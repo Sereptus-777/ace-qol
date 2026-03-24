@@ -1,0 +1,740 @@
+/* ═══════════════════════════════════════════════════════════════════════════════
+   ACE: Quality of Life — Combat Cards
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+/* ─── Attack Results Card ────────────────────────────────────────────────── */
+.ace-qol-attack-card {
+  background: #1a1a1e;
+  border: 1px solid #d4af37;
+  border-radius: 4px;
+  padding: 0;
+  font-family: 'Segoe UI', sans-serif;
+  overflow: hidden;
+}
+
+.ace-qol-atk-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: linear-gradient(135deg, #1a1a1e 0%, #252528 100%);
+  border-bottom: 1px solid #333;
+}
+
+.ace-qol-atk-item-img {
+  width: 28px;
+  height: 28px;
+  border-radius: 3px;
+  border: 1px solid #d4af37;
+}
+
+.ace-qol-atk-item-name {
+  color: #d4af37;
+  font-size: 0.95rem;
+  flex: 1;
+}
+
+/* ─── Roll Mode Badge (ADV / DISADV) ─────────────────────────────────── */
+.ace-qol-roll-mode {
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.ace-qol-adv {
+  color: #00e676;
+  background: rgba(0, 230, 118, 0.15);
+  border: 1px solid rgba(0, 230, 118, 0.3);
+}
+
+.ace-qol-disadv {
+  color: #ff1744;
+  background: rgba(255, 23, 68, 0.1);
+  border: 1px solid rgba(255, 23, 68, 0.25);
+}
+
+/* ─── Roll Formula + Big Result Number ───────────────────────────────── */
+.ace-qol-atk-roll {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px 6px;
+  background: #111114;
+  border-bottom: 1px solid #333;
+}
+
+.ace-qol-atk-formula {
+  color: #ccc;
+  font-size: 0.82rem;
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+
+.ace-qol-mod-die {
+  color: #d4af37;
+  font-weight: 600;
+}
+
+.ace-qol-mod-num {
+  color: #e8e6e0;
+  font-weight: 600;
+}
+
+.ace-qol-mod-label {
+  font-size: 0.6rem;
+  color: #d4af37;
+  text-transform: uppercase;
+  margin-right: 4px;
+  opacity: 1;
+}
+
+.ace-qol-atk-total {
+  font-size: 1.4rem;
+  font-weight: 700;
+  min-width: 40px;
+  text-align: center;
+}
+
+.ace-qol-result-hit  { color: #00e676; }
+.ace-qol-result-crit { color: #ffd700; text-shadow: 0 0 8px rgba(255, 215, 0, 0.5); }
+.ace-qol-result-miss { color: #ff1744; }
+
+/* ─── Target Rows ────────────────────────────────────────────────────── */
+.ace-qol-atk-results {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ace-qol-atk-row {
+  padding: 5px 10px;
+  background: #111114;
+}
+
+.ace-qol-atk-row:nth-child(even) {
+  background: #151518;
+}
+
+.ace-qol-atk-target {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ace-qol-atk-img {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid #444;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.ace-qol-atk-name {
+  color: #e8e6e0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ace-qol-atk-ac {
+  color: #448aff;
+  font-size: 0.75rem;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.ace-qol-atk-result {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.ace-qol-hit     { color: #00e676; background: rgba(0, 230, 118, 0.12); }
+.ace-qol-crit    { color: #ffd700; background: rgba(255, 215, 0, 0.15); text-shadow: 0 0 6px rgba(255, 215, 0, 0.4); }
+.ace-qol-miss    { color: #888; background: rgba(136, 136, 136, 0.08); }
+.ace-qol-fumble  { color: #ff1744; background: rgba(255, 23, 68, 0.1); }
+
+/* ─── Tags (conditions, advantages, resistances) ─────────────────────── */
+.ace-qol-atk-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 3px;
+  padding-left: 30px;
+}
+
+.ace-qol-tag {
+  font-size: 0.6rem;
+  padding: 1px 4px;
+  border-radius: 2px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.ace-qol-tag i {
+  font-size: 0.55rem;
+}
+
+.ace-qol-tag-condition  { color: #ffab00; background: rgba(255, 171, 0, 0.1); border: 1px solid rgba(255, 171, 0, 0.2); }
+.ace-qol-tag-immune     { color: #ff1744; background: rgba(255, 23, 68, 0.08); border: 1px solid rgba(255, 23, 68, 0.2); }
+.ace-qol-tag-resistant  { color: #ff9100; background: rgba(255, 145, 0, 0.08); border: 1px solid rgba(255, 145, 0, 0.2); }
+.ace-qol-tag-vulnerable { color: #e040fb; background: rgba(224, 64, 251, 0.08); border: 1px solid rgba(224, 64, 251, 0.2); }
+.ace-qol-tag-buff       { color: #00e5ff; background: rgba(0, 229, 255, 0.08); border: 1px solid rgba(0, 229, 255, 0.2); }
+.ace-qol-tag-debuff     { color: #ff6e40; background: rgba(255, 110, 64, 0.08); border: 1px solid rgba(255, 110, 64, 0.2); }
+.ace-qol-tag-danger     { color: #ff1744; background: rgba(255, 23, 68, 0.12); border: 1px solid rgba(255, 23, 68, 0.25); }
+.ace-qol-tag-bonus      { color: #76ff03; background: rgba(118, 255, 3, 0.08); border: 1px solid rgba(118, 255, 3, 0.2); }
+.ace-qol-tag-info       { color: #448aff; background: rgba(68, 138, 255, 0.08); border: 1px solid rgba(68, 138, 255, 0.2); }
+.ace-qol-tag-legendary  { color: #ffd740; background: rgba(255, 215, 64, 0.08); border: 1px solid rgba(255, 215, 64, 0.2); }
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   DAMAGE CARD
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.ace-qol-damage-card {
+  background: #1a1a1e;
+  border: 1px solid #ff6b6b;
+  border-radius: 4px;
+  overflow: hidden;
+  font-family: 'Segoe UI', sans-serif;
+}
+
+.ace-qol-dmg-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: linear-gradient(135deg, #1a1a1e 0%, #2a1a1a 100%);
+  border-bottom: 1px solid #333;
+}
+
+.ace-qol-dmg-item-img {
+  width: 28px; height: 28px; border-radius: 3px; border: 1px solid #ff6b6b;
+}
+
+.ace-qol-dmg-item-name {
+  color: #ff6b6b; font-size: 0.95rem; flex: 1;
+}
+
+.ace-qol-dmg-crit-rule {
+  font-size: 0.6rem; color: #ffd700; background: rgba(255,215,0,0.1);
+  border: 1px solid rgba(255,215,0,0.25); padding: 1px 5px; border-radius: 2px;
+  text-transform: uppercase;
+}
+
+/* ─── Per-target damage section ──────────────────────────────────────── */
+.ace-qol-dmg-targets {
+  display: flex; flex-direction: column; gap: 1px;
+}
+
+.ace-qol-dmg-target {
+  padding: 6px 10px; background: #111114;
+}
+
+.ace-qol-dmg-target-header {
+  display: flex; align-items: center; gap: 6px; margin-bottom: 4px;
+}
+
+.ace-qol-dmg-target-img {
+  width: 24px; height: 24px; border-radius: 50%; border: 1px solid #444; object-fit: cover;
+}
+
+.ace-qol-dmg-target-name {
+  color: #e8e6e0; font-size: 0.85rem; font-weight: 600; flex: 1;
+}
+
+.ace-qol-dmg-crit-badge {
+  font-size: 0.6rem; font-weight: 700; color: #ffd700;
+  background: rgba(255,215,0,0.15); border: 1px solid rgba(255,215,0,0.3);
+  padding: 1px 5px; border-radius: 2px;
+}
+
+.ace-qol-dmg-total {
+  font-size: 1rem; font-weight: 700; color: #ff6b6b;
+}
+
+.ace-qol-dmg-dead {
+  font-size: 1.1rem;
+}
+
+/* ─── Damage components (per-type rows — compact horizontal) ─────────── */
+.ace-qol-dmg-components {
+  display: flex; flex-direction: column; gap: 1px; padding-left: 30px;
+}
+
+.ace-qol-dmg-component {
+  display: flex; align-items: center; gap: 4px; font-size: 0.85rem;
+  padding: 2px 0; color: #e8e6e0; flex-wrap: wrap;
+}
+
+.ace-qol-die {
+  color: #d4af37; font-weight: 600;
+}
+
+.ace-qol-die i {
+  font-size: 0.8rem; margin-right: 2px; opacity: 1;
+}
+
+.ace-qol-dmg-equals {
+  color: #999; margin: 0 2px;
+}
+
+.ace-qol-dmg-crit-label {
+  color: #ffd700; font-weight: 700; font-size: 0.75rem;
+  background: rgba(255,215,0,0.1); padding: 1px 4px; border-radius: 2px;
+}
+
+.ace-qol-dmg-value {
+  font-weight: 700; font-size: 0.9rem; margin-left: auto;
+}
+
+.ace-qol-dmg-mod {
+  font-size: 0.6rem; font-weight: 700; padding: 1px 5px; border-radius: 2px;
+  text-transform: uppercase;
+}
+
+.ace-qol-dmg-immune  { color: #ff1744; background: rgba(255,23,68,0.15); border: 1px solid rgba(255,23,68,0.3); }
+.ace-qol-dmg-resist  { color: #ff9100; background: rgba(255,145,0,0.15); border: 1px solid rgba(255,145,0,0.3); }
+.ace-qol-dmg-vuln    { color: #e040fb; background: rgba(224,64,251,0.15); border: 1px solid rgba(224,64,251,0.3); }
+
+/* ─── HP line ────────────────────────────────────────────────────────── */
+.ace-qol-dmg-hp {
+  font-size: 0.75rem; color: #ddd; padding: 3px 0 0 30px;
+}
+
+/* ─── Apply/Undo buttons ─────────────────────────────────────────────── */
+.ace-qol-dmg-actions {
+  display: flex; gap: 6px; padding: 8px 10px; border-top: 1px solid #333;
+}
+
+.ace-qol-btn {
+  flex: 1; padding: 6px 10px; border-radius: 3px; font-size: 0.8rem;
+  font-weight: 600; cursor: pointer; text-align: center;
+  font-family: 'Segoe UI', sans-serif; border: 1px solid;
+}
+
+.ace-qol-btn:disabled {
+  opacity: 0.5; cursor: default;
+}
+
+.ace-qol-btn-apply {
+  background: rgba(255,107,107,0.15); color: #ff6b6b; border-color: rgba(255,107,107,0.3);
+}
+
+.ace-qol-btn-apply:hover:not(:disabled) {
+  background: rgba(255,107,107,0.25);
+}
+
+.ace-qol-btn-undo {
+  background: rgba(255,171,0,0.1); color: #ffab00; border-color: rgba(255,171,0,0.25);
+}
+
+.ace-qol-btn-undo:hover:not(:disabled) {
+  background: rgba(255,171,0,0.2);
+}
+
+/* ─── PC Roll Damage Button Card ─────────────────────────────────────── */
+.ace-qol-dmg-btn-card {
+  background: #f0f0f0;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  padding: 6px;
+  text-align: center;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+
+.ace-qol-btn-roll-dmg {
+  width: 100%; padding: 10px 16px; border: none;
+  border-radius: 3px;
+  background: #fff;
+  color: #cc3300; font-size: 1rem; font-weight: 700; cursor: pointer;
+  display: flex; align-items: center; gap: 8px; justify-content: center;
+  font-family: 'Segoe UI', sans-serif; transition: all 0.15s;
+  text-transform: uppercase; letter-spacing: 1px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+  -webkit-text-stroke: 0.5px #000;
+  text-shadow: 0 0 1px rgba(0,0,0,0.3);
+}
+
+.ace-qol-btn-roll-dmg:hover:not(:disabled) {
+  background: #fff5f0;
+  box-shadow: 0 3px 10px rgba(204,51,0,0.25);
+  color: #e63900;
+}
+
+.ace-qol-btn-roll-dmg:disabled {
+  opacity: 0.5; cursor: default; box-shadow: none;
+}
+
+.ace-qol-btn-roll-dmg i {
+  font-size: 1.1rem; color: #cc3300;
+  -webkit-text-stroke: 0.5px #000;
+  filter: drop-shadow(0 0 1px rgba(0,0,0,0.4));
+}
+
+.ace-qol-dmg-btn-crit {
+  color: #fff; background: #cc3300;
+  padding: 1px 6px; border-radius: 2px; font-size: 0.8rem;
+}
+
+.ace-qol-dmg-btn-targets {
+  display: block; font-size: 0.75rem; font-weight: 500; color: #555;
+  margin-top: 4px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   SAVE CARDS
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.ace-qol-save-card, .ace-qol-save-results-card {
+  background: #1a1a1e; border: 1px solid #448aff; border-radius: 4px;
+  overflow: hidden; font-family: 'Segoe UI', sans-serif;
+}
+
+.ace-qol-save-header {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  background: linear-gradient(135deg, #1a1a1e 0%, #1a1a2a 100%);
+  border-bottom: 1px solid #333;
+}
+
+.ace-qol-save-item-img {
+  width: 28px; height: 28px; border-radius: 3px; border: 1px solid #448aff;
+}
+
+.ace-qol-save-item-name { color: #448aff; font-size: 0.95rem; }
+
+.ace-qol-save-dc {
+  color: #ccc; font-size: 0.8rem; display: block;
+}
+
+.ace-qol-save-half-badge {
+  font-size: 0.6rem; color: #ffab00; background: rgba(255,171,0,0.12);
+  border: 1px solid rgba(255,171,0,0.25); padding: 1px 5px; border-radius: 2px;
+  text-transform: uppercase; font-weight: 700; margin-left: auto;
+}
+
+.ace-qol-save-targets, .ace-qol-save-results {
+  display: flex; flex-direction: column; gap: 1px;
+}
+
+.ace-qol-save-target, .ace-qol-save-result-row {
+  padding: 5px 10px; background: #111114;
+}
+
+.ace-qol-save-target:nth-child(even), .ace-qol-save-result-row:nth-child(even) {
+  background: #151518;
+}
+
+.ace-qol-save-target-header, .ace-qol-save-result-target {
+  display: flex; align-items: center; gap: 6px;
+}
+
+.ace-qol-save-target-img {
+  width: 24px; height: 24px; border-radius: 50%; border: 1px solid #444; object-fit: cover;
+}
+
+.ace-qol-save-target-name {
+  color: #e8e6e0; font-size: 0.82rem; font-weight: 600; flex: 1;
+}
+
+.ace-qol-save-target-mod {
+  color: #999; font-size: 0.72rem;
+}
+
+.ace-qol-save-actions {
+  padding: 8px 10px; border-top: 1px solid #333;
+}
+
+.ace-qol-btn-roll {
+  width: 100%; background: rgba(68,138,255,0.15); color: #448aff;
+  border-color: rgba(68,138,255,0.3); font-size: 0.9rem; padding: 8px;
+}
+
+.ace-qol-btn-roll:hover:not(:disabled) { background: rgba(68,138,255,0.25); }
+
+/* ─── Save Result Rows ───────────────────────────────────────────────── */
+.ace-qol-save-roll {
+  font-size: 1.1rem; font-weight: 700; min-width: 30px; text-align: center;
+}
+
+.ace-qol-save-result-label {
+  font-size: 0.7rem; font-weight: 700; padding: 2px 6px; border-radius: 2px;
+  text-transform: uppercase;
+}
+
+.ace-qol-save-pass { color: #00e676; }
+.ace-qol-save-pass.ace-qol-save-result-label { background: rgba(0,230,118,0.12); }
+.ace-qol-save-fail { color: #ff1744; }
+.ace-qol-save-fail.ace-qol-save-result-label { background: rgba(255,23,68,0.12); }
+
+.ace-qol-save-result-damage {
+  font-size: 0.8rem; color: #ccc; padding: 2px 0 0 30px;
+}
+
+.ace-qol-save-dmg-summary {
+  padding: 4px 10px; font-size: 0.8rem; color: #bbb;
+  background: #111114; border-bottom: 1px solid #333;
+}
+
+/* ─── Post-Hit Save Effects ──────────────────────────────── */
+.ace-qol-posthit-effects {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  padding: 4px 8px; margin-top: 4px;
+}
+
+.ace-qol-table-result {
+  width: 100%; padding: 6px 10px; margin-bottom: 4px;
+  background: rgba(212, 175, 55, 0.1);
+  border: 1px solid rgba(212, 175, 55, 0.3);
+  border-radius: 3px; font-size: 0.85rem; color: #e8e6e0;
+}
+
+.ace-qol-table-result i { color: #d4af37; margin-right: 4px; }
+.ace-qol-table-result strong { color: #d4af37; }
+
+/* ═══════════════════════════════════════════════════════════════
+   AoE SAVE SPELL CARDS — Phase A + B
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ─── Live Target Card ─────────────────────────────────────── */
+.ace-qol-save-tgt-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 6px; margin: 2px 0;
+  background: rgba(255,255,255,0.04);
+  border-radius: 3px; min-height: 28px;
+}
+.ace-qol-save-tgt-row:hover { background: rgba(255,255,255,0.08); }
+.ace-qol-save-tgt-img {
+  width: 24px; height: 24px; border-radius: 50%;
+  object-fit: cover; border: 1px solid #444; flex-shrink: 0;
+}
+.ace-qol-save-tgt-name {
+  flex: 1; font-size: 0.85rem; font-weight: 600; color: #e8e6e0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ace-qol-save-tgt-mod {
+  font-size: 0.75rem; color: #888; font-family: monospace; flex-shrink: 0;
+}
+.ace-qol-save-tgt-remove {
+  background: none; border: none; color: #666; cursor: pointer;
+  padding: 2px 4px; font-size: 0.7rem; flex-shrink: 0;
+  transition: color 0.15s;
+}
+.ace-qol-save-tgt-remove:hover { color: #ff1744; }
+
+/* PC target rows */
+.ace-qol-save-tgt-pc { opacity: 0.7; border-left: 2px solid #448aff; }
+.ace-qol-save-pc-note {
+  font-size: 0.65rem; color: #448aff; font-style: italic; flex-shrink: 0;
+}
+
+/* ─── Mode Toggle (TARGETED / SELECTED) ────────────────────── */
+.ace-qol-save-mode-toggle {
+  display: flex; gap: 4px; margin: 6px 0; justify-content: center;
+}
+.ace-qol-save-mode-btn {
+  padding: 3px 10px; border-radius: 3px; font-size: 0.7rem;
+  font-weight: 700; text-transform: uppercase; cursor: pointer;
+  border: 1px solid #444; background: rgba(255,255,255,0.05);
+  color: #888; transition: all 0.15s;
+}
+.ace-qol-save-mode-btn.active {
+  background: rgba(212,175,55,0.15); color: #d4af37;
+  border-color: #d4af37;
+}
+
+/* ─── Section Headers ──────────────────────────────────────── */
+.ace-qol-save-section-header {
+  font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+  color: #888; padding: 4px 6px; margin-top: 6px;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+.ace-qol-save-section-header.pc-section { color: #448aff; }
+
+/* ─── Results Card — Slim Single-Line Rows ─────────────────── */
+.ace-qol-save-result-row {
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.ace-qol-save-result-line {
+  display: flex; align-items: center; gap: 4px;
+  padding: 3px 4px; min-height: 26px;
+}
+.ace-qol-save-result-line .ace-qol-save-tgt-name {
+  flex: 1; min-width: 0;
+}
+.ace-qol-save-roll {
+  font-size: 0.8rem; font-weight: 700; font-family: monospace;
+  min-width: 20px; text-align: center;
+}
+.ace-qol-save-verdict {
+  font-size: 0.6rem; font-weight: 700; text-transform: uppercase;
+  padding: 1px 4px; border-radius: 2px; flex-shrink: 0;
+}
+.ace-qol-save-verdict.ace-qol-save-pass {
+  background: rgba(0,230,118,0.15); color: #00e676;
+}
+.ace-qol-save-verdict.ace-qol-save-fail {
+  background: rgba(255,23,68,0.15); color: #ff1744;
+}
+.ace-qol-save-result-dmg {
+  font-size: 0.8rem; font-weight: 700; font-family: monospace;
+  min-width: 24px; text-align: right; flex-shrink: 0;
+}
+.ace-qol-save-result-hp {
+  font-size: 0.65rem; color: #888; flex-shrink: 0; white-space: nowrap;
+}
+
+/* ─── Inline Override Buttons (tiny, in the row) ───────────── */
+.ace-qol-save-ovr {
+  padding: 0 3px; font-size: 0.55rem; border-radius: 2px;
+  background: rgba(255,255,255,0.05); border: 1px solid #333;
+  color: #666; cursor: pointer; transition: all 0.1s;
+  line-height: 1.4; flex-shrink: 0; min-width: 16px; text-align: center;
+}
+.ace-qol-save-ovr:hover {
+  background: rgba(212,175,55,0.15); color: #d4af37; border-color: #d4af37;
+}
+.ace-qol-save-ovr-active {
+  background: rgba(212,175,55,0.12); color: #d4af37; border-color: rgba(212,175,55,0.4);
+}
+
+/* ─── Inline Immune/Resist/Vuln Badges ─────────────────────── */
+.ace-qol-save-inline-badge {
+  font-size: 0.55rem; font-weight: 700; padding: 0 3px; border-radius: 2px;
+  text-transform: uppercase; flex-shrink: 0; line-height: 1.4;
+}
+.ace-qol-save-inline-badge.immune {
+  color: #ff1744; background: rgba(255,23,68,0.15); border: 1px solid rgba(255,23,68,0.3);
+}
+.ace-qol-save-inline-badge.resist {
+  color: #ff9100; background: rgba(255,145,0,0.15); border: 1px solid rgba(255,145,0,0.3);
+}
+.ace-qol-save-inline-badge.vuln {
+  color: #e040fb; background: rgba(224,64,251,0.15); border: 1px solid rgba(224,64,251,0.3);
+}
+
+/* ─── PC Waiting State ─────────────────────────────────────── */
+.ace-qol-save-waiting {
+  font-size: 0.75rem; color: #888; font-style: italic;
+}
+.ace-qol-save-waiting::before {
+  content: "⏳ "; animation: ace-qol-pulse 1.5s ease-in-out infinite;
+}
+@keyframes ace-qol-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+/* ─── PC Save Prompt Card (whispered) ──────────────────────── */
+.ace-qol-pc-save-card {
+  background: #1a1a1e; border: 1px solid #555; border-radius: 4px;
+  padding: 8px;
+}
+.ace-qol-pc-save-card .ace-qol-save-header {
+  border-bottom-color: rgba(255,255,255,0.1);
+}
+
+/* ─── PC Save Result Card (public) ─────────────────────────── */
+.ace-qol-save-pc-result-card {
+  background: #1a1a1e; border-radius: 4px; padding: 4px 6px;
+}
+.ace-qol-save-pc-result-line {
+  display: flex; align-items: center; gap: 6px;
+}
+.ace-qol-save-pc-result-line .ace-qol-save-tgt-img {
+  width: 24px; height: 24px; border-radius: 50%; object-fit: cover;
+  border: 1px solid #444;
+}
+.ace-qol-save-pc-result-line .ace-qol-save-tgt-name {
+  flex: 1; font-size: 0.8rem; color: #ddd; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ace-qol-save-pc-result-line .ace-qol-save-roll {
+  font-size: 0.85rem; font-weight: 700; font-family: monospace;
+}
+.ace-qol-save-pc-result-line .ace-qol-save-verdict {
+  font-size: 0.6rem; font-weight: 700; padding: 1px 5px; border-radius: 2px;
+}
+
+/* ─── Auto-collapsed rolled card ───────────────────────────── */
+.ace-qol-save-collapsed {
+  max-height: 0; overflow: hidden; padding: 0 !important;
+  margin: 0 !important; border: none !important; opacity: 0;
+  transition: all 0.3s ease;
+}
+
+/* ─── Concentration Widget ─────────────────────────────────── */
+.ace-qol-conc-widget {
+  background: #1a1a1e; border: 1px solid rgba(212,175,55,0.4);
+  border-radius: 6px; padding: 8px; min-width: 280px; max-width: 340px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.6);
+}
+.ace-qol-conc-header {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+}
+.ace-qol-conc-spell-img {
+  width: 28px; height: 28px; border-radius: 3px;
+  border: 1px solid #d4af37; object-fit: cover;
+}
+.ace-qol-conc-info {
+  flex: 1; display: flex; flex-direction: column;
+}
+.ace-qol-conc-info strong {
+  font-size: 0.9rem; color: #e8e6e0;
+}
+.ace-qol-conc-dc {
+  font-size: 0.75rem; color: #d4af37; font-weight: 600;
+}
+.ace-qol-conc-dismiss {
+  background: none; border: none; color: #666; cursor: pointer;
+  padding: 4px; font-size: 0.8rem; transition: color 0.15s;
+}
+.ace-qol-conc-dismiss:hover { color: #ff1744; }
+
+.ace-qol-conc-timing {
+  font-size: 0.7rem; color: #888; padding: 2px 0 4px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  margin-bottom: 4px;
+}
+.ace-qol-conc-timing i { color: #d4af37; margin-right: 4px; }
+
+.ace-qol-conc-targets {
+  max-height: 150px; overflow-y: auto; margin-bottom: 6px;
+}
+.ace-qol-conc-tgt-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 2px 4px; margin: 1px 0;
+}
+.ace-qol-conc-empty {
+  font-size: 0.75rem; color: #666; font-style: italic; text-align: center;
+  padding: 8px;
+}
+
+.ace-qol-conc-actions {
+  display: flex; gap: 6px;
+}
+.ace-qol-btn-inflict {
+  width: 100%; padding: 6px; font-size: 0.8rem; font-weight: 700;
+  text-transform: uppercase; background: rgba(255,152,0,0.15);
+  border: 1px solid rgba(255,152,0,0.4); color: #ff9800;
+  border-radius: 3px; cursor: pointer; transition: all 0.15s;
+}
+.ace-qol-btn-inflict:hover {
+  background: rgba(255,152,0,0.25); border-color: #ff9800;
+}

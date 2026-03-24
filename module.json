@@ -1,0 +1,44 @@
+{
+  "id": "ace-qol",
+  "title": "ACE: Quality of Life — Combat Automation Engine",
+  "description": "Comprehensive D&D 5e combat automation. Attack resolution, damage separation by type, save automation, target state assessment, concentration tracking, and extended Active Effects — all in one module, everything ON by default.",
+  "version": "0.1.0",
+  "compatibility": {
+    "minimum": "12.0.0",
+    "verified": "13",
+    "maximum": "13"
+  },
+  "relationships": {
+    "systems": [
+      {
+        "id": "dnd5e",
+        "type": "system",
+        "compatibility": {
+          "minimum": "4.0.0",
+          "verified": "5.2.5"
+        }
+      }
+    ]
+  },
+  "authors": [
+    {
+      "name": "Sereptus",
+      "url": "https://github.com/Sereptus-777"
+    }
+  ],
+  "esmodules": [
+    "scripts/ace-qol.mjs"
+  ],
+  "styles": [
+    "styles/ace-qol.css"
+  ],
+  "languages": [
+    {
+      "lang": "en",
+      "name": "English",
+      "path": "languages/en.json"
+    }
+  ],
+  "socket": true,
+  "flags": {}
+}

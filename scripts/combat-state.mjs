@@ -1,0 +1,992 @@
+// ─── ACE: QOL — Combat State Assessment Engine (COMPREHENSIVE) ──────────────
+// Reads BOTH the attacker AND the target COMPLETELY, cross-references both
+// sides, and determines ALL combat modifiers for this specific attack.
+//
+// This is the intelligence layer — EVERY D&D 5e rule that affects advantage,
+// disadvantage, AC, saves, auto-crit, damage, and conditions is checked here.
+// ──────────────────────────────────────────────────────────────────────────────
+
+import { MODULE_ID } from "./ace-qol.mjs";
+import { ExtendedEffects } from "./extended-effects.mjs";
+import { QolSettings } from "./settings.mjs";
+
+// ─── Physical damage types (bypass checks) ──────────────────────────────────
+const PHYSICAL_TYPES = new Set(["bludgeoning", "piercing", "slashing"]);
+
+export class CombatState {
+
+  /**
+   * Full combat assessment — EVERY rule checked.
+   */
+  static assess(attackerActor, targetToken, item, opts = {}) {
+    const targetActor = targetToken?.actor;
+    if (!attackerActor || !targetActor) return null;
+
+    const isSpell = opts.isSpell ?? (item?.type === "spell");
+    const actionType = item?.system?.actionType ?? "mwak";
+    const itemProps = item?.system?.properties ?? new Set();
+
+    // ── Smart melee/ranged detection ────────────────────────────────────
+    // Don't just trust actionType — cross-check weapon type, properties, and range.
+    // Catches misconfigured items (e.g., longbow with actionType "mwak")
+    const actuallyRanged = CombatState._isActuallyRanged(item, actionType);
+    const isMelee = opts.isMelee ?? !actuallyRanged;
+    const isRanged = !isMelee;
+
+    const damageTypes = opts.damageTypes ?? CombatState._getItemDamageTypes(item);
+    const saveAbility = opts.saveAbility ?? null;
+
+    // Collect all advantage/disadvantage sources with reasons
+    const advantageSources = [];
+    const disadvantageSources = [];
+
+    // ═════════════════════════════════════════════════════════════════════════
+    //  ATTACKER STATE
+    // ═════════════════════════════════════════════════════════════════════════
+    const atkStatuses = CombatState._getStatuses(attackerActor);
+    const atkConditions = new Set();
+
+    // ── Attacker Conditions ──────────────────────────────────────────────
+    if (atkStatuses.has("blinded") || atkStatuses.has("blind")) {
+      atkConditions.add("blinded");
+      disadvantageSources.push({ source: "attacker", reason: "Attacker is BLINDED → attack disadvantage" });
+    }
+    if (atkStatuses.has("poisoned")) {
+      atkConditions.add("poisoned");
+      disadvantageSources.push({ source: "attacker", reason: "Attacker is POISONED → attack disadvantage" });
+    }
+    if (atkStatuses.has("frightened")) {
+      atkConditions.add("frightened");
+      // Only applies if source of fear is visible — we assume it is for now
+      disadvantageSources.push({ source: "attacker", reason: "Attacker is FRIGHTENED → attack disadvantage" });
+    }
+    if (atkStatuses.has("restrained")) {
+      atkConditions.add("restrained");
+      disadvantageSources.push({ source: "attacker", reason: "Attacker is RESTRAINED → attack disadvantage" });
+    }
+    if (atkStatuses.has("prone")) {
+      atkConditions.add("prone");
+      disadvantageSources.push({ source: "attacker", reason: "Attacker is PRONE → attack disadvantage" });
+    }
+    if (atkStatuses.has("invisible")) {
+      atkConditions.add("invisible");
+      advantageSources.push({ source: "attacker", reason: "Attacker is INVISIBLE → attack advantage" });
+    }
+
+    // ── Exhaustion ───────────────────────────────────────────────────────
+    const exhaustion = attackerActor.system?.attributes?.exhaustion ?? 0;
+    if (exhaustion >= 3) {
+      disadvantageSources.push({ source: "attacker", reason: `Attacker EXHAUSTION ${exhaustion} → attack disadvantage` });
+    }
+
+    // ── Reckless Attack (Barbarian) ─────────────────────────────────────
+    const reckless = attackerActor.getFlag(MODULE_ID, "recklessAttack")
+                  || atkStatuses.has("reckless");
+    if (reckless && isMelee) {
+      advantageSources.push({ source: "attacker", reason: "RECKLESS ATTACK → melee advantage (enemies get advantage back)" });
+    }
+
+    // ── Pack Tactics ────────────────────────────────────────────────────
+    if (CombatState._hasFeature(attackerActor, "Pack Tactics")) {
+      if (CombatState._isAllyNearTarget(attackerActor, targetToken, 5)) {
+        advantageSources.push({ source: "attacker", reason: "PACK TACTICS → ally within 5ft of target" });
+      }
+    }
+
+    // ── Flanking (optional rule, line-through method) ────────────────────
+    try {
+      if (isMelee && QolSettings.get("flanking")) {
+        if (CombatState._isFlanking(attackerActor, targetToken)) {
+          advantageSources.push({ source: "attacker", reason: "FLANKING → ally on opposite side of target" });
+        }
+      }
+    } catch { /* setting not registered yet */ }
+
+    // ── Advantage/Disadvantage from Active Effects ──────────────────────
+    const atkType = actionType;
+    if (ExtendedEffects.hasAdvantage(attackerActor, "attack", atkType)
+     || ExtendedEffects.hasAdvantage(attackerActor, "attack", "all")) {
+      advantageSources.push({ source: "attacker", reason: "Effect/feature grants attack advantage" });
+    }
+    if (ExtendedEffects.hasDisadvantage(attackerActor, "attack", atkType)
+     || ExtendedEffects.hasDisadvantage(attackerActor, "attack", "all")) {
+      disadvantageSources.push({ source: "attacker", reason: "Effect/feature grants attack disadvantage" });
+    }
+
+    // ── Heavy Weapon + Small Creature ───────────────────────────────────
+    const atkSize = attackerActor.system?.traits?.size ?? attackerActor.system?.details?.size ?? "medium";
+    if (["tiny", "sm"].includes(atkSize) && itemProps.has("hvy")) {
+      disadvantageSources.push({ source: "attacker", reason: "SMALL CREATURE + HEAVY WEAPON → attack disadvantage" });
+    }
+
+    // ── Non-proficient Armor ────────────────────────────────────────────
+    // TODO: detect if wearing armor without proficiency
+
+    // ═════════════════════════════════════════════════════════════════════════
+    //  TARGET STATE
+    // ═════════════════════════════════════════════════════════════════════════
+    const tgtStatuses = CombatState._getStatuses(targetActor, targetToken);
+    const tgtSys = targetActor.system ?? {};
+    const tgtTraits = tgtSys.traits ?? {};
+    const tgtAttrs = tgtSys.attributes ?? {};
+    const tgtDetails = tgtSys.details ?? {};
+    const tgtConditions = new Set();
+
+    // ── Target Conditions → Attack Modifiers ─────────────────────────────
+
+    // PRONE
+    if (tgtStatuses.has("prone")) {
+      tgtConditions.add("prone");
+      if (isMelee) {
+        advantageSources.push({ source: "target", reason: "Target is PRONE → melee attack advantage" });
+      } else {
+        disadvantageSources.push({ source: "target", reason: "Target is PRONE → ranged attack disadvantage" });
+      }
+    }
+
+    // RESTRAINED
+    if (tgtStatuses.has("restrained")) {
+      tgtConditions.add("restrained");
+      advantageSources.push({ source: "target", reason: "Target is RESTRAINED → attack advantage" });
+    }
+
+    // PARALYZED
+    if (tgtStatuses.has("paralyzed")) {
+      tgtConditions.add("paralyzed");
+      advantageSources.push({ source: "target", reason: "Target is PARALYZED → attack advantage" });
+    }
+
+    // STUNNED
+    if (tgtStatuses.has("stunned")) {
+      tgtConditions.add("stunned");
+      advantageSources.push({ source: "target", reason: "Target is STUNNED → attack advantage" });
+    }
+
+    // UNCONSCIOUS
+    if (tgtStatuses.has("unconscious")) {
+      tgtConditions.add("unconscious");
+      advantageSources.push({ source: "target", reason: "Target is UNCONSCIOUS → attack advantage" });
+    }
+
+    // BLINDED
+    if (tgtStatuses.has("blinded") || tgtStatuses.has("blind")) {
+      tgtConditions.add("blinded");
+      advantageSources.push({ source: "target", reason: "Target is BLINDED → attack advantage" });
+    }
+
+    // INVISIBLE
+    if (tgtStatuses.has("invisible")) {
+      tgtConditions.add("invisible");
+      disadvantageSources.push({ source: "target", reason: "Target is INVISIBLE → attack disadvantage" });
+    }
+
+    // PETRIFIED
+    if (tgtStatuses.has("petrified")) {
+      tgtConditions.add("petrified");
+      advantageSources.push({ source: "target", reason: "Target is PETRIFIED → attack advantage" });
+    }
+
+    // DODGING
+    if (tgtStatuses.has("dodging") || tgtStatuses.has("dodge")) {
+      tgtConditions.add("dodging");
+      disadvantageSources.push({ source: "target", reason: "Target is DODGING → attack disadvantage" });
+    }
+
+    // POISONED, FRIGHTENED, CHARMED, GRAPPLED, INCAPACITATED, DEAFENED
+    if (tgtStatuses.has("poisoned")) tgtConditions.add("poisoned");
+    if (tgtStatuses.has("frightened")) tgtConditions.add("frightened");
+    if (tgtStatuses.has("charmed")) tgtConditions.add("charmed");
+    if (tgtStatuses.has("grappled")) tgtConditions.add("grappled");
+    if (tgtStatuses.has("incapacitated")) tgtConditions.add("incapacitated");
+    if (tgtStatuses.has("deafened") || tgtStatuses.has("deaf")) tgtConditions.add("deafened");
+
+    // ── Ranged Attack Within 5ft of Hostile ─────────────────────────────
+    if (isRanged) {
+      const hostileNear = CombatState._isHostileNearAttacker(attackerActor, targetToken, 5);
+      if (hostileNear) {
+        disadvantageSources.push({ source: "situation", reason: "RANGED ATTACK within 5ft of hostile creature → disadvantage" });
+      }
+    }
+
+    // ── Ranged Attack at Long Range ─────────────────────────────────────
+    if (isRanged && targetToken && attackerActor.getActiveTokens?.()?.[0]) {
+      const atkToken = attackerActor.getActiveTokens()[0];
+      const distance = CombatState._getDistance(atkToken, targetToken);
+      const normalRange = item?.system?.range?.value ?? 0;
+      const longRange = item?.system?.range?.long ?? 0;
+      if (normalRange && distance > normalRange && longRange && distance <= longRange) {
+        disadvantageSources.push({ source: "situation", reason: `RANGED at LONG RANGE (${Math.round(distance)}ft > ${normalRange}ft normal) → disadvantage` });
+      }
+    }
+
+    // ── Faerie Fire on Target ───────────────────────────────────────────
+    if (CombatState._hasEffect(targetActor, "Faerie Fire")) {
+      advantageSources.push({ source: "target", reason: "Target affected by FAERIE FIRE → attack advantage" });
+    }
+
+    // ── Guiding Bolt on Target (next attack advantage) ──────────────────
+    if (CombatState._hasEffect(targetActor, "Guiding Bolt")) {
+      advantageSources.push({ source: "target", reason: "Target marked by GUIDING BOLT → attack advantage" });
+    }
+
+    // ── Protection from Evil/Good on Target ─────────────────────────────
+    if (CombatState._hasEffect(targetActor, "Protection from Evil and Good")) {
+      const atkType = attackerActor.system?.details?.type?.value ?? "";
+      if (["aberration", "celestial", "elemental", "fey", "fiend", "undead"].includes(atkType)) {
+        disadvantageSources.push({ source: "target", reason: `Target has PROTECTION FROM EVIL/GOOD → disadvantage (attacker is ${atkType})` });
+      }
+    }
+
+    // ── Blur on Target ──────────────────────────────────────────────────
+    if (CombatState._hasEffect(targetActor, "Blur")) {
+      disadvantageSources.push({ source: "target", reason: "Target has BLUR → attack disadvantage" });
+    }
+
+    // ── Foresight on Target ─────────────────────────────────────────────
+    if (CombatState._hasEffect(targetActor, "Foresight")) {
+      disadvantageSources.push({ source: "target", reason: "Target has FORESIGHT → attacks against have disadvantage" });
+    }
+
+    // ── Holy Aura on Target ─────────────────────────────────────────────
+    if (CombatState._hasEffect(targetActor, "Holy Aura")) {
+      disadvantageSources.push({ source: "target", reason: "Target has HOLY AURA → attacks against have disadvantage" });
+    }
+
+    // ── Foresight on Attacker ───────────────────────────────────────────
+    if (CombatState._hasEffect(attackerActor, "Foresight")) {
+      advantageSources.push({ source: "attacker", reason: "Attacker has FORESIGHT → attack advantage" });
+    }
+
+    // ── Otto's Irresistible Dance on Target ─────────────────────────────
+    if (CombatState._hasEffect(targetActor, "Irresistible Dance") || CombatState._hasEffect(targetActor, "Otto")) {
+      advantageSources.push({ source: "target", reason: "Target affected by IRRESISTIBLE DANCE → attack advantage" });
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    //  AUTO-CRIT CONDITIONS
+    // ═════════════════════════════════════════════════════════════════════════
+    let autoCrit = false;
+    const autoCritReasons = [];
+
+    if (isMelee && (tgtConditions.has("paralyzed") || tgtConditions.has("unconscious"))) {
+      autoCrit = true;
+      autoCritReasons.push(`Melee vs ${tgtConditions.has("paralyzed") ? "PARALYZED" : "UNCONSCIOUS"} = AUTO-CRIT`);
+    }
+
+    // Assassinate — attacker is Assassin rogue, target hasn't acted in combat
+    if (CombatState._hasFeature(attackerActor, "Assassinate")) {
+      const combat = game.combat;
+      if (combat?.started) {
+        const targetCombatant = combat.combatants?.find(c => c.actorId === targetActor.id);
+        if (targetCombatant && !targetCombatant.hasActed) {
+          autoCrit = true;
+          autoCritReasons.push("ASSASSINATE → target hasn't acted yet = AUTO-CRIT");
+          advantageSources.push({ source: "attacker", reason: "ASSASSINATE → advantage vs creature that hasn't acted" });
+        }
+      }
+    }
+
+    // Expanded crit range — Hexblade's Curse (19-20), Champion Improved Critical (19-20 or 18-20)
+    let critRange = 20;
+    if (CombatState._hasEffect(attackerActor, "Hexblade") || attackerActor.getFlag(MODULE_ID, "hexbladeCurse")) {
+      critRange = 19;
+    }
+    if (CombatState._hasFeature(attackerActor, "Improved Critical")) {
+      critRange = 19;
+    }
+    if (CombatState._hasFeature(attackerActor, "Superior Critical")) {
+      critRange = 18;
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    //  DAMAGE MODIFIERS PER TYPE
+    // ═════════════════════════════════════════════════════════════════════════
+    const resistances = new Set(tgtTraits.dr?.value ?? []);
+    const immunities = new Set(tgtTraits.di?.value ?? []);
+    const vulnerabilities = new Set(tgtTraits.dv?.value ?? []);
+    const isMagical = itemProps.has("mgc") || !!item?.system?.magicAvailable;
+    const isSilvered = itemProps.has("sil");
+    const isAdamantine = itemProps.has("ada");
+
+    const damageModifiers = {};
+    for (const type of damageTypes) {
+      let modifier = "normal";
+      let reason = null;
+
+      if (immunities.has(type)) {
+        modifier = "immune";
+        reason = `Immune to ${type}`;
+      } else if (resistances.has(type)) {
+        if (PHYSICAL_TYPES.has(type) && isMagical) {
+          modifier = "normal";
+          reason = `${type} resistance BYPASSED (magical weapon)`;
+        } else if (PHYSICAL_TYPES.has(type) && isSilvered) {
+          modifier = "normal";
+          reason = `${type} resistance BYPASSED (silvered weapon)`;
+        } else if (PHYSICAL_TYPES.has(type) && isAdamantine) {
+          modifier = "normal";
+          reason = `${type} resistance BYPASSED (adamantine weapon)`;
+        } else {
+          modifier = "resistant";
+          reason = `Resists ${type} (half damage)`;
+        }
+      } else if (vulnerabilities.has(type)) {
+        modifier = "vulnerable";
+        reason = `VULNERABLE to ${type} (double damage)`;
+      }
+
+      // Petrified = resist all
+      if (tgtConditions.has("petrified") && modifier === "normal") {
+        modifier = "resistant";
+        reason = "PETRIFIED → resists all damage";
+      }
+
+      damageModifiers[type] = { modifier, reason };
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    //  SAVING THROW MODIFIERS ON TARGET
+    // ═════════════════════════════════════════════════════════════════════════
+    let saveAdvantage = false;
+    let saveDisadvantage = false;
+    let autoFailSave = false;
+    const saveBonuses = [];
+    const saveAdvReasons = [];
+    const saveDisadvReasons = [];
+
+    if (saveAbility) {
+      // Auto-fail STR/DEX saves
+      if (["str", "dex"].includes(saveAbility)) {
+        if (tgtConditions.has("paralyzed") || tgtConditions.has("stunned")
+         || tgtConditions.has("unconscious") || tgtConditions.has("petrified")) {
+          autoFailSave = true;
+        }
+      }
+
+      // Restrained → disadvantage on DEX saves
+      if (tgtConditions.has("restrained") && saveAbility === "dex") {
+        saveDisadvantage = true;
+        saveDisadvReasons.push("RESTRAINED → DEX save disadvantage");
+      }
+
+      // Exhaustion 3+ → disadvantage on ALL saves
+      const tgtExhaustion = tgtSys.attributes?.exhaustion ?? 0;
+      if (tgtExhaustion >= 3) {
+        saveDisadvantage = true;
+        saveDisadvReasons.push(`EXHAUSTION ${tgtExhaustion} → save disadvantage`);
+      }
+
+      // Dodge → advantage on DEX saves
+      if (saveAbility === "dex" && tgtConditions.has("dodging")) {
+        saveAdvantage = true;
+        saveAdvReasons.push("DODGING → DEX save advantage");
+      }
+
+      // Magic Resistance → advantage on saves vs spells
+      const magicRes = ExtendedEffects.hasMagicResistance(targetActor)
+                    || !!targetActor.getFlag("midi-qol", "magicResistance.all")
+                    || CombatState._hasFeature(targetActor, "Magic Resistance");
+      if (magicRes && isSpell) {
+        saveAdvantage = true;
+        saveAdvReasons.push("MAGIC RESISTANCE → advantage on saves vs spells");
+      }
+
+      // Gnome Cunning → advantage on INT/WIS/CHA saves vs magic
+      if (["int", "wis", "cha"].includes(saveAbility) && isSpell) {
+        if (CombatState._hasFeature(targetActor, "Gnome Cunning")) {
+          saveAdvantage = true;
+          saveAdvReasons.push("GNOME CUNNING → advantage on INT/WIS/CHA saves vs magic");
+        }
+      }
+
+      // Danger Sense (Barbarian) → advantage on DEX saves you can see
+      if (saveAbility === "dex" && CombatState._hasFeature(targetActor, "Danger Sense")) {
+        if (!tgtConditions.has("blinded") && !tgtConditions.has("deafened") && !tgtConditions.has("incapacitated")) {
+          saveAdvantage = true;
+          saveAdvReasons.push("DANGER SENSE → DEX save advantage");
+        }
+      }
+
+      // Haste → advantage on DEX saves
+      if (saveAbility === "dex" && CombatState._hasEffect(targetActor, "Haste")) {
+        saveAdvantage = true;
+        saveAdvReasons.push("HASTE → DEX save advantage");
+      }
+
+      // Foresight → advantage on ALL saves
+      if (CombatState._hasEffect(targetActor, "Foresight")) {
+        saveAdvantage = true;
+        saveAdvReasons.push("FORESIGHT → advantage on all saves");
+      }
+
+      // Holy Aura → advantage on ALL saves
+      if (CombatState._hasEffect(targetActor, "Holy Aura")) {
+        saveAdvantage = true;
+        saveAdvReasons.push("HOLY AURA → advantage on all saves");
+      }
+
+      // Beacon of Hope → advantage on WIS saves
+      if (saveAbility === "wis" && CombatState._hasEffect(targetActor, "Beacon of Hope")) {
+        saveAdvantage = true;
+        saveAdvReasons.push("BEACON OF HOPE → WIS save advantage");
+      }
+
+      // ACE QOL flags
+      if (ExtendedEffects.hasAdvantage(targetActor, "save", saveAbility)
+       || ExtendedEffects.hasAdvantage(targetActor, "save", "all")) {
+        saveAdvantage = true;
+        saveAdvReasons.push("Effect grants save advantage");
+      }
+      if (ExtendedEffects.hasDisadvantage(targetActor, "save", saveAbility)
+       || ExtendedEffects.hasDisadvantage(targetActor, "save", "all")) {
+        saveDisadvantage = true;
+        saveDisadvReasons.push("Effect grants save disadvantage");
+      }
+
+      // Bless → +1d4 to saves (bonus, not advantage)
+      const blessBonus = tgtSys.bonuses?.abilities?.save;
+      if (blessBonus) saveBonuses.push({ value: blessBonus, label: "Bless" });
+
+      // Per-ability save bonus
+      const abilitySaveBonus = tgtSys.abilities?.[saveAbility]?.bonuses?.save;
+      if (abilitySaveBonus) saveBonuses.push({ value: abilitySaveBonus, label: `${saveAbility.toUpperCase()} bonus` });
+
+      // Aura of Protection (Paladin) — CHA mod to saves for nearby allies
+      // Check all nearby friendly tokens for a paladin with this feature
+      const auraBonus = CombatState._getAuraOfProtectionBonus(targetToken);
+      if (auraBonus > 0) saveBonuses.push({ value: `+${auraBonus}`, label: "Aura of Protection" });
+    }
+
+    // ── Evasion / Shield Master ─────────────────────────────────────────
+    const superSaver = ExtendedEffects.hasSuperSaver(targetActor, saveAbility)
+                    || !!targetActor.getFlag("midi-qol", `superSaver.${saveAbility}`)
+                    || (saveAbility === "dex" && CombatState._hasFeature(targetActor, "Evasion"));
+    const semiSuperSaver = ExtendedEffects.hasSemiSuperSaver(targetActor, saveAbility)
+                        || !!targetActor.getFlag("midi-qol", `semiSuperSaver.${saveAbility}`)
+                        || (saveAbility === "dex" && CombatState._hasFeature(targetActor, "Shield Master"));
+
+    // ═════════════════════════════════════════════════════════════════════════
+    //  CREATURE TYPE + SLAYER
+    // ═════════════════════════════════════════════════════════════════════════
+    const creatureType = tgtDetails.type?.value ?? "";
+    const creatureSubtype = tgtDetails.type?.subtype ?? "";
+    const creatureSize = tgtDetails.size ?? "medium";
+
+    const slayerType = item?.getFlag?.("ace-artificer", "slayerType")
+                    || item?.getFlag?.("ace-qol", "slayerType") || null;
+    const slayerDamage = item?.getFlag?.("ace-artificer", "slayerDamage")
+                      || item?.getFlag?.("ace-qol", "slayerDamage") || null;
+    let slayerMatch = false;
+    if (slayerType && creatureType) {
+      slayerMatch = creatureType === slayerType
+                 || creatureSubtype?.toLowerCase().includes(slayerType)
+                 || creatureType?.toLowerCase().includes(slayerType);
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    //  ATTACKER BONUS DAMAGE FEATURES
+    // ═════════════════════════════════════════════════════════════════════════
+    const attackerBonuses = [];
+
+    // Sneak Attack
+    const sneakAttack = CombatState._checkSneakAttack(attackerActor, targetToken, item, isMelee, advantageSources.length > 0);
+    if (sneakAttack.eligible) attackerBonuses.push(sneakAttack);
+
+    // Hex
+    if (CombatState._hasEffect(attackerActor, "Hex")) {
+      attackerBonuses.push({ name: "Hex", formula: "1d6", type: "necrotic", reason: "Hex → +1d6 necrotic per hit" });
+    }
+
+    // Hunter's Mark
+    if (CombatState._hasEffect(attackerActor, "Hunter's Mark") || CombatState._hasEffect(attackerActor, "Hunter")) {
+      attackerBonuses.push({ name: "Hunter's Mark", formula: "1d6", type: damageTypes[0] ?? "force", reason: "Hunter's Mark → +1d6 per hit" });
+    }
+
+    // Hexblade's Curse
+    if (CombatState._hasEffect(attackerActor, "Hexblade") || attackerActor.getFlag(MODULE_ID, "hexbladeCurse")) {
+      const prof = attackerActor.system?.attributes?.prof ?? 2;
+      attackerBonuses.push({ name: "Hexblade's Curse", formula: `${prof}`, type: damageTypes[0] ?? "force", reason: `Hexblade's Curse → +${prof} damage` });
+    }
+
+    // Rage damage (Barbarian)
+    if (CombatState._hasEffect(attackerActor, "Rage") && isMelee) {
+      const rageBonus = CombatState._getRageDamageBonus(attackerActor);
+      if (rageBonus > 0) {
+        attackerBonuses.push({ name: "Rage", formula: `${rageBonus}`, type: damageTypes[0] ?? "bludgeoning", reason: `Rage → +${rageBonus} melee damage` });
+      }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    //  CONCENTRATION STATE
+    // ═════════════════════════════════════════════════════════════════════════
+    const isConcentrating = tgtStatuses.has("concentrating");
+    let concentrationSpell = null;
+    if (isConcentrating) {
+      for (const effect of targetActor.effects ?? []) {
+        if (effect.statuses?.has("concentrating")) {
+          concentrationSpell = effect.name || "Unknown spell";
+          break;
+        }
+      }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    //  LEGENDARY RESISTANCE
+    // ═════════════════════════════════════════════════════════════════════════
+    const legendaryResistance = tgtSys.resources?.legres?.value ?? 0;
+    const legendaryResistanceMax = tgtSys.resources?.legres?.max ?? 0;
+
+    // ═════════════════════════════════════════════════════════════════════════
+    //  FINAL ROLL MODE DETERMINATION
+    // ═════════════════════════════════════════════════════════════════════════
+    const hasAdvantage = advantageSources.length > 0;
+    const hasDisadvantage = disadvantageSources.length > 0;
+
+    // D&D 5e rule: any amount of advantage + any amount of disadvantage = normal
+    let finalRollMode = "normal";
+    if (hasAdvantage && hasDisadvantage) {
+      finalRollMode = "normal"; // they cancel
+    } else if (hasAdvantage) {
+      finalRollMode = "advantage";
+    } else if (hasDisadvantage) {
+      finalRollMode = "disadvantage";
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    //  BUILD RESULT
+    // ═════════════════════════════════════════════════════════════════════════
+    return {
+      attackerActor, targetToken, targetActor, item,
+      isMelee, isRanged, isSpell, actionType,
+
+      attacker: {
+        name: attackerActor.token?.name ?? attackerActor.getActiveTokens?.()?.[0]?.name ?? attackerActor.name,
+        conditions: atkConditions,
+        exhaustion,
+        reckless: !!reckless,
+        bonuses: attackerBonuses,
+      },
+
+      target: {
+        name: targetToken.document?.name ?? targetToken.name ?? targetActor.name,
+        img: targetToken.document?.texture?.src ?? targetActor.img,
+        ac: tgtAttrs.ac?.value ?? 10,
+        conditions: tgtConditions,
+        conditionImmunities: new Set(tgtTraits.ci?.value ?? []),
+        currentHP: tgtSys.attributes?.hp?.value ?? 0,
+        maxHP: tgtSys.attributes?.hp?.max ?? 0,
+        tempHP: tgtSys.attributes?.hp?.temp ?? 0,
+        creatureType, creatureSubtype, creatureSize,
+        isConcentrating, concentrationSpell,
+        legendaryResistance, legendaryResistanceMax,
+      },
+
+      damageModifiers,
+      magicalBypass: isMagical, silveredBypass: isSilvered, adamantineBypass: isAdamantine,
+      damageTypes,
+
+      finalRollMode,
+      advantageSources,
+      disadvantageSources,
+      autoCrit,
+      autoCritReasons,
+      critRange,
+
+      saveAbility, saveAdvantage, saveDisadvantage, autoFailSave,
+      saveBonuses, saveAdvReasons, saveDisadvReasons,
+      superSaver, semiSuperSaver,
+      magicResistance: (ExtendedEffects.hasMagicResistance(targetActor) || CombatState._hasFeature(targetActor, "Magic Resistance")) && isSpell,
+
+      slayerMatch, slayerDamage, slayerType,
+    };
+  }
+
+  /**
+   * Assess all currently targeted tokens.
+   */
+  static assessAll(attackerActor, item, opts = {}) {
+    const results = [];
+    for (const token of game.user.targets) {
+      const state = CombatState.assess(attackerActor, token, item, opts);
+      if (state) results.push(state);
+    }
+    return results;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Summary Tags for Chat Card
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  static getSummaryTags(state) {
+    const tags = [];
+
+    // Roll mode
+    if (state.finalRollMode === "advantage") {
+      tags.push({ label: "ROLL: ADVANTAGE", type: "bonus", icon: "fa-angles-up" });
+    } else if (state.finalRollMode === "disadvantage") {
+      tags.push({ label: "ROLL: DISADVANTAGE", type: "debuff", icon: "fa-angles-down" });
+    } else if (state.advantageSources.length > 0 && state.disadvantageSources.length > 0) {
+      tags.push({ label: "ADV + DISADV = NORMAL (cancelled)", type: "info", icon: "fa-equals" });
+    }
+
+    // Why advantage
+    for (const src of state.advantageSources) {
+      tags.push({ label: src.reason, type: "bonus", icon: "fa-arrow-up" });
+    }
+
+    // Why disadvantage
+    for (const src of state.disadvantageSources) {
+      tags.push({ label: src.reason, type: "debuff", icon: "fa-arrow-down" });
+    }
+
+    // Auto-crit
+    for (const reason of (state.autoCritReasons ?? [])) {
+      tags.push({ label: reason, type: "danger", icon: "fa-skull-crossbones" });
+    }
+
+    // Expanded crit range
+    if (state.critRange < 20) {
+      tags.push({ label: `CRIT RANGE: ${state.critRange}-20`, type: "danger", icon: "fa-crosshairs" });
+    }
+
+    // Damage modifiers
+    for (const [type, mod] of Object.entries(state.damageModifiers)) {
+      if (mod.modifier === "immune") tags.push({ label: `IMMUNE: ${type}`, type: "immune", icon: "fa-shield" });
+      if (mod.modifier === "resistant" && mod.reason) tags.push({ label: mod.reason, type: mod.reason.includes("BYPASS") ? "info" : "resistant", icon: "fa-shield-halved" });
+      if (mod.modifier === "vulnerable") tags.push({ label: mod.reason || `VULNERABLE: ${type}`, type: "vulnerable", icon: "fa-heart-crack" });
+    }
+
+    // Attacker bonuses
+    for (const bonus of state.attacker.bonuses) {
+      tags.push({ label: `${bonus.name}: +${bonus.formula} ${bonus.type}`, type: "bonus", icon: "fa-plus" });
+    }
+
+    // Slayer
+    if (state.slayerMatch) {
+      tags.push({ label: `SLAYER → +${state.slayerDamage} vs ${state.slayerType}`, type: "bonus", icon: "fa-crosshairs" });
+    }
+
+    // Target special
+    if (state.target.isConcentrating) {
+      tags.push({ label: `CONCENTRATING: ${state.target.concentrationSpell}`, type: "info", icon: "fa-brain" });
+    }
+    if (state.target.legendaryResistance > 0) {
+      tags.push({ label: `LEG RESIST: ${state.target.legendaryResistance}/${state.target.legendaryResistanceMax}`, type: "legendary", icon: "fa-crown" });
+    }
+
+    // Save modifiers
+    if (state.autoFailSave) tags.push({ label: "TARGET AUTO-FAILS STR/DEX SAVE", type: "danger", icon: "fa-circle-xmark" });
+    for (const reason of (state.saveAdvReasons ?? [])) {
+      tags.push({ label: reason, type: "buff", icon: "fa-arrow-up" });
+    }
+    for (const reason of (state.saveDisadvReasons ?? [])) {
+      tags.push({ label: reason, type: "debuff", icon: "fa-arrow-down" });
+    }
+    if (state.superSaver) tags.push({ label: "EVASION → SAVE PASS = 0 DMG", type: "buff", icon: "fa-person-running" });
+    if (state.semiSuperSaver) tags.push({ label: "SHIELD MASTER → SAVE PASS = 0 DMG (reaction)", type: "buff", icon: "fa-shield" });
+    if (state.magicResistance) tags.push({ label: "MAGIC RESISTANCE → SAVE ADVANTAGE vs SPELLS", type: "buff", icon: "fa-hat-wizard" });
+
+    for (const bonus of (state.saveBonuses ?? [])) {
+      tags.push({ label: `SAVE BONUS: ${bonus.value} (${bonus.label})`, type: "buff", icon: "fa-plus" });
+    }
+
+    return tags;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  HELPERS
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Smart detection: is this ACTUALLY a ranged weapon/attack?
+   * Cross-checks weapon type, properties, and range against actionType.
+   * Catches misconfigured items like a longbow set to "mwak".
+   */
+  static _isActuallyRanged(item, actionType) {
+    if (!item) return false;
+    const sys = item.system ?? {};
+    const props = sys.properties ?? new Set();
+
+    // If actionType already says ranged, trust it
+    if (["rwak", "rsak"].includes(actionType)) return true;
+
+    // Check weapon type classification
+    const weaponType = sys.type?.value ?? "";
+    if (["simpleR", "martialR"].includes(weaponType)) return true;
+
+    // Check for ammunition property (bows, crossbows)
+    if (props.has("amm")) return true;
+
+    // Check range — if normal range is significantly more than melee range, it's ranged
+    const normalRange = sys.range?.value ?? 0;
+    const longRange = sys.range?.long ?? 0;
+    if (normalRange > 10 && longRange > 0) return true;
+    // Even without long range, if normal range > 30ft it's clearly ranged
+    if (normalRange > 30) return true;
+
+    // If it's a spell with range > 10ft and actionType is msak, could be ranged
+    // But msak is explicitly melee spell attack, so leave it
+    if (item.type === "spell" && ["rsak"].includes(actionType)) return true;
+
+    return false;
+  }
+
+  /** Get all statuses from an actor — checks actor.statuses + effects + token */
+  static _getStatuses(actor, token = null) {
+    const statuses = new Set(actor.statuses ?? []);
+    // Also check effects directly
+    for (const effect of actor.effects ?? []) {
+      if (effect.disabled) continue;
+      for (const s of (effect.statuses ?? [])) statuses.add(s);
+    }
+    // Check token document
+    if (token?.document?.hasStatusEffect) {
+      // Can't iterate all, but at least we have the Set from above
+    }
+    return statuses;
+  }
+
+  /**
+   * Flanking check — line-through method.
+   * Draw a line from attacker through target center. If an ally is within
+   * 5ft of the target on the opposite side of that line, flanking applies.
+   */
+  static _isFlanking(attackerActor, targetToken) {
+    if (!canvas.tokens?.placeables) return false;
+
+    const atkToken = attackerActor.getActiveTokens?.()?.[0];
+    if (!atkToken) return false;
+
+    const atkCenter = atkToken.center;
+    const tgtCenter = targetToken.center;
+    const atkDisposition = atkToken.document?.disposition ?? 1;
+
+    // Vector from target to attacker
+    const dx = atkCenter.x - tgtCenter.x;
+    const dy = atkCenter.y - tgtCenter.y;
+
+    // The "opposite side" is the point on the other side of the target
+    // from the attacker — roughly target center minus the same vector
+    const oppositeX = tgtCenter.x - dx;
+    const oppositeY = tgtCenter.y - dy;
+
+    // Check if any ally is near the opposite side (within ~1.5 grid squares)
+    const gridSize = canvas.grid?.size ?? 100;
+    const flankRadius = gridSize * 1.5; // Allow some tolerance
+
+    for (const token of canvas.tokens.placeables) {
+      if (!token.actor || token.actor.id === attackerActor.id) continue;
+      if (token.id === targetToken.id) continue;
+
+      // Must be same disposition (ally)
+      if (token.document?.disposition !== atkDisposition) continue;
+
+      // Must not be incapacitated
+      if (token.actor.statuses?.has("incapacitated") || token.actor.statuses?.has("unconscious")) continue;
+
+      // Must be within 5ft of the target (melee range)
+      const distToTarget = CombatState._getDistance(token, targetToken);
+      if (distToTarget > 5) continue;
+
+      // Check if this ally is roughly on the opposite side
+      // Distance from ally to the "opposite point"
+      const allyCenter = token.center;
+      const distToOpposite = Math.hypot(allyCenter.x - oppositeX, allyCenter.y - oppositeY);
+
+      if (distToOpposite <= flankRadius) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /** Check if actor has a named feature/feat */
+  static _hasFeature(actor, name) {
+    const lower = name.toLowerCase();
+    return actor.items?.some(i =>
+      (i.type === "feat" || i.type === "class") && i.name?.toLowerCase().includes(lower)
+    ) ?? false;
+  }
+
+  /** Check if actor has a named active effect */
+  static _hasEffect(actor, name) {
+    const lower = name.toLowerCase();
+    return actor.effects?.some(e =>
+      !e.disabled && e.name?.toLowerCase().includes(lower)
+    ) ?? false;
+  }
+
+  /** Check if a hostile creature is within range of the attacker */
+  static _isHostileNearAttacker(attackerActor, targetToken, rangeFt = 5) {
+    if (!canvas.tokens?.placeables) return false;
+    const atkToken = attackerActor.getActiveTokens?.()?.[0];
+    if (!atkToken) return false;
+
+    const atkDisposition = atkToken.document?.disposition ?? 1;
+
+    for (const token of canvas.tokens.placeables) {
+      if (!token.actor || token.actor.id === attackerActor.id) continue;
+      if (token.id === targetToken?.id) continue; // Target itself doesn't count for this rule
+
+      const disp = token.document?.disposition ?? 0;
+      // Hostile = opposite disposition
+      if (disp === atkDisposition) continue; // Same team
+      if (token.actor.statuses?.has("incapacitated") || token.actor.statuses?.has("unconscious")) continue;
+
+      const dist = CombatState._getDistance(atkToken, token);
+      if (dist <= rangeFt) return true;
+    }
+    return false;
+  }
+
+  /** Check if an ally is near a target */
+  static _isAllyNearTarget(attacker, targetToken, rangeFt = 5) {
+    if (!canvas.tokens?.placeables) return false;
+    const atkDisposition = attacker.prototypeToken?.disposition ?? attacker.token?.disposition ?? 1;
+
+    for (const token of canvas.tokens.placeables) {
+      if (!token.actor || token.actor.id === attacker.id) continue;
+      if (token.id === targetToken.id) continue;
+      if (token.document?.disposition !== atkDisposition) continue;
+      if (token.actor.statuses?.has("incapacitated") || token.actor.statuses?.has("unconscious")) continue;
+
+      const dist = CombatState._getDistance(token, targetToken);
+      if (dist <= rangeFt) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Get distance between two tokens using EDGE-TO-EDGE measurement.
+   * D&D 5e rule: distance is from the nearest edge of one creature's
+   * space to the nearest edge of the other's. This handles Large (2×2),
+   * Huge (3×3), and Gargantuan (4×4) tokens correctly — adjacent tokens
+   * are always 5ft apart regardless of size.
+   */
+  static _getDistance(token1, token2) {
+    try {
+      const gs = canvas.grid.size; // pixels per grid square
+      const gd = canvas.dimensions?.distance ?? 5; // ft per grid square (usually 5)
+
+      // Get occupied rectangle bounds in pixels
+      const r1 = { left: token1.x, top: token1.y, right: token1.x + (token1.document?.width ?? 1) * gs, bottom: token1.y + (token1.document?.height ?? 1) * gs };
+      const r2 = { left: token2.x, top: token2.y, right: token2.x + (token2.document?.width ?? 1) * gs, bottom: token2.y + (token2.document?.height ?? 1) * gs };
+
+      // Calculate gap between rectangles on each axis
+      const gapX = Math.max(0, r1.left - r2.right, r2.left - r1.right);
+      const gapY = Math.max(0, r1.top - r2.bottom, r2.top - r1.bottom);
+
+      // If overlapping or adjacent on both axes, distance is 0 (same space)
+      if (gapX === 0 && gapY === 0) return 0;
+
+      // Convert pixel gap to grid squares, then to feet
+      const sqX = Math.floor(gapX / gs);
+      const sqY = Math.floor(gapY / gs);
+
+      // D&D 5e diagonal: max(sqX, sqY) in grid squares × distance per square
+      // (standard 5e doesn't use Pythagorean — diagonal costs same as straight)
+      const gridDist = Math.max(sqX, sqY);
+      return gridDist * gd;
+    } catch {
+      // Fallback to center-to-center if anything fails
+      try {
+        return canvas.grid.measureDistance(token1.center, token2.center, { gridSpaces: true }) ?? 999;
+      } catch { return 999; }
+    }
+  }
+
+  /** Get Aura of Protection bonus from nearby paladin */
+  static _getAuraOfProtectionBonus(targetToken) {
+    if (!canvas.tokens?.placeables) return 0;
+    let bestBonus = 0;
+
+    for (const token of canvas.tokens.placeables) {
+      if (!token.actor || token.id === targetToken.id) continue;
+      // Same team
+      if (token.document?.disposition !== targetToken.document?.disposition) continue;
+      // Has Aura of Protection
+      if (!CombatState._hasFeature(token.actor, "Aura of Protection")) continue;
+      // Not incapacitated
+      if (token.actor.statuses?.has("incapacitated")) continue;
+
+      const dist = CombatState._getDistance(token, targetToken);
+      // 10ft base, 30ft at 18th level
+      const paladinLevel = token.actor.items?.find(i => i.type === "class" && i.name?.toLowerCase().includes("paladin"))?.system?.levels ?? 0;
+      const auraRange = paladinLevel >= 18 ? 30 : 10;
+
+      if (dist <= auraRange) {
+        const chaMod = token.actor.system?.abilities?.cha?.mod ?? 0;
+        if (chaMod > bestBonus) bestBonus = chaMod;
+      }
+    }
+    return bestBonus;
+  }
+
+  /** Check Sneak Attack eligibility */
+  static _checkSneakAttack(attacker, targetToken, item, isMelee, hasAdvantage) {
+    const sneakFeature = attacker.items?.find(i =>
+      i.type === "feat" && i.name?.toLowerCase().includes("sneak attack")
+    );
+    if (!sneakFeature) return { eligible: false };
+
+    const props = item?.system?.properties ?? new Set();
+    if (!props.has("fin") && !["rwak"].includes(item?.system?.actionType)) {
+      return { eligible: false, reason: "Weapon not finesse or ranged" };
+    }
+
+    const allyNearby = CombatState._isAllyNearTarget(attacker, targetToken, 5);
+    if (hasAdvantage || allyNearby) {
+      const rogueClass = attacker.items?.find(i => i.type === "class" && i.name?.toLowerCase() === "rogue");
+      const dice = Math.ceil((rogueClass?.system?.levels ?? 1) / 2);
+      return {
+        eligible: true, name: "Sneak Attack", formula: `${dice}d6`,
+        type: item?.system?.damage?.parts?.[0]?.[1] ?? "piercing",
+        reason: hasAdvantage ? "Sneak Attack (have advantage)" : "Sneak Attack (ally within 5ft)",
+      };
+    }
+    return { eligible: false, reason: "No advantage and no ally near target" };
+  }
+
+  /** Get Rage damage bonus by barbarian level */
+  static _getRageDamageBonus(actor) {
+    const barbClass = actor.items?.find(i => i.type === "class" && i.name?.toLowerCase().includes("barbarian"));
+    const level = barbClass?.system?.levels ?? 0;
+    if (level >= 16) return 4;
+    if (level >= 9) return 3;
+    if (level >= 1) return 2;
+    return 0;
+  }
+
+  /** Get all damage types from an item */
+  static _getItemDamageTypes(item) {
+    const types = new Set();
+    const sys = item?.system ?? {};
+    if (sys.activities) {
+      const actList = (typeof sys.activities.forEach === "function")
+        ? [...(sys.activities.values?.() ?? sys.activities)]
+        : (typeof sys.activities === "object" ? Object.values(sys.activities) : []);
+      for (const activity of actList) {
+        if (!activity?.damage?.parts) continue;
+        for (const part of activity.damage.parts) {
+          if (part.types) for (const t of part.types) types.add(t);
+        }
+      }
+    }
+    if (sys.damage?.parts) {
+      for (const part of sys.damage.parts) { if (part[1]) types.add(part[1]); }
+    }
+    return [...types];
+  }
+
+  /** Debug logging */
+  static _debugLog(state) {
+    try { if (!game.settings.get(MODULE_ID, "debugMode")) return; } catch { return; }
+    const advSrc = state.advantageSources.map(s => s.reason).join("; ") || "none";
+    const disSrc = state.disadvantageSources.map(s => s.reason).join("; ") || "none";
+    console.log(`${MODULE_ID} | COMBAT STATE: ${state.attacker.name} → ${state.target.name}`);
+    console.log(`  Roll: ${state.finalRollMode} | Adv: [${advSrc}] | Disadv: [${disSrc}]`);
+    console.log(`  AutoCrit: ${state.autoCrit} | CritRange: ${state.critRange}-20 | Slayer: ${state.slayerMatch ? state.slayerType : "no"}`);
+    console.log(`  Target AC: ${state.target.ac} | HP: ${state.target.currentHP}/${state.target.maxHP}`);
+  }
+}
