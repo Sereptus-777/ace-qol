@@ -43,7 +43,7 @@ Hooks.once("init", () => {
 // ─── Ready: start all subsystems (GM only for combat, all users for effects) ─
 Hooks.once("ready", () => {
 
-  // Attack pipeline — GM only
+  // Attack pipeline + Damage engine — GM only
   if (game.user.isGM) {
     try {
       attackPipeline = new AttackPipeline();
@@ -58,14 +58,18 @@ Hooks.once("ready", () => {
     } catch (err) {
       console.error(`${MODULE_ID} | Damage engine init failed:`, err);
     }
+  }
 
-    try {
-      saveEngine = new SaveEngine({ damageEngine });
-      console.log(`${MODULE_ID} | Save engine online`);
-    } catch (err) {
-      console.error(`${MODULE_ID} | Save engine init failed:`, err);
-    }
+  // Save engine — ALL users (players need renderChatMessage hook for PC save cards)
+  try {
+    saveEngine = new SaveEngine({ damageEngine });
+    console.log(`${MODULE_ID} | Save engine online`);
+  } catch (err) {
+    console.error(`${MODULE_ID} | Save engine init failed:`, err);
+  }
 
+  // Concentration widget — GM only
+  if (game.user.isGM) {
     try {
       concentrationWidget = new ConcentrationWidget(saveEngine);
       console.log(`${MODULE_ID} | Concentration widget online`);

@@ -26,6 +26,11 @@ import { getSpellTiming, TIMING } from "./spell-timing.mjs";
 
 export class SaveEngine {
 
+  /** In-memory override cache — avoids re-render on every button click.
+   *  Key: `${messageId}|${tokenDocId}` → multiplier (number)
+   *  Flushed to flags only when APPLY ALL is clicked. */
+  static overrideCache = new Map();
+
   constructor({ damageEngine } = {}) {
     this.damageEngine = damageEngine;
 
@@ -52,6 +57,28 @@ export class SaveEngine {
       this._onUseActivity(activity);
     });
 
+    // ── Snap template origin to caster token ──
+    Hooks.on("dnd5e.createActivityTemplate", (activity, templates) => {
+      if (!game.user.isGM) return;
+      const casterActor = activity?.actor ?? this._pendingSaveSpell?.actor;
+      if (!casterActor) return;
+      const casterToken = canvas.tokens.placeables.find(t => t.actor?.id === casterActor.id);
+      if (!casterToken) return;
+      for (const tmpl of (templates ?? [])) {
+        const doc = tmpl.document ?? tmpl;
+        doc.updateSource({
+          x: casterToken.center.x,
+          y: casterToken.center.y,
+        });
+        // Also update the PIXI object position if it exists
+        if (tmpl.x !== undefined) {
+          tmpl.x = casterToken.center.x;
+          tmpl.y = casterToken.center.y;
+        }
+        console.log(`${MODULE_ID} | Snapped template origin to ${casterToken.name}`);
+      }
+    });
+
     // ── Template placement — auto-target tokens inside ──
     Hooks.on("createMeasuredTemplate", (templateDoc, context, userId) => {
       if (!game.user.isGM) return;
@@ -60,11 +87,13 @@ export class SaveEngine {
     });
 
     // ── Persistent button wiring for ALL save card types ──
-    Hooks.on("renderChatMessage", (message, html) => {
+    // V13 uses renderChatMessageHTML (HTMLElement), V12 uses renderChatMessage (jQuery)
+    const _onRenderChatMessage = (message, html) => {
       const flags = message.flags?.[MODULE_ID];
       if (!flags?.type) return;
 
-      const el = html[0] ?? html;
+      const el = html instanceof HTMLElement ? html : (html[0] ?? html);
+
 
       // ── Save Prompt card (legacy — still supported) ──
       if (flags.type === "savePrompt") {
@@ -78,14 +107,41 @@ export class SaveEngine {
 
       // ── PC Save Prompt card (whispered to player) ──
       if (flags.type === "pcSavePrompt") {
+        if (game.user.isGM) {
+          // GM sees all whispers — hide prompt cards on GM side (GM uses dice icon instead)
+          const chatMsg = el.closest?.(".chat-message") ?? el;
+          chatMsg.classList.add("ace-qol-save-collapsed");
+          return;
+        }
         this._wirePcSaveButton(el, message, flags);
       }
 
-      // ── Save Results card — manual override + Apply/Undo ──
+      // PC Save Result handled by createChatMessage hook (more reliable)
+
+      // ── Save Results card — phase-aware wiring ──
       if (flags.type === "saveResults") {
-        this._wireSaveResultButtons(el, message, flags);
+        if (flags.phase === 1) {
+          // Phase 1: saves only — wire ROLL DAMAGE button + portrait click-to-pan
+          this._wireRollDamageButton(el, message, flags);
+        } else {
+          // Phase 2 (or legacy cards without phase flag): wire overrides + Apply/Undo
+          this._wireSaveResultButtons(el, message, flags);
+        }
         // Auto-collapse the target list card above this one
         this._collapseTargetListCard(flags);
+      }
+    };
+    Hooks.on("renderChatMessage", _onRenderChatMessage);
+    Hooks.on("renderChatMessageHTML", _onRenderChatMessage);
+
+    // ── createChatMessage — reliable hook for PC save results (fires on ALL clients) ──
+    Hooks.on("createChatMessage", (message) => {
+      if (!game.user.isGM) return;
+      const flags = message.flags?.[MODULE_ID];
+      if (flags?.type === "pcSaveResult") {
+        console.log(`${MODULE_ID} | createChatMessage caught pcSaveResult for`, flags.tokenDocId);
+        // Small delay to let the DOM render first
+        setTimeout(() => this._onPcSaveResultPosted(flags), 200);
       }
     });
 
@@ -224,23 +280,23 @@ export class SaveEngine {
     const pending = this._pendingSaveSpell;
     this._pendingSaveSpell = null; // consume it
 
-    // Find tokens inside the template
-    let tokens = [];
-    try {
-      tokens = SaveEngine._getTokensInTemplate(templateDoc);
-      console.log(`${MODULE_ID} | _getTokensInTemplate found ${tokens.length} tokens:`, tokens.map(t => t.name));
-    } catch (err) {
-      console.error(`${MODULE_ID} | _getTokensInTemplate FAILED:`, err);
+    // ── Primary: use game.user.targets (GM already targeted who they want) ──
+    let tokens = [...game.user.targets];
+    console.log(`${MODULE_ID} | game.user.targets: ${tokens.length} tokens:`, tokens.map(t => t.name));
+
+    // ── Fallback: template geometry if GM had nothing targeted ──
+    if (!tokens.length) {
+      try {
+        tokens = SaveEngine._getTokensInTemplate(templateDoc);
+        console.log(`${MODULE_ID} | _getTokensInTemplate found ${tokens.length} tokens:`, tokens.map(t => t.name));
+      } catch (err) {
+        console.error(`${MODULE_ID} | _getTokensInTemplate FAILED:`, err);
+      }
     }
 
     if (!tokens.length) {
-      // Fallback: use game.user.targets if template targeting found nothing
-      console.warn(`${MODULE_ID} | Template found 0 tokens — falling back to game.user.targets`);
-      tokens = [...game.user.targets];
-      if (!tokens.length) {
-        console.warn(`${MODULE_ID} | No targets either — skipping save card`);
-        return;
-      }
+      console.warn(`${MODULE_ID} | No targets and template found 0 tokens — skipping save card`);
+      return;
     }
 
     // Store template reference
@@ -339,7 +395,7 @@ export class SaveEngine {
         maxHP: state.target.maxHP,
         // For owners — which players own this PC
         ownerIds: isPC ? Object.entries(token.actor?.ownership ?? {})
-          .filter(([id, level]) => level >= 3 && id !== "default")
+          .filter(([id, level]) => level >= 3 && id !== "default" && !game.users.get(id)?.isGM)
           .map(([id]) => id) : [],
       });
     }
@@ -350,31 +406,57 @@ export class SaveEngine {
     const npcs = targetData.filter(t => !t.isPC);
     const pcs = targetData.filter(t => t.isPC);
 
+    // ── Helper: determine worst damage modifier for color-coding ──
+    const _getDmgIndicator = (t) => {
+      if (!t.damageModifiers || !damageTypes?.length) return { cls: "", tag: "" };
+      // Check each spell damage type against this target's modifiers
+      let hasImmune = false, hasResist = false, hasVuln = false;
+      for (const dtype of damageTypes) {
+        const mod = t.damageModifiers[dtype];
+        if (mod?.modifier === "immune") hasImmune = true;
+        else if (mod?.modifier === "resistant") hasResist = true;
+        else if (mod?.modifier === "vulnerable") hasVuln = true;
+      }
+      // Immune takes priority, then resist, then vuln
+      if (hasImmune) return { cls: "ace-qol-tgt-immune", tag: '<span class="ace-qol-tag ace-qol-tag-immune"><i class="fas fa-shield-halved"></i> IMMUNE</span>' };
+      if (hasResist) return { cls: "ace-qol-tgt-resist", tag: '<span class="ace-qol-tag ace-qol-tag-resist"><i class="fas fa-shield-halved"></i> RESIST</span>' };
+      if (hasVuln) return { cls: "ace-qol-tgt-vuln", tag: '<span class="ace-qol-tag ace-qol-tag-vuln"><i class="fas fa-burst"></i> VULN</span>' };
+      return { cls: "", tag: "" };
+    };
+
     // ── Build NPC rows ──
-    const npcRowsHtml = npcs.map(t => `
-      <div class="ace-qol-save-tgt-row" data-token-id="${t.tokenId}">
+    const npcRowsHtml = npcs.map(t => {
+      const di = _getDmgIndicator(t);
+      return `
+      <div class="ace-qol-save-tgt-row ${di.cls}" data-token-id="${t.tokenId}">
         <img src="${t.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
         <span class="ace-qol-save-tgt-name">${t.name}</span>
         <span class="ace-qol-save-tgt-mod">${t.saveAbilityUpper} ${t.saveMod}</span>
         ${t.autoFailSave ? '<span class="ace-qol-tag ace-qol-tag-danger"><i class="fas fa-circle-xmark"></i> AUTO-FAIL</span>' : ""}
         ${t.superSaver ? '<span class="ace-qol-tag ace-qol-tag-buff"><i class="fas fa-person-running"></i> EVASION</span>' : ""}
+        ${di.tag}
         <button class="ace-qol-save-tgt-remove" data-action="aceQolRemoveTarget" data-token-id="${t.tokenId}">
           <i class="fas fa-xmark"></i>
         </button>
       </div>
-    `).join("");
+    `}).join("");
 
-    // ── Build PC rows ──
-    const pcRowsHtml = pcs.map(t => `
-      <div class="ace-qol-save-tgt-row ace-qol-save-tgt-pc" data-token-id="${t.tokenId}">
+    // ── Build PC rows (with GM dice icon to roll on their behalf) ──
+    const pcRowsHtml = pcs.map(t => {
+      const di = _getDmgIndicator(t);
+      return `
+      <div class="ace-qol-save-tgt-row ace-qol-save-tgt-pc ${di.cls}" data-token-id="${t.tokenId}" data-token-doc-id="${t.tokenDocId}" data-actor-id="${t.actorId}">
         <img src="${t.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
         <span class="ace-qol-save-tgt-name">${t.name}</span>
         <span class="ace-qol-save-tgt-mod">${t.saveAbilityUpper} ${t.saveMod}</span>
         ${t.autoFailSave ? '<span class="ace-qol-tag ace-qol-tag-danger"><i class="fas fa-circle-xmark"></i> AUTO-FAIL</span>' : ""}
         ${t.superSaver ? '<span class="ace-qol-tag ace-qol-tag-buff"><i class="fas fa-person-running"></i> EVASION</span>' : ""}
-        <span class="ace-qol-save-pc-note">rolls privately</span>
+        ${di.tag}
+        <button class="ace-qol-save-pc-roll-btn" data-action="aceQolGmRollPcSave" data-token-doc-id="${t.tokenDocId}">
+          <i class="fas fa-dice-d20"></i>
+        </button>
       </div>
-    `).join("");
+    `}).join("");
 
     // ── Assemble card ──
     const cardHtml = `
@@ -395,21 +477,19 @@ export class SaveEngine {
 
         ${npcs.length ? `
           <div class="ace-qol-save-tgt-section">
-            <div class="ace-qol-save-tgt-section-label">NPCs (${npcs.length})</div>
             ${npcRowsHtml}
           </div>
         ` : ""}
 
         ${pcs.length ? `
           <div class="ace-qol-save-tgt-section ace-qol-save-tgt-section-pc">
-            <div class="ace-qol-save-tgt-section-label">PCs (${pcs.length})</div>
             ${pcRowsHtml}
           </div>
         ` : ""}
 
         <div class="ace-qol-save-actions">
           <button class="ace-qol-btn ace-qol-btn-roll" data-action="aceQolRollNpcSaves">
-            <i class="fas fa-dice-d20"></i> ROLL NPC SAVES
+            <i class="fas fa-dice-d20"></i> ROLL SAVES
           </button>
         </div>
       </div>
@@ -437,6 +517,13 @@ export class SaveEngine {
         }
       }
     });
+
+    // ── Send PC save prompts immediately (same time as target list card) ──
+    for (const tgt of pcs) {
+      await this._sendPcSavePrompt(item, actor, tgt, {
+        saveAbility, saveDC, halfOnSave, damageTypes, isSpell,
+      });
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -656,6 +743,94 @@ export class SaveEngine {
       }
     }
 
+    // ── PC dice buttons (GM rolls for PC on main card) ──
+    const pcRollBtns = el.querySelectorAll?.("[data-action='aceQolGmRollPcSave']");
+    if (pcRollBtns?.length) {
+      // Check for existing PC results to gray out already-rolled PCs
+      const recentMsgs = game.messages.contents.slice(-30);
+      const rolledPcs = new Set();
+      for (const m of recentMsgs) {
+        const f = m.flags?.[MODULE_ID];
+        if (f?.type === "pcSaveResult" && f.tokenDocId) rolledPcs.add(f.tokenDocId);
+      }
+
+      for (const btn of pcRollBtns) {
+        if (btn.dataset.wired) continue;
+        btn.dataset.wired = "1";
+
+        // If this PC already rolled, show result and disable
+        const tokenDocId = btn.dataset.tokenDocId;
+        if (rolledPcs.has(tokenDocId)) {
+          const existingResult = recentMsgs.find(m => m.flags?.[MODULE_ID]?.type === "pcSaveResult" && m.flags[MODULE_ID].tokenDocId === tokenDocId);
+          if (existingResult) {
+            const f = existingResult.flags[MODULE_ID];
+            const passClass = f.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
+            const verdictText = f.passed ? "PASS" : "FAIL";
+            btn.disabled = true;
+            btn.innerHTML = `<span class="ace-qol-save-verdict ${passClass}" style="font-size:0.65rem">${verdictText}</span>`;
+            btn.style.background = "none"; btn.style.border = "none"; btn.style.padding = "0 4px";
+            // Also update the mod display
+            const row = btn.closest(".ace-qol-save-tgt-row");
+            const modSpan = row?.querySelector(".ace-qol-save-tgt-mod");
+            if (modSpan) modSpan.innerHTML = `<span class="${passClass}" style="font-weight:700">${f.autoFailSave ? "AUTO" : f.saveTotal}</span>`;
+            continue;
+          }
+        }
+
+        btn.addEventListener("click", async () => {
+          const tokenDocId = btn.dataset.tokenDocId;
+          if (!tokenDocId) return;
+
+          // Check if this PC already rolled (race condition guard)
+          const alreadyRolled = game.messages.contents.slice(-30).some(m => {
+            const f = m.flags?.[MODULE_ID];
+            return f?.type === "pcSaveResult" && f.tokenDocId === tokenDocId;
+          });
+          if (alreadyRolled) {
+            ui.notifications.warn("This PC has already rolled their save.");
+            btn.disabled = true;
+            return;
+          }
+
+          // Find the PC target data from flags
+          const targets = message.flags?.[MODULE_ID]?.targets ?? [];
+          const tgt = targets.find(t => t.tokenDocId === tokenDocId);
+          if (!tgt) return;
+
+          btn.disabled = true;
+          btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+
+          // Build a fake pcSavePrompt message and roll it
+          const flags = message.flags?.[MODULE_ID];
+          const fakeMsg = { flags: { [MODULE_ID]: {
+            type: "pcSavePrompt",
+            saveAbility: flags.saveAbility,
+            saveDC: flags.saveDC,
+            halfOnSave: flags.halfOnSave,
+            damageTypes: flags.damageTypes,
+            isSpell: flags.isSpell,
+            tokenDocId: tgt.tokenDocId,
+            actorId: tgt.actorId,
+            sceneId: tgt.sceneId,
+            targetName: tgt.name,
+            targetImg: tgt.img,
+            autoFailSave: tgt.autoFailSave,
+            saveAdvantage: tgt.saveAdvantage,
+            saveDisadvantage: tgt.saveDisadvantage,
+            superSaver: tgt.superSaver,
+            semiSuperSaver: tgt.semiSuperSaver,
+            saveBonuses: tgt.saveBonuses,
+            damageModifiers: tgt.damageModifiers,
+            currentHP: tgt.currentHP,
+            maxHP: tgt.maxHP,
+          }}};
+
+          await this._rollPcSave(fakeMsg);
+          btn.innerHTML = '<i class="fas fa-check"></i>';
+        });
+      }
+    }
+
     // ── ROLL NPC SAVES button ──
     const rollNpcBtn = el.querySelector?.("[data-action='aceQolRollNpcSaves']");
     if (rollNpcBtn && !rollNpcBtn.dataset.wired) {
@@ -682,24 +857,28 @@ export class SaveEngine {
   // ═══════════════════════════════════════════════════════════════════════════
 
   _wirePcSaveButton(el, message, flags) {
+    // If already rolled, collapse the entire prompt card
+    if (flags.rolled) {
+      const chatMsg = el.closest?.(".chat-message") ?? el;
+      chatMsg.classList.add("ace-qol-save-collapsed");
+      return; // No need to wire anything
+    }
+
     const rollBtn = el.querySelector?.("[data-action='aceQolRollPcSave']");
     if (!rollBtn || rollBtn.dataset.wired) return;
     rollBtn.dataset.wired = "1";
 
-    if (flags.rolled) {
+    rollBtn.addEventListener("click", async () => {
       rollBtn.disabled = true;
+      rollBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Rolling...';
+
+      await this._rollPcSave(message);
+
+      // Collapse on this client immediately (DOM only — no flag write needed)
       rollBtn.innerHTML = '<i class="fas fa-check"></i> ROLLED \u2713';
-    } else {
-      rollBtn.addEventListener("click", async () => {
-        rollBtn.disabled = true;
-        rollBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Rolling...';
-
-        await this._rollPcSave(message);
-
-        rollBtn.innerHTML = '<i class="fas fa-check"></i> ROLLED \u2713';
-        await message.setFlag(MODULE_ID, "rolled", true);
-      });
-    }
+      const chatMsg = el.closest?.(".chat-message") ?? el;
+      chatMsg.classList.add("ace-qol-save-collapsed");
+    });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -708,7 +887,7 @@ export class SaveEngine {
 
   _collapseTargetListCard(resultsFlags) {
     // Find the target list card that spawned this results card and collapse it
-    const chatLog = document.querySelector("#chat-log");
+    const chatLog = document.querySelector("#chat-log, .chat-log");
     if (!chatLog) return;
     const targetCards = chatLog.querySelectorAll(".ace-qol-save-card");
     for (const card of targetCards) {
@@ -719,7 +898,46 @@ export class SaveEngine {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  //  Button Wiring — Save Results Card (override + Apply/Undo)
+  //  Button Wiring — Phase 1 (ROLL DAMAGE + portrait click-to-pan)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  _wireRollDamageButton(el, message, flags) {
+    // ── Click portrait/name → select + pan to token ──
+    const rows = el.querySelectorAll?.(".ace-qol-save-result-row");
+    if (rows?.length) {
+      for (const row of rows) {
+        const img = row.querySelector(".ace-qol-save-tgt-img");
+        const name = row.querySelector(".ace-qol-save-tgt-name");
+        const tokenDocId = row.dataset.tokenDocId;
+        const clickHandler = () => {
+          if (!tokenDocId) return;
+          const scene = canvas.scene;
+          if (!scene) return;
+          const tokenDoc = scene.tokens.get(tokenDocId);
+          const token = tokenDoc?.object;
+          if (!token) return;
+          token.control({ releaseOthers: true });
+          canvas.animatePan({ x: token.center.x, y: token.center.y, duration: 250 });
+        };
+        if (img) { img.style.cursor = "pointer"; img.addEventListener("click", clickHandler); }
+        if (name) { name.style.cursor = "pointer"; name.addEventListener("click", clickHandler); }
+      }
+    }
+
+    // ── ROLL DAMAGE button ──
+    const rollDmgBtn = el.querySelector?.("[data-action='aceQolRollDamage']");
+    if (rollDmgBtn && !rollDmgBtn.dataset.wired) {
+      rollDmgBtn.dataset.wired = "1";
+      rollDmgBtn.addEventListener("click", async () => {
+        rollDmgBtn.disabled = true;
+        rollDmgBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Rolling damage...';
+        await this._completeSaveResultsPhase2(message);
+      });
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Button Wiring — Phase 2 / Legacy (override + Apply/Undo)
   // ═══════════════════════════════════════════════════════════════════════════
 
   _wireSaveResultButtons(el, message, flags) {
@@ -747,23 +965,56 @@ export class SaveEngine {
       }
     }
 
-    // ── Manual damage override buttons (x0, x1/2, x1, x2) ──
+    // ── Manual damage override buttons (0, ¼, ½, 1, 2) ──
     const overrideBtns = el.querySelectorAll?.("[data-action='aceQolDmgOverride']");
     if (overrideBtns?.length) {
       for (const btn of overrideBtns) {
         if (btn.dataset.wired) continue;
         btn.dataset.wired = "1";
-        btn.addEventListener("click", async () => {
+        btn.addEventListener("click", () => {
           const tokenDocId = btn.dataset.tokenDocId;
           const multiplier = parseFloat(btn.dataset.multiplier);
           if (!tokenDocId || isNaN(multiplier)) return;
 
-          await this._applyDamageOverride(message, tokenDocId, multiplier, el);
+          // Toggle active class — scoped to this row only
+          const ovrLine = btn.closest(".ace-qol-save-ovr-line");
+          if (ovrLine) {
+            ovrLine.querySelectorAll(".ace-qol-save-ovr").forEach(b => b.classList.remove("ace-qol-save-ovr-active"));
+            btn.classList.add("ace-qol-save-ovr-active");
+          }
+
+          // Store in memory cache (NO flag persist, NO re-render)
+          const cacheKey = `${message.id}|${tokenDocId}`;
+          SaveEngine.overrideCache.set(cacheKey, multiplier);
+
+          // Update DOM instantly — scoped to this button's row
+          const row = btn.closest(".ace-qol-save-result-row");
+          if (row) this._updateRowDamageDisplay(row, tokenDocId, multiplier, flags);
         });
       }
     }
 
-    // ── Apply All / Undo All (reuse DamageEngine wiring pattern) ──
+    // ── × Remove buttons — hide row and exclude from APPLY ──
+    const removeBtns = el.querySelectorAll?.("[data-action='aceQolRemoveResult']");
+    if (removeBtns?.length) {
+      for (const btn of removeBtns) {
+        if (btn.dataset.wired) continue;
+        btn.dataset.wired = "1";
+        btn.addEventListener("click", () => {
+          const tokenDocId = btn.dataset.tokenDocId;
+          const row = btn.closest(".ace-qol-save-result-row");
+          if (row) {
+            row.style.display = "none";
+            row.dataset.removed = "1";
+          }
+          // Mark as removed in cache so APPLY ALL skips it
+          const cacheKey = `${message.id}|${tokenDocId}`;
+          SaveEngine.overrideCache.set(cacheKey, "removed");
+        });
+      }
+    }
+
+    // ── Apply All / Undo All ──
     const applyBtn = el.querySelector?.("[data-action='aceQolApplyDamage']");
     const undoBtn = el.querySelector?.("[data-action='aceQolUndoDamage']");
 
@@ -772,12 +1023,16 @@ export class SaveEngine {
       if (flags.applied) {
         applyBtn.disabled = true;
         applyBtn.textContent = "APPLIED \u2713";
+        // Enable undo since damage was already applied
+        if (undoBtn && !flags.undone) undoBtn.disabled = false;
       } else {
         applyBtn.addEventListener("click", async () => {
           await this._applyAllSaveDamage(message);
           applyBtn.disabled = true;
           applyBtn.textContent = "APPLIED \u2713";
           await message.setFlag(MODULE_ID, "applied", true);
+          // Enable UNDO now that damage has been applied
+          if (undoBtn) { undoBtn.disabled = false; }
         });
       }
     }
@@ -787,7 +1042,11 @@ export class SaveEngine {
       if (flags.undone) {
         undoBtn.disabled = true;
         undoBtn.textContent = "UNDONE \u2713";
+      } else if (!flags.applied) {
+        // Not applied yet — keep disabled (set in HTML)
       } else {
+        // Was applied but not yet undone — enable it
+        undoBtn.disabled = false;
         undoBtn.addEventListener("click", async () => {
           await this._undoAllSaveDamage(message);
           undoBtn.disabled = true;
@@ -851,7 +1110,7 @@ export class SaveEngine {
         currentHP: state.target.currentHP,
         maxHP: state.target.maxHP,
         ownerIds: isPC ? Object.entries(token.actor?.ownership ?? {})
-          .filter(([id, level]) => level >= 3 && id !== "default")
+          .filter(([id, level]) => level >= 3 && id !== "default" && !game.users.get(id)?.isGM)
           .map(([id]) => id) : [],
       });
     }
@@ -899,41 +1158,65 @@ export class SaveEngine {
       npcResults.push(result);
     }
 
-    // ── Build PC "waiting" placeholders ──
-    const pcResults = pcTargets.map(tgt => ({
-      name: tgt.name,
-      img: tgt.img,
-      tokenDocId: tgt.tokenDocId,
-      actorId: tgt.actorId,
-      sceneId: tgt.sceneId,
-      saveTotal: null,
-      passed: null,
-      isAutoFail: tgt.autoFailSave,
-      resultLabel: "\u23f3 Waiting for save...",
-      damageMultiplier: null,
-      roll: null,
-      damageModifiers: tgt.damageModifiers,
-      currentHP: tgt.currentHP,
-      maxHP: tgt.maxHP,
-      isPC: true,
-      pending: true,
-    }));
-
-    // ── Roll damage once for the spell ──
-    const damageComponents = await this._rollSpellDamage(item, casterActor);
-
-    // ── Post results card (NPC results + PC placeholders) ──
-    const allResults = [...npcResults, ...pcResults];
-    await this._postSaveResults(item, casterActor, allResults, {
-      saveAbility, saveDC, halfOnSave, damageTypes, isSpell,
-    }, damageComponents);
-
-    // ── Send PC whispered save prompts ──
-    for (const tgt of pcTargets) {
-      await this._sendPcSavePrompt(item, casterActor, tgt, {
-        saveAbility, saveDC, halfOnSave, damageTypes, isSpell,
-      });
+    // ── Build PC results — check if they already rolled ──
+    // Search recent chat for pcSaveResult messages matching each PC
+    const recentMsgs = game.messages.contents.slice(-30);
+    const existingPcResults = new Map();
+    for (const m of recentMsgs) {
+      const f = m.flags?.[MODULE_ID];
+      if (f?.type === "pcSaveResult" && f.tokenDocId) {
+        existingPcResults.set(f.tokenDocId, f);
+      }
     }
+
+    const pcResults = pcTargets.map(tgt => {
+      const existing = existingPcResults.get(tgt.tokenDocId);
+      if (existing) {
+        // PC already rolled — build resolved result
+        const passed = existing.passed;
+        const superSaver = existing.superSaver;
+        let damageMultiplier;
+        if (passed) {
+          if (superSaver) damageMultiplier = 0;
+          else if (halfOnSave) damageMultiplier = 0.5;
+          else damageMultiplier = 0;
+        } else {
+          if (superSaver) damageMultiplier = 0.5;
+          else damageMultiplier = 1;
+        }
+        return {
+          name: tgt.name, img: tgt.img,
+          tokenDocId: tgt.tokenDocId, actorId: tgt.actorId, sceneId: tgt.sceneId,
+          saveTotal: existing.saveTotal, passed,
+          isAutoFail: existing.autoFailSave,
+          resultLabel: existing.resultLabel,
+          damageMultiplier,
+          roll: null, damageModifiers: tgt.damageModifiers,
+          currentHP: tgt.currentHP, maxHP: tgt.maxHP,
+          isPC: true, pending: false,
+        };
+      }
+      // PC hasn't rolled yet — pending placeholder
+      return {
+        name: tgt.name, img: tgt.img,
+        tokenDocId: tgt.tokenDocId, actorId: tgt.actorId, sceneId: tgt.sceneId,
+        saveTotal: null, passed: null,
+        isAutoFail: tgt.autoFailSave,
+        resultLabel: "\u23f3 Waiting for save...",
+        damageMultiplier: null,
+        roll: null, damageModifiers: tgt.damageModifiers,
+        currentHP: tgt.currentHP, maxHP: tgt.maxHP,
+        isPC: true, pending: true,
+      };
+    });
+
+    // ── PC prompts already sent when target list card was posted ──
+
+    // ── Post Phase 1 saves-only card (damage rolled separately) ──
+    const allResults = [...npcResults, ...pcResults];
+    await this._postSaveResultsPhase1(item, casterActor, allResults, {
+      saveAbility, saveDC, halfOnSave, damageTypes, isSpell,
+    });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1086,8 +1369,9 @@ export class SaveEngine {
       </div>
     `;
 
-    // Whisper to the player(s) who own this PC
-    const whisperIds = tgt.ownerIds?.length ? tgt.ownerIds : [];
+    // Whisper to the player(s) who own this PC only (GM has dice icon on target list)
+    // Filter out GM users — they have ownership on all actors but don't need prompt cards
+    const whisperIds = (tgt.ownerIds ?? []).filter(id => !game.users.get(id)?.isGM);
 
     await ChatMessage.create({
       content: cardHtml,
@@ -1136,9 +1420,16 @@ export class SaveEngine {
 
     const scene = game.scenes.get(sceneId) ?? canvas.scene;
     const tokenDoc = scene?.tokens?.get(tokenDocId);
-    const targetActor = tokenDoc?.actor ?? game.actors.get(actorId);
-    if (!targetActor) return;
+    const targetActor = tokenDoc?.actor
+      ?? game.actors.get(actorId)
+      ?? game.user.character;  // Fallback: player's assigned character
+    if (!targetActor) {
+      console.error(`${MODULE_ID} | _rollPcSave: Could not find actor for ${targetName} (actorId: ${actorId})`);
+      ui.notifications.error("Could not find your character to roll the save.");
+      return;
+    }
 
+    const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
     let saveTotal = 0;
     let passed = false;
     let rollResult = null;
@@ -1164,6 +1455,8 @@ export class SaveEngine {
       saveTotal = roll.total;
       passed = saveTotal >= saveDC;
       rollResult = roll;
+
+      // Dice So Nice will animate from the pcSaveResult ChatMessage roll if present
     }
 
     // Determine result label
@@ -1179,7 +1472,6 @@ export class SaveEngine {
     }
 
     const passClass = passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
-    const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
     const rollDisplay = autoFailSave ? "AUTO" : saveTotal;
     const reasonText = autoFailSave
       ? `AUTO-FAIL (condition)`
@@ -1217,6 +1509,162 @@ export class SaveEngine {
         }
       }
     });
+
+    // ── Update the main save results card's pending row for this PC ──
+    // Determine damage multiplier same as NPC saves
+    let damageMultiplier;
+    if (passed) {
+      if (superSaver) damageMultiplier = 0;        // Evasion pass = 0 damage
+      else if (halfOnSave) damageMultiplier = 0.5;  // Half on save
+      else damageMultiplier = 0;                     // No damage on save
+    } else {
+      if (superSaver) damageMultiplier = 0.5;        // Evasion fail = half
+      else damageMultiplier = 1;                     // Full damage
+    }
+
+    // Main card update happens via renderChatMessage hook on GM client
+    // (players don't have permission to edit GM-whispered messages)
+
+    // Collapse any PC save prompt cards for this token
+    const chatLog = document.querySelector("#chat-log, .chat-log");
+    if (chatLog) {
+      const promptCards = chatLog.querySelectorAll(".chat-message");
+      for (const card of promptCards) {
+        const cardMsg = game.messages.get(card.dataset.messageId);
+        const cardFlags = cardMsg?.flags?.[MODULE_ID];
+        if (cardFlags?.type === "pcSavePrompt" && cardFlags.tokenDocId === tokenDocId) {
+          card.classList.add("ace-qol-save-collapsed");
+        }
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  GM: Handle PC Save Result Posted (from renderChatMessage hook)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  _onPcSaveResultPosted(resultFlags) {
+    console.log(`${MODULE_ID} | _onPcSaveResultPosted fired for tokenDocId:`, resultFlags.tokenDocId, "passed:", resultFlags.passed);
+    const { tokenDocId, saveTotal, passed, resultLabel, autoFailSave, superSaver } = resultFlags;
+
+    // Determine damage multiplier
+    let damageMultiplier;
+    if (passed) {
+      if (superSaver) damageMultiplier = 0;
+      else damageMultiplier = 0.5; // half on save (most common for AoE)
+    } else {
+      if (superSaver) damageMultiplier = 0.5;
+      else damageMultiplier = 1;
+    }
+
+    const pcResult = { saveTotal, passed, resultLabel, autoFailSave, damageMultiplier };
+
+    // Update Phase 1 save results card if it exists
+    this._updateMainCardPcResult(tokenDocId, pcResult);
+
+    // Update the target list card's PC row live
+    this._updateTargetListPcRow(tokenDocId, pcResult);
+
+    // Collapse the PC prompt card on GM side
+    const chatLog = document.querySelector("#chat-log, .chat-log");
+    if (chatLog) {
+      for (const card of chatLog.querySelectorAll(".chat-message")) {
+        const cardMsg = game.messages.get(card.dataset.messageId);
+        const f = cardMsg?.flags?.[MODULE_ID];
+        if (f?.type === "pcSavePrompt" && f.tokenDocId === tokenDocId) {
+          card.classList.add("ace-qol-save-collapsed");
+        }
+      }
+    }
+  }
+
+  /**
+   * Update a PC row on the target list card with their save result (live update).
+   */
+  _updateTargetListPcRow(tokenDocId, pcResult) {
+    console.log(`${MODULE_ID} | _updateTargetListPcRow looking for tokenDocId:`, tokenDocId);
+
+    // Search the entire document — V13 chat containers vary
+    const row = document.querySelector(`.ace-qol-save-tgt-row[data-token-doc-id="${tokenDocId}"]`);
+    if (!row) { console.log(`${MODULE_ID} | Row not found in DOM`); return; }
+    {
+
+      const passClass = pcResult.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
+      const verdictText = pcResult.passed ? "PASS" : "FAIL";
+      const rollDisplay = pcResult.autoFailSave ? "AUTO" : pcResult.saveTotal;
+
+      // Replace the dice button + mod with the result
+      const modSpan = row.querySelector(".ace-qol-save-tgt-mod");
+      if (modSpan) modSpan.innerHTML = `<span class="${passClass}" style="font-weight:700">${rollDisplay}</span>`;
+
+      const rollBtn = row.querySelector(".ace-qol-save-pc-roll-btn");
+      if (rollBtn) {
+        rollBtn.disabled = true;
+        rollBtn.innerHTML = `<span class="ace-qol-save-verdict ${passClass}" style="font-size:0.65rem">${verdictText}</span>`;
+        rollBtn.style.background = "none";
+        rollBtn.style.border = "none";
+        rollBtn.style.padding = "0 4px";
+      }
+
+      console.log(`${MODULE_ID} | Updated target list PC row: ${verdictText} (${rollDisplay})`);
+      return;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Update Main Save Results Card with PC Save Result
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async _updateMainCardPcResult(tokenDocId, pcResult) {
+    // Find the most recent saveResults card that has this tokenDocId as pending
+    const messages = game.messages.contents.slice(-20).reverse();
+    for (const msg of messages) {
+      const flags = msg.flags?.[MODULE_ID];
+      if (flags?.type !== "saveResults") continue;
+      const allResults = flags.allResults;
+      if (!allResults) continue;
+
+      const idx = allResults.findIndex(r => r.tokenDocId === tokenDocId && r.pending);
+      if (idx < 0) continue;
+
+      // Found the matching pending row — update it in the flag data
+      allResults[idx].pending = false;
+      allResults[idx].saveTotal = pcResult.saveTotal;
+      allResults[idx].passed = pcResult.passed;
+      allResults[idx].resultLabel = pcResult.resultLabel;
+      allResults[idx].isAutoFail = pcResult.autoFailSave;
+      allResults[idx].damageMultiplier = pcResult.damageMultiplier;
+
+      // Persist flags WITHOUT re-render (render:false prevents DOM wipe)
+      await msg.update({
+        [`flags.${MODULE_ID}.allResults`]: allResults,
+      }, { render: false });
+
+      // Update DOM directly for the pending row
+      const chatLog = document.querySelector("#chat-log, .chat-log");
+      if (!chatLog) return;
+      const msgEl = chatLog.querySelector(`.chat-message[data-message-id="${msg.id}"]`);
+      if (!msgEl) return;
+      const row = msgEl.querySelector(`.ace-qol-save-result-row[data-token-doc-id="${tokenDocId}"]`);
+      if (!row) return;
+
+      const passClass = pcResult.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
+      const verdictText = pcResult.passed ? "PASS" : "FAIL";
+      const rollDisplay = pcResult.autoFailSave ? "AUTO" : pcResult.saveTotal;
+
+      row.classList.remove("ace-qol-save-result-pending");
+      row.innerHTML = `
+        <div class="ace-qol-save-result-line">
+          <img src="${allResults[idx].img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
+          <span class="ace-qol-save-tgt-name">${allResults[idx].name}</span>
+          <span class="ace-qol-save-roll ${passClass}">${rollDisplay}</span>
+          <span class="ace-qol-save-verdict ${passClass}">${verdictText}</span>
+        </div>
+      `;
+
+      console.log(`${MODULE_ID} | Updated main card pending row for ${allResults[idx].name}: ${verdictText} (${rollDisplay})`);
+      return;
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1247,7 +1695,294 @@ export class SaveEngine {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  //  Save Results + Damage Card (Redesigned)
+  //  Phase 1 — Saves-Only Card (no damage yet, ROLL DAMAGE button)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async _postSaveResultsPhase1(item, casterActor, results, opts) {
+    const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell } = opts;
+    const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
+
+    // ── Build Phase 1 target rows (saves only — no damage, no HP, no overrides) ──
+    const targetRows = results.map(r => {
+      // PC still pending
+      if (r.pending) {
+        return `
+          <div class="ace-qol-save-result-row ace-qol-save-result-pending" data-token-doc-id="${r.tokenDocId}">
+            <div class="ace-qol-save-result-target">
+              <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
+              <span class="ace-qol-save-tgt-name">${r.name}</span>
+              <span class="ace-qol-save-result-label ace-qol-save-pending">\u23f3 Waiting for save...</span>
+            </div>
+          </div>
+        `;
+      }
+
+      const passClass = r.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
+      const rollDisplay = r.isAutoFail ? "AUTO" : r.saveTotal;
+      const verdictText = r.passed ? "PASS" : "FAIL";
+
+      return `
+        <div class="ace-qol-save-result-row" data-token-doc-id="${r.tokenDocId}">
+          <div class="ace-qol-save-result-line">
+            <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
+            <span class="ace-qol-save-tgt-name">${r.name}</span>
+            <span class="ace-qol-save-roll ${passClass}">${rollDisplay}</span>
+            <span class="ace-qol-save-verdict ${passClass}">${verdictText}</span>
+          </div>
+        </div>
+      `;
+    }).join("");
+
+    const cardHtml = `
+      <div class="ace-qol-save-results-card" data-phase="1">
+        <div class="ace-qol-save-header">
+          <img src="${item.img || "icons/svg/spell.svg"}" class="ace-qol-save-item-img" />
+          <div>
+            <strong class="ace-qol-save-item-name">${item.name} \u2014 Saves</strong>
+            <span class="ace-qol-save-dc">DC ${saveDC} ${abilityLabel}</span>
+          </div>
+        </div>
+        <div class="ace-qol-save-results">
+          ${targetRows}
+        </div>
+        <div class="ace-qol-dmg-actions">
+          <button class="ace-qol-btn ace-qol-btn-roll-dmg" data-action="aceQolRollDamage">
+            <i class="fas fa-dice-d20"></i> ROLL DAMAGE
+          </button>
+        </div>
+      </div>
+    `;
+
+    await ChatMessage.create({
+      content: cardHtml,
+      speaker: ChatMessage.getSpeaker({ actor: casterActor }),
+      whisper: [game.user.id],
+      flags: {
+        [MODULE_ID]: {
+          type: "saveResults",
+          phase: 1,
+          itemId: item.id,
+          itemUuid: item.uuid,
+          actorId: casterActor?.id,
+          saveAbility,
+          saveDC,
+          halfOnSave,
+          damageTypes,
+          isSpell,
+          allResults: results.map(r => ({
+            name: r.name,
+            img: r.img,
+            tokenDocId: r.tokenDocId,
+            actorId: r.actorId,
+            sceneId: r.sceneId,
+            saveTotal: r.saveTotal,
+            passed: r.passed,
+            isAutoFail: r.isAutoFail,
+            resultLabel: r.resultLabel,
+            damageMultiplier: r.damageMultiplier,
+            damageModifiers: r.damageModifiers,
+            currentHP: r.currentHP,
+            maxHP: r.maxHP,
+            isPC: r.isPC,
+            pending: r.pending,
+          })),
+        }
+      }
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Phase 2 — Complete Save Results (roll damage, update card in-place)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async _completeSaveResultsPhase2(message) {
+    const flags = message.flags?.[MODULE_ID];
+    if (!flags || flags.phase !== 1) return;
+
+    const { itemUuid, itemId, actorId, saveAbility, saveDC, halfOnSave,
+            damageTypes, isSpell, allResults } = flags;
+
+    const item = await fromUuid(itemUuid) ?? game.items.get(itemId);
+    const casterActor = game.actors.get(actorId);
+
+    if (!item) {
+      ui.notifications.error("ACE QOL | Could not find spell item for damage roll.");
+      return;
+    }
+
+    // ── 1. Roll damage dice ──
+    const damageComponents = await this._rollSpellDamage(item, casterActor);
+    const baseDamageTotal = damageComponents.reduce((sum, c) => sum + c.total, 0);
+
+    // Damage info is shown in the results card header — no separate roll message needed
+
+    // ── 3. Build Phase 2 card HTML with full damage data ──
+    const cardHtml = this._buildPhase2CardHtml(item, casterActor, allResults, damageComponents, {
+      saveAbility, saveDC, halfOnSave, damageTypes,
+    });
+
+    // ── 4. Compute damageResults for flag storage ──
+    const damageResults = [];
+    for (const r of allResults) {
+      if (r.pending) continue;
+      let targetDamage = 0;
+      for (const c of damageComponents) {
+        let dmg = Math.floor(c.total * r.damageMultiplier);
+        const mod = r.damageModifiers?.[c.type];
+        if (mod?.modifier === "immune") dmg = 0;
+        else if (mod?.modifier === "resistant") dmg = Math.floor(dmg / 2);
+        else if (mod?.modifier === "vulnerable") dmg = dmg * 2;
+        targetDamage += dmg;
+      }
+      damageResults.push({
+        targetId: r.actorId,
+        tokenDocId: r.tokenDocId,
+        sceneId: r.sceneId,
+        totalFinal: targetDamage,
+        currentHP: r.currentHP,
+      });
+    }
+
+    // ── 5. Update existing message in one call ──
+    await message.update({
+      content: cardHtml,
+      [`flags.${MODULE_ID}.phase`]: 2,
+      [`flags.${MODULE_ID}.baseDamageTotal`]: baseDamageTotal,
+      [`flags.${MODULE_ID}.damageComponentTotals`]: damageComponents.map(c => ({ total: c.total, type: c.type })),
+      [`flags.${MODULE_ID}.damageResults`]: damageResults,
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Build Phase 2 Card HTML (extracted from _postSaveResults)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  _buildPhase2CardHtml(item, casterActor, results, damageComponents, opts) {
+    const { saveAbility, saveDC, halfOnSave, damageTypes } = opts;
+    const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
+    const baseDamageTotal = damageComponents.reduce((sum, c) => sum + c.total, 0);
+
+    // ── Sort: highest save roll first, pending PCs at bottom ──
+    const sorted = [...results].sort((a, b) => {
+      if (a.pending && !b.pending) return 1;
+      if (!a.pending && b.pending) return -1;
+      return (b.saveTotal ?? -999) - (a.saveTotal ?? -999);
+    });
+
+    // ── Build result rows ──
+    const targetRows = sorted.map(r => {
+      // PC still pending
+      if (r.pending) {
+        return `
+          <div class="ace-qol-save-result-row ace-qol-save-result-pending" data-token-doc-id="${r.tokenDocId}">
+            <div class="ace-qol-save-result-target">
+              <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
+              <span class="ace-qol-save-tgt-name">${r.name}</span>
+              <span class="ace-qol-save-result-label ace-qol-save-pending">\u23f3 Waiting for save...</span>
+            </div>
+          </div>
+        `;
+      }
+
+      const passClass = r.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
+      const rollDisplay = r.isAutoFail ? "AUTO" : r.saveTotal;
+      const verdictText = r.passed ? "PASS" : "FAIL";
+
+      // ── Calculate per-target damage ──
+      let targetDamage = 0;
+      const dmgReasons = [];
+      const dmgParts = damageComponents.map(c => {
+        let dmg = Math.floor(c.total * r.damageMultiplier);
+        const mod = r.damageModifiers?.[c.type];
+        if (mod?.modifier === "immune") {
+          dmg = 0;
+          dmgReasons.push(`IMMUNE to ${c.type}`);
+        } else if (mod?.modifier === "resistant") {
+          dmg = Math.floor(dmg / 2);
+          dmgReasons.push(`RESIST ${c.type}`);
+        } else if (mod?.modifier === "vulnerable") {
+          dmg = dmg * 2;
+          dmgReasons.push(`VULN ${c.type}`);
+        }
+        targetDamage += dmg;
+        return dmg;
+      });
+
+      const newHP = Math.max(0, r.currentHP - targetDamage);
+      const isDead = newHP <= 0;
+
+      // Inline badge for immune/resist/vuln
+      const inlineBadge = dmgReasons.length
+        ? dmgReasons.map(dr => {
+            if (dr.includes("IMMUNE")) return '<span class="ace-qol-save-inline-badge immune">IMMUNE</span>';
+            if (dr.includes("RESIST")) return '<span class="ace-qol-save-inline-badge resist">\u00bd</span>';
+            if (dr.includes("VULN")) return '<span class="ace-qol-save-inline-badge vuln">\u00d72</span>';
+            return "";
+          }).join("")
+        : "";
+
+      // Determine which multiplier button should be highlighted
+      const dm = r.damageMultiplier;
+      const _a = (val) => dm === val ? " ace-qol-save-ovr-active" : "";
+      // Zero damage (evasion pass) — no button highlighted, just show 0
+      const dmgDisplay = targetDamage === 0 ? "0" : targetDamage.toString();
+
+      return `
+        <div class="ace-qol-save-result-row" data-token-doc-id="${r.tokenDocId}">
+          <div class="ace-qol-save-result-line">
+            <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
+            <span class="ace-qol-save-tgt-name">${r.name}</span>
+            <span class="ace-qol-save-roll ${passClass}">${rollDisplay}</span>
+            <span class="ace-qol-save-verdict ${passClass}">${verdictText}</span>
+            ${inlineBadge}
+          </div>
+          <div class="ace-qol-save-ovr-line">
+            <button class="ace-qol-save-ovr-x" data-action="aceQolRemoveResult" data-token-doc-id="${r.tokenDocId}">\u00d7</button>
+            <button class="ace-qol-save-ovr${_a(0.25)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="0.25">\u00bc</button>
+            <button class="ace-qol-save-ovr${_a(0.5)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="0.5">\u00bd</button>
+            <button class="ace-qol-save-ovr${_a(1)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="1">1</button>
+            <button class="ace-qol-save-ovr${_a(2)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="2">2</button>
+            <span class="ace-qol-save-ovr-spacer"></span>
+            <span class="ace-qol-save-result-dmg">${dmgDisplay}</span>${isDead ? '<span class="ace-qol-save-skull">\u2620</span>' : '<span class="ace-qol-save-skull" style="display:none">\u2620</span>'}
+            <span class="ace-qol-save-result-hp">HP: <span class="ace-qol-hp-cur">${r.currentHP}</span>\u2192<span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span></span>
+          </div>
+        </div>
+      `;
+    }).join("");
+
+    // ── Damage summary ──
+    const dmgSummary = damageComponents.map(c => {
+      const color = DamageEngine.DAMAGE_COLORS[c.type] ?? "#ccc";
+      return `<span style="color:${color}">${c.formula} = ${c.total} ${c.type}</span>`;
+    }).join(", ");
+
+    return `
+      <div class="ace-qol-save-results-card" data-phase="2">
+        <div class="ace-qol-save-header">
+          <img src="${item.img || "icons/svg/spell.svg"}" class="ace-qol-save-item-img" />
+          <div>
+            <strong class="ace-qol-save-item-name">${item.name} \u2014 Save Results</strong>
+            <span class="ace-qol-save-dc">DC ${saveDC} ${abilityLabel}</span>
+          </div>
+        </div>
+        <div class="ace-qol-save-dmg-summary">Damage: ${dmgSummary}</div>
+        <div class="ace-qol-save-results">
+          ${targetRows}
+        </div>
+        <div class="ace-qol-dmg-actions">
+          <button class="ace-qol-btn ace-qol-btn-apply" data-action="aceQolApplyDamage">
+            <i class="fas fa-heart-crack"></i> APPLY ALL
+          </button>
+          <button class="ace-qol-btn ace-qol-btn-undo" data-action="aceQolUndoDamage" disabled
+            <i class="fas fa-undo"></i> UNDO ALL
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Save Results + Damage Card (Legacy / Direct Post)
   // ═══════════════════════════════════════════════════════════════════════════
 
   async _postSaveResults(item, casterActor, results, opts, damageComponents) {
@@ -1342,19 +2077,32 @@ export class SaveEngine {
           }).join("")
         : "";
 
+      const verdictText = r.passed ? "PASS" : "FAIL";
+
+      // Determine which multiplier button should be highlighted
+      const dm = r.damageMultiplier;
+      const _a = (val) => dm === val ? " ace-qol-save-ovr-active" : "";
+      // Zero damage (evasion pass) — no button highlighted, just show 0
+      const dmgDisplay = targetDamage === 0 ? "0" : targetDamage.toString();
+
       return `
         <div class="ace-qol-save-result-row" data-token-doc-id="${r.tokenDocId}">
           <div class="ace-qol-save-result-line">
             <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
             <span class="ace-qol-save-tgt-name">${r.name}</span>
             <span class="ace-qol-save-roll ${passClass}">${rollDisplay}</span>
-            <span class="ace-qol-save-result-dmg" style="color:${DamageEngine.DAMAGE_COLORS[damageComponents[0]?.type] ?? '#ff6644'}">${targetDamage}</span>${isDead ? '<span style="color:#fff; margin-left:2px;">\u2620</span>' : ""}
+            <span class="ace-qol-save-verdict ${passClass}">${verdictText}</span>
             ${inlineBadge}
-            <span class="ace-qol-save-result-hp">HP: ${r.currentHP}\u2192${newHP}</span>
-            <button class="ace-qol-save-ovr" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="0">\u00d70</button>
-            <button class="ace-qol-save-ovr" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="0.5">\u00bd</button>
-            <button class="ace-qol-save-ovr ace-qol-save-ovr-active" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="1">1</button>
-            <button class="ace-qol-save-ovr" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="2">\u00d72</button>
+          </div>
+          <div class="ace-qol-save-ovr-line">
+            <button class="ace-qol-save-ovr-x" data-action="aceQolRemoveResult" data-token-doc-id="${r.tokenDocId}">\u00d7</button>
+            <button class="ace-qol-save-ovr${_a(0.25)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="0.25">\u00bc</button>
+            <button class="ace-qol-save-ovr${_a(0.5)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="0.5">\u00bd</button>
+            <button class="ace-qol-save-ovr${_a(1)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="1">1</button>
+            <button class="ace-qol-save-ovr${_a(2)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="2">2</button>
+            <span class="ace-qol-save-ovr-spacer"></span>
+            <span class="ace-qol-save-result-dmg">${dmgDisplay}</span>${isDead ? '<span class="ace-qol-save-skull">\u2620</span>' : '<span class="ace-qol-save-skull" style="display:none">\u2620</span>'}
+            <span class="ace-qol-save-result-hp">HP: <span class="ace-qol-hp-cur">${r.currentHP}</span>\u2192<span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span></span>
           </div>
         </div>
       `;
@@ -1383,7 +2131,7 @@ export class SaveEngine {
           <button class="ace-qol-btn ace-qol-btn-apply" data-action="aceQolApplyDamage">
             <i class="fas fa-heart-crack"></i> APPLY ALL
           </button>
-          <button class="ace-qol-btn ace-qol-btn-undo" data-action="aceQolUndoDamage">
+          <button class="ace-qol-btn ace-qol-btn-undo" data-action="aceQolUndoDamage" disabled
             <i class="fas fa-undo"></i> UNDO ALL
           </button>
         </div>
@@ -1397,6 +2145,7 @@ export class SaveEngine {
       flags: {
         [MODULE_ID]: {
           type: "saveResults",
+          phase: 2,
           itemId: item.id,
           itemUuid: item.uuid,
           actorId: casterActor?.id,
@@ -1422,35 +2171,34 @@ export class SaveEngine {
   //  Manual Damage Override (x0, x1/2, x1, x2 per row)
   // ═══════════════════════════════════════════════════════════════════════════
 
-  async _applyDamageOverride(message, tokenDocId, multiplier, el) {
-    const flags = message.flags?.[MODULE_ID];
-    if (!flags) return;
-
+  /**
+   * Update a single row's damage + HP display in the DOM. No flag writes.
+   * @param {HTMLElement} rowElement  The .ace-qol-save-result-row element
+   * @param {string} tokenDocId
+   * @param {number} multiplier
+   * @param {object} flags  The message's MODULE_ID flags (read-only)
+   */
+  _updateRowDamageDisplay(rowElement, tokenDocId, multiplier, flags) {
     const results = flags.damageResults ?? [];
-    const idx = results.findIndex(r => r.tokenDocId === tokenDocId);
-    if (idx < 0) return;
+    const result = results.find(r => r.tokenDocId === tokenDocId);
+    if (!result) return;
 
-    // Recalculate damage with the new multiplier from base
     const baseDmg = flags.baseDamageTotal ?? 0;
     const newDamage = Math.floor(baseDmg * multiplier);
+    const currentHP = result.currentHP ?? 0;
 
-    // Update the stored result
-    results[idx].totalFinal = newDamage;
-    await message.setFlag(MODULE_ID, "damageResults", results);
+    const dmgSpan = rowElement.querySelector(".ace-qol-save-result-dmg");
+    if (dmgSpan) {
+      dmgSpan.textContent = newDamage.toString();
+      const skullSpan = rowElement.querySelector(".ace-qol-save-skull");
+      if (skullSpan) skullSpan.style.display = (Math.max(0, currentHP - newDamage) <= 0) ? "" : "none";
+    }
 
-    // Update the damage display in the DOM
-    const row = el.querySelector?.(`.ace-qol-save-result-row[data-token-doc-id="${tokenDocId}"]`);
-    if (row) {
-      const dmgSpan = row.querySelector(".ace-qol-save-result-dmg");
-      if (dmgSpan) {
-        const newHP = Math.max(0, results[idx].currentHP - newDamage);
-        dmgSpan.textContent = `${newDamage} dmg${newHP <= 0 ? " \u2620" : ""}`;
-      }
-      const hpSpan = row.querySelector(".ace-qol-dmg-hp");
-      if (hpSpan) {
-        const newHP = Math.max(0, results[idx].currentHP - newDamage);
-        hpSpan.textContent = `HP: ${results[idx].currentHP} \u2192 ${newHP}/${results[idx].maxHP ?? "?"}`;
-      }
+    const hpSpan = rowElement.querySelector(".ace-qol-save-result-hp");
+    if (hpSpan) {
+      const newHP = Math.max(0, currentHP - newDamage);
+      const deadClass = newHP <= 0 ? " ace-qol-hp-dead" : "";
+      hpSpan.innerHTML = `HP: ${currentHP}\u2192<span class="ace-qol-hp-new${deadClass}">${newHP}</span>`;
     }
   }
 
@@ -1462,15 +2210,34 @@ export class SaveEngine {
     const flags = message.flags?.[MODULE_ID];
     if (!flags?.damageResults?.length) return;
 
+    const baseDmg = flags.baseDamageTotal ?? 0;
+
     for (const r of flags.damageResults) {
       const scene = game.scenes.get(r.sceneId) ?? canvas.scene;
       const tokenDoc = scene?.tokens?.get(r.tokenDocId);
       const actor = tokenDoc?.actor ?? game.actors.get(r.targetId);
       if (!actor) continue;
 
+      // Check override cache for this target
+      const cacheKey = `${message.id}|${r.tokenDocId}`;
+      const cachedValue = SaveEngine.overrideCache.get(cacheKey);
+
+      // Skip removed targets
+      if (cachedValue === "removed") {
+        SaveEngine.overrideCache.delete(cacheKey);
+        continue;
+      }
+
+      const damageToApply = (typeof cachedValue === "number")
+        ? Math.floor(baseDmg * cachedValue)
+        : (r.totalFinal ?? 0);
+
       const currentHP = actor.system?.attributes?.hp?.value ?? 0;
-      const newHP = Math.max(0, currentHP - (r.totalFinal ?? 0));
+      const newHP = Math.max(0, currentHP - damageToApply);
       await actor.update({ "system.attributes.hp.value": newHP });
+
+      // Clear cache entry after applying
+      SaveEngine.overrideCache.delete(cacheKey);
     }
   }
 

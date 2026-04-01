@@ -532,16 +532,48 @@
   font-size: 0.75rem; color: #888; font-family: monospace; flex-shrink: 0;
 }
 .ace-qol-save-tgt-remove {
-  background: none; border: none; color: #666; cursor: pointer;
-  padding: 2px 4px; font-size: 0.7rem; flex-shrink: 0;
-  transition: color 0.15s;
+  background: rgba(255,255,255,0.05); border: 1px solid #555; border-radius: 3px;
+  color: #aaa; cursor: pointer;
+  padding: 2px 6px; font-size: 0.85rem; flex-shrink: 0;
+  transition: all 0.15s;
 }
-.ace-qol-save-tgt-remove:hover { color: #ff1744; }
+.ace-qol-save-tgt-remove:hover { color: #ff1744; background: rgba(255,23,68,0.15); border-color: #ff1744; }
 
 /* PC target rows */
 .ace-qol-save-tgt-pc { opacity: 0.7; border-left: 2px solid #448aff; }
+
+/* ─── Damage Type Indicators (immune/resist/vuln on target list) ── */
+.ace-qol-tgt-immune .ace-qol-save-tgt-name,
+.ace-qol-tgt-immune .ace-qol-save-tgt-mod { color: #ff1744; }
+.ace-qol-tgt-resist .ace-qol-save-tgt-name,
+.ace-qol-tgt-resist .ace-qol-save-tgt-mod { color: #ffd740; }
+.ace-qol-tgt-vuln .ace-qol-save-tgt-name,
+.ace-qol-tgt-vuln .ace-qol-save-tgt-mod { color: #e040fb; }
+.ace-qol-tag-immune {
+  color: #ff1744; background: rgba(255,23,68,0.15); border: 1px solid rgba(255,23,68,0.3);
+  font-size: 0.55rem; font-weight: 700; padding: 0 4px; border-radius: 2px;
+}
+.ace-qol-tag-resist {
+  color: #ffd740; background: rgba(255,215,64,0.15); border: 1px solid rgba(255,215,64,0.3);
+  font-size: 0.55rem; font-weight: 700; padding: 0 4px; border-radius: 2px;
+}
+.ace-qol-tag-vuln {
+  color: #e040fb; background: rgba(224,64,251,0.15); border: 1px solid rgba(224,64,251,0.3);
+  font-size: 0.55rem; font-weight: 700; padding: 0 4px; border-radius: 2px;
+}
 .ace-qol-save-pc-note {
   font-size: 0.65rem; color: #448aff; font-style: italic; flex-shrink: 0;
+}
+.ace-qol-save-pc-roll-btn {
+  background: rgba(68,138,255,0.15); border: 1px solid rgba(68,138,255,0.4);
+  border-radius: 3px; padding: 3px 8px; cursor: pointer;
+  color: #448aff; font-size: 1rem; transition: all 0.15s; flex-shrink: 0;
+}
+.ace-qol-save-pc-roll-btn:hover {
+  background: rgba(68,138,255,0.3); border-color: #448aff; color: #fff;
+}
+.ace-qol-save-pc-roll-btn:disabled {
+  opacity: 0.4; cursor: default;
 }
 
 /* ─── Mode Toggle (TARGETED / SELECTED) ────────────────────── */
@@ -595,23 +627,67 @@
 .ace-qol-save-result-dmg {
   font-size: 0.8rem; font-weight: 700; font-family: monospace;
   min-width: 24px; text-align: right; flex-shrink: 0;
+  color: #ffab40;
 }
 .ace-qol-save-result-hp {
-  font-size: 0.65rem; color: #888; flex-shrink: 0; white-space: nowrap;
+  font-size: 0.75rem; color: #81c784; flex-shrink: 0; white-space: nowrap;
+  background: rgba(255,255,255,0.1); padding: 0 7px; border-radius: 3px;
+  border: 1px solid rgba(255,255,255,0.12);
+  height: 20px; line-height: 20px; box-sizing: border-box;
+}
+.ace-qol-hp-cur { color: #00e676; font-weight: 700; }
+.ace-qol-hp-new { color: #fff; font-weight: 700; }
+.ace-qol-hp-dead { color: #ff1744; font-weight: 700; }
+.ace-qol-hp-heal { color: #00e676; font-weight: 700; }
+.ace-qol-save-skull { color: #fff; margin-left: 2px; }
+
+/* ─── Override Button Sub-Line (beneath each target row) ──── */
+.ace-qol-save-ovr-line {
+  display: flex; align-items: center; gap: 3px;
+  padding: 1px 4px 3px; margin-top: -1px;
+}
+.ace-qol-save-ovr-x {
+  font-size: 0.75rem; font-weight: 700; color: #ff5252;
+  background: rgba(255,82,82,0.1); border: 1px solid rgba(255,82,82,0.3);
+  border-radius: 3px; padding: 0 7px; cursor: pointer;
+  transition: all 0.15s; margin-right: 3px;
+  height: 20px; line-height: 20px; box-sizing: border-box;
+}
+.ace-qol-save-ovr-x:hover {
+  background: rgba(255,82,82,0.25); border-color: #ff5252; color: #fff;
+}
+.ace-qol-save-ovr-spacer {
+  flex: 1;
+}
+.ace-qol-save-ovr {
+  padding: 0 7px; font-size: 0.75rem; border-radius: 3px;
+  background: rgba(255,255,255,0.06); border: 1px solid #444;
+  color: #aaa; cursor: pointer; transition: all 0.1s;
+  min-width: 0; text-align: center;
+  height: 20px; line-height: 20px; box-sizing: border-box;
+}
+/* Damage number on the override line */
+.ace-qol-save-ovr-line .ace-qol-save-result-dmg {
+  font-size: 0.95rem;
+}
+.ace-qol-save-ovr.ace-qol-save-ovr:hover {
+  background: rgba(255,171,64,0.15) !important; color: #ffab40 !important; border-color: #ffab40 !important;
+}
+.ace-qol-save-ovr.ace-qol-save-ovr-active {
+  background: rgba(255,171,64,0.15) !important; color: #ffab40 !important; border-color: rgba(255,171,64,0.5) !important;
 }
 
-/* ─── Inline Override Buttons (tiny, in the row) ───────────── */
-.ace-qol-save-ovr {
-  padding: 0 3px; font-size: 0.55rem; border-radius: 2px;
-  background: rgba(255,255,255,0.05); border: 1px solid #333;
-  color: #666; cursor: pointer; transition: all 0.1s;
-  line-height: 1.4; flex-shrink: 0; min-width: 16px; text-align: center;
+/* Heal button (green H) */
+.ace-qol-save-ovr-heal {
+  background: rgba(0,230,118,0.08); border-color: rgba(0,230,118,0.3);
+  color: #00e676; margin-left: 4px;
 }
-.ace-qol-save-ovr:hover {
-  background: rgba(212,175,55,0.15); color: #d4af37; border-color: #d4af37;
+.ace-qol-save-ovr-heal:hover {
+  background: rgba(0,230,118,0.2); color: #00e676; border-color: #00e676;
 }
-.ace-qol-save-ovr-active {
-  background: rgba(212,175,55,0.12); color: #d4af37; border-color: rgba(212,175,55,0.4);
+.ace-qol-save-ovr-heal.ace-qol-save-ovr-active {
+  background: rgba(0,230,118,0.2); color: #00e676; border-color: rgba(0,230,118,0.5);
+  box-shadow: 0 0 4px rgba(0,230,118,0.3);
 }
 
 /* ─── Inline Immune/Resist/Vuln Badges ─────────────────────── */
