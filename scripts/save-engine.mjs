@@ -116,7 +116,11 @@ export class SaveEngine {
         this._wirePcSaveButton(el, message, flags);
       }
 
-      // PC Save Result handled by createChatMessage hook (more reliable)
+      // ── PC Save Result — collapse on GM side (result shown inline in target list) ──
+      if (flags.type === "pcSaveResult" && game.user.isGM) {
+        const chatMsg = el.closest?.(".chat-message") ?? el;
+        chatMsg.classList.add("ace-qol-save-collapsed");
+      }
 
       // ── Save Results card — phase-aware wiring ──
       if (flags.type === "saveResults") {
@@ -138,8 +142,8 @@ export class SaveEngine {
     Hooks.on("createChatMessage", (message) => {
       if (!game.user.isGM) return;
       const flags = message.flags?.[MODULE_ID];
-      if (flags?.type === "pcSaveResult") {
-        console.log(`${MODULE_ID} | createChatMessage caught pcSaveResult for`, flags.tokenDocId);
+      if (flags?.type === "pcSaveResult" && flags.castId) {
+        console.log(`${MODULE_ID} | createChatMessage caught pcSaveResult for`, flags.tokenDocId, "castId:", flags.castId);
         // Small delay to let the DOM render first
         setTimeout(() => this._onPcSaveResultPosted(flags), 200);
       }
@@ -453,7 +457,7 @@ export class SaveEngine {
         ${t.superSaver ? '<span class="ace-qol-tag ace-qol-tag-buff"><i class="fas fa-person-running"></i> EVASION</span>' : ""}
         ${di.tag}
         <button class="ace-qol-save-pc-roll-btn" data-action="aceQolGmRollPcSave" data-token-doc-id="${t.tokenDocId}">
-          <i class="fas fa-dice-d20"></i>
+          <img src="modules/ace-qol/assets/20-20.png" class="ace-qol-save-pc-dice-img" />
         </button>
       </div>
     `}).join("");
@@ -495,7 +499,7 @@ export class SaveEngine {
       </div>
     `;
 
-    await ChatMessage.create({
+    const targetListMsg = await ChatMessage.create({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor }),
       whisper: [game.user.id],
@@ -518,10 +522,13 @@ export class SaveEngine {
       }
     });
 
+    // Use target list message ID as unique cast identifier
+    const castId = targetListMsg.id;
+
     // ── Send PC save prompts immediately (same time as target list card) ──
     for (const tgt of pcs) {
       await this._sendPcSavePrompt(item, actor, tgt, {
-        saveAbility, saveDC, halfOnSave, damageTypes, isSpell,
+        saveAbility, saveDC, halfOnSave, damageTypes, isSpell, castId,
       });
     }
   }
@@ -746,12 +753,13 @@ export class SaveEngine {
     // ── PC dice buttons (GM rolls for PC on main card) ──
     const pcRollBtns = el.querySelectorAll?.("[data-action='aceQolGmRollPcSave']");
     if (pcRollBtns?.length) {
-      // Check for existing PC results to gray out already-rolled PCs
+      // Check for existing PC results to gray out already-rolled PCs (same cast only)
+      const thisCastId = message.id;
       const recentMsgs = game.messages.contents.slice(-30);
       const rolledPcs = new Set();
       for (const m of recentMsgs) {
         const f = m.flags?.[MODULE_ID];
-        if (f?.type === "pcSaveResult" && f.tokenDocId) rolledPcs.add(f.tokenDocId);
+        if (f?.type === "pcSaveResult" && f.tokenDocId && f.castId === thisCastId) rolledPcs.add(f.tokenDocId);
       }
 
       for (const btn of pcRollBtns) {
@@ -761,7 +769,7 @@ export class SaveEngine {
         // If this PC already rolled, show result and disable
         const tokenDocId = btn.dataset.tokenDocId;
         if (rolledPcs.has(tokenDocId)) {
-          const existingResult = recentMsgs.find(m => m.flags?.[MODULE_ID]?.type === "pcSaveResult" && m.flags[MODULE_ID].tokenDocId === tokenDocId);
+          const existingResult = recentMsgs.find(m => m.flags?.[MODULE_ID]?.type === "pcSaveResult" && m.flags[MODULE_ID].tokenDocId === tokenDocId && m.flags[MODULE_ID].castId === thisCastId);
           if (existingResult) {
             const f = existingResult.flags[MODULE_ID];
             const passClass = f.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
@@ -784,7 +792,7 @@ export class SaveEngine {
           // Check if this PC already rolled (race condition guard)
           const alreadyRolled = game.messages.contents.slice(-30).some(m => {
             const f = m.flags?.[MODULE_ID];
-            return f?.type === "pcSaveResult" && f.tokenDocId === tokenDocId;
+            return f?.type === "pcSaveResult" && f.tokenDocId === tokenDocId && f.castId === message.id;
           });
           if (alreadyRolled) {
             ui.notifications.warn("This PC has already rolled their save.");
@@ -823,6 +831,7 @@ export class SaveEngine {
             damageModifiers: tgt.damageModifiers,
             currentHP: tgt.currentHP,
             maxHP: tgt.maxHP,
+            castId: message.id,
           }}};
 
           await this._rollPcSave(fakeMsg);
@@ -1158,13 +1167,13 @@ export class SaveEngine {
       npcResults.push(result);
     }
 
-    // ── Build PC results — check if they already rolled ──
-    // Search recent chat for pcSaveResult messages matching each PC
+    // ── Build PC results — check if they already rolled (same cast only) ──
+    const thisCastId = message.id; // target list message ID = cast ID
     const recentMsgs = game.messages.contents.slice(-30);
     const existingPcResults = new Map();
     for (const m of recentMsgs) {
       const f = m.flags?.[MODULE_ID];
-      if (f?.type === "pcSaveResult" && f.tokenDocId) {
+      if (f?.type === "pcSaveResult" && f.tokenDocId && f.castId === thisCastId) {
         existingPcResults.set(f.tokenDocId, f);
       }
     }
@@ -1351,7 +1360,7 @@ export class SaveEngine {
   // ═══════════════════════════════════════════════════════════════════════════
 
   async _sendPcSavePrompt(item, casterActor, tgt, opts) {
-    const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell } = opts;
+    const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell, castId } = opts;
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
 
     const cardHtml = `
@@ -1401,6 +1410,7 @@ export class SaveEngine {
           damageModifiers: tgt.damageModifiers,
           currentHP: tgt.currentHP,
           maxHP: tgt.maxHP,
+          castId,
         }
       }
     });
@@ -1416,7 +1426,7 @@ export class SaveEngine {
 
     const { saveAbility, saveDC, halfOnSave, tokenDocId, sceneId, actorId,
             autoFailSave, saveAdvantage, saveDisadvantage, superSaver,
-            saveBonuses, targetName, targetImg } = flags;
+            saveBonuses, targetName, targetImg, castId } = flags;
 
     const scene = game.scenes.get(sceneId) ?? canvas.scene;
     const tokenDoc = scene?.tokens?.get(tokenDocId);
@@ -1456,7 +1466,10 @@ export class SaveEngine {
       passed = saveTotal >= saveDC;
       rollResult = roll;
 
-      // Dice So Nice will animate from the pcSaveResult ChatMessage roll if present
+      // Trigger Dice So Nice 3D animation — public so all players see it
+      if (game.dice3d) {
+        game.dice3d.showForRoll(roll, game.user, true).catch(() => {});
+      }
     }
 
     // Determine result label
@@ -1506,6 +1519,7 @@ export class SaveEngine {
           resultLabel,
           autoFailSave,
           superSaver,
+          castId,
         }
       }
     });
@@ -1921,14 +1935,28 @@ export class SaveEngine {
           }).join("")
         : "";
 
-      // Determine which multiplier button should be highlighted
-      const dm = r.damageMultiplier;
+      // Determine EFFECTIVE multiplier (save × resist/vuln) for button highlighting
+      let effectiveMult = r.damageMultiplier;
+      const mods = r.damageModifiers ?? {};
+      for (const dtype of Object.keys(mods)) {
+        if (mods[dtype]?.modifier === "immune") { effectiveMult = 0; break; }
+        if (mods[dtype]?.modifier === "resistant") effectiveMult *= 0.5;
+        if (mods[dtype]?.modifier === "vulnerable") effectiveMult *= 2;
+      }
+      // Snap to nearest button value: 0, 0.25, 0.5, 1, 2
+      const snapValues = [0, 0.25, 0.5, 1, 2];
+      const dm = snapValues.reduce((prev, curr) => Math.abs(curr - effectiveMult) < Math.abs(prev - effectiveMult) ? curr : prev);
       const _a = (val) => dm === val ? " ace-qol-save-ovr-active" : "";
-      // Zero damage (evasion pass) — no button highlighted, just show 0
       const dmgDisplay = targetDamage === 0 ? "0" : targetDamage.toString();
 
+      // Color-code name to match target list (immune=red, resist=yellow, vuln=purple)
+      let nameClass = "";
+      if (dmgReasons.some(d => d.includes("IMMUNE"))) nameClass = "ace-qol-tgt-immune";
+      else if (dmgReasons.some(d => d.includes("VULN"))) nameClass = "ace-qol-tgt-vuln";
+      else if (dmgReasons.some(d => d.includes("RESIST"))) nameClass = "ace-qol-tgt-resist";
+
       return `
-        <div class="ace-qol-save-result-row" data-token-doc-id="${r.tokenDocId}">
+        <div class="ace-qol-save-result-row ${nameClass}" data-token-doc-id="${r.tokenDocId}">
           <div class="ace-qol-save-result-line">
             <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
             <span class="ace-qol-save-tgt-name">${r.name}</span>
@@ -2079,14 +2107,28 @@ export class SaveEngine {
 
       const verdictText = r.passed ? "PASS" : "FAIL";
 
-      // Determine which multiplier button should be highlighted
-      const dm = r.damageMultiplier;
+      // Determine EFFECTIVE multiplier (save × resist/vuln) for button highlighting
+      let effectiveMult = r.damageMultiplier;
+      const mods = r.damageModifiers ?? {};
+      for (const dtype of Object.keys(mods)) {
+        if (mods[dtype]?.modifier === "immune") { effectiveMult = 0; break; }
+        if (mods[dtype]?.modifier === "resistant") effectiveMult *= 0.5;
+        if (mods[dtype]?.modifier === "vulnerable") effectiveMult *= 2;
+      }
+      // Snap to nearest button value: 0, 0.25, 0.5, 1, 2
+      const snapValues = [0, 0.25, 0.5, 1, 2];
+      const dm = snapValues.reduce((prev, curr) => Math.abs(curr - effectiveMult) < Math.abs(prev - effectiveMult) ? curr : prev);
       const _a = (val) => dm === val ? " ace-qol-save-ovr-active" : "";
-      // Zero damage (evasion pass) — no button highlighted, just show 0
       const dmgDisplay = targetDamage === 0 ? "0" : targetDamage.toString();
 
+      // Color-code name to match target list (immune=red, resist=yellow, vuln=purple)
+      let nameClass = "";
+      if (dmgReasons.some(d => d.includes("IMMUNE"))) nameClass = "ace-qol-tgt-immune";
+      else if (dmgReasons.some(d => d.includes("VULN"))) nameClass = "ace-qol-tgt-vuln";
+      else if (dmgReasons.some(d => d.includes("RESIST"))) nameClass = "ace-qol-tgt-resist";
+
       return `
-        <div class="ace-qol-save-result-row" data-token-doc-id="${r.tokenDocId}">
+        <div class="ace-qol-save-result-row ${nameClass}" data-token-doc-id="${r.tokenDocId}">
           <div class="ace-qol-save-result-line">
             <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
             <span class="ace-qol-save-tgt-name">${r.name}</span>

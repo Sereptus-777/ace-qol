@@ -539,8 +539,10 @@
 }
 .ace-qol-save-tgt-remove:hover { color: #ff1744; background: rgba(255,23,68,0.15); border-color: #ff1744; }
 
-/* PC target rows */
-.ace-qol-save-tgt-pc { opacity: 0.7; border-left: 2px solid #448aff; }
+/* PC target rows — red until rolled */
+.ace-qol-save-tgt-pc { border-left: 2px solid #ff5252; }
+.ace-qol-save-tgt-pc .ace-qol-save-tgt-name { color: #ff5252; }
+.ace-qol-save-tgt-pc .ace-qol-save-tgt-mod { color: #ff5252; }
 
 /* ─── Damage Type Indicators (immune/resist/vuln on target list) ── */
 .ace-qol-tgt-immune .ace-qol-save-tgt-name,
@@ -565,15 +567,13 @@
   font-size: 0.65rem; color: #448aff; font-style: italic; flex-shrink: 0;
 }
 .ace-qol-save-pc-roll-btn {
-  background: rgba(68,138,255,0.15); border: 1px solid rgba(68,138,255,0.4);
-  border-radius: 3px; padding: 3px 8px; cursor: pointer;
-  color: #448aff; font-size: 1rem; transition: all 0.15s; flex-shrink: 0;
+  background: none; border: none; cursor: pointer;
+  padding: 0; flex-shrink: 0; transition: transform 0.15s;
 }
-.ace-qol-save-pc-roll-btn:hover {
-  background: rgba(68,138,255,0.3); border-color: #448aff; color: #fff;
-}
-.ace-qol-save-pc-roll-btn:disabled {
-  opacity: 0.4; cursor: default;
+.ace-qol-save-pc-roll-btn:hover { transform: scale(1.15); }
+.ace-qol-save-pc-roll-btn:disabled { opacity: 0.4; cursor: default; transform: none; }
+.ace-qol-save-pc-dice-img {
+  width: 28px; height: 28px; object-fit: contain;
 }
 
 /* ─── Mode Toggle (TARGETED / SELECTED) ────────────────────── */
