@@ -179,7 +179,9 @@ export class DamageEngine {
   async _rollDamageComponents(item, actor, targetState, isCrit, critRule) {
     const components = [];
     const sys = item.system ?? {};
-    const rollData = actor.getRollData?.() ?? {};
+    // Use ITEM roll data (not just actor) — the item knows its ability modifier
+    // e.g., a longsword sets @mod to STR, a finesse weapon might use DEX
+    const rollData = item.getRollData?.() ?? actor.getRollData?.() ?? {};
 
     // ── Parse item description for conditional damage (save-gated) ──
     // Damage from effects like Spiked Chain's 4d10 necrotic (only on failed save)
@@ -224,15 +226,18 @@ export class DamageEngine {
           // For the FIRST damage part, add ability modifier + magic bonus
           // (subsequent parts are extra damage dice like bonus elemental)
           if (i === 0) {
-            // Ability modifier — @mod in rollData
+            // Ability modifier — @mod in rollData (STR for longsword, DEX for finesse, etc.)
             const abilityMod = rollData.mod ?? 0;
             if (abilityMod !== 0) {
               formula += abilityMod >= 0 ? `+${abilityMod}` : `${abilityMod}`;
             }
 
             // Magical bonus on the item (e.g., +2 weapon)
+            // Guard against double-stacking: if the damage part's own bonus already
+            // equals the magical bonus, DDB Importer likely put it in both places.
             const magicBonus = sys.magicalBonus ?? 0;
-            if (magicBonus > 0) {
+            const partBonusNum = parseInt(part.bonus) || 0;
+            if (magicBonus > 0 && partBonusNum !== magicBonus) {
               formula += `+${magicBonus}`;
             }
           }
@@ -504,7 +509,8 @@ export class DamageEngine {
     if (!item || !actor) return;
 
     const critRule = QolSettings.get("critRule") ?? "maxPlusRoll";
-    const rollData = actor.getRollData?.() ?? {};
+    // Use item roll data for correct @mod resolution (STR for longsword, DEX for finesse, etc.)
+    const rollData = item.getRollData?.() ?? actor.getRollData?.() ?? {};
 
     const damageResults = [];
     for (const hit of flags.hits) {
