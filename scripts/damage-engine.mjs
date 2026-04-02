@@ -181,7 +181,13 @@ export class DamageEngine {
     const sys = item.system ?? {};
     // Use ITEM roll data (not just actor) — the item knows its ability modifier
     // e.g., a longsword sets @mod to STR, a finesse weapon might use DEX
-    const rollData = item.getRollData?.() ?? actor.getRollData?.() ?? {};
+    let rollData;
+    try {
+      rollData = item.getRollData?.() ?? actor.getRollData?.() ?? {};
+    } catch (e) {
+      console.warn(`${MODULE_ID} | item.getRollData() failed, falling back to actor:`, e.message);
+      rollData = actor.getRollData?.() ?? {};
+    }
 
     // ── Parse item description for conditional damage (save-gated) ──
     // Damage from effects like Spiked Chain's 4d10 necrotic (only on failed save)
@@ -510,7 +516,13 @@ export class DamageEngine {
 
     const critRule = QolSettings.get("critRule") ?? "maxPlusRoll";
     // Use item roll data for correct @mod resolution (STR for longsword, DEX for finesse, etc.)
-    const rollData = item.getRollData?.() ?? actor.getRollData?.() ?? {};
+    let rollData;
+    try {
+      rollData = item.getRollData?.() ?? actor.getRollData?.() ?? {};
+    } catch (e) {
+      console.warn(`${MODULE_ID} | item.getRollData() failed in button handler, falling back to actor:`, e.message);
+      rollData = actor.getRollData?.() ?? {};
+    }
 
     const damageResults = [];
     for (const hit of flags.hits) {
