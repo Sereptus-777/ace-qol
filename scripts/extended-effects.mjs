@@ -42,11 +42,16 @@ const EXTENDED_KEYS = new Set([
   "system.attributes.movement.climb",
   "system.attributes.movement.burrow",
 
-  // ── Senses ──
+  // ── Senses (D&D 5e 5.2.x paths) ──
   "system.attributes.senses.darkvision",
   "system.attributes.senses.blindsight",
   "system.attributes.senses.tremorsense",
   "system.attributes.senses.truesight",
+  // ── Senses (D&D 5e 5.3.0+ paths — moved under .ranges) ──
+  "system.attributes.senses.ranges.darkvision",
+  "system.attributes.senses.ranges.blindsight",
+  "system.attributes.senses.ranges.tremorsense",
+  "system.attributes.senses.ranges.truesight",
 
   // ── Damage traits ──
   "system.traits.dr.value",    // resistance
