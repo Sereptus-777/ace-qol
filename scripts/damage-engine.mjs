@@ -232,8 +232,31 @@ export class DamageEngine {
           // For the FIRST damage part, add ability modifier + magic bonus
           // (subsequent parts are extra damage dice like bonus elemental)
           if (i === 0) {
-            // Ability modifier — @mod in rollData (STR for longsword, DEX for finesse, etc.)
-            const abilityMod = rollData.mod ?? 0;
+            // Resolve the weapon's ability modifier
+            // Priority: activity.attack.ability → item.system.ability → item rollData @mod → fallback to STR/DEX
+            let abilityMod = 0;
+            const actAbility = activity.attack?.ability ?? sys.ability ?? "";
+            if (actAbility && rollData.abilities?.[actAbility]) {
+              abilityMod = rollData.abilities[actAbility].mod ?? 0;
+            } else if (rollData.mod !== undefined && rollData.mod !== null) {
+              abilityMod = rollData.mod;
+            } else {
+              // Fallback: melee weapons use STR, ranged use DEX
+              // Finesse weapons use whichever is higher
+              const str = rollData.abilities?.str?.mod ?? 0;
+              const dex = rollData.abilities?.dex?.mod ?? 0;
+              const isFinesse = sys.properties?.has?.("fin") || sys.properties?.fin;
+              const isRanged = sys.type?.value === "rangedWeapon" || sys.type?.value === "simpleR" || sys.type?.value === "martialR"
+                || sys.actionType === "rwak";
+              if (isFinesse) {
+                abilityMod = Math.max(str, dex);
+              } else if (isRanged) {
+                abilityMod = dex;
+              } else {
+                abilityMod = str;
+              }
+            }
+
             if (abilityMod !== 0) {
               formula += abilityMod >= 0 ? `+${abilityMod}` : `${abilityMod}`;
             }
