@@ -179,8 +179,8 @@ export class DamageEngine {
   async _rollDamageComponents(item, actor, targetState, isCrit, critRule) {
     const components = [];
     const sys = item.system ?? {};
-    // Use ITEM roll data (not just actor) — the item knows its ability modifier
-    // e.g., a longsword sets @mod to STR, a finesse weapon might use DEX
+
+    // Get roll data — prefer item (includes @mod) with actor fallback
     let rollData;
     try {
       rollData = item.getRollData?.() ?? actor.getRollData?.() ?? {};
@@ -190,8 +190,6 @@ export class DamageEngine {
     }
 
     // ── Parse item description for conditional damage (save-gated) ──
-    // Damage from effects like Spiked Chain's 4d10 necrotic (only on failed save)
-    // should NOT be included in the initial hit damage.
     const parsed = DescriptionParser.parse(item);
     const conditionalDamageTypes = new Set();
     if (parsed.saves.length > 0) {
@@ -200,7 +198,11 @@ export class DamageEngine {
       }
     }
 
-    // ── Base weapon/spell damage from activities ──
+    // ── Use the D&D 5e system's own damage formula builder ──────────
+    // The system knows EVERYTHING: ability mod, magic bonus, ammo bonus,
+    // scaling, proficiency — all of it. We call getDamageConfig() to get
+    // the complete formula, then roll it ourselves with our crit rules.
+    let usedNativeConfig = false;
     const activities = sys.activities;
     if (activities) {
       const actList = (typeof activities.forEach === "function")
@@ -209,83 +211,92 @@ export class DamageEngine {
 
       for (const activity of actList) {
         if (!activity?.damage?.parts?.length) continue;
+        if (typeof activity.getDamageConfig !== "function") continue;
 
-        // Build the full damage formula including ability modifier and magic bonus
-        for (let i = 0; i < activity.damage.parts.length; i++) {
-          const part = activity.damage.parts[i];
+        try {
+          const dmgConfig = activity.getDamageConfig({}, { rollData });
+          const rolls = dmgConfig?.rolls ?? [];
 
-          // Skip conditional damage parts (gated behind a save from the description)
-          const partTypes = part.types ? [...part.types] : [];
-          if (partTypes.some(t => conditionalDamageTypes.has(t)) && i > 0) {
-            continue; // Skip this part — it'll be rolled after the save
-          }
-          let formula = part.custom?.enabled
-            ? part.custom.formula
-            : `${part.number ?? 1}d${part.denomination ?? 8}`;
+          for (let i = 0; i < rolls.length; i++) {
+            const rollCfg = rolls[i];
+            const parts = rollCfg.parts ?? [];
+            if (!parts.length) continue;
 
-          // Add the part's own bonus if it has one
-          if (part.bonus && String(part.bonus) !== "0") {
-            const bonusStr = String(part.bonus);
-            formula += (bonusStr.startsWith("+") || bonusStr.startsWith("-")) ? bonusStr : `+${bonusStr}`;
-          }
+            // Join the system's formula parts (it already includes @mod, @magicalBonus, etc.)
+            const formula = parts.join(" + ");
+            const type = rollCfg.options?.type ?? rollCfg.options?.types?.[0] ?? "untyped";
 
-          // For the FIRST damage part, add ability modifier + magic bonus
-          // (subsequent parts are extra damage dice like bonus elemental)
-          if (i === 0) {
-            // Resolve the weapon's ability modifier
-            // Priority: activity.attack.ability → item.system.ability → item rollData @mod → fallback to STR/DEX
-            let abilityMod = 0;
-            const actAbility = activity.attack?.ability ?? sys.ability ?? "";
-            if (actAbility && rollData.abilities?.[actAbility]) {
-              abilityMod = rollData.abilities[actAbility].mod ?? 0;
-            } else if (rollData.mod !== undefined && rollData.mod !== null) {
-              abilityMod = rollData.mod;
-            } else {
-              // Fallback: melee weapons use STR, ranged use DEX
-              // Finesse weapons use whichever is higher
-              const str = rollData.abilities?.str?.mod ?? 0;
-              const dex = rollData.abilities?.dex?.mod ?? 0;
-              const isFinesse = sys.properties?.has?.("fin") || sys.properties?.fin;
-              const isRanged = sys.type?.value === "rangedWeapon" || sys.type?.value === "simpleR" || sys.type?.value === "martialR"
-                || sys.actionType === "rwak";
-              if (isFinesse) {
-                abilityMod = Math.max(str, dex);
-              } else if (isRanged) {
-                abilityMod = dex;
-              } else {
-                abilityMod = str;
-              }
-            }
+            // Skip conditional damage parts (gated behind a save from description)
+            if (conditionalDamageTypes.has(type) && i > 0) continue;
 
-            if (abilityMod !== 0) {
-              formula += abilityMod >= 0 ? `+${abilityMod}` : `${abilityMod}`;
-            }
-
-            // Magical bonus on the item (e.g., +2 weapon)
-            // Guard against double-stacking: if the damage part's own bonus already
-            // equals the magical bonus, DDB Importer likely put it in both places.
-            const magicBonus = sys.magicalBonus ?? 0;
-            const partBonusNum = parseInt(part.bonus) || 0;
-            if (magicBonus > 0 && partBonusNum !== magicBonus) {
-              formula += `+${magicBonus}`;
-            }
+            // Resolve @references and roll with our crit rules
+            const data = rollCfg.data ?? rollData;
+            const result = await this._rollWithCrit(formula, data, isCrit, critRule, `Base ${type}`);
+            components.push({ name: item.name, ...result, type });
           }
 
-          const types = part.types ? [...part.types] : ["untyped"];
-          const type = types[0] ?? "untyped";
-
-          const result = await this._rollWithCrit(formula, rollData, isCrit, critRule, `Base ${type}`);
-          components.push({ name: item.name, ...result, type });
+          usedNativeConfig = true;
+        } catch (e) {
+          console.warn(`${MODULE_ID} | getDamageConfig() failed for ${item.name}, falling back to manual:`, e.message);
         }
+
         break; // Only use first attack activity
       }
     }
 
-    // ── Legacy damage.parts fallback ──
-    if (!components.length && sys.damage?.parts?.length) {
-      for (const [formula, type] of sys.damage.parts) {
-        const result = await this._rollWithCrit(formula, rollData, isCrit, critRule, `Base ${type}`);
-        components.push({ name: item.name, ...result, type: type || "untyped" });
+    // ── Fallback: manual formula construction (legacy or getDamageConfig unavailable) ──
+    if (!usedNativeConfig) {
+      if (activities) {
+        const actList = (typeof activities.forEach === "function")
+          ? [...(activities.values?.() ?? activities)]
+          : (typeof activities === "object" ? Object.values(activities) : []);
+
+        for (const activity of actList) {
+          if (!activity?.damage?.parts?.length) continue;
+
+          for (let i = 0; i < activity.damage.parts.length; i++) {
+            const part = activity.damage.parts[i];
+            const partTypes = part.types ? [...part.types] : [];
+            if (partTypes.some(t => conditionalDamageTypes.has(t)) && i > 0) continue;
+
+            let formula = part.custom?.enabled
+              ? part.custom.formula
+              : `${part.number ?? 1}d${part.denomination ?? 8}`;
+
+            if (part.bonus && String(part.bonus) !== "0") {
+              const bonusStr = String(part.bonus);
+              formula += (bonusStr.startsWith("+") || bonusStr.startsWith("-")) ? bonusStr : `+${bonusStr}`;
+            }
+
+            // First part gets ability mod + magic bonus
+            if (i === 0) {
+              const str = rollData.abilities?.str?.mod ?? 0;
+              const dex = rollData.abilities?.dex?.mod ?? 0;
+              const isFinesse = sys.properties?.has?.("fin") || sys.properties?.fin;
+              const isRanged = sys.actionType === "rwak";
+              const abilityMod = rollData.mod ?? (isFinesse ? Math.max(str, dex) : isRanged ? dex : str);
+              if (abilityMod !== 0) formula += abilityMod >= 0 ? `+${abilityMod}` : `${abilityMod}`;
+
+              const magicBonus = sys.magicalBonus ?? 0;
+              const partBonusNum = parseInt(part.bonus) || 0;
+              if (magicBonus > 0 && partBonusNum !== magicBonus) formula += `+${magicBonus}`;
+            }
+
+            const types = part.types ? [...part.types] : ["untyped"];
+            const type = types[0] ?? "untyped";
+            const result = await this._rollWithCrit(formula, rollData, isCrit, critRule, `Base ${type}`);
+            components.push({ name: item.name, ...result, type });
+          }
+          break;
+        }
+      }
+
+      // Legacy damage.parts array (pre-activities dnd5e)
+      if (!components.length && sys.damage?.parts?.length) {
+        for (const [formula, type] of sys.damage.parts) {
+          const result = await this._rollWithCrit(formula, rollData, isCrit, critRule, `Base ${type}`);
+          components.push({ name: item.name, ...result, type: type || "untyped" });
+        }
       }
     }
 
