@@ -276,6 +276,56 @@ export class DamageEngine {
       });
     }
 
+    // ── Creature-type conditional bonus damage ──
+    // Parsed from item description: "extra 1d8 radiant damage to undead", etc.
+    // If the description mentions a creature type trigger and the target matches,
+    // auto-roll the bonus damage. Sources (in priority order):
+    //   1. bonusDamage array (separate [[/damage]] tags in description)
+    //   2. Creature trigger's embedded formula (parsed from the trigger sentence itself)
+    if (parsed.creatureTrigger) {
+      const triggerType = parsed.creatureTrigger.creatureType?.toLowerCase();
+      const targetType = targetState.creatureType?.toLowerCase() ?? "";
+      const targetSubtype = targetState.creatureSubtype?.toLowerCase() ?? "";
+
+      if (triggerType && (targetType === triggerType
+          || targetType.includes(triggerType)
+          || targetSubtype.includes(triggerType))) {
+
+        let rolled = false;
+
+        // Source 1: bonusDamage array from separate damage tags
+        if (parsed.bonusDamage.length > 0) {
+          for (const bd of parsed.bonusDamage) {
+            if (!bd.formula) continue;
+            const dmgType = bd.damageType ?? components[0]?.type ?? "untyped";
+            const result = await this._rollWithCrit(bd.formula, rollData, isCrit, critRule, `vs ${triggerType}`);
+            components.push({
+              name: `${item.name} (vs ${triggerType})`,
+              ...result,
+              type: dmgType,
+            });
+            rolled = true;
+          }
+        }
+
+        // Source 2: formula embedded in the creature trigger sentence itself
+        if (!rolled && parsed.creatureTrigger.bonusFormula) {
+          const dmgType = parsed.creatureTrigger.bonusType ?? components[0]?.type ?? "untyped";
+          const result = await this._rollWithCrit(parsed.creatureTrigger.bonusFormula, rollData, isCrit, critRule, `vs ${triggerType}`);
+          components.push({
+            name: `${item.name} (vs ${triggerType})`,
+            ...result,
+            type: dmgType,
+          });
+          rolled = true;
+        }
+
+        if (rolled) {
+          console.log(`${MODULE_ID} | Creature bonus: ${item.name} deals extra damage to ${triggerType} (target: ${targetType})`);
+        }
+      }
+    }
+
     return components;
   }
 

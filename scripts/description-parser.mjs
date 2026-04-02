@@ -324,7 +324,29 @@ export class DescriptionParser {
 
       for (const pattern of patterns) {
         if (pattern.test(text)) {
-          return { creatureType: type, rawMatch: text.match(pattern)?.[0] ?? "" };
+          const rawMatch = text.match(pattern)?.[0] ?? "";
+
+          // Extract bonus damage formula from the same sentence context
+          // e.g., "extra 1d8 radiant damage to undead", "deals an additional 2d6 fire damage against fiends"
+          let bonusFormula = null;
+          let bonusType = null;
+          const formulaPatterns = [
+            new RegExp(`(\\d+d\\d+(?:\\s*[+\\-]\\s*\\d+)?)\\s+(\\w+)\\s+damage\\s+(?:to|against)\\s+(?:a\\s+)?${type}`, "i"),
+            new RegExp(`(?:hit|strike|attack)\\s+(?:a|an)\\s+${type}[^.]*?(\\d+d\\d+(?:\\s*[+\\-]\\s*\\d+)?)\\s+(\\w+)\\s+damage`, "i"),
+            new RegExp(`(?:extra|additional)\\s+(\\d+d\\d+(?:\\s*[+\\-]\\s*\\d+)?)\\s+(\\w+)\\s+damage`, "i"),
+          ];
+
+          for (const fp of formulaPatterns) {
+            const fm = text.match(fp);
+            if (fm) {
+              bonusFormula = fm[1];
+              const candidateType = fm[2]?.toLowerCase();
+              if (DAMAGE_TYPES.includes(candidateType)) bonusType = candidateType;
+              break;
+            }
+          }
+
+          return { creatureType: type, rawMatch, bonusFormula, bonusType };
         }
       }
     }
