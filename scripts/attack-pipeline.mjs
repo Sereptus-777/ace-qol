@@ -40,7 +40,38 @@ export class AttackPipeline {
       }
     });
 
-    console.log(`${MODULE_ID} | Attack pipeline hooks registered (pre-roll + post-roll)`);
+    // ── DIALOG RENDER: Swap the d20 icon with our BD20 dice image ──
+    Hooks.on("renderApplication", (app, html) => this._onRenderRollDialog(app, html));
+    Hooks.on("renderApplicationV2", (app, html) => this._onRenderRollDialog(app, html));
+
+    console.log(`${MODULE_ID} | Attack pipeline hooks registered (pre-roll + post-roll + dialog render)`);
+  }
+
+  /**
+   * When the D&D 5e attack roll dialog renders, swap the d20 icon
+   * with our BD20 dice PNG.
+   */
+  _onRenderRollDialog(app, html) {
+    // Only target D&D 5e roll configuration dialogs
+    const isRollDialog = app?.constructor?.name?.includes("RollConfigurationDialog")
+      || app?.options?.classes?.includes?.("roll-configuration");
+    if (!isRollDialog) return;
+
+    const el = html instanceof HTMLElement ? html : html?.[0] ?? html;
+    if (!el?.querySelectorAll) return;
+
+    // Find the dice display images inside ul.dice
+    const diceImgs = el.querySelectorAll("ul.dice img, .dice img");
+    for (const img of diceImgs) {
+      // Only replace d20 icons (alt text or src containing "d20")
+      const isD20 = img.alt?.toLowerCase()?.includes("d20")
+        || img.src?.toLowerCase()?.includes("d20");
+      if (!isD20) continue;
+
+      // Use a generic BD20 image (the "neutral" face, BD20-20 is the iconic one)
+      img.src = `modules/ace-qol/Assets/Dice%20Dice/BD20/BD20-20_nobg.png`;
+      img.style.filter = "drop-shadow(0 2px 4px rgba(0,0,0,0.5))";
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -56,7 +87,8 @@ export class AttackPipeline {
    * config.rolls[0] contains the roll config we can modify.
    */
   _onPreAttackRoll(config, dialog, message) {
-    if (!game.user.isGM) return;
+    // Runs on ALL clients (GM + players) — handles advantage/disadvantage detection,
+    // range checks, and incapacitation blocks. The pre-roll dialog is client-local.
     if (!QolSettings.get("autoCheckHit")) return;
 
     const subject = config?.subject;
@@ -78,7 +110,11 @@ export class AttackPipeline {
     }
 
     const targets = game.user.targets;
-    if (!targets.size) return;
+    if (!targets.size) {
+      // ── Friendly "no target" reminder — don't block, just nudge ──
+      this._showNoTargetReminder(actor, item);
+      return;
+    }
 
     // ── Range check: block attacks on out-of-range targets ──
     const firstTarget = targets.first();
@@ -288,7 +324,14 @@ export class AttackPipeline {
     }
 
     // Build the display formula
-    formulaParts.push(`<span class="ace-qol-mod-die"><i class="fas fa-dice-d20"></i> ${d20}</span>`);
+    const bd20Path = `modules/ace-qol/Assets/Dice%20Dice/BD20/BD20-${d20}_nobg.png`;
+    formulaParts.push(
+      `<span class="ace-qol-mod-die">`
+      + `<img class="ace-qol-atk-d20-img" src="${bd20Path}" alt="d20" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'">`
+      + `<i class="fas fa-dice-d20 ace-qol-atk-d20-fallback" style="display:none"></i>`
+      + `<span class="ace-qol-atk-d20-result">${d20}</span>`
+      + `</span>`
+    );
     if (abilityMod !== 0) {
       formulaParts.push(`<span class="ace-qol-mod-num">${abilityMod >= 0 ? "+" : ""}${abilityMod}</span><span class="ace-qol-mod-label">${abilityLabel}</span>`);
     }
@@ -299,7 +342,7 @@ export class AttackPipeline {
     // Check for magic bonus on the item
     const magicBonus = item.system?.magicalBonus ?? 0;
     if (magicBonus) {
-      formulaParts.push(`<span class="ace-qol-mod-num">+${magicBonus}</span><span class="ace-qol-mod-label">MAGIC</span>`);
+      formulaParts.push(`<span class="ace-qol-mod-num">+${magicBonus}</span><span class="ace-qol-mod-label ace-qol-mod-magic">MAGIC</span>`);
     }
 
     // Check for attack bonus from item
@@ -372,7 +415,6 @@ export class AttackPipeline {
     await ChatMessage.create({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor }),
-      whisper: [game.user.id],
       flags: {
         [MODULE_ID]: {
           type: "attackResult",
@@ -526,6 +568,59 @@ export class AttackPipeline {
 
     // Unknown weapon type — don't block
     return { blocked: false, distanceFt, rangeDesc: "", isRanged: false };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  No-Target Reminder — friendly nudge with humor
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  _showNoTargetReminder(actor, item) {
+    const name = actor.token?.name ?? actor.name ?? "Adventurer";
+    const weapon = item?.name ?? "weapon";
+
+    // Grab a random PLAYER CHARACTER name (not the attacker) for jokes
+    // Must be player-owned characters only — no NPCs
+    const partyNames = (game.actors ?? [])
+      .filter(a => a.type === "character" && a.hasPlayerOwner
+        && a.name !== name
+        && game.users.some(u => !u.isGM && a.testUserPermission(u, "OWNER")))
+      .map(a => a.name);
+    const randomAlly = partyNames.length
+      ? partyNames[Math.floor(Math.random() * partyNames.length)]
+      : "a nearby bookshelf";
+
+    // Build quip pool — ally quips only included when we have a real PC name
+    const quips = [
+      `No target! <em>The air molecules shriek in terror as ${name}'s ${weapon} cleaves through nothing but atmosphere.</em>`,
+      `No target! <em>${name} swings ${weapon} at the ghosts of their imagination. The ghosts are unimpressed.</em>`,
+      `No target! <em>${name} whips ${weapon} through the air with devastating precision. The oxygen never stood a chance.</em>`,
+      `No target! <em>A faint whistle echoes as ${name}'s ${weapon} carves a beautiful arc through absolutely nothing.</em>`,
+      `No target! <em>${name} heroically attacks the empty void. Somewhere, a dust particle writes its last will.</em>`,
+      `No target! <em>The wind cries out as ${name} hammers ${weapon} into the space where an enemy should be standing.</em>`,
+      `No target! <em>${name} takes a mighty swing. The air parts obediently. Nearby insects scatter in panic.</em>`,
+      `No target! <em>${name}'s ${weapon} slices through nothing with such conviction that even the shadows flinch.</em>`,
+      `No target! <em>The invisible man would be dead right now, if he existed. Nice swing, ${name}.</em>`,
+      `No target! <em>${name} lunges forward with ${weapon} drawn. The cobblestones remain stubbornly uninjured.</em>`,
+      `No target! <em>Somewhere in the multiverse, a version of ${name} actually targeted something. Not this one.</em>`,
+    ];
+
+    // Party member reactions — only when we have actual PCs to reference
+    if (partyNames.length) {
+      quips.push(
+        `No target! <em>${name} swings ${weapon} at thin air. ${randomAlly} takes a cautious step back.</em>`,
+        `No target! <em>${name} attacks nothing. ${randomAlly} and the others exchange worried glances.</em>`,
+        `No target! <em>${name} flails ${weapon} wildly. ${randomAlly} quietly questions their choice of adventuring companion.</em>`,
+        `No target! <em>"You, uh... you alright there?" mumbles ${randomAlly}, watching ${name} attack the void.</em>`,
+        `No target! <em>${name} cleaves the air. ${randomAlly} makes a mental note to sleep further from them tonight.</em>`,
+        `No target! <em>${randomAlly} whispers to the group: "Should... should we be concerned about ${name}?"</em>`,
+        `No target! <em>${randomAlly} clears their throat. "So... are we just not going to talk about what ${name} just did?"</em>`,
+      );
+    }
+
+    const quip = quips[Math.floor(Math.random() * quips.length)];
+
+    // Non-blocking notification — attack still goes through normally
+    ui.notifications.warn(quip, { permanent: false, localize: false });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

@@ -516,6 +516,81 @@ export class CombatState {
       }
     }
 
+    // Improved Divine Smite / Radiant Strikes (Paladin 11+)
+    if (isMelee && (CombatState._hasFeature(attackerActor, "Improved Divine Smite") || CombatState._hasFeature(attackerActor, "Radiant Strikes") || CombatState._getClassLevel(attackerActor, "paladin") >= 11)) {
+      attackerBonuses.push({ name: "Improved Divine Smite", formula: "1d8", type: "radiant", reason: "Improved Divine Smite → +1d8 radiant on melee hits" });
+    }
+
+    // Divine Strike / Blessed Strikes (Cleric 8+)
+    if (CombatState._hasFeature(attackerActor, "Divine Strike") || CombatState._hasFeature(attackerActor, "Blessed Strikes")) {
+      const blessedStrikes = CombatState._hasFeature(attackerActor, "Blessed Strikes");
+      attackerBonuses.push({ name: blessedStrikes ? "Blessed Strikes" : "Divine Strike", formula: "1d8", type: "radiant", reason: `${blessedStrikes ? "Blessed Strikes" : "Divine Strike"} → +1d8 radiant (once per turn)` });
+    }
+
+    // Colossus Slayer (Hunter Ranger)
+    if (CombatState._hasFeature(attackerActor, "Colossus Slayer")) {
+      const tgtCurrentHP = tgtSys.attributes?.hp?.value ?? 0;
+      const tgtMaxHP = tgtSys.attributes?.hp?.max ?? 0;
+      if (tgtCurrentHP < tgtMaxHP) {
+        attackerBonuses.push({ name: "Colossus Slayer", formula: "1d8", type: damageTypes[0] ?? "untyped", reason: "Colossus Slayer → +1d8 (target below max HP)" });
+      }
+    }
+
+    // Dread Ambusher (Gloom Stalker)
+    if (CombatState._hasFeature(attackerActor, "Dread Ambusher") && game.combat?.round === 1) {
+      const rangerLevel = CombatState._getClassLevel(attackerActor, "ranger");
+      const hasStalkerFlurry = CombatState._hasFeature(attackerActor, "Stalker's Flurry") || rangerLevel >= 11;
+      const dreadFormula = hasStalkerFlurry ? "2d8" : "1d8";
+      attackerBonuses.push({ name: "Dread Ambusher", formula: dreadFormula, type: damageTypes[0] ?? "untyped", reason: `Dread Ambusher → +${dreadFormula} damage (first round of combat)` });
+    }
+
+    // Divine Fury (Zealot Barbarian)
+    if (CombatState._hasFeature(attackerActor, "Divine Fury") && CombatState._hasEffect(attackerActor, "Rage")) {
+      const barbarianLevel = CombatState._getClassLevel(attackerActor, "barbarian");
+      const furyBonus = Math.floor(barbarianLevel / 2);
+      attackerBonuses.push({ name: "Divine Fury", formula: `1d6 + ${furyBonus}`, type: "radiant", reason: `Divine Fury → +1d6+${furyBonus} radiant (first hit while raging)` });
+    }
+
+    // Lifedrinker (Warlock invocation)
+    if (CombatState._hasFeature(attackerActor, "Lifedrinker")) {
+      attackerBonuses.push({ name: "Lifedrinker", formula: "1d6", type: "necrotic", reason: "Lifedrinker → +1d6 necrotic per hit" });
+    }
+
+    // Spirit Shroud (active spell)
+    // TODO: Should also check distance to target <= 10ft
+    if (CombatState._hasEffect(attackerActor, "Spirit Shroud")) {
+      attackerBonuses.push({ name: "Spirit Shroud", formula: "1d8", type: "radiant", reason: "Spirit Shroud → +1d8 radiant per hit (within 10ft)" });
+    }
+
+    // Holy Weapon (active spell)
+    if (CombatState._hasEffect(attackerActor, "Holy Weapon")) {
+      attackerBonuses.push({ name: "Holy Weapon", formula: "2d8", type: "radiant", reason: "Holy Weapon → +2d8 radiant per hit" });
+    }
+
+    // Elemental Weapon (active spell)
+    if (CombatState._hasEffect(attackerActor, "Elemental Weapon")) {
+      attackerBonuses.push({ name: "Elemental Weapon", formula: "1d4", type: "fire", reason: "Elemental Weapon → +1d4 elemental damage per hit" });
+    }
+
+    // Crusader's Mantle (active spell aura)
+    if (CombatState._hasEffect(attackerActor, "Crusader's Mantle") || CombatState._hasEffect(attackerActor, "Crusader")) {
+      attackerBonuses.push({ name: "Crusader's Mantle", formula: "1d4", type: "radiant", reason: "Crusader's Mantle → +1d4 radiant per hit" });
+    }
+
+    // Absorb Elements (active spell buff, melee only)
+    if (CombatState._hasEffect(attackerActor, "Absorb Elements") && isMelee) {
+      attackerBonuses.push({ name: "Absorb Elements", formula: "1d6", type: "fire", reason: "Absorb Elements → +1d6 elemental damage (next melee hit)" });
+    }
+
+    // Great Weapon Master +PB (2024 feat, heavy weapons only)
+    if (CombatState._hasFeature(attackerActor, "Great Weapon Master")) {
+      const hasHeavy = item?.system?.properties?.has?.("hvy") || item?.system?.properties?.hvy;
+      if (hasHeavy) {
+        const prof = attackerActor.system?.attributes?.prof ?? 2;
+        attackerBonuses.push({ name: "Great Weapon Master", formula: `${prof}`, type: damageTypes[0] ?? "untyped", reason: `Great Weapon Master → +${prof} damage (proficiency bonus)` });
+      }
+    }
+
     // ═════════════════════════════════════════════════════════════════════════
     //  CONCENTRATION STATE
     // ═════════════════════════════════════════════════════════════════════════
@@ -716,6 +791,12 @@ export class CombatState {
 
     // Check for ammunition property (bows, crossbows)
     if (props.has("amm")) return true;
+
+    // Thrown weapons (spear, javelin, handaxe, dagger) are fundamentally MELEE
+    // weapons that can optionally be thrown. Their range values (20/60, 30/120)
+    // must NOT override the melee classification. When actually thrown, the
+    // system sets actionType to "rwak" — caught by the check above.
+    if (props.has("thr")) return false;
 
     // Check range — if normal range is significantly more than melee range, it's ranged
     const normalRange = sys.range?.value ?? 0;
@@ -946,6 +1027,16 @@ export class CombatState {
       };
     }
     return { eligible: false, reason: "No advantage and no ally near target" };
+  }
+
+  /** Get class level by name (e.g., "paladin", "barbarian") */
+  static _getClassLevel(actor, className) {
+    for (const item of actor.items ?? []) {
+      if (item.type === "class" && item.name?.toLowerCase().includes(className.toLowerCase())) {
+        return item.system?.levels ?? 0;
+      }
+    }
+    return 0;
   }
 
   /** Get Rage damage bonus by barbarian level */
