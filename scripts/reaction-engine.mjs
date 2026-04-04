@@ -18,7 +18,8 @@
 //   AttackPipeline → checkPreFinalizeReactions() — Cutting Words (on attack roll)
 // ──────────────────────────────────────────────────────────────────────────────
 
-import { MODULE_ID } from "./ace-qol.mjs";
+// NOTE: MODULE_ID hardcoded to avoid circular import (ace-qol.mjs imports us)
+const MODULE_ID = "ace-qol";
 import { QolSettings } from "./settings.mjs";
 import { CombatState } from "./combat-state.mjs";
 

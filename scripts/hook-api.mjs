@@ -125,14 +125,7 @@ export class HookAPI {
     const hookResult = this.fireHook(hookName, item, ...args);
     if (hookResult === false) return false;
 
-    // 2. Fire Hooks.callAll for listeners that don't need abort capability
-    try {
-      Hooks.callAll(`${MODULE_ID}.${hookName}`, item, ...args);
-    } catch (err) {
-      console.error(`${MODULE_ID} | Hook callAll error in ${hookName}:`, err);
-    }
-
-    // 3. Execute onUseMacro from item flags (ace-qol format)
+    // 2. Execute onUseMacro from item flags (ace-qol format)
     const macroResult = await this._executeOnUseMacro(hookName, item, args);
     if (macroResult === false) return false;
 

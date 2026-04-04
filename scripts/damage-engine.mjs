@@ -100,6 +100,9 @@ export class DamageEngine {
       const applyBtn = el.querySelector?.("[data-action='aceQolApplyDamage']");
       const undoBtn = el.querySelector?.("[data-action='aceQolUndoDamage']");
 
+      // ── Check if any per-type damage has been applied (for UNDO button state) ──
+      const anyPerTypeApplied = Object.values(flags?.appliedComps ?? {}).some(arr => arr?.length > 0);
+
       if (applyBtn && !applyBtn.dataset.wired) {
         applyBtn.dataset.wired = "1";
         if (flags.applied) {
@@ -111,38 +114,46 @@ export class DamageEngine {
             applyBtn.disabled = true;
             applyBtn.textContent = "APPLIED ✓";
             await message.setFlag(MODULE_ID, "applied", true);
-            // Enable the Undo button now that damage is applied
-            if (undoBtn && !flags.undone) {
-              undoBtn.disabled = false;
-              undoBtn.style.opacity = "";
-              undoBtn.title = "";
-              undoBtn.addEventListener("click", async () => {
-                await this._undoDamage(message);
-                undoBtn.disabled = true;
-                undoBtn.textContent = "UNDONE ✓";
-                await message.setFlag(MODULE_ID, "undone", true);
-              });
-            }
           });
         }
       }
 
       if (undoBtn && !undoBtn.dataset.wired) {
         undoBtn.dataset.wired = "1";
-        if (flags.undone) {
-          undoBtn.disabled = true;
-          undoBtn.textContent = "UNDONE ✓";
-        } else if (!flags.applied) {
-          // Undo is disabled until Apply has been pressed
+        if (!flags.applied && !anyPerTypeApplied) {
+          // No damage applied yet — disabled
           undoBtn.disabled = true;
           undoBtn.style.opacity = "0.35";
           undoBtn.title = "Apply damage first";
         } else {
+          // Active — damage has been applied. Build contextual label.
+          undoBtn.disabled = false;
+          undoBtn.style.opacity = "";
+          undoBtn.title = "Undo all applied damage and reset card";
+
+          // Dynamic label: "↩ UNDO SLASHING" for one type, "↩ UNDO ALL" for multiple
+          const appliedCompsMap = flags?.appliedComps ?? {};
+          const results = flags?.damageResults ?? [];
+          const appliedTypeNames = new Set();
+          for (const [tid, indices] of Object.entries(appliedCompsMap)) {
+            const entry = results.find(r => r.tokenDocId === tid);
+            if (!entry?.components) continue;
+            for (const idx of (indices ?? [])) {
+              const comp = entry.components[idx];
+              if (comp?.type) appliedTypeNames.add(comp.type.toUpperCase());
+            }
+          }
+          if (flags.applied) {
+            undoBtn.innerHTML = '<i class="fas fa-undo"></i> UNDO ALL';
+          } else if (appliedTypeNames.size === 1) {
+            undoBtn.innerHTML = `<i class="fas fa-undo"></i> UNDO ${[...appliedTypeNames][0]}`;
+          } else {
+            undoBtn.innerHTML = '<i class="fas fa-undo"></i> UNDO ALL';
+          }
+
           undoBtn.addEventListener("click", async () => {
             await this._undoDamage(message);
-            undoBtn.disabled = true;
-            undoBtn.textContent = "UNDONE ✓";
-            await message.setFlag(MODULE_ID, "undone", true);
+            // _undoDamage resets all flags and triggers re-render — button re-wires fresh
           });
         }
       }
@@ -1672,6 +1683,21 @@ export class DamageEngine {
       await actor.update({ "system.attributes.hp.value": newHP });
       console.log(`${MODULE_ID} | Applied ${damageToApply} damage to ${entry.name}: ${currentHP} → ${newHP}`);
 
+      // Track what APPLY ALL applied: mark all remaining comps as applied in flags
+      const allIndices = components.map((_, i) => i);
+      const prevPerType = flags?.perTypeApplied?.[entry.tokenDocId] ?? 0;
+      const perCompUpdate = {};
+      for (let i = 0; i < components.length; i++) {
+        if (appliedComps.includes(i)) continue; // already tracked from per-type click
+        const compDmg = Math.floor(components[i].final * override);
+        perCompUpdate[`flags.${MODULE_ID}.perCompApplied.${entry.tokenDocId}.${i}`] = compDmg;
+      }
+      await message.update({
+        [`flags.${MODULE_ID}.appliedComps.${entry.tokenDocId}`]: allIndices,
+        [`flags.${MODULE_ID}.perTypeApplied.${entry.tokenDocId}`]: prevPerType + damageToApply,
+        ...perCompUpdate,
+      });
+
       DamageEngine.overrideCache.delete(cacheKey);
       applied++;
     }
@@ -1686,6 +1712,7 @@ export class DamageEngine {
     const data = message.getFlag(MODULE_ID, "damageResults");
     if (!data?.length) return;
 
+    let undoneCount = 0;
     for (const entry of data) {
       const actor = this._resolveTargetActor(entry);
       if (!actor) {
@@ -1693,17 +1720,22 @@ export class DamageEngine {
         continue;
       }
 
-      await actor.update({ "system.attributes.hp.value": entry.currentHP });
-      console.log(`${MODULE_ID} | Undid damage on ${actor.name}: restored to ${entry.currentHP}`);
+      // Restore HP to what it was before this damage card's damage was applied
+      const restoredHP = Math.min(entry.currentHP, actor.system.attributes.hp.max);
+      await actor.update({ "system.attributes.hp.value": restoredHP });
+      console.log(`${MODULE_ID} | Undid damage on ${actor.name}: ${actor.system.attributes.hp.value} → restored to ${restoredHP}`);
+      undoneCount++;
     }
 
-    // Clear per-type tracking so a fresh APPLY ALL uses full amounts
+    // Clear ALL tracking flags so the card returns to completely fresh state
     await message.update({
       [`flags.${MODULE_ID}.perTypeApplied`]: {},
       [`flags.${MODULE_ID}.appliedComps`]: {},
+      [`flags.${MODULE_ID}.perCompApplied`]: {},
+      [`flags.${MODULE_ID}.applied`]: false,
     });
 
-    ui.notifications.info(`ACE QOL: Damage undone for ${data.length} target(s).`);
+    if (undoneCount) ui.notifications.info(`ACE QOL: Damage undone for ${undoneCount} target(s). Card reset — you can re-apply.`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -2295,9 +2327,50 @@ export class DamageEngine {
       if (nameEl) nameEl.addEventListener("click", clickHandler);
     }
 
-    // ── Per-type damage apply (click a type line to apply just that type's damage) ──
+    // ── Update HP + damage display from flags on every re-render ──
+    // Shows live state: current HP (after applied damage), remaining damage, projected HP.
+    const mFlags = message.flags?.[MODULE_ID] ?? {};
+    const perTypeApplied = mFlags.perTypeApplied ?? {};
+    const appliedCompsMap = mFlags.appliedComps ?? {};
+    const damageResults = mFlags.damageResults ?? [];
+    for (const row of (el.querySelectorAll?.(".ace-qol-dmg-target-row") ?? [])) {
+      const tokenDocId = row.dataset?.tokenDocId;
+      if (!tokenDocId) continue;
+      const appliedAmount = perTypeApplied[tokenDocId] ?? 0;
+      const entry = damageResults.find(r => r.tokenDocId === tokenDocId);
+      if (!entry) continue;
+
+      const origHP = entry.currentHP;             // HP when card was created
+      const maxHP = entry.maxHP ?? origHP;
+      const totalDamage = entry.totalFinal ?? 0;   // Total damage (all types)
+      const appliedIndices = appliedCompsMap[tokenDocId] ?? [];
+
+      // Calculate remaining damage (sum of unapplied components)
+      const remainingDamage = (entry.components ?? []).reduce((sum, c, i) => {
+        if (appliedIndices.includes(i)) return sum;
+        return sum + (c.final ?? 0);
+      }, 0);
+
+      const currentLiveHP = Math.max(0, origHP - appliedAmount);   // HP right now
+      const projectedHP = Math.max(0, currentLiveHP - remainingDamage);  // HP after remaining damage
+      const isDead = projectedHP <= 0;
+
+      // Update the red damage total → remaining damage to apply
+      const dmgSpan = row.querySelector(".ace-qol-dmg-row-dmg");
+      if (dmgSpan && appliedAmount > 0) {
+        dmgSpan.textContent = remainingDamage;
+      }
+
+      // Update HP line: "HP: {currentLive} → {projected}/{max}"
+      const hpLine = row.querySelector(".ace-qol-dmg-row-hp");
+      if (hpLine && appliedAmount > 0) {
+        hpLine.innerHTML = `HP: <span class="ace-qol-hp-cur">${currentLiveHP}</span> → <span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${projectedHP}</span><span class="ace-qol-hp-max">/${maxHP}</span>`;
+      }
+    }
+
+    // ── Per-type damage TOGGLE (click to apply, click again to undo) ──
     // State is persisted in flags so it survives re-renders (setFlag triggers re-render).
-    // Flag structure: appliedComps.{tokenDocId} = [0, 1, ...] (array of component indices)
+    // Flags: appliedComps.{tokenDocId} = [indices], perCompApplied.{tokenDocId}.{idx} = amount
     const typeLines = el.querySelectorAll?.("[data-action='aceQolApplyType']");
     for (const line of (typeLines ?? [])) {
       if (line.dataset.wired) continue;
@@ -2322,21 +2395,7 @@ export class DamageEngine {
         const tokenDocId = row?.dataset?.tokenDocId;
         if (!tokenDocId) return;
 
-        // ── Check flags (not DOM class) to prevent double-apply after re-render ──
         const currentApplied = message.flags?.[MODULE_ID]?.appliedComps?.[tokenDocId] ?? [];
-        if (currentApplied.includes(idx)) {
-          console.log(`${MODULE_ID} | Per-type already applied: comp ${idx} (${dmgType}) for ${tokenDocId}`);
-          return;
-        }
-
-        // ── Apply override multiplier if one is selected (¼, ½, 1, 2×) ──
-        const cacheKey = `${message.id}|${tokenDocId}`;
-        const override = DamageEngine.overrideCache.get(cacheKey);
-        const amount = (typeof override === "number")
-          ? Math.floor(baseAmount * override)
-          : baseAmount;
-
-        // Resolve actor
         const entry = message.flags?.[MODULE_ID]?.damageResults?.find(r => r.tokenDocId === tokenDocId);
         if (!entry) return;
         const actor = this._resolveTargetActor(entry);
@@ -2345,32 +2404,71 @@ export class DamageEngine {
           return;
         }
 
+        // ════════════════════════════════════════════════════════════════
+        //  TOGGLE OFF — undo this type's damage
+        // ════════════════════════════════════════════════════════════════
+        if (currentApplied.includes(idx)) {
+          const appliedAmount = message.flags?.[MODULE_ID]?.perCompApplied?.[tokenDocId]?.[idx] ?? 0;
+          if (appliedAmount <= 0) {
+            console.warn(`${MODULE_ID} | Toggle-off: no recorded amount for comp ${idx} (${dmgType})`);
+            return;
+          }
+
+          // Restore HP
+          const currentHP = actor.system.attributes.hp.value;
+          const restoredHP = Math.min(currentHP + appliedAmount, actor.system.attributes.hp.max);
+          await actor.update({ "system.attributes.hp.value": restoredHP });
+
+          // Update flags: remove from appliedComps, subtract from perTypeApplied, delete from perCompApplied
+          const newApplied = currentApplied.filter(i => i !== idx);
+          const prevTotal = message.flags?.[MODULE_ID]?.perTypeApplied?.[tokenDocId] ?? 0;
+          const flagUpdate = {
+            [`flags.${MODULE_ID}.appliedComps.${tokenDocId}`]: newApplied,
+            [`flags.${MODULE_ID}.perTypeApplied.${tokenDocId}`]: Math.max(0, prevTotal - appliedAmount),
+            [`flags.${MODULE_ID}.perCompApplied.${tokenDocId}.${idx}`]: null,
+          };
+          // If was fully applied, re-enable APPLY ALL
+          if (message.flags?.[MODULE_ID]?.applied) {
+            flagUpdate[`flags.${MODULE_ID}.applied`] = false;
+          }
+          await message.update(flagUpdate);
+
+          console.log(`${MODULE_ID} | Per-type UNDO: comp ${idx} (${appliedAmount} ${dmgType}) from ${entry.name}: HP ${currentHP} → ${restoredHP}`);
+          line.classList.remove("ace-qol-dmg-type-applied");
+          ui.notifications.info(`ACE QOL: Undid ${appliedAmount} ${dmgType} damage from ${entry.name} (${currentHP} → ${restoredHP})`);
+          return;
+        }
+
+        // ════════════════════════════════════════════════════════════════
+        //  TOGGLE ON — apply this type's damage
+        // ════════════════════════════════════════════════════════════════
+        const cacheKey = `${message.id}|${tokenDocId}`;
+        const override = DamageEngine.overrideCache.get(cacheKey);
+        const amount = (typeof override === "number")
+          ? Math.floor(baseAmount * override)
+          : baseAmount;
+
         const currentHP = actor.system.attributes.hp.value;
         const newHP = Math.max(0, currentHP - amount);
         await actor.update({ "system.attributes.hp.value": newHP });
 
-        // Track per-type applied amount in message flags so APPLY ALL can subtract it
+        // Track in flags: appliedComps, perTypeApplied, AND perCompApplied (exact amount for undo)
         const prevApplied = message.flags?.[MODULE_ID]?.perTypeApplied?.[tokenDocId] ?? 0;
         const overrideLabel = (typeof override === "number" && override !== 1) ? ` (×${override})` : "";
-        console.log(`${MODULE_ID} | Per-type apply: comp ${idx} (${amount} ${dmgType}${overrideLabel}) to ${entry.name}: HP ${currentHP} → ${newHP}, perTypeApplied ${prevApplied} → ${prevApplied + amount}`);
+        console.log(`${MODULE_ID} | Per-type apply: comp ${idx} (${amount} ${dmgType}${overrideLabel}) to ${entry.name}: HP ${currentHP} → ${newHP}`);
 
-        // Persist BOTH: numeric total for APPLY ALL math, and component index list for visual state
-        // Use a single update to avoid double re-render
         const updatedComps = [...currentApplied, idx];
         await message.update({
           [`flags.${MODULE_ID}.perTypeApplied.${tokenDocId}`]: prevApplied + amount,
           [`flags.${MODULE_ID}.appliedComps.${tokenDocId}`]: updatedComps,
+          [`flags.${MODULE_ID}.perCompApplied.${tokenDocId}.${idx}`]: amount,
         });
 
-        // ── Reset override back to ×1 after applying ──
-        // Prevents accidentally applying the next type at the same multiplier
         DamageEngine.overrideCache.delete(cacheKey);
-
-        // Visual feedback (will also be restored on re-render via the flag check above)
         line.classList.add("ace-qol-dmg-type-applied");
         ui.notifications.info(`ACE QOL: Applied ${amount} ${dmgType} damage to ${entry.name} (${currentHP} → ${newHP})`);
 
-        // If ALL clickable type lines are now applied, mark as fully applied
+        // If ALL types now applied, mark fully applied
         const totalComps = el.querySelectorAll("[data-action='aceQolApplyType']");
         const allDone = [...totalComps].every(l => {
           const ci = parseInt(l.dataset.compIndex);

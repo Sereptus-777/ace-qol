@@ -104,7 +104,7 @@ export class DurationTracker {
     const currentRound = combat.round;
     const currentTurn = combat.turn;
     const currentCombatant = combat.combatant;
-    const previousCombatant = combat.combatants.contents[change.turn !== undefined ? (change.turn > 0 ? change.turn - 1 : combat.combatants.size - 1) : combat.turn] ?? null;
+    const previousCombatant = combat.turns[change.turn !== undefined ? (change.turn > 0 ? change.turn - 1 : combat.turns.length - 1) : combat.turn] ?? null;
 
     this._debug(`Combat update: round=${currentRound} turn=${currentTurn} combatant=${currentCombatant?.name ?? "none"}`);
 

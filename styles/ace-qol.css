@@ -387,23 +387,30 @@
   font-size: 0.8rem; font-weight: 600;
 }
 .ace-qol-dmg-type-clickable {
-  cursor: pointer; padding: 2px 6px; border-radius: 3px;
-  border: 1px solid transparent;
+  cursor: pointer; padding: 3px 8px; border-radius: 4px;
+  border: 1px solid rgba(255,255,255,0.18);
+  background: rgba(255,255,255,0.06);
   transition: all 0.15s;
 }
 .ace-qol-dmg-type-clickable:hover {
-  background: rgba(255,255,255,0.06);
-  border-color: rgba(255,255,255,0.15);
-  box-shadow: 0 0 4px rgba(255,255,255,0.05);
+  background: rgba(255,255,255,0.12);
+  border-color: rgba(255,255,255,0.3);
+  box-shadow: 0 0 6px rgba(255,255,255,0.08);
 }
 .ace-qol-dmg-type-clickable:active {
-  background: rgba(255,255,255,0.1);
+  background: rgba(255,255,255,0.18);
 }
 .ace-qol-dmg-type-applied {
-  opacity: 0.4; pointer-events: none;
+  opacity: 0.4;
+  cursor: pointer;
   text-decoration: line-through;
   border-color: rgba(76,175,80,0.3) !important;
   background: rgba(76,175,80,0.08) !important;
+}
+.ace-qol-dmg-type-applied:hover {
+  opacity: 0.7;
+  border-color: rgba(255,183,77,0.6) !important;
+  background: rgba(255,183,77,0.12) !important;
 }
 
 /* ─── Grand total multi-type separator ─────────────────────────────── */

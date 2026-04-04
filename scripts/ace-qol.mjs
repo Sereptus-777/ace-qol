@@ -242,7 +242,7 @@ Hooks.once("ready", () => {
 
       // ReactionEngine prompts — routed to specific player
       if (payload?.action === "showReactionPrompt" || payload?.action === "reactionResponse") {
-        if (reactionEngine?.handleSocketMessage(payload)) return;
+        if (await reactionEngine?.handleSocketMessage(payload)) return;
       }
 
       if (!payload?.action || payload?.userId !== game.user.id) return;
@@ -307,7 +307,7 @@ Hooks.once("ready", () => {
 
       // ReactionEngine responses from players
       if (payload.action === "reactionResponse") {
-        if (reactionEngine?.handleSocketMessage(payload)) return;
+        if (await reactionEngine?.handleSocketMessage(payload)) return;
       }
 
       // ── Player responds to rider popup (Divine Smite, Eldritch Smite, etc.) ──
