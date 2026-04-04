@@ -14,6 +14,17 @@ import { DamageEngine }      from "./damage-engine.mjs";
 import { SaveEngine }           from "./save-engine.mjs";
 import { ConcentrationWidget }  from "./concentration-widget.mjs";
 import { RiderEngine }          from "./rider-engine.mjs";
+import { FlagsEngine }          from "./flags-engine.mjs";
+import { ReactionEngine, injectReactionCSS } from "./reaction-engine.mjs";
+import { HookAPI }              from "./hook-api.mjs";
+import { OverTimeEngine }       from "./overtime-engine.mjs";
+import { CoverEngine }          from "./cover-engine.mjs";
+import { BloodiedEngine }       from "./bloodied-engine.mjs";
+import { VisibilityEngine }     from "./visibility-engine.mjs";
+import { ConditionLibrary }     from "./condition-library.mjs";
+import { DurationTracker }      from "./duration-tracker.mjs";
+import { SpeedRolls }           from "./speed-rolls.mjs";
+import { MergeCard }            from "./merge-card.mjs";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 let extendedEffects      = null;
@@ -21,6 +32,11 @@ let attackPipeline       = null;
 let damageEngine         = null;
 let saveEngine           = null;
 let concentrationWidget  = null;
+let durationTracker      = null;
+let reactionEngine       = null;
+let overTimeEngine       = null;
+let bloodiedEngine       = null;
+let speedRolls           = null;
 
 const SOCKET_NAME = `module.${MODULE_ID}`;
 
@@ -85,6 +101,78 @@ Hooks.once("ready", () => {
     }
   }
 
+  // Reaction engine — ALL users (players receive reaction prompts via socket)
+  try {
+    reactionEngine = new ReactionEngine();
+    injectReactionCSS();
+    console.log(`${MODULE_ID} | Reaction engine online`);
+  } catch (err) {
+    console.error(`${MODULE_ID} | Reaction engine init failed:`, err);
+  }
+
+  // Hook API — register public API on the module for third-party extensibility
+  try {
+    HookAPI.registerAPI();
+    console.log(`${MODULE_ID} | Hook API online`);
+  } catch (err) {
+    console.error(`${MODULE_ID} | Hook API init failed:`, err);
+  }
+
+  // OverTime engine — GM only (processes recurring effects on combat turn changes)
+  if (game.user.isGM) {
+    try {
+      overTimeEngine = new OverTimeEngine();
+      console.log(`${MODULE_ID} | OverTime engine online`);
+    } catch (err) {
+      console.error(`${MODULE_ID} | OverTime engine init failed:`, err);
+    }
+  }
+
+  // Bloodied engine — ALL users (visual overlays render on every client)
+  try {
+    bloodiedEngine = new BloodiedEngine();
+    console.log(`${MODULE_ID} | Bloodied engine online`);
+  } catch (err) {
+    console.error(`${MODULE_ID} | Bloodied engine init failed:`, err);
+  }
+
+  // Visibility engine — ALL users (players need renderChatMessage filtering)
+  try {
+    VisibilityEngine.registerHooks();
+    console.log(`${MODULE_ID} | Visibility engine online`);
+  } catch (err) {
+    console.error(`${MODULE_ID} | Visibility engine init failed:`, err);
+  }
+
+  // Cover engine — static, no constructor needed (API registered after game.aceQol is set)
+  console.log(`${MODULE_ID} | Cover engine online`);
+
+  // Condition Library — ALL users (effect definitions + apply/remove API)
+  try {
+    ConditionLibrary.registerAPI();
+    console.log(`${MODULE_ID} | Condition Library online`);
+  } catch (err) {
+    console.error(`${MODULE_ID} | Condition Library init failed:`, err);
+  }
+
+  // Duration Tracker — ALL users init hooks, but only GM processes expirations
+  try {
+    durationTracker = new DurationTracker();
+    durationTracker.init();
+    DurationTracker.registerAPI(durationTracker);
+    console.log(`${MODULE_ID} | Duration Tracker online`);
+  } catch (err) {
+    console.error(`${MODULE_ID} | Duration Tracker init failed:`, err);
+  }
+
+  // Speed Rolls — ALL users (intercepts character sheet clicks for fast-forward)
+  try {
+    speedRolls = new SpeedRolls();
+    console.log(`${MODULE_ID} | Speed rolls online`);
+  } catch (err) {
+    console.error(`${MODULE_ID} | Speed rolls init failed:`, err);
+  }
+
   // ── Socket bridge: player attacks → GM processing ──
   // When a player rolls an attack on their client, the dnd5e.rollAttackV2 hook only
   // fires there. We capture the data and send it to the GM via socket.
@@ -146,6 +234,17 @@ Hooks.once("ready", () => {
 
     // ── PLAYER SIDE: listen for GM commands via socket ──
     game.socket.on(SOCKET_NAME, async (payload) => {
+      // FlagsEngine optional prompts — routed to specific player
+      if (payload?.action === "showOptionalPrompt" || payload?.action === "optionalPromptResult") {
+        FlagsEngine.handleSocketMessage(payload);
+        return;
+      }
+
+      // ReactionEngine prompts — routed to specific player
+      if (payload?.action === "showReactionPrompt" || payload?.action === "reactionResponse") {
+        if (reactionEngine?.handleSocketMessage(payload)) return;
+      }
+
       if (!payload?.action || payload?.userId !== game.user.id) return;
 
       // ── Close system ActivityChoiceDialogs (Divine Smite "Use/Damage/Undead" popup) ──
@@ -199,6 +298,17 @@ Hooks.once("ready", () => {
     // ── GM SIDE: receive player requests via socket ──
     game.socket.on(SOCKET_NAME, async (payload) => {
       if (!payload?.action) return;
+
+      // FlagsEngine optional prompt responses from players
+      if (payload.action === "optionalPromptResult") {
+        FlagsEngine.handleSocketMessage(payload);
+        return;
+      }
+
+      // ReactionEngine responses from players
+      if (payload.action === "reactionResponse") {
+        if (reactionEngine?.handleSocketMessage(payload)) return;
+      }
 
       // ── Player responds to rider popup (Divine Smite, Eldritch Smite, etc.) ──
       if (payload.action === "riderChoice") {
@@ -270,13 +380,28 @@ Hooks.once("ready", () => {
           CombatState.assess(actor, token, item)
         );
 
-        // Build results (same logic as _onAttackRoll)
+        // Build results (same logic as _onAttackRoll, with cover calculation)
+        const atkToken = CoverEngine.getAttackerToken(actor);
         const results = [];
         for (const cs of combatStates) {
+          // ── Cover calculation ──
+          let coverResult = null;
+          let effectiveAC = cs.target.ac;
+          try {
+            if (QolSettings.get("enableCoverCalculation") && atkToken && cs.targetToken) {
+              coverResult = CoverEngine.calculateCover(atkToken, cs.targetToken);
+              if (!coverResult.isFullCover && coverResult.acBonus > 0) {
+                effectiveAC += coverResult.acBonus;
+              }
+              CoverEngine.showCoverIndicator(cs.targetToken, coverResult);
+            }
+          } catch { /* cover non-blocking */ }
+
           let hitResult;
           if (isFumbleRoll) hitResult = "fumble";
+          else if (coverResult?.isFullCover) hitResult = "miss";
           else if (isCritRoll || cs.autoCrit) hitResult = "critical";
-          else if (attackTotal >= cs.target.ac) hitResult = "hit";
+          else if (attackTotal >= effectiveAC) hitResult = "hit";
           else hitResult = "miss";
 
           results.push({
@@ -284,12 +409,27 @@ Hooks.once("ready", () => {
             name: cs.target.name,
             img: cs.target.img,
             ac: cs.target.ac,
+            effectiveAC,
+            coverResult,
             hitResult,
             attackTotal,
             d20Result,
             isCritRoll,
             isFumbleRoll,
           });
+        }
+
+        // ── POST-HIT REACTIONS (Shield, etc.) — socket attack path ──
+        if (reactionEngine) {
+          try {
+            const modifiedResults = await reactionEngine.checkPostHitReactions(results, item, actor);
+            if (modifiedResults) {
+              results.length = 0;
+              results.push(...modifiedResults);
+            }
+          } catch (err) {
+            console.error(`${MODULE_ID} | Socket: post-hit reaction check failed:`, err);
+          }
         }
 
         const hits = results.filter(r => r.hitResult === "hit" || r.hitResult === "critical");
@@ -339,6 +479,19 @@ Hooks.once("ready", () => {
     TargetState,
     CombatState,
     DamageEngine,
+    FlagsEngine,
+    HookAPI,
+    overTimeEngine,
+    reactionEngine,
+    ReactionEngine,
+    bloodiedEngine,
+    CoverEngine,
+    VisibilityEngine,
+    ConditionLibrary,
+    DurationTracker,
+    durationTracker,
+    speedRolls,
+    MergeCard,
 
     /** Check if a setting is enabled */
     isEnabled: (key) => QolSettings.get(key),
@@ -346,7 +499,23 @@ Hooks.once("ready", () => {
     /** Manually assess combat state (for console testing) */
     assessCombat: (attackerActor, targetToken, item) => CombatState.assess(attackerActor, targetToken, item),
     assessTarget: (token, item) => TargetState.assess(token, null, item),
+
+    /** Check flags on an actor (for console testing) */
+    checkFlags: (actor, actionType) => ({
+      attackAdvantage: FlagsEngine.hasAttackAdvantage(actor, actionType ?? "mwak"),
+      attackDisadvantage: FlagsEngine.hasAttackDisadvantage(actor, actionType ?? "mwak"),
+      autoCrit: FlagsEngine.hasAutoCrit(actor, actionType ?? "mwak"),
+      magicResistance: FlagsEngine.hasMagicResistance(actor),
+      evasion: FlagsEngine.hasEvasion(actor),
+      sculptSpell: FlagsEngine.hasSculptSpell(actor),
+      optionals: FlagsEngine.getAvailableOptionals(actor, "attack", actionType ?? "mwak"),
+    }),
   };
+
+  // Register APIs that need game.aceQol to exist
+  try { CoverEngine.registerAPI(); } catch { /* non-critical */ }
+  try { if (bloodiedEngine) bloodiedEngine.registerAPI(); } catch { /* non-critical */ }
+  try { VisibilityEngine.registerAPI(); } catch { /* non-critical */ }
 
   // ── Suppress "Bloodied" and other status effect chat cards ──
   // These come from modules like BLFS/DFreds and show "Bloodied - Applied to X" /

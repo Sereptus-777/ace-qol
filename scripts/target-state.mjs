@@ -6,6 +6,7 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { ExtendedEffects } from "./extended-effects.mjs";
+import { FlagsEngine } from "./flags-engine.mjs";
 
 // ─── Conditions that affect combat ──────────────────────────────────────────
 const CONDITION_EFFECTS = {
@@ -73,6 +74,10 @@ export class TargetState {
     const isSilvered = itemProps.has("sil");
     const isAdamantine = itemProps.has("ada");
 
+    // Build bypass sets from the creature's actual trait data
+    const drBypasses = new Set(traits.dr?.bypasses ?? []);
+    const diBypasses = new Set(traits.di?.bypasses ?? []);
+
     const damageModifiers = {};
     for (const type of damageTypes) {
       let modifier = "normal";
@@ -80,25 +85,41 @@ export class TargetState {
 
       // Check immunity first (highest priority)
       if (immunities.has(type)) {
-        modifier = "immune";
-        reason = `${actor.name} is immune to ${type}`;
+        // Physical damage types may be bypassed by magical/silvered/adamantine weapons
+        if (PHYSICAL_TYPES.has(type) && diBypasses.size > 0) {
+          const bypassed = (diBypasses.has("mgc") && isMagical)
+                        || (diBypasses.has("sil") && isSilvered)
+                        || (diBypasses.has("ada") && isAdamantine);
+          if (bypassed) {
+            modifier = "normal";
+            reason = `${type} immunity BYPASSED (${isMagical ? "magical" : isSilvered ? "silvered" : "adamantine"} weapon)`;
+          } else {
+            modifier = "immune";
+            reason = `${actor.name} is immune to ${type}`;
+          }
+        } else {
+          modifier = "immune";
+          reason = `${actor.name} is immune to ${type}`;
+        }
       }
       // Check resistance
       else if (resistances.has(type)) {
-        // Physical damage bypass check
-        if (PHYSICAL_TYPES.has(type)) {
-          // Many monsters resist "nonmagical bludgeoning/piercing/slashing"
-          // If weapon is magical, silvered, or adamantine, bypass may apply
-          if (isMagical) {
+        // Physical damage bypass check — use creature's actual bypasses array
+        if (PHYSICAL_TYPES.has(type) && drBypasses.size > 0) {
+          const bypassed = (drBypasses.has("mgc") && isMagical)
+                        || (drBypasses.has("sil") && isSilvered)
+                        || (drBypasses.has("ada") && isAdamantine);
+          if (bypassed) {
             modifier = "normal";
-            reason = `Resistance bypassed (magical weapon)`;
-          } else if (isSilvered) {
-            modifier = "normal";
-            reason = `Resistance bypassed (silvered weapon)`;
+            reason = `${type} resistance BYPASSED (${isMagical ? "magical" : isSilvered ? "silvered" : "adamantine"} weapon)`;
           } else {
             modifier = "resistant";
             reason = `${actor.name} resists ${type} (nonmagical)`;
           }
+        } else if (PHYSICAL_TYPES.has(type) && drBypasses.size === 0) {
+          // No bypasses defined — physical resistance applies to all weapons
+          modifier = "resistant";
+          reason = `${actor.name} resists ${type}`;
         } else {
           modifier = "resistant";
           reason = `${actor.name} resists ${type}`;
@@ -126,15 +147,22 @@ export class TargetState {
     let autoFailSave = false;
 
     if (saveAbility) {
-      // Check our flags
-      saveAdvantage = ExtendedEffects.hasAdvantage(actor, "save", saveAbility)
+      // Check flags via FlagsEngine (checks ace-qol + midi-qol automatically)
+      saveAdvantage = FlagsEngine.hasSaveAdvantage(actor, saveAbility)
+                   || ExtendedEffects.hasAdvantage(actor, "save", saveAbility)
                    || ExtendedEffects.hasAdvantage(actor, "save", "all");
-      saveDisadvantage = ExtendedEffects.hasDisadvantage(actor, "save", saveAbility)
+      saveDisadvantage = FlagsEngine.hasSaveDisadvantage(actor, saveAbility)
+                      || ExtendedEffects.hasDisadvantage(actor, "save", saveAbility)
                       || ExtendedEffects.hasDisadvantage(actor, "save", "all");
 
+      // Auto-fail saves from flags (e.g., custom effects)
+      if (FlagsEngine.autoFailsSave(actor, saveAbility)) {
+        autoFailSave = true;
+      }
+
       // Magic resistance — advantage on saves vs spells
-      const magicRes = ExtendedEffects.hasMagicResistance(actor)
-                    || !!actor.getFlag("midi-qol", "magicResistance.all");  // backward compat
+      const magicRes = FlagsEngine.hasMagicResistance(actor)
+                    || ExtendedEffects.hasMagicResistance(actor);
       if (magicRes && isSpell) {
         saveAdvantage = true;
       }
@@ -159,10 +187,10 @@ export class TargetState {
     }
 
     // ── Evasion / Shield Master ──
-    const superSaver = ExtendedEffects.hasSuperSaver(actor, saveAbility)
-                    || !!actor.getFlag("midi-qol", `superSaver.${saveAbility}`);
+    const superSaver = FlagsEngine.hasEvasion(actor)
+                    || ExtendedEffects.hasSuperSaver(actor, saveAbility);
     const semiSuperSaver = ExtendedEffects.hasSemiSuperSaver(actor, saveAbility)
-                        || !!actor.getFlag("midi-qol", `semiSuperSaver.${saveAbility}`);
+                        || FlagsEngine._checkFlag(actor, `semiSuperSaver.${saveAbility}`);
 
     // ── Creature type ──
     const creatureType = details.type?.value ?? "";
@@ -251,7 +279,7 @@ export class TargetState {
       saveDisadvantage,
       autoFailSave,
       saveBonuses,
-      magicResistance: (ExtendedEffects.hasMagicResistance(actor) || !!actor.getFlag("midi-qol", "magicResistance.all")) && isSpell,
+      magicResistance: (FlagsEngine.hasMagicResistance(actor) || ExtendedEffects.hasMagicResistance(actor)) && isSpell,
 
       // Evasion / Shield Master
       superSaver,

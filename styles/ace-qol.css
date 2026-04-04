@@ -1248,3 +1248,161 @@
   background: linear-gradient(180deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.05) 100%);
   border-color: rgba(212,175,55,0.3); color: #d4af37;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   MERGE CARD — Combined Attack + Damage Display
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.ace-qol-merge-card {
+  background: linear-gradient(180deg, #0e0e10 0%, #141418 50%, #0e0e10 100%);
+  border: 1px solid rgba(212,175,55,0.2);
+  border-top: 2px solid;
+  border-image: linear-gradient(90deg, #8b6914, #d4af37, #f5d060, #d4af37, #8b6914) 1;
+  border-radius: 4px;
+  overflow: hidden;
+  font-family: 'Rajdhani', 'Segoe UI', sans-serif;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.6), 0 0 1px rgba(212,175,55,0.15),
+    inset 0 1px 0 rgba(255,255,255,0.04);
+}
+
+/* ─── Merge Header ─────────────────────────────────────────────────────── */
+.ace-qol-merge-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: linear-gradient(180deg, #1a1a20 0%, #111116 100%);
+  border-bottom: 1px solid;
+  border-image: linear-gradient(90deg, transparent, #8b6914, #d4af37, #8b6914, transparent) 1;
+}
+
+.ace-qol-merge-item-img {
+  width: 32px; height: 32px; border-radius: 3px;
+  border: 1px solid #8b6914;
+  box-shadow: 0 0 4px rgba(212,175,55,0.3);
+}
+
+.ace-qol-merge-header-text {
+  display: flex; flex-direction: column; flex: 1; min-width: 0;
+}
+
+.ace-qol-merge-item-name {
+  color: #d4af37; font-size: 1.05rem; font-weight: 700;
+  background: linear-gradient(180deg, #f5d060, #d4af37, #8b6914);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  background-clip: text;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.ace-qol-merge-attacker {
+  font-size: 0.72rem; color: #888; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+
+/* ─── Merge Attack Section ──────────────────────────────────────────── */
+.ace-qol-merge-attack {
+  border-bottom: 1px solid rgba(212,175,55,0.1);
+}
+
+.ace-qol-merge-attack .ace-qol-atk-roll {
+  background: linear-gradient(180deg, #0c0c0f 0%, #111116 100%);
+}
+
+/* ─── Merge Damage Formula ──────────────────────────────────────────── */
+.ace-qol-merge-damage-formula {
+  border-bottom: 1px solid rgba(212,175,55,0.1);
+}
+
+/* ─── Merge Targets (combined hit/miss + damage rows) ───────────────── */
+.ace-qol-merge-targets {
+  display: flex; flex-direction: column; gap: 0;
+}
+
+.ace-qol-merge-combined-row {
+  border-top: 1px solid rgba(212,175,55,0.08);
+}
+
+.ace-qol-merge-combined-row:first-child {
+  border-top: none;
+}
+
+.ace-qol-merge-row-header {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 10px;
+  background: linear-gradient(180deg, #111116 0%, #0e0e12 100%);
+}
+
+/* Miss rows get a subtle desaturated look */
+.ace-qol-merge-row-miss {
+  opacity: 0.65;
+}
+
+.ace-qol-merge-row-miss .ace-qol-merge-row-header {
+  background: linear-gradient(180deg, #0e0e10 0%, #0c0c0e 100%);
+}
+
+/* ─── Hit/Miss Target Rows (for PC ROLL DAMAGE button cards) ────────── */
+.ace-qol-merge-hitmiss-targets {
+  display: flex; flex-direction: column; gap: 0;
+  border-bottom: 1px solid rgba(212,175,55,0.1);
+}
+
+.ace-qol-merge-target-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 10px;
+  background: #111114;
+}
+
+.ace-qol-merge-target-row:nth-child(even) {
+  background: #151518;
+}
+
+.ace-qol-merge-tgt-img {
+  width: 24px; height: 24px; border-radius: 50%;
+  border: 1px solid #444; object-fit: cover; flex-shrink: 0;
+}
+
+.ace-qol-merge-tgt-name {
+  color: #e8e6e0; font-size: 0.82rem; font-weight: 600;
+  flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.ace-qol-merge-tgt-ac {
+  color: #448aff; font-size: 0.75rem; font-weight: 600; flex-shrink: 0;
+}
+
+.ace-qol-merge-tgt-result {
+  font-size: 0.72rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.5px; padding: 2px 8px; border-radius: 3px; flex-shrink: 0;
+}
+
+/* Hit/crit/miss coloring for merge target rows */
+.ace-qol-merge-hit .ace-qol-merge-tgt-result {
+  color: #00e676; background: rgba(0, 230, 118, 0.12);
+}
+.ace-qol-merge-crit .ace-qol-merge-tgt-result {
+  color: #ffd700; background: rgba(255, 215, 0, 0.15);
+  text-shadow: 0 0 6px rgba(255, 215, 0, 0.4);
+}
+.ace-qol-merge-miss .ace-qol-merge-tgt-result {
+  color: #888; background: rgba(136, 136, 136, 0.08);
+}
+.ace-qol-merge-fumble .ace-qol-merge-tgt-result {
+  color: #ff1744; background: rgba(255, 23, 68, 0.1);
+}
+
+/* ─── Merge Damage Button Section ───────────────────────────────────── */
+.ace-qol-merge-dmg-btn-section {
+  padding: 8px; text-align: center;
+  background: linear-gradient(180deg, #151518 0%, #0e0e10 100%);
+  border-top: 1px solid rgba(212,175,55,0.15);
+}
+
+.ace-qol-merge-dmg-btn-section .ace-qol-btn-roll-dmg {
+  width: 100%;
+}
+
+.ace-qol-merge-dmg-btn-section .ace-qol-dmg-btn-targets {
+  display: block; font-size: 0.75rem; font-weight: 600;
+  color: #888; margin-top: 6px;
+}

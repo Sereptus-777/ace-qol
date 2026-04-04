@@ -9,6 +9,7 @@
 import { MODULE_ID } from "./ace-qol.mjs";
 import { ExtendedEffects } from "./extended-effects.mjs";
 import { QolSettings } from "./settings.mjs";
+import { FlagsEngine } from "./flags-engine.mjs";
 
 // ─── Physical damage types (bypass checks) ──────────────────────────────────
 const PHYSICAL_TYPES = new Set(["bludgeoning", "piercing", "slashing"]);
@@ -102,15 +103,25 @@ export class CombatState {
       }
     } catch { /* setting not registered yet */ }
 
-    // ── Advantage/Disadvantage from Active Effects ──────────────────────
+    // ── Advantage/Disadvantage from Active Effects + Flags ───────────────
     const atkType = actionType;
-    if (ExtendedEffects.hasAdvantage(attackerActor, "attack", atkType)
+    if (FlagsEngine.hasAttackAdvantage(attackerActor, atkType)
+     || ExtendedEffects.hasAdvantage(attackerActor, "attack", atkType)
      || ExtendedEffects.hasAdvantage(attackerActor, "attack", "all")) {
       advantageSources.push({ source: "attacker", reason: "Effect/feature grants attack advantage" });
     }
-    if (ExtendedEffects.hasDisadvantage(attackerActor, "attack", atkType)
+    if (FlagsEngine.hasAttackDisadvantage(attackerActor, atkType)
+     || ExtendedEffects.hasDisadvantage(attackerActor, "attack", atkType)
      || ExtendedEffects.hasDisadvantage(attackerActor, "attack", "all")) {
       disadvantageSources.push({ source: "attacker", reason: "Effect/feature grants attack disadvantage" });
+    }
+
+    // ── Grants from target flags (target grants advantage/disadvantage) ──
+    if (FlagsEngine.grantsAttackAdvantage(targetActor, atkType)) {
+      advantageSources.push({ source: "target", reason: "Target grants attack advantage (flag)" });
+    }
+    if (FlagsEngine.grantsAttackDisadvantage(targetActor, atkType)) {
+      disadvantageSources.push({ source: "target", reason: "Target grants attack disadvantage (flag)" });
     }
 
     // ── Heavy Weapon + Small Creature ───────────────────────────────────
@@ -273,6 +284,25 @@ export class CombatState {
       autoCritReasons.push(`Melee vs ${tgtConditions.has("paralyzed") ? "PARALYZED" : "UNCONSCIOUS"} = AUTO-CRIT`);
     }
 
+    // Auto-crit from flags (attacker-side)
+    if (FlagsEngine.hasAutoCrit(attackerActor, actionType)) {
+      autoCrit = true;
+      autoCritReasons.push("Flag grants AUTO-CRIT");
+    }
+
+    // Auto-crit from target grants flags
+    if (FlagsEngine.grantsAutoCrit(targetActor, actionType)) {
+      autoCrit = true;
+      autoCritReasons.push("Target grants AUTO-CRIT (flag)");
+    }
+
+    // Prevent critical from target flags (Adamantine Armor)
+    if (FlagsEngine.preventsCritical(targetActor, actionType)) {
+      autoCrit = false;
+      autoCritReasons.length = 0;
+      autoCritReasons.push("CRITS PREVENTED (Adamantine Armor or similar)");
+    }
+
     // Assassinate — attacker is Assassin rogue, target hasn't acted in combat
     if (CombatState._hasFeature(attackerActor, "Assassinate")) {
       const combat = game.combat;
@@ -308,24 +338,47 @@ export class CombatState {
     const isSilvered = itemProps.has("sil");
     const isAdamantine = itemProps.has("ada");
 
+    // Build bypass sets from the creature's actual trait data
+    const drBypasses = new Set(tgtTraits.dr?.bypasses ?? []);
+    const diBypasses = new Set(tgtTraits.di?.bypasses ?? []);
+
     const damageModifiers = {};
     for (const type of damageTypes) {
       let modifier = "normal";
       let reason = null;
 
       if (immunities.has(type)) {
-        modifier = "immune";
-        reason = `Immune to ${type}`;
+        // Physical damage types may be bypassed by magical/silvered/adamantine weapons
+        if (PHYSICAL_TYPES.has(type) && diBypasses.size > 0) {
+          const bypassed = (diBypasses.has("mgc") && isMagical)
+                        || (diBypasses.has("sil") && isSilvered)
+                        || (diBypasses.has("ada") && isAdamantine);
+          if (bypassed) {
+            modifier = "normal";
+            reason = `${type} immunity BYPASSED (${isMagical ? "magical" : isSilvered ? "silvered" : "adamantine"} weapon)`;
+          } else {
+            modifier = "immune";
+            reason = `Immune to ${type}`;
+          }
+        } else {
+          modifier = "immune";
+          reason = `Immune to ${type}`;
+        }
       } else if (resistances.has(type)) {
-        if (PHYSICAL_TYPES.has(type) && isMagical) {
-          modifier = "normal";
-          reason = `${type} resistance BYPASSED (magical weapon)`;
-        } else if (PHYSICAL_TYPES.has(type) && isSilvered) {
-          modifier = "normal";
-          reason = `${type} resistance BYPASSED (silvered weapon)`;
-        } else if (PHYSICAL_TYPES.has(type) && isAdamantine) {
-          modifier = "normal";
-          reason = `${type} resistance BYPASSED (adamantine weapon)`;
+        if (PHYSICAL_TYPES.has(type) && drBypasses.size > 0) {
+          const bypassed = (drBypasses.has("mgc") && isMagical)
+                        || (drBypasses.has("sil") && isSilvered)
+                        || (drBypasses.has("ada") && isAdamantine);
+          if (bypassed) {
+            modifier = "normal";
+            reason = `${type} resistance BYPASSED (${isMagical ? "magical" : isSilvered ? "silvered" : "adamantine"} weapon)`;
+          } else {
+            modifier = "resistant";
+            reason = `Resists ${type} (half damage)`;
+          }
+        } else if (PHYSICAL_TYPES.has(type) && drBypasses.size === 0) {
+          modifier = "resistant";
+          reason = `Resists ${type} (half damage)`;
         } else {
           modifier = "resistant";
           reason = `Resists ${type} (half damage)`;
@@ -383,8 +436,8 @@ export class CombatState {
       }
 
       // Magic Resistance → advantage on saves vs spells
-      const magicRes = ExtendedEffects.hasMagicResistance(targetActor)
-                    || !!targetActor.getFlag("midi-qol", "magicResistance.all")
+      const magicRes = FlagsEngine.hasMagicResistance(targetActor)
+                    || ExtendedEffects.hasMagicResistance(targetActor)
                     || CombatState._hasFeature(targetActor, "Magic Resistance");
       if (magicRes && isSpell) {
         saveAdvantage = true;
@@ -431,16 +484,23 @@ export class CombatState {
         saveAdvReasons.push("BEACON OF HOPE → WIS save advantage");
       }
 
-      // ACE QOL flags
-      if (ExtendedEffects.hasAdvantage(targetActor, "save", saveAbility)
+      // ACE QOL flags (FlagsEngine checks ace-qol + midi-qol automatically)
+      if (FlagsEngine.hasSaveAdvantage(targetActor, saveAbility)
+       || ExtendedEffects.hasAdvantage(targetActor, "save", saveAbility)
        || ExtendedEffects.hasAdvantage(targetActor, "save", "all")) {
         saveAdvantage = true;
         saveAdvReasons.push("Effect grants save advantage");
       }
-      if (ExtendedEffects.hasDisadvantage(targetActor, "save", saveAbility)
+      if (FlagsEngine.hasSaveDisadvantage(targetActor, saveAbility)
+       || ExtendedEffects.hasDisadvantage(targetActor, "save", saveAbility)
        || ExtendedEffects.hasDisadvantage(targetActor, "save", "all")) {
         saveDisadvantage = true;
         saveDisadvReasons.push("Effect grants save disadvantage");
+      }
+
+      // Auto-fail saves from flags
+      if (FlagsEngine.autoFailsSave(targetActor, saveAbility)) {
+        autoFailSave = true;
       }
 
       // Bless → +1d4 to saves (bonus, not advantage)
@@ -458,11 +518,11 @@ export class CombatState {
     }
 
     // ── Evasion / Shield Master ─────────────────────────────────────────
-    const superSaver = ExtendedEffects.hasSuperSaver(targetActor, saveAbility)
-                    || !!targetActor.getFlag("midi-qol", `superSaver.${saveAbility}`)
+    const superSaver = FlagsEngine.hasEvasion(targetActor)
+                    || ExtendedEffects.hasSuperSaver(targetActor, saveAbility)
                     || (saveAbility === "dex" && CombatState._hasFeature(targetActor, "Evasion"));
-    const semiSuperSaver = ExtendedEffects.hasSemiSuperSaver(targetActor, saveAbility)
-                        || !!targetActor.getFlag("midi-qol", `semiSuperSaver.${saveAbility}`)
+    const semiSuperSaver = FlagsEngine._checkFlag(targetActor, `semiSuperSaver.${saveAbility}`)
+                        || ExtendedEffects.hasSemiSuperSaver(targetActor, saveAbility)
                         || (saveAbility === "dex" && CombatState._hasFeature(targetActor, "Shield Master"));
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -670,7 +730,7 @@ export class CombatState {
       saveAbility, saveAdvantage, saveDisadvantage, autoFailSave,
       saveBonuses, saveAdvReasons, saveDisadvReasons,
       superSaver, semiSuperSaver,
-      magicResistance: (ExtendedEffects.hasMagicResistance(targetActor) || CombatState._hasFeature(targetActor, "Magic Resistance")) && isSpell,
+      magicResistance: (FlagsEngine.hasMagicResistance(targetActor) || ExtendedEffects.hasMagicResistance(targetActor) || CombatState._hasFeature(targetActor, "Magic Resistance")) && isSpell,
 
       slayerMatch, slayerDamage, slayerType,
     };

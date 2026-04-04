@@ -12,6 +12,9 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { TargetState } from "./target-state.mjs";
 import { CombatState } from "./combat-state.mjs";
 import { QolSettings } from "./settings.mjs";
+import { FlagsEngine } from "./flags-engine.mjs";
+import { MergeCard } from "./merge-card.mjs";
+import { CoverEngine } from "./cover-engine.mjs";
 
 export class AttackPipeline {
 
@@ -196,31 +199,90 @@ export class AttackPipeline {
       return;
     }
 
-    const attackTotal = roll.total;
+    let attackTotal = roll.total;
     const d20Result = roll.dice?.[0]?.total ?? roll.result;
     const isCritRoll = d20Result === 20;
     const isFumbleRoll = d20Result === 1;
 
-    // Determine attack type
-    const actionType = item.system?.actionType ?? "mwak";
+    // Determine attack type — use the activity's getter (handles thrown, spell, etc.)
+    const actionType = subject.actionType ?? item.system?.actionType ?? "mwak";
     const isMelee = ["mwak", "msak"].includes(actionType);
     const isSpell = item.type === "spell" || ["msak", "rsak"].includes(actionType);
+
+    // ── Optional Bonus Prompts (Bardic Inspiration, Lucky, Precision Attack, etc.) ──
+    // Check if the actor has any optional bonuses available for this attack roll.
+    // Route to the correct player (owner of the attacking actor) via socket.
+    try {
+      const optionalResult = await FlagsEngine.routeOptionalPrompt(
+        actor, "attack", actionType, attackTotal, d20Result
+      );
+      if (optionalResult.bonuses.length > 0) {
+        attackTotal = optionalResult.newTotal;
+        this._debug(`Optional bonuses applied: ${optionalResult.bonuses.map(b => `${b.label} +${b.total}`).join(", ")} → new total ${attackTotal}`);
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Optional prompt failed (non-blocking):`, err);
+    }
 
     // ── Use pre-roll combat states if available, otherwise assess now ──
     const combatStates = this._lastCombatStates?.length
       ? this._lastCombatStates
       : CombatState.assessAll(actor, item);
 
-    // ── Build results from combat state ──
+    // ── Calculate cover for each target and build results ──
+    const atkToken = CoverEngine.getAttackerToken(actor);
     const results = [];
     for (const cs of combatStates) {
+      // ── Cover calculation: add AC bonus from cover ──
+      let coverResult = null;
+      let effectiveAC = cs.target.ac;
+      try {
+        if (QolSettings.get("enableCoverCalculation") && atkToken && cs.targetToken) {
+          coverResult = CoverEngine.calculateCover(atkToken, cs.targetToken);
+          if (coverResult.isFullCover) {
+            this._debug(`COVER: ${cs.target.name} has FULL COVER — untargetable`);
+          } else if (coverResult.acBonus > 0) {
+            effectiveAC += coverResult.acBonus;
+            this._debug(`COVER: ${cs.target.name} has ${coverResult.label} — AC ${cs.target.ac} → ${effectiveAC}`);
+          }
+          // Show visual indicator on target
+          CoverEngine.showCoverIndicator(cs.targetToken, coverResult);
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Cover calculation failed (non-blocking):`, err);
+      }
+
+      // ── CUTTING WORDS — Lore Bard reaction to reduce attack roll ──
+      // Must happen BEFORE hit determination since it changes the attack total.
+      let adjustedAttackTotal = attackTotal;
+      try {
+        const reactionEng = game.aceQol?.reactionEngine;
+        if (reactionEng && !isFumbleRoll && !isCritRoll) {
+          const cwResult = await reactionEng.checkCuttingWords({
+            actor: actor,
+            token: atkToken,
+            rollType: "attack",
+            total: attackTotal,
+            description: `${actor.name}'s attack with ${item.name}`,
+          });
+          if (cwResult.reduced) {
+            adjustedAttackTotal = cwResult.newTotal;
+            this._debug(`Cutting Words reduced attack total: ${attackTotal} → ${adjustedAttackTotal}`);
+          }
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Cutting Words check failed (non-blocking):`, err);
+      }
+
       // ── Determine hit/miss ──
       let hitResult;
       if (isFumbleRoll) {
         hitResult = "fumble";
+      } else if (coverResult?.isFullCover) {
+        hitResult = "miss"; // Full cover = can't be hit
       } else if (isCritRoll || cs.autoCrit) {
         hitResult = "critical";
-      } else if (attackTotal >= cs.target.ac) {
+      } else if (adjustedAttackTotal >= effectiveAC) {
         hitResult = "hit";
       } else {
         hitResult = "miss";
@@ -231,8 +293,11 @@ export class AttackPipeline {
         name: cs.target.name,
         img: cs.target.img,
         ac: cs.target.ac,
+        effectiveAC,
+        coverResult,
         hitResult,
-        attackTotal,
+        attackTotal: adjustedAttackTotal,
+        originalAttackTotal: attackTotal,
         d20Result,
         isCritRoll,
         isFumbleRoll,
@@ -243,6 +308,52 @@ export class AttackPipeline {
     this._lastCombatStates = null;
     this._lastCombatState = null;
 
+    // ── POST-HIT REACTIONS (Shield, etc.) ──
+    // Check before posting results so that Shield can change hits to misses.
+    // The reactionEngine is accessed via the global API (avoids circular imports).
+    const reactionEng = game.aceQol?.reactionEngine;
+    if (reactionEng) {
+      try {
+        const modifiedResults = await reactionEng.checkPostHitReactions(results, item, actor);
+        // Replace results in-place if modified (Shield may flip hit→miss)
+        if (modifiedResults) {
+          results.length = 0;
+          results.push(...modifiedResults);
+        }
+      } catch (err) {
+        console.error(`${MODULE_ID} | Post-hit reaction check failed:`, err);
+      }
+    }
+
+    // ── SILVERY BARBS — force reroll on successful attacks ──
+    // Opponents within 60ft can force the attacker to reroll the d20.
+    if (reactionEng) {
+      try {
+        for (let i = 0; i < results.length; i++) {
+          const r = results[i];
+          if (r.hitResult !== "hit" && r.hitResult !== "critical") continue;
+          const sbResult = await reactionEng.checkSilveryBarbs({
+            actor: actor,
+            token: atkToken,
+            rollType: "attack",
+            total: r.attackTotal,
+            dc: r.effectiveAC,
+            description: `${actor.name}'s attack against ${r.name}`,
+          });
+          if (sbResult.rerolled) {
+            // Re-evaluate hit with new d20
+            const newTotal = sbResult.newTotal ?? r.attackTotal;
+            if (newTotal < r.effectiveAC && !r.isCritRoll) {
+              results[i] = { ...r, hitResult: "miss", attackTotal: newTotal, silveryBarbsRerolled: true };
+              this._debug(`Silvery Barbs: ${actor.name}'s attack rerolled → ${newTotal} vs AC ${r.effectiveAC} → MISS`);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Silvery Barbs check failed (non-blocking):`, err);
+      }
+    }
+
     // ── Log results ──
     const hits = results.filter(r => r.hitResult === "hit" || r.hitResult === "critical");
     const misses = results.filter(r => r.hitResult === "miss" || r.hitResult === "fumble");
@@ -250,7 +361,7 @@ export class AttackPipeline {
     this._debug(`Attack: ${item.name} (${attackTotal}) → ${hits.length} hits, ${misses.length} misses`);
 
     // ── Post attack results to chat ──
-    await this._postAttackResults(item, actor, results, { isMelee, isSpell, roll });
+    await this._postAttackResults(item, actor, results, { isMelee, isSpell, roll, subject });
 
     // ── Store results for damage phase ──
     // The damage pipeline (Phase 4) will read this to apply damage
@@ -265,6 +376,8 @@ export class AttackPipeline {
       results,
       hits,
       misses,
+      actionType,
+      subject,
     });
   }
 
@@ -288,38 +401,55 @@ export class AttackPipeline {
     // Parse the roll formula to extract each modifier
     const formulaParts = [];
     const rollObj = opts.roll;
+
+    // ── MERGE CARD: store attack data instead of posting separate card ──
+    // When merge mode is enabled, we skip posting the attack card here.
+    // Instead, we cache the attack results so the damage engine can build
+    // a combined card when damage is calculated.
+    if (MergeCard.isEnabled) {
+      // Still build formula parts so the merge card can use them
+      this._buildFormulaPartsForMerge(item, actor, results, opts);
+      MergeCard.storeAttackResult({
+        item, actor, results,
+        roll: rollObj,
+        opts,
+        formulaParts: this._lastFormulaPartsHtml ?? "",
+      });
+      return; // Don't post the separate attack card
+    }
     const rollFormula = rollObj?.formula ?? "";
     const rollTerms = rollObj?.terms ?? [];
 
-    // Try to extract meaningful labels from roll data
-    const atkAbility = item.system?.attack?.ability || item.system?.ability || "";
+    // ── Ability modifier — use the activity's computed ability (handles Battle Smith,
+    //    finesse, spell attacks, thrown weapons, etc. automatically via the system) ──
     const actorAbilities = actor.system?.abilities ?? {};
     const profBonus = actor.system?.attributes?.prof ?? 0;
+    const activity = opts.subject; // AttackActivity from dnd5e.rollAttackV2 hook
 
-    // Find the ability used — check all abilities for a mod that matches
-    let abilityLabel = atkAbility?.toUpperCase() || "";
-    let abilityMod = atkAbility ? (actorAbilities[atkAbility]?.mod ?? 0) : 0;
+    // activity.ability resolves: explicit override → spellcasting → availableAbilities
+    // (Battle Smith INT, finesse highest of STR/DEX, spell CHA/INT/WIS, ranged DEX, melee STR)
+    const resolvedAbility = activity?.ability
+      || item.system?.attack?.ability || item.system?.ability || "";
+    let abilityLabel = resolvedAbility?.toUpperCase() || "";
+    let abilityMod = resolvedAbility ? (actorAbilities[resolvedAbility]?.mod ?? 0) : 0;
 
-    // If we couldn't find the ability from the item, try to figure it out
-    // by matching the roll total breakdown
+    // Fallback only if activity wasn't available (e.g., old dnd5e version)
     if (!abilityLabel) {
-      // For melee: usually STR, for finesse/ranged: usually DEX
-      const actionType = item.system?.actionType ?? "mwak";
-      if (["rwak", "rsak"].includes(actionType)) {
-        abilityLabel = "DEX";
-        abilityMod = actorAbilities.dex?.mod ?? 0;
+      const actionType = activity?.actionType ?? item.system?.actionType ?? "mwak";
+      const isFinesse = item.system?.properties?.has?.("fin");
+      const isThrown = item.system?.properties?.has?.("thr");
+      const strMod = actorAbilities.str?.mod ?? 0;
+      const dexMod = actorAbilities.dex?.mod ?? 0;
+
+      if (isFinesse) {
+        if (dexMod > strMod) { abilityLabel = "DEX"; abilityMod = dexMod; }
+        else { abilityLabel = "STR"; abilityMod = strMod; }
+      } else if (isThrown && actionType === "rwak") {
+        abilityLabel = "STR"; abilityMod = strMod;
+      } else if (["rwak", "rsak"].includes(actionType)) {
+        abilityLabel = "DEX"; abilityMod = dexMod;
       } else {
-        // Melee — check if STR or DEX is higher (finesse)
-        const strMod = actorAbilities.str?.mod ?? 0;
-        const dexMod = actorAbilities.dex?.mod ?? 0;
-        const isFinesse = item.system?.properties?.has?.("fin");
-        if (isFinesse && dexMod > strMod) {
-          abilityLabel = "DEX";
-          abilityMod = dexMod;
-        } else {
-          abilityLabel = "STR";
-          abilityMod = strMod;
-        }
+        abilityLabel = "STR"; abilityMod = strMod;
       }
     }
 
@@ -332,9 +462,8 @@ export class AttackPipeline {
       + `<span class="ace-qol-atk-d20-result">${d20}</span>`
       + `</span>`
     );
-    if (abilityMod !== 0) {
-      formulaParts.push(`<span class="ace-qol-mod-num">${abilityMod >= 0 ? "+" : ""}${abilityMod}</span><span class="ace-qol-mod-label">${abilityLabel}</span>`);
-    }
+    // Always show the ability label so users know which stat is used (even when +0)
+    formulaParts.push(`<span class="ace-qol-mod-num">${abilityMod >= 0 ? "+" : ""}${abilityMod}</span><span class="ace-qol-mod-label">${abilityLabel}</span>`);
     if (profBonus) {
       formulaParts.push(`<span class="ace-qol-mod-num">+${profBonus}</span><span class="ace-qol-mod-label">PROF</span>`);
     }
@@ -382,15 +511,25 @@ export class AttackPipeline {
                      : r.hitResult === "fumble" ? "FUMBLE"
                      : "MISS";
 
+      // ── Cover tag (shown next to AC when cover applies) ──
+      const coverTag = r.coverResult && r.coverResult.acBonus > 0
+        ? `<span class="ace-qol-tag ace-qol-tag-cover" title="${r.coverResult.label} (${r.coverResult.blockedPct}% blocked)"><i class="fas fa-shield-alt"></i> ${r.coverResult.label}</span>`
+        : r.coverResult?.isFullCover
+        ? `<span class="ace-qol-tag ace-qol-tag-cover" style="color:#ff4444;"><i class="fas fa-shield-alt"></i> Full Cover</span>`
+        : "";
+      const acDisplay = r.effectiveAC && r.effectiveAC !== r.ac
+        ? `AC ${r.effectiveAC} <span style="opacity:0.5;font-size:0.85em;">(${r.ac}+${r.effectiveAC - r.ac})</span>`
+        : `AC ${r.ac}`;
+
       return `
         <div class="ace-qol-atk-row">
           <div class="ace-qol-atk-target">
             <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-atk-img" />
             <span class="ace-qol-atk-name">${r.name}</span>
-            <span class="ace-qol-atk-ac">AC ${r.ac}</span>
+            <span class="ace-qol-atk-ac">${acDisplay}</span>
             <span class="ace-qol-atk-result ${hitClass}">${hitLabel}</span>
           </div>
-          ${tagHtml ? `<div class="ace-qol-atk-tags">${tagHtml}</div>` : ""}
+          ${coverTag || tagHtml ? `<div class="ace-qol-atk-tags">${coverTag}${tagHtml}</div>` : ""}
         </div>
       `;
     }).join("");
@@ -423,6 +562,71 @@ export class AttackPipeline {
         }
       }
     });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Merge Card Support — Pre-build formula HTML for combined display
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Build the attack formula HTML string for the merge card.
+   * Same logic as the formula builder in _postAttackResults, but stored
+   * in this._lastFormulaPartsHtml for the MergeCard to consume.
+   */
+  _buildFormulaPartsForMerge(item, actor, results, opts) {
+    const r0 = results[0];
+    const d20 = r0.d20Result;
+    const parts = [];
+
+    const actorAbilities = actor.system?.abilities ?? {};
+    const profBonus = actor.system?.attributes?.prof ?? 0;
+    const activity = opts.subject;
+
+    const resolvedAbility = activity?.ability
+      || item.system?.attack?.ability || item.system?.ability || "";
+    let abilityLabel = resolvedAbility?.toUpperCase() || "";
+    let abilityMod = resolvedAbility ? (actorAbilities[resolvedAbility]?.mod ?? 0) : 0;
+
+    if (!abilityLabel) {
+      const actionType = activity?.actionType ?? item.system?.actionType ?? "mwak";
+      const isFinesse = item.system?.properties?.has?.("fin");
+      const isThrown = item.system?.properties?.has?.("thr");
+      const strMod = actorAbilities.str?.mod ?? 0;
+      const dexMod = actorAbilities.dex?.mod ?? 0;
+      if (isFinesse) {
+        if (dexMod > strMod) { abilityLabel = "DEX"; abilityMod = dexMod; }
+        else { abilityLabel = "STR"; abilityMod = strMod; }
+      } else if (isThrown && actionType === "rwak") {
+        abilityLabel = "STR"; abilityMod = strMod;
+      } else if (["rwak", "rsak"].includes(actionType)) {
+        abilityLabel = "DEX"; abilityMod = dexMod;
+      } else {
+        abilityLabel = "STR"; abilityMod = strMod;
+      }
+    }
+
+    const bd20Path = `modules/ace-qol/Assets/Dice%20Dice/BD20/BD20-${d20}_nobg.png`;
+    parts.push(
+      `<span class="ace-qol-mod-die">`
+      + `<img class="ace-qol-atk-d20-img" src="${bd20Path}" alt="d20" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'">`
+      + `<i class="fas fa-dice-d20 ace-qol-atk-d20-fallback" style="display:none"></i>`
+      + `<span class="ace-qol-atk-d20-result">${d20}</span>`
+      + `</span>`
+    );
+    parts.push(`<span class="ace-qol-mod-num">${abilityMod >= 0 ? "+" : ""}${abilityMod}</span><span class="ace-qol-mod-label">${abilityLabel}</span>`);
+    if (profBonus) {
+      parts.push(`<span class="ace-qol-mod-num">+${profBonus}</span><span class="ace-qol-mod-label">PROF</span>`);
+    }
+    const magicBonus = item.system?.magicalBonus ?? 0;
+    if (magicBonus) {
+      parts.push(`<span class="ace-qol-mod-num">+${magicBonus}</span><span class="ace-qol-mod-label ace-qol-mod-magic">MAGIC</span>`);
+    }
+    const itemAtkBonus = item.system?.attack?.bonus ? parseInt(item.system.attack.bonus) || 0 : 0;
+    if (itemAtkBonus) {
+      parts.push(`<span class="ace-qol-mod-num">+${itemAtkBonus}</span><span class="ace-qol-mod-label">ITEM</span>`);
+    }
+
+    this._lastFormulaPartsHtml = parts.join(" ");
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

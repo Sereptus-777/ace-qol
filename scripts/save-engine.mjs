@@ -1167,6 +1167,73 @@ export class SaveEngine {
       npcResults.push(result);
     }
 
+    // ── POST-SAVE REACTIONS (Legendary Resistance) ──
+    // Check if any NPC that failed can use Legendary Resistance.
+    const reactionEng = game.aceQol?.reactionEngine;
+    if (reactionEng) {
+      try {
+        // Enrich results with actor references for the reaction engine
+        const enriched = npcResults.map(r => ({
+          ...r,
+          actor: game.actors.get(r.actorId),
+          ability: saveAbility,
+          dc: saveDC,
+          total: r.saveTotal,
+          saved: r.passed,
+        }));
+        const modified = await reactionEng.checkPostSaveReactions(enriched);
+        // Apply any changes (Legendary Resistance flips saved to true)
+        for (let i = 0; i < modified.length; i++) {
+          if (modified[i].legendaryResistance && modified[i].saved) {
+            npcResults[i].passed = true;
+            npcResults[i].legendaryResistance = true;
+            npcResults[i].resultLabel = "LEGENDARY RESISTANCE";
+            // Recalculate damage multiplier
+            if (halfOnSave) npcResults[i].damageMultiplier = 0.5;
+            else npcResults[i].damageMultiplier = 0;
+          }
+        }
+      } catch (err) {
+        console.error(`${MODULE_ID} | Post-save reaction check failed:`, err);
+      }
+    }
+
+    // ── SILVERY BARBS — force reroll on successful NPC saves ──
+    if (reactionEng) {
+      try {
+        for (let i = 0; i < npcResults.length; i++) {
+          const r = npcResults[i];
+          if (!r.passed) continue; // Only targets successful saves
+          const targetActor = game.actors.get(r.actorId);
+          const scene = game.scenes.get(r.sceneId) ?? canvas.scene;
+          const targetTokenDoc = scene?.tokens?.get(r.tokenDocId);
+          const targetToken = targetTokenDoc?.object;
+          if (!targetActor || !targetToken) continue;
+
+          const sbResult = await reactionEng.checkSilveryBarbs({
+            actor: targetActor,
+            token: targetToken,
+            rollType: "save",
+            total: r.saveTotal,
+            dc: saveDC,
+            description: `${targetActor.name}'s ${saveAbility.toUpperCase()} save`,
+          });
+          if (sbResult.rerolled && sbResult.newTotal !== undefined) {
+            const newPassed = sbResult.newTotal >= saveDC;
+            if (!newPassed) {
+              npcResults[i].passed = false;
+              npcResults[i].saveTotal = sbResult.newTotal;
+              npcResults[i].silveryBarbsRerolled = true;
+              npcResults[i].resultLabel = "SILVERY BARBS → FAILED";
+              npcResults[i].damageMultiplier = 1;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Silvery Barbs save check failed (non-blocking):`, err);
+      }
+    }
+
     // ── Build PC results — check if they already rolled (same cast only) ──
     const thisCastId = message.id; // target list message ID = cast ID
     const recentMsgs = game.messages.contents.slice(-30);

@@ -10,6 +10,9 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
 import { DescriptionParser } from "./description-parser.mjs";
 import { RiderEngine } from "./rider-engine.mjs";
+import { MergeCard } from "./merge-card.mjs";
+
+const PHYSICAL_TYPES = new Set(["bludgeoning", "piercing", "slashing"]);
 
 export class DamageEngine {
 
@@ -283,7 +286,7 @@ export class DamageEngine {
    * For each hit target, calculates damage with type separation and crit rules.
    */
   async _onAttackComplete(data) {
-    const { item, actor, results, hits } = data;
+    const { item, actor, results, hits, actionType: hookActionType, subject } = data;
     if (!hits?.length) return; // No hits, no damage
 
     // Player characters get a ROLL DAMAGE button — they click to roll
@@ -292,8 +295,9 @@ export class DamageEngine {
       try {
         const firstHit = hits[0];
         const targetActor = firstHit.targetActor ?? game.actors.get(firstHit.actorId);
-        const isMelee = ["mwak", "msak"].includes(item.system?.actionType ?? "mwak");
-        const isRanged = ["rwak", "rsak"].includes(item.system?.actionType ?? "");
+        const resolvedActionType = hookActionType ?? subject?.actionType ?? item.system?.actionType ?? "mwak";
+        const isMelee = ["mwak", "msak"].includes(resolvedActionType);
+        const isRanged = ["rwak", "rsak"].includes(resolvedActionType);
         const isCrit = firstHit.hitResult === "critical";
 
         const availableRiders = RiderEngine.detectRiders(actor, {
@@ -349,7 +353,12 @@ export class DamageEngine {
         // Non-blocking: if rider detection fails, still post the damage button
       }
 
-      await this._postDamageButton(item, actor, hits);
+      if (MergeCard.isEnabled) {
+        // Merge mode: use merge card layout for the PC damage button
+        await this._postMergeDamageButton(item, actor, hits);
+      } else {
+        await this._postDamageButton(item, actor, hits);
+      }
       return;
     }
 
@@ -362,7 +371,22 @@ export class DamageEngine {
       const targetState = hit; // hit already contains full combat state
 
       // Roll all damage components separately by type
-      const components = await this._rollDamageComponents(item, actor, targetState, isCrit, critRule);
+      let components = await this._rollDamageComponents(item, actor, targetState, isCrit, critRule);
+
+      // ── ABSORB ELEMENTS — target reaction to halve elemental damage ──
+      try {
+        const reactionEng = game.aceQol?.reactionEngine;
+        if (reactionEng && hit.targetActor && hit.targetToken) {
+          const absorbResult = await reactionEng.checkPreDamageReactions(
+            components, hit.targetActor, hit.targetToken, actor, item
+          );
+          if (absorbResult.absorbed) {
+            components = absorbResult.modifiedComponents;
+          }
+        }
+      } catch (err) {
+        console.warn(`ace-qol | Absorb Elements check failed (non-blocking):`, err);
+      }
 
       // Apply resistance/immunity/vulnerability to each component
       const applied = this._applyDamageModifiers(components, targetState.damageModifiers);
@@ -382,9 +406,15 @@ export class DamageEngine {
       });
     }
 
-    // ── Post the batch damage card ──
+    // ── Post the batch damage card (or merge card) ──
     try {
-      await this._postDamageCard(item, actor, damageResults, critRule);
+      if (MergeCard.isEnabled) {
+        // Merge mode: combine attack + damage into one card
+        const attackData = MergeCard.consumeAttackResult();
+        await MergeCard.postMergedDamageCard(attackData, item, actor, damageResults, critRule);
+      } else {
+        await this._postDamageCard(item, actor, damageResults, critRule);
+      }
     } catch (err) {
       console.error(`${MODULE_ID} | _postDamageCard CRASHED:`, err);
       console.error(`${MODULE_ID} | damageResults:`, JSON.stringify(damageResults, (k, v) => {
@@ -544,28 +574,39 @@ export class DamageEngine {
           // Tag first component with modifier metadata for card labels
           if (components.length > 0 && !components[0]._modMeta) {
             const magicBonus = sys.magicalBonus ?? 0;
-            // Detect ability name + mod value robustly
+            // Detect ability name + mod — use the activity's resolved ability getter
+            // (handles Battle Smith INT, finesse, spell CHA/INT/WIS, ranged DEX, etc.)
             let abilName = "MOD";
             let abilMod = 0;
             try {
               const str = rollData.abilities?.str?.mod ?? 0;
               const dex = rollData.abilities?.dex?.mod ?? 0;
-              const atkAbility = activity?.attack?.ability;
-              if (atkAbility) {
-                abilName = atkAbility.toUpperCase();
-                abilMod = rollData.abilities?.[atkAbility]?.mod ?? rollData.mod ?? 0;
+              // activity.ability is the system's resolved getter — picks the correct
+              // ability accounting for class features, finesse, spellcasting, etc.
+              const resolvedAbility = activity?.ability;
+              if (resolvedAbility) {
+                abilName = resolvedAbility.toUpperCase();
+                abilMod = rollData.abilities?.[resolvedAbility]?.mod ?? rollData.mod ?? 0;
               } else {
-                const isFinesse = sys.properties?.has?.("fin") || sys.properties?.fin;
-                const isRanged = sys.actionType === "rwak";
-                if (isFinesse) {
-                  abilName = (dex >= str) ? "DEX" : "STR";
-                  abilMod = Math.max(str, dex);
-                } else if (isRanged) {
-                  abilName = "DEX";
-                  abilMod = dex;
+                // Fallback for activities without an ability getter
+                const atkAbility = activity?.attack?.ability;
+                if (atkAbility && atkAbility !== "none") {
+                  abilName = atkAbility.toUpperCase();
+                  abilMod = rollData.abilities?.[atkAbility]?.mod ?? rollData.mod ?? 0;
                 } else {
-                  abilName = "STR";
-                  abilMod = str;
+                  const actionType = activity?.actionType ?? sys.actionType ?? "mwak";
+                  const isFinesse = sys.properties?.has?.("fin") || sys.properties?.fin;
+                  const isThrown = sys.properties?.has?.("thr") || sys.properties?.thr;
+                  if (isFinesse) {
+                    abilName = (dex >= str) ? "DEX" : "STR";
+                    abilMod = Math.max(str, dex);
+                  } else if (isThrown && actionType === "rwak") {
+                    abilName = "STR"; abilMod = str;
+                  } else if (["rwak", "rsak"].includes(actionType)) {
+                    abilName = "DEX"; abilMod = dex;
+                  } else {
+                    abilName = "STR"; abilMod = str;
+                  }
                 }
               }
               // Final fallback: if rollData.mod is set and we got 0, use it
@@ -615,11 +656,12 @@ export class DamageEngine {
 
             // First part gets ability mod + magic bonus
             if (i === 0) {
+              const resolvedAbil = activity?.ability;
               const str = rollData.abilities?.str?.mod ?? 0;
               const dex = rollData.abilities?.dex?.mod ?? 0;
-              const isFinesse = sys.properties?.has?.("fin") || sys.properties?.fin;
-              const isRanged = sys.actionType === "rwak";
-              const abilityMod = rollData.mod ?? (isFinesse ? Math.max(str, dex) : isRanged ? dex : str);
+              const abilityMod = resolvedAbil
+                ? (rollData.abilities?.[resolvedAbil]?.mod ?? rollData.mod ?? 0)
+                : (rollData.mod ?? str);
               if (abilityMod !== 0) formula += abilityMod >= 0 ? `+${abilityMod}` : `${abilityMod}`;
 
               const magicBonus = sys.magicalBonus ?? 0;
@@ -634,12 +676,22 @@ export class DamageEngine {
 
             // Tag first component with modifier metadata
             if (i === 0) {
-              const isFinesse = sys.properties?.has?.("fin") || sys.properties?.fin;
-              const isRanged = sys.actionType === "rwak";
+              const resolvedAbil = activity?.ability;
               const str = rollData.abilities?.str?.mod ?? 0;
               const dex = rollData.abilities?.dex?.mod ?? 0;
-              const abilMod = rollData.mod ?? (isFinesse ? Math.max(str, dex) : isRanged ? dex : str);
-              let abilName = isFinesse ? (dex >= str ? "DEX" : "STR") : isRanged ? "DEX" : "STR";
+              let abilMod, abilName;
+              if (resolvedAbil) {
+                abilName = resolvedAbil.toUpperCase();
+                abilMod = rollData.abilities?.[resolvedAbil]?.mod ?? rollData.mod ?? 0;
+              } else {
+                const actionType = activity?.actionType ?? sys.actionType ?? "mwak";
+                const isFinesse = sys.properties?.has?.("fin") || sys.properties?.fin;
+                const isThrown = sys.properties?.has?.("thr") || sys.properties?.thr;
+                abilMod = rollData.mod ?? (isFinesse ? Math.max(str, dex) : ["rwak","rsak"].includes(actionType) ? dex : str);
+                abilName = isFinesse ? (dex >= str ? "DEX" : "STR")
+                         : (isThrown && actionType === "rwak") ? "STR"
+                         : ["rwak","rsak"].includes(actionType) ? "DEX" : "STR";
+              }
               comp._modMeta = {
                 abilityMod: abilMod,
                 abilityName: abilName,
@@ -868,7 +920,23 @@ export class DamageEngine {
     try {
       for (const hit of hits) {
         const isCrit = hit.hitResult === "critical";
-        const components = await this._rollDamageComponents(item, actor, hit, isCrit, critRule);
+        let components = await this._rollDamageComponents(item, actor, hit, isCrit, critRule);
+
+        // ── ABSORB ELEMENTS — target reaction to halve elemental damage ──
+        try {
+          const reactionEng = game.aceQol?.reactionEngine;
+          if (reactionEng && hit.targetActor && hit.targetToken) {
+            const absorbResult = await reactionEng.checkPreDamageReactions(
+              components, hit.targetActor, hit.targetToken, actor, item
+            );
+            if (absorbResult.absorbed) {
+              components = absorbResult.modifiedComponents;
+            }
+          }
+        } catch (err) {
+          console.warn(`ace-qol | Absorb Elements check failed (non-blocking):`, err);
+        }
+
         const applied = this._applyDamageModifiers(components, hit.damageModifiers ?? {});
         const totalRaw = applied.reduce((sum, c) => sum + c.raw, 0);
         const totalFinal = applied.reduce((sum, c) => sum + c.final, 0);
@@ -956,6 +1024,71 @@ export class DamageEngine {
         }
       }
     });
+  }
+
+  /**
+   * Post a merged attack + ROLL DAMAGE button card for PC attacks.
+   * Does the same pre-rolling as _postDamageButton, but wraps the output
+   * in MergeCard's combined layout that includes attack results above.
+   */
+  async _postMergeDamageButton(item, actor, hits) {
+    const critRule = QolSettings.get("critRule") ?? "maxPlusRoll";
+    const anyCrit = hits.some(h => h.hitResult === "critical");
+
+    // ── Pre-roll damage (same as _postDamageButton) ──
+    DamageEngine._suppressDiceAnimation = true;
+    const preRolled = [];
+    try {
+      for (const hit of hits) {
+        const isCrit = hit.hitResult === "critical";
+        const components = await this._rollDamageComponents(item, actor, hit, isCrit, critRule);
+        const applied = this._applyDamageModifiers(components, hit.damageModifiers ?? {});
+        const totalRaw = applied.reduce((sum, c) => sum + c.raw, 0);
+        const totalFinal = applied.reduce((sum, c) => sum + c.final, 0);
+
+        const serializedComponents = applied.map(c => ({
+          name: c.name, formula: c.formula, total: c.total ?? c.raw,
+          raw: c.raw, final: c.final, modifier: c.modifier, reason: c.reason,
+          type: c.type, isCrit: c.isCrit ?? false, normalTotal: c.normalTotal,
+          _modMeta: c._modMeta ?? null,
+          terms: DamageEngine._serializeRollTerms(c.roll),
+        }));
+
+        preRolled.push({
+          tokenId: hit.targetToken?.id,
+          tokenDocId: hit.targetToken?.document?.id ?? hit.targetToken?.id,
+          actorId: hit.targetActor?.id,
+          sceneId: canvas.scene?.id,
+          hitResult: hit.hitResult, isCrit,
+          name: hit.target?.name ?? hit.name,
+          img: hit.target?.img ?? hit.img,
+          currentHP: hit.target?.currentHP, maxHP: hit.target?.maxHP,
+          totalRaw, totalFinal,
+          components: serializedComponents,
+          damageModifiers: hit.damageModifiers,
+        });
+      }
+    } finally {
+      DamageEngine._suppressDiceAnimation = false;
+    }
+
+    // ── Pre-parse description for post-hit effects ──
+    let parsedDescription = null;
+    try {
+      const parsed = DescriptionParser.parse(item);
+      if (parsed.saves.length || parsed.effectTable || parsed.bonusDamage.length || parsed.conditions.length) {
+        parsedDescription = {
+          saves: parsed.saves, effectTable: parsed.effectTable,
+          bonusDamage: parsed.bonusDamage, conditions: parsed.conditions,
+        };
+      }
+    } catch (e) {
+      console.warn(`${MODULE_ID} | DescriptionParser.parse failed in _postMergeDamageButton:`, e.message);
+    }
+
+    // ── Post the merged card ──
+    const attackData = MergeCard.consumeAttackResult();
+    await MergeCard.postMergedDamageButton(attackData, item, actor, hits, preRolled, critRule, parsedDescription);
   }
 
   async _rollDamageFromButton(message) {
@@ -1243,6 +1376,7 @@ export class DamageEngine {
     await ChatMessage.create({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor }),
+      whisper: [game.user.id],
       flags: {
         [MODULE_ID]: {
           type: "postHitSave",
@@ -1759,16 +1893,50 @@ export class DamageEngine {
                 const resistSet = new Set((tgtTraits.dr?.value ?? []).map(s => s.toLowerCase()));
                 const immuneSet = new Set((tgtTraits.di?.value ?? []).map(s => s.toLowerCase()));
                 const vulnSet = new Set((tgtTraits.dv?.value ?? []).map(s => s.toLowerCase()));
+                const drBypasses = new Set(tgtTraits.dr?.bypasses ?? []);
+                const diBypasses = new Set(tgtTraits.di?.bypasses ?? []);
                 const dmgType = (fx.damageType ?? "").toLowerCase();
 
+                // Determine weapon properties for bypass checks
+                const riderItemProps = new Set(item?.system?.properties ?? []);
+                const riderIsMagical = riderItemProps.has("mgc") || !!item?.system?.magicAvailable;
+                const riderIsSilvered = riderItemProps.has("sil");
+                const riderIsAdamantine = riderItemProps.has("ada");
+
                 if (immuneSet.has(dmgType)) {
-                  finalTotal = 0;
-                  dmgModifier = "immune";
-                  dmgModReason = `Immune to ${dmgType}`;
+                  // Check if physical damage immunity is bypassed
+                  if (PHYSICAL_TYPES.has(dmgType) && diBypasses.size > 0) {
+                    const bypassed = (diBypasses.has("mgc") && riderIsMagical)
+                                  || (diBypasses.has("sil") && riderIsSilvered)
+                                  || (diBypasses.has("ada") && riderIsAdamantine);
+                    if (!bypassed) {
+                      finalTotal = 0;
+                      dmgModifier = "immune";
+                      dmgModReason = `Immune to ${dmgType}`;
+                    }
+                    // else: bypassed — stays normal
+                  } else {
+                    finalTotal = 0;
+                    dmgModifier = "immune";
+                    dmgModReason = `Immune to ${dmgType}`;
+                  }
                 } else if (resistSet.has(dmgType)) {
-                  finalTotal = Math.floor(rawTotal / 2);
-                  dmgModifier = "resistant";
-                  dmgModReason = `Resists ${dmgType} (half damage)`;
+                  // Check if physical damage resistance is bypassed
+                  if (PHYSICAL_TYPES.has(dmgType) && drBypasses.size > 0) {
+                    const bypassed = (drBypasses.has("mgc") && riderIsMagical)
+                                  || (drBypasses.has("sil") && riderIsSilvered)
+                                  || (drBypasses.has("ada") && riderIsAdamantine);
+                    if (!bypassed) {
+                      finalTotal = Math.floor(rawTotal / 2);
+                      dmgModifier = "resistant";
+                      dmgModReason = `Resists ${dmgType} (half damage)`;
+                    }
+                    // else: bypassed — stays normal
+                  } else {
+                    finalTotal = Math.floor(rawTotal / 2);
+                    dmgModifier = "resistant";
+                    dmgModReason = `Resists ${dmgType} (half damage)`;
+                  }
                 } else if (vulnSet.has(dmgType)) {
                   finalTotal = rawTotal * 2;
                   dmgModifier = "vulnerable";
@@ -2264,8 +2432,11 @@ export class DamageEngine {
       return;
     }
 
+    // Retrieve the attacking item for bypass checks (magical/silvered/adamantine)
+    const attackItem = flags.itemUuid ? await fromUuid(flags.itemUuid) : null;
+
     // Assess new target's defenses
-    const damageModifiers = this._getTargetDamageModifiers(actor);
+    const damageModifiers = this._getTargetDamageModifiers(actor, attackItem);
 
     let components;
     if (isCleave && overkillAmount > 0) {
@@ -2343,23 +2514,58 @@ export class DamageEngine {
 
   /**
    * Build damage modifiers map from an actor's traits (resistances/immunities/vulnerabilities).
+   * @param {Actor} actor - The target actor
+   * @param {Item|null} item - The attacking item (for bypass property checks)
    */
-  _getTargetDamageModifiers(actor) {
+  _getTargetDamageModifiers(actor, item = null) {
     const traits = actor?.system?.traits ?? {};
     const resistSet = new Set((traits.dr?.value ?? []).map(s => s.toLowerCase()));
     const immuneSet = new Set((traits.di?.value ?? []).map(s => s.toLowerCase()));
     const vulnSet = new Set((traits.dv?.value ?? []).map(s => s.toLowerCase()));
+    const drBypasses = new Set(traits.dr?.bypasses ?? []);
+    const diBypasses = new Set(traits.di?.bypasses ?? []);
+
+    // Determine weapon properties for bypass checks
+    const itemProps = new Set(item?.system?.properties ?? []);
+    const isMagical = itemProps.has("mgc") || !!item?.system?.magicAvailable;
+    const isSilvered = itemProps.has("sil");
+    const isAdamantine = itemProps.has("ada");
 
     const modifiers = {};
-    for (const type of resistSet) {
-      modifiers[type] = { modifier: "resistant", reason: `Resists ${type}` };
-    }
+
     for (const type of immuneSet) {
+      // Physical damage types may be bypassed by magical/silvered/adamantine weapons
+      if (PHYSICAL_TYPES.has(type) && diBypasses.size > 0) {
+        const bypassed = (diBypasses.has("mgc") && isMagical)
+                      || (diBypasses.has("sil") && isSilvered)
+                      || (diBypasses.has("ada") && isAdamantine);
+        if (bypassed) {
+          // Don't add immunity — weapon bypasses it
+          continue;
+        }
+      }
       modifiers[type] = { modifier: "immune", reason: `Immune to ${type}` };
     }
+
+    for (const type of resistSet) {
+      if (modifiers[type]) continue; // Already immune (takes priority)
+      if (PHYSICAL_TYPES.has(type) && drBypasses.size > 0) {
+        const bypassed = (drBypasses.has("mgc") && isMagical)
+                      || (drBypasses.has("sil") && isSilvered)
+                      || (drBypasses.has("ada") && isAdamantine);
+        if (bypassed) {
+          // Don't add resistance — weapon bypasses it
+          continue;
+        }
+      }
+      modifiers[type] = { modifier: "resistant", reason: `Resists ${type}` };
+    }
+
     for (const type of vulnSet) {
+      if (modifiers[type]) continue; // Immunity/resistance takes priority
       modifiers[type] = { modifier: "vulnerable", reason: `Vulnerable to ${type}` };
     }
+
     return modifiers;
   }
 
