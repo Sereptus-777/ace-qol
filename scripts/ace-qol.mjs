@@ -25,6 +25,7 @@ import { ConditionLibrary }     from "./condition-library.mjs";
 import { DurationTracker }      from "./duration-tracker.mjs";
 import { SpeedRolls }           from "./speed-rolls.mjs";
 import { MergeCard }            from "./merge-card.mjs";
+import { LootEngine }           from "./loot-engine.mjs";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 let extendedEffects      = null;
@@ -37,6 +38,7 @@ let reactionEngine       = null;
 let overTimeEngine       = null;
 let bloodiedEngine       = null;
 let speedRolls           = null;
+let lootEngine           = null;
 
 const SOCKET_NAME = `module.${MODULE_ID}`;
 
@@ -44,6 +46,7 @@ const SOCKET_NAME = `module.${MODULE_ID}`;
 Hooks.once("init", () => {
   try {
     QolSettings.register();
+    LootEngine.registerSettings();
   } catch (err) {
     console.error(`${MODULE_ID} | Settings registration failed:`, err);
   }
@@ -171,6 +174,33 @@ Hooks.once("ready", () => {
     console.log(`${MODULE_ID} | Speed rolls online`);
   } catch (err) {
     console.error(`${MODULE_ID} | Speed rolls init failed:`, err);
+  }
+
+  // Loot Engine — GM only (generates loot on NPC death)
+  if (game.user.isGM) {
+    try {
+      lootEngine = new LootEngine();
+      LootEngine.registerAPI(lootEngine);
+      // Hook: generate loot card when NPC drops to 0 HP
+      Hooks.on("updateActor", async (actor, changes) => {
+        try {
+          if (!game.settings.get(MODULE_ID, "enableLootGeneration")) return;
+          if (!game.settings.get(MODULE_ID, "lootOnDeath")) return;
+          const hpUpdate = foundry.utils.getProperty(changes, "system.attributes.hp.value");
+          if (hpUpdate !== 0) return;
+          if (actor.hasPlayerOwner || actor.type !== "npc") return;
+          const cr = actor.system.details?.cr ?? 0;
+          const minCR = game.settings.get(MODULE_ID, "minCRForLoot") ?? 0.25;
+          if (cr < minCR) return;
+          await lootEngine.checkAndGenerateOnDeath(actor);
+        } catch (err) {
+          console.error(`${MODULE_ID} | Loot on death failed:`, err);
+        }
+      });
+      console.log(`${MODULE_ID} | Loot engine online`);
+    } catch (err) {
+      console.error(`${MODULE_ID} | Loot engine init failed:`, err);
+    }
   }
 
   // ── Socket bridge: player attacks → GM processing ──
@@ -492,6 +522,8 @@ Hooks.once("ready", () => {
     durationTracker,
     speedRolls,
     MergeCard,
+    LootEngine,
+    lootEngine,
 
     /** Check if a setting is enabled */
     isEnabled: (key) => QolSettings.get(key),
