@@ -83,7 +83,13 @@ export class SaveEngine {
     Hooks.on("createMeasuredTemplate", (templateDoc, context, userId) => {
       if (!game.user.isGM) return;
       // Small delay to let the PIXI shape render
-      setTimeout(() => this._onTemplateCreated(templateDoc), 100);
+      setTimeout(async () => {
+        try {
+          await this._onTemplateCreated(templateDoc);
+        } catch (err) {
+          console.error(`${MODULE_ID} | _onTemplateCreated CRASHED:`, err);
+        }
+      }, 100);
     });
 
     // ── Persistent button wiring for ALL save card types ──
@@ -308,11 +314,15 @@ export class SaveEngine {
 
     const { item, actor, saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activityId } = pending;
 
-    if (timing.isInstant) {
+    console.log(`${MODULE_ID} | Template resolved: spell="${item.name}", timing=`, timing, `isInstant=${timing?.isInstant}, tokens=${tokens.length}`);
+
+    if (timing?.isInstant) {
       // ── Instant spell (Fireball, etc.) — post target card immediately ──
+      console.log(`${MODULE_ID} | Posting instant save card for ${item.name} → ${tokens.length} targets`);
       await this._postLiveTargetCard(item, actor, tokens, {
         saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activityId,
       });
+      console.log(`${MODULE_ID} | Instant save card posted successfully`);
 
     } else {
       // ── Persistent spell (Moonbeam, Spirit Guardians, etc.) ──

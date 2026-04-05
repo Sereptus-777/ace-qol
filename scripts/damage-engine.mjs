@@ -300,8 +300,9 @@ export class DamageEngine {
     const { item, actor, results, hits, actionType: hookActionType, subject } = data;
     if (!hits?.length) return; // No hits, no damage
 
-    // Player characters get a ROLL DAMAGE button — they click to roll
-    if (actor.type === "character" || actor.hasPlayerOwner) {
+    // ALL attacks get a ROLL DAMAGE button — GM controls when damage applies.
+    // Works for PCs, friendly NPCs, hostile NPCs — any actor the GM rolls for.
+    if (true) {
       // ── Check for optional riders (Divine Smite, Eldritch Smite, maneuvers, etc.) ──
       try {
         const firstHit = hits[0];
