@@ -595,8 +595,10 @@ export class DamageEngine {
               const dex = rollData.abilities?.dex?.mod ?? 0;
               // activity.ability is the system's resolved getter — picks the correct
               // ability accounting for class features, finesse, spellcasting, etc.
-              const resolvedAbility = activity?.ability;
-              if (resolvedAbility) {
+              let resolvedAbility = activity?.ability;
+              // dnd5e v5: ability can be a Set — unwrap it
+              if (resolvedAbility instanceof Set || resolvedAbility instanceof Array) resolvedAbility = [...resolvedAbility][0];
+              if (resolvedAbility && typeof resolvedAbility === "string") {
                 abilName = resolvedAbility.toUpperCase();
                 abilMod = rollData.abilities?.[resolvedAbility]?.mod ?? rollData.mod ?? 0;
               } else {

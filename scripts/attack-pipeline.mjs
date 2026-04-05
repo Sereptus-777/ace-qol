@@ -428,9 +428,12 @@ export class AttackPipeline {
 
     // activity.ability resolves: explicit override → spellcasting → availableAbilities
     // (Battle Smith INT, finesse highest of STR/DEX, spell CHA/INT/WIS, ranged DEX, melee STR)
-    const resolvedAbility = activity?.ability
+    let resolvedAbility = activity?.ability
       || item.system?.attack?.ability || item.system?.ability || "";
-    let abilityLabel = resolvedAbility?.toUpperCase() || "";
+    // dnd5e v5: ability can be a Set — unwrap it
+    if (resolvedAbility instanceof Set || resolvedAbility instanceof Array) resolvedAbility = [...resolvedAbility][0] ?? "";
+    if (typeof resolvedAbility !== "string") resolvedAbility = String(resolvedAbility || "");
+    let abilityLabel = resolvedAbility.toUpperCase() || "";
     let abilityMod = resolvedAbility ? (actorAbilities[resolvedAbility]?.mod ?? 0) : 0;
 
     // Fallback only if activity wasn't available (e.g., old dnd5e version)
@@ -582,10 +585,12 @@ export class AttackPipeline {
     const profBonus = actor.system?.attributes?.prof ?? 0;
     const activity = opts.subject;
 
-    const resolvedAbility = activity?.ability
+    let resolvedAbility2 = activity?.ability
       || item.system?.attack?.ability || item.system?.ability || "";
-    let abilityLabel = resolvedAbility?.toUpperCase() || "";
-    let abilityMod = resolvedAbility ? (actorAbilities[resolvedAbility]?.mod ?? 0) : 0;
+    if (resolvedAbility2 instanceof Set || resolvedAbility2 instanceof Array) resolvedAbility2 = [...resolvedAbility2][0] ?? "";
+    if (typeof resolvedAbility2 !== "string") resolvedAbility2 = String(resolvedAbility2 || "");
+    let abilityLabel = resolvedAbility2.toUpperCase() || "";
+    let abilityMod = resolvedAbility2 ? (actorAbilities[resolvedAbility2]?.mod ?? 0) : 0;
 
     if (!abilityLabel) {
       const actionType = activity?.actionType ?? item.system?.actionType ?? "mwak";

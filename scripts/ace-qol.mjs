@@ -238,6 +238,10 @@ Hooks.once("ready", () => {
           results: r.dice?.[0]?.results?.map(d => d.result),
         }));
 
+        // Resolve which ability the attack uses (INT for Artificer, CHA for Warlock, etc.)
+        const atkActivity = item.system?.activities ? [...item.system.activities].find(a => a.type === "attack") : null;
+        const attackAbility = atkActivity?.ability || item.system?.attack?.ability || "";
+
         // Send to GM via socket
         const payload = {
           action: "attackRoll",
@@ -248,6 +252,7 @@ Hooks.once("ready", () => {
           itemImg: item.img,
           itemActionType: item.system?.actionType ?? "mwak",
           itemType: item.type,
+          attackAbility,
           actorId: actor.id,
           actorUuid: actor.uuid,
           targets: targetData,
@@ -477,7 +482,9 @@ Hooks.once("ready", () => {
 
         // Post the attack card and trigger the damage pipeline — use the AttackPipeline instance
         if (attackPipeline) {
-          await attackPipeline._postAttackResults(item, actor, results, { isMelee, isSpell, roll: fakeRoll });
+          // Build a fake subject with the resolved ability so the card shows the right label
+          const fakeSubject = { ability: payload.attackAbility || "", actionType: actionType };
+          await attackPipeline._postAttackResults(item, actor, results, { isMelee, isSpell, roll: fakeRoll, subject: fakeSubject });
 
           // Store for damage phase
           attackPipeline._lastAttackResults = results;
