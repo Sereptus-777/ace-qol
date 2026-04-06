@@ -104,6 +104,15 @@ export class LootEngine {
         range:   { min: 0, max: 5, step: 0.25 },
       });
 
+      s("lootCardPublic", {
+        name:    "Show Loot Cards to All Players",
+        hint:    "When enabled, loot cards are visible to all players (not just GM). Players can drag items from the card to their character sheets.",
+        scope:   "world",
+        config:  true,
+        type:    Boolean,
+        default: true,
+      });
+
       console.log(`${LOG_PREFIX} Settings registered`);
     } catch (err) {
       console.error(`${LOG_PREFIX} Settings registration failed:`, err);
@@ -118,13 +127,20 @@ export class LootEngine {
    * Expose loot engine methods on `game.aceQol.LootEngine`.
    * Call this during the "ready" hook after game.aceQol is initialized.
    */
-  static registerAPI() {
+  /**
+   * Expose loot engine methods on `game.aceQol.LootEngine`.
+   * Call this during the "ready" hook after game.aceQol is initialized.
+   * @param {LootEngine} [instance] - Optional pre-created instance to use
+   */
+  static registerAPI(instance) {
     try {
       if (!game.aceQol) game.aceQol = {};
-      const engine = new LootEngine();
+      const engine = instance ?? new LootEngine();
       game.aceQol.LootEngine = {
-        generateLoot:   engine.generateLoot.bind(engine),
-        postLootCard:   engine.postLootCard.bind(engine),
+        generateLoot:        engine.generateLoot.bind(engine),
+        postLootCard:        engine.postLootCard.bind(engine),
+        postPublicLootCard:  engine.postPublicLootCard.bind(engine),
+        handleItemLooted:    engine.handleItemLooted.bind(engine),
       };
       console.log(`${LOG_PREFIX} API registered on game.aceQol.LootEngine`);
     } catch (err) {
@@ -290,6 +306,548 @@ export class LootEngine {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  //  Public Loot Card (visible to all players)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Post a PUBLIC loot card visible to ALL players. Items use @UUID links
+   * that Foundry makes natively draggable. Stores full item/currency data
+   * in message flags so looting progress can be tracked.
+   *
+   * @param {Actor} actor      - The NPC that died
+   * @param {object} [options] - Optional overrides
+   * @param {object} [options.lootData] - Pre-built loot data (from generateLoot)
+   * @returns {Promise<ChatMessage|null>}
+   */
+  async postPublicLootCard(actor, options = {}) {
+    try {
+      if (!actor) {
+        console.warn(`${LOG_PREFIX} postPublicLootCard called with no actor`);
+        return null;
+      }
+
+      const lootData = options.lootData ?? null;
+      const actorId = actor.id;
+      const actorName = actor.name ?? "Unknown Creature";
+      const actorImg = actor.img ?? actor.prototypeToken?.texture?.src ?? "icons/svg/skull.svg";
+
+      // ── Gather currency from the actor ──
+      const curr = actor.system?.currency ?? {};
+      const currency = {
+        pp: curr.pp ?? 0,
+        gp: curr.gp ?? 0,
+        ep: curr.ep ?? 0,
+        sp: curr.sp ?? 0,
+        cp: curr.cp ?? 0,
+      };
+      const hasCurrency = currency.pp + currency.gp + currency.ep + currency.sp + currency.cp > 0;
+
+      // ── Gather lootable items ──
+      const lootItems = this._getExistingLootItems(actor);
+      const itemsArray = lootItems.map((item, idx) => ({
+        name:     item.name,
+        img:      item.img ?? "icons/svg/item-bag.svg",
+        uuid:     item.uuid,
+        type:     item.type,
+        rarity:   item.system?.rarity ?? "common",
+        index:    idx,
+        looted:   false,
+        lootedBy: null,
+      }));
+
+      // ── Build currency HTML ──
+      let currencyHTML = "";
+      if (hasCurrency) {
+        const coins = [];
+        if (currency.pp > 0) coins.push(`<span class="ace-qol-loot-coin ace-qol-loot-pp">${currency.pp} pp</span>`);
+        if (currency.gp > 0) coins.push(`<span class="ace-qol-loot-coin ace-qol-loot-gp">${currency.gp} gp</span>`);
+        if (currency.ep > 0) coins.push(`<span class="ace-qol-loot-coin ace-qol-loot-ep">${currency.ep} ep</span>`);
+        if (currency.sp > 0) coins.push(`<span class="ace-qol-loot-coin ace-qol-loot-sp">${currency.sp} sp</span>`);
+        if (currency.cp > 0) coins.push(`<span class="ace-qol-loot-coin ace-qol-loot-cp">${currency.cp} cp</span>`);
+        currencyHTML = `<div class="ace-qol-loot-currency">${coins.join(" ")}</div>`;
+      }
+
+      // ── Build item list HTML ──
+      let itemListHTML = "";
+      if (itemsArray.length > 0) {
+        const lines = itemsArray.map((item, idx) => {
+          const rarityLabel = this._formatRarity(item.rarity);
+          return `<li class="ace-qol-loot-item" data-item-uuid="${item.uuid}" data-item-index="${idx}">` +
+            `<img src="${item.img}" class="ace-qol-loot-item-img" style="width:24px;height:24px;border:0;">` +
+            ` @UUID[${item.uuid}]{${item.name}}` +
+            ` <span class="ace-qol-loot-rarity">(${rarityLabel})</span>` +
+            `</li>`;
+        });
+        itemListHTML = `<ul class="ace-qol-loot-items">${lines.join("\n")}</ul>`;
+      } else {
+        itemListHTML = `<p class="ace-qol-loot-none"><em>No lootable items</em></p>`;
+      }
+
+      // ── Build GM controls ──
+      const controlsHTML = hasCurrency
+        ? `<div class="ace-qol-loot-controls"><button class="ace-qol-loot-split-btn" data-action="aceQolSplitGold">Split Gold Evenly</button></div>`
+        : "";
+
+      // ── Assemble the full card ──
+      const content = `
+<div class="ace-qol-loot-card" data-actor-id="${actorId}">
+  <div class="ace-qol-loot-header">
+    <img src="${actorImg}" class="ace-qol-loot-portrait">
+    <span class="ace-qol-loot-name">${actorName}</span>
+  </div>
+  ${currencyHTML}
+  ${itemListHTML}
+  ${controlsHTML}
+</div>`.trim();
+
+      // ── Create the public chat message with flags ──
+      const messageData = {
+        content,
+        speaker: ChatMessage.getSpeaker({ alias: "ACE Loot" }),
+        flags: {
+          [MODULE_ID]: {
+            type:          "lootCard",
+            actorId,
+            actorName,
+            actorImg,
+            items:         itemsArray,
+            currency,
+            currencySplit: false,
+            splitReceipt:  null,
+            fullyLooted:   false,
+          },
+        },
+      };
+
+      // Respect the setting — whisper or public
+      try {
+        const isPublic = game.settings.get(MODULE_ID, "lootCardPublic") ?? true;
+        if (!isPublic) {
+          messageData.whisper = [game.user.id];
+        }
+      } catch { /* setting not registered — default to public */ }
+
+      const message = await ChatMessage.create(messageData);
+      console.log(`${LOG_PREFIX} Public loot card posted for ${actorName} ` +
+        `(${itemsArray.length} items, ${hasCurrency ? "has currency" : "no currency"})`);
+
+      return message;
+
+    } catch (err) {
+      console.error(`${LOG_PREFIX} postPublicLootCard failed:`, err);
+      return null;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Wire Public Loot Card Interactivity (renderChatMessage)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Wire up interactivity on a rendered loot card.
+   * Called from the renderChatMessage hook.
+   *
+   * @param {HTMLElement} el       - The chat message DOM element
+   * @param {ChatMessage} message  - The Foundry ChatMessage document
+   * @param {object} flags         - The ace-qol flags from the message
+   */
+  _wirePublicLootCard(el, message, flags) {
+    try {
+      if (!el?.querySelector) return;
+
+      const card = el.querySelector(".ace-qol-loot-card");
+      if (!card) return;
+
+      // ── Hide GM controls for non-GM users ──
+      const controls = card.querySelector(".ace-qol-loot-controls");
+      if (controls && !game.user.isGM) {
+        controls.style.display = "none";
+      }
+
+      // ── If fully looted, show collapsed view ──
+      if (flags.fullyLooted) {
+        this._renderCollapsedLootCard(card, flags);
+        return;
+      }
+
+      // ── Mark already-looted items with strikethrough ──
+      this._renderLootedItems(card, flags);
+
+      // ── Wire Split Gold button ──
+      const splitBtn = card.querySelector('[data-action="aceQolSplitGold"]');
+      if (splitBtn && game.user.isGM) {
+        if (flags.currencySplit) {
+          // Already split — disable the button and show checkmark
+          splitBtn.textContent = "Gold Split \u2713";
+          splitBtn.disabled = true;
+          splitBtn.classList.add("ace-qol-loot-split-done");
+
+          // Show split receipt if available
+          if (flags.splitReceipt) {
+            this._renderSplitReceipt(card, flags.splitReceipt);
+          }
+        } else {
+          splitBtn.addEventListener("click", async (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            await this._handleSplitGold(message, flags, splitBtn);
+          }, { once: true });
+        }
+      }
+
+      // ── Wire the collapsed receipt toggle (if card was previously collapsed) ──
+      const doneDiv = card.querySelector(".ace-qol-loot-done");
+      if (doneDiv) {
+        doneDiv.addEventListener("click", () => {
+          const receipt = doneDiv.querySelector(".ace-qol-loot-receipt");
+          if (receipt) {
+            receipt.style.display = receipt.style.display === "none" ? "block" : "none";
+          }
+        });
+      }
+
+    } catch (err) {
+      console.error(`${LOG_PREFIX} _wirePublicLootCard failed:`, err);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Split Gold Handler
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Split currency evenly among all active PCs.
+   * Remainder goes to the first PC alphabetically.
+   *
+   * @param {ChatMessage} message - The loot card message
+   * @param {object} flags        - ace-qol flags
+   * @param {HTMLElement} btn     - The split button element
+   */
+  async _handleSplitGold(message, flags, btn) {
+    try {
+      btn.disabled = true;
+      btn.textContent = "Splitting...";
+
+      const currency = flags.currency ?? {};
+
+      // ── Find all connected PCs ──
+      const pcs = game.actors.filter(a =>
+        a.type === "character" &&
+        a.hasPlayerOwner &&
+        game.users.find(u => u.active && !u.isGM && a.ownership?.[u.id] >= 3)
+      );
+
+      if (pcs.length === 0) {
+        // No active player-owned PCs found — try broader search
+        const fallbackPCs = game.actors.filter(a =>
+          a.type === "character" && a.hasPlayerOwner
+        );
+        if (fallbackPCs.length === 0) {
+          ui.notifications.warn("ACE Loot: No player characters found to split gold.");
+          btn.disabled = false;
+          btn.textContent = "Split Gold Evenly";
+          return;
+        }
+        pcs.push(...fallbackPCs);
+      }
+
+      // Sort alphabetically for deterministic remainder assignment
+      pcs.sort((a, b) => a.name.localeCompare(b.name));
+
+      const count = pcs.length;
+      const receiptLines = [];
+
+      // ── Split each denomination ──
+      const denominations = ["pp", "gp", "ep", "sp", "cp"];
+      const denomLabels = { pp: "pp", gp: "gp", ep: "ep", sp: "sp", cp: "cp" };
+
+      for (const denom of denominations) {
+        const total = currency[denom] ?? 0;
+        if (total <= 0) continue;
+
+        const share = Math.floor(total / count);
+        const remainder = total % count;
+
+        for (let i = 0; i < pcs.length; i++) {
+          const pc = pcs[i];
+          const extra = (i === 0) ? remainder : 0;  // Remainder to first alphabetically
+          const amount = share + extra;
+          if (amount <= 0) continue;
+
+          try {
+            const currentVal = pc.system?.currency?.[denom] ?? 0;
+            await pc.update({ [`system.currency.${denom}`]: currentVal + amount });
+          } catch (err) {
+            console.error(`${LOG_PREFIX} Failed to update ${pc.name} currency:`, err);
+          }
+        }
+
+        // Build receipt line
+        if (remainder > 0) {
+          receiptLines.push(`${total} ${denomLabels[denom]} split: ${share + remainder} to ${pcs[0].name}, ${share} each to ${pcs.slice(1).map(p => p.name).join(", ")}`);
+        } else {
+          receiptLines.push(`${total} ${denomLabels[denom]} split: ${share} each to ${pcs.map(p => p.name).join(", ")}`);
+        }
+      }
+
+      // ── Update message flags ──
+      const splitReceipt = {
+        pcNames: pcs.map(p => p.name),
+        lines: receiptLines,
+      };
+
+      await message.update({
+        [`flags.${MODULE_ID}.currencySplit`]: true,
+        [`flags.${MODULE_ID}.splitReceipt`]: splitReceipt,
+      });
+
+      // ── Update button immediately ──
+      btn.textContent = "Gold Split \u2713";
+      btn.classList.add("ace-qol-loot-split-done");
+
+      // ── Check if fully looted now ──
+      await this._checkFullyLooted(message);
+
+      console.log(`${LOG_PREFIX} Gold split among ${count} PCs: ${receiptLines.join("; ")}`);
+      ui.notifications.info(`ACE Loot: Gold split among ${pcs.map(p => p.name).join(", ")}.`);
+
+    } catch (err) {
+      console.error(`${LOG_PREFIX} _handleSplitGold failed:`, err);
+      btn.disabled = false;
+      btn.textContent = "Split Gold Evenly";
+      ui.notifications.error("ACE Loot: Failed to split gold.");
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Item Loot Tracking (preCreateItem hook)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Called from the preCreateItem hook. Checks if the item being created
+   * on a PC matches one of the loot card items (by UUID or name + type).
+   * If it matches, marks the item as looted in the loot card message flags.
+   *
+   * @param {Item} item       - The item being created
+   * @param {object} data     - The item creation data
+   * @param {object} context  - The creation context
+   */
+  async handleItemLooted(item, data, context) {
+    try {
+      // Only care about items created on player characters
+      const parentActor = item.parent;
+      if (!parentActor || parentActor.type !== "character" || !parentActor.hasPlayerOwner) return;
+
+      // Search recent chat messages for loot cards
+      const messages = game.messages.contents.slice(-50);  // Last 50 messages
+
+      for (const msg of messages) {
+        const msgFlags = msg.flags?.[MODULE_ID];
+        if (msgFlags?.type !== "lootCard") continue;
+        if (msgFlags.fullyLooted) continue;
+
+        const items = msgFlags.items;
+        if (!items || items.length === 0) continue;
+
+        // Try to match by source UUID in the creation context
+        const sourceUuid = data?.flags?.core?.sourceId
+          ?? context?.aceQolSourceUuid
+          ?? item.flags?.core?.sourceId
+          ?? null;
+
+        let matchIndex = -1;
+
+        if (sourceUuid) {
+          // Match by UUID (most reliable — drag from @UUID link)
+          matchIndex = items.findIndex(li => !li.looted && li.uuid === sourceUuid);
+        }
+
+        if (matchIndex === -1) {
+          // Fallback: match by name + type (for manual creation or import)
+          const itemName = item.name?.toLowerCase()?.trim();
+          const itemType = item.type;
+          matchIndex = items.findIndex(li =>
+            !li.looted &&
+            li.name?.toLowerCase()?.trim() === itemName &&
+            li.type === itemType
+          );
+        }
+
+        if (matchIndex === -1) continue;
+
+        // ── Found a match — mark as looted ──
+        const updatedItems = foundry.utils.deepClone(items);
+        updatedItems[matchIndex].looted = true;
+        updatedItems[matchIndex].lootedBy = parentActor.name;
+
+        await msg.update({
+          [`flags.${MODULE_ID}.items`]: updatedItems,
+        });
+
+        console.log(`${LOG_PREFIX} ${updatedItems[matchIndex].name} looted by ${parentActor.name}`);
+
+        // ── Check if fully looted now ──
+        await this._checkFullyLooted(msg);
+
+        // Only match the first loot card containing this item
+        break;
+      }
+
+    } catch (err) {
+      console.error(`${LOG_PREFIX} handleItemLooted failed:`, err);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Loot Card Rendering Helpers
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Render already-looted items with strikethrough and "to PlayerName".
+   * @param {HTMLElement} card - The .ace-qol-loot-card element
+   * @param {object} flags     - ace-qol flags
+   */
+  _renderLootedItems(card, flags) {
+    try {
+      const items = flags.items ?? [];
+      for (const item of items) {
+        if (!item.looted) continue;
+
+        const li = card.querySelector(`[data-item-index="${item.index}"]`);
+        if (!li) continue;
+
+        // Add strikethrough class
+        li.classList.add("ace-qol-loot-item-looted");
+
+        // Append looted-by label if not already present
+        if (!li.querySelector(".ace-qol-loot-looted-by")) {
+          const label = document.createElement("span");
+          label.className = "ace-qol-loot-looted-by";
+          label.textContent = ` \u2192 ${item.lootedBy ?? "Unknown"}`;
+          li.appendChild(label);
+        }
+      }
+    } catch (err) {
+      console.error(`${LOG_PREFIX} _renderLootedItems failed:`, err);
+    }
+  }
+
+  /**
+   * Render the split receipt below the currency section.
+   * @param {HTMLElement} card    - The .ace-qol-loot-card element
+   * @param {object} splitReceipt - { pcNames, lines }
+   */
+  _renderSplitReceipt(card, splitReceipt) {
+    try {
+      if (!splitReceipt?.lines?.length) return;
+      // Don't add duplicates
+      if (card.querySelector(".ace-qol-loot-split-receipt")) return;
+
+      const receiptDiv = document.createElement("div");
+      receiptDiv.className = "ace-qol-loot-split-receipt";
+      receiptDiv.innerHTML = splitReceipt.lines.map(line =>
+        `<small>${line}</small>`
+      ).join("");
+
+      // Insert after currency div or after header
+      const currencyDiv = card.querySelector(".ace-qol-loot-currency");
+      const insertAfter = currencyDiv ?? card.querySelector(".ace-qol-loot-header");
+      if (insertAfter?.nextSibling) {
+        insertAfter.parentNode.insertBefore(receiptDiv, insertAfter.nextSibling);
+      } else {
+        card.appendChild(receiptDiv);
+      }
+    } catch (err) {
+      console.error(`${LOG_PREFIX} _renderSplitReceipt failed:`, err);
+    }
+  }
+
+  /**
+   * Replace the loot card content with a collapsed "Looted" view.
+   * Clicking expands the receipt.
+   * @param {HTMLElement} card - The .ace-qol-loot-card element
+   * @param {object} flags     - ace-qol flags
+   */
+  _renderCollapsedLootCard(card, flags) {
+    try {
+      const actorName = flags.actorName ?? "Unknown";
+
+      // Build the receipt lines
+      const receiptLines = [];
+
+      // Currency receipt
+      if (flags.splitReceipt?.lines?.length) {
+        for (const line of flags.splitReceipt.lines) {
+          receiptLines.push(`<small>${line}</small>`);
+        }
+      }
+
+      // Item receipt
+      const items = flags.items ?? [];
+      for (const item of items) {
+        if (item.looted && item.lootedBy) {
+          receiptLines.push(`<small>${item.name} \u2192 ${item.lootedBy}</small>`);
+        }
+      }
+
+      const receiptHTML = receiptLines.length > 0
+        ? `<div class="ace-qol-loot-receipt" style="display:none;">${receiptLines.join("\n")}</div>`
+        : "";
+
+      card.innerHTML = `
+<div class="ace-qol-loot-done">
+  <span class="ace-qol-loot-done-label">\u{1FAA6} ${actorName} \u2014 Looted</span>
+  ${receiptHTML}
+</div>`.trim();
+
+      // Wire toggle
+      const doneDiv = card.querySelector(".ace-qol-loot-done");
+      if (doneDiv) {
+        doneDiv.style.cursor = "pointer";
+        doneDiv.addEventListener("click", () => {
+          const receipt = doneDiv.querySelector(".ace-qol-loot-receipt");
+          if (receipt) {
+            receipt.style.display = receipt.style.display === "none" ? "block" : "none";
+          }
+        });
+      }
+    } catch (err) {
+      console.error(`${LOG_PREFIX} _renderCollapsedLootCard failed:`, err);
+    }
+  }
+
+  /**
+   * Check if a loot card is fully looted (all items + gold split).
+   * If so, update flags to mark it as fullyLooted.
+   * @param {ChatMessage} message - The loot card message
+   */
+  async _checkFullyLooted(message) {
+    try {
+      const flags = message.flags?.[MODULE_ID];
+      if (!flags || flags.type !== "lootCard") return;
+      if (flags.fullyLooted) return;
+
+      const items = flags.items ?? [];
+      const allItemsLooted = items.length === 0 || items.every(i => i.looted);
+      const currencySplit = flags.currencySplit;
+
+      // Determine if there was any currency to split
+      const currency = flags.currency ?? {};
+      const hasCurrency = (currency.pp + currency.gp + currency.ep + currency.sp + currency.cp) > 0;
+      const currencyHandled = !hasCurrency || currencySplit;
+
+      if (allItemsLooted && currencyHandled) {
+        await message.update({
+          [`flags.${MODULE_ID}.fullyLooted`]: true,
+        });
+        console.log(`${LOG_PREFIX} Loot card for ${flags.actorName} fully looted`);
+      }
+    } catch (err) {
+      console.error(`${LOG_PREFIX} _checkFullyLooted failed:`, err);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   //  Check and Generate on Death
   // ═══════════════════════════════════════════════════════════════════════════
 
@@ -338,7 +896,8 @@ export class LootEngine {
       }
 
       if (lootData) {
-        await this.postLootCard(lootData);
+        // Use the new public loot card (tracks looting, visible to all)
+        await this.postPublicLootCard(actor, { lootData });
       }
 
       return lootData;

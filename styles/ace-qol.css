@@ -1413,3 +1413,214 @@
   display: block; font-size: 0.75rem; font-weight: 600;
   color: #888; margin-top: 6px;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   Loot Card — Public Draggable Loot Display
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.ace-qol-loot-card {
+  background: #1a1a1e;
+  border: 1px solid #d4af37;
+  border-radius: 4px;
+  padding: 0;
+  font-family: 'Segoe UI', sans-serif;
+  overflow: hidden;
+}
+
+/* ─── Header: portrait + creature name ──────────────────────────────── */
+.ace-qol-loot-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: linear-gradient(135deg, #1a1a1e 0%, #252528 100%);
+  border-bottom: 1px solid rgba(212, 175, 55, 0.3);
+}
+
+.ace-qol-loot-portrait {
+  width: 36px;
+  height: 36px;
+  border-radius: 4px;
+  border: 1px solid #d4af37;
+  object-fit: cover;
+}
+
+.ace-qol-loot-name {
+  color: #d4af37;
+  font-size: 1rem;
+  font-weight: 700;
+  flex: 1;
+}
+
+/* ─── Currency Row ──────────────────────────────────────────────────── */
+.ace-qol-loot-currency {
+  padding: 6px 10px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: #111114;
+  border-bottom: 1px solid #333;
+}
+
+.ace-qol-loot-coin {
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.ace-qol-loot-gp {
+  color: #ffd700;
+  background: rgba(255, 215, 0, 0.1);
+}
+
+.ace-qol-loot-sp {
+  color: #c0c0c0;
+  background: rgba(192, 192, 192, 0.1);
+}
+
+.ace-qol-loot-cp {
+  color: #b87333;
+  background: rgba(184, 115, 51, 0.1);
+}
+
+.ace-qol-loot-pp {
+  color: #e5e4e2;
+  background: rgba(229, 228, 226, 0.1);
+}
+
+.ace-qol-loot-ep {
+  color: #bcc6cc;
+  background: rgba(188, 198, 204, 0.1);
+}
+
+/* ─── Item List ─────────────────────────────────────────────────────── */
+.ace-qol-loot-items {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+}
+
+.ace-qol-loot-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 0.88rem;
+  color: #e8e6e0;
+  transition: background 0.15s;
+}
+
+.ace-qol-loot-item:hover {
+  background: rgba(212, 175, 55, 0.06);
+}
+
+.ace-qol-loot-item-img {
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.ace-qol-loot-rarity {
+  font-size: 0.75rem;
+  color: #888;
+  font-style: italic;
+}
+
+.ace-qol-loot-none {
+  padding: 6px 10px;
+  color: #666;
+  font-size: 0.85rem;
+}
+
+/* ─── Looted Item (strikethrough + looted-by label) ─────────────────── */
+.ace-qol-loot-item-looted {
+  opacity: 0.5;
+  text-decoration: line-through;
+}
+
+.ace-qol-loot-looted-by {
+  color: #00e676;
+  font-size: 0.78rem;
+  font-weight: 600;
+  font-style: italic;
+  text-decoration: none;
+  margin-left: 4px;
+}
+
+/* ─── GM Controls ───────────────────────────────────────────────────── */
+.ace-qol-loot-controls {
+  padding: 6px 10px 8px;
+  border-top: 1px solid #333;
+  background: #111114;
+  text-align: center;
+}
+
+.ace-qol-loot-split-btn {
+  background: linear-gradient(180deg, #2a2a2e 0%, #1a1a1e 100%);
+  border: 1px solid rgba(212, 175, 55, 0.4);
+  color: #d4af37;
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 5px 16px;
+  border-radius: 3px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  transition: all 0.2s;
+  width: 100%;
+}
+
+.ace-qol-loot-split-btn:hover {
+  background: linear-gradient(180deg, #333338 0%, #252528 100%);
+  border-color: #d4af37;
+  box-shadow: 0 0 6px rgba(212, 175, 55, 0.3);
+}
+
+.ace-qol-loot-split-btn:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.ace-qol-loot-split-done {
+  color: #00e676;
+  border-color: rgba(0, 230, 118, 0.4);
+}
+
+/* ─── Split Receipt ─────────────────────────────────────────────────── */
+.ace-qol-loot-split-receipt {
+  padding: 4px 10px 2px;
+  background: rgba(0, 230, 118, 0.04);
+  border-top: 1px solid rgba(0, 230, 118, 0.1);
+}
+
+.ace-qol-loot-split-receipt small {
+  display: block;
+  color: #888;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+/* ─── Collapsed "Fully Looted" View ─────────────────────────────────── */
+.ace-qol-loot-done {
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.ace-qol-loot-done-label {
+  color: #888;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.ace-qol-loot-receipt {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid #333;
+}
+
+.ace-qol-loot-receipt small {
+  display: block;
+  color: #777;
+  font-size: 0.75rem;
+  line-height: 1.5;
+}

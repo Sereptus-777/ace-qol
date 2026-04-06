@@ -179,12 +179,36 @@ Hooks.once("ready", () => {
     console.error(`${MODULE_ID} | Speed rolls init failed:`, err);
   }
 
-  // Loot Engine — GM only (generates loot on NPC death)
-  if (game.user.isGM) {
-    try {
-      lootEngine = new LootEngine();
-      LootEngine.registerAPI(lootEngine);
-      // Hook: generate loot card when NPC drops to 0 HP
+  // Loot Engine — ALL users (players need renderChatMessage hook for public loot cards)
+  try {
+    lootEngine = new LootEngine();
+    LootEngine.registerAPI(lootEngine);
+
+    // Hook: wire loot card interactivity on render (all users)
+    Hooks.on("renderChatMessage", (message, html) => {
+      try {
+        const flags = message.flags?.[MODULE_ID];
+        if (flags?.type !== "lootCard") return;
+        const el = html instanceof HTMLElement ? html : html?.[0] ?? html;
+        if (!el) return;
+        lootEngine._wirePublicLootCard(el, message, flags);
+      } catch (err) {
+        console.error(`${MODULE_ID} | Loot card render hook failed:`, err);
+      }
+    });
+
+    // Hook: detect items dragged to PC sheets (all users — tracks looting)
+    Hooks.on("preCreateItem", async (item, data, context) => {
+      try {
+        if (!lootEngine) return;
+        await lootEngine.handleItemLooted(item, data, context);
+      } catch (err) {
+        console.error(`${MODULE_ID} | Loot item tracking failed:`, err);
+      }
+    });
+
+    // Hook: generate loot on NPC death — GM only
+    if (game.user.isGM) {
       Hooks.on("updateActor", async (actor, changes) => {
         try {
           if (!game.settings.get(MODULE_ID, "enableLootGeneration")) return;
@@ -200,11 +224,14 @@ Hooks.once("ready", () => {
           console.error(`${MODULE_ID} | Loot on death failed:`, err);
         }
       });
-      console.log(`${MODULE_ID} | Loot engine online`);
-    } catch (err) {
-      console.error(`${MODULE_ID} | Loot engine init failed:`, err);
     }
 
+    console.log(`${MODULE_ID} | Loot engine online`);
+  } catch (err) {
+    console.error(`${MODULE_ID} | Loot engine init failed:`, err);
+  }
+
+  if (game.user.isGM) {
     // Death Pipeline — GM only (converts dead NPC tokens to tiles with dead art)
     try {
       deathPipeline = new DeathPipeline();
