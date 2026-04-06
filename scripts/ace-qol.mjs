@@ -26,6 +26,7 @@ import { DurationTracker }      from "./duration-tracker.mjs";
 import { SpeedRolls }           from "./speed-rolls.mjs";
 import { MergeCard }            from "./merge-card.mjs";
 import { LootEngine }           from "./loot-engine.mjs";
+import { DeathPipeline }        from "./death-pipeline.mjs";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 let extendedEffects      = null;
@@ -39,6 +40,7 @@ let overTimeEngine       = null;
 let bloodiedEngine       = null;
 let speedRolls           = null;
 let lootEngine           = null;
+let deathPipeline        = null;
 
 const SOCKET_NAME = `module.${MODULE_ID}`;
 
@@ -47,6 +49,7 @@ Hooks.once("init", () => {
   try {
     QolSettings.register();
     LootEngine.registerSettings();
+    DeathPipeline.registerSettings();
   } catch (err) {
     console.error(`${MODULE_ID} | Settings registration failed:`, err);
   }
@@ -200,6 +203,40 @@ Hooks.once("ready", () => {
       console.log(`${MODULE_ID} | Loot engine online`);
     } catch (err) {
       console.error(`${MODULE_ID} | Loot engine init failed:`, err);
+    }
+
+    // Death Pipeline — GM only (converts dead NPC tokens to tiles with dead art)
+    try {
+      deathPipeline = new DeathPipeline();
+      deathPipeline.buildArtCache();
+      DeathPipeline.registerAPI(deathPipeline);
+
+      // Hook: convert NPC to dead tile when HP hits 0
+      Hooks.on("updateActor", async (actor, changes) => {
+        try {
+          if (!game.settings.get(MODULE_ID, "enableDeathPipeline")) return;
+          const hpUpdate = foundry.utils.getProperty(changes, "system.attributes.hp.value");
+          if (hpUpdate !== 0) return;
+          if (actor.hasPlayerOwner || actor.type !== "npc") return;
+
+          // Find the token for this actor on the current scene
+          const tokenDoc = canvas.scene?.tokens?.find(t => t.actorId === actor.id);
+          if (!tokenDoc) return;
+
+          await deathPipeline.processNPCDeath(actor, tokenDoc);
+        } catch (err) {
+          console.error(`${MODULE_ID} | Death pipeline hook failed:`, err);
+        }
+      });
+
+      // Rebuild art cache on scene change
+      Hooks.on("canvasReady", () => {
+        if (deathPipeline) deathPipeline.buildArtCache();
+      });
+
+      console.log(`${MODULE_ID} | Death pipeline online`);
+    } catch (err) {
+      console.error(`${MODULE_ID} | Death pipeline init failed:`, err);
     }
   }
 
@@ -531,6 +568,8 @@ Hooks.once("ready", () => {
     MergeCard,
     LootEngine,
     lootEngine,
+    DeathPipeline,
+    deathPipeline,
 
     /** Check if a setting is enabled */
     isEnabled: (key) => QolSettings.get(key),
