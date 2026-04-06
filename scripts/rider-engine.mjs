@@ -223,11 +223,21 @@ export class RiderEngine {
       }
 
       // Optional riders (player chooses)
+      const isGM = game.user.isGM;
       for (const r of optionalRiders) {
         // Group maneuvers together
         const slotPicker = r.scalable ? RiderEngine._buildSlotPicker(r.resource.available) : "";
         const highlightBadge = r.highlight
           ? `<span class="ace-qol-rider-badge ace-qol-rider-highlight" style="color:${creatureTypeColor}">${r.highlight}</span>`
+          : "";
+
+        // GM-only: "Consume Slot" checkbox (checked by default).
+        // When unchecked, the rider fires damage but doesn't spend the resource.
+        const consumeToggle = isGM
+          ? `<label class="ace-qol-rider-consume" title="Uncheck to use without spending the resource">
+               <input type="checkbox" data-rider-id="${r.id}" class="ace-qol-rider-consume-cb" checked />
+               <span>Consume</span>
+             </label>`
           : "";
 
         html += `<div class="ace-qol-rider-row" data-rider-id="${r.id}">
@@ -236,6 +246,7 @@ export class RiderEngine {
           <span class="ace-qol-rider-formula">${r.description}</span>
           ${highlightBadge}
           ${slotPicker}
+          ${consumeToggle}
           <button class="ace-qol-rider-select" data-rider-id="${r.id}">
             <i class="fas fa-check"></i> USE
           </button>
@@ -277,6 +288,12 @@ export class RiderEngine {
                   rider.resource.level = slotLevel;
                   rider.description = `${numDice}d8 radiant (${slotLevel === 1 ? "1st" : slotLevel === 2 ? "2nd" : slotLevel === 3 ? "3rd" : slotLevel + "th"} level slot)`;
                 }
+              }
+
+              // GM consume toggle: if unchecked, skip resource consumption
+              const consumeCb = el.querySelector(`.ace-qol-rider-consume-cb[data-rider-id="${riderId}"]`);
+              if (consumeCb && !consumeCb.checked) {
+                rider.skipConsume = true;
               }
 
               // Resolve with selected rider + any discharge riders
@@ -331,6 +348,12 @@ export class RiderEngine {
           await effect.delete();
           console.log(`${MODULE_ID} | Discharged ${rider.name} effect from ${actor.name}`);
         }
+        continue;
+      }
+
+      // GM toggled "Consume" off — fire damage without spending the resource
+      if (rider.skipConsume) {
+        console.log(`${MODULE_ID} | Skipping resource consumption for ${rider.name} (GM override)`);
         continue;
       }
 

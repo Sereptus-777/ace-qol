@@ -1327,7 +1327,7 @@ export class ReactionEngine {
       // Play a notification sound so the player notices
       try {
         AudioHelper.play({ src: "sounds/notify.wav", volume: 0.4, autoplay: true }, false);
-      } catch { /* sound not critical */ }
+      } catch (err) { console.debug("ace-qol | ReactionEngine notification sound playback:", err); }
     });
   }
 

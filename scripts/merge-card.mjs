@@ -550,7 +550,7 @@ export class MergeCard {
    * @param {string} critRule - Active crit rule
    * @param {object|null} parsedDescription - Pre-parsed item description
    */
-  static async postMergedDamageButton(attackData, item, actor, hits, preRolled, critRule, parsedDescription) {
+  static async postMergedDamageButton(attackData, item, actor, hits, preRolled, critRule, parsedDescription, consumedRiders = []) {
     const anyCrit = hits.some(h => h.hitResult === "critical");
     const targetNames = hits.map(h => h.name ?? h.target?.name ?? "target").join(", ");
 
@@ -571,6 +571,7 @@ export class MergeCard {
           critRule,
           preRolled,
           parsedDescription,
+          consumedRiders: consumedRiders?.length ? consumedRiders : undefined,
         }
       }
     });
@@ -582,16 +583,16 @@ export class MergeCard {
 
   static _getStyle() {
     try { return QolSettings.get("mergeCardStyle"); }
-    catch { return "detailed"; }
+    catch (err) { console.warn("ace-qol | MergeCard._getStyle setting read failed:", err); return "detailed"; }
   }
 
   static _showAttackFormula() {
     try { return QolSettings.get("showAttackFormula"); }
-    catch { return true; }
+    catch (err) { console.warn("ace-qol | MergeCard._showAttackFormula setting read failed:", err); return true; }
   }
 
   static _showDamageFormula() {
     try { return QolSettings.get("showDamageFormula"); }
-    catch { return true; }
+    catch (err) { console.warn("ace-qol | MergeCard._showDamageFormula setting read failed:", err); return true; }
   }
 }

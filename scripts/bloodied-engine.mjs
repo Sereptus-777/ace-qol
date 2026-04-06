@@ -64,7 +64,7 @@ export class BloodiedEngine {
 
     try {
       if (!QolSettings.get("enableBloodied")) return;
-    } catch { return; }
+    } catch (err) { console.debug("ace-qol | BloodiedEngine._onActorUpdate setting read:", err); return; }
 
     // Check if HP actually changed
     const newHP = foundry.utils.getProperty(changes, "system.attributes.hp.value");
@@ -82,7 +82,7 @@ export class BloodiedEngine {
       } else if (newHP > 0) {
         this._removeDeadMarker(actor);
       }
-    } catch { /* ignore */ }
+    } catch (err) { console.debug("ace-qol | BloodiedEngine._onActorUpdate dead marker:", err); }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -98,7 +98,7 @@ export class BloodiedEngine {
 
     try {
       if (!QolSettings.get("enableBloodied")) return;
-    } catch { return; }
+    } catch (err) { console.debug("ace-qol | BloodiedEngine._onTokenUpdate setting read:", err); return; }
 
     // Check for HP change in the token delta
     const newHP = foundry.utils.getProperty(changes, "delta.system.attributes.hp.value")
@@ -122,7 +122,7 @@ export class BloodiedEngine {
       } else if (newHP > 0) {
         this._removeDeadMarker(actor, tokenDoc);
       }
-    } catch { /* ignore */ }
+    } catch (err) { console.debug("ace-qol | BloodiedEngine._onTokenUpdate dead marker:", err); }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -155,7 +155,7 @@ export class BloodiedEngine {
         if (QolSettings.get("announceBloodied")) {
           this._announceBloodied(actor, tokenDoc, true);
         }
-      } catch { /* no announcement */ }
+      } catch (err) { console.debug("ace-qol | BloodiedEngine bloodied announcement:", err); }
 
       // Show scrolling text on the token
       this._showBloodiedScrollingText(actor, tokenDoc);
@@ -182,7 +182,7 @@ export class BloodiedEngine {
   _onRefreshToken(token) {
     try {
       if (!QolSettings.get("enableBloodied")) return;
-    } catch { return; }
+    } catch (err) { console.debug("ace-qol | BloodiedEngine._onRefreshToken setting read:", err); return; }
 
     const actor = token.actor;
     if (!actor) return;
@@ -241,6 +241,14 @@ export class BloodiedEngine {
     }
 
     const container = token._aceBloodiedGraphics;
+
+    // ── Remove old pulse handler BEFORE destroying children ──
+    if (container._pulseHandler && container._pulseTicker) {
+      container._pulseTicker.remove(container._pulseHandler);
+      container._pulseHandler = null;
+      container._pulseTicker = null;
+    }
+
     container.removeChildren();
     container.visible = true;
 
@@ -267,15 +275,22 @@ export class BloodiedEngine {
    */
   _removeBloodiedOverlay(token) {
     if (token._aceBloodiedGraphics) {
-      token._aceBloodiedGraphics.removeChildren();
-      token._aceBloodiedGraphics.visible = false;
+      const container = token._aceBloodiedGraphics;
+      // ── Remove pulse handler from ticker before destroying ──
+      if (container._pulseHandler && container._pulseTicker) {
+        container._pulseTicker.remove(container._pulseHandler);
+        container._pulseHandler = null;
+        container._pulseTicker = null;
+      }
+      container.removeChildren();
+      container.visible = false;
     }
 
     // Remove tint if applied
     if (token._aceBloodiedTint) {
       try {
         if (token.mesh) token.mesh.tint = 0xFFFFFF;
-      } catch { /* mesh not available */ }
+      } catch (err) { console.debug("ace-qol | BloodiedEngine mesh tint reset:", err); }
       token._aceBloodiedTint = false;
     }
   }

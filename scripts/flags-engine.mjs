@@ -86,7 +86,7 @@ export class FlagsEngine {
     } catch { /* not set */ }
 
     let midiCompat = true;
-    try { midiCompat = game.settings.get(MODULE_ID, "midiCompatibility"); } catch {}
+    try { midiCompat = game.settings.get(MODULE_ID, "midiCompatibility"); } catch (err) { console.warn("ace-qol | FlagsEngine._readFlag midiCompatibility setting read failed:", err); }
     if (midiCompat) {
       try {
         const val = actor.getFlag(MIDI_ID, path);
@@ -367,7 +367,7 @@ export class FlagsEngine {
    */
   static get enabled() {
     try { return game.settings.get(MODULE_ID, "enableFlagsSystem"); }
-    catch { return true; }
+    catch (err) { console.warn("ace-qol | FlagsEngine.enabled setting read failed:", err); return true; }
   }
 
 
@@ -398,7 +398,7 @@ export class FlagsEngine {
     // Scan both ace-qol and midi-qol optional flags
     const namespaces = [MODULE_ID];
     let midiCompat = true;
-    try { midiCompat = game.settings.get(MODULE_ID, "midiCompatibility"); } catch {}
+    try { midiCompat = game.settings.get(MODULE_ID, "midiCompatibility"); } catch (err) { console.warn("ace-qol | FlagsEngine.getAvailableOptionals midiCompatibility setting read failed:", err); }
     if (midiCompat) namespaces.push(MIDI_ID);
 
     for (const ns of namespaces) {

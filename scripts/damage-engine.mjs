@@ -161,6 +161,11 @@ export class DamageEngine {
       // ── Per-row override buttons (×, ¼, ½, 1, 2×) ──
       this._wireOverrideButtons(el, message);
 
+      // ── Rider Refund buttons — GM only ──
+      if (game.user.isGM) {
+        this._wireRefundButtons(el, message);
+      }
+
       // ── ADD TARGET button — pick a token from canvas ──
       const addBtn = el.querySelector?.("[data-action='aceQolAddTarget']");
       if (addBtn && !addBtn.dataset.wired) {
@@ -356,6 +361,17 @@ export class DamageEngine {
                 }
               }
             }
+
+            // Store consumed rider info for refund button (only riders that actually consumed)
+            this._pendingConsumedRiders = selectedRiders
+              .filter(r => !r.isDischarge && !r.skipConsume && r.resource)
+              .map(r => ({
+                id: r.id,
+                name: r.name,
+                resourceType: r.resource.type,
+                resourceLevel: r.resource.level ?? null,
+                actorId: actor.id,
+              }));
 
             console.log(`${MODULE_ID} | Riders applied: ${selectedRiders.map(r => `${r.name} (${r.formula})`).join(", ")}`);
           }
@@ -1021,6 +1037,10 @@ export class DamageEngine {
       </div>
     `;
 
+    // Grab consumed riders from pending state (set in _onAttackComplete)
+    const consumedRiders = this._pendingConsumedRiders ?? [];
+    this._pendingConsumedRiders = null;
+
     await ChatMessage.create({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor }),
@@ -1035,6 +1055,7 @@ export class DamageEngine {
           critRule,
           preRolled,
           parsedDescription,
+          consumedRiders: consumedRiders.length ? consumedRiders : undefined,
         }
       }
     });
@@ -1100,9 +1121,13 @@ export class DamageEngine {
       console.warn(`${MODULE_ID} | DescriptionParser.parse failed in _postMergeDamageButton:`, e.message);
     }
 
+    // Grab consumed riders from pending state (set in _onAttackComplete)
+    const consumedRiders = this._pendingConsumedRiders ?? [];
+    this._pendingConsumedRiders = null;
+
     // ── Post the merged card ──
     const attackData = MergeCard.consumeAttackResult();
-    await MergeCard.postMergedDamageButton(attackData, item, actor, hits, preRolled, critRule, parsedDescription);
+    await MergeCard.postMergedDamageButton(attackData, item, actor, hits, preRolled, critRule, parsedDescription, consumedRiders);
   }
 
   async _rollDamageFromButton(message) {
@@ -1261,7 +1286,7 @@ export class DamageEngine {
 
     // ── Post the damage card AFTER dice finish rolling ──
     try {
-      await this._postDamageCard(fakeItem, actor, damageResults, critRule);
+      await this._postDamageCard(fakeItem, actor, damageResults, critRule, flags.consumedRiders);
     } catch (err) {
       console.error(`${MODULE_ID} | _postPreRolledDamageCard CRASHED:`, err);
       return false;
@@ -1457,7 +1482,7 @@ export class DamageEngine {
   //  Damage Card — Batch Results with Apply/Undo
   // ═══════════════════════════════════════════════════════════════════════════
 
-  async _postDamageCard(item, actor, damageResults, critRule) {
+  async _postDamageCard(item, actor, damageResults, critRule, consumedRiders = null) {
     if (!damageResults.length) return;
 
     // ── Shared formula display (from first target's raw roll — same roll for all) ──
@@ -1587,6 +1612,7 @@ export class DamageEngine {
           actorId: actor.id,
           rawComponents,
           totalRaw,
+          consumedRiders: consumedRiders?.length ? consumedRiders : undefined,
           damageResults: damageResults.map(dr => ({
             targetId: dr.targetActor.id,
             tokenId: dr.targetToken.id,
@@ -1847,7 +1873,7 @@ export class DamageEngine {
         await saveRoll.evaluate();
 
         // Show dice animation
-        try { if (game.dice3d) await game.dice3d.showForRoll(saveRoll, game.user, true); } catch {}
+        try { if (game.dice3d) await game.dice3d.showForRoll(saveRoll, game.user, true); } catch (err) { console.warn("ace-qol | DamageEngine dice3d save roll display failed:", err); }
 
         saveTotal = saveRoll.total;
         passed = saveTotal >= save.dc;
@@ -1872,7 +1898,7 @@ export class DamageEngine {
         if (effectTable) {
           const tableRoll = new Roll(effectTable.die === "d6" ? "1d6" : `1${effectTable.die}`);
           await tableRoll.evaluate();
-          try { if (game.dice3d) await game.dice3d.showForRoll(tableRoll, game.user, true); } catch {}
+          try { if (game.dice3d) await game.dice3d.showForRoll(tableRoll, game.user, true); } catch (err) { console.warn("ace-qol | DamageEngine dice3d table roll display failed:", err); }
 
           const tableResult = tableRoll.total;
           result.tableRoll = tableResult;
@@ -1917,7 +1943,7 @@ export class DamageEngine {
               } else if (fx.type === "damage") {
                 const dmgRoll = new Roll(fx.formula);
                 await dmgRoll.evaluate();
-                try { if (game.dice3d) await game.dice3d.showForRoll(dmgRoll, game.user, true); } catch {}
+                try { if (game.dice3d) await game.dice3d.showForRoll(dmgRoll, game.user, true); } catch (err) { console.warn("ace-qol | DamageEngine dice3d damage roll display failed:", err); }
 
                 // ── Check target resistance/immunity/vulnerability for this damage type ──
                 const rawTotal = dmgRoll.total;
@@ -2611,6 +2637,169 @@ export class DamageEngine {
 
     await message.update({ [`flags.${MODULE_ID}.damageResults`]: existingResults });
     console.log(`${MODULE_ID} | ${isCleave ? "CLEAVE" : "ADD"}: ${token.name} added to damage card (${totalFinal} damage)`);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Rider Refund — GM-only: give back a consumed resource post-facto
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Render and wire refund buttons for consumed riders on the damage card.
+   * Only called for GM users. Renders a small refund row below the card's
+   * damage section for each rider that consumed a resource.
+   */
+  _wireRefundButtons(el, message) {
+    const mFlags = message.flags?.[MODULE_ID];
+    const consumedRiders = mFlags?.consumedRiders;
+    if (!consumedRiders?.length) return;
+
+    // Don't re-inject if already rendered
+    if (el.querySelector?.(".ace-qol-refund-row")) return;
+
+    // Build refund row HTML
+    let refundHtml = '<div class="ace-qol-refund-section">';
+    for (const cr of consumedRiders) {
+      const refunded = mFlags?.refundedRiders?.includes(cr.id);
+      const label = this._refundLabel(cr);
+      if (refunded) {
+        refundHtml += `<div class="ace-qol-refund-row ace-qol-refund-done">
+          <i class="fas fa-check"></i> ${cr.name} — REFUNDED
+        </div>`;
+      } else {
+        refundHtml += `<div class="ace-qol-refund-row">
+          <button class="ace-qol-btn ace-qol-btn-refund" data-rider-id="${cr.id}" data-actor-id="${cr.actorId}"
+                  data-resource-type="${cr.resourceType}" data-resource-level="${cr.resourceLevel ?? ""}">
+            <i class="fas fa-rotate-left"></i> REFUND ${label}
+          </button>
+        </div>`;
+      }
+    }
+    refundHtml += '</div>';
+
+    // Insert after GM controls (APPLY ALL / UNDO ALL), or at end of card
+    const gmControls = el.querySelector?.(".ace-qol-dmg-gm-controls");
+    const dmgCard = el.querySelector?.(".ace-qol-damage-card") ?? el.querySelector?.(".ace-qol-dmg-btn-card");
+    if (gmControls) {
+      gmControls.insertAdjacentHTML("afterend", refundHtml);
+    } else if (dmgCard) {
+      dmgCard.insertAdjacentHTML("beforeend", refundHtml);
+    } else {
+      return; // nowhere to put it
+    }
+
+    // Wire refund buttons
+    el.querySelectorAll?.(".ace-qol-btn-refund")?.forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const riderId = btn.dataset.riderId;
+        const actorId = btn.dataset.actorId;
+        const resType = btn.dataset.resourceType;
+        const resLevel = btn.dataset.resourceLevel ? parseInt(btn.dataset.resourceLevel) : null;
+
+        await this._refundRiderResource(actorId, resType, resLevel, riderId);
+
+        // Mark as refunded in flags (survives re-render)
+        const existing = message.flags?.[MODULE_ID]?.refundedRiders ?? [];
+        await message.setFlag(MODULE_ID, "refundedRiders", [...existing, riderId]);
+
+        // Visual feedback (re-render will also catch it)
+        btn.disabled = true;
+        btn.closest(".ace-qol-refund-row")?.classList.add("ace-qol-refund-done");
+        btn.innerHTML = `<i class="fas fa-check"></i> REFUNDED`;
+      });
+    });
+  }
+
+  /**
+   * Build a short human-readable label for the refund button.
+   * e.g., "1ST SLOT", "PACT SLOT", "KI POINT", "SUPERIORITY DIE"
+   */
+  _refundLabel(cr) {
+    switch (cr.resourceType) {
+      case "spell-slot": {
+        const lvl = cr.resourceLevel ?? 1;
+        const suffix = lvl === 1 ? "ST" : lvl === 2 ? "ND" : lvl === 3 ? "RD" : "TH";
+        return `${lvl}${suffix} SLOT`;
+      }
+      case "pact-slot":      return "PACT SLOT";
+      case "ki":              return "KI POINT";
+      case "superiority-die": return "SUPERIORITY DIE";
+      default:                return cr.name?.toUpperCase() ?? "RESOURCE";
+    }
+  }
+
+  /**
+   * Refund a consumed rider resource back to the actor.
+   * Adds back the spell slot, pact slot, ki point, or superiority die.
+   */
+  async _refundRiderResource(actorId, resourceType, resourceLevel, riderId) {
+    const actor = game.actors.get(actorId);
+    if (!actor) {
+      ui.notifications.warn("ACE QOL: Cannot refund — actor not found.");
+      return;
+    }
+
+    switch (resourceType) {
+      case "spell-slot": {
+        const slotKey = `spell${resourceLevel}`;
+        const current = actor.system?.spells?.[slotKey]?.value ?? 0;
+        const max = actor.system?.spells?.[slotKey]?.max ?? 0;
+        if (current < max) {
+          await actor.update({ [`system.spells.${slotKey}.value`]: current + 1 });
+          ui.notifications.info(`ACE QOL: Refunded level ${resourceLevel} spell slot to ${actor.name}.`);
+        } else {
+          ui.notifications.warn(`ACE QOL: ${actor.name} already has max level ${resourceLevel} slots.`);
+        }
+        break;
+      }
+      case "pact-slot": {
+        const pact = actor.system?.spells?.pact;
+        if (pact && pact.value < pact.max) {
+          await actor.update({ "system.spells.pact.value": pact.value + 1 });
+          ui.notifications.info(`ACE QOL: Refunded pact slot to ${actor.name}.`);
+        } else {
+          ui.notifications.warn(`ACE QOL: ${actor.name} already has max pact slots.`);
+        }
+        break;
+      }
+      case "ki": {
+        const kiItem = actor.items.find(i => {
+          const n = i.name?.toLowerCase() ?? "";
+          return (n.includes("ki point") || n.includes("focus point") || n === "ki") && i.system?.uses;
+        });
+        if (kiItem) {
+          const current = kiItem.system.uses.value ?? 0;
+          const max = kiItem.system.uses.max ?? 0;
+          if (current < max) {
+            await kiItem.update({ "system.uses.value": current + 1 });
+            ui.notifications.info(`ACE QOL: Refunded ki/focus point to ${actor.name}.`);
+          } else {
+            ui.notifications.warn(`ACE QOL: ${actor.name} already has max ki points.`);
+          }
+        }
+        break;
+      }
+      case "superiority-die": {
+        const supItem = actor.items.find(i => {
+          const n = i.name?.toLowerCase() ?? "";
+          return (n.includes("superiority") || n.includes("combat superiority")) && i.system?.uses;
+        });
+        if (supItem) {
+          const current = supItem.system.uses.value ?? 0;
+          const max = supItem.system.uses.max ?? 0;
+          if (current < max) {
+            await supItem.update({ "system.uses.value": current + 1 });
+            ui.notifications.info(`ACE QOL: Refunded superiority die to ${actor.name}.`);
+          } else {
+            ui.notifications.warn(`ACE QOL: ${actor.name} already has max superiority dice.`);
+          }
+        }
+        break;
+      }
+      default:
+        ui.notifications.warn(`ACE QOL: Unknown resource type "${resourceType}" — cannot refund.`);
+    }
+
+    console.log(`${MODULE_ID} | Refunded ${resourceType}${resourceLevel ? ` (level ${resourceLevel})` : ""} to ${actor.name}`);
   }
 
   /**

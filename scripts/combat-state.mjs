@@ -1029,11 +1029,12 @@ export class CombatState {
       // (standard 5e doesn't use Pythagorean — diagonal costs same as straight)
       const gridDist = Math.max(sqX, sqY);
       return gridDist * gd;
-    } catch {
+    } catch (err) {
       // Fallback to center-to-center if anything fails
+      console.warn("ace-qol | CombatState._getDistance grid calc failed:", err);
       try {
         return canvas.grid.measureDistance(token1.center, token2.center, { gridSpaces: true }) ?? 999;
-      } catch { return 999; }
+      } catch (err2) { console.warn("ace-qol | CombatState._getDistance center fallback failed:", err2); return 999; }
     }
   }
 

@@ -678,7 +678,7 @@ export class AttackPipeline {
           if (rider.damageType) types.add(rider.damageType);
         }
       }
-    } catch { /* no artificer */ }
+    } catch (err) { console.debug("ace-qol | AttackPipeline artificer rider read:", err); }
 
     // Bonus damage from active effects (e.g., Frost Brand's 2d6[cold])
     const bonusDmg = item.system?.bonuses?.mwak?.damage ?? "";

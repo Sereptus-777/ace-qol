@@ -27,6 +27,7 @@ import { SpeedRolls }           from "./speed-rolls.mjs";
 import { MergeCard }            from "./merge-card.mjs";
 import { LootEngine }           from "./loot-engine.mjs";
 import { DeathPipeline }        from "./death-pipeline.mjs";
+import * as Diagnostics         from "./diagnostics.mjs";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 let extendedEffects      = null;
@@ -207,25 +208,6 @@ Hooks.once("ready", () => {
       }
     });
 
-    // Hook: generate loot on NPC death — GM only
-    if (game.user.isGM) {
-      Hooks.on("updateActor", async (actor, changes) => {
-        try {
-          if (!game.settings.get(MODULE_ID, "enableLootGeneration")) return;
-          if (!game.settings.get(MODULE_ID, "lootOnDeath")) return;
-          const hpUpdate = foundry.utils.getProperty(changes, "system.attributes.hp.value");
-          if (hpUpdate !== 0) return;
-          if (actor.hasPlayerOwner || actor.type !== "npc") return;
-          const cr = actor.system.details?.cr ?? 0;
-          const minCR = game.settings.get(MODULE_ID, "minCRForLoot") ?? 0.25;
-          if (cr < minCR) return;
-          await lootEngine.checkAndGenerateOnDeath(actor);
-        } catch (err) {
-          console.error(`${MODULE_ID} | Loot on death failed:`, err);
-        }
-      });
-    }
-
     console.log(`${MODULE_ID} | Loot engine online`);
   } catch (err) {
     console.error(`${MODULE_ID} | Loot engine init failed:`, err);
@@ -238,24 +220,6 @@ Hooks.once("ready", () => {
       deathPipeline.buildArtCache();
       DeathPipeline.registerAPI(deathPipeline);
 
-      // Hook: convert NPC to dead tile when HP hits 0
-      Hooks.on("updateActor", async (actor, changes) => {
-        try {
-          if (!game.settings.get(MODULE_ID, "enableDeathPipeline")) return;
-          const hpUpdate = foundry.utils.getProperty(changes, "system.attributes.hp.value");
-          if (hpUpdate !== 0) return;
-          if (actor.hasPlayerOwner || actor.type !== "npc") return;
-
-          // Find the token for this actor on the current scene
-          const tokenDoc = canvas.scene?.tokens?.find(t => t.actorId === actor.id);
-          if (!tokenDoc) return;
-
-          await deathPipeline.processNPCDeath(actor, tokenDoc);
-        } catch (err) {
-          console.error(`${MODULE_ID} | Death pipeline hook failed:`, err);
-        }
-      });
-
       // Rebuild art cache on scene change
       Hooks.on("canvasReady", () => {
         if (deathPipeline) deathPipeline.buildArtCache();
@@ -265,6 +229,94 @@ Hooks.once("ready", () => {
     } catch (err) {
       console.error(`${MODULE_ID} | Death pipeline init failed:`, err);
     }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  UNIFIED NPC DEATH HOOK — Single updateActor listener for all death logic
+    //  Replaces 2 separate hooks (loot + death pipeline). Fires ace-qol.npcDeath
+    //  so other modules (Envoy) can listen without their own updateActor hooks.
+    // ══════════════════════════════════════════════════════════════════════════
+
+    const _deathProcessed = new Set();  // Guard against double-fire within same update
+
+    Hooks.on("updateActor", async (actor, changes, options, userId) => {
+      if (!game.user.isGM) return;
+
+      // ── Only fire for NPC HP reaching 0 ──
+      const hpUpdate = foundry.utils.getProperty(changes, "system.attributes.hp.value");
+      if (hpUpdate === undefined || hpUpdate > 0) return;
+      if (actor.hasPlayerOwner || actor.type !== "npc") return;
+
+      // ── Guard: skip if max HP is 0 (invalid actor) ──
+      const maxHP = actor.system?.attributes?.hp?.max ?? 0;
+      if (maxHP <= 0) return;
+
+      // ── Guard: deduplicate within the same Foundry update cycle ──
+      const deathKey = `${actor.id}-${Date.now()}`;
+      if (_deathProcessed.has(actor.id)) return;
+      _deathProcessed.add(actor.id);
+      setTimeout(() => _deathProcessed.delete(actor.id), 2000);
+
+      // ── Find the token on the current scene ──
+      const tokenDoc = canvas.scene?.tokens?.find(t =>
+        t.actorId === actor.id || t.actor?.id === actor.id
+      );
+
+      // ── Determine killer from recent chat messages ──
+      let killerName = "";
+      try {
+        const recentMsgs = game.messages?.contents?.slice(-5) ?? [];
+        for (const msg of recentMsgs.reverse()) {
+          if (msg.rolls?.length && msg.speaker?.alias) {
+            const speakerActor = game.actors?.get(msg.speaker?.actor);
+            if (speakerActor?.hasPlayerOwner) {
+              killerName = msg.speaker.alias;
+              break;
+            }
+          }
+        }
+      } catch (err) { console.debug("ace-qol | NPC death killer-search best-effort:", err); }
+
+      console.log(`${MODULE_ID} | NPC death detected: ${actor.name}${killerName ? ` (killed by ${killerName})` : ""}`);
+
+      // ── Step 1: Loot generation (before token might be removed) ──
+      try {
+        if (lootEngine
+            && game.settings.get(MODULE_ID, "enableLootGeneration")
+            && game.settings.get(MODULE_ID, "lootOnDeath")) {
+          const cr = actor.system.details?.cr ?? 0;
+          const minCR = game.settings.get(MODULE_ID, "minCRForLoot") ?? 0.25;
+          if (cr >= minCR) {
+            await lootEngine.checkAndGenerateOnDeath(actor);
+          }
+        }
+      } catch (err) {
+        console.error(`${MODULE_ID} | Loot on death failed:`, err);
+      }
+
+      // ── Step 2: Death pipeline (dead art tile conversion) ──
+      if (tokenDoc && deathPipeline) {
+        try {
+          await deathPipeline.processNPCDeath(actor, tokenDoc);
+        } catch (err) {
+          console.error(`${MODULE_ID} | Death pipeline failed:`, err);
+        }
+      }
+
+      // ── Step 3: Fire custom hook for other modules (Envoy, Engine, etc.) ──
+      // This fires AFTER QOL's own processing so the token still existed
+      // during loot/dead-art steps. Listeners get full context.
+      Hooks.callAll("ace-qol.npcDeath", {
+        actor,
+        tokenDoc:   tokenDoc ?? null,
+        changes,
+        killerName,
+        maxHP,
+        options,
+        userId,
+      });
+    });
+
+    console.log(`${MODULE_ID} | Unified NPC death hook registered`);
   }
 
   // ── Socket bridge: player attacks → GM processing ──
@@ -494,7 +546,7 @@ Hooks.once("ready", () => {
               }
               CoverEngine.showCoverIndicator(cs.targetToken, coverResult);
             }
-          } catch { /* cover non-blocking */ }
+          } catch (err) { console.debug("ace-qol | CoverEngine calculation non-blocking:", err); }
 
           let hitResult;
           if (isFumbleRoll) hitResult = "fumble";
@@ -615,12 +667,15 @@ Hooks.once("ready", () => {
       sculptSpell: FlagsEngine.hasSculptSpell(actor),
       optionals: FlagsEngine.getAvailableOptionals(actor, "attack", actionType ?? "mwak"),
     }),
+
+    /** Diagnostics — run from console: game.aceQol.diagnostics.runAll() */
+    diagnostics: Diagnostics,
   };
 
   // Register APIs that need game.aceQol to exist
-  try { CoverEngine.registerAPI(); } catch { /* non-critical */ }
-  try { if (bloodiedEngine) bloodiedEngine.registerAPI(); } catch { /* non-critical */ }
-  try { VisibilityEngine.registerAPI(); } catch { /* non-critical */ }
+  try { CoverEngine.registerAPI(); } catch (err) { console.debug("ace-qol | CoverEngine.registerAPI non-critical:", err); }
+  try { if (bloodiedEngine) bloodiedEngine.registerAPI(); } catch (err) { console.debug("ace-qol | BloodiedEngine.registerAPI non-critical:", err); }
+  try { VisibilityEngine.registerAPI(); } catch (err) { console.debug("ace-qol | VisibilityEngine.registerAPI non-critical:", err); }
 
   // ── Suppress "Bloodied" and other status effect chat cards ──
   // These come from modules like BLFS/DFreds and show "Bloodied - Applied to X" /

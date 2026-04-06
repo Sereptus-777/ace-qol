@@ -56,7 +56,7 @@ export class CoverEngine {
         const distance = CombatState._getDistance(attacker, target);
         if (distance <= 5) return CoverEngine._noCover();
       }
-    } catch { /* proceed without adjacency check */ }
+    } catch (err) { console.debug("ace-qol | CoverEngine adjacency check:", err); }
 
     // ── Choose calculation method ──
     let method = "corners";

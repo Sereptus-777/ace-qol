@@ -152,7 +152,7 @@ export class VisibilityEngine {
    */
   static _filterAttackCard(el) {
     let visibility = "public";
-    try { visibility = QolSettings.get("npcAttackVisibility"); } catch { return; }
+    try { visibility = QolSettings.get("npcAttackVisibility"); } catch (err) { console.debug("ace-qol | VisibilityEngine._filterAttackCard setting read:", err); return; }
 
     if (visibility === "public") return;
 
@@ -204,7 +204,7 @@ export class VisibilityEngine {
    */
   static _filterDamageCard(el) {
     let visibility = "public";
-    try { visibility = QolSettings.get("npcDamageVisibility"); } catch { return; }
+    try { visibility = QolSettings.get("npcDamageVisibility"); } catch (err) { console.debug("ace-qol | VisibilityEngine._filterDamageCard setting read:", err); return; }
 
     if (visibility === "public") return;
 
@@ -286,7 +286,7 @@ export class VisibilityEngine {
    */
   static _filterNPCNames(el, flags) {
     let hideNames = false;
-    try { hideNames = QolSettings.get("hideNPCNames"); } catch { return; }
+    try { hideNames = QolSettings.get("hideNPCNames"); } catch (err) { console.debug("ace-qol | VisibilityEngine._filterNPCNames setting read:", err); return; }
 
     if (!hideNames) return;
 
