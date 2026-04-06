@@ -21,7 +21,7 @@
 import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
 import { CombatState } from "./combat-state.mjs";
-import { DamageEngine } from "./damage-engine.mjs";
+import { DamageConstants } from "./damage-engine.mjs";
 import { getSpellTiming, TIMING } from "./spell-timing.mjs";
 
 export class SaveEngine {
@@ -2057,7 +2057,7 @@ export class SaveEngine {
 
     // ── Damage summary ──
     const dmgSummary = damageComponents.map(c => {
-      const color = DamageEngine.DAMAGE_COLORS[c.type] ?? "#ccc";
+      const color = DamageConstants.DAMAGE_COLORS[c.type] ?? "#ccc";
       return `<span style="color:${color}">${c.formula} = ${c.total} ${c.type}</span>`;
     }).join(", ");
 
@@ -2142,7 +2142,7 @@ export class SaveEngine {
         }
 
         targetDamage += dmg;
-        const color = DamageEngine.DAMAGE_COLORS[c.type] ?? "#ccc";
+        const color = DamageConstants.DAMAGE_COLORS[c.type] ?? "#ccc";
         return `<span style="color:${color}">${dmg} ${c.type}</span>${modBadge}`;
       }).join(" ");
 
@@ -2229,7 +2229,7 @@ export class SaveEngine {
 
     // ── Damage rolled summary ──
     const dmgSummary = damageComponents.map(c => {
-      const color = DamageEngine.DAMAGE_COLORS[c.type] ?? "#ccc";
+      const color = DamageConstants.DAMAGE_COLORS[c.type] ?? "#ccc";
       return `<span style="color:${color}">${c.formula} = ${c.total} ${c.type}</span>`;
     }).join(", ");
 

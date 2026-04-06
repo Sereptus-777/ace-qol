@@ -570,6 +570,165 @@ export class RiderEngine {
   //  Creature Type Colors (for popup display)
   // ═══════════════════════════════════════════════════════════════════════════
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Rider Refund — GM-only: give back a consumed resource post-facto
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Render and wire refund buttons for consumed riders on a damage card.
+   * Only called for GM users.
+   */
+  static wireRefundButtons(el, message) {
+    const mFlags = message.flags?.[MODULE_ID];
+    const consumedRiders = mFlags?.consumedRiders;
+    if (!consumedRiders?.length) return;
+
+    // Don't re-inject if already rendered
+    if (el.querySelector?.(".ace-qol-refund-row")) return;
+
+    let refundHtml = '<div class="ace-qol-refund-section">';
+    for (const cr of consumedRiders) {
+      const refunded = mFlags?.refundedRiders?.includes(cr.id);
+      const label = RiderEngine.refundLabel(cr);
+      if (refunded) {
+        refundHtml += `<div class="ace-qol-refund-row ace-qol-refund-done">
+          <i class="fas fa-check"></i> ${cr.name} — REFUNDED
+        </div>`;
+      } else {
+        refundHtml += `<div class="ace-qol-refund-row">
+          <button class="ace-qol-btn ace-qol-btn-refund" data-rider-id="${cr.id}" data-actor-id="${cr.actorId}"
+                  data-resource-type="${cr.resourceType}" data-resource-level="${cr.resourceLevel ?? ""}">
+            <i class="fas fa-rotate-left"></i> REFUND ${label}
+          </button>
+        </div>`;
+      }
+    }
+    refundHtml += '</div>';
+
+    const gmControls = el.querySelector?.(".ace-qol-dmg-gm-controls");
+    const dmgCard = el.querySelector?.(".ace-qol-damage-card") ?? el.querySelector?.(".ace-qol-dmg-btn-card");
+    if (gmControls) {
+      gmControls.insertAdjacentHTML("afterend", refundHtml);
+    } else if (dmgCard) {
+      dmgCard.insertAdjacentHTML("beforeend", refundHtml);
+    } else {
+      return;
+    }
+
+    el.querySelectorAll?.(".ace-qol-btn-refund")?.forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const riderId = btn.dataset.riderId;
+        const actorId = btn.dataset.actorId;
+        const resType = btn.dataset.resourceType;
+        const resLevel = btn.dataset.resourceLevel ? parseInt(btn.dataset.resourceLevel) : null;
+
+        await RiderEngine.refundRiderResource(actorId, resType, resLevel, riderId);
+
+        const existing = message.flags?.[MODULE_ID]?.refundedRiders ?? [];
+        await message.setFlag(MODULE_ID, "refundedRiders", [...existing, riderId]);
+
+        btn.disabled = true;
+        btn.closest(".ace-qol-refund-row")?.classList.add("ace-qol-refund-done");
+        btn.innerHTML = `<i class="fas fa-check"></i> REFUNDED`;
+      });
+    });
+  }
+
+  /**
+   * Build a short human-readable label for the refund button.
+   */
+  static refundLabel(cr) {
+    switch (cr.resourceType) {
+      case "spell-slot": {
+        const lvl = cr.resourceLevel ?? 1;
+        const suffix = lvl === 1 ? "ST" : lvl === 2 ? "ND" : lvl === 3 ? "RD" : "TH";
+        return `${lvl}${suffix} SLOT`;
+      }
+      case "pact-slot":      return "PACT SLOT";
+      case "ki":              return "KI POINT";
+      case "superiority-die": return "SUPERIORITY DIE";
+      default:                return cr.name?.toUpperCase() ?? "RESOURCE";
+    }
+  }
+
+  /**
+   * Refund a consumed rider resource back to the actor.
+   */
+  static async refundRiderResource(actorId, resourceType, resourceLevel, riderId) {
+    const actor = game.actors.get(actorId);
+    if (!actor) {
+      ui.notifications.warn("ACE QOL: Cannot refund — actor not found.");
+      return;
+    }
+
+    switch (resourceType) {
+      case "spell-slot": {
+        const slotKey = `spell${resourceLevel}`;
+        const current = actor.system?.spells?.[slotKey]?.value ?? 0;
+        const max = actor.system?.spells?.[slotKey]?.max ?? 0;
+        if (current < max) {
+          await actor.update({ [`system.spells.${slotKey}.value`]: current + 1 });
+          ui.notifications.info(`ACE QOL: Refunded level ${resourceLevel} spell slot to ${actor.name}.`);
+        } else {
+          ui.notifications.warn(`ACE QOL: ${actor.name} already has max level ${resourceLevel} slots.`);
+        }
+        break;
+      }
+      case "pact-slot": {
+        const pact = actor.system?.spells?.pact;
+        if (pact && pact.value < pact.max) {
+          await actor.update({ "system.spells.pact.value": pact.value + 1 });
+          ui.notifications.info(`ACE QOL: Refunded pact slot to ${actor.name}.`);
+        } else {
+          ui.notifications.warn(`ACE QOL: ${actor.name} already has max pact slots.`);
+        }
+        break;
+      }
+      case "ki": {
+        const kiItem = actor.items.find(i => {
+          const n = i.name?.toLowerCase() ?? "";
+          return (n.includes("ki point") || n.includes("focus point") || n === "ki") && i.system?.uses;
+        });
+        if (kiItem) {
+          const current = kiItem.system.uses.value ?? 0;
+          const max = kiItem.system.uses.max ?? 0;
+          if (current < max) {
+            await kiItem.update({ "system.uses.value": current + 1 });
+            ui.notifications.info(`ACE QOL: Refunded ki/focus point to ${actor.name}.`);
+          } else {
+            ui.notifications.warn(`ACE QOL: ${actor.name} already has max ki points.`);
+          }
+        }
+        break;
+      }
+      case "superiority-die": {
+        const supItem = actor.items.find(i => {
+          const n = i.name?.toLowerCase() ?? "";
+          return (n.includes("superiority") || n.includes("combat superiority")) && i.system?.uses;
+        });
+        if (supItem) {
+          const current = supItem.system.uses.value ?? 0;
+          const max = supItem.system.uses.max ?? 0;
+          if (current < max) {
+            await supItem.update({ "system.uses.value": current + 1 });
+            ui.notifications.info(`ACE QOL: Refunded superiority die to ${actor.name}.`);
+          } else {
+            ui.notifications.warn(`ACE QOL: ${actor.name} already has max superiority dice.`);
+          }
+        }
+        break;
+      }
+      default:
+        ui.notifications.warn(`ACE QOL: Unknown resource type "${resourceType}" — cannot refund.`);
+    }
+
+    console.log(`${MODULE_ID} | Refunded ${resourceType}${resourceLevel ? ` (level ${resourceLevel})` : ""} to ${actor.name}`);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Creature Type Colors (for popup display)
+  // ═══════════════════════════════════════════════════════════════════════════
+
   static CREATURE_TYPE_COLORS = {
     undead:      "#ce93d8",  // purple
     fiend:       "#ff6d00",  // orange

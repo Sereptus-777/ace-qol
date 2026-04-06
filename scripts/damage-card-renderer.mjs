@@ -1,0 +1,587 @@
+// ─── ACE: QOL — Damage Card Renderer ─────────────────────────────────────────
+// All HTML card generation for the damage system: damage buttons, full damage
+// cards, target rows, and pre-rolled dice animation. No HP mutation, no hooks.
+// ──────────────────────────────────────────────────────────────────────────────
+
+import { MODULE_ID } from "./ace-qol.mjs";
+import { QolSettings } from "./settings.mjs";
+import { DescriptionParser } from "./description-parser.mjs";
+import { DamageCalculator } from "./damage-calculator.mjs";
+import { DamageConstants } from "./damage-engine.mjs";
+import { MergeCard } from "./merge-card.mjs";
+
+export class DamageCardRenderer {
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  PC Damage Button — slim card with "ROLL DAMAGE" button
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Post a slim card with a ROLL DAMAGE button. Pre-rolls damage while item
+   * still exists (Beneos/BG3 HUD deletes items after attack).
+   */
+  static async postDamageButton(item, actor, hits, consumedRiders = []) {
+    const critRule = QolSettings.get("critRule") ?? "maxPlusRoll";
+    const anyCrit = hits.some(h => h.hitResult === "critical");
+    const targetNames = hits.map(h => h.name ?? h.target?.name ?? "target").join(", ");
+
+    // ── Pre-roll damage while item still exists ──
+    DamageConstants.suppressDiceAnimation = true;
+    const preRolled = [];
+    try {
+      for (const hit of hits) {
+        const isCrit = hit.hitResult === "critical";
+        let components = await DamageCalculator.rollDamageComponents(item, actor, hit, isCrit, critRule);
+
+        // ── ABSORB ELEMENTS — target reaction to halve elemental damage ──
+        try {
+          const reactionEng = game.aceQol?.reactionEngine;
+          if (reactionEng && hit.targetActor && hit.targetToken) {
+            const absorbResult = await reactionEng.checkPreDamageReactions(
+              components, hit.targetActor, hit.targetToken, actor, item
+            );
+            if (absorbResult.absorbed) {
+              components = absorbResult.modifiedComponents;
+            }
+          }
+        } catch (err) {
+          console.warn(`ace-qol | Absorb Elements check failed (non-blocking):`, err);
+        }
+
+        const applied = DamageCalculator.applyDamageModifiers(components, hit.damageModifiers ?? {});
+        const totalRaw = applied.reduce((sum, c) => sum + c.raw, 0);
+        const totalFinal = applied.reduce((sum, c) => sum + c.final, 0);
+
+        // Serialize components (Roll objects aren't JSON-serializable)
+        const serializedComponents = applied.map(c => ({
+          name: c.name,
+          formula: c.formula,
+          total: c.total ?? c.raw,
+          raw: c.raw,
+          final: c.final,
+          modifier: c.modifier,
+          reason: c.reason,
+          type: c.type,
+          isCrit: c.isCrit ?? false,
+          normalTotal: c.normalTotal,
+          _modMeta: c._modMeta ?? null,
+          terms: DamageConstants.serializeRollTerms(c.roll),
+        }));
+
+        preRolled.push({
+          tokenId: hit.targetToken?.id,
+          tokenDocId: hit.targetToken?.document?.id ?? hit.targetToken?.id,
+          actorId: hit.targetActor?.id,
+          sceneId: canvas.scene?.id,
+          hitResult: hit.hitResult,
+          isCrit,
+          name: hit.target?.name ?? hit.name,
+          img: hit.target?.img ?? hit.img,
+          currentHP: hit.target?.currentHP,
+          maxHP: hit.target?.maxHP,
+          totalRaw,
+          totalFinal,
+          components: serializedComponents,
+          damageModifiers: hit.damageModifiers,
+        });
+      }
+    } finally {
+      DamageConstants.suppressDiceAnimation = false;
+    }
+
+    // ── Also pre-parse item description for post-hit effects ──
+    let parsedDescription = null;
+    try {
+      const parsed = DescriptionParser.parse(item);
+      if (parsed.saves.length || parsed.effectTable || parsed.bonusDamage.length || parsed.conditions.length) {
+        parsedDescription = {
+          saves: parsed.saves,
+          effectTable: parsed.effectTable,
+          bonusDamage: parsed.bonusDamage,
+          conditions: parsed.conditions,
+        };
+      }
+    } catch (e) {
+      console.warn(`${MODULE_ID} | DescriptionParser.parse failed in postDamageButton:`, e.message);
+    }
+
+    console.log(`${MODULE_ID} | postDamageButton: pre-rolled ${preRolled.length} targets, critRule=${critRule}`);
+
+    const cardHtml = `
+      <div class="ace-qol-dmg-btn-card">
+        <button class="ace-qol-btn ace-qol-btn-roll-dmg" data-action="aceQolRollDamage">
+          <i class="fas fa-burst"></i>
+          ROLL DAMAGE${anyCrit ? ' <span class="ace-qol-dmg-btn-crit">CRIT!</span>' : ""}
+        </button>
+        <span class="ace-qol-dmg-btn-targets">→ ${targetNames}</span>
+      </div>
+    `;
+
+    await ChatMessage.create({
+      content: cardHtml,
+      speaker: ChatMessage.getSpeaker({ actor }),
+      flags: {
+        [MODULE_ID]: {
+          type: "damageButton",
+          itemId: item.id,
+          itemUuid: item.uuid,
+          itemName: item.name,
+          itemImg: item.img || "icons/svg/sword.svg",
+          actorId: actor.id,
+          critRule,
+          preRolled,
+          parsedDescription,
+          consumedRiders: consumedRiders.length ? consumedRiders : undefined,
+        }
+      }
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Merged Attack + Damage Button
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Post a merged attack + ROLL DAMAGE button card for PC attacks.
+   * Does the same pre-rolling as postDamageButton, but wraps the output
+   * in MergeCard's combined layout that includes attack results above.
+   */
+  static async postMergeDamageButton(item, actor, hits, consumedRiders = []) {
+    const critRule = QolSettings.get("critRule") ?? "maxPlusRoll";
+
+    // ── Pre-roll damage (same as postDamageButton) ──
+    DamageConstants.suppressDiceAnimation = true;
+    const preRolled = [];
+    try {
+      for (const hit of hits) {
+        const isCrit = hit.hitResult === "critical";
+        const components = await DamageCalculator.rollDamageComponents(item, actor, hit, isCrit, critRule);
+        const applied = DamageCalculator.applyDamageModifiers(components, hit.damageModifiers ?? {});
+        const totalRaw = applied.reduce((sum, c) => sum + c.raw, 0);
+        const totalFinal = applied.reduce((sum, c) => sum + c.final, 0);
+
+        const serializedComponents = applied.map(c => ({
+          name: c.name, formula: c.formula, total: c.total ?? c.raw,
+          raw: c.raw, final: c.final, modifier: c.modifier, reason: c.reason,
+          type: c.type, isCrit: c.isCrit ?? false, normalTotal: c.normalTotal,
+          _modMeta: c._modMeta ?? null,
+          terms: DamageConstants.serializeRollTerms(c.roll),
+        }));
+
+        preRolled.push({
+          tokenId: hit.targetToken?.id,
+          tokenDocId: hit.targetToken?.document?.id ?? hit.targetToken?.id,
+          actorId: hit.targetActor?.id,
+          sceneId: canvas.scene?.id,
+          hitResult: hit.hitResult, isCrit,
+          name: hit.target?.name ?? hit.name,
+          img: hit.target?.img ?? hit.img,
+          currentHP: hit.target?.currentHP, maxHP: hit.target?.maxHP,
+          totalRaw, totalFinal,
+          components: serializedComponents,
+          damageModifiers: hit.damageModifiers,
+        });
+      }
+    } finally {
+      DamageConstants.suppressDiceAnimation = false;
+    }
+
+    // ── Pre-parse description for post-hit effects ──
+    let parsedDescription = null;
+    try {
+      const parsed = DescriptionParser.parse(item);
+      if (parsed.saves.length || parsed.effectTable || parsed.bonusDamage.length || parsed.conditions.length) {
+        parsedDescription = {
+          saves: parsed.saves, effectTable: parsed.effectTable,
+          bonusDamage: parsed.bonusDamage, conditions: parsed.conditions,
+        };
+      }
+    } catch (e) {
+      console.warn(`${MODULE_ID} | DescriptionParser.parse failed in postMergeDamageButton:`, e.message);
+    }
+
+    // ── Post the merged card ──
+    const attackData = MergeCard.consumeAttackResult();
+    await MergeCard.postMergedDamageButton(attackData, item, actor, hits, preRolled, critRule, parsedDescription, consumedRiders);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Full Damage Card — Batch Results with Apply/Undo
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  static async postDamageCard(item, actor, damageResults, critRule, consumedRiders = null) {
+    if (!damageResults.length) return;
+
+    // ── Shared formula display (from first target's raw roll — same roll for all) ──
+    const firstResult = damageResults[0];
+    const formulaRows = firstResult.components.map(c => {
+      const dieResults = [];
+      const flatMods = [];
+      const meta = c._modMeta;
+      const usedLabels = new Set();
+
+      if (c.roll?.terms) {
+        for (const term of c.roll.terms) {
+          if (term.faces) {
+            for (const r of (term.results ?? [])) {
+              const imgPath = DamageConstants.getDiceImagePath(term.faces, r.result);
+              const fallbackIcon = DamageConstants.DIE_ICONS[term.faces] ?? "fa-dice";
+              dieResults.push(
+                `<span class="ace-qol-die">`
+                + `<img class="ace-qol-die-img" src="${imgPath}" alt="d${term.faces}" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'">`
+                + `<i class="fas ${fallbackIcon} ace-qol-die-fallback" style="display:none"></i>`
+                + `<span class="ace-qol-die-result">${r.result}</span>`
+                + `</span>`
+              );
+            }
+          } else if (term.number !== undefined && term.number !== 0) {
+            const num = term.number;
+            let label = "";
+            if (meta) {
+              if (!usedLabels.has("ability") && meta.abilityMod !== 0 && num === meta.abilityMod) {
+                label = meta.abilityName;
+                usedLabels.add("ability");
+              } else if (!usedLabels.has("magic") && meta.magicBonus > 0 && num === meta.magicBonus) {
+                label = "MAGIC";
+                usedLabels.add("magic");
+              }
+            }
+            const sign = num > 0 ? "+" : "";
+            const labelClass = label === "MAGIC" ? "ace-qol-mod-label ace-qol-mod-magic" : "ace-qol-mod-label";
+            const labelHtml = label
+              ? `<span class="ace-qol-mod-labeled">${sign}${num} <span class="${labelClass}">${label}</span></span>`
+              : `<span class="ace-qol-mod-plain">${sign}${num}</span>`;
+            flatMods.push(labelHtml);
+          }
+        }
+      }
+
+      const dieDisplay = dieResults.join(' <span class="ace-qol-dmg-plus">+</span> ') || c.formula;
+      const modDisplay = flatMods.length ? ` ${flatMods.join(" ")}` : "";
+      const critDisplay = c.isCrit ? `<span class="ace-qol-dmg-crit-label">${c.normalTotal !== undefined ? `MAX ${c.normalTotal}` : "CRIT"}</span> + ` : "";
+
+      const color = DamageConstants.DAMAGE_COLORS[c.type] ?? "#ccc";
+      const typeTotal = `<span class="ace-qol-dmg-type-total" style="color:${color}"><span class="ace-qol-dmg-type-num">${c.final}</span> ${c.type}</span>`;
+
+      return `<div class="ace-qol-dmg-component">`
+        + `<div class="ace-qol-dmg-comp-left">${critDisplay}${dieDisplay}${modDisplay}</div>`
+        + typeTotal
+        + `</div>`;
+    }).join("");
+
+    const totalRaw = firstResult.totalRaw;
+
+    // ── Build per-target rows ──
+    const targetRows = damageResults.map(dr => DamageCardRenderer.buildTargetRowHtml({
+      tokenDocId: dr.targetToken?.document?.id ?? dr.targetToken?.id,
+      actorId: dr.targetActor?.id,
+      sceneId: canvas.scene?.id,
+      name: dr.target.name,
+      img: dr.target.img,
+      currentHP: dr.target.currentHP,
+      maxHP: dr.target.maxHP,
+      totalFinal: dr.totalFinal,
+      isCrit: dr.isCrit,
+      components: dr.components,
+    })).join("");
+
+    const critRuleLabel = { doubleDice: "Double Dice", maxPlusRoll: "Max + Roll", maxAll: "Max All" }[critRule] ?? critRule;
+    const anyCrit = damageResults.some(dr => dr.isCrit);
+
+    const hasCleave = actor ? DamageConstants.actorHasCleave(actor) : false;
+
+    const cardHtml = `
+      <div class="ace-qol-damage-card">
+        <div class="ace-qol-dmg-header">
+          <img src="${item.img || "icons/svg/sword.svg"}" class="ace-qol-dmg-item-img" />
+          <strong class="ace-qol-dmg-item-name">${item.name} — Damage</strong>
+          ${anyCrit ? `<span class="ace-qol-dmg-crit-rule">${critRuleLabel}</span>` : ""}
+        </div>
+        <div class="ace-qol-dmg-roll-section">
+          <div class="ace-qol-dmg-components">${formulaRows}</div>
+        </div>
+        <div class="ace-qol-dmg-targets">
+          ${targetRows}
+        </div>
+        <div class="ace-qol-dmg-gm-controls">
+          <div class="ace-qol-dmg-actions">
+            ${hasCleave ? `<button class="ace-qol-btn ace-qol-btn-cleave" data-action="aceQolCleave">
+              <i class="fas fa-khanda"></i> CLEAVE
+            </button>` : ""}
+            <button class="ace-qol-btn ace-qol-btn-apply" data-action="aceQolApplyDamage">
+              <i class="fas fa-heart-crack"></i> APPLY ALL
+            </button>
+            <button class="ace-qol-btn ace-qol-btn-undo" data-action="aceQolUndoDamage" disabled>
+              <i class="fas fa-undo"></i> UNDO ALL
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Store raw components for ADD TARGET re-calculation
+    const rawComponents = firstResult.components.map(c => ({
+      name: c.name, type: c.type, raw: c.raw, formula: c.formula,
+    }));
+
+    await ChatMessage.create({
+      content: cardHtml,
+      speaker: ChatMessage.getSpeaker({ actor }),
+      flags: {
+        [MODULE_ID]: {
+          type: "damageResult",
+          itemUuid: item.uuid,
+          actorId: actor.id,
+          rawComponents,
+          totalRaw,
+          consumedRiders: consumedRiders?.length ? consumedRiders : undefined,
+          damageResults: damageResults.map(dr => ({
+            targetId: dr.targetActor.id,
+            tokenId: dr.targetToken.id,
+            tokenDocId: dr.targetToken.document?.id ?? dr.targetToken.id,
+            sceneId: canvas.scene?.id,
+            isLinked: dr.targetActor.prototypeToken?.actorLink ?? dr.targetToken.document?.actorLink ?? false,
+            totalFinal: dr.totalFinal,
+            currentHP: dr.target.currentHP,
+            maxHP: dr.target.maxHP,
+            name: dr.target.name,
+            img: dr.target.img,
+            components: dr.components.map(c => ({ name: c.name, type: c.type, raw: c.raw, final: c.final, modifier: c.modifier })),
+          })),
+        }
+      }
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Pre-Rolled Damage Card (from button click)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Post damage card from pre-rolled results stored in message flags.
+   * Fires Dice So Nice animations, then posts the card.
+   * @returns {boolean} true on success
+   */
+  static async postPreRolledDamageCard(message, flags) {
+    const { preRolled, critRule, itemName, itemImg, actorId, parsedDescription } = flags;
+    const actor = game.actors.get(actorId);
+
+    console.log(`${MODULE_ID} | postPreRolledDamageCard: ${preRolled.length} pre-rolled targets`);
+
+    // Reconstruct damageResults from serialized data
+    const damageResults = preRolled.map(pr => {
+      const scene = game.scenes.get(pr.sceneId) ?? canvas.scene;
+      const tokenDoc = scene?.tokens?.get(pr.tokenDocId);
+      const targetActor = tokenDoc?.actor ?? game.actors.get(pr.actorId);
+
+      const components = pr.components.map(c => ({
+        ...c,
+        roll: { terms: (c.terms ?? []).map(t => {
+          if (t.type === "die") return { faces: t.faces, results: t.results };
+          if (t.type === "num") return { number: t.number };
+          return t;
+        }) },
+      }));
+
+      return {
+        target: {
+          name: pr.name,
+          img: pr.img,
+          currentHP: targetActor?.system?.attributes?.hp?.value ?? pr.currentHP,
+          maxHP: pr.maxHP,
+        },
+        targetToken: { id: pr.tokenId, document: { id: pr.tokenDocId } },
+        targetActor: targetActor ?? { id: pr.actorId },
+        isCrit: pr.isCrit,
+        components,
+        totalRaw: pr.totalRaw,
+        totalFinal: pr.totalFinal,
+      };
+    });
+
+    // Build a minimal item stand-in for the card header
+    const fakeItem = { name: itemName, img: itemImg, uuid: flags.itemUuid };
+
+    // ── Fire Dice So Nice animations FIRST, then post the card ──
+    if (game.dice3d) {
+      try {
+        for (const pr of preRolled) {
+          for (const c of (pr.components ?? [])) {
+            if (!c.terms?.length) continue;
+            const formulaParts = [];
+            for (const t of c.terms) {
+              if (t.type === "die") formulaParts.push(`${t.results.length}d${t.faces}`);
+              else if (t.type === "num" && t.number > 0) formulaParts.push(`+ ${t.number}`);
+              else if (t.type === "num" && t.number < 0) formulaParts.push(`- ${Math.abs(t.number)}`);
+              else if (t.type === "op") formulaParts.push(t.operator);
+            }
+            const formula = formulaParts.join(" ") || c.formula;
+            if (!formula) continue;
+
+            const roll = new Roll(formula);
+            roll._evaluated = true;
+            let termIdx = 0;
+            for (const term of roll.terms) {
+              if (term.faces) {
+                const sTerm = c.terms.find((t, i) => t.type === "die" && i >= termIdx);
+                if (sTerm) {
+                  term._evaluated = true;
+                  term.results = sTerm.results.map(r => ({ result: r.result, active: true }));
+                  termIdx = c.terms.indexOf(sTerm) + 1;
+                }
+              }
+            }
+            roll._total = c.total ?? c.raw;
+
+            await game.dice3d.showForRoll(roll, game.user, true);
+          }
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Pre-rolled dice animation failed (non-blocking):`, err);
+      }
+    }
+
+    // ── Post the damage card AFTER dice finish rolling ──
+    try {
+      await DamageCardRenderer.postDamageCard(fakeItem, actor, damageResults, critRule, flags.consumedRiders);
+    } catch (err) {
+      console.error(`${MODULE_ID} | postPreRolledDamageCard CRASHED:`, err);
+      return false;
+    }
+
+    // ── Post-hit effects — use pre-parsed description data if item is gone ──
+    if (parsedDescription?.saves?.length) {
+      let item = await fromUuid(flags.itemUuid).catch(() => null);
+      if (!item) item = actor?.items?.get(flags.itemId);
+      if (!item && itemName) item = actor?.items?.getName(itemName);
+
+      if (item) {
+        // Return item for caller to run post-hit effects
+        return { success: true, item, preRolled, damageResults };
+      } else {
+        console.warn(`${MODULE_ID} | Item gone, but post-hit saves detected. Save card skipped (item description unavailable).`);
+      }
+    }
+
+    return { success: true };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Target Row HTML Builder
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Build HTML for a single target row in the damage card.
+   * Normalized input — works for both initial render and dynamic ADD/CLEAVE.
+   */
+  static buildTargetRowHtml({ tokenDocId, actorId, sceneId, name, img, currentHP, maxHP, totalFinal, isCrit, components }) {
+    const tDocId = tokenDocId ?? "unknown";
+    const portrait = img || "icons/svg/mystery-man.svg";
+    const newHP = Math.max(0, currentHP - totalFinal);
+    const isDead = newHP <= 0;
+
+    const compLines = (components ?? []).map((c, idx) => {
+      const color = DamageConstants.DAMAGE_COLORS[c.type] ?? "#ccc";
+      let modBadge = "";
+      let strikeStyle = "";
+      if (c.modifier === "immune") {
+        modBadge = `<span class="ace-qol-dmg-mod ace-qol-dmg-immune" style="background:${color}; color:#000">IMMUNE</span>`;
+        strikeStyle = `text-decoration: line-through; text-decoration-color: ${color}; opacity: 0.6;`;
+      } else if (c.modifier === "resistant") {
+        modBadge = `<span class="ace-qol-dmg-mod ace-qol-dmg-resist" style="border-color:${color}; color:${color}">½ RESIST</span>`;
+      } else if (c.modifier === "vulnerable") {
+        modBadge = `<span class="ace-qol-dmg-mod ace-qol-dmg-vuln">×2 VULN</span>`;
+      }
+      const dmgDisplay = (c.raw !== c.final && c.modifier !== "normal")
+        ? `<span style="color:#666; text-decoration:line-through; font-size:0.75rem">${c.raw}</span> <strong style="color:${color}">${c.final}</strong>`
+        : `<strong style="color:${color}">${c.final}</strong>`;
+      const clickable = c.final > 0 ? `data-action="aceQolApplyType" data-damage-type="${c.type}" data-damage-amount="${c.final}" data-comp-index="${idx}" title="Click to apply ${c.final} ${c.type} damage"` : "";
+      const clickClass = c.final > 0 ? " ace-qol-dmg-type-clickable" : "";
+      return `
+        <div class="ace-qol-dmg-type-line${clickClass}" ${clickable} style="${strikeStyle}">
+          ${dmgDisplay} <span style="color:${color}; font-weight:600">${c.type}</span> ${modBadge}
+        </div>
+      `;
+    }).join("");
+
+    const _a = (mult) => (mult === 1) ? " ace-qol-dmg-ovr-active" : "";
+
+    return `
+      <div class="ace-qol-dmg-target-row" data-token-doc-id="${tDocId}" data-actor-id="${actorId ?? ""}" data-scene-id="${sceneId ?? ""}">
+        <div class="ace-qol-dmg-row-header">
+          <img src="${portrait}" class="ace-qol-dmg-tgt-img" />
+          <span class="ace-qol-dmg-tgt-name">${name ?? "Unknown"}</span>
+          ${isCrit ? '<span class="ace-qol-dmg-crit-badge">CRIT</span>' : ""}
+        </div>
+        ${compLines ? `<div class="ace-qol-dmg-type-breakdown">${compLines}</div>` : ""}
+        <div class="ace-qol-dmg-gm-controls">
+          <div class="ace-qol-dmg-hp-line">
+            <span class="ace-qol-dmg-row-dmg">${totalFinal}</span>
+            ${isDead ? '<span class="ace-qol-dmg-skull">☠</span>' : ''}
+            <span class="ace-qol-dmg-row-hp">HP: <span class="ace-qol-hp-cur">${currentHP}</span> → <span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span><span class="ace-qol-hp-max">/${maxHP}</span></span>
+          </div>
+          <div class="ace-qol-dmg-ovr-line">
+            <button class="ace-qol-dmg-ovr-x" data-action="aceQolDmgRemove" data-token-doc-id="${tDocId}">×</button>
+            <button class="ace-qol-dmg-ovr${_a(0.25)}" data-action="aceQolDmgOverride" data-token-doc-id="${tDocId}" data-multiplier="0.25">¼</button>
+            <button class="ace-qol-dmg-ovr${_a(0.5)}" data-action="aceQolDmgOverride" data-token-doc-id="${tDocId}" data-multiplier="0.5">½</button>
+            <button class="ace-qol-dmg-ovr${_a(1)}" data-action="aceQolDmgOverride" data-token-doc-id="${tDocId}" data-multiplier="1">1</button>
+            <button class="ace-qol-dmg-ovr${_a(2)}" data-action="aceQolDmgOverride" data-token-doc-id="${tDocId}" data-multiplier="2">2</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Player Status Summary (post-apply, shown to all users)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Inject player-visible status summary into a damage card after GM applies.
+   * Shows "12 slashing applied", "IMMUNE fire", etc.
+   */
+  static injectPlayerStatus(el, flags) {
+    if (!flags.applied || !flags.damageResults?.length) return;
+
+    const existing = el.querySelector(".ace-qol-player-status");
+    if (existing) return;
+
+    const MODIFIER_LABELS = {
+      immune: { text: "IMMUNE", color: "#ef5350", icon: "fa-shield" },
+      resistant: { text: "RESIST", color: "#ffa726", icon: "fa-shield-halved" },
+      vulnerable: { text: "VULN ×2", color: "#ab47bc", icon: "fa-burst" },
+    };
+
+    let statusHtml = '<div class="ace-qol-player-status">';
+    for (const dr of flags.damageResults) {
+      statusHtml += `<div class="ace-qol-player-status-target">
+        <span class="ace-qol-player-status-name">${dr.name}</span>`;
+      for (const c of (dr.components ?? [])) {
+        const mod = MODIFIER_LABELS[c.modifier];
+        if (c.modifier === "immune") {
+          statusHtml += `<span class="ace-qol-player-status-line ace-qol-player-status-immune">
+            <i class="fas ${mod.icon}"></i> ${c.type} <strong>${mod.text}</strong>
+          </span>`;
+        } else if (mod) {
+          statusHtml += `<span class="ace-qol-player-status-line" style="color:${mod.color}">
+            <i class="fas ${mod.icon}"></i> ${c.final} ${c.type} <strong>${mod.text}</strong>
+          </span>`;
+        } else if (c.final > 0) {
+          statusHtml += `<span class="ace-qol-player-status-line ace-qol-player-status-applied">
+            <i class="fas fa-check"></i> ${c.final} ${c.type}
+          </span>`;
+        }
+      }
+      statusHtml += `</div>`;
+    }
+    statusHtml += '</div>';
+
+    const rollSection = el.querySelector(".ace-qol-dmg-roll-section");
+    if (rollSection) {
+      rollSection.insertAdjacentHTML("afterend", statusHtml);
+    } else {
+      const card = el.querySelector(".ace-qol-damage-card");
+      if (card) card.insertAdjacentHTML("beforeend", statusHtml);
+    }
+  }
+}

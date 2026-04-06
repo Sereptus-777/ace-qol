@@ -18,7 +18,7 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
-import { DamageEngine } from "./damage-engine.mjs";
+import { DamageConstants } from "./damage-engine.mjs";
 
 export class MergeCard {
 
@@ -97,7 +97,7 @@ export class MergeCard {
     const targetsHtml = MergeCard._buildTargetSection(attackData, damageResults);
 
     // ── Control buttons ──
-    const hasCleave = actor ? DamageEngine._actorHasCleave(actor) : false;
+    const hasCleave = actor ? DamageConstants.actorHasCleave(actor) : false;
     const controlsHtml = MergeCard._buildControls(hasCleave);
 
     const critRuleLabel = { doubleDice: "Double Dice", maxPlusRoll: "Max + Roll", maxAll: "Max All" }[critRule] ?? critRule;
@@ -277,8 +277,8 @@ export class MergeCard {
         for (const term of c.roll.terms) {
           if (term.faces) {
             for (const r of (term.results ?? [])) {
-              const imgPath = DamageEngine.getDiceImagePath(term.faces, r.result);
-              const fallbackIcon = DamageEngine.DIE_ICONS[term.faces] ?? "fa-dice";
+              const imgPath = DamageConstants.getDiceImagePath(term.faces, r.result);
+              const fallbackIcon = DamageConstants.DIE_ICONS[term.faces] ?? "fa-dice";
               dieResults.push(
                 `<span class="ace-qol-die">`
                 + `<img class="ace-qol-die-img" src="${imgPath}" alt="d${term.faces}" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'">`
@@ -315,7 +315,7 @@ export class MergeCard {
         ? `<span class="ace-qol-dmg-crit-label">${c.normalTotal !== undefined ? `MAX ${c.normalTotal}` : "CRIT"}</span> + `
         : "";
 
-      const color = DamageEngine.DAMAGE_COLORS[c.type] ?? "#ccc";
+      const color = DamageConstants.DAMAGE_COLORS[c.type] ?? "#ccc";
       const typeTotal = `<span class="ace-qol-dmg-type-total" style="color:${color}"><span class="ace-qol-dmg-type-num">${c.final}</span> ${c.type}</span>`;
 
       return `<div class="ace-qol-dmg-component">`
@@ -403,7 +403,7 @@ export class MergeCard {
 
       // Per-component type breakdown lines
       const compLines = (dr.components ?? []).map((c, idx) => {
-        const color = DamageEngine.DAMAGE_COLORS[c.type] ?? "#ccc";
+        const color = DamageConstants.DAMAGE_COLORS[c.type] ?? "#ccc";
         let modBadge = "";
         let strikeStyle = "";
         if (c.modifier === "immune") {
