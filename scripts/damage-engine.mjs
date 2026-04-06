@@ -264,6 +264,29 @@ export class DamageEngine {
         });
       }
 
+      // ── Auto-apply damage to HP ──
+      // If setting is ON, GM auto-applies damage as soon as the card renders
+      if (game.user.isGM && flags.type === "damageResult" && !flags.applied && applyBtn) {
+        try {
+          const shouldAutoApply = QolSettings.get("autoApplyDamage");
+          if (shouldAutoApply && !el.dataset.aceAutoApplied) {
+            el.dataset.aceAutoApplied = "1";
+            // Slight delay to let the card fully render first
+            setTimeout(async () => {
+              try {
+                await DamageApplicator.applyDamage(message);
+                const btn = el.querySelector?.("[data-action='aceQolApplyDamage']");
+                if (btn) { btn.disabled = true; btn.textContent = "APPLIED ✓"; }
+                await message.setFlag(MODULE_ID, "applied", true);
+                console.log(`${MODULE_ID} | Auto-applied damage for message ${message.id}`);
+              } catch (err) {
+                console.error(`${MODULE_ID} | Auto-apply damage failed:`, err);
+              }
+            }, 100);
+          }
+        } catch (_) { /* setting not ready */ }
+      }
+
       // ── PC "Roll Damage" button ──
       const rollDmgBtn = el.querySelector?.("[data-action='aceQolRollDamage']");
       if (rollDmgBtn && !rollDmgBtn.dataset.wired) {
@@ -272,6 +295,36 @@ export class DamageEngine {
           rollDmgBtn.disabled = true;
           rollDmgBtn.innerHTML = '<i class="fas fa-check"></i> ROLLED ✓';
         }
+
+        // ── Auto-roll damage when setting is ON ──
+        if (game.user.isGM && !flags.rolled && !el.dataset.aceAutoRolled) {
+          try {
+            const shouldAutoRoll = QolSettings.get("autoRollDamage");
+            if (shouldAutoRoll) {
+              el.dataset.aceAutoRolled = "1";
+              rollDmgBtn.disabled = true;
+              rollDmgBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Rolling...';
+              // Slight delay to let the card render fully before triggering
+              setTimeout(async () => {
+                try {
+                  const success = await this._rollDamageFromButton(message);
+                  if (success) {
+                    rollDmgBtn.innerHTML = '<i class="fas fa-check"></i> Rolled ✓';
+                    console.log(`${MODULE_ID} | Auto-rolled damage for message ${message.id}`);
+                  } else {
+                    rollDmgBtn.innerHTML = '<i class="fas fa-burst"></i> ROLL DAMAGE';
+                    rollDmgBtn.disabled = false;
+                  }
+                } catch (err) {
+                  console.error(`${MODULE_ID} | Auto-roll damage failed:`, err);
+                  rollDmgBtn.innerHTML = '<i class="fas fa-burst"></i> ROLL DAMAGE';
+                  rollDmgBtn.disabled = false;
+                }
+              }, 50);
+            }
+          } catch (_) { /* setting not ready */ }
+        }
+
         rollDmgBtn.addEventListener("click", async () => {
           rollDmgBtn.disabled = true;
           rollDmgBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Rolling...';

@@ -278,6 +278,233 @@ export class FlagsEngine {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
+  //  Ability Check / Skill Check Modifiers
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Check if an actor has advantage on ability checks.
+   * @param {Actor} actor    - The actor making the check
+   * @param {string} ability - "str", "dex", "con", "int", "wis", "cha"
+   * @returns {boolean}
+   */
+  static hasAbilityCheckAdvantage(actor, ability) {
+    return FlagsEngine._checkFlag(actor,
+      "advantage.ability.check.all",
+      `advantage.ability.check.${ability}`
+    );
+  }
+
+  /**
+   * Check if an actor has disadvantage on ability checks.
+   * @param {Actor} actor    - The actor making the check
+   * @param {string} ability - "str", "dex", "con", "int", "wis", "cha"
+   * @returns {boolean}
+   */
+  static hasAbilityCheckDisadvantage(actor, ability) {
+    return FlagsEngine._checkFlag(actor,
+      "disadvantage.ability.check.all",
+      `disadvantage.ability.check.${ability}`
+    );
+  }
+
+  /**
+   * Check if an actor has advantage on a specific skill check.
+   * Checks skill-specific flag first, then falls back to the ability's check flags.
+   * @param {Actor} actor    - The actor making the check
+   * @param {string} skill   - Skill id (e.g., "ste", "per", "ath", "acr")
+   * @param {string} ability - The ability used for this skill
+   * @returns {boolean}
+   */
+  static hasSkillAdvantage(actor, skill, ability) {
+    if (FlagsEngine._checkFlag(actor, `advantage.skill.all`, `advantage.skill.${skill}`)) return true;
+    return FlagsEngine.hasAbilityCheckAdvantage(actor, ability);
+  }
+
+  /**
+   * Check if an actor has disadvantage on a specific skill check.
+   * @param {Actor} actor    - The actor making the check
+   * @param {string} skill   - Skill id
+   * @param {string} ability - The ability used for this skill
+   * @returns {boolean}
+   */
+  static hasSkillDisadvantage(actor, skill, ability) {
+    if (FlagsEngine._checkFlag(actor, `disadvantage.skill.all`, `disadvantage.skill.${skill}`)) return true;
+    return FlagsEngine.hasAbilityCheckDisadvantage(actor, ability);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  Roll Hook Registration — ability checks, skill checks, tool checks
+  //  Hooks into dnd5e's pre-roll hooks to inject advantage/disadvantage
+  //  from Active Effect flags.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Register dnd5e roll hooks for ability checks, skill checks, and tool checks.
+   * Called once from ace-qol.mjs ready hook.
+   */
+  static registerRollHooks() {
+    // ── Ability Checks ──
+    // dnd5e v3.x uses preRollAbilityCheckV2, older versions use preRollAbilityCheck
+    Hooks.on("dnd5e.preRollAbilityCheckV2", (config, dialog, message) => {
+      FlagsEngine._onPreRollAbilityCheck(config, dialog);
+    });
+    Hooks.on("dnd5e.preRollAbilityCheck", (actor, config, abilityId) => {
+      FlagsEngine._onPreRollAbilityCheckLegacy(actor, config, abilityId);
+    });
+
+    // ── Skill Checks ──
+    Hooks.on("dnd5e.preRollSkillV2", (config, dialog, message) => {
+      FlagsEngine._onPreRollSkill(config, dialog);
+    });
+    Hooks.on("dnd5e.preRollSkill", (actor, config, skillId) => {
+      FlagsEngine._onPreRollSkillLegacy(actor, config, skillId);
+    });
+
+    // ── Tool Checks ──
+    Hooks.on("dnd5e.preRollToolCheckV2", (config, dialog, message) => {
+      FlagsEngine._onPreRollToolCheck(config, dialog);
+    });
+    Hooks.on("dnd5e.preRollToolCheck", (actor, config, toolId) => {
+      FlagsEngine._onPreRollToolCheckLegacy(actor, config, toolId);
+    });
+
+    console.log(`${MODULE_ID} | FlagsEngine: ability/skill/tool check hooks registered`);
+  }
+
+  /**
+   * dnd5e v3.x ability check hook handler.
+   * config.rolls[0].options.advantageMode controls advantage: 1=adv, -1=dis, 0=normal
+   * @private
+   */
+  static _onPreRollAbilityCheck(config, dialog) {
+    try {
+      if (!game.settings.get(MODULE_ID, "enableFlagsSystem")) return;
+    } catch { return; }
+
+    const actor = config.subject?.parent ?? config.actor;
+    const ability = config.ability ?? config.rolls?.[0]?.options?.ability;
+    if (!actor || !ability) return;
+
+    const hasAdv = FlagsEngine.hasAbilityCheckAdvantage(actor, ability);
+    const hasDis = FlagsEngine.hasAbilityCheckDisadvantage(actor, ability);
+
+    if (hasAdv || hasDis) {
+      FlagsEngine._applyAdvantageMode(config, hasAdv, hasDis, `ability check (${ability})`);
+    }
+  }
+
+  /** Legacy (dnd5e v12) ability check hook. @private */
+  static _onPreRollAbilityCheckLegacy(actor, config, abilityId) {
+    try {
+      if (!game.settings.get(MODULE_ID, "enableFlagsSystem")) return;
+    } catch { return; }
+    if (!actor || !abilityId) return;
+
+    const hasAdv = FlagsEngine.hasAbilityCheckAdvantage(actor, abilityId);
+    const hasDis = FlagsEngine.hasAbilityCheckDisadvantage(actor, abilityId);
+
+    if (hasAdv && !hasDis) config.advantage = true;
+    else if (hasDis && !hasAdv) config.disadvantage = true;
+  }
+
+  /** dnd5e v3.x skill check hook. @private */
+  static _onPreRollSkill(config, dialog) {
+    try {
+      if (!game.settings.get(MODULE_ID, "enableFlagsSystem")) return;
+    } catch { return; }
+
+    const actor = config.subject?.parent ?? config.actor;
+    const skill = config.skill ?? config.rolls?.[0]?.options?.skill;
+    const ability = config.ability ?? config.rolls?.[0]?.options?.ability;
+    if (!actor || !skill) return;
+
+    const hasAdv = FlagsEngine.hasSkillAdvantage(actor, skill, ability ?? "");
+    const hasDis = FlagsEngine.hasSkillDisadvantage(actor, skill, ability ?? "");
+
+    if (hasAdv || hasDis) {
+      FlagsEngine._applyAdvantageMode(config, hasAdv, hasDis, `skill check (${skill})`);
+    }
+  }
+
+  /** Legacy (dnd5e v12) skill check hook. @private */
+  static _onPreRollSkillLegacy(actor, config, skillId) {
+    try {
+      if (!game.settings.get(MODULE_ID, "enableFlagsSystem")) return;
+    } catch { return; }
+    if (!actor || !skillId) return;
+
+    // Get the ability for this skill from dnd5e config
+    const ability = CONFIG.DND5E?.skills?.[skillId]?.ability ?? "";
+    const hasAdv = FlagsEngine.hasSkillAdvantage(actor, skillId, ability);
+    const hasDis = FlagsEngine.hasSkillDisadvantage(actor, skillId, ability);
+
+    if (hasAdv && !hasDis) config.advantage = true;
+    else if (hasDis && !hasAdv) config.disadvantage = true;
+  }
+
+  /** dnd5e v3.x tool check hook. Treated as an ability check with the tool's ability. @private */
+  static _onPreRollToolCheck(config, dialog) {
+    try {
+      if (!game.settings.get(MODULE_ID, "enableFlagsSystem")) return;
+    } catch { return; }
+
+    const actor = config.subject?.parent ?? config.actor;
+    const ability = config.ability ?? config.rolls?.[0]?.options?.ability;
+    if (!actor || !ability) return;
+
+    // Tool checks use the same ability check flags
+    const hasAdv = FlagsEngine.hasAbilityCheckAdvantage(actor, ability);
+    const hasDis = FlagsEngine.hasAbilityCheckDisadvantage(actor, ability);
+
+    if (hasAdv || hasDis) {
+      FlagsEngine._applyAdvantageMode(config, hasAdv, hasDis, `tool check (${ability})`);
+    }
+  }
+
+  /** Legacy (dnd5e v12) tool check hook. @private */
+  static _onPreRollToolCheckLegacy(actor, config, toolId) {
+    try {
+      if (!game.settings.get(MODULE_ID, "enableFlagsSystem")) return;
+    } catch { return; }
+    if (!actor) return;
+
+    const ability = config.ability ?? "";
+    const hasAdv = FlagsEngine.hasAbilityCheckAdvantage(actor, ability);
+    const hasDis = FlagsEngine.hasAbilityCheckDisadvantage(actor, ability);
+
+    if (hasAdv && !hasDis) config.advantage = true;
+    else if (hasDis && !hasAdv) config.disadvantage = true;
+  }
+
+  /**
+   * Apply advantage/disadvantage mode to a dnd5e v3.x roll config.
+   * dnd5e v3.x uses config.rolls[0].options.advantageMode: 1=adv, -1=dis, 0=normal
+   * @private
+   */
+  static _applyAdvantageMode(config, hasAdv, hasDis, label) {
+    // If both → they cancel out → normal (don't override existing state)
+    if (hasAdv && hasDis) return;
+
+    const mode = hasAdv ? 1 : -1;
+
+    // v3.x format: config.rolls array
+    if (config.rolls?.length) {
+      for (const roll of config.rolls) {
+        const opts = roll.options ?? (roll.options = {});
+        // Don't downgrade existing advantage/disadvantage — only upgrade
+        const current = opts.advantageMode ?? 0;
+        if (hasAdv && current < 1) opts.advantageMode = 1;
+        else if (hasDis && current > -1) opts.advantageMode = -1;
+      }
+      return;
+    }
+
+    // Fallback: direct config properties
+    if (hasAdv) config.advantage = true;
+    else if (hasDis) config.disadvantage = true;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
   //  Damage Modifiers
   // ─────────────────────────────────────────────────────────────────────────
 

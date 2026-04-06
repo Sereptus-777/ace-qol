@@ -4,10 +4,109 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 
+// ── Preset definitions: which settings each level sets ──────────────────────
+const PRESETS = {
+  recommended: {
+    autoCheckHit: true, autoTargetTemplates: true, damageTypeSeparation: true,
+    autoCheckResistances: true, halfDamageOnSave: true, concentrationTracking: true,
+    concentrationWidget: true, batchResultsCard: true, targetStateAssessment: true,
+    slayerAutoDetect: true, flanking: false, autoApplyConditions: true,
+    autoRollDamage: false, autoApplyDamage: false,
+    enableReactions: true, autoShield: true, autoCounterspell: true,
+    autoAbsorbElements: true, autoLegendaryResistance: true,
+    enableSpeedRolls: true, enableMergeCard: false,
+    extendedEffects: true, effectTransferRules: true,
+    enableOnUseHooks: true, enableOverTimeEffects: true, autoApplyOverTimeDamage: false,
+    enableFlagsSystem: true, enableOptionalPrompts: true, midiCompatibility: true,
+    enableDurationTracker: true, expireEffectsOnTurnChange: true, notifyOnExpiry: true,
+    expiryNotifyAll: false,
+    enableCoverCalculation: true, creatureAsCover: false, showCoverIndicator: true,
+    ignoreCoverForAdjacent: true,
+    enableBloodied: true, announceBloodied: true, enableDeadMarker: true,
+    hideSaveDC: false, hideNPCNames: false, playersSeeBloodied: true,
+  },
+  minimal: {
+    autoCheckHit: true, autoTargetTemplates: false, damageTypeSeparation: true,
+    autoCheckResistances: true, halfDamageOnSave: true, concentrationTracking: false,
+    concentrationWidget: false, batchResultsCard: true, targetStateAssessment: false,
+    slayerAutoDetect: false, flanking: false, autoApplyConditions: false,
+    autoRollDamage: false, autoApplyDamage: false,
+    enableReactions: false, autoShield: false, autoCounterspell: false,
+    autoAbsorbElements: false, autoLegendaryResistance: false,
+    enableSpeedRolls: true, enableMergeCard: false,
+    extendedEffects: false, effectTransferRules: false,
+    enableOnUseHooks: false, enableOverTimeEffects: false, autoApplyOverTimeDamage: false,
+    enableFlagsSystem: false, enableOptionalPrompts: false, midiCompatibility: false,
+    enableDurationTracker: false, expireEffectsOnTurnChange: false, notifyOnExpiry: false,
+    expiryNotifyAll: false,
+    enableCoverCalculation: false, creatureAsCover: false, showCoverIndicator: false,
+    ignoreCoverForAdjacent: true,
+    enableBloodied: true, announceBloodied: false, enableDeadMarker: true,
+    hideSaveDC: false, hideNPCNames: false, playersSeeBloodied: true,
+  },
+  full: {
+    autoCheckHit: true, autoTargetTemplates: true, damageTypeSeparation: true,
+    autoCheckResistances: true, halfDamageOnSave: true, concentrationTracking: true,
+    concentrationWidget: true, batchResultsCard: true, targetStateAssessment: true,
+    slayerAutoDetect: true, flanking: true, autoApplyConditions: true,
+    autoRollDamage: true, autoApplyDamage: true,
+    enableReactions: true, autoShield: true, autoCounterspell: true,
+    autoAbsorbElements: true, autoLegendaryResistance: true,
+    enableSpeedRolls: true, enableMergeCard: true,
+    extendedEffects: true, effectTransferRules: true,
+    enableOnUseHooks: true, enableOverTimeEffects: true, autoApplyOverTimeDamage: true,
+    enableFlagsSystem: true, enableOptionalPrompts: true, midiCompatibility: true,
+    enableDurationTracker: true, expireEffectsOnTurnChange: true, notifyOnExpiry: true,
+    expiryNotifyAll: true,
+    enableCoverCalculation: true, creatureAsCover: true, showCoverIndicator: true,
+    ignoreCoverForAdjacent: true,
+    enableBloodied: true, announceBloodied: true, enableDeadMarker: true,
+    hideSaveDC: false, hideNPCNames: false, playersSeeBloodied: true,
+  },
+};
+
+// ── Settings that presets control (hidden when not "custom") ────────────────
+const PRESET_MANAGED_KEYS = new Set(Object.keys(PRESETS.recommended));
+
 export class QolSettings {
+
+  /**
+   * Apply a preset by batch-setting all managed toggles.
+   */
+  static async applyPreset(presetName) {
+    const preset = PRESETS[presetName];
+    if (!preset) return;
+    for (const [key, value] of Object.entries(preset)) {
+      try { await game.settings.set(MODULE_ID, key, value); }
+      catch (_) { /* setting may not exist yet */ }
+    }
+    ui.notifications?.info(`ACE QOL: Applied "${presetName}" automation preset.`);
+  }
 
   static register() {
     const s = (key, opts) => game.settings.register(MODULE_ID, key, opts);
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  AUTOMATION LEVEL PRESET — controls 30+ toggles with one dropdown
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    s("automationLevel", {
+      name:    "Automation Level",
+      hint:    "Quick preset for all combat automation settings. Recommended: sensible defaults. Minimal: basic hit/damage only. Full: everything automated. Custom: tweak individual settings below.",
+      scope:   "world",
+      config:  true,
+      type:    String,
+      default: "recommended",
+      choices: {
+        recommended: "Recommended — sensible defaults, most features ON",
+        minimal:     "Minimal — basic hit checking and damage only",
+        full:        "Full Automation — everything ON, maximum automation",
+        custom:      "Custom — show all individual settings below",
+      },
+      onChange: (value) => {
+        if (value !== "custom") QolSettings.applyPreset(value);
+      },
+    });
 
     // ═══════════════════════════════════════════════════════════════════════════
     //  COMBAT WORKFLOW — all ON by default
@@ -119,6 +218,24 @@ export class QolSettings {
       config:  true,
       type:    Boolean,
       default: true,
+    });
+
+    s("autoRollDamage", {
+      name:    "Auto-Roll Damage on Hit",
+      hint:    "Automatically roll damage when an attack hits, instead of showing a ROLL DAMAGE button. Fastest combat flow — one click and damage appears.",
+      scope:   "world",
+      config:  true,
+      type:    Boolean,
+      default: false,
+    });
+
+    s("autoApplyDamage", {
+      name:    "Auto-Apply Damage to HP",
+      hint:    "Automatically apply rolled damage to target HP without waiting for the GM to click APPLY. The UNDO button remains available on the card. ⚠️ Full automation — damage is applied instantly.",
+      scope:   "world",
+      config:  true,
+      type:    Boolean,
+      default: false,
     });
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -618,7 +735,7 @@ export class QolSettings {
       name:    "Debug Mode",
       hint:    "Log detailed combat resolution info to console.",
       scope:   "client",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: false,
     });
@@ -629,5 +746,74 @@ export class QolSettings {
   /** Quick helper to read a setting */
   static get(key) {
     return game.settings.get(MODULE_ID, key);
+  }
+
+  /**
+   * Hook into settings panel render to hide/show managed settings and add section headers.
+   */
+  static onRenderSettingsConfig(app, html) {
+    const el = html[0] ?? html;
+    const level = game.settings.get(MODULE_ID, "automationLevel");
+    const isCustom = (level === "custom");
+
+    // ── Hide/show managed settings based on preset ──
+    for (const key of PRESET_MANAGED_KEYS) {
+      const row = el.querySelector(`div.form-group:has([name="${MODULE_ID}.${key}"])`);
+      if (!row) continue;
+      row.style.display = isCustom ? "" : "none";
+    }
+
+    // ── Also hide non-boolean settings that are sub-options of hidden parents ──
+    const subSettings = [
+      "reactionTimeout", "speedRollBehavior", "speedRollAdvantageKey",
+      "mergeCardStyle", "showAttackFormula", "showDamageFormula", "critRule",
+      "optionalPromptTimeout", "coverCalculationMethod",
+      "bloodiedThreshold", "bloodiedIndicatorStyle", "bloodiedVisibleTo",
+      "npcAttackVisibility", "npcDamageVisibility", "npcSaveVisibility",
+    ];
+    for (const key of subSettings) {
+      const row = el.querySelector(`div.form-group:has([name="${MODULE_ID}.${key}"])`);
+      if (!row) continue;
+      row.style.display = isCustom ? "" : "none";
+    }
+
+    // ── Add a summary note when not custom ──
+    if (!isCustom) {
+      const presetRow = el.querySelector(`div.form-group:has([name="${MODULE_ID}.automationLevel"])`);
+      if (presetRow && !presetRow.querySelector(".ace-preset-note")) {
+        const note = document.createElement("p");
+        note.className = "ace-preset-note notes";
+        note.style.cssText = "color:#999; font-style:italic; margin:4px 0 0 0; font-size:11px;";
+        note.textContent = `Using "${level}" preset. Switch to "Custom" to see and edit all ${PRESET_MANAGED_KEYS.size}+ individual settings.`;
+        presetRow.appendChild(note);
+      }
+    }
+
+    // ── When in custom mode, add section headers ──
+    if (isCustom) {
+      const sections = {
+        autoCheckHit:           "⚔️ Combat Workflow",
+        enableReactions:        "🛡️ Reactions",
+        enableSpeedRolls:       "⚡ Speed Rolls",
+        enableMergeCard:        "📋 Merge Card",
+        critRule:               "💥 Critical Hits",
+        extendedEffects:        "✨ Active Effects",
+        enableOnUseHooks:       "🔗 Hooks & OverTime",
+        enableFlagsSystem:      "🚩 Flags & Optional Prompts",
+        enableDurationTracker:  "⏱️ Duration Tracking",
+        enableCoverCalculation: "🏰 Cover",
+        enableBloodied:         "🩸 Bloodied & Death",
+        npcAttackVisibility:    "👁️ Roll Visibility",
+      };
+      for (const [settingKey, label] of Object.entries(sections)) {
+        const row = el.querySelector(`div.form-group:has([name="${MODULE_ID}.${settingKey}"])`);
+        if (!row || row.previousElementSibling?.classList?.contains("ace-section-header")) continue;
+        const header = document.createElement("h3");
+        header.className = "ace-section-header";
+        header.style.cssText = "border-bottom:1px solid #444; padding:8px 0 4px 0; margin:16px 0 6px 0; color:#d4af37; font-size:13px; font-weight:bold;";
+        header.textContent = label;
+        row.parentNode.insertBefore(header, row);
+      }
+    }
   }
 }

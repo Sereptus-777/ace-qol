@@ -51,6 +51,7 @@ Hooks.once("init", () => {
     QolSettings.register();
     LootEngine.registerSettings();
     DeathPipeline.registerSettings();
+    Hooks.on("renderSettingsConfig", (app, html) => QolSettings.onRenderSettingsConfig(app, html));
   } catch (err) {
     console.error(`${MODULE_ID} | Settings registration failed:`, err);
   }
@@ -170,6 +171,14 @@ Hooks.once("ready", () => {
     console.log(`${MODULE_ID} | Duration Tracker online`);
   } catch (err) {
     console.error(`${MODULE_ID} | Duration Tracker init failed:`, err);
+  }
+
+  // Flags Engine roll hooks — ALL users (injects adv/dis from flags into ability/skill/tool checks)
+  try {
+    FlagsEngine.registerRollHooks();
+    console.log(`${MODULE_ID} | Flags roll hooks online`);
+  } catch (err) {
+    console.error(`${MODULE_ID} | Flags roll hooks init failed:`, err);
   }
 
   // Speed Rolls — ALL users (intercepts character sheet clicks for fast-forward)

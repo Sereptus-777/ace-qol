@@ -77,6 +77,12 @@ export class DurationTracker {
     // ── Attack received: expire "isAttacked" effects ──
     Hooks.on(`${MODULE_ID}.attackComplete`, this._onAttackComplete.bind(this));
 
+    // ── Save attempted: expire "isSave" effects ──
+    Hooks.on(`${MODULE_ID}.saveComplete`, this._onSaveComplete.bind(this));
+
+    // ── World time advancement: expire seconds-based effects outside combat ──
+    Hooks.on("updateWorldTime", this._onWorldTimeUpdate.bind(this));
+
     console.log(`${MODULE_ID} | Duration Tracker initialized`);
   }
 
@@ -255,9 +261,8 @@ export class DurationTracker {
     if (!DurationTracker._isEnabled()) return;
 
     const combat = game.combat;
-    if (!combat?.started) return;
-
     const duration = effect.duration;
+
     // Only stamp if the effect has a duration and it hasn't been stamped already
     const hasDuration = (duration.rounds ?? 0) > 0
                      || (duration.turns ?? 0) > 0
@@ -266,19 +271,42 @@ export class DurationTracker {
 
     if (!hasDuration) return;
 
+    // ── Outside combat: stamp worldTimeStart for seconds-based effects ──
+    if (!combat?.started) {
+      if ((duration.seconds ?? 0) > 0 && !effect.flags?.[MODULE_ID]?.worldTimeStart) {
+        try {
+          await effect.update({
+            [`flags.${MODULE_ID}.worldTimeStart`]: game.time.worldTime,
+            [`flags.${MODULE_ID}.createdWorldTime`]: game.time.worldTime,
+          });
+          this._debug(`Stamped worldTimeStart on "${effect.name}" (out-of-combat): ${game.time.worldTime}`);
+        } catch (err) {
+          console.warn(`${MODULE_ID} | Failed to stamp world time on "${effect.name}":`, err.message);
+        }
+      }
+      return;
+    }
+
     // Don't re-stamp if already set
     if (duration.startRound != null && duration.combat) return;
 
-    // Stamp the start time
+    // Stamp the start time — combat round/turn + world time for post-combat tracking
     const updateData = {
       "duration.startRound": combat.round,
       "duration.startTurn": combat.turn,
       "duration.combat": combat.id,
+      [`flags.${MODULE_ID}.createdWorldTime`]: game.time.worldTime,
     };
+
+    // If this effect has a seconds-based duration, also stamp worldTimeStart
+    // so it can expire via world time advancement after combat ends
+    if ((duration.seconds ?? 0) > 0) {
+      updateData[`flags.${MODULE_ID}.worldTimeStart`] = game.time.worldTime;
+    }
 
     try {
       await effect.update(updateData);
-      this._debug(`Stamped duration start on "${effect.name}": round=${combat.round} turn=${combat.turn}`);
+      this._debug(`Stamped duration start on "${effect.name}": round=${combat.round} turn=${combat.turn} worldTime=${game.time.worldTime}`);
     } catch (err) {
       console.warn(`${MODULE_ID} | Failed to stamp duration on "${effect.name}":`, err.message);
     }
@@ -408,6 +436,103 @@ export class DurationTracker {
         if (specialDuration === "isAttacked") {
           await this._expireEffect(targetActor, effect, `${effect.name}: was attacked`);
         }
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Save Attempted — expire "isSave" effects
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * When a creature makes a saving throw, expire "isSave" special duration effects.
+   * Expects payload: { actor, tokenDocId, saveAbility, passed }
+   */
+  async _onSaveComplete(payload) {
+    if (!game.user.isGM) return;
+    if (!DurationTracker._isEnabled()) return;
+
+    const actor = payload?.actor;
+    if (!actor) return;
+
+    for (const effect of actor.effects) {
+      if (effect.disabled) continue;
+      const specialDuration = effect.flags?.[MODULE_ID]?.specialDuration;
+      if (specialDuration === "isSave") {
+        await this._expireEffect(actor, effect, `${effect.name}: made a saving throw`);
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  World Time Update — expire seconds-based effects outside combat
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * When game world time advances (travel, rest, manual advance), check all
+   * actors for seconds-based effects that have expired. This handles the case
+   * where Mage Armor (8 hours), Longstrider (1 hour), etc. should expire
+   * outside of combat when the GM advances time.
+   */
+  async _onWorldTimeUpdate(worldTime, delta, options, userId) {
+    if (!game.user.isGM) return;
+    if (!DurationTracker._isEnabled()) return;
+    if (delta <= 0) return; // Only care about forward time advancement
+
+    this._debug(`World time advanced by ${delta}s (new time: ${worldTime})`);
+
+    // Check all active actors (in the current scene + any with linked tokens)
+    const actorsToCheck = new Set();
+
+    // All actors with tokens on the current scene
+    if (canvas.scene) {
+      for (const tokenDoc of canvas.scene.tokens) {
+        if (tokenDoc.actor) actorsToCheck.add(tokenDoc.actor);
+      }
+    }
+
+    // Also check player characters (they may not be on the current scene)
+    for (const user of game.users) {
+      if (user.character) actorsToCheck.add(user.character);
+    }
+
+    for (const actor of actorsToCheck) {
+      const toExpire = [];
+
+      for (const effect of actor.effects) {
+        if (effect.disabled) continue;
+
+        const duration = effect.duration;
+        const seconds = duration?.seconds;
+        if (!seconds || seconds <= 0) continue;
+
+        // Check world time start stamp
+        const worldTimeStart = effect.flags?.[MODULE_ID]?.worldTimeStart;
+        if (worldTimeStart != null) {
+          const elapsed = worldTime - worldTimeStart;
+          if (elapsed >= seconds) {
+            toExpire.push({ effect, reason: `${effect.name}: ${DurationTracker._formatSeconds(seconds)} duration expired (world time)` });
+            continue;
+          }
+        }
+
+        // Fallback: check combat-stamped effects that have duration.seconds
+        // These were created during combat but combat has ended
+        if (duration.startRound != null && !game.combat?.started) {
+          // Effect was combat-linked but combat is over — check against world time
+          // Use the creation timestamp if available
+          const createdTime = effect.flags?.[MODULE_ID]?.createdWorldTime;
+          if (createdTime != null) {
+            const elapsed = worldTime - createdTime;
+            if (elapsed >= seconds) {
+              toExpire.push({ effect, reason: `${effect.name}: ${DurationTracker._formatSeconds(seconds)} duration expired (post-combat world time)` });
+            }
+          }
+        }
+      }
+
+      for (const { effect, reason } of toExpire) {
+        await this._expireEffect(actor, effect, reason);
       }
     }
   }

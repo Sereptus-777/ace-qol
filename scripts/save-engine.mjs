@@ -23,6 +23,7 @@ import { QolSettings } from "./settings.mjs";
 import { CombatState } from "./combat-state.mjs";
 import { DamageConstants } from "./damage-engine.mjs";
 import { getSpellTiming, TIMING } from "./spell-timing.mjs";
+import { CoverEngine } from "./cover-engine.mjs";
 
 export class SaveEngine {
 
@@ -1173,7 +1174,7 @@ export class SaveEngine {
     // ── Roll NPC saves ──
     const npcResults = [];
     for (const tgt of npcTargets) {
-      const result = await this._rollSingleSave(tgt, saveAbility, saveDC, halfOnSave);
+      const result = await this._rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, actorId);
       npcResults.push(result);
     }
 
@@ -1244,6 +1245,18 @@ export class SaveEngine {
       }
     }
 
+    // ── Emit saveComplete hooks for NPC saves (for duration tracker isSave expiry) ──
+    for (const r of npcResults) {
+      try {
+        const scene = game.scenes.get(r.sceneId) ?? canvas.scene;
+        const tokenDoc = scene?.tokens?.get(r.tokenDocId);
+        const actor = tokenDoc?.actor ?? game.actors.get(r.actorId);
+        if (actor) {
+          Hooks.callAll(`${MODULE_ID}.saveComplete`, { actor, tokenDocId: r.tokenDocId, saveAbility, passed: r.passed });
+        }
+      } catch (_) { /* non-fatal */ }
+    }
+
     // ── Build PC results — check if they already rolled (same cast only) ──
     const thisCastId = message.id; // target list message ID = cast ID
     const recentMsgs = game.messages.contents.slice(-30);
@@ -1309,7 +1322,7 @@ export class SaveEngine {
   //  Roll a Single NPC Save
   // ═══════════════════════════════════════════════════════════════════════════
 
-  async _rollSingleSave(tgt, saveAbility, saveDC, halfOnSave) {
+  async _rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, casterActorId = null) {
     const scene = game.scenes.get(tgt.sceneId) ?? canvas.scene;
     const tokenDoc = scene?.tokens?.get(tgt.tokenDocId);
     const targetActor = tokenDoc?.actor ?? game.actors.get(tgt.actorId);
@@ -1335,7 +1348,24 @@ export class SaveEngine {
       const saveMod = typeof rawSaveMod === "number" ? rawSaveMod
                     : typeof rawSaveMod === "object" ? (rawSaveMod?.value ?? rawSaveMod?.total ?? 0)
                     : Number(rawSaveMod) || 0;
-      const bonuses = (tgt.saveBonuses ?? []).map(b => b.value).join(" + ");
+      const allBonusParts = (tgt.saveBonuses ?? []).map(b => b.value);
+
+      // ── Cover DEX save bonus (half cover +2, three-quarters +5) ──
+      if (saveAbility === "dex" && tokenDoc && casterActorId) {
+        try {
+          if (QolSettings.get("enableCoverCalculation")) {
+            const casterTokenDoc = scene?.tokens?.find(t => t.actorId === casterActorId);
+            if (casterTokenDoc) {
+              const coverResult = CoverEngine.calculateCover(casterTokenDoc, tokenDoc);
+              if (coverResult?.dexSaveBonus > 0) {
+                allBonusParts.push(coverResult.dexSaveBonus);
+              }
+            }
+          }
+        } catch (_) { /* cover check non-fatal */ }
+      }
+
+      const bonuses = allBonusParts.join(" + ");
       const formula = rollMode === "advantage" ? `2d20kh + ${saveMod}${bonuses ? ` + ${bonuses}` : ""}`
                     : rollMode === "disadvantage" ? `2d20kl + ${saveMod}${bonuses ? ` + ${bonuses}` : ""}`
                     : `1d20 + ${saveMod}${bonuses ? ` + ${bonuses}` : ""}`;
@@ -1532,7 +1562,26 @@ export class SaveEngine {
 
       const rawPcMod = targetActor.system?.abilities?.[saveAbility]?.save;
       const saveMod = typeof rawPcMod === "number" ? rawPcMod : (rawPcMod?.value ?? rawPcMod?.total ?? (Number(rawPcMod) || 0));
-      const bonuses = (saveBonuses ?? []).map(b => b.value).join(" + ");
+      const allBonusParts = (saveBonuses ?? []).map(b => b.value);
+
+      // ── Cover DEX save bonus (half cover +2, three-quarters +5) ──
+      if (saveAbility === "dex" && tokenDoc) {
+        try {
+          if (QolSettings.get("enableCoverCalculation")) {
+            // Find caster token from the flags
+            const casterActorId = flags.casterActorId ?? flags.actorId;
+            const casterTokenDoc = scene?.tokens?.find(t => t.actorId === casterActorId);
+            if (casterTokenDoc) {
+              const coverResult = CoverEngine.calculateCover(casterTokenDoc, tokenDoc);
+              if (coverResult?.dexSaveBonus > 0) {
+                allBonusParts.push(coverResult.dexSaveBonus);
+              }
+            }
+          }
+        } catch (_) { /* cover check non-fatal */ }
+      }
+
+      const bonuses = allBonusParts.join(" + ");
       const formula = rollMode === "advantage" ? `2d20kh + ${saveMod}${bonuses ? ` + ${bonuses}` : ""}`
                     : rollMode === "disadvantage" ? `2d20kl + ${saveMod}${bonuses ? ` + ${bonuses}` : ""}`
                     : `1d20 + ${saveMod}${bonuses ? ` + ${bonuses}` : ""}`;
@@ -1600,6 +1649,13 @@ export class SaveEngine {
         }
       }
     });
+
+    // ── Emit saveComplete hook for PC save (duration tracker isSave expiry) ──
+    try {
+      if (targetActor) {
+        Hooks.callAll(`${MODULE_ID}.saveComplete`, { actor: targetActor, tokenDocId, saveAbility, passed });
+      }
+    } catch (_) { /* non-fatal */ }
 
     // ── Update the main save results card's pending row for this PC ──
     // Determine damage multiplier same as NPC saves
@@ -1774,8 +1830,18 @@ export class SaveEngine {
     const results = [];
 
     for (const tgt of targets) {
-      const result = await this._rollSingleSave(tgt, saveAbility, saveDC, halfOnSave);
+      const result = await this._rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, actorId);
       results.push(result);
+
+      // Emit saveComplete hook for duration tracker (isSave expiry)
+      try {
+        const scene = game.scenes.get(result.sceneId) ?? canvas.scene;
+        const tokenDoc = scene?.tokens?.get(result.tokenDocId);
+        const actor = tokenDoc?.actor ?? game.actors.get(result.actorId);
+        if (actor) {
+          Hooks.callAll(`${MODULE_ID}.saveComplete`, { actor, tokenDocId: result.tokenDocId, saveAbility, passed: result.passed });
+        }
+      } catch (_) { /* non-fatal */ }
     }
 
     // Roll damage once and apply per target with multipliers
