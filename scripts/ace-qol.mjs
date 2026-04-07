@@ -632,6 +632,7 @@ Hooks.once("ready", () => {
 
   // Expose module API
   game.aceQol = {
+    VERSION: 1,
     MODULE_ID,
     extendedEffects,
     attackPipeline,
