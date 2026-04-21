@@ -86,13 +86,43 @@ export class QolSettings {
   static register() {
     const s = (key, opts) => game.settings.register(MODULE_ID, key, opts);
 
+    // ── Tabbed configuration panel — single button in module settings ──
+    try {
+      // Lazy import so we don't pull in ApplicationV2 before Foundry is ready
+      import("./config-panel.mjs").then(({ AceQolConfigPanel }) => {
+        game.settings.registerMenu(MODULE_ID, "configurePanel", {
+          name:     "ACE QOL — Configuration Panel",
+          label:    "Open Configuration",
+          hint:     "Open the tabbed configuration panel — every setting organized by feature.",
+          icon:     "fa-solid fa-cog",
+          type:     AceQolConfigPanel,
+          restricted: true,
+        });
+      }).catch(err => console.warn(`${MODULE_ID} | Config panel registration deferred:`, err));
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Config panel menu registration failed:`, err);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  MODULE MASTER ENABLED — global kill-switch, sits at top of settings page
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    s("moduleEnabled", {
+      name:    "ACE QOL — Enabled",
+      hint:    "Master on/off switch for the entire module. When OFF, all QOL automation and UI is skipped. Requires a world reload to take effect.",
+      scope:   "world",
+      config:  true,
+      type:    Boolean,
+      default: true,
+    });
+
     // ═══════════════════════════════════════════════════════════════════════════
     //  AUTOMATION LEVEL PRESET — controls 30+ toggles with one dropdown
     // ═══════════════════════════════════════════════════════════════════════════
 
     s("automationLevel", {
       name:    "Automation Level",
-      hint:    "Quick preset for all combat automation settings. Recommended: sensible defaults. Minimal: basic hit/damage only. Full: everything automated. Custom: tweak individual settings below.",
+      hint:    "Quick preset for all combat automation. Use the 'Open Configuration' button above for full per-setting control via the tabbed panel.",
       scope:   "world",
       config:  true,
       type:    String,
@@ -101,7 +131,7 @@ export class QolSettings {
         recommended: "Recommended — sensible defaults, most features ON",
         minimal:     "Minimal — basic hit checking and damage only",
         full:        "Full Automation — everything ON, maximum automation",
-        custom:      "Custom — show all individual settings below",
+        custom:      "Custom — leave individual settings as-is (use the panel)",
       },
       onChange: (value) => {
         if (value !== "custom") QolSettings.applyPreset(value);
@@ -116,7 +146,7 @@ export class QolSettings {
       name:    "Auto-Check Hit vs AC",
       hint:    "Automatically compare attack rolls against target AC, factoring in cover, conditions, and buffs.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -125,7 +155,7 @@ export class QolSettings {
       name:    "Auto-Target Tokens in Templates",
       hint:    "When a measured template is placed (Fireball, Moonbeam, etc.), automatically target all tokens inside it.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -134,7 +164,7 @@ export class QolSettings {
       name:    "Separate Damage by Type",
       hint:    "Roll and display each damage type separately (slashing, cold, fire, etc.) so resistances apply per type.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -143,7 +173,7 @@ export class QolSettings {
       name:    "Check Resistances/Immunities",
       hint:    "Automatically check target resistances, immunities, and vulnerabilities for each damage type.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -152,7 +182,7 @@ export class QolSettings {
       name:    "Half Damage on Save",
       hint:    "Automatically detect 'half damage on save' from spell descriptions and apply accordingly.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -161,7 +191,7 @@ export class QolSettings {
       name:    "Concentration Tracking",
       hint:    "Track concentration spells, prompt saves on damage, remove effects when concentration breaks.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -170,7 +200,7 @@ export class QolSettings {
       name:    "Floating Concentration Widget",
       hint:    "Show a persistent floating card for active concentration spells with Re-apply Damage button.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -179,7 +209,7 @@ export class QolSettings {
       name:    "Batch Combat Results Card",
       hint:    "Show all targets in one consolidated damage card instead of individual cards per target.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -188,7 +218,7 @@ export class QolSettings {
       name:    "Full Target State Assessment",
       hint:    "Assess every condition, buff, resistance, creature type, and modifier on every target before damage.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -197,7 +227,7 @@ export class QolSettings {
       name:    "Slayer Weapon Auto-Detect",
       hint:    "Automatically detect Slayer weapons (Giant Slayer, Dragon Slayer) and apply bonus damage vs matching creature types.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -206,7 +236,7 @@ export class QolSettings {
       name:    "Flanking (Optional Rule)",
       hint:    "Melee attackers get advantage when an ally is on the opposite side of the target. Uses the line-through method — a line from attacker through target must reach an ally.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: false,
     });
@@ -215,7 +245,7 @@ export class QolSettings {
       name:    "Auto-Apply Conditions",
       hint:    "Automatically apply conditions (prone, grappled, restrained, etc.) to targets when they fail saves. When OFF, conditions show in the results card but must be applied manually.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -224,7 +254,7 @@ export class QolSettings {
       name:    "Auto-Roll Damage on Hit",
       hint:    "Automatically roll damage when an attack hits, instead of showing a ROLL DAMAGE button. Fastest combat flow — one click and damage appears.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: false,
     });
@@ -233,7 +263,7 @@ export class QolSettings {
       name:    "Auto-Apply Damage to HP",
       hint:    "Automatically apply rolled damage to target HP without waiting for the GM to click APPLY. The UNDO button remains available on the card. ⚠️ Full automation — damage is applied instantly.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: false,
     });
@@ -246,7 +276,7 @@ export class QolSettings {
       name:    "Enable Reaction Automation",
       hint:    "Master toggle for all automated reaction prompts (Shield, Counterspell, Absorb Elements, Legendary Resistance, Silvery Barbs, Cutting Words).",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -255,7 +285,7 @@ export class QolSettings {
       name:    "Reaction Prompt Timeout (seconds)",
       hint:    "How long players have to respond to a reaction prompt before it auto-declines. Default: 10 seconds.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Number,
       default: 10,
       range:   { min: 5, max: 30, step: 1 },
@@ -265,7 +295,7 @@ export class QolSettings {
       name:    "Auto-Prompt Shield Spell",
       hint:    "When an attack hits a target that has Shield prepared and a spell slot, prompt them to cast it.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -274,7 +304,7 @@ export class QolSettings {
       name:    "Auto-Prompt Counterspell",
       hint:    "When a creature casts a spell, prompt eligible opponents within 60ft to Counterspell.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -283,7 +313,7 @@ export class QolSettings {
       name:    "Auto-Prompt Absorb Elements",
       hint:    "When a creature takes elemental damage (acid/cold/fire/lightning/thunder), prompt for Absorb Elements.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -292,7 +322,7 @@ export class QolSettings {
       name:    "Auto-Prompt Legendary Resistance",
       hint:    "When an NPC fails a save and has Legendary Resistance uses, prompt the GM to use one.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -305,7 +335,7 @@ export class QolSettings {
       name:    "Speed Item Rolls",
       hint:    "Click a weapon/spell on the character sheet to immediately roll the attack with no dialog. Ctrl+click to show the normal dialog. Alt+click for advantage.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -314,7 +344,7 @@ export class QolSettings {
       name:    "Speed Roll Behavior",
       hint:    "What happens when you click an item on the character sheet. Fast Forward: rolls immediately, no dialog. Dialog: always shows the roll dialog. Disabled: normal Foundry behavior.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    String,
       default: "fastForward",
       choices: {
@@ -328,7 +358,7 @@ export class QolSettings {
       name:    "Speed Roll Advantage Key",
       hint:    "Which modifier key grants advantage on speed rolls. Alt: Alt+click = advantage, Ctrl+Alt = disadvantage. Shift: Shift+click = advantage, Ctrl+Shift = disadvantage.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    String,
       default: "alt",
       choices: {
@@ -345,7 +375,7 @@ export class QolSettings {
       name:    "Merge Attack + Damage Cards",
       hint:    "Combine the attack and damage results into a single chat card instead of separate messages. Opt-in — disabled by default.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: false,
     });
@@ -354,7 +384,7 @@ export class QolSettings {
       name:    "Merge Card Style",
       hint:    "Detailed: shows full dice formulas and type breakdowns. Compact: minimal display with just totals.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    String,
       default: "detailed",
       choices: {
@@ -367,7 +397,7 @@ export class QolSettings {
       name:    "Show Attack Roll Formula (Merge Card)",
       hint:    "Display the attack roll breakdown (d20 + ability + proficiency + magic) in merge cards.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -376,7 +406,7 @@ export class QolSettings {
       name:    "Show Damage Roll Formula (Merge Card)",
       hint:    "Display the damage dice breakdown (individual die results + modifiers) in merge cards.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -389,7 +419,7 @@ export class QolSettings {
       name:    "Critical Hit Damage Rule",
       hint:    "How critical hits calculate bonus damage. RAW Double Dice: roll all dice twice (2d8 becomes 4d8). Max + Roll: take max value of normal dice + roll crit dice (guarantees strong crits). Max All: max value of ALL dice (most generous, brutal crits).",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    String,
       default: "maxPlusRoll",
       choices: {
@@ -407,7 +437,7 @@ export class QolSettings {
       name:    "Extended Active Effects",
       hint:    "Enable extended effect keys, formula evaluation, and macros on apply/remove (replaces DAE).",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -416,7 +446,7 @@ export class QolSettings {
       name:    "Effect Transfer Rules",
       hint:    "Control when item effects transfer to actors (equip, attune, always). Extends vanilla Foundry behavior.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -429,7 +459,7 @@ export class QolSettings {
       name:    "Enable OnUse Hook API",
       hint:    "Fire ace-qol.* hooks at every phase of the combat workflow. Allows third-party modules and macros to extend behavior (damage bonuses, custom conditions, etc.).",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -438,7 +468,7 @@ export class QolSettings {
       name:    "Enable OverTime Effects",
       hint:    "Process recurring Active Effects (damage, saves) at the start/end of a creature's combat turn. Reads flags.ace-qol.OverTime and flags.midi-qol.OverTime.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -447,7 +477,7 @@ export class QolSettings {
       name:    "Auto-Apply OverTime Damage",
       hint:    "When ON, OverTime damage is applied to HP automatically. When OFF, the GM must click APPLY on the chat card.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: false,
     });
@@ -460,7 +490,7 @@ export class QolSettings {
       name:    "Flags System",
       hint:    "Enable the general-purpose flags system. Active Effects can set flags under flags.ace-qol.* to control advantage, disadvantage, auto-crit, save modifiers, damage bonuses, and more.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -469,7 +499,7 @@ export class QolSettings {
       name:    "Optional Bonus Prompts",
       hint:    "When a roll happens and the actor has optional modifiers available (Bardic Inspiration, Lucky, Guided Strike, Precision Attack, etc.), show a prompt to the player.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -478,7 +508,7 @@ export class QolSettings {
       name:    "Optional Prompt Timeout (seconds)",
       hint:    "How many seconds the optional bonus prompt stays open before auto-declining. 0 = no timeout.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Number,
       default: 8,
       range:   { min: 0, max: 30, step: 1 },
@@ -488,7 +518,7 @@ export class QolSettings {
       name:    "Midi-QOL Flag Compatibility",
       hint:    "Also read flags.midi-qol.* on actors for backward compatibility with existing items that have Midi-QOL flags set. Disable if you have fully migrated to ace-qol flags.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -501,7 +531,7 @@ export class QolSettings {
       name:    "Effect Duration Tracker",
       hint:    "Automatically track and expire Active Effects when their duration runs out (replaces Times Up module).",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -510,7 +540,7 @@ export class QolSettings {
       name:    "Expire Effects on Turn Change",
       hint:    "Automatically check for and remove expired effects when combat turns/rounds advance.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -519,7 +549,7 @@ export class QolSettings {
       name:    "Notify on Effect Expiry",
       hint:    "Post a chat notification when an effect expires during combat.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -528,7 +558,7 @@ export class QolSettings {
       name:    "Expiry Notifications Visible to All",
       hint:    "When ON, effect expiry notifications are visible to all players. When OFF, they are whispered to GM only.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: false,
     });
@@ -541,7 +571,7 @@ export class QolSettings {
       name:    "Auto-Calculate Cover",
       hint:    "Automatically calculate cover between attacker and target using wall/obstacle ray casting. Adds AC bonus to target before hit determination.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -550,7 +580,7 @@ export class QolSettings {
       name:    "Cover Calculation Method",
       hint:    "How cover is calculated. Corners: casts 16 rays from attacker corners to target corners (DMG variant, more accurate). Center: single ray from center to center (simpler, faster).",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    String,
       default: "corners",
       choices: {
@@ -563,7 +593,7 @@ export class QolSettings {
       name:    "Creatures Provide Cover (Optional Rule)",
       hint:    "Other creatures in the line of attack provide half cover (+2 AC) to the target. PHB optional rule.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: false,
     });
@@ -572,7 +602,7 @@ export class QolSettings {
       name:    "Show Cover Indicator",
       hint:    "Display a scrolling text indicator on the target showing the cover level when an attack is made.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -581,7 +611,7 @@ export class QolSettings {
       name:    "Ignore Cover for Adjacent Targets",
       hint:    "Targets within 5ft of the attacker ignore cover (they are too close for obstacles to matter).",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -594,7 +624,7 @@ export class QolSettings {
       name:    "Bloodied Indicator",
       hint:    "Show a visual indicator when a token drops to half HP or below.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -603,7 +633,7 @@ export class QolSettings {
       name:    "Bloodied Threshold",
       hint:    "Percentage of max HP at or below which a creature is considered bloodied. Default 0.5 = half HP.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Number,
       default: 0.5,
       range:   { min: 0.1, max: 0.9, step: 0.05 },
@@ -613,7 +643,7 @@ export class QolSettings {
       name:    "Bloodied Indicator Style",
       hint:    "Visual style for the bloodied indicator on tokens.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    String,
       default: "border",
       choices: {
@@ -627,7 +657,7 @@ export class QolSettings {
       name:    "Announce Bloodied in Chat",
       hint:    "Post a chat message when a creature becomes bloodied.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -636,7 +666,7 @@ export class QolSettings {
       name:    "Bloodied Visible To",
       hint:    "Who can see the bloodied indicator on tokens and in chat.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    String,
       default: "gm",
       choices: {
@@ -649,7 +679,7 @@ export class QolSettings {
       name:    "Auto Dead Marker",
       hint:    "Automatically apply the dead status effect (skull overlay) when a creature drops to 0 HP.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -662,7 +692,7 @@ export class QolSettings {
       name:    "NPC Attack Roll Visibility",
       hint:    "What players see when NPCs make attack rolls. Public: full details. Result Only: Hit/Miss but not the number. GM Only: players see nothing.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    String,
       default: "public",
       choices: {
@@ -676,7 +706,7 @@ export class QolSettings {
       name:    "NPC Damage Roll Visibility",
       hint:    "What players see when NPCs deal damage. Public: full details. Result Only: damage type but not the number. GM Only: hidden.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    String,
       default: "public",
       choices: {
@@ -690,7 +720,7 @@ export class QolSettings {
       name:    "NPC Save Roll Visibility",
       hint:    "What players see when NPCs make saving throws.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    String,
       default: "public",
       choices: {
@@ -704,7 +734,7 @@ export class QolSettings {
       name:    "Hide Save DC from Players",
       hint:    "Replace save DCs with 'DC ???' in chat messages visible to players. Prevents metagaming save difficulty.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: false,
     });
@@ -713,7 +743,7 @@ export class QolSettings {
       name:    "Hide NPC Names in Rolls",
       hint:    "Replace NPC names with '???' in attack/damage/save cards. Prevents players from identifying unknown creatures.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: false,
     });
@@ -722,7 +752,7 @@ export class QolSettings {
       name:    "Players See Bloodied Indicators",
       hint:    "Whether players can see bloodied visual indicators on NPC tokens. Independent of the Bloodied Visible To setting for chat announcements.",
       scope:   "world",
-      config:  true,
+      config:  false,
       type:    Boolean,
       default: true,
     });
@@ -738,6 +768,281 @@ export class QolSettings {
       config:  false,
       type:    Boolean,
       default: false,
+    });
+
+    s("requireTarget", {
+      name:    "Require Target for Weapon Attacks",
+      hint:    "Block weapon attacks when no target is selected. Shows a centered 'Please select a target' notice.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
+    s("advantagePrompt", {
+      name:    "Advantage Prompt Before Weapon Attacks",
+      hint:    "Show a centered popup with three buttons (Advantage / Normal / Disadvantage) before each weapon attack. The button ace-qol auto-detects is pre-focused; press Enter to accept it.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
+    s("suppressSystemCards", {
+      name:    "Suppress D&D 5e System Chat Cards",
+      hint:    "Hide the system's item-use and attack-roll chat cards entirely. Our ace-qol attack card embeds the item description (collapsed under a chevron) so nothing is lost. Disable to fall back to the legacy collapse behavior.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
+    s("enableEffectsPanel", {
+      name:    "Enable Effects Panel",
+      hint:    "Show a floating list of the currently selected token's active effects. Left-click an effect to read its description, right-click to disable/delete (with confirmation).",
+      scope:   "client",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
+    s("effectsPanelPosition", {
+      name:    "Effects Panel Position",
+      hint:    "Where the effects panel anchors on screen.",
+      scope:   "client",
+      config:  false,
+      type:    String,
+      choices: { "top-right": "Top Right", "top-left": "Top Left", "bottom-right": "Bottom Right", "bottom-left": "Bottom Left" },
+      default: "top-right",
+    });
+
+    s("effectsPanelAction", {
+      name:    "Effects Panel Right-Click Action",
+      hint:    "What right-click does after the confirmation prompt: Disable (effect stays on the actor but inactive — reversible) or Delete (effect removed entirely — permanent).",
+      scope:   "world",
+      config:  false,
+      type:    String,
+      choices: { "disable": "Disable (recommended)", "delete": "Delete" },
+      default: "disable",
+    });
+
+    s("effectsPanelFor", {
+      name:    "Effects Panel Visibility",
+      hint:    "Who sees the panel for which tokens. 'Default': GM sees panel for any token, players see only their own. 'Owned only': both GM and players see only tokens they own.",
+      scope:   "world",
+      config:  false,
+      type:    String,
+      choices: { "default": "Default (GM all, players owned)", "owned": "Owned tokens only" },
+      default: "default",
+    });
+
+    s("effectsPanelShowAuras", {
+      name:    "Effects Panel — Show Class Auras",
+      hint:    "Detect and display class auras (Paladin Aura of Protection, Aura of Courage, etc.) computed from class levels — these are class features, not Active Effects, so they don't appear elsewhere.",
+      scope:   "client",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
+    // ── Turn Marker (replaces combatbooster) ────────────────────────────
+    s("enableTurnMarker", {
+      name:    "Enable Turn Marker",
+      hint:    "Rotating marker placed under the active combatant's token during combat.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
+    s("turnMarkerImage", {
+      name:    "Turn Marker Image (Current)",
+      hint:    "Image/webm under the active combatant. Default: JB2A red Evocation rune (loops automatically).",
+      scope:   "world",
+      config:  false,
+      type:    String,
+      default: "modules/JB2A_DnD5e/Library/Generic/Magic_Signs/Runes/EvocationRuneLoop_01_Regular_Red_400x400.webm",
+      filePicker: "imagevideo",
+    });
+
+    s("turnMarkerImageNext", {
+      name:    "Turn Marker Image (Next)",
+      hint:    "Image/webm under the next combatant. Default: JB2A blue Abjuration rune (loops automatically).",
+      scope:   "world",
+      config:  false,
+      type:    String,
+      default: "modules/JB2A_DnD5e/Library/Generic/Magic_Signs/Runes/AbjurationRuneLoop_01_Regular_Blue_400x400.webm",
+      filePicker: "imagevideo",
+    });
+
+    s("turnMarkerNextAlpha", {
+      name:    "Next-Turn Marker Opacity",
+      hint:    "Opacity of the next-combatant marker. Lower = more subtle.",
+      scope:   "world",
+      config:  false,
+      type:    Number,
+      default: 0.7,
+      range:   { min: 0.1, max: 1, step: 0.05 },
+    });
+
+    s("turnMarkerScale", {
+      name:    "Turn Marker Size",
+      hint:    "Scale multiplier relative to the active token. 1.0 = same size, 1.5 = 50% larger.",
+      scope:   "world",
+      config:  false,
+      type:    Number,
+      default: 1.15,
+      range:   { min: 0.5, max: 2.5, step: 0.05 },
+    });
+
+    s("turnMarkerSpeed", {
+      name:    "Turn Marker Rotation Speed",
+      hint:    "How fast the marker spins. 0 = no rotation, 1.0 = normal, 2.0 = fast.",
+      scope:   "world",
+      config:  false,
+      type:    Number,
+      default: 0.5,
+      range:   { min: 0, max: 3, step: 0.1 },
+    });
+
+    s("turnMarkerAlpha", {
+      name:    "Turn Marker Opacity",
+      hint:    "How transparent the marker is. 1.0 = fully opaque.",
+      scope:   "world",
+      config:  false,
+      type:    Number,
+      default: 0.85,
+      range:   { min: 0.1, max: 1, step: 0.05 },
+    });
+
+    s("enableNextTurnMarker", {
+      name:    "Enable Next-Turn Marker",
+      hint:    "Greyscale version of the marker placed under the next combatant's token (helps players prepare).",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
+    s("enableYourTurnNotification", {
+      name:    "Show 'Your Turn' Notification",
+      hint:    "Display a centered popup for connected players when their turn begins.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
+    s("enableYourTurnSound", {
+      name:    "Play 'Your Turn' Sound",
+      hint:    "Play an audible alert for connected players when their turn begins.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
+    s("yourTurnSound", {
+      name:    "Your Turn Sound File",
+      hint:    "Sound played when it's a player's turn.",
+      scope:   "world",
+      config:  false,
+      type:    String,
+      default: "sounds/notify.wav",
+      filePicker: "audio",
+    });
+
+    s("enableTurnMarkerAutoPan", {
+      name:    "Auto-Pan Camera to Active Combatant",
+      hint:    "Smoothly pan the camera to the current combatant when their turn begins.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: false,
+    });
+
+    // ── Movement Tracker (colored squares while dragging tokens) ────────
+    s("enableMovementTracker", {
+      name:    "Enable Movement Tracker",
+      hint:    "Show colored grid squares while dragging a token: green = within walk speed, yellow = within Dash (2× walk), red = beyond Dash.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
+    s("movementTrackerOnlyInCombat", {
+      name:    "Movement Tracker — Only in Combat",
+      hint:    "When on, the colored squares only appear during combat. Off = always visible while dragging.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
+    s("movementTrackerAlpha", {
+      name:    "Movement Tracker Opacity",
+      hint:    "How visible the colored squares are. 1.0 = solid color, 0.2 = very subtle.",
+      scope:   "world",
+      config:  false,
+      type:    Number,
+      default: 0.35,
+      range:   { min: 0.1, max: 0.8, step: 0.05 },
+    });
+
+    s("flankingAllowReachWeapons", {
+      name:    "Flanking — Allow Reach Weapons (Houserule)",
+      hint:    "When ON, an ally with an equipped reach weapon (Glaive, Halberd, Pike, Whip, Lance, etc.) can grant flanking from 10ft. RAW only allows flanking at 5ft (adjacent).",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: false,
+    });
+
+    s("autoPostLootCard", {
+      name:    "Auto-Post Loot Card on Death",
+      hint:    "When ON, a public chat card listing the dead NPC's loot is posted automatically. When OFF (default), the lootable tile dialog (double-right-click the dead-art tile) is the only loot interface.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: false,
+    });
+
+    s("enableXpDistribution", {
+      name:    "Enable XP Distribution at Combat End",
+      hint:    "When combat ends, prompt the GM to distribute XP from defeated NPCs. Only connected (active) PCs receive XP. Dead PCs are auto-skipped.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
+    s("reduceCoverForLargeTargets", {
+      name:    "Reduce Cover for Large+ Targets (House Rule)",
+      hint:    "Big creatures can't easily hide behind small obstacles. When ON: Large targets ignore Half cover and downgrade ¾ cover to Half. Huge targets ignore Half + ¾ cover entirely (only Full cover counts). Gargantuan: same as Huge. Disable to use strict 5e RAW.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
+    s("autoDeleteInstantTemplates", {
+      name:    "Auto-Delete Instant Spell Templates",
+      hint:    "After damage is rolled for an instantaneous spell (Fireball, Lightning Bolt, etc.), automatically delete the AOE template from the canvas. Templates for persistent spells (Fog Cloud, Spirit Guardians) are kept and remain draggable.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
+    s("dsnRevealDelayMs", {
+      name:    "Delay Result Card After Dice Roll (ms)",
+      hint:    "Hold the attack result card for this many milliseconds after the roll fires, so Dice So Nice dice finish tumbling before the result is revealed. Default 3000 (3 seconds). Set to 0 to disable the delay.",
+      scope:   "world",
+      config:  false,
+      type:    Number,
+      default: 3000,
+      range:   { min: 0, max: 6000, step: 250 },
     });
 
     console.log(`${MODULE_ID} | Settings registered (all combat features ON by default)`);

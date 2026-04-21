@@ -28,6 +28,14 @@ import { MergeCard }            from "./merge-card.mjs";
 import { LootEngine }           from "./loot-engine.mjs";
 import { DeathPipeline }        from "./death-pipeline.mjs";
 import * as Diagnostics         from "./diagnostics.mjs";
+import { showCenterToast, showAdvantagePrompt, pendingAttackChoices }
+  from "./attack-prompt.mjs";
+import { EffectsPanel } from "./effects-panel.mjs";
+import { XpEngine } from "./xp-engine.mjs";
+import { QuickSelectTools } from "./quick-select-tools.mjs";
+import { TurnMarker } from "./turn-marker.mjs";
+import { MovementTracker } from "./movement-tracker.mjs";
+import { LootableTile } from "./lootable-tile.mjs";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 let extendedEffects      = null;
@@ -42,8 +50,20 @@ let bloodiedEngine       = null;
 let speedRolls           = null;
 let lootEngine           = null;
 let deathPipeline        = null;
+let effectsPanel         = null;
+let xpEngine             = null;
+let quickSelectTools     = null;
+let turnMarker           = null;
+let movementTracker      = null;
+let lootableTile         = null;
 
 const SOCKET_NAME = `module.${MODULE_ID}`;
+
+// Read the master on/off switch — safe to call after settings are registered.
+function _aceQolEnabled() {
+  try { return game.settings.get(MODULE_ID, "moduleEnabled") !== false; }
+  catch (_) { return true; }
+}
 
 // ─── Init: register settings ─────────────────────────────────────────────────
 Hooks.once("init", () => {
@@ -54,6 +74,13 @@ Hooks.once("init", () => {
     Hooks.on("renderSettingsConfig", (app, html) => QolSettings.onRenderSettingsConfig(app, html));
   } catch (err) {
     console.error(`${MODULE_ID} | Settings registration failed:`, err);
+  }
+
+  // Gate the rest of init behind the master enabled switch — settings MUST
+  // stay registered (so the user can re-enable) but no runtime systems load.
+  if (!_aceQolEnabled()) {
+    console.log(`${MODULE_ID} | Module disabled — skipping init subsystems.`);
+    return;
   }
 
   // Initialize Extended Active Effects engine (must be early — before effects process)
@@ -69,6 +96,10 @@ Hooks.once("init", () => {
 
 // ─── Ready: start all subsystems (GM only for combat, all users for effects) ─
 Hooks.once("ready", () => {
+  if (!_aceQolEnabled()) {
+    console.log(`${MODULE_ID} | Module disabled — skipping ready subsystems.`);
+    return;
+  }
 
   // Attack pipeline — ALL users
   // Pre-roll hook (advantage/disadvantage, range check) runs on the attacking client.
@@ -187,6 +218,51 @@ Hooks.once("ready", () => {
     console.log(`${MODULE_ID} | Speed rolls online`);
   } catch (err) {
     console.error(`${MODULE_ID} | Speed rolls init failed:`, err);
+  }
+
+  // Effects Panel — ALL users (floating list of selected token's active effects)
+  try {
+    effectsPanel = new EffectsPanel();
+    console.log(`${MODULE_ID} | Effects panel online`);
+  } catch (err) {
+    console.error(`${MODULE_ID} | Effects panel init failed:`, err);
+  }
+
+  // XP Engine — GM only (tracks combat kills, prompts XP distribution at end)
+  try {
+    xpEngine = new XpEngine();
+  } catch (err) {
+    console.error(`${MODULE_ID} | XP engine init failed:`, err);
+  }
+
+  // Quick Select Tools — GM only (toolbar buttons to select PCs/NPCs/disposition)
+  try {
+    quickSelectTools = new QuickSelectTools();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Quick select tools init failed:`, err);
+  }
+
+  // Turn Marker — ALL users (rotating marker on canvas + your-turn notif/sound)
+  try {
+    turnMarker = new TurnMarker();
+    console.log(`${MODULE_ID} | Turn marker online`);
+  } catch (err) {
+    console.error(`${MODULE_ID} | Turn marker init failed:`, err);
+  }
+
+  // Movement Tracker — ALL users (colored squares while dragging tokens)
+  try {
+    movementTracker = new MovementTracker();
+    console.log(`${MODULE_ID} | Movement tracker online`);
+  } catch (err) {
+    console.error(`${MODULE_ID} | Movement tracker init failed:`, err);
+  }
+
+  // Lootable Tile — ALL users (clickable dead-art tiles → loot dialog)
+  try {
+    lootableTile = new LootableTile();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Lootable tile init failed:`, err);
   }
 
   // Loot Engine — ALL users (players need renderChatMessage hook for public loot cards)
@@ -659,6 +735,12 @@ Hooks.once("ready", () => {
     lootEngine,
     DeathPipeline,
     deathPipeline,
+    effectsPanel,
+    xpEngine,
+    quickSelectTools,
+    turnMarker,
+    movementTracker,
+    lootableTile,
 
     /** Check if a setting is enabled */
     isEnabled: (key) => QolSettings.get(key),
@@ -731,7 +813,15 @@ Hooks.once("ready", () => {
     if (el.dataset.aceHidden) return;
     el.dataset.aceHidden = "1";
 
-    // Collapse the description/content section, keep header visible
+    // ── Full suppression mode: hide the system card entirely ──
+    // The item description is embedded in our own attack-result card
+    // (collapsible via chevron). This eliminates the redundant system cards.
+    if (QolSettings.get("suppressSystemCards") !== false) {
+      el.style.display = "none";
+      return;
+    }
+
+    // ── Legacy mode: collapse the description, keep header visible ──
     const content = el.querySelector(".card-content, .details, .collapsible-content, .dice-tooltip");
     if (content) content.style.display = "none";
     const footer = el.querySelector(".card-footer");
@@ -770,6 +860,33 @@ Hooks.once("ready", () => {
     });
   });
 
+  // ── Wire chevron toggle on our attack-result cards ──
+  // Click the chevron in the card header to expand/collapse the embedded
+  // item description + property tags.
+  Hooks.on("renderChatMessage", (message, html) => {
+    if (message.flags?.[MODULE_ID]?.type !== "attackResult") return;
+    const el = html instanceof HTMLElement ? html : html?.[0] ?? html;
+    if (!el) return;
+    const toggle = el.querySelector(".ace-qol-atk-info-toggle");
+    if (!toggle) return;
+
+    toggle.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const card = toggle.closest(".ace-qol-attack-card");
+      const details = card?.querySelector(".ace-qol-atk-item-details");
+      if (!details) return;
+      const willShow = details.classList.contains("ace-qol-collapsed");
+      details.classList.toggle("ace-qol-collapsed", !willShow);
+      toggle.setAttribute("aria-expanded", String(willShow));
+      const icon = toggle.querySelector("i");
+      if (icon) {
+        icon.classList.toggle("fa-chevron-down", !willShow);
+        icon.classList.toggle("fa-chevron-up", willShow);
+      }
+    });
+  });
+
   // ── Suppress system's ActivityChoiceDialog for ALL weapon uses ──
   // The D&D 5e system shows an "activity-choice" dialog when:
   //   (activities.length > 1 || chooseActivity) && !event?.shiftKey
@@ -784,16 +901,62 @@ Hooks.once("ready", () => {
   const ItemClass = CONFIG.Item?.documentClass;
   if (ItemClass?.prototype?.use) {
     const origUse = ItemClass.prototype.use;
-    ItemClass.prototype.use = function(config = {}, ...args) {
-      if (this.type === "weapon") {
-        // Replace the event with a plain object — native MouseEvent.shiftKey is read-only,
-        // so we can't set it on the original event (BG3 HUD passes real MouseEvents).
-        // The system checks event?.shiftKey to skip ActivityChoiceDialog.
-        config.event = { shiftKey: true };
+    ItemClass.prototype.use = async function(config = {}, ...args) {
+      if (this.type === "weapon" && this.actor) {
+        // ── Block attacks from incapacitated attackers (BEFORE the prompt) ───
+        const atkStatuses = this.actor.statuses ?? new Set();
+        const blockingConditions = ["paralyzed", "stunned", "unconscious", "incapacitated", "petrified"];
+        const blocker = blockingConditions.find(c => atkStatuses.has(c));
+        if (blocker) {
+          const name = this.actor.token?.name ?? this.actor.name;
+          showCenterToast(`${name} is ${blocker.toUpperCase()} — cannot attack`, 2500);
+          return null;
+        }
+
+        // ── Require a target ─────────────────────────────────────────────────
+        if (QolSettings.get("requireTarget") !== false) {
+          if (!game.user.targets.size) {
+            showCenterToast("Please select a target", 2500);
+            return null;
+          }
+        }
+
+        // ── Show the advantage prompt (if enabled) ───────────────────────────
+        if (QolSettings.get("advantagePrompt") !== false) {
+          const target = game.user.targets.first();
+          let suggested = "normal";
+          let reasons   = [];
+          try {
+            const cs = CombatState.assess(this.actor, target, this);
+            suggested = cs?.finalRollMode || "normal";
+            reasons   = suggested === "advantage"    ? (cs?.advantageSources    ?? [])
+                      : suggested === "disadvantage" ? (cs?.disadvantageSources ?? [])
+                                                     : [];
+          } catch (err) {
+            console.warn(`${MODULE_ID} | CombatState.assess failed in prompt:`, err);
+          }
+
+          const choice = await showAdvantagePrompt({
+            attacker:     this.actor.token?.name ?? this.actor.name ?? "Attacker",
+            target:       target.actor?.name ?? target.name ?? "Target",
+            suggested,
+            reasons,
+            attackerIsPC: !!this.actor?.hasPlayerOwner,
+            targetIsPC:   !!target.actor?.hasPlayerOwner,
+          });
+
+          if (!choice) return null; // Esc cancels the attack
+          pendingAttackChoices.set(this.actor.id, choice);
+        }
+
+        // Replace the event so dnd5e fast-forwards (skips ActivityChoiceDialog).
+        // Native MouseEvent.shiftKey is read-only, so we wrap. Preserve target
+        // so dnd5e's buildPost can call .closest() safely.
+        config.event = { shiftKey: true, target: config.event?.target ?? document.body };
       }
       return origUse.call(this, config, ...args);
     };
-    console.log(`${MODULE_ID} | Patched Item.use() to skip ActivityChoiceDialog for weapons`);
+    console.log(`${MODULE_ID} | Patched Item.use(): target gating + advantage prompt for weapons`);
   }
 
   // ── Persistent suppression of ALL system ActivityChoiceDialogs ──
