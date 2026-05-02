@@ -481,21 +481,24 @@ export class AttackPipeline {
       + `</span>`
     );
     // Always show the ability label so users know which stat is used (even when +0)
-    formulaParts.push(`<span class="ace-qol-mod-num">${abilityMod >= 0 ? "+" : ""}${abilityMod}</span><span class="ace-qol-mod-label">${abilityLabel}</span>`);
+    formulaParts.push(`<span class="ace-qol-mod-chip"><span class="ace-qol-mod-num">${abilityMod >= 0 ? "+" : ""}${abilityMod}</span><span class="ace-qol-mod-label">${abilityLabel}</span></span>`);
     if (profBonus) {
-      formulaParts.push(`<span class="ace-qol-mod-num">+${profBonus}</span><span class="ace-qol-mod-label">PROF</span>`);
+      formulaParts.push(`<span class="ace-qol-mod-chip"><span class="ace-qol-mod-num">+${profBonus}</span><span class="ace-qol-mod-label">PROF</span></span>`);
     }
 
     // Check for magic bonus on the item
-    const magicBonus = item.system?.magicalBonus ?? 0;
+    // Coerce to number — dnd5e stores magicalBonus as a string in some
+    // item schemas (Dawnbringer, etc.). Without coercion, downstream
+    // math switches to string concatenation: 5 + 3 + "2" + 0 = "820".
+    const magicBonus = Number(item.system?.magicalBonus) || 0;
     if (magicBonus) {
-      formulaParts.push(`<span class="ace-qol-mod-num">+${magicBonus}</span><span class="ace-qol-mod-label ace-qol-mod-magic">MAGIC</span>`);
+      formulaParts.push(`<span class="ace-qol-mod-chip"><span class="ace-qol-mod-num">+${magicBonus}</span><span class="ace-qol-mod-label ace-qol-mod-magic">MAGIC</span></span>`);
     }
 
     // Check for attack bonus from item
     const itemAtkBonus = item.system?.attack?.bonus ? parseInt(item.system.attack.bonus) || 0 : 0;
     if (itemAtkBonus) {
-      formulaParts.push(`<span class="ace-qol-mod-num">+${itemAtkBonus}</span><span class="ace-qol-mod-label">ITEM</span>`);
+      formulaParts.push(`<span class="ace-qol-mod-chip"><span class="ace-qol-mod-num">+${itemAtkBonus}</span><span class="ace-qol-mod-label">ITEM</span></span>`);
     }
 
     // Delta detection — sum of displayed parts didn't match the actual roll
@@ -503,13 +506,19 @@ export class AttackPipeline {
     // spell-attack overlay, dnd5e Summon activity's `bonuses.attackDamage`,
     // active effects modifying attack rolls, etc. Show the unaccounted-for
     // chunk as a single labeled line so the breakdown still adds up.
-    const displayedSum = (abilityMod || 0) + (profBonus || 0) + (magicBonus || 0) + (itemAtkBonus || 0);
-    const expectedBonus = (rollTotal ?? d20) - d20;
+    // Number()-coerce every input — defends against the magicalBonus
+    // string-concat trap (see comment above) and any other field that
+    // arrives as a string from DDB/legacy data.
+    const displayedSum = (Number(abilityMod) || 0)
+                       + (Number(profBonus) || 0)
+                       + (Number(magicBonus) || 0)
+                       + (Number(itemAtkBonus) || 0);
+    const expectedBonus = (Number(rollTotal) || d20) - d20;
     const missingBonus = expectedBonus - displayedSum;
     if (missingBonus !== 0 && Number.isFinite(missingBonus)) {
       const isSummon = !!actor?.flags?.dnd5e?.summon;
       const label = isSummon ? "SUMMON" : "BONUS";
-      formulaParts.push(`<span class="ace-qol-mod-num">${missingBonus >= 0 ? "+" : ""}${missingBonus}</span><span class="ace-qol-mod-label">${label}</span>`);
+      formulaParts.push(`<span class="ace-qol-mod-chip"><span class="ace-qol-mod-num">${missingBonus >= 0 ? "+" : ""}${missingBonus}</span><span class="ace-qol-mod-label">${label}</span></span>`);
     }
 
     const formulaStr = formulaParts.join(" ");
@@ -584,8 +593,11 @@ export class AttackPipeline {
         </div>
         <div class="ace-qol-atk-item-details ace-qol-collapsed">${itemDetailsHtml}</div>
         <div class="ace-qol-atk-roll">
-          <span class="ace-qol-atk-formula">${formulaStr}</span>
-          <span class="ace-qol-atk-total ${resultClass}">${rollTotal}</span>
+          <span class="ace-qol-atk-formula">
+            ${formulaStr}
+            <span class="ace-qol-atk-equals">=</span>
+            <span class="ace-qol-atk-total ${resultClass}">${rollTotal}</span>
+          </span>
         </div>
         <div class="ace-qol-atk-results">
           ${targetRows}
@@ -661,30 +673,35 @@ export class AttackPipeline {
       + `<span class="ace-qol-atk-d20-result">${d20}</span>`
       + `</span>`
     );
-    parts.push(`<span class="ace-qol-mod-num">${abilityMod >= 0 ? "+" : ""}${abilityMod}</span><span class="ace-qol-mod-label">${abilityLabel}</span>`);
+    parts.push(`<span class="ace-qol-mod-chip"><span class="ace-qol-mod-num">${abilityMod >= 0 ? "+" : ""}${abilityMod}</span><span class="ace-qol-mod-label">${abilityLabel}</span></span>`);
     if (profBonus) {
-      parts.push(`<span class="ace-qol-mod-num">+${profBonus}</span><span class="ace-qol-mod-label">PROF</span>`);
+      parts.push(`<span class="ace-qol-mod-chip"><span class="ace-qol-mod-num">+${profBonus}</span><span class="ace-qol-mod-label">PROF</span></span>`);
     }
-    const magicBonus = item.system?.magicalBonus ?? 0;
+    // Coerce magicalBonus to a number — dnd5e stores it as a string on some
+    // items (e.g. Dawnbringer). Without coercion the delta math below uses
+    // string concatenation and produces nonsense like "-810 BONUS".
+    const magicBonus = Number(item.system?.magicalBonus) || 0;
     if (magicBonus) {
-      parts.push(`<span class="ace-qol-mod-num">+${magicBonus}</span><span class="ace-qol-mod-label ace-qol-mod-magic">MAGIC</span>`);
+      parts.push(`<span class="ace-qol-mod-chip"><span class="ace-qol-mod-num">+${magicBonus}</span><span class="ace-qol-mod-label ace-qol-mod-magic">MAGIC</span></span>`);
     }
     const itemAtkBonus = item.system?.attack?.bonus ? parseInt(item.system.attack.bonus) || 0 : 0;
     if (itemAtkBonus) {
-      parts.push(`<span class="ace-qol-mod-num">+${itemAtkBonus}</span><span class="ace-qol-mod-label">ITEM</span>`);
+      parts.push(`<span class="ace-qol-mod-chip"><span class="ace-qol-mod-num">+${itemAtkBonus}</span><span class="ace-qol-mod-label">ITEM</span></span>`);
     }
 
-    // Delta detection — same as _postAttackResults. Catches summon spell
-    // attack overlays, active effects, etc. that aren't in the displayed
-    // breakdown so the parts add up to the real roll total.
-    const rollTotal = r0?.attackTotal ?? null;
-    const displayedSum = (abilityMod || 0) + (profBonus || 0) + (magicBonus || 0) + (itemAtkBonus || 0);
-    const expectedBonus = (rollTotal ?? d20) - d20;
+    // Delta detection — same logic as _postAttackResults; Number()-coerce
+    // every input to defend against string-concat traps.
+    const rollTotal = Number(r0?.attackTotal);
+    const displayedSum = (Number(abilityMod) || 0)
+                       + (Number(profBonus) || 0)
+                       + (Number(magicBonus) || 0)
+                       + (Number(itemAtkBonus) || 0);
+    const expectedBonus = (Number.isFinite(rollTotal) ? rollTotal : d20) - d20;
     const missingBonus = expectedBonus - displayedSum;
     if (missingBonus !== 0 && Number.isFinite(missingBonus)) {
       const isSummon = !!actor?.flags?.dnd5e?.summon;
       const label = isSummon ? "SUMMON" : "BONUS";
-      parts.push(`<span class="ace-qol-mod-num">${missingBonus >= 0 ? "+" : ""}${missingBonus}</span><span class="ace-qol-mod-label">${label}</span>`);
+      parts.push(`<span class="ace-qol-mod-chip"><span class="ace-qol-mod-num">${missingBonus >= 0 ? "+" : ""}${missingBonus}</span><span class="ace-qol-mod-label">${label}</span></span>`);
     }
 
     this._lastFormulaPartsHtml = parts.join(" ");
