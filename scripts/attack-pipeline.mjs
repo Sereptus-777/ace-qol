@@ -595,8 +595,10 @@ export class AttackPipeline {
         <div class="ace-qol-atk-roll">
           <span class="ace-qol-atk-formula">
             ${formulaStr}
-            <span class="ace-qol-atk-equals">=</span>
-            <span class="ace-qol-atk-total ${resultClass}">${rollTotal}</span>
+            <span class="ace-qol-atk-result-chip">
+              <span class="ace-qol-atk-equals">=</span>
+              <span class="ace-qol-atk-total ${resultClass}">${rollTotal}</span>
+            </span>
           </span>
         </div>
         <div class="ace-qol-atk-results">

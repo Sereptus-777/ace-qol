@@ -222,17 +222,18 @@ export class RiderEngine {
         </div>`;
       }
 
-      // Optional riders (player chooses)
+      // Optional riders (player chooses one OR MORE — multi-select per RAW)
+      // Per RAW (Crawford): multiple smites/riders can stack on a single hit
+      // as long as each trigger condition is met and each consumes its own
+      // resource. Two-row layout per rider to give the description full
+      // breathing room instead of squishing it between the name and badges.
       const isGM = game.user.isGM;
       for (const r of optionalRiders) {
-        // Group maneuvers together
         const slotPicker = r.scalable ? RiderEngine._buildSlotPicker(r.resource.available) : "";
         const highlightBadge = r.highlight
           ? `<span class="ace-qol-rider-badge ace-qol-rider-highlight" style="color:${creatureTypeColor}">${r.highlight}</span>`
           : "";
 
-        // GM-only: "Consume Slot" checkbox (checked by default).
-        // When unchecked, the rider fires damage but doesn't spend the resource.
         const consumeToggle = isGM
           ? `<label class="ace-qol-rider-consume" title="Uncheck to use without spending the resource">
                <input type="checkbox" data-rider-id="${r.id}" class="ace-qol-rider-consume-cb" checked />
@@ -240,21 +241,33 @@ export class RiderEngine {
              </label>`
           : "";
 
+        // Two-row layout:
+        //   Top:    [icon] Name              [highlight] [slot] [consume]
+        //   Bottom: full-width description                          [USE toggle]
         html += `<div class="ace-qol-rider-row" data-rider-id="${r.id}">
-          <i class="fas ${r.icon}"></i>
-          <span class="ace-qol-rider-name">${r.name}</span>
-          <span class="ace-qol-rider-formula">${r.description}</span>
-          ${highlightBadge}
-          ${slotPicker}
-          ${consumeToggle}
-          <button class="ace-qol-rider-select" data-rider-id="${r.id}">
-            <i class="fas fa-check"></i> USE
-          </button>
+          <div class="ace-qol-rider-row-top">
+            <i class="fas ${r.icon} ace-qol-rider-icon"></i>
+            <span class="ace-qol-rider-name">${r.name}</span>
+            <div class="ace-qol-rider-row-meta">
+              ${highlightBadge}
+              ${slotPicker}
+              ${consumeToggle}
+            </div>
+          </div>
+          <div class="ace-qol-rider-row-bottom">
+            <span class="ace-qol-rider-formula">${r.description}</span>
+            <button class="ace-qol-rider-select" data-rider-id="${r.id}" aria-pressed="false">
+              <i class="fas fa-check"></i> <span class="ace-qol-rider-select-label">USE</span>
+            </button>
+          </div>
         </div>`;
       }
 
-      // Dismiss button
+      // Action row — Apply Selected (fires all checked riders) + dismiss
       html += `<div class="ace-qol-rider-actions">
+        <button class="ace-qol-rider-apply" disabled>
+          <i class="fas fa-check-double"></i> Apply Selected (<span class="ace-qol-rider-count">0</span>)
+        </button>
         <button class="ace-qol-rider-dismiss">
           <i class="fas fa-xmark"></i> Not This Time
         </button>
@@ -269,14 +282,43 @@ export class RiderEngine {
         render: (jq) => {
           const el = jq[0] ?? jq;
 
-          // Wire USE buttons
+          // ── USE buttons toggle selection state (don't close the dialog) ──
+          // Per-rider USE click flips the row's selected state. Multiple
+          // riders can be selected simultaneously (RAW: stackable smites).
+          // The bottom Apply Selected button is the actual commit action.
+          const updateApplyButton = () => {
+            const selectedCount = el.querySelectorAll(".ace-qol-rider-select.selected").length;
+            const applyBtn = el.querySelector(".ace-qol-rider-apply");
+            const countSpan = el.querySelector(".ace-qol-rider-count");
+            if (countSpan) countSpan.textContent = String(selectedCount);
+            if (applyBtn) applyBtn.disabled = selectedCount === 0;
+          };
+
           el.querySelectorAll(".ace-qol-rider-select").forEach(btn => {
-            btn.addEventListener("click", () => {
+            btn.addEventListener("click", (ev) => {
+              ev.preventDefault();
+              ev.stopPropagation();
+              const isSelected = btn.classList.toggle("selected");
+              btn.setAttribute("aria-pressed", isSelected ? "true" : "false");
+              const labelEl = btn.querySelector(".ace-qol-rider-select-label");
+              if (labelEl) labelEl.textContent = isSelected ? "SELECTED" : "USE";
+              const row = btn.closest(".ace-qol-rider-row");
+              if (row) row.classList.toggle("selected", isSelected);
+              updateApplyButton();
+            });
+          });
+
+          // ── Apply Selected — gather all checked riders and resolve ──
+          el.querySelector(".ace-qol-rider-apply")?.addEventListener("click", () => {
+            const selectedBtns = [...el.querySelectorAll(".ace-qol-rider-select.selected")];
+            if (!selectedBtns.length) return; // disabled state guard
+            const chosen = [];
+            for (const btn of selectedBtns) {
               const riderId = btn.dataset.riderId;
               const rider = riders.find(r => r.id === riderId);
-              if (!rider) return;
+              if (!rider) continue;
 
-              // Check for slot picker override
+              // Slot picker override (Divine Smite scalable)
               if (rider.scalable) {
                 const select = el.querySelector(`select[data-rider-id="${riderId}"]`);
                 if (select) {
@@ -290,25 +332,24 @@ export class RiderEngine {
                 }
               }
 
-              // GM consume toggle: if unchecked, skip resource consumption
+              // GM consume toggle
               const consumeCb = el.querySelector(`.ace-qol-rider-consume-cb[data-rider-id="${riderId}"]`);
               if (consumeCb && !consumeCb.checked) {
                 rider.skipConsume = true;
               }
 
-              // Resolve with selected rider + any discharge riders
-              // MUST set flag BEFORE dialog.close() — Foundry calls the close callback
-              // synchronously inside close(), which would steal the resolve otherwise.
-              resolved = true;
-              resolve([...dischargeRiders, rider]);
-              dialog.close();
-            });
+              chosen.push(rider);
+            }
+
+            resolved = true;
+            resolve([...dischargeRiders, ...chosen]);
+            dialog.close();
           });
 
-          // Wire dismiss
+          // ── Dismiss — fire only discharge riders (already-active spells) ──
           el.querySelector(".ace-qol-rider-dismiss")?.addEventListener("click", () => {
             resolved = true;
-            resolve(dischargeRiders); // Still include discharge riders
+            resolve(dischargeRiders);
             dialog.close();
           });
         },
