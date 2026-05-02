@@ -151,6 +151,36 @@ export class DamageApplicator {
       [`flags.${MODULE_ID}.applied`]: false,
     });
 
+    // Direct DOM reset — flag updates alone don't trigger the strikethroughs
+    // and "applied" badges to clear, because the message content was set at
+    // create-time and re-rendering doesn't regenerate it from flag state.
+    // Match every card instance for this message (sidebar + popouts) and
+    // strip the visual "applied" markers.
+    const cards = document.querySelectorAll(`[data-message-id="${message.id}"] .ace-qol-damage-card, [data-message-id="${message.id}"] .ace-qol-merge-card`);
+    cards.forEach(card => {
+      // Remove .applied / .struck / .consumed classes from anything that
+      // might be carrying a strikethrough or grayout style
+      card.querySelectorAll(".applied, .struck, .consumed, .ace-qol-applied").forEach(el => {
+        el.classList.remove("applied", "struck", "consumed", "ace-qol-applied");
+      });
+      // Also strip inline text-decoration: line-through
+      card.querySelectorAll("[style*='line-through']").forEach(el => {
+        el.style.textDecoration = "";
+      });
+      // Re-enable the APPLY ALL button if it was disabled
+      const applyBtn = card.querySelector("[data-action='aceQolApplyDamage']");
+      if (applyBtn) {
+        applyBtn.disabled = false;
+        applyBtn.textContent = applyBtn.textContent.replace(/applied\s*✓?/i, "").trim() || "APPLY ALL";
+        applyBtn.classList.remove("applied", "ace-qol-btn-applied");
+      }
+      // Re-enable per-target apply buttons
+      card.querySelectorAll("[data-action='aceQolApplyTarget']").forEach(btn => {
+        btn.disabled = false;
+        btn.classList.remove("applied", "ace-qol-btn-applied");
+      });
+    });
+
     if (undoneCount) ui.notifications.info(`ACE QOL: Damage undone for ${undoneCount} target(s). Card reset — you can re-apply.`);
   }
 

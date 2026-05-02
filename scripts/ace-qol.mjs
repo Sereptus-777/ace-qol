@@ -347,16 +347,30 @@ Hooks.once("ready", () => {
       const maxHP = actor.system?.attributes?.hp?.max ?? 0;
       if (maxHP <= 0) return;
 
-      // ── Guard: deduplicate within the same Foundry update cycle ──
-      const deathKey = `${actor.id}-${Date.now()}`;
-      if (_deathProcessed.has(actor.id)) return;
-      _deathProcessed.add(actor.id);
-      setTimeout(() => _deathProcessed.delete(actor.id), 2000);
-
       // ── Find the token on the current scene ──
-      const tokenDoc = canvas.scene?.tokens?.find(t =>
-        t.actorId === actor.id || t.actor?.id === actor.id
-      );
+      // For synthetic actors (unlinked tokens, most NPCs), `actor.token` points
+      // DIRECTLY at the parent TokenDocument. Using find() against the scene is
+      // ambiguous when the same prototype has multiple tokens — find() returns
+      // the FIRST match, and a sibling clone may resolve to the wrong token.
+      // Prefer the direct lookup; fall back to scan only for fully linked actors.
+      let tokenDoc = actor?.token ?? null;
+      if (!tokenDoc) {
+        tokenDoc = canvas.scene?.tokens?.find(t =>
+          t.actor?.id === actor.id || t.actorId === actor.id
+        );
+      }
+
+      // ── Guard: deduplicate within the same Foundry update cycle ──
+      // Dedupe by the resolved token's UUID (unique per scene token) instead
+      // of actor.id. For unlinked tokens, `actor.id` collides with the base
+      // actor's id — meaning a linked clone dying first would lock out an
+      // unlinked clone of the same prototype that dies right after. Using
+      // tokenDoc.uuid keeps each individual token's death event distinct.
+      // Fall back to actor.uuid if the token couldn't be resolved.
+      const dedupeKey = tokenDoc?.uuid ?? actor?.uuid ?? actor.id;
+      if (_deathProcessed.has(dedupeKey)) return;
+      _deathProcessed.add(dedupeKey);
+      setTimeout(() => _deathProcessed.delete(dedupeKey), 2000);
 
       // ── Determine killer from recent chat messages ──
       let killerName = "";

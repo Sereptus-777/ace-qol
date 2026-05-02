@@ -9,6 +9,7 @@ import { DescriptionParser } from "./description-parser.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
 import { DamageConstants } from "./damage-engine.mjs";
 import { MergeCard } from "./merge-card.mjs";
+import { awaitDsnRoll } from "./attack-prompt.mjs";
 
 export class DamageCardRenderer {
 
@@ -209,7 +210,7 @@ export class DamageCardRenderer {
   //  Full Damage Card — Batch Results with Apply/Undo
   // ═══════════════════════════════════════════════════════════════════════════
 
-  static async postDamageCard(item, actor, damageResults, critRule, consumedRiders = null) {
+  static async postDamageCard(item, actor, damageResults, critRule, consumedRiders = null, refundLink = null) {
     if (!damageResults.length) return;
 
     // ── Shared formula display (from first target's raw roll — same roll for all) ──
@@ -261,11 +262,13 @@ export class DamageCardRenderer {
       const critDisplay = c.isCrit ? `<span class="ace-qol-dmg-crit-label">${c.normalTotal !== undefined ? `MAX ${c.normalTotal}` : "CRIT"}</span> + ` : "";
 
       const color = DamageConstants.DAMAGE_COLORS[c.type] ?? "#ccc";
-      const typeTotal = `<span class="ace-qol-dmg-type-total" style="color:${color}"><span class="ace-qol-dmg-type-num">${c.final}</span> ${c.type}</span>`;
+      const typeTotal = `<span class="ace-qol-dmg-equals">=</span> <span class="ace-qol-dmg-type-total" style="color:${color}"><span class="ace-qol-dmg-type-num">${c.final}</span> ${c.type}</span>`;
 
-      return `<div class="ace-qol-dmg-component">`
-        + `<div class="ace-qol-dmg-comp-left">${critDisplay}${dieDisplay}${modDisplay}</div>`
-        + typeTotal
+      // Inline-flow layout: dice → mods → "= total type" all on one wrapping row
+      // (was a 2-column flex with the total floating right, which forced dice
+      // into a vertical stack on narrow chat-card widths).
+      return `<div class="ace-qol-dmg-component ace-qol-dmg-row">`
+        + `${critDisplay}${dieDisplay}${modDisplay}${typeTotal}`
         + `</div>`;
     }).join("");
 
@@ -324,6 +327,10 @@ export class DamageCardRenderer {
       name: c.name, type: c.type, raw: c.raw, formula: c.formula,
     }));
 
+    // Wait for DSN damage dice to settle before posting the result card —
+    // otherwise the chat card spoils the totals while dice are still rolling.
+    await awaitDsnRoll();
+
     await ChatMessage.create({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor }),
@@ -335,6 +342,11 @@ export class DamageCardRenderer {
           rawComponents,
           totalRaw,
           consumedRiders: consumedRiders?.length ? consumedRiders : undefined,
+          // Cross-card refund linking: damage card knows about the button card
+          // so refunds done on either side stay in sync, and refunds already
+          // performed on the button card carry over (no duplicate refund buttons).
+          refundSourceMsgId: refundLink?.sourceMsgId ?? undefined,
+          refundedRiders: refundLink?.alreadyRefunded?.length ? [...refundLink.alreadyRefunded] : undefined,
           damageResults: damageResults.map(dr => ({
             targetId: dr.targetActor.id,
             tokenId: dr.targetToken.id,
@@ -442,8 +454,14 @@ export class DamageCardRenderer {
     }
 
     // ── Post the damage card AFTER dice finish rolling ──
+    // Carry refund state forward: damage card links back to the button card,
+    // and inherits any rider refunds the GM already performed on the button card.
+    const refundLink = {
+      sourceMsgId: message.id,
+      alreadyRefunded: message.flags?.[MODULE_ID]?.refundedRiders ?? [],
+    };
     try {
-      await DamageCardRenderer.postDamageCard(fakeItem, actor, damageResults, critRule, flags.consumedRiders);
+      await DamageCardRenderer.postDamageCard(fakeItem, actor, damageResults, critRule, flags.consumedRiders, refundLink);
     } catch (err) {
       console.error(`${MODULE_ID} | postPreRolledDamageCard CRASHED:`, err);
       return false;

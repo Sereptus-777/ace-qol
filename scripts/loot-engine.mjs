@@ -71,7 +71,7 @@ export class LootEngine {
         name:    "Enable Loot Generation",
         hint:    "Master toggle for automatic loot generation on NPC bio creation and death.",
         scope:   "world",
-        config:  true,
+        config:  false,
         type:    Boolean,
         default: true,
       });
@@ -80,7 +80,7 @@ export class LootEngine {
         name:    "Loot on Bio Generation",
         hint:    "Add loot to NPC inventory when AI generates their bio/description.",
         scope:   "world",
-        config:  true,
+        config:  false,
         type:    Boolean,
         default: true,
       });
@@ -89,7 +89,7 @@ export class LootEngine {
         name:    "Loot on NPC Death",
         hint:    "Generate a loot card and add items to inventory when an NPC drops to 0 HP.",
         scope:   "world",
-        config:  true,
+        config:  false,
         type:    Boolean,
         default: true,
       });
@@ -98,7 +98,7 @@ export class LootEngine {
         name:    "Minimum CR for Loot",
         hint:    "NPCs below this CR will not generate loot. Set to 0 to loot everything.",
         scope:   "world",
-        config:  true,
+        config:  false,
         type:    Number,
         default: 0.25,
         range:   { min: 0, max: 5, step: 0.25 },
@@ -108,7 +108,7 @@ export class LootEngine {
         name:    "Show Loot Cards to All Players",
         hint:    "When enabled, loot cards are visible to all players (not just GM). Players can drag items from the card to their character sheets.",
         scope:   "world",
-        config:  true,
+        config:  false,
         type:    Boolean,
         default: true,
       });
@@ -372,8 +372,13 @@ export class LootEngine {
       if (itemsArray.length > 0) {
         const lines = itemsArray.map((item, idx) => {
           const rarityLabel = this._formatRarity(item.rarity);
+          // Defensive onerror: if the item.img path 404s (e.g. AI-generated icon
+          // hint refers to a Foundry icon path that doesn't exist on this host),
+          // swap in the always-present item-bag svg so the user never sees a
+          // broken-image placeholder. onerror=null prevents an infinite loop.
           return `<li class="ace-qol-loot-item" data-item-uuid="${item.uuid}" data-item-index="${idx}">` +
-            `<img src="${item.img}" class="ace-qol-loot-item-img" style="width:24px;height:24px;border:0;">` +
+            `<img src="${item.img}" class="ace-qol-loot-item-img" style="width:24px;height:24px;border:0;" ` +
+            `onerror="this.onerror=null;this.src='icons/svg/item-bag.svg';">` +
             ` @UUID[${item.uuid}]{${item.name}}` +
             ` <span class="ace-qol-loot-rarity">(${rarityLabel})</span>` +
             `</li>`;
@@ -896,8 +901,16 @@ export class LootEngine {
       }
 
       if (lootData) {
-        // Use the new public loot card (tracks looting, visible to all)
-        await this.postPublicLootCard(actor, { lootData });
+        // Auto-fire loot card is OPT-IN — by default the lootable tile dialog
+        // (double-right-click the dead-art tile) is the primary loot interface.
+        // Preserve the card code for users who want it.
+        let autoPost = false;
+        try { autoPost = !!game.settings.get(MODULE_ID, "autoPostLootCard"); } catch (_) {}
+        if (autoPost) {
+          await this.postPublicLootCard(actor, { lootData });
+        } else {
+          console.log(`${LOG_PREFIX} autoPostLootCard=false — skipping chat card (tile dialog is primary UI)`);
+        }
       }
 
       return lootData;

@@ -308,6 +308,44 @@ export class DamageCalculator {
     // Roll the base damage
     const baseRoll = new Roll(resolved);
     await baseRoll.evaluate();
+
+    // ── DSN Crit Payoff: force every base-roll die to its max face ──
+    // For "maxAll" the rule already says all dice are max — overriding the
+    // result values here makes Dice So Nice ANIMATE the dice landing on
+    // their top numbers (a d8 lands on 8, etc.) for dramatic visual effect.
+    // For "maxPlusRoll" the BASE set is treated as max in the math, so we
+    // also force max here; the SECOND `critRoll` (rolled in the switch
+    // branch below) stays random — it's the bonus crit dice the rule rolls.
+    // For "doubleDice" the math uses both rolls' actual values, so no
+    // override — both sets stay random.
+    if (isCrit && (critRule === "maxAll" || critRule === "maxPlusRoll")) {
+      try {
+        for (const term of baseRoll.terms) {
+          if (!term.faces) continue;
+          if (!Array.isArray(term.results)) continue;
+          for (const r of term.results) {
+            r.result = term.faces;
+            r.active = true;
+            // dnd5e/Foundry sometimes writes rerolled state into discarded;
+            // clear flags that would suppress the result from the displayed total.
+            if (r.discarded) r.discarded = false;
+          }
+          // Recompute the term's contribution
+          if (typeof term._total === "number") term._total = term.faces * term.results.length;
+        }
+        // Recompute the roll total from the forced-max dice + flat terms
+        baseRoll._total = baseRoll.terms.reduce((sum, t) => {
+          if (t.faces && Array.isArray(t.results)) {
+            return sum + t.results.reduce((s, r) => s + (r.active !== false ? (r.result ?? 0) : 0), 0);
+          }
+          if (t.number !== undefined) return sum + t.number;
+          return sum;
+        }, 0);
+      } catch (err) {
+        console.warn(`ace-qol | rollWithCrit max-dice override failed (visual only):`, err);
+      }
+    }
+
     await DamageConstants.showDiceAnimation(baseRoll);
     const normalTotal = baseRoll.total;
 

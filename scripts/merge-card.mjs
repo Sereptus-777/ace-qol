@@ -316,11 +316,11 @@ export class MergeCard {
         : "";
 
       const color = DamageConstants.DAMAGE_COLORS[c.type] ?? "#ccc";
-      const typeTotal = `<span class="ace-qol-dmg-type-total" style="color:${color}"><span class="ace-qol-dmg-type-num">${c.final}</span> ${c.type}</span>`;
+      const typeTotal = `<span class="ace-qol-dmg-equals">=</span> <span class="ace-qol-dmg-type-total" style="color:${color}"><span class="ace-qol-dmg-type-num">${c.final}</span> ${c.type}</span>`;
 
-      return `<div class="ace-qol-dmg-component">`
-        + `<div class="ace-qol-dmg-comp-left">${critDisplay}${dieDisplay}${modDisplay}</div>`
-        + typeTotal
+      // Inline-flow layout: dice → mods → "= total type" all on one wrapping row
+      return `<div class="ace-qol-dmg-component ace-qol-dmg-row">`
+        + `${critDisplay}${dieDisplay}${modDisplay}${typeTotal}`
         + `</div>`;
     }).join("");
 

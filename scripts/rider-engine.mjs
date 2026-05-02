@@ -624,51 +624,125 @@ export class RiderEngine {
     const consumedRiders = mFlags?.consumedRiders;
     if (!consumedRiders?.length) return;
 
-    // Don't re-inject if already rendered
-    if (el.querySelector?.(".ace-qol-refund-row")) return;
+    // ── Cross-card refund sync ──
+    // Pre-roll button card and damage card both display refund buttons for
+    // the same consumedRiders list. They get linked via `refundSourceMsgId`
+    // (damage card → button card). Read the union of refunded IDs from BOTH
+    // messages so a refund on either side is reflected on the other when it
+    // re-renders. Without this, the GM could double-refund the same slot.
+    const sourceMsgId = mFlags?.refundSourceMsgId;
+    const sourceMsg = sourceMsgId ? game.messages?.get(sourceMsgId) : null;
+    const sourceRefunded = sourceMsg?.flags?.[MODULE_ID]?.refundedRiders ?? [];
+    const selfRefunded = mFlags?.refundedRiders ?? [];
+    const refundedSet = new Set([...sourceRefunded, ...selfRefunded]);
 
-    let refundHtml = '<div class="ace-qol-refund-section">';
-    for (const cr of consumedRiders) {
-      const refunded = mFlags?.refundedRiders?.includes(cr.id);
-      const label = RiderEngine.refundLabel(cr);
-      if (refunded) {
-        refundHtml += `<div class="ace-qol-refund-row ace-qol-refund-done">
-          <i class="fas fa-check"></i> ${cr.name} — REFUNDED
-        </div>`;
-      } else {
-        refundHtml += `<div class="ace-qol-refund-row">
-          <button class="ace-qol-btn ace-qol-btn-refund" data-rider-id="${cr.id}" data-actor-id="${cr.actorId}"
-                  data-resource-type="${cr.resourceType}" data-resource-level="${cr.resourceLevel ?? ""}">
-            <i class="fas fa-rotate-left"></i> REFUND ${label}
-          </button>
-        </div>`;
+    const alreadyRendered = !!el.querySelector?.(".ace-qol-refund-row");
+
+    if (!alreadyRendered) {
+      let refundHtml = '<div class="ace-qol-refund-section">';
+      for (const cr of consumedRiders) {
+        const refunded = refundedSet.has(cr.id);
+        const label = RiderEngine.refundLabel(cr);
+        if (refunded) {
+          refundHtml += `<div class="ace-qol-refund-row ace-qol-refund-done" data-rider-id="${cr.id}">
+            <i class="fas fa-check"></i> ${cr.name} — REFUNDED
+          </div>`;
+        } else {
+          refundHtml += `<div class="ace-qol-refund-row" data-rider-id="${cr.id}">
+            <button class="ace-qol-btn ace-qol-btn-refund" data-rider-id="${cr.id}" data-actor-id="${cr.actorId}"
+                    data-resource-type="${cr.resourceType}" data-resource-level="${cr.resourceLevel ?? ""}">
+              <i class="fas fa-rotate-left"></i> REFUND ${label}
+            </button>
+          </div>`;
+        }
       }
-    }
-    refundHtml += '</div>';
+      refundHtml += '</div>';
 
-    const gmControls = el.querySelector?.(".ace-qol-dmg-gm-controls");
-    const dmgCard = el.querySelector?.(".ace-qol-damage-card") ?? el.querySelector?.(".ace-qol-dmg-btn-card");
-    if (gmControls) {
-      gmControls.insertAdjacentHTML("afterend", refundHtml);
-    } else if (dmgCard) {
-      dmgCard.insertAdjacentHTML("beforeend", refundHtml);
+      const gmControls = el.querySelector?.(".ace-qol-dmg-gm-controls");
+      const dmgCard = el.querySelector?.(".ace-qol-damage-card") ?? el.querySelector?.(".ace-qol-dmg-btn-card");
+      if (gmControls) {
+        gmControls.insertAdjacentHTML("afterend", refundHtml);
+      } else if (dmgCard) {
+        dmgCard.insertAdjacentHTML("beforeend", refundHtml);
+      } else {
+        return;
+      }
     } else {
-      return;
+      // Already rendered — sync any rider that was refunded by the linked
+      // sibling card after this card was first rendered.
+      for (const cr of consumedRiders) {
+        if (!refundedSet.has(cr.id)) continue;
+        const row = el.querySelector?.(`.ace-qol-refund-row[data-rider-id="${cr.id}"]`);
+        if (!row || row.classList.contains("ace-qol-refund-done")) continue;
+        row.classList.add("ace-qol-refund-done");
+        row.innerHTML = `<i class="fas fa-check"></i> ${cr.name} — REFUNDED`;
+      }
     }
 
     el.querySelectorAll?.(".ace-qol-btn-refund")?.forEach(btn => {
+      // Dedupe wiring across V13's renderChatMessage + renderChatMessageHTML
+      if (btn.dataset.aceqolRefundWired === "1") return;
+      btn.dataset.aceqolRefundWired = "1";
+
       btn.addEventListener("click", async () => {
+        if (btn.disabled) return;
+        btn.disabled = true; // optimistic lock against double-click
+
         const riderId = btn.dataset.riderId;
         const actorId = btn.dataset.actorId;
         const resType = btn.dataset.resourceType;
         const resLevel = btn.dataset.resourceLevel ? parseInt(btn.dataset.resourceLevel) : null;
 
+        // Re-read flags fresh in case the linked sibling card refunded
+        // this same rider between render and click.
+        const freshSourceMsgId = message.flags?.[MODULE_ID]?.refundSourceMsgId;
+        const freshSource = freshSourceMsgId ? game.messages?.get(freshSourceMsgId) : null;
+        const freshSelfRefunded = message.flags?.[MODULE_ID]?.refundedRiders ?? [];
+        const freshSourceRefunded = freshSource?.flags?.[MODULE_ID]?.refundedRiders ?? [];
+        const alreadyDone = freshSelfRefunded.includes(riderId) || freshSourceRefunded.includes(riderId);
+
+        if (alreadyDone) {
+          ui.notifications?.info(`ACE QOL: Resource already refunded.`);
+          const row = btn.closest(".ace-qol-refund-row");
+          if (row) {
+            row.classList.add("ace-qol-refund-done");
+            row.innerHTML = `<i class="fas fa-check"></i> REFUNDED`;
+          }
+          return;
+        }
+
         await RiderEngine.refundRiderResource(actorId, resType, resLevel, riderId);
 
-        const existing = message.flags?.[MODULE_ID]?.refundedRiders ?? [];
-        await message.setFlag(MODULE_ID, "refundedRiders", [...existing, riderId]);
+        // Mark refund on THIS message
+        const selfExisting = message.flags?.[MODULE_ID]?.refundedRiders ?? [];
+        if (!selfExisting.includes(riderId)) {
+          await message.setFlag(MODULE_ID, "refundedRiders", [...selfExisting, riderId]);
+        }
 
-        btn.disabled = true;
+        // Mark refund on the linked source message (button card)
+        if (freshSource) {
+          const srcExisting = freshSource.flags?.[MODULE_ID]?.refundedRiders ?? [];
+          if (!srcExisting.includes(riderId)) {
+            await freshSource.setFlag(MODULE_ID, "refundedRiders", [...srcExisting, riderId]);
+          }
+        }
+
+        // Also propagate to any child messages that link back to this one
+        // (case: GM clicks refund on button card → damage card already exists)
+        try {
+          const children = game.messages?.contents?.filter(
+            m => m.flags?.[MODULE_ID]?.refundSourceMsgId === message.id
+          ) ?? [];
+          for (const child of children) {
+            const childExisting = child.flags?.[MODULE_ID]?.refundedRiders ?? [];
+            if (!childExisting.includes(riderId)) {
+              await child.setFlag(MODULE_ID, "refundedRiders", [...childExisting, riderId]);
+            }
+          }
+        } catch (err) {
+          console.warn(`${MODULE_ID} | Refund child-sync failed:`, err);
+        }
+
         btn.closest(".ace-qol-refund-row")?.classList.add("ace-qol-refund-done");
         btn.innerHTML = `<i class="fas fa-check"></i> REFUNDED`;
       });

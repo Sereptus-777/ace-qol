@@ -659,13 +659,26 @@
   min-height: 38px;
 }
 
-/* Left side: dice + modifiers */
+/* Inline-flow row: everything on a single wrapping line so dice flow
+   horizontally (🎲 + 🎲 + 🎲 = 11 radiant) instead of stacking column-style.
+   Used by damage cards built from postDamageCard / merge-card. */
+.ace-qol-dmg-component.ace-qol-dmg-row {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  row-gap: 4px; column-gap: 6px;
+}
+.ace-qol-dmg-component.ace-qol-dmg-row .ace-qol-die {
+  flex-shrink: 0;
+}
+
+/* Left side: dice + modifiers (legacy two-column layout — kept for save cards
+   and post-hit effects, but no longer used by the main damage card rows) */
 .ace-qol-dmg-comp-left {
   display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
   flex: 1; min-width: 0;
 }
 
-/* Right side: big bold type total (e.g., "12 slashing") */
+/* Right side: big bold type total (e.g., "= 12 slashing") */
 .ace-qol-dmg-type-total {
   font-size: 1.5rem; font-weight: 800; letter-spacing: 0.5px;
   text-shadow: 0 0 8px rgba(255, 255, 255, 0.1);
@@ -679,12 +692,12 @@
 
 /* ─── Dice display with PNG images ──────────────────────────────────── */
 .ace-qol-die {
-  display: inline-flex; align-items: flex-start; gap: 6px;
+  display: inline-flex; align-items: center; gap: 4px;
   font-weight: 700;
 }
 
 .ace-qol-die-img {
-  width: 36px; height: 36px; object-fit: contain;
+  width: 30px; height: 30px; object-fit: contain;
   vertical-align: middle; filter: drop-shadow(0 1px 3px rgba(0,0,0,0.6));
 }
 

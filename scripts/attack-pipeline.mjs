@@ -116,6 +116,19 @@ export class AttackPipeline {
     const targets = game.user.targets;
     if (!targets.size) return; // Item.use shim hard-blocks no-target weapons; silent fallback for other paths
 
+    // ── Melee multi-target lockout ──
+    // A melee weapon swings at one creature unless the actor has a cleave-style
+    // feature (Cleave, Great Weapon Master, Whirlwind Attack, etc.). If the GM
+    // or player has multiple tokens targeted by accident, block the attack and
+    // tell them to retarget. Skips when the actor genuinely has multi-target
+    // melee features so Whirlwind/Cleave still work as designed.
+    if (targets.size > 1 && AttackPipeline._isMeleeAttack(item, subject)
+        && !AttackPipeline._actorHasMultiTargetMelee(actor)) {
+      showCenterToast(`Melee attack — only one target allowed`, 2500);
+      this._debug(`Blocked: ${actor.name} melee attack with ${targets.size} targets, no cleave/whirlwind feature`);
+      return false; // Block the roll
+    }
+
     // ── Range check: block attacks on out-of-range targets ──
     const firstTarget = targets.first();
     const rangeCheck = this._checkRange(actor, firstTarget, item);
@@ -792,6 +805,61 @@ export class AttackPipeline {
    *
    * @returns {{ blocked: boolean, distanceFt: number, rangeDesc: string, isRanged: boolean }}
    */
+
+  /**
+   * Detect whether an attack is melee. Checks the activity's actionType first
+   * (mwak/msak), then range.units (touch/melee), then activity range value (≤ 5).
+   * Throw weapons are NOT considered melee here — at long range they're rwak.
+   * @param {Item} item
+   * @param {Activity|object} subject - dnd5e activity (5.x) or null (legacy)
+   * @returns {boolean}
+   */
+  static _isMeleeAttack(item, subject) {
+    try {
+      // Prefer the activity's resolved actionType (it knows about ranged/melee mode)
+      const actionType = subject?.actionType ?? item?.system?.actionType ?? "";
+      if (actionType === "mwak" || actionType === "msak") return true;
+
+      // Activity-level range (dnd5e 5.x)
+      const actRange = subject?.range ?? subject?.system?.range ?? null;
+      if (actRange?.units === "touch" || actRange?.units === "self") return true;
+      if (actRange?.units === "ft" && (actRange?.value ?? 0) <= 5 && (actRange?.value ?? 0) > 0) return true;
+
+      // Item-level range fallback (legacy)
+      const itemRange = item?.system?.range ?? {};
+      if (itemRange.units === "touch") return true;
+      if (itemRange.units === "ft" && (itemRange.value ?? 0) <= 5 && (itemRange.value ?? 0) > 0) return true;
+
+      return false;
+    } catch (err) {
+      console.warn(`ace-qol | _isMeleeAttack failed:`, err);
+      return false;
+    }
+  }
+
+  /**
+   * Detect whether the attacker has a multi-target melee feature that legitimately
+   * lets them swing at more than one creature on a single attack action.
+   * Currently recognizes: Cleave / Great Weapon Master, Whirlwind Attack,
+   * Polearm Master cleave variants, Crusher/Slasher feats with multi-tag, and
+   * generic "multiattack" features on monstrous NPCs.
+   * @param {Actor} actor
+   * @returns {boolean}
+   */
+  static _actorHasMultiTargetMelee(actor) {
+    if (!actor?.items) return false;
+    for (const item of actor.items) {
+      const name = (item.name ?? "").toLowerCase();
+      // Cleave-style features that explicitly let one swing hit multiple foes
+      if (name.includes("cleave") || name.includes("cleaving")) return true;
+      if (name.includes("great weapon master")) return true;
+      if (name.includes("whirlwind")) return true;
+      // Note: "Multiattack" is NOT included — it means "make N attack rolls
+      // sequentially, each on its own target", not "one attack hits N targets".
+    }
+    return false;
+  }
+
   _checkRange(attackerActor, targetToken, item) {
     const atkToken = attackerActor.getActiveTokens?.()?.[0]
                   ?? canvas.tokens.controlled?.[0];
