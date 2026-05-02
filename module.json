@@ -2,7 +2,7 @@
   "id": "ace-qol",
   "title": "ACE: Quality of Life — Combat Automation Engine",
   "description": "Comprehensive D&D 5e combat automation. Attack resolution, damage separation by type, save automation, target state assessment, concentration tracking, and extended Active Effects — all in one module, everything ON by default.",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "compatibility": {
     "minimum": "12.0.0",
     "verified": "13",

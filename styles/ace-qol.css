@@ -502,7 +502,7 @@
   display: flex; align-items: center; gap: 6px;
 }
 .ace-qol-dmg-tgt-img {
-  width: 24px; height: 24px; border-radius: 50%;
+  width: 26px; height: 26px; border-radius: 50%;
   border: 1px solid rgba(212,175,55,0.4);
   box-shadow: 0 0 3px rgba(212,175,55,0.15);
   object-fit: cover; cursor: pointer;
@@ -565,11 +565,11 @@
 /* ─── Per-type damage breakdown inside target rows ─────────────────── */
 .ace-qol-dmg-type-breakdown {
   display: flex; flex-direction: column; gap: 1px;
-  padding: 3px 10px 3px 36px; font-size: 0.8rem;
+  padding: 3px 10px 3px 36px; font-size: 0.84rem;
 }
 .ace-qol-dmg-type-line {
   display: flex; align-items: center; gap: 6px;
-  font-size: 0.8rem; font-weight: 600;
+  font-size: 0.84rem; font-weight: 600;
 }
 .ace-qol-dmg-type-clickable {
   cursor: pointer; padding: 3px 8px; border-radius: 4px;
@@ -671,6 +671,18 @@
   flex-shrink: 0;
 }
 
+/* Save-results damage chip: keep the "25 necrotic" total as one unbreakable
+   unit so the damage-type word doesn't wrap char-by-char ("ne / cro / tic")
+   when the chat panel is narrow. The parent has flex-wrap so the whole chip
+   moves to a new line if it can't fit alongside the dice. */
+.ace-qol-dmg-value-chip {
+  font-size: 1.1rem; font-weight: 800; letter-spacing: 0.4px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  padding: 0 4px;
+  text-shadow: 0 0 6px currentColor, 0 1px 2px rgba(0,0,0,0.6);
+}
+
 /* Left side: dice + modifiers (legacy two-column layout — kept for save cards
    and post-hit effects, but no longer used by the main damage card rows) */
 .ace-qol-dmg-comp-left {
@@ -678,15 +690,15 @@
   flex: 1; min-width: 0;
 }
 
-/* Right side: big bold type total (e.g., "= 12 slashing") */
+/* Right side: big bold type total (e.g., "= 12 slashing") — shrunk ~20% */
 .ace-qol-dmg-type-total {
-  font-size: 1.5rem; font-weight: 800; letter-spacing: 0.5px;
+  font-size: 1.2rem; font-weight: 800; letter-spacing: 0.5px;
   text-shadow: 0 0 8px rgba(255, 255, 255, 0.1);
   white-space: nowrap; text-align: right;
   flex-shrink: 0;
 }
 .ace-qol-dmg-type-num {
-  font-size: 1.7rem;
+  font-size: 1.35rem;
   text-shadow: 0 0 12px currentColor, 0 1px 2px rgba(0,0,0,0.8);
 }
 
@@ -737,6 +749,21 @@
 
 .ace-qol-dmg-equals {
   color: #666; margin: 0 4px; font-size: 0.8rem;
+}
+
+/* ─── Subtle in-fiction flavor hint (player-visible) ─────────────────────
+   Shown at the bottom of a damage target row when the target has an
+   immunity / resistance / vulnerability for one of the damage types in
+   the swing. Replaces the old definitive IMMUNE/RESIST/VULN badges for
+   non-GM viewers. The truth badges still render for the GM, hidden via
+   `.ace-qol-dmg-truth-only` for everyone else. */
+.ace-qol-dmg-flavor-hint {
+  font-style: italic; font-size: 0.78rem;
+  color: #b8a87a;
+  padding: 2px 10px 4px 36px;
+  text-shadow: 0 0 6px rgba(212,175,55,0.15);
+  letter-spacing: 0.2px;
+  opacity: 0.85;
 }
 
 .ace-qol-dmg-crit-label {

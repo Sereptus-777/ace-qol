@@ -1350,6 +1350,55 @@ export class ConditionLibrary {
   }
 
   /**
+   * Apply a condition to an actor by name. Handles the exhaustion special
+   * case correctly — exhaustion is a 1-6 LEVEL counter in 5e, not a binary
+   * status, so a simple `toggleStatusEffect("exhaustion", {active:true})`
+   * always sets it to level 1 (or removes it if already on). Sword of
+   * Sharpness's "gains 1 Exhaustion level" rider needs INCREMENT, not toggle.
+   *
+   * For all other conditions, falls through to the standard Foundry
+   * `actor.toggleStatusEffect(key, {active:true})` call.
+   *
+   * @param {Actor} actor
+   * @param {string} conditionKey - lowercase condition name (e.g., "prone",
+   *   "frightened", "exhaustion")
+   * @returns {Promise<{ok: boolean, applied: string, level?: number}>}
+   */
+  static async applyByName(actor, conditionKey) {
+    if (!actor || !conditionKey) return { ok: false, applied: null };
+    const key = String(conditionKey).toLowerCase().trim();
+
+    // ── Exhaustion special case ──
+    if (key === "exhaustion" || key.startsWith("exhaustion ")) {
+      try {
+        const current = Number(actor.system?.attributes?.exhaustion ?? 0);
+        // Detect explicit level if the condition says "exhaustion 2", "exhaustion level 3" etc.
+        const levelMatch = key.match(/exhaustion(?:\s+level)?\s*(\d+)/);
+        const requestedLevel = levelMatch ? parseInt(levelMatch[1], 10) : (current + 1);
+        const newLevel = Math.min(6, Math.max(0, requestedLevel));
+        if (newLevel === current) return { ok: true, applied: "exhaustion", level: newLevel };
+        await actor.update({ "system.attributes.exhaustion": newLevel });
+        console.log(`${MODULE_ID} | Exhaustion: ${actor.name} ${current} → ${newLevel}`);
+        return { ok: true, applied: "exhaustion", level: newLevel };
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Exhaustion increment failed for ${actor.name}:`, err);
+        return { ok: false, applied: null };
+      }
+    }
+
+    // ── Standard binary status condition ──
+    try {
+      if (typeof actor.toggleStatusEffect === "function") {
+        await actor.toggleStatusEffect(key, { active: true });
+      }
+      return { ok: true, applied: key };
+    } catch (err) {
+      console.warn(`${MODULE_ID} | toggleStatusEffect failed for "${key}" on ${actor.name}:`, err);
+      return { ok: false, applied: null };
+    }
+  }
+
+  /**
    * Debug logging helper.
    * @private
    */

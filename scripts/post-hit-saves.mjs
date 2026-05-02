@@ -8,6 +8,8 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
 import { DescriptionParser } from "./description-parser.mjs";
 import { DamageConstants } from "./damage-engine.mjs";
+import { DamageCalculator } from "./damage-calculator.mjs";
+import { ConditionLibrary } from "./condition-library.mjs";
 
 const PHYSICAL_TYPES = new Set(["bludgeoning", "piercing", "slashing"]);
 
@@ -34,10 +36,13 @@ export class PostHitSaves {
     const hitTargets = hits.filter(h => h.hitResult === "hit" || h.hitResult === "critical");
     if (!hitTargets.length) return;
 
-    // ── Post-hit save required ──
-    if (parsed.saves.length) {
-      const save = parsed.saves[0];
-
+    // ── Post-hit save(s) required ──
+    // Some weapons have MULTIPLE independent saves (Hammer of Thunderbolts:
+    // DC 17 CON instant-death vs giant + DC 17 CON stun in 30-ft AOE).
+    // Iterate every parsed save so each posts its own card. The creature-type
+    // / damage-immunity / condition-immunity gates inside the loop filter
+    // targets per-save, so a save that doesn't apply to anyone simply skips.
+    for (const save of parsed.saves) {
       const targetData = hitTargets.map(h => {
         const scene = game.scenes.get(h.sceneId) ?? canvas.scene;
         const tokenDoc = scene?.tokens?.get(h.targetToken?.document?.id ?? h.tokenDocId);
@@ -55,15 +60,271 @@ export class PostHitSaves {
         };
       }).filter(t => t.targetActor);
 
-      if (!targetData.length) return;
+      // ── Creature-type gating ──
+      // If the save is conditional on a target type (e.g., "Giant Slayer
+      // Spear: vs Giant the target must make a DC 15 STR save"), only fire
+      // the save card against targets whose creature type matches. A Wolf
+      // hit by a Giant Slayer should NOT roll a save — the qualifier is
+      // an integral part of the effect, not a generic on-hit rider.
+      let filteredTargets = targetData;
+      const skippedNotes = [];
 
-      await PostHitSaves.postSaveCard(item, actor, targetData, {
+      if (save.requiredCreatureType) {
+        const required = save.requiredCreatureType.toLowerCase();
+        filteredTargets = filteredTargets.filter(t => {
+          const td = t.targetActor?.system?.details?.type;
+          const tType = (td?.value ?? "").toLowerCase();
+          const tSubtype = (td?.subtype ?? "").toLowerCase();
+          const matches = tType === required
+                       || tType.includes(required)
+                       || tSubtype.includes(required);
+          if (!matches) skippedNotes.push({ name: t.name, reason: `not a ${required}` });
+          return matches;
+        });
+      }
+
+      // ── Damage-type immunity gating ──
+      // If the save's failure effect is purely damage of one or more types
+      // (e.g., "DC 14 CON save or take 2d6 cold damage") AND the target is
+      // immune to ALL of those damage types, the save is meaningless — the
+      // failure does nothing, so don't make them roll. If the failure also
+      // includes a condition (prone, paralyzed, etc.), the save still
+      // matters because the condition applies regardless of damage immunity.
+      const failDamageTypes = (save.failEffect ?? [])
+        .filter(e => e?.type === "damage" && typeof e.damageType === "string")
+        .map(e => e.damageType.toLowerCase());
+      const failConditions = (save.failEffect ?? [])
+        .filter(e => e?.type === "condition" && typeof e.condition === "string")
+        .map(e => e.condition.toLowerCase());
+      const hasNonDamageNonConditionFail = (save.failEffect ?? [])
+        .some(e => e?.type && e.type !== "damage" && e.type !== "condition");
+
+      if (failDamageTypes.length > 0 && failConditions.length === 0 && !hasNonDamageNonConditionFail) {
+        filteredTargets = filteredTargets.filter(t => {
+          const mods = DamageCalculator.getTargetDamageModifiers(t.targetActor, item);
+          const allImmune = failDamageTypes.every(dt => mods[dt]?.modifier === "immune");
+          if (allImmune) {
+            skippedNotes.push({
+              name: t.name,
+              reason: `immune to ${failDamageTypes.join("/")}`,
+            });
+            return false;
+          }
+          return true;
+        });
+      }
+
+      // ── Condition-immunity gating ──
+      // If the save's failure effect is purely conditions (e.g., "DC 17 WIS
+      // save or be frightened") AND the target is immune to ALL of them,
+      // the save is meaningless — the condition can't apply. Mace of Terror
+      // vs a fey-immune-to-frightened target should not roll. Same shape as
+      // the damage-immunity gate above. Targets get filtered out and the GM
+      // gets a transparency note explaining why.
+      // Reads `actor.system.traits.ci.value` (Condition Immunities, Foundry
+      // dnd5e standard).
+      if (failConditions.length > 0 && failDamageTypes.length === 0 && !hasNonDamageNonConditionFail) {
+        filteredTargets = filteredTargets.filter(t => {
+          const condImmunities = new Set((t.targetActor?.system?.traits?.ci?.value ?? []).map(s => String(s).toLowerCase()));
+          const allImmune = failConditions.every(cond => condImmunities.has(cond));
+          if (allImmune) {
+            skippedNotes.push({
+              name: t.name,
+              reason: `immune to ${failConditions.join("/")}`,
+            });
+            return false;
+          }
+          return true;
+        });
+      }
+
+      // ── GM-only transparency note (whispered) ──
+      // Tells the GM exactly WHY a target was filtered out so the missing
+      // save card doesn't look like a silent bug. NOT public — players see
+      // the subtle italic flavor hint on the damage card instead, which
+      // gives them a discovery prompt without revealing immunities verbatim.
+      if (skippedNotes.length && game.user.isGM) {
+        try {
+          const lines = skippedNotes.map(s =>
+            `<strong>${foundry.utils.escapeHTML(s.name)}</strong> — ${foundry.utils.escapeHTML(s.reason)}`
+          ).join("<br>");
+          await ChatMessage.create({
+            content: `<div class="ace-qol-save-suppressed" style="background:#1a1a1f;border-left:3px solid #d4af37;padding:6px 10px;border-radius:3px;color:#aaa;font-size:11px;">
+              <div style="color:#d4af37;font-weight:700;margin-bottom:3px;">🛡 ${foundry.utils.escapeHTML(item.name)} — save not required (GM)</div>
+              <div>${lines}</div>
+            </div>`,
+            whisper: [game.user.id],
+          });
+        } catch (_) { /* note is informational only */ }
+      }
+
+      if (!filteredTargets.length) {
+        console.log(`${MODULE_ID} | PostHitSave skipped (this save) — no eligible targets after creature-type/immunity filtering`);
+        continue; // try the next save in parsed.saves (multi-save weapons)
+      }
+
+      await PostHitSaves.postSaveCard(item, actor, filteredTargets, {
         save,
         effectTable: parsed.effectTable,
         bonusDamage: parsed.bonusDamage,
         conditions: parsed.conditions,
       });
     }
+
+    // ── Secondary-roll sever rider (Sword of Sharpness, Vorpal Sword) ──
+    // After the save card(s), fire the sever mechanic for any target hit
+    // by a NATURAL 20 attack. Rolls a fresh d20 per target; on a 20, posts
+    // a SEVERED chat card with creature-shape immunity awareness (no head
+    // → can't sever head, no limbs → can't sever limbs, etc.).
+    if (parsed.severRider) {
+      try {
+        await PostHitSaves._runSeverRiders(item, actor, hitTargets, parsed.severRider);
+      } catch (err) {
+        console.error(`${MODULE_ID} | Sever rider failed:`, err);
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Sever Rider — secondary-roll mechanic (Sword of Sharpness / Vorpal Sword)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * For every target hit by a natural 20 attack, roll a secondary d20.
+   * On a 20, post a SEVERED card (limb / head / body part). On any other
+   * result, post a near-miss card with the roll value so the table sees
+   * the d20 was attempted.
+   *
+   * Vorpal-style head-sever respects creature-shape immunity: if the target
+   * has no head (oozes, swarms, certain elementals) the rider falls back to
+   * the "lop off a portion of body" wording. Similarly, brainless creatures
+   * can't be killed outright by head sever — we still announce the wound
+   * but mark it as "no instant kill applied".
+   *
+   * @param {Item} item
+   * @param {Actor} actor
+   * @param {Array} hitTargets - the same hits[] used by checkPostHitEffects
+   * @param {object} severRider - { triggerOn, secondaryDie, secondaryThreshold, severType, description }
+   */
+  static async _runSeverRiders(item, actor, hitTargets, severRider) {
+    if (!severRider || !hitTargets?.length) return;
+    const threshold = severRider.secondaryThreshold ?? 20;
+
+    // Filter to natural-20 hits only — RAW these riders chain off "roll a 20
+    // on the attack roll". Expanded crit ranges (Champion 19-20) do NOT
+    // qualify — only literal d20 = 20.
+    const nat20Hits = hitTargets.filter(h => (h.naturalRoll ?? 0) === 20);
+    if (!nat20Hits.length) return;
+
+    for (const hit of nat20Hits) {
+      const scene = game.scenes.get(hit.sceneId) ?? canvas.scene;
+      const tokenDoc = scene?.tokens?.get(hit.tokenDocId ?? hit.targetToken?.document?.id);
+      const targetActor = tokenDoc?.actor ?? game.actors.get(hit.actorId ?? hit.targetActor?.id);
+      if (!targetActor) continue;
+
+      // Roll the secondary d20 with DSN animation
+      const secondaryRoll = new Roll("1d20");
+      await secondaryRoll.evaluate();
+      try {
+        if (game.dice3d) await game.dice3d.showForRoll(secondaryRoll, game.user, true);
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Sever roll DSN display failed:`, err);
+      }
+      const rolled = secondaryRoll.total;
+      const severed = rolled >= threshold;
+
+      // Determine creature-shape compatibility for the sever target part.
+      // The dnd5e creature type isn't authoritative for head/limb presence,
+      // so we use simple heuristics on type/subtype/name. False positives are
+      // harmless — falls back to "body" wording.
+      const shape = PostHitSaves._creatureShapeOf(targetActor);
+      let actualSeverType = severRider.severType;
+      if (severRider.severType === "head" && !shape.hasHead) actualSeverType = "body";
+      if (severRider.severType === "limb" && !shape.hasLimbs) actualSeverType = "body";
+
+      // Post the result card. ALWAYS public so the player at the table sees
+      // the climactic roll (this is the iconic Sword of Sharpness moment).
+      const targetName = hit.name ?? targetActor.name ?? "Target";
+      const itemName = item.name ?? "Weapon";
+      const severNoun = { head: "head", limb: "limb", body: "portion of body" }[actualSeverType] ?? "limb";
+
+      let cardHtml;
+      if (severed) {
+        cardHtml = `
+          <div class="ace-qol-sever-card ace-qol-sever-success" style="background:linear-gradient(180deg,#2a0a0a 0%,#3a0e0e 50%,#2a0a0a 100%); border:2px solid #d4af37; border-radius:6px; padding:10px 12px; box-shadow:0 0 12px rgba(212,175,55,0.3);">
+            <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
+              <i class="fas fa-skull" style="font-size:20px; color:#d4af37;"></i>
+              <strong style="color:#ffd87a; font-size:14px; text-shadow:0 0 8px rgba(255,200,80,0.4);">
+                ${foundry.utils.escapeHTML(itemName)} — SEVERED
+              </strong>
+            </div>
+            <div style="color:#cfcfd0; font-size:12px; line-height:1.45;">
+              <strong>Sever roll:</strong> <span style="color:#ffd87a; font-weight:700;">${rolled}</span> (needed ${threshold})<br>
+              <strong>${foundry.utils.escapeHTML(targetName)}</strong> loses a ${severNoun}.
+              ${actualSeverType !== severRider.severType ? ` <em style="color:#aaa;">(creature has no ${severRider.severType} — ${severNoun} severed instead)</em>` : ""}
+            </div>
+            <div style="color:#aaa; font-size:11px; margin-top:6px; font-style:italic; border-top:1px solid rgba(212,175,55,0.2); padding-top:6px;">
+              GM: adjudicate the lasting effect (loss of attribute, halved speed, can't wield two weapons, etc.).
+            </div>
+          </div>
+        `;
+        console.log(`${MODULE_ID} | SEVER: ${targetName} loses a ${severNoun} from ${itemName} (rolled ${rolled})`);
+      } else {
+        cardHtml = `
+          <div class="ace-qol-sever-card ace-qol-sever-miss" style="background:#1a1a1f; border-left:3px solid #555; padding:6px 10px; border-radius:3px; color:#aaa; font-size:11px;">
+            <i class="fas fa-dice-d20" style="color:#888;"></i>
+            <strong style="color:#ccc;">${foundry.utils.escapeHTML(itemName)}</strong> — sever roll: <span style="color:#ccc; font-weight:700;">${rolled}</span> (needed ${threshold}). <em>${foundry.utils.escapeHTML(targetName)}'s ${severNoun} stays attached.</em>
+          </div>
+        `;
+        console.log(`${MODULE_ID} | SEVER MISS: ${targetName} on ${itemName} — rolled ${rolled}, needed ${threshold}`);
+      }
+
+      await ChatMessage.create({
+        content: cardHtml,
+        speaker: ChatMessage.getSpeaker({ actor }),
+        flags: {
+          [MODULE_ID]: {
+            type: "severResult",
+            actorId: actor.id,
+            itemUuid: item.uuid,
+            targetActorId: targetActor.id,
+            severed,
+            rolled,
+            threshold,
+            severType: actualSeverType,
+          },
+        },
+      });
+    }
+  }
+
+  /**
+   * Best-effort creature-shape detection for sever-target compatibility.
+   * Returns {hasHead, hasLimbs}. Defaults to true/true for unknowns.
+   *
+   * Used so Vorpal Sword's "sever the head" doesn't try to sever the head
+   * of a Gelatinous Cube or a Swarm of Insects (no central head).
+   */
+  static _creatureShapeOf(actor) {
+    const type = String(actor?.system?.details?.type?.value ?? "").toLowerCase();
+    const subtype = String(actor?.system?.details?.type?.subtype ?? "").toLowerCase();
+    const name = String(actor?.name ?? "").toLowerCase();
+
+    // Headless / shapeless creatures
+    const headless = ["ooze", "plant", "elemental"];
+    const swarmKeyword = subtype.includes("swarm") || name.includes("swarm");
+    const isOoze = type === "ooze" || /\b(?:ooze|jelly|cube|pudding|slime)\b/.test(name);
+    const isFormless = headless.includes(type) || swarmKeyword || isOoze;
+
+    // Limbless creatures — most oozes, swarms, snakes, eyes, slimes
+    const limbless = isFormless
+      || /\b(?:snake|serpent|naga|wyrm|worm|leech|eye|beholder|tendril)\b/.test(name)
+      || subtype.includes("snake") || subtype.includes("serpent");
+
+    return {
+      hasHead:  !isFormless,
+      hasLimbs: !limbless,
+    };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -200,6 +461,40 @@ export class PostHitSaves {
         passed = saveTotal >= save.dc;
       }
 
+      // ── Legendary Resistance check ──
+      // If the target failed AND it's a legendary creature with charges
+      // remaining, the reaction engine may flip the result to a pass (and
+      // burn one LR charge). Mirrors the spell-save handling in
+      // save-engine.mjs:1256-1285. Without this, bosses can't burn LR to
+      // shrug off Giant Slayer prone, Sword of Wounding, Mace of Disruption
+      // destroy, Hammer of Thunderbolts stun — design-breaking for tier 3+.
+      let usedLegendaryResistance = false;
+      if (!passed && !isAutoFail) {
+        const reactionEng = game.aceQol?.reactionEngine;
+        if (reactionEng) {
+          try {
+            const enriched = [{
+              name:    tgt.name,
+              actorId: tgt.actorId,
+              actor:   targetActor,
+              ability: save.ability,
+              dc:      save.dc,
+              total:   saveTotal,
+              saved:   passed,
+              passed:  passed,
+            }];
+            const modified = await reactionEng.checkPostSaveReactions(enriched);
+            if (modified?.[0]?.legendaryResistance && modified[0].saved) {
+              passed = true;
+              usedLegendaryResistance = true;
+              console.log(`${MODULE_ID} | PostHitSave: ${tgt.name} burned Legendary Resistance to pass`);
+            }
+          } catch (err) {
+            console.error(`${MODULE_ID} | Post-save reaction check failed for ${tgt.name}:`, err);
+          }
+        }
+      }
+
       // ── Determine outcome ──
       const result = {
         name: tgt.name,
@@ -211,6 +506,7 @@ export class PostHitSaves {
         passed,
         isAutoFail,
         saveRoll,
+        legendaryResistance: usedLegendaryResistance,
         effects: [],
       };
 
@@ -250,12 +546,13 @@ export class PostHitSaves {
                   console.log(`${MODULE_ID} | POST-HIT TABLE: ${tgt.name} IMMUNE to "${fx.condition}" — skipped`);
                 } else {
                   result.effects.push({ type: "condition", condition: fx.condition });
-                  if (autoApply) {
-                    try {
-                      await tokenDoc?.actor?.toggleStatusEffect?.(fx.condition, { active: true });
-                      console.log(`${MODULE_ID} | POST-HIT TABLE: applied condition "${fx.condition}" to ${tgt.name}`);
-                    } catch (err) {
-                      console.warn(`${MODULE_ID} | Could not apply ${fx.condition}:`, err);
+                  if (autoApply && tokenDoc?.actor) {
+                    // Use ConditionLibrary.applyByName so exhaustion correctly
+                    // INCREMENTS the actor's level counter rather than toggling
+                    // the status off/on (toggle would always set level=1).
+                    const r = await ConditionLibrary.applyByName(tokenDoc.actor, fx.condition);
+                    if (r.ok) {
+                      console.log(`${MODULE_ID} | POST-HIT TABLE: applied "${fx.condition}"${r.level !== undefined ? ` (level ${r.level})` : ""} to ${tgt.name}`);
                     }
                   }
                 }
@@ -275,11 +572,13 @@ export class PostHitSaves {
               console.log(`${MODULE_ID} | ${tgt.name} is IMMUNE to ${cond.condition} — skipped`);
             } else {
               result.effects.push({ type: "condition", condition: cond.condition });
-              if (autoApply) {
-                try {
-                  await tokenDoc?.actor?.toggleStatusEffect?.(cond.condition, { active: true });
-                } catch (err) {
-                  console.warn(`${MODULE_ID} | Could not apply ${cond.condition}:`, err);
+              if (autoApply && tokenDoc?.actor) {
+                // Routes through ConditionLibrary so exhaustion correctly
+                // INCREMENTS rather than toggles. Other conditions fall
+                // through to a normal toggleStatusEffect call.
+                const r = await ConditionLibrary.applyByName(tokenDoc.actor, cond.condition);
+                if (r.ok && r.level !== undefined) {
+                  console.log(`${MODULE_ID} | Exhaustion increment for ${tgt.name} (level ${r.level})`);
                 }
               }
             }
@@ -436,10 +735,16 @@ export class PostHitSaves {
             }
             if (fxDice.length) fxDieDisplay = fxDice.join(' <span class="ace-qol-dmg-plus">+</span> ');
           }
-          effectsHtml += `<div class="ace-qol-dmg-component" style="padding-left: 0;">
+          // Use the shared horizontal-flow row class so dice + total wrap
+          // gracefully on narrow chat panels (otherwise the damage type word
+          // wraps character-by-character — "ne / cro / tic"). The
+          // ace-qol-dmg-row class allows the chip to flow to a new line as a
+          // whole unit when space is tight, and the total chip itself has
+          // white-space: nowrap so it stays intact.
+          effectsHtml += `<div class="ace-qol-dmg-component ace-qol-dmg-row" style="padding-left: 0;">
             ${fxDieDisplay}
             <span class="ace-qol-dmg-equals">=</span>
-            <span class="ace-qol-dmg-value" style="color:${color}">${displayTotal} ${fx.damageType}</span>
+            <span class="ace-qol-dmg-value ace-qol-dmg-value-chip" style="color:${color}">${displayTotal} ${fx.damageType}</span>
             ${modBadge}
           </div>`;
         }

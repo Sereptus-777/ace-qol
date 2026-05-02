@@ -250,6 +250,14 @@ export class DamageCalculator {
         if (parsed.bonusDamage.length > 0) {
           for (const bd of parsed.bonusDamage) {
             if (!bd.formula) continue;
+            // ── Crit-only gate ──
+            // Some creature-trigger weapons gate bonus damage behind a crit
+            // (e.g., Mace of Smiting "+2d6 on crit, +4d6 vs construct on crit").
+            // If the description marks this bonus as crit-only and we didn't
+            // crit, skip — otherwise we'd add 2d6 to every hit on the trigger
+            // creature, which is the production-blocking Vicious-line bug.
+            if (bd.triggersOnCrit && !isCrit) continue;
+
             const dmgType = bd.damageType ?? components[0]?.type ?? "untyped";
             const result = await DamageCalculator.rollWithCrit(bd.formula, rollData, isCrit, critRule, `vs ${triggerType}`);
             components.push({
@@ -275,6 +283,33 @@ export class DamageCalculator {
         if (rolled) {
           console.log(`${MODULE_ID} | Creature bonus: ${item.name} deals extra damage to ${triggerType} (target: ${targetType})`);
         }
+      }
+    }
+
+    // ── Standalone bonus damage (no creature-trigger gate) ──
+    // For weapons with a description like Vicious's "When you score a critical
+    // hit with this weapon, the target takes an extra 2d6 damage of the
+    // weapon's type." — there's no creature-type gate, just a crit gate.
+    // We only run this path when the bonus is explicitly marked as
+    // triggersOnCrit AND we actually crit, AND the damage type isn't already
+    // gated behind a save (which would be handled by post-hit-saves). This
+    // serves as a safety net for items that have description-only bonuses
+    // (no activity-level damage parts) — like AI-generated or homebrew items.
+    if (!parsed.creatureTrigger && Array.isArray(parsed.bonusDamage) && parsed.bonusDamage.length > 0) {
+      for (const bd of parsed.bonusDamage) {
+        if (!bd.formula) continue;
+        if (!bd.triggersOnCrit) continue;     // only crit-gated bonuses on this path
+        if (!isCrit) continue;                 // safety: must actually be a crit
+        if (conditionalDamageTypes.has(bd.damageType)) continue; // save-gated → handled in post-hit
+        const baseType = components[0]?.type ?? "untyped";
+        const dmgType = (bd.damageType && bd.damageType !== "weapon") ? bd.damageType : baseType;
+        const result = await DamageCalculator.rollWithCrit(bd.formula, rollData, isCrit, critRule, "Crit Bonus");
+        components.push({
+          name: `${item.name} (crit bonus)`,
+          ...result,
+          type: dmgType,
+        });
+        console.log(`${MODULE_ID} | Crit bonus: ${item.name} +${bd.formula} ${dmgType}`);
       }
     }
 

@@ -91,15 +91,29 @@ export class VisibilityEngine {
    * @param {HTMLElement|jQuery} html
    */
   static filterMessageContent(message, html) {
-    // GM sees everything — no filtering
-    if (game.user.isGM) return;
-
     // Only filter our own messages (ones with ace-qol flags)
     const flags = message.flags?.[MODULE_ID];
     if (!flags?.type) return;
 
     const el = html instanceof HTMLElement ? html : html?.[0] ?? html;
     if (!el?.querySelector) return;
+
+    // GM branch: hide PLAYER-ONLY flavor elements (the GM doesn't need a
+    // discovery hint — they already see the IMMUNE / RESIST / VULN truth
+    // badges and know the target's defensive profile). Keep everything else.
+    if (game.user.isGM) {
+      try {
+        for (const node of el.querySelectorAll(".ace-qol-dmg-flavor-hint")) {
+          node.style.display = "none";
+        }
+        for (const node of el.querySelectorAll(".ace-qol-dmg-player-only")) {
+          node.style.display = "none";
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | GM-only player-element hide failed:`, err);
+      }
+      return;
+    }
 
     // ── Determine if the source actor is an NPC ──
     const actorId = flags.actorId;
@@ -114,7 +128,19 @@ export class VisibilityEngine {
       isNPC = speakerActor?.type === "npc";
     }
 
-    // Only filter NPC rolls
+    // ── Truth-only stripping ALWAYS runs (regardless of NPC status) ──
+    // A player attacking an NPC produces a damage card whose source actor is
+    // the PLAYER. We still need to hide the IMMUNE/RESIST/VULN badges from
+    // OTHER players so they can't see the target's resistance profile.
+    // This needs to happen before the NPC-only short-circuit below.
+    try {
+      VisibilityEngine._hideTruthOnly(el);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Truth-only filter failed:`, err);
+    }
+
+    // Only the broader NPC-roll filtering (hide totals, mask DCs, etc.)
+    // requires the source to be an NPC. Skip the rest for player rolls.
     if (!isNPC) return;
 
     // ── Apply filters based on message type and settings ──
@@ -136,8 +162,32 @@ export class VisibilityEngine {
       // ── Hide NPC names if configured ──
       VisibilityEngine._filterNPCNames(el, flags);
 
+      // (Truth-only stripping was already applied at the top of this method
+      // — see the comment above the early NPC-return.)
+
     } catch (err) {
       console.warn(`${MODULE_ID} | Visibility filter failed:`, err);
+    }
+  }
+
+  /**
+   * Strip GM-truth elements from a player's view. Two passes:
+   *   1. `.ace-qol-dmg-truth-only` → display:none on individual badges/spans
+   *   2. `.ace-qol-dmg-truth-row` → display:none on entire damage rows
+   *      (used for IMMUNE rows so players don't see "0 cold" lines that
+   *      would confirm the resistance profile)
+   *
+   * The flavor hint added to per-target rows (`.ace-qol-dmg-flavor-hint`)
+   * is intentionally NOT hidden — it's the in-fiction substitute for the
+   * truth badges and gives players a discovery prompt.
+   */
+  static _hideTruthOnly(el) {
+    if (!el?.querySelectorAll) return;
+    for (const node of el.querySelectorAll(".ace-qol-dmg-truth-only")) {
+      node.style.display = "none";
+    }
+    for (const row of el.querySelectorAll(".ace-qol-dmg-truth-row")) {
+      row.style.display = "none";
     }
   }
 

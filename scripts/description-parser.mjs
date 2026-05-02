@@ -80,6 +80,9 @@ export class DescriptionParser {
       /** Half damage on successful save */
       halfOnSave: DescriptionParser._parseHalfOnSave(lower),
 
+      /** Secondary-roll sever rider (Sword of Sharpness, Vorpal Sword) */
+      severRider: DescriptionParser._parseSeverRider(text, lower),
+
       /** Raw text for reference */
       rawText: text,
     };
@@ -112,11 +115,13 @@ export class DescriptionParser {
       if (ability && dc > 0 && !seen.has(`${ability}-${dc}`)) {
         seen.add(`${ability}-${dc}`);
         const afterText = text.slice(match.index + match[0].length, match.index + match[0].length + 300).toLowerCase();
+        const requiredCreatureType = DescriptionParser._detectCreatureTypeQualifier(text, match.index);
         saves.push({
           dc, ability,
           abilityLabel: abilityRaw.charAt(0).toUpperCase() + abilityRaw.slice(1),
           failEffect: DescriptionParser._parseFailEffect(afterText),
           perHit: lower.includes("must succeed") || lower.includes("target must"),
+          requiredCreatureType,
         });
       }
     }
@@ -130,16 +135,57 @@ export class DescriptionParser {
       if (ability && dc > 0 && !seen.has(`${ability}-${dc}`)) {
         seen.add(`${ability}-${dc}`);
         const afterText = text.slice(match.index + match[0].length, match.index + match[0].length + 300).toLowerCase();
+        const requiredCreatureType = DescriptionParser._detectCreatureTypeQualifier(text, match.index);
         saves.push({
           dc, ability,
           abilityLabel: match[2],
           failEffect: DescriptionParser._parseFailEffect(afterText),
           perHit: lower.includes("must succeed") || lower.includes("target must"),
+          requiredCreatureType,
         });
       }
     }
 
     return saves;
+  }
+
+  /**
+   * Detect whether a save match is gated to a specific creature type.
+   *
+   * Slayer-style weapons describe their save effects inside conditional
+   * sentences like:
+   *   "On a hit against a Giant, the target must make a DC 15 Strength save..."
+   *   "If you hit a fiend, it must succeed on a DC 14 Wisdom saving throw..."
+   *   "Whenever this weapon damages a Dragon, it makes a DC 13 CON save..."
+   *
+   * If we don't track the qualifier, the save fires against every hit creature
+   * — which is the bug we just patched (Giant Slayer Spear forcing a STR save
+   * on a Wolf). Looks ~250 chars before AND ~150 chars after the save match
+   * for any creature-type word; returns the matched type (lowercase) or null.
+   *
+   * @param {string} fullText - Full description text
+   * @param {number} matchIdx - Character index where the save pattern matched
+   * @returns {string|null} matched creature type (e.g. "giant"), or null if unconditional
+   */
+  static _detectCreatureTypeQualifier(fullText, matchIdx) {
+    if (!fullText || typeof matchIdx !== "number") return null;
+    const before = fullText.slice(Math.max(0, matchIdx - 250), matchIdx).toLowerCase();
+    const after  = fullText.slice(matchIdx, matchIdx + 150).toLowerCase();
+    const window = before + " " + after;
+
+    // Patterns that scope a save to a creature type. Looks for any of the
+    // standard 5e types preceded by a conditional/qualifier phrase.
+    for (const type of CREATURE_TYPES) {
+      const patterns = [
+        new RegExp(`(?:against|hit|hits|hitting|strike|strikes|striking|attack|attacks|attacking|damage|damages|damaging)\\s+(?:a|an|the)?\\s*${type}s?\\b`, "i"),
+        new RegExp(`if\\s+(?:the\\s+)?target\\s+is\\s+(?:a|an|the)?\\s*${type}s?\\b`, "i"),
+        new RegExp(`when\\s+(?:you\\s+)?(?:hit|strike|attack|damage)\\s+(?:a|an|the)?\\s*${type}s?\\b`, "i"),
+        new RegExp(`whenever\\s+(?:this\\s+weapon\\s+)?(?:hits|damages|strikes)\\s+(?:a|an|the)?\\s*${type}s?\\b`, "i"),
+        new RegExp(`vs\\.?\\s+(?:a|an|the)?\\s*${type}s?\\b`, "i"),
+      ];
+      if (patterns.some(p => p.test(window))) return type;
+    }
+    return null;
   }
 
   /**
@@ -215,10 +261,11 @@ export class DescriptionParser {
                    || beforeMatch.includes("also") || beforeMatch.includes("save");
 
       if (isBonus && displayFormula) {
-        const key = `${formula}|${damageType}`;
+        const triggersOnCrit = DescriptionParser._detectCritOnlyQualifier(text, match.index);
+        const key = `${formula}|${damageType}|${triggersOnCrit ? "crit" : "any"}`;
         if (!seen.has(key)) {
           seen.add(key);
-          bonuses.push({ formula, displayFormula, damageType });
+          bonuses.push({ formula, displayFormula, damageType, triggersOnCrit });
         }
       }
     }
@@ -236,15 +283,52 @@ export class DescriptionParser {
         const formula = match[1];
         const typeRaw = (match[2] ?? "").toLowerCase();
         const damageType = DAMAGE_TYPES.includes(typeRaw) ? typeRaw : "weapon";
-        const key = `${formula}|${damageType}`;
+        const triggersOnCrit = DescriptionParser._detectCritOnlyQualifier(text, match.index);
+        const key = `${formula}|${damageType}|${triggersOnCrit ? "crit" : "any"}`;
         if (!seen.has(key)) {
           seen.add(key);
-          bonuses.push({ formula, displayFormula: formula, damageType });
+          bonuses.push({ formula, displayFormula: formula, damageType, triggersOnCrit });
         }
       }
     }
 
     return bonuses;
+  }
+
+  /**
+   * Detect whether a bonus-damage match is gated on rolling a critical hit.
+   *
+   * Vicious-line weapons + Sword of Sharpness, Mace of Smiting, Sword of Life
+   * Stealing, Nine Lives Stealer all have phrasing like "When you score a
+   * critical hit with this weapon, the target takes an extra ..." or
+   * "When you roll a 20 on the attack...". Without gating, the bonus rolls on
+   * every hit — a Vicious longsword would do +2d6 on every swing rather than
+   * only on crits, which is silently game-breaking.
+   *
+   * Looks at ~250 chars before the bonus-damage match for crit-trigger
+   * phrasing. Returns true if found, false otherwise.
+   *
+   * @param {string} fullText
+   * @param {number} matchIdx
+   * @returns {boolean}
+   */
+  static _detectCritOnlyQualifier(fullText, matchIdx) {
+    if (!fullText || typeof matchIdx !== "number") return false;
+    const before = fullText.slice(Math.max(0, matchIdx - 250), matchIdx).toLowerCase();
+    // Common crit-gate phrasings in published 5e and DDB-formatted descriptions.
+    const critPatterns = [
+      /\bcritical\s+hit\b/i,
+      /\bscore\s+a\s+critical\b/i,
+      /\bon\s+a\s+critical\b/i,
+      /\bif\s+you\s+score\s+a\s+critical\b/i,
+      /\bwhen\s+you\s+score\s+a\s+critical\b/i,
+      /\broll\s+a\s+20\b/i,
+      /\brolled\s+a\s+20\b/i,
+      /\b(?:rolling|roll)\s+a\s+20\b/i,
+      /\bnatural\s+20\b/i,
+      /\bnatural\s+roll\s+of\s+20\b/i,
+    ];
+    return critPatterns.some(p => p.test(before));
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -469,6 +553,70 @@ export class DescriptionParser {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  //  Sever Rider — secondary-roll mechanic (Sword of Sharpness, Vorpal Sword)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Detect a secondary-roll sever rider:
+   *   "Then roll another d20. If you roll a 20, you lop off one of the
+   *    target's limbs..."
+   *   "...if you roll another 20, you sever the head..."
+   *
+   * Returns null if no sever pattern is detected, otherwise:
+   *   {
+   *     triggerOn: "crit",            // always — these riders all chain off a nat 20 attack
+   *     secondaryDie: "d20",          // always d20 in 5e RAW
+   *     secondaryThreshold: 20,       // value needed on the second roll
+   *     severType: "limb" | "head" | "body",
+   *     description: "<excerpt>"      // what to flavor the result with
+   *   }
+   *
+   * The secondary roll only happens on a NATURAL 20 attack roll (not on
+   * expanded crit ranges) — that's RAW for both weapons, and it's the only
+   * sane reading of "Then roll another d20" since the trigger sentence
+   * starts with "and roll a 20 on the attack roll".
+   */
+  static _parseSeverRider(text, lower) {
+    if (!text) return null;
+    // Quick reject: no sever-action verbs anywhere → not a sever rider
+    if (!/\b(?:lop\s+off|sever|amputate|severs?|severed)\b/i.test(text)) return null;
+
+    // Must be paired with a secondary-roll trigger pattern
+    const triggerPatterns = [
+      /\bthen\s+roll\s+another\s+d?20\b/i,
+      /\broll\s+another\s+d?20\b/i,
+      /\broll\s+a\s+second\s+d?20\b/i,
+      /\bif\s+you\s+roll\s+(?:a|another)\s+20\b/i,
+    ];
+    if (!triggerPatterns.some(p => p.test(text))) return null;
+
+    // Determine WHAT gets severed (limb / head / body part)
+    let severType = "limb"; // default — Sword of Sharpness lops a limb
+    if (/\bsever(?:s|ed)?\s+(?:the\s+)?head\b/i.test(text) || /\blop\s+off\s+(?:the\s+)?head\b/i.test(text)) {
+      severType = "head"; // Vorpal Sword
+    } else if (/\bportion\s+of\s+(?:its\s+)?body\b/i.test(text) || /\bsever\s+(?:a\s+)?body/i.test(text)) {
+      severType = "body";
+    }
+
+    // Capture a short excerpt for the chat card flavor
+    const m = text.match(/(roll\s+another\s+d?20[^.]*\.\s*if\s+you\s+roll[^.]*\.[^.]*)/i)
+           ?? text.match(/(if\s+you\s+roll\s+(?:a|another)\s+20[^.]*\.[^.]*)/i);
+    const description = m ? stripExcerpt(m[1]) : "Roll another d20 — on a 20, the limb is severed.";
+
+    function stripExcerpt(s) {
+      return String(s).replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim().slice(0, 280);
+    }
+
+    return {
+      triggerOn: "crit",
+      secondaryDie: "d20",
+      secondaryThreshold: 20,
+      severType,
+      description,
+    };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   //  Utility
   // ═══════════════════════════════════════════════════════════════════════════
 
@@ -480,6 +628,7 @@ export class DescriptionParser {
       creatureTrigger: null,
       effectTable: null,
       halfOnSave: false,
+      severRider: null,
       rawText: "",
     };
   }
@@ -493,7 +642,8 @@ export class DescriptionParser {
         || parsed.bonusDamage.length > 0
         || parsed.conditions.length > 0
         || parsed.creatureTrigger !== null
-        || parsed.effectTable !== null;
+        || parsed.effectTable !== null
+        || parsed.severRider !== null;
   }
 
   /**

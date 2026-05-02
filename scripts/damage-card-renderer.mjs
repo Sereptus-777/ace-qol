@@ -76,6 +76,11 @@ export class DamageCardRenderer {
           sceneId: canvas.scene?.id,
           hitResult: hit.hitResult,
           isCrit,
+          // Carry the natural d20 attack result so secondary-roll riders
+          // (Sword of Sharpness, Vorpal Sword) can distinguish a true
+          // natural 20 from an expanded crit-range crit. RAW: their sever
+          // mechanic only triggers on a literal d20 = 20.
+          naturalRoll: hit.d20Result ?? (hit.isCritRoll ? 20 : null),
           name: hit.target?.name ?? hit.name,
           img: hit.target?.img ?? hit.img,
           currentHP: hit.target?.currentHP,
@@ -94,12 +99,13 @@ export class DamageCardRenderer {
     let parsedDescription = null;
     try {
       const parsed = DescriptionParser.parse(item);
-      if (parsed.saves.length || parsed.effectTable || parsed.bonusDamage.length || parsed.conditions.length) {
+      if (parsed.saves.length || parsed.effectTable || parsed.bonusDamage.length || parsed.conditions.length || parsed.severRider) {
         parsedDescription = {
           saves: parsed.saves,
           effectTable: parsed.effectTable,
           bonusDamage: parsed.bonusDamage,
           conditions: parsed.conditions,
+          severRider: parsed.severRider,
         };
       }
     } catch (e) {
@@ -175,6 +181,8 @@ export class DamageCardRenderer {
           actorId: hit.targetActor?.id,
           sceneId: canvas.scene?.id,
           hitResult: hit.hitResult, isCrit,
+          // Natural d20 result for secondary-roll riders (Sword of Sharpness etc.)
+          naturalRoll: hit.d20Result ?? (hit.isCritRoll ? 20 : null),
           name: hit.target?.name ?? hit.name,
           img: hit.target?.img ?? hit.img,
           currentHP: hit.target?.currentHP, maxHP: hit.target?.maxHP,
@@ -191,10 +199,11 @@ export class DamageCardRenderer {
     let parsedDescription = null;
     try {
       const parsed = DescriptionParser.parse(item);
-      if (parsed.saves.length || parsed.effectTable || parsed.bonusDamage.length || parsed.conditions.length) {
+      if (parsed.saves.length || parsed.effectTable || parsed.bonusDamage.length || parsed.conditions.length || parsed.severRider) {
         parsedDescription = {
           saves: parsed.saves, effectTable: parsed.effectTable,
           bonusDamage: parsed.bonusDamage, conditions: parsed.conditions,
+          severRider: parsed.severRider,
         };
       }
     } catch (e) {
@@ -498,29 +507,58 @@ export class DamageCardRenderer {
     const newHP = Math.max(0, currentHP - totalFinal);
     const isDead = newHP <= 0;
 
+    // Tracking: which modifier categories were hit, for flavor-hint generation.
+    // We pick the strongest single hint to show — vulnerable > immune > resistant.
+    const flavorTrigger = { vulnerable: null, immune: null, resistant: null };
+
     const compLines = (components ?? []).map((c, idx) => {
       const color = DamageConstants.DAMAGE_COLORS[c.type] ?? "#ccc";
       let modBadge = "";
       let strikeStyle = "";
+      let rowClasses = "";
+
       if (c.modifier === "immune") {
-        modBadge = `<span class="ace-qol-dmg-mod ace-qol-dmg-immune" style="background:${color}; color:#000">IMMUNE</span>`;
+        // Truth-only badge AND truth-only row — players don't see this row at all
+        modBadge = `<span class="ace-qol-dmg-mod ace-qol-dmg-immune ace-qol-dmg-truth-only" style="background:${color}; color:#000">IMMUNE</span>`;
         strikeStyle = `text-decoration: line-through; text-decoration-color: ${color}; opacity: 0.6;`;
+        rowClasses = " ace-qol-dmg-truth-row";
+        if (!flavorTrigger.immune) flavorTrigger.immune = c.type;
       } else if (c.modifier === "resistant") {
-        modBadge = `<span class="ace-qol-dmg-mod ace-qol-dmg-resist" style="border-color:${color}; color:${color}">½ RESIST</span>`;
+        // Truth-only badge — players see the halved number but no "RESIST" label
+        modBadge = `<span class="ace-qol-dmg-mod ace-qol-dmg-resist ace-qol-dmg-truth-only" style="border-color:${color}; color:${color}">½ RESIST</span>`;
+        if (!flavorTrigger.resistant) flavorTrigger.resistant = c.type;
       } else if (c.modifier === "vulnerable") {
-        modBadge = `<span class="ace-qol-dmg-mod ace-qol-dmg-vuln">×2 VULN</span>`;
+        // Truth-only badge — players see the doubled number but no "VULN" label
+        modBadge = `<span class="ace-qol-dmg-mod ace-qol-dmg-vuln ace-qol-dmg-truth-only">×2 VULN</span>`;
+        if (!flavorTrigger.vulnerable) flavorTrigger.vulnerable = c.type;
       }
-      const dmgDisplay = (c.raw !== c.final && c.modifier !== "normal")
-        ? `<span style="color:#666; text-decoration:line-through; font-size:0.75rem">${c.raw}</span> <strong style="color:${color}">${c.final}</strong>`
-        : `<strong style="color:${color}">${c.final}</strong>`;
+
+      // Show the raw→final transition only for GM (it leaks the modifier);
+      // players see only the final number, no strikethrough hint.
+      const rawFinalSpan = (c.raw !== c.final && c.modifier !== "normal")
+        ? `<span class="ace-qol-dmg-truth-only" style="color:#666; text-decoration:line-through; font-size:0.75rem">${c.raw}</span> `
+        : "";
+      const dmgDisplay = `${rawFinalSpan}<strong style="color:${color}">${c.final}</strong>`;
       const clickable = c.final > 0 ? `data-action="aceQolApplyType" data-damage-type="${c.type}" data-damage-amount="${c.final}" data-comp-index="${idx}" title="Click to apply ${c.final} ${c.type} damage"` : "";
       const clickClass = c.final > 0 ? " ace-qol-dmg-type-clickable" : "";
       return `
-        <div class="ace-qol-dmg-type-line${clickClass}" ${clickable} style="${strikeStyle}">
+        <div class="ace-qol-dmg-type-line${clickClass}${rowClasses}" ${clickable} style="${strikeStyle}">
           ${dmgDisplay} <span style="color:${color}; font-weight:600">${c.type}</span> ${modBadge}
         </div>
       `;
     }).join("");
+
+    // Build the player-visible flavor hint (subtle, in-fiction). Visible to
+    // everyone — gives players a hint without using definitive language like
+    // "IMMUNE" or "RESIST". GM sees it too but they also see the truth badges.
+    let flavorHintHtml = "";
+    if (flavorTrigger.vulnerable) {
+      flavorHintHtml = `<div class="ace-qol-dmg-flavor-hint">…the ${flavorTrigger.vulnerable} damage cuts deeper than expected.</div>`;
+    } else if (flavorTrigger.immune) {
+      flavorHintHtml = `<div class="ace-qol-dmg-flavor-hint">…the ${flavorTrigger.immune} damage seems to wash over with little effect.</div>`;
+    } else if (flavorTrigger.resistant) {
+      flavorHintHtml = `<div class="ace-qol-dmg-flavor-hint">…some of the ${flavorTrigger.resistant} damage seems blunted.</div>`;
+    }
 
     const _a = (mult) => (mult === 1) ? " ace-qol-dmg-ovr-active" : "";
 
@@ -532,6 +570,7 @@ export class DamageCardRenderer {
           ${isCrit ? '<span class="ace-qol-dmg-crit-badge">CRIT</span>' : ""}
         </div>
         ${compLines ? `<div class="ace-qol-dmg-type-breakdown">${compLines}</div>` : ""}
+        ${flavorHintHtml}
         <div class="ace-qol-dmg-gm-controls">
           <div class="ace-qol-dmg-hp-line">
             <span class="ace-qol-dmg-row-dmg">${totalFinal}</span>
@@ -564,6 +603,9 @@ export class DamageCardRenderer {
     const existing = el.querySelector(".ace-qol-player-status");
     if (existing) return;
 
+    // Modifier labels are GM-truth — wrapped in `ace-qol-dmg-truth-only` so
+    // the visibility-engine can hide them from non-GM viewers. Players see
+    // only the damage that landed, never an "IMMUNE/RESIST/VULN" label.
     const MODIFIER_LABELS = {
       immune: { text: "IMMUNE", color: "#ef5350", icon: "fa-shield" },
       resistant: { text: "RESIST", color: "#ffa726", icon: "fa-shield-halved" },
@@ -577,12 +619,15 @@ export class DamageCardRenderer {
       for (const c of (dr.components ?? [])) {
         const mod = MODIFIER_LABELS[c.modifier];
         if (c.modifier === "immune") {
-          statusHtml += `<span class="ace-qol-player-status-line ace-qol-player-status-immune">
+          // Whole "IMMUNE fire" pill is truth-only — players don't see it
+          statusHtml += `<span class="ace-qol-player-status-line ace-qol-player-status-immune ace-qol-dmg-truth-only">
             <i class="fas ${mod.icon}"></i> ${c.type} <strong>${mod.text}</strong>
           </span>`;
         } else if (mod) {
+          // Show the damage that landed to everyone, but the modifier label
+          // ("RESIST" / "VULN ×2") is truth-only.
           statusHtml += `<span class="ace-qol-player-status-line" style="color:${mod.color}">
-            <i class="fas ${mod.icon}"></i> ${c.final} ${c.type} <strong>${mod.text}</strong>
+            <i class="fas ${mod.icon}"></i> ${c.final} ${c.type} <strong class="ace-qol-dmg-truth-only">${mod.text}</strong>
           </span>`;
         } else if (c.final > 0) {
           statusHtml += `<span class="ace-qol-player-status-line ace-qol-player-status-applied">

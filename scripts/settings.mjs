@@ -1030,6 +1030,15 @@ export class QolSettings {
       range:   { min: 0, max: 5000, step: 100 },
     });
 
+    s("lootClickDebug", {
+      name:    "Loot Click Debug Logging",
+      hint:    "When ON, every left-click logs the lootable-tile detection result to console (world pos, layer, tile found?). Use this to diagnose click-doesn't-open-loot bugs. Default: OFF.",
+      scope:   "client",
+      config:  false,
+      type:    Boolean,
+      default: false,
+    });
+
     s("enableXpDistribution", {
       name:    "Enable XP Distribution at Combat End",
       hint:    "When combat ends, prompt the GM to distribute XP from defeated NPCs. Only connected (active) PCs receive XP. Dead PCs are auto-skipped.",
