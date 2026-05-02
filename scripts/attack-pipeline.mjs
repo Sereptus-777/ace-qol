@@ -15,6 +15,7 @@ import { QolSettings } from "./settings.mjs";
 import { FlagsEngine } from "./flags-engine.mjs";
 import { MergeCard } from "./merge-card.mjs";
 import { CoverEngine } from "./cover-engine.mjs";
+import { pendingAttackChoices, awaitDsnRoll, showCenterToast } from "./attack-prompt.mjs";
 
 export class AttackPipeline {
 
@@ -108,22 +109,18 @@ export class AttackPipeline {
      || atkStatuses.has("petrified")) {
       const condition = ["paralyzed", "stunned", "unconscious", "incapacitated", "petrified"]
         .find(c => atkStatuses.has(c))?.toUpperCase();
-      ui.notifications.warn(`ACE QOL: ${actor.token?.name ?? actor.name} is ${condition} and cannot attack!`);
+      showCenterToast(`${actor.token?.name ?? actor.name} is ${condition} — cannot attack`, 2500);
       return false; // Block the roll
     }
 
     const targets = game.user.targets;
-    if (!targets.size) {
-      // ── Friendly "no target" reminder — don't block, just nudge ──
-      this._showNoTargetReminder(actor, item);
-      return;
-    }
+    if (!targets.size) return; // Item.use shim hard-blocks no-target weapons; silent fallback for other paths
 
     // ── Range check: block attacks on out-of-range targets ──
     const firstTarget = targets.first();
     const rangeCheck = this._checkRange(actor, firstTarget, item);
     if (rangeCheck.blocked) {
-      ui.notifications.warn(`ACE QOL: Target is out of range! (${rangeCheck.distanceFt}ft away, ${rangeCheck.rangeDesc})`);
+      showCenterToast(`Out of range — ${rangeCheck.distanceFt}ft away (${rangeCheck.rangeDesc})`, 2500);
       return false; // Block the roll
     }
 
@@ -143,12 +140,30 @@ export class AttackPipeline {
 
     const rollConfig = config.rolls?.[0];
 
+    // ── User prompt choice (from attack-prompt.mjs) overrides auto-detection ──
+    const userChoice = pendingAttackChoices.get(actor.id);
+    if (userChoice) {
+      pendingAttackChoices.delete(actor.id);
+      if (userChoice === "advantage") {
+        dialog.options.defaultButton = "advantage";
+        if (rollConfig?.options) rollConfig.options.advantage = true;
+        config.advantage = true;
+      } else if (userChoice === "disadvantage") {
+        dialog.options.defaultButton = "disadvantage";
+        if (rollConfig?.options) rollConfig.options.disadvantage = true;
+        config.disadvantage = true;
+      }
+      // "normal" → leave config alone; dnd5e applyKeybindings sets NORMAL.
+      this._debug(`PRE-ROLL: Using user prompt choice: ${userChoice}`);
+      return;
+    }
+
     if (combatState.finalRollMode === "advantage") {
-      // Pre-select the ADVANTAGE button in the dialog
       dialog.options.defaultButton = "advantage";
-      // Also set on roll config for fast-forward mode
-      if (rollConfig?.options) rollConfig.options.advantageMode = 1;
-      if (rollConfig) rollConfig.advantageMode = 1;
+      // dnd5e applyKeybindings reads roll.options.advantage / config.advantage (booleans),
+      // NOT advantageMode — it overwrites advantageMode based on those three sources.
+      if (rollConfig?.options) rollConfig.options.advantage = true;
+      config.advantage = true;
 
       this._debug(`PRE-ROLL: Setting ADVANTAGE for ${item.name} → ${firstTarget.actor?.name}`);
       for (const src of combatState.advantageSources) {
@@ -156,8 +171,8 @@ export class AttackPipeline {
       }
     } else if (combatState.finalRollMode === "disadvantage") {
       dialog.options.defaultButton = "disadvantage";
-      if (rollConfig?.options) rollConfig.options.advantageMode = -1;
-      if (rollConfig) rollConfig.advantageMode = -1;
+      if (rollConfig?.options) rollConfig.options.disadvantage = true;
+      config.disadvantage = true;
 
       this._debug(`PRE-ROLL: Setting DISADVANTAGE for ${item.name} → ${firstTarget.actor?.name}`);
       for (const src of combatState.disadvantageSources) {
@@ -483,6 +498,20 @@ export class AttackPipeline {
       formulaParts.push(`<span class="ace-qol-mod-num">+${itemAtkBonus}</span><span class="ace-qol-mod-label">ITEM</span>`);
     }
 
+    // Delta detection — sum of displayed parts didn't match the actual roll
+    // total. Common cases: summoned creatures with Match Proficiency adding a
+    // spell-attack overlay, dnd5e Summon activity's `bonuses.attackDamage`,
+    // active effects modifying attack rolls, etc. Show the unaccounted-for
+    // chunk as a single labeled line so the breakdown still adds up.
+    const displayedSum = (abilityMod || 0) + (profBonus || 0) + (magicBonus || 0) + (itemAtkBonus || 0);
+    const expectedBonus = (rollTotal ?? d20) - d20;
+    const missingBonus = expectedBonus - displayedSum;
+    if (missingBonus !== 0 && Number.isFinite(missingBonus)) {
+      const isSummon = !!actor?.flags?.dnd5e?.summon;
+      const label = isSummon ? "SUMMON" : "BONUS";
+      formulaParts.push(`<span class="ace-qol-mod-num">${missingBonus >= 0 ? "+" : ""}${missingBonus}</span><span class="ace-qol-mod-label">${label}</span>`);
+    }
+
     const formulaStr = formulaParts.join(" ");
 
     // ── Roll mode indicator ──
@@ -515,13 +544,16 @@ export class AttackPipeline {
                      : "MISS";
 
       // ── Cover tag (shown next to AC when cover applies) ──
+      const coverLabelShort = r.coverResult?.cover === 5 ? "¾ cover"
+                            : r.coverResult?.cover === 2 ? "half cover"
+                            : "cover";
       const coverTag = r.coverResult && r.coverResult.acBonus > 0
-        ? `<span class="ace-qol-tag ace-qol-tag-cover" title="${r.coverResult.label} (${r.coverResult.blockedPct}% blocked)"><i class="fas fa-shield-alt"></i> ${r.coverResult.label}</span>`
+        ? `<span class="ace-qol-tag ace-qol-tag-cover" title="${r.coverResult.label} — ${r.coverResult.blockedPct}% line of sight blocked"><i class="fas fa-shield-alt"></i> +${r.coverResult.acBonus} AC for ${coverLabelShort}</span>`
         : r.coverResult?.isFullCover
-        ? `<span class="ace-qol-tag ace-qol-tag-cover" style="color:#ff4444;"><i class="fas fa-shield-alt"></i> Full Cover</span>`
+        ? `<span class="ace-qol-tag ace-qol-tag-cover ace-qol-tag-cover-full" title="Full cover — line of sight completely blocked. Cannot be targeted."><i class="fas fa-shield-alt"></i> FULL COVER (untargetable)</span>`
         : "";
       const acDisplay = r.effectiveAC && r.effectiveAC !== r.ac
-        ? `AC ${r.effectiveAC} <span style="opacity:0.5;font-size:0.85em;">(${r.ac}+${r.effectiveAC - r.ac})</span>`
+        ? `AC ${r.effectiveAC} <span class="ace-qol-atk-ac-bonus" title="Base AC ${r.ac} + Cover ${r.effectiveAC - r.ac}">+${r.effectiveAC - r.ac}</span>`
         : `AC ${r.ac}`;
 
       return `
@@ -537,13 +569,20 @@ export class AttackPipeline {
       `;
     }).join("");
 
+    // Collapsible item details (embeds the dnd5e description + property tags)
+    const itemDetailsHtml = await this._buildItemDetails(item);
+
     const cardHtml = `
       <div class="ace-qol-attack-card">
         <div class="ace-qol-atk-header">
           <img src="${item.img || "icons/svg/sword.svg"}" class="ace-qol-atk-item-img" />
           <strong class="ace-qol-atk-item-name">${item.name}</strong>
+          <button type="button" class="ace-qol-atk-info-toggle" data-action="toggleItemDetails" title="Show item details" aria-expanded="false">
+            <i class="fas fa-chevron-down"></i>
+          </button>
           ${rollModeLabel}
         </div>
+        <div class="ace-qol-atk-item-details ace-qol-collapsed">${itemDetailsHtml}</div>
         <div class="ace-qol-atk-roll">
           <span class="ace-qol-atk-formula">${formulaStr}</span>
           <span class="ace-qol-atk-total ${resultClass}">${rollTotal}</span>
@@ -553,6 +592,10 @@ export class AttackPipeline {
         </div>
       </div>
     `;
+
+    // Wait for DSN dice to finish tumbling before posting the result card —
+    // otherwise the chat card spoils the d20 result while dice are still rolling.
+    await awaitDsnRoll();
 
     await ChatMessage.create({
       content: cardHtml,
@@ -629,6 +672,19 @@ export class AttackPipeline {
     const itemAtkBonus = item.system?.attack?.bonus ? parseInt(item.system.attack.bonus) || 0 : 0;
     if (itemAtkBonus) {
       parts.push(`<span class="ace-qol-mod-num">+${itemAtkBonus}</span><span class="ace-qol-mod-label">ITEM</span>`);
+    }
+
+    // Delta detection — same as _postAttackResults. Catches summon spell
+    // attack overlays, active effects, etc. that aren't in the displayed
+    // breakdown so the parts add up to the real roll total.
+    const rollTotal = r0?.attackTotal ?? null;
+    const displayedSum = (abilityMod || 0) + (profBonus || 0) + (magicBonus || 0) + (itemAtkBonus || 0);
+    const expectedBonus = (rollTotal ?? d20) - d20;
+    const missingBonus = expectedBonus - displayedSum;
+    if (missingBonus !== 0 && Number.isFinite(missingBonus)) {
+      const isSummon = !!actor?.flags?.dnd5e?.summon;
+      const label = isSummon ? "SUMMON" : "BONUS";
+      parts.push(`<span class="ace-qol-mod-num">${missingBonus >= 0 ? "+" : ""}${missingBonus}</span><span class="ace-qol-mod-label">${label}</span>`);
     }
 
     this._lastFormulaPartsHtml = parts.join(" ");
@@ -780,56 +836,76 @@ export class AttackPipeline {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  //  No-Target Reminder — friendly nudge with humor
+  //  Item Details (collapsible) — embeds the dnd5e item description + tags
   // ═══════════════════════════════════════════════════════════════════════════
 
-  _showNoTargetReminder(actor, item) {
-    const name = actor.token?.name ?? actor.name ?? "Adventurer";
-    const weapon = item?.name ?? "weapon";
+  async _buildItemDetails(item) {
+    const sys = item?.system ?? {};
 
-    // Grab a random PLAYER CHARACTER name (not the attacker) for jokes
-    // Must be player-owned characters only — no NPCs
-    const partyNames = (game.actors ?? [])
-      .filter(a => a.type === "character" && a.hasPlayerOwner
-        && a.name !== name
-        && game.users.some(u => !u.isGM && a.testUserPermission(u, "OWNER")))
-      .map(a => a.name);
-    const randomAlly = partyNames.length
-      ? partyNames[Math.floor(Math.random() * partyNames.length)]
-      : "a nearby bookshelf";
-
-    // Build quip pool — ally quips only included when we have a real PC name
-    const quips = [
-      `No target! <em>The air molecules shriek in terror as ${name}'s ${weapon} cleaves through nothing but atmosphere.</em>`,
-      `No target! <em>${name} swings ${weapon} at the ghosts of their imagination. The ghosts are unimpressed.</em>`,
-      `No target! <em>${name} whips ${weapon} through the air with devastating precision. The oxygen never stood a chance.</em>`,
-      `No target! <em>A faint whistle echoes as ${name}'s ${weapon} carves a beautiful arc through absolutely nothing.</em>`,
-      `No target! <em>${name} heroically attacks the empty void. Somewhere, a dust particle writes its last will.</em>`,
-      `No target! <em>The wind cries out as ${name} hammers ${weapon} into the space where an enemy should be standing.</em>`,
-      `No target! <em>${name} takes a mighty swing. The air parts obediently. Nearby insects scatter in panic.</em>`,
-      `No target! <em>${name}'s ${weapon} slices through nothing with such conviction that even the shadows flinch.</em>`,
-      `No target! <em>The invisible man would be dead right now, if he existed. Nice swing, ${name}.</em>`,
-      `No target! <em>${name} lunges forward with ${weapon} drawn. The cobblestones remain stubbornly uninjured.</em>`,
-      `No target! <em>Somewhere in the multiverse, a version of ${name} actually targeted something. Not this one.</em>`,
-    ];
-
-    // Party member reactions — only when we have actual PCs to reference
-    if (partyNames.length) {
-      quips.push(
-        `No target! <em>${name} swings ${weapon} at thin air. ${randomAlly} takes a cautious step back.</em>`,
-        `No target! <em>${name} attacks nothing. ${randomAlly} and the others exchange worried glances.</em>`,
-        `No target! <em>${name} flails ${weapon} wildly. ${randomAlly} quietly questions their choice of adventuring companion.</em>`,
-        `No target! <em>"You, uh... you alright there?" mumbles ${randomAlly}, watching ${name} attack the void.</em>`,
-        `No target! <em>${name} cleaves the air. ${randomAlly} makes a mental note to sleep further from them tonight.</em>`,
-        `No target! <em>${randomAlly} whispers to the group: "Should... should we be concerned about ${name}?"</em>`,
-        `No target! <em>${randomAlly} clears their throat. "So... are we just not going to talk about what ${name} just did?"</em>`,
-      );
+    // Description: enrich so links / inline rolls / references resolve
+    let desc = sys.description?.value ?? "";
+    try {
+      const TE = foundry.applications?.ux?.TextEditor?.implementation
+              ?? globalThis.TextEditor;
+      if (TE?.enrichHTML) {
+        desc = await TE.enrichHTML(desc, {
+          rollData: item.actor?.getRollData?.() ?? {},
+          relativeTo: item,
+          secrets: false,
+        });
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | enrichHTML failed for ${item.name}:`, err);
     }
 
-    const quip = quips[Math.floor(Math.random() * quips.length)];
+    // Property tags — match what dnd5e shows on its item cards
+    const tags = [];
 
-    // Non-blocking notification — attack still goes through normally
-    ui.notifications.warn(quip, { permanent: false, localize: false });
+    // Activation type (ACTION / BONUS / REACTION)
+    const activationType = sys.activation?.type ?? sys.activities?.contents?.[0]?.activation?.type;
+    if (activationType) tags.push(String(activationType).toUpperCase());
+
+    // Range / reach
+    const reach     = sys.range?.reach ?? (sys.range?.units === "ft" && !sys.range?.long ? sys.range?.value : null);
+    const rangeVal  = sys.range?.value;
+    const rangeLong = sys.range?.long;
+    const rangeUnits = sys.range?.units ?? "ft";
+    if (reach && !rangeLong)            tags.push(`REACH ${reach} ${rangeUnits.toUpperCase()}`);
+    else if (rangeVal && rangeLong)     tags.push(`RANGE ${rangeVal}/${rangeLong} ${rangeUnits.toUpperCase()}`);
+    else if (rangeVal && !reach)        tags.push(`RANGE ${rangeVal} ${rangeUnits.toUpperCase()}`);
+
+    if (sys.attuned || sys.attunement === "attuned")     tags.push("ATTUNED");
+    if (sys.equipped)                                    tags.push("EQUIPPED");
+    if (sys.proficient || sys.prof?.hasProficiency)      tags.push("PROFICIENT");
+    if (sys.magicalBonus || sys.properties?.has?.("mgc")) tags.push("MAGICAL");
+
+    // Weapon mastery (Sap, Vex, Topple, etc.)
+    const mastery = sys.mastery;
+    if (mastery) {
+      const masteryLabel = CONFIG?.DND5E?.weaponMasteries?.[mastery]?.label
+        ?? CONFIG?.DND5E?.weaponMasteries?.[mastery]
+        ?? mastery;
+      tags.push(`MASTERY: ${String(masteryLabel).toUpperCase()}`);
+    }
+
+    // Weapon properties (Finesse, Light, Versatile, Two-Handed, Heavy, Reach, etc.)
+    const propsCfg = CONFIG?.DND5E?.itemProperties ?? {};
+    const propsSet = sys.properties;
+    if (propsSet) {
+      const propIter = (propsSet instanceof Set) ? [...propsSet] : Object.keys(propsSet);
+      for (const p of propIter) {
+        const label = propsCfg[p]?.label ?? propsCfg[p] ?? p;
+        // Skip the magical bookkeeping property (already shown as MAGICAL above)
+        if (p === "mgc") continue;
+        tags.push(String(label).toUpperCase());
+      }
+    }
+
+    const tagsHtml = tags.length
+      ? `<div class="ace-qol-atk-itemtags">${tags.map(t => `<span class="ace-qol-atk-itemtag">${t}</span>`).join("")}</div>`
+      : "";
+
+    return `<div class="ace-qol-atk-itemdesc">${desc || "<em>No description.</em>"}</div>${tagsHtml}`;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

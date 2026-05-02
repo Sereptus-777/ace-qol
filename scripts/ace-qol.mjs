@@ -8,6 +8,7 @@ export const MODULE_ID = "ace-qol";
 import { QolSettings }       from "./settings.mjs";
 import { ExtendedEffects }   from "./extended-effects.mjs";
 import { AttackPipeline }    from "./attack-pipeline.mjs";
+import { HealPipeline }      from "./heal-pipeline.mjs";
 import { TargetState }       from "./target-state.mjs";
 import { CombatState }       from "./combat-state.mjs";
 import { DamageEngine }      from "./damage-engine.mjs";
@@ -40,6 +41,7 @@ import { LootableTile } from "./lootable-tile.mjs";
 // ─── Module state ────────────────────────────────────────────────────────────
 let extendedEffects      = null;
 let attackPipeline       = null;
+let healPipeline         = null;
 let damageEngine         = null;
 let saveEngine           = null;
 let concentrationWidget  = null;
@@ -109,6 +111,16 @@ Hooks.once("ready", () => {
     console.log(`${MODULE_ID} | Attack pipeline online`);
   } catch (err) {
     console.error(`${MODULE_ID} | Attack pipeline init failed:`, err);
+  }
+
+  // Heal pipeline — GM-only handler (registered for all clients but gated inside)
+  // Detects HealActivity uses, shows target picker, builds a custom heal card
+  // with per-target Apply buttons. Mirrors the attack pipeline architecture.
+  try {
+    healPipeline = new HealPipeline();
+    console.log(`${MODULE_ID} | Heal pipeline online`);
+  } catch (err) {
+    console.error(`${MODULE_ID} | Heal pipeline init failed:`, err);
   }
 
   // Damage engine — ALL users

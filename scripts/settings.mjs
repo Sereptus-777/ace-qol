@@ -14,7 +14,7 @@ const PRESETS = {
     autoRollDamage: false, autoApplyDamage: false,
     enableReactions: true, autoShield: true, autoCounterspell: true,
     autoAbsorbElements: true, autoLegendaryResistance: true,
-    enableSpeedRolls: true, enableMergeCard: false,
+    enableSpeedRolls: true, enableMergeCard: false, enableHealPipeline: true,
     extendedEffects: true, effectTransferRules: true,
     enableOnUseHooks: true, enableOverTimeEffects: true, autoApplyOverTimeDamage: false,
     enableFlagsSystem: true, enableOptionalPrompts: true, midiCompatibility: true,
@@ -33,7 +33,7 @@ const PRESETS = {
     autoRollDamage: false, autoApplyDamage: false,
     enableReactions: false, autoShield: false, autoCounterspell: false,
     autoAbsorbElements: false, autoLegendaryResistance: false,
-    enableSpeedRolls: true, enableMergeCard: false,
+    enableSpeedRolls: true, enableMergeCard: false, enableHealPipeline: true,
     extendedEffects: false, effectTransferRules: false,
     enableOnUseHooks: false, enableOverTimeEffects: false, autoApplyOverTimeDamage: false,
     enableFlagsSystem: false, enableOptionalPrompts: false, midiCompatibility: false,
@@ -378,6 +378,18 @@ export class QolSettings {
       config:  false,
       type:    Boolean,
       default: false,
+    });
+
+    // ═════════════════════════════════════════════════════════════════════
+    //  HEAL PIPELINE — custom heal flow (HealActivity interception)
+    // ═════════════════════════════════════════════════════════════════════
+    s("enableHealPipeline", {
+      name:    "Custom Heal Pipeline",
+      hint:    "Replaces the vanilla dnd5e heal usage card with a custom card: target picker popup (range-aware), one-click apply per target, temp HP support. Disable to fall back to vanilla dnd5e heal flow.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
     });
 
     s("mergeCardStyle", {
@@ -1001,11 +1013,21 @@ export class QolSettings {
 
     s("autoPostLootCard", {
       name:    "Auto-Post Loot Card on Death",
-      hint:    "When ON, a public chat card listing the dead NPC's loot is posted automatically. When OFF (default), the lootable tile dialog (double-right-click the dead-art tile) is the only loot interface.",
+      hint:    "When ON (default), a public chat card listing the dead NPC's loot is posted automatically — items are draggable to PC sheets. Disable to suppress the chat card and rely solely on the tile loot dialog (single-click the dead-art tile).",
       scope:   "world",
       config:  false,
       type:    Boolean,
-      default: false,
+      default: true,
+    });
+
+    s("lootHoverIconDelayMs", {
+      name:    "Loot Hover-Icon Delay (ms)",
+      hint:    "How long to hover over a corpse / container tile before the gold treasure-chest icon fades in. Set to 0 to disable the hover icon entirely. Default: 1000ms (1 second).",
+      scope:   "client",
+      config:  false,
+      type:    Number,
+      default: 1000,
+      range:   { min: 0, max: 5000, step: 100 },
     });
 
     s("enableXpDistribution", {

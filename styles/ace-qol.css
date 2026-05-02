@@ -17,6 +17,148 @@
   padding: 0;
   font-family: 'Segoe UI', sans-serif;
   overflow: hidden;
+  zoom: 1.18; /* ~18% bigger overall — readable without overflowing chat sidebar */
+}
+
+.ace-qol-save-card,
+.ace-qol-save-results-card,
+.ace-qol-damage-card,
+.ace-qol-merge-card,
+.ace-qol-loot-card {
+  zoom: 1.18; /* match attack card scale */
+}
+
+/* ─── Hover-icon for lootable tiles (Phase 3c) ──────────────────────────── */
+/* Shown by lootable-tile.mjs after 1s hover over a dead-body or container
+   tile. The element is built inline (style.cssText) but the keyframes live
+   here so the pulse animation is consistent with the rest of the chrome. */
+@keyframes ace-qol-loot-pulse {
+  0%, 100% {
+    transform: translate(-50%, -50%) scale(1.0);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6),
+                0 0 0 0 rgba(212, 175, 55, 0.6);
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.08);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6),
+                0 0 16px 4px rgba(212, 175, 55, 0.4);
+  }
+}
+
+/* ─── GM Edit-Loot dialog (Phase 3c) ────────────────────────────────────── */
+.ace-qol-edit-loot-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 13px;
+  color: #e8e6e0;
+}
+.ace-qol-edit-loot-dialog .form-group label {
+  display: block;
+  font-weight: 700;
+  color: #d4af37;
+  margin-bottom: 4px;
+}
+.ace-qol-edit-loot-dialog input[type="text"],
+.ace-qol-edit-loot-dialog input[type="number"] {
+  width: 100%;
+  padding: 4px 6px;
+  background: #0e0e10;
+  border: 1px solid #444;
+  border-radius: 3px;
+  color: #f0eee0;
+}
+.ace-qol-edit-loot-dialog fieldset {
+  border: 1px solid rgba(212, 175, 55, 0.4);
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin: 0;
+}
+.ace-qol-edit-loot-dialog fieldset legend {
+  color: #d4af37;
+  font-weight: 700;
+  padding: 0 6px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.ace-qol-edit-loot-currency {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+}
+.ace-qol-edit-loot-currency label {
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+  font-weight: 700;
+  color: #d4af37;
+  text-transform: uppercase;
+}
+.ace-qol-edit-loot-currency input {
+  width: 100%;
+  text-align: right;
+  margin-top: 2px;
+}
+.ace-qol-edit-loot-itemlist {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.ace-qol-edit-loot-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 3px;
+}
+.ace-qol-edit-loot-img {
+  width: 24px;
+  height: 24px;
+  border-radius: 2px;
+  border: 0;
+  flex-shrink: 0;
+}
+.ace-qol-edit-loot-name {
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: 12px;
+  color: #f0eee0;
+  word-break: break-word;
+}
+.ace-qol-edit-loot-remove {
+  flex-shrink: 0;
+  width: 26px;
+  height: 22px;
+  background: rgba(180, 60, 60, 0.25);
+  border: 1px solid #b44;
+  color: #ff9090;
+  border-radius: 3px;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 12px;
+  line-height: 1;
+}
+.ace-qol-edit-loot-remove:hover:not(:disabled) {
+  background: rgba(180, 60, 60, 0.45);
+}
+.ace-qol-edit-loot-remove:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.ace-qol-edit-loot-empty {
+  padding: 10px;
+  color: #888;
+  text-align: center;
+}
+.ace-qol-edit-loot-hint {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #888;
+  font-style: italic;
 }
 
 .ace-qol-atk-header {
@@ -109,11 +251,13 @@
 }
 
 .ace-qol-mod-label {
-  font-size: 0.6rem;
+  font-size: 0.72rem;
   color: #d4af37;
   text-transform: uppercase;
   margin-right: 4px;
   opacity: 1;
+  font-weight: 700;
+  letter-spacing: 0.4px;
 }
 
 .ace-qol-attack-card .ace-qol-mod-magic {
@@ -1498,32 +1642,75 @@
 .ace-qol-loot-items {
   list-style: none;
   margin: 0;
-  padding: 4px 0;
+  padding: 2px 0;
 }
 
 .ace-qol-loot-item {
-  display: flex;
-  align-items: center;
+  display: flex !important;
+  align-items: flex-start;
   gap: 6px;
-  padding: 4px 10px;
-  font-size: 0.88rem;
+  padding: 3px 8px;
+  font-size: 0.78rem;
+  line-height: 1.3;
+  min-height: 0;
   color: #e8e6e0;
   transition: background 0.15s;
+  /* Defeat any chat theme that adds margin/padding to <li> */
+  margin: 0 !important;
+  /* Names wrap onto a second line when the chat sidebar is narrow — full
+     name always visible, no ellipsis truncation. */
 }
 
 .ace-qol-loot-item:hover {
   background: rgba(212, 175, 55, 0.06);
 }
 
+/* Defeat enricher-injected paragraphs / line breaks inside list items */
+.ace-qol-loot-item p,
+.ace-qol-loot-item br {
+  display: none !important;
+}
+
+/* Foundry's @UUID renders as <a.content-link> — allow wrapping so long
+   names like "Thaxius's Infernal Bloodstone" stay fully visible. */
+.ace-qol-loot-item .content-link,
+.ace-qol-loot-item a.content-link {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0 !important;
+  margin: 0 !important;
+  background: transparent !important;
+  border: none !important;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  text-decoration: none;
+  color: #ffb74d;
+  line-height: 1.3;
+}
+.ace-qol-loot-item .content-link:hover {
+  color: #ffd180;
+  text-decoration: underline;
+}
+.ace-qol-loot-item .content-link i {
+  margin-right: 3px;
+}
+
 .ace-qol-loot-item-img {
+  width: 22px;
+  height: 22px;
   border-radius: 2px;
+  border: 0;
   flex-shrink: 0;
 }
 
 .ace-qol-loot-rarity {
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   color: #888;
   font-style: italic;
+  flex-shrink: 0;
+  margin-left: auto;
+  padding-left: 6px;
 }
 
 .ace-qol-loot-none {
@@ -1702,4 +1889,1719 @@
   background: transparent;
   pointer-events: none;
   box-shadow: none;
+}
+
+/* ─── Center toast (no-target nudge) ────────────────────────────────────── */
+.ace-qol-center-toast {
+  position: fixed;
+  top: 45%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.85);
+  background: linear-gradient(135deg, rgba(10, 10, 12, 0.96), rgba(17, 17, 20, 0.96));
+  color: #d4af37;
+  padding: 22px 48px;
+  border: 2px solid #d4af37;
+  border-radius: 6px;
+  box-shadow: 0 0 24px rgba(212, 175, 55, 0.45), 0 8px 32px rgba(0, 0, 0, 0.6);
+  font-family: "Cinzel Decorative", "Cinzel", serif;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  text-shadow: 0 0 8px rgba(212, 175, 55, 0.6);
+  z-index: 99999;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+.ace-qol-center-toast.show {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+.ace-qol-center-toast.hide {
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(1.08);
+}
+
+/* ─── Advantage prompt dialog ───────────────────────────────────────────── */
+.ace-qol-adv-dialog {
+  font-family: "Rajdhani", "Signika", sans-serif;
+}
+.ace-qol-adv-dialog .window-content {
+  background: linear-gradient(135deg, #0a0a0c, #111114);
+  color: #e8e8e8;
+}
+.ace-qol-adv-prompt {
+  padding: 10px 4px 16px 4px;
+  text-align: center;
+}
+.ace-qol-adv-targets {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  margin-bottom: 12px;
+}
+.ace-qol-adv-targets i {
+  margin: 0 10px;
+  color: #d4af37;
+  opacity: 0.7;
+}
+.ace-qol-adv-attacker,
+.ace-qol-adv-target {
+  text-transform: uppercase;
+  font-weight: 700;
+}
+.ace-qol-adv-pc  { color: #6ee06e; text-shadow: 0 0 6px rgba(110, 224, 110, 0.4); }
+.ace-qol-adv-npc { color: #ff6b6b; text-shadow: 0 0 6px rgba(255, 107, 107, 0.4); }
+
+.ace-qol-adv-suggested {
+  font-size: 15px;
+  color: #e0e0e0;
+  font-weight: 700;
+  margin-bottom: 8px;
+  letter-spacing: 0.3px;
+}
+.ace-qol-adv-suggested .ace-qol-adv-advantage    { color: #6ee06e; text-shadow: 0 0 8px rgba(110, 224, 110, 0.6); font-size: 16px; }
+.ace-qol-adv-suggested .ace-qol-adv-normal       { color: #d4af37; text-shadow: 0 0 8px rgba(212, 175, 55, 0.6); font-size: 16px; }
+.ace-qol-adv-suggested .ace-qol-adv-disadvantage { color: #e06e6e; text-shadow: 0 0 8px rgba(224, 110, 110, 0.6); font-size: 16px; }
+
+/* Reason — was tiny gray italic; now readable orange callout */
+.ace-qol-adv-reason {
+  font-size: 14px;
+  color: #ffa726;
+  font-weight: 600;
+  font-style: normal;
+  text-shadow: 0 0 4px rgba(255, 167, 38, 0.3);
+  margin-top: 4px;
+  padding: 4px 8px;
+  background: rgba(255, 167, 38, 0.06);
+  border-left: 3px solid rgba(255, 167, 38, 0.5);
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.ace-qol-adv-dialog .dialog-buttons button {
+  font-family: "Rajdhani", sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+.ace-qol-adv-dialog .dialog-buttons button[data-action="advantage"]    { color: #6ee06e; }
+.ace-qol-adv-dialog .dialog-buttons button[data-action="disadvantage"] { color: #e06e6e; }
+
+/* Suggested button — persistent class added at render time, survives focus changes */
+.ace-qol-adv-dialog button.ace-qol-suggested-btn,
+.ace-qol-adv-dialog .dialog-buttons button.ace-qol-suggested-btn,
+.ace-qol-adv-dialog .dialog-buttons button.default {
+  border: 2px solid #d4af37 !important;
+  box-shadow: 0 0 14px rgba(212, 175, 55, 0.65), inset 0 0 8px rgba(212, 175, 55, 0.15) !important;
+  background: rgba(212, 175, 55, 0.12) !important;
+  outline: none !important;
+}
+/* Override Foundry's :focus style on non-suggested buttons so they don't
+   "look default" after the user clicks them */
+.ace-qol-adv-dialog .dialog-buttons button:not(.ace-qol-suggested-btn):focus {
+  border-color: rgba(255, 255, 255, 0.2) !important;
+  box-shadow: none !important;
+}
+
+/* ─── + TARGET SELECTED button on save target list card ────────────────── */
+.ace-qol-save-target-selected-row {
+  display: flex;
+  justify-content: center;
+  padding: 4px 0 6px 0;
+}
+.ace-qol-save-target-selected-btn {
+  background: linear-gradient(135deg, #1a1a1f, #25252c);
+  color: #d4af37;
+  border: 1px solid rgba(212, 175, 55, 0.45);
+  border-radius: 4px;
+  padding: 5px 14px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: auto;
+}
+.ace-qol-save-target-selected-btn:hover {
+  background: linear-gradient(135deg, #2a2a35, #353540);
+  border-color: rgba(212, 175, 55, 0.85);
+  box-shadow: 0 0 8px rgba(212, 175, 55, 0.4);
+}
+.ace-qol-save-target-selected-btn i {
+  font-size: 0.78rem;
+  pointer-events: none;
+}
+
+/* ─── AC bonus pill (cover indicator next to AC on attack card) ───────── */
+.ace-qol-atk-ac-bonus {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 0.85em;
+  font-weight: 700;
+  color: #d4af37;
+  background: rgba(212, 175, 55, 0.12);
+  border: 1px solid rgba(212, 175, 55, 0.55);
+  border-radius: 3px;
+  letter-spacing: 0.3px;
+  vertical-align: middle;
+  cursor: help;
+}
+
+/* ─── Cover tag — bumped above default tag size for clear "why" callout ── */
+.ace-qol-tag-cover {
+  font-size: 0.78rem !important;
+  padding: 3px 8px !important;
+  color: #d4af37;
+  background: rgba(212, 175, 55, 0.12) !important;
+  border: 1px solid rgba(212, 175, 55, 0.55) !important;
+  letter-spacing: 0.3px;
+  font-weight: 700;
+}
+.ace-qol-tag-cover i {
+  font-size: 0.72rem !important;
+  margin-right: 2px;
+}
+.ace-qol-tag-cover-full {
+  color: #ff6b6b !important;
+  background: rgba(255, 80, 80, 0.12) !important;
+  border-color: rgba(255, 80, 80, 0.55) !important;
+}
+
+/* ─── Tabbed Configuration Panel — BRASS THEME ──────────────────────────────
+   Architecture: image-as-frame using landscape-panel-full-frame.png as the
+   panel chrome. The frame's transparent center holds: header / tab list +
+   body / footer.
+
+   Asset map (all under Assets/UI/Brass Frame/):
+   - landscape-panel-full-frame.png — outer frame chrome with corner dragons
+   - brass-brushed-surface.png      — header / footer / button surfaces
+   - dark-steel-backing.png         — body background
+   - brass-slave-watermark.png      — body center watermark (skull + wings)
+   - vertical-rail-divider.png      — spine between tab list and pane
+   - horizontal-divider.png         — between setting rows
+   - header-icon-gear.png           — title bar gear ornament (optional)
+   - Icons/tab-icon-*.png           — 17 brass medallion tab icons
+*/
+
+/* ── Foundry window chrome — brass title bar with engraved title ── */
+.ace-qol-config-panel-window {
+  border: 1px solid #2a1a05 !important;
+  box-shadow:
+    0 10px 36px rgba(0, 0, 0, 0.85),
+    0 0 0 1px rgba(184, 148, 58, 0.5) !important;
+}
+.ace-qol-config-panel-window .window-header {
+  background:
+    linear-gradient(180deg, rgba(255, 240, 200, 0.25) 0%, transparent 40%, rgba(0, 0, 0, 0.40) 100%),
+    url("../Assets/UI/Brass Frame/brass-brushed-surface.png") repeat !important;
+  background-blend-mode: overlay, normal !important;
+  border-bottom: 3px solid #2a1a05 !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 250, 220, 0.55),
+    inset 0 -2px 4px rgba(60, 40, 5, 0.4),
+    0 4px 8px rgba(0, 0, 0, 0.5) !important;
+  padding: 6px 14px !important;
+  min-height: 38px !important;
+}
+.ace-qol-config-panel-window .window-header {
+  padding: 6px 22px !important;  /* extra side padding so title doesn't crash into bevels */
+  /* Add LEFT and RIGHT vertical bevels to balance the existing top/bottom edges */
+  border-left: 1px solid rgba(255, 230, 150, 0.45) !important;
+  border-right: 1px solid rgba(255, 230, 150, 0.45) !important;
+}
+.ace-qol-config-panel-window .window-header .window-title,
+.ace-qol-config-panel-window .window-header h4,
+.ace-qol-config-panel-window .window-header h1,
+.ace-qol-config-panel-window .window-header h2 {
+  font-family: "Cinzel Decorative", "Cinzel", serif !important;
+  color: #000 !important;
+  font-weight: 700 !important;
+  font-size: 18px !important;
+  letter-spacing: 2px !important;
+  text-transform: uppercase !important;
+  -webkit-text-stroke: 0 !important;
+  /* Engraved effect — warm highlight just under the text on the brass */
+  text-shadow: 0 1px 0 rgba(255, 240, 200, 0.55) !important;
+}
+.ace-qol-config-panel-window .window-header i,
+.ace-qol-config-panel-window .window-header .header-button,
+.ace-qol-config-panel-window .window-header button {
+  color: #000 !important;
+  font-size: 18px !important;
+  text-shadow: 0 1px 0 rgba(255, 240, 200, 0.5) !important;
+  filter: drop-shadow(0 1px 0 rgba(255, 240, 200, 0.4));
+}
+.ace-qol-config-panel-window .window-header .header-button:hover,
+.ace-qol-config-panel-window .window-header button:hover {
+  color: #4a2a05 !important;
+  text-shadow: 0 1px 0 rgba(255, 240, 200, 0.7) !important;
+}
+
+/* ── Window content — clean dark steel background, no frame chrome ──
+   Frame assets (corner dragons, full panel frame) are saved for splash
+   screens / about dialogs — too gaudy for a functional settings panel. */
+.ace-qol-config-panel-window .window-content {
+  background:
+    linear-gradient(180deg, rgba(184, 148, 58, 0.06) 0%, transparent 20%, transparent 80%, rgba(0, 0, 0, 0.4) 100%),
+    url("../Assets/UI/Brass Frame/dark-steel-backing.png") repeat,
+    #0a0a0c;
+  color: #e8d8a8;
+  padding: 0;
+  overflow: hidden;
+  position: relative;
+  box-shadow:
+    inset 0 0 0 1px rgba(184, 148, 58, 0.25),
+    inset 0 0 32px rgba(0, 0, 0, 0.55);
+}
+.ace-qol-cfg-root {
+  position: relative;
+  display: flex;
+  flex-direction: row;
+  height: calc(100% - 56px);  /* leave room for footer */
+  overflow: hidden;
+  background: transparent;  /* let the dark-steel inside pane-frame show through, no separate root box */
+  border: none;
+}
+
+/* ── Tab list (left rail) — integrated with body, no floating panel look ── */
+.ace-qol-cfg-tablist {
+  position: relative;
+  width: 220px;
+  flex-shrink: 0;
+  background:
+    linear-gradient(90deg, rgba(0, 0, 0, 0.45) 0%, rgba(0, 0, 0, 0.08) 100%),
+    url("../Assets/UI/Brass Frame/dark-steel-backing.png") repeat;
+  margin: 0;
+  padding: 6px 4px;
+  overflow-y: auto;
+  list-style: none;
+}
+/* Brass-themed scrollbar for the tab list */
+.ace-qol-cfg-tablist::-webkit-scrollbar {
+  width: 8px;
+}
+.ace-qol-cfg-tablist::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.4);
+}
+.ace-qol-cfg-tablist::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(184, 148, 58, 0.6), rgba(120, 90, 30, 0.6));
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.4);
+}
+.ace-qol-cfg-tablist::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(255, 220, 130, 0.7), rgba(180, 140, 40, 0.7));
+}
+
+/* Vertical brass rail — divider between tab list and pane */
+.ace-qol-cfg-tablist::after {
+  content: "";
+  position: absolute;
+  top: -4px; right: -10px; bottom: -4px;
+  width: 22px;
+  background: url("../Assets/UI/Brass Frame/vertical-rail-divider.png") no-repeat center;
+  background-size: 22px 100%;
+  pointer-events: none;
+  z-index: 5;
+  filter: drop-shadow(2px 0 5px rgba(0, 0, 0, 0.8));
+}
+
+/* Each tab — clean horizontal row, brass medallion icon + label */
+.ace-qol-cfg-tab {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  margin: 3px 2px;
+  font-family: "Rajdhani", "Signika", sans-serif;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  color: #d4b878;
+  cursor: pointer;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.85);
+  transition: background 0.12s ease, color 0.12s ease, transform 0.1s ease;
+}
+.ace-qol-cfg-tab:hover {
+  background: linear-gradient(90deg, rgba(184, 148, 58, 0.20), rgba(184, 148, 58, 0.05) 90%);
+  color: #ffd878;
+  transform: translateX(2px);
+}
+.ace-qol-cfg-tab.active {
+  background:
+    linear-gradient(90deg, rgba(184, 148, 58, 0.30), rgba(184, 148, 58, 0.05) 95%);
+  color: #ffe89a;
+  border-color: rgba(255, 230, 150, 0.5);
+  box-shadow:
+    inset 0 0 12px rgba(0, 0, 0, 0.4),
+    0 0 8px rgba(255, 200, 100, 0.35);
+  text-shadow: 0 0 6px rgba(255, 200, 100, 0.6), 0 1px 1px rgba(0, 0, 0, 0.9);
+}
+
+/* Brass medallion icons — uniform treatment for all 17.
+   Sources restored to full 978x816 slices with intact medallion circles.
+   Batch-2 sources have a label text embossed on the lower portion of the
+   medallion — this is part of the artwork and stays visible (keeps
+   "COVER" / "FLANKING" etc. text readable in the tab icons).
+   cover + circle clip = perfectly round medallion in every tab. */
+.ace-qol-cfg-tab-icon {
+  display: inline-block;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  background-repeat: no-repeat;
+  background-size: cover;
+  background-position: center;
+  clip-path: circle(50% at center);
+  filter:
+    drop-shadow(0 0 2px rgba(255, 220, 150, 0.5))
+    drop-shadow(0 1px 2px rgba(0, 0, 0, 0.7));
+}
+.ace-qol-cfg-tab-icon-targeting    { background-image: url("../Assets/UI/Brass Frame/Icons/tab-icon-targeting.png"); }
+.ace-qol-cfg-tab-icon-attacks      { background-image: url("../Assets/UI/Brass Frame/Icons/tab-icon-attacks.png"); }
+.ace-qol-cfg-tab-icon-damage       { background-image: url("../Assets/UI/Brass Frame/Icons/tab-icon-damage.png"); }
+.ace-qol-cfg-tab-icon-saves        { background-image: url("../Assets/UI/Brass Frame/Icons/tab-icon-saves.png"); }
+.ace-qol-cfg-tab-icon-reactions    { background-image: url("../Assets/UI/Brass Frame/Icons/tab-icon-reactions.png"); }
+.ace-qol-cfg-tab-icon-effects      { background-image: url("../Assets/UI/Brass Frame/Icons/tab-icon-effects.png"); }
+.ace-qol-cfg-tab-icon-cover        { background-image: url("../Assets/UI/Brass Frame/Icons/tab-icon-cover.png"); }
+.ace-qol-cfg-tab-icon-flanking     { background-image: url("../Assets/UI/Brass Frame/Icons/tab-icon-flanking.png"); }
+.ace-qol-cfg-tab-icon-templates    { background-image: url("../Assets/UI/Brass Frame/Icons/tab-icon-templates.png"); }
+.ace-qol-cfg-tab-icon-death        { background-image: url("../Assets/UI/Brass Frame/Icons/tab-icon-death.png"); }
+.ace-qol-cfg-tab-icon-loot         { background-image: url("../Assets/UI/Brass Frame/Icons/tab-icon-loot.png"); }
+.ace-qol-cfg-tab-icon-xp           { background-image: url("../Assets/UI/Brass Frame/Icons/tab-icon-xp.png"); }
+.ace-qol-cfg-tab-icon-turnmarker   { background-image: url("../Assets/UI/Brass Frame/Icons/tab-icon-turnmarker.png"); }
+.ace-qol-cfg-tab-icon-movement     { background-image: url("../Assets/UI/Brass Frame/Icons/tab-icon-movement.png"); }
+.ace-qol-cfg-tab-icon-effectspanel { background-image: url("../Assets/UI/Brass Frame/Icons/tab-icon-effectspanel.png"); }
+.ace-qol-cfg-tab-icon-ui           { background-image: url("../Assets/UI/Brass Frame/Icons/tab-icon-ui.png"); }
+.ace-qol-cfg-tab-icon-advanced     { background-image: url("../Assets/UI/Brass Frame/Icons/tab-icon-advanced.png"); }
+
+.ace-qol-cfg-tab-label {
+  flex: 1;
+}
+
+/* ── Right pane ── */
+.ace-qol-cfg-pane {
+  flex: 1;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Pane header — brass surface bar with engraved title + medallion icon ── */
+.ace-qol-cfg-pane-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 10px 22px;
+  background:
+    linear-gradient(180deg, rgba(255, 240, 200, 0.25) 0%, transparent 35%, rgba(0, 0, 0, 0.35) 100%),
+    url("../Assets/UI/Brass Frame/brass-brushed-surface.png") repeat;
+  background-blend-mode: overlay, normal;
+  border-top: 1px solid rgba(255, 230, 150, 0.55);
+  border-bottom: 3px solid #2a1a05;
+  border-left: 1px solid rgba(255, 230, 150, 0.45);
+  border-right: 1px solid rgba(255, 230, 150, 0.45);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 250, 220, 0.45),
+    inset 0 -2px 4px rgba(60, 40, 5, 0.35),
+    inset 1px 0 0 rgba(255, 250, 220, 0.35),
+    inset -1px 0 0 rgba(255, 250, 220, 0.35),
+    0 4px 10px rgba(0, 0, 0, 0.55);
+  min-height: 78px;
+}
+/* Hairline accent below header */
+.ace-qol-cfg-pane-header::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: -8px;
+  height: 12px;
+  background: url("../Assets/UI/Brass Frame/horizontal-divider.png") no-repeat center;
+  background-size: 100% 100%;
+  pointer-events: none;
+  z-index: 4;
+}
+/* Pane header's brass medallion icon — BIG, showcases the artwork.
+   Sized to roughly fill the header height with a slight overhang for impact. */
+.ace-qol-cfg-pane-icon {
+  display: inline-block;
+  width: 70px;
+  height: 70px;
+  flex-shrink: 0;
+  background-repeat: no-repeat;
+  background-size: cover;
+  background-position: center;
+  clip-path: circle(50% at center);
+  filter:
+    drop-shadow(0 0 4px rgba(255, 220, 150, 0.6))
+    drop-shadow(0 2px 3px rgba(0, 0, 0, 0.7));
+}
+.ace-qol-cfg-pane-header h2 {
+  font-family: "Cinzel Decorative", "Cinzel", serif;
+  font-size: 26px;
+  font-weight: 700;
+  color: #000;
+  margin: 0;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  /* Engraved effect — warm highlight just under the text */
+  text-shadow:
+    0 1px 0 rgba(255, 240, 200, 0.6),
+    0 -1px 1px rgba(0, 0, 0, 0.25);
+}
+
+/* ── Pane frame — clean dark steel canvas, no watermark ornament ── */
+.ace-qol-cfg-pane-frame {
+  position: relative;
+  flex: 1;
+  padding: 16px 20px;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(184, 148, 58, 0.04), transparent 60%),
+    radial-gradient(ellipse at center, transparent 50%, rgba(0, 0, 0, 0.35)),
+    url("../Assets/UI/Brass Frame/dark-steel-backing.png") repeat;
+}
+
+/* ── Pane body — scrollable content inside the frame ── */
+.ace-qol-cfg-pane-body {
+  position: relative;
+  height: 100%;
+  overflow-y: auto;
+  padding: 4px 8px 4px 4px;
+  z-index: 2;
+}
+/* Custom brass-themed scrollbar */
+.ace-qol-cfg-pane-body::-webkit-scrollbar {
+  width: 10px;
+}
+.ace-qol-cfg-pane-body::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 5px;
+}
+.ace-qol-cfg-pane-body::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(184, 148, 58, 0.7), rgba(120, 90, 30, 0.7));
+  border-radius: 5px;
+  border: 1px solid rgba(0, 0, 0, 0.4);
+}
+.ace-qol-cfg-pane-body::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(255, 220, 130, 0.8), rgba(180, 140, 40, 0.8));
+}
+
+/* ── Settings — horizontal-divider PNG between rows ── */
+.ace-qol-cfg-setting {
+  padding: 12px 4px 18px 4px;  /* extra bottom padding for the divider art */
+  background-image: url("../Assets/UI/Brass Frame/horizontal-divider.png");
+  background-repeat: no-repeat;
+  background-position: bottom center;
+  background-size: 100% 10px;
+}
+.ace-qol-cfg-setting:last-of-type {
+  background-image: none;
+}
+.ace-qol-cfg-setting.modified {
+  background-color: rgba(184, 148, 58, 0.07);
+  margin: 0 -12px;
+  padding-left: 16px;
+  padding-right: 16px;
+  border-left: 2px solid #ffaa44;
+  box-shadow: inset 0 0 14px rgba(255, 170, 68, 0.06);
+  background-image: url("../Assets/UI/Brass Frame/horizontal-divider.png");
+  background-repeat: no-repeat;
+  background-position: bottom center;
+  background-size: 100% 10px;
+}
+.ace-qol-cfg-setting-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+.ace-qol-cfg-setting label {
+  flex: 1;
+  font-family: "Rajdhani", "Signika", sans-serif;
+  font-weight: 700;
+  font-size: 17px;
+  color: #f0e0b4;
+  letter-spacing: 0.3px;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.85);
+}
+.ace-qol-cfg-modified-dot {
+  color: #ffaa44;
+  font-size: 14px;
+  margin-left: 4px;
+  text-shadow: 0 0 6px rgba(255, 170, 68, 0.7);
+}
+
+/* ── Widgets — dark inset on dark steel ── */
+.ace-qol-cfg-widget {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ace-qol-cfg-widget input[type="text"],
+.ace-qol-cfg-widget input[type="number"],
+.ace-qol-cfg-widget select {
+  background:
+    linear-gradient(180deg, rgba(0,0,0,0.65), rgba(0,0,0,0.40)),
+    rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(184, 148, 58, 0.55);
+  color: #f0e0b4;
+  padding: 5px 10px;
+  border-radius: 3px;
+  font-size: 16px;
+  min-width: 240px;
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.65),
+    0 1px 0 rgba(184, 148, 58, 0.18);
+}
+.ace-qol-cfg-widget input[type="number"] {
+  min-width: 90px;
+}
+.ace-qol-cfg-widget input[type="range"] {
+  width: 180px;
+  height: 18px;
+}
+.ace-qol-cfg-widget button {
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.30), transparent 40%, rgba(0, 0, 0, 0.30)),
+    url("../Assets/UI/Brass Frame/brass-brushed-surface.png") repeat;
+  background-blend-mode: overlay, normal;
+  background-size: auto, 100px;
+  border: 1px solid rgba(184, 148, 58, 0.7);
+  color: #000;
+  font-weight: 700;
+  padding: 5px 12px;
+  border-radius: 3px;
+  font-size: 15px;
+  cursor: pointer;
+  text-shadow: 0 1px 0 rgba(255, 240, 200, 0.5);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 240, 200, 0.45),
+    0 2px 3px rgba(0, 0, 0, 0.55);
+}
+.ace-qol-cfg-widget button i {
+  color: #000;
+  text-shadow: 0 1px 0 rgba(255, 240, 200, 0.5);
+}
+.ace-qol-cfg-widget button:hover {
+  color: #4a2a05;
+  text-shadow: 0 1px 0 rgba(255, 240, 200, 0.7);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 240, 200, 0.55),
+    0 0 10px rgba(255, 200, 100, 0.7),
+    0 2px 3px rgba(0, 0, 0, 0.55);
+}
+.ace-qol-cfg-range-value {
+  font-family: "Orbitron", monospace;
+  color: #ffd878;
+  font-size: 16px;
+  min-width: 50px;
+  text-align: right;
+  font-weight: 700;
+  text-shadow: 0 0 6px rgba(255, 170, 68, 0.55);
+}
+
+/* ── Toggle switch — dark gunmetal off, brass with amber glow on ── */
+.ace-qol-cfg-toggle {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 22px;
+  cursor: pointer;
+}
+.ace-qol-cfg-toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.ace-qol-cfg-toggle-track {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: linear-gradient(180deg, #15171c, #2a2c34);
+  border-radius: 22px;
+  transition: 0.2s;
+  border: 1px solid rgba(184, 148, 58, 0.4);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.75);
+}
+.ace-qol-cfg-toggle-track::before {
+  content: "";
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  left: 3px;
+  top: 2px;
+  background: linear-gradient(180deg, #888, #555);
+  border-radius: 50%;
+  transition: 0.2s;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
+}
+.ace-qol-cfg-toggle input:checked + .ace-qol-cfg-toggle-track {
+  background:
+    linear-gradient(180deg, rgba(255, 220, 130, 0.6), rgba(140, 100, 30, 0.7)),
+    url("../Assets/UI/Brass Frame/brass-brushed-surface.png") repeat;
+  background-size: auto, 80px;
+  border-color: #ffaa44;
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.4),
+    0 0 10px rgba(255, 170, 68, 0.55);
+}
+.ace-qol-cfg-toggle input:checked + .ace-qol-cfg-toggle-track::before {
+  transform: translateX(20px);
+  background: linear-gradient(180deg, #fff0b8, #ffaa44);
+  box-shadow:
+    0 0 8px rgba(255, 200, 100, 0.85),
+    0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+/* ── Hint text — warm cream-amber, readable on dark steel ── */
+.ace-qol-cfg-hint {
+  margin: 6px 0 0 0;
+  font-size: 15px;
+  color: #c9b890;
+  line-height: 1.45;
+  font-style: italic;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.85);
+}
+.ace-qol-cfg-empty {
+  text-align: center;
+  color: #c9b890;
+  padding: 50px 30px;
+  font-size: 16px;
+  font-style: italic;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.85);
+}
+
+/* ── Footer — brass surface bar ── */
+.ace-qol-cfg-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 18px;
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.35) 0%, transparent 25%, rgba(255, 240, 200, 0.18) 100%),
+    url("../Assets/UI/Brass Frame/brass-brushed-surface.png") repeat;
+  background-blend-mode: overlay, normal;
+  border-top: 3px solid #2a1a05;
+  border-bottom: 1px solid rgba(255, 230, 150, 0.4);
+  border-left: 1px solid rgba(255, 230, 150, 0.45);
+  border-right: 1px solid rgba(255, 230, 150, 0.45);
+  box-shadow:
+    inset 0 -1px 0 rgba(255, 250, 220, 0.4),
+    inset 0 2px 4px rgba(60, 40, 5, 0.35),
+    inset 1px 0 0 rgba(255, 250, 220, 0.35),
+    inset -1px 0 0 rgba(255, 250, 220, 0.35),
+    0 -4px 10px rgba(0, 0, 0, 0.55);
+  gap: 10px;
+  min-height: 56px;
+  position: relative;
+}
+.ace-qol-cfg-footer::before {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; top: -8px;
+  height: 12px;
+  background: url("../Assets/UI/Brass Frame/horizontal-divider.png") no-repeat center;
+  background-size: 100% 100%;
+  pointer-events: none;
+}
+.ace-qol-cfg-footer-left,
+.ace-qol-cfg-footer-right {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+/* All footer buttons get the brass treatment.
+   Save is the same shape with a slightly stronger amber glow. */
+.ace-qol-cfg-footer button {
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.35) 0%, transparent 40%, rgba(0, 0, 0, 0.35) 100%),
+    url("../Assets/UI/Brass Frame/brass-brushed-surface.png") repeat;
+  background-blend-mode: overlay, normal;
+  background-size: auto, 200px;
+  border: 1px solid #5a3a08;
+  color: #000;
+  padding: 8px 22px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: "Rajdhani", sans-serif;
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  min-width: 120px;
+  text-shadow: 0 1px 0 rgba(255, 240, 200, 0.55);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 250, 220, 0.5),
+    inset 0 -2px 3px rgba(60, 40, 5, 0.35),
+    0 2px 4px rgba(0, 0, 0, 0.6);
+  transition: filter 0.12s ease, box-shadow 0.12s ease, transform 0.08s ease;
+}
+.ace-qol-cfg-footer button i {
+  color: #000;
+  text-shadow: 0 1px 0 rgba(255, 240, 200, 0.5);
+  filter: drop-shadow(0 1px 0 rgba(255, 240, 200, 0.4));
+  margin-right: 6px;
+}
+.ace-qol-cfg-footer button:hover {
+  color: #4a2a05;
+  text-shadow: 0 1px 0 rgba(255, 240, 200, 0.7);
+  filter: brightness(1.10);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 250, 220, 0.6),
+    inset 0 -2px 3px rgba(60, 40, 5, 0.35),
+    0 3px 6px rgba(0, 0, 0, 0.65),
+    0 0 10px rgba(255, 170, 68, 0.7);
+}
+.ace-qol-cfg-footer button:active {
+  transform: translateY(1px);
+  filter: brightness(0.95);
+}
+/* Save button — brightest amber glow + brighter trim, the hero button */
+.ace-qol-cfg-save-btn {
+  border-color: #ffe89a !important;
+  color: #000 !important;
+  text-shadow: 0 1px 0 rgba(255, 240, 200, 0.6) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 250, 220, 0.7),
+    inset 0 -2px 3px rgba(60, 40, 5, 0.35),
+    0 0 14px rgba(255, 170, 68, 0.7),
+    0 2px 4px rgba(0, 0, 0, 0.6) !important;
+}
+.ace-qol-cfg-save-btn i {
+  color: #000 !important;
+  text-shadow: 0 1px 0 rgba(255, 240, 200, 0.6) !important;
+}
+.ace-qol-cfg-save-btn:hover {
+  filter: brightness(1.10) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 250, 220, 0.75),
+    inset 0 -2px 3px rgba(60, 40, 5, 0.35),
+    0 0 22px rgba(255, 170, 68, 0.95),
+    0 3px 6px rgba(0, 0, 0, 0.7) !important;
+}
+
+/* Preset dropdown — brass with glowing gold text + black outline */
+.ace-qol-cfg-preset-select {
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.35) 0%, transparent 40%, rgba(0, 0, 0, 0.35) 100%),
+    url("../Assets/UI/Brass Frame/brass-brushed-surface.png") repeat;
+  background-blend-mode: overlay, normal;
+  background-size: auto, 200px;
+  border: 1px solid #5a3a08;
+  color: #000;
+  padding: 8px 14px;
+  border-radius: 3px;
+  font-family: "Rajdhani", sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  min-width: 200px;
+  text-shadow: 0 1px 0 rgba(255, 240, 200, 0.55);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 250, 220, 0.5),
+    inset 0 -2px 3px rgba(60, 40, 5, 0.35),
+    0 2px 4px rgba(0, 0, 0, 0.6);
+  cursor: pointer;
+}
+.ace-qol-cfg-preset-select option {
+  background: #0a0a0c;
+  color: #ffd878;
+  font-weight: 700;
+  padding: 6px 8px;
+}
+
+/* ─── XP Distribution dialog ────────────────────────────────────────────── */
+.ace-qol-xp-dialog-window .window-content {
+  background: linear-gradient(135deg, #0a0a0c, #111114);
+  color: #e8e8e8;
+}
+.ace-qol-xp-dialog {
+  font-family: "Rajdhani", "Signika", sans-serif;
+  font-size: 13px;
+}
+.ace-qol-xp-dialog hr {
+  border: none;
+  border-top: 1px solid rgba(212, 175, 55, 0.25);
+  margin: 8px 0;
+}
+.ace-qol-xp-kills {
+  margin-bottom: 8px;
+}
+.ace-qol-xp-kills ul {
+  list-style: none;
+  padding: 4px 0 0 4px;
+  margin: 4px 0 0 0;
+}
+.ace-qol-xp-kills li {
+  padding: 3px 0;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.05);
+}
+.ace-qol-xp-cr {
+  font-size: 0.85em;
+  color: #888;
+  margin-left: 4px;
+}
+.ace-qol-xp-totals {
+  text-align: center;
+  padding: 6px 8px;
+  background: rgba(212, 175, 55, 0.08);
+  border: 1px solid rgba(212, 175, 55, 0.3);
+  border-radius: 4px;
+  margin: 8px 0;
+}
+.ace-qol-xp-totals strong {
+  color: #d4af37;
+  font-size: 1.1em;
+}
+.ace-qol-xp-pcs strong {
+  color: #d4af37;
+  display: block;
+  margin-bottom: 6px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+.ace-qol-xp-pc {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+.ace-qol-xp-pc-name {
+  flex: 1;
+  font-weight: 600;
+  color: #e8e8e8;
+}
+.ace-qol-xp-pc-amount {
+  width: 80px;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(212, 175, 55, 0.4);
+  color: #d4af37;
+  font-weight: 700;
+  text-align: right;
+  padding: 2px 5px;
+  border-radius: 3px;
+}
+.ace-qol-xp-pc-current {
+  font-size: 0.85em;
+  color: #888;
+  min-width: 95px;
+  text-align: right;
+}
+.ace-qol-xp-skipped, .ace-qol-xp-offline {
+  font-size: 11px;
+  color: #888;
+  font-style: italic;
+  margin-top: 6px;
+  padding: 4px 8px;
+}
+
+/* ─── XP award chat card ────────────────────────────────────────────────── */
+.ace-qol-xp-card {
+  background: linear-gradient(135deg, #0a0a0c, #111114);
+  border: 1px solid #d4af37;
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-family: "Rajdhani", sans-serif;
+}
+.ace-qol-xp-card-header {
+  color: #d4af37;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  font-size: 12px;
+  border-bottom: 1px solid rgba(212, 175, 55, 0.3);
+  padding-bottom: 6px;
+  margin-bottom: 6px;
+}
+.ace-qol-xp-card-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.ace-qol-xp-card-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  font-size: 12px;
+}
+.ace-qol-xp-row-amount {
+  color: #6ee06e;
+  font-weight: 700;
+  text-align: right;
+  width: 80px;
+}
+.ace-qol-xp-row-newxp {
+  color: #ccc;
+  text-align: right;
+}
+
+/* ─── Lootable Tile dialog (per-corpse loot view) ──────────────────────── */
+.ace-qol-tile-loot-dialog-window .window-content {
+  background: linear-gradient(135deg, #0a0a0c, #111114);
+  color: #e8e8e8;
+}
+.ace-qol-tile-loot-dialog {
+  font-family: "Rajdhani", "Signika", sans-serif;
+  font-size: 13px;
+}
+.ace-qol-tile-loot-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 4px 8px;
+  border-bottom: 1px solid rgba(212, 175, 55, 0.3);
+  margin-bottom: 8px;
+}
+.ace-qol-tile-loot-header strong {
+  font-size: 16px;
+  color: #d4af37;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+.ace-qol-tile-loot-type {
+  font-size: 11px;
+  color: #888;
+  font-style: italic;
+}
+.ace-qol-tile-loot-locked {
+  background: rgba(255, 80, 80, 0.1);
+  border: 1px solid rgba(255, 80, 80, 0.4);
+  border-radius: 4px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  color: #ff8080;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 600;
+}
+.ace-qol-tile-loot-locked button {
+  background: rgba(212, 175, 55, 0.15);
+  border: 1px solid #d4af37;
+  color: #d4af37;
+  padding: 3px 10px;
+  border-radius: 3px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ace-qol-tile-loot-locked button:hover {
+  background: rgba(212, 175, 55, 0.3);
+  box-shadow: 0 0 8px rgba(212, 175, 55, 0.4);
+}
+.ace-qol-tile-loot-gold {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  background: rgba(212, 175, 55, 0.08);
+  border: 1px solid rgba(212, 175, 55, 0.4);
+  border-radius: 4px;
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+.ace-qol-tile-loot-gold strong { color: #ffd700; }
+.ace-qol-tile-loot-gold button {
+  margin-left: auto;
+  background: rgba(255, 215, 0, 0.1);
+  border: 1px solid #ffd700;
+  color: #ffd700;
+  padding: 3px 10px;
+  border-radius: 3px;
+  font-weight: 700;
+  cursor: pointer;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.ace-qol-tile-loot-gold button:hover {
+  background: rgba(255, 215, 0, 0.25);
+}
+.ace-qol-tile-loot-gold button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.ace-qol-tile-loot-items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ace-qol-tile-loot-item {
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(212, 175, 55, 0.2);
+  border-radius: 4px;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ace-qol-tile-loot-item > .ace-qol-tile-loot-img,
+.ace-qol-tile-loot-item > .ace-qol-tile-loot-name {
+  display: inline-block;
+}
+.ace-qol-tile-loot-img {
+  width: 28px;
+  height: 28px;
+  border-radius: 3px;
+  border: 1px solid rgba(212, 175, 55, 0.3);
+  vertical-align: middle;
+  margin-right: 6px;
+}
+.ace-qol-tile-loot-name {
+  font-weight: 700;
+  color: #e8e8e8;
+  font-size: 13px;
+  vertical-align: middle;
+}
+.ace-qol-tile-loot-give-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+.ace-qol-loot-give-btn {
+  flex: 1 1 auto;
+  background: rgba(212, 175, 55, 0.08);
+  border: 1px solid rgba(212, 175, 55, 0.5);
+  color: #d4af37;
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-weight: 600;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+  white-space: nowrap;
+}
+.ace-qol-loot-give-btn:hover:not(:disabled) {
+  background: rgba(212, 175, 55, 0.25);
+  box-shadow: 0 0 6px rgba(212, 175, 55, 0.4);
+}
+.ace-qol-loot-give-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  border-style: dashed;
+}
+.ace-qol-tile-loot-empty {
+  text-align: center;
+  font-style: italic;
+  color: #666;
+  padding: 12px;
+}
+
+/* ─── Effects Panel (floating side panel for selected token's effects) ── */
+.ace-qol-effects-panel {
+  position: fixed;
+  z-index: 60;
+  width: 260px;
+  max-height: 70vh;
+  overflow-y: auto;
+  background: linear-gradient(135deg, rgba(10, 10, 12, 0.95), rgba(17, 17, 20, 0.95));
+  border: 1px solid rgba(212, 175, 55, 0.45);
+  border-radius: 6px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6), 0 0 12px rgba(212, 175, 55, 0.15);
+  font-family: "Rajdhani", "Signika", sans-serif;
+  pointer-events: auto;
+  user-select: none;
+  transition: right 0.3s ease, left 0.3s ease;
+}
+
+/* ── Header (clickable + draggable; click toggles, drag moves) ── */
+.ace-qol-effects-panel-header {
+  padding: 6px 10px;
+  background: linear-gradient(180deg, rgba(212, 175, 55, 0.12) 0%, transparent 100%);
+  border-bottom: 1px solid rgba(212, 175, 55, 0.3);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: grab;
+  transition: background 0.15s ease;
+  user-select: none;
+}
+.ace-qol-effects-panel-header:active {
+  cursor: grabbing;
+}
+.ace-qol-effects-panel-header:hover {
+  background: linear-gradient(180deg, rgba(212, 175, 55, 0.2) 0%, transparent 100%);
+}
+.ace-qol-effects-panel-chevron {
+  color: #d4af37;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.ace-qol-effects-panel-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  flex: 1;
+  min-width: 0;
+}
+.ace-qol-effects-panel-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: #d4af37;
+  line-height: 1.2;
+}
+.ace-qol-effects-panel-actor {
+  font-size: 12px;
+  font-weight: 700;
+  color: #e0e0e0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+}
+.ace-qol-effects-panel-counts {
+  font-size: 10px;
+  color: #888;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  flex-shrink: 0;
+}
+
+/* ── Collapsed state: hide body ── */
+.ace-qol-effects-panel-body {
+  display: flex;
+  flex-direction: column;
+  transition: max-height 0.25s ease;
+  overflow: hidden;
+}
+.ace-qol-effects-panel-collapsed .ace-qol-effects-panel-body {
+  display: none;
+}
+.ace-qol-effects-panel-collapsed {
+  border-bottom-left-radius: 6px;
+  border-bottom-right-radius: 6px;
+}
+
+/* ── Section labels (Active / Auras) ── */
+.ace-qol-effects-section-label {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: #888;
+  padding: 5px 10px 3px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  background: rgba(0, 0, 0, 0.2);
+}
+
+/* ── Effect rows ── */
+.ace-qol-effect-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.ace-qol-effect-row:last-of-type {
+  border-bottom: none;
+}
+.ace-qol-effect-row:hover {
+  background: rgba(212, 175, 55, 0.08);
+}
+.ace-qol-aura-row {
+  background: rgba(212, 175, 55, 0.04);
+}
+.ace-qol-aura-row .ace-qol-effect-icon {
+  border-color: rgba(212, 175, 55, 0.6);
+  box-shadow: 0 0 6px rgba(212, 175, 55, 0.25);
+}
+.ace-qol-effect-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 4px;
+  border: 1px solid rgba(212, 175, 55, 0.3);
+  flex-shrink: 0;
+  object-fit: cover;
+}
+.ace-qol-effect-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+.ace-qol-effect-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #e8e8e8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ace-qol-effect-duration {
+  font-size: 10px;
+  color: #d4af37;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+
+/* ── Passive expandable footer ── */
+.ace-qol-effects-passive-toggle {
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #aaa;
+  background: rgba(0, 0, 0, 0.3);
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ace-qol-effects-passive-toggle:hover {
+  background: rgba(212, 175, 55, 0.08);
+  color: #d4af37;
+}
+.ace-qol-effects-passive-toggle.expanded {
+  color: #d4af37;
+}
+.ace-qol-effects-passive-toggle i {
+  font-size: 10px;
+  pointer-events: none;
+}
+
+/* ── Description tooltip ── */
+.ace-qol-effect-tooltip {
+  padding: 8px 12px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #ccc;
+  background: rgba(0, 0, 0, 0.4);
+  border-bottom: 1px solid rgba(212, 175, 55, 0.2);
+  border-left: 2px solid rgba(212, 175, 55, 0.5);
+}
+.ace-qol-effect-tooltip[hidden] { display: none; }
+.ace-qol-effect-tooltip p { margin: 0 0 4px 0; }
+.ace-qol-effect-tooltip strong { color: #d4af37; }
+
+/* ─── Phase 1 X-remove button (on save card before damage) ─────────────── */
+.ace-qol-save-phase1-remove {
+  background: transparent;
+  border: 1px solid rgba(255, 80, 80, 0.4);
+  color: #ff6b6b;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-left: 8px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+.ace-qol-save-phase1-remove:hover {
+  background: rgba(255, 80, 80, 0.15);
+  border-color: rgba(255, 80, 80, 0.85);
+  box-shadow: 0 0 6px rgba(255, 80, 80, 0.4);
+}
+.ace-qol-save-phase1-remove i { pointer-events: none; }
+
+/* ─── Attack card: chevron toggle + expandable item details ─────────────── */
+.ace-qol-atk-info-toggle {
+  background: transparent;
+  border: 1px solid rgba(212, 175, 55, 0.35);
+  color: #d4af37;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-left: 6px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  font-size: 11px;
+}
+.ace-qol-atk-info-toggle:hover {
+  background: rgba(212, 175, 55, 0.15);
+  border-color: rgba(212, 175, 55, 0.7);
+  box-shadow: 0 0 6px rgba(212, 175, 55, 0.4);
+}
+.ace-qol-atk-info-toggle i {
+  pointer-events: none;
+}
+.ace-qol-atk-item-details {
+  border-top: 1px solid rgba(212, 175, 55, 0.25);
+  border-bottom: 1px solid rgba(212, 175, 55, 0.25);
+  background: rgba(10, 10, 12, 0.4);
+  padding: 10px 12px;
+  margin: 6px 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #d8d8d8;
+  max-height: 360px;
+  overflow-y: auto;
+}
+.ace-qol-atk-item-details.ace-qol-collapsed { display: none !important; }
+.ace-qol-atk-itemdesc p { margin: 0 0 6px 0; }
+.ace-qol-atk-itemdesc strong { color: #d4af37; }
+.ace-qol-atk-itemdesc em { color: #b8b8b8; }
+.ace-qol-atk-itemtags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(212, 175, 55, 0.2);
+}
+.ace-qol-atk-itemtag {
+  display: inline-block;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 2px 7px;
+  border: 1px solid rgba(212, 175, 55, 0.4);
+  border-radius: 3px;
+  color: #d4af37;
+  background: rgba(212, 175, 55, 0.06);
+  text-transform: uppercase;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ *  HEAL PIPELINE — Card + Target Picker
+ *  Same gold-on-black aesthetic as the attack card. Healing accent color
+ *  is luminous green (#5cf28a) instead of damage red.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Heal Chat Card ─────────────────────────────────────────────────────── */
+.ace-qol-heal-card {
+  background: linear-gradient(135deg, rgba(10,10,12,0.96), rgba(17,17,20,0.96));
+  border: 1px solid rgba(92, 242, 138, 0.45);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: "Rajdhani", "Signika", sans-serif;
+  color: #e8e8ea;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.5), 0 0 8px rgba(92,242,138,0.12);
+}
+.ace-qol-heal-card-header {
+  display: flex; align-items: center; gap: 10px; padding-bottom: 6px;
+  border-bottom: 1px solid rgba(92,242,138,0.25);
+}
+.ace-qol-heal-card-icon {
+  width: 36px; height: 36px; border-radius: 4px; flex: 0 0 auto;
+  border: 1px solid rgba(92,242,138,0.4);
+}
+.ace-qol-heal-card-titles {
+  display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto;
+}
+.ace-qol-heal-card-title {
+  font-family: "Cinzel Decorative", "Cinzel", serif;
+  font-weight: 700; font-size: 14px; color: #d4af37; letter-spacing: 0.5px;
+}
+.ace-qol-heal-card-tag {
+  display: inline-block; align-self: flex-start;
+  font-size: 9px; font-weight: 700; letter-spacing: 1.5px;
+  padding: 2px 6px; border-radius: 2px; text-transform: uppercase;
+}
+.ace-qol-heal-card-tag-hp {
+  background: rgba(92,242,138,0.18); color: #5cf28a;
+  border: 1px solid rgba(92,242,138,0.4);
+}
+.ace-qol-heal-card-tag-temp {
+  background: rgba(108,170,255,0.18); color: #6caaff;
+  border: 1px solid rgba(108,170,255,0.4);
+}
+
+/* ── Formula chip ──────────────────────────────────────────────────────── */
+.ace-qol-heal-card-formula {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 4px; margin-top: 4px;
+  background: rgba(0,0,0,0.25); border-radius: 4px;
+  font-size: 14px;
+}
+.ace-qol-heal-card-die {
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  width: 48px; height: 48px;
+}
+.ace-qol-heal-card-die-img {
+  width: 48px; height: 48px; object-fit: contain;
+  /* Layered green glow — outer halo + inner sharper edge for richness */
+  filter: drop-shadow(0 0 6px rgba(92, 242, 138, 0.65))
+          drop-shadow(0 0 12px rgba(92, 242, 138, 0.35))
+          drop-shadow(0 0 2px rgba(170, 255, 200, 0.6));
+  transition: filter 0.2s ease;
+}
+.ace-qol-heal-card-die:hover .ace-qol-heal-card-die-img {
+  filter: drop-shadow(0 0 8px rgba(92, 242, 138, 0.85))
+          drop-shadow(0 0 16px rgba(92, 242, 138, 0.5))
+          drop-shadow(0 0 3px rgba(170, 255, 200, 0.8));
+}
+.ace-qol-heal-card-die i,
+.ace-qol-heal-card-die-fallback {
+  font-size: 36px; color: #5cf28a;
+  filter: drop-shadow(0 0 4px rgba(92,242,138,0.6));
+}
+.ace-qol-heal-card-die-result {
+  position: absolute; font-weight: 700; color: #fff; font-size: 13px;
+  text-shadow: 0 0 3px #000, 0 0 3px #000;
+}
+.ace-qol-heal-card-bonus {
+  font-weight: 700; color: #d4af37; font-size: 16px;
+}
+.ace-qol-heal-card-equals {
+  color: #888; margin: 0 2px;
+}
+.ace-qol-heal-card-total {
+  font-family: "Orbitron", "Cinzel", serif; font-weight: 700;
+  color: #5cf28a; font-size: 22px;
+  text-shadow: 0 0 4px rgba(92,242,138,0.4);
+}
+.ace-qol-heal-card-total-label {
+  color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
+}
+
+/* ── Per-target rows ───────────────────────────────────────────────────── */
+.ace-qol-heal-card-targets {
+  display: flex; flex-direction: column; gap: 6px; margin-top: 8px;
+}
+.ace-qol-heal-card-target {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; background: rgba(255,255,255,0.03); border-radius: 4px;
+  border: 1px solid rgba(212,175,55,0.18);
+}
+.ace-qol-heal-card-target.applied {
+  opacity: 0.55; background: rgba(92,242,138,0.06);
+  border-color: rgba(92,242,138,0.3);
+}
+.ace-qol-heal-card-target-img {
+  width: 32px; height: 32px; border-radius: 50%;
+  border: 1px solid rgba(212,175,55,0.3); flex: 0 0 auto;
+}
+.ace-qol-heal-card-target-info {
+  display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-width: 0;
+}
+.ace-qol-heal-card-target-name {
+  font-weight: 600; color: #e8e8ea; font-size: 12px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ace-qol-heal-card-target-hpline {
+  display: flex; align-items: center; gap: 4px; font-size: 11px;
+}
+.ace-qol-heal-card-target-hp-before { color: #aaa; }
+.ace-qol-heal-card-target-arrow { color: #5cf28a; font-size: 9px; }
+.ace-qol-heal-card-target-hp-after { color: #5cf28a; font-weight: 700; }
+.ace-qol-heal-card-target-hp-max { color: #666; }
+.ace-qol-heal-card-target-temptag {
+  margin-left: 4px; font-size: 9px; padding: 1px 4px;
+  background: rgba(108,170,255,0.18); color: #6caaff;
+  border: 1px solid rgba(108,170,255,0.4); border-radius: 2px;
+  text-transform: uppercase; letter-spacing: 1px;
+}
+.ace-qol-heal-card-target-bar {
+  position: relative; height: 4px; background: rgba(255,255,255,0.06);
+  border-radius: 2px; overflow: hidden; margin-top: 2px;
+}
+.ace-qol-heal-card-target-bar-before {
+  position: absolute; top: 0; left: 0; height: 100%;
+  background: rgba(170,170,170,0.5);
+}
+.ace-qol-heal-card-target-bar-gain {
+  position: absolute; top: 0; height: 100%;
+  background: linear-gradient(90deg, #5cf28a, #aef9b0);
+  box-shadow: 0 0 4px rgba(92,242,138,0.6);
+}
+.ace-qol-heal-card-target-action { flex: 0 0 auto; }
+.ace-qol-heal-card-apply, .ace-qol-heal-card-applied {
+  font-family: "Rajdhani", sans-serif; font-weight: 700; font-size: 11px;
+  letter-spacing: 1px; text-transform: uppercase;
+  padding: 5px 10px; border-radius: 3px; cursor: pointer;
+  background: linear-gradient(180deg, rgba(92,242,138,0.18), rgba(92,242,138,0.08));
+  color: #5cf28a; border: 1px solid rgba(92,242,138,0.5);
+  transition: all 0.15s;
+}
+.ace-qol-heal-card-apply:hover {
+  background: linear-gradient(180deg, rgba(92,242,138,0.3), rgba(92,242,138,0.15));
+  box-shadow: 0 0 8px rgba(92,242,138,0.4);
+}
+.ace-qol-heal-card-applied {
+  cursor: default; opacity: 0.55;
+  background: rgba(92,242,138,0.06) !important;
+  color: #88c499 !important;
+  border-color: rgba(92,242,138,0.25) !important;
+}
+.ace-qol-heal-card-applied:disabled { pointer-events: none; }
+
+/* Apply to All button — sits below the per-target rows */
+.ace-qol-heal-card-applyall-row {
+  margin-top: 8px; padding-top: 8px;
+  border-top: 1px solid rgba(212,175,55,0.2);
+  display: flex; justify-content: center;
+}
+.ace-qol-heal-card-applyall {
+  font-family: "Rajdhani", sans-serif; font-weight: 700; font-size: 12px;
+  letter-spacing: 1.5px; text-transform: uppercase;
+  padding: 6px 18px; border-radius: 3px; cursor: pointer;
+  background: linear-gradient(180deg, rgba(92,242,138,0.25), rgba(92,242,138,0.12));
+  color: #5cf28a; border: 1px solid rgba(92,242,138,0.6);
+  transition: all 0.15s;
+  box-shadow: 0 0 4px rgba(92,242,138,0.2);
+}
+.ace-qol-heal-card-applyall:hover {
+  background: linear-gradient(180deg, rgba(92,242,138,0.35), rgba(92,242,138,0.18));
+  box-shadow: 0 0 12px rgba(92,242,138,0.5);
+}
+.ace-qol-heal-card-applyall.applied,
+.ace-qol-heal-card-applyall:disabled {
+  opacity: 0.55; pointer-events: none;
+  background: rgba(92,242,138,0.06);
+  color: #88c499; border-color: rgba(92,242,138,0.25);
+}
+
+.ace-qol-heal-applied-msg {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; font-family: "Rajdhani", sans-serif; font-size: 13px;
+  background: rgba(92,242,138,0.06); border-left: 3px solid #5cf28a;
+  border-radius: 0 3px 3px 0;
+}
+.ace-qol-heal-applied-msg i { color: #5cf28a; }
+.ace-qol-heal-applied-delta { color: #5cf28a; font-weight: 700; }
+
+/* ── Target Picker Dialog ──────────────────────────────────────────────── */
+.ace-qol-heal-pickr {
+  font-family: "Rajdhani", "Signika", sans-serif; color: #e8e8ea;
+}
+.ace-qol-heal-pickr-header {
+  display: flex; align-items: center; gap: 10px;
+  padding-bottom: 8px; margin-bottom: 8px;
+  border-bottom: 1px solid rgba(92,242,138,0.3);
+}
+.ace-qol-heal-pickr-icon {
+  width: 38px; height: 38px; border-radius: 4px;
+  border: 1px solid rgba(92,242,138,0.4);
+}
+.ace-qol-heal-pickr-titles {
+  display: flex; flex-direction: column; gap: 4px;
+}
+.ace-qol-heal-pickr-name {
+  font-family: "Cinzel Decorative", serif; font-weight: 700;
+  font-size: 15px; color: #d4af37;
+}
+.ace-qol-heal-pickr-meta { display: flex; gap: 6px; }
+.ace-qol-heal-pickr-tag {
+  display: inline-block; padding: 2px 6px; border-radius: 2px;
+  font-size: 9px; font-weight: 700; letter-spacing: 1.2px;
+  background: rgba(92,242,138,0.15); color: #5cf28a;
+  border: 1px solid rgba(92,242,138,0.4); text-transform: uppercase;
+}
+.ace-qol-heal-pickr-tag-temp {
+  background: rgba(108,170,255,0.18); color: #6caaff;
+  border-color: rgba(108,170,255,0.4);
+}
+.ace-qol-heal-pickr-instructions {
+  font-size: 11px; color: #999; margin-bottom: 8px;
+}
+.ace-qol-heal-pickr-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 6px; max-height: 360px; overflow-y: auto;
+  padding: 4px; background: rgba(0,0,0,0.2); border-radius: 4px;
+}
+.ace-qol-heal-pickr-tok {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 6px; background: rgba(255,255,255,0.04); border-radius: 4px;
+  border: 2px solid transparent; cursor: pointer; transition: all 0.12s;
+  position: relative;
+}
+.ace-qol-heal-pickr-tok:hover {
+  background: rgba(92,242,138,0.08); border-color: rgba(92,242,138,0.3);
+}
+.ace-qol-heal-pickr-tok.invalid { opacity: 0.45; }
+.ace-qol-heal-pickr-tok.invalid:hover {
+  background: rgba(255,80,80,0.1); border-color: rgba(255,80,80,0.3);
+}
+.ace-qol-heal-pickr-tok.selected {
+  background: rgba(92,242,138,0.18); border-color: #5cf28a;
+  box-shadow: 0 0 8px rgba(92,242,138,0.4); opacity: 1;
+}
+.ace-qol-heal-pickr-tok-img-wrap { position: relative; }
+.ace-qol-heal-pickr-tok-img {
+  width: 60px; height: 60px; border-radius: 50%;
+  border: 2px solid rgba(212,175,55,0.4); object-fit: cover;
+}
+.ace-qol-heal-pickr-tok.selected .ace-qol-heal-pickr-tok-img {
+  border-color: #5cf28a;
+}
+.ace-qol-heal-pickr-tok.pc .ace-qol-heal-pickr-tok-img {
+  border-color: rgba(108,170,255,0.6);
+}
+.ace-qol-heal-pickr-tok-self-badge {
+  position: absolute; bottom: -4px; left: 50%; transform: translateX(-50%);
+  font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 2px;
+  background: #d4af37; color: #1a1a1c; letter-spacing: 1px;
+}
+.ace-qol-heal-pickr-tok-name {
+  font-weight: 600; font-size: 11px; color: #e8e8ea; text-align: center;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+}
+.ace-qol-heal-pickr-tok-hp {
+  width: 100%; display: flex; flex-direction: column; gap: 2px;
+}
+.ace-qol-heal-pickr-tok-hp-bar {
+  height: 4px; background: rgba(255,255,255,0.08); border-radius: 2px; overflow: hidden;
+}
+.ace-qol-heal-pickr-tok-hp-fill {
+  height: 100%; background: linear-gradient(90deg, #fd0808, #d4af37, #5cf28a);
+}
+.ace-qol-heal-pickr-tok-hp-text {
+  font-size: 10px; color: #aaa; text-align: center; display: flex; gap: 4px; justify-content: center;
+}
+.ace-qol-heal-pickr-tok-temp { color: #6caaff; font-weight: 700; }
+.ace-qol-heal-pickr-tok-dist {
+  font-size: 9px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
+  padding: 1px 5px; border-radius: 2px;
+}
+.ace-qol-heal-pickr-tok-dist.in-range {
+  color: #5cf28a; background: rgba(92,242,138,0.1);
+}
+.ace-qol-heal-pickr-tok-dist.out-of-range {
+  color: #ff7878; background: rgba(255,80,80,0.1);
+}
+.ace-qol-heal-pickr-tok-dist.self {
+  color: #d4af37; background: rgba(212,175,55,0.12);
+}
+.ace-qol-heal-pickr-footer {
+  margin-top: 8px; padding-top: 8px;
+  border-top: 1px solid rgba(212,175,55,0.2);
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px; color: #aaa; gap: 12px;
+}
+.ace-qol-heal-pickr-count-num { color: #5cf28a; }
+
+.ace-qol-heal-pickr-consume {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; color: #c0c0c0; cursor: pointer;
+  padding: 3px 8px; border-radius: 3px;
+  background: rgba(212,175,55,0.05); border: 1px solid rgba(212,175,55,0.25);
+  user-select: none; transition: all 0.12s;
+}
+.ace-qol-heal-pickr-consume:hover {
+  background: rgba(212,175,55,0.1); border-color: rgba(212,175,55,0.5);
+}
+.ace-qol-heal-pickr-consume input[type="checkbox"] {
+  accent-color: #5cf28a; cursor: pointer;
 }
