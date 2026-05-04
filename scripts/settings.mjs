@@ -334,9 +334,15 @@ export class QolSettings {
 
     s("auraVisualMode", {
       name: "Aura Visual Style",
-      hint: "How to render aura range circles. RINGS (default) = always show our reliable PIXI rings around source tokens. AUTO = defer to Automated Animations when it's active (less reliable — AA may only render on some tokens). OFF = no ace-qol rings (rely on AA or nothing). Default changed to RINGS in v0.4.13 because AA's per-effect rendering proved inconsistent.",
-      scope: "world", config: false, type: String, default: "rings",
-      choices: { rings: "PIXI rings (default — reliable)", auto: "Auto (defer to AA when active)", off: "Off (no rings)" },
+      hint: "How to render aura range circles. RINGS = always show our reliable PIXI rings around source tokens. AUTO = defer to Automated Animations when it's active (less reliable — AA may only render on some tokens). OFF (default) = no ace-qol rings (rely on AA or nothing).",
+      scope: "world", config: false, type: String, default: "off",
+      choices: { off: "Off (default — no ace-qol rings)", rings: "PIXI rings (reliable)", auto: "Auto (defer to AA when active)" },
+    });
+
+    s("spellAutoDamageEnabled", {
+      name: "Spell Auto-Damage Pipeline (Magic Missile, Fire Bolt, etc.)",
+      hint: "When ON (default), ace-qol intercepts auto-hit damage spells (Magic Missile, Fire Bolt, etc.) and posts our unified ROLL DAMAGE card with per-target apply/undo + resistance/immunity gates. dnd5e's native damage popup is suppressed via prototype patch. Set to OFF for a clean fallback to vanilla dnd5e flow if our pipeline misbehaves.",
+      scope: "world", config: false, type: Boolean, default: true,
     });
 
     s("batchResultsCard", {

@@ -43,61 +43,50 @@ export class SpellAutoDamage {
   }
 
   _registerHooks() {
-    // ── Mark cast active EARLY (preUseActivity) so the damage-dialog
-    //    suppressor catches it, but POST the chat card LATE (after the
-    //    cast is confirmed via postCreateUsageMessage). This fixes:
-    //    - User clicked cast → our card appeared BEFORE the slot dialog
-    //      (now waits until slot is confirmed)
-    //    - dnd5e's damage dialog still appeared → now suppressed
-    //
-    // Two separate hooks now:
-    //   preUseActivity         → mark active (catch both card + dialog)
-    //   postCreateUsageMessage → post our card
-    //   preRollDamageV2        → cancel dnd5e's damage roll dialog
-    //   preCreateChatMessage   → cancel dnd5e's damage chat card
+    // ── KILL SWITCH: setting `spellAutoDamageEnabled` (default true) ──
+    // When OFF, our pipeline doesn't intercept anything. dnd5e handles
+    // auto-hit damage spells natively. Use this if our suppression
+    // misbehaves and you need a clean fallback at the table.
+    if (QolSettings.get?.("spellAutoDamageEnabled") === false) {
+      console.log(`${MODULE_ID} | SpellAutoDamage DISABLED via setting — dnd5e handles auto-damage spells natively`);
+      return;
+    }
+
+    // ── Mark cast active EARLY (preUseActivity) so the rollDamage
+    //    prototype patch knows to suppress the dialog + chat card.
     Hooks.on("dnd5e.preUseActivity", (activity, usageConfig) => {
       if (!SpellAutoDamage._isAutoHitDamageSpell(activity)) return;
       const actor = activity?.item?.actor;
       const itemId = activity?.item?.id;
       if (!actor) return;
       SpellAutoDamage._markActiveCast(actor.id, itemId);
-      // Auto-clear after 5s — covers slot dialog wait + cast finalize +
-      // any tail follow-ups. If user cancels at slot dialog, marker
-      // expires harmlessly.
+      // Auto-clear after 5s — covers slot dialog wait + cast finalize.
       setTimeout(() => SpellAutoDamage._unmarkActiveCast(actor.id, itemId), 5000);
     });
 
-    // Post our damage card AFTER the cast is confirmed (slot consumed,
-    // usage card visible). This fixes the premature card appearing
-    // before the user even confirmed the slot in the cast dialog.
+    // ── Post our damage card AFTER cast is confirmed ──
+    // dnd5e has consumed the slot, posted the usage card, fired its
+    // cast-time hooks (AA's animation triggers from those). Now we
+    // post our damage card.
     Hooks.on("dnd5e.postCreateUsageMessage", (activity /*, message */) => {
       if (!SpellAutoDamage._isAutoHitDamageSpell(activity)) return;
       const actor = activity?.item?.actor;
       if (!actor) return;
-      // Run pipeline async (don't block the hook chain)
       this._handleDamageSpell(activity, null)
         .catch(err => console.error(`${MODULE_ID} | SpellAutoDamage handler threw:`, err));
     });
 
-    // ── Cancel dnd5e's damage roll dialog while our pipeline owns the cast ──
-    // Without this, the user sees BOTH our "Roll Damage" chat card AND
-    // dnd5e's modal damage dialog — confusing for Magic Missile's
-    // multi-target distribution UX.
-    Hooks.on("dnd5e.preRollDamageV2", (config /*, dialog, message */) => {
-      try {
-        const activity = config?.subject;
-        if (!activity) return;
-        const actor = activity?.actor ?? activity?.item?.actor;
-        if (!actor) return;
-        if (SpellAutoDamage._isCastActive(actor.id, activity?.item?.id)) {
-          console.log(`${MODULE_ID} | SpellAutoDamage: canceling vanilla damage roll for ${activity.item?.name}`);
-          return false; // sync-cancel — no dialog, no roll
-        }
-      } catch (err) { /* fail-open */ }
-    });
+    // ── Suppress dnd5e's damage flow via prototype patch ──
+    // dnd5e 5.3.1 has NO preRollDamage hook (only post-roll
+    // rollDamage / rollDamageV2). The damage dialog is opened inside
+    // activity.rollDamage(). To stop both the dialog AND the
+    // resulting chat card, we wrap rollDamage on the damage-activity
+    // prototype: if our marker is active, return [] (empty rolls,
+    // no dialog, no chat). Otherwise call the original.
+    SpellAutoDamage._patchActivityRollDamage();
 
-    // Suppress dnd5e's auto-damage chat card while our pipeline runs.
-    // (Belt-and-suspenders if preRollDamageV2 didn't catch it.)
+    // Belt-and-suspenders: chat-message suppressor for any path that
+    // bypasses our prototype patch (custom activity subclasses, etc.)
     Hooks.on("preCreateChatMessage", (msg, data) => {
       if (!data?.flags?.dnd5e?.activity) return;
       const flagActorId = data.flags.dnd5e.activity?.actor;
@@ -109,12 +98,45 @@ export class SpellAutoDamage {
         && (data.flags.dnd5e.roll?.type === "damage"
             || data.flags.dnd5e.activity?.type === "damage");
       if (!isDamageRoll) return;
-
-      console.log(`${MODULE_ID} | SpellAutoDamage: suppressing vanilla damage card for ${flagItemId}`);
       return false;
     });
 
-    console.log(`${MODULE_ID} | Spell auto-damage pipeline online`);
+    console.log(`${MODULE_ID} | Spell auto-damage pipeline online (prototype patch active)`);
+  }
+
+  /**
+   * Monkey-patch CONFIG.DND5E.activityTypes.damage.documentClass.prototype.rollDamage
+   * so we can intercept damage activity rolls without canceling the cast.
+   *
+   * Called once during init. Idempotent — checks for prior patch via flag.
+   * Wrap in try/catch — if dnd5e changes the prototype shape, fail-open
+   * (vanilla flow continues, our card just shows "Roll Damage" without
+   * suppression and the user gets the double-prompt they're trying to
+   * avoid; minor regression, no crash).
+   */
+  static _patchActivityRollDamage() {
+    try {
+      const damageActivityClass = CONFIG.DND5E?.activityTypes?.damage?.documentClass;
+      if (!damageActivityClass?.prototype) return;
+      if (damageActivityClass.prototype._aceQolRollDamagePatched) return;
+
+      const original = damageActivityClass.prototype.rollDamage;
+      damageActivityClass.prototype.rollDamage = async function (...args) {
+        try {
+          const actorId = this?.actor?.id ?? this?.item?.actor?.id;
+          const itemId  = this?.item?.id;
+          if (actorId && SpellAutoDamage._isCastActive(actorId, itemId)) {
+            console.log(`${MODULE_ID} | rollDamage suppressed for ${this?.item?.name} (ace-qol owns this cast)`);
+            return []; // skip dialog + chat creation
+          }
+        } catch (_) { /* fall through to original */ }
+        return original.apply(this, args);
+      };
+      damageActivityClass.prototype._aceQolRollDamagePatched = true;
+      console.log(`${MODULE_ID} | activity.rollDamage prototype patch applied`);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | activity.rollDamage patch failed (non-fatal — vanilla flow will run):`, err);
+    }
   }
 
   /**
