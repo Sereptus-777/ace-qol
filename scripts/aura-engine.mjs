@@ -64,7 +64,7 @@ const AURAS = [
     appliesTo: "allies",
     suppressedBy: ["incapacitated", "unconscious"],
     includesSource: true,
-    icon: "icons/magic/holy/yellow-glow-rays.webp",
+    icon: "icons/svg/aura.svg", // verified-exists on hosted Foundry; yellow-glow-rays 404s
     description: "Bonus to saving throws equal to source's CHA mod (PHB)",
     effectChanges: (sourceActor) => {
       // The save bonus is calculated dynamically at save-roll time by
@@ -84,7 +84,7 @@ const AURAS = [
     appliesTo: "allies",
     suppressedBy: ["incapacitated", "unconscious"],
     includesSource: true,
-    icon: "icons/magic/defensive/shield-barrier-glowing-blue.webp",
+    icon: "icons/svg/shield.svg",
     description: "Resistance to spell damage (Oath of Devotion / Ancients PHB)",
     effectChanges: () => [],
     markerFlags: { isAuraOfWarding: true },
@@ -98,7 +98,7 @@ const AURAS = [
     appliesTo: "allies",
     suppressedBy: ["incapacitated", "unconscious"],
     includesSource: true,
-    icon: "icons/magic/holy/saint-glass-yellow-blue.webp",
+    icon: "icons/svg/regen.svg",
     description: "Immune to the frightened condition (PHB)",
     effectChanges: () => [
       // Add condition immunity (frightened)
@@ -116,7 +116,7 @@ const AURAS = [
     appliesTo: "allies", // RAW: paladin + fiends/undead within 10ft, but for our table we apply to allies
     suppressedBy: ["incapacitated", "unconscious"],
     includesSource: true,
-    icon: "icons/magic/death/skull-horned-crown-black.webp",
+    icon: "icons/svg/skull.svg",
     description: "Bonus to melee weapon damage equal to source's CHA mod (Oathbreaker DMG)",
     effectChanges: () => [],
     markerFlags: { isAuraOfHate: true },
@@ -130,7 +130,7 @@ const AURAS = [
     appliesTo: "allies",
     suppressedBy: ["incapacitated", "unconscious"],
     includesSource: false, // self can't transfer damage to self
-    icon: "icons/magic/defensive/shield-barrier-glowing-triangle.webp",
+    icon: "icons/svg/shield.svg",
     description: "Use reaction to take damage in place of nearby ally (Oath of Redemption Xanathar's)",
     effectChanges: () => [],
     markerFlags: { isAuraOfTheGuardian: true },
