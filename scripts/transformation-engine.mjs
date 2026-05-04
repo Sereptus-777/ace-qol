@@ -944,6 +944,11 @@ export class TransformationEngine {
   /**
    * Click handler for the chat-card "Revert Now" button.
    * Bound globally in init() so the button works after page reload.
+   *
+   * Uses GM_FORCED reason (not VOLUNTARY) because the Polymorph spell sets
+   * `state.voluntaryRevertOK = false` per RAW (only the caster ending
+   * concentration can dismiss the spell). The GM clicking "Revert Now" is
+   * GM fiat — overrides RAW restrictions, like dispel-magic-equivalent.
    */
   static async _onRevertButtonClick(event) {
     try {
@@ -957,23 +962,37 @@ export class TransformationEngine {
       }
       const uuid = btn.dataset.targetUuid;
       if (!uuid) return;
-      const actor = await fromUuid(uuid).catch(() => null);
-      if (!actor) {
+      const resolved = await fromUuid(uuid).catch(() => null);
+      if (!resolved) {
         ui.notifications?.error("Polymorph: target actor not found (may have been deleted).");
         return;
       }
-      const realActor = actor.actor ?? actor; // handle TokenDocument vs Actor
+      const realActor = resolved.actor ?? resolved; // handle TokenDocument vs Actor
+
+      // Diagnose state BEFORE attempting revert — surfaces clearer error
+      // messages than "not currently transformed" (which is misleading
+      // when the actor IS transformed but a guard blocked the revert).
+      const state = TransformationEngine.getState(realActor);
+      if (!state) {
+        ui.notifications?.warn(`Polymorph: ${realActor.name} is not currently transformed (state cleared).`);
+        return;
+      }
+
       // Disable the button immediately so double-click can't fire twice
       btn.disabled = true;
       btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Reverting…`;
-      const ok = await TransformationEngine.revert(realActor, REVERT_REASON.VOLUNTARY);
+
+      // GM_FORCED bypasses the voluntaryRevertOK gate (Polymorph spell
+      // disallows voluntary self-revert; GM fiat overrides).
+      const ok = await TransformationEngine.revert(realActor, REVERT_REASON.GM_FORCED);
       if (!ok) {
-        ui.notifications?.warn(`Polymorph: ${realActor.name} is not currently transformed.`);
+        ui.notifications?.warn(`Polymorph: revert returned false for ${realActor.name} — check console for details.`);
         btn.disabled = false;
         btn.innerHTML = `<i class="fas fa-undo-alt"></i> Revert Now`;
       }
     } catch (err) {
       console.warn(`${MODULE_ID} | revert button click failed:`, err);
+      ui.notifications?.error(`Polymorph revert error: ${err.message ?? err}`);
     }
   }
 
