@@ -134,20 +134,23 @@ export class TransformationEngine {
     });
 
     // ── Chat-card "Revert Now" button binding ──
-    // Re-binds on every renderChatMessage so the button works on history
-    // messages after a page reload. Also reveals .ace-qol-gm-only sections
-    // when the current user is GM by setting data-ace-gm="true".
-    Hooks.on("renderChatMessage", (message, html) => {
+    // Foundry V13 fires `renderChatMessageHTML` (HTMLElement), V12 fires
+    // `renderChatMessage` (jQuery). Register BOTH with the same handler
+    // so the button works regardless of Foundry version.
+    // Re-binds on every render so the button works on history messages
+    // after a page reload. Also reveals .ace-qol-gm-only sections when the
+    // current user is GM by setting data-ace-gm="true".
+    const _onRenderChat = (message, html) => {
       try {
-        const root = html?.[0] ?? html; // jQuery vs DOM element
-        if (!root) return;
+        const root = html instanceof HTMLElement ? html : (html?.[0] ?? html);
+        if (!root || typeof root.querySelectorAll !== "function") return;
         // GM-only visibility toggle
         if (game.user?.isGM) {
-          const gmOnly = root.querySelectorAll?.(".ace-qol-gm-only") ?? [];
+          const gmOnly = root.querySelectorAll(".ace-qol-gm-only") ?? [];
           for (const el of gmOnly) el.setAttribute("data-ace-gm", "true");
         }
         // Revert-button click binding (idempotent)
-        const btns = root.querySelectorAll?.("[data-action='aceQolPolymorphRevert']") ?? [];
+        const btns = root.querySelectorAll("[data-action='aceQolPolymorphRevert']") ?? [];
         for (const btn of btns) {
           if (btn.dataset.aceQolBound === "1") continue;
           btn.dataset.aceQolBound = "1";
@@ -156,7 +159,9 @@ export class TransformationEngine {
       } catch (err) {
         console.warn(`${MODULE_ID} | revert-button binding failed:`, err);
       }
-    });
+    };
+    Hooks.on("renderChatMessage",     _onRenderChat); // V12
+    Hooks.on("renderChatMessageHTML", _onRenderChat); // V13
 
     // ── Concentration linkage ──
     // The existing `dnd5e.dependentOn` chain (Layer 1-5 in ace-qol.mjs) takes
