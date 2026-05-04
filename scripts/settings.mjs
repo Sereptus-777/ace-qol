@@ -334,9 +334,9 @@ export class QolSettings {
 
     s("auraVisualMode", {
       name: "Aura Visual Style",
-      hint: "How to render aura range circles. AUTO (default) = use our PIXI rings ONLY when Automated Animations is NOT active (lets AA's particle visuals handle aura visuals when present). RINGS = always show our PIXI rings (overlay alongside AA if active). OFF = no ace-qol rings at all (rely on AA / dnd5e core / nothing).",
-      scope: "world", config: false, type: String, default: "auto",
-      choices: { auto: "Auto (use AA visuals when present)", rings: "Always show PIXI rings", off: "Off (no ace-qol rings)" },
+      hint: "How to render aura range circles. RINGS (default) = always show our reliable PIXI rings around source tokens. AUTO = defer to Automated Animations when it's active (less reliable — AA may only render on some tokens). OFF = no ace-qol rings (rely on AA or nothing). Default changed to RINGS in v0.4.13 because AA's per-effect rendering proved inconsistent.",
+      scope: "world", config: false, type: String, default: "rings",
+      choices: { rings: "PIXI rings (default — reliable)", auto: "Auto (defer to AA when active)", off: "Off (no rings)" },
     });
 
     s("batchResultsCard", {

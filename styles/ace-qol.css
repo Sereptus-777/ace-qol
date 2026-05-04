@@ -1073,6 +1073,7 @@
 /* ─── Live Target Card ─────────────────────────────────────── */
 .ace-qol-save-tgt-row {
   display: flex; align-items: center; gap: 6px;
+  flex-wrap: wrap; /* allow chips/buttons to wrap to next line if needed */
   padding: 3px 6px; margin: 2px 0;
   background: rgba(255,255,255,0.04);
   border-radius: 3px; min-height: 28px;
@@ -1083,8 +1084,11 @@
   object-fit: cover; border: 1px solid #444; flex-shrink: 0;
 }
 .ace-qol-save-tgt-name {
-  flex: 1; font-size: 0.85rem; font-weight: 600; color: #e8e6e0;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  flex: 1 1 100px; min-width: 0;
+  font-size: 0.85rem; font-weight: 600; color: #e8e6e0;
+  white-space: normal; /* allow wrap instead of truncation */
+  overflow: visible;
+  word-break: break-word;
 }
 .ace-qol-save-tgt-mod {
   font-size: 0.75rem; color: #888; font-family: monospace; flex-shrink: 0;

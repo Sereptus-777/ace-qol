@@ -624,19 +624,34 @@ export class SaveEngine {
     // Returns HTML showing base mod + each bonus as a chip with attribution.
     // Example: "DEX +0  [+3 Aura]  [+1d8 BI]"
     // Players see exactly which buffs are contributing — no hidden math.
+    // Skips 0-value / empty / non-meaningful bonus entries so we don't show
+    // useless chips like "0 DEX bonus".
     const _renderModBreakdown = (t) => {
       const baseStr = t.saveModBase >= 0 ? `+${t.saveModBase}` : `${t.saveModBase}`;
-      const bonusChips = (t.saveBonuses ?? []).map(b => {
-        const v = String(b?.value ?? "").trim();
-        const label = String(b?.label ?? "Bonus").trim();
-        // Short label for common buffs
-        const shortLabel = label
-          .replace(/^Aura of Protection$/i, "Aura")
-          .replace(/^Bardic Inspiration$/i, "BI")
-          .replace(/^Resistance$/i, "Resist")
-          .replace(/^Heroes' Feast$/i, "Feast");
-        return `<span class="ace-qol-save-bonus-chip" title="${label}">${v} ${shortLabel}</span>`;
-      }).join("");
+      const bonusChips = (t.saveBonuses ?? [])
+        .filter(b => {
+          const raw = String(b?.value ?? "").trim();
+          if (!raw) return false;
+          // Reject literal "+0" / "-0" / "0" — those add nothing
+          const stripped = raw.replace(/^\+/, "").replace(/^0+(?=\d|$)/, "0");
+          if (stripped === "0" || stripped === "-0" || stripped === "") return false;
+          // Numeric? Skip if zero. Non-numeric (like "+1d4") always rendered.
+          const n = Number(stripped);
+          if (Number.isFinite(n) && n === 0) return false;
+          return true;
+        })
+        .map(b => {
+          const v = String(b?.value ?? "").trim();
+          const vDisplay = v.startsWith("+") || v.startsWith("-") ? v : `+${v}`;
+          const label = String(b?.label ?? "Bonus").trim();
+          const shortLabel = label
+            .replace(/^Aura of Protection$/i, "Aura")
+            .replace(/^Aura of Warding$/i, "Warding")
+            .replace(/^Bardic Inspiration$/i, "BI")
+            .replace(/^Resistance$/i, "Resist")
+            .replace(/^Heroes' Feast$/i, "Feast");
+          return `<span class="ace-qol-save-bonus-chip" title="${label}">${vDisplay} ${shortLabel}</span>`;
+        }).join("");
       return `<span class="ace-qol-save-tgt-mod">${t.saveAbilityUpper} ${baseStr}</span>${bonusChips}`;
     };
 
@@ -760,8 +775,25 @@ export class SaveEngine {
       });
     }
 
-    // NOTE: Template auto-delete moved to ROLL SAVES click — gives autoanimations
-    // (caster → travel → explosion VFX) time to play before the template is removed.
+    // ── Auto-delete the AOE template ──
+    // Originally fired only on ROLL SAVES click — but if the GM let PCs
+    // roll via individual dice icons OR the cast just sat there, the
+    // template lingered indefinitely. Now fires after a 1.5s delay (gives
+    // Sequencer/AA spell animations time to play through) right after
+    // the target list lands. Persistent spells (Moonbeam, Spirit Guardians,
+    // etc.) bail inside _deleteInstantTemplate via the timingType check.
+    if (timing?.isInstant && opts.templateDoc) {
+      const flagsForDelete = {
+        timingType: TIMING.INSTANT,
+        templateDocId: opts.templateDoc.id,
+        templateSceneId: opts.templateDoc.parent?.id,
+      };
+      setTimeout(() => {
+        this._deleteInstantTemplate(flagsForDelete).catch(err =>
+          console.warn(`${MODULE_ID} | post-target-list template delete threw:`, err)
+        );
+      }, 1500);
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
