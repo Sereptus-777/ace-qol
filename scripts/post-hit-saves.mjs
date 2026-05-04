@@ -438,8 +438,19 @@ export class PostHitSaves {
         saveTotal = 0;
         passed = false;
       } else {
+        // Magic Resistance applies to saves vs SPELLS or magical effects.
+        // Post-hit saves come from weapon RIDERS (Mace of Disruption, Wand
+        // attacks with riders, etc.) — many of which ARE magical. The old
+        // gate `item?.type === "spell"` was too narrow: a Wand of Magic
+        // Missiles' rider hits a creature with MR but it didn't get the
+        // advantage because the wand's item.type is "weapon" or "consumable".
+        // Now: extend MR to magical items (mgc property) and spell-typed items.
+        const isMagicalSource = item?.type === "spell"
+          || item?.system?.properties?.includes?.("mgc")
+          || item?.system?.properties?.has?.("mgc")
+          || !!item?.system?.magicAvailable;
         const hasAdvantage = targetActor.flags?.["midi-qol"]?.advantage?.save?.[save.ability]
-          || (statuses.has("magic-resistance") && item?.type === "spell");
+          || (statuses.has("magic-resistance") && isMagicalSource);
         const hasDisadvantage = (save.ability === "dex" && statuses.has("restrained"));
 
         let rollMode = "normal";

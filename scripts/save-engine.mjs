@@ -24,6 +24,10 @@ import { CombatState } from "./combat-state.mjs";
 import { DamageConstants } from "./damage-engine.mjs";
 import { getSpellTiming, TIMING } from "./spell-timing.mjs";
 import { CoverEngine } from "./cover-engine.mjs";
+import { DescriptionParser } from "./description-parser.mjs";
+import { ConditionLibrary } from "./condition-library.mjs";
+import { PolymorphSpellPipeline } from "./polymorph-spell-pipeline.mjs";
+import { DamageCalculator } from "./damage-calculator.mjs";
 
 export class SaveEngine {
 
@@ -274,9 +278,107 @@ export class SaveEngine {
     if (!targets.size) return;
 
     const tokens = [...targets];
+
+    // ── Fast-path for NPC-only single-target saves ──
+    // If the GM is rolling on a single NPC with no PCs in the mix, the
+    // live-target-card confirmation step is unnecessary friction — the GM
+    // is just going to click ROLL SAVES anyway. Skip straight to rolling
+    // and posting the result card. The GM can always pre-target multiple
+    // creatures or include a PC if they want the confirmation step.
+    const isNpcOnlySingleTarget = tokens.length === 1
+      && !tokens[0].actor?.hasPlayerOwner;
+    if (isNpcOnlySingleTarget) {
+      console.log(`${MODULE_ID} | Single NPC target detected — skipping live-target-card, rolling immediately`);
+      await this._fastResolveSingleNpcSave(item, actor, tokens[0], {
+        saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing,
+        activity,
+      });
+      return;
+    }
+
     await this._postLiveTargetCard(item, actor, tokens, {
       saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing,
       activityId: activity.id,
+    });
+  }
+
+  /**
+   * Fast-path for single NPC target: roll the save immediately and post the
+   * Phase 1 result card. Skips the live-target-card confirmation step.
+   *
+   * Mirrors the relevant subset of _rollNpcSavesFromTargetList — same
+   * roll, same condition application, same wasted-concentration drop, same
+   * Phase 1 card. Does NOT support template AOEs, multi-target, or PC
+   * saves — those go through the normal flow.
+   */
+  async _fastResolveSingleNpcSave(item, casterActor, token, opts) {
+    const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activity } = opts;
+    const activityId = activity?.id ?? null;
+
+    // Build the target context the way _postLiveTargetCard does so
+    // _rollSingleSave gets a normalized input.
+    const tActor = token.actor;
+    const rawMod = tActor?.system?.abilities?.[saveAbility]?.save;
+    const saveMod = typeof rawMod === "number" ? rawMod : (rawMod?.value ?? rawMod?.mod ?? 0);
+    const tgt = {
+      tokenId:    token.id,
+      tokenDocId: token.document?.id ?? token.id,
+      sceneId:    canvas.scene?.id,
+      actorId:    tActor?.id,
+      name:       token.name ?? tActor?.name,
+      img:        tActor?.img ?? token.document?.texture?.src,
+      saveAbility,
+      saveAbilityUpper: saveAbility.toUpperCase(),
+      saveMod,
+      saveBonus: saveMod,
+      autoFailSave: false,
+      superSaver: false,
+      damageModifiers: tActor ? DamageCalculator.getTargetDamageModifiers(tActor, item) : {},
+      currentHP: tActor?.system?.attributes?.hp?.value ?? 0,
+      maxHP:     tActor?.system?.attributes?.hp?.max ?? 0,
+    };
+
+    // Roll the save
+    const result = await this._rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, casterActor?.id);
+
+    // Emit saveComplete hook
+    try {
+      Hooks.callAll(`${MODULE_ID}.saveComplete`, {
+        actor: tActor, tokenDocId: result.tokenDocId, saveAbility, passed: result.passed,
+      });
+    } catch (_) { /* non-fatal */ }
+
+    // Compute hasDamage same way the regular path does
+    const hasDamage = Array.isArray(damageTypes) && damageTypes.length > 0
+                   && damageTypes.some(t => t && t !== "none");
+
+    // Apply condition if appropriate
+    let appliedConditions = [];
+    if (!hasDamage) {
+      try {
+        appliedConditions = await this._applyFailedSaveConditions(item, [result], { saveAbility, saveDC, activityId, casterActor }) ?? [];
+      } catch (err) {
+        console.error(`${MODULE_ID} | Fast-path condition application failed:`, err);
+      }
+    }
+
+    // Drop wasted concentration if nothing landed
+    if (!hasDamage && appliedConditions.length === 0) {
+      try {
+        await this._dropCasterConcentrationIfNoEffect(item, casterActor);
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Fast-path wasted-concentration drop failed:`, err);
+      }
+    }
+
+    // Post the result card (Phase 1 — same builder as the normal flow)
+    await this._postSaveResultsPhase1(item, casterActor, [result], {
+      saveAbility, saveDC, halfOnSave, damageTypes, isSpell,
+      timingType: timing?.type ?? null,
+      templateDocId: null,
+      templateSceneId: null,
+      hasDamage,
+      appliedConditions,
     });
   }
 
@@ -321,7 +423,7 @@ export class SaveEngine {
       // ── Instant spell (Fireball, etc.) — post target card immediately ──
       console.log(`${MODULE_ID} | Posting instant save card for ${item.name} → ${tokens.length} targets`);
       await this._postLiveTargetCard(item, actor, tokens, {
-        saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activityId,
+        saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activityId, templateDoc,
       });
       console.log(`${MODULE_ID} | Instant save card posted successfully`);
 
@@ -371,8 +473,17 @@ export class SaveEngine {
   // ═══════════════════════════════════════════════════════════════════════════
 
   async _postLiveTargetCard(item, actor, tokens, opts) {
-    const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activityId } = opts;
+    const { saveAbility, saveDC, halfOnSave: rawHalfOnSave, damageTypes, isSpell, timing, activityId } = opts;
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
+
+    // ── Gate the HALF ON SAVE badge on actual damage presence ──
+    // Some 2024 spell activities default `damage.onSave: "half"` even when
+    // there are no damage parts (Hold Person, Charm Person, etc. were
+    // showing a bogus "HALF ON SAVE" badge). The badge should only appear
+    // when the spell ACTUALLY deals damage that gets halved.
+    const hasDamage = Array.isArray(damageTypes) && damageTypes.length > 0
+                   && damageTypes.some(t => t && t !== "none");
+    const halfOnSave = rawHalfOnSave && hasDamage;
 
     // Assess all targets
     const targetData = [];
@@ -456,7 +567,7 @@ export class SaveEngine {
       </div>
     `}).join("");
 
-    // ── Build PC rows (with GM dice icon to roll on their behalf) ──
+    // ── Build PC rows (with GM dice icon to roll on their behalf + X to remove) ──
     const pcRowsHtml = pcs.map(t => {
       const di = _getDmgIndicator(t);
       return `
@@ -467,8 +578,12 @@ export class SaveEngine {
         ${t.autoFailSave ? '<span class="ace-qol-tag ace-qol-tag-danger"><i class="fas fa-circle-xmark"></i> AUTO-FAIL</span>' : ""}
         ${t.superSaver ? '<span class="ace-qol-tag ace-qol-tag-buff"><i class="fas fa-person-running"></i> EVASION</span>' : ""}
         ${di.tag}
-        <button class="ace-qol-save-pc-roll-btn" data-action="aceQolGmRollPcSave" data-token-doc-id="${t.tokenDocId}">
-          <img src="modules/ace-qol/assets/20-20.png" class="ace-qol-save-pc-dice-img" />
+        <button class="ace-qol-save-pc-roll-btn" data-action="aceQolGmRollPcSave" data-token-doc-id="${t.tokenDocId}" title="Roll save on this PC's behalf (GM)">
+          <img src="modules/ace-qol/Assets/Dice%20Dice/BD20/BD20-20_nobg.png" class="ace-qol-save-pc-dice-img" alt="d20" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'" />
+          <i class="fas fa-dice-d20" style="display:none"></i>
+        </button>
+        <button class="ace-qol-save-tgt-remove" data-action="aceQolRemoveTarget" data-token-id="${t.tokenId}" title="Remove this PC from the save list">
+          <i class="fas fa-xmark"></i>
         </button>
       </div>
     `}).join("");
@@ -488,6 +603,11 @@ export class SaveEngine {
         <div class="ace-qol-save-mode-toggle">
           <button class="ace-qol-save-mode-btn active" data-mode="targeted">TARGETED</button>
           <button class="ace-qol-save-mode-btn" data-mode="selected">SELECTED</button>
+        </div>
+        <div class="ace-qol-save-target-selected-row">
+          <button class="ace-qol-save-target-selected-btn" data-action="aceQolTargetSelected" title="Add currently selected tokens to the target list (additive)">
+            <i class="fas fa-crosshairs"></i> + TARGET SELECTED
+          </button>
         </div>
 
         ${npcs.length ? `
@@ -529,6 +649,8 @@ export class SaveEngine {
           timingType: timing?.timing ?? TIMING.INSTANT,
           targets: targetData,
           persistentInitial: opts.persistentInitial ?? false,
+          templateDocId:   opts.templateDoc?.id ?? null,
+          templateSceneId: opts.templateDoc?.parent?.id ?? null,
         }
       }
     });
@@ -542,6 +664,9 @@ export class SaveEngine {
         saveAbility, saveDC, halfOnSave, damageTypes, isSpell, castId,
       });
     }
+
+    // NOTE: Template auto-delete moved to ROLL SAVES click — gives autoanimations
+    // (caster → travel → explosion VFX) time to play before the template is removed.
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -549,8 +674,13 @@ export class SaveEngine {
   // ═══════════════════════════════════════════════════════════════════════════
 
   async _postSaveCard(item, actor, targetStates, opts) {
-    const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell } = opts;
+    const { saveAbility, saveDC, halfOnSave: rawHalfOnSave, damageTypes, isSpell } = opts;
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
+    // Same hasDamage gate as _postLiveTargetCard — suppresses bogus
+    // "HALF ON SAVE" badge on save-only-condition spells (Hold Person etc.)
+    const hasDamage = Array.isArray(damageTypes) && damageTypes.length > 0
+                   && damageTypes.some(t => t && t !== "none");
+    const halfOnSave = rawHalfOnSave && hasDamage;
 
     const targetRows = targetStates.map(ts => {
       const tags = [];
@@ -851,6 +981,30 @@ export class SaveEngine {
       }
     }
 
+    // ── + TARGET SELECTED button (additive: adds canvas-selected tokens) ──
+    const targetSelBtn = el.querySelector?.("[data-action='aceQolTargetSelected']");
+    if (targetSelBtn && !targetSelBtn.dataset.wired) {
+      targetSelBtn.dataset.wired = "1";
+      targetSelBtn.addEventListener("click", async () => {
+        const selected = canvas.tokens?.controlled ?? [];
+        if (!selected.length) {
+          ui.notifications.warn("ACE QOL: No tokens selected on the canvas.");
+          return;
+        }
+        const existingIds = new Set((flags.targets ?? []).map(t => t.tokenDocId));
+        const newTokens = selected.filter(t => !existingIds.has(t.document?.id ?? t.id));
+        if (!newTokens.length) {
+          ui.notifications.info("ACE QOL: All selected tokens are already in the target list.");
+          return;
+        }
+        // Additive: target each new token, keep existing user targets
+        for (const tok of newTokens) {
+          tok.setTarget(true, { user: game.user, releaseOthers: false });
+        }
+        await this._addTargetsToCard(message, newTokens);
+      });
+    }
+
     // ── ROLL NPC SAVES button ──
     const rollNpcBtn = el.querySelector?.("[data-action='aceQolRollNpcSaves']");
     if (rollNpcBtn && !rollNpcBtn.dataset.wired) {
@@ -941,6 +1095,42 @@ export class SaveEngine {
         };
         if (img) { img.style.cursor = "pointer"; img.addEventListener("click", clickHandler); }
         if (name) { name.style.cursor = "pointer"; name.addEventListener("click", clickHandler); }
+      }
+    }
+
+    // ── × Remove buttons (Phase 1 — strip target from allResults before damage) ──
+    const phase1RemoveBtns = el.querySelectorAll?.("[data-action='aceQolRemovePhase1']");
+    if (phase1RemoveBtns?.length) {
+      for (const btn of phase1RemoveBtns) {
+        if (btn.dataset.wired) continue;
+        btn.dataset.wired = "1";
+        btn.addEventListener("click", async (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const tokenDocId = btn.dataset.tokenDocId;
+          if (!tokenDocId) return;
+          const allResults = (message.flags?.[MODULE_ID]?.allResults ?? []).filter(r => r.tokenDocId !== tokenDocId);
+          await message.update({
+            [`flags.${MODULE_ID}.allResults`]: allResults,
+          }, { render: false });
+          // Remove the row from DOM and rebuild the card content for persistence
+          const row = btn.closest(".ace-qol-save-result-row");
+          if (row) row.remove();
+          // Rebuild content so subsequent renders/updates stay correct
+          try {
+            const item = await fromUuid(message.flags?.[MODULE_ID]?.itemUuid)
+                      ?? game.items.get(message.flags?.[MODULE_ID]?.itemId);
+            if (item) {
+              const cardHtml = this._buildPhase1CardHtml(item, allResults, {
+                saveAbility: message.flags?.[MODULE_ID]?.saveAbility,
+                saveDC:      message.flags?.[MODULE_ID]?.saveDC,
+              });
+              await message.update({ content: cardHtml }, { render: false });
+            }
+          } catch (err) {
+            console.warn(`${MODULE_ID} | Phase 1 X-remove rebuild failed:`, err);
+          }
+        });
       }
     }
 
@@ -1162,7 +1352,8 @@ export class SaveEngine {
     const flags = message.flags?.[MODULE_ID];
     if (!flags) return;
 
-    const { saveAbility, saveDC, halfOnSave, targets, itemId, itemUuid, actorId, damageTypes, isSpell } = flags;
+    const { saveAbility, saveDC, halfOnSave, targets, itemId, itemUuid, actorId, damageTypes, isSpell,
+            timingType, templateDocId, templateSceneId } = flags;
 
     const item = await fromUuid(itemUuid) ?? game.items.get(itemId);
     const casterActor = game.actors.get(actorId);
@@ -1172,9 +1363,14 @@ export class SaveEngine {
     const pcTargets = targets.filter(t => t.isPC);
 
     // ── Roll NPC saves ──
+    // isMulti tells _rollSingleSave to use the multi-target dice pacing
+    // (default 250ms per save) instead of the single-target pacing
+    // (default 1000ms). Without this, a 5-target Fireball would wait
+    // 5 full seconds with the per-die delay summed.
+    const isMulti = npcTargets.length > 1;
     const npcResults = [];
     for (const tgt of npcTargets) {
-      const result = await this._rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, actorId);
+      const result = await this._rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, actorId, { isMultiTarget: isMulti });
       npcResults.push(result);
     }
 
@@ -1311,18 +1507,65 @@ export class SaveEngine {
 
     // ── PC prompts already sent when target list card was posted ──
 
+    // ── Detect whether this spell deals damage at all ──
+    // Save-or-condition spells (Hold Person, Charm Person, Sleep, Bane,
+    // Hypnotic Pattern, Tasha's, Suggestion, Slow, Dominate Person, etc.)
+    // have NO damage parts. For those, skip the ROLL DAMAGE button + Phase 2
+    // damage card entirely and apply conditions on the spot.
+    const hasDamage = Array.isArray(damageTypes) && damageTypes.length > 0
+                   && damageTypes.some(t => t && t !== "none");
+
+    // ── Apply on-fail conditions immediately for save-only-condition spells ──
+    // (Damage spells defer condition application until after the damage card
+    // posts in _completeSaveResultsPhase2 → _runConditionApplicationFromPhase2,
+    // so the GM can review damage before conditions apply. Pure-condition
+    // spells skip that gate — there's nothing to review.)
+    let appliedConditions = [];
+    if (!hasDamage) {
+      try {
+        appliedConditions = await this._applyFailedSaveConditions(item, [...npcResults, ...pcResults], { saveAbility, saveDC, activityId, casterActor }) ?? [];
+      } catch (err) {
+        console.error(`${MODULE_ID} | Phase-1 condition application failed:`, err);
+      }
+    }
+
+    // ── Drop wasted concentration ──
+    // RAW: if no target ended up affected (everyone saved, all immune, etc.),
+    // there's nothing to concentrate ON. The caster shouldn't be locked into
+    // concentration on a no-effect Hold Person. Only drops when:
+    //   - The spell required concentration
+    //   - No condition was applied to anyone
+    //   - All saves are resolved (no pending PCs)
+    // If PCs are pending, we defer until their saves resolve (handled in
+    // _handlePCSaveResult).
+    const anyPending = [...npcResults, ...pcResults].some(r => r?.pending);
+    if (!hasDamage && !anyPending && appliedConditions.length === 0) {
+      try {
+        await this._dropCasterConcentrationIfNoEffect(item, casterActor);
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Wasted-concentration drop failed:`, err);
+      }
+    }
+
     // ── Post Phase 1 saves-only card (damage rolled separately) ──
     const allResults = [...npcResults, ...pcResults];
     await this._postSaveResultsPhase1(item, casterActor, allResults, {
       saveAbility, saveDC, halfOnSave, damageTypes, isSpell,
+      timingType, templateDocId, templateSceneId,
+      hasDamage,
+      appliedConditions,
     });
+
+    // ── Auto-delete the AOE template now that saves have rolled ──
+    // Animation has had time to play (caster → travel → explosion).
+    await this._deleteInstantTemplate({ timingType, templateDocId, templateSceneId });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
   //  Roll a Single NPC Save
   // ═══════════════════════════════════════════════════════════════════════════
 
-  async _rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, casterActorId = null) {
+  async _rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, casterActorId = null, options = {}) {
     const scene = game.scenes.get(tgt.sceneId) ?? canvas.scene;
     const tokenDoc = scene?.tokens?.get(tgt.tokenDocId);
     const targetActor = tokenDoc?.actor ?? game.actors.get(tgt.actorId);
@@ -1372,6 +1615,40 @@ export class SaveEngine {
 
       const roll = new Roll(formula);
       await roll.evaluate();
+
+      // ── Visible Dice So Nice animation ──
+      // Players want to SEE NPC saves roll across the screen, not just have
+      // a number appear. DSN auto-fires for player-rolled saves via the
+      // chat-message hook, but engine-rolled NPC saves bypass that. Fire
+      // the animation here, then wait for the configurable pacing delay
+      // before resolving the result.
+      //
+      // Pacing reads from QOL settings (Damage tab):
+      //   • npcSaveAnimationDelay      — single-target  (default 1000ms)
+      //   • npcSaveAnimationDelayMulti — per-save in batch (default 250ms)
+      // The caller passes options.isMultiTarget=true when rolling a batch
+      // (Mass Suggestion, Fireball, etc.) so multi-target casts don't
+      // burn the full single-target delay per die.
+      try {
+        if (game.dice3d) {
+          // Fire-and-forget: animation runs in background, we control wait
+          // time via the setting (decoupled from DSN's own throw speed).
+          game.dice3d.showForRoll(roll, game.user, true).catch(err =>
+            console.warn(`${MODULE_ID} | DSN showForRoll rejected (non-fatal):`, err)
+          );
+        }
+        const isMulti = !!options.isMultiTarget;
+        let delay = isMulti
+          ? (QolSettings.get("npcSaveAnimationDelayMulti") ?? 250)
+          : (QolSettings.get("npcSaveAnimationDelay") ?? 1000);
+        delay = Math.max(0, Math.min(5000, Number(delay) || 0));
+        if (delay > 0) {
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | DSN/pacing failed for save roll (non-fatal):`, err);
+      }
+
       saveTotal = roll.total;
       passed = saveTotal >= saveDC;
       rollResult = roll;
@@ -1429,6 +1706,7 @@ export class SaveEngine {
   async _rollSpellDamage(item, casterActor) {
     const rollData = casterActor?.getRollData?.() ?? {};
     const damageComponents = [];
+    const rollsToShow = []; // DSN animations to fire in parallel
 
     const sys = item?.system ?? {};
     const activities = sys.activities;
@@ -1454,9 +1732,34 @@ export class SaveEngine {
           const roll = new Roll(resolved);
           await roll.evaluate();
           damageComponents.push({ name: item.name, formula: resolved, total: roll.total, type, roll });
+          rollsToShow.push(roll);
         }
         break; // Only first activity with damage
       }
+    }
+
+    // ── Visible Dice So Nice animation for spell damage ──
+    // Save rolls already animate via the save-engine path. Damage rolls were
+    // silently evaluated, so the merge card displayed totals without any dice
+    // crossing the table. Now we fire DSN for every damage component (one
+    // per damage type) in parallel, then wait a configurable pacing delay
+    // before the merge card draws — same pattern as save rolls. Animation
+    // is broadcast (3rd arg true) so PCs see NPC damage dice and vice versa.
+    try {
+      if (game.dice3d && rollsToShow.length > 0) {
+        for (const r of rollsToShow) {
+          game.dice3d.showForRoll(r, game.user, true).catch(err =>
+            console.warn(`${MODULE_ID} | DSN showForRoll (damage) rejected (non-fatal):`, err)
+          );
+        }
+        let delay = QolSettings.get("npcDamageAnimationDelay") ?? 1500;
+        delay = Math.max(0, Math.min(8000, Number(delay) || 0));
+        if (delay > 0) {
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | DSN/pacing failed for damage roll (non-fatal):`, err);
     }
 
     return damageComponents;
@@ -1763,54 +2066,101 @@ export class SaveEngine {
   // ═══════════════════════════════════════════════════════════════════════════
 
   async _updateMainCardPcResult(tokenDocId, pcResult) {
-    // Find the most recent saveResults card that has this tokenDocId as pending
+    // Find the most recent saveResults card and update/insert this PC's row.
+    // Three cases for that card:
+    //   (a) PC entry exists as pending → update in place
+    //   (b) PC entry exists already resolved → REPLACE (re-roll after X+re-add)
+    //   (c) PC not in allResults at all → append as new resolved entry (late-add)
     const messages = game.messages.contents.slice(-20).reverse();
-    for (const msg of messages) {
-      const flags = msg.flags?.[MODULE_ID];
-      if (flags?.type !== "saveResults") continue;
-      const allResults = flags.allResults;
-      if (!allResults) continue;
 
-      const idx = allResults.findIndex(r => r.tokenDocId === tokenDocId && r.pending);
-      if (idx < 0) continue;
+    let msg = null;
+    for (const m of messages) {
+      const f = m.flags?.[MODULE_ID];
+      if (f?.type === "saveResults" && Array.isArray(f.allResults)) { msg = m; break; }
+    }
+    if (!msg) return;
 
-      // Found the matching pending row — update it in the flag data
-      allResults[idx].pending = false;
-      allResults[idx].saveTotal = pcResult.saveTotal;
-      allResults[idx].passed = pcResult.passed;
-      allResults[idx].resultLabel = pcResult.resultLabel;
-      allResults[idx].isAutoFail = pcResult.autoFailSave;
-      allResults[idx].damageMultiplier = pcResult.damageMultiplier;
+    const flags = msg.flags?.[MODULE_ID];
+    const allResults = [...(flags.allResults ?? [])];
+    let idx = allResults.findIndex(r => r.tokenDocId === tokenDocId);
 
-      // Persist flags WITHOUT re-render (render:false prevents DOM wipe)
+    if (idx < 0) {
+      // Case (c): late-add — build a fresh resolved entry
+      const scene = game.scenes.get(canvas.scene?.id) ?? canvas.scene;
+      const tokenDoc = scene?.tokens?.get(tokenDocId);
+      const actor = tokenDoc?.actor;
+      allResults.push({
+        name:       tokenDoc?.name ?? actor?.name ?? "Unknown",
+        img:        tokenDoc?.texture?.src ?? actor?.img ?? "icons/svg/mystery-man.svg",
+        tokenDocId,
+        actorId:    actor?.id,
+        sceneId:    scene?.id,
+        saveTotal:  pcResult.saveTotal,
+        passed:     pcResult.passed,
+        isAutoFail: pcResult.autoFailSave,
+        resultLabel: pcResult.resultLabel,
+        damageMultiplier: pcResult.damageMultiplier,
+        damageModifiers: {},
+        currentHP:  actor?.system?.attributes?.hp?.value ?? 0,
+        maxHP:      actor?.system?.attributes?.hp?.max ?? 0,
+        isPC:       true,
+        pending:    false,
+      });
+      idx = allResults.length - 1;
+    }
+
+    // Apply pcResult to the entry at idx (covers a, b, and c cases)
+    const r = allResults[idx];
+    r.pending = false;
+    r.saveTotal = pcResult.saveTotal;
+    r.passed = pcResult.passed;
+    r.resultLabel = pcResult.resultLabel;
+    r.isAutoFail = pcResult.autoFailSave;
+    r.damageMultiplier = pcResult.damageMultiplier;
+
+    // Refresh live HP from the actor (PC may have taken damage since card was built)
+    try {
+      const scene = game.scenes.get(r.sceneId) ?? canvas.scene;
+      const tokenDoc = scene?.tokens?.get(r.tokenDocId);
+      const actor = tokenDoc?.actor ?? game.actors.get(r.actorId);
+      if (actor) r.currentHP = actor.system?.attributes?.hp?.value ?? r.currentHP;
+    } catch (_) { /* keep cached HP if refresh fails */ }
+
+    // ── Rebuild the card (Phase 2 if damage rolled, otherwise Phase 1) ──
+    try {
+      const item = await fromUuid(flags.itemUuid) ?? game.items.get(flags.itemId);
+      if (!item) {
+        await msg.update({ [`flags.${MODULE_ID}.allResults`]: allResults }, { render: false });
+        return;
+      }
+
+      const isPhase2 = flags.phase === 2 || Array.isArray(flags.damageComponentTotals);
+      let cardHtml;
+      if (isPhase2 && Array.isArray(flags.damageComponentTotals)) {
+        const casterActor = game.actors.get(flags.actorId);
+        const damageComponents = flags.damageComponentTotals.map(c => ({
+          total: c.total, type: c.type, formula: c.formula ?? String(c.total),
+        }));
+        cardHtml = this._buildPhase2CardHtml(item, casterActor, allResults, damageComponents, {
+          saveAbility: flags.saveAbility, saveDC: flags.saveDC,
+          halfOnSave: flags.halfOnSave, damageTypes: flags.damageTypes,
+        });
+      } else {
+        cardHtml = this._buildPhase1CardHtml(item, allResults, {
+          saveAbility: flags.saveAbility, saveDC: flags.saveDC,
+          hasDamage: flags.hasDamage !== false,
+        });
+      }
+
       await msg.update({
+        content: cardHtml,
         [`flags.${MODULE_ID}.allResults`]: allResults,
-      }, { render: false });
-
-      // Update DOM directly for the pending row
-      const chatLog = document.querySelector("#chat-log, .chat-log");
-      if (!chatLog) return;
-      const msgEl = chatLog.querySelector(`.chat-message[data-message-id="${msg.id}"]`);
-      if (!msgEl) return;
-      const row = msgEl.querySelector(`.ace-qol-save-result-row[data-token-doc-id="${tokenDocId}"]`);
-      if (!row) return;
-
-      const passClass = pcResult.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
-      const verdictText = pcResult.passed ? "PASS" : "FAIL";
-      const rollDisplay = pcResult.autoFailSave ? "AUTO" : pcResult.saveTotal;
-
-      row.classList.remove("ace-qol-save-result-pending");
-      row.innerHTML = `
-        <div class="ace-qol-save-result-line">
-          <img src="${allResults[idx].img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
-          <span class="ace-qol-save-tgt-name">${allResults[idx].name}</span>
-          <span class="ace-qol-save-roll ${passClass}">${rollDisplay}</span>
-          <span class="ace-qol-save-verdict ${passClass}">${verdictText}</span>
-        </div>
-      `;
-
-      console.log(`${MODULE_ID} | Updated main card pending row for ${allResults[idx].name}: ${verdictText} (${rollDisplay})`);
-      return;
+      });
+      console.log(`${MODULE_ID} | Card updated for ${r.name}: ${r.passed ? "PASS" : "FAIL"} (${r.saveTotal})`);
+    } catch (err) {
+      console.error(`${MODULE_ID} | Card update failed:`, err);
+      // Last-ditch: at least persist the flag
+      await msg.update({ [`flags.${MODULE_ID}.allResults`]: allResults }, { render: false });
     }
   }
 
@@ -1828,9 +2178,13 @@ export class SaveEngine {
     const casterActor = game.actors.get(actorId);
 
     const results = [];
+    // Multi-target pacing for the legacy ROLL ALL SAVES button — same logic
+    // as the modern path so a Fireball through this code path doesn't burn
+    // the full single-target delay per die.
+    const isMultiLegacy = (targets?.length ?? 0) > 1;
 
     for (const tgt of targets) {
-      const result = await this._rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, actorId);
+      const result = await this._rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, actorId, { isMultiTarget: isMultiLegacy });
       results.push(result);
 
       // Emit saveComplete hook for duration tracker (isSave expiry)
@@ -1844,6 +2198,15 @@ export class SaveEngine {
       } catch (_) { /* non-fatal */ }
     }
 
+    // ── Save-or-condition spell handling ──
+    // For spells like Hold Person, Sleep, Hypnotic Pattern, Charm Person,
+    // Bane, Tasha's Hideous Laughter — failed saves apply CONDITIONS
+    // (paralyzed, frightened, charmed, etc.) with no damage. Until this
+    // shipped, save-engine was hard-wired to damage flow only and these
+    // spells silently did nothing when the save failed. Mirrors the
+    // post-hit-saves.mjs pattern that handles weapon-rider conditions.
+    await this._applyFailedSaveConditions(item, results, { saveAbility, saveDC, activityId: flags.activityId ?? null, casterActor });
+
     // Roll damage once and apply per target with multipliers
     const damageComponents = await this._rollSpellDamage(item, casterActor);
     await this._postSaveResults(item, casterActor, results, {
@@ -1851,17 +2214,299 @@ export class SaveEngine {
     }, damageComponents);
   }
 
+  /**
+   * Apply on-fail conditions to every target that failed the save.
+   *
+   * Reads conditions from the item description via DescriptionParser. Honors
+   * `cond.requiresSave === true` so we don't apply on-hit conditions through
+   * this path (those are handled elsewhere). Respects per-target condition
+   * immunity — frightened-immune fey hit by Cause Fear silently skip.
+   * Routes through ConditionLibrary.applyByName so exhaustion correctly
+   * INCREMENTS the level counter rather than toggling.
+   *
+   * @param {Item} item    — the spell item (must have description)
+   * @param {Array} results — per-target save results (fields: passed, tokenDocId, sceneId, actorId, name)
+   * @returns {Promise<void>}
+   */
+  /**
+   * Drop the caster's concentration on this specific spell.
+   *
+   * Called when a concentration spell resolved with no actual effect on any
+   * target — the caster shouldn't be stuck "concentrating on nothing." RAW:
+   * concentration only matters while there's an effect to maintain; if every
+   * target saved or was immune, the spell ends and so does the concentration.
+   *
+   * Matches the concentrating Active Effect by:
+   *   1. flags.dnd5e.concentration.origin includes the spell item's UUID, OR
+   *   2. The effect name contains the spell name (fallback)
+   * Only deletes if the spell is actually a concentration spell.
+   *
+   * @param {Item} item — the spell that just resolved
+   * @param {Actor} caster — the caster
+   * @returns {Promise<boolean>} — true if concentration was dropped
+   */
+  async _dropCasterConcentrationIfNoEffect(item, caster) {
+    if (!item || !caster) return false;
+
+    // Confirm the spell required concentration in the first place
+    const props = item.system?.properties;
+    const isConcentration = props?.has?.("concentration")
+      || (Array.isArray(props) && props.includes("concentration"));
+    if (!isConcentration) return false;
+
+    // Find the matching concentrating effect on the caster
+    const effects = caster.effects?.contents ?? [];
+    const concEffect = effects.find(e => {
+      if (e.disabled) return false;
+      const isConcentratingFx = e.statuses?.has?.("concentrating")
+        || e.flags?.dnd5e?.concentration;
+      if (!isConcentratingFx) return false;
+      // Match by spell origin
+      const concOrigin = e.flags?.dnd5e?.concentration?.origin ?? "";
+      if (concOrigin && item.uuid && concOrigin.includes(item.uuid)) return true;
+      // Fallback: effect name contains spell name
+      if (e.name && item.name && e.name.includes(item.name)) return true;
+      return false;
+    });
+
+    if (!concEffect) {
+      console.log(`${MODULE_ID} | _dropCasterConcentrationIfNoEffect: no matching concentration effect on ${caster.name} for ${item.name}`);
+      return false;
+    }
+
+    try {
+      await concEffect.delete();
+      ui.notifications?.info(`${item.name}: no targets affected — concentration ended.`);
+      console.log(`${MODULE_ID} | Dropped wasted concentration on ${item.name} for ${caster.name}`);
+      return true;
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Failed to drop concentration effect on ${caster.name}:`, err);
+      return false;
+    }
+  }
+
+  async _applyFailedSaveConditions(item, results, saveCtx = null) {
+    // Returns an array of { targetName, conditions: [...] } per target where
+    // at least one condition was successfully applied. Used by Phase 1 card
+    // builder to render specific "Goblin: Paralyzed" footers instead of a
+    // generic message.
+    //
+    // saveCtx (optional): { saveAbility, saveDC }
+    //   When provided, repeating-save metadata gets stamped on the placed
+    //   effect so RepeatingSaveEngine can fire end-of-turn re-saves
+    //   (Hold Person, Banishment, etc.). If omitted, we try to recover the
+    //   ability/DC from the item's first save activity as a fallback.
+    const applied = [];
+
+    if (!item || !results?.length) {
+      console.log(`${MODULE_ID} | _applyFailedSaveConditions: no item or no results`);
+      return applied;
+    }
+
+    let parsed;
+    try {
+      parsed = DescriptionParser.parse(item);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | _applyFailedSaveConditions: parse failed for ${item.name}:`, err);
+      return applied;
+    }
+
+    // ── Resolve save ability + DC for repeating-save metadata ──
+    let resolvedSaveAbility = saveCtx?.saveAbility ?? null;
+    let resolvedSaveDC      = Number(saveCtx?.saveDC) || null;
+    if ((!resolvedSaveAbility || !resolvedSaveDC) && item?.system?.activities) {
+      try {
+        const acts = [...(item.system.activities?.values?.() ?? [])];
+        const saveAct = acts.find(a => a?.save?.ability);
+        if (saveAct) {
+          if (!resolvedSaveAbility) {
+            const ab = saveAct.save.ability;
+            resolvedSaveAbility = (ab instanceof Set || Array.isArray(ab)) ? [...ab][0] : String(ab);
+          }
+          if (!resolvedSaveDC) {
+            resolvedSaveDC = Number(saveAct.save.dc?.value ?? saveAct.save.dc) || null;
+          }
+        }
+      } catch (_) { /* best-effort fallback */ }
+    }
+    // Compute spell duration in seconds (for math-correct OOC cap)
+    let durationSeconds = null;
+    try {
+      const dur = item?.system?.duration;
+      if (dur) {
+        const value = Number(dur.value) || 0;
+        const units = String(dur.units ?? "").toLowerCase();
+        switch (units) {
+          case "round":   durationSeconds = value * 6; break;
+          case "turn":    durationSeconds = value * 6; break;
+          case "minute":  durationSeconds = value * 60; break;
+          case "hour":    durationSeconds = value * 3600; break;
+          case "day":     durationSeconds = value * 86400; break;
+          case "instant": durationSeconds = 0; break;
+          // "permanent", "special", "until dispelled" → null (no cap)
+        }
+      }
+    } catch (_) { /* fallthrough */ }
+
+    const repeatingSaveMeta = (parsed?.repeatingSave?.trigger && resolvedSaveAbility && resolvedSaveDC)
+      ? {
+          ability:         resolvedSaveAbility,
+          dc:              resolvedSaveDC,
+          trigger:         parsed.repeatingSave.trigger,
+          castWorldTime:   game.time?.worldTime ?? 0,
+          durationSeconds: durationSeconds, // null = no duration cap
+        }
+      : null;
+
+    // Diagnostic dump — surfaces why conditions might not be applying
+    const allConds = parsed?.conditions ?? [];
+    const failConditions = allConds.filter(c => c?.requiresSave);
+    console.log(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — parsed ${allConds.length} condition(s), ${failConditions.length} marked requiresSave:`,
+      allConds.map(c => `${c.condition}${c.requiresSave ? "(save)" : "(no-save)"}`));
+
+    // ── Polymorph spell branch — MUST run BEFORE the no-conditions early return ──
+    // Polymorph-class spells don't apply a tagged condition like "paralyzed" —
+    // they transform the target. So `failConditions.length === 0` is EXPECTED
+    // for Polymorph and the normal "NO conditions marked requiresSave" return
+    // would skip our transformation routing. Branch here first.
+    const isPolymorph = PolymorphSpellPipeline.isPolymorphSpell(item);
+    if (isPolymorph) {
+      console.log(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — routing to Polymorph pipeline (skipping normal condition path)`);
+      const activityId = saveCtx?.activityId ?? null;
+      const casterActor = saveCtx?.casterActor ?? null;
+      const failed = results.filter(r => r && !r.passed);
+      if (!failed.length) {
+        console.log(`${MODULE_ID} | ${item.name}: no failed saves — no transformation`);
+        return applied;
+      }
+      for (const r of failed) {
+        const scene = game.scenes.get(r.sceneId) ?? canvas.scene;
+        const tokenDoc = scene?.tokens?.get(r.tokenDocId);
+        const actor = tokenDoc?.actor ?? game.actors.get(r.actorId);
+        if (!actor) continue;
+
+        const transformed = await PolymorphSpellPipeline.tryConsumeAndTransform(activityId, actor, casterActor, tokenDoc);
+        if (transformed) {
+          applied.push({
+            targetName: r.name ?? actor.name,
+            tokenDocId: r.tokenDocId,
+            conditions: ["transformed"],
+          });
+        } else {
+          console.warn(`${MODULE_ID} | ${item.name}: Polymorph cast but no pending pick for activity ${activityId} — target ${actor.name} unaffected`);
+        }
+      }
+      // Polymorph handled (success or no-pick) — skip the normal condition
+      // application loop entirely. Polymorph doesn't apply paralyzed etc.
+      return applied;
+    }
+
+    if (!failConditions.length) {
+      console.warn(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — NO conditions marked requiresSave. Description parse may have missed the save trigger. Description excerpt:`,
+        String(item.system?.description?.value ?? "").replace(/<[^>]+>/g, " ").slice(0, 300));
+      return applied;
+    }
+
+    const autoApply = QolSettings.get("autoApplyConditions") ?? true;
+    if (!autoApply) {
+      console.log(`${MODULE_ID} | autoApplyConditions OFF — skipping condition application for ${item.name}`);
+      return applied;
+    }
+
+    const failed = results.filter(r => r && !r.passed);
+    if (!failed.length) {
+      console.log(`${MODULE_ID} | ${item.name}: no failed saves — no conditions to apply`);
+      return applied;
+    }
+
+    for (const r of failed) {
+      const scene = game.scenes.get(r.sceneId) ?? canvas.scene;
+      const tokenDoc = scene?.tokens?.get(r.tokenDocId);
+      const actor = tokenDoc?.actor ?? game.actors.get(r.actorId);
+      if (!actor) {
+        console.warn(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — could not resolve actor for failed target ${r.name} (sceneId=${r.sceneId} tokenDocId=${r.tokenDocId} actorId=${r.actorId})`);
+        continue;
+      }
+
+      const condImmunities = new Set(
+        (actor.system?.traits?.ci?.value ?? []).map(s => String(s).toLowerCase())
+      );
+
+      const appliedForThisTarget = [];
+
+      for (const cond of failConditions) {
+        const condKey = String(cond.condition ?? "").toLowerCase().trim();
+        if (!condKey) continue;
+        if (condImmunities.has(condKey)) {
+          console.log(`${MODULE_ID} | ${actor.name} IMMUNE to ${condKey} — ${item.name} condition skipped`);
+          continue;
+        }
+        try {
+          // ── Concentration linkage ──
+          // For concentration spells (Hold Person, Hypnotic Pattern, etc.),
+          // tag the applied condition with the caster + spell name so we
+          // can sweep + remove it automatically when the caster's
+          // concentration ends or moves to a new cast.
+          let concentrationOrigin = null;
+          const isConcentration = item?.system?.properties?.has?.("concentration")
+            || (Array.isArray(item?.system?.properties) && item.system.properties.includes("concentration"));
+          if (isConcentration) {
+            concentrationOrigin = {
+              casterId:    item.actor?.id ?? null,
+              spellName:   item.name,
+              spellItemId: item.id,
+            };
+          }
+
+          // Build options bundle for applyByName — concentration linkage AND
+          // repeating-save metadata (when applicable).
+          const applyOpts = {};
+          if (concentrationOrigin) applyOpts.concentrationOrigin = concentrationOrigin;
+          if (repeatingSaveMeta)   applyOpts.repeatingSave       = repeatingSaveMeta;
+
+          const out = await ConditionLibrary.applyByName(actor, cond.condition,
+            Object.keys(applyOpts).length ? applyOpts : undefined);
+          if (out?.ok) {
+            const detail = out.level !== undefined ? ` (level ${out.level})` : "";
+            const tagBits = [];
+            if (concentrationOrigin) tagBits.push("concentration-linked");
+            if (repeatingSaveMeta)   tagBits.push(`repeating-save:${repeatingSaveMeta.trigger}`);
+            const tagStr = tagBits.length ? ` [${tagBits.join(", ")}]` : "";
+            console.log(`${MODULE_ID} | ${item.name}: applied "${cond.condition}"${detail} to ${actor.name} (failed save)${tagStr}`);
+            appliedForThisTarget.push(cond.condition);
+          } else {
+            console.warn(`${MODULE_ID} | ${item.name}: applyByName returned not-ok for "${cond.condition}" on ${actor.name}:`, out);
+          }
+        } catch (err) {
+          console.warn(`${MODULE_ID} | applyByName(${cond.condition}) failed for ${actor.name}:`, err);
+        }
+      }
+
+      if (appliedForThisTarget.length) {
+        applied.push({
+          targetName: r.name ?? actor.name,
+          tokenDocId: r.tokenDocId,
+          conditions: appliedForThisTarget,
+        });
+      }
+    }
+
+    return applied;
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   //  Phase 1 — Saves-Only Card (no damage yet, ROLL DAMAGE button)
   // ═══════════════════════════════════════════════════════════════════════════
 
-  async _postSaveResultsPhase1(item, casterActor, results, opts) {
-    const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell } = opts;
+  // ─────────────────────────────────────────────────────────────────────────
+  //  Build Phase 1 card HTML — extracted so late PC updates can rebuild
+  // ─────────────────────────────────────────────────────────────────────────
+  _buildPhase1CardHtml(item, results, opts) {
+    const { saveAbility, saveDC, hasDamage = true, appliedConditions = [] } = opts;
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
 
-    // ── Build Phase 1 target rows (saves only — no damage, no HP, no overrides) ──
     const targetRows = results.map(r => {
-      // PC still pending
+      const removeBtn = `<button class="ace-qol-save-phase1-remove" data-action="aceQolRemovePhase1" data-token-doc-id="${r.tokenDocId}" title="Remove this target before damage rolls"><i class="fas fa-xmark"></i></button>`;
       if (r.pending) {
         return `
           <div class="ace-qol-save-result-row ace-qol-save-result-pending" data-token-doc-id="${r.tokenDocId}">
@@ -1869,15 +2514,14 @@ export class SaveEngine {
               <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
               <span class="ace-qol-save-tgt-name">${r.name}</span>
               <span class="ace-qol-save-result-label ace-qol-save-pending">\u23f3 Waiting for save...</span>
+              ${removeBtn}
             </div>
           </div>
         `;
       }
-
       const passClass = r.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
       const rollDisplay = r.isAutoFail ? "AUTO" : r.saveTotal;
       const verdictText = r.passed ? "PASS" : "FAIL";
-
       return `
         <div class="ace-qol-save-result-row" data-token-doc-id="${r.tokenDocId}">
           <div class="ace-qol-save-result-line">
@@ -1885,12 +2529,59 @@ export class SaveEngine {
             <span class="ace-qol-save-tgt-name">${r.name}</span>
             <span class="ace-qol-save-roll ${passClass}">${rollDisplay}</span>
             <span class="ace-qol-save-verdict ${passClass}">${verdictText}</span>
+            ${removeBtn}
           </div>
         </div>
       `;
     }).join("");
 
-    const cardHtml = `
+    // ROLL DAMAGE button only appears if the spell actually deals damage.
+    // Save-or-condition spells (Hold Person, Charm Person, Sleep, etc.) get
+    // a per-target condition footer instead. Each line shows exactly which
+    // condition was applied to which target (red, e.g., "Goblin: Paralyzed")
+    // so the GM/player can see at a glance what changed.
+    let actionsHtml;
+    if (hasDamage) {
+      actionsHtml = `<div class="ace-qol-dmg-actions">
+          <button class="ace-qol-btn ace-qol-btn-roll-dmg" data-action="aceQolRollDamage">
+            <i class="fas fa-dice-d20"></i> ROLL DAMAGE
+          </button>
+        </div>`;
+    } else if (appliedConditions?.length) {
+      const lines = appliedConditions.map(a => {
+        const condList = a.conditions.map(c =>
+          c.charAt(0).toUpperCase() + c.slice(1).toLowerCase()
+        ).join(", ");
+        return `<div style="display:flex;align-items:center;gap:6px;padding:2px 0;">
+          <i class="fas fa-skull-crossbones" style="color:#ff5555;font-size:11px;"></i>
+          <span style="color:#ffffff;font-weight:700;">${foundry.utils.escapeHTML(a.targetName)}</span>
+          <span style="color:#888;">\u2192</span>
+          <span style="color:#ff5555;font-weight:700;letter-spacing:0.5px;">${foundry.utils.escapeHTML(condList)}</span>
+        </div>`;
+      }).join("");
+      actionsHtml = `<div class="ace-qol-save-conditions-applied" style="padding:8px 12px;background:linear-gradient(180deg,rgba(255,85,85,0.08),rgba(255,85,85,0.03));border-top:1px solid rgba(255,85,85,0.25);font-size:12px;">
+          ${lines}
+        </div>`;
+    } else {
+      // No conditions applied. Distinguish between:
+      //   (a) Everyone passed their save \u2192 green "resisted" message
+      //   (b) Someone failed but no conditions to apply \u2192 silent (leave blank)
+      // Otherwise we'd show a misleading "all resisted" message when in fact
+      // a target failed but the parser couldn't extract the condition (e.g.,
+      // homebrew description format we don't recognize yet).
+      const anyoneFailed = (results ?? []).some(r => r && !r.passed && !r.pending);
+      if (anyoneFailed) {
+        actionsHtml = `<div class="ace-qol-save-no-effect" style="padding:6px 12px;text-align:center;color:#aaa;font-size:11px;font-style:italic;">
+          <i class="fas fa-info-circle"></i> Save resolved \u2014 apply spell effect manually if needed
+        </div>`;
+      } else {
+        actionsHtml = `<div class="ace-qol-save-no-effect" style="padding:6px 12px;text-align:center;color:#88c878;font-size:11px;font-style:italic;">
+          <i class="fas fa-shield-halved"></i> All targets resisted
+        </div>`;
+      }
+    }
+
+    return `
       <div class="ace-qol-save-results-card" data-phase="1">
         <div class="ace-qol-save-header">
           <img src="${item.img || "icons/svg/spell.svg"}" class="ace-qol-save-item-img" />
@@ -1902,13 +2593,17 @@ export class SaveEngine {
         <div class="ace-qol-save-results">
           ${targetRows}
         </div>
-        <div class="ace-qol-dmg-actions">
-          <button class="ace-qol-btn ace-qol-btn-roll-dmg" data-action="aceQolRollDamage">
-            <i class="fas fa-dice-d20"></i> ROLL DAMAGE
-          </button>
-        </div>
+        ${actionsHtml}
       </div>
     `;
+  }
+
+  async _postSaveResultsPhase1(item, casterActor, results, opts) {
+    const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell,
+            timingType, templateDocId, templateSceneId, hasDamage = true,
+            appliedConditions = [] } = opts;
+
+    const cardHtml = this._buildPhase1CardHtml(item, results, opts);
 
     await ChatMessage.create({
       content: cardHtml,
@@ -1926,6 +2621,8 @@ export class SaveEngine {
           halfOnSave,
           damageTypes,
           isSpell,
+          hasDamage, // false for save-only-condition spells; suppresses Phase 2
+          appliedConditions, // [{ targetName, conditions:[...] }] for footer rendering
           allResults: results.map(r => ({
             name: r.name,
             img: r.img,
@@ -1943,6 +2640,9 @@ export class SaveEngine {
             isPC: r.isPC,
             pending: r.pending,
           })),
+          timingType:      timingType ?? null,
+          templateDocId:   templateDocId ?? null,
+          templateSceneId: templateSceneId ?? null,
         }
       }
     });
@@ -1955,6 +2655,15 @@ export class SaveEngine {
   async _completeSaveResultsPhase2(message) {
     const flags = message.flags?.[MODULE_ID];
     if (!flags || flags.phase !== 1) return;
+
+    // Save-only-condition spells (no damage parts) never produce a Phase 2.
+    // Defensive — the button shouldn't render, but if a stale card from
+    // before this fix or a custom hook somehow fires here, refuse to post
+    // a damage card with zero damage.
+    if (flags.hasDamage === false) {
+      console.log(`${MODULE_ID} | Phase 2 skipped — ${flags.itemId ?? "spell"} has no damage parts`);
+      return;
+    }
 
     const { itemUuid, itemId, actorId, saveAbility, saveDC, halfOnSave,
             damageTypes, isSpell, allResults } = flags;
@@ -2005,9 +2714,219 @@ export class SaveEngine {
       content: cardHtml,
       [`flags.${MODULE_ID}.phase`]: 2,
       [`flags.${MODULE_ID}.baseDamageTotal`]: baseDamageTotal,
-      [`flags.${MODULE_ID}.damageComponentTotals`]: damageComponents.map(c => ({ total: c.total, type: c.type })),
+      [`flags.${MODULE_ID}.damageComponentTotals`]: damageComponents.map(c => ({ total: c.total, type: c.type, formula: c.formula })),
       [`flags.${MODULE_ID}.damageResults`]: damageResults,
     });
+
+    // ── 6. Auto-delete the AOE template if the spell is instantaneous ──
+    await this._deleteInstantTemplate(message.flags?.[MODULE_ID]);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  + TARGET SELECTED — append canvas-selected tokens to an existing save card
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async _addTargetsToCard(message, newTokens) {
+    const flags = message.flags?.[MODULE_ID];
+    if (!flags) return;
+    const item  = await fromUuid(flags.itemUuid) ?? game.items.get(flags.itemId);
+    const actor = game.actors.get(flags.actorId);
+    if (!item) return;
+
+    // ── Build target data for the new tokens (mirrors _postLiveTargetCard) ──
+    const newTargetData = [];
+    for (const token of newTokens) {
+      const state = CombatState.assess(actor, token, item, {
+        saveAbility: flags.saveAbility, isSpell: flags.isSpell, damageTypes: flags.damageTypes,
+      });
+      if (!state) continue;
+      const isPC = token.actor?.hasPlayerOwner ?? false;
+      const rawMod = token.actor?.system?.abilities?.[flags.saveAbility]?.save;
+      const saveMod = typeof rawMod === "number" ? rawMod
+                    : typeof rawMod === "object" ? (rawMod?.value ?? rawMod?.total ?? 0)
+                    : Number(rawMod) || 0;
+      newTargetData.push({
+        tokenId:        token.id,
+        tokenDocId:     token.document?.id ?? token.id,
+        actorId:        token.actor?.id,
+        sceneId:        canvas.scene?.id,
+        name:           state.target.name,
+        img:            state.target.img,
+        isPC,
+        saveMod:        saveMod >= 0 ? `+${saveMod}` : `${saveMod}`,
+        saveAbilityUpper: flags.saveAbility.toUpperCase(),
+        autoFailSave:   state.autoFailSave,
+        superSaver:     state.superSaver,
+        damageModifiers: state.damageModifiers,
+        ownerIds:       isPC ? Object.entries(token.actor?.ownership ?? {})
+          .filter(([uid, lvl]) => uid !== "default" && lvl >= 3).map(([uid]) => uid) : null,
+      });
+    }
+    if (!newTargetData.length) return;
+
+    // ── Build damage indicator for color coding ──
+    const dmgInd = (t) => {
+      const dt = flags.damageTypes;
+      if (!t.damageModifiers || !dt?.length) return { cls: "", tag: "" };
+      let im=false, re=false, vu=false;
+      for (const d of dt) {
+        const m = t.damageModifiers[d];
+        if (m?.modifier === "immune")     im = true;
+        else if (m?.modifier === "resistant")  re = true;
+        else if (m?.modifier === "vulnerable") vu = true;
+      }
+      if (im) return { cls: "ace-qol-tgt-immune", tag: '<span class="ace-qol-tag ace-qol-tag-immune"><i class="fas fa-shield-halved"></i> IMMUNE</span>' };
+      if (re) return { cls: "ace-qol-tgt-resist", tag: '<span class="ace-qol-tag ace-qol-tag-resist"><i class="fas fa-shield-halved"></i> RESIST</span>' };
+      if (vu) return { cls: "ace-qol-tgt-vuln",   tag: '<span class="ace-qol-tag ace-qol-tag-vuln"><i class="fas fa-burst"></i> VULN</span>' };
+      return { cls: "", tag: "" };
+    };
+
+    const buildNpcRow = (t) => {
+      const di = dmgInd(t);
+      return `<div class="ace-qol-save-tgt-row ${di.cls}" data-token-id="${t.tokenId}">
+        <img src="${t.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
+        <span class="ace-qol-save-tgt-name">${t.name}</span>
+        <span class="ace-qol-save-tgt-mod">${t.saveAbilityUpper} ${t.saveMod}</span>
+        ${t.autoFailSave ? '<span class="ace-qol-tag ace-qol-tag-danger"><i class="fas fa-circle-xmark"></i> AUTO-FAIL</span>' : ""}
+        ${t.superSaver ? '<span class="ace-qol-tag ace-qol-tag-buff"><i class="fas fa-person-running"></i> EVASION</span>' : ""}
+        ${di.tag}
+        <button class="ace-qol-save-tgt-remove" data-action="aceQolRemoveTarget" data-token-id="${t.tokenId}"><i class="fas fa-xmark"></i></button>
+      </div>`;
+    };
+    const buildPcRow = (t) => {
+      const di = dmgInd(t);
+      return `<div class="ace-qol-save-tgt-row ace-qol-save-tgt-pc ${di.cls}" data-token-id="${t.tokenId}" data-token-doc-id="${t.tokenDocId}" data-actor-id="${t.actorId}">
+        <img src="${t.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
+        <span class="ace-qol-save-tgt-name">${t.name}</span>
+        <span class="ace-qol-save-tgt-mod">${t.saveAbilityUpper} ${t.saveMod}</span>
+        ${t.autoFailSave ? '<span class="ace-qol-tag ace-qol-tag-danger"><i class="fas fa-circle-xmark"></i> AUTO-FAIL</span>' : ""}
+        ${t.superSaver ? '<span class="ace-qol-tag ace-qol-tag-buff"><i class="fas fa-person-running"></i> EVASION</span>' : ""}
+        ${di.tag}
+        <button class="ace-qol-save-pc-roll-btn" data-action="aceQolGmRollPcSave" data-token-doc-id="${t.tokenDocId}" title="Roll save on this PC's behalf (GM)">
+          <img src="modules/ace-qol/Assets/Dice%20Dice/BD20/BD20-20_nobg.png" class="ace-qol-save-pc-dice-img" alt="d20" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'" />
+          <i class="fas fa-dice-d20" style="display:none"></i>
+        </button>
+        <button class="ace-qol-save-tgt-remove" data-action="aceQolRemoveTarget" data-token-id="${t.tokenId}" title="Remove this PC from the save list">
+          <i class="fas fa-xmark"></i>
+        </button>
+      </div>`;
+    };
+
+    // ── Build the COMPLETE updated targets list (existing minus duplicates + new) ──
+    // flags.targets is the authoritative source — reflects any X-removals already done.
+    // Rebuilding sections from scratch avoids stale-content bugs where removed targets
+    // would resurface because message.content wasn't updated alongside flag changes.
+    const existingIds  = new Set((flags.targets ?? []).map(t => t.tokenDocId));
+    const dedupedNew   = newTargetData.filter(t => !existingIds.has(t.tokenDocId));
+    if (!dedupedNew.length) {
+      ui.notifications.info("ACE QOL: All selected tokens are already in the target list.");
+      return;
+    }
+    const updatedTargets = [...(flags.targets ?? []), ...dedupedNew];
+    const allNpcs = updatedTargets.filter(t => !t.isPC);
+    const allPcs  = updatedTargets.filter(t =>  t.isPC);
+    const allNpcRowsHtml = allNpcs.map(buildNpcRow).join("");
+    const allPcRowsHtml  = allPcs.map(buildPcRow).join("");
+
+    // ── Replace the section contents in the parsed DOM (don't append to stale HTML) ──
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(message.content, "text/html");
+    const card = doc.querySelector(".ace-qol-save-card");
+    if (!card) {
+      console.warn(`${MODULE_ID} | Could not find save card to update targets`);
+      return;
+    }
+
+    const ensureSection = (selector, classes) => {
+      let s = card.querySelector(selector);
+      if (!s) {
+        s = doc.createElement("div");
+        s.className = classes;
+        const actions = card.querySelector(".ace-qol-save-actions");
+        if (actions) actions.before(s); else card.appendChild(s);
+      }
+      return s;
+    };
+    // Remove any existing sections so we can rebuild cleanly
+    card.querySelectorAll(".ace-qol-save-tgt-section").forEach(s => s.remove());
+    if (allNpcRowsHtml) {
+      const sec = ensureSection("__missing__", "ace-qol-save-tgt-section");
+      sec.innerHTML = allNpcRowsHtml;
+    }
+    if (allPcRowsHtml) {
+      const sec = ensureSection("__missing__", "ace-qol-save-tgt-section ace-qol-save-tgt-section-pc");
+      sec.innerHTML = allPcRowsHtml;
+    }
+
+    // Update local var for the prompt loop and the success notification
+    const newPcs = dedupedNew.filter(t => t.isPC);
+    const newNpcs = dedupedNew.filter(t => !t.isPC);
+
+    // ── Persist ──
+    await message.update({
+      content: card.outerHTML,
+      [`flags.${MODULE_ID}.targets`]: updatedTargets,
+    });
+
+    // ── Clear any stale pcSaveResults for re-added PCs (so they get a fresh roll) ──
+    // Use case: PC was on the list, rolled, X-removed (e.g., user wants to apply a buff),
+    // then re-added via TARGET SELECTED — they should be allowed to re-roll.
+    for (const tgt of newPcs) {
+      try {
+        const stale = game.messages.contents.filter(m => {
+          const f = m.flags?.[MODULE_ID];
+          return f?.type === "pcSaveResult"
+              && f.tokenDocId === tgt.tokenDocId
+              && f.castId === message.id;
+        });
+        for (const m of stale) await m.delete();
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Failed to clear stale pcSaveResult for ${tgt.name}:`, err);
+      }
+    }
+
+    // ── Send prompts to any new PCs ──
+    for (const tgt of newPcs) {
+      try {
+        await this._sendPcSavePrompt(item, actor, tgt, {
+          saveAbility:  flags.saveAbility,
+          saveDC:       flags.saveDC,
+          halfOnSave:   flags.halfOnSave,
+          damageTypes:  flags.damageTypes,
+          isSpell:      flags.isSpell,
+          castId:       message.id,
+        });
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Failed to send prompt to new PC ${tgt.name}:`, err);
+      }
+    }
+
+    const npcMsg = newNpcs.length ? ` (${newNpcs.length} NPC${newNpcs.length > 1 ? "s" : ""})` : "";
+    const pcMsg  = newPcs.length  ? ` (${newPcs.length} PC${newPcs.length > 1 ? "s" : ""} prompted)` : "";
+    ui.notifications.info(`ACE QOL: Added ${newTargetData.length} target${newTargetData.length > 1 ? "s" : ""}${npcMsg}${pcMsg}.`);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Auto-delete instant spell templates (Fireball, Lightning Bolt, etc.)
+  //  Persistent spells (Fog Cloud, Spirit Guardians) keep their template.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async _deleteInstantTemplate(flags) {
+    try {
+      if (!flags) return;
+      if (game.settings.get(MODULE_ID, "autoDeleteInstantTemplates") === false) return;
+      if (flags.timingType !== TIMING.INSTANT) return;
+      const sceneId = flags.templateSceneId;
+      const tmplId  = flags.templateDocId;
+      if (!sceneId || !tmplId) return;
+      const scene = game.scenes.get(sceneId);
+      const tmpl  = scene?.templates?.get(tmplId);
+      if (!tmpl) return;
+      await tmpl.delete();
+      console.log(`${MODULE_ID} | Auto-deleted instant template ${tmplId}`);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Failed to auto-delete instant template:`, err);
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -2346,7 +3265,7 @@ export class SaveEngine {
           })),
           // Store base damage for override recalculation
           baseDamageTotal,
-          damageComponentTotals: damageComponents.map(c => ({ total: c.total, type: c.type })),
+          damageComponentTotals: damageComponents.map(c => ({ total: c.total, type: c.type, formula: c.formula })),
         }
       }
     });

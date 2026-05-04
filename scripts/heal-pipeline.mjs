@@ -272,7 +272,7 @@ export class HealPipeline {
       console.log(`${MODULE_ID} | HealPipeline: consume toggle off — skipping resource decrement`);
     }
 
-    await this._rollAndPostCard(activity, actor, item, targets, classification);
+    await this._rollAndPostCard(activity, actor, item, targets, classification, usageConfig);
   }
 
   /**
@@ -480,7 +480,7 @@ export class HealPipeline {
 
   async _onTemplatePlaced(templates) {
     if (!this._pendingTemplateHeal) return;
-    const { activity, classification } = this._pendingTemplateHeal;
+    const { activity, classification, usageConfig } = this._pendingTemplateHeal;
     this._pendingTemplateHeal = null;
 
     const tmpl = templates?.[0];
@@ -499,7 +499,7 @@ export class HealPipeline {
       return;
     }
 
-    await this._rollAndPostCard(activity, activity.actor, activity.item, targets, classification);
+    await this._rollAndPostCard(activity, activity.actor, activity.item, targets, classification, usageConfig);
   }
 
   /**
@@ -618,11 +618,12 @@ export class HealPipeline {
    * Custom formula override:    custom.enabled=true → use custom.formula verbatim
    * Standard:                    `{number}d{denomination}` + (bonus ? ` + ${bonus}` : "")
    */
-  static _buildHealFormula(activity) {
+  static _buildHealFormula(activity, usageConfig = null) {
     const obj = activity.toObject?.() ?? activity;
     const h   = obj.healing ?? activity.healing ?? {};
 
-    // Custom formula override
+    // Custom formula override (use as-is, no scaling — assume the GM wrote it
+    // exactly as they want)
     if (h.custom?.enabled && h.custom?.formula) {
       return h.custom.formula;
     }
@@ -635,6 +636,52 @@ export class HealPipeline {
     let formula = "";
     if (num > 0 && den > 0) formula = `${num}d${den}`;
     if (bonus) formula = formula ? `${formula} + ${bonus}` : bonus;
+
+    // ── Upcast scaling ──
+    // When a spell is cast at a higher level than its base (Healing Word at
+    // L3 instead of L1), the heal scales. RAW Cure Wounds 2024: +2d8 per slot
+    // above 1st. Healing Word: +2d4. Mass Healing Word: +1d4. Etc.
+    //
+    // dnd5e 5.x stores the scaling expression on the activity. Read it from
+    // `activity.healing.scaling.formula` if present; otherwise fall back to
+    // the heuristic "one extra base dice block per level above" (Cure Wounds
+    // pattern — works for the vast majority of heal spells).
+    try {
+      const item = activity.item ?? activity.parent?.parent ?? null;
+      const baseLevel = parseInt(item?.system?.level ?? 0);
+      const slotKey = usageConfig?.spell?.slot ?? null;
+      // slotKey forms: "spell1".."spell9", "pact"
+      let slotLevel = baseLevel;
+      if (typeof slotKey === "string") {
+        const m = slotKey.match(/spell(\d+)/);
+        if (m) slotLevel = parseInt(m[1]);
+        else if (slotKey === "pact") slotLevel = parseInt(item?.actor?.system?.spells?.pact?.level ?? baseLevel);
+      } else if (typeof usageConfig?.spell?.level === "number") {
+        slotLevel = usageConfig.spell.level;
+      }
+      const levelsAbove = Math.max(0, slotLevel - baseLevel);
+
+      if (levelsAbove > 0 && baseLevel > 0) {
+        const scalingFormula = h.scaling?.formula?.trim?.();
+        if (scalingFormula) {
+          // Activity has explicit scaling expression — apply it `levelsAbove` times
+          const upcastPart = levelsAbove === 1
+            ? scalingFormula
+            : `${levelsAbove} * (${scalingFormula})`;
+          formula = formula ? `${formula} + ${upcastPart}` : upcastPart;
+        } else if (num > 0 && den > 0) {
+          // Heuristic fallback: add `levelsAbove` more copies of the base dice
+          // (Cure Wounds 2024 = 2d8 base, +2d8 per slot above)
+          formula = formula
+            ? `${formula} + ${num * levelsAbove}d${den}`
+            : `${num * levelsAbove}d${den}`;
+        }
+        console.log(`${MODULE_ID} | Heal upcast: ${item?.name} cast at ${slotLevel} (base ${baseLevel}) → formula "${formula}"`);
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Heal upcast scaling failed (non-fatal):`, err);
+    }
+
     return formula || "0";
   }
 
@@ -642,7 +689,7 @@ export class HealPipeline {
   //  Roll + Post Card
   // ═══════════════════════════════════════════════════════════════════════════
 
-  async _rollAndPostCard(activity, actor, item, targets, classification) {
+  async _rollAndPostCard(activity, actor, item, targets, classification, usageConfig = null) {
     // Build the heal Roll directly from the activity's healing data.
     //
     // We do NOT call activity.rollDamage() because:
@@ -652,7 +699,10 @@ export class HealPipeline {
     //      damage-applicator widget the user reported.
     // Direct construction gives us a clean Roll with full @ data resolution
     // (so @flags.dnd5e.summon.mod still works) and zero extra UI.
-    const formula = HealPipeline._buildHealFormula(activity);
+    //
+    // Pass usageConfig so _buildHealFormula can detect upcasting and add
+    // the per-level scaling dice (Cure Wounds 2024: +2d8 per slot above 1st).
+    const formula = HealPipeline._buildHealFormula(activity, usageConfig);
     const rollData = activity.getRollData?.() ?? actor.getRollData();
     let roll;
     try {

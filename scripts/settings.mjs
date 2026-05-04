@@ -769,6 +769,36 @@ export class QolSettings {
       default: true,
     });
 
+    s("npcSaveAnimationDelay", {
+      name:    "NPC Save Dice Pacing — Single Target (ms)",
+      hint:    "How long the engine waits while a SINGLE NPC's save d20 is animating before showing the result. Higher = more dramatic. Set to 0 to skip waiting entirely (result appears instantly while dice roll in background). Default: 1000ms.",
+      scope:   "world",
+      config:  false,
+      type:    Number,
+      default: 1000,
+      range:   { min: 0, max: 5000, step: 100 },
+    });
+
+    s("npcSaveAnimationDelayMulti", {
+      name:    "NPC Save Dice Pacing — Multi-Target (ms per save)",
+      hint:    "When rolling saves for MULTIPLE NPCs at once (Fireball, Mass Suggestion, etc.), how long to pause per save. Lower = faster batch resolution. Default: 250ms per save (5 targets ≈ 1.25s total).",
+      scope:   "world",
+      config:  false,
+      type:    Number,
+      default: 250,
+      range:   { min: 0, max: 2000, step: 50 },
+    });
+
+    s("npcDamageAnimationDelay", {
+      name:    "Spell Damage Dice Pacing (ms)",
+      hint:    "How long the engine waits while spell damage dice (Fireball 8d6, Sacred Flame 1d8, etc.) are animating across the table before the merge card displays. Applies to BOTH NPC and PC casts since damage is rolled engine-side either way. Set to 0 to skip waiting entirely. Default: 1500ms.",
+      scope:   "world",
+      config:  false,
+      type:    Number,
+      default: 1500,
+      range:   { min: 0, max: 8000, step: 100 },
+    });
+
     // ═══════════════════════════════════════════════════════════════════════════
     //  DEBUG
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1074,6 +1104,37 @@ export class QolSettings {
       type:    Number,
       default: 3000,
       range:   { min: 0, max: 6000, step: 250 },
+    });
+
+    s("polymorphMode", {
+      name:    "Polymorph Implementation",
+      hint:    "Choose the engine that handles Polymorph spell + trap transformations. CUSTOM is ace-qol's own implementation: stat-override Active Effect + token swap, ~3 database writes, 1-3 seconds even on hosted servers. DND5E NATIVE uses the system's built-in transformInto API which creates a brand-new actor in the world; mechanically perfect RAW but slow on hosted servers (60-120 seconds when many modules listen on actor/token hooks).",
+      scope:   "world",
+      config:  false,
+      type:    String,
+      default: "custom",
+      choices: {
+        custom: "Custom — fast (ace-qol implementation, ~3s)",
+        dnd5e:  "dnd5e Native — slow but RAW-perfect (transformInto)",
+      },
+    });
+
+    s("tokenImageFolders", {
+      name:    "Token Image Folders",
+      hint:    "Folders ace-qol scans recursively to build the polymorph token-image cache. Each entry is a path relative to your Foundry user-data folder (e.g. 'NPCs' or 'assets/srd5e/img/bestiary/tokens/MM'). When empty, polymorph uses compendium-default images. Add/remove folders via the ace-qol config panel.",
+      scope:   "world",
+      config:  false,
+      type:    Object,
+      default: [],
+    });
+
+    s("tokenImageCacheData", {
+      name:    "Token Image Cache Data (persisted)",
+      hint:    "Internal — persisted snapshot of the scanned token-image map. Auto-managed by ace-qol; do not edit by hand. Cleared by 'Rescan' in the config panel.",
+      scope:   "world",
+      config:  false,
+      type:    Object,
+      default: { map: {}, paths: [], fileCount: 0, uniqueCount: 0, durationSec: 0, timestamp: 0 },
     });
 
     console.log(`${MODULE_ID} | Settings registered (all combat features ON by default)`);

@@ -282,7 +282,7 @@ export class SpeedRolls {
     // feeding into our AttackPipeline for hit/miss resolution and damage.
     try {
       const useConfig = {
-        event: { shiftKey: true },  // Skip ActivityChoiceDialog
+        event: { shiftKey: true, target: document.body },  // Skip ActivityChoiceDialog (target preserved for dnd5e buildPost)
       };
 
       // Build roll config options for advantage/disadvantage

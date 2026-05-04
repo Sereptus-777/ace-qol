@@ -109,6 +109,24 @@ export class CoverEngine {
       cover = COVER_HALF;
     }
 
+    // ── House rule: large+ targets resist cover (can't hide behind small things) ──
+    let sizeReduced = false;
+    try {
+      if (QolSettings.get("reduceCoverForLargeTargets") && cover !== COVER_FULL) {
+        const targetSize = target.document?.width ?? 1; // grid units; Large=2, Huge=3, Gargantuan=4
+        const before = cover;
+        if (targetSize >= 3) {
+          // Huge / Gargantuan: only Full cover applies
+          cover = COVER_NONE;
+        } else if (targetSize >= 2) {
+          // Large: no Half cover, ¾ cover downgrades to Half
+          if (cover === COVER_HALF) cover = COVER_NONE;
+          else if (cover === COVER_THREE_QUARTERS) cover = COVER_HALF;
+        }
+        if (cover !== before) sizeReduced = true;
+      }
+    } catch { /* setting not ready */ }
+
     const label = COVER_LABELS[cover] ?? "No Cover";
     return {
       cover,
@@ -119,6 +137,7 @@ export class CoverEngine {
       total: totalRays,
       blockedPct: Math.round(blockedPct * 100),
       isFullCover: cover === COVER_FULL,
+      sizeReduced,
     };
   }
 
@@ -211,7 +230,9 @@ export class CoverEngine {
     const tgtCenter = target.center;
 
     // Build a ray from attacker center to target center
-    const ray = new Ray(atkCenter, tgtCenter);
+    // (v13: Ray namespaced under foundry.canvas.geometry.Ray)
+    const RayClass = foundry.canvas?.geometry?.Ray ?? globalThis.Ray;
+    const ray = new RayClass(atkCenter, tgtCenter);
     const rayLength = ray.distance;
     if (rayLength < 1) return 0;
 

@@ -473,7 +473,7 @@ export class OverTimeEngine {
         const roll = await actor.rollSavingThrow?.({
           ability,
           target: dc,
-          event: { shiftKey: true }, // fast-forward
+          event: { shiftKey: true, target: document.body }, // fast-forward (target preserved for dnd5e buildPost)
           chatMessage: false,
         });
         const rollObj = Array.isArray(roll) ? roll[0] : roll;

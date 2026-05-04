@@ -9,6 +9,8 @@ import { QolSettings }       from "./settings.mjs";
 import { ExtendedEffects }   from "./extended-effects.mjs";
 import { AttackPipeline }    from "./attack-pipeline.mjs";
 import { HealPipeline }      from "./heal-pipeline.mjs";
+import { SpellAutoDamage }   from "./spell-auto-damage.mjs";
+import { EngagementGate }    from "./engagement-gate.mjs";
 import { TargetState }       from "./target-state.mjs";
 import { CombatState }       from "./combat-state.mjs";
 import { DamageEngine }      from "./damage-engine.mjs";
@@ -23,6 +25,10 @@ import { CoverEngine }          from "./cover-engine.mjs";
 import { BloodiedEngine }       from "./bloodied-engine.mjs";
 import { VisibilityEngine }     from "./visibility-engine.mjs";
 import { ConditionLibrary }     from "./condition-library.mjs";
+import { RepeatingSaveEngine }  from "./repeating-save-engine.mjs";
+import { TransformationEngine } from "./transformation-engine.mjs";
+import { PolymorphSpellPipeline } from "./polymorph-spell-pipeline.mjs";
+import { TokenCache }            from "./token-cache.mjs";
 import { DurationTracker }      from "./duration-tracker.mjs";
 import { SpeedRolls }           from "./speed-rolls.mjs";
 import { MergeCard }            from "./merge-card.mjs";
@@ -123,6 +129,30 @@ Hooks.once("ready", () => {
     console.error(`${MODULE_ID} | Heal pipeline init failed:`, err);
   }
 
+  // Spell auto-damage pipeline — ALL users
+  // Routes damage-type spell activities (Magic Missile, Witch Bolt initial,
+  // any custom auto-hit damage spell) through our resistance/immunity-aware
+  // damage card flow. Without this, vanilla dnd5e bypasses our gates and a
+  // force-immune target would still take full damage from Magic Missile.
+  try {
+    new SpellAutoDamage();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Spell auto-damage pipeline init failed:`, err);
+  }
+
+  // Engagement Gate — ALL users, ALWAYS first
+  // The pre-flight validator for every spell cast. Phase 1 covers:
+  //   • Creature-type restrictions (Hold Person on a Wolf → BLOCKED)
+  //   • Concentration confirm (Haste while concentrating on Bless → DIALOG)
+  // Returns false from preUseActivity to cancel invalid casts BEFORE any
+  // slot is consumed. Subsequent phases will add range, cover, size, and
+  // route weapon attacks through the same gate.
+  try {
+    EngagementGate.registerHooks();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Engagement gate init failed:`, err);
+  }
+
   // Damage engine — ALL users
   // Players need the renderChatMessage hooks for: hiding GM controls, wiring
   // the ROLL DAMAGE button (routes to GM via socket), and per-type click feedback.
@@ -201,7 +231,316 @@ Hooks.once("ready", () => {
   // Condition Library — ALL users (effect definitions + apply/remove API)
   try {
     ConditionLibrary.registerAPI();
-    console.log(`${MODULE_ID} | Condition Library online`);
+
+    // ── Concentration link cleanup ──
+    // When the caster's "concentrating" Active Effect is deleted (concentration
+    // ends, OR a new concentration spell breaks the previous one, OR the GM
+    // manually drops it from the effects panel/sheet), sweep all actors and
+    // remove conditions that were tagged as linked to that caster + spell.
+    // RAW: dropping concentration ends the spell's effects.
+    //
+    // Without this hook, casting Hold Person on Goblin B leaves Goblin A
+    // paralyzed forever even though concentration moved to B.
+    //
+    // Detection is intentionally PERMISSIVE — dnd5e 5.x exposes the
+    // concentration effect through several signals depending on path:
+    //   - effect.statuses (Set) contains "concentrating"
+    //   - effect.flags.dnd5e.concentration exists (raw flag presence is enough)
+    //   - effect.flags.core.statusId === "concentrating"
+    //   - effect.name starts with "Concentrating" (legacy + manual edits)
+    // We accept ANY of these as "this is the concentration tracker effect".
+    //
+    // Both this hook AND `dnd5e.endConcentration` (registered below) can fire
+    // for the same end-event. We share a dedup cache between the two so the
+    // sweep only runs once per (caster, spell) within a 2-second window.
+    // Dedup window: the two hooks fire within milliseconds of each other for
+    // the same concentration-end event. 500ms is plenty to dedupe but won't
+    // block a legitimate back-to-back end (e.g. rapid testing).
+    const SWEEP_DEDUP_MS = 500;
+    const _recentSweeps = new Map();
+    const _markSweep = (key) => _recentSweeps.set(key, Date.now());
+    const _wasRecentlySwept = (key) => {
+      const t = _recentSweeps.get(key);
+      if (!t) return false;
+      if (Date.now() - t > SWEEP_DEDUP_MS) { _recentSweeps.delete(key); return false; }
+      return true;
+    };
+
+    const _runSweep = async (casterId, spellName, source, casterName) => {
+      const key = `${casterId}::${spellName ?? "*"}`;
+      if (_wasRecentlySwept(key)) {
+        console.log(`${MODULE_ID} | [concentration-end:${source}] skipped — already swept ${key} <${SWEEP_DEDUP_MS}ms ago`);
+        return 0;
+      }
+      _markSweep(key);
+      console.log(`${MODULE_ID} | [concentration-end:${source}] sweeping ${spellName ? `"${spellName}"` : "(any spell)"} from caster ${casterName ?? casterId}`);
+      const removed = await ConditionLibrary.dropConcentrationLinkedEffects({
+        casterId, spellName,
+      });
+      if (removed > 0) {
+        console.log(`${MODULE_ID} | [concentration-end:${source}] removed ${removed} linked condition(s) from caster ${casterName ?? casterId}`);
+      } else {
+        console.log(`${MODULE_ID} | [concentration-end:${source}] sweep found nothing to remove (caster ${casterId}${spellName ? `, spell "${spellName}"` : ""})`);
+      }
+      return removed;
+    };
+
+    Hooks.on("deleteActiveEffect", async (effect, opts, userId) => {
+      try {
+        if (!game.user.isGM) return; // GM client owns the cleanup
+        if (!effect) return;
+
+        // ── Permissive detection ──
+        const statuses = effect.statuses;
+        const hasStatusSet = statuses?.has?.("concentrating") === true;
+        const statusFirst  = statuses?.first?.() ?? null;
+        const coreStatus   = effect.flags?.core?.statusId ?? null;
+        const dndConcFlag  = effect.flags?.dnd5e?.concentration ?? null;
+        const nameLc       = String(effect.name ?? "").toLowerCase();
+
+        const isConcentratingFx =
+             hasStatusSet
+          || statusFirst === "concentrating"
+          || coreStatus === "concentrating"
+          || !!dndConcFlag
+          || nameLc.startsWith("concentrating")
+          || nameLc.includes("concentrating");
+
+        if (!isConcentratingFx) return;
+
+        console.log(`${MODULE_ID} | [concentration-end] hook fired:`, {
+          name:        effect.name,
+          parent:      effect.parent?.name ?? "(no parent)",
+          parentId:    effect.parent?.id ?? null,
+          hasStatusSet,
+          statusFirst,
+          coreStatus,
+          dndConcFlag: dndConcFlag ? Object.keys(dndConcFlag) : null,
+          dndOrigin:   dndConcFlag?.origin ?? null,
+          dndItem:     dndConcFlag?.item ?? null,
+        });
+
+        const casterId = effect.parent?.id ?? null;
+        if (!casterId) {
+          console.warn(`${MODULE_ID} | [concentration-end] no caster id resolvable — skipping sweep`);
+          return;
+        }
+
+        // ── Resolve spell name from every available signal ──
+        let spellName = null;
+        let spellResolveSource = null;
+
+        // Path A: dnd5e flag with origin UUID
+        if (!spellName && dndConcFlag?.origin) {
+          try {
+            const src = await fromUuid(dndConcFlag.origin);
+            if (src?.name) {
+              spellName = src.name;
+              spellResolveSource = "flags.dnd5e.concentration.origin";
+            }
+          } catch (_) { /* fallthrough */ }
+        }
+
+        // Path B: dnd5e flag with item id (resolve on parent actor)
+        if (!spellName && dndConcFlag?.item && effect.parent) {
+          const it = effect.parent.items?.get?.(dndConcFlag.item)
+                  ?? effect.parent.items?.find?.(i => i.id === dndConcFlag.item);
+          if (it?.name) {
+            spellName = it.name;
+            spellResolveSource = "flags.dnd5e.concentration.item";
+          }
+        }
+
+        // Path C: name pattern "Concentrating: Hold Person"
+        if (!spellName) {
+          const m = String(effect.name ?? "").match(/Concentrating(?:\s*[:—–-])?\s*(.+)/i);
+          if (m?.[1]) {
+            spellName = m[1].trim();
+            spellResolveSource = "name pattern";
+          }
+        }
+
+        // ── Sweep ──
+        // If we have a spell name, filter the sweep to that spell only.
+        // If we don't, fall back to a name-less sweep (any concentration-
+        // tagged effect from this caster) — safer than orphaning conditions
+        // forever, since the caster's only concentration just ended anyway.
+        if (spellName) {
+          console.log(`${MODULE_ID} | [concentration-end] spellName="${spellName}" resolved via ${spellResolveSource}`);
+        } else {
+          console.warn(`${MODULE_ID} | [concentration-end] could not resolve spell name — falling back to caster-only sweep`);
+        }
+
+        await _runSweep(casterId, spellName, "deleteActiveEffect", effect.parent?.name);
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Concentration-link sweep on deleteActiveEffect failed:`, err);
+      }
+    });
+
+    // ── Safety-net hook: dnd5e native concentration-end signal ──
+    // Some dnd5e flows (e.g. "End Concentration" UI buttons that route through
+    // ConcentrationManager) may emit this hook AS WELL AS deleteActiveEffect,
+    // or in rare cases instead of it. Wiring both gives us belt-and-braces;
+    // the shared dedup cache prevents double-sweeps.
+    Hooks.on("dnd5e.endConcentration", async (...args) => {
+      try {
+        if (!game.user.isGM) return;
+        // Try to find an actor and an effect/item in the args
+        const actor  = args.find(a => a?.documentName === "Actor") ?? null;
+        const effect = args.find(a => a?.documentName === "ActiveEffect") ?? null;
+        const item   = args.find(a => a?.documentName === "Item") ?? null;
+        if (!actor) return;
+
+        let spellName = null;
+        if (item?.name) spellName = item.name;
+        else if (effect?.flags?.dnd5e?.concentration?.origin) {
+          try {
+            const src = await fromUuid(effect.flags.dnd5e.concentration.origin);
+            if (src?.name) spellName = src.name;
+          } catch (_) {}
+        }
+        if (!spellName && effect?.name) {
+          const m = String(effect.name).match(/Concentrating(?:\s*[:—–-])?\s*(.+)/i);
+          if (m?.[1]) spellName = m[1].trim();
+        }
+
+        console.log(`${MODULE_ID} | [concentration-end:dnd5e] hook fired — caster=${actor.name} spell=${spellName ?? "(unknown)"}`);
+        await _runSweep(actor.id, spellName, "dnd5e", actor.name);
+      } catch (err) {
+        console.warn(`${MODULE_ID} | dnd5e.endConcentration handler failed:`, err);
+      }
+    });
+
+    // ── Fifth path: orphaned-parent drop ──
+    // When a concentration-LINKED dependent (paralyzed, charmed, etc.) is
+    // deleted by any means OTHER than the parent concentration ending — e.g.
+    // a successful repeating save, Lesser Restoration cure, GM manual removal,
+    // duration expiry — check whether the caster has ANY other linked targets
+    // remaining. If none, drop the caster's concentration too. Without this,
+    // a single goblin passing its end-of-turn save against Hold Person would
+    // leave the caster locked into an effectless concentration forever.
+    //
+    // Skips when: (a) the deleted thing IS the Concentrating effect itself
+    // (handled by other layers), (b) parent is already gone/disabled, or
+    // (c) any other dependent is still alive on the parent.
+    Hooks.on("deleteActiveEffect", async (effect /*, opts, userId */) => {
+      try {
+        if (!game.user.isGM) return;
+        if (!effect) return;
+
+        // Only react to LINKED dependents — they have flags.dnd5e.dependentOn
+        const depOnUuid = effect.flags?.dnd5e?.dependentOn;
+        if (!depOnUuid) return;
+
+        // Skip if the deleted effect is itself a Concentrating effect — the
+        // other concentration layers handle that case (and we'd recurse).
+        const isConcSelf = effect.statuses?.has?.("concentrating")
+                       || !!effect.flags?.dnd5e?.concentration
+                       || String(effect.name ?? "").toLowerCase().includes("concentrating");
+        if (isConcSelf) return;
+
+        // Resolve the parent Concentrating effect
+        let parent;
+        try { parent = fromUuidSync(depOnUuid); } catch (_) { return; }
+        if (!parent) return;        // Parent already gone — nothing to do
+        if (parent.disabled) return; // Parent already disabled — already handled
+
+        // Count remaining alive dependents on the parent. The just-deleted
+        // effect may or may not still be in the registry depending on hook
+        // ordering (super._onDelete fires this hook BEFORE dnd5e's mixin
+        // untracks). Filter by id to guarantee we exclude it.
+        let remaining = [];
+        try {
+          remaining = (parent.getDependents?.() ?? [])
+            .filter(d => d && d.id !== effect.id && !d.disabled);
+        } catch (_) { /* fall through */ }
+
+        if (remaining.length > 0) return; // Other targets still hooked
+
+        // Last linked target gone — drop the caster's concentration
+        console.log(`${MODULE_ID} | [orphan-parent] last linked dependent of "${parent.name}" removed — dropping caster's concentration`);
+        try {
+          await parent.delete();
+          ui.notifications?.info(`${parent.name} ended — no targets remain affected.`);
+        } catch (err) {
+          const msg = String(err?.message ?? err ?? "");
+          if (!/does not exist/i.test(msg)) {
+            console.warn(`${MODULE_ID} | Failed to drop orphan parent concentration:`, err);
+          }
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | orphan-parent handler failed:`, err);
+      }
+    });
+
+    // ── Third safety net: watch for concentration being DISABLED (not deleted) ──
+    // Some UIs (effect badge toggles, certain modules) may set `disabled: true`
+    // on the Concentrating effect rather than deleting it. RAW: a disabled
+    // concentration effect means the spell is no longer being concentrated on,
+    // so we treat that the same as deletion.
+    //
+    // After we sweep linked conditions, we ALSO delete the now-dead
+    // Concentrating effect itself. Otherwise it sits on the actor as clutter
+    // forever, and if the player re-casts the same concentration spell, the
+    // system stacks a NEW Concentrating effect on top — so disabled-cast,
+    // disabled-cast, disabled-cast accumulates indefinitely.
+    Hooks.on("updateActiveEffect", async (effect, changes /*, opts, userId */) => {
+      try {
+        if (!game.user.isGM) return;
+        if (!effect) return;
+
+        // Only react to disabled flips on a concentrating effect
+        const becameDisabled = changes?.disabled === true;
+        if (!becameDisabled) return;
+
+        const isConcentrating = effect.statuses?.has?.("concentrating")
+          || !!effect.flags?.dnd5e?.concentration
+          || String(effect.name ?? "").toLowerCase().includes("concentrating");
+        if (!isConcentrating) return;
+
+        const casterId = effect.parent?.id ?? null;
+        if (!casterId) return;
+
+        let spellName = null;
+        const dndConcFlag = effect.flags?.dnd5e?.concentration;
+        if (dndConcFlag?.origin) {
+          try {
+            const src = await fromUuid(dndConcFlag.origin);
+            if (src?.name) spellName = src.name;
+          } catch (_) {}
+        }
+        if (!spellName) {
+          const m = String(effect.name ?? "").match(/Concentrating(?:\s*[:—–-])?\s*(.+)/i);
+          if (m?.[1]) spellName = m[1].trim();
+        }
+
+        console.log(`${MODULE_ID} | [concentration-end:disable] Concentrating effect disabled on ${effect.parent?.name} — sweeping`);
+        await _runSweep(casterId, spellName, "disable", effect.parent?.name);
+
+        // ── Clean up the now-dead Concentrating effect ──
+        // Re-fetch right before delete in case something else already removed
+        // it (race with dnd5e's own cleanup on some flows).
+        try {
+          const stillThere = effect.parent?.effects?.get?.(effect.id);
+          if (stillThere) {
+            await stillThere.delete();
+            console.log(`${MODULE_ID} | [concentration-end:disable] cleaned up disabled Concentrating effect on ${effect.parent?.name}`);
+          } else {
+            console.log(`${MODULE_ID} | [concentration-end:disable] disabled Concentrating effect already gone — no cleanup needed`);
+          }
+        } catch (err) {
+          // "does not exist" = something else won the race — benign
+          const msg = String(err?.message ?? err ?? "");
+          if (!/does not exist/i.test(msg)) {
+            console.warn(`${MODULE_ID} | Failed to delete disabled Concentrating effect on ${effect.parent?.name}:`, err);
+          }
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | updateActiveEffect concentration-disable handler failed:`, err);
+      }
+    });
+
+    console.log(`${MODULE_ID} | Condition Library online (concentration-link sweep registered)`);
   } catch (err) {
     console.error(`${MODULE_ID} | Condition Library init failed:`, err);
   }
@@ -214,6 +553,42 @@ Hooks.once("ready", () => {
     console.log(`${MODULE_ID} | Duration Tracker online`);
   } catch (err) {
     console.error(`${MODULE_ID} | Duration Tracker init failed:`, err);
+  }
+
+  // Repeating Save Engine — GM-only (it gates internally). Handles RAW
+  // end-of-turn re-saves for Hold Person, Banishment, Tasha's, etc.
+  try {
+    RepeatingSaveEngine.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Repeating Save Engine init failed:`, err);
+  }
+
+  // Transformation Engine — GM-only. Wraps dnd5e transformInto/revertOriginalForm
+  // and handles Polymorph spell + trap, True Polymorph, Wild Shape, lycanthropy,
+  // innate shapechangers, and item-driven transformations through one pipeline.
+  try {
+    TransformationEngine.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Transformation Engine init failed:`, err);
+  }
+
+  // Polymorph Spell Pipeline — GM-only. Detects Polymorph / True Polymorph /
+  // Mass Polymorph spell casts, shows form picker, stashes the pick, and
+  // routes failed-save outcomes to TransformationEngine via save-engine.
+  try {
+    PolymorphSpellPipeline.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Polymorph spell pipeline init failed:`, err);
+  }
+
+  // Token Image Cache — fast in-memory lookup of beast-name → image-path.
+  // Refreshes once at world ready by walking configured folders recursively.
+  // Used by transformation-engine to skip TVA's slow doImageSearch on hosted
+  // servers. Falls back to TVA if cache miss.
+  try {
+    TokenCache.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | TokenCache init failed:`, err);
   }
 
   // Flags Engine roll hooks — ALL users (injects adv/dis from flags into ability/skill/tool checks)
@@ -753,6 +1128,21 @@ Hooks.once("ready", () => {
     CoverEngine,
     VisibilityEngine,
     ConditionLibrary,
+    TransformationEngine,
+    TokenCache,
+    /** Quick-call shortcuts for transformation testing.
+     *  game.aceQol.transform(token.actor, beastActor, opts)
+     *  game.aceQol.revert(token.actor, "voluntary")
+     *  game.aceQol.isTransformed(actor)
+     *  game.aceQol.tokenCache.get("Almiraj") → path or null
+     *  game.aceQol.tokenCache.refresh()      → re-scan folders
+     *  game.aceQol.tokenCache.stats()        → diagnostics
+     */
+    transform: (target, source, opts) => TransformationEngine.transform(target, source, opts),
+    revert:    (actor, reason)        => TransformationEngine.revert(actor, reason),
+    isTransformed: (actor)             => TransformationEngine.isTransformed(actor),
+    getTransformState: (actor)         => TransformationEngine.getState(actor),
+    tokenCache: TokenCache,
     DurationTracker,
     durationTracker,
     speedRolls,

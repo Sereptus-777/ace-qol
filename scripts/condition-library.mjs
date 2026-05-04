@@ -1163,6 +1163,28 @@ export class ConditionLibrary {
       effectData.flags.core = { overlay: true };
     }
 
+    // ── Same-key dedupe (RAW: same-name effects don't stack) ──
+    // Casting Bless twice on the same target shouldn't create two +1d4
+    // effects. The 5e rule is "the more potent effect applies; same effect
+    // doesn't stack with itself". Replace any existing effect with the
+    // same library key BEFORE creating the new one — that way:
+    //   - Concentration timers reset (new caster takes over)
+    //   - Source-actor / origin updates to the new caster
+    //   - No duplicate +1d4 stacking
+    // Pass `options.allowStack: true` to opt out (rare cases where dedupe
+    // is wrong — none in the standard SRD library).
+    if (!options.allowStack) {
+      try {
+        const existing = ConditionLibrary._findEffect(actor, key);
+        if (existing) {
+          await existing.delete();
+          ConditionLibrary._debug(`Replaced existing "${def.name}" on ${actor.name} (dedupe)`);
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | applyEffect dedupe failed (non-fatal):`, err);
+      }
+    }
+
     // Create the effect
     const created = await actor.createEmbeddedDocuments("ActiveEffect", [effectData]);
     const effect = created?.[0] ?? null;
@@ -1364,7 +1386,7 @@ export class ConditionLibrary {
    *   "frightened", "exhaustion")
    * @returns {Promise<{ok: boolean, applied: string, level?: number}>}
    */
-  static async applyByName(actor, conditionKey) {
+  static async applyByName(actor, conditionKey, options = {}) {
     if (!actor || !conditionKey) return { ok: false, applied: null };
     const key = String(conditionKey).toLowerCase().trim();
 
@@ -1391,11 +1413,205 @@ export class ConditionLibrary {
       if (typeof actor.toggleStatusEffect === "function") {
         await actor.toggleStatusEffect(key, { active: true });
       }
+
+      // ── Stamp concentration linkage ──
+      // When a concentration spell's failed-save condition is being applied,
+      // link the resulting effect back to the caster + spell so we can clean
+      // it up automatically when the caster's concentration ends. Without
+      // this, casting Hold Person on Goblin B leaves Goblin A paralyzed
+      // forever even though concentration moved.
+      //
+      // We use TWO mechanisms in parallel for maximum robustness:
+      //   1. dnd5e native dependent system — set `flags.dnd5e.dependentOn` on
+      //      the placed effect, pointing to the caster's Concentrating effect
+      //      UUID. dnd5e's `ActiveEffect._onDelete` calls `getDependents()`
+      //      which auto-deletes us when concentration ends, by ANY path (chat
+      //      card "End", effects panel X, manual delete, system-initiated end,
+      //      replace-cast, etc.). This is the system's own mechanism.
+      //   2. ace-qol concentrationOrigin tag — fallback for any path that
+      //      bypasses the dependent system. Our deleteActiveEffect hook
+      //      sweeps actors and deletes any ace-qol-tagged effects matching
+      //      caster+spell. Belt-and-braces.
+      if (options.concentrationOrigin?.casterId && options.concentrationOrigin?.spellName) {
+        try {
+          // Find the effect we just created/toggled. statusId match on Foundry
+          // status effects, fallback to name. Same lookup as _findEffect uses.
+          const def = ALL_EFFECTS[key];
+          const statusId = def?.statusId ?? key;
+          const placed = actor.effects.contents.find(e =>
+            e.statuses?.has?.(statusId) || e.name === def?.name || e.name?.toLowerCase() === key
+          );
+          if (placed) {
+            // ── Resolve the caster's Concentrating effect for this spell ──
+            const caster = game.actors.get(options.concentrationOrigin.casterId);
+            let concEffect = null;
+            if (caster) {
+              const spellNameLc = String(options.concentrationOrigin.spellName).toLowerCase();
+              const spellItemId = options.concentrationOrigin.spellItemId ?? null;
+              concEffect = caster.effects.contents.find(e => {
+                if (!e.statuses?.has?.("concentrating")) return false;
+                // Match by name pattern "Concentrating: Hold Person"
+                const eNameLc = String(e.name ?? "").toLowerCase();
+                if (eNameLc.includes(spellNameLc)) return true;
+                // Or match by dnd5e flag origin/item
+                const cf = e.flags?.dnd5e?.concentration;
+                if (cf?.item && spellItemId && cf.item === spellItemId) return true;
+                if (cf?.origin && spellItemId && String(cf.origin).includes(spellItemId)) return true;
+                return false;
+              });
+            }
+
+            // ── Build the update payload (BOTH flags in one update) ──
+            const updateData = {
+              [`flags.${MODULE_ID}.concentrationOrigin`]: {
+                casterId:    options.concentrationOrigin.casterId,
+                spellName:   options.concentrationOrigin.spellName,
+                spellItemId: options.concentrationOrigin.spellItemId ?? null,
+                concEffectUuid: concEffect?.uuid ?? null,
+                stampedAt:   Date.now(),
+              },
+            };
+            if (concEffect?.uuid) {
+              updateData["flags.dnd5e.dependentOn"] = concEffect.uuid;
+            }
+
+            // ── Repeating-save metadata (Hold Person, Banishment, etc.) ──
+            // If the caller passed in `repeatingSave`, stamp it on the placed
+            // effect so the RepeatingSaveEngine can fire end-of-turn re-rolls.
+            //
+            // We also stash:
+            //   - castWorldTime: game.time.worldTime at apply moment, so OOC
+            //     batch saves can compute remaining spell duration (math-
+            //     correct cap — Hold Person at round 5 only has 5 saves left
+            //     in its 10-round duration, not a fresh 10).
+            //   - durationSeconds: total spell duration in seconds. Pulled
+            //     from the spell item by save-engine.mjs.
+            if (options.repeatingSave?.trigger
+              && options.repeatingSave?.ability
+              && Number.isFinite(options.repeatingSave?.dc)) {
+              updateData[`flags.${MODULE_ID}.repeatingSave`] = {
+                ability:        String(options.repeatingSave.ability).toLowerCase(),
+                dc:             Number(options.repeatingSave.dc),
+                trigger:        String(options.repeatingSave.trigger),
+                spellName:      options.concentrationOrigin?.spellName ?? null,
+                castWorldTime:  Number(options.repeatingSave.castWorldTime ?? game.time?.worldTime ?? 0),
+                durationSeconds: Number(options.repeatingSave.durationSeconds) || null,
+                stampedAt:      Date.now(),
+              };
+            }
+
+            await placed.update(updateData);
+
+            if (concEffect?.uuid) {
+              console.log(`${MODULE_ID} | Linked ${actor.name}'s ${key} to ${caster?.name ?? "caster"}'s Concentrating: ${options.concentrationOrigin.spellName} (dnd5e dependentOn=${concEffect.uuid}, also ace-qol tag)`);
+            } else {
+              console.warn(`${MODULE_ID} | Could NOT find Concentrating effect on caster ${options.concentrationOrigin.casterId} for spell "${options.concentrationOrigin.spellName}" — applied ace-qol tag only (sweep-based cleanup)`);
+            }
+          }
+        } catch (err) {
+          console.warn(`${MODULE_ID} | Failed to tag concentration origin on ${actor.name}'s ${key}:`, err);
+        }
+      }
+
       return { ok: true, applied: key };
     } catch (err) {
       console.warn(`${MODULE_ID} | toggleStatusEffect failed for "${key}" on ${actor.name}:`, err);
       return { ok: false, applied: null };
     }
+  }
+
+  /**
+   * Sweep every actor's effects and remove ones tagged as concentration-linked
+   * to the given caster + spell name. Called when the caster's concentrating
+   * effect is deleted (RAW: dropping concentration ends all linked effects).
+   *
+   * Usage: ConditionLibrary.dropConcentrationLinkedEffects({ casterId, spellName });
+   *
+   * Matches loosely on spellName (string equality, case-sensitive) since the
+   * concentrating effect's name is "Concentrating: Hold Person" — we extract
+   * the trailing spell name at the call site.
+   */
+  static async dropConcentrationLinkedEffects({ casterId, spellName }) {
+    if (!casterId) return 0;
+
+    // ── Race-condition guard ──
+    // When dnd5e replaces concentration (Cast Hold Person on Goblin B while
+    // already concentrating on Goblin A), the sequence is:
+    //   1. Old concentrating effect deleted → THIS sweep starts
+    //   2. dnd5e creates new concentrating effect
+    //   3. save-engine applies paralyzed to Goblin B (NEW timestamp)
+    //   4. THIS sweep is still iterating actors → it would catch B's new
+    //      paralyzed (same casterId + spellName) and delete it. WRONG.
+    // Solution: capture a sweep-start timestamp. Skip any effect whose
+    // concentrationOrigin.stampedAt is AFTER the sweep started — those were
+    // applied by the new cast and shouldn't be cleaned up by old-cast sweep.
+    const sweepStartedAt = Date.now();
+    const SWEEP_GRACE_MS = 50; // small buffer for clock skew
+
+    let removed = 0;
+    let skippedRecent = 0;
+    // Iterate every actor in the world (concentration links can target any
+    // actor, including unlinked synthetic clones on tokens).
+    const allActors = [];
+    // World actors
+    for (const a of game.actors?.contents ?? []) allActors.push(a);
+    // Synthetic actors on the active scene (unlinked tokens)
+    if (canvas?.scene) {
+      for (const t of canvas.scene.tokens?.contents ?? []) {
+        if (t.actor && !allActors.includes(t.actor)) allActors.push(t.actor);
+      }
+    }
+
+    for (const actor of allActors) {
+      const linked = (actor.effects?.contents ?? []).filter(e => {
+        const tag = e.flags?.[MODULE_ID]?.concentrationOrigin;
+        if (!tag) return false;
+        if (tag.casterId !== casterId) return false;
+        if (spellName && tag.spellName !== spellName) return false;
+        return true;
+      });
+      for (const eff of linked) {
+        const stamped = eff.flags?.[MODULE_ID]?.concentrationOrigin?.stampedAt ?? 0;
+        // Skip effects that were applied AFTER this sweep started — those
+        // belong to the NEW cast that's replacing the old concentration.
+        if (stamped > sweepStartedAt + SWEEP_GRACE_MS) {
+          skippedRecent++;
+          console.log(`${MODULE_ID} | Sweep skipped "${eff.name}" on ${actor.name} — applied AFTER sweep start (new cast)`);
+          continue;
+        }
+        // Re-check existence right before deleting. dnd5e tracks concentration
+        // dependents natively and may have already removed this effect when
+        // its own endConcentration cleanup ran (race with our hook). If the
+        // effect is no longer in the actor's collection, count it as removed
+        // and move on quietly.
+        const stillPresent = actor.effects?.get?.(eff.id);
+        if (!stillPresent) {
+          removed++;
+          console.log(`${MODULE_ID} | Concentration ended → "${eff.name}" already cleaned up by dnd5e on ${actor.name}`);
+          continue;
+        }
+        try {
+          await eff.delete();
+          removed++;
+          console.log(`${MODULE_ID} | Concentration ended → removed "${eff.name}" from ${actor.name}`);
+        } catch (err) {
+          // "does not exist" = dnd5e raced us and won — that's a successful
+          // outcome, not a failure. Don't spam the console.
+          const msg = String(err?.message ?? err ?? "");
+          if (/does not exist/i.test(msg)) {
+            removed++;
+            console.log(`${MODULE_ID} | Concentration ended → "${eff.name}" was concurrently deleted (race with dnd5e — benign)`);
+          } else {
+            console.warn(`${MODULE_ID} | Failed to remove concentration-linked effect "${eff.name}" from ${actor.name}:`, err);
+          }
+        }
+      }
+    }
+
+    if (skippedRecent > 0) {
+      console.log(`${MODULE_ID} | Sweep complete — removed ${removed}, skipped ${skippedRecent} recent (race protection)`);
+    }
+    return removed;
   }
 
   /**

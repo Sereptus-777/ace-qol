@@ -97,8 +97,12 @@ export class CombatState {
     // ── Flanking (optional rule, line-through method) ────────────────────
     try {
       if (isMelee && QolSettings.get("flanking")) {
-        if (CombatState._isFlanking(attackerActor, targetToken)) {
-          advantageSources.push({ source: "attacker", reason: "FLANKING → ally on opposite side of target" });
+        const flankAlly = CombatState._isFlanking(attackerActor, targetToken);
+        if (flankAlly) {
+          advantageSources.push({
+            source: "attacker",
+            reason: `FLANKING → ${flankAlly} on opposite side of target`,
+          });
         }
       }
     } catch { /* setting not registered yet */ }
@@ -892,54 +896,130 @@ export class CombatState {
    * Draw a line from attacker through target center. If an ally is within
    * 5ft of the target on the opposite side of that line, flanking applies.
    */
+  /**
+   * @returns {string|null} Name of the flanking ally if found, else null.
+   */
   static _isFlanking(attackerActor, targetToken) {
-    if (!canvas.tokens?.placeables) return false;
+    if (!canvas.tokens?.placeables) return null;
 
     const atkToken = attackerActor.getActiveTokens?.()?.[0];
-    if (!atkToken) return false;
+    if (!atkToken) return null;
 
     const atkCenter = atkToken.center;
     const tgtCenter = targetToken.center;
     const atkDisposition = atkToken.document?.disposition ?? 1;
 
-    // Vector from target to attacker
-    const dx = atkCenter.x - tgtCenter.x;
-    const dy = atkCenter.y - tgtCenter.y;
+    // Normalized vector from target to attacker
+    const atkDx = atkCenter.x - tgtCenter.x;
+    const atkDy = atkCenter.y - tgtCenter.y;
+    const atkLen = Math.hypot(atkDx, atkDy);
+    if (atkLen < 1) return null;
+    const atkNx = atkDx / atkLen;
+    const atkNy = atkDy / atkLen;
 
-    // The "opposite side" is the point on the other side of the target
-    // from the attacker — roughly target center minus the same vector
-    const oppositeX = tgtCenter.x - dx;
-    const oppositeY = tgtCenter.y - dy;
+    // Angle threshold scales with target size — small creatures are strict
+    // (perfect geometry from adjacent squares), large ones get more leeway
+    // because tokens can't always land exactly opposite across a 3x3 / 4x4 body.
+    //   Medium (1x1): ±32° (-0.85)  — RAW-tight
+    //   Large  (2x2): ±40° (-0.77)
+    //   Huge   (3x3): ±50° (-0.64)
+    //   Garg   (4x4+): ±60° (-0.5)
+    const targetSize = Math.max(
+      targetToken.document?.width  ?? 1,
+      targetToken.document?.height ?? 1,
+    );
+    const FLANK_DOT_THRESHOLD =
+        targetSize <= 1 ? -0.85
+      : targetSize <= 2 ? -0.77
+      : targetSize <= 3 ? -0.64
+      :                   -0.5;
 
-    // Check if any ally is near the opposite side (within ~1.5 grid squares)
-    const gridSize = canvas.grid?.size ?? 100;
-    const flankRadius = gridSize * 1.5; // Allow some tolerance
+    // Per RAW (DMG p251): both attackers must be ADJACENT to the target (5ft).
+    // _getDistance() measures edge-to-edge, so this works for ALL target sizes:
+    //   - Medium target: ally must be in one of the 8 adjacent squares (5ft)
+    //   - Gargantuan target: ally must be touching one of its edges (0–5ft)
+    // Reach weapons explicitly do NOT grant flanking per RAW.
+    const FLANK_MAX_DISTANCE = 5;
+
+    const dbg = game.settings.get(MODULE_ID, "debugMode");
+    const log = (...args) => { if (dbg) console.log("ace-qol | FLANK |", ...args); };
+    log(`Checking flanking for ${attackerActor.name} → ${targetToken.name}`);
+    log(`  Attacker vector: (${atkNx.toFixed(2)}, ${atkNy.toFixed(2)})`);
 
     for (const token of canvas.tokens.placeables) {
       if (!token.actor || token.actor.id === attackerActor.id) continue;
       if (token.id === targetToken.id) continue;
 
+      const tokName = token.document?.name ?? token.name ?? token.actor?.name ?? "ally";
+
       // Must be same disposition (ally)
-      if (token.document?.disposition !== atkDisposition) continue;
+      if (token.document?.disposition !== atkDisposition) {
+        log(`  ✗ ${tokName}: different disposition (${token.document?.disposition} vs ${atkDisposition})`);
+        continue;
+      }
 
-      // Must not be incapacitated
-      if (token.actor.statuses?.has("incapacitated") || token.actor.statuses?.has("unconscious")) continue;
+      // ── Must be a CONSCIOUS, COMBAT-CAPABLE ally ──
+      const ally = token.actor;
+      const blockingStatuses = ["incapacitated", "unconscious", "dead", "paralyzed", "petrified", "stunned"];
+      const blocker = blockingStatuses.find(s => ally.statuses?.has(s));
+      if (blocker) { log(`  ✗ ${tokName}: status "${blocker}"`); continue; }
 
-      // Must be within 5ft of the target (melee range)
+      const allyHp = ally.system?.attributes?.hp?.value;
+      if (allyHp !== undefined && allyHp !== null && allyHp <= 0) {
+        log(`  ✗ ${tokName}: HP ${allyHp}`); continue;
+      }
+
+      const combatant = game.combat?.combatants?.find(c => c.token?.id === token.document?.id);
+      if (combatant?.defeated) { log(`  ✗ ${tokName}: marked defeated`); continue; }
+
+      // Must be within melee reach of the target.
+      // RAW (DMG p251): adjacent = 5ft. Houserule: if ally has a reach weapon
+      // equipped (Glaive, Halberd, Pike, Whip, Lance, etc.), they can flank
+      // from 10ft when the `flankingAllowReachWeapons` setting is on.
       const distToTarget = CombatState._getDistance(token, targetToken);
-      if (distToTarget > 5) continue;
+      let maxDist = FLANK_MAX_DISTANCE;
+      let usedReach = false;
+      try {
+        if (game.settings.get(MODULE_ID, "flankingAllowReachWeapons")) {
+          const hasEquippedReach = (ally.items?.contents ?? []).some(it => {
+            if (it.type !== "weapon") return false;
+            if (!it.system?.equipped) return false;
+            const props = it.system?.properties;
+            if (props?.has?.("rch"))     return true;  // Set
+            if (Array.isArray(props) && props.includes("rch")) return true;
+            if (props && typeof props === "object" && props.rch) return true;
+            return false;
+          });
+          if (hasEquippedReach) { maxDist = 10; usedReach = true; }
+        }
+      } catch (_) { /* setting not registered yet */ }
 
-      // Check if this ally is roughly on the opposite side
-      // Distance from ally to the "opposite point"
+      if (distToTarget > maxDist) {
+        log(`  ✗ ${tokName}: distance ${distToTarget}ft > ${maxDist}ft (not in melee reach of target)`);
+        continue;
+      }
+
+      // Angle check
       const allyCenter = token.center;
-      const distToOpposite = Math.hypot(allyCenter.x - oppositeX, allyCenter.y - oppositeY);
+      const allyDx = allyCenter.x - tgtCenter.x;
+      const allyDy = allyCenter.y - tgtCenter.y;
+      const allyLen = Math.hypot(allyDx, allyDy);
+      if (allyLen < 1) { log(`  ✗ ${tokName}: same position as target?`); continue; }
+      const allyNx = allyDx / allyLen;
+      const allyNy = allyDy / allyLen;
+      const dot = (atkNx * allyNx) + (atkNy * allyNy);
+      const angleDeg = (Math.acos(Math.max(-1, Math.min(1, dot))) * 180 / Math.PI).toFixed(0);
 
-      if (distToOpposite <= flankRadius) {
-        return true;
+      if (dot <= FLANK_DOT_THRESHOLD) {
+        log(`  ✓ ${tokName}: distance=${distToTarget}ft, ally-vector (${allyNx.toFixed(2)}, ${allyNy.toFixed(2)}), dot=${dot.toFixed(2)}, angle=${angleDeg}° → FLANKING`);
+        return tokName;
+      } else {
+        log(`  ✗ ${tokName}: ally-vector (${allyNx.toFixed(2)}, ${allyNy.toFixed(2)}), dot=${dot.toFixed(2)}, angle=${angleDeg}° (need ≤ ${FLANK_DOT_THRESHOLD}, i.e. ≥ ~148°)`);
       }
     }
 
-    return false;
+    log(`  → No flanking ally found.`);
+    return null;
   }
 
   /** Check if actor has a named feature/feat */
@@ -1018,16 +1098,18 @@ export class CombatState {
       const gapX = Math.max(0, r1.left - r2.right, r2.left - r1.right);
       const gapY = Math.max(0, r1.top - r2.bottom, r2.top - r1.bottom);
 
-      // If overlapping or adjacent on both axes, distance is 0 (same space)
-      if (gapX === 0 && gapY === 0) return 0;
+      // Overlapping = same space
+      if (gapX < 0 && gapY < 0) return 0;
 
-      // Convert pixel gap to grid squares, then to feet
-      const sqX = Math.floor(gapX / gs);
-      const sqY = Math.floor(gapY / gs);
+      // Convert pixel gap to grid squares
+      const sqX = Math.ceil(gapX / gs);
+      const sqY = Math.ceil(gapY / gs);
 
-      // D&D 5e diagonal: max(sqX, sqY) in grid squares × distance per square
-      // (standard 5e doesn't use Pythagorean — diagonal costs same as straight)
-      const gridDist = Math.max(sqX, sqY);
+      // 5e cell distance: nearest neighbor (touching) = 1 cell = 5ft
+      // Gap of 0 cells (cells touching) → 1 cell distance → 5ft
+      // Gap of 1 cell (1 cell between) → 2 cells distance → 10ft
+      // D&D 5e diagonal counts as same (max, not Pythagorean)
+      const gridDist = Math.max(sqX, sqY) + 1;
       return gridDist * gd;
     } catch (err) {
       // Fallback to center-to-center if anything fails

@@ -83,6 +83,11 @@ export class DescriptionParser {
       /** Secondary-roll sever rider (Sword of Sharpness, Vorpal Sword) */
       severRider: DescriptionParser._parseSeverRider(text, lower),
 
+      /** Repeating save trigger (Hold Person, Banishment, Tasha's, etc.)
+       *  Returns { trigger: "endOfTurn"|"onDamage"|"endOfTurn|onDamage" }
+       *  or null if no repeating save phrasing detected. */
+      repeatingSave: DescriptionParser._parseRepeatingSave(text, lower),
+
       /** Raw text for reference */
       rawText: text,
     };
@@ -348,15 +353,36 @@ export class DescriptionParser {
     const found = [];
     const seen = new Set();
 
-    // ── Foundry enriched format: &Reference[grappled]{grappled} or &amp;Reference[prone]{prone} ──
-    const refPattern = /(?:&amp;|&)?Reference\[(\w+)\]\{(\w+)\}/gi;
+    // ── Foundry enriched format ──
+    // Multiple variants seen in practice:
+    //   &Reference[grappled]{grappled}                      (older 2014 PHB)
+    //   &amp;Reference[prone]{prone}                          (HTML-encoded ampersand)
+    //   &Reference[paralyzed apply=false]                   (2024 PHB — Hold Person, etc.)
+    //   &Reference[charmed type=enchantment apply=false]    (modifier args, no {label})
+    // The OLD regex required the closing bracket to come right after `\w+` and
+    // ALSO required a `{label}` block. Both assumptions break for 2024 spells
+    // that include `apply=false` modifiers and omit the label. The result was
+    // Hold Person's paralyzed never being extracted — silent failure.
+    // New pattern: the first word inside the brackets is the condition; any
+    // additional space-separated modifier args are ignored; the {label} is
+    // also optional.
+    const refPattern = /(?:&amp;|&)?Reference\[(\w+)(?:[^\]]*)?\](?:\{[^}]*\})?/gi;
     let match;
     while ((match = refPattern.exec(text)) !== null) {
       const cond = match[1].toLowerCase();
       if (CONDITIONS.includes(cond) && !seen.has(cond)) {
         seen.add(cond);
         const nearbyText = text.slice(Math.max(0, match.index - 200), match.index).toLowerCase();
-        const requiresSave = /dc\s*\d+/.test(nearbyText) || /\[\[\/save/.test(nearbyText);
+        // requiresSave: condition is gated by a save the target must make.
+        // The OLD test only matched the literal phrase "DC 17" or the enriched
+        // [[/save tag. Hold Person's text says "must succeed on a Wisdom saving
+        // throw" with no inline DC — so paralyzed wasn't detected as save-gated
+        // and was silently skipped. Loosened to match standard 5e save-trigger
+        // phrasings: "saving throw", "save or", "must succeed".
+        const requiresSave = /dc\s*\d+/.test(nearbyText)
+                          || /\[\[\/save/.test(nearbyText)
+                          || /sav(?:ing\s+throw|e)/i.test(nearbyText)
+                          || /must\s+succeed\s+on/i.test(nearbyText);
         found.push({ condition: cond, requiresSave });
       }
     }
@@ -377,7 +403,16 @@ export class DescriptionParser {
           seen.add(cond);
           const condIdx = lower.indexOf(cond);
           const nearbyText = lower.slice(Math.max(0, condIdx - 200), condIdx);
-          const requiresSave = /dc\s*\d+/.test(nearbyText) || /\[\[\/save/.test(nearbyText);
+          // requiresSave: condition is gated by a save the target must make.
+        // The OLD test only matched the literal phrase "DC 17" or the enriched
+        // [[/save tag. Hold Person's text says "must succeed on a Wisdom saving
+        // throw" with no inline DC — so paralyzed wasn't detected as save-gated
+        // and was silently skipped. Loosened to match standard 5e save-trigger
+        // phrasings: "saving throw", "save or", "must succeed".
+        const requiresSave = /dc\s*\d+/.test(nearbyText)
+                          || /\[\[\/save/.test(nearbyText)
+                          || /sav(?:ing\s+throw|e)/i.test(nearbyText)
+                          || /must\s+succeed\s+on/i.test(nearbyText);
           found.push({ condition: cond, requiresSave });
         }
       }
@@ -538,18 +573,102 @@ export class DescriptionParser {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  //  Target Type Restriction (creature-type filter for spell targets)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Detect creature-type restrictions on a spell's targeting.
+   *
+   * Examples:
+   *   Hold Person:    "Choose a Humanoid that you can see within range"
+   *   Charm Person:   "Choose a Humanoid you can see within range"
+   *   Charm Monster:  "Choose a Humanoid, Beast, Fey, Giant, or Plant"
+   *   Conjure Animals (target a beast): "Choose a Beast you can see"
+   *
+   * Returns null when no restriction is detected (most spells — they
+   * accept any creature type). Otherwise returns:
+   *   { allowed: ["humanoid"] } / { allowed: ["humanoid", "beast", "fey", "giant", "plant"] }
+   *
+   * The EngagementGate uses this to BLOCK casts on invalid targets BEFORE
+   * the slot is consumed. RAW: Hold Person doesn't merely fail on a wolf,
+   * the wolf isn't a legal target at all — the spell shouldn't be cast.
+   *
+   * @param {string} text — full description text (HTML stripped or raw)
+   * @returns {{ allowed: string[] }|null}
+   */
+  static _parseTargetTypeRestriction(text) {
+    if (!text) return null;
+    // Strip HTML for cleaner regex
+    const plain = String(text).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+    const lower = plain.toLowerCase();
+
+    // ── First: find a "choose / target a [type]" anchor phrase ──
+    // Capture the index so we can scan the immediately-following text for
+    // additional types (Charm Monster's "Humanoid, Beast, Fey, Giant, or Plant").
+    const typeAlternation = CREATURE_TYPES.join("|");
+    const anchorRegex = new RegExp(
+      `(?:choose|target)\\s+(?:a|an|one|any\\s+number\\s+of)\\s+(?:[a-z]+\\s+)?(${typeAlternation})s?\\b`,
+      "i"
+    );
+    const anchor = lower.match(anchorRegex);
+    if (!anchor) return null;
+
+    const found = new Set([anchor[1].toLowerCase()]);
+
+    // ── Scan the following ~200 chars for additional types in a comma list ──
+    // Charm Monster: "Choose a Humanoid, Beast, Fey, Giant, or Plant"
+    // The list ENDS at the first sentence break (period, "you can see", etc.)
+    const listStart = anchor.index + anchor[0].length;
+    const listWindow = lower.slice(listStart, listStart + 200);
+    // Stop scanning at the first period or the phrase "you can see" which
+    // marks the end of the targeting clause in 5e wording.
+    const stopIdx = listWindow.search(/[.;]|\byou can see\b|\bwithin range\b/);
+    const scan = stopIdx >= 0 ? listWindow.slice(0, stopIdx) : listWindow;
+    // Match every standalone creature-type word in this window
+    const followRegex = new RegExp(`\\b(${typeAlternation})s?\\b`, "gi");
+    let m;
+    while ((m = followRegex.exec(scan)) !== null) {
+      found.add(m[1].toLowerCase());
+    }
+
+    return { allowed: [...found] };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   //  Half Damage on Save
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
    * Detect "half damage on successful save" patterns.
+   *
+   * The previous version returned true on the bare phrase "on a successful
+   * save" — but that text appears in nearly every save-or-condition spell
+   * (Hold Person says the target re-saves and "on a successful save" the
+   * paralysis ends, NOT that damage is halved). The result was Hold Person,
+   * Charm Person, Dominate, Suggestion etc. all getting a bogus "HALF ON
+   * SAVE" label and triggering the damage-card UI even though they have
+   * zero damage parts.
+   *
+   * Tightened to require "damage" or "takes half" near the success phrase,
+   * and accepts the standard 5e half-damage idioms.
    */
   static _parseHalfOnSave(lower) {
-    return lower.includes("half as much damage") ||
-           lower.includes("half damage") ||
-           lower.includes("takes half") ||
-           lower.includes("on a successful save") ||
-           lower.includes("success: half");
+    if (!lower) return false;
+    // Direct half-damage phrasings (always true)
+    if (lower.includes("half as much damage")) return true;
+    if (lower.includes("half damage")) return true;
+    if (lower.includes("takes half")) return true;
+    if (lower.includes("success: half")) return true;
+    // "on a successful save" — only treat as half-damage if "damage" appears
+    // within ~120 chars (same sentence/clause).
+    const idx = lower.indexOf("on a successful save");
+    if (idx >= 0) {
+      const window = lower.slice(idx, idx + 120);
+      if (window.includes("damage") && (window.includes("half") || window.includes("only"))) {
+        return true;
+      }
+    }
+    return false;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -576,6 +695,67 @@ export class DescriptionParser {
    * sane reading of "Then roll another d20" since the trigger sentence
    * starts with "and roll a 20 on the attack roll".
    */
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Repeating Save Trigger
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Detect spells that allow the affected creature to re-roll the save on a
+   * recurring trigger — RAW for Hold Person, Hold Monster, Banishment,
+   * Dominate Person/Monster, Tasha's Hideous Laughter, etc.
+   *
+   * Three trigger types in 5e:
+   *   - "endOfTurn"             — Hold Person, Hold Monster, Banishment
+   *   - "onDamage"              — Dominate Person/Monster
+   *   - "endOfTurn|onDamage"    — Tasha's Hideous Laughter (both)
+   *
+   * Returns an object like { trigger: "endOfTurn" } or null if no repeating
+   * save phrasing detected. Detection is permissive — multiple phrasings of
+   * the same RAW rule:
+   *   "at the end of each of its turns"
+   *   "at the end of each of the target's turns"
+   *   "at the end of each of the creature's turns"
+   *   "each time it takes damage"
+   *   "each time the target takes damage"
+   *   "after taking damage"  (rare phrasing)
+   *
+   * The save details (ability, DC) are NOT extracted here — those come from
+   * the activity itself (caller passes saveAbility + saveDC). This function
+   * only answers: "does the spell allow recurring re-saves, and if so, when?"
+   */
+  static _parseRepeatingSave(text, lower) {
+    if (!text) return null;
+
+    const ENDOFTURN_PATTERNS = [
+      /at\s+the\s+end\s+of\s+each\s+of\s+(?:its|the\s+target'?s|the\s+creature'?s|the\s+target's|the\s+creature's)\s+turns?/i,
+      /at\s+the\s+end\s+of\s+(?:its|the\s+target'?s|the\s+creature'?s)\s+turns?/i,
+      /(?:can|may|repeats?)\s+(?:make\s+)?another\s+(?:\w+\s+)?saving\s+throw\s+at\s+the\s+end\s+of\s+(?:its|the\s+target'?s|each)/i,
+      /repeat(?:s)?\s+(?:the\s+)?save\s+(?:at\s+)?(?:the\s+)?end\s+of\s+(?:each\s+of\s+)?(?:its|the\s+target'?s)?\s*turns?/i,
+    ];
+
+    const ONDAMAGE_PATTERNS = [
+      /each\s+time\s+(?:it|the\s+target|the\s+creature)\s+takes\s+damage/i,
+      /(?:when|whenever)\s+(?:it|the\s+target|the\s+creature)\s+takes\s+damage/i,
+      /each\s+time\s+(?:the\s+)?(?:target|creature)\s+takes\s+damage/i,
+    ];
+
+    const hasEndOfTurn = ENDOFTURN_PATTERNS.some(p => p.test(text));
+    const hasOnDamage  = ONDAMAGE_PATTERNS.some(p => p.test(text));
+
+    if (!hasEndOfTurn && !hasOnDamage) return null;
+
+    let trigger;
+    if (hasEndOfTurn && hasOnDamage) trigger = "endOfTurn|onDamage";
+    else if (hasEndOfTurn)            trigger = "endOfTurn";
+    else                              trigger = "onDamage";
+
+    return { trigger };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Sever Rider
+  // ═══════════════════════════════════════════════════════════════════════════
+
   static _parseSeverRider(text, lower) {
     if (!text) return null;
     // Quick reject: no sever-action verbs anywhere → not a sever rider

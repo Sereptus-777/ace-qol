@@ -77,7 +77,7 @@ export class DeathPipeline {
         name:    "Convert NPC Tokens to Dead Art on Death",
         hint:    "When an NPC reaches 0 HP, replace their token with a matching dead-art tile on the canvas.",
         scope:   "world",
-        config:  true,
+        config:  false,
         type:    Boolean,
         default: true,
       });
@@ -86,7 +86,7 @@ export class DeathPipeline {
         name:    "Remove Token After Creating Dead Tile",
         hint:    "Delete the original token once the dead-art tile has been placed. Disable to keep both.",
         scope:   "world",
-        config:  true,
+        config:  false,
         type:    Boolean,
         default: true,
       });
@@ -173,13 +173,72 @@ export class DeathPipeline {
     if (!fileName) return;
 
     const stem = fileName
-      .replace(/\.(png|webp|jpg|jpeg|gif|svg)$/i, "")
+      .replace(/\.(png|webp|jpg|jpeg|gif|svg|webm|mp4|m4v|ogv)$/i, "")
       .toLowerCase();
 
     // Don't overwrite — first match wins (root beats subfolder).
     if (!this._artCache.has(stem)) {
       this._artCache.set(stem, filePath);
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Loot Snapshot
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Build a plain-object snapshot of the actor's lootable items + currency.
+   * Stored on the dead tile's flags so players (who typically lack permission
+   * on NPC actors) can still open the loot dialog and see what dropped.
+   *
+   * Filter mirrors LootableTile._isLootableItem — kept inline because this
+   * file is intentionally self-contained (no cross-module imports).
+   *
+   * @param {Actor} actor
+   * @returns {{items: Array, currency: object}}
+   */
+  _buildLootSnapshot(actor) {
+    const REJECT_TYPES = new Set([
+      "feat", "spell", "class", "subclass", "background", "race",
+      "species", "facility", "feature", "trait", "spelllist",
+    ]);
+    const ALLOW_TYPES = new Set([
+      "weapon", "equipment", "consumable", "tool", "loot",
+      "container", "treasure", "backpack",
+    ]);
+    const NATURAL_WEAPON_TYPES = new Set(["natural", "improv", "improvised", "siege"]);
+    const NATURAL_NAME_RE = /^(bite|claws?|cat'?s\s+claws|fangs|gore|sting|talons?|trunk|fanged\s+bite|vampiric\s+bite|form\s+of\s+the\s+beast|natural\s+attack)\b/i;
+
+    const items = [];
+    for (const item of actor?.items?.contents ?? []) {
+      const t = item.type;
+      if (REJECT_TYPES.has(t)) continue;
+      if (!ALLOW_TYPES.has(t)) continue;
+      if (t === "weapon") {
+        const wt = item.system?.weaponType ?? item.system?.type?.value ?? "";
+        if (NATURAL_WEAPON_TYPES.has(wt)) continue;
+        if (NATURAL_NAME_RE.test((item.name ?? "").trim())) continue;
+      }
+      items.push({
+        id:     item.id,
+        name:   item.name,
+        img:    item.img,
+        uuid:   item.uuid,
+        type:   item.type,
+        rarity: item.system?.rarity ?? "common",
+      });
+    }
+
+    const c = actor?.system?.currency ?? {};
+    const currency = {
+      pp: c.pp ?? 0,
+      gp: c.gp ?? 0,
+      ep: c.ep ?? 0,
+      sp: c.sp ?? 0,
+      cp: c.cp ?? 0,
+    };
+
+    return { items, currency };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -197,35 +256,99 @@ export class DeathPipeline {
    * @returns {Promise<void>}
    */
   async processNPCDeath(actor, tokenDoc) {
+    const name = actor?.name ?? "unknown";
+    console.log(`${LOG_PREFIX} ▶ processNPCDeath("${name}") starting`);
     try {
-      // ── Guard: setting enabled? ──
-      if (!game.settings.get(MODULE_ID, "enableDeathPipeline")) return;
+      // ── Guard: setting enabled? — auto-recover if disabled ──
+      if (!game.settings.get(MODULE_ID, "enableDeathPipeline")) {
+        console.warn(`${LOG_PREFIX}   ✗ enableDeathPipeline is OFF — auto-enabling`);
+        try { await game.settings.set(MODULE_ID, "enableDeathPipeline", true); } catch (_) {}
+        // Retry: the setting may have been intentionally off this session
+        if (!game.settings.get(MODULE_ID, "enableDeathPipeline")) {
+          console.warn(`${LOG_PREFIX}   ✗ Could not enable — aborting`);
+          return;
+        }
+      }
 
       // ── Guard: NPC only, not player-owned ──
-      if (!actor || actor.type !== "npc" || actor.hasPlayerOwner) return;
-
-      // ── Guard: must have a valid scene and token ──
-      if (!tokenDoc || !canvas.scene) return;
-
-      // ── Resolve dead art ──
-      const deadArtPath = this._resolveDeadArt(actor);
-      if (!deadArtPath) {
-        console.log(`${LOG_PREFIX} No dead art found for "${actor.name}" — skipping tile conversion`);
+      if (!actor || actor.type !== "npc" || actor.hasPlayerOwner) {
+        console.log(`${LOG_PREFIX}   ✗ Not an NPC or is player-owned — skipping`);
         return;
       }
 
-      // ── Step 1: Create the dead tile BEFORE deleting the token ──
+      // ── Guard: must have a valid scene and token ──
+      if (!tokenDoc) { console.warn(`${LOG_PREFIX}   ✗ No tokenDoc — skipping`); return; }
+      if (!canvas.scene) { console.warn(`${LOG_PREFIX}   ✗ No canvas.scene — skipping`); return; }
+
+      // ── Resolve dead art (with hard fallback chain — tile ALWAYS created) ──
+      let deadArtPath = this._resolveDeadArt(actor);
+      let fallbackUsed = null;
+
+      if (!deadArtPath) {
+        // Fallback 1: the actor's own token image (shows the creature as-is)
+        deadArtPath = actor.prototypeToken?.texture?.src
+                   ?? tokenDoc.texture?.src
+                   ?? actor.img;
+        if (deadArtPath) fallbackUsed = "token-image";
+      }
+      if (!deadArtPath) {
+        // Fallback 2: Foundry stock skull icon — absolute last resort
+        deadArtPath = "icons/svg/skull.svg";
+        fallbackUsed = "skull-icon";
+      }
+
+      if (fallbackUsed) {
+        const creatureType = actor.system?.details?.type?.value ?? "(none)";
+        const availableKeys = [...this._artCache.keys()].filter(k => k.startsWith("dead-")).sort();
+        console.log(`${LOG_PREFIX}   • Using fallback "${fallbackUsed}" (no matching dead-art for type="${creatureType}")`);
+
+        // Informational chat notice — NOT an error. Tile IS being created.
+        try {
+          const availableHtml = availableKeys.length
+            ? `<details style="margin-top:4px;"><summary style="cursor:pointer;font-weight:700;font-size:11px;">${availableKeys.length} available dead-art keys</summary><div style="font-family:monospace;font-size:10px;max-height:180px;overflow-y:auto;padding:4px 8px;background:rgba(0,0,0,0.3);border-radius:3px;margin-top:3px;">${availableKeys.join("<br>")}</div></details>`
+            : "";
+          await ChatMessage.create({
+            content: `<div style="background:#1a1a1f;border:1px solid #555;padding:6px 10px;border-radius:4px;color:#aaa;font-size:11px;">
+              <div style="color:#d4af37;font-weight:700;margin-bottom:2px;">ℹ ACE QOL — dead-art fallback used</div>
+              <div><strong>${foundry.utils.escapeHTML(name)}</strong> (type: ${foundry.utils.escapeHTML(creatureType)}) — using ${fallbackUsed === "token-image" ? "actor's token image" : "generic skull icon"}. Tile created normally.</div>
+              <div style="margin-top:3px;">Add <code>Assets/Dead/dead-${foundry.utils.escapeHTML(creatureType)}.png</code> for a proper corpse image.</div>
+              ${availableHtml}
+            </div>`,
+            whisper: [game.user.id],
+          });
+        } catch (_) {}
+      } else {
+        console.log(`${LOG_PREFIX}   ✓ Resolved art: ${deadArtPath}`);
+      }
+
+      // ── Find an unoccupied grid position (don't stack on existing dead tiles) ──
       const gridSize = canvas.grid?.size ?? 100;
+      const tileWidth  = (tokenDoc.width ?? 1) * gridSize;
+      const tileHeight = (tokenDoc.height ?? 1) * gridSize;
+      const placement = this._findUnoccupiedPosition(tokenDoc.x, tokenDoc.y, tileWidth, tileHeight);
+      console.log(`${LOG_PREFIX}   ✓ Placement: (${placement.x},${placement.y})${placement.shifted ? " [shifted to avoid overlap]" : ""}`);
+
+      // ── Step 1: Create the dead tile BEFORE deleting the token ──
+      const isVideo = /\.(webm|mp4|m4v|ogv)$/i.test(deadArtPath);
+
+      // Snapshot the actor's lootable items + currency at time of death.
+      // Lets players open the loot dialog without needing actor permission
+      // (most NPCs are owner-locked to the GM). Snapshot is updated as the
+      // GM transfers items / splits gold from the dialog.
+      const lootSnapshot = this._buildLootSnapshot(actor);
+
       const tileData = {
         texture: { src: deadArtPath },
-        x:        tokenDoc.x,
-        y:        tokenDoc.y,
-        width:    (tokenDoc.width ?? 1) * gridSize,
-        height:   (tokenDoc.height ?? 1) * gridSize,
+        x:        placement.x,
+        y:        placement.y,
+        width:    tileWidth,
+        height:   tileHeight,
         overhead: false,
         roof:     false,
         hidden:   false,
         locked:   false,
+        // Video config — autoplay + loop for .webm/.mp4/.ogv; harmless for images
+        video: isVideo ? { loop: true, autoplay: true, volume: 0 } : undefined,
         flags: {
           [MODULE_ID]: {
             isDeadToken:     true,
@@ -234,32 +357,95 @@ export class DeathPipeline {
             originalName:    actor.name,
             creatureType:    actor.system?.details?.type?.value || "",
             lootable:        true,
+            combatLocked:    !!game.combat?.started,
+            createdAt:       Date.now(),
+            lootSnapshot,
           },
         },
       };
 
-      const created = await canvas.scene.createEmbeddedDocuments("Tile", [tileData]);
-      if (!created?.length) {
-        console.warn(`${LOG_PREFIX} Failed to create dead tile for "${actor.name}"`);
+      let created;
+      try {
+        created = await canvas.scene.createEmbeddedDocuments("Tile", [tileData]);
+      } catch (createErr) {
+        console.error(`${LOG_PREFIX}   ✗ Tile creation threw:`, createErr);
+        try {
+          await ChatMessage.create({
+            content: `<div style="background:#2a1a0a;border:1px solid #ff6b6b;padding:6px 10px;border-radius:4px;color:#ffa0a0;font-size:12px;">⚠ ACE QOL: Tile creation FAILED for <strong>${name}</strong>: ${createErr?.message ?? createErr}</div>`,
+            whisper: [game.user.id],
+          });
+        } catch (_) {}
         return;
       }
 
-      console.log(`${LOG_PREFIX} ${actor.name} -> tile (${deadArtPath})`);
+      if (!created?.length) {
+        console.warn(`${LOG_PREFIX}   ✗ Failed to create dead tile for "${name}" (no document returned)`);
+        return;
+      }
+
+      console.log(`${LOG_PREFIX}   ✓ Tile created: ${created[0].id}`);
 
       // ── Step 2: Remove original token (if setting enabled) ──
       if (game.settings.get(MODULE_ID, "deleteTokenOnDeath")) {
         try {
           await tokenDoc.delete();
-          console.log(`${LOG_PREFIX} Token deleted for "${actor.name}"`);
+          console.log(`${LOG_PREFIX}   ✓ Original token deleted`);
         } catch (delErr) {
-          console.warn(`${LOG_PREFIX} Token deletion failed for "${actor.name}":`, delErr);
+          console.warn(`${LOG_PREFIX}   ✗ Token deletion failed:`, delErr);
         }
+      } else {
+        console.log(`${LOG_PREFIX}   • deleteTokenOnDeath OFF — original token left in place`);
       }
 
+      console.log(`${LOG_PREFIX} ✓ processNPCDeath("${name}") complete`);
     } catch (err) {
       // Death pipeline must NEVER crash the combat flow.
-      console.error(`${LOG_PREFIX} processNPCDeath failed for "${actor?.name ?? "unknown"}":`, err);
+      console.error(`${LOG_PREFIX} ✗ processNPCDeath failed for "${name}":`, err);
     }
+  }
+
+  /**
+   * Find a grid position near (originX, originY) that's not already occupied by
+   * another ace-qol dead tile. Spirals outward up to 5 squares looking for empty.
+   * Returns { x, y, shifted } where shifted indicates whether we moved.
+   */
+  _findUnoccupiedPosition(originX, originY, width, height) {
+    if (!canvas.scene) return { x: originX, y: originY, shifted: false };
+    const gridSize = canvas.grid?.size ?? 100;
+    const existingTiles = canvas.scene.tiles.contents.filter(t =>
+      t.flags?.[MODULE_ID]?.isDeadToken);
+
+    const isOccupied = (tx, ty) => {
+      for (const t of existingTiles) {
+        // Overlap check via bounding boxes
+        if (tx + width  <= t.x)         continue;
+        if (tx          >= t.x + t.width) continue;
+        if (ty + height <= t.y)         continue;
+        if (ty          >= t.y + t.height) continue;
+        return true; // overlaps
+      }
+      return false;
+    };
+
+    if (!isOccupied(originX, originY)) {
+      return { x: originX, y: originY, shifted: false };
+    }
+
+    // Spiral search outward (max 5 squares)
+    for (let radius = 1; radius <= 5; radius++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        for (let dy = -radius; dy <= radius; dy++) {
+          if (Math.abs(dx) !== radius && Math.abs(dy) !== radius) continue;
+          const tryX = originX + dx * gridSize;
+          const tryY = originY + dy * gridSize;
+          if (!isOccupied(tryX, tryY)) {
+            return { x: tryX, y: tryY, shifted: true };
+          }
+        }
+      }
+    }
+    // Couldn't find empty — just stack at origin
+    return { x: originX, y: originY, shifted: false };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -367,9 +553,22 @@ export class DeathPipeline {
 
     // ── Tier 4: Generic creature type (humanoid, beast, undead, etc.) ──
     if (creatureType) {
-      const typeKey = `dead-${creatureType.replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "")}`;
+      const cleanType = creatureType.replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+      const typeKey = `dead-${cleanType}`;
       if (this._artCache.has(typeKey)) {
         return this._artCache.get(typeKey);
+      }
+
+      // ── Tier 4b: Typo-tolerant lookup for common misspellings ──
+      // Users frequently save files with spelling variants (abberation vs aberration,
+      // monstrosoity vs monstrosity, etc.). Try a few mutations:
+      const variants = this._generateTypeVariants(cleanType);
+      for (const variant of variants) {
+        const variantKey = `dead-${variant}`;
+        if (this._artCache.has(variantKey)) {
+          console.log(`${LOG_PREFIX}   Typo-match: ${typeKey} → ${variantKey}`);
+          return this._artCache.get(variantKey);
+        }
       }
     }
 
@@ -378,7 +577,48 @@ export class DeathPipeline {
       return this._artCache.get("dead-generic");
     }
 
-    // ── Nothing found — skip conversion ──
+    // ── Nothing found — skip conversion (log available keys for debugging) ──
+    const availableKeys = [...this._artCache.keys()].filter(k => k.startsWith("dead-"));
+    console.warn(`${LOG_PREFIX} No match for actor "${actor.name}" (type="${creatureType}"). Available dead-* keys (${availableKeys.length}):`, availableKeys);
     return null;
+  }
+
+  /**
+   * Generate common typo/variant spellings for a creature type.
+   * Example: "aberration" -> ["abberation", "aberation"]
+   * Covers letter doubling, letter dropping, and known D&D typos.
+   */
+  _generateTypeVariants(type) {
+    const variants = new Set();
+
+    // Known common typos in D&D creature types
+    const knownTypos = {
+      "aberration":  ["abberation", "aberation"],
+      "abberation":  ["aberration"],
+      "monstrosity": ["monstrosoity"],
+      "undead":      ["un-dead"],
+      "humanoid":    ["human"],
+      "celestial":   ["celestrial"],
+    };
+    if (knownTypos[type]) {
+      for (const v of knownTypos[type]) variants.add(v);
+    }
+
+    // Letter-doubling: "aberration" -> "abberation"
+    for (let i = 1; i < type.length; i++) {
+      const doubled = type.slice(0, i) + type[i] + type.slice(i);
+      variants.add(doubled);
+    }
+
+    // Letter-dropping: "abberation" -> "aberation"
+    for (let i = 1; i < type.length - 1; i++) {
+      if (type[i] === type[i - 1]) {
+        // Dropping one of two consecutive same letters
+        variants.add(type.slice(0, i) + type.slice(i + 1));
+      }
+    }
+
+    variants.delete(type); // don't retry exact
+    return [...variants];
   }
 }

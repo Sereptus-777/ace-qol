@@ -1315,11 +1315,12 @@ export class ReactionEngine {
         },
       }, {
         classes: ["ace-qol-reaction-dialog"],
-        width: 420,
+        width: 460,
         height: "auto",
-        // Position near top-right of screen for visibility
-        top: 80,
-        left: window.innerWidth - 460,
+        // Center on screen — matches the advantage prompt placement so player
+        // attention always lands at the same spot for time-critical decisions.
+        top: Math.max(40, Math.floor(window.innerHeight / 2 - 240)),
+        left: Math.max(20, Math.floor(window.innerWidth / 2 - 230)),
       });
 
       dialog.render(true);
