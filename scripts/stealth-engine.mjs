@@ -30,7 +30,10 @@
 import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
 
-const FLAG_NS = MODULE_ID;
+// Hardcoded literal — using MODULE_ID at module-eval time triggers a TDZ
+// circular-import error because stealth-engine is imported BY ace-qol.mjs.
+// Same pattern as custom-polymorph.mjs.
+const FLAG_NS = "ace-qol";
 const FLAG_HIDDEN    = "hidden";
 const FLAG_SURPRISED = "surprised";
 

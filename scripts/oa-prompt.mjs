@@ -27,7 +27,8 @@
 import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
 
-const FLAG_NS = MODULE_ID;
+// Hardcoded literal — TDZ-safe (see stealth-engine.mjs comment)
+const FLAG_NS = "ace-qol";
 
 export class OAPrompt {
 
