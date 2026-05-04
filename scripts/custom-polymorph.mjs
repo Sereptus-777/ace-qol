@@ -342,6 +342,37 @@ export class CustomPolymorph {
     if (!target || !polymorphRecord) return false;
     const snap = polymorphRecord.originalSnapshot ?? {};
 
+    // ── Suppress benign cleanup-race notifications ──
+    // When excess damage from polymorph carryover drops the original form to
+    // 0 HP, the death pipeline races our cleanup: it starts deleting the
+    // token while we're still tearing down polymorph artifacts. Foundry's
+    // CRUD methods fire ui.notifications.error("X does not exist in the
+    // EmbeddedCollection") BEFORE throwing — our try/catches swallow the
+    // throw but the red toast already fired. Same known pattern as
+    // ace-engine's permission-warning suppression.
+    //
+    // We monkey-patch ui.notifications.error + console.error briefly,
+    // restoring them in finally. Filter is narrow: only "does not exist in
+    // the EmbeddedCollection" — everything else passes through.
+    const filterRE = /does not exist in the EmbeddedCollection/i;
+    const origNotifError   = ui.notifications?.error?.bind(ui.notifications);
+    const origConsoleError = console.error?.bind(console);
+    if (origNotifError) {
+      ui.notifications.error = function(msg, ...args) {
+        if (typeof msg === "string" && filterRE.test(msg)) return;
+        return origNotifError(msg, ...args);
+      };
+    }
+    if (origConsoleError) {
+      console.error = function(...args) {
+        try {
+          const text = args.map(a => typeof a === "string" ? a : (a?.message ?? "")).join(" ");
+          if (filterRE.test(text)) return; // benign cleanup race
+        } catch (_) { /* fall through */ }
+        return origConsoleError(...args);
+      };
+    }
+
     try {
       // 1. Delete the polymorph Active Effect
       if (polymorphRecord.effectId) {
@@ -409,12 +440,25 @@ export class CustomPolymorph {
         try {
           await target.update({ "system.attributes.hp.value": restoredHpValue });
         } catch (err) {
-          console.warn(`${MODULE_ID} | CustomPolymorph: HP carryover failed:`, err);
+          // Use the ORIGINAL console.error so this real error isn't filtered
+          if (origConsoleError) origConsoleError(`${MODULE_ID} | CustomPolymorph: HP carryover failed:`, err);
+          else console.warn(`${MODULE_ID} | CustomPolymorph: HP carryover failed:`, err);
         }
       }
+      // Brief settle delay so any cascading deletes from the death-pipeline
+      // (triggered if excess damage zeroed the original form) emit their
+      // benign "does not exist" notifications BEFORE we restore the
+      // suppression. ~200ms is enough on hosted; cheaper than a long wait
+      // and short enough that real errors after this still surface normally.
+      await new Promise(r => setTimeout(r, 200));
     } catch (err) {
-      console.error(`${MODULE_ID} | CustomPolymorph.revert failed:`, err);
+      if (origConsoleError) origConsoleError(`${MODULE_ID} | CustomPolymorph.revert failed:`, err);
+      else console.error(`${MODULE_ID} | CustomPolymorph.revert failed:`, err);
       return false;
+    } finally {
+      // Restore notification handlers
+      if (origNotifError)   ui.notifications.error = origNotifError;
+      if (origConsoleError) console.error          = origConsoleError;
     }
     return true;
   }
