@@ -88,6 +88,14 @@ export class DescriptionParser {
        *  or null if no repeating save phrasing detected. */
       repeatingSave: DescriptionParser._parseRepeatingSave(text, lower),
 
+      /** HP-threshold rider (Mace of Disruption, Mace of Smiting).
+       *  Pattern: "If the target has X hit points or fewer [after taking
+       *  this damage], it must succeed on a DC Y [ABILITY] save or be
+       *  [destroyed/stunned/etc]."
+       *  Returns null or { threshold:int, dc:int, ability:str, effect:str,
+       *                    requireType?:str (e.g. "construct", "fiend|undead") } */
+      hpThresholdRider: DescriptionParser._parseHpThresholdRider(text, lower),
+
       /** Raw text for reference */
       rawText: text,
     };
@@ -669,6 +677,79 @@ export class DescriptionParser {
       }
     }
     return false;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  HP-threshold rider — Mace of Disruption, Mace of Smiting, etc.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Detect HP-threshold rider:
+   *   "If the target has 25 hit points or fewer after taking this damage, it
+   *    must succeed on a DC 15 Wisdom saving throw or be destroyed."
+   *   "If the target is a construct and has 25 hit points or fewer, it must
+   *    succeed on a DC 15 Strength saving throw or be destroyed."
+   *
+   * Returns null if no HP-threshold rider is detected, otherwise:
+   *   {
+   *     threshold: 25,         // HP at-or-below for the trigger to fire
+   *     dc: 15,                // Save DC
+   *     ability: "wis",        // Save ability (lowercase 3-letter code)
+   *     effect: "destroyed",   // What happens on save fail (text)
+   *     requireType: "construct", // Optional creature-type gate, lowercase
+   *     onlyOnCrit: false,     // Mace of Smiting requires nat 20 to even check
+   *   }
+   *
+   * Returns null when:
+   *   - No "X hit points or fewer" pattern is present
+   *   - No save DC adjacent to the threshold
+   */
+  static _parseHpThresholdRider(text, lower) {
+    if (!text || !lower) return null;
+
+    // Quick reject — no HP-threshold language at all
+    if (!/\b\d+\s+hit\s+points?\s+or\s+fewer\b/i.test(text)) return null;
+
+    // Match the canonical phrase. Captures:
+    //   1: threshold number
+    //   2: save DC number
+    //   3: ability label
+    //   4: effect (until period)
+    const re = /\b(\d+)\s+hit\s+points?\s+or\s+fewer\b[^.]{0,80}?(?:succeed\s+on\s+a\s+)?DC\s+(\d+)\s+(strength|dexterity|constitution|intelligence|wisdom|charisma)\s+(?:saving\s+throw|save)\s+or\s+(?:be\s+|become\s+)?([a-z\-]+)/i;
+    const m = text.match(re);
+    if (!m) return null;
+
+    const threshold = Number(m[1]);
+    const dc        = Number(m[2]);
+    const abilityFull = m[3].toLowerCase();
+    const ability   = ({ strength: "str", dexterity: "dex", constitution: "con",
+                        intelligence: "int", wisdom: "wis", charisma: "cha" })[abilityFull];
+    const effect    = m[4].toLowerCase();
+
+    if (!Number.isFinite(threshold) || !Number.isFinite(dc) || !ability) return null;
+
+    // Look back ~150 chars for a creature-type gate ("a construct", "a fiend
+    // or an undead", etc.)
+    const before = text.slice(Math.max(0, m.index - 200), m.index).toLowerCase();
+    let requireType = null;
+    const typeMatch = before.match(/\b(?:if|when)\s+(?:the\s+target\s+is\s+)?an?\s+(construct|fiend|undead|aberration|beast|celestial|dragon|elemental|fey|giant|humanoid|monstrosity|ooze|plant)/i);
+    if (typeMatch) {
+      requireType = typeMatch[1].toLowerCase();
+    } else {
+      // Pattern "a fiend or an undead"
+      const orMatch = before.match(/\b(?:hit\s+)?an?\s+(\w+)\s+or\s+an?\s+(\w+)\b/i);
+      if (orMatch) {
+        const [_, t1, t2] = orMatch;
+        const validTypes = ["construct","fiend","undead","aberration","beast","celestial","dragon","elemental","fey","giant","humanoid","monstrosity","ooze","plant"];
+        const types = [t1, t2].map(t => t.toLowerCase()).filter(t => validTypes.includes(t));
+        if (types.length > 0) requireType = types.join("|");
+      }
+    }
+
+    // Detect "on a 20 attack roll" gate (Mace of Smiting requires a crit)
+    const onlyOnCrit = /\bnat(?:ural)?\s+20\b|\broll\s+a\s+20\b/i.test(before);
+
+    return { threshold, dc, ability, effect, requireType, onlyOnCrit };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

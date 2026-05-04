@@ -30,11 +30,24 @@ export class PostHitSaves {
     if (!item) return;
 
     const parsed = DescriptionParser.parse(item);
-    if (!parsed.saves.length && !parsed.effectTable) return;
+    if (!parsed.saves.length && !parsed.effectTable && !parsed.hpThresholdRider) return;
 
     // Only process targets that were actually HIT
     const hitTargets = hits.filter(h => h.hitResult === "hit" || h.hitResult === "critical");
     if (!hitTargets.length) return;
+
+    // ── HP-threshold rider (Mace of Disruption / Smiting) ──
+    // Fires AFTER damage is applied. For each hit target whose post-damage HP
+    // is at-or-below the rider's threshold, prompt a save. On fail, apply
+    // the effect ("destroyed" sets HP to 0; named conditions go through
+    // ConditionLibrary).
+    if (parsed.hpThresholdRider) {
+      try {
+        await PostHitSaves._applyHpThresholdRider(item, actor, hitTargets, parsed.hpThresholdRider);
+      } catch (err) {
+        console.warn(`${MODULE_ID} | HP-threshold rider handling failed:`, err);
+      }
+    }
 
     // ── Post-hit save(s) required ──
     // Some weapons have MULTIPLE independent saves (Hammer of Thunderbolts:
@@ -242,6 +255,25 @@ export class PostHitSaves {
       if (severRider.severType === "head" && !shape.hasHead) actualSeverType = "body";
       if (severRider.severType === "limb" && !shape.hasLimbs) actualSeverType = "body";
 
+      // ── RAW immunity check (Vorpal Sword head-lop) ──
+      // RAW: "A creature is immune to this effect if it is immune to slashing
+      // damage, doesn't have or need a head, has legendary actions, or the GM
+      // decides that the creature is too big for its head to be lopped off
+      // with this weapon. Such a creature instead takes an extra 6d8 slashing
+      // damage from the hit." (Vorpal Sword, DMG)
+      //
+      // We auto-detect slashing-damage IMMUNITY (resistance does NOT block
+      // sever — only immunity does). For other immunity reasons (no head,
+      // legendary, GM call), the GM still adjudicates from the chat card.
+      let slashingImmune = false;
+      try {
+        const dmgInfo = targetActor.system?.traits?.di?.value
+                     ?? targetActor.system?.traits?.di
+                     ?? new Set();
+        const di = dmgInfo instanceof Set ? [...dmgInfo] : (Array.isArray(dmgInfo) ? dmgInfo : []);
+        slashingImmune = di.map(s => String(s).toLowerCase()).includes("slashing");
+      } catch (_) { /* non-fatal */ }
+
       // Post the result card. ALWAYS public so the player at the table sees
       // the climactic roll (this is the iconic Sword of Sharpness moment).
       const targetName = hit.name ?? targetActor.name ?? "Target";
@@ -249,7 +281,35 @@ export class PostHitSaves {
       const severNoun = { head: "head", limb: "limb", body: "portion of body" }[actualSeverType] ?? "limb";
 
       let cardHtml;
-      if (severed) {
+      if (severed && slashingImmune && actualSeverType === "head") {
+        // Vorpal RAW: slashing-immune target → lop denied, target instead
+        // takes 6d8 slashing. Roll the 6d8 here and apply (respecting other
+        // resistances/vulnerabilities — RAW makes no exception for them).
+        const altDmg = new Roll("6d8");
+        await altDmg.evaluate();
+        try { if (game.dice3d) game.dice3d.showForRoll(altDmg, game.user, true).catch(() => {}); } catch (_) {}
+        try {
+          await targetActor.applyDamage?.(altDmg.total, 1);
+        } catch (err) {
+          console.warn(`${MODULE_ID} | Vorpal alt-damage application failed:`, err);
+        }
+        cardHtml = `
+          <div class="ace-qol-sever-card ace-qol-sever-immune" style="background:#0f0a1a; border:2px solid #6c5ce7; border-radius:6px; padding:10px 12px; box-shadow:0 0 8px rgba(108,92,231,0.3);">
+            <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
+              <i class="fas fa-shield-halved" style="font-size:20px; color:#a29bfe;"></i>
+              <strong style="color:#dfd9ff; font-size:14px;">
+                ${foundry.utils.escapeHTML(itemName)} — IMMUNE (slashing immunity)
+              </strong>
+            </div>
+            <div style="color:#cfcfd0; font-size:12px; line-height:1.45;">
+              <strong>Sever roll:</strong> <span style="color:#a29bfe; font-weight:700;">${rolled}</span> (needed ${threshold})<br>
+              <strong>${foundry.utils.escapeHTML(targetName)}</strong> is immune to slashing damage — head stays attached.<br>
+              Takes <strong style="color:#ff6b6b;">${altDmg.total}</strong> slashing damage instead (6d8 RAW alternate).
+            </div>
+          </div>
+        `;
+        console.log(`${MODULE_ID} | SEVER IMMUNE (slashing): ${targetName} took ${altDmg.total} slashing instead of head loss`);
+      } else if (severed) {
         cardHtml = `
           <div class="ace-qol-sever-card ace-qol-sever-success" style="background:linear-gradient(180deg,#2a0a0a 0%,#3a0e0e 50%,#2a0a0a 100%); border:2px solid #d4af37; border-radius:6px; padding:10px 12px; box-shadow:0 0 12px rgba(212,175,55,0.3);">
             <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
@@ -840,5 +900,108 @@ export class PostHitSaves {
         }
       },
     });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  HP-Threshold Rider — Mace of Disruption, Mace of Smiting
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * For each hit target whose post-damage HP is at-or-below the rider's
+   * threshold (and matches the optional creature-type gate), roll a save
+   * (NPCs auto-roll, PCs get a whispered prompt). On fail, apply the effect.
+   *
+   * Effects we handle explicitly:
+   *   - "destroyed" — sets HP to 0 (instant death; for constructs/undead)
+   *   - "stunned" / "paralyzed" / "frightened" / "blinded" / "deafened" /
+   *     "poisoned" / "restrained" / "incapacitated" / "unconscious" /
+   *     "charmed" / "grappled" / "petrified" — applied via ConditionLibrary
+   *   - other: posted as plain text in the chat card; GM applies manually
+   */
+  static async _applyHpThresholdRider(item, actor, hitTargets, rider) {
+    if (!rider || !Number.isFinite(rider.threshold) || !Number.isFinite(rider.dc)) return;
+
+    for (const h of hitTargets) {
+      // Mace of Smiting: only check on a nat-20 attack roll
+      if (rider.onlyOnCrit && h.hitResult !== "critical") continue;
+
+      const scene = game.scenes.get(h.sceneId) ?? canvas.scene;
+      const tokenDoc = scene?.tokens?.get(h.targetToken?.document?.id ?? h.tokenDocId);
+      const targetActor = tokenDoc?.actor ?? game.actors.get(h.targetActor?.id ?? h.actorId);
+      if (!targetActor) continue;
+
+      // Creature-type gate (Mace of Disruption: fiend OR undead)
+      if (rider.requireType) {
+        const targetType = String(targetActor.system?.details?.type?.value ?? "").toLowerCase();
+        const gateTypes = rider.requireType.split("|");
+        if (!gateTypes.includes(targetType)) continue;
+      }
+
+      // HP-after-damage gate
+      const hpNow = Number(targetActor.system?.attributes?.hp?.value ?? 0);
+      if (hpNow > rider.threshold) continue;
+
+      // ── Roll the save (NPCs auto-roll; PC handling routes through the
+      // existing whispered-prompt pipeline if available, but for now we
+      // auto-roll and let the player counter via the GM if needed) ──
+      const abilityKey = rider.ability;
+      const saveBonus = Number(targetActor.system?.abilities?.[abilityKey]?.save?.value
+                            ?? targetActor.system?.abilities?.[abilityKey]?.save
+                            ?? 0);
+      const roll = new Roll(`1d20 + ${saveBonus}`);
+      await roll.evaluate();
+      const passed = roll.total >= rider.dc;
+
+      // Animate (DSN broadcast) — same pattern as save-engine
+      try {
+        if (game.dice3d) game.dice3d.showForRoll(roll, game.user, true).catch(() => {});
+      } catch (_) { /* non-fatal */ }
+
+      // Apply effect on fail
+      let appliedEffect = null;
+      if (!passed) {
+        const effect = (rider.effect ?? "").toLowerCase();
+        try {
+          if (effect === "destroyed") {
+            await targetActor.update({ "system.attributes.hp.value": 0 });
+            appliedEffect = "Destroyed (HP set to 0)";
+          } else if (["stunned","paralyzed","frightened","blinded","deafened","poisoned","restrained","incapacitated","unconscious","charmed","grappled","petrified","prone"].includes(effect)) {
+            await ConditionLibrary.applyByName?.(targetActor, effect);
+            appliedEffect = effect.charAt(0).toUpperCase() + effect.slice(1);
+          } else {
+            appliedEffect = effect; // unknown — log only, GM applies manually
+          }
+        } catch (err) {
+          console.warn(`${MODULE_ID} | HP-threshold rider effect "${effect}" failed:`, err);
+        }
+      }
+
+      // Post chat card showing the rider trigger + result
+      try {
+        const abilityLabel = CONFIG.DND5E?.abilities?.[abilityKey]?.label ?? abilityKey.toUpperCase();
+        const resultLabel = passed ? "PASS — no effect" : (appliedEffect ? `FAIL — ${appliedEffect}` : "FAIL");
+        const html = `
+          <div class="ace-qol-postsave-card ace-qol-hp-threshold-rider">
+            <div class="ace-qol-pst-header">
+              <i class="fas fa-skull-crossbones"></i>
+              <strong>${item.name} — HP Threshold</strong>
+              <span class="ace-qol-pst-target">${h.target?.name ?? targetActor.name}</span>
+            </div>
+            <div class="ace-qol-pst-body">
+              <div class="ace-qol-pst-line">HP ${hpNow} ≤ ${rider.threshold} → DC ${rider.dc} ${abilityLabel} save</div>
+              <div class="ace-qol-pst-line">Roll: <strong>${roll.total}</strong> ${passed ? "✅" : "❌"}</div>
+              <div class="ace-qol-pst-line ace-qol-pst-result">${resultLabel}</div>
+            </div>
+          </div>
+        `;
+        await ChatMessage.create({
+          speaker: ChatMessage.getSpeaker({ actor }),
+          content: html,
+          flags: { [MODULE_ID]: { type: "hpThresholdRider", actorId: targetActor.id, passed } },
+        });
+      } catch (err) {
+        console.warn(`${MODULE_ID} | HP-threshold rider chat post failed:`, err);
+      }
+    }
   }
 }
