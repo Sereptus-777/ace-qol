@@ -183,8 +183,17 @@ export class AuraEngine {
       } catch (_) { /* non-fatal */ }
     });
 
-    // Status effects added/removed (incapacitated etc.)
-    const _onEffectChange = () => AuraEngine._scheduleRecompute();
+    // Status effects added/removed (incapacitated etc.) — but ONLY for non-aura
+    // effects. Our own aura creates/deletes would recursively trigger recompute
+    // (infinite loop, duplicate effect explosion).
+    const _onEffectChange = (effect) => {
+      try {
+        // Skip if it's one of OUR aura marker effects — we created it, we
+        // don't need to recompute because of it
+        if (effect?.flags?.[FLAG_NS]?.[FLAG_AURA_APPLIED] === true) return;
+        AuraEngine._scheduleRecompute();
+      } catch (_) { /* non-fatal */ }
+    };
     Hooks.on("createActiveEffect", _onEffectChange);
     Hooks.on("deleteActiveEffect", _onEffectChange);
     Hooks.on("updateActiveEffect", _onEffectChange);
@@ -210,8 +219,26 @@ export class AuraEngine {
    * Full scene rescan: for every aura source, find all tokens in range and
    * apply the marker effect. For every existing marker effect, if the
    * source is no longer in range OR no longer eligible, remove it.
+   *
+   * Re-entry guard prevents concurrent runs from racing each other and
+   * creating duplicate effects.
    */
   static async recomputeAll() {
+    if (this._running) {
+      // Another recompute is already in flight — schedule a follow-up so we
+      // catch the latest state but don't run concurrently.
+      this._scheduleRecompute();
+      return;
+    }
+    this._running = true;
+    try {
+      await AuraEngine._recomputeAllInner();
+    } finally {
+      this._running = false;
+    }
+  }
+
+  static async _recomputeAllInner() {
     if (!canvas?.scene) return;
     const tokens = canvas.tokens?.placeables ?? [];
     if (!tokens.length) return;
@@ -277,6 +304,16 @@ export class AuraEngine {
     }
 
     // 3. Apply diffs: for each token, compute add/remove
+    //
+    // DEDUP FIX: previous version used Map<auraId, effect> which collapsed
+    // duplicates to a single entry — so if the actor already had 3 Aura of
+    // Protection effects, the remove loop only saw 1 of them and the other
+    // 2 stayed forever. Plus our own create/delete events recursively
+    // triggered recomputes, exploding duplicates each pass.
+    //
+    // This version: iterate ALL marker effects per actor, dedupe by
+    // (auraId, sourceTokenId) tuple. Keep ONE matching effect per target;
+    // delete every duplicate AND every effect that doesn't match target.
     let appliedCount = 0;
     let removedCount = 0;
     for (const t of tokens) {
@@ -285,30 +322,58 @@ export class AuraEngine {
       const currentEffects = (t.actor.effects?.contents ?? []).filter(e =>
         e?.flags?.[FLAG_NS]?.[FLAG_AURA_APPLIED] === true
       );
-      const currentByAuraId = new Map();
-      for (const e of currentEffects) {
-        const aId = e.flags?.[FLAG_NS]?.auraId;
-        if (aId) currentByAuraId.set(aId, e);
+
+      // Bucket existing effects by (auraId, sourceTokenId) tuple
+      /** @type {Map<string, Array<ActiveEffect>>} */
+      const buckets = new Map();
+      for (const eff of currentEffects) {
+        const aId = eff.flags?.[FLAG_NS]?.auraId;
+        const sId = eff.flags?.[FLAG_NS]?.auraSourceTokenId;
+        if (!aId) continue;
+        const key = `${aId}::${sId ?? "none"}`;
+        if (!buckets.has(key)) buckets.set(key, []);
+        buckets.get(key).push(eff);
       }
 
-      // Remove effects that should no longer be there OR whose source has changed
-      for (const [auraId, eff] of currentByAuraId) {
-        const wantSourceTokenId = target.get(auraId);
-        const currentSourceTokenId = eff.flags?.[FLAG_NS]?.auraSourceTokenId;
-        if (!wantSourceTokenId || wantSourceTokenId !== currentSourceTokenId) {
-          try { await eff.delete(); removedCount++; } catch (err) {
-            console.warn(`${MODULE_ID} | AuraEngine: failed to remove ${eff.name}:`, err);
+      // Determine what each bucket SHOULD do
+      // For each target (auraId, sourceTokenId), keep ONE effect; delete extras
+      const toDelete = [];
+      const targetKeys = new Set();
+      for (const [auraId, sourceTokenId] of target) {
+        const key = `${auraId}::${sourceTokenId}`;
+        targetKeys.add(key);
+        const bucket = buckets.get(key) ?? [];
+        if (bucket.length > 1) {
+          // Keep first, delete rest
+          for (let i = 1; i < bucket.length; i++) toDelete.push(bucket[i].id);
+        }
+      }
+
+      // Any bucket NOT in targetKeys → delete entirely
+      for (const [key, bucket] of buckets) {
+        if (targetKeys.has(key)) continue;
+        for (const eff of bucket) toDelete.push(eff.id);
+      }
+
+      // Execute deletes (single batch per actor)
+      if (toDelete.length) {
+        try {
+          await t.actor.deleteEmbeddedDocuments("ActiveEffect", toDelete);
+          removedCount += toDelete.length;
+        } catch (err) {
+          // "Does not exist" is benign — Foundry may have already cleaned via
+          // cascade. Suppress that, log other errors.
+          if (!/does not exist/i.test(String(err?.message ?? err))) {
+            console.warn(`${MODULE_ID} | AuraEngine: bulk delete failed for ${t.actor.name}:`, err);
           }
         }
       }
 
-      // Add effects that should be there but aren't
+      // Add effects for targets that have NO existing effect (bucket was empty)
       for (const [auraId, sourceTokenId] of target) {
-        if (currentByAuraId.has(auraId)) {
-          // Already present and matches source — skip
-          const eff = currentByAuraId.get(auraId);
-          if (eff.flags?.[FLAG_NS]?.auraSourceTokenId === sourceTokenId) continue;
-        }
+        const key = `${auraId}::${sourceTokenId}`;
+        const bucket = buckets.get(key);
+        if (bucket && bucket.length > 0) continue; // already had at least one (we kept first, deleted rest)
         const aura = AURAS.find(a => a.id === auraId);
         if (!aura) continue;
         const sourceToken = tokens.find(tt => tt.id === sourceTokenId);
