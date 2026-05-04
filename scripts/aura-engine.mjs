@@ -145,8 +145,9 @@ export class AuraEngine {
     // Full recompute when canvas is ready (handles initial load + scene change)
     Hooks.on("canvasReady", () => {
       try {
-        if (!game.user.isGM) return;
         if (QolSettings.get?.("auraEngineEnabled") === false) return;
+        AuraVisualLayer.attach(); // visual ring renderer (all clients)
+        if (!game.user.isGM) return;
         AuraEngine.recomputeAll();
       } catch (err) { console.warn(`${MODULE_ID} | AuraEngine canvasReady threw:`, err); }
     });
@@ -157,10 +158,13 @@ export class AuraEngine {
     //   - Every other token if the moving token is an aura source
     Hooks.on("updateToken", (tokenDoc, changes) => {
       try {
-        if (!game.user.isGM) return;
         if (QolSettings.get?.("auraEngineEnabled") === false) return;
         const moved = changes.x !== undefined || changes.y !== undefined;
         if (!moved) return;
+        // Visual layer refreshes on every client (so everyone sees the rings)
+        AuraVisualLayer.refresh();
+        // Effect-application is GM-only
+        if (!game.user.isGM) return;
         // Defer slightly to let the actual position update commit
         setTimeout(() => AuraEngine.recomputeAll().catch(err =>
           console.warn(`${MODULE_ID} | AuraEngine recompute after move threw:`, err)
@@ -393,9 +397,44 @@ export class AuraEngine {
     // 4. Final cleanup pass: any aura effects whose source token no longer exists
     await AuraEngine._cleanupOrphanedAuras(tokens, sources);
 
+    // 5. Refresh the visual layer (rings around source tokens)
+    try { AuraVisualLayer.refresh(); } catch (_) { /* non-fatal */ }
+
     if (QolSettings.get?.("debugMode") || appliedCount + removedCount > 0) {
       console.log(`${MODULE_ID} | AuraEngine: ${sources.length} source(s), +${appliedCount} applied / -${removedCount} removed`);
     }
+  }
+
+  /**
+   * Returns the active aura sources (for the visual layer).
+   * Used by AuraVisualLayer to draw the rings.
+   */
+  static getActiveSources() {
+    if (!canvas?.scene) return [];
+    const tokens = canvas.tokens?.placeables ?? [];
+    const sources = [];
+    for (const t of tokens) {
+      if (!t.actor) continue;
+      for (const aura of AURAS) {
+        const classItem = t.actor.items?.find(i => i.type === "class"
+          && i.name?.toLowerCase().includes(aura.sourceClass.toLowerCase()));
+        const level = Number(classItem?.system?.levels ?? 0);
+        if (level < aura.minLevel) continue;
+        const hasFeat = t.actor.items?.some(i => i.type === "feat"
+          && i.name?.toLowerCase().includes(aura.sourceFeatureName.toLowerCase()));
+        if (!hasFeat) continue;
+        const statuses = t.actor.statuses ?? new Set();
+        const suppressed = (aura.suppressedBy ?? []).some(s => statuses.has(s));
+        if (suppressed) continue;
+        sources.push({
+          token: t,
+          aura,
+          level,
+          rangeFt: aura.range(level),
+        });
+      }
+    }
+    return sources;
   }
 
   /**
@@ -498,6 +537,130 @@ export class AuraEngine {
     }
     console.log(`${MODULE_ID} | AuraEngine: removed ${removed} stale aura effect(s); rebuilding...`);
     await AuraEngine.recomputeAll();
+    AuraVisualLayer.refresh();
     ui.notifications?.info(`Aura cleanup: removed ${removed} stale effect(s); rebuilt from scratch.`);
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  AuraVisualLayer — PIXI ring renderer for source tokens
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// Independent of Automated Animations / Sequencer. Draws a translucent
+// circle at each aura source's position with the configured range. Color-
+// coded per aura type. Updates on token movement, creation, deletion, and
+// engine recomputes.
+//
+// Why custom: AA's Sequencer-based aura visuals leave orphaned animations
+// when active effects are deleted, spam the console with "use Sequencer
+// Effect Manager" warnings, and don't update reliably on token movement.
+// PIXI Graphics is direct, fast, and we control the lifecycle.
+//
+// All clients render the same rings (the data is just the active aura
+// sources on canvas). No socket needed.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const AURA_RING_COLORS = {
+  "aura-of-protection":    0xffd700,  // gold
+  "aura-of-warding":       0x4488ff,  // blue
+  "aura-of-courage":       0xffaa00,  // amber
+  "aura-of-hate":          0xaa00aa,  // purple
+  "aura-of-the-guardian":  0x00aaff,  // cyan
+};
+
+export class AuraVisualLayer {
+  /** PIXI.Container holding all aura ring graphics */
+  static container = null;
+
+  /**
+   * Attach the aura ring container to the canvas. Idempotent.
+   */
+  static attach() {
+    if (!canvas?.tokens) return;
+    if (this.container && !this.container.destroyed) {
+      // Already attached; refresh in case the scene is fresh
+      this.refresh();
+      return;
+    }
+    try {
+      this.container = new PIXI.Container();
+      this.container.name = "ace-qol-aura-rings";
+      this.container.eventMode = "none"; // pass clicks through
+      this.container.zIndex = -1; // below tokens
+      // Insert at index 0 so it's BELOW token sprites (under their feet)
+      canvas.tokens.addChildAt(this.container, 0);
+      this.refresh();
+      console.log(`${MODULE_ID} | AuraVisualLayer attached to canvas.tokens`);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | AuraVisualLayer attach failed:`, err);
+    }
+  }
+
+  /**
+   * Re-draw all aura rings from scratch. Cheap (Graphics is GPU-accelerated).
+   */
+  static refresh() {
+    if (!this.container || this.container.destroyed) {
+      this.attach();
+      return;
+    }
+    // Clear existing graphics
+    this.container.removeChildren().forEach(c => c.destroy?.());
+
+    if (!canvas.scene) return;
+
+    const sources = AuraEngine.getActiveSources();
+    const grid = canvas.scene.grid?.size ?? 100;
+    const ftPer = canvas.scene.grid?.distance ?? 5;
+
+    for (const src of sources) {
+      const t = src.token;
+      const tw = (t.document?.width  ?? 1) * grid;
+      const th = (t.document?.height ?? 1) * grid;
+      const cx = (t.x ?? 0) + tw / 2;
+      const cy = (t.y ?? 0) + th / 2;
+      const radiusPx = (src.rangeFt / ftPer) * grid;
+      const color = AURA_RING_COLORS[src.aura.id] ?? 0xffffff;
+
+      const g = new PIXI.Graphics();
+      // Outer ring (thicker, opaque)
+      g.lineStyle({ width: 3, color, alpha: 0.7, alignment: 0 });
+      g.drawCircle(cx, cy, radiusPx);
+      // Inner glow (filled, very translucent)
+      g.beginFill(color, 0.08);
+      g.drawCircle(cx, cy, radiusPx);
+      g.endFill();
+      // Inner ring (subtle, slightly inside)
+      g.lineStyle({ width: 1.5, color, alpha: 0.4, alignment: 0 });
+      g.drawCircle(cx, cy, radiusPx - 4);
+
+      this.container.addChild(g);
+    }
+  }
+
+  /**
+   * Detach + cleanup (called on canvas tear-down or module disable).
+   */
+  static detach() {
+    if (this.container && !this.container.destroyed) {
+      this.container.removeChildren().forEach(c => c.destroy?.());
+      this.container.parent?.removeChild(this.container);
+      this.container.destroy();
+      this.container = null;
+    }
+  }
+}
+
+// ── Hook the visual layer into Foundry's render lifecycle ───────────────────
+// canvasReady is the primary attach point (handled in AuraEngine.init).
+// We also refresh on token sheet updates that might change aura status.
+Hooks.on("createToken", () => AuraVisualLayer.refresh());
+Hooks.on("deleteToken", () => AuraVisualLayer.refresh());
+Hooks.on("updateActor", () => AuraVisualLayer.refresh());
+Hooks.on("createActiveEffect", (effect) => {
+  // Status effect added (e.g., paladin became unconscious) — re-evaluate
+  if (!effect?.flags?.["ace-qol"]?.auraApplied) AuraVisualLayer.refresh();
+});
+Hooks.on("deleteActiveEffect", (effect) => {
+  if (!effect?.flags?.["ace-qol"]?.auraApplied) AuraVisualLayer.refresh();
+});
