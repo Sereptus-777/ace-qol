@@ -16,6 +16,84 @@ export class DamageApplicator {
   static overrideCache = new Map();
 
   // ═══════════════════════════════════════════════════════════════════════════
+  //  Universal HP Mutator — Single Source of Truth
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * THE single helper for applying damage to an actor's HP.
+   *
+   * Every damage path in ace-qol should funnel through here. Owns:
+   *   1. Computing newHP = max(0, currentHP - damage)
+   *   2. Polymorph excess-damage capture (RAW carryover)
+   *   3. The actual actor.update() write
+   *   4. Optional pre-update return value with computed newHP for callers
+   *      that need to display "X → Y" before the await
+   *
+   * Replaces a previously-scattered pattern across damage-applicator,
+   * save-engine, post-hit-saves, heal-card-renderer, overtime-engine, etc.
+   *
+   * @param {Actor}   actor       — the target whose HP we're mutating
+   * @param {number}  damageAmount — raw incoming damage (positive integer)
+   * @param {object}  [opts]
+   * @param {string}  [opts.label] — optional label for the console log line
+   * @param {boolean} [opts.skipPolymorphCapture] — skip excess capture (rare)
+   * @returns {Promise<{currentHP, newHP, excess, applied}>}
+   *   Returns the resolved values so callers can render UI BEFORE awaiting
+   *   the actor.update if they want. `applied` is the actual update Promise.
+   */
+  static async applyHPDamage(actor, damageAmount, opts = {}) {
+    const damage = Math.max(0, Number(damageAmount) || 0);
+    const currentHP = Number(actor?.system?.attributes?.hp?.value ?? 0);
+    const newHP     = Math.max(0, currentHP - damage);
+    const excess    = Math.max(0, damage - currentHP);
+
+    // ── Polymorph excess-damage capture (RAW carryover) ──
+    // If this hit drops a polymorphed creature to 0, stash the excess so
+    // TransformationEngine._handleZeroHPRevert can apply it to the
+    // original form's HP. Belt-and-suspenders w/ dnd5e.preApplyDamage.
+    if (excess > 0 && !opts.skipPolymorphCapture) {
+      try { TransformationEngine.recordPendingExcess?.(actor, excess); } catch (_) {}
+    }
+
+    // ── The actual write ──
+    const updatePromise = actor.update({ "system.attributes.hp.value": newHP });
+
+    if (opts.label) {
+      console.log(`${MODULE_ID} | applyHPDamage [${opts.label}]: ${actor.name} ${currentHP} → ${newHP}${excess > 0 ? ` (excess ${excess} captured)` : ""}`);
+    }
+
+    await updatePromise;
+    return { currentHP, newHP, excess, applied: true };
+  }
+
+  /**
+   * THE single helper for healing. Mirror of applyHPDamage.
+   * Clamps to max HP. No polymorph excess capture (healing doesn't trigger
+   * carryover). Used by heal-card-renderer + heal-pipeline.
+   *
+   * @param {Actor}  actor      — target
+   * @param {number} healAmount — positive integer
+   * @param {object} [opts]
+   * @param {string} [opts.label]
+   * @returns {Promise<{currentHP, newHP, applied, healedAmount}>}
+   */
+  static async applyHPHeal(actor, healAmount, opts = {}) {
+    const heal      = Math.max(0, Number(healAmount) || 0);
+    const currentHP = Number(actor?.system?.attributes?.hp?.value ?? 0);
+    const maxHP     = Number(actor?.system?.attributes?.hp?.max ?? 0);
+    const newHP     = Math.min(maxHP, currentHP + heal);
+    const healedAmount = newHP - currentHP;
+
+    await actor.update({ "system.attributes.hp.value": newHP });
+
+    if (opts.label) {
+      console.log(`${MODULE_ID} | applyHPHeal [${opts.label}]: ${actor.name} ${currentHP} → ${newHP} (+${healedAmount})`);
+    }
+
+    return { currentHP, newHP, healedAmount, applied: true };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   //  Actor Resolution
   // ═══════════════════════════════════════════════════════════════════════════
 

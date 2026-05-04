@@ -29,6 +29,12 @@ import { RepeatingSaveEngine }  from "./repeating-save-engine.mjs";
 import { TransformationEngine } from "./transformation-engine.mjs";
 import { ConcentrationDamage }  from "./concentration-damage.mjs";
 import { BonusSpellRule }       from "./bonus-spell-rule.mjs";
+import { DeathSaves }           from "./death-saves.mjs";
+import { StealthEngine }        from "./stealth-engine.mjs";
+import { CombatActions }        from "./combat-actions.mjs";
+import { FumbleEngine }         from "./fumble-engine.mjs";
+import { OAPrompt }             from "./oa-prompt.mjs";
+import { InitiativeTools }      from "./initiative-tools.mjs";
 import { PolymorphSpellPipeline } from "./polymorph-spell-pipeline.mjs";
 import { TokenCache }            from "./token-cache.mjs";
 import { DurationTracker }      from "./duration-tracker.mjs";
@@ -590,6 +596,53 @@ Hooks.once("ready", () => {
     BonusSpellRule.init();
   } catch (err) {
     console.error(`${MODULE_ID} | Bonus Spell Rule init failed:`, err);
+  }
+
+  // Death Saves — RAW PHB 197. Auto-roll death save at PC turn start;
+  // massive-damage instant-death check; reset tally on heal.
+  try {
+    DeathSaves.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Death Saves init failed:`, err);
+  }
+
+  // Stealth Engine — surprise at combat start, Hide action, attack-from-hidden
+  // advantage, hide reveals on attack/damage. RAW PHB 192-194 + 175.
+  try {
+    StealthEngine.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Stealth Engine init failed:`, err);
+  }
+
+  // Combat Actions — Disengage / Dodge / Help / Ready API + auto-cleanup at
+  // start of next turn. RAW PHB 192-193.
+  try {
+    CombatActions.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Combat Actions init failed:`, err);
+  }
+
+  // Fumble Engine — optional natural-1 fumble table (NOT RAW, off by default).
+  try {
+    FumbleEngine.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Fumble Engine init failed:`, err);
+  }
+
+  // Opportunity Attack Prompt — detects provoking movement, prompts GM to
+  // take an OA on behalf of the reacting creature. PHB 195.
+  try {
+    OAPrompt.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | OA Prompt init failed:`, err);
+  }
+
+  // Initiative Tools — Roll-All-NPCs / Roll-All-PCs buttons in the combat
+  // tracker header.
+  try {
+    InitiativeTools.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Initiative Tools init failed:`, err);
   }
 
   // Polymorph Spell Pipeline — GM-only. Detects Polymorph / True Polymorph /
@@ -1195,6 +1248,33 @@ Hooks.once("ready", () => {
     isTransformed: (actor)             => TransformationEngine.isTransformed(actor),
     getTransformState: (actor)         => TransformationEngine.getState(actor),
     tokenCache: TokenCache,
+    // ── v0.4.0 sprint additions (Phases 2-8) ──
+    DeathSaves,
+    StealthEngine,
+    /** Quick-call shortcuts for stealth testing.
+     *  game.aceQol.hide(token)                      → roll Stealth + hide
+     *  game.aceQol.reveal(token)                    → clear hidden state
+     *  game.aceQol.attackerHidden(attacker, target) → check advantage
+     */
+    hide:           (tokenOrDoc) => StealthEngine.hide(tokenOrDoc),
+    reveal:         (tokenOrDoc) => StealthEngine.reveal(tokenOrDoc),
+    attackerHidden: (att, tgt)   => StealthEngine.attackerHiddenFromTarget(att, tgt),
+    CombatActions,
+    /** Quick-call shortcuts for combat actions.
+     *  game.aceQol.disengage(token)
+     *  game.aceQol.dodge(token)
+     *  game.aceQol.help(helper, ally, foe)
+     *  game.aceQol.ready(token, trigger, description)
+     */
+    disengage: (t)              => CombatActions.disengage(t),
+    dodge:     (t)              => CombatActions.dodge(t),
+    help:      (h, a, f)        => CombatActions.help(h, a, f),
+    ready:     (t, trig, desc)  => CombatActions.ready(t, trig, desc),
+    FumbleEngine,
+    OAPrompt,
+    InitiativeTools,
+    rollAllNpcs: () => InitiativeTools.rollAllNpcs(),
+    rollAllPcs:  () => InitiativeTools.rollAllPcs(),
     DurationTracker,
     durationTracker,
     speedRolls,

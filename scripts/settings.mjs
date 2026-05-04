@@ -242,6 +242,84 @@ export class QolSettings {
       default: true,
     });
 
+    // ── Death Saves (PHB 197) ────────────────────────────────────────────
+    s("autoDeathSaves", {
+      name: "Auto-Roll Death Saves",
+      hint: "When a PC at 0 HP starts their turn, automatically roll their death save.",
+      scope: "world", config: false, type: Boolean, default: true,
+    });
+    s("massiveDamageDeath", {
+      name: "Massive Damage Instant Death (PHB 197)",
+      hint: "If damage exceeds the target's HP maximum on a hit that would drop them to 0, they die instantly.",
+      scope: "world", config: false, type: Boolean, default: true,
+    });
+    s("autoResetOnHeal", {
+      name: "Reset Death Save Tally on Heal",
+      hint: "When a PC heals from 0 HP back to 1+ HP, clear their death save success/failure count.",
+      scope: "world", config: false, type: Boolean, default: true,
+    });
+
+    // ── Stealth / Hide / Surprise (PHB 192-194) ─────────────────────────
+    s("autoSurpriseCheck", {
+      name: "Auto Surprise Check at Combat Start",
+      hint: "Compare each combatant's passive Perception against opposing-side stealth at combat start. Surprised combatants skip turn 1.",
+      scope: "world", config: false, type: Boolean, default: true,
+    });
+    s("hideActionEnabled", {
+      name: "Hide Action Enabled",
+      hint: "Allow the game.aceQol.StealthEngine.hide(token) API and the Hide token-toolbar action.",
+      scope: "world", config: false, type: Boolean, default: true,
+    });
+    s("hideRevealsOnAttack", {
+      name: "Hide Reveals on Attack",
+      hint: "When a hidden token makes an attack, automatically clear their hidden state (PHB 195).",
+      scope: "world", config: false, type: Boolean, default: true,
+    });
+    s("hideRevealsOnDamage", {
+      name: "Hide Reveals on Damage Taken",
+      hint: "When a hidden token takes damage, automatically clear their hidden state.",
+      scope: "world", config: false, type: Boolean, default: true,
+    });
+
+    // ── Ranged-in-melee disadvantage (PHB 195) ──────────────────────────
+    s("rangedInMeleeDisadvantage", {
+      name: "Ranged in Melee = Disadvantage (PHB 195)",
+      hint: "Disadvantage on ranged attack rolls when a hostile creature within 5ft can see the attacker (and isn't incapacitated/unconscious/etc).",
+      scope: "world", config: false, type: Boolean, default: true,
+    });
+
+    // ── Critical Fumble (table rule, NOT RAW) ───────────────────────────
+    s("criticalFumbleEnabled", {
+      name: "Critical Fumble Table",
+      hint: "OPTIONAL house rule. When an attack roll is a natural 1, post a fumble chat card with a rolled effect. Off by default — many tables don't use fumbles.",
+      scope: "world", config: false, type: Boolean, default: false,
+    });
+
+    // ── Opportunity Attack Prompt (PHB 195) ─────────────────────────────
+    s("opportunityAttackPrompt", {
+      name: "Opportunity Attack Prompt",
+      hint: "When a hostile creature moves out of an actor's reach, prompt the GM to take an OA on the actor's behalf.",
+      scope: "world", config: false, type: Boolean, default: true,
+    });
+    s("opportunityAttackReach", {
+      name: "Opportunity Attack — Default Reach (ft)",
+      hint: "Default reach distance for OA detection. Most actors use 5ft; reach weapons (10ft) handled per-weapon as a future enhancement.",
+      scope: "world", config: false, type: Number, default: 5,
+      range: { min: 5, max: 30, step: 5 },
+    });
+
+    // ── Initiative Tools ────────────────────────────────────────────────
+    s("showInitiativeButtons", {
+      name: "Show Initiative Buttons in Combat Tracker",
+      hint: "Render Roll-All-NPCs / Roll-All-PCs buttons at the top of the combat tracker.",
+      scope: "world", config: false, type: Boolean, default: true,
+    });
+    s("pcInitiativeAutoRoll", {
+      name: "Auto-Roll PC Initiative",
+      hint: "When ON, the Roll-All-PCs button rolls server-side. When OFF (default), it whispers each player a roll prompt — most tables prefer players rolling themselves.",
+      scope: "world", config: false, type: Boolean, default: false,
+    });
+
     s("batchResultsCard", {
       name:    "Batch Combat Results Card",
       hint:    "Show all targets in one consolidated damage card instead of individual cards per target.",

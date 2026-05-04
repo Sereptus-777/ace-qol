@@ -107,6 +107,34 @@ export class CombatState {
       }
     } catch { /* setting not registered yet */ }
 
+    // ── Ranged attack within 5ft of a hostile → disadvantage (PHB 195) ───
+    // RAW: "You have disadvantage on a ranged attack roll if you are within
+    // 5 feet of a hostile creature who can see you and who isn't
+    // incapacitated."
+    try {
+      if (isRanged && QolSettings.get?.("rangedInMeleeDisadvantage")) {
+        if (CombatState._hasHostileWithinReach(attackerActor, 5)) {
+          disadvantageSources.push({
+            source: "attacker",
+            reason: "RANGED IN MELEE → hostile within 5ft (PHB 195)",
+          });
+        }
+      }
+    } catch { /* setting not registered yet */ }
+
+    // ── Hidden attacker → advantage (PHB 195, ace-qol StealthEngine) ─────
+    // If the attacker is hidden from this target, gain advantage.
+    try {
+      const StealthEngine = game.aceQol?.StealthEngine;
+      const attackerToken = attackerActor.getActiveTokens?.()?.[0];
+      if (StealthEngine?.attackerHiddenFromTarget?.(attackerToken, targetToken)) {
+        advantageSources.push({
+          source: "attacker",
+          reason: "HIDDEN → unseen attacker (PHB 195)",
+        });
+      }
+    } catch { /* StealthEngine not loaded yet */ }
+
     // ── Advantage/Disadvantage from Active Effects + Flags ───────────────
     const atkType = actionType;
     if (FlagsEngine.hasAttackAdvantage(attackerActor, atkType)
@@ -1073,6 +1101,35 @@ export class CombatState {
       if (token.actor.statuses?.has("incapacitated") || token.actor.statuses?.has("unconscious")) continue;
 
       const dist = CombatState._getDistance(token, targetToken);
+      if (dist <= rangeFt) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Check if any HOSTILE creature is within `rangeFt` of the attacker.
+   * Used for ranged-attack-in-melee disadvantage (PHB 195): a hostile
+   * within 5ft who can see you AND isn't incapacitated triggers it.
+   */
+  static _hasHostileWithinReach(attacker, rangeFt = 5) {
+    if (!canvas.tokens?.placeables) return false;
+    const atkDisposition = attacker.prototypeToken?.disposition ?? attacker.token?.disposition ?? 1;
+    // Find the attacker's token on canvas
+    const atkToken = attacker.getActiveTokens?.()?.[0]
+                  ?? canvas.tokens.placeables.find(t => t.actor?.id === attacker.id);
+    if (!atkToken) return false;
+
+    for (const token of canvas.tokens.placeables) {
+      if (!token.actor || token.actor.id === attacker.id) continue;
+      // Hostile = opposite disposition
+      if (token.document?.disposition === atkDisposition) continue;
+      if (token.document?.disposition === 0) continue; // neutral doesn't trigger
+      // RAW: hostile must be able to see + not incapacitated
+      if (token.actor.statuses?.has("incapacitated") || token.actor.statuses?.has("unconscious")
+       || token.actor.statuses?.has("paralyzed") || token.actor.statuses?.has("petrified")
+       || token.actor.statuses?.has("stunned") || token.actor.statuses?.has("blinded")) continue;
+
+      const dist = CombatState._getDistance(atkToken, token);
       if (dist <= rangeFt) return true;
     }
     return false;
