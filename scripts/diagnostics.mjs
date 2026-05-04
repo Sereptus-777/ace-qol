@@ -70,6 +70,8 @@ export function checkSystems() {
     ["LootEngine",           api.lootEngine,           false, "CR-based loot generation"],
     ["DeathPipeline",        api.deathPipeline,        true,  "Dead art tile conversion"],
     ["ExtendedEffects",      api.extendedEffects,      false, "Enhanced Active Effect processing"],
+    ["TransformationEngine", api.TransformationEngine, true,  "Custom polymorph (Tier 3 RAW)"],
+    ["TokenCache",           api.TokenCache ?? api.tokenCache, true, "Beast image folder cache"],
   ];
 
   for (const [name, ref, gmOnly, desc] of engines) {
@@ -133,6 +135,12 @@ export function checkSettings() {
     ["autoCheckResistances",     "boolean", "Auto-check damage resistances"],
     ["damageTypeSeparation",     "boolean", "Separate mixed damage by type"],
     ["concentrationTracking",    "boolean", "Track concentration on casters"],
+    ["concentrationOnDamage",    "boolean", "RAW concentration save on damage"],
+    ["concentrationDamageMinDC", "number",  "Floor DC for concentration save"],
+    ["bonusActionSpellRule",     "boolean", "RAW bonus action spell rule"],
+    ["bonusActionSpellStrict",   "boolean", "Strict-block vs warn-only mode"],
+    ["polymorphMode",            "string",  "Polymorph mode (custom/dnd5e)"],
+    ["npcDamageAnimationDelay",  "number",  "Spell damage DSN pacing"],
     ["enableReactions",          "boolean", "Enable reaction automation"],
     ["enableSpeedRolls",         "boolean", "Enable fast-forward rolling"],
     ["enableMergeCard",          "boolean", "Enable merged attack+damage"],
