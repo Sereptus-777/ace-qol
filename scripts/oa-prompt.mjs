@@ -110,75 +110,164 @@ export class OAPrompt {
   static async _postPromptCard(reactorActor, moverActor, reactorTokenDoc, moverTokenDoc) {
     const reactorId = reactorActor.id;
     const moverId   = moverActor.id;
-    const html = `
+    const html = OAPrompt._renderCardHtml(reactorActor.name, moverActor.name, reactorId, moverId, "pending");
+
+    // Whisper recipients: GM(s) + the reactor's player owner (if any).
+    // For GM-controlled NPCs, only the GM sees the prompt. PCs reactors
+    // include their owner so the player can decide. This prevents the
+    // table's other players from seeing irrelevant OA prompts.
+    const recipients = new Set();
+    for (const u of game.users) if (u.isGM) recipients.add(u.id);
+    if (reactorActor.hasPlayerOwner) {
+      for (const [uid, level] of Object.entries(reactorActor.ownership ?? {})) {
+        if (uid === "default") continue;
+        if (level >= 3) recipients.add(uid); // 3 = OWNER
+      }
+    }
+    await ChatMessage.create({
+      content: html,
+      speaker: ChatMessage.getSpeaker({ actor: reactorActor }),
+      whisper: [...recipients],
+      flags: { [MODULE_ID]: { type: "oaPrompt", reactorId, moverId, status: "pending" } },
+    });
+  }
+
+  /**
+   * Single source of truth for OA card HTML.
+   * status: "pending" | "taken" | "passed"
+   */
+  static _renderCardHtml(reactorName, moverName, reactorId, moverId, status) {
+    const isPending = status === "pending";
+    const verdictHtml = status === "taken"
+      ? `<div style="color:#d4af37;font-weight:600;font-size:12px;margin-top:8px;"><i class="fas fa-bolt"></i> Reaction used</div>`
+      : status === "passed"
+      ? `<div style="color:#888;font-weight:600;font-size:12px;margin-top:8px;font-style:italic;">Passed — no action</div>`
+      : "";
+    const buttonsHtml = isPending ? `
+      <div style="display:flex;gap:6px;margin-top:8px;">
+        <button type="button" class="ace-qol-btn"
+                data-action="aceQolTakeOA"
+                data-reactor-id="${reactorId}"
+                data-mover-id="${moverId}"
+                style="background:#3a2010;color:#ffd87a;border:1px solid #d4af37;padding:4px 10px;border-radius:3px;cursor:pointer;font-size:12px;font-weight:600;">
+          <i class="fas fa-bolt"></i> Take OA
+        </button>
+        <button type="button" class="ace-qol-btn"
+                data-action="aceQolPassOA"
+                data-reactor-id="${reactorId}"
+                data-mover-id="${moverId}"
+                style="background:#1a1a1f;color:#aaa;border:1px solid #555;padding:4px 10px;border-radius:3px;cursor:pointer;font-size:12px;">
+          Pass
+        </button>
+      </div>` : "";
+    return `
       <div class="ace-qol-oa-card" style="background:linear-gradient(180deg,#1a1416 0%,#241a1d 100%);border:2px solid #d4af37;border-radius:6px;padding:10px 12px;">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
           <i class="fas fa-bolt" style="color:#d4af37;font-size:18px;"></i>
           <strong style="color:#ffd87a;font-size:13px;text-transform:uppercase;letter-spacing:0.5px;">Opportunity Attack</strong>
         </div>
         <div style="color:#cfcfd0;font-size:12px;line-height:1.4;">
-          <strong>${reactorActor.name}</strong> can make an OA against <strong>${moverActor.name}</strong>.
+          <strong>${reactorName}</strong> can make an OA against <strong>${moverName}</strong>.
         </div>
-        <div style="display:flex;gap:6px;margin-top:8px;">
-          <button type="button" class="ace-qol-btn"
-                  data-action="aceQolTakeOA"
-                  data-reactor-id="${reactorId}"
-                  data-mover-id="${moverId}"
-                  style="background:#3a2010;color:#ffd87a;border:1px solid #d4af37;padding:4px 10px;border-radius:3px;cursor:pointer;font-size:12px;font-weight:600;">
-            <i class="fas fa-bolt"></i> Take OA
-          </button>
-          <button type="button" class="ace-qol-btn"
-                  data-action="aceQolPassOA"
-                  style="background:#1a1a1f;color:#aaa;border:1px solid #555;padding:4px 10px;border-radius:3px;cursor:pointer;font-size:12px;">
-            Pass
-          </button>
-        </div>
+        ${verdictHtml}
+        ${buttonsHtml}
       </div>
     `;
-    await ChatMessage.create({
-      content: html,
-      speaker: ChatMessage.getSpeaker({ actor: reactorActor }),
-      flags: { [MODULE_ID]: { type: "oaPrompt", reactorId, moverId } },
-    });
+  }
+
+  /**
+   * Resolve an OA prompt — updates the chat MESSAGE itself (so all clients
+   * re-render with the resolved state) AND fires the appropriate side
+   * effects (mark reaction used, fire cross-module hook).
+   * @param {string} messageId
+   * @param {"taken"|"passed"} status
+   */
+  static async resolveOAPrompt(messageId, status) {
+    const msg = game.messages?.get?.(messageId);
+    if (!msg) return;
+    const flags = msg.flags?.[MODULE_ID];
+    if (flags?.type !== "oaPrompt") return;
+    if (flags?.status && flags.status !== "pending") return; // already resolved
+
+    const reactorId = flags.reactorId;
+    const moverId   = flags.moverId;
+    const reactor   = game.actors.get(reactorId);
+    const mover     = game.actors.get(moverId);
+    const reactorName = reactor?.name ?? "Reactor";
+    const moverName   = mover?.name ?? "Target";
+
+    if (status === "taken" && reactor) {
+      // Mark reaction used + fire cross-module hook (reaction-engine, etc.)
+      try {
+        await reactor.setFlag?.(MODULE_ID, "reactionUsed", true);
+        Hooks.callAll(`${MODULE_ID}.opportunityAttack`, reactor.id);
+      } catch (_) { /* non-fatal */ }
+    }
+
+    // Re-render the card content with the resolved state. ALL clients with
+    // visibility see this update via the standard chat-message render flow.
+    const newHtml = OAPrompt._renderCardHtml(reactorName, moverName, reactorId, moverId, status);
+    try {
+      await msg.update({
+        content: newHtml,
+        [`flags.${MODULE_ID}.status`]: status,
+        [`flags.${MODULE_ID}.resolvedAt`]: Date.now(),
+      });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | OA prompt resolve update failed:`, err);
+    }
   }
 }
 
 // ── Bind click handlers via renderChatMessage / renderChatMessageHTML ────────
+// Both Take OA and Pass call resolveOAPrompt → the message's content + flags
+// update, every client re-renders the resolved state. No more local-only
+// DOM mutation that left other clients showing the active button.
+//
+// Permission gate: only the GM can resolve the prompt (matches the rest of
+// our reaction-engine model). For PC reactors, the player still sees the
+// prompt but the GM clicks the button. Future enhancement could allow the
+// PC's owner to click their own.
 const _bindOAButtons = (message, html) => {
   try {
     const root = html instanceof HTMLElement ? html : (html?.[0] ?? html);
     if (!root || typeof root.querySelectorAll !== "function") return;
-    const takeBtns = root.querySelectorAll("[data-action='aceQolTakeOA']");
-    const passBtns = root.querySelectorAll("[data-action='aceQolPassOA']");
-    for (const btn of takeBtns) {
+    const handleClick = async (ev, status) => {
+      ev.preventDefault();
+      if (!game.user.isGM) {
+        ui.notifications?.warn("Only the GM can resolve OA prompts.");
+        return;
+      }
+      const btn = ev.currentTarget;
+      btn.disabled = true; // immediate local feedback
+      // Find the message id from the chat message DOM (or the message
+      // arg from the renderChatMessage hook). Fallback to walking up to
+      // the .chat-message[data-message-id] element.
+      const chatEl = btn.closest?.(".chat-message");
+      const msgId = message?.id ?? chatEl?.dataset?.messageId;
+      if (!msgId) {
+        console.warn(`${MODULE_ID} | OA resolve: could not find messageId`);
+        btn.disabled = false;
+        return;
+      }
+      // Use the OAPrompt class's resolve method (single source of truth).
+      try {
+        const { OAPrompt } = await import("/modules/ace-qol/scripts/oa-prompt.mjs");
+        await OAPrompt.resolveOAPrompt(msgId, status);
+      } catch (err) {
+        console.warn(`${MODULE_ID} | OA resolveOAPrompt threw:`, err);
+        btn.disabled = false;
+      }
+    };
+    for (const btn of root.querySelectorAll("[data-action='aceQolTakeOA']")) {
       if (btn.dataset.aceQolBound === "1") continue;
       btn.dataset.aceQolBound = "1";
-      btn.addEventListener("click", async (ev) => {
-        ev.preventDefault();
-        if (!game.user.isGM) {
-          ui.notifications?.warn("Only the GM can resolve OA prompts.");
-          return;
-        }
-        btn.disabled = true;
-        const reactorId = btn.dataset.reactorId;
-        const reactor = game.actors.get(reactorId);
-        if (reactor) {
-          // Mark reaction used + fire the cross-module hook other engines
-          // listen for (reaction-engine, etc.)
-          await reactor.setFlag?.(MODULE_ID, "reactionUsed", true);
-          Hooks.callAll(`${MODULE_ID}.opportunityAttack`, reactor.id);
-        }
-        btn.innerHTML = `<i class="fas fa-check"></i> Reaction used`;
-      });
+      btn.addEventListener("click", (ev) => handleClick(ev, "taken"));
     }
-    for (const btn of passBtns) {
+    for (const btn of root.querySelectorAll("[data-action='aceQolPassOA']")) {
       if (btn.dataset.aceQolBound === "1") continue;
       btn.dataset.aceQolBound = "1";
-      btn.addEventListener("click", (ev) => {
-        ev.preventDefault();
-        btn.disabled = true;
-        btn.textContent = "Passed";
-      });
+      btn.addEventListener("click", (ev) => handleClick(ev, "passed"));
     }
   } catch (err) { /* non-fatal */ }
 };
