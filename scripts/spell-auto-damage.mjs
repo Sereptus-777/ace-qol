@@ -43,52 +43,75 @@ export class SpellAutoDamage {
   }
 
   _registerHooks() {
-    // Hook fires before any other dnd5e activity-use logic. Returning false
-    // cancels the activity entirely, BUT we want dnd5e to consume the slot
-    // and post the usage card — so we DON'T return false here. Instead we
-    // run our pipeline async and suppress the system's auto-damage card via
-    // the preCreateChatMessage hook below.
-    Hooks.on("dnd5e.preUseActivity", (activity, usageConfig, dialogConfig, messageConfig) => {
+    // ── Mark cast active EARLY (preUseActivity) so the damage-dialog
+    //    suppressor catches it, but POST the chat card LATE (after the
+    //    cast is confirmed via postCreateUsageMessage). This fixes:
+    //    - User clicked cast → our card appeared BEFORE the slot dialog
+    //      (now waits until slot is confirmed)
+    //    - dnd5e's damage dialog still appeared → now suppressed
+    //
+    // Two separate hooks now:
+    //   preUseActivity         → mark active (catch both card + dialog)
+    //   postCreateUsageMessage → post our card
+    //   preRollDamageV2        → cancel dnd5e's damage roll dialog
+    //   preCreateChatMessage   → cancel dnd5e's damage chat card
+    Hooks.on("dnd5e.preUseActivity", (activity, usageConfig) => {
       if (!SpellAutoDamage._isAutoHitDamageSpell(activity)) return;
-
-      // Mark this activity invocation so the chat-message suppressor knows
-      // to drop dnd5e's auto-damage card. Per-actor unique key prevents
-      // collisions when multiple casters fire damage spells in parallel.
-      const item = activity?.item;
-      const actor = item?.actor;
+      const actor = activity?.item?.actor;
+      const itemId = activity?.item?.id;
       if (!actor) return;
-      SpellAutoDamage._markActiveCast(actor.id, item?.id);
+      SpellAutoDamage._markActiveCast(actor.id, itemId);
+      // Auto-clear after 5s — covers slot dialog wait + cast finalize +
+      // any tail follow-ups. If user cancels at slot dialog, marker
+      // expires harmlessly.
+      setTimeout(() => SpellAutoDamage._unmarkActiveCast(actor.id, itemId), 5000);
+    });
 
-      // Run the pipeline async — never block the hook
-      this._handleDamageSpell(activity, usageConfig)
-        .catch(err => console.error(`${MODULE_ID} | SpellAutoDamage handler threw:`, err))
-        .finally(() => {
-          // Clear the marker on a short delay so any system follow-up cards
-          // posted within the next ~3s also get suppressed (covers both the
-          // damage roll message and any "result" follow-up).
-          setTimeout(() => SpellAutoDamage._unmarkActiveCast(actor.id, item?.id), 3000);
-        });
+    // Post our damage card AFTER the cast is confirmed (slot consumed,
+    // usage card visible). This fixes the premature card appearing
+    // before the user even confirmed the slot in the cast dialog.
+    Hooks.on("dnd5e.postCreateUsageMessage", (activity /*, message */) => {
+      if (!SpellAutoDamage._isAutoHitDamageSpell(activity)) return;
+      const actor = activity?.item?.actor;
+      if (!actor) return;
+      // Run pipeline async (don't block the hook chain)
+      this._handleDamageSpell(activity, null)
+        .catch(err => console.error(`${MODULE_ID} | SpellAutoDamage handler threw:`, err));
+    });
+
+    // ── Cancel dnd5e's damage roll dialog while our pipeline owns the cast ──
+    // Without this, the user sees BOTH our "Roll Damage" chat card AND
+    // dnd5e's modal damage dialog — confusing for Magic Missile's
+    // multi-target distribution UX.
+    Hooks.on("dnd5e.preRollDamageV2", (config /*, dialog, message */) => {
+      try {
+        const activity = config?.subject;
+        if (!activity) return;
+        const actor = activity?.actor ?? activity?.item?.actor;
+        if (!actor) return;
+        if (SpellAutoDamage._isCastActive(actor.id, activity?.item?.id)) {
+          console.log(`${MODULE_ID} | SpellAutoDamage: canceling vanilla damage roll for ${activity.item?.name}`);
+          return false; // sync-cancel — no dialog, no roll
+        }
+      } catch (err) { /* fail-open */ }
     });
 
     // Suppress dnd5e's auto-damage chat card while our pipeline runs.
-    // We only delete messages flagged with our actor+item marker — never
-    // touch unrelated messages.
-    Hooks.on("preCreateChatMessage", (msg, data, options, userId) => {
+    // (Belt-and-suspenders if preRollDamageV2 didn't catch it.)
+    Hooks.on("preCreateChatMessage", (msg, data) => {
       if (!data?.flags?.dnd5e?.activity) return;
       const flagActorId = data.flags.dnd5e.activity?.actor;
       const flagItemId  = data.flags.dnd5e.activity?.item;
       if (!flagActorId) return;
       if (!SpellAutoDamage._isCastActive(flagActorId, flagItemId)) return;
 
-      // Only suppress damage-roll messages — keep usage cards (so the table
-      // sees the spell was cast) and other types intact.
       const isDamageRoll = (data.rolls?.length ?? 0) > 0
         && (data.flags.dnd5e.roll?.type === "damage"
             || data.flags.dnd5e.activity?.type === "damage");
       if (!isDamageRoll) return;
 
       console.log(`${MODULE_ID} | SpellAutoDamage: suppressing vanilla damage card for ${flagItemId}`);
-      return false; // cancel the message
+      return false;
     });
 
     console.log(`${MODULE_ID} | Spell auto-damage pipeline online`);
