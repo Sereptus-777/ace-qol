@@ -680,7 +680,11 @@ export class SaveEngine {
 
         <div class="ace-qol-save-actions">
           <button class="ace-qol-btn ace-qol-btn-roll" data-action="aceQolRollNpcSaves">
-            <i class="fas fa-dice-d20"></i> ROLL SAVES
+            <i class="fas fa-dice-d20"></i> ${
+              npcs.length > 0 && pcs.length > 0 ? "ROLL NPC SAVES + PROMPT PCs" :
+              npcs.length > 0                    ? "ROLL NPC SAVES" :
+                                                   "PROMPT PCs TO ROLL"
+            }
           </button>
         </div>
       </div>

@@ -1177,19 +1177,26 @@ export class CombatState {
     }
   }
 
-  /** Get Aura of Protection bonus from nearby paladin */
+  /** Get Aura of Protection bonus from a nearby paladin (or the target's
+   *  OWN aura, since RAW PHB: "you OR a friendly creature within 10 feet"
+   *  — the paladin's own aura applies to their own saves). */
   static _getAuraOfProtectionBonus(targetToken) {
     if (!canvas.tokens?.placeables) return 0;
     let bestBonus = 0;
 
     for (const token of canvas.tokens.placeables) {
-      if (!token.actor || token.id === targetToken.id) continue;
-      // Same team
+      if (!token.actor) continue;
+      // NOTE: do NOT skip the target itself. RAW the paladin's aura applies
+      // to themselves too. "you or a friendly creature within 10 feet" (PHB).
+      // Self-distance is 0, naturally within range.
+
+      // Same team — but for self this is always true so it auto-passes
       if (token.document?.disposition !== targetToken.document?.disposition) continue;
       // Has Aura of Protection
       if (!CombatState._hasFeature(token.actor, "Aura of Protection")) continue;
-      // Not incapacitated
+      // Not incapacitated (per RAW the aura suppresses if paladin is unconscious)
       if (token.actor.statuses?.has("incapacitated")) continue;
+      if (token.actor.statuses?.has("unconscious"))   continue;
 
       const dist = CombatState._getDistance(token, targetToken);
       // 10ft base, 30ft at 18th level
