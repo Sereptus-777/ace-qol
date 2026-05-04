@@ -187,9 +187,26 @@ export class EngagementGate {
       }
     }
 
-    // ── BLOCK: Single-target spell with multiple selected ──
-    // Read affects.count if present. dnd5e schema: target.affects.count: "1"
-    // (or similar). A literal "1" or numeric 1 → single target.
+    // ── BLOCK: Too many targets selected ──
+    // First check our RAW multi-target catalog (overrides bad sheet data).
+    // Many DDB-imported spells have target.affects.count = 1 even when the
+    // RAW spell allows multiple (Magic Missile darts, Scorching Ray rays,
+    // Eldritch Blast beams, etc.). We compute the correct max from PHB
+    // text and the cast slot level.
+    const cataloged = EngagementGate._catalogedMaxTargets(item, activity);
+    if (cataloged !== null) {
+      if (targets.length > cataloged) {
+        return {
+          blocked: true,
+          reason: `${item.name} targets up to ${cataloged} creature${cataloged === 1 ? "" : "s"} at this cast level — you have ${targets.length} selected`,
+        };
+      }
+      // Catalog says it's allowed → skip the data-sheet check (which would
+      // incorrectly block due to bad importer data).
+      return null;
+    }
+
+    // Fallback: respect the activity/item data when there's no catalog entry.
     const rawCount = targetData?.affects?.count ?? targetData?.value ?? null;
     const numCount = parseInt(rawCount);
     if (Number.isFinite(numCount) && numCount > 0 && targets.length > numCount) {
@@ -199,6 +216,100 @@ export class EngagementGate {
       };
     }
 
+    return null;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  RAW Multi-Target Spell Catalog
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  // Many DDB-imported spells have target.affects.count = 1 in their data
+  // even when RAW PHB allows multiple targets. This catalog overrides the
+  // sheet data with the correct RAW max-target count, computed from the
+  // cast slot level + character level (for cantrips).
+  //
+  // Returns null if the spell isn't in the catalog (caller falls back to
+  // sheet data). Returns an integer otherwise.
+  //
+  // PHB references included for verification.
+  // ═══════════════════════════════════════════════════════════════════════════
+  static _catalogedMaxTargets(item, activity) {
+    if (item?.type !== "spell") return null;
+    const name = String(item.name ?? "").toLowerCase().trim();
+    const baseLevel = Number(item.system?.level ?? 0);
+
+    // Resolve cast slot level. Try activity-level usage data first (dnd5e
+    // 5.x stamps usageConfig.spell.level for upcasts), fall back to base.
+    const castLevel = Number(
+      activity?.usage?.spellLevel
+      ?? activity?.consumes?.spellSlots?.[0]?.level
+      ?? activity?.consumption?.spellSlots
+      ?? baseLevel
+    );
+
+    // Character level (for cantrip scaling at L5/11/17)
+    const casterLevel = Number(item.parent?.system?.details?.level ?? 0);
+
+    // ── Attack-roll multi-target spells ──
+    if (name === "magic missile") {
+      // PHB: "You create three glowing darts of magical force" + "When you
+      // cast this spell using a spell slot of 2nd level or higher, the spell
+      // creates one more dart for each slot level above 1st."
+      // 3 darts at L1, 4 at L2, 5 at L3, 6 at L4, ...
+      return 3 + Math.max(0, castLevel - 1);
+    }
+    if (name === "scorching ray") {
+      // PHB: "You create three rays of fire" + "+1 ray per slot above 2nd"
+      return 3 + Math.max(0, castLevel - 2);
+    }
+    if (name === "eldritch blast") {
+      // PHB: "you can create one beam" → 1/2/3/4 beams at level 1/5/11/17
+      if (casterLevel >= 17) return 4;
+      if (casterLevel >= 11) return 3;
+      if (casterLevel >= 5)  return 2;
+      return 1;
+    }
+
+    // ── Save spells with "+1 target per slot above" pattern ──
+    if (name === "hold person") {
+      // PHB: "Choose a Humanoid you can see" + "+1 humanoid per slot above 2"
+      return 1 + Math.max(0, castLevel - 2);
+    }
+    if (name === "hold monster") {
+      // 1 + 1/slot above 5
+      return 1 + Math.max(0, castLevel - 5);
+    }
+    if (name === "charm person") {
+      // 1 + 1/slot above 1 (must be within 30ft of each other)
+      return 1 + Math.max(0, castLevel - 1);
+    }
+    if (name === "banishment") {
+      // 1 + 1/slot above 4
+      return 1 + Math.max(0, castLevel - 4);
+    }
+    if (name === "fear" || name === "compulsion") {
+      // AOE — let template gate handle, not multi-target
+      return null;
+    }
+    if (name === "haste" || name === "slow") {
+      // Haste: 1 willing creature. Slow: up to 6.
+      if (name === "slow") return 6;
+      return 1;
+    }
+    if (name === "bless" || name === "bane") {
+      // 3 + 1/slot above 1
+      return 3 + Math.max(0, castLevel - 1);
+    }
+
+    // ── Healing multi-target spells ──
+    if (name === "mass cure wounds")  return 6;
+    if (name === "mass healing word") return 6;
+    if (name === "healing spirit") {
+      // 1 creature per turn — but the spell card itself targets 1
+      return 1;
+    }
+
+    // No catalog match — return null so caller uses sheet data
     return null;
   }
 
