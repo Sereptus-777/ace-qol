@@ -7,6 +7,7 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
 import { DamageCardRenderer } from "./damage-card-renderer.mjs";
 import { DamageConstants } from "./damage-engine.mjs";
+import { TransformationEngine } from "./transformation-engine.mjs";
 
 export class DamageApplicator {
 
@@ -92,6 +93,14 @@ export class DamageApplicator {
 
       const currentHP = actor.system.attributes.hp.value;
       const newHP = Math.max(0, currentHP - damageToApply);
+
+      // ── Polymorph excess-damage capture (RAW carryover) ──
+      // If this hit drops a polymorphed creature to 0, stash the excess so
+      // TransformationEngine._handleZeroHPRevert can apply it to the
+      // original form's HP. Belt-and-suspenders w/ dnd5e.preApplyDamage.
+      if (damageToApply > currentHP) {
+        try { TransformationEngine.recordPendingExcess?.(actor, damageToApply - currentHP); } catch (_) {}
+      }
 
       await actor.update({ "system.attributes.hp.value": newHP });
       console.log(`${MODULE_ID} | Applied ${damageToApply} damage to ${entry.name}: ${currentHP} → ${newHP}`);
@@ -486,6 +495,12 @@ export class DamageApplicator {
 
         const currentHP = actor.system.attributes.hp.value;
         const newHP = Math.max(0, currentHP - amount);
+
+        // Polymorph excess capture (per-type apply path)
+        if (amount > currentHP) {
+          try { TransformationEngine.recordPendingExcess?.(actor, amount - currentHP); } catch (_) {}
+        }
+
         await actor.update({ "system.attributes.hp.value": newHP });
 
         const prevApplied = message.flags?.[MODULE_ID]?.perTypeApplied?.[tokenDocId] ?? 0;

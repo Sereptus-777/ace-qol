@@ -205,6 +205,43 @@ export class QolSettings {
       default: true,
     });
 
+    s("concentrationOnDamage", {
+      name:    "Concentration Save on Damage (RAW)",
+      hint:    "When a concentrating actor takes damage, automatically prompt a Constitution saving throw with DC = max(10, floor(damage / 2)). On fail, the concentration effect is removed and dependent spells end. PHB 203.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
+    s("concentrationDamageMinDC", {
+      name:    "Concentration Save Minimum DC",
+      hint:    "Floor for the auto-fired concentration save DC. RAW says 10 — leave this alone unless your table uses a houserule. Damage of 21+ generates DC 11+ via the half-damage formula regardless of this setting.",
+      scope:   "world",
+      config:  false,
+      type:    Number,
+      default: 10,
+      range:   { min: 5, max: 25, step: 1 },
+    });
+
+    s("bonusActionSpellRule", {
+      name:    "Bonus Action Spell Rule (RAW)",
+      hint:    "Enforce PHB 202: 'You can't cast another spell during the same turn, except for a cantrip with a casting time of 1 action.' Blocks leveled spells after a bonus-action leveled spell, and bonus-action leveled spells after any other spell on the same turn.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
+    s("bonusActionSpellStrict", {
+      name:    "Bonus Action Spell Rule — Strict",
+      hint:    "When ON, the rule BLOCKS the cast (sync-cancels via dnd5e.preUseActivity). When OFF, only WARNS via toast and lets the cast proceed (table-style override). Default ON.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
     s("batchResultsCard", {
       name:    "Batch Combat Results Card",
       hint:    "Show all targets in one consolidated damage card instead of individual cards per target.",

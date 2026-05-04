@@ -3853,6 +3853,62 @@
 .ace-qol-tx-excess { color: #f25c5c; font-style: italic; font-size: 0.85em; }
 .ace-qol-transform-permanent { border-color: #f2c25c; }
 .ace-qol-tx-perm-note { color: #f2c25c; font-size: 0.85em; font-style: italic; margin-top: 2px; }
+
+/* Transform card thumbnails (original → current form) */
+.ace-qol-tx-thumbs {
+  display: flex; align-items: center; gap: 8px;
+  justify-content: center;
+  padding: 6px 0;
+}
+.ace-qol-tx-thumb {
+  width: 48px; height: 48px;
+  object-fit: cover;
+  border: 2px solid #d4af37;
+  border-radius: 4px;
+  box-shadow: 0 0 6px rgba(212,175,55,0.35);
+  background: #000;
+}
+.ace-qol-tx-arrow {
+  color: #d4af37;
+  font-size: 1.2em;
+  opacity: 0.7;
+}
+
+/* Transform card actions row (Revert Now button) */
+.ace-qol-tx-actions {
+  display: flex; justify-content: center; gap: 8px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(212,175,55,0.2);
+}
+.ace-qol-tx-revert-btn {
+  background: linear-gradient(135deg, #2a1a1a 0%, #3a2020 100%);
+  color: #d4af37;
+  border: 1px solid rgba(212,175,55,0.45);
+  padding: 4px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: "Signika", sans-serif;
+  font-size: 0.9em;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  transition: all 120ms ease-out;
+}
+.ace-qol-tx-revert-btn:hover {
+  background: linear-gradient(135deg, #3a2020 0%, #4a2828 100%);
+  box-shadow: 0 0 8px rgba(212,175,55,0.4);
+}
+.ace-qol-tx-revert-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* GM-only sections — hidden for non-GM players.
+   Visibility toggled by renderChatMessage hook adding [data-ace-gm="true"]
+   when game.user.isGM is true on render. */
+.ace-qol-gm-only { display: none; }
+.ace-qol-gm-only[data-ace-gm="true"] { display: flex; }
+
 .message .message-content:has(.ace-qol-transform-card),
 .chat-message:has(.ace-qol-transform-card) .message-content {
   background: transparent;

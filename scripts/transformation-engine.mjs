@@ -95,12 +95,66 @@ export class TransformationEngine {
         if (Number(hpChange) > 0) return;
 
         // Hit 0 HP in transformed form — RAW (Polymorph): revert with excess
-        // damage carrying over to the original form's HP. Excess = how far
-        // below 0 we went (negative HP not allowed in dnd5e, but pre-clamp
-        // value gives us the math).
+        // damage carrying over to the original form's HP. Excess is captured
+        // at damage-application time via recordPendingExcess() (see below).
         await this._handleZeroHPRevert(actor, state, changes);
       } catch (err) {
         console.warn(`${MODULE_ID} | TransformationEngine HP-revert failed:`, err);
+      }
+    });
+
+    // ── Pre-clamp excess damage capture (RAW carryover) ──
+    // dnd5e's `preApplyDamage` hook fires with the raw damage amount BEFORE
+    // the system clamps HP at 0. We use this to compute "excess damage"
+    // (how far past 0 the hit would have gone) and stash it in a transient
+    // cache so _handleZeroHPRevert can apply it to the original form's HP.
+    //
+    // RAW: "Any excess damage carries over to its normal form."
+    //
+    // This catches damage from ALL sources — dnd5e stock damage buttons,
+    // ace-qol's damage-applicator, custom modules. Anything that ultimately
+    // calls Actor.applyDamage() lands here.
+    Hooks.on("dnd5e.preApplyDamage", (actor, amount /*, updates, options */) => {
+      try {
+        if (!game.user.isGM) return;
+        if (!Number.isFinite(amount) || amount <= 0) return;
+        const state = this.getState?.(actor);
+        if (!state) return;
+        if (!state.revertOnZeroHP) return;
+        const currentHP = Number(actor.system?.attributes?.hp?.value ?? 0);
+        if (amount <= currentHP) return; // doesn't drop them to 0
+        const excess = amount - currentHP;
+        TransformationEngine.recordPendingExcess(actor, excess);
+        if (QolSettings.get?.("debugMode")) {
+          console.log(`${MODULE_ID} | Polymorph excess captured (preApplyDamage): ${actor.name} damage=${amount} hp=${currentHP} excess=${excess}`);
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | preApplyDamage excess capture failed:`, err);
+      }
+    });
+
+    // ── Chat-card "Revert Now" button binding ──
+    // Re-binds on every renderChatMessage so the button works on history
+    // messages after a page reload. Also reveals .ace-qol-gm-only sections
+    // when the current user is GM by setting data-ace-gm="true".
+    Hooks.on("renderChatMessage", (message, html) => {
+      try {
+        const root = html?.[0] ?? html; // jQuery vs DOM element
+        if (!root) return;
+        // GM-only visibility toggle
+        if (game.user?.isGM) {
+          const gmOnly = root.querySelectorAll?.(".ace-qol-gm-only") ?? [];
+          for (const el of gmOnly) el.setAttribute("data-ace-gm", "true");
+        }
+        // Revert-button click binding (idempotent)
+        const btns = root.querySelectorAll?.("[data-action='aceQolPolymorphRevert']") ?? [];
+        for (const btn of btns) {
+          if (btn.dataset.aceQolBound === "1") continue;
+          btn.dataset.aceQolBound = "1";
+          btn.addEventListener("click", (ev) => TransformationEngine._onRevertButtonClick(ev));
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | revert-button binding failed:`, err);
       }
     });
 
@@ -729,24 +783,93 @@ export class TransformationEngine {
   //  Internal — HP threshold revert with damage carryover
   // ═══════════════════════════════════════════════════════════════════════════
 
-  static async _handleZeroHPRevert(actor, state, changes) {
-    // Compute excess damage. Foundry clamps HP at 0 (no negative), so we
-    // can't read it directly. Use the BEFORE-update value from the actor's
-    // current HP (already applied by the time updateActor fires) plus the
-    // delta.
-    const beforeHP = (actor.system?.attributes?.hp?.value ?? 0)
-                   - (Number.isFinite(changes.system?.attributes?.hp?.value) ?
-                      0 : 0); // We have post-update value; need to compute excess differently.
+  /**
+   * Transient cache of pre-clamp excess damage values.
+   * Populated by `dnd5e.preApplyDamage` hook + ace-qol's damage-applicator.
+   * Read + cleared by `_handleZeroHPRevert` when a polymorphed actor hits 0.
+   *
+   * Key: actor.id (or token uuid for unlinked clones — see recordPendingExcess)
+   * Value: number (damage that exceeded current HP at application time)
+   */
+  static _pendingExcess = new Map();
 
-    // Better: take the new value (which is 0 or less), and figure out
-    // excess = abs(prevDamageThatBroughtUsHere - prevHP). But we don't
-    // track that here. Conservative approach: 0 excess on the first revert,
-    // GM can manually adjust if needed. RAW says excess carries over —
-    // we'll wire that more precisely once we have a damage interceptor.
+  /**
+   * Records pre-clamp excess damage for a polymorphed actor.
+   * Called from:
+   *   1. dnd5e.preApplyDamage hook (catches all dnd5e damage)
+   *   2. ace-qol's damage-applicator (belt-and-suspenders for our own pipeline)
+   *
+   * Uses both actor.id AND tokenDoc.uuid as keys so unlinked clones don't
+   * collide (same actor.id can map to multiple placed tokens).
+   */
+  static recordPendingExcess(actor, excess) {
+    if (!actor || !Number.isFinite(excess) || excess <= 0) return;
+    // Key by actor.id for the most common case (linked actors, sheet damage)
+    this._pendingExcess.set(actor.id, excess);
+    // Also key by tokenDoc.uuid for any active token, in case the revert
+    // path looks up by token instead of actor (e.g., synthetic actors).
+    const tokens = actor.getActiveTokens?.() ?? [];
+    for (const t of tokens) {
+      const uuid = t?.document?.uuid ?? t?.uuid;
+      if (uuid) this._pendingExcess.set(uuid, excess);
+    }
+    // Auto-expire after 10s — defensive, in case revert never fires.
+    setTimeout(() => {
+      this._pendingExcess.delete(actor.id);
+      for (const t of tokens) {
+        const uuid = t?.document?.uuid ?? t?.uuid;
+        if (uuid) this._pendingExcess.delete(uuid);
+      }
+    }, 10000);
+  }
+
+  /**
+   * Reads + clears the pending excess for an actor.
+   */
+  static consumePendingExcess(actor) {
+    if (!actor) return 0;
+    let excess = this._pendingExcess.get(actor.id) ?? 0;
+    this._pendingExcess.delete(actor.id);
+    if (!excess) {
+      // Try by token uuid (unlinked clone case)
+      const tokens = actor.getActiveTokens?.() ?? [];
+      for (const t of tokens) {
+        const uuid = t?.document?.uuid ?? t?.uuid;
+        if (uuid && this._pendingExcess.has(uuid)) {
+          excess = this._pendingExcess.get(uuid) ?? 0;
+          this._pendingExcess.delete(uuid);
+          if (excess) break;
+        }
+      }
+    } else {
+      // Clean up token-uuid keys too
+      const tokens = actor.getActiveTokens?.() ?? [];
+      for (const t of tokens) {
+        const uuid = t?.document?.uuid ?? t?.uuid;
+        if (uuid) this._pendingExcess.delete(uuid);
+      }
+    }
+    return excess;
+  }
+
+  static async _handleZeroHPRevert(actor, state, changes) {
+    // RAW (Polymorph): "When the creature drops to 0 hit points, any excess
+    // damage carries over to its normal form."
     //
-    // For now: trigger revert with 0 excess. TODO: integrate with our
-    // existing damage-engine to capture pre-clamp delta.
-    const excess = 0;
+    // The excess is captured at damage-application time via the
+    // `dnd5e.preApplyDamage` hook (catches all damage paths). We read it
+    // out of _pendingExcess here and pass it to revert(), which (for
+    // custom mode) hands it to CustomPolymorph.revert which subtracts it
+    // from the snapshotted original HP.
+    //
+    // If no excess was captured (e.g., damage came from a non-dnd5e path
+    // or the cache expired), we fall back to 0 excess — the creature
+    // reverts at full original HP. GM can manually adjust if the table
+    // wants stricter accounting.
+    const excess = TransformationEngine.consumePendingExcess(actor);
+    if (QolSettings.get?.("debugMode")) {
+      console.log(`${MODULE_ID} | Polymorph ZERO_HP revert for ${actor.name}: excess=${excess}`);
+    }
     await this.revert(actor, REVERT_REASON.ZERO_HP, { excessDamage: excess });
   }
 
@@ -761,26 +884,91 @@ export class TransformationEngine {
       const durationLabel = Number.isFinite(state.durationSeconds)
         ? this._formatDuration(state.durationSeconds)
         : "indefinite";
+      // Manual-revert button — only meaningful for the GM. Players see the
+      // card but the button is hidden via CSS class. Click triggers a
+      // VOLUNTARY-reason revert (no excess damage carryover).
+      const targetUuid = target.uuid;
+      const targetName = target.name;
+      const sourceName = sourceActor.name;
+      const targetImg  = target.img || target.prototypeToken?.texture?.src || "icons/svg/mystery-man.svg";
+      const sourceImg  = sourceActor.img || sourceActor.prototypeToken?.texture?.src || "icons/svg/mystery-man.svg";
       const html = `
         <div class="ace-qol-transform-card">
           <div class="ace-qol-tx-header">
             <i class="fas fa-paw"></i>
-            <strong>${target.name}</strong> transformed into <strong>${sourceActor.name}</strong>
+            <strong>${targetName}</strong> transformed into <strong>${sourceName}</strong>
             <span class="ace-qol-tx-source">(${sourceLabel})</span>
+          </div>
+          <div class="ace-qol-tx-thumbs">
+            <img src="${targetImg}" class="ace-qol-tx-thumb" title="${targetName} (original)" />
+            <i class="fas fa-arrow-right ace-qol-tx-arrow"></i>
+            <img src="${sourceImg}" class="ace-qol-tx-thumb" title="${sourceName} (current form)" />
           </div>
           <div class="ace-qol-tx-body">
             <span class="ace-qol-tx-spell">${spellName}</span>
             <span class="ace-qol-tx-duration">Duration: ${durationLabel}</span>
+          </div>
+          <div class="ace-qol-tx-actions ace-qol-gm-only">
+            <button type="button"
+                    class="ace-qol-btn ace-qol-tx-revert-btn"
+                    data-action="aceQolPolymorphRevert"
+                    data-target-uuid="${targetUuid}"
+                    title="End the transformation now — original form returns at current beast HP">
+              <i class="fas fa-undo-alt"></i> Revert Now
+            </button>
           </div>
         </div>
       `;
       await ChatMessage.create({
         speaker: ChatMessage.getSpeaker({ actor: target }),
         content: html,
-        flags: { [MODULE_ID]: { type: "transformStart", actorId: target.id, source: state.source } },
+        flags: {
+          [MODULE_ID]: {
+            type: "transformStart",
+            actorId: target.id,
+            actorUuid: target.uuid,
+            source: state.source,
+          },
+        },
       });
     } catch (err) {
       console.warn(`${MODULE_ID} | transform chat card failed:`, err);
+    }
+  }
+
+  /**
+   * Click handler for the chat-card "Revert Now" button.
+   * Bound globally in init() so the button works after page reload.
+   */
+  static async _onRevertButtonClick(event) {
+    try {
+      const btn = event.target?.closest?.("[data-action='aceQolPolymorphRevert']");
+      if (!btn) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (!game.user.isGM) {
+        ui.notifications?.warn("Only the GM can end a transformation from the chat card.");
+        return;
+      }
+      const uuid = btn.dataset.targetUuid;
+      if (!uuid) return;
+      const actor = await fromUuid(uuid).catch(() => null);
+      if (!actor) {
+        ui.notifications?.error("Polymorph: target actor not found (may have been deleted).");
+        return;
+      }
+      const realActor = actor.actor ?? actor; // handle TokenDocument vs Actor
+      // Disable the button immediately so double-click can't fire twice
+      btn.disabled = true;
+      btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Reverting…`;
+      const ok = await TransformationEngine.revert(realActor, REVERT_REASON.VOLUNTARY);
+      if (!ok) {
+        ui.notifications?.warn(`Polymorph: ${realActor.name} is not currently transformed.`);
+        btn.disabled = false;
+        btn.innerHTML = `<i class="fas fa-undo-alt"></i> Revert Now`;
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | revert button click failed:`, err);
     }
   }
 

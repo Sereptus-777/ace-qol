@@ -235,6 +235,29 @@ export class SaveEngine {
     const actor = activity.actor;
     if (!item || !actor) return;
 
+    // ── Capture spell upcast level (RAW upcast scaling) ──
+    // dnd5e 5.x stamps the chat message with `flags.dnd5e.use.spellLevel`
+    // (the slot level the spell was actually cast at — can be > base level).
+    // We thread this through to _rollSpellDamage so dnd5e's rollDamage
+    // applies the proper "+ X dice per slot above base" scaling.
+    //
+    // Falls back to base spell level when no upcast info is available.
+    // For cantrips (level 0), this stays 0 and character-level cantrip
+    // scaling kicks in instead.
+    let spellLevel = null;
+    try {
+      const useFlag = messageConfig?.data?.flags?.dnd5e?.use
+                   ?? messageConfig?.flags?.dnd5e?.use
+                   ?? usageConfig?.spell;
+      if (useFlag) {
+        spellLevel = Number(useFlag.spellLevel ?? useFlag.level ?? null);
+      }
+      // Fallback: use base item level
+      if (!Number.isFinite(spellLevel) && item.system?.level !== undefined) {
+        spellLevel = Number(item.system.level);
+      }
+    } catch (_) { /* non-fatal */ }
+
     // dnd5e 5.2.5: save.ability is a Set, not a string
     const saveAbility = (save.ability instanceof Set || save.ability instanceof Array)
       ? [...save.ability][0]
@@ -268,6 +291,7 @@ export class SaveEngine {
         isSpell,
         timing,
         activityId: activity.id,
+        spellLevel,
       };
       console.log(`${MODULE_ID} | Save spell "${item.name}" has template type "${templateType}" — waiting for template placement`);
       return;
@@ -299,6 +323,7 @@ export class SaveEngine {
     await this._postLiveTargetCard(item, actor, tokens, {
       saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing,
       activityId: activity.id,
+      spellLevel,
     });
   }
 
@@ -473,7 +498,7 @@ export class SaveEngine {
   // ═══════════════════════════════════════════════════════════════════════════
 
   async _postLiveTargetCard(item, actor, tokens, opts) {
-    const { saveAbility, saveDC, halfOnSave: rawHalfOnSave, damageTypes, isSpell, timing, activityId } = opts;
+    const { saveAbility, saveDC, halfOnSave: rawHalfOnSave, damageTypes, isSpell, timing, activityId, spellLevel } = opts;
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
 
     // ── Gate the HALF ON SAVE badge on actual damage presence ──
@@ -646,6 +671,7 @@ export class SaveEngine {
           damageTypes,
           isSpell,
           activityId,
+          spellLevel: Number.isFinite(spellLevel) ? spellLevel : null,
           timingType: timing?.timing ?? TIMING.INSTANT,
           targets: targetData,
           persistentInitial: opts.persistentInitial ?? false,
@@ -1703,7 +1729,7 @@ export class SaveEngine {
   //  Roll Spell Damage (once, shared across all targets)
   // ═══════════════════════════════════════════════════════════════════════════
 
-  async _rollSpellDamage(item, casterActor) {
+  async _rollSpellDamage(item, casterActor, opts = {}) {
     const rollData = casterActor?.getRollData?.() ?? {};
     const damageComponents = [];
     const rollsToShow = []; // DSN animations to fire in parallel
@@ -1717,23 +1743,73 @@ export class SaveEngine {
 
       for (const activity of actList) {
         if (!activity?.damage?.parts?.length) continue;
-        for (const part of activity.damage.parts) {
-          const formula = part.custom?.enabled
-            ? part.custom.formula
-            : `${part.number ?? 1}d${part.denomination ?? 6}${part.bonus ? `+${part.bonus}` : ""}`;
-          const types = part.types ? [...part.types] : ["untyped"];
-          const type = types[0] ?? "untyped";
 
-          let resolved = formula.replace(/@([a-zA-Z0-9_.]+)/g, (match, path) => {
-            const val = path.split(".").reduce((o, k) => o?.[k], rollData);
-            return val !== undefined ? String(val) : "0";
-          });
-
-          const roll = new Roll(resolved);
-          await roll.evaluate();
-          damageComponents.push({ name: item.name, formula: resolved, total: roll.total, type, roll });
-          rollsToShow.push(roll);
+        // ── PRIMARY PATH: dnd5e's native rollDamage ──
+        // Handles cantrip scaling at L5/11/17 (character-level based) AND
+        // spell upcast scaling (slot-level based) when caller passes
+        // opts.spellLevel. Returns Array<DamageRoll> with proper @scale
+        // resolution, magic damage tagging, versatile/two-handed handling.
+        let nativeRolledOk = false;
+        try {
+          if (typeof activity.rollDamage === "function") {
+            const rollConfig = {};
+            // Thread spell upcast level if caller supplied it (Burning Hands
+            // at L3 = 5d6 instead of 3d6, etc.). Falls through to base level
+            // when undefined — cantrip scaling still works regardless.
+            if (Number.isFinite(opts.spellLevel)) {
+              rollConfig.spell = { level: Number(opts.spellLevel) };
+            }
+            const damageRolls = await activity.rollDamage(
+              rollConfig,
+              { configure: false },          // skip the modify-roll dialog
+              { create: false, rollMode: CONST.DICE_ROLL_MODES?.PUBLIC ?? "publicroll" }
+            );
+            if (Array.isArray(damageRolls) && damageRolls.length > 0) {
+              for (const roll of damageRolls) {
+                const optTypes = roll.options?.types;
+                const optType  = roll.options?.type;
+                const type = optType
+                          ?? (Array.isArray(optTypes) && optTypes.length > 0 ? optTypes[0] : "untyped");
+                damageComponents.push({
+                  name:    item.name,
+                  formula: roll.formula,
+                  total:   roll.total,
+                  type,
+                  roll,
+                });
+                rollsToShow.push(roll);
+              }
+              nativeRolledOk = true;
+            }
+          }
+        } catch (err) {
+          console.warn(`${MODULE_ID} | activity.rollDamage failed, falling back to manual roll:`, err);
         }
+
+        // ── FALLBACK: manual formula construction ──
+        // Used when activity.rollDamage isn't available (older dnd5e,
+        // non-spell items, malformed activity). No cantrip/upcast scaling
+        // here — purely the literal formula in part.number/denomination.
+        if (!nativeRolledOk) {
+          for (const part of activity.damage.parts) {
+            const formula = part.custom?.enabled
+              ? part.custom.formula
+              : `${part.number ?? 1}d${part.denomination ?? 6}${part.bonus ? `+${part.bonus}` : ""}`;
+            const types = part.types ? [...part.types] : ["untyped"];
+            const type = types[0] ?? "untyped";
+
+            let resolved = formula.replace(/@([a-zA-Z0-9_.]+)/g, (match, path) => {
+              const val = path.split(".").reduce((o, k) => o?.[k], rollData);
+              return val !== undefined ? String(val) : "0";
+            });
+
+            const roll = new Roll(resolved);
+            await roll.evaluate();
+            damageComponents.push({ name: item.name, formula: resolved, total: roll.total, type, roll });
+            rollsToShow.push(roll);
+          }
+        }
+
         break; // Only first activity with damage
       }
     }
@@ -2208,7 +2284,9 @@ export class SaveEngine {
     await this._applyFailedSaveConditions(item, results, { saveAbility, saveDC, activityId: flags.activityId ?? null, casterActor });
 
     // Roll damage once and apply per target with multipliers
-    const damageComponents = await this._rollSpellDamage(item, casterActor);
+    const damageComponents = await this._rollSpellDamage(item, casterActor, {
+      spellLevel: flags.spellLevel ?? null,
+    });
     await this._postSaveResults(item, casterActor, results, {
       saveAbility, saveDC, halfOnSave, damageTypes, isSpell,
     }, damageComponents);
@@ -2666,7 +2744,7 @@ export class SaveEngine {
     }
 
     const { itemUuid, itemId, actorId, saveAbility, saveDC, halfOnSave,
-            damageTypes, isSpell, allResults } = flags;
+            damageTypes, isSpell, allResults, spellLevel } = flags;
 
     const item = await fromUuid(itemUuid) ?? game.items.get(itemId);
     const casterActor = game.actors.get(actorId);
@@ -2676,8 +2754,10 @@ export class SaveEngine {
       return;
     }
 
-    // ── 1. Roll damage dice ──
-    const damageComponents = await this._rollSpellDamage(item, casterActor);
+    // ── 1. Roll damage dice (with cantrip + upcast scaling) ──
+    const damageComponents = await this._rollSpellDamage(item, casterActor, {
+      spellLevel: Number.isFinite(spellLevel) ? spellLevel : null,
+    });
     const baseDamageTotal = damageComponents.reduce((sum, c) => sum + c.total, 0);
 
     // Damage info is shown in the results card header — no separate roll message needed
@@ -3076,12 +3156,14 @@ export class SaveEngine {
   // ═══════════════════════════════════════════════════════════════════════════
 
   async _postSaveResults(item, casterActor, results, opts, damageComponents) {
-    const { saveAbility, saveDC, halfOnSave, damageTypes } = opts;
+    const { saveAbility, saveDC, halfOnSave, damageTypes, spellLevel } = opts;
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
 
-    // If damageComponents not provided, roll them
+    // If damageComponents not provided, roll them (with cantrip + upcast scaling)
     if (!damageComponents) {
-      damageComponents = await this._rollSpellDamage(item, casterActor);
+      damageComponents = await this._rollSpellDamage(item, casterActor, {
+        spellLevel: Number.isFinite(spellLevel) ? spellLevel : null,
+      });
     }
 
     const baseDamageTotal = damageComponents.reduce((sum, c) => sum + c.total, 0);

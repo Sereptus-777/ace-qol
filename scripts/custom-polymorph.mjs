@@ -244,10 +244,27 @@ export class CustomPolymorph {
     let addedItemIds = [];
     try {
       // 1. Create the polymorph Active Effect
+      // ── Visual indicator (RAW comprehensive) ──
+      // The token's TEXTURE already swaps to the beast, but tokens look the
+      // same as any other beast at a glance. Three layers of indicator:
+      //   1. statuses: ["polymorphed"] — small corner badge (Foundry default)
+      //   2. flags.core.overlay = true — large semi-transparent overlay icon
+      //      centered on the token (unmistakable from any zoom level)
+      //   3. flags.ace-qol.polymorphMarker = true — used by canvas hooks to
+      //      add a colored token-border tint (see _applyPolymorphTokenStyling)
+      //
+      // Icon: the beast image (sourceActor.img) so the overlay reinforces
+      // "this is a transformation" — at a glance you see beast token + beast
+      // overlay, but the overlay tint says "magic transformation, not a real
+      // beast spawn".
+      const polyIcon = sourceActor.img
+                    || sourceActor.prototypeToken?.texture?.src
+                    || "icons/svg/aura.svg";
       const effData = {
         name:    POLYMORPH_EFFECT_NAME,
-        icon:    sourceActor.img || sourceActor.prototypeToken?.texture?.src || "icons/svg/mystery-man.svg",
-        img:     sourceActor.img || sourceActor.prototypeToken?.texture?.src || "icons/svg/mystery-man.svg",
+        icon:    polyIcon,
+        img:     polyIcon,
+        tint:    "#a020f0", // magenta-purple — communicates "magical effect"
         origin:  opts.casterUuid ?? null,
         duration: {
           seconds:   opts.durationSeconds ?? null,
@@ -256,11 +273,16 @@ export class CustomPolymorph {
         changes,
         statuses: ["polymorphed"],
         flags: {
+          core: {
+            overlay: true, // big half-token-size overlay icon
+          },
           [FLAG_NS]: {
-            polymorphEffect: true,
-            sourceActorUuid: sourceActor.uuid,
-            sourceActorName: sourceActor.name,
-            stampedAt:       Date.now(),
+            polymorphEffect:  true,
+            polymorphMarker:  true,
+            sourceActorUuid:  sourceActor.uuid,
+            sourceActorName:  sourceActor.name,
+            originalActorName: target.name,
+            stampedAt:        Date.now(),
           },
         },
       };

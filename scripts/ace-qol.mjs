@@ -27,6 +27,8 @@ import { VisibilityEngine }     from "./visibility-engine.mjs";
 import { ConditionLibrary }     from "./condition-library.mjs";
 import { RepeatingSaveEngine }  from "./repeating-save-engine.mjs";
 import { TransformationEngine } from "./transformation-engine.mjs";
+import { ConcentrationDamage }  from "./concentration-damage.mjs";
+import { BonusSpellRule }       from "./bonus-spell-rule.mjs";
 import { PolymorphSpellPipeline } from "./polymorph-spell-pipeline.mjs";
 import { TokenCache }            from "./token-cache.mjs";
 import { DurationTracker }      from "./duration-tracker.mjs";
@@ -570,6 +572,24 @@ Hooks.once("ready", () => {
     TransformationEngine.init();
   } catch (err) {
     console.error(`${MODULE_ID} | Transformation Engine init failed:`, err);
+  }
+
+  // Concentration on Damage — GM-only. Hooks dnd5e.preApplyDamage; if the
+  // damaged actor is concentrating, fires actor.challengeConcentration with
+  // DC = max(10, floor(damage / 2)). RAW PHB 203.
+  try {
+    ConcentrationDamage.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Concentration Damage init failed:`, err);
+  }
+
+  // Bonus Action Spell Rule — RAW PHB 202: a bonus-action leveled spell
+  // limits the rest of the turn to a single 1-action cantrip. Pre-flight
+  // check via dnd5e.preUseActivity; tracks per-actor cast state per turn.
+  try {
+    BonusSpellRule.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Bonus Spell Rule init failed:`, err);
   }
 
   // Polymorph Spell Pipeline — GM-only. Detects Polymorph / True Polymorph /
