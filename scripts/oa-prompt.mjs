@@ -52,6 +52,26 @@ export class OAPrompt {
   static async _checkProvocations(moverDoc, changes) {
     const moverActor = moverDoc?.actor;
     if (!moverActor) return;
+
+    // ── Mover-state guards: skip OA detection entirely ──
+    // Dead / unconscious / petrified / 0-HP creatures don't provoke OAs
+    // when the GM drags their corpse around the map. RAW: an OA triggers
+    // when a hostile creature MOVES out of reach — corpses aren't moving
+    // willingly. Same for incapacitated / paralyzed / stunned (can't take
+    // actions, but the body still being shoved doesn't provoke an OA in
+    // any reasonable interpretation).
+    const skipStatuses = ["dead", "unconscious", "petrified", "incapacitated",
+                          "paralyzed", "stunned"];
+    const moverStatuses = moverActor.statuses ?? new Set();
+    for (const s of skipStatuses) {
+      if (moverStatuses.has?.(s)) return;
+    }
+    // 0-HP guard: dnd5e doesn't always set "dead" status when HP = 0
+    // (especially for NPCs whose death-pipeline removed the token but
+    // left a synthetic actor). Belt-and-suspenders: skip on 0 HP.
+    const hp = Number(moverActor.system?.attributes?.hp?.value ?? 0);
+    if (hp <= 0) return;
+
     // Disengage skips OAs entirely
     const hasDisengage = (moverActor.effects?.contents ?? []).some(e =>
       e?.flags?.[FLAG_NS]?.disengage === true && !e.disabled
