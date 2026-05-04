@@ -554,7 +554,19 @@ export class SaveEngine {
       const saveMod = typeof rawMod === "number" ? rawMod
                     : typeof rawMod === "object" ? (rawMod?.value ?? rawMod?.total ?? 0)
                     : Number(rawMod) || 0;
-      const modStr = saveMod >= 0 ? `+${saveMod}` : `${saveMod}`;
+
+      // Sum numeric save bonuses (Aura of Protection, ability-specific bonus,
+      // cover) into the displayed mod. Non-numeric bonuses (Bless's "+1d4")
+      // stay in saveBonuses for the roll formula but don't fold into the
+      // shown number — they get rendered as separate badges if the card
+      // chooses to display them.
+      const numericBonusTotal = (state.saveBonuses ?? []).reduce((sum, b) => {
+        const raw = String(b?.value ?? "").replace(/^\+/, "").trim();
+        const n = Number(raw);
+        return Number.isFinite(n) ? sum + n : sum;
+      }, 0);
+      const effectiveMod = saveMod + numericBonusTotal;
+      const modStr = effectiveMod >= 0 ? `+${effectiveMod}` : `${effectiveMod}`;
 
       targetData.push({
         tokenId: token.id,
@@ -565,6 +577,8 @@ export class SaveEngine {
         img: state.target.img,
         isPC,
         saveMod: modStr,
+        saveModBase: saveMod,
+        saveModBonus: numericBonusTotal,
         saveAbilityUpper: saveAbility.toUpperCase(),
         autoFailSave: state.autoFailSave,
         saveAdvantage: state.saveAdvantage,
@@ -1359,7 +1373,13 @@ export class SaveEngine {
       const isPC = token.actor?.hasPlayerOwner ?? false;
       const rawSM = token.actor?.system?.abilities?.[flags.saveAbility]?.save;
       const saveMod = typeof rawSM === "number" ? rawSM : (rawSM?.value ?? rawSM?.total ?? (Number(rawSM) || 0));
-      const modStr = saveMod >= 0 ? `+${saveMod}` : `${saveMod}`;
+      const numericBonusTotal2 = (state.saveBonuses ?? []).reduce((sum, b) => {
+        const raw = String(b?.value ?? "").replace(/^\+/, "").trim();
+        const n = Number(raw);
+        return Number.isFinite(n) ? sum + n : sum;
+      }, 0);
+      const effectiveMod2 = saveMod + numericBonusTotal2;
+      const modStr = effectiveMod2 >= 0 ? `+${effectiveMod2}` : `${effectiveMod2}`;
 
       newTargets.push({
         tokenId: token.id,
@@ -2165,6 +2185,27 @@ export class SaveEngine {
         rollBtn.style.background = "none";
         rollBtn.style.border = "none";
         rollBtn.style.padding = "0 4px";
+      }
+
+      // ── Bottom action button reconciliation ──
+      // After this PC rolled, check if any PC roll buttons are still pending.
+      // If no PCs left to roll AND no NPCs left to roll, the bottom action
+      // button has nothing to do — change to "ALL ROLLED" terminal state.
+      // (User reported: bottom button kept saying "PROMPT PCs TO ROLL" even
+      //  after both PCs had rolled via their individual d20 icons.)
+      try {
+        const card = row.closest(".ace-qol-save-target-card")
+                  ?? row.closest(".chat-message");
+        const pendingPcRolls = card?.querySelectorAll?.(".ace-qol-save-pc-roll-btn:not([disabled])") ?? [];
+        const pendingNpcRolls = card?.querySelectorAll?.(".ace-qol-save-tgt-row[data-pc='false']:not([data-rolled])") ?? [];
+        const bottomBtn = card?.querySelector?.("[data-action='aceQolRollNpcSaves']");
+        if (bottomBtn && pendingPcRolls.length === 0 && pendingNpcRolls.length === 0) {
+          bottomBtn.disabled = true;
+          bottomBtn.innerHTML = `<i class="fas fa-check"></i> ALL ROLLED`;
+          bottomBtn.classList?.add?.("ace-qol-btn-done");
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Bottom-button reconciliation threw:`, err);
       }
 
       console.log(`${MODULE_ID} | Updated target list PC row: ${verdictText} (${rollDisplay})`);
