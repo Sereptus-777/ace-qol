@@ -755,6 +755,23 @@ Hooks.once("ready", () => {
         );
       }
 
+      // ── Polymorph defer (RAW: polymorphed creature reverts at 0 HP) ──
+      // If the dying actor is currently polymorphed AND the polymorph state
+      // says "revert on zero HP", DO NOT register the dedupe entry. The
+      // polymorph engine handles this 0-HP event (revert + carryover). If
+      // the carryover damage drops the ORIGINAL form to 0 too, a new
+      // updateActor will fire → re-enters this hook with state cleared,
+      // and dedupe is fresh so the death pipeline runs cleanly that time.
+      // Without this skip, the post-revert death event gets blocked by
+      // a stale dedupe entry from the now-reverted polymorph form.
+      try {
+        const polyState = actor?.getFlag?.(MODULE_ID, "transformState");
+        if (polyState && polyState.revertOnZeroHP === true) {
+          console.log(`${MODULE_ID} | NPC death deferred — ${actor.name} is polymorphed; revert pipeline owns this 0-HP event`);
+          return;
+        }
+      } catch (_) { /* fall through — guard is best-effort */ }
+
       // ── Guard: deduplicate within the same Foundry update cycle ──
       // Dedupe by the resolved token's UUID (unique per scene token) instead
       // of actor.id. For unlinked tokens, `actor.id` collides with the base
