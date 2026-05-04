@@ -439,6 +439,16 @@ export class DamageEngine {
                   name: rider.name,
                   formula: rider.formula,
                   type: rider.type ?? "radiant",
+                  // ── Preserve metadata flags so downstream consumers
+                  //    (Radiant Soul detector, future feature riders) can
+                  //    still see them. Without this, isSpellDerived was
+                  //    silently lost when riders were transferred to the
+                  //    bonus list, and Radiant Soul could never fire on
+                  //    Divine Smite / smite spell damage attached to a
+                  //    weapon attack. v0.4.19 hotfix.
+                  isSpellDerived: rider.isSpellDerived === true,
+                  isDischarge: rider.isDischarge === true,
+                  riderId: rider.id,
                 });
               }
             }
