@@ -1089,6 +1089,24 @@
 .ace-qol-save-tgt-mod {
   font-size: 0.75rem; color: #888; font-family: monospace; flex-shrink: 0;
 }
+/* Bonus chips (Aura of Protection, Bardic Inspiration, Bless, etc.) */
+.ace-qol-save-bonus-chip {
+  display: inline-block;
+  font-size: 0.68rem;
+  font-family: monospace;
+  font-weight: 600;
+  color: #ffd87a;
+  background: rgba(212,175,55,0.12);
+  border: 1px solid rgba(212,175,55,0.35);
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-left: 4px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.ace-qol-save-tgt-pc .ace-qol-save-bonus-chip {
+  color: #ffd87a; /* same gold treatment regardless of PC/NPC */
+}
 .ace-qol-save-tgt-remove {
   background: rgba(255,255,255,0.05); border: 1px solid #555; border-radius: 3px;
   color: #aaa; cursor: pointer;

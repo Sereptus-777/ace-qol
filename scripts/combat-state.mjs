@@ -535,16 +535,55 @@ export class CombatState {
         autoFailSave = true;
       }
 
-      // Bless → +1d4 to saves (bonus, not advantage)
-      const blessBonus = tgtSys.bonuses?.abilities?.save;
-      if (blessBonus) saveBonuses.push({ value: blessBonus, label: "Bless" });
+      // ── Save bonuses from active effects (Bless, Bardic Inspiration,
+      //    Heroes' Feast, Resistance cantrip, custom buffs) ──
+      // Scan the actor's active effects for any change modifying:
+      //   • system.bonuses.abilities.save        (all-save bonus, like Bless)
+      //   • system.abilities.<ability>.bonuses.save  (per-ability bonus)
+      // Use the effect's NAME as the label so players see exactly which buff
+      // is contributing. This replaces the old hardcoded "Bless" label which
+      // mis-attributed Bardic Inspiration / Heroism / etc.
+      const collectedFromEffects = new Set(); // dedup by (key,value)
+      for (const eff of (targetActor.effects?.contents ?? [])) {
+        if (eff.disabled) continue;
+        const effName = eff.name || "Active Effect";
+        for (const ch of (eff.changes ?? [])) {
+          if (!ch.value) continue;
+          const k = String(ch.key ?? "");
+          const isAllSave = k === "system.bonuses.abilities.save";
+          const isThisSave = k === `system.abilities.${saveAbility}.bonuses.save`;
+          if (!isAllSave && !isThisSave) continue;
+          const dedupeKey = `${k}::${ch.value}::${effName}`;
+          if (collectedFromEffects.has(dedupeKey)) continue;
+          collectedFromEffects.add(dedupeKey);
+          saveBonuses.push({
+            value: String(ch.value).startsWith("+") || String(ch.value).startsWith("-")
+              ? ch.value : `+${ch.value}`,
+            label: effName,
+          });
+        }
+      }
 
-      // Per-ability save bonus
+      // Fallback: bonuses applied directly to the actor's system data (some
+      // legacy modules/sheets stash bonuses there without a discoverable
+      // active effect). Only surface if not already captured above.
+      const blessBonus = tgtSys.bonuses?.abilities?.save;
+      if (blessBonus && ![...collectedFromEffects].some(k => k.endsWith(`::${blessBonus}::Bless`))) {
+        // Try to identify the source — if there's an effect literally named
+        // "Bless" we already grabbed it. Otherwise label it as "Save bonus".
+        const blessEff = (targetActor.effects?.contents ?? []).find(e =>
+          /^bless$/i.test(e.name ?? "") && !e.disabled);
+        if (!blessEff) {
+          saveBonuses.push({ value: blessBonus, label: "Save bonus" });
+        }
+      }
       const abilitySaveBonus = tgtSys.abilities?.[saveAbility]?.bonuses?.save;
-      if (abilitySaveBonus) saveBonuses.push({ value: abilitySaveBonus, label: `${saveAbility.toUpperCase()} bonus` });
+      if (abilitySaveBonus && !collectedFromEffects.size) {
+        saveBonuses.push({ value: abilitySaveBonus, label: `${saveAbility.toUpperCase()} bonus` });
+      }
 
       // Aura of Protection (Paladin) — CHA mod to saves for nearby allies
-      // Check all nearby friendly tokens for a paladin with this feature
+      // (or self per RAW). Check all friendly tokens for a paladin source.
       const auraBonus = CombatState._getAuraOfProtectionBonus(targetToken);
       if (auraBonus > 0) saveBonuses.push({ value: `+${auraBonus}`, label: "Aura of Protection" });
     }

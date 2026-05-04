@@ -620,6 +620,26 @@ export class SaveEngine {
       return { cls: "", tag: "" };
     };
 
+    // ── Helper: render save mod breakdown ──
+    // Returns HTML showing base mod + each bonus as a chip with attribution.
+    // Example: "DEX +0  [+3 Aura]  [+1d8 BI]"
+    // Players see exactly which buffs are contributing — no hidden math.
+    const _renderModBreakdown = (t) => {
+      const baseStr = t.saveModBase >= 0 ? `+${t.saveModBase}` : `${t.saveModBase}`;
+      const bonusChips = (t.saveBonuses ?? []).map(b => {
+        const v = String(b?.value ?? "").trim();
+        const label = String(b?.label ?? "Bonus").trim();
+        // Short label for common buffs
+        const shortLabel = label
+          .replace(/^Aura of Protection$/i, "Aura")
+          .replace(/^Bardic Inspiration$/i, "BI")
+          .replace(/^Resistance$/i, "Resist")
+          .replace(/^Heroes' Feast$/i, "Feast");
+        return `<span class="ace-qol-save-bonus-chip" title="${label}">${v} ${shortLabel}</span>`;
+      }).join("");
+      return `<span class="ace-qol-save-tgt-mod">${t.saveAbilityUpper} ${baseStr}</span>${bonusChips}`;
+    };
+
     // ── Build NPC rows ──
     const npcRowsHtml = npcs.map(t => {
       const di = _getDmgIndicator(t);
@@ -627,7 +647,7 @@ export class SaveEngine {
       <div class="ace-qol-save-tgt-row ${di.cls}" data-token-id="${t.tokenId}">
         <img src="${t.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
         <span class="ace-qol-save-tgt-name">${t.name}</span>
-        <span class="ace-qol-save-tgt-mod">${t.saveAbilityUpper} ${t.saveMod}</span>
+        ${_renderModBreakdown(t)}
         ${t.autoFailSave ? '<span class="ace-qol-tag ace-qol-tag-danger"><i class="fas fa-circle-xmark"></i> AUTO-FAIL</span>' : ""}
         ${t.superSaver ? '<span class="ace-qol-tag ace-qol-tag-buff"><i class="fas fa-person-running"></i> EVASION</span>' : ""}
         ${di.tag}
@@ -644,7 +664,7 @@ export class SaveEngine {
       <div class="ace-qol-save-tgt-row ace-qol-save-tgt-pc ${di.cls}" data-token-id="${t.tokenId}" data-token-doc-id="${t.tokenDocId}" data-actor-id="${t.actorId}">
         <img src="${t.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
         <span class="ace-qol-save-tgt-name">${t.name}</span>
-        <span class="ace-qol-save-tgt-mod">${t.saveAbilityUpper} ${t.saveMod}</span>
+        ${_renderModBreakdown(t)}
         ${t.autoFailSave ? '<span class="ace-qol-tag ace-qol-tag-danger"><i class="fas fa-circle-xmark"></i> AUTO-FAIL</span>' : ""}
         ${t.superSaver ? '<span class="ace-qol-tag ace-qol-tag-buff"><i class="fas fa-person-running"></i> EVASION</span>' : ""}
         ${di.tag}
@@ -1390,6 +1410,8 @@ export class SaveEngine {
         img: state.target.img,
         isPC,
         saveMod: modStr,
+        saveModBase: saveMod,
+        saveModBonus: numericBonusTotal2,
         saveAbilityUpper: flags.saveAbility.toUpperCase(),
         autoFailSave: state.autoFailSave,
         saveAdvantage: state.saveAdvantage,
@@ -2187,15 +2209,16 @@ export class SaveEngine {
         rollBtn.style.padding = "0 4px";
       }
 
-      // ── Bottom action button reconciliation ──
+      // ── Bottom action button reconciliation + template auto-delete ──
       // After this PC rolled, check if any PC roll buttons are still pending.
-      // If no PCs left to roll AND no NPCs left to roll, the bottom action
-      // button has nothing to do — change to "ALL ROLLED" terminal state.
-      // (User reported: bottom button kept saying "PROMPT PCs TO ROLL" even
-      //  after both PCs had rolled via their individual d20 icons.)
+      // If no PCs left to roll AND no NPCs left to roll:
+      //   1. Change bottom button to "ALL ROLLED" terminal state
+      //   2. Auto-delete the AOE template (so the spell visual goes away —
+      //      the existing _deleteInstantTemplate path only fires on full save
+      //      completion / Phase 2, not on the "PCs roll individually" path)
       try {
-        const card = row.closest(".ace-qol-save-target-card")
-                  ?? row.closest(".chat-message");
+        const chatEl = row.closest(".chat-message");
+        const card = row.closest(".ace-qol-save-target-card") ?? chatEl;
         const pendingPcRolls = card?.querySelectorAll?.(".ace-qol-save-pc-roll-btn:not([disabled])") ?? [];
         const pendingNpcRolls = card?.querySelectorAll?.(".ace-qol-save-tgt-row[data-pc='false']:not([data-rolled])") ?? [];
         const bottomBtn = card?.querySelector?.("[data-action='aceQolRollNpcSaves']");
@@ -2203,6 +2226,18 @@ export class SaveEngine {
           bottomBtn.disabled = true;
           bottomBtn.innerHTML = `<i class="fas fa-check"></i> ALL ROLLED`;
           bottomBtn.classList?.add?.("ace-qol-btn-done");
+
+          // Trigger template auto-delete (was only firing on full result-card
+          // completion paths). Look up the message from the chat element's
+          // data-message-id, fetch flags, hand to _deleteInstantTemplate.
+          try {
+            const msgId = chatEl?.dataset?.messageId;
+            const msg = msgId ? game.messages.get(msgId) : null;
+            const flags = msg?.flags?.[MODULE_ID];
+            if (flags) this._deleteInstantTemplate(flags);
+          } catch (err) {
+            console.warn(`${MODULE_ID} | Template auto-delete on PC-only completion threw:`, err);
+          }
         }
       } catch (err) {
         console.warn(`${MODULE_ID} | Bottom-button reconciliation threw:`, err);
