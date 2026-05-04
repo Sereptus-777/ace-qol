@@ -3420,6 +3420,22 @@ export class SaveEngine {
 
       const currentHP = actor.system?.attributes?.hp?.value ?? 0;
       const newHP = Math.max(0, currentHP - damageToApply);
+
+      // Polymorph excess-damage capture (RAW carryover) ───
+      // Save-engine applies damage via direct actor.update — neither
+      // dnd5e.preApplyDamage nor damage-applicator's hook fires here, so
+      // we have to capture the excess inline. If we don't, polymorphed
+      // creatures revert without any carryover and the math comes out
+      // as if no excess was carried over (Balor at 0 HP after a save).
+      if (damageToApply > currentHP) {
+        try {
+          const TE = game.aceQol?.TransformationEngine;
+          if (TE?.recordPendingExcess) {
+            TE.recordPendingExcess(actor, damageToApply - currentHP);
+          }
+        } catch (_) { /* non-fatal */ }
+      }
+
       await actor.update({ "system.attributes.hp.value": newHP });
 
       // Clear cache entry after applying
