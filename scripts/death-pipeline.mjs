@@ -271,25 +271,24 @@ export class DeathPipeline {
       }
 
       // ── Polymorph defer guard (RAW: polymorphed creature reverts at 0 HP) ──
-      // If the dying actor is currently polymorphed AND the polymorph state
-      // says "revert on zero HP", skip the death pipeline entirely. The
-      // polymorph engine's _handleZeroHPRevert will fire the revert and
-      // apply excess damage carryover to the original form. If THAT excess
-      // also drops the original form to 0, the original form's updateActor
-      // will fire a NEW NpcDeath event — at which point this guard returns
-      // false (no longer polymorphed) and the death pipeline runs cleanly.
-      //
-      // Without this guard, both pipelines race on the same updateActor
-      // event: death-pipeline deletes the token before polymorph revert
-      // can restore it, leaving cascade-delete cleanup errors AND skipping
-      // the carryover entirely.
+      // Multi-signal check matches the primary guard in ace-qol.mjs's
+      // npcDeath hook. Defensive layer in case anything else calls
+      // processNPCDeath directly while the actor is polymorphed.
       try {
-        const polyState = actor?.getFlag?.(MODULE_ID, "transformState");
-        if (polyState && polyState.revertOnZeroHP === true) {
-          console.log(`${LOG_PREFIX}   ⏭ Deferring — ${name} is polymorphed (revert pipeline owns this 0-HP event)`);
+        const flagState = actor?.getFlag?.(MODULE_ID, "transformState");
+        const rawFlag   = actor?.flags?.[MODULE_ID]?.transformState;
+        const polyEff   = actor.effects?.contents?.some?.(e =>
+                            e?.flags?.[MODULE_ID]?.polymorphEffect === true && !e.disabled);
+        const isPolymorphed = (flagState && flagState.revertOnZeroHP !== false)
+                           || (rawFlag   && rawFlag.revertOnZeroHP   !== false)
+                           || polyEff;
+        if (isPolymorphed) {
+          console.log(`${LOG_PREFIX}   ⏭ Deferring — ${name} is polymorphed (flag=${!!flagState}, raw=${!!rawFlag}, eff=${polyEff})`);
           return;
         }
-      } catch (_) { /* fall through — guard is best-effort */ }
+      } catch (err) {
+        console.warn(`${LOG_PREFIX}   polymorph-defer guard threw — falling through:`, err);
+      }
 
       // ── Guard: NPC only, not player-owned ──
       if (!actor || actor.type !== "npc" || actor.hasPlayerOwner) {

@@ -756,21 +756,36 @@ Hooks.once("ready", () => {
       }
 
       // ── Polymorph defer (RAW: polymorphed creature reverts at 0 HP) ──
-      // If the dying actor is currently polymorphed AND the polymorph state
-      // says "revert on zero HP", DO NOT register the dedupe entry. The
-      // polymorph engine handles this 0-HP event (revert + carryover). If
-      // the carryover damage drops the ORIGINAL form to 0 too, a new
-      // updateActor will fire → re-enters this hook with state cleared,
-      // and dedupe is fresh so the death pipeline runs cleanly that time.
-      // Without this skip, the post-revert death event gets blocked by
-      // a stale dedupe entry from the now-reverted polymorph form.
+      // If the dying actor is currently polymorphed, DO NOT fire NPC death
+      // logic. The polymorph engine handles this 0-HP event (revert +
+      // carryover). If the carryover damage drops the ORIGINAL form to 0
+      // too, a new updateActor will fire → re-enters this hook with the
+      // polymorph state/effect cleared, and the death pipeline runs cleanly.
+      //
+      // Multi-signal check (defensive — getFlag has shown intermittent races
+      // in V13 for synthetic actors during simultaneous DB writes):
+      //   1. flag check: transformState.revertOnZeroHP === true
+      //   2. effect check: any active effect flagged polymorphEffect === true
+      //   3. raw flags check: actor.flags["ace-qol"].transformState present
+      // If ANY signal says "polymorphed", defer. False positives are safer
+      // than false negatives here — the worst case of a false defer is the
+      // death pipeline never running, which is recoverable. The worst case
+      // of a false negative is the cleanup race we're trying to prevent.
       try {
-        const polyState = actor?.getFlag?.(MODULE_ID, "transformState");
-        if (polyState && polyState.revertOnZeroHP === true) {
-          console.log(`${MODULE_ID} | NPC death deferred — ${actor.name} is polymorphed; revert pipeline owns this 0-HP event`);
+        const flagState = actor?.getFlag?.(MODULE_ID, "transformState");
+        const rawFlag   = actor?.flags?.[MODULE_ID]?.transformState;
+        const polyEff   = actor.effects?.contents?.some?.(e =>
+                            e?.flags?.[MODULE_ID]?.polymorphEffect === true && !e.disabled);
+        const isPolymorphed = (flagState && flagState.revertOnZeroHP !== false)
+                           || (rawFlag   && rawFlag.revertOnZeroHP   !== false)
+                           || polyEff;
+        if (isPolymorphed) {
+          console.log(`${MODULE_ID} | NPC death deferred — ${actor.name} is polymorphed (flag=${!!flagState}, raw=${!!rawFlag}, eff=${polyEff}); revert pipeline owns this 0-HP event`);
           return;
         }
-      } catch (_) { /* fall through — guard is best-effort */ }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | polymorph-defer guard threw — falling through:`, err);
+      }
 
       // ── Guard: deduplicate within the same Foundry update cycle ──
       // Dedupe by the resolved token's UUID (unique per scene token) instead
