@@ -345,6 +345,18 @@ export class QolSettings {
       scope: "world", config: false, type: Boolean, default: true,
     });
 
+    s("radiantSoulRiderEnabled", {
+      name: "Radiant Soul Rider (Celestial Warlock 6+)",
+      hint: "When ON (default), automatically adds CHA modifier to fire/radiant damage from spells and cantrips, once per turn. Triggers on Divine Smite (it's a spell in 2024 PHB), Sacred Flame, Spirit Shroud's radiant variant, Holy Weapon, Crusader's Mantle, etc. RAW: Celestial Warlock 6th-level feature. Set to OFF if your table runs the rider manually.",
+      scope: "world", config: false, type: Boolean, default: true,
+    });
+
+    s("descriptionOnKillRiderEnabled", {
+      name: "On-Kill Description Riders (temp HP / self-heal on kill)",
+      hint: "When ON (default), parses item descriptions for on-kill rewards like 'Reducing a target to zero hitpoints grants 2d6 temporary hitpoints' (Blood Halberd) or 'When you reduce a creature to 0 HP you regain Xd6 hit points' (life-leech weapons). Auto-rolls and applies to the attacker after each kill. Temp HP uses Math.max per RAW (doesn't stack). Set to OFF to handle these manually.",
+      scope: "world", config: false, type: Boolean, default: true,
+    });
+
     s("batchResultsCard", {
       name:    "Batch Combat Results Card",
       hint:    "Show all targets in one consolidated damage card instead of individual cards per target.",

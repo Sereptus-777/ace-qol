@@ -30,7 +30,7 @@ export class PostHitSaves {
     if (!item) return;
 
     const parsed = DescriptionParser.parse(item);
-    if (!parsed.saves.length && !parsed.effectTable && !parsed.hpThresholdRider) return;
+    if (!parsed.saves.length && !parsed.effectTable && !parsed.hpThresholdRider && !parsed.onKillRider) return;
 
     // Only process targets that were actually HIT
     const hitTargets = hits.filter(h => h.hitResult === "hit" || h.hitResult === "critical");
@@ -46,6 +46,20 @@ export class PostHitSaves {
         await PostHitSaves._applyHpThresholdRider(item, actor, hitTargets, parsed.hpThresholdRider);
       } catch (err) {
         console.warn(`${MODULE_ID} | HP-threshold rider handling failed:`, err);
+      }
+    }
+
+    // ── On-kill rider (Blood Halberd 2d6 temp HP, life-leech weapons, etc.) ──
+    // Fires AFTER damage is applied. Detects which hit targets were reduced
+    // to 0 HP by THIS attack and rolls the rider formula once per kill.
+    // Temp HP applies via Math.max(existing, rolled) per RAW. Self-heal
+    // variants clamp to actor max HP. Each kill gets its own DSN-broadcast
+    // roll so all clients see the dice.
+    if (parsed.onKillRider) {
+      try {
+        await PostHitSaves._applyOnKillRider(item, actor, hitTargets, parsed.onKillRider);
+      } catch (err) {
+        console.warn(`${MODULE_ID} | On-kill rider handling failed:`, err);
       }
     }
 
@@ -1002,6 +1016,217 @@ export class PostHitSaves {
       } catch (err) {
         console.warn(`${MODULE_ID} | HP-threshold rider chat post failed:`, err);
       }
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  On-Kill Rider (description-parsed)
+  //
+  //  Triggers when this attack reduces a hit target to 0 HP. Reward goes to
+  //  the ATTACKER (Blood Halberd 2d6 temp HP, life-leech HP regain, etc.).
+  //  Fires AFTER damage is applied — we read the post-damage HP off each
+  //  hit target's actor.
+  //
+  //  RAW edge cases handled:
+  //    - Multiple kills in one swing (cleave/multi-attack): rolls per kill,
+  //      takes the HIGHEST roll for temp HP (RAW: temp HP doesn't stack —
+  //      keep the larger pool from any single source)
+  //    - Self-heal variant: SUMS rolls across kills, clamps to max HP
+  //    - Target was already at 0 HP before the swing: we look at the kill
+  //      flag set by our damage pipeline (hit.killedThisSwing). If the
+  //      pipeline didn't tag it (legacy), fall back to "currentHP <= 0"
+  //      which can over-fire if the target was already dead — accepted
+  //      trade-off because re-applying temp HP to the attacker is harmless
+  //      (Math.max).
+  //    - Synthetic actors (unlinked tokens): correctly resolve via tokenDoc
+  //      then fall back to actor lookup, same pattern as HP-threshold rider
+  //    - DSN broadcast: 3rd arg true so the dice are visible to all players,
+  //      not just the GM (consistent with rest of the pipeline)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Apply on-kill rider rewards to the attacker.
+   * @param {Item} item - Source weapon/item with the on-kill description
+   * @param {Actor} actor - Attacker (gets the reward)
+   * @param {Array} hitTargets - Targets that were hit by the attack
+   * @param {Object} rider - Parsed rider { formula, reward, target, phrase }
+   */
+  static async _applyOnKillRider(item, actor, hitTargets, rider) {
+    if (!rider?.formula || !actor) return;
+
+    // Setting kill switch
+    try {
+      if (QolSettings.get?.("descriptionOnKillRiderEnabled") === false) {
+        console.log(`${MODULE_ID} | On-kill rider disabled via setting — skipping`);
+        return;
+      }
+    } catch (_) { /* setting not ready — proceed */ }
+
+    // Identify which hit targets were actually killed by THIS attack.
+    // We check post-damage HP on each target's actor. Unlinked-token
+    // resolution mirrors _applyHpThresholdRider for consistency.
+    const killedNames = [];
+    for (const h of hitTargets) {
+      const scene = game.scenes.get(h.sceneId) ?? canvas.scene;
+      const tokenDoc = scene?.tokens?.get(h.targetToken?.document?.id ?? h.tokenDocId);
+      const targetActor = tokenDoc?.actor ?? game.actors.get(h.targetActor?.id ?? h.actorId);
+      if (!targetActor) continue;
+      const hpNow = Number(targetActor.system?.attributes?.hp?.value ?? 0);
+      if (hpNow <= 0) {
+        killedNames.push(h.target?.name ?? h.name ?? targetActor.name ?? "Unknown");
+      }
+    }
+
+    if (!killedNames.length) {
+      // No kills this swing — rider doesn't trigger. Quiet skip (no log noise).
+      return;
+    }
+
+    // Roll formula once per kill — RAW: each kill is its own trigger.
+    // For temp HP, we'll Math.max to find the strongest pool.
+    // For self-heal, we'll sum (multiple kills = more healing, clamped to max).
+    const rolls = [];
+    for (let i = 0; i < killedNames.length; i++) {
+      try {
+        const roll = new Roll(rider.formula);
+        await roll.evaluate();
+        rolls.push(roll);
+        // DSN broadcast — 3rd arg true so all clients see the dice
+        try {
+          if (game.dice3d?.showForRoll) {
+            await game.dice3d.showForRoll(roll, game.user, true);
+          }
+        } catch (_) { /* DSN not available — non-fatal */ }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | On-kill rider formula "${rider.formula}" failed to roll:`, err);
+      }
+    }
+
+    if (!rolls.length) return;
+
+    const totals = rolls.map(r => r.total);
+
+    if (rider.reward === "tempHP") {
+      // RAW: temp HP doesn't stack — take the higher of existing vs new.
+      // For multi-kill, take the HIGHEST roll first (best of the trigger
+      // batch), then Math.max against existing.
+      const bestRolled = Math.max(...totals);
+      const currentTemp = Number(actor.system?.attributes?.hp?.temp ?? 0);
+      const newTemp = Math.max(currentTemp, bestRolled);
+      const applied = newTemp > currentTemp;
+
+      if (applied) {
+        try {
+          await actor.update({ "system.attributes.hp.temp": newTemp });
+        } catch (err) {
+          console.warn(`${MODULE_ID} | On-kill temp HP update failed:`, err);
+          return;
+        }
+      }
+
+      // Post chat card
+      try {
+        const killText = killedNames.length === 1
+          ? `Reduced ${killedNames[0]} to 0 HP`
+          : `Reduced ${killedNames.length} targets to 0 HP (${killedNames.join(", ")})`;
+        const rollDetail = rolls.length === 1
+          ? `Roll: <strong>${totals[0]}</strong>`
+          : `Rolls: <strong>${totals.join(", ")}</strong> → best <strong>${bestRolled}</strong>`;
+        const resultLine = applied
+          ? `Temp HP: <strong>${currentTemp} → ${newTemp}</strong>`
+          : `Temp HP: <strong>${currentTemp}</strong> (existing pool was higher — no change per RAW)`;
+
+        const html = `
+          <div class="ace-qol-postsave-card ace-qol-onkill-rider">
+            <div class="ace-qol-pst-header">
+              <i class="fas fa-shield-heart"></i>
+              <strong>${item.name} — On-Kill Bonus</strong>
+              <span class="ace-qol-pst-target">${actor.name}</span>
+            </div>
+            <div class="ace-qol-pst-body">
+              <div class="ace-qol-pst-line">${killText}</div>
+              <div class="ace-qol-pst-line">${rollDetail} ${rider.formula}</div>
+              <div class="ace-qol-pst-line ace-qol-pst-result">${resultLine}</div>
+            </div>
+          </div>
+        `;
+        await ChatMessage.create({
+          speaker: ChatMessage.getSpeaker({ actor }),
+          content: html,
+          flags: { [MODULE_ID]: {
+            type: "onKillRider",
+            actorId: actor.id,
+            reward: "tempHP",
+            formula: rider.formula,
+            kills: killedNames.length,
+            tempBefore: currentTemp,
+            tempAfter: newTemp,
+          }},
+        });
+      } catch (err) {
+        console.warn(`${MODULE_ID} | On-kill chat post failed:`, err);
+      }
+    } else if (rider.reward === "hp") {
+      // Self-heal variant — sum rolls across kills, clamp to max HP.
+      const totalRolled = totals.reduce((a, b) => a + b, 0);
+      const currentHP = Number(actor.system?.attributes?.hp?.value ?? 0);
+      const maxHP = Number(actor.system?.attributes?.hp?.max ?? 0);
+      const newHP = Math.min(maxHP, currentHP + totalRolled);
+      const actualGain = newHP - currentHP;
+
+      if (actualGain > 0) {
+        try {
+          await actor.update({ "system.attributes.hp.value": newHP });
+        } catch (err) {
+          console.warn(`${MODULE_ID} | On-kill HP regain update failed:`, err);
+          return;
+        }
+      }
+
+      try {
+        const killText = killedNames.length === 1
+          ? `Reduced ${killedNames[0]} to 0 HP`
+          : `Reduced ${killedNames.length} targets to 0 HP (${killedNames.join(", ")})`;
+        const rollDetail = rolls.length === 1
+          ? `Roll: <strong>${totals[0]}</strong>`
+          : `Rolls: <strong>${totals.join(" + ")}</strong> = <strong>${totalRolled}</strong>`;
+        const resultLine = actualGain > 0
+          ? `HP: <strong>${currentHP} → ${newHP}</strong> (regained ${actualGain})`
+          : `HP: <strong>${currentHP}</strong> (already at max — no change)`;
+
+        const html = `
+          <div class="ace-qol-postsave-card ace-qol-onkill-rider">
+            <div class="ace-qol-pst-header">
+              <i class="fas fa-heart-pulse"></i>
+              <strong>${item.name} — On-Kill Bonus</strong>
+              <span class="ace-qol-pst-target">${actor.name}</span>
+            </div>
+            <div class="ace-qol-pst-body">
+              <div class="ace-qol-pst-line">${killText}</div>
+              <div class="ace-qol-pst-line">${rollDetail} ${rider.formula}</div>
+              <div class="ace-qol-pst-line ace-qol-pst-result">${resultLine}</div>
+            </div>
+          </div>
+        `;
+        await ChatMessage.create({
+          speaker: ChatMessage.getSpeaker({ actor }),
+          content: html,
+          flags: { [MODULE_ID]: {
+            type: "onKillRider",
+            actorId: actor.id,
+            reward: "hp",
+            formula: rider.formula,
+            kills: killedNames.length,
+            hpBefore: currentHP,
+            hpAfter: newHP,
+            gain: actualGain,
+          }},
+        });
+      } catch (err) {
+        console.warn(`${MODULE_ID} | On-kill chat post failed:`, err);
+      }
+    } else {
+      console.warn(`${MODULE_ID} | On-kill rider has unknown reward type "${rider.reward}" — ignored`);
     }
   }
 }

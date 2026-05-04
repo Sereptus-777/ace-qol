@@ -25,6 +25,7 @@ import { CoverEngine }          from "./cover-engine.mjs";
 import { BloodiedEngine }       from "./bloodied-engine.mjs";
 import { VisibilityEngine }     from "./visibility-engine.mjs";
 import { ConditionLibrary }     from "./condition-library.mjs";
+import { DescriptionParser }    from "./description-parser.mjs";
 import { RepeatingSaveEngine }  from "./repeating-save-engine.mjs";
 import { TransformationEngine } from "./transformation-engine.mjs";
 import { ConcentrationDamage }  from "./concentration-damage.mjs";
@@ -597,6 +598,38 @@ Hooks.once("ready", () => {
     BonusSpellRule.init();
   } catch (err) {
     console.error(`${MODULE_ID} | Bonus Spell Rule init failed:`, err);
+  }
+
+  // Class Feature Riders (turn-based reset) — clears the once-per-turn flag
+  // for features like Radiant Soul (Celestial Warlock 6+) when this actor's
+  // turn ends. Same pattern as BonusSpellRule's combatTurnChange handler:
+  // we read the PRIOR combatant's actor (the one whose turn just ended) and
+  // unset their feature-rider flags. Belt-and-suspenders cleanup also runs
+  // on deleteCombat in case state survives a combat ending.
+  try {
+    Hooks.on("combatTurnChange", (combat /*, prior, current */) => {
+      try {
+        const priorActorId = combat?.previous?.combatantId
+          ? combat?.combatants?.get?.(combat.previous.combatantId)?.actorId
+          : null;
+        if (priorActorId) {
+          const priorActor = game.actors.get(priorActorId);
+          if (priorActor) {
+            CombatState.clearRadiantSoulFlag(priorActor).catch(() => {});
+          }
+        }
+      } catch (_) { /* non-fatal */ }
+    });
+    Hooks.on("deleteCombat", (combat) => {
+      try {
+        for (const c of combat?.combatants?.contents ?? []) {
+          if (c.actor) CombatState.clearRadiantSoulFlag(c.actor).catch(() => {});
+        }
+      } catch (_) { /* non-fatal */ }
+    });
+    console.log(`${MODULE_ID} | Class feature rider turn-reset hooks registered (Radiant Soul, etc.)`);
+  } catch (err) {
+    console.error(`${MODULE_ID} | Class feature rider hook setup failed:`, err);
   }
 
   // Death Saves — RAW PHB 197. Auto-roll death save at PC turn start;
@@ -1244,6 +1277,7 @@ Hooks.once("ready", () => {
     CoverEngine,
     VisibilityEngine,
     ConditionLibrary,
+    DescriptionParser,
     TransformationEngine,
     TokenCache,
     /** Quick-call shortcuts for transformation testing.

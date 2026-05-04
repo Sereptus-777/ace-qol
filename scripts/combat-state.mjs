@@ -690,27 +690,27 @@ export class CombatState {
     // Spirit Shroud (active spell)
     // TODO: Should also check distance to target <= 10ft
     if (CombatState._hasEffect(attackerActor, "Spirit Shroud")) {
-      attackerBonuses.push({ name: "Spirit Shroud", formula: "1d8", type: "radiant", reason: "Spirit Shroud → +1d8 radiant per hit (within 10ft)" });
+      attackerBonuses.push({ name: "Spirit Shroud", formula: "1d8", type: "radiant", reason: "Spirit Shroud → +1d8 radiant per hit (within 10ft)", isSpellDerived: true });
     }
 
     // Holy Weapon (active spell)
     if (CombatState._hasEffect(attackerActor, "Holy Weapon")) {
-      attackerBonuses.push({ name: "Holy Weapon", formula: "2d8", type: "radiant", reason: "Holy Weapon → +2d8 radiant per hit" });
+      attackerBonuses.push({ name: "Holy Weapon", formula: "2d8", type: "radiant", reason: "Holy Weapon → +2d8 radiant per hit", isSpellDerived: true });
     }
 
     // Elemental Weapon (active spell)
     if (CombatState._hasEffect(attackerActor, "Elemental Weapon")) {
-      attackerBonuses.push({ name: "Elemental Weapon", formula: "1d4", type: "fire", reason: "Elemental Weapon → +1d4 elemental damage per hit" });
+      attackerBonuses.push({ name: "Elemental Weapon", formula: "1d4", type: "fire", reason: "Elemental Weapon → +1d4 elemental damage per hit", isSpellDerived: true });
     }
 
     // Crusader's Mantle (active spell aura)
     if (CombatState._hasEffect(attackerActor, "Crusader's Mantle") || CombatState._hasEffect(attackerActor, "Crusader")) {
-      attackerBonuses.push({ name: "Crusader's Mantle", formula: "1d4", type: "radiant", reason: "Crusader's Mantle → +1d4 radiant per hit" });
+      attackerBonuses.push({ name: "Crusader's Mantle", formula: "1d4", type: "radiant", reason: "Crusader's Mantle → +1d4 radiant per hit", isSpellDerived: true });
     }
 
     // Absorb Elements (active spell buff, melee only)
     if (CombatState._hasEffect(attackerActor, "Absorb Elements") && isMelee) {
-      attackerBonuses.push({ name: "Absorb Elements", formula: "1d6", type: "fire", reason: "Absorb Elements → +1d6 elemental damage (next melee hit)" });
+      attackerBonuses.push({ name: "Absorb Elements", formula: "1d6", type: "fire", reason: "Absorb Elements → +1d6 elemental damage (next melee hit)", isSpellDerived: true });
     }
 
     // Great Weapon Master +PB (2024 feat, heavy weapons only)
@@ -1325,5 +1325,88 @@ export class CombatState {
     console.log(`  Roll: ${state.finalRollMode} | Adv: [${advSrc}] | Disadv: [${disSrc}]`);
     console.log(`  AutoCrit: ${state.autoCrit} | CritRange: ${state.critRange}-20 | Slayer: ${state.slayerMatch ? state.slayerType : "no"}`);
     console.log(`  Target AC: ${state.target.ac} | HP: ${state.target.currentHP}/${state.target.maxHP}`);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Radiant Soul (Celestial Warlock 6+)
+  //
+  //  RAW: "Once per turn when you deal fire or radiant damage with a spell or
+  //  cantrip, you can add your Charisma modifier to that damage."
+  //
+  //  Triggers in two places in our pipeline:
+  //    1. Direct spell damage in save-engine._rollSpellDamage
+  //    2. Spell-derived weapon riders (Divine Smite, smite spells) when they
+  //       roll fire/radiant damage attached to a weapon attack
+  //
+  //  Once-per-turn enforced via actor flag, cleared on combatTurnChange.
+  //  Out-of-combat usage clears the flag immediately after firing (no
+  //  multi-trigger spam from a flurry of spells, but no permanent block
+  //  if the actor isn't in combat).
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Returns the Radiant Soul bonus value (CHA mod) if it applies, else 0.
+   * Does NOT mark the flag — caller must call markRadiantSoulUsed() after
+   * actually applying the bonus to a damage component.
+   *
+   * @param {Actor} actor - The attacking/casting actor
+   * @param {string} damageType - The damage type being dealt (case-insensitive)
+   * @returns {number} CHA modifier or 0 if not applicable
+   */
+  static getRadiantSoulBonus(actor, damageType) {
+    if (!actor || !damageType) return 0;
+
+    // Setting kill switch
+    try {
+      if (game.settings.get(MODULE_ID, "radiantSoulRiderEnabled") === false) return 0;
+    } catch (_) { /* setting not registered yet — proceed */ }
+
+    // Type gate — RAW: fire OR radiant only
+    const t = String(damageType).toLowerCase();
+    if (t !== "radiant" && t !== "fire") return 0;
+
+    // Feature presence — match by name (handles Celestial Warlock 6+ feature
+    // entry from D&D Beyond importer + native dnd5e content)
+    if (!CombatState._hasFeature(actor, "Radiant Soul")) return 0;
+
+    // Once-per-turn check
+    try {
+      if (actor.getFlag?.(MODULE_ID, "radiantSoul.usedThisTurn")) return 0;
+    } catch (_) { /* flag access failed — treat as unused */ }
+
+    const chaMod = Number(actor.system?.abilities?.cha?.mod ?? 0);
+    if (chaMod <= 0) return 0;
+
+    return chaMod;
+  }
+
+  /**
+   * Mark Radiant Soul as used for the current turn. Call this AFTER applying
+   * the bonus to a damage component so subsequent damage in the same turn
+   * skips it.
+   * @param {Actor} actor
+   */
+  static async markRadiantSoulUsed(actor) {
+    if (!actor) return;
+    try {
+      await actor.setFlag(MODULE_ID, "radiantSoul.usedThisTurn", true);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Failed to mark Radiant Soul used:`, err);
+    }
+  }
+
+  /**
+   * Clear the Radiant Soul once-per-turn flag. Called from the
+   * combatTurnChange hook when this actor's turn ends, and from combatEnd
+   * for cleanup.
+   * @param {Actor} actor
+   */
+  static async clearRadiantSoulFlag(actor) {
+    if (!actor) return;
+    try {
+      if (actor.getFlag?.(MODULE_ID, "radiantSoul.usedThisTurn")) {
+        await actor.unsetFlag(MODULE_ID, "radiantSoul.usedThisTurn");
+      }
+    } catch (_) { /* non-fatal */ }
   }
 }

@@ -7,6 +7,7 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
 import { DescriptionParser } from "./description-parser.mjs";
 import { DamageConstants } from "./damage-engine.mjs";
+import { CombatState } from "./combat-state.mjs";
 
 const PHYSICAL_TYPES = new Set(["bludgeoning", "piercing", "slashing"]);
 
@@ -219,10 +220,58 @@ export class DamageCalculator {
 
     // ── Attacker bonus damage (Hex, Hunter's Mark, Rage, Sneak Attack) ──
     const bonuses = targetState.attacker?.bonuses ?? targetState.attackerBonuses ?? [];
+    // Track first spell-derived radiant/fire bonus so Radiant Soul can attach
+    // to its component AFTER all bonuses are rolled. Per RAW: "add CHA mod to
+    // that damage" — singular, applies to ONE damage roll per turn.
+    let radiantSoulTargetIdx = -1;
+    let radiantSoulType = null;
     for (const bonus of bonuses) {
       if (!bonus.formula) continue;
+      const bonusType = bonus.type ?? components[0]?.type ?? "untyped";
       const result = await DamageCalculator.rollWithCrit(bonus.formula, rollData, isCrit, critRule, bonus.name);
-      components.push({ name: bonus.name ?? "Bonus", ...result, type: bonus.type ?? components[0]?.type ?? "untyped" });
+      const compIdx = components.length;
+      components.push({ name: bonus.name ?? "Bonus", ...result, type: bonusType });
+      // Mark the first qualifying spell-derived component for Radiant Soul
+      if (radiantSoulTargetIdx === -1
+          && bonus.isSpellDerived === true
+          && (bonusType === "radiant" || bonusType === "fire")) {
+        radiantSoulTargetIdx = compIdx;
+        radiantSoulType = bonusType;
+      }
+    }
+
+    // ── Radiant Soul (Celestial Warlock 6+) ──
+    // Apply CHA mod to the FIRST spell-derived radiant/fire bonus on this hit.
+    // Once-per-turn enforced via actor flag. The bonus is added as a NEW
+    // component (rather than mutating the existing roll) so the damage card
+    // shows it as a separate visible line — players can see exactly where
+    // the +5 came from.
+    try {
+      if (radiantSoulTargetIdx !== -1) {
+        const chaBonus = CombatState.getRadiantSoulBonus(actor, radiantSoulType);
+        if (chaBonus > 0) {
+          // Push as a flat component — formula matches the bonus value so the
+          // existing rollWithCrit/applyDamageModifiers pipeline handles it.
+          const flatRoll = new Roll(`${chaBonus}`);
+          await flatRoll.evaluate();
+          components.push({
+            name: "Radiant Soul",
+            formula: `${chaBonus}`,
+            roll: flatRoll,
+            total: chaBonus,
+            type: radiantSoulType,
+            isFeatureRider: true,
+            featureLabel: "RADIANT SOUL",
+          });
+          // Mark used — fire-and-forget; the await isn't strictly necessary
+          // for correctness because the next damage roll comes after this
+          // pipeline completes, but we await for consistency.
+          await CombatState.markRadiantSoulUsed(actor);
+          console.log(`${MODULE_ID} | Radiant Soul: +${chaBonus} ${radiantSoulType} added to ${actor.name}'s ${item.name} (Celestial Warlock CHA mod)`);
+        }
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Radiant Soul rider check failed (non-fatal):`, err);
     }
 
     // ── Slayer bonus ──

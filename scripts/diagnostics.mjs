@@ -160,6 +160,8 @@ export function checkSettings() {
     ["flanking",                 "boolean", "Enable flanking advantage"],
     ["enableLootGeneration",     "boolean", "Enable loot generation"],
     ["enableDeathPipeline",      "boolean", "Enable dead art conversion"],
+    ["radiantSoulRiderEnabled",  "boolean", "Radiant Soul rider (Celestial Warlock 6+)"],
+    ["descriptionOnKillRiderEnabled", "boolean", "On-kill description riders (Blood Halberd, etc.)"],
   ];
 
   for (const [key, expectedType, desc] of criticalSettings) {
@@ -413,6 +415,51 @@ export function smokeTest() {
   } catch (err) {
     _log(FAIL, "Socket", err.message);
     results.push({ test: "Socket.exists", status: FAIL, error: err.message });
+  }
+
+  // ── Test 9: Description-parser onKillRider regex sanity ──
+  _sub("DescriptionParser.onKillRider");
+  try {
+    if (api.DescriptionParser?._parseOnKillRider) {
+      // Three canonical phrasings — each should parse cleanly
+      const samples = [
+        { text: "Reducing a target to zero hitpoints grants 2d6 temporary hitpoints", expectFormula: "2d6", expectReward: "tempHP" },
+        { text: "When you reduce a creature to 0 HP, you regain 1d10 hit points", expectFormula: "1d10", expectReward: "hp" },
+        { text: "Killing a creature with this weapon grants 3d6 temp hp", expectFormula: "3d6", expectReward: "tempHP" },
+      ];
+      let parsed = 0;
+      for (const s of samples) {
+        const r = api.DescriptionParser._parseOnKillRider(s.text, s.text.toLowerCase());
+        if (r?.formula === s.expectFormula && r?.reward === s.expectReward) parsed++;
+      }
+      const ok = parsed === samples.length;
+      _log(ok ? OK : WARN, "_parseOnKillRider()", `Parsed ${parsed}/${samples.length} canonical phrasings`);
+      results.push({ test: "DescriptionParser.onKillRider", status: ok ? OK : WARN });
+    } else {
+      _log(SKIP, "_parseOnKillRider()", "Not exposed on API (smoke test only)");
+      results.push({ test: "DescriptionParser.onKillRider", status: SKIP });
+    }
+  } catch (err) {
+    _log(FAIL, "_parseOnKillRider()", err.message);
+    results.push({ test: "DescriptionParser.onKillRider", status: FAIL, error: err.message });
+  }
+
+  // ── Test 10: CombatState.getRadiantSoulBonus signature check ──
+  _sub("CombatState.RadiantSoul");
+  try {
+    if (api.CombatState?.getRadiantSoulBonus) {
+      // Calling with no actor should return 0 (defensive guard)
+      const zero = api.CombatState.getRadiantSoulBonus(null, "radiant");
+      const ok = zero === 0;
+      _log(ok ? OK : WARN, "getRadiantSoulBonus()", `null actor returns ${zero} (expected 0)`);
+      results.push({ test: "CombatState.RadiantSoul.signature", status: ok ? OK : WARN });
+    } else {
+      _log(SKIP, "getRadiantSoulBonus()", "Not exposed on API (smoke test only)");
+      results.push({ test: "CombatState.RadiantSoul.signature", status: SKIP });
+    }
+  } catch (err) {
+    _log(FAIL, "getRadiantSoulBonus()", err.message);
+    results.push({ test: "CombatState.RadiantSoul.signature", status: FAIL, error: err.message });
   }
 
   const ok   = results.filter(r => r.status === OK).length;

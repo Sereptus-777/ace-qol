@@ -45,6 +45,7 @@ export class RiderEngine {
           highlight: isUndeadOrFiend ? targetType.toUpperCase() : null,
           isMeleeOnly: true,
           scalable: true, // can pick higher slot for more dice
+          isSpellDerived: true, // 2024 PHB: Divine Smite is a spell — qualifies for Radiant Soul / spell-only riders
         });
       }
     }
@@ -158,6 +159,7 @@ export class RiderEngine {
           icon: ss.icon,
           highlight: "ACTIVE",
           isDischarge: true, // Auto-included, just confirming
+          isSpellDerived: true, // smite spells qualify for Radiant Soul if they deal fire/radiant
         });
       }
     }

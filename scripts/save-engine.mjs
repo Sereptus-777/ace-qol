@@ -1923,6 +1923,40 @@ export class SaveEngine {
       }
     }
 
+    // ── Radiant Soul (Celestial Warlock 6+) — direct spell damage path ──
+    // RAW: "Once per turn when you deal fire or radiant damage with a spell or
+    // cantrip, you can add your Charisma modifier to that damage."
+    // Find the first fire/radiant component and add CHA mod. Once-per-turn
+    // enforced via actor flag. The spell-source check is implicit here
+    // because _rollSpellDamage is ONLY called for spell items — every path
+    // through this method qualifies as "damage with a spell or cantrip".
+    try {
+      const radiantSoulIdx = damageComponents.findIndex(c => {
+        const t = String(c.type ?? "").toLowerCase();
+        return t === "radiant" || t === "fire";
+      });
+      if (radiantSoulIdx !== -1) {
+        const targetType = damageComponents[radiantSoulIdx].type;
+        const chaBonus = CombatState.getRadiantSoulBonus(casterActor, targetType);
+        if (chaBonus > 0) {
+          // Mutate the component's total + display formula so the bonus shows
+          // inline with the spell's damage rather than as a separate line.
+          // Direct spell damage is a single roll per type — adding a sibling
+          // component would split the visual into two pieces of the same
+          // type, which reads worse on the merge card.
+          const original = damageComponents[radiantSoulIdx];
+          original.total = (original.total ?? 0) + chaBonus;
+          original.formula = `${original.formula} + ${chaBonus}`;
+          original.radiantSoulBonus = chaBonus;
+          original.featureRiders = [...(original.featureRiders ?? []), { name: "Radiant Soul", bonus: chaBonus }];
+          await CombatState.markRadiantSoulUsed(casterActor);
+          console.log(`${MODULE_ID} | Radiant Soul: +${chaBonus} ${targetType} added to ${casterActor.name}'s ${item.name} (direct spell path)`);
+        }
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Radiant Soul direct-spell rider check failed (non-fatal):`, err);
+    }
+
     // ── Visible Dice So Nice animation for spell damage ──
     // Save rolls already animate via the save-engine path. Damage rolls were
     // silently evaluated, so the merge card displayed totals without any dice

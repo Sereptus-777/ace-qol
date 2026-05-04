@@ -96,6 +96,14 @@ export class DescriptionParser {
        *                    requireType?:str (e.g. "construct", "fiend|undead") } */
       hpThresholdRider: DescriptionParser._parseHpThresholdRider(text, lower),
 
+      /** On-kill rider — attacker reward when this attack reduces target to 0 HP.
+       *  Pattern: "Reducing a target to zero hitpoints grants 2d6 temporary hitpoints"
+       *  (Blood Halberd), "When you reduce a creature to 0 HP you regain Xd6 hit
+       *   points" (Demonblade-style life-leech weapons), "Killing a creature with
+       *   this weapon grants Xd6 temp HP", etc.
+       *  Returns null or { formula:str, reward:"tempHP"|"hp", target:"attacker" } */
+      onKillRider: DescriptionParser._parseOnKillRider(text, lower),
+
       /** Raw text for reference */
       rawText: text,
     };
@@ -753,6 +761,121 @@ export class DescriptionParser {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  //  On-Kill Rider — attacker reward when reducing target to 0 HP
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Detect on-kill riders that grant the ATTACKER something (temp HP, healing,
+   * etc.) when this attack reduces a target to 0 hit points.
+   *
+   * Examples:
+   *   Blood Halberd: "Reducing a target to zero hitpoints grants 2d6 temporary
+   *                   hitpoints"
+   *   Demon-life weapons: "When you reduce a creature to 0 HP, you regain
+   *                        1d10 hit points"
+   *   Soul-drinker: "Killing a creature with this weapon grants 3d6 temp HP"
+   *
+   * Returns null when no kill-trigger pattern is detected, otherwise:
+   *   {
+   *     formula: "2d6"        // dice formula to roll (no spaces)
+   *     reward:  "tempHP" | "hp"
+   *     target:  "attacker"   // always — riders that benefit the target on
+   *                            //  kill make no semantic sense, leave room
+   *                            //  for future expansion
+   *     phrase:  "<excerpt>"   // matched text for debugging
+   *   }
+   *
+   * Detection is permissive — multiple phrasings of the same RAW pattern.
+   * False positives are filtered by the kill-trigger keyword reject up front.
+   */
+  static _parseOnKillRider(text, lower) {
+    if (!text || !lower) return null;
+
+    // Quick reject — no kill-trigger language anywhere
+    // Covers: "reducing... to 0/zero", "kills/killing", "drops to 0/zero"
+    const triggerProbe = /\b(?:reducing|reduce|kills?|killing|drop(?:s|ped)?\s+to\s+(?:0|zero))\b/i;
+    if (!triggerProbe.test(text)) return null;
+
+    // ── TEMP HP variants ──
+    // Match flexible phrasings of "<kill phrase> grants/gives Xd6 temp HP".
+    // The {0,80} allows for filler text between the kill phrase and the reward
+    // (e.g., "...to 0 hit points grants the wielder 2d6 temp hp").
+    const tempHpPatterns = [
+      // "Reducing a target to zero hitpoints grants 2d6 temporary hitpoints"
+      // "Reducing a creature to 0 hit points grants Xd6 temp hp"
+      /(?:reducing|reduce|killing|kills)\s+(?:an?\s+|the\s+)?(?:target|creature|enemy|foe)?[^.]{0,80}?(?:grants?|gives?|gains?|regain)\s+(?:you\s+|the\s+wielder\s+)?(\d+d\d+(?:\s*\+\s*\d+)?)\s+(?:temp(?:orary)?\s+(?:hit\s*)?points?|temp\s+hp)/i,
+      // "When you reduce a creature to 0 HP, you gain Xd6 temp HP"
+      /(?:when|if)\s+(?:you|this\s+attack)\s+(?:reduces?|kills?)\s+(?:an?\s+|the\s+)?(?:target|creature|enemy|foe)[^.]{0,80}?(?:grants?|gives?|gains?|regain)\s+(?:you\s+)?(\d+d\d+(?:\s*\+\s*\d+)?)\s+(?:temp(?:orary)?\s+(?:hit\s*)?points?|temp\s+hp)/i,
+      // "Drops to 0, attacker gains Xd6 temp HP"
+      /drops?\s+to\s+(?:0|zero)[^.]{0,80}?(?:attacker|wielder|you)\s+(?:gains?|grants?|regain)\s+(\d+d\d+(?:\s*\+\s*\d+)?)\s+(?:temp(?:orary)?\s+(?:hit\s*)?points?|temp\s+hp)/i,
+    ];
+
+    for (const re of tempHpPatterns) {
+      const m = text.match(re);
+      if (m) {
+        const formula = m[1].trim().replace(/\s+/g, "");
+        if (DescriptionParser._isValidDiceFormula(formula)) {
+          return {
+            formula,
+            reward: "tempHP",
+            target: "attacker",
+            phrase: m[0].slice(0, 120),
+          };
+        }
+      }
+    }
+
+    // ── SELF-HEAL (HP regain) variants ──
+    // Distinct from temp HP. Must NOT include the word "temp" anywhere in the
+    // matched phrase, otherwise we'd misclassify temp-HP rewards as healing.
+    // Verb alternation is broader than temp HP because heal phrasings have
+    // more variety in natural English: "regain", "heal", "restore", plus
+    // "gain", "grants", "gives" (each in singular/plural). The runtime
+    // !temp check below catches any temp-HP false positives.
+    const healPatterns = [
+      // "Reducing a target to 0 HP, you regain 1d10 hit points"
+      /(?:reducing|reduce|killing|kills)\s+(?:an?\s+|the\s+)?(?:target|creature|enemy|foe)?[^.]{0,80}?(?:regain|heal|restore|gains?|grants?|gives?)\s+(?:you\s+|the\s+wielder\s+)?(\d+d\d+(?:\s*\+\s*\d+)?)\s+(?:hit\s*points?|hp)\b(?!\s*as\s*temp)/i,
+      // "When you kill a creature, you regain Xd6 hit points"
+      /(?:when|if)\s+(?:you|this\s+attack)\s+(?:reduces?|kills?)\s+(?:an?\s+|the\s+)?(?:target|creature|enemy|foe)[^.]{0,80}?(?:regain|heal|restore|gains?|grants?|gives?)\s+(?:you\s+)?(\d+d\d+(?:\s*\+\s*\d+)?)\s+(?:hit\s*points?|hp)\b(?!\s*as\s*temp)/i,
+    ];
+
+    for (const re of healPatterns) {
+      const m = text.match(re);
+      if (m && !/\btemp(?:orary)?\b/i.test(m[0])) {
+        const formula = m[1].trim().replace(/\s+/g, "");
+        if (DescriptionParser._isValidDiceFormula(formula)) {
+          return {
+            formula,
+            reward: "hp",
+            target: "attacker",
+            phrase: m[0].slice(0, 120),
+          };
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Lightweight dice-formula sanity check. We don't need full Roll-engine
+   * validation — just verify the matched substring looks like a real formula
+   * before treating it as authoritative. Catches regex false-positives where
+   * the dice-formula capture got something silly like "0d0" or "999d999".
+   */
+  static _isValidDiceFormula(formula) {
+    if (!formula) return false;
+    const m = formula.match(/^(\d+)d(\d+)(?:\+(\d+))?$/);
+    if (!m) return false;
+    const num = parseInt(m[1]);
+    const die = parseInt(m[2]);
+    if (!Number.isFinite(num) || !Number.isFinite(die)) return false;
+    if (num < 1 || num > 20) return false;     // reasonable upper bound
+    if (![4,6,8,10,12,20,100].includes(die)) return false;  // standard dice only
+    return true;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   //  Sever Rider — secondary-roll mechanic (Sword of Sharpness, Vorpal Sword)
   // ═══════════════════════════════════════════════════════════════════════════
 
@@ -890,6 +1013,9 @@ export class DescriptionParser {
       effectTable: null,
       halfOnSave: false,
       severRider: null,
+      repeatingSave: null,
+      hpThresholdRider: null,
+      onKillRider: null,
       rawText: "",
     };
   }
@@ -904,7 +1030,10 @@ export class DescriptionParser {
         || parsed.conditions.length > 0
         || parsed.creatureTrigger !== null
         || parsed.effectTable !== null
-        || parsed.severRider !== null;
+        || parsed.severRider !== null
+        || parsed.repeatingSave !== null
+        || parsed.hpThresholdRider !== null
+        || parsed.onKillRider !== null;
   }
 
   /**
