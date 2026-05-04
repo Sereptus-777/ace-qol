@@ -35,6 +35,7 @@ import { CombatActions }        from "./combat-actions.mjs";
 import { FumbleEngine }         from "./fumble-engine.mjs";
 import { OAPrompt }             from "./oa-prompt.mjs";
 import { InitiativeTools }      from "./initiative-tools.mjs";
+import { AuraEngine }           from "./aura-engine.mjs";
 import { PolymorphSpellPipeline } from "./polymorph-spell-pipeline.mjs";
 import { TokenCache }            from "./token-cache.mjs";
 import { DurationTracker }      from "./duration-tracker.mjs";
@@ -643,6 +644,16 @@ Hooks.once("ready", () => {
     InitiativeTools.init();
   } catch (err) {
     console.error(`${MODULE_ID} | Initiative Tools init failed:`, err);
+  }
+
+  // Aura Engine — replaces broken ActiveAuras module (dnd5e 5.x incompat).
+  // Self-maintaining: applies/removes aura marker effects on token movement.
+  // Catalog: Paladin Auras of Protection / Warding / Courage / Hate /
+  // The Guardian, plus generic feature-name detection.
+  try {
+    AuraEngine.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Aura Engine init failed:`, err);
   }
 
   // Polymorph Spell Pipeline — GM-only. Detects Polymorph / True Polymorph /
@@ -1275,6 +1286,14 @@ Hooks.once("ready", () => {
     InitiativeTools,
     rollAllNpcs: () => InitiativeTools.rollAllNpcs(),
     rollAllPcs:  () => InitiativeTools.rollAllPcs(),
+    AuraEngine,
+    /** Quick-call shortcuts.
+     *  game.aceQol.recomputeAuras()   → full rescan + apply/remove
+     *  game.aceQol.cleanAllAuras()    → wipe ALL aura effects (ours + stale
+     *                                    ActiveAuras leftovers) then rebuild
+     */
+    recomputeAuras: () => AuraEngine.recomputeAll(),
+    cleanAllAuras:  () => AuraEngine.cleanAllAndRebuild(),
     DurationTracker,
     durationTracker,
     speedRolls,

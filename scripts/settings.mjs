@@ -326,6 +326,12 @@ export class QolSettings {
       scope: "world", config: false, type: Boolean, default: true,
     });
 
+    s("auraEngineEnabled", {
+      name: "Aura Engine — Auto-Apply / Auto-Remove",
+      hint: "Self-maintaining replacement for the (broken in dnd5e 5.x) ActiveAuras module. Watches token movement and dynamically applies/removes paladin aura marker effects on tokens within range. Catalog includes Aura of Protection / Warding / Courage / Hate / The Guardian and is easy to extend.",
+      scope: "world", config: false, type: Boolean, default: true,
+    });
+
     s("batchResultsCard", {
       name:    "Batch Combat Results Card",
       hint:    "Show all targets in one consolidated damage card instead of individual cards per target.",
