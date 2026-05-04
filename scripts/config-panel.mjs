@@ -30,7 +30,7 @@ const TABS = [
   { id: "templates",  label: "Templates",          icon: "fa-solid fa-circle-dot",
     settings: ["autoTargetTemplates", "autoDeleteInstantTemplates", "excludeCasterFromTemplates"] },
   { id: "auras",      label: "Auras",              icon: "fa-solid fa-circle-radiation",
-    settings: ["auraEngineEnabled"] },
+    settings: ["auraEngineEnabled", "auraVisualMode"] },
   { id: "death",      label: "Death",              icon: "fa-solid fa-skull",
     settings: ["enableDeadMarker", "enableDeathPipeline", "deleteTokenOnDeath", "enableBloodied", "announceBloodied",
                "autoDeathSaves", "massiveDamageDeath", "autoResetOnHeal"] },

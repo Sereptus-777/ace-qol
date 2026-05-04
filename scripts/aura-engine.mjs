@@ -592,12 +592,28 @@ export class AuraVisualLayer {
   static container = null;
 
   /**
+   * Returns true if our PIXI ring renderer should be active.
+   * Auto-disables when Automated Animations is active (it draws its own
+   * particle swirls for aura effects). User can override via setting.
+   */
+  static _shouldRender() {
+    const mode = QolSettings.get?.("auraVisualMode") ?? "auto";
+    if (mode === "off")   return false;
+    if (mode === "rings") return true;
+    // "auto": render rings only if AA is NOT active
+    return !game.modules?.get?.("autoanimations")?.active;
+  }
+
+  /**
    * Attach the aura ring container to the canvas. Idempotent.
    */
   static attach() {
     if (!canvas?.tokens) return;
+    if (!this._shouldRender()) {
+      this.detach();
+      return;
+    }
     if (this.container && !this.container.destroyed) {
-      // Already attached; refresh in case the scene is fresh
       this.refresh();
       return;
     }
@@ -617,8 +633,13 @@ export class AuraVisualLayer {
 
   /**
    * Re-draw all aura rings from scratch. Cheap (Graphics is GPU-accelerated).
+   * Auto-noops if rendering is disabled (e.g., AA is active and mode=auto).
    */
   static refresh() {
+    if (!this._shouldRender()) {
+      this.detach();
+      return;
+    }
     if (!this.container || this.container.destroyed) {
       this.attach();
       return;

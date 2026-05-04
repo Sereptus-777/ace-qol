@@ -332,6 +332,13 @@ export class QolSettings {
       scope: "world", config: false, type: Boolean, default: true,
     });
 
+    s("auraVisualMode", {
+      name: "Aura Visual Style",
+      hint: "How to render aura range circles. AUTO (default) = use our PIXI rings ONLY when Automated Animations is NOT active (lets AA's particle visuals handle aura visuals when present). RINGS = always show our PIXI rings (overlay alongside AA if active). OFF = no ace-qol rings at all (rely on AA / dnd5e core / nothing).",
+      scope: "world", config: false, type: String, default: "auto",
+      choices: { auto: "Auto (use AA visuals when present)", rings: "Always show PIXI rings", off: "Off (no ace-qol rings)" },
+    });
+
     s("batchResultsCard", {
       name:    "Batch Combat Results Card",
       hint:    "Show all targets in one consolidated damage card instead of individual cards per target.",
