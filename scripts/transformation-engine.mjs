@@ -544,7 +544,14 @@ export class TransformationEngine {
     }
 
     // ── Chat card ──
-    await this._postRevertCard(reverted ?? actor, state, reason, opts);
+    // Suppress on GM_FORCED — the original transform card's "Revert Now"
+    // button already shows a "Reverted ✓" terminal state, no need for a
+    // duplicate card. Automatic reasons (ZERO_HP, DURATION_EXPIRED,
+    // CONCENTRATION_END) still post a card since they happen without
+    // explicit GM action.
+    if (reason !== REVERT_REASON.GM_FORCED) {
+      await this._postRevertCard(reverted ?? actor, state, reason, opts);
+    }
 
     console.log(`${MODULE_ID} | Reverted ${actor.name} (reason: ${reason})`);
     return true;
@@ -897,6 +904,11 @@ export class TransformationEngine {
       const sourceName = sourceActor.name;
       const targetImg  = target.img || target.prototypeToken?.texture?.src || "icons/svg/mystery-man.svg";
       const sourceImg  = sourceActor.img || sourceActor.prototypeToken?.texture?.src || "icons/svg/mystery-man.svg";
+      // Thumbnails reversed on purpose so the visual matches the "Revert"
+      // button below: LEFT = current form (the beast you ARE right now),
+      // ARROW, RIGHT = original form (where Revert will take you).
+      // The header text stays past-tense ("X transformed into Y") to describe
+      // what happened, but the images describe the current state + action.
       const html = `
         <div class="ace-qol-transform-card">
           <div class="ace-qol-tx-header">
@@ -905,9 +917,9 @@ export class TransformationEngine {
             <span class="ace-qol-tx-source">(${sourceLabel})</span>
           </div>
           <div class="ace-qol-tx-thumbs">
-            <img src="${targetImg}" class="ace-qol-tx-thumb" title="${targetName} (original)" />
-            <i class="fas fa-arrow-right ace-qol-tx-arrow"></i>
             <img src="${sourceImg}" class="ace-qol-tx-thumb" title="${sourceName} (current form)" />
+            <i class="fas fa-arrow-right ace-qol-tx-arrow"></i>
+            <img src="${targetImg}" class="ace-qol-tx-thumb" title="${targetName} (revert destination)" />
           </div>
           <div class="ace-qol-tx-body">
             <span class="ace-qol-tx-spell">${spellName}</span>
@@ -985,7 +997,13 @@ export class TransformationEngine {
       // GM_FORCED bypasses the voluntaryRevertOK gate (Polymorph spell
       // disallows voluntary self-revert; GM fiat overrides).
       const ok = await TransformationEngine.revert(realActor, REVERT_REASON.GM_FORCED);
-      if (!ok) {
+      if (ok) {
+        // Success — change button to "Reverted ✓" terminal state. Stays
+        // disabled so re-click does nothing. The separate revert chat card
+        // posts elsewhere with the reversed-direction thumbnails.
+        btn.innerHTML = `<i class="fas fa-check"></i> Reverted`;
+        btn.classList?.add?.("ace-qol-tx-revert-btn-done");
+      } else {
         ui.notifications?.warn(`Polymorph: revert returned false for ${realActor.name} — check console for details.`);
         btn.disabled = false;
         btn.innerHTML = `<i class="fas fa-undo-alt"></i> Revert Now`;
@@ -993,6 +1011,12 @@ export class TransformationEngine {
     } catch (err) {
       console.warn(`${MODULE_ID} | revert button click failed:`, err);
       ui.notifications?.error(`Polymorph revert error: ${err.message ?? err}`);
+      // Restore button on throw so user can retry
+      const btn = event?.target?.closest?.("[data-action='aceQolPolymorphRevert']");
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = `<i class="fas fa-undo-alt"></i> Revert Now`;
+      }
     }
   }
 
