@@ -28,7 +28,7 @@ const TABS = [
   { id: "flanking",   label: "Flanking",           icon: "fa-solid fa-arrows-left-right",
     settings: ["flanking", "flankingAllowReachWeapons"] },
   { id: "templates",  label: "Templates",          icon: "fa-solid fa-circle-dot",
-    settings: ["autoTargetTemplates", "autoDeleteInstantTemplates"] },
+    settings: ["autoTargetTemplates", "autoDeleteInstantTemplates", "excludeCasterFromTemplates"] },
   { id: "death",      label: "Death",              icon: "fa-solid fa-skull",
     settings: ["enableDeadMarker", "enableDeathPipeline", "deleteTokenOnDeath", "enableBloodied", "announceBloodied",
                "autoDeathSaves", "massiveDamageDeath", "autoResetOnHeal"] },

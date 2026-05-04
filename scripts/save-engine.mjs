@@ -302,7 +302,17 @@ export class SaveEngine {
     const targets = game.user.targets;
     if (!targets.size) return;
 
-    const tokens = [...targets];
+    let tokens = [...targets];
+
+    // Exclude caster — same logic as the template path. See _onTemplateCreated
+    // for full justification. GM can re-add via "+ TARGET SELECTED" button.
+    if (QolSettings.get?.("excludeCasterFromTemplates") !== false) {
+      tokens = tokens.filter(t => t.actor?.id !== actor?.id);
+      if (!tokens.length) {
+        console.log(`${MODULE_ID} | All targets were the caster — skipping save card`);
+        return;
+      }
+    }
 
     // ── Fast-path for NPC-only single-target saves ──
     // If the GM is rolling on a single NPC with no PCs in the mix, the
@@ -442,6 +452,26 @@ export class SaveEngine {
     pending.templateDoc = templateDoc;
 
     const { item, actor, saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activityId } = pending;
+
+    // ── Exclude the caster from the auto-targeted list ──
+    // Foundry / dnd5e auto-targets every token an AOE template touches when
+    // it lands. If the caster is standing inside their own AOE (Lightning
+    // Bolt line origin, Fireball self-cast, etc.) they show up in the save
+    // list. RAW the caster CAN target themselves with most damage AOEs, but
+    // 99% of the time the GM doesn't want it. Filter them out by default;
+    // the GM can re-add via "+ TARGET SELECTED" button if intentional.
+    if (QolSettings.get?.("excludeCasterFromTemplates") !== false) {
+      const before = tokens.length;
+      tokens = tokens.filter(t => t.actor?.id !== actor?.id);
+      const after = tokens.length;
+      if (before !== after) {
+        console.log(`${MODULE_ID} | Excluded caster ${actor?.name} from save targets (${before} → ${after})`);
+      }
+    }
+    if (!tokens.length) {
+      console.warn(`${MODULE_ID} | After caster exclusion, 0 targets remain — skipping save card`);
+      return;
+    }
 
     console.log(`${MODULE_ID} | Template resolved: spell="${item.name}", timing=`, timing, `isInstant=${timing?.isInstant}, tokens=${tokens.length}`);
 

@@ -320,6 +320,12 @@ export class QolSettings {
       scope: "world", config: false, type: Boolean, default: false,
     });
 
+    s("excludeCasterFromTemplates", {
+      name: "Exclude Caster From Auto-Targeted AOE Saves",
+      hint: "When the caster is standing inside their own AOE template (Lightning Bolt line origin, Fireball self-cast, etc.), Foundry/dnd5e auto-targets them. By default ace-qol filters the caster OUT of the save target list. Turn this OFF if you actually want the caster to roll their own save (Evasion + half damage builds, etc.).",
+      scope: "world", config: false, type: Boolean, default: true,
+    });
+
     s("batchResultsCard", {
       name:    "Batch Combat Results Card",
       hint:    "Show all targets in one consolidated damage card instead of individual cards per target.",
