@@ -2,7 +2,7 @@
   "id": "ace-qol",
   "title": "ACE: Quality of Life — Combat Automation Engine",
   "description": "Comprehensive D&D 5e combat automation. Attack resolution, damage separation by type, save automation, target state assessment, concentration tracking, and extended Active Effects — all in one module, everything ON by default.",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "url": "https://github.com/Sereptus-777/ace-qol",
   "manifest": "https://raw.githubusercontent.com/Sereptus-777/ace-qol/master/module.json",
   "download": "https://github.com/Sereptus-777/ace-qol/archive/refs/heads/master.zip",
