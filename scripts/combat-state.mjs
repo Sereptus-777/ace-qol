@@ -29,8 +29,20 @@ export class CombatState {
 
     // ── Smart melee/ranged detection ────────────────────────────────────
     // Don't just trust actionType — cross-check weapon type, properties, and range.
-    // Catches misconfigured items (e.g., longbow with actionType "mwak")
-    const actuallyRanged = CombatState._isActuallyRanged(item, actionType);
+    // Catches misconfigured items (e.g., longbow with actionType "mwak").
+    //
+    // v0.4.22.7: For thrown weapons (spear, javelin, etc.), the call needs
+    // attacker-to-target distance to distinguish a melee swing from a throw.
+    // We resolve the attacker's token from canvas and pass distance into
+    // `_isActuallyRanged`. If no token can be found (off-canvas actor, etc.)
+    // the function falls back to its old behavior (treats thrown as melee).
+    const attackerToken = opts.attackerToken
+                       ?? canvas.tokens?.placeables?.find(t => t.actor?.id === attackerActor.id)
+                       ?? null;
+    const distanceToTarget = (attackerToken && targetToken)
+      ? CombatState._getDistance(attackerToken, targetToken)
+      : null;
+    const actuallyRanged = CombatState._isActuallyRanged(item, actionType, distanceToTarget);
     const isMelee = opts.isMelee ?? !actuallyRanged;
     const isRanged = !isMelee;
 
@@ -364,17 +376,38 @@ export class CombatState {
           const flagSet = targetCombatant.flags?.core?.hasActed === true
                        || targetCombatant.flags?.dnd5e?.hasActed === true;
 
-          // Initiative-order fallback: target has acted if their initiative
-          // is HIGHER than the current combatant (same round, earlier turn).
-          // Only valid AFTER round 1's first turn passes.
+          // v0.4.22.7 FIX: Assassinate is PER-COMBAT, not per-round. The
+          // previous logic only checked init order within the current round,
+          // so in Round 3 with Jeth (12.18) attacking Lord Soth (10.11),
+          // initOrderSaysActed = (10.11 > 12.18) = false, falsely saying
+          // Lord Soth hadn't acted — even though Soth had already taken
+          // turns in Rounds 1 and 2.
+          //
+          // Correct logic:
+          //   • Round 1: only init-order tells us whether the target's turn
+          //     has come up yet. Target with HIGHER init has acted; target
+          //     with LOWER init hasn't yet.
+          //   • Round 2+: every combatant in initiative has had at least one
+          //     full round to take their turn. Assume they've acted unless
+          //     the flag explicitly says otherwise.
           const currentCombatant = combat.combatant;
           const targetInit = Number(targetCombatant.initiative ?? -Infinity);
           const currentInit = Number(currentCombatant?.initiative ?? -Infinity);
-          const initOrderSaysActed = combat.round > 1
-            ? targetInit > currentInit  // round 2+: target's earlier-init turn already passed this round
-            : (Number.isFinite(targetInit) && Number.isFinite(currentInit) && targetInit > currentInit);
 
-          const targetHasActed = flagSet || initOrderSaysActed;
+          let targetHasActed;
+          if (flagSet) {
+            // Foundry/dnd5e flag explicitly set — trust it
+            targetHasActed = true;
+          } else if (combat.round > 1) {
+            // Round 2+: target has had at least one full round to act
+            targetHasActed = true;
+          } else {
+            // Round 1: target acted if their init was higher (turn already
+            // passed before current attacker's turn)
+            targetHasActed = Number.isFinite(targetInit)
+                          && Number.isFinite(currentInit)
+                          && targetInit > currentInit;
+          }
 
           if (!targetHasActed) {
             // ── Advantage portion (RAW: target hasn't taken a turn yet) ──
@@ -968,7 +1001,7 @@ export class CombatState {
    * Cross-checks weapon type, properties, and range against actionType.
    * Catches misconfigured items like a longbow set to "mwak".
    */
-  static _isActuallyRanged(item, actionType) {
+  static _isActuallyRanged(item, actionType, distanceToTarget = null) {
     if (!item) return false;
     const sys = item.system ?? {};
     const props = sys.properties ?? new Set();
@@ -983,11 +1016,25 @@ export class CombatState {
     // Check for ammunition property (bows, crossbows)
     if (props.has("amm")) return true;
 
-    // Thrown weapons (spear, javelin, handaxe, dagger) are fundamentally MELEE
-    // weapons that can optionally be thrown. Their range values (20/60, 30/120)
-    // must NOT override the melee classification. When actually thrown, the
-    // system sets actionType to "rwak" — caught by the check above.
-    if (props.has("thr")) return false;
+    // ── Thrown weapons (spear, javelin, handaxe, dagger) ──
+    //
+    // v0.4.22.7 FIX: Previously this returned `false` (= melee) on any thrown
+    // weapon, on the assumption that dnd5e would set actionType to "rwak" when
+    // actually throwing. But dnd5e 5.x doesn't always do that — actionType can
+    // stay "mwak" even when the player is throwing the weapon at long range.
+    // Result: a player throwing a spear from 30ft was getting flanking
+    // advantage as if it were a melee attack, because flanking only gates on
+    // `isMelee` (which was true).
+    //
+    // Correct test: distance to target. Thrown weapons used within melee reach
+    // (5ft) are melee swings; anything further is a thrown attack and counts
+    // as ranged for flanking, ranged-disadvantage-from-adjacent-hostile, etc.
+    if (props.has("thr")) {
+      if (Number.isFinite(distanceToTarget) && distanceToTarget > 5) {
+        return true; // throwing — distance > melee reach
+      }
+      return false; // melee swing or no distance available
+    }
 
     // Check range — if normal range is significantly more than melee range, it's ranged
     const normalRange = sys.range?.value ?? 0;
