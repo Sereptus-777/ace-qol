@@ -113,7 +113,30 @@ export class SaveEngine {
         const dedupKey = activityUuid || activityId;
         if (!dedupKey) return;
 
-        // Already processed by the standard hook? skip
+        // Fast-bail: if this activity was processed within the 5s TTL
+        // (same cast repeated, prior cast still in dedup window), skip
+        // without yielding.
+        if (this._processedActivityIds.has(dedupKey)) return;
+
+        // ── v0.4.22.2 race fix ──
+        // The standard `dnd5e.postCreateUsageMessage` hook fires ~2ms after
+        // `createChatMessage` for activities that go through the normal
+        // path. Without yielding here, the fallback hook would race the
+        // standard hook: both would call `_onUseActivity` for the same
+        // cast (standard directly, fallback via setTimeout 50ms later).
+        // The two calls fight over shared state (`overrideCache`, the
+        // 200ms PC-save merge timeout, target sets), and the visible
+        // symptom is first-cast-after-reload producing no save card.
+        //
+        // We wait 200ms. If `dnd5e.postCreateUsageMessage` fires in that
+        // window, the standard handler's `_onUseActivity` will have set
+        // the dedup synchronously at the top of the function — we re-check
+        // and bail. The fallback only engages when the standard path
+        // genuinely did not run (the case it was built for).
+        await new Promise(r => setTimeout(r, 200));
+
+        // Re-check dedup after the yield. If the standard hook fired
+        // during the wait, it owns the activity — bail.
         if (this._processedActivityIds.has(dedupKey)) return;
 
         // Resolve the live activity. UUID path is the primary route in
