@@ -182,12 +182,64 @@ export class ConcentrationWidget {
   //  Template Deleted — Remove Widget
   // ═══════════════════════════════════════════════════════════════
 
-  _onTemplateDeleted(templateId) {
+  async _onTemplateDeleted(templateId) {
     if (!this._activeSpells.has(templateId)) return;
     const tracker = this._activeSpells.get(templateId);
-    console.log(`${TAG} | Template deleted for ${tracker.item?.name} — removing widget`);
+    console.log(`${TAG} | Template deleted for ${tracker.item?.name} — removing widget + dropping concentration`);
     this._activeSpells.delete(templateId);
     this._renderWidgets();
+
+    // v0.6.3: Manually deleting a persistent spell's template ends the
+    // concentration on that spell (no template = no spell area = no
+    // ongoing effect). Drop the actor's concentration effect tied to
+    // this item.
+    if (game.user.isGM && tracker.actor && tracker.item) {
+      await this._dropConcentrationForItem(tracker.actor, tracker.item);
+    }
+  }
+
+  /**
+   * v0.6.3: Find and delete the active concentration effect on `actor`
+   * that's tied to `item`. dnd5e 5.x stores concentration as an active
+   * effect with status "concentrating" — we match it via origin / item-
+   * uuid / name. Returns true if an effect was deleted.
+   */
+  async _dropConcentrationForItem(actor, item) {
+    if (!actor || !item) return false;
+    const effects = Array.from(actor.effects?.contents ?? actor.effects ?? []);
+    const itemName  = (item.name ?? "").toLowerCase();
+    const itemId    = item.id ?? "";
+    const itemUuid  = item.uuid ?? "";
+
+    for (const effect of effects) {
+      const isConcentration = effect.statuses?.has?.("concentrating")
+                           || !!effect.flags?.dnd5e?.itemData
+                           || !!effect.flags?.dnd5e?.dependents
+                           || (effect.name ?? "").toLowerCase().includes("concentrating");
+      if (!isConcentration) continue;
+
+      // Match by origin path, item-uuid flag, or name substring
+      const origin    = effect.origin ?? "";
+      const flagUuid  = effect.flags?.dnd5e?.itemUuid
+                     ?? effect.flags?.dnd5e?.dependents?.[0]?.uuid
+                     ?? "";
+      const effectName = (effect.name ?? "").toLowerCase();
+      const matches = (itemId   && (origin.includes(itemId)   || flagUuid.includes(itemId)))
+                   || (itemUuid && (origin.includes(itemUuid) || flagUuid.includes(itemUuid)))
+                   || (itemName && effectName.includes(itemName));
+
+      if (matches) {
+        console.log(`${TAG} | Dropping concentration "${effect.name}" on ${actor.name}`);
+        try {
+          await effect.delete();
+          return true;
+        } catch (err) {
+          console.warn(`${TAG} | Failed to delete concentration effect on ${actor.name}:`, err);
+        }
+      }
+    }
+    console.log(`${TAG} | No matching concentration effect found on ${actor.name} for item ${item.name}`);
+    return false;
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -339,8 +391,15 @@ export class ConcentrationWidget {
 
   /**
    * Whether a token's CENTER point is currently inside a measured-template
-   * polygon. Uses the placeable's hit-test if available, falls back to a
-   * shape-bounds + polygon intersection check.
+   * polygon. Uses Foundry's official `containsPoint` first (matches the
+   * core auto-targeting logic across all template types), falling back
+   * to PIXI shape geometry only if needed.
+   *
+   * v0.6.3: Switched to containsPoint as primary. Previous code used
+   * `template.shape.contains()` which had edge-case misses on tokens at
+   * the template boundary — auto-targeting could see them as "inside"
+   * but our hit-test would say "outside," so the entry trigger
+   * fired sporadically.
    *
    * `positions` is the pre/post move coord pair — we use the post-move
    * (new) center for "currently inside" determination.
@@ -354,17 +413,25 @@ export class ConcentrationWidget {
     const cx = positions.newX + (w * gridSize) / 2;
     const cy = positions.newY + (h * gridSize) / 2;
 
-    // Foundry V13 MeasuredTemplate has a `shape` property (a PIXI polygon)
-    // and inherits PlaceableObject's `bounds` + custom hit testing.
+    // Primary: Foundry's official containsPoint. Same method used by
+    // dnd5e for auto-targeting tokens in spell areas — guarantees
+    // consistent behavior with what the GM visually expects.
+    if (typeof template.containsPoint === "function") {
+      try {
+        return template.containsPoint({ x: cx, y: cy });
+      } catch (err) {
+        console.warn(`${TAG} | template.containsPoint threw, falling back to shape.contains:`, err);
+      }
+    }
+
+    // Fallback 1: PIXI shape hit-test in local coordinates
     if (typeof template.shape?.contains === "function") {
       const localX = cx - template.x;
       const localY = cy - template.y;
       return template.shape.contains(localX, localY);
     }
-    if (typeof template.containsPoint === "function") {
-      return template.containsPoint({ x: cx, y: cy });
-    }
-    // Fallback — bounds-only check (works for circles approximately)
+
+    // Fallback 2: bounds-only (rough, but better than always-false)
     const b = template.bounds;
     if (!b) return false;
     return cx >= b.x && cx <= b.x + b.width
