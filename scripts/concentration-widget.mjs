@@ -161,6 +161,13 @@ export class ConcentrationWidget {
   // ═══════════════════════════════════════════════════════════════
 
   _onTurnChange(combat, changes) {
+    // v0.4.22.10: GM-only gate. The body of this function calls
+    // `_triggerSaveForToken` which posts save cards via the SaveEngine.
+    // Without this guard, every player client would post their own save
+    // card on every relevant turn change — N players in a session would
+    // produce N duplicate save cards. The hook fires on every client
+    // because Foundry's `updateCombat` hook is broadcast.
+    if (!game.user.isGM) return;
     if (!this._activeSpells.size) return;
 
     // Who just started their turn?
@@ -206,6 +213,11 @@ export class ConcentrationWidget {
    * Posts a save card to the GM chat for that one creature.
    */
   async _triggerSaveForToken(tracker, tokenDoc) {
+    // v0.4.22.10: Defense-in-depth GM gate. `_onTurnChange` already gates,
+    // but if any future caller invokes this directly we still want only
+    // the GM client to post the save card.
+    if (!game.user.isGM) return;
+
     // Resolve the actual token placeable
     const token = canvas.tokens.get(tokenDoc.id) ?? canvas.tokens.placeables.find(t => t.document.id === tokenDoc.id);
     if (!token) return;
@@ -247,14 +259,18 @@ export class ConcentrationWidget {
         ui.notifications.info(`${tracker.item?.name}: Concentration broken by ${actor.name}`);
         this._activeSpells.delete(templateId);
 
-        // Optionally remove the template from canvas
-        try {
-          const template = canvas.scene.templates.get(templateId);
-          if (template) {
-            template.delete();
+        // v0.4.22.10: Only the GM client may delete the canvas template.
+        // Otherwise every player would race to delete the same document,
+        // generating N permission errors and one successful delete.
+        if (game.user.isGM) {
+          try {
+            const template = canvas.scene.templates.get(templateId);
+            if (template) {
+              template.delete();
+            }
+          } catch (err) {
+            console.warn(`${TAG} | Failed to delete template:`, err);
           }
-        } catch (err) {
-          console.warn(`${TAG} | Failed to delete template:`, err);
         }
       }
     }
