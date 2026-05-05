@@ -703,6 +703,20 @@ export class SaveEngine {
   //  Live Target Card — NPC/PC split, remove buttons, roll trigger
   // ═══════════════════════════════════════════════════════════════════════════
 
+  /**
+   * v0.6.0 — Public-facing alias for `_postLiveTargetCard`. The leading
+   * underscore on the original signals "internal use only," but the
+   * persistent-template tracker (and any future external module) needs a
+   * stable, non-underscore entry point. Both names resolve to the same
+   * implementation; this alias is the recommended API for cross-module
+   * callers.
+   *
+   * Same args/return as `_postLiveTargetCard`.
+   */
+  async postSaveCard(item, actor, tokens, opts) {
+    return this._postLiveTargetCard(item, actor, tokens, opts);
+  }
+
   async _postLiveTargetCard(item, actor, tokens, opts) {
     // v0.4.22.4: Pace the save card behind the spell/feat animation.
     // Without this delay the save card can land 1-2 seconds before the

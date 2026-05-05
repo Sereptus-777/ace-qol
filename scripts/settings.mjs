@@ -381,6 +381,12 @@ export class QolSettings {
       scope: "client", config: false, type: Boolean, default: false,
     });
 
+    s("showConcentrationWidget", {
+      name: "Show Concentration Widget",
+      hint: "Floating GM-side dashboard that pins all active persistent concentration AoE spells (Moonbeam, Spirit Guardians, Cloudkill, Spike Growth, etc.) with quick INFLICT DAMAGE buttons. Useful for big fights with overlapping AoEs as a glanceable summary and an off-cycle manual trigger if auto-detection misses an edge case. Independent of the chat-card save flow — saves still post automatically when tokens enter persistent areas regardless of this setting.",
+      scope: "client", config: false, type: Boolean, default: true,
+    });
+
     s("batchResultsCard", {
       name:    "Batch Combat Results Card",
       hint:    "Show all targets in one consolidated damage card instead of individual cards per target.",
