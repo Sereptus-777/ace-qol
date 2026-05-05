@@ -357,6 +357,18 @@ export class QolSettings {
       scope: "world", config: false, type: Boolean, default: true,
     });
 
+    s("multiTargetMeleeFeatureIds", {
+      name: "Multi-Target Melee Feature Allow-List (advanced)",
+      hint: "Array of feature identifiers, item names, or UUIDs that authorize an actor to make a single melee swing against multiple targets (Cleave, Whirlwind, Great Weapon Master, etc.). Default detection uses dnd5e weapon-mastery 'cleave' property + standard identifiers (great-weapon-master, cleaving-attack, whirlwind-attack, improved-whirlwind-attack). Add homebrew or translated content here. Setting is consumed by AttackPipeline._actorHasMultiTargetMelee.",
+      scope: "world", config: false, type: Array, default: [],
+    });
+
+    s("dsnRevealDelayMs", {
+      name: "DSN Damage Reveal Delay (ms)",
+      hint: "Pacing delay (in milliseconds) between Dice So Nice damage animations and the result card appearing in chat. Default 1500ms gives players time to see the dice land before damage totals are revealed. Set to 0 to skip the pause entirely. Setting is consumed by the damage card pipeline; no effect if DSN module isn't installed or is broken.",
+      scope: "world", config: false, type: Number, default: 1500,
+    });
+
     s("batchResultsCard", {
       name:    "Batch Combat Results Card",
       hint:    "Show all targets in one consolidated damage card instead of individual cards per target.",

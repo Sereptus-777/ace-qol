@@ -20,6 +20,13 @@ import { pendingAttackChoices, awaitDsnRoll, showCenterToast } from "./attack-pr
 export class AttackPipeline {
 
   constructor() {
+    /** @type {Map<string, number>} attackKey → timestamp.
+     *  v0.4.22 dedupe Set: protects against the dual `rollAttackV2` +
+     *  legacy `rollAttack` hook registration firing both handlers for the
+     *  same attack under module-loading-order races or system-version
+     *  edge cases. Auto-prunes entries older than 10 seconds. */
+    this._processedAttackKeys = new Map();
+
     this._registerHooks();
   }
 
@@ -35,14 +42,49 @@ export class AttackPipeline {
     });
 
     // ── POST-ROLL: Assess results, post card ──
-    Hooks.on("dnd5e.rollAttackV2", (rolls, data) => this._onAttackRoll(rolls, data));
+    //
+    // v0.4.22: BOTH the V2 and legacy hooks now route through a per-attack
+    // dedupe Set. The previous implementation had a fallback guard
+    // `if (!Hooks.events["dnd5e.rollAttackV2"]?.length)` but that was
+    // vulnerable to module-loading-order races (other modules registering
+    // V2 listeners after our legacy fallback runs).
+    //
+    // The dedupe key combines message ID + activity ID + roll formula —
+    // any one of those is enough to identify a unique attack. Entries
+    // auto-prune after 10 seconds.
+    const dedupedAttackHandler = (rolls, data) => {
+      try {
+        const messageId  = data?.message?.id ?? data?.messageId ?? null;
+        const activityId = data?.subject?.id ?? data?.flags?.dnd5e?.activity?.id ?? null;
+        const formula    = rolls?.[0]?.formula ?? rolls?.[0]?._formula ?? "";
+        const key = `${messageId ?? "no-msg"}|${activityId ?? "no-act"}|${formula}`;
 
-    // Fallback for older dnd5e versions
-    Hooks.on("dnd5e.rollAttack", (rolls, data) => {
-      if (!Hooks.events["dnd5e.rollAttackV2"]?.length) {
-        this._onAttackRoll(rolls, data);
+        if (this._processedAttackKeys.has(key)) {
+          // Silent dedupe — log only in debug
+          try {
+            if (game.settings.get(MODULE_ID, "debugMode")) {
+              console.log(`${MODULE_ID} | rollAttack dedupe: skipping duplicate fire for key ${key}`);
+            }
+          } catch (_) { /* setting not ready */ }
+          return;
+        }
+        this._processedAttackKeys.set(key, Date.now());
+
+        // Auto-prune entries older than 10 seconds
+        const cutoff = Date.now() - 10000;
+        for (const [k, ts] of this._processedAttackKeys) {
+          if (ts < cutoff) this._processedAttackKeys.delete(k);
+        }
+
+        return this._onAttackRoll(rolls, data);
+      } catch (err) {
+        console.warn(`${MODULE_ID} | dedupedAttackHandler failed:`, err);
+        return this._onAttackRoll(rolls, data);
       }
-    });
+    };
+
+    Hooks.on("dnd5e.rollAttackV2", dedupedAttackHandler);
+    Hooks.on("dnd5e.rollAttack",   dedupedAttackHandler);
 
     // ── DIALOG RENDER: Swap the d20 icon with our BD20 dice image ──
     Hooks.on("renderApplication", (app, html) => this._onRenderRollDialog(app, html));
@@ -56,25 +98,45 @@ export class AttackPipeline {
    * with our BD20 dice PNG.
    */
   _onRenderRollDialog(app, html) {
-    // Only target D&D 5e roll configuration dialogs
-    const isRollDialog = app?.constructor?.name?.includes("RollConfigurationDialog")
-      || app?.options?.classes?.includes?.("roll-configuration");
-    if (!isRollDialog) return;
+    // ── v0.4.22 hardened ──
+    // Tighter dialog-class detection (RollConfigurationDialog only) and
+    // narrower image selector that requires the d20 alt/src match BEFORE
+    // querying the DOM. Previous selector `ul.dice img, .dice img` could
+    // pick up unrelated dice elements if Foundry/dnd5e refactor the dialog
+    // structure. Now we scope to the recognized dnd5e dialog tree first
+    // and short-circuit aggressively. Wrapped in try/catch so a CSS shift
+    // can't break the entire render hook chain.
+    try {
+      const isRollDialog = app?.constructor?.name?.includes("RollConfigurationDialog")
+        || app?.options?.classes?.includes?.("roll-configuration");
+      if (!isRollDialog) return;
 
-    const el = html instanceof HTMLElement ? html : html?.[0] ?? html;
-    if (!el?.querySelectorAll) return;
+      const el = html instanceof HTMLElement ? html : html?.[0] ?? html;
+      if (!el?.querySelectorAll) return;
 
-    // Find the dice display images inside ul.dice
-    const diceImgs = el.querySelectorAll("ul.dice img, .dice img");
-    for (const img of diceImgs) {
-      // Only replace d20 icons (alt text or src containing "d20")
-      const isD20 = img.alt?.toLowerCase()?.includes("d20")
-        || img.src?.toLowerCase()?.includes("d20");
-      if (!isD20) continue;
+      // Scope the search to the dialog's actual dice container — fall back
+      // to the broader selector only if the scoped one finds nothing
+      let diceImgs = el.querySelectorAll(".roll-configuration ul.dice img");
+      if (!diceImgs.length) {
+        diceImgs = el.querySelectorAll("ul.dice img");
+      }
 
-      // Use a generic BD20 image (the "neutral" face, BD20-20 is the iconic one)
-      img.src = `modules/ace-qol/Assets/Dice%20Dice/BD20/BD20-20_nobg.png`;
-      img.style.filter = "drop-shadow(0 2px 4px rgba(0,0,0,0.5))";
+      for (const img of diceImgs) {
+        // Only replace d20 icons (alt text or src containing "d20")
+        const altLc = (img.alt ?? "").toLowerCase();
+        const srcLc = (img.src ?? "").toLowerCase();
+        const isD20 = altLc.includes("d20") || srcLc.includes("d20");
+        if (!isD20) continue;
+
+        // Skip if we already swapped (idempotent re-render guard)
+        if (img.dataset.aceQolSwapped === "1") continue;
+
+        img.src = `modules/ace-qol/Assets/Dice%20Dice/BD20/BD20-20_nobg.png`;
+        img.style.filter = "drop-shadow(0 2px 4px rgba(0,0,0,0.5))";
+        img.dataset.aceQolSwapped = "1";
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | _onRenderRollDialog dice-icon swap failed (non-fatal):`, err?.message ?? err);
     }
   }
 
@@ -103,13 +165,21 @@ export class AttackPipeline {
     if (!item || !actor) return;
 
     // ── Block attacks from incapacitated attackers ──
+    //
+    // v0.4.22: alongside the center toast (auto-dismissing), also post a
+    // `ui.notifications.warn` so the block reason persists in the Foundry
+    // notification stack. Center toasts can be missed if the player isn't
+    // looking at the screen center; the notification stays visible until
+    // the user dismisses or another notification replaces it.
     const atkStatuses = actor.statuses ?? new Set();
     if (atkStatuses.has("paralyzed") || atkStatuses.has("stunned")
      || atkStatuses.has("unconscious") || atkStatuses.has("incapacitated")
      || atkStatuses.has("petrified")) {
       const condition = ["paralyzed", "stunned", "unconscious", "incapacitated", "petrified"]
         .find(c => atkStatuses.has(c))?.toUpperCase();
-      showCenterToast(`${actor.token?.name ?? actor.name} is ${condition} — cannot attack`, 2500);
+      const msg = `${actor.token?.name ?? actor.name} is ${condition} — cannot attack`;
+      showCenterToast(msg, 2500);
+      ui.notifications?.warn(`ACE QOL: ${msg}`);
       return false; // Block the roll
     }
 
@@ -123,8 +193,10 @@ export class AttackPipeline {
     // tell them to retarget. Skips when the actor genuinely has multi-target
     // melee features so Whirlwind/Cleave still work as designed.
     if (targets.size > 1 && AttackPipeline._isMeleeAttack(item, subject)
-        && !AttackPipeline._actorHasMultiTargetMelee(actor)) {
-      showCenterToast(`Melee attack — only one target allowed`, 2500);
+        && !AttackPipeline._actorHasMultiTargetMelee(actor, item)) {
+      const msg = `Melee attack — only one target allowed (${targets.size} targeted; retarget single creature)`;
+      showCenterToast(msg, 2500);
+      ui.notifications?.warn(`ACE QOL: ${msg}`);
       this._debug(`Blocked: ${actor.name} melee attack with ${targets.size} targets, no cleave/whirlwind feature`);
       return false; // Block the roll
     }
@@ -133,7 +205,9 @@ export class AttackPipeline {
     const firstTarget = targets.first();
     const rangeCheck = this._checkRange(actor, firstTarget, item);
     if (rangeCheck.blocked) {
-      showCenterToast(`Out of range — ${rangeCheck.distanceFt}ft away (${rangeCheck.rangeDesc})`, 2500);
+      const msg = `Out of range — ${rangeCheck.distanceFt}ft away (${rangeCheck.rangeDesc})`;
+      showCenterToast(msg, 2500);
+      ui.notifications?.warn(`ACE QOL: ${msg}`);
       return false; // Block the roll
     }
 
@@ -840,22 +914,95 @@ export class AttackPipeline {
   /**
    * Detect whether the attacker has a multi-target melee feature that legitimately
    * lets them swing at more than one creature on a single attack action.
-   * Currently recognizes: Cleave / Great Weapon Master, Whirlwind Attack,
-   * Polearm Master cleave variants, Crusher/Slasher feats with multi-tag, and
-   * generic "multiattack" features on monstrous NPCs.
-   * @param {Actor} actor
+   * Recognizes: Cleave (weapon mastery + feat), Great Weapon Master, Whirlwind
+   * Attack, and any UUID/identifier added to the world setting
+   * `multiTargetMeleeFeatureIds`.
+   *
+   * v0.4.22 refactor — three-layer detection (was pure name-matching):
+   *
+   *   Layer 1: dnd5e weapon mastery property "cleave" on the swung weapon.
+   *     If the weapon itself has the cleave mastery, the wielder gets the
+   *     multi-target swing regardless of feats. (`item.system.properties`
+   *     is a Set in dnd5e 5.x.)
+   *
+   *   Layer 2: feature identifier match on `system.identifier`.
+   *     Stable across translations (the identifier stays in English even
+   *     when the displayed name is translated). Catches:
+   *       great-weapon-master, cleaving-attack, whirlwind-attack,
+   *       improved-whirlwind-attack, cleave (the weapon mastery feat in
+   *       homebrew rebrands)
+   *
+   *   Layer 3: world-configurable allow-list via `multiTargetMeleeFeatureIds`
+   *     setting (Array<string>). GMs can drop in UUIDs, identifiers, or
+   *     names to extend without code changes. Useful for homebrew or
+   *     content packs.
+   *
+   *   Layer 4 (last resort): English name-matching, kept for back-compat
+   *     with older worlds that don't have identifiers populated. Logged at
+   *     debug level so brittle matches surface during diagnostic runs.
+   *
+   * Note: "Multiattack" is NOT included in any layer — that means "make N
+   * attack rolls sequentially, each on its own target", not "one attack
+   * hits N targets". Different mechanic.
+   *
+   * @param {Actor} actor - The attacking actor
+   * @param {Item}  [weapon] - Optional: the specific weapon being swung,
+   *                           used for Layer 1 weapon-mastery detection
    * @returns {boolean}
    */
-  static _actorHasMultiTargetMelee(actor) {
+  static _actorHasMultiTargetMelee(actor, weapon = null) {
     if (!actor?.items) return false;
+
+    // ── Layer 1: weapon mastery "cleave" on the active weapon ──
+    try {
+      const props = weapon?.system?.properties;
+      const hasCleaveMastery = props?.has?.("cleave") === true
+                            || (Array.isArray(props) && props.includes("cleave"));
+      if (hasCleaveMastery) return true;
+    } catch (_) { /* fall through */ }
+
+    // ── Layer 3: world-configurable allow-list ──
+    let allowList = [];
+    try {
+      const raw = game.settings.get(MODULE_ID, "multiTargetMeleeFeatureIds");
+      if (Array.isArray(raw)) allowList = raw.map(s => String(s).toLowerCase());
+    } catch (_) { /* setting may not be registered yet */ }
+
+    // ── Layer 2 + 3 + 4: scan items ──
+    const KNOWN_IDENTIFIERS = new Set([
+      "great-weapon-master",
+      "cleaving-attack",
+      "cleave",
+      "whirlwind-attack",
+      "improved-whirlwind-attack",
+    ]);
+
     for (const item of actor.items) {
+      if (item.type !== "feat" && item.type !== "subclass" && item.type !== "class") continue;
+
+      // Layer 2: stable identifier match
+      const id = String(item.system?.identifier ?? "").toLowerCase();
+      if (id && KNOWN_IDENTIFIERS.has(id)) return true;
+
+      // Layer 3: world-configured allow-list (matches identifier, name, or UUID)
+      if (allowList.length) {
+        const uuid = String(item.uuid ?? "").toLowerCase();
+        const name = String(item.name ?? "").toLowerCase();
+        if (allowList.includes(id) || allowList.includes(name) || allowList.includes(uuid)) return true;
+      }
+
+      // Layer 4: legacy English name-matching (back-compat)
       const name = (item.name ?? "").toLowerCase();
-      // Cleave-style features that explicitly let one swing hit multiple foes
-      if (name.includes("cleave") || name.includes("cleaving")) return true;
+      if (name.includes("cleave") || name.includes("cleaving")) {
+        try {
+          if (game.settings.get(MODULE_ID, "debugMode")) {
+            console.log(`${MODULE_ID} | multi-target detection: matched "${item.name}" via legacy name-matching (no identifier set). Recommend setting system.identifier or adding to multiTargetMeleeFeatureIds.`);
+          }
+        } catch (_) {}
+        return true;
+      }
       if (name.includes("great weapon master")) return true;
       if (name.includes("whirlwind")) return true;
-      // Note: "Multiattack" is NOT included — it means "make N attack rolls
-      // sequentially, each on its own target", not "one attack hits N targets".
     }
     return false;
   }

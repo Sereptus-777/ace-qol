@@ -18,6 +18,7 @@ import { MergeCard } from "./merge-card.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
 import { DamageCardRenderer } from "./damage-card-renderer.mjs";
 import { DamageApplicator } from "./damage-applicator.mjs";
+import { AttackPipeline } from "./attack-pipeline.mjs";  // v0.4.22: shared multi-target detection
 import { PostHitSaves } from "./post-hit-saves.mjs";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -56,14 +57,19 @@ export class DamageConstants {
 
   /**
    * Check if an actor has a cleave-type ability.
+   *
+   * v0.4.22: delegates to AttackPipeline._actorHasMultiTargetMelee for
+   * 4-layer detection (weapon mastery, identifier match, world allow-list,
+   * legacy name-matching) instead of the previous pure-name-matching that
+   * broke on translated worlds and homebrew weapons.
+   *
+   * @param {Actor} actor
+   * @param {Item} [weapon] - Optional weapon being swung; enables Layer 1
+   *                          weapon-mastery detection
    */
-  static actorHasCleave(actor) {
+  static actorHasCleave(actor, weapon = null) {
     if (!actor?.items) return false;
-    for (const item of actor.items) {
-      const name = item.name?.toLowerCase() ?? "";
-      if (name.includes("great weapon master") || name.includes("cleave") || name.includes("cleaving")) return true;
-    }
-    return false;
+    return AttackPipeline._actorHasMultiTargetMelee(actor, weapon);
   }
 
   // ── Dice image path builder ──
@@ -126,11 +132,24 @@ export class DamageEngine {
     Hooks.on(`${MODULE_ID}.attackComplete`, (data) => this._onAttackComplete(data));
 
     // ── PERSISTENT BUTTONS: Re-wire Apply/Undo on ANY damage card render ──
-    Hooks.on("renderChatMessage", (message, html) => {
-      const flags = message.flags?.[MODULE_ID];
-      if (!flags?.type || !["damageResult", "damageButton", "postHitSave", "postHitSaveResult"].includes(flags.type)) return;
+    //
+    // v0.4.22: tightened scope + defensive try/catch.
+    //   Previous implementation extracted flags then type-checked. Now we
+    //   short-circuit on flag presence FIRST (fastest possible exit on
+    //   non-ace messages), and the entire body is wrapped in try/catch so
+    //   a single malformed card can't crash the listener for subsequent
+    //   messages.
+    //   Also registers `renderChatMessageHTML` for Foundry V13 compat —
+    //   previous implementation only listened to V12's `renderChatMessage`.
+    const _cardRenderHandler = (message, html) => {
+      try {
+        // Fastest-possible early exit for non-ace messages
+        if (!message?.flags?.[MODULE_ID]) return;
+        const flags = message.flags[MODULE_ID];
+        if (!flags?.type || !["damageResult", "damageButton", "postHitSave", "postHitSaveResult"].includes(flags.type)) return;
 
-      const el = html[0] ?? html;
+        const el = html?.[0] ?? html;
+        if (!el) return;
 
       // ── Hide GM-only sections for non-GM users ──
       if (!game.user.isGM) {
@@ -383,7 +402,13 @@ export class DamageEngine {
           });
         }
       }
-    });
+      } catch (err) {
+        console.warn(`${MODULE_ID} | renderChatMessage handler threw (non-fatal):`, err?.message ?? err);
+      }
+    };
+
+    Hooks.on("renderChatMessage", _cardRenderHandler);
+    Hooks.on("renderChatMessageHTML", _cardRenderHandler);  // V13 hook
 
     console.log(`${MODULE_ID} | Damage engine hooks registered`);
   }

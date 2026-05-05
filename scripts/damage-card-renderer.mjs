@@ -300,7 +300,7 @@ export class DamageCardRenderer {
     const critRuleLabel = { doubleDice: "Double Dice", maxPlusRoll: "Max + Roll", maxAll: "Max All" }[critRule] ?? critRule;
     const anyCrit = damageResults.some(dr => dr.isCrit);
 
-    const hasCleave = actor ? DamageConstants.actorHasCleave(actor) : false;
+    const hasCleave = actor ? DamageConstants.actorHasCleave(actor, item) : false;
 
     const cardHtml = `
       <div class="ace-qol-damage-card">

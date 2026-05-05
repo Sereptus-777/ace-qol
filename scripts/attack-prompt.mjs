@@ -131,7 +131,29 @@ export async function showAdvantagePrompt({ attacker, target, suggested, reasons
     });
     return result ?? null;
   } catch (err) {
-    console.warn(`${MODULE_ID} | Attack prompt failed:`, err);
-    return suggested ?? "normal"; // fail-safe: use suggestion
+    // ── v0.4.22: improved error visibility ──
+    // Previous behavior silently fell back to the suggested mode if the
+    // dialog rendered with an error. That meant a subtle CSS or module
+    // conflict could quietly apply ADVANTAGE or DISADVANTAGE without the
+    // GM/player ever knowing. Now we log full context AND show a toast
+    // so the issue is visible at the table.
+    const fallback = suggested ?? "normal";
+    console.error(`${MODULE_ID} | showAdvantagePrompt FAILED — falling back to "${fallback}"`, {
+      attacker,
+      target,
+      suggested,
+      reasons,
+      attackerIsPC,
+      targetIsPC,
+      error: err?.message ?? err,
+      stack: err?.stack?.substring(0, 600),
+    });
+    try {
+      ui.notifications?.warn(
+        `ACE QOL: attack prompt error — using "${fallback}" mode for ${attacker}'s attack on ${target}. Check console for details.`,
+        { permanent: false }
+      );
+    } catch (_) { /* notifications API unavailable */ }
+    return fallback;
   }
 }

@@ -43,6 +43,13 @@ export class SaveEngine {
     /** @type {object|null} Pending save spell waiting for template placement */
     this._pendingSaveSpell = null;
 
+    /** @type {Map<string, number>} activityId → timestamp; tracks activities
+     *  we've already posted save cards for, so the createChatMessage fallback
+     *  hook (v0.4.22) doesn't double-fire when the standard
+     *  postCreateUsageMessage hook also processes the same cast. Entries
+     *  auto-prune after 5 seconds. */
+    this._processedActivityIds = new Map();
+
     this._registerHooks();
   }
 
@@ -61,6 +68,76 @@ export class SaveEngine {
     Hooks.on("dnd5e.useActivity", (activity, usageConfig, dialogConfig, messageConfig) => {
       console.log(`${MODULE_ID} | useActivity fired (legacy):`, activity?.item?.name);
       this._onUseActivity(activity);
+    });
+
+    // ── v0.4.22 FALLBACK: createChatMessage detection for non-standard cast paths ──
+    //
+    // Some cast paths skip the `dnd5e.postCreateUsageMessage` hook entirely
+    // (right-click → "Display Card", certain macros, drag-and-drop). These
+    // post the description card without firing our standard processing.
+    //
+    // Live impact: Hellfire Orb (Death Knight feat-type) and Hold Person (Chudd)
+    // both hit this path during a session — description card appeared but no
+    // save card. Workaround was a manual `_postLiveTargetCard` call from JS.
+    //
+    // This fallback hook listens to ALL chat-message creation. When a message
+    // has `flags.dnd5e.activity.type === "save"` AND we haven't already
+    // processed that activity ID via the standard hook (within the 5s TTL),
+    // we resolve the activity from the actor+item+activityId path and run it
+    // through `_onUseActivity` as if the standard hook had fired.
+    //
+    // Dedupe via `_processedActivityIds` Map prevents double-firing.
+    Hooks.on("createChatMessage", (message) => {
+      try {
+        if (!game.user.isGM) return;
+        const dnd5eFlag = message.flags?.dnd5e;
+        const activityFlag = dnd5eFlag?.activity;
+        if (activityFlag?.type !== "save") return;
+        const activityId = activityFlag?.id;
+        if (!activityId) return;
+
+        // Already processed by the standard hook? skip
+        if (this._processedActivityIds.has(activityId)) return;
+
+        // Resolve the live activity from the chat message's actor + item refs
+        const actorId = activityFlag?.actor;
+        const itemId  = activityFlag?.item;
+        const actor = actorId ? game.actors.get(actorId) : null;
+        const item  = (actor && itemId) ? actor.items.get(itemId) : null;
+        if (!actor || !item) return;
+
+        // Walk activities to find the matching id
+        const activities = item.system?.activities;
+        if (!activities) return;
+        let activity = null;
+        try {
+          if (typeof activities.get === "function") {
+            activity = activities.get(activityId);
+          } else {
+            for (const a of activities) {
+              if (a?.id === activityId) { activity = a; break; }
+            }
+          }
+        } catch (_) { /* iteration shape varies — fall through */ }
+        if (!activity) return;
+
+        console.log(`${MODULE_ID} | createChatMessage fallback firing for ${item.name} (activity ${activityId} skipped postCreateUsageMessage)`);
+
+        // Mark BEFORE calling _onUseActivity so the call itself doesn't
+        // re-trigger via the standard hook (race-safe)
+        this._processedActivityIds.set(activityId, Date.now());
+
+        // Defer one tick so the chat message finishes posting first
+        setTimeout(() => {
+          try {
+            this._onUseActivity(activity);
+          } catch (err) {
+            console.warn(`${MODULE_ID} | createChatMessage fallback _onUseActivity threw:`, err);
+          }
+        }, 50);
+      } catch (err) {
+        console.warn(`${MODULE_ID} | createChatMessage fallback hook failed:`, err);
+      }
     });
 
     // ── Snap template origin to caster token ──
@@ -235,6 +312,20 @@ export class SaveEngine {
     const item = activity.item;
     const actor = activity.actor;
     if (!item || !actor) return;
+
+    // ── v0.4.22 — Mark this activity as processed ──
+    // The createChatMessage fallback hook (registered below) reads this Map
+    // to skip activities already handled by the standard postCreateUsageMessage
+    // path. Without this dedupe, both hooks would fire and post duplicate
+    // save cards.
+    if (activity?.id) {
+      this._processedActivityIds.set(activity.id, Date.now());
+      // Auto-prune entries older than 5 seconds
+      const cutoff = Date.now() - 5000;
+      for (const [k, ts] of this._processedActivityIds) {
+        if (ts < cutoff) this._processedActivityIds.delete(k);
+      }
+    }
 
     // ── Capture spell upcast level (RAW upcast scaling) ──
     // dnd5e 5.x stamps the chat message with `flags.dnd5e.use.spellLevel`

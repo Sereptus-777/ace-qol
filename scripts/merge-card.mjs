@@ -97,7 +97,7 @@ export class MergeCard {
     const targetsHtml = MergeCard._buildTargetSection(attackData, damageResults);
 
     // ── Control buttons ──
-    const hasCleave = actor ? DamageConstants.actorHasCleave(actor) : false;
+    const hasCleave = actor ? DamageConstants.actorHasCleave(actor, item) : false;
     const controlsHtml = MergeCard._buildControls(hasCleave);
 
     const critRuleLabel = { doubleDice: "Double Dice", maxPlusRoll: "Max + Roll", maxAll: "Max All" }[critRule] ?? critRule;

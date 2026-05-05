@@ -42,6 +42,16 @@ export class DamageApplicator {
    *   the actor.update if they want. `applied` is the actual update Promise.
    */
   static async applyHPDamage(actor, damageAmount, opts = {}) {
+    // ── v0.4.22 GM-only guard ──
+    // Defense-in-depth: Foundry's permission system blocks the actual
+    // actor.update() call for non-owners, but the front-half of this
+    // function (calculating excess, etc.) and any side-effects in the
+    // calling chain should never fire for non-GMs.
+    if (!game.user.isGM) {
+      console.warn(`${MODULE_ID} | applyHPDamage called by non-GM (${game.user.name}) — blocked`);
+      return { currentHP: actor?.system?.attributes?.hp?.value ?? 0, newHP: actor?.system?.attributes?.hp?.value ?? 0, excess: 0, applied: Promise.resolve() };
+    }
+
     const damage = Math.max(0, Number(damageAmount) || 0);
     const currentHP = Number(actor?.system?.attributes?.hp?.value ?? 0);
     const newHP     = Math.max(0, currentHP - damage);
@@ -78,6 +88,12 @@ export class DamageApplicator {
    * @returns {Promise<{currentHP, newHP, applied, healedAmount}>}
    */
   static async applyHPHeal(actor, healAmount, opts = {}) {
+    // ── v0.4.22 GM-only guard ──
+    if (!game.user.isGM) {
+      console.warn(`${MODULE_ID} | applyHPHeal called by non-GM (${game.user.name}) — blocked`);
+      return { currentHP: actor?.system?.attributes?.hp?.value ?? 0, newHP: actor?.system?.attributes?.hp?.value ?? 0, applied: Promise.resolve(), healedAmount: 0 };
+    }
+
     const heal      = Math.max(0, Number(healAmount) || 0);
     const currentHP = Number(actor?.system?.attributes?.hp?.value ?? 0);
     const maxHP     = Number(actor?.system?.attributes?.hp?.max ?? 0);
@@ -120,8 +136,19 @@ export class DamageApplicator {
 
   /**
    * Apply damage to all targets from a damage card.
+   *
+   * v0.4.22: GM-only guard at function entry.
+   *   Foundry permission system blocks the actual actor.update() for non-
+   *   owners, but the front-half of this function (flag updates, override
+   *   cache writes, button-state changes) runs unguarded on any client
+   *   that clicks APPLY ALL. This guard prevents that defense-in-depth gap.
    */
   static async applyDamage(message) {
+    if (!game.user.isGM) {
+      console.warn(`${MODULE_ID} | applyDamage called by non-GM (${game.user.name}) — blocked. APPLY ALL must run on the GM client.`);
+      return;
+    }
+
     const flags = message.flags?.[MODULE_ID];
     const data = flags?.damageResults;
     if (!data?.length) return;
@@ -213,6 +240,12 @@ export class DamageApplicator {
    * Undo damage — restore HP to pre-damage values.
    */
   static async undoDamage(message) {
+    // ── v0.4.22 GM-only guard ──
+    if (!game.user.isGM) {
+      console.warn(`${MODULE_ID} | undoDamage called by non-GM (${game.user.name}) — blocked.`);
+      return;
+    }
+
     const data = message.getFlag(MODULE_ID, "damageResults");
     if (!data?.length) return;
 

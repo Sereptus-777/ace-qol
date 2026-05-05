@@ -336,14 +336,51 @@ export class CombatState {
     }
 
     // Assassinate — attacker is Assassin rogue, target hasn't acted in combat
+    //
+    // RAW (PHB 2024 Soulknife/Assassin): "You have advantage on attack rolls
+    // against any creature that hasn't taken a turn in the combat yet. Any
+    // hit you score against a creature that is surprised is a critical hit."
+    //
+    // V0.4.22 FIX (replaces v0.4.21 runtime patch):
+    //   The previous implementation read `targetCombatant.hasActed`. That
+    //   getter does NOT exist on Foundry V13's `Combatant5e` class — it
+    //   returned undefined, so `!undefined === true`, so Assassinate fired
+    //   against EVERY target in combat regardless of turn state.
+    //
+    //   Two-layer detection:
+    //   1) Read the actual flag Foundry stores: `flags.core.hasActed === true`
+    //   2) Fallback: initiative-order comparison — if the target's initiative
+    //      is higher than the current combatant's initiative AND we're in
+    //      the same round, the target's turn already passed.
+    //
+    //   Both checks are required because (a) the flag isn't always set by
+    //   default Foundry workflows and (b) initiative comparison breaks on
+    //   the very first turn of round 1 when no one has acted yet.
     if (CombatState._hasFeature(attackerActor, "Assassinate")) {
       const combat = game.combat;
       if (combat?.started) {
         const targetCombatant = combat.combatants?.find(c => c.actorId === targetActor.id);
-        if (targetCombatant && !targetCombatant.hasActed) {
-          autoCrit = true;
-          autoCritReasons.push("ASSASSINATE → target hasn't acted yet = AUTO-CRIT");
-          advantageSources.push({ source: "attacker", reason: "ASSASSINATE → advantage vs creature that hasn't acted" });
+        if (targetCombatant) {
+          const flagSet = targetCombatant.flags?.core?.hasActed === true
+                       || targetCombatant.flags?.dnd5e?.hasActed === true;
+
+          // Initiative-order fallback: target has acted if their initiative
+          // is HIGHER than the current combatant (same round, earlier turn).
+          // Only valid AFTER round 1's first turn passes.
+          const currentCombatant = combat.combatant;
+          const targetInit = Number(targetCombatant.initiative ?? -Infinity);
+          const currentInit = Number(currentCombatant?.initiative ?? -Infinity);
+          const initOrderSaysActed = combat.round > 1
+            ? targetInit > currentInit  // round 2+: target's earlier-init turn already passed this round
+            : (Number.isFinite(targetInit) && Number.isFinite(currentInit) && targetInit > currentInit);
+
+          const targetHasActed = flagSet || initOrderSaysActed;
+
+          if (!targetHasActed) {
+            autoCrit = true;
+            autoCritReasons.push("ASSASSINATE → target hasn't acted yet = AUTO-CRIT");
+            advantageSources.push({ source: "attacker", reason: "ASSASSINATE → advantage vs creature that hasn't acted" });
+          }
         }
       }
     }
