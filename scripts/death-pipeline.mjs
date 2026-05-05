@@ -342,9 +342,22 @@ export class DeathPipeline {
       }
 
       // ── Find an unoccupied grid position (don't stack on existing dead tiles) ──
+      //
+      // v0.4.22.11 BUG FIX: Previously `(tokenDoc.width ?? 1) * gridSize`.
+      // The `??` operator only substitutes for null/undefined — it does NOT
+      // substitute for 0. Some tokens (synthetic actors, mid-polymorph,
+      // freshly-created with bad scale) report `width: 0`. With `??`, that
+      // 0 propagated through, producing tile dimensions of (0, 0) — a tile
+      // exists but has zero hit area, so it cannot be clicked.
+      // (Observed live: Death Knight tile spawned with w:0/h:0.)
+      //
+      // Fix: use `||` for explicit zero-or-falsy fallback, plus a clamp
+      // ensuring the resulting size is at least one grid square.
       const gridSize = canvas.grid?.size ?? 100;
-      const tileWidth  = (tokenDoc.width ?? 1) * gridSize;
-      const tileHeight = (tokenDoc.height ?? 1) * gridSize;
+      const widthCells  = Number(tokenDoc.width)  > 0 ? Number(tokenDoc.width)  : 1;
+      const heightCells = Number(tokenDoc.height) > 0 ? Number(tokenDoc.height) : 1;
+      const tileWidth  = Math.max(widthCells  * gridSize, gridSize);
+      const tileHeight = Math.max(heightCells * gridSize, gridSize);
       const placement = this._findUnoccupiedPosition(tokenDoc.x, tokenDoc.y, tileWidth, tileHeight);
       console.log(`${LOG_PREFIX}   ✓ Placement: (${placement.x},${placement.y})${placement.shifted ? " [shifted to avoid overlap]" : ""}`);
 
@@ -373,7 +386,13 @@ export class DeathPipeline {
           [MODULE_ID]: {
             isDeadToken:     true,
             originalActorId: actor.id,
-            originalTokenId: tokenDoc.id,
+            // v0.4.22.11: Renamed from `originalTokenId` to `_deletedTokenId`
+            // to make the staleness explicit. The token referenced here is
+            // the one we're about to delete in the next step, so any code
+            // looking it up will fail. Use `originalActorId` for any actor
+            // lookup. Kept under the `_` prefix purely for forensics/
+            // debugging — never to be read by feature code.
+            _deletedTokenId: tokenDoc.id,
             originalName:    actor.name,
             creatureType:    actor.system?.details?.type?.value || "",
             lootable:        true,

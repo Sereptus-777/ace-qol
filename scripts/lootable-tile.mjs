@@ -165,8 +165,12 @@ export class LootableTile {
       // Only containers — dead-body tiles aren't drop targets
       if (tileDoc.flags?.[MODULE_ID]?.isDeadToken === true) continue;
       if (!isContainerTile(tileDoc)) continue;
-      const w = tileDoc.width  ?? 100;
-      const h = tileDoc.height ?? 100;
+      // v0.4.22.11: `??` was substituting for null/undefined only — a
+      // tile with width:0 (corrupt or freshly-created) propagated 0
+      // through, making the hit-test box have zero area. Use explicit
+      // positive-number check.
+      const w = (Number(tileDoc.width)  > 0) ? Number(tileDoc.width)  : 100;
+      const h = (Number(tileDoc.height) > 0) ? Number(tileDoc.height) : 100;
       if (worldX >= tileDoc.x && worldX < tileDoc.x + w
        && worldY >= tileDoc.y && worldY < tileDoc.y + h) {
         return tileDoc;
@@ -300,8 +304,11 @@ export class LootableTile {
     for (const t of canvas.tokens?.placeables ?? []) {
       const td = t.document;
       if (!td) continue;
-      const tw = (td.width ?? 1) * gridSize;
-      const th = (td.height ?? 1) * gridSize;
+      // v0.4.22.11: same 0-vs-?? bug as the dead-tile hit test
+      const wCells = (Number(td.width)  > 0) ? Number(td.width)  : 1;
+      const hCells = (Number(td.height) > 0) ? Number(td.height) : 1;
+      const tw = wCells * gridSize;
+      const th = hCells * gridSize;
       if (worldPos.x >= td.x && worldPos.x < td.x + tw
        && worldPos.y >= td.y && worldPos.y < td.y + th) {
         return true;
@@ -327,8 +334,10 @@ export class LootableTile {
       const isDead = tileDoc.flags?.[MODULE_ID]?.isDeadToken === true;
       const isContainer = !isDead && isContainerTile(tileDoc);
       if (!isDead && !isContainer) continue;
-      const w = tileDoc.width  ?? 100;
-      const h = tileDoc.height ?? 100;
+      // v0.4.22.11: 0-width tile would never match. Fix below allows
+      // recovery — clicking still works on dimensionally-broken tiles.
+      const w = (Number(tileDoc.width)  > 0) ? Number(tileDoc.width)  : 100;
+      const h = (Number(tileDoc.height) > 0) ? Number(tileDoc.height) : 100;
       if (worldPos.x >= tileDoc.x
        && worldPos.x < tileDoc.x + w
        && worldPos.y >= tileDoc.y
@@ -399,8 +408,9 @@ export class LootableTile {
     try {
       const tileDoc = tile.document ?? tile;
       if (!tileDoc) return;
-      const w = tileDoc.width  ?? 100;
-      const h = tileDoc.height ?? 100;
+      // v0.4.22.11: same 0-width fallback fix
+      const w = (Number(tileDoc.width)  > 0) ? Number(tileDoc.width)  : 100;
+      const h = (Number(tileDoc.height) > 0) ? Number(tileDoc.height) : 100;
       const cx = tileDoc.x + w / 2;
       const cy = tileDoc.y + h / 2;
       // Convert world → screen via canvas.stage
