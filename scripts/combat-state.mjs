@@ -1247,11 +1247,31 @@ export class CombatState {
     if (!canvas.tokens?.placeables) return false;
     const atkDisposition = attacker.prototypeToken?.disposition ?? attacker.token?.disposition ?? 1;
 
+    // v0.4.22.8: Match the blocking-status set already used by `_isFlanking`.
+    // The previous check only excluded `incapacitated` and `unconscious`,
+    // which let DEAD allies (token still on canvas with status="dead") count
+    // as "near target." Symptom: Jeth was getting Sneak Attack on every
+    // attack near Lord Soth because Dorian Blackthorne's corpse was
+    // adjacent. Pack Tactics had the same blind spot since it uses this
+    // function too. RAW: only conscious, combat-capable allies provide the
+    // distraction needed for these features.
+    const blockingStatuses = ["incapacitated", "unconscious", "dead", "paralyzed", "petrified", "stunned"];
+
     for (const token of canvas.tokens.placeables) {
       if (!token.actor || token.actor.id === attacker.id) continue;
       if (token.id === targetToken.id) continue;
       if (token.document?.disposition !== atkDisposition) continue;
-      if (token.actor.statuses?.has("incapacitated") || token.actor.statuses?.has("unconscious")) continue;
+
+      // Status block — dead/incapacitated/etc. allies don't count
+      if (blockingStatuses.some(s => token.actor.statuses?.has(s))) continue;
+
+      // HP block — token at 0 HP doesn't count even if no status set
+      const allyHp = token.actor.system?.attributes?.hp?.value;
+      if (allyHp !== undefined && allyHp !== null && allyHp <= 0) continue;
+
+      // Defeated-combatant block — combat tracker explicitly defeated
+      const combatant = game.combat?.combatants?.find(c => c.token?.id === token.document?.id);
+      if (combatant?.defeated) continue;
 
       const dist = CombatState._getDistance(token, targetToken);
       if (dist <= rangeFt) return true;
