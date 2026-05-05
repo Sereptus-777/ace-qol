@@ -87,45 +87,76 @@ export class SaveEngine {
     // through `_onUseActivity` as if the standard hook had fired.
     //
     // Dedupe via `_processedActivityIds` Map prevents double-firing.
-    Hooks.on("createChatMessage", (message) => {
+    Hooks.on("createChatMessage", async (message) => {
       try {
         if (!game.user.isGM) return;
         const dnd5eFlag = message.flags?.dnd5e;
         const activityFlag = dnd5eFlag?.activity;
         if (activityFlag?.type !== "save") return;
-        const activityId = activityFlag?.id;
-        if (!activityId) return;
+
+        // ── v0.4.22.1 hotfix ──
+        // Previous version read `activityFlag.actor` and `activityFlag.item`
+        // as separate fields and bailed when they were undefined. dnd5e 5.x
+        // actually stores the activity reference as a single
+        // `activityFlag.uuid` of the form `Actor.X.Item.Y.Activity.Z`.
+        // Use that UUID to resolve the activity directly via fromUuid().
+        //
+        // Also: the dedup key was `activityFlag.id` (e.g. "dnd5eactivity000")
+        // which is dnd5e's default activity ID — SHARED across all items
+        // that have only a single primary activity. A Hellfire Orb cast
+        // would be wrongly deduped against an earlier Hold Person cast
+        // because both have id "dnd5eactivity000". Now uses the FULL UUID
+        // as the dedup key.
+
+        const activityUuid = activityFlag?.uuid;
+        const activityId   = activityFlag?.id;
+        const dedupKey = activityUuid || activityId;
+        if (!dedupKey) return;
 
         // Already processed by the standard hook? skip
-        if (this._processedActivityIds.has(activityId)) return;
+        if (this._processedActivityIds.has(dedupKey)) return;
 
-        // Resolve the live activity from the chat message's actor + item refs
-        const actorId = activityFlag?.actor;
-        const itemId  = activityFlag?.item;
-        const actor = actorId ? game.actors.get(actorId) : null;
-        const item  = (actor && itemId) ? actor.items.get(itemId) : null;
-        if (!actor || !item) return;
-
-        // Walk activities to find the matching id
-        const activities = item.system?.activities;
-        if (!activities) return;
+        // Resolve the live activity. UUID path is the primary route in
+        // modern dnd5e; the actor/item-id fallback handles older flag
+        // shapes if they ever appear.
         let activity = null;
-        try {
-          if (typeof activities.get === "function") {
-            activity = activities.get(activityId);
-          } else {
-            for (const a of activities) {
-              if (a?.id === activityId) { activity = a; break; }
+        if (activityUuid) {
+          try { activity = await fromUuid(activityUuid); }
+          catch (err) { console.warn(`${MODULE_ID} | createChatMessage fallback fromUuid failed for ${activityUuid}:`, err?.message ?? err); }
+        }
+        if (!activity) {
+          // Legacy fallback: separate actor/item fields
+          const actorId = activityFlag?.actor;
+          const itemId  = activityFlag?.item;
+          const actor = actorId ? game.actors.get(actorId) : null;
+          const item  = (actor && itemId) ? actor.items.get(itemId) : null;
+          if (actor && item && activityId) {
+            const activities = item.system?.activities;
+            if (activities) {
+              try {
+                if (typeof activities.get === "function") {
+                  activity = activities.get(activityId);
+                } else {
+                  for (const a of activities) {
+                    if (a?.id === activityId) { activity = a; break; }
+                  }
+                }
+              } catch (_) { /* iteration shape varies */ }
             }
           }
-        } catch (_) { /* iteration shape varies — fall through */ }
-        if (!activity) return;
+        }
 
-        console.log(`${MODULE_ID} | createChatMessage fallback firing for ${item.name} (activity ${activityId} skipped postCreateUsageMessage)`);
+        if (!activity) {
+          console.warn(`${MODULE_ID} | createChatMessage fallback: could not resolve activity for ${dedupKey}`);
+          return;
+        }
+
+        const itemName = activity?.item?.name ?? "(unknown)";
+        console.log(`${MODULE_ID} | createChatMessage fallback firing for ${itemName} (uuid ${activityUuid ?? "no-uuid"} skipped postCreateUsageMessage)`);
 
         // Mark BEFORE calling _onUseActivity so the call itself doesn't
         // re-trigger via the standard hook (race-safe)
-        this._processedActivityIds.set(activityId, Date.now());
+        this._processedActivityIds.set(dedupKey, Date.now());
 
         // Defer one tick so the chat message finishes posting first
         setTimeout(() => {
@@ -318,13 +349,22 @@ export class SaveEngine {
     // to skip activities already handled by the standard postCreateUsageMessage
     // path. Without this dedupe, both hooks would fire and post duplicate
     // save cards.
+    //
+    // v0.4.22.1: Mark BOTH the activity.uuid AND activity.id, because the
+    // fallback hook keys on uuid (different items can share the default id
+    // "dnd5eactivity000"). Marking only the id would leave the fallback
+    // hook to fire spuriously for any subsequent cast that happens to share
+    // the same default id.
+    if (activity?.uuid) {
+      this._processedActivityIds.set(activity.uuid, Date.now());
+    }
     if (activity?.id) {
       this._processedActivityIds.set(activity.id, Date.now());
-      // Auto-prune entries older than 5 seconds
-      const cutoff = Date.now() - 5000;
-      for (const [k, ts] of this._processedActivityIds) {
-        if (ts < cutoff) this._processedActivityIds.delete(k);
-      }
+    }
+    // Auto-prune entries older than 5 seconds
+    const cutoff = Date.now() - 5000;
+    for (const [k, ts] of this._processedActivityIds) {
+      if (ts < cutoff) this._processedActivityIds.delete(k);
     }
 
     // ── Capture spell upcast level (RAW upcast scaling) ──
