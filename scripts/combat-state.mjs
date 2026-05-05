@@ -775,9 +775,29 @@ export class CombatState {
       attackerBonuses.push({ name: "Divine Fury", formula: `1d6 + ${furyBonus}`, type: "radiant", reason: `Divine Fury → +1d6+${furyBonus} radiant (first hit while raging)` });
     }
 
-    // Lifedrinker (Warlock invocation)
+    // Lifedrinker (Warlock invocation, requires Pact of the Blade + lvl 12)
+    //
+    // v0.4.22.14 FIX: was hardcoded to "1d6" which is wrong for 2014 RAW
+    // (the dominant ruleset) and incomplete for 2024 RAW.
+    //
+    //   2014 PHB: "When you hit a creature with your pact weapon, the
+    //     creature takes extra necrotic damage equal to your Charisma
+    //     modifier (minimum 1)."
+    //   2024 PHB: "When you hit a creature with your Pact Weapon, you can
+    //     deal an extra 1d6 Necrotic damage..." (plus optional self-heal
+    //     by spending a slot — not implemented; that's a v0.4.22.15+ item)
+    //
+    // Default to 2014 (CHA mod necrotic, min 1). The flat-1d6 path can be
+    // added behind a setting if a 2024-ruleset table needs it.
     if (CombatState._hasFeature(attackerActor, "Lifedrinker")) {
-      attackerBonuses.push({ name: "Lifedrinker", formula: "1d6", type: "necrotic", reason: "Lifedrinker → +1d6 necrotic per hit" });
+      const chaMod = attackerActor.system?.abilities?.cha?.mod ?? 0;
+      const necroticDmg = Math.max(1, chaMod);
+      attackerBonuses.push({
+        name: "Lifedrinker",
+        formula: String(necroticDmg),
+        type: "necrotic",
+        reason: `Lifedrinker → +${necroticDmg} necrotic per hit (CHA mod, min 1)`,
+      });
     }
 
     // Spirit Shroud (active spell)
