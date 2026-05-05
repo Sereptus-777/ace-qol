@@ -513,6 +513,16 @@ export class SaveEngine {
    * saves — those go through the normal flow.
    */
   async _fastResolveSingleNpcSave(item, casterActor, token, opts) {
+    // v0.4.22.4: Match the pacing of `_postLiveTargetCard`. Without this
+    // the fast-path NPC save card lands instantly, ahead of the spell
+    // animation. Configurable via `saveCardDelayAfterCastMs`.
+    try {
+      const delay = Number(QolSettings.get?.("saveCardDelayAfterCastMs") ?? 1500);
+      if (Number.isFinite(delay) && delay > 0) {
+        await new Promise(r => setTimeout(r, delay));
+      }
+    } catch (_) { /* setting unavailable — proceed without delay */ }
+
     const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activity } = opts;
     const activityId = activity?.id ?? null;
 
@@ -694,6 +704,17 @@ export class SaveEngine {
   // ═══════════════════════════════════════════════════════════════════════════
 
   async _postLiveTargetCard(item, actor, tokens, opts) {
+    // v0.4.22.4: Pace the save card behind the spell/feat animation.
+    // Without this delay the save card can land 1-2 seconds before the
+    // visual effect, eating the dramatic beat. Configurable via
+    // `saveCardDelayAfterCastMs` (default 1500ms; set 0 to disable).
+    try {
+      const delay = Number(QolSettings.get?.("saveCardDelayAfterCastMs") ?? 1500);
+      if (Number.isFinite(delay) && delay > 0) {
+        await new Promise(r => setTimeout(r, delay));
+      }
+    } catch (_) { /* setting unavailable — proceed without delay */ }
+
     const { saveAbility, saveDC, halfOnSave: rawHalfOnSave, damageTypes, isSpell, timing, activityId, spellLevel } = opts;
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
 

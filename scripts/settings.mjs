@@ -369,6 +369,18 @@ export class QolSettings {
       scope: "world", config: false, type: Number, default: 1500,
     });
 
+    s("saveCardDelayAfterCastMs", {
+      name: "Save Card Delay After Cast (ms)",
+      hint: "Pause (in milliseconds) between the cast/template landing and the save card appearing in chat. Default 1500ms lets the spell animation play first so the save card doesn't pre-empt the dramatic beat. Set to 0 to post the save card immediately. Setting is consumed by SaveEngine._postLiveTargetCard and SaveEngine._fastResolveSingleNpcSave.",
+      scope: "world", config: false, type: Number, default: 1500,
+    });
+
+    s("debugFlankLogging", {
+      name: "Debug — Flanking Resolution Logs",
+      hint: "Log detailed flanking-detection diagnostics to console (per-target, per-ally distance/disposition/reach checks). EXTREMELY verbose — typically 15-25 lines per attack roll. Off by default even when general Debug Mode is on. Turn on only when troubleshooting why a token does or doesn't get the flanking bonus.",
+      scope: "client", config: false, type: Boolean, default: false,
+    });
+
     s("batchResultsCard", {
       name:    "Batch Combat Results Card",
       hint:    "Show all targets in one consolidated damage card instead of individual cards per target.",

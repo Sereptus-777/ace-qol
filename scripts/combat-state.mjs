@@ -1045,7 +1045,14 @@ export class CombatState {
     // Reach weapons explicitly do NOT grant flanking per RAW.
     const FLANK_MAX_DISTANCE = 5;
 
-    const dbg = game.settings.get(MODULE_ID, "debugMode");
+    // v0.4.22.4: Flank logging gated behind its own setting (debugFlankLogging)
+    // because flank resolution is EXTREMELY verbose (15-25 lines per target check).
+    // Users who want general debug output via debugMode should not be flooded
+    // with flank spam every attack roll.
+    let dbg = false;
+    try {
+      dbg = game.settings.get(MODULE_ID, "debugFlankLogging");
+    } catch (_) { /* setting not registered yet during boot */ }
     const log = (...args) => { if (dbg) console.log("ace-qol | FLANK |", ...args); };
     log(`Checking flanking for ${attackerActor.name} → ${targetToken.name}`);
     log(`  Attacker vector: (${atkNx.toFixed(2)}, ${atkNy.toFixed(2)})`);
