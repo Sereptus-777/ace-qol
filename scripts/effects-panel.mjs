@@ -119,8 +119,16 @@ export class EffectsPanel {
     // collapse animation — same approach ace-engine uses for smooth tracking.
     Hooks.once("ready", () => this._bindSidebarObserver());
 
+    // v0.4.22.13: debounced resize handler. Without the 120ms gate,
+    // a fluid window-drag fired `_applyPosition` dozens of times per
+    // second, recomputing layout each tick. Single trailing-edge
+    // call is enough — users don't perceive the difference.
+    let _resizeTimer = null;
     window.addEventListener("resize", () => {
-      if (this._panelEl && !this._userMoved) this._applyPosition();
+      if (_resizeTimer) clearTimeout(_resizeTimer);
+      _resizeTimer = setTimeout(() => {
+        if (this._panelEl && !this._userMoved) this._applyPosition();
+      }, 120);
     });
   }
 

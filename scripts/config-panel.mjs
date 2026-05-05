@@ -10,8 +10,12 @@ import { TokenCache } from "./token-cache.mjs";
 
 // ─── Tab definitions ────────────────────────────────────────────────────────
 const TABS = [
+  // v0.4.22.13: removed `autoTargetTemplates` from this tab — it was
+  // also listed under "templates" (its natural home), creating two
+  // controls for the same setting that could disagree mid-session.
+  // Keeping the "templates" tab as the canonical location.
   { id: "targeting",  label: "Targeting",         icon: "fa-solid fa-crosshairs",
-    settings: ["requireTarget", "advantagePrompt", "autoTargetTemplates", "autoCheckHit"] },
+    settings: ["requireTarget", "advantagePrompt", "autoCheckHit"] },
   { id: "attacks",    label: "Attacks",            icon: "fa-solid fa-swords",
     settings: ["damageTypeSeparation", "autoCheckResistances", "slayerAutoDetect", "batchResultsCard"] },
   { id: "damage",     label: "Damage",             icon: "fa-solid fa-burst",
