@@ -155,9 +155,10 @@ export class ConcentrationWidget {
   //  Template Movement — Re-target
   // ═══════════════════════════════════════════════════════════════
 
-  _onTemplateMove(templateDoc) {
+  async _onTemplateMove(templateDoc) {
     const tracker = this._activeSpells.get(templateDoc.id);
     if (!tracker) return;
+    if (!game.user.isGM) return; // entry-trigger save is GM-only work
 
     // Update the template reference
     tracker.templateDoc = templateDoc;
@@ -173,15 +174,31 @@ export class ConcentrationWidget {
 
     tracker.tokens = newTokens;
 
+    // Bug fix: previously we only logged + posted a notification toast for
+    // entered tokens. The actual save card flow was never invoked. Now we
+    // route every newly-entered token through `_onTokenEnteredTemplate`,
+    // which handles NPC auto-roll vs PC prompt the same way token-entry
+    // does. Also keep `tokensInside` Set in sync for both directions so
+    // the token-movement path doesn't double-fire when a token is
+    // already inside a template that just moved onto it.
+    if (!tracker.tokensInside) tracker.tokensInside = new Set();
+
     if (entered.length > 0) {
-      console.log(`${TAG} | ${entered.length} token(s) entered ${tracker.item.name} template`);
-      // If timing includes "enter", these tokens should save
-      if (tracker.timing.timing.includes("enter")) {
-        ui.notifications.info(`${MODULE_ID} | ${entered.map(t => t.name).join(", ")} entered ${tracker.item.name} — save required!`);
+      console.log(`${TAG} | template-move: ${entered.length} token(s) entered ${tracker.item.name}`);
+      const timingStr = tracker.timing?.timing ?? "";
+      const triggerOnEnter = timingStr.includes("enter");
+      for (const tok of entered) {
+        tracker.tokensInside.add(tok.id);
+        if (triggerOnEnter) {
+          await this._onTokenEnteredTemplate(tracker, tok);
+        }
       }
     }
     if (exited.length > 0) {
-      console.log(`${TAG} | ${exited.length} token(s) exited ${tracker.item.name} template`);
+      console.log(`${TAG} | template-move: ${exited.length} token(s) exited ${tracker.item.name}`);
+      for (const tok of exited) {
+        tracker.tokensInside.delete(tok.id);
+      }
     }
 
     this._renderWidgets();
@@ -255,7 +272,7 @@ export class ConcentrationWidget {
   //  Turn Change — Check Triggers
   // ═══════════════════════════════════════════════════════════════
 
-  _onTurnChange(combat, changes) {
+  async _onTurnChange(combat, changes) {
     // v0.4.22.10: GM-only gate. The body of this function calls
     // `_triggerSaveForToken` which posts save cards via the SaveEngine.
     // Without this guard, every player client would post their own save
@@ -280,24 +297,43 @@ export class ConcentrationWidget {
 
     for (const [templateId, tracker] of this._activeSpells) {
       const timing = tracker.timing.timing;
-      const tokenIds = new Set(tracker.tokens.map(t => t.id));
+      // Check current state via the canvas template — `tracker.tokens` can
+      // go stale if tokens moved without a template-move event. Using the
+      // live placeable's hit-test guarantees we only fire if the
+      // combatant is actually in the area right now.
+      const template = canvas.scene.templates.get(templateId)?.object;
+      if (!template) continue;
 
       // Start-of-turn check
       if (timing.includes("startOfTurn") || timing.includes("enter+startOfTurn")) {
-        if (currentToken && tokenIds.has(currentToken.id)) {
-          console.log(`${TAG} | ${currentToken.name} starts turn in ${tracker.item.name}`);
-          ui.notifications.info(`${tracker.item.name}: ${currentToken.name} starts turn in area — save required!`);
-          // Post a single-target save prompt
-          this._triggerSaveForToken(tracker, currentToken);
+        if (currentToken) {
+          const placeable = canvas.tokens.get(currentToken.id);
+          if (placeable) {
+            const positions = { newX: currentToken.x, newY: currentToken.y };
+            const inside = this._tokenInsideTemplate(placeable, template, positions);
+            if (inside) {
+              console.log(`${TAG} | ${currentToken.name} starts turn in ${tracker.item.name}`);
+              // Use the same auto-roll-or-prompt routing as token entry —
+              // NPC fast-resolves, PC gets prompted. Skip the cast-pacing
+              // delay since this is a turn-start trigger, not a cast.
+              await this._onTokenEnteredTemplate(tracker, placeable);
+            }
+          }
         }
       }
 
       // End-of-turn check
       if (timing.includes("endOfTurn") || timing.includes("enter+endOfTurn")) {
-        if (prevToken && tokenIds.has(prevToken.id)) {
-          console.log(`${TAG} | ${prevToken.name} ends turn in ${tracker.item.name}`);
-          ui.notifications.info(`${tracker.item.name}: ${prevToken.name} ends turn in area — save required!`);
-          this._triggerSaveForToken(tracker, prevToken);
+        if (prevToken) {
+          const placeable = canvas.tokens.get(prevToken.id);
+          if (placeable) {
+            const positions = { newX: prevToken.x, newY: prevToken.y };
+            const inside = this._tokenInsideTemplate(placeable, template, positions);
+            if (inside) {
+              console.log(`${TAG} | ${prevToken.name} ends turn in ${tracker.item.name}`);
+              await this._onTokenEnteredTemplate(tracker, placeable);
+            }
+          }
         }
       }
     }
