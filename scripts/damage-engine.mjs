@@ -29,12 +29,15 @@ export class DamageConstants {
 
   static async showDiceAnimation(roll) {
     if (!roll || DamageConstants.suppressDiceAnimation) return;
+    // ── DSN fire-and-forget (v0.4.21) ──
+    // Never await DSN. If the renderer is broken, awaiting hangs forever.
+    // Players still see broadcast dice on their working clients.
     try {
-      if (game.dice3d) {
-        await game.dice3d.showForRoll(roll, game.user, true);
-      }
+      game.dice3d?.showForRoll?.(roll, game.user, true)?.catch?.(err =>
+        console.warn(`${MODULE_ID} | DSN dice animation rejected (non-fatal):`, err?.message ?? err)
+      );
     } catch (err) {
-      console.warn(`${MODULE_ID} | Dice animation failed:`, err.message);
+      console.warn(`${MODULE_ID} | DSN dice animation threw:`, err?.message ?? err);
     }
   }
 

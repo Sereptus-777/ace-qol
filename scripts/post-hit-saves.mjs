@@ -252,8 +252,11 @@ export class PostHitSaves {
       // Roll the secondary d20 with DSN animation
       const secondaryRoll = new Roll("1d20");
       await secondaryRoll.evaluate();
+      // DSN fire-and-forget (v0.4.21)
       try {
-        if (game.dice3d) await game.dice3d.showForRoll(secondaryRoll, game.user, true);
+        game.dice3d?.showForRoll?.(secondaryRoll, game.user, true)?.catch?.(err =>
+          console.warn(`${MODULE_ID} | Sever roll DSN rejected (non-fatal):`, err?.message ?? err)
+        );
       } catch (err) {
         console.warn(`${MODULE_ID} | Sever roll DSN display failed:`, err);
       }
@@ -540,7 +543,8 @@ export class PostHitSaves {
         saveRoll = new Roll(formula);
         await saveRoll.evaluate();
 
-        try { if (game.dice3d) await game.dice3d.showForRoll(saveRoll, game.user, true); } catch (err) { console.warn("ace-qol | PostHitSaves dice3d save roll display failed:", err); }
+        // DSN fire-and-forget (v0.4.21)
+        try { game.dice3d?.showForRoll?.(saveRoll, game.user, true)?.catch?.(err => console.warn("ace-qol | PostHitSaves DSN save roll rejected (non-fatal):", err?.message ?? err)); } catch (err) { console.warn("ace-qol | PostHitSaves dice3d save roll display failed:", err); }
 
         saveTotal = saveRoll.total;
         passed = saveTotal >= save.dc;
@@ -600,7 +604,8 @@ export class PostHitSaves {
         if (effectTable) {
           const tableRoll = new Roll(effectTable.die === "d6" ? "1d6" : `1${effectTable.die}`);
           await tableRoll.evaluate();
-          try { if (game.dice3d) await game.dice3d.showForRoll(tableRoll, game.user, true); } catch (err) { console.warn("ace-qol | PostHitSaves dice3d table roll display failed:", err); }
+          // DSN fire-and-forget (v0.4.21)
+          try { game.dice3d?.showForRoll?.(tableRoll, game.user, true)?.catch?.(err => console.warn("ace-qol | PostHitSaves DSN table roll rejected (non-fatal):", err?.message ?? err)); } catch (err) { console.warn("ace-qol | PostHitSaves dice3d table roll display failed:", err); }
 
           const tableResult = tableRoll.total;
           result.tableRoll = tableResult;
@@ -689,7 +694,8 @@ export class PostHitSaves {
   static async _rollAndApplySaveDamage(fx, targetActor, item, result) {
     const dmgRoll = new Roll(fx.formula);
     await dmgRoll.evaluate();
-    try { if (game.dice3d) await game.dice3d.showForRoll(dmgRoll, game.user, true); } catch (err) { console.warn("ace-qol | PostHitSaves dice3d damage roll display failed:", err); }
+    // DSN fire-and-forget (v0.4.21)
+    try { game.dice3d?.showForRoll?.(dmgRoll, game.user, true)?.catch?.(err => console.warn("ace-qol | PostHitSaves DSN damage roll rejected (non-fatal):", err?.message ?? err)); } catch (err) { console.warn("ace-qol | PostHitSaves dice3d damage roll display failed:", err); }
 
     const rawTotal = dmgRoll.total;
     let finalTotal = rawTotal;
@@ -1093,9 +1099,10 @@ export class PostHitSaves {
         rolls.push(roll);
         // DSN broadcast — 3rd arg true so all clients see the dice
         try {
-          if (game.dice3d?.showForRoll) {
-            await game.dice3d.showForRoll(roll, game.user, true);
-          }
+          // DSN fire-and-forget (v0.4.21) — never await, broken renderers hang forever
+          game.dice3d?.showForRoll?.(roll, game.user, true)?.catch?.(err =>
+            console.warn(`${MODULE_ID} | On-kill rider DSN rejected (non-fatal):`, err?.message ?? err)
+          );
         } catch (_) { /* DSN not available — non-fatal */ }
       } catch (err) {
         console.warn(`${MODULE_ID} | On-kill rider formula "${rider.formula}" failed to roll:`, err);

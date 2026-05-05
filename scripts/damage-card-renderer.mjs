@@ -454,7 +454,12 @@ export class DamageCardRenderer {
             }
             roll._total = c.total ?? c.raw;
 
-            await game.dice3d.showForRoll(roll, game.user, true);
+            // ── DSN fire-and-forget (v0.4.21) ──
+            // Never await DSN — broken renderers hang forever and lock the
+            // entire damage pipeline. Broadcast still works for player clients.
+            game.dice3d?.showForRoll?.(roll, game.user, true)?.catch?.(err =>
+              console.warn(`${MODULE_ID} | DSN pre-rolled dice rejected (non-fatal):`, err?.message ?? err)
+            );
           }
         }
       } catch (err) {
