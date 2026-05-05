@@ -20,12 +20,23 @@ import { pendingAttackChoices, awaitDsnRoll, showCenterToast } from "./attack-pr
 export class AttackPipeline {
 
   constructor() {
-    /** @type {Map<string, number>} attackKey → timestamp.
-     *  v0.4.22 dedupe Set: protects against the dual `rollAttackV2` +
-     *  legacy `rollAttack` hook registration firing both handlers for the
-     *  same attack under module-loading-order races or system-version
-     *  edge cases. Auto-prunes entries older than 10 seconds. */
-    this._processedAttackKeys = new Map();
+    /** @type {WeakSet<Roll>} v0.4.22.9 — dedupe Set keyed on Roll object
+     *  reference. Replaces the v0.4.22 `_processedAttackKeys` Map which
+     *  was keyed on `messageId|activityId|formula`. That key collided
+     *  catastrophically: `messageId` is null at the rollAttackV2 hook
+     *  stage (chat message hasn't been created yet), and `activityId +
+     *  formula` is identical across every attack made with the same
+     *  weapon. Every Jeth rapier swing within 10s produced the same
+     *  key, so swings 2-N got silently deduped → "swing 1 fires, no
+     *  cards on subsequent swings."
+     *
+     *  Roll-reference dedup is correct: the dual `rollAttackV2 +
+     *  rollAttack` hooks fire with the SAME Roll instance, so
+     *  `WeakSet.has(roll)` is true on the second fire. Distinct
+     *  attacks produce distinct Roll instances, so they pass through.
+     *  WeakSet auto-cleans when Roll references go out of scope —
+     *  no memory leak, no TTL needed. */
+    this._processedAttackRolls = new WeakSet();
 
     this._registerHooks();
   }
@@ -43,38 +54,35 @@ export class AttackPipeline {
 
     // ── POST-ROLL: Assess results, post card ──
     //
-    // v0.4.22: BOTH the V2 and legacy hooks now route through a per-attack
-    // dedupe Set. The previous implementation had a fallback guard
-    // `if (!Hooks.events["dnd5e.rollAttackV2"]?.length)` but that was
-    // vulnerable to module-loading-order races (other modules registering
-    // V2 listeners after our legacy fallback runs).
+    // v0.4.22.9: Dedupe via the Roll OBJECT REFERENCE, not a string key.
+    // Both `rollAttackV2` and `rollAttack` hooks fire with the same Roll
+    // instance for a given attack — WeakSet identity check catches the
+    // duplicate. Distinct attacks have distinct Roll instances and pass
+    // through. WeakSet auto-cleans when refs are GC'd; no TTL needed.
     //
-    // The dedupe key combines message ID + activity ID + roll formula —
-    // any one of those is enough to identify a unique attack. Entries
-    // auto-prune after 10 seconds.
+    // Previous (v0.4.22) implementation used a string key
+    // `messageId|activityId|formula`, which collided across every attack
+    // made with the same weapon: `messageId` was null at this hook stage,
+    // and `activityId + formula` are identical for repeat swings. Net
+    // effect: only the first swing per ~10 seconds posted a card.
     const dedupedAttackHandler = (rolls, data) => {
       try {
-        const messageId  = data?.message?.id ?? data?.messageId ?? null;
-        const activityId = data?.subject?.id ?? data?.flags?.dnd5e?.activity?.id ?? null;
-        const formula    = rolls?.[0]?.formula ?? rolls?.[0]?._formula ?? "";
-        const key = `${messageId ?? "no-msg"}|${activityId ?? "no-act"}|${formula}`;
-
-        if (this._processedAttackKeys.has(key)) {
-          // Silent dedupe — log only in debug
-          try {
-            if (game.settings.get(MODULE_ID, "debugMode")) {
-              console.log(`${MODULE_ID} | rollAttack dedupe: skipping duplicate fire for key ${key}`);
-            }
-          } catch (_) { /* setting not ready */ }
-          return;
+        const rollRef = rolls?.[0];
+        if (rollRef && typeof rollRef === "object") {
+          if (this._processedAttackRolls.has(rollRef)) {
+            // Silent dedupe — log only in debug
+            try {
+              if (game.settings.get(MODULE_ID, "debugMode")) {
+                console.log(`${MODULE_ID} | rollAttack dedupe: dual-hook duplicate for Roll ${rollRef?.formula ?? "?"}`);
+              }
+            } catch (_) { /* setting not ready */ }
+            return;
+          }
+          this._processedAttackRolls.add(rollRef);
         }
-        this._processedAttackKeys.set(key, Date.now());
-
-        // Auto-prune entries older than 10 seconds
-        const cutoff = Date.now() - 10000;
-        for (const [k, ts] of this._processedAttackKeys) {
-          if (ts < cutoff) this._processedAttackKeys.delete(k);
-        }
+        // If rollRef is missing or non-object (shouldn't happen but safe),
+        // we skip dedup — better to risk a duplicate card than to block
+        // a legitimate attack.
 
         return this._onAttackRoll(rolls, data);
       } catch (err) {
