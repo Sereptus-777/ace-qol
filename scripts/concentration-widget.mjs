@@ -246,7 +246,7 @@ export class ConcentrationWidget {
    * Trigger a save prompt for a single token inside a persistent spell.
    * Posts a save card to the GM chat for that one creature.
    */
-  async _triggerSaveForToken(tracker, tokenDoc) {
+  async _triggerSaveForToken(tracker, tokenDoc, opts = {}) {
     // v0.4.22.10: Defense-in-depth GM gate. `_onTurnChange` already gates,
     // but if any future caller invokes this directly we still want only
     // the GM client to post the save card.
@@ -263,6 +263,8 @@ export class ConcentrationWidget {
     const post = this._saveEngine?.postSaveCard?.bind(this._saveEngine)
               ?? this._saveEngine?._postLiveTargetCard?.bind(this._saveEngine);
     if (typeof post === "function") {
+      // v0.6.2: forward `skipDelay` so entry-trigger callers can bypass
+      // the 1500ms cast-pacing pause.
       await post(tracker.item, tracker.actor, [token], {
         saveAbility: tracker.saveAbility,
         saveDC: tracker.saveDC,
@@ -271,6 +273,7 @@ export class ConcentrationWidget {
         isSpell: true,
         isPersistent: true,
         templateId: tracker.templateId,
+        skipDelay: opts.skipDelay === true,
       });
     } else {
       console.warn(`${TAG} | save engine has neither postSaveCard nor _postLiveTargetCard — INFLICT DAMAGE failed for ${tracker.item?.name}`);
@@ -417,14 +420,59 @@ export class ConcentrationWidget {
   /**
    * Phase 1 entry trigger. Routes to NPC auto-save flow vs PC save-prompt
    * flow based on token ownership.
+   *
+   * v0.6.2: Split PC vs NPC paths. NPC fast-resolve auto-rolls and posts
+   * the result. PC live-target-card asks the player to roll their own
+   * save (always — PCs roll their own dice). Both pass `skipDelay: true`
+   * so the save card lands immediately on entry — the cast animation
+   * has already played, so the 1500ms cast-pacing doesn't apply.
    */
   async _onTokenEnteredTemplate(tracker, token) {
     const isPC = !!token.actor?.hasPlayerOwner;
     console.log(`${TAG} | ${token.name} entered ${tracker.item?.name} (${isPC ? "PC" : "NPC"})`);
-    // Reuse the SaveEngine's postSaveCard flow for both NPCs and PCs —
-    // it already handles the NPC-fast-path single-target auto-roll
-    // pathway internally, and the PC-prompt whisper-+-collapse rendering.
-    await this._triggerSaveForToken(tracker, token.document);
+
+    if (isPC) {
+      // PC: live target card with that PC's ROLL SAVE button enabled.
+      // SaveEngine already routes whisper / collapse so non-owners see a
+      // collapsed row. GM also enabled via existing override.
+      await this._triggerSaveForToken(tracker, token.document, { skipDelay: true });
+    } else {
+      // NPC: auto-roll the save. `_fastResolveSingleNpcSave` posts a
+      // result card that's visible to all (so PCs can see the NPC failed),
+      // and includes a ROLL DAMAGE button (for the spell caster) and an
+      // INFLICT DAMAGE button (for the GM).
+      await this._triggerNpcAutoSave(tracker, token, { skipDelay: true });
+    }
+  }
+
+  /**
+   * v0.6.2: NPC entry-trigger fast-resolve. Calls SaveEngine's existing
+   * `_fastResolveSingleNpcSave` which auto-rolls the save and posts a
+   * public result card. Falls back to the live-target-card path if the
+   * fast method isn't available (older save engine versions).
+   */
+  async _triggerNpcAutoSave(tracker, token, opts = {}) {
+    if (!game.user.isGM) return;
+    const fastResolve = this._saveEngine?._fastResolveSingleNpcSave?.bind(this._saveEngine);
+    if (typeof fastResolve === "function") {
+      try {
+        await fastResolve(tracker.item, tracker.actor, token, {
+          saveAbility: tracker.saveAbility,
+          saveDC:      tracker.saveDC,
+          halfOnSave:  tracker.halfOnSave,
+          damageTypes: tracker.damageTypes,
+          isSpell:     true,
+          timing:      tracker.timing,
+          activity:    null,
+          skipDelay:   opts.skipDelay === true,
+        });
+        return;
+      } catch (err) {
+        console.warn(`${TAG} | _fastResolveSingleNpcSave threw, falling back to live-target-card:`, err);
+      }
+    }
+    // Fallback — slow path
+    await this._triggerSaveForToken(tracker, token.document, opts);
   }
 
   /**
