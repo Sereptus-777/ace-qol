@@ -33,6 +33,20 @@ import { showCenterToast } from "./attack-prompt.mjs";
 export class EngagementGate {
 
   /**
+   * v0.4.22.5: UUIDs of activities the user has already confirmed via the
+   * concentration-break dialog. Replaces the old approach of mutating
+   * `activity._aceQolConfirmed = true`, which silently failed because dnd5e
+   * 5.x activity objects are non-extensible — the marker was lost on every
+   * re-fire and the dialog re-prompted in a loop.
+   *
+   * The async confirm handler adds the UUID before re-firing `activity.use()`.
+   * The synchronous preUseActivity hook checks the Set, consumes (deletes)
+   * the entry on hit, and bypasses the gate. Single-use marker — a future
+   * independent cast of the same activity still triggers the prompt.
+   */
+  static _confirmedActivityUuids = new Set();
+
+  /**
    * The single entry point. Every pipeline calls this first.
    *
    * @param {object} ctx
@@ -473,6 +487,14 @@ export class EngagementGate {
         const source = item.actor;
         if (!source) return;
 
+        // v0.4.22.5: bypass gate if this is the post-confirm re-fire from the
+        // concentration dialog. Consume the entry so a future independent cast
+        // of the same activity still gets gated.
+        if (activity?.uuid && EngagementGate._confirmedActivityUuids.has(activity.uuid)) {
+          EngagementGate._confirmedActivityUuids.delete(activity.uuid);
+          return; // proceed without gating
+        }
+
         const targets = [...(game.user.targets ?? [])];
 
         // ── SYNCHRONOUS check 0: target requirement (zero targets, wrong count) ──
@@ -501,8 +523,10 @@ export class EngagementGate {
         //      with a marker flag so the gate skips the confirm on re-entry
         if (EngagementGate._spellRequiresConcentration(item, activity)) {
           const current = EngagementGate._currentConcentrationSpellName(source);
-          if (current && current !== item.name && !activity._aceQolConfirmed) {
-            // Defer the dialog + re-fire to async land
+          if (current && current !== item.name) {
+            // Defer the dialog + re-fire to async land. The early-bypass
+            // check at the top of this hook handles the post-confirm
+            // re-entry via `_confirmedActivityUuids`.
             EngagementGate._handleConcentrationConfirmAsync(activity, source, item, current);
             return false; // cancel the original cast (synchronous)
           }
@@ -537,17 +561,26 @@ export class EngagementGate {
       showCenterToast(`Cancelled — concentration on ${oldSpellName} preserved`, 3000);
       return;
     }
-    // User confirmed — re-fire the activity with our marker so the gate
-    // doesn't prompt again on re-entry.
+    // User confirmed — register the activity UUID so the sync hook bypasses
+    // the gate on re-entry, then re-fire `activity.use()`.
+    //
+    // v0.4.22.5: Use a static Set keyed on activity.uuid instead of mutating
+    // `activity._aceQolConfirmed`. The mutation approach silently failed
+    // because dnd5e 5.x activities are non-extensible — every click of "Break"
+    // re-fired the dialog in a loop because the marker never stuck.
+    if (!activity?.uuid) {
+      console.warn(`${MODULE_ID} | concentration confirm: activity has no uuid, can't safely re-fire`);
+      ui.notifications?.error(`Re-cast of ${item.name} failed — please cast from the sheet.`);
+      return;
+    }
     try {
-      activity._aceQolConfirmed = true;
+      EngagementGate._confirmedActivityUuids.add(activity.uuid);
       await activity.use();
     } catch (err) {
       console.error(`${MODULE_ID} | EngagementGate re-fire of ${item.name} failed:`, err);
       ui.notifications?.error(`Re-cast of ${item.name} failed — try again from the sheet.`);
-    } finally {
-      // Clear the marker so a future independent cast still triggers the prompt
-      try { delete activity._aceQolConfirmed; } catch (_) {}
+      // Clean up if re-fire blew up before the sync hook could consume the entry
+      EngagementGate._confirmedActivityUuids.delete(activity.uuid);
     }
   }
 }
