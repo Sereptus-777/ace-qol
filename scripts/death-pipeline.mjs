@@ -114,11 +114,98 @@ export class DeathPipeline {
         processNPCDeath: instance.processNPCDeath.bind(instance),
         buildArtCache:   instance.buildArtCache.bind(instance),
         getAvailableArt: () => new Map(instance._artCache),
+        healZeroSizeDeadTiles: DeathPipeline.healZeroSizeDeadTiles,
       };
       console.log(`${LOG_PREFIX} API registered on game.aceQol.DeathPipeline`);
     } catch (err) {
       console.error(`${LOG_PREFIX} API registration failed:`, err);
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  v0.4.23 Migration — Heal Zero-Size Dead Tiles
+  //
+  //  Older death-pipeline versions (pre-v0.4.23) sometimes spawned dead-art
+  //  tiles with width:0/height:0 due to the (tokenDoc.width ?? 1) nullish
+  //  bug. Those tiles render visibly because Foundry derives display size
+  //  from asset metadata, but the document fields stay at zero — making
+  //  the lootable-tile click hit-test geometrically impossible.
+  //
+  //  This migration runs ONCE on first v0.4.23 ready: scans every scene,
+  //  finds dead-art tiles with isDeadToken flag AND width===0 OR height===0,
+  //  updates them to grid size. Idempotent — running again is a no-op.
+  //  Persisted via the world setting `deadTileMigrationV0423` so it doesn't
+  //  re-run on every reload.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  static async healZeroSizeDeadTiles({ force = false } = {}) {
+    if (!game.user.isGM) return { skipped: "non-GM client" };
+
+    let alreadyRan = false;
+    try { alreadyRan = !!game.settings.get(MODULE_ID, "deadTileMigrationV0423"); }
+    catch (_) { /* setting not registered yet — proceed */ }
+    if (alreadyRan && !force) return { skipped: "already ran" };
+
+    const updates = [];
+    let scanned = 0;
+    for (const scene of game.scenes.contents) {
+      for (const tile of scene.tiles?.contents ?? []) {
+        if (tile.flags?.[MODULE_ID]?.isDeadToken !== true) continue;
+        scanned++;
+        const w = tile.width;
+        const h = tile.height;
+        if ((w && w > 0) && (h && h > 0)) continue;  // already healthy
+        const gridSize = scene.grid?.size || 100;
+        updates.push({
+          sceneId: scene.id,
+          tileId: tile.id,
+          oldW: w, oldH: h,
+          newW: gridSize, newH: gridSize,
+        });
+      }
+    }
+
+    if (updates.length === 0) {
+      console.log(`${LOG_PREFIX} healZeroSizeDeadTiles: scanned ${scanned} dead tiles, none needed healing`);
+      try { await game.settings.set(MODULE_ID, "deadTileMigrationV0423", true); } catch (_) {}
+      return { scanned, healed: 0 };
+    }
+
+    // Group updates by scene for batch dispatch
+    const bySceneId = new Map();
+    for (const u of updates) {
+      if (!bySceneId.has(u.sceneId)) bySceneId.set(u.sceneId, []);
+      bySceneId.get(u.sceneId).push({ _id: u.tileId, width: u.newW, height: u.newH });
+    }
+
+    let healed = 0;
+    for (const [sceneId, ops] of bySceneId) {
+      const scene = game.scenes.get(sceneId);
+      if (!scene) continue;
+      try {
+        await scene.updateEmbeddedDocuments("Tile", ops);
+        healed += ops.length;
+      } catch (err) {
+        console.warn(`${LOG_PREFIX} healZeroSizeDeadTiles: scene ${scene.name} update failed:`, err?.message ?? err);
+      }
+    }
+
+    try { await game.settings.set(MODULE_ID, "deadTileMigrationV0423", true); } catch (_) {}
+
+    console.log(`${LOG_PREFIX} healZeroSizeDeadTiles: scanned ${scanned}, healed ${healed} tiles across ${bySceneId.size} scene(s). Right-click loot should now work on every existing dead tile.`);
+
+    if (healed > 0) {
+      try {
+        await ChatMessage.create({
+          content: `<div style="background:#1a3a1a;border:1px solid #4caf50;padding:6px 10px;border-radius:4px;color:#a8f0a8;font-size:12px;">
+            <strong>✓ ACE QOL v0.4.23 migration:</strong> Healed ${healed} zero-size dead tile(s) across ${bySceneId.size} scene(s). Click on any dead body to open its loot dialog.
+          </div>`,
+          whisper: [game.user.id],
+        });
+      } catch (_) {}
+    }
+
+    return { scanned, healed, sceneCount: bySceneId.size, updates };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -219,6 +306,19 @@ export class DeathPipeline {
         if (NATURAL_WEAPON_TYPES.has(wt)) continue;
         if (NATURAL_NAME_RE.test((item.name ?? "").trim())) continue;
       }
+      // v0.4.23: store FULL item data (toObject()) alongside the UUID/metadata.
+      //   The UUID `Scene.X.Token.Y.Actor.Z.Item.W` becomes UNRESOLVABLE the
+      //   moment the source token is deleted by the death pipeline (which
+      //   happens immediately after this snapshot). Without the full data,
+      //   loot recovery is impossible — names + images preserved but
+      //   mechanical effects lost.
+      //   Storing toObject() is ~1-3 KB per item, totally acceptable in
+      //   tile flag storage. Loot dialog now uses `data` for new creates
+      //   and falls back to `uuid` only for legacy snapshots.
+      let fullData = null;
+      try { fullData = item.toObject(); }
+      catch (err) { console.warn(`${LOG_PREFIX} _buildLootSnapshot: toObject failed for ${item.name}:`, err?.message ?? err); }
+
       items.push({
         id:     item.id,
         name:   item.name,
@@ -226,6 +326,7 @@ export class DeathPipeline {
         uuid:   item.uuid,
         type:   item.type,
         rarity: item.system?.rarity ?? "common",
+        data:   fullData,  // v0.4.23 — survives token deletion
       });
     }
 
@@ -257,6 +358,35 @@ export class DeathPipeline {
    */
   async processNPCDeath(actor, tokenDoc) {
     const name = actor?.name ?? "unknown";
+
+    // ── v0.4.23 dedup Set ──
+    //   Without this guard, processNPCDeath could fire 2-3 times for the
+    //   same actor when multiple hooks bridge to it (preApplyDamage,
+    //   updateActor, deleteToken, manual delete). Result: 3x loot cards,
+    //   3x dead-art tiles. Observed live in May 4 session: Death Knight
+    //   had 3 identical loot cards in chat.
+    //
+    //   Guard key uses tokenDoc.uuid when available (handles unlinked
+    //   synthetic actors with shared base actorId), else actor.id.
+    //   Auto-pruned 5 seconds after entry — long enough to catch all
+    //   bridge hooks for the same death event, short enough that a
+    //   later genuine death of the same actor (e.g., revived then killed)
+    //   still processes correctly.
+    if (!this._processingActors) this._processingActors = new Map();
+    const guardKey = tokenDoc?.uuid ?? actor?.id ?? null;
+    if (guardKey && this._processingActors.has(guardKey)) {
+      console.log(`${LOG_PREFIX} ⏭ processNPCDeath("${name}") DEDUP skip — already processing this actor (${guardKey})`);
+      return;
+    }
+    if (guardKey) {
+      this._processingActors.set(guardKey, Date.now());
+      // Auto-prune entries older than 5 seconds
+      const cutoff = Date.now() - 5000;
+      for (const [k, ts] of this._processingActors) {
+        if (ts < cutoff) this._processingActors.delete(k);
+      }
+    }
+
     console.log(`${LOG_PREFIX} ▶ processNPCDeath("${name}") starting`);
     try {
       // ── Guard: setting enabled? — auto-recover if disabled ──
@@ -342,11 +472,27 @@ export class DeathPipeline {
       }
 
       // ── Find an unoccupied grid position (don't stack on existing dead tiles) ──
-      const gridSize = canvas.grid?.size ?? 100;
-      const tileWidth  = (tokenDoc.width ?? 1) * gridSize;
-      const tileHeight = (tokenDoc.height ?? 1) * gridSize;
+      //
+      // v0.4.23 FIX: defensive non-zero dimension calculation.
+      //   Previous: const tileWidth = (tokenDoc.width ?? 1) * gridSize;
+      //   Bug: if tokenDoc.width === 0 (which happens with certain token
+      //   configs, synthetic actors, or partially-deleted documents), the
+      //   nullish-coalescing operator does NOT substitute the fallback —
+      //   `0 ?? 1` is 0, not 1. Result: tile spawned with width:0, height:0,
+      //   making the click hit-test in lootable-tile.mjs geometrically
+      //   impossible. THIS IS WHY DEAD-TILE LOOTING NEVER WORKED.
+      //
+      //   Fix: use `|| 1` (handles BOTH 0 and nullish), then sanity-check
+      //   the final values to ensure we never produce a zero-size tile.
+      //   If anything ends up zero, force to grid size so the tile is at
+      //   least clickable at the smallest valid size.
+      const gridSize = canvas.grid?.size || 100;
+      let tileWidth  = (tokenDoc.width  || 1) * gridSize;
+      let tileHeight = (tokenDoc.height || 1) * gridSize;
+      if (tileWidth  <= 0) { console.warn(`${LOG_PREFIX}   ⚠ tokenDoc.width was ${tokenDoc.width} → forcing tileWidth to gridSize ${gridSize}`); tileWidth  = gridSize; }
+      if (tileHeight <= 0) { console.warn(`${LOG_PREFIX}   ⚠ tokenDoc.height was ${tokenDoc.height} → forcing tileHeight to gridSize ${gridSize}`); tileHeight = gridSize; }
       const placement = this._findUnoccupiedPosition(tokenDoc.x, tokenDoc.y, tileWidth, tileHeight);
-      console.log(`${LOG_PREFIX}   ✓ Placement: (${placement.x},${placement.y})${placement.shifted ? " [shifted to avoid overlap]" : ""}`);
+      console.log(`${LOG_PREFIX}   ✓ Placement: (${placement.x},${placement.y}) ${tileWidth}x${tileHeight}${placement.shifted ? " [shifted to avoid overlap]" : ""}`);
 
       // ── Step 1: Create the dead tile BEFORE deleting the token ──
       const isVideo = /\.(webm|mp4|m4v|ogv)$/i.test(deadArtPath);
@@ -373,7 +519,12 @@ export class DeathPipeline {
           [MODULE_ID]: {
             isDeadToken:     true,
             originalActorId: actor.id,
+            // v0.4.23: renamed `originalTokenId` → `_deletedTokenId` to make
+            // it explicit that this is the ID of the token that WAS deleted
+            // (not a current token reference). Kept under the old name as
+            // well for back-compat with any existing code that reads it.
             originalTokenId: tokenDoc.id,
+            _deletedTokenId: tokenDoc.id,
             originalName:    actor.name,
             creatureType:    actor.system?.details?.type?.value || "",
             lootable:        true,

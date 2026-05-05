@@ -141,10 +141,138 @@ export class LootEngine {
         postLootCard:        engine.postLootCard.bind(engine),
         postPublicLootCard:  engine.postPublicLootCard.bind(engine),
         handleItemLooted:    engine.handleItemLooted.bind(engine),
+        syncLootRemoved:     LootEngine.syncLootRemoved,
+        syncLootCurrencyZeroed: LootEngine.syncLootCurrencyZeroed,
       };
+      LootEngine.registerCrossPipelineHooks();
       console.log(`${LOG_PREFIX} API registered on game.aceQol.LootEngine`);
     } catch (err) {
       console.error(`${LOG_PREFIX} API registration failed:`, err);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  v0.4.23 Cross-Pipeline Sync — chat-card ↔ tile-dialog
+  //
+  //  When a GM transfers an item via the tile loot dialog, lootable-tile.mjs
+  //  emits `ace-qol.lootRemoved` with the actor + item details. We listen
+  //  here and mark the matching item as `looted: true` on every relevant
+  //  loot-card chat message, so players see the chat card update without
+  //  reload.
+  //
+  //  Conversely, the loot-card chat handler can fire the same hook to keep
+  //  the tile dialog in sync (the dialog re-reads from the actor on next
+  //  open, so the sync is one-way for now — chat-card updates flow back
+  //  through the actor's items list).
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  static registerCrossPipelineHooks() {
+    if (LootEngine._crossHooksRegistered) return;
+    LootEngine._crossHooksRegistered = true;
+
+    Hooks.on(`${MODULE_ID}.lootRemoved`, async (data) => {
+      try { await LootEngine.syncLootRemoved(data); }
+      catch (err) { console.warn(`${LOG_PREFIX} lootRemoved sync failed:`, err?.message ?? err); }
+    });
+
+    Hooks.on(`${MODULE_ID}.lootCurrencyZeroed`, async (data) => {
+      try { await LootEngine.syncLootCurrencyZeroed(data); }
+      catch (err) { console.warn(`${LOG_PREFIX} lootCurrencyZeroed sync failed:`, err?.message ?? err); }
+    });
+
+    console.log(`${LOG_PREFIX} cross-pipeline sync hooks registered (lootRemoved, lootCurrencyZeroed)`);
+  }
+
+  /**
+   * Mark an item as looted on every loot-card chat message that references
+   * the same source actor. Match by item.id (preferred), uuid, or name as
+   * fallback. Idempotent — items already marked stay looted.
+   *
+   * @param {object} data - { actorId, itemId, itemUuid, itemName, recipientActorId }
+   */
+  static async syncLootRemoved(data) {
+    if (!game.user.isGM) return;
+    const { actorId, itemId, itemUuid, itemName } = data ?? {};
+    if (!itemId && !itemUuid && !itemName) return;
+
+    let updatedCards = 0;
+    for (const msg of game.messages.contents) {
+      const flags = msg.flags?.[MODULE_ID] ?? msg.flags?.["ace-engine"];
+      if (!flags || flags.type !== "lootCard") continue;
+      // Match by source actorId when available — exact match preferred
+      if (actorId && flags.actorId && flags.actorId !== actorId) continue;
+
+      const items = flags.items ?? [];
+      let dirty = false;
+      const updatedItems = items.map(it => {
+        if (it.looted) return it;
+        const matchById   = itemId   && (it.id === itemId);
+        const matchByUuid = itemUuid && (it.uuid === itemUuid);
+        const matchByName = itemName && (it.name === itemName);
+        if (matchById || matchByUuid || matchByName) {
+          dirty = true;
+          return {
+            ...it,
+            looted: true,
+            lootedBy: data.recipientActorId ?? "tile-transfer",
+            lootedAt: Date.now(),
+          };
+        }
+        return it;
+      });
+
+      if (!dirty) continue;
+
+      // Check if all items now looted → mark fullyLooted
+      const allLooted = updatedItems.every(it => it.looted);
+
+      try {
+        const ns = msg.flags?.[MODULE_ID] ? MODULE_ID : "ace-engine";
+        await msg.setFlag(ns, "items", updatedItems);
+        if (allLooted) await msg.setFlag(ns, "fullyLooted", true);
+        // Re-render via no-op flag update to refresh chat-card UI
+        await msg.update({ "flags.ace-qol.syncRender": Date.now() });
+        updatedCards++;
+      } catch (err) {
+        console.warn(`${LOG_PREFIX} syncLootRemoved: failed to update message ${msg.id}:`, err?.message ?? err);
+      }
+    }
+
+    if (updatedCards > 0) {
+      console.log(`${LOG_PREFIX} syncLootRemoved: marked "${itemName ?? itemUuid ?? itemId}" looted on ${updatedCards} chat card(s)`);
+    }
+  }
+
+  /**
+   * Zero out the currency display on every loot-card chat message that
+   * references the same source actor (called when the GM splits the gold
+   * via the tile dialog). The actual currency was already deducted on the
+   * source actor — this just keeps the chat card display honest.
+   *
+   * @param {object} data - { actorId }
+   */
+  static async syncLootCurrencyZeroed(data) {
+    if (!game.user.isGM) return;
+    const { actorId } = data ?? {};
+    if (!actorId) return;
+
+    let updatedCards = 0;
+    for (const msg of game.messages.contents) {
+      const flags = msg.flags?.[MODULE_ID] ?? msg.flags?.["ace-engine"];
+      if (!flags || flags.type !== "lootCard") continue;
+      if (flags.actorId !== actorId) continue;
+      const c = flags.currency ?? {};
+      if ((c.cp|0) === 0 && (c.sp|0) === 0 && (c.ep|0) === 0 && (c.gp|0) === 0 && (c.pp|0) === 0) continue;
+      try {
+        const ns = msg.flags?.[MODULE_ID] ? MODULE_ID : "ace-engine";
+        await msg.setFlag(ns, "currency", { cp: 0, sp: 0, ep: 0, gp: 0, pp: 0 });
+        await msg.update({ "flags.ace-qol.syncRender": Date.now() });
+        updatedCards++;
+      } catch (_) {}
+    }
+
+    if (updatedCards > 0) {
+      console.log(`${LOG_PREFIX} syncLootCurrencyZeroed: zeroed currency on ${updatedCards} chat card(s) for actor ${actorId}`);
     }
   }
 

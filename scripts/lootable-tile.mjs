@@ -161,12 +161,14 @@ export class LootableTile {
   _findContainerTileAtWorldPos(worldX, worldY) {
     if (!canvas?.scene) return null;
     const tiles = [...canvas.scene.tiles.contents].reverse();
+    const gridFallback = canvas.grid?.size || 100;
     for (const tileDoc of tiles) {
       // Only containers — dead-body tiles aren't drop targets
       if (tileDoc.flags?.[MODULE_ID]?.isDeadToken === true) continue;
       if (!isContainerTile(tileDoc)) continue;
-      const w = tileDoc.width  ?? 100;
-      const h = tileDoc.height ?? 100;
+      // v0.4.23: same nullish-vs-zero fix as _findLootableTileAt
+      const w = (tileDoc.width  || 0) > 0 ? tileDoc.width  : gridFallback;
+      const h = (tileDoc.height || 0) > 0 ? tileDoc.height : gridFallback;
       if (worldX >= tileDoc.x && worldX < tileDoc.x + w
        && worldY >= tileDoc.y && worldY < tileDoc.y + h) {
         return tileDoc;
@@ -323,12 +325,22 @@ export class LootableTile {
   _findLootableTileAt(worldPos) {
     if (!canvas?.scene || !worldPos) return null;
     const tiles = [...canvas.scene.tiles.contents].reverse();
+    const gridFallback = canvas.grid?.size || 100;
     for (const tileDoc of tiles) {
       const isDead = tileDoc.flags?.[MODULE_ID]?.isDeadToken === true;
       const isContainer = !isDead && isContainerTile(tileDoc);
       if (!isDead && !isContainer) continue;
-      const w = tileDoc.width  ?? 100;
-      const h = tileDoc.height ?? 100;
+
+      // v0.4.23 FIX: previous code used `tileDoc.width ?? 100` which evaluates
+      //   `(0 ?? 100) === 0`, not the fallback. Many existing dead-art tiles
+      //   in user worlds have `width: 0, height: 0` (the death-pipeline
+      //   creation bug fixed in same release). Without `|| gridFallback`,
+      //   the hit-test rectangle is empty and no click can ever land in it.
+      //   THIS IS THE ENTIRE REASON DEAD-TILE LOOTING NEVER WORKED.
+      //   Using `|| gridFallback` handles both nullish AND zero values.
+      const w = (tileDoc.width  || 0) > 0 ? tileDoc.width  : gridFallback;
+      const h = (tileDoc.height || 0) > 0 ? tileDoc.height : gridFallback;
+
       if (worldPos.x >= tileDoc.x
        && worldPos.x < tileDoc.x + w
        && worldPos.y >= tileDoc.y
@@ -487,6 +499,20 @@ export class LootableTile {
         isDead ? "Loot this body" : "Open container",
         "rgba(212,175,55,0.2)",
         () => this._openLootDialog(tile),
+      );
+    }
+
+    // ── Revive button (dead-body tiles only, GM only) — v0.4.23 ──
+    // Recreates the original token from the actor's prototype at the tile's
+    // location, deletes the dead-art tile, restores the actor to (max HP)/2
+    // by default. Useful for "I shouldn't have killed this" rollbacks like
+    // the Death Knight scenario in the May 4 session.
+    if (isDead) {
+      makeBtn(
+        "fa-heart-pulse",
+        "Revive this creature (recreate token, delete dead tile)",
+        "rgba(80,212,80,0.2)",
+        () => this._reviveDeadTile(tile),
       );
     }
 
@@ -712,20 +738,42 @@ export class LootableTile {
             await ChatMessage.create({
               content: `<em><strong>${foundry.utils.escapeHTML(targetActor.name)}</strong> received <strong>${foundry.utils.escapeHTML(sourceItem.name)}</strong> from the chest.</em>`,
             });
+            // v0.4.23: emit cross-pipeline sync hook so loot-card chat
+            // listings (loot-engine.mjs) can mark this item looted.
+            Hooks.callAll(`${MODULE_ID}.lootRemoved`, {
+              source: "tile-container",
+              tileId: tile?.document?.id ?? tile?.id ?? null,
+              actorId: null,
+              itemUuid: key,
+              itemName: sourceItem.name,
+              recipientActorId: targetActor.id,
+            });
           } else if (source === "actor" && actor) {
             // Live-actor path — original transfer logic
             const item = actor.items.get(key);
             if (!item) return;
             const itemData = item.toObject();
+            const itemNameSnap = item.name;
+            const itemUuidSnap = item.uuid;
             await targetActor.createEmbeddedDocuments("Item", [itemData]);
             await item.delete();
-            ui.notifications.info(`ACE QOL: Gave ${item.name} to ${targetActor.name}.`);
+            ui.notifications.info(`ACE QOL: Gave ${itemNameSnap} to ${targetActor.name}.`);
             btn.closest(".ace-qol-tile-loot-item")?.remove();
             await ChatMessage.create({
-              content: `<em><strong>${foundry.utils.escapeHTML(targetActor.name)}</strong> received <strong>${foundry.utils.escapeHTML(item.name)}</strong> from ${foundry.utils.escapeHTML(actor.name)}'s body.</em>`,
+              content: `<em><strong>${foundry.utils.escapeHTML(targetActor.name)}</strong> received <strong>${foundry.utils.escapeHTML(itemNameSnap)}</strong> from ${foundry.utils.escapeHTML(actor.name)}'s body.</em>`,
             });
             // Keep tile snapshot in sync so players see the updated loot list
             await this._syncSnapshotItemRemoved(tile, key);
+            // v0.4.23: cross-pipeline sync — loot-card listener marks looted
+            Hooks.callAll(`${MODULE_ID}.lootRemoved`, {
+              source: "tile-actor",
+              tileId: tile?.document?.id ?? tile?.id ?? null,
+              actorId: actor.id,
+              itemId: key,        // actor item id (matches loot-card item.id)
+              itemUuid: itemUuidSnap,
+              itemName: itemNameSnap,
+              recipientActorId: targetActor.id,
+            });
           }
           // source === "snapshot": read-only, give-buttons aren't shown
         } catch (err) {
@@ -745,11 +793,22 @@ export class LootableTile {
           await this._splitContainerGold(tile, recipients);
           splitBtn.disabled = true;
           splitBtn.textContent = "Split Done";
+          // v0.4.23: cross-pipeline sync — loot card should zero its currency
+          Hooks.callAll(`${MODULE_ID}.lootCurrencyZeroed`, {
+            source: "tile-container",
+            tileId: tile?.document?.id ?? tile?.id ?? null,
+            actorId: null,
+          });
         } else if (source === "actor" && actor) {
           await this._splitGold(actor, recipients);
           splitBtn.disabled = true;
           splitBtn.textContent = "Split Done";
           await this._syncSnapshotCurrencyZeroed(tile);
+          Hooks.callAll(`${MODULE_ID}.lootCurrencyZeroed`, {
+            source: "tile-actor",
+            tileId: tile?.document?.id ?? tile?.id ?? null,
+            actorId: actor.id,
+          });
         }
       });
     }
@@ -1172,6 +1231,125 @@ export class LootableTile {
       console.log(`${MODULE_ID} | Combat ended — auto-unlocked ${lockedTiles.length} loot tile${lockedTiles.length === 1 ? "" : "s"}`);
     } catch (err) {
       console.warn(`${MODULE_ID} | Combat-end auto-unlock failed:`, err);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  v0.4.23 — Revive dead-body tile back to a token
+  //
+  //  Codifies the manual recovery procedure used in the May 4 session
+  //  (Death Knight false-Assassinate scenario):
+  //    1. Read flags.originalActorId from the tile
+  //    2. Get the actor (must still exist — linked actors persist; some
+  //       unlinked synthetics may be gone)
+  //    3. Create a new token from actor.prototypeToken at the tile's location
+  //    4. Delete the dead-art tile
+  //    5. Restore HP to half-max by default (configurable via dialog)
+  //    6. Remove "Dead" / "Defeated" / "Unconscious" active effects
+  //    7. Mark the tile's parent loot card fullyLooted to clean up chat
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  async _reviveDeadTile(tile) {
+    if (!game.user.isGM) {
+      ui.notifications.warn("Only the GM can revive creatures.");
+      return;
+    }
+
+    const tileDoc = tile.document ?? tile;
+    const flags = tileDoc?.flags?.[MODULE_ID];
+    if (!flags?.isDeadToken) {
+      ui.notifications.warn("This tile is not a dead-body tile.");
+      return;
+    }
+
+    const actorId = flags.originalActorId;
+    const originalName = flags.originalName ?? "Unknown";
+    const actor = actorId ? game.actors.get(actorId) : null;
+
+    if (!actor) {
+      ui.notifications.error(
+        `ACE QOL: Cannot revive ${originalName} — source actor (${actorId}) no longer exists. ` +
+        `This usually means the actor was an unlinked synthetic that was deleted.`
+      );
+      return;
+    }
+
+    // Confirm dialog (revive is destructive — deletes the tile)
+    const maxHp = actor.system?.attributes?.hp?.max ?? 1;
+    const halfHp = Math.max(1, Math.floor(maxHp / 2));
+
+    const confirmed = await foundry.applications.api.DialogV2.confirm({
+      window: { title: `Revive ${originalName}?` },
+      content: `<p>Recreate <strong>${originalName}</strong> from prototype at this tile's location?</p>
+                <ul style="margin:6px 0 6px 18px;">
+                  <li>HP will be set to <strong>${halfHp} / ${maxHp}</strong> (half max)</li>
+                  <li>Dead/defeated/unconscious effects will be removed</li>
+                  <li>Dead-art tile will be deleted</li>
+                  <li>Parent loot card (if any) will be marked fully looted</li>
+                </ul>
+                <p style="color:#aaa;font-size:0.85em;font-style:italic;">
+                  This is the codified version of the manual recovery procedure.
+                  Only works for actors that still exist (linked actors always do;
+                  unlinked synthetic actors may have been deleted).
+                </p>`,
+      yes: { label: "Revive" },
+      no:  { label: "Cancel" },
+    }).catch(() => false);
+
+    if (!confirmed) return;
+
+    try {
+      // 1. Recreate token at tile location
+      const protoToken = actor.prototypeToken.toObject();
+      protoToken.x = tileDoc.x;
+      protoToken.y = tileDoc.y;
+      protoToken.actorId = actor.id;
+      protoToken.actorLink = actor.prototypeToken.actorLink ?? true;
+      const created = await canvas.scene.createEmbeddedDocuments("Token", [protoToken]);
+      const newToken = created?.[0];
+
+      // 2. Restore HP
+      await actor.update({ "system.attributes.hp.value": halfHp });
+
+      // 3. Remove dead-related active effects
+      const deadEffects = actor.effects.filter(e =>
+        /dead|defeated|unconscious/i.test(e.name ?? "")
+        || e.statuses?.has?.("dead")
+        || e.statuses?.has?.("defeated")
+        || e.statuses?.has?.("unconscious")
+      );
+      for (const e of deadEffects) {
+        try { await e.delete(); } catch (_) {}
+      }
+
+      // 4. Delete the dead-art tile
+      const tileId = tileDoc.id;
+      const sceneId = tileDoc.parent?.id ?? canvas.scene?.id;
+      try { await tileDoc.delete(); } catch (_) {}
+
+      // 5. Mark parent loot card(s) fullyLooted to clean up chat
+      try {
+        for (const msg of game.messages.contents) {
+          const f = msg.flags?.[MODULE_ID] ?? msg.flags?.["ace-engine"];
+          if (!f || f.type !== "lootCard") continue;
+          if (f.actorId !== actor.id) continue;
+          const ns = msg.flags?.[MODULE_ID] ? MODULE_ID : "ace-engine";
+          await msg.setFlag(ns, "fullyLooted", true).catch(() => {});
+        }
+      } catch (_) {}
+
+      ui.notifications.info(`ACE QOL: Revived ${originalName} at ${halfHp}/${maxHp} HP. Dead-art tile removed.`);
+      console.log(`${MODULE_ID} | Revived ${originalName} (actor ${actor.id}, new token ${newToken?.id}) — tile ${tileId} deleted from scene ${sceneId}`);
+
+      // Post a chat notice so players see the revive
+      await ChatMessage.create({
+        content: `<div style="border:1px solid #4caf50;background:#1a3a1a;border-radius:4px;padding:6px 10px;color:#a8f0a8;">
+          <strong>${foundry.utils.escapeHTML(originalName)}</strong> has been revived (HP: ${halfHp}/${maxHp}).
+        </div>`,
+      }).catch(() => {});
+    } catch (err) {
+      console.error(`${MODULE_ID} | _reviveDeadTile failed:`, err);
+      ui.notifications.error(`Revive failed: ${err.message}`);
     }
   }
 }

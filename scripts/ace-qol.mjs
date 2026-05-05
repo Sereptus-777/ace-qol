@@ -814,6 +814,14 @@ Hooks.once("ready", () => {
         if (deathPipeline) deathPipeline.buildArtCache();
       });
 
+      // v0.4.23 one-time migration — heal zero-size dead tiles in user worlds
+      // (older death-pipeline versions had a nullish-coalescing bug that
+      //  spawned dead-art tiles with width:0/height:0, breaking the
+      //  click-to-loot hit-test entirely). Idempotent — no-op after first run.
+      DeathPipeline.healZeroSizeDeadTiles().catch(err =>
+        console.warn(`${MODULE_ID} | dead-tile migration deferred (non-fatal):`, err?.message ?? err)
+      );
+
       console.log(`${MODULE_ID} | Death pipeline online`);
     } catch (err) {
       console.error(`${MODULE_ID} | Death pipeline init failed:`, err);

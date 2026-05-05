@@ -369,6 +369,12 @@ export class QolSettings {
       scope: "world", config: false, type: Number, default: 1500,
     });
 
+    s("deadTileMigrationV0423", {
+      name: "Dead-Tile v0.4.23 Migration Run",
+      hint: "Internal flag — set to true after the v0.4.23 ready hook runs healZeroSizeDeadTiles() once. Prevents the migration from re-scanning every reload. Force re-run via game.aceQol.DeathPipeline.healZeroSizeDeadTiles({force:true}).",
+      scope: "world", config: false, type: Boolean, default: false,
+    });
+
     s("batchResultsCard", {
       name:    "Batch Combat Results Card",
       hint:    "Show all targets in one consolidated damage card instead of individual cards per target.",
