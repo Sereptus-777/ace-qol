@@ -428,8 +428,19 @@ export class SaveEngine {
     // Get spell timing classification
     const timing = getSpellTiming(item);
 
-    // ── Check if the spell places a measured template ──
-    const templateType = item.system?.target?.template?.type
+    // ── Check if the spell/feat places a measured template ──
+    // v0.4.22.3: dnd5e 5.x stores template config on the ACTIVITY for
+    // feats (and modern-shape spells), and on the ITEM for legacy-shape
+    // spells. Reading only `item.system.target.template.type` missed
+    // every feat-with-template (Hellfire Orb, dragon breath weapons,
+    // aura-of-dread style abilities), causing the handler to fall
+    // through to the `game.user.targets` branch — which is empty
+    // BEFORE the template lands and auto-targets tokens. Result:
+    // first-cast-after-reload produced no save card. Check activity
+    // first, item second.
+    const templateType = activity?.target?.template?.type
+                      ?? activity?.target?.type
+                      ?? item.system?.target?.template?.type
                       ?? item.system?.target?.type
                       ?? "";
 
