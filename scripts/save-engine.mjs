@@ -618,11 +618,6 @@ export class SaveEngine {
       }
     }
 
-    if (!tokens.length) {
-      console.warn(`${MODULE_ID} | No targets and template found 0 tokens — skipping save card`);
-      return;
-    }
-
     // Store template reference
     pending.templateDoc = templateDoc;
 
@@ -643,15 +638,22 @@ export class SaveEngine {
         console.log(`${MODULE_ID} | Excluded caster ${actor?.name} from save targets (${before} → ${after})`);
       }
     }
-    if (!tokens.length) {
-      console.warn(`${MODULE_ID} | After caster exclusion, 0 targets remain — skipping save card`);
-      return;
-    }
 
     console.log(`${MODULE_ID} | Template resolved: spell="${item.name}", timing=`, timing, `isInstant=${timing?.isInstant}, tokens=${tokens.length}`);
 
     if (timing?.isInstant) {
       // ── Instant spell (Fireball, etc.) — post target card immediately ──
+      // v0.6.1: empty-targets bail moved INSIDE this branch. For instant
+      // spells, no targets = no card. For PERSISTENT spells (Moonbeam,
+      // Spike Growth, etc.), an empty area at cast time is the NORMAL
+      // case — they're cast on the ground waiting for tokens to enter.
+      // The previous bail above this `if` was preventing
+      // `persistentSpellCreated` from firing, so the concentration
+      // widget never tracked persistent spells with empty initial areas.
+      if (!tokens.length) {
+        console.warn(`${MODULE_ID} | Instant ${item.name}: 0 tokens in area — skipping save card`);
+        return;
+      }
       console.log(`${MODULE_ID} | Posting instant save card for ${item.name} → ${tokens.length} targets`);
       await this._postLiveTargetCard(item, actor, tokens, {
         saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activityId, templateDoc,
@@ -660,13 +662,16 @@ export class SaveEngine {
 
     } else {
       // ── Persistent spell (Moonbeam, Spirit Guardians, etc.) ──
-      // Emit hook for concentration widget (Phase B)
+      // Emit hook for concentration widget — fires REGARDLESS of whether
+      // any tokens are currently in the area. The widget needs to track
+      // the spell so it can fire the entry-trigger save card later when
+      // a token walks in.
       Hooks.callAll("ace-qol.persistentSpellCreated", {
         item, actor, templateDoc, timing, saveAbility, saveDC,
         halfOnSave, damageTypes, tokens,
       });
 
-      console.log(`${MODULE_ID} | Persistent spell "${item.name}" — emitted ace-qol.persistentSpellCreated`);
+      console.log(`${MODULE_ID} | Persistent spell "${item.name}" — emitted ace-qol.persistentSpellCreated (${tokens.length} tokens initially in area)`);
 
       // If timing includes "enter" trigger, post initial save for tokens already in area
       const triggerOnEnter = timing.timing === TIMING.ENTER_START

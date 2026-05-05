@@ -596,14 +596,18 @@ export class ConcentrationWidget {
   }
 
   _renderWidgets() {
-    // v0.6.0: Gate UI rendering behind the `showConcentrationWidget` setting.
+    // v0.6.1: Gate UI rendering behind the existing `concentrationWidget`
+    // setting (Saves tab → "Floating Concentration Widget"). v0.6.0
+    // accidentally registered a duplicate `showConcentrationWidget` that
+    // wasn't in any tab — removed in v0.6.1.
+    //
     // The DATA tracking (this._activeSpells Map) and entry-detection logic
     // continue to run regardless — only the visible widget is suppressed
     // when the setting is off. That way auto save-card flow still works
     // even with the widget hidden.
     let widgetEnabled = true;
     try {
-      widgetEnabled = QolSettings.get?.("showConcentrationWidget") !== false;
+      widgetEnabled = QolSettings.get?.("concentrationWidget") !== false;
     } catch (_) { /* setting not registered yet during boot */ }
 
     if (!widgetEnabled || !this._activeSpells.size) {
