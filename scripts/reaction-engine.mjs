@@ -44,11 +44,21 @@ export class ReactionEngine {
 
   constructor() {
     /** Pending reaction prompts awaiting player response.
-     *  Key: requestId (string) → { resolve, timeout, reactorActorId } */
-    this._pendingRequests = {};
+     *  v0.4.22.12: switched from plain object to Map for cleaner
+     *  iteration semantics + protection against prototype-key
+     *  collisions (e.g. requestId === "constructor"). */
+    this._pendingRequests = new Map();
 
     /** Counter for unique request IDs */
     this._requestCounter = 0;
+
+    /** v0.4.22.12: WeakSet of activity references already processed by
+     *  the V2 `postCreateUsageMessage` hook. The legacy `useActivity`
+     *  hook checks this Set and bails if the activity was already
+     *  handled — replaces the broken
+     *  `_lastCounterspellCheck = ${id}-${Date.now()}` debounce, where
+     *  the timestamp made every key unique and the dedup never fired. */
+    this._handledActivityRefs = new WeakSet();
 
     this._registerHooks();
     this._registerSocketHandlers();
@@ -71,6 +81,24 @@ export class ReactionEngine {
       this._resetCurrentCombatantReaction(combat);
     });
 
+    // ── v0.4.22.12: Reset all reactionUsed flags when combat ends ──
+    // Without this, an actor's `reactionUsed` flag persists across
+    // combats. Next combat, they'd appear to have already used their
+    // reaction even though it's a new fight.
+    Hooks.on("deleteCombat", () => {
+      if (!game.user.isGM) return;
+      this._resetAllReactionFlags("combat ended");
+    });
+
+    // ── v0.4.22.12: Reset all reactionUsed flags on world reload ──
+    // The flag is stored on actor.flags so it persists across saves.
+    // Without this cleanup, a session that ends mid-combat would
+    // leave stale flags forever.
+    Hooks.once("ready", () => {
+      if (!game.user.isGM) return;
+      this._resetAllReactionFlags("world startup");
+    });
+
     // ── Track opportunity attacks as reaction usage ──
     // When an OA is made, mark the attacker's reaction as used.
     // We detect OAs via the dnd5e system's "opportunity" flag if available,
@@ -88,6 +116,11 @@ export class ReactionEngine {
       if (!game.user.isGM) return;
       if (!QolSettings.get("enableReactions")) return;
       if (!QolSettings.get("autoCounterspell")) return;
+      // Mark BEFORE processing so the legacy hook (which fires after
+      // this synchronous return) sees the handled state.
+      if (activity && typeof activity === "object") {
+        this._handledActivityRefs.add(activity);
+      }
       await this._onSpellCast(activity, message);
     });
     // Legacy fallback
@@ -95,11 +128,12 @@ export class ReactionEngine {
       if (!game.user.isGM) return;
       if (!QolSettings.get("enableReactions")) return;
       if (!QolSettings.get("autoCounterspell")) return;
-      // Only fire if postCreateUsageMessage didn't already handle it
-      // (use a debounce key to avoid double-fire)
-      const key = `${activity?.item?.id}-${Date.now()}`;
-      if (this._lastCounterspellCheck === key) return;
-      this._lastCounterspellCheck = key;
+      // v0.4.22.12: replaced broken `${id}-${Date.now()}` debounce.
+      // Both the V2 and legacy hooks fire with the SAME activity
+      // reference for a given cast. The V2 hook adds the ref to
+      // `_handledActivityRefs`. If we see it here, V2 already
+      // processed and we bail.
+      if (activity && this._handledActivityRefs.has(activity)) return;
       await this._onSpellCast(activity, null);
     });
 
@@ -127,13 +161,38 @@ export class ReactionEngine {
 
     // ── Player responds to a reaction prompt ──
     if (payload.action === "reactionResponse") {
-      const { requestId, accepted, choiceData } = payload;
-      const pending = this._pendingRequests[requestId];
-      if (pending) {
-        clearTimeout(pending.timeout);
-        delete this._pendingRequests[requestId];
-        pending.resolve({ accepted: !!accepted, choiceData: choiceData ?? {} });
+      const { requestId, accepted, choiceData, senderUserId, reactorActorId } = payload;
+      const pending = this._pendingRequests.get(requestId);
+      if (!pending) return true;
+
+      // v0.4.22.12: Ownership validation (defense-in-depth).
+      // Without this, a malicious or buggy client with a known
+      // requestId could resolve a reaction belonging to a different
+      // actor. Validate that the responder either owns the reactor
+      // actor or is a GM.
+      if (senderUserId) {
+        const senderUser = game.users?.get(senderUserId);
+        const expectedActorId = pending.reactorActorId;
+        if (senderUser && expectedActorId) {
+          const isGm = !!senderUser.isGM;
+          const actor = game.actors?.get(expectedActorId);
+          const ownsActor = !!actor?.testUserPermission?.(senderUser, "OWNER");
+          if (!isGm && !ownsActor) {
+            console.warn(`${MODULE_ID} | Rejected reactionResponse from ${senderUser.name}: not GM and doesn't own actor ${expectedActorId}`);
+            return true; // silently drop
+          }
+        }
+        // Echo-actor sanity check: if responder echoed an actorId,
+        // it must match the stored one.
+        if (reactorActorId && expectedActorId && reactorActorId !== expectedActorId) {
+          console.warn(`${MODULE_ID} | Rejected reactionResponse: actor mismatch ${reactorActorId} vs ${expectedActorId}`);
+          return true;
+        }
       }
+
+      clearTimeout(pending.timeout);
+      this._pendingRequests.delete(requestId);
+      pending.resolve({ accepted: !!accepted, choiceData: choiceData ?? {} });
       return true;
     }
 
@@ -142,12 +201,17 @@ export class ReactionEngine {
       // Only the targeted player should handle this
       if (payload.targetUserId !== game.user.id) return true;
       const result = await ReactionEngine.showReactionDialog(payload.promptData);
-      // Send response back to GM
+      // Send response back to GM. v0.4.22.12: include senderUserId
+      // and reactorActorId so the GM-side handler can validate
+      // ownership (defense in depth — a stolen requestId alone no
+      // longer authenticates a response).
       game.socket.emit(SOCKET_NAME, {
         action: "reactionResponse",
         requestId: payload.requestId,
         accepted: result.accepted,
         choiceData: result.choiceData ?? {},
+        senderUserId: game.user.id,
+        reactorActorId: payload.promptData?.actorId ?? null,
       });
       return true;
     }
@@ -189,6 +253,35 @@ export class ReactionEngine {
     if (actor.getFlag(MODULE_ID, FLAG_REACTION_USED)) {
       await actor.unsetFlag(MODULE_ID, FLAG_REACTION_USED);
       this._debug(`Reaction RESET: ${actor.name} (start of turn)`);
+    }
+  }
+
+  /**
+   * v0.4.22.12: Bulk-reset every actor's reactionUsed flag.
+   * Called on `ready` (world startup) and on `deleteCombat` (combat
+   * ended). Ensures stale flags don't persist across saves or
+   * between combats. GM-gated by callers.
+   *
+   * @param {string} reason  Human-readable trigger source for log line.
+   */
+  async _resetAllReactionFlags(reason) {
+    let cleared = 0;
+    for (const actor of game.actors ?? []) {
+      try {
+        if (actor.getFlag(MODULE_ID, FLAG_REACTION_USED)) {
+          await actor.unsetFlag(MODULE_ID, FLAG_REACTION_USED);
+          cleared += 1;
+        }
+      } catch (err) {
+        // Permission errors on actors we don't own are expected;
+        // skip them silently. Genuine failures get logged.
+        if (!String(err?.message ?? "").toLowerCase().includes("permission")) {
+          console.warn(`${MODULE_ID} | _resetAllReactionFlags: failed to clear flag on ${actor?.name}:`, err);
+        }
+      }
+    }
+    if (cleared > 0) {
+      this._debug(`Reaction flags reset on ${cleared} actor(s) (${reason})`);
     }
   }
 
@@ -1085,11 +1178,11 @@ export class ReactionEngine {
 
       // Set up timeout
       const timer = setTimeout(() => {
-        delete this._pendingRequests[requestId];
+        this._pendingRequests.delete(requestId);
         resolve({ accepted: false, choiceData: {} });
       }, timeout + 2000); // Extra 2s buffer for network latency
 
-      this._pendingRequests[requestId] = { resolve, timeout: timer, reactorActorId: opts.reactorActor?.id };
+      this._pendingRequests.set(requestId, { resolve, timeout: timer, reactorActorId: opts.reactorActor?.id });
 
       // Send to player
       game.socket.emit(SOCKET_NAME, {
