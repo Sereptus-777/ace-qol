@@ -801,9 +801,37 @@ export class CombatState {
     }
 
     // Spirit Shroud (active spell)
-    // TODO: Should also check distance to target <= 10ft
+    //
+    // v0.4.22.15: Range gate added (was TODO since launch). RAW: "the
+    // first time on each of your turns that you hit a creature with a
+    // weapon and deal damage to it, including when you make this melee
+    // attack, the target takes an extra 1d8 radiant, necrotic, or cold
+    // damage. THE TARGET MUST BE WITHIN 10 FEET OF YOU." Without the
+    // distance check, the bonus fired at any range — wrong for archers
+    // or thrown weapon attacks.
+    //
+    // We resolve the attacker's token from canvas (same approach as the
+    // thrown-weapon fix in v0.4.22.7) and check distance.
     if (CombatState._hasEffect(attackerActor, "Spirit Shroud")) {
-      attackerBonuses.push({ name: "Spirit Shroud", formula: "1d8", type: "radiant", reason: "Spirit Shroud → +1d8 radiant per hit (within 10ft)", isSpellDerived: true });
+      const atkToken = opts.attackerToken
+                    ?? canvas.tokens?.placeables?.find(t => t.actor?.id === attackerActor.id)
+                    ?? null;
+      const dist = (atkToken && targetToken)
+        ? CombatState._getDistance(atkToken, targetToken)
+        : null;
+      // If we can't measure (off-canvas), default to allowing the
+      // bonus — better to grant than wrongly deny when we lack data.
+      if (dist === null || dist <= 10) {
+        attackerBonuses.push({
+          name: "Spirit Shroud",
+          formula: "1d8",
+          type: "radiant",
+          reason: dist !== null
+            ? `Spirit Shroud → +1d8 radiant (target ${Math.round(dist)}ft, within 10ft range)`
+            : "Spirit Shroud → +1d8 radiant per hit (within 10ft)",
+          isSpellDerived: true,
+        });
+      }
     }
 
     // Holy Weapon (active spell)
