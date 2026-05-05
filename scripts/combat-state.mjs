@@ -377,9 +377,32 @@ export class CombatState {
           const targetHasActed = flagSet || initOrderSaysActed;
 
           if (!targetHasActed) {
-            autoCrit = true;
-            autoCritReasons.push("ASSASSINATE → target hasn't acted yet = AUTO-CRIT");
+            // ── Advantage portion (RAW: target hasn't taken a turn yet) ──
+            // This applies whether or not the target is surprised.
             advantageSources.push({ source: "attacker", reason: "ASSASSINATE → advantage vs creature that hasn't acted" });
+
+            // ── Auto-crit portion (RAW: target must be SURPRISED) ──
+            // v0.4.22.6: Previously auto-crit fired on any not-yet-acted
+            // creature, which is broader than RAW. Per PHB Assassin
+            // Assassinate, the auto-crit ONLY applies to creatures with
+            // the "surprised" condition. Surprise is a specific status
+            // applied at combat start when the target didn't notice the
+            // attacker before initiative. Without this gate, every round-1
+            // attack from above-initiative was an auto-crit, dramatically
+            // overpowering the feature.
+            //
+            // Detection: standard `surprised` status effect on the actor,
+            // with fallback to dnd5e flag and combatant flag for cross-
+            // workflow safety.
+            const isSurprised = targetActor.statuses?.has?.("surprised") === true
+                             || targetActor.statuses?.has?.("surprise") === true
+                             || targetCombatant.flags?.dnd5e?.surprised === true
+                             || targetCombatant.flags?.core?.surprised === true;
+
+            if (isSurprised) {
+              autoCrit = true;
+              autoCritReasons.push("ASSASSINATE → target is surprised = AUTO-CRIT");
+            }
           }
         }
       }
