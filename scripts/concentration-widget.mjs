@@ -90,16 +90,25 @@ export class ConcentrationWidget {
     Hooks.on("updateToken", (tokenDoc, changes, opts, userId) => {
       if (!game.user.isGM) return;
       if (changes.x === undefined && changes.y === undefined) return;
+
+      // v0.6.4: Read NEW positions from the `changes` payload, not from
+      // tokenDoc.x/y. Diagnostic showed tokenDoc.x/y was being mutated
+      // by other modules (autoRotation in user's setup) between the hook
+      // fire and our setTimeout(0) handler — by the time our code ran,
+      // td.y had reverted to a partial / pre-move value, making our
+      // hit-test miss entries. The `changes` payload is the immutable
+      // intent of THIS update, so it's safe to read.
       const pre = this._preMovePositions.get(tokenDoc.id);
       this._preMovePositions.delete(tokenDoc.id);
-      const oldX = pre?.x ?? tokenDoc.x;
-      const oldY = pre?.y ?? tokenDoc.y;
-      const newX = tokenDoc.x;
-      const newY = tokenDoc.y;
-      // Defer to next tick so the token document is fully updated
-      setTimeout(() => {
-        this._onTokenMoved(tokenDoc, { oldX, oldY, newX, newY });
-      }, 0);
+      const newX = (changes.x !== undefined) ? changes.x : tokenDoc.x;
+      const newY = (changes.y !== undefined) ? changes.y : tokenDoc.y;
+      const oldX = pre?.x ?? newX;
+      const oldY = pre?.y ?? newY;
+
+      // v0.6.4: Removed setTimeout deferral — caused stale-position reads
+      // when other modules mutated td.x/td.y between hook fire and our
+      // handler. Run synchronously now.
+      this._onTokenMoved(tokenDoc, { oldX, oldY, newX, newY });
     });
 
     console.log(`${TAG} | Hooks registered`);
@@ -413,25 +422,33 @@ export class ConcentrationWidget {
     const cx = positions.newX + (w * gridSize) / 2;
     const cy = positions.newY + (h * gridSize) / 2;
 
-    // Primary: Foundry's official containsPoint. Same method used by
-    // dnd5e for auto-targeting tokens in spell areas — guarantees
-    // consistent behavior with what the GM visually expects.
+    // v0.6.4: Permissive hit-test. User's diagnostic showed
+    // `template.containsPoint` is a function but returns `undefined`
+    // (not boolean) for circle templates in their Foundry/dnd5e build —
+    // my previous code took that as falsy and missed valid entries.
+    // `template.shape.contains` returned reliable booleans in the same
+    // diagnostic. Now: try BOTH methods, treat as inside if EITHER
+    // returns a strict `true`. Either method's `false` (or non-boolean)
+    // doesn't override the other's `true`.
+    let containsPointResult = null;
     if (typeof template.containsPoint === "function") {
       try {
-        return template.containsPoint({ x: cx, y: cy });
-      } catch (err) {
-        console.warn(`${TAG} | template.containsPoint threw, falling back to shape.contains:`, err);
-      }
+        const r = template.containsPoint({ x: cx, y: cy });
+        if (typeof r === "boolean") containsPointResult = r;
+      } catch (_) { /* ignore — fall through */ }
     }
-
-    // Fallback 1: PIXI shape hit-test in local coordinates
+    let shapeContainsResult = null;
     if (typeof template.shape?.contains === "function") {
-      const localX = cx - template.x;
-      const localY = cy - template.y;
-      return template.shape.contains(localX, localY);
+      try {
+        shapeContainsResult = template.shape.contains(cx - template.x, cy - template.y);
+      } catch (_) { /* ignore — fall through */ }
     }
+    if (containsPointResult === true || shapeContainsResult === true) return true;
 
-    // Fallback 2: bounds-only (rough, but better than always-false)
+    // Either method returned a clean false → trust it
+    if (containsPointResult === false || shapeContainsResult === false) return false;
+
+    // Both methods unavailable / threw → bounds-only fallback
     const b = template.bounds;
     if (!b) return false;
     return cx >= b.x && cx <= b.x + b.width
