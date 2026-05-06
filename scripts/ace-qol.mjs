@@ -269,21 +269,6 @@ Hooks.once("ready", () => {
     const SWEEP_DEDUP_MS = 500;
     const _recentSweeps = new Map();
     const _markSweep = (key) => _recentSweeps.set(key, Date.now());
-
-    // v0.6.5 — Template-creation timestamp tracker.
-    // Foundry's MeasuredTemplate docs don't populate `_stats.createdTime`
-    // in this version, so we maintain our own map of templateId → ms-since-
-    // epoch. Used by the concentration-end sweep below for the grace-period
-    // skip, so freshly-created templates aren't deleted by hair-trigger
-    // concentration-end events (e.g. dnd5e auto-ending when a damage
-    // activity has zero targets).
-    const _templateCreatedAt = new Map();
-    Hooks.on("createMeasuredTemplate", (tdoc) => {
-      try { _templateCreatedAt.set(tdoc.id, Date.now()); } catch (_) {}
-    });
-    Hooks.on("deleteMeasuredTemplate", (tdoc) => {
-      try { _templateCreatedAt.delete(tdoc.id); } catch (_) {}
-    });
     const _wasRecentlySwept = (key) => {
       const t = _recentSweeps.get(key);
       if (!t) return false;
@@ -314,23 +299,10 @@ Hooks.once("ready", () => {
       // floating on canvas indefinitely. We match templates by
       // `flags.dnd5e.origin` (item UUID) or `flags.dnd5e.actor.id` —
       // both are populated by the dnd5e create-template flow.
-      //
-      // GRACE PERIOD: Skip templates that were created less than
-      // TEMPLATE_GRACE_MS ago. Some workflows (e.g. dnd5e auto-ending
-      // concentration when a damage activity has zero targets) fire the
-      // concentration-end hook within ~200ms of the template being
-      // placed. Without this guard, the user sees the template flash on
-      // for one frame and disappear before they can interact with it.
-      // The grace period gives time for legitimate fast-cast flows to
-      // complete; manual concentration-end actions taken later still
-      // sweep the template.
-      const TEMPLATE_GRACE_MS = 2500;
       try {
         const scene = canvas?.scene;
         if (scene) {
-          const now = Date.now();
           const toDelete = [];
-          const gracedSkipped = [];
           for (const tmplDoc of scene.templates.contents) {
             const flags = tmplDoc.flags?.dnd5e ?? {};
             const tmplActorId = flags?.actor?.id ?? null;
@@ -349,22 +321,7 @@ Hooks.once("ready", () => {
               if (tmplItemName && tmplItemName !== wantName) continue;
             }
 
-            // Grace period — Foundry doesn't populate `_stats.createdTime`
-            // for MeasuredTemplate documents, so we use our own
-            // `_templateCreatedAt` Map (populated by the
-            // createMeasuredTemplate hook above). If we have no record
-            // (e.g. template was placed before the world reload), no
-            // grace skip applies.
-            const createdAt = _templateCreatedAt.get(tmplDoc.id);
-            if (createdAt != null && (now - createdAt) < TEMPLATE_GRACE_MS) {
-              gracedSkipped.push({ id: tmplDoc.id, ageMs: now - createdAt });
-              continue;
-            }
-
             toDelete.push(tmplDoc.id);
-          }
-          if (gracedSkipped.length > 0) {
-            console.log(`${MODULE_ID} | [concentration-end:${source}] grace-period skip on ${gracedSkipped.length} freshly-created template(s):`, gracedSkipped);
           }
           if (toDelete.length > 0) {
             await scene.deleteEmbeddedDocuments("MeasuredTemplate", toDelete);
