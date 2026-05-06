@@ -292,6 +292,46 @@ Hooks.once("ready", () => {
       } else {
         console.log(`${MODULE_ID} | [concentration-end:${source}] sweep found nothing to remove (caster ${casterId}${spellName ? `, spell "${spellName}"` : ""})`);
       }
+
+      // v0.6.5: Also delete any persistent measured templates owned by this
+      // caster for this spell. Without this, ending concentration on a
+      // template spell (Moonbeam, Spike Growth, etc.) leaves the template
+      // floating on canvas indefinitely. We match templates by
+      // `flags.dnd5e.origin` (item UUID) or `flags.dnd5e.actor.id` —
+      // both are populated by the dnd5e create-template flow.
+      try {
+        const scene = canvas?.scene;
+        if (scene) {
+          const toDelete = [];
+          for (const tmplDoc of scene.templates.contents) {
+            const flags = tmplDoc.flags?.dnd5e ?? {};
+            const tmplActorId = flags?.actor?.id ?? null;
+            const tmplOrigin  = flags?.origin ?? "";
+            const tmplItemName = (flags?.item?.name ?? "").toLowerCase();
+
+            // Caster ownership: actor.id flag or origin path includes caster id
+            const ownedByCaster = (tmplActorId === casterId)
+                               || (typeof tmplOrigin === "string" && tmplOrigin.includes(casterId));
+            if (!ownedByCaster) continue;
+
+            // Spell match: by name when we have one, otherwise sweep all
+            // templates owned by this caster (last-resort cleanup)
+            if (spellName) {
+              const wantName = String(spellName).toLowerCase();
+              if (tmplItemName && tmplItemName !== wantName) continue;
+            }
+
+            toDelete.push(tmplDoc.id);
+          }
+          if (toDelete.length > 0) {
+            await scene.deleteEmbeddedDocuments("MeasuredTemplate", toDelete);
+            console.log(`${MODULE_ID} | [concentration-end:${source}] removed ${toDelete.length} template(s) for ${spellName ?? "(any spell)"} on caster ${casterName ?? casterId}`);
+          }
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | [concentration-end:${source}] template cleanup threw:`, err);
+      }
+
       return removed;
     };
 

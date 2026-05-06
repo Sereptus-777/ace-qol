@@ -120,7 +120,7 @@ export class ConcentrationWidget {
 
   _onPersistentSpellCreated(data) {
     const { item, actor, templateDoc, timing, saveAbility, saveDC,
-            halfOnSave, damageTypes, tokens } = data;
+            halfOnSave, damageTypes, damageFormula, tokens } = data;
 
     if (!templateDoc?.id) {
       console.warn(`${TAG} | No template for persistent spell "${item?.name}"`);
@@ -137,12 +137,14 @@ export class ConcentrationWidget {
       saveDC,
       halfOnSave,
       damageTypes,
+      damageFormula,                  // v0.6.5: needed for Spike Growth-style movement damage
       tokens: tokens ?? [],
       createdAt: Date.now(),
     };
 
     this._activeSpells.set(templateDoc.id, tracker);
-    console.log(`${TAG} | Registered persistent spell: ${item.name} (${timing.timing}) with ${tracker.tokens.length} initial targets`);
+    const variant = saveAbility ? "save" : "movement-damage";
+    console.log(`${TAG} | Registered persistent spell: ${item.name} (${timing.timing}, ${variant}) with ${tracker.tokens.length} initial targets`);
 
     this._renderWidgets();
 
