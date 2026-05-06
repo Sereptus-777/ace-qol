@@ -391,21 +391,41 @@ export class SaveEngine {
         let formula = null;
         let damageType = null;
 
-        // Activity-level damage parts (rare for movement spells but
-        // would catch e.g. Wall of Thorns if it's set up that way).
+        // Activity-level damage parts. Two known shapes:
+        //   • dnd5e 5.x:   { number, denomination, bonus, types: [...] }
+        //   • Legacy:      ["2d4", "piercing"]
+        // (v0.6.5 originally only handled the legacy shape, so Chudd's
+        // 2024 Spike Growth — which uses the new object shape — fell
+        // through to the description regex, which then also failed.)
         const damageParts = activity?.damage?.parts ?? [];
         if (Array.isArray(damageParts) && damageParts.length > 0) {
-          formula    = damageParts[0]?.[0] ?? null;
-          damageType = damageParts[0]?.[1] ?? null;
+          const p = damageParts[0];
+          if (Array.isArray(p)) {
+            formula    = p[0] ?? null;
+            damageType = p[1] ?? null;
+          } else if (p && typeof p === "object") {
+            if (p.number != null && p.denomination != null) {
+              formula = `${p.number}d${p.denomination}` + (p.bonus ? `+${p.bonus}` : "");
+            }
+            damageType = p.types?.[0] ?? null;
+          }
         }
 
-        // Description regex fallback — Spike Growth (2d4 piercing per 5ft),
-        // Wall of Thorns (7d8 piercing per 5ft when moving through), etc.
+        // Description regex fallback — covers spells where damage isn't
+        // on the activity (e.g. Spike Growth before re-import). Two
+        // patterns since dnd5e descriptions can use plain text OR
+        // dnd5e enrichers:
+        //   • Plain:    "takes 2d4 piercing damage for every 5 feet"
+        //   • Enricher: "takes [[/damage 2d4 type=piercing]] damage for every 5 feet"
         if (!formula) {
           const descRaw = item.system?.description?.value ?? "";
-          // Strip HTML and references for cleaner matching
           const desc = String(descRaw).replace(/<[^>]+>/g, " ").replace(/&\w+;/g, " ");
-          const m = desc.match(/takes?\s+(\d+d\d+)\s+([a-zA-Z]+)\s+damage\s+(?:for\s+every|per)\s+5\s+(?:feet|ft)/i);
+          // Plain-text pattern first
+          let m = desc.match(/takes?\s+(\d+d\d+)\s+([a-zA-Z]+)\s+damage\s+(?:for\s+every|per)\s+5\s+(?:feet|ft)/i);
+          // Enricher pattern: [[/damage 2d4 type=piercing]] ... 5 feet
+          if (!m) {
+            m = desc.match(/\[\[\s*\/damage\s+(\d+d\d+)[^\]]*?type\s*=\s*([a-zA-Z]+)[^\]]*?\]\]\s*damage\s+(?:for\s+every|per)\s+5\s+(?:feet|ft)/i);
+          }
           if (m) {
             formula    = m[1];
             damageType = m[2].toLowerCase();
