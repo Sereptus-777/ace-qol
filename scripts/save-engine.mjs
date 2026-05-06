@@ -359,76 +359,13 @@ export class SaveEngine {
   async _onUseActivity(activity, usageConfig, dialogConfig, messageConfig) {
     if (!game.user.isGM) return;
 
+    // Check if this activity has a save
+    const save = activity.save;
+    if (!save?.ability) return;
+
     const item = activity.item;
     const actor = activity.actor;
     if (!item || !actor) return;
-
-    // v0.6.5: Detect movement-damage concentration spells (Spike Growth,
-    // Wall of Thorns, etc.) that have a template + damage but NO save.
-    // These don't fit the save-engine's save-on-entry model, but they
-    // ARE persistent template spells that need movement-distance damage
-    // tracking by the concentration widget. Stash a pending entry so
-    // `_onTemplateCreated` can fire `ace-qol.persistentSpellCreated`
-    // for them with no-save metadata.
-    const save = activity.save;
-    if (!save?.ability) {
-      try {
-        const templateType = activity?.target?.template?.type
-                          ?? activity?.target?.type
-                          ?? item.system?.target?.template?.type
-                          ?? item.system?.target?.type
-                          ?? "";
-        const props = item.system?.properties ?? new Set();
-        const hasConcentration = props.has?.("concentration") === true
-                              || (Array.isArray(props) && props.includes("concentration"))
-                              || activity?.duration?.concentration === true;
-
-        // v0.6.5: Spike Growth-class spells have NO save and NO
-        // `activity.damage.parts` — dnd5e stores them as `utility`
-        // activities with damage described in the spell text only.
-        // Parse the description for the standard "takes XdY <type> damage
-        // for every 5 feet" pattern.
-        let formula = null;
-        let damageType = null;
-
-        // Activity-level damage parts (rare for movement spells but
-        // would catch e.g. Wall of Thorns if it's set up that way).
-        const damageParts = activity?.damage?.parts ?? [];
-        if (Array.isArray(damageParts) && damageParts.length > 0) {
-          formula    = damageParts[0]?.[0] ?? null;
-          damageType = damageParts[0]?.[1] ?? null;
-        }
-
-        // Description regex fallback — Spike Growth (2d4 piercing per 5ft),
-        // Wall of Thorns (7d8 piercing per 5ft when moving through), etc.
-        if (!formula) {
-          const descRaw = item.system?.description?.value ?? "";
-          // Strip HTML and references for cleaner matching
-          const desc = String(descRaw).replace(/<[^>]+>/g, " ").replace(/&\w+;/g, " ");
-          const m = desc.match(/takes?\s+(\d+d\d+)\s+([a-zA-Z]+)\s+damage\s+(?:for\s+every|per)\s+5\s+(?:feet|ft)/i);
-          if (m) {
-            formula    = m[1];
-            damageType = m[2].toLowerCase();
-          }
-        }
-
-        if (templateType && hasConcentration && formula) {
-          this._pendingMovementDamageSpell = {
-            activity,
-            item,
-            actor,
-            damageTypes: damageType ? [damageType] : CombatState._getItemDamageTypes(item),
-            damageFormula: formula,
-            timing: getSpellTiming(item),
-            activityId: activity.id,
-          };
-          console.log(`${MODULE_ID} | Movement-damage spell "${item.name}" detected (formula: ${formula} ${damageType ?? "?"}) — waiting for placement`);
-        }
-      } catch (err) {
-        console.warn(`${MODULE_ID} | Movement-damage detection threw:`, err);
-      }
-      return; // No save flow needed for these
-    }
 
     // ── v0.4.22 — Mark this activity as processed ──
     // The createChatMessage fallback hook (registered below) reads this Map
@@ -666,31 +603,7 @@ export class SaveEngine {
   // ═══════════════════════════════════════════════════════════════════════════
 
   async _onTemplateCreated(templateDoc) {
-    console.log(`${MODULE_ID} | _onTemplateCreated fired, pending save:`, !!this._pendingSaveSpell, "pending movement-damage:", !!this._pendingMovementDamageSpell);
-
-    // v0.6.5: Movement-damage spell waiting for template (Spike Growth,
-    // Wall of Thorns, etc.). Fire the persistent hook with no-save
-    // metadata so concentration-widget tracks it for the Phase 2
-    // movement-distance damage flow.
-    if (this._pendingMovementDamageSpell && !this._pendingSaveSpell) {
-      const pending = this._pendingMovementDamageSpell;
-      this._pendingMovementDamageSpell = null;
-      Hooks.callAll("ace-qol.persistentSpellCreated", {
-        item: pending.item,
-        actor: pending.actor,
-        templateDoc,
-        timing: pending.timing,
-        saveAbility: null,        // no save = movement-damage variant
-        saveDC: null,
-        halfOnSave: false,
-        damageTypes: pending.damageTypes,
-        damageFormula: pending.damageFormula,
-        tokens: [],
-      });
-      console.log(`${MODULE_ID} | Movement-damage "${pending.item.name}" — emitted ace-qol.persistentSpellCreated (no-save variant, formula: ${pending.damageFormula})`);
-      return;
-    }
-
+    console.log(`${MODULE_ID} | _onTemplateCreated fired, pending:`, !!this._pendingSaveSpell);
     if (!this._pendingSaveSpell) return;
 
     const pending = this._pendingSaveSpell;
