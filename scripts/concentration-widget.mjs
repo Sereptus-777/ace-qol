@@ -12,8 +12,9 @@
 
 // NOTE: MODULE_ID hardcoded to avoid circular import (ace-qol.mjs imports us)
 const MODULE_ID = "ace-qol";
-import { TIMING } from "./spell-timing.mjs";
+import { TIMING, getSpellTiming } from "./spell-timing.mjs";
 import { QolSettings } from "./settings.mjs";
+import { DamageCalculator } from "./damage-calculator.mjs";
 
 const TAG = `${MODULE_ID} | ConcWidget`;
 
@@ -36,6 +37,24 @@ export class ConcentrationWidget {
     Hooks.on("ace-qol.persistentSpellCreated", (data) => {
       this._onPersistentSpellCreated(data);
     });
+
+    // On reload, re-register trackers for any persistent-spell templates
+    // that survived. Without this, Spike Growth / Moonbeam / etc. templates
+    // remain visible on canvas but `_activeSpells` Map is empty, so
+    // dragging a token through does nothing — no damage, no save card.
+    //
+    // Run BOTH immediately (this _registerHooks fires from the `ready`
+    // hook in ace-qol.mjs, AFTER canvasReady — so the initial canvasReady
+    // already fired before our listener could register, and we'd miss the
+    // boot. Calling the work directly here handles boot) AND on future
+    // canvasReady fires (handles scene switches).
+    const _doReattach = () => {
+      this._reattachTrackersFromCanvas().catch(err =>
+        console.warn(`${TAG} | tracker re-attach failed:`, err)
+      );
+    };
+    _doReattach();                            // handles initial boot
+    Hooks.on("canvasReady", _doReattach);     // handles scene switches
 
     // Template moved — re-target
     Hooks.on("updateMeasuredTemplate", (templateDoc, changes, opts, userId) => {
@@ -62,6 +81,10 @@ export class ConcentrationWidget {
       this._onEffectRemoved(effect);
     });
 
+    // Note: movement-damage UNDO button wiring is registered globally in
+    // ace-qol.mjs (not here) so non-GM clients also get the button hidden.
+    // ConcentrationWidget is GM-only and would never run on player clients.
+
     // Also check for the "concentrating" status being removed
     Hooks.on("updateActiveEffect", (effect, changes, opts, userId) => {
       if (changes.disabled === true) {
@@ -87,6 +110,14 @@ export class ConcentrationWidget {
       });
     });
 
+    // Dedup tracker — Foundry/dnd5e can fire updateToken multiple times for
+    // a single user-driven move (preview update + final commit, animation
+    // settle, dnd5e RegionMovement re-emits, etc.). Without dedup, Spike
+    // Growth movement damage rolls twice for one move. Key by
+    // tokenId + position-quad so a legitimate back-and-forth move (rare
+    // but possible) is still processed independently.
+    if (!this._recentMoveKeys) this._recentMoveKeys = new Map();
+
     Hooks.on("updateToken", (tokenDoc, changes, opts, userId) => {
       if (!game.user.isGM) return;
       if (changes.x === undefined && changes.y === undefined) return;
@@ -105,6 +136,46 @@ export class ConcentrationWidget {
       const oldX = pre?.x ?? newX;
       const oldY = pre?.y ?? newY;
 
+      // Dedup #1 (vector-exact): same `oldXY > newXY` within 2 seconds is
+      // a duplicate fire. Foundry's V13 token movement can re-emit
+      // `updateToken` after animation settle, which can be 1+ seconds
+      // after the initial fire. The previous 500ms window was too short
+      // and missed the second tick — the bug the user pointed out (move
+      // 5ft, see 2d4 roll, ~1s pause, see ANOTHER 2d4 roll).
+      const moveKey = `${tokenDoc.id}:${oldX},${oldY}>${newX},${newY}`;
+      const lastSeen = this._recentMoveKeys.get(moveKey);
+      const now = Date.now();
+      if (lastSeen && (now - lastSeen) < 2000) {
+        console.log(`${TAG} | duplicate updateToken (vector-key) for ${tokenDoc.name ?? tokenDoc.id} — skipped (within 2000ms dedup window)`);
+        return;
+      }
+      this._recentMoveKeys.set(moveKey, now);
+      // Prune stale entries opportunistically (keep map small)
+      if (this._recentMoveKeys.size > 64) {
+        for (const [k, t] of this._recentMoveKeys) {
+          if (now - t > 4000) this._recentMoveKeys.delete(k);
+        }
+      }
+
+      // Dedup #2 (token-destination): if the second fire mutates `newX/Y`
+      // slightly (snap-to-grid, collision adjustment) the vector key
+      // misses. Belt-and-suspenders: if the same TOKEN already produced
+      // movement damage within 1500ms with a destination close to the
+      // current one, skip. "Close" = within 1 grid cell, which handles
+      // any post-animation position correction by Foundry or modules.
+      if (!this._recentDamagePos) this._recentDamagePos = new Map();
+      const recent = this._recentDamagePos.get(tokenDoc.id);
+      if (recent && (now - recent.t) < 1500) {
+        const gridSize = canvas.grid?.size ?? 100;
+        const dx = (newX - recent.x);
+        const dy = (newY - recent.y);
+        if ((dx * dx + dy * dy) <= (gridSize * gridSize)) {
+          console.log(`${TAG} | duplicate updateToken (token-dest) for ${tokenDoc.name ?? tokenDoc.id} — skipped (Δ=${Math.round(Math.hypot(dx, dy))}px, ${now - recent.t}ms ago)`);
+          return;
+        }
+      }
+      this._recentDamagePos.set(tokenDoc.id, { x: newX, y: newY, t: now });
+
       // v0.6.4: Removed setTimeout deferral — caused stale-position reads
       // when other modules mutated td.x/td.y between hook fire and our
       // handler. Run synchronously now.
@@ -117,6 +188,112 @@ export class ConcentrationWidget {
   // ═══════════════════════════════════════════════════════════════
   //  Persistent Spell Registration
   // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * On canvasReady (boot + scene switch), walk all persistent-spell
+   * templates on the scene and re-emit `ace-qol.persistentSpellCreated`
+   * for each so the tracker registers AND the Sequencer animation re-plays.
+   *
+   * Without this, a reload leaves Spike Growth visible on canvas (Foundry
+   * persisted the template doc) but the `_activeSpells` Map is empty, so
+   * dragging a token through does nothing. This walks the templates,
+   * resolves the item from `flags.dnd5e.origin`, computes timing, and
+   * synthesizes the persistentSpellCreated event so the normal flow runs.
+   */
+  async _reattachTrackersFromCanvas() {
+    if (!game.user.isGM) return;
+    const templates = canvas?.scene?.templates?.contents ?? [];
+    if (!templates.length) return;
+
+    let reattached = 0;
+    for (const tdoc of templates) {
+      try {
+        // Skip if we already have a tracker for this template (e.g., the
+        // canvasReady fires during a scene-switch on the same world where
+        // the spell was just cast).
+        if (this._activeSpells.has(tdoc.id)) continue;
+
+        const dnd5eFlags = tdoc.flags?.dnd5e;
+        const originUuid = dnd5eFlags?.origin;
+        if (!originUuid) continue; // not a dnd5e-activity-placed template
+
+        // Resolve the activity/item. dnd5e origin is the Activity UUID;
+        // its parent is the Item. Some legacy templates store the Item
+        // UUID directly — handle both.
+        const resolved = await fromUuid(originUuid).catch(() => null);
+        if (!resolved) continue;
+        const item = resolved.item ?? resolved; // Activity has .item; Item is itself
+        if (!item || item.documentName !== "Item") continue;
+        const actor = item.actor;
+        if (!actor) continue;
+
+        // Determine timing + damage info — same path save-engine uses
+        // when first detecting movement-damage spells.
+        const timing = getSpellTiming(item);
+        const damageParts = item.system?.damage?.parts ?? [];
+        let formula = null, damageType = null;
+        if (Array.isArray(damageParts) && damageParts.length > 0) {
+          const p = damageParts[0];
+          if (Array.isArray(p)) {
+            formula    = p[0] ?? null;
+            damageType = p[1] ?? null;
+          } else if (p && typeof p === "object") {
+            if (p.number != null && p.denomination != null) {
+              formula = `${p.number}d${p.denomination}` + (p.bonus ? `+${p.bonus}` : "");
+            }
+            damageType = p.types?.[0] ?? null;
+          }
+        }
+        // Description fallback (for spells that store damage in text only)
+        if (!formula) {
+          const descRaw = item.system?.description?.value ?? "";
+          const desc = String(descRaw).replace(/<[^>]+>/g, " ").replace(/&\w+;/g, " ");
+          let m = desc.match(/takes?\s+(\d+d\d+)\s+([a-zA-Z]+)\s+damage\s+(?:for\s+every|per)\s+5\s+(?:feet|ft)/i);
+          if (!m) {
+            m = desc.match(/\[\[\s*\/damage\s+(\d+d\d+)[^\]]*?type\s*=\s*([a-zA-Z]+)[^\]]*?\]\]\s*damage\s+(?:for\s+every|per)\s+5\s+(?:feet|ft)/i);
+          }
+          if (m) {
+            formula    = m[1];
+            damageType = m[2].toLowerCase();
+          }
+        }
+
+        // Determine save data — look for any activity with a save block
+        const activities = item.system?.activities?.contents ?? Array.from(item.system?.activities ?? []);
+        let saveActivity = null;
+        for (const act of activities) {
+          if (act.save?.ability) { saveActivity = act; break; }
+        }
+        const saveAbility = saveActivity?.save?.ability ?? null;
+        const saveDC      = saveActivity?.save?.dc?.value ?? saveActivity?.save?.dc?.calculation
+                         ?? item.system?.save?.dc ?? null;
+        const halfOnSave  = saveActivity?.damage?.onSave === "half"
+                         || (saveActivity?.save?.onSave === "half");
+
+        // Skip if we can't determine ANY persistent-spell metadata
+        // (means it's a one-shot template like Fireball that's already
+        // resolved — those shouldn't re-attach).
+        if (!saveAbility && !formula) continue;
+
+        // Emit through the same hook the live-cast path uses. The
+        // _onPersistentSpellCreated handler does the rest (register
+        // tracker, play Sequencer animation, render widget).
+        Hooks.callAll("ace-qol.persistentSpellCreated", {
+          item, actor, templateDoc: tdoc, timing,
+          saveAbility, saveDC, halfOnSave,
+          damageTypes: damageType ? [damageType] : [],
+          damageFormula: formula,
+          tokens: [],
+        });
+        reattached++;
+      } catch (err) {
+        console.warn(`${TAG} | _reattachTrackersFromCanvas: failed for template ${tdoc?.id}`, err);
+      }
+    }
+    if (reattached > 0) {
+      console.log(`${TAG} | canvasReady: re-attached ${reattached} persistent-spell tracker(s)`);
+    }
+  }
 
   _onPersistentSpellCreated(data) {
     const { item, actor, templateDoc, timing, saveAbility, saveDC,
@@ -148,9 +325,84 @@ export class ConcentrationWidget {
 
     this._renderWidgets();
 
+    // Sequencer animation hook — owns the visual ourselves instead of
+    // relying on Auto-Animations (which has leaked orphans + paused on
+    // hidden flag in the user's setup). See SPELL_ANIMATIONS table below
+    // for the name→Sequencer database ID mapping. The effect attaches to
+    // the template, persists for its lifetime, and is cleaned up by the
+    // deleteMeasuredTemplate hook in ace-qol.mjs.
+    try { this._playPersistentSpellAnimation(item, templateDoc); }
+    catch (err) { console.warn(`${TAG} | persistent-spell animation failed:`, err); }
+
     // If timing includes "enter", tokens already in the area might need to save
     // (Depends on interpretation — some GMs say "enter" means voluntarily move in)
     // We'll let the GM trigger this manually via INFLICT DAMAGE
+  }
+
+  /**
+   * Spell name → Sequencer Database ID mapping. JB2A Patreon naming.
+   * Add entries here to give a spell its own Sequencer animation through
+   * ace-qol instead of relying on Auto-Animations.
+   *
+   * `opacity` is 0..1; default 1.0 (fully solid). Use lower values for
+   * effects meant to be subtle (cloud-style spells, particle swirls).
+   *
+   * `belowTokens` true puts the effect under tokens so they walk over it
+   * naturally — appropriate for ground-level effects like Spike Growth,
+   * Web, Grease. false renders above (Moonbeam, Cloudkill, Fog Cloud).
+   */
+  static SPELL_ANIMATIONS = {
+    // Spike Growth — JB2A doesn't ship a dedicated asset; user has the
+    // `blfx` module which DOES, so we use that one.
+    "spike growth":      { db: "blfx.spell.template.circle.nature.spike_growth1.vine_thorn.loop.color1", opacity: 1.0,  belowTokens: true  },
+    // Wall of Thorns has no good JB2A or blfx asset — fall back to the
+    // same blfx spike_growth animation; thematically very close (thorny vines).
+    "wall of thorns":    { db: "blfx.spell.template.circle.nature.spike_growth1.vine_thorn.loop.color1", opacity: 1.0,  belowTokens: false },
+    "cloud of daggers":  { db: "jb2a.cloud_of_daggers.daggers.dark_red", opacity: 0.9,  belowTokens: false },
+    "moonbeam":          { db: "jb2a.moonbeam.01.loop.blue",             opacity: 0.85, belowTokens: false },
+    "spirit guardians":  { db: "jb2a.spirit_guardians.blueyellow.ring",  opacity: 0.85, belowTokens: false },
+    "fog cloud":         { db: "jb2a.fog_cloud.01.white",                opacity: 0.65, belowTokens: false },
+    // Cloudkill has no dedicated JB2A asset — green fog_cloud_02 substitutes.
+    "cloudkill":         { db: "jb2a.fog_cloud.02.green",                opacity: 0.85, belowTokens: false },
+    // Stinking Cloud — same trick, saturated green fog_cloud_02 variant.
+    "stinking cloud":    { db: "jb2a.fog_cloud.02.green02",              opacity: 0.85, belowTokens: false },
+    // Wall of Fire — JB2A has sized rectangles (100x100, 200x100, etc.).
+    // 100x100 yellow plus scaleToObject handles arbitrary template sizes.
+    "wall of fire":      { db: "jb2a.wall_of_fire.100x100.yellow",       opacity: 1.0,  belowTokens: false },
+    "grease":            { db: "jb2a.grease.dark_brown.loop",            opacity: 0.95, belowTokens: true  },
+    // Web — no dedicated JB2A web asset in this user's library; the
+    // eldritch_web variant is close enough thematically (sticky webbing).
+    "web":               { db: "jb2a.shield_themed.below.eldritch_web.01.dark_green", opacity: 0.95, belowTokens: true  },
+  };
+
+  _playPersistentSpellAnimation(item, templateDoc) {
+    if (!game.modules?.get?.("sequencer")?.active) return;
+    const name = (item?.name ?? "").toLowerCase().trim();
+    const cfg = ConcentrationWidget.SPELL_ANIMATIONS[name];
+    if (!cfg) return; // no mapping — let AA (or nothing) handle it
+
+    try {
+      let chain = Sequencer.Effect.create()
+        .file(cfg.db)
+        .attachTo(templateDoc)
+        .persist()
+        .opacity(cfg.opacity ?? 1.0);
+
+      // Circle / rectangle / cone templates: scale the animation to match
+      // the template's bounding box. Ray templates need stretchTo because
+      // they have a direction vector and the animation should follow it.
+      if (templateDoc.t === "ray") {
+        chain = chain.stretchTo(templateDoc);
+      } else {
+        chain = chain.scaleToObject(1.0);
+      }
+
+      if (cfg.belowTokens) chain = chain.belowTokens();
+      chain.play();
+      console.log(`${TAG} | Played animation "${cfg.db}" for ${item.name} (opacity ${cfg.opacity ?? 1.0}, belowTokens=${!!cfg.belowTokens})`);
+    } catch (err) {
+      console.warn(`${TAG} | Sequencer.Effect chain failed for ${item?.name}:`, err);
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -401,6 +653,16 @@ export class ConcentrationWidget {
                ?? canvas.tokens.placeables.find(t => t.document.id === tokenDoc.id);
     if (!token) return;
 
+    // Dead-actor guard. When movement damage kills a token, the death
+    // pipeline relocates the token to its dead-art tile location, which
+    // re-fires updateToken with new x/y. Without this guard, the cascading
+    // move re-triggers spike-growth-style movement damage on a corpse —
+    // double-rolling damage and posting a second chat card. The relocate
+    // is also not a "voluntary movement" so RAW-wise it shouldn't trigger
+    // movement damage anyway.
+    const hp = token.actor?.system?.attributes?.hp?.value;
+    if (typeof hp === "number" && hp <= 0) return;
+
     for (const [templateId, tracker] of this._activeSpells) {
       const template = canvas.scene.templates.get(templateId)?.object;
       if (!template) continue;
@@ -610,34 +872,256 @@ export class ConcentrationWidget {
     const formulaPerTick = tracker.item?.system?.damage?.parts?.[0]?.[0]
                         ?? tracker.damageFormula
                         ?? "2d4";
-    const damageType     = tracker.damageTypes?.[0] ?? "piercing";
+    const damageType     = (tracker.damageTypes?.[0] ?? "piercing").toLowerCase();
 
-    // Build a multi-tick formula. e.g. ticks=4, formulaPerTick="2d4" → "4*(2d4)"
-    const formula = `${ticks}*(${formulaPerTick})`;
+    // Build a multi-tick formula that ACTUALLY rolls the dice per tick
+    // (RAW Spike Growth: 2d4 *for every 5 feet*). Previous version used
+    // `${ticks}*(${formulaPerTick})` which Foundry's Roll parses as
+    // multiplication — it rolls 2d4 ONCE and multiplies the result by the
+    // tick count, so 5ft and 25ft both showed only 2 dice. RAW expects
+    // per-tick rolls (more dice, more variance). The chained `+` form
+    // makes Foundry roll each instance independently — e.g. 5 ticks of
+    // 2d4 yields a 10-die DSN animation and the correct probability
+    // distribution.
+    const formula = Array(ticks).fill(`(${formulaPerTick})`).join(" + ");
     try {
       const roll = new Roll(formula, tracker.actor?.getRollData?.() ?? {});
       await roll.evaluate();
-      // Fire-and-forget DSN broadcast (per v0.4.21 fix — never await)
+      // DSN broadcast — chat message below intentionally OMITS the
+      // `rolls:` field so Foundry doesn't render the `(2d4) + (2d4) + ...`
+      // breakdown inline on the card (the user wants only the clean
+      // "N × 2d4 = total" summary). Because there's no `rolls:` field,
+      // chat-message DSN auto-fire is bypassed too — so we trigger DSN
+      // manually here exactly once. Result: dice animate correctly,
+      // chat card stays clean.
       try { game.dice3d?.showForRoll?.(roll, game.user, true); } catch (_) {}
 
-      const total = roll.total;
-      const flavor = `<strong>${tracker.item?.name ?? "Persistent area"}</strong> — ${token.name} moved ${Math.round(ftMoved)}ft through area`
-                   + `<br><em>${ticks} × ${formulaPerTick} ${damageType} = ${total}</em>`;
-      // Whisper to GM only — they apply damage manually per user spec
-      // (chat-card with INFLICT DAMAGE button is the right surface; for
-      // now we post a simple result card and let the GM apply via the
-      // existing damage application pipeline.)
+      const rawTotal = roll.total;
+
+      // ── Resistance / immunity / vulnerability via ace-qol damage calculator ──
+      const tgtActor = token.actor;
+      let finalDamage = rawTotal;
+      let modifier = "normal";
+      let modReason = null;
+      try {
+        // Movement-damage spells (Spike Growth, Wall of Thorns) deal
+        // damage from conjured physical objects — thorns, spikes, etc.
+        // RAW Iron Golem's BPS immunity reads "from nonmagical attacks";
+        // these aren't even attacks, so the immunity applies. We pass
+        // `treatAsNonMagical:true` so the calculator's "mgc" bypass
+        // doesn't override the immunity just because the source is a
+        // spell with `system.magicAvailable=true`.
+        const mods = DamageCalculator.getTargetDamageModifiers(tgtActor, tracker.item, { treatAsNonMagical: true });
+        const mod = mods?.[damageType];
+        if (mod) {
+          modifier = mod.modifier;
+          modReason = mod.reason ?? null;
+          switch (mod.modifier) {
+            case "immune":     finalDamage = 0; break;
+            case "resistant":  finalDamage = Math.floor(rawTotal / 2); break;
+            case "vulnerable": finalDamage = rawTotal * 2; break;
+          }
+        }
+      } catch (err) {
+        console.warn(`${TAG} | damage modifier check failed, applying raw:`, err);
+      }
+
+      // ── Capture pre-damage HP (for UNDO) and auto-apply via dnd5e's
+      // actor.applyDamage (handles temp HP, downed state, etc.). Movement
+      // damage is "you walked through spikes" — the event of taking the
+      // damage already happened, there's no decision point to gate on, so
+      // this applies independently of the global `autoApplyDamage` setting
+      // (which gates attack-damage cards where the GM may want to review).
+      // The UNDO button on the chat card lets the GM reverse one-click.
+      const preHP = tgtActor?.system?.attributes?.hp?.value;
+      const preTempHP = tgtActor?.system?.attributes?.hp?.temp ?? 0;
+      let applied = false;
+      if (finalDamage > 0 && tgtActor && game.user.isGM) {
+        try {
+          await tgtActor.applyDamage(finalDamage);
+          applied = true;
+        } catch (err) {
+          console.warn(`${TAG} | applyDamage failed for ${token.name}:`, err);
+        }
+      }
+
+      // ── Public chat card so the table sees what happened ──
+      // Badges use solid backgrounds so they read on any chat-card surface
+      // (light green dnd5e cards, dark themes, etc.) — pure text-color
+      // badges blend into the green dnd5e damage card the user pointed out.
+      const badgeStyle = "display:inline-block;padding:1px 6px;border-radius:3px;font-weight:bold;font-size:0.85em;letter-spacing:0.5px;";
+      const modBadge =
+          modifier === "immune"     ? ` <span style="${badgeStyle}background:#2d5f7a;color:#cdefff">IMMUNE</span>`
+        : modifier === "resistant"  ? ` <span style="${badgeStyle}background:#3a567a;color:#d0e3ff">RESIST &frac12;</span>`
+        : modifier === "vulnerable" ? ` <span style="${badgeStyle}background:#7a2d2d;color:#ffd0d0">VULN &times;2</span>`
+        : "";
+      const reasonLine = modReason ? `<br><em style="opacity:.7">${modReason}</em>` : "";
+      const appliedTag = applied
+        ? ` <span style="${badgeStyle}background:#1e6b1e;color:#e8ffe8">APPLIED</span>`
+        : (finalDamage === 0 ? "" : ` <span style="${badgeStyle}background:#5a5a5a;color:#ddd">NOT APPLIED</span>`);
+
+      // Round the displayed distance to the nearest 5ft (grid increment) so
+      // a 14ft inside-path reads as "15ft", 23ft as "25ft", etc. The damage
+      // tick count above is already grid-aligned (`Math.floor(ftMoved/5)`);
+      // this just makes the human-readable label match.
+      const gridFt = canvas?.scene?.grid?.distance ?? 5;
+      const displayFt = Math.round(ftMoved / gridFt) * gridFt;
+
+      // Wrap the card body in ace-qol's dark surface so it doesn't sit on
+      // dnd5e's default chat-card green/cream — matches the visual identity
+      // of our other damage cards.
+      const cardStyle = "background:#15161a;border:1px solid #3a3a44;border-radius:5px;padding:8px 10px;color:#dfe2ea;font-size:0.9em;line-height:1.4em;";
+      const flavor = `<div style="${cardStyle}">`
+                   + `<strong style="color:#d4af37">${tracker.item?.name ?? "Persistent area"}</strong>`
+                   + ` &mdash; ${token.name} moved ${displayFt}ft through area${appliedTag}`
+                   + `<br><em style="color:#a8aab2">${ticks} × ${formulaPerTick} ${damageType} = ${rawTotal}${modBadge}`
+                   + (modifier !== "normal" ? ` → <strong style="color:#fff">${finalDamage}</strong>` : "")
+                   + `</em>${reasonLine}`
+                   + `</div>`;
+
+      // UNDO button row — only shown when damage was actually applied (no
+      // point offering undo on an IMMUNE-zeroed roll). The button itself is
+      // disabled-on-click after firing; the `undone` flag persists across
+      // page reloads so a re-render still shows the disabled state.
+      const undoBtnHtml = applied
+        ? `<div style="margin-top:6px;text-align:right;">
+             <button type="button"
+                     class="ace-qol-mvmt-undo"
+                     style="padding:3px 10px;font-size:0.85em;font-weight:bold;letter-spacing:0.5px;background:#3a2727;color:#ffcdcd;border:1px solid #6a3a3a;border-radius:3px;cursor:pointer;">
+               <i class="fas fa-undo"></i> UNDO
+             </button>
+           </div>`
+        : "";
+
+      // NOTE: `rolls` field intentionally omitted from the message — the
+      // flavor text already shows the clean "N × formula = total" summary,
+      // and we don't want Foundry rendering the per-die breakdown inline.
+      // DSN was triggered manually above so the dice animation still
+      // plays on all clients.
       await ChatMessage.create({
         speaker: ChatMessage.getSpeaker({ actor: tracker.actor }),
-        flavor,
-        rolls: [roll],
+        content: flavor + undoBtnHtml,
         sound: CONFIG.sounds.dice,
-        whisper: ChatMessage.getWhisperRecipients("GM"),
-        type: CONST.CHAT_MESSAGE_STYLES?.OTHER ?? 0,
+        flags: {
+          [MODULE_ID]: {
+            type: "movementDamage",
+            spellName: tracker.item?.name ?? "Persistent area",
+            tokenDocId: token.document?.id,
+            actorUuid: tgtActor?.uuid ?? null,
+            sceneId: canvas.scene?.id ?? null,
+            damageApplied: applied ? finalDamage : 0,
+            damageFormula: formula,
+            damageRawTotal: rawTotal,
+            damageFinal: finalDamage,
+            preHP: preHP ?? null,
+            preTempHP: preTempHP,
+            undone: false,
+          },
+        },
       });
-      console.log(`${TAG} | Movement damage: ${token.name} took ${total} ${damageType} from ${tracker.item?.name} (${Math.round(ftMoved)}ft)`);
+      console.log(`${TAG} | Movement damage: ${token.name} took ${finalDamage}/${rawTotal} ${damageType} from ${tracker.item?.name} (${Math.round(ftMoved)}ft) — ${modifier}, applied=${applied}`);
     } catch (err) {
       console.error(`${TAG} | _applyMovementDamage failed:`, err);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  Movement-Damage Chat Card — UNDO Wiring
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * Wire the UNDO button on a movement-damage chat card. Fires on every
+   * render of the message (initial post + later refreshes). Idempotent
+   * via a `dataset.wired` flag on the button itself.
+   *
+   * GM-only behavior. Non-GM clients still see the card but the button is
+   * hidden — they can't apply or undo damage anyway.
+   */
+  _wireMovementDamageUndo(message, html) {
+    try {
+      const flags = message.flags?.[MODULE_ID];
+      if (flags?.type !== "movementDamage") return;
+
+      const el = (html instanceof HTMLElement) ? html : (html?.[0] ?? html);
+      if (!el?.querySelector) return;
+
+      const btn = el.querySelector(".ace-qol-mvmt-undo");
+      if (!btn) return;
+
+      if (!game.user.isGM) {
+        // Non-GMs shouldn't see the button — they have no permission to
+        // restore HP and clicking would be a no-op with a console warning.
+        btn.style.display = "none";
+        return;
+      }
+
+      if (btn.dataset.wired === "1") return;
+      btn.dataset.wired = "1";
+
+      const setDisabled = (label) => {
+        btn.disabled = true;
+        btn.style.opacity = "0.55";
+        btn.style.cursor = "default";
+        btn.innerHTML = label;
+      };
+
+      if (flags.undone) {
+        setDisabled('<i class="fas fa-check"></i> UNDONE');
+        return;
+      }
+      if (!flags.damageApplied || flags.damageApplied <= 0) {
+        setDisabled('<i class="fas fa-undo"></i> NOTHING TO UNDO');
+        return;
+      }
+
+      btn.addEventListener("click", async () => {
+        if (btn.disabled) return;
+        btn.disabled = true; // immediate visual lock against double-click
+        try {
+          // Resolve the actor. Prefer the UUID we stamped at apply-time;
+          // fall back to scene.token.actor lookup if the actor was deleted.
+          let actor = null;
+          if (flags.actorUuid) {
+            try { actor = await fromUuid(flags.actorUuid); } catch (_) {}
+          }
+          if (!actor && flags.sceneId && flags.tokenDocId) {
+            const scene = game.scenes.get(flags.sceneId);
+            actor = scene?.tokens?.get(flags.tokenDocId)?.actor ?? null;
+          }
+          if (!actor) {
+            ui.notifications?.warn?.(`${MODULE_ID}: Could not find target actor to undo damage.`);
+            btn.disabled = false;
+            return;
+          }
+
+          // Restore HP exactly to the pre-damage state. We persisted both
+          // hp.value and hp.temp at apply-time, so temp HP that absorbed
+          // part of the hit comes back correctly. Clamp value to max HP
+          // to avoid setting HP above max if max changed (level-up etc).
+          const update = {};
+          if (typeof flags.preHP === "number") {
+            const maxHP = actor.system?.attributes?.hp?.max ?? flags.preHP;
+            update["system.attributes.hp.value"] = Math.min(flags.preHP, maxHP);
+          }
+          if (typeof flags.preTempHP === "number") {
+            update["system.attributes.hp.temp"] = flags.preTempHP;
+          }
+          if (Object.keys(update).length) {
+            await actor.update(update);
+          }
+
+          await message.setFlag(MODULE_ID, "undone", true);
+          setDisabled('<i class="fas fa-check"></i> UNDONE');
+          console.log(`${TAG} | UNDO: restored ${actor.name} HP to ${flags.preHP} (temp ${flags.preTempHP})`);
+        } catch (err) {
+          console.error(`${TAG} | UNDO failed:`, err);
+          btn.disabled = false;
+          btn.style.opacity = "";
+          ui.notifications?.error?.(`${MODULE_ID}: Undo failed — see console.`);
+        }
+      });
+    } catch (err) {
+      console.warn(`${TAG} | _wireMovementDamageUndo threw:`, err);
     }
   }
 
@@ -788,10 +1272,27 @@ export class ConcentrationWidget {
       return;
     }
 
+    // Filter: movement-damage variants (Spike Growth, Wall of Thorns) have
+    // no save and apply damage automatically when tokens move through the
+    // area — the widget's INFLICT DAMAGE button is meaningless for them,
+    // and "DC null / No targets in area" looks like a bug. Keep the
+    // tracker in `_activeSpells` (so movement-damage detection keeps
+    // firing) but skip rendering the visible card.
+    const renderable = [...this._activeSpells.values()]
+      .filter(t => !!t.saveAbility);
+
+    if (!renderable.length) {
+      if (this._container) {
+        this._container.remove();
+        this._container = null;
+      }
+      return;
+    }
+
     this._ensureContainer();
     this._container.innerHTML = "";
 
-    for (const [templateId, tracker] of this._activeSpells) {
+    for (const tracker of renderable) {
       const card = this._buildWidgetCard(tracker);
       this._container.appendChild(card);
     }

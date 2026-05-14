@@ -119,6 +119,72 @@ Hooks.once("ready", () => {
     return;
   }
 
+  // ── hideSpellTemplateVisuals — prototype patch on MeasuredTemplate._refreshState ──
+  // The refreshMeasuredTemplate hook alone isn't reliable: in Foundry V13,
+  // _refreshState fires on hover changes, layer activation, selection
+  // changes, etc., and each call resets the template.template.alpha and
+  // highlightLayer.alpha back to the "hidden + GM = 0.5" default before
+  // the hook can rerun. Diagnostic confirmed: placeable.alpha=1 (our value)
+  // but template.alpha=0.5 (Foundry's reset after some downstream refresh).
+  //
+  // Patching _refreshState on the prototype guarantees our zeroing runs
+  // AFTER every single call to it, with no race-window. Cheap — one extra
+  // prototype-property check per refresh, no measurable cost.
+  try {
+    const MTClass = CONFIG?.MeasuredTemplate?.objectClass;
+    if (MTClass && !MTClass.prototype.__aceQolHideVisualsPatched) {
+      const _origRefreshState = MTClass.prototype._refreshState;
+      MTClass.prototype._refreshState = function() {
+        _origRefreshState.call(this);
+        try {
+          if (this?.document?.getFlag?.(MODULE_ID, "visualHidden")) {
+            if (this.template) this.template.alpha = 0;
+            if (this.ruler)    this.ruler.alpha    = 0;
+            const hl = canvas?.interface?.grid?.getHighlightLayer?.(this.highlightId);
+            if (hl) hl.alpha = 0;
+          }
+        } catch (_) {}
+      };
+      MTClass.prototype.__aceQolHideVisualsPatched = true;
+      console.log(`${MODULE_ID} | hideSpellTemplateVisuals: prototype patch applied to MeasuredTemplate._refreshState`);
+    }
+  } catch (err) {
+    console.warn(`${MODULE_ID} | hideSpellTemplateVisuals: prototype patch failed`, err);
+  }
+
+  // On reload, the prototype patch installs HERE in the ready hook, but
+  // templates already rendered during canvasReady (which fires BEFORE
+  // ready). So existing templates were drawn with alpha=1 — the patch
+  // exists now but hasn't been applied to them yet. Force a state refresh
+  // on every flagged template so our patched _refreshState fires and
+  // they go invisible.
+  //
+  // We do this BOTH immediately (handles boot — canvasReady has already
+  // fired by the time `ready` fires) AND on future canvasReady events
+  // (handles scene switches). Same logic, both timings.
+  const _reapplyVisualHiddenToTemplates = () => {
+    try {
+      const templates = canvas?.scene?.templates?.contents ?? [];
+      let refreshed = 0;
+      for (const tdoc of templates) {
+        if (!tdoc.getFlag?.(MODULE_ID, "visualHidden")) continue;
+        const placeable = tdoc.object;
+        if (!placeable?.renderFlags?.set) continue;
+        try {
+          placeable.renderFlags.set({ refreshState: true });
+          refreshed++;
+        } catch (_) {}
+      }
+      if (refreshed > 0) {
+        console.log(`${MODULE_ID} | hideSpellTemplateVisuals: re-applied to ${refreshed} existing template(s)`);
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | hideSpellTemplateVisuals re-apply failed:`, err);
+    }
+  };
+  _reapplyVisualHiddenToTemplates();              // handles initial boot
+  Hooks.on("canvasReady", _reapplyVisualHiddenToTemplates); // handles scene switches
+
   // Attack pipeline — ALL users
   // Pre-roll hook (advantage/disadvantage, range check) runs on the attacking client.
   // Post-roll processing (_onAttackRoll) has its own GM guard — only GM processes results.
@@ -182,7 +248,7 @@ Hooks.once("ready", () => {
     console.error(`${MODULE_ID} | Save engine init failed:`, err);
   }
 
-  // Concentration widget — GM only
+  // Concentration widget — GM only (Map + per-spell tracking is GM-owned)
   if (game.user.isGM) {
     try {
       concentrationWidget = new ConcentrationWidget(saveEngine);
@@ -191,6 +257,30 @@ Hooks.once("ready", () => {
       console.error(`${MODULE_ID} | Concentration widget init failed:`, err);
     }
   }
+
+  // Movement-damage UNDO button wiring — ALL clients. Non-GM clients need
+  // this hook too so the button on the chat card gets hidden for them
+  // (clicking it would do nothing — they have no permission to update HP).
+  // Without this, non-GMs see a dead UNDO button on every movement-damage
+  // card. The handler itself is a no-op on non-GM aside from hiding the
+  // button.
+  const wireMovementUndo = (message, html) => {
+    try {
+      const flags = message.flags?.[MODULE_ID];
+      if (flags?.type !== "movementDamage") return;
+      const el = (html instanceof HTMLElement) ? html : (html?.[0] ?? html);
+      const btn = el?.querySelector?.(".ace-qol-mvmt-undo");
+      if (!btn) return;
+      if (!game.user.isGM) {
+        btn.style.display = "none";
+        return;
+      }
+      // GM client — delegate to the widget instance for the actual wiring.
+      concentrationWidget?._wireMovementDamageUndo?.(message, html);
+    } catch (_) { /* non-fatal */ }
+  };
+  Hooks.on("renderChatMessage", wireMovementUndo);
+  Hooks.on("renderChatMessageHTML", wireMovementUndo);
 
   // Reaction engine — ALL users (players receive reaction prompts via socket)
   try {
@@ -280,9 +370,115 @@ Hooks.once("ready", () => {
     const _templateCreatedAt = new Map();
     Hooks.on("createMeasuredTemplate", (tdoc) => {
       try { _templateCreatedAt.set(tdoc.id, Date.now()); } catch (_) {}
+
+      // Hide spell template visuals — GM-owned write. The template doc still
+      // exists (Spike Growth / Moonbeam / Wall of Fire entry-trigger detection
+      // keeps working) but the placeable alpha is dropped to 0 in the refresh
+      // hook below. setTimeout(100) lets dnd5e finish populating flags.dnd5e.*
+      // — at synchronous create-hook time those may not be set yet on V13.
+      //
+      // IMPORTANT: We do NOT set `document.hidden = true` here. The MeasuredTemplate
+      // _refreshState patch in the ready hook handles invisibility via PIXI alpha,
+      // which works for all clients. Setting `hidden: true` triggers Auto-Animations
+      // and similar Sequencer-based modules to PAUSE their animations on the
+      // template — which is exactly the "static-sprite instead of looping video"
+      // muting symptom the user reported. The flag-only marker is enough.
+      setTimeout(async () => {
+        try {
+          if (!game.user.isGM) return;
+          if (!game.settings.get(MODULE_ID, "hideSpellTemplateVisuals")) return;
+          const fresh = canvas?.scene?.templates?.get?.(tdoc.id);
+          if (!fresh) return;
+          const dnd5eFlags = fresh.flags?.dnd5e;
+          if (!dnd5eFlags?.origin) return;
+          if (fresh.getFlag?.(MODULE_ID, "visualHidden")) return;
+          await fresh.update({
+            [`flags.${MODULE_ID}.visualHidden`]: true,
+          });
+          // CRITICAL: trigger a state refresh on the placeable manually.
+          // Foundry V13 MeasuredTemplate._onUpdate only sets renderFlags
+          // for `sort`, `hidden`, or `author` changes — a pure-flag update
+          // (like ours) doesn't request `refreshState`, so our prototype-
+          // patched _refreshState never runs and the alphas stay at 1.
+          // Now that we no longer set `hidden:true` (because it caused
+          // Auto-Animations to pause the attached Sequencer effect),
+          // there's nothing else triggering the refresh — we have to do
+          // it ourselves.
+          const placeable = fresh.object;
+          if (placeable?.renderFlags?.set) {
+            placeable.renderFlags.set({ refreshState: true });
+          }
+          console.log(`${MODULE_ID} | hideSpellTemplateVisuals: flagged template ${tdoc.id} (origin=${dnd5eFlags.origin})`);
+        } catch (err) {
+          console.warn(`${MODULE_ID} | hideSpellTemplateVisuals: flag write failed`, err);
+        }
+      }, 100);
     });
     Hooks.on("deleteMeasuredTemplate", (tdoc) => {
       try { _templateCreatedAt.delete(tdoc.id); } catch (_) {}
+
+      // Clean up orphaned Sequencer/Auto-Animations effects that were
+      // attached to this template. AA's auto-cleanup on attached-entity
+      // deletion is unreliable in dnd5e 5.x + Foundry V13 — the user's
+      // diagnostic showed Sequencer's EffectManager retaining persistent
+      // effects whose source token/template had been deleted. Over
+      // multiple casts those orphans pile up at 50% opacity and composite
+      // into the "muted animation" symptom (each new cast layers on top
+      // of N invisible-but-rendering ghosts from prior casts).
+      //
+      // This explicit cleanup catches what AA misses for the
+      // template-attached case. GM-only because endEffects writes through
+      // the socket. Wrapped in try/catch because Sequencer isn't a hard
+      // dependency.
+      try {
+        if (!game.user.isGM) return;
+        if (!game.modules?.get?.("sequencer")?.active) return;
+        const uuid = tdoc?.uuid;
+        if (!uuid) return;
+        // Sequencer accepts `source` as a UUID string or a Document; UUID
+        // works after the doc is gone from the canvas. Fire-and-forget
+        // (don't await — keeps the delete-hook handler non-blocking).
+        Sequencer?.EffectManager?.endEffects?.({ source: uuid })
+          ?.then?.(() => console.log(`${MODULE_ID} | Sequencer effects ended for deleted template ${tdoc.id}`))
+          ?.catch?.(err => console.warn(`${MODULE_ID} | Sequencer endEffects (template) failed:`, err));
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Sequencer cleanup on template delete threw:`, err);
+      }
+    });
+
+    // Render-side hide for spell templates flagged `visualHidden`. There are
+    // THREE separate render surfaces to zero out — Foundry V13 doesn't put
+    // them all under the placeable:
+    //
+    //   1. Placeable children (this.template = Graphics with shape+texture,
+    //      this.ruler = PreciseText). Bulldozed via child.alpha = 0.
+    //   2. The control icon — left visible so the GM can still hover-and-grab
+    //      the template on the templates layer (controlIcon's own visibility
+    //      gate already restricts it to layer.active && document.isOwner).
+    //   3. The grid HIGHLIGHT LAYER at canvas.interface.grid, keyed by
+    //      template.highlightId. This is the colored AOE-fill overlay (the
+    //      red squares). It lives OUTSIDE the placeable, so the children
+    //      loop never reaches it. Foundry's _refreshState sets its alpha to
+    //      0.5 for GM on hidden templates — we have to zero that out again
+    //      here, after _refreshState runs (the refreshMeasuredTemplate hook
+    //      fires after _applyRenderFlags). Without this, the GM still sees
+    //      the red AOE squares even after the shape/texture are invisible.
+    //
+    // Cleanup workflow stays the same: end concentration on the caster's
+    // effect → the v0.6.5 sweep deletes the template automatically.
+    Hooks.on("refreshMeasuredTemplate", (template) => {
+      try {
+        if (!template?.document?.getFlag?.(MODULE_ID, "visualHidden")) return;
+        template.alpha = 1;
+        for (const child of (template.children ?? [])) {
+          if (child === template.controlIcon) continue;
+          try { child.alpha = 0; } catch (_) {}
+        }
+        try {
+          const hl = canvas?.interface?.grid?.getHighlightLayer?.(template.highlightId);
+          if (hl) hl.alpha = 0;
+        } catch (_) {}
+      } catch (_) { /* PIXI children may not exist mid-init */ }
     });
     const _wasRecentlySwept = (key) => {
       const t = _recentSweeps.get(key);

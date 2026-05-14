@@ -319,24 +319,33 @@ export class DeathPipeline {
 
       if (fallbackUsed) {
         const creatureType = actor.system?.details?.type?.value ?? "(none)";
-        const availableKeys = [...this._artCache.keys()].filter(k => k.startsWith("dead-")).sort();
         console.log(`${LOG_PREFIX}   • Using fallback "${fallbackUsed}" (no matching dead-art for type="${creatureType}")`);
 
-        // Informational chat notice — NOT an error. Tile IS being created.
-        try {
-          const availableHtml = availableKeys.length
-            ? `<details style="margin-top:4px;"><summary style="cursor:pointer;font-weight:700;font-size:11px;">${availableKeys.length} available dead-art keys</summary><div style="font-family:monospace;font-size:10px;max-height:180px;overflow-y:auto;padding:4px 8px;background:rgba(0,0,0,0.3);border-radius:3px;margin-top:3px;">${availableKeys.join("<br>")}</div></details>`
-            : "";
-          await ChatMessage.create({
-            content: `<div style="background:#1a1a1f;border:1px solid #555;padding:6px 10px;border-radius:4px;color:#aaa;font-size:11px;">
-              <div style="color:#d4af37;font-weight:700;margin-bottom:2px;">ℹ ACE QOL — dead-art fallback used</div>
-              <div><strong>${foundry.utils.escapeHTML(name)}</strong> (type: ${foundry.utils.escapeHTML(creatureType)}) — using ${fallbackUsed === "token-image" ? "actor's token image" : "generic skull icon"}. Tile created normally.</div>
-              <div style="margin-top:3px;">Add <code>Assets/Dead/dead-${foundry.utils.escapeHTML(creatureType)}.png</code> for a proper corpse image.</div>
-              ${availableHtml}
-            </div>`,
-            whisper: [game.user.id],
-          });
-        } catch (_) {}
+        // Informational chat notice — opt-in via `notifyDeadArtFallback`
+        // setting (default OFF). The notice clutters chat for every dying
+        // creature whose type doesn't have a dedicated dead-art file. When
+        // the user is actively building out their corpse-art library they
+        // can flip it on to see which types are still missing; otherwise
+        // the fallback is silent (tile is still created normally).
+        let notify = false;
+        try { notify = game.settings.get(MODULE_ID, "notifyDeadArtFallback"); } catch (_) {}
+        if (notify) {
+          try {
+            const availableKeys = [...this._artCache.keys()].filter(k => k.startsWith("dead-")).sort();
+            const availableHtml = availableKeys.length
+              ? `<details style="margin-top:4px;"><summary style="cursor:pointer;font-weight:700;font-size:11px;">${availableKeys.length} available dead-art keys</summary><div style="font-family:monospace;font-size:10px;max-height:180px;overflow-y:auto;padding:4px 8px;background:rgba(0,0,0,0.3);border-radius:3px;margin-top:3px;">${availableKeys.join("<br>")}</div></details>`
+              : "";
+            await ChatMessage.create({
+              content: `<div style="background:#1a1a1f;border:1px solid #555;padding:6px 10px;border-radius:4px;color:#aaa;font-size:11px;">
+                <div style="color:#d4af37;font-weight:700;margin-bottom:2px;">ℹ ACE QOL — dead-art fallback used</div>
+                <div><strong>${foundry.utils.escapeHTML(name)}</strong> (type: ${foundry.utils.escapeHTML(creatureType)}) — using ${fallbackUsed === "token-image" ? "actor's token image" : "generic skull icon"}. Tile created normally.</div>
+                <div style="margin-top:3px;">Add <code>Assets/Dead/dead-${foundry.utils.escapeHTML(creatureType)}.png</code> for a proper corpse image.</div>
+                ${availableHtml}
+              </div>`,
+              whisper: [game.user.id],
+            });
+          } catch (_) {}
+        }
       } else {
         console.log(`${LOG_PREFIX}   ✓ Resolved art: ${deadArtPath}`);
       }

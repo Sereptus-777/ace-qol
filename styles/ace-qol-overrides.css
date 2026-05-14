@@ -1,0 +1,104 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   Ace QoL — Chat Card Overrides
+   Futuristic crimson styling for ROLL DAMAGE buttons
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ─── Damage Button Card ─────────────────────────────────────────────── */
+.ace-qol-dmg-btn-card {
+  background: linear-gradient(135deg, rgba(15, 15, 20, 0.95) 0%, rgba(8, 8, 12, 0.98) 100%);
+  border: 1px solid rgba(160, 20, 30, 0.3);
+  border-top: 2px solid;
+  border-image: linear-gradient(90deg, transparent, #5a0a0a, #8b1a1a, #c02020, #8b1a1a, #5a0a0a, transparent) 1;
+  border-radius: 0px;
+  padding: 10px;
+  text-align: center;
+  box-shadow:
+    0 2px 12px rgba(0, 0, 0, 0.6),
+    0 0 1px rgba(160, 20, 30, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+/* ─── ROLL DAMAGE Button ─────────────────────────────────────────────── */
+.ace-qol-btn-roll-dmg {
+  width: 100%;
+  padding: 10px 20px;
+  border: 1px solid rgba(200, 30, 40, 0.35);
+  border-radius: 0px;
+  background: linear-gradient(180deg,
+    rgba(140, 15, 25, 0.9) 0%,
+    rgba(90, 8, 15, 0.95) 50%,
+    rgba(60, 5, 10, 1) 100%);
+  color: rgba(255, 220, 220, 0.95);
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  font-family: 'Rajdhani', 'Segoe UI', sans-serif;
+  transition: all 0.3s ease;
+  text-transform: uppercase;
+  letter-spacing: 2.5px;
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.5),
+    0 0 15px rgba(140, 15, 25, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.3);
+  text-shadow: 0 0 8px rgba(200, 30, 40, 0.5), 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
+.ace-qol-btn-roll-dmg:hover:not(:disabled) {
+  background: linear-gradient(180deg,
+    rgba(170, 20, 35, 0.95) 0%,
+    rgba(120, 12, 22, 0.95) 50%,
+    rgba(80, 8, 15, 1) 100%);
+  border-color: rgba(220, 40, 50, 0.6);
+  box-shadow:
+    0 4px 20px rgba(160, 20, 30, 0.4),
+    0 0 30px rgba(160, 20, 30, 0.25),
+    0 0 6px rgba(200, 30, 40, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.3);
+  color: rgba(255, 240, 240, 1);
+  text-shadow: 0 0 14px rgba(220, 40, 50, 0.7), 0 1px 2px rgba(0, 0, 0, 0.8);
+  transform: translateY(-1px);
+}
+
+.ace-qol-btn-roll-dmg:active:not(:disabled) {
+  transform: translateY(0);
+  background: linear-gradient(180deg, rgba(70, 8, 12, 1) 0%, rgba(50, 5, 8, 1) 100%);
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.5),
+    inset 0 2px 4px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+/* ─── Icon Swap: hide original icon, use splotch via pseudo-elements ── */
+.ace-qol-btn-roll-dmg > i {
+  display: none;
+}
+
+.ace-qol-btn-roll-dmg::before,
+.ace-qol-btn-roll-dmg::after {
+  font-family: 'Font Awesome 6 Free';
+  font-weight: 900;
+  content: '\f5bc'; /* fa-splotch */
+  color: rgb(255, 15, 15);
+  font-size: 13px;
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.9)) drop-shadow(0 0 2px rgba(0, 0, 0, 0.5));
+  -webkit-text-stroke: 1px rgba(0, 0, 0, 0.7);
+}
+
+.ace-qol-btn-roll-dmg::before {
+  margin-right: 10px;
+}
+
+.ace-qol-btn-roll-dmg::after {
+  margin-left: 10px;
+}
+
+.ace-qol-btn-roll-dmg:hover::before,
+.ace-qol-btn-roll-dmg:hover::after {
+  color: rgb(255, 40, 40);
+}

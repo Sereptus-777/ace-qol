@@ -571,6 +571,22 @@ export class DamageEngine {
       return true;
     }
 
+    // In-memory lock against double-click race. setFlag is async, so the
+    // window between this function entering and line ~578 (setFlag commits
+    // `rolled:true`) is non-trivial. A user double-clicking the ROLL
+    // DAMAGE button — or a held mouse button firing two click events —
+    // produces two concurrent calls; both see no `rolled` flag and both
+    // post a damage card. The set-flag check above only catches
+    // sequential clicks. This lock catches concurrent clicks too.
+    if (!DamageEngine._rollLocks) DamageEngine._rollLocks = new Set();
+    if (DamageEngine._rollLocks.has(message.id)) {
+      console.log(`${MODULE_ID} | _rollDamageFromButton: roll already in progress for ${message.id}, skipping`);
+      return false;
+    }
+    DamageEngine._rollLocks.add(message.id);
+
+    try {
+
     // ── New path: pre-rolled results available (Beneos-safe) ──
     if (flags?.preRolled?.length) {
       const result = await DamageCardRenderer.postPreRolledDamageCard(message, flags);
@@ -631,5 +647,9 @@ export class DamageEngine {
     }
     await PostHitSaves.checkPostHitEffects(item, actor, flags.hits, damageResults);
     return true;
+
+    } finally {
+      DamageEngine._rollLocks?.delete?.(message.id);
+    }
   }
 }

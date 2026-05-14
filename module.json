@@ -33,7 +33,8 @@
     "scripts/ace-qol.mjs"
   ],
   "styles": [
-    "styles/ace-qol.css"
+    "styles/ace-qol.css",
+    "styles/ace-qol-overrides.css"
   ],
   "languages": [
     {

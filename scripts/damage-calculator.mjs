@@ -553,17 +553,36 @@ export class DamageCalculator {
    * @param {Actor} actor - The target actor
    * @param {Item|null} item - The attacking item (for bypass property checks)
    */
-  static getTargetDamageModifiers(actor, item = null) {
+  static getTargetDamageModifiers(actor, item = null, opts = {}) {
     const traits = actor?.system?.traits ?? {};
-    const resistSet = new Set((traits.dr?.value ?? []).map(s => s.toLowerCase()));
-    const immuneSet = new Set((traits.di?.value ?? []).map(s => s.toLowerCase()));
-    const vulnSet = new Set((traits.dv?.value ?? []).map(s => s.toLowerCase()));
-    const drBypasses = new Set(traits.dr?.bypasses ?? []);
-    const diBypasses = new Set(traits.di?.bypasses ?? []);
 
-    // Determine weapon properties for bypass checks
+    // dnd5e 5.x stores trait values as `SetField` instances (Set), but older
+    // releases used plain Arrays. Calling `.map()` directly on a Set throws
+    // (Sets don't have .map), which silently sent immunity/resistance
+    // detection down the "normal damage" path. Normalize through
+    // `Array.from` which handles Set, Array, and any iterable.
+    const _toLowerArr = (v) => Array.from(v ?? []).map(s => String(s).toLowerCase());
+    const _toArr      = (v) => Array.from(v ?? []);
+
+    const resistSet  = new Set(_toLowerArr(traits.dr?.value));
+    const immuneSet  = new Set(_toLowerArr(traits.di?.value));
+    const vulnSet    = new Set(_toLowerArr(traits.dv?.value));
+    const drBypasses = new Set(_toArr(traits.dr?.bypasses));
+    const diBypasses = new Set(_toArr(traits.di?.bypasses));
+
+    // Determine weapon properties for bypass checks. The
+    // `treatAsNonMagical` opt forces isMagical=false regardless of the
+    // item — used by movement-damage spells (Spike Growth, Wall of
+    // Thorns) where the damage is conceptually physical (conjured
+    // thorns/spikes/etc.) and shouldn't trigger an Iron Golem's `mgc`
+    // bypass to override the immunity. Without this, every spell with
+    // `system.magicAvailable=true` (which is almost all of them in dnd5e)
+    // would bypass non-magical BPS immunities — making Iron Golem take
+    // full piercing from Spike Growth, against most tables' rulings.
     const itemProps = new Set(item?.system?.properties ?? []);
-    const isMagical = itemProps.has("mgc") || !!item?.system?.magicAvailable;
+    const isMagical = opts.treatAsNonMagical
+      ? false
+      : (itemProps.has("mgc") || !!item?.system?.magicAvailable);
     const isSilvered = itemProps.has("sil");
     const isAdamantine = itemProps.has("ada");
 

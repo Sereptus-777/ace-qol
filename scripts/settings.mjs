@@ -160,6 +160,15 @@ export class QolSettings {
       default: true,
     });
 
+    s("hideSpellTemplateVisuals", {
+      name:    "Hide Spell Template Visuals",
+      hint:    "When a spell places a template, hide the visual (red zone, ruler, etc.) from GM and players. The spell still works normally — Spike Growth still damages on movement, auto-targeting still fires — only the visual is suppressed. End concentration to delete the template.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
     s("damageTypeSeparation", {
       name:    "Separate Damage by Type",
       hint:    "Roll and display each damage type separately (slashing, cold, fire, etc.) so resistances apply per type.",
@@ -874,6 +883,15 @@ export class QolSettings {
       config:  false,
       type:    Boolean,
       default: true,
+    });
+
+    s("notifyDeadArtFallback", {
+      name:    "Notify When Dead-Art Falls Back",
+      hint:    "Whisper a chat notice to the GM when the death pipeline can't find a matching corpse image for a creature type and uses the token image (or skull icon) as a fallback. Off by default — the tile is still created normally; this notice exists only to help you discover which Assets/Dead/dead-<type>.png files are still missing.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: false,
     });
 
     // ═══════════════════════════════════════════════════════════════════════════

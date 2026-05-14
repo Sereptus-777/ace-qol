@@ -35,10 +35,19 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
 import { DamageCardRenderer } from "./damage-card-renderer.mjs";
+import { getSpellTiming, TIMING } from "./spell-timing.mjs";
 
 export class SpellAutoDamage {
 
   constructor() {
+    // Dedup tracker — identity-based WeakSet on Activity references.
+    // `dnd5e.postCreateUsageMessage` can fire more than once for the same
+    // cast in setups where another module re-posts the usage message
+    // (Auto-Animations, custom macros, etc.). Without dedup, our handler
+    // posts the damage card twice — same Activity, same target list,
+    // double damage on apply. WeakSet by Activity ref catches the second
+    // fire; refs go out of scope when the activity is GC'd, so no leak.
+    this._handledActivities = new WeakSet();
     this._registerHooks();
   }
 
@@ -72,6 +81,12 @@ export class SpellAutoDamage {
       if (!SpellAutoDamage._isAutoHitDamageSpell(activity)) return;
       const actor = activity?.item?.actor;
       if (!actor) return;
+      // Dedup: same Activity ref → already handled this fire of the hook
+      if (activity && this._handledActivities.has(activity)) {
+        console.log(`${MODULE_ID} | SpellAutoDamage: duplicate postCreateUsageMessage for ${activity.item?.name} — skipped`);
+        return;
+      }
+      if (activity) this._handledActivities.add(activity);
       this._handleDamageSpell(activity, null)
         .catch(err => console.error(`${MODULE_ID} | SpellAutoDamage handler threw:`, err));
     });
@@ -123,6 +138,22 @@ export class SpellAutoDamage {
       const original = damageActivityClass.prototype.rollDamage;
       damageActivityClass.prototype.rollDamage = async function (...args) {
         try {
+          // NO_SAVE_AUTO spells (Spike Growth, Wall of Thorns, Cloud of
+          // Daggers) — the damage activity should NEVER be rolled here.
+          // The concentration widget applies per-tick damage on token
+          // movement. Suppress unconditionally so the dialog never appears
+          // even if the GM clicks the spell card's DAMAGE button by habit.
+          try {
+            const item = this?.item;
+            if (item) {
+              const timing = getSpellTiming(item);
+              if (timing?.timing === TIMING.NO_SAVE_AUTO) {
+                console.log(`${MODULE_ID} | rollDamage suppressed for ${item.name} (NO_SAVE_AUTO — handled by concentration widget movement-damage)`);
+                return [];
+              }
+            }
+          } catch (_) { /* fall through to active-cast check */ }
+
           const actorId = this?.actor?.id ?? this?.item?.actor?.id;
           const itemId  = this?.item?.id;
           if (actorId && SpellAutoDamage._isCastActive(actorId, itemId)) {
@@ -201,6 +232,23 @@ export class SpellAutoDamage {
     const item  = activity.item;
     const actor = item?.actor;
     if (!actor) return;
+
+    // Movement-damage spells (Spike Growth, Wall of Thorns, Cloud of Daggers)
+    // have a damage activity that dnd5e wants to roll, but the damage is
+    // actually applied per-token-movement by concentration-widget. We must
+    // NOT defer to vanilla here — that would show the dnd5e damage roll
+    // dialog (the "2d4 piercing" popup) which the user has to dismiss
+    // every cast. Keep the active-cast mark in place so the rollDamage
+    // prototype patch silently suppresses the dialog + chat card.
+    try {
+      const timing = getSpellTiming(item);
+      if (timing?.timing === TIMING.NO_SAVE_AUTO) {
+        console.log(`${MODULE_ID} | SpellAutoDamage: ${item.name} is movement-damage (NO_SAVE_AUTO) — suppressing dnd5e damage flow (concentration-widget owns per-tick application)`);
+        return; // leave mark active; rollDamage prototype patch returns [] silently
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | SpellAutoDamage: movement-damage check failed`, err);
+    }
 
     const targets = [...(game.user.targets ?? [])];
     if (!targets.length) {
