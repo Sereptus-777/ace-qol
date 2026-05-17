@@ -335,6 +335,28 @@ export class PostHitSaves {
           </div>
         `;
         console.log(`${MODULE_ID} | SEVER IMMUNE (slashing): ${targetName} took ${altDmg.total} slashing instead of head loss`);
+      } else if (severed && slashingImmune && (actualSeverType === "limb" || actualSeverType === "body")) {
+        // Sword of Sharpness on slashing-immune target (Stone Golem etc.).
+        // RAW doesn't define a Vorpal-style alt-damage path for Sharpness,
+        // so we just deny the sever and explain why on the card. The base
+        // attack's slashing damage was already zeroed by the immunity in
+        // the normal damage-applicator path — no further damage here.
+        cardHtml = `
+          <div class="ace-qol-sever-card ace-qol-sever-immune" style="background:#0f0a1a; border:2px solid #6c5ce7; border-radius:6px; padding:10px 12px; box-shadow:0 0 8px rgba(108,92,231,0.3);">
+            <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
+              <i class="fas fa-shield-halved" style="font-size:20px; color:#a29bfe;"></i>
+              <strong style="color:#dfd9ff; font-size:14px;">
+                ${foundry.utils.escapeHTML(itemName)} — IMMUNE (slashing immunity)
+              </strong>
+            </div>
+            <div style="color:#cfcfd0; font-size:12px; line-height:1.45;">
+              <strong>Sever roll:</strong> <span style="color:#a29bfe; font-weight:700;">${rolled}</span> (needed ${threshold})<br>
+              <strong>${foundry.utils.escapeHTML(targetName)}</strong> is immune to slashing damage — its ${severNoun} stays attached.<br>
+              <em style="color:#aaa; font-size:11px;">A slashing weapon can't sever what slashing can't damage.</em>
+            </div>
+          </div>
+        `;
+        console.log(`${MODULE_ID} | SEVER IMMUNE (slashing): ${targetName}'s ${severNoun} not severed — ${itemName} slashing-immune target`);
       } else if (severed) {
         cardHtml = `
           <div class="ace-qol-sever-card ace-qol-sever-success" style="background:linear-gradient(180deg,#2a0a0a 0%,#3a0e0e 50%,#2a0a0a 100%); border:2px solid #d4af37; border-radius:6px; padding:10px 12px; box-shadow:0 0 12px rgba(212,175,55,0.3);">
