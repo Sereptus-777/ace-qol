@@ -925,6 +925,72 @@ Hooks.once("ready", () => {
     console.error(`${MODULE_ID} | Class feature rider hook setup failed:`, err);
   }
 
+  // ── Spell feature riders for ATTACK-based spells ─────────────────────────
+  // Empowered Evocation / Agonizing Blast / Potent Spellcasting all add a
+  // stat modifier to spell damage. SAVE-based spells (Fireball, Sacred Flame,
+  // etc.) get this via the save-engine `_rollSpellDamage` path. But ATTACK-
+  // based spells (Eldritch Blast, Fire Bolt, Scorching Ray) roll damage
+  // through the attack activity's own rollDamage method — they bypass the
+  // save-engine entirely. To cover those, prototype-patch the attack
+  // activity's rollDamage: call the original, then bump the resulting
+  // DamageRoll _total values to reflect our feature bonuses.
+  //
+  // Same pattern as SpellAutoDamage's rollDamage patch. Idempotent via flag.
+  try {
+    const attackActivityClass = CONFIG.DND5E?.activityTypes?.attack?.documentClass;
+    if (attackActivityClass?.prototype && !attackActivityClass.prototype._aceQolSpellRiderPatched) {
+      const original = attackActivityClass.prototype.rollDamage;
+      attackActivityClass.prototype.rollDamage = async function (...args) {
+        const rolls = await original.apply(this, args);
+        try {
+          const item = this?.item;
+          if (item?.type !== "spell") return rolls;
+          const actor = item.actor ?? this?.actor;
+          if (!actor) return rolls;
+          if (!Array.isArray(rolls) || rolls.length === 0) return rolls;
+
+          const empoweredBonus = CombatState.getEmpoweredEvocationBonus(actor, item);
+          const potentBonus    = CombatState.getPotentSpellcastingBonus(actor, item);
+          const agonizingBonus = CombatState.getAgonizingBlastBonus(actor, item);
+
+          // Empowered + Potent: apply ONCE to the first damage roll (RAW: "one
+          // damage roll" / "the damage you deal with [a cantrip]" — singular).
+          // Agonizing Blast: applies to EVERY damage roll (each beam).
+          for (let i = 0; i < rolls.length; i++) {
+            const roll = rolls[i];
+            if (!roll) continue;
+            let bonus = 0;
+            if (i === 0) bonus += empoweredBonus + potentBonus;
+            bonus += agonizingBonus;
+            if (bonus <= 0) continue;
+
+            // Mutate _total so the rendered damage value includes our bonus.
+            // Foundry's chat rendering reads _total when displaying — bumping
+            // here propagates to the player-visible number.
+            roll._total = Number(roll._total ?? roll.total ?? 0) + bonus;
+
+            // Stamp metadata so downstream consumers (logs, post-hit) can see
+            // which features fired. Non-functional but useful for debugging.
+            roll.options = roll.options ?? {};
+            roll.options.aceQolFeatureRiders = roll.options.aceQolFeatureRiders ?? [];
+            if (i === 0 && empoweredBonus > 0) roll.options.aceQolFeatureRiders.push({ name: "Empowered Evocation", bonus: empoweredBonus });
+            if (i === 0 && potentBonus > 0)    roll.options.aceQolFeatureRiders.push({ name: "Potent Spellcasting", bonus: potentBonus });
+            if (agonizingBonus > 0)            roll.options.aceQolFeatureRiders.push({ name: "Agonizing Blast", bonus: agonizingBonus });
+
+            console.log(`${MODULE_ID} | Spell rider (attack path): +${bonus} added to ${item.name} damage roll ${i}`);
+          }
+        } catch (err) {
+          console.warn(`${MODULE_ID} | Spell-rider attack-path patch failed (non-fatal):`, err);
+        }
+        return rolls;
+      };
+      attackActivityClass.prototype._aceQolSpellRiderPatched = true;
+      console.log(`${MODULE_ID} | Spell feature rider attack-path patch applied (Empowered Evocation / Agonizing Blast / Potent Spellcasting)`);
+    }
+  } catch (err) {
+    console.warn(`${MODULE_ID} | Spell rider attack-path patch setup failed:`, err);
+  }
+
   // Death Saves — RAW PHB 197. Auto-roll death save at PC turn start;
   // massive-damage instant-death check; reset tally on heal.
   try {

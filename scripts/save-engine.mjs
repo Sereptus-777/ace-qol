@@ -2287,6 +2287,58 @@ export class SaveEngine {
       console.warn(`${MODULE_ID} | Radiant Soul direct-spell rider check failed (non-fatal):`, err);
     }
 
+    // ── Empowered Evocation (Wizard Evoker 10+) — INT mod to one damage roll
+    //    of an evocation spell. Apply to the FIRST damage component since RAW
+    //    says "one damage roll" (singular).
+    try {
+      const empoweredBonus = CombatState.getEmpoweredEvocationBonus(casterActor, item);
+      if (empoweredBonus > 0 && damageComponents.length > 0) {
+        const target = damageComponents[0];
+        target.total = (target.total ?? 0) + empoweredBonus;
+        target.formula = `${target.formula} + ${empoweredBonus}`;
+        target.featureRiders = [...(target.featureRiders ?? []), { name: "Empowered Evocation", bonus: empoweredBonus }];
+        console.log(`${MODULE_ID} | Empowered Evocation: +${empoweredBonus} ${target.type} added to ${casterActor.name}'s ${item.name} (Wizard Evoker INT mod)`);
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Empowered Evocation rider check failed (non-fatal):`, err);
+    }
+
+    // ── Potent Spellcasting (Cleric Light Domain 8+ / Druid Circle of the
+    //    Land 14+) — WIS mod to cantrip damage. Apply to first damage
+    //    component. Per RAW: "any cleric/druid cantrip" — applies every cast.
+    try {
+      const potentBonus = CombatState.getPotentSpellcastingBonus(casterActor, item);
+      if (potentBonus > 0 && damageComponents.length > 0) {
+        const target = damageComponents[0];
+        target.total = (target.total ?? 0) + potentBonus;
+        target.formula = `${target.formula} + ${potentBonus}`;
+        target.featureRiders = [...(target.featureRiders ?? []), { name: "Potent Spellcasting", bonus: potentBonus }];
+        console.log(`${MODULE_ID} | Potent Spellcasting: +${potentBonus} ${target.type} added to ${casterActor.name}'s ${item.name} (WIS mod on cantrip)`);
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Potent Spellcasting rider check failed (non-fatal):`, err);
+    }
+
+    // ── Agonizing Blast (Warlock invocation) — CHA mod per Eldritch Blast
+    //    beam. Applies to EACH damage component (each beam is its own roll).
+    //    Note: most Eldritch Blast routes go through attack-pipeline rather
+    //    than save-engine — so this save-engine block primarily covers edge
+    //    cases (homebrew save-based variants). The attack path is handled by
+    //    the dnd5e.rollDamageV2 hook registered in ace-qol.mjs.
+    try {
+      const agonizingBonus = CombatState.getAgonizingBlastBonus(casterActor, item);
+      if (agonizingBonus > 0) {
+        for (const target of damageComponents) {
+          target.total = (target.total ?? 0) + agonizingBonus;
+          target.formula = `${target.formula} + ${agonizingBonus}`;
+          target.featureRiders = [...(target.featureRiders ?? []), { name: "Agonizing Blast", bonus: agonizingBonus }];
+        }
+        console.log(`${MODULE_ID} | Agonizing Blast: +${agonizingBonus} per beam added to ${casterActor.name}'s Eldritch Blast (CHA mod)`);
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Agonizing Blast rider check failed (non-fatal):`, err);
+    }
+
     // ── Visible Dice So Nice animation for spell damage ──
     // Save rolls already animate via the save-engine path. Damage rolls were
     // silently evaluated, so the merge card displayed totals without any dice

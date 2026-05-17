@@ -1648,4 +1648,99 @@ export class CombatState {
       }
     } catch (_) { /* non-fatal */ }
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Empowered Evocation (Wizard Evoker 10+)
+  //
+  //  RAW (PHB Wizard / Evocation subclass at 10th level): "You can add your
+  //  INT modifier to one damage roll of any wizard evocation spell you cast."
+  //
+  //  Per cast (not per turn). Applies to the FIRST damage roll only. No flag
+  //  tracking needed — we mutate one damage component per cast.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Returns the Empowered Evocation bonus (INT mod) if it applies, else 0.
+   * @param {Actor} actor — the casting actor
+   * @param {Item}  spellItem — the spell being cast (must be a spell item)
+   * @returns {number}
+   */
+  static getEmpoweredEvocationBonus(actor, spellItem) {
+    if (!actor || !spellItem) return 0;
+    if (spellItem.type !== "spell") return 0;
+
+    // Feature presence check
+    if (!CombatState._hasFeature(actor, "Empowered Evocation")) return 0;
+
+    // Spell must be an evocation. dnd5e uses short codes ("evo", "abj", etc.)
+    const school = String(spellItem.system?.school ?? "").toLowerCase();
+    if (school !== "evo" && school !== "evocation") return 0;
+
+    const intMod = Number(actor.system?.abilities?.int?.mod ?? 0);
+    return intMod > 0 ? intMod : 0;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Agonizing Blast (Warlock invocation, requires Eldritch Blast)
+  //
+  //  RAW (PHB Warlock invocations): "When you cast eldritch blast, add your
+  //  Charisma modifier to the damage it deals on a hit."
+  //
+  //  Applies to EVERY beam of Eldritch Blast (not once per cast — once per
+  //  damage roll). No flag tracking.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Returns the Agonizing Blast bonus (CHA mod) if it applies, else 0.
+   * @param {Actor} actor — the casting actor
+   * @param {Item}  spellItem — must be the Eldritch Blast cantrip
+   * @returns {number}
+   */
+  static getAgonizingBlastBonus(actor, spellItem) {
+    if (!actor || !spellItem) return 0;
+    if (spellItem.type !== "spell") return 0;
+
+    // Spell must be Eldritch Blast specifically. Match by name (case-insensitive)
+    // — dnd5e doesn't have a stable "isEldritchBlast" flag, and the spell can
+    // exist under several compendium variants.
+    const name = String(spellItem.name ?? "").toLowerCase();
+    if (name !== "eldritch blast") return 0;
+
+    // Feature presence — Agonizing Blast is typically a feat / invocation item.
+    if (!CombatState._hasFeature(actor, "Agonizing Blast")) return 0;
+
+    const chaMod = Number(actor.system?.abilities?.cha?.mod ?? 0);
+    return chaMod > 0 ? chaMod : 0;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Potent Spellcasting (Cleric Light Domain 8+, Druid Circle of the Land 14+)
+  //
+  //  RAW (PHB Cleric Light Domain / Druid Land subclass): "You add your WIS
+  //  modifier to the damage you deal with any cleric [or druid] cantrip."
+  //
+  //  Applies to every cantrip damage roll. No once-per-turn.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Returns the Potent Spellcasting bonus (WIS mod) if it applies, else 0.
+   * @param {Actor} actor — the casting actor
+   * @param {Item}  spellItem — must be a cantrip (level 0)
+   * @returns {number}
+   */
+  static getPotentSpellcastingBonus(actor, spellItem) {
+    if (!actor || !spellItem) return 0;
+    if (spellItem.type !== "spell") return 0;
+
+    // Cantrip-only (level 0)
+    const level = Number(spellItem.system?.level ?? -1);
+    if (level !== 0) return 0;
+
+    // Feature presence — Light Domain Cleric or Land Druid both have a
+    // feature named "Potent Spellcasting" in the SRD content.
+    if (!CombatState._hasFeature(actor, "Potent Spellcasting")) return 0;
+
+    const wisMod = Number(actor.system?.abilities?.wis?.mod ?? 0);
+    return wisMod > 0 ? wisMod : 0;
+  }
 }
