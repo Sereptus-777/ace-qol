@@ -278,17 +278,40 @@ export class WeaponMasteries {
   }
 
   /**
-   * Does this actor have the Weapon Mastery class feature? (Strict mode
-   * required to fire masteries.) In strict mode, masteries only fire for
-   * actors with the feature. In permissive mode, every weapon fires its
-   * mastery for every wielder.
+   * Does this actor have the Weapon Mastery class feature?
+   *
+   * In strict mode, masteries fire only for actors with weapon mastery
+   * eligibility. RAW (2024 PHB), Weapon Mastery is granted at L1 to
+   * Barbarian, Fighter, Paladin, Ranger, and Rogue — but the dnd5e system
+   * usually doesn't materialize it as a stand-alone feat item; it's
+   * implicit in the class. So we check three sources, accepting any:
+   *   1. An explicit feat-type item named "Weapon Mastery"
+   *   2. An item of ANY type whose name matches (covers class features
+   *      that some imports surface as their own row)
+   *   3. Membership in a Weapon-Mastery-granting class at L1+
+   *
+   * In permissive mode (strict OFF), every weapon's mastery fires for
+   * every wielder — useful for NPC monster weapons that have a mastery.
    */
   static _actorHasMasteryFeature(actor) {
     if (!actor) return false;
     if (!this.isStrict()) return true;
-    return (actor.items ?? []).some(i =>
-      i.type === "feat" && /weapon\s*mastery/i.test(String(i.name ?? ""))
+
+    // Path 1 + 2: name match on any item
+    const byName = (actor.items ?? []).some(i =>
+      /weapon\s*mastery/i.test(String(i.name ?? ""))
     );
+    if (byName) return true;
+
+    // Path 3: class membership. Weapon Mastery is automatic at L1 for
+    // these classes in 2024 RAW; the dnd5e system rarely instantiates
+    // a separate item for the class feature.
+    const WM_CLASSES = ["barbarian", "fighter", "paladin", "ranger", "rogue"];
+    return (actor.items ?? []).some(i => {
+      if (i.type !== "class") return false;
+      const name = String(i.name ?? "").toLowerCase();
+      return WM_CLASSES.some(c => name.includes(c));
+    });
   }
 
   // ──────────────────────────────────────────────────────────────────────────
