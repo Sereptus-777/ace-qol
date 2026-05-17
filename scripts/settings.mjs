@@ -117,29 +117,6 @@ export class QolSettings {
     });
 
     // ═══════════════════════════════════════════════════════════════════════════
-    //  SOUND EFFECTS — optional BLFX audio layer (silent if BLFX not installed)
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    s("soundEffectsEnabled", {
-      name:    "Sound Effects — Enabled",
-      hint:    "Master on/off switch for ACE QOL sound effects. Spell-cast WHOOSH plays when a spell is cast; impact BOOM plays when damage lands. Requires Sequencer + BLFX (Boss Loot FX); silently does nothing if either isn't installed.",
-      scope:   "world",
-      config:  false,
-      type:    Boolean,
-      default: true,
-    });
-
-    s("soundEffectsVolume", {
-      name:    "Sound Effects — Volume",
-      hint:    "Per-user volume for ACE QOL sound effects (0–100). Each player can set their own level.",
-      scope:   "client",
-      config:  false,
-      type:    Number,
-      default: 60,
-      range:   { min: 0, max: 100, step: 5 },
-    });
-
-    // ═══════════════════════════════════════════════════════════════════════════
     //  AUTOMATION LEVEL PRESET — controls 30+ toggles with one dropdown
     // ═══════════════════════════════════════════════════════════════════════════
 
