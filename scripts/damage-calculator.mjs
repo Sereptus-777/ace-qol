@@ -440,6 +440,45 @@ export class DamageCalculator {
       }
     }
 
+    // ── Savage Attacks (Half-Orc / Orc Lineage) — extra weapon die on melee crit ──
+    // RAW (2024): "When you damage a creature with a critical hit from an
+    // attack roll using a Strength-based weapon, you can roll one of the
+    // weapon's damage dice one additional time and add it to the extra
+    // damage." Adds a single weapon-die component, only on melee crits.
+    try {
+      const itemSys = item?.system ?? {};
+      const isMeleeWeapon = itemSys.actionType === "mwak" || itemSys.actionType === "msak";
+      if (isCrit && isMeleeWeapon) {
+        const race = actor?.system?.details?.race ?? "";
+        const raceLower = String(race).toLowerCase();
+        const isOrcKin = raceLower.includes("orc"); // catches Half-Orc, Orc, Half Orc
+        if (isOrcKin) {
+          const partsArr = itemSys.damage?.parts ?? [];
+          const firstFormula = Array.isArray(partsArr[0]) ? partsArr[0][0] : partsArr[0]?.formula;
+          const dieMatch = String(firstFormula ?? "").match(/(\d*d\d+)/i);
+          const wpnDie = dieMatch ? `1${dieMatch[1].replace(/^\d+/, "")}` : "1d6";
+          const wpnType = (Array.isArray(partsArr[0]) ? partsArr[0][1] : partsArr[0]?.types?.[0]) ?? "slashing";
+          const savageRoll = new Roll(wpnDie);
+          await savageRoll.evaluate();
+          components.push({
+            name: "Savage Attacks",
+            type: wpnType,
+            formula: wpnDie,
+            normalTotal: savageRoll.total,
+            critTotal:   savageRoll.total,
+            final:       savageRoll.total,
+            raw:         savageRoll.total,
+            modifier:    0,
+            isCrit:      true,
+            roll:        savageRoll,
+          });
+          console.log(`${MODULE_ID} | Savage Attacks crit bonus: +${savageRoll.total} ${wpnType} (${wpnDie})`);
+        }
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Savage Attacks (non-fatal):`, err);
+    }
+
     return components;
   }
 

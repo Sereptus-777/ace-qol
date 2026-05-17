@@ -63,6 +63,40 @@ export class RiderEngine {
       }
     }
 
+    // ── BRUTAL STRIKE (Barbarian L9+ 2024) ──
+    // RAW: "When you make an attack with the Reckless Attack feature, you can
+    // forgo that feature's benefits and instead make a Brutal Strike. The
+    // attack deals an extra 1d10 damage of the weapon's type, and you can
+    // choose one Brutal Strike effect: Forceful Blow (push) or Hamstring
+    // Blow (speed reduction). Increases to 2d10 at L13, 3d10 at L17.
+    //
+    // Eligibility shown only when actor has the feature, is Raging, AND the
+    // weapon is melee. The "forgoing Reckless" is the player's deliberate
+    // choice — they pick the rider or not.
+    if (isMelee && RiderEngine._hasFeature(actor, "Brutal Strike")) {
+      const isRaging = (actor.effects ?? []).some(e =>
+        !e.disabled && /rage/i.test(String(e.name ?? ""))
+      );
+      if (isRaging) {
+        const barbLevel = RiderEngine._getClassLevel?.(actor, "barbarian") ?? 0;
+        const numDice = barbLevel >= 17 ? 3 : barbLevel >= 13 ? 2 : 1;
+        const weaponType = item?.system?.damage?.parts?.[0]?.[1]
+                        ?? item?.system?.damage?.parts?.[0]?.types?.[0]
+                        ?? "bludgeoning";
+        riders.push({
+          id: "brutal-strike",
+          name: "Brutal Strike",
+          formula: `${numDice}d10`,
+          type: weaponType,
+          resource: null, // no slot cost — Brutal Strike is a swing-time choice
+          description: `${numDice}d10 ${weaponType} + Forceful Blow (push 15 ft) or Hamstring Blow (speed -15 ft)`,
+          icon: "fa-axe-battle",
+          highlight: "FORGO RECKLESS",
+          isMeleeOnly: true,
+        });
+      }
+    }
+
     // ── ELDRITCH SMITE (Warlock invocation — once per turn, both 2014 & 2024 RAW) ──
     // RAW: "Once per turn when you hit a creature with your pact weapon, you
     //       can expend a warlock spell slot to deal an extra 1d8 force damage
