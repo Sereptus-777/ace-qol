@@ -911,6 +911,11 @@ Hooks.once("ready", () => {
             CombatState.clearSneakAttackFlag(priorActor).catch(() => {});
           }
         }
+        // Hexblade's Curse — RAW 1-minute (10-round) duration. GM client only,
+        // since the expire helper writes to other clients' actors.
+        if (game.user.isGM) {
+          CombatState.expireHexbladeCursesIfDue().catch(() => {});
+        }
       } catch (_) { /* non-fatal */ }
     });
     Hooks.on("deleteCombat", (combat) => {
@@ -923,6 +928,11 @@ Hooks.once("ready", () => {
             CombatState.clearEldritchSmiteFlag(c.actor).catch(() => {});
             CombatState.clearSneakAttackFlag(c.actor).catch(() => {});
           }
+        }
+        // Combat ended → expire any leftover Hexblade curses (RAW 1-minute
+        // window is conservatively assumed to have closed out by combat end).
+        if (game.user.isGM) {
+          CombatState.expireHexbladeCursesIfDue().catch(() => {});
         }
       } catch (_) { /* non-fatal */ }
     });
@@ -957,6 +967,48 @@ Hooks.once("ready", () => {
     console.log(`${MODULE_ID} | Hexblade's Curse heal-on-kill hook registered.`);
   } catch (err) {
     console.error(`${MODULE_ID} | Hexblade hook setup failed:`, err);
+  }
+
+  // Hexblade's Curse — auto-clear when the attacker becomes incapacitated.
+  // RAW: "The curse ends early if [...] you die or are incapacitated."
+  // Two trigger paths:
+  //   (a) Attacker's HP hits 0     → updateActor hook below
+  //   (b) Incapacitating status    → createActiveEffect hook below
+  //                                   (stunned, paralyzed, petrified, etc.)
+  // GM-only so the cleanup is idempotent (one client running the heal/clear).
+  try {
+    Hooks.on("updateActor", (actor, changes /*, opts, userId */) => {
+      if (!game.user.isGM) return;
+      try {
+        const hpUpdate = foundry.utils.getProperty(changes, "system.attributes.hp.value");
+        if (hpUpdate === undefined || hpUpdate > 0) return;
+        if (!actor?.getFlag?.(MODULE_ID, "hexbladeCurse")) return;
+        CombatState.clearHexbladeCurseIfIncapacitated(actor).catch(() => {});
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Hexblade incapacitation HP-hook failed:`, err);
+      }
+    });
+
+    Hooks.on("createActiveEffect", (effect /*, opts, userId */) => {
+      if (!game.user.isGM) return;
+      try {
+        const actor = effect?.parent;
+        if (!actor?.getFlag?.(MODULE_ID, "hexbladeCurse")) return;
+        // Active-effect statuses are stored as a Set on the effect; the actor
+        // composite `actor.statuses` updates async after this hook. Read off
+        // the freshly-created effect directly.
+        const statuses = effect?.statuses ?? new Set();
+        const INCAP = ["incapacitated", "stunned", "paralyzed", "petrified", "unconscious", "dead"];
+        const incap = INCAP.some(s => statuses.has?.(s));
+        if (!incap) return;
+        CombatState.clearHexbladeCurseIfIncapacitated(actor).catch(() => {});
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Hexblade incapacitation status-hook failed:`, err);
+      }
+    });
+    console.log(`${MODULE_ID} | Hexblade's Curse incapacitation hooks registered (HP=0, stunned/paralyzed/etc).`);
+  } catch (err) {
+    console.error(`${MODULE_ID} | Hexblade incapacitation hook setup failed:`, err);
   }
 
   // Hexblade's Curse — auto-apply when the player activates the feature.

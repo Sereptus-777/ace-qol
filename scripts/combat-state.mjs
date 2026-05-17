@@ -1930,7 +1930,9 @@ export class CombatState {
     try {
       await attackerActor.setFlag(MODULE_ID, "hexbladeCurse", {
         targetUuid,
-        appliedAt: Date.now(),
+        appliedAt:     Date.now(),
+        appliedRound:  game.combat?.round ?? 0,    // for 1-minute (10-round) expiration check
+        combatId:      game.combat?.id ?? null,    // distinguishes "applied in this combat" from a stale flag
       });
       console.log(`${MODULE_ID} | Hexblade's Curse applied: ${attackerActor.name} → ${targetToken.name ?? targetUuid}`);
       if (!opts.silent) {
@@ -1960,10 +1962,12 @@ export class CombatState {
   /**
    * Remove Hexblade's Curse from `attackerActor`. Optionally awards the
    * heal-on-kill rebate (warlock level + CHA mod) if `opts.cursedTargetDied`
-   * is true.
+   * is true. `opts.reason` controls the chat-card flavour (default,
+   * "expired", "incapacitated").
    * @param {Actor} attackerActor
    * @param {object} [opts]
    * @param {boolean} [opts.cursedTargetDied=false] - Trigger heal-on-kill
+   * @param {string}  [opts.reason]                  - "expired" | "incapacitated" | undefined
    * @param {boolean} [opts.silent=false]            - Suppress chat card
    * @returns {Promise<boolean>}
    */
@@ -1973,7 +1977,28 @@ export class CombatState {
     if (!curse) return false;
     try {
       await attackerActor.unsetFlag(MODULE_ID, "hexbladeCurse");
-      console.log(`${MODULE_ID} | Hexblade's Curse removed from ${attackerActor.name}`);
+      console.log(`${MODULE_ID} | Hexblade's Curse removed from ${attackerActor.name}${opts.reason ? ` (${opts.reason})` : ""}`);
+
+      // Reason-specific expiry card (skip when heal-on-kill is firing — that
+      // card supersedes this one).
+      if (!opts.cursedTargetDied && !opts.silent && opts.reason) {
+        const attName = foundry.utils.escapeHTML(attackerActor.name);
+        const blurb = opts.reason === "expired"
+          ? `<strong>${attName}</strong>'s Hexblade's Curse fades — its 1-minute duration expired.`
+          : opts.reason === "incapacitated"
+            ? `<strong>${attName}</strong> is incapacitated — Hexblade's Curse ends.`
+            : `<strong>${attName}</strong>'s Hexblade's Curse ends.`;
+        ChatMessage.create({
+          content: `<div class="ace-qol-card" style="background:#1a1018; border:2px solid #5a4070; border-radius:6px; padding:10px 12px;">
+            <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">
+              <i class="fas fa-hourglass-end" style="color:#9b88c0; font-size:18px;"></i>
+              <strong style="color:#cdc0e0;">Hexblade's Curse — ${opts.reason.toUpperCase()}</strong>
+            </div>
+            <div style="color:#d8cee8; font-size:12px;">${blurb}</div>
+          </div>`,
+          speaker: ChatMessage.getSpeaker({ actor: attackerActor }),
+        });
+      }
 
       // Heal-on-kill rebate: warlock level + CHA mod (min 1)
       if (opts.cursedTargetDied) {
@@ -2009,5 +2034,69 @@ export class CombatState {
       console.error(`${MODULE_ID} | removeHexbladeCurse failed:`, err);
       return false;
     }
+  }
+
+  /**
+   * Scan every actor for an active Hexblade's Curse and expire any whose
+   * 10-round (1-minute, RAW) duration has elapsed. Also clears curses tied
+   * to a combat that's no longer the current one (combat ended without the
+   * curse expiring naturally — RAW would also have it expire by then).
+   *
+   * No heal-on-kill — the target survived; curse just ran out.
+   * @returns {Promise<number>} number of curses expired
+   */
+  static async expireHexbladeCursesIfDue() {
+    let expired = 0;
+    const currentRound   = game.combat?.round   ?? null;
+    const currentCombatId = game.combat?.id     ?? null;
+    for (const a of game.actors?.contents ?? []) {
+      const curse = a?.getFlag?.(MODULE_ID, "hexbladeCurse");
+      if (!curse || typeof curse !== "object") continue;
+
+      let shouldExpire = false;
+      // Case 1: combat the curse was applied in is over — RAW 1 minute would
+      // have passed (combat rounds are 6s, but out-of-combat we don't track
+      // a wall-clock for short-duration buffs; conservative cleanup).
+      if (curse.combatId && curse.combatId !== currentCombatId) {
+        shouldExpire = true;
+      }
+      // Case 2: still in the original combat but ≥ 10 rounds elapsed.
+      else if (
+        currentRound !== null &&
+        typeof curse.appliedRound === "number" &&
+        (currentRound - curse.appliedRound) >= 10
+      ) {
+        shouldExpire = true;
+      }
+
+      if (shouldExpire) {
+        await CombatState.removeHexbladeCurse(a, { reason: "expired" });
+        expired++;
+      }
+    }
+    if (expired > 0) console.log(`${MODULE_ID} | Expired ${expired} Hexblade curse(s) (1-minute duration elapsed).`);
+    return expired;
+  }
+
+  /**
+   * If `attackerActor` has an active Hexblade's Curse AND is now incapacitated
+   * (HP at 0, or carrying any of the incapacitating statuses below), clear the
+   * curse. RAW: "The curse ends early if [...] you die or are incapacitated."
+   * @param {Actor} attackerActor
+   * @returns {Promise<boolean>} true if curse was cleared by this call
+   */
+  static async clearHexbladeCurseIfIncapacitated(attackerActor) {
+    if (!attackerActor) return false;
+    const curse = attackerActor.getFlag?.(MODULE_ID, "hexbladeCurse");
+    if (!curse) return false;
+
+    const hp = attackerActor.system?.attributes?.hp?.value ?? null;
+    const statuses = attackerActor.statuses ?? new Set();
+    const INCAP_STATUSES = ["incapacitated", "stunned", "paralyzed", "petrified", "unconscious", "dead"];
+    const isIncap = (hp !== null && hp <= 0) || INCAP_STATUSES.some(s => statuses.has?.(s));
+    if (!isIncap) return false;
+
+    await CombatState.removeHexbladeCurse(attackerActor, { reason: "incapacitated" });
+    return true;
   }
 }
