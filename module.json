@@ -21,6 +21,23 @@
           "verified": "5.2.5"
         }
       }
+    ],
+    "recommends": [
+      {
+        "id": "sequencer",
+        "type": "module",
+        "reason": "Powers ACE QOL's animation pipeline and the optional sound-effects layer."
+      },
+      {
+        "id": "JB2A_DnD5e",
+        "type": "module",
+        "reason": "Free animation library for spells, weapon attacks, and effects. Falls back gracefully when missing."
+      },
+      {
+        "id": "blfx",
+        "type": "module",
+        "reason": "Boss Loot FX — adds sound effects for spell casts and damage impacts. Silent fallback when missing."
+      }
     ]
   },
   "authors": [

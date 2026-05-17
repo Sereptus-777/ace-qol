@@ -54,6 +54,7 @@ import { TurnMarker } from "./turn-marker.mjs";
 import { MovementTracker } from "./movement-tracker.mjs";
 import { LootableTile } from "./lootable-tile.mjs";
 import { initAATools }  from "./aa-tools/aa-tools-init.mjs";
+import { SoundEngine }  from "./sound-engine.mjs";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 let extendedEffects      = null;
@@ -203,6 +204,14 @@ Hooks.once("ready", () => {
     initAATools();
   } catch (err) {
     console.error(`${MODULE_ID} | AA Tools init failed:`, err);
+  }
+
+  // Sound engine — optional BLFX audio layer. Self-discovers BLFX paths and
+  // binds its own hooks. Silently dormant if Sequencer or BLFX is missing.
+  try {
+    SoundEngine.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Sound engine init failed:`, err);
   }
 
   // Heal pipeline — GM-only handler (registered for all clients but gated inside)
