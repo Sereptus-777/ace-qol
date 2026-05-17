@@ -80,6 +80,28 @@ export class FeatEffects {
       );
     }
 
+    // ── Dual Wielder (Enhanced Dual Wielding, 2024 XPHB) ──
+    // RAW: "When you take the Attack action on your turn and attack with a
+    // weapon that has the Light property, you can make one extra attack as
+    // a Bonus Action later on the same turn with a different weapon, which
+    // must be a Melee weapon that lacks the Two-Handed property. You don't
+    // add your ability modifier to the extra attack's damage."
+    // We fire on attacks made with a Light weapon by an actor with the feat.
+    // Posted at most once per turn so multi-attack volleys don't spam.
+    if (this._hasFeat(actor, "Dual Wielder")) {
+      const props = item?.system?.properties ?? new Set();
+      const isLight = props.has?.("lgt");
+      const alreadyShown = !!actor.getFlag?.(MODULE_ID, "dualWielderReminder.shownThisTurn");
+      if (isLight && !alreadyShown) {
+        try { await actor.setFlag(MODULE_ID, "dualWielderReminder.shownThisTurn", true); }
+        catch (_) { /* non-fatal */ }
+        this._postFeatCard("dual-wielder", item, actor, hits[0]?.target,
+          `${actor.name} may make a <strong>Bonus Action attack</strong> with any equipped melee weapon that isn't two-handed — <em>Light property not required</em>. (Ability modifier is NOT added to that attack's damage.)`,
+          "#c08866", "fa-khanda"
+        );
+      }
+    }
+
     // ── Crusher / Slasher / Piercer — once-per-turn riders by damage type ──
     for (const hit of hits) {
       const isCrit = hit?.hitResult === "critical";
@@ -271,7 +293,12 @@ export class FeatEffects {
 
   static async clearOncePerTurnFlags(actor) {
     if (!actor) return;
-    for (const k of ["crusher.usedThisTurn", "slasher.usedThisTurn", "piercer.usedThisTurn"]) {
+    for (const k of [
+      "crusher.usedThisTurn",
+      "slasher.usedThisTurn",
+      "piercer.usedThisTurn",
+      "dualWielderReminder.shownThisTurn",
+    ]) {
       try {
         if (actor.getFlag?.(MODULE_ID, k)) await actor.unsetFlag(MODULE_ID, k);
       } catch (_) { /* non-fatal */ }
