@@ -53,6 +53,26 @@ export class SwordOfWounding {
         console.warn(`${TAG} | combatTurnChange handler failed:`, err);
       }
     });
+
+    // Auto-clear wounds when the wounded actor passes their CON save.
+    // Listens to the existing ace-qol.saveComplete hook. We use a 30-second
+    // window between "wounding save card posted" and "save resolved" to
+    // avoid clearing wounds on incidental other-CON-saves the actor might
+    // roll for other effects.
+    Hooks.on(`${MODULE_ID}.saveComplete`, async ({ actor, saveAbility, passed }) => {
+      if (!game.user.isGM) return;
+      try {
+        if (!actor || saveAbility !== "con" || !passed) return;
+        const wound = actor.getFlag?.(MODULE_ID, FLAG_KEY);
+        if (!wound || typeof wound !== "object") return;
+        const promptedAt = wound.savePromptedAt;
+        if (!promptedAt || (Date.now() - promptedAt) > 30000) return;
+        await this.clearWounds(actor);
+      } catch (err) {
+        console.warn(`${TAG} | save-callback clear failed:`, err);
+      }
+    });
+
     console.log(`${TAG} | Sword of Wounding DoT online.`);
   }
 
@@ -119,13 +139,17 @@ export class SwordOfWounding {
       flags: { [MODULE_ID]: { type: "woundingTick", stacks } },
     });
 
-    // Try to fire a CON save card via the save engine; on save success the
-    // GM can manually remove the flag. (Tying the save result back to flag
-    // removal is a follow-up — requires a new save-engine callback channel.)
+    // Fire a CON save card via the save engine. Stamp savePromptedAt on
+    // the wound flag so the saveComplete listener can auto-clear wounds if
+    // the actor's CON save passes within the 30-second window.
     try {
       const tokenOnCanvas = canvas.tokens?.placeables?.find(t => t.actor?.id === actor.id);
       const saveEngine = game.aceQol?.saveEngine;
       if (tokenOnCanvas && saveEngine?.postSaveCard) {
+        await actor.setFlag(MODULE_ID, FLAG_KEY, {
+          ...wound,
+          savePromptedAt: Date.now(),
+        });
         await saveEngine.postSaveCard(
           { name: "Wounding (DC 15 CON to close)", uuid: null, system: {}, type: "feat" },
           actor,

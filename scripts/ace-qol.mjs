@@ -1006,6 +1006,7 @@ Hooks.once("ready", () => {
         // since the expire helper writes to other clients' actors.
         if (game.user.isGM) {
           CombatState.expireHexbladeCursesIfDue().catch(() => {});
+          FeatEffects.expireCritDebuffsIfDue().catch(() => {});
         }
       } catch (_) { /* non-fatal */ }
     });

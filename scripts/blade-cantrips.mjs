@@ -55,7 +55,78 @@ export class BladeCantrips {
         });
       });
     });
+
+    // Booming Blade — auto-fire bonus thunder damage if the marked target
+    // moves on its turn. updateToken fires on EVERY position change (drag,
+    // ruler-move, AI move), so we GATE on "is it the marked actor's turn?"
+    // to approximate "voluntary movement." Out-of-turn forced movement
+    // (Thunderwave, Eldritch Blast Repelling, etc.) doesn't trigger.
+    Hooks.on("updateToken", async (tokenDoc, changes /*, opts, userId */) => {
+      if (!game.user.isGM) return;
+      try {
+        if (!("x" in changes || "y" in changes)) return;
+        const actor = tokenDoc?.actor;
+        if (!actor) return;
+        const bb = actor.getFlag?.(MODULE_ID, "boomingBlade");
+        if (!bb || typeof bb !== "object") return;
+
+        // Voluntary-movement gate: only fires when it's the marked actor's
+        // own turn. Forced movement on another turn won't trigger.
+        const currentActorId = game.combat?.combatant?.actorId ?? null;
+        if (currentActorId !== actor.id) return;
+
+        const dice = Number(bb.moveDice) || 2;
+        const roll = await new Roll(`${dice}d8`).evaluate();
+        const total = roll.total;
+
+        // Apply damage, then clear the flag — Booming Blade only triggers
+        // once per cast.
+        try { await actor.applyDamage([{ value: total, type: "thunder" }]); }
+        catch (err) { console.warn(`${TAG} | Booming Blade damage apply failed:`, err); }
+        await actor.unsetFlag(MODULE_ID, "boomingBlade").catch(() => {});
+
+        ChatMessage.create({
+          content: `<div class="ace-qol-card" style="background:#10101a; border:2px solid #a39bcf; border-radius:6px; padding:10px 12px;">
+            <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">
+              <i class="fas fa-bolt" style="color:#a39bcf; font-size:18px;"></i>
+              <strong style="color:#c8c0e8;">Booming Blade — Movement Trigger</strong>
+            </div>
+            <div style="color:#dcd0e8; font-size:12px; line-height:1.45;">
+              <strong>${foundry.utils.escapeHTML(actor.name)}</strong> takes <strong>${total} thunder</strong> (${dice}d8) for moving while echoing with ${foundry.utils.escapeHTML(bb.casterName ?? "the caster")}'s Booming Blade.
+            </div>
+          </div>`,
+          speaker: ChatMessage.getSpeaker({ actor }),
+          flags: { [MODULE_ID]: { type: "bladeCantrip", cantrip: "booming-blade-trigger" } },
+        });
+      } catch (err) {
+        console.warn(`${TAG} | Booming Blade updateToken handler failed:`, err);
+      }
+    });
+
+    // Booming Blade cleanup — clear the marker when its 1-round window
+    // (caster's next turn) closes, even if the target never moved.
+    Hooks.on("combatTurnChange", () => {
+      if (!game.user.isGM) return;
+      try { this._expireBoomingBladeIfDue(); }
+      catch (err) { console.warn(`${TAG} | Booming Blade expiry sweep failed:`, err); }
+    });
+
     console.log(`${TAG} | Blade cantrip handlers online (Booming Blade, Green-Flame Blade, True Strike).`);
+  }
+
+  /** Clear stale boomingBlade markers — applied previous round, never moved. */
+  static async _expireBoomingBladeIfDue() {
+    const currentRound = game.combat?.round ?? null;
+    if (currentRound === null) return;
+    for (const a of game.actors?.contents ?? []) {
+      const bb = a?.getFlag?.(MODULE_ID, "boomingBlade");
+      if (!bb || typeof bb !== "object") continue;
+      // Booming Blade lasts until the start of the caster's next turn —
+      // round+1 from when applied.
+      if ((bb.appliedRound ?? 0) < currentRound) {
+        try { await a.unsetFlag(MODULE_ID, "boomingBlade"); } catch (_) { /* non-fatal */ }
+      }
+    }
   }
 
   static async _onCantripCast(activity, message) {
@@ -78,6 +149,24 @@ export class BladeCantrips {
       const target = game.user.targets?.first?.();
       const targetName = target?.name ?? "the target";
       const moveDice = cantripDice + 1; // 2024: base 1d8 + Xd8 on movement, scales
+
+      // Mark the target's actor with the movement-trigger payload. The
+      // updateToken listener in init() reads this on position change and
+      // fires bonus damage. Auto-clears at start of caster's next turn via
+      // the combatTurnChange handler (we store the round here for the
+      // cleanup gate).
+      try {
+        if (target?.actor) {
+          await target.actor.setFlag(MODULE_ID, "boomingBlade", {
+            moveDice,
+            casterUuid:     actor.uuid,
+            casterName:     actor.name,
+            appliedRound:   game.combat?.round ?? 0,
+            combatId:       game.combat?.id ?? null,
+          });
+        }
+      } catch (_) { /* non-fatal */ }
+
       this._postCantripCard("booming-blade", item, actor, target,
         `<strong>${targetName}</strong> takes <strong>${moveDice}d8 thunder</strong> if they move voluntarily before the start of ${actor.name}'s next turn.`,
         "#a39bcf", "fa-bolt"

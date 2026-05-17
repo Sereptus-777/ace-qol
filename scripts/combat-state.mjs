@@ -181,6 +181,31 @@ export class CombatState {
       }
     } catch (_) { /* non-fatal */ }
 
+    // ── Crusher crit — Advantage on all attacks vs the cursed target ──
+    // Flag lives on the TARGET (set in feat-effects when Crusher crits them).
+    // Reads as a target-side advantage modifier — applies to every attacker,
+    // not just the Crusher. Cleared at start of Crusher's next turn.
+    try {
+      const crusherDebuff = targetActor?.getFlag?.(MODULE_ID, "crusherCritDebuff");
+      if (crusherDebuff && typeof crusherDebuff === "object") {
+        advantageSources.push({ source: "target", reason: "CRUSHER CRIT → all attacks vs this target have advantage" });
+      }
+    } catch (_) { /* non-fatal */ }
+
+    // ── Slasher crit — Disadvantage on attacks vs anyone EXCEPT the slasher ──
+    // Flag lives on the ATTACKER (the original target of the slasher's crit).
+    // exceptUuid is the slasher's actor uuid — attacks vs the slasher don't
+    // suffer disadvantage. Cleared at start of slasher's next turn.
+    try {
+      const slasherDebuff = attackerActor?.getFlag?.(MODULE_ID, "slasherCritDebuff");
+      if (slasherDebuff && typeof slasherDebuff === "object") {
+        const exceptUuid = slasherDebuff.exceptUuid;
+        if (exceptUuid !== targetActor?.uuid) {
+          disadvantageSources.push({ source: "attacker", reason: "SLASHER CRIT → disadvantage on attack rolls vs anyone except the slasher" });
+        }
+      }
+    } catch (_) { /* non-fatal */ }
+
     // ── Sap mastery — target Sapped → its attack has disadvantage ──
     try {
       const sapped = attackerActor.getFlag?.(MODULE_ID, "sapped");

@@ -122,6 +122,18 @@ export class FeatEffects {
     }
 
     if (isCrit) {
+      // Auto-set the crit advantage flag on the TARGET. Combat-state reads
+      // this when ANY attacker rolls vs this target → advantage. Cleared
+      // at start of actor's (the Crusher's) next turn via combatTurnChange.
+      try {
+        if (target?.actor) {
+          await target.actor.setFlag(MODULE_ID, "crusherCritDebuff", {
+            byUuid: actor.uuid,
+            expiresAtRound: (game.combat?.round ?? 0) + 1,
+            combatId: game.combat?.id ?? null,
+          });
+        }
+      } catch (_) { /* non-fatal */ }
       this._postFeatCard("crusher-crit", item, actor, target,
         `Attack rolls against ${targetName} have <strong>Advantage</strong> until the start of ${actor.name}'s next turn.`,
         "#d4af37", "fa-star"
@@ -146,6 +158,20 @@ export class FeatEffects {
     }
 
     if (isCrit) {
+      // Auto-set the slasher crit flag on the TARGET. Combat-state reads
+      // this when the target attacks anyone else → disadvantage. The
+      // exceptUuid is the slasher's actor uuid, so attacks vs the slasher
+      // themselves don't suffer disadvantage. Cleared at start of slasher's
+      // next turn via combatTurnChange.
+      try {
+        if (target?.actor) {
+          await target.actor.setFlag(MODULE_ID, "slasherCritDebuff", {
+            exceptUuid: actor.uuid,
+            expiresAtRound: (game.combat?.round ?? 0) + 1,
+            combatId: game.combat?.id ?? null,
+          });
+        }
+      } catch (_) { /* non-fatal */ }
       this._postFeatCard("slasher-crit", item, actor, target,
         `${targetName} has <strong>Disadvantage</strong> on attack rolls against anyone except ${actor.name} until the start of ${actor.name}'s next turn.`,
         "#d04040", "fa-star"
@@ -170,8 +196,17 @@ export class FeatEffects {
     }
 
     if (isCrit) {
+      // Set a one-shot marker the damage-calculator reads on the NEXT
+      // damage roll. (For Piercer the extra die fires WITH this same crit's
+      // damage roll, but our attackComplete fires AFTER the attack roll
+      // resolves but BEFORE damage rolls — by setting the flag now, the
+      // upcoming damage-roll picks it up.) The flag is consumed by
+      // damage-calculator after one use.
+      try {
+        await actor.setFlag(MODULE_ID, "piercerCrit.pendingExtraDie", true);
+      } catch (_) { /* non-fatal */ }
       this._postFeatCard("piercer-crit", item, actor, target,
-        `On this critical hit with piercing damage, you may roll <strong>one additional damage die</strong>.`,
+        `On this critical hit with piercing damage, you roll <strong>one additional damage die</strong>.`,
         "#d4af37", "fa-star"
       );
     }
@@ -240,6 +275,31 @@ export class FeatEffects {
       try {
         if (actor.getFlag?.(MODULE_ID, k)) await actor.unsetFlag(MODULE_ID, k);
       } catch (_) { /* non-fatal */ }
+    }
+  }
+
+  /**
+   * Expire Crusher/Slasher crit debuffs whose round window has passed.
+   * Scans every actor for the flag and clears it when its expiresAtRound
+   * is in the past or its combat no longer matches the current one.
+   * Called from combatTurnChange in ace-qol.mjs.
+   */
+  static async expireCritDebuffsIfDue() {
+    const round = game.combat?.round ?? null;
+    const combatId = game.combat?.id ?? null;
+    if (round === null) return;
+    for (const a of game.actors?.contents ?? []) {
+      for (const flagKey of ["crusherCritDebuff", "slasherCritDebuff"]) {
+        const debuff = a?.getFlag?.(MODULE_ID, flagKey);
+        if (!debuff || typeof debuff !== "object") continue;
+        const expired =
+          (debuff.combatId && debuff.combatId !== combatId) ||
+          (typeof debuff.expiresAtRound === "number" && round >= debuff.expiresAtRound);
+        if (expired) {
+          try { await a.unsetFlag(MODULE_ID, flagKey); }
+          catch (_) { /* non-fatal */ }
+        }
+      }
     }
   }
 }

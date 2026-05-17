@@ -464,6 +464,41 @@ export class DamageCalculator {
       }
     }
 
+    // ── Piercer crit — one additional weapon damage die on piercing crit ──
+    // The Piercer feat's crit bonus marker is set in feat-effects.mjs when
+    // the attack lands a crit with piercing damage. We consume it here on
+    // the next damage roll and add a single weapon-die component.
+    try {
+      const piercerPending = !!actor?.getFlag?.(MODULE_ID, "piercerCrit.pendingExtraDie");
+      if (piercerPending && isCrit) {
+        await actor.unsetFlag(MODULE_ID, "piercerCrit.pendingExtraDie");
+        const partsArr = item?.system?.damage?.parts ?? [];
+        const firstFormula = Array.isArray(partsArr[0]) ? partsArr[0][0] : partsArr[0]?.formula;
+        const dieMatch = String(firstFormula ?? "").match(/(\d*d\d+)/i);
+        if (dieMatch) {
+          const wpnDie = `1${dieMatch[1].replace(/^\d+/, "")}`;
+          const wpnType = (Array.isArray(partsArr[0]) ? partsArr[0][1] : partsArr[0]?.types?.[0]) ?? "piercing";
+          const piercerRoll = new Roll(wpnDie);
+          await piercerRoll.evaluate();
+          components.push({
+            name: "Piercer (Crit)",
+            type: wpnType,
+            formula: wpnDie,
+            normalTotal: piercerRoll.total,
+            critTotal:   piercerRoll.total,
+            final:       piercerRoll.total,
+            raw:         piercerRoll.total,
+            modifier:    0,
+            isCrit:      true,
+            roll:        piercerRoll,
+          });
+          console.log(`${MODULE_ID} | Piercer crit bonus: +${piercerRoll.total} ${wpnType} (${wpnDie})`);
+        }
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Piercer crit-die (non-fatal):`, err);
+    }
+
     // ── Savage Attacks (Half-Orc / Orc Lineage) — extra weapon die on melee crit ──
     // RAW (2024): "When you damage a creature with a critical hit from an
     // attack roll using a Strength-based weapon, you can roll one of the
