@@ -745,10 +745,25 @@ export class CombatState {
       attackerBonuses.push({ name: "Improved Divine Smite", formula: "1d8", type: "radiant", reason: "Improved Divine Smite → +1d8 radiant on melee hits" });
     }
 
-    // Divine Strike / Blessed Strikes (Cleric 8+)
+    // Divine Strike / Blessed Strikes (Cleric 8+) — ONCE PER TURN (RAW)
+    // RAW: "Once on each of your turns when you hit a creature with a weapon
+    // attack, you can cause the attack to deal an extra 1d8 [type] damage."
+    //
+    // Tracked via actor flag `divineStrike.usedThisTurn`. Cleared on this
+    // actor's turn-end via the combatTurnChange handler in ace-qol.mjs.
+    // Pattern mirrors Radiant Soul (Celestial Warlock 6+).
     if (CombatState._hasFeature(attackerActor, "Divine Strike") || CombatState._hasFeature(attackerActor, "Blessed Strikes")) {
-      const blessedStrikes = CombatState._hasFeature(attackerActor, "Blessed Strikes");
-      attackerBonuses.push({ name: blessedStrikes ? "Blessed Strikes" : "Divine Strike", formula: "1d8", type: "radiant", reason: `${blessedStrikes ? "Blessed Strikes" : "Divine Strike"} → +1d8 radiant (once per turn)` });
+      const alreadyUsed = !!attackerActor.getFlag?.(MODULE_ID, "divineStrike.usedThisTurn");
+      if (!alreadyUsed) {
+        const blessedStrikes = CombatState._hasFeature(attackerActor, "Blessed Strikes");
+        attackerBonuses.push({
+          name: blessedStrikes ? "Blessed Strikes" : "Divine Strike",
+          formula: "1d8",
+          type: "radiant",
+          reason: `${blessedStrikes ? "Blessed Strikes" : "Divine Strike"} → +1d8 radiant (once per turn)`,
+          isOncePerTurn: "divineStrike",  // marker for damage-calculator to call markDivineStrikeUsed
+        });
+      }
     }
 
     // Colossus Slayer (Hunter Ranger)
@@ -1588,6 +1603,48 @@ export class CombatState {
     try {
       if (actor.getFlag?.(MODULE_ID, "radiantSoul.usedThisTurn")) {
         await actor.unsetFlag(MODULE_ID, "radiantSoul.usedThisTurn");
+      }
+    } catch (_) { /* non-fatal */ }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Divine Strike / Blessed Strikes (Cleric 8+) — Once-per-turn enforcement
+  //
+  //  RAW (PHB Cleric): "Once on each of your turns when you hit a creature
+  //  with a weapon attack, you can cause the attack to deal an extra 1d8
+  //  [type] damage."
+  //
+  //  Mirrors the Radiant Soul pattern: combat-state push-side checks the
+  //  flag; damage-calculator consume-side calls markDivineStrikeUsed after
+  //  applying the bonus; combatTurnChange handler calls clearDivineStrikeFlag
+  //  when the actor's turn ends.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Mark Divine Strike / Blessed Strikes as used for the current turn.
+   * Call this AFTER applying the bonus to a damage component so subsequent
+   * weapon attacks in the same turn skip it.
+   * @param {Actor} actor
+   */
+  static async markDivineStrikeUsed(actor) {
+    if (!actor) return;
+    try {
+      await actor.setFlag(MODULE_ID, "divineStrike.usedThisTurn", true);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Failed to mark Divine Strike used:`, err);
+    }
+  }
+
+  /**
+   * Clear the Divine Strike once-per-turn flag. Called from the
+   * combatTurnChange hook when this actor's turn ends.
+   * @param {Actor} actor
+   */
+  static async clearDivineStrikeFlag(actor) {
+    if (!actor) return;
+    try {
+      if (actor.getFlag?.(MODULE_ID, "divineStrike.usedThisTurn")) {
+        await actor.unsetFlag(MODULE_ID, "divineStrike.usedThisTurn");
       }
     } catch (_) { /* non-fatal */ }
   }

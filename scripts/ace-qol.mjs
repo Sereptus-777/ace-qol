@@ -905,6 +905,7 @@ Hooks.once("ready", () => {
           const priorActor = game.actors.get(priorActorId);
           if (priorActor) {
             CombatState.clearRadiantSoulFlag(priorActor).catch(() => {});
+            CombatState.clearDivineStrikeFlag(priorActor).catch(() => {});
           }
         }
       } catch (_) { /* non-fatal */ }
@@ -912,11 +913,14 @@ Hooks.once("ready", () => {
     Hooks.on("deleteCombat", (combat) => {
       try {
         for (const c of combat?.combatants?.contents ?? []) {
-          if (c.actor) CombatState.clearRadiantSoulFlag(c.actor).catch(() => {});
+          if (c.actor) {
+            CombatState.clearRadiantSoulFlag(c.actor).catch(() => {});
+            CombatState.clearDivineStrikeFlag(c.actor).catch(() => {});
+          }
         }
       } catch (_) { /* non-fatal */ }
     });
-    console.log(`${MODULE_ID} | Class feature rider turn-reset hooks registered (Radiant Soul, etc.)`);
+    console.log(`${MODULE_ID} | Class feature rider turn-reset hooks registered (Radiant Soul, Divine Strike, etc.)`);
   } catch (err) {
     console.error(`${MODULE_ID} | Class feature rider hook setup failed:`, err);
   }

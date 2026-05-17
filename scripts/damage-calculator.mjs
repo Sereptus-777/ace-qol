@@ -238,6 +238,13 @@ export class DamageCalculator {
         radiantSoulTargetIdx = compIdx;
         radiantSoulType = bonusType;
       }
+      // Once-per-turn riders: mark the actor flag now that the bonus has
+      // actually been rolled into a damage component. The push-side guard in
+      // combat-state.mjs reads this flag and skips re-pushing on subsequent
+      // attacks the same turn. combatTurnChange clears it at turn end.
+      if (bonus.isOncePerTurn === "divineStrike") {
+        await CombatState.markDivineStrikeUsed(actor);
+      }
     }
 
     // ── Radiant Soul (Celestial Warlock 6+) ──
@@ -355,6 +362,35 @@ export class DamageCalculator {
                                    && targetState.creatureType
                                    && (targetState.creatureType.toLowerCase() === parsed.creatureTrigger.creatureType?.toLowerCase());
     if (!creatureTriggerFiredBonus && Array.isArray(parsed.bonusDamage) && parsed.bonusDamage.length > 0) {
+
+      // PRE-PASS: "X or Y if creature-type" replacement detection.
+      //
+      // Mace of Smiting: "extra 7 Bludgeoning damage, OR 14 Bludgeoning damage
+      // if it's a Construct." RAW: 14 REPLACES 7 vs construct; doesn't stack.
+      //
+      // Heuristic: if a creature-gated bonus matches the target type AND
+      // shares the same damage type with an ungated bonus, the gated bonus
+      // is a REPLACEMENT. We skip the ungated variant for that damage type.
+      //
+      // Safe because: the "extra ... or ... if it's a ..." phrasing only
+      // appears in items where the second clause replaces the first. If two
+      // truly-additive bonuses share a damage type, they wouldn't both have
+      // crit-or-creature gates that match in this narrow way.
+      const targetTypeLower = String(targetState.creatureType ?? "").toLowerCase();
+      const replacedDamageTypes = new Set();
+      if (targetTypeLower) {
+        for (const bd of parsed.bonusDamage) {
+          if (!Array.isArray(bd.requiresCreatureTypes) || bd.requiresCreatureTypes.length === 0) continue;
+          const matchesTarget = bd.requiresCreatureTypes.some(t => {
+            const tl = String(t).toLowerCase();
+            return targetTypeLower === tl || targetTypeLower.includes(tl);
+          });
+          if (matchesTarget && bd.damageType) {
+            replacedDamageTypes.add(String(bd.damageType).toLowerCase());
+          }
+        }
+      }
+
       for (const bd of parsed.bonusDamage) {
         if (!bd.formula) continue;
         if (conditionalDamageTypes.has(bd.damageType)) continue; // save-gated → handled in post-hit
@@ -365,8 +401,8 @@ export class DamageCalculator {
         // Creature gate: if the bonus is creature-type-gated (Holy Avenger
         // "+2d10 radiant vs fiend/undead"), the target's creature type must
         // match ONE of the listed types.
-        if (Array.isArray(bd.requiresCreatureTypes) && bd.requiresCreatureTypes.length > 0) {
-          const targetTypeLower = String(targetState.creatureType ?? "").toLowerCase();
+        const isCreatureGated = Array.isArray(bd.requiresCreatureTypes) && bd.requiresCreatureTypes.length > 0;
+        if (isCreatureGated) {
           if (!targetTypeLower) continue;
           const matches = bd.requiresCreatureTypes.some(t => {
             const tl = String(t).toLowerCase();
@@ -375,11 +411,19 @@ export class DamageCalculator {
           if (!matches) continue;
         }
 
+        // Replacement gate: if THIS bonus is ungated but a creature-gated
+        // bonus of the same damage type fired (Mace of Smiting +14 construct
+        // overrides the +7 generic), skip this one — the gated one replaces it.
+        if (!isCreatureGated && bd.damageType && replacedDamageTypes.has(String(bd.damageType).toLowerCase())) {
+          console.log(`${MODULE_ID} | Bonus replaced: ${item.name} +${bd.formula} ${bd.damageType} skipped (creature-gated override fired)`);
+          continue;
+        }
+
         // Safety: don't fire wildly. A bonus with NO crit gate AND NO creature
         // gate is suspicious — it would apply on every single hit. Preserve
         // the prior behavior of "must be either crit-gated or creature-gated"
         // to keep this path from over-applying on free-text descriptions.
-        if (!bd.triggersOnCrit && !(Array.isArray(bd.requiresCreatureTypes) && bd.requiresCreatureTypes.length > 0)) continue;
+        if (!bd.triggersOnCrit && !isCreatureGated) continue;
 
         const baseType = components[0]?.type ?? "untyped";
         const dmgType = (bd.damageType && bd.damageType !== "weapon") ? bd.damageType : baseType;
