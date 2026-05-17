@@ -88,13 +88,19 @@ export class FeatEffects {
     // add your ability modifier to the extra attack's damage."
     // We fire on attacks made with a Light weapon by an actor with the feat.
     // Posted at most once per turn so multi-attack volleys don't spam.
-    // Note: DDB imports name this feat "Enhanced Dual Wielding" (the
-    // sub-feature name) on some characters and "Dual Wielder" on others.
-    // We match "dual.?wield" to catch both spellings + the "-ing"/"-er"
-    // ending variants.
-    const hasDualWielder = (actor?.items ?? []).some(i =>
-      i.type === "feat" && /dual.?wield/i.test(String(i.name ?? ""))
+    //
+    // Detection paths:
+    //   1. dnd5e 5.x stores the "Edit Sheet" checkbox at
+    //      flags.dnd5e.enhancedDualWielding (boolean — not an item).
+    //   2. DDB imports as an actual feat item named "Enhanced Dual
+    //      Wielding" or "Dual Wielder".
+    // We accept either source.
+    const hasDualWielderFlag = actor?.getFlag?.("dnd5e", "enhancedDualWielding") === true
+                            || actor?.getFlag?.("dnd5e", "dualWielder") === true;
+    const hasDualWielderItem = (actor?.items ?? []).some(i =>
+      /dual.?wield/i.test(String(i.name ?? ""))
     );
+    const hasDualWielder = hasDualWielderFlag || hasDualWielderItem;
     if (hasDualWielder) {
       const props = item?.system?.properties ?? new Set();
       const isLight = props.has?.("lgt");
