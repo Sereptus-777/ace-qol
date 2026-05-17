@@ -482,7 +482,22 @@ export class DamageCardRenderer {
     }
 
     // ── Post-hit effects — use pre-parsed description data if item is gone ──
-    if (parsedDescription?.saves?.length) {
+    // The item must be returned to the caller (damage-engine) whenever ANY
+    // post-hit machinery needs to run, not just saves. severRider (Sword of
+    // Sharpness, Vorpal Sword), effectTable, bonusDamage, and conditions all
+    // need the item handed back so PostHitSaves.checkPostHitEffects can fire.
+    //
+    // Previous bug: gate was `parsedDescription?.saves?.length` only. For
+    // Sword of Sharpness — which has a severRider but no saves — the item
+    // was never returned, so the sever-roll d20 never fired.
+    const hasAnyPostHit = !!(parsedDescription && (
+         parsedDescription.saves?.length
+      || parsedDescription.severRider
+      || parsedDescription.effectTable
+      || parsedDescription.bonusDamage?.length
+      || parsedDescription.conditions?.length
+    ));
+    if (hasAnyPostHit) {
       let item = await fromUuid(flags.itemUuid).catch(() => null);
       if (!item) item = actor?.items?.get(flags.itemId);
       if (!item && itemName) item = actor?.items?.getName(itemName);
@@ -491,7 +506,7 @@ export class DamageCardRenderer {
         // Return item for caller to run post-hit effects
         return { success: true, item, preRolled, damageResults };
       } else {
-        console.warn(`${MODULE_ID} | Item gone, but post-hit saves detected. Save card skipped (item description unavailable).`);
+        console.warn(`${MODULE_ID} | Item gone, but post-hit effects detected. Post-hit chain skipped (item description unavailable).`);
       }
     }
 
