@@ -43,6 +43,18 @@ export class DamageCalculator {
       }
     }
 
+    // ── True Strike (2024) — one-shot weapon-damage-type swap to Radiant ──
+    // Set by BladeCantrips dialog at cantrip cast. Consume the flag now (so
+    // an error mid-rollDamageComponents doesn't leave the flag stuck).
+    let trueStrikeSwap = false;
+    try {
+      if (actor?.getFlag?.(MODULE_ID, "trueStrike.swapDamage")) {
+        trueStrikeSwap = true;
+        await actor.unsetFlag(MODULE_ID, "trueStrike.swapDamage");
+        console.log(`${MODULE_ID} | True Strike radiant-swap consumed for ${actor.name}`);
+      }
+    } catch (_) { /* non-fatal */ }
+
     // ── Use the D&D 5e system's own damage formula builder ──────────
     // The system knows EVERYTHING: ability mod, magic bonus, ammo bonus,
     // scaling, proficiency — all of it. We call getDamageConfig() to get
@@ -437,6 +449,18 @@ export class DamageCalculator {
           type: dmgType,
         });
         console.log(`${MODULE_ID} | Bonus (${gateLabel}): ${item.name} +${bd.formula} ${dmgType}`);
+      }
+    }
+
+    // ── True Strike swap — applied AFTER all weapon-damage components are
+    // pushed but BEFORE riders are tallied. Walks components and swaps the
+    // type to "radiant" only on the weapon's base damage (name matches item
+    // name). Riders (Smites, Savage Attacks, etc.) keep their own types.
+    if (trueStrikeSwap) {
+      for (const c of components) {
+        if (c?.name === item?.name) {
+          c.type = "radiant";
+        }
       }
     }
 

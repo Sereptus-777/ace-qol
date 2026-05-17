@@ -55,6 +55,7 @@ import { MovementTracker } from "./movement-tracker.mjs";
 import { LootableTile } from "./lootable-tile.mjs";
 import { initAATools }     from "./aa-tools/aa-tools-init.mjs";
 import { WeaponMasteries } from "./weapon-masteries.mjs";
+import { BladeCantrips }   from "./blade-cantrips.mjs";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 let extendedEffects      = null;
@@ -212,6 +213,14 @@ Hooks.once("ready", () => {
     WeaponMasteries.init();
   } catch (err) {
     console.error(`${MODULE_ID} | Weapon Mastery init failed:`, err);
+  }
+
+  // Blade cantrips (Booming Blade / Green-Flame Blade / True Strike).
+  // Self-contained — listens to dnd5e.postCreateUsageMessage + renderChatMessage.
+  try {
+    BladeCantrips.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Blade Cantrip init failed:`, err);
   }
 
   // Heal pipeline — GM-only handler (registered for all clients but gated inside)
