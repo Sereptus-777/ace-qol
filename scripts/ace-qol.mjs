@@ -906,6 +906,7 @@ Hooks.once("ready", () => {
           if (priorActor) {
             CombatState.clearRadiantSoulFlag(priorActor).catch(() => {});
             CombatState.clearDivineStrikeFlag(priorActor).catch(() => {});
+            CombatState.clearDivineSmiteFlag(priorActor).catch(() => {});
           }
         }
       } catch (_) { /* non-fatal */ }
@@ -916,6 +917,7 @@ Hooks.once("ready", () => {
           if (c.actor) {
             CombatState.clearRadiantSoulFlag(c.actor).catch(() => {});
             CombatState.clearDivineStrikeFlag(c.actor).catch(() => {});
+            CombatState.clearDivineSmiteFlag(c.actor).catch(() => {});
           }
         }
       } catch (_) { /* non-fatal */ }
@@ -925,17 +927,24 @@ Hooks.once("ready", () => {
     console.error(`${MODULE_ID} | Class feature rider hook setup failed:`, err);
   }
 
-  // ── Spell feature riders for ATTACK-based spells ─────────────────────────
-  // Empowered Evocation / Agonizing Blast / Potent Spellcasting all add a
-  // stat modifier to spell damage. SAVE-based spells (Fireball, Sacred Flame,
-  // etc.) get this via the save-engine `_rollSpellDamage` path. But ATTACK-
-  // based spells (Eldritch Blast, Fire Bolt, Scorching Ray) roll damage
-  // through the attack activity's own rollDamage method — they bypass the
-  // save-engine entirely. To cover those, prototype-patch the attack
-  // activity's rollDamage: call the original, then bump the resulting
-  // DamageRoll _total values to reflect our feature bonuses.
+  // ── Spell feature riders for ATTACK-based spells + Pact-of-the-Blade type ──
+  // Combined prototype patch on the attack-activity rollDamage method:
   //
-  // Same pattern as SpellAutoDamage's rollDamage patch. Idempotent via flag.
+  //   1. Empowered Evocation / Agonizing Blast / Potent Spellcasting:
+  //      add stat-mod bonuses to spell damage (Eldritch Blast, Fire Bolt, etc.).
+  //
+  //   2. Pact of the Blade (2024 PHB): "You can cause the weapon to deal
+  //      Necrotic, Psychic, or Radiant damage or its normal damage type."
+  //      Player's preference is stored as actor flag and applied to every
+  //      damage roll of the actor's pact weapon (any weapon item).
+  //
+  // Both layers run in the same patch since they target the same prototype.
+  // Idempotent via flag. Mirrors SpellAutoDamage's rollDamage patch pattern.
+  // Defer the prototype patch until the warlock-damage-chooser module has
+  // loaded. We need its hasPactOfTheBlade + getPactBladeType helpers inside
+  // the patched function. Using import().then() instead of await because the
+  // surrounding `ready` hook callback is not declared async.
+  import("./warlock-damage-chooser.mjs").then(({ hasPactOfTheBlade, getPactBladeType }) => {
   try {
     const attackActivityClass = CONFIG.DND5E?.activityTypes?.attack?.documentClass;
     if (attackActivityClass?.prototype && !attackActivityClass.prototype._aceQolSpellRiderPatched) {
@@ -944,40 +953,53 @@ Hooks.once("ready", () => {
         const rolls = await original.apply(this, args);
         try {
           const item = this?.item;
-          if (item?.type !== "spell") return rolls;
-          const actor = item.actor ?? this?.actor;
-          if (!actor) return rolls;
-          if (!Array.isArray(rolls) || rolls.length === 0) return rolls;
+          const actor = item?.actor ?? this?.actor;
+          if (!actor || !Array.isArray(rolls) || rolls.length === 0) return rolls;
 
-          const empoweredBonus = CombatState.getEmpoweredEvocationBonus(actor, item);
-          const potentBonus    = CombatState.getPotentSpellcastingBonus(actor, item);
-          const agonizingBonus = CombatState.getAgonizingBlastBonus(actor, item);
+          // ── Layer 1: spell feature riders (only for spell items) ──
+          if (item?.type === "spell") {
+            const empoweredBonus = CombatState.getEmpoweredEvocationBonus(actor, item);
+            const potentBonus    = CombatState.getPotentSpellcastingBonus(actor, item);
+            const agonizingBonus = CombatState.getAgonizingBlastBonus(actor, item);
+            for (let i = 0; i < rolls.length; i++) {
+              const roll = rolls[i];
+              if (!roll) continue;
+              let bonus = 0;
+              if (i === 0) bonus += empoweredBonus + potentBonus;
+              bonus += agonizingBonus;
+              if (bonus <= 0) continue;
+              roll._total = Number(roll._total ?? roll.total ?? 0) + bonus;
+              roll.options = roll.options ?? {};
+              roll.options.aceQolFeatureRiders = roll.options.aceQolFeatureRiders ?? [];
+              if (i === 0 && empoweredBonus > 0) roll.options.aceQolFeatureRiders.push({ name: "Empowered Evocation", bonus: empoweredBonus });
+              if (i === 0 && potentBonus > 0)    roll.options.aceQolFeatureRiders.push({ name: "Potent Spellcasting", bonus: potentBonus });
+              if (agonizingBonus > 0)            roll.options.aceQolFeatureRiders.push({ name: "Agonizing Blast", bonus: agonizingBonus });
+              console.log(`${MODULE_ID} | Spell rider (attack path): +${bonus} added to ${item.name} damage roll ${i}`);
+            }
+          }
 
-          // Empowered + Potent: apply ONCE to the first damage roll (RAW: "one
-          // damage roll" / "the damage you deal with [a cantrip]" — singular).
-          // Agonizing Blast: applies to EVERY damage roll (each beam).
-          for (let i = 0; i < rolls.length; i++) {
-            const roll = rolls[i];
-            if (!roll) continue;
-            let bonus = 0;
-            if (i === 0) bonus += empoweredBonus + potentBonus;
-            bonus += agonizingBonus;
-            if (bonus <= 0) continue;
-
-            // Mutate _total so the rendered damage value includes our bonus.
-            // Foundry's chat rendering reads _total when displaying — bumping
-            // here propagates to the player-visible number.
-            roll._total = Number(roll._total ?? roll.total ?? 0) + bonus;
-
-            // Stamp metadata so downstream consumers (logs, post-hit) can see
-            // which features fired. Non-functional but useful for debugging.
-            roll.options = roll.options ?? {};
-            roll.options.aceQolFeatureRiders = roll.options.aceQolFeatureRiders ?? [];
-            if (i === 0 && empoweredBonus > 0) roll.options.aceQolFeatureRiders.push({ name: "Empowered Evocation", bonus: empoweredBonus });
-            if (i === 0 && potentBonus > 0)    roll.options.aceQolFeatureRiders.push({ name: "Potent Spellcasting", bonus: potentBonus });
-            if (agonizingBonus > 0)            roll.options.aceQolFeatureRiders.push({ name: "Agonizing Blast", bonus: agonizingBonus });
-
-            console.log(`${MODULE_ID} | Spell rider (attack path): +${bonus} added to ${item.name} damage roll ${i}`);
+          // ── Layer 2: Pact of the Blade damage type override ──
+          // Applies to any WEAPON attack from a Warlock with Pact of the Blade
+          // whose stored preference != "weapon" (default). When set to
+          // necrotic/psychic/radiant, overwrite the rolls' damage type so the
+          // resistance/immunity pipeline applies the right reductions later.
+          if (item?.type === "weapon" && hasPactOfTheBlade(actor)) {
+            const preferredType = getPactBladeType(actor);
+            if (preferredType && preferredType !== "weapon") {
+              for (const roll of rolls) {
+                if (!roll) continue;
+                roll.options = roll.options ?? {};
+                // dnd5e 5.x stores damage type on roll.options.type (singular)
+                // OR roll.options.types (array). Update both for robustness.
+                const originalType = roll.options.type ?? roll.options.types?.[0];
+                roll.options.type = preferredType;
+                if (Array.isArray(roll.options.types)) {
+                  roll.options.types = [preferredType];
+                }
+                roll.options.aceQolPactBladeOverride = { from: originalType, to: preferredType };
+              }
+              console.log(`${MODULE_ID} | Pact of the Blade: ${actor.name}'s ${item.name} damage type ${preferredType} (player preference)`);
+            }
           }
         } catch (err) {
           console.warn(`${MODULE_ID} | Spell-rider attack-path patch failed (non-fatal):`, err);
@@ -985,11 +1007,47 @@ Hooks.once("ready", () => {
         return rolls;
       };
       attackActivityClass.prototype._aceQolSpellRiderPatched = true;
-      console.log(`${MODULE_ID} | Spell feature rider attack-path patch applied (Empowered Evocation / Agonizing Blast / Potent Spellcasting)`);
+      console.log(`${MODULE_ID} | Spell rider + Pact-of-Blade attack-path patch applied`);
     }
   } catch (err) {
     console.warn(`${MODULE_ID} | Spell rider attack-path patch setup failed:`, err);
   }
+  }).catch(err => console.warn(`${MODULE_ID} | Warlock chooser module import failed:`, err));
+
+  // ── Public API: Warlock damage type chooser dialog ──
+  // Players invoke via game.aceQol.openWarlockChooser(actor) — opens a dialog
+  // letting them set Pact of the Blade + Lifedrinker damage type preferences.
+  import("./warlock-damage-chooser.mjs").then(({ openWarlockDamageDialog }) => {
+    globalThis.game = globalThis.game ?? {};
+    game.aceQol = game.aceQol ?? {};
+    game.aceQol.openWarlockChooser = (actor) => {
+      const target = actor ?? game.user?.character ?? canvas.tokens?.controlled?.[0]?.actor;
+      return openWarlockDamageDialog(target);
+    };
+    console.log(`${MODULE_ID} | Warlock damage chooser API exposed at game.aceQol.openWarlockChooser`);
+  }).catch(err => console.warn(`${MODULE_ID} | Warlock chooser API exposure failed:`, err));
+
+  // ── Actor sheet button — adds "Warlock Damage Types" to the dnd5e item
+  // context menu so players can find the chooser without a console command.
+  Hooks.on("dnd5e.getItemContextOptions", (item, options) => {
+    try {
+      if (!item?.actor) return;
+      // Only show on items that belong to a Warlock (pact items typically)
+      const itemName = String(item.name ?? "").toLowerCase();
+      if (!itemName.includes("pact of the blade") && !itemName.includes("lifedrinker")) return;
+      options.push({
+        name: "ACE: Warlock damage types…",
+        icon: '<i class="fa-solid fa-flask-vial"></i>',
+        condition: () => true,
+        callback: async () => {
+          const { openWarlockDamageDialog } = await import("./warlock-damage-chooser.mjs");
+          openWarlockDamageDialog(item.actor);
+        },
+      });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Warlock chooser context menu hook failed:`, err);
+    }
+  });
 
   // Death Saves — RAW PHB 197. Auto-roll death save at PC turn start;
   // massive-damage instant-death check; reset tally on heal.

@@ -22,12 +22,22 @@ export class RiderEngine {
     const riders = [];
     const { isMelee, isRanged, isCrit, item } = opts;
 
-    // ── DIVINE SMITE (2014 class feature) ──
-    // Paladin class feature, melee only, costs spell slot
-    // +2d8 radiant, +1d8 per slot above 1st, +1d8 vs undead/fiend
+    // ── DIVINE SMITE (Paladin 2014/2024 — once-per-turn enforced for 2024 RAW) ──
+    // 2014 RAW: "When you hit with a melee weapon attack, expend a spell slot to..."
+    //           — fires PER HIT (any number per turn, each costs a slot).
+    // 2024 RAW: "Once per turn when you hit a target with a Melee Strike, you can
+    //           expend a spell slot to..." — ONCE PER TURN (still costs a slot).
+    //
+    // Tracked via actor flag `divineSmite.usedThisTurn`. The 2014 behavior is
+    // recoverable: if the actor has the "Divine Smite (2014)" feature variant
+    // OR a setting is off, skip the once-per-turn gate. Default = 2024 RAW
+    // since dnd5e 5.x is shipping with 2024 content as the SRD default.
+    //
+    // Cleared on combatTurnChange via clearDivineSmiteFlag in ace-qol.mjs.
     if (isMelee && RiderEngine._hasPaladinSmite(actor)) {
       const slots = RiderEngine._getAvailableSpellSlots(actor);
-      if (slots.length > 0) {
+      const alreadyUsed = !!actor.getFlag?.(MODULE_ID, "divineSmite.usedThisTurn");
+      if (slots.length > 0 && !alreadyUsed) {
         const targetType = target.creatureType?.toLowerCase() ?? "";
         const isUndeadOrFiend = targetType === "undead" || targetType === "fiend";
         const bestSlot = slots[0]; // lowest available
@@ -46,7 +56,10 @@ export class RiderEngine {
           isMeleeOnly: true,
           scalable: true, // can pick higher slot for more dice
           isSpellDerived: true, // 2024 PHB: Divine Smite is a spell — qualifies for Radiant Soul / spell-only riders
+          isOncePerTurn: "divineSmite", // marker consumed by damage-engine to mark flag after consumeResources
         });
+      } else if (slots.length > 0 && alreadyUsed) {
+        console.log(`${MODULE_ID} | Divine Smite skipped — already used this turn (2024 RAW: once per turn)`);
       }
     }
 

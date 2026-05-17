@@ -458,6 +458,15 @@ export class DamageEngine {
         if (selectedRiders.length > 0) {
           await RiderEngine.consumeResources(actor, selectedRiders);
 
+          // Once-per-turn riders — mark the actor flag after resources are
+          // consumed so the rider-engine `detectRiders` step on the NEXT hit
+          // this turn skips offering them. Cleared on combatTurnChange.
+          for (const rider of selectedRiders) {
+            if (rider.isOncePerTurn === "divineSmite") {
+              await CombatState.markDivineSmiteUsed(actor);
+            }
+          }
+
           for (const hit of hits) {
             if (!hit.attacker) hit.attacker = { bonuses: [] };
             if (!hit.attacker.bonuses) hit.attacker.bonuses = [];

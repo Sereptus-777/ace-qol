@@ -790,28 +790,31 @@ export class CombatState {
       attackerBonuses.push({ name: "Divine Fury", formula: `1d6 + ${furyBonus}`, type: "radiant", reason: `Divine Fury → +1d6+${furyBonus} radiant (first hit while raging)` });
     }
 
-    // Lifedrinker (Warlock invocation, requires Pact of the Blade + lvl 12)
+    // Lifedrinker (Warlock invocation, requires Pact of the Blade)
     //
-    // v0.4.22.14 FIX: was hardcoded to "1d6" which is wrong for 2014 RAW
-    // (the dominant ruleset) and incomplete for 2024 RAW.
+    // 2014 PHB: "extra necrotic damage equal to CHA modifier (minimum 1)"
+    // 2024 PHB: "extra 1d6 Necrotic, Psychic, or Radiant damage (your choice)"
     //
-    //   2014 PHB: "When you hit a creature with your pact weapon, the
-    //     creature takes extra necrotic damage equal to your Charisma
-    //     modifier (minimum 1)."
-    //   2024 PHB: "When you hit a creature with your Pact Weapon, you can
-    //     deal an extra 1d6 Necrotic damage..." (plus optional self-heal
-    //     by spending a slot — not implemented; that's a v0.4.22.15+ item)
-    //
-    // Default to 2014 (CHA mod necrotic, min 1). The flat-1d6 path can be
-    // added behind a setting if a 2024-ruleset table needs it.
+    // Default behavior is 2024 RAW (the user's table runs 2024). The type
+    // is read from the actor's stored preference flag, set via the Warlock
+    // damage chooser dialog (game.aceQol.openWarlockChooser(actor)). Default
+    // type is necrotic if no preference is stored.
     if (CombatState._hasFeature(attackerActor, "Lifedrinker")) {
-      const chaMod = attackerActor.system?.abilities?.cha?.mod ?? 0;
-      const necroticDmg = Math.max(1, chaMod);
+      // Lazy-import inside the function — combat-state.mjs is loaded early
+      // and top-level import of warlock-damage-chooser would risk a
+      // circular-import TDZ if the chooser ever depends on combat-state.
+      let lifedrinkerType = "necrotic";
+      try {
+        const v = attackerActor.getFlag?.(MODULE_ID, "warlock.lifedrinkerType");
+        if (v === "necrotic" || v === "psychic" || v === "radiant") {
+          lifedrinkerType = v;
+        }
+      } catch (_) { /* default necrotic */ }
       attackerBonuses.push({
         name: "Lifedrinker",
-        formula: String(necroticDmg),
-        type: "necrotic",
-        reason: `Lifedrinker → +${necroticDmg} necrotic per hit (CHA mod, min 1)`,
+        formula: "1d6",
+        type: lifedrinkerType,
+        reason: `Lifedrinker → +1d6 ${lifedrinkerType} per hit (2024 PHB, type per actor preference)`,
       });
     }
 
@@ -1742,5 +1745,44 @@ export class CombatState {
 
     const wisMod = Number(actor.system?.abilities?.wis?.mod ?? 0);
     return wisMod > 0 ? wisMod : 0;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Divine Smite (Paladin) — 2024 PHB once-per-turn enforcement
+  //
+  //  2014 PHB allowed Divine Smite on EVERY hit (costs a slot each time).
+  //  2024 PHB restricts to once-per-turn AND requires a bonus action.
+  //
+  //  rider-engine.mjs guards the popup-offer side; this module provides the
+  //  mark/clear helpers used by damage-engine post-consume and combatTurnChange.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Mark Divine Smite as used for the current turn. Called by damage-engine
+   * after RiderEngine.consumeResources successfully consumes the spell slot
+   * for a Divine Smite rider.
+   * @param {Actor} actor
+   */
+  static async markDivineSmiteUsed(actor) {
+    if (!actor) return;
+    try {
+      await actor.setFlag(MODULE_ID, "divineSmite.usedThisTurn", true);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Failed to mark Divine Smite used:`, err);
+    }
+  }
+
+  /**
+   * Clear the Divine Smite once-per-turn flag. Called from combatTurnChange
+   * when this actor's turn ends.
+   * @param {Actor} actor
+   */
+  static async clearDivineSmiteFlag(actor) {
+    if (!actor) return;
+    try {
+      if (actor.getFlag?.(MODULE_ID, "divineSmite.usedThisTurn")) {
+        await actor.unsetFlag(MODULE_ID, "divineSmite.usedThisTurn");
+      }
+    } catch (_) { /* non-fatal */ }
   }
 }
