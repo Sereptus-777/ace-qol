@@ -53,10 +53,11 @@ import { QuickSelectTools } from "./quick-select-tools.mjs";
 import { TurnMarker } from "./turn-marker.mjs";
 import { MovementTracker } from "./movement-tracker.mjs";
 import { LootableTile } from "./lootable-tile.mjs";
-import { initAATools }     from "./aa-tools/aa-tools-init.mjs";
-import { WeaponMasteries } from "./weapon-masteries.mjs";
-import { BladeCantrips }   from "./blade-cantrips.mjs";
-import { FeatEffects }     from "./feat-effects.mjs";
+import { initAATools }       from "./aa-tools/aa-tools-init.mjs";
+import { WeaponMasteries }   from "./weapon-masteries.mjs";
+import { BladeCantrips }     from "./blade-cantrips.mjs";
+import { FeatEffects }       from "./feat-effects.mjs";
+import { SwordOfWounding }   from "./sword-of-wounding.mjs";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 let extendedEffects      = null;
@@ -230,6 +231,13 @@ Hooks.once("ready", () => {
     FeatEffects.init();
   } catch (err) {
     console.error(`${MODULE_ID} | Feat Effects init failed:`, err);
+  }
+
+  // Sword of Wounding DoT — listens to attackComplete + combatTurnChange.
+  try {
+    SwordOfWounding.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Sword of Wounding init failed:`, err);
   }
 
   // Heavy Armor Master (2014 PHB / 2024 PHB variant)
