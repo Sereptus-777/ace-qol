@@ -959,6 +959,48 @@ Hooks.once("ready", () => {
     console.error(`${MODULE_ID} | Hexblade hook setup failed:`, err);
   }
 
+  // Hexblade's Curse — auto-apply when the player activates the feature.
+  // Detection: any dnd5e activity whose item name contains both "hexblade"
+  // and "curse". The activator's currently-targeted token becomes the curse
+  // target (RAW: "choose one creature you can see within 30 feet"). Runs only
+  // on the activator's client — they have ownership of their own actor, so
+  // setFlag succeeds locally and replicates to everyone.
+  //
+  // If no target is selected, we don't fail silently — a chat-card hint tells
+  // the player to target first and reactivate.
+  try {
+    Hooks.on("dnd5e.postCreateUsageMessage", async (activity, message) => {
+      try {
+        // Only the user who activated runs this; otherwise the curse would be
+        // re-applied N times (once per connected client).
+        if (message?.author?.id && message.author.id !== game.user.id) return;
+
+        const item = activity?.item;
+        if (!item) return;
+        const nameNorm = String(item.name ?? "").toLowerCase();
+        if (!nameNorm.includes("hexblade") || !nameNorm.includes("curse")) return;
+
+        const actor = item.actor;
+        if (!actor) return;
+
+        const targetToken = game.user.targets?.first?.();
+        if (!targetToken) {
+          ui.notifications?.warn(
+            `Hexblade's Curse: target a creature first (mouse-over + T), then re-activate the feature.`
+          );
+          return;
+        }
+
+        await CombatState.applyHexbladeCurse(actor, targetToken);
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Hexblade's Curse auto-apply hook failed:`, err);
+      }
+    });
+    console.log(`${MODULE_ID} | Hexblade's Curse auto-apply hook registered (fires on feature activation).`);
+  } catch (err) {
+    console.error(`${MODULE_ID} | Hexblade auto-apply hook setup failed:`, err);
+  }
+
   // ── Spell feature riders for ATTACK-based spells + Pact-of-the-Blade type ──
   // Combined prototype patch on the attack-activity rollDamage method:
   //
