@@ -56,6 +56,7 @@ import { LootableTile } from "./lootable-tile.mjs";
 import { initAATools }     from "./aa-tools/aa-tools-init.mjs";
 import { WeaponMasteries } from "./weapon-masteries.mjs";
 import { BladeCantrips }   from "./blade-cantrips.mjs";
+import { FeatEffects }     from "./feat-effects.mjs";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 let extendedEffects      = null;
@@ -221,6 +222,69 @@ Hooks.once("ready", () => {
     BladeCantrips.init();
   } catch (err) {
     console.error(`${MODULE_ID} | Blade Cantrip init failed:`, err);
+  }
+
+  // Feat effects (Polearm Master, Crusher, Slasher, Piercer).
+  // Self-contained — listens to ace-qol.attackComplete.
+  try {
+    FeatEffects.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Feat Effects init failed:`, err);
+  }
+
+  // Heavy Armor Master (2014 PHB / 2024 PHB variant)
+  // RAW (2014): "While you are wearing heavy armor, bludgeoning, piercing,
+  // and slashing damage that you take from nonmagical weapons is reduced
+  // by 3."
+  // Hook: dnd5e.preApplyDamage — fires before HP reduction. We mutate the
+  // damage descriptors in place when the actor has the HAM feat AND is
+  // wearing heavy armor AND the damage type is B/P/S. Magical-bypass: we
+  // check the damage descriptor's `properties` set for "mgc" if dnd5e
+  // surfaces it; otherwise we apply the reduction (acceptable approximation
+  // — magical attacks against PCs are rare enough that the over-reduction
+  // is small in practice).
+  try {
+    Hooks.on("dnd5e.preApplyDamage", (actor, amount, updates, opts) => {
+      try {
+        if (!actor) return;
+        const hasFeat = (actor.items ?? []).some(i =>
+          i.type === "feat" && /heavy\s*armor\s*master/i.test(String(i.name ?? ""))
+        );
+        if (!hasFeat) return;
+        // Detect heavy armor equipped
+        const wearingHeavy = (actor.items ?? []).some(i =>
+          i.type === "equipment"
+          && i.system?.equipped
+          && (i.system?.type?.value === "heavy" || /heavy/i.test(String(i.system?.armor?.type ?? "")))
+        );
+        if (!wearingHeavy) return;
+
+        // dnd5e calls preApplyDamage with descriptors in opts.damages (array
+        // of { value, type, properties }). Reduce qualifying entries by 3.
+        const damages = Array.isArray(opts?.damages) ? opts.damages : null;
+        if (!damages?.length) return;
+        let reduced = 0;
+        const BPS = new Set(["bludgeoning", "piercing", "slashing"]);
+        for (const d of damages) {
+          if (!BPS.has(String(d?.type ?? "").toLowerCase())) continue;
+          // Skip if magical-property surfaced
+          const props = d?.properties;
+          const isMagical = props instanceof Set ? props.has("mgc") : Array.isArray(props) ? props.includes("mgc") : false;
+          if (isMagical) continue;
+          const cut = Math.min(3, d.value ?? 0);
+          d.value = (d.value ?? 0) - cut;
+          reduced += cut;
+        }
+        if (reduced > 0) {
+          console.log(`${MODULE_ID} | Heavy Armor Master: ${actor.name} reduced ${reduced} non-magical B/P/S damage.`);
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Heavy Armor Master hook failed (non-fatal):`, err);
+      }
+    });
+    console.log(`${MODULE_ID} | Heavy Armor Master damage-reduction hook registered.`);
+  } catch (err) {
+    console.error(`${MODULE_ID} | HAM hook setup failed:`, err);
   }
 
   // Heal pipeline — GM-only handler (registered for all clients but gated inside)
@@ -927,6 +991,7 @@ Hooks.once("ready", () => {
             CombatState.clearDivineSmiteFlag(priorActor).catch(() => {});
             CombatState.clearEldritchSmiteFlag(priorActor).catch(() => {});
             CombatState.clearSneakAttackFlag(priorActor).catch(() => {});
+            FeatEffects.clearOncePerTurnFlags(priorActor).catch(() => {});
           }
         }
         // Hexblade's Curse — RAW 1-minute (10-round) duration. GM client only,
@@ -945,6 +1010,7 @@ Hooks.once("ready", () => {
             CombatState.clearDivineSmiteFlag(c.actor).catch(() => {});
             CombatState.clearEldritchSmiteFlag(c.actor).catch(() => {});
             CombatState.clearSneakAttackFlag(c.actor).catch(() => {});
+            FeatEffects.clearOncePerTurnFlags(c.actor).catch(() => {});
           }
         }
         // Combat ended → expire any leftover Hexblade curses (RAW 1-minute

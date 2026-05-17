@@ -785,6 +785,57 @@ export class CombatState {
       }
     }
 
+    // ── Polearm Master (2024) — bonus-action butt attack ──
+    // RAW: "When you take the Attack action and attack with only a Glaive,
+    // Halberd, Pike, Quarterstaff, or Spear, you can make one melee attack
+    // with the opposite end of the weapon as a Bonus Action that turn. The
+    // weapon's damage die for this attack is a d4, and it deals bludgeoning
+    // damage."
+    // We surface a reminder card via the attackComplete hook (no damage
+    // bonus added here — the player makes the actual bonus-action attack).
+    // (Reminder posting handled in weapon-masteries.mjs's framework — added
+    // there as a sibling card.)
+
+    // ── Crusher (2024) — bludgeoning damage feat ──
+    // RAW: Once per turn when you hit a creature with an attack that deals
+    // bludgeoning damage, you can move it 5 feet to an unoccupied space.
+    // On crit with bludgeoning, attack rolls vs target have advantage until
+    // start of your next turn.
+    // We post a reminder card on hit and let the GM apply the movement.
+    // (Push/advantage effects via cards in weapon-masteries.mjs sibling layer.)
+
+    // ── Great Weapon Master (2024 PHB) — +PB damage on Heavy melee weapon ──
+    // RAW: "When you make a melee attack with a Heavy weapon you have
+    // proficiency with, you can add your Proficiency Bonus to the damage."
+    // (2024 dropped the -5/+10 trade.)
+    if (isMelee && CombatState._hasFeature(attackerActor, "Great Weapon Master")) {
+      const propsX = item?.system?.properties ?? new Set();
+      if (propsX.has?.("hvy")) {
+        const prof = attackerActor.system?.attributes?.prof ?? 2;
+        attackerBonuses.push({
+          name: "Great Weapon Master",
+          formula: `${prof}`,
+          type: damageTypes[0] ?? "slashing",
+          reason: `Great Weapon Master (2024) → +${prof} damage on Heavy melee weapon`,
+        });
+      }
+    }
+
+    // ── Sharpshooter (2024 PHB) — +PB damage on Ranged weapon attack ──
+    // RAW: "When you make an attack with a Ranged Weapon you have proficiency
+    // with, you can add your Proficiency Bonus to the damage of the attack."
+    // Also ignores Half and Three-Quarters Cover (cover handling lives in
+    // CoverEngine; this block only adds the damage bonus).
+    if (isRanged && CombatState._hasFeature(attackerActor, "Sharpshooter")) {
+      const prof = attackerActor.system?.attributes?.prof ?? 2;
+      attackerBonuses.push({
+        name: "Sharpshooter",
+        formula: `${prof}`,
+        type: damageTypes[0] ?? "piercing",
+        reason: `Sharpshooter (2024) → +${prof} damage on Ranged weapon`,
+      });
+    }
+
     // ── Two-Weapon Fighting — add ability mod to off-hand damage ──
     // RAW (2024): "When you make the extra attack from the Light property of a
     // weapon, you can add your ability modifier to the damage of that attack."
