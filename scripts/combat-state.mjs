@@ -741,6 +741,13 @@ export class CombatState {
       attackerBonuses.push({ name: "Hunter's Mark", formula: "1d6", type: damageTypes[0] ?? "force", reason: "Hunter's Mark → +1d6 per hit" });
     }
 
+    // Hex — +1d6 necrotic against the hexed target only (RAW).
+    // Target tracked via `flags.ace-qol.hex = { targetUuid, ... }`. Set on
+    // spell cast, cleared on concentration end (deleteActiveEffect for "Hex").
+    if (CombatState._isHexTarget(attackerActor, targetToken)) {
+      attackerBonuses.push({ name: "Hex", formula: "1d6", type: "necrotic", reason: "Hex → +1d6 necrotic vs hexed target" });
+    }
+
     // Hexblade's Curse — +PB to damage rolls, but ONLY vs cursed target (RAW).
     // Curse is stored as `flags.ace-qol.hexbladeCurse = { targetUuid, appliedAt }`
     // — set via `CombatState.applyHexbladeCurse(attacker, targetToken)`.
@@ -2032,6 +2039,97 @@ export class CombatState {
       return true;
     } catch (err) {
       console.error(`${MODULE_ID} | removeHexbladeCurse failed:`, err);
+      return false;
+    }
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  //  HEX (Warlock 1st-level spell — 2014 PHB / 2024 PHB)
+  // ════════════════════════════════════════════════════════════════════════
+  //
+  //  RAW (2024): "Curse a creature you can see within range. Until the spell
+  //  ends, you deal an extra 1d6 necrotic damage to the target whenever you
+  //  hit it with an attack. Also, choose one ability when you cast the
+  //  spell; the target has disadvantage on ability checks made with the
+  //  chosen ability."
+  //
+  //  Storage: `flags.ace-qol.hex = { targetUuid, appliedAt, combatId }`
+  //  Application: auto-applied by the dnd5e.postCreateUsageMessage hook in
+  //               ace-qol.mjs when the player casts "Hex". Target is the
+  //               activator's currently-targeted token.
+  //  Auto-clear:  deleteActiveEffect hook fires when concentration ends.
+
+  static getHexedTargetUuid(attackerActor) {
+    const hex = attackerActor?.getFlag?.(MODULE_ID, "hex");
+    if (!hex || typeof hex !== "object") return null;
+    return hex.targetUuid ?? null;
+  }
+
+  static _isHexTarget(attackerActor, targetToken) {
+    const hexedUuid = CombatState.getHexedTargetUuid(attackerActor);
+    if (!hexedUuid) return false;
+    const tgtUuid = targetToken?.document?.uuid ?? targetToken?.uuid;
+    return !!tgtUuid && tgtUuid === hexedUuid;
+  }
+
+  /**
+   * Apply Hex from `attacker` onto `targetToken`. Stores the target's UUID
+   * on the attacker. Replaces any existing hex (re-cast moves the curse).
+   * @param {Actor} attackerActor
+   * @param {Token|TokenDocument} targetToken
+   * @param {object} [opts]
+   * @param {boolean} [opts.silent=false]
+   * @returns {Promise<boolean>}
+   */
+  static async applyHex(attackerActor, targetToken, opts = {}) {
+    if (!attackerActor || !targetToken) return false;
+    const targetUuid = targetToken?.document?.uuid ?? targetToken?.uuid;
+    if (!targetUuid) return false;
+    try {
+      await attackerActor.setFlag(MODULE_ID, "hex", {
+        targetUuid,
+        appliedAt: Date.now(),
+        combatId:  game.combat?.id ?? null,
+      });
+      console.log(`${MODULE_ID} | Hex applied: ${attackerActor.name} → ${targetToken.name ?? targetUuid}`);
+      if (!opts.silent) {
+        const tgtName = foundry.utils.escapeHTML(targetToken.name ?? "the target");
+        const attName = foundry.utils.escapeHTML(attackerActor.name);
+        ChatMessage.create({
+          content: `<div class="ace-qol-card" style="background:#0a141a; border:2px solid #4a6c7a; border-radius:6px; padding:10px 12px;">
+            <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">
+              <i class="fas fa-spider" style="color:#88c0d0; font-size:18px;"></i>
+              <strong style="color:#d0e0ea;">Hex</strong>
+            </div>
+            <div style="color:#d0d8e0; font-size:12px;">
+              <strong>${attName}</strong> hexes <strong>${tgtName}</strong>.<br>
+              <em style="color:#aaa;">+1d6 necrotic on every hit against the hexed target while concentration holds.</em>
+            </div>
+          </div>`,
+          speaker: ChatMessage.getSpeaker({ actor: attackerActor }),
+        });
+      }
+      return true;
+    } catch (err) {
+      console.error(`${MODULE_ID} | applyHex failed:`, err);
+      return false;
+    }
+  }
+
+  /**
+   * Remove Hex from `attackerActor`. Called when concentration on Hex ends
+   * (the "Hex" active effect is deleted) or manually.
+   */
+  static async removeHex(attackerActor, opts = {}) {
+    if (!attackerActor) return false;
+    const hex = attackerActor.getFlag?.(MODULE_ID, "hex");
+    if (!hex) return false;
+    try {
+      await attackerActor.unsetFlag(MODULE_ID, "hex");
+      console.log(`${MODULE_ID} | Hex removed from ${attackerActor.name}${opts.reason ? ` (${opts.reason})` : ""}`);
+      return true;
+    } catch (err) {
+      console.error(`${MODULE_ID} | removeHex failed:`, err);
       return false;
     }
   }

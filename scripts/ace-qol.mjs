@@ -1030,27 +1030,59 @@ Hooks.once("ready", () => {
         const item = activity?.item;
         if (!item) return;
         const nameNorm = String(item.name ?? "").toLowerCase();
-        if (!nameNorm.includes("hexblade") || !nameNorm.includes("curse")) return;
-
         const actor = item.actor;
         if (!actor) return;
 
-        const targetToken = game.user.targets?.first?.();
-        if (!targetToken) {
-          ui.notifications?.warn(
-            `Hexblade's Curse: target a creature first (mouse-over + T), then re-activate the feature.`
-          );
+        // Hexblade's Curse — auto-apply
+        if (nameNorm.includes("hexblade") && nameNorm.includes("curse")) {
+          const targetToken = game.user.targets?.first?.();
+          if (!targetToken) {
+            ui.notifications?.warn(
+              `Hexblade's Curse: target a creature first (mouse-over + T), then re-activate the feature.`
+            );
+            return;
+          }
+          await CombatState.applyHexbladeCurse(actor, targetToken);
           return;
         }
 
-        await CombatState.applyHexbladeCurse(actor, targetToken);
+        // Hex spell — auto-apply on cast. Detection: spell named "Hex"
+        // (exact match — avoid catching "Hexblade's Curse" which is handled
+        // above and has its own apply).
+        if (item.type === "spell" && nameNorm === "hex") {
+          const targetToken = game.user.targets?.first?.();
+          if (!targetToken) {
+            ui.notifications?.warn(
+              `Hex: target a creature first (mouse-over + T), then re-cast the spell.`
+            );
+            return;
+          }
+          await CombatState.applyHex(actor, targetToken);
+          return;
+        }
       } catch (err) {
-        console.warn(`${MODULE_ID} | Hexblade's Curse auto-apply hook failed:`, err);
+        console.warn(`${MODULE_ID} | spell-activation auto-apply hook failed:`, err);
       }
     });
-    console.log(`${MODULE_ID} | Hexblade's Curse auto-apply hook registered (fires on feature activation).`);
+    console.log(`${MODULE_ID} | Hexblade's Curse + Hex auto-apply hook registered (fires on feature/spell activation).`);
+
+    // Hex — auto-clear when concentration ends (the "Hex" Active Effect on the
+    // caster is deleted, either by the concentration widget, by casting a new
+    // concentration spell, or by manual removal).
+    Hooks.on("deleteActiveEffect", (effect /*, opts, userId */) => {
+      if (!game.user.isGM) return;
+      try {
+        const name = String(effect?.name ?? "").toLowerCase();
+        if (name !== "hex") return;
+        const actor = effect?.parent;
+        if (!actor?.getFlag?.(MODULE_ID, "hex")) return;
+        CombatState.removeHex(actor, { reason: "concentration ended" }).catch(() => {});
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Hex effect-delete hook failed:`, err);
+      }
+    });
   } catch (err) {
-    console.error(`${MODULE_ID} | Hexblade auto-apply hook setup failed:`, err);
+    console.error(`${MODULE_ID} | Spell auto-apply hook setup failed:`, err);
   }
 
   // ── Spell feature riders for ATTACK-based spells + Pact-of-the-Blade type ──
