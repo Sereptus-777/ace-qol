@@ -244,6 +244,8 @@ export class DamageCalculator {
       // attacks the same turn. combatTurnChange clears it at turn end.
       if (bonus.isOncePerTurn === "divineStrike") {
         await CombatState.markDivineStrikeUsed(actor);
+      } else if (bonus.isOncePerTurn === "sneakAttack") {
+        await CombatState.markSneakAttackUsed(actor);
       }
     }
 

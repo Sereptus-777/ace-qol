@@ -63,11 +63,21 @@ export class RiderEngine {
       }
     }
 
-    // ── ELDRITCH SMITE (Warlock invocation) ──
-    // Pact of the Blade, costs warlock slot, 1d8 + 1d8/level above 1st, knocks prone if Huge or smaller
-    if (RiderEngine._hasFeature(actor, "Eldritch Smite")) {
+    // ── ELDRITCH SMITE (Warlock invocation — once per turn, both 2014 & 2024 RAW) ──
+    // RAW: "Once per turn when you hit a creature with your pact weapon, you
+    //       can expend a warlock spell slot to deal an extra 1d8 force damage
+    //       to the target, plus another 1d8 per level of the spell slot, and
+    //       you can knock the target prone if it is Huge or smaller."
+    //
+    // Damage scaling: slot level N = (1 + N) d8 force.
+    //   • slot 1 → 2d8     • slot 3 → 4d8     • slot 5 → 6d8
+    //
+    // Tracked via actor flag `eldritchSmite.usedThisTurn`. Cleared on this
+    // actor's turn-end via the combatTurnChange handler in ace-qol.mjs.
+    if (isMelee && RiderEngine._hasFeature(actor, "Eldritch Smite")) {
       const pactSlots = RiderEngine._getPactSlots(actor);
-      if (pactSlots.available > 0) {
+      const alreadyUsed = !!actor.getFlag?.(MODULE_ID, "eldritchSmite.usedThisTurn");
+      if (pactSlots.available > 0 && !alreadyUsed) {
         const numDice = 1 + pactSlots.level;
         const targetSize = target.creatureSize ?? "medium";
         const canKnockProne = ["tiny","small","medium","large","huge"].includes(targetSize.toLowerCase());
@@ -81,7 +91,10 @@ export class RiderEngine {
           icon: "fa-bolt",
           highlight: canKnockProne ? "KNOCKS PRONE" : null,
           proneOnHit: canKnockProne,
+          isOncePerTurn: "eldritchSmite", // marker consumed by damage-engine to mark flag after consumeResources
         });
+      } else if (pactSlots.available > 0 && alreadyUsed) {
+        console.log(`${MODULE_ID} | Eldritch Smite skipped — already used this turn (RAW: once per turn)`);
       }
     }
 

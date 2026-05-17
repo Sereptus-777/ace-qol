@@ -907,6 +907,8 @@ Hooks.once("ready", () => {
             CombatState.clearRadiantSoulFlag(priorActor).catch(() => {});
             CombatState.clearDivineStrikeFlag(priorActor).catch(() => {});
             CombatState.clearDivineSmiteFlag(priorActor).catch(() => {});
+            CombatState.clearEldritchSmiteFlag(priorActor).catch(() => {});
+            CombatState.clearSneakAttackFlag(priorActor).catch(() => {});
           }
         }
       } catch (_) { /* non-fatal */ }
@@ -918,11 +920,13 @@ Hooks.once("ready", () => {
             CombatState.clearRadiantSoulFlag(c.actor).catch(() => {});
             CombatState.clearDivineStrikeFlag(c.actor).catch(() => {});
             CombatState.clearDivineSmiteFlag(c.actor).catch(() => {});
+            CombatState.clearEldritchSmiteFlag(c.actor).catch(() => {});
+            CombatState.clearSneakAttackFlag(c.actor).catch(() => {});
           }
         }
       } catch (_) { /* non-fatal */ }
     });
-    console.log(`${MODULE_ID} | Class feature rider turn-reset hooks registered (Radiant Soul, Divine Strike, etc.)`);
+    console.log(`${MODULE_ID} | Class feature rider turn-reset hooks registered (Radiant Soul, Divine Strike, Divine Smite, Eldritch Smite, Sneak Attack).`);
   } catch (err) {
     console.error(`${MODULE_ID} | Class feature rider hook setup failed:`, err);
   }

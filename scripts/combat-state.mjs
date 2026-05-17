@@ -712,9 +712,21 @@ export class CombatState {
     // ═════════════════════════════════════════════════════════════════════════
     const attackerBonuses = [];
 
-    // Sneak Attack
+    // Sneak Attack — once per turn (RAW, both 2014 and 2024).
+    // Detection covers finesse/ranged weapon + (advantage OR ally within 5 ft).
+    // Once-per-turn enforcement gates re-fire on subsequent hits this turn
+    // (Two-Weapon Fighting, Action Surge, Bonus-Action Attack, etc.).
+    // Flag `sneakAttack.usedThisTurn` is cleared on this actor's turn-end.
     const sneakAttack = CombatState._checkSneakAttack(attackerActor, targetToken, item, isMelee, advantageSources.length > 0);
-    if (sneakAttack.eligible) attackerBonuses.push(sneakAttack);
+    if (sneakAttack.eligible) {
+      const alreadyUsed = !!attackerActor.getFlag?.(MODULE_ID, "sneakAttack.usedThisTurn");
+      if (!alreadyUsed) {
+        sneakAttack.isOncePerTurn = "sneakAttack"; // marker consumed downstream to set flag
+        attackerBonuses.push(sneakAttack);
+      } else {
+        console.log(`${MODULE_ID} | Sneak Attack skipped — already used this turn (RAW: once per turn)`);
+      }
+    }
 
     // Hex
     if (CombatState._hasEffect(attackerActor, "Hex")) {
@@ -1782,6 +1794,64 @@ export class CombatState {
     try {
       if (actor.getFlag?.(MODULE_ID, "divineSmite.usedThisTurn")) {
         await actor.unsetFlag(MODULE_ID, "divineSmite.usedThisTurn");
+      }
+    } catch (_) { /* non-fatal */ }
+  }
+
+  /**
+   * Mark Eldritch Smite as used this turn. Set after `consumeResources` runs
+   * for an Eldritch Smite rider. RAW (both 2014 and 2024): "Once per turn when
+   * you hit a creature with your pact weapon..."
+   * @param {Actor} actor
+   */
+  static async markEldritchSmiteUsed(actor) {
+    if (!actor) return;
+    try {
+      await actor.setFlag(MODULE_ID, "eldritchSmite.usedThisTurn", true);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Failed to mark Eldritch Smite used:`, err);
+    }
+  }
+
+  /**
+   * Clear the Eldritch Smite once-per-turn flag. Called from combatTurnChange
+   * when this actor's turn ends.
+   * @param {Actor} actor
+   */
+  static async clearEldritchSmiteFlag(actor) {
+    if (!actor) return;
+    try {
+      if (actor.getFlag?.(MODULE_ID, "eldritchSmite.usedThisTurn")) {
+        await actor.unsetFlag(MODULE_ID, "eldritchSmite.usedThisTurn");
+      }
+    } catch (_) { /* non-fatal */ }
+  }
+
+  /**
+   * Mark Sneak Attack as used this turn. Set when an attacker-bonus carrying
+   * `isOncePerTurn === "sneakAttack"` is applied downstream. RAW (2014/2024):
+   * "Once per turn, you can deal an extra ... damage when you hit ..."
+   * @param {Actor} actor
+   */
+  static async markSneakAttackUsed(actor) {
+    if (!actor) return;
+    try {
+      await actor.setFlag(MODULE_ID, "sneakAttack.usedThisTurn", true);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Failed to mark Sneak Attack used:`, err);
+    }
+  }
+
+  /**
+   * Clear the Sneak Attack once-per-turn flag. Called from combatTurnChange
+   * when this actor's turn ends.
+   * @param {Actor} actor
+   */
+  static async clearSneakAttackFlag(actor) {
+    if (!actor) return;
+    try {
+      if (actor.getFlag?.(MODULE_ID, "sneakAttack.usedThisTurn")) {
+        await actor.unsetFlag(MODULE_ID, "sneakAttack.usedThisTurn");
       }
     } catch (_) { /* non-fatal */ }
   }

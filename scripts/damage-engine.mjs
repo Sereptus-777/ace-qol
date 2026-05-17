@@ -464,6 +464,8 @@ export class DamageEngine {
           for (const rider of selectedRiders) {
             if (rider.isOncePerTurn === "divineSmite") {
               await CombatState.markDivineSmiteUsed(actor);
+            } else if (rider.isOncePerTurn === "eldritchSmite") {
+              await CombatState.markEldritchSmiteUsed(actor);
             }
           }
 
