@@ -1010,6 +1010,25 @@ Hooks.once("ready", () => {
         }
       } catch (_) { /* non-fatal */ }
     });
+    // Also clear all once-per-turn flags on combat START — protects against
+    // flags getting stuck from out-of-combat testing or a session-crash mid-turn.
+    // Without this, an actor who fired Sneak Attack out of combat could enter
+    // their next combat with the flag pre-set and have round 1 Sneak Attack
+    // silently blocked.
+    Hooks.on("combatStart", (combat) => {
+      try {
+        for (const c of combat?.combatants?.contents ?? []) {
+          if (c.actor) {
+            CombatState.clearRadiantSoulFlag(c.actor).catch(() => {});
+            CombatState.clearDivineStrikeFlag(c.actor).catch(() => {});
+            CombatState.clearDivineSmiteFlag(c.actor).catch(() => {});
+            CombatState.clearEldritchSmiteFlag(c.actor).catch(() => {});
+            CombatState.clearSneakAttackFlag(c.actor).catch(() => {});
+            FeatEffects.clearOncePerTurnFlags(c.actor).catch(() => {});
+          }
+        }
+      } catch (_) { /* non-fatal */ }
+    });
     Hooks.on("deleteCombat", (combat) => {
       try {
         for (const c of combat?.combatants?.contents ?? []) {

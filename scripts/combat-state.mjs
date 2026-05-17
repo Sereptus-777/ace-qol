@@ -1631,8 +1631,31 @@ export class CombatState {
     );
     if (!sneakFeature) return { eligible: false };
 
+    // Eligibility: Finesse OR Ranged weapon (RAW).
+    // dnd5e 5.x moved actionType onto Activity objects, so `item.system.actionType`
+    // is often undefined for native imports. We detect "ranged" through several
+    // robust paths instead of trusting a single field:
+    //   1. item.system.actionType === "rwak"             (legacy item-level)
+    //   2. item.system.type.value matches simpleR/martialR (2024 weapon-type schema)
+    //   3. ANY activity on the item is actionType "rwak"  (5.x activity model)
+    //   4. weapon has ammunition property "amm"          (bow/crossbow proxy)
     const props = item?.system?.properties ?? new Set();
-    if (!props.has("fin") && !["rwak"].includes(item?.system?.actionType)) {
+    const isFinesse = props.has?.("fin");
+
+    const typeVal = String(item?.system?.type?.value ?? "");
+    const acts = item?.system?.activities;
+    const actsList = acts instanceof Map ? [...acts.values()]
+                   : acts && typeof acts === "object" ? Object.values(acts) : [];
+    const anyRangedActivity = actsList.some(act =>
+      act?.actionType === "rwak" || act?.type === "rwak"
+    );
+
+    const isRanged = item?.system?.actionType === "rwak"
+                  || /^(simpleR|martialR|R)$/i.test(typeVal)
+                  || anyRangedActivity
+                  || props.has?.("amm");
+
+    if (!isFinesse && !isRanged) {
       return { eligible: false, reason: "Weapon not finesse or ranged" };
     }
 
