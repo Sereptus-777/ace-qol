@@ -168,6 +168,29 @@ export class CombatState {
       disadvantageSources.push({ source: "target", reason: "Target grants attack disadvantage (flag)" });
     }
 
+    // ── Vex mastery — attacker has Advantage on next attack vs the same target ──
+    try {
+      const vex = attackerActor.getFlag?.(MODULE_ID, "vex");
+      if (vex && typeof vex === "object" && vex.targetUuid) {
+        const tgtUuid = targetToken?.document?.uuid ?? targetToken?.uuid;
+        if (tgtUuid && tgtUuid === vex.targetUuid) {
+          advantageSources.push({ source: "attacker", reason: "VEX (weapon mastery) → advantage on next attack vs this target" });
+          // Consume — Vex is "next attack only"
+          attackerActor.unsetFlag(MODULE_ID, "vex").catch(() => {});
+        }
+      }
+    } catch (_) { /* non-fatal */ }
+
+    // ── Sap mastery — target Sapped → its attack has disadvantage ──
+    try {
+      const sapped = attackerActor.getFlag?.(MODULE_ID, "sapped");
+      if (sapped && typeof sapped === "object") {
+        disadvantageSources.push({ source: "attacker", reason: "SAPPED (weapon mastery) → disadvantage on this attack roll" });
+        // Consume — Sap is "next attack only"
+        attackerActor.unsetFlag(MODULE_ID, "sapped").catch(() => {});
+      }
+    } catch (_) { /* non-fatal */ }
+
     // ── Heavy Weapon + Small Creature ───────────────────────────────────
     const atkSize = attackerActor.system?.traits?.size ?? attackerActor.system?.details?.size ?? "medium";
     if (["tiny", "sm"].includes(atkSize) && itemProps.has("hvy")) {

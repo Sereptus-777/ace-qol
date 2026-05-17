@@ -116,6 +116,24 @@ export class QolSettings {
       default: true,
     });
 
+    s("weaponMasteryEnabled", {
+      name:    "Weapon Mastery (2024 PHB) — Enabled",
+      hint:    "Auto-fires mastery effects (Cleave, Graze, Vex, Sap, Topple, etc.) when a weapon is used. Each mastery posts a chat card and applies its effect where automatable.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
+    s("weaponMasteryStrict", {
+      name:    "Weapon Mastery — Strict (require feature)",
+      hint:    "When ON, only actors with a 'Weapon Mastery' class feature can fire masteries (RAW 2024). When OFF, every weapon fires its mastery for every wielder (looser, useful for monster attacks).",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
     // ═══════════════════════════════════════════════════════════════════════════
     //  AUTOMATION LEVEL PRESET — controls 30+ toggles with one dropdown
     // ═══════════════════════════════════════════════════════════════════════════

@@ -53,7 +53,8 @@ import { QuickSelectTools } from "./quick-select-tools.mjs";
 import { TurnMarker } from "./turn-marker.mjs";
 import { MovementTracker } from "./movement-tracker.mjs";
 import { LootableTile } from "./lootable-tile.mjs";
-import { initAATools }  from "./aa-tools/aa-tools-init.mjs";
+import { initAATools }     from "./aa-tools/aa-tools-init.mjs";
+import { WeaponMasteries } from "./weapon-masteries.mjs";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 let extendedEffects      = null;
@@ -203,6 +204,14 @@ Hooks.once("ready", () => {
     initAATools();
   } catch (err) {
     console.error(`${MODULE_ID} | AA Tools init failed:`, err);
+  }
+
+  // Weapon Mastery system (2024 PHB) — listens to ace-qol.attackComplete,
+  // fires mastery chat cards + effects per weapon. Self-contained.
+  try {
+    WeaponMasteries.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Weapon Mastery init failed:`, err);
   }
 
   // Heal pipeline — GM-only handler (registered for all clients but gated inside)
