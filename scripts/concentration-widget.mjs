@@ -25,6 +25,20 @@ export class ConcentrationWidget {
     /** @type {Map<string, SpellTracker>} templateId → spell tracking data */
     this._activeSpells = new Map();
     this._container = null;
+
+    // ── Area-denial state (Stinking Cloud family) ──
+    // _pendingSaves: tracks saves we triggered so we can react to the
+    // ace-qol.saveComplete hook with the right tracker + phase context.
+    // Key = `${tokenDocId}:${saveAbility}`. Auto-pruned after 30s.
+    /** @type {Map<string, {tracker:object, phase:string, t:number}>} */
+    this._pendingSaves = new Map();
+
+    // _pendingLingering: tokens with queued Lingering Nausea — applied at
+    // start of their next turn. Survives template deletion (option 2b —
+    // the gas got in them before the cloud cleared).
+    /** @type {Map<string, {spellName:string, sourceActorUuid:string|null}>} */
+    this._pendingLingering = new Map();
+
     this._registerHooks();
   }
 
@@ -79,6 +93,54 @@ export class ConcentrationWidget {
     // Concentration broken — active effect removed
     Hooks.on("deleteActiveEffect", (effect, opts, userId) => {
       this._onEffectRemoved(effect);
+    });
+
+    // ── Save results from save-engine: area-denial spells use this to
+    // apply Retching / Restrained / Exhaustion + track failed-this-round
+    // for the exit-save-with-advantage mechanic.
+    Hooks.on(`${MODULE_ID}.saveComplete`, (data) => {
+      this._onAreaDenialSaveComplete(data).catch(err =>
+        console.warn(`${TAG} | _onAreaDenialSaveComplete failed:`, err)
+      );
+    });
+
+    // ── 1-cell cube snap fix ──
+    // Foundry's default snap behavior for `rect` templates is to snap the
+    // anchor to a grid VERTEX (corner of cells), which puts a 5ft cube
+    // straddling 4 cells. RAW intent for a 5ft cube is to occupy ONE cell.
+    // This hook detects 1-cell cubes (rect with distance = 1 cell, either
+    // direct or rotated 45°) and shifts the anchor so the cube's CENTER
+    // aligns with the nearest cell's center. Larger cubes left alone.
+    Hooks.on("preCreateMeasuredTemplate", (templateDoc, data, opts, userId) => {
+      try {
+        if (templateDoc.t !== "rect") return;
+        const gridDist = canvas.scene?.grid?.distance ?? 5;
+        const gridSize = canvas.grid?.size ?? 100;
+        const dist = templateDoc.distance;
+        // dnd5e stores 5ft cubes as rect with distance = 5 OR distance = 5*√2 (rotated 45°)
+        const isSingleCellCube = Math.abs(dist - gridDist) < 0.1
+                              || Math.abs(dist - gridDist * Math.SQRT2) < 0.1;
+        if (!isSingleCellCube) return;
+
+        const dPx = dist * gridSize / gridDist;
+        const dirRad = ((templateDoc.direction ?? 0) * Math.PI) / 180;
+        // Current geometric center of the rect (rotated or not)
+        const cx = templateDoc.x + (dPx / 2) * Math.cos(dirRad);
+        const cy = templateDoc.y + (dPx / 2) * Math.sin(dirRad);
+        // Snap center to nearest grid-cell center
+        const halfCell = gridSize / 2;
+        const snappedCx = Math.round((cx - halfCell) / gridSize) * gridSize + halfCell;
+        const snappedCy = Math.round((cy - halfCell) / gridSize) * gridSize + halfCell;
+        // If already snapped (within 1 pixel), skip the update
+        if (Math.abs(snappedCx - cx) < 1 && Math.abs(snappedCy - cy) < 1) return;
+        // Recompute anchor (x, y) from new center
+        const newX = snappedCx - (dPx / 2) * Math.cos(dirRad);
+        const newY = snappedCy - (dPx / 2) * Math.sin(dirRad);
+        templateDoc.updateSource({ x: newX, y: newY });
+        console.log(`${TAG} | snapped 1-cell cube to single cell (center ${cx.toFixed(0)},${cy.toFixed(0)} -> ${snappedCx},${snappedCy})`);
+      } catch (err) {
+        console.warn(`${TAG} | cube-snap hook failed (non-fatal):`, err);
+      }
     });
 
     // Note: movement-damage UNDO button wiring is registered globally in
@@ -317,10 +379,17 @@ export class ConcentrationWidget {
       damageFormula,                  // v0.6.5: needed for Spike Growth-style movement damage
       tokens: tokens ?? [],
       createdAt: Date.now(),
+      // Area-denial state — only populated for spells with timing.family === "areaDenial"
+      failedSavesThisRound: new Set(),  // tokenDocIds who failed a save this round
+      entrySavesThisTurn:   new Set(),  // tokenDocIds who already saved on entry this turn (cap = 1)
     };
 
     this._activeSpells.set(templateDoc.id, tracker);
-    const variant = saveAbility ? "save" : "movement-damage";
+    const variant = saveAbility
+      ? "save"
+      : timing?.family === "areaDenialAuto"
+        ? "area-denial auto-damage"
+        : "movement-damage";
     console.log(`${TAG} | Registered persistent spell: ${item.name} (${timing.timing}, ${variant}) with ${tracker.tokens.length} initial targets`);
 
     this._renderWidgets();
@@ -334,9 +403,25 @@ export class ConcentrationWidget {
     try { this._playPersistentSpellAnimation(item, templateDoc); }
     catch (err) { console.warn(`${TAG} | persistent-spell animation failed:`, err); }
 
-    // If timing includes "enter", tokens already in the area might need to save
-    // (Depends on interpretation — some GMs say "enter" means voluntarily move in)
-    // We'll let the GM trigger this manually via INFLICT DAMAGE
+    // Area-denial family: tokens caught inside the AOE at cast time get an
+    // immediate entry save (or auto-damage for areaDenialAuto). Treats them
+    // as having "entered" by the spell — same RAW consequence either way.
+    const castFamily = timing?.family;
+    if ((castFamily === "areaDenial" || castFamily === "areaDenialAuto")
+        && tracker.tokens?.length && game.user.isGM) {
+      if (!tracker.tokensInside) tracker.tokensInside = new Set();
+      for (const tok of tracker.tokens) {
+        if (!tok?.document?.id) continue;
+        tracker.tokensInside.add(tok.document.id);
+        // Note: _onTokenEnteredTemplate itself manages entrySavesThisTurn
+        // for areaDenialAuto; for areaDenial save spells we mark it here.
+        if (castFamily === "areaDenial") {
+          tracker.entrySavesThisTurn.add(tok.document.id);
+        }
+        this._onTokenEnteredTemplate(tracker, tok, { phase: "entry" })
+          .catch(err => console.warn(`${TAG} | initial entry trigger failed for ${tok.name}:`, err));
+      }
+    }
   }
 
   /**
@@ -358,11 +443,16 @@ export class ConcentrationWidget {
     // Wall of Thorns has no good JB2A or blfx asset — fall back to the
     // same blfx spike_growth animation; thematically very close (thorny vines).
     "wall of thorns":    { db: "blfx.spell.template.circle.nature.spike_growth1.vine_thorn.loop.color1", opacity: 1.0,  belowTokens: false },
-    "cloud of daggers":  { db: "jb2a.cloud_of_daggers.daggers.dark_red", opacity: 0.9,  belowTokens: false },
+    // Purple variant — visually distinct from any other dagger/blade asset.
+    // If your install doesn't have purple, run this in console to see what
+    // variants you DO have, paste a different path here:
+    //   Sequencer.Database.searchFor("cloud_of_daggers").filter(p=>typeof p==="string")
+    "cloud of daggers":  { db: "jb2a.cloud_of_daggers.daggers.purple",   opacity: 0.9,  belowTokens: false },
     "moonbeam":          { db: "jb2a.moonbeam.01.loop.blue",             opacity: 0.85, belowTokens: false },
     "spirit guardians":  { db: "jb2a.spirit_guardians.blueyellow.ring",  opacity: 0.85, belowTokens: false },
     "fog cloud":         { db: "jb2a.fog_cloud.01.white",                opacity: 0.65, belowTokens: false },
-    // Cloudkill has no dedicated JB2A asset — green fog_cloud_02 substitutes.
+    // Cloudkill — darker green fog variant. Visually distinct from Stinking
+    // Cloud which uses the brighter green02 variant.
     "cloudkill":         { db: "jb2a.fog_cloud.02.green",                opacity: 0.85, belowTokens: false },
     // Stinking Cloud — same trick, saturated green fog_cloud_02 variant.
     "stinking cloud":    { db: "jb2a.fog_cloud.02.green02",              opacity: 0.85, belowTokens: false },
@@ -376,13 +466,35 @@ export class ConcentrationWidget {
   };
 
   _playPersistentSpellAnimation(item, templateDoc) {
+    // Gate: only play ace-qol's own animations if the user has explicitly
+    // opted in. By default Automated Animations owns the visual layer
+    // (it's the mature, GM-configurable solution they already know).
+    // We still own damage / saves / concentration regardless.
+    try {
+      if (QolSettings.get?.("ownSpellAnimations") !== true) return;
+    } catch (_) { return; /* setting not registered → default to OFF */ }
+
     if (!game.modules?.get?.("sequencer")?.active) return;
     const name = (item?.name ?? "").toLowerCase().trim();
     const cfg = ConcentrationWidget.SPELL_ANIMATIONS[name];
     if (!cfg) return; // no mapping — let AA (or nothing) handle it
 
+    // Sequencer's public API for building a persistent effect is the Sequence
+    // chain — `Sequencer.Effect.create()` is NOT a thing and throws
+    // "Cannot read properties of undefined (reading 'create')". The previous
+    // code path was failing silently for every spell in SPELL_ANIMATIONS;
+    // Stinking Cloud only appeared to work because AutoAnimations was filling
+    // in. This now uses the documented `new Sequence().effect()` chain.
     try {
-      let chain = Sequencer.Effect.create()
+      const SequenceCtor = (typeof Sequence !== "undefined") ? Sequence
+                         : globalThis.Sequence ?? Sequencer?.Sequence
+                         ?? null;
+      if (!SequenceCtor) {
+        console.warn(`${TAG} | Sequence constructor not found — Sequencer install may be incomplete`);
+        return;
+      }
+      let chain = new SequenceCtor()
+        .effect()
         .file(cfg.db)
         .attachTo(templateDoc)
         .persist()
@@ -401,7 +513,7 @@ export class ConcentrationWidget {
       chain.play();
       console.log(`${TAG} | Played animation "${cfg.db}" for ${item.name} (opacity ${cfg.opacity ?? 1.0}, belowTokens=${!!cfg.belowTokens})`);
     } catch (err) {
-      console.warn(`${TAG} | Sequencer.Effect chain failed for ${item?.name}:`, err);
+      console.warn(`${TAG} | Sequencer chain failed for ${item?.name}:`, err);
     }
   }
 
@@ -466,6 +578,30 @@ export class ConcentrationWidget {
     if (!this._activeSpells.has(templateId)) return;
     const tracker = this._activeSpells.get(templateId);
     console.log(`${TAG} | Template deleted for ${tracker.item?.name} — removing widget + dropping concentration`);
+
+    // Area-denial spells: queue Lingering Nausea for anyone who failed a
+    // save inside this template this round. Option 2b — the gas already
+    // got in them before the cloud cleared, so they still suffer next
+    // turn even though the spell is over. Only spells with a failEffect
+    // queue lingering (damage-only spells have nothing to linger).
+    if (tracker.timing?.family === "areaDenial"
+        && tracker.timing?.failEffect
+        && tracker.failedSavesThisRound?.size) {
+      const spellName = tracker.item?.name ?? "Spell";
+      const failEffect = tracker.timing.failEffect;
+      for (const tokenDocId of tracker.failedSavesThisRound) {
+        // Don't overwrite an existing queued lingering — earliest source wins.
+        if (!this._pendingLingering.has(tokenDocId)) {
+          this._pendingLingering.set(tokenDocId, {
+            spellName,
+            sourceActorUuid: tracker.actor?.uuid ?? null,
+            failEffect,
+          });
+        }
+      }
+      console.log(`${TAG} | template ended for ${spellName}: queued Lingering ${failEffect} for ${tracker.failedSavesThisRound.size} token(s)`);
+    }
+
     this._activeSpells.delete(templateId);
     this._renderWidgets();
 
@@ -549,6 +685,72 @@ export class ConcentrationWidget {
       : turns[turns.length - 1]; // wrapped from previous round
     const prevToken = prevCombatant?.token;
 
+    // ── Area-denial: per-turn state reset + Lingering Nausea application ──
+    // When `currentToken`'s turn starts: clear their failed-this-round +
+    // entry-save-this-turn flags for every active tracker, AND apply any
+    // queued Lingering Nausea effect for them.
+    if (currentToken) {
+      for (const tracker of this._activeSpells.values()) {
+        const fam = tracker.timing?.family;
+        if (fam === "areaDenial" || fam === "areaDenialAuto") {
+          tracker.failedSavesThisRound?.delete?.(currentToken.id);
+          tracker.entrySavesThisTurn?.delete?.(currentToken.id);
+        }
+      }
+
+      if (this._pendingLingering.has(currentToken.id)) {
+        const { spellName, failEffect } = this._pendingLingering.get(currentToken.id);
+        this._pendingLingering.delete(currentToken.id);
+        const placeable = canvas.tokens.get(currentToken.id);
+        const actor = placeable?.actor;
+        if (actor) {
+          try {
+            // Lingering effects mirror the original failEffect:
+            //   retching → Lingering Nausea (Incapacitated until end of turn)
+            //   restrained → Lingering Grip (Restrained until end of turn)
+            //   exhaustion+glowing → already permanent, just announce
+            const effectName = failEffect === "restrained"
+              ? `Lingering Grip (${spellName})`
+              : `Lingering Nausea (${spellName})`;
+            const alreadyHas = actor.effects?.contents?.find?.(e => e.name === effectName);
+            if (!alreadyHas && (failEffect === "retching" || failEffect === "restrained")) {
+              const statusToApply = failEffect === "restrained" ? "restrained" : "incapacitated";
+              const iconImg = failEffect === "restrained" ? "icons/svg/net.svg" : "icons/svg/poison.svg";
+              await actor.createEmbeddedDocuments("ActiveEffect", [{
+                name: effectName,
+                img: iconImg,
+                statuses: [statusToApply],
+                flags: {
+                  "ace-qol": {
+                    areaDenial: true, source: "lingering", spellName, failEffect,
+                    specialDuration: "turnEnd", // expires end of THIS (victim's) turn
+                  },
+                },
+              }]);
+              try {
+                const flavorText = failEffect === "restrained"
+                  ? `is still gripped by residual force from <em style="color:#d4af37;">${spellName}</em> — <strong style="color:#ef4444;">Restrained</strong> this turn.`
+                  : `is wracked by lingering nausea from <em style="color:#d4af37;">${spellName}</em> — <strong style="color:#ef4444;">Incapacitated</strong> this turn (loses Action).`;
+                const darkContent = `
+                  <div style="background:#1a1a1f;color:#e8dfc8;padding:10px 12px;border-radius:5px;border:1px solid #d4af37;font-family:'Signika',sans-serif;font-size:13px;">
+                    <strong style="color:#d4af37;">${currentToken.name ?? actor.name}</strong>
+                    <span style="color:#c8b890;"> ${flavorText}</span>
+                  </div>
+                `;
+                await ChatMessage.create({
+                  speaker: ChatMessage.getSpeaker({ token: currentToken }),
+                  content: darkContent,
+                });
+              } catch (_) {}
+              console.log(`${TAG} | applied lingering ${failEffect} for ${spellName} to ${actor.name}`);
+            }
+          } catch (err) {
+            console.warn(`${TAG} | could not apply lingering effect to ${actor?.name}:`, err);
+          }
+        }
+      }
+    }
+
     for (const [templateId, tracker] of this._activeSpells) {
       const timing = tracker.timing.timing;
       // Check current state via the canvas template — `tracker.tokens` can
@@ -558,19 +760,25 @@ export class ConcentrationWidget {
       const template = canvas.scene.templates.get(templateId)?.object;
       if (!template) continue;
 
+      const trackerFamily = tracker.timing?.family;
+      const isAreaDenial = trackerFamily === "areaDenial" || trackerFamily === "areaDenialAuto";
+
       // Start-of-turn check
       if (timing.includes("startOfTurn") || timing.includes("enter+startOfTurn")) {
         if (currentToken) {
           const placeable = canvas.tokens.get(currentToken.id);
           if (placeable) {
             const positions = { newX: currentToken.x, newY: currentToken.y };
-            const inside = this._tokenInsideTemplate(placeable, template, positions);
+            // RAW "wholly within" for area-denial; center-point for others.
+            const inside = isAreaDenial
+              ? this._tokenWhollyInsideTemplate(placeable, template, positions)
+              : this._tokenInsideTemplate(placeable, template, positions);
             if (inside) {
               console.log(`${TAG} | ${currentToken.name} starts turn in ${tracker.item.name}`);
               // Use the same auto-roll-or-prompt routing as token entry —
               // NPC fast-resolves, PC gets prompted. Skip the cast-pacing
               // delay since this is a turn-start trigger, not a cast.
-              await this._onTokenEnteredTemplate(tracker, placeable);
+              await this._onTokenEnteredTemplate(tracker, placeable, { phase: "startOfTurn" });
             }
           }
         }
@@ -582,10 +790,12 @@ export class ConcentrationWidget {
           const placeable = canvas.tokens.get(prevToken.id);
           if (placeable) {
             const positions = { newX: prevToken.x, newY: prevToken.y };
-            const inside = this._tokenInsideTemplate(placeable, template, positions);
+            const inside = isAreaDenial
+              ? this._tokenWhollyInsideTemplate(placeable, template, positions)
+              : this._tokenInsideTemplate(placeable, template, positions);
             if (inside) {
               console.log(`${TAG} | ${prevToken.name} ends turn in ${tracker.item.name}`);
-              await this._onTokenEnteredTemplate(tracker, placeable);
+              await this._onTokenEnteredTemplate(tracker, placeable, { phase: "endOfTurn" });
             }
           }
         }
@@ -667,14 +877,29 @@ export class ConcentrationWidget {
       const template = canvas.scene.templates.get(templateId)?.object;
       if (!template) continue;
 
+      // Both area-denial families share the same trigger pattern (entry,
+      // start-of-turn, exit-with-advantage); they differ only in whether
+      // they fire a save card ("areaDenial") or auto-apply damage directly
+      // ("areaDenialAuto", e.g. Cloud of Daggers).
+      const family = tracker.timing?.family;
+      const isAreaDenial = family === "areaDenial" || family === "areaDenialAuto";
+
       const wasInside = !!tracker.tokensInside?.has?.(tokenDoc.id);
-      const isInside  = this._tokenInsideTemplate(token, template, positions);
+      // Area-denial uses RAW "wholly within" (all 4 token corners inside).
+      // Other spells keep the legacy center-point hit-test.
+      const isInside  = isAreaDenial
+        ? this._tokenWhollyInsideTemplate(token, template, positions)
+        : this._tokenInsideTemplate(token, template, positions);
       if (!tracker.tokensInside) tracker.tokensInside = new Set();
 
       // ── Phase 2: Spike Growth-style movement damage ──
       // Spells with damage but NO save are continuous — apply per 5ft
-      // of movement traversed inside the template area.
-      const isMovementDamage = !tracker.saveAbility && !!tracker.damageTypes?.length;
+      // of movement traversed inside the template area. EXCEPT
+      // areaDenialAuto (Cloud of Daggers) which has its own entry-based
+      // mechanic and must NOT route through movement damage.
+      const isMovementDamage = !tracker.saveAbility
+                            && !!tracker.damageTypes?.length
+                            && family !== "areaDenialAuto";
       if (isMovementDamage) {
         const ft = this._distanceMovedInsideTemplate(template, positions);
         if (ft > 0) {
@@ -683,13 +908,44 @@ export class ConcentrationWidget {
         // Movement-damage spells don't use the entry trigger flow
       }
 
-      // ── Phase 1: Save on entry (Moonbeam, Wall of Fire, etc.) ──
+      // ── Phase 1: Save / auto-damage on entry (Moonbeam, Wall of Fire,
+      //    area-denial families, etc.) ──
       if (!isMovementDamage) {
         if (isInside && !wasInside) {
           tracker.tokensInside.add(tokenDoc.id);
-          await this._onTokenEnteredTemplate(tracker, token);
+          if (family === "areaDenial") {
+            // Save-based: cap is enforced here so save card doesn't double-fire.
+            if (tracker.entrySavesThisTurn.has(tokenDoc.id)) {
+              console.log(`${TAG} | ${token.name} re-entered ${tracker.item?.name} — entry save already fired this turn, skipping`);
+            } else {
+              tracker.entrySavesThisTurn.add(tokenDoc.id);
+              await this._onTokenEnteredTemplate(tracker, token, { phase: "entry" });
+            }
+          } else if (family === "areaDenialAuto") {
+            // Auto-damage: cap is enforced inside _onTokenEnteredTemplate so the
+            // entry path and the start-of-turn path share a single
+            // once-per-turn flag (RAW: damage on enter OR start, not both).
+            await this._onTokenEnteredTemplate(tracker, token, { phase: "entry" });
+          } else {
+            await this._onTokenEnteredTemplate(tracker, token);
+          }
         } else if (!isInside && wasInside) {
           tracker.tokensInside.delete(tokenDoc.id);
+          // Area-denial exit save with advantage — only fires if:
+          //   1. the creature failed a save this round (otherwise no
+          //      lingering effect to shake off, exit is free), AND
+          //   2. the spell has a failEffect to potentially re-apply
+          //      (damage-only spells like Cloudkill have nothing to
+          //      "linger" — they took damage on the way through).
+          if (isAreaDenial
+              && tracker.timing?.failEffect
+              && tracker.failedSavesThisRound.has(tokenDoc.id)) {
+            await this._triggerExitSave(tracker, tokenDoc, token);
+          } else if (isAreaDenial) {
+            // Clean exit for damage-only spells or no-fail-yet — just
+            // clear state, no save needed.
+            tracker.failedSavesThisRound.delete(tokenDoc.id);
+          }
         } else if (isInside) {
           // Already inside, still inside — keep tracker fresh
           tracker.tokensInside.add(tokenDoc.id);
@@ -756,6 +1012,287 @@ export class ConcentrationWidget {
   }
 
   /**
+   * RAW "wholly within" hit-test: a token is wholly inside the template
+   * only if all four corners of its bounding box are inside the template
+   * polygon. For 1x1 tokens this is effectively the same as center-point;
+   * for Large/Huge tokens it correctly requires the whole token to be
+   * inside (so partial overlap doesn't trigger area-denial saves).
+   *
+   * @param {Token} token
+   * @param {MeasuredTemplate} template
+   * @param {{newX, newY}} positions
+   * @returns {boolean}
+   */
+  _tokenWhollyInsideTemplate(token, template, positions) {
+    if (!token || !template) return false;
+    const tokenDoc = token.document;
+    const w = (Number(tokenDoc.width)  > 0) ? Number(tokenDoc.width)  : 1;
+    const h = (Number(tokenDoc.height) > 0) ? Number(tokenDoc.height) : 1;
+    const gridSize = canvas.grid?.size ?? 100;
+
+    const x = positions.newX;
+    const y = positions.newY;
+    // Insets keep the corners slightly inside the actual token bounds so
+    // a token sitting exactly on the template edge doesn't fail purely
+    // due to floating-point rounding on the boundary line.
+    const inset = Math.max(1, gridSize * 0.02);
+    const corners = [
+      { x: x + inset,                y: y + inset },
+      { x: x + w * gridSize - inset, y: y + inset },
+      { x: x + inset,                y: y + h * gridSize - inset },
+      { x: x + w * gridSize - inset, y: y + h * gridSize - inset },
+    ];
+
+    const testPoint = (pt) => {
+      let cp = null, sp = null;
+      if (typeof template.containsPoint === "function") {
+        try { const r = template.containsPoint(pt); if (typeof r === "boolean") cp = r; } catch (_) {}
+      }
+      if (typeof template.shape?.contains === "function") {
+        try { sp = template.shape.contains(pt.x - template.x, pt.y - template.y); } catch (_) {}
+      }
+      if (cp === true || sp === true) return true;
+      if (cp === false || sp === false) return false;
+      // Last resort: bounding box
+      const b = template.bounds;
+      if (!b) return false;
+      return pt.x >= b.x && pt.x <= b.x + b.width
+          && pt.y >= b.y && pt.y <= b.y + b.height;
+    };
+
+    for (const c of corners) {
+      if (!testPoint(c)) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Area-denial exit save with advantage. Only triggered when a token
+   * walks OUT of the template after having failed a save inside it this
+   * round (option C homebrew). Rolls the save automatically — pass means
+   * a clean exit, fail queues Lingering Nausea for the victim's NEXT turn.
+   *
+   * @param {object} tracker
+   * @param {TokenDocument} tokenDoc
+   * @param {Token} token
+   */
+  async _triggerExitSave(tracker, tokenDoc, token) {
+    if (!game.user.isGM) return;
+    const actor = token.actor;
+    if (!actor) return;
+    const ability = tracker.saveAbility;
+    if (!ability) return;
+    const dc = tracker.saveDC ?? 10;
+    const spellName = tracker.item?.name ?? "Spell";
+
+    let roll = null;
+    try {
+      // dnd5e 5.x: rollSavingThrow uses 3-arg signature:
+      //   (rollConfig, dialogConfig, messageConfig)
+      // configure:false skips the Foundry advantage/normal/disadvantage
+      // dialog. create:false suppresses the auto chat card so we can post
+      // our own with full spell context (DC, advantage flavor, etc.).
+      const result = await actor.rollSavingThrow(
+        { ability, target: tracker.saveDC, advantage: true },
+        { configure: false },
+        { create: false }
+      );
+      roll = Array.isArray(result) ? result[0] : result;
+    } catch (err) {
+      console.warn(`${TAG} | exit save roll failed for ${token.name}:`, err);
+      return;
+    }
+
+    if (!roll || typeof roll.total !== "number") {
+      console.warn(`${TAG} | exit save produced no valid roll for ${token.name}`);
+      return;
+    }
+
+    const total = roll.total;
+    const passed = total >= dc;
+
+    // Extract d20 result + modifier so the chat card shows the breakdown
+    // (e.g. "20 +7 = 27") instead of just the total.
+    const d20Term = roll.dice?.[0] ?? roll.terms?.[0];
+    const d20Result = d20Term?.total ?? null;
+    const modifier = (typeof total === "number" && d20Result != null) ? total - d20Result : null;
+    const modSign = (modifier != null && modifier >= 0) ? "+" : "";
+    const modPart = (modifier != null && modifier !== 0) ? ` ${modSign}${modifier}` : "";
+
+    // Post the roll to chat with the ACE dark theme. `rolls:` array makes
+    // Foundry / DSN render the dice info inline below our card.
+    try {
+      const accent = passed ? "#4ade80" : "#ef4444";
+      const verdictText = passed
+        ? `Total ${total} — PASS, clean exit`
+        : `Total ${total} — FAIL, Lingering Nausea applied next turn`;
+      const breakdown = (d20Result != null)
+        ? `<span style="color:#c8b890;font-size:12px;"><i class="fas fa-dice-d20" style="color:#d4af37;margin-right:4px;"></i>${d20Result}${modPart} = <strong style="color:${accent};">${total}</strong></span>`
+        : `<span style="color:${accent};font-weight:bold;">${total}</span>`;
+
+      const darkContent = `
+        <div style="background:#1a1a1f;color:#e8dfc8;padding:10px 12px;border-radius:5px;border:1px solid #d4af37;font-family:'Signika',sans-serif;">
+          <div style="color:#d4af37;font-size:14px;font-weight:bold;margin-bottom:4px;">${spellName} — Exit Save <span style="color:#c8b890;font-weight:normal;font-size:12px;">(advantage)</span></div>
+          <div style="color:#c8b890;font-size:11px;margin-bottom:6px;">vs DC ${dc}</div>
+          <div style="margin-bottom:4px;">${breakdown}</div>
+          <div style="color:${accent};font-weight:bold;font-size:13px;">${verdictText}</div>
+        </div>
+      `;
+
+      await ChatMessage.create({
+        speaker: ChatMessage.getSpeaker({ token: tokenDoc }),
+        content: darkContent,
+        rolls: [roll],
+      });
+    } catch (err) {
+      // Non-fatal — log and continue with state update
+      console.warn(`${TAG} | exit save chat post failed:`, err);
+    }
+
+    if (passed) {
+      // Clean exit — clear failed-this-round so subsequent re-entry
+      // starts fresh.
+      tracker.failedSavesThisRound.delete(tokenDoc.id);
+    } else {
+      // Failed — queue Lingering Nausea for victim's next turn start.
+      // Store the failEffect so the conversion handler applies the right
+      // effect (Retching for Stinking Cloud, Restrained for Watery
+      // Sphere, etc).
+      this._pendingLingering.set(tokenDoc.id, {
+        spellName,
+        sourceActorUuid: tracker.actor?.uuid ?? null,
+        failEffect: tracker.timing?.failEffect ?? "retching",
+      });
+    }
+  }
+
+  /**
+   * Hook handler for `ace-qol.saveComplete`. When an area-denial spell's
+   * save resolves, look up the pending entry and apply the consequence:
+   *   - failed entry/start-of-turn  →  mark failed-this-round + apply
+   *                                    failEffect (Retching / Restrained /
+   *                                    Exhaustion+Glowing)
+   *   - passed entry/start-of-turn  →  no-op (damage path, if any, is
+   *                                    handled by the save engine itself)
+   */
+  async _onAreaDenialSaveComplete({ actor, tokenDocId, saveAbility, passed }) {
+    if (!game.user.isGM) return;
+    if (!tokenDocId || !saveAbility) return;
+    const key = `${tokenDocId}:${saveAbility}`;
+    const queue = this._pendingSaves.get(key);
+    if (!queue || queue.length === 0) return;
+    const pending = queue.shift();
+    if (queue.length === 0) this._pendingSaves.delete(key);
+
+    const { tracker, phase } = pending;
+    if (tracker.timing?.family !== "areaDenial") return;
+    if (!tracker.failedSavesThisRound) tracker.failedSavesThisRound = new Set();
+
+    if (passed) {
+      // Successful entry / start-of-turn save → no extra effect.
+      // (Damage half-on-save is handled by the save engine for spells like
+      // Cloudkill / Incendiary Cloud; we don't apply anything more here.)
+      return;
+    }
+
+    // Failed — mark for the exit-save-with-advantage trigger and the
+    // template-deleted lingering-queue logic.
+    tracker.failedSavesThisRound.add(tokenDocId);
+
+    const failEffect = tracker.timing?.failEffect;
+    if (failEffect) {
+      await this._applyAreaDenialEffect(actor, tracker, failEffect, phase);
+    }
+  }
+
+  /**
+   * Apply the per-spell failEffect when an area-denial save fails.
+   * Effects auto-expire via dnd5e's specialDurations flag where
+   * applicable.
+   *
+   *   "retching"            → Incapacitated until end of turn (Stinking Cloud)
+   *   "restrained"          → Restrained (Watery Sphere — no auto-expire,
+   *                           cleared on template delete + sphere move)
+   *   "exhaustion+glowing"  → +1 exhaustion + 10-minute Glowing marker
+   *                           (Sickening Radiance)
+   */
+  async _applyAreaDenialEffect(actor, tracker, failEffect, phase) {
+    if (!actor) return;
+
+    // ── DEFENSIVE IMMUNITY SAFEGUARD ──
+    // _shouldAutoSucceedSave SHOULD have returned early in _onTokenEnteredTemplate
+    // before reaching here. If we still landed here for a condition-immune
+    // creature (Lord Soth + poisoned), that's a bug — never apply the failEffect
+    // to someone whose RAW immunity guarantees they'd auto-succeed. Log it so
+    // we can chase the upstream path.
+    if (this._shouldAutoSucceedSave(actor, tracker.timing)) {
+      console.warn(`${TAG} | _applyAreaDenialEffect REFUSED: ${actor.name} is condition-immune to one of [${(tracker.timing?.autoSucceedIfCondImmune ?? []).join(", ")}] — auto-success should have fired upstream. Spell="${tracker.item?.name}", failEffect="${failEffect}", phase="${phase}". Path to this call:`);
+      console.warn(new Error().stack);
+      return;
+    }
+
+    const spellName = tracker.item?.name ?? "Spell";
+    const existingByName = (name) => actor.effects?.contents?.find?.(e => e.name === name)
+                                  ?? Array.from(actor.effects ?? []).find(e => e.name === name);
+
+    try {
+      if (failEffect === "retching") {
+        const name = `Retching (${spellName})`;
+        if (existingByName(name)) return;
+        await actor.createEmbeddedDocuments("ActiveEffect", [{
+          name,
+          img: "icons/svg/poison.svg",
+          statuses: ["incapacitated"],
+          flags: {
+            "ace-qol": {
+              areaDenial: true, source: "fail", phase, spellName,
+              specialDuration: "turnEnd", // handled by duration-tracker.mjs
+            },
+          },
+        }]);
+        console.log(`${TAG} | applied Retching to ${actor.name} from ${spellName}`);
+      } else if (failEffect === "restrained") {
+        const name = `Restrained by ${spellName}`;
+        if (existingByName(name)) return;
+        await actor.createEmbeddedDocuments("ActiveEffect", [{
+          name,
+          img: "icons/svg/net.svg",
+          statuses: ["restrained"],
+          flags: {
+            "ace-qol": { areaDenial: true, source: "fail", phase, spellName },
+          },
+        }]);
+        console.log(`${TAG} | applied Restrained to ${actor.name} from ${spellName}`);
+      } else if (failEffect === "exhaustion+glowing") {
+        // Increment exhaustion via the actor's system attribute (dnd5e 5.x
+        // stores exhaustion as a number 0-6 on system.attributes.exhaustion).
+        try {
+          const cur = Number(actor.system?.attributes?.exhaustion ?? 0);
+          if (Number.isFinite(cur) && cur < 6) {
+            await actor.update({ "system.attributes.exhaustion": cur + 1 });
+          }
+        } catch (e) {
+          console.warn(`${TAG} | could not increment exhaustion on ${actor.name}:`, e);
+        }
+        const glowName = `Glowing (${spellName})`;
+        if (!existingByName(glowName)) {
+          await actor.createEmbeddedDocuments("ActiveEffect", [{
+            name: glowName,
+            img: "icons/svg/sun.svg",
+            duration: { seconds: 600 }, // 10 minutes — RAW Sickening Radiance
+            flags: {
+              "ace-qol": { areaDenial: true, source: "fail", phase, spellName },
+            },
+          }]);
+        }
+        console.log(`${TAG} | applied +1 Exhaustion + Glowing to ${actor.name} from ${spellName}`);
+      }
+    } catch (err) {
+      console.warn(`${TAG} | failed to apply ${failEffect} effect on ${actor?.name}:`, err);
+    }
+  }
+
+  /**
    * For Phase 2 (Spike Growth, Wall of Thorns) — measure how many feet of
    * the token's move-vector lay INSIDE the template's polygon. Uses
    * Foundry's grid distance scale (typically 5 ft per cell). Returns 0 if
@@ -811,9 +1348,39 @@ export class ConcentrationWidget {
    * so the save card lands immediately on entry — the cast animation
    * has already played, so the 1500ms cast-pacing doesn't apply.
    */
-  async _onTokenEnteredTemplate(tracker, token) {
+  async _onTokenEnteredTemplate(tracker, token, opts = {}) {
+    const phase = opts.phase ?? "entry";
+
+    // ── RAW auto-success on condition immunity ──
+    // Stinking Cloud (and any spell with `autoSucceedIfCondImmune`):
+    // creatures with one of the listed condition immunities automatically
+    // succeed on the save. Skip the dice roll, mark as passed, post a
+    // brief chat note so the GM/PCs see why no save was rolled.
+    if (this._shouldAutoSucceedSave(token?.actor, tracker.timing)) {
+      await this._postAutoSuccessCard(tracker, token, phase);
+      return;
+    }
+
+    // ── Area-denial AUTO family (Cloud of Daggers): NO save, just damage ──
+    // RAW: damage on first entry per turn OR start of turn there. We use the
+    // entrySavesThisTurn Set as a unified "fired this turn" cap so both
+    // triggers respect the one-per-turn rule together.
+    if (tracker.timing?.family === "areaDenialAuto") {
+      if (tracker.entrySavesThisTurn?.has?.(token.document.id)) {
+        console.log(`${TAG} | ${token.name} already triggered ${tracker.item?.name} this turn — skipping auto damage (phase=${phase})`);
+        return;
+      }
+      tracker.entrySavesThisTurn.add(token.document.id);
+      await this._applyAutoEntryDamage(tracker, token, phase);
+      return;
+    }
+
     const isPC = !!token.actor?.hasPlayerOwner;
-    console.log(`${TAG} | ${token.name} entered ${tracker.item?.name} (${isPC ? "PC" : "NPC"})`);
+    console.log(`${TAG} | ${token.name} entered ${tracker.item?.name} (${isPC ? "PC" : "NPC"}, phase=${phase})`);
+
+    // Area-denial save: register pending save so saveComplete handler knows
+    // which tracker + phase to apply the consequence for.
+    this._registerPendingSave(tracker, token.document, phase);
 
     if (isPC) {
       // PC: live target card with that PC's ROLL SAVE button enabled.
@@ -826,6 +1393,212 @@ export class ConcentrationWidget {
       // and includes a ROLL DAMAGE button (for the spell caster) and an
       // INFLICT DAMAGE button (for the GM).
       await this._triggerNpcAutoSave(tracker, token, { skipDelay: true });
+    }
+  }
+
+  /**
+   * Cloud-of-Daggers-style auto damage on entry or start-of-turn. Rolls the
+   * spell's damage formula ONCE (not per-tick), routes through ace-qol's
+   * DamageCalculator for resistance/immunity, applies HP change, posts a
+   * dark-themed chat card with the dice breakdown.
+   */
+  async _applyAutoEntryDamage(tracker, token, phase) {
+    if (!game.user.isGM) return;
+    const actor = token?.actor;
+    if (!actor) return;
+    const hp = actor.system?.attributes?.hp?.value;
+    if (typeof hp !== "number" || hp <= 0) return; // dead-actor guard
+
+    const formula = tracker.item?.system?.damage?.parts?.[0]?.[0]
+                  ?? tracker.damageFormula
+                  ?? "4d4";
+    const damageType = (tracker.damageTypes?.[0] ?? "slashing").toLowerCase();
+    const spellName = tracker.item?.name ?? "Spell";
+
+    let roll;
+    try {
+      roll = new Roll(`(${formula})`, tracker.actor?.getRollData?.() ?? {});
+      await roll.evaluate();
+    } catch (err) {
+      console.warn(`${TAG} | auto-damage roll failed for ${spellName}:`, err);
+      return;
+    }
+    // Fire-and-forget DSN broadcast
+    try { game.dice3d?.showForRoll?.(roll, game.user, true); } catch (_) {}
+
+    const rawTotal = roll.total;
+
+    // Route through DamageCalculator so spell magic-ness + resist/immune
+    // /vulnerable all apply consistently with the rest of ace-qol.
+    let finalDamage = rawTotal;
+    let modifier = "normal";
+    try {
+      const result = DamageCalculator.calculate?.({
+        targetActor: actor,
+        rawDamage: rawTotal,
+        damageType,
+        isMagical: true,    // all spell-source damage is magical
+        isSpell: true,
+      });
+      if (result) {
+        finalDamage = result.finalDamage ?? rawTotal;
+        modifier = result.modifier ?? "normal";
+      }
+    } catch (err) {
+      console.warn(`${TAG} | DamageCalculator failed (using raw):`, err);
+    }
+
+    const newHP = Math.max(0, hp - finalDamage);
+    try {
+      await actor.update({ "system.attributes.hp.value": newHP });
+    } catch (err) {
+      console.warn(`${TAG} | HP update failed:`, err);
+    }
+
+    // Phase label for the card
+    const phaseLabel = phase === "entry"      ? "Entry"
+                     : phase === "startOfTurn" ? "Start of Turn"
+                     : phase === "endOfTurn"   ? "End of Turn"
+                     : phase;
+
+    // Modifier flavor
+    const modText = modifier === "immune"     ? " (IMMUNE — no damage)"
+                  : modifier === "resistant"  ? " (½ resisted)"
+                  : modifier === "vulnerable" ? " (×2 vulnerable)"
+                  : "";
+
+    const accent = newHP === 0 ? "#ef4444" : (modifier === "immune" ? "#888" : "#ef4444");
+    const content = `
+      <div style="background:#1a1a1f;color:#e8dfc8;padding:10px 12px;border-radius:5px;border:1px solid #d4af37;font-family:'Signika',sans-serif;">
+        <div style="color:#d4af37;font-size:14px;font-weight:bold;margin-bottom:4px;">${spellName} — ${phaseLabel}</div>
+        <div style="color:#c8b890;font-size:12px;margin-bottom:4px;">
+          <i class="fas fa-dice-d20" style="color:#d4af37;margin-right:4px;"></i>
+          ${formula} = ${rawTotal} → <strong style="color:${accent};">${finalDamage} ${damageType}</strong>${modText}
+        </div>
+        <div style="color:#c8b890;font-size:11px;">HP: ${hp} → <span style="color:${newHP === 0 ? '#ef4444' : '#e8dfc8'};font-weight:${newHP === 0 ? 'bold' : 'normal'};">${newHP}</span>${newHP === 0 ? " ☠" : ""}</div>
+      </div>
+    `;
+
+    try {
+      await ChatMessage.create({
+        speaker: ChatMessage.getSpeaker({ token: token.document }),
+        content,
+        rolls: [roll],
+      });
+    } catch (err) {
+      console.warn(`${TAG} | auto-damage chat post failed:`, err);
+    }
+
+    console.log(`${TAG} | auto-damage applied to ${actor.name} from ${spellName}: ${finalDamage} ${damageType} (HP ${hp}→${newHP})`);
+  }
+
+  /**
+   * RAW auto-success check. Returns true when the spell's timing config has
+   * `autoSucceedIfCondImmune: [...]` and the actor has condition-immunity
+   * to any listed condition. Stinking Cloud (poison immune → auto-pass),
+   * Sickening Radiance (exhaustion immune → auto-pass), etc.
+   */
+  _shouldAutoSucceedSave(actor, timing) {
+    if (!actor) return false;
+    const list = timing?.autoSucceedIfCondImmune;
+    if (!Array.isArray(list) || list.length === 0) {
+      // Debug: log the FIRST time this check is called on a known actor so
+      // we can see what timing object is actually being passed in
+      console.debug(`${TAG} | _shouldAutoSucceedSave: ${actor.name} — no autoSucceedIfCondImmune on timing (timing keys: ${Object.keys(timing ?? {}).join(",")})`);
+      return false;
+    }
+    const ci = actor.system?.traits?.ci?.value;
+    // ci can be a Set (dnd5e 5.x) or an Array (legacy)
+    const has = (key) => {
+      const k = String(key).toLowerCase();
+      if (ci instanceof Set) return [...ci].some(v => String(v).toLowerCase() === k);
+      if (Array.isArray(ci)) return ci.some(v => String(v).toLowerCase() === k);
+      return false;
+    };
+    const result = list.some(cond => has(cond));
+    if (result) {
+      console.log(`${TAG} | _shouldAutoSucceedSave: ${actor.name} AUTO-PASSES (immune to one of ${list.join(", ")})`);
+    } else {
+      console.debug(`${TAG} | _shouldAutoSucceedSave: ${actor.name} NOT immune (checked: ${list.join(", ")}, has ci: ${ci instanceof Set ? [...ci].join(",") : Array.isArray(ci) ? ci.join(",") : "(empty/unknown)"})`);
+    }
+    return result;
+  }
+
+  /**
+   * Post a brief dark-themed chat card noting the auto-success and skip the
+   * save card entirely. Used when the actor's RAW-listed immunity makes the
+   * save automatic per the spell's text.
+   */
+  async _postAutoSuccessCard(tracker, token, phase) {
+    if (!game.user.isGM) return;
+    const spellName = tracker.item?.name ?? "Spell";
+    const phaseLabel = phase === "entry"      ? "Entry"
+                     : phase === "startOfTurn" ? "Start of Turn"
+                     : phase === "endOfTurn"   ? "End of Turn"
+                     : phase;
+    const targetName = this._escapeHtml(token?.name ?? token?.actor?.name ?? "Target");
+    const portrait   = token?.actor?.img ?? token?.document?.texture?.src ?? "icons/svg/mystery-man.svg";
+
+    // Two-line layout to match the save-result-row UX: target portrait +
+    // name across the top, verdict on the second line indented under it.
+    const content = `
+      <div style="background:#1a1a1f;color:#e8dfc8;padding:10px 12px;border-radius:5px;border:1px solid #d4af37;font-family:'Signika',sans-serif;">
+        <div style="color:#d4af37;font-size:14px;font-weight:bold;margin-bottom:8px;letter-spacing:0.4px;">
+          ${this._escapeHtml(spellName)} — ${phaseLabel}
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+          <img src="${portrait}" style="width:24px;height:24px;border-radius:50%;flex-shrink:0;border:1px solid #444;">
+          <span style="flex:1;font-weight:bold;color:#fff;font-size:14px;line-height:1.2;">${targetName}</span>
+        </div>
+        <div style="padding-left:32px;color:#4ade80;font-weight:bold;font-size:13px;letter-spacing:0.4px;">
+          AUTO-SUCCEED <span style="color:#c8b890;font-weight:normal;font-size:11px;">(immune per RAW)</span>
+        </div>
+        <div style="color:#c8b890;font-size:11px;margin-top:6px;padding-left:32px;font-style:italic;">
+          No save rolled — creature's condition immunity grants automatic success.
+        </div>
+      </div>
+    `;
+    try {
+      await ChatMessage.create({
+        speaker: ChatMessage.getSpeaker({ token: token?.document }),
+        content,
+      });
+    } catch (err) {
+      console.warn(`${TAG} | _postAutoSuccessCard failed:`, err);
+    }
+    console.log(`${TAG} | ${token?.name ?? "?"} auto-succeeded on ${spellName} save (RAW condition-immune)`);
+  }
+
+  /** Cheap HTML escape for chat card content. */
+  _escapeHtml(str) {
+    const div = document.createElement("div");
+    div.textContent = String(str ?? "");
+    return div.innerHTML;
+  }
+
+  /**
+   * Register a pending save so the `ace-qol.saveComplete` hook can apply
+   * the right consequence (Retching, damage-only, restrained, etc.) when
+   * the result arrives. Key: tokenDocId + saveAbility. Stored as a FIFO
+   * queue so two area-denial spells with the same save type both resolve
+   * (e.g. Stinking Cloud + Cloudkill both Con on the same token).
+   * Auto-prunes entries older than 30s to avoid leaks if a save card is
+   * dismissed without resolving.
+   */
+  _registerPendingSave(tracker, tokenDoc, phase) {
+    if (tracker.timing?.family !== "areaDenial") return;
+    if (!tracker.saveAbility) return;
+    const key = `${tokenDoc.id}:${tracker.saveAbility}`;
+    if (!this._pendingSaves.has(key)) this._pendingSaves.set(key, []);
+    this._pendingSaves.get(key).push({ tracker, phase, t: Date.now() });
+    // Lazy prune of stale entries
+    if (this._pendingSaves.size > 24) {
+      const now = Date.now();
+      for (const [k, q] of this._pendingSaves) {
+        const fresh = q.filter(e => now - e.t < 30000);
+        if (fresh.length === 0) this._pendingSaves.delete(k);
+        else if (fresh.length !== q.length) this._pendingSaves.set(k, fresh);
+      }
     }
   }
 
@@ -1272,14 +2045,16 @@ export class ConcentrationWidget {
       return;
     }
 
-    // Filter: movement-damage variants (Spike Growth, Wall of Thorns) have
-    // no save and apply damage automatically when tokens move through the
-    // area — the widget's INFLICT DAMAGE button is meaningless for them,
-    // and "DC null / No targets in area" looks like a bug. Keep the
-    // tracker in `_activeSpells` (so movement-damage detection keeps
-    // firing) but skip rendering the visible card.
+    // Filter out spells that don't need a visible widget:
+    //   - Movement-damage variants (Spike Growth, Wall of Thorns): no save,
+    //     auto damage on movement — widget's INFLICT DAMAGE meaningless.
+    //   - Area-denial family (Stinking Cloud, Cloudkill, etc.): entry / start-of-
+    //     turn / exit saves all auto-fire, damage auto-applies — widget is
+    //     redundant clutter.
+    // The tracker stays in `_activeSpells` (entry / save / cleanup logic keeps
+    // firing) — we just don't draw the floating card.
     const renderable = [...this._activeSpells.values()]
-      .filter(t => !!t.saveAbility);
+      .filter(t => !!t.saveAbility && t.timing?.family !== "areaDenial");
 
     if (!renderable.length) {
       if (this._container) {
@@ -1304,20 +2079,39 @@ export class ConcentrationWidget {
     div.dataset.templateId = tracker.templateId;
 
     const timingLabel = tracker.timing.timing.replace(/\+/g, " + ").replace(/([A-Z])/g, " $1").trim();
+    const isAreaDenial = tracker.timing?.family === "areaDenial";
+
+    // dnd5e 5.x: abilities[].save is an OBJECT { value, dc, ... } not a
+    // raw number — unwrap it. Older shapes return a number directly.
+    const _numOrValue = (v) => {
+      if (typeof v === "number") return v;
+      if (v && typeof v === "object" && Number.isFinite(v.value)) return v.value;
+      return 0;
+    };
 
     // Target list
     const targetRows = tracker.tokens.map(t => {
       const actor = t.actor;
-      const saveMod = actor?.system?.abilities?.[tracker.saveAbility]?.save ?? 0;
+      const saveMod = _numOrValue(actor?.system?.abilities?.[tracker.saveAbility]?.save);
       const modSign = saveMod >= 0 ? "+" : "";
       return `
         <div class="ace-qol-conc-tgt-row">
           <img src="${actor?.img || t.document?.texture?.src || 'icons/svg/mystery-man.svg'}" class="ace-qol-save-tgt-img" />
           <span class="ace-qol-save-tgt-name">${t.name || actor?.name || "Unknown"}</span>
-          <span class="ace-qol-save-tgt-mod">${tracker.saveAbility.toUpperCase()} ${modSign}${saveMod}</span>
+          <span class="ace-qol-save-tgt-mod">${(tracker.saveAbility || "").toUpperCase()} ${modSign}${saveMod}</span>
         </div>
       `;
     }).join("") || '<div class="ace-qol-conc-empty">No targets in area</div>';
+
+    // Area-denial family auto-rolls all saves (entry / start-of-turn /
+    // exit-with-advantage) — INFLICT DAMAGE button is redundant noise.
+    const actionsHTML = isAreaDenial ? "" : `
+      <div class="ace-qol-conc-actions">
+        <button class="ace-qol-btn ace-qol-btn-inflict" data-template-id="${tracker.templateId}">
+          <i class="fas fa-bolt"></i> INFLICT DAMAGE
+        </button>
+      </div>
+    `;
 
     div.innerHTML = `
       <div class="ace-qol-conc-header">
@@ -1332,16 +2126,13 @@ export class ConcentrationWidget {
       </div>
       <div class="ace-qol-conc-timing">
         <i class="fas fa-clock"></i> ${timingLabel}
+        ${isAreaDenial ? ' <span class="ace-qol-save-half-badge" style="background:#3a2a10;color:#d4af37;">AUTO-SAVES</span>' : ''}
         ${tracker.halfOnSave ? ' <span class="ace-qol-save-half-badge">HALF ON SAVE</span>' : ''}
       </div>
       <div class="ace-qol-conc-targets">
         ${targetRows}
       </div>
-      <div class="ace-qol-conc-actions">
-        <button class="ace-qol-btn ace-qol-btn-inflict" data-template-id="${tracker.templateId}">
-          <i class="fas fa-bolt"></i> INFLICT DAMAGE
-        </button>
-      </div>
+      ${actionsHTML}
     `;
 
     // Wire dismiss button

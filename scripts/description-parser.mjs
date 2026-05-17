@@ -108,6 +108,58 @@ export class DescriptionParser {
       rawText: text,
     };
 
+    // ── Cross-link bonusDamage entries with creatureTrigger sentence ──
+    // If a bonus damage match sits in the SAME sentence as the creature
+    // trigger phrase, that bonus is creature-gated. Mark it so the damage
+    // engine can skip it on non-matching targets.
+    //
+    // Example — Holy Avenger: "When you attack a fiend or undead, target takes
+    // extra 2d10 radiant damage." The bonus and the trigger are in the same
+    // sentence → bonus only fires vs fiend/undead.
+    //
+    // Counter-example — Mace of Smiting: "+3 when you use the weapon to attack
+    // a Construct. When you roll a 20 ... extra 7 Bludgeoning damage..." The
+    // trigger is in sentence 1 (+3 bonus context); the rider is in sentence 2.
+    // The rider stays UNGATED (fires on any crit), so Goblins still take it.
+    if (result.creatureTrigger && Array.isArray(result.bonusDamage) && result.bonusDamage.length > 0) {
+      const triggerStart = result.creatureTrigger.matchIndex;
+      const triggerEnd   = result.creatureTrigger.sentenceEnd;
+      const allowedTypes = result.creatureTrigger.creatureTypes
+                        ?? (result.creatureTrigger.creatureType ? [result.creatureTrigger.creatureType] : []);
+      for (const bd of result.bonusDamage) {
+        if (typeof bd.matchIndex !== "number") continue;
+        if (bd.matchIndex >= triggerStart && bd.matchIndex <= triggerEnd) {
+          bd.requiresCreatureTypes = allowedTypes;
+        }
+      }
+    }
+
+    // ── Per-bonus "if it's a/an X" conditional detection ──
+    // Mace of Smiting style: "extra 7 Bludgeoning damage, OR 14 Bludgeoning
+    // damage IF IT'S A CONSTRUCT." The second entry (14) is construct-gated;
+    // mark it so non-construct targets don't get the 14 on top of the 7.
+    if (Array.isArray(result.bonusDamage)) {
+      const conditionalRegexes = [
+        /if\s+it'?s\s+(?:an?\s+)?(\w+)/i,
+        /if\s+the\s+target\s+is\s+(?:an?\s+)?(\w+)/i,
+      ];
+      for (const bd of result.bonusDamage) {
+        if (bd.requiresCreatureTypes) continue;  // already marked by sentence gating
+        if (typeof bd.matchIndex !== "number") continue;
+        const afterMatch = text.slice(bd.matchIndex, Math.min(text.length, bd.matchIndex + 200));
+        for (const cre of conditionalRegexes) {
+          const m = afterMatch.match(cre);
+          if (m) {
+            const candidate = m[1]?.toLowerCase();
+            if (candidate && CREATURE_TYPES.includes(candidate)) {
+              bd.requiresCreatureTypes = [candidate];
+              break;
+            }
+          }
+        }
+      }
+    }
+
     return result;
   }
 
@@ -286,17 +338,26 @@ export class DescriptionParser {
         const key = `${formula}|${damageType}|${triggersOnCrit ? "crit" : "any"}`;
         if (!seen.has(key)) {
           seen.add(key);
-          bonuses.push({ formula, displayFormula, damageType, triggersOnCrit });
+          bonuses.push({ formula, displayFormula, damageType, triggersOnCrit, matchIndex: match.index });
         }
       }
     }
 
     // ── Plain English patterns ──
+    //
+    // The type-word capture is OPTIONAL in patterns that take "extra Xd Y damage".
+    // Why: Vicious-line weapons and other crit-rider items use phrasing like
+    // "extra 2d6 damage of the weapon's type" with NO type word between the
+    // dice and "damage". The previous required-type-word patterns silently
+    // missed these. When type is missing, damageType falls back to "weapon"
+    // which the damage engine resolves at apply-time to the weapon's primary
+    // damage type (piercing for a blowgun, slashing for a sword, etc.).
     const plainPatterns = [
+      // Dice-notation patterns (Xd Y) — covers 2014 PHB phrasing
       /(?:extra|additional|plus)\s+\d+\s*\((\d+d\d+(?:\s*[+\-]\s*\d+)?)\)\s*(?:(\w+)\s+)?damage/gi,
-      /takes?\s+\d+\s*\((\d+d\d+(?:\s*[+\-]\s*\d+)?)\)\s+(\w+)\s+damage/gi,
-      /(?:extra|additional|plus)\s+(\d+d\d+(?:\s*[+\-]\s*\d+)?)\s+(\w+)\s+damage/gi,
-      /deals?\s+(?:an?\s+extra\s+)?(\d+d\d+(?:\s*[+\-]\s*\d+)?)\s+(\w+)\s+damage/gi,
+      /takes?\s+\d+\s*\((\d+d\d+(?:\s*[+\-]\s*\d+)?)\)\s+(?:(\w+)\s+)?damage/gi,
+      /(?:extra|additional|plus)\s+(\d+d\d+(?:\s*[+\-]\s*\d+)?)\s+(?:(\w+)\s+)?damage/gi,
+      /deals?\s+(?:an?\s+extra\s+)?(\d+d\d+(?:\s*[+\-]\s*\d+)?)\s+(?:(\w+)\s+)?damage/gi,
     ];
 
     for (const pattern of plainPatterns) {
@@ -308,7 +369,47 @@ export class DescriptionParser {
         const key = `${formula}|${damageType}|${triggersOnCrit ? "crit" : "any"}`;
         if (!seen.has(key)) {
           seen.add(key);
-          bonuses.push({ formula, displayFormula: formula, damageType, triggersOnCrit });
+          bonuses.push({ formula, displayFormula: formula, damageType, triggersOnCrit, matchIndex: match.index });
+        }
+      }
+    }
+
+    // ── Flat-integer bonus damage patterns (dnd5e 5.x / 2024 PHB style) ──
+    // The 2024 PHB and dnd5e 5.x compendium use flat numbers instead of dice
+    // for NPC/item bonus damage: "extra 7 Bludgeoning damage" instead of
+    // "extra 2d6 bludgeoning damage". Our regex needs to handle both.
+    //
+    // The negative lookahead `(?!\s+rolls?)` prevents matching phrases like
+    // "+1 bonus to damage rolls" or "your damage rolls made with..." — those
+    // are item-property bonuses, not bonus damage we want to add separately.
+    //
+    // Type word is optional (same reasoning as the dice patterns above).
+    // When matched, formula is just the integer string (e.g., "7"), which
+    // the damage engine rolls as a fixed value.
+    const flatIntPatterns = [
+      /(?:extra|additional|plus)\s+(\d+)\s+(?:(\w+)\s+)?damage(?!\s+rolls?)/gi,
+      /takes?\s+(?:an?\s+extra\s+)?(\d+)\s+(?:(\w+)\s+)?damage(?!\s+rolls?)/gi,
+      /deals?\s+(?:an?\s+extra\s+)?(\d+)\s+(?:(\w+)\s+)?damage(?!\s+rolls?)/gi,
+      // "or Y damage if it's a Construct" — the conditional override variant.
+      // Captures the integer; the conditional creature-type gate is handled at
+      // apply-time (currently both this and the base bonus may fire, which
+      // over-damages by the smaller — acceptable until conditional gating ships).
+      /,?\s*or\s+(\d+)\s+(?:(\w+)\s+)?damage(?!\s+rolls?)/gi,
+    ];
+
+    for (const pattern of flatIntPatterns) {
+      while ((match = pattern.exec(text)) !== null) {
+        const flat = match[1];
+        // Skip very small numbers that are likely false positives (counters,
+        // page refs, distances). Real bonus damage is almost always >= 3.
+        if (Number(flat) < 2) continue;
+        const typeRaw = (match[2] ?? "").toLowerCase();
+        const damageType = DAMAGE_TYPES.includes(typeRaw) ? typeRaw : "weapon";
+        const triggersOnCrit = DescriptionParser._detectCritOnlyQualifier(text, match.index);
+        const key = `${flat}|${damageType}|${triggersOnCrit ? "crit" : "any"}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          bonuses.push({ formula: flat, displayFormula: flat, damageType, triggersOnCrit, isFlat: true, matchIndex: match.index });
         }
       }
     }
@@ -449,44 +550,79 @@ export class DescriptionParser {
    *   "against fiends and undead"
    */
   static _parseCreatureTrigger(text, lower) {
+    // Collect ALL matching creature types and their match positions. Some
+    // items target multiple types (Holy Avenger: "fiend or undead", Sun Blade:
+    // "undead", Demon Slayer: "fiend"). We want to capture all of them so the
+    // damage system can fire the bonus when target matches ANY of them.
+    const allMatches = [];
+
     for (const type of CREATURE_TYPES) {
       const patterns = [
         new RegExp(`(?:hit|strike|attack)\\s+(?:a|an)\\s+${type}`, "i"),
         new RegExp(`(?:extra|additional|bonus)\\s+.*damage\\s+(?:to|against)\\s+(?:a\\s+)?${type}`, "i"),
         new RegExp(`against\\s+(?:a\\s+)?${type}s?`, "i"),
         new RegExp(`when\\s+you\\s+hit\\s+(?:a\\s+)?${type}`, "i"),
+        // Multi-type variant: "attack a fiend or undead", "fiend or undead"
+        new RegExp(`(?:a|an)\\s+\\w+\\s+or\\s+${type}`, "i"),
+        new RegExp(`${type}\\s+or\\s+\\w+`, "i"),
       ];
 
+      let matchInfo = null;
       for (const pattern of patterns) {
-        if (pattern.test(text)) {
-          const rawMatch = text.match(pattern)?.[0] ?? "";
-
-          // Extract bonus damage formula from the same sentence context
-          // e.g., "extra 1d8 radiant damage to undead", "deals an additional 2d6 fire damage against fiends"
-          let bonusFormula = null;
-          let bonusType = null;
-          const formulaPatterns = [
-            new RegExp(`(\\d+d\\d+(?:\\s*[+\\-]\\s*\\d+)?)\\s+(\\w+)\\s+damage\\s+(?:to|against)\\s+(?:a\\s+)?${type}`, "i"),
-            new RegExp(`(?:hit|strike|attack)\\s+(?:a|an)\\s+${type}[^.]*?(\\d+d\\d+(?:\\s*[+\\-]\\s*\\d+)?)\\s+(\\w+)\\s+damage`, "i"),
-            new RegExp(`(?:extra|additional)\\s+(\\d+d\\d+(?:\\s*[+\\-]\\s*\\d+)?)\\s+(\\w+)\\s+damage`, "i"),
-          ];
-
-          for (const fp of formulaPatterns) {
-            const fm = text.match(fp);
-            if (fm) {
-              bonusFormula = fm[1];
-              const candidateType = fm[2]?.toLowerCase();
-              if (DAMAGE_TYPES.includes(candidateType)) bonusType = candidateType;
-              break;
-            }
-          }
-
-          return { creatureType: type, rawMatch, bonusFormula, bonusType };
+        const m = text.match(pattern);
+        if (m) {
+          matchInfo = { rawMatch: m[0], matchIndex: m.index };
+          break;
         }
+      }
+      if (matchInfo) {
+        allMatches.push({ type, ...matchInfo });
       }
     }
 
-    return null;
+    if (allMatches.length === 0) return null;
+
+    // Sort by match index — the EARLIEST trigger position is the "primary".
+    // Multiple types within ~30 chars are treated as a multi-type trigger.
+    allMatches.sort((a, b) => a.matchIndex - b.matchIndex);
+    const primary = allMatches[0];
+    const grouped = allMatches.filter(m => Math.abs(m.matchIndex - primary.matchIndex) < 30);
+    const creatureTypes = grouped.map(g => g.type);
+
+    // Formula extraction — look for dice or flat-int bonus damage in the SAME
+    // sentence as the primary trigger (between matchIndex and the next period).
+    let bonusFormula = null;
+    let bonusType    = null;
+    const sentenceEnd = (() => {
+      const dot = text.indexOf(".", primary.matchIndex);
+      return dot < 0 ? text.length : dot;
+    })();
+    const sentence = text.slice(primary.matchIndex, sentenceEnd + 1);
+    const formulaPatterns = [
+      // Dice patterns
+      new RegExp(`(\\d+d\\d+(?:\\s*[+\\-]\\s*\\d+)?)\\s+(?:(\\w+)\\s+)?damage`, "i"),
+      // Flat-int (2024 PHB style)
+      new RegExp(`(?:extra|additional|plus|takes?|deals?)\\s+(?:an?\\s+extra\\s+)?(\\d+)\\s+(?:(\\w+)\\s+)?damage(?!\\s+rolls?)`, "i"),
+    ];
+    for (const fp of formulaPatterns) {
+      const fm = sentence.match(fp);
+      if (fm) {
+        bonusFormula = fm[1];
+        const candidateType = fm[2]?.toLowerCase();
+        if (DAMAGE_TYPES.includes(candidateType)) bonusType = candidateType;
+        break;
+      }
+    }
+
+    return {
+      creatureType:  primary.type,         // primary single type (back-compat)
+      creatureTypes,                       // all types in the trigger phrase
+      rawMatch:      primary.rawMatch,
+      matchIndex:    primary.matchIndex,
+      sentenceEnd,
+      bonusFormula,
+      bonusType,
+    };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

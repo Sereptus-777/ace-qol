@@ -53,6 +53,7 @@ import { QuickSelectTools } from "./quick-select-tools.mjs";
 import { TurnMarker } from "./turn-marker.mjs";
 import { MovementTracker } from "./movement-tracker.mjs";
 import { LootableTile } from "./lootable-tile.mjs";
+import { initAATools }  from "./aa-tools/aa-tools-init.mjs";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 let extendedEffects      = null;
@@ -193,6 +194,15 @@ Hooks.once("ready", () => {
     console.log(`${MODULE_ID} | Attack pipeline online`);
   } catch (err) {
     console.error(`${MODULE_ID} | Attack pipeline init failed:`, err);
+  }
+
+  // AA Tools — right-click "Tweak Animation" on actor-sheet spell rows,
+  // plus a "Tweak" button on chat cards after a spell is cast. No-op if
+  // AutoAnimations isn't installed.
+  try {
+    initAATools();
+  } catch (err) {
+    console.error(`${MODULE_ID} | AA Tools init failed:`, err);
   }
 
   // Heal pipeline — GM-only handler (registered for all clients but gated inside)
@@ -1883,6 +1893,53 @@ Hooks.once("ready", () => {
   });
   Hooks.on("renderActivityChoiceDialog", (app, element) => {
     _handleActivityChoiceDialog(app, element);
+  });
+
+  // ─── Auto-remove combatants when their token is deleted ────────────────────
+  // Foundry SHOULD cascade-delete a Combatant when its underlying token goes
+  // away, but module interference + unlinked-actor edge cases sometimes leave
+  // ghost combatants in the tracker (stale entries pointing at a tokenId that
+  // no longer exists). These ghost entries break:
+  //   - Auto-pass/fail logic (CombatState.assess reads them)
+  //   - "Next turn" / "Previous turn" jumps to an invisible combatant
+  //   - Save/concentration prompts fire against non-existent tokens
+  //
+  // Fix: on every token delete, walk every combat in the world and remove
+  // combatants pointing at the deleted token. Idempotent. GM-only because
+  // only the GM can edit Combat documents.
+  Hooks.on("deleteToken", async (tokenDoc, options, userId) => {
+    try {
+      if (!game.user.isGM) return;
+      const tokenId = tokenDoc?.id;
+      if (!tokenId) return;
+
+      let totalRemoved = 0;
+      for (const combat of game.combats ?? []) {
+        // Match by tokenId — covers both linked and synthetic-actor combatants.
+        // Also defensively match by uuid since some combatants store token.uuid.
+        const targets = combat.combatants.filter(c =>
+             c.tokenId === tokenId
+          || c.token?.id === tokenId
+          || (c.token?.uuid && c.token.uuid.endsWith(`.${tokenId}`))
+        );
+        if (targets.length === 0) continue;
+
+        const ids = targets.map(c => c.id).filter(Boolean);
+        if (!ids.length) continue;
+
+        try {
+          await combat.deleteEmbeddedDocuments("Combatant", ids);
+          totalRemoved += ids.length;
+        } catch (err) {
+          console.warn(`${MODULE_ID} | Could not auto-remove combatant(s) ${ids.join(",")} from combat ${combat.id}:`, err);
+        }
+      }
+      if (totalRemoved > 0) {
+        console.log(`${MODULE_ID} | Auto-removed ${totalRemoved} stale combatant(s) on token delete: "${tokenDoc?.name ?? tokenId}"`);
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | deleteToken combatant-cleanup handler failed:`, err);
+    }
   });
 
   console.log(`${MODULE_ID} | Ready — combat automation active (all features ON by default)`);

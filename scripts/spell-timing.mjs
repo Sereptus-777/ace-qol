@@ -56,6 +56,8 @@ function _checkFlagOverride(item) {
     onSave:       flags.onSave ?? null,
     notes:        flags.notes ?? null,
     phases:       flags.phases ?? null,
+    family:       flags.family ?? null,
+    failEffect:   flags.failEffect ?? null,
   };
 }
 
@@ -194,6 +196,8 @@ function _makeParsedResult(timing, save, onSave, item) {
     onSave,
     notes:  null,
     phases: null,
+    family: null,
+    failEffect: null,
   };
 }
 
@@ -242,15 +246,28 @@ const SPELL_TABLE = {
   // ────── ENTER + START OF TURN ──────
   "moonbeam":              { timing: TIMING.ENTER_START, save: "con", onSave: "half", notes: "Shapechanger disadvantage" },
   "spirit guardians":      { timing: TIMING.ENTER_START, save: "wis", onSave: "half", notes: "Moves with caster, halves speed" },
-  "cloudkill":             { timing: TIMING.ENTER_START, save: "con", onSave: "half", notes: "Moves 10ft/round away from caster" },
-  "sickening radiance":    { timing: TIMING.ENTER_START, save: "con", onSave: "none", notes: "+1 exhaustion on fail" },
   "blade barrier":         { timing: TIMING.ENTER_START, save: "dex", onSave: "half" },
   "dawn":                  { timing: TIMING.ENTER_START, save: "con", onSave: "half", notes: "Caster can move beam" },
   "create bonfire":        { timing: TIMING.ENTER_START, save: "dex", onSave: "none" },
   "dust devil":            { timing: TIMING.ENTER_START, save: "str", onSave: "half", notes: "Caster can move it" },
   "evard's black tentacles": { timing: TIMING.ENTER_START, save: "dex", onSave: "none", notes: "Also restrains on fail" },
-  "stinking cloud":        { timing: TIMING.START_OF_TURN, save: "con", onSave: "none", notes: "No damage — wastes action" },
   "sleet storm":           { timing: TIMING.ENTER_START, save: "dex", onSave: "none", notes: "No damage — prone + conc check" },
+
+  // ────── AREA DENIAL FAMILY (entry + start-of-turn + exit-with-advantage) ──────
+  // These all use the same homebrew-plus-RAW mechanic in concentration-widget:
+  //   1. Save on entering (homebrew, one per turn)
+  //   2. Save at start of turn while wholly inside (RAW)
+  //   3. Save with advantage on exit, ONLY if failed a save this round
+  //      Fail exit save → Lingering Nausea (Incapacitated) next turn
+  //   4. Template deleted while inside-and-failed → Lingering Nausea queued
+  // `failEffect` controls what extra effect to apply on a failed save
+  // (damage is handled by the existing save-engine path via the item's
+  // damage parts). null/undefined means "damage only, no extra effect."
+  "stinking cloud":        { timing: TIMING.ENTER_START, save: "con", onSave: "none", family: "areaDenial", failEffect: "retching", autoSucceedIfCondImmune: ["poisoned"], notes: "RAW PHB: creatures that don't need to breathe OR are immune to poison automatically succeed. Entry save = homebrew." },
+  "cloudkill":             { timing: TIMING.ENTER_START, save: "con", onSave: "half", family: "areaDenial", notes: "5d8 poison, half on save. Moves 10ft/round away from caster." },
+  "sickening radiance":    { timing: TIMING.ENTER_START, save: "con", onSave: "none", family: "areaDenial", failEffect: "exhaustion+glowing", notes: "4d6 radiant + 1 exhaustion + glowing on fail." },
+  "incendiary cloud":      { timing: TIMING.ENTER_START, save: "dex", onSave: "half", family: "areaDenial", notes: "10d8 fire, half on save. Moves 10ft/round." },
+  "watery sphere":         { timing: TIMING.ENTER_START, save: "str", onSave: "none", family: "areaDenial", failEffect: "restrained", notes: "Restrained inside sphere on fail. Caster can move sphere." },
 
   // ────── ENTER + END OF TURN ──────
   "wall of fire":          { timing: TIMING.ENTER_END, save: "dex", onSave: "half", notes: "One side only, 10ft range" },
@@ -258,7 +275,6 @@ const SPELL_TABLE = {
   "wall of thorns":        { timing: TIMING.ENTER_END, save: "dex", onSave: "half" },
 
   // ────── START OF TURN ONLY ──────
-  "incendiary cloud":      { timing: TIMING.START_OF_TURN, save: "dex", onSave: "half", notes: "Moves 10ft/round" },
   "maelstrom":             { timing: TIMING.START_OF_TURN, save: "str", onSave: "half", notes: "Pulls toward center" },
 
   // ────── END OF TURN ONLY ──────
@@ -272,23 +288,35 @@ const SPELL_TABLE = {
   "heat metal":            { timing: TIMING.CASTER_ACTION, save: "con", onSave: "none", notes: "Bonus action; CON save is to drop object" },
 
   // ────── SPECIAL (unique multi-phase timing) ──────
+  // These still use phases for their unique mechanics, but `family: "areaDenial"`
+  // also gives them the exit-save-with-advantage + Lingering Nausea treatment
+  // when the player fails any save inside the cloud.
   "hunger of hadar":       {
     timing: TIMING.SPECIAL,
+    family: "areaDenial",
     phases: [
       { trigger: "startOfTurn", damage: "2d6", type: "cold", save: null, notes: "No save, auto cold damage" },
       { trigger: "endOfTurn", damage: "2d6", type: "acid", save: "dex", onSave: "none" },
     ],
+    notes: "RAW: auto 2d6 cold at start of turn; Dex save vs 2d6 acid at end of turn. Difficult terrain inside.",
   },
   "storm sphere":          {
     timing: TIMING.SPECIAL,
+    family: "areaDenial",
+    save: "str",
+    onSave: "none",
     phases: [
       { trigger: "enter+startOfTurn", damage: "2d6", type: "bludgeoning", save: "str", onSave: "none" },
       { trigger: "casterAction", damage: "4d6", type: "lightning", save: "dex", onSave: "half", notes: "Bonus action bolt" },
     ],
+    notes: "2d6 bludgeoning on Str-save fail (entry + start of turn). Caster has bonus-action lightning bolt.",
   },
 
   // ────── NO SAVE / AUTO DAMAGE ──────
-  "cloud of daggers":      { timing: TIMING.NO_SAVE_AUTO, save: null, onSave: null, notes: "No save, auto damage on enter/start" },
+  // Cloud of Daggers — auto damage on FIRST entry per turn OR start of turn.
+  // Not per-5ft movement (that's Spike Growth). Routes through the area-denial
+  // pipeline with a "no save, just damage" branch (family: areaDenialAuto).
+  "cloud of daggers":      { timing: TIMING.ENTER_START, save: null, onSave: null, family: "areaDenialAuto", notes: "4d4 slashing on enter (1/turn) or start-of-turn; no save" },
   "spike growth":          { timing: TIMING.NO_SAVE_AUTO, save: null, onSave: null, notes: "2d4 per 5ft moved, no save" },
 };
 
@@ -417,6 +445,9 @@ function _fromTableEntry(entry) {
     onSave:       entry.onSave ?? null,
     notes:        entry.notes ?? null,
     phases:       entry.phases ?? null,
+    family:       entry.family ?? null,
+    failEffect:   entry.failEffect ?? null,
+    autoSucceedIfCondImmune: entry.autoSucceedIfCondImmune ?? null,
   };
 }
 
@@ -433,5 +464,7 @@ function _makeResult(timing, fromTable, unclassified = false) {
     onSave: null,
     notes:  null,
     phases: null,
+    family: null,
+    failEffect: null,
   };
 }

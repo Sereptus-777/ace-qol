@@ -785,11 +785,17 @@ export class SaveEngine {
 
       console.log(`${MODULE_ID} | Persistent spell "${item.name}" — emitted ace-qol.persistentSpellCreated (${tokens.length} tokens initially in area)`);
 
-      // If timing includes "enter" trigger, post initial save for tokens already in area
+      // If timing includes "enter" trigger, post initial save for tokens already in area.
+      //
+      // EXCEPTION: area-denial family (Stinking Cloud, Cloudkill, etc.) — these
+      // are handled by the concentration widget, which auto-rolls entry saves
+      // for initial-in-area tokens via _onPersistentSpellCreated. Posting the
+      // manual TARGETED/SELECTED card here would be duplicate noise.
       const triggerOnEnter = timing.timing === TIMING.ENTER_START
                           || timing.timing === TIMING.ENTER_END;
+      const isAreaDenial = timing?.family === "areaDenial";
 
-      if (triggerOnEnter && tokens.length) {
+      if (triggerOnEnter && tokens.length && !isAreaDenial) {
         await this._postLiveTargetCard(item, actor, tokens, {
           saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activityId,
           persistentInitial: true,
@@ -2833,6 +2839,29 @@ export class SaveEngine {
       || (Array.isArray(props) && props.includes("concentration"));
     if (!isConcentration) return false;
 
+    // ── Persistent-AOE exception ──
+    // Spells like Stinking Cloud, Cloudkill, Moonbeam etc. create a persistent
+    // template that AFFECTS creatures over time — even if every creature in
+    // the area at cast time saves successfully, the cloud is still there for
+    // 1 minute and other creatures may enter / start their turn inside.
+    // Dropping concentration here would defeat the spell.
+    //
+    // Heuristic: any spell whose timing is NOT instant (i.e. has a persistent
+    // template / ongoing area) is exempt from "wasted concentration" drop.
+    // This covers all area-denial family spells, all ENTER_START spells, and
+    // all NO_SAVE_AUTO movement-damage spells in one rule.
+    try {
+      const timing = getSpellTiming(item);
+      const isPersistent = timing?.isPersistent === true
+        || (timing?.timing && timing.timing !== TIMING.INSTANT);
+      if (isPersistent) {
+        console.log(`${MODULE_ID} | _dropCasterConcentrationIfNoEffect: skipping for "${item.name}" — persistent template spell, concentration is NOT wasted by passed initial saves`);
+        return false;
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | wasted-concentration spell-timing check failed (non-fatal — vanilla drop logic continues):`, err);
+    }
+
     // Find the matching concentrating effect on the caster
     const effects = caster.effects?.contents ?? [];
     const concEffect = effects.find(e => {
@@ -3043,6 +3072,26 @@ export class SaveEngine {
           if (concentrationOrigin) applyOpts.concentrationOrigin = concentrationOrigin;
           if (repeatingSaveMeta)   applyOpts.repeatingSave       = repeatingSaveMeta;
 
+          // Area-denial family (Stinking Cloud, etc.): description-parsed
+          // conditions like Poisoned need to auto-expire at end of the
+          // victim's turn, otherwise they linger forever even after the
+          // Retching effect clears. Stinking Cloud 2024 RAW: Poisoned
+          // until start of next turn — turnEnd is one tick earlier but
+          // functionally equivalent for "loses Action this turn."
+          try {
+            const tm = item?.flags?.["ace-qol"]?.spellTiming;
+            let familyTag = tm?.family ?? null;
+            if (!familyTag) {
+              // Look up via the spell-timing table
+              const { getSpellTiming } = await import("./spell-timing.mjs");
+              const timing = getSpellTiming(item);
+              familyTag = timing?.family ?? null;
+            }
+            if (familyTag === "areaDenial") {
+              applyOpts.specialDuration = "turnEnd";
+            }
+          } catch (_) { /* best-effort; missing family flag = old behavior */ }
+
           const out = await ConditionLibrary.applyByName(actor, cond.condition,
             Object.keys(applyOpts).length ? applyOpts : undefined);
           if (out?.ok) {
@@ -3099,16 +3148,53 @@ export class SaveEngine {
         `;
       }
       const passClass = r.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
-      const rollDisplay = r.isAutoFail ? "AUTO" : r.saveTotal;
       const verdictText = r.passed ? "PASS" : "FAIL";
+
+      // Build the dice breakdown: show the d20 (with adv/disadv indicator)
+      // plus modifier so the GM can immediately see what was rolled and
+      // calc the actor's static bonus. Falls back to just the total when
+      // roll info isn't available (auto-fail, edge cases).
+      let rollDisplay;
+      if (r.isAutoFail) {
+        rollDisplay = `<span class="ace-qol-save-roll ${passClass}">AUTO</span>`;
+      } else if (r.roll) {
+        const d20Term = r.roll.dice?.[0] ?? r.roll.terms?.[0];
+        const d20Result = d20Term?.total ?? null;
+        const modifier = (typeof r.saveTotal === "number" && d20Result != null)
+          ? r.saveTotal - d20Result : null;
+        if (d20Result != null && modifier != null) {
+          const modSign = modifier >= 0 ? "+" : "";
+          const modPart = modifier === 0 ? "" : ` ${modSign}${modifier}`;
+          rollDisplay = `
+            <span class="ace-qol-save-roll-breakdown" style="display:inline-flex;align-items:center;gap:5px;font-family:'Signika',sans-serif;">
+              <i class="fas fa-dice-d20" style="color:#d4af37;font-size:13px;"></i>
+              <span style="color:#c8b890;font-size:12px;letter-spacing:0.3px;">${d20Result}${modPart} =</span>
+              <span class="${passClass}" style="font-weight:700;font-size:14px;">${r.saveTotal}</span>
+            </span>`;
+        } else {
+          rollDisplay = `<span class="ace-qol-save-roll ${passClass}">${r.saveTotal}</span>`;
+        }
+      } else {
+        rollDisplay = `<span class="ace-qol-save-roll ${passClass}">${r.saveTotal}</span>`;
+      }
+
+      // Two-line layout: target name across the top, dice/verdict on the
+      // second line. Avoids the "Dea/th/Kni/ght" squish that happens when
+      // a long name fights for horizontal space with the roll formula.
       return `
-        <div class="ace-qol-save-result-row" data-token-doc-id="${r.tokenDocId}">
-          <div class="ace-qol-save-result-line">
-            <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
-            <span class="ace-qol-save-tgt-name">${r.name}</span>
-            <span class="ace-qol-save-roll ${passClass}">${rollDisplay}</span>
-            <span class="ace-qol-save-verdict ${passClass}">${verdictText}</span>
+        <div class="ace-qol-save-result-row" data-token-doc-id="${r.tokenDocId}"
+             style="padding:8px 10px;border-bottom:1px solid rgba(212,175,55,0.15);">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+            <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img"
+                 style="width:24px;height:24px;border-radius:50%;flex-shrink:0;border:1px solid #444;" />
+            <span class="ace-qol-save-tgt-name"
+                  style="flex:1;font-weight:bold;color:#fff;font-size:14px;line-height:1.2;">${r.name}</span>
             ${removeBtn}
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;padding-left:32px;gap:8px;">
+            <span style="flex:1;">${rollDisplay}</span>
+            <span class="ace-qol-save-verdict ${passClass}"
+                  style="font-weight:bold;font-size:14px;letter-spacing:0.5px;">${verdictText}</span>
           </div>
         </div>
       `;
@@ -3542,8 +3628,33 @@ export class SaveEngine {
       }
 
       const passClass = r.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
-      const rollDisplay = r.isAutoFail ? "AUTO" : r.saveTotal;
       const verdictText = r.passed ? "PASS" : "FAIL";
+
+      // Dice breakdown — same shape as Phase 1 card so GMs can read the
+      // d20 result + modifier at a glance.
+      let rollDisplay;
+      if (r.isAutoFail) {
+        rollDisplay = `<span class="ace-qol-save-roll ${passClass}">AUTO</span>`;
+      } else if (r.roll) {
+        const d20Term = r.roll.dice?.[0] ?? r.roll.terms?.[0];
+        const d20Result = d20Term?.total ?? null;
+        const modifier = (typeof r.saveTotal === "number" && d20Result != null)
+          ? r.saveTotal - d20Result : null;
+        if (d20Result != null && modifier != null) {
+          const modSign = modifier >= 0 ? "+" : "";
+          const modPart = modifier === 0 ? "" : ` ${modSign}${modifier}`;
+          rollDisplay = `
+            <span class="ace-qol-save-roll-breakdown" style="display:inline-flex;align-items:center;gap:5px;font-family:'Signika',sans-serif;">
+              <i class="fas fa-dice-d20" style="color:#d4af37;font-size:13px;"></i>
+              <span style="color:#c8b890;font-size:12px;letter-spacing:0.3px;">${d20Result}${modPart} =</span>
+              <span class="${passClass}" style="font-weight:700;font-size:14px;">${r.saveTotal}</span>
+            </span>`;
+        } else {
+          rollDisplay = `<span class="ace-qol-save-roll ${passClass}">${r.saveTotal}</span>`;
+        }
+      } else {
+        rollDisplay = `<span class="ace-qol-save-roll ${passClass}">${r.saveTotal}</span>`;
+      }
 
       // ── Calculate per-target damage ──
       let targetDamage = 0;
@@ -3598,14 +3709,23 @@ export class SaveEngine {
       else if (dmgReasons.some(d => d.includes("VULN"))) nameClass = "ace-qol-tgt-vuln";
       else if (dmgReasons.some(d => d.includes("RESIST"))) nameClass = "ace-qol-tgt-resist";
 
+      // Two-line layout (name on top, formula/verdict below) so long names
+      // don't get squished into a vertical "Dea/th/Kni/ght" stack next to
+      // the dice readout.
       return `
-        <div class="ace-qol-save-result-row ${nameClass}" data-token-doc-id="${r.tokenDocId}">
-          <div class="ace-qol-save-result-line">
-            <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
-            <span class="ace-qol-save-tgt-name">${r.name}</span>
-            <span class="ace-qol-save-roll ${passClass}">${rollDisplay}</span>
-            <span class="ace-qol-save-verdict ${passClass}">${verdictText}</span>
+        <div class="ace-qol-save-result-row ${nameClass}" data-token-doc-id="${r.tokenDocId}"
+             style="padding:8px 10px;border-bottom:1px solid rgba(212,175,55,0.15);">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+            <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img"
+                 style="width:24px;height:24px;border-radius:50%;flex-shrink:0;border:1px solid #444;" />
+            <span class="ace-qol-save-tgt-name"
+                  style="flex:1;font-weight:bold;color:#fff;font-size:14px;line-height:1.2;">${r.name}</span>
             ${inlineBadge}
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;padding-left:32px;gap:8px;">
+            <span style="flex:1;">${rollDisplay}</span>
+            <span class="ace-qol-save-verdict ${passClass}"
+                  style="font-weight:bold;font-size:14px;letter-spacing:0.5px;">${verdictText}</span>
           </div>
           <div class="ace-qol-save-ovr-line">
             <button class="ace-qol-save-ovr-x" data-action="aceQolRemoveResult" data-token-doc-id="${r.tokenDocId}">\u00d7</button>
@@ -3772,14 +3892,23 @@ export class SaveEngine {
       else if (dmgReasons.some(d => d.includes("VULN"))) nameClass = "ace-qol-tgt-vuln";
       else if (dmgReasons.some(d => d.includes("RESIST"))) nameClass = "ace-qol-tgt-resist";
 
+      // Two-line layout (name on top, formula/verdict below) so long names
+      // don't get squished into a vertical "Dea/th/Kni/ght" stack next to
+      // the dice readout.
       return `
-        <div class="ace-qol-save-result-row ${nameClass}" data-token-doc-id="${r.tokenDocId}">
-          <div class="ace-qol-save-result-line">
-            <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
-            <span class="ace-qol-save-tgt-name">${r.name}</span>
-            <span class="ace-qol-save-roll ${passClass}">${rollDisplay}</span>
-            <span class="ace-qol-save-verdict ${passClass}">${verdictText}</span>
+        <div class="ace-qol-save-result-row ${nameClass}" data-token-doc-id="${r.tokenDocId}"
+             style="padding:8px 10px;border-bottom:1px solid rgba(212,175,55,0.15);">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+            <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img"
+                 style="width:24px;height:24px;border-radius:50%;flex-shrink:0;border:1px solid #444;" />
+            <span class="ace-qol-save-tgt-name"
+                  style="flex:1;font-weight:bold;color:#fff;font-size:14px;line-height:1.2;">${r.name}</span>
             ${inlineBadge}
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;padding-left:32px;gap:8px;">
+            <span style="flex:1;">${rollDisplay}</span>
+            <span class="ace-qol-save-verdict ${passClass}"
+                  style="font-weight:bold;font-size:14px;letter-spacing:0.5px;">${verdictText}</span>
           </div>
           <div class="ace-qol-save-ovr-line">
             <button class="ace-qol-save-ovr-x" data-action="aceQolRemoveResult" data-token-doc-id="${r.tokenDocId}">\u00d7</button>

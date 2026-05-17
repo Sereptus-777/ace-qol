@@ -240,7 +240,16 @@ export class PostHitSaves {
     // Filter to natural-20 hits only — RAW these riders chain off "roll a 20
     // on the attack roll". Expanded crit ranges (Champion 19-20) do NOT
     // qualify — only literal d20 = 20.
-    const nat20Hits = hitTargets.filter(h => (h.naturalRoll ?? 0) === 20);
+    //
+    // The attack pipeline stores the natural d20 result as `d20Result` (see
+    // attack-pipeline.mjs:411). Older drafts of this code looked for
+    // `naturalRoll` which was never populated → the filter always returned
+    // empty and the sever rider silently no-op'd. Accept both keys defensively
+    // so future renames don't reintroduce the bug.
+    const nat20Hits = hitTargets.filter(h => {
+      const nat = h.d20Result ?? h.naturalRoll ?? h.natRoll ?? 0;
+      return Number(nat) === 20;
+    });
     if (!nat20Hits.length) return;
 
     for (const hit of nat20Hits) {

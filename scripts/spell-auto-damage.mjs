@@ -138,17 +138,22 @@ export class SpellAutoDamage {
       const original = damageActivityClass.prototype.rollDamage;
       damageActivityClass.prototype.rollDamage = async function (...args) {
         try {
-          // NO_SAVE_AUTO spells (Spike Growth, Wall of Thorns, Cloud of
-          // Daggers) — the damage activity should NEVER be rolled here.
-          // The concentration widget applies per-tick damage on token
-          // movement. Suppress unconditionally so the dialog never appears
-          // even if the GM clicks the spell card's DAMAGE button by habit.
+          // Widget-owned spells — concentration-widget applies the damage
+          // per its own trigger (entry / start-of-turn / movement). The
+          // dnd5e damage activity should NEVER fire its own dialog or
+          // chat card. Suppress unconditionally so the popup never
+          // appears, even if the GM clicks the spell card's DAMAGE
+          // button by habit.
           try {
             const item = this?.item;
             if (item) {
               const timing = getSpellTiming(item);
-              if (timing?.timing === TIMING.NO_SAVE_AUTO) {
-                console.log(`${MODULE_ID} | rollDamage suppressed for ${item.name} (NO_SAVE_AUTO — handled by concentration widget movement-damage)`);
+              const fam = timing?.family;
+              const isWidgetOwned = timing?.timing === TIMING.NO_SAVE_AUTO
+                                 || fam === "areaDenialAuto"
+                                 || fam === "areaDenial";
+              if (isWidgetOwned) {
+                console.log(`${MODULE_ID} | rollDamage suppressed for ${item.name} (widget-owned: ${fam ?? "NO_SAVE_AUTO"})`);
                 return [];
               }
             }
@@ -233,21 +238,29 @@ export class SpellAutoDamage {
     const actor = item?.actor;
     if (!actor) return;
 
-    // Movement-damage spells (Spike Growth, Wall of Thorns, Cloud of Daggers)
-    // have a damage activity that dnd5e wants to roll, but the damage is
-    // actually applied per-token-movement by concentration-widget. We must
-    // NOT defer to vanilla here — that would show the dnd5e damage roll
-    // dialog (the "2d4 piercing" popup) which the user has to dismiss
-    // every cast. Keep the active-cast mark in place so the rollDamage
-    // prototype patch silently suppresses the dialog + chat card.
+    // Spells whose damage application is owned by concentration-widget — we
+    // must NOT defer to vanilla dnd5e here, otherwise the damage roll dialog
+    // pops up at cast time (the "4d4 slashing" popup the user has to
+    // dismiss every cast). Keep the active-cast mark in place so the
+    // rollDamage prototype patch silently suppresses the dialog + chat card.
+    //
+    // Covers:
+    //   - NO_SAVE_AUTO (Spike Growth, Wall of Thorns): per-5ft movement damage
+    //   - areaDenialAuto (Cloud of Daggers): per-entry / per-start-of-turn damage
+    //   - areaDenial    (Stinking Cloud, Cloudkill, etc): handled via save flow,
+    //                    no cast-time damage roll
     try {
       const timing = getSpellTiming(item);
-      if (timing?.timing === TIMING.NO_SAVE_AUTO) {
-        console.log(`${MODULE_ID} | SpellAutoDamage: ${item.name} is movement-damage (NO_SAVE_AUTO) — suppressing dnd5e damage flow (concentration-widget owns per-tick application)`);
+      const fam = timing?.family;
+      const isWidgetOwned = timing?.timing === TIMING.NO_SAVE_AUTO
+                         || fam === "areaDenialAuto"
+                         || fam === "areaDenial";
+      if (isWidgetOwned) {
+        console.log(`${MODULE_ID} | SpellAutoDamage: ${item.name} is widget-owned (${fam ?? "NO_SAVE_AUTO"}) — suppressing dnd5e damage flow (concentration-widget applies damage per trigger)`);
         return; // leave mark active; rollDamage prototype patch returns [] silently
       }
     } catch (err) {
-      console.warn(`${MODULE_ID} | SpellAutoDamage: movement-damage check failed`, err);
+      console.warn(`${MODULE_ID} | SpellAutoDamage: widget-owned check failed`, err);
     }
 
     const targets = [...(game.user.targets ?? [])];

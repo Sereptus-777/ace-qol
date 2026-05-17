@@ -214,6 +214,22 @@ export class QolSettings {
       default: true,
     });
 
+    // Whether ace-qol owns the persistent-spell animation layer (Sequencer
+    // chain attached to the template). Default false — Automated Animations
+    // is the mature, configurable visual layer that GMs already know; our
+    // SPELL_ANIMATIONS table is opt-in for users who specifically want
+    // ace-qol to render those 11 spells through its own pipeline.
+    // Damage / saves / concentration / effects are ALWAYS owned by ace-qol
+    // regardless of this setting — only the visual is gated.
+    s("ownSpellAnimations", {
+      name:    "ace-qol Owns Persistent-Spell Animations",
+      hint:    "When ON, ace-qol's SPELL_ANIMATIONS table plays animations for known concentration AoE spells (Stinking Cloud, Cloudkill, Spike Growth, etc) via a Sequencer chain attached to the template. When OFF (default), Automated Animations handles all spell visuals — ace-qol still owns damage/saves/concentration. Turn ON only if you want ace-qol's animations instead of AA's.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: false,
+    });
+
     s("concentrationOnDamage", {
       name:    "Concentration Save on Damage (RAW)",
       hint:    "When a concentrating actor takes damage, automatically prompt a Constitution saving throw with DC = max(10, floor(damage / 2)). On fail, the concentration effect is removed and dependent spells end. PHB 203.",

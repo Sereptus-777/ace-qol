@@ -339,26 +339,58 @@ export class DamageCalculator {
     // For weapons with a description like Vicious's "When you score a critical
     // hit with this weapon, the target takes an extra 2d6 damage of the
     // weapon's type." — there's no creature-type gate, just a crit gate.
-    // We only run this path when the bonus is explicitly marked as
-    // triggersOnCrit AND we actually crit, AND the damage type isn't already
-    // gated behind a save (which would be handled by post-hit-saves). This
-    // serves as a safety net for items that have description-only bonuses
-    // (no activity-level damage parts) — like AI-generated or homebrew items.
-    if (!parsed.creatureTrigger && Array.isArray(parsed.bonusDamage) && parsed.bonusDamage.length > 0) {
+    //
+    // Two sub-cases:
+    //   (a) Bonus has NO requiresCreatureTypes → fires on any target (subject
+    //       to crit gate). Mace of Smiting +7 falls here because the rider
+    //       sentence has no creature mention.
+    //   (b) Bonus has requiresCreatureTypes set → only fires if target's
+    //       creature type matches ONE of those (case-insensitive). Holy Avenger
+    //       +2d10 radiant falls here — only fires vs fiend/undead.
+    //
+    // We also skip if a creature-trigger ALREADY captured AND fired bonus
+    // damage via the creature-trigger path above (to avoid double-stacking).
+    const creatureTriggerFiredBonus = parsed.creatureTrigger
+                                   && parsed.creatureTrigger.bonusFormula
+                                   && targetState.creatureType
+                                   && (targetState.creatureType.toLowerCase() === parsed.creatureTrigger.creatureType?.toLowerCase());
+    if (!creatureTriggerFiredBonus && Array.isArray(parsed.bonusDamage) && parsed.bonusDamage.length > 0) {
       for (const bd of parsed.bonusDamage) {
         if (!bd.formula) continue;
-        if (!bd.triggersOnCrit) continue;     // only crit-gated bonuses on this path
-        if (!isCrit) continue;                 // safety: must actually be a crit
         if (conditionalDamageTypes.has(bd.damageType)) continue; // save-gated → handled in post-hit
+
+        // Crit gate: if the bonus is explicitly marked as crit-only, require a crit.
+        if (bd.triggersOnCrit && !isCrit) continue;
+
+        // Creature gate: if the bonus is creature-type-gated (Holy Avenger
+        // "+2d10 radiant vs fiend/undead"), the target's creature type must
+        // match ONE of the listed types.
+        if (Array.isArray(bd.requiresCreatureTypes) && bd.requiresCreatureTypes.length > 0) {
+          const targetTypeLower = String(targetState.creatureType ?? "").toLowerCase();
+          if (!targetTypeLower) continue;
+          const matches = bd.requiresCreatureTypes.some(t => {
+            const tl = String(t).toLowerCase();
+            return targetTypeLower === tl || targetTypeLower.includes(tl);
+          });
+          if (!matches) continue;
+        }
+
+        // Safety: don't fire wildly. A bonus with NO crit gate AND NO creature
+        // gate is suspicious — it would apply on every single hit. Preserve
+        // the prior behavior of "must be either crit-gated or creature-gated"
+        // to keep this path from over-applying on free-text descriptions.
+        if (!bd.triggersOnCrit && !(Array.isArray(bd.requiresCreatureTypes) && bd.requiresCreatureTypes.length > 0)) continue;
+
         const baseType = components[0]?.type ?? "untyped";
         const dmgType = (bd.damageType && bd.damageType !== "weapon") ? bd.damageType : baseType;
-        const result = await DamageCalculator.rollWithCrit(bd.formula, rollData, isCrit, critRule, "Crit Bonus");
+        const gateLabel = bd.triggersOnCrit ? "crit bonus" : `vs ${bd.requiresCreatureTypes?.join("/")}`;
+        const result = await DamageCalculator.rollWithCrit(bd.formula, rollData, isCrit, critRule, gateLabel);
         components.push({
-          name: `${item.name} (crit bonus)`,
+          name: `${item.name} (${gateLabel})`,
           ...result,
           type: dmgType,
         });
-        console.log(`${MODULE_ID} | Crit bonus: ${item.name} +${bd.formula} ${dmgType}`);
+        console.log(`${MODULE_ID} | Bonus (${gateLabel}): ${item.name} +${bd.formula} ${dmgType}`);
       }
     }
 
