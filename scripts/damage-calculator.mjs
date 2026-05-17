@@ -471,6 +471,39 @@ export class DamageCalculator {
     const baseRoll = new Roll(resolved);
     await baseRoll.evaluate();
 
+    // ── Great Weapon Fighting (2024 PHB) — treat any 1 or 2 on a damage die as a 3 ──
+    // Gate: actor has a "Great Weapon Fighting" feat AND the weapon is wielded
+    // two-handed (system.properties has "two" — two-handed — OR is a versatile
+    // weapon being used two-handed). 2014 GWF was "reroll 1s and 2s once"; the
+    // 2024 rule is the simpler "treat 1 or 2 as 3" mechanic, applied here.
+    try {
+      const hasGWF = (actor?.items ?? []).some(
+        i => i.type === "feat" && /great\s*weapon\s*fighting/i.test(String(i.name ?? ""))
+      );
+      if (hasGWF) {
+        const props = sys.properties ?? new Set();
+        const isTwoHanded = props.has?.("two") || (props.has?.("ver") && (sys.equipped !== false));
+        if (isTwoHanded) {
+          for (const term of baseRoll.terms) {
+            if (!term.faces || !Array.isArray(term.results)) continue;
+            for (const r of term.results) {
+              if (r.result === 1 || r.result === 2) r.result = 3;
+            }
+          }
+          // Recompute total after die mutation.
+          baseRoll._total = baseRoll.terms.reduce((sum, t) => {
+            if (t.faces && Array.isArray(t.results)) {
+              return sum + t.results.reduce((a, r) => a + (r.active === false ? 0 : r.result), 0);
+            }
+            if (typeof t.number === "number") return sum + t.number;
+            return sum;
+          }, 0);
+        }
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | GWF dice-bump failed (non-fatal):`, err);
+    }
+
     // ── DSN Crit Payoff: force every base-roll die to its max face ──
     // For "maxAll" the rule already says all dice are max — overriding the
     // result values here makes Dice So Nice ANIMATE the dice landing on

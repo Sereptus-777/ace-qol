@@ -764,6 +764,57 @@ export class CombatState {
       attackerBonuses.push({ name: "Hunter's Mark", formula: "1d6", type: damageTypes[0] ?? "force", reason: "Hunter's Mark → +1d6 per hit" });
     }
 
+    // ── Dueling fighting style — +2 damage with one-handed melee, no other weapon ──
+    // RAW: "When you are wielding a melee weapon in one hand and no other
+    // weapons, you gain a +2 bonus to damage rolls with that weapon."
+    if (isMelee && CombatState._hasFeature(attackerActor, "Dueling")) {
+      const itemSysX = item?.system ?? {};
+      const propsX = itemSysX.properties ?? new Set();
+      const isOneHanded = !propsX.has?.("two") && !propsX.has?.("ver"); // exclude 2H and versatile (versatile counts only if held 2H, hard to detect — exclude conservatively)
+      // "No other weapons" — heuristic: no other equipped weapon items.
+      const otherWeapons = (attackerActor.items ?? []).filter(i =>
+        i !== item && i.type === "weapon" && i.system?.equipped
+      );
+      if (isOneHanded && otherWeapons.length === 0) {
+        attackerBonuses.push({
+          name: "Dueling",
+          formula: "2",
+          type: damageTypes[0] ?? "untyped",
+          reason: "Dueling fighting style → +2 damage (one-handed melee, no other weapon)",
+        });
+      }
+    }
+
+    // ── Two-Weapon Fighting — add ability mod to off-hand damage ──
+    // RAW (2024): "When you make the extra attack from the Light property of a
+    // weapon, you can add your ability modifier to the damage of that attack."
+    // Detection: actor has TWF feat AND this attack is on a Light weapon AND
+    // either uses bonus-action timing OR has flag set by attack-pipeline. For
+    // simplicity, we apply on Light weapons when the actor is also wielding a
+    // second weapon — the dnd5e system normally suppresses ability mod on
+    // these attacks; this restores it for TWF-style users.
+    if (isMelee && CombatState._hasFeature(attackerActor, "Two-Weapon Fighting")) {
+      const itemSysX = item?.system ?? {};
+      const propsX = itemSysX.properties ?? new Set();
+      if (propsX.has?.("lgt")) {
+        const otherWeapons = (attackerActor.items ?? []).filter(i =>
+          i !== item && i.type === "weapon" && i.system?.equipped && (i.system?.properties?.has?.("lgt"))
+        );
+        if (otherWeapons.length > 0) {
+          const abilKey = itemSysX.ability || (propsX.has?.("fin") ? "dex" : "str");
+          const abilMod = attackerActor.system?.abilities?.[abilKey]?.mod ?? 0;
+          if (abilMod > 0) {
+            attackerBonuses.push({
+              name: "Two-Weapon Fighting",
+              formula: `${abilMod}`,
+              type: damageTypes[0] ?? "untyped",
+              reason: `Two-Weapon Fighting → +${abilMod} damage to Light-weapon attack`,
+            });
+          }
+        }
+      }
+    }
+
     // Hex — +1d6 necrotic against the hexed target only (RAW).
     // Target tracked via `flags.ace-qol.hex = { targetUuid, ... }`. Set on
     // spell cast, cleared on concentration end (deleteActiveEffect for "Hex").
