@@ -88,7 +88,14 @@ export class FeatEffects {
     // add your ability modifier to the extra attack's damage."
     // We fire on attacks made with a Light weapon by an actor with the feat.
     // Posted at most once per turn so multi-attack volleys don't spam.
-    if (this._hasFeat(actor, "Dual Wielder")) {
+    // Note: DDB imports name this feat "Enhanced Dual Wielding" (the
+    // sub-feature name) on some characters and "Dual Wielder" on others.
+    // We match "dual.?wield" to catch both spellings + the "-ing"/"-er"
+    // ending variants.
+    const hasDualWielder = (actor?.items ?? []).some(i =>
+      i.type === "feat" && /dual.?wield/i.test(String(i.name ?? ""))
+    );
+    if (hasDualWielder) {
       const props = item?.system?.properties ?? new Set();
       const isLight = props.has?.("lgt");
       const alreadyShown = !!actor.getFlag?.(MODULE_ID, "dualWielderReminder.shownThisTurn");
