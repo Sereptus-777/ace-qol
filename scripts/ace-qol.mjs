@@ -931,6 +931,34 @@ Hooks.once("ready", () => {
     console.error(`${MODULE_ID} | Class feature rider hook setup failed:`, err);
   }
 
+  // Hexblade's Curse — auto-clear on cursed target death + heal-on-kill.
+  // Listens to the existing ace-qol.npcDeath hook (fired by the death pipeline
+  // when any NPC's HP reaches 0). Scans all actors for a matching curse flag;
+  // calls CombatState.removeHexbladeCurse with cursedTargetDied=true so the
+  // Hexblade warlock regains HP = warlock level + CHA mod (RAW heal-on-kill).
+  try {
+    Hooks.on(`${MODULE_ID}.npcDeath`, ({ actor, tokenDoc }) => {
+      if (!game.user.isGM) return;
+      try {
+        const deadUuid = tokenDoc?.uuid;
+        if (!deadUuid) return;
+        for (const a of game.actors?.contents ?? []) {
+          const curse = a?.getFlag?.(MODULE_ID, "hexbladeCurse");
+          if (!curse || typeof curse !== "object") continue;
+          if (curse.targetUuid !== deadUuid) continue;
+          CombatState.removeHexbladeCurse(a, { cursedTargetDied: true }).catch(err => {
+            console.warn(`${MODULE_ID} | Hexblade curse heal-on-kill failed for ${a.name}:`, err);
+          });
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Hexblade death-hook failed:`, err);
+      }
+    });
+    console.log(`${MODULE_ID} | Hexblade's Curse heal-on-kill hook registered.`);
+  } catch (err) {
+    console.error(`${MODULE_ID} | Hexblade hook setup failed:`, err);
+  }
+
   // ── Spell feature riders for ATTACK-based spells + Pact-of-the-Blade type ──
   // Combined prototype patch on the attack-activity rollDamage method:
   //

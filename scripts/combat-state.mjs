@@ -441,9 +441,12 @@ export class CombatState {
       }
     }
 
-    // Expanded crit range — Hexblade's Curse (19-20), Champion Improved Critical (19-20 or 18-20)
+    // Expanded crit range — Hexblade's Curse (19-20 vs cursed target only),
+    // Champion Improved Critical (19-20 vs any), Superior Critical (18-20).
+    // RAW: Hexblade's Curse 19-20 crit range applies ONLY to the cursed
+    // target, not to all attacks while the curse is active.
     let critRange = 20;
-    if (CombatState._hasEffect(attackerActor, "Hexblade") || attackerActor.getFlag(MODULE_ID, "hexbladeCurse")) {
+    if (CombatState._isHexbladeCursedTarget(attackerActor, targetToken)) {
       critRange = 19;
     }
     if (CombatState._hasFeature(attackerActor, "Improved Critical")) {
@@ -738,10 +741,12 @@ export class CombatState {
       attackerBonuses.push({ name: "Hunter's Mark", formula: "1d6", type: damageTypes[0] ?? "force", reason: "Hunter's Mark → +1d6 per hit" });
     }
 
-    // Hexblade's Curse
-    if (CombatState._hasEffect(attackerActor, "Hexblade") || attackerActor.getFlag(MODULE_ID, "hexbladeCurse")) {
+    // Hexblade's Curse — +PB to damage rolls, but ONLY vs cursed target (RAW).
+    // Curse is stored as `flags.ace-qol.hexbladeCurse = { targetUuid, appliedAt }`
+    // — set via `CombatState.applyHexbladeCurse(attacker, targetToken)`.
+    if (CombatState._isHexbladeCursedTarget(attackerActor, targetToken)) {
       const prof = attackerActor.system?.attributes?.prof ?? 2;
-      attackerBonuses.push({ name: "Hexblade's Curse", formula: `${prof}`, type: damageTypes[0] ?? "force", reason: `Hexblade's Curse → +${prof} damage` });
+      attackerBonuses.push({ name: "Hexblade's Curse", formula: `${prof}`, type: damageTypes[0] ?? "force", reason: `Hexblade's Curse → +${prof} damage vs cursed target` });
     }
 
     // Rage damage (Barbarian)
@@ -1854,5 +1859,155 @@ export class CombatState {
         await actor.unsetFlag(MODULE_ID, "sneakAttack.usedThisTurn");
       }
     } catch (_) { /* non-fatal */ }
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  //  HEXBLADE'S CURSE (Warlock — Hexblade Patron, 2014 PHB / Tasha's)
+  // ════════════════════════════════════════════════════════════════════════
+  //
+  //  RAW: As a bonus action, choose one creature within 30 ft. The target is
+  //  cursed for 1 minute. While cursed:
+  //   • +Proficiency Bonus to damage rolls against the cursed target
+  //   • Attack rolls vs cursed target crit on 19-20
+  //   • If cursed target dies, you regain HP = warlock level + CHA mod
+  //  Curse ends if target dies, you die, or you are incapacitated.
+  //
+  //  Storage: `flags.ace-qol.hexbladeCurse = { targetUuid, appliedAt }`
+  //  Application: `CombatState.applyHexbladeCurse(attacker, targetToken)`
+  //  Manual clear: `CombatState.removeHexbladeCurse(attacker)`
+  //  Auto-clear:  when cursed target's HP hits 0 (handled in death-pipeline
+  //               via the `getCursedTargetUuid` helper) — also fires the
+  //               heal-on-kill rebate.
+
+  /**
+   * Return the UUID of the token currently cursed by this attacker, or null.
+   * @param {Actor} attackerActor
+   * @returns {string|null}
+   */
+  static getCursedTargetUuid(attackerActor) {
+    const curse = attackerActor?.getFlag?.(MODULE_ID, "hexbladeCurse");
+    if (!curse || typeof curse !== "object") return null;
+    return curse.targetUuid ?? null;
+  }
+
+  /**
+   * Check whether `targetToken` is the current Hexblade-cursed target of
+   * `attackerActor`. The damage/crit bonuses RAW only apply to the cursed
+   * target — this is the gate used by both check sites in `assess()`.
+   * @param {Actor} attackerActor
+   * @param {Token|TokenDocument} targetToken
+   * @returns {boolean}
+   */
+  static _isHexbladeCursedTarget(attackerActor, targetToken) {
+    const cursedUuid = CombatState.getCursedTargetUuid(attackerActor);
+    if (!cursedUuid) return false;
+    const tgtUuid = targetToken?.document?.uuid ?? targetToken?.uuid;
+    return !!tgtUuid && tgtUuid === cursedUuid;
+  }
+
+  /**
+   * Apply Hexblade's Curse from `attacker` onto `targetToken`. Stores the
+   * target's UUID + a timestamp on the attacker as `flags.ace-qol.hexbladeCurse`.
+   * Replaces any existing curse on this attacker (RAW: only one target at a
+   * time). Posts a chat card if `opts.silent` is not set.
+   *
+   * @param {Actor} attackerActor   - The Hexblade warlock applying the curse
+   * @param {Token|TokenDocument} targetToken - The token to curse
+   * @param {object} [opts]
+   * @param {boolean} [opts.silent=false] - Suppress chat card if true
+   * @returns {Promise<boolean>} true on success
+   */
+  static async applyHexbladeCurse(attackerActor, targetToken, opts = {}) {
+    if (!attackerActor || !targetToken) {
+      console.warn(`${MODULE_ID} | applyHexbladeCurse: attacker or target missing`);
+      return false;
+    }
+    const targetUuid = targetToken?.document?.uuid ?? targetToken?.uuid;
+    if (!targetUuid) {
+      console.warn(`${MODULE_ID} | applyHexbladeCurse: target has no UUID`);
+      return false;
+    }
+    try {
+      await attackerActor.setFlag(MODULE_ID, "hexbladeCurse", {
+        targetUuid,
+        appliedAt: Date.now(),
+      });
+      console.log(`${MODULE_ID} | Hexblade's Curse applied: ${attackerActor.name} → ${targetToken.name ?? targetUuid}`);
+      if (!opts.silent) {
+        const tgtName = foundry.utils.escapeHTML(targetToken.name ?? "the target");
+        const attName = foundry.utils.escapeHTML(attackerActor.name);
+        ChatMessage.create({
+          content: `<div class="ace-qol-card" style="background:#1a0a1a; border:2px solid #6c3aaf; border-radius:6px; padding:10px 12px;">
+            <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">
+              <i class="fas fa-skull" style="color:#b388ff; font-size:18px;"></i>
+              <strong style="color:#dcc8ff;">Hexblade's Curse</strong>
+            </div>
+            <div style="color:#dcd0e8; font-size:12px;">
+              <strong>${attName}</strong> curses <strong>${tgtName}</strong>.<br>
+              <em style="color:#aaa;">+PB damage and 19–20 crit range against the cursed target until it dies or the curse is ended.</em>
+            </div>
+          </div>`,
+          speaker: ChatMessage.getSpeaker({ actor: attackerActor }),
+        });
+      }
+      return true;
+    } catch (err) {
+      console.error(`${MODULE_ID} | applyHexbladeCurse failed:`, err);
+      return false;
+    }
+  }
+
+  /**
+   * Remove Hexblade's Curse from `attackerActor`. Optionally awards the
+   * heal-on-kill rebate (warlock level + CHA mod) if `opts.cursedTargetDied`
+   * is true.
+   * @param {Actor} attackerActor
+   * @param {object} [opts]
+   * @param {boolean} [opts.cursedTargetDied=false] - Trigger heal-on-kill
+   * @param {boolean} [opts.silent=false]            - Suppress chat card
+   * @returns {Promise<boolean>}
+   */
+  static async removeHexbladeCurse(attackerActor, opts = {}) {
+    if (!attackerActor) return false;
+    const curse = attackerActor.getFlag?.(MODULE_ID, "hexbladeCurse");
+    if (!curse) return false;
+    try {
+      await attackerActor.unsetFlag(MODULE_ID, "hexbladeCurse");
+      console.log(`${MODULE_ID} | Hexblade's Curse removed from ${attackerActor.name}`);
+
+      // Heal-on-kill rebate: warlock level + CHA mod (min 1)
+      if (opts.cursedTargetDied) {
+        const warlockClass = attackerActor.items?.find(i => i.type === "class" && i.name?.toLowerCase().includes("warlock"));
+        const warlockLevel = warlockClass?.system?.levels ?? 0;
+        const chaMod       = attackerActor.system?.abilities?.cha?.mod ?? 0;
+        const heal         = Math.max(1, warlockLevel + chaMod);
+        if (heal > 0 && warlockLevel > 0) {
+          const currentHP = attackerActor.system?.attributes?.hp?.value ?? 0;
+          const maxHP     = attackerActor.system?.attributes?.hp?.max ?? 0;
+          const newHP     = Math.min(maxHP, currentHP + heal);
+          await attackerActor.update({ "system.attributes.hp.value": newHP });
+          if (!opts.silent) {
+            const attName = foundry.utils.escapeHTML(attackerActor.name);
+            ChatMessage.create({
+              content: `<div class="ace-qol-card" style="background:#0a1a0a; border:2px solid #4caf50; border-radius:6px; padding:10px 12px;">
+                <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">
+                  <i class="fas fa-heart" style="color:#a3e8a3; font-size:18px;"></i>
+                  <strong style="color:#cfeacf;">Hexblade's Curse — Vengeance</strong>
+                </div>
+                <div style="color:#d8e8d8; font-size:12px;">
+                  <strong>${attName}</strong> regains <strong>${heal} HP</strong> (warlock level ${warlockLevel} + CHA mod ${chaMod >= 0 ? "+" : ""}${chaMod}).
+                </div>
+              </div>`,
+              speaker: ChatMessage.getSpeaker({ actor: attackerActor }),
+            });
+          }
+          console.log(`${MODULE_ID} | Hexblade's Curse heal-on-kill: ${attackerActor.name} +${heal} HP`);
+        }
+      }
+      return true;
+    } catch (err) {
+      console.error(`${MODULE_ID} | removeHexbladeCurse failed:`, err);
+      return false;
+    }
   }
 }
