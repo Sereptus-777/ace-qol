@@ -179,35 +179,35 @@ export class LootableTile {
     return null;
   }
 
-  // ── DOM-level listeners (Phase 3c — single-click + hover icon) ─────────
+  // ── DOM-level listeners (Phase 3d — right-click + hover icon) ──────────
   // Two paths to the loot dialog:
-  //   1. Single LEFT-CLICK on a lootable tile (primary — GM and players)
-  //      Detected via mousedown → mouseup pair with drag-resistance: a click
-  //      is "real" when mouseup happens within 500ms of mousedown AND the
-  //      cursor moved less than 5px. This filters out canvas-pan drags and
-  //      doesn't depend on browser-synthesized `click`/`dblclick` events
-  //      (which Foundry's PIXI canvas often swallows via preventDefault).
-  //   2. Hover for N seconds → treasure-chest icon appears at tile center →
-  //      click the icon to open (discoverability for new players). Delay
-  //      is configurable (lootHoverIconDelayMs setting; 0 = disabled).
+  //   1. Single RIGHT-CLICK on a lootable tile (primary — GM and players).
+  //      Right-click feels less ambiguous than left-click on the canvas:
+  //      left-click is "select / token control"; right-click on the canvas
+  //      is already used for context menus elsewhere, so it's a natural
+  //      "interact with this thing under the cursor" gesture. Detected via
+  //      contextmenu event with drag-resistance: only fires when the click
+  //      ended within 500ms of mousedown AND cursor moved less than 5px.
+  //   2. Hover for N seconds → treasure-chest icon appears at tile center
+  //      ONLY IF the tile has loot to take. Click the icon to open the
+  //      dialog. Delay configurable via lootHoverIconDelayMs (0 = disabled).
   _wireDomListener() {
     if (this._domWired) return;
     this._domWired = true;
 
-    // ── Single-click (mousedown→mouseup with drag-resistance) ──
+    // ── Right-click (contextmenu) with drag-resistance ──
     document.addEventListener("mousedown", (ev) => {
-      if (ev.button !== 0) return;
-      this._leftDownAt = {
+      if (ev.button !== 2) return;
+      this._rightDownAt = {
         screenX: ev.clientX,
         screenY: ev.clientY,
         time:    Date.now(),
       };
     });
 
-    document.addEventListener("mouseup", (ev) => {
-      if (ev.button !== 0) return;
-      const start = this._leftDownAt;
-      this._leftDownAt = null;
+    document.addEventListener("contextmenu", (ev) => {
+      const start = this._rightDownAt;
+      this._rightDownAt = null;
       if (!start) return;
 
       const dt   = Date.now() - start.time;
@@ -215,28 +215,27 @@ export class LootableTile {
       // Click = quick + small movement; drag/pan = either slow or large dist
       if (dt > 500 || dist > 5) return;
 
-      this._handleSingleLeftClick(ev);
+      this._handleSingleRightClick(ev);
     });
 
     // ── Hover-icon system ──
     document.addEventListener("mousemove", (ev) => this._onHoverMove(ev));
 
-    console.log(`${MODULE_ID} | Lootable tile DOM listeners wired (single-click + hover-icon)`);
+    console.log(`${MODULE_ID} | Lootable tile DOM listeners wired (right-click + hover-icon)`);
   }
 
   /**
-   * Process a confirmed single left-click. Opens the loot dialog if the
+   * Process a confirmed single right-click. Opens the loot dialog if the
    * click landed on a lootable tile (dead-body OR container).
    *
-   * Click-priority order (changed from the old version that prioritized
-   * tokens first — that broke looting whenever a PC was standing on a body):
+   * Click-priority order:
    *   1. Active layer is TilesLayer → defer (GM is editing tiles)
    *   2. Lootable tile at click pos → open loot dialog (highest priority,
    *      wins over overlapping tokens — looting is the dominant intent
    *      when a body/chest is at the click point)
-   *   3. Otherwise → no-op (let Foundry handle token select / canvas pan)
+   *   3. Otherwise → no-op (let Foundry handle its own right-click menus)
    */
-  _handleSingleLeftClick(event) {
+  _handleSingleRightClick(event) {
     const debug = this._isDebugEnabled();
     const worldPos = this._eventToWorldPos(event);
     if (!worldPos) {
@@ -361,7 +360,7 @@ export class LootableTile {
      ══════════════════════════════════════════════════════════════════════ */
 
   _onHoverMove(ev) {
-    // Setting === 0 disables the hover icon entirely (still keeps single-click).
+    // Setting === 0 disables the hover icon entirely (still keeps right-click).
     let delayMs = 1000;
     try { delayMs = game.settings.get(MODULE_ID, "lootHoverIconDelayMs") ?? 1000; }
     catch (_) { /* setting not registered yet — fall back to default */ }
@@ -380,6 +379,13 @@ export class LootableTile {
       this._cancelHoverIcon();
       return;
     }
+    // Don't tease the user with a treasure-chest icon on empty corpses /
+    // empty containers — only show the icon if there's actually something
+    // to take. Right-click still works either way for diagnostic purposes.
+    if (!this._tileHasLoot(tile)) {
+      this._cancelHoverIcon();
+      return;
+    }
     // If we're already showing the icon for this tile, leave it alone
     if (this._hoverIconTileId === (tile.id ?? tile.document?.id)) return;
     // Clear any pending or visible icon for a different tile
@@ -390,6 +396,57 @@ export class LootableTile {
       this._showHoverIcon(tile);
       this._hoverIconTileId = tileId;
     }, delayMs);
+  }
+
+  /**
+   * Does this tile have any loot worth surfacing the hover icon for?
+   * Returns true when:
+   *   • Dead-body tile: linked actor has at least 1 lootable item, OR
+   *     any positive currency, OR a snapshot with items/currency
+   *   • Container tile: containerLoot flag has at least 1 item OR positive currency
+   * Returns false for empty bodies / empty chests / unknown sources.
+   */
+  _tileHasLoot(tile) {
+    try {
+      const tileDoc = tile?.document ?? tile;
+      if (!tileDoc) return false;
+      const flags = tileDoc.flags?.[MODULE_ID] ?? {};
+      const isDead = flags.isDeadToken === true;
+      const isContainer = !isDead && isContainerTile(tileDoc);
+      if (!isDead && !isContainer) return false;
+
+      const currencyHasValue = (c) =>
+        ((c?.pp ?? 0) + (c?.gp ?? 0) + (c?.ep ?? 0) + (c?.sp ?? 0) + (c?.cp ?? 0)) > 0;
+
+      if (isDead) {
+        // Prefer the live actor; fall back to the lootSnapshot if the actor
+        // was deleted (Curse of Strahd module purge, GM cleanup, etc.).
+        const actor = flags.originalActorId ? game.actors.get(flags.originalActorId) : null;
+        if (actor) {
+          const items = actor.items?.contents?.filter(i => this._isLootableItem(i)) ?? [];
+          if (items.length > 0) return true;
+          if (currencyHasValue(actor.system?.currency)) return true;
+          return false;
+        }
+        const snapshot = flags.lootSnapshot ?? null;
+        if (snapshot) {
+          if ((snapshot.items?.length ?? 0) > 0) return true;
+          if (currencyHasValue(snapshot.currency)) return true;
+        }
+        return false;
+      }
+
+      // Container tile
+      const loot = getContainerLoot(tileDoc);
+      if ((loot.items?.length ?? 0) > 0) return true;
+      if (currencyHasValue(loot.currency)) return true;
+      return false;
+    } catch (_) {
+      // Fail safe — if loot detection blows up, show the icon so the user
+      // can still try clicking. Better to over-show than to hide a valid
+      // body behind a bug.
+      return true;
+    }
   }
 
   _cancelHoverIcon() {
