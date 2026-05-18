@@ -805,15 +805,15 @@ export class LootableTile {
         left: ${left}px;
         top: ${top}px;
         transform: translate(-50%, -50%);
-        width: 56px; height: 56px;
+        width: 40px; height: 40px;
         display: flex; align-items: center; justify-content: center;
         background: rgba(212, 175, 55, 0.95);
         border: 2px solid #d4af37;
         border-radius: 50%;
         color: #1a1a1e;
-        font-size: 28px;
+        font-size: 20px;
         cursor: pointer;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.6);
+        box-shadow: 0 2px 8px rgba(0,0,0,0.55);
         z-index: 10000;
         pointer-events: auto;
         animation: ace-qol-loot-pulse 1.4s ease-in-out infinite;
