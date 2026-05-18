@@ -3040,53 +3040,68 @@
 }
 
 /* ─── Lootable Tile dialog (per-corpse loot view) ──────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════════════
+   Loot Dialog v2 (May 2026)
+   • Dark ACE base; gold accent for chrome (header, gold-row, item border)
+   • Recipient buttons: COLORED FILLS with BLACK TEXT for legibility
+       gold       → PC owned by an online player
+       grayish    → PC owned by an offline player
+       lavender   → friendly NPC on the scene
+   • Per-item descriptions (real OR unidentified flavor)
+   • Identification lock badge on magical items + GM-only Reveal button
+   • All text sizes ~doubled from v1 (was 11–13px → now 18–22px)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
 .ace-qol-tile-loot-dialog-window .window-content {
   background: linear-gradient(135deg, #0a0a0c, #111114);
   color: #e8e8e8;
 }
 .ace-qol-tile-loot-dialog {
   font-family: "Rajdhani", "Signika", sans-serif;
-  font-size: 13px;
+  font-size: 17px;
+  line-height: 1.4;
 }
 .ace-qol-tile-loot-header {
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  padding: 6px 4px 8px;
+  gap: 10px;
+  padding: 10px 6px 12px;
   border-bottom: 1px solid rgba(212, 175, 55, 0.3);
-  margin-bottom: 8px;
+  margin-bottom: 12px;
 }
 .ace-qol-tile-loot-header strong {
-  font-size: 16px;
+  font-size: 22px;
   color: #d4af37;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.6px;
   text-transform: uppercase;
 }
 .ace-qol-tile-loot-type {
-  font-size: 11px;
-  color: #888;
+  font-size: 14px;
+  color: #aaa;
   font-style: italic;
 }
 .ace-qol-tile-loot-locked {
   background: rgba(255, 80, 80, 0.1);
   border: 1px solid rgba(255, 80, 80, 0.4);
-  border-radius: 4px;
-  padding: 6px 10px;
-  margin-bottom: 8px;
+  border-radius: 5px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
   color: #ff8080;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 10px;
   font-weight: 600;
+  font-size: 16px;
 }
 .ace-qol-tile-loot-locked button {
   background: rgba(212, 175, 55, 0.15);
   border: 1px solid #d4af37;
   color: #d4af37;
-  padding: 3px 10px;
-  border-radius: 3px;
+  padding: 5px 14px;
+  border-radius: 4px;
   font-weight: 700;
+  font-size: 14px;
   cursor: pointer;
   white-space: nowrap;
 }
@@ -3097,13 +3112,13 @@
 .ace-qol-tile-loot-gold {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 8px 10px;
+  gap: 14px;
+  padding: 10px 14px;
   background: rgba(212, 175, 55, 0.08);
   border: 1px solid rgba(212, 175, 55, 0.4);
-  border-radius: 4px;
-  margin-bottom: 8px;
-  font-size: 14px;
+  border-radius: 5px;
+  margin-bottom: 10px;
+  font-size: 18px;
 }
 .ace-qol-tile-loot-gold strong { color: #ffd700; }
 .ace-qol-tile-loot-gold button {
@@ -3111,13 +3126,13 @@
   background: rgba(255, 215, 0, 0.1);
   border: 1px solid #ffd700;
   color: #ffd700;
-  padding: 3px 10px;
-  border-radius: 3px;
+  padding: 5px 14px;
+  border-radius: 4px;
   font-weight: 700;
   cursor: pointer;
-  font-size: 11px;
+  font-size: 13px;
   text-transform: uppercase;
-  letter-spacing: 0.4px;
+  letter-spacing: 0.5px;
 }
 .ace-qol-tile-loot-gold button:hover {
   background: rgba(255, 215, 0, 0.25);
@@ -3126,71 +3141,141 @@
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* ── Item rows ── */
 .ace-qol-tile-loot-items {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ace-qol-tile-loot-item {
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(212, 175, 55, 0.22);
+  border-radius: 6px;
+  padding: 10px 12px;
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
-.ace-qol-tile-loot-item {
-  background: rgba(0, 0, 0, 0.25);
-  border: 1px solid rgba(212, 175, 55, 0.2);
-  border-radius: 4px;
-  padding: 6px 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+.ace-qol-tile-loot-item.ace-loot-unidentified {
+  /* Subtle violet shimmer on unidentified items so the GM knows at a glance */
+  border-color: rgba(170, 130, 220, 0.45);
+  background:
+    linear-gradient(135deg, rgba(170, 130, 220, 0.06), transparent 60%),
+    rgba(0, 0, 0, 0.25);
 }
-.ace-qol-tile-loot-item > .ace-qol-tile-loot-img,
-.ace-qol-tile-loot-item > .ace-qol-tile-loot-name {
-  display: inline-block;
+.ace-qol-tile-loot-item-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 .ace-qol-tile-loot-img {
-  width: 28px;
-  height: 28px;
-  border-radius: 3px;
-  border: 1px solid rgba(212, 175, 55, 0.3);
-  vertical-align: middle;
-  margin-right: 6px;
+  width: 48px;
+  height: 48px;
+  border-radius: 5px;
+  border: 1px solid rgba(212, 175, 55, 0.4);
+  flex-shrink: 0;
+}
+.ace-qol-tile-loot-item-titles {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 .ace-qol-tile-loot-name {
   font-weight: 700;
   color: #e8e8e8;
-  font-size: 13px;
-  vertical-align: middle;
+  font-size: 20px;
+  letter-spacing: 0.2px;
 }
+.ace-qol-tile-loot-item.ace-loot-unidentified .ace-qol-tile-loot-name {
+  color: #d8c5f0;            /* violet-tinged for unidentified */
+}
+.ace-qol-tile-loot-desc {
+  font-size: 14px;
+  font-style: italic;
+  color: #b8b8c0;
+  line-height: 1.35;
+}
+.ace-qol-loot-reveal-btn {
+  flex-shrink: 0;
+  background: rgba(170, 130, 220, 0.18);
+  border: 1px solid rgba(170, 130, 220, 0.6);
+  color: #d8c5f0;
+  width: 34px;
+  height: 34px;
+  border-radius: 5px;
+  font-size: 15px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.12s ease;
+}
+.ace-qol-loot-reveal-btn:hover {
+  background: rgba(170, 130, 220, 0.35);
+  box-shadow: 0 0 8px rgba(170, 130, 220, 0.5);
+}
+
+/* ── Recipient buttons ── */
 .ace-qol-tile-loot-give-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 2px;
+  gap: 6px;
+  margin-top: 4px;
 }
 .ace-qol-loot-give-btn {
-  flex: 1 1 auto;
-  background: rgba(212, 175, 55, 0.08);
-  border: 1px solid rgba(212, 175, 55, 0.5);
-  color: #d4af37;
-  padding: 3px 8px;
-  border-radius: 3px;
-  font-weight: 600;
-  font-size: 11px;
+  flex: 0 1 auto;
+  border: 1px solid transparent;
+  padding: 7px 14px;
+  border-radius: 5px;
+  font-weight: 700;
+  font-size: 16px;
   cursor: pointer;
-  transition: all 0.12s ease;
+  transition: filter 0.12s ease, box-shadow 0.12s ease, transform 0.06s ease;
   white-space: nowrap;
+  letter-spacing: 0.2px;
 }
 .ace-qol-loot-give-btn:hover:not(:disabled) {
-  background: rgba(212, 175, 55, 0.25);
-  box-shadow: 0 0 6px rgba(212, 175, 55, 0.4);
+  filter: brightness(1.15);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+.ace-qol-loot-give-btn:active:not(:disabled) {
+  transform: translateY(1px);
 }
 .ace-qol-loot-give-btn:disabled {
   opacity: 0.35;
   cursor: not-allowed;
-  border-style: dashed;
+  filter: grayscale(0.6);
 }
+
+/* Variant: PC online — full gold fill, black name */
+.ace-qol-loot-give-btn.ace-give-pc-online {
+  background: linear-gradient(180deg, #e6c447 0%, #c39b2c 100%);
+  color: #1a1a1a;
+  border-color: #8a6c1a;
+}
+/* Variant: PC offline — desaturated gold, slightly faded */
+.ace-qol-loot-give-btn.ace-give-pc-offline {
+  background: linear-gradient(180deg, #a89968 0%, #75664a 100%);
+  color: #1a1a1a;
+  border-color: #4f4530;
+  opacity: 0.78;
+}
+/* Variant: friendly NPC — subtle lavender, black name */
+.ace-qol-loot-give-btn.ace-give-npc {
+  background: linear-gradient(180deg, #c2a8de 0%, #9c80c0 100%);
+  color: #1a1a1a;
+  border-color: #6a4f8c;
+}
+
 .ace-qol-tile-loot-empty {
   text-align: center;
   font-style: italic;
-  color: #666;
-  padding: 12px;
+  color: #888;
+  padding: 16px;
+  font-size: 16px;
 }
 
 /* ─── Effects Panel (floating side panel for selected token's effects) ── */

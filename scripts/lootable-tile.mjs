@@ -775,11 +775,16 @@ export class LootableTile {
         source = "actor";
         items = actor.items.contents
           .filter(i => this._isLootableItem(i))
-          .map(i => ({ id: i.id, name: i.name, img: i.img, uuid: i.uuid }));
+          .map(i => this._buildLootItemRow(i));
         currency = actor.system?.currency ?? {};
       } else if (snapshot) {
         source = "snapshot";
-        items = snapshot.items ?? [];
+        items = (snapshot.items ?? []).map(it => ({
+          ...it,
+          description:    it.description ?? "",
+          identified:     it.identified !== false,
+          revealable:     false,  // can't re-identify off a snapshot — actor's gone
+        }));
         currency = snapshot.currency ?? {};
       } else {
         ui.notifications.warn(`ACE QOL: Loot data not available for "${flags.originalName}".`);
@@ -789,7 +794,12 @@ export class LootableTile {
     } else {
       source = "container";
       const loot = getContainerLoot(tileDoc);
-      items = loot.items;
+      items = (loot.items ?? []).map(it => ({
+        ...it,
+        description:    it.description ?? "",
+        identified:     it.identified !== false,
+        revealable:     false,  // container loot is plain stored data — no live item to flip
+      }));
       currency = loot.currency;
       displayName = tileDoc.flags?.[CONTAINER_FLAG_NS]?.containerName
                   ?? this._extractContainerName(tileDoc);
@@ -817,17 +827,37 @@ export class LootableTile {
     //   - container → item.uuid (used with fromUuid + flag-array filter)
     const keyFor = (item) => source === "actor" ? (item.id ?? "") : (item.uuid ?? "");
 
-    const itemRowsHtml = items.length ? items.map((item, idx) => {
+    const itemRowsHtml = items.length ? items.map((item) => {
       const key = keyFor(item);
+      // Recipient buttons — class-driven fills (no inline player-color border).
+      // pc-online = gold fill, pc-offline = grayer-gold, npc = subtle purple.
+      // All show black text on the player name for legibility.
       const recipientBtns = canDistribute ? recipients.map(r => {
-        const colorStyle = r.color ? `border-color:${r.color}` : "";
-        const typeBadge = r.type === "pc" ? "👤" : "🤝";
-        return `<button class="ace-qol-loot-give-btn" data-item-key="${key}" data-actor-id="${r.actorId}" style="${colorStyle}" ${btnDisabled} title="${r.type === "pc" ? "Player Character" : "Friendly/Neutral NPC"}">${typeBadge} ${foundry.utils.escapeHTML(r.name)}</button>`;
+        let cls = "ace-qol-loot-give-btn";
+        if (r.type === "pc") cls += r.online ? " ace-give-pc-online" : " ace-give-pc-offline";
+        else cls += " ace-give-npc";
+        const title = r.type === "pc"
+          ? (r.online ? "Player Character (online)" : "Player Character (offline)")
+          : "Friendly NPC on scene";
+        return `<button class="${cls}" data-item-key="${key}" data-actor-id="${r.actorId}" ${btnDisabled} title="${title}">${foundry.utils.escapeHTML(r.name)}</button>`;
       }).join("") : "";
+
+      // Per-item header row: image + name + (GM-only) reveal toggle for unidentified items
+      const revealBtn = (game.user.isGM && item.revealable)
+        ? `<button class="ace-qol-loot-reveal-btn" data-action="lootRevealItem" data-item-key="${key}" title="Reveal real name + description to players (Identify spell, GM grant)"><i class="fas fa-lock"></i></button>`
+        : "";
+      const unidentClass = item.identified === false ? " ace-loot-unidentified" : "";
+
       return `
-        <div class="ace-qol-tile-loot-item" data-item-key="${key}">
-          <img src="${item.img}" class="ace-qol-tile-loot-img" />
-          <span class="ace-qol-tile-loot-name">${foundry.utils.escapeHTML(item.name)}</span>
+        <div class="ace-qol-tile-loot-item${unidentClass}" data-item-key="${key}">
+          <div class="ace-qol-tile-loot-item-head">
+            <img src="${item.img}" class="ace-qol-tile-loot-img" />
+            <div class="ace-qol-tile-loot-item-titles">
+              <div class="ace-qol-tile-loot-name">${foundry.utils.escapeHTML(item.name)}</div>
+              ${item.description ? `<div class="ace-qol-tile-loot-desc">${foundry.utils.escapeHTML(item.description)}</div>` : ""}
+            </div>
+            ${revealBtn}
+          </div>
           ${canDistribute ? `<div class="ace-qol-tile-loot-give-row">${recipientBtns}</div>` : ""}
         </div>
       `;
@@ -870,7 +900,7 @@ export class LootableTile {
       content,
       buttons: [{ action: "close", label: "Close", icon: "fa-solid fa-xmark", default: true }],
       rejectClose: false,
-      position: { width: 460 },
+      position: { width: 560 },
       render: (event, dialog) =>
         this._wireDialog(event, dialog, { tile, actor, recipients, source }),
     });
@@ -971,6 +1001,41 @@ export class LootableTile {
         this._openLootDialog(tile);
       });
     }
+
+    // ── Reveal-item button (GM only) — flips identified:false → true on a single item ──
+    root.querySelectorAll(".ace-qol-loot-reveal-btn").forEach(btn => {
+      btn.addEventListener("click", async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (!game.user.isGM) return;
+        const key = btn.dataset.itemKey;
+        if (!key) return;
+        try {
+          let item = null;
+          if (source === "actor" && actor) {
+            item = actor.items.get(key);
+          } else {
+            // Container / snapshot — item key is a UUID
+            item = await fromUuid(key);
+          }
+          if (!item) {
+            ui.notifications.warn("ACE QOL: Couldn't locate item to reveal.");
+            return;
+          }
+          await item.update({ "system.identified": true });
+          ui.notifications.info(`ACE QOL: Revealed "${item.name}" to all players.`);
+          await ChatMessage.create({
+            content: `<em>The party identifies the item: <strong>${foundry.utils.escapeHTML(item.name)}</strong>.</em>`,
+          });
+          // Re-open dialog so the line item refreshes with real name + description
+          await dialog.close();
+          this._openLootDialog(tile);
+        } catch (err) {
+          console.error(`${MODULE_ID} | Reveal-item failed:`, err);
+          ui.notifications.error("ACE QOL: Failed to reveal item — see console.");
+        }
+      });
+    });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1026,52 +1091,110 @@ export class LootableTile {
   }
 
   /**
-   * Build the list of loot recipients:
-   *  - All PCs (any actor with hasPlayerOwner)
-   *  - Any alive non-hostile tokens on the current scene (disposition ≥ 0)
-   *  Excluded: the dead body itself, hostile tokens, dead/incapacitated actors
+   * Build an enriched row payload for the loot dialog from a live actor
+   * item. Handles dnd5e's built-in identification model:
+   *   - system.identified === false  → show unidentified.name + unidentified.description
+   *   - system.identified !== false  → show real name + real description
+   *
+   * Description HTML is stripped to plain text and truncated to keep the
+   * dialog readable. The GM-side dialog gets a "Reveal" toggle when the
+   * item is currently unidentified (revealable: true).
+   */
+  _buildLootItemRow(item) {
+    const sys = item.system ?? {};
+    const isIdentified = sys.identified !== false;
+
+    // What name + description to display in the dialog
+    const realName = item.name ?? "";
+    const unidentName = sys.unidentified?.name ?? "";
+    const displayName = isIdentified ? realName : (unidentName || realName);
+
+    const stripHtml = (s) => String(s ?? "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&nbsp;/gi, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const truncate = (s, n) => (s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s);
+
+    const realDesc = stripHtml(sys.description?.value ?? "");
+    const unidentDesc = stripHtml(sys.unidentified?.description ?? "");
+    const rawDesc = isIdentified ? realDesc : (unidentDesc || ""); // mundane shows real; magical-unid shows unident
+    const description = truncate(rawDesc, 220);
+
+    // The Reveal button only matters when item is currently unidentified
+    // AND we have a real actor reference (so the click handler can resolve
+    // it via fromUuid). Snapshot / container items can't be revealed
+    // because there's no live item document to update.
+    const revealable = !isIdentified && !!item.uuid;
+
+    return {
+      id:          item.id,
+      uuid:        item.uuid,
+      name:        displayName,
+      realName,
+      img:         item.img,
+      description,
+      identified:  isIdentified,
+      revealable,
+    };
+  }
+
+  /**
+   * Build the list of loot recipients.
+   *
+   * v2 (May 2026): SCENE ONLY — drop the world-actor-sidebar source. The
+   * old behavior pulled every PC ever rolled in the campaign, even ones
+   * not at the table that night. Now we only show tokens actually on the
+   * current scene.
+   *
+   * Included:
+   *   - PCs (hasPlayerOwner) currently on the scene, alive
+   *   - Friendly/neutral NPCs on the scene, alive, not flagged as a
+   *     dead-token tile representation
+   * Excluded:
+   *   - Hostile or secret-disposition tokens
+   *   - Dead bodies / 0-HP actors
+   *   - The actor being looted (excludeActorId)
+   *
+   * Each PC is tagged `online: true|false` based on whether a non-GM
+   * owner is currently connected. Used by the dialog CSS to dim
+   * offline-PC buttons so the GM can see at a glance who's actually at
+   * the table.
    */
   _getLootRecipients(excludeActorId) {
-    const seen = new Set();
+    if (!canvas.scene) return [];
     const recipients = [];
+    const seen = new Set();
 
-    // 1. All PCs (characters with player ownership)
-    for (const a of game.actors.contents) {
-      if (a.type !== "character") continue;
-      if (!a.hasPlayerOwner) continue;
-      if (a.id === excludeActorId) continue;
-      const hp = a.system?.attributes?.hp?.value;
-      if (hp !== undefined && hp <= 0) continue; // skip dead PCs
-      // Match a user for color coding
-      const user = game.users.find(u => !u.isGM && a.testUserPermission(u, "OWNER"));
-      seen.add(a.id);
-      recipients.push({
-        type:    "pc",
-        actorId: a.id,
-        name:    a.name,
-        color:   user?.color ?? null,
-      });
-    }
+    for (const token of canvas.tokens?.placeables ?? []) {
+      if (!token.actor) continue;
+      if (seen.has(token.actor.id)) continue;
+      if (token.actor.id === excludeActorId) continue;
+      const disp = token.document?.disposition ?? 0;
+      if (disp < 0) continue;                               // hostile / secret — skip
+      const hp = token.actor.system?.attributes?.hp?.value;
+      if (hp !== undefined && hp <= 0) continue;            // skip dead
+      if (token.document.flags?.[MODULE_ID]?.isDeadToken) continue;
 
-    // 2. Friendly/neutral NPCs on the current scene (disposition ≥ 0)
-    if (canvas.scene) {
-      for (const token of canvas.tokens?.placeables ?? []) {
-        if (!token.actor || seen.has(token.actor.id)) continue;
-        if (token.actor.id === excludeActorId) continue;
-        const disp = token.document?.disposition ?? 0;
-        if (disp === -1) continue;              // hostile — skip
-        const hp = token.actor.system?.attributes?.hp?.value;
-        if (hp !== undefined && hp <= 0) continue; // skip dead
-        if (token.document.flags?.[MODULE_ID]?.isDeadToken) continue;
-        // Include
-        seen.add(token.actor.id);
-        recipients.push({
-          type:    token.actor.hasPlayerOwner ? "pc" : "npc",
-          actorId: token.actor.id,
-          name:    token.name ?? token.actor.name,
-          color:   null,
-        });
+      const isPC = !!token.actor.hasPlayerOwner;
+      let online = false;
+      if (isPC) {
+        for (const u of game.users) {
+          if (u.isGM) continue;
+          if (!u.active) continue;
+          try {
+            if (token.actor.testUserPermission(u, "OWNER")) { online = true; break; }
+          } catch (_) {}
+        }
       }
+
+      seen.add(token.actor.id);
+      recipients.push({
+        type:    isPC ? "pc" : "npc",
+        actorId: token.actor.id,
+        name:    token.name ?? token.actor.name,
+        online,
+      });
     }
 
     return recipients;
