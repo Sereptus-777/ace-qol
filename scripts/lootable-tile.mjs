@@ -86,10 +86,21 @@ export class LootableTile {
     // patch the Tile class's _onClickRight method — Foundry's tile-event
     // pipeline calls it directly. We delegate to a hook-driven check that
     // opens the loot dialog when the tile is one of ours.
+    //
+    // Patch IMMEDIATELY (not deferred to ready) because if the module
+    // loads late (e.g. on a quick reload), `Hooks.once("ready")` may
+    // never fire — the event already passed. Patching at construction
+    // time means it runs as soon as CONFIG.Tile.objectClass is available.
+    // If CONFIG isn't ready yet at construction, fall through to the
+    // ready hook as backup. Idempotent via __aceQolRightClickPatched.
+    this._patchTileClickRight();
     Hooks.once("ready", () => {
-      this._patchTileClickRight();
-      this._wireDomListener();  // keep DOM fallback for hover-icon mousemove
+      this._patchTileClickRight();  // backup if init-time patch missed
+      this._wireDomListener();       // mousemove → hover icon
     });
+    // Also try after canvasReady — by then the Tile class is definitely
+    // initialized even if init/ready timing was weird.
+    Hooks.once("canvasReady", () => this._patchTileClickRight());
 
     // Tile HUD buttons (GM-only, when on tile layer)
     Hooks.on("renderTileHUD", (hud, html) => this._addTileHudButton(hud, html));
