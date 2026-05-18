@@ -687,17 +687,28 @@ export class LootEngine {
       const hasCurrency = currency.pp + currency.gp + currency.ep + currency.sp + currency.cp > 0;
 
       // ── Gather lootable items ──
+      // Respect dnd5e identification: if an item is flagged unidentified
+      // and has an obscured name set (by the biogenerator's unidentified
+      // layer pass), show that obscured name on the public chat card so
+      // players don't see "Cloak of Many Fashions" before they've cast
+      // Identify. GM-side dialog will show the real name and a Reveal
+      // button — that's the canonical path to disclose.
       const lootItems = this._getExistingLootItems(actor);
-      const itemsArray = lootItems.map((item, idx) => ({
-        name:     item.name,
-        img:      item.img ?? "icons/svg/item-bag.svg",
-        uuid:     item.uuid,
-        type:     item.type,
-        rarity:   item.system?.rarity ?? "common",
-        index:    idx,
-        looted:   false,
-        lootedBy: null,
-      }));
+      const itemsArray = lootItems.map((item, idx) => {
+        const isUnid = item.system?.identified === false;
+        const obscName = item.system?.unidentified?.name;
+        const publicName = (isUnid && obscName) ? obscName : item.name;
+        return {
+          name:     publicName,
+          img:      item.img ?? "icons/svg/item-bag.svg",
+          uuid:     item.uuid,
+          type:     item.type,
+          rarity:   item.system?.rarity ?? "common",
+          index:    idx,
+          looted:   false,
+          lootedBy: null,
+        };
+      });
 
       // ── Build currency HTML ──
       let currencyHTML = "";
