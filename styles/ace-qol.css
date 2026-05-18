@@ -3193,10 +3193,14 @@
   color: #d8c5f0;            /* violet-tinged for unidentified */
 }
 .ace-qol-tile-loot-desc {
-  font-size: 14px;
+  font-size: 16px;
   font-style: italic;
-  color: #b8b8c0;
-  line-height: 1.35;
+  color: #d8c890;          /* warm parchment cream — readable on the dark base, matches the gold accent palette */
+  line-height: 1.45;
+  letter-spacing: 0.15px;
+}
+.ace-qol-tile-loot-item.ace-loot-unidentified .ace-qol-tile-loot-desc {
+  color: #c8b8e0;          /* violet-tinged for unidentified flavor text */
 }
 .ace-qol-loot-reveal-btn {
   flex-shrink: 0;

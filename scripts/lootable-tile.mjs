@@ -171,6 +171,103 @@ export class LootableTile {
     this._registerHooks();
   }
 
+  // ─── Description-cleaning helpers ────────────────────────────────────────
+  // Foundry V13 + dnd5e 5.x descriptions are rich text with HTML tags AND
+  // enricher syntax baked in. When we display item descriptions in plain
+  // text (loot dialog, hover tooltips, anywhere we don't want full HTML),
+  // we have to strip BOTH layers — otherwise raw artifacts like
+  // `[[/attack extended]]` or `@UUID[Compendium.dnd5e...]{Sword}` leak
+  // into the UI looking like garbage.
+  //
+  // Static so any future feature that displays item text can reuse them
+  // without having to re-derive the regex set.
+
+  /**
+   * Strip HTML tags, decode common entities, and remove dnd5e/Foundry
+   * enricher syntax from an item-description string. Returns a clean
+   * single-line plain-text fragment (whitespace collapsed).
+   *
+   * Handles:
+   *   • HTML tags                                  <p>, <em>, <strong>, …
+   *   • Common HTML entities                       &nbsp; &amp; &lt; &gt; &quot;
+   *   • dnd5e enricher commands                    [[/attack ...]], [[/damage ...]],
+   *                                                [[/save ...]], [[/check ...]],
+   *                                                [[/heal ...]], [[/h ...]],
+   *                                                [[/r ...]], [[/roll ...]],
+   *                                                [[/ability ...]], etc.
+   *   • Inline-roll formulas                       [[<formula>]]
+   *   • Foundry referential enrichers              @UUID[ref]{Label}     → "Label"
+   *                                                @Compendium[ref]{Label} → "Label"
+   *                                                @Item[ref]{Label}     → "Label"
+   *                                                @Actor[ref]{Label}    → "Label"
+   *                                                @Scene[ref]{Label}    → "Label"
+   *                                                @Folder[ref]{Label}   → "Label"
+   *                                                @JournalEntry[ref]{Label} → "Label"
+   *   • Same enrichers without a label             @Check[ability=str], @Damage[2d6]
+   *                                                (whole tag removed)
+   *
+   * @param {string} s   Raw description value
+   * @returns {string}   Cleaned single-line plain text (empty string if input was empty)
+   */
+  static cleanItemDescription(s) {
+    if (!s) return "";
+    let out = String(s);
+
+    // 1. Strip enricher commands first — they're the most likely source of
+    //    bracketed garbage. `[[/cmd args]]` covers attack/damage/save/check/
+    //    heal/h/r/roll/ability/concentration/condition and any future
+    //    slash-prefixed enricher.
+    out = out.replace(/\[\[\/[^\]]+\]\]/g, "");
+
+    // 2. Strip inline-roll formulas `[[1d6+2]]`, `[[@scaling.cantrip]]`, etc.
+    //    Anything else still wrapped in [[ ]] at this point is a roll
+    //    formula — Foundry uses these heavily in spells/feats.
+    out = out.replace(/\[\[[^\]]+\]\]/g, "");
+
+    // 3. Replace document-referential enrichers with their label when one
+    //    exists (e.g. @UUID[...]{Sword of Wounding} → "Sword of Wounding").
+    //    Without the label we have no human-readable fallback, so drop
+    //    the whole thing.
+    out = out.replace(/@(?:UUID|Compendium|Item|Actor|Scene|Folder|JournalEntry|Macro|RollTable)\[[^\]]+\]\{([^}]+)\}/g, "$1");
+    out = out.replace(/@(?:UUID|Compendium|Item|Actor|Scene|Folder|JournalEntry|Macro|RollTable)\[[^\]]+\]/g, "");
+
+    // 4. Strip remaining `@Foo[args]` enrichers (e.g. @Check, @Damage,
+    //    @Save) that don't carry a label. Conservative — only matches
+    //    the @Word[ … ] shape.
+    out = out.replace(/@\w+\[[^\]]+\]/g, "");
+
+    // 5. HTML tags
+    out = out.replace(/<[^>]+>/g, " ");
+
+    // 6. Common HTML entities
+    out = out
+      .replace(/&nbsp;/gi, " ")
+      .replace(/&amp;/gi, "&")
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">")
+      .replace(/&quot;/gi, "\"")
+      .replace(/&#39;/gi, "'")
+      .replace(/&#x?[0-9a-f]+;/gi, "");  // any remaining numeric/hex entity
+
+    // 7. Collapse whitespace
+    out = out.replace(/\s+/g, " ").trim();
+
+    // 8. Trim leading punctuation left behind by stripped enrichers
+    //    ("., a shield is made..." → "a shield is made...")
+    out = out.replace(/^[.,;:\s]+/, "");
+
+    return out;
+  }
+
+  /** Truncate a cleaned description to `n` chars, appending an ellipsis
+   *  if a cut was made. Used by the loot dialog to keep entries from
+   *  ballooning vertically. */
+  static truncateDescription(s, n = 220) {
+    if (!s) return "";
+    if (s.length <= n) return s;
+    return s.slice(0, n - 1).trimEnd() + "…";
+  }
+
   _registerHooks() {
     // Tile right-click patch is installed via top-level Hooks.once("setup"/
     // "canvasReady"/"ready") registered above, NOT from this constructor.
@@ -781,7 +878,7 @@ export class LootableTile {
         source = "snapshot";
         items = (snapshot.items ?? []).map(it => ({
           ...it,
-          description:    it.description ?? "",
+          description:    LootableTile.truncateDescription(LootableTile.cleanItemDescription(it.description ?? ""), 220),
           identified:     it.identified !== false,
           revealable:     false,  // can't re-identify off a snapshot — actor's gone
         }));
@@ -796,7 +893,7 @@ export class LootableTile {
       const loot = getContainerLoot(tileDoc);
       items = (loot.items ?? []).map(it => ({
         ...it,
-        description:    it.description ?? "",
+        description:    LootableTile.truncateDescription(LootableTile.cleanItemDescription(it.description ?? ""), 220),
         identified:     it.identified !== false,
         revealable:     false,  // container loot is plain stored data — no live item to flip
       }));
@@ -1096,7 +1193,9 @@ export class LootableTile {
    *   - system.identified === false  → show unidentified.name + unidentified.description
    *   - system.identified !== false  → show real name + real description
    *
-   * Description HTML is stripped to plain text and truncated to keep the
+   * Description HTML is stripped to plain text, enricher tags are filtered
+   * out (so `[[/attack ...]]` and `@UUID[...]{Name}` etc. don't leak into
+   * the UI as raw artifacts), and the result is truncated to keep the
    * dialog readable. The GM-side dialog gets a "Reveal" toggle when the
    * item is currently unidentified (revealable: true).
    */
@@ -1109,17 +1208,10 @@ export class LootableTile {
     const unidentName = sys.unidentified?.name ?? "";
     const displayName = isIdentified ? realName : (unidentName || realName);
 
-    const stripHtml = (s) => String(s ?? "")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/&nbsp;/gi, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-    const truncate = (s, n) => (s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s);
-
-    const realDesc = stripHtml(sys.description?.value ?? "");
-    const unidentDesc = stripHtml(sys.unidentified?.description ?? "");
+    const realDesc = LootableTile.cleanItemDescription(sys.description?.value ?? "");
+    const unidentDesc = LootableTile.cleanItemDescription(sys.unidentified?.description ?? "");
     const rawDesc = isIdentified ? realDesc : (unidentDesc || ""); // mundane shows real; magical-unid shows unident
-    const description = truncate(rawDesc, 220);
+    const description = LootableTile.truncateDescription(rawDesc, 220);
 
     // The Reveal button only matters when item is currently unidentified
     // AND we have a real actor reference (so the click handler can resolve
