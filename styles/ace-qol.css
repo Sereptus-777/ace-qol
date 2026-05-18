@@ -3222,11 +3222,34 @@
   gap: 6px;
 }
 .ace-qol-tile-loot-item.ace-loot-unidentified {
-  /* Subtle violet shimmer on unidentified items so the GM knows at a glance */
-  border-color: rgba(170, 130, 220, 0.45);
+  /* GM-only visual: prominent violet outline + faint violet glow so the
+     GM can scan a long list and instantly see which items are magical.
+     Players never see this — the dialog only adds the class when
+     `game.user.isGM` is true. */
+  border-color: rgba(170, 130, 220, 0.75);
   background:
-    linear-gradient(135deg, rgba(170, 130, 220, 0.06), transparent 60%),
-    rgba(0, 0, 0, 0.25);
+    linear-gradient(135deg, rgba(170, 130, 220, 0.10), transparent 60%),
+    rgba(0, 0, 0, 0.28);
+  box-shadow: 0 0 0 1px rgba(170, 130, 220, 0.25), 0 0 12px rgba(170, 130, 220, 0.15);
+}
+/* GM-only "true identity" label that sits above the obscured name.
+   Distinctively styled so the GM cannot miss the real item identity
+   while reading the obscured layer the players see. */
+.ace-qol-tile-loot-realname {
+  font-size: 13px;
+  font-weight: 700;
+  color: #ffd700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  margin-bottom: 2px;
+  text-shadow: 0 0 4px rgba(255, 215, 0, 0.35);
+  cursor: help;
+}
+.ace-qol-tile-loot-realname::before {
+  content: "GM: ";
+  color: #b8b88a;
+  font-weight: 600;
+  letter-spacing: 0.2px;
 }
 .ace-qol-tile-loot-item-head {
   display: flex;

@@ -1098,13 +1098,27 @@ export class LootableTile {
       const deleteBtn = game.user.isGM
         ? `<button class="ace-qol-loot-delete-btn" data-item-key="${key}" data-item-name="${foundry.utils.escapeHTML(item.name)}" title="Delete this item from the loot (asks for confirmation)"><i class="fas fa-trash"></i></button>`
         : "";
-      const unidentClass = item.identified === false ? " ace-loot-unidentified" : "";
+      // Visual distinction for unidentified items is GM-ONLY. Players see
+      // EVERY item — magical or mundane — with identical styling so they
+      // can't tell at a glance which is which. They have to read the
+      // descriptions and use Identify (or wait for the GM Reveal) to
+      // figure out what's actually magical.
+      const isUnid = item.identified === false;
+      const showUnidStyling = game.user.isGM && isUnid;
+      const unidentClass = showUnidStyling ? " ace-loot-unidentified" : "";
+      // Real-name label — only the GM sees this, sits above the obscured
+      // name so the GM knows the truth at a glance. Hidden from players
+      // entirely.
+      const realNameLabel = (game.user.isGM && isUnid && item.realName && item.realName !== item.name)
+        ? `<div class="ace-qol-tile-loot-realname" title="True identity (GM only)">${foundry.utils.escapeHTML(item.realName)}</div>`
+        : "";
 
       return `
         <div class="ace-qol-tile-loot-item${unidentClass}" data-item-key="${key}">
           <div class="ace-qol-tile-loot-item-head">
             <img src="${item.img}" class="ace-qol-tile-loot-img" />
             <div class="ace-qol-tile-loot-item-titles">
+              ${realNameLabel}
               <div class="ace-qol-tile-loot-name">${foundry.utils.escapeHTML(item.name)}</div>
               ${item.description ? `<div class="ace-qol-tile-loot-desc">${foundry.utils.escapeHTML(item.description)}</div>` : ""}
             </div>
