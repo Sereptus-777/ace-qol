@@ -1039,11 +1039,16 @@ export class LootableTile {
     //   actor    → item.id   (lookup via actor.items.get(key))
     //   snapshot → item.id   (lookup by indexOf inside snapshot.items[])
     //              fallback to uuid if id missing (legacy snapshots)
-    //   container → item.uuid (lookup via fromUuid + uuid match in array)
+    //   container → prefer uuid (linked items), fall back to id for
+    //               name-only / placeholder entries (the screenshot-to-tile
+    //               spawn path assigns randomID() id but null uuid for
+    //               homebrew items it can't resolve to a compendium doc).
+    //               Without this fallback the delete handler bails on
+    //               empty keys and the trash icon silently no-ops.
     const keyFor = (item) => {
       if (source === "actor") return item.id ?? "";
       if (source === "snapshot") return item.id ?? item.uuid ?? "";
-      return item.uuid ?? "";
+      return item.uuid ?? item.id ?? "";
     };
 
     const itemRowsHtml = items.length ? items.map((item) => {
@@ -1877,12 +1882,14 @@ export class LootableTile {
     return base.replace(/[-_]/g, " ").replace(/\b\w/g, c => c.toUpperCase());
   }
 
-  /** Remove an item (by UUID) from a container tile's loot flag. */
-  async _removeContainerItem(tile, uuid) {
+  /** Remove an item from a container tile's loot flag. Matches by uuid OR
+   *  id — placeholder entries (e.g. name-only items from the screenshot-
+   *  to-tile spawn path) have null uuid and need to be matched by id. */
+  async _removeContainerItem(tile, key) {
     try {
       const tileDoc = tile?.document ?? tile;
       const loot = getContainerLoot(tileDoc);
-      const updatedItems = loot.items.filter(i => i.uuid !== uuid);
+      const updatedItems = loot.items.filter(i => i.uuid !== key && i.id !== key);
       if (updatedItems.length === loot.items.length) return;
       await tileDoc.update({
         [`flags.${CONTAINER_FLAG_NS}.${CONTAINER_LOOT_NAME}.items`]: updatedItems,
