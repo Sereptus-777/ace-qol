@@ -1425,6 +1425,65 @@ export class LootableTile {
       });
     });
 
+    // ── Inspect-item (GM only) — click image or name to open the item sheet ──
+    // Routes by source:
+    //   actor    → actor.items.get(key).sheet.render(true)
+    //   container → fromUuid(key) — if uuid (real item), open its sheet
+    //               If placeholder (no uuid), warn — nothing to inspect
+    //   snapshot → fromUuid(uuid) if still valid (linked actor),
+    //              OR rehydrate a temporary Item from snapshot.data
+    //              (synthetic-actor items still inspectable after the
+    //               original token is gone, because we stored toObject() data)
+    if (game.user.isGM) {
+      const inspectClick = async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const itemEl = ev.currentTarget.closest(".ace-qol-tile-loot-item");
+        if (!itemEl) return;
+        const key = itemEl.dataset.itemKey;
+        if (!key) {
+          ui.notifications.warn("ACE QOL: This item has no source document to inspect (homebrew placeholder).");
+          return;
+        }
+        let item = null;
+        try {
+          if (source === "actor" && actor) {
+            item = actor.items.get(key) ?? null;
+            if (!item && key.includes(".")) item = await fromUuid(key);
+          } else if (source === "snapshot") {
+            // Try the (possibly dead) UUID first; fall back to rehydrating
+            // a temporary Item from the snapshot's stored toObject() data.
+            const tileDoc = tile.document ?? tile;
+            const entry = (tileDoc?.flags?.[MODULE_ID]?.lootSnapshot?.items ?? [])
+                            .find(it => (it.id ?? it.uuid) === key);
+            if (entry?.uuid) {
+              try { item = await fromUuid(entry.uuid); } catch (_) {}
+            }
+            if (!item && entry?.data) {
+              try { item = new CONFIG.Item.documentClass(entry.data, { temporary: true }); } catch (_) {}
+            }
+          } else {
+            // container — key is uuid or id
+            if (key.includes(".")) {
+              try { item = await fromUuid(key); } catch (_) {}
+            }
+          }
+        } catch (err) {
+          console.warn(`${MODULE_ID} | Inspect lookup failed:`, err);
+        }
+        if (item?.sheet) {
+          item.sheet.render(true);
+        } else {
+          ui.notifications.warn("ACE QOL: Couldn't open item sheet — original document not found (homebrew or deleted).");
+        }
+      };
+      root.querySelectorAll(".ace-qol-tile-loot-img, .ace-qol-tile-loot-name").forEach(el => {
+        el.style.cursor = "pointer";
+        el.title = "Click to view item details";
+        el.addEventListener("click", inspectClick);
+      });
+    }
+
     // ── Drag-and-drop ADD into the dialog body (GM only) ──
     // GM drags an Item (from sidebar, compendium, or another sheet) onto the
     // open loot dialog. Item is appended to the source (actor / snapshot /

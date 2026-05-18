@@ -3239,6 +3239,15 @@
   border-radius: 5px;
   border: 1px solid rgba(212, 175, 55, 0.4);
   flex-shrink: 0;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.ace-qol-tile-loot-img:hover {
+  border-color: #d4af37;
+  box-shadow: 0 0 8px rgba(212, 175, 55, 0.55);
+}
+.ace-qol-tile-loot-name:hover {
+  color: #ffe89a;
+  text-shadow: 0 0 6px rgba(212, 175, 55, 0.4);
 }
 .ace-qol-tile-loot-item-titles {
   flex: 1;
