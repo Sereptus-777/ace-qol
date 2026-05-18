@@ -1349,23 +1349,41 @@ export class LootableTile {
       if (hp !== undefined && hp <= 0) continue;            // skip dead
       if (token.document.flags?.[MODULE_ID]?.isDeadToken) continue;
 
-      const isPC = !!token.actor.hasPlayerOwner;
+      // Classify recipient:
+      //   - actor.type === "character" + hasPlayerOwner → REAL PC (shows as PC button)
+      //   - actor.type === "npc"      + hasPlayerOwner → companion / summon / familiar
+      //                                                   (Steel Defender, Spectral
+      //                                                    Dire Wolf, Find Familiar
+      //                                                    creature, etc.) — EXCLUDE
+      //                                                    from loot list entirely.
+      //                                                    Their owning PC gets the
+      //                                                    share; the pet shouldn't
+      //                                                    be a separate recipient.
+      //   - actor.type === "npc"      + !hasPlayerOwner → friendly scene NPC (Kasimir-
+      //                                                   type) → show as NPC button
+      const actor = token.actor;
+      const isCharacter = actor.type === "character";
+      const isPlayerOwned = !!actor.hasPlayerOwner;
+      const isCompanion = isPlayerOwned && !isCharacter;   // player-owned NPC = companion/summon
+      if (isCompanion) continue;                            // skip — they never get loot
+
+      const isPC = isCharacter && isPlayerOwned;
       let online = false;
       if (isPC) {
         for (const u of game.users) {
           if (u.isGM) continue;
           if (!u.active) continue;
           try {
-            if (token.actor.testUserPermission(u, "OWNER")) { online = true; break; }
+            if (actor.testUserPermission(u, "OWNER")) { online = true; break; }
           } catch (_) {}
         }
       }
 
-      seen.add(token.actor.id);
+      seen.add(actor.id);
       recipients.push({
         type:    isPC ? "pc" : "npc",
-        actorId: token.actor.id,
-        name:    token.name ?? token.actor.name,
+        actorId: actor.id,
+        name:    token.name ?? actor.name,
         online,
       });
     }
