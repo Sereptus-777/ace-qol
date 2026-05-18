@@ -73,34 +73,112 @@ export function getContainerLoot(tileDoc) {
   };
 }
 
+// ─── Tile right-click patch — installed via top-level hooks ─────────────────
+// CRITICAL: this MUST run from top-level module code, not from inside the
+// LootableTile constructor. The constructor is called from ace-qol.mjs's
+// `Hooks.once("ready", ...)` block, which means `Hooks.once("ready", ...)`
+// registered INSIDE the constructor never fires (ready already passed).
+//
+// By registering setup/canvasReady/ready hooks at module-import time, we
+// guarantee at least one fires after CONFIG.Tile.objectClass is available.
+// `setup` is the earliest — fires once init has completed and CONFIG is
+// fully populated. canvasReady fires when each scene's canvas finishes
+// drawing (catches late module class swaps). ready fires last (final
+// belt-and-suspenders).
+//
+// Plus a per-tile `drawTile` fallback: if some other module replaces
+// CONFIG.Tile.objectClass AFTER our setup-time patch (e.g. with a custom
+// subclass), the prototype patch is on the OLD class. drawTile verifies
+// each instance's constructor.prototype carries our sentinel and re-patches
+// if not.
+
+// Module-level handle to the LootableTile instance so the patched method
+// can call _openLootDialog. Set by the constructor when the singleton is
+// created in ace-qol.mjs's ready hook.
+let _lootableTileInstance = null;
+
+function _aceQolPatchTileClickRight(reason) {
+  const TileClass = CONFIG?.Tile?.objectClass;
+  if (!TileClass) {
+    console.warn(`${MODULE_ID} | Tile right-click patch (${reason}): Tile class not available yet — will retry.`);
+    return false;
+  }
+  if (TileClass.prototype.__aceQolRightClickPatched) return true;  // already done
+  const proto = TileClass.prototype;
+  const original = proto._onClickRight;
+  proto._onClickRight = function(event) {
+    try {
+      const tileDoc = this.document ?? this;
+      const flags = tileDoc?.flags?.[MODULE_ID] ?? {};
+      const isDead = flags.isDeadToken === true;
+      const isContainer = !isDead && isContainerTile(tileDoc);
+      if (isDead || isContainer) {
+        try { event?.preventDefault?.(); event?.stopPropagation?.(); } catch (_) {}
+        if (_lootableTileInstance) _lootableTileInstance._openLootDialog(this);
+        return;
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Tile right-click patch handler failed:`, err);
+    }
+    // Fall through to Foundry's default right-click for non-lootable tiles
+    return original?.call(this, event);
+  };
+  TileClass.prototype.__aceQolRightClickPatched = true;
+  console.log(`${MODULE_ID} | Tile.prototype._onClickRight patched (${reason}).`);
+  return true;
+}
+
+// Register patch installers at TOP LEVEL — runs at module import time
+// (during init phase), guaranteeing these hooks register before they fire.
+Hooks.once("setup",       () => _aceQolPatchTileClickRight("setup"));
+Hooks.once("canvasReady", () => _aceQolPatchTileClickRight("canvasReady"));
+Hooks.once("ready",       () => _aceQolPatchTileClickRight("ready"));
+
+// Per-tile defense: if any module replaces CONFIG.Tile.objectClass AFTER
+// our setup-time patch, the prototype patch is on the OLD class and useless.
+// drawTile fires for every tile rendered on canvas — check the instance's
+// actual constructor.prototype and patch THAT one if it lacks our sentinel.
+Hooks.on("drawTile", (tile) => {
+  try {
+    const ctorProto = tile?.constructor?.prototype;
+    if (!ctorProto || ctorProto.__aceQolRightClickPatched) return;
+    const original = ctorProto._onClickRight;
+    ctorProto._onClickRight = function(event) {
+      try {
+        const tileDoc = this.document ?? this;
+        const flags = tileDoc?.flags?.[MODULE_ID] ?? {};
+        const isDead = flags.isDeadToken === true;
+        const isContainer = !isDead && isContainerTile(tileDoc);
+        if (isDead || isContainer) {
+          try { event?.preventDefault?.(); event?.stopPropagation?.(); } catch (_) {}
+          if (_lootableTileInstance) _lootableTileInstance._openLootDialog(this);
+          return;
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Tile right-click patch handler failed:`, err);
+      }
+      return original?.call(this, event);
+    };
+    ctorProto.__aceQolRightClickPatched = true;
+    console.log(`${MODULE_ID} | drawTile: late-patched ${tile.constructor.name}.prototype._onClickRight.`);
+  } catch (_) {}
+});
+
 export class LootableTile {
 
   constructor() {
+    _lootableTileInstance = this;
     this._registerHooks();
   }
 
   _registerHooks() {
-    // ── PIXI-level right-click — the reliable path ──
-    // Document-level mousedown/mouseup listeners get eaten by Foundry's
-    // PIXI canvas. The correct way to handle clicks on placeables is to
-    // patch the Tile class's _onClickRight method — Foundry's tile-event
-    // pipeline calls it directly. We delegate to a hook-driven check that
-    // opens the loot dialog when the tile is one of ours.
-    //
-    // Patch IMMEDIATELY (not deferred to ready) because if the module
-    // loads late (e.g. on a quick reload), `Hooks.once("ready")` may
-    // never fire — the event already passed. Patching at construction
-    // time means it runs as soon as CONFIG.Tile.objectClass is available.
-    // If CONFIG isn't ready yet at construction, fall through to the
-    // ready hook as backup. Idempotent via __aceQolRightClickPatched.
-    this._patchTileClickRight();
-    Hooks.once("ready", () => {
-      this._patchTileClickRight();  // backup if init-time patch missed
-      this._wireDomListener();       // mousemove → hover icon
-    });
-    // Also try after canvasReady — by then the Tile class is definitely
-    // initialized even if init/ready timing was weird.
-    Hooks.once("canvasReady", () => this._patchTileClickRight());
+    // Tile right-click patch is installed via top-level Hooks.once("setup"/
+    // "canvasReady"/"ready") registered above, NOT from this constructor.
+    // (Constructor runs inside ace-qol.mjs's ready hook, by which point any
+    //  Hooks.once("ready") registered here would already have missed.)
+
+    // DOM listener — mouse-move tracking for the hover-icon UX
+    this._wireDomListener();
 
     // Tile HUD buttons (GM-only, when on tile layer)
     Hooks.on("renderTileHUD", (hud, html) => this._addTileHudButton(hud, html));
@@ -111,46 +189,14 @@ export class LootableTile {
     // GM drops an Item onto a container tile → append to that tile's loot
     Hooks.on("dropCanvasData", (canvas, data) => this._onCanvasDrop(canvas, data));
 
-    console.log(`${MODULE_ID} | Lootable tile online`);
+    console.log(`${MODULE_ID} | Lootable tile online (instance bound; right-click patched via top-level hooks)`);
   }
 
-  /**
-   * Patch Tile.prototype._onClickRight so right-clicking ANY ace-qol
-   * lootable tile opens the loot dialog — bypassing all the document-
-   * level listener weirdness Foundry's PIXI canvas creates.
-   *
-   * The patched method falls through to the original for non-lootable
-   * tiles, preserving Foundry's default right-click behavior elsewhere.
-   */
+  /** Re-installs the prototype patch on demand. Kept on the instance for
+   *  external tools (debug console, hot-reload scripts) — the canonical
+   *  install path is the top-level hooks at the head of this file. */
   _patchTileClickRight() {
-    const TileClass = CONFIG?.Tile?.objectClass;
-    if (!TileClass) {
-      console.warn(`${MODULE_ID} | Could not find Tile object class — right-click won't work.`);
-      return;
-    }
-    if (TileClass.prototype.__aceQolRightClickPatched) return;
-    const proto = TileClass.prototype;
-    const original = proto._onClickRight;
-    const self = this;
-    proto._onClickRight = function(event) {
-      try {
-        const tileDoc = this.document ?? this;
-        const flags = tileDoc?.flags?.[MODULE_ID] ?? {};
-        const isDead = flags.isDeadToken === true;
-        const isContainer = !isDead && isContainerTile(tileDoc);
-        if (isDead || isContainer) {
-          try { event?.preventDefault?.(); event?.stopPropagation?.(); } catch (_) {}
-          self._openLootDialog(this);
-          return;
-        }
-      } catch (err) {
-        console.warn(`${MODULE_ID} | Tile right-click patch failed:`, err);
-      }
-      // Fall through to Foundry's default right-click for non-lootable tiles
-      return original?.call(this, event);
-    };
-    TileClass.prototype.__aceQolRightClickPatched = true;
-    console.log(`${MODULE_ID} | Tile.prototype._onClickRight patched for lootable tiles.`);
+    return _aceQolPatchTileClickRight("instance.reinstall");
   }
 
   /**
