@@ -1108,17 +1108,35 @@ export class LootableTile {
       ? (flags.creatureType ?? "")
       : "Container";
 
+    // GM-only "Repost Loot Card" button — recreates the ACE Loot chat card
+    // for this tile if the original card was lost / accidentally deleted.
+    // Hidden if there's nothing worth posting (no items + no currency).
+    const repostBtn = (game.user.isGM && (items.length > 0 || totalCoins > 0))
+      ? `<button class="ace-qol-loot-repost-btn" data-action="lootRepostCard" title="Post a fresh ACE Loot chat card from this tile's contents — use if the original card was deleted"><i class="fas fa-comment-alt"></i> Repost Card</button>`
+      : "";
+
     const content = `
       <div class="ace-qol-tile-loot-dialog">
         <div class="ace-qol-tile-loot-header">
           <strong>${foundry.utils.escapeHTML(displayName)}</strong>
           <span class="ace-qol-tile-loot-type">${foundry.utils.escapeHTML(subtitle)}</span>
+          ${repostBtn}
         </div>
         ${lockBanner}
         ${goldHtml}
         <div class="ace-qol-tile-loot-items">${itemRowsHtml}</div>
       </div>
     `;
+
+    // Capture the resolved source data so the dialog wiring can build a
+    // postable chat card payload without re-resolving from scratch.
+    const repostPayload = {
+      displayName,
+      actorId:   flags?.originalActorId ?? actor?.id ?? null,
+      actorImg:  actor?.img ?? actor?.prototypeToken?.texture?.src ?? "icons/svg/skull.svg",
+      items,
+      currency,
+    };
 
     const dlg = await foundry.applications.api.DialogV2.wait({
       window: { title: `Loot — ${displayName}` },
@@ -1128,7 +1146,7 @@ export class LootableTile {
       rejectClose: false,
       position: { width: 560 },
       render: (event, dialog) =>
-        this._wireDialog(event, dialog, { tile, actor, recipients, source }),
+        this._wireDialog(event, dialog, { tile, actor, recipients, source, repostPayload }),
     });
   }
 
@@ -1141,7 +1159,35 @@ export class LootableTile {
     if (ctx && typeof ctx === "object" && !("source" in ctx) && arguments.length > 3) {
       ctx = { tile: arguments[2], actor: arguments[3], recipients: arguments[4], source: "actor" };
     }
-    const { tile, actor, recipients, source } = ctx ?? {};
+    const { tile, actor, recipients, source, repostPayload } = ctx ?? {};
+
+    // ── Repost Loot Card button (GM only) ──
+    const repostBtn = root.querySelector(".ace-qol-loot-repost-btn");
+    if (repostBtn && game.user.isGM && repostPayload) {
+      repostBtn.addEventListener("click", async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const confirmed = await foundry.applications.api.DialogV2.confirm({
+          window: { title: "Repost Loot Card" },
+          content: `<p style="font-size:15px;line-height:1.5;">Post a fresh <strong>ACE Loot</strong> chat card for <strong>${foundry.utils.escapeHTML(repostPayload.displayName)}</strong> using this tile's current contents? Useful if the original card was deleted.</p>`,
+          modal:   true,
+          yes:     { default: true, label: "Repost", icon: "fa-solid fa-comment-alt" },
+          no:      { label: "Cancel" },
+          rejectClose: false,
+        }).catch(() => false);
+        if (!confirmed) return;
+        try {
+          if (game.aceQol?.LootEngine?.postCardFromTile) {
+            await game.aceQol.LootEngine.postCardFromTile(repostPayload);
+          } else {
+            ui.notifications.warn("ACE QOL: LootEngine.postCardFromTile not available.");
+          }
+        } catch (err) {
+          console.error(`${MODULE_ID} | Repost loot card failed:`, err);
+          ui.notifications.error("ACE QOL: Failed to repost loot card — see console.");
+        }
+      });
+    }
 
     // ── Give-to-recipient buttons ──
     root.querySelectorAll(".ace-qol-loot-give-btn").forEach(btn => {

@@ -142,6 +142,8 @@ export class LootEngine {
         postPublicLootCard:  engine.postPublicLootCard.bind(engine),
         handleItemLooted:    engine.handleItemLooted.bind(engine),
         syncCardForActor:    engine.syncCardForActor.bind(engine),
+        spawnTileFromCard:   engine.spawnTileFromCard.bind(engine),
+        postCardFromTile:    engine.postCardFromTile.bind(engine),
       };
       console.log(`${LOG_PREFIX} API registered on game.aceQol.LootEngine`);
     } catch (err) {
@@ -247,6 +249,156 @@ export class LootEngine {
   }
 
   /**
+   * Recreate a loot tile on the current scene from a chat card's flags.
+   * Use case: the dead-body tile was accidentally deleted (or the corpse
+   * never had one) but the ACE Loot card still exists in chat. GM clicks
+   * the "Spawn Tile" button on the card; this rebuilds a container tile
+   * at scene center carrying the same items + currency. The tile uses
+   * the chest icon (we don't have the original dead-body art to restore).
+   *
+   * @param {ChatMessage} message  The lootCard ChatMessage
+   * @returns {Promise<TileDocument|null>}
+   */
+  async spawnTileFromCard(message) {
+    try {
+      if (!message || !game.user.isGM) return null;
+      const flags = message.flags?.[MODULE_ID];
+      if (flags?.type !== "lootCard") {
+        ui.notifications.warn("ACE QOL: Not a loot card.");
+        return null;
+      }
+      const scene = canvas?.scene;
+      if (!scene) {
+        ui.notifications.error("ACE QOL: No active scene to spawn the tile on.");
+        return null;
+      }
+
+      // Filter out items already marked looted — those are gone, no point
+      // recreating them. Currency: respect currencySplit so we don't dump
+      // gold the party already received.
+      const liveItems = (flags.items ?? []).filter(it => !it.looted);
+      const containerItems = liveItems.map(it => ({
+        id:     foundry.utils.randomID(),
+        name:   it.name,
+        img:    it.img ?? "icons/svg/item-bag.svg",
+        uuid:   it.uuid ?? null,
+        type:   it.type ?? "loot",
+        rarity: it.rarity ?? "common",
+      }));
+      const currency = flags.currencySplit
+        ? { pp: 0, gp: 0, ep: 0, sp: 0, cp: 0 }
+        : (flags.currency ?? { pp: 0, gp: 0, ep: 0, sp: 0, cp: 0 });
+
+      // Tile at scene center, 2 grid squares
+      const gridSize = scene.grid?.size ?? 100;
+      const tileSize = gridSize * 2;
+      const cx = scene.width  / 2;
+      const cy = scene.height / 2;
+      const containerName = flags.actorName
+        ? `${flags.actorName}'s Loot`
+        : "Recovered Loot";
+
+      const [created] = await scene.createEmbeddedDocuments("Tile", [{
+        x: Math.round(cx - tileSize / 2),
+        y: Math.round(cy - tileSize / 2),
+        width:  tileSize,
+        height: tileSize,
+        texture: { src: "icons/svg/chest.svg" },
+        flags: {
+          "ace-suite": {
+            containerTile: true,
+            containerName,
+            containerLoot: { items: containerItems, currency },
+          },
+          [MODULE_ID]: {
+            // Link the spawned tile back to the original actor so future
+            // sync operations (add/delete) can still find this chat card.
+            // We DON'T set isDeadToken — this is a recovered loot pile,
+            // not a freshly-killed body — but originalActorId still lets
+            // the sync helper match cards by actor id.
+            originalActorId: flags.actorId ?? null,
+            originalName: flags.actorName ?? "Recovered Loot",
+          },
+        },
+      }]);
+
+      ui.notifications.info(`ACE QOL: Spawned "${containerName}" tile at scene center. Drag to relocate.`);
+      // Pan to the new tile so the GM can see where it landed
+      try {
+        await canvas.animatePan({ x: cx, y: cy, scale: 1.0, duration: 600 });
+      } catch (_) {}
+      return created;
+    } catch (err) {
+      console.error(`${LOG_PREFIX} spawnTileFromCard failed:`, err);
+      ui.notifications.error("ACE QOL: Couldn't spawn tile from card — see console.");
+      return null;
+    }
+  }
+
+  /**
+   * Repost a fresh "ACE Loot — <Name>" chat card from a tile's current
+   * loot data. Use case: the original card was accidentally deleted but
+   * the tile (corpse OR container) still has all the items. GM clicks
+   * "Repost Loot Card" in the loot dialog.
+   *
+   * @param {object} src              Pre-resolved source payload from the loot dialog:
+   *                                  { displayName, actorId, actorImg, items: [...], currency: {...} }
+   * @returns {Promise<ChatMessage|null>}
+   */
+  async postCardFromTile(src) {
+    try {
+      if (!src || !game.user.isGM) return null;
+      const itemsArray = (src.items ?? []).map((it, idx) => ({
+        name:     it.name ?? "Unknown",
+        img:      it.img ?? "icons/svg/item-bag.svg",
+        uuid:     it.uuid ?? "",
+        type:     it.type ?? "loot",
+        rarity:   it.rarity ?? "common",
+        index:    idx,
+        looted:   false,
+        lootedBy: null,
+      }));
+      const currency = {
+        pp: src.currency?.pp ?? 0,
+        gp: src.currency?.gp ?? 0,
+        ep: src.currency?.ep ?? 0,
+        sp: src.currency?.sp ?? 0,
+        cp: src.currency?.cp ?? 0,
+      };
+      const flagsPayload = {
+        type:          "lootCard",
+        actorId:       src.actorId ?? null,
+        actorName:     src.displayName ?? "Recovered Loot",
+        actorImg:      src.actorImg ?? "icons/svg/skull.svg",
+        items:         itemsArray,
+        currency,
+        currencySplit: false,
+        splitReceipt:  null,
+        fullyLooted:   false,
+      };
+
+      const content = this._buildLootCardContent(flagsPayload);
+      const messageData = {
+        content,
+        speaker: ChatMessage.getSpeaker({ alias: "ACE Loot" }),
+        flags: { [MODULE_ID]: flagsPayload },
+      };
+      try {
+        const isPublic = game.settings.get(MODULE_ID, "lootCardPublic") ?? true;
+        if (!isPublic) messageData.whisper = [game.user.id];
+      } catch (_) {}
+
+      const message = await ChatMessage.create(messageData);
+      ui.notifications.info(`ACE QOL: Posted loot card for "${flagsPayload.actorName}".`);
+      return message;
+    } catch (err) {
+      console.error(`${LOG_PREFIX} postCardFromTile failed:`, err);
+      ui.notifications.error("ACE QOL: Couldn't post loot card — see console.");
+      return null;
+    }
+  }
+
+  /**
    * Build the public loot card HTML from a flags payload. Mirrors the
    * structure produced inline by postPublicLootCard so sync edits look
    * identical to the original card. Items already flagged as looted get
@@ -299,9 +451,15 @@ export class LootEngine {
       itemListHTML = `<p class="ace-qol-loot-none"><em>No lootable items</em></p>`;
     }
 
-    const controlsHTML = (hasCurrency && !flags.currencySplit)
-      ? `<div class="ace-qol-loot-controls"><button class="ace-qol-loot-split-btn" data-action="aceQolSplitGold">Split Gold Evenly</button></div>`
-      : "";
+    // Control buttons row — GM only via CSS handled in _wirePublicLootCard:
+    //   - Split Gold Evenly (only when there's still currency to split)
+    //   - Spawn Tile (always available so GM can recreate a lost tile)
+    const ctrlButtons = [];
+    if (hasCurrency && !flags.currencySplit) {
+      ctrlButtons.push(`<button class="ace-qol-loot-split-btn" data-action="aceQolSplitGold">Split Gold Evenly</button>`);
+    }
+    ctrlButtons.push(`<button class="ace-qol-loot-spawn-tile-btn" data-action="aceQolSpawnTile" title="Spawn a loot tile on the current scene from this card's contents — use if the original tile was deleted">Spawn Tile</button>`);
+    const controlsHTML = `<div class="ace-qol-loot-controls">${ctrlButtons.join("")}</div>`;
 
     return `
 <div class="ace-qol-loot-card" data-actor-id="${actorId}">
@@ -556,9 +714,14 @@ export class LootEngine {
       }
 
       // ── Build GM controls ──
-      const controlsHTML = hasCurrency
-        ? `<div class="ace-qol-loot-controls"><button class="ace-qol-loot-split-btn" data-action="aceQolSplitGold">Split Gold Evenly</button></div>`
-        : "";
+      // Split Gold (only when there's currency) + Spawn Tile (always — lets
+      // the GM recreate a loot tile on the canvas if the original was lost).
+      const ctrlButtons = [];
+      if (hasCurrency) {
+        ctrlButtons.push(`<button class="ace-qol-loot-split-btn" data-action="aceQolSplitGold">Split Gold Evenly</button>`);
+      }
+      ctrlButtons.push(`<button class="ace-qol-loot-spawn-tile-btn" data-action="aceQolSpawnTile" title="Spawn a loot tile on the current scene from this card's contents — use if the original tile was deleted">Spawn Tile</button>`);
+      const controlsHTML = `<div class="ace-qol-loot-controls">${ctrlButtons.join("")}</div>`;
 
       // ── Assemble the full card ──
       const content = `
@@ -653,7 +816,6 @@ export class LootEngine {
           splitBtn.textContent = "Gold Split \u2713";
           splitBtn.disabled = true;
           splitBtn.classList.add("ace-qol-loot-split-done");
-
           // Show split receipt if available
           if (flags.splitReceipt) {
             this._renderSplitReceipt(card, flags.splitReceipt);
@@ -665,6 +827,27 @@ export class LootEngine {
             await this._handleSplitGold(message, flags, splitBtn);
           }, { once: true });
         }
+      }
+
+      // \u2500\u2500 Wire Spawn Tile button (GM only) \u2014 recreate a loot tile on the
+      //    current scene from this card's contents. Used to recover when
+      //    the original dead-body / container tile was deleted. \u2500\u2500
+      const spawnBtn = card.querySelector('[data-action="aceQolSpawnTile"]');
+      if (spawnBtn && game.user.isGM) {
+        spawnBtn.addEventListener("click", async (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const confirmed = await foundry.applications.api.DialogV2.confirm({
+            window: { title: "Spawn Loot Tile" },
+            content: `<p style="font-size:15px;line-height:1.5;">Spawn a loot tile for <strong>${foundry.utils.escapeHTML(flags.actorName ?? "this card")}</strong> on the current scene? It'll drop at scene center as a chest-style tile carrying the same loot. Items already taken won't be respawned.</p>`,
+            modal:   true,
+            yes:     { default: true, label: "Spawn", icon: "fa-solid fa-treasure-chest" },
+            no:      { label: "Cancel" },
+            rejectClose: false,
+          }).catch(() => false);
+          if (!confirmed) return;
+          await this.spawnTileFromCard(message);
+        });
       }
 
       // ── Wire the collapsed receipt toggle (if card was previously collapsed) ──
