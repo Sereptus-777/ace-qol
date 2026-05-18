@@ -80,8 +80,16 @@ export class LootableTile {
   }
 
   _registerHooks() {
-    // DOM-level listeners — fire regardless of active layer, no PIXI quirks.
-    Hooks.once("ready", () => this._wireDomListener());
+    // ── PIXI-level right-click — the reliable path ──
+    // Document-level mousedown/mouseup listeners get eaten by Foundry's
+    // PIXI canvas. The correct way to handle clicks on placeables is to
+    // patch the Tile class's _onClickRight method — Foundry's tile-event
+    // pipeline calls it directly. We delegate to a hook-driven check that
+    // opens the loot dialog when the tile is one of ours.
+    Hooks.once("ready", () => {
+      this._patchTileClickRight();
+      this._wireDomListener();  // keep DOM fallback for hover-icon mousemove
+    });
 
     // Tile HUD buttons (GM-only, when on tile layer)
     Hooks.on("renderTileHUD", (hud, html) => this._addTileHudButton(hud, html));
@@ -93,6 +101,45 @@ export class LootableTile {
     Hooks.on("dropCanvasData", (canvas, data) => this._onCanvasDrop(canvas, data));
 
     console.log(`${MODULE_ID} | Lootable tile online`);
+  }
+
+  /**
+   * Patch Tile.prototype._onClickRight so right-clicking ANY ace-qol
+   * lootable tile opens the loot dialog — bypassing all the document-
+   * level listener weirdness Foundry's PIXI canvas creates.
+   *
+   * The patched method falls through to the original for non-lootable
+   * tiles, preserving Foundry's default right-click behavior elsewhere.
+   */
+  _patchTileClickRight() {
+    const TileClass = CONFIG?.Tile?.objectClass;
+    if (!TileClass) {
+      console.warn(`${MODULE_ID} | Could not find Tile object class — right-click won't work.`);
+      return;
+    }
+    if (TileClass.prototype.__aceQolRightClickPatched) return;
+    const proto = TileClass.prototype;
+    const original = proto._onClickRight;
+    const self = this;
+    proto._onClickRight = function(event) {
+      try {
+        const tileDoc = this.document ?? this;
+        const flags = tileDoc?.flags?.[MODULE_ID] ?? {};
+        const isDead = flags.isDeadToken === true;
+        const isContainer = !isDead && isContainerTile(tileDoc);
+        if (isDead || isContainer) {
+          try { event?.preventDefault?.(); event?.stopPropagation?.(); } catch (_) {}
+          self._openLootDialog(this);
+          return;
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Tile right-click patch failed:`, err);
+      }
+      // Fall through to Foundry's default right-click for non-lootable tiles
+      return original?.call(this, event);
+    };
+    TileClass.prototype.__aceQolRightClickPatched = true;
+    console.log(`${MODULE_ID} | Tile.prototype._onClickRight patched for lootable tiles.`);
   }
 
   /**
