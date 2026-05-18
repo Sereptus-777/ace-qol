@@ -342,7 +342,10 @@ export class LootableTile {
     // ── Hover-icon system ──
     document.addEventListener("mousemove", (ev) => this._onHoverMove(ev));
 
-    console.log(`${MODULE_ID} | Lootable tile DOM listeners wired (right-click + hover-icon)`);
+    let delayMs = "?";
+    try { delayMs = game.settings.get(MODULE_ID, "lootHoverIconDelayMs"); }
+    catch (_) {}
+    console.log(`${MODULE_ID} | Lootable tile DOM listeners wired — right-click ready; hover-icon delay=${delayMs}ms${delayMs === 0 ? " (DISABLED — set lootHoverIconDelayMs > 0 to enable)" : ""}`);
   }
 
   /**
@@ -500,6 +503,17 @@ export class LootableTile {
       this._cancelHoverIcon();
       return;
     }
+    // One-time diagnostic so we can prove the listener fires + the tile is
+    // detected. Logged exactly once per session per tile-id so it doesn't
+    // spam. If you never see this line in console, _wireDomListener never
+    // ran. If you see it but no icon appears, the problem is downstream
+    // (_tileHasLoot returned false, or _showHoverIcon couldn't render).
+    if (!this._hoverFirstDetectLogged) this._hoverFirstDetectLogged = new Set();
+    const tid = tile.id ?? tile.document?.id;
+    if (tid && !this._hoverFirstDetectLogged.has(tid)) {
+      this._hoverFirstDetectLogged.add(tid);
+      console.log(`${MODULE_ID} | hover-icon: lootable tile detected under cursor (${tid}, delay=${delayMs}ms)`);
+    }
     // Don't tease the user with a treasure-chest icon on empty corpses /
     // empty containers — only show the icon if there's actually something
     // to take. Right-click still works either way for diagnostic purposes.
@@ -601,19 +615,22 @@ export class LootableTile {
 
       const icon = document.createElement("div");
       icon.className = "ace-qol-loot-hover-icon";
-      icon.innerHTML = `<i class="fas fa-treasure-chest"></i>`;
+      // fa-sack-dollar is Font Awesome 6 Free (Foundry V13 bundles Free).
+      // Previously used fa-treasure-chest, which is Pro-only — the icon
+      // div rendered as a blank circle on Free installations.
+      icon.innerHTML = `<i class="fas fa-sack-dollar" aria-hidden="true"></i>`;
       icon.style.cssText = `
         position: fixed;
         left: ${left}px;
         top: ${top}px;
         transform: translate(-50%, -50%);
-        width: 36px; height: 36px;
+        width: 38px; height: 38px;
         display: flex; align-items: center; justify-content: center;
         background: rgba(212, 175, 55, 0.95);
         border: 2px solid #d4af37;
         border-radius: 50%;
         color: #1a1a1e;
-        font-size: 18px;
+        font-size: 20px;
         cursor: pointer;
         box-shadow: 0 2px 8px rgba(0,0,0,0.6);
         z-index: 10000;
