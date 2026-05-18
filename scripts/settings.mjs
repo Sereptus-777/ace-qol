@@ -1284,12 +1284,12 @@ export class QolSettings {
 
     s("lootHoverIconDelayMs", {
       name:    "Loot Hover-Icon Delay (ms)",
-      hint:    "How long to hover over a corpse / container tile before the gold treasure-chest icon fades in. Set to 0 to disable the hover icon entirely. Default: 1000ms (1 second).",
+      hint:    "How long to hover over a corpse / container tile before the gold coin-sack icon fades in. Set to 0 to disable the hover icon entirely. Default: 200ms (0.2 seconds — snappy).",
       scope:   "client",
       config:  false,
       type:    Number,
-      default: 1000,
-      range:   { min: 0, max: 5000, step: 100 },
+      default: 200,
+      range:   { min: 0, max: 5000, step: 50 },
     });
 
     s("lootClickDebug", {

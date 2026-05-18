@@ -485,8 +485,8 @@ export class LootableTile {
 
   _onHoverMove(ev) {
     // Setting === 0 disables the hover icon entirely (still keeps right-click).
-    let delayMs = 1000;
-    try { delayMs = game.settings.get(MODULE_ID, "lootHoverIconDelayMs") ?? 1000; }
+    let delayMs = 200;
+    try { delayMs = game.settings.get(MODULE_ID, "lootHoverIconDelayMs") ?? 200; }
     catch (_) { /* setting not registered yet — fall back to default */ }
     if (delayMs <= 0) {
       this._cancelHoverIcon();
@@ -624,15 +624,15 @@ export class LootableTile {
         left: ${left}px;
         top: ${top}px;
         transform: translate(-50%, -50%);
-        width: 38px; height: 38px;
+        width: 76px; height: 76px;
         display: flex; align-items: center; justify-content: center;
         background: rgba(212, 175, 55, 0.95);
-        border: 2px solid #d4af37;
+        border: 3px solid #d4af37;
         border-radius: 50%;
         color: #1a1a1e;
-        font-size: 20px;
+        font-size: 40px;
         cursor: pointer;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.6);
+        box-shadow: 0 3px 14px rgba(0,0,0,0.65);
         z-index: 10000;
         pointer-events: auto;
         animation: ace-qol-loot-pulse 1.4s ease-in-out infinite;
