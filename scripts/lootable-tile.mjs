@@ -312,15 +312,76 @@ export class LootableTile {
     if (data?.type !== "Item" || !data?.uuid) return;
     if (typeof data.x !== "number" || typeof data.y !== "number") return;
 
-    // Find a CONTAINER tile at the drop position (dead-body tiles use the
-    // actor as source of truth — drops there would be confusing).
-    const tileDoc = this._findContainerTileAtWorldPos(data.x, data.y);
+    // Find a lootable tile at the drop position — container OR dead-body.
+    // Container drops append to containerLoot.items. Dead-body drops append
+    // to the lootSnapshot (so players + the dialog both see the new item
+    // immediately) and to the live actor if one exists.
+    const tileDoc = this._findLootableTileDocAtWorldPos(data.x, data.y);
     if (!tileDoc) return;
+
+    const isDead = tileDoc.flags?.[MODULE_ID]?.isDeadToken === true;
 
     try {
       const item = await fromUuid(data.uuid);
       if (!item) return;
 
+      if (isDead) {
+        // ── Dead-body tile: append to snapshot, and to live actor if linked ──
+        const tileFlags = tileDoc.flags?.[MODULE_ID] ?? {};
+        const liveActor = tileFlags.originalActorId
+          ? game.actors.get(tileFlags.originalActorId)
+          : null;
+
+        const itemData = item.toObject();
+        let createdOnActor = null;
+        if (liveActor) {
+          try {
+            const [created] = await liveActor.createEmbeddedDocuments("Item", [itemData]);
+            createdOnActor = created ?? null;
+          } catch (err) {
+            console.warn(`${MODULE_ID} | Drop on dead tile: createEmbeddedDocuments failed:`, err);
+          }
+        }
+
+        // Append to snapshot too — snapshot is the canonical store for
+        // unlinked-NPC corpses, and players read from it regardless.
+        const snap = tileDoc.flags?.[MODULE_ID]?.lootSnapshot;
+        const items = Array.isArray(snap?.items) ? [...snap.items] : [];
+        items.push({
+          id:          createdOnActor?.id ?? foundry.utils.randomID(),
+          name:        item.name,
+          img:         item.img,
+          uuid:        createdOnActor?.uuid ?? item.uuid,
+          type:        item.type,
+          rarity:      item.system?.rarity ?? "common",
+          description: item.system?.description?.value ?? "",
+          identified:  item.system?.identified !== false,
+          data:        itemData,
+        });
+        await tileDoc.update({ [`flags.${MODULE_ID}.lootSnapshot.items`]: items });
+
+        ui.notifications.info(`ACE QOL: Added "${item.name}" to ${tileFlags.originalName ?? "the body"}.`);
+
+        // Sync chat card if there's a lootCard for this corpse
+        if (tileFlags.originalActorId && game.aceQol?.LootEngine?.syncCardForActor) {
+          try {
+            await game.aceQol.LootEngine.syncCardForActor(tileFlags.originalActorId, {
+              addItem: {
+                name:   item.name,
+                img:    item.img,
+                uuid:   createdOnActor?.uuid ?? item.uuid,
+                type:   item.type,
+                rarity: item.system?.rarity ?? "common",
+              },
+            });
+          } catch (err) {
+            console.warn(`${MODULE_ID} | Chat-card sync after canvas drop failed (non-fatal):`, err);
+          }
+        }
+        return false;  // cancel default drop handling
+      }
+
+      // ── Container tile (original path) ──
       const entry = {
         id:     item.id ?? null,
         name:   item.name,
@@ -353,8 +414,31 @@ export class LootableTile {
       ui.notifications.info(`ACE QOL: Added ${item.name} to container.`);
       return false;  // cancel default drop handling
     } catch (err) {
-      console.warn(`${MODULE_ID} | Container drop failed:`, err);
+      console.warn(`${MODULE_ID} | Tile drop failed:`, err);
     }
+  }
+
+  /**
+   * Find a lootable tile-document (dead-body OR container) at the given
+   * world position. Companion of _findContainerTileAtWorldPos which
+   * matched only containers — this broader version powers the canvas-drop
+   * handler so you can drop items onto either kind of loot tile.
+   */
+  _findLootableTileDocAtWorldPos(worldX, worldY) {
+    if (!canvas?.scene) return null;
+    const tiles = [...canvas.scene.tiles.contents].reverse();
+    for (const tileDoc of tiles) {
+      const isDead = tileDoc.flags?.[MODULE_ID]?.isDeadToken === true;
+      const isCont = !isDead && isContainerTile(tileDoc);
+      if (!isDead && !isCont) continue;
+      const w = (Number(tileDoc.width)  > 0) ? Number(tileDoc.width)  : 100;
+      const h = (Number(tileDoc.height) > 0) ? Number(tileDoc.height) : 100;
+      if (worldX >= tileDoc.x && worldX < tileDoc.x + w
+       && worldY >= tileDoc.y && worldY < tileDoc.y + h) {
+        return tileDoc;
+      }
+    }
+    return null;
   }
 
   /** Find a container tile at the given world position. Used by the
@@ -979,7 +1063,11 @@ export class LootableTile {
 
       // Per-item header row: image + name + (GM-only) reveal toggle for unidentified items
       const revealBtn = (game.user.isGM && item.revealable)
-        ? `<button class="ace-qol-loot-reveal-btn" data-action="lootRevealItem" data-item-key="${key}" title="Reveal real name + description to players (Identify spell, GM grant)"><i class="fas fa-lock"></i></button>`
+        ? `<button class="ace-qol-loot-reveal-btn" data-item-key="${key}" title="Reveal real name + description to players (Identify spell, GM grant)"><i class="fas fa-lock"></i></button>`
+        : "";
+      // GM-only per-item Delete button — confirms before removing
+      const deleteBtn = game.user.isGM
+        ? `<button class="ace-qol-loot-delete-btn" data-item-key="${key}" data-item-name="${foundry.utils.escapeHTML(item.name)}" title="Delete this item from the loot (asks for confirmation)"><i class="fas fa-trash"></i></button>`
         : "";
       const unidentClass = item.identified === false ? " ace-loot-unidentified" : "";
 
@@ -991,7 +1079,10 @@ export class LootableTile {
               <div class="ace-qol-tile-loot-name">${foundry.utils.escapeHTML(item.name)}</div>
               ${item.description ? `<div class="ace-qol-tile-loot-desc">${foundry.utils.escapeHTML(item.description)}</div>` : ""}
             </div>
-            ${revealBtn}
+            <div class="ace-qol-tile-loot-item-actions">
+              ${revealBtn}
+              ${deleteBtn}
+            </div>
           </div>
           ${canDistribute ? `<div class="ace-qol-tile-loot-give-row">${recipientBtns}</div>` : ""}
         </div>
@@ -1214,6 +1305,209 @@ export class LootableTile {
         }
       });
     });
+
+    // ── Delete-item button (GM only) — confirms before removing ──
+    root.querySelectorAll(".ace-qol-loot-delete-btn").forEach(btn => {
+      btn.addEventListener("click", async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (!game.user.isGM) return;
+        const key = btn.dataset.itemKey;
+        const itemName = btn.dataset.itemName ?? "this item";
+        if (!key) return;
+
+        // Confirm dialog — default "Yes" so Enter confirms.
+        const confirmed = await foundry.applications.api.DialogV2.confirm({
+          window: { title: "Delete Item" },
+          content: `<p style="font-size:15px;line-height:1.5;">Delete <strong>${itemName}</strong> from this loot? This cannot be undone.</p>`,
+          modal:   true,
+          yes:     { default: true, label: "Delete", icon: "fa-solid fa-trash" },
+          no:      { label: "Cancel" },
+          rejectClose: false,
+        }).catch(() => false);
+        if (!confirmed) return;
+
+        try {
+          const tileDoc = tile.document ?? tile;
+          const originalActorId = tileDoc?.flags?.[MODULE_ID]?.originalActorId;
+          let removed = null;       // { name, uuid } for chat sync
+
+          if (source === "actor" && actor) {
+            const item = actor.items.get(key);
+            if (!item) return;
+            removed = { name: item.name, uuid: item.uuid };
+            await item.delete();
+            await this._syncSnapshotItemRemoved(tile, key);
+          } else if (source === "snapshot") {
+            const snap = tileDoc?.flags?.[MODULE_ID]?.lootSnapshot;
+            const entry = (snap?.items ?? []).find(it => (it.id ?? it.uuid) === key);
+            if (!entry) return;
+            removed = { name: entry.name, uuid: entry.uuid };
+            await this._syncSnapshotItemRemoved(tile, key);
+          } else if (source === "container") {
+            const loot = getContainerLoot(tileDoc);
+            const entry = loot.items.find(it => (it.uuid ?? it.id) === key);
+            if (!entry) return;
+            removed = { name: entry.name, uuid: entry.uuid };
+            await this._removeContainerItem(tile, key);
+          }
+
+          if (removed) {
+            ui.notifications.info(`ACE QOL: Removed "${removed.name}" from the loot.`);
+            btn.closest(".ace-qol-tile-loot-item")?.remove();
+            // Sync the chat card if one exists for this corpse
+            if (originalActorId && game.aceQol?.LootEngine?.syncCardForActor) {
+              try {
+                await game.aceQol.LootEngine.syncCardForActor(originalActorId, {
+                  removeByUuid: removed.uuid || undefined,
+                  removeByName: removed.uuid ? undefined : removed.name,
+                });
+              } catch (err) {
+                console.warn(`${MODULE_ID} | Chat-card sync after delete failed (non-fatal):`, err);
+              }
+            }
+          }
+        } catch (err) {
+          console.error(`${MODULE_ID} | Delete-item failed:`, err);
+          ui.notifications.error("ACE QOL: Failed to delete item — see console.");
+        }
+      });
+    });
+
+    // ── Drag-and-drop ADD into the dialog body (GM only) ──
+    // GM drags an Item (from sidebar, compendium, or another sheet) onto the
+    // open loot dialog. Item is appended to the source (actor / snapshot /
+    // container) and the chat card is synced if one exists.
+    if (game.user.isGM) {
+      const dropTarget = root.querySelector(".ace-qol-tile-loot-dialog") ?? root;
+      if (dropTarget) {
+        dropTarget.addEventListener("dragover", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          try { ev.dataTransfer.dropEffect = "copy"; } catch (_) {}
+          dropTarget.classList.add("ace-qol-tile-loot-drag-over");
+        });
+        dropTarget.addEventListener("dragleave", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          dropTarget.classList.remove("ace-qol-tile-loot-drag-over");
+        });
+        dropTarget.addEventListener("drop", async (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          dropTarget.classList.remove("ace-qol-tile-loot-drag-over");
+          try {
+            const raw = ev.dataTransfer?.getData("text/plain");
+            if (!raw) return;
+            let data; try { data = JSON.parse(raw); } catch { return; }
+            if (data?.type !== "Item" || !data?.uuid) return;
+            await this._handleDialogItemDrop(tile, data.uuid, source, actor, dialog);
+          } catch (err) {
+            console.error(`${MODULE_ID} | Dialog drop failed:`, err);
+            ui.notifications.error("ACE QOL: Failed to add item — see console.");
+          }
+        });
+      }
+    }
+  }
+
+  /**
+   * Append an item to the current loot source. Routes by source kind:
+   *   - actor    → createEmbeddedDocuments on the live actor
+   *   - snapshot → push to tile.flags.lootSnapshot.items with toObject() data
+   *   - container → push to tile.flags["ace-suite"].containerLoot.items
+   * Syncs the chat card if one exists for this corpse, then reopens the
+   * dialog so the new entry appears.
+   *
+   * @param {Tile|TileDocument} tile
+   * @param {string} itemUuid    UUID of the dragged item
+   * @param {"actor"|"snapshot"|"container"} source
+   * @param {Actor|null} actor   Live actor reference (only for source==="actor")
+   * @param {DialogV2} dialog
+   */
+  async _handleDialogItemDrop(tile, itemUuid, source, actor, dialog) {
+    const sourceItem = await fromUuid(itemUuid);
+    if (!sourceItem) {
+      ui.notifications.warn(`ACE QOL: Couldn't load dropped item.`);
+      return;
+    }
+    const tileDoc = tile.document ?? tile;
+    const originalActorId = tileDoc?.flags?.[MODULE_ID]?.originalActorId;
+    const itemData = sourceItem.toObject();
+
+    if (source === "actor" && actor) {
+      const [created] = await actor.createEmbeddedDocuments("Item", [itemData]);
+      if (created) {
+        // Mirror to snapshot for players reading the tile
+        try {
+          const snap = tileDoc?.flags?.[MODULE_ID]?.lootSnapshot;
+          const items = Array.isArray(snap?.items) ? [...snap.items] : [];
+          items.push({
+            id:          created.id,
+            name:        created.name,
+            img:         created.img,
+            uuid:        created.uuid,
+            type:        created.type,
+            rarity:      created.system?.rarity ?? "common",
+            description: created.system?.description?.value ?? "",
+            identified:  created.system?.identified !== false,
+            data:        created.toObject(),
+          });
+          await tileDoc.update({ [`flags.${MODULE_ID}.lootSnapshot.items`]: items });
+        } catch (_) {}
+      }
+    } else if (source === "snapshot") {
+      const snap = tileDoc?.flags?.[MODULE_ID]?.lootSnapshot;
+      const items = Array.isArray(snap?.items) ? [...snap.items] : [];
+      items.push({
+        id:          foundry.utils.randomID(),
+        name:        sourceItem.name,
+        img:         sourceItem.img,
+        uuid:        sourceItem.uuid,
+        type:        sourceItem.type,
+        rarity:      sourceItem.system?.rarity ?? "common",
+        description: sourceItem.system?.description?.value ?? "",
+        identified:  sourceItem.system?.identified !== false,
+        data:        itemData,
+      });
+      await tileDoc.update({ [`flags.${MODULE_ID}.lootSnapshot.items`]: items });
+    } else if (source === "container") {
+      const loot = getContainerLoot(tileDoc);
+      const updatedItems = [...loot.items, {
+        id:     sourceItem.id ?? foundry.utils.randomID(),
+        name:   sourceItem.name,
+        img:    sourceItem.img,
+        uuid:   sourceItem.uuid,
+        type:   sourceItem.type,
+        rarity: sourceItem.system?.rarity ?? "common",
+      }];
+      await tileDoc.update({
+        [`flags.${CONTAINER_FLAG_NS}.${CONTAINER_LOOT_NAME}.items`]: updatedItems,
+      });
+    }
+
+    ui.notifications.info(`ACE QOL: Added "${sourceItem.name}" to the loot.`);
+
+    // Chat card sync (corpse only — containers don't have ACE Loot cards)
+    if ((source === "actor" || source === "snapshot") && originalActorId && game.aceQol?.LootEngine?.syncCardForActor) {
+      try {
+        await game.aceQol.LootEngine.syncCardForActor(originalActorId, {
+          addItem: {
+            name:   sourceItem.name,
+            img:    sourceItem.img,
+            uuid:   sourceItem.uuid,
+            type:   sourceItem.type,
+            rarity: sourceItem.system?.rarity ?? "common",
+          },
+        });
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Chat-card sync after add failed (non-fatal):`, err);
+      }
+    }
+
+    // Reopen dialog so the new item renders
+    await dialog.close();
+    this._openLootDialog(tile);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

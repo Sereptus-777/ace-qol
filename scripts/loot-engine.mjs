@@ -141,11 +141,178 @@ export class LootEngine {
         postLootCard:        engine.postLootCard.bind(engine),
         postPublicLootCard:  engine.postPublicLootCard.bind(engine),
         handleItemLooted:    engine.handleItemLooted.bind(engine),
+        syncCardForActor:    engine.syncCardForActor.bind(engine),
       };
       console.log(`${LOG_PREFIX} API registered on game.aceQol.LootEngine`);
     } catch (err) {
       console.error(`${LOG_PREFIX} API registration failed:`, err);
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Chat Card Sync — keep the "ACE Loot — <Creature>" card aligned with the
+  //  state of the dead-body / container tile after the GM adds or removes
+  //  items via the loot dialog.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Find and update the public loot card matching an actorId, then rebuild
+   * its content from the updated state. Used by the loot dialog (lootable-
+   * tile.mjs) when the GM adds or removes items / changes currency on a
+   * corpse, so the chat log doesn't show stale data.
+   *
+   * @param {string} actorId            - The original actor id (matches flags.actorId on the loot card)
+   * @param {object} change             - What changed:
+   * @param {object} [change.addItem]   - Append: { name, img, uuid, type, rarity }
+   * @param {string} [change.removeByName] - Mark first un-removed entry with this name as "removed by GM"
+   * @param {string} [change.removeByUuid] - Mark first un-removed entry with this UUID as "removed by GM"
+   * @param {object} [change.currency]  - Patch currency: { pp, gp, ep, sp, cp } (any subset)
+   * @returns {Promise<boolean>}  true if a card was found and updated
+   */
+  async syncCardForActor(actorId, change = {}) {
+    try {
+      if (!actorId || !change) return false;
+      // Find the most recent (non-fully-looted) loot card for this actor.
+      const msgs = game.messages?.contents ?? [];
+      const msg = [...msgs].reverse().find(m =>
+        m.flags?.[MODULE_ID]?.type === "lootCard" &&
+        m.flags?.[MODULE_ID]?.actorId === actorId
+      );
+      if (!msg) return false;
+
+      const flags = foundry.utils.deepClone(msg.flags[MODULE_ID]);
+      flags.items = Array.isArray(flags.items) ? flags.items : [];
+      let touched = false;
+
+      // Removal — mark the matching entry as looted with a "removed by GM" tag.
+      // The renderer already strikes through looted items, so this gives a
+      // visible audit trail without destroying the original list ordering.
+      if (change.removeByUuid || change.removeByName) {
+        for (const it of flags.items) {
+          if (it.looted) continue;
+          const matches = (change.removeByUuid && it.uuid === change.removeByUuid)
+                       || (change.removeByName && it.name === change.removeByName);
+          if (matches) {
+            it.looted   = true;
+            it.lootedBy = "removed by GM";
+            touched = true;
+            break;
+          }
+        }
+      }
+
+      // Addition — append a fresh entry. Index = next array position.
+      if (change.addItem) {
+        flags.items.push({
+          name:     change.addItem.name ?? "Unknown",
+          img:      change.addItem.img ?? "icons/svg/item-bag.svg",
+          uuid:     change.addItem.uuid ?? "",
+          type:     change.addItem.type ?? "loot",
+          rarity:   change.addItem.rarity ?? "common",
+          index:    flags.items.length,
+          looted:   false,
+          lootedBy: null,
+        });
+        touched = true;
+      }
+
+      // Currency patch
+      if (change.currency) {
+        flags.currency = { ...(flags.currency ?? {}), ...change.currency };
+        touched = true;
+      }
+
+      if (!touched) return false;
+
+      // Rebuild the visible card content from the updated flags so the chat
+      // log reflects reality. Strikethrough on removed items, new entries
+      // appended, currency block regenerated.
+      const newContent = this._buildLootCardContent(flags);
+
+      await msg.update({
+        [`flags.${MODULE_ID}.items`]:    flags.items,
+        [`flags.${MODULE_ID}.currency`]: flags.currency,
+        content: newContent,
+      });
+
+      // Re-evaluate fully-looted state (e.g. after a delete the card might
+      // now be entirely struck through → collapse it).
+      try { await this._checkFullyLooted(msg); } catch (_) {}
+
+      return true;
+    } catch (err) {
+      console.error(`${LOG_PREFIX} syncCardForActor failed:`, err);
+      return false;
+    }
+  }
+
+  /**
+   * Build the public loot card HTML from a flags payload. Mirrors the
+   * structure produced inline by postPublicLootCard so sync edits look
+   * identical to the original card. Items already flagged as looted get
+   * the strikethrough class up-front.
+   *
+   * @param {object} flags  - The ace-qol flags payload (actorId, actorName, actorImg, items, currency)
+   * @returns {string}      - Card HTML for ChatMessage content
+   */
+  _buildLootCardContent(flags) {
+    const actorId   = flags.actorId ?? "";
+    const actorName = flags.actorName ?? "Unknown";
+    const actorImg  = flags.actorImg ?? "icons/svg/skull.svg";
+    const items     = flags.items ?? [];
+    const currency  = flags.currency ?? {};
+    const hasCurrency = ((currency.pp ?? 0) + (currency.gp ?? 0) + (currency.ep ?? 0)
+                       + (currency.sp ?? 0) + (currency.cp ?? 0)) > 0;
+
+    let currencyHTML = "";
+    if (hasCurrency) {
+      const coins = [];
+      if (currency.pp > 0) coins.push(`<span class="ace-qol-loot-coin ace-qol-loot-pp">${currency.pp} pp</span>`);
+      if (currency.gp > 0) coins.push(`<span class="ace-qol-loot-coin ace-qol-loot-gp">${currency.gp} gp</span>`);
+      if (currency.ep > 0) coins.push(`<span class="ace-qol-loot-coin ace-qol-loot-ep">${currency.ep} ep</span>`);
+      if (currency.sp > 0) coins.push(`<span class="ace-qol-loot-coin ace-qol-loot-sp">${currency.sp} sp</span>`);
+      if (currency.cp > 0) coins.push(`<span class="ace-qol-loot-coin ace-qol-loot-cp">${currency.cp} cp</span>`);
+      currencyHTML = `<div class="ace-qol-loot-currency">${coins.join(" ")}</div>`;
+    }
+
+    let itemListHTML = "";
+    if (items.length > 0) {
+      const lines = items.map((item, idx) => {
+        const rarityLabel = this._formatRarity(item.rarity);
+        const lootedCls = item.looted ? " ace-qol-loot-item-looted" : "";
+        const lootedTag = item.looted
+          ? `<span class="ace-qol-loot-looted-by"> → ${item.lootedBy ?? "looted"}</span>`
+          : "";
+        const linkOrName = item.uuid
+          ? `@UUID[${item.uuid}]{${item.name}}`
+          : foundry.utils.escapeHTML(item.name);
+        return `<li class="ace-qol-loot-item${lootedCls}" data-item-uuid="${item.uuid ?? ""}" data-item-index="${idx}">` +
+          `<img src="${item.img}" class="ace-qol-loot-item-img" style="width:24px;height:24px;border:0;" ` +
+          `onerror="this.onerror=null;this.src='icons/svg/item-bag.svg';">` +
+          ` ${linkOrName}` +
+          ` <span class="ace-qol-loot-rarity">(${rarityLabel})</span>` +
+          lootedTag +
+          `</li>`;
+      });
+      itemListHTML = `<ul class="ace-qol-loot-items">${lines.join("\n")}</ul>`;
+    } else {
+      itemListHTML = `<p class="ace-qol-loot-none"><em>No lootable items</em></p>`;
+    }
+
+    const controlsHTML = (hasCurrency && !flags.currencySplit)
+      ? `<div class="ace-qol-loot-controls"><button class="ace-qol-loot-split-btn" data-action="aceQolSplitGold">Split Gold Evenly</button></div>`
+      : "";
+
+    return `
+<div class="ace-qol-loot-card" data-actor-id="${actorId}">
+  <div class="ace-qol-loot-header">
+    <img src="${actorImg}" class="ace-qol-loot-portrait">
+    <span class="ace-qol-loot-name">${foundry.utils.escapeHTML(actorName)}</span>
+  </div>
+  ${currencyHTML}
+  ${itemListHTML}
+  ${controlsHTML}
+</div>`.trim();
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

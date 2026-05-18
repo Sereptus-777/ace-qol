@@ -3226,8 +3226,13 @@
 .ace-qol-tile-loot-item.ace-loot-unidentified .ace-qol-tile-loot-desc {
   color: #c8b8e0;          /* violet-tinged for unidentified flavor text */
 }
-.ace-qol-loot-reveal-btn {
+.ace-qol-tile-loot-item-actions {
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ace-qol-loot-reveal-btn {
   background: rgba(170, 130, 220, 0.18);
   border: 1px solid rgba(170, 130, 220, 0.6);
   color: #d8c5f0;
@@ -3244,6 +3249,34 @@
 .ace-qol-loot-reveal-btn:hover {
   background: rgba(170, 130, 220, 0.35);
   box-shadow: 0 0 8px rgba(170, 130, 220, 0.5);
+}
+.ace-qol-loot-delete-btn {
+  background: rgba(200, 70, 70, 0.18);
+  border: 1px solid rgba(200, 70, 70, 0.6);
+  color: #f0a8a8;
+  width: 34px;
+  height: 34px;
+  border-radius: 5px;
+  font-size: 15px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.12s ease;
+}
+.ace-qol-loot-delete-btn:hover {
+  background: rgba(200, 70, 70, 0.4);
+  color: #fff0f0;
+  box-shadow: 0 0 8px rgba(200, 70, 70, 0.55);
+}
+
+/* Drag-over highlight when GM is dropping an item onto the open dialog */
+.ace-qol-tile-loot-dialog.ace-qol-tile-loot-drag-over {
+  outline: 2px dashed rgba(212, 175, 55, 0.85);
+  outline-offset: -4px;
+  background:
+    linear-gradient(135deg, rgba(212, 175, 55, 0.06), transparent 60%),
+    transparent;
 }
 
 /* ── Recipient buttons ── */
