@@ -868,21 +868,47 @@ export class LootableTile {
     if (isDead) {
       actor = game.actors.get(flags.originalActorId);
       const snapshot = flags.lootSnapshot ?? null;
-      if (actor) {
+
+      // Decide which source has the "real" loot:
+      //
+      //   Background — for UNLINKED token NPCs (most monsters), loot is
+      //   generated on the synthetic token-actor by loot-engine.mjs BEFORE
+      //   the death pipeline runs. The death pipeline then snapshots that
+      //   token-actor's items+currency into tile.flags.lootSnapshot. After
+      //   the token dies the synthetic actor is destroyed; the world-
+      //   sidebar prototype (game.actors.get) never had the loot.
+      //
+      //   So: prefer the snapshot when it has any items OR currency.
+      //   Fall back to the world actor only when the snapshot is empty
+      //   AND the world actor (linked NPC, or pre-built loot on the
+      //   prototype) does have lootable items.
+      const snapshotHasItems = (snapshot?.items?.length ?? 0) > 0;
+      const snapshotHasGold = (() => {
+        const c = snapshot?.currency ?? {};
+        return ((c.pp ?? 0) + (c.gp ?? 0) + (c.ep ?? 0) + (c.sp ?? 0) + (c.cp ?? 0)) > 0;
+      })();
+      const useSnapshot = !!snapshot && (snapshotHasItems || snapshotHasGold);
+
+      if (useSnapshot) {
+        source = "snapshot";
+        items = (snapshot.items ?? []).map(it => ({
+          ...it,
+          name:           it.name ?? "",
+          description:    LootableTile.truncateDescription(LootableTile.cleanItemDescription(it.description ?? ""), 220),
+          identified:     it.identified !== false,
+          // Revealable when we still have an actor reference AND the item
+          // is currently unidentified. Without an actor, identification
+          // can't be persisted (snapshot items are recreated on the
+          // recipient at give time, so identified state is one-shot).
+          revealable:     !!actor && it.identified === false,
+        }));
+        currency = snapshot.currency ?? {};
+      } else if (actor) {
         source = "actor";
         items = actor.items.contents
           .filter(i => this._isLootableItem(i))
           .map(i => this._buildLootItemRow(i));
         currency = actor.system?.currency ?? {};
-      } else if (snapshot) {
-        source = "snapshot";
-        items = (snapshot.items ?? []).map(it => ({
-          ...it,
-          description:    LootableTile.truncateDescription(LootableTile.cleanItemDescription(it.description ?? ""), 220),
-          identified:     it.identified !== false,
-          revealable:     false,  // can't re-identify off a snapshot — actor's gone
-        }));
-        currency = snapshot.currency ?? {};
       } else {
         ui.notifications.warn(`ACE QOL: Loot data not available for "${flags.originalName}".`);
         return;
@@ -915,14 +941,26 @@ export class LootableTile {
 
     // GM can distribute from a live actor OR a container; snapshots are
     // read-only because the source actor is gone.
-    const canDistribute = game.user.isGM && (source === "actor" || source === "container");
+    // GM can distribute from a live actor, a container, OR a snapshot
+    // (snapshot items now carry full toObject() data so they can be
+    // recreated on the recipient — see death-pipeline._buildLootSnapshot).
+    const canDistribute = game.user.isGM && (source === "actor" || source === "container" || source === "snapshot");
     const btnDisabled = (isLocked || !canDistribute) ? "disabled" : "";
 
     // Item identifier in the DOM:
     //   - actor   → item.id (used with actor.items.get to fetch + delete)
     //   - snapshot → item.uuid (display only; no transfer)
     //   - container → item.uuid (used with fromUuid + flag-array filter)
-    const keyFor = (item) => source === "actor" ? (item.id ?? "") : (item.uuid ?? "");
+    // DOM key for each item — uniquely identifies the row inside its source.
+    //   actor    → item.id   (lookup via actor.items.get(key))
+    //   snapshot → item.id   (lookup by indexOf inside snapshot.items[])
+    //              fallback to uuid if id missing (legacy snapshots)
+    //   container → item.uuid (lookup via fromUuid + uuid match in array)
+    const keyFor = (item) => {
+      if (source === "actor") return item.id ?? "";
+      if (source === "snapshot") return item.id ?? item.uuid ?? "";
+      return item.uuid ?? "";
+    };
 
     const itemRowsHtml = items.length ? items.map((item) => {
       const key = keyFor(item);
@@ -1058,8 +1096,42 @@ export class LootableTile {
             });
             // Keep tile snapshot in sync so players see the updated loot list
             await this._syncSnapshotItemRemoved(tile, key);
+          } else if (source === "snapshot") {
+            // Snapshot path — the actor is gone (unlinked NPC token was
+            // destroyed when the dead-art tile was created). Find the item
+            // by id in tile.flags.lootSnapshot.items, recreate it on the
+            // recipient from the stored toObject() data, and prune the
+            // snapshot entry so the dialog updates on next open.
+            const tileDoc = tile.document ?? tile;
+            const snap = tileDoc.flags?.[MODULE_ID]?.lootSnapshot;
+            const entry = (snap?.items ?? []).find(it => (it.id ?? it.uuid) === key);
+            if (!entry) {
+              ui.notifications.warn(`ACE QOL: Item not found in snapshot.`);
+              return;
+            }
+            // Prefer the stored toObject() data; fall back to fetching by
+            // uuid if (somehow) data wasn't captured. Legacy snapshots
+            // pre-v0.7.2 will hit the fallback and likely fail — that's
+            // OK, those are dead corpses from before the fix.
+            let itemData = entry.data ?? null;
+            if (!itemData && entry.uuid) {
+              try {
+                const liveItem = await fromUuid(entry.uuid);
+                if (liveItem) itemData = liveItem.toObject();
+              } catch (_) {}
+            }
+            if (!itemData) {
+              ui.notifications.warn(`ACE QOL: Snapshot has no item data for "${entry.name}". Pre-v0.7.2 corpse?`);
+              return;
+            }
+            await targetActor.createEmbeddedDocuments("Item", [itemData]);
+            await this._syncSnapshotItemRemoved(tile, key);
+            ui.notifications.info(`ACE QOL: Gave ${entry.name} to ${targetActor.name}.`);
+            btn.closest(".ace-qol-tile-loot-item")?.remove();
+            await ChatMessage.create({
+              content: `<em><strong>${foundry.utils.escapeHTML(targetActor.name)}</strong> received <strong>${foundry.utils.escapeHTML(entry.name)}</strong> from the body.</em>`,
+            });
           }
-          // source === "snapshot": read-only, give-buttons aren't shown
         } catch (err) {
           console.error(`${MODULE_ID} | Loot transfer failed:`, err);
           ui.notifications.error(`Failed to transfer item.`);
@@ -1073,16 +1145,25 @@ export class LootableTile {
       splitBtn.addEventListener("click", async (ev) => {
         ev.preventDefault();
         if (!game.user.isGM) return;
-        if (source === "container") {
-          await this._splitContainerGold(tile, recipients);
-          splitBtn.disabled = true;
-          splitBtn.textContent = "Split Done";
-        } else if (source === "actor" && actor) {
-          await this._splitGold(actor, recipients);
-          splitBtn.disabled = true;
-          splitBtn.textContent = "Split Done";
-          await this._syncSnapshotCurrencyZeroed(tile);
+        // Gold goes to PCs on scene only (not to NPC recipients).
+        // Online/offline status doesn't matter for gold — offline PCs still
+        // get their share since the gold belongs to the character, not the
+        // player's session presence.
+        const pcRecipients = (recipients ?? []).filter(r => r.type === "pc");
+        if (!pcRecipients.length) {
+          ui.notifications.warn("ACE QOL: No PCs on this scene to split gold to.");
+          return;
         }
+        if (source === "container") {
+          await this._splitContainerGold(tile, pcRecipients);
+        } else if (source === "actor" && actor) {
+          await this._splitGold(actor, pcRecipients);
+          await this._syncSnapshotCurrencyZeroed(tile);
+        } else if (source === "snapshot") {
+          await this._splitSnapshotGold(tile, pcRecipients);
+        }
+        splitBtn.disabled = true;
+        splitBtn.textContent = "Split Done";
       });
     }
 
@@ -1338,6 +1419,62 @@ export class LootableTile {
 
     await ChatMessage.create({
       content: `<em>Split <strong>${sharePerGp}gp ${sharePerSp}sp ${sharePerCpFinal}cp</strong> per recipient from ${foundry.utils.escapeHTML(actor.name)}'s body (${recipients.length} recipient${recipients.length === 1 ? "" : "s"}: ${recipients.map(r => foundry.utils.escapeHTML(r.name)).join(", ")}).</em>`,
+    });
+  }
+
+  /**
+   * Split gold from a snapshot (unlinked-token NPC death) among PC recipients.
+   * Reads currency from tile.flags.lootSnapshot.currency, adds the share to
+   * each PC actor, and zeroes the snapshot currency to prevent re-claiming.
+   * Same arithmetic as _splitGold — only the source/sink differ.
+   */
+  async _splitSnapshotGold(tile, recipients) {
+    if (!recipients?.length) {
+      ui.notifications.warn("No eligible recipients to split gold to.");
+      return;
+    }
+    const tileDoc = tile?.document ?? tile;
+    const snap = tileDoc?.flags?.[MODULE_ID]?.lootSnapshot;
+    const cur = snap?.currency ?? {};
+    const totalCp = (cur.pp ?? 0) * 1000 + (cur.gp ?? 0) * 100 + (cur.ep ?? 0) * 50
+                  + (cur.sp ?? 0) * 10 + (cur.cp ?? 0);
+    if (totalCp <= 0) {
+      ui.notifications.info("No gold to split.");
+      return;
+    }
+    const sharePerCp = Math.floor(totalCp / recipients.length);
+    const sharePerGp = Math.floor(sharePerCp / 100);
+    const remainderCp = sharePerCp - sharePerGp * 100;
+    const sharePerSp = Math.floor(remainderCp / 10);
+    const sharePerCpFinal = remainderCp - sharePerSp * 10;
+
+    for (const r of recipients) {
+      const targetActor = game.actors.get(r.actorId);
+      if (!targetActor) continue;
+      const tc = targetActor.system?.currency ?? {};
+      try {
+        await targetActor.update({
+          "system.currency.gp": (tc.gp ?? 0) + sharePerGp,
+          "system.currency.sp": (tc.sp ?? 0) + sharePerSp,
+          "system.currency.cp": (tc.cp ?? 0) + sharePerCpFinal,
+        });
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Snapshot gold split to ${targetActor.name} failed:`, err);
+      }
+    }
+
+    // Zero the snapshot currency so the dialog shows no more gold next open
+    try {
+      await tileDoc.update({
+        [`flags.${MODULE_ID}.lootSnapshot.currency`]: { pp: 0, gp: 0, ep: 0, sp: 0, cp: 0 },
+      });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Snapshot currency zero failed:`, err);
+    }
+
+    const sourceName = tileDoc?.flags?.[MODULE_ID]?.originalName ?? "the body";
+    await ChatMessage.create({
+      content: `<em>Split <strong>${sharePerGp}gp ${sharePerSp}sp ${sharePerCpFinal}cp</strong> per recipient from ${foundry.utils.escapeHTML(sourceName)} (${recipients.length} recipient${recipients.length === 1 ? "" : "s"}: ${recipients.map(r => foundry.utils.escapeHTML(r.name)).join(", ")}).</em>`,
     });
   }
 

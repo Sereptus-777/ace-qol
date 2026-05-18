@@ -3277,9 +3277,10 @@
 .ace-qol-tile-loot-empty {
   text-align: center;
   font-style: italic;
-  color: #888;
-  padding: 16px;
-  font-size: 16px;
+  color: #d8c890;          /* warm parchment cream — same family as description text */
+  padding: 20px 16px;
+  font-size: 18px;
+  letter-spacing: 0.2px;
 }
 
 /* ─── Effects Panel (floating side panel for selected token's effects) ── */

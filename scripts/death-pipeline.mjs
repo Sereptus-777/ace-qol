@@ -219,6 +219,17 @@ export class DeathPipeline {
         if (NATURAL_WEAPON_TYPES.has(wt)) continue;
         if (NATURAL_NAME_RE.test((item.name ?? "").trim())) continue;
       }
+      // v0.7.2 (May 2026): store FULL item data, not just metadata.
+      // Previously snapshots stored only id/name/img/uuid — which was fine
+      // for read-only display but useless for actually transferring items
+      // to a PC after the token was gone (the UUID points at the destroyed
+      // synthetic token-actor; fromUuid returns null). With toObject() we
+      // have a complete portable item document that can be recreated on
+      // any recipient via createEmbeddedDocuments("Item", [data]).
+      let data = null;
+      try { data = item.toObject(); } catch (err) {
+        console.warn(`${LOG_PREFIX} _buildLootSnapshot: toObject failed for item ${item.name}:`, err);
+      }
       items.push({
         id:     item.id,
         name:   item.name,
@@ -226,6 +237,9 @@ export class DeathPipeline {
         uuid:   item.uuid,
         type:   item.type,
         rarity: item.system?.rarity ?? "common",
+        description: item.system?.description?.value ?? "",
+        identified:  item.system?.identified !== false,
+        data,    // full toObject() — used by loot dialog to recreate on recipient
       });
     }
 
