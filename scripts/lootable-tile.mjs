@@ -363,9 +363,9 @@ export class LootableTile {
         ui.notifications.info(`ACE QOL: Added "${item.name}" to ${tileFlags.originalName ?? "the body"}.`);
 
         // Sync chat card if there's a lootCard for this corpse
-        if (tileFlags.originalActorId && game.aceQol?.LootEngine?.syncCardForActor) {
+        if (tileFlags.originalActorId && game.aceQol?.lootEngine?.syncCardForActor) {
           try {
-            await game.aceQol.LootEngine.syncCardForActor(tileFlags.originalActorId, {
+            await game.aceQol.lootEngine.syncCardForActor(tileFlags.originalActorId, {
               addItem: {
                 name:   item.name,
                 img:    item.img,
@@ -1177,8 +1177,8 @@ export class LootableTile {
         }).catch(() => false);
         if (!confirmed) return;
         try {
-          if (game.aceQol?.LootEngine?.postCardFromTile) {
-            await game.aceQol.LootEngine.postCardFromTile(repostPayload);
+          if (game.aceQol?.lootEngine?.postCardFromTile) {
+            await game.aceQol.lootEngine.postCardFromTile(repostPayload);
           } else {
             ui.notifications.warn("ACE QOL: LootEngine.postCardFromTile not available.");
           }
@@ -1402,9 +1402,9 @@ export class LootableTile {
             ui.notifications.info(`ACE QOL: Removed "${removed.name}" from the loot.`);
             btn.closest(".ace-qol-tile-loot-item")?.remove();
             // Sync the chat card if one exists for this corpse
-            if (originalActorId && game.aceQol?.LootEngine?.syncCardForActor) {
+            if (originalActorId && game.aceQol?.lootEngine?.syncCardForActor) {
               try {
-                await game.aceQol.LootEngine.syncCardForActor(originalActorId, {
+                await game.aceQol.lootEngine.syncCardForActor(originalActorId, {
                   removeByUuid: removed.uuid || undefined,
                   removeByName: removed.uuid ? undefined : removed.name,
                 });
@@ -1535,9 +1535,9 @@ export class LootableTile {
     ui.notifications.info(`ACE QOL: Added "${sourceItem.name}" to the loot.`);
 
     // Chat card sync (corpse only — containers don't have ACE Loot cards)
-    if ((source === "actor" || source === "snapshot") && originalActorId && game.aceQol?.LootEngine?.syncCardForActor) {
+    if ((source === "actor" || source === "snapshot") && originalActorId && game.aceQol?.lootEngine?.syncCardForActor) {
       try {
-        await game.aceQol.LootEngine.syncCardForActor(originalActorId, {
+        await game.aceQol.lootEngine.syncCardForActor(originalActorId, {
           addItem: {
             name:   sourceItem.name,
             img:    sourceItem.img,

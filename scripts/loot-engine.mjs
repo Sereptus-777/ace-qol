@@ -136,7 +136,16 @@ export class LootEngine {
     try {
       if (!game.aceQol) game.aceQol = {};
       const engine = instance ?? new LootEngine();
-      game.aceQol.LootEngine = {
+      // NOTE on game.aceQol.LootEngine: ace-qol.mjs's main bulk-init
+      // (`game.aceQol = { ..., LootEngine, lootEngine, ... }`) runs in the
+      // same ready hook AFTER us and reassigns `game.aceQol.LootEngine` to
+      // the CLASS itself (no instance methods). The bulk init also exposes
+      // the instance as `game.aceQol.lootEngine` (lowercase). All internal
+      // callers should use the instance — it carries every public method
+      // natively and survives the bulk assignment. The convenience API
+      // object below is published for backward-compat only; the keys it
+      // exports may not survive the bulk init depending on call order.
+      const api = {
         generateLoot:        engine.generateLoot.bind(engine),
         postLootCard:        engine.postLootCard.bind(engine),
         postPublicLootCard:  engine.postPublicLootCard.bind(engine),
@@ -145,7 +154,11 @@ export class LootEngine {
         spawnTileFromCard:   engine.spawnTileFromCard.bind(engine),
         postCardFromTile:    engine.postCardFromTile.bind(engine),
       };
-      console.log(`${LOG_PREFIX} API registered on game.aceQol.LootEngine`);
+      game.aceQol.LootEngine = api;
+      // Also publish under a stable name that the bulk init won't stomp,
+      // so external callers have a reliable handle.
+      game.aceQol.lootEngineAPI = api;
+      console.log(`${LOG_PREFIX} API registered (game.aceQol.lootEngineAPI for stable access; instance methods at game.aceQol.lootEngine.*)`);
     } catch (err) {
       console.error(`${LOG_PREFIX} API registration failed:`, err);
     }
