@@ -1031,7 +1031,10 @@ export class LootableTile {
 
       if (useSnapshot) {
         source = "snapshot";
-        items = (snapshot.items ?? []).map(it => LootableTile._buildStoredItemRow(it, { revealable: !!actor && it.identified === false }));
+        // Snapshot revealable whenever the entry is unidentified — we can
+        // flip the stored flag even when the source actor is gone (the
+        // reveal handler updates the snapshot.items entry in-place).
+        items = (snapshot.items ?? []).map(it => LootableTile._buildStoredItemRow(it, { revealable: it.identified === false }));
         currency = snapshot.currency ?? {};
       } else if (actor) {
         source = "actor";
@@ -1047,7 +1050,10 @@ export class LootableTile {
     } else {
       source = "container";
       const loot = getContainerLoot(tileDoc);
-      items = (loot.items ?? []).map(it => LootableTile._buildStoredItemRow(it, { revealable: false }));
+      // Container revealable whenever the entry is unidentified — the
+      // reveal handler updates the containerLoot.items entry in-place
+      // (no live Item document needed since the data lives on the tile).
+      items = (loot.items ?? []).map(it => LootableTile._buildStoredItemRow(it, { revealable: it.identified === false }));
       currency = loot.currency;
       displayName = tileDoc.flags?.[CONTAINER_FLAG_NS]?.containerName
                   ?? this._extractContainerName(tileDoc);
@@ -1175,11 +1181,21 @@ export class LootableTile {
       ? `<button class="ace-qol-loot-repost-btn" data-action="lootRepostCard" title="Post a fresh ACE Loot chat card from this tile's contents — use if the original card was deleted"><i class="fas fa-comment-alt"></i> Repost Card</button>`
       : "";
 
+    // GM-only "Reveal All" button — flips identified:true on every
+    // unidentified item in this loot pile in one shot. Hidden when no
+    // unidentified items exist (so it doesn't clutter the header for
+    // a fully-mundane corpse).
+    const unidCount = items.filter(it => it.identified === false).length;
+    const revealAllBtn = (game.user.isGM && unidCount > 0)
+      ? `<button class="ace-qol-loot-reveal-all-btn" data-action="lootRevealAll" title="Reveal ALL ${unidCount} unidentified items in this loot pile to players in one action"><i class="fas fa-eye"></i> Reveal All (${unidCount})</button>`
+      : "";
+
     const content = `
       <div class="ace-qol-tile-loot-dialog">
         <div class="ace-qol-tile-loot-header">
           <strong>${foundry.utils.escapeHTML(displayName)}</strong>
           <span class="ace-qol-tile-loot-type">${foundry.utils.escapeHTML(subtitle)}</span>
+          ${revealAllBtn}
           ${repostBtn}
         </div>
         ${lockBanner}
@@ -1245,6 +1261,80 @@ export class LootableTile {
         } catch (err) {
           console.error(`${MODULE_ID} | Repost loot card failed:`, err);
           ui.notifications.error("ACE QOL: Failed to repost loot card — see console.");
+        }
+      });
+    }
+
+    // ── Reveal All button (GM only) — flip every unidentified item in one action ──
+    const revealAllBtn = root.querySelector(".ace-qol-loot-reveal-all-btn");
+    if (revealAllBtn && game.user.isGM) {
+      revealAllBtn.addEventListener("click", async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const confirmed = await foundry.applications.api.DialogV2.confirm({
+          window: { title: "Reveal All Items" },
+          content: `<p style="font-size:15px;line-height:1.5;">Reveal the real name and description of EVERY unidentified item in this loot pile to all players? This cannot be undone (re-marking individually would require editing each item's sheet).</p>`,
+          modal:   true,
+          yes:     { default: true, label: "Reveal All", icon: "fa-solid fa-eye" },
+          no:      { label: "Cancel" },
+          rejectClose: false,
+        }).catch(() => false);
+        if (!confirmed) return;
+
+        try {
+          const tileDoc = tile.document ?? tile;
+          const revealed = [];
+
+          if (source === "actor" && actor) {
+            // Iterate actor.items, update each unidentified one
+            const targets = actor.items.contents.filter(i => i.system?.identified === false);
+            for (const it of targets) {
+              try {
+                await it.update({ "system.identified": true });
+                revealed.push(it.name);
+              } catch (err) {
+                console.warn(`${MODULE_ID} | Reveal-all: failed on "${it.name}":`, err);
+              }
+            }
+          } else if (source === "snapshot") {
+            const snapItems = foundry.utils.deepClone(tileDoc?.flags?.[MODULE_ID]?.lootSnapshot?.items ?? []);
+            for (const entry of snapItems) {
+              if (entry.identified === false) {
+                entry.identified = true;
+                if (entry.data?.system) entry.data.system.identified = true;
+                revealed.push(entry.name);
+              }
+            }
+            if (revealed.length) {
+              await tileDoc.update({ [`flags.${MODULE_ID}.lootSnapshot.items`]: snapItems });
+            }
+          } else if (source === "container") {
+            const contItems = foundry.utils.deepClone(tileDoc?.flags?.[CONTAINER_FLAG_NS]?.[CONTAINER_LOOT_NAME]?.items ?? []);
+            for (const entry of contItems) {
+              if (entry.identified === false) {
+                entry.identified = true;
+                revealed.push(entry.name);
+              }
+            }
+            if (revealed.length) {
+              await tileDoc.update({ [`flags.${CONTAINER_FLAG_NS}.${CONTAINER_LOOT_NAME}.items`]: contItems });
+            }
+          }
+
+          if (!revealed.length) {
+            ui.notifications.info("ACE QOL: Nothing to reveal — all items were already identified.");
+            return;
+          }
+
+          ui.notifications.info(`ACE QOL: Revealed ${revealed.length} item${revealed.length === 1 ? "" : "s"} to all players.`);
+          await ChatMessage.create({
+            content: `<em>The party identifies <strong>${revealed.length}</strong> item${revealed.length === 1 ? "" : "s"}: ${revealed.map(n => `<strong>${foundry.utils.escapeHTML(n)}</strong>`).join(", ")}.</em>`,
+          });
+          await dialog.close();
+          this._openLootDialog(tile);
+        } catch (err) {
+          console.error(`${MODULE_ID} | Reveal-all failed:`, err);
+          ui.notifications.error("ACE QOL: Reveal-all failed — see console.");
         }
       });
     }
@@ -1378,6 +1468,10 @@ export class LootableTile {
     }
 
     // ── Reveal-item button (GM only) — flips identified:false → true on a single item ──
+    // Routes by source kind:
+    //   actor    → live Item document.update({ "system.identified": true })
+    //   snapshot → mutate tile.flags.lootSnapshot.items entry in place
+    //   container → mutate tile.flags["ace-suite"].containerLoot.items entry in place
     root.querySelectorAll(".ace-qol-loot-reveal-btn").forEach(btn => {
       btn.addEventListener("click", async (ev) => {
         ev.preventDefault();
@@ -1386,21 +1480,46 @@ export class LootableTile {
         const key = btn.dataset.itemKey;
         if (!key) return;
         try {
-          let item = null;
+          let revealedName = null;
           if (source === "actor" && actor) {
-            item = actor.items.get(key);
-          } else {
-            // Container / snapshot — item key is a UUID
-            item = await fromUuid(key);
+            const item = actor.items.get(key) ?? (key.includes(".") ? await fromUuid(key) : null);
+            if (!item) {
+              ui.notifications.warn("ACE QOL: Couldn't locate item to reveal.");
+              return;
+            }
+            await item.update({ "system.identified": true });
+            revealedName = item.name;
+          } else if (source === "snapshot") {
+            const tileDoc = tile.document ?? tile;
+            const snapItems = foundry.utils.deepClone(tileDoc?.flags?.[MODULE_ID]?.lootSnapshot?.items ?? []);
+            const entry = snapItems.find(it => (it.id ?? it.uuid) === key);
+            if (!entry) {
+              ui.notifications.warn("ACE QOL: Couldn't locate snapshot entry to reveal.");
+              return;
+            }
+            revealedName = entry.name;
+            entry.identified = true;
+            // The full toObject() stored in entry.data still has identified:false
+            // baked in — flip there too so future give-to-recipient creates an
+            // identified item on the PC.
+            if (entry.data?.system) entry.data.system.identified = true;
+            await tileDoc.update({ [`flags.${MODULE_ID}.lootSnapshot.items`]: snapItems });
+          } else if (source === "container") {
+            const tileDoc = tile.document ?? tile;
+            const contItems = foundry.utils.deepClone(tileDoc?.flags?.[CONTAINER_FLAG_NS]?.[CONTAINER_LOOT_NAME]?.items ?? []);
+            const entry = contItems.find(it => (it.uuid ?? it.id) === key);
+            if (!entry) {
+              ui.notifications.warn("ACE QOL: Couldn't locate container entry to reveal.");
+              return;
+            }
+            revealedName = entry.name;
+            entry.identified = true;
+            await tileDoc.update({ [`flags.${CONTAINER_FLAG_NS}.${CONTAINER_LOOT_NAME}.items`]: contItems });
           }
-          if (!item) {
-            ui.notifications.warn("ACE QOL: Couldn't locate item to reveal.");
-            return;
-          }
-          await item.update({ "system.identified": true });
-          ui.notifications.info(`ACE QOL: Revealed "${item.name}" to all players.`);
+          if (!revealedName) return;
+          ui.notifications.info(`ACE QOL: Revealed "${revealedName}" to all players.`);
           await ChatMessage.create({
-            content: `<em>The party identifies the item: <strong>${foundry.utils.escapeHTML(item.name)}</strong>.</em>`,
+            content: `<em>The party identifies the item: <strong>${foundry.utils.escapeHTML(revealedName)}</strong>.</em>`,
           });
           // Re-open dialog so the line item refreshes with real name + description
           await dialog.close();

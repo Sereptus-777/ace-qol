@@ -3101,6 +3101,29 @@
 .ace-qol-loot-repost-btn i {
   margin-right: 5px;
 }
+.ace-qol-loot-reveal-all-btn {
+  margin-left: auto;
+  background: rgba(170, 130, 220, 0.18);
+  border: 1px solid rgba(170, 130, 220, 0.6);
+  color: #e0cefa;
+  padding: 6px 12px;
+  border-radius: 5px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.12s ease;
+}
+.ace-qol-loot-reveal-all-btn + .ace-qol-loot-repost-btn {
+  margin-left: 6px;
+}
+.ace-qol-loot-reveal-all-btn:hover {
+  background: rgba(170, 130, 220, 0.35);
+  box-shadow: 0 0 8px rgba(170, 130, 220, 0.5);
+}
+.ace-qol-loot-reveal-all-btn i {
+  margin-right: 5px;
+}
 /* Spawn-tile button on the chat card (matches Split Gold styling but with a different accent) */
 .ace-qol-loot-spawn-tile-btn {
   background: rgba(110, 170, 230, 0.15);
