@@ -311,12 +311,18 @@ export class LootEngine {
         ? `${flags.actorName}'s Loot`
         : "Recovered Loot";
 
+      // Chest texture: prefer our bundled dark-wood chest icon over the
+      // default Foundry SVG (abstract line-art). URL-encoded for the
+      // space in "Treasure Chest". File path is case-sensitive on web
+      // serving even on Windows.
+      const chestSrc = "modules/ace-qol/Assets/UI/CLOSED-Treasure%20Chest.webp";
+
       const [created] = await scene.createEmbeddedDocuments("Tile", [{
         x: Math.round(cx - tileSize / 2),
         y: Math.round(cy - tileSize / 2),
         width:  tileSize,
         height: tileSize,
-        texture: { src: "icons/svg/chest.svg" },
+        texture: { src: chestSrc },
         flags: {
           "ace-suite": {
             containerTile: true,
