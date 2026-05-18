@@ -268,6 +268,45 @@ export class LootableTile {
     return s.slice(0, n - 1).trimEnd() + "…";
   }
 
+  /**
+   * Build a dialog-ready row from a STORED item entry (snapshot or
+   * container path — both store plain data, not live Item documents).
+   *
+   * Respects the unidentified layer in the same way `_buildLootItemRow`
+   * does for live items: when an entry is marked unidentified AND has an
+   * obscured name / description stored on it, show those instead of the
+   * real values. Players see the obscured layer; the GM can flip the
+   * Reveal toggle on snapshot items (handled in _wireDialog).
+   *
+   * Schema we expect on a stored magical entry:
+   *   {
+   *     name, img, uuid, type, rarity,
+   *     description,                    ← real flavor (HTML or plain)
+   *     identified: false,
+   *     unidentified: {
+   *       name:        "obscured name",
+   *       description: "obscured flavor (HTML or plain)"
+   *     }
+   *   }
+   */
+  static _buildStoredItemRow(it, opts = {}) {
+    const isIdentified = it.identified !== false;
+    const realName  = it.name ?? "";
+    const obscName  = it.unidentified?.name ?? "";
+    const realDesc  = it.description ?? "";
+    const obscDesc  = it.unidentified?.description ?? "";
+    const displayName = isIdentified ? realName : (obscName || realName);
+    const rawDesc     = isIdentified ? realDesc : (obscDesc || "");
+    return {
+      ...it,
+      name:        displayName,
+      realName,
+      description: LootableTile.truncateDescription(LootableTile.cleanItemDescription(rawDesc), 220),
+      identified:  isIdentified,
+      revealable:  opts.revealable === true,
+    };
+  }
+
   _registerHooks() {
     // Tile right-click patch is installed via top-level Hooks.once("setup"/
     // "canvasReady"/"ready") registered above, NOT from this constructor.
@@ -975,17 +1014,7 @@ export class LootableTile {
 
       if (useSnapshot) {
         source = "snapshot";
-        items = (snapshot.items ?? []).map(it => ({
-          ...it,
-          name:           it.name ?? "",
-          description:    LootableTile.truncateDescription(LootableTile.cleanItemDescription(it.description ?? ""), 220),
-          identified:     it.identified !== false,
-          // Revealable when we still have an actor reference AND the item
-          // is currently unidentified. Without an actor, identification
-          // can't be persisted (snapshot items are recreated on the
-          // recipient at give time, so identified state is one-shot).
-          revealable:     !!actor && it.identified === false,
-        }));
+        items = (snapshot.items ?? []).map(it => LootableTile._buildStoredItemRow(it, { revealable: !!actor && it.identified === false }));
         currency = snapshot.currency ?? {};
       } else if (actor) {
         source = "actor";
@@ -1001,12 +1030,7 @@ export class LootableTile {
     } else {
       source = "container";
       const loot = getContainerLoot(tileDoc);
-      items = (loot.items ?? []).map(it => ({
-        ...it,
-        description:    LootableTile.truncateDescription(LootableTile.cleanItemDescription(it.description ?? ""), 220),
-        identified:     it.identified !== false,
-        revealable:     false,  // container loot is plain stored data — no live item to flip
-      }));
+      items = (loot.items ?? []).map(it => LootableTile._buildStoredItemRow(it, { revealable: false }));
       currency = loot.currency;
       displayName = tileDoc.flags?.[CONTAINER_FLAG_NS]?.containerName
                   ?? this._extractContainerName(tileDoc);
