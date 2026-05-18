@@ -713,6 +713,23 @@ export class LootableTile {
       return;
     }
 
+    // ── UI-overlap guard ──
+    // The hover icon is position:fixed and floats over screen coords. If a
+    // dialog, popup (attack roll, save card, etc.), sidebar, or any other
+    // UI element is layered ABOVE the canvas at the cursor's position,
+    // showing the icon would punch through and obscure that UI. Cursor
+    // coords still resolve to a valid world position underneath, so
+    // _eventToWorldPos can't detect this on its own — we have to ask the
+    // DOM what's actually at the top of the layer stack right now.
+    const topEl = document.elementFromPoint(ev.clientX, ev.clientY);
+    const canvasEl = document.getElementById("board") ?? canvas?.app?.view ?? null;
+    const overIcon = this._hoverIconEl
+      && (topEl === this._hoverIconEl || this._hoverIconEl.contains(topEl));
+    if (topEl && canvasEl && topEl !== canvasEl && !overIcon) {
+      this._cancelHoverIcon();
+      return;
+    }
+
     const worldPos = this._eventToWorldPos(ev);
     if (!worldPos) {
       this._cancelHoverIcon();
@@ -853,7 +870,7 @@ export class LootableTile {
         font-size: 20px;
         cursor: pointer;
         box-shadow: 0 2px 8px rgba(0,0,0,0.55);
-        z-index: 10000;
+        z-index: 60;
         pointer-events: auto;
         animation: ace-qol-loot-pulse 1.4s ease-in-out infinite;
       `;
