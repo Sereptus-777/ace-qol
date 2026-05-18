@@ -195,7 +195,15 @@ export class LootableTile {
     if (this._domWired) return;
     this._domWired = true;
 
-    // ── Right-click (contextmenu) with drag-resistance ──
+    // ── Right-click (mousedown→mouseup pair, button=2) with drag-resistance ──
+    // We previously tried the `contextmenu` event, but Foundry's PIXI canvas
+    // calls preventDefault on it inside its own handlers — by the time our
+    // document listener fires, the event has been consumed. The
+    // mousedown/mouseup pair on the document fires reliably regardless of
+    // PIXI's internal handling.
+    //
+    // We ALSO swallow contextmenu over a lootable tile so Foundry doesn't
+    // pop its default right-click menu on top of our dialog.
     document.addEventListener("mousedown", (ev) => {
       if (ev.button !== 2) return;
       this._rightDownAt = {
@@ -203,20 +211,29 @@ export class LootableTile {
         screenY: ev.clientY,
         time:    Date.now(),
       };
-    });
+    }, true);  // capture phase — beat Foundry to it
 
-    document.addEventListener("contextmenu", (ev) => {
+    document.addEventListener("mouseup", (ev) => {
+      if (ev.button !== 2) return;
       const start = this._rightDownAt;
       this._rightDownAt = null;
       if (!start) return;
-
       const dt   = Date.now() - start.time;
       const dist = Math.hypot(ev.clientX - start.screenX, ev.clientY - start.screenY);
-      // Click = quick + small movement; drag/pan = either slow or large dist
       if (dt > 500 || dist > 5) return;
-
       this._handleSingleRightClick(ev);
-    });
+    }, true);  // capture phase
+
+    // Suppress browser/Foundry context menu when right-clicking over a
+    // lootable tile so our dialog isn't covered by a stray menu.
+    document.addEventListener("contextmenu", (ev) => {
+      const worldPos = this._eventToWorldPos(ev);
+      if (!worldPos) return;
+      if (this._findLootableTileAt(worldPos)) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+    }, true);
 
     // ── Hover-icon system ──
     document.addEventListener("mousemove", (ev) => this._onHoverMove(ev));
