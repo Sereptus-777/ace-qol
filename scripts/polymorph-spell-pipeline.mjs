@@ -121,7 +121,7 @@ export class PolymorphSpellPipeline {
       }
     });
 
-    console.log(`${MODULE_ID} | Polymorph spell pipeline online (Polymorph / True Polymorph / Mass Polymorph)`);
+    console.debug(`${MODULE_ID} | Polymorph spell pipeline online (Polymorph / True Polymorph / Mass Polymorph)`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

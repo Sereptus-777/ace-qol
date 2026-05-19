@@ -150,7 +150,7 @@ export class DeathSaves {
       }
     });
 
-    console.log(`${MODULE_ID} | DeathSaves online`);
+    console.debug(`${MODULE_ID} | DeathSaves online`);
   }
 
   static _isStabilized(actor) {

@@ -67,7 +67,7 @@ export class FumbleEngine {
       }
     });
 
-    console.log(`${MODULE_ID} | FumbleEngine online`);
+    console.debug(`${MODULE_ID} | FumbleEngine online`);
   }
 
   static async _postFumble(actor) {

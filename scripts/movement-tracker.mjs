@@ -81,7 +81,7 @@ export class MovementTracker {
       };
     }
 
-    console.log(`${MODULE_ID} | Movement tracker patched Token drag handlers`);
+    console.debug(`${MODULE_ID} | Movement tracker patched Token drag handlers`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

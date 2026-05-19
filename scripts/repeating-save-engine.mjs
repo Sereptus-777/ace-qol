@@ -64,7 +64,7 @@ export class RepeatingSaveEngine {
       }
     });
 
-    console.log(`${MODULE_ID} | Repeating Save Engine online (combat + worldTime hooks)`);
+    console.debug(`${MODULE_ID} | Repeating Save Engine online (combat + worldTime hooks)`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

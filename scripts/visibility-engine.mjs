@@ -30,7 +30,7 @@ export class VisibilityEngine {
       VisibilityEngine.filterMessageContent(message, html);
     });
 
-    console.log(`${MODULE_ID} | Visibility engine hooks registered`);
+    console.debug(`${MODULE_ID} | Visibility engine hooks registered`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -392,6 +392,6 @@ export class VisibilityEngine {
     game.aceQol.VisibilityEngine = VisibilityEngine;
     game.aceQol.getMessageVisibility = VisibilityEngine.getMessageVisibility;
 
-    console.log(`${MODULE_ID} | Visibility engine API registered (game.aceQol.VisibilityEngine)`);
+    console.debug(`${MODULE_ID} | Visibility engine API registered (game.aceQol.VisibilityEngine)`);
   }
 }

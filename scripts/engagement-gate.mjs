@@ -540,7 +540,7 @@ export class EngagementGate {
       }
     });
 
-    console.log(`${MODULE_ID} | EngagementGate hooks registered (Phase 1: creature-type + concentration)`);
+    console.debug(`${MODULE_ID} | EngagementGate hooks registered (Phase 1: creature-type + concentration)`);
   }
 
   /**

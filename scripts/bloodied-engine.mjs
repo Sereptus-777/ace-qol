@@ -48,7 +48,7 @@ export class BloodiedEngine {
       this._announcedBloodied.clear();
     });
 
-    console.log(`${MODULE_ID} | Bloodied engine hooks registered`);
+    console.debug(`${MODULE_ID} | Bloodied engine hooks registered`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -542,6 +542,6 @@ export class BloodiedEngine {
   registerAPI() {
     if (!game.aceQol) return;
     game.aceQol.bloodiedEngine = this;
-    console.log(`${MODULE_ID} | Bloodied engine API registered (game.aceQol.bloodiedEngine)`);
+    console.debug(`${MODULE_ID} | Bloodied engine API registered (game.aceQol.bloodiedEngine)`);
   }
 }

@@ -1334,7 +1334,7 @@ export class ConditionLibrary {
     const mod = game.modules.get(MODULE_ID);
     if (mod) {
       mod.api = { ...(mod.api ?? {}), conditions: ConditionLibrary };
-      console.log(`${MODULE_ID} | ConditionLibrary registered on module API`);
+      console.debug(`${MODULE_ID} | ConditionLibrary registered on module API`);
     }
   }
 

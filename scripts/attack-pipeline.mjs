@@ -98,7 +98,7 @@ export class AttackPipeline {
     Hooks.on("renderApplication", (app, html) => this._onRenderRollDialog(app, html));
     Hooks.on("renderApplicationV2", (app, html) => this._onRenderRollDialog(app, html));
 
-    console.log(`${MODULE_ID} | Attack pipeline hooks registered (pre-roll + post-roll + dialog render)`);
+    console.debug(`${MODULE_ID} | Attack pipeline hooks registered (pre-roll + post-roll + dialog render)`);
   }
 
   /**

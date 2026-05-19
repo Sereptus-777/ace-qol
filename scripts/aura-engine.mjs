@@ -202,7 +202,7 @@ export class AuraEngine {
     Hooks.on("deleteActiveEffect", _onEffectChange);
     Hooks.on("updateActiveEffect", _onEffectChange);
 
-    console.log(`${MODULE_ID} | AuraEngine online — managing ${AURAS.length} aura types`);
+    console.debug(`${MODULE_ID} | AuraEngine online — managing ${AURAS.length} aura types`);
   }
 
   /** Debounced trigger to avoid recomputing 10x in one tick */

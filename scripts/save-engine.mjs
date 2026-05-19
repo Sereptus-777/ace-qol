@@ -292,7 +292,7 @@ export class SaveEngine {
       }
     });
 
-    console.log(`${MODULE_ID} | Save engine hooks registered`);
+    console.debug(`${MODULE_ID} | Save engine hooks registered`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

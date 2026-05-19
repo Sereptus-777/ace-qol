@@ -72,7 +72,7 @@ export class OverTimeEngine {
       this._processTurnChange(combat, prior?.combatantId, current?.combatantId, combat.round);
     });
 
-    console.log(`${MODULE_ID} | OverTime engine hooks registered`);
+    console.debug(`${MODULE_ID} | OverTime engine hooks registered`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

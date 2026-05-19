@@ -368,7 +368,7 @@ export class FlagsEngine {
       FlagsEngine._onPreRollToolCheckLegacy(actor, config, toolId);
     });
 
-    console.log(`${MODULE_ID} | FlagsEngine: ability/skill/tool check hooks registered`);
+    console.debug(`${MODULE_ID} | FlagsEngine: ability/skill/tool check hooks registered`);
   }
 
   /**

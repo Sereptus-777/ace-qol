@@ -410,7 +410,7 @@ export class DamageEngine {
     Hooks.on("renderChatMessage", _cardRenderHandler);
     Hooks.on("renderChatMessageHTML", _cardRenderHandler);  // V13 hook
 
-    console.log(`${MODULE_ID} | Damage engine hooks registered`);
+    console.debug(`${MODULE_ID} | Damage engine hooks registered`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

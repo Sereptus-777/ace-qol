@@ -195,7 +195,7 @@ Hooks.once("ready", () => {
   // Post-roll processing (_onAttackRoll) has its own GM guard — only GM processes results.
   try {
     attackPipeline = new AttackPipeline();
-    console.log(`${MODULE_ID} | Attack pipeline online`);
+    console.debug(`${MODULE_ID} | Attack pipeline online`);
   } catch (err) {
     console.error(`${MODULE_ID} | Attack pipeline init failed:`, err);
   }
@@ -290,7 +290,7 @@ Hooks.once("ready", () => {
         console.warn(`${MODULE_ID} | Heavy Armor Master hook failed (non-fatal):`, err);
       }
     });
-    console.log(`${MODULE_ID} | Heavy Armor Master damage-reduction hook registered.`);
+    console.debug(`${MODULE_ID} | Heavy Armor Master damage-reduction hook registered.`);
   } catch (err) {
     console.error(`${MODULE_ID} | HAM hook setup failed:`, err);
   }
@@ -300,7 +300,7 @@ Hooks.once("ready", () => {
   // with per-target Apply buttons. Mirrors the attack pipeline architecture.
   try {
     healPipeline = new HealPipeline();
-    console.log(`${MODULE_ID} | Heal pipeline online`);
+    console.debug(`${MODULE_ID} | Heal pipeline online`);
   } catch (err) {
     console.error(`${MODULE_ID} | Heal pipeline init failed:`, err);
   }
@@ -335,7 +335,7 @@ Hooks.once("ready", () => {
   // Attack processing methods only run when called by GM socket handlers.
   try {
     damageEngine = new DamageEngine();
-    console.log(`${MODULE_ID} | Damage engine online`);
+    console.debug(`${MODULE_ID} | Damage engine online`);
   } catch (err) {
     console.error(`${MODULE_ID} | Damage engine init failed:`, err);
   }
@@ -343,7 +343,7 @@ Hooks.once("ready", () => {
   // Save engine — ALL users (players need renderChatMessage hook for PC save cards)
   try {
     saveEngine = new SaveEngine({ damageEngine });
-    console.log(`${MODULE_ID} | Save engine online`);
+    console.debug(`${MODULE_ID} | Save engine online`);
   } catch (err) {
     console.error(`${MODULE_ID} | Save engine init failed:`, err);
   }
@@ -352,7 +352,7 @@ Hooks.once("ready", () => {
   if (game.user.isGM) {
     try {
       concentrationWidget = new ConcentrationWidget(saveEngine);
-      console.log(`${MODULE_ID} | Concentration widget online`);
+      console.debug(`${MODULE_ID} | Concentration widget online`);
     } catch (err) {
       console.error(`${MODULE_ID} | Concentration widget init failed:`, err);
     }
@@ -386,7 +386,7 @@ Hooks.once("ready", () => {
   try {
     reactionEngine = new ReactionEngine();
     injectReactionCSS();
-    console.log(`${MODULE_ID} | Reaction engine online`);
+    console.debug(`${MODULE_ID} | Reaction engine online`);
   } catch (err) {
     console.error(`${MODULE_ID} | Reaction engine init failed:`, err);
   }
@@ -394,7 +394,7 @@ Hooks.once("ready", () => {
   // Hook API — register public API on the module for third-party extensibility
   try {
     HookAPI.registerAPI();
-    console.log(`${MODULE_ID} | Hook API online`);
+    console.debug(`${MODULE_ID} | Hook API online`);
   } catch (err) {
     console.error(`${MODULE_ID} | Hook API init failed:`, err);
   }
@@ -403,7 +403,7 @@ Hooks.once("ready", () => {
   if (game.user.isGM) {
     try {
       overTimeEngine = new OverTimeEngine();
-      console.log(`${MODULE_ID} | OverTime engine online`);
+      console.debug(`${MODULE_ID} | OverTime engine online`);
     } catch (err) {
       console.error(`${MODULE_ID} | OverTime engine init failed:`, err);
     }
@@ -412,7 +412,7 @@ Hooks.once("ready", () => {
   // Bloodied engine — ALL users (visual overlays render on every client)
   try {
     bloodiedEngine = new BloodiedEngine();
-    console.log(`${MODULE_ID} | Bloodied engine online`);
+    console.debug(`${MODULE_ID} | Bloodied engine online`);
   } catch (err) {
     console.error(`${MODULE_ID} | Bloodied engine init failed:`, err);
   }
@@ -420,13 +420,13 @@ Hooks.once("ready", () => {
   // Visibility engine — ALL users (players need renderChatMessage filtering)
   try {
     VisibilityEngine.registerHooks();
-    console.log(`${MODULE_ID} | Visibility engine online`);
+    console.debug(`${MODULE_ID} | Visibility engine online`);
   } catch (err) {
     console.error(`${MODULE_ID} | Visibility engine init failed:`, err);
   }
 
   // Cover engine — static, no constructor needed (API registered after game.aceQol is set)
-  console.log(`${MODULE_ID} | Cover engine online`);
+  console.debug(`${MODULE_ID} | Cover engine online`);
 
   // Condition Library — ALL users (effect definitions + apply/remove API)
   try {
@@ -929,7 +929,7 @@ Hooks.once("ready", () => {
       }
     });
 
-    console.log(`${MODULE_ID} | Condition Library online (concentration-link sweep registered)`);
+    console.debug(`${MODULE_ID} | Condition Library online (concentration-link sweep registered)`);
   } catch (err) {
     console.error(`${MODULE_ID} | Condition Library init failed:`, err);
   }
@@ -939,7 +939,7 @@ Hooks.once("ready", () => {
     durationTracker = new DurationTracker();
     durationTracker.init();
     DurationTracker.registerAPI(durationTracker);
-    console.log(`${MODULE_ID} | Duration Tracker online`);
+    console.debug(`${MODULE_ID} | Duration Tracker online`);
   } catch (err) {
     console.error(`${MODULE_ID} | Duration Tracker init failed:`, err);
   }
@@ -1048,7 +1048,7 @@ Hooks.once("ready", () => {
         }
       } catch (_) { /* non-fatal */ }
     });
-    console.log(`${MODULE_ID} | Class feature rider turn-reset hooks registered (Radiant Soul, Divine Strike, Divine Smite, Eldritch Smite, Sneak Attack).`);
+    console.debug(`${MODULE_ID} | Class feature rider turn-reset hooks registered (Radiant Soul, Divine Strike, Divine Smite, Eldritch Smite, Sneak Attack).`);
   } catch (err) {
     console.error(`${MODULE_ID} | Class feature rider hook setup failed:`, err);
   }
@@ -1076,7 +1076,7 @@ Hooks.once("ready", () => {
         console.warn(`${MODULE_ID} | Hexblade death-hook failed:`, err);
       }
     });
-    console.log(`${MODULE_ID} | Hexblade's Curse heal-on-kill hook registered.`);
+    console.debug(`${MODULE_ID} | Hexblade's Curse heal-on-kill hook registered.`);
   } catch (err) {
     console.error(`${MODULE_ID} | Hexblade hook setup failed:`, err);
   }
@@ -1118,7 +1118,7 @@ Hooks.once("ready", () => {
         console.warn(`${MODULE_ID} | Hexblade incapacitation status-hook failed:`, err);
       }
     });
-    console.log(`${MODULE_ID} | Hexblade's Curse incapacitation hooks registered (HP=0, stunned/paralyzed/etc).`);
+    console.debug(`${MODULE_ID} | Hexblade's Curse incapacitation hooks registered (HP=0, stunned/paralyzed/etc).`);
   } catch (err) {
     console.error(`${MODULE_ID} | Hexblade incapacitation hook setup failed:`, err);
   }
@@ -1176,7 +1176,7 @@ Hooks.once("ready", () => {
         console.warn(`${MODULE_ID} | spell-activation auto-apply hook failed:`, err);
       }
     });
-    console.log(`${MODULE_ID} | Hexblade's Curse + Hex auto-apply hook registered (fires on feature/spell activation).`);
+    console.debug(`${MODULE_ID} | Hexblade's Curse + Hex auto-apply hook registered (fires on feature/spell activation).`);
 
     // Hex — auto-clear when concentration ends (the "Hex" Active Effect on the
     // caster is deleted, either by the concentration widget, by casting a new
@@ -1294,7 +1294,7 @@ Hooks.once("ready", () => {
       const target = actor ?? game.user?.character ?? canvas.tokens?.controlled?.[0]?.actor;
       return openWarlockDamageDialog(target);
     };
-    console.log(`${MODULE_ID} | Warlock damage chooser API exposed at game.aceQol.openWarlockChooser`);
+    console.debug(`${MODULE_ID} | Warlock damage chooser API exposed at game.aceQol.openWarlockChooser`);
   }).catch(err => console.warn(`${MODULE_ID} | Warlock chooser API exposure failed:`, err));
 
   // ── Actor sheet button — adds "Warlock Damage Types" to the dnd5e item
@@ -1398,7 +1398,7 @@ Hooks.once("ready", () => {
   // Flags Engine roll hooks — ALL users (injects adv/dis from flags into ability/skill/tool checks)
   try {
     FlagsEngine.registerRollHooks();
-    console.log(`${MODULE_ID} | Flags roll hooks online`);
+    console.debug(`${MODULE_ID} | Flags roll hooks online`);
   } catch (err) {
     console.error(`${MODULE_ID} | Flags roll hooks init failed:`, err);
   }
@@ -1406,7 +1406,7 @@ Hooks.once("ready", () => {
   // Speed Rolls — ALL users (intercepts character sheet clicks for fast-forward)
   try {
     speedRolls = new SpeedRolls();
-    console.log(`${MODULE_ID} | Speed rolls online`);
+    console.debug(`${MODULE_ID} | Speed rolls online`);
   } catch (err) {
     console.error(`${MODULE_ID} | Speed rolls init failed:`, err);
   }
@@ -1414,7 +1414,7 @@ Hooks.once("ready", () => {
   // Effects Panel — ALL users (floating list of selected token's active effects)
   try {
     effectsPanel = new EffectsPanel();
-    console.log(`${MODULE_ID} | Effects panel online`);
+    console.debug(`${MODULE_ID} | Effects panel online`);
   } catch (err) {
     console.error(`${MODULE_ID} | Effects panel init failed:`, err);
   }
@@ -1436,7 +1436,7 @@ Hooks.once("ready", () => {
   // Turn Marker — ALL users (rotating marker on canvas + your-turn notif/sound)
   try {
     turnMarker = new TurnMarker();
-    console.log(`${MODULE_ID} | Turn marker online`);
+    console.debug(`${MODULE_ID} | Turn marker online`);
   } catch (err) {
     console.error(`${MODULE_ID} | Turn marker init failed:`, err);
   }
@@ -1444,7 +1444,7 @@ Hooks.once("ready", () => {
   // Movement Tracker — ALL users (colored squares while dragging tokens)
   try {
     movementTracker = new MovementTracker();
-    console.log(`${MODULE_ID} | Movement tracker online`);
+    console.debug(`${MODULE_ID} | Movement tracker online`);
   } catch (err) {
     console.error(`${MODULE_ID} | Movement tracker init failed:`, err);
   }
@@ -1484,7 +1484,7 @@ Hooks.once("ready", () => {
       }
     });
 
-    console.log(`${MODULE_ID} | Loot engine online`);
+    console.debug(`${MODULE_ID} | Loot engine online`);
   } catch (err) {
     console.error(`${MODULE_ID} | Loot engine init failed:`, err);
   }
@@ -1501,7 +1501,7 @@ Hooks.once("ready", () => {
         if (deathPipeline) deathPipeline.buildArtCache();
       });
 
-      console.log(`${MODULE_ID} | Death pipeline online`);
+      console.debug(`${MODULE_ID} | Death pipeline online`);
     } catch (err) {
       console.error(`${MODULE_ID} | Death pipeline init failed:`, err);
     }
@@ -1638,7 +1638,7 @@ Hooks.once("ready", () => {
       });
     });
 
-    console.log(`${MODULE_ID} | Unified NPC death hook registered`);
+    console.debug(`${MODULE_ID} | Unified NPC death hook registered`);
   }
 
   // ── Socket bridge: player attacks → GM processing ──
@@ -1764,7 +1764,7 @@ Hooks.once("ready", () => {
       }
     });
 
-    console.log(`${MODULE_ID} | Player-side attack bridge registered`);
+    console.debug(`${MODULE_ID} | Player-side attack bridge registered`);
   }
 
   if (game.user.isGM) {
@@ -1940,7 +1940,7 @@ Hooks.once("ready", () => {
       }
     });
 
-    console.log(`${MODULE_ID} | GM-side socket listener registered`);
+    console.debug(`${MODULE_ID} | GM-side socket listener registered`);
   }
 
   // Expose module API

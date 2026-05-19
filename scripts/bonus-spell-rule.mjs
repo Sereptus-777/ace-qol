@@ -91,7 +91,7 @@ export class BonusSpellRule {
       } catch (_) { /* non-fatal */ }
     });
 
-    console.log(`${MODULE_ID} | BonusSpellRule online`);
+    console.debug(`${MODULE_ID} | BonusSpellRule online`);
   }
 
   /**

@@ -65,7 +65,7 @@ export class InitiativeTools {
 
     Hooks.on("renderCombatTracker", _bindButtons);
 
-    console.log(`${MODULE_ID} | InitiativeTools online`);
+    console.debug(`${MODULE_ID} | InitiativeTools online`);
   }
 
   /**

@@ -228,7 +228,7 @@ export class ExtendedEffects {
       this._onItemUpdated(item, changes, options, userId);
     });
 
-    console.log(`${MODULE_ID} | Extended Active Effects engine initialized`);
+    console.debug(`${MODULE_ID} | Extended Active Effects engine initialized`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

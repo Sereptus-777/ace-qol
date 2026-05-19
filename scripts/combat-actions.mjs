@@ -53,7 +53,7 @@ export class CombatActions {
       }
     });
 
-    console.log(`${MODULE_ID} | CombatActions online`);
+    console.debug(`${MODULE_ID} | CombatActions online`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

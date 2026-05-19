@@ -542,7 +542,7 @@ export class HookAPI {
       },
     };
 
-    console.log(`${MODULE_ID} | Hook API registered — ${HOOK_NAMES.length} hook points available`);
+    console.debug(`${MODULE_ID} | Hook API registered — ${HOOK_NAMES.length} hook points available`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

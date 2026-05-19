@@ -77,7 +77,7 @@ export class QuickSelectTools {
     if (!game.user.isGM) return;
     _quickSelectInstance = this;
 
-    console.log(`${MODULE_ID} | Quick select tools registered`);
+    console.debug(`${MODULE_ID} | Quick select tools registered`);
 
     // Direct mutation: V13 already built ui.controls.controls during init,
     // and our hook missed that one fire. Inject directly into the live data

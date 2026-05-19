@@ -252,7 +252,7 @@ export class TransformationEngine {
       }
     });
 
-    console.log(`${MODULE_ID} | Transformation Engine online (worldTime + HP + concentration triggers)`);
+    console.debug(`${MODULE_ID} | Transformation Engine online (worldTime + HP + concentration triggers)`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

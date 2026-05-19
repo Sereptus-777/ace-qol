@@ -66,7 +66,7 @@ export class ConcentrationDamage {
       }
     });
 
-    console.log(`${MODULE_ID} | ConcentrationDamage online`);
+    console.debug(`${MODULE_ID} | ConcentrationDamage online`);
   }
 
   /**

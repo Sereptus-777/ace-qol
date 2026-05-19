@@ -46,7 +46,7 @@ export class OAPrompt {
       }
     });
 
-    console.log(`${MODULE_ID} | OAPrompt online`);
+    console.debug(`${MODULE_ID} | OAPrompt online`);
   }
 
   static async _checkProvocations(moverDoc, changes) {

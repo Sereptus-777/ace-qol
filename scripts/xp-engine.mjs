@@ -39,7 +39,7 @@ export class XpEngine {
       this._showDistributionDialog();
     });
 
-    console.log(`${MODULE_ID} | XP engine online`);
+    console.debug(`${MODULE_ID} | XP engine online`);
   }
 
   _recordKill(actor) {

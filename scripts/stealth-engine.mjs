@@ -97,7 +97,7 @@ export class StealthEngine {
       } catch (err) { /* non-fatal */ }
     });
 
-    console.log(`${MODULE_ID} | StealthEngine online`);
+    console.debug(`${MODULE_ID} | StealthEngine online`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

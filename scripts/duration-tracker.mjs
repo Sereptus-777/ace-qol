@@ -83,7 +83,7 @@ export class DurationTracker {
     // ── World time advancement: expire seconds-based effects outside combat ──
     Hooks.on("updateWorldTime", this._onWorldTimeUpdate.bind(this));
 
-    console.log(`${MODULE_ID} | Duration Tracker initialized`);
+    console.debug(`${MODULE_ID} | Duration Tracker initialized`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -783,7 +783,7 @@ export class DurationTracker {
     const mod = game.modules.get(MODULE_ID);
     if (mod) {
       mod.api = { ...(mod.api ?? {}), durations: DurationTracker, durationTracker: instance };
-      console.log(`${MODULE_ID} | DurationTracker registered on module API`);
+      console.debug(`${MODULE_ID} | DurationTracker registered on module API`);
     }
   }
 }

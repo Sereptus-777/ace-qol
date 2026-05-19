@@ -52,7 +52,7 @@ export class TokenCache {
       try {
         const hydrated = this._hydrateFromSettings();
         if (hydrated) {
-          console.log(`${MODULE_ID} | TokenCache hydrated from world settings: ${this._cache.size} unique names (last scanned ${this._formatAge(this._lastScanInfo?.timestamp)})`);
+          console.debug(`${MODULE_ID} | TokenCache hydrated from world settings: ${this._cache.size} unique names (last scanned ${this._formatAge(this._lastScanInfo?.timestamp)})`);
           return;
         }
         // No persisted cache — run an initial scan if folders are configured
@@ -72,7 +72,7 @@ export class TokenCache {
 
     if (game?.ready) ready();
     else Hooks.once("ready", ready);
-    console.log(`${MODULE_ID} | TokenCache wired`);
+    console.debug(`${MODULE_ID} | TokenCache wired`);
   }
 
   /** Look up a token image by name. Returns the full path, or null if no

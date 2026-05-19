@@ -442,6 +442,6 @@ export class CoverEngine {
     game.aceQol.calculateCover = CoverEngine.calculateCover;
     game.aceQol.getTargetCover = CoverEngine.getTargetCover;
 
-    console.log(`${MODULE_ID} | Cover engine API registered (game.aceQol.calculateCover, game.aceQol.getTargetCover)`);
+    console.debug(`${MODULE_ID} | Cover engine API registered (game.aceQol.calculateCover, game.aceQol.getTargetCover)`);
   }
 }

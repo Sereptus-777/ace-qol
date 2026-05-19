@@ -1369,7 +1369,7 @@ export class QolSettings {
       default: { map: {}, paths: [], fileCount: 0, uniqueCount: 0, durationSec: 0, timestamp: 0 },
     });
 
-    console.log(`${MODULE_ID} | Settings registered (all combat features ON by default)`);
+    console.debug(`${MODULE_ID} | Settings registered (all combat features ON by default)`);
   }
 
   /** Quick helper to read a setting */

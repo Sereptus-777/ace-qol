@@ -18,7 +18,7 @@ export class SpeedRolls {
 
   constructor() {
     this._registerHooks();
-    console.log(`${MODULE_ID} | Speed rolls initialized`);
+    console.debug(`${MODULE_ID} | Speed rolls initialized`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -36,7 +36,7 @@ export class SpeedRolls {
       this._onRenderHud(app, html, data);
     });
 
-    console.log(`${MODULE_ID} | Speed roll hooks registered (sheet + HUD)`);
+    console.debug(`${MODULE_ID} | Speed roll hooks registered (sheet + HUD)`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

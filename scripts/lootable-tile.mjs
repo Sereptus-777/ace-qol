@@ -124,7 +124,7 @@ function _aceQolPatchTileClickRight(reason) {
     return original?.call(this, event);
   };
   TileClass.prototype.__aceQolRightClickPatched = true;
-  console.log(`${MODULE_ID} | Tile.prototype._onClickRight patched (${reason}).`);
+  console.debug(`${MODULE_ID} | Tile.prototype._onClickRight patched (${reason}).`);
   return true;
 }
 
@@ -160,7 +160,7 @@ Hooks.on("drawTile", (tile) => {
       return original?.call(this, event);
     };
     ctorProto.__aceQolRightClickPatched = true;
-    console.log(`${MODULE_ID} | drawTile: late-patched ${tile.constructor.name}.prototype._onClickRight.`);
+    console.debug(`${MODULE_ID} | drawTile: late-patched ${tile.constructor.name}.prototype._onClickRight.`);
   } catch (_) {}
 });
 
@@ -325,7 +325,7 @@ export class LootableTile {
     // GM drops an Item onto a container tile → append to that tile's loot
     Hooks.on("dropCanvasData", (canvas, data) => this._onCanvasDrop(canvas, data));
 
-    console.log(`${MODULE_ID} | Lootable tile online (instance bound; right-click patched via top-level hooks)`);
+    console.debug(`${MODULE_ID} | Lootable tile online (instance bound; right-click patched via top-level hooks)`);
   }
 
   /** Re-installs the prototype patch on demand. Kept on the instance for
@@ -565,7 +565,7 @@ export class LootableTile {
     let delayMs = "?";
     try { delayMs = game.settings.get(MODULE_ID, "lootHoverIconDelayMs"); }
     catch (_) {}
-    console.log(`${MODULE_ID} | Lootable tile DOM listeners wired — right-click ready; hover-icon delay=${delayMs}ms${delayMs === 0 ? " (DISABLED — set lootHoverIconDelayMs > 0 to enable)" : ""}`);
+    console.debug(`${MODULE_ID} | Lootable tile DOM listeners wired — right-click ready; hover-icon delay=${delayMs}ms${delayMs === 0 ? " (DISABLED — set lootHoverIconDelayMs > 0 to enable)" : ""}`);
   }
 
   /**

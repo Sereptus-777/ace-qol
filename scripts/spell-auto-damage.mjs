@@ -116,7 +116,7 @@ export class SpellAutoDamage {
       return false;
     });
 
-    console.log(`${MODULE_ID} | Spell auto-damage pipeline online (prototype patch active)`);
+    console.debug(`${MODULE_ID} | Spell auto-damage pipeline online (prototype patch active)`);
   }
 
   /**
