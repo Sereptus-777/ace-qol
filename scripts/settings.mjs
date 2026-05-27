@@ -285,6 +285,15 @@ export class QolSettings {
       default: true,
     });
 
+    s("armorProfSpellBlock", {
+      name:    "Block Spellcasting in Unproficient Armor (RAW)",
+      hint:    "RAW (PHB p.144): a PC wearing armor they lack proficiency with cannot cast spells. When ON, attempts to cast are blocked with an error toast. When OFF, casts proceed normally. PC-only — does not affect NPC casters. Default ON.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
     // ── Death Saves (PHB 197) ────────────────────────────────────────────
     s("autoDeathSaves", {
       name: "Auto-Roll Death Saves",

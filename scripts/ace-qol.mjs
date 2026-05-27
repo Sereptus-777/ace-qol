@@ -30,6 +30,7 @@ import { RepeatingSaveEngine }  from "./repeating-save-engine.mjs";
 import { TransformationEngine } from "./transformation-engine.mjs";
 import { ConcentrationDamage }  from "./concentration-damage.mjs";
 import { BonusSpellRule }       from "./bonus-spell-rule.mjs";
+import { ArmorProfSpellBlock }  from "./armor-prof-spell-block.mjs";
 import { DeathSaves }           from "./death-saves.mjs";
 import { StealthEngine }        from "./stealth-engine.mjs";
 import { CombatActions }        from "./combat-actions.mjs";
@@ -977,6 +978,17 @@ Hooks.once("ready", () => {
     BonusSpellRule.init();
   } catch (err) {
     console.error(`${MODULE_ID} | Bonus Spell Rule init failed:`, err);
+  }
+
+  // Non-Proficient Armor Spell Block — RAW PHB p.144: a PC wearing armor
+  // they lack proficiency with cannot cast spells. Pre-flight check via
+  // dnd5e.preUseActivity that cancels the activity before dialog or
+  // usage message fires. Pairs with the attack-roll disadvantage check
+  // in combat-state.assess (v0.7.6).
+  try {
+    ArmorProfSpellBlock.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Armor-Prof Spell Block init failed:`, err);
   }
 
   // Class Feature Riders (turn-based reset) — clears the once-per-turn flag
