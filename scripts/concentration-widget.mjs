@@ -15,6 +15,9 @@ const MODULE_ID = "ace-qol";
 import { TIMING, getSpellTiming } from "./spell-timing.mjs";
 import { QolSettings } from "./settings.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
+// dsn-utils is a dependency-free leaf module — safe to import here even
+// though concentration-widget itself is imported by ace-qol.mjs.
+import { safeShowForRoll } from "./dsn-utils.mjs";
 
 const TAG = `${MODULE_ID} | ConcWidget`;
 
@@ -1423,8 +1426,7 @@ export class ConcentrationWidget {
       console.warn(`${TAG} | auto-damage roll failed for ${spellName}:`, err);
       return;
     }
-    // Fire-and-forget DSN broadcast
-    try { game.dice3d?.showForRoll?.(roll, game.user, true); } catch (_) {}
+    safeShowForRoll(roll, "concentration-widget auto-damage");
 
     const rawTotal = roll.total;
 
@@ -1667,7 +1669,7 @@ export class ConcentrationWidget {
       // chat-message DSN auto-fire is bypassed too — so we trigger DSN
       // manually here exactly once. Result: dice animate correctly,
       // chat card stays clean.
-      try { game.dice3d?.showForRoll?.(roll, game.user, true); } catch (_) {}
+      safeShowForRoll(roll, "concentration-widget per-target damage");
 
       const rawTotal = roll.total;
 

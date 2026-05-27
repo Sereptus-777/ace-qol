@@ -25,42 +25,12 @@ import { PostHitSaves } from "./post-hit-saves.mjs";
 //  Shared Constants — exported for use by all damage sub-modules
 // ═══════════════════════════════════════════════════════════════════════════
 
-/**
- * safeShowForRoll — the canonical fire-and-forget Dice So Nice display.
- *
- * This is the ONLY sanctioned way to invoke DSN from inside ace-qol's
- * damage / save / attack / fumble flows. Replaces ~13 inline implementations
- * that each had subtly different try/catch and optional-chaining patterns,
- * a few of which still had subtle hang risks (Grok audit caught the last
- * batch in v0.7.2).
- *
- * Guards against every known failure mode:
- *   - DSN not loaded            → game.dice3d undefined → optional chain
- *   - DSN half-broken           → game.dice3d.showForRoll undefined → optional chain
- *   - DSN throws synchronously  → outer try/catch
- *   - DSN returns rejected promise → inner .catch
- *   - DSN returns a non-thenable → optional .catch
- *
- * Never returns an awaitable. Callers that do `await safeShowForRoll(...)`
- * will await `undefined`, which is a no-op — but the contract is that this
- * function is sync and the call to DSN itself is fire-and-forget. Production
- * has bitten us with awaited DSN promises hanging the entire damage pipeline
- * when the renderer was broken (v0.4.21, 4+ live hangs in a single combat).
- *
- * @param {Roll}   roll    — Foundry Roll instance to animate
- * @param {string} [label] — short tag for diagnostic logs (e.g. "save roll")
- */
-export function safeShowForRoll(roll, label = "dice animation") {
-  if (!roll) return;
-  try {
-    const p = game.dice3d?.showForRoll?.(roll, game.user, true);
-    p?.catch?.(err =>
-      console.warn(`${MODULE_ID} | DSN ${label} rejected (non-fatal):`, err?.message ?? err)
-    );
-  } catch (err) {
-    console.warn(`${MODULE_ID} | DSN ${label} threw (non-fatal):`, err?.message ?? err);
-  }
-}
+// safeShowForRoll lives in dsn-utils.mjs (a dependency-free leaf module)
+// so concentration-widget.mjs can import it without creating a circular
+// dependency through ace-qol.mjs. We re-export it here so existing
+// imports of `safeShowForRoll` from damage-engine.mjs keep working.
+import { safeShowForRoll } from "./dsn-utils.mjs";
+export { safeShowForRoll };
 
 export class DamageConstants {
   static suppressDiceAnimation = false;
