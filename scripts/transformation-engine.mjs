@@ -353,7 +353,19 @@ export class TransformationEngine {
       if (!target.isToken) {
         const tokenLike = Array.isArray(transformedActor) ? transformedActor[0] : transformedActor;
         const newActor = tokenLike?.actor ?? null;
-        if (newActor) flagTarget = newActor;
+        if (newActor) {
+          flagTarget = newActor;
+        } else {
+          // Grok audit catch (v0.7.8): dnd5e's transformInto can return a
+          // TokenDocument whose .actor is null in V13 unlinked-token edge
+          // cases. We currently fall back to stamping the flag on the
+          // ORIGINAL target, which may be the wrong document and cause
+          // the revert-path to miss state. Log loudly so we hear about
+          // it if it ever fires in production. Recommended workaround
+          // for the GM: switch this token to polymorphMode = "custom"
+          // (CustomPolymorph always operates on the original target).
+          console.warn(`${MODULE_ID} | TransformationEngine: dnd5e native transformInto returned a TokenDocument with no resolvable .actor — falling back to stamping flag on original target ${target.name}. This is the unlinked-token edge case flagged by Grok audit. If polymorph state becomes inconsistent, switch to polymorphMode = "custom" in settings.`);
+        }
       }
     }
 

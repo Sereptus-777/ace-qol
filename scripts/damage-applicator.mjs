@@ -542,6 +542,18 @@ export class DamageApplicator {
       }
 
       line.addEventListener("click", async () => {
+        // GM-only at function entry — defense-in-depth (v0.7.8).
+        // Buttons are hidden for non-GM via CSS in damage-engine.mjs, but
+        // a crafted DOM click, devtools, or module interference can still
+        // reach this handler. The actor.update + message.update calls
+        // below would partially go through (player owns their own actor =
+        // permission allowed) and the front-half flag manipulation runs
+        // unguarded regardless. Grok audit catch.
+        if (!game.user.isGM) {
+          console.warn(`${MODULE_ID} | per-type damage toggle clicked by non-GM (${game.user.name}) — blocked.`);
+          return;
+        }
+
         const baseAmount = parseInt(line.dataset.damageAmount);
         const dmgType = line.dataset.damageType;
         const idx = parseInt(line.dataset.compIndex);
@@ -570,9 +582,13 @@ export class DamageApplicator {
             return;
           }
 
-          const currentHP = actor.system.attributes.hp.value;
-          const restoredHP = Math.min(currentHP + appliedAmount, actor.system.attributes.hp.max);
-          await actor.update({ "system.attributes.hp.value": restoredHP });
+          // Route through the canonical helper (clamps to max HP, owns
+          // the actor.update). Refactored from inline math for the same
+          // reason APPLY ALL was refactored in v0.7.3: single source of
+          // truth for HP mutation. Grok audit follow-on.
+          const { currentHP, newHP: restoredHP } = await DamageApplicator.applyHPHeal(actor, appliedAmount, {
+            label: `per-type UNDO ${dmgType}`,
+          });
 
           const newApplied = currentApplied.filter(i => i !== idx);
           const prevTotal = message.flags?.[MODULE_ID]?.perTypeApplied?.[tokenDocId] ?? 0;
@@ -601,15 +617,13 @@ export class DamageApplicator {
           ? Math.floor(baseAmount * override)
           : baseAmount;
 
-        const currentHP = actor.system.attributes.hp.value;
-        const newHP = Math.max(0, currentHP - amount);
-
-        // Polymorph excess capture (per-type apply path)
-        if (amount > currentHP) {
-          try { TransformationEngine.recordPendingExcess?.(actor, amount - currentHP); } catch (_) {}
-        }
-
-        await actor.update({ "system.attributes.hp.value": newHP });
+        // Route through the canonical helper — owns the HP math, the
+        // polymorph excess-damage capture, and the actor.update. Replaces
+        // inline duplication (same fix pattern as APPLY ALL in v0.7.3).
+        // Grok audit follow-on.
+        const { currentHP, newHP } = await DamageApplicator.applyHPDamage(actor, amount, {
+          label: `per-type ${dmgType}`,
+        });
 
         const prevApplied = message.flags?.[MODULE_ID]?.perTypeApplied?.[tokenDocId] ?? 0;
         const overrideLabel = (typeof override === "number" && override !== 1) ? ` (×${override})` : "";

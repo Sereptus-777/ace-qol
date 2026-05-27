@@ -998,10 +998,21 @@ Hooks.once("ready", () => {
   // unset their feature-rider flags. Belt-and-suspenders cleanup also runs
   // on deleteCombat in case state survives a combat ending.
   try {
-    Hooks.on("combatTurnChange", (combat /*, prior, current */) => {
+    Hooks.on("combatTurnChange", (combat, prior /*, current */) => {
       try {
-        const priorActorId = combat?.previous?.combatantId
-          ? combat?.combatants?.get?.(combat.previous.combatantId)?.actorId
+        // Resolve the prior combatant (the one whose turn just ended).
+        // Prefer combat.previous.combatantId (the canonical position
+        // marker dnd5e maintains), fall back to the hook's `prior` arg
+        // (passed by Foundry core) if `previous` is null — happens during
+        // mid-round GM interventions, held actions reasserting, certain
+        // initiative-edit operations, and other combat state transitions
+        // where the previous-position marker isn't populated. Grok audit
+        // catch (v0.7.8).
+        const priorCombatantId = combat?.previous?.combatantId
+                              ?? prior?.combatantId
+                              ?? null;
+        const priorActorId = priorCombatantId
+          ? combat?.combatants?.get?.(priorCombatantId)?.actorId
           : null;
         if (priorActorId) {
           const priorActor = game.actors.get(priorActorId);
