@@ -239,6 +239,29 @@ export class DamageCalculator {
     let radiantSoulType = null;
     for (const bonus of bonuses) {
       if (!bonus.formula) continue;
+
+      // ── Once-per-turn race-window guard (v0.7.4) ──
+      // The push-side check in combat-state.assess already gated this, BUT
+      // a parallel attack flow (Two-Weapon Fighting, Action Surge, multi-
+      // attack, rapid sequential clicks) can queue the same rider on TWO
+      // attacks before either consumes the flag — both attacks resolve
+      // their hits, both bonuses arrays get the rider, both damage rolls
+      // would double-apply it. Re-check the flag here so the FIRST damage
+      // roll to land this turn gets the bonus; subsequent rolls see the
+      // flag and skip silently. Smites mark at consumeResources time so
+      // they're already race-proof; only divineStrike + sneakAttack are
+      // affected by the late-mark pattern. Grok audit catch.
+      if (bonus.isOncePerTurn === "divineStrike"
+          && actor?.getFlag?.(MODULE_ID, "divineStrike.usedThisTurn")) {
+        console.log(`${MODULE_ID} | Divine Strike skipped on this hit — already consumed this turn (race-window guard)`);
+        continue;
+      }
+      if (bonus.isOncePerTurn === "sneakAttack"
+          && actor?.getFlag?.(MODULE_ID, "sneakAttack.usedThisTurn")) {
+        console.log(`${MODULE_ID} | Sneak Attack skipped on this hit — already consumed this turn (race-window guard)`);
+        continue;
+      }
+
       const bonusType = bonus.type ?? components[0]?.type ?? "untyped";
       const result = await DamageCalculator.rollWithCrit(bonus.formula, rollData, isCrit, critRule, bonus.name);
       const compIdx = components.length;
