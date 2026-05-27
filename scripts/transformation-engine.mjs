@@ -289,6 +289,49 @@ export class TransformationEngine {
       await this.revert(target, REVERT_REASON.CONCENTRATION_END);
     }
 
+    // ── Cross-module collision check (v0.7.9, HIGH 4 from Grok audit) ──
+    // RAW (PHB Polymorph): "An unwilling creature... can be subjected to
+    // the spell only once at a time." Equivalent rules apply for stacking
+    // Polymorph against other transformation sources. Both Forge's trap
+    // polymorph and dnd5e native transformInto end up using the same
+    // underlying actor-swap mechanic — applying QOL on top of either
+    // produces corrupt revert state because dnd5e isn't designed for
+    // nested transforms.
+    //
+    // Detection sources:
+    //   - Forge trap polymorph: flags.ace-artificer.polymorphEndTime in future
+    //   - dnd5e native transformInto: actor.isPolymorphed === true OR
+    //     flags.dnd5e.transformOptions present
+    //
+    // Resolution: revert the existing transform first, then apply ours.
+    // Mirrors the existing this.isTransformed() handling above.
+    try {
+      const forgeEndTime = target.getFlag?.("ace-artificer", "polymorphEndTime");
+      if (Number.isFinite(forgeEndTime) && forgeEndTime > (game.time?.worldTime ?? 0)) {
+        console.warn(`${MODULE_ID} | TransformationEngine: ${target.name} is currently polymorphed by Forge trap (ends at worldTime ${forgeEndTime}). Reverting before applying QOL transformation.`);
+        try {
+          const forge = game.modules.get("ace-artificer");
+          // Dynamic import — soft dependency; works only if Forge is installed.
+          if (forge?.active) {
+            const { PolymorphPipeline } = await import("/modules/ace-artificer/scripts/polymorph-pipeline.mjs");
+            await PolymorphPipeline?.revertActor?.(target);
+          }
+        } catch (err) {
+          console.warn(`${MODULE_ID} | TransformationEngine: Forge revert failed (continuing anyway — state may be inconsistent):`, err);
+        }
+      }
+    } catch (_) { /* defensive — missing getFlag method etc. */ }
+
+    try {
+      const nativePoly = (target.isPolymorphed === true)
+                     || !!target.flags?.dnd5e?.transformOptions;
+      if (nativePoly) {
+        console.warn(`${MODULE_ID} | TransformationEngine: ${target.name} is already polymorphed via dnd5e native transformInto (outside our modules). Proceeding with caution — manually revert via dnd5e Actor sheet if state corrupts.`);
+        // Don't auto-revert native; we don't own that state. Just log.
+      }
+    } catch (_) { /* defensive */ }
+
+
     // ── Mode dispatch: custom (fast) vs dnd5e native (slow but RAW-perfect) ──
     let polymorphMode = "custom";
     try {
