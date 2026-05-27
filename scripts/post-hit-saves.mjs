@@ -313,7 +313,11 @@ export class PostHitSaves {
         // resistances/vulnerabilities — RAW makes no exception for them).
         const altDmg = new Roll("6d8");
         await altDmg.evaluate();
-        try { if (game.dice3d) game.dice3d.showForRoll(altDmg, game.user, true).catch(() => {}); } catch (_) {}
+        // DSN fire-and-forget — full optional-chain protects against broken
+        // renderer where game.dice3d exists but .showForRoll is undefined or
+        // returns a non-thenable (Grok audit caught this — was throwing on
+        // the half-broken DSN state we hit in v0.4.21).
+        try { game.dice3d?.showForRoll?.(altDmg, game.user, true)?.catch?.(err => console.warn(`${MODULE_ID} | DSN sever-alt-damage rejected (non-fatal):`, err?.message ?? err)); } catch (_) {}
         try {
           await targetActor.applyDamage?.(altDmg.total, 1);
         } catch (err) {
@@ -1004,8 +1008,10 @@ export class PostHitSaves {
       const passed = roll.total >= rider.dc;
 
       // Animate (DSN broadcast) — same pattern as save-engine
+      // Full optional-chain protects against half-broken DSN state (renderer
+      // exists but .showForRoll is undefined / non-thenable). Grok audit catch.
       try {
-        if (game.dice3d) game.dice3d.showForRoll(roll, game.user, true).catch(() => {});
+        game.dice3d?.showForRoll?.(roll, game.user, true)?.catch?.(err => console.warn(`${MODULE_ID} | DSN repeating-save rejected (non-fatal):`, err?.message ?? err));
       } catch (_) { /* non-fatal */ }
 
       // Apply effect on fail

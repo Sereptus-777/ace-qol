@@ -80,8 +80,10 @@ export class FumbleEngine {
     if (!entry) return;
 
     // Animate the fumble die
+    // Full optional-chain protects against half-broken DSN state (renderer
+    // exists but .showForRoll is undefined / non-thenable). Grok audit catch.
     try {
-      if (game.dice3d) game.dice3d.showForRoll(tableRoll, game.user, true).catch(() => {});
+      game.dice3d?.showForRoll?.(tableRoll, game.user, true)?.catch?.(err => console.warn(`${MODULE_ID} | DSN fumble-table rejected (non-fatal):`, err?.message ?? err));
     } catch (_) {}
 
     await ChatMessage.create({
