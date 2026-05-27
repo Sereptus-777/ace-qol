@@ -662,7 +662,11 @@ export class DamageCalculator {
       }
     }
 
-    await DamageConstants.showDiceAnimation(baseRoll);
+    // v0.7.3 made showDiceAnimation non-async — it now returns undefined
+    // synchronously, the DSN call inside is fire-and-forget. `await` on a
+    // non-thenable is a no-op; we drop the await so it doesn't read as
+    // "wait for DSN" (which it never did, even pre-v0.7.3).
+    DamageConstants.showDiceAnimation(baseRoll);
     const normalTotal = baseRoll.total;
 
     if (!isCrit) {
@@ -685,7 +689,7 @@ export class DamageCalculator {
       case "doubleDice": {
         const critRoll = new Roll(resolved);
         await critRoll.evaluate();
-        await DamageConstants.showDiceAnimation(critRoll);
+        DamageConstants.showDiceAnimation(critRoll);
         const diceTotal = diceTerms.reduce((sum, t) => sum + t.total, 0);
         const critDiceTotal = critRoll.terms.filter(t => t.faces).reduce((sum, t) => sum + t.total, 0);
         const flatTotal = flatTerms.reduce((sum, t) => sum + (t.number ?? 0), 0);
@@ -701,7 +705,7 @@ export class DamageCalculator {
         const maxDice = diceTerms.reduce((sum, t) => sum + (t.faces * (t.number ?? 1)), 0);
         const critRoll = new Roll(resolved);
         await critRoll.evaluate();
-        await DamageConstants.showDiceAnimation(critRoll);
+        DamageConstants.showDiceAnimation(critRoll);
         const critDiceOnly = critRoll.terms.filter(t => t.faces).reduce((sum, t) => sum + t.total, 0);
         const flatTotal = flatTerms.reduce((sum, t) => sum + (t.number ?? 0), 0);
         const finalTotal = maxDice + critDiceOnly + flatTotal;

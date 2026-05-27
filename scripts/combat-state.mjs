@@ -222,8 +222,46 @@ export class CombatState {
       disadvantageSources.push({ source: "attacker", reason: "SMALL CREATURE + HEAVY WEAPON → attack disadvantage" });
     }
 
-    // ── Non-proficient Armor ────────────────────────────────────────────
-    // TODO: detect if wearing armor without proficiency
+    // ── Non-proficient Armor (v0.7.5) ───────────────────────────────────
+    // RAW (PHB p.144 / 2024 PHB equivalent): "If you wear armor that you
+    // lack proficiency with, you have disadvantage on any ability check,
+    // saving throw, or attack roll that involves Strength or Dexterity,
+    // and you can't cast spells." We apply the attack-roll piece here.
+    // STR/DEX save + ability-check disadvantage and spell-cast blocking
+    // would live in their own pipelines (save-engine + spell flow) and
+    // are not yet implemented — flagged in roadmap.
+    //
+    // Gated to PCs (actor.type === "character"). NPCs almost never have
+    // populated `armorProf` arrays — applying the "lacks proficiency"
+    // gate to monsters would give every armored bear/goblin/giant
+    // disadvantage on every attack, which is plainly wrong.
+    if (attackerActor.type === "character") {
+      // dnd5e 5.x stores armor item type as a long-form string and
+      // armorProf entries as short-form keys. Map between them.
+      const ARMOR_TYPE_TO_PROF = { light: "lgt", medium: "med", heavy: "hvy" };
+      // Find equipped body armor (shields excluded — separate ruleset).
+      let equippedArmor = null;
+      try {
+        equippedArmor = attackerActor.items?.find?.(it =>
+          it.type === "equipment"
+          && it.system?.equipped === true
+          && ARMOR_TYPE_TO_PROF[it.system?.armor?.type]
+        ) ?? null;
+      } catch (_) { /* defensive — never break combat-state on a malformed item */ }
+      if (equippedArmor) {
+        const profKey = ARMOR_TYPE_TO_PROF[equippedArmor.system.armor.type];
+        const profs = attackerActor.system?.traits?.armorProf?.value;
+        const hasProf = (profs?.has?.(profKey) === true)
+                     || (Array.isArray(profs) && profs.includes(profKey));
+        if (!hasProf) {
+          disadvantageSources.push({
+            source: "attacker",
+            reason: `UNPROFICIENT ARMOR (${equippedArmor.name}) → STR/DEX attacks have disadvantage (RAW PHB p.144)`,
+          });
+        }
+      }
+    }
+
 
     // ═════════════════════════════════════════════════════════════════════════
     //  TARGET STATE
