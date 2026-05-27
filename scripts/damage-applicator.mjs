@@ -196,19 +196,16 @@ export class DamageApplicator {
         continue;
       }
 
-      const currentHP = actor.system.attributes.hp.value;
-      const newHP = Math.max(0, currentHP - damageToApply);
-
-      // ── Polymorph excess-damage capture (RAW carryover) ──
-      // If this hit drops a polymorphed creature to 0, stash the excess so
-      // TransformationEngine._handleZeroHPRevert can apply it to the
-      // original form's HP. Belt-and-suspenders w/ dnd5e.preApplyDamage.
-      if (damageToApply > currentHP) {
-        try { TransformationEngine.recordPendingExcess?.(actor, damageToApply - currentHP); } catch (_) {}
-      }
-
-      await actor.update({ "system.attributes.hp.value": newHP });
-      console.log(`${MODULE_ID} | Applied ${damageToApply} damage to ${entry.name}: ${currentHP} → ${newHP}`);
+      // ── Route through the canonical helper ──
+      // applyHPDamage owns the math (newHP = max(0, current - dmg)), the
+      // polymorph excess-damage capture (RAW carryover for transformations
+      // that drop to 0), the actor.update write, and the diagnostic log.
+      // We used to inline all three of those here, which duplicated logic
+      // and meant any future change to the polymorph rules needed two
+      // edits. Grok audit catch.
+      await DamageApplicator.applyHPDamage(actor, damageToApply, {
+        label: `APPLY ALL ${entry.name}`,
+      });
 
       // Track what APPLY ALL applied: mark all remaining comps as applied in flags
       const allIndices = components.map((_, i) => i);

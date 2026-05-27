@@ -21,7 +21,7 @@
 import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
 import { CombatState } from "./combat-state.mjs";
-import { DamageConstants } from "./damage-engine.mjs";
+import { DamageConstants, safeShowForRoll } from "./damage-engine.mjs";
 import { DamageApplicator } from "./damage-applicator.mjs";
 import { getSpellTiming, TIMING } from "./spell-timing.mjs";
 import { CoverEngine } from "./cover-engine.mjs";
@@ -2095,13 +2095,9 @@ export class SaveEngine {
       // (Mass Suggestion, Fireball, etc.) so multi-target casts don't
       // burn the full single-target delay per die.
       try {
-        if (game.dice3d) {
-          // Fire-and-forget: animation runs in background, we control wait
-          // time via the setting (decoupled from DSN's own throw speed).
-          game.dice3d.showForRoll(roll, game.user, true).catch(err =>
-            console.warn(`${MODULE_ID} | DSN showForRoll rejected (non-fatal):`, err)
-          );
-        }
+        // Fire-and-forget: animation runs in background, we control wait
+        // time via the setting (decoupled from DSN's own throw speed).
+        safeShowForRoll(roll, "NPC save roll");
         const isMulti = !!options.isMultiTarget;
         let delay = isMulti
           ? (QolSettings.get("npcSaveAnimationDelayMulti") ?? 250)
@@ -2347,11 +2343,9 @@ export class SaveEngine {
     // before the merge card draws — same pattern as save rolls. Animation
     // is broadcast (3rd arg true) so PCs see NPC damage dice and vice versa.
     try {
-      if (game.dice3d && rollsToShow.length > 0) {
+      if (rollsToShow.length > 0) {
         for (const r of rollsToShow) {
-          game.dice3d.showForRoll(r, game.user, true).catch(err =>
-            console.warn(`${MODULE_ID} | DSN showForRoll (damage) rejected (non-fatal):`, err)
-          );
+          safeShowForRoll(r, "NPC damage roll");
         }
         let delay = QolSettings.get("npcDamageAnimationDelay") ?? 1500;
         delay = Math.max(0, Math.min(8000, Number(delay) || 0));
@@ -2497,9 +2491,7 @@ export class SaveEngine {
       rollResult = roll;
 
       // Trigger Dice So Nice 3D animation — public so all players see it
-      if (game.dice3d) {
-        game.dice3d.showForRoll(roll, game.user, true).catch(() => {});
-      }
+      safeShowForRoll(roll, "GM-prompt save roll");
     }
 
     // Determine result label

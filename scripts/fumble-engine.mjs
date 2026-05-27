@@ -17,6 +17,7 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
+import { safeShowForRoll } from "./damage-engine.mjs";
 
 const FUMBLE_TABLE = [
   // 1-2: minor — clumsy stumble
@@ -79,12 +80,8 @@ export class FumbleEngine {
     const entry = FUMBLE_TABLE.find(e => rolled >= e.range[0] && rolled <= e.range[1]);
     if (!entry) return;
 
-    // Animate the fumble die
-    // Full optional-chain protects against half-broken DSN state (renderer
-    // exists but .showForRoll is undefined / non-thenable). Grok audit catch.
-    try {
-      game.dice3d?.showForRoll?.(tableRoll, game.user, true)?.catch?.(err => console.warn(`${MODULE_ID} | DSN fumble-table rejected (non-fatal):`, err?.message ?? err));
-    } catch (_) {}
+    // Animate the fumble die via the canonical safe helper
+    safeShowForRoll(tableRoll, "fumble-table roll");
 
     await ChatMessage.create({
       speaker: ChatMessage.getSpeaker({ actor }),

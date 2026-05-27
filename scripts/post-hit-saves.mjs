@@ -7,7 +7,7 @@
 import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
 import { DescriptionParser } from "./description-parser.mjs";
-import { DamageConstants } from "./damage-engine.mjs";
+import { DamageConstants, safeShowForRoll } from "./damage-engine.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
 import { ConditionLibrary } from "./condition-library.mjs";
 
@@ -261,14 +261,7 @@ export class PostHitSaves {
       // Roll the secondary d20 with DSN animation
       const secondaryRoll = new Roll("1d20");
       await secondaryRoll.evaluate();
-      // DSN fire-and-forget (v0.4.21)
-      try {
-        game.dice3d?.showForRoll?.(secondaryRoll, game.user, true)?.catch?.(err =>
-          console.warn(`${MODULE_ID} | Sever roll DSN rejected (non-fatal):`, err?.message ?? err)
-        );
-      } catch (err) {
-        console.warn(`${MODULE_ID} | Sever roll DSN display failed:`, err);
-      }
+      safeShowForRoll(secondaryRoll, "sever roll");
       const rolled = secondaryRoll.total;
       const severed = rolled >= threshold;
 
@@ -313,11 +306,7 @@ export class PostHitSaves {
         // resistances/vulnerabilities — RAW makes no exception for them).
         const altDmg = new Roll("6d8");
         await altDmg.evaluate();
-        // DSN fire-and-forget — full optional-chain protects against broken
-        // renderer where game.dice3d exists but .showForRoll is undefined or
-        // returns a non-thenable (Grok audit caught this — was throwing on
-        // the half-broken DSN state we hit in v0.4.21).
-        try { game.dice3d?.showForRoll?.(altDmg, game.user, true)?.catch?.(err => console.warn(`${MODULE_ID} | DSN sever-alt-damage rejected (non-fatal):`, err?.message ?? err)); } catch (_) {}
+        safeShowForRoll(altDmg, "sever alt-damage");
         try {
           await targetActor.applyDamage?.(altDmg.total, 1);
         } catch (err) {
@@ -578,8 +567,7 @@ export class PostHitSaves {
         saveRoll = new Roll(formula);
         await saveRoll.evaluate();
 
-        // DSN fire-and-forget (v0.4.21)
-        try { game.dice3d?.showForRoll?.(saveRoll, game.user, true)?.catch?.(err => console.warn("ace-qol | PostHitSaves DSN save roll rejected (non-fatal):", err?.message ?? err)); } catch (err) { console.warn("ace-qol | PostHitSaves dice3d save roll display failed:", err); }
+        safeShowForRoll(saveRoll, "post-hit save roll");
 
         saveTotal = saveRoll.total;
         passed = saveTotal >= save.dc;
@@ -639,8 +627,7 @@ export class PostHitSaves {
         if (effectTable) {
           const tableRoll = new Roll(effectTable.die === "d6" ? "1d6" : `1${effectTable.die}`);
           await tableRoll.evaluate();
-          // DSN fire-and-forget (v0.4.21)
-          try { game.dice3d?.showForRoll?.(tableRoll, game.user, true)?.catch?.(err => console.warn("ace-qol | PostHitSaves DSN table roll rejected (non-fatal):", err?.message ?? err)); } catch (err) { console.warn("ace-qol | PostHitSaves dice3d table roll display failed:", err); }
+          safeShowForRoll(tableRoll, "post-hit effect-table roll");
 
           const tableResult = tableRoll.total;
           result.tableRoll = tableResult;
@@ -729,8 +716,7 @@ export class PostHitSaves {
   static async _rollAndApplySaveDamage(fx, targetActor, item, result) {
     const dmgRoll = new Roll(fx.formula);
     await dmgRoll.evaluate();
-    // DSN fire-and-forget (v0.4.21)
-    try { game.dice3d?.showForRoll?.(dmgRoll, game.user, true)?.catch?.(err => console.warn("ace-qol | PostHitSaves DSN damage roll rejected (non-fatal):", err?.message ?? err)); } catch (err) { console.warn("ace-qol | PostHitSaves dice3d damage roll display failed:", err); }
+    safeShowForRoll(dmgRoll, "post-hit save-damage roll");
 
     const rawTotal = dmgRoll.total;
     let finalTotal = rawTotal;
@@ -1007,12 +993,7 @@ export class PostHitSaves {
       await roll.evaluate();
       const passed = roll.total >= rider.dc;
 
-      // Animate (DSN broadcast) — same pattern as save-engine
-      // Full optional-chain protects against half-broken DSN state (renderer
-      // exists but .showForRoll is undefined / non-thenable). Grok audit catch.
-      try {
-        game.dice3d?.showForRoll?.(roll, game.user, true)?.catch?.(err => console.warn(`${MODULE_ID} | DSN repeating-save rejected (non-fatal):`, err?.message ?? err));
-      } catch (_) { /* non-fatal */ }
+      safeShowForRoll(roll, "repeating-save roll");
 
       // Apply effect on fail
       let appliedEffect = null;
@@ -1134,13 +1115,7 @@ export class PostHitSaves {
         const roll = new Roll(rider.formula);
         await roll.evaluate();
         rolls.push(roll);
-        // DSN broadcast — 3rd arg true so all clients see the dice
-        try {
-          // DSN fire-and-forget (v0.4.21) — never await, broken renderers hang forever
-          game.dice3d?.showForRoll?.(roll, game.user, true)?.catch?.(err =>
-            console.warn(`${MODULE_ID} | On-kill rider DSN rejected (non-fatal):`, err?.message ?? err)
-          );
-        } catch (_) { /* DSN not available — non-fatal */ }
+        safeShowForRoll(roll, "on-kill rider roll");
       } catch (err) {
         console.warn(`${MODULE_ID} | On-kill rider formula "${rider.formula}" failed to roll:`, err);
       }

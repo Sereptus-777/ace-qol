@@ -7,7 +7,7 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
 import { DescriptionParser } from "./description-parser.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
-import { DamageConstants } from "./damage-engine.mjs";
+import { DamageConstants, safeShowForRoll } from "./damage-engine.mjs";
 import { MergeCard } from "./merge-card.mjs";
 import { awaitDsnRoll } from "./attack-prompt.mjs";
 
@@ -454,12 +454,11 @@ export class DamageCardRenderer {
             }
             roll._total = c.total ?? c.raw;
 
-            // ── DSN fire-and-forget (v0.4.21) ──
-            // Never await DSN — broken renderers hang forever and lock the
-            // entire damage pipeline. Broadcast still works for player clients.
-            game.dice3d?.showForRoll?.(roll, game.user, true)?.catch?.(err =>
-              console.warn(`${MODULE_ID} | DSN pre-rolled dice rejected (non-fatal):`, err?.message ?? err)
-            );
+            // ── DSN via canonical safe helper (v0.7.2) ──
+            // safeShowForRoll handles every failure mode (loader missing,
+            // half-broken renderer, sync throws, non-thenable returns) and
+            // is non-async so it can never hang the pipeline.
+            safeShowForRoll(roll, "pre-rolled component");
           }
         }
       } catch (err) {
