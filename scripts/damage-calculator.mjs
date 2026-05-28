@@ -318,6 +318,87 @@ export class DamageCalculator {
       console.warn(`${MODULE_ID} | Radiant Soul rider check failed (non-fatal):`, err);
     }
 
+    // ── Empowered Evocation (Wizard Evocation School 10+, v0.7.12) ──
+    // RAW: "you can add your Intelligence modifier to one damage roll of
+    // any wizard evocation spell you cast." Pushed as a new component so
+    // the damage card shows the +mod as a clearly-labeled line.
+    try {
+      if (item?.type === "spell" && item.system?.school === "evo") {
+        const intBonus = CombatState.getEmpoweredEvocationBonus(actor);
+        if (intBonus > 0 && components.length > 0) {
+          const flatRoll = new Roll(`${intBonus}`);
+          await flatRoll.evaluate();
+          components.push({
+            name:          "Empowered Evocation",
+            formula:       `${intBonus}`,
+            roll:          flatRoll,
+            total:         intBonus,
+            type:          components[0]?.type ?? "untyped",
+            isFeatureRider: true,
+            featureLabel:  "EMPOWERED EVOCATION",
+          });
+          console.log(`${MODULE_ID} | Empowered Evocation: +${intBonus} added to ${actor.name}'s ${item.name} (INT mod, Wizard Evocation School 10+)`);
+        }
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Empowered Evocation rider check failed (non-fatal):`, err);
+    }
+
+    // ── Agonizing Blast (Warlock invocation, v0.7.12) ──
+    // RAW: "When you cast eldritch blast, add your Charisma modifier to
+    // the damage it deals on a hit." Per beam — Eldritch Blast at higher
+    // caster levels rolls more beams (2 @ 5th, 3 @ 11th, 4 @ 17th). Each
+    // beam normally comes through as its own damage component in dnd5e's
+    // rollDamage result; we add CHA mod to each. If dnd5e instead
+    // aggregates the beams into one combined component (some configs do
+    // this), GM can manually adjust via the per-component override UI.
+    try {
+      if (item?.type === "spell" && /eldritch\s*blast/i.test(item.name ?? "")) {
+        const chaBonus = CombatState.getAgonizingBlastBonus(actor);
+        if (chaBonus > 0 && components.length > 0) {
+          for (const comp of components) {
+            comp.total = (comp.total ?? 0) + chaBonus;
+            comp.featureLabel = comp.featureLabel
+              ? `${comp.featureLabel} + AGONIZING BLAST`
+              : "AGONIZING BLAST";
+            // Annotate the formula display so the chat card shows the bonus
+            comp.formula = comp.formula
+              ? `${comp.formula} + ${chaBonus}`
+              : `${chaBonus}`;
+          }
+          console.log(`${MODULE_ID} | Agonizing Blast: +${chaBonus} per beam (${components.length} component${components.length === 1 ? "" : "s"}) on ${actor.name}'s Eldritch Blast (CHA mod)`);
+        }
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Agonizing Blast rider check failed (non-fatal):`, err);
+    }
+
+    // ── Potent Spellcasting (Cleric 8+ / Druid 8+, v0.7.12) ──
+    // RAW: "When you cast a cleric cantrip that deals damage, you can
+    // add your Wisdom modifier to the damage." (Same for Druid with
+    // druid cantrips.) Cantrip-level gate via item.system.level === 0.
+    try {
+      if (item?.type === "spell" && Number(item.system?.level) === 0) {
+        const wisBonus = CombatState.getPotentSpellcastingBonus(actor);
+        if (wisBonus > 0 && components.length > 0) {
+          const flatRoll = new Roll(`${wisBonus}`);
+          await flatRoll.evaluate();
+          components.push({
+            name:          "Potent Spellcasting",
+            formula:       `${wisBonus}`,
+            roll:          flatRoll,
+            total:         wisBonus,
+            type:          components[0]?.type ?? "untyped",
+            isFeatureRider: true,
+            featureLabel:  "POTENT SPELLCASTING",
+          });
+          console.log(`${MODULE_ID} | Potent Spellcasting: +${wisBonus} added to ${actor.name}'s cantrip ${item.name} (WIS mod)`);
+        }
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Potent Spellcasting rider check failed (non-fatal):`, err);
+    }
+
     // ── Slayer bonus ──
     if (targetState.slayerMatch && targetState.slayerDamage) {
       const result = await DamageCalculator.rollWithCrit(targetState.slayerDamage, rollData, isCrit, critRule, "Slayer");

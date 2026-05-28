@@ -1846,6 +1846,71 @@ export class CombatState {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  //  Empowered Evocation (Wizard, Evocation School, 10th+) — v0.7.12
+  //
+  //  RAW: "you can add your Intelligence modifier to one damage roll of any
+  //  wizard evocation spell you cast." No per-turn limit (the limit is "one
+  //  damage roll per spell cast"). Auto-applied to evocation-school spells.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /** Returns INT mod if actor has Empowered Evocation, else 0. */
+  static getEmpoweredEvocationBonus(actor) {
+    if (!actor) return 0;
+    try {
+      if (game.settings.get(MODULE_ID, "empoweredEvocationEnabled") === false) return 0;
+    } catch (_) { /* setting not registered yet — proceed */ }
+    if (!CombatState._hasFeature(actor, "Empowered Evocation")) return 0;
+    const intMod = Number(actor.system?.abilities?.int?.mod ?? 0);
+    return intMod > 0 ? intMod : 0;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Agonizing Blast (Warlock invocation) — v0.7.12
+  //
+  //  RAW: "When you cast eldritch blast, add your Charisma modifier to the
+  //  damage it deals on a hit." Adds CHA mod to EACH BEAM. Eldritch Blast
+  //  rolls more beams as the caster levels up (1 at 1st, 2 at 5th, 3 at 11th,
+  //  4 at 17th). Each beam gets the CHA mod independently.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /** Returns CHA mod if actor has Agonizing Blast invocation, else 0. */
+  static getAgonizingBlastBonus(actor) {
+    if (!actor) return 0;
+    try {
+      if (game.settings.get(MODULE_ID, "agonizingBlastEnabled") === false) return 0;
+    } catch (_) { /* setting not registered yet — proceed */ }
+    if (!CombatState._hasFeature(actor, "Agonizing Blast")) return 0;
+    const chaMod = Number(actor.system?.abilities?.cha?.mod ?? 0);
+    return chaMod > 0 ? chaMod : 0;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Potent Spellcasting (Cleric 8+, Druid 8+) — v0.7.12
+  //
+  //  RAW (Cleric): "When you cast a cleric cantrip that deals damage, you can
+  //  add your Wisdom modifier to the damage." Same for Druid (with druid
+  //  cantrips). Adds WIS mod to cantrip damage. Once per cantrip cast.
+  //
+  //  We don't gate on "is this a cleric/druid cantrip specifically" because
+  //  dnd5e doesn't reliably tag spell list ownership. The feature presence
+  //  check (actor has "Potent Spellcasting") + cantrip-level check (spell
+  //  level === 0) is sufficient — a Wizard with multi-class Cleric who has
+  //  Potent Spellcasting will also benefit from their Wizard cantrips per
+  //  some RAI readings, and the GM can disable per-instance if strict.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /** Returns WIS mod if actor has Potent Spellcasting, else 0. */
+  static getPotentSpellcastingBonus(actor) {
+    if (!actor) return 0;
+    try {
+      if (game.settings.get(MODULE_ID, "potentSpellcastingEnabled") === false) return 0;
+    } catch (_) { /* setting not registered yet — proceed */ }
+    if (!CombatState._hasFeature(actor, "Potent Spellcasting")) return 0;
+    const wisMod = Number(actor.system?.abilities?.wis?.mod ?? 0);
+    return wisMod > 0 ? wisMod : 0;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   //  Divine Strike / Blessed Strikes (Cleric 8+) — Once-per-turn enforcement
   //
   //  RAW (PHB Cleric): "Once on each of your turns when you hit a creature

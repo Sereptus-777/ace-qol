@@ -403,6 +403,24 @@ export class QolSettings {
       scope: "world", config: false, type: Boolean, default: true,
     });
 
+    s("empoweredEvocationEnabled", {
+      name: "Empowered Evocation Rider (Wizard Evocation School 10+)",
+      hint: "When ON (default), automatically adds INT modifier to damage rolls of evocation-school wizard spells. RAW: 'you can add your Intelligence modifier to one damage roll of any wizard evocation spell you cast.' Detection: actor has the 'Empowered Evocation' feature AND the spell's school is 'evo'. Set to OFF if your table runs the rider manually.",
+      scope: "world", config: false, type: Boolean, default: true,
+    });
+
+    s("agonizingBlastEnabled", {
+      name: "Agonizing Blast Rider (Warlock invocation)",
+      hint: "When ON (default), automatically adds CHA modifier to each beam of Eldritch Blast. RAW: 'When you cast eldritch blast, add your Charisma modifier to the damage it deals on a hit.' Detection: actor has the 'Agonizing Blast' invocation AND the spell name matches 'Eldritch Blast'. CHA mod added per damage component (per beam) so higher-level multi-beam casts scale correctly. Set to OFF if your table runs the rider manually.",
+      scope: "world", config: false, type: Boolean, default: true,
+    });
+
+    s("potentSpellcastingEnabled", {
+      name: "Potent Spellcasting Rider (Cleric / Druid 8+)",
+      hint: "When ON (default), automatically adds WIS modifier to damage from cantrips. RAW: 'When you cast a cleric cantrip [or druid cantrip] that deals damage, you can add your Wisdom modifier to the damage.' Detection: actor has 'Potent Spellcasting' feature AND the spell is level 0 (cantrip). Applied once per cantrip cast. Set to OFF if your table runs the rider manually.",
+      scope: "world", config: false, type: Boolean, default: true,
+    });
+
     s("descriptionOnKillRiderEnabled", {
       name: "On-Kill Description Riders (temp HP / self-heal on kill)",
       hint: "When ON (default), parses item descriptions for on-kill rewards like 'Reducing a target to zero hitpoints grants 2d6 temporary hitpoints' (Blood Halberd) or 'When you reduce a creature to 0 HP you regain Xd6 hit points' (life-leech weapons). Auto-rolls and applies to the attacker after each kill. Temp HP uses Math.max per RAW (doesn't stack). Set to OFF to handle these manually.",
