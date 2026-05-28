@@ -351,6 +351,37 @@ export class PostHitSaves {
         `;
         console.log(`${MODULE_ID} | SEVER IMMUNE (slashing): ${targetName}'s ${severNoun} not severed — ${itemName} slashing-immune target`);
       } else if (severed) {
+        // ── Vorpal head-sever auto-kill (v0.7.11) ───────────────────────
+        // RAW Vorpal Sword (DMG): on a successful head-sever, "the creature
+        // dies if it can't survive without the lost head." For the vast
+        // majority of creatures this is the only way to interpret losing
+        // the head — they're dead. Slashing-immune creatures took the
+        // alt-damage branch above (line 303). Edge cases (trolls regen,
+        // certain undead, gods with backup heads) are rare enough that
+        // the GM can manually heal/revive via the chat card if needed.
+        //
+        // Sword of Sharpness (severType="limb") and generic body-part
+        // severs do NOT auto-kill — those are wounds, GM adjudicates.
+        let autoKilled = false;
+        if (actualSeverType === "head" && shape.hasHead) {
+          try {
+            const curHp = targetActor.system?.attributes?.hp?.value ?? 0;
+            if (curHp > 0 && game.user.isGM) {
+              await targetActor.update({ "system.attributes.hp.value": 0 });
+              autoKilled = true;
+              console.log(`${MODULE_ID} | SEVER AUTO-KILL: ${targetName} dropped to 0 HP from head loss (Vorpal RAW)`);
+            }
+          } catch (err) {
+            console.warn(`${MODULE_ID} | Vorpal auto-kill HP update failed:`, err);
+          }
+        }
+
+        const killBanner = autoKilled
+          ? `<div style="color:#ff6b6b; font-weight:700; margin-top:4px; padding:4px 6px; background:rgba(255,107,107,0.1); border-left:3px solid #ff6b6b; border-radius:2px;">
+               💀 <strong>${foundry.utils.escapeHTML(targetName)}</strong> dies from loss of head (HP set to 0).
+             </div>`
+          : "";
+
         cardHtml = `
           <div class="ace-qol-sever-card ace-qol-sever-success" style="background:linear-gradient(180deg,#2a0a0a 0%,#3a0e0e 50%,#2a0a0a 100%); border:2px solid #d4af37; border-radius:6px; padding:10px 12px; box-shadow:0 0 12px rgba(212,175,55,0.3);">
             <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
@@ -364,12 +395,16 @@ export class PostHitSaves {
               <strong>${foundry.utils.escapeHTML(targetName)}</strong> loses a ${severNoun}.
               ${actualSeverType !== severRider.severType ? ` <em style="color:#aaa;">(creature has no ${severRider.severType} — ${severNoun} severed instead)</em>` : ""}
             </div>
+            ${killBanner}
             <div style="color:#aaa; font-size:11px; margin-top:6px; font-style:italic; border-top:1px solid rgba(212,175,55,0.2); padding-top:6px;">
-              GM: adjudicate the lasting effect (loss of attribute, halved speed, can't wield two weapons, etc.).
+              ${autoKilled
+                ? "GM: undo the kill via the actor sheet if this creature can survive without its head (troll regen, certain undead, etc.)."
+                : "GM: adjudicate the lasting effect (loss of attribute, halved speed, can't wield two weapons, etc.)."
+              }
             </div>
           </div>
         `;
-        console.log(`${MODULE_ID} | SEVER: ${targetName} loses a ${severNoun} from ${itemName} (rolled ${rolled})`);
+        console.log(`${MODULE_ID} | SEVER: ${targetName} loses a ${severNoun} from ${itemName} (rolled ${rolled})${autoKilled ? " — auto-killed" : ""}`);
       } else {
         cardHtml = `
           <div class="ace-qol-sever-card ace-qol-sever-miss" style="background:#1a1a1f; border-left:3px solid #555; padding:6px 10px; border-radius:3px; color:#aaa; font-size:11px;">
