@@ -294,6 +294,15 @@ export class QolSettings {
       default: true,
     });
 
+    s("armorProfCheckSaveDisadvantage", {
+      name:    "Disadvantage on STR/DEX Checks & Saves in Unproficient Armor (RAW)",
+      hint:    "RAW (PHB p.144): the same unproficient-armor rule that imposes attack-roll disadvantage and blocks spellcasting ALSO imposes disadvantage on any STR or DEX ability check or saving throw. When ON, those rolls automatically take disadvantage if the PC is wearing armor they lack proficiency with. PC-only. Default ON.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
     // ── Death Saves (PHB 197) ────────────────────────────────────────────
     s("autoDeathSaves", {
       name: "Auto-Roll Death Saves",
