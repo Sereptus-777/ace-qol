@@ -2302,6 +2302,19 @@ Hooks.once("ready", () => {
       }
     }
 
+    // ── ACE: Forge-templated items exception (v0.7.10) ─────────────────
+    // Items wired by ACE: Forge's Item Template Library (Holy Symbol of
+    // Ravenkind etc.) have LEGITIMATE multi-activity setups where the
+    // user needs to pick which power to fire (Hold Vampires vs Sunlight
+    // vs Turn Undead Enhanced). The original "no attack → close" logic
+    // was correctly catching Divine Smite rider popups but ALSO catching
+    // these legitimate user-choice dialogs. Leave Forge-templated dialogs
+    // open so the user can actually pick.
+    if (item?.flags?.["ace-artificer"]?.appliedTemplate) {
+      console.log(`${MODULE_ID} | ActivityChoiceDialog for Forge-templated item — leaving open for user choice: ${app.title}`);
+      return;
+    }
+
     // No Attack button found — this is a post-hit rider dialog, close it.
     // Our rider engine handles all post-hit abilities (Divine Smite, etc.)
     console.log(`${MODULE_ID} | Auto-closing post-hit ActivityChoiceDialog: ${app.title}`);
