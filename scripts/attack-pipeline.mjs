@@ -15,6 +15,7 @@ import { QolSettings } from "./settings.mjs";
 import { FlagsEngine } from "./flags-engine.mjs";
 import { MergeCard } from "./merge-card.mjs";
 import { CoverEngine } from "./cover-engine.mjs";
+import { RiderEngine } from "./rider-engine.mjs";
 import { pendingAttackChoices, awaitDsnRoll, showCenterToast } from "./attack-prompt.mjs";
 
 export class AttackPipeline {
@@ -319,7 +320,7 @@ export class AttackPipeline {
     const isMelee = ["mwak", "msak"].includes(actionType);
     const isSpell = item.type === "spell" || ["msak", "rsak"].includes(actionType);
 
-    // ── Optional Bonus Prompts (Bardic Inspiration, Lucky, Precision Attack, etc.) ──
+    // ── Optional Bonus Prompts (Bardic Inspiration, Lucky, etc.) ──
     // Check if the actor has any optional bonuses available for this attack roll.
     // Route to the correct player (owner of the attacking actor) via socket.
     try {
@@ -332,6 +333,22 @@ export class AttackPipeline {
       }
     } catch (err) {
       console.warn(`${MODULE_ID} | Optional prompt failed (non-blocking):`, err);
+    }
+
+    // ── Precision Attack pre-resolution intercept (v0.7.14 F12) ──
+    // Battle Master Fighter maneuver: declared AFTER the d20 lands but BEFORE
+    // hit/miss is determined. Player sees their attack roll and decides whether
+    // to spend a superiority die to push a marginal miss into a hit. Both 2014
+    // and 2024 use this mid-roll timing — this is the load-bearing case for
+    // having a pre-resolution intercept tier at all.
+    try {
+      const precisionBonus = await RiderEngine.promptPrecisionAttack(actor, attackTotal, d20Result);
+      if (precisionBonus > 0) {
+        attackTotal += precisionBonus;
+        this._debug(`Precision Attack added: +${precisionBonus} → new total ${attackTotal}`);
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Precision Attack prompt failed (non-blocking):`, err);
     }
 
     // ── Use pre-roll combat states if available, otherwise assess now ──
@@ -384,12 +401,88 @@ export class AttackPipeline {
         console.warn(`${MODULE_ID} | Cutting Words check failed (non-blocking):`, err);
       }
 
+      // ── Mirror Image redirect (v0.7.15) ──
+      // RAW: target with Mirror Image active rolls a d20 each time they're
+      // attacked. Threshold 6/8/11 for 3/2/1 duplicates. On success, the
+      // attack switches to a duplicate (AC 10 + DEX mod). If the attack hits
+      // the duplicate, the duplicate is destroyed; the real target takes no
+      // damage either way.
+      // Note: this implementation does NOT yet honor blindsight / truesight /
+      // see-illusions immunities — those are a tier-2 polish item.
+      let mirrorImageRedirect = null;
+      try {
+        const targetActor = cs.targetActor ?? cs.target?.actor;
+        const dupes = Number(targetActor?.getFlag?.(MODULE_ID, "mirrorImage") ?? 0);
+        if (dupes > 0 && !isFumbleRoll && !coverResult?.isFullCover) {
+          const threshold = dupes >= 3 ? 6 : dupes === 2 ? 8 : 11;
+          const redirectRoll = await new Roll("1d20").evaluate();
+          const redirectVal = redirectRoll.total;
+          const isRedirected = redirectVal >= threshold;
+
+          if (isRedirected) {
+            const dexMod = targetActor.system?.abilities?.dex?.mod ?? 0;
+            const duplicateAC = 10 + dexMod;
+            const hitDuplicate = adjustedAttackTotal >= duplicateAC;
+
+            // Decrement duplicate count on hit (and remove the effect at 0).
+            let newCount = dupes;
+            if (hitDuplicate) {
+              newCount = dupes - 1;
+              try { await targetActor.setFlag(MODULE_ID, "mirrorImage", newCount); } catch (_) {}
+              if (newCount === 0) {
+                try {
+                  const eff = targetActor.effects?.find(e => String(e.name ?? "").toLowerCase() === "mirror image");
+                  if (eff) await eff.delete();
+                  await targetActor.unsetFlag(MODULE_ID, "mirrorImage");
+                } catch (_) {}
+              }
+            }
+
+            mirrorImageRedirect = {
+              rollResult: redirectVal,
+              threshold,
+              duplicatesBefore: dupes,
+              duplicatesAfter: newCount,
+              duplicateAC,
+              hitDuplicate,
+            };
+
+            // Post a brief chat card so the table sees what happened.
+            try {
+              const remainingTxt = newCount === 0 ? "all duplicates destroyed — spell ends" : `${newCount} duplicate${newCount === 1 ? "" : "s"} remaining`;
+              const outcomeTxt = hitDuplicate
+                ? `<strong style="color:#d4af37;">duplicate destroyed</strong> — ${remainingTxt}`
+                : `<strong style="color:#8eebff;">attack misses</strong> — duplicate not struck, ${dupes} duplicate${dupes === 1 ? "" : "s"} remaining`;
+              ChatMessage.create({
+                content: `
+                  <div style="background:linear-gradient(180deg,#1a1416 0%,#241a30 100%);border:2px solid #8eebff;border-radius:6px;padding:8px 10px;color:#cfcfd0;font-size:12px;">
+                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+                      <i class="fas fa-clone" style="color:#8eebff;font-size:16px;"></i>
+                      <strong style="color:#8eebff;text-transform:uppercase;letter-spacing:0.5px;">Mirror Image</strong>
+                    </div>
+                    Attack on <strong>${targetActor.name}</strong> redirected (roll <strong>${redirectVal}</strong> vs threshold ${threshold}+).
+                    Duplicate AC <strong>${duplicateAC}</strong> vs attack <strong>${adjustedAttackTotal}</strong> → ${outcomeTxt}.
+                  </div>
+                `,
+                speaker: ChatMessage.getSpeaker({ actor: targetActor }),
+              }).catch(() => {});
+            } catch (_) { /* non-fatal */ }
+          }
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Mirror Image redirect check failed (non-blocking):`, err);
+      }
+
       // ── Determine hit/miss ──
       let hitResult;
       if (isFumbleRoll) {
         hitResult = "fumble";
       } else if (coverResult?.isFullCover) {
         hitResult = "miss"; // Full cover = can't be hit
+      } else if (mirrorImageRedirect) {
+        // Mirror Image redirected the attack to a duplicate — the real target
+        // takes no damage regardless of whether the duplicate was hit.
+        hitResult = "miss";
       } else if (isCritRoll || cs.autoCrit) {
         hitResult = "critical";
       } else if (adjustedAttackTotal >= effectiveAC) {
@@ -411,6 +504,7 @@ export class AttackPipeline {
         d20Result,
         isCritRoll,
         isFumbleRoll,
+        mirrorImageRedirect,
       });
     }
 

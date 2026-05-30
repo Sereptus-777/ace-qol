@@ -26,9 +26,16 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
+import { CombatState } from "./combat-state.mjs";
 
 // Hardcoded literal — TDZ-safe (see stealth-engine.mjs comment)
 const FLAG_NS = "ace-qol";
+
+// ── Polearm Master enter-reach qualifying weapons (edition-aware) ──
+// 2014 RAW (Tasha's expanded): Glaive, Halberd, Pike, Quarterstaff, Spear.
+// 2024 RAW (Reactive Strike): Glaive, Halberd, Pike, Quarterstaff (Spear dropped).
+const POLEARM_NAMES_2014 = ["glaive", "halberd", "pike", "quarterstaff", "spear"];
+const POLEARM_NAMES_2024 = ["glaive", "halberd", "pike", "quarterstaff"];
 
 export class OAPrompt {
 
@@ -120,17 +127,74 @@ export class OAPrompt {
       const distBefore = Math.hypot(fromCenter.x - reactorCenter.x, fromCenter.y - reactorCenter.y);
       const distAfter  = Math.hypot(toCenter.x   - reactorCenter.x, toCenter.y   - reactorCenter.y);
 
-      // Was within reach AND now isn't = provoking
+      // Was within reach AND now isn't = standard leave-reach OA (PHB 195).
       if (distBefore <= reachPx && distAfter > reachPx) {
         await OAPrompt._postPromptCard(t.actor, moverActor, td, moverDoc);
+      }
+
+      // ── Polearm Master enter-reach OA (2014 + 2024) ──
+      // 2014 Polearm Master (Tasha's expanded list): an enemy entering your
+      // reach while you wield a qualifying polearm provokes an OA.
+      // 2024 Polearm Master "Reactive Strike": same trigger, narrower weapon
+      // list (no Spear). Reach pulled from the weapon (10 ft for reach-property
+      // weapons, 5 ft otherwise). Mover must have been OUTSIDE the polearm's
+      // reach before and INSIDE it after.
+      const polearmData = OAPrompt._getPolearmReachData(t.actor);
+      if (polearmData) {
+        const polearmReachPx = (polearmData.reachFt / ftPerGrid) * gridSize;
+        if (distBefore > polearmReachPx && distAfter <= polearmReachPx) {
+          const reasonText = `can make an OA against <strong>${moverActor.name}</strong> entering polearm reach (${polearmData.weaponName}, ${polearmData.reachFt} ft, ${polearmData.edition} RAW).`;
+          await OAPrompt._postPromptCard(t.actor, moverActor, td, moverDoc, { reasonText });
+        }
       }
     }
   }
 
-  static async _postPromptCard(reactorActor, moverActor, reactorTokenDoc, moverTokenDoc) {
+  /**
+   * If the reactor has Polearm Master AND a qualifying polearm equipped,
+   * return the polearm's reach in feet plus the weapon name and the active
+   * edition. Returns null otherwise.
+   *
+   * Edition-aware qualifying weapon list:
+   *   2014 (Tasha's expanded): Glaive, Halberd, Pike, Quarterstaff, Spear.
+   *   2024 (Reactive Strike):  Glaive, Halberd, Pike, Quarterstaff.
+   *
+   * Reach: weapons carrying the "rch" property = 10 ft total reach;
+   * otherwise 5 ft. Pulled per-weapon rather than from a single setting so
+   * Glaive/Halberd/Pike fire at 10 ft and Quarterstaff/Spear fire at 5 ft.
+   *
+   * @param {Actor} reactorActor
+   * @returns {{ reachFt: number, weaponName: string, edition: string } | null}
+   */
+  static _getPolearmReachData(reactorActor) {
+    if (!reactorActor) return null;
+    const hasPM = (reactorActor.items ?? []).some(i =>
+      (i.type === "feat" || i.type === "class") &&
+      i.name?.toLowerCase().includes("polearm master")
+    );
+    if (!hasPM) return null;
+
+    const edition = CombatState.getActiveEdition(reactorActor);
+    const validNames = edition === "2024" ? POLEARM_NAMES_2024 : POLEARM_NAMES_2014;
+
+    for (const it of reactorActor.items ?? []) {
+      if (it.type !== "weapon") continue;
+      if (!it.system?.equipped) continue;
+      const nameNorm = String(it.name ?? "").toLowerCase().trim();
+      if (!validNames.some(p => nameNorm.includes(p))) continue;
+      const props = it.system?.properties;
+      const hasReachProp = props?.has?.("rch") || props?.rch === true;
+      const reachFt = hasReachProp ? 10 : 5;
+      return { reachFt, weaponName: it.name, edition };
+    }
+    return null;
+  }
+
+  static async _postPromptCard(reactorActor, moverActor, reactorTokenDoc, moverTokenDoc, opts = {}) {
     const reactorId = reactorActor.id;
     const moverId   = moverActor.id;
-    const html = OAPrompt._renderCardHtml(reactorActor.name, moverActor.name, reactorId, moverId, "pending");
+    const reasonText = opts.reasonText ?? null;
+    const html = OAPrompt._renderCardHtml(reactorActor.name, moverActor.name, reactorId, moverId, "pending", reasonText);
 
     // Whisper recipients: GM(s) + the reactor's player owner (if any).
     // For GM-controlled NPCs, only the GM sees the prompt. PCs reactors
@@ -148,15 +212,18 @@ export class OAPrompt {
       content: html,
       speaker: ChatMessage.getSpeaker({ actor: reactorActor }),
       whisper: [...recipients],
-      flags: { [MODULE_ID]: { type: "oaPrompt", reactorId, moverId, status: "pending" } },
+      flags: { [MODULE_ID]: { type: "oaPrompt", reactorId, moverId, status: "pending", reasonText } },
     });
   }
 
   /**
    * Single source of truth for OA card HTML.
    * status: "pending" | "taken" | "passed"
+   * reasonText (optional): custom body line. Falls back to the standard
+   * leave-reach phrasing when null. Used by the Polearm Master enter-reach
+   * branch to clarify the trigger condition.
    */
-  static _renderCardHtml(reactorName, moverName, reactorId, moverId, status) {
+  static _renderCardHtml(reactorName, moverName, reactorId, moverId, status, reasonText = null) {
     const isPending = status === "pending";
     const verdictHtml = status === "taken"
       ? `<div style="color:#d4af37;font-weight:600;font-size:12px;margin-top:8px;"><i class="fas fa-bolt"></i> Reaction used</div>`
@@ -187,7 +254,7 @@ export class OAPrompt {
           <strong style="color:#ffd87a;font-size:13px;text-transform:uppercase;letter-spacing:0.5px;">Opportunity Attack</strong>
         </div>
         <div style="color:#cfcfd0;font-size:12px;line-height:1.4;">
-          <strong>${reactorName}</strong> can make an OA against <strong>${moverName}</strong>.
+          <strong>${reactorName}</strong> ${reasonText ?? `can make an OA against <strong>${moverName}</strong>.`}
         </div>
         ${verdictHtml}
         ${buttonsHtml}
@@ -226,7 +293,10 @@ export class OAPrompt {
 
     // Re-render the card content with the resolved state. ALL clients with
     // visibility see this update via the standard chat-message render flow.
-    const newHtml = OAPrompt._renderCardHtml(reactorName, moverName, reactorId, moverId, status);
+    // Preserve the original reasonText (set by the polearm enter-reach branch)
+    // so the resolved card keeps its trigger explanation.
+    const reasonText = flags.reasonText ?? null;
+    const newHtml = OAPrompt._renderCardHtml(reactorName, moverName, reactorId, moverId, status, reasonText);
     try {
       await msg.update({
         content: newHtml,

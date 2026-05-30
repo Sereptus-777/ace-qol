@@ -269,9 +269,10 @@ export class DeathPipeline {
    * @param {TokenDocument} tokenDoc - The TokenDocument on the current scene.
    * @returns {Promise<void>}
    */
-  async processNPCDeath(actor, tokenDoc) {
+  async processNPCDeath(actor, tokenDoc, options = {}) {
     const name = actor?.name ?? "unknown";
-    console.log(`${LOG_PREFIX} ▶ processNPCDeath("${name}") starting`);
+    const { allowPC = false, keepOriginalToken = false, reason = null } = options;
+    console.log(`${LOG_PREFIX} ▶ processNPCDeath("${name}")${reason ? ` reason=${reason}` : ""}${allowPC ? " [allowPC]" : ""}${keepOriginalToken ? " [keepToken]" : ""} starting`);
     try {
       // ── Guard: setting enabled? — auto-recover if disabled ──
       if (!game.settings.get(MODULE_ID, "enableDeathPipeline")) {
@@ -305,7 +306,14 @@ export class DeathPipeline {
       }
 
       // ── Guard: NPC only, not player-owned ──
-      if (!actor || actor.type !== "npc" || actor.hasPlayerOwner) {
+      // Bypassed when allowPC=true (called explicitly by Vorpal sever or
+      // similar permanent-death effects). In that case we still need a
+      // valid actor of any character/NPC type.
+      if (!actor) {
+        console.log(`${LOG_PREFIX}   ✗ No actor — skipping`);
+        return;
+      }
+      if (!allowPC && (actor.type !== "npc" || actor.hasPlayerOwner)) {
         console.log(`${LOG_PREFIX}   ✗ Not an NPC or is player-owned — skipping`);
         return;
       }
@@ -314,19 +322,33 @@ export class DeathPipeline {
       if (!tokenDoc) { console.warn(`${LOG_PREFIX}   ✗ No tokenDoc — skipping`); return; }
       if (!canvas.scene) { console.warn(`${LOG_PREFIX}   ✗ No canvas.scene — skipping`); return; }
 
-      // ── Resolve dead art (with hard fallback chain — tile ALWAYS created) ──
+      // ── Resolve dead art (with hard fallback chain) ──
+      // 1. Best: creature-specific match (Dead-Goblin.png, dead-fey.png)
+      // 2. Better: hand-crafted Dead-Humanoid.png fallback in Assets/Dead
+      // 3. Token's own image (shows the creature as-is, just dead status)
+      // 4. Foundry stock skull icon — absolute last resort
       let deadArtPath = this._resolveDeadArt(actor);
       let fallbackUsed = null;
 
       if (!deadArtPath) {
-        // Fallback 1: the actor's own token image (shows the creature as-is)
+        // Fallback 1: hand-made dead-humanoid fallback (case-insensitive).
+        // The user maintains this asset specifically as the catch-all visual
+        // for any humanoid-shaped creature that doesn't have a more specific
+        // dead-art file. Better than the token's own image because at least
+        // we KNOW it's a corpse pose.
+        const humanoidFallback = `modules/${MODULE_ID}/Assets/Dead/Dead-Humanoid.png`;
+        deadArtPath = humanoidFallback;
+        fallbackUsed = "dead-humanoid-fallback";
+      }
+      if (!deadArtPath) {
+        // Fallback 2: the actor's own token image (shows the creature as-is)
         deadArtPath = actor.prototypeToken?.texture?.src
                    ?? tokenDoc.texture?.src
                    ?? actor.img;
         if (deadArtPath) fallbackUsed = "token-image";
       }
       if (!deadArtPath) {
-        // Fallback 2: Foundry stock skull icon — absolute last resort
+        // Fallback 3: Foundry stock skull icon — absolute last resort
         deadArtPath = "icons/svg/skull.svg";
         fallbackUsed = "skull-icon";
       }
@@ -384,79 +406,149 @@ export class DeathPipeline {
       const placement = this._findUnoccupiedPosition(tokenDoc.x, tokenDoc.y, tileWidth, tileHeight);
       console.log(`${LOG_PREFIX}   ✓ Placement: (${placement.x},${placement.y})${placement.shifted ? " [shifted to avoid overlap]" : ""}`);
 
-      // ── Step 1: Create the dead tile BEFORE deleting the token ──
-      const isVideo = /\.(webm|mp4|m4v|ogv)$/i.test(deadArtPath);
+      // ── NEW PIPELINE (v0.7.14): In-place token texture swap ──
+      //
+      // The OLD pipeline created a corpse tile then deleted the token.
+      // That was visually fine for NPCs but caused two real problems:
+      //   1. Reviving was a chore — GM had to switch to the tile layer,
+      //      delete the tile, then recreate / re-stat the token.
+      //   2. PC deaths were impossible to handle (PCs need sheet access
+      //      preserved for death-saves / raise-dead workflows).
+      //
+      // The new pipeline keeps the token in place and swaps its image.
+      // The actor's portrait (actor.img) and prototype token texture stay
+      // untouched — only this specific token's `texture.src` changes,
+      // because that property is on the TokenDocument, not the Actor or
+      // prototype. Original state is snapshotted to a flag for reversal.
+      //
+      // Player ownership is dropped to OBSERVER while dead — players can
+      // still view their character sheet (read it, see what they HAD) but
+      // they CAN'T modify HP, items, ownership, etc. The custom loot
+      // click handler (see ace-qol.mjs) routes player clicks on dead
+      // tokens to the loot dialog instead of the normal sheet-open path.
+
+      // Bail if already marked dead — idempotent. Prevents double-processing
+      // if the actor takes multiple updates in the same tick.
+      if (tokenDoc.flags?.[MODULE_ID]?.isDead) {
+        console.log(`${LOG_PREFIX}   • already marked isDead — skipping (idempotent)`);
+        return;
+      }
 
       // Snapshot the actor's lootable items + currency at time of death.
-      // Lets players open the loot dialog without needing actor permission
-      // (most NPCs are owner-locked to the GM). Snapshot is updated as the
-      // GM transfers items / splits gold from the dialog.
+      // Stored on the TOKEN flag (not a tile, since we don't make tiles
+      // anymore). The loot dialog reads from here.
       const lootSnapshot = this._buildLootSnapshot(actor);
 
-      const tileData = {
-        texture: { src: deadArtPath },
-        x:        placement.x,
-        y:        placement.y,
-        width:    tileWidth,
-        height:   tileHeight,
-        overhead: false,
-        roof:     false,
-        hidden:   false,
-        locked:   false,
-        // Video config — autoplay + loop for .webm/.mp4/.ogv; harmless for images
-        video: isVideo ? { loop: true, autoplay: true, volume: 0 } : undefined,
-        flags: {
-          [MODULE_ID]: {
-            isDeadToken:     true,
-            originalActorId: actor.id,
-            // v0.4.22.11: Renamed from `originalTokenId` to `_deletedTokenId`
-            // to make the staleness explicit. The token referenced here is
-            // the one we're about to delete in the next step, so any code
-            // looking it up will fail. Use `originalActorId` for any actor
-            // lookup. Kept under the `_` prefix purely for forensics/
-            // debugging — never to be read by feature code.
-            _deletedTokenId: tokenDoc.id,
-            originalName:    actor.name,
-            creatureType:    actor.system?.details?.type?.value || "",
-            lootable:        true,
-            combatLocked:    !!game.combat?.started,
-            createdAt:       Date.now(),
-            lootSnapshot,
-          },
-        },
+      // Snapshot pre-death visual state for revive reversal.
+      const preDeathSnapshot = {
+        textureSrc:    tokenDoc.texture?.src ?? null,
+        textureTint:   tokenDoc.texture?.tint ?? null,
+        textureScaleX: tokenDoc.texture?.scaleX ?? null,
+        textureScaleY: tokenDoc.texture?.scaleY ?? null,
+        width:         tokenDoc.width,
+        height:        tokenDoc.height,
       };
 
-      let created;
-      try {
-        created = await canvas.scene.createEmbeddedDocuments("Tile", [tileData]);
-      } catch (createErr) {
-        console.error(`${LOG_PREFIX}   ✗ Tile creation threw:`, createErr);
-        try {
-          await ChatMessage.create({
-            content: `<div style="background:#2a1a0a;border:1px solid #ff6b6b;padding:6px 10px;border-radius:4px;color:#ffa0a0;font-size:12px;">⚠ ACE QOL: Tile creation FAILED for <strong>${name}</strong>: ${createErr?.message ?? createErr}</div>`,
-            whisper: [game.user.id],
-          });
-        } catch (_) {}
-        return;
-      }
+      // Snapshot actor ownership so revive restores it exactly.
+      const preDeathOwnership = foundry.utils.deepClone(actor.ownership ?? {});
 
-      if (!created?.length) {
-        console.warn(`${LOG_PREFIX}   ✗ Failed to create dead tile for "${name}" (no document returned)`);
-        return;
-      }
-
-      console.log(`${LOG_PREFIX}   ✓ Tile created: ${created[0].id}`);
-
-      // ── Step 2: Remove original token (if setting enabled) ──
-      if (game.settings.get(MODULE_ID, "deleteTokenOnDeath")) {
-        try {
-          await tokenDoc.delete();
-          console.log(`${LOG_PREFIX}   ✓ Original token deleted`);
-        } catch (delErr) {
-          console.warn(`${LOG_PREFIX}   ✗ Token deletion failed:`, delErr);
+      // Build the dead-ownership map: every non-GM user drops to OBSERVER
+      // (level 2). OBSERVER lets them view their sheet but blocks all
+      // modifications — including HP bumping, item deletion, and token
+      // control. GMs get OWNER for full access (default OWNER for GM is
+      // implicit in Foundry but we make it explicit defensively).
+      const newOwnership = { default: 0 };  // NONE for "anyone else"
+      for (const user of game.users) {
+        const had = preDeathOwnership[user.id] ?? preDeathOwnership.default ?? 0;
+        if (user.isGM) {
+          newOwnership[user.id] = 3;  // OWNER — GM keeps full control
+        } else if (had > 0) {
+          // User had at least limited access before — drop to OBSERVER
+          // so they can still READ the sheet but not modify it.
+          newOwnership[user.id] = 2;  // OBSERVER
         }
-      } else {
-        console.log(`${LOG_PREFIX}   • deleteTokenOnDeath OFF — original token left in place`);
+        // Users with no prior access stay at 0 (NONE).
+      }
+
+      try {
+        await tokenDoc.update({
+          "texture.src": deadArtPath,
+          // New token-pipeline flags
+          [`flags.${MODULE_ID}.isDead`]:              true,
+          [`flags.${MODULE_ID}.isDeadLootable`]:      true,
+          [`flags.${MODULE_ID}.permanentlyDead`]:     !!options.permanentDeath,
+          [`flags.${MODULE_ID}.deathReason`]:         reason ?? "hp-zero",
+          [`flags.${MODULE_ID}.preDeathSnapshot`]:    preDeathSnapshot,
+          [`flags.${MODULE_ID}.preDeathOwnership`]:   preDeathOwnership,
+          [`flags.${MODULE_ID}.lootSnapshot`]:        lootSnapshot,
+          [`flags.${MODULE_ID}.deathArtPath`]:        deadArtPath,
+          [`flags.${MODULE_ID}.diedAt`]:              Date.now(),
+          // Compatibility flags — these mirror the field names the existing
+          // lootable-tile dialog reads (originally designed for dead-art
+          // TILES). By setting them on the dead TOKEN's flags too, the
+          // dialog code Just Works when passed a token instead of a tile.
+          [`flags.${MODULE_ID}.isDeadToken`]:         true,
+          [`flags.${MODULE_ID}.originalActorId`]:     actor.id,
+          [`flags.${MODULE_ID}.originalName`]:        actor.name,
+          [`flags.${MODULE_ID}.combatLocked`]:        !!game.combat?.started,
+        });
+        console.log(`${LOG_PREFIX}   ✓ Token texture swapped to dead-art: ${deadArtPath}`);
+      } catch (swapErr) {
+        console.error(`${LOG_PREFIX}   ✗ Token texture swap failed:`, swapErr);
+        return;
+      }
+
+      // Strip player ownership AFTER the texture swap so if the ownership
+      // update fails partway we still have the visual death and the
+      // snapshot flag (revive can recover).
+      try {
+        await actor.update({ ownership: newOwnership });
+        console.log(`${LOG_PREFIX}   ✓ Player ownership reduced to OBSERVER (sheet readable, not editable)`);
+      } catch (ownErr) {
+        console.warn(`${LOG_PREFIX}   ✗ Ownership update failed (visual death still applied):`, ownErr);
+      }
+
+      // ── Suppress Foundry's auto-applied "dead" status overlay ──
+      // dnd5e automatically applies the "dead" status effect (skull icon)
+      // when an actor hits 0 HP. That overlay renders ON TOP of our corpse
+      // texture, stacking a redundant skull on the dead body — ugly and
+      // unnecessary since the body itself IS the dead visual.
+      //
+      // We remove just the dead status THEN explicitly set the combatant's
+      // defeated flag — depending on Foundry version + dnd5e version, the
+      // tracker's ✗ defeated mark is driven EITHER by the dead status OR by
+      // combatant.defeated independently. Setting it explicitly is defense
+      // against the case where removing the status also removed the marker.
+      try {
+        if (tokenDoc.actor?.statuses?.has?.("dead")) {
+          await tokenDoc.actor.toggleStatusEffect("dead", { active: false });
+          console.log(`${LOG_PREFIX}   ✓ Suppressed skull-icon overlay (dead status removed)`);
+        }
+        // Belt-and-suspenders: also clear any ActiveEffect named "Dead"
+        // applied by other modules (BetterRolls, DAE templates, etc.).
+        const deadEffects = tokenDoc.actor?.effects?.filter?.(e =>
+          (e.statuses?.has?.("dead")) || /^dead$/i.test(e.name ?? "")
+        ) ?? [];
+        for (const ef of deadEffects) {
+          try { await ef.delete(); } catch (_) {}
+        }
+        // Explicitly mark the combatant as defeated in the tracker so the
+        // ✗ stays even if dead-status removal would have cleared it. Only
+        // applies when there's an active combat that contains this actor.
+        const combat = game.combats?.find(c =>
+          c.combatants?.some(cb => cb.actorId === tokenDoc.actor?.id || cb.tokenId === tokenDoc.id)
+        );
+        if (combat) {
+          const combatant = combat.combatants.find(cb =>
+            cb.tokenId === tokenDoc.id || cb.actorId === tokenDoc.actor?.id
+          );
+          if (combatant && !combatant.defeated) {
+            await combatant.update({ defeated: true });
+            console.log(`${LOG_PREFIX}   ✓ Combatant.defeated explicitly set (tracker ✗ preserved)`);
+          }
+        }
+      } catch (statusErr) {
+        console.warn(`${LOG_PREFIX}   ✗ Dead status suppression / combatant marker failed (visual death still applied):`, statusErr);
       }
 
       console.log(`${LOG_PREFIX} ✓ processNPCDeath("${name}") complete`);

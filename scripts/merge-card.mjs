@@ -90,7 +90,7 @@ export class MergeCard {
 
     // ── Damage formula section (shared roll display) ──
     const damageFormulaHtml = showDmgFormula
-      ? MergeCard._buildDamageFormulaSection(damageResults)
+      ? MergeCard._buildDamageFormulaSection(damageResults, item)
       : "";
 
     // ── Per-target results (combined hit/miss + damage) ──
@@ -263,10 +263,11 @@ export class MergeCard {
    * Build the damage formula display (dice + type totals).
    * Reuses the same layout as the standalone damage card.
    */
-  static _buildDamageFormulaSection(damageResults) {
+  static _buildDamageFormulaSection(damageResults, item = null) {
     if (!damageResults?.length) return "";
 
     const first = damageResults[0];
+    const itemName = item?.name ?? null;
     const formulaRows = (first.components ?? []).map(c => {
       const dieResults = [];
       const flatMods = [];
@@ -318,9 +319,18 @@ export class MergeCard {
       const color = DamageConstants.DAMAGE_COLORS[c.type] ?? "#ccc";
       const typeTotal = `<span class="ace-qol-dmg-equals">=</span> <span class="ace-qol-dmg-type-total" style="color:${color}"><span class="ace-qol-dmg-type-num">${c.final}</span> ${c.type}</span>`;
 
+      // ── Rider source caption (v0.7.15) — same as postDamageCard path ──
+      // Riders / bonuses (Searing Smite, Divine Smite, Hex, etc.) get a
+      // small label beneath the row. The weapon base row stays uncaptioned.
+      const isWeaponBase = itemName && c.name === itemName;
+      const sourceCaption = (!isWeaponBase && c.name && c.name !== "Bonus")
+        ? `<div class="ace-qol-dmg-source-caption" style="color:${color};">${c.name}</div>`
+        : "";
+
       // Inline-flow layout: dice → mods → "= total type" all on one wrapping row
       return `<div class="ace-qol-dmg-component ace-qol-dmg-row">`
         + `${critDisplay}${dieDisplay}${modDisplay}${typeTotal}`
+        + `${sourceCaption}`
         + `</div>`;
     }).join("");
 

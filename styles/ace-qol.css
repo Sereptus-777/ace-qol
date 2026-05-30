@@ -707,6 +707,22 @@
   text-shadow: 0 0 12px currentColor, 0 1px 2px rgba(0,0,0,0.8);
 }
 
+/* Rider source caption (v0.7.15) — e.g. "Searing Smite" beneath "4 fire".
+ * Sits on its own line under the row, same color as the damage type
+ * (not dimmed — user wants it readable). One size smaller than the
+ * main row, weight 600 so it doesn't disappear at small sizes. */
+.ace-qol-dmg-source-caption {
+  flex-basis: 100%;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  margin-top: 2px;
+  margin-left: 0;
+  text-align: left;
+  opacity: 0.92;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+}
+
 /* ─── Dice display with PNG images ──────────────────────────────────── */
 .ace-qol-die {
   display: inline-flex; align-items: center; gap: 4px;
@@ -4036,6 +4052,114 @@
 .ace-qol-heal-pickr-consume input[type="checkbox"] {
   accent-color: #5cf28a; cursor: pointer;
 }
+
+
+/* ── Spell Target Picker Dialog (v0.7.15) ─────────────────────────────────
+ * Used by SpellTargetPicker for multi-target buff/debuff spells like Bless,
+ * Bane, Slow, Faerie Fire, Beacon of Hope, etc. Mirrors the heal picker
+ * structure with a purple/gold accent to distinguish buff-cast UI.
+ */
+.ace-qol-spell-pickr {
+  font-family: "Rajdhani", "Signika", sans-serif; color: #e8e8ea;
+}
+.ace-qol-spell-pickr-header {
+  display: flex; align-items: center; gap: 10px;
+  padding-bottom: 8px; margin-bottom: 8px;
+  border-bottom: 1px solid rgba(171, 71, 188, 0.4);
+}
+.ace-qol-spell-pickr-icon {
+  width: 38px; height: 38px; border-radius: 4px;
+  border: 1px solid rgba(171, 71, 188, 0.5);
+}
+.ace-qol-spell-pickr-titles { display: flex; flex-direction: column; gap: 4px; }
+.ace-qol-spell-pickr-name {
+  font-family: "Cinzel Decorative", serif; font-weight: 700;
+  font-size: 15px; color: #d4af37;
+}
+.ace-qol-spell-pickr-meta { display: flex; gap: 6px; }
+.ace-qol-spell-pickr-tag {
+  display: inline-block; padding: 2px 6px; border-radius: 2px;
+  font-size: 9px; font-weight: 700; letter-spacing: 1.2px;
+  background: rgba(171, 71, 188, 0.18); color: #d59cf0;
+  border: 1px solid rgba(171, 71, 188, 0.45); text-transform: uppercase;
+}
+.ace-qol-spell-pickr-instructions {
+  font-size: 11px; color: #999; margin-bottom: 8px;
+}
+.ace-qol-spell-pickr-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 6px; max-height: 360px; overflow-y: auto;
+  padding: 4px; background: rgba(0,0,0,0.2); border-radius: 4px;
+}
+.ace-qol-spell-pickr-tok {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 6px; background: rgba(255,255,255,0.04); border-radius: 4px;
+  border: 2px solid transparent; cursor: pointer; transition: all 0.12s;
+  position: relative;
+}
+.ace-qol-spell-pickr-tok:hover {
+  background: rgba(171, 71, 188, 0.1); border-color: rgba(171, 71, 188, 0.45);
+}
+.ace-qol-spell-pickr-tok.invalid { opacity: 0.45; }
+.ace-qol-spell-pickr-tok.invalid:hover {
+  background: rgba(255, 80, 80, 0.1); border-color: rgba(255, 80, 80, 0.35);
+}
+.ace-qol-spell-pickr-tok.selected {
+  background: rgba(171, 71, 188, 0.22); border-color: #d59cf0;
+  box-shadow: 0 0 8px rgba(213, 156, 240, 0.45); opacity: 1;
+}
+.ace-qol-spell-pickr-tok-img-wrap { position: relative; }
+.ace-qol-spell-pickr-tok-img {
+  width: 60px; height: 60px; border-radius: 50%;
+  border: 2px solid rgba(212,175,55,0.45); object-fit: cover;
+}
+.ace-qol-spell-pickr-tok.selected .ace-qol-spell-pickr-tok-img {
+  border-color: #d59cf0;
+}
+.ace-qol-spell-pickr-tok.pc .ace-qol-spell-pickr-tok-img {
+  border-color: rgba(108,170,255,0.6);
+}
+.ace-qol-spell-pickr-tok-self-badge {
+  position: absolute; bottom: -4px; left: 50%; transform: translateX(-50%);
+  font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 2px;
+  background: #d4af37; color: #1a1a1c; letter-spacing: 1px;
+}
+.ace-qol-spell-pickr-tok-dead {
+  position: absolute; top: 4px; right: 4px;
+  font-size: 9px; font-weight: 700; padding: 1px 4px; border-radius: 2px;
+  background: #4a0e0e; color: #ffb0b0; letter-spacing: 1px;
+}
+.ace-qol-spell-pickr-tok-name {
+  font-weight: 600; font-size: 11px; color: #e8e8ea; text-align: center;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+}
+.ace-qol-spell-pickr-tok-disp {
+  font-size: 8px; font-weight: 700; letter-spacing: 1px;
+  padding: 1px 4px; border-radius: 2px;
+}
+.ace-qol-spell-pickr-tok-disp.friendly { color: #8eebff; background: rgba(108,170,255,0.18); }
+.ace-qol-spell-pickr-tok-disp.hostile  { color: #ff7878; background: rgba(255,80,80,0.16); }
+.ace-qol-spell-pickr-tok-disp.neutral  { color: #ddd;    background: rgba(255,255,255,0.08); }
+.ace-qol-spell-pickr-tok-dist {
+  font-size: 9px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
+  padding: 1px 5px; border-radius: 2px;
+}
+.ace-qol-spell-pickr-tok-dist.in-range {
+  color: #d59cf0; background: rgba(171,71,188,0.14);
+}
+.ace-qol-spell-pickr-tok-dist.out-of-range {
+  color: #ff7878; background: rgba(255,80,80,0.1);
+}
+.ace-qol-spell-pickr-tok-dist.self {
+  color: #d4af37; background: rgba(212,175,55,0.14);
+}
+.ace-qol-spell-pickr-footer {
+  margin-top: 8px; padding-top: 8px;
+  border-top: 1px solid rgba(171, 71, 188, 0.3);
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px; color: #aaa; gap: 12px;
+}
+.ace-qol-spell-pickr-count-num { color: #d59cf0; }
 
 
 /* ───────────────────────────────────────────────────────────────────────

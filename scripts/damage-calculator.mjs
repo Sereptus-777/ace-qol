@@ -8,6 +8,7 @@ import { QolSettings } from "./settings.mjs";
 import { DescriptionParser } from "./description-parser.mjs";
 import { DamageConstants } from "./damage-engine.mjs";
 import { CombatState } from "./combat-state.mjs";
+import { getChosenDamageType } from "./multi-type-damage-chooser.mjs";
 
 const PHYSICAL_TYPES = new Set(["bludgeoning", "piercing", "slashing"]);
 
@@ -42,6 +43,14 @@ export class DamageCalculator {
         if (bd.damageType) conditionalDamageTypes.add(bd.damageType);
       }
     }
+
+    // ── Multi-type damage choice (Blood Halberd "fire or cold", etc.) ──
+    // If the player has set a preferred damage type on this item via the
+    // chooser dialog, we filter damage parts in both the native and fallback
+    // paths to only include parts matching the chosen type. "default" or
+    // null means use all parts normally (weapon's listed types as-is).
+    const chosenDamageType = getChosenDamageType(item);
+    const shouldFilterByChosen = chosenDamageType && chosenDamageType !== "default";
 
     // ── True Strike (2024) — one-shot weapon-damage-type swap to Radiant ──
     // Set by BladeCantrips dialog at cantrip cast. Consume the flag now (so
@@ -86,9 +95,16 @@ export class DamageCalculator {
             // Skip conditional damage parts (gated behind a save from description)
             if (conditionalDamageTypes.has(type) && i > 0) continue;
 
+            // Skip parts that don't match the chosen damage type (Blood Halberd
+            // "fire or cold" → only the chosen one rolls).
+            if (shouldFilterByChosen && String(type).toLowerCase() !== chosenDamageType) {
+              console.log(`${MODULE_ID} | Multi-type damage: skipping ${type} part (chosen=${chosenDamageType})`);
+              continue;
+            }
+
             // Resolve @references and roll with our crit rules
             const data = rollCfg.data ?? rollData;
-            const result = await DamageCalculator.rollWithCrit(formula, data, isCrit, critRule, `Base ${type}`);
+            const result = await DamageCalculator.rollWithCrit(formula, data, isCrit, critRule, `Base ${type}`, item);
             components.push({ name: item.name, ...result, type });
           }
 
@@ -187,8 +203,25 @@ export class DamageCalculator {
 
             const types = part.types ? [...part.types] : ["untyped"];
             const type = types[0] ?? "untyped";
-            const result = await DamageCalculator.rollWithCrit(formula, rollData, isCrit, critRule, `Base ${type}`);
-            const comp = { name: item.name, ...result, type };
+
+            // Skip parts that don't match the chosen damage type. For multi-
+            // type parts (a single part listing both "fire" AND "cold"), we
+            // pass through if the chosen type is in the part's type list —
+            // the part still rolls, just labeled as the chosen type.
+            if (shouldFilterByChosen) {
+              const partTypesLower = types.map(t => String(t).toLowerCase());
+              if (!partTypesLower.includes(chosenDamageType)) {
+                console.log(`${MODULE_ID} | Multi-type damage: skipping ${type} part (chosen=${chosenDamageType})`);
+                continue;
+              }
+            }
+
+            // If the chosen type IS one of the part's types, use that as the
+            // applied type instead of the first-listed type. So "fire or cold"
+            // with chosen=cold rolls as cold (not as fire).
+            const appliedType = shouldFilterByChosen ? chosenDamageType : type;
+            const result = await DamageCalculator.rollWithCrit(formula, rollData, isCrit, critRule, `Base ${appliedType}`, item);
+            const comp = { name: item.name, ...result, type: appliedType };
 
             // Tag first component with modifier metadata
             if (i === 0) {
@@ -657,9 +690,19 @@ export class DamageCalculator {
    * @param {boolean} isCrit    — is this a critical hit?
    * @param {string} critRule   — "doubleDice" | "maxPlusRoll" | "maxAll"
    * @param {string} label      — display label
+   * @param {Item5e} [item]     — source item (used for GWF gating). Optional;
+   *                              if omitted, the GWF dice-bump simply skips.
    * @returns {{ formula, normalTotal, critTotal, total, isCrit, breakdown }}
    */
-  static async rollWithCrit(formula, rollData, isCrit, critRule, label = "") {
+  static async rollWithCrit(formula, rollData, isCrit, critRule, label = "", item = null) {
+    // Derive actor + system data from the optional item parameter. Pre-fix,
+    // this code referenced bare `actor` and `sys` which were never in scope —
+    // every GWF dice-bump attempt threw a non-fatal ReferenceError and the
+    // dice-bump never actually fired for any character. Threading `item`
+    // through gives us both refs cleanly.
+    const actor = item?.actor ?? null;
+    const sys   = item?.system ?? {};
+
     // Resolve @references in formula
     let resolved = formula;
     if (typeof formula === "string") {
@@ -683,7 +726,7 @@ export class DamageCalculator {
         i => i.type === "feat" && /great\s*weapon\s*fighting/i.test(String(i.name ?? ""))
       );
       if (hasGWF) {
-        const props = sys.properties ?? new Set();
+        const props = sys?.properties ?? new Set();
         const isTwoHanded = props.has?.("two") || (props.has?.("ver") && (sys.equipped !== false));
         if (isTwoHanded) {
           for (const term of baseRoll.terms) {

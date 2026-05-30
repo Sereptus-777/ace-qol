@@ -4,6 +4,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { CombatState } from "./combat-state.mjs";
 
 export class RiderEngine {
 
@@ -22,27 +23,31 @@ export class RiderEngine {
     const riders = [];
     const { isMelee, isRanged, isCrit, item } = opts;
 
-    // ── DIVINE SMITE (Paladin 2014/2024 — once-per-turn enforced for 2024 RAW) ──
-    // 2014 RAW: "When you hit with a melee weapon attack, expend a spell slot to..."
-    //           — fires PER HIT (any number per turn, each costs a slot).
-    // 2024 RAW: "Once per turn when you hit a target with a Melee Strike, you can
-    //           expend a spell slot to..." — ONCE PER TURN (still costs a slot).
+    // ── DIVINE SMITE (Paladin — edition-aware) ──
+    // 2014 RAW: "When you hit with a melee weapon attack, expend a spell slot
+    //           to deal radiant damage to the target." — fires PER HIT, any
+    //           number per turn (each smite still costs a slot).
+    // 2024 RAW: "Once per turn when you hit a target with a Melee Strike, you
+    //           can expend a spell slot to..." — ONCE PER TURN.
     //
-    // Tracked via actor flag `divineSmite.usedThisTurn`. The 2014 behavior is
-    // recoverable: if the actor has the "Divine Smite (2014)" feature variant
-    // OR a setting is off, skip the once-per-turn gate. Default = 2024 RAW
-    // since dnd5e 5.x is shipping with 2024 content as the SRD default.
+    // Resolution: CombatState.getActiveEdition(actor) reads the dnd5e system's
+    // rulesVersion ("legacy" → 2014, "modern" → 2024), with the ACE QOL
+    // gameRulesEdition setting as an override. On 2014 we ignore the per-turn
+    // flag and skip the isOncePerTurn marker so the damage engine does not
+    // stamp it. On 2024 we keep the once-per-turn lockout.
     //
-    // Cleared on combatTurnChange via clearDivineSmiteFlag in ace-qol.mjs.
+    // Flag cleared on combatTurnChange via clearDivineSmiteFlag in ace-qol.mjs.
     if (isMelee && RiderEngine._hasPaladinSmite(actor)) {
+      const edition = CombatState.getActiveEdition(actor);
       const slots = RiderEngine._getAvailableSpellSlots(actor);
-      const alreadyUsed = !!actor.getFlag?.(MODULE_ID, "divineSmite.usedThisTurn");
+      const perTurnFlag = !!actor.getFlag?.(MODULE_ID, "divineSmite.usedThisTurn");
+      const alreadyUsed = edition === "2024" && perTurnFlag;
       if (slots.length > 0 && !alreadyUsed) {
         const targetType = target.creatureType?.toLowerCase() ?? "";
         const isUndeadOrFiend = targetType === "undead" || targetType === "fiend";
         const bestSlot = slots[0]; // lowest available
         const numDice = 1 + bestSlot.level + (isUndeadOrFiend ? 1 : 0);
-        riders.push({
+        const rider = {
           id: "divine-smite",
           name: "Divine Smite",
           formula: `${numDice}d8`,
@@ -55,9 +60,11 @@ export class RiderEngine {
           highlight: isUndeadOrFiend ? targetType.toUpperCase() : null,
           isMeleeOnly: true,
           scalable: true, // can pick higher slot for more dice
-          isSpellDerived: true, // 2024 PHB: Divine Smite is a spell — qualifies for Radiant Soul / spell-only riders
-          isOncePerTurn: "divineSmite", // marker consumed by damage-engine to mark flag after consumeResources
-        });
+          isSpellDerived: true, // Divine Smite is a spell — qualifies for Radiant Soul / spell-only riders
+        };
+        // 2024 only: stamp the once-per-turn marker so damage-engine writes the flag after use.
+        if (edition === "2024") rider.isOncePerTurn = "divineSmite";
+        riders.push(rider);
       } else if (slots.length > 0 && alreadyUsed) {
         console.log(`${MODULE_ID} | Divine Smite skipped — already used this turn (2024 RAW: once per turn)`);
       }
@@ -153,13 +160,16 @@ export class RiderEngine {
     }
 
     // ── BATTLE MASTER MANEUVERS ──
-    // Check for superiority dice
+    // Post-hit maneuvers offered after the attack resolves. Pre-resolution
+    // maneuvers (Precision Attack) are handled separately in the attack
+    // pipeline before hit/miss is determined — see RiderEngine.promptPrecisionAttack.
     if (RiderEngine._hasFeature(actor, "Combat Superiority") || RiderEngine._hasFeature(actor, "Superiority Dice")) {
       const supDice = RiderEngine._getSuperiorityDice(actor);
       if (supDice.current > 0) {
         // Detect which maneuvers the actor knows
         const maneuvers = RiderEngine._detectManeuvers(actor);
         for (const m of maneuvers) {
+          if (m.preResolution) continue; // handled by attack-pipeline pre-resolution intercept
           riders.push({
             id: `maneuver-${m.id}`,
             name: m.name,
@@ -196,31 +206,47 @@ export class RiderEngine {
       }
     }
 
-    // ── SMITE SPELLS (pre-cast, discharge on hit) ──
-    // These are active concentration effects that discharge on the next weapon hit
-    const smiteSpells = [
-      { effect: "Searing Smite",    formula: "1d6",  type: "fire",    icon: "fa-fire" },
-      { effect: "Thunderous Smite", formula: "2d6",  type: "thunder", icon: "fa-cloud-bolt" },
-      { effect: "Wrathful Smite",   formula: "2d6",  type: "psychic", icon: "fa-brain" },
-      { effect: "Blinding Smite",   formula: "3d8",  type: "radiant", icon: "fa-eye-slash" },
-      { effect: "Staggering Smite", formula: "4d6",  type: "psychic", icon: "fa-dizzy" },
-      { effect: "Banishing Smite",  formula: "5d10", type: "force",   icon: "fa-portal-exit" },
-      { effect: "Shining Smite",    formula: "2d6",  type: "radiant", icon: "fa-sparkles" },
-    ];
-    for (const ss of smiteSpells) {
-      if (RiderEngine._hasEffect(actor, ss.effect)) {
-        riders.push({
-          id: `smite-spell-${ss.effect.toLowerCase().replace(/\s+/g, "-")}`,
-          name: ss.effect,
-          formula: ss.formula,
-          type: ss.type,
-          resource: { type: "discharge", note: "Active — will discharge on hit" },
-          description: `${ss.formula} ${ss.type} (ACTIVE — discharges on hit)`,
-          icon: ss.icon,
-          highlight: "ACTIVE",
-          isDischarge: true, // Auto-included, just confirming
-          isSpellDerived: true, // smite spells qualify for Radiant Soul if they deal fire/radiant
-        });
+    // ── SMITE SPELLS (pre-cast, discharge on melee hit, concentration-gated) ──
+    // 2014 + 2024 RAW: every smite spell in this list requires (a) a MELEE
+    // weapon attack and (b) the spell to have been pre-cast as a bonus action
+    // with concentration. Discharge on the next qualifying hit.
+    //
+    // v0.7.14 hardening (F4):
+    //   1. isMelee guard added — these spells never fire on ranged attacks
+    //      regardless of edition.
+    //   2. Concentration verification — switched to _hasConcentrationEffect
+    //      which requires the actor to actually be concentrating, not just
+    //      have a stale name-matching effect on the sheet.
+    //   3. Edition handle wired via getActiveEdition for future per-spell
+    //      formula/type splits where 2024 reworks differ from 2014. Current
+    //      values match the 2014 PHB. Per-edition refinements can layer on.
+    if (isMelee) {
+      const smiteEdition = CombatState.getActiveEdition(actor);
+      const smiteSpells = [
+        { effect: "Searing Smite",    formula: "1d6",  type: "fire",    icon: "fa-fire" },
+        { effect: "Thunderous Smite", formula: "2d6",  type: "thunder", icon: "fa-cloud-bolt" },
+        { effect: "Wrathful Smite",   formula: "2d6",  type: "psychic", icon: "fa-brain" },
+        { effect: "Blinding Smite",   formula: "3d8",  type: "radiant", icon: "fa-eye-slash" },
+        { effect: "Staggering Smite", formula: "4d6",  type: "psychic", icon: "fa-dizzy" },
+        { effect: "Banishing Smite",  formula: "5d10", type: "force",   icon: "fa-portal-exit" },
+        { effect: "Shining Smite",    formula: "2d6",  type: "radiant", icon: "fa-sparkles" },
+      ];
+      for (const ss of smiteSpells) {
+        if (RiderEngine._hasConcentrationEffect(actor, ss.effect)) {
+          riders.push({
+            id: `smite-spell-${ss.effect.toLowerCase().replace(/\s+/g, "-")}`,
+            name: ss.effect,
+            formula: ss.formula,
+            type: ss.type,
+            resource: { type: "discharge", note: `Active concentration (${smiteEdition}) — discharges on hit` },
+            description: `${ss.formula} ${ss.type} (ACTIVE — discharges on melee hit)`,
+            icon: ss.icon,
+            highlight: "ACTIVE",
+            isMeleeOnly: true,
+            isDischarge: true,
+            isSpellDerived: true, // qualifies for Radiant Soul on fire/radiant
+          });
+        }
       }
     }
 
@@ -539,6 +565,34 @@ export class RiderEngine {
     return false;
   }
 
+  /**
+   * Stricter variant of _hasEffect: requires the actor to currently be
+   * concentrating (so a stale name-matching effect on a non-concentrating
+   * actor can't trigger a smite-spell discharge).
+   *
+   * Used by the smite-spell loop in v0.7.14 (F4) to ensure the rider only
+   * appears when the spell was actually cast as a bonus action and the
+   * caster is still concentrating on it.
+   *
+   * @param {Actor} actor
+   * @param {string} name - spell name (e.g. "Searing Smite")
+   * @returns {boolean}
+   */
+  static _hasConcentrationEffect(actor, name) {
+    if (!actor?.effects) return false;
+    // Must currently be concentrating — if concentration broke or was never
+    // started, the smite spell hasn't been pre-cast.
+    const isConcentrating = actor.statuses?.has?.("concentrating") === true;
+    if (!isConcentrating) return false;
+    const lcName = name.toLowerCase();
+    for (const effect of actor.effects) {
+      if (effect.disabled) continue;
+      if (!effect.name?.toLowerCase().includes(lcName)) continue;
+      return true;
+    }
+    return false;
+  }
+
   static _getClassLevel(actor, className) {
     for (const item of actor.items ?? []) {
       if (item.type === "class" && item.name?.toLowerCase().includes(className.toLowerCase())) {
@@ -642,6 +696,12 @@ export class RiderEngine {
       { id: "feinting",    name: "Feinting Attack",    effect: "Advantage + bonus dmg",     save: null },
       { id: "quick-toss",  name: "Quick Toss",         effect: "Bonus action thrown attack", save: null },
       { id: "brace",       name: "Brace",              effect: "Reaction on approach",       save: null },
+      // ── Precision Attack — pre-resolution intercept (v0.7.14 F12) ──
+      // Detected here for catalog completeness but NEVER offered in the
+      // post-hit popup (preResolution flag filters it out). The actual
+      // prompt fires in attack-pipeline.mjs after the d20 lands but before
+      // hit/miss is determined — see promptPrecisionAttack below.
+      { id: "precision",   name: "Precision Attack",   effect: "Pre-resolution: add d8/d10/d12 to attack roll", save: null, preResolution: true },
     ];
 
     for (const def of maneuverDefs) {
@@ -658,6 +718,142 @@ export class RiderEngine {
       }
     }
     return known;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  PRECISION ATTACK — Pre-resolution intercept (v0.7.14 F12)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Detect whether the actor can spend a superiority die on Precision Attack
+   * right now. Returns the die/current/max metadata, or null if unavailable.
+   *
+   * Eligibility:
+   *   1. Combat Superiority (Battle Master Fighter)
+   *   2. Has Precision Attack feature/maneuver
+   *   3. At least one superiority die remaining
+   *
+   * 2014 + 2024 RAW: Precision Attack's mid-roll declaration window is
+   * identical in both editions, so no edition branch is needed here.
+   *
+   * @param {Actor} actor
+   * @returns {{die: string, current: number, max: number} | null}
+   */
+  static checkPrecisionAttack(actor) {
+    if (!actor) return null;
+    if (!RiderEngine._hasFeature(actor, "Combat Superiority") &&
+        !RiderEngine._hasFeature(actor, "Superiority Dice")) return null;
+    if (!RiderEngine._hasFeature(actor, "Precision Attack")) return null;
+    const supDice = RiderEngine._getSuperiorityDice(actor);
+    if (supDice.current <= 0) return null;
+    return supDice;
+  }
+
+  /**
+   * Post the pre-resolution Precision Attack prompt. The Fighter sees their
+   * d20 result and current attack total, then decides whether to spend one
+   * superiority die to add it to the roll.
+   *
+   * Returns the bonus to add to the attack total (0 if declined, timed out,
+   * or unavailable).
+   *
+   * Future enhancement: when the attacking actor is player-owned, route the
+   * prompt to the owning player via socket instead of showing it locally.
+   *
+   * @param {Actor} actor
+   * @param {number} attackTotal - current attack roll total
+   * @param {number} d20Result   - the natural d20 result
+   * @returns {Promise<number>}
+   */
+  static async promptPrecisionAttack(actor, attackTotal, d20Result) {
+    const data = RiderEngine.checkPrecisionAttack(actor);
+    if (!data) return 0;
+    const TIMEOUT_MS = 20000;
+
+    return new Promise((resolve) => {
+      let resolved = false;
+      let dialog = null;
+      const safeResolve = (n) => {
+        if (resolved) return;
+        resolved = true;
+        try { dialog?.close({ force: true }); } catch (_) { /* noop */ }
+        resolve(n);
+      };
+
+      dialog = new Dialog({
+        title: "Precision Attack — Battle Master",
+        content: `
+          <div style="background:linear-gradient(180deg,#1a1416 0%,#241a1d 100%);border:2px solid #d4af37;border-radius:6px;padding:10px 12px;color:#cfcfd0;">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+              <i class="fas fa-bullseye" style="color:#d4af37;font-size:18px;"></i>
+              <strong style="color:#ffd87a;font-size:13px;text-transform:uppercase;letter-spacing:0.5px;">Precision Attack</strong>
+            </div>
+            <div style="font-size:13px;line-height:1.5;margin-bottom:8px;">
+              <strong>${actor.name}</strong> rolled <strong>d20 = ${d20Result}</strong> (current attack total <strong>${attackTotal}</strong>).
+            </div>
+            <div style="font-size:12px;line-height:1.5;">
+              Spend one Superiority Die (<strong>${data.die}</strong>) to add it to the attack roll?
+              <small style="opacity:0.75;display:block;margin-top:4px;">${data.current} / ${data.max} dice remaining. RAW: declared after the d20 but before hit/miss is known.</small>
+            </div>
+          </div>
+        `,
+        buttons: {
+          use: {
+            icon: '<i class="fas fa-bullseye"></i>',
+            label: `Use ${data.die}`,
+            callback: async () => {
+              try {
+                const r = new Roll(data.die);
+                await r.evaluate();
+                const bonus = r.total;
+                await RiderEngine._consumeSuperiorityDie(actor);
+                ChatMessage.create({
+                  content: `<div style="background:linear-gradient(180deg,#1a1416 0%,#241a1d 100%);border:2px solid #d4af37;border-radius:6px;padding:8px 10px;color:#cfcfd0;">
+                    <strong style="color:#ffd87a;">Precision Attack:</strong> ${actor.name} rolled <strong>${data.die} → ${bonus}</strong>. Attack total ${attackTotal} → <strong>${attackTotal + bonus}</strong>.
+                  </div>`,
+                  speaker: ChatMessage.getSpeaker({ actor }),
+                });
+                safeResolve(bonus);
+              } catch (err) {
+                console.warn("Precision Attack roll failed:", err);
+                safeResolve(0);
+              }
+            },
+          },
+          pass: {
+            icon: '<i class="fas fa-times"></i>',
+            label: "Pass",
+            callback: () => safeResolve(0),
+          },
+        },
+        default: "pass",
+        close: () => safeResolve(0),
+      });
+      dialog.render(true);
+
+      // Timeout fallback — auto-pass if the prompt is ignored.
+      setTimeout(() => safeResolve(0), TIMEOUT_MS);
+    });
+  }
+
+  /**
+   * Decrement the actor's Superiority Dice count by one. No-op if the actor
+   * has no superiority resource item.
+   * @private
+   */
+  static async _consumeSuperiorityDie(actor) {
+    if (!actor?.items) return;
+    for (const item of actor.items) {
+      const name = item.name?.toLowerCase() ?? "";
+      if ((name.includes("superiority") || name.includes("combat superiority")) && item.system?.uses) {
+        const current = Number(item.system.uses.value ?? 0);
+        const next = Math.max(0, current - 1);
+        if (next !== current) {
+          await item.update({ "system.uses.value": next });
+        }
+        return;
+      }
+    }
   }
 
   static _buildSlotPicker(availableSlots) {

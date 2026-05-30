@@ -471,16 +471,52 @@ export class ReactionEngine {
 
     this._debug(`Counterspell check: ${casterActor.name} casts ${item.name} (level ${spellLevel}), ${reactors.length} eligible reactors`);
 
+    // Resolve the spell's targets so the prompt can show "casting Bless on
+    // Varek Thalor" instead of just "casting Bless". Three sources, in order:
+    //   1. dnd5e usage flag on the chat message (most reliable for the player
+    //      who initiated the cast)
+    //   2. activity.targets if the dnd5e activity carries them
+    //   3. game.user.targets fallback on the caster's client
+    let targetNames = "";
+    try {
+      const msgTargets = message?.flags?.dnd5e?.targets ?? message?.flags?.dnd5e?.use?.targets;
+      if (Array.isArray(msgTargets) && msgTargets.length) {
+        const names = msgTargets.map(t => {
+          if (typeof t === "string") {
+            const a = fromUuidSync?.(t);
+            return a?.name ?? a?.actor?.name;
+          }
+          return t?.name ?? t?.actor?.name ?? t?.token?.name;
+        }).filter(Boolean);
+        if (names.length) targetNames = names.join(", ");
+      }
+      if (!targetNames) {
+        const activityTargets = activity?.targets ?? [];
+        const names = [...activityTargets].map(t => t?.actor?.name ?? t?.name).filter(Boolean);
+        if (names.length) targetNames = names.join(", ");
+      }
+      if (!targetNames && game.user.targets?.size) {
+        const names = [...game.user.targets].map(t => t.name).filter(Boolean);
+        if (names.length) targetNames = names.join(", ");
+      }
+    } catch (_) { /* non-fatal — leave targetNames empty */ }
+
+    // Build the detail rows. Target line only appears when we resolved at least one name.
+    const detailRows = [
+      { label: "Spell", value: item.name },
+      { label: "Spell Level", value: spellLevel },
+    ];
+    if (targetNames) {
+      detailRows.push({ label: "Target", value: targetNames });
+    }
+    detailRows.push({ label: "Range", value: "60 ft (must see caster)" });
+
     // Prompt all eligible reactors simultaneously — first to accept wins
     const result = await this._promptMultipleReactors(reactors, {
       type: "counterspell",
       title: "Counterspell",
-      description: `<strong>${casterActor.name}</strong> is casting <strong>${item.name}</strong> (Level ${spellLevel} spell)!`,
-      details: [
-        { label: "Spell", value: item.name },
-        { label: "Spell Level", value: spellLevel },
-        { label: "Range", value: "60 ft (must see caster)" },
-      ],
+      description: `<strong>${casterActor.name}</strong> is casting <strong>${item.name}</strong> (Level ${spellLevel} spell)${targetNames ? ` on <strong>${targetNames}</strong>` : ""}.`,
+      details: detailRows,
       acceptLabel: "Cast Counterspell",
       declineLabel: "Let It Go",
       spellSlotLevel: 3,
@@ -1156,8 +1192,19 @@ export class ReactionEngine {
         resolve({ accepted: false, choiceData: {} });
       }, timeout);
 
+      // ── Serialize reactor reference for the dialog ──
+      // showReactionDialog destructures `reactorActorName` / `reactorActorImg`
+      // (strings), not the live actor object. The remote socket path serializes
+      // these already; the local path was forwarding only the live `reactorActor`
+      // object, so the dialog destructure returned undefined and the header fell
+      // back to "Unknown". Bug fix: surface the same string fields here.
       ReactionEngine.showReactionDialog({
         ...opts,
+        reactorActorName: opts.reactorActor?.name ?? opts.reactorActorName ?? "Reaction",
+        reactorActorImg: opts.reactorActor?.img
+          ?? opts.reactorToken?.document?.texture?.src
+          ?? opts.reactorActorImg
+          ?? null,
         timeoutMs: timeout,
       }).then(result => {
         clearTimeout(timer);

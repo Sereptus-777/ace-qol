@@ -25,6 +25,7 @@ import { CoverEngine }          from "./cover-engine.mjs";
 import { BloodiedEngine }       from "./bloodied-engine.mjs";
 import { VisibilityEngine }     from "./visibility-engine.mjs";
 import { ConditionLibrary }     from "./condition-library.mjs";
+import { SpellTargetPicker }    from "./spell-target-picker.mjs";
 import { DescriptionParser }    from "./description-parser.mjs";
 import { RepeatingSaveEngine }  from "./repeating-save-engine.mjs";
 import { TransformationEngine } from "./transformation-engine.mjs";
@@ -89,6 +90,221 @@ function _aceQolEnabled() {
   catch (_) { return true; }
 }
 
+// ─── Spell-cast auto-apply dispatch table (v0.7.15) ──────────────────────────
+// When a spell is cast that has a matching effect template in condition-library,
+// auto-apply the effect to the right target(s) and link to the caster's
+// concentration so the effect cleans up when concentration ends.
+//
+// Match key: spell.name.toLowerCase() with apostrophes stripped.
+// Target modes:
+//   "self"    → apply to the caster
+//   "targets" → apply to the user's currently-targeted token(s)
+//                 maxTargets caps the spread (Bless 3, Slow 6, etc.).
+//                 If no targets and target mode is "targets", warn and bail.
+//
+// Hex / Hexblade's Curse / Hunter's Mark / Hold Person / Hold Monster are
+// excluded here — Hex/Hexblade have bespoke handlers above with extra flag
+// tracking, and Hold Person/Monster are wired through the save engine's
+// failed-save-condition path.
+//
+// Exported so the EngagementGate can recognize spells that handle their own
+// target selection via the SpellTargetPicker (skip the "no target" block).
+export const SPELL_AUTO_APPLY = {
+  // ── 1st level ─────────────────────────────────────────────────────────────
+  "bless":                          { key: "bless",                 target: "targets", maxTargets: 3 },
+  "bane":                           { key: "bane",                  target: "targets", maxTargets: 3 },
+  "shield of faith":                { key: "shield_of_faith",       target: "targets", maxTargets: 1 },
+  "heroism":                        { key: "heroism",               target: "targets", maxTargets: 1 },
+  "faerie fire":                    { key: "faerie_fire",           target: "targets" },
+  "mage armor":                     { key: "mage_armor",            target: "targets", maxTargets: 1 },
+  "protection from evil and good":  { key: "protection_from_evil",  target: "targets", maxTargets: 1 },
+  "protection from evil":           { key: "protection_from_evil",  target: "targets", maxTargets: 1 },
+  "longstrider":                    { key: "longstrider",           target: "targets" },
+  "sanctuary":                      { key: "sanctuary",             target: "targets", maxTargets: 1 },
+  "divine favor":                   { key: "divine_favor",          target: "self" },
+  // ── 2nd level ─────────────────────────────────────────────────────────────
+  "barkskin":                       { key: "barkskin",              target: "targets", maxTargets: 1 },
+  "blur":                           { key: "blur",                  target: "self" },
+  "darkness":                       { key: "darkness",              target: "self" },
+  "mirror image":                   { key: "mirror_image",          target: "self" },
+  "enlarge/reduce":                 { key: "enlarge",               target: "targets", maxTargets: 1 },
+  "enlarge":                        { key: "enlarge",               target: "targets", maxTargets: 1 },
+  "reduce":                         { key: "reduce",                target: "targets", maxTargets: 1 },
+  // ── 3rd level ─────────────────────────────────────────────────────────────
+  "haste":                          { key: "haste",                 target: "targets", maxTargets: 1 },
+  "slow":                           { key: "slow",                  target: "targets", maxTargets: 6 },
+  "fly":                            { key: "fly",                   target: "targets", maxTargets: 3 },
+  "elemental weapon":               { key: "elemental_weapon",      target: "self" },
+  "crusader's mantle":              { key: "crusaders_mantle",      target: "self" },
+  "crusaders mantle":               { key: "crusaders_mantle",      target: "self" },
+  "beacon of hope":                 { key: "beacon_of_hope",        target: "targets" },
+  // ── 4th level ─────────────────────────────────────────────────────────────
+  "stoneskin":                      { key: "stoneskin",             target: "targets", maxTargets: 1 },
+  "freedom of movement":            { key: "freedom_of_movement",   target: "targets", maxTargets: 1 },
+  "aura of vitality":               { key: "aura_of_vitality",      target: "self" },
+  "fire shield":                    { key: "fire_shield",           target: "self" },
+  "death ward":                     { key: "death_ward",            target: "targets", maxTargets: 1 },
+  // ── Misc ──────────────────────────────────────────────────────────────────
+  "invisibility":                   { key: "invisibility",          target: "targets", maxTargets: 1 },
+  "greater invisibility":           { key: "greater_invisibility",  target: "targets", maxTargets: 1 },
+  "warding bond":                   { key: "warding_bond",          target: "targets", maxTargets: 1 },
+  // ── Smite spells (self-buffs that discharge on next melee weapon hit) ────
+  // Cast applies the named concentration effect to the caster. The
+  // rider-engine's _hasConcentrationEffect detects it and offers the
+  // discharge rider on the next melee swing.
+  "searing smite":                  { key: "searing_smite",         target: "self" },
+  "wrathful smite":                 { key: "wrathful_smite",        target: "self" },
+  "thunderous smite":               { key: "thunderous_smite",      target: "self" },
+  "blinding smite":                 { key: "blinding_smite",        target: "self" },
+  "staggering smite":               { key: "staggering_smite",      target: "self" },
+  "banishing smite":                { key: "banishing_smite",       target: "self" },
+};
+
+/**
+ * Find the caster's existing Concentrating effect for a given spell, or null.
+ * Match by status + name pattern + dnd5e flag origin/item.
+ */
+function _findConcentratingEffectFor(caster, spellItem) {
+  const spellNameLc = String(spellItem?.name ?? "").toLowerCase();
+  return (caster?.effects?.contents ?? []).find(e => {
+    if (!e.statuses?.has?.("concentrating")) return false;
+    const eNameLc = String(e.name ?? "").toLowerCase();
+    if (eNameLc.includes(spellNameLc)) return true;
+    const cf = e.flags?.dnd5e?.concentration;
+    if (cf?.item && spellItem?.id && cf.item === spellItem.id) return true;
+    if (cf?.origin && spellItem?.id && String(cf.origin).includes(spellItem.id)) return true;
+    return false;
+  }) ?? null;
+}
+
+/**
+ * Manually create a Concentrating effect on the caster for the given spell.
+ * Used when dnd5e's own activity-use pipeline fails to start concentration
+ * (custom/broken spell items, compendium items missing concentration on
+ * activity, etc.). Mirrors dnd5e.createConcentrationEffectData's shape so
+ * the dnd5e system treats it identically — same status id, same flags.
+ *
+ * Returns the created concentrating effect, or null on failure.
+ */
+async function _createConcentratingEffectManually(caster, spellItem, durationRounds = 10) {
+  try {
+    const statusEffectDef = (CONFIG.statusEffects ?? []).find(e =>
+      e.id === (CONFIG.specialStatusEffects?.CONCENTRATING ?? "concentrating")
+    ) ?? { id: "concentrating", icon: "icons/svg/aura.svg", statuses: ["concentrating"] };
+
+    const effectData = {
+      name: `Concentrating: ${spellItem.name}`,
+      icon: statusEffectDef.icon ?? statusEffectDef.img ?? "icons/svg/aura.svg",
+      origin: spellItem.uuid,
+      statuses: ["concentrating", ...(statusEffectDef.statuses ?? [])].filter((v, i, a) => a.indexOf(v) === i),
+      duration: { rounds: durationRounds },
+      flags: {
+        dnd5e: {
+          activity: { type: "utility", id: spellItem.id, uuid: spellItem.uuid },
+          item:     { type: spellItem.type, id: spellItem.id, uuid: spellItem.uuid },
+        },
+        [MODULE_ID]: {
+          aceQolCreated:  true,
+          spellName:      spellItem.name,
+          createdAt:      Date.now?.() ?? 0,
+          reason:         "dnd5e-item-missing-concentration",
+        },
+      },
+    };
+    const created = await caster.createEmbeddedDocuments("ActiveEffect", [effectData]);
+    const placed = created?.[0] ?? null;
+    if (placed) {
+      console.log(`${MODULE_ID} | Concentrating effect manually created for ${spellItem.name} on ${caster.name} (dnd5e item config was missing concentration).`);
+    }
+    return placed;
+  } catch (err) {
+    console.warn(`${MODULE_ID} | Manual Concentrating effect creation failed for ${spellItem.name} on ${caster.name}:`, err);
+    return null;
+  }
+}
+
+/**
+ * Apply a spell effect from the condition library to a target actor and link
+ * it to the caster's Concentrating effect for proper auto-cleanup when
+ * concentration ends. Used by the spell-cast auto-apply dispatch.
+ *
+ * If the spell is a concentration spell AND the dnd5e system failed to apply
+ * the Concentrating status (because the item is misconfigured, custom, or
+ * missing the concentration property on its activity), this helper creates
+ * the Concentrating effect manually to ensure concentration is tracked and
+ * the rider-engine can detect smite-spell discharges, etc.
+ *
+ * @param {Actor} targetActor — actor receiving the effect
+ * @param {string} libraryKey — ConditionLibrary effect key (e.g. "bless")
+ * @param {Actor} caster      — actor who cast the spell
+ * @param {Item}  spellItem   — the spell item that was cast
+ * @returns {Promise<ActiveEffect|null>}
+ */
+async function _applySpellEffectWithConcentration(targetActor, libraryKey, caster, spellItem) {
+  try {
+    // Look up the library definition to know if this is a concentration spell.
+    // (ConditionLibrary.get(key) returns the definition; getEffect is a
+    // different method that returns a placed ActiveEffect — don't use that here.)
+    const libDef = ConditionLibrary.get?.(libraryKey) ?? null;
+    const isConcentration = libDef?.concentration === true;
+
+    // Step 1: Apply the named effect (Bless, Searing Smite, etc.) to the target.
+    const effect = await ConditionLibrary.applyEffect(targetActor, libraryKey, {
+      origin: spellItem.uuid,
+    });
+    if (!effect) return null;
+
+    // Step 1b: Initialize per-spell state flags on the target where needed.
+    // Mirror Image starts with 3 duplicates; the count is read + decremented
+    // by the attack-pipeline's redirect check. The AE change writes mode 0
+    // (CUSTOM) which doesn't auto-apply to flags, so we set it explicitly.
+    if (libraryKey === "mirror_image") {
+      try { await targetActor.setFlag(MODULE_ID, "mirrorImage", 3); }
+      catch (_) { /* non-fatal */ }
+    }
+
+    // Step 2: For concentration spells, ensure the caster has a Concentrating
+    // effect. If dnd5e set one up via its own activity pipeline, use it. If
+    // not (broken/custom spell item — common cause of "casting did nothing"),
+    // create one manually so concentration is properly tracked.
+    let concEffect = null;
+    if (isConcentration) {
+      concEffect = _findConcentratingEffectFor(caster, spellItem);
+      if (!concEffect) {
+        // Derive a sensible duration from the library entry (defaults to 10 rounds = 1 minute).
+        const durationRounds = libDef?.duration?.rounds
+          ?? (libDef?.duration?.minutes ? libDef.duration.minutes * 10 : 10);
+        concEffect = await _createConcentratingEffectManually(caster, spellItem, durationRounds);
+      }
+    }
+
+    // Step 3: Link the placed effect to the Concentrating effect so dnd5e's
+    // dependent-cleanup auto-deletes it when concentration ends.
+    if (concEffect?.uuid) {
+      await effect.update({
+        "flags.dnd5e.dependentOn": concEffect.uuid,
+        [`flags.${MODULE_ID}.concentrationOrigin`]: {
+          casterId:       caster.id,
+          spellName:      spellItem.name,
+          spellItemId:    spellItem.id,
+          concEffectUuid: concEffect.uuid,
+          stampedAt:      Date.now?.() ?? 0,
+        },
+      });
+      console.log(`${MODULE_ID} | Spell auto-apply: ${spellItem.name} → ${targetActor.name} (linked to Concentrating effect)`);
+    } else if (isConcentration) {
+      console.log(`${MODULE_ID} | Spell auto-apply: ${spellItem.name} → ${targetActor.name} (concentration linkage failed; effect placed without auto-cleanup)`);
+    } else {
+      console.log(`${MODULE_ID} | Spell auto-apply: ${spellItem.name} → ${targetActor.name} (non-concentration, no linkage needed)`);
+    }
+
+    return effect;
+  } catch (err) {
+    console.warn(`${MODULE_ID} | Spell auto-apply failed for ${spellItem.name} on ${targetActor.name}:`, err);
+    return null;
+  }
+}
+
 // ─── Init: register settings ─────────────────────────────────────────────────
 Hooks.once("init", () => {
   try {
@@ -113,6 +329,25 @@ Hooks.once("init", () => {
     extendedEffects.init();
   } catch (err) {
     console.error(`${MODULE_ID} | Extended Effects init failed:`, err);
+  }
+
+  // ── 2024 Exhaustion sheet-pip cap bump ──
+  // dnd5e 5.x ships CONFIG.DND5E.conditionTypes.exhaustion.levels = 6 even when
+  // the system is in modern (2024) mode. 2024 RAW has 10 exhaustion levels.
+  // Without bumping this, the actor sheet exhaustion track clamps at 6 pips
+  // and the actor cannot reach the level-10 death threshold visually. Bump it
+  // here when the system itself is on "modern" rules so the UI matches RAW.
+  try {
+    const rv = game.settings.get?.("dnd5e", "rulesVersion");
+    if (rv === "modern" && CONFIG?.DND5E?.conditionTypes?.exhaustion) {
+      const currentLevels = CONFIG.DND5E.conditionTypes.exhaustion.levels;
+      if (currentLevels !== 10) {
+        CONFIG.DND5E.conditionTypes.exhaustion.levels = 10;
+        console.log(`${MODULE_ID} | Exhaustion levels bumped 6 → 10 for 2024 RAW (was ${currentLevels}).`);
+      }
+    }
+  } catch (err) {
+    console.warn(`${MODULE_ID} | Exhaustion config bump failed (non-fatal):`, err);
   }
 
   console.log(`${MODULE_ID} | Initialized`);
@@ -1195,11 +1430,60 @@ Hooks.once("ready", () => {
           await CombatState.applyHex(actor, targetToken);
           return;
         }
+
+        // ── Generic spell-cast auto-apply (v0.7.15) ──
+        // Look up the spell name in SPELL_AUTO_APPLY. If a match exists, the
+        // condition-library has a ready-to-go effect template for this spell
+        // (Bless, Bane, Haste, Faerie Fire, Mage Armor, Stoneskin, Mirror
+        // Image, etc.). Apply to caster (self) or picked target(s) and link
+        // to the caster's Concentrating effect via dnd5e.dependentOn.
+        //
+        // For multi-target spells (Bless up to 3, Slow up to 6, etc.) the
+        // SpellTargetPicker opens a portrait grid so the caster can pick
+        // exactly which creatures to affect. Single-target spells use the
+        // currently-targeted token if present, otherwise the picker too.
+        if (item.type === "spell") {
+          const lookupKey = nameNorm.replace(/['']/g, "").trim();
+          const dispatch = SPELL_AUTO_APPLY[lookupKey];
+          if (dispatch) {
+            let targets = [];
+
+            if (dispatch.target === "self") {
+              // Self-target spells (Searing Smite, Mirror Image, Blur, etc.)
+              targets = [actor];
+
+            } else {
+              // "targets" mode — pick via the SpellTargetPicker UI
+              const maxTargets = dispatch.maxTargets ?? 6;
+              targets = await SpellTargetPicker.pick({
+                spellItem: item,
+                casterActor: actor,
+                maxTargets,
+                allowSelf: true,
+              });
+              if (!targets || targets.length === 0) {
+                console.log(`${MODULE_ID} | ${item.name}: target selection cancelled — no auto-apply.`);
+                return;
+              }
+            }
+
+            if (!targets.length) {
+              console.warn(`${MODULE_ID} | ${item.name}: no valid target actors resolved for auto-apply.`);
+              return;
+            }
+
+            // Apply the library effect to each target with concentration link.
+            for (const targetActor of targets) {
+              await _applySpellEffectWithConcentration(targetActor, dispatch.key, actor, item);
+            }
+            return;
+          }
+        }
       } catch (err) {
         console.warn(`${MODULE_ID} | spell-activation auto-apply hook failed:`, err);
       }
     });
-    console.debug(`${MODULE_ID} | Hexblade's Curse + Hex auto-apply hook registered (fires on feature/spell activation).`);
+    console.debug(`${MODULE_ID} | Spell auto-apply hook registered: Hexblade's Curse + Hex + ${Object.keys(SPELL_AUTO_APPLY).length} dispatched library spells.`);
 
     // Hex — auto-clear when concentration ends (the "Hex" Active Effect on the
     // caster is deleted, either by the concentration widget, by casting a new
@@ -1319,6 +1603,22 @@ Hooks.once("ready", () => {
     };
     console.debug(`${MODULE_ID} | Warlock damage chooser API exposed at game.aceQol.openWarlockChooser`);
   }).catch(err => console.warn(`${MODULE_ID} | Warlock chooser API exposure failed:`, err));
+
+  // ── Public API: Multi-type damage chooser dialog ──
+  // Players invoke via game.aceQol.openMultiTypeChooser(actor) — opens a
+  // dialog listing every weapon/item they own that offers a damage-type
+  // choice (Blood Halberd, Holy Avenger, Dragon's Wrath, etc.) with a
+  // dropdown per item to set the preferred type. Sticky — once set, all
+  // future attacks with that weapon use the chosen type until changed.
+  import("./multi-type-damage-chooser.mjs").then(({ openMultiTypeChooser }) => {
+    globalThis.game = globalThis.game ?? {};
+    game.aceQol = game.aceQol ?? {};
+    game.aceQol.openMultiTypeChooser = (actor) => {
+      const target = actor ?? game.user?.character ?? canvas.tokens?.controlled?.[0]?.actor;
+      return openMultiTypeChooser(target);
+    };
+    console.debug(`${MODULE_ID} | Multi-type damage chooser API exposed at game.aceQol.openMultiTypeChooser`);
+  }).catch(err => console.warn(`${MODULE_ID} | Multi-type chooser API exposure failed:`, err));
 
   // ── Actor sheet button — adds "Warlock Damage Types" to the dnd5e item
   // context menu so players can find the chooser without a console command.
@@ -1662,6 +1962,449 @@ Hooks.once("ready", () => {
     });
 
     console.debug(`${MODULE_ID} | Unified NPC death hook registered`);
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  REVIVE HOOK — HP restored above 0 → reverse the death pipeline
+    //  Listens for any actor's HP going from 0 back to positive, reads the
+    //  preDeath snapshot stored on the token by processNPCDeath, and restores:
+    //    - The token's original texture (image)
+    //    - The token's original dimensions and tint
+    //    - The actor's original ownership levels (player access)
+    //    - Clears all death-related flags so the token is "alive" again
+    //  Vorpal / permanent-death victims have `permanentlyDead: true` on their
+    //  flags — those bypass the revive entirely so the visual stays dead even
+    //  if a GM accidentally bumps HP. Only manual GM override (button on the
+    //  SEVERED card, actor sheet, or right-click menu) or strict-RAW
+    //  resurrection magic clears the permanent flag.
+    // ══════════════════════════════════════════════════════════════════════════
+    Hooks.on("updateActor", async (actor, changes, options, userId) => {
+      if (!game.user.isGM) return;
+      try {
+        const hpUpdate = foundry.utils.getProperty(changes, "system.attributes.hp.value");
+        if (hpUpdate === undefined || Number(hpUpdate) <= 0) return;
+
+        // Find the token. Same logic as the death hook above.
+        let tokenDoc = actor?.token ?? null;
+        if (!tokenDoc) {
+          tokenDoc = canvas.scene?.tokens?.find(t =>
+            t.actor?.id === actor.id || t.actorId === actor.id
+          );
+        }
+        if (!tokenDoc) return;
+
+        // Only act on tokens we previously marked dead.
+        const flags = tokenDoc.flags?.[MODULE_ID];
+        if (!flags?.isDead) return;
+
+        // Permanent death (Vorpal etc.) — refuse to revive.
+        // The visual stays dead, the flag stays set, the GM must clear it
+        // manually or have an auto-clearing resurrection spell fire.
+        if (flags.permanentlyDead) {
+          console.log(`${MODULE_ID} | Revive denied — ${actor.name} is permanently dead (${flags.deathReason ?? "unknown"}). Use the override card or actor sheet to allow revive.`);
+          // Post a one-time notification so the GM sees what happened.
+          try {
+            await ChatMessage.create({
+              content: `<div style="background:#1a0a0a;border:2px solid #c44;border-radius:6px;padding:8px 12px;">
+                <strong style="color:#ffaaaa;"><i class="fas fa-skull-crossbones"></i> Revive Blocked — Permanent Death</strong>
+                <div style="color:#e8c8c8;font-size:12px;margin-top:4px;">
+                  <strong>${foundry.utils.escapeHTML(actor.name)}</strong> was permanently killed
+                  (${foundry.utils.escapeHTML(flags.deathReason ?? "permanent effect")}).
+                  HP was restored but the visual stays dead by RAW. Use the override button on
+                  the SEVERED chat card or on the actor sheet header to allow revive.
+                </div>
+              </div>`,
+              whisper: [game.user.id],
+              flags: { [MODULE_ID]: { type: "reviveDenied", actorId: actor.id } },
+            });
+          } catch (_) {}
+          return;
+        }
+
+        // Read snapshot and restore everything.
+        const snap = flags.preDeathSnapshot;
+        if (!snap) {
+          console.warn(`${MODULE_ID} | Revive skipped — no preDeathSnapshot on token for ${actor.name}`);
+          return;
+        }
+
+        // Token visual restoration — clear EVERY death-related flag, including
+        // the compatibility-mirror flags added so the existing tile-based
+        // loot dialog code reads dead tokens correctly. Forgetting any one
+        // of these leaves the token half-revived: hit points back, texture
+        // restored, but the loot click handler / hover icon / chat-overlay
+        // gate still see the leftover flag and treat the token as dead.
+        const tokenUpdate = {
+          [`flags.${MODULE_ID}.-=isDead`]:             null,
+          [`flags.${MODULE_ID}.-=isDeadLootable`]:     null,
+          [`flags.${MODULE_ID}.-=preDeathSnapshot`]:   null,
+          [`flags.${MODULE_ID}.-=preDeathOwnership`]:  null,
+          [`flags.${MODULE_ID}.-=lootSnapshot`]:       null,
+          [`flags.${MODULE_ID}.-=deathArtPath`]:       null,
+          [`flags.${MODULE_ID}.-=deathReason`]:        null,
+          [`flags.${MODULE_ID}.-=diedAt`]:             null,
+          // Compatibility flags added so the existing tile-pipeline loot
+          // dialog reads tokens unmodified. ALL of these must be cleared
+          // on revive or the dead-state checks downstream still trigger.
+          [`flags.${MODULE_ID}.-=isDeadToken`]:        null,
+          [`flags.${MODULE_ID}.-=originalActorId`]:    null,
+          [`flags.${MODULE_ID}.-=originalName`]:       null,
+          [`flags.${MODULE_ID}.-=combatLocked`]:       null,
+          // Permanent-death lock — defensive clear. If we got here, the
+          // permanent gate already passed (we're in the success branch),
+          // so any lingering flag is stale and should go.
+          [`flags.${MODULE_ID}.-=permanentlyDead`]:    null,
+        };
+        if (snap.textureSrc) tokenUpdate["texture.src"] = snap.textureSrc;
+        if (snap.textureTint !== null && snap.textureTint !== undefined) {
+          tokenUpdate["texture.tint"] = snap.textureTint;
+        }
+        if (snap.textureScaleX !== null) tokenUpdate["texture.scaleX"] = snap.textureScaleX;
+        if (snap.textureScaleY !== null) tokenUpdate["texture.scaleY"] = snap.textureScaleY;
+        if (snap.width)  tokenUpdate.width  = snap.width;
+        if (snap.height) tokenUpdate.height = snap.height;
+
+        try {
+          await tokenDoc.update(tokenUpdate);
+          console.log(`${MODULE_ID} | Revive — token texture restored for ${actor.name}`);
+        } catch (texErr) {
+          console.warn(`${MODULE_ID} | Revive texture restore failed:`, texErr);
+        }
+
+        // Actor ownership restoration
+        const preDeathOwn = flags.preDeathOwnership;
+        if (preDeathOwn) {
+          try {
+            await actor.update({ ownership: preDeathOwn });
+            console.log(`${MODULE_ID} | Revive — ownership restored for ${actor.name}`);
+          } catch (ownErr) {
+            console.warn(`${MODULE_ID} | Revive ownership restore failed:`, ownErr);
+          }
+        }
+
+        // Post a brief chat note so the table sees the revive.
+        try {
+          await ChatMessage.create({
+            content: `<div style="background:#0a1a0a;border:2px solid #4c4;border-radius:6px;padding:8px 12px;">
+              <strong style="color:#aaffaa;"><i class="fas fa-heart-pulse"></i> Revived</strong>
+              <div style="color:#c8e8c8;font-size:12px;margin-top:4px;">
+                <strong>${foundry.utils.escapeHTML(actor.name)}</strong> is back among the living.
+                Token image, dimensions, and player access restored.
+              </div>
+            </div>`,
+            speaker: { alias: "ACE QOL", actor: actor.id },
+          });
+        } catch (_) {}
+      } catch (err) {
+        console.error(`${MODULE_ID} | Revive hook threw:`, err);
+      }
+    });
+    console.debug(`${MODULE_ID} | Revive hook registered`);
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  STALE-FLAG AUTO-CLEANUP — Self-heal tokens stuck in half-dead state
+    //  On world ready, walk every scene's tokens. Any token whose actor has
+    //  positive HP BUT still has lingering death-pipeline flags is by
+    //  definition stale (the actor is alive, the flags shouldn't be there).
+    //  Clear them defensively so the loot icon, ace-engine chat suppression,
+    //  click handlers, etc. all return to live-token behavior immediately.
+    //
+    //  Catches:
+    //    - Tokens revived BEFORE the revive hook's compatibility-flag clear
+    //      was wired (pre-2026-05-29 evening builds)
+    //    - Tokens stuck because a revive promise rejected mid-update
+    //    - Tokens whose flags were set by an old version of the death
+    //      pipeline that's since been changed
+    //    - Any user upgrading from an older ace-qol version mid-campaign
+    //
+    //  Idempotent — runs once per world load. If a token is genuinely dead
+    //  (HP 0 + flags set), this leaves it alone. Only positive-HP + flags
+    //  combinations get cleaned.
+    // ══════════════════════════════════════════════════════════════════════════
+    Hooks.once("ready", async () => {
+      if (!game.user.isGM) return;
+      try {
+        let cleaned = 0;
+        for (const scene of game.scenes ?? []) {
+          for (const tokenDoc of scene.tokens ?? []) {
+            try {
+              const f = tokenDoc.flags?.[MODULE_ID];
+              if (!f) continue;
+              // Any of these set means "this token went through the death
+              // pipeline at some point." If it's also currently alive, the
+              // flags are stale and need to go.
+              const hasStaleFlags = f.isDead || f.isDeadToken || f.isDeadLootable
+                                 || f.preDeathSnapshot || f.lootSnapshot
+                                 || f.originalActorId || f.combatLocked;
+              if (!hasStaleFlags) continue;
+              const hp = Number(tokenDoc.actor?.system?.attributes?.hp?.value ?? 0);
+              if (hp <= 0) continue;  // genuinely dead — leave alone
+              await tokenDoc.update({
+                [`flags.${MODULE_ID}.-=isDead`]:             null,
+                [`flags.${MODULE_ID}.-=isDeadLootable`]:     null,
+                [`flags.${MODULE_ID}.-=isDeadToken`]:        null,
+                [`flags.${MODULE_ID}.-=originalActorId`]:    null,
+                [`flags.${MODULE_ID}.-=originalName`]:       null,
+                [`flags.${MODULE_ID}.-=combatLocked`]:       null,
+                [`flags.${MODULE_ID}.-=lootSnapshot`]:       null,
+                [`flags.${MODULE_ID}.-=preDeathSnapshot`]:   null,
+                [`flags.${MODULE_ID}.-=preDeathOwnership`]:  null,
+                [`flags.${MODULE_ID}.-=deathArtPath`]:       null,
+                [`flags.${MODULE_ID}.-=deathReason`]:        null,
+                [`flags.${MODULE_ID}.-=diedAt`]:             null,
+                [`flags.${MODULE_ID}.-=permanentlyDead`]:    null,
+              });
+              cleaned++;
+              console.log(`${MODULE_ID} | Stale-flag cleanup: ${tokenDoc.name ?? tokenDoc.id} (scene ${scene.name}) — alive at ${hp} HP with stale death flags, cleared.`);
+            } catch (perTokenErr) {
+              console.warn(`${MODULE_ID} | Stale-flag cleanup skipped one token (non-fatal):`, perTokenErr);
+            }
+          }
+        }
+        if (cleaned > 0) {
+          console.log(`${MODULE_ID} | Stale-flag cleanup complete — ${cleaned} half-revived token(s) self-healed on this world load.`);
+        }
+      } catch (err) {
+        console.error(`${MODULE_ID} | Stale-flag cleanup hook failed:`, err);
+      }
+    });
+    console.debug(`${MODULE_ID} | Stale-flag auto-cleanup hook registered`);
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  PERMANENT-DEATH OVERRIDE — Vorpal revoke button (chat card + actor sheet
+    //  + token right-click menu)
+    //  All three locations call the same handler: clear the permanentlyDead
+    //  flag on the actor's token, then either auto-revive (if HP already
+    //  positive) or prompt the GM to bump HP. The handler is idempotent.
+    // ══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Clear the permanent-death flag on the actor's token. If HP is already
+     * positive, fire the revive flow immediately. Otherwise notify the GM
+     * that the lock is cleared and they can heal normally.
+     * @param {string} actorId
+     * @param {string} [tokenId]  — optional, helps locate the right token
+     * @param {string} [sceneId]  — optional, helps locate the right token
+     */
+    async function _revokeVorpalLock(actorId, tokenId, sceneId) {
+      if (!game.user.isGM) {
+        ui.notifications.warn("Only the GM can revoke a Vorpal lock.");
+        return;
+      }
+      const actor = game.actors.get(actorId);
+      if (!actor) {
+        ui.notifications.error(`Actor ${actorId} not found.`);
+        return;
+      }
+      // Find the token — same resolution as the revive hook
+      let tokenDoc = null;
+      if (sceneId && tokenId) {
+        const scene = game.scenes.get(sceneId);
+        tokenDoc = scene?.tokens?.get(tokenId);
+      }
+      if (!tokenDoc) tokenDoc = actor.token ?? null;
+      if (!tokenDoc) {
+        for (const scene of game.scenes) {
+          const found = scene.tokens?.find(t => t.actor?.id === actor.id || t.actorId === actor.id);
+          if (found) { tokenDoc = found; break; }
+        }
+      }
+      if (!tokenDoc) {
+        ui.notifications.error(`No token found for ${actor.name}.`);
+        return;
+      }
+      const flags = tokenDoc.flags?.[MODULE_ID];
+      if (!flags?.permanentlyDead) {
+        ui.notifications.info(`${actor.name} is not under a permanent-death lock.`);
+        return;
+      }
+      try {
+        await tokenDoc.update({
+          [`flags.${MODULE_ID}.permanentlyDead`]: false,
+        });
+        ui.notifications.info(`Vorpal lock revoked for ${actor.name}. Healing will now revive normally.`);
+        // If the actor is somehow already at positive HP (rare but possible
+        // if GM bumped HP first then revoked the lock), nudge the revive
+        // hook with a no-op update so the visual reverts.
+        const curHp = actor.system?.attributes?.hp?.value ?? 0;
+        if (curHp > 0) {
+          await actor.update({ "system.attributes.hp.value": curHp });
+        }
+      } catch (err) {
+        console.error(`${MODULE_ID} | Revoke Vorpal lock failed:`, err);
+        ui.notifications.error("Failed to revoke Vorpal lock — see console.");
+      }
+    }
+
+    // Wire chat-card button + hide for non-GM
+    Hooks.on("renderChatMessageHTML", (msg, html /*, data*/) => {
+      try {
+        const root = html instanceof HTMLElement ? html : html?.[0];
+        if (!root) return;
+        const button = root.querySelector(".ace-qol-btn-vorpal-override");
+        if (!button) return;
+        if (!game.user.isGM) {
+          // Hide the override wrapper for players
+          const wrap = button.closest(".ace-qol-vorpal-override");
+          if (wrap) wrap.style.display = "none";
+          return;
+        }
+        if (button.dataset.aceQolWired === "true") return;
+        button.dataset.aceQolWired = "true";
+        button.addEventListener("click", async (ev) => {
+          ev.preventDefault();
+          await _revokeVorpalLock(
+            button.dataset.actorId,
+            button.dataset.tokenId,
+            button.dataset.sceneId,
+          );
+        });
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Vorpal override button wire failed:`, err);
+      }
+    });
+
+    // Expose API for the actor sheet button + console
+    game.aceQol = game.aceQol ?? {};
+    game.aceQol.revokeVorpalLock = _revokeVorpalLock;
+
+    // ── Actor sheet header button (location #2) ──
+    // Adds a "Revoke Vorpal Lock" header button to any actor sheet whose
+    // token has the permanentlyDead flag. GM-only — hidden for players.
+    Hooks.on("getActorSheetHeaderButtons", (sheet, buttons) => {
+      try {
+        if (!game.user.isGM) return;
+        const actor = sheet?.actor;
+        if (!actor) return;
+        // Find the token to check the flag
+        let tokenDoc = actor.token ?? null;
+        if (!tokenDoc) {
+          for (const scene of game.scenes) {
+            const t = scene.tokens?.find(x => x.actor?.id === actor.id || x.actorId === actor.id);
+            if (t) { tokenDoc = t; break; }
+          }
+        }
+        if (!tokenDoc?.flags?.[MODULE_ID]?.permanentlyDead) return;
+        buttons.unshift({
+          label: "Revoke Vorpal Lock",
+          class: "ace-qol-revoke-vorpal",
+          icon:  "fas fa-unlock-keyhole",
+          onclick: () => _revokeVorpalLock(actor.id, tokenDoc.id, tokenDoc.parent?.id),
+        });
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Actor sheet button add failed:`, err);
+      }
+    });
+
+    // ── Token right-click context menu (location #3) ──
+    // Adds a "Revoke Vorpal Lock" entry to the token HUD / right-click
+    // context menu for permanently-dead tokens. GM-only.
+    Hooks.on("getTokenHUDButtons", (hud, buttons) => {
+      try {
+        if (!game.user.isGM) return;
+        const tokenDoc = hud?.object?.document ?? hud?.token;
+        if (!tokenDoc?.flags?.[MODULE_ID]?.permanentlyDead) return;
+        buttons.unshift?.({
+          label: "Revoke Vorpal Lock",
+          icon:  "fas fa-unlock-keyhole",
+          onclick: () => _revokeVorpalLock(tokenDoc.actor?.id, tokenDoc.id, tokenDoc.parent?.id),
+        });
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Token HUD button add failed:`, err);
+      }
+    });
+
+    console.debug(`${MODULE_ID} | Vorpal override hooks registered (chat card + actor sheet + token HUD)`);
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  STRICT-RAW RESURRECTION DETECTION
+    //  Vorpal RAW says a beheaded creature dies AND can't be revived by
+    //  ordinary means — only True Resurrection or Wish actually restore a
+    //  body that's lost a head. We detect spell casts of revival magic and:
+    //    - True Resurrection or Wish → auto-clear permanentlyDead, allowing
+    //      the next HP-restored update to revive normally
+    //    - Revivify / Raise Dead / Resurrection / Reincarnate → post a chat
+    //      card explaining "this spell can't normally restore a body missing
+    //      a head; GM, click to override if you want to allow it"
+    //  Detection is by spell NAME (case-insensitive substring), which is the
+    //  most robust approach across the SRD, homebrew variants, and dnd5e 5.x
+    //  activity restructuring.
+    // ══════════════════════════════════════════════════════════════════════════
+    const STRICT_RAW_REVIVES = [/true\s*resurrection/i, /\bwish\b/i];
+    const WEAKER_REVIVES = [
+      /revivify/i,
+      /raise\s*dead/i,
+      /^resurrection\b/i,         // "Resurrection" but not "True Resurrection"
+      /reincarnate/i,
+    ];
+
+    Hooks.on("dnd5e.preUseActivity", (activity /*, usageConfig, dialogConfig, messageConfig*/) => {
+      try {
+        if (!game.user.isGM) return;
+        const spellName = String(activity?.item?.name ?? "");
+        if (!spellName) return;
+        const isStrict  = STRICT_RAW_REVIVES.some(rx => rx.test(spellName));
+        const isWeaker  = !isStrict && WEAKER_REVIVES.some(rx => rx.test(spellName));
+        if (!isStrict && !isWeaker) return;
+
+        // Get the targets the caster has selected on canvas. For PC casters
+        // that's the player's targets; for GM-cast spells it's the GM's.
+        const targets = [...(game.user.targets ?? [])];
+        if (!targets.length) return;
+
+        // For each targeted token, check if it has the permanent-death flag
+        for (const tgt of targets) {
+          const tokenDoc = tgt.document;
+          if (!tokenDoc?.flags?.[MODULE_ID]?.permanentlyDead) continue;
+
+          if (isStrict) {
+            // True Resurrection or Wish — auto-clear the flag silently
+            tokenDoc.update({
+              [`flags.${MODULE_ID}.permanentlyDead`]: false,
+            }).then(() => {
+              ChatMessage.create({
+                content: `<div style="background:#0a1a0a;border:2px solid #4c4;border-radius:6px;padding:8px 12px;">
+                  <strong style="color:#aaffaa;"><i class="fas fa-staff-aesculapius"></i> Permanent-Death Lock Cleared</strong>
+                  <div style="color:#c8e8c8;font-size:12px;margin-top:4px;">
+                    <strong>${foundry.utils.escapeHTML(spellName)}</strong> bypasses the Vorpal lock per RAW.
+                    <strong>${foundry.utils.escapeHTML(tokenDoc.actor?.name ?? tokenDoc.name)}</strong> can be revived
+                    by healing now.
+                  </div>
+                </div>`,
+                whisper: [game.user.id],
+                flags: { [MODULE_ID]: { type: "permanentDeathStrictClear" } },
+              });
+            }).catch(err => console.warn(`${MODULE_ID} | Strict-RAW clear failed:`, err));
+          } else {
+            // Weaker revival spell — post override card asking GM to decide
+            ChatMessage.create({
+              content: `<div style="background:#2a0a0a;border:2px solid #c44;border-radius:6px;padding:8px 12px;">
+                <strong style="color:#ffaaaa;"><i class="fas fa-skull-crossbones"></i> Revive Spell Insufficient (per RAW)</strong>
+                <div style="color:#e8c8c8;font-size:12px;margin-top:4px;line-height:1.45;">
+                  <strong>${foundry.utils.escapeHTML(spellName)}</strong> normally restores a corpse to life, but
+                  <strong>${foundry.utils.escapeHTML(tokenDoc.actor?.name ?? tokenDoc.name)}</strong> is missing
+                  body parts (Vorpal RAW). True Resurrection or Wish are required to restore them. The spell still
+                  fires — but to RESTORE this victim, click the button below.
+                </div>
+                <div style="margin-top:8px;">
+                  <button type="button" class="ace-qol-btn-vorpal-override" data-action="aceQolRevokeVorpal"
+                          data-actor-id="${foundry.utils.escapeHTML(tokenDoc.actor?.id ?? "")}"
+                          data-token-id="${foundry.utils.escapeHTML(tokenDoc.id ?? "")}"
+                          data-scene-id="${foundry.utils.escapeHTML(tokenDoc.parent?.id ?? "")}"
+                          style="background:linear-gradient(180deg,#2a1a0a,#1a0a05);border:1px solid #d4af37;border-radius:4px;color:#ffd87a;padding:6px 12px;font-size:12px;font-weight:700;cursor:pointer;width:100%;">
+                    <i class="fas fa-unlock-keyhole"></i> GM Override: Allow ${foundry.utils.escapeHTML(spellName)} to revive
+                  </button>
+                </div>
+              </div>`,
+              whisper: [game.user.id],
+              flags: { [MODULE_ID]: { type: "permanentDeathSpellWarning" } },
+            }).catch(err => console.warn(`${MODULE_ID} | Permanent-death spell-warning post failed:`, err));
+          }
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Strict-RAW resurrection detection threw:`, err);
+      }
+    });
+    console.debug(`${MODULE_ID} | Strict-RAW resurrection detection registered`);
   }
 
   // ── Socket bridge: player attacks → GM processing ──
@@ -1893,9 +2636,62 @@ Hooks.once("ready", () => {
             }
           } catch (err) { console.debug("ace-qol | CoverEngine calculation non-blocking:", err); }
 
+          // ── Mirror Image redirect (socket attack path — v0.7.15) ──
+          // Same logic as the local attack-pipeline path. RAW: target with
+          // Mirror Image rolls d20 (threshold 6/8/11 for 3/2/1 dupes).
+          // Success → attack vs duplicate AC (10+DEX); hit destroys duplicate.
+          let mirrorImageRedirect = null;
+          try {
+            const targetActor = cs.targetActor ?? cs.target?.actor;
+            const dupes = Number(targetActor?.getFlag?.(MODULE_ID, "mirrorImage") ?? 0);
+            if (dupes > 0 && !isFumbleRoll && !coverResult?.isFullCover) {
+              const threshold = dupes >= 3 ? 6 : dupes === 2 ? 8 : 11;
+              const redirectRoll = await new Roll("1d20").evaluate();
+              const redirectVal = redirectRoll.total;
+              if (redirectVal >= threshold) {
+                const dexMod = targetActor.system?.abilities?.dex?.mod ?? 0;
+                const duplicateAC = 10 + dexMod;
+                const hitDuplicate = attackTotal >= duplicateAC;
+                let newCount = dupes;
+                if (hitDuplicate) {
+                  newCount = dupes - 1;
+                  try { await targetActor.setFlag(MODULE_ID, "mirrorImage", newCount); } catch (_) {}
+                  if (newCount === 0) {
+                    try {
+                      const eff = targetActor.effects?.find(e => String(e.name ?? "").toLowerCase() === "mirror image");
+                      if (eff) await eff.delete();
+                      await targetActor.unsetFlag(MODULE_ID, "mirrorImage");
+                    } catch (_) {}
+                  }
+                }
+                mirrorImageRedirect = { rollResult: redirectVal, threshold, duplicatesBefore: dupes, duplicatesAfter: newCount, duplicateAC, hitDuplicate };
+                try {
+                  const remainingTxt = newCount === 0 ? "all duplicates destroyed — spell ends" : `${newCount} duplicate${newCount === 1 ? "" : "s"} remaining`;
+                  const outcomeTxt = hitDuplicate
+                    ? `<strong style="color:#d4af37;">duplicate destroyed</strong> — ${remainingTxt}`
+                    : `<strong style="color:#8eebff;">attack misses</strong> — duplicate not struck, ${dupes} duplicate${dupes === 1 ? "" : "s"} remaining`;
+                  ChatMessage.create({
+                    content: `<div style="background:linear-gradient(180deg,#1a1416 0%,#241a30 100%);border:2px solid #8eebff;border-radius:6px;padding:8px 10px;color:#cfcfd0;font-size:12px;">
+                      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+                        <i class="fas fa-clone" style="color:#8eebff;font-size:16px;"></i>
+                        <strong style="color:#8eebff;text-transform:uppercase;letter-spacing:0.5px;">Mirror Image</strong>
+                      </div>
+                      Attack on <strong>${targetActor.name}</strong> redirected (roll <strong>${redirectVal}</strong> vs threshold ${threshold}+).
+                      Duplicate AC <strong>${duplicateAC}</strong> vs attack <strong>${attackTotal}</strong> → ${outcomeTxt}.
+                    </div>`,
+                    speaker: ChatMessage.getSpeaker({ actor: targetActor }),
+                  }).catch(() => {});
+                } catch (_) { /* non-fatal */ }
+              }
+            }
+          } catch (err) {
+            console.warn(`${MODULE_ID} | Mirror Image socket-path redirect failed (non-blocking):`, err);
+          }
+
           let hitResult;
           if (isFumbleRoll) hitResult = "fumble";
           else if (coverResult?.isFullCover) hitResult = "miss";
+          else if (mirrorImageRedirect) hitResult = "miss"; // Mirror Image absorbed
           else if (isCritRoll || cs.autoCrit) hitResult = "critical";
           else if (attackTotal >= effectiveAC) hitResult = "hit";
           else hitResult = "miss";
@@ -1912,6 +2708,7 @@ Hooks.once("ready", () => {
             d20Result,
             isCritRoll,
             isFumbleRoll,
+            mirrorImageRedirect,
           });
         }
 

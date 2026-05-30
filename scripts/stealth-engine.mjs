@@ -29,6 +29,7 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
+import { CombatState } from "./combat-state.mjs";
 
 // Hardcoded literal — using MODULE_ID at module-eval time triggers a TDZ
 // circular-import error because stealth-engine is imported BY ace-qol.mjs.
@@ -40,18 +41,73 @@ const FLAG_SURPRISED = "surprised";
 export class StealthEngine {
 
   static init() {
-    // ── Combat start: surprise check ──
+    // ── Pre-start surprise detection (preferred path) ──
+    // Runs BEFORE initiative is rolled so the standard "surprised" status is
+    // in place when dnd5e rolls initiative. On 2024 worlds the dnd5e system
+    // wires the surprised status into its initiative-disadvantage set
+    // (dnd5e.mjs ~line 47284), so applying the status here makes the system
+    // roll initiative with disadvantage automatically. On 2014 worlds the
+    // system removes that wiring (~50250), so the status is a marker for
+    // ACE QOL's own turn-skip + Assassinate detection.
+    Hooks.on("preUpdateCombat", async (combat, changes /*, opts, userId */) => {
+      try {
+        if (!game.user.isGM) return;
+        if (!QolSettings.get?.("autoSurpriseCheck")) return;
+        if (changes?.started !== true) return; // only fires on the start transition
+        if (combat?.started) return; // already started — don't re-run
+        await StealthEngine._runSurpriseCheck(combat);
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Surprise check (preUpdateCombat) threw:`, err);
+      }
+    });
+
+    // ── Fallback: run at combatStart if preUpdateCombat didn't catch ──
+    // Guards against the possibility of an older Foundry version or a
+    // module load order that misses the preUpdateCombat hook.
     Hooks.on("combatStart", async (combat) => {
       try {
         if (!game.user.isGM) return;
         if (!QolSettings.get?.("autoSurpriseCheck")) return;
+        // Skip if any combatant already has the ACE QOL surprised flag —
+        // means the preUpdateCombat path already ran.
+        const alreadyChecked = (combat?.combatants?.contents ?? []).some(c =>
+          c?.token?.getFlag?.(FLAG_NS, FLAG_SURPRISED) !== undefined
+        );
+        if (alreadyChecked) return;
         await StealthEngine._runSurpriseCheck(combat);
       } catch (err) {
-        console.warn(`${MODULE_ID} | Surprise check threw:`, err);
+        console.warn(`${MODULE_ID} | Surprise check (combatStart) threw:`, err);
       }
     });
 
-    // ── Round 2: clear surprised flags ──
+    // ── 2014 turn-skip: surprised combatants skip their first turn ──
+    // On round 1, when a surprised combatant's turn comes up, auto-advance
+    // past them with a chat note. 2024 RAW does NOT skip turns (surprise
+    // becomes init-disadvantage instead), so this only fires on 2014 worlds.
+    Hooks.on("combatTurnChange", async (combat /*, prev, current */) => {
+      try {
+        if (!game.user.isGM) return;
+        if ((combat?.round ?? 0) !== 1) return;
+        const currentCombatant = combat?.combatant;
+        if (!currentCombatant?.token) return;
+        const isSurprised = currentCombatant.token.getFlag?.(FLAG_NS, FLAG_SURPRISED) === true;
+        if (!isSurprised) return;
+        // Edition check — 2014 only.
+        const edition = CombatState.getActiveEdition(currentCombatant.actor);
+        if (edition !== "2014") return;
+        await ChatMessage.create({
+          content: `<div class="ace-qol-surprise-card" style="border-left:3px solid #d4af37;padding:6px 10px;">
+            <strong>⚠️ ${currentCombatant.name}</strong> is surprised — turn skipped. <small style="opacity:0.7;">(2014 RAW)</small>
+          </div>`,
+          speaker: ChatMessage.getSpeaker({ actor: currentCombatant.actor }),
+        });
+        await combat.nextTurn?.();
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Surprise turn-skip threw:`, err);
+      }
+    });
+
+    // ── Round 2: clear surprised flags and the standard surprised status ──
     Hooks.on("combatRound", async (combat) => {
       try {
         if (!game.user.isGM) return;
@@ -62,6 +118,14 @@ export class StealthEngine {
           if (td.getFlag?.(FLAG_NS, FLAG_SURPRISED)) {
             await td.unsetFlag?.(FLAG_NS, FLAG_SURPRISED);
           }
+          // Also clear the standard surprised status that the surprise check
+          // applies. RAW: surprise lasts only the first round, then the
+          // creature is no longer surprised.
+          try {
+            if (c.actor?.statuses?.has?.("surprised") && c.actor?.toggleStatusEffect) {
+              await c.actor.toggleStatusEffect("surprised", { active: false });
+            }
+          } catch (_) { /* non-fatal */ }
         }
       } catch (err) {
         console.warn(`${MODULE_ID} | Surprise reset threw:`, err);
@@ -232,17 +296,34 @@ export class StealthEngine {
       if (!noticedAtLeastOne && me.token) {
         surprised.push(me);
         await me.token.setFlag?.(FLAG_NS, FLAG_SURPRISED, true);
+        // Also apply the standard "surprised" status so:
+        //   • In 2024 mode the dnd5e system applies init-disadvantage automatically.
+        //   • In 2014 mode the Assassinate auto-crit gate sees the status.
+        //   • Either way, downstream automation that watches the standard status
+        //     (cross-module, macros, other QOL features) stays in sync.
+        try {
+          if (me.actor?.toggleStatusEffect) {
+            await me.actor.toggleStatusEffect("surprised", { active: true });
+          }
+        } catch (_) { /* non-fatal */ }
       }
     }
 
     if (surprised.length > 0) {
       const names = surprised.map(c => c.name).join(", ");
+      // Edition-aware card text. Derive the edition from the first surprised
+      // actor — in a homogeneous world every combatant resolves to the same
+      // edition via the dnd5e rulesVersion setting.
+      const edition = CombatState.getActiveEdition(surprised[0]?.actor);
+      const bodyText = edition === "2014"
+        ? `${names} ${surprised.length === 1 ? "is" : "are"} surprised — turn skipped on round 1, no reactions until that turn ends. <small style="opacity:0.7;">(2014 RAW)</small>`
+        : `${names} ${surprised.length === 1 ? "is" : "are"} surprised — initiative rolled with disadvantage. <small style="opacity:0.7;">(2024 RAW — handled by dnd5e system)</small>`;
       await ChatMessage.create({
         content: `<div class="ace-qol-surprise-card">
           <strong>⚠️ SURPRISE</strong><br/>
-          ${names} ${surprised.length === 1 ? "is" : "are"} surprised — cannot move or take an action on their first turn.
+          ${bodyText}
         </div>`,
-        flags: { [MODULE_ID]: { type: "surprise", surprised: surprised.map(c => c.id) } },
+        flags: { [MODULE_ID]: { type: "surprise", surprised: surprised.map(c => c.id), edition } },
       });
     }
   }

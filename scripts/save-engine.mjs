@@ -27,6 +27,7 @@ import { getSpellTiming, TIMING } from "./spell-timing.mjs";
 import { CoverEngine } from "./cover-engine.mjs";
 import { DescriptionParser } from "./description-parser.mjs";
 import { ConditionLibrary } from "./condition-library.mjs";
+import { awaitDsnRoll } from "./attack-prompt.mjs";
 import { PolymorphSpellPipeline } from "./polymorph-spell-pipeline.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
 
@@ -2387,6 +2388,9 @@ export class SaveEngine {
     // Filter out GM users — they have ownership on all actors but don't need prompt cards
     const whisperIds = (tgt.ownerIds ?? []).filter(id => !game.users.get(id)?.isGM);
 
+    // Let NPC save dice settle before posting the result card.
+    await awaitDsnRoll();
+
     await ChatMessage.create({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ alias: tgt.name }),
@@ -2526,6 +2530,9 @@ export class SaveEngine {
         </div>
       </div>
     `;
+
+    // Let PC save dice settle before posting the result card.
+    await awaitDsnRoll();
 
     await ChatMessage.create({
       content: resultHtml,

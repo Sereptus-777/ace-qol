@@ -1,0 +1,333 @@
+// ─── ACE: QOL — Spell Target Picker (v0.7.15) ────────────────────────────────
+// DialogV2-based popup that lets the caster pick targets for a multi-target
+// buff/debuff spell (Bless, Bane, Slow, Faerie Fire, Beacon of Hope, etc.).
+//
+// What it shows:
+//   - Portrait grid of every token on the current scene
+//   - Distance-from-caster in feet (color-coded vs spell range)
+//   - Self always selectable (Bless allows caster to bless themselves)
+//   - Out-of-range tokens dimmed but still selectable (GM houserule)
+//   - Multi-select with a per-spell target cap
+//   - Already-targeted tokens (game.user.targets) come pre-selected
+//
+// Pattern mirrors HealTargetPicker but stripped of heal-specific logic.
+// Returns Promise<Actor[]> — selected actors, [] if cancelled.
+// ──────────────────────────────────────────────────────────────────────────────
+
+import { MODULE_ID } from "./ace-qol.mjs";
+
+export class SpellTargetPicker {
+
+  /**
+   * Public entry point. Shows the picker and resolves to an array of selected
+   * Actor objects. Returns [] if cancelled.
+   *
+   * @param {object} opts
+   * @param {Item}   opts.spellItem    — the spell item being cast
+   * @param {Actor}  opts.casterActor  — actor casting the spell
+   * @param {number} opts.maxTargets   — max selectable (e.g., 3 for Bless)
+   * @param {number} [opts.rangeFt]    — range in feet (defaults to spell.system.range)
+   * @param {boolean}[opts.allowSelf]  — caster can be a target (default true)
+   * @returns {Promise<Actor[]>}
+   */
+  static async pick({ spellItem, casterActor, maxTargets, rangeFt, allowSelf = true }) {
+    if (!spellItem || !casterActor) return [];
+
+    // Resolve range from spell item if not explicitly passed
+    const resolvedRange = Number.isFinite(rangeFt)
+      ? rangeFt
+      : SpellTargetPicker._resolveRangeFt(spellItem);
+
+    // Find caster's token for range computation
+    const casterToken = casterActor.getActiveTokens?.()?.[0]
+                     ?? canvas.tokens?.placeables.find(t => t.actor?.id === casterActor.id)
+                     ?? null;
+
+    if (!casterToken) {
+      ui.notifications?.warn(
+        `${spellItem.name}: caster has no token on this scene — defaulting to caster only.`
+      );
+      return [casterActor];
+    }
+
+    // Build the candidate list
+    const candidates = SpellTargetPicker._buildCandidates(casterToken, casterActor, resolvedRange, allowSelf);
+    if (!candidates.length) {
+      ui.notifications?.warn(`${spellItem.name}: no valid targets on this scene.`);
+      return [];
+    }
+
+    // Pre-select tokens already in game.user.targets (caster convenience)
+    const preSelected = new Set();
+    for (const t of game.user.targets ?? []) {
+      if (candidates.find(c => c.tokenId === t.id)) preSelected.add(t.id);
+    }
+    // If nothing pre-selected and self-targeting is allowed, pre-select self
+    if (preSelected.size === 0 && allowSelf) {
+      const selfRow = candidates.find(c => c.isSelf);
+      if (selfRow) preSelected.add(selfRow.tokenId);
+    }
+
+    return await SpellTargetPicker._showDialog({
+      spellItem,
+      candidates,
+      preSelected,
+      maxTargets: Math.max(1, Number(maxTargets) || 1),
+      rangeFt: resolvedRange,
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Range Resolution
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Read a spell's range and convert to feet. Returns Infinity for unlimited.
+   */
+  static _resolveRangeFt(spellItem) {
+    const range = spellItem.system?.range ?? {};
+    const v = Number(range.value);
+    const u = String(range.units ?? "").toLowerCase();
+    if (!Number.isFinite(v) || v <= 0) {
+      // Touch / self / special — treat as 5ft default
+      if (u === "touch") return 5;
+      if (u === "self") return 0;
+      return 30; // sensible fallback
+    }
+    if (u === "ft" || u === "feet" || u === "") return v;
+    if (u === "mi" || u === "mile" || u === "miles") return v * 5280;
+    if (u === "m" || u === "meter" || u === "meters") return v * 3.28084;
+    return v;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Candidate Building
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Walk every token on canvas. Compute distance from caster, validity.
+   * Returns sorted by distance ascending (caster first, then nearest).
+   */
+  static _buildCandidates(casterToken, casterActor, rangeFt, allowSelf) {
+    const tokens = canvas.tokens?.placeables ?? [];
+    const out = [];
+
+    for (const tok of tokens) {
+      if (!tok.actor) continue;
+      const isSelf = tok.id === casterToken.id || tok.actor.id === casterActor.id;
+      if (isSelf && !allowSelf) continue;
+
+      let distFt = 0;
+      if (!isSelf) {
+        try {
+          distFt = SpellTargetPicker._measureDistance(casterToken, tok);
+        } catch (_) {
+          distFt = SpellTargetPicker._fallbackDistance(casterToken, tok);
+        }
+      }
+
+      const inRange = !Number.isFinite(rangeFt) || distFt <= rangeFt + 0.01;
+      const disposition = tok.document?.disposition ?? 0;
+      const isPlayerOwned = !!tok.actor.hasPlayerOwner;
+      const hp = tok.actor.system?.attributes?.hp ?? {};
+      const isDead = (hp.value ?? 1) <= 0 || tok.actor.statuses?.has?.("dead");
+
+      out.push({
+        tokenId: tok.id,
+        token: tok,
+        actor: tok.actor,
+        name: tok.name ?? tok.actor.name,
+        img: tok.actor.img ?? tok.document?.texture?.src ?? "icons/svg/mystery-man.svg",
+        isSelf,
+        distFt,
+        inRange,
+        disposition,
+        isPlayerOwned,
+        isDead,
+      });
+    }
+
+    out.sort((a, b) => {
+      if (a.isSelf && !b.isSelf) return -1;
+      if (b.isSelf && !a.isSelf) return 1;
+      return a.distFt - b.distFt;
+    });
+
+    return out;
+  }
+
+  static _measureDistance(t1, t2) {
+    const a = t1.center, b = t2.center;
+    if (canvas.grid?.measurePath) {
+      return canvas.grid.measurePath([a, b]).distance;
+    }
+    return SpellTargetPicker._fallbackDistance(t1, t2);
+  }
+
+  static _fallbackDistance(t1, t2) {
+    const a = t1.center, b = t2.center;
+    const dx = a.x - b.x, dy = a.y - b.y;
+    const px = Math.sqrt(dx * dx + dy * dy);
+    const gridSize = canvas.scene?.grid?.size ?? 100;
+    const distance = canvas.scene?.grid?.distance ?? 5;
+    return (px / gridSize) * distance;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Dialog Render
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  static async _showDialog({ spellItem, candidates, preSelected, maxTargets, rangeFt }) {
+    const rangeLabel = !Number.isFinite(rangeFt) ? "any range"
+                     : rangeFt === 0 ? "self only"
+                     : rangeFt === 5 ? "5 ft (touch)"
+                     : `${rangeFt} ft`;
+
+    const headerHtml = `
+      <div class="ace-qol-spell-pickr-header">
+        <img class="ace-qol-spell-pickr-icon" src="${spellItem.img}" alt="" onerror="this.style.display='none'">
+        <div class="ace-qol-spell-pickr-titles">
+          <div class="ace-qol-spell-pickr-name">${foundry.utils.escapeHTML(spellItem.name)}</div>
+          <div class="ace-qol-spell-pickr-meta">
+            <span class="ace-qol-spell-pickr-tag">${rangeLabel}</span>
+            <span class="ace-qol-spell-pickr-tag">up to ${maxTargets} target${maxTargets === 1 ? "" : "s"}</span>
+          </div>
+        </div>
+      </div>
+    `;
+
+    const rowsHtml = candidates.map(c =>
+      SpellTargetPicker._renderTokenRow(c, preSelected.has(c.tokenId))
+    ).join("");
+
+    const content = `
+      <div class="ace-qol-spell-pickr">
+        ${headerHtml}
+        <div class="ace-qol-spell-pickr-instructions">
+          Select up to <strong>${maxTargets}</strong> target${maxTargets === 1 ? "" : "s"}.
+          Click a portrait to toggle. Out-of-range targets are dimmed but still selectable.
+        </div>
+        <div class="ace-qol-spell-pickr-grid" data-max-count="${maxTargets}">
+          ${rowsHtml}
+        </div>
+        <div class="ace-qol-spell-pickr-footer">
+          <span class="ace-qol-spell-pickr-count" data-selected="${preSelected.size}">
+            <strong class="ace-qol-spell-pickr-count-num">${preSelected.size}</strong> / ${maxTargets} selected
+          </span>
+        </div>
+      </div>
+    `;
+
+    return await new Promise((resolve) => {
+      const dlg = new foundry.applications.api.DialogV2({
+        window: { title: `Cast ${spellItem.name} — Pick Targets` },
+        content,
+        rejectClose: false,
+        position: { width: 600 },
+        buttons: [
+          {
+            action: "confirm",
+            label: `Cast ${spellItem.name}`,
+            icon: "fa-solid fa-sparkles",
+            default: true,
+            callback: (_event, _button, dialog) => {
+              const root = dialog?.element ?? document;
+              const actors = SpellTargetPicker._readSelection(root, candidates);
+              resolve(actors);
+            },
+          },
+          {
+            action: "cancel",
+            label: "Cancel",
+            icon: "fa-solid fa-xmark",
+            callback: () => resolve([]),
+          },
+        ],
+      });
+      dlg.render({ force: true });
+
+      // Wire clicks once the DOM is in place
+      setTimeout(() => SpellTargetPicker._wireGrid(dlg.element ?? document, maxTargets), 50);
+    });
+  }
+
+  static _renderTokenRow(c, preSelected) {
+    const distLabel = c.isSelf ? "self" : `${Math.round(c.distFt)} ft`;
+    const distClass = c.isSelf ? "self" : (c.inRange ? "in-range" : "out-of-range");
+    const validClass = c.inRange && !c.isDead ? "valid" : "invalid";
+    const selectedClass = preSelected ? "selected" : "";
+    const ownerClass = c.isPlayerOwned ? "pc" : "npc";
+    const deadBadge = c.isDead ? `<div class="ace-qol-spell-pickr-tok-dead">DEAD</div>` : "";
+    const dispLabel = c.disposition === 1 ? "FRIENDLY"
+                    : c.disposition === -1 ? "HOSTILE"
+                    : c.disposition === 0 ? "NEUTRAL"
+                    : "";
+    const dispClass = c.disposition === 1 ? "friendly"
+                    : c.disposition === -1 ? "hostile"
+                    : "neutral";
+
+    return `
+      <div class="ace-qol-spell-pickr-tok ${validClass} ${selectedClass} ${ownerClass}"
+           data-token-id="${c.tokenId}"
+           data-actor-id="${c.actor.id}"
+           title="${foundry.utils.escapeHTML(c.name)} — ${distLabel}">
+        <div class="ace-qol-spell-pickr-tok-img-wrap">
+          <img src="${c.img}" alt="" class="ace-qol-spell-pickr-tok-img" onerror="this.style.display='none'">
+          ${c.isSelf ? `<div class="ace-qol-spell-pickr-tok-self-badge">SELF</div>` : ""}
+          ${deadBadge}
+        </div>
+        <div class="ace-qol-spell-pickr-tok-name">${foundry.utils.escapeHTML(c.name)}</div>
+        ${dispLabel ? `<div class="ace-qol-spell-pickr-tok-disp ${dispClass}">${dispLabel}</div>` : ""}
+        <div class="ace-qol-spell-pickr-tok-dist ${distClass}">${distLabel}</div>
+      </div>
+    `;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Selection Logic
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  static _wireGrid(root, maxTargets) {
+    const grid = root.querySelector?.(".ace-qol-spell-pickr-grid");
+    const counter = root.querySelector?.(".ace-qol-spell-pickr-count");
+    if (!grid) return;
+
+    grid.querySelectorAll(".ace-qol-spell-pickr-tok").forEach(el => {
+      el.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+
+        const isSelected = el.classList.contains("selected");
+        if (!isSelected) {
+          // Enforce max — drop oldest selection if exceeding
+          const allSelected = grid.querySelectorAll(".ace-qol-spell-pickr-tok.selected");
+          if (allSelected.length >= maxTargets) {
+            allSelected[0]?.classList.remove("selected");
+          }
+          el.classList.add("selected");
+        } else {
+          el.classList.remove("selected");
+        }
+
+        // Update counter
+        const newCount = grid.querySelectorAll(".ace-qol-spell-pickr-tok.selected").length;
+        if (counter) {
+          const numEl = counter.querySelector(".ace-qol-spell-pickr-count-num");
+          if (numEl) numEl.textContent = String(newCount);
+          counter.dataset.selected = String(newCount);
+        }
+      });
+    });
+  }
+
+  static _readSelection(root, candidates) {
+    const selectedIds = [...root.querySelectorAll(".ace-qol-spell-pickr-tok.selected")]
+      .map(el => el.dataset.tokenId);
+    const out = [];
+    for (const id of selectedIds) {
+      const c = candidates.find(x => x.tokenId === id);
+      if (c?.actor) out.push(c.actor);
+    }
+    return out;
+  }
+}

@@ -134,6 +134,162 @@ Hooks.once("setup",       () => _aceQolPatchTileClickRight("setup"));
 Hooks.once("canvasReady", () => _aceQolPatchTileClickRight("canvasReady"));
 Hooks.once("ready",       () => _aceQolPatchTileClickRight("ready"));
 
+// ─── Token click patching for the new dead-token pipeline ────────────────
+//
+// Since v0.7.14 the death pipeline keeps the token in place and swaps its
+// texture instead of creating a separate corpse tile. The loot dialog
+// historically opened from clicking the tile — now it opens from clicking
+// the dead TOKEN. Click rules:
+//
+//   - LEFT CLICK on a dead token:
+//       Player → open loot dialog (selection is blocked because the player
+//                no longer has OWNER permission anyway; we intercept the
+//                click so it doesn't fall through to nothing).
+//       GM     → normal Foundry behavior (select / drag / etc.)
+//
+//   - RIGHT CLICK on a dead token:
+//       Player → open loot dialog (mirrors the player left-click; either
+//                button opens loot)
+//       GM     → open loot dialog (per user's spec: "as long as the DM can
+//                right-click and still bring up the loot pile, everything
+//                will be solved perfectly")
+//
+//   - DOUBLE LEFT CLICK on a dead token:
+//       Player → blocked (would normally open the actor sheet)
+//       GM     → normal behavior
+//
+// We monkey-patch Token.prototype the same way the existing tile patch
+// works, with both setup-time + per-token defense (drawToken hook for
+// late-replacement module compatibility).
+
+function _aceQolPatchTokenClicks(reason) {
+  const TokenClass = CONFIG?.Token?.objectClass;
+  if (!TokenClass) {
+    console.warn(`${MODULE_ID} | Token click patch (${reason}): Token class not available yet — will retry.`);
+    return false;
+  }
+  if (TokenClass.prototype.__aceQolTokenClicksPatched) return true;
+  const proto = TokenClass.prototype;
+
+  const _isDead = (token) => {
+    const doc = token?.document ?? token;
+    return doc?.flags?.[MODULE_ID]?.isDead === true;
+  };
+
+  // ── Right-click: always open loot dialog for dead tokens (GM + player) ──
+  const origRight = proto._onClickRight;
+  proto._onClickRight = function(event) {
+    try {
+      if (_isDead(this)) {
+        try { event?.preventDefault?.(); event?.stopPropagation?.(); } catch (_) {}
+        if (_lootableTileInstance) _lootableTileInstance._openLootDialog(this);
+        return;
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Token right-click patch handler failed:`, err);
+    }
+    return origRight?.call(this, event);
+  };
+
+  // ── Left-click: player-only loot redirect; GM keeps normal behavior ──
+  const origLeft = proto._onClickLeft;
+  proto._onClickLeft = function(event) {
+    try {
+      if (_isDead(this) && !game.user.isGM) {
+        try { event?.preventDefault?.(); event?.stopPropagation?.(); } catch (_) {}
+        if (_lootableTileInstance) _lootableTileInstance._openLootDialog(this);
+        return;
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Token left-click patch handler failed:`, err);
+    }
+    return origLeft?.call(this, event);
+  };
+
+  // ── Double left-click: block sheet open on dead tokens for non-GMs ──
+  // GMs still get full sheet access for HP-bump / revive workflows.
+  const origLeft2 = proto._onClickLeft2;
+  proto._onClickLeft2 = function(event) {
+    try {
+      if (_isDead(this) && !game.user.isGM) {
+        try { event?.preventDefault?.(); event?.stopPropagation?.(); } catch (_) {}
+        if (_lootableTileInstance) _lootableTileInstance._openLootDialog(this);
+        return;
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Token double-click patch handler failed:`, err);
+    }
+    return origLeft2?.call(this, event);
+  };
+
+  TokenClass.prototype.__aceQolTokenClicksPatched = true;
+  console.debug(`${MODULE_ID} | Token.prototype clicks patched (${reason}).`);
+  return true;
+}
+
+Hooks.once("setup",       () => _aceQolPatchTokenClicks("setup"));
+Hooks.once("canvasReady", () => _aceQolPatchTokenClicks("canvasReady"));
+Hooks.once("ready",       () => _aceQolPatchTokenClicks("ready"));
+
+// Per-token defense — same pattern as drawTile, for modules that swap
+// the Token class after our setup patch installs.
+Hooks.on("drawToken", (token) => {
+  try {
+    const ctorProto = token?.constructor?.prototype;
+    if (!ctorProto || ctorProto.__aceQolTokenClicksPatched) return;
+
+    const _isDead = (tk) => {
+      const doc = tk?.document ?? tk;
+      return doc?.flags?.[MODULE_ID]?.isDead === true;
+    };
+
+    const origRight = ctorProto._onClickRight;
+    ctorProto._onClickRight = function(event) {
+      try {
+        if (_isDead(this)) {
+          try { event?.preventDefault?.(); event?.stopPropagation?.(); } catch (_) {}
+          if (_lootableTileInstance) _lootableTileInstance._openLootDialog(this);
+          return;
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | drawToken right-click patch threw:`, err);
+      }
+      return origRight?.call(this, event);
+    };
+
+    const origLeft = ctorProto._onClickLeft;
+    ctorProto._onClickLeft = function(event) {
+      try {
+        if (_isDead(this) && !game.user.isGM) {
+          try { event?.preventDefault?.(); event?.stopPropagation?.(); } catch (_) {}
+          if (_lootableTileInstance) _lootableTileInstance._openLootDialog(this);
+          return;
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | drawToken left-click patch threw:`, err);
+      }
+      return origLeft?.call(this, event);
+    };
+
+    const origLeft2 = ctorProto._onClickLeft2;
+    ctorProto._onClickLeft2 = function(event) {
+      try {
+        if (_isDead(this) && !game.user.isGM) {
+          try { event?.preventDefault?.(); event?.stopPropagation?.(); } catch (_) {}
+          if (_lootableTileInstance) _lootableTileInstance._openLootDialog(this);
+          return;
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | drawToken double-click patch threw:`, err);
+      }
+      return origLeft2?.call(this, event);
+    };
+
+    ctorProto.__aceQolTokenClicksPatched = true;
+    console.debug(`${MODULE_ID} | drawToken: late-patched ${token.constructor.name} clicks.`);
+  } catch (_) {}
+});
+
 // Per-tile defense: if any module replaces CONFIG.Tile.objectClass AFTER
 // our setup-time patch, the prototype patch is on the OLD class and useless.
 // drawTile fires for every tile rendered on canvas — check the instance's
@@ -549,11 +705,12 @@ export class LootableTile {
     }, true);  // capture phase
 
     // Suppress browser/Foundry context menu when right-clicking over a
-    // lootable tile so our dialog isn't covered by a stray menu.
+    // lootable tile OR dead token, so our dialog isn't covered by a stray
+    // browser menu or Foundry's default right-click handlers.
     document.addEventListener("contextmenu", (ev) => {
       const worldPos = this._eventToWorldPos(ev);
       if (!worldPos) return;
-      if (this._findLootableTileAt(worldPos)) {
+      if (this._findLootableTileAt(worldPos) || this._findLootableTokenAt(worldPos)) {
         ev.preventDefault();
         ev.stopPropagation();
       }
@@ -594,23 +751,27 @@ export class LootableTile {
       return;
     }
 
-    // Lootable tile wins over overlapping tokens — clicking a visible body
-    // or chest is the user's clear intent regardless of who's standing on it.
-    const tile = this._findLootableTileAt(worldPos);
-    if (!tile) {
+    // Lootable tile OR dead token — both are valid loot targets. Tile takes
+    // priority for backwards-compat with the old pipeline that placed corpse
+    // tiles. The new pipeline (v0.7.14+) doesn't place tiles, so the token
+    // pass is what fires for normal post-launch dead bodies.
+    const target = this._findLootableTileAt(worldPos)
+                ?? this._findLootableTokenAt(worldPos);
+    if (!target) {
       if (debug) {
         const hasToken = this._tokenAtPos(worldPos);
-        console.debug(`${MODULE_ID} | LootClick: no lootable tile at (${worldPos.x.toFixed(0)},${worldPos.y.toFixed(0)})${hasToken ? " (token at pos)" : ""}`);
+        console.debug(`${MODULE_ID} | LootClick: no lootable tile or dead token at (${worldPos.x.toFixed(0)},${worldPos.y.toFixed(0)})${hasToken ? " (live token at pos)" : ""}`);
       }
       return;
     }
 
-    const tileDoc = tile.document ?? tile;
-    const isDead = tileDoc.flags?.[MODULE_ID]?.isDeadToken === true;
-    if (debug) console.debug(`${MODULE_ID} | LootClick: opening loot dialog for ${isDead ? "dead-body" : "container"} tile ${tileDoc.id}`);
+    const targetDoc = target.document ?? target;
+    const kind = targetDoc.documentName === "Token" ? "dead-body (token)"
+               : (targetDoc.flags?.[MODULE_ID]?.isDeadToken === true ? "dead-body (tile)" : "container");
+    if (debug) console.debug(`${MODULE_ID} | LootClick: opening loot dialog for ${kind} ${targetDoc.id}`);
 
     try { event.stopPropagation(); event.preventDefault(); } catch (_) {}
-    this._openLootDialog(tile);
+    this._openLootDialog(target);
   }
 
   /**
@@ -697,6 +858,34 @@ export class LootableTile {
     return this._findLootableTileAt(worldPos);
   }
 
+  /**
+   * Find a lootable TOKEN at the given world position. Mirrors
+   * _findLootableTileAt but walks scene tokens instead of tiles, filtering
+   * to those marked dead by ace-qol's death pipeline (v0.7.14+).
+   *
+   * Dead tokens have flag isDeadToken (set as a compatibility mirror of
+   * the new isDead flag) so the existing loot dialog code reads them
+   * unchanged. Returns the Token (PIXI object) or its document.
+   */
+  _findLootableTokenAt(worldPos) {
+    if (!canvas?.scene || !worldPos) return null;
+    const tokens = [...canvas.scene.tokens.contents].reverse();
+    for (const tokenDoc of tokens) {
+      const isDead = tokenDoc.flags?.[MODULE_ID]?.isDead === true
+                  || tokenDoc.flags?.[MODULE_ID]?.isDeadToken === true;
+      if (!isDead) continue;
+      const w = (Number(tokenDoc.width)  > 0) ? Number(tokenDoc.width)  * canvas.grid.size : canvas.grid.size;
+      const h = (Number(tokenDoc.height) > 0) ? Number(tokenDoc.height) * canvas.grid.size : canvas.grid.size;
+      if (worldPos.x >= tokenDoc.x
+       && worldPos.x < tokenDoc.x + w
+       && worldPos.y >= tokenDoc.y
+       && worldPos.y < tokenDoc.y + h) {
+        return tokenDoc.object ?? canvas.tokens?.get?.(tokenDoc.id) ?? tokenDoc;
+      }
+    }
+    return null;
+  }
+
   /* ══════════════════════════════════════════════════════════════════════
      Hover-icon system — small treasure-chest icon appears over a lootable
      tile after 1s of hover, providing a discoverable click target for new
@@ -735,38 +924,46 @@ export class LootableTile {
       this._cancelHoverIcon();
       return;
     }
-    const tile = this._findLootableTileAt(worldPos);
-    if (!tile) {
+    // First-pass: tiles (dead-art tiles + containers — original behavior).
+    // Second-pass: dead TOKENS (v0.7.14+ — the new in-place death pipeline
+    // keeps the token, swaps its texture, and marks it lootable on flags).
+    // Tile takes priority if both are present at the same spot (legacy +
+    // possibility of an older dead-art tile overlaid on the new pipeline's
+    // token). The dialog handles either kind via tile.document ?? tile.
+    let target = this._findLootableTileAt(worldPos);
+    if (!target) target = this._findLootableTokenAt(worldPos);
+    if (!target) {
       this._cancelHoverIcon();
       return;
     }
-    // One-time diagnostic so we can prove the listener fires + the tile is
-    // detected. Logged exactly once per session per tile-id so it doesn't
+    // One-time diagnostic so we can prove the listener fires + the target is
+    // detected. Logged exactly once per session per target-id so it doesn't
     // spam. If you never see this line in console, _wireDomListener never
     // ran. If you see it but no icon appears, the problem is downstream
     // (_tileHasLoot returned false, or _showHoverIcon couldn't render).
     if (!this._hoverFirstDetectLogged) this._hoverFirstDetectLogged = new Set();
-    const tid = tile.id ?? tile.document?.id;
+    const tid = target.id ?? target.document?.id;
     if (tid && !this._hoverFirstDetectLogged.has(tid)) {
       this._hoverFirstDetectLogged.add(tid);
-      console.log(`${MODULE_ID} | hover-icon: lootable tile detected under cursor (${tid}, delay=${delayMs}ms)`);
+      const kind = target.document?.documentName ?? (target.constructor?.name ?? "lootable");
+      console.log(`${MODULE_ID} | hover-icon: lootable ${kind} detected under cursor (${tid}, delay=${delayMs}ms)`);
     }
     // Don't tease the user with a treasure-chest icon on empty corpses /
     // empty containers — only show the icon if there's actually something
     // to take. Right-click still works either way for diagnostic purposes.
-    if (!this._tileHasLoot(tile)) {
+    if (!this._tileHasLoot(target)) {
       this._cancelHoverIcon();
       return;
     }
-    // If we're already showing the icon for this tile, leave it alone
-    if (this._hoverIconTileId === (tile.id ?? tile.document?.id)) return;
-    // Clear any pending or visible icon for a different tile
+    // If we're already showing the icon for this target, leave it alone
+    if (this._hoverIconTileId === (target.id ?? target.document?.id)) return;
+    // Clear any pending or visible icon for a different target
     this._cancelHoverIcon();
     // Schedule icon reveal after the configured delay
-    const tileId = tile.id ?? tile.document?.id;
+    const targetId = target.id ?? target.document?.id;
     this._hoverPending = setTimeout(() => {
-      this._showHoverIcon(tile);
-      this._hoverIconTileId = tileId;
+      this._showHoverIcon(target);
+      this._hoverIconTileId = targetId;
     }, delayMs);
   }
 
@@ -998,6 +1195,86 @@ export class LootableTile {
     const isDead      = flags.isDeadToken === true;
     const isContainer = !isDead && isContainerTile(tileDoc);
     if (!isDead && !isContainer) return;
+
+    // ── Distance gate for players (GM is unrestricted) ──
+    // The player's character has to be within 10 feet (configurable via
+    // setting `lootMaxDistanceFt`) of the body/container to loot it.
+    // Without this, a player anywhere on the canvas can open the loot
+    // dialog on any dead body — including ones on the other side of a
+    // wall or 150 feet away across the battlefield.
+    //
+    // Rules of engagement:
+    //   - GM: unrestricted (often runs cleanup post-combat from the chair)
+    //   - Player: distance from their character's token to the loot target
+    //   - If we can't find the player's character token (no assigned
+    //     character, no token on canvas), fall back to ALLOW. Defensive —
+    //     we'd rather over-allow than soft-lock players whose setup is
+    //     non-standard. Better complaint to handle than silent failure.
+    if (!game.user.isGM) {
+      const maxFt = (() => {
+        try {
+          const v = Number(game.settings.get(MODULE_ID, "lootMaxDistanceFt"));
+          // Setting 0 = disabled (any distance allowed). NaN / negative
+          // fall back to the default. Otherwise honor exactly.
+          if (!Number.isFinite(v) || v < 0) return 10;
+          return v;
+        } catch (_) { return 10; }
+      })();
+      // maxFt = 0 → distance gate disabled, skip the whole check
+      if (maxFt > 0) {
+      const playerToken = (() => {
+        // Prefer a token the player is actually controlling
+        const ctrl = canvas.tokens?.controlled?.find(t =>
+          t.actor?.hasPlayerOwner && t.actor?.id === game.user.character?.id
+        );
+        if (ctrl) return ctrl;
+        // Else find the assigned character's token on this scene
+        if (game.user.character) {
+          const owned = canvas.tokens?.placeables?.find(t =>
+            t.actor?.id === game.user.character?.id
+          );
+          if (owned) return owned;
+        }
+        // Else any token on this scene the player owns
+        return canvas.tokens?.placeables?.find(t =>
+          t.actor?.hasPlayerOwner && t.actor?.testUserPermission?.(game.user, "OWNER")
+        ) ?? null;
+      })();
+      if (playerToken) {
+        try {
+          const gridSize = canvas.grid?.size ?? 100;
+          // Center-to-center distance using Foundry's measureDistances
+          // when available; fall back to Pythagoras / grid units otherwise.
+          const targetW = (Number(tileDoc.width)  > 0 ? Number(tileDoc.width)  : 1)
+                       * (tileDoc.documentName === "Token" ? gridSize : 1);
+          const targetH = (Number(tileDoc.height) > 0 ? Number(tileDoc.height) : 1)
+                       * (tileDoc.documentName === "Token" ? gridSize : 1);
+          const targetCx = (tileDoc.x ?? 0) + targetW / 2;
+          const targetCy = (tileDoc.y ?? 0) + targetH / 2;
+          const playerCx = playerToken.center?.x ?? (playerToken.document.x + (playerToken.document.width * gridSize) / 2);
+          const playerCy = playerToken.center?.y ?? (playerToken.document.y + (playerToken.document.height * gridSize) / 2);
+          // Edge-to-edge distance per typical D&D 5e measurement — subtract
+          // half-widths so a token standing adjacent to a 1-square body
+          // reads as 0-5ft, not 5-10ft from center-to-center.
+          const dx = Math.max(0, Math.abs(playerCx - targetCx) - (targetW / 2 + (playerToken.document.width * gridSize) / 2));
+          const dy = Math.max(0, Math.abs(playerCy - targetCy) - (targetH / 2 + (playerToken.document.height * gridSize) / 2));
+          const distPixels = Math.hypot(dx, dy);
+          const ftPerSquare = canvas.scene?.grid?.distance ?? 5;
+          const distFt = (distPixels / gridSize) * ftPerSquare;
+          if (distFt > maxFt) {
+            ui.notifications?.warn(`Too far to loot — ${Math.round(distFt)} ft away (max ${maxFt} ft). Move closer.`);
+            return;
+          }
+        } catch (distErr) {
+          // Defensive: if the math throws (unusual scene config, missing
+          // grid, etc.) ALLOW the loot rather than soft-locking the player.
+          console.warn(`${MODULE_ID} | Loot distance check threw — allowing access:`, distErr);
+        }
+      } else {
+        console.debug(`${MODULE_ID} | No player token found for distance gate — allowing loot access (defensive).`);
+      }
+      } // end if (maxFt > 0)
+    }
 
     // Resolve loot data based on tile kind:
     //   - dead-body → live actor (preferred) or snapshot (player fallback)

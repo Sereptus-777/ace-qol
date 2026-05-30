@@ -48,9 +48,14 @@ export class BonusSpellRule {
 
         const allowed = BonusSpellRule._evaluate(actor, activity, item);
         if (allowed.ok) {
-          // Permitted — record the cast so subsequent casts on this turn
-          // can be evaluated against it.
-          BonusSpellRule._recordCast(actor, activity, item);
+          // Permitted — but only record the cast if we're actually in an
+          // active combat. Out-of-combat casts shouldn't leave state on
+          // the actor (that flag would persist past the next combat start
+          // and falsely block the actor's first bonus-action spell of the
+          // new combat — exactly the v0.7.15-reported bug).
+          if (game.combat?.started) {
+            BonusSpellRule._recordCast(actor, activity, item);
+          }
           return;
         }
 
@@ -77,6 +82,22 @@ export class BonusSpellRule {
         if (priorActorId) {
           const priorActor = game.actors.get(priorActorId);
           if (priorActor) priorActor.unsetFlag(FLAG_NS, FLAG_KEY).catch(() => {});
+        }
+      } catch (_) { /* non-fatal */ }
+    });
+
+    // Combat START: wipe the flag for every combatant. This catches the case
+    // where an actor cast a bonus-action spell out of combat (older versions
+    // wrote state in that path) or where a fresh combat begins with stale
+    // flags on its combatants from a previous combat. Without this, the
+    // affected combatant's first bonus-action spell of the new combat would
+    // be incorrectly blocked.
+    Hooks.on("combatStart", (combat) => {
+      try {
+        for (const c of combat?.combatants?.contents ?? []) {
+          if (c.actor?.getFlag?.(FLAG_NS, FLAG_KEY) !== undefined) {
+            c.actor.unsetFlag(FLAG_NS, FLAG_KEY).catch(() => {});
+          }
         }
       } catch (_) { /* non-fatal */ }
     });

@@ -96,16 +96,32 @@ export class DamageCardRenderer {
     }
 
     // ── Also pre-parse item description for post-hit effects ──
+    // Gate must list EVERY parsed field, otherwise weapons whose only
+    // post-hit machinery is a tier the gate forgets (hpThresholdRider —
+    // Mace of Disruption/Smiting; onKillRider — Blood Halberd; repeatingSave
+    // — Hold Person etc.) silently skip the entire post-hit chain.
     let parsedDescription = null;
     try {
       const parsed = DescriptionParser.parse(item);
-      if (parsed.saves.length || parsed.effectTable || parsed.bonusDamage.length || parsed.conditions.length || parsed.severRider) {
+      if (parsed.saves.length
+          || parsed.effectTable
+          || parsed.bonusDamage.length
+          || parsed.conditions.length
+          || parsed.severRider
+          || parsed.hpThresholdRider
+          || parsed.onKillRider
+          || parsed.repeatingSave
+          || parsed.creatureTrigger) {
         parsedDescription = {
           saves: parsed.saves,
           effectTable: parsed.effectTable,
           bonusDamage: parsed.bonusDamage,
           conditions: parsed.conditions,
           severRider: parsed.severRider,
+          hpThresholdRider: parsed.hpThresholdRider,
+          onKillRider: parsed.onKillRider,
+          repeatingSave: parsed.repeatingSave,
+          creatureTrigger: parsed.creatureTrigger,
         };
       }
     } catch (e) {
@@ -196,14 +212,31 @@ export class DamageCardRenderer {
     }
 
     // ── Pre-parse description for post-hit effects ──
+    // Same gate / storage as postDamageButton — must list every parsed
+    // field so weapons whose only post-hit effect is hpThresholdRider,
+    // onKillRider, repeatingSave, or creatureTrigger don't silently skip.
     let parsedDescription = null;
     try {
       const parsed = DescriptionParser.parse(item);
-      if (parsed.saves.length || parsed.effectTable || parsed.bonusDamage.length || parsed.conditions.length || parsed.severRider) {
+      if (parsed.saves.length
+          || parsed.effectTable
+          || parsed.bonusDamage.length
+          || parsed.conditions.length
+          || parsed.severRider
+          || parsed.hpThresholdRider
+          || parsed.onKillRider
+          || parsed.repeatingSave
+          || parsed.creatureTrigger) {
         parsedDescription = {
-          saves: parsed.saves, effectTable: parsed.effectTable,
-          bonusDamage: parsed.bonusDamage, conditions: parsed.conditions,
+          saves: parsed.saves,
+          effectTable: parsed.effectTable,
+          bonusDamage: parsed.bonusDamage,
+          conditions: parsed.conditions,
           severRider: parsed.severRider,
+          hpThresholdRider: parsed.hpThresholdRider,
+          onKillRider: parsed.onKillRider,
+          repeatingSave: parsed.repeatingSave,
+          creatureTrigger: parsed.creatureTrigger,
         };
       }
     } catch (e) {
@@ -273,11 +306,24 @@ export class DamageCardRenderer {
       const color = DamageConstants.DAMAGE_COLORS[c.type] ?? "#ccc";
       const typeTotal = `<span class="ace-qol-dmg-equals">=</span> <span class="ace-qol-dmg-type-total" style="color:${color}"><span class="ace-qol-dmg-type-num">${c.final}</span> ${c.type}</span>`;
 
+      // ── Rider source caption (v0.7.15) ──
+      // Identify rows that came from a rider/bonus (Searing Smite, Divine
+      // Smite, Hex, Hunter's Mark, Radiant Soul, etc.) and add a small label
+      // beneath the row so the GM can see WHERE the damage came from. The
+      // weapon base row stays uncaptioned by design — its source is implicit.
+      // Caption sits on its own line, in the same color as the damage type
+      // (not dimmed), one size smaller than the main row.
+      const isWeaponBase = c.name === item.name;
+      const sourceCaption = (!isWeaponBase && c.name && c.name !== "Bonus")
+        ? `<div class="ace-qol-dmg-source-caption" style="color:${color};">${c.name}</div>`
+        : "";
+
       // Inline-flow layout: dice → mods → "= total type" all on one wrapping row
       // (was a 2-column flex with the total floating right, which forced dice
       // into a vertical stack on narrow chat-card widths).
       return `<div class="ace-qol-dmg-component ace-qol-dmg-row">`
         + `${critDisplay}${dieDisplay}${modDisplay}${typeTotal}`
+        + `${sourceCaption}`
         + `</div>`;
     }).join("");
 
@@ -385,7 +431,14 @@ export class DamageCardRenderer {
    */
   static async postPreRolledDamageCard(message, flags) {
     const { preRolled, critRule, itemName, itemImg, actorId, parsedDescription } = flags;
-    const actor = game.actors.get(actorId);
+    // Resolve the attacker — prefer the TOKEN's actor (canvas instance) over
+    // the base actor template. This matters when the GM drag-drops a weapon
+    // onto an NPC token mid-battle (e.g. handing a Goblin Boss a Vorpal
+    // Scimitar to see how the players handle a sudden head-chopper). Those
+    // items live ONLY on the synthetic token actor, not on the world's
+    // base actor. The base lookup below would miss them entirely and the
+    // sever / on-kill / save-rider chains would all silently no-op.
+    const actor = _resolveAttackerActor(message, actorId);
 
     console.log(`${MODULE_ID} | postPreRolledDamageCard: ${preRolled.length} pre-rolled targets`);
 
@@ -495,6 +548,10 @@ export class DamageCardRenderer {
       || parsedDescription.effectTable
       || parsedDescription.bonusDamage?.length
       || parsedDescription.conditions?.length
+      || parsedDescription.hpThresholdRider
+      || parsedDescription.onKillRider
+      || parsedDescription.repeatingSave
+      || parsedDescription.creatureTrigger
     ));
     if (hasAnyPostHit) {
       let item = await fromUuid(flags.itemUuid).catch(() => null);
@@ -666,4 +723,54 @@ export class DamageCardRenderer {
       if (card) card.insertAdjacentHTML("beforeend", statusHtml);
     }
   }
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * Resolve the attacker actor from a ChatMessage + actorId, preferring the
+ * TOKEN'S actor on canvas (with any dynamically-added items) over the
+ * base actor template.
+ *
+ * Why: A GM can drag weapons / items directly onto an NPC token mid-battle
+ * via the token's actor sheet. Those items live on the synthetic token
+ * actor only, NOT on the world's base actor. Using game.actors.get() alone
+ * misses them entirely, which silently breaks any post-hit machinery that
+ * inspects the attacker's items (sever riders, on-kill riders, etc.).
+ *
+ * Resolution order:
+ *   1. Token referenced by message.speaker.token on message.speaker.scene
+ *   2. Any token on any scene whose actor matches actorId (defensive)
+ *   3. Base actor template by actorId
+ *
+ * @param {ChatMessage} message
+ * @param {string}      actorId
+ * @returns {Actor|null}
+ */
+function _resolveAttackerActor(message, actorId) {
+  try {
+    const tokenId = message?.speaker?.token;
+    const sceneId = message?.speaker?.scene;
+    if (tokenId && sceneId) {
+      const scene = game.scenes.get(sceneId);
+      const tdoc = scene?.tokens?.get(tokenId);
+      if (tdoc?.actor) return tdoc.actor;
+    }
+    if (tokenId) {
+      for (const scene of game.scenes) {
+        const tdoc = scene.tokens?.get(tokenId);
+        if (tdoc?.actor) return tdoc.actor;
+      }
+    }
+    if (actorId) {
+      for (const scene of game.scenes) {
+        for (const tdoc of scene.tokens ?? []) {
+          if (tdoc.actor?.id === actorId) return tdoc.actor;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn(`${MODULE_ID} | _resolveAttackerActor failed (falling back to base actor):`, err);
+  }
+  return actorId ? game.actors.get(actorId) : null;
 }

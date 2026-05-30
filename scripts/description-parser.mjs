@@ -80,8 +80,10 @@ export class DescriptionParser {
       /** Half damage on successful save */
       halfOnSave: DescriptionParser._parseHalfOnSave(lower),
 
-      /** Secondary-roll sever rider (Sword of Sharpness, Vorpal Sword) */
-      severRider: DescriptionParser._parseSeverRider(text, lower),
+      /** Secondary-roll sever rider (Sword of Sharpness, Vorpal Sword).
+       *  Item name is also checked — any weapon with "vorpal" in its name
+       *  is treated as RAW Vorpal regardless of how the description reads. */
+      severRider: DescriptionParser._parseSeverRider(text, lower, item?.name),
 
       /** Repeating save trigger (Hold Person, Banishment, Tasha's, etc.)
        *  Returns { trigger: "endOfTurn"|"onDamage"|"endOfTurn|onDamage" }
@@ -1096,23 +1098,66 @@ export class DescriptionParser {
   //  Sever Rider
   // ═══════════════════════════════════════════════════════════════════════════
 
-  static _parseSeverRider(text, lower) {
-    if (!text) return null;
-    // Quick reject: no sever-action verbs anywhere → not a sever rider
-    if (!/\b(?:lop\s+off|sever|amputate|severs?|severed)\b/i.test(text)) return null;
+  static _parseSeverRider(text, lower, itemName = "") {
+    // ── Door 1: NAME-BASED detection (most reliable, RAW-fallback) ──
+    // Any weapon with "vorpal" in its name is treated as a full RAW Vorpal
+    // Sword regardless of how the description reads. This catches:
+    //   - Homebrew with non-RAW wording ("severs the head" instead of "cut off")
+    //   - Renamed variants ("Vorpal Scimitar", "Vorpal Greatsword", "the Vorpal")
+    //   - Items whose description was lost or replaced
+    // Going to market with this safety net so production users don't lose
+    // the iconic Vorpal head-lop when descriptions drift from the book.
+    const name = String(itemName ?? "").toLowerCase();
+    if (/\bvorpal\b/i.test(name)) {
+      return {
+        triggerOn:         "crit",
+        secondaryDie:      "d20",
+        secondaryThreshold: 20,
+        severType:         "head",
+        // Critical: Vorpal triggers off the ORIGINAL nat-20 attack roll, NOT
+        // a separate secondary d20. Skipping the secondary roll makes the
+        // runner treat the nat 20 as an automatic sever (RAW).
+        skipSecondaryRoll: true,
+        description:       "Vorpal — on a natural 20 attack, the target's head is cut off (RAW).",
+        matchedBy:         "name",
+      };
+    }
 
-    // Must be paired with a secondary-roll trigger pattern
-    const triggerPatterns = [
+    if (!text) return null;
+
+    // ── Door 2: DESCRIPTION-BASED detection ──
+    // Quick reject: no sever-action verbs anywhere → not a sever rider.
+    // "cut off" added so RAW Vorpal Sword text ("you cut off one of the
+    // creature's heads") is recognized.
+    if (!/\b(?:lop\s+off|cut\s+off|cuts?\s+off|sever|amputate|severs?|severed)\b/i.test(text)) return null;
+
+    // Must be paired with a trigger pattern. Two flavors:
+    //   (a) Sharpness-style — explicit secondary d20 roll
+    //   (b) Vorpal-style — triggers directly off the original nat-20 attack,
+    //       no secondary roll. RAW Vorpal phrasing: "and roll a 20 on the
+    //       attack roll, you cut off…"
+    const sharpnessTriggers = [
       /\bthen\s+roll\s+another\s+d?20\b/i,
       /\broll\s+another\s+d?20\b/i,
       /\broll\s+a\s+second\s+d?20\b/i,
       /\bif\s+you\s+roll\s+(?:a|another)\s+20\b/i,
     ];
-    if (!triggerPatterns.some(p => p.test(text))) return null;
+    const vorpalTriggers = [
+      /\broll\s+a\s+20\s+on\s+the\s+attack\s+roll\b/i,
+      /\bnatural\s+20\s+on\s+the\s+attack\s+roll\b/i,
+      /\bon\s+a\s+(?:natural\s+)?20\b/i,
+    ];
+
+    const hasSharpnessTrigger = sharpnessTriggers.some(p => p.test(text));
+    const hasVorpalTrigger    = vorpalTriggers.some(p => p.test(text));
+
+    if (!hasSharpnessTrigger && !hasVorpalTrigger) return null;
 
     // Determine WHAT gets severed (limb / head / body part)
     let severType = "limb"; // default — Sword of Sharpness lops a limb
-    if (/\bsever(?:s|ed)?\s+(?:the\s+)?head\b/i.test(text) || /\blop\s+off\s+(?:the\s+)?head\b/i.test(text)) {
+    if (/\bsever(?:s|ed)?\s+(?:the\s+)?head\b/i.test(text)
+        || /\b(?:lop|cut)s?\s+off\s+(?:one\s+of\s+)?(?:the\s+)?(?:creature'?s\s+)?heads?\b/i.test(text)
+        || /\b(?:lop|cut)\s+off\s+(?:the\s+)?head\b/i.test(text)) {
       severType = "head"; // Vorpal Sword
     } else if (/\bportion\s+of\s+(?:its\s+)?body\b/i.test(text) || /\bsever\s+(?:a\s+)?body/i.test(text)) {
       severType = "body";
@@ -1120,19 +1165,26 @@ export class DescriptionParser {
 
     // Capture a short excerpt for the chat card flavor
     const m = text.match(/(roll\s+another\s+d?20[^.]*\.\s*if\s+you\s+roll[^.]*\.[^.]*)/i)
-           ?? text.match(/(if\s+you\s+roll\s+(?:a|another)\s+20[^.]*\.[^.]*)/i);
-    const description = m ? stripExcerpt(m[1]) : "Roll another d20 — on a 20, the limb is severed.";
+           ?? text.match(/(if\s+you\s+roll\s+(?:a|another)\s+20[^.]*\.[^.]*)/i)
+           ?? text.match(/(roll\s+a\s+20\s+on\s+the\s+attack\s+roll[^.]*\.[^.]*)/i);
+    const description = m ? stripExcerpt(m[1])
+                          : (hasVorpalTrigger ? "On a natural 20 attack roll, the target's head is cut off."
+                                              : "Roll another d20 — on a 20, the limb is severed.");
 
     function stripExcerpt(s) {
       return String(s).replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim().slice(0, 280);
     }
 
     return {
-      triggerOn: "crit",
-      secondaryDie: "d20",
+      triggerOn:         "crit",
+      secondaryDie:      "d20",
       secondaryThreshold: 20,
       severType,
+      // Vorpal-style descriptions trigger on the primary nat-20 only, no
+      // secondary d20. Sharpness-style explicitly requires the second roll.
+      skipSecondaryRoll: hasVorpalTrigger && !hasSharpnessTrigger,
       description,
+      matchedBy:         "description",
     };
   }
 

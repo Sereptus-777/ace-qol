@@ -20,6 +20,8 @@ import { DamageCardRenderer } from "./damage-card-renderer.mjs";
 import { DamageApplicator } from "./damage-applicator.mjs";
 import { AttackPipeline } from "./attack-pipeline.mjs";  // v0.4.22: shared multi-target detection
 import { PostHitSaves } from "./post-hit-saves.mjs";
+import { CombatState } from "./combat-state.mjs";
+import { ConditionLibrary } from "./condition-library.mjs";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Shared Constants — exported for use by all damage sub-modules
@@ -497,6 +499,29 @@ export class DamageEngine {
             }
           }
 
+          // ── Save-required riders (Stunning Strike, etc.) ──
+          // Riders carrying a `saveRequired` payload have no damage formula
+          // but require a follow-up save card on the target. Stunning Strike
+          // (Monk) is the canonical case: CON save vs the monk's ki save DC,
+          // on failure the target is stunned with edition-aware duration.
+          // (v0.7.14 G-D fix — previously the rider dead-ended after burning
+          //  the ki point with no save and no condition applied.)
+          for (const rider of selectedRiders) {
+            if (!rider.saveRequired) continue;
+            if (rider.id === "stunning-strike") {
+              for (const hit of hits) {
+                const targetActor = hit.targetActor ?? game.actors.get(hit.actorId);
+                if (!targetActor) continue;
+                try {
+                  await ConditionLibrary.postStunningStrikeSaveCard(actor, targetActor, rider.saveRequired);
+                } catch (err) {
+                  console.warn(`${MODULE_ID} | Stunning Strike save card post failed:`, err);
+                }
+              }
+            }
+            // Future: other save-required riders dispatch here by rider.id.
+          }
+
           this._pendingConsumedRiders = selectedRiders
             .filter(r => !r.isDischarge && !r.skipConsume && r.resource)
             .map(r => ({
@@ -607,9 +632,14 @@ export class DamageEngine {
       const result = await DamageCardRenderer.postPreRolledDamageCard(message, flags);
       if (result?.success) {
         await message.setFlag(MODULE_ID, "rolled", true);
-        // If the renderer returned an item for post-hit effects, run them
+        // If the renderer returned an item for post-hit effects, run them.
+        // Prefer the item's parent actor (which the renderer resolved from
+        // the TOKEN, so items dragged onto NPC tokens mid-battle work) over
+        // the base actor lookup. Falls back to base if the item somehow
+        // has no parent (orphaned item — shouldn't happen in practice).
         if (result.item) {
-          await PostHitSaves.checkPostHitEffects(result.item, game.actors.get(flags.actorId), flags.preRolled, result.damageResults);
+          const attackerActor = result.item.actor ?? game.actors.get(flags.actorId);
+          await PostHitSaves.checkPostHitEffects(result.item, attackerActor, flags.preRolled, result.damageResults);
         }
       }
       return !!result?.success;

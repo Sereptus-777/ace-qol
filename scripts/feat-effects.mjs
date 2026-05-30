@@ -26,6 +26,8 @@
 //  via ace-qol.mjs).
 // ============================================================================
 
+import { CombatState } from "./combat-state.mjs";
+
 const MODULE_ID = "ace-qol";
 const TAG       = `${MODULE_ID} | FeatEffects`;
 
@@ -169,8 +171,12 @@ export class FeatEffects {
           });
         }
       } catch (_) { /* non-fatal */ }
+      const crusherEdition = CombatState.getActiveEdition(actor);
+      const crusherCritText = crusherEdition === "2014"
+        ? `Attack rolls against ${targetName} <em>by creatures other than ${actor.name}</em> have <strong>Advantage</strong> until the start of ${actor.name}'s next turn. <small style="opacity:0.7;">(2014 Tasha's RAW)</small>`
+        : `Attack rolls against ${targetName} have <strong>Advantage</strong> until the start of ${actor.name}'s next turn. <small style="opacity:0.7;">(2024 RAW)</small>`;
       this._postFeatCard("crusher-crit", item, actor, target,
-        `Attack rolls against ${targetName} have <strong>Advantage</strong> until the start of ${actor.name}'s next turn.`,
+        crusherCritText,
         "#d4af37", "fa-star"
       );
     }
@@ -207,8 +213,12 @@ export class FeatEffects {
           });
         }
       } catch (_) { /* non-fatal */ }
+      const slasherEdition = CombatState.getActiveEdition(actor);
+      const slasherCritText = slasherEdition === "2014"
+        ? `${targetName} has <strong>Disadvantage</strong> on attack rolls until the start of ${actor.name}'s next turn. <small style="opacity:0.7;">(2014 Tasha's RAW — blanket disadvantage, including vs ${actor.name})</small>`
+        : `${targetName} has <strong>Disadvantage</strong> on attack rolls against anyone except ${actor.name} until the start of ${actor.name}'s next turn. <small style="opacity:0.7;">(2024 RAW)</small>`;
       this._postFeatCard("slasher-crit", item, actor, target,
-        `${targetName} has <strong>Disadvantage</strong> on attack rolls against anyone except ${actor.name} until the start of ${actor.name}'s next turn.`,
+        slasherCritText,
         "#d04040", "fa-star"
       );
     }

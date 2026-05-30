@@ -10,6 +10,7 @@ import { DescriptionParser } from "./description-parser.mjs";
 import { DamageConstants, safeShowForRoll } from "./damage-engine.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
 import { ConditionLibrary } from "./condition-library.mjs";
+import { awaitDsnRoll } from "./attack-prompt.mjs";
 
 const PHYSICAL_TYPES = new Set(["bludgeoning", "piercing", "slashing"]);
 
@@ -30,7 +31,16 @@ export class PostHitSaves {
     if (!item) return;
 
     const parsed = DescriptionParser.parse(item);
-    if (!parsed.saves.length && !parsed.effectTable && !parsed.hpThresholdRider && !parsed.onKillRider) return;
+    // Early-return gate: skip the whole function if the item has NO
+    // post-hit machinery to run. severRider MUST be in this list — without
+    // it, weapons whose only post-hit effect is a head/limb sever (Vorpal
+    // Sword by RAW, Sword of Sharpness without auxiliary saves) silently
+    // no-op here and the sever code further down never runs.
+    if (!parsed.saves.length
+        && !parsed.effectTable
+        && !parsed.hpThresholdRider
+        && !parsed.onKillRider
+        && !parsed.severRider) return;
 
     // Only process targets that were actually HIT
     const hitTargets = hits.filter(h => h.hitResult === "hit" || h.hitResult === "critical");
@@ -258,12 +268,23 @@ export class PostHitSaves {
       const targetActor = tokenDoc?.actor ?? game.actors.get(hit.actorId ?? hit.targetActor?.id);
       if (!targetActor) continue;
 
-      // Roll the secondary d20 with DSN animation
-      const secondaryRoll = new Roll("1d20");
-      await secondaryRoll.evaluate();
-      safeShowForRoll(secondaryRoll, "sever roll");
-      const rolled = secondaryRoll.total;
-      const severed = rolled >= threshold;
+      // ── Vorpal-style (no secondary roll) vs Sharpness-style (secondary d20)
+      // RAW Vorpal Sword triggers off the ORIGINAL nat-20 attack roll — no
+      // second d20 is rolled. The parser flags Vorpal items (by name OR by
+      // matching the RAW description pattern) with skipSecondaryRoll:true.
+      // For those, we treat the sever as automatic. Sword of Sharpness and
+      // other secondary-roll weapons still roll the second d20 as before.
+      let rolled, severed;
+      if (severRider.skipSecondaryRoll) {
+        rolled  = 20;   // displayed on the chat card as the triggering value
+        severed = true; // RAW: Vorpal severs on every nat-20 attack
+      } else {
+        const secondaryRoll = new Roll("1d20");
+        await secondaryRoll.evaluate();
+        safeShowForRoll(secondaryRoll, "sever roll");
+        rolled  = secondaryRoll.total;
+        severed = rolled >= threshold;
+      }
 
       // Determine creature-shape compatibility for the sever target part.
       // The dnd5e creature type isn't authoritative for head/limb presence,
@@ -370,6 +391,37 @@ export class PostHitSaves {
               await targetActor.update({ "system.attributes.hp.value": 0 });
               autoKilled = true;
               console.log(`${MODULE_ID} | SEVER AUTO-KILL: ${targetName} dropped to 0 HP from head loss (Vorpal RAW)`);
+
+              // ── Run the death pipeline (token texture swap + permanent-
+              //    death flag) ──
+              // RAW: Vorpal Sword "the creature dies if it can't survive
+              // without the lost head" — this is a PERMANENT death. The
+              // pipeline marks the token with permanentlyDead:true so the
+              // normal HP-restored revive hook refuses to clear it. Only a
+              // GM override (button on the SEVERED card, actor sheet, or
+              // right-click menu) or strict-RAW resurrection magic (True
+              // Resurrection, Wish — coming next session) brings them back.
+              //
+              // For NPCs the auto-pipeline runs from the HP-to-0 update
+              // hook AND we explicitly call it here with permanentDeath:true
+              // so the permanent flag is set even on NPCs (the auto-pipeline
+              // would otherwise treat the death as a normal mortal end).
+              // For PCs we always call it explicitly since the auto-pipeline
+              // skips them by default.
+              if (game.aceQol?.DeathPipeline?.processNPCDeath) {
+                try {
+                  const targetTokenDoc = scene?.tokens?.get(hit.tokenDocId ?? hit.targetToken?.document?.id);
+                  if (targetTokenDoc) {
+                    await game.aceQol.DeathPipeline.processNPCDeath(targetActor, targetTokenDoc, {
+                      allowPC:        true,
+                      permanentDeath: true,
+                      reason:         "vorpal-head-sever",
+                    });
+                  }
+                } catch (artErr) {
+                  console.warn(`${MODULE_ID} | Vorpal sever dead-art placement failed (non-fatal):`, artErr);
+                }
+              }
             }
           } catch (err) {
             console.warn(`${MODULE_ID} | Vorpal auto-kill HP update failed:`, err);
@@ -379,6 +431,22 @@ export class PostHitSaves {
         const killBanner = autoKilled
           ? `<div style="color:#ff6b6b; font-weight:700; margin-top:4px; padding:4px 6px; background:rgba(255,107,107,0.1); border-left:3px solid #ff6b6b; border-radius:2px;">
                💀 <strong>${foundry.utils.escapeHTML(targetName)}</strong> dies from loss of head (HP set to 0).
+             </div>`
+          : "";
+
+        // GM-only "Revoke Vorpal lock" button — clears the permanentlyDead
+        // flag so the next HP-restored update revives the actor normally.
+        // Hidden for players via the inline GM-only display rule. The
+        // chat-message-rendered hook (added to ace-qol.mjs) wires the click.
+        const overrideButton = autoKilled
+          ? `<div class="ace-qol-vorpal-override" style="margin-top:8px;padding-top:6px;border-top:1px solid rgba(212,175,55,0.2);" data-gm-only="true">
+               <button type="button" class="ace-qol-btn-vorpal-override" data-action="aceQolRevokeVorpal"
+                       data-actor-id="${foundry.utils.escapeHTML(targetActor.id)}"
+                       data-token-id="${foundry.utils.escapeHTML(tokenDoc?.id ?? "")}"
+                       data-scene-id="${foundry.utils.escapeHTML(scene?.id ?? "")}"
+                       style="background:linear-gradient(180deg,#2a1a0a,#1a0a05);border:1px solid #d4af37;border-radius:4px;color:#ffd87a;padding:6px 12px;font-size:12px;font-weight:700;cursor:pointer;width:100%;">
+                 <i class="fas fa-unlock-keyhole"></i> GM: Revoke Vorpal Lock (allow normal revive)
+               </button>
              </div>`
           : "";
 
@@ -398,10 +466,11 @@ export class PostHitSaves {
             ${killBanner}
             <div style="color:#aaa; font-size:11px; margin-top:6px; font-style:italic; border-top:1px solid rgba(212,175,55,0.2); padding-top:6px;">
               ${autoKilled
-                ? "GM: undo the kill via the actor sheet if this creature can survive without its head (troll regen, certain undead, etc.)."
+                ? "Permanent kill per Vorpal RAW — HP restoration alone won't revive. True Resurrection / Wish will. GM can revoke the lock below to allow normal revive."
                 : "GM: adjudicate the lasting effect (loss of attribute, halved speed, can't wield two weapons, etc.)."
               }
             </div>
+            ${overrideButton}
           </div>
         `;
         console.log(`${MODULE_ID} | SEVER: ${targetName} loses a ${severNoun} from ${itemName} (rolled ${rolled})${autoKilled ? " — auto-killed" : ""}`);
@@ -413,6 +482,13 @@ export class PostHitSaves {
           </div>
         `;
         console.log(`${MODULE_ID} | SEVER MISS: ${targetName} on ${itemName} — rolled ${rolled}, needed ${threshold}`);
+      }
+
+      // Wait for sever / alt-damage dice to settle before posting the
+      // result card — otherwise the table sees the verdict before the
+      // dice stop tumbling.
+      if (!severRider.skipSecondaryRoll) {
+        await awaitDsnRoll();
       }
 
       await ChatMessage.create({
@@ -966,6 +1042,11 @@ export class PostHitSaves {
         currentHP: r._currentHP,
       }));
 
+    // Wait for save + save-damage dice to settle before posting the
+    // result card so the table doesn't see the outcome before the dice
+    // finish tumbling.
+    await awaitDsnRoll();
+
     await ChatMessage.create({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor }),
@@ -1067,6 +1148,8 @@ export class PostHitSaves {
             </div>
           </div>
         `;
+        // Let the HP-threshold save dice settle before posting the verdict.
+        await awaitDsnRoll();
         await ChatMessage.create({
           speaker: ChatMessage.getSpeaker({ actor }),
           content: html,
@@ -1204,6 +1287,8 @@ export class PostHitSaves {
             </div>
           </div>
         `;
+        // Let the on-kill reward dice settle before posting the result.
+        await awaitDsnRoll();
         await ChatMessage.create({
           speaker: ChatMessage.getSpeaker({ actor }),
           content: html,
@@ -1262,6 +1347,8 @@ export class PostHitSaves {
             </div>
           </div>
         `;
+        // Let the on-kill self-heal dice settle before posting the result.
+        await awaitDsnRoll();
         await ChatMessage.create({
           speaker: ChatMessage.getSpeaker({ actor }),
           content: html,

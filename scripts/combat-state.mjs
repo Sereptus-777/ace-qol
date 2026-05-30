@@ -86,10 +86,15 @@ export class CombatState {
       advantageSources.push({ source: "attacker", reason: "Attacker is INVISIBLE → attack advantage" });
     }
 
-    // ── Exhaustion ───────────────────────────────────────────────────────
+    // ── Exhaustion (edition-aware) ───────────────────────────────────────
+    // 2014 RAW: 6-level cascading model — at L3+ attacker has disadvantage
+    //           on attack rolls. ACE QOL applies that directly here.
+    // 2024 RAW: 10-level flat -N penalty model — the dnd5e system applies
+    //           its own per-level d20 penalty via addRollExhaustion. ACE QOL
+    //           must NOT stack 2014-style disadvantage on top in 2024 worlds.
     const exhaustion = attackerActor.system?.attributes?.exhaustion ?? 0;
-    if (exhaustion >= 3) {
-      disadvantageSources.push({ source: "attacker", reason: `Attacker EXHAUSTION ${exhaustion} → attack disadvantage` });
+    if (exhaustion >= 3 && CombatState.getActiveEdition(attackerActor) === "2014") {
+      disadvantageSources.push({ source: "attacker", reason: `Attacker EXHAUSTION ${exhaustion} (2014 L3+) → attack disadvantage` });
     }
 
     // ── Reckless Attack (Barbarian) ─────────────────────────────────────
@@ -181,27 +186,41 @@ export class CombatState {
       }
     } catch (_) { /* non-fatal */ }
 
-    // ── Crusher crit — Advantage on all attacks vs the cursed target ──
-    // Flag lives on the TARGET (set in feat-effects when Crusher crits them).
-    // Reads as a target-side advantage modifier — applies to every attacker,
-    // not just the Crusher. Cleared at start of Crusher's next turn.
+    // ── Crusher crit — Advantage on attacks vs the cursed target (edition-aware) ──
+    // Flag lives on the TARGET. byUuid is the Crusher's actor uuid.
+    // 2014 Tasha's: advantage applies to attacks by OTHER creatures — the
+    //   Crusher's own follow-up swings do NOT get advantage on the cursed target.
+    // 2024 PHB: advantage applies to ALL attackers including the Crusher.
     try {
       const crusherDebuff = targetActor?.getFlag?.(MODULE_ID, "crusherCritDebuff");
       if (crusherDebuff && typeof crusherDebuff === "object") {
-        advantageSources.push({ source: "target", reason: "CRUSHER CRIT → all attacks vs this target have advantage" });
+        const crusherEdition = CombatState.getActiveEdition(attackerActor);
+        const attackerIsCrusher = attackerActor?.uuid && crusherDebuff.byUuid && attackerActor.uuid === crusherDebuff.byUuid;
+        // 2014 carve-out: skip advantage for the Crusher's own attacks.
+        const skipAdv = crusherEdition === "2014" && attackerIsCrusher;
+        if (!skipAdv) {
+          advantageSources.push({ source: "target", reason: `CRUSHER CRIT (${crusherEdition}) → attack advantage vs this target` });
+        }
       }
     } catch (_) { /* non-fatal */ }
 
-    // ── Slasher crit — Disadvantage on attacks vs anyone EXCEPT the slasher ──
+    // ── Slasher crit — Disadvantage on attacks (edition-aware carve-out) ──
     // Flag lives on the ATTACKER (the original target of the slasher's crit).
-    // exceptUuid is the slasher's actor uuid — attacks vs the slasher don't
-    // suffer disadvantage. Cleared at start of slasher's next turn.
+    // exceptUuid is the slasher's actor uuid.
+    // 2014 Tasha's: BLANKET disadvantage on attack rolls — no carve-out;
+    //   the target is at disadvantage attacking the slasher as well.
+    // 2024 PHB: carve-out applies — disadvantage on attacks vs anyone EXCEPT
+    //   the slasher.
     try {
       const slasherDebuff = attackerActor?.getFlag?.(MODULE_ID, "slasherCritDebuff");
       if (slasherDebuff && typeof slasherDebuff === "object") {
+        const slasherEdition = CombatState.getActiveEdition(attackerActor);
         const exceptUuid = slasherDebuff.exceptUuid;
-        if (exceptUuid !== targetActor?.uuid) {
-          disadvantageSources.push({ source: "attacker", reason: "SLASHER CRIT → disadvantage on attack rolls vs anyone except the slasher" });
+        const isTargetingSlasher = exceptUuid && targetActor?.uuid && exceptUuid === targetActor.uuid;
+        // 2014 = always push disadvantage. 2024 = skip when targeting the slasher.
+        if (slasherEdition === "2014" || !isTargetingSlasher) {
+          const carveOutText = slasherEdition === "2014" ? "" : " (vs anyone except the slasher)";
+          disadvantageSources.push({ source: "attacker", reason: `SLASHER CRIT (${slasherEdition}) → disadvantage on attack rolls${carveOutText}` });
         }
       }
     } catch (_) { /* non-fatal */ }
@@ -516,7 +535,13 @@ export class CombatState {
             const isSurprised = targetActor.statuses?.has?.("surprised") === true
                              || targetActor.statuses?.has?.("surprise") === true
                              || targetCombatant.flags?.dnd5e?.surprised === true
-                             || targetCombatant.flags?.core?.surprised === true;
+                             || targetCombatant.flags?.core?.surprised === true
+                             // v0.7.14 G-A fix: also read the ACE QOL surprise flag on the
+                             // target's TokenDocument. StealthEngine stamps this on detection
+                             // and ALSO applies the standard status, but belt-and-braces
+                             // covers any path where the standard status was cleared but our
+                             // flag persists (or vice versa).
+                             || targetCombatant.token?.getFlag?.(MODULE_ID, "surprised") === true;
 
             if (isSurprised) {
               autoCrit = true;
@@ -636,11 +661,13 @@ export class CombatState {
         saveDisadvReasons.push("RESTRAINED → DEX save disadvantage");
       }
 
-      // Exhaustion 3+ → disadvantage on ALL saves
+      // Exhaustion 3+ → disadvantage on ALL saves (2014 only)
+      // 2024 RAW collapses exhaustion to a flat -N penalty per level handled
+      // natively by the dnd5e system; ACE QOL must not double-stack.
       const tgtExhaustion = tgtSys.attributes?.exhaustion ?? 0;
-      if (tgtExhaustion >= 3) {
+      if (tgtExhaustion >= 3 && CombatState.getActiveEdition(targetActor) === "2014") {
         saveDisadvantage = true;
-        saveDisadvReasons.push(`EXHAUSTION ${tgtExhaustion} → save disadvantage`);
+        saveDisadvReasons.push(`EXHAUSTION ${tgtExhaustion} (2014 L3+) → save disadvantage`);
       }
 
       // Dodge → advantage on DEX saves
@@ -806,7 +833,7 @@ export class CombatState {
     // Once-per-turn enforcement gates re-fire on subsequent hits this turn
     // (Two-Weapon Fighting, Action Surge, Bonus-Action Attack, etc.).
     // Flag `sneakAttack.usedThisTurn` is cleared on this actor's turn-end.
-    const sneakAttack = CombatState._checkSneakAttack(attackerActor, targetToken, item, isMelee, advantageSources.length > 0);
+    const sneakAttack = CombatState._checkSneakAttack(attackerActor, targetToken, item, isMelee, advantageSources.length > 0, disadvantageSources.length > 0);
     if (sneakAttack.eligible) {
       const alreadyUsed = !!attackerActor.getFlag?.(MODULE_ID, "sneakAttack.usedThisTurn");
       if (!alreadyUsed) {
@@ -867,47 +894,67 @@ export class CombatState {
     // We post a reminder card on hit and let the GM apply the movement.
     // (Push/advantage effects via cards in weapon-masteries.mjs sibling layer.)
 
-    // ── Great Weapon Master (2024 PHB) — +PB damage on Heavy melee weapon ──
-    // RAW: "When you make a melee attack with a Heavy weapon you have
-    // proficiency with, you can add your Proficiency Bonus to the damage."
-    // (2024 dropped the -5/+10 trade.)
+    // ── Great Weapon Master — edition-aware ──
+    // 2014 RAW: Player-choice -5 to-hit / +10 damage toggle on Heavy melee
+    //           weapons you are proficient with, PLUS a bonus-action melee
+    //           attack on crit or kill. No passive damage bonus. The -5/+10
+    //           toggle is surfaced via the optional-bonus prompt system.
+    // 2024 RAW: "When you make a melee attack with a Heavy weapon you have
+    //           proficiency with, you can add your Proficiency Bonus to the
+    //           damage." Passive +PB damage on every heavy melee hit.
+    //
+    // Resolution: CombatState.getActiveEdition(attackerActor). 2014 = no
+    // passive damage here. 2024 = +PB damage rider.
     if (isMelee && CombatState._hasFeature(attackerActor, "Great Weapon Master")) {
-      const propsX = item?.system?.properties ?? new Set();
-      if (propsX.has?.("hvy")) {
+      const gwmEdition = CombatState.getActiveEdition(attackerActor);
+      if (gwmEdition === "2024") {
+        const propsX = item?.system?.properties ?? new Set();
+        if (propsX.has?.("hvy")) {
+          const prof = attackerActor.system?.attributes?.prof ?? 2;
+          attackerBonuses.push({
+            name: "Great Weapon Master",
+            formula: `${prof}`,
+            type: damageTypes[0] ?? "slashing",
+            reason: `Great Weapon Master (2024) → +${prof} damage on Heavy melee weapon`,
+          });
+        }
+      }
+    }
+
+    // ── Sharpshooter — edition-aware ──
+    // 2014 RAW: Player-choice -5 to-hit / +10 damage toggle on ranged weapons
+    //           you are proficient with, PLUS ignores long-range disadvantage
+    //           and Half / Three-Quarters Cover. No passive damage bonus.
+    //           Toggle surfaced via the optional-bonus prompt system.
+    // 2024 RAW: "When you make an attack with a Ranged Weapon you have
+    //           proficiency with, you can add your Proficiency Bonus to the
+    //           damage of the attack." Passive +PB damage on every ranged hit.
+    //           (Cover-ignore handled by CoverEngine in both editions.)
+    if (isRanged && CombatState._hasFeature(attackerActor, "Sharpshooter")) {
+      const shsEdition = CombatState.getActiveEdition(attackerActor);
+      if (shsEdition === "2024") {
         const prof = attackerActor.system?.attributes?.prof ?? 2;
         attackerBonuses.push({
-          name: "Great Weapon Master",
+          name: "Sharpshooter",
           formula: `${prof}`,
-          type: damageTypes[0] ?? "slashing",
-          reason: `Great Weapon Master (2024) → +${prof} damage on Heavy melee weapon`,
+          type: damageTypes[0] ?? "piercing",
+          reason: `Sharpshooter (2024) → +${prof} damage on Ranged weapon`,
         });
       }
     }
 
-    // ── Sharpshooter (2024 PHB) — +PB damage on Ranged weapon attack ──
-    // RAW: "When you make an attack with a Ranged Weapon you have proficiency
-    // with, you can add your Proficiency Bonus to the damage of the attack."
-    // Also ignores Half and Three-Quarters Cover (cover handling lives in
-    // CoverEngine; this block only adds the damage bonus).
-    if (isRanged && CombatState._hasFeature(attackerActor, "Sharpshooter")) {
-      const prof = attackerActor.system?.attributes?.prof ?? 2;
-      attackerBonuses.push({
-        name: "Sharpshooter",
-        formula: `${prof}`,
-        type: damageTypes[0] ?? "piercing",
-        reason: `Sharpshooter (2024) → +${prof} damage on Ranged weapon`,
-      });
-    }
-
-    // ── Two-Weapon Fighting — add ability mod to off-hand damage ──
-    // RAW (2024): "When you make the extra attack from the Light property of a
-    // weapon, you can add your ability modifier to the damage of that attack."
-    // Detection: actor has TWF feat AND this attack is on a Light weapon AND
-    // either uses bonus-action timing OR has flag set by attack-pipeline. For
-    // simplicity, we apply on Light weapons when the actor is also wielding a
-    // second weapon — the dnd5e system normally suppresses ability mod on
-    // these attacks; this restores it for TWF-style users.
-    if (isMelee && CombatState._hasFeature(attackerActor, "Two-Weapon Fighting")) {
+    // ── Two-Weapon Fighting — edition-aware off-hand ability mod ──
+    // 2014 RAW: Off-hand attack adds ability modifier to damage ONLY if the
+    //           actor has the Two-Weapon Fighting fighting style.
+    // 2024 RAW: The ability-mod rule moved onto the Light weapon property
+    //           itself — any Light-weapon bonus-action swing gets the mod
+    //           automatically; no fighting style required.
+    //
+    // The dnd5e system unconditionally strips the off-hand ability mod on its
+    // damage path (dnd5e.mjs ~28326), so feature-aware code (us) owns the
+    // restoration. Both editions still require: Light property + a second
+    // equipped Light weapon + positive ability mod.
+    if (isMelee) {
       const itemSysX = item?.system ?? {};
       const propsX = itemSysX.properties ?? new Set();
       if (propsX.has?.("lgt")) {
@@ -915,15 +962,24 @@ export class CombatState {
           i !== item && i.type === "weapon" && i.system?.equipped && (i.system?.properties?.has?.("lgt"))
         );
         if (otherWeapons.length > 0) {
-          const abilKey = itemSysX.ability || (propsX.has?.("fin") ? "dex" : "str");
-          const abilMod = attackerActor.system?.abilities?.[abilKey]?.mod ?? 0;
-          if (abilMod > 0) {
-            attackerBonuses.push({
-              name: "Two-Weapon Fighting",
-              formula: `${abilMod}`,
-              type: damageTypes[0] ?? "untyped",
-              reason: `Two-Weapon Fighting → +${abilMod} damage to Light-weapon attack`,
-            });
+          const twfEdition = CombatState.getActiveEdition(attackerActor);
+          const hasTWFStyle = CombatState._hasFeature(attackerActor, "Two-Weapon Fighting");
+          // 2014 requires the fighting style; 2024 does not.
+          const qualifies = twfEdition === "2024" || hasTWFStyle;
+          if (qualifies) {
+            const abilKey = itemSysX.ability || (propsX.has?.("fin") ? "dex" : "str");
+            const abilMod = attackerActor.system?.abilities?.[abilKey]?.mod ?? 0;
+            if (abilMod > 0) {
+              const reasonSource = twfEdition === "2024"
+                ? "Light property bonus-action attack"
+                : "Two-Weapon Fighting style + Light weapon";
+              attackerBonuses.push({
+                name: "Two-Weapon Fighting",
+                formula: `${abilMod}`,
+                type: damageTypes[0] ?? "untyped",
+                reason: `Off-hand ability mod (${twfEdition}) → +${abilMod} (${reasonSource})`,
+              });
+            }
           }
         }
       }
@@ -1004,30 +1060,43 @@ export class CombatState {
 
     // Lifedrinker (Warlock invocation, requires Pact of the Blade)
     //
-    // 2014 PHB: "extra necrotic damage equal to CHA modifier (minimum 1)"
-    // 2024 PHB: "extra 1d6 Necrotic, Psychic, or Radiant damage (your choice)"
+    // Edition-aware via getActiveEdition(actor). Mechanics differ:
+    //   2014: bonus damage equal to the Warlock's CHA modifier (minimum 1),
+    //         always necrotic, no player choice.
+    //   2024: extra 1d6 of necrotic / psychic / radiant — player's choice
+    //         (read from a sticky flag set via the chooser dialog).
     //
-    // Default behavior is 2024 RAW (the user's table runs 2024). The type
-    // is read from the actor's stored preference flag, set via the Warlock
-    // damage chooser dialog (game.aceQol.openWarlockChooser(actor)). Default
-    // type is necrotic if no preference is stored.
+    // The edition setting at the top of the module config decides which
+    // branch fires. Default is Auto, which sniffs the actor's items for
+    // 2024 markers (weapon-mastery field, Innate Sorcery feat) and falls
+    // back to 2014 when no markers are found.
     if (CombatState._hasFeature(attackerActor, "Lifedrinker")) {
-      // Lazy-import inside the function — combat-state.mjs is loaded early
-      // and top-level import of warlock-damage-chooser would risk a
-      // circular-import TDZ if the chooser ever depends on combat-state.
-      let lifedrinkerType = "necrotic";
-      try {
-        const v = attackerActor.getFlag?.(MODULE_ID, "warlock.lifedrinkerType");
-        if (v === "necrotic" || v === "psychic" || v === "radiant") {
-          lifedrinkerType = v;
-        }
-      } catch (_) { /* default necrotic */ }
-      attackerBonuses.push({
-        name: "Lifedrinker",
-        formula: "1d6",
-        type: lifedrinkerType,
-        reason: `Lifedrinker → +1d6 ${lifedrinkerType} per hit (2024 PHB, type per actor preference)`,
-      });
+      const edition = CombatState.getActiveEdition(attackerActor);
+      if (edition === "2024") {
+        let lifedrinkerType = "necrotic";
+        try {
+          const v = attackerActor.getFlag?.(MODULE_ID, "warlock.lifedrinkerType");
+          if (v === "necrotic" || v === "psychic" || v === "radiant") {
+            lifedrinkerType = v;
+          }
+        } catch (_) { /* default necrotic */ }
+        attackerBonuses.push({
+          name: "Lifedrinker",
+          formula: "1d6",
+          type: lifedrinkerType,
+          reason: `Lifedrinker → +1d6 ${lifedrinkerType} per hit (2024 PHB, type per actor preference)`,
+        });
+      } else {
+        // 2014 RAW: CHA modifier (minimum 1), necrotic, no choice.
+        const chaMod = attackerActor.system?.abilities?.cha?.mod ?? 0;
+        const damage = Math.max(1, chaMod);
+        attackerBonuses.push({
+          name: "Lifedrinker",
+          formula: String(damage),
+          type: "necrotic",
+          reason: `Lifedrinker → +${damage} necrotic per hit (2014 PHB, CHA mod ${chaMod} → min 1)`,
+        });
+      }
     }
 
     // Spirit Shroud (active spell)
@@ -1084,14 +1153,9 @@ export class CombatState {
       attackerBonuses.push({ name: "Absorb Elements", formula: "1d6", type: "fire", reason: "Absorb Elements → +1d6 elemental damage (next melee hit)", isSpellDerived: true });
     }
 
-    // Great Weapon Master +PB (2024 feat, heavy weapons only)
-    if (CombatState._hasFeature(attackerActor, "Great Weapon Master")) {
-      const hasHeavy = item?.system?.properties?.has?.("hvy") || item?.system?.properties?.hvy;
-      if (hasHeavy) {
-        const prof = attackerActor.system?.attributes?.prof ?? 2;
-        attackerBonuses.push({ name: "Great Weapon Master", formula: `${prof}`, type: damageTypes[0] ?? "untyped", reason: `Great Weapon Master → +${prof} damage (proficiency bonus)` });
-      }
-    }
+    // (Great Weapon Master +PB removed — was a duplicate of the earlier
+    // edition-gated block above. Single edition-aware path lives at the
+    // primary GWM block; double-stacking bug fixed.)
 
     // ═════════════════════════════════════════════════════════════════════════
     //  CONCENTRATION STATE
@@ -1482,6 +1546,61 @@ export class CombatState {
   }
 
   /** Check if actor has a named feature/feat */
+  /**
+   * Determine which 5e ruleset (2014 vs 2024) is active for a given actor.
+   * Single source of truth for every edition-aware feature implementation.
+   *
+   * Resolution order:
+   *   1. ACE QOL world setting `gameRulesEdition` = "2014" or "2024"
+   *      → hard override; return that regardless of system state.
+   *   2. Setting = "auto" → read the dnd5e system's own setting
+   *      `dnd5e.rulesVersion`:
+   *        - "legacy" → "2014"
+   *        - "modern" → "2024"
+   *      This is the most reliable signal: compendium items are loaded
+   *      and stamped with mechanics for whichever edition the system is
+   *      set to, so the system setting is the actual source of truth.
+   *   3. If the system setting cannot be read (very old dnd5e versions),
+   *      fall back to sniffing the actor's items for 2024-only markers
+   *      (weapon mastery field, Innate Sorcery feat, Weapon Mastery feat).
+   *   4. Final fallback "2014" — market data as of 2026 shows ~50% of
+   *      players want 2014 vs ~25% who want 2024. Defaulting to the
+   *      larger base is the safer wrong answer when truly uncertain.
+   *
+   * @param {Actor} actor — Actor to sniff for tertiary auto-detection
+   * @returns {"2014" | "2024"}
+   */
+  static getActiveEdition(actor) {
+    // 1. Hard override from ACE QOL setting
+    let setting = "auto";
+    try { setting = game.settings.get(MODULE_ID, "gameRulesEdition"); }
+    catch (_) { /* setting unregistered → fall through */ }
+    if (setting === "2014" || setting === "2024") return setting;
+
+    // 2. Primary auto signal: read dnd5e system's own rulesVersion setting
+    try {
+      const rv = game.settings.get("dnd5e", "rulesVersion");
+      if (rv === "legacy") return "2014";
+      if (rv === "modern") return "2024";
+    } catch (_) { /* setting unavailable on this dnd5e version → fall through */ }
+
+    // 3. Tertiary fallback: sniff the actor's items for 2024-specific markers
+    if (actor?.items) {
+      for (const it of actor.items) {
+        // 2024 weapons carry a `mastery` field on system that 2014 weapons
+        // never had. Any populated mastery = 2024 schema in use.
+        if (it.type === "weapon" && it.system?.mastery) return "2024";
+        // 2024-exclusive feats / features
+        const nameLower = String(it.name ?? "").toLowerCase();
+        if (nameLower === "innate sorcery") return "2024";
+        if (nameLower === "weapon mastery") return "2024";
+      }
+    }
+
+    // 4. Final fallback — no markers, no system setting → assume 2014
+    return "2014";
+  }
+
   static _hasFeature(actor, name) {
     const lower = name.toLowerCase();
     return actor.items?.some(i =>
@@ -1663,11 +1782,23 @@ export class CombatState {
   }
 
   /** Check Sneak Attack eligibility */
-  static _checkSneakAttack(attacker, targetToken, item, isMelee, hasAdvantage) {
+  static _checkSneakAttack(attacker, targetToken, item, isMelee, hasAdvantage, hasDisadvantage = false) {
     const sneakFeature = attacker.items?.find(i =>
       i.type === "feat" && i.name?.toLowerCase().includes("sneak attack")
     );
     if (!sneakFeature) return { eligible: false };
+
+    // RAW disadvantage block (PHB p.196 / 2024 PHB equivalent):
+    //   "You don't need advantage on the attack roll if another enemy of
+    //   the target is within 5 feet of it, that enemy isn't Incapacitated,
+    //   AND YOU DON'T HAVE DISADVANTAGE ON THE ATTACK ROLL."
+    // Even with advantage, RAW also bars Sneak Attack if disadvantage is
+    // present — but at our call site advantage+disadvantage already cancel
+    // to NORMAL, so hasAdvantage would be false then. The case this guard
+    // catches is "ally adjacent, but I have disadvantage" — fully RAW.
+    if (hasDisadvantage) {
+      return { eligible: false, reason: "Disadvantage blocks Sneak Attack (RAW)" };
+    }
 
     // Eligibility: Finesse OR Ranged weapon (RAW).
     // dnd5e 5.x moved actionType onto Activity objects, so `item.system.actionType`

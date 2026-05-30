@@ -49,3 +49,34 @@ export function safeShowForRoll(roll, label = "dice animation") {
     console.warn(`${MODULE_ID} | DSN ${label} threw (non-fatal):`, err?.message ?? err);
   }
 }
+
+/**
+ * awaitDiceSettle — pause briefly so the 3D dice animation can finish
+ * before the next chat card posts.
+ *
+ * Solves a polish bug: result cards (attack hit/miss, damage totals,
+ * save outcomes, sever results) were appearing in chat at the SAME TIME
+ * as the dice were still tumbling, which made the table see the answer
+ * before the dice settled — anti-climactic. This helper inserts a small
+ * delay between the dice show and the chat card post.
+ *
+ * IMPORTANT: this is a fixed-time delay, NOT an await of the DSN promise.
+ * Awaiting DSN directly caused a production hang in v0.4.21 when the GM's
+ * DSN renderer was broken (the promise never resolved). A fixed timer is
+ * immune to renderer breakage — it always resolves cleanly.
+ *
+ *   - No DSN installed / DSN disabled → no wait (returns immediately)
+ *   - DSN running                     → wait the configured duration
+ *
+ * Default 1800ms covers a typical d20 roll's settle time. Complex multi-
+ * die rolls (8d6 fireball) may need a touch longer; pass a higher maxMs.
+ *
+ * @param {number} [maxMs=1800] — milliseconds to wait
+ * @returns {Promise<void>}
+ */
+export async function awaitDiceSettle(maxMs = 1800) {
+  try {
+    if (!game?.dice3d?.isEnabled?.()) return;
+  } catch (_) { return; }
+  return new Promise(resolve => setTimeout(resolve, maxMs));
+}

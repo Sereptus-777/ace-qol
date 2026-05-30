@@ -104,6 +104,36 @@ export class QolSettings {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    //  GAME RULES EDITION — single source of truth for 2014 vs 2024 5e rules
+    //
+    //  Registered FIRST so new users see it immediately on Configure Settings.
+    //  Many class features and magic items behave differently between 2014 and
+    //  2024 editions (Lifedrinker, Hunter's Mark, True Strike, Counterspell,
+    //  Surprise, Weapon Masteries, etc.). This single toggle drives every
+    //  edition-aware feature implementation through the getActiveEdition
+    //  helper in combat-state.mjs.
+    //
+    //  "Auto" is the default: at evaluation time, we inspect the relevant
+    //  actor's class items and feats for 2024-only markers (weapon mastery
+    //  property, Innate Sorcery feat, etc.). When in doubt, falls back to
+    //  2014 — the larger of the two player bases per market surveys as of
+    //  2026 (roughly 50% want 2014 vs 25% want 2024; remainder split).
+    // ═══════════════════════════════════════════════════════════════════════════
+    s("gameRulesEdition", {
+      name: "D&D 5e Rules Edition",
+      hint: "Which 5e ruleset should ACE follow for class features, magic items, and feats with edition-specific behavior (Lifedrinker, Hunter's Mark, Counterspell, etc.). Default: Auto — sniffs each actor's class items for 2024 markers. Override to lock everything to one edition.",
+      scope: "world",
+      config: true,
+      type: String,
+      choices: {
+        auto:   "Auto — detect per actor from their class items (recommended)",
+        "2014": "2014 Rules (original 5e Player's Handbook)",
+        "2024": "2024 Rules (new Player's Handbook / One D&D)",
+      },
+      default: "auto",
+    });
+
+    // ═══════════════════════════════════════════════════════════════════════════
     //  MODULE MASTER ENABLED — global kill-switch, sits at top of settings page
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1326,6 +1356,16 @@ export class QolSettings {
       type:    Number,
       default: 200,
       range:   { min: 0, max: 5000, step: 50 },
+    });
+
+    s("lootMaxDistanceFt", {
+      name:    "Max Loot Distance (ft)",
+      hint:    "How close a player's character has to be to a corpse or container to open the loot dialog. Doesn't apply to the GM — GMs can loot from anywhere. Set to 0 to disable the distance gate entirely. Default: 10 ft (one move action's reach for an adjacent body / right next to a chest).",
+      scope:   "world",
+      config:  false,
+      type:    Number,
+      default: 10,
+      range:   { min: 0, max: 200, step: 5 },
     });
 
     s("lootClickDebug", {

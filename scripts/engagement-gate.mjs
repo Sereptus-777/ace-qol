@@ -26,7 +26,7 @@
 // pipelines to consume the validator's output.
 // ──────────────────────────────────────────────────────────────────────────────
 
-import { MODULE_ID } from "./ace-qol.mjs";
+import { MODULE_ID, SPELL_AUTO_APPLY } from "./ace-qol.mjs";
 import { DescriptionParser } from "./description-parser.mjs";
 import { showCenterToast } from "./attack-prompt.mjs";
 
@@ -151,6 +151,19 @@ export class EngagementGate {
    */
   static _checkTargetRequirement(item, activity, targets, source) {
     if (item?.type !== "spell") return null;
+
+    // ── Bypass: spells handled by SPELL_AUTO_APPLY (v0.7.15) ──
+    // For spells in our spell-cast auto-apply dispatch, the SpellTargetPicker
+    // handles target selection AFTER the cast fires. The gate's "select a
+    // target first" block would block the cast before our picker ever runs,
+    // so skip it for these spells. (Bless, Bane, Haste, Slow, Faerie Fire,
+    // Mirror Image, Mage Armor, etc., plus the smite spells.)
+    try {
+      const nameLc = String(item.name ?? "").toLowerCase().replace(/['']/g, "").trim();
+      if (SPELL_AUTO_APPLY?.[nameLc]) {
+        return null;
+      }
+    } catch (_) { /* non-fatal — fall through to normal gate */ }
 
     // Defensive reads — dnd5e activity schema varies between 2014/2024 and
     // some fields are objects (target.template = {type, size, ...}) not

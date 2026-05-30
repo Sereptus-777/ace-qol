@@ -16,6 +16,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { CombatState } from "./combat-state.mjs";
 
 // ─── Shorthand for Active Effect modes ──────────────────────────────────────
 // Resolved at call time via getter so CONST is available
@@ -760,6 +761,59 @@ const SPELL_EFFECTS = {
     duration: { rounds: 10 },
   },
 
+  // ── Smite spells (bonus action, concentration self-buffs that discharge ──
+  //    on next melee weapon hit). The named-effect entries here are what the
+  //    rider-engine's _hasConcentrationEffect looks for. No changes array
+  //    needed — the rider-engine handles the discharge damage on hit.
+  searing_smite: {
+    name: "Searing Smite",
+    icon: "icons/magic/fire/blade-fire-glowing-red.webp",
+    description: "Next melee weapon hit deals extra fire damage. Save vs ignition (ongoing fire).",
+    changes: [],
+    concentration: true,
+    duration: { minutes: 1 },
+  },
+  wrathful_smite: {
+    name: "Wrathful Smite",
+    icon: "icons/magic/control/fear-fright-shadow-monster-green.webp",
+    description: "Next melee weapon hit deals extra psychic damage. WIS save or frightened.",
+    changes: [],
+    concentration: true,
+    duration: { minutes: 1 },
+  },
+  thunderous_smite: {
+    name: "Thunderous Smite",
+    icon: "icons/magic/sonic/explosion-shock-wave-teal.webp",
+    description: "Next melee weapon hit deals extra thunder damage. STR save or pushed + prone.",
+    changes: [],
+    concentration: true,
+    duration: { minutes: 1 },
+  },
+  blinding_smite: {
+    name: "Blinding Smite",
+    icon: "icons/magic/light/explosion-burst-sky-yellow.webp",
+    description: "Next melee weapon hit deals extra radiant damage. CON save or blinded.",
+    changes: [],
+    concentration: true,
+    duration: { minutes: 1 },
+  },
+  staggering_smite: {
+    name: "Staggering Smite",
+    icon: "icons/magic/control/silhouette-aura-energy-purple.webp",
+    description: "Next melee weapon hit deals extra psychic damage. WIS save or disadvantage on attacks/checks.",
+    changes: [],
+    concentration: true,
+    duration: { minutes: 1 },
+  },
+  banishing_smite: {
+    name: "Banishing Smite",
+    icon: "icons/magic/holy/projectile-stars-glowing.webp",
+    description: "Next melee weapon hit deals extra force damage. Target ≤50 HP is banished to home plane.",
+    changes: [],
+    concentration: true,
+    duration: { minutes: 1 },
+  },
+
   // ── Dodge (action, not a spell but commonly needed) ───────────────────────
   dodge: {
     name: "Dodge",
@@ -1390,17 +1444,20 @@ export class ConditionLibrary {
     if (!actor || !conditionKey) return { ok: false, applied: null };
     const key = String(conditionKey).toLowerCase().trim();
 
-    // ── Exhaustion special case ──
+    // ── Exhaustion special case (edition-aware level cap) ──
+    // 2014 RAW: 6-level model — clamp to 6.
+    // 2024 RAW: 10-level model — clamp to 10.
     if (key === "exhaustion" || key.startsWith("exhaustion ")) {
       try {
         const current = Number(actor.system?.attributes?.exhaustion ?? 0);
         // Detect explicit level if the condition says "exhaustion 2", "exhaustion level 3" etc.
         const levelMatch = key.match(/exhaustion(?:\s+level)?\s*(\d+)/);
         const requestedLevel = levelMatch ? parseInt(levelMatch[1], 10) : (current + 1);
-        const newLevel = Math.min(6, Math.max(0, requestedLevel));
+        const maxLevel = CombatState.getActiveEdition(actor) === "2024" ? 10 : 6;
+        const newLevel = Math.min(maxLevel, Math.max(0, requestedLevel));
         if (newLevel === current) return { ok: true, applied: "exhaustion", level: newLevel };
         await actor.update({ "system.attributes.exhaustion": newLevel });
-        console.log(`${MODULE_ID} | Exhaustion: ${actor.name} ${current} → ${newLevel}`);
+        console.log(`${MODULE_ID} | Exhaustion: ${actor.name} ${current} → ${newLevel} (cap ${maxLevel})`);
         return { ok: true, applied: "exhaustion", level: newLevel };
       } catch (err) {
         console.warn(`${MODULE_ID} | Exhaustion increment failed for ${actor.name}:`, err);
@@ -1625,4 +1682,197 @@ export class ConditionLibrary {
       }
     } catch { /* settings not ready yet */ }
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  STUNNING STRIKE — Save card + edition-aware condition application
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Post a Stunning Strike save card. GM-whispered. Two buttons:
+   *   • Save FAILED → applies stunned with edition-aware duration
+   *   • Save PASSED → resolves the card with a "save passed" note
+   *
+   * Edition awareness lives on the data-edition attribute and is read back
+   * when the FAILED button is clicked. 2014 = stunned until end of monk's
+   * next turn (turnEndSource). 2024 = stunned until start of monk's next
+   * turn (turnStartSource).
+   *
+   * @param {Actor} monk     - the Monk who used Stunning Strike
+   * @param {Actor} target   - the target who must save
+   * @param {object} saveReq - { ability: "con", dc: number }
+   */
+  static async postStunningStrikeSaveCard(monk, target, saveReq) {
+    if (!monk || !target || !saveReq) return;
+    const edition = CombatState.getActiveEdition(monk);
+    const durationText = edition === "2024"
+      ? `until the start of ${monk.name}'s next turn`
+      : `until the end of ${monk.name}'s next turn`;
+    const abilityLabel = String(saveReq.ability ?? "con").toUpperCase();
+    const dc = Number(saveReq.dc ?? 10);
+
+    const html = `
+      <div class="ace-qol-stunning-strike-card" style="background:linear-gradient(180deg,#1a1416 0%,#2a1f30 100%);border:2px solid #d4af37;border-radius:6px;padding:10px 12px;">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+          <i class="fas fa-hand-fist" style="color:#d4af37;font-size:18px;"></i>
+          <strong style="color:#ffd87a;font-size:13px;text-transform:uppercase;letter-spacing:0.5px;">Stunning Strike</strong>
+        </div>
+        <div style="color:#cfcfd0;font-size:13px;line-height:1.5;margin-bottom:8px;">
+          <strong>${target.name}</strong> must make a <strong>DC ${dc} ${abilityLabel}</strong> save or be <strong style="color:#ffd87a;">Stunned</strong> ${durationText}.
+        </div>
+        <div style="color:#888;font-size:11px;font-style:italic;margin-bottom:8px;">(${edition} RAW)</div>
+        <div style="display:flex;gap:6px;">
+          <button type="button" class="ace-qol-btn"
+                  data-action="aceQolStunningStrikeFailed"
+                  data-target-id="${target.id}"
+                  data-monk-id="${monk.id}"
+                  data-edition="${edition}"
+                  style="background:#3a0e0e;color:#ffd0d0;border:1px solid #d44a4a;padding:4px 10px;border-radius:3px;cursor:pointer;font-size:12px;font-weight:600;">
+            <i class="fas fa-times-circle"></i> Save FAILED
+          </button>
+          <button type="button" class="ace-qol-btn"
+                  data-action="aceQolStunningStrikePassed"
+                  style="background:#0e3a14;color:#d0ffd0;border:1px solid #4ad44a;padding:4px 10px;border-radius:3px;cursor:pointer;font-size:12px;font-weight:600;">
+            <i class="fas fa-check-circle"></i> Save PASSED
+          </button>
+        </div>
+      </div>
+    `;
+
+    // GM-whisper: only the GM clicks the save outcome.
+    const recipients = new Set();
+    for (const u of game.users ?? []) if (u.isGM) recipients.add(u.id);
+
+    await ChatMessage.create({
+      content: html,
+      speaker: ChatMessage.getSpeaker({ actor: monk }),
+      whisper: [...recipients],
+      flags: { [MODULE_ID]: { type: "stunningStrikeSave", monkId: monk.id, targetId: target.id, edition, status: "pending" } },
+    });
+  }
+
+  /**
+   * Apply the Stunned condition to the target with edition-aware duration
+   * metadata so the duration-tracker expires it at the correct moment
+   * relative to the monk's next turn.
+   *
+   *   2014: specialDuration = "turnEndSource" → end of monk's next turn.
+   *   2024: specialDuration = "turnStartSource" → start of monk's next turn.
+   *
+   * The source actor flag points to the monk so the duration tracker can
+   * locate them in the combat order.
+   */
+  static async applyStunnedFromStunningStrike(target, monk, edition) {
+    if (!target || !monk) return;
+    try {
+      // Toggle the standard stunned status on so the system applies the
+      // baked-in stunned effects (auto-fail STR/DEX saves, incapacitated, etc).
+      if (typeof target.toggleStatusEffect === "function") {
+        await target.toggleStatusEffect("stunned", { active: true });
+      }
+      // Find the just-placed stunned effect.
+      const stunnedEffect = (target.effects?.contents ?? []).find(e =>
+        e.statuses?.has?.("stunned") || e.name?.toLowerCase() === "stunned"
+      );
+      if (!stunnedEffect) return;
+
+      const specialDuration = edition === "2024" ? "turnStartSource" : "turnEndSource";
+      const combat = game.combat;
+      const startRound = combat?.round ?? 0;
+
+      await stunnedEffect.update({
+        name: `Stunned (Stunning Strike: ${monk.name})`,
+        [`flags.${MODULE_ID}.sourceActorId`]: monk.id,
+        [`flags.${MODULE_ID}.specialDuration`]: specialDuration,
+        "duration.rounds": 1,
+        "duration.startRound": startRound,
+      });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Stunning Strike condition apply failed:`, err);
+    }
+  }
+
+  /**
+   * Resolve a posted Stunning Strike save card. Updates the card content
+   * to a read-only resolved state on either path.
+   */
+  static async _resolveStunningStrikeCard(messageId, outcome) {
+    const msg = game.messages?.get?.(messageId);
+    if (!msg) return;
+    const flags = msg.flags?.[MODULE_ID];
+    if (flags?.type !== "stunningStrikeSave") return;
+    if (flags?.status && flags.status !== "pending") return;
+
+    const monkId = flags.monkId;
+    const targetId = flags.targetId;
+    const edition = flags.edition ?? "2014";
+    const monk = game.actors?.get?.(monkId);
+    const target = game.actors?.get?.(targetId);
+
+    if (outcome === "failed" && monk && target) {
+      await ConditionLibrary.applyStunnedFromStunningStrike(target, monk, edition);
+    }
+
+    // Rewrite the card content to a resolved state.
+    const verdictHtml = outcome === "failed"
+      ? `<div style="color:#ff7676;font-weight:600;font-size:12px;margin-top:4px;"><i class="fas fa-times-circle"></i> Save FAILED — ${target?.name ?? "Target"} is Stunned (${edition === "2024" ? "to start of monk's next turn" : "to end of monk's next turn"}).</div>`
+      : `<div style="color:#76ff76;font-weight:600;font-size:12px;margin-top:4px;"><i class="fas fa-check-circle"></i> Save PASSED — no effect.</div>`;
+
+    const newHtml = `
+      <div class="ace-qol-stunning-strike-card" style="background:linear-gradient(180deg,#1a1416 0%,#2a1f30 100%);border:2px solid #d4af37;border-radius:6px;padding:10px 12px;">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+          <i class="fas fa-hand-fist" style="color:#d4af37;font-size:18px;"></i>
+          <strong style="color:#ffd87a;font-size:13px;text-transform:uppercase;letter-spacing:0.5px;">Stunning Strike</strong>
+        </div>
+        <div style="color:#cfcfd0;font-size:12px;line-height:1.4;">
+          <strong>${target?.name ?? "Target"}</strong> vs Stunning Strike (${edition} RAW).
+        </div>
+        ${verdictHtml}
+      </div>
+    `;
+    try {
+      await msg.update({
+        content: newHtml,
+        [`flags.${MODULE_ID}.status`]: outcome,
+        [`flags.${MODULE_ID}.resolvedAt`]: Date.now(),
+      });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Stunning Strike card resolve failed:`, err);
+    }
+  }
 }
+
+// ── Bind Stunning Strike save-card buttons via renderChatMessage(HTML) ───────
+const _bindStunningStrikeButtons = (message, html) => {
+  try {
+    if (!game.user?.isGM) return;
+    const root = html instanceof HTMLElement ? html : (html?.[0] ?? html);
+    if (!root || typeof root.querySelectorAll !== "function") return;
+    const failedBtn = root.querySelector('[data-action="aceQolStunningStrikeFailed"]');
+    const passedBtn = root.querySelector('[data-action="aceQolStunningStrikePassed"]');
+    if (!failedBtn && !passedBtn) return;
+    const handleClick = async (ev, outcome) => {
+      ev.preventDefault();
+      const btn = ev.currentTarget;
+      btn.disabled = true;
+      const chatEl = btn.closest?.(".chat-message");
+      const msgId = message?.id ?? chatEl?.dataset?.messageId;
+      if (!msgId) {
+        console.warn(`${MODULE_ID} | Stunning Strike resolve: no messageId`);
+        btn.disabled = false;
+        return;
+      }
+      try {
+        await ConditionLibrary._resolveStunningStrikeCard(msgId, outcome);
+      } catch (err) {
+        console.error(`${MODULE_ID} | Stunning Strike resolve threw:`, err);
+        btn.disabled = false;
+      }
+    };
+    if (failedBtn) failedBtn.addEventListener("click", (ev) => handleClick(ev, "failed"));
+    if (passedBtn) passedBtn.addEventListener("click", (ev) => handleClick(ev, "passed"));
+  } catch (err) {
+    console.warn(`${MODULE_ID} | Stunning Strike bind threw:`, err);
+  }
+};
+Hooks.on("renderChatMessage",     _bindStunningStrikeButtons); // V12
+Hooks.on("renderChatMessageHTML", _bindStunningStrikeButtons); // V13

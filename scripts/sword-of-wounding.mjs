@@ -73,6 +73,55 @@ export class SwordOfWounding {
       }
     });
 
+    // ── Healing block while wounded (RAW: "hit points lost to this weapon's
+    //    damage can be regained only through a short or long rest, rather
+    //    than by regeneration, magic, or any other means") ──
+    // A wounded creature can't be healed by spells, potions, regeneration,
+    // or any other means until the wounds are closed (CON save passes,
+    // Medicine check, or short/long rest). Catches both player heals on
+    // PCs and party heals on wounded allies. Returning false from
+    // dnd5e.preApplyDamage cancels the application entirely.
+    Hooks.on("dnd5e.preApplyDamage", (actor, amount /* updates, damages */) => {
+      try {
+        if (!game.user.isGM) return true;            // GM client owns this
+        if (amount >= 0) return true;                // not a heal (positive = damage in dnd5e)
+        const wound = actor?.getFlag?.(MODULE_ID, FLAG_KEY);
+        if (!wound || typeof wound !== "object") return true;
+        const stacks = Number(wound.stacks) || 0;
+        if (stacks <= 0) return true;
+        // Wounded — block the heal. Post a notification card so the
+        // healer knows why the spell/potion did nothing (and isn't left
+        // wondering if the dice rolled badly).
+        ChatMessage.create({
+          content: `<div class="ace-qol-card" style="background:#160808; border:2px solid #a03030; border-radius:6px; padding:8px 10px;">
+            <strong style="color:#ffc8c8;"><i class="fas fa-ban"></i> Healing Blocked — Wounded</strong>
+            <div style="color:#e8d8d8; font-size:12px; margin-top:3px;">
+              ${foundry.utils.escapeHTML(actor.name)} can't be healed while wounds are open.
+              <em style="color:#ccaaaa;">Close the wounds first (DC 15 CON save at start of turn, DC 15 Medicine check, or short/long rest).</em>
+            </div>
+          </div>`,
+          speaker: ChatMessage.getSpeaker({ actor }),
+        });
+        return false;  // cancel the heal application
+      } catch (err) {
+        console.warn(`${TAG} | preApplyDamage heal-block failed (non-fatal):`, err);
+        return true;
+      }
+    });
+
+    // ── Auto-clear wounds on short/long rest (RAW: HP lost to this weapon
+    //    can be regained "only through a short or long rest"). After a rest,
+    //    wounds are closed and the healing-block lifts. ──
+    Hooks.on("dnd5e.restCompleted", async (actor /*, result */) => {
+      try {
+        if (!game.user.isGM) return;
+        if (!actor?.getFlag?.(MODULE_ID, FLAG_KEY)) return;
+        await this.clearWounds(actor, { silent: false });
+      } catch (err) {
+        console.warn(`${TAG} | rest auto-clear failed:`, err);
+      }
+    });
+
     console.log(`${TAG} | Sword of Wounding DoT online.`);
   }
 
