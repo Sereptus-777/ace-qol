@@ -1053,45 +1053,44 @@
 .ace-qol-btn-roll-dmg-push {
   width: 100%;
   margin-top: 8px;
-  padding: 8px 16px;
+  padding: 11px 14px;
   border: 1px solid rgba(255, 180, 90, 0.55);
   border-radius: 6px;
   color: #fff7e8;
-  font-size: 0.92rem;
   font-weight: 700;
   cursor: pointer;
-  /* Two-line layout: top row "[icons] ROLL DAMAGE +", bottom row "PUSH 10 FT?".
-     Stacked vertically so the long text doesn't overflow narrow chat cards. */
+  /* One-line layout: [icon] ROLL DAMAGE + PUSH 10 FT? [icon]
+     Icons hug the button edges via space-between; text grows to fill the
+     middle and is centered within its own column. */
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  justify-content: center;
-  gap: 2px;
-  line-height: 1.15;
+  justify-content: space-between;
+  gap: 6px;
   font-family: 'Rajdhani', 'Segoe UI', sans-serif;
   transition: background 0.15s, box-shadow 0.15s;
   text-transform: uppercase;
-  letter-spacing: 0.6px;
   text-shadow: 0 1px 2px rgba(0,0,0,0.6);
 }
-.ace-qol-btn-roll-dmg-push-top,
-.ace-qol-btn-roll-dmg-push-bot {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
+.ace-qol-btn-roll-dmg-push-text {
+  flex: 1;
+  text-align: center;
+  font-size: 0.85rem;
+  letter-spacing: 0.6px;
+  line-height: 1;
   white-space: nowrap;
 }
-.ace-qol-btn-roll-dmg-push-bot {
-  font-size: 0.95rem;
-  letter-spacing: 0.8px;
-}
-/* Burst (explosion) icons flanking "ROLL DAMAGE +" — fiery red-amber with
-   a soft glow so they pop against the orange button background instead of
-   reading as flat white. Matches the visual weight of the red explosion
-   on the regular ROLL DAMAGE button below for visual continuity. */
+/* Burst (explosion) icons flanking the bundled-push text — fiery red-amber
+   with a soft glow so they pop against the orange button background
+   instead of reading as flat white. Matches the visual weight of the red
+   explosion on the regular ROLL DAMAGE button below for visual continuity.
+   flex-shrink:0 keeps them from being squeezed if the chat card is narrow;
+   line-height:1 ensures they vertically center on the text baseline. */
 .ace-qol-btn-roll-dmg-push i.fa-burst {
   color: #ff5a1a;
   font-size: 1.05rem;
+  line-height: 1;
+  flex-shrink: 0;
   text-shadow:
     0 0 6px rgba(255, 140, 40, 0.85),
     0 1px 2px rgba(60, 10, 0, 0.7);
