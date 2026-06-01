@@ -1868,8 +1868,19 @@ const _bindStunningStrikeButtons = (message, html) => {
         btn.disabled = false;
       }
     };
-    if (failedBtn) failedBtn.addEventListener("click", (ev) => handleClick(ev, "failed"));
-    if (passedBtn) passedBtn.addEventListener("click", (ev) => handleClick(ev, "passed"));
+    // dataset.wired guard prevents duplicate listeners on chat re-renders.
+    // Without it, every chat-message re-render (scroll, resize, V13 fires
+    // both renderChatMessage AND renderChatMessageHTML) attaches another
+    // click handler — clicking "Failed" once could fire it 5+ times across
+    // a long session, double-applying the stun and corrupting state.
+    if (failedBtn && !failedBtn.dataset.wired) {
+      failedBtn.dataset.wired = "1";
+      failedBtn.addEventListener("click", (ev) => handleClick(ev, "failed"));
+    }
+    if (passedBtn && !passedBtn.dataset.wired) {
+      passedBtn.dataset.wired = "1";
+      passedBtn.addEventListener("click", (ev) => handleClick(ev, "passed"));
+    }
   } catch (err) {
     console.warn(`${MODULE_ID} | Stunning Strike bind threw:`, err);
   }

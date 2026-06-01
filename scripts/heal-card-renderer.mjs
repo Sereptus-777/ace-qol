@@ -213,25 +213,34 @@ export class HealCardRenderer {
   static wireButtons(el, message, flags) {
     if (!el?.querySelectorAll) return;
 
-    // Per-target Apply
-    el.querySelectorAll(".ace-qol-heal-card-apply").forEach(btn => {
-      btn.addEventListener("click", async (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        const idx = parseInt(btn.dataset.targetIdx);
-        if (!Number.isFinite(idx)) return;
-        await HealCardRenderer._onApplyClick(message, idx, btn);
+    // Per-target Apply + Apply All — GM-only.
+    // Discovered during the Gemini-audit chat-card sweep: when a non-GM
+    // clicked Apply, the local DOM flipped to "Applied" but the underlying
+    // actor.update() and message.update() both failed silently on permission.
+    // Result: player saw a confident green check, GM saw the heal NEVER
+    // applied, and players asked "why isn't my Cure Wounds working?"
+    // Gate the click handlers GM-only so the visual state never lies.
+    // (Future enhancement: socket-route a heal-apply request through GM —
+    // would let casters apply their own heals — punch-list item.)
+    if (game.user.isGM) {
+      el.querySelectorAll(".ace-qol-heal-card-apply").forEach(btn => {
+        btn.addEventListener("click", async (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const idx = parseInt(btn.dataset.targetIdx);
+          if (!Number.isFinite(idx)) return;
+          await HealCardRenderer._onApplyClick(message, idx, btn);
+        });
       });
-    });
 
-    // Apply to All
-    const allBtn = el.querySelector(".ace-qol-heal-card-applyall");
-    if (allBtn) {
-      allBtn.addEventListener("click", async (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        await HealCardRenderer._onApplyAll(message, el, allBtn);
-      });
+      const allBtn = el.querySelector(".ace-qol-heal-card-applyall");
+      if (allBtn) {
+        allBtn.addEventListener("click", async (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          await HealCardRenderer._onApplyAll(message, el, allBtn);
+        });
+      }
     }
   }
 

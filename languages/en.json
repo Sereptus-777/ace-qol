@@ -2,10 +2,53 @@
   "ACE_QOL": {
     "Title": "ACE: Quality of Life",
     "Description": "Comprehensive D&D 5e combat automation engine.",
+    "common": {
+      "target":          "the target",
+      "weapon":          "Weapon"
+    },
     "mirrorImage": {
       "redirectHitDestroyed": "Hit Mirror Image duplicate (AC {ac}) — duplicate destroyed",
       "redirectHitDodged":    "Hit Mirror Image duplicate (AC {ac}) — duplicate dodged",
       "label":                "Mirror Image"
+    },
+    "mastery": {
+      "cardTitle":   "Mastery — {mastery}",
+      "names": {
+        "cleave":  "Cleave",
+        "graze":   "Graze",
+        "nick":    "Nick",
+        "push":    "Push",
+        "sap":     "Sap",
+        "slow":    "Slow",
+        "topple":  "Topple",
+        "vex":     "Vex",
+        "flex":    "Flex"
+      },
+      "descriptions": {
+        "cleave":  "If the target is within 5 ft of another creature in your reach, you may attack that second creature with the same weapon (no ability modifier to that damage).",
+        "graze":   "Miss with this weapon? The target still takes damage equal to the ability modifier you used to attack.",
+        "nick":    "When you make the extra attack of the Light property, you can make it as part of the Attack action instead of as a Bonus Action.",
+        "push":    "You can push the target 10 feet straight away from you.",
+        "sap":     "The target has Disadvantage on its next attack roll before the start of your next turn.",
+        "slow":    "The target's Speed is reduced by 10 feet until the start of your next turn.",
+        "topple":  "The target must succeed on a Constitution save (DC 8 + PB + your STR/DEX mod) or be knocked Prone.",
+        "vex":     "You have Advantage on your next attack roll against the target before the end of your next turn.",
+        "flex":    "Versatile stance — alternate between one-handed and two-handed damage dice."
+      },
+      "fired": {
+        "vex":     "{attacker} gains <strong>Advantage</strong> on their next attack vs {target} (this turn or next).",
+        "sap":     "{target} has <strong>Disadvantage</strong> on its next attack roll (before {attacker}'s next turn).",
+        "slow":    "{target}'s speed is <strong>reduced by 10 ft</strong> until the start of {attacker}'s next turn.",
+        "push":    "{attacker} may <strong>push {target} 10 ft</strong> straight away.",
+        "topple":  "{target} must make a <strong>DC {dc} CON save</strong> or fall <strong>Prone</strong>.",
+        "cleave":  "{attacker} may make a <strong>second attack with {weapon}</strong> against another creature within 5 ft of {target} that's also within their reach. No ability modifier to that damage.",
+        "nick":    "{attacker} may make their extra <strong>Light weapon attack</strong> as part of this Attack action (instead of as a Bonus Action).",
+        "graze":   "{target} takes <strong>{damage} {type}</strong> damage on the miss (ability modifier)."
+      },
+      "buttons": {
+        "push":    "Push 10 ft",
+        "cleave":  "Attack Adjacent"
+      }
     }
   }
 }

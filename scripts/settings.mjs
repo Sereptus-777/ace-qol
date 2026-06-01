@@ -444,8 +444,8 @@ export class QolSettings {
     // ── Stealth / Hide / Surprise (PHB 192-194) ─────────────────────────
     s("autoSurpriseCheck", {
       name: "Auto Surprise Check at Combat Start",
-      hint: "Compare each combatant's passive Perception against opposing-side stealth at combat start. Surprised combatants skip turn 1.",
-      scope: "world", config: false, type: Boolean, default: true,
+      hint: "Compare each combatant's passive Perception against opposing-side stealth at combat start. Surprised combatants skip turn 1. Default OFF — Surprise (PHB 192-194) is a RAW rule many tables don't enforce; opt-in so installing ACE QOL doesn't silently change how combat-start works for GMs unfamiliar with the rule.",
+      scope: "world", config: false, type: Boolean, default: false,
     });
     s("hideActionEnabled", {
       name: "Hide Action Enabled",

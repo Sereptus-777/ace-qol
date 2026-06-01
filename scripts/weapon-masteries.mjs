@@ -974,6 +974,19 @@ export class WeaponMasteries {
   //  Individual mastery handlers
   // ──────────────────────────────────────────────────────────────────────────
 
+  /**
+   * Localize a "{mastery}-fired" template from languages/en.json, with the
+   * usual {attacker}/{target} interpolations. Falls back to the English
+   * literal on missing-key so the system never renders blank.
+   */
+  static _l10nFire(masteryKey, data, fallback) {
+    try {
+      const out = game.i18n?.format?.(`ACE_QOL.mastery.fired.${masteryKey}`, data);
+      if (out && out !== `ACE_QOL.mastery.fired.${masteryKey}`) return out;
+    } catch (_) { /* fall through */ }
+    return fallback;
+  }
+
   /** Vex — set advantage-on-next-attack flag on attacker, gated to target. */
   static async _fireVex(item, actor, targetToken) {
     const targetUuid = targetToken?.document?.uuid ?? targetToken?.uuid;
@@ -984,8 +997,10 @@ export class WeaponMasteries {
         expiresAtRound: (game.combat?.round ?? 0) + 1,  // until end of your next turn
         combatId: game.combat?.id ?? null,
       });
+      const tName = targetToken?.name ?? game.i18n?.localize?.("ACE_QOL.common.target") ?? "the target";
       this._postMasteryCard("vex", item, actor, targetToken,
-        `${actor.name} gains <strong>Advantage</strong> on their next attack vs ${targetToken?.name ?? "the target"} (this turn or next).`
+        this._l10nFire("vex", { attacker: actor.name, target: tName },
+          `${actor.name} gains <strong>Advantage</strong> on their next attack vs ${tName} (this turn or next).`)
       );
     } catch (err) { console.warn(`${TAG} | Vex apply failed:`, err); }
   }
@@ -1000,16 +1015,20 @@ export class WeaponMasteries {
         expiresAtRound: (game.combat?.round ?? 0) + 1,
         combatId: game.combat?.id ?? null,
       });
+      const tName = targetToken?.name ?? game.i18n?.localize?.("ACE_QOL.common.target") ?? "The target";
       this._postMasteryCard("sap", item, actor, targetToken,
-        `${targetToken?.name ?? "The target"} has <strong>Disadvantage</strong> on its next attack roll (before ${actor.name}'s next turn).`
+        this._l10nFire("sap", { attacker: actor.name, target: tName },
+          `${tName} has <strong>Disadvantage</strong> on its next attack roll (before ${actor.name}'s next turn).`)
       );
     } catch (err) { console.warn(`${TAG} | Sap apply failed:`, err); }
   }
 
   /** Slow — reduce target speed 10 ft until your next turn (informational card; system-level speed mod is a follow-up). */
   static async _fireSlow(item, actor, targetToken) {
+    const tName = targetToken?.name ?? game.i18n?.localize?.("ACE_QOL.common.target") ?? "The target";
     this._postMasteryCard("slow", item, actor, targetToken,
-      `${targetToken?.name ?? "The target"}'s speed is <strong>reduced by 10 ft</strong> until the start of ${actor.name}'s next turn.`
+      this._l10nFire("slow", { attacker: actor.name, target: tName },
+        `${tName}'s speed is <strong>reduced by 10 ft</strong> until the start of ${actor.name}'s next turn.`)
     );
   }
 
@@ -1018,14 +1037,17 @@ export class WeaponMasteries {
     const targetTokenDoc = targetToken?.document ?? targetToken;
     const tgtUuid = targetTokenDoc?.uuid;
     const attUuid = actor.uuid;
+    const tName = targetToken?.name ?? game.i18n?.localize?.("ACE_QOL.common.target") ?? "the target";
+    const pushBtnLabel = game.i18n?.localize?.("ACE_QOL.mastery.buttons.push") ?? "Push 10 ft";
     this._postMasteryCard("push", item, actor, targetToken,
-      `${actor.name} may <strong>push ${targetToken?.name ?? "the target"} 10 ft</strong> straight away.`,
+      this._l10nFire("push", { attacker: actor.name, target: tName },
+        `${actor.name} may <strong>push ${tName} 10 ft</strong> straight away.`),
       `<div style="margin-top:6px;">
          <button class="ace-qol-btn ace-qol-mastery-push-btn"
                  data-attacker-uuid="${attUuid}"
                  data-target-uuid="${tgtUuid}"
                  style="background:#3a1a0a; color:#ffe1c8; border:1px solid #e88a5a; border-radius:4px; padding:4px 10px; font-size:12px;">
-           <i class="fas fa-hand-back-fist"></i> Push 10 ft
+           <i class="fas fa-hand-back-fist"></i> ${foundry.utils.escapeHTML(pushBtnLabel)}
          </button>
        </div>`
     );
@@ -1038,9 +1060,11 @@ export class WeaponMasteries {
     const strMod = actor.system?.abilities?.str?.mod ?? 0;
     const dexMod = actor.system?.abilities?.dex?.mod ?? 0;
     const dc = 8 + prof + Math.max(strMod, dexMod);
+    const tName = targetToken?.name ?? game.i18n?.localize?.("ACE_QOL.common.target") ?? "The target";
 
     this._postMasteryCard("topple", item, actor, targetToken,
-      `${targetToken?.name ?? "The target"} must make a <strong>DC ${dc} CON save</strong> or fall <strong>Prone</strong>.`
+      this._l10nFire("topple", { attacker: actor.name, target: tName, dc },
+        `${tName} must make a <strong>DC ${dc} CON save</strong> or fall <strong>Prone</strong>.`)
     );
 
     // If the save engine is available, fire a public save card for this single target.
@@ -1064,19 +1088,26 @@ export class WeaponMasteries {
     }
   }
 
-  /** Cleave — present a chat card with an Attack Adjacent button. */
+  /** Cleave — present a chat card with an Attack Adjacent button. (Legacy
+   * path; in v0.7.16+ the cleave case in _fireMasteryForHit returns early so
+   * the damage-card button handles 2024 RAW Cleave. Method retained for
+   * any external caller or future standalone-card use.) */
   static async _fireCleave(item, actor, targetToken) {
     const tgtUuid = targetToken?.document?.uuid ?? targetToken?.uuid;
     const itemUuid = item?.uuid;
+    const tName = targetToken?.name ?? game.i18n?.localize?.("ACE_QOL.common.target") ?? "the target";
+    const itemName = item?.name ?? game.i18n?.localize?.("ACE_QOL.common.weapon") ?? "Weapon";
+    const cleaveBtnLabel = game.i18n?.localize?.("ACE_QOL.mastery.buttons.cleave") ?? "Attack Adjacent";
     this._postMasteryCard("cleave", item, actor, targetToken,
-      `${actor.name} may make a <strong>second attack with ${item.name}</strong> against another creature within 5 ft of ${targetToken?.name ?? "the target"} that's also within their reach. No ability modifier to that damage.`,
+      this._l10nFire("cleave", { attacker: actor.name, weapon: itemName, target: tName },
+        `${actor.name} may make a <strong>second attack with ${itemName}</strong> against another creature within 5 ft of ${tName} that's also within their reach. No ability modifier to that damage.`),
       `<div style="margin-top:6px;">
          <button class="ace-qol-btn ace-qol-mastery-cleave-btn"
                  data-attacker-uuid="${actor.uuid}"
                  data-target-uuid="${tgtUuid}"
                  data-item-uuid="${itemUuid}"
                  style="background:#1a1a0a; color:#fff7cc; border:1px solid #d4af37; border-radius:4px; padding:4px 10px; font-size:12px;">
-           <i class="fas fa-axe-battle"></i> Attack Adjacent
+           <i class="fas fa-axe-battle"></i> ${foundry.utils.escapeHTML(cleaveBtnLabel)}
          </button>
        </div>`
     );
@@ -1085,7 +1116,8 @@ export class WeaponMasteries {
   /** Nick — note the bonus light attack option. Player executes via standard attack. */
   static async _fireNick(item, actor, targetToken) {
     this._postMasteryCard("nick", item, actor, targetToken,
-      `${actor.name} may make their extra <strong>Light weapon attack</strong> as part of this Attack action (instead of as a Bonus Action).`
+      this._l10nFire("nick", { attacker: actor.name },
+        `${actor.name} may make their extra <strong>Light weapon attack</strong> as part of this Attack action (instead of as a Bonus Action).`)
     );
   }
 
@@ -1105,8 +1137,10 @@ export class WeaponMasteries {
                     ?? item.system?.damage?.parts?.[0]?.types?.[0]
                     ?? "slashing";
 
+    const tName = targetToken?.name ?? game.i18n?.localize?.("ACE_QOL.common.target") ?? "The target";
     this._postMasteryCard("graze", item, actor, targetToken,
-      `${targetToken?.name ?? "The target"} takes <strong>${abilityMod} ${damageType}</strong> damage on the miss (ability modifier).`
+      this._l10nFire("graze", { target: tName, damage: abilityMod, type: damageType },
+        `${tName} takes <strong>${abilityMod} ${damageType}</strong> damage on the miss (ability modifier).`)
     );
 
     // Apply the damage using the existing damage applicator
@@ -1128,18 +1162,28 @@ export class WeaponMasteries {
   static _postMasteryCard(mastery, item, actor, targetToken, body, extraHtml = "") {
     const color   = MASTERY_COLORS[mastery] ?? "#d4af37";
     const icon    = MASTERY_ICONS[mastery] ?? "fa-star";
-    const label   = mastery.charAt(0).toUpperCase() + mastery.slice(1);
-    const itemName = foundry.utils.escapeHTML(item?.name ?? "Weapon");
+    // i18n: localized mastery name (Cleave/Push/Topple/etc.) and card title.
+    // Falls back to capitalized English on missing key so non-English worlds
+    // missing a translation still get readable text.
+    const localizedName = game.i18n?.localize?.(`ACE_QOL.mastery.names.${mastery}`)
+                       ?? (mastery.charAt(0).toUpperCase() + mastery.slice(1));
+    const title = game.i18n?.format?.("ACE_QOL.mastery.cardTitle", { mastery: localizedName })
+               ?? `Mastery — ${localizedName}`;
+    const localizedDesc = game.i18n?.localize?.(`ACE_QOL.mastery.descriptions.${mastery}`)
+                      ?? MASTERY_DESCRIPTIONS[mastery]
+                      ?? "";
+    const fallbackItem = game.i18n?.localize?.("ACE_QOL.common.weapon") ?? "Weapon";
+    const itemName = foundry.utils.escapeHTML(item?.name ?? fallbackItem);
     ChatMessage.create({
       content: `<div class="ace-qol-card ace-qol-mastery-card"
                      style="background:#0e0e10; border:2px solid ${color}; border-radius:6px; padding:10px 12px;">
         <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">
           <i class="fas ${icon}" style="color:${color}; font-size:18px;"></i>
-          <strong style="color:${color}; font-size:14px;">Mastery — ${label}</strong>
+          <strong style="color:${color}; font-size:14px;">${foundry.utils.escapeHTML(title)}</strong>
           <span style="color:#888; font-size:11px; margin-left:auto;">${itemName}</span>
         </div>
         <div style="color:#e0e0e0; font-size:12px; line-height:1.45;">${body}</div>
-        <div style="color:#888; font-size:11px; margin-top:4px; font-style:italic;">${MASTERY_DESCRIPTIONS[mastery]}</div>
+        <div style="color:#888; font-size:11px; margin-top:4px; font-style:italic;">${foundry.utils.escapeHTML(localizedDesc)}</div>
         ${extraHtml}
       </div>`,
       speaker: ChatMessage.getSpeaker({ actor }),
