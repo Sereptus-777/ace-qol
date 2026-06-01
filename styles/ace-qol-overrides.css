@@ -117,3 +117,86 @@
 .ace-qol-btn-roll-dmg:hover::after {
   color: rgb(255, 40, 40);
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   BG3 HUD — portrait head-anchor fix (MAX specificity)
+   ───────────────────────────────────────────────────────────────────────
+   BG3 Inspired Hotbar's default portrait CSS uses:
+     object-fit: cover; object-position: 50% 100%;
+   That anchors the BOTTOM of the image to the bottom of the slot, so
+   tall/full-body portraits show only feet/legs with the head clipped off.
+   Override with object-fit: contain + object-position: top center so the
+   FACE is visible — which is what a HUD portrait is supposed to do.
+
+   Selector list uses multiple ancestor chains to outrank BragginRites'
+   default rule even if our overrides file loads BEFORE bg3-hud's CSS.
+   ═══════════════════════════════════════════════════════════════════════ */
+body .bg3-hud img.portrait-image,
+body .bg3-portrait-container img.portrait-image,
+body .portrait-image-container img.portrait-image,
+body .portrait-image-subcontainer img.portrait-image,
+body img.portrait-image,
+img.portrait-image {
+  object-fit: contain !important;
+  object-position: top center !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   BG3 HUD — dice/info button on hover only
+   ───────────────────────────────────────────────────────────────────────
+   Default: dice-d20 button is always visible over the portrait,
+   cluttering the HUD. Johnny wants it discoverable but invisible until
+   the user hovers on the portrait. Opacity transition keeps the reveal
+   smooth instead of a hard pop-in.
+   ═══════════════════════════════════════════════════════════════════════ */
+.bg3-portrait-container .bg3-info-button,
+.bg3-hud .bg3-info-button {
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transition: opacity 0.15s ease !important;
+}
+.bg3-portrait-container:hover .bg3-info-button,
+.bg3-hud .bg3-portrait-container:hover .bg3-info-button {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   ACE QOL config panel — right-side decorative rail
+   ───────────────────────────────────────────────────────────────────────
+   The LEFT side gets its visual weight from a 220px tablist column with
+   brass medallions on a dark-steel background. The RIGHT side used to
+   just drop off — pane content right against the window edge. That made
+   the panel look asymmetric and unfinished.
+
+   Fix: add a 14px decorative vertical RAIL on the right side of the body
+   row using a `::after` pseudo-element. Matches the LEFT side's visual
+   weight: brass texture + horizontal gradient + thin gold separator. The
+   body itself gets `padding-right: 14px` so pane content doesn't disappear
+   behind the rail.
+
+   Selector chain bumped with the window class so we outrank Foundry's
+   default flex children styling. Pointer-events disabled on the rail so
+   it never blocks clicks on adjacent content.
+   ═══════════════════════════════════════════════════════════════════════ */
+.ace-qol-config-panel-window .ace-qol-cfg-body {
+  position: relative !important;
+  padding-right: 14px !important;
+}
+.ace-qol-config-panel-window .ace-qol-cfg-body::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  background:
+    linear-gradient(90deg, rgba(0, 0, 0, 0.10) 0%, rgba(0, 0, 0, 0.50) 100%),
+    url("../Assets/UI/Brass Frame/dark-steel-backing.png") repeat;
+  border-left: 1px solid rgba(212, 175, 55, 0.55);
+  box-shadow:
+    inset 1px 0 0 rgba(255, 230, 150, 0.45),
+    inset -1px 0 2px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  z-index: 1;
+}

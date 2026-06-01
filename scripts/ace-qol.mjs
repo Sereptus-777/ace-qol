@@ -412,6 +412,80 @@ Hooks.once("ready", () => {
   }, 1500);
 });
 
+// ─── BG3 HUD bleed-through auto-heal (REACTIVE — fires only when bug occurs) ─
+// BragginRites/bg3-inspired-hotbar's DnD5eAdapter.decorateCellElement throws
+// "Actor is not a valid embedded Document within the Token Document" on
+// some token swaps. When it throws, the affected grid cells (4-7) are left
+// in their previous state — visually this looks like the PRIOR token's
+// portrait + icons "bleed through" into the next selection's HUD slot.
+//
+// Previous implementation hooked controlToken and fired a heal on EVERY
+// token swap — that caused visible HUD flicker and intermittent disappear
+// because release+control cycles were doing extra work every selection
+// even when BG3 HUD's render succeeded.
+//
+// Current implementation is REACTIVE: wraps console.error to detect the
+// specific BG3 HUD failure message, and triggers a SINGLE debounced heal
+// only when that error actually fires. Token swaps that work correctly
+// pass through with zero overhead — no flicker, no disappear.
+//
+// GM-only because the bug surfaces on the GM client (full action grid).
+Hooks.once("ready", () => {
+  if (!game.user.isGM) return;
+  let _bg3HealActive = false;
+  let _bg3HealQueued = null;
+  const origErr = console.error.bind(console);
+
+  console.error = function(...args) {
+    try {
+      // Only inspect string + Error args; ignore complex objects to keep this cheap.
+      const msg = args.map(a => {
+        if (typeof a === "string") return a;
+        if (a instanceof Error)    return String(a.message ?? "") + " " + String(a.stack ?? "");
+        return "";
+      }).join(" ");
+      const isBg3Bug = msg.includes("Cell decoration failed")
+                    && msg.includes("Actor is not a valid embedded Document");
+      if (isBg3Bug && !_bg3HealActive && !_bg3HealQueued) {
+        // Coalesce: a single token swap can trigger this error on cells 4,
+        // 5, 6, 7 simultaneously (Promise.all from GridContainer.render).
+        // Debounce so we only heal once per token-swap regardless of how
+        // many cells failed.
+        _bg3HealQueued = setTimeout(async () => {
+          _bg3HealQueued = null;
+          try {
+            _bg3HealActive = true;
+            // Prefer BG3 HUD's official refresh API — no visible blink.
+            const api = globalThis.bg3Hotbar
+                     ?? game.modules?.get?.("bg3-inspired-hotbar")?.api
+                     ?? globalThis.BG3Hotbar;
+            if (api?.refresh) {
+              await api.refresh();
+            } else {
+              // Fallback only if no API: release + reselect cycle.
+              const tokens = canvas.tokens?.controlled?.slice() ?? [];
+              if (tokens.length) {
+                for (const t of tokens) t.release?.();
+                await new Promise(r => setTimeout(r, 80));
+                for (const t of tokens) t.control?.({ releaseOthers: false });
+              }
+            }
+          } catch (err) {
+            // Use origErr to avoid recursing through our own wrapper.
+            origErr(`${MODULE_ID} | BG3 HUD bleed-through heal failed:`, err);
+          } finally {
+            // Clear the re-entrancy guard a beat after the heal — any
+            // errors the heal itself triggers in BG3 HUD won't re-fire us.
+            setTimeout(() => { _bg3HealActive = false; }, 500);
+          }
+        }, 100);
+      }
+    } catch (_) { /* never let our wrapper itself throw — fall through */ }
+    return origErr.apply(this, args);
+  };
+  console.log(`${MODULE_ID} | BG3 HUD bleed-through auto-heal: REACTIVE mode armed (fires only on the actual error pattern).`);
+});
+
 // ─── Player Can Start Combat (RAW behavior) ─────────────────────────────
 // Foundry/dnd5e default: only the GM can create a Combat document. Players
 // rolling initiative when no combat exists hit a TypeError from dnd5e's
