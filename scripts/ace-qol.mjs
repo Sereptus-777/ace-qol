@@ -3496,6 +3496,30 @@ Hooks.once("ready", () => {
           }
         }
 
+        // ── Range check (FIRST — before the advantage prompt) ────────────────
+        // Bug reported 2026-05-31: range check used to run only in the
+        // `dnd5e.preRollAttackV2` downstream hook, AFTER the player had
+        // already clicked through the Advantage/Normal/Disadvantage prompt.
+        // That wasted clicks on attacks that couldn't physically land.
+        // Now we range-check before the prompt so out-of-range attacks
+        // get a clean "Out of range" toast and abort cleanly without the
+        // player ever seeing the advantage dialog.
+        try {
+          const target = game.user.targets.first();
+          const ap = game.aceQol?.attackPipeline;
+          if (target && ap?._checkRange) {
+            const rangeCheck = ap._checkRange(this.actor, target, this);
+            if (rangeCheck?.blocked) {
+              const msg = `Out of range — ${rangeCheck.distanceFt}ft away (${rangeCheck.rangeDesc})`;
+              showCenterToast(msg, 2500);
+              ui.notifications?.warn(`ACE QOL: ${msg}`);
+              return null;  // cancel the attack
+            }
+          }
+        } catch (err) {
+          console.warn(`${MODULE_ID} | Pre-prompt range check failed (non-fatal):`, err);
+        }
+
         // ── Show the advantage prompt (if enabled) ───────────────────────────
         if (QolSettings.get("advantagePrompt") !== false) {
           const target = game.user.targets.first();
