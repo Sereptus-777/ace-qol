@@ -1557,6 +1557,13 @@ export class SaveEngine {
     }
 
     // ── × Remove buttons (Phase 1 — strip target from allResults before damage) ──
+    // GM-only: the handler calls message.update() which players don't have
+    // permission for on GM-authored cards. Without this gate a player click
+    // would remove the row from their LOCAL DOM (because row.remove() works
+    // anywhere) but fail silently on the message.update — leaving them with
+    // a desynced view from the GM. Discovered during the .update() audit
+    // sweep (Gemini P1-3).
+    if (!game.user.isGM) return;
     const phase1RemoveBtns = el.querySelectorAll?.("[data-action='aceQolRemovePhase1']");
     if (phase1RemoveBtns?.length) {
       for (const btn of phase1RemoveBtns) {
