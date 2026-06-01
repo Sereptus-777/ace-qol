@@ -10,6 +10,7 @@ import { DamageCalculator } from "./damage-calculator.mjs";
 import { DamageConstants, safeShowForRoll } from "./damage-engine.mjs";
 import { MergeCard } from "./merge-card.mjs";
 import { awaitDsnRoll } from "./attack-prompt.mjs";
+import { WeaponMasteries } from "./weapon-masteries.mjs";
 
 export class DamageCardRenderer {
 
@@ -347,6 +348,7 @@ export class DamageCardRenderer {
     const anyCrit = damageResults.some(dr => dr.isCrit);
 
     const hasCleave = actor ? DamageConstants.actorHasCleave(actor, item) : false;
+    const hasPush   = (actor && item) ? WeaponMasteries.shouldOfferPush(item, actor) : false;
 
     const cardHtml = `
       <div class="ace-qol-damage-card">
@@ -361,6 +363,11 @@ export class DamageCardRenderer {
         ${hasCleave ? `<div class="ace-qol-dmg-cleave-row">
           <button class="ace-qol-btn ace-qol-btn-cleave" data-action="aceQolCleave">
             <i class="fas fa-khanda"></i> CLEAVE
+          </button>
+        </div>` : ""}
+        ${hasPush ? `<div class="ace-qol-dmg-push-row">
+          <button class="ace-qol-btn ace-qol-btn-push-dmg" data-action="aceQolPush">
+            <i class="fas fa-hand-back-fist"></i> PUSH 10 FT
           </button>
         </div>` : ""}
         <div class="ace-qol-dmg-targets">

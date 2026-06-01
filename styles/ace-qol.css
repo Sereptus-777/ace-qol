@@ -883,6 +883,44 @@
   padding: 7px 18px;
 }
 
+/* ─── Push row (shared between player + GM) ───────────────────────────────
+   Mirrors the cleave row but with the orange Push palette so the two
+   mastery buttons read as distinct at a glance. Visible to both player
+   and GM. Either can click. Persistent `pushFired` flag greys the button
+   on re-render. */
+.ace-qol-dmg-push-row {
+  display: flex;
+  justify-content: center;
+  padding: 8px 12px;
+  background: linear-gradient(180deg, rgba(232, 138, 90, 0.08) 0%, rgba(0, 0, 0, 0) 100%);
+  border-top: 1px solid rgba(232, 138, 90, 0.20);
+  border-bottom: 1px solid rgba(232, 138, 90, 0.20);
+}
+.ace-qol-dmg-push-row .ace-qol-btn-push-dmg {
+  flex: 0 0 auto;
+  min-width: 140px;
+  padding: 7px 18px;
+  background: linear-gradient(180deg, rgba(232, 138, 90, 0.20) 0%, rgba(180, 100, 60, 0.15) 100%);
+  color: #ffd1b3;
+  border: 1px solid rgba(232, 138, 90, 0.50);
+  text-transform: uppercase;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  font-family: "Rajdhani", "Segoe UI", sans-serif;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+.ace-qol-dmg-push-row .ace-qol-btn-push-dmg:hover:not(:disabled) {
+  background: linear-gradient(180deg, rgba(232, 138, 90, 0.32) 0%, rgba(180, 100, 60, 0.25) 100%);
+  border-color: rgba(232, 138, 90, 0.75);
+  box-shadow: 0 0 10px rgba(232, 138, 90, 0.30), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+.ace-qol-dmg-push-row .ace-qol-btn-push-dmg:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 /* ─── Apply/Undo buttons ─────────────────────────────────────────────── */
 .ace-qol-dmg-actions {
   display: flex;

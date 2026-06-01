@@ -350,6 +350,68 @@ export class DamageEngine {
         });
       }
 
+      // ── PUSH button (2024 RAW Push mastery on the damage card) ──
+      // Push moves the first damage target 10 ft directly away from the
+      // attacker. Lives on the damage card so the player sees damage FIRST,
+      // then decides whether the push is worth doing (e.g., skip if the
+      // target already died). Permission-aware: GM does the token-move
+      // directly, players socket-route through GM. Persistent `pushFired`
+      // flag greys the button across all clients on re-render.
+      const pushBtn = el.querySelector?.("[data-action='aceQolPush']");
+      if (pushBtn && !pushBtn.dataset.wired) {
+        pushBtn.dataset.wired = "1";
+        if (message.flags?.[MODULE_ID]?.pushFired) {
+          pushBtn.disabled = true;
+          pushBtn.innerHTML = '<i class="fas fa-check"></i> PUSHED ✓';
+        } else {
+          pushBtn.addEventListener("click", async () => {
+            if (message.flags?.[MODULE_ID]?.pushFired) return;
+            const flags = message.flags?.[MODULE_ID] ?? {};
+            try {
+              // Resolve attacker actor + active token
+              const attActor = flags.actorId ? game.actors?.get?.(flags.actorId) : null;
+              const attTok   = attActor?.getActiveTokens?.()[0] ?? null;
+              if (!attTok) {
+                ui.notifications.warn("ACE QOL: Push — attacker token not on the current scene.");
+                return;
+              }
+              // First target from damage results = the creature being pushed
+              const firstResult = (flags.damageResults ?? [])[0];
+              if (!firstResult) {
+                ui.notifications.warn("ACE QOL: Push needs a target — roll damage first.");
+                return;
+              }
+              const scene     = firstResult.sceneId ? game.scenes?.get?.(firstResult.sceneId) : canvas.scene;
+              const tgtTokDoc = scene?.tokens?.get?.(firstResult.tokenDocId);
+              if (!tgtTokDoc) {
+                ui.notifications.warn("ACE QOL: Push — target token not on the current scene.");
+                return;
+              }
+              // Permission-route: GM does the move directly; player sockets
+              const { WeaponMasteries } = await import("./weapon-masteries.mjs");
+              if (game.user.isGM) {
+                await WeaponMasteries._pushTarget(attTok.document.uuid, tgtTokDoc.uuid);
+                try { await message.update({ [`flags.${MODULE_ID}.pushFired`]: true }); }
+                catch (e) { console.warn(`${MODULE_ID} | Failed to persist pushFired flag:`, e); }
+              } else {
+                game.socket?.emit?.(`module.${MODULE_ID}`, {
+                  type:         "executePush",
+                  fromUserId:   game.user.id,
+                  attackerUuid: attTok.document.uuid,
+                  targetUuid:   tgtTokDoc.uuid,
+                  messageId:    message.id,
+                });
+              }
+              // Optimistic UI — disable + flip label immediately
+              pushBtn.disabled = true;
+              pushBtn.innerHTML = '<i class="fas fa-check"></i> PUSHED ✓';
+            } catch (err) {
+              console.warn(`${MODULE_ID} | Push click failed:`, err);
+            }
+          });
+        }
+      }
+
       // ── CLEAVE button ──
       // Two behaviors share one button:
       //   1. RAW 2024 Weapon Mastery Cleave — if the attacker has cleave

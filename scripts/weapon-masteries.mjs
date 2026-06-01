@@ -152,19 +152,45 @@ export class WeaponMasteries {
       const el = (html instanceof HTMLElement) ? html : (html?.[0] ?? html);
       if (!el?.querySelectorAll) return;
 
-      // ── Push — GM-only (moves a token, players lack update permission) ──
+      // ── Push — player OR GM can click ──────────────────────────────────
+      // Pushing a token requires token.update() which players don't have
+      // permission for. Permission-aware: GM calls _pushTarget directly;
+      // non-GM emits a socket request → GM handler performs the move on
+      // their side. Same architectural pattern as Cleave (proven working).
+      //
+      // Persistent gray-out: the chat message gets a `pushFired` flag when
+      // the push fires. Bind handler checks the flag on render and renders
+      // disabled if already fired — so gray state survives chat re-renders.
       el.querySelectorAll(".ace-qol-mastery-push-btn:not([data-bound])").forEach(btn => {
         btn.setAttribute("data-bound", "1");
-        btn.addEventListener("click", () => {
-          if (!game.user.isGM) {
-            ui.notifications?.warn("Push: only the GM can move targets.");
-            return;
-          }
+        // Restore "Pushed" state from persistent flag on re-render
+        if (message?.flags?.[MODULE_ID]?.pushFired) {
+          btn.disabled = true;
+          btn.innerHTML = `<i class="fas fa-check"></i> Pushed`;
+          return;  // skip click handler — no point binding
+        }
+        btn.addEventListener("click", async () => {
+          if (message?.flags?.[MODULE_ID]?.pushFired) return;  // race guard
           try {
-            this._pushTarget(
-              btn.dataset.attackerUuid,
-              btn.dataset.targetUuid,
-            );
+            if (game.user.isGM) {
+              // GM path: do the move + flag update directly
+              await this._pushTarget(btn.dataset.attackerUuid, btn.dataset.targetUuid);
+              try { await message.update({ [`flags.${MODULE_ID}.pushFired`]: true }); }
+              catch (flagErr) { console.warn(`${TAG} | Failed to persist pushFired flag:`, flagErr); }
+            } else {
+              // Player path: socket-route to GM. GM handler performs the
+              // token move AND sets the pushFired flag (which propagates
+              // back via Foundry's standard message sync). Player's button
+              // disables optimistically below.
+              game.socket?.emit?.(`module.${MODULE_ID}`, {
+                type:         "executePush",
+                fromUserId:   game.user.id,
+                attackerUuid: btn.dataset.attackerUuid,
+                targetUuid:   btn.dataset.targetUuid,
+                messageId:    message.id,
+              });
+            }
+            // Local optimistic UI: disable + flip label immediately
             btn.disabled = true;
             btn.innerHTML = `<i class="fas fa-check"></i> Pushed`;
           } catch (err) { console.warn(`${TAG} | Push click failed:`, err); }
@@ -237,20 +263,49 @@ export class WeaponMasteries {
     Hooks.on("renderChatMessageHTML", _bindMasteryButtons);  // V13
     Hooks.on("renderChatMessage",     _bindMasteryButtons);  // V12 fallback
 
-    // ── GM-side socket handler for player-initiated flag updates ────────
-    // Players don't have permission to update chat messages they don't own.
-    // When a player clicks Attack Adjacent, they need the GM client to set
-    // the persistent `cleaveFired` flag so the button stays grayed across
-    // re-renders. Player emits → GM applies.
+    // ── GM-side socket handler for player-initiated mastery actions ─────
+    // Players don't have permission to update chat messages they don't own
+    // (cleaveFired/pushFired flags), and they don't have permission to
+    // update tokens they don't own (Push target move). All player clicks
+    // on mastery buttons emit socket requests on this channel; the GM
+    // client performs the actual mutations.
+    //
+    // Action types:
+    //   - "setCleaveFiredFlag": persist cleaveFired flag on a damage card
+    //     after a player completed a cleave (the damage row itself was
+    //     added via the addCleaveTarget socket handler in damage-engine.mjs).
+    //   - "executePush": perform the token-move for Push mastery + set the
+    //     pushFired flag so the button greys out for everyone.
     if (game.user.isGM) {
       game.socket?.on?.(`module.${MODULE_ID}`, async (data) => {
         try {
-          if (data?.type !== "setCleaveFiredFlag") return;
-          const msg = game.messages?.get?.(data.messageId);
-          if (!msg) return;
-          await msg.update({ [`flags.${MODULE_ID}.cleaveFired`]: true });
+          if (data?.type === "setCleaveFiredFlag") {
+            const msg = game.messages?.get?.(data.messageId);
+            if (!msg) return;
+            await msg.update({ [`flags.${MODULE_ID}.cleaveFired`]: true });
+            return;
+          }
+          if (data?.type === "executePush") {
+            // Validate the requesting user (so a malicious player can't
+            // socket arbitrary token moves)
+            const fromUser = game.users?.get?.(data.fromUserId);
+            if (!fromUser) {
+              console.warn(`${TAG} | executePush socket: unknown user ${data.fromUserId} — rejecting.`);
+              return;
+            }
+            // Perform the token move
+            await this._pushTarget(data.attackerUuid, data.targetUuid);
+            // Persist the pushFired flag so the button stays disabled on
+            // all clients after re-render
+            if (data.messageId) {
+              const msg = game.messages?.get?.(data.messageId);
+              if (msg) await msg.update({ [`flags.${MODULE_ID}.pushFired`]: true });
+            }
+            console.log(`${TAG} | Socket: GM applied push from ${fromUser.name}`);
+            return;
+          }
         } catch (err) {
-          console.warn(`${TAG} | Cleave flag socket update failed:`, err);
+          console.warn(`${TAG} | Mastery socket handler failed:`, err);
         }
       });
     }
@@ -773,6 +828,30 @@ export class WeaponMasteries {
   }
 
   /**
+   * Returns true if Push mastery should fire for this (item, actor) combo.
+   * Same edition/feature/mastery gate as shouldOfferCleave — single source
+   * of truth used by both the damage card's PUSH button (visibility +
+   * click) and any future code that needs to gate Push behavior.
+   */
+  static shouldOfferPush(item, actor) {
+    if (!item || !actor) return false;
+    // Edition gate (2024 or 2014 + override)
+    try {
+      const rv = game.settings.get?.("dnd5e", "rulesVersion");
+      if (rv === "legacy") {
+        const allow = game.settings.get?.(MODULE_ID, "weaponMasteryAllowIn2014") === true;
+        if (!allow) return false;
+      }
+    } catch (_) {}
+    try {
+      if (game.settings.get?.(MODULE_ID, "weaponMasteryEnabled") === false) return false;
+    } catch (_) {}
+    if (this.getMasteryFor(item) !== "push") return false;
+    if (!this._actorHasMasteryFeature(actor)) return false;
+    return true;
+  }
+
+  /**
    * Compute the attacker's ability modifier used for this weapon's attack roll.
    * Returns: { abilityKey, abilityMod, subtracted }
    *   - abilityKey: "str", "dex", etc.
@@ -836,7 +915,12 @@ export class WeaponMasteries {
       case "vex":     return this._fireVex(item, actor, targetToken);
       case "sap":     return this._fireSap(item, actor, targetToken);
       case "slow":    return this._fireSlow(item, actor, targetToken);
-      case "push":    return this._firePush(item, actor, targetToken);
+      // ── Push: damage-card button handles it ──
+      // Same architecture as Cleave — Push is now an action on the damage
+      // card itself (next to ROLL DAMAGE / APPLY ALL), not a separate chat
+      // card that pops before the damage rolls. Lets the player see the
+      // damage first, THEN decide whether the push is worth it.
+      case "push":    return;
       case "nick":    return this._fireNick(item, actor, targetToken);
       case "graze":   return; // graze fires only on miss
       case "flex":    return; // niche stance toggle, no on-hit effect
