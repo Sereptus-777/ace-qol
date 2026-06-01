@@ -674,6 +674,10 @@ export class LootableTile {
   _wireDomListener() {
     if (this._domWired) return;
     this._domWired = true;
+    // Track listener references so we can cleanly unwire on module disable
+    // or world unload. Previous code added document listeners but never
+    // removed them — accumulating duplicates on reload (audit P1-3).
+    this._domHandlers = this._domHandlers ?? {};
 
     // ── Right-click (mousedown→mouseup pair, button=2) with drag-resistance ──
     // We previously tried the `contextmenu` event, but Foundry's PIXI canvas
@@ -734,7 +738,8 @@ export class LootableTile {
       return !t.closest(UI_BAIL);
     };
 
-    document.addEventListener("mousedown", (ev) => {
+    // ── Bound handler refs (so we can remove them in _unwireDomListener) ──
+    this._domHandlers.mousedown = (ev) => {
       if (ev.button !== 2) return;
       if (!this._isOverGameCanvas(ev)) return;
       this._rightDownAt = {
@@ -742,9 +747,8 @@ export class LootableTile {
         screenY: ev.clientY,
         time:    Date.now(),
       };
-    }, true);  // capture phase — beat Foundry to it
-
-    document.addEventListener("mouseup", (ev) => {
+    };
+    this._domHandlers.mouseup = (ev) => {
       if (ev.button !== 2) return;
       if (!this._isOverGameCanvas(ev)) { this._rightDownAt = null; return; }
       const start = this._rightDownAt;
@@ -754,12 +758,8 @@ export class LootableTile {
       const dist = Math.hypot(ev.clientX - start.screenX, ev.clientY - start.screenY);
       if (dt > 500 || dist > 5) return;
       this._handleSingleRightClick(ev);
-    }, true);  // capture phase
-
-    // Suppress browser/Foundry context menu when right-clicking over a
-    // lootable tile OR dead token, so our dialog isn't covered by a stray
-    // browser menu or Foundry's default right-click handlers.
-    document.addEventListener("contextmenu", (ev) => {
+    };
+    this._domHandlers.contextmenu = (ev) => {
       if (!this._isOverGameCanvas(ev)) return;
       const worldPos = this._eventToWorldPos(ev);
       if (!worldPos) return;
@@ -767,26 +767,48 @@ export class LootableTile {
         ev.preventDefault();
         ev.stopPropagation();
       }
-    }, true);
-
-    // ── Hover-icon system ──
-    // Same UI bail-out applies here: hovering over an open character sheet
-    // that happens to be positioned over a dead token shouldn't make our
-    // loot-hover icon appear behind the sheet. The hover system was missing
-    // this check, which was the residual bleed-through Johnny reported.
-    document.addEventListener("mousemove", (ev) => {
+    };
+    this._domHandlers.mousemove = (ev) => {
       if (!this._isOverGameCanvas(ev)) {
-        // Cancel any pending hover-icon timer when the mouse leaves canvas
         this._cancelHoverIcon?.();
         return;
       }
       this._onHoverMove(ev);
-    });
+    };
+
+    document.addEventListener("mousedown",   this._domHandlers.mousedown,   true);
+    document.addEventListener("mouseup",     this._domHandlers.mouseup,     true);
+    document.addEventListener("contextmenu", this._domHandlers.contextmenu, true);
+    document.addEventListener("mousemove",   this._domHandlers.mousemove);
 
     let delayMs = "?";
     try { delayMs = game.settings.get(MODULE_ID, "lootHoverIconDelayMs"); }
     catch (_) {}
     console.debug(`${MODULE_ID} | Lootable tile DOM listeners wired — right-click ready; hover-icon delay=${delayMs}ms${delayMs === 0 ? " (DISABLED — set lootHoverIconDelayMs > 0 to enable)" : ""}`);
+  }
+
+  /**
+   * Remove the document-level mouse listeners wired by _wireDomListener.
+   * Called from a Foundry `closeGame`/`disableModule` hook (or manually
+   * via the API) so listeners don't accumulate across reload/disable.
+   *
+   * Without this, every module reload added a fresh set of four document
+   * listeners while the old ones stayed bound — leading to duplicated
+   * right-clicks and stuck hover-icon timers on long sessions. Audit P1-3.
+   */
+  _unwireDomListener() {
+    if (!this._domWired || !this._domHandlers) return;
+    try {
+      document.removeEventListener("mousedown",   this._domHandlers.mousedown,   true);
+      document.removeEventListener("mouseup",     this._domHandlers.mouseup,     true);
+      document.removeEventListener("contextmenu", this._domHandlers.contextmenu, true);
+      document.removeEventListener("mousemove",   this._domHandlers.mousemove);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | _unwireDomListener: removeEventListener threw (non-fatal):`, err);
+    }
+    this._domHandlers = {};
+    this._domWired = false;
+    console.debug(`${MODULE_ID} | Lootable tile DOM listeners unwired.`);
   }
 
   /**

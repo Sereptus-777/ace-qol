@@ -412,6 +412,57 @@ Hooks.once("ready", () => {
   }, 1500);
 });
 
+// ─── Module-conflict detection on world ready (audit P2-4) ───────────────────
+// ACE QOL is a comprehensive replacement for Midi-QOL + DAE + Times-Up +
+// Convenient Effects + Cover modules. Users migrating from those modules
+// may leave them active during the transition — which causes double-firing
+// on damage application, double active-effect handling, conflicting reaction
+// prompts, etc. Detect on world load, warn ONCE with a dismissible message.
+//
+// GM-only because GMs install/disable modules; players see no actionable UI.
+// Warning is suppressible via a settings-stored flag so users only see it
+// once per world (or until they re-enable a conflicting module).
+const REPLACED_MODULES = [
+  { id: "midi-qol",                  label: "Midi-QOL" },
+  { id: "dae",                       label: "Dynamic Active Effects (DAE)" },
+  { id: "times-up",                  label: "Times Up" },
+  { id: "dfreds-convenient-effects", label: "DFreds Convenient Effects" },
+  { id: "tokenmagic",                label: "Token Magic FX (cover features)" },
+];
+Hooks.once("ready", () => {
+  if (!game.user.isGM) return;
+  if (!_aceQolEnabled()) return;
+  try {
+    const active = REPLACED_MODULES.filter(m => game.modules?.get?.(m.id)?.active);
+    if (!active.length) return;
+    const labelList = active.map(m => `<li><strong>${m.label}</strong> <code>(${m.id})</code></li>`).join("");
+    // Post a chat notice once per world session — easy to dismiss + reference.
+    const html = `
+      <div style="background:#1a0e0e;border:2px solid #c74420;border-radius:6px;padding:10px 14px;color:#f0e4c0;">
+        <div style="font-family:'Cinzel Decorative','Cinzel',serif;color:#ff6b3d;font-size:14px;font-weight:700;letter-spacing:1px;margin-bottom:6px;">
+          <i class="fas fa-triangle-exclamation"></i> ACE QOL — Module Conflict Warning
+        </div>
+        <p style="margin:4px 0 6px 0;font-size:12px;">
+          ACE QOL replaces these modules — running them simultaneously will cause double-firing damage,
+          conflicting effect application, and inconsistent behavior. Consider disabling them for a clean experience.
+        </p>
+        <ul style="margin:4px 0 0 18px;font-size:12px;line-height:1.5;">${labelList}</ul>
+        <p style="margin:8px 0 0 0;font-size:11px;color:#c0b288;font-style:italic;">
+          This message is whispered to GMs only and shown once per world load.
+        </p>
+      </div>
+    `;
+    ChatMessage.create({
+      content: html,
+      whisper: game.users.filter(u => u.isGM).map(u => u.id),
+      flags: { [MODULE_ID]: { type: "conflictWarning" } },
+    });
+    console.warn(`${MODULE_ID} | Detected ${active.length} potentially-conflicting module(s): ${active.map(m => m.id).join(", ")}`);
+  } catch (err) {
+    console.warn(`${MODULE_ID} | Module-conflict detection threw (non-fatal):`, err);
+  }
+});
+
 // ─── BG3 HUD bleed-through auto-heal (REACTIVE — fires only when bug occurs) ─
 // BragginRites/bg3-inspired-hotbar's DnD5eAdapter.decorateCellElement throws
 // "Actor is not a valid embedded Document within the Token Document" on
@@ -433,8 +484,23 @@ Hooks.once("ready", () => {
 Hooks.once("ready", () => {
   if (!game.user.isGM) return;
   let _bg3HealActive = false;
+  let _bg3HealActiveSince = 0;  // timestamp when flag was set — staleness check
   let _bg3HealQueued = null;
   const origErr = console.error.bind(console);
+
+  // Helper: clear the active flag if it's been held longer than the max
+  // expected heal duration (3s). Defends against the edge case where the
+  // setTimeout in `finally` never fires (page unload, JS event-loop hang,
+  // exception in an async path the finally can't reach). Audit P2-3.
+  const _isBg3HealStale = () => {
+    if (!_bg3HealActive) return false;
+    if (Date.now() - _bg3HealActiveSince > 3000) {
+      console.warn(`${MODULE_ID} | BG3 HUD heal flag was stale (>3s) — force-clearing.`);
+      _bg3HealActive = false;
+      return true;
+    }
+    return false;
+  };
 
   console.error = function(...args) {
     try {
@@ -446,6 +512,9 @@ Hooks.once("ready", () => {
       }).join(" ");
       const isBg3Bug = msg.includes("Cell decoration failed")
                     && msg.includes("Actor is not a valid embedded Document");
+      // Staleness check: force-clear the flag if it's been held too long
+      // (recovery from edge cases where the `finally` setTimeout never fires).
+      _isBg3HealStale();
       if (isBg3Bug && !_bg3HealActive && !_bg3HealQueued) {
         // Coalesce: a single token swap can trigger this error on cells 4,
         // 5, 6, 7 simultaneously (Promise.all from GridContainer.render).
@@ -455,6 +524,7 @@ Hooks.once("ready", () => {
           _bg3HealQueued = null;
           try {
             _bg3HealActive = true;
+            _bg3HealActiveSince = Date.now();  // staleness tracking — see _isBg3HealStale
             // Prefer BG3 HUD's official refresh API — no visible blink.
             const api = globalThis.bg3Hotbar
                      ?? game.modules?.get?.("bg3-inspired-hotbar")?.api
@@ -2534,8 +2604,16 @@ Hooks.once("ready", () => {
         // without manually un-defeating, and the carousel hid them from the
         // active-turn rotation. Clear the flag on every combat the actor is
         // part of (rare but possible to be in multiple).
-        try {
-          for (const combat of game.combats ?? []) {
+        // Per-combat + per-update guards — audit P1-2.
+        // Each combat is checked for staleness (deleted/null) before iter,
+        // and each combatant.update is wrapped in its own try/catch so a
+        // single failed update doesn't abort the loop and leave other
+        // combats with stale defeated flags. Multi-combat iteration is
+        // intentional — an actor can legitimately be in multiple combats
+        // across paused scenes; reviving must clear them all.
+        for (const combat of game.combats ?? []) {
+          if (!combat || combat.deleted) continue;
+          try {
             const combatant = combat.combatants?.find(c =>
               c.actorId === actor.id && (!c.tokenId || c.tokenId === tokenDoc.id)
             );
@@ -2543,9 +2621,9 @@ Hooks.once("ready", () => {
               await combatant.update({ defeated: false });
               console.log(`${MODULE_ID} | Revive — cleared combatant.defeated for ${actor.name} in combat "${combat.id}"`);
             }
+          } catch (combErr) {
+            console.warn(`${MODULE_ID} | Revive defeated-clear failed for combat "${combat.id}" (non-fatal, continuing):`, combErr);
           }
-        } catch (combErr) {
-          console.warn(`${MODULE_ID} | Revive combatant.defeated clear failed (non-fatal):`, combErr);
         }
 
         // Post a brief chat note so the table sees the revive.
