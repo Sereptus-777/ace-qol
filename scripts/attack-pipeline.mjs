@@ -788,9 +788,16 @@ export class AttackPipeline {
       let mirrorCaption = "";
       if (r.mirrorImageRedirect) {
         const mi = r.mirrorImageRedirect;
-        const outcome = mi.hitDuplicate
-          ? `Hit Mirror Image duplicate (AC ${mi.duplicateAC}) — duplicate destroyed`
-          : `Hit Mirror Image duplicate (AC ${mi.duplicateAC}) — duplicate dodged`;
+        // i18n: caption pulled from languages/en.json (and any other locale
+        // files the user has installed). Falls back to the English literal
+        // if the key is missing somehow.
+        const key = mi.hitDuplicate
+          ? "ACE_QOL.mirrorImage.redirectHitDestroyed"
+          : "ACE_QOL.mirrorImage.redirectHitDodged";
+        const outcome = game.i18n?.format?.(key, { ac: mi.duplicateAC })
+                     ?? (mi.hitDuplicate
+                         ? `Hit Mirror Image duplicate (AC ${mi.duplicateAC}) — duplicate destroyed`
+                         : `Hit Mirror Image duplicate (AC ${mi.duplicateAC}) — duplicate dodged`);
         mirrorCaption = `<div class="ace-qol-atk-mirror-caption">→ ${outcome}</div>`;
       }
 

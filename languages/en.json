@@ -1,6 +1,11 @@
 {
   "ACE_QOL": {
     "Title": "ACE: Quality of Life",
-    "Description": "Comprehensive D&D 5e combat automation engine."
+    "Description": "Comprehensive D&D 5e combat automation engine.",
+    "mirrorImage": {
+      "redirectHitDestroyed": "Hit Mirror Image duplicate (AC {ac}) — duplicate destroyed",
+      "redirectHitDodged":    "Hit Mirror Image duplicate (AC {ac}) — duplicate dodged",
+      "label":                "Mirror Image"
+    }
   }
 }

@@ -161,9 +161,14 @@ export class MergeCard {
       let mirrorCaption = "";
       if (r.mirrorImageRedirect) {
         const mi = r.mirrorImageRedirect;
-        const outcome = mi.hitDuplicate
-          ? `Hit Mirror Image duplicate (AC ${mi.duplicateAC}) — duplicate destroyed`
-          : `Hit Mirror Image duplicate (AC ${mi.duplicateAC}) — duplicate dodged`;
+        // i18n: see languages/en.json — key:redirectHitDestroyed / redirectHitDodged
+        const key = mi.hitDuplicate
+          ? "ACE_QOL.mirrorImage.redirectHitDestroyed"
+          : "ACE_QOL.mirrorImage.redirectHitDodged";
+        const outcome = game.i18n?.format?.(key, { ac: mi.duplicateAC })
+                     ?? (mi.hitDuplicate
+                         ? `Hit Mirror Image duplicate (AC ${mi.duplicateAC}) — duplicate destroyed`
+                         : `Hit Mirror Image duplicate (AC ${mi.duplicateAC}) — duplicate dodged`);
         mirrorCaption = `<div class="ace-qol-merge-tgt-caption ace-qol-merge-mirror-caption">→ ${outcome}</div>`;
       }
 
@@ -392,9 +397,14 @@ export class MergeCard {
         let mirrorCaption = "";
         if (atkResult.mirrorImageRedirect) {
           const mi = atkResult.mirrorImageRedirect;
-          const outcome = mi.hitDuplicate
-            ? `Hit Mirror Image duplicate (AC ${mi.duplicateAC}) — duplicate destroyed`
-            : `Hit Mirror Image duplicate (AC ${mi.duplicateAC}) — duplicate dodged`;
+          // i18n: see languages/en.json — key:redirectHitDestroyed / redirectHitDodged
+          const key = mi.hitDuplicate
+            ? "ACE_QOL.mirrorImage.redirectHitDestroyed"
+            : "ACE_QOL.mirrorImage.redirectHitDodged";
+          const outcome = game.i18n?.format?.(key, { ac: mi.duplicateAC })
+                       ?? (mi.hitDuplicate
+                           ? `Hit Mirror Image duplicate (AC ${mi.duplicateAC}) — duplicate destroyed`
+                           : `Hit Mirror Image duplicate (AC ${mi.duplicateAC}) — duplicate dodged`);
           mirrorCaption = `<div class="ace-qol-merge-tgt-caption ace-qol-merge-mirror-caption">→ ${outcome}</div>`;
         }
         return `
