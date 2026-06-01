@@ -1053,22 +1053,37 @@
 .ace-qol-btn-roll-dmg-push {
   width: 100%;
   margin-top: 8px;
-  padding: 11px 16px;
+  padding: 8px 16px;
   border: 1px solid rgba(255, 180, 90, 0.55);
   border-radius: 6px;
   color: #fff7e8;
-  font-size: 0.95rem;
+  font-size: 0.92rem;
   font-weight: 700;
   cursor: pointer;
+  /* Two-line layout: top row "[icons] ROLL DAMAGE +", bottom row "PUSH 10 FT?".
+     Stacked vertically so the long text doesn't overflow narrow chat cards. */
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 8px;
   justify-content: center;
+  gap: 2px;
+  line-height: 1.15;
   font-family: 'Rajdhani', 'Segoe UI', sans-serif;
   transition: background 0.15s, box-shadow 0.15s;
   text-transform: uppercase;
-  letter-spacing: 0.8px;
+  letter-spacing: 0.6px;
   text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+}
+.ace-qol-btn-roll-dmg-push-top,
+.ace-qol-btn-roll-dmg-push-bot {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.ace-qol-btn-roll-dmg-push-bot {
+  font-size: 0.95rem;
+  letter-spacing: 0.8px;
 }
 .ace-qol-blink-push {
   animation: ace-blink-push 0.75s ease-in-out infinite;
