@@ -195,11 +195,11 @@ export class QolSettings {
     //  commercial customer will expect.
     s("playerCanStartCombat", {
       name:    "Players Can Start Combat (RAW)",
-      hint:    "When enabled, any player rolling initiative auto-creates a combat encounter if none exists. Restores standard D&D flow (any combatant can initiate). Disable only if you specifically want GM-only combat creation.",
+      hint:    "When enabled, any player rolling initiative auto-creates a combat encounter if none exists. Restores standard D&D flow (any combatant can initiate). Default OFF so installing ACE QOL doesn't change Foundry's default GM-only combat-creation behavior without an explicit opt-in.",
       scope:   "world",
       config:  true,
       type:    Boolean,
-      default: true,
+      default: false,
     });
 
     // ── Hidden NPC Initiative ──────────────────────────────────────────────
@@ -213,11 +213,11 @@ export class QolSettings {
     //  fully-transparent combat for some reason.
     s("hideNpcInitiative", {
       name:    "Hide NPC Initiative Rolls from Players",
-      hint:    "When enabled, NPC initiative rolls go to GM-only chat. Players never see the roll, preventing meta-gaming from ambushes and hidden combatants. PC initiative rolls remain public.",
+      hint:    "When enabled, NPC initiative rolls go to GM-only chat. Players never see the roll, preventing meta-gaming from ambushes and hidden combatants. PC initiative rolls remain public. Default OFF — opt-in so installing ACE QOL doesn't silently change Foundry's default visibility behavior for new GMs.",
       scope:   "world",
       config:  true,
       type:    Boolean,
-      default: true,
+      default: false,
     });
 
     s("weaponMasteryEnabled", {
