@@ -194,6 +194,45 @@ export class DamageEngine {
     console.log(`${MODULE_ID} | GM cleave-socket listener online.`);
   }
 
+  /**
+   * Arm a one-shot hook on the GM client that stamps `pushFired: true` on
+   * the NEXT damageResult chat message matching the given actor + item.
+   * Used by the bundled "ROLL DAMAGE + PUSH" flow to ensure that when the
+   * damage card lands shortly after the push fires, its PUSH button
+   * renders as already-greyed "PUSHED ✓" instead of active. Auto-cleanup
+   * after 8 seconds so we don't leak hooks on aborted rolls.
+   *
+   * GM-only — only the GM has permission to update the damage card's flags.
+   */
+  static _armDamageCardPushStamp(actorId, itemUuid) {
+    if (!game.user?.isGM) return;
+    if (!actorId || !itemUuid) return;
+    let resolved = false;
+    const hookId = Hooks.on("createChatMessage", async (msg) => {
+      try {
+        const f = msg.flags?.[MODULE_ID];
+        if (!f) return;
+        if (f.type !== "damageResult") return;
+        if (f.actorId !== actorId) return;
+        if (f.itemUuid !== itemUuid) return;
+        if (resolved) return;
+        resolved = true;
+        Hooks.off("createChatMessage", hookId);
+        await msg.update({ [`flags.${MODULE_ID}.pushFired`]: true });
+        console.log(`${MODULE_ID} | Bundled-push: stamped pushFired on damage card ${msg.id}`);
+      } catch (err) {
+        console.warn(`${MODULE_ID} | _armDamageCardPushStamp hook failed:`, err);
+      }
+    });
+    // Auto-cleanup after 8s if no matching damage card arrives
+    setTimeout(() => {
+      if (!resolved) {
+        Hooks.off("createChatMessage", hookId);
+        console.log(`${MODULE_ID} | _armDamageCardPushStamp timed out for actor=${actorId}, item=${itemUuid}`);
+      }
+    }, 8000);
+  }
+
   // Keep backward-compat static reference to override cache
   static get overrideCache() { return DamageApplicator.overrideCache; }
 
@@ -513,11 +552,80 @@ export class DamageEngine {
         } catch (_) { /* setting not ready */ }
       }
 
+      // ── PC "ROLL DAMAGE + PUSH 10 FT?" bundled button (push mastery only) ──
+      // Lives on the pre-damage button card right under the regular ROLL DAMAGE.
+      // Orange + blinking to grab attention. ONE click commits both actions:
+      // (1) push target 10 ft directly away, with forced-movement flag so no
+      //     OA prompt fires; (2) trigger the regular ROLL DAMAGE flow. Damage
+      // result card that follows will be stamped with pushFired:true so its
+      // own PUSH 10 FT button renders as already-greyed "PUSHED ✓" for the
+      // visual confirmation.
+      const rollDmgPushBtn = el.querySelector?.("[data-action='aceQolRollDamagePush']");
+      if (rollDmgPushBtn && !rollDmgPushBtn.dataset.wired) {
+        rollDmgPushBtn.dataset.wired = "1";
+        if (flags.bundledFired || flags.rolled) {
+          rollDmgPushBtn.disabled = true;
+          rollDmgPushBtn.classList.remove("ace-qol-blink-push");
+          rollDmgPushBtn.innerHTML = '<i class="fas fa-check"></i> ROLLED + PUSHED ✓';
+        } else {
+          rollDmgPushBtn.addEventListener("click", async () => {
+            if (message.flags?.[MODULE_ID]?.bundledFired) return;
+            if (message.flags?.[MODULE_ID]?.rolled) return;
+            try {
+              const attUuid = rollDmgPushBtn.dataset.attackerUuid;
+              const tgtUuid = rollDmgPushBtn.dataset.targetUuid;
+              const actorIdForStamp = message.flags?.[MODULE_ID]?.actorId;
+              const itemUuidForStamp = message.flags?.[MODULE_ID]?.itemUuid;
+
+              // ── (1) Trigger push first (immediate token movement) ──
+              const { WeaponMasteries } = await import("./weapon-masteries.mjs");
+              if (game.user.isGM) {
+                // GM: push directly AND set up the one-shot hook to stamp
+                // the upcoming damage card with pushFired:true.
+                DamageEngine._armDamageCardPushStamp(actorIdForStamp, itemUuidForStamp);
+                await WeaponMasteries._pushTarget(attUuid, tgtUuid);
+                try { await message.update({ [`flags.${MODULE_ID}.bundledFired`]: true }); }
+                catch (e) { console.warn(`${MODULE_ID} | bundledFired update failed:`, e); }
+              } else {
+                // Player: emit socket with expectDamageCard:true so GM also
+                // arms the stamp hook on its side before the damage card lands.
+                game.socket?.emit?.(`module.${MODULE_ID}`, {
+                  type:            "executePush",
+                  fromUserId:      game.user.id,
+                  attackerUuid:    attUuid,
+                  targetUuid:      tgtUuid,
+                  expectDamageCard: true,
+                  stampActorId:    actorIdForStamp,
+                  stampItemUuid:   itemUuidForStamp,
+                });
+                game.socket?.emit?.(`module.${MODULE_ID}`, {
+                  type:      "setBundledFiredFlag",
+                  messageId: message.id,
+                });
+              }
+
+              // ── (2) Optimistic UI: grey both buttons, kill the blink ──
+              rollDmgPushBtn.disabled = true;
+              rollDmgPushBtn.classList.remove("ace-qol-blink-push");
+              rollDmgPushBtn.innerHTML = '<i class="fas fa-check"></i> ROLLED + PUSHED ✓';
+              const rollDmgBtnLocal = el.querySelector?.("[data-action='aceQolRollDamage']");
+              if (rollDmgBtnLocal && !rollDmgBtnLocal.disabled) {
+                // (3) Programmatically trigger the regular ROLL DAMAGE flow
+                // BEFORE we disable it, so its handler fires normally.
+                rollDmgBtnLocal.click();
+              }
+            } catch (err) {
+              console.warn(`${MODULE_ID} | Bundled roll+push click failed:`, err);
+            }
+          });
+        }
+      }
+
       // ── PC "Roll Damage" button ──
       const rollDmgBtn = el.querySelector?.("[data-action='aceQolRollDamage']");
       if (rollDmgBtn && !rollDmgBtn.dataset.wired) {
         rollDmgBtn.dataset.wired = "1";
-        if (flags.rolled) {
+        if (flags.rolled || flags.bundledFired) {
           rollDmgBtn.disabled = true;
           rollDmgBtn.innerHTML = '<i class="fas fa-check"></i> ROLLED ✓';
         }

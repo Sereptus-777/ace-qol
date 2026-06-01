@@ -293,15 +293,31 @@ export class WeaponMasteries {
               console.warn(`${TAG} | executePush socket: unknown user ${data.fromUserId} — rejecting.`);
               return;
             }
+            // Bundled "ROLL DAMAGE + PUSH": arm the damage-card stamp hook
+            // BEFORE the push so it's listening when the damage card arrives.
+            if (data.expectDamageCard && data.stampActorId && data.stampItemUuid) {
+              try {
+                const { DamageEngine } = await import("./damage-engine.mjs");
+                DamageEngine._armDamageCardPushStamp(data.stampActorId, data.stampItemUuid);
+              } catch (err) {
+                console.warn(`${TAG} | Failed to arm damage-card stamp hook:`, err);
+              }
+            }
             // Perform the token move
             await this._pushTarget(data.attackerUuid, data.targetUuid);
             // Persist the pushFired flag so the button stays disabled on
-            // all clients after re-render
+            // all clients after re-render (post-damage card path)
             if (data.messageId) {
               const msg = game.messages?.get?.(data.messageId);
               if (msg) await msg.update({ [`flags.${MODULE_ID}.pushFired`]: true });
             }
-            console.log(`${TAG} | Socket: GM applied push from ${fromUser.name}`);
+            console.log(`${TAG} | Socket: GM applied push from ${fromUser.name}${data.expectDamageCard ? " (bundled with roll damage)" : ""}`);
+            return;
+          }
+          if (data?.type === "setBundledFiredFlag") {
+            const msg = game.messages?.get?.(data.messageId);
+            if (!msg) return;
+            await msg.update({ [`flags.${MODULE_ID}.bundledFired`]: true });
             return;
           }
         } catch (err) {
@@ -337,8 +353,14 @@ export class WeaponMasteries {
     const pushPx = cell * 2; // 10 ft on standard 5 ft grid
     const newX = Math.round(tgtTok.x + (dx / dist) * pushPx);
     const newY = Math.round(tgtTok.y + (dy / dist) * pushPx);
-    await tgtTok.update({ x: newX, y: newY });
-    console.log(`${TAG} | Pushed ${tgtTok.name} 10 ft away from ${attTok.name}`);
+    // ── aceForcedMovement flag ──
+    // Signals to OAPrompt (and any other movement-aware ACE systems) that
+    // this position change is NOT voluntary. Push mastery is "forced
+    // movement" per RAW — the target isn't using their own movement, so
+    // it must NOT provoke opportunity attacks. OAPrompt's updateToken hook
+    // checks for this flag and short-circuits when it sees it.
+    await tgtTok.update({ x: newX, y: newY }, { aceForcedMovement: true });
+    console.log(`${TAG} | Pushed ${tgtTok.name} 10 ft away from ${attTok.name} (forced movement — OA suppressed)`);
   }
 
   /**
@@ -828,12 +850,19 @@ export class WeaponMasteries {
   }
 
   /**
-   * Returns true if Push mastery should fire for this (item, actor) combo.
-   * Same edition/feature/mastery gate as shouldOfferCleave — single source
-   * of truth used by both the damage card's PUSH button (visibility +
-   * click) and any future code that needs to gate Push behavior.
+   * Returns true if Push mastery should fire for this (item, actor[, target]).
+   *
+   * Single source of truth for the Push gate. Optional `targetActor` enables
+   * the RAW size cap — Push only works if the target is no more than one
+   * size category larger than the attacker (PHB 2024). Pass `null`/omit to
+   * skip the size check (e.g., for visibility decisions where we don't
+   * have a target yet).
+   *
+   *   Medium attacker → can push tiny/small/medium/large
+   *   Medium attacker → CANNOT push huge/gargantuan
+   *   Small attacker  → CANNOT push large/huge/gargantuan
    */
-  static shouldOfferPush(item, actor) {
+  static shouldOfferPush(item, actor, targetActor = null) {
     if (!item || !actor) return false;
     // Edition gate (2024 or 2014 + override)
     try {
@@ -848,6 +877,19 @@ export class WeaponMasteries {
     } catch (_) {}
     if (this.getMasteryFor(item) !== "push") return false;
     if (!this._actorHasMasteryFeature(actor)) return false;
+    // ── RAW 2024 size cap ──
+    // "If you hit a creature that is no more than one size larger than you
+    //  with this weapon, you can push the creature up to 10 feet straight
+    //  away from you."
+    if (targetActor) {
+      const SIZE_ORDER = ["tiny", "sm", "med", "lg", "huge", "grg"];
+      const aSize = String(actor.system?.traits?.size ?? "med").toLowerCase();
+      const tSize = String(targetActor.system?.traits?.size ?? "med").toLowerCase();
+      const aIdx = SIZE_ORDER.indexOf(aSize);
+      const tIdx = SIZE_ORDER.indexOf(tSize);
+      // Unknown sizes default to allow (avoid false rejections on homebrew)
+      if (aIdx >= 0 && tIdx >= 0 && tIdx > aIdx + 1) return false;
+    }
     return true;
   }
 

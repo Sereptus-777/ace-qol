@@ -40,13 +40,20 @@ const POLEARM_NAMES_2024 = ["glaive", "halberd", "pike", "quarterstaff"];
 export class OAPrompt {
 
   static init() {
-    Hooks.on("updateToken", async (tokenDoc, changes /*, opts, userId */) => {
+    Hooks.on("updateToken", async (tokenDoc, changes, opts /*, userId */) => {
       try {
         if (!game.user.isGM) return;
         if (!QolSettings.get?.("opportunityAttackPrompt")) return;
         const movedX = changes.x !== undefined;
         const movedY = changes.y !== undefined;
         if (!movedX && !movedY) return;
+        // ── Skip OA detection on FORCED movement ──────────────────────────
+        // RAW: opportunity attacks trigger only when a creature USES its own
+        // movement to leave reach. Forced movement (Push mastery, Telekinesis,
+        // shove, repelling spells, etc.) is NOT voluntary, so it does NOT
+        // provoke. Callers signal forced movement by passing { aceForcedMovement: true }
+        // to token.update(). This guard sees the flag and skips the OA check.
+        if (opts?.aceForcedMovement === true) return;
         await OAPrompt._checkProvocations(tokenDoc, changes);
       } catch (err) {
         console.warn(`${MODULE_ID} | OA detection threw:`, err);
@@ -143,7 +150,12 @@ export class OAPrompt {
       if (polearmData) {
         const polearmReachPx = (polearmData.reachFt / ftPerGrid) * gridSize;
         if (distBefore > polearmReachPx && distAfter <= polearmReachPx) {
-          const reasonText = `can make an OA against <strong>${moverActor.name}</strong> entering polearm reach (${polearmData.weaponName}, ${polearmData.reachFt} ft, ${polearmData.edition} RAW).`;
+          // Use the TOKEN name (which has disambiguators like "Assassin 1",
+          // "Assassin 2") rather than the actor name (which would just say
+          // "Assassin" for every duplicate). Falls back to actor name if
+          // the token doc somehow lacks a name.
+          const moverDisplayName = moverDoc?.name ?? moverActor.name;
+          const reasonText = `can make an OA against <strong>${moverDisplayName}</strong> entering polearm reach (${polearmData.weaponName}, ${polearmData.reachFt} ft, ${polearmData.edition} RAW).`;
           await OAPrompt._postPromptCard(t.actor, moverActor, td, moverDoc, { reasonText });
         }
       }
@@ -193,8 +205,14 @@ export class OAPrompt {
   static async _postPromptCard(reactorActor, moverActor, reactorTokenDoc, moverTokenDoc, opts = {}) {
     const reactorId = reactorActor.id;
     const moverId   = moverActor.id;
+    // Prefer the TOKEN name (auto-disambiguated like "Assassin 1") over the
+    // actor name (which collapses duplicates into a single ambiguous name).
+    // Stored in flags so resolveOAPrompt can re-render with the right name
+    // later without re-resolving tokens.
+    const reactorName = reactorTokenDoc?.name ?? reactorActor.name;
+    const moverName   = moverTokenDoc?.name   ?? moverActor.name;
     const reasonText = opts.reasonText ?? null;
-    const html = OAPrompt._renderCardHtml(reactorActor.name, moverActor.name, reactorId, moverId, "pending", reasonText);
+    const html = OAPrompt._renderCardHtml(reactorName, moverName, reactorId, moverId, "pending", reasonText);
 
     // Whisper recipients: GM(s) + the reactor's player owner (if any).
     // For GM-controlled NPCs, only the GM sees the prompt. PCs reactors
@@ -212,7 +230,7 @@ export class OAPrompt {
       content: html,
       speaker: ChatMessage.getSpeaker({ actor: reactorActor }),
       whisper: [...recipients],
-      flags: { [MODULE_ID]: { type: "oaPrompt", reactorId, moverId, status: "pending", reasonText } },
+      flags: { [MODULE_ID]: { type: "oaPrompt", reactorId, moverId, reactorName, moverName, status: "pending", reasonText } },
     });
   }
 
@@ -280,8 +298,11 @@ export class OAPrompt {
     const moverId   = flags.moverId;
     const reactor   = game.actors.get(reactorId);
     const mover     = game.actors.get(moverId);
-    const reactorName = reactor?.name ?? "Reactor";
-    const moverName   = mover?.name ?? "Target";
+    // Prefer the token names that were captured when the card was posted
+    // (they include disambiguators like "Assassin 1"). Fall back to actor
+    // name, then to a generic placeholder so old cards still render.
+    const reactorName = flags.reactorName ?? reactor?.name ?? "Reactor";
+    const moverName   = flags.moverName   ?? mover?.name   ?? "Target";
 
     if (status === "taken" && reactor) {
       // Mark reaction used + fire cross-module hook (reaction-engine, etc.)

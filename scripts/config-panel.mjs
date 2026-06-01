@@ -143,6 +143,7 @@ export class AceQolConfigPanel extends ApplicationV2 {
           <div class="ace-qol-cfg-pane-header">
             <span class="ace-qol-cfg-pane-icon ace-qol-cfg-tab-icon-${activeTab.id}" aria-hidden="true"></span>
             <h2>${activeTab.label}</h2>
+            <span class="ace-qol-cfg-pane-icon ace-qol-cfg-pane-icon-mirror ace-qol-cfg-tab-icon-${activeTab.id}" aria-hidden="true"></span>
           </div>
           <div class="ace-qol-cfg-pane-frame">
             <div class="ace-qol-cfg-pane-body">
@@ -216,6 +217,7 @@ export class AceQolConfigPanel extends ApplicationV2 {
           <div class="ace-qol-cfg-pane-header">
             <span class="ace-qol-cfg-pane-icon" aria-hidden="true"><i class="fa-solid fa-magnifying-glass"></i></span>
             <h2>Search Results</h2>
+            <span class="ace-qol-cfg-pane-icon ace-qol-cfg-pane-icon-mirror" aria-hidden="true"><i class="fa-solid fa-magnifying-glass"></i></span>
           </div>
           <div class="ace-qol-cfg-pane-frame">
             <div class="ace-qol-cfg-pane-body">
@@ -242,6 +244,7 @@ export class AceQolConfigPanel extends ApplicationV2 {
         <div class="ace-qol-cfg-pane-header">
           <span class="ace-qol-cfg-pane-icon" aria-hidden="true"><i class="fa-solid fa-magnifying-glass"></i></span>
           <h2>Search Results — ${results.length} match${results.length === 1 ? "" : "es"} for "${foundry.utils.escapeHTML(query)}"</h2>
+          <span class="ace-qol-cfg-pane-icon ace-qol-cfg-pane-icon-mirror" aria-hidden="true"><i class="fa-solid fa-magnifying-glass"></i></span>
         </div>
         <div class="ace-qol-cfg-pane-frame">
           <div class="ace-qol-cfg-pane-body">

@@ -1027,6 +1027,73 @@
   box-shadow: 0 4px 18px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.04);
 }
 
+/* ─── Bundled "ROLL DAMAGE + PUSH 10 FT?" button ───────────────────────────
+   Sits under the regular ROLL DAMAGE button on the pre-damage button card
+   when push mastery applies + target is within the size cap. Blinks orange
+   so the player notices. Click → roll damage AND push 10 ft in one action.
+   Blink animation stops when the button gets the disabled state. */
+@keyframes ace-blink-push {
+  0%, 100% {
+    background: linear-gradient(180deg, #c25718 0%, #8a3b0e 100%);
+    box-shadow:
+      0 2px 10px rgba(0,0,0,0.45),
+      0 0 0 1px rgba(232, 138, 90, 0.45),
+      inset 0 1px 0 rgba(255,255,255,0.12),
+      inset 0 -1px 0 rgba(0,0,0,0.25);
+  }
+  50% {
+    background: linear-gradient(180deg, #ff8a30 0%, #d65f12 100%);
+    box-shadow:
+      0 0 24px rgba(255, 140, 0, 0.95),
+      0 0 0 2px rgba(255, 180, 60, 0.85),
+      inset 0 1px 0 rgba(255,255,255,0.28),
+      inset 0 -1px 0 rgba(0,0,0,0.20);
+  }
+}
+.ace-qol-btn-roll-dmg-push {
+  width: 100%;
+  margin-top: 8px;
+  padding: 11px 16px;
+  border: 1px solid rgba(255, 180, 90, 0.55);
+  border-radius: 6px;
+  color: #fff7e8;
+  font-size: 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: center;
+  font-family: 'Rajdhani', 'Segoe UI', sans-serif;
+  transition: background 0.15s, box-shadow 0.15s;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+}
+.ace-qol-blink-push {
+  animation: ace-blink-push 0.75s ease-in-out infinite;
+}
+.ace-qol-btn-roll-dmg-push:hover:not(:disabled) {
+  animation-play-state: paused;
+  background: linear-gradient(180deg, #ffa050 0%, #e07014 100%);
+  box-shadow:
+    0 4px 18px rgba(255, 140, 0, 0.65),
+    0 0 0 2px rgba(255, 200, 100, 0.85),
+    inset 0 1px 0 rgba(255,255,255,0.32),
+    inset 0 -1px 0 rgba(0,0,0,0.20);
+}
+.ace-qol-btn-roll-dmg-push:disabled {
+  background: linear-gradient(180deg, #4a3520 0%, #2a1f12 100%);
+  color: #8a7050;
+  border-color: rgba(232, 138, 90, 0.20);
+  cursor: not-allowed;
+  opacity: 0.65;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+}
+.ace-qol-btn-roll-dmg-push i {
+  font-size: 0.9rem;
+}
+
 /* v0.6.x polish: replaced the chunky 3-stop chrome gradient with a single
    deeper crimson + subtle highlight. Slightly rounder corners (6px),
    refined shadow, tighter letter-spacing. Modernized. */

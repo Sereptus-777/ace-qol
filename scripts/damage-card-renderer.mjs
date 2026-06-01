@@ -131,12 +131,43 @@ export class DamageCardRenderer {
 
     console.log(`${MODULE_ID} | postDamageButton: pre-rolled ${preRolled.length} targets, critRule=${critRule}`);
 
+    // ── Push mastery: bundled "ROLL DAMAGE + PUSH 10 FT?" button ──
+    // If the attacker has Push mastery + the weapon has push + edition allows
+    // it + the FIRST target is within the size cap, offer a second blinking
+    // orange button that bundles the roll-damage and push actions into one
+    // click. RAW: Push is "you can" — optional — so the player decides via
+    // the choice between the plain button and the bundled button.
+    let pushBundle = null;
+    try {
+      const firstHit = hits?.[0];
+      const firstTargetActor = firstHit?.targetActor ?? firstHit?.target?.actor ?? null;
+      if (firstTargetActor && WeaponMasteries.shouldOfferPush(item, actor, firstTargetActor)) {
+        const firstTargetToken = firstHit?.targetToken ?? null;
+        const attTok = actor?.getActiveTokens?.()[0] ?? null;
+        if (firstTargetToken && attTok) {
+          pushBundle = {
+            attackerUuid: attTok.document?.uuid ?? attTok.uuid,
+            targetUuid:   firstTargetToken.document?.uuid ?? firstTargetToken.uuid,
+            targetName:   firstHit?.target?.name ?? firstHit?.name ?? firstTargetToken.name,
+          };
+        }
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | postDamageButton push-bundle check failed (non-blocking):`, err);
+    }
+
     const cardHtml = `
       <div class="ace-qol-dmg-btn-card">
         <button class="ace-qol-btn ace-qol-btn-roll-dmg" data-action="aceQolRollDamage">
           <i class="fas fa-burst"></i>
           ROLL DAMAGE${anyCrit ? ' <span class="ace-qol-dmg-btn-crit">CRIT!</span>' : ""}
         </button>
+        ${pushBundle ? `<button class="ace-qol-btn ace-qol-btn-roll-dmg-push ace-qol-blink-push" data-action="aceQolRollDamagePush"
+          data-attacker-uuid="${pushBundle.attackerUuid}"
+          data-target-uuid="${pushBundle.targetUuid}">
+          <i class="fas fa-burst"></i><i class="fas fa-hand-back-fist"></i>
+          ROLL DAMAGE + PUSH 10 FT?
+        </button>` : ""}
         <span class="ace-qol-dmg-btn-targets">→ ${targetNames}</span>
       </div>
     `;
