@@ -358,14 +358,16 @@ export class DamageCardRenderer {
         <div class="ace-qol-dmg-roll-section">
           <div class="ace-qol-dmg-components">${formulaRows}</div>
         </div>
+        ${hasCleave ? `<div class="ace-qol-dmg-cleave-row">
+          <button class="ace-qol-btn ace-qol-btn-cleave" data-action="aceQolCleave">
+            <i class="fas fa-khanda"></i> CLEAVE
+          </button>
+        </div>` : ""}
         <div class="ace-qol-dmg-targets">
           ${targetRows}
         </div>
         <div class="ace-qol-dmg-gm-controls">
           <div class="ace-qol-dmg-actions">
-            ${hasCleave ? `<button class="ace-qol-btn ace-qol-btn-cleave" data-action="aceQolCleave">
-              <i class="fas fa-khanda"></i> CLEAVE
-            </button>` : ""}
             <button class="ace-qol-btn ace-qol-btn-apply" data-action="aceQolApplyDamage">
               <i class="fas fa-heart-crack"></i> APPLY ALL
             </button>
@@ -706,8 +708,11 @@ export class DamageCardRenderer {
             <i class="fas ${mod.icon}"></i> ${c.final} ${c.type} <strong class="ace-qol-dmg-truth-only">${mod.text}</strong>
           </span>`;
         } else if (c.final > 0) {
+          // Green check (applied) + bright blood-red damage amount + small "DMG" label
           statusHtml += `<span class="ace-qol-player-status-line ace-qol-player-status-applied">
-            <i class="fas fa-check"></i> ${c.final} ${c.type}
+            <i class="fas fa-check ace-qol-player-status-check"></i>
+            <span class="ace-qol-player-status-dmg">${c.final} ${c.type}</span>
+            <span class="ace-qol-player-status-dmg-label">DMG</span>
           </span>`;
         }
       }

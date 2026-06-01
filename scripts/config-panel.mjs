@@ -42,6 +42,8 @@ const TABS = [
     settings: ["autoSurpriseCheck", "hideActionEnabled", "hideRevealsOnAttack", "hideRevealsOnDamage"] },
   { id: "actions",    label: "Combat Actions",     icon: "fa-solid fa-person-running",
     settings: ["criticalFumbleEnabled", "rangedInMeleeDisadvantage", "opportunityAttackPrompt", "opportunityAttackReach"] },
+  { id: "masteries",  label: "Weapon Masteries",   icon: "fa-solid fa-khanda",
+    settings: ["weaponMasteryEnabled", "weaponMasteryStrict", "weaponMasteryAllowIn2014"] },
   { id: "initiative", label: "Initiative",         icon: "fa-solid fa-hourglass-start",
     settings: ["showInitiativeButtons", "pcInitiativeAutoRoll"] },
   { id: "loot",       label: "Loot",               icon: "fa-solid fa-treasure-chest",
@@ -87,6 +89,7 @@ export class AceQolConfigPanel extends ApplicationV2 {
     super(options);
     this._activeTab = TABS[0].id;
     this._pendingChanges = {};
+    this._searchQuery = "";  // cross-tab filter input value
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -105,20 +108,37 @@ export class AceQolConfigPanel extends ApplicationV2 {
   _buildHTML() {
     const tabsHtml = TABS.map(tab => `
       <li class="ace-qol-cfg-tab ${tab.id === this._activeTab ? "active" : ""}" data-tab-id="${tab.id}">
-        <span class="ace-qol-cfg-tab-icon ace-qol-cfg-tab-icon-${tab.id}" aria-hidden="true"></span>
+        <span class="ace-qol-cfg-tab-icon ace-qol-cfg-tab-icon-${tab.id}" aria-hidden="true">
+          <i class="${tab.icon ?? "fa-solid fa-circle"}"></i>
+        </span>
         <span class="ace-qol-cfg-tab-label">${tab.label}</span>
       </li>
     `).join("");
 
-    const activeTab = TABS.find(t => t.id === this._activeTab) ?? TABS[0];
-    const settingsHtml = activeTab.settings.map(k => this._renderSetting(k)).join("");
-    const customHtml = activeTab.customMethod && typeof this[activeTab.customMethod] === "function"
-      ? this[activeTab.customMethod]()
-      : "";
+    // ── Search bar (cross-tab) ──
+    // When query has 2+ chars, the pane shows search results across ALL tabs
+    // instead of the active tab's settings. Each result is rendered with a
+    // small chip showing which tab it belongs to (clickable to jump).
+    const q = String(this._searchQuery ?? "").trim();
+    const searchBar = `
+      <div class="ace-qol-cfg-search">
+        <span class="ace-qol-cfg-search-icon"><i class="fa-solid fa-magnifying-glass"></i></span>
+        <input type="search" class="ace-qol-cfg-search-input" placeholder="Search all settings…"
+               value="${foundry.utils.escapeHTML(this._searchQuery ?? "")}" />
+        ${q ? `<button type="button" class="ace-qol-cfg-search-clear" data-action="clear-search" title="Clear search"><i class="fa-solid fa-xmark"></i></button>` : ""}
+      </div>
+    `;
 
-    return `
-      <div class="ace-qol-cfg-root">
-        <ul class="ace-qol-cfg-tablist">${tabsHtml}</ul>
+    let paneHtml;
+    if (q.length >= 2) {
+      paneHtml = this._renderSearchResults(q);
+    } else {
+      const activeTab = TABS.find(t => t.id === this._activeTab) ?? TABS[0];
+      const settingsHtml = activeTab.settings.map(k => this._renderSetting(k)).join("");
+      const customHtml = activeTab.customMethod && typeof this[activeTab.customMethod] === "function"
+        ? this[activeTab.customMethod]()
+        : "";
+      paneHtml = `
         <div class="ace-qol-cfg-pane">
           <div class="ace-qol-cfg-pane-header">
             <span class="ace-qol-cfg-pane-icon ace-qol-cfg-tab-icon-${activeTab.id}" aria-hidden="true"></span>
@@ -129,6 +149,16 @@ export class AceQolConfigPanel extends ApplicationV2 {
               ${settingsHtml}${customHtml}${(!settingsHtml && !customHtml) ? `<p class="ace-qol-cfg-empty">No settings for this tab.</p>` : ""}
             </div>
           </div>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="ace-qol-cfg-root">
+        ${searchBar}
+        <div class="ace-qol-cfg-body">
+          <ul class="ace-qol-cfg-tablist">${tabsHtml}</ul>
+          ${paneHtml}
         </div>
       </div>
       <footer class="ace-qol-cfg-footer">
@@ -152,6 +182,73 @@ export class AceQolConfigPanel extends ApplicationV2 {
           </button>
         </div>
       </footer>
+    `;
+  }
+
+  /**
+   * Render cross-tab search results. Walks every tab's settings, matches
+   * the query (case-insensitive) against setting key, name, and hint.
+   * Each match is shown with a clickable "tab chip" so the user can jump
+   * to that tab and edit the setting in context.
+   *
+   * @param {string} query  case-insensitive needle
+   * @returns {string}      HTML for the pane content
+   */
+  _renderSearchResults(query) {
+    const q = query.toLowerCase();
+    const results = [];
+    for (const tab of TABS) {
+      for (const key of (tab.settings ?? [])) {
+        const fullKey = `${MODULE_ID}.${key}`;
+        const setting = game.settings.settings.get(fullKey);
+        if (!setting) continue;
+        const name = String(setting.name ?? "").toLowerCase();
+        const hint = String(setting.hint ?? "").toLowerCase();
+        if (name.includes(q) || hint.includes(q) || key.toLowerCase().includes(q)) {
+          results.push({ tab, key, setting });
+        }
+      }
+    }
+
+    if (!results.length) {
+      return `
+        <div class="ace-qol-cfg-pane">
+          <div class="ace-qol-cfg-pane-header">
+            <span class="ace-qol-cfg-pane-icon" aria-hidden="true"><i class="fa-solid fa-magnifying-glass"></i></span>
+            <h2>Search Results</h2>
+          </div>
+          <div class="ace-qol-cfg-pane-frame">
+            <div class="ace-qol-cfg-pane-body">
+              <p class="ace-qol-cfg-empty">No settings match <strong>"${foundry.utils.escapeHTML(query)}"</strong>.</p>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    const itemsHtml = results.map(r => `
+      <div class="ace-qol-cfg-search-result">
+        <button type="button" class="ace-qol-cfg-search-tab-chip" data-action="jump-to-tab"
+                data-tab-id="${r.tab.id}" title="Jump to ${foundry.utils.escapeHTML(r.tab.label)} tab">
+          <span class="ace-qol-cfg-tab-icon ace-qol-cfg-tab-icon-${r.tab.id}" aria-hidden="true"></span>
+          ${foundry.utils.escapeHTML(r.tab.label)}
+        </button>
+        ${this._renderSetting(r.key)}
+      </div>
+    `).join("");
+
+    return `
+      <div class="ace-qol-cfg-pane">
+        <div class="ace-qol-cfg-pane-header">
+          <span class="ace-qol-cfg-pane-icon" aria-hidden="true"><i class="fa-solid fa-magnifying-glass"></i></span>
+          <h2>Search Results — ${results.length} match${results.length === 1 ? "" : "es"} for "${foundry.utils.escapeHTML(query)}"</h2>
+        </div>
+        <div class="ace-qol-cfg-pane-frame">
+          <div class="ace-qol-cfg-pane-body">
+            ${itemsHtml}
+          </div>
+        </div>
+      </div>
     `;
   }
 
@@ -362,6 +459,41 @@ export class AceQolConfigPanel extends ApplicationV2 {
   // ─────────────────────────────────────────────────────────────────────────
 
   _wireEvents(root) {
+    // ── Search input ──
+    // Re-renders on each keystroke to filter across all tabs. Focus and
+    // caret position are restored after re-render so typing stays smooth.
+    const searchInput = root.querySelector(".ace-qol-cfg-search-input");
+    if (searchInput) {
+      searchInput.addEventListener("input", (ev) => {
+        const newQuery = ev.target.value ?? "";
+        const caretPos = ev.target.selectionStart;
+        this._searchQuery = newQuery;
+        this.render({ force: false }).then(() => {
+          // Restore focus + caret after async re-render
+          const newInput = this.element?.querySelector?.(".ace-qol-cfg-search-input");
+          if (newInput) {
+            newInput.focus();
+            try { newInput.setSelectionRange(caretPos, caretPos); } catch (_) {}
+          }
+        });
+      });
+    }
+    root.querySelector("[data-action='clear-search']")?.addEventListener("click", () => {
+      this._searchQuery = "";
+      this.render({ force: false });
+    });
+    // Search results — click a tab chip to jump to that tab (clears search)
+    root.querySelectorAll("[data-action='jump-to-tab']").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.tabId;
+        if (id) {
+          this._activeTab = id;
+          this._searchQuery = "";
+          this.render({ force: false });
+        }
+      });
+    });
+
     // Tab switching
     root.querySelectorAll(".ace-qol-cfg-tab").forEach(li => {
       li.addEventListener("click", () => {
@@ -378,6 +510,22 @@ export class AceQolConfigPanel extends ApplicationV2 {
       el.addEventListener("change", () => this._onSettingChange(el));
       if (el.type === "range") {
         el.addEventListener("input", () => this._onSettingChange(el));
+
+        // ── UX fix: block wheel-over-slider from changing the value ──
+        // Without this, scrolling the settings list with the mouse wheel
+        // will accidentally crank any slider the cursor passes over, often
+        // to its min or max. Foundry's stock UI has the same problem.
+        // Standard pattern: sliders only respond to click + drag or to
+        // arrow keys after click. Wheel events bubble up to scroll the
+        // panel normally (we manually propagate to the scroll container).
+        el.addEventListener("wheel", (ev) => {
+          ev.preventDefault();
+          const scrollContainer = el.closest(".ace-qol-cfg-pane-body")
+                              ?? el.closest(".ace-qol-cfg-pane");
+          if (scrollContainer) {
+            scrollContainer.scrollBy({ top: ev.deltaY, behavior: "auto" });
+          }
+        }, { passive: false });
       }
     });
 

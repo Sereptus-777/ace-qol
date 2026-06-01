@@ -154,6 +154,19 @@ export class MergeCard {
                      : r.hitResult === "fumble" ? "FUMBLE"
                      : "MISS";
 
+      // ── Mirror Image redirect caption ──
+      // When an attack was absorbed by a Mirror Image duplicate, the target row
+      // shows MISS — but without context the attacker sees "21 vs AC 13 = MISS"
+      // and is confused why. Inject a small caption explaining the redirect.
+      let mirrorCaption = "";
+      if (r.mirrorImageRedirect) {
+        const mi = r.mirrorImageRedirect;
+        const outcome = mi.hitDuplicate
+          ? `Hit Mirror Image duplicate (AC ${mi.duplicateAC}) — duplicate destroyed`
+          : `Hit Mirror Image duplicate (AC ${mi.duplicateAC}) — duplicate dodged`;
+        mirrorCaption = `<div class="ace-qol-merge-tgt-caption ace-qol-merge-mirror-caption">→ ${outcome}</div>`;
+      }
+
       return `
         <div class="ace-qol-merge-target-row ${hitClass}">
           <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-merge-tgt-img" />
@@ -161,6 +174,7 @@ export class MergeCard {
           <span class="ace-qol-merge-tgt-ac">AC ${r.ac}</span>
           <span class="ace-qol-merge-tgt-result">${hitLabel}</span>
         </div>
+        ${mirrorCaption}
       `;
     }).join("");
 
@@ -374,6 +388,15 @@ export class MergeCard {
 
       // ── Miss / Fumble row (no damage) ──
       if (!isHit) {
+        // Mirror Image redirect explanation — same caption as the early hit-card path
+        let mirrorCaption = "";
+        if (atkResult.mirrorImageRedirect) {
+          const mi = atkResult.mirrorImageRedirect;
+          const outcome = mi.hitDuplicate
+            ? `Hit Mirror Image duplicate (AC ${mi.duplicateAC}) — duplicate destroyed`
+            : `Hit Mirror Image duplicate (AC ${mi.duplicateAC}) — duplicate dodged`;
+          mirrorCaption = `<div class="ace-qol-merge-tgt-caption ace-qol-merge-mirror-caption">→ ${outcome}</div>`;
+        }
         return `
           <div class="ace-qol-merge-combined-row ace-qol-merge-row-miss">
             <div class="ace-qol-merge-row-header">
@@ -382,6 +405,7 @@ export class MergeCard {
               <span class="ace-qol-atk-ac">AC ${atkResult.ac}</span>
               <span class="ace-qol-atk-result ${hitClass}">${hitLabel}</span>
             </div>
+            ${mirrorCaption}
           </div>
         `;
       }

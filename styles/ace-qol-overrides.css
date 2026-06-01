@@ -1,7 +1,22 @@
 /* ═══════════════════════════════════════════════════════════════════════
-   Ace QoL — Chat Card Overrides
-   Futuristic crimson styling for ROLL DAMAGE buttons
+   Ace QoL — Chat Card + Cross-Module Overrides
+   Futuristic crimson styling for ROLL DAMAGE buttons + BG3 HUD tweaks
    ═══════════════════════════════════════════════════════════════════════ */
+
+/* ─── BG3 HUD info-button (initiative dice) always visible ───────────────
+   BG3 HUD's default behavior hides the dice icon until you hover over the
+   portrait. Johnny's table workflow assumes the dice is always visible so
+   players don't have to fish for it. Force opacity:1 unconditionally;
+   transition still happens for the hover-emphasis grow effect but the
+   button itself is permanently rendered. */
+.bg3-info-button {
+  opacity: 1 !important;
+}
+.bg3-portrait-container .bg3-info-button,
+.bg3-portrait-container:hover .bg3-info-button {
+  opacity: 1 !important;
+}
+
 
 /* ─── Damage Button Card ─────────────────────────────────────────────── */
 .ace-qol-dmg-btn-card {

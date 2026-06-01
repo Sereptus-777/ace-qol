@@ -63,24 +63,72 @@ export class AAStore {
   }
 
   /**
-   * Find a record whose label matches the given spell name.
+   * Find a record whose label matches the given spell/item.
    * Case-insensitive. Strips bracket prefixes like "[ACE-OFF] ".
    * Searches every category since AA splits by category.
    *
-   * @returns {{category:string, recId:string, record:object} | null}
+   * Backwards-compatible signature: accepts either a string (name) or an
+   * Item document. When passed an Item, also tries a second-pass fallback
+   * to `item.system.type.baseItem` — the dnd5e base weapon type like
+   * "longsword". This is what AA does at playback time for magical
+   * weapons whose proper name ("Longsword of Sharpness", "Dawnbringer")
+   * doesn't exactly match AA's autorec entries.
+   *
+   * @param {string|Item} spellNameOrItem
+   * @returns {{category:string, recId:string, record:object, matchedBy:string} | null}
    */
-  static findRecord(spellName) {
+  static findRecord(spellNameOrItem) {
     if (!AAStore.isInstalled()) return null;
-    const target = String(spellName ?? "").toLowerCase().trim();
+
+    // Accept either a string OR an item document
+    let itemRef = null;
+    let target;
+    if (spellNameOrItem && typeof spellNameOrItem === "object" && spellNameOrItem.name !== undefined) {
+      itemRef = spellNameOrItem;
+      target = String(itemRef.name ?? "").toLowerCase().trim();
+    } else {
+      target = String(spellNameOrItem ?? "").toLowerCase().trim();
+    }
     if (!target) return null;
-    for (const cat of AA_CATEGORIES) {
-      const records = AAStore.getCategory(cat);
-      for (const [recId, rec] of Object.entries(records)) {
-        const label = String(rec?.label ?? "").toLowerCase().trim()
-          .replace(/^\[[^\]]*\]\s*/, "");
-        if (label === target) return { category: cat, recId, record: rec };
+
+    const _searchAllCategories = (needle) => {
+      for (const cat of AA_CATEGORIES) {
+        const records = AAStore.getCategory(cat);
+        for (const [recId, rec] of Object.entries(records)) {
+          const label = String(rec?.label ?? "").toLowerCase().trim()
+            .replace(/^\[[^\]]*\]\s*/, "");
+          if (label === needle) return { category: cat, recId, record: rec };
+        }
+      }
+      return null;
+    };
+
+    // ── Pass 1: exact match on the item name ──
+    const exact = _searchAllCategories(target);
+    if (exact) return { ...exact, matchedBy: "name" };
+
+    // ── Pass 2 (item-aware): fall back to baseItem ──
+    // "Longsword of Sharpness" → baseItem "longsword" → matches AA's
+    // built-in "Longsword" entry. Same path covers Dawnbringer (baseItem
+    // "longsword"), Mace of Disruption (baseItem "mace"), etc.
+    if (itemRef) {
+      const baseItem = String(itemRef.system?.type?.baseItem ?? "").toLowerCase().trim();
+      if (baseItem && baseItem !== target) {
+        const byBase = _searchAllCategories(baseItem);
+        if (byBase) return { ...byBase, matchedBy: "baseItem" };
+      }
+
+      // ── Pass 3 (item-aware): fall back to weapon type ──
+      // For weapons missing both name and baseItem matches, try the
+      // weapon's `system.type.value` ("simpleM", "martialM", "simpleR",
+      // "martialR") — AA sometimes has generic entries keyed by these.
+      const typeValue = String(itemRef.system?.type?.value ?? "").toLowerCase().trim();
+      if (typeValue && typeValue !== target && typeValue !== baseItem) {
+        const byType = _searchAllCategories(typeValue);
+        if (byType) return { ...byType, matchedBy: "weaponType" };
       }
     }
+
     return null;
   }
 

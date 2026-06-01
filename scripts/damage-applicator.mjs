@@ -314,6 +314,36 @@ export class DamageApplicator {
     const flags = message.flags?.[MODULE_ID];
     if (!flags) return;
 
+    // ── Permission guard: route non-author/non-GM clicks through GM via socket ──
+    // Foundry's permission model only allows a chat message to be updated by
+    // its author or by a GM. When a PLAYER clicks CLEAVE on a damage card
+    // that was created on the GM client (which is the normal flow for our
+    // forwarded-attack pipeline), the player can't call message.update().
+    // Route the request to the GM, who performs the update on their side.
+    // The flag change propagates back via Foundry's standard sync and every
+    // client re-renders with the new target row + greyed-out CLEAVE button.
+    const isAuthor = message.author?.id === game.user.id;
+    if (!game.user.isGM && !isAuthor) {
+      try {
+        const tokenDocId = token.document?.id ?? token.id;
+        const sceneId = token.document?.parent?.id ?? canvas.scene?.id;
+        game.socket?.emit?.(`module.${MODULE_ID}`, {
+          type:              "addCleaveTarget",
+          fromUserId:        game.user.id,
+          messageId:         message.id,
+          sceneId,
+          tokenDocId,
+          isCleave,
+          overkillAmount,
+          overkillComponents,
+        });
+        console.log(`${MODULE_ID} | Player ${game.user.name} emitted addCleaveTarget socket request (msg=${message.id}, token=${tokenDocId})`);
+      } catch (err) {
+        console.warn(`${MODULE_ID} | addCleaveTarget socket emit failed:`, err);
+      }
+      return;  // GM will perform the actual update + propagate to all clients
+    }
+
     const actor = token.actor;
     if (!actor) {
       ui.notifications.warn("ACE QOL: Selected token has no actor.");
@@ -399,7 +429,14 @@ export class DamageApplicator {
       isCleave: isCleave,
     });
 
-    await message.update({ [`flags.${MODULE_ID}.damageResults`]: existingResults });
+    // Persist the new target on the message. If this was a cleave (mastery
+    // or overkill), also set the `cleaveFired` flag so the CLEAVE button
+    // greys out for every client on subsequent renders.
+    const updatePayload = { [`flags.${MODULE_ID}.damageResults`]: existingResults };
+    if (isCleave) {
+      updatePayload[`flags.${MODULE_ID}.cleaveFired`] = true;
+    }
+    await message.update(updatePayload);
     console.log(`${MODULE_ID} | ${isCleave ? "CLEAVE" : "ADD"}: ${token.name} added to damage card (${totalFinal} damage)`);
   }
 

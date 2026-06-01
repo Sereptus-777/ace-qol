@@ -331,6 +331,20 @@ Hooks.once("init", () => {
     console.error(`${MODULE_ID} | Extended Effects init failed:`, err);
   }
 
+  // Apply user-configured tooltip activation delay (Foundry default is 500ms;
+  // we let the user slow it down for sheet-browsing comfort). The setting's
+  // onChange handler covers live updates; this applies the saved value on
+  // every world load so it survives reloads.
+  try {
+    const delay = Number(game.settings.get(MODULE_ID, "tooltipDelay")) || 500;
+    if (foundry.helpers?.interaction?.TooltipManager) {
+      foundry.helpers.interaction.TooltipManager.TOOLTIP_ACTIVATION_DELAY = delay;
+      console.log(`${MODULE_ID} | Tooltip delay restored to ${delay}ms on world load.`);
+    }
+  } catch (err) {
+    console.warn(`${MODULE_ID} | Tooltip delay init failed (non-fatal):`, err);
+  }
+
   // ── 2024 Exhaustion sheet-pip cap bump ──
   // dnd5e 5.x ships CONFIG.DND5E.conditionTypes.exhaustion.levels = 6 even when
   // the system is in modern (2024) mode. 2024 RAW has 10 exhaustion levels.
@@ -351,6 +365,363 @@ Hooks.once("init", () => {
   }
 
   console.log(`${MODULE_ID} | Initialized`);
+});
+
+// ─── BG3 HUD nudge (auto deselect + reselect on world load) ─────────────
+// BG3 HUD's portrait + action-hotbar components don't always fully render
+// + bind their click handlers on the very first load. Symptoms include:
+//   - Info-button (dice icon) missing on portrait
+//   - Weapon attack buttons (Halberd / Dawnbringer in hotbar) not firing
+//     when clicked
+//   - Both clear up immediately when the player clicks off their token
+//     onto empty canvas and back on (deselect+reselect cycle)
+//
+// Fix: on world ready, do the deselect+reselect for the player automatically
+// so they don't have to remember the workaround. Runs for GM AND players
+// (Johnny reported the bug hits GM side too when re-selecting between
+// tokens). The release+control sequence triggers BG3 HUD's controlToken
+// hook which fully re-initializes BOTH the portrait and the action hotbar.
+//
+// Timing: 1500ms after ready. Earlier values (600ms) sometimes fired
+// BEFORE BG3 HUD had finished its initial render, leaving the action
+// buttons still unbound. 1500ms is conservative but still imperceptible
+// for the player.
+Hooks.once("ready", () => {
+  setTimeout(() => {
+    try {
+      const controlled = canvas?.tokens?.controlled ?? [];
+      if (controlled.length === 0) return;  // nothing to nudge
+      // If multiple selected (GM with a group), only nudge the first to
+      // avoid changing the GM's selection state too aggressively.
+      const token = controlled[0];
+      const tokenName = token.name;
+      // Deselect all
+      canvas.tokens?.releaseAll?.();
+      // One tick later, re-select the same token. BG3 HUD's controlToken
+      // hook fires on both events, fully re-initializing the portrait
+      // AND the action hotbar (binding the click handlers properly).
+      setTimeout(() => {
+        try {
+          token.control?.({ releaseOthers: true });
+          console.log(`${MODULE_ID} | BG3 HUD nudged (deselect+reselect) for ${tokenName}`);
+        } catch (_) { /* non-fatal — token may have moved off-canvas */ }
+      }, 100);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | BG3 HUD nudge failed (non-fatal):`, err);
+    }
+  }, 1500);
+});
+
+// ─── Player Can Start Combat (RAW behavior) ─────────────────────────────
+// Foundry/dnd5e default: only the GM can create a Combat document. Players
+// rolling initiative when no combat exists hit a TypeError from dnd5e's
+// rollInitiative trying to call methods on null. This is wrong for D&D —
+// RAW any combatant can initiate combat (assassin from stealth, surprise
+// attack, etc.). We patch the system so any roll-initiative call auto-
+// creates a combat if one doesn't exist.
+//
+// Two paths:
+//   - GM side: patch Actor.rollInitiative to create the combat directly.
+//   - Player side: same patch, but if Combat.create fails (permission
+//     denied), emit a socket to the GM client which creates on their
+//     behalf and adds the player's actor as a combatant.
+//
+// Both paths fall back to calling the original rollInitiative once the
+// combat exists. No-op when the `playerCanStartCombat` setting is off.
+const ACE_SOCKET_NAME = `module.${MODULE_ID}`;
+
+Hooks.once("ready", () => {
+  if (!_aceQolEnabled()) return;
+  if (!game.settings.get(MODULE_ID, "playerCanStartCombat")) {
+    console.log(`${MODULE_ID} | Player-can-start-combat patch skipped (setting off).`);
+    return;
+  }
+
+  // ── 1. Prototype patch on Actor.rollInitiative ─────────────────────────
+  try {
+    const ActorClass = CONFIG.Actor?.documentClass;
+    if (!ActorClass) {
+      console.warn(`${MODULE_ID} | CONFIG.Actor.documentClass missing — initiative patch skipped.`);
+    } else if (typeof ActorClass.prototype.rollInitiative === "function"
+               && !ActorClass.prototype.rollInitiative.__aceQolStartCombatPatched) {
+      const _origRollInitiative = ActorClass.prototype.rollInitiative;
+      ActorClass.prototype.rollInitiative = async function (...args) {
+        try {
+          // Combat already active in the viewed scene? Nothing to do here.
+          if (game.combat) return _origRollInitiative.apply(this, args);
+
+          // No combat — figure out which scene and try to create one.
+          const sceneId = canvas.scene?.id ?? game.scenes?.viewed?.id;
+          if (!sceneId) {
+            ui.notifications?.error("ACE: Can't start combat — no active scene.");
+            return _origRollInitiative.apply(this, args);
+          }
+          const actor = this;
+          const token = actor.getActiveTokens?.()?.[0]?.document
+                     ?? actor.getActiveTokens?.()?.[0];
+
+          // Direct create path (works for GM; throws for player without
+          // permission — that's the trigger to fall through to socket).
+          try {
+            const combat = await Combat.create({ scene: sceneId, active: true });
+            if (combat && token) {
+              try {
+                await combat.createEmbeddedDocuments("Combatant", [{
+                  tokenId: token.id,
+                  sceneId,
+                  actorId: actor.id,
+                  hidden:  false,
+                }]);
+              } catch (addErr) {
+                console.warn(`${MODULE_ID} | Failed to add actor to auto-created combat:`, addErr);
+              }
+            }
+            console.log(`${MODULE_ID} | Auto-created combat for ${actor.name} (direct path)`);
+          } catch (createErr) {
+            // Permission denied (player) — ask the GM client to do it.
+            if (!game.user.isGM) {
+              console.log(`${MODULE_ID} | Direct create failed (likely permission), routing via GM socket.`);
+              ui.notifications?.info("ACE: Asking GM to start combat...");
+              game.socket?.emit?.(ACE_SOCKET_NAME, {
+                type:    "requestCreateCombat",
+                sceneId,
+                actorId: actor.id,
+                tokenId: token?.id,
+                fromUserId: game.user.id,
+              });
+              // Poll for combat to appear (GM client creates it via socket).
+              // 100ms intervals up to 5s total — round-trip socket + create
+              // typically takes <500ms on a healthy connection, but slow GM
+              // machines / busy worlds can stretch this. Extended from 3s
+              // to 5s after audit feedback (silent roll-drop risk at 3s).
+              const deadline = Date.now() + 5000;
+              while (!game.combat && Date.now() < deadline) {
+                await new Promise(r => setTimeout(r, 100));
+              }
+              // ── HIGH-priority audit fix (Grok #3) ──
+              // Previously this had `return;` here which silently dropped
+              // the user's initiative roll if combat hadn't appeared by
+              // deadline. Now we do one final synchronous check AND fall
+              // through to _origRollInitiative regardless of result. If
+              // game.combat exists (race recovery), original works; if
+              // not, dnd5e's standard "no encounter" warning fires —
+              // which is no worse than the pre-patch behavior, and the
+              // user can retry. We still post a friendly heads-up so
+              // they know what happened.
+              if (!game.combat) {
+                ui.notifications?.warn("ACE: GM didn't respond yet — combat may not be started. Attempting roll anyway; retry if it fails.");
+                // No `return;` — fall through below.
+              }
+            } else {
+              // We ARE the GM and create still failed — re-throw so the
+              // error surfaces instead of silently swallowing.
+              throw createErr;
+            }
+          }
+          return _origRollInitiative.apply(this, args);
+        } catch (err) {
+          console.error(`${MODULE_ID} | rollInitiative patch threw:`, err);
+          return _origRollInitiative.apply(this, args);
+        }
+      };
+      ActorClass.prototype.rollInitiative.__aceQolStartCombatPatched = true;
+      console.log(`${MODULE_ID} | Actor.rollInitiative patched — players can now start combat.`);
+    }
+  } catch (patchErr) {
+    console.warn(`${MODULE_ID} | rollInitiative prototype patch failed:`, patchErr);
+  }
+
+  // ── 2. GM-side socket handler for player-initiated combat creation ────
+  // Only the GM client should respond. Multiple GMs: first to respond
+  // wins — the in-memory lock below prevents duplicate Combat creation
+  // even under concurrent player requests.
+  //
+  // ── In-memory mutex per scene (audit fix — Grok #2) ──
+  // Without this, two players rolling initiative simultaneously could
+  // BOTH pass the "no combat" check, BOTH call Combat.create, and end
+  // up with two combats for the same scene. The lock serializes per-
+  // scene handler execution. Locks auto-expire after 5s as a safety
+  // net (handler should never take that long).
+  if (game.user.isGM) {
+    const _pendingScenes = new Map();  // sceneId → expiryTimestamp
+
+    game.socket?.on?.(ACE_SOCKET_NAME, async (data) => {
+      try {
+        if (data?.type !== "requestCreateCombat") return;
+        const sceneId = data.sceneId ?? canvas.scene?.id;
+        if (!sceneId) return;
+
+        // ── CRITICAL audit fix (Grok #1) — Permission validation ──
+        // Without this, ANY connected client could craft a socket payload
+        // claiming any actorId/tokenId, and the GM handler would dutifully
+        // create a combat and add that combatant. Malicious player could
+        // force-add hidden ambush NPCs, other players' characters, etc.
+        // Verify the requesting user actually has permission on the actor
+        // they claim to be acting for.
+        const requestingUser = game.users?.get?.(data.fromUserId);
+        if (!requestingUser) {
+          console.warn(`${MODULE_ID} | Socket request from unknown user id "${data.fromUserId}" — rejecting.`);
+          return;
+        }
+        const requestedActor = game.actors?.get?.(data.actorId);
+        if (!requestedActor) {
+          console.warn(`${MODULE_ID} | Socket request for unknown actor id "${data.actorId}" — rejecting.`);
+          return;
+        }
+        // Must have at least OBSERVER (level 2) on the actor to start
+        // combat for them. PCs typically have OWNER (3) on their own
+        // characters; this gates against players hijacking unowned NPCs.
+        const userPerm = requestedActor.getUserLevel?.(requestingUser)
+                      ?? requestedActor.ownership?.[requestingUser.id]
+                      ?? requestedActor.ownership?.default
+                      ?? 0;
+        if (userPerm < 2) {
+          console.warn(`${MODULE_ID} | User "${requestingUser.name}" lacks permission on actor "${requestedActor.name}" (level=${userPerm}) — rejecting socket request.`);
+          ui.notifications?.warn(`ACE: Player "${requestingUser.name}" tried to start combat for "${requestedActor.name}" but lacks ownership. Request denied.`);
+          return;
+        }
+
+        // ── Acquire per-scene lock (Grok #2 race fix) ──
+        const now = Date.now();
+        const existingLock = _pendingScenes.get(sceneId);
+        if (existingLock && existingLock > now) {
+          // Another handler is mid-flight for this scene — wait for it
+          // to finish, then re-check (the other handler likely created
+          // the combat we need).
+          const waitDeadline = existingLock + 500;
+          while (_pendingScenes.has(sceneId) && Date.now() < waitDeadline) {
+            await new Promise(r => setTimeout(r, 50));
+          }
+        }
+        _pendingScenes.set(sceneId, Date.now() + 5000);  // 5s expiry
+
+        try {
+          let combat = game.combats?.find?.(c => (c.scene?.id ?? c.sceneId) === sceneId);
+          if (!combat) {
+            try {
+              combat = await Combat.create({ scene: sceneId, active: true });
+              console.log(`${MODULE_ID} | GM auto-created combat on player request (user=${requestingUser.name}, actor=${requestedActor.name})`);
+            } catch (createErr) {
+              // Could be a constraint violation from another concurrent
+              // handler beating us — re-query and try to use existing.
+              combat = game.combats?.find?.(c => (c.scene?.id ?? c.sceneId) === sceneId);
+              if (!combat) throw createErr;  // Genuine error, not a race
+              console.log(`${MODULE_ID} | Combat.create race detected — using existing combat created by concurrent handler.`);
+            }
+          }
+          // Add the requesting player's token as a combatant if not already.
+          if (data.tokenId && combat) {
+            const alreadyIn = combat.combatants?.some?.(c =>
+              c.tokenId === data.tokenId || c.actorId === data.actorId
+            );
+            if (!alreadyIn) {
+              await combat.createEmbeddedDocuments("Combatant", [{
+                tokenId: data.tokenId,
+                sceneId,
+                actorId: data.actorId,
+                hidden:  false,  // PC — always visible
+              }]);
+              console.log(`${MODULE_ID} | Added ${requestedActor.name} to combat (requested by ${requestingUser.name})`);
+            }
+          }
+          ui.notifications?.info(`ACE: Combat started for ${requestingUser.name}'s request.`);
+        } finally {
+          // ALWAYS release the lock, success or failure
+          _pendingScenes.delete(sceneId);
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Socket combat creation failed:`, err);
+      }
+    });
+    console.log(`${MODULE_ID} | GM socket handler online for player-initiated combat starts.`);
+  }
+});
+
+// ─── Hidden NPC Initiative ───────────────────────────────────────────────
+// When the GM rolls initiative for an NPC (via the combat tracker, BG3 HUD,
+// hotkey, or any other path), the resulting chat message is whispered to GMs
+// only — players never see "Hidden Bandit rolled 17 for initiative" and so
+// can't meta-game from knowing an ambush is incoming. PCs are still public.
+//
+// We hook on preCreateChatMessage (runs on every client before the message
+// is persisted) and rewrite the whisper field for any message whose speaker
+// is an NPC actor AND whose flavor identifies it as an initiative roll. The
+// dnd5e system marks initiative rolls by setting `flags.core.initiativeRoll`
+// or by including localized "Initiative" in flavor text; we check both to
+// be robust across system versions.
+// Companion hook: when an NPC is added to combat, mark them as hidden so
+// they don't appear in the native combat tracker, BG3 HUD carousel, or any
+// other UI surface that respects Foundry's standard Combatant.hidden flag.
+// Players will see a "???" placeholder for hidden entries — same convention
+// Foundry GMs already use for surprise-round ambushes.
+//
+// GM can manually un-hide any combatant from the tracker right-click menu
+// when the NPC is revealed in-fiction (typically after the surprise round).
+Hooks.on("preCreateCombatant", (combatant, data) => {
+  try {
+    if (!game.settings.get(MODULE_ID, "hideNpcInitiative")) return;
+    // Resolve actor — combatant.actor getter relies on actorId, which is
+    // not yet linked during preCreate. Read straight from the data payload.
+    const actorId = data?.actorId ?? combatant?.actorId;
+    if (!actorId) return;
+    const actor = game.actors.get(actorId);
+    if (!actor || actor.type !== "npc") return;
+    // Honor an explicit GM choice to show this NPC (e.g., they manually set
+    // hidden=false before creation). Otherwise hide by default.
+    if (data?.hidden === false) return;
+    data.hidden = true;
+  } catch (err) {
+    console.warn(`${MODULE_ID} | Hidden NPC combatant hook failed (non-fatal):`, err);
+  }
+});
+
+Hooks.on("preCreateChatMessage", (message, data) => {
+  try {
+    if (!game.settings.get(MODULE_ID, "hideNpcInitiative")) return;
+
+    // Initiative detection — try multiple signals so we work across versions
+    const isInitiative =
+         !!data?.flags?.core?.initiativeRoll
+      || !!message?.flags?.core?.initiativeRoll
+      || /initiative/i.test(String(data?.flavor ?? message?.flavor ?? ""))
+      || /initiative/i.test(String(data?.system?.activity?.type ?? ""));
+    if (!isInitiative) return;
+
+    // Resolve the actor from the speaker
+    const speaker = data?.speaker ?? message?.speaker;
+    const actor   = ChatMessage.getSpeakerActor?.(speaker);
+    if (!actor) return;
+
+    // PC initiative stays public; only hide NPC rolls
+    if (actor.type !== "npc") return;
+
+    // Already whispered (e.g. GM chose Private Roll manually)? Don't override
+    if (Array.isArray(data?.whisper) && data.whisper.length > 0) return;
+
+    // Whisper to all GM users — preserves dice animations for them, hides
+    // entirely from players
+    const gmIds = game.users?.filter?.(u => u.isGM)?.map?.(u => u.id) ?? [];
+    if (gmIds.length === 0) return;
+
+    // ── CRITICAL: mutate `data` directly, NOT `message.updateSource()` ──
+    // In preCreateChatMessage, the ChatMessage document is constructed FROM
+    // the `data` object. updateSource() on the temp document doesn't reliably
+    // propagate to the finalized message's whisper field. Mutating data
+    // before the document finishes constructing is the canonical Foundry V13
+    // pattern. We do BOTH (belt and suspenders) so it sticks regardless of
+    // which path Foundry actually reads from for the final whisper resolve.
+    data.whisper = gmIds;
+    if (typeof message?.updateSource === "function") {
+      try { message.updateSource({ whisper: gmIds }); } catch (_) { /* non-fatal */ }
+    }
+
+    // Optional: also flip the rollMode hint to "gmroll" so any downstream
+    // module that inspects rollMode (instead of whisper) renders correctly.
+    if (!data.rollMode) data.rollMode = "gmroll";
+  } catch (err) {
+    // Non-fatal — if anything throws, fall back to the default public roll
+    console.warn(`${MODULE_ID} | Hidden NPC initiative hook failed:`, err);
+  }
 });
 
 // ─── Ready: start all subsystems (GM only for combat, all users for effects) ─
@@ -2079,6 +2450,28 @@ Hooks.once("ready", () => {
           } catch (ownErr) {
             console.warn(`${MODULE_ID} | Revive ownership restore failed:`, ownErr);
           }
+        }
+
+        // ── Clear combatant.defeated flag in any active combat ──
+        // When a token dies, the death pipeline sets `combatant.defeated = true`
+        // so the combat tracker shows the ✗ defeated mark. On revive, that
+        // flag was being LEFT in place — meaning the tracker still showed the
+        // revived character as defeated, GM couldn't roll initiative for them
+        // without manually un-defeating, and the carousel hid them from the
+        // active-turn rotation. Clear the flag on every combat the actor is
+        // part of (rare but possible to be in multiple).
+        try {
+          for (const combat of game.combats ?? []) {
+            const combatant = combat.combatants?.find(c =>
+              c.actorId === actor.id && (!c.tokenId || c.tokenId === tokenDoc.id)
+            );
+            if (combatant?.defeated) {
+              await combatant.update({ defeated: false });
+              console.log(`${MODULE_ID} | Revive — cleared combatant.defeated for ${actor.name} in combat "${combat.id}"`);
+            }
+          }
+        } catch (combErr) {
+          console.warn(`${MODULE_ID} | Revive combatant.defeated clear failed (non-fatal):`, combErr);
         }
 
         // Post a brief chat note so the table sees the revive.

@@ -128,6 +128,70 @@ export class DamageEngine {
     /** Pending rider popup requests sent to players, keyed by requestId. */
     this._pendingRiderRequests = {};
     this._registerHooks();
+    this._registerCleaveSocket();
+  }
+
+  /**
+   * GM-side socket listener for player-initiated cleave targets.
+   *
+   * When a player clicks CLEAVE on a damage card that the GM authored (the
+   * normal flow for forwarded-attack damage cards), the player can't call
+   * message.update() — Foundry blocks it on permission. The player emits a
+   * socket request with the chosen target; this handler picks it up on the
+   * GM client and performs the addTargetToCard call locally (GM has
+   * permission). The resulting flag update propagates back to every client
+   * via Foundry's normal sync, and every chat card re-renders with the new
+   * target row visible + the CLEAVE button greyed out.
+   */
+  _registerCleaveSocket() {
+    // NOTE: this method is called from the DamageEngine constructor, which is
+    // itself invoked inside ace-qol.mjs's `Hooks.once("ready", ...)` callback.
+    // That means we're ALREADY past init + setup, and `game.socket` / `game.user`
+    // are guaranteed available. An earlier version wrapped this registration in
+    // another `Hooks.once("ready", ...)` — that was a bug: by the time we got
+    // here, the ready hook had already fired, and the nested registration
+    // never landed. Result: the GM socket listener was never attached, so
+    // player CLEAVE clicks emitted into the void. Register directly instead.
+    if (!game.user?.isGM) return;
+    game.socket?.on?.(`module.${MODULE_ID}`, async (data) => {
+      try {
+        if (data?.type !== "addCleaveTarget") return;
+
+        // Validate the requesting user actually exists + has permission
+        // on the chosen target (so a malicious player can't socket cleave
+        // damage onto, e.g., the party's own characters).
+        const fromUser = game.users?.get?.(data.fromUserId);
+        if (!fromUser) {
+          console.warn(`${MODULE_ID} | addCleaveTarget socket: unknown user ${data.fromUserId} — rejecting.`);
+          return;
+        }
+        const message = game.messages?.get?.(data.messageId);
+        if (!message) {
+          console.warn(`${MODULE_ID} | addCleaveTarget socket: message ${data.messageId} not found.`);
+          return;
+        }
+        const scene = data.sceneId ? game.scenes?.get?.(data.sceneId) : canvas.scene;
+        const tokenDoc = scene?.tokens?.get?.(data.tokenDocId);
+        const tokenObj = tokenDoc?.object ?? null;
+        if (!tokenObj) {
+          console.warn(`${MODULE_ID} | addCleaveTarget socket: token ${data.tokenDocId} not on scene.`);
+          return;
+        }
+
+        // Find the rendered damage card element on the GM's screen so the
+        // local DOM insert in addTargetToCard targets the right card.
+        const messageEl = document.querySelector(`[data-message-id="${data.messageId}"]`);
+        const cardEl = messageEl?.querySelector?.(".ace-qol-damage-card") ?? messageEl ?? null;
+
+        await DamageApplicator.addTargetToCard(
+          message, cardEl, tokenObj, data.isCleave, data.overkillAmount, data.overkillComponents
+        );
+        console.log(`${MODULE_ID} | Socket: GM applied cleave target ${tokenObj.name} on behalf of ${fromUser.name}`);
+      } catch (err) {
+        console.warn(`${MODULE_ID} | addCleaveTarget socket handler failed:`, err);
+      }
+    });
+    console.log(`${MODULE_ID} | GM cleave-socket listener online.`);
   }
 
   // Keep backward-compat static reference to override cache
@@ -158,12 +222,43 @@ export class DamageEngine {
         if (!el) return;
 
       // ── Hide GM-only sections for non-GM users ──
+      // Note: the CLEAVE button row (`.ace-qol-dmg-cleave-row`) sits OUTSIDE
+      // these hidden sections so players can see + click it.
       if (!game.user.isGM) {
         const targets = el.querySelector?.(".ace-qol-dmg-targets");
         if (targets) targets.style.display = "none";
         const gmControls = el.querySelectorAll?.(".ace-qol-dmg-gm-controls");
         for (const ctrl of (gmControls ?? [])) {
           ctrl.style.display = "none";
+        }
+      }
+
+      // ── Rebuild target rows from flags if stored HTML is stale ──
+      // When a player clicks CLEAVE and addTargetToCard updates message
+      // flags, Foundry propagates the flag change to all clients. Each
+      // client re-renders the message using the stored `content` HTML
+      // (which was captured at create time and DOES NOT include the new
+      // target row). Without this rebuild, the GM would re-render with
+      // ONLY the original target visible until APPLY ALL — defeating the
+      // point of cleave-on-damage-card UX. This regenerates the target
+      // rows section every render so it always matches the flags state.
+      if (game.user.isGM && flags?.type === "damageResult" && Array.isArray(flags?.damageResults)) {
+        const targetsDiv = el.querySelector?.(".ace-qol-dmg-targets");
+        const currentRows = targetsDiv?.querySelectorAll?.(".ace-qol-dmg-target-row")?.length ?? 0;
+        if (targetsDiv && flags.damageResults.length > currentRows) {
+          const rebuiltRows = flags.damageResults.map(r => DamageCardRenderer.buildTargetRowHtml({
+            tokenDocId: r.tokenDocId,
+            actorId:    r.targetId,
+            sceneId:    r.sceneId,
+            name:       r.name,
+            img:        r.img,
+            currentHP:  r.currentHP,
+            maxHP:      r.maxHP,
+            totalFinal: r.totalFinal,
+            isCrit:     r.isCrit ?? false,
+            components: r.components,
+          })).join("");
+          targetsDiv.innerHTML = rebuiltRows;
         }
       }
 
@@ -256,13 +351,54 @@ export class DamageEngine {
       }
 
       // ── CLEAVE button ──
+      // Two behaviors share one button:
+      //   1. RAW 2024 Weapon Mastery Cleave — if the attacker has cleave
+      //      mastery + the edition allows it, picks any adjacent enemy and
+      //      adds them as a SECOND ROW on this damage card with damage =
+      //      first-target-damage − ability mod. APPLY ALL then handles
+      //      both targets in one GM-side click (no permission issue).
+      //   2. Homebrew Overkill Carryover — legacy fallback. If a target was
+      //      reduced to 0 HP, the excess damage can be redirected to an
+      //      adjacent enemy. Same proportional-component scaling. Used when
+      //      no cleave mastery applies (e.g., non-mastery weapons, 2014
+      //      mode without the override).
       const cleaveBtn = el.querySelector?.("[data-action='aceQolCleave']");
       if (cleaveBtn && !cleaveBtn.dataset.wired) {
         cleaveBtn.dataset.wired = "1";
-        cleaveBtn.addEventListener("click", () => {
-          if (message.flags?.[MODULE_ID]?.applied) return;
 
-          const results = message.flags?.[MODULE_ID]?.damageResults ?? [];
+        // ── Restore "CLEAVED ✓" state from persistent flag ──
+        // Once a cleave has fired on this damage card (whether by player or
+        // GM), the `cleaveFired` flag is set on the message. Every subsequent
+        // render shows the button as disabled with a "CLEAVED ✓" label so
+        // it's visually clear the action happened, and you can't double-fire.
+        if (message.flags?.[MODULE_ID]?.cleaveFired) {
+          cleaveBtn.disabled = true;
+          cleaveBtn.innerHTML = '<i class="fas fa-check"></i> CLEAVED ✓';
+          return;  // skip click handler — no point binding
+        }
+
+        cleaveBtn.addEventListener("click", async () => {
+          if (message.flags?.[MODULE_ID]?.applied) return;
+          if (message.flags?.[MODULE_ID]?.cleaveFired) return;  // race guard
+          const flags = message.flags?.[MODULE_ID] ?? {};
+
+          // ── Branch 1: 2024 RAW Cleave (weapon mastery) ──
+          try {
+            const { WeaponMasteries } = await import("./weapon-masteries.mjs");
+            const item = flags.itemUuid ? await fromUuid(flags.itemUuid).catch(() => null) : null;
+            const attActor = flags.actorId ? game.actors?.get?.(flags.actorId) : null;
+            if (item && attActor && WeaponMasteries.shouldOfferCleave(item, attActor)) {
+              await DamageEngine._handleMasteryCleave({
+                message, el, cleaveBtn, item, attActor, flags, WeaponMasteries,
+              });
+              return;
+            }
+          } catch (err) {
+            console.warn(`${MODULE_ID} | Mastery cleave branch failed — falling through to overkill:`, err);
+          }
+
+          // ── Branch 2: Homebrew Overkill Carryover (fallback) ──
+          const results = flags.damageResults ?? [];
           let overkill = 0;
           let overkillComponents = null;
           for (const r of results) {
@@ -696,5 +832,111 @@ export class DamageEngine {
     } finally {
       DamageEngine._rollLocks?.delete?.(message.id);
     }
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  //  2024 RAW Weapon Mastery — Cleave (damage-card flow)
+  //
+  //  Called from the damage-card CLEAVE button click handler when:
+  //   - the attacker has the Weapon Mastery class feature
+  //   - the weapon has cleave mastery
+  //   - the edition allows it (2024 mode, or 2014 + override setting)
+  //
+  //  Flow: find adjacent enemy → portrait picker (if multiple) → compute
+  //  cleave damage = (first target's total damage) − ability mod → add the
+  //  chosen target as a second row to the SAME damage card. APPLY ALL then
+  //  applies to both rows GM-side (no permission problem).
+  //
+  //  Per 2024 PHB Cleave entry: "if you hit a creature with a melee attack
+  //  using this weapon, you can deal damage to a second creature with the
+  //  same attack. The second creature must be within 5 feet of the first
+  //  and within your reach. The damage is the same as the damage you dealt
+  //  the first creature, except the second creature doesn't take any
+  //  damage from your Strength (or Dexterity) modifier."
+  // ──────────────────────────────────────────────────────────────────────────
+  static async _handleMasteryCleave({ message, el, cleaveBtn, item, attActor, flags, WeaponMasteries }) {
+    // 1. Need the first damage row to copy damage from
+    const results = flags.damageResults ?? [];
+    const origEntry = results[0];
+    if (!origEntry || !Number.isFinite(origEntry.totalFinal)) {
+      ui.notifications.warn("ACE QOL: Cleave needs damage to be rolled first.");
+      return;
+    }
+
+    // 2. Resolve the original target token on canvas (need its position to
+    //    find adjacent enemies). Try the recorded sceneId first; fall back
+    //    to current canvas.
+    const origScene = origEntry.sceneId ? game.scenes?.get?.(origEntry.sceneId) : null;
+    const origTokDoc = (origScene?.tokens?.get?.(origEntry.tokenDocId))
+                    ?? canvas.scene?.tokens?.get?.(origEntry.tokenDocId);
+    const origTok = origTokDoc?.object;
+    if (!origTok) {
+      ui.notifications.warn("ACE QOL: Cleave — original target isn't on the current scene.");
+      return;
+    }
+
+    // 3. Resolve the attacker token (need their disposition to filter allies
+    //    out of cleave candidates, and their identity to exclude self).
+    //    Prefer an active token on the current canvas.
+    const attTok = attActor?.getActiveTokens?.()[0] ?? null;
+    if (!attTok) {
+      ui.notifications.warn("ACE QOL: Cleave — attacker token not on the current scene.");
+      return;
+    }
+
+    // 4. Find adjacent enemies (within 5 ft of original target, hostile)
+    const adjacent = WeaponMasteries.findCleaveAdjacent(attTok, origTok);
+    if (!adjacent.length) {
+      ui.notifications.warn(`Cleave: no adjacent creatures within 5 ft of ${origTok.name}.`);
+      return;
+    }
+
+    // 5. Auto-pick if exactly one; otherwise portrait picker
+    let chosen;
+    if (adjacent.length === 1) {
+      chosen = adjacent[0];
+    } else {
+      chosen = await WeaponMasteries._pickCleaveTarget(adjacent, origTok.name);
+      if (!chosen) {
+        ui.notifications.info("Cleave cancelled.");
+        return;
+      }
+    }
+
+    // 6. Already in card?  Tell the user, don't double-add.
+    const tokenDocId = chosen.document?.id ?? chosen.id;
+    if (results.some(r => r.tokenDocId === tokenDocId)) {
+      ui.notifications.warn(`ACE QOL: ${chosen.name} is already a target on this damage card.`);
+      return;
+    }
+
+    // 7. Compute cleave damage. Use the FIRST target's totalFinal (the damage
+    //    they actually took) — this is what RAW means by "same damage as the
+    //    first creature." Subtract the attacker's ability mod (positive only).
+    const { abilityKey, subtracted } = WeaponMasteries.getAttackAbilityMod(item, attActor);
+    const cleaveDmg = Math.max(0, origEntry.totalFinal - subtracted);
+    if (cleaveDmg <= 0) {
+      ui.notifications.info(
+        `Cleave: ${origTok.name}'s damage was ${origEntry.totalFinal} − ${subtracted} ${abilityKey.toUpperCase()} = 0. Nothing to cleave.`
+      );
+      return;
+    }
+
+    // 8. Hand off to addTargetToCard. We pass the ORIGINAL target's components
+    //    as `overkillComponents` so addTargetToCard's isCleave branch scales
+    //    them proportionally to `cleaveDmg`, then applies the cleave TARGET'S
+    //    own defenses (resistance/immunity/vulnerability) on top. That gives
+    //    the new target its full set of damage modifiers while preserving
+    //    the proportional damage-type breakdown of the original hit.
+    cleaveBtn.disabled = true;
+    cleaveBtn.innerHTML = '<i class="fas fa-check"></i> CLEAVED ✓';
+    await DamageApplicator.addTargetToCard(
+      message, el, chosen, /* isCleave */ true, cleaveDmg, origEntry.components ?? flags.rawComponents ?? []
+    );
+    DamageApplicator.wireOverrideButtons(el, message);
+
+    ui.notifications.info(
+      `Cleave → ${chosen.name}: ${cleaveDmg} damage (${origEntry.totalFinal} − ${subtracted} ${abilityKey.toUpperCase()})`
+    );
   }
 }

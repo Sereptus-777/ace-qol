@@ -27,6 +27,13 @@
 //  no edits to attack-pipeline.mjs required.
 // ============================================================================
 
+// NOTE: DamageApplicator is dynamic-imported at call-time inside
+// _cleaveSecondAttack (NOT a top-level import). Top-level import would
+// create a circular dependency: ace-qol.mjs → weapon-masteries.mjs →
+// damage-applicator.mjs → ace-qol.mjs. The cycle causes DamageApplicator
+// to be `undefined` when this file evaluates, which breaks module loading
+// and prevents the entire Weapon Mastery system from registering.
+
 const MODULE_ID = "ace-qol";
 const TAG       = `${MODULE_ID} | Mastery`;
 
@@ -133,15 +140,26 @@ export class WeaponMasteries {
     // Bind mastery-card button handlers (Push, Cleave). Each fires once per
     // chat-card render — guarded by data-bound so we don't double-bind on
     // re-renders. GM-only so movement/attacks only run on the GM client.
-    Hooks.on("renderChatMessage", (message, html /*, data */) => {
-      if (!game.user.isGM) return;
+    //
+    // ── V13 hook rename fix ─────────────────────────────────────────────
+    // Foundry V13 renamed the chat-render hook from `renderChatMessage` to
+    // `renderChatMessageHTML` (the new hook receives a real HTMLElement
+    // instead of a jQuery wrapper). Register on BOTH names so this works
+    // on V12 AND V13 systems. The `data-bound` guard prevents the click
+    // handler from being attached twice if both hooks happen to fire.
+    const _bindMasteryButtons = (message, html /*, data */) => {
       if (message?.flags?.[MODULE_ID]?.type !== "weaponMastery") return;
       const el = (html instanceof HTMLElement) ? html : (html?.[0] ?? html);
       if (!el?.querySelectorAll) return;
 
+      // ── Push — GM-only (moves a token, players lack update permission) ──
       el.querySelectorAll(".ace-qol-mastery-push-btn:not([data-bound])").forEach(btn => {
         btn.setAttribute("data-bound", "1");
         btn.addEventListener("click", () => {
+          if (!game.user.isGM) {
+            ui.notifications?.warn("Push: only the GM can move targets.");
+            return;
+          }
           try {
             this._pushTarget(
               btn.dataset.attackerUuid,
@@ -153,21 +171,89 @@ export class WeaponMasteries {
         });
       });
 
+      // ── Cleave — attacker's owner OR GM can click ──────────────────────
+      // The attacker fires their own second attack, so permission gating is
+      // by actor ownership. GM always works (full permissions). Player can
+      // click on THEIR character's cleave card.
+      //
+      // Persistent gray-out: the chat message gets a `cleaveFired` flag
+      // when the attack fires. Bind handler checks the flag on render and
+      // disables the button if already fired — so the gray state survives
+      // chat re-renders (otherwise the button springs back to clickable).
       el.querySelectorAll(".ace-qol-mastery-cleave-btn:not([data-bound])").forEach(btn => {
         btn.setAttribute("data-bound", "1");
-        btn.addEventListener("click", () => {
+        // Check persistent flag on the message — if cleave already fired,
+        // render as disabled immediately on this re-bind.
+        if (message?.flags?.[MODULE_ID]?.cleaveFired) {
+          btn.disabled = true;
+          btn.innerHTML = `<i class="fas fa-check"></i> Cleave fired`;
+          return;  // skip click handler — no point binding
+        }
+        btn.addEventListener("click", async () => {
+          const attUuid = btn.dataset.attackerUuid;
           try {
-            this._cleaveSecondAttack(
-              btn.dataset.attackerUuid,
+            // Resolve the attacker actor and check permission
+            const attActor = await fromUuid(attUuid).catch(() => null);
+            const canClick = game.user.isGM
+              || (attActor && attActor.testUserPermission?.(game.user, "OWNER"));
+            if (!canClick) {
+              ui.notifications?.warn("Cleave: only the attacker or the GM can use this.");
+              return;
+            }
+            // _cleaveSecondAttack returns true ONLY on success (damage
+            // actually applied). False/falsy means a guard fired (no
+            // damage card yet, no adjacent enemy, user cancelled, etc.)
+            // — in those cases leave the button clickable so the user
+            // can try again after rolling damage / adjusting positions.
+            const success = await this._cleaveSecondAttack(
+              attUuid,
               btn.dataset.targetUuid,
               btn.dataset.itemUuid,
             );
+            if (!success) return;  // don't gray out — let user retry
+            // Immediate UI update (success path only)
             btn.disabled = true;
             btn.innerHTML = `<i class="fas fa-check"></i> Cleave fired`;
+            // Persistent flag on the message — survives chat re-renders.
+            try {
+              if (game.user.isGM) {
+                await message.update({ [`flags.${MODULE_ID}.cleaveFired`]: true });
+              } else {
+                game.socket?.emit?.(`module.${MODULE_ID}`, {
+                  type: "setCleaveFiredFlag",
+                  messageId: message.id,
+                });
+              }
+            } catch (flagErr) {
+              console.warn(`${TAG} | Failed to persist cleaveFired flag:`, flagErr);
+            }
           } catch (err) { console.warn(`${TAG} | Cleave click failed:`, err); }
         });
       });
-    });
+    };
+    // Register on both hook names — V13 fires renderChatMessageHTML (with
+    // a raw HTMLElement); V12 fires renderChatMessage (with a jQuery wrap).
+    // The data-bound guard prevents double-binding if both fire.
+    Hooks.on("renderChatMessageHTML", _bindMasteryButtons);  // V13
+    Hooks.on("renderChatMessage",     _bindMasteryButtons);  // V12 fallback
+
+    // ── GM-side socket handler for player-initiated flag updates ────────
+    // Players don't have permission to update chat messages they don't own.
+    // When a player clicks Attack Adjacent, they need the GM client to set
+    // the persistent `cleaveFired` flag so the button stays grayed across
+    // re-renders. Player emits → GM applies.
+    if (game.user.isGM) {
+      game.socket?.on?.(`module.${MODULE_ID}`, async (data) => {
+        try {
+          if (data?.type !== "setCleaveFiredFlag") return;
+          const msg = game.messages?.get?.(data.messageId);
+          if (!msg) return;
+          await msg.update({ [`flags.${MODULE_ID}.cleaveFired`]: true });
+        } catch (err) {
+          console.warn(`${TAG} | Cleave flag socket update failed:`, err);
+        }
+      });
+    }
 
     console.log(`${TAG} | Weapon Mastery system online (2024 PHB).`);
   }
@@ -218,7 +304,7 @@ export class WeaponMasteries {
       ui.notifications?.warn("Cleave: original target not found — pick an adjacent creature manually.");
       return;
     }
-    // Find adjacent enemies on the scene within 5 ft of original target.
+    // Resolve the original-target token (canvas object)
     const origTok = (originalTargetDoc?.documentName === "Token")
                      ? originalTargetDoc.object
                      : originalTargetDoc?.getActiveTokens?.()[0] ?? null;
@@ -226,26 +312,299 @@ export class WeaponMasteries {
       ui.notifications?.warn("Cleave: target not on canvas — pick manually.");
       return;
     }
+
+    // ── Resolve the attacker token so we filter by ATTACKER's disposition ──
+    // (not target's — that was the bug that made Syrax cleave himself).
+    // Cleave RAW: damage to a "second creature within 5 ft of the first."
+    // Practically: any creature other than the attacker AND the original
+    // target. We additionally filter out same-disposition (allies) so the
+    // player doesn't accidentally cleave their wizard standing next to the
+    // boss. Allies aren't usually who you want to cleave anyway; if a GM
+    // wants ally-cleave they can target manually.
+    const attackerDoc = await fromUuid(attackerUuid).catch(() => null);
+    const attackerToken = (attackerDoc?.documentName === "Token")
+                         ? attackerDoc.object
+                         : attackerDoc?.getActiveTokens?.()[0] ?? null;
+    const attackerDisp = attackerToken?.document?.disposition ?? 0;
+
     const cell = canvas.grid?.size ?? 100;
     const maxPx = cell * 1.5; // ~5 ft in grid distance (a touch over to catch diagonals)
     const adjacent = canvas.tokens?.placeables?.filter(t =>
-      t !== origTok &&
-      t.actor &&
-      t.document.disposition !== origTok.document.disposition &&
-      Math.hypot(t.x - origTok.x, t.y - origTok.y) <= maxPx
+      t !== origTok &&                                          // not the original target
+      t.id !== attackerToken?.id &&                             // not the attacker themselves
+      t.actor &&                                                // has an actor
+      t.document.disposition !== attackerDisp &&                // not on attacker's side
+      Math.hypot(t.x - origTok.x, t.y - origTok.y) <= maxPx     // within 5 ft of original target
     ) ?? [];
 
     if (!adjacent.length) {
       ui.notifications?.warn("Cleave: no adjacent creatures within 5 ft of the original target.");
       return;
     }
-    // Target the first one and let the GM target+roll manually with the weapon.
-    // (Programmatic re-roll through the activity would need attack-pipeline
-    // surgery; saving that for a follow-up.)
-    adjacent[0].setTarget(true, { user: game.user, releaseOthers: true });
-    ui.notifications?.info(
-      `Cleave: targeting ${adjacent[0].name}. Re-attack with ${item.name} (no ability mod on damage).`
+
+    // ── Target picker ──
+    // If exactly one adjacent enemy, auto-pick. Otherwise show a portrait
+    // picker dialog so the player chooses who to swing at. Players don't
+    // have to manually target on canvas — click the portrait, attack fires.
+    let chosen;
+    if (adjacent.length === 1) {
+      chosen = adjacent[0];
+    } else {
+      chosen = await this._pickCleaveTarget(adjacent, origTok.name);
+      if (!chosen) {
+        ui.notifications?.info("Cleave cancelled.");
+        return;
+      }
+    }
+
+    // ── RAW 2024 PHB Cleave damage application ──
+    // Cleave is NOT a second attack roll. Per RAW: "you can deal damage to
+    // a second creature with the same attack ... the damage is the same as
+    // the damage dealt to the first creature, but the second creature
+    // doesn't take the damage from your STR or DEX modifier."
+    //
+    // Implementation:
+    //   1. Find the most recent damage card from this attacker + this item
+    //   2. Look up the original target's totalFinal damage in that card
+    //   3. Subtract the attacker's ability modifier
+    //   4. Apply the result directly to the chosen target's HP (no attack
+    //      roll, no save, no AC check — RAW says it's automatic damage)
+    //   5. Post a small chat confirmation
+    //
+    // The OLD implementation called item.use() which triggered the entire
+    // attack pipeline again — that caused infinite Cleave cascades because
+    // every successful hit re-fired _onAttackComplete which posted another
+    // Cleave card. This implementation does ONE damage event and stops.
+
+    // Find the matching damage card in recent chat history.
+    const originalTokId = origTok.document?.id ?? origTok.id;
+    const recentMsgs = [...(game.messages?.contents ?? [])].slice(-30).reverse();
+    let damageCard = null;
+    for (const msg of recentMsgs) {
+      const fl = msg.flags?.[MODULE_ID];
+      if (fl?.type !== "damageResult") continue;
+      if (fl?.itemUuid && fl.itemUuid !== itemUuid) continue;
+      const hasOrigInResults = (fl?.damageResults ?? []).some(r =>
+        r.tokenDocId === originalTokId || r.tokenId === originalTokId
+      );
+      if (hasOrigInResults) { damageCard = msg; break; }
+    }
+
+    if (!damageCard) {
+      ui.notifications?.warn(
+        `Cleave: roll damage on ${origTok.name} first, then click Attack Adjacent again.`
+      );
+      return;
+    }
+
+    // Look up the original target's damage entry
+    const dResults = damageCard.flags?.[MODULE_ID]?.damageResults ?? [];
+    const origEntry = dResults.find(r =>
+      r.tokenDocId === originalTokId || r.tokenId === originalTokId
     );
+    if (!origEntry || !Number.isFinite(origEntry.totalFinal)) {
+      ui.notifications?.warn("Cleave: couldn't read original target's damage from the damage card.");
+      return;
+    }
+
+    // Compute the attacker's ability modifier for THIS weapon's attack.
+    // dnd5e 5.x: weapon attack ability defaults to STR for melee, DEX for
+    // finesse/ranged, set by item.system.ability or item.system.attack.ability.
+    const attActor = attackerToken?.actor ?? attackerDoc?.actor ?? attackerDoc;
+    let abilityKey = item.system?.attack?.ability || item.system?.ability || "";
+    if (abilityKey instanceof Set || abilityKey instanceof Array) abilityKey = [...abilityKey][0] ?? "";
+    abilityKey = String(abilityKey || "").toLowerCase().trim() || "str";
+    const abilityMod = attActor?.system?.abilities?.[abilityKey]?.mod ?? 0;
+
+    // RAW: don't subtract a NEGATIVE ability mod (don't add to the second
+    // creature's damage). PHB text: "doesn't take the damage from your
+    // STR/DEX modifier" — implicitly only applies if the mod was a bonus.
+    const subtractedMod = Math.max(0, abilityMod);
+    const cleaveDamage = Math.max(0, origEntry.totalFinal - subtractedMod);
+
+    if (cleaveDamage <= 0) {
+      ui.notifications?.info(
+        `Cleave: damage on ${origTok.name} was ${origEntry.totalFinal}; minus ${subtractedMod} ${abilityKey.toUpperCase()} = 0. No damage to apply.`
+      );
+      return;
+    }
+
+    // Determine damage type from the first component (preserves type for
+    // resistance/immunity calculations on the cleave target).
+    const damageType = origEntry.components?.[0]?.type ?? "slashing";
+
+    // Apply damage directly to the chosen actor's HP.
+    const chosenActor = chosen.actor;
+    if (!chosenActor) {
+      ui.notifications?.warn(`Cleave: ${chosen.name} has no actor — can't apply damage.`);
+      return;
+    }
+    try {
+      // Lazy import to avoid the ace-qol → weapon-masteries → damage-applicator
+      // → ace-qol circular dependency at module-load time.
+      const { DamageApplicator } = await import("./damage-applicator.mjs");
+      await DamageApplicator.applyHPDamage(chosenActor, cleaveDamage, {
+        label: `Cleave from ${attActor?.name ?? "attacker"} (${item.name})`,
+      });
+    } catch (err) {
+      console.warn(`${TAG} | Cleave damage application failed:`, err);
+      ui.notifications?.warn(`Cleave: damage failed — apply ${cleaveDamage} ${damageType} to ${chosen.name} manually.`);
+      return;
+    }
+
+    // Post a confirmation chat card so the table sees what happened.
+    const attName = foundry.utils.escapeHTML(attActor?.name ?? "Attacker");
+    const tgtName = foundry.utils.escapeHTML(chosen.name);
+    const itemName = foundry.utils.escapeHTML(item.name);
+    const dmgTypeLabel = foundry.utils.escapeHTML(damageType);
+    try {
+      await ChatMessage.create({
+        content: `<div class="ace-qol-card ace-qol-cleave-fired-card"
+                       style="background:#0e0e10; border:2px solid #d4af37; border-radius:6px; padding:10px 12px;">
+          <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">
+            <i class="fas fa-axe-battle" style="color:#d4af37; font-size:18px;"></i>
+            <strong style="color:#d4af37; font-size:14px;">Cleave Hit</strong>
+            <span style="color:#888; font-size:11px; margin-left:auto;">${itemName}</span>
+          </div>
+          <div style="color:#e8e6e0; font-size:12px; line-height:1.45;">
+            <strong>${attName}</strong> cleaves into <strong>${tgtName}</strong> for
+            <strong style="color:#ff9a4a;">${cleaveDamage}</strong> ${dmgTypeLabel} damage
+            (${origEntry.totalFinal} − ${subtractedMod} ${abilityKey.toUpperCase()} mod).
+          </div>
+        </div>`,
+        speaker: ChatMessage.getSpeaker({ actor: attActor }),
+        flags: { [MODULE_ID]: { type: "cleaveFiredCard" } },
+      });
+    } catch (_) { /* non-fatal — damage already applied */ }
+    return true;  // signal success to the click handler so it grays the button
+  }
+
+  /**
+   * Pick a Cleave target via a portrait-grid dialog.
+   * @param {Token[]} candidates  list of valid adjacent enemy tokens
+   * @param {string} origName     name of the original target (for the prompt)
+   * @returns {Promise<Token|null>}  the picked token, or null if cancelled
+   */
+  static _pickCleaveTarget(candidates, origName) {
+    return new Promise(resolve => {
+      const tiles = candidates.map((t, i) => {
+        const img = t.document?.texture?.src ?? t.actor?.img ?? "icons/svg/mystery-man.svg";
+        const name = foundry.utils.escapeHTML(t.name ?? `Target ${i + 1}`);
+        return `
+          <div class="ace-qol-cleave-pick" data-idx="${i}"
+               style="display:flex; flex-direction:column; align-items:center; padding:8px;
+                      border:2px solid #555; border-radius:8px; cursor:pointer;
+                      background:#1a1a1f; transition: border-color 0.15s, transform 0.15s;
+                      width:96px;">
+            <img src="${img}" style="width:64px; height:64px; border-radius:50%;
+                                     border:2px solid #d4af37; object-fit:cover;" />
+            <div style="margin-top:6px; font-size:12px; color:#e0e0e0; text-align:center;
+                        max-width:84px; overflow:hidden; text-overflow:ellipsis;
+                        white-space:nowrap;">${name}</div>
+          </div>
+        `;
+      }).join("");
+
+      const content = `
+        <style>
+          .ace-qol-cleave-pick { transition: border-color 0.15s, transform 0.15s; }
+          .ace-qol-cleave-pick:hover {
+            border-color: #d4af37 !important;
+            transform: translateY(-2px);
+          }
+        </style>
+        <div style="color:#e0e0e0; padding:6px 0;">
+          <p style="margin:0 0 10px 0; font-size:13px;">
+            Choose which adjacent creature to attack (within 5 ft of <strong>${foundry.utils.escapeHTML(origName)}</strong>):
+          </p>
+          <div class="ace-qol-cleave-picker"
+               style="display:flex; flex-wrap:wrap; gap:10px; justify-content:center;">
+            ${tiles}
+          </div>
+        </div>
+      `;
+
+      let dialog;
+      let resolved = false;
+
+      // ── Event delegation on the document body ──
+      // The per-tile click handlers in the original implementation were
+      // brittle — DialogV2's render callback fires before the dialog's
+      // DOM is fully attached in some V13 builds, so querySelectorAll
+      // found 0 tiles. Document-level delegation works regardless of
+      // render timing — we listen for any click bubbling up, check if
+      // it originated inside a tile, and resolve based on its data-idx.
+      const onDocClick = (ev) => {
+        const tile = ev.target?.closest?.(".ace-qol-cleave-pick");
+        if (!tile || resolved) return;
+        const idx = Number(tile.dataset.idx);
+        const picked = candidates[idx] ?? null;
+        resolved = true;
+        document.removeEventListener("click", onDocClick, true);
+        try { dialog?.close?.({ force: true }); } catch (_) {}
+        resolve(picked);
+      };
+      document.addEventListener("click", onDocClick, true);
+
+      // Hover effects via CSS pseudo-class (no JS needed) — added to the
+      // tile styles below so hovering still highlights the active option.
+
+      // Use V13 DialogV2 if available, fall back to legacy Dialog
+      try {
+        if (foundry.applications?.api?.DialogV2) {
+          const Dialog2 = foundry.applications.api.DialogV2;
+          dialog = new Dialog2({
+            window: { title: "Cleave — Pick adjacent target" },
+            content,
+            buttons: [{
+              action: "cancel",
+              label: "Cancel",
+              callback: () => {
+                if (resolved) return;
+                resolved = true;
+                document.removeEventListener("click", onDocClick, true);
+                resolve(null);
+              },
+            }],
+            rejectClose: false,
+            close: () => {
+              if (resolved) return;
+              resolved = true;
+              document.removeEventListener("click", onDocClick, true);
+              resolve(null);
+            },
+          });
+          dialog.render({ force: true });
+        } else {
+          dialog = new Dialog({
+            title: "Cleave — Pick adjacent target",
+            content,
+            buttons: {
+              cancel: {
+                label: "Cancel",
+                callback: () => {
+                  if (resolved) return;
+                  resolved = true;
+                  document.removeEventListener("click", onDocClick, true);
+                  resolve(null);
+                },
+              },
+            },
+            close: () => {
+              if (resolved) return;
+              resolved = true;
+              document.removeEventListener("click", onDocClick, true);
+              resolve(null);
+            },
+          });
+          dialog.render(true);
+        }
+      } catch (err) {
+        console.warn(`${TAG} | Cleave picker failed to render:`, err);
+        document.removeEventListener("click", onDocClick, true);
+        resolve(null);
+      }
+    });
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -271,10 +630,35 @@ export class WeaponMasteries {
   static getMasteryFor(item) {
     if (!item) return null;
     const sys = item.system ?? {};
+    // ── Path 1: dnd5e 2024 system data populates `system.mastery` directly ──
     const direct = String(sys.mastery ?? "").toLowerCase().trim();
     if (direct && MASTERY_DESCRIPTIONS[direct]) return direct;
+
     const nameNorm = String(item.name ?? "").toLowerCase().trim();
-    return WEAPON_NAME_TO_MASTERY[nameNorm] ?? null;
+    if (!nameNorm) return null;
+
+    // ── Path 2: exact-name match against the WEAPON_NAME_TO_MASTERY table ──
+    if (WEAPON_NAME_TO_MASTERY[nameNorm]) return WEAPON_NAME_TO_MASTERY[nameNorm];
+
+    // ── Path 3: word-boundary substring match — catches magic/named variants ──
+    // "Blood Halberd [Pact Weapon]" → "halberd" → cleave
+    // "Greataxe of Smiting" → "greataxe" → cleave
+    // "+1 Longsword" → "longsword" → sap
+    //
+    // Sort keys by length DESC so longer multi-word keys match before their
+    // single-word substrings: "hand crossbow" / "heavy crossbow" / "light
+    // crossbow" / "musket" must all match before bare "crossbow" would.
+    // (Currently "crossbow" alone isn't in the table, but the sort future-proofs.)
+    const sortedKeys = Object.keys(WEAPON_NAME_TO_MASTERY).sort((a, b) => b.length - a.length);
+    for (const key of sortedKeys) {
+      // Word-boundary regex so "halberd" matches "Blood Halberd" but not
+      // "halberdier" (and so "axe" wouldn't match "battleaxe"). Escape any
+      // regex metacharacters in the key just in case the table grows.
+      const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const re = new RegExp(`\\b${escaped}\\b`, "i");
+      if (re.test(nameNorm)) return WEAPON_NAME_TO_MASTERY[key];
+    }
+    return null;
   }
 
   /**
@@ -323,6 +707,24 @@ export class WeaponMasteries {
     if (!item || !actor) return;
     if (!game.user.isGM) return; // single client fires the cards
 
+    // ── 2014 mode gate (with hybrid-mode override) ──
+    // Weapon Mastery is a D&D 2024 PHB feature. It does NOT exist in the
+    // 2014 PHB. If the world is set to legacy (2014) rules, skip mastery
+    // by default. BUT some tables run 2014 ruleset and want Weapon Mastery
+    // as a houserule import from 2024 — the `weaponMasteryAllowIn2014`
+    // setting lets them opt in. Defaults to false (pure RAW).
+    try {
+      const rv = game.settings.get?.("dnd5e", "rulesVersion");
+      if (rv === "legacy") {
+        const allowIn2014 = game.settings.get?.(MODULE_ID, "weaponMasteryAllowIn2014") === true;
+        if (!allowIn2014) {
+          console.log(`${TAG} | 2014 mode active — skipping mastery (enable "Weapon Mastery — Allow in 2014" in ACE QOL settings if you want this as a houserule).`);
+          return;
+        }
+        console.log(`${TAG} | 2014 mode + houserule override active — firing mastery anyway.`);
+      }
+    } catch (_) { /* dnd5e version w/o the setting — assume modern */ }
+
     const mastery = this.getMasteryFor(item);
     if (!mastery) return;
     if (!this._actorHasMasteryFeature(actor)) return;
@@ -338,10 +740,98 @@ export class WeaponMasteries {
     }
   }
 
+  // ──────────────────────────────────────────────────────────────────────────
+  //  Public helpers — used by damage-engine's CLEAVE damage-card button
+  //  to decide whether to do RAW behavior or fall through to homebrew overkill
+  // ──────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Returns true if 2024 RAW Cleave should fire for this (item, actor) combo.
+   * Single source of truth for the edition-gate + master-toggle + mastery-type
+   * + actor-feature checks. Damage-engine's CLEAVE button calls this on click
+   * — true means RAW branch (find adjacent, picker, add row with damage − mod);
+   * false means fall through to homebrew overkill (the old button behavior).
+   */
+  static shouldOfferCleave(item, actor) {
+    if (!item || !actor) return false;
+    // Edition gate (2024, or 2014 + override)
+    try {
+      const rv = game.settings.get?.("dnd5e", "rulesVersion");
+      if (rv === "legacy") {
+        const allow = game.settings.get?.(MODULE_ID, "weaponMasteryAllowIn2014") === true;
+        if (!allow) return false;
+      }
+    } catch (_) { /* assume modern */ }
+    // Master toggle
+    try {
+      if (game.settings.get?.(MODULE_ID, "weaponMasteryEnabled") === false) return false;
+    } catch (_) {}
+    // Item has cleave mastery + actor has the feature
+    if (this.getMasteryFor(item) !== "cleave") return false;
+    if (!this._actorHasMasteryFeature(actor)) return false;
+    return true;
+  }
+
+  /**
+   * Compute the attacker's ability modifier used for this weapon's attack roll.
+   * Returns: { abilityKey, abilityMod, subtracted }
+   *   - abilityKey: "str", "dex", etc.
+   *   - abilityMod: actor's signed modifier (can be negative)
+   *   - subtracted: Math.max(0, abilityMod) — RAW only "doesn't take the
+   *     damage from your STR/DEX modifier" if that modifier was a bonus
+   */
+  static getAttackAbilityMod(item, actor) {
+    let abilityKey = item?.system?.attack?.ability || item?.system?.ability || "";
+    if (abilityKey instanceof Set || abilityKey instanceof Array) {
+      abilityKey = [...abilityKey][0] ?? "";
+    }
+    abilityKey = String(abilityKey || "").toLowerCase().trim() || "str";
+    const abilityMod = actor?.system?.abilities?.[abilityKey]?.mod ?? 0;
+    return { abilityKey, abilityMod, subtracted: Math.max(0, abilityMod) };
+  }
+
+  /**
+   * Find enemies adjacent (within 5 ft / 1.5 grid cells) to the original
+   * target, excluding the attacker and the original target themselves, and
+   * filtering out allies of the attacker (matched by disposition).
+   * Same filter logic as the old _cleaveSecondAttack — extracted so the
+   * damage-card button can reuse it cleanly.
+   */
+  static findCleaveAdjacent(attackerToken, origTok) {
+    if (!attackerToken || !origTok) return [];
+    const attackerDisp = attackerToken?.document?.disposition ?? 0;
+    const cell = canvas.grid?.size ?? 100;
+    const maxPx = cell * 1.5; // ~5 ft on standard grid; tolerant of diagonals
+    return canvas.tokens?.placeables?.filter(t =>
+      t !== origTok &&
+      t.id !== attackerToken?.id &&
+      t.actor &&
+      t.document.disposition !== attackerDisp &&
+      Math.hypot(t.x - origTok.x, t.y - origTok.y) <= maxPx
+    ) ?? [];
+  }
+
   static async _fireMasteryForHit(mastery, item, actor, hitResult) {
-    const targetToken = hitResult?.target ?? hitResult?.token ?? null;
+    // ── BUG FIX ──
+    // hitResult.target is a PLAIN METADATA OBJECT ({name, img, ac, ...}),
+    // not a real Token reference. Calling `.document.uuid` on it returns
+    // undefined, which made every mastery card's button get an empty
+    // data-target-uuid → fromUuid("") → null → "original target not found"
+    // error. The real Token reference is on `hitResult.targetToken`
+    // (combat-state.mjs line 1200 puts it there alongside the metadata).
+    const targetToken = hitResult?.targetToken
+                     ?? hitResult?.token
+                     ?? null;
     switch (mastery) {
-      case "cleave":  return this._fireCleave(item, actor, targetToken);
+      // ── Cleave: damage-card button handles it ──
+      // RAW 2024 Cleave is now fully integrated into the damage card itself
+      // (the CLEAVE button on every damage card). When the player rolls
+      // damage and clicks CLEAVE, the picker opens; on pick, a SECOND target
+      // row is added to the same damage card with damage − ability mod.
+      // APPLY ALL then handles both rows in one click. This avoids the
+      // separate-chat-card UX and the player-can't-apply-damage permission
+      // problem the old standalone-card flow had.
+      case "cleave":  return;
       case "topple":  return this._fireTopple(item, actor, targetToken);
       case "vex":     return this._fireVex(item, actor, targetToken);
       case "sap":     return this._fireSap(item, actor, targetToken);

@@ -332,6 +332,20 @@
   background: #151518;
 }
 
+/* Mirror Image redirect caption — sits under the target row when an attack
+   was absorbed by an illusory duplicate. Icy-blue to match the Mirror Image
+   chat card; italic and small to read as supplementary detail. */
+.ace-qol-atk-mirror-caption {
+  padding: 2px 0 2px 38px;  /* aligned past the avatar */
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  font-style: italic;
+  color: #8ab4d8;
+  opacity: 0.92;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+}
+
 .ace-qol-atk-target {
   display: flex;
   align-items: center;
@@ -625,7 +639,26 @@
 }
 .ace-qol-player-status-line i { font-size: 0.7rem; }
 .ace-qol-player-status-applied {
-  color: #66bb6a;
+  color: #d0d0d0;  /* neutral row color — the green ✓ and red DMG amount stand out */
+}
+/* Green check mark — clearly signals "damage was applied" */
+.ace-qol-player-status-check {
+  color: #4caf50;
+  font-size: 0.85rem;
+}
+/* Bright blood-red damage amount — pops as the primary number */
+.ace-qol-player-status-dmg {
+  color: #ff3838;
+  font-weight: 800;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+/* Small "DMG" label in muted gold so it reads as a unit, not a number */
+.ace-qol-player-status-dmg-label {
+  color: #c0b288;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  opacity: 0.85;
 }
 .ace-qol-player-status-immune {
   color: #ef5350; text-decoration: line-through; opacity: 0.7;
@@ -831,10 +864,40 @@
   font-size: 0.75rem; color: #ddd; padding: 3px 0 0 30px;
 }
 
+/* ─── Cleave row (shared between player + GM) ─────────────────────────────
+   Sits between the formula breakdown and the target rows. Visible to BOTH
+   the player who attacked AND the GM. Either can click CLEAVE. Once a
+   cleave has fired, the message's `cleaveFired` flag is set and the button
+   renders as disabled with "CLEAVED ✓". */
+.ace-qol-dmg-cleave-row {
+  display: flex;
+  justify-content: center;
+  padding: 8px 12px;
+  background: linear-gradient(180deg, rgba(255, 152, 0, 0.06) 0%, rgba(0, 0, 0, 0) 100%);
+  border-top: 1px solid rgba(255, 152, 0, 0.18);
+  border-bottom: 1px solid rgba(255, 152, 0, 0.18);
+}
+.ace-qol-dmg-cleave-row .ace-qol-btn-cleave {
+  flex: 0 0 auto;
+  min-width: 140px;
+  padding: 7px 18px;
+}
+
 /* ─── Apply/Undo buttons ─────────────────────────────────────────────── */
 .ace-qol-dmg-actions {
-  display: flex; gap: 6px; padding: 6px 10px;
+  display: flex;
+  flex-wrap: wrap;          /* drop to a new row instead of squishing mid-word */
+  gap: 6px;
+  padding: 6px 10px;
   background: linear-gradient(180deg, #0e0e12 0%, #111116 100%);
+}
+/* Each action button must keep its full label on ONE line. If the row
+   can't fit them all side-by-side, flex-wrap above drops the overflow
+   button to its own row at full width. */
+.ace-qol-dmg-actions .ace-qol-btn {
+  white-space: nowrap;       /* never break "APPLY ALL" into "APP LY ALL" */
+  flex: 1 1 88px;            /* allow grow, but floor at 88px before wrapping */
+  min-width: 0;              /* lets flex-shrink work properly inside the row */
 }
 .ace-qol-dmg-actions:first-of-type {
   border-top: 1px solid;
@@ -1713,6 +1776,26 @@
   background: #151518;
 }
 
+/* Mirror Image redirect caption — appears under a MISS target row when the
+   attack was absorbed by an illusory duplicate. Same visual treatment as
+   the damage-source caption so the chat log reads consistently. */
+.ace-qol-merge-tgt-caption {
+  padding: 2px 10px 6px 42px;  /* left padding aligns under target name, past the avatar */
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  font-style: italic;
+  opacity: 0.92;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+  background: #111114;
+}
+.ace-qol-merge-target-row:nth-child(even) + .ace-qol-merge-tgt-caption {
+  background: #151518;
+}
+.ace-qol-merge-mirror-caption {
+  color: #8ab4d8;  /* same icy blue as the Mirror Image redirect chat card */
+}
+
 .ace-qol-merge-tgt-img {
   width: 24px; height: 24px; border-radius: 50%;
   border: 1px solid #444; object-fit: cover; flex-shrink: 0;
@@ -2361,18 +2444,145 @@
   padding: 0;
   overflow: hidden;
   position: relative;
+  /* Symmetric beveled gold bevels on LEFT and RIGHT edges + bottom.
+     Top is already drawn by the brass header. Each edge gets a bright
+     1px highlight line plus a 3px dark inner shadow to read as "beveled". */
   box-shadow:
-    inset 0 0 0 1px rgba(184, 148, 58, 0.25),
-    inset 0 0 32px rgba(0, 0, 0, 0.55);
+    inset  1px 0 0 rgba(255, 230, 150, 0.65),   /* bright gold highlight — LEFT */
+    inset -1px 0 0 rgba(255, 230, 150, 0.65),   /* bright gold highlight — RIGHT */
+    inset 0 -1px 0 rgba(255, 230, 150, 0.55),   /* bright gold highlight — BOTTOM */
+    inset  3px 0 6px rgba(0, 0, 0, 0.4),        /* dark inset bevel — LEFT */
+    inset -3px 0 6px rgba(0, 0, 0, 0.4),        /* dark inset bevel — RIGHT */
+    inset 0 -3px 6px rgba(0, 0, 0, 0.35),       /* dark inset bevel — BOTTOM */
+    inset 0 0 32px rgba(0, 0, 0, 0.45);         /* overall darkening for depth */
+}
+
+/* ── Catch-all brass scrollbars throughout the config panel ──
+   Without this, any element that triggers a HORIZONTAL scrollbar (or any
+   scrollable element we forgot to style individually) falls back to the
+   browser's default. On Foundry V13 + Chrome that's a thin red bar that
+   breaks the theme. Apply brass to every scrollable descendant. */
+.ace-qol-config-panel-window *::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.ace-qol-config-panel-window *::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 5px;
+}
+.ace-qol-config-panel-window *::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(184, 148, 58, 0.7), rgba(120, 90, 30, 0.7));
+  border-radius: 5px;
+  border: 1px solid rgba(0, 0, 0, 0.4);
+}
+.ace-qol-config-panel-window *::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(255, 220, 130, 0.85), rgba(180, 140, 40, 0.85));
+}
+.ace-qol-config-panel-window *::-webkit-scrollbar-corner {
+  background: rgba(0, 0, 0, 0.55);
 }
 .ace-qol-cfg-root {
   position: relative;
   display: flex;
-  flex-direction: row;
+  flex-direction: column;  /* search bar on top, body (tablist + pane) below */
   height: calc(100% - 56px);  /* leave room for footer */
   overflow: hidden;
   background: transparent;  /* let the dark-steel inside pane-frame show through, no separate root box */
   border: none;
+}
+.ace-qol-cfg-body {
+  display: flex;
+  flex-direction: row;
+  flex: 1 1 auto;
+  min-height: 0;  /* allow inner scrolling instead of pushing out */
+  overflow: hidden;
+}
+
+/* ── Cross-tab search bar (top of config panel) ────────────────────────── */
+.ace-qol-cfg-search {
+  position: relative;
+  width: 100%;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.35);
+  border-bottom: 1px solid rgba(212, 175, 55, 0.25);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ace-qol-cfg-search-icon {
+  color: #d4af37;
+  font-size: 14px;
+  padding-left: 4px;
+}
+.ace-qol-cfg-search-input {
+  flex: 1;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: #f0e4c0;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(212, 175, 55, 0.4);
+  border-radius: 4px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.ace-qol-cfg-search-input:focus {
+  border-color: #d4af37;
+  box-shadow: 0 0 6px rgba(212, 175, 55, 0.4);
+}
+.ace-qol-cfg-search-input::placeholder {
+  color: #888;
+  font-style: italic;
+}
+.ace-qol-cfg-search-clear {
+  background: transparent;
+  border: 1px solid rgba(212, 175, 55, 0.4);
+  color: #c0b288;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  transition: background 0.15s, color 0.15s;
+}
+.ace-qol-cfg-search-clear:hover {
+  background: rgba(212, 175, 55, 0.15);
+  color: #f0e4c0;
+}
+
+/* Each search result wraps a setting with a "jump to tab" chip above it */
+.ace-qol-cfg-search-result {
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px dashed rgba(212, 175, 55, 0.18);
+}
+.ace-qol-cfg-search-result:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+}
+.ace-qol-cfg-search-tab-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(212, 175, 55, 0.12);
+  border: 1px solid rgba(212, 175, 55, 0.4);
+  color: #d4af37;
+  padding: 3px 9px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  cursor: pointer;
+  margin-bottom: 6px;
+  transition: background 0.15s, color 0.15s;
+}
+.ace-qol-cfg-search-tab-chip:hover {
+  background: rgba(212, 175, 55, 0.25);
+  color: #fff7cc;
+}
+.ace-qol-cfg-search-tab-chip .ace-qol-cfg-tab-icon {
+  width: 14px;
+  height: 14px;
 }
 
 /* ── Tab list (left rail) — integrated with body, no floating panel look ── */
@@ -2488,6 +2698,39 @@
 .ace-qol-cfg-tab-icon-effectspanel { background-image: url("../Assets/UI/Brass Frame/Icons/tab-icon-effectspanel.png"); }
 .ace-qol-cfg-tab-icon-ui           { background-image: url("../Assets/UI/Brass Frame/Icons/tab-icon-ui.png"); }
 .ace-qol-cfg-tab-icon-advanced     { background-image: url("../Assets/UI/Brass Frame/Icons/tab-icon-advanced.png"); }
+
+/* ── FA fallback icon for tabs added after the brass-medallion sprite was built ──
+   The PNG sprite covers the FA <i> by default. Tabs without a matching PNG
+   (auras, stealth, actions, masteries, initiative, tokens) show a brass-themed
+   FA icon medallion built from gradients so they visually match. */
+.ace-qol-cfg-tab-icon > i {
+  display: none;  /* hidden by default — PNG sprite tabs cover this */
+}
+.ace-qol-cfg-tab-icon-auras,
+.ace-qol-cfg-tab-icon-stealth,
+.ace-qol-cfg-tab-icon-actions,
+.ace-qol-cfg-tab-icon-masteries,
+.ace-qol-cfg-tab-icon-initiative,
+.ace-qol-cfg-tab-icon-tokens {
+  background:
+    radial-gradient(circle at 35% 30%, rgba(255, 220, 130, 0.55) 0%, rgba(184, 148, 58, 0.25) 50%, rgba(60, 45, 15, 0.55) 100%),
+    linear-gradient(135deg, #8a6d2e 0%, #5e4818 100%);
+}
+.ace-qol-cfg-tab-icon-auras > i,
+.ace-qol-cfg-tab-icon-stealth > i,
+.ace-qol-cfg-tab-icon-actions > i,
+.ace-qol-cfg-tab-icon-masteries > i,
+.ace-qol-cfg-tab-icon-initiative > i,
+.ace-qol-cfg-tab-icon-tokens > i {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  font-size: 20px;
+  color: #f0e4c0;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7), 0 0 4px rgba(255, 220, 150, 0.4);
+}
 
 .ace-qol-cfg-tab-label {
   flex: 1;
@@ -2675,8 +2918,55 @@
   min-width: 90px;
 }
 .ace-qol-cfg-widget input[type="range"] {
-  width: 180px;
-  height: 18px;
+  width: 200px;
+  height: 22px;
+  -webkit-appearance: none;
+          appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+/* Track: low-contrast dark groove with brass border */
+.ace-qol-cfg-widget input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px;
+  background: linear-gradient(180deg, rgba(80, 60, 20, 0.7), rgba(40, 30, 10, 0.85));
+  border: 1px solid rgba(212, 175, 55, 0.5);
+  border-radius: 3px;
+}
+.ace-qol-cfg-widget input[type="range"]::-moz-range-track {
+  height: 6px;
+  background: linear-gradient(180deg, rgba(80, 60, 20, 0.7), rgba(40, 30, 10, 0.85));
+  border: 1px solid rgba(212, 175, 55, 0.5);
+  border-radius: 3px;
+}
+/* Thumb: bigger and clearly grabbable — 20px brass medallion */
+.ace-qol-cfg-widget input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+          appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #f0e4c0 0%, #d4af37 50%, #8a6d2e 100%);
+  border: 1px solid #5e4818;
+  box-shadow: 0 0 4px rgba(255, 220, 150, 0.4), 0 1px 2px rgba(0, 0, 0, 0.7);
+  margin-top: -7px;  /* center the thumb on the 6px track */
+  cursor: grab;
+}
+.ace-qol-cfg-widget input[type="range"]::-webkit-slider-thumb:active {
+  cursor: grabbing;
+  background: radial-gradient(circle at 35% 30%, #fff7cc 0%, #ffd166 50%, #8a6d2e 100%);
+}
+.ace-qol-cfg-widget input[type="range"]::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #f0e4c0 0%, #d4af37 50%, #8a6d2e 100%);
+  border: 1px solid #5e4818;
+  box-shadow: 0 0 4px rgba(255, 220, 150, 0.4), 0 1px 2px rgba(0, 0, 0, 0.7);
+  cursor: grab;
+}
+.ace-qol-cfg-widget input[type="range"]::-moz-range-thumb:active {
+  cursor: grabbing;
+  background: radial-gradient(circle at 35% 30%, #fff7cc 0%, #ffd166 50%, #8a6d2e 100%);
 }
 .ace-qol-cfg-widget button {
   background:

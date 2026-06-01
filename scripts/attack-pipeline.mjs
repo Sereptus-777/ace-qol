@@ -17,6 +17,7 @@ import { MergeCard } from "./merge-card.mjs";
 import { CoverEngine } from "./cover-engine.mjs";
 import { RiderEngine } from "./rider-engine.mjs";
 import { pendingAttackChoices, awaitDsnRoll, showCenterToast } from "./attack-prompt.mjs";
+import { WeaponMasteries } from "./weapon-masteries.mjs";
 
 export class AttackPipeline {
 
@@ -706,7 +707,32 @@ export class AttackPipeline {
     const missingBonus = expectedBonus - displayedSum;
     if (missingBonus !== 0 && Number.isFinite(missingBonus)) {
       const isSummon = !!actor?.flags?.dnd5e?.summon;
-      const label = isSummon ? "SUMMON" : "BONUS";
+
+      // ── Source attribution for the unaccounted-for modifier ──
+      // Generic "+3 BONUS" is useless to the table — a DM or player looking
+      // at the card has no idea WHERE that bonus came from. Walk the
+      // actor's active effects to find a known buff source. Common ones
+      // that add to attack rolls: Bless (1d4), Bardic Inspiration (d4-d12),
+      // Inspiring Leader, Guidance (some tables), Aid (no but a flag-style
+      // version exists). Add to this list as we encounter more in play.
+      let label = isSummon ? "SUMMON" : "BONUS";
+      try {
+        const effectNames = (actor?.effects ?? [])
+          .filter(e => !e.disabled && !e.isSuppressed)
+          .map(e => String(e.name ?? "").toLowerCase());
+        // Order matters: more specific names checked first so partial-string
+        // matches don't claim broader effects (e.g. "Bardic Inspiration"
+        // before "Inspiration").
+        if      (effectNames.some(n => n.includes("bardic inspiration"))) label = "INSPIRE";
+        else if (effectNames.some(n => n.includes("bless")))              label = "BLESS";
+        else if (effectNames.some(n => n.includes("guidance")))           label = "GUIDE";
+        else if (effectNames.some(n => n.includes("inspiring leader")))   label = "LEADER";
+        else if (effectNames.some(n => n.includes("haste")))              label = "HASTE";
+        else if (effectNames.some(n => n.includes("enlarge")))            label = "ENLARGE";
+        else if (effectNames.some(n => n.includes("hex"))
+                 || effectNames.some(n => n.includes("hunter's mark")))   label = "MARK";
+      } catch (_) { /* fall back to "BONUS" / "SUMMON" */ }
+
       formulaParts.push(`<span class="ace-qol-mod-chip"><span class="ace-qol-mod-num">${missingBonus >= 0 ? "+" : ""}${missingBonus}</span><span class="ace-qol-mod-label">${label}</span></span>`);
     }
 
@@ -754,6 +780,20 @@ export class AttackPipeline {
         ? `AC ${r.effectiveAC} <span class="ace-qol-atk-ac-bonus" title="Base AC ${r.ac} + Cover ${r.effectiveAC - r.ac}">+${r.effectiveAC - r.ac}</span>`
         : `AC ${r.ac}`;
 
+      // ── Mirror Image redirect caption ──
+      // When the attack was absorbed by an illusory duplicate, the row shows
+      // MISS but without context the table sees "21 vs AC 13 = MISS" and is
+      // confused why. Inject a small caption below the target row explaining
+      // the redirect, with the same icy-blue color as the redirect chat card.
+      let mirrorCaption = "";
+      if (r.mirrorImageRedirect) {
+        const mi = r.mirrorImageRedirect;
+        const outcome = mi.hitDuplicate
+          ? `Hit Mirror Image duplicate (AC ${mi.duplicateAC}) — duplicate destroyed`
+          : `Hit Mirror Image duplicate (AC ${mi.duplicateAC}) — duplicate dodged`;
+        mirrorCaption = `<div class="ace-qol-atk-mirror-caption">→ ${outcome}</div>`;
+      }
+
       return `
         <div class="ace-qol-atk-row">
           <div class="ace-qol-atk-target">
@@ -762,6 +802,7 @@ export class AttackPipeline {
             <span class="ace-qol-atk-ac">${acDisplay}</span>
             <span class="ace-qol-atk-result ${hitClass}">${hitLabel}</span>
           </div>
+          ${mirrorCaption}
           ${coverTag || tagHtml ? `<div class="ace-qol-atk-tags">${coverTag}${tagHtml}</div>` : ""}
         </div>
       `;
@@ -1055,12 +1096,36 @@ export class AttackPipeline {
   static _actorHasMultiTargetMelee(actor, weapon = null) {
     if (!actor?.items) return false;
 
-    // ── Layer 1: weapon mastery "cleave" on the active weapon ──
+    // ── Layer 1: weapon mastery "cleave" property on the active weapon ──
+    // 2024 system data populates `cleave` in weapon system.properties for
+    // cleave-mastery weapons (greataxe, halberd). This is the fast-path.
     try {
       const props = weapon?.system?.properties;
       const hasCleaveMastery = props?.has?.("cleave") === true
                             || (Array.isArray(props) && props.includes("cleave"));
       if (hasCleaveMastery) return true;
+    } catch (_) { /* fall through */ }
+
+    // ── Layer 1b: weapon-name → cleave mastery (2014 fallback + safety) ──
+    // 2014 system data does NOT populate the `cleave` property even on
+    // greataxe/halberd. To get the damage-card CLEAVE button to render in
+    // 2014 mode with the override setting on, fall back to name-based
+    // lookup. Gated by:
+    //   - master mastery toggle is ON
+    //   - rulesVersion is modern OR override setting is ON
+    //   - actor actually has the Weapon Mastery class feature
+    // All three gates must pass — otherwise the button stays hidden, which
+    // is correct (the click handler would just bail anyway).
+    try {
+      const rv = game.settings.get?.("dnd5e", "rulesVersion");
+      const allow2014 = game.settings.get?.(MODULE_ID, "weaponMasteryAllowIn2014") === true;
+      const masteryEnabled = game.settings.get?.(MODULE_ID, "weaponMasteryEnabled") !== false;
+      if (masteryEnabled && (rv !== "legacy" || allow2014)) {
+        if (WeaponMasteries?.getMasteryFor?.(weapon) === "cleave"
+            && WeaponMasteries?._actorHasMasteryFeature?.(actor)) {
+          return true;
+        }
+      }
     } catch (_) { /* fall through */ }
 
     // ── Layer 3: world-configurable allow-list ──

@@ -146,6 +146,80 @@ export class QolSettings {
       default: true,
     });
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  TOOLTIP DELAY — slows down Foundry's hover tooltips
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    //  Foundry's default is 500ms which fires almost instantly when mousing
+    //  past elements. A higher value gives you breathing room to scan a
+    //  character sheet without tooltips popping over what you're trying to
+    //  read. 1500ms is the sweet spot per user testing; 500ms is Foundry
+    //  default for users who like the original behavior. Applies live —
+    //  no reload needed when changed.
+    s("tooltipDelay", {
+      name:    "Tooltip Hover Delay (ms)",
+      hint:    "How long you must hover before a tooltip appears (Foundry default is 500ms — too fast for some users). 1500ms = 1.5 seconds. Set to 500 to restore Foundry default. Applies live; no reload required.",
+      scope:   "client",
+      config:  true,
+      type:    Number,
+      range:   { min: 100, max: 5000, step: 100 },
+      default: 1500,
+      onChange: (value) => {
+        try {
+          const v = Number(value) || 500;
+          if (foundry.helpers?.interaction?.TooltipManager) {
+            foundry.helpers.interaction.TooltipManager.TOOLTIP_ACTIVATION_DELAY = v;
+            console.log(`${MODULE_ID} | Tooltip delay set to ${v}ms (live update).`);
+          }
+        } catch (err) {
+          console.warn(`${MODULE_ID} | Tooltip delay live-update failed:`, err);
+        }
+      },
+    });
+
+    // ── Player Can Start Combat ────────────────────────────────────────────
+    //  RAW (5e): any combatant can initiate combat — the assassin striking
+    //  from stealth, the wizard hurling a fireball at a guard, the rogue
+    //  pulling a knife in a tavern brawl. Foundry's default requires the GM
+    //  to manually create the encounter first, which is a flow-break:
+    //  "wait, stop, let me make a combat tracker entry, NOW you can roll
+    //  initiative" — completely backwards from how D&D actually plays.
+    //
+    //  When ON: players (and GMs) can roll initiative anytime. If no active
+    //  combat exists in the current scene, ACE QOL auto-creates one and
+    //  adds the rolling actor as a combatant. Players who lack permission
+    //  to create Combat documents emit a socket request to the GM client,
+    //  which handles the creation on their behalf and emits acknowledgment.
+    //
+    //  Defaults ON because this is RAW-correct behavior and what every
+    //  commercial customer will expect.
+    s("playerCanStartCombat", {
+      name:    "Players Can Start Combat (RAW)",
+      hint:    "When enabled, any player rolling initiative auto-creates a combat encounter if none exists. Restores standard D&D flow (any combatant can initiate). Disable only if you specifically want GM-only combat creation.",
+      scope:   "world",
+      config:  true,
+      type:    Boolean,
+      default: true,
+    });
+
+    // ── Hidden NPC Initiative ──────────────────────────────────────────────
+    //  When ON: any time an NPC rolls initiative, the resulting chat message
+    //  is whispered to GMs only — players never see "Hidden Bandit rolled 17
+    //  for initiative" and therefore can't meta-game knowing an ambush is
+    //  about to drop. Works regardless of how initiative is rolled (combat
+    //  tracker, BG3 HUD, hotkey, manual). PC initiative rolls are still
+    //  public — only NPCs are hidden. Defaults to ON because every GM wants
+    //  this; the only reason to turn it off is if your table prefers
+    //  fully-transparent combat for some reason.
+    s("hideNpcInitiative", {
+      name:    "Hide NPC Initiative Rolls from Players",
+      hint:    "When enabled, NPC initiative rolls go to GM-only chat. Players never see the roll, preventing meta-gaming from ambushes and hidden combatants. PC initiative rolls remain public.",
+      scope:   "world",
+      config:  true,
+      type:    Boolean,
+      default: true,
+    });
+
     s("weaponMasteryEnabled", {
       name:    "Weapon Mastery (2024 PHB) — Enabled",
       hint:    "Auto-fires mastery effects (Cleave, Graze, Vex, Sap, Topple, etc.) when a weapon is used. Each mastery posts a chat card and applies its effect where automatable.",
@@ -153,6 +227,23 @@ export class QolSettings {
       config:  false,
       type:    Boolean,
       default: true,
+    });
+
+    // ── Weapon Mastery 2014 Override ───────────────────────────────────────
+    //  Weapon Mastery is a D&D 2024 PHB feature; by default ACE QOL skips
+    //  it in 2014 (Legacy) mode because the feature doesn't exist there.
+    //  BUT some tables run 2014 ruleset and want Weapon Mastery as a
+    //  houserule import from 2024. Turning this ON forces the mastery
+    //  system to fire even when dnd5e's rulesVersion is "legacy".
+    //
+    //  Default OFF (pure 2014 RAW). Flip ON for hybrid play.
+    s("weaponMasteryAllowIn2014", {
+      name:    "Weapon Mastery — Allow in 2014 (Legacy) mode",
+      hint:    "By default, Weapon Mastery only fires in 2024 (Modern) mode because it's a 2024 PHB feature. Enable this if you're running 2014 rules but want to use the Weapon Mastery system as a houserule import.",
+      scope:   "world",
+      config:  true,
+      type:    Boolean,
+      default: false,
     });
 
     s("weaponMasteryStrict", {

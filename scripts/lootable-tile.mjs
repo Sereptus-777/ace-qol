@@ -684,8 +684,59 @@ export class LootableTile {
     //
     // We ALSO swallow contextmenu over a lootable tile so Foundry doesn't
     // pop its default right-click menu on top of our dialog.
+    // ── UI element bail-out ──
+    // Character sheets, dialogs, sidebar, BG3 HUD, etc. all sit ABOVE the
+    // canvas. A right-click on a sheet whose window happens to overlay a
+    // lootable token underneath was bleeding through to the loot dialog,
+    // because our document-level listeners don't know whether the click
+    // landed on the canvas or on a UI overlay. Bail when the event target
+    // is inside a known UI surface.
+    // UI surfaces that sit ABOVE the canvas. Mouse events landing on any of
+    // these should NOT trigger lootable-tile behavior (right-click, hover icon).
+    // V13 introduced ApplicationV2 which uses `.application` instead of `.app`,
+    // and DialogV2 uses different classes too — must catch both old and new.
+    const UI_BAIL = [
+      ".app",                  // V1 Foundry application (sheets, dialogs)
+      ".application",          // V2 Foundry application (ApplicationV2 / DialogV2)
+      ".window-app",           // generic Foundry window
+      ".sheet",                // actor / item / journal sheets
+      ".dialog",               // legacy Dialog
+      "dialog",                // native HTML dialog element (DialogV2 renders one)
+      "#sidebar",              // right sidebar (chat, combat, etc.)
+      "#chat",                 // chat panel
+      "#chat-log",             // chat log
+      "#hud",                  // canvas HUD
+      "#ui-top",               // top UI bar
+      "#ui-bottom",            // bottom UI bar (hotbar)
+      "#ui-left",              // left UI panel
+      "#ui-right",             // right UI panel
+      ".notification",         // toast notifications
+      "#notifications",        // notifications container
+      ".tooltip",              // tooltips
+      "#tooltip",              // tooltip element
+      "#context-menu",         // context menus
+      ".context-menu",         // context menus
+      "#players",              // player list
+      "#navigation",           // scene navigation
+      ".bg3-hud",              // BG3 HUD module
+      "#bg3-hud-container",    // BG3 HUD container
+      ".combat-dock",          // theripper93's Carousel Combat Tracker container
+      ".combat-dock-tooltip-wrapper",  // ...and its hover tooltips
+      "[data-application-id]", // any element belonging to an Application — V13 catch-all
+      "[role='dialog']",       // ARIA dialog (covers most modal popups)
+    ].join(", ");
+    // Made instance-level so all event handlers in this class can share it
+    // (right-click, hover, drag, future additions).
+    this._isOverGameCanvas = (ev) => {
+      const t = ev?.target;
+      if (!t) return false;
+      if (typeof t.closest !== "function") return false;
+      return !t.closest(UI_BAIL);
+    };
+
     document.addEventListener("mousedown", (ev) => {
       if (ev.button !== 2) return;
+      if (!this._isOverGameCanvas(ev)) return;
       this._rightDownAt = {
         screenX: ev.clientX,
         screenY: ev.clientY,
@@ -695,6 +746,7 @@ export class LootableTile {
 
     document.addEventListener("mouseup", (ev) => {
       if (ev.button !== 2) return;
+      if (!this._isOverGameCanvas(ev)) { this._rightDownAt = null; return; }
       const start = this._rightDownAt;
       this._rightDownAt = null;
       if (!start) return;
@@ -708,6 +760,7 @@ export class LootableTile {
     // lootable tile OR dead token, so our dialog isn't covered by a stray
     // browser menu or Foundry's default right-click handlers.
     document.addEventListener("contextmenu", (ev) => {
+      if (!this._isOverGameCanvas(ev)) return;
       const worldPos = this._eventToWorldPos(ev);
       if (!worldPos) return;
       if (this._findLootableTileAt(worldPos) || this._findLootableTokenAt(worldPos)) {
@@ -717,7 +770,18 @@ export class LootableTile {
     }, true);
 
     // ── Hover-icon system ──
-    document.addEventListener("mousemove", (ev) => this._onHoverMove(ev));
+    // Same UI bail-out applies here: hovering over an open character sheet
+    // that happens to be positioned over a dead token shouldn't make our
+    // loot-hover icon appear behind the sheet. The hover system was missing
+    // this check, which was the residual bleed-through Johnny reported.
+    document.addEventListener("mousemove", (ev) => {
+      if (!this._isOverGameCanvas(ev)) {
+        // Cancel any pending hover-icon timer when the mouse leaves canvas
+        this._cancelHoverIcon?.();
+        return;
+      }
+      this._onHoverMove(ev);
+    });
 
     let delayMs = "?";
     try { delayMs = game.settings.get(MODULE_ID, "lootHoverIconDelayMs"); }

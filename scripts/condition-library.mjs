@@ -520,7 +520,7 @@ const SPELL_EFFECTS = {
   // ── Mirror Image (2nd level, NOT concentration) ───────────────────────────
   mirror_image: {
     name: "Mirror Image",
-    icon: "icons/magic/control/silhouette-multiple-blue.webp",
+    icon: "icons/magic/defensive/illusion-evasion-echo-purple.webp",
     description: "Three illusory duplicates. When attacked, random chance to hit a duplicate instead (AC 10 + DEX mod). Duplicates destroyed on hit.",
     changes: [
       { key: "flags.ace-qol.mirrorImage", mode: 0, value: "3" },
@@ -767,7 +767,7 @@ const SPELL_EFFECTS = {
   //    needed — the rider-engine handles the discharge damage on hit.
   searing_smite: {
     name: "Searing Smite",
-    icon: "icons/magic/fire/blade-fire-glowing-red.webp",
+    icon: "icons/magic/fire/dagger-rune-enchant-flame-red.webp",
     description: "Next melee weapon hit deals extra fire damage. Save vs ignition (ongoing fire).",
     changes: [],
     concentration: true,
@@ -791,7 +791,7 @@ const SPELL_EFFECTS = {
   },
   blinding_smite: {
     name: "Blinding Smite",
-    icon: "icons/magic/light/explosion-burst-sky-yellow.webp",
+    icon: "icons/magic/light/beam-rays-yellow-blue.webp",
     description: "Next melee weapon hit deals extra radiant damage. CON save or blinded.",
     changes: [],
     concentration: true,
@@ -799,7 +799,7 @@ const SPELL_EFFECTS = {
   },
   staggering_smite: {
     name: "Staggering Smite",
-    icon: "icons/magic/control/silhouette-aura-energy-purple.webp",
+    icon: "icons/magic/control/silhouette-aura-energy.webp",
     description: "Next melee weapon hit deals extra psychic damage. WIS save or disadvantage on attacks/checks.",
     changes: [],
     concentration: true,
@@ -807,7 +807,7 @@ const SPELL_EFFECTS = {
   },
   banishing_smite: {
     name: "Banishing Smite",
-    icon: "icons/magic/holy/projectile-stars-glowing.webp",
+    icon: "icons/magic/holy/projectiles-blades-salvo-yellow.webp",
     description: "Next melee weapon hit deals extra force damage. Target ≤50 HP is banished to home plane.",
     changes: [],
     concentration: true,
