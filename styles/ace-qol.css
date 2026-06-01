@@ -1078,12 +1078,29 @@
 .ace-qol-btn-roll-dmg-push-bot {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   white-space: nowrap;
 }
 .ace-qol-btn-roll-dmg-push-bot {
   font-size: 0.95rem;
   letter-spacing: 0.8px;
+}
+/* Burst (explosion) icons flanking "ROLL DAMAGE +" — fiery red-amber with
+   a soft glow so they pop against the orange button background instead of
+   reading as flat white. Matches the visual weight of the red explosion
+   on the regular ROLL DAMAGE button below for visual continuity. */
+.ace-qol-btn-roll-dmg-push i.fa-burst {
+  color: #ff5a1a;
+  font-size: 1.05rem;
+  text-shadow:
+    0 0 6px rgba(255, 140, 40, 0.85),
+    0 1px 2px rgba(60, 10, 0, 0.7);
+  filter: drop-shadow(0 0 3px rgba(255, 120, 30, 0.6));
+}
+.ace-qol-btn-roll-dmg-push:disabled i.fa-burst {
+  color: #6a4a30;
+  text-shadow: none;
+  filter: none;
 }
 .ace-qol-blink-push {
   animation: ace-blink-push 0.75s ease-in-out infinite;

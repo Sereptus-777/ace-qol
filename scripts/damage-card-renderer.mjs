@@ -165,7 +165,7 @@ export class DamageCardRenderer {
         ${pushBundle ? `<button class="ace-qol-btn ace-qol-btn-roll-dmg-push ace-qol-blink-push" data-action="aceQolRollDamagePush"
           data-attacker-uuid="${pushBundle.attackerUuid}"
           data-target-uuid="${pushBundle.targetUuid}">
-          <span class="ace-qol-btn-roll-dmg-push-top"><i class="fas fa-burst"></i><i class="fas fa-hand-back-fist"></i> ROLL DAMAGE +</span>
+          <span class="ace-qol-btn-roll-dmg-push-top"><i class="fas fa-burst"></i> ROLL DAMAGE + <i class="fas fa-burst"></i></span>
           <span class="ace-qol-btn-roll-dmg-push-bot">PUSH 10 FT?</span>
         </button>` : ""}
         <span class="ace-qol-dmg-btn-targets">→ ${targetNames}</span>
