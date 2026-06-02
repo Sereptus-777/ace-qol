@@ -1311,9 +1311,12 @@ export class CombatState {
     if (state.target.isConcentrating) {
       tags.push({ label: `CONCENTRATING: ${state.target.concentrationSpell}`, type: "info", icon: "fa-brain" });
     }
-    if (state.target.legendaryResistance > 0) {
-      tags.push({ label: `LEG RESIST: ${state.target.legendaryResistance}/${state.target.legendaryResistanceMax}`, type: "legendary", icon: "fa-crown" });
-    }
+    // LEG RESIST tag removed from attack-roll summary tags (Johnny audit
+    // 2026-05-31). Was firing on every attack against a creature with
+    // Legendary Resistance — but RAW: attack rolls don't trigger LR
+    // (only failed saves do). Showing the badge here was misleading
+    // visual noise that suggested LR could affect the attack itself.
+    // Save cards still render their own LR-aware UI via save-engine.mjs.
 
     // Save modifiers
     if (state.autoFailSave) tags.push({ label: "TARGET AUTO-FAILS STR/DEX SAVE", type: "danger", icon: "fa-circle-xmark" });
