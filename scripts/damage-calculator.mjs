@@ -8,6 +8,7 @@ import { QolSettings } from "./settings.mjs";
 import { DescriptionParser } from "./description-parser.mjs";
 import { DamageConstants } from "./damage-engine.mjs";
 import { CombatState } from "./combat-state.mjs";
+import { NullificationWalker } from "./target-state-registry/walker.mjs";
 import { getChosenDamageType } from "./multi-type-damage-chooser.mjs";
 
 const PHYSICAL_TYPES = new Set(["bludgeoning", "piercing", "slashing"]);
@@ -1023,6 +1024,30 @@ export class DamageCalculator {
     for (const type of vulnSet) {
       if (modifiers[type]) continue;
       modifiers[type] = { modifier: "vulnerable", reason: `Vulnerable to ${type}` };
+    }
+
+    // ── Registry overrides (v0.7.18) ──
+    // Walk the nullification registry (spell effects, magic items, class /
+    // racial / artifact features) and fold any damage-type overrides in.
+    // Most-restrictive wins: immune > resistant > normal > vulnerable.
+    // This is what gives Brooch of Shielding force resistance, Stoneskin
+    // its nonmagical-B/P/S resistance, Ring of Cold Resistance its cold
+    // resistance, etc. — beyond just the bare traits block.
+    try {
+      const nullifications = NullificationWalker.walk(actor, { item });
+      const rank = { vulnerable: 0, normal: 1, resistant: 2, immune: 3 };
+      for (const [type, mod] of Object.entries(nullifications.damage ?? {})) {
+        const existingMod = modifiers[type]?.modifier ?? "normal";
+        if ((rank[mod] ?? 1) > (rank[existingMod] ?? 1)) {
+          modifiers[type] = {
+            modifier: mod,
+            reason: `${nullifications.damageSources?.[type] ?? "registry"} → ${mod}`,
+          };
+        }
+      }
+    } catch (err) {
+      // Non-blocking — registry import failed or walker threw. Bare traits still work.
+      console.warn(`${MODULE_ID} | DamageCalculator: NullificationWalker fold failed (non-blocking):`, err?.message ?? err);
     }
 
     return modifiers;

@@ -20,6 +20,7 @@ import { RiderEngine }          from "./rider-engine.mjs";
 import { FlagsEngine }          from "./flags-engine.mjs";
 import { ReactionEngine, injectReactionCSS } from "./reaction-engine.mjs";
 import { InvisibilityBreaker } from "./invisibility-breaker.mjs";
+import { SpellPipeline } from "./spell-pipeline/pipeline.mjs";
 import { HookAPI }              from "./hook-api.mjs";
 import { OverTimeEngine }       from "./overtime-engine.mjs";
 import { CoverEngine }          from "./cover-engine.mjs";
@@ -1149,6 +1150,20 @@ Hooks.once("ready", () => {
     InvisibilityBreaker.register();
   } catch (err) {
     console.error(`${MODULE_ID} | Invisibility breaker init failed:`, err);
+  }
+
+  // Unified Spell Pipeline — registry-driven dispatch for spells whose
+  // shape is mapped in SPELL_REGISTRY. Phase 1 ships with Magic Missile
+  // as proof-of-concept; other spells fall through to dnd5e default flow.
+  // Exposed on game.aceQol.SpellPipeline so spell-auto-damage can check
+  // pipeline ownership before its own handlers fire (avoids double-dispatch).
+  try {
+    SpellPipeline.initialize();
+    game.aceQol = game.aceQol ?? {};
+    game.aceQol.SpellPipeline = SpellPipeline;
+    console.debug(`${MODULE_ID} | Spell pipeline online + exposed on game.aceQol.SpellPipeline`);
+  } catch (err) {
+    console.error(`${MODULE_ID} | Spell pipeline init failed:`, err);
   }
 
   // Hook API — register public API on the module for third-party extensibility
@@ -3334,6 +3349,7 @@ Hooks.once("ready", () => {
     overTimeEngine,
     reactionEngine,
     ReactionEngine,
+    SpellPipeline,            // v0.7.18 — registry-driven spell dispatcher
     bloodiedEngine,
     CoverEngine,
     VisibilityEngine,

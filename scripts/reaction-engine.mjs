@@ -592,20 +592,30 @@ export class ReactionEngine {
   }
 
   /**
-   * Check if an actor can cast Shield.
-   * @returns {{ canUse: boolean, slots: object[] }}
+   * Check if an actor can cast Shield as a reaction.
+   * @returns {{ canUse: boolean, slots: object[], reason?: string }}
    */
   _canUseShield(actor) {
+    // Shield already active? (v0.7.18) — they're already protected, no point
+    // in prompting them to cast it again (and would waste a reaction + slot).
+    // Match by effect name; defense-in-depth for both "Shield" and "Shield Spell".
+    try {
+      const hasShieldActive = (actor.effects ?? []).some(e =>
+        !e.disabled && /^shield(\s+spell)?$/i.test(String(e.name ?? "").trim())
+      );
+      if (hasShieldActive) return { canUse: false, slots: [], reason: "Shield already active" };
+    } catch (_) { /* fall through */ }
+
     // Reaction already used?
-    if (this._hasUsedReaction(actor)) return { canUse: false, slots: [] };
+    if (this._hasUsedReaction(actor)) return { canUse: false, slots: [], reason: "Reaction already used this round" };
 
     // Has Shield spell prepared/known?
     const hasShield = this._hasSpellPrepared(actor, "Shield");
-    if (!hasShield) return { canUse: false, slots: [] };
+    if (!hasShield) return { canUse: false, slots: [], reason: "Shield not prepared" };
 
     // Has a spell slot of 1st level or higher?
     const slots = this._getAvailableSlots(actor, 1);
-    if (!slots.length) return { canUse: false, slots: [] };
+    if (!slots.length) return { canUse: false, slots: [], reason: "No 1st-level+ slot available" };
 
     return { canUse: true, slots };
   }

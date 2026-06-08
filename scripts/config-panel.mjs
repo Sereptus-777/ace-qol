@@ -497,13 +497,21 @@ export class AceQolConfigPanel extends ApplicationV2 {
       });
     });
 
-    // Tab switching
+    // Tab switching — preserve the tab-rail scroll position across re-render.
+    // Without this, clicking a tab causes the left rail to jump back to top
+    // (the new DOM is fresh, so scrollTop defaults to 0). Capture before,
+    // restore after the async render resolves.
     root.querySelectorAll(".ace-qol-cfg-tab").forEach(li => {
       li.addEventListener("click", () => {
         const id = li.dataset.tabId;
         if (id && id !== this._activeTab) {
+          const tablistEl = root.querySelector(".ace-qol-cfg-tablist");
+          const savedScroll = tablistEl?.scrollTop ?? 0;
           this._activeTab = id;
-          this.render({ force: false });
+          this.render({ force: false }).then(() => {
+            const newTablist = this.element?.querySelector?.(".ace-qol-cfg-tablist");
+            if (newTablist) newTablist.scrollTop = savedScroll;
+          });
         }
       });
     });

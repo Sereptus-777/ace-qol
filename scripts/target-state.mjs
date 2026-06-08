@@ -7,6 +7,7 @@
 import { MODULE_ID } from "./ace-qol.mjs";
 import { ExtendedEffects } from "./extended-effects.mjs";
 import { FlagsEngine } from "./flags-engine.mjs";
+import { NullificationWalker } from "./target-state-registry/walker.mjs";
 
 // ─── Conditions that affect combat ──────────────────────────────────────────
 const CONDITION_EFFECTS = {
@@ -255,6 +256,48 @@ export class TargetState {
     // ── AC ──
     const ac = attrs.ac?.value ?? 10;
 
+    // ── Nullification walk (v0.7.18) ──
+    // Walks the registry of spell-effect / magic-item / class-feature /
+    // racial / artifact / background nullifications against this actor.
+    // Merges results into damageModifiers + saveAdvantage/disadvantage +
+    // a new `nullifications` block for spell-specific immunities
+    // (Shield vs MM, Brooch of Shielding, etc.) the damage code respects.
+    let nullifications = NullificationWalker._emptyNullifications();
+    try {
+      nullifications = NullificationWalker.walk(actor, { item, isSpell, isMelee, damageTypes });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | TargetState: NullificationWalker threw (non-blocking):`, err);
+    }
+
+    // Fold null-walker damage overrides into damageModifiers (most-restrictive wins).
+    // The walker uses "immune" | "resistant" | "normal" | "vulnerable"; damageModifiers
+    // uses the same vocabulary, so direct merge works.
+    const rank = { vulnerable: 0, normal: 1, resistant: 2, immune: 3 };
+    for (const [type, mod] of Object.entries(nullifications.damage ?? {})) {
+      const existing = damageModifiers[type]?.modifier ?? "normal";
+      if ((rank[mod] ?? 1) > (rank[existing] ?? 1)) {
+        damageModifiers[type] = {
+          modifier: mod,
+          reason: `${nullifications.damageSources?.[type] ?? "registry"} → ${mod}`,
+        };
+      }
+    }
+
+    // Fold null-walker save advantages/disadvantages into save modifiers.
+    // (saveAdvReasons isn't declared in this scope — assess() doesn't track
+    // per-source reason strings for save mods; the registry's `_matchedSources`
+    // list serves that purpose.)
+    for (const tag of (nullifications.saves?.advantage ?? [])) {
+      if (tag === "all" || tag === saveAbility || (isSpell && tag === "spell")) {
+        saveAdvantage = true;
+      }
+    }
+    for (const tag of (nullifications.saves?.disadvantage ?? [])) {
+      if (tag === "all" || tag === saveAbility || (isSpell && tag === "spell")) {
+        saveDisadvantage = true;
+      }
+    }
+
     // ── Build result ──
     const state = {
       token: targetToken,
@@ -263,7 +306,7 @@ export class TargetState {
       img: targetToken.document?.texture?.src ?? actor.img,
 
       // Defenses
-      ac,
+      ac: ac + (nullifications.ac?.bonus ?? 0),  // include registry AC bonuses
       conditions,
       conditionImmunities,
 
@@ -272,6 +315,12 @@ export class TargetState {
       magicalBypass: isMagical,
       silveredBypass: isSilvered,
       adamantineBypass: isAdamantine,
+
+      // ── NEW (v0.7.18): registry nullifications block ──
+      // Spell-by-name immunities (e.g. "magic missile" from Brooch of
+      // Shielding / active Shield), feature flags (evasion, lucky, etc.),
+      // and sourced match list for the damage-card "why" tooltips.
+      nullifications,
 
       // Save modifiers
       saveAbility,

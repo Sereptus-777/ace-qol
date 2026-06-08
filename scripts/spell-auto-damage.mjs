@@ -280,6 +280,18 @@ export class SpellAutoDamage {
       const item = activity.item;
       if (!item || item.type !== "spell") return false;
 
+      // ── v0.7.18: pipeline takes precedence over the auto-damage fork ──
+      // If the unified spell pipeline owns this spell (via SPELL_REGISTRY),
+      // skip auto-damage entirely — pipeline.mjs will dispatch it via the
+      // shape resolver. Without this guard, BOTH systems would fire for
+      // Magic Missile and the player would see two pickers.
+      try {
+        // Static import would create a circular dep at module-load time;
+        // resolve lazily via the global registered on game.aceQol.
+        const pipeline = globalThis.game?.aceQol?.SpellPipeline;
+        if (pipeline?.ownsSpell?.(item)) return false;
+      } catch (_) { /* if pipeline isn't registered yet, fall through */ }
+
       // ── Magic Missile special case (v0.7.17b — 2026-06-07) ─────────
       // dnd5e 5.x stores Magic Missile as a "utility" activity type,
       // not "damage". Our standard filter below would reject utility
@@ -288,6 +300,11 @@ export class SpellAutoDamage {
       // Magic Missile fork that uses _getMagicMissileBase (with safe
       // fallback to 1d4+1 force), so we don't need damage parts on the
       // activity object itself.
+      //
+      // NOTE: With v0.7.18's pipeline-precedence guard above, this branch
+      // is only the fallback for setups where the pipeline isn't loaded
+      // or Magic Missile isn't registered. In normal v0.7.18+ flow,
+      // Magic Missile is owned by the pipeline and this branch doesn't fire.
       if (SpellAutoDamage._isMagicMissile(activity)) {
         return true;
       }
