@@ -527,6 +527,12 @@ export class QolSettings {
       scope: "world", config: false, type: Boolean, default: true,
     });
 
+    s("magicMissilePerDartRoll", {
+      name: "Magic Missile — Roll each dart separately",
+      hint: "RAW: each missile rolls 1d4+1 independently — more variance, slightly more table time. When OFF (default), darts assigned to the same target combine into a single multi-die roll (Nd4+N) — mathematically equivalent expected value with less variance and faster play. Per-dart rolling is the strict RAW interpretation; combined rolling is the popular table shortcut. Either way, the picker UI for distributing darts works identically.",
+      scope: "world", config: false, type: Boolean, default: false,
+    });
+
     s("radiantSoulRiderEnabled", {
       name: "Radiant Soul Rider (Celestial Warlock 6+)",
       hint: "When ON (default), automatically adds CHA modifier to fire/radiant damage from spells and cantrips, once per turn. Triggers on Divine Smite (it's a spell in 2024 PHB), Sacred Flame, Spirit Shroud's radiant variant, Holy Weapon, Crusader's Mantle, etc. RAW: Celestial Warlock 6th-level feature. Set to OFF if your table runs the rider manually.",
@@ -683,6 +689,15 @@ export class QolSettings {
     s("autoCounterspell", {
       name:    "Auto-Prompt Counterspell",
       hint:    "When a creature casts a spell, prompt eligible opponents within 60ft to Counterspell.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
+    s("autoBreakInvisibility", {
+      name:    "Auto-Break Invisibility on Attack / Spell-Cast (RAW)",
+      hint:    "When a creature with the Invisibility spell active makes an attack or casts a spell, automatically end the spell and make them visible (RAW 2014 + 2024). Greater Invisibility persists (intentional — that's the point of the spell). Natural invisibility from monster traits (Will-o'-Wisp, Invisible Stalker) is not touched.",
       scope:   "world",
       config:  false,
       type:    Boolean,
@@ -953,6 +968,25 @@ export class QolSettings {
       config:  false,
       type:    Boolean,
       default: false,
+    });
+
+    s("combatWindDownEnabled", {
+      name:    "Combat Wind-Down — Expire Short Buffs After Combat",
+      hint:    "When combat ends, automatically expire any effect with a short remaining duration (Bless, Bane, Haste, Faerie Fire, etc.). Long-duration effects (Mage Armor 8h, Stoneskin 1h) are NOT touched — they survive combat naturally. Threshold controls how short counts as 'short'.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
+    s("combatWindDownThresholdMin", {
+      name:    "Combat Wind-Down Threshold (minutes)",
+      hint:    "Any effect with this much remaining duration or less is auto-expired when combat ends. Default: 10 minutes — catches all 1-minute combat buffs and short concentration spells. Set higher to also drop 1-hour buffs (Stoneskin, Spirit Shroud) at combat's end.",
+      scope:   "world",
+      config:  false,
+      type:    Number,
+      default: 10,
+      range:   { min: 1, max: 480, step: 1 },
     });
 
     // ═══════════════════════════════════════════════════════════════════════════

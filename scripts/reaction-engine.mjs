@@ -42,6 +42,108 @@ const DEFAULT_TIMEOUT = 10;
 
 export class ReactionEngine {
 
+  /**
+   * v0.7.17b — Cast barrier registry (2026-06-07).
+   * Map of activity-ref → { promise, resolve, resolved, createdAt }.
+   *
+   * Why this exists:
+   *   Foundry's Hooks.on fires every listener in parallel. The Counterspell
+   *   handler in _onSpellCast is `async` and awaits the user's prompt — but
+   *   the other listeners on the same hook (SpellAutoDamage, Forge FX,
+   *   AA triggers, dnd5e's own chat-card creation) DON'T wait. They race
+   *   ahead and post the damage card / play the animation BEFORE the user
+   *   has even clicked the Counterspell prompt. Result: clicking "Cast
+   *   Counterspell" appeared to do nothing because the spell already fully
+   *   resolved.
+   *
+   * The fix:
+   *   At `dnd5e.preUseActivity` (which fires BEFORE postCreateUsageMessage),
+   *   reaction-engine creates a barrier Promise and stores it keyed by the
+   *   activity object reference. Other engines call
+   *   `ReactionEngine.awaitCastBarrier(activity)` at the top of their
+   *   postCreateUsageMessage handler and await the promise before doing
+   *   anything. Reaction-engine resolves the barrier once the user has
+   *   decided — with { abort: true } on a successful counterspell,
+   *   { abort: false } otherwise. Downstream handlers bail or proceed
+   *   based on the abort flag.
+   *
+   * Safety net: every barrier auto-resolves after 30s in case the
+   * reaction handler never finishes (timeout, error, etc.).
+   */
+  static _castBarriers = new Map();
+
+  /**
+   * Create a barrier for the given activity. Called in preUseActivity.
+   * Idempotent — calling twice for the same activity is a no-op.
+   */
+  static _createCastBarrier(activity) {
+    if (!activity) return;
+    if (ReactionEngine._castBarriers.has(activity)) return;
+    let resolveFn;
+    const promise = new Promise(r => { resolveFn = r; });
+    const entry = { promise, resolve: resolveFn, resolved: false, resolvedWith: null, createdAt: Date.now() };
+    ReactionEngine._castBarriers.set(activity, entry);
+    console.log(`ace-qol | [BARRIER] CREATE for ${activity?.item?.name ?? '?'} on ${activity?.item?.actor?.name ?? '?'} — map size now ${ReactionEngine._castBarriers.size}`);
+    // Safety-net timeout — auto-resolve with { abort: false } after 30s
+    setTimeout(() => {
+      const b = ReactionEngine._castBarriers.get(activity);
+      if (b && !b.resolved) {
+        b.resolve({ abort: false, reason: "timeout" });
+        b.resolved = true;
+      }
+      ReactionEngine._castBarriers.delete(activity);
+    }, 30000);
+  }
+
+  /**
+   * Resolve a barrier. Called by reaction-engine after the user decides
+   * (or when reaction-engine bails because no reactors / not a spell / etc.).
+   */
+  static _resolveCastBarrier(activity, result) {
+    if (!activity) {
+      console.log(`ace-qol | [BARRIER] RESOLVE skipped — no activity`);
+      return;
+    }
+    const b = ReactionEngine._castBarriers.get(activity);
+    if (!b) {
+      console.log(`ace-qol | [BARRIER] RESOLVE skipped — no barrier for ${activity?.item?.name ?? '?'} (map size: ${ReactionEngine._castBarriers.size})`);
+      return;
+    }
+    if (b.resolved) {
+      console.log(`ace-qol | [BARRIER] RESOLVE skipped — already resolved with ${JSON.stringify(b.resolvedWith)}, new request was ${JSON.stringify(result)}`);
+      return;
+    }
+    b.resolve(result);
+    b.resolved = true;
+    b.resolvedWith = result;
+    console.log(`ace-qol | [BARRIER] RESOLVE for ${activity?.item?.name ?? '?'} with ${JSON.stringify(result)}`);
+  }
+
+  /**
+   * PUBLIC API. Other engines call this at the top of their
+   * postCreateUsageMessage handler to wait for reaction resolution.
+   *
+   * @param {object} activity   the dnd5e activity object
+   * @returns {Promise<{abort: boolean, reason: string}>}
+   *   abort:true  → the cast was counterspelled; the caller should bail.
+   *   abort:false → no reaction or reaction failed; proceed normally.
+   */
+  static async awaitCastBarrier(activity) {
+    if (!activity) {
+      console.log(`ace-qol | [BARRIER] await — no activity`);
+      return { abort: false, reason: "no_activity" };
+    }
+    const b = ReactionEngine._castBarriers.get(activity);
+    if (!b) {
+      console.log(`ace-qol | [BARRIER] await — no barrier for ${activity?.item?.name ?? '?'} (map size: ${ReactionEngine._castBarriers.size}, resolved: ${b?.resolved})`);
+      return { abort: false, reason: "no_barrier" };
+    }
+    console.log(`ace-qol | [BARRIER] AWAITING ${activity?.item?.name ?? '?'} (currently resolved: ${b.resolved})`);
+    const result = await b.promise;
+    console.log(`ace-qol | [BARRIER] await returned ${JSON.stringify(result)} for ${activity?.item?.name ?? '?'}`);
+    return result;
+  }
+
   constructor() {
     /** Pending reaction prompts awaiting player response.
      *  v0.4.22.12: switched from plain object to Map for cleaner
@@ -109,13 +211,30 @@ export class ReactionEngine {
       if (actor) this._markReactionUsed(actor);
     });
 
+    // ── v0.7.17b — Cast barrier creation (preUseActivity) ──
+    // Fires EARLIER than postCreateUsageMessage. Other engines (Spell-
+    // AutoDamage, etc.) await this barrier in their postCreateUsageMessage
+    // handlers so reactions resolve modally before downstream effects.
+    Hooks.on("dnd5e.preUseActivity", (activity, usageConfig) => {
+      if (!game.user.isGM) return;
+      if (!QolSettings.get("enableReactions")) return;
+      if (!QolSettings.get("autoCounterspell")) return;
+      const item = activity?.item;
+      if (!item || item.type !== "spell") return;
+      const lvl = item.system?.level ?? 0;
+      if (lvl === 0) return; // cantrips can't be counterspelled
+      ReactionEngine._createCastBarrier(activity);
+    });
+
     // ── Counterspell: detect spell casting ──
     // dnd5e 5.x fires postCreateUsageMessage for every activity use.
     // We check if it is a spell and look for Counterspell reactors.
     Hooks.on("dnd5e.postCreateUsageMessage", async (activity, message) => {
+      console.log(`ace-qol | [REACTION-V2-HOOK] entry for ${activity?.item?.name ?? '?'} isGM=${game.user.isGM} reactions=${QolSettings.get("enableReactions")} cs=${QolSettings.get("autoCounterspell")}`);
       if (!game.user.isGM) return;
       if (!QolSettings.get("enableReactions")) return;
       if (!QolSettings.get("autoCounterspell")) return;
+      console.log(`ace-qol | [REACTION-V2-HOOK] passed gates, calling _onSpellCast for ${activity?.item?.name ?? '?'}`);
       // Mark BEFORE processing so the legacy hook (which fires after
       // this synchronous return) sees the handled state.
       if (activity && typeof activity === "object") {
@@ -376,6 +495,102 @@ export class ReactionEngine {
     return modified;
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  1b. SHIELD vs MAGIC MISSILE — Auto-Hit Defense
+  //
+  //  Shield has a SPECIAL RAW clause: "you take no damage from magic missile."
+  //  (2014 + 2024 PHB, identical wording.) Unlike normal attack-vs-Shield
+  //  which is +5 AC math, Magic Missile vs Shield is ABSOLUTE — all darts
+  //  on that target are nullified, no damage applies.
+  //
+  //  Magic Missile has no attack roll, so it bypasses checkPostHitReactions().
+  //  This method is invoked from SpellAutoDamage's Magic Missile handler
+  //  AFTER the picker confirms target distribution but BEFORE damage rolls.
+  //
+  //  Returns a filtered distribution Map with shielded targets removed.
+  //  If every target shields, the returned Map is empty and the caller
+  //  should abort the damage card entirely.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Check each Magic Missile target for Shield availability and prompt.
+   * @param {Map<Actor, number>} distribution - Map of targetActor → dart count
+   * @param {Actor} caster - The Magic Missile caster
+   * @param {Item} spellItem - The Magic Missile spell item
+   * @returns {Promise<Map<Actor, number>>} Filtered distribution (shielded removed)
+   */
+  async checkMagicMissileShield(distribution, caster, spellItem) {
+    if (!QolSettings.get("enableReactions")) return distribution;
+    if (!QolSettings.get("autoShield")) return distribution;
+    if (!distribution || distribution.size === 0) return distribution;
+
+    const modified = new Map();
+
+    for (const [targetActor, darts] of distribution.entries()) {
+      if (!targetActor || darts <= 0) {
+        modified.set(targetActor, darts);
+        continue;
+      }
+
+      // ── Can this target use Shield? (reaction unspent + prepared + slot) ──
+      const shieldCheck = this._canUseShield(targetActor);
+      if (!shieldCheck.canUse) {
+        modified.set(targetActor, darts);
+        continue;
+      }
+
+      const targetToken = targetActor.getActiveTokens?.()?.[0]
+                       ?? canvas.tokens?.placeables.find(t => t.actor?.id === targetActor.id)
+                       ?? null;
+
+      // ── Prompt the target's owner ──
+      const promptResult = await this._promptReaction({
+        reactorActor: targetActor,
+        reactorToken: targetToken,
+        type: "shield",
+        title: "Shield — Magic Missile Defense",
+        description: `<strong>${caster.name}</strong> casts <strong>Magic Missile</strong> at <strong>${targetActor.name}</strong>.`,
+        details: [
+          { label: "Darts incoming",   value: String(darts) },
+          { label: "Per-dart damage",  value: "1d4 + 1 force" },
+          { label: "Effect of Shield", value: "ALL DARTS NULLIFIED — no damage", color: "#66bb6a" },
+        ],
+        acceptLabel:    "Cast Shield (negate all darts)",
+        declineLabel:   "Take the damage",
+        spellSlotLevel: 1,
+        availableSlots: shieldCheck.slots,
+        icon:           "fa-shield-halved",
+        accentColor:    "#42a5f5",
+      });
+
+      if (promptResult.accepted) {
+        // ── Consume slot, mark reaction, apply Shield effect ──
+        const slotLevel = promptResult.choiceData?.slotLevel ?? 1;
+        await this._consumeSpellSlot(targetActor, slotLevel);
+        await this._markReactionUsed(targetActor);
+        await this._applyShieldEffect(targetActor);
+
+        // ── Post chat caption noting the negation ──
+        await this._postReactionChat(
+          targetActor,
+          "Shield",
+          `${targetActor.name} casts <strong>Shield</strong>! All ${darts} dart${darts !== 1 ? "s" : ""} from ${caster.name}'s Magic Missile are nullified — no damage taken.`,
+          "#42a5f5"
+        );
+
+        this._debug(`Magic Missile Shield: ${targetActor.name} negated ${darts} darts`);
+
+        // DON'T add this target to the modified distribution — they take no damage.
+        // Their darts simply vanish (Shield doesn't redirect; the darts are absorbed).
+      } else {
+        // Declined or timeout — they take the darts.
+        modified.set(targetActor, darts);
+      }
+    }
+
+    return modified;
+  }
+
   /**
    * Check if an actor can cast Shield.
    * @returns {{ canUse: boolean, slots: object[] }}
@@ -450,24 +665,41 @@ export class ReactionEngine {
    * Checks for Counterspell reactors within 60ft.
    */
   async _onSpellCast(activity, message) {
-    if (!activity?.item) return;
+    // EVERY exit point must resolve the cast barrier so downstream engines
+    // (SpellAutoDamage, etc.) don't hang awaiting it.
+    if (!activity?.item) {
+      ReactionEngine._resolveCastBarrier(activity, { abort: false, reason: "no_item" });
+      return;
+    }
     const item = activity.item;
     const casterActor = activity.actor ?? item.actor;
 
     // Only react to spell-type items
-    if (item.type !== "spell") return;
+    if (item.type !== "spell") {
+      ReactionEngine._resolveCastBarrier(activity, { abort: false, reason: "not_spell" });
+      return;
+    }
 
     // Cantrips can't be counterspelled
     const spellLevel = item.system?.level ?? 0;
-    if (spellLevel === 0) return;
+    if (spellLevel === 0) {
+      ReactionEngine._resolveCastBarrier(activity, { abort: false, reason: "cantrip" });
+      return;
+    }
 
     // Get the caster's token
     const casterToken = this._getActorToken(casterActor);
-    if (!casterToken) return;
+    if (!casterToken) {
+      ReactionEngine._resolveCastBarrier(activity, { abort: false, reason: "no_caster_token" });
+      return;
+    }
 
     // Find all eligible Counterspell reactors within 60ft
     const reactors = this._findCounterspellReactors(casterToken, casterActor);
-    if (!reactors.length) return;
+    if (!reactors.length) {
+      ReactionEngine._resolveCastBarrier(activity, { abort: false, reason: "no_reactors" });
+      return;
+    }
 
     this._debug(`Counterspell check: ${casterActor.name} casts ${item.name} (level ${spellLevel}), ${reactors.length} eligible reactors`);
 
@@ -563,8 +795,19 @@ export class ReactionEngine {
       }
 
       if (countered) {
+        // ── Mechanical line + randomized flavor line (v0.7.17b) ──
+        const flavorOptions = [
+          `${casterActor.name}'s ${item.name} unravels in their hands.`,
+          `${casterActor.name}'s ${item.name} is unwoven before it can take form.`,
+          `${casterActor.name}'s ${item.name} fizzles into shimmering blue motes.`,
+          `${casterActor.name}'s ${item.name} crumbles back into raw arcane noise.`,
+          `${casterActor.name}'s ${item.name} dissolves mid-cast, the weave torn apart.`,
+        ];
+        const flavorText = flavorOptions[Math.floor(Math.random() * flavorOptions.length)];
+        const mechanical = `${reactor.actor.name} counterspells ${casterActor.name}'s ${item.name}!${checkResult !== null ? ` (Check: ${checkResult} vs DC ${10 + spellLevel})` : " (auto-success)"}`;
+        const flavorBlock = `<div style="margin-top:10px;padding-top:8px;border-top:1px dashed #6b5230;font-size:15px;font-style:italic;color:#e1bee7;font-weight:600;">— ${flavorText}</div>`;
         await this._postReactionChat(reactor.actor, "Counterspell",
-          `${reactor.actor.name} counterspells ${casterActor.name}'s ${item.name}!${checkResult !== null ? ` (Check: ${checkResult} vs DC ${10 + spellLevel})` : " (auto-success)"}`,
+          `${mechanical}${flavorBlock}`,
           "#ab47bc");
 
         // Cancel the spell — set a flag that other engines can check
@@ -578,6 +821,17 @@ export class ReactionEngine {
           });
         }
 
+        // ── v0.7.17b — Play counterspell animations ──
+        // Ward bubble on counterspeller (Varek) → 300ms wait → counter-burst
+        // on the original caster (Kasimir). One animation per side, both
+        // brief, total under 1.5s. Magic Missile's own trajectory animation
+        // will be suppressed by SpellAutoDamage when it sees abort:true.
+        try {
+          await this._playCounterspellAnimations(reactor.actor, casterToken);
+        } catch (err) {
+          console.warn(`${MODULE_ID} | Counterspell animation failed (non-fatal):`, err);
+        }
+
         // Emit hook for other systems to react
         Hooks.callAll(`${MODULE_ID}.spellCountered`, {
           caster: casterActor,
@@ -587,12 +841,87 @@ export class ReactionEngine {
           checkResult,
         });
 
+        // ── Resolve the barrier with abort:true so downstream engines
+        //    (SpellAutoDamage, etc.) bail cleanly. ──
+        ReactionEngine._resolveCastBarrier(activity, {
+          abort: true,
+          reason: "counterspelled",
+          counterspeller: reactor.actor.name,
+        });
+
       } else {
         await this._postReactionChat(reactor.actor, "Counterspell",
           `${reactor.actor.name} attempts to counterspell ${casterActor.name}'s ${item.name} but fails! (Check: ${checkResult} vs DC ${10 + spellLevel})`,
           "#ef5350");
+        // Counter failed — cast continues
+        ReactionEngine._resolveCastBarrier(activity, { abort: false, reason: "counter_failed" });
       }
+    } else {
+      // User declined the counterspell prompt — cast continues
+      ReactionEngine._resolveCastBarrier(activity, { abort: false, reason: "declined" });
     }
+  }
+
+  /**
+   * v0.7.17b — Play the two counterspell animations:
+   *   1. Ward bubble on the counterspeller (visual: "I'm protected")
+   *   2. After 300ms delay, counter-burst on the original caster (visual:
+   *      "your spell unravels at your hands")
+   *
+   * Requires Sequencer + JB2A. Skips silently if either is missing.
+   */
+  async _playCounterspellAnimations(counterspellerActor, originalCasterToken) {
+    // Sequencer is exposed at globalThis.Sequence (v3+) or window.Sequence.
+    const Seq = globalThis.Sequence ?? window.Sequence;
+    if (!Seq) {
+      console.log(`${MODULE_ID} | Counterspell animation: Sequencer not active — skipping visuals`);
+      return;
+    }
+    const counterspellerToken = this._getActorToken(counterspellerActor);
+    if (!counterspellerToken || !originalCasterToken) {
+      console.log(`${MODULE_ID} | Counterspell animation: missing tokens — skipping`);
+      return;
+    }
+
+    // Defensive: only play files that actually exist in the user's
+    // Sequencer database. Asset-missing failures leave broken sprites
+    // that persist forever (the "circular twisting thing" bug). The
+    // pre-check prevents that.
+    const wardFile   = "jb2a.shield.03.intro.blue";
+    const unravelFile = "jb2a.healing_generic.burst.bluewhite";
+    const db = globalThis.Sequencer?.Database;
+    const wardOK   = db?.entryExists?.(wardFile)   ?? false;
+    const unravelOK = db?.entryExists?.(unravelFile) ?? false;
+    if (!wardOK && !unravelOK) {
+      console.log(`${MODULE_ID} | Counterspell animation: neither effect available in Sequencer DB — skipping`);
+      return;
+    }
+
+    const seq = new Seq();
+    if (wardOK) {
+      // (1) Ward bubble on the counterspeller — brief blue shield flash
+      seq.effect()
+        .file(wardFile)
+        .atLocation(counterspellerToken)
+        .scaleToObject(2.0)
+        .duration(1200)    // hard cap so a failed asset can't persist
+        .fadeIn(150)
+        .fadeOut(300);
+      // (2) Pause so the cause-effect reads cleanly
+      seq.wait(300);
+    }
+    if (unravelOK) {
+      // (3) Unravel burst on the original caster — blue-white burst
+      // visually reads as "your spell unravels at your hands"
+      seq.effect()
+        .file(unravelFile)
+        .atLocation(originalCasterToken)
+        .scaleToObject(1.8)
+        .duration(1200)    // hard cap so a failed asset can't persist
+        .fadeIn(100)
+        .fadeOut(300);
+    }
+    seq.play();
   }
 
   /**
@@ -1480,12 +1809,17 @@ export class ReactionEngine {
    * Post a compact reaction notification to chat.
    */
   async _postReactionChat(actor, reactionName, text, accentColor = "#d4af37") {
+    // v0.7.17b — inline-styled dark wrapper. The previous CSS-class
+    // version inherited Foundry's parchment chat-card background and
+    // rendered as light-on-light. Inline styles guarantee the brand
+    // look regardless of upstream CSS scope.
     const html = `
-      <div class="ace-qol-reaction-chat" style="border-left-color:${accentColor}">
-        <div class="ace-qol-reaction-chat-header" style="color:${accentColor}">
-          <i class="fas fa-bolt"></i> REACTION — ${reactionName.toUpperCase()}
+      <div style="background:linear-gradient(180deg,#1a1410 0%,#0f0a08 100%);border:2px solid ${accentColor};border-radius:6px;padding:14px;color:#f0e4c0;font-family:'Signika','Helvetica Neue',sans-serif;box-shadow:0 0 12px ${accentColor}33;">
+        <div style="display:flex;align-items:center;gap:10px;font-size:16px;font-weight:700;color:${accentColor};text-transform:uppercase;letter-spacing:0.6px;border-bottom:1px solid #4a3a28;padding-bottom:8px;margin-bottom:10px;">
+          <i class="fas fa-bolt" style="font-size:18px;color:${accentColor};"></i>
+          <span>REACTION — ${reactionName.toUpperCase()}</span>
         </div>
-        <div class="ace-qol-reaction-chat-body">${text}</div>
+        <div style="font-size:16px;line-height:1.5;color:#f0e4c0;font-weight:500;">${text}</div>
       </div>
     `;
 

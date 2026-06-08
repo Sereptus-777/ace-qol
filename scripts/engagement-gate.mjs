@@ -29,6 +29,7 @@
 import { MODULE_ID, SPELL_AUTO_APPLY } from "./ace-qol.mjs";
 import { DescriptionParser } from "./description-parser.mjs";
 import { showCenterToast } from "./attack-prompt.mjs";
+import { SpellAutoDamage } from "./spell-auto-damage.mjs";
 
 export class EngagementGate {
 
@@ -161,6 +162,17 @@ export class EngagementGate {
     try {
       const nameLc = String(item.name ?? "").toLowerCase().replace(/['']/g, "").trim();
       if (SPELL_AUTO_APPLY?.[nameLc]) {
+        return null;
+      }
+    } catch (_) { /* non-fatal — fall through to normal gate */ }
+
+    // ── Bypass: damage spells with their own picker (v0.7.17) ──
+    // Magic Missile and other auto-hit damage spells that own targeting via
+    // a dedicated picker (MagicMissilePicker). The gate's pre-target block
+    // would fire BEFORE the picker opens, so bypass it for these too. See
+    // ACE_SPELL_TARGETING_FLOW_SPEC.md for the full post-camp unification.
+    try {
+      if (SpellAutoDamage?._isMagicMissile?.(activity)) {
         return null;
       }
     } catch (_) { /* non-fatal — fall through to normal gate */ }

@@ -26,7 +26,7 @@ const TABS = [
   { id: "reactions",  label: "Reactions",          icon: "fa-solid fa-bolt",
     settings: ["enableReactions", "autoShield", "autoCounterspell", "autoAbsorbElements", "autoLegendaryResistance"] },
   { id: "effects",    label: "Conditions & Effects", icon: "fa-solid fa-wand-sparkles",
-    settings: ["extendedEffects", "autoApplyConditions", "effectTransferRules", "enableDurationTracker", "expireEffectsOnTurnChange", "notifyOnExpiry", "expiryNotifyAll"] },
+    settings: ["extendedEffects", "autoApplyConditions", "effectTransferRules", "enableDurationTracker", "expireEffectsOnTurnChange", "notifyOnExpiry", "expiryNotifyAll", "combatWindDownEnabled", "combatWindDownThresholdMin"] },
   { id: "cover",      label: "Cover",              icon: "fa-solid fa-shield-alt",
     settings: ["enableCoverCalculation", "creatureAsCover", "showCoverIndicator", "ignoreCoverForAdjacent", "reduceCoverForLargeTargets"] },
   { id: "flanking",   label: "Flanking",           icon: "fa-solid fa-arrows-left-right",

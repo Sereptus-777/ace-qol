@@ -48,6 +48,10 @@
       "buttons": {
         "push":    "Push 10 ft",
         "cleave":  "Attack Adjacent"
+      },
+      "cleaveCaption": {
+        "auto":   "⚔ Auto-cleaved to {target} (only valid target)",
+        "picker": "⚔ Cleaved to {target}"
       }
     }
   }

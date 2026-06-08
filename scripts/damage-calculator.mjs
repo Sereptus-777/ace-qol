@@ -35,6 +35,57 @@ export class DamageCalculator {
       rollData = actor.getRollData?.() ?? {};
     }
 
+    // ── Magic Missile dart override ────────────────────────────────────
+    // When the MagicMissilePicker assigns N darts to this target, the
+    // spell-auto-damage handler stuffs `magicMissileOverride` onto the
+    // hit. Each target gets a custom formula (Nd4+N combined, or N
+    // separate 1d4+1 per-dart depending on the setting). Magic Missile
+    // is auto-hit, no-save, no-crit — so we skip the normal item-parts
+    // path entirely and emit a single component.
+    //
+    // Empowered Evocation (Wizard Evocation 10+) RAW: "add INT to one
+    // damage roll of any wizard evocation spell." We honor that by
+    // applying EE to the FIRST target's hit only (the spell-auto-damage
+    // handler tags hit #0 with `applyEmpoweredEvocation: true`).
+    if (targetState?.magicMissileOverride) {
+      try {
+        const ov = targetState.magicMissileOverride;
+        const dartLabel = `Magic Missile (${ov.darts} dart${ov.darts === 1 ? "" : "s"})`;
+        const result = await DamageCalculator.rollWithCrit(
+          ov.formula, rollData, /* isCrit */ false, critRule, dartLabel, item
+        );
+        components.push({ name: item.name, ...result, type: ov.type || "force" });
+
+        // Empowered Evocation rider — applies once per spell, on this target only.
+        if (targetState.applyEmpoweredEvocation && item?.system?.school === "evo") {
+          try {
+            const intBonus = CombatState.getEmpoweredEvocationBonus(actor);
+            if (intBonus > 0) {
+              const flatRoll = new Roll(`${intBonus}`);
+              await flatRoll.evaluate();
+              components.push({
+                name:           "Empowered Evocation",
+                formula:        `${intBonus}`,
+                roll:           flatRoll,
+                total:          intBonus,
+                type:           ov.type || "force",
+                isFeatureRider: true,
+                featureLabel:   "EMPOWERED EVOCATION",
+              });
+              console.log(`${MODULE_ID} | Empowered Evocation: +${intBonus} added to ${actor.name}'s Magic Missile (Wizard Evocation 10+)`);
+            }
+          } catch (err) {
+            console.warn(`${MODULE_ID} | Empowered Evocation override-path check failed (non-fatal):`, err);
+          }
+        }
+
+        return components;
+      } catch (err) {
+        console.error(`${MODULE_ID} | Magic Missile override roll failed:`, err);
+        // Fall through to normal flow on error
+      }
+    }
+
     // ── Parse item description for conditional damage (save-gated) ──
     const parsed = DescriptionParser.parse(item);
     const conditionalDamageTypes = new Set();

@@ -310,7 +310,7 @@ export class DamageApplicator {
    * Reads raw components from flags, assesses new target's defenses,
    * calculates adjusted damage, appends row to DOM, updates message flags.
    */
-  static async addTargetToCard(message, el, token, isCleave = false, overkillAmount = 0, overkillComponents = null) {
+  static async addTargetToCard(message, el, token, isCleave = false, overkillAmount = 0, overkillComponents = null, cleaveMeta = null) {
     const flags = message.flags?.[MODULE_ID];
     if (!flags) return;
 
@@ -431,10 +431,17 @@ export class DamageApplicator {
 
     // Persist the new target on the message. If this was a cleave (mastery
     // or overkill), also set the `cleaveFired` flag so the CLEAVE button
-    // greys out for every client on subsequent renders.
+    // greys out for every client on subsequent renders. When mastery cleave
+    // passes cleaveMeta, ALSO stamp the cleaved target's name + whether the
+    // pick was automatic — render handler uses these to show a clarifying
+    // "Cleaved to <name>" caption to both GM and player.
     const updatePayload = { [`flags.${MODULE_ID}.damageResults`]: existingResults };
     if (isCleave) {
       updatePayload[`flags.${MODULE_ID}.cleaveFired`] = true;
+      if (cleaveMeta) {
+        updatePayload[`flags.${MODULE_ID}.cleaveTargetName`] = cleaveMeta.targetName ?? token.name;
+        updatePayload[`flags.${MODULE_ID}.cleaveAutoPicked`] = !!cleaveMeta.autoPicked;
+      }
     }
     await message.update(updatePayload);
     console.log(`${MODULE_ID} | ${isCleave ? "CLEAVE" : "ADD"}: ${token.name} added to damage card (${totalFinal} damage)`);

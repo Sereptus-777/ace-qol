@@ -326,7 +326,9 @@ export class DurationTracker {
     const combatId = combat.id;
     this._debug(`Combat ended (${combatId}), checking for combat-duration effects`);
 
-    // Check all actors that were in this combat
+    // ── Phase 1: explicit "Until combat ends" + combat-linked rounds ────────
+    // The original behaviour: anything stamped with the ending combat's id
+    // and a round-based duration is expired alongside the combat itself.
     for (const combatant of combat.combatants) {
       const actor = combatant.actor;
       if (!actor) continue;
@@ -348,6 +350,96 @@ export class DurationTracker {
         if (effect.duration?.combat === combatId && (effect.duration.rounds ?? 0) > 0) {
           await this._expireEffect(actor, effect, `${effect.name}: combat ended (duration was combat-linked)`);
         }
+      }
+    }
+
+    // ── Phase 2: Combat Wind-Down (configurable safety net) ────────────────
+    // Short-duration buffs (Bless, Bane, Haste, Faerie Fire, Spirit Shroud,
+    // smite spells, etc.) often have 1-minute / 10-round durations. When the
+    // GM clicks End Combat with 5 rounds left, RAW says the buff continues
+    // for another ~30 seconds of game time — but narratively the next scene
+    // is minutes/hours later and those buffs should have worn off. This pass
+    // catches any effect on a combatant whose REMAINING duration is at or
+    // below the wind-down threshold (default 10 min). Long-duration buffs
+    // like Mage Armor (8 h) and Stoneskin (1 h) are far above the threshold
+    // and survive untouched.
+    await this._windDownAfterCombat(combat);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Combat Wind-Down — expire short-duration buffs after combat ends
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * After combat ends, expire any active effect on a combatant whose
+   * remaining duration is at or below the wind-down threshold.
+   *
+   * Gated by two settings:
+   *   combatWindDownEnabled       (Boolean, default true)
+   *   combatWindDownThresholdMin  (Number,  default 10 minutes)
+   *
+   * Remaining-duration logic:
+   *   - seconds-based: worldTime now − worldTimeStart vs duration.seconds
+   *   - rounds-based:  (duration.rounds − elapsedRounds) × 6 sec/round
+   * If neither, the effect is skipped (treated as permanent for our purposes).
+   *
+   * @private
+   */
+  async _windDownAfterCombat(combat) {
+    const enabled = DurationTracker._getSetting("combatWindDownEnabled") ?? true;
+    if (!enabled) return;
+
+    const thresholdMin = DurationTracker._getSetting("combatWindDownThresholdMin") ?? 10;
+    const thresholdSec = thresholdMin * 60;
+
+    this._debug(`Wind-down: checking for effects with ≤${thresholdMin}min remaining`);
+
+    for (const combatant of combat.combatants) {
+      const actor = combatant.actor;
+      if (!actor) continue;
+
+      const toExpire = [];
+      for (const effect of actor.effects) {
+        if (effect.disabled) continue;
+
+        const dur = effect.duration;
+        if (!dur) continue;
+        const hasRoundsDur  = (dur.rounds  ?? 0) > 0;
+        const hasSecondsDur = (dur.seconds ?? 0) > 0;
+        if (!hasRoundsDur && !hasSecondsDur) continue;  // permanent — leave alone
+
+        const flags = effect.flags?.[MODULE_ID] ?? {};
+
+        // Compute remaining duration in seconds. Prefer seconds-based math
+        // (more accurate for spells with explicit time durations).
+        let remainingSec = Infinity;
+        if (hasSecondsDur) {
+          const startWT = flags.worldTimeStart ?? flags.createdWorldTime;
+          if (startWT != null) {
+            const elapsed = game.time.worldTime - startWT;
+            remainingSec = dur.seconds - elapsed;
+          } else {
+            remainingSec = dur.seconds;  // can't tell elapsed; assume full
+          }
+        } else if (hasRoundsDur) {
+          const startRound = dur.startRound ?? 1;
+          const elapsedRounds = Math.max(0, combat.round - startRound);
+          const remainingRounds = Math.max(0, dur.rounds - elapsedRounds);
+          remainingSec = remainingRounds * 6;  // 6 sec per round (5e RAW)
+        }
+
+        if (remainingSec > 0 && remainingSec <= thresholdSec) {
+          const remMin = Math.max(1, Math.round(remainingSec / 60));
+          toExpire.push({
+            effect,
+            reason: `${effect.name}: combat wind-down (≤${thresholdMin}min remaining)`
+          });
+        }
+      }
+
+      // Delete after iteration (don't mutate the collection mid-loop)
+      for (const { effect, reason } of toExpire) {
+        await this._expireEffect(actor, effect, reason);
       }
     }
   }

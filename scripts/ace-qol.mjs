@@ -19,6 +19,7 @@ import { ConcentrationWidget }  from "./concentration-widget.mjs";
 import { RiderEngine }          from "./rider-engine.mjs";
 import { FlagsEngine }          from "./flags-engine.mjs";
 import { ReactionEngine, injectReactionCSS } from "./reaction-engine.mjs";
+import { InvisibilityBreaker } from "./invisibility-breaker.mjs";
 import { HookAPI }              from "./hook-api.mjs";
 import { OverTimeEngine }       from "./overtime-engine.mjs";
 import { CoverEngine }          from "./cover-engine.mjs";
@@ -1140,6 +1141,14 @@ Hooks.once("ready", () => {
     console.debug(`${MODULE_ID} | Reaction engine online`);
   } catch (err) {
     console.error(`${MODULE_ID} | Reaction engine init failed:`, err);
+  }
+
+  // Invisibility breaker — RAW: attack/cast ends Invisibility spell (not Greater).
+  // Runs on the casting/attacking actor's owner client (PC owner OR GM for NPCs).
+  try {
+    InvisibilityBreaker.register();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Invisibility breaker init failed:`, err);
   }
 
   // Hook API — register public API on the module for third-party extensibility

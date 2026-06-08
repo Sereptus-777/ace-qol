@@ -529,6 +529,34 @@ export class DamageEngine {
         });
       }
 
+      // ── Cleave caption (clarity for both GM and player) ──
+      // When a mastery cleave fires, stamp a one-line caption right below
+      // the CLEAVE button row showing WHICH target got cleaved. Two variants:
+      //   - Auto-picked (only one valid candidate):
+      //       "⚔ Auto-cleaved to <name> (only valid target)"
+      //   - Picker resolved (multi-target):
+      //       "⚔ Cleaved to <name>"
+      // Independent of the cleave button wiring above — must re-check on
+      // every render because flag-driven updates trigger fresh renders.
+      // Idempotent: checks for the caption's class on the next sibling
+      // before inserting, so re-renders don't stack duplicates.
+      if (flags?.cleaveFired && flags?.cleaveTargetName) {
+        const cleaveRow = el.querySelector?.(".ace-qol-dmg-cleave-row");
+        const alreadyInserted = cleaveRow?.nextElementSibling?.classList?.contains?.("ace-qol-cleave-caption");
+        if (cleaveRow && !alreadyInserted) {
+          const key = flags.cleaveAutoPicked
+            ? "ACE_QOL.mastery.cleaveCaption.auto"
+            : "ACE_QOL.mastery.cleaveCaption.picker";
+          const text = game.i18n?.format?.(key, { target: flags.cleaveTargetName })
+                    ?? `⚔ Cleaved to ${flags.cleaveTargetName}`;
+          const captionDiv = document.createElement("div");
+          captionDiv.className = "ace-qol-cleave-caption";
+          captionDiv.textContent = text;
+          captionDiv.style.cssText = "text-align:center;font-style:italic;color:#c9a868;font-size:0.85rem;padding:6px 8px;opacity:0.95;letter-spacing:0.3px;";
+          cleaveRow.insertAdjacentElement("afterend", captionDiv);
+        }
+      }
+
       // ── Auto-apply damage to HP ──
       // If setting is ON, GM auto-applies damage as soon as the card renders
       if (game.user.isGM && flags.type === "damageResult" && !flags.applied && applyBtn) {
@@ -1063,14 +1091,17 @@ export class DamageEngine {
 
     // 5. Auto-pick if exactly one; otherwise portrait picker
     let chosen;
+    let wasAutoPicked;
     if (adjacent.length === 1) {
       chosen = adjacent[0];
+      wasAutoPicked = true;
     } else {
       chosen = await WeaponMasteries._pickCleaveTarget(adjacent, origTok.name);
       if (!chosen) {
         ui.notifications.info("Cleave cancelled.");
         return;
       }
+      wasAutoPicked = false;
     }
 
     // 6. Already in card?  Tell the user, don't double-add.
@@ -1101,7 +1132,10 @@ export class DamageEngine {
     cleaveBtn.disabled = true;
     cleaveBtn.innerHTML = '<i class="fas fa-check"></i> CLEAVED ✓';
     await DamageApplicator.addTargetToCard(
-      message, el, chosen, /* isCleave */ true, cleaveDmg, origEntry.components ?? flags.rawComponents ?? []
+      message, el, chosen, /* isCleave */ true, cleaveDmg, origEntry.components ?? flags.rawComponents ?? [],
+      // cleaveMeta — render handler reads these flags to show the
+      // "Cleaved to <target>" caption on both GM and player damage cards.
+      { autoPicked: wasAutoPicked, targetName: chosen.name }
     );
     DamageApplicator.wireOverrideButtons(el, message);
 

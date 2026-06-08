@@ -568,6 +568,19 @@ export class AttackPipeline {
     // ── Post attack results to chat ──
     await this._postAttackResults(item, actor, results, { isMelee, isSpell, roll, subject });
 
+    // ── RAW: Attack ends Invisibility spell (NOT Greater Invisibility) ──
+    // Fires AFTER the attack results post so the order in chat reads:
+    //   1. Attack results card
+    //   2. "Invisibility ends" caption
+    // Owner-permission gated inside the breaker; no-op for non-owners.
+    // Setting `autoBreakInvisibility` controls this (default ON).
+    try {
+      const { InvisibilityBreaker } = await import("./invisibility-breaker.mjs");
+      await InvisibilityBreaker.breakOnAttack(actor);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | InvisibilityBreaker post-attack call threw:`, err);
+    }
+
     // ── Store results for damage phase ──
     // The damage pipeline (Phase 4) will read this to apply damage
     this._lastAttackResults = results;
