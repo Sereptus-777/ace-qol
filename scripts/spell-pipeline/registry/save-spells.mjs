@@ -113,4 +113,109 @@ export const SAVE_SPELLS = {
     picker: { allowSelf: false, requiresAdjacent: true, excludeDead: true },
     flavorOnConfirm: "A creature you touch must save or be cursed for the duration.",
   },
+
+  // ─── Phase 3.A additions ───
+
+  "maze": {
+    shape: "save-single",
+    range: 60,
+    save: { ability: "int", onFail: "effect" },
+    effect: { key: "maze", duration: "concentration" },
+    picker: { allowSelf: false, excludeDead: true },
+    flavorOnConfirm: "Target is banished to a labyrinthine demiplane. INT save at end of each turn to escape.",
+  },
+
+  "imprisonment": {
+    shape: "save-single",
+    range: 30,
+    save: { ability: "wis", onFail: "effect" },
+    effect: { key: "imprisonment", duration: { seconds: 86400 * 365 } },  // until lifted
+    picker: { allowSelf: false, excludeDead: true },
+    flavorOnConfirm: "Target must succeed on a Wisdom save or be magically imprisoned. Lasts until the spell is dispelled.",
+  },
+
+  "geas": {
+    shape: "save-single",
+    range: 60,
+    save: { ability: "wis", onFail: "effect" },
+    effect: { key: "geas", duration: { seconds: 86400 * 30 } },  // 30 days
+    picker: { allowSelf: false, excludeDead: true },
+    flavorOnConfirm: "Charge a creature to carry out a service or refrain from an action. Fail saves and take 5d10 psychic if they violate.",
+  },
+
+  "mass suggestion": {
+    shape: "save-single",  // RAW: each creature saves separately; for picker we treat as single (loop manually for multi later)
+    range: 60,
+    save: { ability: "wis", onFail: "effect" },
+    effect: { key: "suggestion", duration: { hours: 24 } },
+    picker: { allowSelf: false, excludeDead: true },
+    flavorOnConfirm: "Suggest a course of action — up to 12 creatures within range must save or follow it.",
+  },
+
+  "modify memory": {
+    shape: "save-single",
+    range: 30,
+    save: { ability: "wis", onFail: "effect" },
+    effect: { key: "modify_memory", duration: "instantaneous" },
+    picker: { allowSelf: false, excludeDead: true },
+    flavorOnConfirm: "Reach into a target's mind and modify up to 10 minutes of memory.",
+  },
+
+  "power word stun": {
+    shape: "save-single",
+    range: 60,
+    save: { ability: "con", onFail: "effect" },  // CON save in 2024; 2014 was HP threshold (no save)
+    effect: { key: "power_word_stun", duration: "concentration" },
+    picker: { allowSelf: false, excludeDead: true },
+    flavorOnConfirm: "Target with ≤150 HP must succeed CON save or be stunned (CON save at end of each turn).",
+  },
+
+  "power word kill": {
+    shape: "save-single",
+    range: 60,
+    // 2014 RAW: no save, HP-threshold instant kill. 2024 RAW: CON save.
+    save: { ability: "con", onFail: "effect" },
+    effect: { key: "dead", duration: "instantaneous" },
+    picker: { allowSelf: false, excludeDead: true },
+    flavorOnConfirm: "If target has ≤100 HP, they die. (2024: CON save negates.)",
+  },
+
+  "polymorph any object": {
+    shape: "save-single",
+    range: 120,
+    save: { ability: "wis", onFail: "effect" },
+    effect: { key: "polymorph", duration: "concentration" },
+    picker: { allowSelf: false, excludeDead: true },
+    flavorOnConfirm: "Permanently or temporarily transform a creature or object into another creature or object.",
+  },
+
+  "true polymorph": {
+    shape: "save-single",
+    range: 30,
+    save: { ability: "wis", onFail: "effect" },
+    effect: { key: "polymorph", duration: "concentration" },
+    picker: { allowSelf: true, preHighlightSelf: false, excludeDead: true },
+    flavorOnConfirm: "Target transforms into a different creature for the duration. After 1 hour of concentration, the change becomes permanent.",
+  },
+
+  "sleep": {
+    shape: "save-single",  // simplification: pipeline treats as single-target; real HP-pool flow handled by dnd5e default
+    range: 90,
+    // Sleep has no save — HP-pool mechanic. For pipeline purposes we route through single picker.
+    save: { ability: "wis", onSuccess: "negate" },  // RAW has no save, but pipeline structure requires one — leave WIS as placeholder
+    effect: { key: "unconscious", duration: { rounds: 10 } },
+    picker: { allowSelf: false, excludeDead: true, creatureTypeFilter: null },  // any creature; HP cap not enforced here
+    flavorOnConfirm: "Choose creatures within 20 ft of a point. 5d8 HP-pool; lowest current HP first; each affected falls unconscious.",
+    _needsVerification: true,  // RAW Sleep doesn't use a save — pipeline impl is a simplification
+  },
+
+  "color spray": {
+    shape: "save-single",  // similar simplification — RAW is HP-pool, no save
+    range: 15,
+    save: { ability: "wis", onSuccess: "negate" },
+    effect: { key: "blinded", duration: { rounds: 10 } },
+    picker: { allowSelf: false, excludeDead: true },
+    flavorOnConfirm: "Dazzling colors blind creatures in a 15 ft cone (HP pool — pipeline simplification).",
+    _needsVerification: true,
+  },
 };

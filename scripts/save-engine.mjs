@@ -2121,14 +2121,6 @@ export class SaveEngine {
       const roll = new Roll(formula);
       await roll.evaluate();
 
-      // ── v0.7.18 DIAGNOSTIC (TEMP) — trace every save roll to find the
-      // "NPCs always roll 20s" bug. Strip after confirming root cause.
-      try {
-        const dieTerm = roll.terms?.find(t => t.constructor?.name?.includes("Die"));
-        const dieResults = dieTerm?.results?.map(r => `${r.result}${r.discarded ? "(disc)" : ""}`).join(", ") ?? "?";
-        console.log(`${MODULE_ID} | [SAVE-DIAG] target=${tgt.name ?? "?"} ability=${saveAbility} mode=${rollMode} formula="${formula}" dice=[${dieResults}] total=${roll.total} saveMod=${saveMod} tgtAdv=${tgt.saveAdvantage} tgtDis=${tgt.saveDisadvantage}`);
-      } catch (_) { /* non-fatal */ }
-
       // ── Visible Dice So Nice animation ──
       // Players want to SEE NPC saves roll across the screen, not just have
       // a number appear. DSN auto-fires for player-rolled saves via the
@@ -2548,14 +2540,6 @@ export class SaveEngine {
 
       const roll = new Roll(formula);
       await roll.evaluate();
-
-      // ── v0.7.18 DIAGNOSTIC (TEMP) — trace every save roll to find the
-      // "NPCs always roll 20s" bug. Strip after confirming root cause.
-      try {
-        const dieTerm = roll.terms?.find(t => t.constructor?.name?.includes("Die"));
-        const dieResults = dieTerm?.results?.map(r => `${r.result}${r.discarded ? "(disc)" : ""}`).join(", ") ?? "?";
-        console.log(`${MODULE_ID} | [SAVE-DIAG] target=${tgt.name ?? "?"} ability=${saveAbility} mode=${rollMode} formula="${formula}" dice=[${dieResults}] total=${roll.total} saveMod=${saveMod} tgtAdv=${tgt.saveAdvantage} tgtDis=${tgt.saveDisadvantage}`);
-      } catch (_) { /* non-fatal */ }
       saveTotal = roll.total;
       passed = saveTotal >= saveDC;
       rollResult = roll;

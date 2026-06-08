@@ -893,6 +893,383 @@ const SPELL_EFFECTS = {
     concentration: false,
     duration: { seconds: 3600 },
   },
+
+  // ─── v0.7.20 PHASE 2.5 — additional spell effect keys for save-single + self pipeline ───
+
+  // ── Aid (2nd level, 8 hours, NOT concentration) ──
+  aid: {
+    name: "Aid",
+    icon: "icons/magic/holy/yellow-beam-radiant-3.webp",
+    description: "Max HP and current HP +5 (more at higher levels). Lasts 8 hours.",
+    changes: [
+      { key: "system.attributes.hp.tempmax", mode: 2, value: "+5" },
+      { key: "system.attributes.hp.bonuses.overall", mode: 2, value: "+5" },
+    ],
+    concentration: false,
+    duration: { seconds: 28800 },
+  },
+
+  // ── Charm Person (1st level, 1 hour, NOT concentration) ──
+  charm_person: {
+    name: "Charmed by Caster",
+    icon: "icons/magic/control/silhouette-grow-shrink-blue.webp",
+    description: "Charmed by the caster — treats them as a friendly acquaintance. Ends if harmed.",
+    statuses: ["charmed"],
+    changes: [
+      { key: "flags.ace-qol.charmedByCaster", mode: 0, value: "1" },
+    ],
+    concentration: false,
+    duration: { seconds: 3600 },
+  },
+
+  // ── Suggestion (2nd level, 8 hours, concentration) ──
+  suggestion: {
+    name: "Suggestion",
+    icon: "icons/magic/control/voice-shout-orange.webp",
+    description: "Magically influenced to follow a course of action. Ends if asked to do something harmful.",
+    statuses: ["charmed"],
+    changes: [
+      { key: "flags.ace-qol.suggestionActive", mode: 0, value: "1" },
+    ],
+    concentration: true,
+    duration: { seconds: 28800 },
+  },
+
+  // ── Banishment (4th level, 1 min, concentration) ──
+  banishment: {
+    name: "Banished",
+    icon: "icons/magic/movement/door-portal-blue.webp",
+    description: "Banished to a harmless demiplane. Incapacitated and unable to be targeted.",
+    statuses: ["incapacitated"],
+    changes: [
+      { key: "flags.ace-qol.banished", mode: 0, value: "1" },
+    ],
+    concentration: true,
+    duration: { rounds: 10 },
+  },
+
+  // ── Polymorph (4th level, 1 hour, concentration) ──
+  polymorph: {
+    name: "Polymorphed",
+    icon: "icons/magic/nature/wolf-paw-glow-blue.webp",
+    description: "Transformed into a beast of CR equal to your level or lower. New stats but retain alignment, personality, Int/Wis/Cha.",
+    changes: [
+      { key: "flags.ace-qol.polymorphed", mode: 0, value: "1" },
+    ],
+    concentration: true,
+    duration: { seconds: 3600 },
+  },
+
+  // ── Dominate Person (5th level, 1 min, concentration) ──
+  dominate_person: {
+    name: "Dominated by Caster",
+    icon: "icons/magic/control/hypnosis-mesmerism-eye-orange.webp",
+    description: "Charmed and follows caster's mental commands. New save when taking damage.",
+    statuses: ["charmed"],
+    changes: [
+      { key: "flags.ace-qol.dominatedByCaster", mode: 0, value: "1" },
+    ],
+    concentration: true,
+    duration: { rounds: 10 },
+  },
+
+  // ── Dominate Monster (8th level, 1 hour, concentration) ──
+  dominate_monster: {
+    name: "Dominated (Monster)",
+    icon: "icons/magic/control/hypnosis-mesmerism-eye-pink.webp",
+    description: "Any creature is charmed and follows caster's mental commands. New save when taking damage.",
+    statuses: ["charmed"],
+    changes: [
+      { key: "flags.ace-qol.dominatedByCaster", mode: 0, value: "1" },
+    ],
+    concentration: true,
+    duration: { seconds: 3600 },
+  },
+
+  // ── Feeblemind (8th level, until cured) ──
+  feeblemind: {
+    name: "Feebleminded",
+    icon: "icons/magic/control/silhouette-aura-mind-pink.webp",
+    description: "Int and Cha drop to 1. Can't cast spells, activate magic items, understand language, or communicate intelligibly.",
+    changes: [
+      { key: "system.abilities.int.value", mode: 5, value: "1" },
+      { key: "system.abilities.cha.value", mode: 5, value: "1" },
+      { key: "flags.ace-qol.feebleminded", mode: 0, value: "1" },
+    ],
+    concentration: false,
+    duration: { seconds: 86400 * 30 },  // until cured (~30 days placeholder)
+  },
+
+  // ── Tasha's Hideous Laughter (1st level, 1 min, concentration) ──
+  tashas_hideous_laughter: {
+    name: "Tasha's Hideous Laughter",
+    icon: "icons/magic/control/buff-strength-muscle-pink.webp",
+    description: "Falls prone and is incapacitated, unable to stand, due to uncontrollable laughter.",
+    statuses: ["prone", "incapacitated"],
+    changes: [
+      { key: "flags.ace-qol.proneIncapacitated", mode: 0, value: "1" },
+    ],
+    concentration: true,
+    duration: { rounds: 10 },
+  },
+
+  // ── Crown of Madness (2nd level, 1 min, concentration) ──
+  crown_of_madness: {
+    name: "Crown of Madness",
+    icon: "icons/magic/control/fear-fright-monster-purple.webp",
+    description: "Wears a twisted iron crown. On its turn, must use action to attack a creature the caster chooses.",
+    statuses: ["charmed"],
+    changes: [
+      { key: "flags.ace-qol.crownOfMadness", mode: 0, value: "1" },
+    ],
+    concentration: true,
+    duration: { rounds: 10 },
+  },
+
+  // ── Bestow Curse (3rd level, 1 min, concentration) ──
+  bestow_curse: {
+    name: "Cursed",
+    icon: "icons/magic/death/skull-hood-purple.webp",
+    description: "Cursed — disadvantage on chosen-ability checks/saves, or attacks vs caster have advantage, or various other curses.",
+    changes: [
+      { key: "flags.ace-qol.cursed", mode: 0, value: "1" },
+    ],
+    concentration: true,
+    duration: { rounds: 10 },
+  },
+
+  // ── Fly (3rd level, 10 min, concentration) — when cast on someone else ──
+  fly: {
+    name: "Fly",
+    icon: "icons/magic/control/buff-flight-wings-blue.webp",
+    description: "Flying speed of 60 ft for the duration. Falls if concentration breaks while aloft.",
+    changes: [
+      { key: "system.attributes.movement.fly", mode: 5, value: "60" },
+      { key: "flags.ace-qol.canFly", mode: 0, value: "1" },
+    ],
+    concentration: true,
+    duration: { rounds: 100 },
+  },
+
+  // ── Foresight (9th level, 8 hours, NOT concentration) ──
+  foresight: {
+    name: "Foresight",
+    icon: "icons/magic/perception/eye-ringed-glow-gold.webp",
+    description: "Advantage on attacks, ability checks, and saves. Attackers have disadvantage. Can't be surprised.",
+    changes: [
+      { key: "flags.midi-qol.advantage.attack.all", mode: 0, value: "1" },
+      { key: "flags.midi-qol.advantage.ability.check.all", mode: 0, value: "1" },
+      { key: "flags.midi-qol.advantage.ability.save.all", mode: 0, value: "1" },
+      { key: "flags.midi-qol.grants.disadvantage.attack.all", mode: 0, value: "1" },
+      { key: "flags.ace-qol.foresightActive", mode: 0, value: "1" },
+      { key: "flags.ace-qol.cantBeSurprised", mode: 0, value: "1" },
+    ],
+    concentration: false,
+    duration: { seconds: 28800 },
+  },
+
+  // ─── v0.7.20 PHASE 3.A — minimal effect entries for long-tail spells ───
+  // These are bare-minimum entries (name, icon, duration). Full mechanical
+  // changes can be added later via the nullification registry. The name
+  // matches what the nullification walker looks for.
+
+  true_strike: {
+    name: "True Strike",
+    icon: "icons/magic/control/target-eye-pink.webp",
+    description: "Advantage on next attack against the target.",
+    changes: [{ key: "flags.ace-qol.trueStrike", mode: 0, value: "1" }],
+    concentration: true, duration: { rounds: 1 },
+  },
+  detect_magic: {
+    name: "Detect Magic", icon: "icons/magic/perception/eye-ringed-glow-blue.webp",
+    description: "Sense magic within 30 ft.",
+    changes: [], concentration: true, duration: { rounds: 100 },
+  },
+  detect_evil_and_good: {
+    name: "Detect Evil and Good", icon: "icons/magic/perception/orb-eye-scrying.webp",
+    description: "Sense aberrations, celestials, elementals, fey, fiends, undead within 30 ft.",
+    changes: [], concentration: true, duration: { rounds: 100 },
+  },
+  see_invisibility: {
+    name: "See Invisibility", icon: "icons/magic/perception/eye-ringed-glow-blue.webp",
+    description: "See invisible creatures and objects.",
+    changes: [{ key: "flags.ace-qol.seesInvisible", mode: 0, value: "1" }],
+    concentration: false, duration: { rounds: 100 },
+  },
+  comprehend_languages: {
+    name: "Comprehend Languages", icon: "icons/skills/social/diplomacy-handshake-yellow.webp",
+    description: "Understand any spoken language.",
+    changes: [], concentration: false, duration: { rounds: 600 },
+  },
+  disguise_self: {
+    name: "Disguise Self", icon: "icons/magic/control/silhouette-grow-shrink-blue.webp",
+    description: "Appearance changes to fit your wishes.",
+    changes: [], concentration: false, duration: { rounds: 600 },
+  },
+  longstrider: {
+    name: "Longstrider", icon: "icons/skills/movement/figure-running-gray.webp",
+    description: "+10 ft movement speed.",
+    changes: [{ key: "system.attributes.movement.walk", mode: 2, value: "+10" }],
+    concentration: false, duration: { rounds: 600 },
+  },
+  spider_climb: {
+    name: "Spider Climb", icon: "icons/creatures/arthropods/spider-skull-orange.webp",
+    description: "Climbing speed equal to walking speed; can climb difficult surfaces.",
+    changes: [{ key: "system.attributes.movement.climb", mode: 5, value: "30" }],
+    concentration: true, duration: { rounds: 600 },
+  },
+  misty_step: {
+    name: "Misty Step", icon: "icons/magic/movement/abstract-ribbons-pink.webp",
+    description: "Teleport up to 30 ft.",
+    changes: [], concentration: false, duration: { rounds: 0 },
+  },
+  dimension_door: {
+    name: "Dimension Door", icon: "icons/magic/movement/door-portal-yellow.webp",
+    description: "Teleport up to 500 ft.",
+    changes: [], concentration: false, duration: { rounds: 0 },
+  },
+  death_ward: {
+    name: "Death Ward", icon: "icons/magic/holy/cross-glowing-gold.webp",
+    description: "Next reduction to 0 HP becomes 1 HP instead. Spell ends after triggering.",
+    changes: [{ key: "flags.ace-qol.deathWard", mode: 0, value: "1" }],
+    concentration: false, duration: { seconds: 28800 },
+  },
+  mind_blank: {
+    name: "Mind Blank", icon: "icons/magic/control/silhouette-aura-mind-pink.webp",
+    description: "Immune to psychic damage, charmed, and mind-reading.",
+    changes: [
+      { key: "system.traits.di.value", mode: 2, value: "psychic" },
+      { key: "system.traits.ci.value", mode: 2, value: "charmed" },
+      { key: "flags.ace-qol.mindBlankActive", mode: 0, value: "1" },
+    ],
+    concentration: false, duration: { seconds: 86400 },
+  },
+  etherealness: {
+    name: "Etherealness", icon: "icons/magic/movement/portal-vortex-purple.webp",
+    description: "Step into the Ethereal Plane.",
+    changes: [{ key: "flags.ace-qol.ethereal", mode: 0, value: "1" }],
+    concentration: false, duration: { seconds: 28800 },
+  },
+  time_stop: {
+    name: "Time Stop", icon: "icons/magic/time/clock-spinning-gold.webp",
+    description: "1d4+1 additional turns in a row.",
+    changes: [], concentration: false, duration: { rounds: 5 },
+  },
+  haste: {
+    name: "Haste", icon: "icons/magic/time/clock-stopwatch-white.webp",
+    description: "Speed doubled, +2 AC, advantage on Dex saves, +1 action per turn.",
+    changes: [
+      { key: "system.attributes.ac.bonus", mode: 2, value: "+2" },
+      { key: "flags.ace-qol.hasted", mode: 0, value: "1" },
+    ],
+    concentration: true, duration: { rounds: 10 },
+  },
+  pass_without_trace: {
+    name: "Pass Without Trace", icon: "icons/skills/movement/feet-bare-tan.webp",
+    description: "+10 Stealth, leave no trace.",
+    changes: [{ key: "system.skills.ste.bonuses.check", mode: 2, value: "+10" }],
+    concentration: true, duration: { rounds: 600 },
+  },
+  resistance: {
+    name: "Resistance", icon: "icons/magic/defensive/shield-barrier-flaming-pentagon-blue.webp",
+    description: "Add 1d4 to one saving throw.",
+    changes: [{ key: "system.bonuses.abilities.save", mode: 2, value: "+1d4" }],
+    concentration: true, duration: { rounds: 10 },
+  },
+  guidance: {
+    name: "Guidance", icon: "icons/magic/light/orb-shadow-blue.webp",
+    description: "Add 1d4 to one ability check.",
+    changes: [{ key: "system.bonuses.abilities.check", mode: 2, value: "+1d4" }],
+    concentration: true, duration: { rounds: 10 },
+  },
+  heroes_feast: {
+    name: "Heroes' Feast", icon: "icons/consumables/food/turkey-roasted-brown.webp",
+    description: "Immune to poison and fear. Advantage on Wisdom saves. Temp HP.",
+    changes: [
+      { key: "system.traits.ci.value", mode: 2, value: "poisoned" },
+      { key: "system.traits.ci.value", mode: 2, value: "frightened" },
+      { key: "system.traits.di.value", mode: 2, value: "poison" },
+      { key: "flags.ace-qol.heroesFeast", mode: 0, value: "1" },
+    ],
+    concentration: false, duration: { seconds: 86400 },
+  },
+  tongues: {
+    name: "Tongues", icon: "icons/skills/social/diplomacy-handshake-yellow.webp",
+    description: "Understand and speak any spoken language.",
+    changes: [], concentration: false, duration: { rounds: 600 },
+  },
+  water_breathing: {
+    name: "Water Breathing", icon: "icons/magic/water/bubbles-blue.webp",
+    description: "Breathe underwater.",
+    changes: [{ key: "flags.ace-qol.waterBreathing", mode: 0, value: "1" }],
+    concentration: false, duration: { seconds: 86400 },
+  },
+  magic_weapon: {
+    name: "Magic Weapon", icon: "icons/weapons/swords/sword-runed-gold.webp",
+    description: "Weapon becomes magical with +1 (or +2/+3 at higher levels).",
+    changes: [], concentration: true, duration: { rounds: 100 },
+  },
+  elemental_weapon: {
+    name: "Elemental Weapon", icon: "icons/magic/fire/blade-burning-orange.webp",
+    description: "Weapon becomes magical with +1 and +1d4 elemental damage (more at higher levels).",
+    changes: [], concentration: true, duration: { rounds: 100 },
+  },
+  crusaders_mantle: {
+    name: "Crusader's Mantle", icon: "icons/magic/holy/yellow-beam-radiant-3.webp",
+    description: "30 ft aura grants +1d4 radiant damage to allies' weapon attacks.",
+    changes: [{ key: "flags.ace-qol.crusadersMantleActive", mode: 0, value: "1" }],
+    concentration: true, duration: { rounds: 10 },
+  },
+  spirit_shroud: {
+    name: "Spirit Shroud", icon: "icons/magic/death/projectile-soul-yellow.webp",
+    description: "+1d8 radiant/necrotic/cold damage to attacks within 10 ft.",
+    changes: [{ key: "flags.ace-qol.spiritShroudActive", mode: 0, value: "1" }],
+    concentration: true, duration: { rounds: 10 },
+  },
+  maze: {
+    name: "Maze", icon: "icons/magic/movement/door-portal-purple.webp",
+    description: "Banished to a labyrinthine demiplane.",
+    statuses: ["incapacitated"],
+    changes: [{ key: "flags.ace-qol.maze", mode: 0, value: "1" }],
+    concentration: true, duration: { rounds: 100 },
+  },
+  imprisonment: {
+    name: "Imprisoned", icon: "icons/magic/control/chain-bind-blue.webp",
+    description: "Magically imprisoned. Lasts until the spell is dispelled.",
+    statuses: ["paralyzed"],
+    changes: [{ key: "flags.ace-qol.imprisoned", mode: 0, value: "1" }],
+    concentration: false, duration: { seconds: 86400 * 365 },
+  },
+  geas: {
+    name: "Geas", icon: "icons/magic/control/chain-bind-purple.webp",
+    description: "Compelled to carry out or refrain from a course of action. Takes psychic damage if violated.",
+    changes: [{ key: "flags.ace-qol.geas", mode: 0, value: "1" }],
+    concentration: false, duration: { seconds: 86400 * 30 },
+  },
+  modify_memory: {
+    name: "Modify Memory", icon: "icons/magic/control/silhouette-aura-mind-pink.webp",
+    description: "Up to 10 minutes of memory modified.",
+    changes: [], concentration: false, duration: { rounds: 0 },
+  },
+  power_word_stun: {
+    name: "Power Word Stun", icon: "icons/magic/lightning/strike-blast-blue.webp",
+    description: "Stunned. CON save at end of each turn to recover.",
+    statuses: ["stunned"],
+    changes: [{ key: "flags.ace-qol.powerWordStun", mode: 0, value: "1" }],
+    concentration: false, duration: { rounds: 10 },
+  },
+  dead: {
+    name: "Dead", icon: "icons/svg/skull.svg",
+    description: "Killed by magic.",
+    statuses: ["dead"],
+    changes: [], concentration: false, duration: { rounds: 0 },
+  },
+  unconscious: {
+    name: "Unconscious (Sleep)", icon: "icons/svg/unconscious.svg",
+    description: "Magically asleep. Damage from any source wakes target.",
+    statuses: ["unconscious"],
+    changes: [], concentration: false, duration: { rounds: 10 },
+  },
 };
 
 

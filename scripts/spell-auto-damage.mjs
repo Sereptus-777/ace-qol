@@ -197,13 +197,18 @@ export class SpellAutoDamage {
 
         // Pipeline-owned spell list. Expand as new shapes ship.
         const name = String(item.name ?? "").trim().toLowerCase();
-        // v0.7.18 Phase 2: ANY spell the pipeline owns gets the vanilla
-        // activation card suppressed. The pipeline posts its own enriched
-        // chat card (BuffResolver / SelfResolver / HealResolver / etc.).
-        // Falls through cleanly for spells not in the registry.
+        // v0.7.20 Phase 2.5: only suppress for shapes where the pipeline
+        // actually posts its OWN enriched chat card. Shapes that delegate to
+        // existing engines (template-save, template-trigger, aura, chained)
+        // need dnd5e's activation card to remain so the existing engines
+        // (save-engine, spell-auras, concentration-widget) can pick it up.
         const pipeline = globalThis.game?.aceQol?.SpellPipeline;
-        const ownedByPipeline = !!(pipeline?.ownsSpell?.(item));
-        if (!ownedByPipeline) return;
+        if (!pipeline?.ownsSpell?.(item)) return;
+        const entry = pipeline._getEntry?.(item);
+        const PIPELINE_POSTS_OWN_CARD = new Set([
+          "distribute", "self", "multi-buff", "multi-heal", "touch", "save-single",
+        ]);
+        if (!PIPELINE_POSTS_OWN_CARD.has(entry?.shape)) return;
 
         console.log(`${MODULE_ID} | Suppressing vanilla activation card for "${item.name}" (pipeline owns the cast)`);
         return false; // cancel message creation
