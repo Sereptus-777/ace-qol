@@ -570,6 +570,15 @@ export class ReactionEngine {
         await this._markReactionUsed(targetActor);
         await this._applyShieldEffect(targetActor);
 
+        // ── Visual flash on the absorbing token ──
+        // JB2A free burst with PIXI pulse fallback. Same helper the passive
+        // nullification sweep uses, so MM-vs-active-Shield and MM-vs-cast-Shield
+        // share the same "absorbed it" visual language.
+        try {
+          const { AnimationHelper } = await import("../spell-pipeline/animation.mjs");
+          AnimationHelper.flashNullification(targetToken, "#42a5f5").catch(() => {});
+        } catch (_) { /* non-fatal */ }
+
         // ── Post chat caption noting the negation ──
         await this._postReactionChat(
           targetActor,

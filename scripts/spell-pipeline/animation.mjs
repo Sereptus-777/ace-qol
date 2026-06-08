@@ -51,6 +51,82 @@ export class AnimationHelper {
     } catch (_) { /* non-fatal */ }
   }
 
+  /**
+   * Play a brief visual flash on the target indicating a spell/attack was
+   * nullified or absorbed. Used by the nullification sweep + Shield reaction.
+   *
+   * Tiered fallback (no hard dependencies):
+   *   1. JB2A free healing_generic.burst.bluewhite via Sequencer (richest)
+   *   2. Pure PIXI circle-pulse drawn on the token (always works)
+   *
+   * @param {Token} token        - the target token
+   * @param {string} accentColor - hex color (default soft blue)
+   */
+  static async flashNullification(token, accentColor = "#8ab4d8") {
+    if (!token) return;
+
+    // ── Path 1: JB2A + Sequencer (richest) ──
+    try {
+      if (window.Sequencer && window.Sequence) {
+        const burstFile = "jb2a.healing_generic.burst.bluewhite";
+        if (window.Sequencer.Database?.entryExists?.(burstFile)) {
+          await new window.Sequence()
+            .effect()
+              .file(burstFile)
+              .atLocation(token)
+              .scaleToObject(1.3)
+              .duration(900)
+              .fadeIn(150)
+              .fadeOut(400)
+              .opacity(0.85)
+            .play();
+          return;
+        }
+      }
+    } catch (err) {
+      console.debug(`${MODULE_ID} | AnimationHelper.flashNullification: Sequencer/JB2A path failed, falling back to PIXI:`, err?.message ?? err);
+    }
+
+    // ── Path 2: PIXI pulse (always works, no module dependency) ──
+    try {
+      const ring = new PIXI.Graphics();
+      const size = Math.max(token.w ?? 100, token.h ?? 100);
+      const center = size / 2;
+      const colorInt = parseInt(String(accentColor).replace("#", ""), 16);
+
+      ring.lineStyle(4, colorInt, 0.9);
+      ring.beginFill(colorInt, 0.25);
+      ring.drawCircle(center, center, size * 0.55);
+      ring.endFill();
+
+      try { token.addChildAt(ring, 0); }
+      catch (_) { token.addChild(ring); }
+
+      // Animate alpha + scale pulse over 700ms
+      let elapsed = 0;
+      const duration = 700;
+      const start = performance.now();
+      const animate = (now) => {
+        elapsed = now - start;
+        const t = Math.min(1, elapsed / duration);
+        // Ease-out cubic
+        const eased = 1 - Math.pow(1 - t, 3);
+        ring.alpha = 1 - eased;
+        ring.scale.set(1 + eased * 0.45);
+        ring.position.set(-center * (eased * 0.45), -center * (eased * 0.45));
+        if (t < 1) {
+          requestAnimationFrame(animate);
+        } else {
+          try { token.removeChild(ring); ring.destroy({ children: true }); }
+          catch (_) {}
+        }
+      };
+      requestAnimationFrame(animate);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | AnimationHelper.flashNullification: PIXI fallback threw:`, err);
+    }
+  }
+
   // ─── Internals ─────────────────────────────────────────────────────────────
 
   static _extractTargets(result) {

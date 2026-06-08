@@ -1309,18 +1309,44 @@
    ═══════════════════════════════════════════════════════════════ */
 
 /* ─── Live Target Card ─────────────────────────────────────── */
+/* v0.7.18: rebuilt to CSS Grid for uniform two-tier row layout.
+   Every row has the same shape regardless of PC/NPC:
+       [portrait]  [identity (name + mod)]            [X dismiss]
+       [portrait]  [actions (dice + badges)]
+   The portrait spans both rows. PCs have a dice button in actions;
+   NPCs don't (they roll via the bottom card button). When the
+   actions row is empty (no badges, no dice), it collapses cleanly. */
 .ace-qol-save-tgt-row {
-  display: flex; align-items: center; gap: 6px;
-  flex-wrap: wrap; /* allow chips/buttons to wrap to next line if needed */
-  padding: 3px 6px; margin: 2px 0;
+  display: grid;
+  grid-template-columns: 32px 1fr auto;
+  grid-template-areas:
+    "img identity dismiss"
+    "img actions actions";
+  align-items: center;
+  gap: 2px 8px;
+  padding: 4px 6px; margin: 2px 0;
   background: rgba(255,255,255,0.04);
-  border-radius: 3px; min-height: 28px;
+  border-radius: 3px;
 }
 .ace-qol-save-tgt-row:hover { background: rgba(255,255,255,0.08); }
 .ace-qol-save-tgt-img {
-  width: 24px; height: 24px; border-radius: 50%;
+  grid-area: img;
+  width: 32px; height: 32px; border-radius: 50%;
   object-fit: cover; border: 1px solid #444; flex-shrink: 0;
+  align-self: center;
 }
+.ace-qol-save-tgt-identity {
+  grid-area: identity;
+  display: flex; align-items: center; gap: 8px;
+  min-width: 0;
+}
+.ace-qol-save-tgt-actions {
+  grid-area: actions;
+  display: flex; align-items: center; gap: 6px;
+  min-height: 0;
+}
+.ace-qol-save-tgt-actions:empty { display: none; } /* collapse if NPC has no badges */
+.ace-qol-save-tgt-remove { grid-area: dismiss; }
 .ace-qol-save-tgt-name {
   flex: 1 1 100px; min-width: 0;
   font-size: 0.85rem; font-weight: 600; color: #e8e6e0;

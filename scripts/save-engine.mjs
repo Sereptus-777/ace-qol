@@ -986,41 +986,62 @@ export class SaveEngine {
       return `<span class="ace-qol-save-tgt-mod">${t.saveAbilityUpper} ${baseStr}</span>${bonusChips}`;
     };
 
+    // ── Helper: build the "actions" sub-row (dice button + badges) ──
+    // Used by both PC and NPC rows for uniform two-tier layout. Dice button
+    // appears only on PCs (NPCs roll via the GM-side bottom button).
+    const _renderActionsRow = (t, isPc) => {
+      const di = _getDmgIndicator(t);
+      const dice = isPc
+        ? `<button class="ace-qol-save-pc-roll-btn" data-action="aceQolGmRollPcSave" data-token-doc-id="${t.tokenDocId}" title="Roll save on this PC's behalf (GM)">
+             <img src="modules/ace-qol/Assets/Dice%20Dice/BD20/BD20-20_nobg.png" class="ace-qol-save-pc-dice-img" alt="d20" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'" />
+             <i class="fas fa-dice-d20" style="display:none"></i>
+           </button>`
+        : "";
+      const badges = [
+        t.autoFailSave ? '<span class="ace-qol-tag ace-qol-tag-danger"><i class="fas fa-circle-xmark"></i> AUTO-FAIL</span>' : "",
+        t.superSaver ? '<span class="ace-qol-tag ace-qol-tag-buff"><i class="fas fa-person-running"></i> EVASION</span>' : "",
+        di.tag,
+      ].filter(Boolean).join("");
+      return `<div class="ace-qol-save-tgt-actions">${dice}${badges}</div>`;
+    };
+
     // ── Build NPC rows ──
+    // data-pc="false" is REQUIRED for the "all rolled" reconciliation check
+    // at line ~2692 (querySelector ".ace-qol-save-tgt-row[data-pc='false']").
+    // Without it, NPC rows can't be counted as pending → button false-positives
+    // to "ALL ROLLED" as soon as PCs are done.
     const npcRowsHtml = npcs.map(t => {
       const di = _getDmgIndicator(t);
       return `
-      <div class="ace-qol-save-tgt-row ${di.cls}" data-token-id="${t.tokenId}">
+      <div class="ace-qol-save-tgt-row ${di.cls}" data-token-id="${t.tokenId}" data-pc="false">
         <img src="${t.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
-        <span class="ace-qol-save-tgt-name">${t.name}</span>
-        ${_renderModBreakdown(t)}
-        ${t.autoFailSave ? '<span class="ace-qol-tag ace-qol-tag-danger"><i class="fas fa-circle-xmark"></i> AUTO-FAIL</span>' : ""}
-        ${t.superSaver ? '<span class="ace-qol-tag ace-qol-tag-buff"><i class="fas fa-person-running"></i> EVASION</span>' : ""}
-        ${di.tag}
+        <div class="ace-qol-save-tgt-identity">
+          <span class="ace-qol-save-tgt-name">${t.name}</span>
+          ${_renderModBreakdown(t)}
+        </div>
         <button class="ace-qol-save-tgt-remove" data-action="aceQolRemoveTarget" data-token-id="${t.tokenId}">
           <i class="fas fa-xmark"></i>
         </button>
+        ${_renderActionsRow(t, false)}
       </div>
     `}).join("");
 
     // ── Build PC rows (with GM dice icon to roll on their behalf + X to remove) ──
+    // data-pc="true" for symmetry + future use; the "all rolled" check uses
+    // .ace-qol-save-pc-roll-btn:not([disabled]) for PC pending state.
     const pcRowsHtml = pcs.map(t => {
       const di = _getDmgIndicator(t);
       return `
-      <div class="ace-qol-save-tgt-row ace-qol-save-tgt-pc ${di.cls}" data-token-id="${t.tokenId}" data-token-doc-id="${t.tokenDocId}" data-actor-id="${t.actorId}">
+      <div class="ace-qol-save-tgt-row ace-qol-save-tgt-pc ${di.cls}" data-token-id="${t.tokenId}" data-token-doc-id="${t.tokenDocId}" data-actor-id="${t.actorId}" data-pc="true">
         <img src="${t.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
-        <span class="ace-qol-save-tgt-name">${t.name}</span>
-        ${_renderModBreakdown(t)}
-        ${t.autoFailSave ? '<span class="ace-qol-tag ace-qol-tag-danger"><i class="fas fa-circle-xmark"></i> AUTO-FAIL</span>' : ""}
-        ${t.superSaver ? '<span class="ace-qol-tag ace-qol-tag-buff"><i class="fas fa-person-running"></i> EVASION</span>' : ""}
-        ${di.tag}
-        <button class="ace-qol-save-pc-roll-btn" data-action="aceQolGmRollPcSave" data-token-doc-id="${t.tokenDocId}" title="Roll save on this PC's behalf (GM)">
-          <img src="modules/ace-qol/Assets/Dice%20Dice/BD20/BD20-20_nobg.png" class="ace-qol-save-pc-dice-img" alt="d20" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'" />
-          <i class="fas fa-dice-d20" style="display:none"></i>
-        </button>
+        <div class="ace-qol-save-tgt-identity">
+          <span class="ace-qol-save-tgt-name">${t.name}</span>
+          ${_renderModBreakdown(t)}
+        </div>
         <button class="ace-qol-save-tgt-remove" data-action="aceQolRemoveTarget" data-token-id="${t.tokenId}" title="Remove this PC from the save list">
           <i class="fas fa-xmark"></i>
         </button>
+        ${_renderActionsRow(t, true)}
       </div>
     `}).join("");
 
@@ -2081,13 +2102,32 @@ export class SaveEngine {
         } catch (_) { /* cover check non-fatal */ }
       }
 
-      const bonuses = allBonusParts.join(" + ");
+      // Filter out zero / empty / null bonuses so the formula doesn't show
+      // ugly tails like "1d20 + 2 + 0" when a bonus entry was a no-op.
+      const bonuses = allBonusParts
+        .filter(b => {
+          if (b == null || b === "") return false;
+          if (b === 0 || b === "0") return false;
+          // Numeric strings that resolve to 0 (e.g. "+0", "-0") — strip too
+          const n = Number(b);
+          if (Number.isFinite(n) && n === 0) return false;
+          return true;
+        })
+        .join(" + ");
       const formula = rollMode === "advantage" ? `2d20kh + ${saveMod}${bonuses ? ` + ${bonuses}` : ""}`
                     : rollMode === "disadvantage" ? `2d20kl + ${saveMod}${bonuses ? ` + ${bonuses}` : ""}`
                     : `1d20 + ${saveMod}${bonuses ? ` + ${bonuses}` : ""}`;
 
       const roll = new Roll(formula);
       await roll.evaluate();
+
+      // ── v0.7.18 DIAGNOSTIC (TEMP) — trace every save roll to find the
+      // "NPCs always roll 20s" bug. Strip after confirming root cause.
+      try {
+        const dieTerm = roll.terms?.find(t => t.constructor?.name?.includes("Die"));
+        const dieResults = dieTerm?.results?.map(r => `${r.result}${r.discarded ? "(disc)" : ""}`).join(", ") ?? "?";
+        console.log(`${MODULE_ID} | [SAVE-DIAG] target=${tgt.name ?? "?"} ability=${saveAbility} mode=${rollMode} formula="${formula}" dice=[${dieResults}] total=${roll.total} saveMod=${saveMod} tgtAdv=${tgt.saveAdvantage} tgtDis=${tgt.saveDisadvantage}`);
+      } catch (_) { /* non-fatal */ }
 
       // ── Visible Dice So Nice animation ──
       // Players want to SEE NPC saves roll across the screen, not just have
@@ -2490,13 +2530,32 @@ export class SaveEngine {
         } catch (_) { /* cover check non-fatal */ }
       }
 
-      const bonuses = allBonusParts.join(" + ");
+      // Filter out zero / empty / null bonuses so the formula doesn't show
+      // ugly tails like "1d20 + 2 + 0" when a bonus entry was a no-op.
+      const bonuses = allBonusParts
+        .filter(b => {
+          if (b == null || b === "") return false;
+          if (b === 0 || b === "0") return false;
+          // Numeric strings that resolve to 0 (e.g. "+0", "-0") — strip too
+          const n = Number(b);
+          if (Number.isFinite(n) && n === 0) return false;
+          return true;
+        })
+        .join(" + ");
       const formula = rollMode === "advantage" ? `2d20kh + ${saveMod}${bonuses ? ` + ${bonuses}` : ""}`
                     : rollMode === "disadvantage" ? `2d20kl + ${saveMod}${bonuses ? ` + ${bonuses}` : ""}`
                     : `1d20 + ${saveMod}${bonuses ? ` + ${bonuses}` : ""}`;
 
       const roll = new Roll(formula);
       await roll.evaluate();
+
+      // ── v0.7.18 DIAGNOSTIC (TEMP) — trace every save roll to find the
+      // "NPCs always roll 20s" bug. Strip after confirming root cause.
+      try {
+        const dieTerm = roll.terms?.find(t => t.constructor?.name?.includes("Die"));
+        const dieResults = dieTerm?.results?.map(r => `${r.result}${r.discarded ? "(disc)" : ""}`).join(", ") ?? "?";
+        console.log(`${MODULE_ID} | [SAVE-DIAG] target=${tgt.name ?? "?"} ability=${saveAbility} mode=${rollMode} formula="${formula}" dice=[${dieResults}] total=${roll.total} saveMod=${saveMod} tgtAdv=${tgt.saveAdvantage} tgtDis=${tgt.saveDisadvantage}`);
+      } catch (_) { /* non-fatal */ }
       saveTotal = roll.total;
       passed = saveTotal >= saveDC;
       rollResult = roll;
@@ -3506,34 +3565,46 @@ export class SaveEngine {
       return { cls: "", tag: "" };
     };
 
+    // Action sub-row helper (mirrors primary builder above) — kept in sync.
+    const buildActionsRow = (t, isPc) => {
+      const di = dmgInd(t);
+      const dice = isPc
+        ? `<button class="ace-qol-save-pc-roll-btn" data-action="aceQolGmRollPcSave" data-token-doc-id="${t.tokenDocId}" title="Roll save on this PC's behalf (GM)">
+             <img src="modules/ace-qol/Assets/Dice%20Dice/BD20/BD20-20_nobg.png" class="ace-qol-save-pc-dice-img" alt="d20" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'" />
+             <i class="fas fa-dice-d20" style="display:none"></i>
+           </button>`
+        : "";
+      const badges = [
+        t.autoFailSave ? '<span class="ace-qol-tag ace-qol-tag-danger"><i class="fas fa-circle-xmark"></i> AUTO-FAIL</span>' : "",
+        t.superSaver ? '<span class="ace-qol-tag ace-qol-tag-buff"><i class="fas fa-person-running"></i> EVASION</span>' : "",
+        di.tag,
+      ].filter(Boolean).join("");
+      return `<div class="ace-qol-save-tgt-actions">${dice}${badges}</div>`;
+    };
     const buildNpcRow = (t) => {
       const di = dmgInd(t);
-      return `<div class="ace-qol-save-tgt-row ${di.cls}" data-token-id="${t.tokenId}">
+      return `<div class="ace-qol-save-tgt-row ${di.cls}" data-token-id="${t.tokenId}" data-pc="false">
         <img src="${t.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
-        <span class="ace-qol-save-tgt-name">${t.name}</span>
-        <span class="ace-qol-save-tgt-mod">${t.saveAbilityUpper} ${t.saveMod}</span>
-        ${t.autoFailSave ? '<span class="ace-qol-tag ace-qol-tag-danger"><i class="fas fa-circle-xmark"></i> AUTO-FAIL</span>' : ""}
-        ${t.superSaver ? '<span class="ace-qol-tag ace-qol-tag-buff"><i class="fas fa-person-running"></i> EVASION</span>' : ""}
-        ${di.tag}
+        <div class="ace-qol-save-tgt-identity">
+          <span class="ace-qol-save-tgt-name">${t.name}</span>
+          <span class="ace-qol-save-tgt-mod">${t.saveAbilityUpper} ${t.saveMod}</span>
+        </div>
         <button class="ace-qol-save-tgt-remove" data-action="aceQolRemoveTarget" data-token-id="${t.tokenId}"><i class="fas fa-xmark"></i></button>
+        ${buildActionsRow(t, false)}
       </div>`;
     };
     const buildPcRow = (t) => {
       const di = dmgInd(t);
-      return `<div class="ace-qol-save-tgt-row ace-qol-save-tgt-pc ${di.cls}" data-token-id="${t.tokenId}" data-token-doc-id="${t.tokenDocId}" data-actor-id="${t.actorId}">
+      return `<div class="ace-qol-save-tgt-row ace-qol-save-tgt-pc ${di.cls}" data-token-id="${t.tokenId}" data-token-doc-id="${t.tokenDocId}" data-actor-id="${t.actorId}" data-pc="true">
         <img src="${t.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
-        <span class="ace-qol-save-tgt-name">${t.name}</span>
-        <span class="ace-qol-save-tgt-mod">${t.saveAbilityUpper} ${t.saveMod}</span>
-        ${t.autoFailSave ? '<span class="ace-qol-tag ace-qol-tag-danger"><i class="fas fa-circle-xmark"></i> AUTO-FAIL</span>' : ""}
-        ${t.superSaver ? '<span class="ace-qol-tag ace-qol-tag-buff"><i class="fas fa-person-running"></i> EVASION</span>' : ""}
-        ${di.tag}
-        <button class="ace-qol-save-pc-roll-btn" data-action="aceQolGmRollPcSave" data-token-doc-id="${t.tokenDocId}" title="Roll save on this PC's behalf (GM)">
-          <img src="modules/ace-qol/Assets/Dice%20Dice/BD20/BD20-20_nobg.png" class="ace-qol-save-pc-dice-img" alt="d20" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'" />
-          <i class="fas fa-dice-d20" style="display:none"></i>
-        </button>
+        <div class="ace-qol-save-tgt-identity">
+          <span class="ace-qol-save-tgt-name">${t.name}</span>
+          <span class="ace-qol-save-tgt-mod">${t.saveAbilityUpper} ${t.saveMod}</span>
+        </div>
         <button class="ace-qol-save-tgt-remove" data-action="aceQolRemoveTarget" data-token-id="${t.tokenId}" title="Remove this PC from the save list">
           <i class="fas fa-xmark"></i>
         </button>
+        ${buildActionsRow(t, true)}
       </div>`;
     };
 

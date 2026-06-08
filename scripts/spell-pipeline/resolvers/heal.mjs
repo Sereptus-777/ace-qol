@@ -1,15 +1,128 @@
 // ─── ACE: QOL — Pipeline Resolver: Heal ───────────────────────────────────────
-// Touch heal (Cure Wounds), single-target ranged heal (Healing Word),
-// multi-target heal (Mass Cure Wounds). Phase 2 will implement.
+// Single-target heal (Cure Wounds touch, Healing Word ranged) and multi-target
+// heal (Mass Cure Wounds, Mass Healing Word). Rolls the entry's heal formula
+// per target, applies HP via actor.applyDamage(-amount), posts heal card.
+//
+// Formula resolution: entry.heal.formula is a function (castLvl, spellMod) → string
+// that returns a dice formula. Examples:
+//   Cure Wounds: (lvl, mod) => `${lvl}d8 + ${mod}`
+//   Heal:        (lvl, mod) => `${70 + (lvl - 6) * 10}`  (flat HP, +10/upcast)
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "../../ace-qol.mjs";
 
 export class HealResolver {
-  static async runSingle(_ctx, _result) {
-    console.warn(`${MODULE_ID} | HealResolver.runSingle not yet implemented (Phase 2).`);
+
+  static async runSingle(ctx, result) {
+    const target = result?.target ?? result?.targets?.[0];
+    if (!target) {
+      console.warn(`${MODULE_ID} | HealResolver.runSingle: no target`);
+      return;
+    }
+    return HealResolver._heal(ctx, [target], false);
   }
-  static async runMulti(_ctx, _result) {
-    console.warn(`${MODULE_ID} | HealResolver.runMulti not yet implemented (Phase 2).`);
+
+  static async runMulti(ctx, result) {
+    const targets = result?.targets ?? [];
+    if (!targets.length) {
+      console.warn(`${MODULE_ID} | HealResolver.runMulti: no targets`);
+      return;
+    }
+    return HealResolver._heal(ctx, targets, true);
+  }
+
+  // ─── Core ──────────────────────────────────────────────────────────────────
+
+  static async _heal(ctx, targets, isMulti) {
+    const { entry, item, actor, castLevel, spellMod } = ctx;
+    const formulaFn = entry.heal?.formula;
+    if (typeof formulaFn !== "function") {
+      console.error(`${MODULE_ID} | HealResolver: entry for "${item.name}" missing heal.formula function`);
+      return;
+    }
+
+    const formula = formulaFn(castLevel, spellMod);
+    const results = [];
+
+    for (const c of targets) {
+      const targetActor = c.actor;
+      if (!targetActor) continue;
+      try {
+        // Roll fresh per target so each gets their own dice (RAW per spell text)
+        const roll = await new Roll(formula, actor.getRollData()).evaluate();
+        const healAmount = Math.max(0, roll.total);
+        const beforeHP = targetActor.system?.attributes?.hp?.value ?? 0;
+        const maxHP = targetActor.system?.attributes?.hp?.max ?? 0;
+        const newHP = Math.min(maxHP, beforeHP + healAmount);
+        const actualHealed = newHP - beforeHP;
+
+        await targetActor.update({ "system.attributes.hp.value": newHP });
+
+        results.push({
+          name: c.name,
+          img: c.img,
+          formula,
+          rolled: roll.total,
+          healed: actualHealed,
+          beforeHP,
+          afterHP: newHP,
+          maxHP,
+        });
+
+        try {
+          // Sound: rolling-the-dice + heal pop (optional, depends on dnd5e SFX config)
+          if (game.dice3d) game.dice3d.showForRoll(roll, game.user, true);
+        } catch (_) { /* non-fatal */ }
+      } catch (err) {
+        console.error(`${MODULE_ID} | HealResolver: roll/apply failed for ${c.name}:`, err);
+      }
+    }
+
+    await HealResolver._postChatCard(item, actor, results, castLevel, isMulti);
+  }
+
+  static async _postChatCard(item, caster, results, castLevel, isMulti) {
+    if (!results.length) return;
+    const accent = "#7ec97e";
+    const totalHealed = results.reduce((s, r) => s + r.healed, 0);
+    const targetRows = results.map(r => `
+      <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:rgba(126,201,126,0.10);border-radius:4px;margin-bottom:4px;">
+        <img src="${r.img || "icons/svg/heal.svg"}" style="width:36px;height:36px;border-radius:50%;object-fit:cover;border:1px solid #5a8a5a;" />
+        <div style="flex:1;color:#e8d49a;">
+          <div style="font-weight:600;">${r.name}</div>
+          <div style="font-size:12px;color:#c0b288;">HP ${r.beforeHP} → <strong style="color:#7ec97e;">${r.afterHP}</strong> / ${r.maxHP}</div>
+        </div>
+        <div style="font-size:18px;font-weight:700;color:${accent};">+${r.healed}</div>
+      </div>
+    `).join("");
+
+    const html = `
+      <div style="background:linear-gradient(180deg,#101a10 0%,#080f08 100%);
+                  border:2px solid ${accent};
+                  border-radius:6px;
+                  padding:12px 14px;
+                  color:#f0e4c0;
+                  font-family:'Signika','Helvetica Neue',sans-serif;">
+        <div style="display:flex;align-items:center;gap:10px;
+                    font-size:15px;font-weight:700;color:${accent};
+                    text-transform:uppercase;letter-spacing:0.6px;
+                    border-bottom:1px solid #2a4a2a;
+                    padding-bottom:6px;margin-bottom:8px;">
+          <img src="${item.img || "icons/svg/heal.svg"}" style="width:24px;height:24px;border-radius:3px;object-fit:cover;" />
+          <span>${item.name.toUpperCase()}${castLevel > (item.system?.level ?? 1) ? ` (L${castLevel})` : ""}</span>
+          <span style="margin-left:auto;font-size:14px;">+${totalHealed} total</span>
+        </div>
+        ${targetRows}
+      </div>
+    `;
+    try {
+      await ChatMessage.create({
+        speaker: ChatMessage.getSpeaker({ actor: caster }),
+        content: html,
+        flavor: `${item.name} healed ${results.length} target${results.length === 1 ? "" : "s"} for ${totalHealed} total`,
+      });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | HealResolver: chat post failed:`, err);
+    }
   }
 }

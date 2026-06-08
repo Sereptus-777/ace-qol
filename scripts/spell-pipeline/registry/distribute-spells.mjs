@@ -15,16 +15,18 @@ export const DISTRIBUTE_SPELLS = {
     flavorOnConfirm: "Glowing darts of magical force streak unerringly to their targets.",
   },
 
-  // ── Scorching Ray (2024 = no attack rolls in this implementation; 2014 routes
-  //    to attack-single. Disabled until 2014 dual-path is added in Phase 2.) ──
-  // "scorching ray": {
-  //   shape: "distribute",
-  //   range: 120,
-  //   countResolver: (castLevel) => 3 + Math.max(0, (castLevel ?? 2) - 2),
-  //   unit: { formula: "2d6", type: "fire" },
-  //   picker: { allowSelf: false, excludeDead: true },
-  //   byEdition: {
-  //     legacy: { shape: "attack-single" /* per ray */ },
-  //   },
-  // },
+  // ── Scorching Ray ────────────────────────────────────────────────────────
+  // 2024 RAW: auto-hit per ray (no attack rolls) — distribute shape applies cleanly.
+  // 2014 RAW: melee spell attack roll per ray — would need attack-single shape.
+  // For Phase 2 launch we ship the 2024 behavior; 2014 users can opt out via the
+  // `weaponMasteryAllowIn2014`-style edition override (TBD; defer to dnd5e for now).
+  "scorching ray": {
+    shape: "distribute",
+    range: 120,
+    countResolver: (castLevel) => 3 + Math.max(0, (castLevel ?? 2) - 2),
+    unit: { formula: "2d6", type: "fire" },
+    unitNoun: "ray",
+    picker: { allowSelf: false, excludeDead: true },
+    flavorOnConfirm: "Hurl 3 rays of fire — each strikes a creature within range for 2d6 fire damage.",
+  },
 };

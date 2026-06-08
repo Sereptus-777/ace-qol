@@ -66,11 +66,22 @@ export class UnifiedSpellPicker {
           ...opts, candidates, preTargets, N, casterToken,
         });
       case "single":
-        return UnifiedSpellPicker._stub("single", item.name);
+        return UnifiedSpellPicker._showSinglePicker({
+          ...opts, candidates, preTargets, N: 1, casterToken,
+        });
       case "single-adjacent":
-        return UnifiedSpellPicker._stub("single-adjacent", item.name);
+        // Filter to adjacent candidates only (≤ 5 ft)
+        return UnifiedSpellPicker._showSinglePicker({
+          ...opts,
+          candidates: candidates.filter(c => c.distFt <= 5 || c.isSelf),
+          preTargets: preTargets.filter(c => c.distFt <= 5 || c.isSelf),
+          N: 1,
+          casterToken,
+        });
       case "multi":
-        return UnifiedSpellPicker._stub("multi", item.name);
+        return UnifiedSpellPicker._showMultiPicker({
+          ...opts, candidates, preTargets, N, casterToken,
+        });
       default:
         console.warn(`${MODULE_ID} | UnifiedSpellPicker: unknown pickerType "${pickerType}"`);
         return null;
@@ -332,12 +343,233 @@ export class UnifiedSpellPicker {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // STUBS — Phase 2 variants
+  // SINGLE PICKER — click one target, confirm. Returns { target: candidate }
   // ═══════════════════════════════════════════════════════════════════════════
 
-  static _stub(variant, spellName) {
-    console.warn(`${MODULE_ID} | UnifiedSpellPicker.${variant} not yet implemented — falling through (${spellName})`);
-    return null; // null = pipeline falls through to dnd5e default
+  static async _showSinglePicker(opts) {
+    const { entry, item, candidates, preTargets, castLevel } = opts;
+    return new Promise((resolve) => {
+      // Pre-fill: if one Q-target is in candidates, pre-select it
+      const initialSelected = preTargets.length === 1 ? preTargets[0].tokenId : null;
+      let selectedId = initialSelected;
+
+      const STYLES = UnifiedSpellPicker._sharedStyles();
+      const buildRowHtml = (c) => {
+        const isSelected = c.tokenId === selectedId;
+        const rowStyle = `${c.inRange ? STYLES.ROW : STYLES.ROW_OOR}${isSelected ? "border-color:#c9a76b;background:#2f2515;" : ""}`;
+        const badge = c.isNPC ? `<span style="${STYLES.BADGE_NPC}">NPC</span>` : `<span style="${STYLES.BADGE_PC}">PC</span>`;
+        return `
+          <div class="ace-pipe-row" data-token-id="${c.tokenId}" style="${rowStyle};cursor:pointer;">
+            <img width="56" height="56" src="${c.img}" alt="${c.name}" style="${STYLES.PORTRAIT}" />
+            <div style="${STYLES.INFO}">
+              <div style="${STYLES.NAME}">${c.name} ${badge}</div>
+              <div style="${STYLES.META}">
+                <span>AC ${c.ac ?? "?"}</span>
+                <span>HP ${c.hp}/${c.maxHP}</span>
+                <span style="color: ${UnifiedSpellPicker._rangeColor(c.distFt, c.inRange, entry.range)}">${c.distFt} ft${c.inRange ? "" : " (out of range)"}</span>
+              </div>
+            </div>
+            <div style="flex-shrink:0;">${isSelected ? `<i class="fas fa-circle-check" style="color:#7ec97e;font-size:22px;"></i>` : `<i class="far fa-circle" style="color:#6b5230;font-size:22px;"></i>`}</div>
+          </div>
+        `;
+      };
+
+      const content = `
+        <div style="${STYLES.CONTAINER}">
+          ${UnifiedSpellPicker._headerHtml(item, castLevel, entry, candidates.length, "Pick ONE target.")}
+          <div style="max-height:380px;overflow-y:auto;padding-right:4px;">
+            ${candidates.map(buildRowHtml).join("")}
+          </div>
+        </div>
+      `;
+
+      const dialog = new foundry.applications.api.DialogV2({
+        window: { title: `${item.name} — Pick Target`, icon: "fas fa-crosshairs" },
+        position: { width: 560, height: "auto" },
+        content,
+        buttons: [
+          {
+            action: "confirm",
+            label: "Cast",
+            icon: "fas fa-check",
+            default: true,
+            callback: () => {
+              if (!selectedId) { resolve(null); return; }
+              const c = candidates.find(cc => cc.tokenId === selectedId);
+              if (!c) { resolve(null); return; }
+              resolve({ target: c, targets: [c] });
+            },
+          },
+          { action: "cancel", label: "Cancel", icon: "fas fa-times", callback: () => resolve(null) },
+        ],
+        rejectClose: false,
+        close: () => resolve(null),
+      });
+
+      dialog.render({ force: true });
+
+      setTimeout(() => {
+        const root = dialog.element ?? document;
+        const confirmBtn = root.querySelector?.('button[data-action="confirm"]');
+        if (confirmBtn) confirmBtn.disabled = !selectedId;
+        root.querySelectorAll?.(".ace-pipe-row").forEach(row => {
+          row.addEventListener("click", () => {
+            selectedId = row.dataset.tokenId;
+            // Repaint rows (light update — could re-render but simpler to mark)
+            root.querySelectorAll(".ace-pipe-row").forEach(r => {
+              const isThis = r.dataset.tokenId === selectedId;
+              r.style.borderColor = isThis ? "#c9a76b" : "#3a2e20";
+              r.style.background = isThis ? "#2f2515" : "#1f1812";
+              const icon = r.querySelector("i.fas, i.far");
+              if (icon) {
+                icon.className = isThis ? "fas fa-circle-check" : "far fa-circle";
+                icon.style.color = isThis ? "#7ec97e" : "#6b5230";
+              }
+            });
+            if (confirmBtn) confirmBtn.disabled = false;
+          });
+        });
+      }, 50);
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // MULTI PICKER — click up to N targets, confirm. Returns { targets: [] }
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  static async _showMultiPicker(opts) {
+    const { entry, item, candidates, preTargets, N, castLevel } = opts;
+    return new Promise((resolve) => {
+      const selected = new Set(preTargets.slice(0, N).map(p => p.tokenId));
+
+      const STYLES = UnifiedSpellPicker._sharedStyles();
+      const buildRowHtml = (c) => {
+        const isSelected = selected.has(c.tokenId);
+        const rowStyle = `${c.inRange ? STYLES.ROW : STYLES.ROW_OOR}${isSelected ? "border-color:#c9a76b;background:#2f2515;" : ""}`;
+        const badge = c.isNPC ? `<span style="${STYLES.BADGE_NPC}">NPC</span>` : `<span style="${STYLES.BADGE_PC}">PC</span>`;
+        return `
+          <div class="ace-pipe-row" data-token-id="${c.tokenId}" style="${rowStyle};cursor:pointer;">
+            <img width="56" height="56" src="${c.img}" alt="${c.name}" style="${STYLES.PORTRAIT}" />
+            <div style="${STYLES.INFO}">
+              <div style="${STYLES.NAME}">${c.name} ${badge}</div>
+              <div style="${STYLES.META}">
+                <span>AC ${c.ac ?? "?"}</span>
+                <span>HP ${c.hp}/${c.maxHP}</span>
+                <span style="color: ${UnifiedSpellPicker._rangeColor(c.distFt, c.inRange, entry.range)}">${c.distFt} ft${c.inRange ? "" : " (out of range)"}</span>
+              </div>
+            </div>
+            <div style="flex-shrink:0;">${isSelected ? `<i class="fas fa-check-square" style="color:#7ec97e;font-size:22px;"></i>` : `<i class="far fa-square" style="color:#6b5230;font-size:22px;"></i>`}</div>
+          </div>
+        `;
+      };
+
+      const content = `
+        <div style="${STYLES.CONTAINER}">
+          ${UnifiedSpellPicker._headerHtml(item, castLevel, entry, candidates.length, `Pick up to ${N} target${N === 1 ? "" : "s"}.`)}
+          <div style="background:#2a1f0a;border:1px solid #6b5230;border-radius:4px;padding:8px 12px;margin-bottom:10px;text-align:center;font-size:16px;color:#e8d49a;">
+            <span id="ace-pipe-tally-used" style="font-weight:700;color:#fff;font-size:20px;">${selected.size}</span>
+            <span style="margin:0 6px;color:#6b5230;">/</span>
+            <span style="color:#c9a76b;font-weight:600;">${N}</span>
+            <span style="display:block;font-size:13px;color:#b0a070;margin-top:2px;">targets selected</span>
+          </div>
+          <div style="max-height:340px;overflow-y:auto;padding-right:4px;">
+            ${candidates.map(buildRowHtml).join("")}
+          </div>
+        </div>
+      `;
+
+      const dialog = new foundry.applications.api.DialogV2({
+        window: { title: `${item.name} — Pick Targets`, icon: "fas fa-bullseye" },
+        position: { width: 560, height: "auto" },
+        content,
+        buttons: [
+          {
+            action: "confirm",
+            label: "Cast",
+            icon: "fas fa-check",
+            default: true,
+            callback: () => {
+              if (selected.size === 0) { resolve(null); return; }
+              const picked = candidates.filter(c => selected.has(c.tokenId));
+              resolve({ targets: picked });
+            },
+          },
+          { action: "cancel", label: "Cancel", icon: "fas fa-times", callback: () => resolve(null) },
+        ],
+        rejectClose: false,
+        close: () => resolve(null),
+      });
+
+      dialog.render({ force: true });
+
+      setTimeout(() => {
+        const root = dialog.element ?? document;
+        const tallyEl = root.querySelector?.("#ace-pipe-tally-used");
+        const confirmBtn = root.querySelector?.('button[data-action="confirm"]');
+        const refresh = () => {
+          if (tallyEl) tallyEl.textContent = String(selected.size);
+          if (confirmBtn) confirmBtn.disabled = selected.size === 0;
+        };
+        refresh();
+        root.querySelectorAll?.(".ace-pipe-row").forEach(row => {
+          row.addEventListener("click", () => {
+            const id = row.dataset.tokenId;
+            if (selected.has(id)) {
+              selected.delete(id);
+            } else {
+              if (selected.size >= N) return;
+              selected.add(id);
+            }
+            const isThis = selected.has(id);
+            row.style.borderColor = isThis ? "#c9a76b" : "#3a2e20";
+            row.style.background = isThis ? "#2f2515" : "#1f1812";
+            const icon = row.querySelector("i.fas, i.far");
+            if (icon) {
+              icon.className = isThis ? "fas fa-check-square" : "far fa-square";
+              icon.style.color = isThis ? "#7ec97e" : "#6b5230";
+            }
+            refresh();
+          });
+        });
+      }, 50);
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SHARED HTML / STYLE HELPERS
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  static _sharedStyles() {
+    return {
+      ROW: "display:flex;align-items:center;gap:10px;padding:8px;margin-bottom:6px;background:#1f1812;border:1px solid #3a2e20;border-radius:4px;transition:border-color 0.1s ease,background 0.1s ease;",
+      ROW_OOR: "display:flex;align-items:center;gap:10px;padding:8px;margin-bottom:6px;background:#1f1812;border:1px solid #3a2e20;border-radius:4px;opacity:0.55;",
+      PORTRAIT: "width:56px;height:56px;border-radius:4px;border:1px solid #6b5230;object-fit:cover;flex-shrink:0;display:block;",
+      INFO: "flex:1;min-width:0;color:#f0e4c0;",
+      NAME: "font-size:15px;font-weight:600;color:#e8d49a;display:flex;align-items:center;gap:6px;",
+      META: "display:flex;gap:10px;font-size:13px;color:#c0b288;margin-top:3px;",
+      BADGE_NPC: "font-size:10px;padding:1px 6px;border-radius:3px;font-weight:700;background:#5a2828;color:#f4c4c4;",
+      BADGE_PC: "font-size:10px;padding:1px 6px;border-radius:3px;font-weight:700;background:#28425a;color:#c4daf4;",
+      CONTAINER: "color:#f0e4c0;background:linear-gradient(180deg,#1a1410 0%,#0f0a08 100%);padding:12px;border-radius:6px;font-family:'Signika','Helvetica Neue',sans-serif;",
+    };
+  }
+
+  static _rangeColor(distFt, inRange, rangeFt) {
+    if (!inRange) return "#d44";
+    if (distFt > (rangeFt ?? 0) * 0.66) return "#e8a14b";
+    return "#7ec97e";
+  }
+
+  static _headerHtml(item, castLevel, entry, candidateCount, subtitleSuffix = "") {
+    const rangeStr = entry.range === 0 ? "Self" : entry.range >= 999 ? "Sight" : `${entry.range} ft`;
+    return `
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid #4a3a28;">
+        <i class="fas ${entry.shape === "save-single" ? "fa-dice" : entry.shape === "touch" ? "fa-hand-holding-heart" : "fa-bullseye"}" style="color:#c9a76b;font-size:28px;"></i>
+        <div>
+          <div style="font-size:18px;font-weight:600;color:#e8d49a;">${item.name}${castLevel ? ` <span style="font-size:13px;color:#c0b288;">(L${castLevel})</span>` : ""}</div>
+          <div style="font-size:13px;color:#c0b288;margin-top:2px;">Range ${rangeStr} · ${candidateCount} eligible target${candidateCount === 1 ? "" : "s"}. ${subtitleSuffix}</div>
+        </div>
+      </div>
+    `;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

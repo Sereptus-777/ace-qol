@@ -7,6 +7,7 @@ import { MODULE_ID } from "../../ace-qol.mjs";
 import { DamageCalculator } from "../../damage-calculator.mjs";
 import { DamageCardRenderer } from "../../damage-card-renderer.mjs";
 import { TargetState } from "../../target-state.mjs";
+import { AnimationHelper } from "../animation.mjs";
 
 export class DamageResolver {
 
@@ -62,6 +63,8 @@ export class DamageResolver {
         const reason = sources.join(", ");
         nullifiedNotes.push({ name: token.name ?? targetActor.name, reason, type: "spell-immune" });
         console.log(`${MODULE_ID} | DamageResolver: ${targetActor.name} immune to ${spellName} via [${reason}] — ${darts} unit(s) nullified silently`);
+        // Visual flash on the absorbing token — soft blue burst (JB2A free with PIXI fallback)
+        AnimationHelper.flashNullification(token).catch(() => {});
         continue;  // do NOT add to filteredDistribution
       }
 
@@ -71,6 +74,7 @@ export class DamageResolver {
         const reason = state.damageModifiers[unitType]?.reason ?? `immune to ${unitType}`;
         nullifiedNotes.push({ name: token.name ?? targetActor.name, reason, type: "damage-immune" });
         console.log(`${MODULE_ID} | DamageResolver: ${targetActor.name} immune to ${unitType} via [${reason}] — units nullified`);
+        AnimationHelper.flashNullification(token).catch(() => {});
         continue;
       }
 

@@ -197,8 +197,13 @@ export class SpellAutoDamage {
 
         // Pipeline-owned spell list. Expand as new shapes ship.
         const name = String(item.name ?? "").trim().toLowerCase();
-        const PIPELINE_OWNED = new Set(["magic missile"]);
-        if (!PIPELINE_OWNED.has(name)) return;
+        // v0.7.18 Phase 2: ANY spell the pipeline owns gets the vanilla
+        // activation card suppressed. The pipeline posts its own enriched
+        // chat card (BuffResolver / SelfResolver / HealResolver / etc.).
+        // Falls through cleanly for spells not in the registry.
+        const pipeline = globalThis.game?.aceQol?.SpellPipeline;
+        const ownedByPipeline = !!(pipeline?.ownsSpell?.(item));
+        if (!ownedByPipeline) return;
 
         console.log(`${MODULE_ID} | Suppressing vanilla activation card for "${item.name}" (pipeline owns the cast)`);
         return false; // cancel message creation
