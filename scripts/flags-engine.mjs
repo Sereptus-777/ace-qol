@@ -682,7 +682,11 @@ export class FlagsEngine {
   static async showOptionalPrompt(actor, optionals, rollContext = {}) {
     if (!optionals.length) return [];
 
-    const timeout = FlagsEngine._getPromptTimeout();
+    // v0.7.21: countdown timer REMOVED. Optional-bonus decisions (Lucky
+    // reroll, Bardic Inspiration, Bless, etc.) fire right after a roll the
+    // user just made — the user is sitting right there, no stopwatch
+    // needed. Auto-decline-on-timeout was also removed; the prompt waits
+    // for an explicit choice (or Skip All) or until the user closes it.
     const { rollTotal = 0, rollType = "attack", d20Result = null } = rollContext;
     const rollTypeLabel = rollType.charAt(0).toUpperCase() + rollType.slice(1);
 
@@ -719,10 +723,7 @@ export class FlagsEngine {
       html += `</div>`;
     }
 
-    // Timeout bar
-    html += `<div class="ace-qol-optional-timer">`;
-    html += `  <div class="ace-qol-optional-timer-bar"></div>`;
-    html += `</div>`;
+    // v0.7.21: timer bar REMOVED — see comment at top of function.
 
     // Dismiss all
     html += `<div class="ace-qol-optional-dismiss">`;
@@ -744,12 +745,10 @@ export class FlagsEngine {
       const selected = new Map(); // index → true/false
       let dialog = null;
 
-      // Auto-decline after timeout
-      const timer = setTimeout(() => {
-        FlagsEngine._debug("Optional prompt timed out — auto-declining all");
-        safeResolve([]);
-        if (dialog) dialog.close();
-      }, timeout);
+      // v0.7.21: auto-decline-on-timeout REMOVED. The prompt now waits
+      // indefinitely for the user to act — either pick Use/Skip per row,
+      // or Skip All. Closing the dialog without choosing still resolves []
+      // (treated as Skip All) via the `close` callback.
 
       dialog = new Dialog({
         title: `${rollTypeLabel} Bonuses Available`,
@@ -757,13 +756,6 @@ export class FlagsEngine {
         buttons: {},
         render: (jq) => {
           const el = jq[0] ?? jq;
-
-          // Start the timeout bar animation
-          const timerBar = el.querySelector(".ace-qol-optional-timer-bar");
-          if (timerBar) {
-            timerBar.style.transition = `width ${timeout}ms linear`;
-            requestAnimationFrame(() => { timerBar.style.width = "0%"; });
-          }
 
           // Wire "Use" buttons
           el.querySelectorAll(".ace-qol-optional-yes").forEach(btn => {
@@ -779,7 +771,6 @@ export class FlagsEngine {
               }
               // Check if all have been decided
               if (selected.size === optionals.length) {
-                clearTimeout(timer);
                 FlagsEngine._resolveOptionals(actor, optionals, selected).then(safeResolve);
                 dialog.close();
               }
@@ -798,7 +789,6 @@ export class FlagsEngine {
                 row.querySelectorAll("button").forEach(b => b.disabled = true);
               }
               if (selected.size === optionals.length) {
-                clearTimeout(timer);
                 FlagsEngine._resolveOptionals(actor, optionals, selected).then(safeResolve);
                 dialog.close();
               }
@@ -810,14 +800,12 @@ export class FlagsEngine {
           if (dismissBtn) {
             dismissBtn.addEventListener("click", (e) => {
               e.preventDefault();
-              clearTimeout(timer);
               safeResolve([]);
               dialog.close();
             });
           }
         },
         close: () => {
-          clearTimeout(timer);
           // If dialog closed without resolving (X button, escape, etc.), decline all
           safeResolve([]);
         },
@@ -1045,26 +1033,39 @@ export class FlagsEngine {
    * @param {string} subtype     - Action type or ability
    * @param {number} rollTotal   - Current roll total
    * @param {number} [d20Result] - Natural d20 result (for attacks)
+   * @param {string} [initiatorUserId] - User who rolled (for follow-roller routing)
    * @returns {Promise<{newTotal: number, bonuses: object[]}>}
    */
-  static async routeOptionalPrompt(actor, rollType, subtype, rollTotal, d20Result = null) {
+  static async routeOptionalPrompt(actor, rollType, subtype, rollTotal, d20Result = null, initiatorUserId = null) {
     if (!FlagsEngine.enabled) return { newTotal: rollTotal, bonuses: [] };
 
     const optionals = FlagsEngine.getAvailableOptionals(actor, rollType, subtype);
     if (!optionals.length) return { newTotal: rollTotal, bonuses: [] };
 
-    // Determine the owning user
-    const ownerUser = FlagsEngine._getActorOwner(actor);
+    // ── Resolve WHO sees the optional-bonus prompt (Bardic, Lucky, etc.) ──
+    // v0.7.22: when "riderPromptsFollowRoller" is ON (default), the prompt
+    // follows whoever ROLLED — so a GM rolling for a player's character gets
+    // the Bardic/Lucky prompt instead of it vanishing onto the player's
+    // screen unnoticed. OFF restores legacy "always ask the owning player".
+    let followRoller = true;
+    try { followRoller = game.settings.get(MODULE_ID, "riderPromptsFollowRoller") !== false; }
+    catch (_) { followRoller = true; }
 
-    // If we ARE the owner (or GM controlling an NPC), show locally
-    if (!ownerUser || ownerUser.id === game.user.id) {
+    let targetUser = null;
+    if (followRoller && initiatorUserId) {
+      targetUser = game.users.get(initiatorUserId) ?? null;
+    }
+    if (!targetUser) targetUser = FlagsEngine._getActorOwner(actor);
+
+    // If we ARE the resolved user (GM rolling, or we're the rolling player),
+    // or there's no distinct user to ask, show locally.
+    if (!targetUser || targetUser.id === game.user.id) {
       return FlagsEngine._dispatchLocalPrompt(actor, rollType, subtype, rollTotal, d20Result);
     }
 
-    // Otherwise, route via socket to the owning player
-    // The socket handler on the player's client will show the prompt
-    // and send the result back via socket.
-    return FlagsEngine._dispatchSocketPrompt(actor, ownerUser, rollType, subtype, rollTotal, d20Result);
+    // Otherwise route via socket to the resolved player. The socket handler
+    // on their client shows the prompt and sends the result back.
+    return FlagsEngine._dispatchSocketPrompt(actor, targetUser, rollType, subtype, rollTotal, d20Result);
   }
 
   /**
@@ -1089,14 +1090,17 @@ export class FlagsEngine {
   static _dispatchSocketPrompt(actor, ownerUser, rollType, subtype, rollTotal, d20Result) {
     return new Promise((resolve) => {
       const requestId = `opt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const timeout = FlagsEngine._getPromptTimeout();
-
-      // Timeout fallback — auto-decline if player doesn't respond
+      // v0.7.21: visible countdown REMOVED. The silent network safety
+      // net stays but at 10 minutes — long enough that real players
+      // looking up rules or stepping away briefly don't get auto-declined,
+      // short enough that a fully disconnected client can't hang the GM
+      // forever. (Previously 8s + 2s buffer — too aggressive.)
+      const NETWORK_SAFETY_MS = 10 * 60 * 1000;
       const timer = setTimeout(() => {
         FlagsEngine._pendingPrompts.delete(requestId);
-        FlagsEngine._debug(`Socket optional prompt timed out for ${actor.name} (${requestId})`);
+        FlagsEngine._debug(`Socket optional prompt 10-min safety net for ${actor.name} (${requestId}) — client may be disconnected`);
         resolve({ newTotal: rollTotal, bonuses: [] });
-      }, timeout + 2000); // Add 2s buffer for network latency
+      }, NETWORK_SAFETY_MS);
 
       // Store the pending request so the socket handler can resolve it
       FlagsEngine._pendingPrompts.set(requestId, { resolve, timer, rollTotal });

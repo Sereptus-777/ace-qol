@@ -3,6 +3,29 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { normalizeFoundryPath, verifyFoundryPath } from "./path-utils.mjs";
+
+// ── Auto-clean a pasted file-path setting ───────────────────────────────────
+// Users copy a path from Windows File Explorer (absolute, backslashes) and
+// paste it in. This silently rewrites it to the Foundry-relative forward-slash
+// form, then checks the file actually exists and confirms with a toast. Wired
+// to file-path settings via their onChange. Re-saving the cleaned value re-fires
+// onChange with the already-clean value, which short-circuits to the verify
+// branch — so it runs the toast exactly once and never loops.
+async function _cleanAndVerifyPathSetting(key, value, label = "path") {
+  if (!value || typeof value !== "string") return;
+  const cleaned = normalizeFoundryPath(value);
+  if (cleaned !== value) {
+    try { await game.settings.set(MODULE_ID, key, cleaned); } catch (_) { /* re-save failed */ }
+    return; // the re-save's onChange handles the verify + toast
+  }
+  const ok = await verifyFoundryPath(cleaned);
+  if (ok) {
+    ui.notifications?.info(`ACE QOL: ${label} set ✓ — ${cleaned}`);
+  } else {
+    ui.notifications?.warn(`ACE QOL: ${label} cleaned to "${cleaned}", but no file was found there. Double-check it exists (and that the module/folder is installed).`);
+  }
+}
 
 // ── Preset definitions: which settings each level sets ──────────────────────
 const PRESETS = {
@@ -488,6 +511,20 @@ export class QolSettings {
       hint: "Default reach distance for OA detection. Most actors use 5ft; reach weapons (10ft) handled per-weapon as a future enhancement.",
       scope: "world", config: false, type: Number, default: 5,
       range: { min: 5, max: 30, step: 5 },
+    });
+
+    // ── Resource-prompt routing (Divine Smite, Bardic, Lucky, etc.) ─────
+    s("riderPromptsFollowRoller", {
+      name: "Resource Prompts Follow the Roller",
+      hint: "When ON (default), follow-up resource prompts — Divine Smite, Eldritch Smite, Bardic Inspiration, Lucky, and similar — appear on the screen of whoever ROLLED the attack. So when the GM rolls on behalf of a player's character, the GM gets the smite prompt instead of it appearing unnoticed on the player's screen. When OFF, prompts always go to the character's owning player even when the GM rolled — for tables where the player should decide whether to spend their own resources.",
+      scope: "world", config: false, type: Boolean, default: true,
+    });
+
+    // ── Loadout / hands enforcement ──────────────────────────────────────
+    s("enforceLoadout", {
+      name: "Enforce Weapon Loadout (Hands)",
+      hint: "When ON (default), a player character can't equip more than their hands can hold — two one-handed weapons, OR one two-handed weapon, OR a one-handed weapon + shield. Two non-Light one-handed weapons require the Dual Wielder feat. Natural weapons and unarmed strikes use no hands. Set the flag `ace-qol.handCount` on a creature to raise its hand budget (a marilith has six arms). NPCs are not enforced — their stat blocks are GM-managed. When OFF, the dnd5e equip checkbox behaves normally (equip anything).",
+      scope: "world", config: false, type: Boolean, default: true,
     });
 
     // ── Initiative Tools ────────────────────────────────────────────────
@@ -1322,22 +1359,24 @@ export class QolSettings {
 
     s("turnMarkerImage", {
       name:    "Turn Marker Image (Current)",
-      hint:    "Image/webm under the active combatant. Default: JB2A red Evocation rune (loops automatically).",
+      hint:    "Image/webm under the active combatant. Default: JB2A orange-yellow Buff ring (loops automatically). If JB2A isn't installed, falls back to a spinning Foundry-core icon so a marker always appears.",
       scope:   "world",
       config:  false,
       type:    String,
-      default: "modules/JB2A_DnD5e/Library/Generic/Magic_Signs/Runes/EvocationRuneLoop_01_Regular_Red_400x400.webm",
+      default: "modules/JB2A_DnD5e/Library/Generic/On_Token/Buff/Ontoken_Buff001_001_OrangeYellow_400x400.webm",
       filePicker: "imagevideo",
+      onChange: (v) => _cleanAndVerifyPathSetting("turnMarkerImage", v, "current turn-marker"),
     });
 
     s("turnMarkerImageNext", {
       name:    "Turn Marker Image (Next)",
-      hint:    "Image/webm under the next combatant. Default: JB2A blue Abjuration rune (loops automatically).",
+      hint:    "Image/webm under the next combatant. Default: JB2A blue-purple Buff ring (loops automatically). If JB2A isn't installed, falls back to a spinning Foundry-core icon so a marker always appears.",
       scope:   "world",
       config:  false,
       type:    String,
-      default: "modules/JB2A_DnD5e/Library/Generic/Magic_Signs/Runes/AbjurationRuneLoop_01_Regular_Blue_400x400.webm",
+      default: "modules/JB2A_DnD5e/Library/Generic/On_Token/Buff/Ontoken_Buff001_001_BluePurple_400x400.webm",
       filePicker: "imagevideo",
+      onChange: (v) => _cleanAndVerifyPathSetting("turnMarkerImageNext", v, "next turn-marker"),
     });
 
     s("turnMarkerNextAlpha", {

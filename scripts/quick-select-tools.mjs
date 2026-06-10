@@ -79,13 +79,25 @@ export class QuickSelectTools {
 
     console.debug(`${MODULE_ID} | Quick select tools registered`);
 
-    // Direct mutation: V13 already built ui.controls.controls during init,
-    // and our hook missed that one fire. Inject directly into the live data
-    // structure now, then trigger a render so the buttons paint.
-    setTimeout(() => this._postInitInject(), 200);
-
-    // Diagnostic so we can confirm our tools landed in the data structure.
-    setTimeout(() => this._diagnose(), 800);
+    // v0.7.21: poll-until-ready instead of fixed 200ms timer.
+    // On cold cache (F5 reload), ui.controls.controls isn't always populated
+    // within 200ms — the inject would silently no-op and the tool buttons
+    // would only appear on the SECOND module reload. (Audit-mandated
+    // 2026-06-09 — same "first cast/load fails, second works" pattern.)
+    const _waitForControls = (attempt = 0, maxAttempts = 50) => {
+      if (ui.controls?.controls) {
+        this._postInitInject();
+        // Diagnostic after one more tick so the inject result is visible
+        setTimeout(() => this._diagnose(), 100);
+        return;
+      }
+      if (attempt >= maxAttempts) {
+        console.warn(`${MODULE_ID} | Quick select: ui.controls.controls never became available after ${maxAttempts * 100}ms`);
+        return;
+      }
+      setTimeout(() => _waitForControls(attempt + 1, maxAttempts), 100);
+    };
+    _waitForControls();
   }
 
   _postInitInject() {

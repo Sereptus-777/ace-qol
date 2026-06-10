@@ -517,26 +517,35 @@
 }
 .ace-qol-dmg-row-header {
   display: flex; align-items: center; gap: 6px;
+  flex-wrap: wrap;          /* badges wrap below name instead of squeezing it */
+  row-gap: 3px;
 }
 .ace-qol-dmg-tgt-img {
   width: 26px; height: 26px; border-radius: 50%;
   border: 1px solid rgba(212,175,55,0.4);
   box-shadow: 0 0 3px rgba(212,175,55,0.15);
   object-fit: cover; cursor: pointer;
+  flex-shrink: 0;
 }
 .ace-qol-dmg-tgt-name {
-  color: #e8e6e0; font-size: 0.85rem; font-weight: 600; flex: 1; cursor: pointer;
+  color: #e8e6e0; font-size: 0.85rem; font-weight: 600;
+  flex: 1 1 90px; min-width: 90px;          /* hard floor — never per-char wrap */
+  cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
 /* ─── HP line (above override buttons) ──────────────────────────── */
 .ace-qol-dmg-hp-line {
   display: flex; align-items: center; gap: 6px;
+  flex-wrap: wrap; row-gap: 2px;
   padding: 3px 10px 2px 36px; font-size: 0.85rem;
 }
 
 /* ─── Override buttons per target row ──────────────────────────────── */
 .ace-qol-dmg-ovr-line {
-  display: flex; align-items: center; gap: 3px; padding: 2px 0 2px 30px; font-size: 0.75rem;
+  display: flex; align-items: center; gap: 3px;
+  flex-wrap: wrap; row-gap: 3px;          /* override pills wrap on narrow chats */
+  padding: 2px 0 2px 30px; font-size: 0.75rem;
 }
 .ace-qol-dmg-ovr-x {
   background: linear-gradient(180deg, rgba(255,23,68,0.15) 0%, rgba(200,10,50,0.1) 100%);
@@ -1337,22 +1346,26 @@
 }
 .ace-qol-save-tgt-identity {
   grid-area: identity;
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center; gap: 6px;
+  flex-wrap: wrap;            /* let mod/chips wrap to a new line if name is long */
   min-width: 0;
+  row-gap: 3px;
 }
 .ace-qol-save-tgt-actions {
   grid-area: actions;
   display: flex; align-items: center; gap: 6px;
   min-height: 0;
+  flex-wrap: wrap;            /* badges wrap rather than squeezing the row */
 }
 .ace-qol-save-tgt-actions:empty { display: none; } /* collapse if NPC has no badges */
-.ace-qol-save-tgt-remove { grid-area: dismiss; }
+.ace-qol-save-tgt-remove { grid-area: dismiss; align-self: start; }
 .ace-qol-save-tgt-name {
-  flex: 1 1 100px; min-width: 0;
+  flex: 1 1 auto;
+  min-width: 90px;            /* guarantee at least 90px so name never wraps per-char */
   font-size: 0.85rem; font-weight: 600; color: #e8e6e0;
-  white-space: normal; /* allow wrap instead of truncation */
-  overflow: visible;
-  word-break: break-word;
+  white-space: nowrap;        /* one-line name; row wraps mod/chips instead */
+  overflow: hidden;
+  text-overflow: ellipsis;    /* long names → "Firaxis Greenb…" rather than vertical letters */
 }
 .ace-qol-save-tgt-mod {
   font-size: 0.75rem; color: #888; font-family: monospace; flex-shrink: 0;
@@ -4552,9 +4565,17 @@
 .ace-qol-spell-pickr-tok:hover {
   background: rgba(171, 71, 188, 0.1); border-color: rgba(171, 71, 188, 0.45);
 }
-.ace-qol-spell-pickr-tok.invalid { opacity: 0.45; }
+.ace-qol-spell-pickr-tok.invalid { opacity: 0.45; cursor: not-allowed; }
 .ace-qol-spell-pickr-tok.invalid:hover {
   background: rgba(255, 80, 80, 0.1); border-color: rgba(255, 80, 80, 0.35);
+}
+/* Brief red flash when the user clicks an invalid (out-of-range / dead) token */
+@keyframes ace-qol-pickr-reject-flash {
+  0%   { background: rgba(255, 23, 68, 0.35); box-shadow: 0 0 12px rgba(255, 23, 68, 0.7); }
+  100% { background: transparent;             box-shadow: none; }
+}
+.ace-qol-spell-pickr-tok.ace-qol-pickr-reject-flash {
+  animation: ace-qol-pickr-reject-flash 350ms ease-out;
 }
 .ace-qol-spell-pickr-tok.selected {
   background: rgba(171, 71, 188, 0.22); border-color: #d59cf0;

@@ -434,59 +434,133 @@ export class UnifiedSpellPicker {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // MULTI PICKER — click up to N targets, confirm. Returns { targets: [] }
+  // MULTI PICKER — delegates to the legacy SpellTargetPicker which has a
+  // proven portrait-grid layout + good CSS. The pipeline owns dispatch +
+  // effect application; the picker UI itself is the legacy one.
+  // Returns { targets: [{actor, token, name, img, ...}] }
   // ═══════════════════════════════════════════════════════════════════════════
 
   static async _showMultiPicker(opts) {
+    const { entry, item, actor, N } = opts;
+    try {
+      const { SpellTargetPicker } = await import("../spell-target-picker.mjs");
+      const pickedActors = await SpellTargetPicker.pick({
+        spellItem: item,
+        casterActor: actor,
+        maxTargets: N,
+        rangeFt: entry.range ?? null,
+        allowSelf: entry.picker?.allowSelf !== false,
+      });
+      if (!pickedActors || pickedActors.length === 0) return null;
+
+      // Transform Actor[] back into the candidate-shape the pipeline expects.
+      // Find each actor's token + carry name/img through.
+      const targets = pickedActors.map(targetActor => {
+        const token = targetActor.getActiveTokens?.()?.[0]
+                   ?? canvas.tokens?.placeables.find(t => t.actor?.id === targetActor.id)
+                   ?? null;
+        return {
+          actor: targetActor,
+          token,
+          tokenId: token?.id,
+          name: token?.name ?? targetActor.name,
+          img: targetActor.img ?? token?.document?.texture?.src,
+        };
+      });
+      return { targets };
+    } catch (err) {
+      console.error(`${MODULE_ID} | UnifiedSpellPicker._showMultiPicker: legacy SpellTargetPicker call failed:`, err);
+      return null;
+    }
+  }
+
+  // Old in-house multi-picker (replaced by legacy delegation above) kept here
+  // unused for reference. Future shapes that need different selection logic
+  // (e.g., chained spells with distance-from-primary constraint) can revive
+  // this pattern instead of reinventing.
+  static async _showMultiPickerLegacyInhouse(opts) {
     const { entry, item, candidates, preTargets, N, castLevel } = opts;
     return new Promise((resolve) => {
       const selected = new Set(preTargets.slice(0, N).map(p => p.tokenId));
+      const rangeFt = entry.range ?? 0;
 
-      const STYLES = UnifiedSpellPicker._sharedStyles();
-      const buildRowHtml = (c) => {
+      // ── Tile-grid styles (inline so DialogV2 can't strip them) ──
+      const GRID_STYLE = "display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;padding:6px;max-height:480px;overflow-y:auto;";
+      const TILE_BASE = "position:relative;display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 8px 8px;background:#1f1812;border:2px solid #3a2e20;border-radius:6px;cursor:pointer;transition:transform 0.08s ease,border-color 0.08s ease,background 0.08s ease;";
+      const TILE_INVALID = "opacity:0.55;";
+      const TILE_SELECTED = "border-color:#c9a76b;background:#2f2515;box-shadow:0 0 8px rgba(201,167,107,0.35);";
+      const PORTRAIT = "width:96px;height:96px;border-radius:6px;border:2px solid #6b5230;object-fit:cover;display:block;";
+      const NAME = "font-size:13px;font-weight:600;color:#e8d49a;text-align:center;line-height:1.2;word-break:break-word;max-width:130px;";
+      const DISP_FRIENDLY = "display:inline-block;font-size:9px;font-weight:700;padding:1px 6px;border-radius:3px;background:#28425a;color:#c4daf4;letter-spacing:0.5px;";
+      const DISP_HOSTILE = "display:inline-block;font-size:9px;font-weight:700;padding:1px 6px;border-radius:3px;background:#5a2828;color:#f4c4c4;letter-spacing:0.5px;";
+      const DISP_NEUTRAL = "display:inline-block;font-size:9px;font-weight:700;padding:1px 6px;border-radius:3px;background:#3a3a3a;color:#ccc;letter-spacing:0.5px;";
+      const DIST_IN = "font-size:11px;color:#7ec97e;font-weight:600;";
+      const DIST_OUT = "font-size:11px;color:#d44;font-weight:600;";
+      const DIST_NEAR = "font-size:11px;color:#e8a14b;font-weight:600;";
+      const DIST_SELF = "font-size:11px;color:#c9a76b;font-weight:700;letter-spacing:0.5px;";
+      const SELF_BADGE = "position:absolute;top:4px;right:4px;background:rgba(201,167,107,0.85);color:#1a1410;font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;letter-spacing:0.5px;";
+      const CHECK_BADGE = "position:absolute;top:4px;left:4px;font-size:18px;color:#7ec97e;text-shadow:0 0 4px rgba(0,0,0,0.6);";
+
+      const dispLabel = (c) => {
+        const disp = c.token?.document?.disposition ?? c.actor?.prototypeToken?.disposition ?? 0;
+        if (disp === 1) return { text: "FRIENDLY", style: DISP_FRIENDLY };
+        if (disp === -1) return { text: "HOSTILE", style: DISP_HOSTILE };
+        return { text: "NEUTRAL", style: DISP_NEUTRAL };
+      };
+
+      const distChip = (c) => {
+        if (c.isSelf) return { text: "SELF", style: DIST_SELF };
+        if (!c.inRange) return { text: `${c.distFt} ft (OOR)`, style: DIST_OUT };
+        if (c.distFt > rangeFt * 0.66) return { text: `${c.distFt} ft`, style: DIST_NEAR };
+        return { text: `${c.distFt} ft`, style: DIST_IN };
+      };
+
+      const buildTileHtml = (c) => {
         const isSelected = selected.has(c.tokenId);
-        const rowStyle = `${c.inRange ? STYLES.ROW : STYLES.ROW_OOR}${isSelected ? "border-color:#c9a76b;background:#2f2515;" : ""}`;
-        const badge = c.isNPC ? `<span style="${STYLES.BADGE_NPC}">NPC</span>` : `<span style="${STYLES.BADGE_PC}">PC</span>`;
+        const tileStyle = `${TILE_BASE}${c.inRange ? "" : TILE_INVALID}${isSelected ? TILE_SELECTED : ""}`;
+        const disp = dispLabel(c);
+        const dist = distChip(c);
+        const selfBadge = c.isSelf ? `<div style="${SELF_BADGE}">SELF</div>` : "";
+        const checkBadge = isSelected ? `<div style="${CHECK_BADGE}"><i class="fas fa-circle-check"></i></div>` : "";
         return `
-          <div class="ace-pipe-row" data-token-id="${c.tokenId}" style="${rowStyle};cursor:pointer;">
-            <img width="56" height="56" src="${c.img}" alt="${c.name}" style="${STYLES.PORTRAIT}" />
-            <div style="${STYLES.INFO}">
-              <div style="${STYLES.NAME}">${c.name} ${badge}</div>
-              <div style="${STYLES.META}">
-                <span>AC ${c.ac ?? "?"}</span>
-                <span>HP ${c.hp}/${c.maxHP}</span>
-                <span style="color: ${UnifiedSpellPicker._rangeColor(c.distFt, c.inRange, entry.range)}">${c.distFt} ft${c.inRange ? "" : " (out of range)"}</span>
-              </div>
-            </div>
-            <div style="flex-shrink:0;">${isSelected ? `<i class="fas fa-check-square" style="color:#7ec97e;font-size:22px;"></i>` : `<i class="far fa-square" style="color:#6b5230;font-size:22px;"></i>`}</div>
+          <div class="ace-pipe-tile" data-token-id="${c.tokenId}" style="${tileStyle}">
+            ${selfBadge}
+            ${checkBadge}
+            <img src="${c.img}" alt="${c.name}" style="${PORTRAIT}" />
+            <div style="${NAME}">${c.name}</div>
+            <div style="${disp.style}">${disp.text}</div>
+            <div style="${dist.style}">${dist.text}</div>
           </div>
         `;
       };
 
       const content = `
-        <div style="${STYLES.CONTAINER}">
-          ${UnifiedSpellPicker._headerHtml(item, castLevel, entry, candidates.length, `Pick up to ${N} target${N === 1 ? "" : "s"}.`)}
-          <div style="background:#2a1f0a;border:1px solid #6b5230;border-radius:4px;padding:8px 12px;margin-bottom:10px;text-align:center;font-size:16px;color:#e8d49a;">
-            <span id="ace-pipe-tally-used" style="font-weight:700;color:#fff;font-size:20px;">${selected.size}</span>
+        <div style="color:#f0e4c0;background:linear-gradient(180deg,#1a1410 0%,#0f0a08 100%);padding:12px;border-radius:6px;font-family:'Signika','Helvetica Neue',sans-serif;">
+          ${UnifiedSpellPicker._headerHtml(item, castLevel, entry, candidates.length, `Pick up to ${N} target${N === 1 ? "" : "s"} — click a portrait to toggle.`)}
+          <div style="background:#2a1f0a;border:1px solid #6b5230;border-radius:4px;padding:6px 12px;margin-bottom:8px;text-align:center;font-size:15px;color:#e8d49a;">
+            <span id="ace-pipe-tally-used" style="font-weight:700;color:#fff;font-size:18px;">${selected.size}</span>
             <span style="margin:0 6px;color:#6b5230;">/</span>
             <span style="color:#c9a76b;font-weight:600;">${N}</span>
-            <span style="display:block;font-size:13px;color:#b0a070;margin-top:2px;">targets selected</span>
+            <span style="margin-left:6px;font-size:13px;color:#b0a070;">targets selected</span>
           </div>
-          <div style="max-height:340px;overflow-y:auto;padding-right:4px;">
-            ${candidates.map(buildRowHtml).join("")}
+          <div style="${GRID_STYLE}">
+            ${candidates.map(buildTileHtml).join("")}
+          </div>
+          <div style="margin-top:6px;font-size:11px;color:#8a7a5a;text-align:center;font-style:italic;">
+            Out-of-range targets shown dim — GM may allow at table discretion.
           </div>
         </div>
       `;
 
       const dialog = new foundry.applications.api.DialogV2({
-        window: { title: `${item.name} — Pick Targets`, icon: "fas fa-bullseye" },
-        position: { width: 560, height: "auto" },
+        window: { title: `Cast ${item.name} — Pick Targets`, icon: "fas fa-bullseye" },
+        position: { width: 640, height: "auto" },
         content,
         buttons: [
           {
             action: "confirm",
-            label: "Cast",
-            icon: "fas fa-check",
+            label: `Cast ${item.name}`,
+            icon: "fas fa-sparkles",
             default: true,
             callback: () => {
               if (selected.size === 0) { resolve(null); return; }
@@ -511,22 +585,39 @@ export class UnifiedSpellPicker {
           if (confirmBtn) confirmBtn.disabled = selected.size === 0;
         };
         refresh();
-        root.querySelectorAll?.(".ace-pipe-row").forEach(row => {
-          row.addEventListener("click", () => {
-            const id = row.dataset.tokenId;
+        root.querySelectorAll?.(".ace-pipe-tile").forEach(tile => {
+          tile.addEventListener("click", () => {
+            const id = tile.dataset.tokenId;
             if (selected.has(id)) {
               selected.delete(id);
             } else {
-              if (selected.size >= N) return;
+              if (selected.size >= N) {
+                // Drop oldest to make room (matches legacy picker UX)
+                const first = selected.values().next().value;
+                selected.delete(first);
+                const firstTile = root.querySelector(`.ace-pipe-tile[data-token-id="${first}"]`);
+                if (firstTile) {
+                  firstTile.style.borderColor = "#3a2e20";
+                  firstTile.style.background = "#1f1812";
+                  firstTile.style.boxShadow = "none";
+                  firstTile.querySelector('[style*="position:absolute;top:4px;left:4px"]')?.remove();
+                }
+              }
               selected.add(id);
             }
             const isThis = selected.has(id);
-            row.style.borderColor = isThis ? "#c9a76b" : "#3a2e20";
-            row.style.background = isThis ? "#2f2515" : "#1f1812";
-            const icon = row.querySelector("i.fas, i.far");
-            if (icon) {
-              icon.className = isThis ? "fas fa-check-square" : "far fa-square";
-              icon.style.color = isThis ? "#7ec97e" : "#6b5230";
+            tile.style.borderColor = isThis ? "#c9a76b" : "#3a2e20";
+            tile.style.background = isThis ? "#2f2515" : "#1f1812";
+            tile.style.boxShadow = isThis ? "0 0 8px rgba(201,167,107,0.35)" : "none";
+            // Add/remove the check badge in top-left
+            const existingCheck = tile.querySelector('[style*="position:absolute;top:4px;left:4px"]');
+            if (isThis && !existingCheck) {
+              const badge = document.createElement("div");
+              badge.style.cssText = "position:absolute;top:4px;left:4px;font-size:18px;color:#7ec97e;text-shadow:0 0 4px rgba(0,0,0,0.6);";
+              badge.innerHTML = '<i class="fas fa-circle-check"></i>';
+              tile.appendChild(badge);
+            } else if (!isThis && existingCheck) {
+              existingCheck.remove();
             }
             refresh();
           });

@@ -41,7 +41,7 @@ const TABS = [
   { id: "stealth",    label: "Stealth",            icon: "fa-solid fa-user-ninja",
     settings: ["autoSurpriseCheck", "hideActionEnabled", "hideRevealsOnAttack", "hideRevealsOnDamage"] },
   { id: "actions",    label: "Combat Actions",     icon: "fa-solid fa-person-running",
-    settings: ["criticalFumbleEnabled", "rangedInMeleeDisadvantage", "opportunityAttackPrompt", "opportunityAttackReach"] },
+    settings: ["criticalFumbleEnabled", "rangedInMeleeDisadvantage", "opportunityAttackPrompt", "opportunityAttackReach", "riderPromptsFollowRoller", "enforceLoadout"] },
   { id: "masteries",  label: "Weapon Masteries",   icon: "fa-solid fa-khanda",
     settings: ["weaponMasteryEnabled", "weaponMasteryStrict", "weaponMasteryAllowIn2014"] },
   { id: "initiative", label: "Initiative",         icon: "fa-solid fa-hourglass-start",
@@ -63,7 +63,7 @@ const TABS = [
   { id: "tokens",     label: "Tokens",             icon: "fa-solid fa-paw",
     settings: ["polymorphMode"],
     customMethod: "_buildTokensTabUI" },
-];
+].sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base" })); // tabs displayed alphabetically
 
 // ─── ApplicationV2 panel ────────────────────────────────────────────────────
 const { ApplicationV2 } = foundry.applications.api;
@@ -87,7 +87,10 @@ export class AceQolConfigPanel extends ApplicationV2 {
 
   constructor(options = {}) {
     super(options);
-    this._activeTab = TABS[0].id;
+    // Open on the first NON-Advanced tab (Advanced is alphabetically first but
+    // a poor landing spot — it's the danger-zone settings). With the tabs
+    // sorted, this lands on "Attacks"; robust if the order ever shifts.
+    this._activeTab = (TABS.find(t => t.id !== "advanced") ?? TABS[0]).id;
     this._pendingChanges = {};
     this._searchQuery = "";  // cross-tab filter input value
   }

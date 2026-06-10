@@ -274,10 +274,16 @@ export class HealTargetPicker {
           },
         ],
       });
-      dlg.render({ force: true });
-
-      // Wire portrait clicks once the dialog is in the DOM
-      setTimeout(() => HealTargetPicker._wireGrid(dlg.element ?? document, classification), 50);
+      // v0.7.21: await the render Promise so the DOM is guaranteed mounted
+      // before we wire click handlers. The previous setTimeout(50ms) raced
+      // against DialogV2's render time on cold cache. (Audit-mandated
+      // 2026-06-09 — see SpellTargetPicker for full bug context.)
+      dlg.render({ force: true }).then(() => {
+        HealTargetPicker._wireGrid(dlg.element ?? document, classification);
+      }).catch(err => {
+        console.warn(`${MODULE_ID} | HealTargetPicker dialog render threw:`, err);
+        setTimeout(() => HealTargetPicker._wireGrid(dlg.element ?? document, classification), 200);
+      });
     });
   }
 

@@ -380,7 +380,7 @@ const SPELL_EFFECTS = {
   // ── Heroism (1st level, concentration) ────────────────────────────────────
   heroism: {
     name: "Heroism",
-    icon: "icons/magic/holy/angel-wings-glowing-yellow.webp",
+    icon: "icons/magic/holy/angel-wings-gray.webp",
     description: "Immune to frightened. Gains temp HP equal to caster's spellcasting modifier at the start of each turn.",
     changes: [
       { key: "system.traits.ci.value", mode: 2, value: "frightened" },
@@ -408,7 +408,7 @@ const SPELL_EFFECTS = {
   // ── Slow (3rd level, concentration) ───────────────────────────────────────
   slow: {
     name: "Slow",
-    icon: "icons/magic/time/hourglass-tilted-brown.webp",
+    icon: "icons/magic/time/hourglass-yellow-green.webp",
     description: "Halved speed, -2 AC, -2 DEX saves, can't use reactions. On turn: action or bonus action, not both. Spells require 2 turns to cast.",
     changes: [
       { key: "system.attributes.movement.walk", mode: 1, value: "0.5" },
@@ -496,7 +496,7 @@ const SPELL_EFFECTS = {
   // ── Darkness (2nd level, concentration) ───────────────────────────────────
   darkness: {
     name: "Darkness",
-    icon: "icons/magic/unholy/orb-swirl-black-purple.webp",
+    icon: "icons/magic/unholy/orb-glowing-purple.webp",
     description: "Magical darkness fills a 15ft sphere. Creatures with darkvision can't see through it. Light spells of 2nd level or lower are dispelled.",
     changes: [
       { key: "flags.ace-qol.darkness", mode: 0, value: "1" },
@@ -508,7 +508,7 @@ const SPELL_EFFECTS = {
   // ── Blur (2nd level, concentration) ───────────────────────────────────────
   blur: {
     name: "Blur",
-    icon: "icons/magic/control/silhouette-fall-purple.webp",
+    icon: "icons/magic/control/silhouette-fall-slip-prone.webp",
     description: "Attacks against you have disadvantage (unless attacker has truesight or can see through illusions).",
     changes: [
       { key: "flags.ace-qol.grants.disadvantage.attack.all", mode: 0, value: "1" },
@@ -532,7 +532,7 @@ const SPELL_EFFECTS = {
   // ── Mage Armor (1st level, NOT concentration) ─────────────────────────────
   mage_armor: {
     name: "Mage Armor",
-    icon: "icons/magic/defensive/shield-barrier-glowing-purple.webp",
+    icon: "icons/magic/defensive/shield-barrier-glowing-triangle-purple-orange.webp",
     description: "Base AC becomes 13 + DEX modifier (requires no armor).",
     changes: [
       { key: "system.attributes.ac.flat", mode: 5, value: "13" },
@@ -545,7 +545,7 @@ const SPELL_EFFECTS = {
   // ── Shield (1st level, reaction, NOT concentration) ───────────────────────
   shield: {
     name: "Shield",
-    icon: "icons/magic/defensive/shield-barrier-flaming-blue.webp",
+    icon: "icons/magic/defensive/shield-barrier-flaming-pentagon-blue.webp",
     description: "+5 to AC until the start of your next turn, including against the triggering attack. Immune to magic missile.",
     changes: [
       { key: "system.attributes.ac.bonus", mode: 2, value: "+5" },
@@ -559,7 +559,7 @@ const SPELL_EFFECTS = {
   // ── Barkskin (2nd level, concentration) ───────────────────────────────────
   barkskin: {
     name: "Barkskin",
-    icon: "icons/magic/nature/root-vine-entangled-green.webp",
+    icon: "icons/magic/nature/root-vine-entangled-hand.webp",
     description: "Target's AC can't be less than 16, regardless of armor.",
     changes: [
       { key: "system.attributes.ac.flat", mode: 3, value: "16" },
@@ -598,7 +598,7 @@ const SPELL_EFFECTS = {
   // ── Enlarge (from Enlarge/Reduce, 2nd level, concentration) ───────────────
   enlarge: {
     name: "Enlarge",
-    icon: "icons/magic/control/buff-strength-muscle-red.webp",
+    icon: "icons/magic/control/buff-strength-muscle-damage-red.webp",
     description: "Size doubles. Advantage on STR checks and saves. +1d4 weapon damage.",
     changes: [
       { key: "flags.ace-qol.advantage.ability.check.str", mode: 0, value: "1" },
@@ -640,7 +640,7 @@ const SPELL_EFFECTS = {
   // ── Invisibility (2nd level, concentration) ───────────────────────────────
   invisibility: {
     name: "Invisibility",
-    icon: "icons/magic/perception/eye-ringed-glow-blue.webp",
+    icon: "icons/magic/perception/eye-ringed-green.webp",
     description: "Target becomes invisible. Ends if the target attacks or casts a spell.",
     changes: [
       { key: "flags.ace-qol.advantage.attack.all", mode: 0, value: "1" },
@@ -654,7 +654,7 @@ const SPELL_EFFECTS = {
   // ── Greater Invisibility (4th level, concentration) ───────────────────────
   greater_invisibility: {
     name: "Greater Invisibility",
-    icon: "icons/magic/perception/eye-ringed-glow-purple.webp",
+    icon: "icons/magic/perception/shadow-stealth-eyes-purple.webp",
     description: "Target becomes invisible. Does NOT end on attack or spell.",
     changes: [
       { key: "flags.ace-qol.advantage.attack.all", mode: 0, value: "1" },
@@ -668,7 +668,7 @@ const SPELL_EFFECTS = {
   // ── Spirit Guardians (3rd level, concentration) ───────────────────────────
   spirit_guardians: {
     name: "Spirit Guardians",
-    icon: "icons/magic/holy/saint-wings-702-702.webp",
+    icon: "icons/magic/holy/saint-glass-portrait-halo.webp",
     description: "15ft radius: halves speed on entry, 3d8 radiant/necrotic damage (WIS save half) on enter or start of turn.",
     changes: [
       { key: "flags.ace-qol.spiritGuardians", mode: 0, value: "1" },
@@ -709,7 +709,7 @@ const SPELL_EFFECTS = {
   // ── Fire Shield (4th level, NOT concentration) ────────────────────────────
   fire_shield: {
     name: "Fire Shield",
-    icon: "icons/magic/defensive/shield-barrier-flaming-red.webp",
+    icon: "icons/magic/defensive/shield-barrier-flaming-pentagon-red.webp",
     description: "Resistance to cold (warm) or fire (chill). Melee attackers take 2d8 fire/cold damage. Sheds bright light 10ft, dim light 10ft.",
     changes: [
       { key: "system.traits.dr.value", mode: 2, value: "cold" },
@@ -738,7 +738,7 @@ const SPELL_EFFECTS = {
   // ── Divine Favor (1st level, concentration) ───────────────────────────────
   divine_favor: {
     name: "Divine Favor",
-    icon: "icons/magic/holy/light-beam-cross-gold.webp",
+    icon: "icons/magic/light/beam-strike-orange-gold.webp",
     description: "+1d4 radiant damage on weapon attacks.",
     changes: [
       { key: "system.bonuses.mwak.damage", mode: 2, value: "+1d4[radiant]" },
@@ -751,7 +751,7 @@ const SPELL_EFFECTS = {
   // ── Crusader's Mantle (3rd level, concentration) ─────────────────────────
   crusaders_mantle: {
     name: "Crusader's Mantle",
-    icon: "icons/magic/holy/projectiles-blades-702-702.webp",
+    icon: "icons/magic/holy/projectiles-blades-salvo-yellow.webp",
     description: "30ft aura: nonmagical weapon attacks deal an extra 1d4 radiant damage.",
     changes: [
       { key: "system.bonuses.mwak.damage", mode: 2, value: "+1d4[radiant]" },
@@ -882,7 +882,7 @@ const SPELL_EFFECTS = {
   // ── Warding Bond (2nd level) ──────────────────────────────────────────────
   warding_bond: {
     name: "Warding Bond",
-    icon: "icons/magic/defensive/shield-barrier-glowing-gold.webp",
+    icon: "icons/magic/defensive/shield-barrier-glowing-triangle-orange.webp",
     description: "+1 to AC and saving throws. Resistance to all damage. Caster takes same damage as target.",
     changes: [
       { key: "system.attributes.ac.bonus", mode: 2, value: "+1" },
@@ -899,7 +899,7 @@ const SPELL_EFFECTS = {
   // ── Aid (2nd level, 8 hours, NOT concentration) ──
   aid: {
     name: "Aid",
-    icon: "icons/magic/holy/yellow-beam-radiant-3.webp",
+    icon: "icons/magic/light/beam-rays-yellow.webp",
     description: "Max HP and current HP +5 (more at higher levels). Lasts 8 hours.",
     changes: [
       { key: "system.attributes.hp.tempmax", mode: 2, value: "+5" },
@@ -925,7 +925,7 @@ const SPELL_EFFECTS = {
   // ── Suggestion (2nd level, 8 hours, concentration) ──
   suggestion: {
     name: "Suggestion",
-    icon: "icons/magic/control/voice-shout-orange.webp",
+    icon: "icons/magic/control/mouth-smile-deception-purple.webp",
     description: "Magically influenced to follow a course of action. Ends if asked to do something harmful.",
     statuses: ["charmed"],
     changes: [
@@ -938,7 +938,7 @@ const SPELL_EFFECTS = {
   // ── Banishment (4th level, 1 min, concentration) ──
   banishment: {
     name: "Banished",
-    icon: "icons/magic/movement/door-portal-blue.webp",
+    icon: "icons/magic/movement/portal-vortex-orange.webp",
     description: "Banished to a harmless demiplane. Incapacitated and unable to be targeted.",
     statuses: ["incapacitated"],
     changes: [
@@ -951,7 +951,7 @@ const SPELL_EFFECTS = {
   // ── Polymorph (4th level, 1 hour, concentration) ──
   polymorph: {
     name: "Polymorphed",
-    icon: "icons/magic/nature/wolf-paw-glow-blue.webp",
+    icon: "icons/magic/nature/wolf-paw-glow-teal-blue.webp",
     description: "Transformed into a beast of CR equal to your level or lower. New stats but retain alignment, personality, Int/Wis/Cha.",
     changes: [
       { key: "flags.ace-qol.polymorphed", mode: 0, value: "1" },
@@ -963,7 +963,7 @@ const SPELL_EFFECTS = {
   // ── Dominate Person (5th level, 1 min, concentration) ──
   dominate_person: {
     name: "Dominated by Caster",
-    icon: "icons/magic/control/hypnosis-mesmerism-eye-orange.webp",
+    icon: "icons/magic/control/hypnosis-mesmerism-eye-tan.webp",
     description: "Charmed and follows caster's mental commands. New save when taking damage.",
     statuses: ["charmed"],
     changes: [
@@ -976,7 +976,7 @@ const SPELL_EFFECTS = {
   // ── Dominate Monster (8th level, 1 hour, concentration) ──
   dominate_monster: {
     name: "Dominated (Monster)",
-    icon: "icons/magic/control/hypnosis-mesmerism-eye-pink.webp",
+    icon: "icons/magic/control/hypnosis-mesmerism-eye.webp",
     description: "Any creature is charmed and follows caster's mental commands. New save when taking damage.",
     statuses: ["charmed"],
     changes: [
@@ -989,7 +989,7 @@ const SPELL_EFFECTS = {
   // ── Feeblemind (8th level, until cured) ──
   feeblemind: {
     name: "Feebleminded",
-    icon: "icons/magic/control/silhouette-aura-mind-pink.webp",
+    icon: "icons/magic/control/silhouette-aura-energy.webp",
     description: "Int and Cha drop to 1. Can't cast spells, activate magic items, understand language, or communicate intelligibly.",
     changes: [
       { key: "system.abilities.int.value", mode: 5, value: "1" },
@@ -1003,7 +1003,7 @@ const SPELL_EFFECTS = {
   // ── Tasha's Hideous Laughter (1st level, 1 min, concentration) ──
   tashas_hideous_laughter: {
     name: "Tasha's Hideous Laughter",
-    icon: "icons/magic/control/buff-strength-muscle-pink.webp",
+    icon: "icons/magic/control/buff-strength-muscle-damage.webp",
     description: "Falls prone and is incapacitated, unable to stand, due to uncontrollable laughter.",
     statuses: ["prone", "incapacitated"],
     changes: [
@@ -1016,7 +1016,7 @@ const SPELL_EFFECTS = {
   // ── Crown of Madness (2nd level, 1 min, concentration) ──
   crown_of_madness: {
     name: "Crown of Madness",
-    icon: "icons/magic/control/fear-fright-monster-purple.webp",
+    icon: "icons/magic/control/fear-fright-monster-purple-blue.webp",
     description: "Wears a twisted iron crown. On its turn, must use action to attack a creature the caster chooses.",
     statuses: ["charmed"],
     changes: [
@@ -1029,7 +1029,7 @@ const SPELL_EFFECTS = {
   // ── Bestow Curse (3rd level, 1 min, concentration) ──
   bestow_curse: {
     name: "Cursed",
-    icon: "icons/magic/death/skull-hood-purple.webp",
+    icon: "icons/magic/death/skull-energy-light-purple.webp",
     description: "Cursed — disadvantage on chosen-ability checks/saves, or attacks vs caster have advantage, or various other curses.",
     changes: [
       { key: "flags.ace-qol.cursed", mode: 0, value: "1" },
@@ -1054,7 +1054,7 @@ const SPELL_EFFECTS = {
   // ── Foresight (9th level, 8 hours, NOT concentration) ──
   foresight: {
     name: "Foresight",
-    icon: "icons/magic/perception/eye-ringed-glow-gold.webp",
+    icon: "icons/magic/perception/orb-eye-scrying.webp",
     description: "Advantage on attacks, ability checks, and saves. Attackers have disadvantage. Can't be surprised.",
     changes: [
       { key: "flags.midi-qol.advantage.attack.all", mode: 0, value: "1" },
@@ -1075,13 +1075,13 @@ const SPELL_EFFECTS = {
 
   true_strike: {
     name: "True Strike",
-    icon: "icons/magic/control/target-eye-pink.webp",
+    icon: "icons/magic/perception/eye-slit-pink.webp",
     description: "Advantage on next attack against the target.",
     changes: [{ key: "flags.ace-qol.trueStrike", mode: 0, value: "1" }],
     concentration: true, duration: { rounds: 1 },
   },
   detect_magic: {
-    name: "Detect Magic", icon: "icons/magic/perception/eye-ringed-glow-blue.webp",
+    name: "Detect Magic", icon: "icons/magic/perception/eye-ringed-green.webp",
     description: "Sense magic within 30 ft.",
     changes: [], concentration: true, duration: { rounds: 100 },
   },
@@ -1091,7 +1091,7 @@ const SPELL_EFFECTS = {
     changes: [], concentration: true, duration: { rounds: 100 },
   },
   see_invisibility: {
-    name: "See Invisibility", icon: "icons/magic/perception/eye-ringed-glow-blue.webp",
+    name: "See Invisibility", icon: "icons/magic/perception/eye-ringed-green.webp",
     description: "See invisible creatures and objects.",
     changes: [{ key: "flags.ace-qol.seesInvisible", mode: 0, value: "1" }],
     concentration: false, duration: { rounds: 100 },
@@ -1113,29 +1113,29 @@ const SPELL_EFFECTS = {
     concentration: false, duration: { rounds: 600 },
   },
   spider_climb: {
-    name: "Spider Climb", icon: "icons/creatures/arthropods/spider-skull-orange.webp",
+    name: "Spider Climb", icon: "icons/creatures/invertebrates/spider-mandibles-brown.webp",
     description: "Climbing speed equal to walking speed; can climb difficult surfaces.",
     changes: [{ key: "system.attributes.movement.climb", mode: 5, value: "30" }],
     concentration: true, duration: { rounds: 600 },
   },
   misty_step: {
-    name: "Misty Step", icon: "icons/magic/movement/abstract-ribbons-pink.webp",
+    name: "Misty Step", icon: "icons/magic/movement/abstract-ribbons-red-orange.webp",
     description: "Teleport up to 30 ft.",
     changes: [], concentration: false, duration: { rounds: 0 },
   },
   dimension_door: {
-    name: "Dimension Door", icon: "icons/magic/movement/door-portal-yellow.webp",
+    name: "Dimension Door", icon: "icons/magic/movement/portal-vortex-orange.webp",
     description: "Teleport up to 500 ft.",
     changes: [], concentration: false, duration: { rounds: 0 },
   },
   death_ward: {
-    name: "Death Ward", icon: "icons/magic/holy/cross-glowing-gold.webp",
+    name: "Death Ward", icon: "icons/magic/holy/chalice-glowing-gold.webp",
     description: "Next reduction to 0 HP becomes 1 HP instead. Spell ends after triggering.",
     changes: [{ key: "flags.ace-qol.deathWard", mode: 0, value: "1" }],
     concentration: false, duration: { seconds: 28800 },
   },
   mind_blank: {
-    name: "Mind Blank", icon: "icons/magic/control/silhouette-aura-mind-pink.webp",
+    name: "Mind Blank", icon: "icons/magic/control/silhouette-aura-energy.webp",
     description: "Immune to psychic damage, charmed, and mind-reading.",
     changes: [
       { key: "system.traits.di.value", mode: 2, value: "psychic" },
@@ -1145,18 +1145,18 @@ const SPELL_EFFECTS = {
     concentration: false, duration: { seconds: 86400 },
   },
   etherealness: {
-    name: "Etherealness", icon: "icons/magic/movement/portal-vortex-purple.webp",
+    name: "Etherealness", icon: "icons/magic/movement/portal-vortex-orange.webp",
     description: "Step into the Ethereal Plane.",
     changes: [{ key: "flags.ace-qol.ethereal", mode: 0, value: "1" }],
     concentration: false, duration: { seconds: 28800 },
   },
   time_stop: {
-    name: "Time Stop", icon: "icons/magic/time/clock-spinning-gold.webp",
+    name: "Time Stop", icon: "icons/magic/time/clock-spinning-gold-pink.webp",
     description: "1d4+1 additional turns in a row.",
     changes: [], concentration: false, duration: { rounds: 5 },
   },
   haste: {
-    name: "Haste", icon: "icons/magic/time/clock-stopwatch-white.webp",
+    name: "Haste", icon: "icons/magic/time/clock-stopwatch-white-blue.webp",
     description: "Speed doubled, +2 AC, advantage on Dex saves, +1 action per turn.",
     changes: [
       { key: "system.attributes.ac.bonus", mode: 2, value: "+2" },
@@ -1164,8 +1164,20 @@ const SPELL_EFFECTS = {
     ],
     concentration: true, duration: { rounds: 10 },
   },
+  haste_lethargy: {
+    name: "Haste Lethargy",
+    icon: "icons/magic/time/hourglass-tilted-gray.webp",
+    description: "Can't move or take actions until the end of the next turn — the post-Haste lethargy crashes through them (PHB Haste).",
+    statuses: ["incapacitated"],
+    changes: [
+      { key: "system.attributes.movement.walk", mode: 5, value: "0" },
+      { key: "flags.ace-qol.hasteLethargy", mode: 0, value: "1" },
+    ],
+    concentration: false,
+    duration: { rounds: 1 },  // until end of next turn
+  },
   pass_without_trace: {
-    name: "Pass Without Trace", icon: "icons/skills/movement/feet-bare-tan.webp",
+    name: "Pass Without Trace", icon: "icons/skills/movement/feet-spurred-boots-brown.webp",
     description: "+10 Stealth, leave no trace.",
     changes: [{ key: "system.skills.ste.bonuses.check", mode: 2, value: "+10" }],
     concentration: true, duration: { rounds: 600 },
@@ -1183,7 +1195,7 @@ const SPELL_EFFECTS = {
     concentration: true, duration: { rounds: 10 },
   },
   heroes_feast: {
-    name: "Heroes' Feast", icon: "icons/consumables/food/turkey-roasted-brown.webp",
+    name: "Heroes' Feast", icon: "icons/consumables/food/cooked-drumstick-turkey-brown.webp",
     description: "Immune to poison and fear. Advantage on Wisdom saves. Temp HP.",
     changes: [
       { key: "system.traits.ci.value", mode: 2, value: "poisoned" },
@@ -1199,60 +1211,60 @@ const SPELL_EFFECTS = {
     changes: [], concentration: false, duration: { rounds: 600 },
   },
   water_breathing: {
-    name: "Water Breathing", icon: "icons/magic/water/bubbles-blue.webp",
+    name: "Water Breathing", icon: "icons/magic/water/bubbles-air-water-blue.webp",
     description: "Breathe underwater.",
     changes: [{ key: "flags.ace-qol.waterBreathing", mode: 0, value: "1" }],
     concentration: false, duration: { seconds: 86400 },
   },
   magic_weapon: {
-    name: "Magic Weapon", icon: "icons/weapons/swords/sword-runed-gold.webp",
+    name: "Magic Weapon", icon: "icons/weapons/swords/sword-runed-glowing.webp",
     description: "Weapon becomes magical with +1 (or +2/+3 at higher levels).",
     changes: [], concentration: true, duration: { rounds: 100 },
   },
   elemental_weapon: {
-    name: "Elemental Weapon", icon: "icons/magic/fire/blade-burning-orange.webp",
+    name: "Elemental Weapon", icon: "icons/magic/fire/dagger-rune-enchant-flame-orange.webp",
     description: "Weapon becomes magical with +1 and +1d4 elemental damage (more at higher levels).",
     changes: [], concentration: true, duration: { rounds: 100 },
   },
   crusaders_mantle: {
-    name: "Crusader's Mantle", icon: "icons/magic/holy/yellow-beam-radiant-3.webp",
+    name: "Crusader's Mantle", icon: "icons/magic/light/beam-rays-yellow.webp",
     description: "30 ft aura grants +1d4 radiant damage to allies' weapon attacks.",
     changes: [{ key: "flags.ace-qol.crusadersMantleActive", mode: 0, value: "1" }],
     concentration: true, duration: { rounds: 10 },
   },
   spirit_shroud: {
-    name: "Spirit Shroud", icon: "icons/magic/death/projectile-soul-yellow.webp",
+    name: "Spirit Shroud", icon: "icons/magic/death/projectile-skull-flaming-yellow.webp",
     description: "+1d8 radiant/necrotic/cold damage to attacks within 10 ft.",
     changes: [{ key: "flags.ace-qol.spiritShroudActive", mode: 0, value: "1" }],
     concentration: true, duration: { rounds: 10 },
   },
   maze: {
-    name: "Maze", icon: "icons/magic/movement/door-portal-purple.webp",
+    name: "Maze", icon: "icons/magic/movement/portal-vortex-orange.webp",
     description: "Banished to a labyrinthine demiplane.",
     statuses: ["incapacitated"],
     changes: [{ key: "flags.ace-qol.maze", mode: 0, value: "1" }],
     concentration: true, duration: { rounds: 100 },
   },
   imprisonment: {
-    name: "Imprisoned", icon: "icons/magic/control/chain-bind-blue.webp",
+    name: "Imprisoned", icon: "icons/magic/control/debuff-chains-shackles-movement-blue.webp",
     description: "Magically imprisoned. Lasts until the spell is dispelled.",
     statuses: ["paralyzed"],
     changes: [{ key: "flags.ace-qol.imprisoned", mode: 0, value: "1" }],
     concentration: false, duration: { seconds: 86400 * 365 },
   },
   geas: {
-    name: "Geas", icon: "icons/magic/control/chain-bind-purple.webp",
+    name: "Geas", icon: "icons/magic/control/debuff-chains-shackles-movement-purple.webp",
     description: "Compelled to carry out or refrain from a course of action. Takes psychic damage if violated.",
     changes: [{ key: "flags.ace-qol.geas", mode: 0, value: "1" }],
     concentration: false, duration: { seconds: 86400 * 30 },
   },
   modify_memory: {
-    name: "Modify Memory", icon: "icons/magic/control/silhouette-aura-mind-pink.webp",
+    name: "Modify Memory", icon: "icons/magic/control/silhouette-aura-energy.webp",
     description: "Up to 10 minutes of memory modified.",
     changes: [], concentration: false, duration: { rounds: 0 },
   },
   power_word_stun: {
-    name: "Power Word Stun", icon: "icons/magic/lightning/strike-blast-blue.webp",
+    name: "Power Word Stun", icon: "icons/magic/lightning/bolt-beam-strike-blue.webp",
     description: "Stunned. CON save at end of each turn to recover.",
     statuses: ["stunned"],
     changes: [{ key: "flags.ace-qol.powerWordStun", mode: 0, value: "1" }],
@@ -1282,7 +1294,7 @@ const FEATURE_EFFECTS = {
   // ── Barbarian: Rage ───────────────────────────────────────────────────────
   rage: {
     name: "Rage",
-    icon: "icons/skills/melee/strike-body-flame-red.webp",
+    icon: "icons/skills/melee/strike-sword-blood-red.webp",
     description: "Advantage on STR checks/saves, +2 damage (scales with level), resistance to bludgeoning/piercing/slashing.",
     changes: [
       { key: "flags.ace-qol.advantage.ability.check.str", mode: 0, value: "1" },
@@ -1313,7 +1325,7 @@ const FEATURE_EFFECTS = {
   // ── Rogue: Sneak Attack (marker flag — damage calculated by pipeline) ────
   sneak_attack: {
     name: "Sneak Attack",
-    icon: "icons/skills/melee/strike-dagger-shadow-green.webp",
+    icon: "icons/skills/melee/strike-dagger-poison-green.webp",
     description: "Extra damage on attacks with advantage or when ally is adjacent to target. Damage scales with rogue level.",
     changes: [
       { key: "flags.ace-qol.sneakAttack", mode: 0, value: "1" },
@@ -1326,7 +1338,7 @@ const FEATURE_EFFECTS = {
   // ── Paladin: Divine Smite (marker — damage handled by rider engine) ──────
   divine_smite: {
     name: "Divine Smite",
-    icon: "icons/magic/holy/light-burst-beam-yellow.webp",
+    icon: "icons/magic/light/explosion-star-glow-yellow.webp",
     description: "Expend spell slot for +2d8 radiant (+1d8 per slot above 1st, +1d8 vs undead/fiend). Max 5d8.",
     changes: [
       { key: "flags.ace-qol.divineSmite", mode: 0, value: "1" },
@@ -1352,7 +1364,7 @@ const FEATURE_EFFECTS = {
   // ── Monk: Stunning Strike (marker — condition applied on failed save) ────
   stunning_strike: {
     name: "Stunning Strike",
-    icon: "icons/skills/melee/strike-body-shock-blue.webp",
+    icon: "icons/skills/melee/strike-blade-knife-blue-red.webp",
     description: "On hit, target must make CON save or be stunned until the end of your next turn.",
     changes: [
       { key: "flags.ace-qol.stunningStrike", mode: 0, value: "1" },
@@ -1377,7 +1389,7 @@ const FEATURE_EFFECTS = {
   // ── Fighter: Second Wind (marker) ─────────────────────────────────────────
   second_wind: {
     name: "Second Wind",
-    icon: "icons/magic/life/heart-cross-strong-flame-red.webp",
+    icon: "icons/magic/life/heart-cross-strong-blue.webp",
     description: "Regain 1d10 + fighter level HP as a bonus action.",
     changes: [
       { key: "flags.ace-qol.secondWind", mode: 0, value: "1" },
@@ -1389,7 +1401,7 @@ const FEATURE_EFFECTS = {
   // ── Paladin: Aura of Protection ──────────────────────────────────────────
   aura_of_protection: {
     name: "Aura of Protection",
-    icon: "icons/magic/holy/barrier-shield-winged-gold.webp",
+    icon: "icons/magic/holy/barrier-shield-winged-blue.webp",
     description: "+CHA modifier to all saving throws for allies within 10ft (30ft at 18th level).",
     changes: [
       { key: "system.bonuses.abilities.save", mode: 2, value: "+@abilities.cha.mod" },
@@ -1401,7 +1413,7 @@ const FEATURE_EFFECTS = {
   // ── Druid: Wild Shape (marker) ────────────────────────────────────────────
   wild_shape: {
     name: "Wild Shape",
-    icon: "icons/magic/nature/wolf-paw-glow-teal.webp",
+    icon: "icons/magic/nature/wolf-paw-glow-teal-blue.webp",
     description: "Transform into a beast form. Stats replaced by beast stats. Revert when form's HP reaches 0.",
     changes: [
       { key: "flags.ace-qol.wildShape", mode: 0, value: "1" },
@@ -1426,7 +1438,7 @@ const FEATURE_EFFECTS = {
   // ── Cleric: Blessed Strikes ──────────────────────────────────────────────
   blessed_strikes: {
     name: "Blessed Strikes",
-    icon: "icons/magic/holy/light-burst-beam-yellow.webp",
+    icon: "icons/magic/light/explosion-star-glow-yellow.webp",
     description: "+1d8 radiant damage once per turn on weapon attack or cantrip damage.",
     changes: [
       { key: "flags.ace-qol.blessedStrikes", mode: 0, value: "1" },

@@ -10,6 +10,7 @@
 
 import { MODULE_ID } from "../../ace-qol.mjs";
 import { ConditionLibrary } from "../../condition-library.mjs";
+import { SpellPipeline } from "../pipeline.mjs";
 
 export class BuffResolver {
 
@@ -32,18 +33,82 @@ export class BuffResolver {
       return;
     }
 
+    // Find the caster's concentration effect for this spell — needed to wire
+    // the dependentOn link so target buffs auto-delete when caster ends concentration.
+    // v0.7.21: uses shared SpellPipeline.findCasterConcentrationFor (audit dedup).
+    const casterConcEffect = SpellPipeline.findCasterConcentrationFor(actor, item);
+
     const applied = [];
     const failed = [];
     for (const c of targets) {
       const targetActor = c.actor;
       if (!targetActor) continue;
       try {
-        await ConditionLibrary.applyEffect(targetActor, effectKey, {
+        // ── v0.7.21 — Replace, don't stack on re-cast ──
+        // If the target already has THIS spell's effect (e.g. re-casting Haste
+        // on the same target), delete the old one cleanly first. Flag it as a
+        // replacement so dependent post-end hooks (e.g. Haste → Lethargy)
+        // know to skip — the spell didn't ACTUALLY end, it's being refreshed.
+        //
+        // Also clear any "post-end" debuff that lingered from a prior cast
+        // ending (Haste Lethargy is the canonical case). RAW: when you re-Haste
+        // a target, you're not also stacking Lethargy on them.
+        const existingSame = targetActor.effects?.find(e =>
+          e.flags?.[MODULE_ID]?.conditionKey === effectKey
+          || String(e.name ?? "").toLowerCase().trim() === String(effectKey).replace(/_/g, " ").toLowerCase().trim()
+        );
+        if (existingSame) {
+          try {
+            await existingSame.setFlag(MODULE_ID, "_replacedNotEnded", true);
+          } catch (_) { /* non-fatal */ }
+          try { await existingSame.delete(); } catch (_) { /* non-fatal */ }
+        }
+        // Haste-specific: clear the Lethargy debuff if applying fresh Haste
+        if (effectKey === "haste") {
+          const lethargy = targetActor.effects?.find(e =>
+            e.flags?.[MODULE_ID]?.conditionKey === "haste_lethargy"
+            || String(e.name ?? "").toLowerCase().trim() === "haste lethargy"
+          );
+          if (lethargy) {
+            try { await lethargy.delete(); } catch (_) { /* non-fatal */ }
+          }
+        }
+
+        const targetEffect = await ConditionLibrary.applyEffect(targetActor, effectKey, {
           castLevel,
           spellItem: item,
           spellLevel: castLevel,
           sourceActorId: actor.id,
+          origin: item.uuid,  // tag the buff with the spell's UUID
         });
+
+        // ── Wire dependentOn link so dnd5e auto-deletes the buff when the
+        //    caster's concentration ends. v0.7.21: format MUST match what
+        //    the legacy `_applySpellEffectWithConcentration` uses — a single
+        //    UUID string at `flags.dnd5e.dependentOn`, NOT an array of
+        //    relationship objects. dnd5e's concentration teardown follows
+        //    the string-uuid form to find dependent effects to delete.
+        //    Also stamp our own concentrationOrigin flag for traceability
+        //    (mirrors the legacy stamp pattern so existing scans still work).
+        if (targetEffect && casterConcEffect) {
+          try {
+            await targetEffect.update({
+              "flags.dnd5e.dependentOn": casterConcEffect.uuid,
+              [`flags.${MODULE_ID}.concentrationOrigin`]: {
+                casterId:       actor.id,
+                spellName:      item.name,
+                spellItemId:    item.id,
+                concEffectUuid: casterConcEffect.uuid,
+              },
+            });
+            console.debug(`${MODULE_ID} | BuffResolver: linked ${targetActor.name}'s ${effectKey} → ${actor.name}'s Concentrating:${item.name} (uuid:${casterConcEffect.uuid})`);
+          } catch (err) {
+            console.warn(`${MODULE_ID} | BuffResolver: dependentOn link failed (non-fatal):`, err);
+          }
+        } else if (targetEffect && !casterConcEffect && entry.effect?.duration === "concentration") {
+          console.warn(`${MODULE_ID} | BuffResolver: ${item.name} is concentration but no caster conc effect found — buff will NOT auto-cleanup`);
+        }
+
         applied.push(c);
       } catch (err) {
         console.error(`${MODULE_ID} | BuffResolver: applyEffect failed for ${targetActor.name}:`, err);
@@ -51,18 +116,21 @@ export class BuffResolver {
       }
     }
 
-    console.debug(`${MODULE_ID} | BuffResolver: ${item.name} applied "${effectKey}" to ${applied.length}/${targets.length} targets`);
+    console.debug(`${MODULE_ID} | BuffResolver: ${item.name} applied "${effectKey}" to ${applied.length}/${targets.length} targets (conc-linked: ${!!casterConcEffect})`);
 
     await BuffResolver._postChatCard(item, actor, applied, failed, castLevel, entry);
   }
 
+  // _findCasterConcentrationFor moved to SpellPipeline.findCasterConcentrationFor
+  // (audit dedup 2026-06-08). All call sites now reference the shared helper.
+
   static async _postChatCard(item, caster, applied, failed, castLevel, entry) {
     const accent = "#c9a76b";
     const targetRows = applied.map(c => `
-      <div style="display:flex;align-items:center;gap:8px;padding:5px 8px;background:rgba(201,167,107,0.08);border-radius:4px;margin-bottom:3px;">
-        <img src="${c.img || "icons/svg/mystery-man.svg"}" style="width:32px;height:32px;border-radius:50%;object-fit:cover;border:1px solid #6b5230;" />
-        <span style="flex:1;color:#e8d49a;font-weight:600;">${c.name}</span>
-        <i class="fas fa-check" style="color:#7ec97e;font-size:14px;"></i>
+      <div style="display:flex;align-items:center;gap:8px;padding:5px 8px;background:rgba(201,167,107,0.08);border-radius:4px;margin-bottom:3px;min-width:0;">
+        <img src="${c.img || "icons/svg/mystery-man.svg"}" style="width:32px;height:32px;border-radius:50%;object-fit:cover;border:1px solid #6b5230;flex-shrink:0;" />
+        <span style="flex:1 1 auto;min-width:0;color:#e8d49a;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${c.name}</span>
+        <i class="fas fa-check" style="color:#7ec97e;font-size:14px;flex-shrink:0;"></i>
       </div>
     `).join("");
 
@@ -73,13 +141,13 @@ export class BuffResolver {
                   padding:12px 14px;
                   color:#f0e4c0;
                   font-family:'Signika','Helvetica Neue',sans-serif;">
-        <div style="display:flex;align-items:center;gap:10px;
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;row-gap:4px;
                     font-size:15px;font-weight:700;color:${accent};
                     text-transform:uppercase;letter-spacing:0.6px;
                     border-bottom:1px solid #4a3a28;
                     padding-bottom:6px;margin-bottom:8px;">
-          <img src="${item.img || "icons/svg/spell.svg"}" style="width:24px;height:24px;border-radius:3px;object-fit:cover;" />
-          <span>${item.name.toUpperCase()}${castLevel > (item.system?.level ?? 1) ? ` (L${castLevel})` : ""}</span>
+          <img src="${item.img || "icons/svg/spell.svg"}" style="width:24px;height:24px;border-radius:3px;object-fit:cover;flex-shrink:0;" />
+          <span style="flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${item.name.toUpperCase()}${castLevel > (item.system?.level ?? 1) ? ` (L${castLevel})` : ""}</span>
         </div>
         ${entry.flavorOnConfirm ? `<div style="font-size:13px;color:#c0b288;margin-bottom:8px;font-style:italic;">${entry.flavorOnConfirm}</div>` : ""}
         <div style="font-size:13px;color:#c0b288;margin-bottom:6px;">Applied to ${applied.length} target${applied.length === 1 ? "" : "s"}:</div>

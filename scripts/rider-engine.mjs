@@ -768,7 +768,6 @@ export class RiderEngine {
   static async promptPrecisionAttack(actor, attackTotal, d20Result) {
     const data = RiderEngine.checkPrecisionAttack(actor);
     if (!data) return 0;
-    const TIMEOUT_MS = 20000;
 
     return new Promise((resolve) => {
       let resolved = false;
@@ -831,8 +830,11 @@ export class RiderEngine {
       });
       dialog.render(true);
 
-      // Timeout fallback — auto-pass if the prompt is ignored.
-      setTimeout(() => safeResolve(0), TIMEOUT_MS);
+      // No auto-pass timer (v0.7.22 — suite-wide timer purge). Precision
+      // Attack must be declared after the d20 but before hit/miss is known,
+      // so the dialog simply waits for an explicit Use/Pass. Closing or
+      // pressing Esc resolves to 0 via the dialog's close handler — there is
+      // always an escape hatch, so no countdown is needed.
     });
   }
 

@@ -1,23 +1,23 @@
-// ─── ACE: QOL — Pipeline Resolver: Save ───────────────────────────────────────
+// ─── ACE: QOL — Pipeline Resolver: Save (Single Target) ──────────────────────
 // Single-target save shape — Hold Person, Charm Person, Banishment, Polymorph,
 // Disintegrate, Dominate Person, Feeblemind, Suggestion, Tasha's Hideous
-// Laughter, Crown of Madness, Bestow Curse.
+// Laughter, Crown of Madness, Bestow Curse, Maze, Power Word Stun, etc.
 //
 // Flow:
 //   1. UnifiedSpellPicker (single) returns the chosen target token
 //   2. Resolver calls save-engine's public postSaveCard with that one target
 //   3. Save engine handles the save roll (NPC auto-roll or PC prompt)
 //   4. On fail → applies the entry's effect via ConditionLibrary
-//   5. On pass → no effect (just chat note)
-//
-// Effect application on fail is wired through save-engine's existing
-// post-save hook, which reads the registry entry's `effect.key` and applies
-// it. For Phase 2 launch the resolver passes the effect key in the opts so
-// save-engine can complete the chain.
+//   5. v0.7.21 — links effect to caster's concentration (so ending
+//      concentration removes effect from target)
+//   6. v0.7.21 — replaces same-key effect on re-cast (no stacking)
+//   7. v0.7.21 — wires save-at-end-of-turn for marked spells (Hold Person,
+//      Tasha's, Crown of Madness, Maze, Power Word Stun)
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "../../ace-qol.mjs";
 import { ConditionLibrary } from "../../condition-library.mjs";
+import { SpellPipeline } from "../pipeline.mjs";
 
 export class SaveResolver {
 
@@ -31,8 +31,6 @@ export class SaveResolver {
 
     const saveAbility = entry.save?.ability ?? "wis";
     const saveDC = SaveResolver._computeSaveDC(actor, item, spellMod);
-    const onSuccess = entry.save?.onSuccess ?? "negate";
-    const onFail = entry.save?.onFail ?? "effect";
 
     // Set game.user.targets to the chosen target so AA + downstream systems
     // see the single target the player picked in our UI.
@@ -63,18 +61,24 @@ export class SaveResolver {
     // Listen for the save result for this target, then apply effect on fail.
     // Uses a one-shot hook to catch the saveComplete event.
     if (entry.effect?.key) {
-      SaveResolver._wireEffectOnFail(target.token, entry.effect.key, castLevel, item);
+      SaveResolver._wireEffectOnFail(target.token, entry, castLevel, item, actor);
     }
   }
 
   /**
    * Wire a one-shot save-complete hook for the given target token. If the
-   * save fails, apply the entry's effect via ConditionLibrary. Auto-removes
-   * the hook after firing once (or after 60s timeout).
+   * save fails, apply the entry's effect via ConditionLibrary + the
+   * concentration-link + the replace-on-recast cleanup + save-at-end-of-turn
+   * machinery for spells that need it.
+   *
+   * Auto-removes the hook after firing once (or after 60s timeout).
    */
-  static _wireEffectOnFail(targetToken, effectKey, castLevel, spellItem) {
+  static _wireEffectOnFail(targetToken, entry, castLevel, spellItem, casterActor) {
     const targetTokenDocId = targetToken?.document?.id ?? targetToken?.id;
     if (!targetTokenDocId) return;
+
+    const effectKey = entry.effect?.key;
+    const isConcentration = entry.effect?.duration === "concentration";
 
     let fired = false;
     const hookId = Hooks.on(`${MODULE_ID}.saveComplete`, async (payload) => {
@@ -89,13 +93,76 @@ export class SaveResolver {
           return;
         }
         // Failed → apply effect
-        if (payload.actor) {
-          await ConditionLibrary.applyEffect(payload.actor, effectKey, {
-            castLevel,
+        const targetActor = payload.actor;
+        if (!targetActor) return;
+
+        // ── Replace-on-recast: if target already has this effect, kill the
+        // old one (flagged as replacement so post-end hooks bail) before
+        // applying the new one. Prevents stacking on re-cast of the same
+        // save spell on the same target.
+        const existingSame = targetActor.effects?.find(e =>
+          e.flags?.[MODULE_ID]?.conditionKey === effectKey
+          || String(e.name ?? "").toLowerCase().trim() === String(effectKey).replace(/_/g, " ").toLowerCase().trim()
+        );
+        if (existingSame) {
+          try { await existingSame.setFlag(MODULE_ID, "_replacedNotEnded", true); } catch (_) {}
+          try { await existingSame.delete(); } catch (_) {}
+        }
+
+        const targetEffect = await ConditionLibrary.applyEffect(targetActor, effectKey, {
+          castLevel,
+          spellItem,
+          spellLevel: castLevel,
+          sourceActorId: casterActor?.id,
+          origin: spellItem.uuid,
+        });
+
+        console.debug(`${MODULE_ID} | SaveResolver: applied "${effectKey}" to ${targetActor.name} (failed save)`);
+
+        // ── Concentration link: tie the placed effect to the caster's
+        // concentration effect via flags.dnd5e.dependentOn (UUID string,
+        // matching dnd5e's expected format). When the caster ends
+        // concentration, dnd5e auto-deletes this dependent effect.
+        if (targetEffect && isConcentration && casterActor) {
+          // v0.7.21: uses shared SpellPipeline.findCasterConcentrationFor (audit dedup).
+          const casterConcEffect = SpellPipeline.findCasterConcentrationFor(casterActor, spellItem);
+          if (casterConcEffect) {
+            try {
+              await targetEffect.update({
+                "flags.dnd5e.dependentOn": casterConcEffect.uuid,
+                [`flags.${MODULE_ID}.concentrationOrigin`]: {
+                  casterId:       casterActor.id,
+                  spellName:      spellItem.name,
+                  spellItemId:    spellItem.id,
+                  concEffectUuid: casterConcEffect.uuid,
+                },
+              });
+              console.debug(`${MODULE_ID} | SaveResolver: linked ${targetActor.name}'s ${effectKey} → ${casterActor.name}'s Concentrating:${spellItem.name}`);
+            } catch (err) {
+              console.warn(`${MODULE_ID} | SaveResolver: concentration link failed (non-fatal):`, err);
+            }
+          } else {
+            console.warn(`${MODULE_ID} | SaveResolver: ${spellItem.name} is concentration but no caster conc effect — effect will not auto-cleanup`);
+          }
+        }
+
+        // ── Save-at-end-of-turn machinery (Hold Person, Hold Monster,
+        // Tasha's Hideous Laughter, Crown of Madness, Maze, Power Word Stun).
+        // Marked via entry.save.repeatAt = "endOfTurn". On the target's
+        // turn END, prompt the save again — if they pass, effect ends.
+        if (targetEffect && entry.save?.repeatAt === "endOfTurn") {
+          SaveResolver._wireEndOfTurnSave({
+            targetActor,
+            targetTokenDocId,
+            targetEffectId: targetEffect.id,
+            effectKey,
+            casterActor,
             spellItem,
-            spellLevel: castLevel,
+            castLevel,
+            saveAbility: entry.save?.ability ?? "wis",
+            saveDC: SaveResolver._computeSaveDC(casterActor, spellItem, casterActor?.system?.attributes?.spellmod ?? 0),
+            halvesDamage: entry.save?.halfOnPass === true,
           });
-          console.debug(`${MODULE_ID} | SaveResolver: applied "${effectKey}" to ${payload.actor.name} (failed save)`);
         }
       } catch (err) {
         console.warn(`${MODULE_ID} | SaveResolver._wireEffectOnFail handler threw:`, err);
@@ -110,6 +177,111 @@ export class SaveResolver {
       }
     }, 60000);
   }
+
+  /**
+   * Wire a save-at-end-of-turn loop for spells like Hold Person.
+   * Listens to combatTurn — when the affected target's turn ends, the target
+   * rolls a save. On success, the effect is removed (spell ends on them).
+   * On fail, the effect persists; the loop continues until concentration
+   * ends, the effect is removed manually, or the save passes.
+   *
+   * Hook auto-removes if the effect is deleted (concentration end, dispel,
+   * etc.) — checks effect existence each turn.
+   */
+  static _wireEndOfTurnSave({ targetActor, targetTokenDocId, targetEffectId, effectKey, casterActor, spellItem, castLevel, saveAbility, saveDC, halvesDamage }) {
+    const hookId = Hooks.on("combatTurn", async (combat, updateData, opts) => {
+      try {
+        if (!game.user.isGM) return;
+        // Only fire when the AFFECTED target's turn just ENDED — i.e. the
+        // PREVIOUS turn's combatant matches this target.
+        const prevTurn = combat?.previous?.turn ?? combat?.turns?.[combat?.turn - 1]?._id;
+        const prevCombatant = combat?.combatants?.find?.(c => c.tokenId === targetTokenDocId);
+        if (!prevCombatant) return;
+        // Detect "this combatant just finished their turn" — current turn pointer is past them
+        const currentTurnIdx = combat?.turn ?? 0;
+        const prevTurnIdx = (currentTurnIdx - 1 + combat.turns.length) % combat.turns.length;
+        const prevTurnCombatant = combat?.turns?.[prevTurnIdx];
+        if (prevTurnCombatant?.tokenId !== targetTokenDocId) return;
+
+        // Check if effect still exists — if not (caster ended concentration,
+        // dispel, manual delete), kill the hook.
+        const stillEffected = targetActor.effects?.get?.(targetEffectId)
+          ?? targetActor.effects?.find?.(e => e.id === targetEffectId);
+        if (!stillEffected) {
+          Hooks.off("combatTurn", hookId);
+          console.debug(`${MODULE_ID} | SaveResolver: ${effectKey} effect on ${targetActor.name} gone — end-of-turn save loop unhooked`);
+          return;
+        }
+
+        // Roll save at end of target's turn
+        const abilityMod = targetActor.system?.abilities?.[saveAbility]?.mod ?? 0;
+        const saveBonus = Number(targetActor.system?.abilities?.[saveAbility]?.bonuses?.save ?? 0);
+        const profBonus = targetActor.system?.attributes?.prof ?? 0;
+        const isProficient = targetActor.system?.abilities?.[saveAbility]?.proficient > 0;
+        const profPart = isProficient ? ` + ${profBonus}` : "";
+        const bonusPart = saveBonus ? ` + ${saveBonus}` : "";
+        const formula = `1d20 + ${abilityMod}${profPart}${bonusPart}`;
+        const roll = await new Roll(formula).evaluate();
+        const total = roll.total;
+        const passed = total >= saveDC;
+
+        // Post chat card for the end-of-turn save result
+        const accent = passed ? "#7ec97e" : "#e57373";
+        const verb = passed ? "shakes off" : "remains caught by";
+        const html = `
+          <div style="background:linear-gradient(180deg,#1a1410 0%,#0f0a08 100%);
+                      border:2px solid ${accent};
+                      border-radius:6px;
+                      padding:10px 12px;
+                      color:#f0e4c0;
+                      font-family:'Signika','Helvetica Neue',sans-serif;">
+            <div style="font-size:14px;font-weight:700;color:${accent};
+                        text-transform:uppercase;letter-spacing:0.6px;
+                        border-bottom:1px solid #4a3a28;
+                        padding-bottom:5px;margin-bottom:6px;">
+              ${spellItem.name.toUpperCase()} — END-OF-TURN SAVE
+            </div>
+            <div style="font-size:13px;color:#e8d49a;margin-bottom:4px;">
+              <strong>${targetActor.name}</strong> ${verb} <em>${spellItem.name}</em>.
+            </div>
+            <div style="font-size:12px;color:#c0b288;">
+              Save: <strong>${total}</strong> vs DC <strong>${saveDC}</strong> (${saveAbility.toUpperCase()}) — <strong>${passed ? "SUCCESS" : "FAIL"}</strong>
+            </div>
+          </div>
+        `;
+        try {
+          await ChatMessage.create({
+            speaker: ChatMessage.getSpeaker({ actor: targetActor }),
+            content: html,
+            rolls: [roll],
+            type: CONST.CHAT_MESSAGE_STYLES?.OTHER ?? 0,
+          });
+        } catch (_) { /* non-fatal */ }
+
+        if (passed) {
+          // Delete the effect — spell ends on this target (concentration
+          // on caster persists in case other targets remain affected).
+          try {
+            await stillEffected.setFlag(MODULE_ID, "_replacedNotEnded", true); // suppress post-end hooks
+            await stillEffected.delete();
+          } catch (_) { /* non-fatal */ }
+          Hooks.off("combatTurn", hookId);
+          console.debug(`${MODULE_ID} | SaveResolver: ${targetActor.name} saved at end of turn vs ${spellItem.name} — effect removed`);
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | SaveResolver._wireEndOfTurnSave handler threw (non-fatal):`, err);
+      }
+    });
+
+    // Safety net: also kill the hook on combat end / world reload (mirrors
+    // ReactionEngine cleanup pattern)
+    Hooks.once("deleteCombat", () => Hooks.off("combatTurn", hookId));
+
+    console.debug(`${MODULE_ID} | SaveResolver: wired end-of-turn save loop for ${targetActor.name} vs ${spellItem.name}`);
+  }
+
+  // _findCasterConcentrationFor moved to SpellPipeline.findCasterConcentrationFor
+  // (audit dedup 2026-06-08). All call sites now reference the shared helper.
 
   static _setUserTarget(token) {
     if (!token) return;

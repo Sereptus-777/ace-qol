@@ -18,6 +18,7 @@ import { CoverEngine } from "./cover-engine.mjs";
 import { RiderEngine } from "./rider-engine.mjs";
 import { pendingAttackChoices, awaitDsnRoll, showCenterToast } from "./attack-prompt.mjs";
 import { WeaponMasteries } from "./weapon-masteries.mjs";
+import { OA_IN_FLIGHT } from "./oa-transient.mjs";
 
 export class AttackPipeline {
 
@@ -212,13 +213,24 @@ export class AttackPipeline {
     }
 
     // ── Range check: block attacks on out-of-range targets ──
+    // SKIPPED for opportunity attacks. RAW, an OA "occurs right before the
+    // creature leaves your reach" (PHB 195) — but by the time the OA is
+    // clicked, the token has finished moving and sits out of reach, so this
+    // check would wrongly cancel a legitimate swing. The OA was already
+    // validated as in-reach at trigger time (that's what fired it), so we
+    // trust that and don't re-measure. OA_IN_FLIGHT is set by
+    // OAPrompt.fireOAAttack around item.use() on this same client. v0.7.23.
+    // NB: firstTarget is declared at function scope (it's reused below for the
+    // combat-state assessment) — only the range *check* is OA-gated. v0.7.24.
     const firstTarget = targets.first();
-    const rangeCheck = this._checkRange(actor, firstTarget, item);
-    if (rangeCheck.blocked) {
-      const msg = `Out of range — ${rangeCheck.distanceFt}ft away (${rangeCheck.rangeDesc})`;
-      showCenterToast(msg, 2500);
-      ui.notifications?.warn(`ACE QOL: ${msg}`);
-      return false; // Block the roll
+    if (!OA_IN_FLIGHT.has(actor.id)) {
+      const rangeCheck = this._checkRange(actor, firstTarget, item);
+      if (rangeCheck.blocked) {
+        const msg = `Out of range — ${rangeCheck.distanceFt}ft away (${rangeCheck.rangeDesc})`;
+        showCenterToast(msg, 2500);
+        ui.notifications?.warn(`ACE QOL: ${msg}`);
+        return false; // Block the roll
+      }
     }
 
     // Assess combat state for the first target (primary target)
@@ -323,10 +335,14 @@ export class AttackPipeline {
 
     // ── Optional Bonus Prompts (Bardic Inspiration, Lucky, etc.) ──
     // Check if the actor has any optional bonuses available for this attack roll.
-    // Route to the correct player (owner of the attacking actor) via socket.
+    // Routing follows the roller (v0.7.22): this handler is GM-gated and the
+    // dnd5e roll hook fires on the rolling client, so game.user.id IS the
+    // roller. Passing it lets the prompt appear on the roller's screen when
+    // "riderPromptsFollowRoller" is ON (default), instead of always jumping
+    // to the actor's owning player.
     try {
       const optionalResult = await FlagsEngine.routeOptionalPrompt(
-        actor, "attack", actionType, attackTotal, d20Result
+        actor, "attack", actionType, attackTotal, d20Result, game.user.id
       );
       if (optionalResult.bonuses.length > 0) {
         attackTotal = optionalResult.newTotal;
@@ -587,7 +603,14 @@ export class AttackPipeline {
     this._lastAttackItem = item;
     this._lastAttackActor = actor;
 
-    // Emit a hook that other modules/phases can listen to
+    // Emit a hook that other modules/phases can listen to.
+    // initiatorUserId: this local path only runs on the client that rolled
+    // (_onAttackRoll is GM-gated and dnd5e roll hooks fire on the rolling
+    // client), so game.user.id IS the user who pushed the attack button.
+    // Player-rolled attacks arrive via the socket bridge instead, which
+    // stamps the player's id (see ace-qol.mjs GM socket handler). Used by
+    // the damage engine to route rider popups (Divine Smite etc.) to the
+    // user who actually made the attack. v0.7.22.
     Hooks.callAll(`${MODULE_ID}.attackComplete`, {
       item,
       actor,
@@ -596,6 +619,7 @@ export class AttackPipeline {
       misses,
       actionType,
       subject,
+      initiatorUserId: game.user.id,
     });
   }
 

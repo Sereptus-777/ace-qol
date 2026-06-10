@@ -66,14 +66,148 @@ export class DamageApplicator {
     }
 
     // ── The actual write ──
-    const updatePromise = actor.update({ "system.attributes.hp.value": newHP });
+    // v0.7.21: pass `dnd5e.concentrationCheck: false` so dnd5e's vanilla
+    // challengeConcentration card is suppressed. We post our own (with proper
+    // PC roll button + NPC auto-roll + fail-cascades-dependents) below.
+    // The escape hatch lives at dnd5e.mjs ~line 26287 (HP-update handler).
+    const updatePromise = actor.update(
+      { "system.attributes.hp.value": newHP },
+      { dnd5e: { concentrationCheck: false } }
+    );
 
     if (opts.label) {
       console.log(`${MODULE_ID} | applyHPDamage [${opts.label}]: ${actor.name} ${currentHP} → ${newHP}${excess > 0 ? ` (excess ${excess} captured)` : ""}`);
     }
 
     await updatePromise;
+
+    // Concentration check fires GLOBALLY from the patched Actor.update wrapper
+    // (see ace-qol.mjs init). Don't call it explicitly here — would double-fire.
+
     return { currentHP, newHP, excess, applied: true };
+  }
+
+  /**
+   * v0.7.21 — ACE-owned concentration save on damage.
+   * Detects concentrating status, computes DC = max(10, floor(damage/2)),
+   * routes through save-engine for the visual card, and on fail deletes the
+   * Concentrating effect (cascading dependent cleanup via dnd5e).
+   *
+   * Skips silently if actor isn't concentrating.
+   */
+  static async _triggerAceConcentrationCheck(actor, damage) {
+    if (!actor?.effects) return;
+    const concEffect = actor.effects.find?.(e => e.statuses?.has?.("concentrating"));
+    if (!concEffect) return;
+
+    const dc = Math.max(10, Math.floor(damage / 2));
+    const conMod = actor.system?.abilities?.con?.mod ?? 0;
+    const conSaveBonus = Number(actor.system?.abilities?.con?.bonuses?.save ?? 0);
+    const profBonus = actor.system?.attributes?.prof ?? 0;
+    // Concentration uses CON save; proficiency comes from War Caster / class /
+    // Resilient feat — read the actor's CON save proficiency.
+    const isProficient = (actor.system?.abilities?.con?.proficient ?? 0) > 0;
+    const profPart = isProficient ? ` + ${profBonus}` : "";
+    const bonusPart = conSaveBonus ? ` + ${conSaveBonus}` : "";
+    const formula = `1d20 + ${conMod}${profPart}${bonusPart}`;
+
+    const isPc = actor.type === "character" || actor.hasPlayerOwner;
+    const concName = concEffect.name || "Concentrating";
+    const accent = "#ab47bc";
+
+    if (isPc) {
+      // PC path — post a card with a roll button. The GM clicks it (or the
+      // PC owner does) to roll. On fail, the effect deletes.
+      const html = `
+        <div style="background:linear-gradient(180deg,#1a1410 0%,#0f0a08 100%);
+                    border:2px solid ${accent};
+                    border-radius:6px;
+                    padding:12px 14px;
+                    color:#f0e4c0;
+                    font-family:'Signika','Helvetica Neue',sans-serif;">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;row-gap:4px;
+                      font-size:14px;font-weight:700;color:${accent};
+                      text-transform:uppercase;letter-spacing:0.6px;
+                      border-bottom:1px solid #4a3a28;
+                      padding-bottom:6px;margin-bottom:8px;">
+            <i class="fas fa-brain" style="font-size:16px;color:${accent};flex-shrink:0;"></i>
+            <span style="flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">CONCENTRATION CHECK — ${actor.name.toUpperCase()}</span>
+            <span style="font-size:13px;color:#e8d49a;flex-shrink:0;">DC ${dc}</span>
+          </div>
+          <div style="font-size:13px;color:#c0b288;margin-bottom:8px;">
+            <strong>${actor.name}</strong> took <strong>${damage}</strong> damage while concentrating on <em>${concName}</em>.
+          </div>
+          <button class="ace-qol-conc-roll-btn"
+                  data-action="aceQolRollConcSave"
+                  data-actor-uuid="${actor.uuid}"
+                  data-effect-id="${concEffect.id}"
+                  data-dc="${dc}"
+                  data-formula="${formula}"
+                  style="width:100%;padding:8px;font-size:14px;font-weight:700;
+                         background:${accent};color:#fff;border:none;border-radius:4px;
+                         cursor:pointer;letter-spacing:0.5px;">
+            ROLL CONCENTRATION SAVE (CON ${conMod >= 0 ? "+" : ""}${conMod}${isProficient ? " + prof" : ""})
+          </button>
+        </div>
+      `;
+      try {
+        await ChatMessage.create({
+          speaker: ChatMessage.getSpeaker({ actor }),
+          content: html,
+          flavor: `${actor.name} concentration check vs DC ${dc}`,
+        });
+      } catch (_) { /* non-fatal */ }
+    } else {
+      // NPC path — auto-roll, show result, on fail delete the effect.
+      const roll = await new Roll(formula).evaluate();
+      const total = roll.total;
+      const passed = total >= dc;
+      const resultColor = passed ? "#7ec97e" : "#e57373";
+      const resultLabel = passed ? "MAINTAINED" : "BROKEN";
+
+      const html = `
+        <div style="background:linear-gradient(180deg,#1a1410 0%,#0f0a08 100%);
+                    border:2px solid ${resultColor};
+                    border-radius:6px;
+                    padding:10px 12px;
+                    color:#f0e4c0;
+                    font-family:'Signika','Helvetica Neue',sans-serif;">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;row-gap:4px;
+                      font-size:14px;font-weight:700;color:${resultColor};
+                      text-transform:uppercase;letter-spacing:0.6px;
+                      border-bottom:1px solid #4a3a28;
+                      padding-bottom:6px;margin-bottom:6px;">
+            <i class="fas fa-brain" style="font-size:16px;color:${resultColor};flex-shrink:0;"></i>
+            <span style="flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">CONCENTRATION ${resultLabel}</span>
+          </div>
+          <div style="font-size:13px;color:#e8d49a;margin-bottom:4px;">
+            <strong>${actor.name}</strong> ${passed ? "held" : "lost"} concentration on <em>${concName}</em>.
+          </div>
+          <div style="font-size:12px;color:#c0b288;">
+            Save: <strong>${total}</strong> vs DC <strong>${dc}</strong> — ${passed ? "SUCCESS" : "FAIL"}
+          </div>
+        </div>
+      `;
+      try {
+        await ChatMessage.create({
+          speaker: ChatMessage.getSpeaker({ actor }),
+          content: html,
+          rolls: [roll],
+        });
+      } catch (_) { /* non-fatal */ }
+
+      if (!passed) {
+        // Delete the Concentrating effect — dnd5e auto-cleans dependents
+        try {
+          await concEffect.delete();
+          console.log(`${MODULE_ID} | Concentration BROKEN: ${actor.name} failed concentration save (${total} vs DC ${dc}) — effect deleted`);
+        } catch (err) {
+          console.warn(`${MODULE_ID} | Failed to delete concentration effect:`, err);
+        }
+      } else {
+        console.log(`${MODULE_ID} | Concentration MAINTAINED: ${actor.name} passed concentration save (${total} vs DC ${dc})`);
+      }
+    }
   }
 
   /**
@@ -227,6 +361,21 @@ export class DamageApplicator {
     }
 
     ui.notifications.info(`ACE QOL: Damage applied to ${applied} target(s).`);
+
+    // ── v0.7.21: Clear targeting after APPLY ALL ──
+    // Fireball + other AOE save spells leave game.user.targets populated
+    // with every affected token through the save card + damage card flow.
+    // Once damage is applied, the spell is fully resolved — clear targets
+    // so the next cast / attack starts fresh. Matches the SpellPipeline's
+    // 1500ms post-card clear pattern for distribute shapes (Magic Missile).
+    setTimeout(() => {
+      try {
+        for (const t of [...(game.user?.targets ?? [])]) {
+          t.setTarget?.(false, { user: game.user, releaseOthers: false, groupSelection: false });
+        }
+        game.user?.targets?.clear?.();
+      } catch (_) { /* non-fatal */ }
+    }, 500);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

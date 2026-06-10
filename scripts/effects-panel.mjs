@@ -132,7 +132,7 @@ export class EffectsPanel {
     });
   }
 
-  _bindSidebarObserver() {
+  _bindSidebarObserver(retryAttempt = 0) {
     if (this._sidebarObserver) return;
     // Watch the `#sidebar` element itself — in V13 it carries the
     // `collapsed` class toggle, in V12 it grows/shrinks even if no class
@@ -140,7 +140,14 @@ export class EffectsPanel {
     // BOTH directions (expand AND collapse), regardless of Foundry version.
     const sidebar = document.getElementById("sidebar");
     if (!sidebar) {
-      setTimeout(() => this._bindSidebarObserver(), 500);
+      // v0.7.21: bounded retry — was unbounded recursion. After 30 tries
+      // (15 sec total) give up so we don't leak retries forever if Foundry
+      // never renders a sidebar (headless test environment, etc.).
+      if (retryAttempt >= 30) {
+        console.warn(`${MODULE_ID} | EffectsPanel: #sidebar never appeared after 15s — sidebar observer not bound.`);
+        return;
+      }
+      setTimeout(() => this._bindSidebarObserver(retryAttempt + 1), 500);
       return;
     }
 

@@ -13,9 +13,16 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
 import { showCenterToast } from "./attack-prompt.mjs";
 
-const DEFAULT_MARKER_CURRENT = "modules/JB2A_DnD5e/Library/Generic/Magic_Signs/Runes/EvocationRuneLoop_01_Regular_Red_400x400.webm";
-const DEFAULT_MARKER_NEXT    = "modules/JB2A_DnD5e/Library/Generic/Magic_Signs/Runes/AbjurationRuneLoop_01_Regular_Blue_400x400.webm";
+const DEFAULT_MARKER_CURRENT = "modules/JB2A_DnD5e/Library/Generic/On_Token/Buff/Ontoken_Buff001_001_OrangeYellow_400x400.webm";
+const DEFAULT_MARKER_NEXT    = "modules/JB2A_DnD5e/Library/Generic/On_Token/Buff/Ontoken_Buff001_001_BluePurple_400x400.webm";
 const DEFAULT_SOUND          = "sounds/notify.wav";
+
+// Foundry-core asset that ships with EVERY install — used as the failsafe
+// when the configured marker image can't load (e.g. the GM hasn't installed
+// JB2A). The marker sprite is spun by the animation loop, so this static core
+// icon still renders as an animated spinning turn marker. Guarantees every
+// table sees a marker on their turn out of the box, dependency-free. v0.7.24.
+const CORE_FALLBACK_MARKER   = "icons/svg/aura.svg";
 
 export class TurnMarker {
 
@@ -51,19 +58,26 @@ export class TurnMarker {
         const combat = game.combat;
 
         if (this._currentMarker && !this._currentMarker.destroyed) {
-          this._currentMarker.rotation += 0.008 * speed;
-          const tok = combat?.combatant?.token?.object;
-          if (tok && !tok.destroyed) {
-            this._currentMarker.position.set(tok.center.x, tok.center.y);
+          const m = this._currentMarker;
+          // Re-assert the intended size — a webm texture that finished decoding
+          // after placement can shift the displayed size; this self-corrects it
+          // within a frame (only fires when it has actually drifted).
+          if (m._aceTargetSize && Math.abs(m.width - m._aceTargetSize) > 0.5) {
+            m.width = m._aceTargetSize; m.height = m._aceTargetSize;
           }
+          m.rotation += 0.008 * speed;
+          const tok = combat?.combatant?.token?.object;
+          if (tok && !tok.destroyed) m.position.set(tok.center.x, tok.center.y);
         }
         if (this._nextMarker && !this._nextMarker.destroyed) {
-          this._nextMarker.rotation += 0.008 * speed;
+          const m = this._nextMarker;
+          if (m._aceTargetSize && Math.abs(m.width - m._aceTargetSize) > 0.5) {
+            m.width = m._aceTargetSize; m.height = m._aceTargetSize;
+          }
+          m.rotation += 0.008 * speed;
           const next = combat ? this._getNextCombatant(combat) : null;
           const tok = next?.token?.object;
-          if (tok && !tok.destroyed) {
-            this._nextMarker.position.set(tok.center.x, tok.center.y);
-          }
+          if (tok && !tok.destroyed) m.position.set(tok.center.x, tok.center.y);
         }
       } catch (_) { /* swallow tick errors */ }
       this._animationFrame = requestAnimationFrame(tick);
@@ -120,15 +134,21 @@ export class TurnMarker {
       ? (QolSettings.get("turnMarkerImageNext") || DEFAULT_MARKER_NEXT)
       : (QolSettings.get("turnMarkerImage")     || DEFAULT_MARKER_CURRENT);
 
+    const _load = async (p) => (await foundry.canvas.loadTexture?.(p)) ?? (await PIXI.Assets.load(p));
     let texture;
     try {
-      texture = await foundry.canvas.loadTexture?.(imagePath)
-             ?? await PIXI.Assets.load(imagePath);
+      texture = await _load(imagePath);
     } catch (err) {
-      console.warn(`${MODULE_ID} | Turn marker image load failed (${imagePath}):`, err);
-      return;
+      // Configured/default image failed (most often: JB2A not installed).
+      // Fall back to the core asset so a marker still appears.
+      console.warn(`${MODULE_ID} | Turn marker image load failed (${imagePath}) — falling back to core ${CORE_FALLBACK_MARKER}:`, err?.message ?? err);
+      try { texture = await _load(CORE_FALLBACK_MARKER); }
+      catch (err2) { console.warn(`${MODULE_ID} | Core fallback marker also failed to load:`, err2?.message ?? err2); return; }
     }
-    if (!texture) return;
+    if (!texture) {
+      try { texture = await _load(CORE_FALLBACK_MARKER); } catch (_) { return; }
+      if (!texture) return;
+    }
 
     // Force video textures to loop (webm markers from JB2A etc.)
     try {
@@ -143,10 +163,21 @@ export class TurnMarker {
     const sprite = new PIXI.Sprite(texture);
     sprite.anchor.set(0.5);
 
-    const scale = QolSettings.get("turnMarkerScale") ?? 1.15;
-    const size  = Math.max(token.w, token.h) * scale;
+    // Size off the STABLE footprint — the token document's grid width × the grid
+    // pixel size — NOT the live token.w getter, which can read transiently small
+    // while a token is still constructing/animating. That transient produced a
+    // one-off 0.86× scale that then STUCK, because the active combatant's marker
+    // only re-places on turn change (so it never self-corrected). The intended
+    // size is stamped on the sprite so the animation loop can re-assert it if a
+    // late-decoding webm texture shifts the displayed size after placement.
+    // v0.7.24 fix (confirmed: stale timing placement).
+    const scale     = QolSettings.get("turnMarkerScale") ?? 1.15;
+    const gridSize  = canvas.dimensions?.size ?? canvas.grid?.size ?? 100;
+    const footprint = Math.max(token.document?.width ?? 1, token.document?.height ?? 1) * gridSize;
+    const size      = footprint * scale;
     sprite.width  = size;
     sprite.height = size;
+    sprite._aceTargetSize = size;
 
     sprite.position.set(token.center.x, token.center.y);
     sprite.alpha = isNext

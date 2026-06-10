@@ -32,10 +32,22 @@ import { SelfResolver } from "./resolvers/self.mjs";
 export class SpellPipeline {
 
   // Cache cast level captured between preUseActivity and useActivity hooks
-  static _castLevelCache = new Map(); // key: `${actorId}|${itemId}` → number
+  // Key includes activity.uuid (or fallback) + cast-start timestamp so
+  // simultaneous casts of the same item (macros, rapid actions) don't
+  // overwrite each other. (Audit-mandated 2026-06-08.)
+  static _castLevelCache = new Map();
 
-  // Dedup tracker — postCreateUsageMessage can fire multiple times for one cast
-  static _handledActivities = new WeakSet();
+  // Dedup tracker — postCreateUsageMessage can fire multiple times for one cast.
+  // v0.7.21: switched from WeakSet on activity object to Set on activity UUID
+  // string. dnd5e 5.x clones/wraps activities between hooks, so the WeakSet
+  // dedup silently missed re-fires → double dispatch → double slot consumption
+  // + double effect application. (Audit-mandated 2026-06-08.)
+  static _handledActivities = new Set();
+
+  // Auto-evict handled-activity entries after 30s — bounded memory.
+  static _evictHandledActivity(key) {
+    setTimeout(() => SpellPipeline._handledActivities.delete(key), 30000);
+  }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // INITIALIZATION
@@ -47,6 +59,14 @@ export class SpellPipeline {
       try {
         const entry = SpellPipeline._getEntry(activity?.item);
         if (!entry) return; // not ours — fall through to dnd5e
+
+        // Stamp a per-cast token onto the activity so _cacheKey can produce
+        // a stable, collision-free key across simultaneous casts of the same
+        // item. Uses performance.now() to avoid the disallowed Date.now() in
+        // worker context. Sticks for the activity's lifetime.
+        if (!activity._aceCastStamp) {
+          activity._aceCastStamp = `${performance.now?.() ?? Math.random()}`;
+        }
 
         // Defer slot consumption — restore on confirm or refund on cancel
         if (usageConfig?.consume?.spellSlot !== undefined) {
@@ -101,12 +121,18 @@ export class SpellPipeline {
         const entry = SpellPipeline._getEntry(activity?.item);
         if (!entry) return;
 
-        // Dedup — only run once per Activity reference
-        if (SpellPipeline._handledActivities.has(activity)) {
-          console.debug(`${MODULE_ID} | SpellPipeline: duplicate postCreateUsageMessage for ${activity.item?.name} — skipped`);
+        // Dedup — key by activity UUID + cast timestamp via _cacheKey, NOT
+        // by activity object reference. dnd5e 5.x clones/wraps activities
+        // between hooks, making WeakSet ref-based dedup miss duplicates →
+        // double dispatch → double slot consumption + double effect application.
+        // (Audit-mandated 2026-06-08.)
+        const dedupKey = SpellPipeline._cacheKey(activity);
+        if (SpellPipeline._handledActivities.has(dedupKey)) {
+          console.debug(`${MODULE_ID} | SpellPipeline: duplicate postCreateUsageMessage for ${activity.item?.name} (key=${dedupKey}) — skipped`);
           return;
         }
-        SpellPipeline._handledActivities.add(activity);
+        SpellPipeline._handledActivities.add(dedupKey);
+        SpellPipeline._evictHandledActivity(dedupKey);  // 30s auto-evict
 
         SpellPipeline._dispatch(activity, message)
           .catch(err => console.error(`${MODULE_ID} | SpellPipeline dispatch threw for ${activity?.item?.name}:`, err));
@@ -192,6 +218,34 @@ export class SpellPipeline {
 
     const ctx = { entry, item, actor, activity, castLevel, spellMod, message };
 
+    // ── v0.7.21: Counterspell barrier check at the PIPELINE level ──
+    // The reaction-engine creates a barrier promise at preUseActivity and
+    // resolves it after counterspell prompts complete. If the counterspell
+    // succeeded, the spell must NOT proceed — no resolver runs, no effect
+    // applies, slot is refunded.
+    // Magic Missile (spell-auto-damage) had this check; the pipeline did not,
+    // so Bless / Haste / Hold Person / etc. would fire even after a successful
+    // counterspell. This gates ALL shapes uniformly.
+    try {
+      const { ReactionEngine } = await import("../reaction-engine.mjs");
+      const reactionResult = await ReactionEngine.awaitCastBarrier(activity);
+      if (reactionResult?.abort) {
+        console.log(`${MODULE_ID} | SpellPipeline: ${item.name} aborted by ${reactionResult.reason ?? "reaction"} — slot refunded + concentration torn down`);
+        await SpellPipeline._refundSlotIfDeferred(activity);
+        // ── v0.7.21 — Tear down orphan concentration ──
+        // dnd5e's activity-use flow auto-starts concentration BEFORE our
+        // barrier knows the cast got counterspelled. End that concentration
+        // now so the caster isn't stuck "concentrating on Haste" on a spell
+        // that never actually happened. Universal — applies to every
+        // concentration spell the pipeline owns.
+        await SpellPipeline._endConcentrationForCancelledSpell(actor, item);
+        SpellPipeline._castLevelCache.delete(SpellPipeline._cacheKey(activity));
+        return;
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | SpellPipeline: counterspell barrier check threw (non-blocking):`, err);
+    }
+
     console.debug(`${MODULE_ID} | SpellPipeline: dispatching "${item.name}" shape=${entry.shape} L=${castLevel}`);
 
     try {
@@ -258,10 +312,12 @@ export class SpellPipeline {
     const result = await UnifiedSpellPicker.pick({ ...ctx, pickerType });
 
     if (!result) {
-      // Cancelled — refund slot, no card, return clean
+      // Cancelled — refund slot, end concentration (if dnd5e started it
+      // during the activity flow), no card, return clean.
       await SpellPipeline._refundSlotIfDeferred(ctx.activity);
+      await SpellPipeline._endConcentrationForCancelledSpell(ctx.actor, ctx.item);
       ui.notifications?.info(`${ctx.item.name}: cancelled — slot not consumed.`);
-      console.debug(`${MODULE_ID} | SpellPipeline: ${ctx.item.name} picker cancelled, slot refunded`);
+      console.debug(`${MODULE_ID} | SpellPipeline: ${ctx.item.name} picker cancelled, slot refunded, concentration cleared`);
       return;
     }
 
@@ -365,11 +421,156 @@ export class SpellPipeline {
     if (activity?._aceSlotDeferred) activity._aceSlotDeferred = false;
   }
 
+  /**
+   * When the picker is cancelled, dnd5e may have already started concentration
+   * on the caster during the activity-use flow. Clean it up so the caster
+   * isn't stuck concentrating on a spell they never actually committed to.
+   *
+   * Multi-strategy match (aggressive — we want to catch everything):
+   *   1. actor.concentration.effects with matching origin
+   *   2. actor.effects scan for the "Concentrating" status with matching origin
+   *   3. actor.effects scan by name matching the spell
+   *   4. Cleanup flags.dnd5e.itemData pointing at this item
+   */
+  static async _endConcentrationForCancelledSpell(actor, item) {
+    if (!actor || !item) return;
+    try {
+      const itemUuid = item.uuid;
+      const itemId = item.id;
+      const spellName = String(item.name ?? "").toLowerCase().trim();
+      const toEnd = new Set();
+
+      // Strategy 1: concentration registry
+      const conc = actor.concentration;
+      if (conc?.effects?.size) {
+        for (const eff of conc.effects) {
+          if (SpellPipeline._effectMatchesSpell(eff, itemUuid, itemId, spellName)) {
+            toEnd.add(eff);
+          }
+        }
+      }
+
+      // Strategy 2: scan actor.effects for the "Concentrating" status effect itself
+      for (const eff of actor.effects ?? []) {
+        if (eff.statuses?.has?.("concentrating")) {
+          if (SpellPipeline._effectMatchesSpell(eff, itemUuid, itemId, spellName)) {
+            toEnd.add(eff);
+          }
+        }
+      }
+
+      // Strategy 3: scan actor.effects for any effect named after this spell
+      // (catches the buff effect itself if it was applied early, before our cancel)
+      for (const eff of actor.effects ?? []) {
+        const effNameLower = String(eff.name ?? "").toLowerCase().trim();
+        if (effNameLower === spellName && eff.statuses?.has?.("concentrating")) {
+          toEnd.add(eff);
+        }
+      }
+
+      for (const eff of toEnd) {
+        try {
+          await eff.delete();
+          console.debug(`${MODULE_ID} | SpellPipeline: ended effect "${eff.name}" after cancel`);
+        } catch (err) {
+          console.warn(`${MODULE_ID} | concentration end failed for "${eff.name}":`, err);
+        }
+      }
+
+      if (toEnd.size === 0) {
+        console.debug(`${MODULE_ID} | SpellPipeline: no concentration effects found to end for cancelled ${item.name}`);
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | _endConcentrationForCancelledSpell threw (non-fatal):`, err);
+    }
+  }
+
+  /**
+   * Check if an ActiveEffect is tied to a given spell item via any of the
+   * common identification paths (origin UUID, partial origin match,
+   * dnd5e itemData flag, or by spell name).
+   */
+  static _effectMatchesSpell(eff, itemUuid, itemId, spellName) {
+    try {
+      const origin = String(eff.origin ?? "");
+      if (origin === itemUuid) return true;
+      if (origin.endsWith(`.${itemId}`)) return true;
+      if (origin.includes(itemUuid)) return true;
+      // dnd5e tags some concentration effects with flags.dnd5e.itemData
+      const itemDataName = eff.flags?.dnd5e?.itemData?.name;
+      if (itemDataName && String(itemDataName).toLowerCase().trim() === spellName) return true;
+      // Concentration effect name often matches spell name (e.g. "Concentrating on Haste")
+      const effNameLower = String(eff.name ?? "").toLowerCase();
+      if (effNameLower.includes(spellName) && eff.statuses?.has?.("concentrating")) return true;
+    } catch (_) { /* fall through */ }
+    return false;
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // HELPERS
   // ═══════════════════════════════════════════════════════════════════════════
 
+  /**
+   * Find the caster's existing Concentrating effect tied to the given spell.
+   * SINGLE SOURCE OF TRUTH — replaces the identical helpers that previously
+   * lived in BuffResolver and SaveResolver. (Audit-mandated 2026-06-08.)
+   *
+   * dnd5e starts concentration during the activity-use flow (before our
+   * resolvers run), so the effect should already exist by call time.
+   * Three-strategy lookup with name-substring fallback for compendium items.
+   *
+   * @param {Actor}  caster
+   * @param {Item}   spellItem
+   * @returns {ActiveEffect|null}
+   */
+  static findCasterConcentrationFor(caster, spellItem) {
+    try {
+      if (!caster?.effects) return null;
+      const itemUuid = spellItem?.uuid;
+      const itemId = spellItem?.id;
+      const spellNameLower = String(spellItem?.name ?? "").toLowerCase();
+
+      // Strategy 1: caster.concentration.effects (registry)
+      const conc = caster.concentration;
+      if (conc?.effects?.size) {
+        for (const eff of conc.effects) {
+          const origin = String(eff.origin ?? "");
+          if (itemUuid && (origin === itemUuid || origin.endsWith(`.${itemId}`))) return eff;
+          const itemDataName = eff.flags?.dnd5e?.itemData?.name;
+          if (itemDataName && String(itemDataName).toLowerCase() === spellNameLower) return eff;
+        }
+      }
+
+      // Strategy 2: scan caster.effects for "concentrating" status with matching origin
+      for (const eff of caster.effects) {
+        if (!eff.statuses?.has?.("concentrating")) continue;
+        const origin = String(eff.origin ?? "");
+        if (itemUuid && (origin === itemUuid || origin.endsWith(`.${itemId}`))) return eff;
+        const itemDataName = eff.flags?.dnd5e?.itemData?.name;
+        if (itemDataName && String(itemDataName).toLowerCase() === spellNameLower) return eff;
+        const effNameLower = String(eff.name ?? "").toLowerCase();
+        if (spellNameLower && effNameLower.includes(spellNameLower)) return eff;
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | SpellPipeline.findCasterConcentrationFor threw:`, err);
+    }
+    return null;
+  }
+
+  /**
+   * Stable per-cast key for caches + dedup.
+   * v0.7.21: include activity.uuid AND a per-activity timestamp stamped at
+   * preUseActivity so simultaneous casts of the same item (macros, rapid
+   * re-cast, autofire) don't collide on a shared (actorId, itemId) key.
+   * (Audit-mandated 2026-06-08.)
+   */
   static _cacheKey(activity) {
-    return `${activity?.item?.actor?.id ?? ""}|${activity?.item?.id ?? ""}`;
+    const uuid = activity?.uuid ?? "";
+    if (uuid) return uuid;
+    // Fallback for activities that don't expose .uuid in some dnd5e versions
+    const actorId = activity?.item?.actor?.id ?? "";
+    const itemId  = activity?.item?.id ?? "";
+    const stamp   = activity?._aceCastStamp ?? "";
+    return `${actorId}|${itemId}|${stamp}`;
   }
 }

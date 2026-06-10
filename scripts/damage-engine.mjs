@@ -157,9 +157,9 @@ export class DamageEngine {
       try {
         if (data?.type !== "addCleaveTarget") return;
 
-        // Validate the requesting user actually exists + has permission
-        // on the chosen target (so a malicious player can't socket cleave
-        // damage onto, e.g., the party's own characters).
+        // Validate the requesting user actually exists, owns the ATTACKER
+        // actor on the damage card, and isn't bypassing rate limits.
+        // (Audit-mandated 2026-06-08 — Grok pre-launch audit, Significant #9.)
         const fromUser = game.users?.get?.(data.fromUserId);
         if (!fromUser) {
           console.warn(`${MODULE_ID} | addCleaveTarget socket: unknown user ${data.fromUserId} — rejecting.`);
@@ -170,6 +170,40 @@ export class DamageEngine {
           console.warn(`${MODULE_ID} | addCleaveTarget socket: message ${data.messageId} not found.`);
           return;
         }
+
+        // ── Ownership check on the damage card's actor ──
+        // Only the player who OWNS the attacker should be able to add
+        // cleave targets to their attack's damage card. A malicious player
+        // could otherwise watch chat for a known messageId and redirect
+        // cleave damage onto party characters.
+        const attackerActorId = message.flags?.[MODULE_ID]?.actorId
+                             ?? message.flags?.[MODULE_ID]?.attackerId
+                             ?? message.speaker?.actor;
+        if (attackerActorId) {
+          const attackerActor = game.actors?.get?.(attackerActorId);
+          const ownsAttacker = !!attackerActor?.testUserPermission?.(fromUser, "OWNER");
+          if (!fromUser.isGM && !ownsAttacker) {
+            console.warn(`${MODULE_ID} | addCleaveTarget socket: ${fromUser.name} doesn't own attacker actor ${attackerActorId} — rejecting.`);
+            ui.notifications?.warn(`ACE: Cleave target add rejected — "${fromUser.name}" doesn't own the attacking actor.`);
+            return;
+          }
+        } else {
+          console.warn(`${MODULE_ID} | addCleaveTarget socket: damage card has no attacker actorId — cannot validate ownership.`);
+        }
+
+        // ── Lightweight rate-limit per user (≤2 cleave requests / 1.5s) ──
+        // Prevents socket flood / accidental double-fire from runaway macros.
+        const rlMap = DamageEngine._cleaveRateLimit ??= new Map();
+        const now = Date.now();
+        const userBucket = rlMap.get(fromUser.id) ?? [];
+        const fresh = userBucket.filter(t => now - t < 1500);
+        if (fresh.length >= 2) {
+          console.warn(`${MODULE_ID} | addCleaveTarget socket: rate limit hit for ${fromUser.name} — rejecting.`);
+          return;
+        }
+        fresh.push(now);
+        rlMap.set(fromUser.id, fresh);
+
         const scene = data.sceneId ? game.scenes?.get?.(data.sceneId) : canvas.scene;
         const tokenDoc = scene?.tokens?.get?.(data.tokenDocId);
         const tokenObj = tokenDoc?.object ?? null;
@@ -758,7 +792,7 @@ export class DamageEngine {
   // ═══════════════════════════════════════════════════════════════════════════
 
   async _onAttackComplete(data) {
-    const { item, actor, results, hits, actionType: hookActionType, subject } = data;
+    const { item, actor, results, hits, actionType: hookActionType, subject, initiatorUserId } = data;
     if (!hits?.length) return;
 
     // ── Check for optional riders (Divine Smite, Eldritch Smite, maneuvers, etc.) ──
@@ -793,7 +827,7 @@ export class DamageEngine {
           isCrit,
         };
 
-        const selectedRiders = await this._requestRiderChoice(actor, availableRiders, riderContext);
+        const selectedRiders = await this._requestRiderChoice(actor, availableRiders, riderContext, initiatorUserId);
 
         if (selectedRiders.length > 0) {
           await RiderEngine.consumeResources(actor, selectedRiders);
@@ -888,33 +922,63 @@ export class DamageEngine {
   //  Ownership-based Rider Routing
   // ═══════════════════════════════════════════════════════════════════════════
 
-  async _requestRiderChoice(actor, riders, context) {
-    const owningPlayer = game.users.find(u =>
-      !u.isGM && u.active && actor.testUserPermission(u, "OWNER")
-    );
+  async _requestRiderChoice(actor, riders, context, initiatorUserId = null) {
+    // ── Resolve WHO sees the rider popup (Divine Smite, Eldritch Smite, etc.) ──
+    // v0.7.22 UX rule: the popup goes to whoever ROLLED the attack — GM or
+    // player — because that's the person paying attention and expecting a
+    // follow-up. The OLD behavior always routed to the actor's owning player
+    // regardless of who rolled, so a GM rolling for a connected player's
+    // paladin saw nothing while the popup sat unnoticed on the player's
+    // screen until a 60-second timeout SILENTLY skipped the smite. That 60s
+    // skip is gone (matches the suite-wide timer purge).
+    //
+    // The "riderPromptsFollowRoller" setting (default ON) controls this.
+    // OFF restores the legacy "always ask the owning player" routing for
+    // tables where the GM rolls but wants the player to spend their own slots.
+    let followRoller = true;
+    try { followRoller = QolSettings.get("riderPromptsFollowRoller") !== false; }
+    catch (_) { followRoller = true; }
 
-    if (!owningPlayer) {
-      console.log(`${MODULE_ID} | Rider popup: showing locally (GM-controlled actor)`);
+    let targetUser = null;
+    if (followRoller && initiatorUserId) {
+      targetUser = game.users.get(initiatorUserId) ?? null;
+    }
+    if (!targetUser) {
+      // Fallback / legacy path: first active non-GM owner of the actor.
+      targetUser = game.users.find(u =>
+        !u.isGM && u.active && actor.testUserPermission(u, "OWNER")
+      ) ?? null;
+    }
+
+    // Show on THIS machine when the resolved user is us (GM rolled, or we ARE
+    // the rolling player) or when there's no distinct player to ask.
+    if (!targetUser || targetUser.id === game.user.id) {
+      console.log(`${MODULE_ID} | Rider popup: showing locally (roller=${targetUser?.name ?? "GM/local"})`);
       return RiderEngine.showRiderPopup(riders, context);
     }
 
     const requestId = foundry.utils.randomID();
-    console.log(`${MODULE_ID} | Rider popup: routing to player ${owningPlayer.name} (requestId=${requestId})`);
+    console.log(`${MODULE_ID} | Rider popup: routing to ${targetUser.name} (roller, requestId=${requestId})`);
 
     return new Promise((resolve) => {
+      // NO decision timer. The popup waits for the roller to choose. The only
+      // safety net is a long disconnect guard so a fully-dropped client can't
+      // hang the GM's damage pipeline forever — 10 minutes, matching the
+      // optional-prompt system. This is a disconnect net, NOT a "skip the
+      // smite after N seconds" countdown.
+      const NETWORK_SAFETY_MS = 10 * 60 * 1000;
       const timeout = setTimeout(() => {
         delete this._pendingRiderRequests[requestId];
-        console.warn(`${MODULE_ID} | Rider request ${requestId} timed out after 60s — skipping riders`);
-        ui.notifications.warn(`ACE QOL: ${owningPlayer.name} didn't respond to rider popup — skipping.`);
+        console.warn(`${MODULE_ID} | Rider request ${requestId} disconnect-safety expired (10 min) — ${targetUser.name} likely disconnected`);
         resolve([]);
-      }, 60000);
+      }, NETWORK_SAFETY_MS);
 
       this._pendingRiderRequests[requestId] = { resolve, timeout };
 
       game.socket.emit(`module.${MODULE_ID}`, {
         action: "showRiderPopup",
         requestId,
-        userId: owningPlayer.id,
+        userId: targetUser.id,
         riders,
         context,
       });

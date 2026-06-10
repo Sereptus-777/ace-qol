@@ -510,6 +510,14 @@ export class SpellAutoDamage {
       if (reactionResult.abort) {
         console.log(`${MODULE_ID} | SpellAutoDamage: aborting ${item.name} — ${reactionResult.reason}${reactionResult.counterspeller ? ` (by ${reactionResult.counterspeller})` : ""}`);
         SpellAutoDamage._unmarkActiveCast(actor.id, item?.id);
+        // ── v0.7.21 — Tear down orphan concentration on counterspell ──
+        // dnd5e auto-starts concentration before our barrier resolves.
+        // When counterspelled, the cast never actually happened — end the
+        // dangling concentration so the caster isn't stuck on a phantom spell.
+        try {
+          const { SpellPipeline } = await import("./spell-pipeline/pipeline.mjs");
+          await SpellPipeline._endConcentrationForCancelledSpell(actor, item);
+        } catch (_) { /* non-fatal */ }
         return;
       }
     } catch (err) {

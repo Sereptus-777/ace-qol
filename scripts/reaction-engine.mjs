@@ -73,25 +73,52 @@ export class ReactionEngine {
   static _castBarriers = new Map();
 
   /**
+   * v0.7.21 — Generate a stable key for the activity.
+   * UUID-first; composite fallback when UUID is missing. The previous code
+   * fell back to the activity object reference, which collided on parallel
+   * casts (macros, rapid actions) when both casts hit the object-ref bucket
+   * → Counterspell could resolve the wrong cast, refunding the wrong slot or
+   * tearing down the wrong concentration. (Audit-mandated 2026-06-08.)
+   *
+   * The composite fallback includes a per-activity timestamp stamped at
+   * preUseActivity (`activity._aceCastStamp`, also set by SpellPipeline).
+   * If both UUID and stamp are missing — extremely unusual — we generate a
+   * one-shot stamp here so the key is at least unique per cast attempt.
+   */
+  static _activityKey(activity) {
+    if (!activity) return null;
+    if (activity.uuid) return activity.uuid;
+    // Stamp the activity if it isn't already, so subsequent lookups land on
+    // the same key.
+    if (!activity._aceCastStamp) {
+      activity._aceCastStamp = `${performance.now?.() ?? Math.random()}`;
+    }
+    const actorId = activity?.item?.actor?.id ?? "";
+    const itemId  = activity?.item?.id ?? "";
+    return `${actorId}|${itemId}|${activity._aceCastStamp}`;
+  }
+
+  /**
    * Create a barrier for the given activity. Called in preUseActivity.
    * Idempotent — calling twice for the same activity is a no-op.
    */
   static _createCastBarrier(activity) {
     if (!activity) return;
-    if (ReactionEngine._castBarriers.has(activity)) return;
+    const key = ReactionEngine._activityKey(activity);
+    if (ReactionEngine._castBarriers.has(key)) return;
     let resolveFn;
     const promise = new Promise(r => { resolveFn = r; });
     const entry = { promise, resolve: resolveFn, resolved: false, resolvedWith: null, createdAt: Date.now() };
-    ReactionEngine._castBarriers.set(activity, entry);
-    console.log(`ace-qol | [BARRIER] CREATE for ${activity?.item?.name ?? '?'} on ${activity?.item?.actor?.name ?? '?'} — map size now ${ReactionEngine._castBarriers.size}`);
+    ReactionEngine._castBarriers.set(key, entry);
+    console.log(`ace-qol | [BARRIER] CREATE for ${activity?.item?.name ?? '?'} on ${activity?.item?.actor?.name ?? '?'} — key=${typeof key === "string" ? key : "[obj]"} map size now ${ReactionEngine._castBarriers.size}`);
     // Safety-net timeout — auto-resolve with { abort: false } after 30s
     setTimeout(() => {
-      const b = ReactionEngine._castBarriers.get(activity);
+      const b = ReactionEngine._castBarriers.get(key);
       if (b && !b.resolved) {
         b.resolve({ abort: false, reason: "timeout" });
         b.resolved = true;
       }
-      ReactionEngine._castBarriers.delete(activity);
+      ReactionEngine._castBarriers.delete(key);
     }, 30000);
   }
 
@@ -104,7 +131,8 @@ export class ReactionEngine {
       console.log(`ace-qol | [BARRIER] RESOLVE skipped — no activity`);
       return;
     }
-    const b = ReactionEngine._castBarriers.get(activity);
+    const key = ReactionEngine._activityKey(activity);
+    const b = ReactionEngine._castBarriers.get(key);
     if (!b) {
       console.log(`ace-qol | [BARRIER] RESOLVE skipped — no barrier for ${activity?.item?.name ?? '?'} (map size: ${ReactionEngine._castBarriers.size})`);
       return;
@@ -133,9 +161,10 @@ export class ReactionEngine {
       console.log(`ace-qol | [BARRIER] await — no activity`);
       return { abort: false, reason: "no_activity" };
     }
-    const b = ReactionEngine._castBarriers.get(activity);
+    const key = ReactionEngine._activityKey(activity);
+    const b = ReactionEngine._castBarriers.get(key);
     if (!b) {
-      console.log(`ace-qol | [BARRIER] await — no barrier for ${activity?.item?.name ?? '?'} (map size: ${ReactionEngine._castBarriers.size}, resolved: ${b?.resolved})`);
+      console.log(`ace-qol | [BARRIER] await — no barrier for ${activity?.item?.name ?? '?'} (key=${typeof key === "string" ? key : "[obj]"}, map size: ${ReactionEngine._castBarriers.size})`);
       return { abort: false, reason: "no_barrier" };
     }
     console.log(`ace-qol | [BARRIER] AWAITING ${activity?.item?.name ?? '?'} (currently resolved: ${b.resolved})`);
@@ -177,10 +206,29 @@ export class ReactionEngine {
       this._resetCurrentCombatantReaction(combat);
     });
 
-    // ── Also reset on round change (covers edge cases) ──
-    Hooks.on("combatRound", (combat, updateData, opts) => {
+    // ── Reset ALL combatants' reactions on round change ──
+    // RAW: reactions refresh at the start of each creature's turn. When a
+    // GM advances by whole round (Next Round button), per-turn-start hooks
+    // for individual combatants may not fire — so every combatant's reaction
+    // would stay stale. Refresh everyone in the combat. v0.7.21 fix.
+    Hooks.on("combatRound", async (combat, updateData, opts) => {
       if (!game.user.isGM) return;
-      this._resetCurrentCombatantReaction(combat);
+      try {
+        const cleared = [];
+        for (const c of combat.combatants ?? []) {
+          const actor = c.actor;
+          if (!actor) continue;
+          if (actor.getFlag(MODULE_ID, FLAG_REACTION_USED)) {
+            await actor.unsetFlag(MODULE_ID, FLAG_REACTION_USED);
+            cleared.push(actor.name);
+          }
+        }
+        if (cleared.length) {
+          console.log(`${MODULE_ID} | combatRound: refreshed reactions for ${cleared.length} combatants: ${cleared.join(", ")}`);
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | combatRound reaction-reset failed:`, err);
+      }
     });
 
     // ── v0.4.22.12: Reset all reactionUsed flags when combat ends ──
@@ -242,16 +290,19 @@ export class ReactionEngine {
       }
       await this._onSpellCast(activity, message);
     });
-    // Legacy fallback
+    // Legacy fallback — only fires if dnd5e didn't emit postCreateUsageMessage
+    // (older system versions). Defers one tick AND waits a short window so the
+    // V2 hook can claim the activity. This prevents the prompt from appearing
+    // BEFORE the spell's chat card renders (which happens at
+    // dnd5e.postCreateUsageMessage, not dnd5e.useActivity). v0.7.21 fix.
     Hooks.on("dnd5e.useActivity", async (activity) => {
       if (!game.user.isGM) return;
       if (!QolSettings.get("enableReactions")) return;
       if (!QolSettings.get("autoCounterspell")) return;
-      // v0.4.22.12: replaced broken `${id}-${Date.now()}` debounce.
-      // Both the V2 and legacy hooks fire with the SAME activity
-      // reference for a given cast. The V2 hook adds the ref to
-      // `_handledActivityRefs`. If we see it here, V2 already
-      // processed and we bail.
+      // Defer to give the V2 hook (postCreateUsageMessage) a chance to fire and
+      // mark this activity as handled. If V2 fires, this hook bails. If V2
+      // never fires (old dnd5e), this hook proceeds after the wait.
+      await new Promise(r => setTimeout(r, 250));
       if (activity && this._handledActivityRefs.has(activity)) return;
       await this._onSpellCast(activity, null);
     });
@@ -699,12 +750,26 @@ export class ReactionEngine {
       return;
     }
 
-    // Cantrips can't be counterspelled
-    const spellLevel = item.system?.level ?? 0;
-    if (spellLevel === 0) {
+    // Cantrips can't be counterspelled.
+    // CRITICAL: counterspell RAW compares slot level to the level the spell was
+    // CAST at (i.e. the upcasted level), NOT the spell's base level. A Haste
+    // (base L3) upcast to L6 should require DC 16 against a L3 Counterspell —
+    // not auto-succeed because 3 >= 3. Resolve the cast level from the activity
+    // usage data; fall back to base level only if nothing else is available.
+    // v0.7.21 fix.
+    const baseLevel = item.system?.level ?? 0;
+    if (baseLevel === 0) {
       ReactionEngine._resolveCastBarrier(activity, { abort: false, reason: "cantrip" });
       return;
     }
+    const messageSystemLevel = Number(message?.system?.spellLevel ?? NaN);
+    const messageFlagLevel   = Number(message?.flags?.dnd5e?.use?.spellLevel ?? NaN);
+    const activityUsageLevel = Number(activity?.usage?.spellLevel ?? NaN);
+    const spellLevel = Number.isFinite(messageSystemLevel) ? messageSystemLevel
+                     : Number.isFinite(messageFlagLevel)   ? messageFlagLevel
+                     : Number.isFinite(activityUsageLevel) ? activityUsageLevel
+                     : baseLevel;
+    this._debug(`Counterspell cast-level resolution: base=${baseLevel} msgSys=${messageSystemLevel} msgFlag=${messageFlagLevel} actUsage=${activityUsageLevel} → using ${spellLevel}`);
 
     // Get the caster's token
     const casterToken = this._getActorToken(casterActor);
@@ -780,11 +845,19 @@ export class ReactionEngine {
     if (result.accepted) {
       const reactor = result.reactor;
       const slotLevel = result.choiceData?.slotLevel ?? 3;
+      // v0.7.21: honor the "Consume Spell Slot" checkbox from the dialog.
+      // Defaults to true for PCs, false for NPCs (GM convenience). When
+      // missing entirely (legacy callers / non-dialog paths), default true
+      // so we don't accidentally make slots free.
+      const consumeSlot = result.choiceData?.consumeSlot !== false;
 
-      // Consume spell slot
-      await this._consumeSpellSlot(reactor.actor, slotLevel);
+      if (consumeSlot) {
+        await this._consumeSpellSlot(reactor.actor, slotLevel);
+      } else {
+        this._debug(`Counterspell slot consumption SKIPPED for ${reactor.actor.name} (NPC default / checkbox off).`);
+      }
 
-      // Mark reaction used
+      // Mark reaction used (still costs the reaction action regardless of slot consumption)
       await this._markReactionUsed(reactor.actor);
 
       // Determine success
@@ -1517,67 +1590,66 @@ export class ReactionEngine {
    */
   async _promptReaction(opts) {
     const { reactorActor, reactorToken, forceGM } = opts;
-    const timeout = (QolSettings.get("reactionTimeout") ?? DEFAULT_TIMEOUT) * 1000;
+    // v0.7.21: reaction-prompt timeout REMOVED — reactions wait
+    // indefinitely for an explicit user click. (See _promptLocal +
+    // showReactionDialog for rationale.) Cast-barrier 30s safety net
+    // upstream still prevents spell-pipeline hangs.
 
     // Determine who should see this prompt
     const ownerId = forceGM ? game.users.find(u => u.isGM)?.id : this._getOwnerUserId(reactorActor);
 
     // If the owner is the current user (GM or player), show locally
     if (ownerId === game.user.id) {
-      return this._promptLocal(opts, timeout);
+      return this._promptLocal(opts);
     }
 
     // Otherwise, send via socket to the owning player
-    return this._promptRemote(opts, ownerId, timeout);
+    return this._promptRemote(opts, ownerId);
   }
 
   /**
    * Show a reaction prompt locally (this client).
+   *
+   * v0.7.21: outer auto-resolve timer REMOVED. The reaction dialog now waits
+   * indefinitely for an explicit Accept/Decline click — RAW decisions
+   * shouldn't be racing a stopwatch. (Cast-barrier 30s safety net still
+   * exists upstream so the spell pipeline never hangs forever.)
    */
-  async _promptLocal(opts, timeout) {
-    return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        resolve({ accepted: false, choiceData: {} });
-      }, timeout);
+  async _promptLocal(opts) {
+    // ── Detect PC vs NPC reactor so the dialog can default the
+    // "Consume Spell Slot" checkbox appropriately. NPCs default OFF
+    // (GM convenience — don't track NPC slot economy). PCs default ON.
+    const reactorIsNpc = !opts.reactorActor?.hasPlayerOwner
+                      && opts.reactorActor?.type !== "character";
 
-      // ── Serialize reactor reference for the dialog ──
-      // showReactionDialog destructures `reactorActorName` / `reactorActorImg`
-      // (strings), not the live actor object. The remote socket path serializes
-      // these already; the local path was forwarding only the live `reactorActor`
-      // object, so the dialog destructure returned undefined and the header fell
-      // back to "Unknown". Bug fix: surface the same string fields here.
-      ReactionEngine.showReactionDialog({
-        ...opts,
-        reactorActorName: opts.reactorActor?.name ?? opts.reactorActorName ?? "Reaction",
-        reactorActorImg: opts.reactorActor?.img
-          ?? opts.reactorToken?.document?.texture?.src
-          ?? opts.reactorActorImg
-          ?? null,
-        timeoutMs: timeout,
-      }).then(result => {
-        clearTimeout(timer);
-        resolve(result);
-      }).catch(() => {
-        clearTimeout(timer);
-        resolve({ accepted: false, choiceData: {} });
-      });
-    });
+    return ReactionEngine.showReactionDialog({
+      ...opts,
+      reactorActorName: opts.reactorActor?.name ?? opts.reactorActorName ?? "Reaction",
+      reactorActorImg: opts.reactorActor?.img
+        ?? opts.reactorToken?.document?.texture?.src
+        ?? opts.reactorActorImg
+        ?? null,
+      reactorIsNpc,
+    }).catch(() => ({ accepted: false, choiceData: {} }));
   }
 
   /**
    * Send a reaction prompt to a remote player via socket.
+   *
+   * v0.7.21: outer auto-resolve timer REMOVED. The remote prompt waits
+   * indefinitely for the player to click. (Cast-barrier safety net upstream
+   * still prevents the spell pipeline from hanging.) `reactorIsNpc` is
+   * computed locally and passed to the dialog for slot-checkbox default —
+   * but remote prompts only fire for PC reactors, so this is effectively
+   * always false on the receiving end.
    */
-  async _promptRemote(opts, targetUserId, timeout) {
+  async _promptRemote(opts, targetUserId) {
     return new Promise((resolve) => {
       const requestId = `reaction-${++this._requestCounter}-${Date.now()}`;
+      this._pendingRequests.set(requestId, { resolve, reactorActorId: opts.reactorActor?.id });
 
-      // Set up timeout
-      const timer = setTimeout(() => {
-        this._pendingRequests.delete(requestId);
-        resolve({ accepted: false, choiceData: {} });
-      }, timeout + 2000); // Extra 2s buffer for network latency
-
-      this._pendingRequests.set(requestId, { resolve, timeout: timer, reactorActorId: opts.reactorActor?.id });
+      const reactorIsNpc = !opts.reactorActor?.hasPlayerOwner
+                        && opts.reactorActor?.type !== "character";
 
       // Send to player
       game.socket.emit(SOCKET_NAME, {
@@ -1591,7 +1663,7 @@ export class ReactionEngine {
           reactorActorName: opts.reactorActor?.name,
           reactorActorImg: opts.reactorActor?.img ?? opts.reactorToken?.document?.texture?.src,
           reactorTokenId: opts.reactorToken?.id,
-          timeoutMs: timeout,
+          reactorIsNpc,
           // Strip non-serializable fields
           reactorActor: undefined,
           reactorToken: undefined,
@@ -1675,10 +1747,9 @@ export class ReactionEngine {
       const {
         type, title, description, details, acceptLabel, declineLabel,
         spellSlotLevel, availableSlots, icon, accentColor,
-        reactorActorName, reactorActorImg, timeoutMs, extraData,
+        reactorActorName, reactorActorImg, reactorIsNpc, extraData,
       } = data;
 
-      const timeoutSec = Math.ceil((timeoutMs ?? DEFAULT_TIMEOUT * 1000) / 1000);
       const accent = accentColor ?? "#d4af37";
       let resolved = false;
 
@@ -1705,13 +1776,36 @@ export class ReactionEngine {
           </div>`;
       }
 
-      // ── Countdown timer ──
-      const timerHtml = `<div class="ace-qol-reaction-timer">
-        <div class="ace-qol-reaction-timer-bar" style="background:${accent}"></div>
-        <span class="ace-qol-reaction-timer-text">${timeoutSec}s</span>
-      </div>`;
+      // ── v0.7.21: Consume Spell Slot checkbox ──
+      // RAW: counterspell consumes a slot. For PCs, default ON (they pay
+      // the cost). For NPCs, default OFF (GM convenience — don't track
+      // NPC slot economy strictly; otherwise it's "cheating" the GM out
+      // of unlimited NPC casts which is the normal table rule).
+      // Only render the checkbox when a slot picker is present (i.e.
+      // spell-slot-consuming reaction like Counterspell — Shield etc.
+      // don't need this control).
+      const consumeSlotDefault = reactorIsNpc ? "" : "checked";
+      // v0.7.21: GM-only interaction. PCs see the checkbox state (transparent
+      // about whether the slot gets consumed) but can't toggle it — RAW says
+      // counterspell consumes a slot, and players shouldn't be able to opt
+      // out. GM is the only one with authority to grant slot-free reactions
+      // (typically for NPCs, but also occasional narrative grace).
+      const consumeSlotDisabled = game.user.isGM ? "" : "disabled";
+      const consumeSlotClass = game.user.isGM ? "" : "ace-qol-reaction-consume-slot-locked";
+      const lockedHint = game.user.isGM ? "" : " <em style='opacity:0.55;font-size:0.8em;'>(GM-only)</em>";
+      const consumeSlotHtml = spellSlotLevel && availableSlots?.length ? `
+        <div class="ace-qol-reaction-consume-slot ${consumeSlotClass}">
+          <label>
+            <input type="checkbox" class="ace-qol-reaction-consume-slot-checkbox" ${consumeSlotDefault} ${consumeSlotDisabled} />
+            <span>Consume Spell Slot${reactorIsNpc ? " <em style='opacity:0.7;font-size:0.85em;'>(NPC default: off)</em>" : ""}${lockedHint}</span>
+          </label>
+        </div>` : "";
 
       // ── Full dialog HTML ──
+      // v0.7.21: countdown timer REMOVED. The user wants the reaction
+      // decision to be binary (Accept / Decline) with no time pressure.
+      // Upstream cast-barrier 30s safety net still prevents the spell
+      // pipeline from hanging if the player walks away.
       const html = `
         <div class="ace-qol-reaction-prompt" data-reaction-type="${type}">
           <div class="ace-qol-reaction-header" style="border-color:${accent}">
@@ -1727,8 +1821,8 @@ export class ReactionEngine {
             <div class="ace-qol-reaction-description">${description}</div>
             <div class="ace-qol-reaction-details">${detailRows}</div>
             ${slotPickerHtml}
+            ${consumeSlotHtml}
           </div>
-          ${timerHtml}
           <div class="ace-qol-reaction-buttons">
             <button class="ace-qol-reaction-accept" style="border-color:${accent}; color:${accent}">
               <i class="fas ${icon ?? "fa-check"}"></i> ${acceptLabel ?? "Use Reaction"}
@@ -1747,48 +1841,25 @@ export class ReactionEngine {
         render: (jq) => {
           const el = jq[0] ?? jq;
 
-          // ── Countdown animation ──
-          const timerBar = el.querySelector(".ace-qol-reaction-timer-bar");
-          const timerText = el.querySelector(".ace-qol-reaction-timer-text");
-          if (timerBar) {
-            timerBar.style.transition = `width ${timeoutSec}s linear`;
-            requestAnimationFrame(() => { timerBar.style.width = "0%"; });
-          }
-          let countdown = timeoutSec;
-          const countdownInterval = setInterval(() => {
-            countdown--;
-            if (timerText) timerText.textContent = `${Math.max(0, countdown)}s`;
-            if (countdown <= 0) clearInterval(countdownInterval);
-          }, 1000);
-
-          // ── Auto-close on timeout ──
-          const autoCloseTimer = setTimeout(() => {
-            clearInterval(countdownInterval);
-            if (!resolved) {
-              resolved = true;
-              resolve({ accepted: false, choiceData: {} });
-              dialog.close();
-            }
-          }, timeoutMs ?? DEFAULT_TIMEOUT * 1000);
-
           // ── Accept button ──
           el.querySelector(".ace-qol-reaction-accept")?.addEventListener("click", () => {
-            clearTimeout(autoCloseTimer);
-            clearInterval(countdownInterval);
             if (resolved) return;
             resolved = true;
 
             const slotSelect = el.querySelector(".ace-qol-reaction-slot-select");
             const slotLevel = slotSelect ? parseInt(slotSelect.value) : (spellSlotLevel ?? null);
+            const consumeBox = el.querySelector(".ace-qol-reaction-consume-slot-checkbox");
+            // If the checkbox isn't shown at all (non-slot reactions like
+            // Shield), default to true so spell-slot reactions don't
+            // accidentally skip consumption. If shown, honor the checkbox.
+            const consumeSlot = consumeBox ? consumeBox.checked : true;
 
-            resolve({ accepted: true, choiceData: { slotLevel } });
+            resolve({ accepted: true, choiceData: { slotLevel, consumeSlot } });
             dialog.close();
           });
 
           // ── Decline button ──
           el.querySelector(".ace-qol-reaction-decline")?.addEventListener("click", () => {
-            clearTimeout(autoCloseTimer);
-            clearInterval(countdownInterval);
             if (resolved) return;
             resolved = true;
             resolve({ accepted: false, choiceData: {} });
@@ -1834,9 +1905,9 @@ export class ReactionEngine {
     // look regardless of upstream CSS scope.
     const html = `
       <div style="background:linear-gradient(180deg,#1a1410 0%,#0f0a08 100%);border:2px solid ${accentColor};border-radius:6px;padding:14px;color:#f0e4c0;font-family:'Signika','Helvetica Neue',sans-serif;box-shadow:0 0 12px ${accentColor}33;">
-        <div style="display:flex;align-items:center;gap:10px;font-size:16px;font-weight:700;color:${accentColor};text-transform:uppercase;letter-spacing:0.6px;border-bottom:1px solid #4a3a28;padding-bottom:8px;margin-bottom:10px;">
-          <i class="fas fa-bolt" style="font-size:18px;color:${accentColor};"></i>
-          <span>REACTION — ${reactionName.toUpperCase()}</span>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;row-gap:4px;font-size:16px;font-weight:700;color:${accentColor};text-transform:uppercase;letter-spacing:0.6px;border-bottom:1px solid #4a3a28;padding-bottom:8px;margin-bottom:10px;">
+          <i class="fas fa-bolt" style="font-size:18px;color:${accentColor};flex-shrink:0;"></i>
+          <span style="flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">REACTION — ${reactionName.toUpperCase()}</span>
         </div>
         <div style="font-size:16px;line-height:1.5;color:#f0e4c0;font-weight:500;">${text}</div>
       </div>
@@ -2238,7 +2309,47 @@ export function injectReactionCSS() {
   font-weight: 600;
 }
 
-/* ── Timer ── */
+/* ── Consume Spell Slot Checkbox (v0.7.21) ── */
+.ace-qol-reaction-consume-slot {
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: rgba(255,255,255,0.03);
+  border-radius: 3px;
+  border: 1px solid rgba(255,255,255,0.06);
+}
+.ace-qol-reaction-consume-slot label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: #e0e0e0;
+  cursor: pointer;
+  font-weight: 600;
+}
+.ace-qol-reaction-consume-slot input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: #ab47bc;
+}
+/* v0.7.21: Locked state for non-GM clients — they see the checkbox but
+   can't toggle. Visually muted so the player understands it's read-only. */
+.ace-qol-reaction-consume-slot.ace-qol-reaction-consume-slot-locked {
+  opacity: 0.6;
+  background: rgba(255,255,255,0.015);
+}
+.ace-qol-reaction-consume-slot.ace-qol-reaction-consume-slot-locked label {
+  cursor: not-allowed;
+  color: #888;
+}
+.ace-qol-reaction-consume-slot.ace-qol-reaction-consume-slot-locked input[type="checkbox"] {
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* ── Timer (legacy — preserved for any non-counterspell reactions
+   that might still want a visible time pressure indicator in future.
+   The counterspell flow no longer renders these elements as of v0.7.21.) ── */
 .ace-qol-reaction-timer {
   position: relative;
   height: 20px;

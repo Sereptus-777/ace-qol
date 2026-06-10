@@ -67,8 +67,9 @@ export const HEAL_SPELLS = {
     shape: "touch",
     range: 5,
     heal: {
-      // No HP — clears one condition. Use 0d0 formula for "no heal" + chat-card explains.
+      // No HP — clears conditions. Resolver auto-clears any present from the list.
       formula: () => "0",
+      clearStatuses: ["charmed", "petrified", "paralyzed", "cursed", "exhaustion", "incapacitated"],
     },
     picker: { allowSelf: true, preHighlightSelf: true, requiresAdjacent: true, excludeDead: false },
     flavorOnConfirm: "End one effect on target: exhaustion (1 level), charmed, petrified, cursed, or one reduction to ability score / max HP.",
@@ -79,6 +80,7 @@ export const HEAL_SPELLS = {
     range: 5,
     heal: {
       formula: () => "0",
+      clearStatuses: ["blinded", "deafened", "paralyzed", "poisoned", "diseased"],
     },
     picker: { allowSelf: true, preHighlightSelf: true, requiresAdjacent: true, excludeDead: false },
     flavorOnConfirm: "End one disease or one condition on target: blinded, deafened, paralyzed, or poisoned.",
@@ -88,7 +90,8 @@ export const HEAL_SPELLS = {
     shape: "touch",
     range: 5,
     heal: {
-      formula: () => "0",  // Stabilizes — no HP healed
+      formula: () => "0",
+      stabilizes: true,  // Clears death saves but doesn't restore HP
     },
     picker: { allowSelf: false, preHighlightSelf: false, requiresAdjacent: true, excludeDead: true },
     flavorOnConfirm: "Stabilize a creature with 0 HP. They become stable but stay unconscious.",
@@ -99,6 +102,7 @@ export const HEAL_SPELLS = {
     range: 5,
     heal: {
       formula: () => "1",  // Comes back at 1 HP
+      revivesDead: true,   // Clears "dead" status pre-heal so HP applies
     },
     picker: { allowSelf: false, preHighlightSelf: false, requiresAdjacent: true, excludeDead: true },
     flavorOnConfirm: "Return a creature who died within the last minute to life at 1 HP. Requires diamond worth 300 gp.",
@@ -108,10 +112,13 @@ export const HEAL_SPELLS = {
     shape: "touch",
     range: 5,
     heal: {
-      formula: (castLvl, spellMod) => `${castLvl * 4 + spellMod}`,  // approximation; actually returns with all HP but takes 10 days
+      // RAW: target returns with ALL hit points restored. Computing full HP here.
+      // Caller can pass castLvl higher for upcast — no upcast effect on HP for this spell.
+      formula: () => "999",  // Heal everything; resolver caps at maxHP
+      revivesDead: true,
     },
     picker: { allowSelf: false, preHighlightSelf: false, requiresAdjacent: true, excludeDead: true },
-    flavorOnConfirm: "Return a creature dead up to 10 days to life. They have -4 penalty to attacks/saves/checks for several days.",
+    flavorOnConfirm: "Return a creature dead up to 10 days to life with all HP restored. They have -4 penalty to attacks/saves/checks for 4 long rests.",
   },
 
   "healing word group": {

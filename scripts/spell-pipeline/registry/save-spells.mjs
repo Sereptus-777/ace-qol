@@ -9,19 +9,19 @@ export const SAVE_SPELLS = {
   "hold person": {
     shape: "save-single",
     range: 60,
-    save: { ability: "wis", onFail: "effect" },
+    save: { ability: "wis", onFail: "effect", repeatAt: "endOfTurn" },  // RAW: re-save at end of each turn
     effect: { key: "paralyzed", duration: "concentration" },
     picker: { allowSelf: false, creatureTypeFilter: "humanoid", excludeDead: true },
-    flavorOnConfirm: "A humanoid must succeed on a Wisdom save or be paralyzed for the duration.",
+    flavorOnConfirm: "A humanoid must succeed on a Wisdom save or be paralyzed. Re-saves at end of each turn.",
   },
 
   "hold monster": {
     shape: "save-single",
     range: 60,
-    save: { ability: "wis", onFail: "effect" },
+    save: { ability: "wis", onFail: "effect", repeatAt: "endOfTurn" },  // RAW: re-save at end of each turn
     effect: { key: "paralyzed", duration: "concentration" },
     picker: { allowSelf: false, excludeDead: true },
-    flavorOnConfirm: "Any non-undead creature must succeed on a Wisdom save or be paralyzed.",
+    flavorOnConfirm: "Any non-undead creature must succeed on a Wisdom save or be paralyzed. Re-saves at end of each turn.",
   },
 
   "charm person": {
@@ -45,7 +45,7 @@ export const SAVE_SPELLS = {
   "banishment": {
     shape: "save-single",
     range: 60,
-    save: { ability: "cha", onFail: "effect" },
+    save: { ability: "cha", onFail: "effect" },  // RAW: no end-of-turn re-save; ends if concentration broken or 1 min passes
     effect: { key: "banishment", duration: "concentration" },
     picker: { allowSelf: false, excludeDead: true },
     flavorOnConfirm: "Target must succeed on a Charisma save or be banished to a harmless demiplane.",
@@ -90,19 +90,19 @@ export const SAVE_SPELLS = {
   "tasha's hideous laughter": {
     shape: "save-single",
     range: 30,
-    save: { ability: "wis", onFail: "effect" },
+    save: { ability: "wis", onFail: "effect", repeatAt: "endOfTurn" },  // RAW: re-save at end of each turn
     effect: { key: "tashas_hideous_laughter", duration: "concentration" },
     picker: { allowSelf: false, excludeDead: true },
-    flavorOnConfirm: "Target must succeed on a Wisdom save or drop prone and become incapacitated from laughter.",
+    flavorOnConfirm: "Target must succeed on a Wisdom save or drop prone and become incapacitated from laughter. Re-saves at end of each turn.",
   },
 
   "crown of madness": {
     shape: "save-single",
     range: 120,
-    save: { ability: "wis", onFail: "effect" },
+    save: { ability: "wis", onFail: "effect", repeatAt: "endOfTurn" },  // RAW: re-save at end of each turn
     effect: { key: "crown_of_madness", duration: "concentration" },
     picker: { allowSelf: false, excludeDead: true },
-    flavorOnConfirm: "Humanoid target wears a twisted iron crown — must attack whoever you direct.",
+    flavorOnConfirm: "Humanoid target wears a twisted iron crown — must attack whoever you direct. Re-saves at end of each turn.",
   },
 
   "bestow curse": {
@@ -119,7 +119,7 @@ export const SAVE_SPELLS = {
   "maze": {
     shape: "save-single",
     range: 60,
-    save: { ability: "int", onFail: "effect" },
+    save: { ability: "int", onFail: "effect", repeatAt: "endOfTurn" },  // RAW: INT save at end of each turn to escape
     effect: { key: "maze", duration: "concentration" },
     picker: { allowSelf: false, excludeDead: true },
     flavorOnConfirm: "Target is banished to a labyrinthine demiplane. INT save at end of each turn to escape.",
@@ -164,10 +164,10 @@ export const SAVE_SPELLS = {
   "power word stun": {
     shape: "save-single",
     range: 60,
-    save: { ability: "con", onFail: "effect" },  // CON save in 2024; 2014 was HP threshold (no save)
+    save: { ability: "con", onFail: "effect", repeatAt: "endOfTurn" },  // 2024: CON save at end of each turn
     effect: { key: "power_word_stun", duration: "concentration" },
     picker: { allowSelf: false, excludeDead: true },
-    flavorOnConfirm: "Target with ≤150 HP must succeed CON save or be stunned (CON save at end of each turn).",
+    flavorOnConfirm: "Target with ≤150 HP must succeed CON save or be stunned. Re-saves at end of each turn.",
   },
 
   "power word kill": {

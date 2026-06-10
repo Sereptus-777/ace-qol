@@ -39,6 +39,8 @@ import { StealthEngine }        from "./stealth-engine.mjs";
 import { CombatActions }        from "./combat-actions.mjs";
 import { FumbleEngine }         from "./fumble-engine.mjs";
 import { OAPrompt }             from "./oa-prompt.mjs";
+import { LoadoutEngine }        from "./loadout-engine.mjs";
+import { OA_IN_FLIGHT }         from "./oa-transient.mjs";
 import { InitiativeTools }      from "./initiative-tools.mjs";
 import { AuraEngine }           from "./aura-engine.mjs";
 import { PolymorphSpellPipeline } from "./polymorph-spell-pipeline.mjs";
@@ -1709,6 +1711,312 @@ Hooks.once("ready", () => {
     console.error(`${MODULE_ID} | Condition Library init failed:`, err);
   }
 
+  // ─── v0.7.21: Haste lethargy auto-apply on Haste effect deletion ─────────
+  // PHB Haste: "When the spell ends, the target can't move or take actions
+  // until after its next turn, as a wave of lethargy sweeps over it."
+  // Listen for any Haste effect being deleted and apply the lethargy debuff
+  // to the actor it was on. GM-only because only GM can write to NPC actors.
+  try {
+    Hooks.on("deleteActiveEffect", async (effect, _opts, userId) => {
+      try {
+        if (!game.user.isGM) return;
+        if (userId !== game.user.id) return;  // only the deleting client handles
+        if (!effect) return;
+        const effName = String(effect.name ?? "").toLowerCase().trim();
+        if (effName !== "haste") return;
+        const actor = effect.parent;
+        if (!actor || actor.documentName !== "Actor") return;
+
+        // ── v0.7.21 — Replacement detection ──
+        // BuffResolver flags the prior Haste with `_replacedNotEnded` when
+        // re-casting Haste on the same target. RAW: the spell didn't END, it
+        // was refreshed — no lethargy in that case.
+        if (effect.flags?.[MODULE_ID]?._replacedNotEnded) {
+          console.log(`${MODULE_ID} | Haste on ${actor.name} was REPLACED (re-cast), not ended — skipping lethargy`);
+          return;
+        }
+
+        // Don't double-apply if lethargy is already there (e.g., spell ended twice)
+        const existing = actor.effects?.find(e => String(e.name ?? "").toLowerCase().trim() === "haste lethargy");
+        if (existing) return;
+
+        // Apply via ConditionLibrary
+        const { ConditionLibrary } = await import("./condition-library.mjs");
+        await ConditionLibrary.applyEffect(actor, "haste_lethargy", {});
+        console.log(`${MODULE_ID} | Haste lethargy auto-applied to ${actor.name} — Haste ended`);
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Haste lethargy hook threw (non-fatal):`, err);
+      }
+    });
+    console.debug(`${MODULE_ID} | Haste lethargy auto-apply hook registered`);
+  } catch (err) {
+    console.error(`${MODULE_ID} | Haste lethargy hook init failed:`, err);
+  }
+
+  // ─── v0.7.21: ACE-owned concentration check — PC roll button + vanilla suppress ─
+  // Wires the "Roll Concentration Save" button on PC concentration cards
+  // (posted by DamageApplicator._triggerAceConcentrationCheck) and suppresses
+  // dnd5e's vanilla concentration prompt so the player only sees ours.
+  try {
+    // 1. Click handler — fires when the user (or GM) clicks the roll button
+    const _wireConcButton = (message, html) => {
+      const el = html instanceof HTMLElement ? html : (html?.[0] ?? html);
+      if (!el) return;
+      const btn = el.querySelector?.("[data-action='aceQolRollConcSave']");
+      if (!btn || btn.dataset.aceWired === "1") return;
+      btn.dataset.aceWired = "1";
+      btn.addEventListener("click", async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        try {
+          const actorUuid = btn.dataset.actorUuid;
+          const effectId = btn.dataset.effectId;
+          const dc = Number(btn.dataset.dc);
+          const formula = btn.dataset.formula;
+          const actor = await fromUuid(actorUuid);
+          if (!actor) {
+            ui.notifications?.warn("Concentration save: actor not found.");
+            return;
+          }
+          // Permission check — owner or GM only
+          if (!actor.testUserPermission?.(game.user, "OWNER") && !game.user.isGM) {
+            ui.notifications?.warn("You don't own this actor.");
+            return;
+          }
+          const effect = actor.effects?.get?.(effectId);
+          if (!effect) {
+            ui.notifications?.info("Concentration already ended.");
+            btn.disabled = true;
+            btn.textContent = "ALREADY ENDED";
+            return;
+          }
+          btn.disabled = true;
+          btn.textContent = "ROLLING...";
+          const roll = await new Roll(formula).evaluate();
+          const total = roll.total;
+          const passed = total >= dc;
+          await roll.toMessage({
+            speaker: ChatMessage.getSpeaker({ actor }),
+            flavor: `${actor.name} Concentration save — ${passed ? "MAINTAINED" : "BROKEN"} (${total} vs DC ${dc})`,
+          });
+          if (!passed) {
+            try { await effect.delete(); } catch (_) { /* non-fatal */ }
+            btn.textContent = `BROKEN — ${total} vs DC ${dc}`;
+            btn.style.background = "#e57373";
+          } else {
+            btn.textContent = `MAINTAINED — ${total} vs DC ${dc}`;
+            btn.style.background = "#7ec97e";
+          }
+        } catch (err) {
+          console.error(`${MODULE_ID} | concentration roll button failed:`, err);
+        }
+      });
+    };
+    Hooks.on("renderChatMessage", _wireConcButton);
+    Hooks.on("renderChatMessageHTML", _wireConcButton);
+
+    // 2. Suppress vanilla dnd5e concentration challenge card — we own this now.
+    //    dnd5e doesn't fire a hook before posting the card; the actual escape
+    //    hatch is `options.dnd5e.concentrationCheck === false` in the HP-update
+    //    options (dnd5e.mjs line 26287 checks this before challengeConcentration).
+    //    We patch ALL Actor#update calls that touch HP to inject this option so
+    //    EVERY damage path (ACE, vanilla attack, manual GM edit, traps, DoT)
+    //    routes through our concentration check, not dnd5e's.
+    try {
+      const ActorCls = CONFIG.Actor?.documentClass ?? globalThis.Actor;
+      if (ActorCls?.prototype?.update) {
+        const _origUpdate = ActorCls.prototype.update;
+        // Re-entrancy guard — per-actor WeakSet. If the patch body triggers
+        // another Actor.update on the same actor (e.g. effect creation/deletion
+        // → updateActor hook → other module fires actor.update), we bypass the
+        // patch to avoid stacked concentration cards / infinite recursion.
+        // (Audit-mandated: Grok 2026-06-08.)
+        const _patchActive = new WeakSet();
+        ActorCls.prototype.update = async function(data, options = {}) {
+          // ── Re-entrancy bypass ──
+          if (_patchActive.has(this)) {
+            return _origUpdate.call(this, data, options);
+          }
+          _patchActive.add(this);
+          try {
+            let damageDealt = 0;
+            let wasConcentrating = false;
+            try {
+              // Did this update touch HP downward? Only inject when HP is changing.
+              const newHP = foundry.utils.getProperty(data ?? {}, "system.attributes.hp.value");
+              if (Number.isFinite(newHP)) {
+                const curHP = this.system?.attributes?.hp?.value ?? 0;
+                if (newHP < curHP) {
+                  damageDealt = curHP - newHP;
+                  wasConcentrating = this.effects?.some?.(e => e.statuses?.has?.("concentrating"));
+                  // Suppress vanilla dnd5e concentration challenge — we own this.
+                  options = foundry.utils.mergeObject(options, { dnd5e: { concentrationCheck: false } });
+                }
+              }
+            } catch (_) { /* non-fatal — fall through to original update */ }
+            const result = await _origUpdate.call(this, data, options);
+            // ── Post-update: fire ACE concentration check if HP dropped on a
+            // concentrating actor. Fires AFTER the WeakSet clear (in finally)
+            // so the inner check doesn't recurse against this same guard. ──
+            if (damageDealt > 0 && wasConcentrating) {
+              const actor = this;
+              setTimeout(() => {
+                (async () => {
+                  try {
+                    const { DamageApplicator } = await import("./damage-applicator.mjs");
+                    if (DamageApplicator?._triggerAceConcentrationCheck) {
+                      await DamageApplicator._triggerAceConcentrationCheck(actor, damageDealt);
+                    }
+                  } catch (err) {
+                    console.warn(`${MODULE_ID} | global concentration check threw (non-fatal):`, err);
+                  }
+                })();
+              }, 0);
+            }
+            return result;
+          } finally {
+            _patchActive.delete(this);
+          }
+        };
+        console.debug(`${MODULE_ID} | Actor.update patched (re-entrancy-guarded) — vanilla dnd5e concentration suppressed + ACE concentration check fires globally on HP drops`);
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Actor.update patch failed (non-fatal):`, err);
+    }
+  } catch (err) {
+    console.error(`${MODULE_ID} | concentration-check wiring init failed:`, err);
+  }
+
+  // ─── v0.7.21: One-time cleanup of malformed dependentOn data ─────────────
+  // Earlier BuffResolver writes used an array-of-objects format for
+  // flags.dnd5e.dependentOn that dnd5e 5.x's DependentsRegistry can't parse —
+  // produces "Failed data preparation ... Cannot read properties of null
+  // (reading 'effects')" errors every prepareData cycle. Sweep once on ready,
+  // unset anything that isn't a valid UUID string. Idempotent.
+  Hooks.once("ready", async () => {
+    if (!game.user.isGM) return;
+    try {
+      let fixedCount = 0;
+      for (const actor of game.actors?.contents ?? []) {
+        for (const eff of actor.effects ?? []) {
+          const dep = eff.flags?.dnd5e?.dependentOn;
+          // Valid: string starting with a document class name. Invalid: array, object, undefined garbage.
+          if (dep !== undefined && dep !== null && (typeof dep !== "string" || dep.length < 16)) {
+            try {
+              await eff.update({ "flags.dnd5e.-=dependentOn": null });
+              fixedCount++;
+            } catch (_) { /* non-fatal */ }
+          }
+        }
+      }
+      // Same sweep across scene tokens (unlinked actors live there)
+      for (const scene of game.scenes?.contents ?? []) {
+        for (const token of scene.tokens ?? []) {
+          if (token.actorLink) continue;  // linked → handled above
+          const actor = token.actor;
+          if (!actor) continue;
+          for (const eff of actor.effects ?? []) {
+            const dep = eff.flags?.dnd5e?.dependentOn;
+            if (dep !== undefined && dep !== null && (typeof dep !== "string" || dep.length < 16)) {
+              try {
+                await eff.update({ "flags.dnd5e.-=dependentOn": null });
+                fixedCount++;
+              } catch (_) { /* non-fatal */ }
+            }
+          }
+        }
+      }
+      if (fixedCount > 0) {
+        console.log(`${MODULE_ID} | dependentOn cleanup: unset ${fixedCount} malformed flag(s) — dnd5e dependent registry errors should clear`);
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | dependentOn cleanup threw (non-fatal):`, err);
+    }
+  });
+
+  // ─── v0.7.21: Clear stale targets on turn change ─────────────────────────
+  // Fireball-style template-save spells leave game.user.targets populated
+  // for every token inside the template. If the GM doesn't click APPLY ALL
+  // (the damage-applicator's clear path), or just casts another spell
+  // mid-resolution, the targets persist across the whole encounter. Turn
+  // change is the natural reset point — by then either the spell resolved
+  // or the user moved on. GM-side only (player targets are their own
+  // tactical planning, don't stomp on them).
+  try {
+    Hooks.on("combatTurnChange", () => {
+      try {
+        if (!game.user.isGM) return;
+        const targets = [...(game.user?.targets ?? [])];
+        if (!targets.length) return;
+        for (const t of targets) {
+          t.setTarget?.(false, { user: game.user, releaseOthers: false, groupSelection: false });
+        }
+        game.user?.targets?.clear?.();
+        console.debug(`${MODULE_ID} | turn-change: cleared ${targets.length} stale target(s)`);
+      } catch (err) {
+        console.warn(`${MODULE_ID} | turn-change target clear failed (non-fatal):`, err);
+      }
+    });
+    console.debug(`${MODULE_ID} | turn-change target-clear hook registered`);
+  } catch (err) {
+    console.error(`${MODULE_ID} | turn-change target-clear init failed:`, err);
+  }
+
+  // ─── v0.7.21: Auto-select current combatant's token on turn change ────────
+  // Foundry's core "Control current combatant" setting can be disabled silently
+  // by other modules or per-user toggles, leaving the GM clicking around to
+  // find whose turn it is. We own the behavior here so it always works.
+  // GM-only; for players, only fires if they own the combatant. Skips if
+  // user is currently holding shift (so dragging selections doesn't break).
+  try {
+    Hooks.on("combatTurnChange", (combat /*, prior, current */) => {
+      try {
+        // Bail if no live combat or no current combatant
+        if (!combat?.started) return;
+        const combatant = combat.combatant;
+        const tokenId = combatant?.tokenId;
+        if (!tokenId) return;
+
+        // Permission gate — GM always; players only if they own the actor
+        const actor = combatant.actor;
+        const isOwner = actor?.testUserPermission?.(game.user, "OWNER");
+        if (!game.user.isGM && !isOwner) return;
+
+        // Get the canvas token (the document → token mapping)
+        const token = canvas?.tokens?.get?.(tokenId);
+        if (!token) return;
+
+        // Skip if user has shift held (preserving manual multi-select)
+        if (game.keyboard?.isModifierActive?.("Shift")) return;
+
+        // Already controlled? skip the no-op
+        if (token.controlled && canvas.tokens.controlled.length === 1) return;
+
+        token.control({ releaseOthers: true });
+        // Also pan camera if the token is off-screen and ace-qol pan-on-turn
+        // is enabled (default ON). Uses Foundry's canvas.animatePan.
+        try {
+          const center = token.center;
+          const screen = canvas.screenDimensions;
+          const view = canvas.stage.toLocal({ x: screen[0] / 2, y: screen[1] / 2 });
+          // crude off-screen check — pan if more than 60% of half-screen away
+          const dx = Math.abs(center.x - view.x);
+          const dy = Math.abs(center.y - view.y);
+          if (dx > screen[0] * 0.4 || dy > screen[1] * 0.4) {
+            canvas.animatePan({ x: center.x, y: center.y, duration: 300 });
+          }
+        } catch (_) { /* non-fatal — pan is convenience, not core */ }
+
+        console.debug(`${MODULE_ID} | turn-change: auto-selected ${token.name}`);
+      } catch (err) {
+        console.warn(`${MODULE_ID} | turn-change auto-select failed (non-fatal):`, err);
+      }
+    });
+    console.debug(`${MODULE_ID} | turn-change auto-select hook registered`);
+  } catch (err) {
+    console.error(`${MODULE_ID} | turn-change auto-select init failed:`, err);
+  }
+
   // Duration Tracker — ALL users init hooks, but only GM processes expirations
   try {
     durationTracker = new DurationTracker();
@@ -1982,6 +2290,38 @@ Hooks.once("ready", () => {
         // exactly which creatures to affect. Single-target spells use the
         // currently-targeted token if present, otherwise the picker too.
         if (item.type === "spell") {
+          // ── v0.7.21: SpellPipeline ownership guard ──
+          // If the new unified spell pipeline owns this spell (registry
+          // entry exists), let IT handle the cast end-to-end. Without
+          // this guard, Haste / Bless / Mage Armor / etc. get processed
+          // by BOTH systems → double picker, double effect application.
+          // The pipeline's resolver runs in postCreateUsageMessage, which
+          // also fires this code path — hence the explicit ownership check.
+          const pipeline = globalThis.game?.aceQol?.SpellPipeline;
+          if (pipeline?.ownsSpell?.(item)) {
+            console.log(`${MODULE_ID} | ${item.name}: skipping legacy auto-apply (SpellPipeline owns this spell)`);
+            return;
+          }
+
+          // ── v0.7.21: Counterspell barrier for legacy auto-apply ──
+          // The pipeline path checks the reaction barrier and tears down
+          // concentration on abort. The LEGACY path didn't — meaning if a
+          // spell only in SPELL_AUTO_APPLY (not yet in pipeline registry)
+          // got counterspelled, the buff still applied. Same guard here.
+          try {
+            const { ReactionEngine } = await import("./reaction-engine.mjs");
+            const result = await ReactionEngine.awaitCastBarrier(activity);
+            if (result?.abort) {
+              console.log(`${MODULE_ID} | ${item.name}: legacy auto-apply aborted — ${result.reason}`);
+              try {
+                if (pipeline?._endConcentrationForCancelledSpell) {
+                  await pipeline._endConcentrationForCancelledSpell(actor, item);
+                }
+              } catch (_) { /* non-fatal */ }
+              return;
+            }
+          } catch (_) { /* non-fatal — proceed with cast */ }
+
           const lookupKey = nameNorm.replace(/['']/g, "").trim();
           const dispatch = SPELL_AUTO_APPLY[lookupKey];
           if (dispatch) {
@@ -2218,6 +2558,15 @@ Hooks.once("ready", () => {
     OAPrompt.init();
   } catch (err) {
     console.error(`${MODULE_ID} | OA Prompt init failed:`, err);
+  }
+
+  // Loadout / Hands enforcement — stops a character equipping more weapons
+  // than their hands can hold (makes "equipped" trustworthy for the OA picker
+  // and everything else). PC-only; setting `enforceLoadout` (default ON).
+  try {
+    LoadoutEngine.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Loadout Engine init failed:`, err);
   }
 
   // Initiative Tools — Roll-All-NPCs / Roll-All-PCs buttons in the combat
@@ -3125,6 +3474,19 @@ Hooks.once("ready", () => {
         return;
       }
 
+      // ── Player resolved their OWN opportunity attack — GM flips the card
+      //    and marks the reaction used (message + flag writes are GM-side).
+      //    The player already fired the actual attack on their own client.
+      if (payload.action === "oaResolve") {
+        try {
+          const { OAPrompt } = await import("/modules/ace-qol/scripts/oa-prompt.mjs");
+          await OAPrompt.resolveOAPrompt(payload.messageId, payload.status);
+        } catch (err) {
+          console.error(`${MODULE_ID} | oaResolve socket handler failed:`, err);
+        }
+        return;
+      }
+
       // ── Player requests GM to roll damage from a ROLL DAMAGE button ──
       if (payload.action === "rollDamage") {
         console.log(`${MODULE_ID} | GM received rollDamage request from ${payload.userName} for message ${payload.messageId}`);
@@ -3318,8 +3680,11 @@ Hooks.once("ready", () => {
           attackPipeline._lastAttackItem = item;
           attackPipeline._lastAttackActor = actor;
 
-          // Emit attackComplete hook for the damage engine
-          Hooks.callAll(`${MODULE_ID}.attackComplete`, { item, actor, results, hits, misses });
+          // Emit attackComplete hook for the damage engine.
+          // initiatorUserId = the player who rolled the attack on their
+          // client (forwarded in the bridge payload). The damage engine
+          // routes rider popups (Divine Smite etc.) to this user. v0.7.22.
+          Hooks.callAll(`${MODULE_ID}.attackComplete`, { item, actor, results, hits, misses, initiatorUserId: payload.userId });
 
           // Tell the player to close any system ActivityChoiceDialogs (Divine Smite popup)
           game.socket.emit(SOCKET_NAME, { action: "closeSystemDialogs", userId: payload.userId });
@@ -3581,6 +3946,12 @@ Hooks.once("ready", () => {
     const origUse = ItemClass.prototype.use;
     ItemClass.prototype.use = async function(config = {}, ...args) {
       if (this.type === "weapon" && this.actor) {
+        // Opportunity attacks fast-forward: skip the pre-prompt range check
+        // (the OA was already validated as in-reach when it triggered) AND the
+        // advantage prompt (it's a one-click auto-swing; advantage is still
+        // auto-applied from combat state). v0.7.24.
+        const isOA = OA_IN_FLIGHT.has(this.actor?.id);
+
         // ── Block attacks from incapacitated attackers (BEFORE the prompt) ───
         const atkStatuses = this.actor.statuses ?? new Set();
         const blockingConditions = ["paralyzed", "stunned", "unconscious", "incapacitated", "petrified"];
@@ -3607,24 +3978,26 @@ Hooks.once("ready", () => {
         // Now we range-check before the prompt so out-of-range attacks
         // get a clean "Out of range" toast and abort cleanly without the
         // player ever seeing the advantage dialog.
-        try {
-          const target = game.user.targets.first();
-          const ap = game.aceQol?.attackPipeline;
-          if (target && ap?._checkRange) {
-            const rangeCheck = ap._checkRange(this.actor, target, this);
-            if (rangeCheck?.blocked) {
-              const msg = `Out of range — ${rangeCheck.distanceFt}ft away (${rangeCheck.rangeDesc})`;
-              showCenterToast(msg, 2500);
-              ui.notifications?.warn(`ACE QOL: ${msg}`);
-              return null;  // cancel the attack
+        if (!isOA) {
+          try {
+            const target = game.user.targets.first();
+            const ap = game.aceQol?.attackPipeline;
+            if (target && ap?._checkRange) {
+              const rangeCheck = ap._checkRange(this.actor, target, this);
+              if (rangeCheck?.blocked) {
+                const msg = `Out of range — ${rangeCheck.distanceFt}ft away (${rangeCheck.rangeDesc})`;
+                showCenterToast(msg, 2500);
+                ui.notifications?.warn(`ACE QOL: ${msg}`);
+                return null;  // cancel the attack
+              }
             }
+          } catch (err) {
+            console.warn(`${MODULE_ID} | Pre-prompt range check failed (non-fatal):`, err);
           }
-        } catch (err) {
-          console.warn(`${MODULE_ID} | Pre-prompt range check failed (non-fatal):`, err);
         }
 
         // ── Show the advantage prompt (if enabled) ───────────────────────────
-        if (QolSettings.get("advantagePrompt") !== false) {
+        if (!isOA && QolSettings.get("advantagePrompt") !== false) {
           const target = game.user.targets.first();
           let suggested = "normal";
           let reasons   = [];
@@ -3672,8 +4045,18 @@ Hooks.once("ready", () => {
   // close the dialog — our rider engine handles all post-hit abilities.
   //
   // Using both V1 and V2 hooks to cover all Foundry versions.
+  // Dedup: dnd5e re-renders the dialog multiple times during its lifecycle
+  // (and we hook both renderApplication + renderActivityChoiceDialog).
+  // Use a string-key set on (item-uuid + app-id) so we catch app re-creates.
+  // Cleared after a short timeout so subsequent casts of the same spell work.
+  const _handledActivityDialogs = new Set();
   function _handleActivityChoiceDialog(app, element) {
     const item = app.item;
+    const dedupKey = `${item?.uuid ?? "?"}|${app.id ?? app.appId ?? Math.random()}`;
+    if (_handledActivityDialogs.has(dedupKey)) return;
+    _handledActivityDialogs.add(dedupKey);
+    // Clear after 3s so re-casts of the same spell aren't blocked
+    setTimeout(() => _handledActivityDialogs.delete(dedupKey), 3000);
     const el = element?.[0] ?? element ?? app.element;
 
     // Try to find the Attack activity on this item
@@ -3706,8 +4089,35 @@ Hooks.once("ready", () => {
       return;
     }
 
-    // No Attack button found — this is a post-hit rider dialog, close it.
-    // Our rider engine handles all post-hit abilities (Divine Smite, etc.)
+    // ── Spell items handling (v0.7.21+) ────────────────────────────────
+    // The "no attack → close" assumption only holds for WEAPON post-hit
+    // rider dialogs (Divine Smite, Searing Smite, etc., which our rider
+    // engine handles independently). For SPELL items, we want the cast
+    // to proceed without an extra click.
+    //
+    // Strategy: auto-click the FIRST activity button. Most multi-activity
+    // spells have the primary "Cast" as activity #0 and secondary options
+    // are upcast variants or rarely-used "Dismiss"/"End" actions. For
+    // edge cases where a user genuinely wants the second activity, they
+    // can use the character sheet directly (which calls the activity by
+    // ID without going through the dialog).
+    if (item?.type === "spell") {
+      if (el?.querySelector) {
+        const firstBtn = el.querySelector("button[data-activity-id]");
+        if (firstBtn) {
+          const activityId = firstBtn.dataset.activityId;
+          console.log(`${MODULE_ID} | Spell — auto-clicking first activity (${activityId}): ${app.title}`);
+          setTimeout(() => firstBtn.click(), 0);
+          return;
+        }
+      }
+      console.log(`${MODULE_ID} | Spell ActivityChoiceDialog with no buttons — leaving open: ${app.title}`);
+      return;
+    }
+
+    // No Attack button found — this is a post-hit rider dialog (Divine
+    // Smite et al.) on a weapon. Our rider engine handles all post-hit
+    // abilities, so close it.
     console.log(`${MODULE_ID} | Auto-closing post-hit ActivityChoiceDialog: ${app.title}`);
     setTimeout(() => app.close(), 0);
   }
@@ -3739,24 +4149,35 @@ Hooks.once("ready", () => {
       if (!tokenId) return;
 
       let totalRemoved = 0;
+      // Per-iteration guards — audit-mandated 2026-06-08. A single broken or
+      // concurrently-deleting combat must NOT abort the whole sweep.
       for (const combat of game.combats ?? []) {
-        // Match by tokenId — covers both linked and synthetic-actor combatants.
-        // Also defensively match by uuid since some combatants store token.uuid.
-        const targets = combat.combatants.filter(c =>
-             c.tokenId === tokenId
-          || c.token?.id === tokenId
-          || (c.token?.uuid && c.token.uuid.endsWith(`.${tokenId}`))
-        );
-        if (targets.length === 0) continue;
-
-        const ids = targets.map(c => c.id).filter(Boolean);
-        if (!ids.length) continue;
-
         try {
-          await combat.deleteEmbeddedDocuments("Combatant", ids);
-          totalRemoved += ids.length;
-        } catch (err) {
-          console.warn(`${MODULE_ID} | Could not auto-remove combatant(s) ${ids.join(",")} from combat ${combat.id}:`, err);
+          // Existence + readiness check — combat may be mid-delete or stale
+          if (!combat || combat.deleted) continue;
+          if (!combat.combatants) continue;
+
+          // Match by tokenId — covers both linked and synthetic-actor combatants.
+          // Also defensively match by uuid since some combatants store token.uuid.
+          const targets = combat.combatants.filter(c =>
+               c.tokenId === tokenId
+            || c.token?.id === tokenId
+            || (c.token?.uuid && c.token.uuid.endsWith(`.${tokenId}`))
+          );
+          if (targets.length === 0) continue;
+
+          const ids = targets.map(c => c.id).filter(Boolean);
+          if (!ids.length) continue;
+
+          try {
+            await combat.deleteEmbeddedDocuments("Combatant", ids);
+            totalRemoved += ids.length;
+          } catch (err) {
+            console.warn(`${MODULE_ID} | Could not auto-remove combatant(s) ${ids.join(",")} from combat ${combat.id}:`, err);
+          }
+        } catch (combatErr) {
+          // Match / filter / property access on a malformed combat — log and skip.
+          console.warn(`${MODULE_ID} | Combatant cleanup loop skipped combat "${combat?.id ?? "?"}" due to error:`, combatErr);
         }
       }
       if (totalRemoved > 0) {

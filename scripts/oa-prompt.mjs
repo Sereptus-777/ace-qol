@@ -27,6 +27,7 @@
 import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
 import { CombatState } from "./combat-state.mjs";
+import { OA_IN_FLIGHT } from "./oa-transient.mjs";
 
 // Hardcoded literal — TDZ-safe (see stealth-engine.mjs comment)
 const FLAG_NS = "ace-qol";
@@ -98,18 +99,23 @@ export class OAPrompt {
     const toX   = (changes.x ?? fromX);
     const toY   = (changes.y ?? fromY);
 
-    // Token center offsets
-    const w = (moverDoc.width  ?? 1) * (canvas.scene?.grid?.size ?? 100);
-    const h = (moverDoc.height ?? 1) * (canvas.scene?.grid?.size ?? 100);
-    const fromCenter = { x: fromX + w / 2, y: fromY + h / 2 };
-    const toCenter   = { x: toX   + w / 2, y: toY   + h / 2 };
+    const gridSize  = canvas.scene?.grid?.size ?? 100;
+    const ftPerGrid = canvas.scene?.grid?.distance ?? 5;
+    // Mover footprint in pixels (size-aware).
+    const moverW = (moverDoc.width  ?? 1) * gridSize;
+    const moverH = (moverDoc.height ?? 1) * gridSize;
 
     const moverDisp = moverDoc.disposition ?? 0;
     const placeables = canvas.tokens?.placeables ?? [];
     const reachFt = Number(QolSettings.get?.("opportunityAttackReach") ?? 5);
-    const gridSize = canvas.scene?.grid?.size ?? 100;
-    const ftPerGrid = canvas.scene?.grid?.distance ?? 5;
-    const reachPx = (reachFt / ftPerGrid) * gridSize;
+    // Reach is measured EDGE-TO-EDGE (size-aware) — the way D&D actually works,
+    // and the way our range check already does. NOT center-to-center, which
+    // mis-reads reach for any non-Medium token: Tiny/Small tokens read as "out
+    // of reach" even when adjacent (the bug), and diagonals + Large tokens broke
+    // too. A creature is "in reach" when the footprint gap is under its reach;
+    // the 0.5-ft margin makes the exact one-square boundary read as "out" so a
+    // step away cleanly triggers the leave-reach check. v0.7.26.
+    const reachThresholdFt = reachFt - 0.5;
 
     for (const t of placeables) {
       if (!t.actor) continue;
@@ -119,23 +125,45 @@ export class OAPrompt {
       if (td.disposition === moverDisp) continue;
       if (td.disposition === 0) continue;
 
-      // Reactor can't make OAs if incapacitated, blinded, etc.
-      if (t.actor.statuses?.has?.("incapacitated") || t.actor.statuses?.has?.("unconscious")
-       || t.actor.statuses?.has?.("paralyzed") || t.actor.statuses?.has?.("petrified")
-       || t.actor.statuses?.has?.("stunned") || t.actor.statuses?.has?.("blinded")) continue;
+      // Reactor can't make OAs if dead, incapacitated, blinded, etc.
+      // "dead" + 0-HP guards added v0.7.22 — mirror of the mover-side guard
+      // above. Without them, killing a ghost and walking away from its
+      // corpse offered the DEAD ghost an opportunity attack. dnd5e doesn't
+      // always stamp the "dead" status when HP hits 0 (especially NPCs),
+      // so the HP check is the belt-and-suspenders.
+      if (t.actor.statuses?.has?.("dead") || t.actor.statuses?.has?.("incapacitated")
+       || t.actor.statuses?.has?.("unconscious") || t.actor.statuses?.has?.("paralyzed")
+       || t.actor.statuses?.has?.("petrified") || t.actor.statuses?.has?.("stunned")
+       || t.actor.statuses?.has?.("blinded")) continue;
+      const reactorHP = Number(t.actor.system?.attributes?.hp?.value ?? 0);
+      if (reactorHP <= 0) continue;
 
       // Reactor's reach already used? (reaction-engine flag)
       if (t.actor.getFlag?.(FLAG_NS, "reactionUsed") === true) continue;
 
-      const reactorCenter = {
-        x: td.x + ((td.width  ?? 1) * gridSize) / 2,
-        y: td.y + ((td.height ?? 1) * gridSize) / 2,
-      };
-      const distBefore = Math.hypot(fromCenter.x - reactorCenter.x, fromCenter.y - reactorCenter.y);
-      const distAfter  = Math.hypot(toCenter.x   - reactorCenter.x, toCenter.y   - reactorCenter.y);
+      // Charmed by the mover? RAW: a charmed creature can't attack its
+      // charmer. Best-effort — only suppresses when the charm effect's
+      // origin positively ties to the mover; an unsourced charm doesn't
+      // suppress (the GM can still decline). v0.7.22.
+      if (OAPrompt._isCharmedByMover(t.actor, moverActor)) continue;
+
+      // Nothing to swing = no opportunity attack. With the unarmed-strike
+      // fallback (Tier 3) almost every creature qualifies; this only skips a
+      // creature that has no weapon, no natural attack, AND no unarmed-strike
+      // item at all (e.g. a bare token with no attack items). v0.7.23.
+      if (OAPrompt._getOAWeapons(t.actor).tier === "none") continue;
+
+      const reactorW = (td.width  ?? 1) * gridSize;
+      const reactorH = (td.height ?? 1) * gridSize;
+      // Edge-to-edge gap (in feet) from the mover's BEFORE and AFTER positions
+      // to the reactor's footprint. Size-aware, so a Tiny/Small reactor adjacent
+      // to the mover reads gap≈0 (in reach) instead of being lost like it was
+      // with center-to-center.
+      const gapBeforeFt = OAPrompt._edgeGapFt(fromX, fromY, moverW, moverH, td.x, td.y, reactorW, reactorH, gridSize, ftPerGrid);
+      const gapAfterFt  = OAPrompt._edgeGapFt(toX,   toY,   moverW, moverH, td.x, td.y, reactorW, reactorH, gridSize, ftPerGrid);
 
       // Was within reach AND now isn't = standard leave-reach OA (PHB 195).
-      if (distBefore <= reachPx && distAfter > reachPx) {
+      if (gapBeforeFt <= reachThresholdFt && gapAfterFt > reachThresholdFt) {
         await OAPrompt._postPromptCard(t.actor, moverActor, td, moverDoc);
       }
 
@@ -148,8 +176,8 @@ export class OAPrompt {
       // reach before and INSIDE it after.
       const polearmData = OAPrompt._getPolearmReachData(t.actor);
       if (polearmData) {
-        const polearmReachPx = (polearmData.reachFt / ftPerGrid) * gridSize;
-        if (distBefore > polearmReachPx && distAfter <= polearmReachPx) {
+        const polearmThresholdFt = polearmData.reachFt - 0.5;
+        if (gapBeforeFt > polearmThresholdFt && gapAfterFt <= polearmThresholdFt) {
           // Use the TOKEN name (which has disambiguators like "Assassin 1",
           // "Assassin 2") rather than the actor name (which would just say
           // "Assassin" for every duplicate). Falls back to actor name if
@@ -160,6 +188,19 @@ export class OAPrompt {
         }
       }
     }
+  }
+
+  /**
+   * Edge-to-edge gap (in feet) between two token rectangles. Returns 0 when the
+   * footprints touch or overlap. Size-aware — unlike center-to-center distance,
+   * which over-measures the gap for Tiny/Small tokens (and diagonals), making
+   * them read as out of reach even when adjacent. Coordinates are top-left
+   * pixels; widths/heights in pixels.
+   */
+  static _edgeGapFt(ax, ay, aw, ah, bx, by, bw, bh, gridSize, ftPerGrid) {
+    const dx = Math.max(0, ax - (bx + bw), bx - (ax + aw));
+    const dy = Math.max(0, ay - (by + bh), by - (ay + ah));
+    return (Math.hypot(dx, dy) / gridSize) * ftPerGrid;
   }
 
   /**
@@ -202,9 +243,230 @@ export class OAPrompt {
     return null;
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Eligibility helpers + attack execution (v0.7.22 / v0.7.23)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /** Does an item carry a non-ranged (melee or unspecified) attack activity? */
+  static _isMeleeCapable(it) {
+    const acts = it?.system?.activities;
+    if (!acts) return false;
+    const iter = (typeof acts.values === "function") ? acts.values() : Object.values(acts);
+    for (const a of iter) {
+      if (a?.type !== "attack") continue;
+      const at = String(a?.attack?.type?.value ?? a?.actionType ?? "").toLowerCase();
+      const isRanged = at === "ranged" || at === "rwak" || at === "rsak";
+      if (!isRanged) return true; // melee or unspecified → counts
+    }
+    return false;
+  }
+
+  /** Is this weapon a natural weapon (claws / bite / slam / a ghost's touch)? */
+  static _isNaturalWeapon(it) {
+    return String(it?.system?.type?.value ?? "").toLowerCase() === "natural";
+  }
+
+  /** Is this item an unarmed strike? */
+  static _isUnarmedStrike(it) {
+    const id = String(it?.system?.identifier ?? it?.system?.type?.baseItem ?? "").toLowerCase();
+    return id === "unarmedstrike" || id === "unarmed" || /^unarmed strike$/i.test(String(it?.name ?? ""));
+  }
+
+  /**
+   * Resolve which weapon(s) a creature can realistically make an opportunity
+   * attack with, in strict RAW priority. A token can only swing what's in its
+   * hands or part of its body — never gear stowed in a bag of holding / portable
+   * hole, never a sheathed (unequipped) backup.
+   *
+   *   Tier 1 "equipped"  — manufactured weapons marked equipped (in hand), not
+   *                        natural, not unarmed, not inside a container.
+   *   Tier 2 "natural"   — natural weapons (always available, part of the body).
+   *   Tier 3 "unarmed"   — the unarmed-strike fallback; everyone can punch.
+   *
+   * Higher tiers win: a creature holding a sword swings the sword, not its fists.
+   * Returns { tier, items } — one item → auto-swing; many → the picker.
+   * @param {Actor} actor
+   * @returns {{ tier: "equipped"|"natural"|"unarmed"|"none", items: Item5e[] }}
+   */
+  static _getOAWeapons(actor) {
+    if (!actor) return { tier: "none", items: [] };
+    const isPC = actor.type === "character";
+    const weapons = (actor.items ?? []).filter(it => it.type === "weapon");
+    const inContainer = (it) => !!it.system?.container;
+
+    // Tier 1 — manufactured weapons in hand.
+    //   PC : strictly EQUIPPED (this is the bag-of-holding fix — a character
+    //        can only swing what's actually in hand).
+    //   NPC: any non-container manufactured melee weapon. Monster stat blocks
+    //        don't reliably set the equipped flag and don't stow gear in bags,
+    //        so their listed weapons ARE their available attacks.
+    const tier1 = weapons.filter(it => {
+      if (inContainer(it)) return false;
+      if (OAPrompt._isNaturalWeapon(it) || OAPrompt._isUnarmedStrike(it)) return false;
+      if (!OAPrompt._isMeleeCapable(it)) return false;
+      return isPC ? (it.system?.equipped === true) : true;
+    });
+    if (tier1.length) return { tier: isPC ? "equipped" : "weapon", items: tier1 };
+
+    // Tier 2 — natural weapons (the creature's body).
+    const natural = weapons.filter(it =>
+      !inContainer(it) &&
+      OAPrompt._isNaturalWeapon(it) &&
+      OAPrompt._isMeleeCapable(it)
+    );
+    if (natural.length) return { tier: "natural", items: natural };
+
+    // Tier 3 — unarmed strike (last resort, everyone can punch).
+    const unarmed = weapons.filter(it => OAPrompt._isUnarmedStrike(it));
+    if (unarmed.length) return { tier: "unarmed", items: [unarmed[0]] };
+
+    return { tier: "none", items: [] };
+  }
+
+  /**
+   * Best-effort "is the reactor charmed BY the mover?" check. Only returns
+   * true when a charm-flavored effect's origin positively resolves to the
+   * mover actor — an unsourced charm does not suppress the prompt.
+   * @param {Actor} reactorActor
+   * @param {Actor} moverActor
+   * @returns {boolean}
+   */
+  static _isCharmedByMover(reactorActor, moverActor) {
+    if (!reactorActor?.statuses?.has?.("charmed")) return false;
+    if (!moverActor) return false;
+    const moverUuid = moverActor.uuid;
+    for (const eff of reactorActor.effects ?? []) {
+      if (eff.disabled) continue;
+      const statuses = eff.statuses ?? new Set();
+      const isCharm = statuses.has?.("charmed") || /charm/i.test(String(eff.name ?? ""));
+      if (!isCharm) continue;
+      const origin = String(eff.origin ?? "");
+      if (origin && (origin === moverUuid || (moverActor.id && origin.includes(moverActor.id)))) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Resolve the mover's canvas token from the stored card flags — prefer the
+   * exact token id, fall back to the first token of the mover actor.
+   * @param {object} flags - the oaPrompt flags block
+   * @returns {Token|null}
+   */
+  static _resolveMoverToken(flags) {
+    const byId = flags?.moverTokenId ? (canvas.tokens?.get(flags.moverTokenId) ?? null) : null;
+    if (byId) return byId;
+    if (flags?.moverId) {
+      return canvas.tokens?.placeables.find(t => t.actor?.id === flags.moverId) ?? null;
+    }
+    return null;
+  }
+
+  /**
+   * When the reactor has more than one melee attack option, ask which to
+   * swing. Dark-wrapped per the ACE contrast rules (Foundry's default dialog
+   * body is light parchment). Returns the chosen Item5e, or null if cancelled.
+   * @param {Item5e[]} items
+   * @param {Actor} reactorActor
+   * @returns {Promise<Item5e|null>}
+   */
+  static async _pickWeapon(items, reactorActor) {
+    const DialogV2 = foundry.applications?.api?.DialogV2;
+    if (!DialogV2) return items[0] ?? null;  // very old core — just auto-pick
+    const content = `
+      <div style="background:linear-gradient(180deg,#1a1416 0%,#241a1d 100%);border:2px solid #d4af37;border-radius:6px;padding:12px 14px;color:#f0e4c0;">
+        <div style="font-size:16px;color:#ffd87a;font-weight:600;margin-bottom:6px;">
+          <i class="fas fa-bolt"></i> Opportunity Attack — Choose Weapon
+        </div>
+        <div style="font-size:14px;color:#cfcfd0;line-height:1.4;">
+          <strong>${reactorActor?.name ?? "Reactor"}</strong> has more than one melee attack. Pick the one to swing.
+        </div>
+      </div>`;
+    const buttons = items.map(it => ({ action: it.id, label: it.name }));
+    buttons.push({ action: "__cancel", label: "Cancel" });
+    let result = null;
+    try {
+      result = await DialogV2.wait({
+        window: { title: "Opportunity Attack" },
+        content,
+        buttons,
+        rejectClose: false,
+      });
+    } catch (_) { result = null; }
+    if (!result || result === "__cancel") return null;
+    return items.find(it => it.id === result) ?? null;
+  }
+
+  /**
+   * Fire a REAL opportunity attack on THIS client (the clicker). Sets the
+   * clicker's target to the mover token, fires the reactor's melee attack via
+   * the dnd5e use flow (fast-forward, same pattern as SpeedRolls), then
+   * restores the clicker's prior targets. The attack flows through the normal
+   * AttackPipeline hooks — hit/miss card, damage card, Divine Smite popup
+   * (routed to the clicker), and the mover's Shield / Mirror Image reactions
+   * all fire automatically. Returns false if cancelled or no weapon resolved.
+   * @param {Actor} reactorActor
+   * @param {Token} moverToken
+   * @returns {Promise<boolean>}
+   */
+  static async fireOAAttack(reactorActor, moverToken) {
+    if (!reactorActor) return false;
+    const { tier, items } = OAPrompt._getOAWeapons(reactorActor);
+    if (!items.length) {
+      ui.notifications?.warn(`ACE QOL: ${reactorActor.name} has no weapon, natural attack, or unarmed strike for the opportunity attack.`);
+      return false;
+    }
+    if (!moverToken) {
+      ui.notifications?.warn("ACE QOL: Could not resolve the moving token for the opportunity attack.");
+      return false;
+    }
+
+    // Resolve which weapon to swing. One option (a single equipped weapon, a
+    // lone natural attack, or unarmed) → auto-swing, no dialog. Only a genuine
+    // ambiguity (dual-wielding, or a multi-natural monster) shows the picker.
+    let item = items[0];
+    if (items.length > 1) {
+      const picked = await OAPrompt._pickWeapon(items, reactorActor);
+      if (!picked) return false;  // cancelled — leave the card pending
+      item = picked;
+    }
+    console.log(`${MODULE_ID} | OA: ${reactorActor.name} swings ${item.name} (tier=${tier})`);
+
+    // Target ONLY the mover and fire. We deliberately do NOT save-and-restore
+    // the GM's previous targets: the post-roll resolution (_onAttackRoll) reads
+    // game.user.targets AFTER item.use() resolves, so restoring in a finally
+    // raced ahead and wiped the target → "No targets selected — skipping attack
+    // resolution" (the OA rolled but never produced a hit/damage card). Leaving
+    // the mover targeted is the correct, race-free end state — it's the creature
+    // you just swung at. (v0.7.24 fix.)
+    // V13: the old game.user.updateTokenTargets() helper is gone — per-token
+    // setTarget is the path. releaseOthers:true clears any prior targets so the
+    // OA hits ONLY the mover (a stray second target would trip the melee
+    // multi-target lockout and block the swing).
+    OA_IN_FLIGHT.add(reactorActor.id);
+    try {
+      moverToken.setTarget(true, { user: game.user, releaseOthers: true, groupSelection: false });
+
+      // Fast-forward use — shiftKey skips the activity-choice dialog; our
+      // pipeline handles hit/miss/damage against the mover.
+      await item.use({ event: { shiftKey: true, target: document.body } }, {}, {});
+    } catch (err) {
+      console.error(`${MODULE_ID} | OA attack fire failed:`, err);
+      ui.notifications?.error("ACE QOL: Opportunity attack roll failed — see console.");
+      return false;
+    } finally {
+      OA_IN_FLIGHT.delete(reactorActor.id);
+    }
+    return true;
+  }
+
   static async _postPromptCard(reactorActor, moverActor, reactorTokenDoc, moverTokenDoc, opts = {}) {
     const reactorId = reactorActor.id;
     const moverId   = moverActor.id;
+    // Token ids — needed so "Take OA" can target the EXACT mover token (not
+    // just the first token of the mover actor, which matters for duplicate
+    // NPCs like "Goblin 1 / Goblin 2"). v0.7.22.
+    const reactorTokenId = reactorTokenDoc?.id ?? null;
+    const moverTokenId   = moverTokenDoc?.id ?? null;
     // Prefer the TOKEN name (auto-disambiguated like "Assassin 1") over the
     // actor name (which collapses duplicates into a single ambiguous name).
     // Stored in flags so resolveOAPrompt can re-render with the right name
@@ -230,7 +492,7 @@ export class OAPrompt {
       content: html,
       speaker: ChatMessage.getSpeaker({ actor: reactorActor }),
       whisper: [...recipients],
-      flags: { [MODULE_ID]: { type: "oaPrompt", reactorId, moverId, reactorName, moverName, status: "pending", reasonText } },
+      flags: { [MODULE_ID]: { type: "oaPrompt", reactorId, moverId, reactorTokenId, moverTokenId, reactorName, moverName, status: "pending", reasonText } },
     });
   }
 
@@ -331,42 +593,66 @@ export class OAPrompt {
 }
 
 // ── Bind click handlers via renderChatMessage / renderChatMessageHTML ────────
-// Both Take OA and Pass call resolveOAPrompt → the message's content + flags
-// update, every client re-renders the resolved state. No more local-only
-// DOM mutation that left other clients showing the active button.
+// "Take OA" now fires a REAL attack through the pipeline (v0.7.22). The
+// clicker's machine rolls the reactor's melee attack against the mover; the
+// attack pipeline handles hit/miss, damage, the Divine Smite popup (routed to
+// the clicker), and the mover's Shield / Mirror Image. Message + reaction-flag
+// writes happen GM-side, so a player clicking their OWN character's OA fires
+// the attack locally and sockets the message-resolution to the GM.
 //
-// Permission gate: only the GM can resolve the prompt (matches the rest of
-// our reaction-engine model). For PC reactors, the player still sees the
-// prompt but the GM clicks the button. Future enhancement could allow the
-// PC's owner to click their own.
+// Permission gate: the GM always; the reactor's owner may resolve their own.
 const _bindOAButtons = (message, html) => {
   try {
     const root = html instanceof HTMLElement ? html : (html?.[0] ?? html);
     if (!root || typeof root.querySelectorAll !== "function") return;
     const handleClick = async (ev, status) => {
       ev.preventDefault();
-      if (!game.user.isGM) {
-        ui.notifications?.warn("Only the GM can resolve OA prompts.");
-        return;
-      }
       const btn = ev.currentTarget;
-      btn.disabled = true; // immediate local feedback
-      // Find the message id from the chat message DOM (or the message
-      // arg from the renderChatMessage hook). Fallback to walking up to
-      // the .chat-message[data-message-id] element.
       const chatEl = btn.closest?.(".chat-message");
       const msgId = message?.id ?? chatEl?.dataset?.messageId;
       if (!msgId) {
         console.warn(`${MODULE_ID} | OA resolve: could not find messageId`);
-        btn.disabled = false;
         return;
       }
-      // Use the OAPrompt class's resolve method (single source of truth).
+
+      const msg = game.messages?.get?.(msgId);
+      const flags = msg?.flags?.[MODULE_ID];
+      if (!flags || flags.type !== "oaPrompt") return;
+      if (flags.status && flags.status !== "pending") return; // already resolved
+
+      const reactor = game.actors.get(flags.reactorId);
+
+      // Permission: GM always; otherwise the reactor's owner may take/pass
+      // their OWN opportunity attack.
+      const isOwner = reactor?.testUserPermission?.(game.user, "OWNER") ?? false;
+      if (!game.user.isGM && !isOwner) {
+        ui.notifications?.warn("Only the GM or the reacting character's owner can resolve this opportunity attack.");
+        return;
+      }
+
+      btn.disabled = true; // immediate local feedback
+
       try {
         const { OAPrompt } = await import("/modules/ace-qol/scripts/oa-prompt.mjs");
-        await OAPrompt.resolveOAPrompt(msgId, status);
+
+        if (status === "taken") {
+          // Fire the real attack on THIS client (the clicker). If the weapon
+          // picker is cancelled or no weapon resolves, leave the card pending.
+          const moverToken = OAPrompt._resolveMoverToken(flags);
+          const fired = await OAPrompt.fireOAAttack(reactor, moverToken);
+          if (!fired) { btn.disabled = false; return; }
+        }
+
+        // Resolve the message (flip card + mark reaction used). Message and
+        // flag writes are GM-side — if a player clicked their own OA, socket
+        // the resolution to the GM.
+        if (game.user.isGM) {
+          await OAPrompt.resolveOAPrompt(msgId, status);
+        } else {
+          game.socket.emit(`module.${MODULE_ID}`, { action: "oaResolve", messageId: msgId, status });
+        }
       } catch (err) {
-        console.warn(`${MODULE_ID} | OA resolveOAPrompt threw:`, err);
+        console.warn(`${MODULE_ID} | OA resolve threw:`, err);
         btn.disabled = false;
       }
     };

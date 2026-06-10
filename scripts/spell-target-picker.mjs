@@ -244,10 +244,21 @@ export class SpellTargetPicker {
           },
         ],
       });
-      dlg.render({ force: true });
-
-      // Wire clicks once the DOM is in place
-      setTimeout(() => SpellTargetPicker._wireGrid(dlg.element ?? document, maxTargets), 50);
+      // v0.7.21: await the render Promise so the DOM is guaranteed mounted
+      // before we wire click handlers. The previous setTimeout(50ms) raced
+      // against DialogV2's render time on COLD CACHE (first cast after F5
+      // reload) — DOM wasn't ready, _wireGrid found nothing, click handlers
+      // never attached, out-of-range tokens were silently selectable. The
+      // "first cast fails / second cast works" bug Johnny hit with Haste.
+      // (Audit-mandated 2026-06-09.)
+      dlg.render({ force: true }).then(() => {
+        SpellTargetPicker._wireGrid(dlg.element ?? document, maxTargets);
+      }).catch(err => {
+        console.warn(`${MODULE_ID} | SpellTargetPicker dialog render threw:`, err);
+        // Fallback — try a delayed wire even on render error so the user
+        // isn't left with an unwired picker.
+        setTimeout(() => SpellTargetPicker._wireGrid(dlg.element ?? document, maxTargets), 200);
+      });
     });
   }
 
@@ -296,6 +307,29 @@ export class SpellTargetPicker {
       el.addEventListener("click", (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
+
+        // ── v0.7.21: Hard-enforce range + dead state ──
+        // Previously the .invalid class greyed the token visually but the
+        // click handler ignored it — user could still click + cast Haste on
+        // a target 60ft away when the spell's range is 30ft. Now blocked.
+        // (Bug found in testing 2026-06-09.)
+        if (el.classList.contains("invalid")) {
+          // Brief flash to make it clear the click was rejected
+          el.classList.add("ace-qol-pickr-reject-flash");
+          setTimeout(() => el.classList.remove("ace-qol-pickr-reject-flash"), 350);
+          // Surface a one-time toast on the first rejection so the user
+          // understands why nothing happened.
+          if (!grid.dataset.rejectToastShown) {
+            grid.dataset.rejectToastShown = "1";
+            const reason = el.querySelector(".ace-qol-spell-pickr-tok-dist.out-of-range")
+              ? "out of spell range"
+              : el.querySelector(".ace-qol-spell-pickr-tok-dead")
+                ? "dead"
+                : "invalid";
+            ui.notifications?.warn(`Cannot target ${el.title?.split(" — ")[0] ?? "this token"} — ${reason}.`);
+          }
+          return;
+        }
 
         const isSelected = el.classList.contains("selected");
         if (!isSelected) {

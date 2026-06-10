@@ -11,7 +11,7 @@ export const DISTRIBUTE_SPELLS = {
     countResolver: (castLevel) => 3 + Math.max(0, (castLevel ?? 1) - 1),  // 3 base, +1/upcast
     unit: { formula: "1d4 + 1", type: "force" },
     picker: { allowSelf: false, excludeDead: true },
-    schoolIcon: "icons/magic/perception/eye-ringed-glow-blue.webp",
+    schoolIcon: "icons/magic/perception/eye-ringed-green.webp",
     flavorOnConfirm: "Glowing darts of magical force streak unerringly to their targets.",
   },
 
