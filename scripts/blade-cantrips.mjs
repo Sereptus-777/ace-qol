@@ -22,6 +22,8 @@
 //  name matches one of the three.
 // ============================================================================
 
+import { aceWithinFt } from "./geometry-utils.mjs";
+
 const MODULE_ID = "ace-qol";
 const TAG       = `${MODULE_ID} | BladeCantrips`;
 
@@ -262,12 +264,12 @@ export class BladeCantrips {
       ui.notifications?.warn("Green-Flame Blade: primary target not on canvas — pick adjacent manually.");
       return;
     }
-    const cell = canvas.grid?.size ?? 100;
-    const maxPx = cell * 1.5;
+    // RAW GFB: a different creature within 5 ft of the primary target.
+    // Nearest-edge, size-aware, 3D (canonical — geometry-utils).
     const candidates = canvas.tokens?.placeables?.filter(t =>
       t !== primaryTok &&
       t.actor &&
-      Math.hypot(t.x - primaryTok.x, t.y - primaryTok.y) <= maxPx
+      aceWithinFt(t, primaryTok, 5)
     ) ?? [];
     if (!candidates.length) {
       ui.notifications?.warn("Green-Flame Blade: no creatures within 5 ft of the primary target.");

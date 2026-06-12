@@ -20,6 +20,7 @@
 
 import { MODULE_ID } from "../ace-qol.mjs";
 import { SPELL_REGISTRY } from "./registry/_index.mjs";
+import { FEATURE_REGISTRY } from "./registry/features.mjs";
 import { UnifiedSpellPicker } from "./picker.mjs";
 import { AnimationHelper } from "./animation.mjs";
 import { DamageResolver } from "./resolvers/damage.mjs";
@@ -155,10 +156,19 @@ export class SpellPipeline {
    * whether the pipeline owns a given spell.
    */
   static _getEntry(item) {
-    if (!item || item.type !== "spell") return null;
+    if (!item) return null;
+    const type = item.type;
+    // The doorway: the pipeline now accepts FEATURES (feats), not just spells.
+    if (type !== "spell" && type !== "feat") return null;
     const name = String(item.name ?? "").trim().toLowerCase();
     if (!name) return null;
-    const raw = SPELL_REGISTRY[name];
+    // Spells use the spell registry. Features check the feature registry first,
+    // then fall back to the spell registry — so an ability identical to a spell
+    // (a monster's Banishment, Hold-type gaze, Bless-like buff) reuses that
+    // spell's entry + resolver with zero duplication. "Banish is Banish."
+    const raw = (type === "feat")
+      ? (FEATURE_REGISTRY[name] ?? SPELL_REGISTRY[name])
+      : SPELL_REGISTRY[name];
     if (!raw) return null;
     return SpellPipeline._applyEdition(raw);
   }
@@ -309,7 +319,7 @@ export class SpellPipeline {
   }
 
   static async _runPickerAndResolve(ctx, pickerType) {
-    const result = await UnifiedSpellPicker.pick({ ...ctx, pickerType });
+    const result = await SpellPipeline._pickTargets(ctx, pickerType);
 
     if (!result) {
       // Cancelled — refund slot, end concentration (if dnd5e started it
@@ -361,6 +371,58 @@ export class SpellPipeline {
       try { SpellPipeline._clearUserTargets(); }
       catch (_) { /* non-fatal */ }
     }, 1500);
+  }
+
+  /**
+   * Target selection for the pipeline. DISTRIBUTE (Magic Missile's +/- counters)
+   * still uses the unified picker — those counters only exist there. Every other
+   * shape uses the purple SpellTargetPicker (the tile UI we standardized on); we
+   * adapt its Actor[] return into the { target, targets } candidate shape the
+   * resolvers + AnimationHelper already consume, so the working logic is untouched.
+   */
+  static async _pickTargets(ctx, pickerType) {
+    if (pickerType === "distribute") {
+      return UnifiedSpellPicker.pick({ ...ctx, pickerType });
+    }
+
+    const { entry, item, actor, castLevel } = ctx;
+    const isSingle  = pickerType === "single" || pickerType === "single-adjacent";
+    const N         = isSingle ? 1 : (entry.countResolver?.(castLevel, actor.system?.details?.level ?? 1) ?? 1);
+    const rangeFt   = pickerType === "single-adjacent" ? 5 : (entry.range ?? undefined);
+    const allowSelf = entry.picker?.allowSelf === true;
+
+    let actors = [];
+    try {
+      const { SpellTargetPicker } = await import("../spell-target-picker.mjs");
+      actors = await SpellTargetPicker.pick({
+        spellItem:   item,
+        casterActor: actor,
+        maxTargets:  N,
+        rangeFt,
+        allowSelf,
+      });
+    } catch (err) {
+      console.error(`${MODULE_ID} | SpellPipeline._pickTargets: purple picker failed:`, err);
+      return null;
+    }
+
+    if (!actors || actors.length === 0) return null;   // cancelled / none picked
+
+    // Adapt Actor[] → candidate objects ({ actor, token, ... }) the resolvers expect.
+    const targets = actors.map(a => {
+      const token = a.getActiveTokens?.()?.[0]
+        ?? canvas.tokens?.placeables.find(t => t.actor?.id === a.id)
+        ?? null;
+      return {
+        actor: a, token,
+        tokenId: token?.id ?? null,
+        name: token?.name ?? a.name,
+        img: token?.document?.texture?.src ?? a.img,
+      };
+    }).filter(t => t.token);
+
+    if (!targets.length) return null;
+    return { target: targets[0], targets };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

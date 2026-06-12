@@ -1860,6 +1860,52 @@ export class ConditionLibrary {
         await actor.toggleStatusEffect(key, { active: true });
       }
 
+      // ── Ensure the condition is PRESENT *and* ENABLED ──────────────────
+      // Two silent failure modes this guards against, both of which made
+      // applyByName claim success while the token did nothing:
+      //   1. toggleStatusEffect NO-OPS on an unknown status id → nothing lands.
+      //   2. toggleStatusEffect NO-OPS when a *disabled* copy of the status is
+      //      already present (common after repeated testing / a prior toggle-
+      //      off) → it stays DISABLED, i.e. inert: no mechanics, no token icon.
+      // We confirm an ENABLED matching effect exists; create one if missing,
+      // and force-enable any disabled copies.
+      const _def = ALL_EFFECTS[key];
+      const _statusId = _def?.statusId ?? key;
+      const _matches = () => (actor.effects?.contents ?? []).filter(e =>
+        e.statuses?.has?.(_statusId) || e.statuses?.has?.(key)
+        || e.name?.toLowerCase() === String(_def?.name ?? key).toLowerCase());
+
+      // 1) Exists at all? If not, build it from the Foundry status definition.
+      if (!_matches().length) {
+        try {
+          const cls = CONFIG.ActiveEffect?.documentClass;
+          if (cls?.fromStatusEffect) {
+            const eff = await cls.fromStatusEffect(_statusId);
+            await actor.createEmbeddedDocuments("ActiveEffect", [eff.toObject()]);
+            console.log(`${MODULE_ID} | applyByName: "${key}" placed via fromStatusEffect fallback on ${actor.name}.`);
+          }
+        } catch (e2) {
+          console.warn(`${MODULE_ID} | applyByName fromStatusEffect fallback failed for "${_statusId}" on ${actor.name}:`, e2);
+        }
+      }
+
+      // 2) Force-enable any disabled copies — the actual "inert condition" fix.
+      const _disabled = _matches().filter(e => e.disabled).map(e => ({ _id: e.id, disabled: false }));
+      if (_disabled.length) {
+        try {
+          await actor.updateEmbeddedDocuments("ActiveEffect", _disabled);
+          console.log(`${MODULE_ID} | applyByName: re-enabled ${_disabled.length} inert "${key}" effect(s) on ${actor.name}.`);
+        } catch (e3) {
+          console.warn(`${MODULE_ID} | applyByName re-enable failed for "${key}" on ${actor.name}:`, e3);
+        }
+      }
+
+      // 3) Final verify — there must be at least one ENABLED matching effect.
+      if (!_matches().some(e => !e.disabled)) {
+        console.warn(`${MODULE_ID} | applyByName: could NOT place an ENABLED "${key}" on ${actor.name}.`);
+        return { ok: false, applied: null };
+      }
+
       // ── Stamp concentration linkage ──
       // When a concentration spell's failed-save condition is being applied,
       // link the resulting effect back to the caster + spell so we can clean

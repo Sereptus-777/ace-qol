@@ -22,6 +22,7 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
+import { aceEdgeGapFt } from "./geometry-utils.mjs";
 
 // ─── Container detection (cross-module shared flag namespace) ──────────────
 // Both ACE QOL and ACE Forge read these flags. ACE QOL uses them for the
@@ -1329,24 +1330,21 @@ export class LootableTile {
       if (playerToken) {
         try {
           const gridSize = canvas.grid?.size ?? 100;
-          // Center-to-center distance using Foundry's measureDistances
-          // when available; fall back to Pythagoras / grid units otherwise.
-          const targetW = (Number(tileDoc.width)  > 0 ? Number(tileDoc.width)  : 1)
-                       * (tileDoc.documentName === "Token" ? gridSize : 1);
-          const targetH = (Number(tileDoc.height) > 0 ? Number(tileDoc.height) : 1)
-                       * (tileDoc.documentName === "Token" ? gridSize : 1);
-          const targetCx = (tileDoc.x ?? 0) + targetW / 2;
-          const targetCy = (tileDoc.y ?? 0) + targetH / 2;
-          const playerCx = playerToken.center?.x ?? (playerToken.document.x + (playerToken.document.width * gridSize) / 2);
-          const playerCy = playerToken.center?.y ?? (playerToken.document.y + (playerToken.document.height * gridSize) / 2);
-          // Edge-to-edge distance per typical D&D 5e measurement — subtract
-          // half-widths so a token standing adjacent to a 1-square body
-          // reads as 0-5ft, not 5-10ft from center-to-center.
-          const dx = Math.max(0, Math.abs(playerCx - targetCx) - (targetW / 2 + (playerToken.document.width * gridSize) / 2));
-          const dy = Math.max(0, Math.abs(playerCy - targetCy) - (targetH / 2 + (playerToken.document.height * gridSize) / 2));
-          const distPixels = Math.hypot(dx, dy);
-          const ftPerSquare = canvas.scene?.grid?.distance ?? 5;
-          const distFt = (distPixels / gridSize) * ftPerSquare;
+          // Edge-to-edge gap (nearest-edge, 5e diagonal rule) via the canonical
+          // helper, so loot range agrees with reach/spell measurement. The loot
+          // target may be a Tile (pixel width/height) or a Token (grid-unit
+          // width/height); both resolve to a pixel footprint here. 2D — looting
+          // is a ground reach, so elevation is ignored.
+          const isToken = tileDoc.documentName === "Token";
+          const targetW = (Number(tileDoc.width)  > 0 ? Number(tileDoc.width)  : 1) * (isToken ? gridSize : 1);
+          const targetH = (Number(tileDoc.height) > 0 ? Number(tileDoc.height) : 1) * (isToken ? gridSize : 1);
+          const tileRect = { x: tileDoc.x ?? 0, y: tileDoc.y ?? 0, w: targetW, h: targetH };
+          const pdoc = playerToken.document;
+          const playerRect = {
+            x: pdoc.x ?? 0, y: pdoc.y ?? 0,
+            w: (pdoc.width ?? 1) * gridSize, h: (pdoc.height ?? 1) * gridSize,
+          };
+          const distFt = aceEdgeGapFt(playerRect, tileRect, { threeD: false });
           if (distFt > maxFt) {
             ui.notifications?.warn(`Too far to loot — ${Math.round(distFt)} ft away (max ${maxFt} ft). Move closer.`);
             return;

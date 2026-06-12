@@ -547,11 +547,42 @@ export class SaveEngine {
       return;
     }
 
-    // ── No template — use game.user.targets directly ──
-    const targets = game.user.targets;
-    if (!targets.size) return;
-
-    let tokens = [...targets];
+    // ── No template — use targets, or POP THE PICKER if none are selected ──
+    // Silently returning on an empty target set (the old behaviour) meant a
+    // save item fired with nothing targeted did NOTHING at all — no card, no
+    // prompt. Now, with no targets, we show the same target picker that normal
+    // targeted spells use, so the GM picks who it hits and the save flow runs.
+    let tokens;
+    if (game.user.targets.size) {
+      tokens = [...game.user.targets];
+    } else {
+      // ── Pipeline ownership guard (kills the double-picker) ──
+      // Spells the unified pipeline owns target via the pipeline's OWN picker —
+      // its SaveResolver opens the (purple) picker and calls postSaveCard itself.
+      // The pipeline clears targets pre-cast, so this handler lands here with an
+      // empty set and would open a SECOND picker. Defer to the pipeline instead.
+      if (game.aceQol?.SpellPipeline?.ownsSpell?.(item)) return;
+      let picked = [];
+      try {
+        const { SpellTargetPicker } = await import("./spell-target-picker.mjs");
+        picked = await SpellTargetPicker.pick({
+          spellItem:   item,
+          casterActor: actor,
+          maxTargets:  99,
+          rangeFt:     Number(activity?.range?.value) || 30,
+          allowSelf:   false,
+        });
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Save target picker failed:`, err);
+      }
+      if (!picked?.length) return;   // GM cancelled — nothing to do
+      tokens = picked
+        .map(act => act.getActiveTokens?.()?.[0] ?? canvas.tokens?.placeables.find(t => t.actor?.id === act.id))
+        .filter(Boolean);
+      if (!tokens.length) return;
+      // Reflect the choice in game.user.targets so the card + downstream see it.
+      for (const t of tokens) t.setTarget(true, { user: game.user, releaseOthers: false });
+    }
 
     // Exclude caster — same logic as the template path. See _onTemplateCreated
     // for full justification. GM can re-add via "+ TARGET SELECTED" button.
@@ -577,6 +608,7 @@ export class SaveEngine {
         saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing,
         activity,
       });
+      this._releaseUserTargets();
       return;
     }
 
@@ -585,6 +617,32 @@ export class SaveEngine {
       activityId: activity.id,
       spellLevel,
     });
+    this._releaseUserTargets();
+  }
+
+  /**
+   * Release ALL of the current user's targets once a save has been committed
+   * to a card. Without this the targeting reticles "stick" on the tokens
+   * after the cast resolves — a long-standing UX complaint across every
+   * targeted save/spell. Safe here: the live-target card and the result card
+   * each store their own target snapshot, so the downstream save rolls read
+   * the card data, NOT the live game.user.targets set. The GM can still
+   * re-target and use the card's "+ TARGET SELECTED" button afterwards.
+   */
+  _releaseUserTargets() {
+    try {
+      const targets = [...(game.user?.targets ?? [])];
+      if (!targets.length) return;
+      // V13-correct: User#updateTokenTargets was removed, so toggle each
+      // token off (snapshot first — setTarget(false) mutates the set during
+      // iteration) then clear the set. Matches SpellPipeline._clearUserTargets.
+      for (const t of targets) {
+        t.setTarget?.(false, { user: game.user, releaseOthers: false, groupSelection: false });
+      }
+      game.user?.targets?.clear?.();
+    } catch (err) {
+      console.warn(`${MODULE_ID} | _releaseUserTargets failed:`, err);
+    }
   }
 
   /**
@@ -673,7 +731,7 @@ export class SaveEngine {
 
     // Post the result card (Phase 1 — same builder as the normal flow)
     await this._postSaveResultsPhase1(item, casterActor, [result], {
-      saveAbility, saveDC, halfOnSave, damageTypes, isSpell,
+      saveAbility, saveDC, halfOnSave, damageTypes, isSpell, activityId,
       timingType: timing?.type ?? null,
       templateDocId: null,
       templateSceneId: null,
@@ -1046,12 +1104,21 @@ export class SaveEngine {
     `}).join("");
 
     // ── Assemble card ──
+    // Headline the specific power (activity) when it differs from the item
+    // name — a multi-power item like the Holy Symbol of Ravenkind otherwise
+    // just reads "Holy Symbol of Ravenkind" with no hint of whether it's Hold
+    // Vampires, Turn Undead, etc. Item name drops to a subtitle.
+    const _saveAct   = item.system?.activities?.get?.(activityId);
+    const _actName   = _saveAct?.name ?? "";
+    const _hasPower  = _actName && _actName !== item.name;
+    const _cardTitle = _hasPower ? _actName : item.name;
     const cardHtml = `
       <div class="ace-qol-save-card">
         <div class="ace-qol-save-header">
           <img src="${item.img || "icons/svg/spell.svg"}" class="ace-qol-save-item-img" />
           <div>
-            <strong class="ace-qol-save-item-name">${item.name}</strong>
+            <strong class="ace-qol-save-item-name">${_cardTitle}</strong>
+            ${_hasPower ? `<span class="ace-qol-save-subname" style="display:block;font-size:11px;color:#b9a978;font-weight:600;">${item.name}</span>` : ""}
             <span class="ace-qol-save-dc">DC ${saveDC} ${abilityLabel} Save</span>
           </div>
           ${halfOnSave ? '<span class="ace-qol-save-half-badge">HALF ON SAVE</span>' : ""}
@@ -1501,6 +1568,29 @@ export class SaveEngine {
           rollNpcBtn.innerHTML = '<i class="fas fa-check"></i> ROLLED \u2713';
           await message.setFlag(MODULE_ID, "rolled", true);
         });
+
+        // \u2500\u2500 Auto-roll NPC saves (setting "autoRollNpcSaves", default ON) \u2500\u2500
+        // NPCs roll their own saves \u2014 no reason to make the GM click. PC targets
+        // still get their whispered self-roll prompt (a separate path). Gated to
+        // the primary GM + an in-flight guard + the persisted "rolled" flag, so
+        // it fires exactly once across re-renders and clients.
+        this._autoRolledSaves ??= new Set();
+        const _autoRollNpc = QolSettings.get?.("autoRollNpcSaves") !== false;
+        if (_autoRollNpc && game.user === game.users?.activeGM
+            && !flags.rolled && !this._autoRolledSaves.has(message.id)) {
+          this._autoRolledSaves.add(message.id);
+          rollNpcBtn.disabled = true;
+          rollNpcBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Rolling NPC saves...';
+          (async () => {
+            try {
+              await this._rollNpcSavesFromTargetList(message);
+              rollNpcBtn.innerHTML = '<i class="fas fa-check"></i> ROLLED \u2713';
+              await message.setFlag(MODULE_ID, "rolled", true);
+            } catch (err) {
+              console.warn(`${MODULE_ID} | auto-roll NPC saves failed:`, err);
+            }
+          })();
+        }
       }
     }
   }
@@ -1610,6 +1700,8 @@ export class SaveEngine {
               const cardHtml = this._buildPhase1CardHtml(item, allResults, {
                 saveAbility: message.flags?.[MODULE_ID]?.saveAbility,
                 saveDC:      message.flags?.[MODULE_ID]?.saveDC,
+                activityId:  message.flags?.[MODULE_ID]?.activityId,
+                appliedConditions: message.flags?.[MODULE_ID]?.appliedConditions ?? [],
               });
               await message.update({ content: cardHtml }, { render: false });
             }
@@ -1847,7 +1939,7 @@ export class SaveEngine {
     if (!flags) return;
 
     const { saveAbility, saveDC, halfOnSave, targets, itemId, itemUuid, actorId, damageTypes, isSpell,
-            timingType, templateDocId, templateSceneId } = flags;
+            timingType, templateDocId, templateSceneId, activityId } = flags;
 
     const item = await fromUuid(itemUuid) ?? game.items.get(itemId);
     const casterActor = game.actors.get(actorId);
@@ -2833,6 +2925,8 @@ export class SaveEngine {
         cardHtml = this._buildPhase1CardHtml(item, allResults, {
           saveAbility: flags.saveAbility, saveDC: flags.saveDC,
           hasDamage: flags.hasDamage !== false,
+          activityId: flags.activityId,
+          appliedConditions: flags.appliedConditions ?? [],
         });
       }
 
@@ -3015,6 +3109,46 @@ export class SaveEngine {
     let parsed;
     try {
       parsed = DescriptionParser.parse(item);
+
+      // ── Activity-aware condition override (multi-power items) ──────────────
+      // Conditions are parsed at the ITEM level, so a magic item with several
+      // save powers (e.g. Holy Symbol of Ravenkind: Hold Vampires → paralyzed,
+      // Turn Undead → frightened) would otherwise stamp the SAME blanket
+      // condition on every power. If the firing activity's chatFlavor names its
+      // own condition, parse THAT and override — but only the conditions,
+      // keeping the item-level save/duration/repeating-save data intact.
+      // Opt-in: single-power spells carry no activity-level condition text, so
+      // this branch never fires for them and their behaviour is unchanged.
+      // Isolated try: a failure in the override must NOT discard the
+      // item-level parse we already have — just fall through to it.
+      try {
+        const actId = saveCtx?.activityId;
+        if (actId) {
+          const act = item.system?.activities?.get?.(actId)
+            ?? [...(item.system?.activities ?? [])].find(a => a?.id === actId);
+          const flavor = String(act?.description?.chatFlavor ?? "").trim();
+          if (flavor) {
+            const actParsed = DescriptionParser.parse({
+              name: item.name, type: item.type,
+              system: { description: { value: flavor }, activities: new Map() },
+            });
+            if (actParsed?.conditions?.length) {
+              // These come from a SAVE activity's flavor — they ARE the
+              // save-failure effect, so force them save-gated even if the
+              // parser's nearby-DC heuristic read the flavor conservatively.
+              // (Without this, the override could downgrade a working
+              // paralyzed(save) to paralyzed(no-save) → nothing applies → the
+              // dreaded "apply manually" footer.)
+              const conds = actParsed.conditions.map(c => ({ ...c, requiresSave: true }));
+              parsed = { ...parsed, conditions: conds };
+              console.log(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — using activity-level conditions from "${act?.name ?? actId}":`,
+                conds.map(c => `${c.condition}(save)`));
+            }
+          }
+        }
+      } catch (ovErr) {
+        console.debug(`${MODULE_ID} | activity-level condition override skipped:`, ovErr?.message ?? ovErr);
+      }
     } catch (err) {
       console.warn(`${MODULE_ID} | _applyFailedSaveConditions: parse failed for ${item.name}:`, err);
       return applied;
@@ -3130,7 +3264,16 @@ export class SaveEngine {
 
     for (const r of failed) {
       const scene = game.scenes.get(r.sceneId) ?? canvas.scene;
-      const tokenDoc = scene?.tokens?.get(r.tokenDocId);
+      // Resolve the TOKEN's own actor — critical for UNLINKED tokens, where
+      // applying to the prototype/world actor would never show on the token.
+      // Fall back to finding any token for this actor if the result is missing
+      // a tokenDocId, before finally dropping to the world actor.
+      let tokenDoc = r.tokenDocId ? scene?.tokens?.get(r.tokenDocId) : null;
+      if (!tokenDoc && r.actorId) {
+        tokenDoc = scene?.tokens?.find(t => t.actorId === r.actorId)
+          ?? canvas.tokens?.placeables.find(t => t.actor?.id === r.actorId)?.document
+          ?? null;
+      }
       const actor = tokenDoc?.actor ?? game.actors.get(r.actorId);
       if (!actor) {
         console.warn(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — could not resolve actor for failed target ${r.name} (sceneId=${r.sceneId} tokenDocId=${r.tokenDocId} actorId=${r.actorId})`);
@@ -3231,8 +3374,12 @@ export class SaveEngine {
   //  Build Phase 1 card HTML — extracted so late PC updates can rebuild
   // ─────────────────────────────────────────────────────────────────────────
   _buildPhase1CardHtml(item, results, opts) {
-    const { saveAbility, saveDC, hasDamage = true, appliedConditions = [] } = opts;
+    const { saveAbility, saveDC, hasDamage = true, appliedConditions = [], activityId = null } = opts;
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
+    // Headline the specific power (activity) when it differs from the item name.
+    const _p1Act   = item.system?.activities?.get?.(activityId);
+    const _p1Name  = _p1Act?.name ?? "";
+    const _p1Title = (_p1Name && _p1Name !== item.name) ? _p1Name : item.name;
 
     const targetRows = results.map(r => {
       const removeBtn = `<button class="ace-qol-save-phase1-remove" data-action="aceQolRemovePhase1" data-token-doc-id="${r.tokenDocId}" title="Remove this target before damage rolls"><i class="fas fa-xmark"></i></button>`;
@@ -3337,9 +3484,12 @@ export class SaveEngine {
       // homebrew description format we don't recognize yet).
       const anyoneFailed = (results ?? []).some(r => r && !r.passed && !r.pending);
       if (anyoneFailed) {
-        actionsHtml = `<div class="ace-qol-save-no-effect" style="padding:6px 12px;text-align:center;color:#aaa;font-size:11px;font-style:italic;">
-          <i class="fas fa-info-circle"></i> Save resolved \u2014 apply spell effect manually if needed
-        </div>`;
+        // A target failed but no condition auto-applied. For properly-wired
+        // save-or-condition powers this shouldn't happen \u2014 the condition
+        // applies and renders above. NEVER surface a defeatist "apply manually"
+        // note: the per-target FAIL already conveys the outcome, and genuine
+        // gaps are logged to console for follow-up, not shown to the table.
+        actionsHtml = "";
       } else {
         actionsHtml = `<div class="ace-qol-save-no-effect" style="padding:6px 12px;text-align:center;color:#88c878;font-size:11px;font-style:italic;">
           <i class="fas fa-shield-halved"></i> All targets resisted
@@ -3352,7 +3502,7 @@ export class SaveEngine {
         <div class="ace-qol-save-header">
           <img src="${item.img || "icons/svg/spell.svg"}" class="ace-qol-save-item-img" />
           <div>
-            <strong class="ace-qol-save-item-name">${item.name} \u2014 Saves</strong>
+            <strong class="ace-qol-save-item-name">${_p1Title} \u2014 Saves</strong>
             <span class="ace-qol-save-dc">DC ${saveDC} ${abilityLabel}</span>
           </div>
         </div>

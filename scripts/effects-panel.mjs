@@ -21,6 +21,7 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
+import { HolySymbol } from "./holy-symbol.mjs";
 
 const PANEL_ID = "ace-qol-effects-panel";
 
@@ -100,6 +101,16 @@ export class EffectsPanel {
     Hooks.on("createActiveEffect", refreshIfMine);
     Hooks.on("updateActiveEffect", refreshIfMine);
     Hooks.on("deleteActiveEffect", refreshIfMine);
+
+    // Re-render on combat turn + time advance so synthetic countdowns (e.g. the
+    // Holy Symbol's Sunlight indicator) tick down live in the panel.
+    Hooks.on("updateCombat", () => { if (this._currentActor) this._render(); });
+    Hooks.on("updateWorldTime", () => { if (this._currentActor) this._render(); });
+
+    // Sunlight zones are MeasuredTemplates — refresh so the panel's synthetic
+    // Sunlight indicator appears/disappears the moment the zone is cast/ended.
+    Hooks.on("createMeasuredTemplate", () => { if (this._currentActor) this._render(); });
+    Hooks.on("deleteMeasuredTemplate", () => { if (this._currentActor) this._render(); });
 
     // Foundry hook fallback (fires after collapse animation completes)
     Hooks.on("collapseSidebar", () => {
@@ -495,20 +506,25 @@ export class EffectsPanel {
     const active   = this._collectActive(this._currentActor);
     const auras    = this._collectAuras(this._currentActor);
     const passives = this._collectPassive(this._currentActor);
+    // Synthetic, panel-only indicators (no token icon) — e.g. the Holy Symbol's
+    // Sunlight zone the controlled actor cast, with rounds remaining. Imported
+    // directly (not via game.aceQol) so a later registry reassignment can't
+    // hide it.
+    const sun      = HolySymbol.getCasterSunlightIndicators?.(this._currentActor) ?? [];
 
-    if (!active.length && !auras.length && !passives.length) {
+    if (!active.length && !auras.length && !passives.length && !sun.length) {
       // Nothing to show — hide panel entirely
       if (this._panelEl) { this._panelEl.remove(); this._panelEl = null; }
       return;
     }
 
     // Auto-expand if there are active conditions (stunned, charmed, prone, etc.)
-    // — user shouldn't have to click the chevron to see them. Stay collapsed
-    // only when the actor has nothing time-critical going on.
-    if (active.length > 0) this._collapsed = false;
+    // or a live timed indicator like Sunlight — user shouldn't have to click
+    // the chevron to see them.
+    if (active.length > 0 || sun.length > 0) this._collapsed = false;
 
     const el = this._ensurePanel();
-    const counts = `${active.length}A · ${auras.length}U · ${passives.length}P`;
+    const counts = `${active.length + sun.length}A · ${auras.length}U · ${passives.length}P`;
     const collapsedClass = this._collapsed ? " ace-qol-effects-panel-collapsed" : "";
 
     el.className = `ace-qol-effects-panel${collapsedClass}`;
@@ -522,9 +538,10 @@ export class EffectsPanel {
         <span class="ace-qol-effects-panel-counts" title="Active · aUras · Passive">${counts}</span>
       </div>
       <div class="ace-qol-effects-panel-body">
-        ${active.length ? `
+        ${(active.length || sun.length) ? `
           <div class="ace-qol-effects-section">
             <div class="ace-qol-effects-section-label">Active</div>
+            ${sun.map(s => this._renderSunlightRow(s)).join("")}
             ${active.map(e => this._renderEffectRow(e)).join("")}
           </div>
         ` : ""}
@@ -550,6 +567,7 @@ export class EffectsPanel {
     this._wirePassiveToggle(el);
     this._wireRows(el, [...active, ...passives]);
     this._wireAuraRows(el, auras);
+    this._wireSunlightRows(el);
   }
 
   _renderEffectRow(effect) {
@@ -567,6 +585,35 @@ export class EffectsPanel {
       </div>
       <div class="ace-qol-effect-tooltip" data-effect-id="${id}" hidden></div>
     `;
+  }
+
+  // Synthetic Sunlight indicator — no real effect, so no token icon. Shows the
+  // zone name + a big rounds-remaining badge, like a cast spell would.
+  _renderSunlightRow(s) {
+    return `
+      <div class="ace-qol-effect-row ace-qol-sunlight-row" data-sunlight-token-id="${s.tokenId}" data-sunlight-scene-id="${s.sceneId ?? ""}" title="Right-click to extinguish">
+        <img src="${s.icon}" class="ace-qol-effect-icon" alt="" />
+        <div class="ace-qol-effect-info">
+          <span class="ace-qol-effect-name">${foundry.utils.escapeHTML(s.name)}</span>
+          <span class="ace-qol-effect-duration">${s.rounds}r</span>
+        </div>
+        <i class="fas fa-times ace-qol-sunlight-dismiss" title="Extinguish sunlight" style="margin-left:auto;padding:0 6px;cursor:pointer;color:#ffd86b;"></i>
+      </div>
+    `;
+  }
+
+  _wireSunlightRows(el) {
+    el.querySelectorAll?.("[data-sunlight-token-id]").forEach(row => {
+      const dismiss = async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (!game.user.isGM) return ui.notifications?.warn("Only the GM can extinguish the sunlight.");
+        await HolySymbol.extinguishSunlightZone(row.dataset.sunlightTokenId, row.dataset.sunlightSceneId);
+        ui.notifications?.info("Sunlight extinguished.");
+      };
+      row.addEventListener("contextmenu", dismiss);                              // right-click anywhere on the row
+      row.querySelector(".ace-qol-sunlight-dismiss")?.addEventListener("click", dismiss); // or the × icon
+    });
   }
 
   _renderAuraRow(aura) {

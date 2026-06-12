@@ -4,9 +4,18 @@
 
 /* Hide system's ActivityChoiceDialog instantly — our render hook auto-selects
    the Attack activity or closes it. Without this, the dialog flashes for one
-   frame before our hook fires. */
+   frame before our hook fires.
+   IMPORTANT: this hides EVERY activity-choice dialog by default. Dialogs we
+   intentionally keep open (equipment power menus like the Holy Symbol of
+   Ravenkind, spell casts, Forge-templated items) get the .ace-choice-show
+   class added by _handleActivityChoiceDialog to override this hide. Without
+   that override the menu renders into the DOM but stays invisible — this was
+   the "Holy Symbol power menu never appears" bug. */
 .activity-choice {
   display: none !important;
+}
+.activity-choice.ace-choice-show {
+  display: flex !important;
 }
 
 /* ─── Attack Results Card ────────────────────────────────────────────────── */
@@ -4062,10 +4071,14 @@
   text-overflow: ellipsis;
 }
 .ace-qol-effect-duration {
-  font-size: 10px;
-  color: #d4af37;
-  font-weight: 700;
+  font-size: 16px;
+  color: #1a1a1a;
+  background: #f0c850;
+  border-radius: 8px;
+  padding: 1px 7px;
+  font-weight: 800;
   letter-spacing: 0.3px;
+  line-height: 1.3;
 }
 
 /* ── Passive expandable footer ── */

@@ -17,6 +17,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "../ace-qol.mjs";
+import { aceDistanceFt } from "../geometry-utils.mjs";
 
 export class UnifiedSpellPicker {
 
@@ -116,14 +117,8 @@ export class UnifiedSpellPicker {
         if (type !== creatureFilter.toLowerCase()) continue;
       }
 
-      // Distance in feet (PIXI hypotenuse)
-      const distPx = Math.hypot(
-        (tok.center?.x ?? tok.x) - (casterToken.center?.x ?? casterToken.x),
-        (tok.center?.y ?? tok.y) - (casterToken.center?.y ?? casterToken.y),
-      );
-      const gridSize = canvas.scene?.grid?.size ?? canvas.grid?.size ?? 100;
-      const gridDistance = canvas.scene?.grid?.distance ?? 5;
-      const distFt = Math.round((distPx / gridSize) * gridDistance);
+      // Nearest-edge, size-aware, 3D distance in feet (canonical — geometry-utils).
+      const distFt = Math.round(aceDistanceFt(casterToken, tok));
       const inRange = isSelf ? true : distFt <= range;
 
       out.push({

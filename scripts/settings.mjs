@@ -157,6 +157,48 @@ export class QolSettings {
     });
 
     // ═══════════════════════════════════════════════════════════════════════════
+    //  3D DISTANCE — strict-RAW nearest-edge measurement counts elevation
+    //
+    //  All reach/range/spell/aura/radius checks in ACE measure from the nearest
+    //  EDGE of each creature's space (size-aware), counting 5-ft grid steps the
+    //  5e-default way (diagonal = straight). With this ON, vertical separation
+    //  (flying, ledges) counts too, per strict RAW. At equal elevation it
+    //  changes nothing — only flyers/height are affected. See geometry-utils.mjs.
+    // ═══════════════════════════════════════════════════════════════════════════
+    s("raw3dDistance", {
+      name:    "3D Distance (count elevation)",
+      hint:    "Measure reach, range, spells, and auras in 3D per strict 5e RAW — height from flying or elevation counts toward distance. When everyone is at the same elevation this changes nothing. Turn OFF for flat 2D. Default: ON.",
+      scope:   "world",
+      config:  false,   // lives in the ACE config panel (Combat Actions tab)
+      type:    Boolean,
+      default: true,
+    });
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  HIDE V13 TOKEN MOVEMENT TRAIL — restores the off-switch Foundry refused
+    //
+    //  Foundry V13's native token ruler redraws the path a token took during its
+    //  turn (a trail with dots) every time you pick it back up, and core ships no
+    //  setting to disable it (foundryvtt#12254, "not planned"). This toggle hides
+    //  ONLY that history trail; the live drag-distance ruler still works. Applied
+    //  by movement-trail.mjs, which wraps the ruler's style hooks. Default OFF so
+    //  we never change Foundry's behavior for a table that hasn't asked.
+    // ═══════════════════════════════════════════════════════════════════════════
+    s("hideMovementTrail", {
+      name:    "Hide token movement trail",
+      hint:    "Foundry V13 draws the path a token took during its turn (a trail of dots) and redraws it every time you pick the token up. Turn this ON to hide that trail — your live drag-distance ruler is unaffected. Default: OFF.",
+      scope:   "world",
+      config:  false,   // lives in the ACE config panel (Movement tab)
+      type:    Boolean,
+      default: false,
+      onChange: () => {
+        try {
+          for (const t of (canvas?.tokens?.placeables ?? [])) t.renderFlags?.set?.({ refreshRuler: true });
+        } catch (_) { /* non-fatal */ }
+      },
+    });
+
+    // ═══════════════════════════════════════════════════════════════════════════
     //  MODULE MASTER ENABLED — global kill-switch, sits at top of settings page
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -238,7 +280,7 @@ export class QolSettings {
       name:    "Hide NPC Initiative Rolls from Players",
       hint:    "When enabled, NPC initiative rolls go to GM-only chat. Players never see the roll, preventing meta-gaming from ambushes and hidden combatants. PC initiative rolls remain public. Default OFF — opt-in so installing ACE QOL doesn't silently change Foundry's default visibility behavior for new GMs.",
       scope:   "world",
-      config:  true,
+      config:  false,   // lives in the ACE config panel (Initiative tab)
       type:    Boolean,
       default: false,
     });
@@ -640,6 +682,15 @@ export class QolSettings {
     s("targetStateAssessment", {
       name:    "Full Target State Assessment",
       hint:    "Assess every condition, buff, resistance, creature type, and modifier on every target before damage.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
+    s("autoRollNpcSaves", {
+      name:    "Auto-Roll NPC Saves",
+      hint:    "When a save card targets NPCs, roll their saves automatically — no GM button click. Player-character targets still get their own whispered prompt to roll. Default: ON.",
       scope:   "world",
       config:  false,
       type:    Boolean,

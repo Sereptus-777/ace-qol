@@ -43,6 +43,7 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
+import { aceDistanceFt } from "./geometry-utils.mjs";
 
 // Hardcoded literal — TDZ-safe (see stealth-engine.mjs comment)
 const FLAG_NS = "ace-qol";
@@ -487,39 +488,16 @@ export class AuraEngine {
   }
 
   /**
-   * Distance in feet between two tokens — EDGE-TO-EDGE.
+   * Distance in feet between two tokens — nearest-edge, size-aware, 3D, via the
+   * suite's canonical helper (geometry-utils). Grid-counted the 5e-default way:
+   * two ADJACENT creatures are 5 ft apart, one empty cell between = 10 ft, etc.
+   * So "within 10 feet" correctly includes adjacent + one-cell-away, per RAW.
    *
-   * D&D 5e RAW PHB 192: "When determining whether you are within range
-   * of a target, measure to the nearest part of its space."
-   *
-   * For aura "within 10 feet of you" checks, this means the minimum
-   * distance from any part of the source's space to any part of the
-   * target's space. Two adjacent tokens have edge distance 0; two tokens
-   * separated by one empty grid cell have edge distance 5ft; etc.
-   *
-   * Implemented as rectangle-to-rectangle distance:
-   *   - If the rectangles overlap or touch: 0
-   *   - Otherwise: sqrt(dx^2 + dy^2) where dx/dy are the gap distances
-   *
-   * Replaces the previous center-to-center calc which was too strict —
-   * a target whose body visually overlapped the aura ring could still
-   * test as "out of range" because their center was past the ring edge.
+   * (Previously a raw edge-GAP — adjacent counted as 0 — which made every aura
+   * reach one ring too far. Now identical to the ruler and to attack/reach math.)
    */
   static _tokenDistanceFt(a, b) {
-    const grid = canvas.scene?.grid?.size ?? 100;
-    const ftPer = canvas.scene?.grid?.distance ?? 5;
-    const aw = (a.document?.width  ?? 1) * grid;
-    const ah = (a.document?.height ?? 1) * grid;
-    const bw = (b.document?.width  ?? 1) * grid;
-    const bh = (b.document?.height ?? 1) * grid;
-    const ax1 = a.x ?? 0, ay1 = a.y ?? 0;
-    const ax2 = ax1 + aw, ay2 = ay1 + ah;
-    const bx1 = b.x ?? 0, by1 = b.y ?? 0;
-    const bx2 = bx1 + bw, by2 = by1 + bh;
-    // Gap between rectangles in each axis (0 if overlapping/touching)
-    const dx = Math.max(0, Math.max(bx1 - ax2, ax1 - bx2));
-    const dy = Math.max(0, Math.max(by1 - ay2, ay1 - by2));
-    return Math.hypot(dx, dy) / grid * ftPer;
+    return aceDistanceFt(a, b);
   }
 
   /**

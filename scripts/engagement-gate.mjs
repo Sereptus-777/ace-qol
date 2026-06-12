@@ -166,6 +166,14 @@ export class EngagementGate {
       }
     } catch (_) { /* non-fatal — fall through to normal gate */ }
 
+    // ── Bypass: spells the unified pipeline owns ──
+    // The pipeline opens its OWN picker AFTER the cast fires, so the "select a
+    // target first" block would wrongly stop a no-target Banishment / Hold
+    // Person / Dominate before that picker ever runs.
+    try {
+      if (game.aceQol?.SpellPipeline?.ownsSpell?.(item)) return null;
+    } catch (_) { /* non-fatal — fall through to normal gate */ }
+
     // ── Bypass: damage spells with their own picker (v0.7.17) ──
     // Magic Missile and other auto-hit damage spells that own targeting via
     // a dedicated picker (MagicMissilePicker). The gate's pre-target block

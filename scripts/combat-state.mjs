@@ -10,6 +10,7 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { ExtendedEffects } from "./extended-effects.mjs";
 import { QolSettings } from "./settings.mjs";
 import { FlagsEngine } from "./flags-engine.mjs";
+import { aceDistanceFt } from "./geometry-utils.mjs";
 
 // ─── Physical damage types (bypass checks) ──────────────────────────────────
 const PHYSICAL_TYPES = new Set(["bludgeoning", "piercing", "slashing"]);
@@ -85,6 +86,12 @@ export class CombatState {
       atkConditions.add("invisible");
       advantageSources.push({ source: "attacker", reason: "Attacker is INVISIBLE → attack advantage" });
     }
+
+    // NOTE: Sunlight Sensitivity disadvantage (attacks + ability checks while in
+    // a sunlight zone) is imposed by a real "Sunlight Sensitivity" Active Effect
+    // applied by HolySymbol while a sensitive creature stands in the light. That
+    // effect sets flags.ace-qol.disadvantage.attack.all, which the Effect/Flags
+    // check below already detects — so no special-case is needed here.
 
     // ── Exhaustion (edition-aware) ───────────────────────────────────────
     // 2014 RAW: 6-level cascading model — at L3+ attacker has disadvantage
@@ -1715,39 +1722,11 @@ export class CombatState {
    * Huge (3×3), and Gargantuan (4×4) tokens correctly — adjacent tokens
    * are always 5ft apart regardless of size.
    */
+  // Nearest-edge, size-aware, 3D-aware distance in feet. Canonical math lives in
+  // geometry-utils.mjs (aceDistanceFt) so every reach/range check in the suite
+  // agrees with the in-game ruler. This wrapper is kept for existing callers.
   static _getDistance(token1, token2) {
-    try {
-      const gs = canvas.grid.size; // pixels per grid square
-      const gd = canvas.dimensions?.distance ?? 5; // ft per grid square (usually 5)
-
-      // Get occupied rectangle bounds in pixels
-      const r1 = { left: token1.x, top: token1.y, right: token1.x + (token1.document?.width ?? 1) * gs, bottom: token1.y + (token1.document?.height ?? 1) * gs };
-      const r2 = { left: token2.x, top: token2.y, right: token2.x + (token2.document?.width ?? 1) * gs, bottom: token2.y + (token2.document?.height ?? 1) * gs };
-
-      // Calculate gap between rectangles on each axis
-      const gapX = Math.max(0, r1.left - r2.right, r2.left - r1.right);
-      const gapY = Math.max(0, r1.top - r2.bottom, r2.top - r1.bottom);
-
-      // Overlapping = same space
-      if (gapX < 0 && gapY < 0) return 0;
-
-      // Convert pixel gap to grid squares
-      const sqX = Math.ceil(gapX / gs);
-      const sqY = Math.ceil(gapY / gs);
-
-      // 5e cell distance: nearest neighbor (touching) = 1 cell = 5ft
-      // Gap of 0 cells (cells touching) → 1 cell distance → 5ft
-      // Gap of 1 cell (1 cell between) → 2 cells distance → 10ft
-      // D&D 5e diagonal counts as same (max, not Pythagorean)
-      const gridDist = Math.max(sqX, sqY) + 1;
-      return gridDist * gd;
-    } catch (err) {
-      // Fallback to center-to-center if anything fails
-      console.warn("ace-qol | CombatState._getDistance grid calc failed:", err);
-      try {
-        return canvas.grid.measureDistance(token1.center, token2.center, { gridSpaces: true }) ?? 999;
-      } catch (err2) { console.warn("ace-qol | CombatState._getDistance center fallback failed:", err2); return 999; }
-    }
+    return aceDistanceFt(token1, token2);
   }
 
   /** Get Aura of Protection bonus from a nearby paladin (or the target's

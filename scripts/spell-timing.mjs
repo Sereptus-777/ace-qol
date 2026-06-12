@@ -387,6 +387,16 @@ export function getSpellTiming(item) {
   const flagResult = _checkFlagOverride(item);
   if (flagResult) return flagResult;
 
+  // ── Layer 1b: Non-spell items resolve IMMEDIATELY ──
+  // The persistent start/end-of-turn classification below is ONLY for actual
+  // spells. An equipment item, feat, or consumable with a save (e.g. the Holy
+  // Symbol of Ravenkind's "Hold Vampires") presents and saves NOW. Without this
+  // gate, a description phrase like "re-save at the end of each turn" made the
+  // parser tag the item as a persistent end-of-turn save and DEFER its save card
+  // (nothing posted to chat until end of turn). A flag override (above) can still
+  // force timing for any specific item that genuinely needs it.
+  if (item.type !== "spell") return _makeResult(TIMING.INSTANT, false, false);
+
   const name = (item.name ?? "").toLowerCase().trim();
 
   // ── Layer 2: Description parsing ──

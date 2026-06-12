@@ -15,6 +15,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { aceDistanceFt } from "./geometry-utils.mjs";
 
 export class SpellTargetPicker {
 
@@ -118,13 +119,7 @@ export class SpellTargetPicker {
       if (isSelf && !allowSelf) continue;
 
       let distFt = 0;
-      if (!isSelf) {
-        try {
-          distFt = SpellTargetPicker._measureDistance(casterToken, tok);
-        } catch (_) {
-          distFt = SpellTargetPicker._fallbackDistance(casterToken, tok);
-        }
-      }
+      if (!isSelf) distFt = SpellTargetPicker._measureDistance(casterToken, tok);
 
       const inRange = !Number.isFinite(rangeFt) || distFt <= rangeFt + 0.01;
       const disposition = tok.document?.disposition ?? 0;
@@ -156,21 +151,9 @@ export class SpellTargetPicker {
     return out;
   }
 
+  // Nearest-edge, size-aware, 3D distance in feet (canonical — geometry-utils).
   static _measureDistance(t1, t2) {
-    const a = t1.center, b = t2.center;
-    if (canvas.grid?.measurePath) {
-      return canvas.grid.measurePath([a, b]).distance;
-    }
-    return SpellTargetPicker._fallbackDistance(t1, t2);
-  }
-
-  static _fallbackDistance(t1, t2) {
-    const a = t1.center, b = t2.center;
-    const dx = a.x - b.x, dy = a.y - b.y;
-    const px = Math.sqrt(dx * dx + dy * dy);
-    const gridSize = canvas.scene?.grid?.size ?? 100;
-    const distance = canvas.scene?.grid?.distance ?? 5;
-    return (px / gridSize) * distance;
+    return aceDistanceFt(t1, t2);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

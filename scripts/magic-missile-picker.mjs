@@ -27,6 +27,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { aceDistanceFt } from "./geometry-utils.mjs";
 
 export class MagicMissilePicker {
 
@@ -112,14 +113,8 @@ export class MagicMissilePicker {
       const hp = actor.system?.attributes?.hp?.value ?? 0;
       if (hp <= 0) continue; // dead
 
-      // Distance in feet (Chebyshev via PIXI distance)
-      const distPx = Math.hypot(
-        (tok.center?.x ?? tok.x) - (casterToken.center?.x ?? casterToken.x),
-        (tok.center?.y ?? tok.y) - (casterToken.center?.y ?? casterToken.y),
-      );
-      const gridSize = canvas.scene?.grid?.size ?? canvas.grid?.size ?? 100;
-      const gridDistance = canvas.scene?.grid?.distance ?? 5;
-      const distFt = Math.round((distPx / gridSize) * gridDistance);
+      // Nearest-edge, size-aware, 3D distance in feet (canonical — geometry-utils).
+      const distFt = Math.round(aceDistanceFt(casterToken, tok));
 
       out.push({
         tokenId: tok.id,

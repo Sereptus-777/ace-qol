@@ -83,6 +83,14 @@ export class DurationTracker {
     // ── World time advancement: expire seconds-based effects outside combat ──
     Hooks.on("updateWorldTime", this._onWorldTimeUpdate.bind(this));
 
+    // ── Stale-effect cleanup on load + scene change ──
+    // The per-turn check only fires on turn/round change, so an effect whose
+    // duration elapsed while the world was closed (Ctrl+F5) would linger.
+    // canvasReady fires on initial load and every scene switch; also sweep once
+    // now since init() runs during the `ready` hook (canvas is already up).
+    Hooks.on("canvasReady", () => { try { this.sweepStaleEffects(); } catch (_) {} });
+    try { this.sweepStaleEffects(); } catch (_) {}
+
     console.debug(`${MODULE_ID} | Duration Tracker initialized`);
   }
 
@@ -130,6 +138,12 @@ export class DurationTracker {
         turnChanged,
       });
     }
+
+    // Belt-and-suspenders: a full stale-condition sweep across EVERY actor on
+    // the scene (not just combatants) on each turn/round change, so nothing
+    // lingers anywhere — same sweep that runs on load. Anchors orphans, expires
+    // the elapsed, preserves Bloodied and permanent effects.
+    try { await this.sweepStaleEffects(); } catch (_) {}
   }
 
   /**
@@ -142,16 +156,138 @@ export class DurationTracker {
     for (const effect of actor.effects) {
       if (effect.disabled) continue;
 
-      const reason = this._shouldExpire(effect, combat, actor, ctx);
-      if (reason) {
-        toExpire.push({ effect, reason });
+      let reason = this._shouldExpire(effect, combat, actor, ctx);
+      // General staleness: anchor orphaned finite effects so they CAN expire,
+      // and expire anything whose duration has elapsed. This is what catches a
+      // Haste Lethargy that lingered for dozens of rounds with no start stamp.
+      if (!reason) {
+        const state = DurationTracker._staleState(effect, combat);
+        if (state === "expire") reason = `${effect.name}: duration elapsed`;
+        else if (state === "anchor") await DurationTracker._anchorEffect(effect, combat);
       }
+      if (reason) toExpire.push({ effect, reason });
     }
 
     // Expire them
     for (const { effect, reason } of toExpire) {
       await this._expireEffect(actor, effect, reason);
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Stale-Effect Sweep — on load + scene change
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Sweep every nearby actor for effects whose duration has elapsed and delete
+   * them. Closes two gaps the per-turn check leaves open:
+   *   1. Effects that expired while the world was closed — so a reload (Ctrl+F5)
+   *      doesn't leave a long-dead condition stuck on a token.
+   *   2. Effects created without an ACE start stamp — we trust dnd5e's own
+   *      computed `duration.remaining`.
+   * PRESERVES permanent effects (no duration) and HP-state markers (Bloodied).
+   */
+  async sweepStaleEffects() {
+    if (!game.user.isGM) return;
+    if (!DurationTracker._isEnabled()) return;
+
+    const actors = new Set();
+    for (const tdoc of canvas.scene?.tokens ?? []) if (tdoc.actor) actors.add(tdoc.actor);
+    for (const u of game.users ?? []) if (u.character) actors.add(u.character);
+    for (const c of game.combat?.combatants ?? []) if (c.actor) actors.add(c.actor);
+
+    const combat = game.combat ?? null;
+    for (const actor of actors) {
+      const toExpire = [];
+      for (const effect of actor.effects) {
+        if (effect.disabled) continue;
+        const state = DurationTracker._staleState(effect, combat);
+        if (state === "expire") {
+          toExpire.push({ effect, reason: `${effect.name}: duration elapsed (cleanup sweep)` });
+        } else if (state === "anchor") {
+          await DurationTracker._anchorEffect(effect, combat);
+        }
+      }
+      for (const { effect, reason } of toExpire) await this._expireEffect(actor, effect, reason);
+    }
+  }
+
+  /**
+   * Effects the cleanup must NEVER auto-remove: HP-state markers (Bloodied) and
+   * anything with no real duration (permanent until removed by hand).
+   * @private
+   */
+  static _shouldPreserve(effect) {
+    if (effect.statuses?.has?.("bloodied")) return true;
+    if (/bloodied/i.test(effect.name ?? "")) return true;
+    const d = effect.duration;
+    const hasDur = (d?.rounds ?? 0) > 0 || (d?.turns ?? 0) > 0 || (d?.seconds ?? 0) > 0;
+    return !hasDur; // no duration → permanent → leave it
+  }
+
+  /**
+   * Classify an effect's duration state for the cleanup pass:
+   *   "expire" — its finite duration has elapsed; remove it.
+   *   "anchor" — it has a finite duration but NO start stamp, so dnd5e can't
+   *              compute a meaningful "remaining" (it just echoes the full
+   *              duration every check) and the effect would linger forever.
+   *              Stamp it NOW so it starts counting down and expires on time.
+   *   null     — still valid, or permanent / preserved (Bloodied).
+   *
+   * The "anchor" branch is the fix for conditions like Haste Lethargy that got
+   * stuck for dozens of rounds: they had a real duration but never an anchor,
+   * so "remaining" never reached 0 and nothing ever swept them.
+   * @private
+   */
+  static _staleState(effect, combat) {
+    if (DurationTracker._shouldPreserve(effect)) return null;   // Bloodied / permanent
+    const d = effect.duration ?? {};
+    const rounds  = Number(d.rounds  ?? 0) || 0;
+    const turns   = Number(d.turns   ?? 0) || 0;
+    const seconds = Number(d.seconds ?? 0) || 0;
+    if (!rounds && !turns && !seconds) return null;             // no finite duration → permanent
+
+    // No usable anchor → dnd5e's "remaining" is meaningless (echoes the full
+    // duration forever), so the effect can never expire. Stamp it so it counts
+    // down. Round/turn effects need a START ROUND; pure-time effects need a
+    // start time — a timestamp alone doesn't anchor a round-based duration.
+    const hasAnchor =
+      (((rounds > 0) || (turns > 0)) && d.startRound != null) ||
+      ((seconds > 0) && d.startTime != null);
+    if (!hasAnchor) return "anchor";
+
+    // Anchored → trust dnd5e's own computed remaining first.
+    const rem = d.remaining;
+    if (rem != null) return rem <= 0 ? "expire" : null;
+
+    // Anchored but dnd5e gave no number → compute from the anchor ourselves.
+    const round = combat?.round ?? game.combat?.round ?? null;
+    if (rounds > 0 && d.startRound != null && round != null) {
+      return (round - d.startRound) >= rounds ? "expire" : null;
+    }
+    if (seconds > 0 && d.startTime != null) {
+      return ((game.time?.worldTime ?? 0) - d.startTime) >= seconds ? "expire" : null;
+    }
+    return null; // anchored but unresolvable for now → leave it
+  }
+
+  /**
+   * Stamp a missing duration anchor so an orphaned finite effect can expire.
+   * Writes only the anchors that are actually missing (and a round anchor only
+   * when there IS a combat), so it never churns the DB on repeat passes.
+   */
+  static async _anchorEffect(effect, combat) {
+    const d = effect.duration ?? {};
+    const round = combat?.round ?? game.combat?.round ?? null;
+    const turn  = combat?.turn  ?? game.combat?.turn  ?? null;
+    const patch = {};
+    if (d.startRound == null && round != null) {
+      patch["duration.startRound"] = round;
+      patch["duration.startTurn"]  = turn;
+    }
+    if (d.startTime == null) patch["duration.startTime"] = game.time?.worldTime ?? 0;
+    if (!Object.keys(patch).length) return;
+    try { await effect.update(patch); } catch (_) { /* non-fatal */ }
   }
 
   /**

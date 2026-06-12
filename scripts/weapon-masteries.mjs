@@ -34,6 +34,8 @@
 // to be `undefined` when this file evaluates, which breaks module loading
 // and prevents the entire Weapon Mastery system from registering.
 
+import { aceWithinFt } from "./geometry-utils.mjs";
+
 const MODULE_ID = "ace-qol";
 const TAG       = `${MODULE_ID} | Mastery`;
 
@@ -404,14 +406,13 @@ export class WeaponMasteries {
                          : attackerDoc?.getActiveTokens?.()[0] ?? null;
     const attackerDisp = attackerToken?.document?.disposition ?? 0;
 
-    const cell = canvas.grid?.size ?? 100;
-    const maxPx = cell * 1.5; // ~5 ft in grid distance (a touch over to catch diagonals)
+    // Within 5 ft of the original target — nearest-edge, size-aware, 3D (canonical).
     const adjacent = canvas.tokens?.placeables?.filter(t =>
       t !== origTok &&                                          // not the original target
       t.id !== attackerToken?.id &&                             // not the attacker themselves
       t.actor &&                                                // has an actor
       t.document.disposition !== attackerDisp &&                // not on attacker's side
-      Math.hypot(t.x - origTok.x, t.y - origTok.y) <= maxPx     // within 5 ft of original target
+      aceWithinFt(t, origTok, 5)                                // within 5 ft of original target
     ) ?? [];
 
     if (!adjacent.length) {
@@ -921,14 +922,13 @@ export class WeaponMasteries {
   static findCleaveAdjacent(attackerToken, origTok) {
     if (!attackerToken || !origTok) return [];
     const attackerDisp = attackerToken?.document?.disposition ?? 0;
-    const cell = canvas.grid?.size ?? 100;
-    const maxPx = cell * 1.5; // ~5 ft on standard grid; tolerant of diagonals
+    // Within 5 ft of the original target — nearest-edge, size-aware, 3D (canonical).
     return canvas.tokens?.placeables?.filter(t =>
       t !== origTok &&
       t.id !== attackerToken?.id &&
       t.actor &&
       t.document.disposition !== attackerDisp &&
-      Math.hypot(t.x - origTok.x, t.y - origTok.y) <= maxPx
+      aceWithinFt(t, origTok, 5)
     ) ?? [];
   }
 

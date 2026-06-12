@@ -62,6 +62,9 @@ import { LootableTile } from "./lootable-tile.mjs";
 import { initAATools }       from "./aa-tools/aa-tools-init.mjs";
 import { WeaponMasteries }   from "./weapon-masteries.mjs";
 import { BladeCantrips }     from "./blade-cantrips.mjs";
+import { HolySymbol }        from "./holy-symbol.mjs";
+import { MovementTrail }     from "./movement-trail.mjs";
+import { Banishment }        from "./banishment.mjs";
 import { FeatEffects }       from "./feat-effects.mjs";
 import { SwordOfWounding }   from "./sword-of-wounding.mjs";
 
@@ -978,6 +981,31 @@ Hooks.once("ready", () => {
     BladeCantrips.init();
   } catch (err) {
     console.error(`${MODULE_ID} | Blade Cantrip init failed:`, err);
+  }
+
+  // Holy Symbol of Ravenkind — 3 powers, 30-ft animations, Sunlight zone.
+  // Self-contained — listens to dnd5e.postCreateUsageMessage + combat/time hooks.
+  try {
+    HolySymbol.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Holy Symbol init failed:`, err);
+  }
+
+  // Hide-V13-movement-trail toggle — patches the core token ruler so the
+  // "Hide token movement trail" setting can suppress the history path.
+  try {
+    MovementTrail.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Movement Trail init failed:`, err);
+  }
+
+  // Banishment RAW visuals — on the Banished effect's lifecycle: hide the token
+  // from players (GM still sees it), GM card, un-hide in place on spell end
+  // (or leave it gone permanently if the full minute elapsed).
+  try {
+    Banishment.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Banishment init failed:`, err);
   }
 
   // Feat effects (Polearm Master, Crusher, Slasher, Piercer).
@@ -4059,6 +4087,15 @@ Hooks.once("ready", () => {
     setTimeout(() => _handledActivityDialogs.delete(dedupKey), 3000);
     const el = element?.[0] ?? element ?? app.element;
 
+    // Our CSS hides ALL .activity-choice dialogs by default (to kill the
+    // one-frame flash before we auto-close weapon rider dialogs). Any dialog
+    // we intentionally LEAVE OPEN must be explicitly revealed, or the user
+    // sees nothing — the menu renders into the DOM but stays display:none.
+    // This was the Holy Symbol of Ravenkind "invisible power menu" bug.
+    const _revealChoice = () => {
+      (el?.closest?.(".activity-choice") ?? el)?.classList?.add?.("ace-choice-show");
+    };
+
     // Try to find the Attack activity on this item
     if (item && el?.querySelector) {
       const activities = item.system?.activities;
@@ -4086,6 +4123,7 @@ Hooks.once("ready", () => {
     // open so the user can actually pick.
     if (item?.flags?.["ace-artificer"]?.appliedTemplate) {
       console.log(`${MODULE_ID} | ActivityChoiceDialog for Forge-templated item — leaving open for user choice: ${app.title}`);
+      _revealChoice();
       return;
     }
 
@@ -4112,12 +4150,20 @@ Hooks.once("ready", () => {
         }
       }
       console.log(`${MODULE_ID} | Spell ActivityChoiceDialog with no buttons — leaving open: ${app.title}`);
+      _revealChoice();
       return;
     }
 
-    // No Attack button found — this is a post-hit rider dialog (Divine
-    // Smite et al.) on a weapon. Our rider engine handles all post-hit
-    // abilities, so close it.
+    // No Attack button found. The auto-close rationale — post-hit rider dialogs
+    // (Divine Smite etc.) handled by our rider engine — applies ONLY to WEAPONS.
+    // Any non-weapon multi-activity item (equipment like the Holy Symbol of
+    // Ravenkind: Hold Vampires / Turn Undead / Sunlight; consumables; tools;
+    // feats) has a LEGITIMATE power-choice the user must make. Leave it open.
+    if (item?.type !== "weapon") {
+      console.log(`${MODULE_ID} | Multi-activity ${item?.type ?? "item"} — leaving choice open for the user: ${app.title}`);
+      _revealChoice();
+      return;
+    }
     console.log(`${MODULE_ID} | Auto-closing post-hit ActivityChoiceDialog: ${app.title}`);
     setTimeout(() => app.close(), 0);
   }

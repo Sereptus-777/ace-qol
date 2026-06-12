@@ -17,6 +17,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { aceDistanceFt } from "./geometry-utils.mjs";
 
 const SELF_KEY = "__SELF__";
 
@@ -75,16 +76,9 @@ export class HealTargetPicker {
 
       const isSelf = casterToken && tok.id === casterToken.id;
 
-      // Distance in feet (0 for self). Foundry's measureDistances handles
-      // grid-aware distance with diagonal rules from the scene config.
+      // Distance in feet (0 for self) — nearest-edge, size-aware, 3D (canonical).
       let distFt = 0;
-      if (!isSelf && casterToken) {
-        try {
-          distFt = HealTargetPicker._measureDistance(casterToken, tok);
-        } catch (_) {
-          distFt = HealTargetPicker._fallbackDistance(casterToken, tok);
-        }
-      }
+      if (!isSelf && casterToken) distFt = HealTargetPicker._measureDistance(casterToken, tok);
 
       // Validity checks
       const validity = HealTargetPicker._checkValidity(tok, casterActor, classification, distFt);
@@ -121,31 +115,9 @@ export class HealTargetPicker {
     return out;
   }
 
+  // Nearest-edge, size-aware, 3D distance in feet (canonical — geometry-utils).
   static _measureDistance(t1, t2) {
-    // V13: canvas.grid.measurePath
-    if (typeof canvas.grid?.measurePath === "function") {
-      const p = canvas.grid.measurePath([
-        { x: t1.center.x, y: t1.center.y },
-        { x: t2.center.x, y: t2.center.y },
-      ]);
-      return p?.distance ?? 0;
-    }
-    // V12: canvas.grid.measureDistances
-    if (typeof canvas.grid?.measureDistances === "function") {
-      const segs = [{ ray: new (foundry?.canvas?.geometry?.Ray ?? Ray)(t1.center, t2.center) }];
-      const dists = canvas.grid.measureDistances(segs, { gridSpaces: true });
-      return dists?.[0] ?? 0;
-    }
-    return HealTargetPicker._fallbackDistance(t1, t2);
-  }
-
-  static _fallbackDistance(t1, t2) {
-    const dx = t1.center.x - t2.center.x;
-    const dy = t1.center.y - t2.center.y;
-    const px = Math.hypot(dx, dy);
-    const grid = canvas.grid?.size ?? 100;
-    const sceneDist = canvas.scene?.grid?.distance ?? 5;
-    return (px / grid) * sceneDist;
+    return aceDistanceFt(t1, t2);
   }
 
   /**

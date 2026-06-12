@@ -28,6 +28,7 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
 import { CombatState } from "./combat-state.mjs";
 import { OA_IN_FLIGHT } from "./oa-transient.mjs";
+import { aceEdgeGapFt } from "./geometry-utils.mjs";
 
 // Hardcoded literal — TDZ-safe (see stealth-engine.mjs comment)
 const FLAG_NS = "ace-qol";
@@ -101,9 +102,12 @@ export class OAPrompt {
 
     const gridSize  = canvas.scene?.grid?.size ?? 100;
     const ftPerGrid = canvas.scene?.grid?.distance ?? 5;
-    // Mover footprint in pixels (size-aware).
+    // Mover footprint (px) + cube height + before/after elevation (for 3D reach).
     const moverW = (moverDoc.width  ?? 1) * gridSize;
     const moverH = (moverDoc.height ?? 1) * gridSize;
+    const moverHgtFt    = Math.max(moverDoc.width ?? 1, moverDoc.height ?? 1) * ftPerGrid;
+    const moverElevFrom = Number(moverDoc.elevation ?? 0) || 0;
+    const moverElevTo   = Number(changes.elevation ?? moverElevFrom) || 0;
 
     const moverDisp = moverDoc.disposition ?? 0;
     const placeables = canvas.tokens?.placeables ?? [];
@@ -155,12 +159,22 @@ export class OAPrompt {
 
       const reactorW = (td.width  ?? 1) * gridSize;
       const reactorH = (td.height ?? 1) * gridSize;
-      // Edge-to-edge gap (in feet) from the mover's BEFORE and AFTER positions
-      // to the reactor's footprint. Size-aware, so a Tiny/Small reactor adjacent
-      // to the mover reads gap≈0 (in reach) instead of being lost like it was
-      // with center-to-center.
-      const gapBeforeFt = OAPrompt._edgeGapFt(fromX, fromY, moverW, moverH, td.x, td.y, reactorW, reactorH, gridSize, ftPerGrid);
-      const gapAfterFt  = OAPrompt._edgeGapFt(toX,   toY,   moverW, moverH, td.x, td.y, reactorW, reactorH, gridSize, ftPerGrid);
+      const reactorRect = {
+        x: td.x, y: td.y, w: reactorW, h: reactorH,
+        elev:  Number(td.elevation ?? 0) || 0,
+        hgtFt: Math.max(td.width ?? 1, td.height ?? 1) * ftPerGrid,
+      };
+      // Edge-to-edge gap (ft) from the mover's BEFORE and AFTER positions to the
+      // reactor's footprint — nearest-edge, size-aware, and 3D (a flyer passing
+      // overhead is out of reach). Shared canonical math (geometry-utils), so a
+      // Tiny/Small reactor adjacent to the mover reads gap≈0 (in reach) instead
+      // of being lost the way center-to-center did.
+      const gapBeforeFt = aceEdgeGapFt(
+        { x: fromX, y: fromY, w: moverW, h: moverH, elev: moverElevFrom, hgtFt: moverHgtFt },
+        reactorRect);
+      const gapAfterFt = aceEdgeGapFt(
+        { x: toX, y: toY, w: moverW, h: moverH, elev: moverElevTo, hgtFt: moverHgtFt },
+        reactorRect);
 
       // Was within reach AND now isn't = standard leave-reach OA (PHB 195).
       if (gapBeforeFt <= reachThresholdFt && gapAfterFt > reachThresholdFt) {
@@ -188,19 +202,6 @@ export class OAPrompt {
         }
       }
     }
-  }
-
-  /**
-   * Edge-to-edge gap (in feet) between two token rectangles. Returns 0 when the
-   * footprints touch or overlap. Size-aware — unlike center-to-center distance,
-   * which over-measures the gap for Tiny/Small tokens (and diagonals), making
-   * them read as out of reach even when adjacent. Coordinates are top-left
-   * pixels; widths/heights in pixels.
-   */
-  static _edgeGapFt(ax, ay, aw, ah, bx, by, bw, bh, gridSize, ftPerGrid) {
-    const dx = Math.max(0, ax - (bx + bw), bx - (ax + aw));
-    const dy = Math.max(0, ay - (by + bh), by - (ay + ah));
-    return (Math.hypot(dx, dy) / gridSize) * ftPerGrid;
   }
 
   /**
