@@ -278,6 +278,13 @@ export class SpellPipeline {
           await SpellPipeline._runPickerAndResolve(ctx, "single");
           break;
 
+        case "save-area":
+          // Emanation save — no picker; everyone in range saves. (Frightful
+          // Presence, aura-of-fear, gaze pulses.)
+          await SaveResolver.runArea(ctx);
+          await SpellPipeline._commitSlotIfDeferred(activity, castLevel);
+          break;
+
         case "touch":
           await SpellPipeline._runPickerAndResolve(ctx, "single-adjacent");
           break;

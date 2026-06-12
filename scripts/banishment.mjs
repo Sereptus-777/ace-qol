@@ -22,6 +22,10 @@ import { MODULE_ID } from "./ace-qol.mjs";
 const RETURN_FLAG = "banishReturn";   // remembers WE hid the token (so return restores exactly)
 
 export const Banishment = {
+  // "Banish" legendary-action in-flight state — armed when the feature is used,
+  // consumed by the next failed save (the feature is single-target).
+  _banishArmed: null,
+
   init() {
     Hooks.on("createActiveEffect", (effect) => {
       try { if (Banishment._isBanish(effect)) Banishment._onBanish(effect); }
@@ -30,6 +34,24 @@ export const Banishment = {
     Hooks.on("deleteActiveEffect", (effect) => {
       try { if (Banishment._isBanish(effect)) Banishment._onReturn(effect); }
       catch (err) { console.warn(`${MODULE_ID} | Banishment._onReturn threw:`, err); }
+    });
+
+    // ── The "Banish" legendary action (≠ the Banishment spell) ──
+    // It deals 3d6 force + a SHORT banish until the start of the user's next
+    // turn. The save + damage ride the generic save path; we add the banish
+    // visuals by arming on use and applying a short Banished effect to whoever
+    // fails the save, then returning them when the user's turn comes around.
+    Hooks.on("dnd5e.postCreateUsageMessage", (activity) => {
+      try { Banishment._armBanishFeature(activity); }
+      catch (err) { console.warn(`${MODULE_ID} | Banishment._armBanishFeature threw:`, err); }
+    });
+    Hooks.on(`${MODULE_ID}.saveComplete`, (payload) => {
+      try { Banishment._onBanishFeatureSave(payload); }
+      catch (err) { console.warn(`${MODULE_ID} | Banishment._onBanishFeatureSave threw:`, err); }
+    });
+    Hooks.on("updateCombat", (combat, changed) => {
+      try { if (("turn" in changed) || ("round" in changed)) Banishment._returnShortBanishOnUserTurn(combat); }
+      catch (err) { console.warn(`${MODULE_ID} | Banishment._returnShortBanishOnUserTurn threw:`, err); }
     });
   },
 
@@ -73,11 +95,13 @@ export const Banishment = {
     const actor  = effect?.parent;
     const tokens = Banishment._tokensForEffect(effect);
 
-    // RAW: a spell that ran its FULL duration banishes permanently — no return.
-    // We detect that as "no time remaining" at the moment it ends; anything
-    // ending early (concentration broken, dispel, manual) returns the creature.
+    // RAW: a SPELL that ran its FULL duration banishes permanently — no return.
+    // We detect that as "no time remaining" when it ends; anything ending early
+    // (concentration broken, dispel, manual) returns the creature. The "Banish"
+    // legendary action (banishShort) ALWAYS returns — never permanent.
+    const isShort = effect.getFlag?.(MODULE_ID, "banishShort") === true;
     const rem = effect?.duration?.remaining;
-    const permanent = (rem != null && rem <= 0);
+    const permanent = !isShort && (rem != null && rem <= 0);
 
     if (permanent) {
       for (const t of tokens) { try { await t.document?.unsetFlag(MODULE_ID, RETURN_FLAG); } catch (_) {} }
@@ -125,6 +149,82 @@ export const Banishment = {
       });
     } catch (err) {
       console.warn(`${MODULE_ID} | Banishment._postCard threw:`, err);
+    }
+  },
+
+  // ── "Banish" legendary action: short banish on a failed save ─────────────────
+
+  /** Arm when the "Banish" FEATURE is used (the spell "Banishment" is the pipeline's). */
+  _armBanishFeature(activity) {
+    if (game.users?.activeGM !== game.user) return;
+    const item = activity?.item;
+    if (!item || item.type !== "feat") return;
+    const nm = String(item.name ?? "");
+    // \bbanish\b matches "Banish" / "Banish (Recharge 5-6)" but NOT "Banishment".
+    if (!/\bbanish\b/i.test(nm) || /banishment/i.test(nm)) return;
+    const userActor = item.actor;
+    const userToken = userActor?.token?.object ?? userActor?.getActiveTokens?.()?.[0] ?? null;
+    let targetIds = [];
+    try { targetIds = [...(game.user?.targets ?? [])].map(t => t.document?.id ?? t.id).filter(Boolean); } catch (_) {}
+    Banishment._banishArmed = {
+      userActorId: userActor?.id ?? null,
+      userTokenId: userToken?.document?.id ?? userToken?.id ?? null,
+      targetIds,
+      until: Date.now() + 12000,   // 12s window — the NPC save auto-rolls right after
+    };
+  },
+
+  /** A save just resolved — if a Banish is armed and this one FAILED, banish them. */
+  async _onBanishFeatureSave(payload) {
+    if (game.users?.activeGM !== game.user) return;
+    const armed = Banishment._banishArmed;
+    if (!armed) return;
+    if (Date.now() > armed.until) { Banishment._banishArmed = null; return; }
+    if (payload?.passed !== false) return;                 // only a FAILED save banishes
+    const targetActor = payload.actor;
+    const tokenDocId  = payload.tokenDocId;
+    if (!targetActor || !tokenDocId) return;
+    if (armed.targetIds?.length && !armed.targetIds.includes(tokenDocId)) return; // wrong target
+    Banishment._banishArmed = null;                        // single-target: consume the arm
+    await Banishment._applyShortBanish(targetActor, armed);
+  },
+
+  /** Apply the short Banished effect — reuses the effect-lifecycle visuals. */
+  async _applyShortBanish(targetActor, armed) {
+    try {
+      if (targetActor.effects?.some(e => e.getFlag?.(MODULE_ID, "banishShort"))) return; // already banished
+      await targetActor.createEmbeddedDocuments("ActiveEffect", [{
+        name: "Banished",
+        img: "icons/magic/movement/portal-vortex-orange.webp",
+        statuses: ["incapacitated"],
+        duration: { rounds: 2 },               // fallback expiry if the banisher dies before its turn
+        flags: { [MODULE_ID]: {
+          conditionKey: "banishment",          // → _onBanish hides the token + posts the card
+          banishShort: true,                   // returns on the user's next turn; never permanent
+          banishUserTokenId: armed.userTokenId,
+          banishUserActorId: armed.userActorId,
+        } },
+      }]);
+    } catch (err) { console.warn(`${MODULE_ID} | Banishment._applyShortBanish threw:`, err); }
+  },
+
+  /** At the start of the BANISHING creature's next turn, its victims return. */
+  _returnShortBanishOnUserTurn(combat) {
+    if (game.users?.activeGM !== game.user) return;
+    const cur = combat?.combatant;
+    if (!cur) return;
+    const curTokenId = cur.tokenId ?? cur.token?.id ?? null;
+    const curActorId = cur.actor?.id ?? null;
+    for (const t of (canvas.tokens?.placeables ?? [])) {
+      const eff = t.actor?.effects?.find?.(e => e.getFlag?.(MODULE_ID, "banishShort"));
+      if (!eff) continue;
+      const uTok = eff.getFlag(MODULE_ID, "banishUserTokenId");
+      const uAct = eff.getFlag(MODULE_ID, "banishUserActorId");
+      if ((uTok && uTok === curTokenId) || (uAct && uAct === curActorId)) {
+        // The user's turn has started → remove the effect → _onReturn un-hides
+        // it in place (banishShort has no duration → never the "permanent" path).
+        eff.delete().catch(() => {});
+      }
     }
   },
 };

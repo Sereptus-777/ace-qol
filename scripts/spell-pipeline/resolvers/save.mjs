@@ -66,6 +66,83 @@ export class SaveResolver {
   }
 
   /**
+   * Save-area (emanation): EVERY eligible creature within `entry.range` of the
+   * source makes the save — no template, no picker, the source's own position
+   * is the origin. On a fail → the entry's effect (and the activity's damage,
+   * if any, via postSaveCard). Frightful Presence, aura-of-fear, gaze pulses…
+   *
+   * entry fields: range (ft), save { ability, halfOnPass?, repeatAt? },
+   *   effect { key, duration }, targets ("enemies"|"allies"|"all"; default
+   *   "enemies"), picker { allowSelf?, excludeDead?, creatureTypeFilter? }.
+   */
+  static async runArea(ctx) {
+    const { entry, item, actor, castLevel, spellMod } = ctx;
+    const source = actor.getActiveTokens?.()?.[0]
+      ?? canvas.tokens?.placeables.find(t => t.actor?.id === actor.id);
+    if (!source) {
+      console.warn(`${MODULE_ID} | SaveResolver.runArea: source actor has no token on the scene.`);
+      return;
+    }
+
+    const rangeFt = Number(entry.range) || 0;
+    const filter  = entry.picker ?? {};
+    const affects = entry.targets ?? "enemies";
+    const srcDisp = source.document?.disposition ?? 0;
+
+    const { aceWithinFt } = await import("../../geometry-utils.mjs");
+    const targets = (canvas.tokens?.placeables ?? []).filter(t => {
+      if (!t.actor) return false;
+      if (t === source && filter.allowSelf !== true) return false;
+      if (filter.excludeDead !== false && (t.actor.system?.attributes?.hp?.value ?? 1) <= 0) return false;
+      if (affects === "enemies" && t.document?.disposition === srcDisp) return false;
+      if (affects === "allies"  && t.document?.disposition !== srcDisp) return false;
+      if (filter.creatureTypeFilter) {
+        const type = String(t.actor.system?.details?.type?.value ?? "").toLowerCase();
+        if (type !== String(filter.creatureTypeFilter).toLowerCase()) return false;
+      }
+      return aceWithinFt(source, t, rangeFt);
+    });
+
+    if (!targets.length) {
+      ui.notifications?.info(`${item.name}: no creatures within ${rangeFt} ft.`);
+      return;
+    }
+
+    // Auto-detect damage from the activity (lazy import — no static cycle).
+    let damageTypes = [];
+    try {
+      const { CombatState } = await import("../../combat-state.mjs");
+      damageTypes = CombatState._getItemDamageTypes?.(item) ?? [];
+    } catch (_) { /* condition-only ability */ }
+
+    const saveAbility = entry.save?.ability ?? "wis";
+    const saveDC = SaveResolver._computeSaveDC(actor, item, spellMod);
+
+    const saveEngine = game.aceQol?.saveEngine;
+    if (saveEngine?.postSaveCard) {
+      try {
+        await saveEngine.postSaveCard(item, actor, targets, {
+          saveAbility, saveDC,
+          halfOnSave: entry.save?.halfOnPass === true,
+          damageTypes,
+          isSpell: item.type === "spell",
+          timing: { isInstant: true, isPersistent: false },
+          activityId: ctx.activity?.id,
+          spellLevel: castLevel,
+        });
+      } catch (err) {
+        console.error(`${MODULE_ID} | SaveResolver.runArea: postSaveCard failed for "${item.name}":`, err);
+      }
+    } else {
+      console.warn(`${MODULE_ID} | SaveResolver.runArea: saveEngine.postSaveCard unavailable.`);
+    }
+
+    if (entry.effect?.key) {
+      for (const t of targets) SaveResolver._wireEffectOnFail(t, entry, castLevel, item, actor);
+    }
+  }
+
+  /**
    * Wire a one-shot save-complete hook for the given target token. If the
    * save fails, apply the entry's effect via ConditionLibrary + the
    * concentration-link + the replace-on-recast cleanup + save-at-end-of-turn

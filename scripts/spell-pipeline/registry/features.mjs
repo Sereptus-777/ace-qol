@@ -20,8 +20,19 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 export const FEATURE_REGISTRY = {
-  // Phase 2 content goes here. Examples of the shapes to come:
-  //   "frightful presence": { shape: "save-area", save: { ability: "wis" }, … },
-  //   "blinding breath":    { shape: "save-area", save: { ability: "con" }, … },
-  //   "beguile":            { shape: "save-single", save: { ability: "wis" }, … },
+  // ── Frightful Presence (emanation save) ──────────────────────────────────
+  // Each enemy within range makes a Wis save or is Frightened for 1 min, with
+  // a save at the end of each of its turns to shake it off. (RAW also grants
+  // 24h immunity on a success — not modeled yet.) Proves the save-area shape.
+  "frightful presence": {
+    shape: "save-area",
+    range: 120,
+    save: { ability: "wis", repeatAt: "endOfTurn" },
+    effect: { key: "frightened", duration: { rounds: 10 } },
+    targets: "enemies",
+    picker: { allowSelf: false, excludeDead: true },
+  },
+
+  // Phase 2: more save-area / save-single / summon / teleport entries land here
+  // as their shapes come online (Blinding Breath, gaze attacks, etc.).
 };
