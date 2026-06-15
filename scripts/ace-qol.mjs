@@ -174,7 +174,7 @@ export const SPELL_AUTO_APPLY = {
 function _findConcentratingEffectFor(caster, spellItem) {
   const spellNameLc = String(spellItem?.name ?? "").toLowerCase();
   return (caster?.effects?.contents ?? []).find(e => {
-    if (!e.statuses?.has?.("concentrating")) return false;
+    if (!e.statuses?.has?.("concentration") && !e.statuses?.has?.("concentrating")) return false;
     const eNameLc = String(e.name ?? "").toLowerCase();
     if (eNameLc.includes(spellNameLc)) return true;
     const cf = e.flags?.dnd5e?.concentration;
@@ -1486,7 +1486,8 @@ Hooks.once("ready", () => {
 
         // ── Permissive detection ──
         const statuses = effect.statuses;
-        const hasStatusSet = statuses?.has?.("concentrating") === true;
+        const hasStatusSet = statuses?.has?.("concentration") === true   // dnd5e 5.x
+                          || statuses?.has?.("concentrating") === true;  // dnd5e 4.x
         const statusFirst  = statuses?.first?.() ?? null;
         const coreStatus   = effect.flags?.core?.statusId ?? null;
         const dndConcFlag  = effect.flags?.dnd5e?.concentration ?? null;
@@ -1494,11 +1495,13 @@ Hooks.once("ready", () => {
 
         const isConcentratingFx =
              hasStatusSet
-          || statusFirst === "concentrating"
-          || coreStatus === "concentrating"
+          || statusFirst === "concentration"   // dnd5e 5.x
+          || statusFirst === "concentrating"   // dnd5e 4.x
+          || coreStatus === "concentration"    // dnd5e 5.x
+          || coreStatus === "concentrating"    // dnd5e 4.x
           || !!dndConcFlag
-          || nameLc.startsWith("concentrating")
-          || nameLc.includes("concentrating");
+          || nameLc.startsWith("concentrat")
+          || nameLc.includes("concentrat");
 
         if (!isConcentratingFx) return;
 
@@ -1628,9 +1631,10 @@ Hooks.once("ready", () => {
 
         // Skip if the deleted effect is itself a Concentrating effect — the
         // other concentration layers handle that case (and we'd recurse).
-        const isConcSelf = effect.statuses?.has?.("concentrating")
+        const isConcSelf = effect.statuses?.has?.("concentration")   // dnd5e 5.x
+                       || effect.statuses?.has?.("concentrating")   // dnd5e 4.x
                        || !!effect.flags?.dnd5e?.concentration
-                       || String(effect.name ?? "").toLowerCase().includes("concentrating");
+                       || String(effect.name ?? "").toLowerCase().includes("concentrat");
         if (isConcSelf) return;
 
         // Resolve the parent Concentrating effect
@@ -1687,9 +1691,10 @@ Hooks.once("ready", () => {
         const becameDisabled = changes?.disabled === true;
         if (!becameDisabled) return;
 
-        const isConcentrating = effect.statuses?.has?.("concentrating")
+        const isConcentrating = effect.statuses?.has?.("concentration")   // dnd5e 5.x
+          || effect.statuses?.has?.("concentrating")                      // dnd5e 4.x
           || !!effect.flags?.dnd5e?.concentration
-          || String(effect.name ?? "").toLowerCase().includes("concentrating");
+          || String(effect.name ?? "").toLowerCase().includes("concentrat");
         if (!isConcentrating) return;
 
         const casterId = effect.parent?.id ?? null;
@@ -1876,7 +1881,8 @@ Hooks.once("ready", () => {
                 const curHP = this.system?.attributes?.hp?.value ?? 0;
                 if (newHP < curHP) {
                   damageDealt = curHP - newHP;
-                  wasConcentrating = this.effects?.some?.(e => e.statuses?.has?.("concentrating"));
+                  wasConcentrating = this.effects?.some?.(e =>
+                    e.statuses?.has?.("concentration") || e.statuses?.has?.("concentrating"));
                   // Suppress vanilla dnd5e concentration challenge — we own this.
                   options = foundry.utils.mergeObject(options, { dnd5e: { concentrationCheck: false } });
                 }

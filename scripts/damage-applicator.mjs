@@ -97,7 +97,8 @@ export class DamageApplicator {
    */
   static async _triggerAceConcentrationCheck(actor, damage) {
     if (!actor?.effects) return;
-    const concEffect = actor.effects.find?.(e => e.statuses?.has?.("concentrating"));
+    const concEffect = actor.effects.find?.(e =>
+      e.statuses?.has?.("concentration") || e.statuses?.has?.("concentrating"));
     if (!concEffect) return;
 
     const dc = Math.max(10, Math.floor(damage / 2));

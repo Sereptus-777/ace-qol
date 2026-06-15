@@ -519,9 +519,9 @@ export class SpellPipeline {
         }
       }
 
-      // Strategy 2: scan actor.effects for the "Concentrating" status effect itself
+      // Strategy 2: scan actor.effects for the "Concentrating"/"Concentration" status effect
       for (const eff of actor.effects ?? []) {
-        if (eff.statuses?.has?.("concentrating")) {
+        if (eff.statuses?.has?.("concentration") || eff.statuses?.has?.("concentrating")) {
           if (SpellPipeline._effectMatchesSpell(eff, itemUuid, itemId, spellName)) {
             toEnd.add(eff);
           }
@@ -529,10 +529,10 @@ export class SpellPipeline {
       }
 
       // Strategy 3: scan actor.effects for any effect named after this spell
-      // (catches the buff effect itself if it was applied early, before our cancel)
       for (const eff of actor.effects ?? []) {
         const effNameLower = String(eff.name ?? "").toLowerCase().trim();
-        if (effNameLower === spellName && eff.statuses?.has?.("concentrating")) {
+        if (effNameLower === spellName
+            && (eff.statuses?.has?.("concentration") || eff.statuses?.has?.("concentrating"))) {
           toEnd.add(eff);
         }
       }
@@ -570,7 +570,8 @@ export class SpellPipeline {
       if (itemDataName && String(itemDataName).toLowerCase().trim() === spellName) return true;
       // Concentration effect name often matches spell name (e.g. "Concentrating on Haste")
       const effNameLower = String(eff.name ?? "").toLowerCase();
-      if (effNameLower.includes(spellName) && eff.statuses?.has?.("concentrating")) return true;
+      if (effNameLower.includes(spellName)
+          && (eff.statuses?.has?.("concentration") || eff.statuses?.has?.("concentrating"))) return true;
     } catch (_) { /* fall through */ }
     return false;
   }
@@ -610,9 +611,9 @@ export class SpellPipeline {
         }
       }
 
-      // Strategy 2: scan caster.effects for "concentrating" status with matching origin
+      // Strategy 2: scan caster.effects for concentration status with matching origin
       for (const eff of caster.effects) {
-        if (!eff.statuses?.has?.("concentrating")) continue;
+        if (!eff.statuses?.has?.("concentration") && !eff.statuses?.has?.("concentrating")) continue;
         const origin = String(eff.origin ?? "");
         if (itemUuid && (origin === itemUuid || origin.endsWith(`.${itemId}`))) return eff;
         const itemDataName = eff.flags?.dnd5e?.itemData?.name;

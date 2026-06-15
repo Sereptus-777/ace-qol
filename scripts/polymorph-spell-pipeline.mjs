@@ -146,7 +146,7 @@ export class PolymorphSpellPipeline {
       const caster = casterActor ?? game.actors.get(pick.casterId);
       if (caster) {
         const conc = caster.effects?.contents?.find(e =>
-          e.statuses?.has?.("concentrating")
+          (e.statuses?.has?.("concentration") || e.statuses?.has?.("concentrating"))
           && (String(e.name ?? "").toLowerCase().includes(pick.spellName.toLowerCase())
               || (e.flags?.dnd5e?.concentration?.item === pick.itemId))
         );

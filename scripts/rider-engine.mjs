@@ -582,7 +582,8 @@ export class RiderEngine {
     if (!actor?.effects) return false;
     // Must currently be concentrating — if concentration broke or was never
     // started, the smite spell hasn't been pre-cast.
-    const isConcentrating = actor.statuses?.has?.("concentrating") === true;
+    const isConcentrating = actor.statuses?.has?.("concentration") === true
+                          || actor.statuses?.has?.("concentrating") === true;
     if (!isConcentrating) return false;
     const lcName = name.toLowerCase();
     for (const effect of actor.effects) {

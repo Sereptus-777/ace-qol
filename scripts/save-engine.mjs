@@ -3108,7 +3108,8 @@ export class SaveEngine {
     const effects = caster.effects?.contents ?? [];
     const concEffect = effects.find(e => {
       if (e.disabled) return false;
-      const isConcentratingFx = e.statuses?.has?.("concentrating")
+      const isConcentratingFx = e.statuses?.has?.("concentration")  // dnd5e 5.x
+        || e.statuses?.has?.("concentrating")                        // dnd5e 4.x
         || e.flags?.dnd5e?.concentration;
       if (!isConcentratingFx) return false;
       // Match by spell origin

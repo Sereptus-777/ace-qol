@@ -779,7 +779,8 @@ export class DurationTracker {
     const effectName = effect.name;
     const actorName = actor.name;
     const isConcentration = effect.flags?.[MODULE_ID]?.concentration
-                         || effect.statuses?.has("concentrating");
+                         || effect.statuses?.has("concentration")   // dnd5e 5.x
+                         || effect.statuses?.has("concentrating");  // dnd5e 4.x
 
     this._debug(`Expiring "${effectName}" on ${actorName}: ${reason}`);
 

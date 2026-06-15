@@ -454,11 +454,11 @@ export class EngagementGate {
 
   static _currentConcentrationSpellName(actor) {
     if (!actor?.effects?.contents) return null;
-    // dnd5e 5.x stores concentration as an Active Effect with status "concentrating"
     for (const efx of actor.effects.contents) {
       if (efx.disabled) continue;
       const statuses = efx.statuses ?? new Set();
-      const isConcentration = (statuses.has?.("concentrating") || efx.flags?.dnd5e?.concentration);
+      const isConcentration = (statuses.has?.("concentration") || statuses.has?.("concentrating")
+                               || efx.flags?.dnd5e?.concentration);
       if (isConcentration) {
         return efx.name?.replace(/^Concentrating:\s*/i, "") ?? efx.name ?? null;
       }

@@ -1167,11 +1167,11 @@ export class CombatState {
     // ═════════════════════════════════════════════════════════════════════════
     //  CONCENTRATION STATE
     // ═════════════════════════════════════════════════════════════════════════
-    const isConcentrating = tgtStatuses.has("concentrating");
+    const isConcentrating = tgtStatuses.has("concentration") || tgtStatuses.has("concentrating");
     let concentrationSpell = null;
     if (isConcentrating) {
       for (const effect of targetActor.effects ?? []) {
-        if (effect.statuses?.has("concentrating")) {
+        if (effect.statuses?.has("concentration") || effect.statuses?.has("concentrating")) {
           concentrationSpell = effect.name || "Unknown spell";
           break;
         }

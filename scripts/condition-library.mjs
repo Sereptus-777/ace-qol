@@ -1941,7 +1941,7 @@ export class ConditionLibrary {
               const spellNameLc = String(options.concentrationOrigin.spellName).toLowerCase();
               const spellItemId = options.concentrationOrigin.spellItemId ?? null;
               concEffect = caster.effects.contents.find(e => {
-                if (!e.statuses?.has?.("concentrating")) return false;
+                if (!e.statuses?.has?.("concentration") && !e.statuses?.has?.("concentrating")) return false;
                 // Match by name pattern "Concentrating: Hold Person"
                 const eNameLc = String(e.name ?? "").toLowerCase();
                 if (eNameLc.includes(spellNameLc)) return true;

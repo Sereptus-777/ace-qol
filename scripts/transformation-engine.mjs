@@ -196,9 +196,10 @@ export class TransformationEngine {
         // doesn't reach our marker — happens with synthetic/unlinked tokens
         // or when the registry hasn't tracked yet. We iterate all actors
         // whose transformState.concEffectUuid points at this effect's UUID.)
-        const isConcentrating = effect.statuses?.has?.("concentrating")
+        const isConcentrating = effect.statuses?.has?.("concentration")   // dnd5e 5.x
+                             || effect.statuses?.has?.("concentrating")   // dnd5e 4.x
                              || !!effect.flags?.dnd5e?.concentration
-                             || String(effect.name ?? "").toLowerCase().includes("concentrating");
+                             || String(effect.name ?? "").toLowerCase().includes("concentrat");
         if (!isConcentrating) return;
         await this._revertAllTiedToConc(effect.uuid, "delete");
       } catch (err) {
@@ -242,9 +243,10 @@ export class TransformationEngine {
         if (!effect) return;
         if (changes?.disabled !== true) return;
 
-        const isConcentrating = effect.statuses?.has?.("concentrating")
+        const isConcentrating = effect.statuses?.has?.("concentration")   // dnd5e 5.x
+                             || effect.statuses?.has?.("concentrating")   // dnd5e 4.x
                              || !!effect.flags?.dnd5e?.concentration
-                             || String(effect.name ?? "").toLowerCase().includes("concentrating");
+                             || String(effect.name ?? "").toLowerCase().includes("concentrat");
         if (!isConcentrating) return;
         await this._revertAllTiedToConc(effect.uuid, "disable");
       } catch (err) {

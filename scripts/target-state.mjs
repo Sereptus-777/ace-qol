@@ -237,12 +237,12 @@ export class TargetState {
     const autoCritMelee = isMelee && (conditions.has("paralyzed") || conditions.has("unconscious"));
 
     // ── Concentration ──
-    const isConcentrating = statuses.has("concentrating");
+    const isConcentrating = statuses.has("concentration") || statuses.has("concentrating");
     let concentrationSpell = null;
     if (isConcentrating) {
       // Try to find what spell they're concentrating on
       for (const effect of actor.effects ?? []) {
-        if (effect.statuses?.has("concentrating")) {
+        if (effect.statuses?.has("concentration") || effect.statuses?.has("concentrating")) {
           concentrationSpell = effect.name || "Unknown spell";
           break;
         }

@@ -631,10 +631,11 @@ export class ConcentrationWidget {
     const itemUuid  = item.uuid ?? "";
 
     for (const effect of effects) {
-      const isConcentration = effect.statuses?.has?.("concentrating")
+      const isConcentration = effect.statuses?.has?.("concentration")   // dnd5e 5.x
+                           || effect.statuses?.has?.("concentrating")  // dnd5e 4.x
                            || !!effect.flags?.dnd5e?.itemData
                            || !!effect.flags?.dnd5e?.dependents
-                           || (effect.name ?? "").toLowerCase().includes("concentrating");
+                           || (effect.name ?? "").toLowerCase().includes("concentrat");
       if (!isConcentration) continue;
 
       // Match by origin path, item-uuid flag, or name substring
@@ -1907,8 +1908,9 @@ export class ConcentrationWidget {
   _onEffectRemoved(effect) {
     // Check if this is a concentration effect
     const statusId = effect.statuses?.first?.() ?? effect.flags?.core?.statusId ?? "";
-    const isConcentrating = statusId === "concentrating"
-                         || (effect.name ?? "").toLowerCase().includes("concentrating");
+    const isConcentrating = statusId === "concentration"              // dnd5e 5.x
+                         || statusId === "concentrating"              // dnd5e 4.x
+                         || (effect.name ?? "").toLowerCase().includes("concentrat");
 
     if (!isConcentrating) return;
 
