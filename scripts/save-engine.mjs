@@ -740,6 +740,7 @@ export class SaveEngine {
     // the break-free prompt has something to attach to, even though it also
     // deals damage.
     const breakFreeEnabled = item.getFlag?.(MODULE_ID, "breakFreeConfig")?.enabled === true;
+    console.log(`${MODULE_ID} | ACE-COND-DBG [NPC fast-path] "${item?.name}" failed=${!result.passed} hasDamage=${hasDamage} breakFreeEnabled=${breakFreeEnabled} → willApplyConditions=${!hasDamage || breakFreeEnabled}`);
     let appliedConditions = [];
     if (!hasDamage || breakFreeEnabled) {
       try {
@@ -2991,6 +2992,8 @@ export class SaveEngine {
       // gated like the NPC path (no-damage powers, or any power with break-free
       // enabled) and guarded so repeated card rebuilds don't double-apply.
       try {
+        const _bfe = item.getFlag?.(MODULE_ID, "breakFreeConfig")?.enabled === true;
+        console.log(`${MODULE_ID} | ACE-COND-DBG [PC path] "${item?.name}" passed=${r.passed} condAlready=${!!r._condApplied} breakFreeEnabled=${_bfe} hasDamage=${Array.isArray(flags.damageTypes) && flags.damageTypes.some(t => t && t !== "none")}`);
         if (!r.passed && !r._condApplied) {
           const breakFreeEnabled = item.getFlag?.(MODULE_ID, "breakFreeConfig")?.enabled === true;
           const hasDmg = Array.isArray(flags.damageTypes) && flags.damageTypes.some(t => t && t !== "none");
