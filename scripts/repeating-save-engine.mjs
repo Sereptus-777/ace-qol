@@ -72,7 +72,7 @@ export class RepeatingSaveEngine {
   // ═══════════════════════════════════════════════════════════════════════════
 
   static async _onCombatTurn(combat) {
-    if (!game.user.isGM) return;
+    if (game.users?.activeGM !== game.user) return;  // activeGM: save cards must only fire once
     if (!combat?.started) return;
 
     // Resolve which combatant's turn just ENDED
@@ -103,7 +103,7 @@ export class RepeatingSaveEngine {
   // ═══════════════════════════════════════════════════════════════════════════
 
   static async _onWorldTimeAdvance(dt) {
-    if (!game.user.isGM) return;
+    if (game.users?.activeGM !== game.user) return;  // activeGM: updateWorldTime fires on all clients
     if (!Number.isFinite(dt) || dt < MIN_RT_FOR_OOC_SAVE) return;
     // Skip if a combat is currently running — the combat hook owns timing
     if (game.combat?.started) return;

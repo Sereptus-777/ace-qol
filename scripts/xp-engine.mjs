@@ -24,7 +24,10 @@ export class XpEngine {
     if (!game.user.isGM) return;
 
     // Reset kill list when combat starts (or new round 1)
-    Hooks.on("combatStart", () => { this._currentCombatKills = []; });
+    Hooks.on("combatStart", () => {
+      if (game.users?.activeGM !== game.user) return;
+      this._currentCombatKills = [];
+    });
 
     // Listen to ace-qol's existing npcDeath hook
     Hooks.on(`${MODULE_ID}.npcDeath`, ({ actor, tokenDoc }) => {
@@ -33,7 +36,9 @@ export class XpEngine {
     });
 
     // Combat ended → show distribution dialog
+    // activeGM guard: only one GM should show the dialog + apply awards
     Hooks.on("deleteCombat", (combat) => {
+      if (game.users?.activeGM !== game.user) return;
       if (!QolSettings.get("enableXpDistribution")) return;
       if (!this._currentCombatKills.length) return;
       this._showDistributionDialog();

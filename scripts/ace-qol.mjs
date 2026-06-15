@@ -1290,7 +1290,7 @@ Hooks.once("ready", () => {
       // muting symptom the user reported. The flag-only marker is enough.
       setTimeout(async () => {
         try {
-          if (!game.user.isGM) return;
+          if (game.users?.activeGM !== game.user) return;  // activeGM: flag write must only run once
           if (!game.settings.get(MODULE_ID, "hideSpellTemplateVisuals")) return;
           const fresh = canvas?.scene?.templates?.get?.(tdoc.id);
           if (!fresh) return;
@@ -1336,7 +1336,7 @@ Hooks.once("ready", () => {
       // the socket. Wrapped in try/catch because Sequencer isn't a hard
       // dependency.
       try {
-        if (!game.user.isGM) return;
+        if (game.users?.activeGM !== game.user) return;  // activeGM: endEffects socket must only fire once
         if (!game.modules?.get?.("sequencer")?.active) return;
         const uuid = tdoc?.uuid;
         if (!uuid) return;
@@ -1581,7 +1581,7 @@ Hooks.once("ready", () => {
     // the shared dedup cache prevents double-sweeps.
     Hooks.on("dnd5e.endConcentration", async (...args) => {
       try {
-        if (!game.user.isGM) return;
+        if (game.users?.activeGM !== game.user) return;  // activeGM: concentration sweep must only run once
         // Try to find an actor and an effect/item in the args
         const actor  = args.find(a => a?.documentName === "Actor") ?? null;
         const effect = args.find(a => a?.documentName === "ActiveEffect") ?? null;
@@ -1622,7 +1622,7 @@ Hooks.once("ready", () => {
     // (c) any other dependent is still alive on the parent.
     Hooks.on("deleteActiveEffect", async (effect /*, opts, userId */) => {
       try {
-        if (!game.user.isGM) return;
+        if (game.users?.activeGM !== game.user) return;  // activeGM: concentration orphan sweep must only run once
         if (!effect) return;
 
         // Only react to LINKED dependents — they have flags.dnd5e.dependentOn
@@ -1684,7 +1684,7 @@ Hooks.once("ready", () => {
     // disabled-cast, disabled-cast accumulates indefinitely.
     Hooks.on("updateActiveEffect", async (effect, changes /*, opts, userId */) => {
       try {
-        if (!game.user.isGM) return;
+        if (game.users?.activeGM !== game.user) return;  // activeGM: concentration-disable sweep + delete must only run once
         if (!effect) return;
 
         // Only react to disabled flips on a concentrating effect
@@ -2115,7 +2115,7 @@ Hooks.once("ready", () => {
   // on deleteCombat in case state survives a combat ending.
   try {
     Hooks.on("combatTurnChange", (combat, prior /*, current */) => {
-      if (!game.user.isGM) return;  // flag writes are GM-only; players have no authority here
+      if (game.users?.activeGM !== game.user) return;  // activeGM: flag clears + Hexblade/CritDebuff expiry must only run once
       try {
         // Resolve the prior combatant (the one whose turn just ended).
         // Prefer combat.previous.combatantId (the canonical position
@@ -2153,7 +2153,7 @@ Hooks.once("ready", () => {
     // their next combat with the flag pre-set and have round 1 Sneak Attack
     // silently blocked.
     Hooks.on("combatStart", (combat) => {
-      if (!game.user.isGM) return;
+      if (game.users?.activeGM !== game.user) return;  // activeGM: flag clears on start must only run once
       try {
         for (const c of combat?.combatants?.contents ?? []) {
           if (c.actor) {
@@ -2168,7 +2168,7 @@ Hooks.once("ready", () => {
       } catch (_) { /* non-fatal */ }
     });
     Hooks.on("deleteCombat", (combat) => {
-      if (!game.user.isGM) return;
+      if (game.users?.activeGM !== game.user) return;  // activeGM: flag clears + Hexblade expiry on end must only run once
       try {
         for (const c of combat?.combatants?.contents ?? []) {
           if (c.actor) {
@@ -2225,7 +2225,7 @@ Hooks.once("ready", () => {
   // GM-only so the cleanup is idempotent (one client running the heal/clear).
   try {
     Hooks.on("updateActor", (actor, changes /*, opts, userId */) => {
-      if (!game.user.isGM) return;
+      if (game.users?.activeGM !== game.user) return;  // activeGM: Hexblade curse clear must only run once
       try {
         const hpUpdate = foundry.utils.getProperty(changes, "system.attributes.hp.value");
         if (hpUpdate === undefined || hpUpdate > 0) return;
@@ -2237,7 +2237,7 @@ Hooks.once("ready", () => {
     });
 
     Hooks.on("createActiveEffect", (effect /*, opts, userId */) => {
-      if (!game.user.isGM) return;
+      if (game.users?.activeGM !== game.user) return;  // activeGM: Hexblade incapacitation check must only run once
       try {
         const actor = effect?.parent;
         if (!actor?.getFlag?.(MODULE_ID, "hexbladeCurse")) return;
@@ -2398,7 +2398,7 @@ Hooks.once("ready", () => {
     // caster is deleted, either by the concentration widget, by casting a new
     // concentration spell, or by manual removal).
     Hooks.on("deleteActiveEffect", (effect /*, opts, userId */) => {
-      if (!game.user.isGM) return;
+      if (game.users?.activeGM !== game.user) return;  // activeGM: Hex cleanup must only run once
       try {
         const name = String(effect?.name ?? "").toLowerCase();
         if (name !== "hex") return;
@@ -2756,7 +2756,7 @@ Hooks.once("ready", () => {
     const _deathProcessed = new Set();  // Guard against double-fire within same update
 
     Hooks.on("updateActor", async (actor, changes, options, userId) => {
-      if (!game.user.isGM) return;
+      if (game.users?.activeGM !== game.user) return;  // activeGM: npcDeath hook + death pipeline must only fire once
 
       // ── Only fire for NPC HP reaching 0 ──
       const hpUpdate = foundry.utils.getProperty(changes, "system.attributes.hp.value");
@@ -2909,7 +2909,7 @@ Hooks.once("ready", () => {
     //  resurrection magic clears the permanent flag.
     // ══════════════════════════════════════════════════════════════════════════
     Hooks.on("updateActor", async (actor, changes, options, userId) => {
-      if (!game.user.isGM) return;
+      if (game.users?.activeGM !== game.user) return;  // activeGM: revive pipeline must only run once
       try {
         const hpUpdate = foundry.utils.getProperty(changes, "system.attributes.hp.value");
         if (hpUpdate === undefined || Number(hpUpdate) <= 0) return;
@@ -3496,7 +3496,9 @@ Hooks.once("ready", () => {
 
   if (game.user.isGM) {
     // ── GM SIDE: receive player requests via socket ──
+    // activeGM guard: socket messages broadcast to ALL connected GMs; only one should process.
     game.socket.on(SOCKET_NAME, async (payload) => {
+      if (game.users?.activeGM !== game.user) return;
       if (!payload?.action) return;
 
       // FlagsEngine optional prompt responses from players
@@ -4205,7 +4207,7 @@ Hooks.once("ready", () => {
   // only the GM can edit Combat documents.
   Hooks.on("deleteToken", async (tokenDoc, options, userId) => {
     try {
-      if (!game.user.isGM) return;
+      if (game.users?.activeGM !== game.user) return;  // activeGM: combatant removal must only run once
       const tokenId = tokenDoc?.id;
       if (!tokenId) return;
 

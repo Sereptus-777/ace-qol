@@ -64,7 +64,7 @@ export class BladeCantrips {
     // to approximate "voluntary movement." Out-of-turn forced movement
     // (Thunderwave, Eldritch Blast Repelling, etc.) doesn't trigger.
     Hooks.on("updateToken", async (tokenDoc, changes /*, opts, userId */) => {
-      if (!game.user.isGM) return;
+      if (game.users?.activeGM !== game.user) return;  // activeGM: Booming Blade bonus damage must only fire once
       try {
         if (!("x" in changes || "y" in changes)) return;
         const actor = tokenDoc?.actor;
@@ -108,7 +108,7 @@ export class BladeCantrips {
     // Booming Blade cleanup — clear the marker when its 1-round window
     // (caster's next turn) closes, even if the target never moved.
     Hooks.on("combatTurnChange", () => {
-      if (!game.user.isGM) return;
+      if (game.users?.activeGM !== game.user) return;  // activeGM: marker expiry write must only fire once
       try { this._expireBoomingBladeIfDue(); }
       catch (err) { console.warn(`${TAG} | Booming Blade expiry sweep failed:`, err); }
     });

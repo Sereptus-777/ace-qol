@@ -148,7 +148,7 @@ export class AuraEngine {
       try {
         if (QolSettings.get?.("auraEngineEnabled") === false) return;
         AuraVisualLayer.attach(); // visual ring renderer (all clients)
-        if (!game.user.isGM) return;
+        if (game.users?.activeGM !== game.user) return;  // activeGM: recomputeAll applies effects — must only fire once
         AuraEngine.recomputeAll();
       } catch (err) { console.warn(`${MODULE_ID} | AuraEngine canvasReady threw:`, err); }
     });
@@ -164,8 +164,8 @@ export class AuraEngine {
         if (!moved) return;
         // Visual layer refreshes on every client (so everyone sees the rings)
         AuraVisualLayer.refresh();
-        // Effect-application is GM-only
-        if (!game.user.isGM) return;
+        // Effect-application is activeGM-only (prevent duplicate effect writes with 2 GMs)
+        if (game.users?.activeGM !== game.user) return;
         // Defer slightly to let the actual position update commit
         setTimeout(() => AuraEngine.recomputeAll().catch(err =>
           console.warn(`${MODULE_ID} | AuraEngine recompute after move threw:`, err)
@@ -180,7 +180,7 @@ export class AuraEngine {
     // Actor stats / conditions changed (e.g., paladin became unconscious)
     Hooks.on("updateActor", (actor, changes) => {
       try {
-        if (!game.user.isGM) return;
+        if (game.users?.activeGM !== game.user) return;  // activeGM: scheduleRecompute must only run once
         if (QolSettings.get?.("auraEngineEnabled") === false) return;
         // Watch for HP changes that might trigger unconscious/dead
         const hpChanged = foundry.utils.getProperty(changes, "system.attributes.hp.value") !== undefined;
@@ -208,7 +208,7 @@ export class AuraEngine {
 
   /** Debounced trigger to avoid recomputing 10x in one tick */
   static _scheduleRecompute() {
-    if (!game.user.isGM) return;
+    if (game.users?.activeGM !== game.user) return;  // activeGM: covers createToken/deleteToken + effect hooks
     if (QolSettings.get?.("auraEngineEnabled") === false) return;
     if (this._pendingRecompute) return;
     this._pendingRecompute = true;

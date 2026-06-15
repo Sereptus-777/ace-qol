@@ -184,7 +184,7 @@ export class ConcentrationWidget {
     if (!this._recentMoveKeys) this._recentMoveKeys = new Map();
 
     Hooks.on("updateToken", (tokenDoc, changes, opts, userId) => {
-      if (!game.user.isGM) return;
+      if (game.users?.activeGM !== game.user) return;  // activeGM: movement damage + saves must only fire once
       if (changes.x === undefined && changes.y === undefined) return;
 
       // v0.6.4: Read NEW positions from the `changes` payload, not from
@@ -612,7 +612,7 @@ export class ConcentrationWidget {
     // concentration on that spell (no template = no spell area = no
     // ongoing effect). Drop the actor's concentration effect tied to
     // this item.
-    if (game.user.isGM && tracker.actor && tracker.item) {
+    if (game.users?.activeGM === game.user && tracker.actor && tracker.item) {
       await this._dropConcentrationForItem(tracker.actor, tracker.item);
     }
   }
@@ -673,7 +673,8 @@ export class ConcentrationWidget {
     // card on every relevant turn change — N players in a session would
     // produce N duplicate save cards. The hook fires on every client
     // because Foundry's `updateCombat` hook is broadcast.
-    if (!game.user.isGM) return;
+    // activeGM: with 2 GMs connected, isGM alone would cause duplicate save cards.
+    if (game.users?.activeGM !== game.user) return;
     if (!this._activeSpells.size) return;
 
     // Who just started their turn?
@@ -1927,7 +1928,8 @@ export class ConcentrationWidget {
         // v0.4.22.10: Only the GM client may delete the canvas template.
         // Otherwise every player would race to delete the same document,
         // generating N permission errors and one successful delete.
-        if (game.user.isGM) {
+        // activeGM: with 2 GMs, only one should delete.
+        if (game.users?.activeGM === game.user) {
           try {
             const template = canvas.scene.templates.get(templateId);
             if (template) {

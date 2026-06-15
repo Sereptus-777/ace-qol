@@ -37,7 +37,7 @@ export class DeathSaves {
     // not dead, fire the death save.
     Hooks.on("combatTurnChange", async (combat /*, prior, current */) => {
       try {
-        if (!game.user.isGM) return;
+        if (game.users?.activeGM !== game.user) return;  // activeGM: rollDeathSave must only fire once
         if (!QolSettings.get?.("autoDeathSaves")) return;
         const combatant = combat?.combatant;
         const actor = combatant?.actor;
@@ -76,7 +76,7 @@ export class DeathSaves {
     // clamping. Setting only applies to PCs (NPCs already die at 0 HP).
     Hooks.on("dnd5e.preApplyDamage", (actor, amount /*, updates, options */) => {
       try {
-        if (!game.user.isGM) return;
+        if (game.users?.activeGM !== game.user) return;  // activeGM: instant-death update must only fire once
         if (!QolSettings.get?.("massiveDamageDeath")) return;
         if (!actor?.hasPlayerOwner) return;
         if (!Number.isFinite(amount) || amount <= 0) return;
@@ -131,7 +131,7 @@ export class DeathSaves {
     // versions; defensive auto-reset.
     Hooks.on("updateActor", async (actor, changes) => {
       try {
-        if (!game.user.isGM) return;
+        if (game.users?.activeGM !== game.user) return;  // activeGM: tally reset must only fire once
         if (!QolSettings.get?.("autoResetOnHeal")) return;
         const newHP = foundry.utils.getProperty(changes, "system.attributes.hp.value");
         if (newHP === undefined || Number(newHP) < 1) return;

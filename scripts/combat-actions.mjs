@@ -42,7 +42,7 @@ export class CombatActions {
     // Auto-expire all four action effects at the start of the actor's next turn
     Hooks.on("combatTurnChange", async (combat /*, prior, current */) => {
       try {
-        if (!game.user.isGM) return;
+        if (game.users?.activeGM !== game.user) return;  // activeGM: action-expiry writes must only fire once
         const prior = combat?.previous?.combatantId
           ? combat?.combatants?.get?.(combat.previous.combatantId)
           : null;

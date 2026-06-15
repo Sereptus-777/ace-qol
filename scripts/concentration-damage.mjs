@@ -29,8 +29,8 @@ export class ConcentrationDamage {
   static init() {
     Hooks.on("dnd5e.preApplyDamage", async (actor, amount /*, updates, options */) => {
       try {
-        // Only the GM (or originator) processes — avoid duplicate saves
-        if (!game.user.isGM) return;
+        // activeGM: dnd5e.preApplyDamage fires on all clients; concentration save card must only fire once
+        if (game.users?.activeGM !== game.user) return;
         if (!QolSettings.get?.("concentrationOnDamage")) return;
         if (!Number.isFinite(amount) || amount <= 0) return;
         if (!actor) return;

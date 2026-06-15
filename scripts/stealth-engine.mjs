@@ -51,7 +51,7 @@ export class StealthEngine {
     // ACE QOL's own turn-skip + Assassinate detection.
     Hooks.on("preUpdateCombat", async (combat, changes /*, opts, userId */) => {
       try {
-        if (!game.user.isGM) return;
+        if (game.users?.activeGM !== game.user) return;
         if (!QolSettings.get?.("autoSurpriseCheck")) return;
         if (changes?.started !== true) return; // only fires on the start transition
         if (combat?.started) return; // already started — don't re-run
@@ -66,7 +66,7 @@ export class StealthEngine {
     // module load order that misses the preUpdateCombat hook.
     Hooks.on("combatStart", async (combat) => {
       try {
-        if (!game.user.isGM) return;
+        if (game.users?.activeGM !== game.user) return;
         if (!QolSettings.get?.("autoSurpriseCheck")) return;
         // Skip if any combatant already has the ACE QOL surprised flag —
         // means the preUpdateCombat path already ran.
@@ -86,7 +86,7 @@ export class StealthEngine {
     // becomes init-disadvantage instead), so this only fires on 2014 worlds.
     Hooks.on("combatTurnChange", async (combat /*, prev, current */) => {
       try {
-        if (!game.user.isGM) return;
+        if (game.users?.activeGM !== game.user) return;  // activeGM: nextTurn() must only fire once
         if ((combat?.round ?? 0) !== 1) return;
         const currentCombatant = combat?.combatant;
         if (!currentCombatant?.token) return;
@@ -110,7 +110,7 @@ export class StealthEngine {
     // ── Round 2: clear surprised flags and the standard surprised status ──
     Hooks.on("combatRound", async (combat) => {
       try {
-        if (!game.user.isGM) return;
+        if (game.users?.activeGM !== game.user) return;
         if ((combat?.round ?? 0) < 2) return;
         for (const c of combat.combatants ?? []) {
           const td = c.token;

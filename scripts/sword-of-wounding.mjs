@@ -40,7 +40,7 @@ export class SwordOfWounding {
 
     // At the start of a wounded creature's turn: apply DoT + CON save card.
     Hooks.on("combatTurnChange", (combat /*, prior, current */) => {
-      if (!game.user.isGM) return;
+      if (game.users?.activeGM !== game.user) return;  // activeGM: DoT + save card must only fire once
       try {
         const currentActorId = combat?.combatant?.actorId
                             ?? combat?.combatants?.get?.(combat?.current?.combatantId)?.actorId

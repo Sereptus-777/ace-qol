@@ -60,7 +60,7 @@ export class BloodiedEngine {
    * Only the GM processes bloodied state to avoid duplicate announcements.
    */
   _onActorUpdate(actor, changes, options, userId) {
-    if (!game.user.isGM) return;
+    if (game.users?.activeGM !== game.user) return;  // activeGM: chat announce + dead marker must only fire once
 
     try {
       if (!QolSettings.get("enableBloodied")) return;
@@ -94,7 +94,7 @@ export class BloodiedEngine {
    * Unlinked tokens store HP in tokenDocument.delta.system.attributes.hp.
    */
   _onTokenUpdate(tokenDoc, changes, options, userId) {
-    if (!game.user.isGM) return;
+    if (game.users?.activeGM !== game.user) return;  // activeGM: chat announce + dead marker must only fire once
 
     try {
       if (!QolSettings.get("enableBloodied")) return;

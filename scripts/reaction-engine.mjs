@@ -215,7 +215,7 @@ export class ReactionEngine {
   _registerHooks() {
     // ── Reset reaction at the START of each combatant's turn ──
     Hooks.on("combatTurn", (combat, updateData, opts) => {
-      if (!game.user.isGM) return;
+      if (game.users?.activeGM !== game.user) return;  // activeGM: reaction reset writes must only fire once
       this._resetCurrentCombatantReaction(combat);
     });
 
@@ -225,7 +225,7 @@ export class ReactionEngine {
     // for individual combatants may not fire — so every combatant's reaction
     // would stay stale. Refresh everyone in the combat. v0.7.21 fix.
     Hooks.on("combatRound", async (combat, updateData, opts) => {
-      if (!game.user.isGM) return;
+      if (game.users?.activeGM !== game.user) return;  // activeGM: reaction reset writes must only fire once
       try {
         const cleared = [];
         for (const c of combat.combatants ?? []) {
@@ -249,7 +249,7 @@ export class ReactionEngine {
     // combats. Next combat, they'd appear to have already used their
     // reaction even though it's a new fight.
     Hooks.on("deleteCombat", () => {
-      if (!game.user.isGM) return;
+      if (game.users?.activeGM !== game.user) return;  // activeGM: reaction flag clear must only run once
       this._resetAllReactionFlags("combat ended");
     });
 
