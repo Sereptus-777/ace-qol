@@ -726,6 +726,7 @@ export class SaveEngine {
     try {
       Hooks.callAll(`${MODULE_ID}.saveComplete`, {
         actor: tActor, tokenDocId: result.tokenDocId, saveAbility, passed: result.passed,
+        itemUuid: item?.uuid ?? null,
       });
     } catch (_) { /* non-fatal */ }
 
@@ -2069,7 +2070,7 @@ export class SaveEngine {
         const tokenDoc = scene?.tokens?.get(r.tokenDocId);
         const actor = tokenDoc?.actor ?? game.actors.get(r.actorId);
         if (actor) {
-          Hooks.callAll(`${MODULE_ID}.saveComplete`, { actor, tokenDocId: r.tokenDocId, saveAbility, passed: r.passed });
+          Hooks.callAll(`${MODULE_ID}.saveComplete`, { actor, tokenDocId: r.tokenDocId, saveAbility, passed: r.passed, itemUuid: item?.uuid ?? null });
         }
       } catch (_) { /* non-fatal */ }
     }
@@ -2743,7 +2744,7 @@ export class SaveEngine {
     // ── Emit saveComplete hook for PC save (duration tracker isSave expiry) ──
     try {
       if (targetActor) {
-        Hooks.callAll(`${MODULE_ID}.saveComplete`, { actor: targetActor, tokenDocId, saveAbility, passed });
+        Hooks.callAll(`${MODULE_ID}.saveComplete`, { actor: targetActor, tokenDocId, saveAbility, passed, itemUuid: flags.itemUuid ?? null });
       }
     } catch (_) { /* non-fatal */ }
 
@@ -3035,7 +3036,7 @@ export class SaveEngine {
         const tokenDoc = scene?.tokens?.get(result.tokenDocId);
         const actor = tokenDoc?.actor ?? game.actors.get(result.actorId);
         if (actor) {
-          Hooks.callAll(`${MODULE_ID}.saveComplete`, { actor, tokenDocId: result.tokenDocId, saveAbility, passed: result.passed });
+          Hooks.callAll(`${MODULE_ID}.saveComplete`, { actor, tokenDocId: result.tokenDocId, saveAbility, passed: result.passed, itemUuid: item?.uuid ?? null });
         }
       } catch (_) { /* non-fatal */ }
     }
