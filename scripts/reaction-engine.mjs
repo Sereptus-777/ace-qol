@@ -193,6 +193,19 @@ export class ReactionEngine {
 
     this._registerHooks();
     this._registerSocketHandlers();
+
+    // Auto-decline pending requests when the target player disconnects, so
+    // the spell pipeline never hangs waiting for a player who is gone.
+    Hooks.on("updateUser", (user, changes) => {
+      if (changes.active !== false) return;
+      for (const [reqId, pending] of this._pendingRequests.entries()) {
+        if (pending.targetUserId === user.id) {
+          console.log(`${MODULE_ID} | ReactionEngine: auto-declining pending reaction for disconnected user ${user.name}`);
+          this._pendingRequests.delete(reqId);
+          pending.resolve({ accepted: false, choiceData: {} });
+        }
+      }
+    });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -256,7 +269,7 @@ export class ReactionEngine {
     Hooks.on(`${MODULE_ID}.opportunityAttack`, (actorId) => {
       if (!game.user.isGM) return;
       const actor = game.actors.get(actorId);
-      if (actor) this._markReactionUsed(actor);
+      if (actor) this._markReactionUsed(actor, "opportunityAttack");
     });
 
     // ── v0.7.17b — Cast barrier creation (preUseActivity) ──
@@ -403,11 +416,15 @@ export class ReactionEngine {
 
   /**
    * Mark an actor's reaction as used for this round.
+   * @param {Actor} actor
+   * @param {string} [reactionType]  e.g. "shield", "counterspell", "absorbElements", "opportunityAttack"
+   * @param {Actor}  [targetActor]   the actor the reaction was used against (if applicable)
    */
-  async _markReactionUsed(actor) {
+  async _markReactionUsed(actor, reactionType = "unknown", targetActor = null) {
     if (!actor) return;
     await actor.setFlag(MODULE_ID, FLAG_REACTION_USED, true);
-    this._debug(`Reaction USED: ${actor.name}`);
+    Hooks.callAll(`${MODULE_ID}.reactionUsed`, { actor, reactionType, targetActor });
+    this._debug(`Reaction USED: ${actor.name} (${reactionType})`);
   }
 
   /**
@@ -517,7 +534,7 @@ export class ReactionEngine {
         await this._consumeSpellSlot(targetActor, slotLevel);
 
         // ── Mark reaction used ──
-        await this._markReactionUsed(targetActor);
+        await this._markReactionUsed(targetActor, "shield");
 
         // ── Apply Shield active effect (+5 AC until start of caster's next turn) ──
         await this._applyShieldEffect(targetActor);
@@ -618,7 +635,7 @@ export class ReactionEngine {
         // ── Consume slot, mark reaction, apply Shield effect ──
         const slotLevel = promptResult.choiceData?.slotLevel ?? 1;
         await this._consumeSpellSlot(targetActor, slotLevel);
-        await this._markReactionUsed(targetActor);
+        await this._markReactionUsed(targetActor, "shield");
         await this._applyShieldEffect(targetActor);
 
         // ── Visual flash on the absorbing token ──
@@ -858,7 +875,7 @@ export class ReactionEngine {
       }
 
       // Mark reaction used (still costs the reaction action regardless of slot consumption)
-      await this._markReactionUsed(reactor.actor);
+      await this._markReactionUsed(reactor.actor, "counterspell");
 
       // Determine success
       let countered = false;
@@ -1129,7 +1146,7 @@ export class ReactionEngine {
       await this._consumeSpellSlot(targetActor, slotLevel);
 
       // Mark reaction used
-      await this._markReactionUsed(targetActor);
+      await this._markReactionUsed(targetActor, "absorbElements");
 
       // Apply resistance to the elemental damage components (halve them)
       const modifiedComponents = damageComponents.map(c => {
@@ -1381,7 +1398,7 @@ export class ReactionEngine {
       await this._consumeSpellSlot(reactor.actor, slotLevel);
 
       // Mark reaction used
-      await this._markReactionUsed(reactor.actor);
+      await this._markReactionUsed(reactor.actor, "silveryBarbs");
 
       // Force reroll — roll a new d20 and take the lower
       const reroll = await new Roll("1d20").evaluate();
@@ -1505,7 +1522,7 @@ export class ReactionEngine {
       await this._consumeBardicInspiration(reactor.actor);
 
       // Mark reaction used
-      await this._markReactionUsed(reactor.actor);
+      await this._markReactionUsed(reactor.actor, "cuttingWords");
 
       // Roll the Bardic Inspiration die
       const bardDie = this._getBardicInspirationDie(reactor.actor);
@@ -1573,7 +1590,7 @@ export class ReactionEngine {
    */
   async trackOpportunityAttack(actor) {
     if (!actor) return;
-    await this._markReactionUsed(actor);
+    await this._markReactionUsed(actor, "opportunityAttack");
     this._debug(`Opportunity attack tracked: ${actor.name} (reaction consumed)`);
   }
 
@@ -1646,7 +1663,7 @@ export class ReactionEngine {
   async _promptRemote(opts, targetUserId) {
     return new Promise((resolve) => {
       const requestId = `reaction-${++this._requestCounter}-${Date.now()}`;
-      this._pendingRequests.set(requestId, { resolve, reactorActorId: opts.reactorActor?.id });
+      this._pendingRequests.set(requestId, { resolve, reactorActorId: opts.reactorActor?.id, targetUserId });
 
       const reactorIsNpc = !opts.reactorActor?.hasPlayerOwner
                         && opts.reactorActor?.type !== "character";

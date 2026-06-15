@@ -351,8 +351,10 @@ export class DamageEngine {
           applyBtn.textContent = "APPLIED ✓";
         } else {
           applyBtn.addEventListener("click", async () => {
-            await DamageApplicator.applyDamage(message);
+            if (applyBtn.disabled) return;
             applyBtn.disabled = true;
+            applyBtn.textContent = "APPLYING...";
+            await DamageApplicator.applyDamage(message);
             applyBtn.textContent = "APPLIED ✓";
             await message.setFlag(MODULE_ID, "applied", true);
           });

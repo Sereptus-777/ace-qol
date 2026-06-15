@@ -26,6 +26,7 @@ import { QolSettings } from "./settings.mjs";
 
 // ─── Complete list of all hook names (used for documentation + validation) ────
 const HOOK_NAMES = [
+  // ── Combat pipeline phases ──
   "preItemRoll",
   "preAttackRoll",
   "postAttackRoll",
@@ -40,6 +41,36 @@ const HOOK_NAMES = [
   "postDamageApplication",
   "preActiveEffects",
   "postActiveEffects",
+  // ── Cross-module event contracts ─────────────────────────────────────────
+  // These are emitted at well-defined lifecycle points so other modules
+  // (ace-engine, ace-artificer, user macros) can subscribe without coupling
+  // to raw Foundry hooks whose timing may drift across dnd5e versions.
+  //
+  // ace-qol.damageApplied    ({ actor, total, components, sourceItem, sourceActor })
+  //   Fired after HP is actually changed. Used by regen/aura engines and
+  //   ace-engine deed logging. Defined here for documentation; the hook is
+  //   emitted from damage-applicator.mjs.
+  //
+  // ace-qol.saveComplete     ({ actor, ability, total, dc, saved, sourceItem })
+  //   Fired once per actor after a save resolves (pass or fail, before LR).
+  //   ace-engine uses this to log saves as deeds.
+  //
+  // ace-qol.killLogged       ({ victim, attacker, attackItem, xp, isMassive })
+  //   Fired when a creature is killed and logged by the death pipeline.
+  //   ace-engine consumes this to feed the World Event Ledger.
+  //
+  // ace-qol.reactionUsed     ({ actor, reactionType, targetActor })
+  //   Fired when any reaction (Shield, Counterspell, Absorb Elements, etc.)
+  //   is accepted and consumed. Lets ace-engine narrate dramatic reactions.
+  //
+  // ace-qol.concentrationBroken ({ actor, spell, reason })
+  //   Fired when concentration is lost (damage threshold, effect removal,
+  //   or explicit GM action). ace-engine can narrate "concentration broken."
+  "damageApplied",
+  "saveComplete",
+  "killLogged",
+  "reactionUsed",
+  "concentrationBroken",
 ];
 
 // ─── Midi-QOL hook name → ACE-QOL hook name mapping ─────────────────────────

@@ -38,6 +38,8 @@ export class ConcentrationDamage {
         // Find the concentrating Active Effect on this actor (if any)
         const concEffect = ConcentrationDamage._findConcentrationEffect(actor);
         if (!concEffect) return;
+        const concEffectId = concEffect.id;
+        const concEffectName = concEffect.name ?? "Concentration";
 
         // RAW: DC = max(10, floor(damage / 2))
         const minDC = Number(QolSettings.get?.("concentrationDamageMinDC") ?? 10);
@@ -54,6 +56,20 @@ export class ConcentrationDamage {
             //     unlinks dependent effects via dnd5e.dependentOn chain)
             //   - Returns the roll, or null if the actor isn't concentrating
             await actor.challengeConcentration({ dc, ability: "con" });
+
+            // Emit concentrationBroken if the effect was removed by the challenge.
+            // Check by ID — if the effect is gone, concentration was broken.
+            const stillHasEffect = actor.effects?.some(e => e.id === concEffectId);
+            if (!stillHasEffect) {
+              Hooks.callAll(`${MODULE_ID}.concentrationBroken`, {
+                actor,
+                effectName: concEffectName,
+                reason: "damage",
+                dc,
+                damage: amount,
+              });
+            }
+
             if (QolSettings.get?.("debugMode")) {
               console.log(`${MODULE_ID} | Concentration challenged for ${actor.name}: damage=${amount} DC=${dc}`);
             }
@@ -70,29 +86,31 @@ export class ConcentrationDamage {
   }
 
   /**
-   * Returns the actor's "concentrating" Active Effect, or null.
+   * Returns the actor's concentration Active Effect, or null.
    * Matches against multiple shapes for cross-version compatibility:
-   *   - statuses Set contains "concentrating"
-   *   - flags.core.statusId === "concentrating"
-   *   - name starts with/contains "concentrating" (text fallback)
+   *   - dnd5e 5.x:   statuses Set contains "concentration"
+   *   - dnd5e 4.x:   statuses Set contains "concentrating"
+   *   - flags fallback: flags.dnd5e.statusId or flags.core.statusId
+   *   - name-based fallback for edge cases
    */
   static _findConcentrationEffect(actor) {
     const effects = actor?.effects?.contents ?? actor?.effects ?? [];
     for (const effect of effects) {
       if (!effect || effect.disabled) continue;
       const statuses = effect.statuses;
-      const hasStatusSet = statuses?.has?.("concentrating") === true;
-      let statusFirst = null;
-      if (statuses && statuses.size > 0) {
-        for (const s of statuses) { statusFirst = s; break; }
-      }
-      const coreStatus = effect.flags?.core?.statusId;
+      // dnd5e 5.x uses "concentration"; 4.x used "concentrating" — check both
+      const hasConc5x = statuses?.has?.("concentration") === true;
+      const hasConc4x = statuses?.has?.("concentrating") === true;
+      const dnd5eStatus = effect.flags?.dnd5e?.statusId;
+      const coreStatus  = effect.flags?.core?.statusId;
       const nameLc = String(effect.name ?? "").toLowerCase();
-      const isConc = hasStatusSet
-                  || statusFirst === "concentrating"
-                  || coreStatus === "concentrating"
-                  || nameLc.startsWith("concentrating")
-                  || nameLc.includes("concentrating");
+      const isConc = hasConc5x
+                  || hasConc4x
+                  || dnd5eStatus === "concentration"
+                  || dnd5eStatus === "concentrating"
+                  || coreStatus  === "concentration"
+                  || coreStatus  === "concentrating"
+                  || nameLc.startsWith("concentrat");  // covers both spellings
       if (isConc) return effect;
     }
     return null;

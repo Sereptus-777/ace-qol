@@ -85,7 +85,18 @@ export class EffectsPanel {
     this._showPassives = false;    // passives section default hidden
     this._userMoved = false;       // true once user drags — disables auto-position
     this._sidebarObserver = null;
+    this._renderTimer = null;      // debounce timer — collapses rapid batch changes
     this._registerHooks();
+  }
+
+  /** Debounced re-render — collapses rapid sequential effect changes (e.g. mass AOE
+   *  applying 10+ effects at once) into a single DOM repaint after a 50ms quiet window. */
+  _renderDebounced() {
+    if (this._renderTimer) clearTimeout(this._renderTimer);
+    this._renderTimer = setTimeout(() => {
+      this._renderTimer = null;
+      this._render();
+    }, 50);
   }
 
   _registerHooks() {
@@ -96,7 +107,7 @@ export class EffectsPanel {
 
     const refreshIfMine = (effect) => {
       const actor = effect?.parent;
-      if (actor && this._currentActor && actor.id === this._currentActor.id) this._render();
+      if (actor && this._currentActor && actor.id === this._currentActor.id) this._renderDebounced();
     };
     Hooks.on("createActiveEffect", refreshIfMine);
     Hooks.on("updateActiveEffect", refreshIfMine);
@@ -104,13 +115,13 @@ export class EffectsPanel {
 
     // Re-render on combat turn + time advance so synthetic countdowns (e.g. the
     // Holy Symbol's Sunlight indicator) tick down live in the panel.
-    Hooks.on("updateCombat", () => { if (this._currentActor) this._render(); });
-    Hooks.on("updateWorldTime", () => { if (this._currentActor) this._render(); });
+    Hooks.on("updateCombat", () => { if (this._currentActor) this._renderDebounced(); });
+    Hooks.on("updateWorldTime", () => { if (this._currentActor) this._renderDebounced(); });
 
     // Sunlight zones are MeasuredTemplates — refresh so the panel's synthetic
     // Sunlight indicator appears/disappears the moment the zone is cast/ended.
-    Hooks.on("createMeasuredTemplate", () => { if (this._currentActor) this._render(); });
-    Hooks.on("deleteMeasuredTemplate", () => { if (this._currentActor) this._render(); });
+    Hooks.on("createMeasuredTemplate", () => { if (this._currentActor) this._renderDebounced(); });
+    Hooks.on("deleteMeasuredTemplate", () => { if (this._currentActor) this._renderDebounced(); });
 
     // Foundry hook fallback (fires after collapse animation completes)
     Hooks.on("collapseSidebar", () => {

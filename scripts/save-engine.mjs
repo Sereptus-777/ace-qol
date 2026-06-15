@@ -51,6 +51,12 @@ export class SaveEngine {
      *  auto-prune after 5 seconds. */
     this._processedActivityIds = new Map();
 
+    /** @type {Map<string, Promise>} Serializes concurrent PC save result
+     *  writes per save-results message. Without this, two PCs rolling in
+     *  the same 200ms window both read the same stale allResults, then
+     *  both write — the second write overwrites the first PC's result. */
+    this._pcSaveUpdateQueue = new Map();
+
     this._registerHooks();
   }
 
@@ -2865,13 +2871,7 @@ export class SaveEngine {
   // ═══════════════════════════════════════════════════════════════════════════
 
   async _updateMainCardPcResult(tokenDocId, pcResult) {
-    // Find the most recent saveResults card and update/insert this PC's row.
-    // Three cases for that card:
-    //   (a) PC entry exists as pending → update in place
-    //   (b) PC entry exists already resolved → REPLACE (re-roll after X+re-add)
-    //   (c) PC not in allResults at all → append as new resolved entry (late-add)
     const messages = game.messages.contents.slice(-20).reverse();
-
     let msg = null;
     for (const m of messages) {
       const f = m.flags?.[MODULE_ID];
@@ -2879,6 +2879,30 @@ export class SaveEngine {
     }
     if (!msg) return;
 
+    // Serialize writes per message — two PCs rolling in the same ~200ms window
+    // both call this function, both read stale allResults, and the second write
+    // overwrites the first PC's result. The queue ensures each write completes
+    // before the next one reads flags (Foundry updates in-memory after msg.update).
+    const key = msg.id;
+    const prev = this._pcSaveUpdateQueue.get(key) ?? Promise.resolve();
+    const next = prev.then(() =>
+      this._doUpdateMainCardPcResult(msg, tokenDocId, pcResult).catch(err => {
+        console.error(`${MODULE_ID} | PC save card update failed:`, err);
+      })
+    );
+    this._pcSaveUpdateQueue.set(key, next);
+    next.then(() => {
+      if (this._pcSaveUpdateQueue.get(key) === next) this._pcSaveUpdateQueue.delete(key);
+    });
+    return next;
+  }
+
+  async _doUpdateMainCardPcResult(msg, tokenDocId, pcResult) {
+    // Three cases:
+    //   (a) PC entry exists as pending → update in place
+    //   (b) PC entry exists already resolved → REPLACE (re-roll after X+re-add)
+    //   (c) PC not in allResults at all → append as new resolved entry (late-add)
+    // Read flags FRESH from msg — after a prior queued write, msg.flags has been updated.
     const flags = msg.flags?.[MODULE_ID];
     const allResults = [...(flags.allResults ?? [])];
     let idx = allResults.findIndex(r => r.tokenDocId === tokenDocId);

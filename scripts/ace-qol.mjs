@@ -2875,6 +2875,19 @@ Hooks.once("ready", () => {
         options,
         userId,
       });
+
+      // ── Cross-module contract: killLogged ──
+      // Provides richer kill context for ace-engine (faction standing), ace-envoy
+      // (witness reactions), and macros. attacker is resolved from killerName if
+      // possible — null when the kill source can't be determined from chat history.
+      Hooks.callAll(`${MODULE_ID}.killLogged`, {
+        victim:     actor,
+        attacker:   killerName ? (game.actors?.getName(killerName) ?? null) : null,
+        killerName,
+        attackItem: null,
+        xp:         Number(actor.system?.details?.xp?.value ?? actor.system?.details?.xp ?? 0),
+        isMassive:  false,
+      });
     });
 
     console.debug(`${MODULE_ID} | Unified NPC death hook registered`);
