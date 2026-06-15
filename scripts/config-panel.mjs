@@ -214,6 +214,22 @@ export class AceQolConfigPanel extends ApplicationV2 {
       }
     }
 
+    // Rank prefix-first by the setting NAME (start-of-name beats start-of-word
+    // beats mid-name); hint/key-only matches sink to the bottom. Reorders only —
+    // every match still shows, so you can still find a setting by its hint text.
+    const _score = (nm) => {
+      const n = String(nm ?? "").toLowerCase();
+      if (n.startsWith(q)) return 0;
+      if (n.split(/[\s,\-/()'".:]+/).some(w => w.startsWith(q))) return 1;
+      if (n.includes(q)) return 2;
+      return 3;
+    };
+    results.sort((a, b) => {
+      const d = _score(a.setting.name) - _score(b.setting.name);
+      if (d) return d;
+      return String(a.setting.name ?? "").localeCompare(String(b.setting.name ?? ""));
+    });
+
     if (!results.length) {
       return `
         <div class="ace-qol-cfg-pane">
