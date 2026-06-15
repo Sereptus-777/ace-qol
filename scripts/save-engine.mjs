@@ -2307,6 +2307,10 @@ export class SaveEngine {
       }
     }
 
+    // Extract the d20 face value so it survives flag serialization
+    const _d20Term = rollResult?.dice?.[0];
+    const dieResult = _d20Term?.total ?? null;
+
     return {
       name: tgt.name,
       img: tgt.img,
@@ -2318,6 +2322,7 @@ export class SaveEngine {
       isAutoFail,
       resultLabel,
       damageMultiplier,
+      dieResult,
       roll: rollResult,
       damageModifiers: tgt.damageModifiers,
       currentHP: tgt.currentHP,
@@ -2674,6 +2679,11 @@ export class SaveEngine {
       // Trigger Dice So Nice 3D animation — public so all players see it
       safeShowForRoll(roll, "GM-prompt save roll");
     }
+    }
+
+    // Extract d20 face for display on the results card
+    const _pcD20 = rollResult?.dice?.[0];
+    const dieResult = _pcD20?.total ?? null;
 
     // Determine result label
     let resultLabel;
@@ -2721,6 +2731,7 @@ export class SaveEngine {
           actorId,
           sceneId,
           saveTotal,
+          dieResult,
           passed,
           resultLabel,
           autoFailSave,
@@ -2772,7 +2783,7 @@ export class SaveEngine {
 
   _onPcSaveResultPosted(resultFlags) {
     console.log(`${MODULE_ID} | _onPcSaveResultPosted fired for tokenDocId:`, resultFlags.tokenDocId, "passed:", resultFlags.passed);
-    const { tokenDocId, saveTotal, passed, resultLabel, autoFailSave, superSaver } = resultFlags;
+    const { tokenDocId, saveTotal, dieResult, passed, resultLabel, autoFailSave, superSaver } = resultFlags;
 
     // Determine damage multiplier
     let damageMultiplier;
@@ -2784,7 +2795,7 @@ export class SaveEngine {
       else damageMultiplier = 1;
     }
 
-    const pcResult = { saveTotal, passed, resultLabel, autoFailSave, damageMultiplier };
+    const pcResult = { saveTotal, dieResult: dieResult ?? null, passed, resultLabel, autoFailSave, damageMultiplier };
 
     // Update Phase 1 save results card if it exists
     this._updateMainCardPcResult(tokenDocId, pcResult);
@@ -2942,6 +2953,7 @@ export class SaveEngine {
     const r = allResults[idx];
     r.pending = false;
     r.saveTotal = pcResult.saveTotal;
+    r.dieResult = pcResult.dieResult ?? null;
     r.passed = pcResult.passed;
     r.resultLabel = pcResult.resultLabel;
     r.isAutoFail = pcResult.autoFailSave;
@@ -3452,32 +3464,29 @@ export class SaveEngine {
       const passClass = r.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
       const verdictText = r.passed ? "PASS" : "FAIL";
 
-      // Build the dice breakdown: show the d20 (with adv/disadv indicator)
-      // plus modifier so the GM can immediately see what was rolled and
-      // calc the actor's static bonus. Falls back to just the total when
-      // roll info isn't available (auto-fail, edge cases).
+      // Build the dice breakdown: d20 face is the MOST important number —
+      // show it large and bright. Modifier in muted gray. Total in pass/fail colour.
+      // dieResult persists through flag serialization so this survives Phase 2.
       let rollDisplay;
       if (r.isAutoFail) {
         rollDisplay = `<span class="ace-qol-save-roll ${passClass}">AUTO</span>`;
-      } else if (r.roll) {
-        const d20Term = r.roll.dice?.[0] ?? r.roll.terms?.[0];
-        const d20Result = d20Term?.total ?? null;
-        const modifier = (typeof r.saveTotal === "number" && d20Result != null)
-          ? r.saveTotal - d20Result : null;
-        if (d20Result != null && modifier != null) {
+      } else {
+        const d20Face = r.dieResult ?? r.roll?.dice?.[0]?.total ?? null;
+        const modifier = (typeof r.saveTotal === "number" && d20Face != null)
+          ? r.saveTotal - d20Face : null;
+        if (d20Face != null && modifier != null) {
           const modSign = modifier >= 0 ? "+" : "";
           const modPart = modifier === 0 ? "" : ` ${modSign}${modifier}`;
           rollDisplay = `
-            <span class="ace-qol-save-roll-breakdown" style="display:inline-flex;align-items:center;gap:5px;font-family:'Signika',sans-serif;">
-              <i class="fas fa-dice-d20" style="color:#d4af37;font-size:13px;"></i>
-              <span style="color:#c8b890;font-size:12px;letter-spacing:0.3px;">${d20Result}${modPart} =</span>
-              <span class="${passClass}" style="font-weight:700;font-size:14px;">${r.saveTotal}</span>
+            <span class="ace-qol-save-roll-breakdown" style="display:inline-flex;align-items:center;gap:4px;font-family:'Signika',sans-serif;">
+              <i class="fas fa-dice-d20" style="color:#d4af37;font-size:13px;flex-shrink:0;"></i>
+              <span style="color:#ffffff;font-size:15px;font-weight:700;">${d20Face}</span>
+              <span style="color:#888;font-size:12px;">${modPart} =</span>
+              <span class="${passClass}" style="font-weight:700;font-size:15px;">${r.saveTotal}</span>
             </span>`;
         } else {
           rollDisplay = `<span class="ace-qol-save-roll ${passClass}">${r.saveTotal}</span>`;
         }
-      } else {
-        rollDisplay = `<span class="ace-qol-save-roll ${passClass}">${r.saveTotal}</span>`;
       }
 
       // Two-line layout: target name across the top, dice/verdict on the
@@ -3617,6 +3626,7 @@ export class SaveEngine {
             isAutoFail: r.isAutoFail,
             resultLabel: r.resultLabel,
             damageMultiplier: r.damageMultiplier,
+            dieResult: r.dieResult ?? null,
             damageModifiers: r.damageModifiers,
             currentHP: r.currentHP,
             maxHP: r.maxHP,
@@ -3960,30 +3970,28 @@ export class SaveEngine {
       const passClass = r.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
       const verdictText = r.passed ? "PASS" : "FAIL";
 
-      // Dice breakdown — same shape as Phase 1 card so GMs can read the
-      // d20 result + modifier at a glance.
+      // Dice breakdown — d20 face large + bright, modifier muted, total pass/fail colour.
+      // Uses dieResult (persisted in flags) so the Phase 2 rebuild never loses the die face.
       let rollDisplay;
       if (r.isAutoFail) {
         rollDisplay = `<span class="ace-qol-save-roll ${passClass}">AUTO</span>`;
-      } else if (r.roll) {
-        const d20Term = r.roll.dice?.[0] ?? r.roll.terms?.[0];
-        const d20Result = d20Term?.total ?? null;
-        const modifier = (typeof r.saveTotal === "number" && d20Result != null)
-          ? r.saveTotal - d20Result : null;
-        if (d20Result != null && modifier != null) {
+      } else {
+        const d20Face = r.dieResult ?? r.roll?.dice?.[0]?.total ?? null;
+        const modifier = (typeof r.saveTotal === "number" && d20Face != null)
+          ? r.saveTotal - d20Face : null;
+        if (d20Face != null && modifier != null) {
           const modSign = modifier >= 0 ? "+" : "";
           const modPart = modifier === 0 ? "" : ` ${modSign}${modifier}`;
           rollDisplay = `
-            <span class="ace-qol-save-roll-breakdown" style="display:inline-flex;align-items:center;gap:5px;font-family:'Signika',sans-serif;">
-              <i class="fas fa-dice-d20" style="color:#d4af37;font-size:13px;"></i>
-              <span style="color:#c8b890;font-size:12px;letter-spacing:0.3px;">${d20Result}${modPart} =</span>
-              <span class="${passClass}" style="font-weight:700;font-size:14px;">${r.saveTotal}</span>
+            <span class="ace-qol-save-roll-breakdown" style="display:inline-flex;align-items:center;gap:4px;font-family:'Signika',sans-serif;">
+              <i class="fas fa-dice-d20" style="color:#d4af37;font-size:13px;flex-shrink:0;"></i>
+              <span style="color:#ffffff;font-size:15px;font-weight:700;">${d20Face}</span>
+              <span style="color:#888;font-size:12px;">${modPart} =</span>
+              <span class="${passClass}" style="font-weight:700;font-size:15px;">${r.saveTotal}</span>
             </span>`;
         } else {
           rollDisplay = `<span class="ace-qol-save-roll ${passClass}">${r.saveTotal}</span>`;
         }
-      } else {
-        rollDisplay = `<span class="ace-qol-save-roll ${passClass}">${r.saveTotal}</span>`;
       }
 
       // ── Calculate per-target damage ──
