@@ -55,7 +55,7 @@ export class OverTimeEngine {
     // ── Primary: updateCombat fires on turn/round changes ──
     // Foundry fires updateCombat with changes = { turn, round }
     Hooks.on("updateCombat", (combat, changes, options, userId) => {
-      if (!game.user.isGM) return;
+      if (game.users?.activeGM !== game.user) return;
       if (!QolSettings.get("enableOverTimeEffects")) return;
       this._onUpdateCombat(combat, changes);
     });
@@ -73,7 +73,7 @@ export class OverTimeEngine {
 
     // ── combatTurnChange (some modules/systems fire this custom hook) ──
     Hooks.on("combatTurnChange", (combat, prior, current) => {
-      if (!game.user.isGM) return;
+      if (game.users?.activeGM !== game.user) return;
       if (!QolSettings.get("enableOverTimeEffects")) return;
       // If updateCombat already handled this, the _processed guard prevents double-fire
       this._processTurnChange(combat, prior?.combatantId, current?.combatantId, combat.round);

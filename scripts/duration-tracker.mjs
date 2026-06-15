@@ -103,8 +103,8 @@ export class DurationTracker {
    * Only the GM processes expirations to avoid duplicate deletes.
    */
   async _onCombatUpdate(combat, change, options, userId) {
-    // Only GM processes expirations
-    if (!game.user.isGM) return;
+    // Only the primary GM processes expirations — prevents duplicate cards when two GMs are connected.
+    if (game.users?.activeGM !== game.user) return;
 
     // Check master toggle
     if (!DurationTracker._isEnabled()) return;
@@ -188,7 +188,7 @@ export class DurationTracker {
    * PRESERVES permanent effects (no duration) and HP-state markers (Bloodied).
    */
   async sweepStaleEffects() {
-    if (!game.user.isGM) return;
+    if (game.users?.activeGM !== game.user) return;
     if (!DurationTracker._isEnabled()) return;
 
     const actors = new Set();
@@ -456,7 +456,7 @@ export class DurationTracker {
    * When combat ends, remove all effects flagged with specialDuration "combat".
    */
   async _onCombatDeleted(combat, options, userId) {
-    if (!game.user.isGM) return;
+    if (game.users?.activeGM !== game.user) return;
     if (!DurationTracker._isEnabled()) return;
 
     const combatId = combat.id;
@@ -589,7 +589,7 @@ export class DurationTracker {
    * dnd5e hook signature: (actor, result)
    */
   async _onRestCompleted(actor, result) {
-    if (!game.user.isGM) return;
+    if (game.users?.activeGM !== game.user) return;
     if (!DurationTracker._isEnabled()) return;
 
     const restType = result?.type; // "short" or "long"
@@ -703,7 +703,7 @@ export class DurationTracker {
    * outside of combat when the GM advances time.
    */
   async _onWorldTimeUpdate(worldTime, delta, options, userId) {
-    if (!game.user.isGM) return;
+    if (game.users?.activeGM !== game.user) return;
     if (!DurationTracker._isEnabled()) return;
     if (delta <= 0) return; // Only care about forward time advancement
 

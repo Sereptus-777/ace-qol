@@ -96,7 +96,7 @@ export class SaveEngine {
     // Dedupe via `_processedActivityIds` Map prevents double-firing.
     Hooks.on("createChatMessage", async (message) => {
       try {
-        if (!game.user.isGM) return;
+        if (game.users?.activeGM !== game.user) return;
         const dnd5eFlag = message.flags?.dnd5e;
         const activityFlag = dnd5eFlag?.activity;
         if (activityFlag?.type !== "save") return;
@@ -224,8 +224,10 @@ export class SaveEngine {
     });
 
     // ── Template placement — auto-target tokens inside ──
+    // activeGM guard: only the primary GM processes the template, preventing
+    // duplicate save cards when two GMs are connected simultaneously.
     Hooks.on("createMeasuredTemplate", (templateDoc, context, userId) => {
-      if (!game.user.isGM) return;
+      if (game.users?.activeGM !== game.user) return;
       // Small delay to let the PIXI shape render
       setTimeout(async () => {
         try {
@@ -364,7 +366,7 @@ export class SaveEngine {
   // ═══════════════════════════════════════════════════════════════════════════
 
   async _onUseActivity(activity, usageConfig, dialogConfig, messageConfig) {
-    if (!game.user.isGM) return;
+    if (game.users?.activeGM !== game.user) return;
 
     const item = activity.item;
     const actor = activity.actor;
@@ -1844,12 +1846,16 @@ export class SaveEngine {
         if (undoBtn && !flags.undone) undoBtn.disabled = false;
       } else {
         applyBtn.addEventListener("click", async () => {
-          await this._applyAllSaveDamage(message);
-          applyBtn.disabled = true;
-          applyBtn.textContent = "APPLIED \u2713";
-          await message.setFlag(MODULE_ID, "applied", true);
-          // Enable UNDO now that damage has been applied
-          if (undoBtn) { undoBtn.disabled = false; }
+          applyBtn.disabled = true;   // prevent double-click before first await
+          try {
+            await this._applyAllSaveDamage(message);
+            applyBtn.textContent = "APPLIED \u2713";
+            await message.setFlag(MODULE_ID, "applied", true);
+            if (undoBtn) { undoBtn.disabled = false; }
+          } catch (err) {
+            console.error(`${MODULE_ID} | _applyAllSaveDamage failed:`, err);
+            applyBtn.disabled = false;   // re-enable so GM can retry
+          }
         });
       }
     }

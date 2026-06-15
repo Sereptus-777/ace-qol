@@ -203,7 +203,7 @@ async function _createConcentratingEffectManually(caster, spellItem, durationRou
       name: `Concentrating: ${spellItem.name}`,
       icon: statusEffectDef.icon ?? statusEffectDef.img ?? "icons/svg/aura.svg",
       origin: spellItem.uuid,
-      statuses: ["concentrating", ...(statusEffectDef.statuses ?? [])].filter((v, i, a) => a.indexOf(v) === i),
+      statuses: ["concentration", "concentrating", ...(statusEffectDef.statuses ?? [])].filter((v, i, a) => a.indexOf(v) === i),
       duration: { rounds: durationRounds },
       flags: {
         dnd5e: {
@@ -2115,6 +2115,7 @@ Hooks.once("ready", () => {
   // on deleteCombat in case state survives a combat ending.
   try {
     Hooks.on("combatTurnChange", (combat, prior /*, current */) => {
+      if (!game.user.isGM) return;  // flag writes are GM-only; players have no authority here
       try {
         // Resolve the prior combatant (the one whose turn just ended).
         // Prefer combat.previous.combatantId (the canonical position
@@ -2141,12 +2142,9 @@ Hooks.once("ready", () => {
             FeatEffects.clearOncePerTurnFlags(priorActor).catch(() => {});
           }
         }
-        // Hexblade's Curse — RAW 1-minute (10-round) duration. GM client only,
-        // since the expire helper writes to other clients' actors.
-        if (game.user.isGM) {
-          CombatState.expireHexbladeCursesIfDue().catch(() => {});
-          FeatEffects.expireCritDebuffsIfDue().catch(() => {});
-        }
+        // Hexblade's Curse — RAW 1-minute (10-round) duration.
+        CombatState.expireHexbladeCursesIfDue().catch(() => {});
+        FeatEffects.expireCritDebuffsIfDue().catch(() => {});
       } catch (_) { /* non-fatal */ }
     });
     // Also clear all once-per-turn flags on combat START — protects against
@@ -2155,6 +2153,7 @@ Hooks.once("ready", () => {
     // their next combat with the flag pre-set and have round 1 Sneak Attack
     // silently blocked.
     Hooks.on("combatStart", (combat) => {
+      if (!game.user.isGM) return;
       try {
         for (const c of combat?.combatants?.contents ?? []) {
           if (c.actor) {
@@ -2169,6 +2168,7 @@ Hooks.once("ready", () => {
       } catch (_) { /* non-fatal */ }
     });
     Hooks.on("deleteCombat", (combat) => {
+      if (!game.user.isGM) return;
       try {
         for (const c of combat?.combatants?.contents ?? []) {
           if (c.actor) {
@@ -2180,11 +2180,7 @@ Hooks.once("ready", () => {
             FeatEffects.clearOncePerTurnFlags(c.actor).catch(() => {});
           }
         }
-        // Combat ended → expire any leftover Hexblade curses (RAW 1-minute
-        // window is conservatively assumed to have closed out by combat end).
-        if (game.user.isGM) {
-          CombatState.expireHexbladeCursesIfDue().catch(() => {});
-        }
+        CombatState.expireHexbladeCursesIfDue().catch(() => {});
       } catch (_) { /* non-fatal */ }
     });
     console.debug(`${MODULE_ID} | Class feature rider turn-reset hooks registered (Radiant Soul, Divine Strike, Divine Smite, Eldritch Smite, Sneak Attack).`);
