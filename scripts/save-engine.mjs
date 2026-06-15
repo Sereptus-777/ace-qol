@@ -3188,6 +3188,11 @@ export class SaveEngine {
   }
 
   async _applyFailedSaveConditions(item, results, saveCtx = null) {
+    // TEMP DIAGNOSTIC (remove once break-free Restrained is confirmed):
+    try {
+      const _bf = item?.getFlag?.(MODULE_ID, "breakFreeConfig");
+      console.log(`${MODULE_ID} | ACE-COND-DBG _applyFailedSaveConditions CALLED for "${item?.name}" | failed targets=${(results ?? []).filter(r => r && !r.passed).length} | breakFreeConfig.enabled=${_bf?.enabled === true} | saveCtx.dc=${saveCtx?.saveDC}`);
+    } catch (_) {}
     // Returns an array of { targetName, conditions: [...] } per target where
     // at least one condition was successfully applied. Used by Phase 1 card
     // builder to render specific "Goblin: Paralyzed" footers instead of a
