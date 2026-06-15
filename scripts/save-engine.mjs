@@ -1724,6 +1724,8 @@ export class SaveEngine {
               const cardHtml = this._buildPhase1CardHtml(item, allResults, {
                 saveAbility: message.flags?.[MODULE_ID]?.saveAbility,
                 saveDC:      message.flags?.[MODULE_ID]?.saveDC,
+                hasDamage:   message.flags?.[MODULE_ID]?.hasDamage !== false,
+                halfOnSave:  message.flags?.[MODULE_ID]?.halfOnSave === true,
                 activityId:  message.flags?.[MODULE_ID]?.activityId,
                 appliedConditions: message.flags?.[MODULE_ID]?.appliedConditions ?? [],
               });
@@ -2990,6 +2992,7 @@ export class SaveEngine {
         cardHtml = this._buildPhase1CardHtml(item, allResults, {
           saveAbility: flags.saveAbility, saveDC: flags.saveDC,
           hasDamage: flags.hasDamage !== false,
+          halfOnSave: flags.halfOnSave === true,
           activityId: flags.activityId,
           appliedConditions: flags.appliedConditions ?? [],
         });
@@ -3440,7 +3443,7 @@ export class SaveEngine {
   //  Build Phase 1 card HTML — extracted so late PC updates can rebuild
   // ─────────────────────────────────────────────────────────────────────────
   _buildPhase1CardHtml(item, results, opts) {
-    const { saveAbility, saveDC, hasDamage = true, appliedConditions = [], activityId = null } = opts;
+    const { saveAbility, saveDC, hasDamage = true, halfOnSave = false, appliedConditions = [], activityId = null } = opts;
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
     // Headline the specific power (activity) when it differs from the item name.
     const _p1Act   = item.system?.activities?.get?.(activityId);
@@ -3522,6 +3525,12 @@ export class SaveEngine {
     // rebuilds as each save posts, so ROLL DAMAGE unlocks the moment the last
     // save lands — driven by the actual rolls, not a timer.
     const anyPending = results.some(r => r.pending);
+    // Will ANY resolved target actually take damage? A failer always does; a
+    // passer only when the power deals half-on-save. If nobody will — e.g. the
+    // single target saved against Entangling Rope, which deals no damage on a
+    // save — there's nothing to roll or apply, so show a clean "no damage"
+    // result instead of a ROLL DAMAGE / APPLY ALL card.
+    const anyWillTakeDamage = hasDamage && results.some(r => !r.pending && (!r.passed || halfOnSave));
     let actionsHtml;
     if (hasDamage && anyPending) {
       actionsHtml = `<div class="ace-qol-dmg-actions">
@@ -3530,11 +3539,18 @@ export class SaveEngine {
             <i class="fas fa-hourglass-half"></i> WAITING FOR SAVES…
           </button>
         </div>`;
-    } else if (hasDamage) {
+    } else if (anyWillTakeDamage) {
       actionsHtml = `<div class="ace-qol-dmg-actions">
           <button class="ace-qol-btn ace-qol-btn-roll-dmg" data-action="aceQolRollDamage">
             <i class="fas fa-dice-d20"></i> ROLL DAMAGE
           </button>
+        </div>`;
+    } else if (hasDamage) {
+      // Damaging power, but every resolved target saved and it deals no damage
+      // on a successful save → no damage step at all.
+      const anyoneFailed = results.some(r => r && !r.passed && !r.pending);
+      actionsHtml = `<div class="ace-qol-save-no-effect" style="padding:8px 12px;text-align:center;color:#88c878;font-size:13px;font-weight:600;">
+          <i class="fas fa-shield-halved"></i> ${anyoneFailed ? "Resolved — no damage to apply" : "Saved — no damage"}
         </div>`;
     } else if (appliedConditions?.length) {
       const lines = appliedConditions.map(a => {
