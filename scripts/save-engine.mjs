@@ -734,9 +734,14 @@ export class SaveEngine {
     const hasDamage = Array.isArray(damageTypes) && damageTypes.length > 0
                    && damageTypes.some(t => t && t !== "none");
 
-    // Apply condition if appropriate
+    // Apply condition if appropriate. Normally a damaging power defers its
+    // conditions until after the damage card — but a "can break free" power
+    // (Entangling Rope) needs its Restrained to land on the fail right away so
+    // the break-free prompt has something to attach to, even though it also
+    // deals damage.
+    const breakFreeEnabled = item.getFlag?.(MODULE_ID, "breakFreeConfig")?.enabled === true;
     let appliedConditions = [];
-    if (!hasDamage) {
+    if (!hasDamage || breakFreeEnabled) {
       try {
         appliedConditions = await this._applyFailedSaveConditions(item, [result], { saveAbility, saveDC, activityId, casterActor }) ?? [];
       } catch (err) {
@@ -2141,11 +2146,13 @@ export class SaveEngine {
 
     // ── Apply on-fail conditions immediately for save-only-condition spells ──
     // (Damage spells defer condition application until after the damage card
-    // posts in _completeSaveResultsPhase2 → _runConditionApplicationFromPhase2,
-    // so the GM can review damage before conditions apply. Pure-condition
-    // spells skip that gate — there's nothing to review.)
+    // posts, so the GM can review damage before conditions apply. Pure-condition
+    // spells skip that gate — there's nothing to review.) A "can break free"
+    // power is the exception: its Restrained must land on the fail right away so
+    // the break-free prompt has something to attach to, even with damage.
+    const breakFreeEnabled = item.getFlag?.(MODULE_ID, "breakFreeConfig")?.enabled === true;
     let appliedConditions = [];
-    if (!hasDamage) {
+    if (!hasDamage || breakFreeEnabled) {
       try {
         appliedConditions = await this._applyFailedSaveConditions(item, [...npcResults, ...pcResults], { saveAbility, saveDC, activityId, casterActor }) ?? [];
       } catch (err) {
@@ -3285,6 +3292,16 @@ export class SaveEngine {
     // Diagnostic dump — surfaces why conditions might not be applying
     const allConds = parsed?.conditions ?? [];
     const failConditions = allConds.filter(c => c?.requiresSave);
+
+    // Break-free is self-contained: if the GM enabled "can break free" but the
+    // feature never declared a save-triggered Restrained of its own, inject one
+    // so the Restrained effect (carrying the break-free tag) actually lands on a
+    // failed save. Without this, a damage-only feature like Entangling Rope had
+    // nothing to attach the break-free prompt to.
+    if (breakFreeMeta && !failConditions.some(c => /restrain/i.test(String(c.condition ?? "")))) {
+      failConditions.push({ condition: "restrained", requiresSave: true, source: "breakFree" });
+      console.log(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — break-free enabled, injecting Restrained on fail.`);
+    }
     console.log(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — parsed ${allConds.length} condition(s), ${failConditions.length} marked requiresSave:`,
       allConds.map(c => `${c.condition}${c.requiresSave ? "(save)" : "(no-save)"}`));
 
