@@ -674,23 +674,40 @@ export class OverTimeEngine {
       const desc = String(item.system?.description?.value ?? "")
         .replace(/<[^>]+>/g, " ").replace(/&[a-z]+;/gi, " ").replace(/\s+/g, " ");
       const text = `${name}. ${desc}`;
-      const looksRegen = /regenerat/i.test(name)
-        || /regains?\s+\d+\s+hit points?\s+at the start of/i.test(text);
+
+      // Heal phrase, wording-tolerant: regains / regenerates / heals / recovers
+      // N (hit points|hp). Different modules word this differently and in
+      // different order, so we don't require it to sit right before "at the
+      // start of" the way the old pattern did.
+      const healRe   = /(?:regains?|regenerates?|heals?|recovers?)\s+(\d+)\s+(?:hit\s*points?|hp)\b/i;
+      const healMatch = text.match(healRe);
+      const startOfTurn = /start of (?:each of )?(?:its|their|his|her|the creature'?s)?\s*turns?/i.test(text);
+      const nameRegen   = /regenerat|fast\s*healing/i.test(name);
+
+      // Treat as regeneration if it's NAMED like it (and heals a number), OR it
+      // heals N HP at the start of a turn regardless of the feature's name.
+      const looksRegen = (nameRegen && /\d+\s+(?:hit\s*points?|hp)\b/i.test(text))
+                      || (!!healMatch && startOfTurn);
       if (!looksRegen) continue;
-      const m = text.match(/regains?\s+(\d+)\s+hit points?/i);
-      const amount = m ? parseInt(m[1]) : 0;
+
+      let amount = healMatch ? parseInt(healMatch[1]) : 0;
+      if (!(amount > 0)) {
+        const m2 = text.match(/(\d+)\s+(?:hit\s*points?|hp)\b/i);
+        amount = m2 ? parseInt(m2[1]) : 0;
+      }
       if (!(amount > 0)) continue;
-      // Shut-off damage types: "If it takes <types> damage ... doesn't function"
-      const sm = text.match(/takes?\s+([a-z, ]+?)\s+damage[^.]*?(?:doesn'?t|does not|no longer)\s+function/i)
-              || text.match(/takes?\s+([a-z, ]+?)\s+damage[^.]*?at the start of/i);
+
+      // Shut-off damage types: "If it takes <types> damage ... doesn't function / can't regenerate"
+      const sm = text.match(/takes?\s+([a-z, ]+?)\s+damage[^.]*?(?:doesn'?t|does not|no longer|can'?t|cannot)\s+(?:function|regenerat)/i)
+              || text.match(/(?:if it takes|takes?)\s+([a-z, ]+?)\s+damage/i);
       const scope = sm ? sm[1] : "";
       const shutoff = DMG.filter(d => new RegExp(`\\b${d}\\b`, "i").test(scope));
       return {
         amount,
         shutoff,
         requiresMinHp:     /at least 1 hit point/i.test(text),
-        noRegenInSunlight: /in sunlight/i.test(text),
-        label:             name || "Regeneration",
+        noRegenInSunlight: /in (?:direct )?sunlight/i.test(text),
+        label:             nameRegen ? name : "Regeneration",
       };
     }
     return null;
