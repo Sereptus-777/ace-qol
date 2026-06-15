@@ -39,7 +39,7 @@ const PRESETS = {
     autoAbsorbElements: true, autoLegendaryResistance: true,
     enableSpeedRolls: true, enableMergeCard: false, enableHealPipeline: true,
     extendedEffects: true, effectTransferRules: true,
-    enableOnUseHooks: true, enableOverTimeEffects: true, autoApplyOverTimeDamage: false,
+    enableOnUseHooks: true, enableOverTimeEffects: true, autoApplyOverTimeDamage: false, autoApplyOverTimeHeal: true,
     enableFlagsSystem: true, enableOptionalPrompts: true, midiCompatibility: true,
     enableDurationTracker: true, expireEffectsOnTurnChange: true, notifyOnExpiry: true,
     expiryNotifyAll: false,
@@ -58,7 +58,7 @@ const PRESETS = {
     autoAbsorbElements: false, autoLegendaryResistance: false,
     enableSpeedRolls: true, enableMergeCard: false, enableHealPipeline: true,
     extendedEffects: false, effectTransferRules: false,
-    enableOnUseHooks: false, enableOverTimeEffects: false, autoApplyOverTimeDamage: false,
+    enableOnUseHooks: false, enableOverTimeEffects: false, autoApplyOverTimeDamage: false, autoApplyOverTimeHeal: false,
     enableFlagsSystem: false, enableOptionalPrompts: false, midiCompatibility: false,
     enableDurationTracker: false, expireEffectsOnTurnChange: false, notifyOnExpiry: false,
     expiryNotifyAll: false,
@@ -77,7 +77,7 @@ const PRESETS = {
     autoAbsorbElements: true, autoLegendaryResistance: true,
     enableSpeedRolls: true, enableMergeCard: true,
     extendedEffects: true, effectTransferRules: true,
-    enableOnUseHooks: true, enableOverTimeEffects: true, autoApplyOverTimeDamage: true,
+    enableOnUseHooks: true, enableOverTimeEffects: true, autoApplyOverTimeDamage: true, autoApplyOverTimeHeal: true,
     enableFlagsSystem: true, enableOptionalPrompts: true, midiCompatibility: true,
     enableDurationTracker: true, expireEffectsOnTurnChange: true, notifyOnExpiry: true,
     expiryNotifyAll: true,
@@ -975,6 +975,15 @@ export class QolSettings {
       config:  false,
       type:    Boolean,
       default: false,
+    });
+
+    s("autoApplyOverTimeHeal", {
+      name:    "Auto-Apply Regeneration / Healing",
+      hint:    "When ON, recurring healing (Regeneration on trolls, vampires, etc.) is applied automatically at the start of the creature's turn — the GM never has to remember it. When OFF, a chat card with an APPLY button is posted instead.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
     });
 
     // ═══════════════════════════════════════════════════════════════════════════

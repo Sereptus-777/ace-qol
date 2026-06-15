@@ -565,10 +565,25 @@ export class SaveEngine {
       let picked = [];
       try {
         const { SpellTargetPicker } = await import("./spell-target-picker.mjs");
+        // ── Read the ability's OWN target count — don't blindly allow a crowd ──
+        // dnd5e activities declare their targeting as structured data, so the
+        // generic path reads it instead of guessing: a discrete-target ability
+        // carries an "affects count" (Banish = 1 creature, a two-target gaze = 2),
+        // while an area ability carries a measured template, where picking several
+        // IS correct. Only fall back to "many" when the ability genuinely has
+        // neither — and to the single-target case (1) when it has no template and
+        // no declared count, which is the overwhelmingly common "one creature you
+        // can see" shape. The GM can still add more via "+ TARGET SELECTED".
+        const _tgt      = activity?.target ?? {};
+        const _affects  = _tgt.affects ?? {};
+        const _declared = parseInt(_affects.count);
+        const _maxTargets = (_tgt.template?.type)
+          ? 99
+          : (Number.isFinite(_declared) && _declared > 0 ? _declared : 1);
         picked = await SpellTargetPicker.pick({
           spellItem:   item,
           casterActor: actor,
-          maxTargets:  99,
+          maxTargets:  _maxTargets,
           rangeFt:     Number(activity?.range?.value) || 30,
           allowSelf:   false,
         });
@@ -1717,6 +1732,14 @@ export class SaveEngine {
     if (rollDmgBtn && !rollDmgBtn.dataset.wired) {
       rollDmgBtn.dataset.wired = "1";
       rollDmgBtn.addEventListener("click", async () => {
+        // Defensive: never roll damage while a target's save is still pending —
+        // the button renders disabled in that state, but guard the click too in
+        // case of a stale or raced render.
+        const stillPending = (message.flags?.[MODULE_ID]?.allResults ?? []).some(r => r.pending);
+        if (stillPending) {
+          ui.notifications?.warn("ACE QOL — wait for every target to roll their save before rolling damage.");
+          return;
+        }
         rollDmgBtn.disabled = true;
         rollDmgBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Rolling damage...';
         await this._completeSaveResultsPhase2(message);
@@ -3453,8 +3476,21 @@ export class SaveEngine {
     // a per-target condition footer instead. Each line shows exactly which
     // condition was applied to which target (red, e.g., "Goblin: Paralyzed")
     // so the GM/player can see at a glance what changed.
+    // RAW: EVERY target resolves its save before damage is rolled. NPCs
+    // auto-roll instantly, but a PC (e.g. King) hasn't clicked their save yet —
+    // so hold the damage step until no target is still pending. The card
+    // rebuilds as each save posts, so ROLL DAMAGE unlocks the moment the last
+    // save lands — driven by the actual rolls, not a timer.
+    const anyPending = results.some(r => r.pending);
     let actionsHtml;
-    if (hasDamage) {
+    if (hasDamage && anyPending) {
+      actionsHtml = `<div class="ace-qol-dmg-actions">
+          <button class="ace-qol-btn ace-qol-btn-roll-dmg" disabled
+                  title="Waiting for every target to roll their save first.">
+            <i class="fas fa-hourglass-half"></i> WAITING FOR SAVES…
+          </button>
+        </div>`;
+    } else if (hasDamage) {
       actionsHtml = `<div class="ace-qol-dmg-actions">
           <button class="ace-qol-btn ace-qol-btn-roll-dmg" data-action="aceQolRollDamage">
             <i class="fas fa-dice-d20"></i> ROLL DAMAGE

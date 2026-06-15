@@ -29,6 +29,8 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
+import { DamageApplicator } from "./damage-applicator.mjs";
+import { aceWithinFt } from "./geometry-utils.mjs";
 
 export class OverTimeEngine {
 
@@ -36,6 +38,11 @@ export class OverTimeEngine {
     /** Track which combatant turn we last processed to avoid double-fires.
      *  Key: `${combatId}-${round}-${turn}` → Set<effectId> */
     this._processed = new Map();
+
+    /** Damage types each actor has taken since its last turn, for RAW
+     *  regeneration shut-offs. Key: actor.id → Set<damageType>. Cleared at
+     *  the start of that actor's turn. Fed by the `ace-qol.damageApplied` hook. */
+    this._dmgTypesTaken = new Map();
 
     this._registerHooks();
   }
@@ -56,7 +63,7 @@ export class OverTimeEngine {
     // ── Wire buttons on OverTime chat cards (persistent across re-render) ──
     Hooks.on("renderChatMessage", (message, html) => {
       const flags = message.flags?.[MODULE_ID];
-      if (flags?.type !== "overTimeResult") return;
+      if (flags?.type !== "overTimeResult" && flags?.type !== "overTimeRegen") return;
 
       const el = html instanceof HTMLElement ? html : (html[0] ?? html);
       if (!el?.querySelector) return;
@@ -70,6 +77,12 @@ export class OverTimeEngine {
       if (!QolSettings.get("enableOverTimeEffects")) return;
       // If updateCombat already handled this, the _processed guard prevents double-fire
       this._processTurnChange(combat, prior?.combatantId, current?.combatantId, combat.round);
+    });
+
+    // ── Record damage types taken (for regeneration shut-offs) ──
+    // Emitted by DamageApplicator when APPLY ALL lands damage on a target.
+    Hooks.on(`${MODULE_ID}.damageApplied`, (payload) => {
+      try { this._recordDamageTypes(payload); } catch (_) { /* non-fatal */ }
     });
 
     console.debug(`${MODULE_ID} | OverTime engine hooks registered`);
@@ -179,8 +192,11 @@ export class OverTimeEngine {
       }
     }
 
-    // Collect all Active Effects on the actor that have OverTime data
-    const effects = actor.effects?.contents ?? [];
+    // Collect all Active Effects affecting the actor that have OverTime data.
+    // appliedEffects includes effects TRANSFERRED from items (e.g. the Forge's
+    // "happens automatically each turn" effect lives on the feature item), which
+    // actor.effects alone would miss.
+    const effects = actor.appliedEffects ?? actor.effects?.contents ?? [];
     const overTimeEffects = [];
 
     for (const effect of effects) {
@@ -215,14 +231,34 @@ export class OverTimeEngine {
 
     // Filter to effects matching this timing
     const matching = overTimeEffects.filter(e => e.data.turn === timing);
-    if (!matching.length) return;
 
-    this._debug(`Processing ${matching.length} OverTime effects (${timing} of turn) for ${actor.name}`);
-
-    // Process each effect sequentially (saves and damage may depend on order)
-    for (const { effect, data } of matching) {
-      await this._processOverTimeEffect(actor, combatant, effect, data);
+    if (matching.length) {
+      this._debug(`Processing ${matching.length} OverTime effects (${timing} of turn) for ${actor.name}`);
+      // Process each effect sequentially (saves and damage may depend on order)
+      for (const { effect, data } of matching) {
+        await this._processOverTimeEffect(actor, combatant, effect, data);
+      }
     }
+
+    // ── Regeneration (auto-detected monster/creature trait) ──
+    // Fires automatically at the START of the creature's turn, honoring the RAW
+    // shut-offs (took its weakness, at 0 HP, in sunlight). Skipped when an
+    // authored OverTime heal effect already covers it (handled above) so we
+    // never double-heal.
+    if (timing === "start") {
+      const authoredHeal = matching.some(m => m.data.healRoll || m.data.regen);
+      if (!authoredHeal) {
+        try { await this._processRegeneration(actor, combatant, round); }
+        catch (err) { console.error(`${MODULE_ID} | Regeneration processing failed:`, err); }
+      }
+      // The "damage taken since its last turn" window closes now that this
+      // creature's turn has begun — reset it for the next round.
+      this._dmgTypesTaken.delete(actor.id);
+    }
+
+    // ── Auras (Flavor C): effects that radiate to OTHER creatures within range ──
+    try { await this._processAuras(combat, actor, combatant, timing, round); }
+    catch (err) { console.error(`${MODULE_ID} | Aura processing failed:`, err); }
   }
 
   /**
@@ -248,6 +284,13 @@ export class OverTimeEngine {
         allowRepeatSave:  raw.allowRepeatSave !== false, // default true
         macroOnFail:      raw.macroOnFail ?? raw.macroFail ?? "",
         macroOnSuccess:   raw.macroOnSuccess ?? raw.macroPass ?? "",
+        // ── Recurring HEALING / regeneration (authored via the Forge) ──
+        healRoll:         raw.healRoll ?? raw.heal ?? "",
+        regen:            !!raw.regen,
+        regenShutoff:     Array.isArray(raw.regenShutoff) ? raw.regenShutoff
+                            : (raw.regenShutoff ? String(raw.regenShutoff).split(/[,\s]+/).filter(Boolean) : []),
+        requiresMinHp:    !!raw.requiresMinHp,
+        noRegenInSunlight:!!raw.noRegenInSunlight,
       };
     }
 
@@ -321,6 +364,11 @@ export class OverTimeEngine {
    * @param {object}       otData    - Normalized OverTime data
    */
   async _processOverTimeEffect(actor, combatant, effect, otData) {
+    // Healing / regeneration effects (authored via the Forge) take a dedicated path.
+    if (otData.healRoll || otData.regen) {
+      return this._processHealEffect(actor, combatant, effect, otData);
+    }
+
     const label = otData.label || effect.name || "OverTime Effect";
     const tokenDoc = combatant.token ?? actor.getActiveTokens()?.[0]?.document;
     const tokenImg = tokenDoc?.texture?.src ?? actor.img ?? "icons/svg/mystery-man.svg";
@@ -600,6 +648,287 @@ export class OverTimeEngine {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  //  Regeneration / Recurring Healing
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /** Record the damage types a creature took (fed by the ace-qol.damageApplied hook). */
+  _recordDamageTypes({ actor, types } = {}) {
+    if (!actor?.id || !Array.isArray(types) || !types.length) return;
+    let set = this._dmgTypesTaken.get(actor.id);
+    if (!set) { set = new Set(); this._dmgTypesTaken.set(actor.id, set); }
+    for (const t of types) set.add(String(t).toLowerCase());
+  }
+
+  /**
+   * Detect a Regeneration-style trait on an actor by reading its feature text.
+   * Returns { amount, shutoff[], requiresMinHp, noRegenInSunlight, label } or null.
+   * Covers trolls, vampires, hydras, and any homebrew worded the standard way
+   * ("regains N hit points at the start of its turn").
+   */
+  _detectRegeneration(actor) {
+    if (!actor?.items) return null;
+    const DMG = ["acid","fire","cold","lightning","thunder","poison","radiant","necrotic","force","psychic"];
+    for (const item of actor.items) {
+      if (item.type !== "feat") continue;
+      const name = String(item.name ?? "");
+      const desc = String(item.system?.description?.value ?? "")
+        .replace(/<[^>]+>/g, " ").replace(/&[a-z]+;/gi, " ").replace(/\s+/g, " ");
+      const text = `${name}. ${desc}`;
+      const looksRegen = /regenerat/i.test(name)
+        || /regains?\s+\d+\s+hit points?\s+at the start of/i.test(text);
+      if (!looksRegen) continue;
+      const m = text.match(/regains?\s+(\d+)\s+hit points?/i);
+      const amount = m ? parseInt(m[1]) : 0;
+      if (!(amount > 0)) continue;
+      // Shut-off damage types: "If it takes <types> damage ... doesn't function"
+      const sm = text.match(/takes?\s+([a-z, ]+?)\s+damage[^.]*?(?:doesn'?t|does not|no longer)\s+function/i)
+              || text.match(/takes?\s+([a-z, ]+?)\s+damage[^.]*?at the start of/i);
+      const scope = sm ? sm[1] : "";
+      const shutoff = DMG.filter(d => new RegExp(`\\b${d}\\b`, "i").test(scope));
+      return {
+        amount,
+        shutoff,
+        requiresMinHp:     /at least 1 hit point/i.test(text),
+        noRegenInSunlight: /in sunlight/i.test(text),
+        label:             name || "Regeneration",
+      };
+    }
+    return null;
+  }
+
+  /** Why (if at all) regeneration is suppressed this turn — returns a reason or null. */
+  _regenBlocked(actor, combatant, spec) {
+    const hp  = actor.system?.attributes?.hp ?? {};
+    const cur = Number(hp.value ?? 0);
+    const max = Number(hp.max ?? 0);
+    if (max && cur >= max) return "full";   // nothing to heal — handled silently
+    if (spec.requiresMinHp && cur < 1) return "reduced to 0 HP";
+    if (spec.shutoff?.length) {
+      const taken = this._dmgTypesTaken.get(actor.id);
+      if (taken) {
+        const hit = spec.shutoff.find(t => taken.has(t));
+        if (hit) return `took ${hit} damage since its last turn`;
+      }
+    }
+    if (spec.noRegenInSunlight && this._tokenInSunlight(combatant)) return "standing in sunlight";
+    return null;
+  }
+
+  /** Best-effort: is this combatant's token inside an active Sunlight zone? */
+  _tokenInSunlight(combatant) {
+    try {
+      const HS = game.aceQol?.HolySymbol;
+      if (!HS?._inAnySunlight || !HS?._activeSunBearers) return false;
+      const token = combatant.token?.object ?? combatant.actor?.getActiveTokens?.()?.[0];
+      if (!token) return false;
+      const bearers = HS._activeSunBearers().map(td => td.object).filter(Boolean);
+      return bearers.length ? HS._inAnySunlight(token, bearers) : false;
+    } catch (_) { return false; }
+  }
+
+  /** Auto-detected regeneration for a creature at the start of its turn. */
+  async _processRegeneration(actor, combatant, round) {
+    const spec = this._detectRegeneration(actor);
+    if (!spec) return;
+    await this._runRegen(actor, combatant, spec);
+  }
+
+  /** Authored OverTime healing effect (Forge "happens each turn → regain HP"). */
+  async _processHealEffect(actor, combatant, effect, otData) {
+    let amount = 0;
+    const roll = String(otData.healRoll ?? "").trim();
+    if (roll) {
+      try { amount = (await new Roll(roll).evaluate()).total; }
+      catch (_) { amount = parseInt(roll) || 0; }
+    }
+    if (!(amount > 0)) return;
+    await this._runRegen(actor, combatant, {
+      amount,
+      shutoff:           otData.regenShutoff ?? [],
+      requiresMinHp:     !!otData.requiresMinHp,
+      noRegenInSunlight: !!otData.noRegenInSunlight,
+      label:             otData.label || effect?.name || "Regeneration",
+    });
+  }
+
+  /** Shared core: check shut-offs, apply the heal (auto or via card button), announce. */
+  async _runRegen(actor, combatant, spec) {
+    const reason    = this._regenBlocked(actor, combatant, spec);
+    const tokenDoc  = combatant.token ?? actor.getActiveTokens?.()?.[0]?.document;
+    const tokenImg  = tokenDoc?.texture?.src ?? actor.img ?? "icons/svg/mystery-man.svg";
+    const tokenName = tokenDoc?.name ?? actor.name ?? "Creature";
+
+    if (reason) {
+      if (reason !== "full") {
+        await this._postRegenCard({ tokenImg, tokenName, label: spec.label, amount: spec.amount, healed: 0, blockedReason: reason });
+      }
+      return;
+    }
+
+    const auto = QolSettings.get("autoApplyOverTimeHeal");
+    let healed = 0;
+    if (auto) {
+      const res = await DamageApplicator.applyHPHeal(actor, spec.amount, { label: `Regeneration — ${tokenName}` });
+      healed = res?.healedAmount ?? spec.amount;
+    }
+    this._debug(`Regeneration: ${tokenName} ${auto ? `+${healed} HP` : `pending +${spec.amount}`} (${spec.label})`);
+    await this._postRegenCard({
+      tokenImg, tokenName, label: spec.label, amount: spec.amount,
+      healed, blockedReason: null, applied: auto,
+      actorId: actor.id, tokenDocId: tokenDoc?.id,
+    });
+  }
+
+  /** GM chat card for a regeneration tick (APPLY button shown when not auto-applied). */
+  async _postRegenCard(data) {
+    const { tokenImg, tokenName, label, amount, healed, blockedReason, applied, actorId, tokenDocId } = data;
+
+    let body = "", btn = "";
+    if (blockedReason) {
+      body = `<div class="ace-qol-ot-damage"><span class="ace-qol-ot-dmg-detail">Regeneration suppressed — <strong>${blockedReason}</strong>.</span></div>`;
+    } else if (applied) {
+      body = `<div class="ace-qol-ot-damage"><span class="ace-qol-ot-dmg-detail">Regained <strong>${healed}</strong> HP.</span></div>`;
+    } else {
+      body = `<div class="ace-qol-ot-damage"><span class="ace-qol-ot-dmg-detail">Should regain <strong>${amount}</strong> HP.</span></div>`;
+      btn  = `<div class="ace-qol-ot-buttons ace-qol-dmg-gm-controls">
+                <button class="ace-qol-ot-btn ace-qol-ot-heal" data-action="aceQolOtHeal" data-actor-id="${actorId}" data-heal="${amount}" data-token-doc-id="${tokenDocId ?? ""}">
+                  <i class="fas fa-heart"></i> APPLY ${amount} HP
+                </button>
+              </div>`;
+    }
+
+    const cardHtml = `
+      <div class="ace-qol-overtime-card ace-qol-regen-card">
+        <div class="ace-qol-ot-header">
+          <img src="${tokenImg}" class="ace-qol-ot-token-img" />
+          <div class="ace-qol-ot-header-text">
+            <strong class="ace-qol-ot-name">${tokenName}</strong>
+            <span class="ace-qol-ot-label">— ${label}</span>
+            <span class="ace-qol-ot-timing">(Start of Turn)</span>
+          </div>
+        </div>
+        ${body}
+        ${btn}
+      </div>`;
+
+    await ChatMessage.create({
+      content: cardHtml,
+      whisper: [game.user.id],
+      speaker: { alias: "Regeneration" },
+      flags: { [MODULE_ID]: { type: "overTimeRegen", actorId, tokenDocId, heal: amount, applied: !!applied } },
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Auras (Flavor C) — recurring effects that hit OTHER creatures in range
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /** Read OverTimeAura specs off the effects affecting an actor. */
+  _collectAuras(actor) {
+    const out = [];
+    const effects = actor?.appliedEffects ?? actor?.effects?.contents ?? [];
+    for (const e of effects) {
+      if (e.disabled || e.isSuppressed) continue;
+      const a = e.getFlag?.(MODULE_ID, "OverTimeAura") ?? e.flags?.[MODULE_ID]?.OverTimeAura;
+      if (a && (Number(a.range) > 0) && a.roll) out.push(a);
+    }
+    return out;
+  }
+
+  /** Disposition filter: does an aura with this targeting mode reach this token? */
+  _auraTargetsMatch(sourceToken, targetToken, mode) {
+    if (mode === "all" || !mode) return true;
+    const sd = sourceToken.document?.disposition ?? 0;
+    const td = targetToken.document?.disposition ?? 0;
+    if (mode === "allies")  return td === sd;
+    if (mode === "enemies") return (sd > 0 && td < 0) || (sd < 0 && td > 0);
+    return true;
+  }
+
+  /**
+   * Process auras at a creature's turn boundary. Two timing models:
+   *   on:"source" → on the aura-bearer's turn, it pulses out to everyone in range.
+   *   on:"victim" → on each creature's own turn, it's hit by any aura it stands in.
+   */
+  async _processAuras(combat, actor, combatant, timing, round) {
+    const myToken = combatant.token?.object ?? actor.getActiveTokens?.()?.[0];
+    if (!myToken) return;
+    const placeables = canvas.tokens?.placeables ?? [];
+
+    // (1) This creature's OWN source-auras pulse out on its turn.
+    const myAuras = this._collectAuras(actor).filter(a => a.on === "source" && (a.turn ?? "start") === timing);
+    for (const aura of myAuras) {
+      const victims = placeables.filter(t =>
+        t !== myToken && t.actor
+        && this._auraTargetsMatch(myToken, t, aura.targets)
+        && aceWithinFt(myToken, t, Number(aura.range)));
+      await this._applyAura(myToken, victims, aura);
+    }
+
+    // (2) This creature is standing in someone else's victim-aura on its own turn.
+    for (const src of placeables) {
+      if (src === myToken || !src.actor) continue;
+      const srcAuras = this._collectAuras(src.actor).filter(a => a.on === "victim" && (a.turn ?? "start") === timing);
+      for (const aura of srcAuras) {
+        if (!this._auraTargetsMatch(src, myToken, aura.targets)) continue;
+        if (!aceWithinFt(src, myToken, Number(aura.range))) continue;
+        await this._applyAura(src, [myToken], aura);
+      }
+    }
+  }
+
+  /** Apply one aura to a set of target tokens (auto-applies + posts a card). */
+  async _applyAura(sourceToken, targets, aura) {
+    if (!targets?.length) return;
+    const results = [];
+    for (const t of targets) {
+      const actor = t.actor;
+      if (!actor) continue;
+      if (aura.what === "heal") {
+        let amount = 0;
+        try { amount = (await new Roll(String(aura.roll || "0")).evaluate()).total; }
+        catch (_) { amount = parseInt(aura.roll) || 0; }
+        if (amount <= 0) continue;
+        const res = await DamageApplicator.applyHPHeal(actor, amount, { label: `${aura.label} (aura)` });
+        results.push({ name: t.name, text: `+${res?.healedAmount ?? amount} HP` });
+      } else {
+        const dmg = await this._rollDamage(String(aura.roll || "0"), aura.damageType, actor, false);
+        const final = dmg?.total ?? 0;
+        if (final > 0) await this._applyOverTimeDamage(actor, final, aura.damageType);
+        const mod = dmg?.modifier && dmg.modifier !== "normal" ? ` (${dmg.modifier})` : "";
+        results.push({ name: t.name, text: `${final} ${aura.damageType || ""}${mod}`.trim() });
+      }
+    }
+    if (results.length) await this._postAuraCard(sourceToken, aura, results);
+  }
+
+  /** GM chat card summarizing an aura pulse. */
+  async _postAuraCard(sourceToken, aura, results) {
+    const verb = aura.what === "heal" ? "heals nearby" : "hits nearby";
+    const rows = results.map(r =>
+      `<div class="ace-qol-ot-damage"><span class="ace-qol-ot-dmg-detail">${r.name}: <strong>${r.text}</strong></span></div>`
+    ).join("");
+    const cardHtml = `
+      <div class="ace-qol-overtime-card ace-qol-aura-card">
+        <div class="ace-qol-ot-header">
+          <img src="${sourceToken.document?.texture?.src ?? sourceToken.actor?.img ?? "icons/svg/aura.svg"}" class="ace-qol-ot-token-img" />
+          <div class="ace-qol-ot-header-text">
+            <strong class="ace-qol-ot-name">${sourceToken.name}</strong>
+            <span class="ace-qol-ot-label">— ${aura.label || "Aura"}</span>
+            <span class="ace-qol-ot-timing">(${verb})</span>
+          </div>
+        </div>
+        ${rows}
+      </div>`;
+    await ChatMessage.create({
+      content: cardHtml,
+      whisper: [game.user.id],
+      speaker: { alias: "Aura" },
+      flags: { [MODULE_ID]: { type: "overTimeAura" } },
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   //  Condition Management
   // ═══════════════════════════════════════════════════════════════════════════
 
@@ -859,6 +1188,27 @@ export class OverTimeEngine {
 
           applyBtn.disabled = true;
           applyBtn.innerHTML = '<i class="fas fa-check"></i> APPLIED';
+          await message.setFlag(MODULE_ID, "applied", true);
+        });
+      }
+    }
+
+    // ── APPLY HEAL button (regeneration cards) ──
+    const healBtn = el.querySelector("[data-action='aceQolOtHeal']");
+    if (healBtn && !healBtn.dataset.wired) {
+      healBtn.dataset.wired = "1";
+      if (flags.applied) {
+        healBtn.disabled = true;
+        healBtn.innerHTML = '<i class="fas fa-check"></i> APPLIED';
+      } else {
+        healBtn.addEventListener("click", async () => {
+          const tokenActor = canvas.tokens?.get(healBtn.dataset.tokenDocId)?.actor;
+          const actor = tokenActor ?? game.actors.get(healBtn.dataset.actorId);
+          const heal = parseInt(healBtn.dataset.heal) || 0;
+          if (!actor || heal <= 0) return;
+          await DamageApplicator.applyHPHeal(actor, heal, { label: "Regeneration (manual apply)" });
+          healBtn.disabled = true;
+          healBtn.innerHTML = '<i class="fas fa-check"></i> APPLIED';
           await message.setFlag(MODULE_ID, "applied", true);
         });
       }

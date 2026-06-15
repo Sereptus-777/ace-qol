@@ -310,6 +310,7 @@ export class DamageApplicator {
       const override = (typeof cachedValue === "number") ? cachedValue : 1;
       let damageToApply = 0;
       const components = entry.components ?? [];
+      const typesApplied = new Set();
 
       for (let i = 0; i < components.length; i++) {
         if (appliedComps.includes(i)) {
@@ -318,6 +319,7 @@ export class DamageApplicator {
         }
         const compDmg = Math.floor(components[i].final * override);
         damageToApply += compDmg;
+        if (compDmg > 0 && components[i].type) typesApplied.add(String(components[i].type).toLowerCase());
         console.log(`${MODULE_ID} | APPLY ALL: comp ${i} (${components[i].final} ${components[i].type} × ${override}) = ${compDmg}`);
       }
 
@@ -340,6 +342,15 @@ export class DamageApplicator {
       await DamageApplicator.applyHPDamage(actor, damageToApply, {
         label: `APPLY ALL ${entry.name}`,
       });
+
+      // Signal the damage types this creature just took, so the OverTime engine
+      // can honor RAW regeneration shut-offs (a troll that took fire/acid, or a
+      // vampire that took radiant, doesn't regenerate at the start of its next turn).
+      try {
+        Hooks.callAll(`${MODULE_ID}.damageApplied`, {
+          actor, tokenDocId: entry.tokenDocId, types: [...typesApplied],
+        });
+      } catch (_) { /* non-fatal */ }
 
       // Track what APPLY ALL applied: mark all remaining comps as applied in flags
       const allIndices = components.map((_, i) => i);
@@ -817,6 +828,14 @@ export class DamageApplicator {
         const { currentHP, newHP } = await DamageApplicator.applyHPDamage(actor, amount, {
           label: `per-type ${dmgType}`,
         });
+
+        // Feed the OverTime regeneration shut-off tracker (RAW: a creature that
+        // took its weakness this round doesn't regenerate at its next turn).
+        try {
+          if (amount > 0 && dmgType) {
+            Hooks.callAll(`${MODULE_ID}.damageApplied`, { actor, tokenDocId, types: [String(dmgType).toLowerCase()] });
+          }
+        } catch (_) { /* non-fatal */ }
 
         const prevApplied = message.flags?.[MODULE_ID]?.perTypeApplied?.[tokenDocId] ?? 0;
         const overrideLabel = (typeof override === "number" && override !== 1) ? ` (×${override})` : "";
