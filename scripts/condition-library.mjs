@@ -1992,6 +1992,21 @@ export class ConditionLibrary {
               };
             }
 
+            // If the caller passed `breakFree`, stamp it so the BreakFreeEngine
+            // can prompt an action-to-escape at the start of the creature's
+            // turn. appliedRound/Turn lets the engine skip the turn it was
+            // applied (the initial save already happened on the cast).
+            if (options.breakFree?.ability && Number.isFinite(options.breakFree?.dc)) {
+              updateData[`flags.${MODULE_ID}.breakFree`] = {
+                ability:      String(options.breakFree.ability).toLowerCase(),
+                dc:           Number(options.breakFree.dc),
+                label:        options.breakFree.label ?? null,
+                appliedRound: game.combat?.round ?? null,
+                appliedTurn:  game.combat?.turn ?? null,
+                stampedAt:    Date.now(),
+              };
+            }
+
             await placed.update(updateData);
 
             if (concEffect?.uuid) {

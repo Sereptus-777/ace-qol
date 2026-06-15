@@ -30,6 +30,7 @@ import { ConditionLibrary }     from "./condition-library.mjs";
 import { SpellTargetPicker }    from "./spell-target-picker.mjs";
 import { DescriptionParser }    from "./description-parser.mjs";
 import { RepeatingSaveEngine }  from "./repeating-save-engine.mjs";
+import { BreakFreeEngine }      from "./break-free-engine.mjs";
 import { TransformationEngine } from "./transformation-engine.mjs";
 import { ConcentrationDamage }  from "./concentration-damage.mjs";
 import { BonusSpellRule }       from "./bonus-spell-rule.mjs";
@@ -2067,6 +2068,14 @@ Hooks.once("ready", () => {
     RepeatingSaveEngine.init();
   } catch (err) {
     console.error(`${MODULE_ID} | Repeating Save Engine init failed:`, err);
+  }
+
+  // Break-Free Engine — action-to-escape for restrain-type effects (Entangling
+  // Rope, Net, Entangle). Prompts the trapped creature at the start of its turn.
+  try {
+    BreakFreeEngine.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Break-Free Engine init failed:`, err);
   }
 
   // Transformation Engine — GM-only. Wraps dnd5e transformInto/revertOriginalForm

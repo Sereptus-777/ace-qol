@@ -3270,6 +3270,18 @@ export class SaveEngine {
         }
       : null;
 
+    // Break-free (action-to-escape) — opt-in via the Forge "can break free"
+    // toggle (flags.ace-qol.breakFreeConfig). The escape check uses the chosen
+    // ability (default Strength) against the same DC as the save.
+    const bfConfig = item.getFlag?.(MODULE_ID, "breakFreeConfig");
+    const breakFreeMeta = (bfConfig?.enabled && resolvedSaveDC)
+      ? {
+          ability: String(bfConfig.ability || resolvedSaveAbility || "str").toLowerCase(),
+          dc:      resolvedSaveDC,
+          label:   item.name,
+        }
+      : null;
+
     // Diagnostic dump — surfaces why conditions might not be applying
     const allConds = parsed?.conditions ?? [];
     const failConditions = allConds.filter(c => c?.requiresSave);
@@ -3384,6 +3396,7 @@ export class SaveEngine {
           const applyOpts = {};
           if (concentrationOrigin) applyOpts.concentrationOrigin = concentrationOrigin;
           if (repeatingSaveMeta)   applyOpts.repeatingSave       = repeatingSaveMeta;
+          if (breakFreeMeta)       applyOpts.breakFree           = breakFreeMeta;
 
           // Area-denial family (Stinking Cloud, etc.): description-parsed
           // conditions like Poisoned need to auto-expire at end of the
