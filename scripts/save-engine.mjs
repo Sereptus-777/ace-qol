@@ -2984,6 +2984,29 @@ export class SaveEngine {
         return;
       }
 
+      // ── Apply on-fail conditions for a PC who just failed ──
+      // The NPC paths apply conditions when the save resolves, but the PC
+      // result handler never did — so a PC who failed (e.g. Kasimir vs
+      // Entangling Rope) never got Restrained / the break-free tag. Apply here,
+      // gated like the NPC path (no-damage powers, or any power with break-free
+      // enabled) and guarded so repeated card rebuilds don't double-apply.
+      try {
+        if (!r.passed && !r._condApplied) {
+          const breakFreeEnabled = item.getFlag?.(MODULE_ID, "breakFreeConfig")?.enabled === true;
+          const hasDmg = Array.isArray(flags.damageTypes) && flags.damageTypes.some(t => t && t !== "none");
+          if (!hasDmg || breakFreeEnabled) {
+            r._condApplied = true;
+            const casterActor = game.actors.get(flags.actorId) ?? null;
+            await this._applyFailedSaveConditions(item, [r], {
+              saveAbility: flags.saveAbility, saveDC: flags.saveDC,
+              activityId: flags.activityId ?? null, casterActor,
+            });
+          }
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | PC fail condition application failed:`, err);
+      }
+
       const isPhase2 = flags.phase === 2 || Array.isArray(flags.damageComponentTotals);
       let cardHtml;
       if (isPhase2 && Array.isArray(flags.damageComponentTotals)) {
