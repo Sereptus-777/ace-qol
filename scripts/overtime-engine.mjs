@@ -202,30 +202,20 @@ export class OverTimeEngine {
     for (const effect of effects) {
       if (effect.disabled || effect.isSuppressed) continue;
 
-      // Check ace-qol OverTime flag
-      const aceOT = effect.getFlag?.(MODULE_ID, "OverTime");
+      // Read OverTime flags DIRECTLY off effect.flags — NOT via getFlag().
+      // In Foundry V13, getFlag("midi-qol", …) THROWS when midi-qol isn't an
+      // active module ("Flag scope is not valid or not currently active"). That
+      // throw was aborting this whole turn-processing pass the moment a creature
+      // carried any non-ACE effect — silently killing regeneration, auras, and
+      // every other start/end-of-turn effect. Direct flag reads never throw.
+      const aceOT = effect.flags?.[MODULE_ID]?.OverTime;
       if (aceOT) {
         overTimeEffects.push({ effect, data: this._normalizeOverTimeData(aceOT) });
         continue;
       }
-
-      // Check midi-qol OverTime flag (compat)
-      const midiOT = effect.getFlag?.("midi-qol", "OverTime");
+      const midiOT = effect.flags?.["midi-qol"]?.OverTime;
       if (midiOT) {
         overTimeEffects.push({ effect, data: this._normalizeOverTimeData(midiOT) });
-        continue;
-      }
-
-      // Check for OverTime data encoded in the effect's flags directly
-      // Some modules store it as a flat object on flags.ace-qol or flags.midi-qol
-      const flatAce = effect.flags?.[MODULE_ID]?.OverTime;
-      if (flatAce) {
-        overTimeEffects.push({ effect, data: this._normalizeOverTimeData(flatAce) });
-        continue;
-      }
-      const flatMidi = effect.flags?.["midi-qol"]?.OverTime;
-      if (flatMidi) {
-        overTimeEffects.push({ effect, data: this._normalizeOverTimeData(flatMidi) });
       }
     }
 
