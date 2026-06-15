@@ -51,9 +51,10 @@ const HOOK_NAMES = [
   //   ace-engine deed logging. Defined here for documentation; the hook is
   //   emitted from damage-applicator.mjs.
   //
-  // ace-qol.saveComplete     ({ actor, ability, total, dc, saved, sourceItem })
+  // ace-qol.saveComplete     ({ actor, tokenDocId, saveAbility, passed })
   //   Fired once per actor after a save resolves (pass or fail, before LR).
-  //   ace-engine uses this to log saves as deeds.
+  //   actor = Actor5e; tokenDocId = token document id; saveAbility = "wis" etc;
+  //   passed = boolean. ace-engine uses this; banishment.mjs gates short-banish on it.
   //
   // ace-qol.killLogged       ({ victim, attacker, attackItem, xp, isMassive })
   //   Fired when a creature is killed and logged by the death pipeline.
