@@ -2679,7 +2679,6 @@ export class SaveEngine {
       // Trigger Dice So Nice 3D animation — public so all players see it
       safeShowForRoll(roll, "GM-prompt save roll");
     }
-    }
 
     // Extract d20 face for display on the results card
     const _pcD20 = rollResult?.dice?.[0];
