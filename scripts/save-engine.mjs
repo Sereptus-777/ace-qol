@@ -3476,6 +3476,33 @@ export class SaveEngine {
             const tagStr = tagBits.length ? ` [${tagBits.join(", ")}]` : "";
             console.log(`${MODULE_ID} | ${item.name}: applied "${cond.condition}"${detail} to ${actor.name} (failed save)${tagStr}`);
             appliedForThisTarget.push(cond.condition);
+
+            // Stamp the break-free tag DIRECTLY on the applied effect from here,
+            // so it never depends on condition-library's internal stamp path
+            // (place-new vs re-enable, concentration vs not). The BreakFreeEngine
+            // reads this flag at start of turn to prompt the escape attempt.
+            if (breakFreeMeta) {
+              try {
+                const ck = String(cond.condition).toLowerCase();
+                const eff = actor.effects?.contents?.find(e =>
+                  !e.disabled && (e.statuses?.has?.(ck) || e.name?.toLowerCase() === ck));
+                if (eff && !eff.flags?.[MODULE_ID]?.breakFree?.ability) {
+                  await eff.update({
+                    [`flags.${MODULE_ID}.breakFree`]: {
+                      ability:      breakFreeMeta.ability,
+                      dc:           breakFreeMeta.dc,
+                      label:        breakFreeMeta.label ?? item.name,
+                      appliedRound: game.combat?.round ?? null,
+                      appliedTurn:  game.combat?.turn ?? null,
+                      stampedAt:    Date.now(),
+                    },
+                  });
+                  console.log(`${MODULE_ID} | Stamped break-free (${breakFreeMeta.ability} DC ${breakFreeMeta.dc}) on ${actor.name}'s ${cond.condition} [save-engine direct].`);
+                }
+              } catch (err) {
+                console.warn(`${MODULE_ID} | Direct break-free stamp failed on ${actor.name}:`, err);
+              }
+            }
           } else {
             console.warn(`${MODULE_ID} | ${item.name}: applyByName returned not-ok for "${cond.condition}" on ${actor.name}:`, out);
           }
