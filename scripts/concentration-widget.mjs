@@ -406,6 +406,18 @@ export class ConcentrationWidget {
     try { this._playPersistentSpellAnimation(item, templateDoc); }
     catch (err) { console.warn(`${TAG} | persistent-spell animation failed:`, err); }
 
+    // Difficult terrain — Web, Spike Growth, etc. fill their area with
+    // difficult terrain (2x movement cost). We model that with a Foundry V13
+    // movement-cost Region matching the template footprint, so the token
+    // ruler/drag-measurement charges double inside the area. The Region is
+    // removed when the template is deleted (see the deleteMeasuredTemplate
+    // hook in ace-qol.mjs — universal end path, fires even when concentration
+    // breaks). Fire-and-forget; never block the cast flow.
+    if (tracker.timing?.difficultTerrain) {
+      this._applyDifficultTerrain(tracker)
+        .catch(err => console.warn(`${TAG} | difficult-terrain region failed for ${item?.name}:`, err));
+    }
+
     // Area-denial family: tokens caught inside the AOE at cast time get an
     // immediate entry save (or auto-damage for areaDenialAuto). Treats them
     // as having "entered" by the spell — same RAW consequence either way.
@@ -413,18 +425,178 @@ export class ConcentrationWidget {
     if ((castFamily === "areaDenial" || castFamily === "areaDenialAuto")
         && tracker.tokens?.length && game.user.isGM) {
       if (!tracker.tokensInside) tracker.tokensInside = new Set();
-      for (const tok of tracker.tokens) {
-        if (!tok?.document?.id) continue;
-        tracker.tokensInside.add(tok.document.id);
-        // Note: _onTokenEnteredTemplate itself manages entrySavesThisTurn
-        // for areaDenialAuto; for areaDenial save spells we mark it here.
-        if (castFamily === "areaDenial") {
-          tracker.entrySavesThisTurn.add(tok.document.id);
+
+      if (castFamily === "areaDenial") {
+        // ONE consolidated save card for everyone caught at cast — NPC rows
+        // auto-roll, PC rows show the waiting-timer, all in a single box
+        // (instead of a separate card per creature). Each token still gets a
+        // pending-save registered so its area-denial effect (Restrained, etc.)
+        // applies via the saveComplete hook on a fail. Runs in an async IIFE
+        // because this handler is synchronous (fire-and-forget, like the
+        // movement-entry path).
+        (async () => {
+          const eligible = [];
+          for (const tok of tracker.tokens) {
+            if (!tok?.document?.id) continue;
+            tracker.tokensInside.add(tok.document.id);
+            // RAW auto-success on condition immunity (e.g. Stinking Cloud vs a
+            // poison-immune creature): skip the save, post the note, no pending.
+            if (this._shouldAutoSucceedSave(tok.actor, tracker.timing)) {
+              await this._postAutoSuccessCard(tracker, tok, "entry");
+              continue;
+            }
+            tracker.entrySavesThisTurn.add(tok.document.id);
+            this._registerPendingSave(tracker, tok.document, "entry");
+            eligible.push(tok);
+          }
+          const post = this._saveEngine?.postSaveCard?.bind(this._saveEngine);
+          if (eligible.length && typeof post === "function") {
+            await post(tracker.item, tracker.actor, eligible, {
+              saveAbility:  tracker.saveAbility,
+              saveDC:       tracker.saveDC,
+              halfOnSave:   tracker.halfOnSave,
+              damageTypes:  tracker.damageTypes,
+              isSpell:      true,
+              isPersistent: true,
+              templateId:   tracker.templateId,
+              skipDelay:    true,
+            });
+          } else if (eligible.length) {
+            // No batched API available — fall back to per-token entry triggers.
+            for (const tok of eligible) {
+              this._onTokenEnteredTemplate(tracker, tok, { phase: "entry" })
+                .catch(err => console.warn(`${TAG} | entry trigger failed for ${tok.name}:`, err));
+            }
+          }
+        })().catch(err => console.warn(`${TAG} | area-denial consolidated cast-save failed:`, err));
+      } else {
+        // areaDenialAuto (Cloud of Daggers): no save — per-token auto damage,
+        // one compact card each (there's nothing to consolidate without a save).
+        for (const tok of tracker.tokens) {
+          if (!tok?.document?.id) continue;
+          tracker.tokensInside.add(tok.document.id);
+          this._onTokenEnteredTemplate(tracker, tok, { phase: "entry" })
+            .catch(err => console.warn(`${TAG} | initial entry trigger failed for ${tok.name}:`, err));
         }
-        this._onTokenEnteredTemplate(tracker, tok, { phase: "entry" })
-          .catch(err => console.warn(`${TAG} | initial entry trigger failed for ${tok.name}:`, err));
       }
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  Difficult Terrain — movement-cost Region matching the template
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * Create a Foundry V13 movement-cost Region matching the spell template so
+   * the token ruler / drag-measurement charges the spell's multiplier (2x for
+   * standard difficult terrain) to move through the area. Tagged with the
+   * template id so the deleteMeasuredTemplate hook removes it on ANY end path
+   * (manual delete, duration end, or concentration break). GM-only and gated
+   * by the `spellDifficultTerrain` setting. Best-effort — never blocks a cast.
+   */
+  async _applyDifficultTerrain(tracker) {
+    try {
+      if (QolSettings.get?.("spellDifficultTerrain") !== true) return;
+    } catch (_) { return; }                          // setting unregistered → treat as off
+    if (game.users?.activeGM !== game.user) return;  // scene write must run once
+    const templateDoc = tracker?.templateDoc;
+    const scene = templateDoc?.parent ?? canvas?.scene;
+    if (!templateDoc || !scene) return;
+
+    // Don't double-create — canvasReady re-attachment can re-fire the create.
+    const existing = scene.regions?.find?.(r => r.getFlag?.(MODULE_ID, "difficultTerrainFor") === templateDoc.id);
+    if (existing) { tracker.difficultTerrainRegionId = existing.id; return; }
+
+    // The placeable's `.shape` may not be computed the instant this fires for a
+    // freshly-placed template. Retry briefly so we don't miss it. Bounded —
+    // gives up quietly after ~0.6s.
+    let shape = this._buildRegionShapeFromTemplate(templateDoc);
+    for (let i = 0; i < 4 && !shape; i++) {
+      await new Promise(r => setTimeout(r, 150));
+      shape = this._buildRegionShapeFromTemplate(templateDoc);
+    }
+    if (!shape) {
+      console.warn(`${TAG} | difficult-terrain: could not derive a Region shape for ${tracker.item?.name} (template type ${templateDoc.t})`);
+      return;
+    }
+    // Template may have been deleted while we waited, or another client raced
+    // the create — re-check before writing.
+    if (!scene.templates?.get?.(templateDoc.id)) return;
+    if (scene.regions?.find?.(r => r.getFlag?.(MODULE_ID, "difficultTerrainFor") === templateDoc.id)) return;
+
+    const raw = tracker.timing.difficultTerrain;
+    const mult = (raw === true) ? 2 : (Number(raw) > 0 ? Number(raw) : 2);
+    const difficulties = this._buildTerrainDifficulties(mult);
+
+    const regionData = {
+      name: `ACE — ${tracker.item?.name ?? "Spell"} (Difficult Terrain)`,
+      color: "#9aa0b5",
+      shapes: [shape],
+      behaviors: [{ type: "modifyMovementCost", name: "Difficult Terrain", system: { difficulties } }],
+      flags: { [MODULE_ID]: { difficultTerrainFor: templateDoc.id } },
+    };
+    try {
+      const created = await scene.createEmbeddedDocuments("Region", [regionData]);
+      tracker.difficultTerrainRegionId = created?.[0]?.id ?? null;
+      console.log(`${TAG} | difficult terrain (${mult}x) applied for ${tracker.item?.name} via Region ${tracker.difficultTerrainRegionId}`);
+    } catch (err) {
+      console.warn(`${TAG} | difficult-terrain Region create failed:`, err);
+    }
+  }
+
+  /**
+   * Build a Region shape matching a MeasuredTemplate's footprint. Circles map
+   * to a circle Region; rect/ray/cone map to a polygon traced from the drawn
+   * template shape (local points → absolute scene coordinates).
+   */
+  _buildRegionShapeFromTemplate(templateDoc) {
+    const obj = templateDoc?.object;
+    const x = templateDoc?.x ?? 0;
+    const y = templateDoc?.y ?? 0;
+    const s = obj?.shape;
+    // Foundry computes the template shape per type:
+    //   cone / ray / grid-snapped circle → PIXI.Polygon (has .points)
+    //   5e cube ("rect")                 → PIXI.Rectangle (.x/.y/.width/.height)
+    //   euclidean circle                 → PIXI.Circle (.radius)
+    // All are in LOCAL coords (origin at the template's x,y), so we add x,y.
+
+    // 1) Polygon-based (cone, ray, grid circle): trace the points.
+    const pts = s?.points;
+    if (Array.isArray(pts) && pts.length >= 6) {
+      const abs = pts.map((p, i) => (i % 2 === 0 ? p + x : p + y));
+      return { type: "polygon", points: abs };
+    }
+    // 2) Rectangle (5e cubes — PIXI.Rectangle, no .points).
+    if (s && Number.isFinite(s.width) && Number.isFinite(s.height) && s.width > 0 && s.height > 0) {
+      return { type: "rectangle", x: x + (s.x ?? 0), y: y + (s.y ?? 0), width: s.width, height: s.height, rotation: 0 };
+    }
+    // 3) Circle (euclidean) — fall back to grid math if .radius is missing.
+    let radius = s?.radius;
+    if (!(radius > 0)) {
+      const g = canvas?.grid;
+      if (g?.size && g?.distance) radius = (templateDoc.distance ?? 0) * g.size / g.distance;
+    }
+    if (radius > 0) return { type: "circle", x, y, radius };
+    return null;
+  }
+
+  /**
+   * Map a difficulty multiplier onto every non-derived movement action
+   * (walk/climb/swim/crawl/…). Actions that derive their terrain difficulty
+   * (e.g. fly) are left out so they keep their own derivation. Falls back to
+   * walk-only if the movement-action config can't be read.
+   */
+  _buildTerrainDifficulties(mult) {
+    const out = {};
+    try {
+      const actions = CONFIG?.Token?.movement?.actions ?? {};
+      for (const [key, cfg] of Object.entries(actions)) {
+        if (cfg?.deriveTerrainDifficulty) continue; // derived (e.g. fly) — leave to derive
+        out[key] = mult;
+      }
+    } catch (_) { /* fall through to fallback */ }
+    if (!Object.keys(out).length) out.walk = mult;
+    return out;
   }
 
   /**
@@ -463,9 +635,11 @@ export class ConcentrationWidget {
     // 100x100 yellow plus scaleToObject handles arbitrary template sizes.
     "wall of fire":      { db: "jb2a.wall_of_fire.100x100.yellow",       opacity: 1.0,  belowTokens: false },
     "grease":            { db: "jb2a.grease.dark_brown.loop",            opacity: 0.95, belowTokens: true  },
-    // Web — no dedicated JB2A web asset in this user's library; the
-    // eldritch_web variant is close enough thematically (sticky webbing).
-    "web":               { db: "jb2a.shield_themed.below.eldritch_web.01.dark_green", opacity: 0.95, belowTokens: true  },
+    // Web — JB2A ships a dedicated square spider-web asset (2nd-level Web,
+    // 400x400). With grid-aligned square cube templates (see enforceSquareCubes)
+    // the persistent template is a true 20-ft square, so scaleToObject lays
+    // the web down as a clean square footprint instead of a stretched rectangle.
+    "web":               { db: "jb2a.web.01",                            opacity: 0.85, belowTokens: true  },
   };
 
   _playPersistentSpellAnimation(item, templateDoc) {
@@ -608,12 +782,90 @@ export class ConcentrationWidget {
     this._activeSpells.delete(templateId);
     this._renderWidgets();
 
+    // RAW: the restraint from Web / Watery Sphere lasts "while the creature
+    // remains in the webs or until concentration ends." When the area is gone
+    // (template deleted = concentration ended / dismissed), clear the
+    // area-denial Restrained this spell applied from every creature that still
+    // has it. Without this the "Restrained by <spell>" effect would linger
+    // forever after the web disappears.
+    if (game.users?.activeGM === game.user && tracker.timing?.failEffect === "restrained") {
+      await this._clearAreaDenialRestraint(tracker);
+    }
+
     // v0.6.3: Manually deleting a persistent spell's template ends the
     // concentration on that spell (no template = no spell area = no
     // ongoing effect). Drop the actor's concentration effect tied to
     // this item.
     if (game.users?.activeGM === game.user && tracker.actor && tracker.item) {
       await this._dropConcentrationForItem(tracker.actor, tracker.item);
+    }
+  }
+
+  /**
+   * Remove the area-denial Restrained this spell applied (e.g. "Restrained by
+   * Web") from every creature that still has it. Called when the spell's area
+   * ends. Matches by our `ace-qol.areaDenial` flag + the spell name, or by the
+   * break-free item link, so unrelated Restrained effects are left untouched.
+   */
+  async _clearAreaDenialRestraint(tracker) {
+    const spellName = tracker.item?.name ?? "Spell";
+    const effName = `Restrained by ${spellName}`;
+    const itemUuid = tracker.item?.uuid ?? null;
+    try {
+      for (const tok of canvas.tokens?.placeables ?? []) {
+        const actor = tok.actor;
+        if (!actor) continue;
+        const toDelete = (actor.effects?.contents ?? []).filter(e => {
+          if (!e.statuses?.has?.("restrained")) return false;   // only restraints
+          const f = e.flags?.["ace-qol"] ?? {};
+          // Our area-denial "Restrained by <spell>" effect.
+          if (f.areaDenial && e.name === effName) return true;
+          // Our break-free restraint, linked to this exact item.
+          if (itemUuid && f.breakFree?.itemUuid === itemUuid) return true;
+          // The legacy/duplicate plain "Restrained" the save engine used to
+          // apply for this same spell (pre-dedup leftovers) — identified by its
+          // concentration origin matching this caster's spell (by item or name).
+          const co = f.concentrationOrigin;
+          if (co && (co.spellItemId === tracker.item?.id || co.spellName === spellName)) return true;
+          return false;
+        }).map(e => e.id);
+        if (toDelete.length) {
+          await actor.deleteEmbeddedDocuments("ActiveEffect", toDelete);
+          console.log(`${TAG} | cleared ${toDelete.length} area-denial restraint(s) from ${actor.name} (${spellName} ended)`);
+        }
+      }
+    } catch (err) {
+      console.warn(`${TAG} | clearing area-denial restraint failed:`, err);
+    }
+  }
+
+  /**
+   * Remove this spell's area-denial restraint from ONE actor — used when a
+   * single creature leaves the area (RAW: leaving the webs ends the restraint).
+   * Same match logic as the full sweep, scoped to one actor. GM-only write.
+   */
+  async _removeAreaDenialRestraintFromActor(actor, tracker) {
+    if (!actor) return;
+    if (game.users?.activeGM !== game.user) return;
+    const spellName = tracker.item?.name ?? "Spell";
+    const effName = `Restrained by ${spellName}`;
+    const itemUuid = tracker.item?.uuid ?? null;
+    try {
+      const toDelete = (actor.effects?.contents ?? []).filter(e => {
+        if (!e.statuses?.has?.("restrained")) return false;
+        const f = e.flags?.["ace-qol"] ?? {};
+        if (f.areaDenial && e.name === effName) return true;
+        if (itemUuid && f.breakFree?.itemUuid === itemUuid) return true;
+        const co = f.concentrationOrigin;
+        if (co && (co.spellItemId === tracker.item?.id || co.spellName === spellName)) return true;
+        return false;
+      }).map(e => e.id);
+      if (toDelete.length) {
+        await actor.deleteEmbeddedDocuments("ActiveEffect", toDelete);
+        console.log(`${TAG} | ${actor.name} left ${spellName} — removed ${toDelete.length} restraint(s)`);
+      }
+    } catch (err) {
+      console.warn(`${TAG} | removing area-denial restraint on exit failed:`, err);
     }
   }
 
@@ -948,15 +1200,18 @@ export class ConcentrationWidget {
           }
         } else if (!isInside && wasInside) {
           tracker.tokensInside.delete(tokenDoc.id);
-          // Area-denial exit save with advantage — only fires if:
-          //   1. the creature failed a save this round (otherwise no
-          //      lingering effect to shake off, exit is free), AND
-          //   2. the spell has a failEffect to potentially re-apply
-          //      (damage-only spells like Cloudkill have nothing to
-          //      "linger" — they took damage on the way through).
-          if (isAreaDenial
+          if (isAreaDenial && tracker.timing?.failEffect === "restrained") {
+            // RAW: leaving the webs/sphere ENDS the restraint immediately — no
+            // save. (The exit-save-with-advantage below is for lingering gas
+            // like Stinking Cloud, NOT physical restraints.) So a creature that
+            // moves out of Web is simply free again — strip the restraint.
+            tracker.failedSavesThisRound.delete(tokenDoc.id);
+            await this._removeAreaDenialRestraintFromActor(token.actor, tracker);
+          } else if (isAreaDenial
               && tracker.timing?.failEffect
               && tracker.failedSavesThisRound.has(tokenDoc.id)) {
+            // Exit-save with advantage — only for lingering-effect spells
+            // (Stinking Cloud): a failer who walks out may shake off the gas.
             await this._triggerExitSave(tracker, tokenDoc, token);
           } else if (isAreaDenial) {
             // Clean exit for damage-only spells or no-fail-yet — just
@@ -1948,6 +2203,17 @@ export class ConcentrationWidget {
       if (tracker.actor?.id === actor.id) {
         console.log(`${TAG} | ${actor.name} lost concentration on ${tracker.item?.name} — removing widget`);
         ui.notifications.info(`${tracker.item?.name}: Concentration broken by ${actor.name}`);
+
+        // RAW: web/sphere restraint ends when concentration ends. Clear it HERE,
+        // BEFORE dropping the tracker — because deleting the tracker makes the
+        // later deleteMeasuredTemplate → _onTemplateDeleted bail early (tracker
+        // gone), so its own restraint cleanup would be skipped on this path.
+        // This is why "Restrained by Web" kept lingering after dropping conc.
+        if (game.users?.activeGM === game.user && tracker.timing?.failEffect === "restrained") {
+          this._clearAreaDenialRestraint(tracker)
+            .catch(err => console.warn(`${TAG} | clear restraint on concentration-loss failed:`, err));
+        }
+
         this._activeSpells.delete(templateId);
 
         // v0.4.22.10: Only the GM client may delete the canvas template.

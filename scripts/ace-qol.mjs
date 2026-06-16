@@ -31,6 +31,7 @@ import { SpellTargetPicker }    from "./spell-target-picker.mjs";
 import { DescriptionParser }    from "./description-parser.mjs";
 import { RepeatingSaveEngine }  from "./repeating-save-engine.mjs";
 import { BreakFreeEngine }      from "./break-free-engine.mjs";
+import { RestrainedMovement }   from "./restrained-movement.mjs";
 import { TransformationEngine } from "./transformation-engine.mjs";
 import { ConcentrationDamage }  from "./concentration-damage.mjs";
 import { BonusSpellRule }       from "./bonus-spell-rule.mjs";
@@ -353,24 +354,11 @@ Hooks.once("init", () => {
     console.warn(`${MODULE_ID} | Tooltip delay init failed (non-fatal):`, err);
   }
 
-  // ── 2024 Exhaustion sheet-pip cap bump ──
-  // dnd5e 5.x ships CONFIG.DND5E.conditionTypes.exhaustion.levels = 6 even when
-  // the system is in modern (2024) mode. 2024 RAW has 10 exhaustion levels.
-  // Without bumping this, the actor sheet exhaustion track clamps at 6 pips
-  // and the actor cannot reach the level-10 death threshold visually. Bump it
-  // here when the system itself is on "modern" rules so the UI matches RAW.
-  try {
-    const rv = game.settings.get?.("dnd5e", "rulesVersion");
-    if (rv === "modern" && CONFIG?.DND5E?.conditionTypes?.exhaustion) {
-      const currentLevels = CONFIG.DND5E.conditionTypes.exhaustion.levels;
-      if (currentLevels !== 10) {
-        CONFIG.DND5E.conditionTypes.exhaustion.levels = 10;
-        console.log(`${MODULE_ID} | Exhaustion levels bumped 6 → 10 for 2024 RAW (was ${currentLevels}).`);
-      }
-    }
-  } catch (err) {
-    console.warn(`${MODULE_ID} | Exhaustion config bump failed (non-fatal):`, err);
-  }
+  // ── Exhaustion levels: do NOT mutate ──
+  // dnd5e ships CONFIG.DND5E.conditionTypes.exhaustion.levels = 6, which is the
+  // RAW-correct cap for BOTH 2014 and 2024 (a creature dies at exhaustion 6).
+  // A prior build bumped this to 10 on the false belief that 2024 had 10 levels
+  // — it does not. Leave the system value alone. (Verified: 2024 PHB, die at 6.)
 
   console.log(`${MODULE_ID} | Initialized`);
 });
@@ -393,6 +381,47 @@ Hooks.once("init", () => {
 // Timing: 1500ms after ready. Earlier values (600ms) sometimes fired
 // BEFORE BG3 HUD had finished its initial render, leaving the action
 // buttons still unbound. 1500ms is conservative but still imperceptible
+// ── Notification noise filter ───────────────────────────────────────────────
+// Two long-standing annoyances, killed at the chokepoint every notification
+// routes through (`ui.notifications.notify`):
+//   1. PLAYERS never see warning/error banners. A yellow/red toast means
+//      nothing to a player and makes them think something broke ("hey, what's
+//      that?"). They can just ask the GM, who checks the console. Player-side
+//      warn/error are routed to the console instead — nothing is lost.
+//   2. Benign stale-document churn — "MeasuredTemplate '…' does not exist", a
+//      token/aura/effect touched a hair after it was deleted — fires harmless
+//      red toasts on EVERY client. The operation was already moot; nothing is
+//      wrong. Swallowed for everyone (GM included), routed to the console.
+// Guarded + once so we never double-wrap or break the UI (the signature is
+// preserved: message, type, options).
+Hooks.once("ready", () => {
+  try {
+    const notif = ui?.notifications;
+    if (!notif || notif.__aceQolNoiseFiltered || typeof notif.notify !== "function") return;
+    notif.__aceQolNoiseFiltered = true;
+    const _origNotify = notif.notify.bind(notif);
+    // Embedded canvas/combat documents that race on delete during automation.
+    const BENIGN = /\b(?:MeasuredTemplate|Token|ActiveEffect|AmbientLight|AmbientSound|Tile|Drawing|Wall|Note|Region|Combatant)\b.{0,48}\bdoes not exist\b/i;
+    notif.notify = function(message, type = "info", options = {}) {
+      try {
+        const msgStr = (typeof message === "string") ? message : String(message ?? "");
+        if (BENIGN.test(msgStr)) {
+          console.debug(`${MODULE_ID} | suppressed benign notification: ${msgStr}`);
+          return undefined;
+        }
+        if (!game.user?.isGM && (type === "warning" || type === "error")) {
+          console.debug(`${MODULE_ID} | suppressed player ${type}: ${msgStr}`);
+          return undefined;
+        }
+      } catch (_) { /* never let the filter break notifications */ }
+      return _origNotify(message, type, options);
+    };
+    console.log(`${MODULE_ID} | notification filter active — players see no warn/error; benign stale-doc toasts suppressed for all.`);
+  } catch (err) {
+    console.warn(`${MODULE_ID} | notification filter install failed (non-fatal):`, err);
+  }
+});
+
 // for the player.
 Hooks.once("ready", () => {
   setTimeout(() => {
@@ -418,6 +447,39 @@ Hooks.once("ready", () => {
       console.warn(`${MODULE_ID} | BG3 HUD nudge failed (non-fatal):`, err);
     }
   }, 1500);
+});
+
+// ─── Square cube templates — restore dnd5e's grid-aligned-square default ──────
+// D&D 5e cubes (Web, Thunderwave, Cloudkill's area, Sleet Storm, etc.) should
+// occupy a true N-ft square. dnd5e only does that when its own
+// "gridAlignedSquareTemplates" world setting is ON (which IS the dnd5e default).
+// If a world has it OFF — common after old-world migrations or imports — every
+// cube becomes a draggable RAY (a rectangle whose length follows the mouse), so
+// a "20-ft cube" can land as a ~40-ft strip. That breaks both the look AND ACE's
+// area detection (who's caught in the web), which reads the real drawn shape.
+// When our `enforceSquareCubes` setting is ON (default), restore the correct
+// behavior at load. Only the active GM writes (world-setting write must run
+// once, never double with two GMs connected — same rule as the multi-GM audit).
+Hooks.once("ready", () => {
+  try {
+    if (game.system?.id !== "dnd5e") return;
+    if (!game.user.isGM) return;                     // world-setting write is GM-only
+    if (game.users?.activeGM !== game.user) return;  // exactly one writer
+    if (game.settings.get(MODULE_ID, "enforceSquareCubes") !== true) return;
+    // Bail quietly if dnd5e hasn't registered the setting on this version.
+    let current;
+    try { current = game.settings.get("dnd5e", "gridAlignedSquareTemplates"); }
+    catch (_) { return; }
+    if (current === true) return;                     // already correct — nothing to do
+    game.settings.set("dnd5e", "gridAlignedSquareTemplates", true)
+      .then(() => {
+        console.log(`${MODULE_ID} | Restored dnd5e grid-aligned square cube templates (Web/Thunderwave/etc. now place as true squares).`);
+        ui.notifications?.info?.("ACE QOL: restored square cube templates — 5e cube spells (Web, Thunderwave, …) now place as true grid-aligned squares. Disable via ACE QOL → Templates → Square Cube Templates.");
+      })
+      .catch(err => console.warn(`${MODULE_ID} | Could not set dnd5e gridAlignedSquareTemplates:`, err));
+  } catch (err) {
+    console.warn(`${MODULE_ID} | enforceSquareCubes check failed (non-fatal):`, err);
+  }
 });
 
 // ─── Module-conflict detection on world ready (audit P2-4) ───────────────────
@@ -916,6 +978,60 @@ Hooks.once("ready", () => {
     console.warn(`${MODULE_ID} | hideSpellTemplateVisuals: prototype patch failed`, err);
   }
 
+  // ── Square-cube grid snap — preview side ──
+  // Core's template snap allows CENTER | VERTEX | CORNER | SIDE_MIDPOINT, so a
+  // 5e cube's origin can land on a cell CENTER or side-midpoint — the square
+  // then straddles the grid lines instead of sitting flush ("not snapping").
+  // For dnd5e spell cubes (rect templates) with square-cube enforcement on, we
+  // snap the origin to grid VERTICES only so the cube lands on whole cells.
+  // This patch handles the drag PREVIEW; the preCreateMeasuredTemplate hook
+  // below handles final placement (dnd5e re-snaps permissively on confirm).
+  // Scoped to spell/activity cubes (flags.dnd5e.origin) — manual rect-tool
+  // draws and non-square grids are left to core.
+  try {
+    const MTClass = CONFIG?.MeasuredTemplate?.objectClass;
+    if (MTClass && !MTClass.prototype.__aceQolCubeSnapPatched) {
+      const _origGetSnapped = MTClass.prototype.getSnappedPosition;
+      MTClass.prototype.getSnappedPosition = function(position) {
+        try {
+          if (this?.document?.t === "rect"
+              && this.document.flags?.dnd5e?.origin
+              && canvas?.grid && !canvas.grid.isHexagonal
+              && game.settings.get(MODULE_ID, "enforceSquareCubes")) {
+            const M = CONST.GRID_SNAPPING_MODES;
+            const p = position ?? this.document;
+            return canvas.grid.getSnappedPoint({ x: p.x, y: p.y }, { mode: M.VERTEX | M.CORNER, resolution: 1 });
+          }
+        } catch (_) { /* fall through to core */ }
+        return _origGetSnapped.call(this, position);
+      };
+      MTClass.prototype.__aceQolCubeSnapPatched = true;
+      console.log(`${MODULE_ID} | square-cube grid-snap patch applied to MeasuredTemplate.getSnappedPosition`);
+    }
+  } catch (err) {
+    console.warn(`${MODULE_ID} | square-cube snap patch failed`, err);
+  }
+
+  // ── Square-cube grid snap — final placement side ──
+  // dnd5e's _onConfirmPlacement re-snaps through the layer's permissive
+  // getSnappedPoint, which can undo the vertex snap above. Re-snap the placed
+  // spell-cube origin to a grid vertex on create so it always lands flush.
+  Hooks.on("preCreateMeasuredTemplate", (tdoc, data) => {
+    try {
+      if (data?.t !== "rect") return;
+      if (!data?.flags?.dnd5e?.origin) return;          // spell/activity cubes only
+      if (!canvas?.grid || canvas.grid.isHexagonal) return;
+      if (!game.settings.get(MODULE_ID, "enforceSquareCubes")) return;
+      const M = CONST.GRID_SNAPPING_MODES;
+      const snapped = canvas.grid.getSnappedPoint({ x: data.x, y: data.y }, { mode: M.VERTEX | M.CORNER, resolution: 1 });
+      if (snapped && (snapped.x !== data.x || snapped.y !== data.y)) {
+        tdoc.updateSource({ x: snapped.x, y: snapped.y });
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | cube grid-snap on create failed:`, err);
+    }
+  });
+
   // On reload, the prototype patch installs HERE in the ready hook, but
   // templates already rendered during canvasReady (which fires BEFORE
   // ready). So existing templates were drawn with alpha=1 — the patch
@@ -1320,8 +1436,52 @@ Hooks.once("ready", () => {
         }
       }, 100);
     });
+
+    // hideSpellTemplateVisuals — propagate the hide to PLAYER clients.
+    // The activeGM stamps `visualHidden` and re-runs its own _refreshState, but
+    // players only receive the flag as a document update — nothing re-renders
+    // their copy of the placeable, so the red AOE highlight kept showing on
+    // their screen even though it was hidden for the GM. This fires on EVERY
+    // client when the flag changes and forces the placeable to re-apply its
+    // render state, so the patched _refreshState zeroes the alpha for players too.
+    Hooks.on("updateMeasuredTemplate", (tdoc, changes) => {
+      try {
+        if (foundry.utils.getProperty(changes ?? {}, `flags.${MODULE_ID}.visualHidden`) === undefined) return;
+        const placeable = tdoc?.object;
+        if (placeable?.renderFlags?.set) placeable.renderFlags.set({ refreshState: true });
+      } catch (err) {
+        console.warn(`${MODULE_ID} | visualHidden client-refresh failed:`, err);
+      }
+    });
+
     Hooks.on("deleteMeasuredTemplate", (tdoc) => {
       try { _templateCreatedAt.delete(tdoc.id); } catch (_) {}
+
+      // Difficult terrain — remove the movement-cost Region we created for this
+      // template (Web, Spike Growth, etc.). Keyed by our own flag so it fires
+      // on EVERY end path: manual delete, duration end, or concentration break
+      // (which deletes the template after dropping the tracker, so the
+      // concentration-widget's own template-deleted handler has already
+      // returned early). activeGM-only — deleting a scene embedded doc must run
+      // exactly once. Independent of Sequencer being installed.
+      try {
+        if (game.users?.activeGM === game.user) {
+          const scene = tdoc?.parent ?? canvas?.scene;
+          const regions = scene?.regions;
+          if (regions) {
+            const regionIds = regions
+              .filter(r => r.getFlag?.(MODULE_ID, "difficultTerrainFor") === tdoc.id)
+              .map(r => r.id);
+            if (regionIds.length) {
+              scene.deleteEmbeddedDocuments("Region", regionIds)
+                .then(() => console.log(`${MODULE_ID} | removed ${regionIds.length} difficult-terrain Region(s) for deleted template ${tdoc.id}`))
+                .catch(err => console.warn(`${MODULE_ID} | difficult-terrain Region cleanup failed:`, err));
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | difficult-terrain Region cleanup threw:`, err);
+      }
 
       // Clean up orphaned Sequencer/Auto-Animations effects that were
       // attached to this template. AA's auto-cleanup on attached-entity
@@ -1876,9 +2036,20 @@ Hooks.once("ready", () => {
             let damageDealt = 0;
             let wasConcentrating = false;
             try {
-              // Did this update touch HP downward? Only inject when HP is changing.
+              // v0.7.68: ACE damage paths (DamageApplicator.applyHPDamage) pre-compute
+              // temp-HP absorption and pass the TOTAL pre-temp damage via aceQol.fullDamage.
+              // Use that for the concentration DC — RAW: temp HP does NOT lower the DC, and
+              // the save fires even if temp HP absorbed the whole hit (so we must NOT rely
+              // on hp.value actually dropping in that case).
+              const aceFull = Number(foundry.utils.getProperty(options ?? {}, "aceQol.fullDamage")) || 0;
               const newHP = foundry.utils.getProperty(data ?? {}, "system.attributes.hp.value");
-              if (Number.isFinite(newHP)) {
+              if (aceFull > 0) {
+                damageDealt = aceFull;
+                wasConcentrating = this.effects?.some?.(e =>
+                  e.statuses?.has?.("concentration") || e.statuses?.has?.("concentrating"));
+                // concentrationCheck:false is already set by applyHPDamage.
+              } else if (Number.isFinite(newHP)) {
+                // Non-ACE paths (manual GM edit, vanilla update): infer from hp.value drop.
                 const curHP = this.system?.attributes?.hp?.value ?? 0;
                 if (newHP < curHP) {
                   damageDealt = curHP - newHP;
@@ -2076,6 +2247,15 @@ Hooks.once("ready", () => {
     BreakFreeEngine.init();
   } catch (err) {
     console.error(`${MODULE_ID} | Break-Free Engine init failed:`, err);
+  }
+
+  // Restrained Movement Lock — ALL clients (the block runs on the player who
+  // drags). Stops a player moving their own Restrained/Grappled token (speed 0);
+  // the GM is never blocked. Gates internally on the lockRestrainedMovement setting.
+  try {
+    RestrainedMovement.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Restrained Movement init failed:`, err);
   }
 
   // Transformation Engine — GM-only. Wraps dnd5e transformInto/revertOriginalForm

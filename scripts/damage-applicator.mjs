@@ -52,10 +52,18 @@ export class DamageApplicator {
       return { currentHP: actor?.system?.attributes?.hp?.value ?? 0, newHP: actor?.system?.attributes?.hp?.value ?? 0, excess: 0, applied: Promise.resolve() };
     }
 
-    const damage = Math.max(0, Number(damageAmount) || 0);
+    const damage    = Math.max(0, Number(damageAmount) || 0);
     const currentHP = Number(actor?.system?.attributes?.hp?.value ?? 0);
-    const newHP     = Math.max(0, currentHP - damage);
-    const excess    = Math.max(0, damage - currentHP);
+    const tempHP    = Math.max(0, Number(actor?.system?.attributes?.hp?.temp ?? 0));
+
+    // ── Temp HP absorbs first (RAW, 2014 + 2024) ──
+    // "If you have temporary hit points and take damage, the temporary hit points
+    //  are lost first, and any leftover damage carries over to your normal HP."
+    const tempUsed  = Math.min(tempHP, damage);
+    const newTemp   = tempHP - tempUsed;
+    const toRealHP  = damage - tempUsed;                  // damage remaining past temp HP
+    const newHP     = Math.max(0, currentHP - toRealHP);
+    const excess    = Math.max(0, toRealHP - currentHP);  // carryover past real HP (polymorph)
 
     // ── Polymorph excess-damage capture (RAW carryover) ──
     // If this hit drops a polymorphed creature to 0, stash the excess so
@@ -70,21 +78,30 @@ export class DamageApplicator {
     // challengeConcentration card is suppressed. We post our own (with proper
     // PC roll button + NPC auto-roll + fail-cascades-dependents) below.
     // The escape hatch lives at dnd5e.mjs ~line 26287 (HP-update handler).
+    // v0.7.68: also pass `aceQol.fullDamage` (TOTAL damage, pre-temp-HP) so the
+    // patched Actor.update wrapper computes the concentration DC from TOTAL damage
+    // — RAW: temp HP does NOT lower the concentration DC, and a save still fires
+    // even when temp HP absorbs the whole hit (Sage Advice). Write hp.temp only
+    // when temp was actually consumed (keeps the update diff clean otherwise).
+    const updateData = { "system.attributes.hp.value": newHP };
+    if (tempUsed > 0) updateData["system.attributes.hp.temp"] = newTemp;
     const updatePromise = actor.update(
-      { "system.attributes.hp.value": newHP },
-      { dnd5e: { concentrationCheck: false } }
+      updateData,
+      { dnd5e: { concentrationCheck: false }, aceQol: { fullDamage: damage } }
     );
 
     if (opts.label) {
-      console.log(`${MODULE_ID} | applyHPDamage [${opts.label}]: ${actor.name} ${currentHP} → ${newHP}${excess > 0 ? ` (excess ${excess} captured)` : ""}`);
+      const tempNote = tempUsed > 0 ? ` [temp ${tempHP}→${newTemp}, absorbed ${tempUsed}]` : "";
+      console.log(`${MODULE_ID} | applyHPDamage [${opts.label}]: ${actor.name} ${currentHP} → ${newHP}${tempNote}${excess > 0 ? ` (excess ${excess} captured)` : ""}`);
     }
 
     await updatePromise;
 
     // Concentration check fires GLOBALLY from the patched Actor.update wrapper
-    // (see ace-qol.mjs init). Don't call it explicitly here — would double-fire.
+    // (see ace-qol.mjs init), using aceQol.fullDamage for a RAW-correct DC.
+    // Don't call it explicitly here — would double-fire.
 
-    return { currentHP, newHP, excess, applied: true };
+    return { currentHP, newHP, excess, applied: true, tempUsed, newTemp };
   }
 
   /**

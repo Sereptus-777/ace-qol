@@ -31,6 +31,57 @@ import { awaitDsnRoll } from "./attack-prompt.mjs";
 import { PolymorphSpellPipeline } from "./polymorph-spell-pipeline.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
 
+// Real black d20 die art (per-face). These are the dice the GM already sees;
+// we use them everywhere a save result or prompt appears instead of the flat
+// Font Awesome icon. The art is black, and our cards are dark, so each die gets
+// a gold radial glow + drop-shadow beneath it for contrast.
+const ACE_DICE_DIR = "modules/ace-qol/Assets/Dice%20Dice/BD20";
+/**
+ * @param {number} face         The raw d20 result (1–20). Out-of-range → generic 20 face.
+ * @param {{size?:number}} opts  Pixel size of the die (default 30).
+ * @returns {string}            HTML for a glowing black d20 showing that face.
+ */
+function aceD20FaceImg(face, { size = 30, glow = true } = {}) {
+  const n = Number(face);
+  const valid = Number.isInteger(n) && n >= 1 && n <= 20;
+  const src = `${ACE_DICE_DIR}/BD20-${valid ? n : 20}_nobg.png`;
+  const icon = Math.round(size * 0.74);
+  const glowSpan = glow
+    ? `<span style="position:absolute;width:${size}px;height:${size}px;border-radius:50%;background:radial-gradient(circle,rgba(212,175,55,0.60) 0%,rgba(212,175,55,0.22) 48%,transparent 72%);"></span>`
+    : "";
+  const shadow = glow ? "filter:drop-shadow(0 0 3px rgba(212,175,55,0.75));" : "";
+  return `<span class="ace-qol-d20" style="position:relative;display:inline-flex;align-items:center;justify-content:center;width:${size}px;height:${size}px;flex-shrink:0;vertical-align:middle;">`
+    + glowSpan
+    + `<img src="${src}" alt="d20${valid ? " " + n : ""}" style="position:relative;width:${size}px;height:${size}px;object-fit:contain;${shadow}" `
+    + `onerror="this.style.display='none';this.nextElementSibling.style.display='inline-block';" />`
+    + `<i class="fas fa-dice-d20" style="display:none;position:relative;color:#d4af37;font-size:${icon}px;"></i>`
+    + `</span>`;
+}
+
+/**
+ * Inline d20 result breakdown for a live save-card row: glowing black die face
+ * + "raw +mod = total", readable (not a tiny bare total). `f` is a
+ * pcSaveResult-style flag bundle ({ dieResult, saveTotal, passed, autoFailSave }).
+ */
+function aceInlineRollBreakdown(f, passClass) {
+  if (f?.autoFailSave) {
+    return `<span class="${passClass}" style="font-weight:700;font-size:15px;">AUTO-FAIL</span>`;
+  }
+  const face = f?.dieResult ?? null;
+  const mod = (typeof f?.saveTotal === "number" && face != null) ? f.saveTotal - face : null;
+  if (face == null || mod == null) {
+    return `<span class="${passClass}" style="font-weight:700;font-size:16px;">${f?.saveTotal ?? "?"}</span>`;
+  }
+  const ms = mod >= 0 ? "+" : "";
+  const mp = mod === 0 ? "" : ` ${ms}${mod}`;
+  return `<span style="display:inline-flex;align-items:center;gap:6px;font-family:'Signika',sans-serif;">`
+    + aceD20FaceImg(face, { size: 28 })
+    + `<span style="color:#fff;font-size:16px;font-weight:700;">${face}</span>`
+    + `<span style="color:#b9a978;font-size:13px;">${mp} =</span>`
+    + `<span class="${passClass}" style="font-weight:700;font-size:16px;">${f.saveTotal}</span>`
+    + `</span>`;
+}
+
 export class SaveEngine {
 
   /** In-memory override cache — avoids re-render on every button click.
@@ -750,7 +801,6 @@ export class SaveEngine {
     // the break-free prompt has something to attach to, even though it also
     // deals damage.
     const breakFreeEnabled = item.getFlag?.(MODULE_ID, "breakFreeConfig")?.enabled === true;
-    console.log(`${MODULE_ID} | ACE-COND-DBG [NPC fast-path] "${item?.name}" failed=${!result.passed} hasDamage=${hasDamage} breakFreeEnabled=${breakFreeEnabled} → willApplyConditions=${!hasDamage || breakFreeEnabled}`);
     let appliedConditions = [];
     if (!hasDamage || breakFreeEnabled) {
       try {
@@ -1084,23 +1134,25 @@ export class SaveEngine {
       return `<span class="ace-qol-save-tgt-mod">${t.saveAbilityUpper} ${baseStr}</span>${bonusChips}`;
     };
 
-    // ── Helper: build the "actions" sub-row (dice button + badges) ──
-    // Used by both PC and NPC rows for uniform two-tier layout. Dice button
-    // appears only on PCs (NPCs roll via the GM-side bottom button).
-    const _renderActionsRow = (t, isPc) => {
+    // ── Helper: glowing black-d20 ROLL button for a PC (GM rolls on their behalf) ──
+    // Lives in the LEFT column directly under the portrait. Keeps the
+    // .ace-qol-save-pc-roll-btn class + data-action/data-token-doc-id so the
+    // existing click wiring and post-roll DOM updates still target it.
+    const _pcDiceBtn = (t) => `
+      <button class="ace-qol-save-pc-roll-btn" data-action="aceQolGmRollPcSave" data-token-doc-id="${t.tokenDocId}" title="Roll save on this PC's behalf (GM)"
+              style="background:none;border:none;cursor:pointer;padding:0;display:inline-flex;">
+        ${aceD20FaceImg(20, { size: 40, glow: true })}
+      </button>`;
+
+    // ── Helper: status badges (auto-fail / evasion / damage indicator) ──
+    const _renderBadges = (t) => {
       const di = _getDmgIndicator(t);
-      const dice = isPc
-        ? `<button class="ace-qol-save-pc-roll-btn" data-action="aceQolGmRollPcSave" data-token-doc-id="${t.tokenDocId}" title="Roll save on this PC's behalf (GM)">
-             <img src="modules/ace-qol/Assets/Dice%20Dice/BD20/BD20-20_nobg.png" class="ace-qol-save-pc-dice-img" alt="d20" onerror="this.style.display='none';this.nextElementSibling.style.display='inline'" />
-             <i class="fas fa-dice-d20" style="display:none"></i>
-           </button>`
-        : "";
       const badges = [
         t.autoFailSave ? '<span class="ace-qol-tag ace-qol-tag-danger"><i class="fas fa-circle-xmark"></i> AUTO-FAIL</span>' : "",
         t.superSaver ? '<span class="ace-qol-tag ace-qol-tag-buff"><i class="fas fa-person-running"></i> EVASION</span>' : "",
         di.tag,
       ].filter(Boolean).join("");
-      return `<div class="ace-qol-save-tgt-actions">${dice}${badges}</div>`;
+      return badges ? `<div class="ace-qol-save-tgt-actions" style="margin-top:4px;">${badges}</div>` : "";
     };
 
     // ── Build NPC rows ──
@@ -1111,16 +1163,18 @@ export class SaveEngine {
     const npcRowsHtml = npcs.map(t => {
       const di = _getDmgIndicator(t);
       return `
-      <div class="ace-qol-save-tgt-row ${di.cls}" data-token-id="${t.tokenId}" data-pc="false">
-        <img src="${t.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
-        <div class="ace-qol-save-tgt-identity">
-          <span class="ace-qol-save-tgt-name">${t.name}</span>
-          ${_renderModBreakdown(t)}
+      <div class="ace-qol-save-tgt-row ${di.cls}" data-token-id="${t.tokenId}" data-pc="false"
+           style="display:flex;align-items:flex-start;gap:12px;padding:10px 12px;">
+        <img src="${t.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img"
+             style="width:46px;height:46px;border-radius:8px;flex-shrink:0;border:1px solid #555;object-fit:cover;" />
+        <div class="ace-qol-save-tgt-identity" style="flex:1;min-width:0;">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span class="ace-qol-save-tgt-name" style="flex:1;font-weight:bold;color:#fff;font-size:16px;">${t.name}</span>
+            <button class="ace-qol-save-tgt-remove" data-action="aceQolRemoveTarget" data-token-id="${t.tokenId}"><i class="fas fa-xmark"></i></button>
+          </div>
+          <div style="margin-top:3px;">${_renderModBreakdown(t)}</div>
+          ${_renderBadges(t)}
         </div>
-        <button class="ace-qol-save-tgt-remove" data-action="aceQolRemoveTarget" data-token-id="${t.tokenId}">
-          <i class="fas fa-xmark"></i>
-        </button>
-        ${_renderActionsRow(t, false)}
       </div>
     `}).join("");
 
@@ -1130,16 +1184,21 @@ export class SaveEngine {
     const pcRowsHtml = pcs.map(t => {
       const di = _getDmgIndicator(t);
       return `
-      <div class="ace-qol-save-tgt-row ace-qol-save-tgt-pc ${di.cls}" data-token-id="${t.tokenId}" data-token-doc-id="${t.tokenDocId}" data-actor-id="${t.actorId}" data-pc="true">
-        <img src="${t.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
-        <div class="ace-qol-save-tgt-identity">
-          <span class="ace-qol-save-tgt-name">${t.name}</span>
-          ${_renderModBreakdown(t)}
+      <div class="ace-qol-save-tgt-row ace-qol-save-tgt-pc ${di.cls}" data-token-id="${t.tokenId}" data-token-doc-id="${t.tokenDocId}" data-actor-id="${t.actorId}" data-pc="true"
+           style="display:flex;align-items:flex-start;gap:12px;padding:10px 12px;">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:6px;flex-shrink:0;">
+          <img src="${t.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img"
+               style="width:46px;height:46px;border-radius:8px;border:1px solid #d4af37;object-fit:cover;" />
+          ${_pcDiceBtn(t)}
         </div>
-        <button class="ace-qol-save-tgt-remove" data-action="aceQolRemoveTarget" data-token-id="${t.tokenId}" title="Remove this PC from the save list">
-          <i class="fas fa-xmark"></i>
-        </button>
-        ${_renderActionsRow(t, true)}
+        <div class="ace-qol-save-tgt-identity" style="flex:1;min-width:0;">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span class="ace-qol-save-tgt-name" style="flex:1;font-weight:bold;color:#fff;font-size:16px;">${t.name}</span>
+            <button class="ace-qol-save-tgt-remove" data-action="aceQolRemoveTarget" data-token-id="${t.tokenId}" title="Remove this PC from the save list"><i class="fas fa-xmark"></i></button>
+          </div>
+          <div style="margin-top:3px;">${_renderModBreakdown(t)}</div>
+          ${_renderBadges(t)}
+        </div>
       </div>
     `}).join("");
 
@@ -1162,16 +1221,6 @@ export class SaveEngine {
             <span class="ace-qol-save-dc">DC ${saveDC} ${abilityLabel} Save</span>
           </div>
           ${halfOnSave ? '<span class="ace-qol-save-half-badge">HALF ON SAVE</span>' : ""}
-        </div>
-
-        <div class="ace-qol-save-mode-toggle">
-          <button class="ace-qol-save-mode-btn active" data-mode="targeted">TARGETED</button>
-          <button class="ace-qol-save-mode-btn" data-mode="selected">SELECTED</button>
-        </div>
-        <div class="ace-qol-save-target-selected-row">
-          <button class="ace-qol-save-target-selected-btn" data-action="aceQolTargetSelected" title="Add currently selected tokens to the target list (additive)">
-            <i class="fas fa-crosshairs"></i> + TARGET SELECTED
-          </button>
         </div>
 
         ${npcs.length ? `
@@ -1502,12 +1551,13 @@ export class SaveEngine {
             const passClass = f.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
             const verdictText = f.passed ? "PASS" : "FAIL";
             btn.disabled = true;
-            btn.innerHTML = `<span class="ace-qol-save-verdict ${passClass}" style="font-size:0.65rem">${verdictText}</span>`;
+            btn.innerHTML = `<span class="ace-qol-save-verdict ${passClass}" style="font-size:13px;font-weight:700;">${verdictText}</span>`;
             btn.style.background = "none"; btn.style.border = "none"; btn.style.padding = "0 4px";
-            // Also update the mod display
+            // Update the mod display with the FULL d20 breakdown (die face + raw +mod = total),
+            // bigger + readable — not a tiny bare total.
             const row = btn.closest(".ace-qol-save-tgt-row");
             const modSpan = row?.querySelector(".ace-qol-save-tgt-mod");
-            if (modSpan) modSpan.innerHTML = `<span class="${passClass}" style="font-weight:700">${f.autoFailSave ? "AUTO" : f.saveTotal}</span>`;
+            if (modSpan) modSpan.innerHTML = aceInlineRollBreakdown(f, passClass);
             continue;
           }
         }
@@ -1539,6 +1589,12 @@ export class SaveEngine {
           const flags = message.flags?.[MODULE_ID];
           const fakeMsg = { flags: { [MODULE_ID]: {
             type: "pcSavePrompt",
+            // Carry the item link through — without it the saveComplete fires
+            // with itemUuid:null and the Forge FX runtime can't find the item,
+            // so animation+sound never play for GM-rolled PCs (the player-prompt
+            // path already had it, which is why some PCs worked and some didn't).
+            itemUuid: flags.itemUuid ?? null,
+            itemId: flags.itemId ?? null,
             saveAbility: flags.saveAbility,
             saveDC: flags.saveDC,
             halfOnSave: flags.halfOnSave,
@@ -2561,18 +2617,31 @@ export class SaveEngine {
     const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell, castId } = opts;
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
 
+    // Player-facing prompt — mirrors the DM-side row: pure BLACK background,
+    // the creature's token icon with the glowing black d20 directly beneath it,
+    // name + instruction to the right (no cropped pill button). Inline-styled
+    // so it renders identically on the player's client. Keeps the data-action
+    // + button classes intact so the existing click wiring still fires.
+    const pcImg = tgt.img || tgt.tokenImg || item.img || "icons/svg/mystery-man.svg";
     const cardHtml = `
-      <div class="ace-qol-pc-save-card">
-        <div class="ace-qol-save-header">
-          <img src="${item.img || "icons/svg/spell.svg"}" class="ace-qol-save-item-img" />
-          <div>
-            <strong>${item.name}</strong>
-            <span class="ace-qol-save-dc">DC ${saveDC} ${abilityLabel} Save</span>
+      <div class="ace-qol-pc-save-card" style="background:#0c0c10;border:1px solid #d4af37;border-radius:9px;overflow:hidden;font-family:'Signika',sans-serif;">
+        <div style="padding:11px 15px;border-bottom:1px solid rgba(212,175,55,0.3);background:#0c0c10;">
+          <div style="color:#f0e4c0;font-weight:700;font-size:19px;line-height:1.15;">${item.name}</div>
+          <div style="color:#d4af37;font-size:15px;font-weight:600;margin-top:3px;">DC ${saveDC} ${abilityLabel} Save</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:15px;padding:15px;background:#0c0c10;">
+          <div style="display:flex;flex-direction:column;align-items:center;gap:8px;flex-shrink:0;">
+            <img src="${pcImg}" style="width:54px;height:54px;border-radius:8px;border:1px solid #d4af37;object-fit:cover;" />
+            <button class="ace-qol-btn ace-qol-btn-roll" data-action="aceQolRollPcSave" title="Roll your ${abilityLabel} save"
+                    style="background:none;border:none;cursor:pointer;padding:0;display:inline-flex;">
+              ${aceD20FaceImg(20, { size: 46, glow: true })}
+            </button>
+          </div>
+          <div style="flex:1;min-width:0;">
+            <div style="color:#fff;font-weight:700;font-size:18px;line-height:1.2;">${tgt.name}</div>
+            <div style="color:#cdbf8f;font-size:15px;margin-top:5px;line-height:1.3;">Tap the die to roll your <b style="color:#d4af37;">${abilityLabel} save</b>.</div>
           </div>
         </div>
-        <button class="ace-qol-btn ace-qol-btn-roll" data-action="aceQolRollPcSave">
-          <i class="fas fa-dice-d20"></i> ROLL ${abilityLabel.toUpperCase()} SAVE
-        </button>
       </div>
     `;
 
@@ -2727,13 +2796,30 @@ export class SaveEngine {
 
     // Post public result — clean, matches D&D 5e card style
     const passColor = passed ? "#00e676" : "#ff1744";
+    // Big, black, readable result — d20 face under the portrait + full
+    // breakdown (raw +mod = total), matching the DM cards.
+    const _bdMod  = (dieResult != null && typeof saveTotal === "number") ? saveTotal - dieResult : null;
+    const _bdSign = (_bdMod != null && _bdMod >= 0) ? "+" : "";
+    const _bdPart = (_bdMod != null && _bdMod !== 0) ? ` ${_bdSign}${_bdMod}` : "";
+    const _faceHtml = autoFailSave ? "" : aceD20FaceImg(dieResult, { size: 44, glow: true });
     const resultHtml = `
-      <div class="ace-qol-save-pc-result-card">
-        <div class="ace-qol-save-pc-result-line">
-          <img src="${targetImg || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
-          <span class="ace-qol-save-tgt-name">${targetName}</span>
-          <span class="ace-qol-save-roll" style="color:${passColor}">${rollDisplay}</span>
-          <span class="ace-qol-save-verdict" style="background:${passed ? 'rgba(0,230,118,0.15)' : 'rgba(255,23,68,0.15)'};color:${passColor}">${resultLabel}</span>
+      <div class="ace-qol-save-pc-result-card" style="background:#0c0c10;border:1px solid #d4af37;border-radius:9px;overflow:hidden;font-family:'Signika',sans-serif;">
+        <div style="display:flex;align-items:center;gap:14px;padding:14px;">
+          <div style="display:flex;flex-direction:column;align-items:center;gap:6px;flex-shrink:0;">
+            <img src="${targetImg || "icons/svg/mystery-man.svg"}" style="width:50px;height:50px;border-radius:8px;border:1px solid #d4af37;object-fit:cover;" />
+            ${_faceHtml}
+          </div>
+          <div style="flex:1;min-width:0;">
+            <div style="color:#fff;font-weight:700;font-size:18px;line-height:1.2;">${targetName}</div>
+            <div style="margin-top:6px;display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
+              ${autoFailSave
+                ? `<span style="color:${passColor};font-weight:700;font-size:18px;">AUTO-FAIL</span>`
+                : `<span style="color:#fff;font-size:20px;font-weight:700;">${dieResult ?? saveTotal}</span>
+                   <span style="color:#b9a978;font-size:15px;">${_bdPart} =</span>
+                   <span style="color:${passColor};font-size:20px;font-weight:700;">${saveTotal}</span>`}
+              <span style="margin-left:4px;padding:2px 9px;border-radius:5px;background:${passed ? 'rgba(0,230,118,0.15)' : 'rgba(255,23,68,0.15)'};color:${passColor};font-weight:700;font-size:15px;">${resultLabel}</span>
+            </div>
+          </div>
         </div>
       </div>
     `;
@@ -2757,6 +2843,8 @@ export class SaveEngine {
           autoFailSave,
           superSaver,
           castId,
+          saveAbility,                       // needed so the GM can re-fire saveComplete
+          itemUuid: flags.itemUuid ?? null,
         }
       }
     });
@@ -2817,11 +2905,36 @@ export class SaveEngine {
 
     const pcResult = { saveTotal, dieResult: dieResult ?? null, passed, resultLabel, autoFailSave, damageMultiplier };
 
-    // Update Phase 1 save results card if it exists
-    this._updateMainCardPcResult(tokenDocId, pcResult);
+    // ── Re-fire saveComplete on the GM so area-denial effects land ──
+    // FIRST, before the cosmetic card updates — a throw in those must never
+    // block the functional restraint application (it did: a stale variable in
+    // _updateTargetListPcRow aborted this whole handler, so failed PCs walked
+    // free). The area-denial restraint (Web, etc.) is applied GM-side off the
+    // `saveComplete` hook; when a PLAYER rolls, the original saveComplete fired
+    // only on THEIR client (Hooks.callAll is local), so the GM never heard it.
+    // The pcSaveResult chat message DOES reach the GM, so re-emit here on the
+    // active GM. Idempotent: if the GM was the roller the pending-save queue is
+    // already empty, so this second call simply no-ops.
+    try {
+      if (game.user === game.users?.activeGM && resultFlags.saveAbility) {
+        const scene = game.scenes.get(resultFlags.sceneId) ?? canvas.scene;
+        const actor = scene?.tokens?.get(tokenDocId)?.actor ?? game.actors.get(resultFlags.actorId);
+        if (actor) {
+          Hooks.callAll(`${MODULE_ID}.saveComplete`, {
+            actor, tokenDocId, saveAbility: resultFlags.saveAbility,
+            passed, itemUuid: resultFlags.itemUuid ?? null,
+          });
+        }
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | GM saveComplete re-emit failed:`, err);
+    }
 
-    // Update the target list card's PC row live
-    this._updateTargetListPcRow(tokenDocId, pcResult);
+    // Cosmetic card updates — each shielded so one failing can't break the rest.
+    try { this._updateMainCardPcResult(tokenDocId, pcResult); }
+    catch (err) { console.warn(`${MODULE_ID} | main-card PC result update failed:`, err); }
+    try { this._updateTargetListPcRow(tokenDocId, pcResult); }
+    catch (err) { console.warn(`${MODULE_ID} | target-list PC row update failed:`, err); }
 
     // Collapse the PC prompt card on GM side
     const chatLog = document.querySelector("#chat-log, .chat-log");
@@ -2849,16 +2962,15 @@ export class SaveEngine {
 
       const passClass = pcResult.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
       const verdictText = pcResult.passed ? "PASS" : "FAIL";
-      const rollDisplay = pcResult.autoFailSave ? "AUTO" : pcResult.saveTotal;
 
-      // Replace the dice button + mod with the result
+      // Replace the dice button + mod with the FULL d20 breakdown (face + raw +mod = total)
       const modSpan = row.querySelector(".ace-qol-save-tgt-mod");
-      if (modSpan) modSpan.innerHTML = `<span class="${passClass}" style="font-weight:700">${rollDisplay}</span>`;
+      if (modSpan) modSpan.innerHTML = aceInlineRollBreakdown(pcResult, passClass);
 
       const rollBtn = row.querySelector(".ace-qol-save-pc-roll-btn");
       if (rollBtn) {
         rollBtn.disabled = true;
-        rollBtn.innerHTML = `<span class="ace-qol-save-verdict ${passClass}" style="font-size:0.65rem">${verdictText}</span>`;
+        rollBtn.innerHTML = `<span class="ace-qol-save-verdict ${passClass}" style="font-size:13px;font-weight:700;">${verdictText}</span>`;
         rollBtn.style.background = "none";
         rollBtn.style.border = "none";
         rollBtn.style.padding = "0 4px";
@@ -2898,7 +3010,7 @@ export class SaveEngine {
         console.warn(`${MODULE_ID} | Bottom-button reconciliation threw:`, err);
       }
 
-      console.log(`${MODULE_ID} | Updated target list PC row: ${verdictText} (${rollDisplay})`);
+      console.log(`${MODULE_ID} | Updated target list PC row: ${verdictText} (${pcResult.saveTotal})`);
       return;
     }
   }
@@ -3002,9 +3114,7 @@ export class SaveEngine {
       // gated like the NPC path (no-damage powers, or any power with break-free
       // enabled) and guarded so repeated card rebuilds don't double-apply.
       try {
-        const _bfe = item.getFlag?.(MODULE_ID, "breakFreeConfig")?.enabled === true;
-        console.log(`${MODULE_ID} | ACE-COND-DBG [PC path] "${item?.name}" passed=${r.passed} condAlready=${!!r._condApplied} breakFreeEnabled=${_bfe} hasDamage=${Array.isArray(flags.damageTypes) && flags.damageTypes.some(t => t && t !== "none")}`);
-        if (!r.passed && !r._condApplied) {
+        if (r.passed === false && r.pending !== true && !r._condApplied) {
           const breakFreeEnabled = item.getFlag?.(MODULE_ID, "breakFreeConfig")?.enabled === true;
           const hasDmg = Array.isArray(flags.damageTypes) && flags.damageTypes.some(t => t && t !== "none");
           if (!hasDmg || breakFreeEnabled) {
@@ -3202,10 +3312,6 @@ export class SaveEngine {
 
   async _applyFailedSaveConditions(item, results, saveCtx = null) {
     // TEMP DIAGNOSTIC (remove once break-free Restrained is confirmed):
-    try {
-      const _bf = item?.getFlag?.(MODULE_ID, "breakFreeConfig");
-      console.log(`${MODULE_ID} | ACE-COND-DBG _applyFailedSaveConditions CALLED for "${item?.name}" | failed targets=${(results ?? []).filter(r => r && !r.passed).length} | breakFreeConfig.enabled=${_bf?.enabled === true} | saveCtx.dc=${saveCtx?.saveDC}`);
-    } catch (_) {}
     // Returns an array of { targetName, conditions: [...] } per target where
     // at least one condition was successfully applied. Used by Phase 1 card
     // builder to render specific "Goblin: Paralyzed" footers instead of a
@@ -3222,6 +3328,23 @@ export class SaveEngine {
       console.log(`${MODULE_ID} | _applyFailedSaveConditions: no item or no results`);
       return applied;
     }
+
+    // ── Area-denial spells own their own effect lifecycle ──────────────────
+    // Web, Spike Growth, Stinking Cloud, Watery Sphere, etc. are classified
+    // family "areaDenial"/"areaDenialAuto", and the concentration widget
+    // applies + MANAGES their failEffect ("Restrained by Web", "Retching", …)
+    // with the correct break-free tag AND cleanup when the area ends / the
+    // creature breaks free. If we ALSO applied a description-parsed condition
+    // here, the creature would get TWO Restrained effects — and only one would
+    // clear when concentration drops (the stuck-effect bug). Defer entirely to
+    // the area-denial system for these spells.
+    try {
+      const adTiming = getSpellTiming(item);
+      if (adTiming?.family === "areaDenial" || adTiming?.family === "areaDenialAuto") {
+        console.log(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} is area-denial (${adTiming.family}) — effect owned + cleaned up by the concentration widget; skipping save-engine condition application.`);
+        return applied;
+      }
+    } catch (_) { /* classification failed — fall through to the normal path */ }
 
     let parsed;
     try {
@@ -3395,9 +3518,17 @@ export class SaveEngine {
       return applied;
     }
 
-    const failed = results.filter(r => r && !r.passed);
+    // A result counts as "failed" ONLY when it has actually RESOLVED and
+    // failed. Pending PC entries (passed === undefined, pending === true) are
+    // posted into the multi-target card before the player rolls — they must
+    // NOT be treated as fails here, or the condition lands the instant the
+    // card posts (before any roll) and sticks even when the PC passes.
+    // (Bug: Jeth passed Web's Dex save 26 vs DC 22 but was Restrained anyway.)
+    // Genuine fails set passed === false; PCs get their conditions applied
+    // later by the PC-result handler once their roll resolves.
+    const failed = results.filter(r => r && r.pending !== true && r.passed === false);
     if (!failed.length) {
-      console.log(`${MODULE_ID} | ${item.name}: no failed saves — no conditions to apply`);
+      console.log(`${MODULE_ID} | ${item.name}: no resolved failed saves — no conditions to apply`);
       return applied;
     }
 
@@ -3565,13 +3696,14 @@ export class SaveEngine {
       }
       const passClass = r.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
       const verdictText = r.passed ? "PASS" : "FAIL";
+      const portrait = `<img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" style="width:46px;height:46px;border-radius:8px;flex-shrink:0;border:1px solid #555;object-fit:cover;" />`;
 
-      // Build the dice breakdown: d20 face is the MOST important number —
-      // show it large and bright. Modifier in muted gray. Total in pass/fail colour.
-      // dieResult persists through flag serialization so this survives Phase 2.
-      let rollDisplay;
+      // The glowing d20 face goes UNDER the portrait (left column); the math
+      // breakdown (raw +mod = total) sits to the right with the verdict.
+      let d20El = "";
+      let breakdownText;
       if (r.isAutoFail) {
-        rollDisplay = `<span class="ace-qol-save-roll ${passClass}">AUTO</span>`;
+        breakdownText = `<span class="${passClass}" style="font-weight:700;font-size:17px;">AUTO-FAIL</span>`;
       } else {
         const d20Face = r.dieResult ?? r.roll?.dice?.[0]?.total ?? null;
         const modifier = (typeof r.saveTotal === "number" && d20Face != null)
@@ -3579,35 +3711,36 @@ export class SaveEngine {
         if (d20Face != null && modifier != null) {
           const modSign = modifier >= 0 ? "+" : "";
           const modPart = modifier === 0 ? "" : ` ${modSign}${modifier}`;
-          rollDisplay = `
-            <span class="ace-qol-save-roll-breakdown" style="display:inline-flex;align-items:center;gap:4px;font-family:'Signika',sans-serif;">
-              <i class="fas fa-dice-d20" style="color:#d4af37;font-size:13px;flex-shrink:0;"></i>
-              <span style="color:#ffffff;font-size:15px;font-weight:700;">${d20Face}</span>
-              <span style="color:#888;font-size:12px;">${modPart} =</span>
-              <span class="${passClass}" style="font-weight:700;font-size:15px;">${r.saveTotal}</span>
+          d20El = aceD20FaceImg(d20Face, { size: 40 });
+          breakdownText = `
+            <span style="display:inline-flex;align-items:center;gap:6px;font-family:'Signika',sans-serif;">
+              <span style="color:#ffffff;font-size:19px;font-weight:700;">${d20Face}</span>
+              <span style="color:#b9a978;font-size:15px;">${modPart} =</span>
+              <span class="${passClass}" style="font-weight:700;font-size:19px;">${r.saveTotal}</span>
             </span>`;
         } else {
-          rollDisplay = `<span class="ace-qol-save-roll ${passClass}">${r.saveTotal}</span>`;
+          breakdownText = `<span class="${passClass}" style="font-weight:700;font-size:18px;">${r.saveTotal}</span>`;
         }
       }
 
-      // Two-line layout: target name across the top, dice/verdict on the
-      // second line. Avoids the "Dea/th/Kni/ght" squish that happens when
-      // a long name fights for horizontal space with the roll formula.
+      // Portrait + d20 stacked in the left column; name / breakdown / verdict right.
       return `
         <div class="ace-qol-save-result-row" data-token-doc-id="${r.tokenDocId}"
-             style="padding:8px 10px;border-bottom:1px solid rgba(212,175,55,0.15);">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
-            <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img"
-                 style="width:24px;height:24px;border-radius:50%;flex-shrink:0;border:1px solid #444;" />
-            <span class="ace-qol-save-tgt-name"
-                  style="flex:1;font-weight:bold;color:#fff;font-size:14px;line-height:1.2;">${r.name}</span>
-            ${removeBtn}
+             style="display:flex;align-items:center;gap:12px;padding:10px 12px;border-bottom:1px solid rgba(212,175,55,0.15);">
+          <div style="display:flex;flex-direction:column;align-items:center;gap:5px;flex-shrink:0;">
+            ${portrait}
+            ${d20El}
           </div>
-          <div style="display:flex;justify-content:space-between;align-items:center;padding-left:32px;gap:8px;">
-            <span style="flex:1;">${rollDisplay}</span>
-            <span class="ace-qol-save-verdict ${passClass}"
-                  style="font-weight:bold;font-size:14px;letter-spacing:0.5px;">${verdictText}</span>
+          <div style="flex:1;min-width:0;">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px;">
+              <span class="ace-qol-save-tgt-name" style="flex:1;font-weight:bold;color:#fff;font-size:16px;line-height:1.2;">${r.name}</span>
+              ${removeBtn}
+            </div>
+            <div style="display:flex;align-items:center;gap:12px;">
+              <span style="flex:1;">${breakdownText}</span>
+              <span class="ace-qol-save-verdict ${passClass}"
+                    style="font-weight:bold;font-size:15px;letter-spacing:0.5px;">${verdictText}</span>
+            </div>
           </div>
         </div>
       `;
@@ -4098,11 +4231,11 @@ export class SaveEngine {
           const modSign = modifier >= 0 ? "+" : "";
           const modPart = modifier === 0 ? "" : ` ${modSign}${modifier}`;
           rollDisplay = `
-            <span class="ace-qol-save-roll-breakdown" style="display:inline-flex;align-items:center;gap:4px;font-family:'Signika',sans-serif;">
-              <i class="fas fa-dice-d20" style="color:#d4af37;font-size:13px;flex-shrink:0;"></i>
-              <span style="color:#ffffff;font-size:15px;font-weight:700;">${d20Face}</span>
-              <span style="color:#888;font-size:12px;">${modPart} =</span>
-              <span class="${passClass}" style="font-weight:700;font-size:15px;">${r.saveTotal}</span>
+            <span class="ace-qol-save-roll-breakdown" style="display:inline-flex;align-items:center;gap:7px;font-family:'Signika',sans-serif;">
+              ${aceD20FaceImg(d20Face, { size: 34 })}
+              <span style="color:#ffffff;font-size:18px;font-weight:700;">${d20Face}</span>
+              <span style="color:#b9a978;font-size:15px;">${modPart} =</span>
+              <span class="${passClass}" style="font-weight:700;font-size:18px;">${r.saveTotal}</span>
             </span>`;
         } else {
           rollDisplay = `<span class="ace-qol-save-roll ${passClass}">${r.saveTotal}</span>`;

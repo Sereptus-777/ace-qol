@@ -175,6 +175,67 @@ export class QolSettings {
     });
 
     // ═══════════════════════════════════════════════════════════════════════════
+    //  SQUARE CUBE TEMPLATES — keep 5e cube AoEs grid-aligned squares
+    //
+    //  D&D 5e cubes (Web, Thunderwave, Cloudkill area, Sleet Storm, etc.) should
+    //  occupy a true N-ft square. dnd5e only does this when its own
+    //  "gridAlignedSquareTemplates" world setting is ON (which IS its default).
+    //  When that setting is OFF, dnd5e turns every cube into a draggable RAY —
+    //  a rectangle whose length follows the mouse — so a "20-ft cube" can land
+    //  as a 40-ft-long strip. That breaks BOTH the visual AND ACE's area
+    //  detection (who's caught in the web), since detection reads the real
+    //  drawn template shape. With this ON, ACE restores the correct square cube
+    //  at load so area saves, auras, and persistent animations match the
+    //  spell's true footprint. Turn OFF only if you deliberately want
+    //  rotatable rectangular cubes. Default: ON.
+    // ═══════════════════════════════════════════════════════════════════════════
+    s("enforceSquareCubes", {
+      name:    "Square Cube Templates",
+      hint:    "Keep 5e cube spells (Web, Thunderwave, etc.) as true grid-aligned squares so area detection and animations match the real footprint. Restores the dnd5e default; turn OFF only if you want rotatable rectangular cubes. Default: ON.",
+      scope:   "world",
+      config:  false,   // lives in the ACE config panel (Templates tab)
+      type:    Boolean,
+      default: true,
+    });
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  SPELL DIFFICULT TERRAIN — auto movement-cost Region for area spells
+    //
+    //  Spells that fill their area with difficult terrain (Web, Spike Growth,
+    //  etc.) drop a Foundry V13 movement-cost Region matching the template, so
+    //  the token ruler charges double to move through. The Region is removed
+    //  automatically when the spell's template is deleted (concentration end,
+    //  duration end, or manual delete). Turn OFF if your table tracks difficult
+    //  terrain by hand or uses another terrain module. Default: ON.
+    // ═══════════════════════════════════════════════════════════════════════════
+    s("spellDifficultTerrain", {
+      name:    "Spell Difficult Terrain",
+      hint:    "Area spells that create difficult terrain (Web, Spike Growth, …) drop a movement-cost Region so the token ruler charges 2x to move through — removed automatically when the spell ends. Turn OFF to track difficult terrain manually. Default: ON.",
+      scope:   "world",
+      config:  false,   // lives in the ACE config panel (Templates tab)
+      type:    Boolean,
+      default: true,
+    });
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  LOCK RESTRAINED MOVEMENT — players can't drag a held token (RAW speed 0)
+    //
+    //  Restrained and Grappled both set a creature's speed to 0 — it can't move
+    //  on its own. With this ON, a PLAYER trying to drag their own Restrained /
+    //  Grappled token is stopped (the token snaps back). The GM is never
+    //  blocked, so forced movement, repositioning, and shoves all still work,
+    //  and the creature can still break free and then move. Default: ON.
+    // ═══════════════════════════════════════════════════════════════════════════
+    s("lockRestrainedMovement", {
+      name:    "Lock Restrained Movement",
+      hint:    "Players can't drag a token that can't move under RAW — Restrained, Grappled, Paralyzed, Stunned, Unconscious, or Petrified. (Prone is excluded — it can still crawl.) The GM can always reposition it; the creature moves again once the condition clears. Default: ON.",
+      scope:   "world",
+      config:  false,   // lives in the ACE config panel (Combat Actions tab)
+      type:    Boolean,
+      default: true,
+    });
+
+    // ═══════════════════════════════════════════════════════════════════════════
     //  HIDE V13 TOKEN MOVEMENT TRAIL — restores the off-switch Foundry refused
     //
     //  Foundry V13's native token ruler redraws the path a token took during its

@@ -237,10 +237,6 @@ export class OverTimeEngine {
     // never double-heal.
     if (timing === "start") {
       const authoredHeal = matching.some(m => m.data.healRoll || m.data.regen);
-      // TEMP DIAGNOSTIC (remove once regen is confirmed): proves the engine
-      // reached this creature's start-of-turn, and whether an authored heal
-      // effect suppressed the auto-regen path.
-      console.log(`${MODULE_ID} | ACE-REGEN-DBG ${actor?.name}: start-of-turn reached | authoredHeal=${authoredHeal} | overTimeEffects=${overTimeEffects.length}`);
       if (!authoredHeal) {
         try { await this._processRegeneration(actor, combatant, round); }
         catch (err) { console.error(`${MODULE_ID} | Regeneration processing failed:`, err); }
@@ -740,11 +736,6 @@ export class OverTimeEngine {
   /** Auto-detected regeneration for a creature at the start of its turn. */
   async _processRegeneration(actor, combatant, round) {
     const spec = this._detectRegeneration(actor);
-    // TEMP DIAGNOSTIC (remove once regen is confirmed): shows exactly why a
-    // creature does/doesn't regenerate this turn.
-    const _hp = actor?.system?.attributes?.hp ?? {};
-    const _blocked = spec ? this._regenBlocked(actor, combatant, spec) : "no-feature";
-    console.log(`${MODULE_ID} | ACE-REGEN-DBG ${actor?.name}: ${spec ? `+${spec.amount} (${spec.label})` : "NO REGEN FEATURE DETECTED"} | hp=${_hp.value}/${_hp.max} | blocked=${_blocked ?? "no — should heal"}`);
     if (!spec) return;
     await this._runRegen(actor, combatant, spec);
   }

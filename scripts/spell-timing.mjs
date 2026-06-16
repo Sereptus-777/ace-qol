@@ -59,6 +59,7 @@ function _checkFlagOverride(item) {
     family:       flags.family ?? null,
     failEffect:   flags.failEffect ?? null,
     breakFree:    flags.breakFree ?? null,
+    difficultTerrain: flags.difficultTerrain ?? null,
   };
 }
 
@@ -269,7 +270,7 @@ const SPELL_TABLE = {
   "sickening radiance":    { timing: TIMING.ENTER_START, save: "con", onSave: "none", family: "areaDenial", failEffect: "exhaustion+glowing", notes: "4d6 radiant + 1 exhaustion + glowing on fail." },
   "incendiary cloud":      { timing: TIMING.ENTER_START, save: "dex", onSave: "half", family: "areaDenial", notes: "10d8 fire, half on save. Moves 10ft/round." },
   "watery sphere":         { timing: TIMING.ENTER_START, save: "str", onSave: "none", family: "areaDenial", failEffect: "restrained", notes: "Restrained inside sphere on fail. Caster can move sphere." },
-  "web":                   { timing: TIMING.ENTER_START, save: "dex", onSave: "none", family: "areaDenial", failEffect: "restrained", breakFree: "str", notes: "RAW: Dex save on entering/starting turn in the cube; Restrained while in the webs on a fail; STR check (action) vs spell DC to break free; difficult terrain; flammable. Restraint clears on leaving the area or when concentration ends." },
+  "web":                   { timing: TIMING.ENTER_START, save: "dex", onSave: "none", family: "areaDenial", failEffect: "restrained", breakFree: "str", difficultTerrain: 2, notes: "RAW: Dex save on entering/starting turn in the cube; Restrained while in the webs on a fail; STR check (action) vs spell DC to break free; difficult terrain (2x move cost via a movement-cost Region); flammable. Restraint clears on leaving the area or when concentration ends." },
 
   // ────── ENTER + END OF TURN ──────
   "wall of fire":          { timing: TIMING.ENTER_END, save: "dex", onSave: "half", notes: "One side only, 10ft range" },
@@ -319,7 +320,7 @@ const SPELL_TABLE = {
   // Not per-5ft movement (that's Spike Growth). Routes through the area-denial
   // pipeline with a "no save, just damage" branch (family: areaDenialAuto).
   "cloud of daggers":      { timing: TIMING.ENTER_START, save: null, onSave: null, family: "areaDenialAuto", notes: "4d4 slashing on enter (1/turn) or start-of-turn; no save" },
-  "spike growth":          { timing: TIMING.NO_SAVE_AUTO, save: null, onSave: null, notes: "2d4 per 5ft moved, no save" },
+  "spike growth":          { timing: TIMING.NO_SAVE_AUTO, save: null, onSave: null, difficultTerrain: 2, notes: "2d4 per 5ft moved, no save; the ground is also difficult terrain (2x move cost via a movement-cost Region)." },
 };
 
 
@@ -460,6 +461,7 @@ function _fromTableEntry(entry) {
     family:       entry.family ?? null,
     failEffect:   entry.failEffect ?? null,
     breakFree:    entry.breakFree ?? null,
+    difficultTerrain: entry.difficultTerrain ?? null,
     autoSucceedIfCondImmune: entry.autoSucceedIfCondImmune ?? null,
   };
 }
