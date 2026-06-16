@@ -1924,47 +1924,46 @@ export class ConditionLibrary {
       //      bypasses the dependent system. Our deleteActiveEffect hook
       //      sweeps actors and deletes any ace-qol-tagged effects matching
       //      caster+spell. Belt-and-braces.
-      if (options.concentrationOrigin?.casterId && options.concentrationOrigin?.spellName) {
+      if (options.concentrationOrigin?.casterId || options.repeatingSave?.trigger || options.breakFree?.ability) {
         try {
-          // Find the effect we just created/toggled. statusId match on Foundry
-          // status effects, fallback to name. Same lookup as _findEffect uses.
+          // Find the effect we just created/toggled OR re-enabled. statusId match
+          // on Foundry status effects, fallback to name. This now runs for
+          // concentration AND non-concentration powers — break-free / repeating-
+          // save tags must land on Entangling Rope, the Net, etc. too. The find
+          // also covers the "re-enabled inert effect" path.
           const def = ALL_EFFECTS[key];
           const statusId = def?.statusId ?? key;
           const placed = actor.effects.contents.find(e =>
             e.statuses?.has?.(statusId) || e.name === def?.name || e.name?.toLowerCase() === key
           );
           if (placed) {
-            // ── Resolve the caster's Concentrating effect for this spell ──
-            const caster = game.actors.get(options.concentrationOrigin.casterId);
-            let concEffect = null;
-            if (caster) {
-              const spellNameLc = String(options.concentrationOrigin.spellName).toLowerCase();
-              const spellItemId = options.concentrationOrigin.spellItemId ?? null;
-              concEffect = caster.effects.contents.find(e => {
-                if (!e.statuses?.has?.("concentration") && !e.statuses?.has?.("concentrating")) return false;
-                // Match by name pattern "Concentrating: Hold Person"
-                const eNameLc = String(e.name ?? "").toLowerCase();
-                if (eNameLc.includes(spellNameLc)) return true;
-                // Or match by dnd5e flag origin/item
-                const cf = e.flags?.dnd5e?.concentration;
-                if (cf?.item && spellItemId && cf.item === spellItemId) return true;
-                if (cf?.origin && spellItemId && String(cf.origin).includes(spellItemId)) return true;
-                return false;
-              });
-            }
+            const updateData = {};
+            let caster = null, concEffect = null;
 
-            // ── Build the update payload (BOTH flags in one update) ──
-            const updateData = {
-              [`flags.${MODULE_ID}.concentrationOrigin`]: {
+            // ── Concentration linkage (concentration spells only) ──
+            if (options.concentrationOrigin?.casterId && options.concentrationOrigin?.spellName) {
+              caster = game.actors.get(options.concentrationOrigin.casterId);
+              if (caster) {
+                const spellNameLc = String(options.concentrationOrigin.spellName).toLowerCase();
+                const spellItemId = options.concentrationOrigin.spellItemId ?? null;
+                concEffect = caster.effects.contents.find(e => {
+                  if (!e.statuses?.has?.("concentration") && !e.statuses?.has?.("concentrating")) return false;
+                  const eNameLc = String(e.name ?? "").toLowerCase();
+                  if (eNameLc.includes(spellNameLc)) return true;
+                  const cf = e.flags?.dnd5e?.concentration;
+                  if (cf?.item && spellItemId && cf.item === spellItemId) return true;
+                  if (cf?.origin && spellItemId && String(cf.origin).includes(spellItemId)) return true;
+                  return false;
+                });
+              }
+              updateData[`flags.${MODULE_ID}.concentrationOrigin`] = {
                 casterId:    options.concentrationOrigin.casterId,
                 spellName:   options.concentrationOrigin.spellName,
                 spellItemId: options.concentrationOrigin.spellItemId ?? null,
                 concEffectUuid: concEffect?.uuid ?? null,
                 stampedAt:   Date.now(),
-              },
-            };
-            if (concEffect?.uuid) {
-              updateData["flags.dnd5e.dependentOn"] = concEffect.uuid;
+              };
+              if (concEffect?.uuid) updateData["flags.dnd5e.dependentOn"] = concEffect.uuid;
             }
 
             // ── Repeating-save metadata (Hold Person, Banishment, etc.) ──
@@ -2007,16 +2006,21 @@ export class ConditionLibrary {
               };
             }
 
-            await placed.update(updateData);
+            if (Object.keys(updateData).length) await placed.update(updateData);
 
-            if (concEffect?.uuid) {
-              console.log(`${MODULE_ID} | Linked ${actor.name}'s ${key} to ${caster?.name ?? "caster"}'s Concentrating: ${options.concentrationOrigin.spellName} (dnd5e dependentOn=${concEffect.uuid}, also ace-qol tag)`);
-            } else {
-              console.warn(`${MODULE_ID} | Could NOT find Concentrating effect on caster ${options.concentrationOrigin.casterId} for spell "${options.concentrationOrigin.spellName}" — applied ace-qol tag only (sweep-based cleanup)`);
+            if (updateData[`flags.${MODULE_ID}.breakFree`]) {
+              console.log(`${MODULE_ID} | Stamped break-free (${options.breakFree.ability} DC ${options.breakFree.dc}) on ${actor.name}'s ${key}.`);
+            }
+            if (options.concentrationOrigin?.casterId) {
+              if (concEffect?.uuid) {
+                console.log(`${MODULE_ID} | Linked ${actor.name}'s ${key} to ${caster?.name ?? "caster"}'s Concentrating: ${options.concentrationOrigin.spellName} (dnd5e dependentOn=${concEffect.uuid}, also ace-qol tag)`);
+              } else {
+                console.warn(`${MODULE_ID} | Could NOT find Concentrating effect on caster ${options.concentrationOrigin.casterId} for spell "${options.concentrationOrigin.spellName}" — applied ace-qol tag only (sweep-based cleanup)`);
+              }
             }
           }
         } catch (err) {
-          console.warn(`${MODULE_ID} | Failed to tag concentration origin on ${actor.name}'s ${key}:`, err);
+          console.warn(`${MODULE_ID} | Failed to stamp linkage/break-free on ${actor.name}'s ${key}:`, err);
         }
       }
 
