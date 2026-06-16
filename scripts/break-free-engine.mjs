@@ -78,6 +78,14 @@ export class BreakFreeEngine {
       if (meta.appliedRound === round && meta.appliedTurn === turn) continue;
       // Don't double-prompt for the same effect on the same turn.
       if (meta.promptedRound === round && meta.promptedTurn === turn) continue;
+      // SYNCHRONOUS race guard. Both turn hooks (combatTurnChange + updateCombat)
+      // fire near-simultaneously; the async flag write below can't dedupe in
+      // time, so without this we post two cards. This blocks the second fire
+      // instantly, in-memory.
+      const gk = `${combat.id}:${round}:${turn}:${eff.id}`;
+      if (this._promptGuard?.has(gk)) continue;
+      (this._promptGuard ??= new Set()).add(gk);
+      if (this._promptGuard.size > 300) this._promptGuard = new Set([gk]);  // bound it
       this._postPrompt(actor, combatant, eff, meta, round, turn);
     }
   }
@@ -208,16 +216,28 @@ export class BreakFreeEngine {
 
     if (passed) {
       try { await eff.delete(); } catch (_) { /* already gone */ }
-      // Clear the persistent Forge animation tied to this item (the frozen
-      // rope). Deleting the effect alone doesn't reliably match the FX's tag,
-      // so end it explicitly by the item's persist name.
-      const itemUuid = btn.dataset.itemUuid;
-      if (itemUuid) {
-        try {
-          const seqMgr = globalThis.Sequencer?.EffectManager ?? window.Sequencer?.EffectManager;
-          await seqMgr?.endEffects?.({ name: `forge:persist:${itemUuid}` });
-        } catch (_) { /* FX already ended */ }
-      }
+      // Clear the persistent Forge animation (the frozen rope). Try the precise
+      // item-name end first; then sweep ANY forge:persist:* effect bound to the
+      // freed token — robust even if the flag predates itemUuid tracking.
+      try {
+        const seqMgr = globalThis.Sequencer?.EffectManager ?? window.Sequencer?.EffectManager;
+        if (seqMgr) {
+          const itemUuid = btn.dataset.itemUuid;
+          if (itemUuid) { try { await seqMgr.endEffects({ name: `forge:persist:${itemUuid}` }); } catch (_) {} }
+          const tokDoc = btn.dataset.sceneId
+            ? game.scenes.get(btn.dataset.sceneId)?.tokens?.get(btn.dataset.tokenId)
+            : canvas.scene?.tokens?.get(btn.dataset.tokenId);
+          const tokObj = tokDoc?.object ?? actor.getActiveTokens?.()?.[0];
+          if (tokObj && typeof seqMgr.getEffects === "function") {
+            for (const e of (seqMgr.getEffects({ object: tokObj }) ?? [])) {
+              const nm = e?.data?.name ?? e?.name ?? "";
+              if (typeof nm === "string" && nm.startsWith("forge:persist:")) {
+                try { await seqMgr.endEffects({ name: nm }); } catch (_) {}
+              }
+            }
+          }
+        }
+      } catch (_) { /* best-effort FX cleanup */ }
     }
 
     const color = passed ? "#9bcc4a" : "#d98b46";
