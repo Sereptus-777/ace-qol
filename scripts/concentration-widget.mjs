@@ -1259,15 +1259,28 @@ export class ConcentrationWidget {
       } else if (failEffect === "restrained") {
         const name = `Restrained by ${spellName}`;
         if (existingByName(name)) return;
+        // Break-free: if the spell allows an action-to-escape (Web, Watery
+        // Sphere), stamp the break-free tag so ACE QOL prompts a STR (or other)
+        // check vs the spell DC at the start of the creature's turn.
+        const aceFlags = { areaDenial: true, source: "fail", phase, spellName };
+        if (tracker.timing?.breakFree && Number.isFinite(tracker.saveDC)) {
+          aceFlags.breakFree = {
+            ability:      String(tracker.timing.breakFree).toLowerCase(),
+            dc:           tracker.saveDC,
+            label:        spellName,
+            itemUuid:     tracker.item?.uuid ?? null,
+            appliedRound: game.combat?.round ?? null,
+            appliedTurn:  game.combat?.turn ?? null,
+            stampedAt:    Date.now(),
+          };
+        }
         await actor.createEmbeddedDocuments("ActiveEffect", [{
           name,
           img: "icons/svg/net.svg",
           statuses: ["restrained"],
-          flags: {
-            "ace-qol": { areaDenial: true, source: "fail", phase, spellName },
-          },
+          flags: { "ace-qol": aceFlags },
         }]);
-        console.log(`${TAG} | applied Restrained to ${actor.name} from ${spellName}`);
+        console.log(`${TAG} | applied Restrained to ${actor.name} from ${spellName}${aceFlags.breakFree ? " (break-free enabled)" : ""}`);
       } else if (failEffect === "exhaustion+glowing") {
         // Increment exhaustion via the actor's system attribute (dnd5e 5.x
         // stores exhaustion as a number 0-6 on system.attributes.exhaustion).

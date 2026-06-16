@@ -510,7 +510,17 @@ export class SaveEngine {
       ? [...save.ability][0]
       : (typeof save.ability === "string" ? save.ability : String(save.ability));
     if (!saveAbility) return;
-    const saveDC = save.dc?.value ?? save.dc ?? 10;
+    let saveDC = save.dc?.value ?? save.dc ?? 0;
+    // Fallback: some items (esp. bg3-hud / imported spells) leave the save DC
+    // unresolved at 0. Use the caster's spell save DC so the save isn't a free
+    // auto-pass (DC 0 = everyone succeeds, which silently breaks Web etc.).
+    if (!(Number(saveDC) > 0)) {
+      const sysDC = actor?.system?.attributes?.spelldc
+                 ?? actor?.system?.attributes?.spell?.dc
+                 ?? null;
+      saveDC = Number(sysDC) > 0 ? Number(sysDC) : 10;
+      console.log(`${MODULE_ID} | Save DC for "${item.name}" was 0/unset — falling back to caster spell DC ${saveDC}`);
+    }
     const isSpell = item.type === "spell";
 
     // Get damage info

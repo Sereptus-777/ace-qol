@@ -58,6 +58,7 @@ function _checkFlagOverride(item) {
     phases:       flags.phases ?? null,
     family:       flags.family ?? null,
     failEffect:   flags.failEffect ?? null,
+    breakFree:    flags.breakFree ?? null,
   };
 }
 
@@ -268,6 +269,7 @@ const SPELL_TABLE = {
   "sickening radiance":    { timing: TIMING.ENTER_START, save: "con", onSave: "none", family: "areaDenial", failEffect: "exhaustion+glowing", notes: "4d6 radiant + 1 exhaustion + glowing on fail." },
   "incendiary cloud":      { timing: TIMING.ENTER_START, save: "dex", onSave: "half", family: "areaDenial", notes: "10d8 fire, half on save. Moves 10ft/round." },
   "watery sphere":         { timing: TIMING.ENTER_START, save: "str", onSave: "none", family: "areaDenial", failEffect: "restrained", notes: "Restrained inside sphere on fail. Caster can move sphere." },
+  "web":                   { timing: TIMING.ENTER_START, save: "dex", onSave: "none", family: "areaDenial", failEffect: "restrained", breakFree: "str", notes: "RAW: Dex save on entering/starting turn in the cube; Restrained while in the webs on a fail; STR check (action) vs spell DC to break free; difficult terrain; flammable. Restraint clears on leaving the area or when concentration ends." },
 
   // ────── ENTER + END OF TURN ──────
   "wall of fire":          { timing: TIMING.ENTER_END, save: "dex", onSave: "half", notes: "One side only, 10ft range" },
@@ -457,6 +459,7 @@ function _fromTableEntry(entry) {
     phases:       entry.phases ?? null,
     family:       entry.family ?? null,
     failEffect:   entry.failEffect ?? null,
+    breakFree:    entry.breakFree ?? null,
     autoSucceedIfCondImmune: entry.autoSucceedIfCondImmune ?? null,
   };
 }
