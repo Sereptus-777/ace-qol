@@ -779,11 +779,23 @@ export class ConcentrationWidget {
               ? this._tokenWhollyInsideTemplate(placeable, template, positions)
               : this._tokenInsideTemplate(placeable, template, positions);
             if (inside) {
-              console.log(`${TAG} | ${currentToken.name} starts turn in ${tracker.item.name}`);
-              // Use the same auto-roll-or-prompt routing as token entry —
-              // NPC fast-resolves, PC gets prompted. Skip the cast-pacing
-              // delay since this is a turn-start trigger, not a cast.
-              await this._onTokenEnteredTemplate(tracker, placeable, { phase: "startOfTurn" });
+              // RAW: a creature ALREADY Restrained by this area (Web, Watery
+              // Sphere) doesn't re-roll the avoid-save — it's caught, and its
+              // only out is the break-free action (handled by BreakFreeEngine).
+              // Re-rolling Dex here would double up with the break-free prompt.
+              const spellNm = tracker.item?.name;
+              const alreadyCaught = placeable.actor?.effects?.contents?.some?.(e =>
+                e.statuses?.has?.("restrained")
+                && e.flags?.["ace-qol"]?.spellName === spellNm
+                && e.flags?.["ace-qol"]?.areaDenial);
+              if (alreadyCaught) {
+                console.log(`${TAG} | ${currentToken.name} already restrained by ${spellNm} — skipping avoid-save (break-free handles escape)`);
+              } else {
+                console.log(`${TAG} | ${currentToken.name} starts turn in ${tracker.item.name}`);
+                // Same auto-roll-or-prompt routing as entry — NPC fast-resolves,
+                // PC gets prompted. No cast-pacing delay; this is a turn-start trigger.
+                await this._onTokenEnteredTemplate(tracker, placeable, { phase: "startOfTurn" });
+              }
             }
           }
         }
