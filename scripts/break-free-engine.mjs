@@ -31,14 +31,19 @@ export class BreakFreeEngine {
     if (this._initialized) return;
     this._initialized = true;
 
-    // Prompt at the START of each combatant's turn.
-    Hooks.on("combatTurn", (combat) => {
-      try { this._onCombatTurn(combat); }
-      catch (err) { console.warn(`${MODULE_ID} | BreakFree.combatTurn failed:`, err); }
+    // Prompt at the START of the turn. Use the SAME hooks the OverTime/regen
+    // engine uses — they fire reliably at turn-start here. (combatTurn fired
+    // too late, as the turn was LEAVING, so the card showed after the turn.)
+    // combatTurnChange gives the turn-starting combatant; updateCombat is the
+    // backstop. The prompted-round/turn guard prevents a double prompt.
+    Hooks.on("combatTurnChange", (combat, prior, current) => {
+      try { this._onTurnStart(combat, current?.combatantId ?? null); }
+      catch (err) { console.warn(`${MODULE_ID} | BreakFree.combatTurnChange failed:`, err); }
     });
-    Hooks.on("combatRound", (combat) => {
-      try { this._onCombatTurn(combat); }
-      catch (err) { console.warn(`${MODULE_ID} | BreakFree.combatRound failed:`, err); }
+    Hooks.on("updateCombat", (combat, changes) => {
+      if (!changes || (!("turn" in changes) && !("round" in changes))) return;
+      try { this._onTurnStart(combat, combat.turns?.[combat.turn]?.id ?? null); }
+      catch (err) { console.warn(`${MODULE_ID} | BreakFree.updateCombat failed:`, err); }
     });
 
     // Resolve button clicks on the prompt card.
@@ -49,10 +54,11 @@ export class BreakFreeEngine {
   }
 
   /** Whose turn just STARTED → offer a break-free attempt for its restraints. */
-  static _onCombatTurn(combat) {
+  static _onTurnStart(combat, combatantId) {
     if (game.users?.activeGM !== game.user) return;   // post the prompt once
     if (!combat?.started) return;
-    const combatant = combat.turns?.[combat.turn];
+    const combatant = (combatantId ? combat.turns?.find(c => c.id === combatantId) : null)
+                   ?? combat.turns?.[combat.turn];
     const actor = combatant?.actor;
     if (!actor) return;
 
@@ -104,7 +110,7 @@ export class BreakFreeEngine {
           </div>
           <div style="display:flex;gap:8px;padding:0 12px 12px;">
             <button class="ace-qol-breakfree-go" data-effect-id="${eff.id}" data-actor-uuid="${actor.uuid}"
-                    data-token-id="${tokenId ?? ""}" data-scene-id="${sceneId ?? ""}"
+                    data-token-id="${tokenId ?? ""}" data-scene-id="${sceneId ?? ""}" data-item-uuid="${meta.itemUuid ?? ""}"
                     data-ability="${meta.ability}" data-dc="${meta.dc}" data-label="${foundry.utils.escapeHTML(meta.label || "")}"
                     style="flex:1;padding:9px;font-size:15px;font-weight:700;color:#14140c;background:#9bcc4a;border:none;border-radius:6px;cursor:pointer;">
               <i class="fas fa-hand-fist"></i> Break Free (uses action)
@@ -202,6 +208,16 @@ export class BreakFreeEngine {
 
     if (passed) {
       try { await eff.delete(); } catch (_) { /* already gone */ }
+      // Clear the persistent Forge animation tied to this item (the frozen
+      // rope). Deleting the effect alone doesn't reliably match the FX's tag,
+      // so end it explicitly by the item's persist name.
+      const itemUuid = btn.dataset.itemUuid;
+      if (itemUuid) {
+        try {
+          const seqMgr = globalThis.Sequencer?.EffectManager ?? window.Sequencer?.EffectManager;
+          await seqMgr?.endEffects?.({ name: `forge:persist:${itemUuid}` });
+        } catch (_) { /* FX already ended */ }
+      }
     }
 
     const color = passed ? "#9bcc4a" : "#d98b46";

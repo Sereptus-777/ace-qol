@@ -3492,6 +3492,7 @@ export class SaveEngine {
                       ability:      breakFreeMeta.ability,
                       dc:           breakFreeMeta.dc,
                       label:        breakFreeMeta.label ?? item.name,
+                      itemUuid:     item.uuid,   // so break-free can end the item's persistent FX
                       appliedRound: game.combat?.round ?? null,
                       appliedTurn:  game.combat?.turn ?? null,
                       stampedAt:    Date.now(),
