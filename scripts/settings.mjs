@@ -709,11 +709,11 @@ export class QolSettings {
       scope: "world", config: false, type: Array, default: [],
     });
 
-    s("dsnRevealDelayMs", {
-      name: "DSN Damage Reveal Delay (ms)",
-      hint: "Pacing delay (in milliseconds) between Dice So Nice damage animations and the result card appearing in chat. Default 1500ms gives players time to see the dice land before damage totals are revealed. Set to 0 to skip the pause entirely. Setting is consumed by the damage card pipeline; no effect if DSN module isn't installed or is broken.",
-      scope: "world", config: false, type: Number, default: 1500,
-    });
+    // NOTE: dsnRevealDelayMs is registered ONCE, further below (default 3000,
+    // with a 0–6000ms range slider). A duplicate registration that lived here
+    // (default 1500) was removed 2026-06-17 — Foundry's last-registration-wins
+    // meant the 1500 default was always silently overwritten by the later one,
+    // so removing it changes nothing at runtime and kills the confusion.
 
     s("saveCardDelayAfterCastMs", {
       name: "Save Card Delay After Cast (ms)",

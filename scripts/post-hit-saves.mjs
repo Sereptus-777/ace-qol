@@ -705,6 +705,7 @@ export class PostHitSaves {
               total:   saveTotal,
               saved:   passed,
               passed:  passed,
+              sourceName: item?.name ?? null,   // names the resisted effect in the LR prompt
             }];
             const modified = await reactionEng.checkPostSaveReactions(enriched);
             if (modified?.[0]?.legendaryResistance && modified[0].saved) {

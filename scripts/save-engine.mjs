@@ -2083,6 +2083,7 @@ export class SaveEngine {
           dc: saveDC,
           total: r.saveTotal,
           saved: r.passed,
+          sourceName: item?.name ?? null,   // names the resisted effect in the LR prompt
         }));
         const modified = await reactionEng.checkPostSaveReactions(enriched);
         // Apply any changes (Legendary Resistance flips saved to true)

@@ -11,6 +11,7 @@
 import { MODULE_ID } from "../../ace-qol.mjs";
 import { ConditionLibrary } from "../../condition-library.mjs";
 import { SpellPipeline } from "../pipeline.mjs";
+import { SaveResolver } from "./save.mjs";
 
 export class BuffResolver {
 
@@ -31,6 +32,16 @@ export class BuffResolver {
     if (!effectKey) {
       console.warn(`${MODULE_ID} | BuffResolver: registry entry for "${item.name}" missing effect.key`);
       return;
+    }
+
+    // ── Save-gated debuffs (Bane, Faerie Fire) ──
+    // RAW: each target makes a saving throw and the effect lands ONLY on a
+    // FAILED save (entry.save.onSuccess === "negate"). Route through the save
+    // engine + SaveResolver's effect-on-fail machinery instead of applying the
+    // effect to every target unconditionally. Beneficial buffs (Bless, Aid,
+    // Haste, …) have no entry.save and keep the unconditional apply below.
+    if (entry.save?.ability) {
+      return BuffResolver._runMultiWithSave(ctx, result);
     }
 
     // Find the caster's concentration effect for this spell — needed to wire
@@ -119,6 +130,61 @@ export class BuffResolver {
     console.debug(`${MODULE_ID} | BuffResolver: ${item.name} applied "${effectKey}" to ${applied.length}/${targets.length} targets (conc-linked: ${!!casterConcEffect})`);
 
     await BuffResolver._postChatCard(item, actor, applied, failed, castLevel, entry);
+  }
+
+  /**
+   * Save-gated multi-target debuff (Bane, Faerie Fire). RAW: each target makes
+   * a saving throw and the effect lands ONLY on a failure. Reuses the save
+   * engine (NPC auto-roll / PC prompt / the save card) and SaveResolver's
+   * tested per-target effect-on-fail + concentration-link machinery — the
+   * effect is NEVER applied unconditionally. No "applied to N" summary card is
+   * posted: the save card itself is the result display.
+   */
+  static async _runMultiWithSave(ctx, result) {
+    const { entry, item, actor, castLevel, spellMod } = ctx;
+    const candidates = (result?.targets ?? []).filter(c => c?.actor);
+    if (!candidates.length) {
+      console.warn(`${MODULE_ID} | BuffResolver._runMultiWithSave: no targets for "${item.name}"`);
+      return;
+    }
+
+    // Resolve token placeables for the save engine (defensive: a candidate may
+    // carry .token, else fall back to the actor's active token).
+    const tokens = candidates
+      .map(c => c.token ?? c.actor.getActiveTokens?.()?.[0])
+      .filter(Boolean);
+    if (!tokens.length) {
+      console.warn(`${MODULE_ID} | BuffResolver._runMultiWithSave: no tokens resolved for "${item.name}"`);
+      return;
+    }
+
+    const saveAbility = entry.save?.ability ?? "wis";
+    const saveDC = SaveResolver._computeSaveDC(actor, item, spellMod);
+
+    const saveEngine = game.aceQol?.saveEngine;
+    if (saveEngine?.postSaveCard) {
+      try {
+        await saveEngine.postSaveCard(item, actor, tokens, {
+          saveAbility, saveDC,
+          halfOnSave: false,        // condition-only: a success fully negates, no damage
+          damageTypes: [],
+          isSpell: item.type === "spell",
+          timing: { isInstant: true, isPersistent: false },
+          activityId: ctx.activity?.id,
+          spellLevel: castLevel,
+        });
+      } catch (err) {
+        console.error(`${MODULE_ID} | BuffResolver._runMultiWithSave: postSaveCard failed for "${item.name}":`, err);
+      }
+    } else {
+      console.warn(`${MODULE_ID} | BuffResolver._runMultiWithSave: saveEngine.postSaveCard unavailable`);
+    }
+
+    // Apply the effect ONLY on a failed save, per target — reuses SaveResolver's
+    // saveComplete listener (concentration link + replace-on-recast included).
+    if (entry.effect?.key) {
+      for (const tk of tokens) SaveResolver._wireEffectOnFail(tk, entry, castLevel, item, actor);
+    }
   }
 
   // _findCasterConcentrationFor moved to SpellPipeline.findCasterConcentrationFor

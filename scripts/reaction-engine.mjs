@@ -1228,6 +1228,16 @@ export class ReactionEngine {
       // Only check failures
       if (result.saved) { modified.push(result); continue; }
 
+      // ── Gate: Legendary Resistance applies ONLY to an actual saving throw ──
+      // Skip any result that didn't involve a save (no save ability or no DC) —
+      // e.g. auto-applied / non-save effects that flow through this path. This
+      // stops the LR prompt from popping when no save was ever called for.
+      // (RAW: attacks never trigger LR either; those don't carry ability+dc.)
+      if (!result.ability || !Number.isFinite(Number(result.dc))) {
+        modified.push(result);
+        continue;
+      }
+
       const actor = result.actor ?? game.actors.get(result.actorId);
       if (!actor) { modified.push(result); continue; }
 
@@ -1242,21 +1252,32 @@ export class ReactionEngine {
       // So we don't check _hasUsedReaction for this one.
 
       // ── Prompt the GM ──
+      // Mirrors the Counterspell prompt's contextual richness: names the effect
+      // being resisted in the description + shows Effect / Save / Roll-vs-DC /
+      // Uses-Remaining detail rows. Themed gold (crown + gold sparkles via
+      // iconExtra) — the "legendary" cousin of Counterspell's purple sparkles.
+      const abil = result.ability?.toUpperCase() ?? "???";
+      const sourceName = result.sourceName ?? result.itemName ?? null;
+      const description = sourceName
+        ? `<strong>${actor.name}</strong> failed a ${abil} save against <strong>${sourceName}</strong>. Spend Legendary Resistance to succeed instead?`
+        : `<strong>${actor.name}</strong> failed a ${abil} saving throw. Spend Legendary Resistance to succeed instead?`;
+      const details = [];
+      if (sourceName) details.push({ label: "Effect", value: sourceName });
+      details.push({ label: "Save", value: abil });
+      details.push({ label: "Roll vs DC", value: `${result.total} vs ${result.dc}` });
+      details.push({ label: "Uses Remaining", value: `${lrCheck.usesRemaining} / ${lrCheck.usesMax}` });
+
       const promptResult = await this._promptReaction({
         reactorActor: actor,
         reactorToken: this._getActorToken(actor),
         type: "legendaryResistance",
         title: "Legendary Resistance",
-        description: `<strong>${actor.name}</strong> failed a saving throw!`,
-        details: [
-          { label: "Save Type", value: result.ability?.toUpperCase() ?? "???" },
-          { label: "Rolled", value: result.total },
-          { label: "DC", value: result.dc },
-          { label: "Uses Remaining", value: `${lrCheck.usesRemaining} / ${lrCheck.usesMax}` },
-        ],
+        description,
+        details,
         acceptLabel: `Use Legendary Resistance (${lrCheck.usesRemaining} left)`,
         declineLabel: "Accept Failure",
         icon: "fa-crown",
+        iconExtra: "fa-hand-sparkles",   // gold sparkles alongside the crown (gold via accentColor)
         accentColor: "#ffd54f",
         forceGM: true, // Always prompt GM, even if NPC has a player owner
       });
@@ -1763,7 +1784,7 @@ export class ReactionEngine {
     return new Promise((resolve) => {
       const {
         type, title, description, details, acceptLabel, declineLabel,
-        spellSlotLevel, availableSlots, icon, accentColor,
+        spellSlotLevel, availableSlots, icon, iconExtra, accentColor,
         reactorActorName, reactorActorImg, reactorIsNpc, extraData,
       } = data;
 
@@ -1830,7 +1851,7 @@ export class ReactionEngine {
             <div class="ace-qol-reaction-header-text">
               <span class="ace-qol-reaction-actor-name">${reactorActorName ?? "Unknown"}</span>
               <span class="ace-qol-reaction-type-label" style="color:${accent}">
-                <i class="fas ${icon ?? "fa-bolt"}"></i> ${title}
+                <i class="fas ${icon ?? "fa-bolt"}"></i>${iconExtra ? ` <i class="fas ${iconExtra}"></i>` : ""} ${title}
               </span>
             </div>
           </div>
