@@ -41,6 +41,7 @@ import { StealthEngine }        from "./stealth-engine.mjs";
 import { CombatActions }        from "./combat-actions.mjs";
 import { FumbleEngine }         from "./fumble-engine.mjs";
 import { OAPrompt }             from "./oa-prompt.mjs";
+import { MultiattackEngine }    from "./multiattack-engine.mjs";
 import { LoadoutEngine }        from "./loadout-engine.mjs";
 import { OA_IN_FLIGHT }         from "./oa-transient.mjs";
 import { InitiativeTools }      from "./initiative-tools.mjs";
@@ -2256,6 +2257,16 @@ Hooks.once("ready", () => {
     RestrainedMovement.init();
   } catch (err) {
     console.error(`${MODULE_ID} | Restrained Movement init failed:`, err);
+  }
+
+  // Multiattack / Extra-Attack chain — pops a one-click weapon-button pop-up to
+  // drive the rest of a creature's Multiattack (or a PC's Extra Attack) after
+  // its first swing. Parses the Multiattack text where it can; free-pick
+  // fallback otherwise. Never auto-fires. Gates on the `multiattackChain` setting.
+  try {
+    MultiattackEngine.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Multiattack Engine init failed:`, err);
   }
 
   // Transformation Engine — GM-only. Wraps dnd5e transformInto/revertOriginalForm
