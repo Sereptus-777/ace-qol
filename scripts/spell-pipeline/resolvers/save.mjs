@@ -268,7 +268,13 @@ export class SaveResolver {
   static _wireEndOfTurnSave({ targetActor, targetTokenDocId, targetEffectId, effectKey, casterActor, spellItem, castLevel, saveAbility, saveDC, halvesDamage }) {
     const hookId = Hooks.on("combatTurn", async (combat, updateData, opts) => {
       try {
-        if (!game.user.isGM) return;
+        // v0.7.74 — multi-GM safety. combatTurn fires on every client.
+        // isGM is true for ALL connected GMs, so two GMs would double-
+        // process the end-of-turn save (double chat card + double save
+        // roll + double effect delete on success). activeGM-gate ensures
+        // ONE client owns the state change. Matches the multi-GM audit
+        // pattern (2026-06-15).
+        if (game.users?.activeGM !== game.user) return;
         // Only fire when the AFFECTED target's turn just ENDED — i.e. the
         // PREVIOUS turn's combatant matches this target.
         const prevTurn = combat?.previous?.turn ?? combat?.turns?.[combat?.turn - 1]?._id;
