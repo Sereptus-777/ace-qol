@@ -508,9 +508,22 @@ export class ReactionEngine {
       if (!shieldCheck.canUse) { modified.push(result); continue; }
 
       // ── Send prompt to the target's owner ──
+      // v0.7.71 — pass attacker name + portrait so the reactor sees WHO is
+      // hitting them, not just the description text. Knowing the attacker
+      // changes the math (a Goblin's +4 doesn't deserve a slot; Strahd's +12
+      // probably does).
+      const attackerToken = attacker?.getActiveTokens?.()?.[0]
+        ?? canvas.tokens?.placeables.find(t => t.actor?.id === attacker?.id)
+        ?? null;
+      const attackerImg = attackerToken?.document?.texture?.src
+        ?? attacker?.img
+        ?? attacker?.prototypeToken?.texture?.src
+        ?? null;
       const promptResult = await this._promptReaction({
         reactorActor: targetActor,
         reactorToken: targetToken,
+        attackerName: attacker?.name ?? "An attacker",
+        attackerImg,
         type: "shield",
         title: "Shield Spell",
         description: `<strong>${attacker.name}</strong> hits <strong>${targetActor.name}</strong> with <strong>${attackItem.name}</strong>.`,
@@ -612,9 +625,20 @@ export class ReactionEngine {
                        ?? null;
 
       // ── Prompt the target's owner ──
+      // v0.7.71 — pass caster info as "attacker" so the prompt shows WHO
+      // cast Magic Missile (same plumbing as the Shield post-hit prompt).
+      const casterToken = caster?.getActiveTokens?.()?.[0]
+        ?? canvas.tokens?.placeables.find(t => t.actor?.id === caster?.id)
+        ?? null;
+      const casterImg = casterToken?.document?.texture?.src
+        ?? caster?.img
+        ?? caster?.prototypeToken?.texture?.src
+        ?? null;
       const promptResult = await this._promptReaction({
         reactorActor: targetActor,
         reactorToken: targetToken,
+        attackerName: caster?.name ?? "A caster",
+        attackerImg: casterImg,
         type: "shield",
         title: "Shield — Magic Missile Defense",
         description: `<strong>${caster.name}</strong> casts <strong>Magic Missile</strong> at <strong>${targetActor.name}</strong>.`,
@@ -1667,6 +1691,9 @@ export class ReactionEngine {
         ?? opts.reactorToken?.document?.texture?.src
         ?? opts.reactorActorImg
         ?? null,
+      // v0.7.71: forward attacker name + portrait (Shield prompt UX polish)
+      attackerName: opts.attackerName ?? null,
+      attackerImg:  opts.attackerImg  ?? null,
       reactorIsNpc,
     }).catch(() => ({ accepted: false, choiceData: {} }));
   }
@@ -1701,6 +1728,10 @@ export class ReactionEngine {
           reactorActorName: opts.reactorActor?.name,
           reactorActorImg: opts.reactorActor?.img ?? opts.reactorToken?.document?.texture?.src,
           reactorTokenId: opts.reactorToken?.id,
+          // v0.7.71: attacker name + portrait (Shield prompt UX polish) — these
+          // are already primitives/strings, so they survive the socket roundtrip.
+          attackerName: opts.attackerName ?? null,
+          attackerImg:  opts.attackerImg  ?? null,
           reactorIsNpc,
           // Strip non-serializable fields
           reactorActor: undefined,
@@ -1786,10 +1817,30 @@ export class ReactionEngine {
         type, title, description, details, acceptLabel, declineLabel,
         spellSlotLevel, availableSlots, icon, iconExtra, accentColor,
         reactorActorName, reactorActorImg, reactorIsNpc, extraData,
+        // v0.7.71 — attacker portrait + name (Shield UX polish)
+        attackerName, attackerImg,
       } = data;
 
       const accent = accentColor ?? "#d4af37";
       let resolved = false;
+
+      // ── Build attacker row (v0.7.71 — Shield UX polish) ──
+      // Shows WHO is attacking the reactor, with a portrait, so the player
+      // can make an informed reaction call without scanning chat. Renders
+      // only when attacker data is provided (Shield + MM-Shield set it).
+      const attackerRowHtml = attackerName ? `
+        <div class="ace-qol-reaction-attacker" style="border-color:${accent}">
+          ${attackerImg ? `<img src="${attackerImg}" class="ace-qol-reaction-attacker-portrait" alt="${attackerName}" />` : ""}
+          <div class="ace-qol-reaction-attacker-text">
+            <div class="ace-qol-reaction-attacker-label">Attacker</div>
+            <div class="ace-qol-reaction-attacker-name">${attackerName}</div>
+          </div>
+          <i class="fas fa-arrow-right ace-qol-reaction-attacker-arrow"></i>
+          <div class="ace-qol-reaction-attacker-vs">
+            <div class="ace-qol-reaction-attacker-label">You</div>
+            <div class="ace-qol-reaction-attacker-name">${reactorActorName ?? "Reactor"}</div>
+          </div>
+        </div>` : "";
 
       // ── Build details rows ──
       const detailRows = (details ?? []).map(d =>
@@ -1856,6 +1907,7 @@ export class ReactionEngine {
             </div>
           </div>
           <div class="ace-qol-reaction-body">
+            ${attackerRowHtml}
             <div class="ace-qol-reaction-description">${description}</div>
             <div class="ace-qol-reaction-details">${detailRows}</div>
             ${slotPickerHtml}
@@ -1912,12 +1964,12 @@ export class ReactionEngine {
         },
       }, {
         classes: ["ace-qol-reaction-dialog"],
-        width: 460,
+        width: 540,                     // v0.7.71: wider to fit 16px+ body text + attacker row
         height: "auto",
         // Center on screen — matches the advantage prompt placement so player
         // attention always lands at the same spot for time-critical decisions.
-        top: Math.max(40, Math.floor(window.innerHeight / 2 - 240)),
-        left: Math.max(20, Math.floor(window.innerWidth / 2 - 230)),
+        top: Math.max(40, Math.floor(window.innerHeight / 2 - 280)),
+        left: Math.max(20, Math.floor(window.innerWidth / 2 - 270)),
       });
 
       dialog.render(true);
@@ -2248,18 +2300,20 @@ export function injectReactionCSS() {
   font-family: 'Rajdhani', sans-serif;
 }
 
-/* ── Header (portrait + name + type) ── */
+/* ── Header (portrait + name + type) ──
+   v0.7.71: bumped portrait + font sizes to meet CLAUDE.md §4b minimums
+   (16px body / 18px heading) for any dialog popping over Foundry chrome. */
 .ace-qol-reaction-header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: 12px;
+  padding: 12px 14px;
   border-bottom: 2px solid rgba(212,175,55,0.3);
   background: linear-gradient(180deg, rgba(255,255,255,0.04) 0%, transparent 100%);
 }
 .ace-qol-reaction-portrait {
-  width: 48px;
-  height: 48px;
+  width: 56px;
+  height: 56px;
   border-radius: 50%;
   border: 2px solid rgba(212,175,55,0.4);
   object-fit: cover;
@@ -2267,83 +2321,142 @@ export function injectReactionCSS() {
 .ace-qol-reaction-header-text {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 .ace-qol-reaction-actor-name {
-  font-size: 1rem;
+  font-size: 1.2rem;        /* ≈19px — heading */
   font-weight: 800;
-  color: #e0e0e0;
+  color: #f0e4c0;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 .ace-qol-reaction-type-label {
-  font-size: 0.85rem;
+  font-size: 1rem;          /* 16px — body */
   font-weight: 700;
   letter-spacing: 0.5px;
 }
 
 /* ── Body ── */
 .ace-qol-reaction-body {
-  padding: 10px 12px;
+  padding: 12px 14px;
 }
 .ace-qol-reaction-description {
-  font-size: 0.9rem;
-  color: #bbb;
-  margin-bottom: 8px;
-  line-height: 1.4;
+  font-size: 1rem;          /* 16px — body */
+  color: #d4cdb8;
+  margin-bottom: 10px;
+  line-height: 1.5;
 }
+
+/* ── Attacker row (v0.7.71 — Shield UX polish) ──
+   Side-by-side attacker | arrow | reactor portraits with name labels.
+   Helps the reactor see WHO is attacking so they can decide whether the
+   slot is worth burning. Renders only when the prompt passes attacker data
+   (Shield post-hit + Magic Missile defense; legendary resistance etc. don't). */
+.ace-qol-reaction-attacker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-left: 3px solid;        /* color set inline from accent */
+  border-radius: 4px;
+}
+.ace-qol-reaction-attacker-portrait {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 2px solid rgba(239,83,80,0.45);
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.ace-qol-reaction-attacker-text,
+.ace-qol-reaction-attacker-vs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;     /* let names truncate inside flex */
+}
+.ace-qol-reaction-attacker-vs {
+  text-align: right;
+}
+.ace-qol-reaction-attacker-label {
+  font-size: 0.85rem;       /* 13.6px — hint */
+  color: #999;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+.ace-qol-reaction-attacker-name {
+  font-size: 1.1rem;        /* ≈17.6px — heading-adjacent */
+  color: #f0e4c0;
+  font-weight: 800;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ace-qol-reaction-attacker-arrow {
+  font-size: 1.2rem;
+  color: rgba(239,83,80,0.7);
+  flex-shrink: 0;
+}
+
 .ace-qol-reaction-details {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
 }
 .ace-qol-reaction-detail {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 4px 8px;
+  padding: 6px 10px;
   background: rgba(255,255,255,0.03);
   border-radius: 3px;
   border: 1px solid rgba(255,255,255,0.06);
 }
 .ace-qol-reaction-detail-label {
-  font-size: 0.8rem;
-  color: #888;
+  font-size: 0.9rem;        /* 14.4px — hint */
+  color: #a8a098;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   font-weight: 600;
 }
 .ace-qol-reaction-detail-value {
-  font-size: 0.95rem;
-  color: #f0f0f0;
+  font-size: 1.05rem;       /* ≈16.8px — body */
+  color: #f0e4c0;
   font-weight: 700;
 }
 
-/* ── Slot Picker ── */
+/* ── Slot Picker ──
+   v0.7.71: bumped to body-size minimums per CLAUDE.md §4b. */
 .ace-qol-reaction-slot-picker {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 8px;
-  padding: 6px 8px;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 8px 10px;
   background: rgba(255,255,255,0.03);
   border-radius: 3px;
   border: 1px solid rgba(255,255,255,0.06);
 }
 .ace-qol-reaction-slot-picker label {
-  font-size: 0.8rem;
-  color: #888;
+  font-size: 0.9rem;        /* 14.4px — hint */
+  color: #a8a098;
   text-transform: uppercase;
   font-weight: 600;
+  letter-spacing: 0.5px;
 }
 .ace-qol-reaction-slot-select {
   flex: 1;
-  font-size: 0.85rem;
+  font-size: 1rem;          /* 16px — body */
   background: #1a1a1e;
-  color: #f0f0f0;
+  color: #f0e4c0;
   border: 1px solid #555;
   border-radius: 3px;
-  padding: 3px 6px;
+  padding: 5px 8px;
   font-weight: 600;
 }
 
@@ -2359,8 +2472,8 @@ export function injectReactionCSS() {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 0.85rem;
-  color: #e0e0e0;
+  font-size: 1rem;          /* v0.7.71: 16px — body min */
+  color: #e8e0c8;
   cursor: pointer;
   font-weight: 600;
 }
@@ -2416,16 +2529,18 @@ export function injectReactionCSS() {
   letter-spacing: 1px;
 }
 
-/* ── Buttons ── */
+/* ── Buttons ──
+   v0.7.71: bumped to 16px min per CLAUDE.md §4b — the accept button
+   especially needs to read clearly under time pressure. */
 .ace-qol-reaction-buttons {
   display: flex;
-  gap: 8px;
-  padding: 10px 12px;
+  gap: 10px;
+  padding: 12px 14px;
 }
 .ace-qol-reaction-accept {
   flex: 1;
-  padding: 8px 16px;
-  font-size: 0.85rem;
+  padding: 10px 18px;
+  font-size: 1rem;          /* 16px — body min */
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -2440,15 +2555,15 @@ export function injectReactionCSS() {
   box-shadow: 0 0 12px rgba(212,175,55,0.25);
 }
 .ace-qol-reaction-decline {
-  padding: 8px 16px;
-  font-size: 0.8rem;
+  padding: 10px 18px;
+  font-size: 1rem;          /* 16px — body min */
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   background: linear-gradient(180deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.01) 100%);
   border: 1px solid rgba(255,255,255,0.12);
   border-radius: 4px;
-  color: #999;
+  color: #a8a098;
   cursor: pointer;
   transition: all 0.2s ease;
 }

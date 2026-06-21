@@ -33,6 +33,31 @@ export const FEATURE_REGISTRY = {
     picker: { allowSelf: false, excludeDead: true },
   },
 
+  // ── Banish (2024 Paladin legendary action — NOT the Banishment spell) ────
+  // Target makes a CHA save. On fail: takes 3d6 force damage AND vanishes
+  // until the start of the user's next turn, then reappears within 120 ft
+  // of where it left. RAW reference: PHB 2024 Oath of Watchers / generic
+  // monster "Banish" legendary actions (Strahd, Marquise of Pain, etc.).
+  //
+  // Notable contrast with the Banishment spell:
+  //   • spell = CHA save → 1-minute concentration banish → permanent if full duration
+  //   • feature = CHA save → end of user's next turn → ALWAYS returns within 120 ft
+  //
+  // Damage rides the activity's own damage parts via save-engine (not declared
+  // here — every Banish item should already carry its 3d6 force on the save
+  // activity). We deliberately do NOT set an `effect` key — banishment.mjs's
+  // _onBanishFeatureSave catches the failed save via the ace-qol.saveComplete
+  // hook and applies the SHORT banishShort effect lifecycle (hide + GM card
+  // + return at start of user's next turn). Two-track approach keeps the
+  // spell banishment.mjs flow and the feature short-banish flow cleanly split.
+  "banish": {
+    shape: "save-single",
+    range: 60,
+    save: { ability: "cha" },
+    picker: { allowSelf: false, excludeDead: true },
+    flavorOnConfirm: "Target makes a Charisma save — on a fail, takes 3d6 force damage and vanishes until the start of your next turn, then reappears within 120 ft.",
+  },
+
   // Phase 2: more save-area / save-single / summon / teleport entries land here
   // as their shapes come online (Blinding Breath, gaze attacks, etc.).
 };
