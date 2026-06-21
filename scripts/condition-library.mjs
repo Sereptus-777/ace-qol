@@ -1276,11 +1276,33 @@ const SPELL_EFFECTS = {
     statuses: ["dead"],
     changes: [], concentration: false, duration: { rounds: 0 },
   },
-  unconscious: {
-    name: "Unconscious (Sleep)", icon: "icons/svg/unconscious.svg",
-    description: "Magically asleep. Damage from any source wakes target.",
+  // ── Sleep (1st level, 1 min, NOT concentration) ──
+  // KEY RENAMED from "unconscious" → "sleep_unconscious" so we don't
+  // clobber the SRD unconscious condition during the ALL_EFFECTS merge.
+  // Carries the full RAW unconscious mechanical changes (incapacitated,
+  // auto-fail STR/DEX, auto-crit melee, zero movement) PLUS a sleep
+  // marker that condition-raw-hooks.mjs watches: any damage wakes the
+  // sleeper (RAW PHB 277).
+  sleep_unconscious: {
+    name: "Unconscious (Sleep)",
+    icon: "icons/svg/unconscious.svg",
+    description: "Magically asleep. Incapacitated, can't move/speak, auto-fails STR/DEX saves, melee hits in 5ft are auto-crits. Any damage wakes target.",
     statuses: ["unconscious"],
-    changes: [], concentration: false, duration: { rounds: 10 },
+    changes: [
+      { key: "flags.ace-qol.incapacitated", mode: 0, value: "1" },
+      { key: "flags.ace-qol.fail.save.str", mode: 0, value: "1" },
+      { key: "flags.ace-qol.fail.save.dex", mode: 0, value: "1" },
+      { key: "flags.ace-qol.grants.advantage.attack.all", mode: 0, value: "1" },
+      { key: "flags.ace-qol.grants.autoCrit.melee", mode: 0, value: "1" },
+      { key: "flags.ace-qol.sleepSpell", mode: 0, value: "1" },
+      { key: "system.attributes.movement.walk", mode: 5, value: "0" },
+      { key: "system.attributes.movement.fly",  mode: 5, value: "0" },
+      { key: "system.attributes.movement.swim", mode: 5, value: "0" },
+      { key: "system.attributes.movement.climb", mode: 5, value: "0" },
+      { key: "system.attributes.movement.burrow", mode: 5, value: "0" },
+    ],
+    concentration: false,
+    duration: { rounds: 10 },
   },
 };
 

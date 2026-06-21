@@ -10,7 +10,10 @@ export const SAVE_SPELLS = {
     shape: "save-single",
     range: 60,
     save: { ability: "wis", onFail: "effect", repeatAt: "endOfTurn" },  // RAW: re-save at end of each turn
-    effect: { key: "paralyzed", duration: "concentration" },
+    // v0.7.72: use the spell-specific "hold_person" entry (not generic
+    // "paralyzed") so the effect panel reads "Hold Person" — UX clarity +
+    // the spell entry's changes are a superset (paralysis + zero movement).
+    effect: { key: "hold_person", duration: "concentration" },
     picker: { allowSelf: false, creatureTypeFilter: "humanoid", excludeDead: true },
     flavorOnConfirm: "A humanoid must succeed on a Wisdom save or be paralyzed. Re-saves at end of each turn.",
   },
@@ -19,7 +22,8 @@ export const SAVE_SPELLS = {
     shape: "save-single",
     range: 60,
     save: { ability: "wis", onFail: "effect", repeatAt: "endOfTurn" },  // RAW: re-save at end of each turn
-    effect: { key: "paralyzed", duration: "concentration" },
+    // v0.7.72: spell-specific entry, same reasoning as Hold Person above.
+    effect: { key: "hold_monster", duration: "concentration" },
     picker: { allowSelf: false, excludeDead: true },
     flavorOnConfirm: "Any non-undead creature must succeed on a Wisdom save or be paralyzed. Re-saves at end of each turn.",
   },
@@ -203,10 +207,15 @@ export const SAVE_SPELLS = {
     range: 90,
     // Sleep has no save — HP-pool mechanic. For pipeline purposes we route through single picker.
     save: { ability: "wis", onSuccess: "negate" },  // RAW has no save, but pipeline structure requires one — leave WIS as placeholder
-    effect: { key: "unconscious", duration: { rounds: 10 } },
+    // v0.7.72: use "sleep_unconscious" key (renamed from "unconscious" so it
+    // doesn't clobber the SRD unconscious condition in ALL_EFFECTS). The
+    // renamed entry has FULL RAW changes (incapacitated + zero movement +
+    // auto-crit melee + auto-fail STR/DEX) and a sleepSpell flag that
+    // condition-raw-hooks.mjs watches so any damage wakes the sleeper.
+    effect: { key: "sleep_unconscious", duration: { rounds: 10 } },
     picker: { allowSelf: false, excludeDead: true, creatureTypeFilter: null },  // any creature; HP cap not enforced here
     flavorOnConfirm: "Choose creatures within 20 ft of a point. 5d8 HP-pool; lowest current HP first; each affected falls unconscious.",
-    _needsVerification: true,  // RAW Sleep doesn't use a save — pipeline impl is a simplification
+    _needsVerification: true,  // RAW Sleep doesn't use a save — pipeline impl is a simplification (HP-pool flow is a future phase)
   },
 
   "color spray": {

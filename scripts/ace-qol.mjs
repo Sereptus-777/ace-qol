@@ -68,6 +68,7 @@ import { BladeCantrips }     from "./blade-cantrips.mjs";
 import { HolySymbol }        from "./holy-symbol.mjs";
 import { MovementTrail }     from "./movement-trail.mjs";
 import { Banishment }        from "./banishment.mjs";
+import { ConditionRawHooks } from "./condition-raw-hooks.mjs";
 import { FeatEffects }       from "./feat-effects.mjs";
 import { SwordOfWounding }   from "./sword-of-wounding.mjs";
 
@@ -1124,6 +1125,16 @@ Hooks.once("ready", () => {
     Banishment.init();
   } catch (err) {
     console.error(`${MODULE_ID} | Banishment init failed:`, err);
+  }
+
+  // Condition RAW enforcement — Sleep wakes on damage, Charm Person /
+  // Suggestion break when the caster harms the target, Dominate Person /
+  // Monster auto-re-saves on damage (RAW PHB 235/277/280). One
+  // dnd5e.preApplyDamage hook handles them all in one walk.
+  try {
+    ConditionRawHooks.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Condition RAW Hooks init failed:`, err);
   }
 
   // Feat effects (Polearm Master, Crusher, Slasher, Piercer).

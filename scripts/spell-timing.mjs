@@ -277,6 +277,13 @@ const SPELL_TABLE = {
   "insect plague":         { timing: TIMING.ENTER_END, save: "con", onSave: "half" },
   "wall of thorns":        { timing: TIMING.ENTER_END, save: "dex", onSave: "half" },
 
+  // ────── ENTER ONLY — falls prone on fail, no damage ──────
+  // Grease: a 10-ft square of grease. Each creature standing in the area
+  // when cast or entering it on their turn must make a DEX save or fall
+  // prone. RAW: ground is difficult terrain. The area persists for 1 minute.
+  // No damage component — failEffect: "prone" is what condition-widget reads.
+  "grease":                { timing: TIMING.ENTER_START, save: "dex", onSave: "none", failEffect: "prone", difficultTerrain: 2, notes: "DEX save on entry / start of turn while inside or fall prone. Difficult terrain via 2x movement-cost Region. No damage." },
+
   // ────── START OF TURN ONLY ──────
   "maelstrom":             { timing: TIMING.START_OF_TURN, save: "str", onSave: "half", notes: "Pulls toward center" },
 
