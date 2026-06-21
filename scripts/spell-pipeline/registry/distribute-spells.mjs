@@ -15,18 +15,26 @@ export const DISTRIBUTE_SPELLS = {
     flavorOnConfirm: "Glowing darts of magical force streak unerringly to their targets.",
   },
 
-  // ── Scorching Ray ────────────────────────────────────────────────────────
-  // 2024 RAW: auto-hit per ray (no attack rolls) — distribute shape applies cleanly.
-  // 2014 RAW: melee spell attack roll per ray — would need attack-single shape.
-  // For Phase 2 launch we ship the 2024 behavior; 2014 users can opt out via the
-  // `weaponMasteryAllowIn2014`-style edition override (TBD; defer to dnd5e for now).
-  "scorching ray": {
-    shape: "distribute",
-    range: 120,
-    countResolver: (castLevel) => 3 + Math.max(0, (castLevel ?? 2) - 2),
-    unit: { formula: "2d6", type: "fire" },
-    unitNoun: "ray",
-    picker: { allowSelf: false, excludeDead: true },
-    flavorOnConfirm: "Hurl 3 rays of fire — each strikes a creature within range for 2d6 fire damage.",
-  },
+  // ── Scorching Ray — REMOVED v0.7.74 (RAW correctness) ────────────────────
+  // Previously routed through distribute shape which AUTO-HIT every ray —
+  // strict RAW violation. Scorching Ray (BOTH 2014 AND 2024 PHB) requires
+  // a RANGED SPELL ATTACK PER RAY. The earlier comment claiming 2024 changed
+  // the spell to auto-hit was incorrect — verified against 2024 PHB ("Make
+  // a ranged spell attack for each ray"). Distribute-shape auto-hit was
+  // strictly stronger than RAW (no AC math, no Shield-spell defense, no
+  // miss possibility) — that's a balance bug.
+  //
+  // Removed from the registry so dnd5e's default flow handles it. dnd5e
+  // 5.x ships proper multi-attack support for Scorching Ray (3 separate
+  // ranged spell attacks, each can target a different creature, each
+  // resolves through the normal attack pipeline including Shield reactions).
+  // The pipeline loses slot-deferral + Counterspell-barrier on this one
+  // spell, but the RAW correctness win is worth it.
+  //
+  // PHASE 4 PROMISE — if the registry ever ships a multi-attack shape
+  // (similar to multi-buff but with attack rolls per ray), Scorching Ray
+  // moves into it with:
+  //   shape: "attack-multi", range: 120,
+  //   countResolver: (castLevel) => 3 + Math.max(0, castLevel - 2),
+  //   unit: { formula: "2d6", type: "fire", attackRoll: true },
 };

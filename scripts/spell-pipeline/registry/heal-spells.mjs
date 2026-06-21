@@ -86,6 +86,13 @@ export const HEAL_SPELLS = {
     flavorOnConfirm: "End one disease or one condition on target: blinded, deafened, paralyzed, or poisoned.",
   },
 
+  // v0.7.74 AUDIT FIX — Spare the Dying, Revivify, Raise Dead all had
+  // `excludeDead: true` in their pickers. The picker filters `HP <= 0` —
+  // which is EXACTLY the target each of these spells exists to fix. Net
+  // effect: the picker showed an empty grid and the spell was uncastable
+  // through the pipeline. Set excludeDead: false so the dying / dead
+  // creature is actually selectable. (revivesDead / stabilizes flags still
+  // drive the resolver's restore logic; HealResolver checks them.)
   "spare the dying": {
     shape: "touch",
     range: 5,
@@ -93,7 +100,7 @@ export const HEAL_SPELLS = {
       formula: () => "0",
       stabilizes: true,  // Clears death saves but doesn't restore HP
     },
-    picker: { allowSelf: false, preHighlightSelf: false, requiresAdjacent: true, excludeDead: true },
+    picker: { allowSelf: false, preHighlightSelf: false, requiresAdjacent: true, excludeDead: false },
     flavorOnConfirm: "Stabilize a creature with 0 HP. They become stable but stay unconscious.",
   },
 
@@ -104,7 +111,7 @@ export const HEAL_SPELLS = {
       formula: () => "1",  // Comes back at 1 HP
       revivesDead: true,   // Clears "dead" status pre-heal so HP applies
     },
-    picker: { allowSelf: false, preHighlightSelf: false, requiresAdjacent: true, excludeDead: true },
+    picker: { allowSelf: false, preHighlightSelf: false, requiresAdjacent: true, excludeDead: false },
     flavorOnConfirm: "Return a creature who died within the last minute to life at 1 HP. Requires diamond worth 300 gp.",
   },
 
@@ -117,7 +124,7 @@ export const HEAL_SPELLS = {
       formula: () => "999",  // Heal everything; resolver caps at maxHP
       revivesDead: true,
     },
-    picker: { allowSelf: false, preHighlightSelf: false, requiresAdjacent: true, excludeDead: true },
+    picker: { allowSelf: false, preHighlightSelf: false, requiresAdjacent: true, excludeDead: false },
     flavorOnConfirm: "Return a creature dead up to 10 days to life with all HP restored. They have -4 penalty to attacks/saves/checks for 4 long rests.",
   },
 

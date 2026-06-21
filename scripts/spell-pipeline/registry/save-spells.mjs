@@ -100,12 +100,18 @@ export const SAVE_SPELLS = {
     flavorOnConfirm: "Target must succeed on a Wisdom save or drop prone and become incapacitated from laughter. Re-saves at end of each turn.",
   },
 
+  // v0.7.74 AUDIT FIX — added creatureTypeFilter: "humanoid". RAW Crown of
+  // Madness explicitly says "Choose one humanoid that you can see within
+  // range." Without the filter, a player could target a dragon or beholder
+  // and the spell would silently apply — Crown isn't valid on non-humanoids
+  // RAW. The flavor text already called this out as humanoid-only; the
+  // picker filter was just missing.
   "crown of madness": {
     shape: "save-single",
     range: 120,
     save: { ability: "wis", onFail: "effect", repeatAt: "endOfTurn" },  // RAW: re-save at end of each turn
     effect: { key: "crown_of_madness", duration: "concentration" },
-    picker: { allowSelf: false, excludeDead: true },
+    picker: { allowSelf: false, creatureTypeFilter: "humanoid", excludeDead: true },
     flavorOnConfirm: "Humanoid target wears a twisted iron crown — must attack whoever you direct. Re-saves at end of each turn.",
   },
 

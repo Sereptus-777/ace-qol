@@ -26,11 +26,17 @@ export const SELF_SPELLS = {
     flavorOnConfirm: "Three illusory duplicates of yourself appear in your space.",
   },
 
+  // v0.7.74 — Stoneskin RAW is "touch a willing creature." Moved from
+  // self-shape (caster only) to multi-buff/touch so the cleric / wizard can
+  // cast it on the party tank as RAW intends. Pre-highlight self for the
+  // common case where the caster does target themselves.
   "stoneskin": {
-    shape: "self",
-    range: 0,
+    shape: "multi-buff",
+    range: 5,
+    countResolver: () => 1,
     effect: { key: "stoneskin", duration: { hours: 1 } },
-    flavorOnConfirm: "Your flesh hardens — resistance to nonmagical bludgeoning, piercing, and slashing damage.",
+    picker: { allowSelf: true, preHighlightSelf: true, requiresAdjacent: true, excludeDead: true },
+    flavorOnConfirm: "A willing creature you touch gains resistance to nonmagical bludgeoning, piercing, and slashing damage.",
   },
 
   "blur": {
@@ -40,17 +46,27 @@ export const SELF_SPELLS = {
     flavorOnConfirm: "Your body becomes blurred and indistinct — attackers have disadvantage against you.",
   },
 
+  // v0.7.74 — Greater Invisibility RAW is "touch a creature" — wizard
+  // commonly casts it on the rogue / striker, not always self. Moved.
   "greater invisibility": {
-    shape: "self",
-    range: 0,
+    shape: "multi-buff",
+    range: 5,
+    countResolver: () => 1,
     effect: { key: "greater_invisibility", duration: { minutes: 1 } },
-    flavorOnConfirm: "You become invisible and remain so even when you attack or cast spells.",
+    picker: { allowSelf: true, preHighlightSelf: true, requiresAdjacent: true, excludeDead: true },
+    flavorOnConfirm: "A creature you touch becomes invisible and remains so even when it attacks or casts spells.",
   },
 
+  // v0.7.74 — Foresight RAW is "touch a willing creature." 9th-level slot
+  // almost never goes on the caster themselves — it's the iconic "buff your
+  // melee god" spell. Was self-only, now touch single. (flavor text
+  // updated to match the new semantics; previously inconsistent.)
   "foresight": {
-    shape: "self",
-    range: 0,
+    shape: "multi-buff",
+    range: 5,
+    countResolver: () => 1,
     effect: { key: "foresight", duration: { minutes: 480 } },  // 8 hours
+    picker: { allowSelf: true, preHighlightSelf: false, requiresAdjacent: true, excludeDead: true },
     flavorOnConfirm: "You touch a willing creature, granting them advantage on attack rolls, ability checks, and saves; attackers have disadvantage against them.",
   },
 
@@ -133,18 +149,29 @@ export const SELF_SPELLS = {
     flavorOnConfirm: "You teleport up to 500 feet to a location you can describe.",
   },
 
+  // v0.7.74 — Death Ward RAW is "touch a creature." This is THE canonical
+  // "save your tank" spell — almost never self-cast. Was routing through
+  // SelfResolver which dumped it on the cleric instead of the fighter
+  // they were trying to ward. Moved to touch single.
   "death ward": {
-    shape: "self",
+    shape: "multi-buff",
     range: 5,
+    countResolver: () => 1,
     effect: { key: "death_ward", duration: { hours: 8 } },
-    flavorOnConfirm: "The next time a creature would drop to 0 HP, they drop to 1 HP instead. Spell ends after triggering.",
+    picker: { allowSelf: true, preHighlightSelf: false, requiresAdjacent: true, excludeDead: true },
+    flavorOnConfirm: "A creature you touch is warded — the next time it would drop to 0 HP it drops to 1 HP instead. Spell ends after triggering.",
   },
 
+  // v0.7.74 — Mind Blank RAW is "touch a willing creature." Iconic anti-
+  // scrying buff cast on the party diplomat / mage, not the caster.
+  // Moved from self-only to touch single.
   "mind blank": {
-    shape: "self",
+    shape: "multi-buff",
     range: 5,
+    countResolver: () => 1,
     effect: { key: "mind_blank", duration: { hours: 24 } },
-    flavorOnConfirm: "Target is immune to psychic damage, charmed, and all attempts to read their thoughts or location.",
+    picker: { allowSelf: true, preHighlightSelf: false, requiresAdjacent: true, excludeDead: true },
+    flavorOnConfirm: "A willing creature becomes immune to psychic damage, charmed, and all attempts to read their thoughts or locate them.",
   },
 
   "etherealness": {

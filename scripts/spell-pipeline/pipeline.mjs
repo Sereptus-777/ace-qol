@@ -395,7 +395,13 @@ export class SpellPipeline {
     const { entry, item, actor, castLevel } = ctx;
     const isSingle  = pickerType === "single" || pickerType === "single-adjacent";
     const N         = isSingle ? 1 : (entry.countResolver?.(castLevel, actor.system?.details?.level ?? 1) ?? 1);
-    const rangeFt   = pickerType === "single-adjacent" ? 5 : (entry.range ?? undefined);
+    // v0.7.74 AUDIT FIX — was hardcoding rangeFt to 5 for single-adjacent
+    // pickers regardless of entry.range. That silently capped Healing Word
+    // (range 60), Heal (range 60), Mass Cure Wounds (range 60), and any
+    // other touch-shape ranged spell to adjacent targets only. Honor the
+    // entry's actual range with a 5-ft floor when the entry doesn't supply
+    // one (true touch spells like Cure Wounds, Greater Restoration).
+    const rangeFt   = pickerType === "single-adjacent" ? (entry.range ?? 5) : (entry.range ?? undefined);
     const allowSelf = entry.picker?.allowSelf === true;
 
     let actors = [];
