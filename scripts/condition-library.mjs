@@ -1600,9 +1600,15 @@ export class ConditionLibrary {
       duration.combat     = combat.id;
     }
 
-    // Build statuses set for conditions (links to Foundry's status system)
-    const statuses = [];
-    if (def.statusId) statuses.push(def.statusId);
+    // Build statuses set for conditions (links to Foundry's status system).
+    // Effect defs may use EITHER `statusId` (single) OR `statuses` (array) — we
+    // must honour BOTH. (Bug fixed 2026-06-23: only statusId was read, so every
+    // array-form control effect — Hold Person/Monster paralyzed, Power Word
+    // Stun, Sleep unconscious, charmed/incapacitated/prone/stunned/dead — landed
+    // its flag but NEVER its Foundry status, so the attack pipeline's
+    // actor.statuses gate let held/stunned/asleep creatures still act.)
+    const statuses = Array.isArray(def.statuses) ? [...def.statuses] : [];
+    if (def.statusId && !statuses.includes(def.statusId)) statuses.push(def.statusId);
 
     // Build the effect data
     const effectData = {

@@ -150,7 +150,7 @@ export class BladeCantrips {
     if (nameLower === "booming blade") {
       const target = game.user.targets?.first?.();
       const targetName = target?.name ?? "the target";
-      const moveDice = cantripDice + 1; // 2024: base 1d8 + Xd8 on movement, scales
+      const moveDice = cantripDice; // RAW (2014 + 2024): movement damage is 1d8 / 2d8 / 3d8 / 4d8 at L1-4 / 5-10 / 11-16 / 17+ — exactly the cantrip tier (was cantripDice+1 → over-rolled one die at every tier).
 
       // Mark the target's actor with the movement-trigger payload. The
       // updateToken listener in init() reads this on position change and

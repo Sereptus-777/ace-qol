@@ -610,28 +610,16 @@ export class OverTimeEngine {
     if (!actor || damage <= 0) return;
 
     try {
-      const hp = actor.system?.attributes?.hp;
-      if (!hp) return;
-
-      // Apply to temp HP first, then regular HP
-      let remaining = damage;
-      let newTemp = hp.temp ?? 0;
-      let newHP = hp.value ?? 0;
-
-      if (newTemp > 0) {
-        const absorbed = Math.min(remaining, newTemp);
-        newTemp -= absorbed;
-        remaining -= absorbed;
-      }
-
-      newHP = Math.max(0, newHP - remaining);
-
-      await actor.update({
-        "system.attributes.hp.value": newHP,
-        "system.attributes.hp.temp": newTemp,
-      });
-
-      this._debug(`Applied ${damage} ${damageType} damage to ${actor.name}: HP ${hp.value} → ${newHP}`);
+      const before = actor.system?.attributes?.hp?.value ?? 0;
+      // Route through the canonical HP mutator: temp HP absorbs first (RAW) AND
+      // the concentration save fires off the FULL pre-temp damage (applyHPDamage
+      // passes aceQol.fullDamage) instead of the post-temp hp delta. Fixes DoT /
+      // aura damage under-rating (or skipping) concentration DCs for casters with
+      // temporary HP. (2026-06-23 — previously did its own temp-HP write + raw
+      // actor.update, which lost the full-damage DC.)
+      const { DamageApplicator } = await import("./damage-applicator.mjs");
+      const res = await DamageApplicator.applyHPDamage(actor, damage, { label: `overtime:${damageType ?? "?"}` });
+      this._debug(`Applied ${damage} ${damageType} damage to ${actor.name}: HP ${before} → ${res?.newHP ?? "?"}`);
     } catch (err) {
       console.error(`${MODULE_ID} | Failed to apply OverTime damage:`, err);
     }

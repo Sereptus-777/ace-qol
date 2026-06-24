@@ -27,6 +27,20 @@ import { QolSettings } from "./settings.mjs";
 export class ConcentrationDamage {
 
   static init() {
+    // ── SUPERSEDED 2026-06-23 — inert by design ──
+    // The patched Actor.update wrapper (ace-qol.mjs) fires the ACE concentration
+    // save on EVERY hp-drop, INCLUDING applyDamage's internal update. So this
+    // preApplyDamage path was a SECOND, redundant trigger — producing two cards +
+    // two rolls on every applyDamage-routed hit (Spike Growth movement, blade
+    // cantrips, traps, Holy Symbol, Sword of Wounding, Vorpal, etc.). The wrapper
+    // is now the single owner. We leave the class registered (settings/refs
+    // intact) but do NOT wire the hook. (Re-enabling this would re-introduce the
+    // double save — don't, unless the wrapper's concentration trigger is removed.)
+    console.debug(`${MODULE_ID} | ConcentrationDamage: inert (superseded by the Actor.update concentration wrapper — single owner).`);
+    return;
+
+    // Unreachable below — retained for reference only.
+    // eslint-disable-next-line no-unreachable
     Hooks.on("dnd5e.preApplyDamage", async (actor, amount /*, updates, options */) => {
       try {
         // activeGM: dnd5e.preApplyDamage fires on all clients; concentration save card must only fire once

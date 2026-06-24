@@ -29,6 +29,12 @@ export class SaveResolver {
       return;
     }
 
+    // No-save conditional kill (Power Word Kill) — RAW has NO saving throw in
+    // either edition. Handle it directly; never post a save card.
+    if (entry.instantKill) {
+      return SaveResolver._runInstantKill(ctx, target);
+    }
+
     const saveAbility = entry.save?.ability ?? "wis";
     const saveDC = SaveResolver._computeSaveDC(actor, item, spellMod);
 
@@ -63,6 +69,62 @@ export class SaveResolver {
     if (entry.effect?.key) {
       SaveResolver._wireEffectOnFail(target.token, entry, castLevel, item, actor);
     }
+  }
+
+  /**
+   * Power Word Kill-style no-save conditional kill. RAW (2014 + 2024): no save.
+   *   • target HP ≤ threshold (100) → dies instantly (HP set to 0 → dnd5e death).
+   *   • target HP > threshold:
+   *       – 2024 (modern): takes overDamage (12d12 psychic; resistance applies).
+   *       – 2014 (legacy): no effect.
+   */
+  static async _runInstantKill(ctx, target) {
+    const { entry, item, actor } = ctx;
+    const tActor = target?.actor;
+    if (!tActor) return;
+    SaveResolver._setUserTarget(target.token);
+
+    const cur = Number(tActor.system?.attributes?.hp?.value ?? 0);
+    const thr = Number(entry.instantKill?.hpThreshold ?? 100);
+    let modern = true;
+    try { modern = game.settings.get("dnd5e", "rulesVersion") !== "legacy"; } catch (_) {}
+    const accent = "#b71c1c";
+    const card = (flavor, body) => {
+      try {
+        ChatMessage.create({
+          speaker: ChatMessage.getSpeaker({ actor }),
+          flavor,
+          content: `<div style="background:linear-gradient(180deg,#1a1410 0%,#0f0a08 100%);border:2px solid ${accent};border-radius:6px;padding:12px 14px;color:#f0e4c0;font-family:'Signika','Helvetica Neue',sans-serif;">
+            <div style="font-size:15px;font-weight:700;color:${accent};text-transform:uppercase;letter-spacing:0.6px;border-bottom:1px solid #4a3a28;padding-bottom:6px;margin-bottom:8px;"><i class="fas fa-skull"></i> ${item.name.toUpperCase()}</div>
+            <div style="font-size:14px;color:#e8d49a;">${body}</div>
+          </div>`,
+        });
+      } catch (_) { /* non-fatal */ }
+    };
+
+    if (cur <= thr) {
+      try { await tActor.update({ "system.attributes.hp.value": 0 }); } catch (_) {}
+      card(`${item.name} — ${tActor.name} slain`, `<strong>${tActor.name}</strong> has ${cur} HP (≤ ${thr}) and <strong>dies instantly</strong> — no save.`);
+      return;
+    }
+
+    if (modern && entry.instantKill?.overDamage) {
+      let total = 0;
+      try {
+        const roll = await new Roll(String(entry.instantKill.overDamage)).evaluate();
+        total = roll.total;
+        try { if (game.dice3d) await game.dice3d.showForRoll(roll, game.user, true); } catch (_) {}
+      } catch (_) {}
+      const dtype = entry.instantKill.overDamageType ?? "psychic";
+      if (total > 0 && typeof tActor.applyDamage === "function") {
+        try { await tActor.applyDamage([{ value: total, type: dtype }]); } catch (_) {}
+      }
+      card(`${item.name} — ${tActor.name} survives`, `<strong>${tActor.name}</strong> is above ${thr} HP — takes <strong>${total} ${dtype}</strong> damage instead (2024).`);
+      return;
+    }
+
+    // 2014, above threshold → no effect.
+    card(`${item.name} — no effect`, `<strong>${tActor.name}</strong> is above ${thr} HP — the spell has <strong>no effect</strong> (2014 rules).`);
   }
 
   /**

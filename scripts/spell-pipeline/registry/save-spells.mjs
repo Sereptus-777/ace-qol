@@ -165,10 +165,12 @@ export const SAVE_SPELLS = {
   "modify memory": {
     shape: "save-single",
     range: 30,
-    save: { ability: "wis", onFail: "effect" },
-    effect: { key: "modify_memory", duration: "instantaneous" },
+    save: { ability: "wis", onFail: "narrate" },
+    // No mechanical condition — Modify Memory is narrative. Post the WIS save
+    // card; on a fail the GM adjudicates the memory change. (Was applying an
+    // empty, instantly-expiring effect that did nothing — removed.)
     picker: { allowSelf: false, excludeDead: true },
-    flavorOnConfirm: "Reach into a target's mind and modify up to 10 minutes of memory.",
+    flavorOnConfirm: "Reach into a target's mind and modify up to 10 minutes of memory (GM narrates on a failed save — no mechanical effect).",
   },
 
   "power word stun": {
@@ -181,13 +183,14 @@ export const SAVE_SPELLS = {
   },
 
   "power word kill": {
-    shape: "save-single",
+    shape: "save-single",  // routed to SaveResolver._runInstantKill (no save card)
     range: 60,
-    // 2014 RAW: no save, HP-threshold instant kill. 2024 RAW: CON save.
-    save: { ability: "con", onFail: "effect" },
-    effect: { key: "dead", duration: "instantaneous" },
+    // RAW (2014 + 2024): NO saving throw. ≤100 HP → die instantly. 2024: a target
+    // ABOVE 100 HP instead takes 12d12 psychic (resistance applies); 2014: no
+    // effect above 100 HP.
+    instantKill: { hpThreshold: 100, overDamage: "12d12", overDamageType: "psychic" },
     picker: { allowSelf: false, excludeDead: true },
-    flavorOnConfirm: "If target has ≤100 HP, they die. (2024: CON save negates.)",
+    flavorOnConfirm: "If the target has 100 HP or fewer, it dies — no save. (2024: otherwise it takes 12d12 psychic.)",
   },
 
   "polymorph any object": {
@@ -209,25 +212,27 @@ export const SAVE_SPELLS = {
   },
 
   "sleep": {
-    shape: "save-single",  // simplification: pipeline treats as single-target; real HP-pool flow handled by dnd5e default
+    // RAW: NO save (HP-pool mechanic). Route as multi-buff so the chosen
+    // creatures get the effect UNCONDITIONALLY (no phantom save). The GM picks
+    // who drops — that's the HP-pool / lowest-HP-first judgment. (Was save-single
+    // with a placeholder WIS save, which wrongly let "passers" stay awake.)
+    shape: "multi-buff",
     range: 90,
-    // Sleep has no save — HP-pool mechanic. For pipeline purposes we route through single picker.
-    save: { ability: "wis", onSuccess: "negate" },  // RAW has no save, but pipeline structure requires one — leave WIS as placeholder
-    // v0.7.72: use "sleep_unconscious" key (renamed from "unconscious" so it
-    // doesn't clobber the SRD unconscious condition in ALL_EFFECTS). The
-    // renamed entry has FULL RAW changes (incapacitated + zero movement +
-    // auto-crit melee + auto-fail STR/DEX) and a sleepSpell flag that
-    // condition-raw-hooks.mjs watches so any damage wakes the sleeper.
+    countResolver: () => 999,  // GM chooses affected creatures (5d8 HP pool, lowest current HP first)
+    // sleep_unconscious carries the full RAW unconscious changes (incapacitated +
+    // zero movement + auto-crit melee + auto-fail STR/DEX) and a sleep marker
+    // that condition-raw-hooks.mjs watches so any damage wakes the sleeper.
     effect: { key: "sleep_unconscious", duration: { rounds: 10 } },
-    picker: { allowSelf: false, excludeDead: true, creatureTypeFilter: null },  // any creature; HP cap not enforced here
-    flavorOnConfirm: "Choose creatures within 20 ft of a point. 5d8 HP-pool; lowest current HP first; each affected falls unconscious.",
-    _needsVerification: true,  // RAW Sleep doesn't use a save — pipeline impl is a simplification (HP-pool flow is a future phase)
+    picker: { allowSelf: false, excludeDead: true, creatureTypeFilter: null },
+    flavorOnConfirm: "No save — choose creatures within a 20-ft cube to fall unconscious (RAW: 5d8 HP pool, lowest current HP first; any damage wakes them).",
   },
 
   "color spray": {
-    shape: "save-single",  // similar simplification — RAW is HP-pool, no save
+    // RAW: NO save (HP-pool). Multi-buff so chosen creatures are blinded
+    // unconditionally; the GM picks who drops. (Was save-single w/ a phantom WIS save.)
+    shape: "multi-buff",
     range: 15,
-    save: { ability: "wis", onSuccess: "negate" },
+    countResolver: () => 999,  // GM chooses who's blinded (6d10 HP pool, lowest current HP first)
     effect: { key: "blinded", duration: { rounds: 10 } },
     picker: { allowSelf: false, excludeDead: true },
     flavorOnConfirm: "Dazzling colors blind creatures in a 15 ft cone (HP pool — pipeline simplification).",
