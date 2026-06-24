@@ -110,7 +110,7 @@ export class ReactionEngine {
     const promise = new Promise(r => { resolveFn = r; });
     const entry = { promise, resolve: resolveFn, resolved: false, resolvedWith: null, createdAt: Date.now() };
     ReactionEngine._castBarriers.set(key, entry);
-    console.log(`ace-qol | [BARRIER] CREATE for ${activity?.item?.name ?? '?'} on ${activity?.item?.actor?.name ?? '?'} — key=${typeof key === "string" ? key : "[obj]"} map size now ${ReactionEngine._castBarriers.size}`);
+    ReactionEngine._sdebug(`[BARRIER] CREATE for ${activity?.item?.name ?? '?'} on ${activity?.item?.actor?.name ?? '?'} — key=${typeof key === "string" ? key : "[obj]"} map size now ${ReactionEngine._castBarriers.size}`);
     // Safety-net timeout — auto-resolve with { abort: false } after 30s
     setTimeout(() => {
       const b = ReactionEngine._castBarriers.get(key);
@@ -128,23 +128,23 @@ export class ReactionEngine {
    */
   static _resolveCastBarrier(activity, result) {
     if (!activity) {
-      console.log(`ace-qol | [BARRIER] RESOLVE skipped — no activity`);
+      ReactionEngine._sdebug(`[BARRIER] RESOLVE skipped — no activity`);
       return;
     }
     const key = ReactionEngine._activityKey(activity);
     const b = ReactionEngine._castBarriers.get(key);
     if (!b) {
-      console.log(`ace-qol | [BARRIER] RESOLVE skipped — no barrier for ${activity?.item?.name ?? '?'} (map size: ${ReactionEngine._castBarriers.size})`);
+      ReactionEngine._sdebug(`[BARRIER] RESOLVE skipped — no barrier for ${activity?.item?.name ?? '?'} (map size: ${ReactionEngine._castBarriers.size})`);
       return;
     }
     if (b.resolved) {
-      console.log(`ace-qol | [BARRIER] RESOLVE skipped — already resolved with ${JSON.stringify(b.resolvedWith)}, new request was ${JSON.stringify(result)}`);
+      ReactionEngine._sdebug(`[BARRIER] RESOLVE skipped — already resolved with ${JSON.stringify(b.resolvedWith)}, new request was ${JSON.stringify(result)}`);
       return;
     }
     b.resolve(result);
     b.resolved = true;
     b.resolvedWith = result;
-    console.log(`ace-qol | [BARRIER] RESOLVE for ${activity?.item?.name ?? '?'} with ${JSON.stringify(result)}`);
+    ReactionEngine._sdebug(`[BARRIER] RESOLVE for ${activity?.item?.name ?? '?'} with ${JSON.stringify(result)}`);
   }
 
   /**
@@ -158,18 +158,18 @@ export class ReactionEngine {
    */
   static async awaitCastBarrier(activity) {
     if (!activity) {
-      console.log(`ace-qol | [BARRIER] await — no activity`);
+      ReactionEngine._sdebug(`[BARRIER] await — no activity`);
       return { abort: false, reason: "no_activity" };
     }
     const key = ReactionEngine._activityKey(activity);
     const b = ReactionEngine._castBarriers.get(key);
     if (!b) {
-      console.log(`ace-qol | [BARRIER] await — no barrier for ${activity?.item?.name ?? '?'} (key=${typeof key === "string" ? key : "[obj]"}, map size: ${ReactionEngine._castBarriers.size})`);
+      ReactionEngine._sdebug(`[BARRIER] await — no barrier for ${activity?.item?.name ?? '?'} (key=${typeof key === "string" ? key : "[obj]"}, map size: ${ReactionEngine._castBarriers.size})`);
       return { abort: false, reason: "no_barrier" };
     }
-    console.log(`ace-qol | [BARRIER] AWAITING ${activity?.item?.name ?? '?'} (currently resolved: ${b.resolved})`);
+    ReactionEngine._sdebug(`[BARRIER] AWAITING ${activity?.item?.name ?? '?'} (currently resolved: ${b.resolved})`);
     const result = await b.promise;
-    console.log(`ace-qol | [BARRIER] await returned ${JSON.stringify(result)} for ${activity?.item?.name ?? '?'}`);
+    ReactionEngine._sdebug(`[BARRIER] await returned ${JSON.stringify(result)} for ${activity?.item?.name ?? '?'}`);
     return result;
   }
 
@@ -291,11 +291,11 @@ export class ReactionEngine {
     // dnd5e 5.x fires postCreateUsageMessage for every activity use.
     // We check if it is a spell and look for Counterspell reactors.
     Hooks.on("dnd5e.postCreateUsageMessage", async (activity, message) => {
-      console.log(`ace-qol | [REACTION-V2-HOOK] entry for ${activity?.item?.name ?? '?'} isGM=${game.user.isGM} reactions=${QolSettings.get("enableReactions")} cs=${QolSettings.get("autoCounterspell")}`);
+      this._debug(`[REACTION-V2-HOOK] entry for ${activity?.item?.name ?? '?'} isGM=${game.user.isGM} reactions=${QolSettings.get("enableReactions")} cs=${QolSettings.get("autoCounterspell")}`);
       if (!game.user.isGM) return;
       if (!QolSettings.get("enableReactions")) return;
       if (!QolSettings.get("autoCounterspell")) return;
-      console.log(`ace-qol | [REACTION-V2-HOOK] passed gates, calling _onSpellCast for ${activity?.item?.name ?? '?'}`);
+      this._debug(`[REACTION-V2-HOOK] passed gates, calling _onSpellCast for ${activity?.item?.name ?? '?'}`);
       // Mark BEFORE processing so the legacy hook (which fires after
       // this synchronous return) sees the handled state.
       if (activity && typeof activity === "object") {
@@ -2253,6 +2253,17 @@ export class ReactionEngine {
   // ═══════════════════════════════════════════════════════════════════════════
 
   _debug(msg) {
+    try {
+      if (game.settings.get(MODULE_ID, "debugMode")) {
+        console.log(`${MODULE_ID} | REACTION | ${msg}`);
+      }
+    } catch { /* settings not ready */ }
+  }
+
+  /** Static sibling of _debug — used by the static barrier methods
+   *  (_createCastBarrier / _resolveCastBarrier / awaitCastBarrier),
+   *  which have no `this`. Gated on debugMode so it's silent in production. */
+  static _sdebug(msg) {
     try {
       if (game.settings.get(MODULE_ID, "debugMode")) {
         console.log(`${MODULE_ID} | REACTION | ${msg}`);

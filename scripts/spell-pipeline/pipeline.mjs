@@ -90,6 +90,16 @@ export class SpellPipeline {
         const pickerShapes = new Set(["distribute", "multi-buff", "multi-heal", "save-single", "touch", "chained"]);
         if (pickerShapes.has(entry.shape)) {
           SpellPipeline._clearUserTargets();
+          // OUR picker owns targeting for these shapes — suppress dnd5e's native
+          // template placement so the player doesn't get a redundant "place the
+          // template" prompt (and a leftover template they can't use) ALONGSIDE our
+          // picker. dnd5e reads create.measuredTemplate at use-time (defaults it true
+          // via ??= when the activity has a template), so setting it false here wins.
+          // (2026-06-24 — Sleep / Faerie Fire etc.)
+          if (usageConfig) {
+            usageConfig.create ??= {};
+            usageConfig.create.measuredTemplate = false;
+          }
         }
       } catch (err) {
         console.warn(`${MODULE_ID} | SpellPipeline.preUseActivity threw:`, err);

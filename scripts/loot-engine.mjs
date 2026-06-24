@@ -784,13 +784,13 @@ export class LootEngine {
         },
       };
 
-      // Respect the setting — whisper or public
-      try {
-        const isPublic = game.settings.get(MODULE_ID, "lootCardPublic") ?? true;
-        if (!isPublic) {
-          messageData.whisper = [game.user.id];
-        }
-      } catch { /* setting not registered — default to public */ }
+      // Loot card is GM-only (Johnny 2026-06-24: "just have it in the GM chat card as
+      // a backup — I don't want it on the players' chat"). Whisper to every active GM
+      // so players never see loot contents in chat. Drag-to-sheet still works from the
+      // loot dialog/tile, so nothing is lost. (Guard the empty case — Foundry treats
+      // an empty whisper array as PUBLIC.)
+      const gmIds = game.users.filter(u => u.isGM).map(u => u.id);
+      messageData.whisper = gmIds.length ? gmIds : [game.user.id];
 
       const message = await ChatMessage.create(messageData);
       console.log(`${LOG_PREFIX} Public loot card posted for ${actorName} ` +
@@ -1534,6 +1534,33 @@ export class LootEngine {
       // Skip "Natural Weapon" style items (e.g., Bite, Claw, Slam)
       const weaponType = item.system?.type?.value ?? item.system?.weaponType ?? "";
       if (weaponType === "natural") return false;
+
+      // A weapon counts as loot only if a creature was actually CARRYING it (a Spear,
+      // Sword, Bow you can pick up off the body) — NOT a natural body-part attack
+      // (Tail, Claw, Bite, Slam). We can't trust the weapon CATEGORY: sloppy stat
+      // blocks mis-type natural attacks (the Salamander's "Tail" is typed "Martial
+      // Ranged," identical to a real longbow). So decide in three steps. (2026-06-24.)
+      if (type === "weapon") {
+        const rarity  = String(item.system?.rarity ?? "").toLowerCase();
+        const priced  = Number(item.system?.price?.value ?? 0) > 0;
+        const magical = item.system?.properties?.has?.("mgc") === true
+                     || Number(item.system?.magicalBonus ?? 0) > 0;
+        const valuable = (rarity && rarity !== "common") || priced || magical;
+
+        // 1. Anything valuable is loot — even a magic item oddly named "Claw".
+        if (!valuable) {
+          // 2. A body-part NAME = natural attack, never loot. Catches the Tail even
+          //    though its category is mislabelled "Martial Ranged".
+          const name = String(item.name ?? "").toLowerCase();
+          const NATURAL_NAME = /\b(tail|claws?|bites?|slams?|sting|stinger|tentacles?|gore|horns?|hoof|hooves|talons?|beak|wings?|tongue|tusks?|pincers?|pseudopod|fists?|stomp|trample|ram|constrict|fangs?|maw|rend|quills?|spikes?|tendrils?|proboscis|mandibles?|headbutt|spit|spittle|breath)\b/;
+          // 3. A real manufactured weapon references a base-item key (spear, longbow,
+          //    dagger…) and/or has weight. A natural body-part attack has neither.
+          const baseItem   = String(item.system?.type?.baseItem ?? "").trim();
+          const weight     = Number(item.system?.weight?.value ?? item.system?.weight ?? 0);
+          const realWeapon = baseItem.length > 0 || weight > 0;
+          if (NATURAL_NAME.test(name) || !realWeapon) return false;
+        }
+      }
 
       // Skip items flagged as part of the creature's body
       const attunement = item.system?.attunement;

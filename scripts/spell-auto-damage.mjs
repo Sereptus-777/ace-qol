@@ -258,7 +258,22 @@ export class SpellAutoDamage {
                 return [];
               }
             }
-          } catch (_) { /* fall through to active-cast check */ }
+          } catch (_) { /* fall through to instant-kill / active-cast checks */ }
+
+          // Pipeline instant-kill spells (Power Word Kill) — the pipeline's
+          // SaveResolver._runInstantKill owns the outcome (HP-to-0 for <=100 HP,
+          // or its OWN 12d12 for >100). dnd5e's damage activity must NOT also
+          // roll its 12d12 dialog. Narrow to entry.instantKill so other
+          // save-single spells (e.g. Disintegrate) keep dnd5e's damage roll.
+          // (2026-06-24 — fixes the leaking vanilla PWK damage prompt.)
+          try {
+            const it = this?.item;
+            const e  = it ? globalThis.game?.aceQol?.SpellPipeline?._getEntry?.(it) : null;
+            if (e?.instantKill) {
+              console.log(`${MODULE_ID} | rollDamage suppressed for ${it.name} (pipeline instant-kill owns it)`);
+              return [];
+            }
+          } catch (_) { /* fall through */ }
 
           const actorId = this?.actor?.id ?? this?.item?.actor?.id;
           const itemId  = this?.item?.id;

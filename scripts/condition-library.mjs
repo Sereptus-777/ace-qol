@@ -1287,6 +1287,13 @@ const SPELL_EFFECTS = {
     name: "Unconscious (Sleep)",
     icon: "icons/svg/unconscious.svg",
     description: "Magically asleep. Incapacitated, can't move/speak, auto-fails STR/DEX saves, melee hits in 5ft are auto-crits. Any damage wakes target.",
+    // statuses:["unconscious"] is REQUIRED — combat-state.mjs reads the literal
+    // "unconscious" status for melee auto-crit + attack advantage (PHB). dnd5e
+    // auto-spawns prone + incapacitated RIDER conditions from it (on every effect
+    // create), but those rider conditions are NOT linked back to us for cleanup, so
+    // they linger after our effect ends — that's the stuck "Prone / Incapacitated"
+    // rows. The deleteActiveEffect rider-cleanup in condition-raw-hooks.mjs removes
+    // them when this effect is deleted. (2026-06-24.)
     statuses: ["unconscious"],
     changes: [
       { key: "flags.ace-qol.incapacitated", mode: 0, value: "1" },
@@ -1610,7 +1617,12 @@ export class ConditionLibrary {
     const statuses = Array.isArray(def.statuses) ? [...def.statuses] : [];
     if (def.statusId && !statuses.includes(def.statusId)) statuses.push(def.statusId);
 
-    // Build the effect data
+    // Build the effect data. NOTE: we deliberately do NOT set
+    // flags.dnd5e.riders.statuses — dnd5e's createRiderConditions() already
+    // spawns separate shared rider effects (dnd5eprone, dnd5eincapacitated…)
+    // straight from `this.statuses`, and adding the flag only made it spawn a
+    // duplicate of the status itself too. Rider lifecycle is handled by the
+    // deleteActiveEffect cleanup in condition-raw-hooks.mjs instead. (2026-06-24.)
     const effectData = {
       name: def.name,
       icon: def.icon,

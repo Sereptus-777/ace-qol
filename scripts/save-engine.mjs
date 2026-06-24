@@ -343,12 +343,19 @@ export class SaveEngine {
 
     // ── createChatMessage — reliable hook for PC save results (fires on ALL clients) ──
     Hooks.on("createChatMessage", (message) => {
-      if (!game.user.isGM) return;
       const flags = message.flags?.[MODULE_ID];
-      if (flags?.type === "pcSaveResult" && flags.castId) {
+      if (flags?.type !== "pcSaveResult" || !flags.castId) return;
+      if (game.user.isGM) {
         console.log(`${MODULE_ID} | createChatMessage caught pcSaveResult for`, flags.tokenDocId, "castId:", flags.castId);
         // Small delay to let the DOM render first
         setTimeout(() => this._onPcSaveResultPosted(flags), 200);
+      } else {
+        // ── Player side ── Another client (the GM, or NPC auto-roll) resolved a
+        // PC save. Reflect it on THIS client's copy of the target-list card so the
+        // player's roll button greys out + shows the result, instead of still
+        // looking rollable. (2026-06-24 — fixes GM-rolled PC saves not updating
+        // the player's card.)
+        setTimeout(() => { try { this._updateTargetListPcRow(flags.tokenDocId, flags); } catch (_) {} }, 250);
       }
     });
 
@@ -2846,6 +2853,7 @@ export class SaveEngine {
           castId,
           saveAbility,                       // needed so the GM can re-fire saveComplete
           itemUuid: flags.itemUuid ?? null,
+          rolledByGm: game.user.isGM,        // so a PC's client can show "GM" + grey its button
         }
       }
     });
@@ -2971,7 +2979,12 @@ export class SaveEngine {
       const rollBtn = row.querySelector(".ace-qol-save-pc-roll-btn");
       if (rollBtn) {
         rollBtn.disabled = true;
-        rollBtn.innerHTML = `<span class="ace-qol-save-verdict ${passClass}" style="font-size:13px;font-weight:700;">${verdictText}</span>`;
+        // If a GM rolled this PC's save (shown on the player's own client), tag
+        // it "GM" so the player knows it was rolled for them and is spent.
+        const gmTag = (pcResult.rolledByGm && !game.user.isGM)
+          ? `<span title="Rolled by the GM" style="font-size:9px;font-weight:700;color:#8a7d68;letter-spacing:0.4px;margin-right:4px;">GM</span>`
+          : "";
+        rollBtn.innerHTML = `${gmTag}<span class="ace-qol-save-verdict ${passClass}" style="font-size:13px;font-weight:700;">${verdictText}</span>`;
         rollBtn.style.background = "none";
         rollBtn.style.border = "none";
         rollBtn.style.padding = "0 4px";

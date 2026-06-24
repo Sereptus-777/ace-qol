@@ -514,6 +514,27 @@ export class DamageEngine {
           return;  // skip click handler — no point binding
         }
 
+        // ── Suppress the button when there's nothing to cleave ──
+        // Cleave (mastery OR overkill carryover) both need a hostile creature
+        // within 5 ft of the one you hit. If there's none, don't show a dead
+        // button — on the GM's screen OR the player's. (The render handler is
+        // sync; run the canvas check in a microtask. The import resolves from
+        // cache, so the button hides effectively instantly.) 2026-06-24.
+        (async () => {
+          try {
+            const cf       = message.flags?.[MODULE_ID] ?? {};
+            const first    = (cf.damageResults ?? [])[0];
+            const attActor = cf.actorId ? game.actors?.get?.(cf.actorId) : null;
+            const attTok   = attActor?.getActiveTokens?.()[0] ?? null;
+            const origTok  = first?.tokenDocId ? canvas.tokens?.get?.(first.tokenDocId) : null;
+            if (!attTok || !origTok) return;   // can't evaluate — leave the button
+            const { WeaponMasteries } = await import("./weapon-masteries.mjs");
+            if (WeaponMasteries.findCleaveAdjacent(attTok, origTok).length === 0) {
+              cleaveBtn.style.display = "none";
+            }
+          } catch (_) { /* on any error, leave the button as-is */ }
+        })();
+
         cleaveBtn.addEventListener("click", async () => {
           if (message.flags?.[MODULE_ID]?.applied) return;
           if (message.flags?.[MODULE_ID]?.cleaveFired) return;  // race guard

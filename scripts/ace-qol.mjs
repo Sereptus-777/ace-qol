@@ -4186,6 +4186,75 @@ Hooks.once("ready", () => {
     });
   });
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // V13 HOOK FIX (2026-06-24) — the three handlers ABOVE (status-card suppress,
+  // dnd5e system-card suppress, attack-card chevron) registered ONLY the V12
+  // "renderChatMessage" hook, which NEVER fires in Foundry V13. That's why dnd5e
+  // cards (attacks, spells — everything) still leaked into chat even though
+  // suppressSystemCards defaults ON. Re-register the same behaviour on the V13
+  // "renderChatMessageHTML" hook (and V12 too, harmlessly idempotent — the
+  // dataset guards prevent double-work). This is what actually makes "no dnd5e
+  // card on anything" true in V13.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  // (a) Hide EVERY dnd5e system card — attacks, spells, item uses, all of it.
+  const _aceHideSystemCard = (message, html) => {
+    try {
+      if (!message?.flags?.dnd5e) return;               // only dnd5e system cards
+      if (message.flags?.[MODULE_ID]) return;            // never our own ACE cards
+      if (QolSettings.get("suppressSystemCards") === false) return;
+      const el = html instanceof HTMLElement ? html : html?.[0] ?? html;
+      if (!el || el.dataset?.aceHidden) return;
+      el.style.display = "none";
+      el.dataset.aceHidden = "1";
+    } catch (_) { /* non-fatal */ }
+  };
+  Hooks.on("renderChatMessage", _aceHideSystemCard);
+  Hooks.on("renderChatMessageHTML", _aceHideSystemCard);
+
+  // (b) Hide third-party status-effect spam (Bloodied/Concentrating "Applied to…").
+  const _aceHideStatusCard = (message, html) => {
+    try {
+      if (message?.flags?.[MODULE_ID]) return;
+      const el = html instanceof HTMLElement ? html : html?.[0] ?? html;
+      if (!el || el.dataset?.aceHidden) return;
+      const flagged = message.flags?.blfs
+                   || message.flags?.["dfreds-convenient-effects"]
+                   || message.flags?.["combat-utility-belt"];
+      const txt = el.textContent ?? "";
+      const looksStatus = /\b(Applied to|Removed from)\b/i.test(txt)
+        && /\b(Bloodied|Concentrating|Frightened|Poisoned|Stunned|Blinded|Charmed|Deafened|Exhaustion|Grappled|Incapacitated|Invisible|Paralyzed|Petrified|Prone|Restrained|Unconscious)\b/i.test(txt);
+      if (flagged || looksStatus) { el.style.display = "none"; el.dataset.aceHidden = "1"; }
+    } catch (_) { /* non-fatal */ }
+  };
+  Hooks.on("renderChatMessage", _aceHideStatusCard);
+  Hooks.on("renderChatMessageHTML", _aceHideStatusCard);
+
+  // (c) Wire the chevron toggle on OUR attack-result cards (was V12-only too, so
+  //     the item-description expand/collapse was silently dead in V13).
+  const _aceWireAttackChevron = (message, html) => {
+    try {
+      if (message?.flags?.[MODULE_ID]?.type !== "attackResult") return;
+      const el = html instanceof HTMLElement ? html : html?.[0] ?? html;
+      const toggle = el?.querySelector?.(".ace-qol-atk-info-toggle");
+      if (!toggle || toggle.dataset.aceWired) return;
+      toggle.dataset.aceWired = "1";
+      toggle.addEventListener("click", (ev) => {
+        ev.preventDefault(); ev.stopPropagation();
+        const card = toggle.closest(".ace-qol-attack-card");
+        const details = card?.querySelector(".ace-qol-atk-item-details");
+        if (!details) return;
+        const willShow = details.classList.contains("ace-qol-collapsed");
+        details.classList.toggle("ace-qol-collapsed", !willShow);
+        toggle.setAttribute("aria-expanded", String(willShow));
+        const icon = toggle.querySelector("i");
+        if (icon) { icon.classList.toggle("fa-chevron-down", !willShow); icon.classList.toggle("fa-chevron-up", willShow); }
+      });
+    } catch (_) { /* non-fatal */ }
+  };
+  Hooks.on("renderChatMessage", _aceWireAttackChevron);
+  Hooks.on("renderChatMessageHTML", _aceWireAttackChevron);
+
   // ── Suppress system's ActivityChoiceDialog for ALL weapon uses ──
   // The D&D 5e system shows an "activity-choice" dialog when:
   //   (activities.length > 1 || chooseActivity) && !event?.shiftKey

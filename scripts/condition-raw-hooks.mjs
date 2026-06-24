@@ -70,6 +70,79 @@ export class ConditionRawHooks {
       }
     });
 
+    // ── ACE damage path ── APPLY ALL / Cleave / save-for-half route HP through
+    // DamageApplicator.applyHPDamage, which writes hp via a raw actor.update and
+    // therefore NEVER fires dnd5e.preApplyDamage. So the hook above never heard a
+    // normal ACE attack, and a sleeping creature couldn't be woken by getting hit.
+    // Listen to ACE's own damageApplied hook too. Its payload has no amount/source,
+    // so it only drives the "any damage" reaction (Sleep wake) — caster-specific
+    // ones (charm break, dominate re-save) stay on the dnd5e hook. (2026-06-24.)
+    Hooks.on(`${MODULE_ID}.damageApplied`, (payload) => {
+      try {
+        if (game.users?.activeGM !== game.user) return;
+        const actor = payload?.actor;
+        if (!actor?.effects) return;
+        const sleepEffect = [...(actor.effects ?? [])].find(e =>
+          e && !e.disabled && e.flags?.[MODULE_ID]?.conditionKey === "sleep_unconscious");
+        if (!sleepEffect) return;
+        setTimeout(() => {
+          ConditionRawHooks._wakeSleeper({ actor, effect: sleepEffect, amount: null })
+            .catch(err => console.warn(`${MODULE_ID} | ACE-damage Sleep wake failed:`, err));
+        }, 60);
+      } catch (err) {
+        console.warn(`${MODULE_ID} | ConditionRawHooks damageApplied hook failed:`, err);
+      }
+    });
+
+    // ── Rider cleanup ── dnd5e auto-spawns shared rider CONDITION effects (prone,
+    // incapacitated) from any status that has them — unconscious → prone+incap,
+    // paralyzed/stunned → incap — on EVERY effect create. But it never links those
+    // rider conditions back to the parent, so they are NOT removed when the parent
+    // is deleted; they linger on the token after Sleep / Hold Person ends. When one
+    // of OUR condition effects is deleted, remove the rider conditions it pulled in,
+    // UNLESS another surviving effect still pulls the same rider. (2026-06-24.)
+    Hooks.on("deleteActiveEffect", async (effect, _opts, _userId) => {
+      try {
+        if (game.users?.activeGM !== game.user) return;
+        if (!effect?.flags?.[MODULE_ID]?.conditionKey) return;   // only OUR conditions
+        const actor = effect.parent;
+        if (!(actor instanceof Actor) || !actor.effects) return;
+
+        // Which rider statuses did THIS effect's statuses pull in?
+        const riders = new Set();
+        for (const s of (effect.statuses ?? [])) {
+          for (const p of (CONFIG.statusEffects?.find?.(e => e.id === s)?.riders ?? [])) riders.add(p);
+        }
+        if (!riders.size) return;
+
+        const toDelete = [];
+        for (const rider of riders) {
+          // Justified if another SURVIVING effect still pulls this rider in
+          // (e.g. a creature that's BOTH asleep and held keeps incapacitated).
+          const justified = [...actor.effects].some(e => {
+            if (e.id === effect.id) return false;
+            for (const s2 of (e.statuses ?? [])) {
+              if ((CONFIG.statusEffects?.find?.(x => x.id === s2)?.riders ?? []).includes(rider)) return true;
+            }
+            return false;
+          });
+          if (justified) continue;
+          // Remove the bare single-status rider condition(s) for this status —
+          // never one of our own effects.
+          for (const e of actor.effects) {
+            if (e.id === effect.id) continue;
+            if (e.flags?.[MODULE_ID]?.conditionKey) continue;
+            if (e.statuses?.size === 1 && e.statuses.has(rider)) toDelete.push(e.id);
+          }
+        }
+        if (toDelete.length) {
+          await actor.deleteEmbeddedDocuments("ActiveEffect", [...new Set(toDelete)]);
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | ConditionRawHooks rider cleanup failed (non-fatal):`, err);
+      }
+    });
+
     console.debug(`${MODULE_ID} | ConditionRawHooks online — ${RAW_TRIGGERS.size} keys watched`);
   }
 
@@ -116,7 +189,7 @@ export class ConditionRawHooks {
         actor,
         title: "Sleep — Awakened",
         accent: "#7e9ad0",
-        line: `<b>${actor.name}</b> takes ${amount} damage and snaps awake. The Sleep ends on them.`,
+        line: `<b>${actor.name}</b> takes${Number(amount) > 0 ? ` ${amount}` : ""} damage and snaps awake. The Sleep ends on them.`,
       });
     } catch (err) {
       console.warn(`${MODULE_ID} | Sleep wake-on-damage failed for ${actor.name}:`, err);

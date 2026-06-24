@@ -1283,6 +1283,20 @@ export class LootableTile {
     const isContainer = !isDead && isContainerTile(tileDoc);
     if (!isDead && !isContainer) return;
 
+    // ── Incapacitated creatures can't loot ── (players only; GM unrestricted)
+    // RAW: an incapacitated creature (paralyzed, stunned, unconscious, petrified)
+    // can't take actions — and looting/searching a body IS an action. Block the
+    // dialog so a held/stunned PC can't rummage a corpse or peek its contents.
+    // (2026-06-24.)
+    if (!game.user.isGM) {
+      const st = game.user.character?.statuses;
+      const blocked = ["incapacitated", "paralyzed", "stunned", "unconscious", "petrified"];
+      if (st && blocked.some(s => st.has?.(s))) {
+        ui.notifications?.warn("You can't loot while incapacitated.");
+        return;
+      }
+    }
+
     // ── Distance gate for players (GM is unrestricted) ──
     // The player's character has to be within 10 feet (configurable via
     // setting `lootMaxDistanceFt`) of the body/container to loot it.
