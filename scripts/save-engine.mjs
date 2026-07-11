@@ -323,7 +323,7 @@ export class SaveEngine {
       try {
         if (el?.querySelectorAll) {
           if (game.user?.isGM) {
-            // Reveal the .ace-qol-gm-only blocks (ROLL NPC SAVES / ROLL DAMAGE).
+            // Reveal the .ace-qol-gm-only blocks (ROLL NPC SAVES / APPLY).
             for (const gmEl of el.querySelectorAll(".ace-qol-gm-only")) {
               gmEl.setAttribute("data-ace-gm", "true");
             }
@@ -335,6 +335,15 @@ export class SaveEngine {
             for (const b of el.querySelectorAll(
               "[data-action='aceQolRemoveTarget'],[data-action='aceQolGmRollPcSave'],[data-action='aceQolRemovePhase1'],[data-action='aceQolRemoveResult'],[data-action='aceQolDmgOverride'],.ace-qol-save-pc-roll-btn"
             )) { b.style.display = "none"; }
+          }
+          // ROLL DAMAGE gate — reveal for the GM AND the caster's owning
+          // player(s) so a PC rolls their own spell damage (the dice broadcast
+          // to their screen). Everyone else never sees the button.
+          const _casterIds = flags.casterUserIds;
+          if (game.user?.isGM || (Array.isArray(_casterIds) && _casterIds.includes(game.user?.id))) {
+            for (const gate of el.querySelectorAll(".ace-qol-roll-dmg-gate")) {
+              gate.setAttribute("data-ace-show", "true");
+            }
           }
         }
       } catch (_) { /* cosmetic — never block card wiring */ }
@@ -2088,6 +2097,38 @@ export class SaveEngine {
       }
     }
 
+    // ── ROLL DAMAGE button (GM + the caster's owning player) ──
+    // Johnny 2026-07-11: a PC rolls their OWN spell damage ("part of the fun").
+    // Wired ABOVE the GM-only guard below so the caster's click is bound too.
+    // The GM rolls locally; a non-GM caster hands the roll to the GM over the
+    // socket — the damage dice broadcast back to the caster's screen
+    // (safeShowForRoll uses synchronize=true), so they see themselves roll.
+    // Application stays GM-side.
+    const rollDmgBtn = el.querySelector?.("[data-action='aceQolRollDamage']");
+    if (rollDmgBtn && !rollDmgBtn.dataset.wired) {
+      const _casterIds = flags.casterUserIds ?? [];
+      const _mayRoll = game.user.isGM || _casterIds.includes(game.user.id);
+      if (_mayRoll) {
+        rollDmgBtn.dataset.wired = "1";
+        rollDmgBtn.addEventListener("click", async () => {
+          const stillPending = (message.flags?.[MODULE_ID]?.allResults ?? []).some(r => r.pending);
+          if (stillPending) {
+            ui.notifications?.warn("ACE QOL — wait for every target to roll their save before rolling damage.");
+            return;
+          }
+          rollDmgBtn.disabled = true;
+          rollDmgBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Rolling damage...';
+          if (game.user.isGM) {
+            await this._completeSaveResultsPhase2(message);
+          } else {
+            game.socket.emit(`module.${MODULE_ID}`, {
+              action: "rollSaveDamage", messageId: message.id, userName: game.user.name,
+            });
+          }
+        });
+      }
+    }
+
     // ── × Remove buttons (Phase 1 — strip target from allResults before damage) ──
     // GM-only: the handler calls message.update() which players don't have
     // permission for on GM-authored cards. Without this gate a player click
@@ -2135,24 +2176,6 @@ export class SaveEngine {
       }
     }
 
-    // ── ROLL DAMAGE button ──
-    const rollDmgBtn = el.querySelector?.("[data-action='aceQolRollDamage']");
-    if (rollDmgBtn && !rollDmgBtn.dataset.wired) {
-      rollDmgBtn.dataset.wired = "1";
-      rollDmgBtn.addEventListener("click", async () => {
-        // Defensive: never roll damage while a target's save is still pending —
-        // the button renders disabled in that state, but guard the click too in
-        // case of a stale or raced render.
-        const stillPending = (message.flags?.[MODULE_ID]?.allResults ?? []).some(r => r.pending);
-        if (stillPending) {
-          ui.notifications?.warn("ACE QOL — wait for every target to roll their save before rolling damage.");
-          return;
-        }
-        rollDmgBtn.disabled = true;
-        rollDmgBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Rolling damage...';
-        await this._completeSaveResultsPhase2(message);
-      });
-    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -4141,14 +4164,14 @@ export class SaveEngine {
     const anyWillTakeDamage = hasDamage && results.some(r => !r.pending && (!r.passed || halfOnSave));
     let actionsHtml;
     if (hasDamage && anyPending) {
-      actionsHtml = `<div class="ace-qol-dmg-actions ace-qol-gm-only">
+      actionsHtml = `<div class="ace-qol-dmg-actions ace-qol-roll-dmg-gate">
           <button class="ace-qol-btn ace-qol-btn-roll-dmg" disabled
                   title="Waiting for every target to roll their save first.">
             <i class="fas fa-hourglass-half"></i> WAITING FOR SAVES…
           </button>
         </div>`;
     } else if (anyWillTakeDamage) {
-      actionsHtml = `<div class="ace-qol-dmg-actions ace-qol-gm-only">
+      actionsHtml = `<div class="ace-qol-dmg-actions ace-qol-roll-dmg-gate">
           <button class="ace-qol-btn ace-qol-btn-roll-dmg" data-action="aceQolRollDamage">
             <i class="fas fa-dice-d20"></i> ROLL DAMAGE
           </button>
@@ -4235,6 +4258,11 @@ export class SaveEngine {
           itemId: item.id,
           itemUuid: item.uuid,
           actorId: casterActor?.id,
+          // Owning player(s) of the caster — they see the ROLL DAMAGE button and
+          // roll their OWN spell damage (Johnny 2026-07-11: "PCs always roll
+          // their own damage, it's part of the fun"). Mirrors the weapon path's
+          // attackerOwnerUserIds. GM always rolls too.
+          casterUserIds: game.users.filter(u => !u.isGM && casterActor?.testUserPermission?.(u, "OWNER")).map(u => u.id),
           saveAbility,
           saveDC,
           halfOnSave,

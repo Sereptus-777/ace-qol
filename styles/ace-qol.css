@@ -4828,6 +4828,12 @@
 .ace-qol-gm-only { display: none; }
 .ace-qol-gm-only[data-ace-gm="true"] { display: flex; }
 
+/* Caster-or-GM gate — the save-spell ROLL DAMAGE button. Hidden by default;
+   revealed (data-ace-show) for the GM AND the caster's owning player(s) so a PC
+   rolls their own spell damage. Set by the save-engine render hook. */
+.ace-qol-roll-dmg-gate { display: none; }
+.ace-qol-roll-dmg-gate[data-ace-show="true"] { display: flex; }
+
 /* HP-threshold rider chat card (Mace of Disruption / Smiting / etc.) */
 .ace-qol-hp-threshold-rider {
   display: flex; flex-direction: column; gap: 4px;

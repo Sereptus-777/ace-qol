@@ -4171,6 +4171,21 @@ Hooks.once("ready", () => {
         return;
       }
 
+      // Save-spell damage: a PC clicked ROLL DAMAGE on their own spell's save
+      // card. The GM runs the roll here; the dice broadcast back to the caster
+      // (safeShowForRoll synchronize=true) and the card updates in place.
+      if (payload.action === "rollSaveDamage") {
+        try {
+          const message = game.messages.get(payload.messageId);
+          if (!message) { console.warn(`${MODULE_ID} | rollSaveDamage: message not found ${payload.messageId}`); return; }
+          console.log(`${MODULE_ID} | GM rolling ${payload.userName ?? "caster"}'s save-spell damage for message ${payload.messageId}`);
+          await saveEngine?._completeSaveResultsPhase2?.(message);
+        } catch (err) {
+          console.error(`${MODULE_ID} | rollSaveDamage socket handler crashed:`, err);
+        }
+        return;
+      }
+
       if (payload.action !== "attackRoll") return;
 
       console.log(`${MODULE_ID} | GM received attack from player ${payload.userName}: ${payload.itemName} → ${payload.targets.length} targets`);
