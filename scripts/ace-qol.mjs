@@ -107,6 +107,26 @@ let lootableTile         = null;
 
 const SOCKET_NAME = `module.${MODULE_ID}`;
 
+// ─── [picker-timing] Cast→picker stopwatch ──────────────────────────────────
+// Player-cast save/targeted spells (Frostbite, etc.) route their target picker
+// through the GM: player presses cast → the GM's save-engine sees no target →
+// the GM sockets a "showSpellPicker" request BACK to the caster's client → the
+// picker opens. To the player watching their own screen that round-trip reads
+// as "I pressed it… nothing… then it popped." To PROVE where the delay goes
+// (Johnny 2026-07-11), stamp the exact moment the caster presses cast; the
+// showSpellPicker socket handler below reports the true round-trip in ms.
+// preUseActivity is the earliest hook — it fires before the usage message even
+// exists — and runs ungated on the caster's own client. Timing only; it must
+// never touch or block the cast.
+let _acePickerCastMs   = 0;
+let _acePickerCastName = "";
+Hooks.on("dnd5e.preUseActivity", (activity) => {
+  try {
+    _acePickerCastMs   = performance.now();
+    _acePickerCastName = activity?.item?.name ?? "";
+  } catch (_) { /* timing only */ }
+});
+
 // Read the master on/off switch — safe to call after settings are registered.
 function _aceQolEnabled() {
   try { return game.settings.get(MODULE_ID, "moduleEnabled") !== false; }
@@ -4055,7 +4075,12 @@ Hooks.once("ready", () => {
       //    gate earlier in this handler already scoped the message to this user.)
       if (payload.action === "showSpellPicker") {
         const { requestId, itemUuid, casterActorUuid, maxTargets, rangeFt, allowSelf } = payload;
-        console.log(`${MODULE_ID} | [picker-timing] showSpellPicker socket ARRIVED on caster client — resolving spell + caster now`);
+        // [picker-timing] Headline number: how long from the caster PRESSING cast
+        // to this picker request arriving back (player→GM→player round-trip). The
+        // picker renders ~1 frame after this line, so this ≈ "cast→picker visible".
+        const _rt = _acePickerCastMs ? Math.round(performance.now() - _acePickerCastMs) : -1;
+        const _gm = Number.isFinite(payload.gmProcessMs) ? ` [GM-side ${payload.gmProcessMs}ms via ${payload.detectVia ?? "?"}]` : "";
+        console.log(`${MODULE_ID} | [picker-timing] showSpellPicker ARRIVED — ${_rt}ms from cast-press → picker-request${_gm} (player→GM→player round-trip). Picker renders next.`);
         try {
           const item = await fromUuid(itemUuid);
           const resolved = await fromUuid(casterActorUuid);

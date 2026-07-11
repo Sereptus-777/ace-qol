@@ -126,6 +126,8 @@ export class SaveEngine {
     // dnd5e 5.2.5 uses postCreateUsageMessage, NOT useActivity
     Hooks.on("dnd5e.postCreateUsageMessage", (activity, message) => {
       console.log(`${MODULE_ID} | postCreateUsageMessage fired:`, activity?.item?.name, "save:", activity?.save?.ability);
+      this._castDetectMs  = performance.now();   // [picker-timing] fast path
+      this._castDetectVia = "standard";
       this._onUseActivity(activity);
     });
     // Fallback for older dnd5e versions that might use useActivity
@@ -153,6 +155,7 @@ export class SaveEngine {
     // Dedupe via `_processedActivityIds` Map prevents double-firing.
     Hooks.on("createChatMessage", async (message) => {
       try {
+        const _fbDetectMs = performance.now();   // [picker-timing] slow path — stamped before the ~250ms of built-in waits below
         if (game.users?.activeGM !== game.user) return;
         const dnd5eFlag = message.flags?.dnd5e;
         const activityFlag = dnd5eFlag?.activity;
@@ -250,6 +253,8 @@ export class SaveEngine {
         // Mark BEFORE calling _onUseActivity so the call itself doesn't
         // re-trigger via the standard hook (race-safe)
         this._processedActivityIds.set(dedupKey, Date.now());
+        this._castDetectMs  = _fbDetectMs;                 // [picker-timing] slow path
+        this._castDetectVia = "fallback(+250ms)";
 
         // Defer one tick so the chat message finishes posting first
         setTimeout(() => {
@@ -798,6 +803,10 @@ export class SaveEngine {
         itemUuid: spellItem.uuid,
         casterActorUuid: casterActor.uuid,
         maxTargets, rangeFt, allowSelf,
+        // [picker-timing] GM-side cost (cast detected → this emit) + which detect
+        // path fired, so the caster's log shows the full breakdown from one cast.
+        gmProcessMs: this._castDetectMs ? Math.round(performance.now() - this._castDetectMs) : -1,
+        detectVia: this._castDetectVia ?? "?",
       });
       ui.notifications?.info(`${spellItem.name}: waiting for ${casterUser.name} to choose a target…`);
 
