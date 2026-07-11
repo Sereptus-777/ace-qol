@@ -40,7 +40,7 @@ import { MODULE_ID } from "./ace-qol.mjs";
 const CHAIN_TEXTURE_PATH = "modules/ace-qol/Assets/Conditions/restrained-chain.png";
 // Build stamp — printed at startup so "did the new file load" is answerable
 // in one console glance (the token-art picker header lesson).
-const CV_BUILD = "0.7.209";
+const CV_BUILD = "0.7.210";
 
 /** Conditions this engine renders on the body — their token squares are suppressed. */
 export const BODY_VISUAL_STATUSES = new Set([

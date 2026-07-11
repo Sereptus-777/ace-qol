@@ -24,6 +24,32 @@ export class DamageCalculator {
    * Roll each damage source separately by type.
    * Returns array of { name, formula, roll, total, type, isCritBonus }
    */
+  /**
+   * Parse an attack's damage from its statblock DESCRIPTION when the activity
+   * carries no structured damage part (Steel Defender's Force-Empowered Rend,
+   * imported monster attacks, etc.). Reads the standard 5e line:
+   *   "Hit: 7 (1d8 + 3) force damage"  |  "Hit: 1d8 + PB force damage"  |
+   *   "Hit: 2d6 slashing damage"
+   * Resolves PB / proficiency to a number so the roll needs no @refs.
+   * @returns {{formula:string, type:string}|null}
+   */
+  static _parseHitDamage(item, rollData, actor) {
+    try {
+      const raw = item?.system?.description?.value ?? "";
+      const desc = String(raw).replace(/<[^>]+>/g, " ").replace(/&[a-z]+;/gi, " ").replace(/\s+/g, " ");
+      const m = desc.match(/Hit:\s*(?:\d+\s*)?\(?\s*(\d+d\d+(?:\s*[+\-]\s*(?:\d+|PB|@?prof(?:iciency)?(?:\.value)?))?)\s*\)?\s*([a-zA-Z]+)\s+damage/i);
+      if (!m) return null;
+      let formula = m[1].replace(/\s+/g, "");
+      const type = m[2].toLowerCase();
+      const prof = Number(rollData?.attributes?.prof ?? rollData?.prof ?? actor?.system?.attributes?.prof ?? 0) || 0;
+      formula = formula.replace(/(?:PB|@?prof(?:iciency)?(?:\.value)?)/i, String(prof));
+      formula = formula.replace(/\+\s*\-/, "-").replace(/[+\-]\s*$/, "").trim();
+      // Sanity: must still be a rollable dice expression.
+      if (!/\d+d\d+/.test(formula)) return null;
+      return { formula, type };
+    } catch (_) { return null; }
+  }
+
   static async rollDamageComponents(item, actor, targetState, isCrit, critRule) {
     const components = [];
     const sys = item.system ?? {};
@@ -382,6 +408,24 @@ export class DamageCalculator {
           const result = await DamageCalculator.rollWithCrit(formula, rollData, isCrit, critRule, `Base ${type}`);
           components.push({ name: item.name, ...result, type: type || "untyped" });
         }
+      }
+    }
+
+    // ── Description-damage fallback (2026-07-11) ──
+    // Monster/NPC attacks often carry their damage as statblock TEXT, not a
+    // structured damage part — the Steel Defender's Force-Empowered Rend:
+    // "Hit: 1d8 + PB force damage" lives as a description enricher, and the
+    // activity's damage.parts is EMPTY. With no structured damage,
+    // postDamageButton pre-rolls nothing → no Roll Damage button at all. Read
+    // the "Hit: N (XdY + K/PB) <type> damage" line so the attack still gets its
+    // damage + button. Same class as the Produce Flame gap. Only fires when
+    // NOTHING else produced a base component, so it never double-counts.
+    if (!components.some(c => c.name === item.name)) {
+      const hd = DamageCalculator._parseHitDamage(item, rollData, actor);
+      if (hd) {
+        const result = await DamageCalculator.rollWithCrit(hd.formula, rollData, isCrit, critRule, `Base ${hd.type}`, item);
+        components.push({ name: item.name, ...result, type: hd.type });
+        console.log(`${MODULE_ID} | Description-damage fallback: "${item.name}" → ${hd.formula} ${hd.type} (no structured damage part)`);
       }
     }
 
