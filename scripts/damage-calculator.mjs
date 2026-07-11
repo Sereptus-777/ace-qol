@@ -338,7 +338,11 @@ export class DamageCalculator {
                 ? (rollData.abilities?.[resolvedAbil]?.mod ?? rollData.mod ?? 0)
                 : (rollData.mod ?? str);
               if (abilityOverride && abilityOverride.mod > abilityMod) { abilityMod = abilityOverride.mod; overrideApplied = true; }
-              if (abilityMod !== 0) formula += abilityMod >= 0 ? `+${abilityMod}` : `${abilityMod}`;
+              // Off-hand swing: RAW an off-hand attack adds NO ability mod to its
+              // damage. Strip it here; the qualifying TWF block in combat-state
+              // (2014 style / 2024 Light) restores it as its own bonus when due.
+              const _offhandNoMod = CombatState.isOffhandSwing(item?.uuid);
+              if (abilityMod !== 0 && !_offhandNoMod) formula += abilityMod >= 0 ? `+${abilityMod}` : `${abilityMod}`;
 
               const magicBonus = sys.magicalBonus ?? 0;
               const partBonusNum = parseInt(part.bonus) || 0;
@@ -390,7 +394,7 @@ export class DamageCalculator {
                 abilMod = abilityOverride.mod;
               }
               comp._modMeta = {
-                abilityMod: abilMod,
+                abilityMod: CombatState.isOffhandSwing(item?.uuid) ? 0 : abilMod,
                 abilityName: abilName,
                 magicBonus: sys.magicalBonus ?? 0,
               };

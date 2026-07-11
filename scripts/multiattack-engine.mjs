@@ -25,6 +25,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { CombatState } from "./combat-state.mjs";
 
 const NUM_WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8 };
 const ACCENT = "#ffd54f";
@@ -489,7 +490,7 @@ export class MultiattackEngine {
       }
 
       try {
-        await this._fireAttack(actor, item, activity);
+        await this._fireAttack(actor, item, activity, choice.kind === "offhand");
       } catch (e) {
         console.error(`${MODULE_ID} | [chain] Multiattack fire FAILED:`, e);
         ui.notifications?.error(`ACE Multiattack: the swing failed to fire — see console (F12).`);
@@ -579,7 +580,7 @@ export class MultiattackEngine {
       const dim = state.bonusUsed ? "opacity:0.4;pointer-events:none;filter:grayscale(0.6);" : "";
       const label = b.kind === "offhand" ? `Off-hand: ${b.name}` : b.name;
       return `
-        <button type="button" class="ace-ma-bonus-btn" data-item-id="${b.id}" data-activity-id="${b.activityId ?? ""}" title="${label} (Bonus Action)"
+        <button type="button" class="ace-ma-bonus-btn" data-item-id="${b.id}" data-activity-id="${b.activityId ?? ""}" data-kind="${b.kind ?? ""}" title="${label} (Bonus Action)"
           style="position:relative;width:84px;height:84px;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:3px;padding:6px 4px;background:linear-gradient(180deg,#0c1822 0%,#060d14 100%);border:2px solid ${BONUS_ACCENT}66;border-radius:8px;cursor:pointer;color:#dfeaf5;transition:border-color 0.15s,box-shadow 0.15s;${dim}">
           <img src="${b.img || "icons/svg/sword.svg"}" style="width:42px;height:42px;object-fit:contain;border-radius:4px;pointer-events:none;" />
           <span style="font-size:10px;line-height:1.1;text-align:center;max-width:78px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none;">${label}</span>
@@ -661,7 +662,7 @@ export class MultiattackEngine {
             b.addEventListener("click", (ev) => {
               ev.preventDefault();
               if (state.bonusUsed) return;
-              settle({ itemId: b.getAttribute("data-item-id"), activityId: b.getAttribute("data-activity-id") || null, bonus: true });
+              settle({ itemId: b.getAttribute("data-item-id"), activityId: b.getAttribute("data-activity-id") || null, bonus: true, kind: b.getAttribute("data-kind") || null });
               dialog.close();
             });
           });
@@ -681,8 +682,17 @@ export class MultiattackEngine {
    * targets whatever the user currently has targeted, and flows through the
    * normal AttackPipeline (hit/miss/damage/riders).
    */
-  static async _fireAttack(actor, item, activity = null) {
+  static async _fireAttack(actor, item, activity = null, isOffhand = false) {
     this._inFlight.add(actor.id);
+    // Two-weapon OFF-HAND: flag this swing so the damage calculator strips the
+    // base ability mod (RAW: off-hand damage gets none) and combat-state restores
+    // it only when the 2014 TWF style / 2024 Light rule qualifies. A NON-off-hand
+    // swing of the same weapon clears any stale flag, so a main-hand swing right
+    // after an off-hand one keeps its mod.
+    if (item?.uuid) {
+      if (isOffhand) CombatState.markOffhandSwing(item.uuid);
+      else CombatState.clearOffhandSwing(item.uuid);
+    }
     // A fake event dnd5e can safely poke at — if the system calls
     // preventDefault/stopPropagation on a bare POJO it throws INSIDE use()
     // and the whole swing dies silently. These no-ops make that impossible.

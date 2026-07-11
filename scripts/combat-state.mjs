@@ -20,6 +20,28 @@ const PHYSICAL_TYPES = new Set(["bludgeoning", "piercing", "slashing"]);
 
 export class CombatState {
 
+  // ── Off-hand swing signal (two-weapon fighting) ──
+  // The multiattack engine stamps an off-hand swing here right before it fires,
+  // so the damage calculator knows to STRIP the base ability mod (RAW: an
+  // off-hand attack's damage gets NO ability mod) and the TWF block below knows
+  // to RESTORE it only when the 2014 fighting style / 2024 Light rule qualifies.
+  // Keyed by item uuid with a short TTL so it can't bleed into a later main-hand
+  // swing of the same weapon.
+  static _offhandSwings = new Map();
+  static markOffhandSwing(uuid) {
+    if (uuid) CombatState._offhandSwings.set(uuid, Date.now() + 8000);
+  }
+  static clearOffhandSwing(uuid) {
+    if (uuid) CombatState._offhandSwings.delete(uuid);
+  }
+  static isOffhandSwing(uuid) {
+    if (!uuid) return false;
+    const exp = CombatState._offhandSwings.get(uuid);
+    if (!exp) return false;
+    if (Date.now() > exp) { CombatState._offhandSwings.delete(uuid); return false; }
+    return true;
+  }
+
   /**
    * Full combat assessment — EVERY rule checked.
    */
@@ -983,7 +1005,13 @@ export class CombatState {
     // damage path (dnd5e.mjs ~28326), so feature-aware code (us) owns the
     // restoration. Both editions still require: Light property + a second
     // equipped Light weapon + positive ability mod.
-    if (isMelee) {
+    if (isMelee && CombatState.isOffhandSwing(item?.uuid)) {
+      // OFF-HAND swing only. RAW: the off-hand attack's damage gets the ability
+      // mod ONLY with the 2014 Two-Weapon Fighting style, or automatically under
+      // the 2024 Light property. The damage calculator strips the base mod on an
+      // off-hand swing (see damage-calculator), so this block is the sole
+      // authority that restores it — and only when it qualifies. Main-hand swings
+      // aren't marked, so they skip this entirely and keep their base mod.
       const itemSysX = item?.system ?? {};
       const propsX = itemSysX.properties ?? new Set();
       if (propsX.has?.("lgt")) {
