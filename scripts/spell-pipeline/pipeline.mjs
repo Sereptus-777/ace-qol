@@ -151,18 +151,20 @@ export class SpellPipeline {
         const entry = SpellPipeline._getEntry(activity?.item);
         if (!entry) return;
 
-        // Dedup — key by activity UUID + cast timestamp via _cacheKey, NOT
-        // by activity object reference. dnd5e 5.x clones/wraps activities
-        // between hooks, making WeakSet ref-based dedup miss duplicates →
-        // double dispatch → double slot consumption + double effect application.
-        // (Audit-mandated 2026-06-08.)
-        const dedupKey = SpellPipeline._cacheKey(activity);
+        // Dedup — key by the CHAT MESSAGE id, NOT the activity UUID. Each cast
+        // creates exactly ONE usage message; dnd5e firing this hook twice for
+        // the SAME cast re-notifies the SAME message → same id → skipped. But
+        // the activity UUID is STABLE across casts, so keying on it wrongly
+        // blocked a legit SECOND cast for 30s (Johnny 2026-07-11: "Ghostly Howl
+        // won't fire twice in a row — I have to wait ~30s"). Message id has no
+        // such collision. Fall back to _cacheKey only when there's no message.
+        const dedupKey = message?.id ?? SpellPipeline._cacheKey(activity);
         if (SpellPipeline._handledActivities.has(dedupKey)) {
           console.debug(`${MODULE_ID} | SpellPipeline: duplicate postCreateUsageMessage for ${activity.item?.name} (key=${dedupKey}) — skipped`);
           return;
         }
         SpellPipeline._handledActivities.add(dedupKey);
-        SpellPipeline._evictHandledActivity(dedupKey);  // 30s auto-evict
+        SpellPipeline._evictHandledActivity(dedupKey);  // 30s auto-evict (safety only)
 
         SpellPipeline._dispatch(activity, message)
           .catch(err => console.error(`${MODULE_ID} | SpellPipeline dispatch threw for ${activity?.item?.name}:`, err));
