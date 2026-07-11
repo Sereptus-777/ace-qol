@@ -314,6 +314,30 @@ export class SaveEngine {
 
       const el = html instanceof HTMLElement ? html : (html[0] ?? html);
 
+      // ── Reveal GM-only controls on PUBLIC save cards ──
+      // The save/results cards are public (Johnny 2026-07-11) so the whole table
+      // sees the cast + result. Interactive controls (ROLL NPC SAVES, ROLL
+      // DAMAGE) ship hidden via .ace-qol-gm-only { display:none } and are flipped
+      // on for the GM here by stamping data-ace-gm="true". Players never see the
+      // buttons and so can't trigger a message.update() they lack permission for.
+      try {
+        if (el?.querySelectorAll) {
+          if (game.user?.isGM) {
+            // Reveal the .ace-qol-gm-only blocks (ROLL NPC SAVES / ROLL DAMAGE).
+            for (const gmEl of el.querySelectorAll(".ace-qol-gm-only")) {
+              gmEl.setAttribute("data-ace-gm", "true");
+            }
+          } else {
+            // Hide GM-only in-row controls from players — remove-target ×,
+            // roll-on-behalf dice, phase-1 remove. These live inside shared
+            // rows (not a .ace-qol-gm-only wrapper), so hide them per-viewer
+            // here. Players roll their OWN saves via their whispered prompt.
+            for (const b of el.querySelectorAll(
+              "[data-action='aceQolRemoveTarget'],[data-action='aceQolGmRollPcSave'],[data-action='aceQolRemovePhase1'],[data-action='aceQolRemoveResult'],[data-action='aceQolDmgOverride'],.ace-qol-save-pc-roll-btn"
+            )) { b.style.display = "none"; }
+          }
+        }
+      } catch (_) { /* cosmetic — never block card wiring */ }
 
       // ── Save Prompt card (legacy — still supported) ──
       if (flags.type === "savePrompt") {
@@ -1140,6 +1164,101 @@ export class SaveEngine {
     return this._postLiveTargetCard(item, actor, tokens, opts);
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Public cast announcement + auto-generated effect line
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  //  Johnny 2026-07-11: a player-cast save spell was landing SILENTLY in chat —
+  //  the "who must save" card was whispered to the GM only, so the caster saw a
+  //  token animation and nothing else and assumed the spell had failed. Every
+  //  save card is now PUBLIC and leads with a plain-English "X casts Y on Z"
+  //  banner plus a one-line summary of what a failed save costs, so the whole
+  //  table always sees what was cast and on whom.
+
+  /** "Steel Defender" · "A and B" · "A, B, and C" · "5 creatures". Dedupes by
+   *  name so five identical goblins read as "5 creatures", not a wall of names. */
+  _formatTargetNames(targets) {
+    try {
+      const names = (targets ?? [])
+        .map(t => t?.name ?? t?.actor?.name ?? t?.document?.name)
+        .filter(Boolean);
+      const uniq = [...new Set(names)];
+      if (!uniq.length) return "";
+      if (uniq.length === 1) return uniq[0];
+      if (uniq.length === 2) return `${uniq[0]} and ${uniq[1]}`;
+      if (uniq.length === 3) return `${uniq[0]}, ${uniq[1]}, and ${uniq[2]}`;
+      return `${uniq.length} creatures`;
+    } catch (_) { return ""; }
+  }
+
+  /** Slim banner: "🪄 Chudd casts Frostbite on Steel Defender". Shared by the
+   *  save card AND the results/damage card so the announcement survives the
+   *  target-card collapse and the two cards read as one continuous story. */
+  _castAnnouncementHtml(item, casterActor, targets) {
+    const caster = casterActor?.name ?? "Someone";
+    const spell  = item?.name ?? "a spell";
+    const tgts   = this._formatTargetNames(targets);
+    return `<div class="ace-qol-save-cast-line">`
+      + `<i class="fas fa-wand-magic-sparkles"></i> `
+      + `<strong>${caster}</strong> casts <strong>${spell}</strong>`
+      + `${tgts ? ` on <strong>${tgts}</strong>` : ""}`
+      + `</div>`;
+  }
+
+  /** One concise, RAW-accurate line describing what a FAILED save costs.
+   *  Hand-tuned wording for the spells that come up most; everything else
+   *  auto-generates from the spell's own damage types + applied-effect names.
+   *  Returns "" when we can't say anything reliable — better a clean omission
+   *  than a wrong summary. Edition-neutral phrasing. */
+  _effectSummaryLine(item, opts = {}) {
+    try {
+      const { halfOnSave, damageTypes } = opts;
+      const key = String(item?.name ?? "").toLowerCase().trim();
+
+      // Hand-tuned blurbs (read after "On a failed save: ").
+      const BLURBS = {
+        "frostbite":                 "cold damage, and disadvantage on its next weapon attack before its next turn",
+        "ray of frost":              "cold damage, and its speed drops by 10 ft",
+        "hold person":               "Paralyzed — it repeats the save at the end of each of its turns",
+        "hold monster":              "Paralyzed — it repeats the save at the end of each of its turns",
+        "command":                   "it obeys a one-word command on its next turn",
+        "vicious mockery":           "psychic damage, and disadvantage on its next attack roll",
+        "toll the dead":             "necrotic damage (a d12 if it's already wounded)",
+        "sacred flame":              "radiant damage (ignores cover)",
+        "tasha's hideous laughter":  "Prone and Incapacitated, laughing helplessly",
+        "hideous laughter":          "Prone and Incapacitated, laughing helplessly",
+        "fear":                      "it drops what it's holding and is Frightened",
+        "suggestion":                "it follows a reasonable suggested course of action",
+        "fireball":                  "fire damage",
+        "poison spray":              "poison damage",
+        "mind sliver":               "psychic damage, and subtracts 1d4 from its next save",
+        "banishment":                "it is Banished to another plane",
+        "blindness/deafness":        "Blinded (or Deafened)",
+        "bane":                      "it subtracts 1d4 from attacks and saves",
+      };
+      if (BLURBS[key]) {
+        return `On a failed save: ${BLURBS[key]}`
+             + `${halfOnSave ? " (half as much on a success)" : ""}.`;
+      }
+
+      // Structured fallback — damage types + any condition the item's own
+      // effects will apply.
+      const parts = [];
+      const types = [...new Set((damageTypes ?? []).filter(t => t && t !== "none"))];
+      if (types.length) parts.push(`${types.join("/")} damage`);
+      const condNames = [...new Set((item?.effects ?? [])
+        .filter(e => e && e.disabled !== true)
+        .map(e => String(e.name ?? "").trim())
+        .filter(Boolean)
+        .filter(n => n.toLowerCase() !== key))];
+      if (condNames.length) parts.push(condNames.join(", "));
+      if (!parts.length) return "";
+      let line = `On a failed save: ${parts.join("; ")}`;
+      if (halfOnSave && types.length) line += " (half as much on a success)";
+      return line + ".";
+    } catch (_) { return ""; }
+  }
+
   async _postLiveTargetCard(item, actor, tokens, opts) {
     // v0.4.22.4: Pace the save card behind the spell/feat animation.
     // Without this delay the save card can land 1-2 seconds before the
@@ -1362,8 +1481,10 @@ export class SaveEngine {
     const _actName   = _saveAct?.name ?? "";
     const _hasPower  = _actName && _actName !== item.name;
     const _cardTitle = _hasPower ? _actName : item.name;
+    const _effectLine = this._effectSummaryLine(item, { halfOnSave, damageTypes });
     const cardHtml = `
       <div class="ace-qol-save-card">
+        ${this._castAnnouncementHtml(item, actor, tokens)}
         <div class="ace-qol-save-header">
           <img src="${item.img || "icons/svg/spell.svg"}" class="ace-qol-save-item-img" />
           <div>
@@ -1373,6 +1494,7 @@ export class SaveEngine {
           </div>
           ${halfOnSave ? '<span class="ace-qol-save-half-badge">HALF ON SAVE</span>' : ""}
         </div>
+        ${_effectLine ? `<div class="ace-qol-save-effect-line"><i class="fas fa-angle-right"></i> ${_effectLine}</div>` : ""}
 
         ${npcs.length ? `
           <div class="ace-qol-save-tgt-section">
@@ -1386,7 +1508,7 @@ export class SaveEngine {
           </div>
         ` : ""}
 
-        <div class="ace-qol-save-actions">
+        <div class="ace-qol-save-actions ace-qol-gm-only">
           <button class="ace-qol-btn ace-qol-btn-roll" data-action="aceQolRollNpcSaves">
             <i class="fas fa-dice-d20"></i> ${
               npcs.length > 0 && pcs.length > 0 ? "ROLL NPC SAVES + PROMPT PCs" :
@@ -1401,7 +1523,10 @@ export class SaveEngine {
     const targetListMsg = await ChatMessage.create({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor }),
-      whisper: [game.user.id],
+      // PUBLIC (Johnny 2026-07-11): the whole table sees who cast what on whom.
+      // GM-only controls inside the card are gated with .ace-qol-gm-only; the
+      // GM (message author) still owns every message.update() that fills in
+      // results, so players see the card update live but can't edit it.
       flags: {
         [MODULE_ID]: {
           type: "saveTargetList",
@@ -4005,14 +4130,14 @@ export class SaveEngine {
     const anyWillTakeDamage = hasDamage && results.some(r => !r.pending && (!r.passed || halfOnSave));
     let actionsHtml;
     if (hasDamage && anyPending) {
-      actionsHtml = `<div class="ace-qol-dmg-actions">
+      actionsHtml = `<div class="ace-qol-dmg-actions ace-qol-gm-only">
           <button class="ace-qol-btn ace-qol-btn-roll-dmg" disabled
                   title="Waiting for every target to roll their save first.">
             <i class="fas fa-hourglass-half"></i> WAITING FOR SAVES…
           </button>
         </div>`;
     } else if (anyWillTakeDamage) {
-      actionsHtml = `<div class="ace-qol-dmg-actions">
+      actionsHtml = `<div class="ace-qol-dmg-actions ace-qol-gm-only">
           <button class="ace-qol-btn ace-qol-btn-roll-dmg" data-action="aceQolRollDamage">
             <i class="fas fa-dice-d20"></i> ROLL DAMAGE
           </button>
@@ -4063,6 +4188,7 @@ export class SaveEngine {
 
     return `
       <div class="ace-qol-save-results-card" data-phase="1">
+        ${this._castAnnouncementHtml(item, item.actor, results)}
         <div class="ace-qol-save-header">
           <img src="${item.img || "icons/svg/spell.svg"}" class="ace-qol-save-item-img" />
           <div>
@@ -4088,7 +4214,9 @@ export class SaveEngine {
     await ChatMessage.create({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor: casterActor }),
-      whisper: [game.user.id],
+      // PUBLIC (Johnny 2026-07-11): the save results are visible to the whole
+      // table. The ROLL DAMAGE button is .ace-qol-gm-only; damage rolls +
+      // application still run GM-side via the existing button handler.
       flags: {
         [MODULE_ID]: {
           type: "saveResults",
@@ -4575,6 +4703,7 @@ export class SaveEngine {
 
     return `
       <div class="ace-qol-save-results-card" data-phase="2">
+        ${this._castAnnouncementHtml(item, casterActor, results)}
         <div class="ace-qol-save-header">
           <img src="${item.img || "icons/svg/spell.svg"}" class="ace-qol-save-item-img" />
           <div>
@@ -4586,11 +4715,11 @@ export class SaveEngine {
         <div class="ace-qol-save-results">
           ${targetRows}
         </div>
-        <div class="ace-qol-dmg-actions">
+        <div class="ace-qol-dmg-actions ace-qol-gm-only">
           <button class="ace-qol-btn ace-qol-btn-apply" data-action="aceQolApplyDamage">
             <i class="fas fa-heart-crack"></i> APPLY ALL
           </button>
-          <button class="ace-qol-btn ace-qol-btn-undo" data-action="aceQolUndoDamage" disabled
+          <button class="ace-qol-btn ace-qol-btn-undo" data-action="aceQolUndoDamage" disabled>
             <i class="fas fa-undo"></i> UNDO ALL
           </button>
         </div>
@@ -4758,6 +4887,7 @@ export class SaveEngine {
 
     const cardHtml = `
       <div class="ace-qol-save-results-card">
+        ${this._castAnnouncementHtml(item, casterActor, results)}
         <div class="ace-qol-save-header">
           <img src="${item.img || "icons/svg/spell.svg"}" class="ace-qol-save-item-img" />
           <div>
@@ -4769,11 +4899,11 @@ export class SaveEngine {
         <div class="ace-qol-save-results">
           ${targetRows}
         </div>
-        <div class="ace-qol-dmg-actions">
+        <div class="ace-qol-dmg-actions ace-qol-gm-only">
           <button class="ace-qol-btn ace-qol-btn-apply" data-action="aceQolApplyDamage">
             <i class="fas fa-heart-crack"></i> APPLY ALL
           </button>
-          <button class="ace-qol-btn ace-qol-btn-undo" data-action="aceQolUndoDamage" disabled
+          <button class="ace-qol-btn ace-qol-btn-undo" data-action="aceQolUndoDamage" disabled>
             <i class="fas fa-undo"></i> UNDO ALL
           </button>
         </div>
@@ -4783,7 +4913,9 @@ export class SaveEngine {
     await ChatMessage.create({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor: casterActor }),
-      whisper: [game.user.id],
+      // PUBLIC (Johnny 2026-07-11): the table sees the damage + HP change. The
+      // APPLY/UNDO + per-target override buttons are GM-only (hidden per-viewer
+      // on render); the damage/HP readout stays visible to everyone.
       flags: {
         [MODULE_ID]: {
           type: "saveResults",

@@ -1221,6 +1221,28 @@
   overflow: hidden; font-family: 'Segoe UI', sans-serif;
 }
 
+/* ── Public cast announcement banner ("Chudd casts Frostbite on Steel Defender") ──
+   Johnny 2026-07-11: save cards are public now; this banner tells the whole
+   table who cast what on whom. Blue accent to match this card's theme. */
+.ace-qol-save-cast-line {
+  display: flex; align-items: center; gap: 7px;
+  padding: 7px 11px;
+  background: linear-gradient(180deg, rgba(68,138,255,0.16), rgba(68,138,255,0.05));
+  border-bottom: 1px solid rgba(68,138,255,0.30);
+  color: #dfe7f5; font-size: 13.5px; line-height: 1.3;
+}
+.ace-qol-save-cast-line i { color: #6ba4ff; font-size: 13px; }
+.ace-qol-save-cast-line strong { color: #ffffff; font-weight: 700; }
+
+/* ── Auto-generated "on a failed save" effect hint ── */
+.ace-qol-save-effect-line {
+  display: flex; align-items: baseline; gap: 6px;
+  padding: 5px 11px 7px 11px;
+  color: #aab6c8; font-size: 12px; font-style: italic; line-height: 1.35;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.ace-qol-save-effect-line i { color: #6ba4ff; font-style: normal; font-size: 10px; }
+
 .ace-qol-save-header {
   display: flex; align-items: center; gap: 8px; padding: 6px 10px;
   background: linear-gradient(135deg, #1a1a1e 0%, #1a1a2a 100%);
