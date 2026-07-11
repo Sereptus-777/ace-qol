@@ -234,6 +234,14 @@ export class TurnMarker {
   // ═══════════════════════════════════════════════════════════════════════════
 
   _notifyIfMyTurn(combatant) {
+    // Diagnostic (2026-07-11): logs on EVERY client which combatant is being
+    // notified and where the combat pointer is — so "does the sound fire on
+    // turn BEGIN or END, and for whom" is answerable in one glance next combat.
+    try {
+      const c = game.combat;
+      console.debug(`${MODULE_ID} | [turn-sound] notify → combatant "${combatant?.name}" | combat.turn=${c?.turn} round=${c?.round} current="${c?.combatant?.name}" | isGM=${game.user.isGM}`);
+    } catch (_) {}
+
     if (!combatant || combatant.id === this._lastNotifiedCombatantId) return;
     this._lastNotifiedCombatantId = combatant.id;
 
