@@ -1225,14 +1225,14 @@
    Johnny 2026-07-11: save cards are public now; this banner tells the whole
    table who cast what on whom. Blue accent to match this card's theme. */
 .ace-qol-save-cast-line {
-  display: flex; align-items: center; gap: 7px;
+  display: block;                 /* NOT flex — flex squeezed the words into columns */
   padding: 7px 11px;
   background: linear-gradient(180deg, rgba(68,138,255,0.16), rgba(68,138,255,0.05));
   border-bottom: 1px solid rgba(68,138,255,0.30);
-  color: #dfe7f5; font-size: 13.5px; line-height: 1.3;
+  color: #dfe7f5; font-size: 13.5px; line-height: 1.4;
 }
-.ace-qol-save-cast-line i { color: #6ba4ff; font-size: 13px; }
-.ace-qol-save-cast-line strong { color: #ffffff; font-weight: 700; }
+.ace-qol-save-cast-line i { color: #6ba4ff; font-size: 13px; margin-right: 5px; }
+.ace-qol-save-cast-line strong { color: #ffffff; font-weight: 700; white-space: nowrap; }
 
 /* ── Auto-generated "on a failed save" effect hint ── */
 .ace-qol-save-effect-line {
