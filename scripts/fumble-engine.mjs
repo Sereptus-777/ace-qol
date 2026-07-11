@@ -51,10 +51,12 @@ export class FumbleEngine {
   static init() {
     Hooks.on("dnd5e.rollAttackV2", async (rolls, data) => {
       try {
-        if (!QolSettings.get?.("criticalFumbleEnabled")) return;
+        const fumbleTable = QolSettings.get?.("criticalFumbleEnabled");
+        const endsTurn    = QolSettings.get?.("fumbleEndsTurn");
+        if (!fumbleTable && !endsTurn) return;
         const roll = Array.isArray(rolls) ? rolls[0] : rolls;
         if (!roll) return;
-        // Detect natural 1: the d20 die's first result === 1
+        // Detect natural 1: the d20 die's first (kept) result === 1.
         const d20 = roll.dice?.find(d => d.faces === 20);
         if (!d20) return;
         const result = d20.results?.[0]?.result;
@@ -62,13 +64,62 @@ export class FumbleEngine {
         // Note: dnd5e ALSO checks if the actor has the "lucky" feat or shield
         // master — those auto-reroll. By the time this hook fires the reroll
         // has already happened and the rolled result is what stands.
-        await FumbleEngine._postFumble(data?.subject?.actor ?? data?.actor);
+        const actor = data?.subject?.actor ?? data?.actor;
+
+        // (A) Fumble table card (optional, independent toggle).
+        if (fumbleTable) await FumbleEngine._postFumble(actor);
+
+        // (B) Fumble ENDS THE TURN (Johnny's table rule, 2026-07-10): a nat-1
+        //     on your OWN turn = you're done, immediately. Auto-advances.
+        if (endsTurn) FumbleEngine._endTurnOnFumble(actor);
       } catch (err) {
         console.warn(`${MODULE_ID} | FumbleEngine threw:`, err);
       }
     });
 
     console.debug(`${MODULE_ID} | FumbleEngine online`);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Fumble ends the turn — hard house rule (opt-in)
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  //  A nat-1 on the ACTIVE combatant's OWN attack ends their turn NOW — no
+  //  further attacks, bonus actions, or multiattack pop-up. Only the fumbler's
+  //  OWN turn ends (an opportunity-attack fumble on someone else's turn does
+  //  NOT skip that creature). Roll hooks are LOCAL to the roller, and only the
+  //  GM can advance combat — so a player's fumble relays to the GM over the
+  //  socket; a GM-rolled fumble advances directly.
+  static _endTurnOnFumble(actor) {
+    try {
+      const combat = game.combat;
+      if (!combat?.started || !actor) return;
+      const current = combat.combatant?.actor;
+      if (!current || current.id !== actor.id) return;   // not the fumbler's turn
+
+      ui.notifications?.warn(`${actor.name} FUMBLED — turn ended.`);
+      if (game.users?.activeGM === game.user) {
+        FumbleEngine._advanceAfterFumble(actor.id);
+      } else {
+        try { game.socket.emit(`module.${MODULE_ID}`, { action: "fumbleEndTurn", actorId: actor.id }); }
+        catch (err) { console.warn(`${MODULE_ID} | fumble socket relay failed:`, err); }
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | FumbleEngine._endTurnOnFumble threw:`, err);
+    }
+  }
+
+  /** activeGM-only: advance past the fumbler's turn after a short beat so the
+   *  fumble card + "turn ended" toast register first. Re-checks the combatant
+   *  right before advancing so nothing races the turn forward twice. */
+  static _advanceAfterFumble(actorId) {
+    if (game.users?.activeGM !== game.user) return;
+    setTimeout(() => {
+      try {
+        const c = game.combat;
+        if (c?.started && c.combatant?.actor?.id === actorId) c.nextTurn?.();
+      } catch (err) { console.warn(`${MODULE_ID} | fumble turn-advance threw:`, err); }
+    }, 750);
   }
 
   static async _postFumble(actor) {

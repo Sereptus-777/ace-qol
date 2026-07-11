@@ -3988,6 +3988,22 @@ Hooks.once("ready", () => {
         return;
       }
 
+      // ── Fumble-ends-turn relay: a player fumbled; the GM advances combat ──
+      // (players can't advance the turn themselves). activeGM-gated + re-checks
+      // the combatant so it can't double-advance. (Johnny's table rule.)
+      if (payload?.action === "fumbleEndTurn") {
+        if (game.users?.activeGM === game.user && game.combat?.started
+            && game.combat.combatant?.actor?.id === payload.actorId) {
+          setTimeout(() => {
+            try {
+              const c = game.combat;
+              if (c?.started && c.combatant?.actor?.id === payload.actorId) c.nextTurn?.();
+            } catch (_) { /* non-fatal */ }
+          }, 750);
+        }
+        return;
+      }
+
       if (!payload?.action || payload?.userId !== game.user.id) return;
 
       // ── Close system ActivityChoiceDialogs (Divine Smite "Use/Damage/Undead" popup) ──

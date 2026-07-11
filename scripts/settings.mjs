@@ -603,6 +603,12 @@ export class QolSettings {
       scope: "world", config: false, type: Boolean, default: false,
     });
 
+    s("fumbleEndsTurn", {
+      name: "Fumble Ends the Turn",
+      hint: "OPTIONAL house rule. When a combatant rolls a natural 1 on an attack during their OWN turn, their turn ends IMMEDIATELY — the turn auto-advances, no further attacks, bonus actions, or the multiattack pop-up. Off by default. (Independent of the Critical Fumble Table above.)",
+      scope: "world", config: false, type: Boolean, default: false,
+    });
+
     // ── Opportunity Attack Prompt (PHB 195) ─────────────────────────────
     s("opportunityAttackPrompt", {
       name: "Opportunity Attack Prompt",

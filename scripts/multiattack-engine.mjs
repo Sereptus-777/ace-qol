@@ -53,7 +53,17 @@ export class MultiattackEngine {
     Hooks.on("dnd5e.rollAttack",   trigger);
 
     // Per-turn gating reset
-    Hooks.on("combatTurn",  () => MultiattackEngine._chained.clear());
+    Hooks.on("combatTurn",  () => {
+      MultiattackEngine._chained.clear();
+      // Close any open chain pop-up for an actor who is no longer the active
+      // combatant — covers fumble-ends-turn + GM manual skip (2026-07-10).
+      try {
+        const curId = game.combat?.combatant?.actor?.id;
+        for (const [aid, dlg] of MultiattackEngine._openPrompts) {
+          if (aid !== curId) { try { dlg?.close?.(); } catch (_) {} }
+        }
+      } catch (_) { /* non-fatal */ }
+    });
     Hooks.on("combatRound", () => MultiattackEngine._chained.clear());
     Hooks.on("deleteCombat", () => { MultiattackEngine._chained.clear(); MultiattackEngine._inFlight.clear(); MultiattackEngine._activeChains.clear(); });
 
@@ -448,6 +458,12 @@ export class MultiattackEngine {
 
     try {
     while (remainingCount() > 0 || (bonusAttacks.length && !state.bonusUsed)) {
+      // Turn ended out from under us (fumble-ends-turn, GM skip)? Stop offering —
+      // no more swings once it isn't this actor's turn (2026-07-10).
+      if (game.combat?.started && game.combat.combatant?.actor?.id !== actor.id) {
+        console.log(`${MODULE_ID} | [chain] ${actor.name} is no longer the active combatant — ending chain`);
+        break;
+      }
       const choice = await this._promptOne(actor, state, bonusAttacks);
       if (!choice) break;   // End Attacks / window closed → chain over
 
