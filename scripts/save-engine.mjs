@@ -1590,7 +1590,9 @@ export class SaveEngine {
         rollBtn.addEventListener("click", async () => {
           rollBtn.disabled = true;
           rollBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Rolling...';
+          const restoreScroll = this._preserveChatScroll();
           await this._rollAllSaves(message);
+          restoreScroll();
           rollBtn.innerHTML = '<i class="fas fa-check"></i> ROLLED \u2713';
           await message.setFlag(MODULE_ID, "rolled", true);
         });
@@ -1759,7 +1761,9 @@ export class SaveEngine {
             castId: message.id,
           }}};
 
+          const restoreScroll = this._preserveChatScroll();
           await this._rollPcSave(fakeMsg);
+          restoreScroll();
           btn.innerHTML = '<i class="fas fa-check"></i>';
         });
       }
@@ -1801,7 +1805,9 @@ export class SaveEngine {
           rollNpcBtn.disabled = true;
           rollNpcBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Rolling NPC saves...';
 
+          const restoreScroll = this._preserveChatScroll();
           await this._rollNpcSavesFromTargetList(message);
+          restoreScroll();
 
           rollNpcBtn.innerHTML = '<i class="fas fa-check"></i> ROLLED \u2713';
           await message.setFlag(MODULE_ID, "rolled", true);
@@ -1837,6 +1843,36 @@ export class SaveEngine {
   //  Button Wiring — PC Save Prompt (whispered to player)
   // ═══════════════════════════════════════════════════════════════════════════
 
+  /**
+   * Keep the GM's chat scroll position when THEY roll a save (Johnny 2026-07-11:
+   * "don't jump down to the result — I have to scroll back up to find the next
+   * PC I missed"). Foundry force-scrolls to the bottom whenever the message
+   * AUTHOR is the current user, so a GM-rolled save always yanks the GM's view
+   * down (a connected player, not the author, stays put). We snapshot the log's
+   * scroll position and, if the GM had scrolled UP off the bottom, re-assert it
+   * across a few frames to beat Foundry's auto-scroll. Returns a restore() fn.
+   */
+  _preserveChatScroll() {
+    try {
+      const log = document.querySelector("#chat-log")
+        ?? document.querySelector("ol.chat-log")
+        ?? ui.chat?.element?.querySelector?.("ol.chat-log");
+      if (!log) return () => {};
+      const prevTop  = log.scrollTop;
+      const atBottom = (log.scrollHeight - log.scrollTop - log.clientHeight) < 40;
+      return () => {
+        if (atBottom) return;   // they were pinned to the bottom — leave it there
+        const restore = () => { try { log.scrollTop = prevTop; } catch (_) {} };
+        restore();
+        // Result card + DSN reveal render async — re-assert to outlast the
+        // auto-scroll without guessing a single delay.
+        setTimeout(restore, 120);
+        setTimeout(restore, 400);
+        setTimeout(restore, 1000);
+      };
+    } catch (_) { return () => {}; }
+  }
+
   _wirePcSaveButton(el, message, flags) {
     // If already rolled, collapse the entire prompt card
     if (flags.rolled) {
@@ -1853,7 +1889,9 @@ export class SaveEngine {
       rollBtn.disabled = true;
       rollBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Rolling...';
 
+      const restoreScroll = this._preserveChatScroll();
       await this._rollPcSave(message);
+      restoreScroll();
 
       // Collapse on this client immediately (DOM only — no flag write needed)
       rollBtn.innerHTML = '<i class="fas fa-check"></i> ROLLED \u2713';

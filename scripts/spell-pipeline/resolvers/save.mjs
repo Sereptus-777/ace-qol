@@ -168,14 +168,27 @@ export class SaveResolver {
     });
 
     // ── Hearing gate for sound-based emanations (a howl, a thunderous roar) ──
-    // A creature that can't hear it isn't affected. Deafened → immune. (First
-    // step toward wall/door sound-occlusion; 2026-07-11.)
+    // A creature that can't hear it isn't affected: (1) deafened → immune;
+    // (2) a SOUND-blocking wall/closed sound-door between the source and the
+    // target stops the howl (same wall backend Foundry uses for ambient audio,
+    // mirroring our sight-collision checks). An open doorway lets it through.
+    // 2026-07-11 — RAW: a howl is sound; walls that block sound block it.
     if (entry.requiresHearing) {
+      const soundBackend = CONFIG.Canvas?.polygonBackends?.sound;
       targets = targets.filter(t => {
         const st = t.actor?.statuses;
-        const deaf = st instanceof Set && (st.has("deafened") || st.has("deaf"));
-        if (deaf) console.log(`${MODULE_ID} | ${t.name} is deafened — can't hear "${item.name}", unaffected`);
-        return !deaf;
+        if (st instanceof Set && (st.has("deafened") || st.has("deaf"))) {
+          console.log(`${MODULE_ID} | ${t.name} is deafened — can't hear "${item.name}", unaffected`);
+          return false;
+        }
+        try {
+          const blocked = soundBackend?.testCollision?.(source.center, t.center, { type: "sound", mode: "any" });
+          if (blocked) {
+            console.log(`${MODULE_ID} | ${t.name}: a sound-blocking wall stops "${item.name}" — unaffected`);
+            return false;
+          }
+        } catch (_) { /* backend unavailable → don't false-exclude */ }
+        return true;
       });
     }
 
