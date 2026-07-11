@@ -195,7 +195,11 @@ export class SaveResolver {
     } catch (_) { /* condition-only ability */ }
 
     const saveAbility = entry.save?.ability ?? "wis";
-    const saveDC = SaveResolver._computeSaveDC(actor, item, spellMod);
+    // An explicit DC on the entry (e.g. King's fixed DC 13) wins over the
+    // computed one, so the statblock number always holds.
+    const saveDC = Number(entry.save?.dc) > 0
+      ? Number(entry.save.dc)
+      : SaveResolver._computeSaveDC(actor, item, spellMod);
 
     const saveEngine = game.aceQol?.saveEngine;
     if (saveEngine?.postSaveCard) {

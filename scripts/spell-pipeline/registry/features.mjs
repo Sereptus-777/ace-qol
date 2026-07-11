@@ -58,28 +58,24 @@ export const FEATURE_REGISTRY = {
     flavorOnConfirm: "Target makes a Charisma save — on a fail, takes 3d6 force damage and vanishes until the start of your next turn, then reappears within 120 ft.",
   },
 
-  // ── Ghostly Howl (King's signature — 2026-07-10) ─────────────────────────
-  // Johnny's spec, verbatim: "push it, visual waves go out 30 feet, anybody in
-  // that 30-foot radius has to save immediately." No target-pick, no template —
-  // the source's position IS the origin (save-area). Every enemy within 30 ft
-  // saves at once; on a fail they're Frightened for 1 minute (the RAW-standard
-  // "howl" effect — Wis save vs fear). The `fx` field fires the expanding
-  // ghostly waves (AceFX.ghostlyWaveBroadcast) as the ability resolves.
-  //
-  // NOTE (morning-me / Johnny): if King's actual statblock uses a different
-  // save (e.g. Con) or ALSO deals damage, this is a one-line change — the
-  // save-area resolver auto-detects damage from the activity's own parts, and
-  // the save ability + effect key live right here. Tell me the numbers and I
-  // match them exactly.
+  // ── Ghostly Howl (King, the Spectral Dire Wolf — 2026-07-10) ─────────────
+  // CONFIRMED against King's own actor JSON (2026-07-11): "King lets out a
+  // mournful howl. Each creature of his choice within 30 feet must succeed on
+  // a DC 13 Wisdom saving throw or become Frightened for 1 minute." Johnny's
+  // spec: no target-pick — everyone in 30 ft saves at once (the source's
+  // position is the origin; save-area shape). On a fail → Frightened 1 min.
+  // The `fx` fires the expanding ghostly waves + King's own wolf-howl sound
+  // (broadcast to all clients, synced with the visual). The GM setting
+  // `ghostlyHowlSound` overrides this default if changed.
   "ghostly howl": {
     shape: "save-area",
     range: 30,
-    save: { ability: "wis", repeatAt: "endOfTurn" },
+    save: { ability: "wis", dc: 13, repeatAt: "endOfTurn" },
     effect: { key: "frightened", duration: { rounds: 10 } },  // 1 minute
     targets: "enemies",
     picker: { allowSelf: false, excludeDead: true },
-    fx: { kind: "ghostlyWave", radiusFt: 30, color: 0xbfeaff },
-    flavorOnConfirm: "A keening spectral howl rolls outward — every creature within 30 ft must save or be Frightened.",
+    fx: { kind: "ghostlyWave", radiusFt: 30, color: 0xbfeaff, sound: "PCs/KING/Wolf Howl.ogg" },
+    flavorOnConfirm: "King lets out a mournful howl — every creature within 30 ft must make a DC 13 Wisdom save or be Frightened.",
   },
 
   // Phase 2: more save-area / save-single / summon / teleport entries land here
