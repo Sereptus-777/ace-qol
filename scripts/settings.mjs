@@ -609,6 +609,13 @@ export class QolSettings {
       scope: "world", config: false, type: Boolean, default: false,
     });
 
+    s("ghostlyHowlSound", {
+      name: "Ghostly Howl — Sound",
+      hint: "Sound file that plays with the Ghostly Howl wave (a feature that emanates a 30-ft spectral wave). Paste a file path (e.g. modules/ace-qol/Assets/Sounds/ghostly-howl.ogg) or a Sequencer sound key. Leave blank for silent.",
+      scope: "world", config: false, type: String, default: "",
+      filePicker: "audio",
+    });
+
     // ── Opportunity Attack Prompt (PHB 195) ─────────────────────────────
     s("opportunityAttackPrompt", {
       name: "Opportunity Attack Prompt",

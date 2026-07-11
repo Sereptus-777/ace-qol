@@ -171,7 +171,14 @@ export class SaveResolver {
     if (entry.fx?.kind === "ghostlyWave") {
       try {
         const { AceFX } = await import("../../ace-fx.mjs");
-        AceFX.ghostlyWaveBroadcast(source, entry.fx.radiusFt ?? rangeFt, entry.fx.color ?? 0xbfeaff);
+        // Sound: the GM-configured Ghostly Howl file wins; the entry can carry a
+        // default. Blank = silent wave.
+        let sound = entry.fx.sound ?? null;
+        try {
+          const s = (game.settings.get(MODULE_ID, "ghostlyHowlSound") || "").trim();
+          if (s) sound = s;
+        } catch (_) { /* setting not registered yet — use the entry default */ }
+        AceFX.ghostlyWaveBroadcast(source, entry.fx.radiusFt ?? rangeFt, entry.fx.color ?? 0xbfeaff, sound);
       } catch (err) { console.warn(`${MODULE_ID} | save-area FX failed (non-fatal):`, err); }
     }
 

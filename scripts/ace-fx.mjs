@@ -141,6 +141,7 @@ export class AceFX {
               const gridSize = canvas?.grid?.size || 100;
               AceFX.ghostlyWave(tk, (Number(payload.radiusFt ?? 30) / gridDist) * gridSize, payload.color);
             }
+            AceFX._playSound(payload.soundSrc);
           }
         } catch (err) { console.warn(`${MODULE_ID} | AceFX socket handler threw:`, err); }
       });
@@ -362,17 +363,19 @@ export class AceFX {
     } catch (err) { console.warn(`${MODULE_ID} | AceFX.ghostlyWave threw:`, err); }
   }
 
-  /** Convert a foot radius to canvas pixels, play locally, and relay to all clients. */
-  static ghostlyWaveBroadcast(token, radiusFt = 30, color = 0xbfeaff) {
+  /** Convert a foot radius to canvas pixels, play the wave + its sound locally,
+   *  and relay both to all clients (each plays the sound once, synced). */
+  static ghostlyWaveBroadcast(token, radiusFt = 30, color = 0xbfeaff, soundSrc = null) {
     try {
       const gridDist = canvas?.scene?.grid?.distance || 5;   // ft per square
       const gridSize = canvas?.grid?.size || canvas?.scene?.grid?.size || 100;
       const radiusPx = (Number(radiusFt) / gridDist) * gridSize;
       AceFX.ghostlyWave(token, radiusPx, color);
+      if (soundSrc) AceFX._playSound(soundSrc);
       const sceneId = token?.scene?.id ?? canvas?.scene?.id;
       const tokenId = token?.id ?? token?.document?.id;
       if (sceneId && tokenId) {
-        game.socket.emit(_socket(), { action: "aceFx:ghostlyWave", sceneId, tokenId, radiusFt, color });
+        game.socket.emit(_socket(), { action: "aceFx:ghostlyWave", sceneId, tokenId, radiusFt, color, soundSrc });
       }
     } catch (err) { console.warn(`${MODULE_ID} | AceFX.ghostlyWaveBroadcast threw:`, err); }
   }
