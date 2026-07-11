@@ -72,7 +72,14 @@ export const FEATURE_REGISTRY = {
     range: 30,
     save: { ability: "wis", dc: 13, repeatAt: "endOfTurn" },
     effect: { key: "frightened", duration: { rounds: 10 } },  // 1 minute
-    targets: "enemies",
+    // "Each CREATURE within 30 ft" (statblock) — not just King's enemies.
+    // King was friendly-disposition, so "enemies" wrongly skipped the whole
+    // party (live-fire 2026-07-11). "all" = everyone in range saves; the GM
+    // narrates whom King spares. Frightened re-saves at end of each turn.
+    targets: "all",
+    // It's a HOWL — a creature that can't hear it isn't frightened by it.
+    // Deafened creatures (and, later, sound-blocked ones) auto-ignore it.
+    requiresHearing: true,
     picker: { allowSelf: false, excludeDead: true },
     fx: { kind: "ghostlyWave", radiusFt: 30, color: 0xbfeaff, sound: "PCs/KING/Wolf Howl.ogg" },
     flavorOnConfirm: "King lets out a mournful howl — every creature within 30 ft must make a DC 13 Wisdom save or be Frightened.",

@@ -152,10 +152,12 @@ export class SaveResolver {
     const srcDisp = source.document?.disposition ?? 0;
 
     const { aceWithinFt } = await import("../../geometry-utils.mjs");
-    const targets = (canvas.tokens?.placeables ?? []).filter(t => {
+    let targets = (canvas.tokens?.placeables ?? []).filter(t => {
       if (!t.actor) return false;
       if (t === source && filter.allowSelf !== true) return false;
       if (filter.excludeDead !== false && (t.actor.system?.attributes?.hp?.value ?? 1) <= 0) return false;
+      // "all" = every creature in range (Ghostly Howl); "enemies"/"allies" gate
+      // by disposition relative to the source.
       if (affects === "enemies" && t.document?.disposition === srcDisp) return false;
       if (affects === "allies"  && t.document?.disposition !== srcDisp) return false;
       if (filter.creatureTypeFilter) {
@@ -164,6 +166,18 @@ export class SaveResolver {
       }
       return aceWithinFt(source, t, rangeFt);
     });
+
+    // ── Hearing gate for sound-based emanations (a howl, a thunderous roar) ──
+    // A creature that can't hear it isn't affected. Deafened → immune. (First
+    // step toward wall/door sound-occlusion; 2026-07-11.)
+    if (entry.requiresHearing) {
+      targets = targets.filter(t => {
+        const st = t.actor?.statuses;
+        const deaf = st instanceof Set && (st.has("deafened") || st.has("deaf"));
+        if (deaf) console.log(`${MODULE_ID} | ${t.name} is deafened — can't hear "${item.name}", unaffected`);
+        return !deaf;
+      });
+    }
 
     // ── Emanation FX (Ghostly Howl's expanding waves, etc.) ──
     // Fire BEFORE the early no-targets return so the visual plays even when the
