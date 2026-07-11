@@ -41,7 +41,9 @@ export const SAVE_SPELLS = {
     shape: "save-single",
     range: 30,
     save: { ability: "wis", onFail: "effect" },
-    effect: { key: "suggestion", duration: { hours: 8 } },
+    // Suggestion IS concentration RAW (up to 8 hours). The "concentration" signal
+    // (not a fixed {hours:8}) is what wires the cleanup link. (Audit 2026-06-27.)
+    effect: { key: "suggestion", duration: "concentration" },
     picker: { allowSelf: false, excludeDead: true },
     flavorOnConfirm: "Suggest a course of activity — target must save or follow it.",
   },
@@ -177,7 +179,11 @@ export const SAVE_SPELLS = {
     shape: "save-single",
     range: 60,
     save: { ability: "con", onFail: "effect", repeatAt: "endOfTurn" },  // 2024: CON save at end of each turn
-    effect: { key: "power_word_stun", duration: "concentration" },
+    // Power Word Stun is NOT a concentration spell (neither edition) — stunned
+    // until a CON save succeeds at end of each turn. Marking it concentration
+    // wrongly held the caster's concentration slot + tore it down on the next
+    // conc cast. Fixed duration + the end-of-turn re-save clears it. (Audit 2026-06-27.)
+    effect: { key: "power_word_stun", duration: { rounds: 10 } },
     picker: { allowSelf: false, excludeDead: true },
     flavorOnConfirm: "Target with ≤150 HP must succeed CON save or be stunned. Re-saves at end of each turn.",
   },
@@ -212,19 +218,34 @@ export const SAVE_SPELLS = {
   },
 
   "sleep": {
-    // RAW: NO save (HP-pool mechanic). Route as multi-buff so the chosen
-    // creatures get the effect UNCONDITIONALLY (no phantom save). The GM picks
-    // who drops — that's the HP-pool / lowest-HP-first judgment. (Was save-single
-    // with a placeholder WIS save, which wrongly let "passers" stay awake.)
+    // ── 2024 PHB (modern) ── WIS SAVE. Each creature of your choice in the area
+    //    saves; on a FAIL it falls Unconscious. Concentration (up to 1 min); ends
+    //    on damage or a shake; elves / Exhaustion-immune auto-succeed. Routed as
+    //    multi-buff WITH a save — the SAME proven path as Bane / Faerie Fire:
+    //    BuffResolver._runMultiWithSave gives a picker + a per-target WIS save card
+    //    + the condition only on a fail.
+    //    NOTE: the exact two-stage (Incapacitated for one turn → repeat save →
+    //    Unconscious on the SECOND fail) is the next refinement; this ships the
+    //    WIS save + Unconscious + concentration + wake-on-damage now.
+    // ── 2014 PHB (legacy) ── NO save, 5d8-HP pool (byEdition override below).
     shape: "multi-buff",
-    range: 90,
-    countResolver: () => 999,  // GM chooses affected creatures (5d8 HP pool, lowest current HP first)
+    range: 60,
+    save: { ability: "wis" },   // 2024: per-target Wisdom save; only failures fall asleep
+    countResolver: () => 999,
     // sleep_unconscious carries the full RAW unconscious changes (incapacitated +
-    // zero movement + auto-crit melee + auto-fail STR/DEX) and a sleep marker
-    // that condition-raw-hooks.mjs watches so any damage wakes the sleeper.
-    effect: { key: "sleep_unconscious", duration: { rounds: 10 } },
+    // prone + zero movement + auto-crit melee + auto-fail STR/DEX) and a sleep
+    // marker condition-raw-hooks.mjs watches so any damage wakes the sleeper.
+    effect: { key: "sleep_unconscious", duration: "concentration" },
     picker: { allowSelf: false, excludeDead: true, creatureTypeFilter: null },
-    flavorOnConfirm: "No save — choose creatures within a 20-ft cube to fall unconscious (RAW: 5d8 HP pool, lowest current HP first; any damage wakes them).",
+    flavorOnConfirm: "Each creature of your choice in the area must make a Wisdom save or fall asleep (Unconscious). Any damage wakes them.",
+    byEdition: {
+      legacy: {
+        save: null,                 // 2014: NO save — HP-pool, pick who drops
+        range: 90,
+        effect: { key: "sleep_unconscious", duration: { rounds: 10 } },  // 2014 = 1 min, NOT concentration
+        flavorOnConfirm: "No save (2014 RAW): choose creatures (5d8 HP pool, lowest current HP first) to fall unconscious; any damage wakes them.",
+      },
+    },
   },
 
   "color spray": {
@@ -233,9 +254,10 @@ export const SAVE_SPELLS = {
     shape: "multi-buff",
     range: 15,
     countResolver: () => 999,  // GM chooses who's blinded (6d10 HP pool, lowest current HP first)
-    effect: { key: "blinded", duration: { rounds: 10 } },
+    // RAW: blinded until the END OF YOUR NEXT TURN = 1 round, not 1 minute.
+    // Was {rounds:10} → 10× too long. (Audit 2026-06-27.)
+    effect: { key: "blinded", duration: { rounds: 1 } },
     picker: { allowSelf: false, excludeDead: true },
     flavorOnConfirm: "Dazzling colors blind creatures in a 15 ft cone (HP pool — pipeline simplification).",
-    _needsVerification: true,
   },
 };

@@ -10,6 +10,9 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { ExtendedEffects } from "./extended-effects.mjs";
 import { QolSettings } from "./settings.mjs";
 import { FlagsEngine } from "./flags-engine.mjs";
+import { Situation } from "./situation.mjs";
+// Weapon rules entries (Lance etc.) — function-time reads only; cycle inert.
+import { RulesBrain } from "./rules/rules-brain.mjs";
 import { aceDistanceFt } from "./geometry-utils.mjs";
 
 // ─── Physical damage types (bypass checks) ──────────────────────────────────
@@ -84,7 +87,17 @@ export class CombatState {
     }
     if (atkStatuses.has("invisible")) {
       atkConditions.add("invisible");
-      advantageSources.push({ source: "attacker", reason: "Attacker is INVISIBLE → attack advantage" });
+      // RAW: an unseen attacker has advantage — UNLESS the defender can still SEE it
+      // (Truesight / See Invisibility / Blindsight / Tremorsense). The senses engine
+      // decides; without this, a creature with Truesight wrongly suffered the penalty.
+      const defenderSees = Situation.canSee(targetActor, attackerActor, {
+        viewerToken: targetToken, subjectToken: attackerToken, distanceFt: distanceToTarget,
+      });
+      if (!defenderSees.canSee) {
+        advantageSources.push({ source: "attacker", reason: "Attacker is INVISIBLE (unseen) → attack advantage" });
+      } else {
+        Situation.narrate([`${targetActor?.name} sees the invisible ${attackerActor?.name} (${defenderSees.why}) → no advantage`], { context: "attack" });
+      }
     }
 
     // NOTE: Sunlight Sensitivity disadvantage (attacks + ability checks while in
@@ -341,10 +354,19 @@ export class CombatState {
       advantageSources.push({ source: "target", reason: "Target is BLINDED → attack advantage" });
     }
 
-    // INVISIBLE
+    // INVISIBLE — disadvantage to attack a creature you can't see, UNLESS this
+    // attacker CAN see it (Truesight / See Invisibility / Blindsight / Tremorsense).
+    // The senses engine decides; this is the See-Invisibility gap Johnny hit.
     if (tgtStatuses.has("invisible")) {
       tgtConditions.add("invisible");
-      disadvantageSources.push({ source: "target", reason: "Target is INVISIBLE → attack disadvantage" });
+      const attackerSees = Situation.canSee(attackerActor, targetActor, {
+        viewerToken: attackerToken, subjectToken: targetToken, distanceFt: distanceToTarget,
+      });
+      if (!attackerSees.canSee) {
+        disadvantageSources.push({ source: "target", reason: "Target is INVISIBLE (unseen) → attack disadvantage" });
+      } else {
+        Situation.narrate([`${attackerActor?.name} sees ${targetActor?.name} through invisibility (${attackerSees.why}) → no disadvantage`], { context: "attack" });
+      }
     }
 
     // PETRIFIED
@@ -1185,6 +1207,88 @@ export class CombatState {
     const legendaryResistanceMax = tgtSys.resources?.legres?.max ?? 0;
 
     // ═════════════════════════════════════════════════════════════════════════
+    //  WEAPON RULES ENTRIES — attack-roll quirks from the brain (2026-07-10)
+    // ═════════════════════════════════════════════════════════════════════════
+    // The Lance pattern: quirks dnd5e doesn't model, served as data. The brain
+    // import is function-time only (cycle inert — same pattern as everywhere).
+    try {
+      if (item?.type === "weapon") {
+        const wEntry = RulesBrain.lookup(item, { actor: attackerActor })?.entry;
+        const withinFt = Number(wEntry?.attack?.disadvantageWithinFt);
+        if (withinFt > 0 && distanceToTarget != null && distanceToTarget <= withinFt) {
+          disadvantageSources.push({ source: "weapon", reason: `${item.name} used within ${withinFt} ft → attack disadvantage (weapon rule)` });
+        }
+      }
+      // ── Heavy property (RAW, edition-split — 2026-07-10) ──
+      // 2014: "Small creatures have disadvantage on attack rolls with heavy
+      //        weapons." (Tiny included a fortiori.)
+      // 2024: "You have Disadvantage on attack rolls with a Heavy weapon if
+      //        your Strength isn't 13+ (melee) or Dexterity isn't 13+ (ranged)."
+      if (item?.type === "weapon") {
+        const props = item.system?.properties;
+        const isHeavy = props?.has?.("hvy") || (Array.isArray(props) && props.includes("hvy"));
+        if (isHeavy) {
+          const edition = CombatState.getActiveEdition(attackerActor);
+          if (edition === "2024") {
+            const isRanged = String(item.system?.actionType ?? "").startsWith("r")
+              || item.system?.type?.value === "martialR" || item.system?.type?.value === "simpleR";
+            const abil = isRanged ? "dex" : "str";
+            const score = Number(attackerActor.system?.abilities?.[abil]?.value ?? 10);
+            if (score < 13) {
+              disadvantageSources.push({ source: "weapon", reason: `Heavy weapon with ${abil.toUpperCase()} ${score} (< 13) → attack disadvantage (2024 Heavy property)` });
+            }
+          } else {
+            const size = String(attackerActor.system?.traits?.size ?? "med");
+            if (size === "sm" || size === "tiny") {
+              disadvantageSources.push({ source: "weapon", reason: "Small creature wielding a Heavy weapon → attack disadvantage (2014 Heavy property)" });
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.debug(`${MODULE_ID} | weapon-rules attack check failed (non-fatal):`, err);
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    //  SIGHT THROUGH SPACES — darkness / fog / heavy obscurement (Phase 2, 2026-07-09)
+    // ═════════════════════════════════════════════════════════════════════════
+    // Evaluated at ATTACK TIME, per sight-line, both directions — never a
+    // stamped condition. RAW (both editions): you can't see your target →
+    // DISADVANTAGE on the attack; the target can't see YOU → unseen attacker →
+    // ADVANTAGE. Devil's Sight / truesight pierce magical darkness; blindsight
+    // pierces everything in radius; darkvision pierces neither. Mutual
+    // blindness nets to a straight roll through the standard netting below.
+    // The invisibility blocks above already ran their own sight checks — this
+    // block only ADDS obscurement-caused sources when the cause is the SPACE
+    // (guarded so invisible creatures don't double-report).
+    try {
+      const scene = attackerToken?.document?.parent ?? targetToken?.document?.parent ?? canvas?.scene;
+      const anyObscuring = !!scene?.regions?.some?.(r => r.getFlag?.(MODULE_ID, "space")?.obscurement === "heavy");
+      if (anyObscuring && attackerToken && targetToken) {
+        // Attacker → target: can the attacker see who they're swinging at?
+        if (!atkStatuses.has("blinded")) {           // blinded already penalized above
+          const atkSees = Situation.canSee(attackerActor, targetActor, {
+            viewerToken: attackerToken, subjectToken: targetToken, distanceFt: distanceToTarget,
+          });
+          if (!atkSees.canSee && /darkness|fog|obscure/i.test(atkSees.why)) {
+            disadvantageSources.push({ source: "environment", reason: `Attacker can't see target — ${atkSees.why} → attack disadvantage` });
+          }
+        }
+        // Target → attacker: unseen attacker gets advantage. The why-filter
+        // keeps this to OBSCUREMENT causes only — invisibility-caused blindness
+        // reports "subject is invisible" and was already handled above.
+        const tgtSees = Situation.canSee(targetActor, attackerActor, {
+          viewerToken: targetToken, subjectToken: attackerToken, distanceFt: distanceToTarget,
+        });
+        if (!tgtSees.canSee && /darkness|fog|obscure/i.test(tgtSees.why)) {
+          advantageSources.push({ source: "environment", reason: `Target can't see the attacker — ${tgtSees.why} → attack advantage` });
+        }
+      }
+    } catch (err) {
+      console.debug(`${MODULE_ID} | obscurement sight check failed (non-fatal):`, err);
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
     //  FINAL ROLL MODE DETERMINATION
     // ═════════════════════════════════════════════════════════════════════════
     const hasAdvantage = advantageSources.length > 0;
@@ -1199,6 +1303,21 @@ export class CombatState {
     } else if (hasDisadvantage) {
       finalRollMode = "disadvantage";
     }
+
+    // ── Situational narration: surface the FULL read (the "show me a clue" switch) ──
+    // Light dedup so the dual rollAttack/rollAttackV2 hooks don't double-print.
+    try {
+      const key = `${attackerActor?.id}|${targetActor?.id}|${finalRollMode}|${advantageSources.length}|${disadvantageSources.length}`;
+      if (CombatState._lastNarrationKey !== key) {
+        CombatState._lastNarrationKey = key;
+        const lines = [
+          ...advantageSources.map(s => `+ ${s.reason}`),
+          ...disadvantageSources.map(s => `− ${s.reason}`),
+        ];
+        lines.push(lines.length ? `NET → ${finalRollMode.toUpperCase()}` : "no modifiers → straight roll");
+        Situation.narrate(lines, { context: `${attackerActor?.name} → ${targetActor?.name}` });
+      }
+    } catch (_) { /* non-fatal */ }
 
     // ═════════════════════════════════════════════════════════════════════════
     //  BUILD RESULT
@@ -1609,6 +1728,19 @@ export class CombatState {
 
     // 4. Final fallback — no markers, no system setting → assume 2014
     return "2014";
+  }
+
+  /**
+   * Same resolution as getActiveEdition() but returns the dnd5e system's own
+   * vocabulary ("legacy"/"modern"). Use this ANYWHERE that previously read
+   * `game.settings.get("dnd5e","rulesVersion")` directly, so the ACE QOL
+   * `gameRulesEdition` master override is honored everywhere — not just half
+   * the system. ("2024" → "modern", "2014" → "legacy".)
+   * @param {Actor} [actor]
+   * @returns {"legacy" | "modern"}
+   */
+  static getActiveRulesVersion(actor) {
+    return CombatState.getActiveEdition(actor) === "2024" ? "modern" : "legacy";
   }
 
   static _hasFeature(actor, name) {

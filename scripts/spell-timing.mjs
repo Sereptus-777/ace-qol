@@ -220,6 +220,11 @@ const SPELL_TABLE = {
   "shatter":               { timing: TIMING.INSTANT, save: "con", onSave: "half" },
   "thunderwave":           { timing: TIMING.INSTANT, save: "con", onSave: "half" },
   "burning hands":         { timing: TIMING.INSTANT, save: "dex", onSave: "half" },
+  // Faerie Fire: a 20-ft cube, ONE DEX save on cast (NOT a per-turn re-save like
+  // Web). Fail = outlined (faerie_fire effect, applied by the registry hand-off
+  // in save-engine). Pass = nothing. Instant so the concentration widget never
+  // schedules phantom per-turn re-saves on it.
+  "faerie fire":           { timing: TIMING.INSTANT, save: "dex", onSave: "negate" },
   "ice storm":             { timing: TIMING.INSTANT, save: "dex", onSave: "half" },
   "chain lightning":       { timing: TIMING.INSTANT, save: "dex", onSave: "half" },
   "meteor swarm":          { timing: TIMING.INSTANT, save: "dex", onSave: "half" },
@@ -353,7 +358,7 @@ function _heuristicFallback(item) {
 
   // Non-instant + template + concentration → persistent, default startOfTurn
   if (hasTemplate && isConcentration) {
-    console.warn(`${MODULE_ID} | SpellTiming: "${item.name}" not in table, description parse failed — defaulting to start-of-turn. Set flags.ace-qol.spellTiming.timing on this item to fix.`);
+    console.debug(`${MODULE_ID} | SpellTiming: "${item.name}" not in table — defaulting to start-of-turn (persistent area/concentration spell; harmless).`);
     return _makeResult(TIMING.START_OF_TURN, false, true);
   }
 

@@ -35,6 +35,7 @@
 // and prevents the entire Weapon Mastery system from registering.
 
 import { aceWithinFt } from "./geometry-utils.mjs";
+import { CombatState } from "./combat-state.mjs";
 
 const MODULE_ID = "ace-qol";
 const TAG       = `${MODULE_ID} | Mastery`;
@@ -792,7 +793,7 @@ export class WeaponMasteries {
     // as a houserule import from 2024 — the `weaponMasteryAllowIn2014`
     // setting lets them opt in. Defaults to false (pure RAW).
     try {
-      const rv = game.settings.get?.("dnd5e", "rulesVersion");
+      const rv = CombatState.getActiveRulesVersion(actor);  // honors ACE gameRulesEdition override
       if (rv === "legacy") {
         const allowIn2014 = game.settings.get?.(MODULE_ID, "weaponMasteryAllowIn2014") === true;
         if (!allowIn2014) {
@@ -834,7 +835,7 @@ export class WeaponMasteries {
     if (!item || !actor) return false;
     // Edition gate (2024, or 2014 + override)
     try {
-      const rv = game.settings.get?.("dnd5e", "rulesVersion");
+      const rv = CombatState.getActiveRulesVersion(actor);  // honors ACE gameRulesEdition override
       if (rv === "legacy") {
         const allow = game.settings.get?.(MODULE_ID, "weaponMasteryAllowIn2014") === true;
         if (!allow) return false;
@@ -867,7 +868,7 @@ export class WeaponMasteries {
     if (!item || !actor) return false;
     // Edition gate (2024 or 2014 + override)
     try {
-      const rv = game.settings.get?.("dnd5e", "rulesVersion");
+      const rv = CombatState.getActiveRulesVersion(actor);  // honors ACE gameRulesEdition override
       if (rv === "legacy") {
         const allow = game.settings.get?.(MODULE_ID, "weaponMasteryAllowIn2014") === true;
         if (!allow) return false;

@@ -79,4 +79,23 @@ export const TEMPLATE_SPELLS = {
     save: { ability: "dex", halfOnPass: true },
     flavorOnConfirm: "A 20-ft cylinder of icy chunks slams down — DEX save vs the spell DC, half on a success. Ground stays difficult terrain for 1 round.",
   },
+
+  // ── Faerie Fire (1st, V, 60 ft, 20-ft CUBE, 1 min, conc.) ───────────────
+  // RAW (2014 + 2024): an AREA spell, NOT a target spell. You place a 20-ft
+  // cube (dnd5e draws it; ACE square-snaps it to grid VERTICES — a 4×4 cube has
+  // no centre square). EVERY creature inside — visible OR hidden — makes a DEX
+  // save. On a FAIL it gets the `faerie_fire` effect (the cycling glow flushes
+  // it out, attackers gain advantage, it can't benefit from invisibility). On a
+  // SUCCESS it's untouched — an invisible creature that SAVES stays hidden.
+  // No portrait picker (you flood an area, you don't pick a face). The save-engine
+  // gathers the cube + rolls the saves; it applies this `effect` on each fail
+  // (the template-save → effect hand-off in _applyFailedSaveConditions). Unlike
+  // the other entries here, Faerie Fire carries an `effect` (no damage).
+  "faerie fire": {
+    shape: "template-save",
+    range: 60,
+    save: { ability: "dex", halfOnPass: false },
+    effect: { key: "faerie_fire", duration: "concentration" },
+    flavorOnConfirm: "A 20-ft cube blooms with blue, green, and violet light. Each creature inside makes a DEX save — on a failure it's outlined: attackers have advantage and it can't benefit from being invisible.",
+  },
 };

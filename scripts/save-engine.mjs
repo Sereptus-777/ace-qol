@@ -108,6 +108,12 @@ export class SaveEngine {
      *  both write — the second write overwrites the first PC's result. */
     this._pcSaveUpdateQueue = new Map();
 
+    /** @type {Map<string, Function>} requestId → resolver, for the player-cast
+     *  target-picker socket round-trip. The GM asks the caster's own client to pick
+     *  (mirrors the rider-popup pattern); the resolver fires when the player's
+     *  "spellPickerChoice" socket reply comes back. */
+    this._pickerRequests = new Map();
+
     this._registerHooks();
   }
 
@@ -171,10 +177,15 @@ export class SaveEngine {
         const dedupKey = activityUuid || activityId;
         if (!dedupKey) return;
 
-        // Fast-bail: if this activity was processed within the 5s TTL
-        // (same cast repeated, prior cast still in dedup window), skip
-        // without yielding.
-        if (this._processedActivityIds.has(dedupKey)) return;
+        // Fast-bail ONLY if this exact activity was processed within the last 5s.
+        // MUST be time-aware: the activity UUID is STABLE across every cast of the
+        // same spell, and the age-prune lives inside _onUseActivity — which this
+        // fallback bails out of reaching. So a plain has() check treats a stale stamp
+        // from an EARLIER cast as "already processed" and silently kills every repeat
+        // cast (the dead-second-cast bug). Only a stamp younger than the 5s race
+        // window is a real same-cast dedup; an older one is stale and must NOT block.
+        const _prevTs = this._processedActivityIds.get(dedupKey);
+        if (_prevTs != null && (Date.now() - _prevTs) < 5000) return;
 
         // ── v0.4.22.2 race fix ──
         // The standard `dnd5e.postCreateUsageMessage` hook fires ~2ms after
@@ -193,9 +204,10 @@ export class SaveEngine {
         // genuinely did not run (the case it was built for).
         await new Promise(r => setTimeout(r, 200));
 
-        // Re-check dedup after the yield. If the standard hook fired
-        // during the wait, it owns the activity — bail.
-        if (this._processedActivityIds.has(dedupKey)) return;
+        // Re-check after the yield, same time-aware rule: only a FRESH stamp (the
+        // standard hook having fired during our 200ms wait) should make us bail.
+        const _prevTs2 = this._processedActivityIds.get(dedupKey);
+        if (_prevTs2 != null && (Date.now() - _prevTs2) < 5000) return;
 
         // Resolve the live activity. UUID path is the primary route in
         // modern dnd5e; the actor/item-id fallback handles older flag
@@ -577,7 +589,7 @@ export class SaveEngine {
                  ?? actor?.system?.attributes?.spell?.dc
                  ?? null;
       saveDC = Number(sysDC) > 0 ? Number(sysDC) : 10;
-      console.log(`${MODULE_ID} | Save DC for "${item.name}" was 0/unset — falling back to caster spell DC ${saveDC}`);
+      console.debug(`${MODULE_ID} | Save DC for "${item.name}" was 0/unset — using caster spell DC ${saveDC}`);
     }
     const isSpell = item.type === "spell";
 
@@ -630,6 +642,7 @@ export class SaveEngine {
     // targeted spells use, so the GM picks who it hits and the save flow runs.
     let tokens;
     if (game.user.targets.size) {
+      console.log(`${MODULE_ID} | [picker-timing] SaveEngine: "${item.name}" using ${game.user.targets.size} pre-targeted token(s) — SKIPPING picker`);
       tokens = [...game.user.targets];
     } else {
       // ── Pipeline ownership guard (kills the double-picker) ──
@@ -637,7 +650,11 @@ export class SaveEngine {
       // its SaveResolver opens the (purple) picker and calls postSaveCard itself.
       // The pipeline clears targets pre-cast, so this handler lands here with an
       // empty set and would open a SECOND picker. Defer to the pipeline instead.
-      if (game.aceQol?.SpellPipeline?.ownsSpell?.(item)) return;
+      if (game.aceQol?.SpellPipeline?.ownsSpell?.(item)) {
+        console.log(`${MODULE_ID} | [picker-timing] SaveEngine: "${item.name}" owned by SpellPipeline — deferring, no picker here`);
+        return;
+      }
+      console.log(`${MODULE_ID} | [picker-timing] SaveEngine: "${item.name}" has no pre-targets — opening picker now`);
       let picked = [];
       try {
         const { SpellTargetPicker } = await import("./spell-target-picker.mjs");
@@ -656,7 +673,12 @@ export class SaveEngine {
         const _maxTargets = (_tgt.template?.type)
           ? 99
           : (Number.isFinite(_declared) && _declared > 0 ? _declared : 1);
-        picked = await SpellTargetPicker.pick({
+        // Player-cast spells: this handler runs on the GM (activeGM-gated), but the
+        // TARGET PICK belongs on the CASTER's own screen. _pickTargetsForCaster routes
+        // the picker to the caster's client via socket (mirrors the rider popup) and
+        // returns the same Actor[] the local picker would, so the resolution below is
+        // unchanged. GM-cast / NPC / offline-player → it picks locally.
+        picked = await this._pickTargetsForCaster({
           spellItem:   item,
           casterActor: actor,
           maxTargets:  _maxTargets,
@@ -675,6 +697,12 @@ export class SaveEngine {
       for (const t of tokens) t.setTarget(true, { user: game.user, releaseOthers: false });
     }
 
+    // ── Cast committed WITH a target now locked in (post-picker). Fire the
+    //    caster's flourish HERE — after the pick — not back at the cast-click
+    //    (which is before the picker even opens). AceFX listens for this. ──
+    try { Hooks.callAll(`${MODULE_ID}.spellCommitted`, { casterActor: actor, item }); }
+    catch (_) { /* purely cosmetic — must never block the save flow */ }
+
     // Exclude caster — same logic as the template path. See _onTemplateCreated
     // for full justification. GM can re-add via "+ TARGET SELECTED" button.
     if (QolSettings.get?.("excludeCasterFromTemplates") !== false) {
@@ -683,6 +711,26 @@ export class SaveEngine {
         console.log(`${MODULE_ID} | All targets were the caster — skipping save card`);
         return;
       }
+    }
+
+    // ── "Must hear you" gate (RAW) — Vicious Mockery / Suggestion / Command
+    // class: a deafened target simply can't receive the spell. Filter them
+    // out with a visible explainer instead of rolling a pointless save.
+    try {
+      const { HearingGate } = await import("./rules/hearing-gate.mjs");
+      const gate = HearingGate.filterDeafTargets(item, tokens);
+      if (gate.blocked.length) {
+        await HearingGate.postBlockedCard(item, actor, gate.blocked, gate.entry);
+        tokens = gate.allowed;
+        console.log(`${MODULE_ID} | hearing gate: ${gate.blocked.length} deafened target(s) removed from "${item.name}"`);
+        if (!tokens.length) {
+          ui.notifications?.info(`${item.name}: no valid targets — the deafened can't hear you.`);
+          this._releaseUserTargets();
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | hearing gate failed (non-blocking):`, err);
     }
 
     // ── Fast-path for NPC-only single-target saves ──
@@ -699,7 +747,8 @@ export class SaveEngine {
         saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing,
         activity,
       });
-      this._releaseUserTargets();
+      // PUNCH-LIST #11 (Johnny): single-creature actions KEEP the target —
+      // releasing here broke the follow-up swing/multiattack flow.
       return;
     }
 
@@ -708,7 +757,85 @@ export class SaveEngine {
       activityId: activity.id,
       spellLevel,
     });
-    this._releaseUserTargets();
+    // PUNCH-LIST #11 (Johnny): only MULTI-creature actions release targets;
+    // a single-creature save spell keeps its target for the next action.
+    if (tokens.length > 1) this._releaseUserTargets();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Player-cast target picker — socket round-trip (mirrors the rider popup)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Get the spell's target(s). The pick belongs on the CASTER's screen, but this
+   * handler runs on the GM (activeGM-gated). So: if a connected non-GM player owns
+   * the caster, ask THEIR client to open the picker over the socket and return the
+   * choice (mirrors the Divine Smite rider popup). Otherwise — GM-cast, an NPC, or
+   * the owning player is offline — the GM picks locally. Always returns Actor[].
+   */
+  async _pickTargetsForCaster({ spellItem, casterActor, maxTargets, rangeFt, allowSelf }) {
+    const localPick = async () => {
+      const { SpellTargetPicker } = await import("./spell-target-picker.mjs");
+      return SpellTargetPicker.pick({ spellItem, casterActor, maxTargets, rangeFt, allowSelf });
+    };
+
+    const casterUser = this._casterUser(casterActor);
+    if (!casterUser) {
+      console.debug(`${MODULE_ID} | SaveEngine picker: no remote caster for "${spellItem?.name}" → GM picks locally`);
+      return localPick();   // GM-cast / NPC / no connected owner → GM picks
+    }
+    console.log(`${MODULE_ID} | SaveEngine picker: routing "${spellItem?.name}" target pick to ${casterUser.name}'s client (socket)`);
+
+    const requestId = foundry.utils.randomID();
+    let resolveFn;
+    const reply = new Promise(res => { resolveFn = res; });
+    this._pickerRequests.set(requestId, resolveFn);
+    try {
+      game.socket.emit(`module.${MODULE_ID}`, {
+        action: "showSpellPicker",
+        requestId,
+        userId: casterUser.id,
+        itemUuid: spellItem.uuid,
+        casterActorUuid: casterActor.uuid,
+        maxTargets, rangeFt, allowSelf,
+      });
+      ui.notifications?.info(`${spellItem.name}: waiting for ${casterUser.name} to choose a target…`);
+
+      // 60s safety timeout — a cast must never hang forever waiting on a player.
+      const tokenIds = await Promise.race([
+        reply,
+        new Promise(res => setTimeout(() => res("__timeout__"), 60000)),
+      ]);
+      this._pickerRequests.delete(requestId);
+
+      if (tokenIds === "__timeout__") {
+        ui.notifications?.warn(`${spellItem.name}: ${casterUser.name} didn't respond — picking on the GM side.`);
+        return localPick();
+      }
+      if (!Array.isArray(tokenIds)) return [];   // player cancelled
+      return tokenIds.map(tid => canvas.tokens?.get(tid)?.actor).filter(Boolean);
+    } catch (err) {
+      this._pickerRequests.delete(requestId);
+      console.warn(`${MODULE_ID} | _pickTargetsForCaster socket round-trip failed — picking locally:`, err);
+      return localPick();
+    }
+  }
+
+  /** The active, connected, non-GM user who controls the casting actor (whose screen
+   *  the picker should open on), or null for a GM-cast / NPC / offline owner. */
+  _casterUser(casterActor) {
+    if (!casterActor) return null;
+    try {
+      const assigned = game.users?.find(u => u.active && !u.isGM && u.character?.id === casterActor.id);
+      if (assigned) return assigned;
+      return game.users?.find(u => u.active && !u.isGM && casterActor.testUserPermission?.(u, "OWNER")) ?? null;
+    } catch (_) { return null; }
+  }
+
+  /** Called on the GM when the caster's client replies with its target choice. */
+  resolveSpellPickerChoice(requestId, tokenIds) {
+    const resolve = this._pickerRequests.get(requestId);
+    if (resolve) { this._pickerRequests.delete(requestId); resolve(tokenIds); }
   }
 
   /**
@@ -927,6 +1054,14 @@ export class SaveEngine {
         saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activityId, templateDoc,
       });
       console.log(`${MODULE_ID} | Instant save card posted successfully`);
+
+      // Release the auto-targeting reticles now the card owns its own target
+      // snapshot. dnd5e auto-targets every token under an AOE template; without
+      // this, the green/red brackets stick on the whole cube after the cast
+      // resolves (Faerie Fire, Fireball, etc.). Safe: the card + every save roll
+      // read the card's stored snapshot, NOT game.user.targets — same cleanup
+      // the picker flow already does.
+      this._releaseUserTargets();
 
     } else {
       // ── Persistent spell (Moonbeam, Spirit Guardians, etc.) ──
@@ -2529,7 +2664,7 @@ export class SaveEngine {
           // type, which reads worse on the merge card.
           const original = damageComponents[radiantSoulIdx];
           original.total = (original.total ?? 0) + chaBonus;
-          original.formula = `${original.formula} + ${chaBonus}`;
+          original.formula = `${original.formula} + ${chaBonus} CHA (Radiant Soul)`;
           original.radiantSoulBonus = chaBonus;
           original.featureRiders = [...(original.featureRiders ?? []), { name: "Radiant Soul", bonus: chaBonus }];
           await CombatState.markRadiantSoulUsed(casterActor);
@@ -2548,7 +2683,7 @@ export class SaveEngine {
       if (empoweredBonus > 0 && damageComponents.length > 0) {
         const target = damageComponents[0];
         target.total = (target.total ?? 0) + empoweredBonus;
-        target.formula = `${target.formula} + ${empoweredBonus}`;
+        target.formula = `${target.formula} + ${empoweredBonus} INT (Empowered Evocation)`;
         target.featureRiders = [...(target.featureRiders ?? []), { name: "Empowered Evocation", bonus: empoweredBonus }];
         console.log(`${MODULE_ID} | Empowered Evocation: +${empoweredBonus} ${target.type} added to ${casterActor.name}'s ${item.name} (Wizard Evoker INT mod)`);
       }
@@ -2564,7 +2699,7 @@ export class SaveEngine {
       if (potentBonus > 0 && damageComponents.length > 0) {
         const target = damageComponents[0];
         target.total = (target.total ?? 0) + potentBonus;
-        target.formula = `${target.formula} + ${potentBonus}`;
+        target.formula = `${target.formula} + ${potentBonus} WIS (Potent Spellcasting)`;
         target.featureRiders = [...(target.featureRiders ?? []), { name: "Potent Spellcasting", bonus: potentBonus }];
         console.log(`${MODULE_ID} | Potent Spellcasting: +${potentBonus} ${target.type} added to ${casterActor.name}'s ${item.name} (WIS mod on cantrip)`);
       }
@@ -2583,7 +2718,7 @@ export class SaveEngine {
       if (agonizingBonus > 0) {
         for (const target of damageComponents) {
           target.total = (target.total ?? 0) + agonizingBonus;
-          target.formula = `${target.formula} + ${agonizingBonus}`;
+          target.formula = `${target.formula} + ${agonizingBonus} CHA (Agonizing Blast)`;
           target.featureRiders = [...(target.featureRiders ?? []), { name: "Agonizing Blast", bonus: agonizingBonus }];
         }
         console.log(`${MODULE_ID} | Agonizing Blast: +${agonizingBonus} per beam added to ${casterActor.name}'s Eldritch Blast (CHA mod)`);
@@ -3284,8 +3419,27 @@ export class SaveEngine {
       const timing = getSpellTiming(item);
       const isPersistent = timing?.isPersistent === true
         || (timing?.timing && timing.timing !== TIMING.INSTANT);
-      if (isPersistent) {
-        console.log(`${MODULE_ID} | _dropCasterConcentrationIfNoEffect: skipping for "${item.name}" — persistent template spell, concentration is NOT wasted by passed initial saves`);
+      // The exemption is ONLY for ongoing AREA spells — a template that keeps
+      // affecting creatures over time (Stinking Cloud, Cloudkill, Web). A
+      // single-target condition spell (Hold Person, Hold Monster, Dominate,
+      // Tasha's) has NO template: if its one target saves, nothing lingers and
+      // the concentration IS wasted. Hold Person's "at the end of each of its
+      // turns, the target can make another save" clause makes the timing parser
+      // tag it END_OF_TURN (persistent), which WITHOUT this template gate left
+      // the caster locked, concentrating on a fully-resisted spell. (2026-06-24)
+      const tgt = item.system?.target ?? {};
+      const AREA = new Set(["radius", "sphere", "cube", "cone", "line", "cylinder", "wall", "square", "circle"]);
+      const hasAreaTemplate = !!String(tgt.template?.type ?? "").trim()
+        || AREA.has(String(tgt.type ?? "").toLowerCase().trim());
+      // Registry-owned effect spells (Faerie Fire) are ONE-SHOT reveals, not
+      // ongoing zones — if every creature in the cube saved, the concentration
+      // genuinely IS wasted, so it must drop. Never exempt them, even if the
+      // timing classifier still mislabels them persistent/area.
+      let isRegistryEffectSpell = false;
+      try { isRegistryEffectSpell = !!game.aceQol?.SpellPipeline?._getEntry?.(item)?.effect?.key; }
+      catch (_) { /* pipeline not ready — fall through to the area heuristic */ }
+      if (!isRegistryEffectSpell && isPersistent && hasAreaTemplate) {
+        console.log(`${MODULE_ID} | _dropCasterConcentrationIfNoEffect: skipping for "${item.name}" — persistent AREA spell, concentration not wasted by passed initial saves`);
         return false;
       }
     } catch (err) {
@@ -3343,6 +3497,19 @@ export class SaveEngine {
       return applied;
     }
 
+    // ── Registry-owned effect spells are AUTHORITATIVE (resolved up front) ──
+    // Faerie Fire & friends carry their failed-save effect in the pipeline
+    // REGISTRY, not the item description. Resolving it here, before anything
+    // else, lets it bypass BOTH the area-denial early-return below (Faerie Fire
+    // is a one-shot reveal, NOT a persistent area-denial zone — yet the timing
+    // classifier tags it that way) AND the description parser (which false-
+    // positives on flavor like "can't benefit from being invisible"). When set,
+    // this key IS the effect applied to every creature that fails its save — no
+    // matter how the timing classifier or the parser read the spell.
+    let registryEffectKey = null;
+    try { registryEffectKey = game.aceQol?.SpellPipeline?._getEntry?.(item)?.effect?.key ?? null; }
+    catch (_) { /* pipeline not ready — behave exactly as before */ }
+
     // ── Area-denial spells own their own effect lifecycle ──────────────────
     // Web, Spike Growth, Stinking Cloud, Watery Sphere, etc. are classified
     // family "areaDenial"/"areaDenialAuto", and the concentration widget
@@ -3354,7 +3521,7 @@ export class SaveEngine {
     // the area-denial system for these spells.
     try {
       const adTiming = getSpellTiming(item);
-      if (adTiming?.family === "areaDenial" || adTiming?.family === "areaDenialAuto") {
+      if (!registryEffectKey && (adTiming?.family === "areaDenial" || adTiming?.family === "areaDenialAuto")) {
         console.log(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} is area-denial (${adTiming.family}) — effect owned + cleaned up by the concentration widget; skipping save-engine condition application.`);
         return applied;
       }
@@ -3405,7 +3572,12 @@ export class SaveEngine {
       }
     } catch (err) {
       console.warn(`${MODULE_ID} | _applyFailedSaveConditions: parse failed for ${item.name}:`, err);
-      return applied;
+      // A registry-owned effect spell (Faerie Fire) doesn't depend on the
+      // description parse for its on-fail effect — don't let a parser hiccup
+      // swallow it. Continue with an empty parse so the registry effect still
+      // lands; everything downstream reads `parsed` with optional chaining.
+      if (!registryEffectKey) return applied;
+      parsed = { conditions: [] };
     }
 
     // ── Resolve save ability + DC for repeating-save metadata ──
@@ -3469,7 +3641,7 @@ export class SaveEngine {
 
     // Diagnostic dump — surfaces why conditions might not be applying
     const allConds = parsed?.conditions ?? [];
-    const failConditions = allConds.filter(c => c?.requiresSave);
+    let failConditions = allConds.filter(c => c?.requiresSave);  // `let`: may be injected from the registry below
 
     // Break-free is self-contained: if the GM enabled "can break free" but the
     // feature never declared a save-triggered Restrained of its own, inject one
@@ -3520,9 +3692,16 @@ export class SaveEngine {
       return applied;
     }
 
-    if (!failConditions.length) {
-      console.warn(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — NO conditions marked requiresSave. Description parse may have missed the save trigger. Description excerpt:`,
-        String(item.system?.description?.value ?? "").replace(/<[^>]+>/g, " ").slice(0, 300));
+    // ── Decide WHICH conditions to apply on a failed save ──
+    // Registry-owned effect (Faerie Fire, resolved at the top of this method)
+    // wins outright; otherwise use the description-parsed conditions. If neither
+    // yields anything, there's nothing to apply (a homebrew save spell may
+    // simply need its on-fail condition configured).
+    if (registryEffectKey) {
+      failConditions = [{ condition: registryEffectKey, requiresSave: true, fromRegistry: true }];
+      console.log(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — applying registry effect "${registryEffectKey}" to failed-save targets (template-save hand-off).`);
+    } else if (!failConditions.length) {
+      console.debug(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — no description-parsed conditions + no registry effect (homebrew may need a save trigger).`);
       return applied;
     }
 
@@ -4649,7 +4828,13 @@ export class SaveEngine {
         : (r.totalFinal ?? 0);
 
       // Single source of truth — handles polymorph excess capture + clamp
-      await DamageApplicator.applyHPDamage(actor, damageToApply, { label: "save-apply-all" });
+      // Pass the spell's damage type(s) so applyHPDamage's FX chokepoint (which
+      // fires ace-qol.hpApplied) can theme the impact — this is what drives the
+      // auto-animation encrust on the save-for-half path.
+      await DamageApplicator.applyHPDamage(actor, damageToApply, {
+        label: "save-apply-all",
+        types: flags.damageTypes ?? [],
+      });
 
       // Clear cache entry after applying
       SaveEngine.overrideCache.delete(cacheKey);

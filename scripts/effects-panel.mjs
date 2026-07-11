@@ -469,12 +469,14 @@ export class EffectsPanel {
     const origin = effect.origin ?? "";
     if (origin) {
       try {
-        const item = fromUuidSync?.(origin);
+        // dnd5e 5.x: origin is the ACTIVITY uuid → resolve through to the item
+        // or a real spell effect is misclassified as passive. (Audit 2026-06-27.)
+        // No string fallback: you can't tell a spell from a feat/enchantment by
+        // the origin string alone, so guessing would mislabel real passives.
+        const resolved = fromUuidSync?.(origin);
+        const item = resolved?.item ?? resolved;
         if (item?.type === "spell") return false;
       } catch (_) { /* ignore */ }
-      if (/\.spell\./i.test(origin) || /Item\..+\.Item\./i.test(origin)) {
-        // origin string format check as fallback
-      }
     }
     // Anything else is treated as a passive (item enchantments, class features, etc.)
     return true;

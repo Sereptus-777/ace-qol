@@ -101,23 +101,31 @@ export class BuffResolver {
         //    the string-uuid form to find dependent effects to delete.
         //    Also stamp our own concentrationOrigin flag for traceability
         //    (mirrors the legacy stamp pattern so existing scans still work).
-        if (targetEffect && casterConcEffect) {
+        // ALWAYS stamp our own concentrationOrigin tag for concentration buffs.
+        // The concentration-end sweep (dropConcentrationLinkedEffects) finds the
+        // ally's buff PURELY by this tag, so it must be present even when the
+        // caster-concentration lookup raced and returned null (dnd5e 5.x
+        // activity-origin timing). The dnd5e dependentOn link is added as a BONUS
+        // when we have the conc effect, but our sweep is the authoritative
+        // cleanup — it must never depend on that link. (Audit 2026-06-27, P0.)
+        const isConcentrationBuff = entry.effect?.duration === "concentration";
+        if (targetEffect && isConcentrationBuff) {
           try {
-            await targetEffect.update({
-              "flags.dnd5e.dependentOn": casterConcEffect.uuid,
+            const update = {
               [`flags.${MODULE_ID}.concentrationOrigin`]: {
                 casterId:       actor.id,
                 spellName:      item.name,
                 spellItemId:    item.id,
-                concEffectUuid: casterConcEffect.uuid,
+                concEffectUuid: casterConcEffect?.uuid ?? null,
+                stampedAt:      Date.now(),   // protects a fresh re-cast from the old cast's in-flight sweep
               },
-            });
-            console.debug(`${MODULE_ID} | BuffResolver: linked ${targetActor.name}'s ${effectKey} → ${actor.name}'s Concentrating:${item.name} (uuid:${casterConcEffect.uuid})`);
+            };
+            if (casterConcEffect) update["flags.dnd5e.dependentOn"] = casterConcEffect.uuid;
+            await targetEffect.update(update);
+            console.debug(`${MODULE_ID} | BuffResolver: tagged ${targetActor.name}'s ${effectKey} as ${actor.name}'s concentration${casterConcEffect ? ` + dnd5e link (${casterConcEffect.uuid})` : " (sweep-only — conc effect not found yet)"}`);
           } catch (err) {
-            console.warn(`${MODULE_ID} | BuffResolver: dependentOn link failed (non-fatal):`, err);
+            console.warn(`${MODULE_ID} | BuffResolver: concentration tag/link failed (non-fatal):`, err);
           }
-        } else if (targetEffect && !casterConcEffect && entry.effect?.duration === "concentration") {
-          console.warn(`${MODULE_ID} | BuffResolver: ${item.name} is concentration but no caster conc effect found — buff will NOT auto-cleanup`);
         }
 
         applied.push(c);

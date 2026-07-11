@@ -37,7 +37,10 @@ export class BladeCantrips {
       try { this._onCantripCast(activity, message); }
       catch (err) { console.warn(`${TAG} | activation hook failed:`, err); }
     });
-    Hooks.on("renderChatMessage", (message, html /*, data */) => {
+    // V13-SAFE: handler reads a native element OR jQuery. Registered on BOTH the
+    // V12 (`renderChatMessage`) and V13 (`renderChatMessageHTML`) hooks — the V13
+    // one was missing, so on V13 the Green-Flame-Blade secondary button was inert.
+    const _wireBladeCard = (message, html) => {
       if (!game.user.isGM) return;
       if (message?.flags?.[MODULE_ID]?.type !== "bladeCantrip") return;
       const el = (html instanceof HTMLElement) ? html : (html?.[0] ?? html);
@@ -56,7 +59,9 @@ export class BladeCantrips {
           } catch (err) { console.warn(`${TAG} | GFB secondary click failed:`, err); }
         });
       });
-    });
+    };
+    Hooks.on("renderChatMessage", _wireBladeCard);       // V12
+    Hooks.on("renderChatMessageHTML", _wireBladeCard);   // V13
 
     // Booming Blade — auto-fire bonus thunder damage if the marked target
     // moves on its turn. updateToken fires on EVERY position change (drag,

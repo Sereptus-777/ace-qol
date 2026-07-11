@@ -97,6 +97,23 @@ export class DamageApplicator {
 
     await updatePromise;
 
+    // ── FX chokepoint ── Every ACE damage path (APPLY ALL, Cleave, save-for-half)
+    // funnels through this one write, so it's the only place the auto-animation
+    // layer can RELIABLY hear "damage landed" — including the save-for-half path
+    // that writes HP raw and fires none of dnd5e's own damage hooks. Carries the
+    // damage type(s) the caller passed (opts.types) so the impact can be themed.
+    // Cosmetic only — must never break the damage write.
+    if (damage > 0) {
+      try {
+        Hooks.callAll(`${MODULE_ID}.hpApplied`, {
+          actor,
+          amount: damage,
+          types: Array.isArray(opts.types) ? opts.types : (opts.types ? [opts.types] : []),
+          label: opts.label ?? null,
+        });
+      } catch (_) { /* never let FX break a damage write */ }
+    }
+
     // Concentration check fires GLOBALLY from the patched Actor.update wrapper
     // (see ace-qol.mjs init), using aceQol.fullDamage for a RAW-correct DC.
     // Don't call it explicitly here — would double-fire.

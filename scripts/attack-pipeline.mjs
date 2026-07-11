@@ -18,7 +18,9 @@ import { CoverEngine } from "./cover-engine.mjs";
 import { RiderEngine } from "./rider-engine.mjs";
 import { pendingAttackChoices, awaitDsnRoll, showCenterToast } from "./attack-prompt.mjs";
 import { WeaponMasteries } from "./weapon-masteries.mjs";
+import { CombatContext } from "./combat-context.mjs";
 import { OA_IN_FLIGHT } from "./oa-transient.mjs";
+import { AttackAbilityResolver } from "./attack-ability-resolver.mjs";
 
 export class AttackPipeline {
 
@@ -182,15 +184,13 @@ export class AttackPipeline {
     // notification stack. Center toasts can be missed if the player isn't
     // looking at the screen center; the notification stays visible until
     // the user dismisses or another notification replaces it.
-    const atkStatuses = actor.statuses ?? new Set();
-    if (atkStatuses.has("paralyzed") || atkStatuses.has("stunned")
-     || atkStatuses.has("unconscious") || atkStatuses.has("incapacitated")
-     || atkStatuses.has("petrified")) {
-      const condition = ["paralyzed", "stunned", "unconscious", "incapacitated", "petrified"]
-        .find(c => atkStatuses.has(c))?.toUpperCase();
-      const msg = `${actor.token?.name ?? actor.name} is ${condition} — cannot attack`;
-      showCenterToast(msg, 2500);
-      ui.notifications?.warn(`ACE QOL: ${msg}`);
+    // Hard gate — can the attacker even act? Shared brain (CombatContext.canAct),
+    // identical to the spell path, so weapons and spells can never drift apart
+    // again (the gap that let an incapacitated caster still cast). (2026-06-25)
+    const actGate = CombatContext.canAct(actor, { isSpell: false, item, activationType: "action", verb: "attack" });
+    if (!actGate.ok) {
+      showCenterToast(actGate.reason, 2500);
+      ui.notifications?.warn(`ACE QOL: ${actGate.reason}`);
       return false; // Block the roll
     }
 
@@ -224,7 +224,7 @@ export class AttackPipeline {
     // combat-state assessment) — only the range *check* is OA-gated. v0.7.24.
     const firstTarget = targets.first();
     if (!OA_IN_FLIGHT.has(actor.id)) {
-      const rangeCheck = this._checkRange(actor, firstTarget, item);
+      const rangeCheck = this._checkRange(actor, firstTarget, item, subject);
       if (rangeCheck.blocked) {
         const msg = `Out of range — ${rangeCheck.distanceFt}ft away (${rangeCheck.rangeDesc})`;
         showCenterToast(msg, 2500);
@@ -698,6 +698,17 @@ export class AttackPipeline {
       }
     }
 
+    // Resolver-aware label: when the ability resolver swapped this swing to CHA
+    // (Pact of the Blade / Hex Warrior), show the REAL ability + value — otherwise
+    // the breakdown splits it into a stale "+1 STR" plus a phantom "+4 BONUS".
+    try {
+      const ov = AttackAbilityResolver.getOverride(actor, item);
+      if (ov && Number(ov.mod) > Number(abilityMod)) {
+        abilityLabel = String(ov.ability).toUpperCase();
+        abilityMod = Number(ov.mod);
+      }
+    } catch (_) { /* renderer never breaks on resolver issues */ }
+
     // Build the display formula
     const bd20Path = `modules/ace-qol/Assets/Dice%20Dice/BD20/BD20-${d20}_nobg.png`;
     formulaParts.push(
@@ -941,6 +952,17 @@ export class AttackPipeline {
       }
     }
 
+    // Resolver-aware label — same fix as _postAttackResults: show the swapped
+    // ability (CHA via Pact of the Blade / Hex Warrior) instead of a stale
+    // "+1 STR" chip plus a phantom "+4 BONUS" remainder.
+    try {
+      const ov = AttackAbilityResolver.getOverride(actor, item);
+      if (ov && Number(ov.mod) > Number(abilityMod)) {
+        abilityLabel = String(ov.ability).toUpperCase();
+        abilityMod = Number(ov.mod);
+      }
+    } catch (_) { /* renderer never breaks on resolver issues */ }
+
     const bd20Path = `modules/ace-qol/Assets/Dice%20Dice/BD20/BD20-${d20}_nobg.png`;
     parts.push(
       `<span class="ace-qol-mod-die">`
@@ -1161,7 +1183,7 @@ export class AttackPipeline {
     // All three gates must pass — otherwise the button stays hidden, which
     // is correct (the click handler would just bail anyway).
     try {
-      const rv = game.settings.get?.("dnd5e", "rulesVersion");
+      const rv = CombatState.getActiveRulesVersion(actor);  // honors ACE gameRulesEdition override
       const allow2014 = game.settings.get?.(MODULE_ID, "weaponMasteryAllowIn2014") === true;
       const masteryEnabled = game.settings.get?.(MODULE_ID, "weaponMasteryEnabled") !== false;
       if (masteryEnabled && (rv !== "legacy" || allow2014)) {
@@ -1218,7 +1240,7 @@ export class AttackPipeline {
     return false;
   }
 
-  _checkRange(attackerActor, targetToken, item) {
+  _checkRange(attackerActor, targetToken, item, subject = null) {
     const atkToken = attackerActor.getActiveTokens?.()?.[0]
                   ?? canvas.tokens.controlled?.[0];
     if (!atkToken || !targetToken) return { blocked: false, distanceFt: 0, rangeDesc: "", isRanged: false };
@@ -1228,23 +1250,40 @@ export class AttackPipeline {
     distanceFt = Math.round(distanceFt);
 
     const sys = item.system ?? {};
-    const actionType = sys.actionType ?? "";
-    const range = sys.range ?? {};
+    // dnd5e 5.x moved actionType + range onto the ACTIVITY. Reading only
+    // item.system here is why monster natural attacks (Ram/Bite/Claw — weapon
+    // type "natural", actionType empty on the item) were classified "unknown"
+    // and skipped the gate entirely. Prefer the activity, fall back to legacy.
+    const actionType  = subject?.actionType ?? sys.actionType ?? "";
+    const range       = subject?.range ?? sys.range ?? {};
     const normalRange = range.value ?? 5;
-    const longRange = range.long ?? 0;
+    const longRange   = range.long ?? 0;
 
-    // Determine weapon reach for melee
+    // Determine weapon reach for melee — reach property, or an explicit small
+    // melee range from the activity (5/10/15 ft), else default 5.
     const props = sys.properties ? new Set(sys.properties) : new Set();
-    const meleeReach = props.has("rch") ? 10 : 5;
+    let meleeReach = props.has("rch") ? 10 : 5;
+    // Honor the activity's OWN declared range. A "melee spell attack" (msak) can
+    // legitimately reach 30ft — dnd5e mislabels some ranged cantrips (Produce
+    // Flame) as msak. Gate by the real range, not a hardcoded 5, so we never
+    // block a spell the caster can throw across the room. (2026-06-28)
+    if (range.units === "ft" && range.value > 0 && longRange === 0) {
+      meleeReach = range.value;
+    }
 
-    // Determine weapon type
+    // Classify melee via the shared, activity-aware helper, plus weapon type
+    // (natural = monster attacks; simpleM/martialM = PC melee). isRanged covers
+    // weapon attacks and spell attacks (rsak).
     const weaponType = sys.type?.value ?? "";
-    const isMeleeType = actionType === "mwak" || weaponType.includes("simpleM") || weaponType.includes("martialM");
-    const isRangedType = actionType === "rwak" || weaponType.includes("simpleR") || weaponType.includes("martialR");
-    const isThrown = props.has("thr");
+    const isThrown   = props.has("thr");
+    const isMelee = AttackPipeline._isMeleeAttack(item, subject)
+      || weaponType === "natural"
+      || weaponType.includes("simpleM") || weaponType.includes("martialM");
+    const isRanged = actionType === "rwak" || actionType === "rsak"
+      || weaponType.includes("simpleR") || weaponType.includes("martialR");
 
     // Dual melee/ranged (thrown weapons like daggers, javelins, handaxes)
-    if (isThrown || (isMeleeType && longRange > 0)) {
+    if (isThrown || (isMelee && longRange > 0)) {
       if (distanceFt <= meleeReach) {
         // Within melee reach — treat as melee
         return { blocked: false, distanceFt, rangeDesc: `melee reach ${meleeReach}ft`, isRanged: false };
@@ -1257,8 +1296,8 @@ export class AttackPipeline {
       }
     }
 
-    // Pure melee weapon
-    if (isMeleeType && !isRangedType) {
+    // Pure melee weapon (incl. monster natural attacks)
+    if (isMelee && !isRanged) {
       if (distanceFt <= meleeReach) {
         return { blocked: false, distanceFt, rangeDesc: `melee reach ${meleeReach}ft`, isRanged: false };
       } else {
@@ -1267,7 +1306,7 @@ export class AttackPipeline {
     }
 
     // Pure ranged weapon
-    if (isRangedType) {
+    if (isRanged) {
       const maxRange = longRange || normalRange;
       if (distanceFt <= maxRange) {
         return { blocked: false, distanceFt, rangeDesc: `range ${normalRange}/${longRange}ft`, isRanged: true };
@@ -1276,7 +1315,7 @@ export class AttackPipeline {
       }
     }
 
-    // Unknown weapon type — don't block
+    // Genuinely unclassifiable — don't false-block a legitimate action.
     return { blocked: false, distanceFt, rangeDesc: "", isRanged: false };
   }
 

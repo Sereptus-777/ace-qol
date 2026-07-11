@@ -9,6 +9,13 @@
 const MODULE_ID = "ace-qol";
 const LOG_PREFIX = `${MODULE_ID} | Loot:`;
 
+// Split-gold re-entry guard (punch-list #3: the same monster's gold split 3×).
+// The flag write lands AFTER the slow per-PC currency updates; a card
+// re-render in that window (an item gets looted → message.update → fresh
+// button reading stale flags) allowed a second click. Message ids in here
+// are mid-split — every entry path checks it.
+const _splitsInFlight = new Set();
+
 // ─── CR Tier Definitions ────────────────────────────────────────────────────
 // Each tier defines: gold dice formula, allowed rarities, and item count range.
 const CR_TIERS = [
@@ -909,6 +916,20 @@ export class LootEngine {
    * @param {HTMLElement} btn     - The split button element
    */
   async _handleSplitGold(message, flags, btn) {
+    // ── Re-entry guard (punch #3) ──
+    // Re-read the LIVE flags — the captured `flags` object can be stale if a
+    // re-render or another update landed since this button was wired. Then
+    // hold the in-flight lock for the whole split so no parallel click (from
+    // a re-rendered card, popped-out chat, or double-fire) can start a second
+    // distribution of the same card's gold.
+    const liveFlags = message.flags?.[MODULE_ID] ?? {};
+    if (liveFlags.currencySplit || _splitsInFlight.has(message.id)) {
+      btn.disabled = true;
+      btn.textContent = "Gold Split ✓";
+      console.log(`${LOG_PREFIX} split ignored — this card's gold is already split (or splitting right now)`);
+      return;
+    }
+    _splitsInFlight.add(message.id);
     try {
       btn.disabled = true;
       btn.textContent = "Splitting...";
@@ -1001,6 +1022,8 @@ export class LootEngine {
       btn.disabled = false;
       btn.textContent = "Split Gold Evenly";
       ui.notifications.error("ACE Loot: Failed to split gold.");
+    } finally {
+      _splitsInFlight.delete(message.id);
     }
   }
 

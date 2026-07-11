@@ -1097,9 +1097,23 @@ export class ReactionEngine {
       const slots = this._getAvailableSlots(token.actor, 3);
       if (!slots.length) continue;
 
-      // Must be within 60ft and have line of sight
+      // Must be within 60ft (Counterspell's range)
       const distance = CombatState._getDistance(token, casterToken);
       if (distance > 60) continue;
+
+      // Must have LINE OF SIGHT to the caster — RAW, you have to SEE the
+      // creature casting. The 60ft check alone let a reactor counterspell
+      // through walls / a locked door, even ~200ft away across rooms
+      // (reported 2026-06-28). Test for a sight-blocking wall between the two
+      // token centers. Optional-chained + try/caught so a Foundry API shift
+      // can't break reactor detection — on any failure we fall through rather
+      // than false-block a legitimate counterspell.
+      try {
+        const losBlocked = CONFIG.Canvas?.polygonBackends?.sight?.testCollision?.(
+          token.center, casterToken.center, { type: "sight", mode: "any" }
+        );
+        if (losBlocked) continue;
+      } catch (_) { /* LoS test unavailable — don't false-block */ }
 
       reactors.push({ actor: token.actor, token, slots, distance });
     }

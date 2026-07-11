@@ -710,6 +710,15 @@ export class DamageEngine {
       const rollDmgBtn = el.querySelector?.("[data-action='aceQolRollDamage']");
       if (rollDmgBtn && !rollDmgBtn.dataset.wired) {
         rollDmgBtn.dataset.wired = "1";
+
+        // Only the GM or the attacking actor's OWNER (the caster) may roll this
+        // damage — a player must never roll another player's or a monster's
+        // damage. The caster owns their PC, so actor.isOwner identifies them;
+        // everyone else gets the button hidden (they still see the → targets line).
+        const _dmgActor = game.actors.get(flags.actorId);
+        const _canRoll = game.user.isGM || _dmgActor?.isOwner === true;
+        if (!_canRoll) rollDmgBtn.style.setProperty("display", "none", "important");
+
         if (flags.rolled || flags.bundledFired) {
           rollDmgBtn.disabled = true;
           rollDmgBtn.innerHTML = '<i class="fas fa-check"></i> ROLLED ✓';
@@ -745,10 +754,12 @@ export class DamageEngine {
         }
 
         rollDmgBtn.addEventListener("click", async () => {
+          if (!_canRoll) return; // belt-and-suspenders: the button is hidden for non-owners
           rollDmgBtn.disabled = true;
           rollDmgBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Rolling...';
           try {
             if (game.user.isGM) {
+              // GM rolls locally with its own dice — NPC/monster attacks, GM-cast spells.
               const success = await this._rollDamageFromButton(message);
               if (success) {
                 rollDmgBtn.innerHTML = '<i class="fas fa-check"></i> Rolled ✓';
@@ -758,12 +769,19 @@ export class DamageEngine {
                 ui.notifications.error("ACE QOL: Damage roll returned early — check console (F12) for details.");
               }
             } else {
-              console.log(`${MODULE_ID} | Player requesting GM to roll damage for message ${message.id}`);
+              // CASTER rolls their OWN damage: fire the 3D dice on THIS player's
+              // screen in their own dice theme — DSN sync broadcasts the tumble
+              // to the whole table — then hand the card, post-hit effects, and
+              // HP application to the GM, who runs them exactly as before with
+              // its own dice suppressed (skipDice) so the animation isn't doubled.
+              console.log(`${MODULE_ID} | Player ${game.user.name} rolling their own damage for message ${message.id}`);
+              try { DamageCardRenderer.showPreRolledDice(flags.preRolled); } catch (_) {}
               game.socket.emit(`module.${MODULE_ID}`, {
                 action: "rollDamage",
                 messageId: message.id,
                 userId: game.user.id,
                 userName: game.user.name,
+                skipDice: true,
               });
               rollDmgBtn.innerHTML = '<i class="fas fa-check"></i> Rolled ✓';
             }
@@ -810,13 +828,28 @@ export class DamageEngine {
     console.debug(`${MODULE_ID} | Damage engine hooks registered`);
   }
 
+  // Tell every client that an attack fully resolved (damage rolled, or a clean
+  // miss). The multiattack engine waits for this before offering the next swing.
+  // Fires locally AND broadcasts: for a player-controlled attacker the damage
+  // rolls on the GM but the chain pop-up lives on the player's screen.
+  static _signalAttackResolved(actorId) {
+    if (!actorId) return;
+    try { Hooks.callAll(`${MODULE_ID}.attackResolved`, { actorId }); } catch (_) { /* non-fatal */ }
+    try { game.socket?.emit(`module.${MODULE_ID}`, { action: "attackResolved", actorId }); } catch (_) { /* non-fatal */ }
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   //  Attack Complete → Route to Damage Card
   // ═══════════════════════════════════════════════════════════════════════════
 
   async _onAttackComplete(data) {
     const { item, actor, results, hits, actionType: hookActionType, subject, initiatorUserId } = data;
-    if (!hits?.length) return;
+    if (!hits?.length) {
+      // Whole attack missed — still "resolved". Let any pending multiattack chain
+      // proceed (otherwise a miss would stall the next swing on the fallback timer).
+      DamageEngine._signalAttackResolved(actor?.id);
+      return;
+    }
 
     // ── Check for optional riders (Divine Smite, Eldritch Smite, maneuvers, etc.) ──
     try {
@@ -930,6 +963,32 @@ export class DamageEngine {
       console.error(`${MODULE_ID} | Rider detection/popup failed (non-blocking):`, err);
     }
 
+    // ── Reactive retaliation traits on the TARGET (Heated Body, Fire Shield…) ──
+    // When a melee hit lands, read each hit creature for a "hit me in melee → you
+    // take damage" trait — read by INTENT from its description, NOT its name — and
+    // apply that back to the attacker (honouring the attacker's resistances). (2026-06-24)
+    try {
+      const _at = hookActionType ?? subject?.actionType ?? item.system?.actionType ?? "mwak";
+      const _isMelee = ["mwak", "msak"].includes(_at);
+      if (_isMelee) {
+        const { RetaliationEngine } = await import("./retaliation-engine.mjs");
+        const attackerToken = actor.getActiveTokens?.()[0] ?? null;
+        for (const hit of hits) {
+          const targetActor = hit.targetActor ?? game.actors.get(hit.actorId);
+          if (!targetActor) continue;
+          await RetaliationEngine.checkOnHit({
+            attacker: actor,
+            attackerToken,
+            target: targetActor,
+            targetToken: hit.targetToken ?? targetActor.getActiveTokens?.()[0] ?? null,
+            isMelee: _isMelee,
+          });
+        }
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Retaliation check failed (non-fatal):`, err);
+    }
+
     // Grab consumed riders from pending state
     const consumedRiders = this._pendingConsumedRiders ?? [];
     this._pendingConsumedRiders = null;
@@ -1023,7 +1082,7 @@ export class DamageEngine {
   //  Roll Damage From Button Click
   // ═══════════════════════════════════════════════════════════════════════════
 
-  async _rollDamageFromButton(message) {
+  async _rollDamageFromButton(message, opts = {}) {
     const flags = message.flags?.[MODULE_ID];
     console.log(`${MODULE_ID} | _rollDamageFromButton ENTERED. flags:`, flags);
 
@@ -1050,7 +1109,7 @@ export class DamageEngine {
 
     // ── New path: pre-rolled results available (Beneos-safe) ──
     if (flags?.preRolled?.length) {
-      const result = await DamageCardRenderer.postPreRolledDamageCard(message, flags);
+      const result = await DamageCardRenderer.postPreRolledDamageCard(message, flags, opts);
       if (result?.success) {
         await message.setFlag(MODULE_ID, "rolled", true);
         // If the renderer returned an item for post-hit effects, run them.
@@ -1062,6 +1121,8 @@ export class DamageEngine {
           const attackerActor = result.item.actor ?? game.actors.get(flags.actorId);
           await PostHitSaves.checkPostHitEffects(result.item, attackerActor, flags.preRolled, result.damageResults);
         }
+        // Damage resolved → release any pending multiattack pop-up (local + broadcast).
+        DamageEngine._signalAttackResolved(flags.actorId);
       }
       return !!result?.success;
     }
@@ -1112,6 +1173,7 @@ export class DamageEngine {
       return false;
     }
     await PostHitSaves.checkPostHitEffects(item, actor, flags.hits, damageResults);
+    DamageEngine._signalAttackResolved(flags.actorId);
     return true;
 
     } finally {

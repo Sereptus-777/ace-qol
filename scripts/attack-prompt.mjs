@@ -17,17 +17,48 @@ import { MODULE_ID } from "./ace-qol.mjs";
  * Wait for Dice So Nice to finish animating before posting result cards.
  * Hides the result number while dice are still tumbling so it's not spoiled.
  *
- * @param {number} [fallbackMs] - override the configured delay (ms)
+ * EVENT-BASED (punch-list #14, "do it right" — 2026-07-10): resolves the
+ * moment DSN reports the animation complete, so one quick d20 reveals fast
+ * and a fistful of damage dice gets its full tumble. The configured delay is
+ * now only a CAP — if DSN never fires (3D disabled for this roll, module
+ * mid-toggle, animation skipped), the cap resolves and nothing ever hangs.
+ * Worst case equals the old fixed-delay behavior; typical case is faster
+ * AND spoiler-proof.
+ *
+ * @param {number} [fallbackMs] - override the configured cap (ms)
+ * @param {object} [opts]
+ * @param {string} [opts.messageId] - only accept DSN completion for this
+ *                 chat message (omit = first completion after we start waiting)
  * @returns {Promise<void>}
  */
-export async function awaitDsnRoll(fallbackMs = null) {
+export async function awaitDsnRoll(fallbackMs = null, { messageId = null } = {}) {
   if (!game.dice3d) return; // DSN not active or disabled
-  let ms = fallbackMs;
-  if (ms == null) {
-    try { ms = game.settings.get(MODULE_ID, "dsnRevealDelayMs"); } catch { ms = 2000; }
+  let cap = fallbackMs;
+  if (cap == null) {
+    try { cap = game.settings.get(MODULE_ID, "dsnRevealDelayMs"); } catch { cap = 3000; }
   }
-  if (!Number.isFinite(ms) || ms <= 0) return;
-  return new Promise(r => setTimeout(r, ms));
+  if (!Number.isFinite(cap) || cap <= 0) return;
+
+  return new Promise((resolve) => {
+    let done = false;
+    let hookId = null;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      try { if (hookId != null) Hooks.off("diceSoNiceRollComplete", hookId); } catch (_) { /* non-fatal */ }
+      resolve();
+    };
+    try {
+      // Subscribe FIRST — shrinks the finished-before-we-listened race; that
+      // race degrades to the old fixed-delay wait, never worse.
+      hookId = Hooks.on("diceSoNiceRollComplete", (completedId) => {
+        if (messageId && completedId && completedId !== messageId) return;
+        // A beat of grace so the last die visually settles before the card.
+        setTimeout(finish, 150);
+      });
+    } catch (_) { /* listener failed → the cap below still resolves */ }
+    setTimeout(finish, cap);
+  });
 }
 
 /**

@@ -206,7 +206,7 @@ export class SpellAutoDamage {
         if (!pipeline?.ownsSpell?.(item)) return;
         const entry = pipeline._getEntry?.(item);
         const PIPELINE_POSTS_OWN_CARD = new Set([
-          "distribute", "self", "multi-buff", "multi-heal", "touch", "save-single",
+          "distribute", "attack-multi", "self", "multi-buff", "multi-heal", "touch", "save-single",
         ]);
         if (!PIPELINE_POSTS_OWN_CARD.has(entry?.shape)) return;
 
@@ -754,8 +754,11 @@ export class SpellAutoDamage {
       // Magic Missile. Mirror this pattern in all future picker-owned
       // spells via the unified pipeline (per SPELL_PIPELINE_ARCHITECTURE.md).
       // Small delay so the AA trajectory animation has time to read targets
-      // before they vanish.
-      setTimeout(() => SpellAutoDamage._clearUserTargets(), 1500);
+      // before they vanish. PUNCH-LIST #11 (Johnny): if every dart went to
+      // ONE creature, that's a single-target action — the target STAYS.
+      if (mmHits.length > 1) {
+        setTimeout(() => SpellAutoDamage._clearUserTargets(), 1500);
+      }
 
       return;
     }

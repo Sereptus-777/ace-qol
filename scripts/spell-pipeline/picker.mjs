@@ -56,7 +56,11 @@ export class UnifiedSpellPicker {
     }
 
     // Compute N for shapes that need it
-    const N = entry.countResolver?.(castLevel, actor.system?.details?.level ?? 1) ?? 1;
+    const charLevel = actor.system?.details?.level
+      ?? actor.system?.details?.spellLevel
+      ?? actor.system?.attributes?.spell?.level
+      ?? 1;
+    const N = entry.countResolver?.(castLevel, charLevel) ?? 1;
 
     // Pre-fill from game.user.targets
     const preTargets = UnifiedSpellPicker._matchPreTargets(candidates);
@@ -106,6 +110,18 @@ export class UnifiedSpellPicker {
       const isSelf = actor.id === casterActor.id;
       if (isSelf && !allowSelf) continue;
       if (tok.document?.hidden && !game.user.isGM) continue;
+
+      // LINE OF SIGHT — exclude a target the caster can't SEE (a wall or closed door
+      // between them). A creature behind two doors is in straight-line range but not a
+      // valid spell target. Same sight-collision test as the counterspell fix.
+      if (!isSelf) {
+        try {
+          const blocked = CONFIG.Canvas?.polygonBackends?.sight?.testCollision?.(
+            casterToken.center, tok.center, { type: "sight", mode: "any" }
+          );
+          if (blocked) continue;
+        } catch (_) { /* test unavailable → don't false-exclude */ }
+      }
 
       if (excludeDead) {
         const hp = actor.system?.attributes?.hp?.value ?? 0;

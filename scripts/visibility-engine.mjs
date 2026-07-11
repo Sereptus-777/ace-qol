@@ -26,9 +26,12 @@ export class VisibilityEngine {
    * based on visibility settings. Should be called once during module ready.
    */
   static registerHooks() {
-    Hooks.on("renderChatMessage", (message, html) => {
-      VisibilityEngine.filterMessageContent(message, html);
-    });
+    // filterMessageContent normalizes native-vs-jQuery, so register on BOTH V12 +
+    // V13 hooks (V13 `renderChatMessageHTML` was missing → message-visibility
+    // masking didn't run on V13).
+    const _filter = (message, html) => VisibilityEngine.filterMessageContent(message, html);
+    Hooks.on("renderChatMessage", _filter);       // V12
+    Hooks.on("renderChatMessageHTML", _filter);   // V13
 
     console.debug(`${MODULE_ID} | Visibility engine hooks registered`);
   }

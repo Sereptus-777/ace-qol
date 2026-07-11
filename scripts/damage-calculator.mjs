@@ -10,6 +10,7 @@ import { DamageConstants } from "./damage-engine.mjs";
 import { CombatState } from "./combat-state.mjs";
 import { NullificationWalker } from "./target-state-registry/walker.mjs";
 import { getChosenDamageType } from "./multi-type-damage-chooser.mjs";
+import { AttackAbilityResolver } from "./attack-ability-resolver.mjs";
 
 const PHYSICAL_TYPES = new Set(["bludgeoning", "piercing", "slashing"]);
 
@@ -35,6 +36,30 @@ export class DamageCalculator {
       console.warn(`${MODULE_ID} | item.getRollData() failed, falling back to actor:`, e.message);
       rollData = actor.getRollData?.() ?? {};
     }
+
+    // ── Character-rule ability override (Pact of the Blade / Hex Warrior) ──
+    // The resolver's dnd5e hooks cover NATIVE system rolls; this pipeline
+    // builds its own rolls from getDamageConfig/parts, so the swap must land
+    // HERE too. Live-fire 2026-07-10: the same halberd swing read "+5 CHA"
+    // on the attack card and rolled "+1 STR" on the damage card.
+    let abilityOverride = null;
+    let overrideApplied = false;
+    try {
+      const ov = AttackAbilityResolver.getOverride(actor, item);
+      if (ov) {
+        // Keep the override ALIVE even when item-level rollData carries no
+        // .mod — dnd5e 5.x puts the ability mod on the ACTIVITY's roll data,
+        // which gets patched per-roll below. Nulling out here was the hole
+        // that left the halberd at +1 STR (live-fire 2026-07-10 10:13).
+        abilityOverride = ov;
+        const cur = Number(rollData?.mod);
+        if (Number.isFinite(cur) && ov.mod > cur) {
+          rollData = { ...rollData, mod: ov.mod };
+          overrideApplied = true;
+          console.log(`${MODULE_ID} | [ability-resolver] ${actor.name}: "${item.name}" damage uses ${ov.ability.toUpperCase()} ${ov.mod >= 0 ? "+" : ""}${ov.mod} (was ${cur >= 0 ? "+" : ""}${cur}) — ${ov.why}`);
+        }
+      }
+    } catch (_) { abilityOverride = null; }
 
     // ── Magic Missile dart override ────────────────────────────────────
     // When the MagicMissilePicker assigns N darts to this target, the
@@ -72,12 +97,40 @@ export class DamageCalculator {
                 type:           ov.type || "force",
                 isFeatureRider: true,
                 featureLabel:   "EMPOWERED EVOCATION",
+                _modMeta:       { abilityMod: intBonus, abilityName: "INT", magicBonus: 0 },
               });
               console.log(`${MODULE_ID} | Empowered Evocation: +${intBonus} added to ${actor.name}'s Magic Missile (Wizard Evocation 10+)`);
             }
           } catch (err) {
             console.warn(`${MODULE_ID} | Empowered Evocation override-path check failed (non-fatal):`, err);
           }
+        }
+
+        // Feature riders carried by an attack-multi volley (Agonizing
+        // Blast: +CHA per beam that hit). Labeled components — the card
+        // reads "+10 CHA" with the feature name captioned underneath.
+        try {
+          for (const ex of (ov.extraComponents ?? [])) {
+            const flat = Number(ex?.flat) || 0;
+            if (flat <= 0) continue;
+            const exRoll = new Roll(`${flat}`);
+            await exRoll.evaluate();
+            components.push({
+              name:           ex.name ?? "Bonus",
+              formula:        `${flat}`,
+              roll:           exRoll,
+              total:          flat,
+              type:           ex.type ?? ov.type ?? "untyped",
+              isFeatureRider: true,
+              featureLabel:   String(ex.name ?? "BONUS").toUpperCase(),
+              _modMeta: ex.ability
+                ? { abilityMod: flat, abilityName: String(ex.ability).toUpperCase(), magicBonus: 0 }
+                : null,
+            });
+            console.log(`${MODULE_ID} | volley rider: +${flat} ${ex.type ?? ov.type} (${ex.name}) added`);
+          }
+        } catch (err) {
+          console.warn(`${MODULE_ID} | volley extraComponents failed (non-fatal):`, err);
         }
 
         return components;
@@ -154,8 +207,15 @@ export class DamageCalculator {
               continue;
             }
 
-            // Resolve @references and roll with our crit rules
+            // Resolve @references and roll with our crit rules. The system
+            // builds rollCfg.data from the ACTIVITY's ability — re-assert the
+            // character-rule mod there or the swap above is silently undone.
             const data = rollCfg.data ?? rollData;
+            if (abilityOverride && Number.isFinite(Number(data.mod)) && abilityOverride.mod > Number(data.mod)) {
+              console.log(`${MODULE_ID} | [ability-resolver] ${actor.name}: "${item.name}" damage roll uses ${abilityOverride.ability.toUpperCase()} +${abilityOverride.mod} (was +${data.mod}) — ${abilityOverride.why}`);
+              data.mod = abilityOverride.mod;
+              overrideApplied = true;
+            }
             const result = await DamageCalculator.rollWithCrit(formula, data, isCrit, critRule, `Base ${type}`, item);
             components.push({ name: item.name, ...result, type });
           }
@@ -197,6 +257,11 @@ export class DamageCalculator {
               if (abilMod === 0 && rollData.mod) abilMod = rollData.mod;
             } catch (_) { /* keep default */ }
 
+            if (abilityOverride && overrideApplied) {
+              // The chip must tell the truth about what actually rolled.
+              abilName = abilityOverride.ability.toUpperCase();
+              abilMod = abilityOverride.mod;
+            }
             components[0]._modMeta = {
               abilityMod: abilMod,
               abilityName: abilName,
@@ -243,9 +308,10 @@ export class DamageCalculator {
               const resolvedAbil = activity?.ability;
               const str = rollData.abilities?.str?.mod ?? 0;
               const dex = rollData.abilities?.dex?.mod ?? 0;
-              const abilityMod = resolvedAbil
+              let abilityMod = resolvedAbil
                 ? (rollData.abilities?.[resolvedAbil]?.mod ?? rollData.mod ?? 0)
                 : (rollData.mod ?? str);
+              if (abilityOverride && abilityOverride.mod > abilityMod) { abilityMod = abilityOverride.mod; overrideApplied = true; }
               if (abilityMod !== 0) formula += abilityMod >= 0 ? `+${abilityMod}` : `${abilityMod}`;
 
               const magicBonus = sys.magicalBonus ?? 0;
@@ -293,6 +359,10 @@ export class DamageCalculator {
                          : (isThrown && actionType === "rwak") ? "STR"
                          : ["rwak","rsak"].includes(actionType) ? "DEX" : "STR";
               }
+              if (abilityOverride && overrideApplied) {
+                abilName = abilityOverride.ability.toUpperCase();
+                abilMod = abilityOverride.mod;
+              }
               comp._modMeta = {
                 abilityMod: abilMod,
                 abilityName: abilName,
@@ -313,6 +383,33 @@ export class DamageCalculator {
           components.push({ name: item.name, ...result, type: type || "untyped" });
         }
       }
+    }
+
+    // ── Pact of the Blade damage-type preference (player's sticky choice) ──
+    // The dnd5e rollDamage prototype patch covers NATIVE rolls only; this
+    // pipeline builds its own components, so the preference must land here
+    // too (live-fire 2026-07-10: necrotic choice never reached ACE cards).
+    // Base weapon parts only — riders (smites, Hex) keep their own types.
+    try {
+      if (item?.type === "weapon") {
+        const { hasPactOfTheBlade, getPactBladeType } = await import("./warlock-damage-chooser.mjs");
+        if (hasPactOfTheBlade(actor)) {
+          const preferred = getPactBladeType(actor);
+          if (preferred && preferred !== "weapon") {
+            let swapped = 0;
+            for (const comp of components) {
+              if (comp.name !== item.name) continue;
+              if (comp.type === preferred) continue;
+              comp._pactBladeFrom = comp.type;
+              comp.type = preferred;
+              swapped++;
+            }
+            if (swapped) console.log(`${MODULE_ID} | Pact of the Blade: ${actor.name}'s ${item.name} damage type → ${preferred} (player preference, ${swapped} part${swapped === 1 ? "" : "s"})`);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | pact-blade type preference failed (non-fatal):`, err);
     }
 
     // ── Attacker bonus damage (Hex, Hunter's Mark, Rage, Sneak Attack) ──
@@ -391,6 +488,10 @@ export class DamageCalculator {
             type: radiantSoulType,
             isFeatureRider: true,
             featureLabel: "RADIANT SOUL",
+            // The card labels a flat term that matches abilityMod — this is
+            // what makes the chip read "+5 CHA" instead of a bare "+5"
+            // (provenance ask, 2026-07-10).
+            _modMeta: { abilityMod: chaBonus, abilityName: "CHA", magicBonus: 0 },
           });
           // Mark used — fire-and-forget; the await isn't strictly necessary
           // for correctness because the next damage roll comes after this
@@ -421,6 +522,7 @@ export class DamageCalculator {
             type:          components[0]?.type ?? "untyped",
             isFeatureRider: true,
             featureLabel:  "EMPOWERED EVOCATION",
+            _modMeta:      { abilityMod: intBonus, abilityName: "INT", magicBonus: 0 },
           });
           console.log(`${MODULE_ID} | Empowered Evocation: +${intBonus} added to ${actor.name}'s ${item.name} (INT mod, Wizard Evocation School 10+)`);
         }
@@ -450,6 +552,23 @@ export class DamageCalculator {
             comp.formula = comp.formula
               ? `${comp.formula} + ${chaBonus}`
               : `${chaBonus}`;
+            // The card builds its chips from the ROLL's terms, not the
+            // formula string — a total-only bump left the +CHA invisible
+            // (die shows 7, total says 12). Graft the bonus into the roll
+            // as real terms and tag it so the chip reads "+5 CHA"
+            // (provenance, 2026-07-10). Display-only: comp.total already
+            // carries the math; nothing re-evaluates these rolls.
+            try {
+              if (comp.roll?.terms) {
+                comp.roll.terms.push(
+                  new foundry.dice.terms.OperatorTerm({ operator: "+" }),
+                  new foundry.dice.terms.NumericTerm({ number: chaBonus }),
+                );
+              }
+              if (!comp._modMeta) {
+                comp._modMeta = { abilityMod: chaBonus, abilityName: "CHA", magicBonus: 0 };
+              }
+            } catch (_) { /* cosmetic enrichment — never block damage */ }
           }
           console.log(`${MODULE_ID} | Agonizing Blast: +${chaBonus} per beam (${components.length} component${components.length === 1 ? "" : "s"}) on ${actor.name}'s Eldritch Blast (CHA mod)`);
         }
@@ -476,6 +595,7 @@ export class DamageCalculator {
             type:          components[0]?.type ?? "untyped",
             isFeatureRider: true,
             featureLabel:  "POTENT SPELLCASTING",
+            _modMeta:      { abilityMod: wisBonus, abilityName: "WIS", magicBonus: 0 },
           });
           console.log(`${MODULE_ID} | Potent Spellcasting: +${wisBonus} added to ${actor.name}'s cantrip ${item.name} (WIS mod)`);
         }

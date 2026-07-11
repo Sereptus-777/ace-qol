@@ -18,6 +18,12 @@ import { DamageCalculator } from "./damage-calculator.mjs";
 // dsn-utils is a dependency-free leaf module — safe to import here even
 // though concentration-widget itself is imported by ace-qol.mjs.
 import { safeShowForRoll } from "./dsn-utils.mjs";
+// Shared template-footprint tracer (canonical home: geometry-utils) + the
+// rules brain for the convergence guard below. Both only read their imports
+// inside function bodies, so the ace-qol.mjs import cycle stays inert —
+// the same proven pattern situation.mjs uses.
+import { buildRegionShapeFromTemplate } from "./geometry-utils.mjs";
+import { RulesBrain } from "./rules/rules-brain.mjs";
 
 const TAG = `${MODULE_ID} | ConcWidget`;
 
@@ -499,6 +505,19 @@ export class ConcentrationWidget {
       if (QolSettings.get?.("spellDifficultTerrain") !== true) return;
     } catch (_) { return; }                          // setting unregistered → treat as off
     if (game.users?.activeGM !== game.user) return;  // scene write must run once
+
+    // ── CONVERGENCE GUARD (2026-07-09) ──
+    // Spells with a rules-data entry declaring space properties get their
+    // region from the rules engine (SpaceEffects — one region carrying terrain
+    // + obscurement + everything else). This legacy creator keeps owning
+    // spells with timing-model terrain but NO rules entry yet (Spike Growth,
+    // Grease) until their entries are authored.
+    try {
+      if (RulesBrain.spaceEntry(tracker?.item, { actor: tracker?.actor })?.entry?.space?.difficultTerrain) {
+        console.debug(`${TAG} | difficult terrain for "${tracker?.item?.name}" deferred to the rules engine (space-effects owns it)`);
+        return;
+      }
+    } catch (_) { /* brain unavailable → legacy path proceeds */ }
     const templateDoc = tracker?.templateDoc;
     const scene = templateDoc?.parent ?? canvas?.scene;
     if (!templateDoc || !scene) return;
@@ -545,39 +564,13 @@ export class ConcentrationWidget {
   }
 
   /**
-   * Build a Region shape matching a MeasuredTemplate's footprint. Circles map
-   * to a circle Region; rect/ray/cone map to a polygon traced from the drawn
-   * template shape (local points → absolute scene coordinates).
+   * Build a Region shape matching a MeasuredTemplate's footprint.
+   * Delegates to the canonical shared tracer in geometry-utils (2026-07-09) —
+   * the rules-engine space executor traces through the same function, so both
+   * paths produce identical regions.
    */
   _buildRegionShapeFromTemplate(templateDoc) {
-    const obj = templateDoc?.object;
-    const x = templateDoc?.x ?? 0;
-    const y = templateDoc?.y ?? 0;
-    const s = obj?.shape;
-    // Foundry computes the template shape per type:
-    //   cone / ray / grid-snapped circle → PIXI.Polygon (has .points)
-    //   5e cube ("rect")                 → PIXI.Rectangle (.x/.y/.width/.height)
-    //   euclidean circle                 → PIXI.Circle (.radius)
-    // All are in LOCAL coords (origin at the template's x,y), so we add x,y.
-
-    // 1) Polygon-based (cone, ray, grid circle): trace the points.
-    const pts = s?.points;
-    if (Array.isArray(pts) && pts.length >= 6) {
-      const abs = pts.map((p, i) => (i % 2 === 0 ? p + x : p + y));
-      return { type: "polygon", points: abs };
-    }
-    // 2) Rectangle (5e cubes — PIXI.Rectangle, no .points).
-    if (s && Number.isFinite(s.width) && Number.isFinite(s.height) && s.width > 0 && s.height > 0) {
-      return { type: "rectangle", x: x + (s.x ?? 0), y: y + (s.y ?? 0), width: s.width, height: s.height, rotation: 0 };
-    }
-    // 3) Circle (euclidean) — fall back to grid math if .radius is missing.
-    let radius = s?.radius;
-    if (!(radius > 0)) {
-      const g = canvas?.grid;
-      if (g?.size && g?.distance) radius = (templateDoc.distance ?? 0) * g.size / g.distance;
-    }
-    if (radius > 0) return { type: "circle", x, y, radius };
-    return null;
+    return buildRegionShapeFromTemplate(templateDoc);
   }
 
   /**

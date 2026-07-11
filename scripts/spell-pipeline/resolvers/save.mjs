@@ -16,6 +16,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "../../ace-qol.mjs";
+import { CombatState } from "../../combat-state.mjs";
 import { ConditionLibrary } from "../../condition-library.mjs";
 import { SpellPipeline } from "../pipeline.mjs";
 
@@ -86,8 +87,7 @@ export class SaveResolver {
 
     const cur = Number(tActor.system?.attributes?.hp?.value ?? 0);
     const thr = Number(entry.instantKill?.hpThreshold ?? 100);
-    let modern = true;
-    try { modern = game.settings.get("dnd5e", "rulesVersion") !== "legacy"; } catch (_) {}
+    const modern = CombatState.getActiveRulesVersion(actor) !== "legacy";  // honors ACE gameRulesEdition override
     const accent = "#b71c1c";
     const card = (flavor, body) => {
       try {
@@ -262,26 +262,28 @@ export class SaveResolver {
         // concentration effect via flags.dnd5e.dependentOn (UUID string,
         // matching dnd5e's expected format). When the caster ends
         // concentration, dnd5e auto-deletes this dependent effect.
+        // ALWAYS stamp our concentrationOrigin tag for concentration spells so the
+        // end-sweep can find this debuff on the target — even when the caster-conc
+        // lookup races and returns null. The dnd5e dependentOn link is a bonus when
+        // we have the conc effect; the sweep is authoritative. (Audit 2026-06-27, P0.)
         if (targetEffect && isConcentration && casterActor) {
           // v0.7.21: uses shared SpellPipeline.findCasterConcentrationFor (audit dedup).
           const casterConcEffect = SpellPipeline.findCasterConcentrationFor(casterActor, spellItem);
-          if (casterConcEffect) {
-            try {
-              await targetEffect.update({
-                "flags.dnd5e.dependentOn": casterConcEffect.uuid,
-                [`flags.${MODULE_ID}.concentrationOrigin`]: {
-                  casterId:       casterActor.id,
-                  spellName:      spellItem.name,
-                  spellItemId:    spellItem.id,
-                  concEffectUuid: casterConcEffect.uuid,
-                },
-              });
-              console.debug(`${MODULE_ID} | SaveResolver: linked ${targetActor.name}'s ${effectKey} → ${casterActor.name}'s Concentrating:${spellItem.name}`);
-            } catch (err) {
-              console.warn(`${MODULE_ID} | SaveResolver: concentration link failed (non-fatal):`, err);
-            }
-          } else {
-            console.warn(`${MODULE_ID} | SaveResolver: ${spellItem.name} is concentration but no caster conc effect — effect will not auto-cleanup`);
+          try {
+            const update = {
+              [`flags.${MODULE_ID}.concentrationOrigin`]: {
+                casterId:       casterActor.id,
+                spellName:      spellItem.name,
+                spellItemId:    spellItem.id,
+                concEffectUuid: casterConcEffect?.uuid ?? null,
+                stampedAt:      Date.now(),   // protects a fresh re-cast from the old cast's in-flight sweep
+              },
+            };
+            if (casterConcEffect) update["flags.dnd5e.dependentOn"] = casterConcEffect.uuid;
+            await targetEffect.update(update);
+            console.debug(`${MODULE_ID} | SaveResolver: tagged ${targetActor.name}'s ${effectKey} as ${casterActor.name}'s concentration${casterConcEffect ? " + dnd5e link" : " (sweep-only — conc effect not found yet)"}`);
+          } catch (err) {
+            console.warn(`${MODULE_ID} | SaveResolver: concentration tag/link failed (non-fatal):`, err);
           }
         }
 

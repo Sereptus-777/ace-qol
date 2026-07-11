@@ -54,14 +54,41 @@ function _rectOf(t, gs, gd) {
   const d = t?.document ?? t ?? {};
   const wU = Number(d.width  ?? 1) || 1;
   const hU = Number(d.height ?? 1) || 1;
-  return {
+  // Snap sub-cell (Tiny) footprints out to their whole 5-ft square — see
+  // aceSnapSubCellRect for the full why. No-op for Medium / Large / +.
+  return aceSnapSubCellRect({
     x: Number(t?.x ?? d.x ?? 0) || 0,
     y: Number(t?.y ?? d.y ?? 0) || 0,
     w: wU * gs,
     h: hU * gs,
     elev:  Number(d.elevation ?? 0) || 0,
     hgtFt: Math.max(wU, hU) * gd,
-  };
+  });
+}
+
+/**
+ * Snap a sub-cell (Tiny) token footprint OUT to the whole grid cell that holds
+ * its centre. RAW, a Tiny creature occupies its full 5-ft square for reach and
+ * distance — but its token is < 1 cell and Foundry centres it inside the square,
+ * leaving a fractional-cell gap to a neighbour. aceEdgeGapFt's ceil() then rounds
+ * that part-cell sliver UP to a whole 5-ft cell, so an ADJACENT tiny creature
+ * wrongly reads as 10 ft instead of 5 ft. Snapping each sub-cell dimension to its
+ * enclosing cell makes the edge math see the square the creature truly occupies.
+ *
+ * Idempotent and safe on any rect: a side already >= 1 cell is left untouched, so
+ * Medium / Large / Huge / Gargantuan — and the opportunity-attack path's
+ * hypothetical-position rects — all pass through unchanged. Callers that build
+ * their own TOKEN rects (not tiles) should wrap them in this.
+ *
+ * @param {{x:number,y:number,w:number,h:number,elev?:number,hgtFt?:number}} rect
+ * @returns {{x:number,y:number,w:number,h:number,elev?:number,hgtFt?:number}}
+ */
+export function aceSnapSubCellRect(rect) {
+  const gs = _gridSize();
+  let { x, y, w, h } = rect;
+  if (w < gs) { x = Math.floor((x + w / 2) / gs) * gs; w = gs; }
+  if (h < gs) { y = Math.floor((y + h / 2) / gs) * gs; h = gs; }
+  return { ...rect, x, y, w, h };
 }
 
 /**
@@ -148,4 +175,50 @@ export function aceDistanceFt(a, b, opts = {}) {
  */
 export function aceWithinFt(a, b, rangeFt, opts = {}) {
   return aceDistanceFt(a, b, opts) <= (Number(rangeFt) || 0) + 0.1;
+}
+
+/**
+ * Build a Foundry V13 Region shape matching a MeasuredTemplate's footprint.
+ * Circles map to a circle Region; cone/ray/grid-snapped shapes map to a
+ * polygon traced from the drawn template shape (local points → absolute scene
+ * coordinates); 5e cubes ("rect") map to a rectangle.
+ *
+ * CANONICAL + SHARED: the concentration-widget difficult-terrain path and the
+ * rules-engine space-effects executor both trace template footprints through
+ * THIS function — one tracer, identical regions. (Lifted verbatim from the
+ * proven concentration-widget implementation, 2026-07-09.)
+ *
+ * Returns a Region shape data object, or null when the placeable's shape
+ * isn't computed yet (caller may retry briefly — fresh templates take a
+ * moment to draw).
+ */
+export function buildRegionShapeFromTemplate(templateDoc) {
+  const obj = templateDoc?.object;
+  const x = templateDoc?.x ?? 0;
+  const y = templateDoc?.y ?? 0;
+  const s = obj?.shape;
+  // Foundry computes the template shape per type:
+  //   cone / ray / grid-snapped circle → PIXI.Polygon (has .points)
+  //   5e cube ("rect")                 → PIXI.Rectangle (.x/.y/.width/.height)
+  //   euclidean circle                 → PIXI.Circle (.radius)
+  // All are in LOCAL coords (origin at the template's x,y), so we add x,y.
+
+  // 1) Polygon-based (cone, ray, grid circle): trace the points.
+  const pts = s?.points;
+  if (Array.isArray(pts) && pts.length >= 6) {
+    const abs = pts.map((p, i) => (i % 2 === 0 ? p + x : p + y));
+    return { type: "polygon", points: abs };
+  }
+  // 2) Rectangle (5e cubes — PIXI.Rectangle, no .points).
+  if (s && Number.isFinite(s.width) && Number.isFinite(s.height) && s.width > 0 && s.height > 0) {
+    return { type: "rectangle", x: x + (s.x ?? 0), y: y + (s.y ?? 0), width: s.width, height: s.height, rotation: 0 };
+  }
+  // 3) Circle (euclidean) — fall back to grid math if .radius is missing.
+  let radius = s?.radius;
+  if (!(radius > 0)) {
+    const g = canvas?.grid;
+    if (g?.size && g?.distance) radius = (templateDoc.distance ?? 0) * g.size / g.distance;
+  }
+  if (radius > 0) return { type: "circle", x, y, radius };
+  return null;
 }

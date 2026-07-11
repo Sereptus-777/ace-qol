@@ -5,6 +5,7 @@
 
 import { SELF_SPELLS }       from "./self-spells.mjs";
 import { DISTRIBUTE_SPELLS } from "./distribute-spells.mjs";
+import { ATTACK_MULTI_SPELLS } from "./attack-multi-spells.mjs";
 import { BUFF_SPELLS }       from "./buff-spells.mjs";
 import { HEAL_SPELLS }       from "./heal-spells.mjs";
 import { SAVE_SPELLS }       from "./save-spells.mjs";
@@ -17,6 +18,7 @@ import { SUMMON_SPELLS }     from "./summon-spells.mjs";
 export const SPELL_REGISTRY = {
   ...SELF_SPELLS,
   ...DISTRIBUTE_SPELLS,
+  ...ATTACK_MULTI_SPELLS,
   ...BUFF_SPELLS,
   ...HEAL_SPELLS,
   ...SAVE_SPELLS,

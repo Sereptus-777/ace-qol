@@ -200,3 +200,62 @@ img.portrait-image {
   pointer-events: none;
   z-index: 1;
 }
+
+/* ════════════════════════════════════════════════════════════════════════
+   ACE skin for dnd5e's activity-use pop-up (cast / attack / use dialog).
+   EVERY item type — spell, weapon, feature — uses ONE dialog class
+   (.activity-usage), so this single skin makes every pop-up ours: a thin,
+   shiny metallic-gold border on a dark ACE body. Pure CSS — the dnd5e
+   slot / concentration / consume machinery underneath is untouched. (2026-06-24)
+   ════════════════════════════════════════════════════════════════════════ */
+.application.activity-usage {
+  border-radius: 11px !important;
+  /* thin metallic-gold border — double background = gold rim + rounded corners.
+     The multi-stop gradient (dark gold -> bright highlight -> gold) reads as
+     polished, shiny metal rather than a flat line. */
+  border: 1.5px solid transparent !important;
+  background:
+    linear-gradient(158deg, #17130c 0%, #0b0906 100%) padding-box,
+    linear-gradient(135deg,
+      #6e5417 0%, #fff1c2 15%, #d9b441 33%, #8a6d22 50%,
+      #fff1c2 68%, #b8922e 85%, #6e5417 100%) border-box !important;
+  box-shadow:
+    0 6px 28px rgba(0, 0, 0, 0.70),
+    0 0 18px rgba(212, 175, 55, 0.22),
+    inset 0 0 26px rgba(0, 0, 0, 0.55) !important;
+}
+.application.activity-usage .window-header {
+  background: linear-gradient(90deg, rgba(212, 175, 55, 0.12), rgba(212, 175, 55, 0.02)) !important;
+  border-bottom: 1px solid rgba(212, 175, 55, 0.38) !important;
+}
+.application.activity-usage .window-header .window-title { color: #ffe9a8 !important; letter-spacing: 0.3px; }
+.application.activity-usage .window-content { background: transparent !important; color: #e9ddc1 !important; }
+.application.activity-usage h3,
+.application.activity-usage label,
+.application.activity-usage .form-group > label { color: #cdbb8e !important; }
+.application.activity-usage input,
+.application.activity-usage select {
+  background: rgba(0, 0, 0, 0.35) !important;
+  border: 1px solid rgba(212, 175, 55, 0.30) !important;
+  color: #f0e6cc !important;
+}
+.application.activity-usage .card,
+.application.activity-usage fieldset { border-color: rgba(212, 175, 55, 0.22) !important; }
+/* The CAST / USE button — polished gold */
+.application.activity-usage button[data-action="use"],
+.application.activity-usage .dialog-buttons button {
+  background: linear-gradient(180deg, #2c2109 0%, #181103 100%) !important;
+  border: 1px solid #d4af37 !important;
+  color: #ffe9a8 !important;
+  text-transform: uppercase; letter-spacing: 0.6px; font-weight: 600;
+  transition: box-shadow .15s ease, background .15s ease, color .15s ease;
+}
+.application.activity-usage button[data-action="use"]:hover,
+.application.activity-usage .dialog-buttons button:hover {
+  background: linear-gradient(180deg, #3d2e0c 0%, #241906 100%) !important;
+  box-shadow: 0 0 14px rgba(212, 175, 55, 0.55) !important;
+  color: #fff4d4 !important;
+}
+/* Hide the "Place Measured Template" control — ACE owns targeting. (The render
+   hook in ace-qol.mjs hides the whole row/section; this is the CSS backstop.) */
+.application.activity-usage [name="create.measuredTemplate"] { display: none !important; }

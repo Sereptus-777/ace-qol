@@ -204,6 +204,29 @@ export async function openWarlockDamageDialog(actor) {
         cancel: { icon: '<i class="fas fa-times"></i>', label: "Cancel", callback: () => resolve(null) },
       },
       default: "save",
+      // Foundry V13's core form CSS overpowers inline select styling (its
+      // fixed input height + light color-scheme squeezed the closed select
+      // into an unreadable white bar — live-fire 2026-07-10 07:00). Re-assert
+      // with priority at render, same proven pattern as the token-art picker.
+      render: (html) => {
+        try {
+          const root = html[0] ?? html;
+          for (const sel of root.querySelectorAll(".ace-warlock-dialog select")) {
+            const imp = (prop, val) => sel.style.setProperty(prop, val, "important");
+            imp("height", "44px");
+            imp("min-height", "44px");
+            imp("line-height", "26px");
+            imp("padding", "8px 10px");
+            imp("font-size", "16px");
+            imp("font-weight", "600");
+            imp("background-color", "#1a1a1f");
+            imp("color", "#f0e4c0");
+            imp("border", "2px solid #6a5328");
+            imp("border-radius", "5px");
+            imp("color-scheme", "dark");   // dropdown chrome matches the theme
+          }
+        } catch (_) { /* cosmetic only — never block the dialog */ }
+      },
     }, { width: 520, height: "auto" }).render(true);
   });
 }

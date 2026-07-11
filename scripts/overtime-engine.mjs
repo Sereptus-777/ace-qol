@@ -61,7 +61,10 @@ export class OverTimeEngine {
     });
 
     // ── Wire buttons on OverTime chat cards (persistent across re-render) ──
-    Hooks.on("renderChatMessage", (message, html) => {
+    // V13-SAFE: handler reads native element OR jQuery. Registered on BOTH hooks —
+    // the V13 `renderChatMessageHTML` was missing, so DoT/regen card buttons were
+    // inert on V13.
+    const _wireOverTimeCard = (message, html) => {
       const flags = message.flags?.[MODULE_ID];
       if (flags?.type !== "overTimeResult" && flags?.type !== "overTimeRegen") return;
 
@@ -69,7 +72,9 @@ export class OverTimeEngine {
       if (!el?.querySelector) return;
 
       this._wireOverTimeButtons(el, message, flags);
-    });
+    };
+    Hooks.on("renderChatMessage", _wireOverTimeCard);       // V12
+    Hooks.on("renderChatMessageHTML", _wireOverTimeCard);   // V13
 
     // ── combatTurnChange (some modules/systems fire this custom hook) ──
     Hooks.on("combatTurnChange", (combat, prior, current) => {
@@ -936,18 +941,24 @@ export class OverTimeEngine {
     // Foundry v12+ uses toggleStatusEffect
     if (actor.toggleStatusEffect) {
       const statuses = actor.statuses ?? new Set();
-      if (!statuses.has(condition)) {
+      if (statuses.has(condition)) return;   // already present
+      try {
         await actor.toggleStatusEffect(condition, { active: true });
+        return;
+      } catch (err) {
+        // "Invalid status ID" → `condition` is a custom (non-Foundry-status) key
+        // (a Forge trap / homebrew DoT). Fall through to a manual ActiveEffect
+        // instead of throwing and aborting the over-time tick.
+        console.debug(`${MODULE_ID} | overtime: "${condition}" isn't a Foundry status id; creating the effect manually (${err?.message ?? err}).`);
       }
-    } else {
-      // Fallback: create an ActiveEffect with the status
-      const effectData = {
-        name: condition.charAt(0).toUpperCase() + condition.slice(1),
-        icon: `icons/svg/status-${condition}.svg`,
-        statuses: [condition],
-      };
-      await actor.createEmbeddedDocuments("ActiveEffect", [effectData]);
     }
+    // Fallback: create an ActiveEffect with the status (old Foundry OR custom key)
+    const effectData = {
+      name: condition.charAt(0).toUpperCase() + condition.slice(1),
+      icon: `icons/svg/status-${condition}.svg`,
+      statuses: [condition],
+    };
+    await actor.createEmbeddedDocuments("ActiveEffect", [effectData]);
   }
 
   /**
@@ -958,14 +969,18 @@ export class OverTimeEngine {
   async _removeCondition(actor, condition) {
     if (actor.toggleStatusEffect) {
       const statuses = actor.statuses ?? new Set();
-      if (statuses.has(condition)) {
+      if (!statuses.has(condition)) return;   // not present
+      try {
         await actor.toggleStatusEffect(condition, { active: false });
+        return;
+      } catch (err) {
+        // Custom (non-status) key — fall through to the manual delete below.
+        console.debug(`${MODULE_ID} | overtime: "${condition}" isn't a Foundry status id on remove; deleting the effect manually (${err?.message ?? err}).`);
       }
-    } else {
-      // Fallback: find and delete the effect with this status
-      const effect = actor.effects?.find(e => e.statuses?.has(condition));
-      if (effect) await effect.delete();
     }
+    // Fallback: find and delete the effect with this status (old Foundry OR custom key)
+    const effect = actor.effects?.find(e => e.statuses?.has(condition));
+    if (effect) await effect.delete();
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

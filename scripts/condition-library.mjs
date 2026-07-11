@@ -17,6 +17,7 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { CombatState } from "./combat-state.mjs";
+import { CombatContext } from "./combat-context.mjs";
 
 // ─── Shorthand for Active Effect modes ──────────────────────────────────────
 // Resolved at call time via getter so CONST is available
@@ -560,12 +561,21 @@ const SPELL_EFFECTS = {
   barkskin: {
     name: "Barkskin",
     icon: "icons/magic/nature/root-vine-entangled-hand.webp",
-    description: "Target's AC can't be less than 16, regardless of armor.",
+    description: "Target's AC can't be less than 16 (2014) / 17 (2024), regardless of armor.",
     changes: [
-      { key: "system.attributes.ac.flat", mode: 3, value: "16" },
+      { key: "system.attributes.ac.flat", mode: 3, value: "16" },   // 2014 base: AC floor 16
     ],
     concentration: true,
     duration: { rounds: 10 }, // 1 hour
+    // 2024 RAW raised the AC floor to 17. Merged in by the edition-aware def
+    // logic at the top of applyEffect. (Audit 2026-06-27.)
+    byEdition: {
+      "2024": {
+        changes: [
+          { key: "system.attributes.ac.flat", mode: 3, value: "17" },
+        ],
+      },
+    },
   },
 
   // ── Stoneskin (4th level, concentration) ──────────────────────────────────
@@ -647,6 +657,7 @@ const SPELL_EFFECTS = {
       { key: "flags.ace-qol.grants.disadvantage.attack.all", mode: 0, value: "1" },
       { key: "flags.ace-qol.invisible", mode: 0, value: "1" },
     ],
+    statuses: ["invisible"],   // drives the token fade + CombatState's adv/dis (the flags alone weren't enough)
     concentration: true,
     duration: { rounds: 10 }, // 1 hour
   },
@@ -661,6 +672,7 @@ const SPELL_EFFECTS = {
       { key: "flags.ace-qol.grants.disadvantage.attack.all", mode: 0, value: "1" },
       { key: "flags.ace-qol.invisible", mode: 0, value: "1" },
     ],
+    statuses: ["invisible"],   // drives the token fade + CombatState's adv/dis (the flags alone weren't enough)
     concentration: true,
     duration: { rounds: 10 },
   },
@@ -1056,11 +1068,14 @@ const SPELL_EFFECTS = {
     name: "Foresight",
     icon: "icons/magic/perception/orb-eye-scrying.webp",
     description: "Advantage on attacks, ability checks, and saves. Attackers have disadvantage. Can't be surprised.",
+    // Audit 2026-06-27: these were `flags.midi-qol.*` keys → INERT (midi-qol
+    // isn't installed; ACE replaces it), so Foresight granted no advantage at all.
+    // Switched to ACE's own flag namespace (registered in extended-effects.mjs).
     changes: [
-      { key: "flags.midi-qol.advantage.attack.all", mode: 0, value: "1" },
-      { key: "flags.midi-qol.advantage.ability.check.all", mode: 0, value: "1" },
-      { key: "flags.midi-qol.advantage.ability.save.all", mode: 0, value: "1" },
-      { key: "flags.midi-qol.grants.disadvantage.attack.all", mode: 0, value: "1" },
+      { key: "flags.ace-qol.advantage.attack.all", mode: 0, value: "1" },
+      { key: "flags.ace-qol.advantage.ability.check.all", mode: 0, value: "1" },
+      { key: "flags.ace-qol.advantage.save.all", mode: 0, value: "1" },
+      { key: "flags.ace-qol.grants.disadvantage.attack.all", mode: 0, value: "1" },
       { key: "flags.ace-qol.foresightActive", mode: 0, value: "1" },
       { key: "flags.ace-qol.cantBeSurprised", mode: 0, value: "1" },
     ],
@@ -1219,19 +1234,23 @@ const SPELL_EFFECTS = {
   magic_weapon: {
     name: "Magic Weapon", icon: "icons/weapons/swords/sword-runed-glowing.webp",
     description: "Weapon becomes magical with +1 (or +2/+3 at higher levels).",
-    changes: [], concentration: true, duration: { rounds: 100 },
+    // Audit 2026-06-27: was `changes: []` → the spell applied an icon but NO
+    // actual bonus. Restore +1 to attack + damage for melee AND ranged weapon
+    // attacks. (Upcast +2/+3 scaling is a follow-up; the base +1 is correct.)
+    changes: [
+      { key: "system.bonuses.mwak.attack", mode: 2, value: "+1" },
+      { key: "system.bonuses.mwak.damage", mode: 2, value: "+1" },
+      { key: "system.bonuses.rwak.attack", mode: 2, value: "+1" },
+      { key: "system.bonuses.rwak.damage", mode: 2, value: "+1" },
+      { key: "flags.ace-qol.magicWeapon", mode: 0, value: "1" },
+    ],
+    concentration: true, duration: { rounds: 100 },
   },
-  elemental_weapon: {
-    name: "Elemental Weapon", icon: "icons/magic/fire/dagger-rune-enchant-flame-orange.webp",
-    description: "Weapon becomes magical with +1 and +1d4 elemental damage (more at higher levels).",
-    changes: [], concentration: true, duration: { rounds: 100 },
-  },
-  crusaders_mantle: {
-    name: "Crusader's Mantle", icon: "icons/magic/light/beam-rays-yellow.webp",
-    description: "30 ft aura grants +1d4 radiant damage to allies' weapon attacks.",
-    changes: [{ key: "flags.ace-qol.crusadersMantleActive", mode: 0, value: "1" }],
-    concentration: true, duration: { rounds: 10 },
-  },
+  // NOTE (audit 2026-06-27): duplicate `elemental_weapon` and `crusaders_mantle`
+  // defs used to sit here with `changes: []` / a marker-only change. Being LATER
+  // in merge order they silently OVERRODE the real defs above (elemental_weapon
+  // ~L728 = +1 / +1d4 elemental; crusaders_mantle ~L755 = +1d4 radiant) — so both
+  // spells did nothing mechanically. Removed the empty duplicates; the real defs win.
   spirit_shroud: {
     name: "Spirit Shroud", icon: "icons/magic/death/projectile-skull-flaming-yellow.webp",
     description: "+1d8 radiant/necrotic/cold damage to attacks within 10 ft.",
@@ -1284,7 +1303,7 @@ const SPELL_EFFECTS = {
   // marker that condition-raw-hooks.mjs watches: any damage wakes the
   // sleeper (RAW PHB 277).
   sleep_unconscious: {
-    name: "Unconscious (Sleep)",
+    name: "Sleep",
     icon: "icons/svg/unconscious.svg",
     description: "Magically asleep. Incapacitated, can't move/speak, auto-fails STR/DEX saves, melee hits in 5ft are auto-crits. Any damage wakes target.",
     // statuses:["unconscious"] is REQUIRED — combat-state.mjs reads the literal
@@ -1579,11 +1598,19 @@ export class ConditionLibrary {
    * @returns {ActiveEffect|null} — the created effect, or null if definition not found
    */
   static async applyEffect(actor, key, options = {}) {
-    const def = ALL_EFFECTS[key];
+    let def = ALL_EFFECTS[key];
     if (!def) {
       console.warn(`${MODULE_ID} | ConditionLibrary: unknown effect key "${key}"`);
       return null;
     }
+    // Edition-aware def overrides (e.g. Barkskin's AC floor: 16 in 2014, 17 in
+    // 2024). GUARDED — a no-op for the ~all defs that have no `byEdition` block,
+    // so it can't affect anything but the handful that opt in. Keyed by
+    // getActiveEdition's "2014"/"2024". (Audit 2026-06-27, 2024-edition pass.)
+    try {
+      const _ed = CombatState.getActiveEdition?.(actor);
+      if (_ed && def.byEdition?.[_ed]) def = { ...def, ...def.byEdition[_ed] };
+    } catch (_) { /* keep base def */ }
 
     // Resolve actual CONST values at runtime (not import time)
     const changes = def.changes.map(c => ({
@@ -1599,7 +1626,15 @@ export class ConditionLibrary {
     const duration = {};
     if (durationData.rounds != null) duration.rounds = durationData.rounds;
     if (durationData.turns != null)  duration.turns = durationData.turns;
-    if (durationData.seconds != null) duration.seconds = durationData.seconds;
+    // seconds OR the longer wall-clock units (minutes/hours/days) → convert to
+    // seconds so they're actually honoured. (Audit 2026-06-27: minutes/hours/days
+    // were silently dropped here, producing no-duration → effectively PERMANENT
+    // effects that the duration-tracker never expired.)
+    let _secs = Number(durationData.seconds) || 0;
+    if (durationData.minutes != null) _secs += Number(durationData.minutes) * 60;
+    if (durationData.hours   != null) _secs += Number(durationData.hours)   * 3600;
+    if (durationData.days    != null) _secs += Number(durationData.days)    * 86400;
+    if (_secs > 0) duration.seconds = _secs;
     // Stamp combat start for tracking
     if (combat) {
       duration.startRound = options.combatRound ?? combat.round ?? 0;
@@ -1616,6 +1651,35 @@ export class ConditionLibrary {
     // actor.statuses gate let held/stunned/asleep creatures still act.)
     const statuses = Array.isArray(def.statuses) ? [...def.statuses] : [];
     if (def.statusId && !statuses.includes(def.statusId)) statuses.push(def.statusId);
+
+    // ── Condition immunity (RAW, both editions) ──
+    // Don't apply a condition the target is flatly immune to — undead vs Charmed/
+    // Poisoned, a construct vs Paralyzed, etc. If the target is immune to EVERY
+    // primary status this effect represents, skip it entirely so no phantom
+    // condition lands. Checked BEFORE the rider auto-expand below. Returns null,
+    // same as the unknown-key path, so callers that already handle a null result
+    // (e.g. the wasted-concentration drop) treat "immune" as "nothing applied".
+    if (statuses.length && statuses.every(s => CombatContext.conditionImmune(actor, s))) {
+      ConditionLibrary._debug?.(`"${def.name}" not applied — ${actor.name} is immune to ${statuses.join("/")}.`);
+      return null;
+    }
+
+    // Auto-expand RAW sub-conditions so this ONE effect carries them all, labeled by
+    // THIS effect — e.g. unconscious also makes the target prone + incapacitated.
+    // Paired with the createRiderConditions patch (ace-qol.mjs), dnd5e then does NOT
+    // spawn its own separate generic rider effects; the token shows ONLY our labeled
+    // condition, and deleting it removes everything cleanly. (2026-06-24.)
+    const STATUS_RIDERS = {
+      unconscious: ["prone", "incapacitated"],
+      paralyzed:   ["incapacitated"],
+      stunned:     ["incapacitated"],
+      petrified:   ["incapacitated"],
+    };
+    for (const s of [...statuses]) {
+      for (const rider of (STATUS_RIDERS[s] ?? [])) {
+        if (!statuses.includes(rider)) statuses.push(rider);
+      }
+    }
 
     // Build the effect data. NOTE: we deliberately do NOT set
     // flags.dnd5e.riders.statuses — dnd5e's createRiderConditions() already
@@ -1873,6 +1937,15 @@ export class ConditionLibrary {
     if (!actor || !conditionKey) return { ok: false, applied: null };
     const key = String(conditionKey).toLowerCase().trim();
 
+    // ── Condition immunity (RAW, both editions) ──
+    // Don't apply a condition the target is immune to (undead vs Charmed/Poisoned,
+    // many creatures vs Exhaustion, etc.). Mirrors the applyEffect chokepoint so
+    // BOTH application paths honor immunity. First word handles "exhaustion 2".
+    if (CombatContext.conditionImmune(actor, key.split(/\s+/)[0])) {
+      ConditionLibrary._debug?.(`"${key}" not applied — ${actor.name} is immune.`);
+      return { ok: false, applied: null, immune: true };
+    }
+
     // ── Exhaustion special case (edition-aware level cap) ──
     // 2014 RAW: 6-level model — clamp to 6.
     // 2024 RAW: 10-level model — clamp to 10.
@@ -1897,7 +1970,15 @@ export class ConditionLibrary {
     // ── Standard binary status condition ──
     try {
       if (typeof actor.toggleStatusEffect === "function") {
-        await actor.toggleStatusEffect(key, { active: true });
+        try {
+          await actor.toggleStatusEffect(key, { active: true });
+        } catch (toggleErr) {
+          // "Invalid status ID" → `key` is a custom ACE effect (faerie_fire and
+          // other registry effects), NOT a Foundry status. CONTAIN the throw here
+          // so it doesn't leap over the applyEffect fallback below (step 4) to the
+          // outer catch. The fallback then builds the effect from its definition.
+          console.debug(`${MODULE_ID} | applyByName: "${key}" isn't a Foundry status id; placing via applyEffect instead (${toggleErr?.message ?? toggleErr}).`);
+        }
       }
 
       // ── Ensure the condition is PRESENT *and* ENABLED ──────────────────
@@ -1925,7 +2006,9 @@ export class ConditionLibrary {
             console.log(`${MODULE_ID} | applyByName: "${key}" placed via fromStatusEffect fallback on ${actor.name}.`);
           }
         } catch (e2) {
-          console.warn(`${MODULE_ID} | applyByName fromStatusEffect fallback failed for "${_statusId}" on ${actor.name}:`, e2);
+          // Expected for custom non-status effects (faerie_fire) — the applyEffect
+          // fallback in step 4 places them. Debug-level so it isn't error noise.
+          console.debug(`${MODULE_ID} | applyByName fromStatusEffect skipped for "${_statusId}" on ${actor.name} (not a Foundry status): ${e2?.message ?? e2}`);
         }
       }
 
@@ -1941,9 +2024,24 @@ export class ConditionLibrary {
       }
 
       // 3) Final verify — there must be at least one ENABLED matching effect.
+      //    If the status-effect path couldn't place one, this key is a CUSTOM
+      //    ACE effect (faerie_fire, etc.) that ISN'T a Foundry status effect —
+      //    toggleStatusEffect + fromStatusEffect both no-op on it. Fall back to
+      //    applyEffect, which builds the effect straight from its CONDITIONS def
+      //    (the same path the multi-buff resolver uses successfully). Then fall
+      //    through to the concentration-linkage stamping below so the effect is
+      //    still cleaned up when the caster's concentration ends.
       if (!_matches().some(e => !e.disabled)) {
-        console.warn(`${MODULE_ID} | applyByName: could NOT place an ENABLED "${key}" on ${actor.name}.`);
-        return { ok: false, applied: null };
+        try {
+          await ConditionLibrary.applyEffect(actor, key, options);
+          console.log(`${MODULE_ID} | applyByName: "${key}" placed via applyEffect fallback (custom non-status effect) on ${actor.name}.`);
+        } catch (e4) {
+          console.warn(`${MODULE_ID} | applyByName applyEffect fallback threw for "${key}" on ${actor.name}:`, e4);
+        }
+        if (!_matches().some(e => !e.disabled)) {
+          console.warn(`${MODULE_ID} | applyByName: could NOT place an ENABLED "${key}" on ${actor.name} (status + applyEffect both failed).`);
+          return { ok: false, applied: null };
+        }
       }
 
       // ── Stamp concentration linkage ──

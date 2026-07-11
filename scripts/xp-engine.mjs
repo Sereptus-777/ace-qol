@@ -177,6 +177,15 @@ export class XpEngine {
       </div>
     `;
 
+    // Live capture of the dialog's state (punch-list #6): DialogV2.wait
+    // closes the DOM before returning, so checkbox + amount state must be
+    // mirrored OUT while the dialog is open. Unchecking a PC now actually
+    // excludes them; custom amounts are now actually used.
+    const captured = {
+      included: new Set(eligible.map(p => p.actor.id)),
+      amounts:  new Map(),
+    };
+
     const choice = await foundry.applications.api.DialogV2.wait({
       window: { title: "Combat Ended — XP Award" },
       classes: ["ace-qol-xp-dialog-window"],
@@ -189,8 +198,19 @@ export class XpEngine {
       rejectClose: false,
       position: { width: 480 },
       render: (event, dialog) => {
-        // Auto-update equal-share inputs when checkboxes toggle
+        // Auto-update equal-share inputs when checkboxes toggle, and mirror
+        // ALL state (inclusion + amounts) into `captured` — the dialog DOM
+        // is gone by the time wait() returns.
         const root = dialog.element ?? event.currentTarget;
+        const syncCapture = () => {
+          captured.included = new Set(
+            [...root.querySelectorAll("input[type='checkbox']:checked")].map(cb => cb.dataset.actorId)
+          );
+          captured.amounts = new Map(
+            [...root.querySelectorAll(".ace-qol-xp-pc-amount")].map(inp =>
+              [inp.dataset.actorId, Math.max(0, parseInt(inp.value, 10) || 0)])
+          );
+        };
         const recalcEqual = () => {
           const checked = [...root.querySelectorAll("input[type='checkbox']:checked")];
           const share = checked.length ? Math.floor(totalXp / checked.length) : 0;
@@ -199,10 +219,15 @@ export class XpEngine {
             const numInput = root.querySelector(`.ace-qol-xp-pc-amount[data-actor-id="${id}"]`);
             if (numInput) numInput.value = share;
           }
+          syncCapture();
         };
         for (const cb of root.querySelectorAll("input[type='checkbox']")) {
           cb.addEventListener("change", recalcEqual);
         }
+        for (const inp of root.querySelectorAll(".ace-qol-xp-pc-amount")) {
+          inp.addEventListener("input", syncCapture);
+        }
+        syncCapture();
       },
     });
 
@@ -211,17 +236,24 @@ export class XpEngine {
       return;
     }
 
-    // Read chosen amounts from the dialog (DialogV2.wait closes the dialog
-    // before returning, so we can't query its DOM. We need to read on submit.)
-    // For now: equal split = recompute, custom = use stored values from button click.
+    // Honor the dialog's ACTUAL state (punch-list #6 fix): only checked PCs
+    // receive XP; equal split recomputes over the included set; "Use Amounts
+    // Above" uses the captured per-PC numbers.
+    const includedPCs = eligible.filter(p => captured.included.has(p.actor.id));
+    if (!includedPCs.length) {
+      ui.notifications?.info("ACE XP: no PCs selected — nothing awarded.");
+      this._currentCombatKills = [];
+      return;
+    }
     let awards;
     if (choice === "equal") {
-      awards = eligible.map(p => ({ actor: p.actor, amount: equalShare }));
+      const share = Math.floor(totalXp / includedPCs.length);
+      awards = includedPCs.map(p => ({ actor: p.actor, amount: share }));
     } else {
-      // For "custom", we've lost the input values (dialog already closed).
-      // Use equal split as fallback. (Refinement: capture inputs via render
-      // callback into a shared object before dialog closes — done in v2.)
-      awards = eligible.map(p => ({ actor: p.actor, amount: equalShare }));
+      awards = includedPCs.map(p => ({
+        actor: p.actor,
+        amount: captured.amounts.get(p.actor.id) ?? equalShare,
+      }));
     }
 
     await this._applyAwards(awards, totalXp);

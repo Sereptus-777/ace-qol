@@ -52,7 +52,9 @@ export class SpellTargetPicker {
     }
 
     // Build the candidate list
+    const _tb0 = performance.now();
     const candidates = SpellTargetPicker._buildCandidates(casterToken, casterActor, resolvedRange, allowSelf);
+    console.log(`ace-qol | [picker-timing] _buildCandidates → ${candidates.length} candidates in ${Math.round(performance.now() - _tb0)}ms`);
     if (!candidates.length) {
       ui.notifications?.warn(`${spellItem.name}: no valid targets on this scene.`);
       return [];
@@ -63,12 +65,22 @@ export class SpellTargetPicker {
     for (const t of game.user.targets ?? []) {
       if (candidates.find(c => c.tokenId === t.id)) preSelected.add(t.id);
     }
-    // If nothing pre-selected and self-targeting is allowed, pre-select self
-    if (preSelected.size === 0 && allowSelf) {
+    // If nothing is explicitly pre-targeted and self-targeting is allowed,
+    // pre-select self — BUT only for MULTI-target buffs (Bless, Aid, Slow).
+    // For a SINGLE-target buff (maxTargets === 1: Greater Invisibility, Death
+    // Ward, Stoneskin, Foresight, Mind Blank, Freedom of Movement, Protection
+    // from Evil/Good, Barkskin) auto-selecting self silently biases the spell
+    // onto the caster: if the GM means to buff an adjacent ally and doesn't
+    // notice the pre-pick, the caster gets the buff instead. Single-target
+    // buffs now start with NOTHING selected, forcing one explicit pick — the
+    // caster only ever gets the effect if the GM clicks their own portrait.
+    // (v0.7.90 — Greater Invisibility "caster gets it too" report.)
+    if (preSelected.size === 0 && allowSelf && (Number(maxTargets) || 1) > 1) {
       const selfRow = candidates.find(c => c.isSelf);
       if (selfRow) preSelected.add(selfRow.tokenId);
     }
 
+    console.log(`ace-qol | [picker-timing] candidates ready — opening dialog (gap from here to the picker appearing = render time)`);
     return await SpellTargetPicker._showDialog({
       spellItem,
       candidates,
@@ -118,10 +130,19 @@ export class SpellTargetPicker {
       const isSelf = tok.id === casterToken.id || tok.actor.id === casterActor.id;
       if (isSelf && !allowSelf) continue;
 
+      // Distance FIRST (cheap geometry) — needed for range anyway, AND it lets us
+      // skip the expensive line-of-sight raycast for anything out of range.
       let distFt = 0;
       if (!isSelf) distFt = SpellTargetPicker._measureDistance(casterToken, tok);
-
       const inRange = !Number.isFinite(rangeFt) || distFt <= rangeFt + 0.01;
+
+      // LINE OF SIGHT — a creature you can't SEE (wall / closed door between you and
+      // it) is not a valid target. Only test IN-RANGE creatures: an out-of-range token
+      // can't be picked regardless, so we never pay for a raycast to it — and every ray
+      // stays SHORT (caster → a nearby in-range token) instead of firing clear across a
+      // wall-dense map like the Amber Temple to tokens hundreds of feet away, which was
+      // turning the picker build into a ~20-second stall. Self is always visible.
+      if (!isSelf && inRange && SpellTargetPicker._losBlocked(casterToken, tok)) continue;
       const disposition = tok.document?.disposition ?? 0;
       const isPlayerOwned = !!tok.actor.hasPlayerOwner;
       const hp = tok.actor.system?.attributes?.hp ?? {};
@@ -154,6 +175,32 @@ export class SpellTargetPicker {
   // Nearest-edge, size-aware, 3D distance in feet (canonical — geometry-utils).
   static _measureDistance(t1, t2) {
     return aceDistanceFt(t1, t2);
+  }
+
+  // Is the caster→target line blocked by a sight-blocking wall or closed door?
+  // A creature behind two doors in another room is in straight-line range but NOT
+  // visible, so it must not appear as a spell target.
+  static _losBlocked(fromToken, toToken) {
+    try {
+      // Foundry already computes per-token visibility for the current client every
+      // frame (vision range, walls, light, fog). On the caster's OWN client that IS
+      // "can the caster see this token" — for free. Using it instead of a per-token
+      // sight raycast is the difference between instant and a multi-second stall on a
+      // wall-dense map: a single testCollision through the Amber Temple's wall set was
+      // taking ~1s+ EACH. `visible` is true on the GM (omniscient) and on scenes with
+      // no token vision, so neither is wrongly over-filtered.
+      if (toToken?.visible === false) return true;
+      // Only when visibility is genuinely indeterminate (rare) fall back to one cheap
+      // sight ray — and callers only ask about in-range tokens now, so it stays short.
+      if (toToken?.visible == null) {
+        return !!CONFIG.Canvas?.polygonBackends?.sight?.testCollision?.(
+          fromToken.center, toToken.center, { type: "sight", mode: "any" }
+        );
+      }
+      return false;
+    } catch (_) {
+      return false;   // test unavailable → don't false-exclude
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

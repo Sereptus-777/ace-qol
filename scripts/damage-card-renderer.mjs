@@ -332,7 +332,12 @@ export class DamageCardRenderer {
         }
       }
 
-      const dieDisplay = dieResults.join(' <span class="ace-qol-dmg-plus">+</span> ') || c.formula;
+      // Flat-only riders (Radiant Soul's +CHA) have no dice — falling back to
+      // the formula echoed the value twice ("5 +5 = 5", live-fire 2026-07-10).
+      // With mod chips present, the chip alone tells the truth ("+5 = 5").
+      const dieDisplay = dieResults.length
+        ? dieResults.join(' <span class="ace-qol-dmg-plus">+</span> ')
+        : (flatMods.length ? "" : c.formula);
       const modDisplay = flatMods.length ? ` ${flatMods.join(" ")}` : "";
       const critDisplay = c.isCrit ? `<span class="ace-qol-dmg-crit-label">${c.normalTotal !== undefined ? `MAX ${c.normalTotal}` : "CRIT"}</span> + ` : "";
 
@@ -470,7 +475,56 @@ export class DamageCardRenderer {
    * Fires Dice So Nice animations, then posts the card.
    * @returns {boolean} true on success
    */
-  static async postPreRolledDamageCard(message, flags) {
+  /**
+   * Fire the 3D-dice animation for a set of pre-rolled damage components on
+   * THIS client, broadcasting to the whole table via DSN sync. Reconstructs
+   * Roll objects from the serialized component terms stored on the button
+   * card. Used both when the pre-rolled damage card is posted and, for
+   * player-rolls-own-damage, when the CASTER shows their own dice before
+   * handing the card off to the GM.
+   */
+  static showPreRolledDice(preRolled) {
+    if (!game.dice3d || !Array.isArray(preRolled)) return;
+    try {
+      for (const pr of preRolled) {
+        for (const c of (pr.components ?? [])) {
+          if (!c.terms?.length) continue;
+          const formulaParts = [];
+          for (const t of c.terms) {
+            if (t.type === "die") formulaParts.push(`${t.results.length}d${t.faces}`);
+            else if (t.type === "num" && t.number > 0) formulaParts.push(`+ ${t.number}`);
+            else if (t.type === "num" && t.number < 0) formulaParts.push(`- ${Math.abs(t.number)}`);
+            else if (t.type === "op") formulaParts.push(t.operator);
+          }
+          const formula = formulaParts.join(" ") || c.formula;
+          if (!formula) continue;
+
+          const roll = new Roll(formula);
+          roll._evaluated = true;
+          let termIdx = 0;
+          for (const term of roll.terms) {
+            if (term.faces) {
+              const sTerm = c.terms.find((t, i) => t.type === "die" && i >= termIdx);
+              if (sTerm) {
+                term._evaluated = true;
+                term.results = sTerm.results.map(r => ({ result: r.result, active: true }));
+                termIdx = c.terms.indexOf(sTerm) + 1;
+              }
+            }
+          }
+          roll._total = c.total ?? c.raw;
+
+          // safeShowForRoll handles every DSN failure mode and is non-async,
+          // so it can never hang the pipeline.
+          safeShowForRoll(roll, "pre-rolled component");
+        }
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | showPreRolledDice failed (non-blocking):`, err);
+    }
+  }
+
+  static async postPreRolledDamageCard(message, flags, opts = {}) {
     const { preRolled, critRule, itemName, itemImg, actorId, parsedDescription } = flags;
     // Resolve the attacker — prefer the TOKEN's actor (canvas instance) over
     // the base actor template. This matters when the GM drag-drops a weapon
@@ -518,47 +572,10 @@ export class DamageCardRenderer {
     const fakeItem = { name: itemName, img: itemImg, uuid: flags.itemUuid };
 
     // ── Fire Dice So Nice animations FIRST, then post the card ──
-    if (game.dice3d) {
-      try {
-        for (const pr of preRolled) {
-          for (const c of (pr.components ?? [])) {
-            if (!c.terms?.length) continue;
-            const formulaParts = [];
-            for (const t of c.terms) {
-              if (t.type === "die") formulaParts.push(`${t.results.length}d${t.faces}`);
-              else if (t.type === "num" && t.number > 0) formulaParts.push(`+ ${t.number}`);
-              else if (t.type === "num" && t.number < 0) formulaParts.push(`- ${Math.abs(t.number)}`);
-              else if (t.type === "op") formulaParts.push(t.operator);
-            }
-            const formula = formulaParts.join(" ") || c.formula;
-            if (!formula) continue;
-
-            const roll = new Roll(formula);
-            roll._evaluated = true;
-            let termIdx = 0;
-            for (const term of roll.terms) {
-              if (term.faces) {
-                const sTerm = c.terms.find((t, i) => t.type === "die" && i >= termIdx);
-                if (sTerm) {
-                  term._evaluated = true;
-                  term.results = sTerm.results.map(r => ({ result: r.result, active: true }));
-                  termIdx = c.terms.indexOf(sTerm) + 1;
-                }
-              }
-            }
-            roll._total = c.total ?? c.raw;
-
-            // ── DSN via canonical safe helper (v0.7.2) ──
-            // safeShowForRoll handles every failure mode (loader missing,
-            // half-broken renderer, sync throws, non-thenable returns) and
-            // is non-async so it can never hang the pipeline.
-            safeShowForRoll(roll, "pre-rolled component");
-          }
-        }
-      } catch (err) {
-        console.warn(`${MODULE_ID} | Pre-rolled dice animation failed (non-blocking):`, err);
-      }
-    }
+    // Skipped when the CASTER already rolled these dice on their own client
+    // (player-rolls-own-damage): their DSN sync already broadcast the tumble to
+    // the whole table, so re-firing here on the GM would double the animation.
+    if (!opts.skipDice) DamageCardRenderer.showPreRolledDice(preRolled);
 
     // ── Post the damage card AFTER dice finish rolling ──
     // Carry refund state forward: damage card links back to the button card,

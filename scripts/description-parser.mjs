@@ -195,6 +195,10 @@ export class DescriptionParser {
           dc, ability,
           abilityLabel: abilityRaw.charAt(0).toUpperCase() + abilityRaw.slice(1),
           failEffect: DescriptionParser._parseFailEffect(afterText),
+          // "…taking 10 (3d6) poison damage on a failed save, or HALF AS MUCH
+          // damage on a successful one" — the classic venom pattern (Giant
+          // Wasp Sting live-fire, 2026-07-10). Consumed by post-hit-saves.
+          halfOnSuccess: /half\s+as\s+much\s+damage/i.test(afterText),
           perHit: lower.includes("must succeed") || lower.includes("target must"),
           requiredCreatureType,
         });
@@ -215,6 +219,7 @@ export class DescriptionParser {
           dc, ability,
           abilityLabel: match[2],
           failEffect: DescriptionParser._parseFailEffect(afterText),
+          halfOnSuccess: /half\s+as\s+much\s+damage/i.test(afterText),
           perHit: lower.includes("must succeed") || lower.includes("target must"),
           requiredCreatureType,
         });
@@ -276,8 +281,14 @@ export class DescriptionParser {
       }
     }
 
-    // "takes X (YdZ) [type] damage" after save
-    const dmgPattern = /takes?\s+\d+\s*\((\d+d\d+(?:\s*[+\-]\s*\d+)?)\)\s*(\w+)\s*damage/i;
+    // "takes/taking/take X (YdZ) [type] damage" after save.
+    // "tak(?:es?|ing)" is load-bearing: the official statblock wording is
+    // "…TAKING 10 (3d6) poison damage on a failed save" (Giant Wasp Sting,
+    // proven live 2026-07-10 05:34 — the old /takes?/ silently missed the
+    // gerund and every venom's fail-damage parsed as empty). The average
+    // number and its parentheses are optional so "taking 3d6 poison damage"
+    // homebrew wordings parse too.
+    const dmgPattern = /tak(?:es?|ing)\s+(?:\d+\s*)?\(?(\d+d\d+(?:\s*[+\-]\s*\d+)?)\)?\s*(\w+)\s*damage/i;
     const dmgMatch = afterText.match(dmgPattern);
     if (dmgMatch) {
       const dmgType = dmgMatch[2].toLowerCase();

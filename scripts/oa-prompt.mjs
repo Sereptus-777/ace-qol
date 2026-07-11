@@ -28,7 +28,7 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
 import { CombatState } from "./combat-state.mjs";
 import { OA_IN_FLIGHT } from "./oa-transient.mjs";
-import { aceEdgeGapFt } from "./geometry-utils.mjs";
+import { aceEdgeGapFt, aceSnapSubCellRect } from "./geometry-utils.mjs";
 
 // Hardcoded literal — TDZ-safe (see stealth-engine.mjs comment)
 const FLAG_NS = "ace-qol";
@@ -159,21 +159,23 @@ export class OAPrompt {
 
       const reactorW = (td.width  ?? 1) * gridSize;
       const reactorH = (td.height ?? 1) * gridSize;
-      const reactorRect = {
+      // Snap sub-cell (Tiny) footprints out to their whole 5-ft square so an
+      // adjacent Tiny reactor/mover measures 5 ft, not 10 (see aceSnapSubCellRect).
+      const reactorRect = aceSnapSubCellRect({
         x: td.x, y: td.y, w: reactorW, h: reactorH,
         elev:  Number(td.elevation ?? 0) || 0,
         hgtFt: Math.max(td.width ?? 1, td.height ?? 1) * ftPerGrid,
-      };
+      });
       // Edge-to-edge gap (ft) from the mover's BEFORE and AFTER positions to the
       // reactor's footprint — nearest-edge, size-aware, and 3D (a flyer passing
       // overhead is out of reach). Shared canonical math (geometry-utils), so a
-      // Tiny/Small reactor adjacent to the mover reads gap≈0 (in reach) instead
+      // Tiny / Small reactor adjacent to the mover reads gap≈0 (in reach) instead
       // of being lost the way center-to-center did.
       const gapBeforeFt = aceEdgeGapFt(
-        { x: fromX, y: fromY, w: moverW, h: moverH, elev: moverElevFrom, hgtFt: moverHgtFt },
+        aceSnapSubCellRect({ x: fromX, y: fromY, w: moverW, h: moverH, elev: moverElevFrom, hgtFt: moverHgtFt }),
         reactorRect);
       const gapAfterFt = aceEdgeGapFt(
-        { x: toX, y: toY, w: moverW, h: moverH, elev: moverElevTo, hgtFt: moverHgtFt },
+        aceSnapSubCellRect({ x: toX, y: toY, w: moverW, h: moverH, elev: moverElevTo, hgtFt: moverHgtFt }),
         reactorRect);
 
       // Was within reach AND now isn't = standard leave-reach OA (PHB 195).

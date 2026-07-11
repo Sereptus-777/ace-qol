@@ -1393,6 +1393,22 @@ export class QolSettings {
       default: false,
     });
 
+    // The situational engine's "show me a clue" switch — surfaces WHAT the engine
+    // read and concluded so gaps announce themselves instead of failing silently.
+    s("situationalNarration", {
+      name:    "Situational Narration",
+      hint:    "Show the combat engine's reasoning as it reads the scene (e.g. 'sees through invisibility via Truesight → no disadvantage'). OFF for normal play; CONSOLE logs to F12; GM WHISPER posts it quietly to the GM only.",
+      scope:   "client",
+      config:  true,
+      type:    String,
+      choices: {
+        off:   "Off",
+        debug: "Console (F12)",
+        chat:  "GM whisper",
+      },
+      default: "off",
+    });
+
     s("requireTarget", {
       name:    "Require Target for Weapon Attacks",
       hint:    "Block weapon attacks when no target is selected. Shows a centered 'Please select a target' notice.",
@@ -1690,8 +1706,8 @@ export class QolSettings {
     });
 
     s("dsnRevealDelayMs", {
-      name:    "Delay Result Card After Dice Roll (ms)",
-      hint:    "Hold the attack result card for this many milliseconds after the roll fires, so Dice So Nice dice finish tumbling before the result is revealed. Default 3000 (3 seconds). Set to 0 to disable the delay.",
+      name:    "Result Card Reveal Cap (ms)",
+      hint:    "Result cards now appear the moment Dice So Nice finishes animating (event-based). This value is only the MAXIMUM wait — if the 3D animation is skipped or disabled for a roll, the card reveals after this many milliseconds instead of hanging. Default 3000. Set to 0 to disable waiting entirely.",
       scope:   "world",
       config:  false,
       type:    Number,

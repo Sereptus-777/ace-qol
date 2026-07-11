@@ -304,7 +304,21 @@ export class InvisibilityBreaker {
     if (!effect) return false;
     if (effect.disabled) return false;
 
+    // ── NEVER match the concentration MARKER (the caster-bleed root cause) ────
+    // dnd5e creates a "Concentrating: Greater Invisibility" effect on the CASTER
+    // when concentration begins. Its name CONTAINS "greater invisibility", so the
+    // substring match below returned true for it — and the createActiveEffect
+    // hook then HID THE CASTER'S TOKEN the instant they cast. That was the
+    // multi-day caster-bleed, confirmed by stack trace 2026-06-27 (beginConcentrating
+    // → createActiveEffect → _isInvisibilityEffect → _hideTokensForInvisibility).
+    // The marker carries the "concentration" status, NEVER "invisible", so exclude
+    // it explicitly (status check + name-prefix belt-and-braces). The real
+    // invisibility buffs (status "invisible") still match and still hide.
+    const statuses = effect.statuses;
+    if (statuses?.has?.("concentration") || statuses?.has?.("concentrating")) return false;
+
     const name = String(effect.name ?? "").toLowerCase().trim();
+    if (name.startsWith("concentrat")) return false;
 
     // Greater Invisibility — only match if explicitly requested
     if (name.includes("greater invisibility") || name === "greater invisibility") {
@@ -323,7 +337,12 @@ export class InvisibilityBreaker {
     }
 
     try {
-      const item = fromUuidSync(origin);
+      const resolved = fromUuidSync(origin);
+      // dnd5e 5.x: an effect's origin is the ACTIVITY uuid, so fromUuidSync
+      // returns an Activity whose `.type` is none of spell/feat/race. Resolve
+      // THROUGH to the parent item before the type check, or a monster/feat
+      // invisibility wrongly breaks on attack. (Audit 2026-06-27.)
+      const item = resolved?.item ?? resolved;
       if (!item) return true; // Origin unresolvable → allow (defensive)
       // Spell items break on attack. Feature/race items do NOT.
       if (item.type === "spell") return true;

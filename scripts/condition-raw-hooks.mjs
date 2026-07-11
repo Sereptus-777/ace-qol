@@ -111,7 +111,7 @@ export class ConditionRawHooks {
         // Which rider statuses did THIS effect's statuses pull in?
         const riders = new Set();
         for (const s of (effect.statuses ?? [])) {
-          for (const p of (CONFIG.statusEffects?.find?.(e => e.id === s)?.riders ?? [])) riders.add(p);
+          for (const p of (RIDER_MAP[s] ?? [])) riders.add(p);
         }
         if (!riders.size) return;
 
@@ -122,7 +122,7 @@ export class ConditionRawHooks {
           const justified = [...actor.effects].some(e => {
             if (e.id === effect.id) return false;
             for (const s2 of (e.statuses ?? [])) {
-              if ((CONFIG.statusEffects?.find?.(x => x.id === s2)?.riders ?? []).includes(rider)) return true;
+              if ((RIDER_MAP[s2] ?? []).includes(rider)) return true;
             }
             return false;
           });
@@ -140,6 +140,64 @@ export class ConditionRawHooks {
         }
       } catch (err) {
         console.warn(`${MODULE_ID} | ConditionRawHooks rider cleanup failed (non-fatal):`, err);
+      }
+    });
+
+    // ── Strip dnd5e's DUPLICATE generic condition effects ──
+    // dnd5e separately spawns its own canonical condition effects ("Unconscious",
+    // "Prone", "Incapacitated", "Paralyzed"…) that mirror statuses OUR labeled
+    // condition already carries. They have no conditionKey, so the
+    // createRiderConditions patch can't catch them (it only guards OUR effects),
+    // and the live diagnostic confirmed the result: a token shows "Sleep" PLUS
+    // three generic unlabeled rows that ALSO linger after ours ends. This removes
+    // any non-ACE condition effect whose statuses are FULLY owned by one of our
+    // active ACE conditions — handling both orders (a generic lands after ours;
+    // ours lands on top of pre-existing generics). The dependentOn guards make
+    // sure we never delete an effect OUR condition cascades from (the dnd5e
+    // concentration link sets dependentOn on the applied effect).
+    // activeGM-gated; one client deletes, the change syncs to all. (2026-06-25)
+    Hooks.on("createActiveEffect", async (effect, _opts, _userId) => {
+      try {
+        if (game.users?.activeGM !== game.user) return;
+        const actor = effect.parent;
+        if (!(actor instanceof Actor) || !actor.effects) return;
+
+        const _dep = (e) => {
+          const d = e?.flags?.dnd5e?.dependentOn;
+          return Array.isArray(d) ? d : (d ? [d] : []);
+        };
+
+        if (effect.flags?.[MODULE_ID]?.conditionKey) {
+          // OUR condition just landed → strip any pre-existing generic duplicates it owns.
+          const owned = new Set([...(effect.statuses ?? [])]);
+          if (!owned.size) return;
+          const cascadesFrom = _dep(effect);                      // never delete what we depend on
+          const dupes = [];
+          for (const e of actor.effects) {
+            if (e.id === effect.id) continue;
+            if (e.flags?.[MODULE_ID]?.conditionKey) continue;     // never our own labeled condition
+            if (cascadesFrom.includes(e.uuid)) continue;
+            const s = [...(e.statuses ?? [])];
+            if (s.length && s.every(x => owned.has(x))) dupes.push(e.id);
+          }
+          if (dupes.length) await actor.deleteEmbeddedDocuments("ActiveEffect", [...new Set(dupes)]);
+        } else {
+          // A generic condition/rider just landed → drop it if one of OUR conditions
+          // already owns ALL of its statuses (and nothing of ours cascades from it).
+          const s = [...(effect.statuses ?? [])];
+          if (!s.length) return;
+          const ownedByAce = [...actor.effects].some(e =>
+            e.id !== effect.id &&
+            e.flags?.[MODULE_ID]?.conditionKey &&
+            s.every(x => e.statuses?.has?.(x)));
+          if (!ownedByAce) return;
+          const dependedOnByOurs = [...actor.effects].some(e =>
+            e.flags?.[MODULE_ID]?.conditionKey && _dep(e).includes(effect.uuid));
+          if (dependedOnByOurs) return;
+          await effect.delete();
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | ConditionRawHooks duplicate-condition strip failed (non-fatal):`, err);
       }
     });
 
@@ -399,3 +457,14 @@ const RAW_TRIGGERS = new Set([
   "dominate_monster",
   "geas",
 ]);
+
+// Explicit RAW sub-conditions ("riders") for each status. We hard-code these
+// instead of reading dnd5e's CONFIG.statusEffects[x].riders because that config
+// is INCOMPLETE — unconscious lists only "prone" there, omitting incapacitated,
+// so the rider cleanup left "incapacitated" stuck. (2026-06-24.)
+const RIDER_MAP = {
+  unconscious: ["prone", "incapacitated"],
+  paralyzed:   ["incapacitated"],
+  stunned:     ["incapacitated"],
+  petrified:   ["incapacitated"],
+};

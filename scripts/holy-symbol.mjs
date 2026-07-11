@@ -141,10 +141,14 @@ export class HolySymbol {
       try { HolySymbol._sweepSunlightAffliction(); } catch (_) {}
     });
 
-    // Chat-card buttons (Extinguish / Apply radiant).
-    Hooks.on("renderChatMessage", (msg, html) => {
+    // Chat-card buttons (Extinguish / Apply radiant). _wireCardButtons normalizes
+    // native-vs-jQuery, so register on BOTH V12 + V13 hooks (V13 was missing →
+    // the Extinguish/Radiant buttons were inert on V13).
+    const _wireHolyCard = (msg, html) => {
       try { HolySymbol._wireCardButtons(msg, html); } catch (_) {}
-    });
+    };
+    Hooks.on("renderChatMessage", _wireHolyCard);       // V12
+    Hooks.on("renderChatMessageHTML", _wireHolyCard);   // V13
 
     // Expose for the attack pipeline (sunlight-disadvantage check) + macros.
     game.aceQol = game.aceQol ?? {};

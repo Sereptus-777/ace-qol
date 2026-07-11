@@ -185,6 +185,22 @@ export class EngagementGate {
       }
     } catch (_) { /* non-fatal — fall through to normal gate */ }
 
+    // ── Bypass: save-based spells (Frostbite, Hold Person, Ray of Sickness…) ──
+    // A save spell cast with no pre-selected target is NOT a mistake to block.
+    // The SaveEngine pops its OWN target picker — now routed to the caster's
+    // client over the socket — and then resolves the save. Blocking here cancels
+    // the cast before that picker can ever open, which IS the "no picker comes up
+    // on the client" bug: the cast dies in preUseActivity and the SaveEngine
+    // never runs. Let save activities through; the SaveEngine owns their
+    // targeting. (Detect by activity.type "save" OR a non-empty save ability —
+    // dnd5e 5.x stores the latter as a Set, older shapes as a string/array.)
+    const _saveAbil = activity?.save?.ability;
+    const _isSaveActivity = activity?.type === "save"
+      || (_saveAbil instanceof Set   ? _saveAbil.size   > 0
+        : Array.isArray(_saveAbil)   ? _saveAbil.length > 0
+        : !!_saveAbil);
+    if (_isSaveActivity) return null;
+
     // Defensive reads — dnd5e activity schema varies between 2014/2024 and
     // some fields are objects (target.template = {type, size, ...}) not
     // strings. The previous version did `?? ""` then `.toLowerCase()` which

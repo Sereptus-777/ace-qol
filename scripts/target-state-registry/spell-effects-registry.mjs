@@ -425,6 +425,18 @@ export const SPELL_EFFECTS = [
     source: "PHB Charm Person p.221",
   },
   {
+    // A creature that can't hear is simply unaffected by hearing-clause
+    // spells (the hearing-gate module is the canonical list — keep in sync).
+    name: "Deafened", matchType: "effect", aliases: ["Deaf"],
+    nullifications: {
+      spellImmune: [
+        "vicious mockery", "dissonant whispers", "suggestion",
+        "mass suggestion", "compulsion", "enthrall", "command",
+      ],
+    },
+    source: "PHB conditions — Deafened; per-spell hearing clauses",
+  },
+  {
     name: "Suggestion", matchType: "effect",
     nullifications: { special: { suggestionActive: true } },
     source: "PHB Suggestion p.279",

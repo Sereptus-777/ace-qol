@@ -19,6 +19,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "../ace-qol.mjs";
+import { CombatState } from "../combat-state.mjs";
 import { SPELL_REGISTRY } from "./registry/_index.mjs";
 import { FEATURE_REGISTRY } from "./registry/features.mjs";
 import { UnifiedSpellPicker } from "./picker.mjs";
@@ -87,7 +88,7 @@ export class SpellPipeline {
         //     BEFORE the picker even opens. Both are confusing/wrong.
         // Only clear for picker-using shapes — self/template/aura spells
         // don't open a picker and don't want their targets nuked here.
-        const pickerShapes = new Set(["distribute", "multi-buff", "multi-heal", "save-single", "touch", "chained"]);
+        const pickerShapes = new Set(["distribute", "attack-multi", "multi-buff", "multi-heal", "save-single", "touch", "chained"]);
         if (pickerShapes.has(entry.shape)) {
           SpellPipeline._clearUserTargets();
           // OUR picker owns targeting for these shapes — suppress dnd5e's native
@@ -127,6 +128,24 @@ export class SpellPipeline {
     });
 
     // ── Post-cast: dispatch to the right shape resolver ──
+    // ── Attack-multi roll kill-switch ──
+    // The volley rolls its own d20s. ANY foreign initiator (hotbar/HUD
+    // auto-attack, chat-card button, macro) driving dnd5e's native attack
+    // roll for an attack-multi spell would double-path the attack — cancel
+    // it at the roll gate. The pipeline's picker + volley is the ONLY path.
+    // (Live-fire 2026-07-10 10:13: EB's old dnd5e attack roll still fired.)
+    Hooks.on("dnd5e.preRollAttackV2", (config) => {
+      try {
+        const item = config?.subject?.item;
+        if (!item) return;
+        const entry = SpellPipeline._getEntry(item);
+        if (entry?.shape === "attack-multi") {
+          console.log(`${MODULE_ID} | pipeline owns "${item.name}" (attack-multi) — native attack roll suppressed`);
+          return false;
+        }
+      } catch (_) { /* never block foreign rolls on an error here */ }
+    });
+
     Hooks.on("dnd5e.postCreateUsageMessage", (activity, message) => {
       try {
         const entry = SpellPipeline._getEntry(activity?.item);
@@ -196,14 +215,9 @@ export class SpellPipeline {
   // ═══════════════════════════════════════════════════════════════════════════
 
   static _applyEdition(entry) {
-    let editionKey = null;
-    try {
-      const rv = game.settings.get("dnd5e", "rulesVersion");
-      if (rv === "legacy") editionKey = "legacy";
-      else if (rv === "modern") editionKey = "modern";
-    } catch (_) { /* fall through */ }
-
-    if (!editionKey || !entry.byEdition?.[editionKey]) return entry;
+    // Honors the ACE QOL gameRulesEdition master override (was a raw dnd5e read).
+    const editionKey = CombatState.getActiveRulesVersion();
+    if (!entry.byEdition?.[editionKey]) return entry;
     return { ...entry, ...entry.byEdition[editionKey] };
   }
 
@@ -259,6 +273,12 @@ export class SpellPipeline {
         // that never actually happened. Universal — applies to every
         // concentration spell the pipeline owns.
         await SpellPipeline._endConcentrationForCancelledSpell(actor, item);
+        // dnd5e can PERSIST the Concentrating effect a tick AFTER our barrier
+        // resolves, so an immediate teardown finds nothing and it lingers on a
+        // counterspelled cast. Retry shortly to catch the late-created one.
+        setTimeout(() => {
+          SpellPipeline._endConcentrationForCancelledSpell(actor, item).catch(() => {});
+        }, 400);
         SpellPipeline._castLevelCache.delete(SpellPipeline._cacheKey(activity));
         return;
       }
@@ -277,6 +297,13 @@ export class SpellPipeline {
 
         case "distribute":
           await SpellPipeline._runPickerAndResolve(ctx, "distribute");
+          break;
+
+        case "attack-multi":
+          // The PURPLE picker (Johnny's standard — stated three times, heard).
+          // Pick up to N targets; the resolver round-robins the beams across
+          // them in pick order and rolls a spell attack per beam.
+          await SpellPipeline._runPickerAndResolve(ctx, "multi");
           break;
 
         case "multi-buff":
@@ -356,6 +383,9 @@ export class SpellPipeline {
       case "distribute":
         await DamageResolver.runDistribute(ctx, result);
         break;
+      case "attack-multi":
+        await DamageResolver.runAttackMulti(ctx, result);
+        break;
       case "multi-buff":
         await BuffResolver.runMulti(ctx, result);
         break;
@@ -384,10 +414,17 @@ export class SpellPipeline {
     // doesn't inherit them. Without this, cast 2 pre-fills with cast 1's
     // tokens. The pre-cast clear in preUseActivity is the belt; this is
     // the suspenders.
-    setTimeout(() => {
-      try { SpellPipeline._clearUserTargets(); }
-      catch (_) { /* non-fatal */ }
-    }, 1500);
+    // PUNCH-LIST #11 (Johnny): single-creature spells KEEP the target for
+    // the next action; only multi-creature resolutions clear.
+    const resolvedTargetCount = result?.distribution instanceof Map
+      ? result.distribution.size
+      : (result?.targets?.length ?? 0);
+    if (resolvedTargetCount > 1) {
+      setTimeout(() => {
+        try { SpellPipeline._clearUserTargets(); }
+        catch (_) { /* non-fatal */ }
+      }, 1500);
+    }
   }
 
   /**
@@ -404,7 +441,11 @@ export class SpellPipeline {
 
     const { entry, item, actor, castLevel } = ctx;
     const isSingle  = pickerType === "single" || pickerType === "single-adjacent";
-    const N         = isSingle ? 1 : (entry.countResolver?.(castLevel, actor.system?.details?.level ?? 1) ?? 1);
+    const charLevel = actor.system?.details?.level
+      ?? actor.system?.details?.spellLevel
+      ?? actor.system?.attributes?.spell?.level
+      ?? 1;
+    const N         = isSingle ? 1 : (entry.countResolver?.(castLevel, charLevel) ?? 1);
     // v0.7.74 AUDIT FIX — was hardcoding rangeFt to 5 for single-adjacent
     // pickers regardless of entry.range. That silently capped Healing Word
     // (range 60), Heal (range 60), Mass Cure Wounds (range 60), and any
@@ -445,6 +486,28 @@ export class SpellPipeline {
     }).filter(t => t.token);
 
     if (!targets.length) return null;
+
+    // ── "Must hear you" gate (RAW) — a deafened target can't receive
+    // Suggestion-class spells. All targets deaf → null, which refunds the
+    // deferred slot upstream (same semantics as a cancelled picker).
+    try {
+      const { HearingGate } = await import("../rules/hearing-gate.mjs");
+      const gate = HearingGate.filterDeafTargets(item, targets.map(t => t.token).filter(Boolean));
+      if (gate.blocked.length) {
+        await HearingGate.postBlockedCard(item, actor, gate.blocked, gate.entry);
+        const blockedIds = new Set(gate.blocked.map(b => b.token?.id));
+        const remaining = targets.filter(t => !blockedIds.has(t.tokenId));
+        console.log(`${MODULE_ID} | hearing gate: ${gate.blocked.length} deafened target(s) removed from "${item.name}"`);
+        if (!remaining.length) {
+          ui.notifications?.info(`${item.name}: no valid targets — the deafened can't hear you. Slot not consumed.`);
+          return null;
+        }
+        return { target: remaining[0], targets: remaining };
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | hearing gate failed (non-blocking):`, err);
+    }
+
     return { target: targets[0], targets };
   }
 
@@ -494,7 +557,7 @@ export class SpellPipeline {
         await actor.update({ [`system.spells.${slotKey}.value`]: slot.value - 1 });
         console.debug(`${MODULE_ID} | SpellPipeline: consumed L${castLevel} slot (${slot.value} → ${slot.value - 1})`);
       } else {
-        console.warn(`${MODULE_ID} | SpellPipeline: no L${castLevel} slot available to consume for ${actor.name}`);
+        console.debug(`${MODULE_ID} | SpellPipeline: no L${castLevel} slot to consume for ${actor.name} (innate/at-will or slotless caster — expected).`);
       }
     } catch (err) {
       console.warn(`${MODULE_ID} | SpellPipeline: slot consume threw:`, err);
@@ -621,7 +684,11 @@ export class SpellPipeline {
       if (conc?.effects?.size) {
         for (const eff of conc.effects) {
           const origin = String(eff.origin ?? "");
-          if (itemUuid && (origin === itemUuid || origin.endsWith(`.${itemId}`))) return eff;
+          // dnd5e 5.x: a concentration effect's origin is the ACTIVITY uuid
+          // ("…Item.<id>.Activity.<id>"), so it equals neither the item uuid nor
+          // ends with the item id. Match by item-uuid PREFIX too, or the link
+          // never resolves and the buff never auto-cleans when concentration ends.
+          if (itemUuid && (origin === itemUuid || origin.startsWith(`${itemUuid}.`) || origin.endsWith(`.${itemId}`))) return eff;
           const itemDataName = eff.flags?.dnd5e?.itemData?.name;
           if (itemDataName && String(itemDataName).toLowerCase() === spellNameLower) return eff;
         }
@@ -631,7 +698,8 @@ export class SpellPipeline {
       for (const eff of caster.effects) {
         if (!eff.statuses?.has?.("concentration") && !eff.statuses?.has?.("concentrating")) continue;
         const origin = String(eff.origin ?? "");
-        if (itemUuid && (origin === itemUuid || origin.endsWith(`.${itemId}`))) return eff;
+        // Match by item-uuid PREFIX too (dnd5e 5.x activity-uuid origins).
+        if (itemUuid && (origin === itemUuid || origin.startsWith(`${itemUuid}.`) || origin.endsWith(`.${itemId}`))) return eff;
         const itemDataName = eff.flags?.dnd5e?.itemData?.name;
         if (itemDataName && String(itemDataName).toLowerCase() === spellNameLower) return eff;
         const effNameLower = String(eff.name ?? "").toLowerCase();

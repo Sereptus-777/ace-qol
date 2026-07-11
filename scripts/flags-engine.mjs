@@ -66,6 +66,28 @@ export class FlagsEngine {
         } catch { /* flag not set */ }
       }
     }
+
+    // ── Effect-change fallback (2026-06-25) ──
+    // Several effects declare these flags with CUSTOM apply mode, which does NOT
+    // reliably write the applied actor flag — so the getFlag checks above miss
+    // them. That is why Blur / Faerie Fire / Invisibility grants silently did
+    // nothing (a blurred creature granting no disadvantage, etc.). An effect's
+    // CHANGES are always present regardless of mode, so honour the grant straight
+    // from the source. Cheap: a handful of effects × a few changes, per attack.
+    try {
+      const wanted = new Set();
+      for (const p of paths) {
+        wanted.add(`flags.${MODULE_ID}.${p}`);
+        if (midiCompat) wanted.add(`flags.${MIDI_ID}.${p}`);
+      }
+      for (const eff of (actor.appliedEffects ?? actor.effects ?? [])) {
+        if (eff?.disabled) continue;
+        for (const ch of (eff.changes ?? [])) {
+          if (ch?.value && wanted.has(String(ch.key ?? ""))) return true;
+        }
+      }
+    } catch (_) { /* non-fatal */ }
+
     return false;
   }
 

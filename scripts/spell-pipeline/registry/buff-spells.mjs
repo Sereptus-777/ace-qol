@@ -6,6 +6,77 @@
 
 export const BUFF_SPELLS = {
 
+  // ── Migrated from the legacy SPELL_AUTO_APPLY table (2026-06-25) ──────────────
+  // Touch-range single-target buffs. Adding them here makes the pipeline OWN them
+  // (it takes precedence over the legacy table via SpellPipeline.ownsSpell, so the
+  // old entries go inert). Touch = range 5 + requiresAdjacent; allowSelf because the
+  // caster may touch themselves. Effect keys + durations come from condition-library.
+  // These four have NO 2014/2024 split (the smites, barkskin, and divine favor DO —
+  // concentration changed in 2024 — so they're handled in a separate edition pass).
+  "invisibility": {
+    shape: "multi-buff",
+    range: 5,
+    countResolver: () => 1,
+    effect: { key: "invisibility", duration: "concentration" },
+    picker: { allowSelf: true, preHighlightSelf: true, requiresAdjacent: true, excludeDead: true },
+    flavorOnConfirm: "A creature you touch (or yourself) turns invisible until the spell ends — or until it attacks or casts a spell.",
+  },
+
+  "freedom of movement": {
+    shape: "multi-buff",
+    range: 5,
+    countResolver: () => 1,
+    effect: { key: "freedom_of_movement", duration: { seconds: 3600 } },
+    picker: { allowSelf: true, preHighlightSelf: true, requiresAdjacent: true, excludeDead: true },
+    flavorOnConfirm: "A creature you touch ignores difficult terrain for 1 hour, and can't be paralyzed, restrained, or have its speed reduced by spells.",
+  },
+
+  "protection from evil and good": {
+    shape: "multi-buff",
+    range: 5,
+    countResolver: () => 1,
+    effect: { key: "protection_from_evil", duration: "concentration" },
+    picker: { allowSelf: true, preHighlightSelf: true, requiresAdjacent: true, excludeDead: true },
+    flavorOnConfirm: "A creature you touch is warded against aberrations, celestials, elementals, fey, fiends, and undead — they attack it at disadvantage, and it can't be charmed, frightened, or possessed by them.",
+  },
+
+  "protection from evil": {
+    shape: "multi-buff",
+    range: 5,
+    countResolver: () => 1,
+    effect: { key: "protection_from_evil", duration: "concentration" },
+    picker: { allowSelf: true, preHighlightSelf: true, requiresAdjacent: true, excludeDead: true },
+    flavorOnConfirm: "A creature you touch is warded against aberrations, celestials, elementals, fey, fiends, and undead — they attack it at disadvantage, and it can't be charmed, frightened, or possessed by them.",
+  },
+
+  // Barkskin — touch, single target. 2014 concentration (the 2024 no-concentration
+  // variant is a separate edition pass on the def). Migrated 2026-06-25.
+  "barkskin": {
+    shape: "multi-buff",
+    range: 5,
+    countResolver: () => 1,
+    effect: { key: "barkskin", duration: "concentration" },
+    // 2024: Barkskin is no longer concentration — flat 1-hour duration.
+    // (2024 also raises the AC floor 16 → 17 — that lives in the condition
+    // library def and is tracked separately; duration/concentration is the
+    // audit item closed here.)
+    byEdition: { modern: { effect: { key: "barkskin", duration: { minutes: 60 } } } },
+    picker: { allowSelf: true, preHighlightSelf: true, requiresAdjacent: true, excludeDead: true },
+    flavorOnConfirm: "A creature you touch is sheathed in rugged bark — its AC can't drop below 16, whatever it's wearing.",
+  },
+
+  // Slow — multi-target WITH the Wisdom save the legacy auto-apply was MISSING (a
+  // RAW fix: slow lets each target save to avoid it). Same both editions. 2026-06-25.
+  "slow": {
+    shape: "multi-buff",
+    range: 120,
+    countResolver: () => 6,   // up to six creatures in a 40-ft cube
+    effect: { key: "slow", duration: "concentration" },
+    save: { ability: "wis", onSuccess: "negate" },
+    picker: { allowSelf: false, excludeDead: true },
+    flavorOnConfirm: "Up to six creatures must succeed on a Wisdom save or be Slowed — halved speed, −2 AC and Dex saves, and only one action OR bonus action each turn.",
+  },
+
   "bless": {
     shape: "multi-buff",
     range: 30,
@@ -25,15 +96,10 @@ export const BUFF_SPELLS = {
     flavorOnConfirm: "Up to three creatures must succeed on a Charisma save or suffer −1d4 on attacks and saves.",
   },
 
-  "faerie fire": {
-    shape: "multi-buff",
-    range: 60,
-    countResolver: () => 999,  // template-like 20ft cube, treat as multi up to limit
-    effect: { key: "faerie_fire", duration: "concentration" },
-    save: { ability: "dex", onSuccess: "negate" },
-    picker: { allowSelf: false, excludeDead: true },
-    flavorOnConfirm: "Each creature in a 20-foot cube must save or be outlined — attackers gain advantage and the target can't benefit from invisibility.",
-  },
+  // NOTE: "faerie fire" MOVED to template-spells.mjs (2026-06-26). It is a
+  // 20-ft CUBE AREA spell, not a multi-target buff — you place a template and
+  // every creature inside (visible OR hidden) rolls a DEX save. The old
+  // portrait-picker was wrong: you can't pick an invisible creature from a list.
 
   "shield of faith": {
     shape: "multi-buff",

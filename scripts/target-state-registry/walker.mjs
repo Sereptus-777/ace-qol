@@ -68,6 +68,7 @@
 
 import { MODULE_ID } from "../ace-qol.mjs";
 import { NULLIFICATION_REGISTRY } from "./_index.mjs";
+import { CombatState } from "../combat-state.mjs";
 
 const DEBUG = false;
 
@@ -182,12 +183,10 @@ export class NullificationWalker {
   // ─── Edition handling ─────────────────────────────────────────────────────
 
   static _getEdition() {
-    try {
-      const rv = game.settings.get("dnd5e", "rulesVersion");
-      if (rv === "legacy") return "legacy";
-      if (rv === "modern") return "modern";
-    } catch (_) { /* fall through */ }
-    return "modern";
+    // Honors the ACE QOL gameRulesEdition master override; falls back to
+    // legacy (2014) when undetectable — was previously a raw dnd5e read that
+    // ignored the override AND wrongly defaulted to "modern".
+    return CombatState.getActiveRulesVersion();
   }
 
   static _applyEdition(entry, edition) {

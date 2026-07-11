@@ -11,6 +11,9 @@ import { DamageConstants, safeShowForRoll } from "./damage-engine.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
 import { ConditionLibrary } from "./condition-library.mjs";
 import { awaitDsnRoll } from "./attack-prompt.mjs";
+// The rules brain — entries override the description parser for post-hit
+// behavior (convergence 2026-07-10). Function-time reads only; cycle inert.
+import { RulesBrain } from "./rules/rules-brain.mjs";
 
 const PHYSICAL_TYPES = new Set(["bludgeoning", "piercing", "slashing"]);
 
@@ -31,6 +34,33 @@ export class PostHitSaves {
     if (!item) return;
 
     const parsed = DescriptionParser.parse(item);
+
+    // ── THE BRAIN OVERRIDES THE PARSE (convergence, 2026-07-10) ──
+    // When the item has a rules entry declaring post-hit behavior, the ENTRY
+    // is authoritative — the parser is the general fallback for everything
+    // without one. Both produce the SAME normalized bag, so one resolution
+    // path serves both and the wasp class of wiring gap is structurally dead.
+    let entryOnHit = null;
+    try {
+      const entry = RulesBrain.lookup(item, { actor })?.entry;
+      if (entry?.postHitSave?.dc && entry.postHitSave.ability) {
+        parsed.saves = [foundry.utils.deepClone(entry.postHitSave)];
+        console.log(`${MODULE_ID} | post-hit: rules entry OVERRIDES parsed save for "${item.name}" (DC ${entry.postHitSave.dc} ${entry.postHitSave.ability})`);
+      }
+      if (Array.isArray(entry?.onHit) && entry.onHit.length) {
+        entryOnHit = foundry.utils.deepClone(entry.onHit);
+      }
+    } catch (_) { /* brain unavailable → parser stands */ }
+
+    // ── Entry-declared ON-HIT effects (no save — the Net) ──
+    // Applied to every HIT target, immunity-checked, announced compactly.
+    if (entryOnHit) {
+      try {
+        await PostHitSaves._applyEntryOnHit(item, actor, hits, entryOnHit);
+      } catch (err) {
+        console.warn(`${MODULE_ID} | entry on-hit handling failed:`, err);
+      }
+    }
     // Early-return gate: skip the whole function if the item has NO
     // post-hit machinery to run. severRider MUST be in this list — without
     // it, weapons whose only post-hit effect is a head/limb sever (Vorpal
@@ -40,7 +70,7 @@ export class PostHitSaves {
         && !parsed.effectTable
         && !parsed.hpThresholdRider
         && !parsed.onKillRider
-        && !parsed.severRider) return;
+        && !parsed.severRider) return;   // (entry on-hit already ran above)
 
     // Only process targets that were actually HIT
     const hitTargets = hits.filter(h => h.hitResult === "hit" || h.hitResult === "critical");
@@ -594,7 +624,16 @@ export class PostHitSaves {
           itemId: item.id,
           itemUuid: item.uuid,
           actorId: actor.id,
-          save: { dc: save.dc, ability: save.ability },
+          // failEffect + halfOnSuccess MUST cross the message boundary — the
+          // Giant Wasp bug (2026-07-10 03:24): the parser extracted "3d6
+          // poison on a failed save" but the card's flags only carried
+          // dc+ability, so a FAILED save resolved with no consequence.
+          save: {
+            dc: save.dc,
+            ability: save.ability,
+            failEffect: save.failEffect ?? [],
+            halfOnSuccess: !!save.halfOnSuccess,
+          },
           effectTable: effectTable,
           bonusDamage: bonusDamage,
           conditions: conditions.filter(c => c.requiresSave),
@@ -628,6 +667,16 @@ export class PostHitSaves {
     const { save, effectTable, bonusDamage, conditions, targets, itemId, itemUuid, actorId } = flags;
     const item = await fromUuid(itemUuid) ?? game.items.get(itemId);
     const casterActor = game.actors.get(actorId);
+
+    // FIELD DIAGNOSTIC (2026-07-10): state the consequence inventory up
+    // front — a failed save with an empty bag announces itself instead of
+    // resolving into silence (the Giant Wasp lesson, twice over).
+    console.log(
+      `${MODULE_ID} | rollPostHitSaves: DC ${save?.dc} ${save?.ability} | `
+      + `failEffect=${(save?.failEffect ?? []).length} entr${(save?.failEffect ?? []).length === 1 ? "y" : "ies"} `
+      + `(${(save?.failEffect ?? []).map(f => f.type === "damage" ? `${f.formula} ${f.damageType}` : f.condition).join(", ") || "NONE — a fail will do nothing"}) | `
+      + `halfOnSuccess=${!!save?.halfOnSuccess} | table=${!!effectTable} | conditions=${(conditions ?? []).length}`
+    );
 
     const results = [];
 
@@ -789,8 +838,10 @@ export class PostHitSaves {
           // No table — apply fail conditions directly (e.g., Giant Slayer)
           const autoApply = QolSettings.get("autoApplyConditions") ?? true;
           const condImmunities = new Set((targetActor.system?.traits?.ci?.value ?? []).map(s => s.toLowerCase()));
+          const appliedConds = new Set();
           for (const cond of (conditions ?? [])) {
             const condKey = (cond.condition ?? "").toLowerCase();
+            appliedConds.add(condKey);
             if (condImmunities.has(condKey)) {
               result.effects.push({ type: "condition", condition: cond.condition, blocked: true, reason: `Immune to ${cond.condition}` });
               console.log(`${MODULE_ID} | ${tgt.name} is IMMUNE to ${cond.condition} — skipped`);
@@ -807,6 +858,40 @@ export class PostHitSaves {
               }
             }
           }
+
+          // ── The parsed FAIL EFFECT — the save's own teeth (2026-07-10) ──
+          // "…taking 10 (3d6) poison damage on a failed save" — the parser
+          // always extracted this; the resolution never consumed it (the
+          // Giant Wasp Sting bug: FAIL with zero consequence). Damage rolls
+          // through the defensive-profile path and lands on the results card
+          // with the standard APPLY DAMAGE button; conditions apply unless
+          // the conditions list above already covered them.
+          for (const fx of (save.failEffect ?? [])) {
+            if (fx.type === "damage" && fx.formula) {
+              await PostHitSaves._rollAndApplySaveDamage(fx, targetActor, item, result);
+            } else if (fx.type === "condition" && fx.condition) {
+              const condKey = fx.condition.toLowerCase();
+              if (appliedConds.has(condKey)) continue;        // already handled above
+              appliedConds.add(condKey);
+              if (condImmunities.has(condKey)) {
+                result.effects.push({ type: "condition", condition: fx.condition, blocked: true, reason: `Immune to ${fx.condition}` });
+              } else {
+                result.effects.push({ type: "condition", condition: fx.condition });
+                if (autoApply && tokenDoc?.actor) {
+                  await ConditionLibrary.applyByName(tokenDoc.actor, fx.condition);
+                }
+              }
+            }
+          }
+        }
+      } else if (!isAutoFail && save.halfOnSuccess) {
+        // ── PASSED, but the rule says "half as much damage on a success" ──
+        // (Giant Wasp Sting, Fireball-style venoms). Roll the fail damage at
+        // HALF (halving first, then resistance/immunity per RAW ordering).
+        for (const fx of (save.failEffect ?? [])) {
+          if (fx.type === "damage" && fx.formula) {
+            await PostHitSaves._rollAndApplySaveDamage(fx, targetActor, item, result, { half: true });
+          }
         }
       }
 
@@ -818,6 +903,58 @@ export class PostHitSaves {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  //  Entry-declared ON-HIT effects (no save — the Net pattern)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Apply a rules entry's onHit effects to every HIT target: conditions with
+   * immunity checks (through ConditionLibrary so exhaustion increments), and
+   * one compact announcement card naming what landed and how to escape.
+   */
+  static async _applyEntryOnHit(item, actor, hits, onHit) {
+    const hitTargets = (hits ?? []).filter(h => h.hitResult === "hit" || h.hitResult === "critical");
+    if (!hitTargets.length) return;
+    const autoApply = QolSettings.get("autoApplyConditions") ?? true;
+    const lines = [];
+
+    for (const h of hitTargets) {
+      const scene = game.scenes.get(h.sceneId) ?? canvas.scene;
+      const tokenDoc = scene?.tokens?.get(h.targetToken?.document?.id ?? h.tokenDocId);
+      const targetActor = tokenDoc?.actor ?? game.actors.get(h.targetActor?.id ?? h.actorId);
+      if (!targetActor) continue;
+      const name = h.name ?? tokenDoc?.name ?? targetActor.name;
+      const condImmunities = new Set((targetActor.system?.traits?.ci?.value ?? []).map(s => s.toLowerCase()));
+
+      for (const fx of onHit) {
+        if (fx.type !== "condition" || !fx.condition) continue;
+        const key = fx.condition.toLowerCase();
+        if (condImmunities.has(key)) {
+          lines.push(`<b>${foundry.utils.escapeHTML(name)}</b> is immune to ${fx.condition}.`);
+          continue;
+        }
+        if (autoApply) {
+          const r = await ConditionLibrary.applyByName(targetActor, fx.condition);
+          if (r?.ok === false) console.warn(`${MODULE_ID} | entry on-hit: failed to apply ${fx.condition} to ${name}`);
+        }
+        lines.push(`<b>${foundry.utils.escapeHTML(name)}</b> is <b>${fx.condition.toUpperCase()}</b>${fx.note ? ` — ${foundry.utils.escapeHTML(fx.note)}` : ""}.`);
+        console.log(`${MODULE_ID} | entry on-hit: "${item.name}" → ${fx.condition} on ${name}`);
+      }
+    }
+
+    if (lines.length) {
+      await ChatMessage.create({
+        content: `
+          <div class="ace-qol-posthit-results" style="border-left:3px solid #c9a76b;padding:6px 10px;background:#141118;color:#e8dcc3;font-size:14px;border-radius:4px;">
+            <div style="font-weight:700;color:#c9a76b;"><img src="${item.img}" style="width:18px;height:18px;vertical-align:-4px;border:none;"/> ${foundry.utils.escapeHTML(item.name)}</div>
+            ${lines.map(l => `<div>${l}</div>`).join("")}
+          </div>`,
+        speaker: ChatMessage.getSpeaker({ actor }),
+        flags: { [MODULE_ID]: { type: "entryOnHitResult" } },
+      }).catch(() => {});
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   //  Save-Gated Damage (with full defensive profile check)
   // ═══════════════════════════════════════════════════════════════════════════
 
@@ -825,12 +962,14 @@ export class PostHitSaves {
    * Roll save-gated damage and check target's defensive profile.
    * Pushes the result into result.effects.
    */
-  static async _rollAndApplySaveDamage(fx, targetActor, item, result) {
+  static async _rollAndApplySaveDamage(fx, targetActor, item, result, { half = false } = {}) {
     const dmgRoll = new Roll(fx.formula);
     await dmgRoll.evaluate();
     safeShowForRoll(dmgRoll, "post-hit save-damage roll");
 
-    const rawTotal = dmgRoll.total;
+    // Half-on-successful-save applies FIRST; resistance/immunity below then
+    // modify the halved amount (RAW ordering — resistance after other mods).
+    const rawTotal = half ? Math.floor(dmgRoll.total / 2) : dmgRoll.total;
     let finalTotal = rawTotal;
     let dmgModifier = "normal";
     let dmgModReason = null;
@@ -893,8 +1032,9 @@ export class PostHitSaves {
       roll: dmgRoll,
       modifier: dmgModifier,
       reason: dmgModReason,
+      halvedOnSave: half,
     });
-    console.log(`${MODULE_ID} | POST-HIT TABLE: rolled ${fx.formula} ${fx.damageType} = ${rawTotal}${dmgModifier !== "normal" ? ` → ${finalTotal} (${dmgModifier})` : ""}`);
+    console.log(`${MODULE_ID} | POST-HIT save damage: ${fx.formula} ${fx.damageType} = ${dmgRoll.total}${half ? ` → ${rawTotal} (half on save)` : ""}${dmgModifier !== "normal" ? ` → ${finalTotal} (${dmgModifier})` : ""}`);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

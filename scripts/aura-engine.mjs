@@ -166,10 +166,10 @@ export class AuraEngine {
         AuraVisualLayer.refresh();
         // Effect-application is activeGM-only (prevent duplicate effect writes with 2 GMs)
         if (game.users?.activeGM !== game.user) return;
-        // Defer slightly to let the actual position update commit
-        setTimeout(() => AuraEngine.recomputeAll().catch(err =>
-          console.warn(`${MODULE_ID} | AuraEngine recompute after move threw:`, err)
-        ), 50);
+        // Coalesce rapid drag-moves through the shared 80ms debounce instead of
+        // queuing a full recompute per move-commit (a fast drag across many squares
+        // fired one recompute each). The debounce also covers the commit defer. (perf 2026-06-25)
+        AuraEngine._scheduleRecompute();
       } catch (err) { /* non-fatal */ }
     });
 

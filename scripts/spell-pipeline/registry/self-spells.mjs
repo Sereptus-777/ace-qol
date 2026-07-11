@@ -5,6 +5,75 @@
 
 export const SELF_SPELLS = {
 
+  // Migrated from the legacy SPELL_AUTO_APPLY table (2026-06-25). Fire Shield is
+  // self-only; its melee retaliation is read from the effect's description by
+  // RetaliationEngine on each hit. No 2014/2024 split. Pipeline now owns it.
+  "fire shield": {
+    shape: "self",
+    range: 0,
+    effect: { key: "fire_shield", duration: { rounds: 100 } },  // 10 minutes
+    flavorOnConfirm: "Flames wreathe you for 10 minutes — you gain resistance to cold or fire, and a creature within 5 ft that hits you in melee takes 2d8 of the opposite damage.",
+  },
+
+  // ── Smite spells (migrated from SPELL_AUTO_APPLY 2026-06-25) ──────────────────
+  // Cast applies the named concentration buff to the CASTER; the rider-engine
+  // detects it and offers the discharge on the next melee weapon hit (the existing,
+  // proven smite flow). Behaviour-preserving vs the legacy table — same effect keys.
+  // Durations are 2014 (concentration); the 2024 non-concentration variants are a
+  // separate edition-aware pass on the condition-library defs themselves.
+  "searing smite": {
+    shape: "self", range: 0,
+    effect: { key: "searing_smite", duration: "concentration" },
+    // 2024: smites are no longer concentration — flat 1-minute duration.
+    byEdition: { modern: { effect: { key: "searing_smite", duration: { minutes: 1 } } } },
+    flavorOnConfirm: "Your weapon flares white-hot — your next hit deals +1d6 fire and sets the target alight (1d6 fire at the start of each of its turns; CON save to end).",
+  },
+  "wrathful smite": {
+    shape: "self", range: 0,
+    effect: { key: "wrathful_smite", duration: "concentration" },
+    // 2024: smites are no longer concentration — flat 1-minute duration.
+    byEdition: { modern: { effect: { key: "wrathful_smite", duration: { minutes: 1 } } } },
+    flavorOnConfirm: "Your weapon thrums with dark energy — your next hit deals +1d6 psychic and frightens the target (WIS save to end).",
+  },
+  "thunderous smite": {
+    shape: "self", range: 0,
+    effect: { key: "thunderous_smite", duration: "concentration" },
+    // 2024: smites are no longer concentration — flat 1-minute duration.
+    byEdition: { modern: { effect: { key: "thunderous_smite", duration: { minutes: 1 } } } },
+    flavorOnConfirm: "Your weapon rings with thunder — your next hit deals +2d6 thunder; the target makes a STR save or is pushed 10 ft and knocked prone.",
+  },
+  "blinding smite": {
+    shape: "self", range: 0,
+    effect: { key: "blinding_smite", duration: "concentration" },
+    // 2024: smites are no longer concentration — flat 1-minute duration.
+    byEdition: { modern: { effect: { key: "blinding_smite", duration: { minutes: 1 } } } },
+    flavorOnConfirm: "Your weapon blazes with light — your next hit deals +3d8 radiant and blinds the target (CON save each turn to end).",
+  },
+  "staggering smite": {
+    shape: "self", range: 0,
+    effect: { key: "staggering_smite", duration: "concentration" },
+    // 2024: smites are no longer concentration — flat 1-minute duration.
+    byEdition: { modern: { effect: { key: "staggering_smite", duration: { minutes: 1 } } } },
+    flavorOnConfirm: "Your weapon disrupts mind and body — your next hit deals +4d6 psychic; on a failed WIS save the target has disadvantage on attacks and ability checks until your next turn.",
+  },
+  "banishing smite": {
+    shape: "self", range: 0,
+    effect: { key: "banishing_smite", duration: "concentration" },
+    // 2024: smites are no longer concentration — flat 1-minute duration.
+    byEdition: { modern: { effect: { key: "banishing_smite", duration: { minutes: 1 } } } },
+    flavorOnConfirm: "Your weapon crackles with force — your next hit deals +5d10 force; if it drops the target to 50 HP or fewer, the target is banished.",
+  },
+
+  // Divine Favor — self buff. 2014 concentration (2024 no-concentration = separate
+  // def edition pass). Migrated from SPELL_AUTO_APPLY 2026-06-25.
+  "divine favor": {
+    shape: "self", range: 0,
+    effect: { key: "divine_favor", duration: "concentration" },
+    // 2024: Divine Favor is no longer concentration — flat 1-minute duration.
+    byEdition: { modern: { effect: { key: "divine_favor", duration: { minutes: 1 } } } },
+    flavorOnConfirm: "Your weapon shines with divine radiance — your weapon hits deal an extra 1d4 radiant damage.",
+  },
+
   "mage armor": {
     shape: "self",
     range: 0,
@@ -52,7 +121,10 @@ export const SELF_SPELLS = {
     shape: "multi-buff",
     range: 5,
     countResolver: () => 1,
-    effect: { key: "greater_invisibility", duration: { minutes: 1 } },
+    // duration MUST be the "concentration" signal (not a fixed {minutes:1}) or the
+    // buff resolver never wires the concentration link → the invisibility never
+    // ends when the caster drops concentration. (Audit 2026-06-27, P0.)
+    effect: { key: "greater_invisibility", duration: "concentration" },
     picker: { allowSelf: true, preHighlightSelf: true, requiresAdjacent: true, excludeDead: true },
     flavorOnConfirm: "A creature you touch becomes invisible and remains so even when it attacks or casts spells.",
   },

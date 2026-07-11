@@ -17,14 +17,25 @@ import { DamageEngine }      from "./damage-engine.mjs";
 import { SaveEngine }           from "./save-engine.mjs";
 import { ConcentrationWidget }  from "./concentration-widget.mjs";
 import { RiderEngine }          from "./rider-engine.mjs";
+import { auditItems, runAudit } from "./item-validator.mjs";  // read-only sanity audit — exposed as game.aceQol.auditItems()
+import { AuditApp } from "./audit-app.mjs";  // Audit Tool window + GM settings button (registers its own menu at init)
 import { FlagsEngine }          from "./flags-engine.mjs";
 import { ReactionEngine, injectReactionCSS } from "./reaction-engine.mjs";
 import { InvisibilityBreaker } from "./invisibility-breaker.mjs";
+import { AceFX } from "./ace-fx.mjs";
+import { AttackAbilityResolver } from "./attack-ability-resolver.mjs";
+import { RulesBrain } from "./rules/rules-brain.mjs";
+import { SpaceEffects } from "./rules/space-effects.mjs";
+import { SelfTest } from "./rules/self-test.mjs";
+import { openRulesCoverage, registerCoverageButton } from "./rules/coverage-report.mjs";
+import { ActionInterceptor } from "./profiles/action-interceptor.mjs";
+import { ConditionVisuals, BODY_VISUAL_STATUSES } from "./condition-visuals.mjs";
 import { SpellPipeline } from "./spell-pipeline/pipeline.mjs";
 import { HookAPI }              from "./hook-api.mjs";
 import { OverTimeEngine }       from "./overtime-engine.mjs";
 import { CoverEngine }          from "./cover-engine.mjs";
 import { BloodiedEngine }       from "./bloodied-engine.mjs";
+import { FaerieFireFX }         from "./faerie-fire-fx.mjs";
 import { VisibilityEngine }     from "./visibility-engine.mjs";
 import { ConditionLibrary }     from "./condition-library.mjs";
 import { SpellTargetPicker }    from "./spell-target-picker.mjs";
@@ -69,6 +80,7 @@ import { HolySymbol }        from "./holy-symbol.mjs";
 import { MovementTrail }     from "./movement-trail.mjs";
 import { Banishment }        from "./banishment.mjs";
 import { ConditionRawHooks } from "./condition-raw-hooks.mjs";
+import { CombatContext } from "./combat-context.mjs";
 import { FeatEffects }       from "./feat-effects.mjs";
 import { SwordOfWounding }   from "./sword-of-wounding.mjs";
 
@@ -494,12 +506,17 @@ Hooks.once("ready", () => {
 // GM-only because GMs install/disable modules; players see no actionable UI.
 // Warning is suppressible via a settings-stored flag so users only see it
 // once per world (or until they re-enable a conflicting module).
+// NOTE: Token Magic FX is intentionally NOT listed here. ACE does NOT replace
+// TMFX — it's a general visual-filter framework that ACE (and many modules)
+// can build on, and it does not conflict with ACE's automation. Listing it
+// previously told GMs to disable it, which silently broke any ACE visual that
+// expected its filters. ACE's own glows now use Foundry-native filters and
+// never require TMFX, so there is no reason to flag it. (Removed v0.7.96.)
 const REPLACED_MODULES = [
   { id: "midi-qol",                  label: "Midi-QOL" },
   { id: "dae",                       label: "Dynamic Active Effects (DAE)" },
   { id: "times-up",                  label: "Times Up" },
   { id: "dfreds-convenient-effects", label: "DFreds Convenient Effects" },
-  { id: "tokenmagic",                label: "Token Magic FX (cover features)" },
 ];
 Hooks.once("ready", () => {
   if (!game.user.isGM) return;
@@ -507,6 +524,14 @@ Hooks.once("ready", () => {
   try {
     const active = REPLACED_MODULES.filter(m => game.modules?.get?.(m.id)?.active);
     if (!active.length) return;
+    // Dedupe: if a conflict-warning is already in the chat log, don't pile another
+    // one on every reload (Johnny saw 3 stacked). Posts once; persists until the
+    // GM dismisses it, then re-posts on the next load if a conflict still exists.
+    const alreadyPosted = game.messages?.contents?.some(m => m.flags?.[MODULE_ID]?.type === "conflictWarning");
+    if (alreadyPosted) {
+      console.debug(`${MODULE_ID} | Module-conflict warning already in chat — not re-posting.`);
+      return;
+    }
     const labelList = active.map(m => `<li><strong>${m.label}</strong> <code>(${m.id})</code></li>`).join("");
     // Post a chat notice once per world session — easy to dismiss + reference.
     const html = `
@@ -532,6 +557,116 @@ Hooks.once("ready", () => {
     console.warn(`${MODULE_ID} | Detected ${active.length} potentially-conflicting module(s): ${active.map(m => m.id).join(", ")}`);
   } catch (err) {
     console.warn(`${MODULE_ID} | Module-conflict detection threw (non-fatal):`, err);
+  }
+});
+
+// ─── Hide redundant token EFFECT-ICONS for ACE effects that own their canvas
+// visual (Faerie Fire = the cycling glow → its little corner icon is just clutter).
+// Foundry draws those corner icons from `actor.temporaryEffects`; the EFFECTS LIST
+// (the dnd5e sheet + ACE's own panel) reads `actor.effects`/`appliedEffects`, NOT
+// this getter — so filtering it removes ONLY the on-token icon, never the list
+// entry. We wrap the getter defensively (any error → original list) and only ever
+// drop ACE's OWN effects, never anyone else's.
+//   • Faerie Fire's icon is ALWAYS hidden (it has the glow).
+//   • Setting `hideEffectTokenIcons` hides EVERY ACE condition icon on tokens.
+Hooks.once("ready", () => {
+  try {
+    if (!game.settings.settings.has(`${MODULE_ID}.hideEffectTokenIcons`)) {
+      game.settings.register(MODULE_ID, "hideEffectTokenIcons", {
+        name: "Hide ACE effect icons on tokens",
+        hint: "Keeps ACE-applied condition effects in the effects list, but removes their small corner icons from the token sprite on the canvas. (Faerie Fire's icon is always hidden — it has its own glow.)",
+        scope: "world", config: true, type: Boolean, default: false,
+        onChange: () => { try { canvas?.tokens?.placeables?.forEach(t => t.drawEffects?.()); } catch (_) {} },
+      });
+    }
+
+    const ActorCls = CONFIG.Actor?.documentClass;
+    if (!ActorCls || ActorCls.prototype._aceTempEffectsPatched) return;
+
+    // Locate the temporaryEffects getter anywhere on the prototype chain.
+    let proto = ActorCls.prototype, desc = null;
+    while (proto && !desc) { desc = Object.getOwnPropertyDescriptor(proto, "temporaryEffects"); if (!desc) proto = Object.getPrototypeOf(proto); }
+    if (!desc?.get) { console.debug(`${MODULE_ID} | temporaryEffects getter not found — icon-hide skipped.`); return; }
+
+    const origGet = desc.get;
+    const ALWAYS_HIDE = new Set(["faerie_fire"]); // ACE effects with their own canvas visual
+    Object.defineProperty(ActorCls.prototype, "temporaryEffects", {
+      configurable: true,
+      get() {
+        const list = origGet.call(this);
+        try {
+          let hideAll = false;
+          try { hideAll = game.settings.get(MODULE_ID, "hideEffectTokenIcons") === true; } catch (_) { /* not registered yet */ }
+          // Fast path — nothing to hide.
+          if (!hideAll && !list?.some?.(e => ALWAYS_HIDE.has(e?.flags?.[MODULE_ID]?.conditionKey))) return list;
+          return list.filter(e => {
+            const ck = e?.flags?.[MODULE_ID]?.conditionKey;
+            if (!ck) return true;                  // not an ACE effect → never touch it
+            if (ALWAYS_HIDE.has(ck)) return false; // own visual → corner icon always hidden
+            return !hideAll;                        // setting hides the rest of ACE's icons
+          });
+        } catch (_) { return list; }                // any trouble → unfiltered (safe)
+      },
+    });
+    Object.defineProperty(ActorCls.prototype, "_aceTempEffectsPatched", { value: true, configurable: true });
+    console.log(`${MODULE_ID} | Token effect-icon filter installed (Faerie Fire icon hidden; 'hideEffectTokenIcons' toggles the rest).`);
+  } catch (err) {
+    console.warn(`${MODULE_ID} | temporaryEffects icon-hide patch failed (non-fatal):`, err);
+  }
+});
+
+// ─── Suppress the NATIVE dnd5e effect when ACE's pipeline OWNS the spell ──────
+// Symptom (Greater Invisibility, confirmed 2026-06-26): the instant you click
+// Cast, the CASTER turns invisible — BEFORE the target picker even opens. That's
+// the spell ITEM's own "Invisible" Active Effect, which dnd5e applies to the
+// caster on use. ACE then applies its OWN `greater_invisibility` to the picked
+// target → the caster is double-affected (the bleed-over).
+//
+// Fix: veto the NATIVE effect's creation when ALL of these hold — so it's
+// impossible to clobber a legitimate effect:
+//   • it does NOT already carry ACE's conditionKey flag (i.e. it's not ours);
+//   • its origin resolves to a spell/feat the pipeline OWNS *and* that has its
+//     own registry effect.key (ACE applies its own version → native is a dup);
+//   • it is NOT a concentration effect (we never touch those);
+//   • it is landing on the CASTER themselves (self) — ACE puts its version on
+//     the PICKED target, so a self-landing native effect IS the bleed.
+// Self-casting still works: pick yourself in ACE's picker and ACE applies its
+// own version to you. This only kills dnd5e's automatic self-application.
+Hooks.on("preCreateActiveEffect", (effect, data, _options, _userId) => {
+  try {
+    const flags = data?.flags ?? effect?.flags ?? {};
+    if (flags?.[MODULE_ID]?.conditionKey) return;            // ACE's own effect → keep it
+
+    const origin = data?.origin ?? effect?.origin;
+    if (!origin) return;
+    // dnd5e 5.x sets an effect's `origin` to the ACTIVITY uuid, not the item, so
+    // fromUuidSync returns an Activity whose `.type` is neither "spell" nor "feat".
+    // Resolve THROUGH to the parent item (activity → `.item`; an item origin
+    // resolves to itself). This is exactly why the hook was silently skipping
+    // Greater Invisibility — the guard below bailed on the activity every time.
+    const resolved = (typeof fromUuidSync === "function") ? fromUuidSync(origin) : null;
+    const item = resolved?.item ?? resolved;
+    if (!item || (item.type !== "spell" && item.type !== "feat")) return;
+
+    const entry = globalThis.game?.aceQol?.SpellPipeline?._getEntry?.(item);
+    if (!entry?.effect?.key) return;                         // ACE doesn't own an effect for this spell → leave native alone
+
+    // Never strip a concentration effect.
+    const st = effect?.statuses ?? data?.statuses ?? null;
+    const hasConc = (st?.has?.("concentration") || st?.has?.("concentrating"))
+      || (Array.isArray(st) && (st.includes("concentration") || st.includes("concentrating")));
+    if (hasConc) return;
+    if (String(data?.name ?? effect?.name ?? "").toLowerCase().startsWith("concentrat")) return;
+
+    // Only when it's landing on the CASTER (self).
+    const caster = item.actor ?? item.parent ?? null;
+    const target = effect?.parent ?? null;
+    if (caster && target && caster.id === target.id) {
+      console.log(`${MODULE_ID} | Suppressed native dnd5e self-effect "${effect?.name ?? data?.name}" for pipeline-owned "${item.name}" (ACE applies its own to the picked target).`);
+      return false; // veto creation — the caster no longer auto-gets it
+    }
+  } catch (err) {
+    console.warn(`${MODULE_ID} | native self-effect suppression hook threw (non-fatal):`, err);
   }
 });
 
@@ -1137,6 +1272,14 @@ Hooks.once("ready", () => {
     console.error(`${MODULE_ID} | Condition RAW Hooks init failed:`, err);
   }
 
+  // Shared combat engine — the single brain both weapons + spells funnel through
+  // for can-act gates, advantage/disadvantage, and defense reads. (2026-06-25)
+  try {
+    CombatContext.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | CombatContext init failed:`, err);
+  }
+
   // Feat effects (Polearm Master, Crusher, Slasher, Piercer).
   // Self-contained — listens to ace-qol.attackComplete.
   try {
@@ -1311,6 +1454,131 @@ Hooks.once("ready", () => {
     console.error(`${MODULE_ID} | Invisibility breaker init failed:`, err);
   }
 
+  // Auto-animation — Foundry-native cast flourish + on-fail silhouette encrust.
+  try {
+    AceFX.register();
+  } catch (err) {
+    console.error(`${MODULE_ID} | AceFX auto-animation init failed:`, err);
+  }
+
+  // Attack-ability resolver — character-level rule for WHICH ability a weapon
+  // swing rolls with (Pact of the Blade 2024 / Hex Warrior 2014 → Charisma on
+  // the equipped = bonded weapon). A rule about the attacker, not an item stamp.
+  try {
+    AttackAbilityResolver.register();
+  } catch (err) {
+    console.error(`${MODULE_ID} | AttackAbilityResolver init failed:`, err);
+  }
+
+  // Ranged-spell bonus heuristic — a melee-TAGGED spell with a real ranged
+  // distance (Produce Flame class) gets the actor's ranged-spell attack
+  // bonus at roll time (punch-list #17; the item is never modified).
+  // import().then() — the surrounding callback is not async.
+  import("./ranged-spell-bonus.mjs")
+    .then(({ RangedSpellBonus }) => RangedSpellBonus.register())
+    .catch(err => console.error(`${MODULE_ID} | RangedSpellBonus init failed:`, err));
+
+  // Hex / Hexblade's Curse death watch — Hex offers the RAW bonus-action MOVE
+  // when its target dies; Hexblade's Curse ends + heals the warlock (RAW).
+  // Punch-list #4.
+  import("./hex-death-watch.mjs")
+    .then(({ HexDeathWatch }) => HexDeathWatch.register())
+    .catch(err => console.error(`${MODULE_ID} | HexDeathWatch init failed:`, err));
+
+  // ── THE RULES ENGINE (Phase 0 + 1, 2026-07-09) ──
+  // RulesBrain: deterministic "what do the RULES say this does" lookup (data
+  // entries, never guessing). SpaceEffects: spell templates with space entries
+  // become live Regions (obscurement/silence/terrain/darkness — Darkness, Fog
+  // Cloud, Silence, Web). ActionInterceptor: the Phase-0 universal audit —
+  // every activity use observed, classified, and profiled (debug-level only).
+  // Each registration guarded SEPARATELY — a failure in one must never
+  // silently take the others down with it (2026-07-09 hardening).
+  try { RulesBrain.selfCheck(); } catch (err) { console.error(`${MODULE_ID} | RulesBrain self-check failed:`, err); }
+  try { SpaceEffects.register(); } catch (err) { console.error(`${MODULE_ID} | SpaceEffects init failed:`, err); }
+  try { ActionInterceptor.register(); } catch (err) { console.error(`${MODULE_ID} | ActionInterceptor init failed:`, err); }
+  try { registerCoverageButton(); } catch (err) { console.error(`${MODULE_ID} | coverage toolbar button failed:`, err); }
+  try { ConditionVisuals.register(); } catch (err) { console.error(`${MODULE_ID} | ConditionVisuals init failed:`, err); }
+
+  // ── CLEAN TOKENS: spell bookkeeping lives in the ACE effects panel, never
+  //    as little squares on the token (Johnny directive, 2026-07-09).
+  //
+  // Hidden from the TOKEN's status-icon strip (they all remain fully visible
+  // in the ACE effects panel and on the character sheet):
+  //   (a) concentration trackers ("Concentrating: Darkness" etc.)
+  //   (b) ACE spell-marker effects that carry NO real condition status
+  //       (the Darkness/Blur/Divine Favor self-markers — pure bookkeeping)
+  // REAL conditions keep their token icons — restrained, prone, poisoned,
+  // dead-skull overlays are table-critical at a glance and stay put.
+  //
+  // Mechanism: reimplementation of Token#_drawEffects with a filter, verified
+  // against THIS install's client source (token.mjs _drawEffects — the loop
+  // draws every temporaryEffect with an img). Guarded: any failure falls back
+  // to the original core implementation.
+  try {
+    const TokenClass = foundry.canvas?.placeables?.Token ?? globalThis.Token;
+    const origDrawEffects = TokenClass?.prototype?._drawEffects;
+    if (origDrawEffects && !TokenClass.prototype._aceDrawEffectsPatched) {
+      TokenClass.prototype._aceDrawEffectsPatched = true;
+
+      const isPanelOnly = (effect) => {
+        try {
+          const st = effect.statuses;
+          // (a) Concentration tracker — every signal dnd5e 5.x uses for it.
+          if (st?.has?.("concentration") || st?.has?.("concentrating")
+            || effect.flags?.dnd5e?.concentration !== undefined
+            || /^concentrating\b/i.test(effect.name ?? "")) return true;
+          // (b) Conditions the ConditionVisuals engine renders ON THE BODY —
+          //     chains, coats, orbit glyphs. The body IS the icon; no square.
+          for (const s of (st ?? [])) if (BODY_VISUAL_STATUSES.has(s)) return true;
+          // (c) ACE marker with no real condition status → pure bookkeeping.
+          if (!effect.flags?.[MODULE_ID]) return false;
+          const real = [...(st ?? [])].filter(s => s !== "concentration" && s !== "concentrating");
+          return real.length === 0;
+        } catch (_) { return false; }
+      };
+
+      TokenClass.prototype._drawEffects = async function () {
+        try {
+          this.effects.renderable = false;
+          this.effects.removeChildren().forEach(c => c.destroy());
+          this.effects.bg = this.effects.addChild(new PIXI.Graphics());
+          this.effects.bg.zIndex = -1;
+          this.effects.overlay = null;
+
+          // Core body with ONE change: panel-only effects filtered out.
+          const activeEffects = (this.actor?.temporaryEffects || []).filter(e => !isPanelOnly(e));
+          const overlayEffect = activeEffects.findLast(e => e.img && e.getFlag("core", "overlay"));
+
+          const promises = [];
+          for (const [i, effect] of activeEffects.entries()) {
+            if (!effect.img) continue;
+            const promise = effect === overlayEffect
+              ? this._drawOverlay(effect.img, effect.tint)
+              : this._drawEffect(effect.img, effect.tint);
+            promises.push(promise.then(e => { if (e) e.zIndex = i; }));
+          }
+          await Promise.allSettled(promises);
+
+          this.effects.sortChildren();
+          this.effects.renderable = true;
+          this.renderFlags.set({ refreshEffects: true });
+        } catch (err) {
+          console.warn(`${MODULE_ID} | patched _drawEffects failed — falling back to core:`, err);
+          return origDrawEffects.apply(this, arguments);
+        }
+      };
+
+      // Refresh tokens already on canvas so existing squares clear immediately.
+      try {
+        for (const t of canvas?.tokens?.placeables ?? []) t.renderFlags?.set?.({ redrawEffects: true });
+      } catch (_) { /* next natural refresh applies it */ }
+
+      console.log(`${MODULE_ID} | clean tokens online — concentration + spell bookkeeping show in the ACE effects panel only`);
+    }
+  } catch (err) {
+    console.error(`${MODULE_ID} | clean-tokens patch failed (core behavior unchanged):`, err);
+  }
+
   // Unified Spell Pipeline — registry-driven dispatch for spells whose
   // shape is mapped in SPELL_REGISTRY. Phase 1 ships with Magic Missile
   // as proof-of-concept; other spells fall through to dnd5e default flow.
@@ -1349,6 +1617,15 @@ Hooks.once("ready", () => {
     console.debug(`${MODULE_ID} | Bloodied engine online`);
   } catch (err) {
     console.error(`${MODULE_ID} | Bloodied engine init failed:`, err);
+  }
+
+  // Faerie Fire FX — ALL users (the cycling outline renders on every client;
+  // the dim-light document write is activeGM-gated inside the engine).
+  try {
+    FaerieFireFX.init();
+    console.debug(`${MODULE_ID} | Faerie Fire FX online`);
+  } catch (err) {
+    console.error(`${MODULE_ID} | Faerie Fire FX init failed:`, err);
   }
 
   // Visibility engine — ALL users (players need renderChatMessage filtering)
@@ -1402,8 +1679,33 @@ Hooks.once("ready", () => {
     // concentration-end events (e.g. dnd5e auto-ending when a damage
     // activity has zero targets).
     const _templateCreatedAt = new Map();
-    Hooks.on("createMeasuredTemplate", (tdoc) => {
+    Hooks.on("createMeasuredTemplate", (tdoc, _tOpts, tUserId) => {
       try { _templateCreatedAt.set(tdoc.id, Date.now()); } catch (_) {}
+
+      // ── Release targets once a spell template lands (2026-07-09) ──
+      // Casting an area spell used to leave the caster's old targets locked in
+      // ("it kept all of them targeted"), poisoning the next action. When a
+      // SPELL-created template (dnd5e origin stamp) is placed, clear the
+      // placing user's targets on THEIR client — 600ms later, safely after the
+      // save-engine's target read (100ms) has consumed them for save flows.
+      try {
+        if (tUserId === game.user.id && tdoc?.flags?.dnd5e?.origin) {
+          setTimeout(() => {
+            try {
+              // V13-correct: User#updateTokenTargets was REMOVED — release
+              // per token (snapshot first; setTarget(false) mutates the set
+              // during iteration). Same pattern as save-engine + oa-prompt.
+              const held = [...(game.user.targets ?? [])];
+              if (held.length) {
+                for (const t of held) {
+                  t.setTarget?.(false, { user: game.user, releaseOthers: false, groupSelection: false });
+                }
+                console.log(`${MODULE_ID} | ${held.length} target(s) released after spell template ${tdoc.id} resolved`);
+              }
+            } catch (err) { console.warn(`${MODULE_ID} | target release failed (non-fatal):`, err); }
+          }, 600);
+        }
+      } catch (_) { /* never blocks template handling */ }
 
       // Hide spell template visuals — GM-owned write. The template doc still
       // exists (Spike Growth / Moonbeam / Wall of Fire entry-trigger detection
@@ -2039,7 +2341,23 @@ Hooks.once("ready", () => {
         // (Audit-mandated: Grok 2026-06-08.)
         const _patchActive = new WeakSet();
         ActorCls.prototype.update = async function(data, options = {}) {
-          // ── Re-entrancy bypass ──
+          // ── ALWAYS suppress dnd5e's native concentration challenge on any
+          //    HP-touching update — even re-entrant ones. ACE owns concentration;
+          //    there is no case where we want dnd5e's vanilla challenge card. Doing
+          //    this OUTSIDE the re-entrancy guard is the fix for the DOUBLE SAVE:
+          //    the guard used to drop suppression on nested HP writes, and the
+          //    inferred branch ignored temp-HP-absorbed hits — both let dnd5e's
+          //    card fire alongside ACE's. (Audit 2026-06-27, P0.)
+          const _hpVal  = foundry.utils.getProperty(data ?? {}, "system.attributes.hp.value");
+          const _hpTemp = foundry.utils.getProperty(data ?? {}, "system.attributes.hp.temp");
+          const _touchesHP = Number.isFinite(_hpVal) || Number.isFinite(_hpTemp);
+          if (_touchesHP) {
+            options = foundry.utils.mergeObject(options, { dnd5e: { concentrationCheck: false } });
+          }
+
+          // ── Re-entrancy bypass: only the ACE card-posting must not re-fire on a
+          //    nested update. Suppression above is already applied, so bypassing
+          //    here no longer leaks dnd5e's native card.
           if (_patchActive.has(this)) {
             return _origUpdate.call(this, data, options);
           }
@@ -2048,27 +2366,28 @@ Hooks.once("ready", () => {
             let damageDealt = 0;
             let wasConcentrating = false;
             try {
-              // v0.7.68: ACE damage paths (DamageApplicator.applyHPDamage) pre-compute
-              // temp-HP absorption and pass the TOTAL pre-temp damage via aceQol.fullDamage.
-              // Use that for the concentration DC — RAW: temp HP does NOT lower the DC, and
-              // the save fires even if temp HP absorbed the whole hit (so we must NOT rely
-              // on hp.value actually dropping in that case).
+              const isConc = () => this.effects?.some?.(e =>
+                e.statuses?.has?.("concentration") || e.statuses?.has?.("concentrating"));
+              // ACE damage paths (applyHPDamage) pass the TOTAL pre-temp damage via
+              // aceQol.fullDamage — RAW the concentration DC uses full damage and the
+              // save fires even when temp HP absorbed the whole hit.
               const aceFull = Number(foundry.utils.getProperty(options ?? {}, "aceQol.fullDamage")) || 0;
-              const newHP = foundry.utils.getProperty(data ?? {}, "system.attributes.hp.value");
               if (aceFull > 0) {
                 damageDealt = aceFull;
-                wasConcentrating = this.effects?.some?.(e =>
-                  e.statuses?.has?.("concentration") || e.statuses?.has?.("concentrating"));
-                // concentrationCheck:false is already set by applyHPDamage.
-              } else if (Number.isFinite(newHP)) {
-                // Non-ACE paths (manual GM edit, vanilla update): infer from hp.value drop.
-                const curHP = this.system?.attributes?.hp?.value ?? 0;
-                if (newHP < curHP) {
-                  damageDealt = curHP - newHP;
-                  wasConcentrating = this.effects?.some?.(e =>
-                    e.statuses?.has?.("concentration") || e.statuses?.has?.("concentrating"));
-                  // Suppress vanilla dnd5e concentration challenge — we own this.
-                  options = foundry.utils.mergeObject(options, { dnd5e: { concentrationCheck: false } });
+                wasConcentrating = isConc();
+              } else if (_touchesHP) {
+                // Non-ACE paths (manual GM edit, vanilla update, native applyDamage):
+                // infer damage from the COMBINED hp.value + hp.temp drop. RAW: temp
+                // loss IS damage taken and a temp-only hit still triggers a save —
+                // the old code only watched hp.value and missed temp-absorbed hits.
+                const curVal  = this.system?.attributes?.hp?.value ?? 0;
+                const curTemp = this.system?.attributes?.hp?.temp ?? 0;
+                const dropVal  = Number.isFinite(_hpVal)  ? Math.max(0, curVal  - _hpVal)  : 0;
+                const dropTemp = Number.isFinite(_hpTemp) ? Math.max(0, curTemp - _hpTemp) : 0;
+                const totalDrop = dropVal + dropTemp;
+                if (totalDrop > 0) {
+                  damageDealt = totalDrop;
+                  wasConcentrating = isConc();
                 }
               }
             } catch (_) { /* non-fatal — fall through to original update */ }
@@ -2913,8 +3232,11 @@ Hooks.once("ready", () => {
     lootEngine = new LootEngine();
     LootEngine.registerAPI(lootEngine);
 
-    // Hook: wire loot card interactivity on render (all users)
-    Hooks.on("renderChatMessage", (message, html) => {
+    // Hook: wire loot card interactivity on render (all users).
+    // V13-SAFE: handler normalizes native-vs-jQuery, registered on BOTH the V12
+    // (renderChatMessage) and V13 (renderChatMessageHTML) hooks — the V13 one was
+    // missing, so public loot-card buttons were inert on V13.
+    const _wireLootCard = (message, html) => {
       try {
         const flags = message.flags?.[MODULE_ID];
         if (flags?.type !== "lootCard") return;
@@ -2924,7 +3246,9 @@ Hooks.once("ready", () => {
       } catch (err) {
         console.error(`${MODULE_ID} | Loot card render hook failed:`, err);
       }
-    });
+    };
+    Hooks.on("renderChatMessage", _wireLootCard);       // V12
+    Hooks.on("renderChatMessageHTML", _wireLootCard);   // V13
 
     // Hook: detect items dragged to PC sheets (all users — tracks looting)
     Hooks.on("preCreateItem", async (item, data, context) => {
@@ -3656,6 +3980,14 @@ Hooks.once("ready", () => {
         if (await reactionEngine?.handleSocketMessage(payload)) return;
       }
 
+      // Multiattack chain release — the GM rolled the damage (or the swing missed)
+      // for a player-controlled attacker; let this client's pending chain pop-up
+      // proceed. Broadcast (no userId), so it sits BEFORE the userId gate below.
+      if (payload?.action === "attackResolved") {
+        try { Hooks.callAll(`${MODULE_ID}.attackResolved`, { actorId: payload.actorId }); } catch (_) { /* non-fatal */ }
+        return;
+      }
+
       if (!payload?.action || payload?.userId !== game.user.id) return;
 
       // ── Close system ActivityChoiceDialogs (Divine Smite "Use/Damage/Undead" popup) ──
@@ -3700,6 +4032,32 @@ Hooks.once("ready", () => {
         }
         return;
       }
+
+      // ── Spell target picker — the GM is asking THIS player (the caster) to pick a
+      //    target for their own save/targeted spell, so the picker opens on the
+      //    CASTER's screen, not the GM's. (Mirrors the rider popup above; the userId
+      //    gate earlier in this handler already scoped the message to this user.)
+      if (payload.action === "showSpellPicker") {
+        const { requestId, itemUuid, casterActorUuid, maxTargets, rangeFt, allowSelf } = payload;
+        console.log(`${MODULE_ID} | [picker-timing] showSpellPicker socket ARRIVED on caster client — resolving spell + caster now`);
+        try {
+          const item = await fromUuid(itemUuid);
+          const resolved = await fromUuid(casterActorUuid);
+          const casterActor = resolved?.actor ?? resolved;
+          if (!item || !casterActor) throw new Error("could not resolve spell item or caster actor");
+          console.log(`${MODULE_ID} | [picker-timing] resolved "${item?.name}" for ${casterActor?.name} — calling SpellTargetPicker.pick (building dialog)`);
+          const { SpellTargetPicker } = await import("/modules/ace-qol/scripts/spell-target-picker.mjs");
+          const picked = await SpellTargetPicker.pick({ spellItem: item, casterActor, maxTargets, rangeFt, allowSelf });
+          const tokenIds = (picked ?? [])
+            .map(a => a.getActiveTokens?.()?.[0]?.id ?? canvas.tokens?.placeables.find(t => t.actor?.id === a.id)?.id)
+            .filter(Boolean);
+          game.socket.emit(SOCKET_NAME, { action: "spellPickerChoice", requestId, tokenIds });
+        } catch (err) {
+          console.error(`${MODULE_ID} | showSpellPicker handler failed:`, err);
+          game.socket.emit(SOCKET_NAME, { action: "spellPickerChoice", requestId, tokenIds: null });
+        }
+        return;
+      }
     });
 
     console.debug(`${MODULE_ID} | Player-side attack bridge registered`);
@@ -3730,6 +4088,13 @@ Hooks.once("ready", () => {
         return;
       }
 
+      // ── Player (the caster) replied with their spell target choice ──
+      if (payload.action === "spellPickerChoice") {
+        console.log(`${MODULE_ID} | GM received spellPickerChoice (requestId=${payload.requestId}, targets=${Array.isArray(payload.tokenIds) ? payload.tokenIds.length : "cancelled"})`);
+        saveEngine?.resolveSpellPickerChoice?.(payload.requestId, payload.tokenIds);
+        return;
+      }
+
       // ── Player resolved their OWN opportunity attack — GM flips the card
       //    and marks the reaction used (message + flag writes are GM-side).
       //    The player already fired the actual attack on their own client.
@@ -3743,13 +4108,17 @@ Hooks.once("ready", () => {
         return;
       }
 
-      // ── Player requests GM to roll damage from a ROLL DAMAGE button ──
+      // ── Player rolled their OWN damage from a ROLL DAMAGE button ──
+      //    The caster already fired the 3D dice on their client (DSN-broadcast
+      //    to the whole table). The GM posts the result card, runs post-hit
+      //    effects, and owns HP application — with its own dice suppressed
+      //    (skipDice) so the animation isn't doubled.
       if (payload.action === "rollDamage") {
-        console.log(`${MODULE_ID} | GM received rollDamage request from ${payload.userName} for message ${payload.messageId}`);
+        console.log(`${MODULE_ID} | GM finishing ${payload.userName}'s damage roll for message ${payload.messageId}`);
         try {
           const message = game.messages.get(payload.messageId);
           if (!message) { console.warn(`${MODULE_ID} | rollDamage: message not found ${payload.messageId}`); return; }
-          const success = await damageEngine._rollDamageFromButton(message);
+          const success = await damageEngine._rollDamageFromButton(message, { skipDice: payload.skipDice === true });
           if (success) {
             console.log(`${MODULE_ID} | rollDamage: success for message ${payload.messageId}`);
           } else {
@@ -3957,6 +4326,9 @@ Hooks.once("ready", () => {
   game.aceQol = {
     VERSION: 1,
     MODULE_ID,
+    auditItems,   // read-only item sanity audit — game.aceQol.auditItems()
+    runAudit,     // async world+compendium audit (used by the Audit window)
+    openAudit: () => new AuditApp().render(true),  // console fallback to open the Audit window
     extendedEffects,
     attackPipeline,
     damageEngine,
@@ -3971,6 +4343,34 @@ Hooks.once("ready", () => {
     reactionEngine,
     ReactionEngine,
     SpellPipeline,            // v0.7.18 — registry-driven spell dispatcher
+    // ── THE RULES ENGINE (2026-07-09) ──
+    RulesBrain,               // deterministic "what do the rules say" lookup
+    SpaceEffects,             // spell templates → live mechanical spaces
+    /** The engine tests ITSELF — parser/brain/drafter/sight/save-contract
+     *  suites incl. every live-fire regression. game.aceQol.selfTest() */
+    selfTest: (opts) => SelfTest.run(opts),
+    /** The honest map — every spell/weapon in this world, bucketed by
+     *  coverage state. game.aceQol.openRulesCoverage() */
+    openRulesCoverage,
+    /** Rules-data coverage report: every spell known by actors in this world,
+     *  with whether the rules engine has an entry for it. Console table +
+     *  returned array. game.aceQol.rulesCoverage() */
+    rulesCoverage: () => {
+      const seen = new Map();
+      for (const actor of game.actors) {
+        for (const it of actor.items) {
+          if (it.type !== "spell") continue;
+          const key = RulesBrain.normalizeName(it.name);
+          if (!seen.has(key)) seen.set(key, { spell: it.name, key, covered: !!RulesBrain.lookup(it, { actor }), actors: 0 });
+          seen.get(key).actors++;
+        }
+      }
+      const rows = [...seen.values()].sort((a, b) => Number(a.covered) - Number(b.covered) || a.key.localeCompare(b.key));
+      const gaps = rows.filter(r => !r.covered).length;
+      console.table(rows.map(r => ({ Spell: r.spell, "Rules Entry": r.covered ? "YES" : "—", "Known By": r.actors })));
+      console.log(`ace-qol | rules coverage: ${rows.length - gaps}/${rows.length} world spells have entries (${gaps} gap${gaps === 1 ? "" : "s"})`);
+      return rows;
+    },
     bloodiedEngine,
     CoverEngine,
     VisibilityEngine,
@@ -4255,6 +4655,44 @@ Hooks.once("ready", () => {
   Hooks.on("renderChatMessage", _aceWireAttackChevron);
   Hooks.on("renderChatMessageHTML", _aceWireAttackChevron);
 
+  // ── ACE skin: strip the "Place Measured Template" row from the cast/use dialog ──
+  // The gold styling lives in ace-qol-overrides.css; this removes the template
+  // control (ACE owns targeting — templates are never wanted). ApplicationV2 fires
+  // render<ClassName> with the element passed directly (not jQuery). (2026-06-24)
+  Hooks.on("renderActivityUsageDialog", (app, element) => {
+    try {
+      const el = element instanceof HTMLElement ? element : (element?.[0] ?? app?.element);
+      const tpl = el?.querySelector?.('[name="create.measuredTemplate"]');
+      if (!tpl) return;
+      const section = tpl.closest("fieldset, .card, .form-group") ?? tpl.parentElement;
+      if (section) section.style.display = "none";
+    } catch (_) { /* non-fatal */ }
+  });
+
+  // ── ACE conditions own their statuses — block dnd5e's rider spawn for them ──
+  // dnd5e's ActiveEffect5e.createRiderConditions() auto-creates SEPARATE generic
+  // condition effects (unconscious -> prone + incapacitated, paralyzed -> incap…)
+  // for any effect carrying those statuses, and never links them back for cleanup
+  // — so the token ends up with generic, unlabeled, undeletable condition rows
+  // next to ours. Our condition effects now carry every needed status DIRECTLY
+  // (condition-library.applyEffect auto-expands them), so we skip dnd5e's rider
+  // spawn for OUR effects: the ONLY thing on the token is our one labeled effect,
+  // and deleting it clears everything. Non-ACE effects are untouched. (2026-06-24)
+  try {
+    const AEClass = CONFIG.ActiveEffect?.documentClass;
+    if (AEClass?.prototype?.createRiderConditions && !AEClass.prototype._aceRiderPatched) {
+      const _origCreateRiders = AEClass.prototype.createRiderConditions;
+      AEClass.prototype.createRiderConditions = async function (...args) {
+        try { if (this?.flags?.[MODULE_ID]?.conditionKey) return []; } catch (_) { /* fall through */ }
+        return _origCreateRiders.apply(this, args);
+      };
+      AEClass.prototype._aceRiderPatched = true;
+      console.log(`${MODULE_ID} | createRiderConditions patched — ACE conditions own their statuses`);
+    }
+  } catch (err) {
+    console.warn(`${MODULE_ID} | createRiderConditions patch failed (non-fatal):`, err);
+  }
+
   // ── Suppress system's ActivityChoiceDialog for ALL weapon uses ──
   // The D&D 5e system shows an "activity-choice" dialog when:
   //   (activities.length > 1 || chooseActivity) && !event?.shiftKey
@@ -4329,9 +4767,19 @@ Hooks.once("ready", () => {
           try {
             const cs = CombatState.assess(this.actor, target, this);
             suggested = cs?.finalRollMode || "normal";
-            reasons   = suggested === "advantage"    ? (cs?.advantageSources    ?? [])
-                      : suggested === "disadvantage" ? (cs?.disadvantageSources ?? [])
-                                                     : [];
+            // SHOW THE WORK, always (2026-07-10): a "normal" produced by
+            // advantage and disadvantage CANCELING is a rules outcome the
+            // table deserves to see — "no modifiers detected" when the engine
+            // weighed four of them reads as a miss (the goblin-in-darkness
+            // confusion). Winner shows its sources; a cancel shows BOTH sides.
+            const advS = cs?.advantageSources ?? [], disS = cs?.disadvantageSources ?? [];
+            reasons   = suggested === "advantage"    ? advS
+                      : suggested === "disadvantage" ? disS
+                      : (advS.length || disS.length)
+                        ? [...advS.map(s => ({ reason: `ADV: ${s.reason}` })),
+                           ...disS.map(s => ({ reason: `DIS: ${s.reason}` })),
+                           { reason: "→ they cancel: straight roll (RAW)" }]
+                        : [];
           } catch (err) {
             console.warn(`${MODULE_ID} | CombatState.assess failed in prompt:`, err);
           }
@@ -4378,7 +4826,37 @@ Hooks.once("ready", () => {
   function _handleActivityChoiceDialog(app, element) {
     const item = app.item;
     const dedupKey = `${item?.uuid ?? "?"}|${app.id ?? app.appId ?? Math.random()}`;
-    if (_handledActivityDialogs.has(dedupKey)) return;
+    if (_handledActivityDialogs.has(dedupKey)) {
+      // Re-render of a dialog we already acted on. Our CSS hides ALL activity-choice
+      // dialogs, so if the FIRST render's auto-click went stale (dnd5e re-rendered and
+      // replaced the DOM before the click landed), the dialog is now stranded HIDDEN
+      // and unclicked — the user's attack silently evaporates (the "dead click").
+      // FAIL-VISIBLE invariant: after a beat, if this app is still on screen, retry
+      // the attack auto-click on the FRESH element; if there's no attack button,
+      // reveal the dialog so the user can pick by hand. Never leave it hidden.
+      setTimeout(() => {
+        try {
+          const el2 = app.element?.[0] ?? app.element;
+          if (!el2?.isConnected) return;   // dialog resolved/closed — first click landed
+          const acts = item?.system?.activities;
+          if (acts && el2.querySelector) {
+            for (const a of acts) {
+              if (a.type === "attack") {
+                const btn2 = el2.querySelector(`button[data-activity-id="${a.id}"]`);
+                if (btn2) {
+                  console.log(`${MODULE_ID} | Stranded ActivityChoiceDialog — retrying Attack auto-click: ${app.title}`);
+                  btn2.click();
+                  return;
+                }
+              }
+            }
+          }
+          console.log(`${MODULE_ID} | Stranded ActivityChoiceDialog — revealing for manual pick: ${app.title}`);
+          (el2.closest?.(".activity-choice") ?? el2)?.classList?.add?.("ace-choice-show");
+        } catch (_) { /* non-fatal — worst case the dialog stays as it was */ }
+      }, 400);
+      return;
+    }
     _handledActivityDialogs.add(dedupKey);
     // Clear after 3s so re-casts of the same spell aren't blocked
     setTimeout(() => _handledActivityDialogs.delete(dedupKey), 3000);

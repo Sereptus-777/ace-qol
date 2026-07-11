@@ -43,7 +43,10 @@ export class FeatEffects {
       try { this._onAttackComplete(data); }
       catch (err) { console.warn(`${TAG} | attackComplete handler failed:`, err); }
     });
-    Hooks.on("renderChatMessage", (message, html /*, data */) => {
+    // V13-SAFE: handler reads native element OR jQuery. Registered on BOTH hooks —
+    // the V13 `renderChatMessageHTML` was missing, so the Crusher push button was
+    // inert on V13.
+    const _wireFeatCard = (message, html) => {
       if (!game.user.isGM) return;
       if (message?.flags?.[MODULE_ID]?.type !== "featEffect") return;
       const el = (html instanceof HTMLElement) ? html : (html?.[0] ?? html);
@@ -58,7 +61,9 @@ export class FeatEffects {
           } catch (err) { console.warn(`${TAG} | Crusher push click failed:`, err); }
         });
       });
-    });
+    };
+    Hooks.on("renderChatMessage", _wireFeatCard);       // V12
+    Hooks.on("renderChatMessageHTML", _wireFeatCard);   // V13
     console.log(`${TAG} | Feat-effect handlers online (Polearm Master, Crusher, Slasher, Piercer).`);
   }
 
