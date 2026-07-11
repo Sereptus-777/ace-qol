@@ -278,21 +278,24 @@ export class XpEngine {
       }
     }
 
-    // Public chat card showing the award
-    const rows = updates.map(u => `
-      <tr>
-        <td><strong>${foundry.utils.escapeHTML(u.name)}</strong></td>
-        <td class="ace-qol-xp-row-amount">+${u.amount.toLocaleString()}</td>
-        <td class="ace-qol-xp-row-newxp">${u.before.toLocaleString()} → <strong>${u.after.toLocaleString()}</strong></td>
+    // Public chat card — INLINE dark ACE styling (bulletproof vs Foundry's
+    // light chat background; the CSS-class version rendered green/yellow text
+    // on white, unreadable — Johnny 2026-07-11: "anything we put to chat, that's
+    // our signature" = dark bg, always).
+    const rows = updates.map((u, i) => `
+      <tr style="${i ? "border-top:1px solid #2a2118;" : ""}">
+        <td style="padding:4px 8px;color:#e8d49a;font-weight:600;">${foundry.utils.escapeHTML(u.name)}</td>
+        <td style="padding:4px 8px;color:#8fe3a0;font-weight:800;text-align:right;white-space:nowrap;">+${u.amount.toLocaleString()}</td>
+        <td style="padding:4px 8px;color:#c0b288;text-align:right;white-space:nowrap;">${u.before.toLocaleString()} → <strong style="color:#f0e4c0;">${u.after.toLocaleString()}</strong></td>
       </tr>
     `).join("");
 
     const cardHtml = `
-      <div class="ace-qol-xp-card">
-        <div class="ace-qol-xp-card-header">
-          <i class="fas fa-trophy"></i> COMBAT XP — ${totalXp.toLocaleString()} total
+      <div class="ace-qol-xp-card" style="background:linear-gradient(180deg,#1a1410 0%,#0f0a08 100%);border:2px solid #c9a76b;border-radius:6px;padding:10px 12px;color:#f0e4c0;font-family:'Signika','Helvetica Neue',sans-serif;box-shadow:0 0 10px rgba(201,167,107,0.2);">
+        <div style="display:flex;align-items:center;gap:8px;font-size:15px;font-weight:700;color:#c9a76b;text-transform:uppercase;letter-spacing:0.6px;border-bottom:1px solid #4a3a28;padding-bottom:6px;margin-bottom:6px;">
+          <i class="fas fa-trophy" style="color:#c9a76b;"></i> Combat XP — ${totalXp.toLocaleString()} total
         </div>
-        <table class="ace-qol-xp-card-table">
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
           ${rows}
         </table>
       </div>
