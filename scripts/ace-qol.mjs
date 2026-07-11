@@ -4723,8 +4723,25 @@ Hooks.once("ready", () => {
   const ItemClass = CONFIG.Item?.documentClass;
   if (ItemClass?.prototype?.use) {
     const origUse = ItemClass.prototype.use;
+    // An item ACE's attack shim should own: a weapon, OR a feat/feature that
+    // carries an attack activity (the Steel Defender's Force-Empowered Rend,
+    // monster/NPC feature attacks). Without this, feat-attacks skipped the
+    // shim → dnd5e's native roll dialog leaked + our advantage prompt never
+    // showed (live-fire 2026-07-11). Spells stay out — they own the spell
+    // pipeline. Utility/non-attack feats stay out — no attack activity.
+    const _aceUseHandlesAttack = (it) => {
+      try {
+        if (it.type === "weapon") return true;
+        if (it.type === "feat") {
+          const acts = it.system?.activities;
+          const list = acts ? (typeof acts.values === "function" ? [...acts.values()] : Object.values(acts)) : [];
+          return list.some(a => a?.type === "attack");
+        }
+      } catch (_) {}
+      return false;
+    };
     ItemClass.prototype.use = async function(config = {}, ...args) {
-      if (this.type === "weapon" && this.actor) {
+      if (_aceUseHandlesAttack(this) && this.actor) {
         // Opportunity attacks fast-forward: skip the pre-prompt range check
         // (the OA was already validated as in-reach when it triggered) AND the
         // advantage prompt (it's a one-click auto-swing; advantage is still
