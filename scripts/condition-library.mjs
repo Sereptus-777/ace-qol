@@ -1900,6 +1900,13 @@ export class ConditionLibrary {
       if (effect.flags?.[MODULE_ID]?.conditionKey === key) return effect;
     }
 
+    // Fallback: match by the key ITSELF as a status (frightened/prone/etc. are
+    // their own status id) — catches a native toggled status that carries no
+    // ACE conditionKey flag, so the two apply paths cross-dedup (2026-07-11).
+    for (const effect of actor.effects) {
+      if (effect.statuses?.has(key)) return effect;
+    }
+
     // Fallback: match by statusId (for system-applied conditions)
     const def = ALL_EFFECTS[key];
     if (def?.statusId) {
@@ -1965,6 +1972,21 @@ export class ConditionLibrary {
         console.warn(`${MODULE_ID} | Exhaustion increment failed for ${actor.name}:`, err);
         return { ok: false, applied: null };
       }
+    }
+
+    // ── Same-condition dedupe (RAW: conditions don't stack) ──
+    // Mirror applyEffect so a condition already placed by EITHER path (an ACE
+    // effect OR a native status) is replaced, never doubled. Ghostly Howl
+    // failed twice = ONE Frightened, not two (live-fire 2026-07-11: the chasme
+    // stacked Frightened from two howls). Exhaustion already returned above.
+    if (!options.allowStack) {
+      try {
+        const existing = ConditionLibrary._findEffect(actor, key);
+        if (existing) {
+          await existing.delete();
+          ConditionLibrary._debug?.(`applyByName: replaced existing "${key}" on ${actor.name} (dedupe)`);
+        }
+      } catch (_) { /* dedupe is best-effort — never block the application */ }
     }
 
     // ── Standard binary status condition ──

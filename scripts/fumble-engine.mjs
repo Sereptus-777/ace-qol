@@ -56,11 +56,15 @@ export class FumbleEngine {
         if (!fumbleTable && !endsTurn) return;
         const roll = Array.isArray(rolls) ? rolls[0] : rolls;
         if (!roll) return;
-        // Detect natural 1: the d20 die's first (kept) result === 1.
+        // Detect a natural 1 on the KEPT die. With advantage (2d20kh) a
+        // DISCARDED 1 is NOT a fumble — only the active/kept die counts.
+        // results[0] read the FIRST die, so a kept 17 + discarded 1 falsely
+        // fired a fumble AND would have ended the turn (Johnny 2026-07-11).
         const d20 = roll.dice?.find(d => d.faces === 20);
         if (!d20) return;
-        const result = d20.results?.[0]?.result;
-        if (result !== 1) return;
+        const keptResult = (d20.results ?? []).find(r => r.active !== false)?.result
+                        ?? d20.results?.[0]?.result;
+        if (keptResult !== 1) return;
         // Note: dnd5e ALSO checks if the actor has the "lucky" feat or shield
         // master — those auto-reroll. By the time this hook fires the reroll
         // has already happened and the rolled result is what stands.
