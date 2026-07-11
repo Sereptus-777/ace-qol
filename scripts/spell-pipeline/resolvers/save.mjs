@@ -165,6 +165,16 @@ export class SaveResolver {
       return aceWithinFt(source, t, rangeFt);
     });
 
+    // ── Emanation FX (Ghostly Howl's expanding waves, etc.) ──
+    // Fire BEFORE the early no-targets return so the visual plays even when the
+    // room is empty — a howl still howls. Broadcast so every client sees it.
+    if (entry.fx?.kind === "ghostlyWave") {
+      try {
+        const { AceFX } = await import("../../ace-fx.mjs");
+        AceFX.ghostlyWaveBroadcast(source, entry.fx.radiusFt ?? rangeFt, entry.fx.color ?? 0xbfeaff);
+      } catch (err) { console.warn(`${MODULE_ID} | save-area FX failed (non-fatal):`, err); }
+    }
+
     if (!targets.length) {
       ui.notifications?.info(`${item.name}: no creatures within ${rangeFt} ft.`);
       return;

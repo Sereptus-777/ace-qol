@@ -133,6 +133,14 @@ export class AceFX {
             const tk = _resolveToken(payload.sceneId, payload.tokenId);
             if (tk) AceFX.encrust(tk, { color: payload.color });
             AceFX._playSound(payload.soundSrc);
+          } else if (payload?.action === "aceFx:ghostlyWave") {
+            const tk = _resolveToken(payload.sceneId, payload.tokenId);
+            if (tk) {
+              // Recompute px on THIS client (its canvas/grid may differ).
+              const gridDist = canvas?.scene?.grid?.distance || 5;
+              const gridSize = canvas?.grid?.size || 100;
+              AceFX.ghostlyWave(tk, (Number(payload.radiusFt ?? 30) / gridDist) * gridSize, payload.color);
+            }
           }
         } catch (err) { console.warn(`${MODULE_ID} | AceFX socket handler threw:`, err); }
       });
@@ -305,6 +313,68 @@ export class AceFX {
       };
       requestAnimationFrame(tick);
     } catch (err) { console.warn(`${MODULE_ID} | AceFX.flourish threw:`, err); }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  GHOSTLY WAVE — concentric spectral rings racing OUTWARD to a radius, so a
+  //  30-ft "howl" visibly washes over everyone it reaches (Johnny 2026-07-10:
+  //  "push it, visual waves go out 30 feet"). Three staggered rings, pale and
+  //  translucent, expanding + fading. Pure PIXI on canvas.stage. One-shot.
+  // ═══════════════════════════════════════════════════════════════════════════
+  static ghostlyWave(token, radiusPx, color = 0xbfeaff) {
+    try {
+      const layer = canvas?.stage;
+      if (!layer || !token?.center) return;
+      const R = Math.max(60, Number(radiusPx) || 300);
+      console.log(`${MODULE_ID} | [ace-fx] GHOSTLY WAVE on ${token?.name ?? "?"} → ${Math.round(R)}px`);
+
+      const g = new PIXI.Graphics();
+      g.position.set(token.center.x, token.center.y);
+      g.blendMode = PIXI.BLEND_MODES.ADD;   // spectral glow reads over dark maps
+      layer.addChild(g);
+
+      const start = performance.now();
+      const durMs = 1150;
+      const WAVES = 3;              // staggered ripples
+      const stagger = 0.18;        // fraction of the cycle between waves
+      const lineW = Math.max(3, R * 0.02);
+
+      const tick = () => {
+        if (g.destroyed) return;
+        const now = performance.now();
+        const t = (now - start) / durMs;
+        if (t >= 1) { try { g.destroy(); } catch (_) {} return; }
+        g.clear();
+        for (let i = 0; i < WAVES; i++) {
+          const wt = t - i * stagger;              // this wave's own progress
+          if (wt <= 0 || wt >= 1) continue;
+          const ease = 1 - Math.pow(1 - wt, 2);    // ease-out expansion
+          const r = R * ease;
+          const a = (1 - wt) * 0.9;                // fade as it travels
+          // Faint filled wash inside the leading edge, brighter ring on the edge.
+          g.beginFill(color, 0.06 * a); g.drawCircle(0, 0, r); g.endFill();
+          g.lineStyle(lineW * (1 - wt * 0.5), color, a);
+          g.drawCircle(0, 0, r);
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    } catch (err) { console.warn(`${MODULE_ID} | AceFX.ghostlyWave threw:`, err); }
+  }
+
+  /** Convert a foot radius to canvas pixels, play locally, and relay to all clients. */
+  static ghostlyWaveBroadcast(token, radiusFt = 30, color = 0xbfeaff) {
+    try {
+      const gridDist = canvas?.scene?.grid?.distance || 5;   // ft per square
+      const gridSize = canvas?.grid?.size || canvas?.scene?.grid?.size || 100;
+      const radiusPx = (Number(radiusFt) / gridDist) * gridSize;
+      AceFX.ghostlyWave(token, radiusPx, color);
+      const sceneId = token?.scene?.id ?? canvas?.scene?.id;
+      const tokenId = token?.id ?? token?.document?.id;
+      if (sceneId && tokenId) {
+        game.socket.emit(_socket(), { action: "aceFx:ghostlyWave", sceneId, tokenId, radiusFt, color });
+      }
+    } catch (err) { console.warn(`${MODULE_ID} | AceFX.ghostlyWaveBroadcast threw:`, err); }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

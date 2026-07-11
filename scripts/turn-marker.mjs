@@ -66,6 +66,10 @@ export class TurnMarker {
             m.width = m._aceTargetSize; m.height = m._aceTargetSize;
           }
           m.rotation += 0.008 * speed;
+          // Breathing pulse — the active marker brightens + dims so the eye is
+          // drawn to whose turn it is (0.7×→1.0× of its base opacity, ~1s cycle).
+          const base = m._aceBaseAlpha ?? 1.0;
+          m.alpha = base * (0.7 + 0.3 * (0.5 + 0.5 * Math.sin(performance.now() / 480)));
           const tok = combat?.combatant?.token?.object;
           if (tok && !tok.destroyed) m.position.set(tok.center.x, tok.center.y);
         }
@@ -180,9 +184,13 @@ export class TurnMarker {
     sprite._aceTargetSize = size;
 
     sprite.position.set(token.center.x, token.center.y);
-    sprite.alpha = isNext
-      ? (QolSettings.get("turnMarkerNextAlpha") ?? 0.7)
-      : (QolSettings.get("turnMarkerAlpha")     ?? 0.85);
+    // Store the BASE opacity — the tick loop pulses the CURRENT marker around
+    // it so "whose turn is it" is unmissable (Johnny 2026-07-10: "not bright
+    // enough, can't see them"). Next-marker stays steady (it's a preview).
+    sprite._aceBaseAlpha = isNext
+      ? (QolSettings.get("turnMarkerNextAlpha") ?? 0.85)
+      : (QolSettings.get("turnMarkerAlpha")     ?? 1.0);
+    sprite.alpha = sprite._aceBaseAlpha;
 
     // Insert beneath tokens — addChildAt(0) puts the sprite first in z-order
     try {

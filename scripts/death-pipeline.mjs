@@ -285,6 +285,30 @@ export class DeathPipeline {
         }
       }
 
+      // ── Invisible-death restore (Johnny 2026-07-10) ──
+      // A creature that dies WHILE invisible keeps document.hidden=true (our
+      // invisibility-breaker set it) — the corpse never reappears, and the GM
+      // "can't turn it back visible." Unhide any of this actor's tokens that WE
+      // hid (tagged flags.ace-qol.invisibilityHidden) the moment it dies. Only
+      // OUR flag → we never unhide a token the GM deliberately hid.
+      try {
+        const scenes = tokenDoc?.parent ? [tokenDoc.parent] : [...(game.scenes ?? [])];
+        for (const scene of scenes) {
+          const toShow = scene.tokens.filter(t =>
+            (t.actorId === actor.id || t.actorLink === false && t.id === tokenDoc?.id) &&
+            t.hidden === true && t.flags?.[MODULE_ID]?.invisibilityHidden === true);
+          if (toShow.length) {
+            await scene.updateEmbeddedDocuments("Token", toShow.map(t => ({
+              _id: t.id, hidden: false, alpha: 1,
+              [`flags.${MODULE_ID}.-=invisibilityHidden`]: null,
+            })));
+            console.log(`${LOG_PREFIX}   ↺ restored ${toShow.length} invisible-at-death token(s) for ${name}`);
+          }
+        }
+      } catch (err) {
+        console.warn(`${LOG_PREFIX}   invisible-death restore threw (non-fatal):`, err);
+      }
+
       // ── Polymorph defer guard (RAW: polymorphed creature reverts at 0 HP) ──
       // Multi-signal check matches the primary guard in ace-qol.mjs's
       // npcDeath hook. Defensive layer in case anything else calls

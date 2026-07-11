@@ -1522,17 +1522,17 @@ export class QolSettings {
       scope:   "world",
       config:  false,
       type:    Number,
-      default: 0.7,
+      default: 0.85,
       range:   { min: 0.1, max: 1, step: 0.05 },
     });
 
     s("turnMarkerScale", {
       name:    "Turn Marker Size",
-      hint:    "Scale multiplier relative to the active token. 1.0 = same size, 1.5 = 50% larger.",
+      hint:    "Scale multiplier relative to the active token. 1.0 = same size, 1.5 = 50% larger. Larger rings out past the token art so it's easier to see.",
       scope:   "world",
       config:  false,
       type:    Number,
-      default: 1.15,
+      default: 1.35,
       range:   { min: 0.5, max: 2.5, step: 0.05 },
     });
 
@@ -1548,11 +1548,11 @@ export class QolSettings {
 
     s("turnMarkerAlpha", {
       name:    "Turn Marker Opacity",
-      hint:    "How transparent the marker is. 1.0 = fully opaque.",
+      hint:    "Base opacity of the active-turn marker (it also pulses for visibility). 1.0 = fully opaque.",
       scope:   "world",
       config:  false,
       type:    Number,
-      default: 0.85,
+      default: 1.0,
       range:   { min: 0.1, max: 1, step: 0.05 },
     });
 
