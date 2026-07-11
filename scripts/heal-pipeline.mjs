@@ -270,20 +270,134 @@ export class HealPipeline {
       return;
     }
 
+    // ── Die-pool scaling (Healing Light etc.) — ask how many dice to spend ──
+    // After targets, before consume: a die-pool heal spends 1..N dice, healing
+    // that many dice and consuming that many uses. null = not a die-pool heal.
+    let poolScale = null;
+    try {
+      poolScale = await this._resolvePoolDice(activity, actor, item);
+      if (poolScale === false) {
+        ui.notifications.info(`${item.name}: heal canceled — no dice spent.`);
+        return;
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | HealPipeline: pool-dice resolution failed (non-fatal):`, err);
+    }
+
     // Consume resources only if the user left the toggle ON in the picker.
     // Off = free cast (testing or houserule); spell slot / charges preserved.
     if (consume) {
-      const ok = await this._consumeResources(activity, usageConfig);
-      if (ok === false) {
-        // Resource check failed mid-consume (raced with another cast or got
-        // out-of-sync). Abort the heal — user already saw the warning toast.
-        return;
+      if (poolScale) {
+        // Die-pool: spend N uses directly. dnd5e's activity.consume() without the
+        // vanilla scaling config only spends the base 1, so we deduct N ourselves.
+        const curSpent = parseInt(item.system?.uses?.spent ?? 0) || 0;
+        const maxUses  = parseInt(item.system?.uses?.max ?? 0) || 0;
+        const newSpent = maxUses ? Math.min(maxUses, curSpent + poolScale.dice) : curSpent + poolScale.dice;
+        await item.update({ "system.uses.spent": newSpent });
+        console.log(`${MODULE_ID} | HealPipeline: ${item.name} spent ${poolScale.dice} die(s) from pool (uses ${curSpent} → ${newSpent}/${maxUses})`);
+      } else {
+        const ok = await this._consumeResources(activity, usageConfig);
+        if (ok === false) {
+          // Resource check failed mid-consume (raced with another cast or got
+          // out-of-sync). Abort the heal — user already saw the warning toast.
+          return;
+        }
       }
     } else {
       console.log(`${MODULE_ID} | HealPipeline: consume toggle off — skipping resource decrement`);
     }
 
-    await this._rollAndPostCard(activity, actor, item, targets, classification, usageConfig);
+    await this._rollAndPostCard(activity, actor, item, targets, classification, usageConfig, poolScale);
+  }
+
+  /**
+   * Die-pool heals (Healing Light, Lay on Hands-style dice, etc.): the caster
+   * spends 1..N dice from a pool, healing that many dice and consuming that many
+   * uses. Detects the pattern from the activity's consumption.scaling + itemUses
+   * target, evaluates the item's OWN cap formula (e.g.
+   * `clamp(@abilities.cha.mod, 1, @item.uses.value)` → min of CHA mod and dice
+   * left), and prompts the caster to choose.
+   *
+   * Returns:
+   *   null                    → not a die-pool heal (use the normal path)
+   *   false                   → caster cancelled the dice prompt
+   *   { dice, denomination }  → spend `dice` × d`denomination`
+   */
+  async _resolvePoolDice(activity, actor, item) {
+    const consumption = activity.consumption ?? activity.toObject?.()?.consumption ?? null;
+    if (!consumption?.scaling?.allowed) return null;
+    if (!(consumption.targets ?? []).some(t => t?.type === "itemUses")) return null;
+
+    const heal = activity.healing ?? activity.toObject?.()?.healing ?? {};
+    const denomination = parseInt(heal.denomination) || 6;
+
+    // Max dice — evaluate the item's own cap formula so it honours BOTH the
+    // CHA-mod limit and the dice remaining in the pool.
+    const rollData = activity.getRollData?.() ?? actor.getRollData?.() ?? {};
+    let maxDice = 1;
+    const maxExpr = String(consumption.scaling.max ?? "").trim();
+    if (maxExpr) {
+      try {
+        const r = new Roll(maxExpr, rollData);
+        await r.evaluate();
+        if (Number.isFinite(r.total)) maxDice = Math.max(1, Math.floor(r.total));
+      } catch (err) {
+        console.warn(`${MODULE_ID} | HealPipeline: pool cap "${maxExpr}" failed — falling back:`, err?.message ?? err);
+      }
+    }
+    // Fallback: min(CHA mod, uses remaining), at least 1.
+    if (maxDice <= 1) {
+      const cha = parseInt(actor.system?.abilities?.cha?.mod ?? 0) || 0;
+      const rem = parseInt(item.system?.uses?.value ?? 0) || 0;
+      const both = [cha, rem].filter(n => n > 0);
+      maxDice = both.length ? Math.max(1, Math.min(...both)) : 1;
+    }
+    // Never offer more dice than remain in the pool.
+    const remaining = parseInt(item.system?.uses?.value ?? maxDice) || maxDice;
+    maxDice = Math.max(1, Math.min(maxDice, remaining));
+
+    if (maxDice <= 1) return { dice: 1, denomination };   // no choice — spend the one die
+    const chosen = await this._promptPoolDice(item, maxDice, denomination);
+    if (chosen == null) return false;
+    return { dice: Math.max(1, Math.min(maxDice, chosen)), denomination };
+  }
+
+  /** Dark dice-count picker for die-pool heals. Resolves to the chosen count
+   *  (1..maxDice) or null if cancelled. Styled to match ACE chat cards
+   *  (dark bg, light text, healing-green accent, ≥16px per the contrast rule). */
+  async _promptPoolDice(item, maxDice, denomination) {
+    const tiles = [];
+    for (let n = 1; n <= maxDice; n++) {
+      tiles.push(
+        `<button type="button" class="ace-hl-dice-btn" data-n="${n}" `
+        + `style="background:linear-gradient(180deg,#1e2a1e,#16201a);border:1px solid #4caf50;`
+        + `color:#eaffea;font-size:17px;font-weight:700;padding:10px 15px;border-radius:8px;`
+        + `cursor:pointer;min-width:66px;">${n}d${denomination}</button>`
+      );
+    }
+    const content =
+      `<div style="background:#14141a;padding:14px 16px;border-radius:8px;">`
+      + `<div style="color:#dfe7f5;font-size:16px;margin-bottom:12px;">`
+      + `Spend how many dice? <span style="color:#8fbf8f;">(up to ${maxDice})</span></div>`
+      + `<div style="display:flex;gap:9px;flex-wrap:wrap;">${tiles.join("")}</div></div>`;
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (v) => { if (settled) return; settled = true; resolve(v); };
+      const dlg = new foundry.applications.api.DialogV2({
+        window: { title: `${item.name} — Healing Dice` },
+        content,
+        buttons: [{ action: "cancel", label: "Cancel", callback: () => done(null) }],
+        rejectClose: false,
+        submit: () => done(null),
+      });
+      dlg.render({ force: true }).then(() => {
+        const root = dlg.element ?? document;
+        root.querySelectorAll?.(".ace-hl-dice-btn")?.forEach((btn) => {
+          btn.addEventListener("click", () => { done(parseInt(btn.dataset.n)); try { dlg.close(); } catch (_) {} });
+        });
+      }).catch(() => done(null));
+    });
   }
 
   /**
@@ -629,7 +743,7 @@ export class HealPipeline {
    * Custom formula override:    custom.enabled=true → use custom.formula verbatim
    * Standard:                    `{number}d{denomination}` + (bonus ? ` + ${bonus}` : "")
    */
-  static _buildHealFormula(activity, usageConfig = null) {
+  static _buildHealFormula(activity, usageConfig = null, poolScale = null) {
     const obj = activity.toObject?.() ?? activity;
     const h   = obj.healing ?? activity.healing ?? {};
 
@@ -637,6 +751,17 @@ export class HealPipeline {
     // exactly as they want)
     if (h.custom?.enabled && h.custom?.formula) {
       return h.custom.formula;
+    }
+
+    // ── Die-pool spend (Healing Light etc.) — the caster chose N dice, so the
+    // heal is N × the healing die (plus any flat bonus). Overrides the base
+    // number; upcast slot-scaling below doesn't apply to a die-pool feature.
+    if (poolScale && poolScale.dice > 0) {
+      const den   = poolScale.denomination || parseInt(h.denomination) || 6;
+      const bonus = (h.bonus ?? "").toString().trim();
+      let f = `${poolScale.dice}d${den}`;
+      if (bonus) f = `${f} + ${bonus}`;
+      return f;
     }
 
     // Standard dice + bonus
@@ -700,7 +825,7 @@ export class HealPipeline {
   //  Roll + Post Card
   // ═══════════════════════════════════════════════════════════════════════════
 
-  async _rollAndPostCard(activity, actor, item, targets, classification, usageConfig = null) {
+  async _rollAndPostCard(activity, actor, item, targets, classification, usageConfig = null, poolScale = null) {
     // Build the heal Roll directly from the activity's healing data.
     //
     // We do NOT call activity.rollDamage() because:
@@ -713,7 +838,7 @@ export class HealPipeline {
     //
     // Pass usageConfig so _buildHealFormula can detect upcasting and add
     // the per-level scaling dice (Cure Wounds 2024: +2d8 per slot above 1st).
-    const formula = HealPipeline._buildHealFormula(activity, usageConfig);
+    const formula = HealPipeline._buildHealFormula(activity, usageConfig, poolScale);
     const rollData = activity.getRollData?.() ?? actor.getRollData();
     let roll;
     try {
