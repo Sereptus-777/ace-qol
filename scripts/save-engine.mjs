@@ -355,7 +355,15 @@ export class SaveEngine {
 
       // ── Live Target List card ──
       if (flags.type === "saveTargetList") {
-        this._wireTargetListButtons(el, message, flags);
+        // ONE CLEAN CARD: once the results card posts this card is superseded —
+        // collapse it into nothing, re-applied on EVERY render so a PC-row
+        // re-render can't un-hide it (that was the "pile of cards" bug).
+        if (flags.superseded) {
+          const chatMsg = el.closest?.(".chat-message") ?? el;
+          chatMsg?.classList?.add?.("ace-qol-save-collapsed");
+        } else {
+          this._wireTargetListButtons(el, message, flags);
+        }
       }
 
       // ── PC Save Prompt card (whispered to player) ──
@@ -369,10 +377,13 @@ export class SaveEngine {
         this._wirePcSaveButton(el, message, flags);
       }
 
-      // ── PC Save Result — collapse on GM side (result shown inline in target list) ──
-      if (flags.type === "pcSaveResult" && game.user.isGM) {
+      // ── PC Save Result — the roll's transport to the GM, but visually
+      // redundant with the main card's row. Collapse it on EVERY client (not
+      // just the GM) so it never joins the pile. The message still exists, so
+      // _onPcSaveResultPosted + area-denial re-fire still work off its flags.
+      if (flags.type === "pcSaveResult") {
         const chatMsg = el.closest?.(".chat-message") ?? el;
-        chatMsg.classList.add("ace-qol-save-collapsed");
+        chatMsg?.classList?.add?.("ace-qol-save-collapsed");
       }
 
       // ── Save Results card — phase-aware wiring ──
@@ -2602,6 +2613,16 @@ export class SaveEngine {
       hasDamage,
       appliedConditions,
     });
+
+    // ── ONE CLEAN CARD (Johnny 2026-07-11) ──
+    // Now that the results card is up, retire the target-list card into it. We
+    // COLLAPSE (not delete) via a persisted flag: the old CSS-only collapse was
+    // wiped whenever a PC row re-rendered, leaving the "pile of 2-3 cards"
+    // Johnny saw. A flag re-applied on every render survives that. Collapse
+    // keeps the card in the DOM, so the PC-row reconciliation + template
+    // auto-delete that read that DOM keep working — a delete would break them.
+    try { await message.update({ [`flags.${MODULE_ID}.superseded`]: true }); }
+    catch (err) { console.warn(`${MODULE_ID} | supersede target-list failed:`, err); }
 
     // ── Auto-delete the AOE template now that saves have rolled ──
     // Animation has had time to play (caster → travel → explosion).
