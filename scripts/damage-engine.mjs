@@ -711,12 +711,17 @@ export class DamageEngine {
       if (rollDmgBtn && !rollDmgBtn.dataset.wired) {
         rollDmgBtn.dataset.wired = "1";
 
-        // Only the GM or the attacking actor's OWNER (the caster) may roll this
-        // damage — a player must never roll another player's or a monster's
-        // damage. The caster owns their PC, so actor.isOwner identifies them;
-        // everyone else gets the button hidden (they still see the → targets line).
+        // Only the GM or the attacking creature's OWNER may roll this damage —
+        // a player must never roll an ENEMY monster's or another player's damage.
+        // The owner is (a) the caster of their own PC, or (b) the player who
+        // controls a companion/summon/wild-shape. `attackerOwnerUserIds` is
+        // stamped GM-side (correct even for UNLINKED synthetic tokens, which
+        // game.actors.get can't resolve — that was the Steel Defender gap,
+        // 2026-07-11). Fall back to the live isOwner check for older cards.
         const _dmgActor = game.actors.get(flags.actorId);
-        const _canRoll = game.user.isGM || _dmgActor?.isOwner === true;
+        const _ownerIds = flags.attackerOwnerUserIds ?? null;
+        const _canRoll = game.user.isGM
+          || (Array.isArray(_ownerIds) ? _ownerIds.includes(game.user.id) : (_dmgActor?.isOwner === true));
         if (!_canRoll) rollDmgBtn.style.setProperty("display", "none", "important");
 
         if (flags.rolled || flags.bundledFired) {
@@ -725,7 +730,11 @@ export class DamageEngine {
         }
 
         // ── Auto-roll damage when setting is ON ──
-        if (game.user.isGM && !flags.rolled && !el.dataset.aceAutoRolled) {
+        // BUT never auto-roll a PLAYER-OWNED creature's damage from the GM side —
+        // the owning player rolls their own companion/summon damage (2026-07-11).
+        // Auto-roll stays for enemy NPCs (no player owners) + GM-cast attacks.
+        const _attackerHasPlayerOwner = Array.isArray(_ownerIds) && _ownerIds.length > 0;
+        if (game.user.isGM && !_attackerHasPlayerOwner && !flags.rolled && !el.dataset.aceAutoRolled) {
           try {
             const shouldAutoRoll = QolSettings.get("autoRollDamage");
             if (shouldAutoRoll) {

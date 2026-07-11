@@ -184,6 +184,11 @@ export class DamageCardRenderer {
           itemName: item.name,
           itemImg: item.img || "icons/svg/sword.svg",
           actorId: actor.id,
+          // Non-GM users who OWN the attacking creature — the player who
+          // controls a companion/summon/wild-shape rolls its OWN damage, GM
+          // applies (2026-07-11). Computed GM-side so it's correct for unlinked
+          // synthetic tokens too (game.actors.get can't resolve those).
+          attackerOwnerUserIds: game.users.filter(u => !u.isGM && actor.testUserPermission?.(u, "OWNER")).map(u => u.id),
           critRule,
           preRolled,
           parsedDescription,

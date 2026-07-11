@@ -612,6 +612,9 @@ export class MergeCard {
           itemName: item.name,
           itemImg: item.img || "icons/svg/sword.svg",
           actorId: actor.id,
+          // Player who owns the attacking creature rolls its own damage (companions,
+          // summons, wild-shapes); GM applies. Computed GM-side (2026-07-11).
+          attackerOwnerUserIds: game.users.filter(u => !u.isGM && actor.testUserPermission?.(u, "OWNER")).map(u => u.id),
           critRule,
           preRolled,
           parsedDescription,
