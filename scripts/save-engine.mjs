@@ -670,6 +670,13 @@ export class SaveEngine {
     // prompt. Now, with no targets, we show the same target picker that normal
     // targeted spells use, so the GM picks who it hits and the save flow runs.
     let tokens;
+    // Picker-driven = nothing was pre-targeted, so we open the picker for THIS
+    // cast. A picker-chosen target is TRANSIENT — it must not linger as a
+    // persistent target afterward, or the NEXT cast sees it, skips the picker,
+    // and silently re-hits the same creature (Johnny 2026-07-11: "the picker
+    // only works once"). A creature the user PRE-targeted is kept (their intent,
+    // plus the multiattack follow-up per punch #11).
+    const _pickerDriven = game.user.targets.size === 0;
     if (game.user.targets.size) {
       console.log(`${MODULE_ID} | [picker-timing] SaveEngine: "${item.name}" using ${game.user.targets.size} pre-targeted token(s) — SKIPPING picker`);
       tokens = [...game.user.targets];
@@ -776,8 +783,11 @@ export class SaveEngine {
         saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing,
         activity,
       });
-      // PUNCH-LIST #11 (Johnny): single-creature actions KEEP the target —
-      // releasing here broke the follow-up swing/multiattack flow.
+      // PUNCH-LIST #11 (Johnny): a PRE-targeted single creature KEEPS its target
+      // for the follow-up swing/multiattack. But a PICKER-chosen target is
+      // transient — release it so the next cast re-opens the picker instead of
+      // silently re-hitting this creature.
+      if (_pickerDriven) this._releaseUserTargets();
       return;
     }
 
@@ -786,9 +796,10 @@ export class SaveEngine {
       activityId: activity.id,
       spellLevel,
     });
-    // PUNCH-LIST #11 (Johnny): only MULTI-creature actions release targets;
-    // a single-creature save spell keeps its target for the next action.
-    if (tokens.length > 1) this._releaseUserTargets();
+    // PUNCH-LIST #11 (Johnny): a PRE-targeted single creature keeps its target
+    // for the next action; a MULTI-creature OR PICKER-chosen set releases so the
+    // next cast starts clean and the picker re-opens.
+    if (tokens.length > 1 || _pickerDriven) this._releaseUserTargets();
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
