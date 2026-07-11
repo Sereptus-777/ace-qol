@@ -87,7 +87,10 @@ export class HealPipeline {
     // might live: flags.dnd5e.activity (string), flags.dnd5e.activity.id,
     // flags.dnd5e.use.activityId, flags.dnd5e.item.id/uuid, etc.
     Hooks.on("preCreateChatMessage", (message, data) => {
-      if (!game.user.isGM) return;
+      // No GM gate — this fires on the client CREATING the vanilla card (the
+      // caster). A player-cast heal's stray usage card is created on the player's
+      // client, so the player must cancel it. The 5s window + activity-id match
+      // below keep this from touching any unrelated card.
       if (!QolSettings.get("enableHealPipeline")) return;
 
       const now = Date.now();
@@ -127,7 +130,9 @@ export class HealPipeline {
 
     // Fallback: if a vanilla card slipped past preCreateChatMessage, delete it.
     Hooks.on("dnd5e.postCreateUsageMessage", (activity, message) => {
-      if (!game.user.isGM) return;
+      // No GM gate — caster-local fallback delete of a stray vanilla usage card;
+      // the caster owns (and can delete) their own message. Guarded by the
+      // activity-id + 5s match below so only the just-intercepted heal is deleted.
       if (!activity || !HealPipeline._activityHeals(activity)) return;
       if (!QolSettings.get("enableHealPipeline")) return;
       const now = Date.now();
@@ -149,7 +154,13 @@ export class HealPipeline {
         enabled:      QolSettings.get("enableHealPipeline"),
       });
 
-      if (!game.user.isGM) return;
+      // NO GM gate (Johnny 2026-07-11): preUseActivity is CASTER-local — it fires
+      // only on the client that used the activity. Gating to GM meant a PLAYER-cast
+      // heal (Healing Light, Cure Wounds, Lay on Hands…) was never intercepted, so
+      // dnd5e's default "Healing Roll" dialog ran instead of our pipeline. The
+      // caster (player OR GM) must intercept + cancel the vanilla flow on their own
+      // client. The HP APPLY stays GM-only (HealCardRenderer wires Apply for the GM),
+      // so the caster rolls, the GM applies — same split as weapons/saves.
       if (!QolSettings.get("enableHealPipeline")) return;
       if (!activity) return;
 
