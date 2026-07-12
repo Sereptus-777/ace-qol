@@ -216,8 +216,16 @@ export class DamageCalculator {
 
           for (let i = 0; i < rolls.length; i++) {
             const rollCfg = rolls[i];
-            const parts = rollCfg.parts ?? [];
+            let parts = rollCfg.parts ?? [];
             if (!parts.length) continue;
+
+            // Off-hand swing (RAW): the damage gets NO ability mod. Drop the @mod
+            // term here; combat-state adds it back as a bonus only when the 2014
+            // TWF style / 2024 Light rule qualifies. (Belt-and-suspenders with the
+            // data.mod=0 below, in case @mod resolves via data instead of a part.)
+            if (CombatState.isOffhandSwing(item?.uuid)) {
+              parts = parts.filter(p => String(p).trim() !== "@mod");
+            }
 
             // Join the system's formula parts (it already includes @mod, @magicalBonus, etc.)
             const formula = parts.join(" + ");
@@ -236,11 +244,16 @@ export class DamageCalculator {
             // Resolve @references and roll with our crit rules. The system
             // builds rollCfg.data from the ACTIVITY's ability — re-assert the
             // character-rule mod there or the swap above is silently undone.
-            const data = rollCfg.data ?? rollData;
+            let data = rollCfg.data ?? rollData;
             if (abilityOverride && Number.isFinite(Number(data.mod)) && abilityOverride.mod > Number(data.mod)) {
               console.log(`${MODULE_ID} | [ability-resolver] ${actor.name}: "${item.name}" damage roll uses ${abilityOverride.ability.toUpperCase()} +${abilityOverride.mod} (was +${data.mod}) — ${abilityOverride.why}`);
               data.mod = abilityOverride.mod;
               overrideApplied = true;
+            }
+            // Off-hand: @mod resolves to 0 (cloned so shared rollData isn't touched).
+            if (CombatState.isOffhandSwing(item?.uuid)) {
+              data = { ...data, mod: 0 };
+              console.log(`${MODULE_ID} | off-hand: ability mod stripped from "${item.name}" native damage (RAW: none unless TWF style / 2024 Light — combat-state restores if it qualifies)`);
             }
             const result = await DamageCalculator.rollWithCrit(formula, data, isCrit, critRule, `Base ${type}`, item);
             components.push({ name: item.name, ...result, type });
@@ -288,12 +301,13 @@ export class DamageCalculator {
               abilName = abilityOverride.ability.toUpperCase();
               abilMod = abilityOverride.mod;
             }
+            const _offhandZero = CombatState.isOffhandSwing(item?.uuid);
             components[0]._modMeta = {
-              abilityMod: abilMod,
+              abilityMod: _offhandZero ? 0 : abilMod,
               abilityName: abilName,
               magicBonus: magicBonus,
             };
-            console.log(`${MODULE_ID} | Modifier metadata: ${abilName}=${abilMod}, MAGIC=${magicBonus}`);
+            console.log(`${MODULE_ID} | Modifier metadata: ${abilName}=${_offhandZero ? 0 : abilMod}, MAGIC=${magicBonus}${_offhandZero ? " (off-hand: ability mod stripped)" : ""}`);
           }
 
           usedNativeConfig = true;
