@@ -47,6 +47,20 @@ export class MultiattackEngine {
     } catch (_) { /* already registered */ }
 
     const trigger = (rolls, data) => {
+      // Bulletproof off-hand signal (Johnny 2026-07-12): dnd5e stamps a
+      // two-weapon off-hand swing with roll.options.attackMode === "offhand".
+      // Reading it here — instead of relying only on the pop-up's kind flag —
+      // catches BOTH a native off-hand attack AND our own pop-up swing (which
+      // now fires with the tag). The damage calc + combat-state read the mark to
+      // strip the RAW off-hand ability mod. Fires on the roller's client, right
+      // before the damage build → no TTL race.
+      try {
+        const roll = Array.isArray(rolls) ? rolls[0] : rolls;
+        if (roll?.options?.attackMode === "offhand") {
+          const uuid = data?.subject?.item?.uuid ?? data?.subject?.parent?.uuid ?? null;
+          if (uuid) CombatState.markOffhandSwing(uuid);
+        }
+      } catch (e) { console.warn(`${MODULE_ID} | off-hand attackMode mark failed:`, e); }
       try { MultiattackEngine._onAttack(rolls, data); }
       catch (e) { console.warn(`${MODULE_ID} | MultiattackEngine trigger failed:`, e); }
     };
@@ -719,7 +733,12 @@ export class MultiattackEngine {
       const list = acts ? (typeof acts.values === "function" ? [...acts.values()] : Object.values(acts)) : [];
       const atk = activity ?? list.find(a => a?.type === "attack");
       if (atk && typeof atk.rollAttack === "function") {
-        fireVia = ["rollAttack direct (no event, dialog skipped)", () => atk.rollAttack({}, { configure: false }, {})];
+        // Tag an off-hand swing so dnd5e sets roll.options.attackMode = "offhand"
+        // (proven: without this it defaults to "oneHanded"). The rollAttackV2
+        // trigger reads that tag to strip the RAW off-hand damage mod — robust
+        // across the pop-up path AND any native two-weapon attack.
+        const _atkCfg = isOffhand ? { attackMode: "offhand" } : {};
+        fireVia = ["rollAttack direct (no event, dialog skipped)", () => atk.rollAttack(_atkCfg, { configure: false }, {})];
       } else if (activity && typeof activity.use === "function") {
         fireVia = ["explicit activity use", () => activity.use({ event: fakeEvent }, {}, {})];
       } else if (typeof item.use === "function") {
