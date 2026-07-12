@@ -60,6 +60,70 @@ export async function setWarlockDamageType(actor, kind, value) {
 }
 
 /**
+ * Per-attack Pact of the Blade damage-type prompt (opt-in via the
+ * `pactBladePromptPerAttack` setting). Opens a quick chooser and stores the pick
+ * as the sticky preference, so the damage calculator's existing type-swap picks
+ * it up. AWAITED inside the damage build, so the damage can't roll before the
+ * choice is made — no timing race (this is the "risky live wire" done safe).
+ * Fires only on the roller's own client (owner/GM); a one-at-a-time guard stops
+ * overlapping dialogs across a multiattack chain.
+ */
+const _pactPromptOpen = new Set();
+export async function promptPactTypePerAttack(actor, item) {
+  try {
+    if (!actor?.id) return;
+    if (!(actor.isOwner || game.user?.isGM)) return;   // only the roller chooses
+    if (_pactPromptOpen.has(actor.id)) return;          // one dialog at a time
+    _pactPromptOpen.add(actor.id);
+
+    const current = getPactBladeType(actor);
+    const natural = item?.system?.damage?.base?.types?.[0]
+      ?? [...(item?.system?.activities ?? [])]?.[0]?.damage?.parts?.[0]?.types?.[0]
+      ?? "normal";
+    const opts = [
+      { val: "weapon",   label: `Normal (${natural})` },
+      { val: "necrotic", label: "Necrotic" },
+      { val: "psychic",  label: "Psychic" },
+      { val: "radiant",  label: "Radiant" },
+    ];
+    const chosen = await new Promise((resolve) => {
+      let settled = false;
+      const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+      const tiles = opts.map(o => {
+        const sel = o.val === current;
+        return `<button type="button" class="ace-pact-btn" data-val="${o.val}" `
+          + `style="background:${sel ? "linear-gradient(180deg,#3a1420,#2a0e18)" : "linear-gradient(180deg,#1a1420,#120c18)"};`
+          + `border:1px solid ${sel ? "#e05a7a" : "#7a4a5a"};color:#f5dfe8;font-size:16px;font-weight:700;`
+          + `padding:9px 13px;border-radius:8px;cursor:pointer;min-width:100px;">${o.label}</button>`;
+      }).join("");
+      const content = `<div style="background:#14121a;padding:13px 15px;border-radius:8px;">`
+        + `<div style="color:#f0dfe8;font-size:15px;margin-bottom:10px;">`
+        + `${item?.name ?? "Pact weapon"} — deal which damage type this hit?</div>`
+        + `<div style="display:flex;gap:8px;flex-wrap:wrap;">${tiles}</div></div>`;
+      const dlg = new foundry.applications.api.DialogV2({
+        window: { title: "Pact of the Blade — Damage Type" },
+        content,
+        buttons: [{ action: "keep", label: "Keep current", callback: () => done(current) }],
+        rejectClose: false,
+        submit: () => done(current),
+      });
+      dlg.render({ force: true }).then(() => {
+        const root = dlg.element ?? document;
+        root.querySelectorAll?.(".ace-pact-btn")?.forEach(b =>
+          b.addEventListener("click", () => { done(b.dataset.val); try { dlg.close(); } catch (_) {} }));
+      }).catch(() => done(current));
+    });
+    if (chosen && ALLOWED_TYPES.includes(chosen) && chosen !== current) {
+      await setWarlockDamageType(actor, "pactBlade", chosen);
+    }
+  } catch (err) {
+    console.warn(`${MODULE_ID} | promptPactTypePerAttack threw (non-fatal):`, err);
+  } finally {
+    _pactPromptOpen.delete(actor?.id);
+  }
+}
+
+/**
  * Detect whether an actor has Pact of the Blade (the pact boon).
  * Used to gate when to offer / apply the type choice.
  */

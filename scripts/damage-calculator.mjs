@@ -440,8 +440,14 @@ export class DamageCalculator {
     // Base weapon parts only — riders (smites, Hex) keep their own types.
     try {
       if (item?.type === "weapon") {
-        const { hasPactOfTheBlade, getPactBladeType } = await import("./warlock-damage-chooser.mjs");
+        const { hasPactOfTheBlade, getPactBladeType, promptPactTypePerAttack } = await import("./warlock-damage-chooser.mjs");
         if (hasPactOfTheBlade(actor)) {
+          // Per-attack prompt (opt-in): ask THIS hit's damage type BEFORE reading
+          // the sticky preference below. Awaited here, so the damage build can't
+          // finish before the player picks — the choice always lands in time.
+          if (QolSettings.get?.("pactBladePromptPerAttack")) {
+            await promptPactTypePerAttack(actor, item);
+          }
           const preferred = getPactBladeType(actor);
           if (preferred && preferred !== "weapon") {
             let swapped = 0;

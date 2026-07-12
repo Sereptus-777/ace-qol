@@ -771,6 +771,15 @@ export class QolSettings {
       default: true,
     });
 
+    s("pactBladePromptPerAttack", {
+      name:    "Pact of the Blade — Ask Damage Type Each Hit",
+      hint:    "For a Pact of the Blade weapon, pop a quick chooser (Normal / Necrotic / Psychic / Radiant) each time it deals damage, so you can change the type per swing. OFF = use the sticky choice from the Warlock Damage Type chooser instead (no popup). Only ever appears for a pact-weapon wielder. Default: ON.",
+      scope:   "world",
+      config:  true,
+      type:    Boolean,
+      default: true,
+    });
+
     s("slayerAutoDetect", {
       name:    "Slayer Weapon Auto-Detect",
       hint:    "Automatically detect Slayer weapons (Giant Slayer, Dragon Slayer) and apply bonus damage vs matching creature types.",
