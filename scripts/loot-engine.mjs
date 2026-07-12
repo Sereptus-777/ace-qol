@@ -92,6 +92,15 @@ export class LootEngine {
         default: true,
       });
 
+      s("beastsCarryLoot", {
+        name:    "Beasts Carry Loot",
+        hint:    "OFF (default): beasts — wolves, goats, bears, etc. — drop NO loot (no coins, potions, or gear). ON: beasts can carry mundane 'swallowed' items. Off matches how animals actually work at the table.",
+        scope:   "world",
+        config:  true,
+        type:    Boolean,
+        default: false,
+      });
+
       s("lootOnDeath", {
         name:    "Loot on NPC Death",
         hint:    "Generate a loot card and add items to inventory when an NPC drops to 0 HP.",
@@ -524,6 +533,19 @@ export class LootEngine {
       const creatureType = options.creatureType
         ?? actor.system?.details?.type?.value
         ?? "humanoid";
+
+      // ── Beasts carry no loot (hard rule, Johnny 2026-07-11) ──
+      // A wolf, goat, or bear isn't hauling coins, potions, or gear — the old
+      // "mundane scraps" behavior had goats dropping trinkets. OFF by default;
+      // a table that wants "swallowed gems" flavor can flip beastsCarryLoot ON.
+      if (String(creatureType).toLowerCase() === "beast") {
+        let beastsCarry = false;
+        try { beastsCarry = game.settings.get(MODULE_ID, "beastsCarryLoot") === true; } catch { /* not registered yet */ }
+        if (!beastsCarry) {
+          console.log(`${LOG_PREFIX} ${actor.name} is a beast — no loot (beastsCarryLoot OFF)`);
+          return null;
+        }
+      }
 
       // ── Check minimum CR setting ──
       try {
