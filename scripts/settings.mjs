@@ -286,7 +286,7 @@ export class QolSettings {
       name:    "Tooltip Hover Delay (ms)",
       hint:    "How long you must hover before a tooltip appears (Foundry default is 500ms — too fast for some users). 1500ms = 1.5 seconds. Set to 500 to restore Foundry default. Applies live; no reload required.",
       scope:   "client",
-      config:  true,
+      config:  false,   // surfaced via the ACE config panel (UI / Cards tab), not native settings
       type:    Number,
       range:   { min: 100, max: 5000, step: 100 },
       default: 1500,
@@ -323,7 +323,7 @@ export class QolSettings {
       name:    "Players Can Start Combat (RAW)",
       hint:    "When enabled, any player rolling initiative auto-creates a combat encounter if none exists. Restores standard D&D flow (any combatant can initiate). Default OFF so installing ACE QOL doesn't change Foundry's default GM-only combat-creation behavior without an explicit opt-in.",
       scope:   "world",
-      config:  true,
+      config:  false,   // surfaced via the ACE config panel (Initiative tab), not native settings
       type:    Boolean,
       default: false,
     });
@@ -367,9 +367,18 @@ export class QolSettings {
       name:    "Weapon Mastery — Allow in 2014 (Legacy) mode",
       hint:    "By default, Weapon Mastery only fires in 2024 (Modern) mode because it's a 2024 PHB feature. Enable this if you're running 2014 rules but want to use the Weapon Mastery system as a houserule import.",
       scope:   "world",
-      config:  true,
+      config:  false,   // surfaced via the ACE config panel (Weapon Masteries tab), not native settings
       type:    Boolean,
       default: false,
+    });
+
+    s("cleaveRawAttackRoll", {
+      name:    "Cleave — Roll to Hit (RAW)",
+      hint:    "ON (default, 2024 RAW): the Cleave weapon mastery (Greataxe/Halberd) makes a real attack roll against the second creature — it CAN miss. On a hit, the second creature takes the weapon's damage minus your ability modifier. OFF: the cleave auto-hits (faster; treats the second hit as automatic damage, the old behaviour). Only affects Cleave.",
+      scope:   "world",
+      config:  false,   // surfaced via the ACE config panel (Weapon Masteries tab), not native settings
+      type:    Boolean,
+      default: true,
     });
 
     s("weaponMasteryStrict", {
@@ -428,6 +437,15 @@ export class QolSettings {
     s("hideSpellTemplateVisuals", {
       name:    "Hide Spell Template Visuals",
       hint:    "When a spell places a template, hide the visual (red zone, ruler, etc.) from GM and players. The spell still works normally — Spike Growth still damages on movement, auto-targeting still fires — only the visual is suppressed. End concentration to delete the template.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
+    s("suppressSelfSpellTemplates", {
+      name:    "No Template for Self / Emanation Spells",
+      hint:    "Self-centered spells (Detect Magic, Detect Evil & Good, and other spells ACE classifies as emanating from the caster) don't need a placed template — they radiate from you. When ON (default), ACE cancels the template-placement prompt for those spells so you never have to drop a circle for a spell that just emanates from yourself (a mis-built stat-block spell can otherwise prompt one). Auras that project a tracked zone (Spirit Guardians, etc.) are unaffected. Turn OFF to let every template through.",
       scope:   "world",
       config:  false,
       type:    Boolean,
@@ -512,6 +530,15 @@ export class QolSettings {
       type:    Number,
       default: 10,
       range:   { min: 5, max: 25, step: 1 },
+    });
+
+    s("unifyConcentrationMarker", {
+      name:    "Single Concentration Marker (ACE)",
+      hint:    "When you cast a self-concentration spell (Detect Magic, Blur, Fly, …) dnd5e drops a 'Concentrating: X' effect AND ACE drops its own spell marker — two icons for one spell. When ON (default), ACE folds them into ONE: dnd5e's concentration effect is re-dressed with ACE's name, icon, and description (and ACE's flags, for duration/time-tracking) while keeping its concentration status underneath — so break-on-damage and auto-cleanup still work, and you only see one marker. Turn OFF to keep dnd5e's separate 'Concentrating:' effect visible alongside ACE's.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
     });
 
     s("bonusActionSpellRule", {
@@ -640,6 +667,13 @@ export class QolSettings {
     s("enforceLoadout", {
       name: "Enforce Weapon Loadout (Hands)",
       hint: "When ON (default), a player character can't equip more than their hands can hold — two one-handed weapons, OR one two-handed weapon, OR a one-handed weapon + shield. Two non-Light one-handed weapons require the Dual Wielder feat. Natural weapons and unarmed strikes use no hands. Set the flag `ace-qol.handCount` on a creature to raise its hand budget (a marilith has six arms). NPCs are not enforced — their stat blocks are GM-managed. When OFF, the dnd5e equip checkbox behaves normally (equip anything).",
+      scope: "world", config: false, type: Boolean, default: true,
+    });
+
+    // ── Block un-equipped weapon swing ───────────────────────────────────
+    s("blockUnequippedAttack", {
+      name: "Block Un-Equipped Weapon Attacks",
+      hint: "When ON (default), a player character can't attack with a weapon that isn't marked equipped IF they already have another weapon in hand (e.g. swinging a sheathed halberd while a greataxe is equipped) — the swing is cancelled before it rolls, with a note to equip it first. Fails open: if NOTHING is marked equipped we can't tell what's in hand, so the attack is allowed. Relies on the equipped checkbox being accurate — if a truly-wielded weapon reads 'not equipped' it'll be blocked, so keep your main weapon ticked, or turn this OFF. NPCs are never blocked (their stat blocks are GM-managed).",
       scope: "world", config: false, type: Boolean, default: true,
     });
 
@@ -775,9 +809,18 @@ export class QolSettings {
       name:    "Pact of the Blade — Ask Damage Type Each Hit",
       hint:    "For a Pact of the Blade weapon, pop a quick chooser (Normal / Necrotic / Psychic / Radiant) each time it deals damage, so you can change the type per swing. OFF = use the sticky choice from the Warlock Damage Type chooser instead (no popup). Only ever appears for a pact-weapon wielder. Default: ON.",
       scope:   "world",
-      config:  true,
+      config:  false,   // surfaced via the ACE config panel (Attacks tab), not native settings
       type:    Boolean,
       default: true,
+    });
+
+    s("dualWielderGrantsOffhandMod", {
+      name:    "Dual Wielder Grants Off-Hand Damage Mod (House Rule)",
+      hint:    "STRICT RAW when OFF (default): the Dual Wielder feat does NOT add your ability modifier to an off-hand attack's damage — in either 2014 or 2024. That bonus comes ONLY from the Two-Weapon Fighting fighting style. Turn this ON to house-rule it: any character with the Dual Wielder feat also adds their ability modifier to off-hand damage, as if they had the fighting style (a very common table variant). Characters who actually have the Two-Weapon Fighting style always get the mod regardless of this setting. Default: OFF (RAW).",
+      scope:   "world",
+      config:  false,   // surfaced via the ACE config panel (Attacks tab), not native settings
+      type:    Boolean,
+      default: false,
     });
 
     s("slayerAutoDetect", {
@@ -860,6 +903,15 @@ export class QolSettings {
     s("autoCounterspell", {
       name:    "Auto-Prompt Counterspell",
       hint:    "When a creature casts a spell, prompt eligible opponents within 60ft to Counterspell.",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: true,
+    });
+
+    s("skipOfflineCounterspell", {
+      name:    "Skip Counterspell for Offline Players",
+      hint:    "When ON (default), the Counterspell pop-up is NOT raised for a character whose player owner isn't logged in — an offline player can't answer it anyway, so no dead prompt. NPC counterspellers (GM-owned) are always offered to the GM. Turn OFF to prompt every eligible reactor regardless of who's connected.",
       scope:   "world",
       config:  false,
       type:    Boolean,
@@ -1421,7 +1473,7 @@ export class QolSettings {
       name:    "Situational Narration",
       hint:    "Show the combat engine's reasoning as it reads the scene (e.g. 'sees through invisibility via Truesight → no disadvantage'). OFF for normal play; CONSOLE logs to F12; GM WHISPER posts it quietly to the GM only.",
       scope:   "client",
-      config:  true,
+      config:  false,   // surfaced via the ACE config panel (Advanced tab), not native settings
       type:    String,
       choices: {
         off:   "Off",

@@ -253,6 +253,26 @@ export class ReactionEngine {
       this._resetAllReactionFlags("combat ended");
     });
 
+    // ── Reset reaction on a SHORT or LONG rest (Johnny's houserule) ──
+    // RAW already refreshes reactions every turn/round in combat; this makes a
+    // rest ALSO clear the flag so a creature can never be stranded "reaction
+    // used" OUT of combat (a fight that ended without deleteCombat, a bench
+    // test, etc.). dnd5e fires `restCompleted` for BOTH rest types
+    // (config.type = "short" | "long"), and only on the RESTING actor's own
+    // client — so the owner clears its own flag; no activeGM gate (that would
+    // miss player rests, whose hook never fires on the GM's client).
+    Hooks.on("dnd5e.restCompleted", async (actor, result, config) => {
+      try {
+        if (!actor?.isOwner) return;
+        if (actor.getFlag(MODULE_ID, FLAG_REACTION_USED)) {
+          await actor.unsetFlag(MODULE_ID, FLAG_REACTION_USED);
+          this._debug(`Reaction RESET: ${actor.name} (${config?.type ?? "rest"} rest)`);
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | rest reaction-reset failed:`, err);
+      }
+    });
+
     // ── v0.4.22.12: Reset all reactionUsed flags on world reload ──
     // The flag is stored on actor.flags so it persists across saves.
     // Without this cleanup, a session that ends mid-combat would
@@ -820,9 +840,20 @@ export class ReactionEngine {
     }
 
     // Find all eligible Counterspell reactors within 60ft
-    const reactors = this._findCounterspellReactors(casterToken, casterActor);
+    let reactors = this._findCounterspellReactors(casterToken, casterActor);
+    // Drop reactors whose player owner isn't connected — an offline player can't
+    // answer the pop-up, so we don't raise a dead prompt (Johnny 2026-07-13:
+    // "block counterspell if the owner isn't logged in"). NPCs (GM-owned, no
+    // player owner) stay — the GM is here to decide those. Gate: skipOfflineCounterspell.
+    if (QolSettings.get?.("skipOfflineCounterspell") !== false) {
+      const before = reactors.length;
+      reactors = reactors.filter(r => ReactionEngine._reactorOwnerAvailable(r.actor));
+      if (before !== reactors.length) {
+        this._debug(`Counterspell: dropped ${before - reactors.length} reactor(s) — owner not connected.`);
+      }
+    }
     if (!reactors.length) {
-      ReactionEngine._resolveCastBarrier(activity, { abort: false, reason: "no_reactors" });
+      ReactionEngine._resolveCastBarrier(activity, { abort: false, reason: "no_reactors_available" });
       return;
     }
 
@@ -1119,6 +1150,24 @@ export class ReactionEngine {
     }
 
     return reactors;
+  }
+
+  /**
+   * True if this reactor can actually answer a reaction pop-up — either it's
+   * GM-controlled (NPC, no player owner → the GM is here to decide) or at least
+   * one of its player owners is currently connected. Blocks dead counterspell
+   * prompts aimed at offline players (Johnny 2026-07-13). Fails OPEN on error so
+   * a bug here never silently suppresses a legit reaction.
+   */
+  static _reactorOwnerAvailable(actor) {
+    if (!actor) return false;
+    try {
+      const owners = game.users?.filter?.(u => u && !u.isGM && actor.testUserPermission?.(u, "OWNER")) ?? [];
+      if (!owners.length) return true;          // NPC / GM-owned → GM handles it
+      return owners.some(u => u.active);         // an owning player is connected
+    } catch (_) {
+      return true;   // never suppress a reaction on an error
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

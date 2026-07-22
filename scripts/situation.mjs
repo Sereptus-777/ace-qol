@@ -222,7 +222,10 @@ export class Situation {
         return { canSee: false, why: "subject is invisible" };
       }
 
-      return { canSee: true, why: "in plain sight" };
+      // Plain sight. If a sense had to cut through obscurement to see the
+      // subject, `pierced` carries HOW — callers use it to explain a withheld
+      // advantage ("Demogorgon sees you through the darkness via truesight").
+      return { canSee: true, why: "in plain sight", pierced: obscured.pierced ?? null };
     } catch (err) {
       console.warn(`${MODULE_ID} | Situation.canSee threw (defaulting to visible):`, err);
       return { canSee: true, why: "error — assume visible" };
@@ -302,6 +305,7 @@ export class Situation {
       senses ??= viewer?.system?.attributes?.senses ?? {};
       const inRange = (r) => Number(r) > 0 && (dist == null || dist <= Number(r));
 
+      let piercedInfo = null;   // first sense that cut through an obscuring space
       for (const { region, space } of spaces) {
         // RAW (2026-07-10, v2): a region the VIEWER is standing in never
         // blinds the viewer — you see OUT of the obscurement you occupy
@@ -334,6 +338,8 @@ export class Situation {
         // It does — can the viewer pierce THIS space's kind? (Pure decision
         // function — the self-test harness runs a full table through it.)
         const kind = space.kind ?? "obscurement";
+        const kindLabel = kind === "magicalDarkness" ? "magical darkness"
+                        : kind === "fog" ? "fog" : `heavy obscurement (${kind})`;
         const verdict = Situation.canPierce(space, {
           darkvision: Number(senses.darkvision) || 0,
           blindsight: Number(senses.blindsight) || 0,
@@ -341,17 +347,23 @@ export class Situation {
           devilsSight: Situation._hasDevilsSight(viewer, senses),
           dist,
         });
-        if (verdict.pierced) continue;
+        if (verdict.pierced) {
+          // Saw through it — remember HOW (the first pierce is enough to
+          // explain a withheld advantage on the card) and keep scanning the
+          // remaining spaces in case a later one genuinely blocks.
+          piercedInfo ??= { how: verdict.how, kind, kindLabel, spell: space.spell ?? null };
+          continue;
+        }
 
-        const kindLabel = kind === "magicalDarkness" ? "magical darkness"
-                        : kind === "fog" ? "fog" : `heavy obscurement (${kind})`;
         return {
           blocked: true,
           kindLabel,
           why: `sight line through ${kindLabel}${space.spell ? ` (${space.spell})` : ""}`,
         };
       }
-      return clear;
+      // Nothing blocked. If a sense cut through obscurement to get here, carry
+      // that up so callers can explain a NORMAL-instead-of-advantage outcome.
+      return { blocked: false, why: "", kindLabel: "", pierced: piercedInfo };
     } catch (err) {
       console.debug(`${MODULE_ID} | _sightLineObscured failed (permissive — not blocked):`, err);
       return clear;

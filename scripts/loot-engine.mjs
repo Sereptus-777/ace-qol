@@ -96,7 +96,7 @@ export class LootEngine {
         name:    "Beasts Carry Loot",
         hint:    "OFF (default): beasts — wolves, goats, bears, etc. — drop NO loot (no coins, potions, or gear). ON: beasts can carry mundane 'swallowed' items. Off matches how animals actually work at the table.",
         scope:   "world",
-        config:  true,
+        config:  false,   // surfaced via the ACE config panel (Loot tab), not native settings
         type:    Boolean,
         default: false,
       });
@@ -118,6 +118,16 @@ export class LootEngine {
         type:    Number,
         default: 0.25,
         range:   { min: 0, max: 5, step: 0.25 },
+      });
+
+      s("maxTotalLoot", {
+        name:    "Max Total Loot Items per Creature",
+        hint:    "Hard cap on the COMBINED loot a creature carries from BOTH systems — the AI 'pocket-loot' flavor items (bread rolls, letters, keepsakes) AND the real compendium items (potions, gear). The flavor loot fills first; the compendium engine only tops up to this cap, so you get a little flavor plus the occasional real item instead of a 4-item pile. Default 3.",
+        scope:   "world",
+        config:  false,
+        type:    Number,
+        default: 3,
+        range:   { min: 1, max: 8, step: 1 },
       });
 
       s("lootCardPublic", {
@@ -568,9 +578,14 @@ export class LootEngine {
       const candidateItems = await this._searchCompendiums(tier.rarities, creatureType);
 
       // ── Pick random items from the pool ──
-      const [minItems, maxItems] = tier.items;
-      const itemCount = Math.floor(Math.random() * (maxItems - minItems + 1)) + minItems;
-      const pickedEntries = this._pickRandom(candidateItems, itemCount);
+      const [minItems, maxItemsForTier] = tier.items;
+      let itemCount = Math.floor(Math.random() * (maxItemsForTier - minItems + 1)) + minItems;
+      // Shared loot budget (Option C, 2026-07-14): when the bio-generator's AI
+      // pocket-loot already added items this drop, it passes the REMAINING budget
+      // as options.maxItems so the two systems don't pile up. 0 → add gold only,
+      // no items. Absent (the on-death path) → uncapped, unchanged.
+      if (Number.isFinite(options.maxItems)) itemCount = Math.max(0, Math.min(itemCount, options.maxItems));
+      const pickedEntries = itemCount > 0 ? this._pickRandom(candidateItems, itemCount) : [];
 
       // ── Load full item documents from compendiums ──
       const fullItems = await this._loadFullItems(pickedEntries);

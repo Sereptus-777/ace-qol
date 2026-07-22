@@ -1710,6 +1710,49 @@ export class ConditionLibrary {
       effectData.flags.core = { overlay: true };
     }
 
+    // ── Option B: unify the concentration marker (Johnny 2026-07-13) ──
+    // For a CONCENTRATION spell the caster casts on THEMSELVES (Detect Magic,
+    // Blur, Fly, …), don't stack OUR marker on top of dnd5e's "Concentrating: X"
+    // effect — that double is exactly what Johnny wants gone. Instead RE-DRESS
+    // dnd5e's concentration effect AS our marker (our name / icon / description /
+    // flags) while it keeps its concentration status + dnd5e flags, so
+    // break-on-damage and dependent-cleanup keep working untouched. One marker,
+    // looks like ours, carries our data for the coming time-tracking, mechanics
+    // intact. dnd5e creates the concentration effect (beginConcentrating) BEFORE
+    // the usage message that fires our pipeline dispatch (dnd5e.mjs 16870 vs
+    // 16884), so it always exists by the time we get here — no race. Scoped to a
+    // SELF marker (spellItem owned by the same actor), never a debuff on a target.
+    // Gate: unifyConcentrationMarker.
+    const _spellItem = options.spellItem ?? null;
+    if (def.concentration === true && _spellItem && _spellItem.actor?.id === actor?.id
+        && game.settings.get(MODULE_ID, "unifyConcentrationMarker") !== false) {
+      const concEffect = ConditionLibrary._findConcentrationEffectForSpell(actor, _spellItem);
+      if (concEffect) {
+        // A pre-existing SEPARATE marker (e.g. cast before this setting was on)
+        // is found now, BEFORE we stamp our key onto the concentration effect,
+        // so it can't match the concentration effect itself.
+        let stale = null;
+        try { stale = ConditionLibrary._findEffect(actor, key); } catch (_) { /* none */ }
+        try {
+          await concEffect.update({
+            name: def.name,
+            ...(def.icon ? { img: def.icon } : {}),
+            [`flags.${MODULE_ID}.conditionKey`]:         key,
+            [`flags.${MODULE_ID}.category`]:             def.category,
+            [`flags.${MODULE_ID}.concentration`]:        true,
+            [`flags.${MODULE_ID}.description`]:          def.description,
+            [`flags.${MODULE_ID}.spellName`]:            _spellItem.name,
+            [`flags.${MODULE_ID}.unifiedConcentration`]: true,
+          });
+          if (stale && stale.id !== concEffect.id) { try { await stale.delete(); } catch (_) { /* non-fatal */ } }
+          ConditionLibrary._debug(`Unified "${def.name}" onto ${actor.name}'s concentration marker (Option B — single marker; dnd5e's re-dressed as ours).`);
+          return concEffect;
+        } catch (err) {
+          console.warn(`${MODULE_ID} | concentration-marker unify failed (falling back to a separate marker):`, err);
+        }
+      }
+    }
+
     // ── Same-key dedupe (RAW: same-name effects don't stack) ──
     // Casting Bless twice on the same target shouldn't create two +1d4
     // effects. The 5e rule is "the more potent effect applies; same effect
@@ -1741,6 +1784,25 @@ export class ConditionLibrary {
     }
 
     return effect;
+  }
+
+  /**
+   * Find the actor's dnd5e concentration effect for a given spell (Option B
+   * marker-unify). Matches by concentration status + name-contains + dnd5e item
+   * flag / origin, so it still resolves after we rename it to the spell's name.
+   */
+  static _findConcentrationEffectForSpell(actor, spellItem) {
+    const nameLc = String(spellItem?.name ?? "").toLowerCase();
+    return (actor?.effects?.contents ?? []).find(e => {
+      const isConc = e.statuses?.has?.("concentration") || e.statuses?.has?.("concentrating");
+      if (!isConc) return false;
+      if (nameLc && String(e.name ?? "").toLowerCase().includes(nameLc)) return true;
+      const ci = e.flags?.dnd5e?.item;
+      if (ci?.id && spellItem?.id && ci.id === spellItem.id) return true;
+      const origin = e.origin ?? e.flags?.dnd5e?.origin;
+      if (origin && spellItem?.id && String(origin).includes(spellItem.id)) return true;
+      return false;
+    }) ?? null;
   }
 
   /**

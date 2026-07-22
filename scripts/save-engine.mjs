@@ -896,6 +896,43 @@ export class SaveEngine {
     } catch (_) { return null; }
   }
 
+  /**
+   * Is a PC save-target's owning player currently online (active, non-GM)?
+   * Handles linked actors AND unlinked synthetic token actors.
+   */
+  _pcOwnerActive(tgt) {
+    try {
+      let a = tgt?.actorId ? game.actors.get(tgt.actorId) : null;
+      if (!a && tgt?.sceneId && tgt?.tokenDocId) {
+        a = game.scenes.get(tgt.sceneId)?.tokens?.get(tgt.tokenDocId)?.actor ?? null;
+      }
+      if (!a) return false;
+      return game.users?.some(u => u.active && !u.isGM && a.testUserPermission?.(u, "OWNER")) ?? false;
+    } catch (_) { return false; }
+  }
+
+  /**
+   * GM rolls a PC's save on their behalf — used when the owning player is
+   * OFFLINE so the save never hangs. Mirrors the roll-on-behalf dice button's
+   * fake-prompt construction, then runs the normal GM-side roll.
+   */
+  async _gmRollPcSaveOffline(item, actor, tgt, opts) {
+    const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell, castId } = opts;
+    const fakeMsg = { flags: { [MODULE_ID]: {
+      type: "pcSavePrompt",
+      itemUuid: item?.uuid ?? null,
+      itemId:   item?.id ?? null,
+      saveAbility, saveDC, halfOnSave, damageTypes, isSpell,
+      tokenDocId: tgt.tokenDocId, actorId: tgt.actorId, sceneId: tgt.sceneId,
+      targetName: tgt.name, targetImg: tgt.img,
+      autoFailSave: tgt.autoFailSave, saveAdvantage: tgt.saveAdvantage, saveDisadvantage: tgt.saveDisadvantage,
+      superSaver: tgt.superSaver, semiSuperSaver: tgt.semiSuperSaver,
+      saveBonuses: tgt.saveBonuses, damageModifiers: tgt.damageModifiers,
+      currentHP: tgt.currentHP, maxHP: tgt.maxHP, castId,
+    }}};
+    await this._rollPcSave(fakeMsg);
+  }
+
   /** Called on the GM when the caster's client replies with its target choice. */
   resolveSpellPickerChoice(requestId, tokenIds) {
     const resolve = this._pickerRequests.get(requestId);
@@ -1583,11 +1620,23 @@ export class SaveEngine {
     // Use target list message ID as unique cast identifier
     const castId = targetListMsg.id;
 
-    // ── Send PC save prompts immediately (same time as target list card) ──
+    // ── Send PC save prompts — but if a PC's owner is OFFLINE, the GM rolls it
+    //    on their behalf immediately so the save never hangs (Johnny 2026-07-13:
+    //    "the GM must always be able to roll for absent players, across all
+    //    saves"). The manual roll-on-behalf die stays on the card for online
+    //    PCs too, so the GM can still roll for a present player if they want.
+    const _iAmActiveGM = game.users?.activeGM === game.user;
     for (const tgt of pcs) {
-      await this._sendPcSavePrompt(item, actor, tgt, {
-        saveAbility, saveDC, halfOnSave, damageTypes, isSpell, castId,
-      });
+      if (_iAmActiveGM && !this._pcOwnerActive(tgt)) {
+        console.log(`${MODULE_ID} | PC "${tgt.name}" owner is offline — GM auto-rolling their save (no hang).`);
+        await this._gmRollPcSaveOffline(item, actor, tgt, {
+          saveAbility, saveDC, halfOnSave, damageTypes, isSpell, castId,
+        });
+      } else {
+        await this._sendPcSavePrompt(item, actor, tgt, {
+          saveAbility, saveDC, halfOnSave, damageTypes, isSpell, castId,
+        });
+      }
     }
 
     // ── Auto-delete the AOE template ──

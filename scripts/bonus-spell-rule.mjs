@@ -124,19 +124,27 @@ export class BonusSpellRule {
     const isBonus   = castType === "bonus";
     const isAction  = castType === "action";
 
-    const state = actor.getFlag(FLAG_NS, FLAG_KEY) ?? { castCount: 0, hadBonusActionLeveled: false };
+    const state = actor.getFlag(FLAG_NS, FLAG_KEY) ?? { castCount: 0, hadBonusActionLeveled: false, hadActionSpell: false };
 
     // Out of combat: no enforcement (turns are undefined)
     if (!game.combat || !game.combat.started) {
       return { ok: true };
     }
 
-    // Allowed cases:
-    //   - First spell of the turn → always allowed
-    //   - Cantrip with 1-action cast → always allowed (RAW carve-out)
-    //   - Leveled bonus-action spell as the FIRST spell of the turn → allowed
+    // First spell of the turn → always allowed.
     if (state.castCount === 0) return { ok: true };
-    if (isCantrip && isAction)  return { ok: true };
+
+    // ── One Action-cast spell per turn (you have ONE Action) ──
+    // Blocks a SECOND action-cast spell this turn — INCLUDING a second cantrip.
+    // An action-cast spell uses your Action, and you get one Action per turn.
+    // Action Surge / extra actions are the exception: turn off "strict" for
+    // those turns. This is the "two cantrips in a turn" block (Johnny 2026-07-13).
+    if (isAction && state.hadActionSpell) {
+      return {
+        ok: false,
+        reason: `${actor.name} already cast a spell with their Action this turn — you only get one Action, so a second action-cast spell (even a cantrip) isn't allowed without Action Surge or similar.`,
+      };
+    }
 
     // Block cases:
     //   - Already cast a bonus-action LEVELED spell, and trying to cast a
@@ -168,10 +176,12 @@ export class BonusSpellRule {
       const isCantrip = (item.system?.level ?? 0) === 0;
       const castType  = activity?.activation?.type ?? item?.system?.activation?.type ?? "action";
       const isBonus   = castType === "bonus";
-      const prior = actor.getFlag(FLAG_NS, FLAG_KEY) ?? { castCount: 0, hadBonusActionLeveled: false };
+      const isAction  = castType === "action";
+      const prior = actor.getFlag(FLAG_NS, FLAG_KEY) ?? { castCount: 0, hadBonusActionLeveled: false, hadActionSpell: false };
       await actor.setFlag(FLAG_NS, FLAG_KEY, {
         castCount: (prior.castCount ?? 0) + 1,
         hadBonusActionLeveled: prior.hadBonusActionLeveled || (isBonus && !isCantrip),
+        hadActionSpell: prior.hadActionSpell || isAction,
         lastSpellId: item.id,
         lastSpellName: item.name,
         lastCastType: castType,

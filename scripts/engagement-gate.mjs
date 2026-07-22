@@ -201,6 +201,17 @@ export class EngagementGate {
         : !!_saveAbil);
     if (_isSaveActivity) return null;
 
+    // ── Bypass: summon / conjure activities (Summon Fey/Beast/Undead/Fiend/
+    //    Aberration/Celestial/Construct…, Find Familiar, Conjure Animals). A
+    //    summon CREATES a creature in an unoccupied space near the caster — it
+    //    never needs a pre-selected canvas target. dnd5e types these as
+    //    "summon", and the activity carries the summoned stat block whose
+    //    "target one creature" wording would otherwise trip the description
+    //    scan below and wrongly demand a target. Let the cast through; dnd5e's
+    //    own summon dialog handles placement. (Reported 2026-07-14: Summon Fey
+    //    — the "Tricksy" mood darkness — was blocked on "select a target".)
+    if (activity?.type === "summon") return null;
+
     // Defensive reads — dnd5e activity schema varies between 2014/2024 and
     // some fields are objects (target.template = {type, size, ...}) not
     // strings. The previous version did `?? ""` then `.toLowerCase()` which

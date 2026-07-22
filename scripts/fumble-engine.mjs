@@ -17,6 +17,7 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
+import { CombatState } from "./combat-state.mjs";
 import { safeShowForRoll } from "./damage-engine.mjs";
 
 const FUMBLE_TABLE = [
@@ -70,12 +71,14 @@ export class FumbleEngine {
         // has already happened and the rolled result is what stands.
         const actor = data?.subject?.actor ?? data?.actor;
 
+        // (B) END-TURN on fumble FIRST — synchronous, BEFORE the async fumble-
+        //     table roll below — so the multiattack chain sees the mark + abort
+        //     the instant the nat-1 lands, not after a 1d12 round-trip (Johnny
+        //     2026-07-13: the pop-up raced open right after the fumble).
+        if (endsTurn) FumbleEngine._endTurnOnFumble(actor);
+
         // (A) Fumble table card (optional, independent toggle).
         if (fumbleTable) await FumbleEngine._postFumble(actor);
-
-        // (B) Fumble ENDS THE TURN (Johnny's table rule, 2026-07-10): a nat-1
-        //     on your OWN turn = you're done, immediately. Auto-advances.
-        if (endsTurn) FumbleEngine._endTurnOnFumble(actor);
       } catch (err) {
         console.warn(`${MODULE_ID} | FumbleEngine threw:`, err);
       }
@@ -96,10 +99,33 @@ export class FumbleEngine {
   //  socket; a GM-rolled fumble advances directly.
   static _endTurnOnFumble(actor) {
     try {
+      if (!actor) return;
       const combat = game.combat;
-      if (!combat?.started || !actor) return;
+
+      // ── Stop the fumbler's multiattack UNCONDITIONALLY ──
+      // A fumble ends their attacks, period. We do this BEFORE the turn guard so
+      // an actor/token-id quirk in the tracker can never leave the pop-up
+      // dangling (Johnny 2026-07-13: fumbleEndsTurn was ON but the pop-up stayed).
+      // Both are harmless no-ops when there's no chain (e.g. a fumbled OA):
+      //   • mark  → the roller-local chain consumes it before the NEXT offer.
+      //   • abort → closes an ALREADY-open pop-up on the spot.
+      CombatState.markMultiattackFumble(actor.id);
+      try { Hooks.callAll(`${MODULE_ID}.multiattackAbort`, { actorId: actor.id }); } catch (_) { /* non-fatal */ }
+
+      // Deselect the fumbler's token — a clean "you're out" cue on the roller's
+      // screen (Johnny 2026-07-13). We deliberately DON'T clear the target: Johnny
+      // decided the target reticle should stay up (2026-07-14). Per-client;
+      // harmless if nothing is controlled.
+      try { for (const t of (actor.getActiveTokens?.() ?? [])) t.release?.(); } catch (_) { /* non-fatal */ }
+
+      // ── Advance the turn ONLY on the fumbler's OWN turn ──
+      // An OA fumble on someone else's turn must NOT skip that creature.
+      if (!combat?.started) return;
       const current = combat.combatant?.actor;
-      if (!current || current.id !== actor.id) return;   // not the fumbler's turn
+      if (!current || current.id !== actor.id) {
+        console.debug(`${MODULE_ID} | Fumble: multiattack stopped, turn NOT advanced — active combatant is ${current?.name ?? "none"}, not the fumbler.`);
+        return;
+      }
 
       ui.notifications?.warn(`${actor.name} FUMBLED — turn ended.`);
       if (game.users?.activeGM === game.user) {

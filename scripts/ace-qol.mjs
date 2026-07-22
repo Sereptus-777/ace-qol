@@ -24,6 +24,7 @@ import { ReactionEngine, injectReactionCSS } from "./reaction-engine.mjs";
 import { InvisibilityBreaker } from "./invisibility-breaker.mjs";
 import { AceFX } from "./ace-fx.mjs";
 import { AttackAbilityResolver } from "./attack-ability-resolver.mjs";
+import { pickHiddenReasonLine, showGmHiddenReasonNotice } from "./hidden-reason-notice.mjs";
 import { RulesBrain } from "./rules/rules-brain.mjs";
 import { SpaceEffects } from "./rules/space-effects.mjs";
 import { SelfTest } from "./rules/self-test.mjs";
@@ -1189,6 +1190,32 @@ Hooks.once("ready", () => {
     }
   });
 
+  // Self / emanation spells (Detect Magic, Detect Evil & Good, …) emanate from
+  // the caster — they don't need a placed template and shouldn't PROMPT for one.
+  // A mis-built stat-block spell (Johnny 2026-07-13: the Cambion's Detect Magic)
+  // can carry a placeable template target and pop the drag-to-place UI. We tell
+  // dnd5e to skip template creation at USE time — config.create.measuredTemplate
+  // = false, honored at dnd5e's Activity#placeTemplate (dnd5e.mjs ~17471), set
+  // via `??=` so our false sticks — which kills the prompt with zero cast
+  // disruption. Scoped to anything the pipeline classifies as shape "self"; auras
+  // (Spirit Guardians = "aura") and real area spells are untouched. Only fires
+  // when there's actually a template target to suppress. Gate: suppressSelfSpellTemplates.
+  Hooks.on("dnd5e.preUseActivity", (activity, usageConfig /*, dialogConfig, messageConfig */) => {
+    try {
+      if (!game.settings.get(MODULE_ID, "suppressSelfSpellTemplates")) return;
+      const item = activity?.item;
+      if (!item) return;
+      const entry = SpellPipeline?._getEntry?.(item);
+      if (entry?.shape !== "self") return;                 // only self-emanation spells
+      if (!activity?.target?.template?.type) return;        // no template to suppress anyway
+      usageConfig.create ??= {};
+      usageConfig.create.measuredTemplate = false;
+      console.log(`${MODULE_ID} | suppressSelfSpellTemplates: "${item.name}" emanates from the caster — skipping the template placement prompt.`);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | self-spell template suppression failed (allowing template):`, err);
+    }
+  });
+
   // On reload, the prototype patch installs HERE in the ready hook, but
   // templates already rendered during canvasReady (which fires BEFORE
   // ready). So existing templates were drawn with alpha=1 — the patch
@@ -2323,10 +2350,11 @@ Hooks.once("ready", () => {
           const roll = await new Roll(formula).evaluate();
           const total = roll.total;
           const passed = total >= dc;
-          await roll.toMessage({
-            speaker: ChatMessage.getSpeaker({ actor }),
-            flavor: `${actor.name} Concentration save — ${passed ? "MAINTAINED" : "BROKEN"} (${total} vs DC ${dc})`,
-          });
+          // Tumble the dice via Dice So Nice, but do NOT post dnd5e's vanilla roll
+          // card — the styled button card below already shows the result inline, so
+          // toMessage() was just an ugly duplicate (Johnny 2026-07-14). Fire-and-
+          // forget + broadcast; no-ops cleanly if DSN isn't installed.
+          try { game.dice3d?.showForRoll?.(roll, game.user, true); } catch (_) { /* DSN optional */ }
           if (!passed) {
             try { await effect.delete(); } catch (_) { /* non-fatal */ }
             btn.textContent = `BROKEN — ${total} vs DC ${dc}`;
@@ -2353,14 +2381,18 @@ Hooks.once("ready", () => {
     try {
       const ActorCls = CONFIG.Actor?.documentClass ?? globalThis.Actor;
       if (ActorCls?.prototype?.update) {
-        const _origUpdate = ActorCls.prototype.update;
         // Re-entrancy guard — per-actor WeakSet. If the patch body triggers
         // another Actor.update on the same actor (e.g. effect creation/deletion
         // → updateActor hook → other module fires actor.update), we bypass the
         // patch to avoid stacked concentration cards / infinite recursion.
         // (Audit-mandated: Grok 2026-06-08.)
         const _patchActive = new WeakSet();
-        ActorCls.prototype.update = async function(data, options = {}) {
+        // Body written in libWrapper's WRAPPER shape — `wrapped(data, options)` calls
+        // the original update. Registered THROUGH libWrapper when it's installed
+        // (collision-safe with any other module that also touches Actor.update — the
+        // module's highest-traffic function); falls back to a direct prototype patch
+        // otherwise, so behavior is identical either way. (Launch hardening 2026-07-14.)
+        const _aceUpdateWrapper = async function(wrapped, data, options = {}) {
           // ── ALWAYS suppress dnd5e's native concentration challenge on any
           //    HP-touching update — even re-entrant ones. ACE owns concentration;
           //    there is no case where we want dnd5e's vanilla challenge card. Doing
@@ -2379,7 +2411,7 @@ Hooks.once("ready", () => {
           //    nested update. Suppression above is already applied, so bypassing
           //    here no longer leaks dnd5e's native card.
           if (_patchActive.has(this)) {
-            return _origUpdate.call(this, data, options);
+            return wrapped(data, options);
           }
           _patchActive.add(this);
           try {
@@ -2411,7 +2443,7 @@ Hooks.once("ready", () => {
                 }
               }
             } catch (_) { /* non-fatal — fall through to original update */ }
-            const result = await _origUpdate.call(this, data, options);
+            const result = await wrapped(data, options);
             // ── Post-update: fire ACE concentration check if HP dropped on a
             // concentrating actor. Fires AFTER the WeakSet clear (in finally)
             // so the inner check doesn't recurse against this same guard. ──
@@ -2435,7 +2467,26 @@ Hooks.once("ready", () => {
             _patchActive.delete(this);
           }
         };
-        console.debug(`${MODULE_ID} | Actor.update patched (re-entrancy-guarded) — vanilla dnd5e concentration suppressed + ACE concentration check fires globally on HP drops`);
+        // Register: libWrapper if available (collision-safe), else a direct patch
+        // that adapts the SAME wrapper by feeding it a bound call-original.
+        const _directPatch = () => {
+          const _origUpdate = ActorCls.prototype.update;
+          ActorCls.prototype.update = async function(data, options = {}) {
+            return _aceUpdateWrapper.call(this, (d = data, o = options) => _origUpdate.call(this, d, o), data, options);
+          };
+          console.debug(`${MODULE_ID} | Actor.update patched directly (libWrapper absent) — concentration suppressed + ACE check on HP drops.`);
+        };
+        if (game.modules.get("lib-wrapper")?.active && globalThis.libWrapper) {
+          try {
+            globalThis.libWrapper.register(MODULE_ID, "CONFIG.Actor.documentClass.prototype.update", _aceUpdateWrapper, "WRAPPER");
+            console.log(`${MODULE_ID} | Actor.update wrapped via libWrapper (collision-safe) — concentration suppressed + ACE check on HP drops.`);
+          } catch (e) {
+            console.warn(`${MODULE_ID} | libWrapper register for Actor.update failed — falling back to direct patch:`, e);
+            _directPatch();
+          }
+        } else {
+          _directPatch();
+        }
       }
     } catch (err) {
       console.warn(`${MODULE_ID} | Actor.update patch failed (non-fatal):`, err);
@@ -2689,6 +2740,7 @@ Hooks.once("ready", () => {
             CombatState.clearDivineSmiteFlag(priorActor).catch(() => {});
             CombatState.clearEldritchSmiteFlag(priorActor).catch(() => {});
             CombatState.clearSneakAttackFlag(priorActor).catch(() => {});
+            CombatState.clearCleaveFlag(priorActor).catch(() => {});
             FeatEffects.clearOncePerTurnFlags(priorActor).catch(() => {});
           }
         }
@@ -2712,6 +2764,7 @@ Hooks.once("ready", () => {
             CombatState.clearDivineSmiteFlag(c.actor).catch(() => {});
             CombatState.clearEldritchSmiteFlag(c.actor).catch(() => {});
             CombatState.clearSneakAttackFlag(c.actor).catch(() => {});
+            CombatState.clearCleaveFlag(c.actor).catch(() => {});
             FeatEffects.clearOncePerTurnFlags(c.actor).catch(() => {});
           }
         }
@@ -2727,6 +2780,7 @@ Hooks.once("ready", () => {
             CombatState.clearDivineSmiteFlag(c.actor).catch(() => {});
             CombatState.clearEldritchSmiteFlag(c.actor).catch(() => {});
             CombatState.clearSneakAttackFlag(c.actor).catch(() => {});
+            CombatState.clearCleaveFlag(c.actor).catch(() => {});
             FeatEffects.clearOncePerTurnFlags(c.actor).catch(() => {});
           }
         }
@@ -2984,9 +3038,11 @@ Hooks.once("ready", () => {
   try {
     const attackActivityClass = CONFIG.DND5E?.activityTypes?.attack?.documentClass;
     if (attackActivityClass?.prototype && !attackActivityClass.prototype._aceQolSpellRiderPatched) {
-      const original = attackActivityClass.prototype.rollDamage;
-      attackActivityClass.prototype.rollDamage = async function (...args) {
-        const rolls = await original.apply(this, args);
+      // Body written in libWrapper's WRAPPER shape — `wrapped(...args)` calls the
+      // original rollDamage. Registered through libWrapper when installed
+      // (collision-safe); direct prototype patch otherwise. (Launch hardening 2026-07-14.)
+      const _aceRollDamageWrapper = async function (wrapped, ...args) {
+        const rolls = await wrapped(...args);
         try {
           const item = this?.item;
           const actor = item?.actor ?? this?.actor;
@@ -3042,8 +3098,28 @@ Hooks.once("ready", () => {
         }
         return rolls;
       };
+      // Register: libWrapper if present (collision-safe), else a direct patch that
+      // adapts the SAME wrapper by feeding it a bound call-original.
+      const _rdTarget = "CONFIG.DND5E.activityTypes.attack.documentClass.prototype.rollDamage";
+      const _rdDirect = () => {
+        const original = attackActivityClass.prototype.rollDamage;
+        attackActivityClass.prototype.rollDamage = async function (...args) {
+          return _aceRollDamageWrapper.call(this, (...a) => original.apply(this, a), ...args);
+        };
+      };
+      if (game.modules.get("lib-wrapper")?.active && globalThis.libWrapper) {
+        try {
+          globalThis.libWrapper.register(MODULE_ID, _rdTarget, _aceRollDamageWrapper, "WRAPPER");
+          console.log(`${MODULE_ID} | attack rollDamage wrapped via libWrapper (spell riders + Pact-of-Blade).`);
+        } catch (e) {
+          console.warn(`${MODULE_ID} | libWrapper register for rollDamage failed — falling back to direct patch:`, e);
+          _rdDirect();
+        }
+      } else {
+        _rdDirect();
+        console.log(`${MODULE_ID} | Spell rider + Pact-of-Blade attack-path patch applied (direct).`);
+      }
       attackActivityClass.prototype._aceQolSpellRiderPatched = true;
-      console.log(`${MODULE_ID} | Spell rider + Pact-of-Blade attack-path patch applied`);
     }
   } catch (err) {
     console.warn(`${MODULE_ID} | Spell rider attack-path patch setup failed:`, err);
@@ -4024,6 +4100,18 @@ Hooks.once("ready", () => {
         return;
       }
 
+      // ── GM heads-up: a player's roll HID a situational reason (e.g. the
+      //    target's truesight beat their darkness). Broadcast addressed to
+      //    "the GM" (no userId), so it sits BEFORE the userId gate below.
+      //    activeGM-gated + de-duped inside the notice module. ──
+      if (payload?.action === "gmHiddenReason") {
+        if (game.users?.activeGM === game.user) {
+          try { showGmHiddenReasonNotice(payload); }
+          catch (e) { console.warn(`${MODULE_ID} | gmHiddenReason notice failed:`, e); }
+        }
+        return;
+      }
+
       if (!payload?.action || payload?.userId !== game.user.id) return;
 
       // ── Close system ActivityChoiceDialogs (Divine Smite "Use/Damage/Undead" popup) ──
@@ -4159,6 +4247,22 @@ Hooks.once("ready", () => {
         try {
           const message = game.messages.get(payload.messageId);
           if (!message) { console.warn(`${MODULE_ID} | rollDamage: message not found ${payload.messageId}`); return; }
+
+          // The player chose their per-attack Pact of the Blade damage type on
+          // THEIR screen; the pick rides the socket. Apply it here BEFORE the
+          // damage build reads it — no flag-propagation race — then the build's
+          // getPactBladeType lands on the right type. (The GM-side chooser is
+          // suppressed for player-owned actors, so it never double-pops.)
+          if (payload.pactDamageType) {
+            try {
+              const _pactActor = game.actors.get(message.flags?.[MODULE_ID]?.actorId);
+              if (_pactActor) {
+                const { setWarlockDamageType } = await import("./warlock-damage-chooser.mjs");
+                await setWarlockDamageType(_pactActor, "pactBlade", payload.pactDamageType);
+              }
+            } catch (e) { console.warn(`${MODULE_ID} | rollDamage: pact type apply failed (non-fatal):`, e); }
+          }
+
           const success = await damageEngine._rollDamageFromButton(message, { skipDice: payload.skipDice === true });
           if (success) {
             console.log(`${MODULE_ID} | rollDamage: success for message ${payload.messageId}`);
@@ -4846,13 +4950,46 @@ Hooks.once("ready", () => {
             // weighed four of them reads as a miss (the goblin-in-darkness
             // confusion). Winner shows its sources; a cancel shows BOTH sides.
             const advS = cs?.advantageSources ?? [], disS = cs?.disadvantageSources ?? [];
-            reasons   = suggested === "advantage"    ? advS
-                      : suggested === "disadvantage" ? disS
-                      : (advS.length || disS.length)
-                        ? [...advS.map(s => ({ reason: `ADV: ${s.reason}` })),
-                           ...disS.map(s => ({ reason: `DIS: ${s.reason}` })),
-                           { reason: "→ they cancel: straight roll (RAW)" }]
-                        : [];
+            const allNotes = cs?.situationalNotes ?? [];
+            // Situational notes explain a CANCELLED rule. Some reveal the
+            // TARGET's hidden senses (a monster's truesight). HARD RULE, no
+            // setting: the GM always sees them; players NEVER do — they get a
+            // mystery line and the GM gets the pop-up + record card. Notes about
+            // the player's OWN senses (gmOnly:false) still show to them.
+            const revealNotes = game.user.isGM;
+            const visibleNotes = allNotes.filter(n => revealNotes || !n.gmOnly);
+            // gmOnly notes hidden from THIS (player) viewer = the secret the GM
+            // needs flagged, and the player gets a vague mystery line instead.
+            const suppressed = revealNotes ? [] : allNotes.filter(n => n.gmOnly);
+
+            if (suggested === "advantage")         reasons = advS;
+            else if (suggested === "disadvantage") reasons = disS;
+            else if (advS.length || disS.length)   reasons = [...advS.map(s => ({ reason: `ADV: ${s.reason}` })),
+                                                              ...disS.map(s => ({ reason: `DIS: ${s.reason}` })),
+                                                              { reason: "→ they cancel: straight roll (RAW)" }];
+            else if (visibleNotes.length)          reasons = visibleNotes.map(n => ({ reason: n.text }));
+            // No adv, no dis, nothing visible — but a reason WAS hidden. Give the
+            // player a rotating mystery line instead of "no modifiers detected".
+            else if (suppressed.length)            reasons = [{ reason: pickHiddenReasonLine() }];
+            else                                   reasons = [];
+
+            // ── GM heads-up (three gates): a PLAYER rolled AND a reason was
+            // actually hidden. The GM-roller path already sees it inline above,
+            // so this only fires client-side for a player. De-dupe is GM-side.
+            if (suppressed.length && !game.user.isGM) {
+              try {
+                game.socket.emit(SOCKET_NAME, {
+                  action:       "gmHiddenReason",
+                  attackerName: this.actor.token?.name ?? this.actor.name ?? "Attacker",
+                  targetName:   target.actor?.name ?? target.name ?? "Target",
+                  realReasons:  suppressed.map(n => n.text),
+                  playerLine:   reasons[0]?.reason ?? "",
+                  attackerId:   this.actor.id,
+                  targetId:     target.actor?.id ?? target.id ?? null,
+                  combatId:     game.combat?.id ?? null,
+                });
+              } catch (e) { console.warn(`${MODULE_ID} | gmHiddenReason emit failed:`, e); }
+            }
           } catch (err) {
             console.warn(`${MODULE_ID} | CombatState.assess failed in prompt:`, err);
           }

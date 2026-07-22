@@ -72,6 +72,14 @@ const _pactPromptOpen = new Set();
 export async function promptPactTypePerAttack(actor, item) {
   try {
     if (!actor?.id) return;
+    // Only the ACTUAL roller chooses. When an active player owns this actor, the
+    // GM must NOT pop the chooser — the owning player picks on THEIR client
+    // before the damage socket, and the pick is applied GM-side from that
+    // payload. The GM only chooses for actors it runs itself (monsters / GM-cast:
+    // no active player owner). Stops the chooser landing on the GM (2026-07-12).
+    const _hasActivePlayerOwner = game.users?.some(u =>
+      !u.isGM && u.active && actor.testUserPermission?.(u, "OWNER"));
+    if (game.user?.isGM && _hasActivePlayerOwner) return;
     if (!(actor.isOwner || game.user?.isGM)) return;   // only the roller chooses
     if (_pactPromptOpen.has(actor.id)) return;          // one dialog at a time
     _pactPromptOpen.add(actor.id);

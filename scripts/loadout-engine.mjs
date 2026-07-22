@@ -42,7 +42,48 @@ export class LoadoutEngine {
         return true;
       }
     });
+    // Attack-time BLOCK: a character can't swing a weapon that isn't equipped
+    // (Johnny 2026-07-13: "Syrax can still use his halberd — we gotta stop the
+    // swing from happening"). Cancels the swing (returns false) BEFORE it rolls.
+    // Guarded so it only fires when the character demonstrably maintains a loadout
+    // (has another weapon marked equipped) — if nothing is equipped we can't tell
+    // what's in hand, so we allow (fail-open). Setting `blockUnequippedAttack`.
+    Hooks.on("dnd5e.preUseActivity", (activity /*, usageConfig, dialogConfig, messageConfig */) => {
+      try { return LoadoutEngine._blockUnequippedAttack(activity); }
+      catch (_) { return true; /* our own bug must never block a legit swing */ }
+    });
     console.debug(`${MODULE_ID} | LoadoutEngine online`);
+  }
+
+  /**
+   * Blocks a CHARACTER from attacking with a weapon that isn't equipped, when
+   * they clearly have a DIFFERENT weapon in hand. Returns false to cancel the
+   * activity, true to allow. NPCs, natural weapons, and unarmed strikes are
+   * never blocked. Fails open (allows) whenever the loadout can't be judged, so
+   * a blank/messy sheet never traps a player.
+   */
+  static _blockUnequippedAttack(activity) {
+    if (!QolSettings.get?.("blockUnequippedAttack")) return true;
+    if (activity?.type !== "attack") return true;
+    const item = activity?.item;
+    if (!item || item.type !== "weapon") return true;         // feats/spells/etc. — not our concern
+    const actor = item.actor ?? item.parent;
+    if (!actor || actor.type !== "character") return true;    // NPCs are GM-managed
+    // Natural weapons / unarmed strikes never need equipping.
+    const props = item.system?.properties;
+    if (props?.has?.("nat") || /unarmed/i.test(item.name ?? "")) return true;
+    if (item.system?.equipped === true) return true;          // it IS equipped → fine
+    // Not equipped. Only block if the character has ANOTHER weapon in hand —
+    // that's the signal they keep their equip flags tidy and this weapon really
+    // isn't drawn. No other equipped weapon → we can't judge → allow (fail-open).
+    const hasOtherEquippedWeapon = (actor.items ?? []).some(i =>
+      i.type === "weapon" && i.id !== item.id && i.system?.equipped === true
+      && !(i.system?.properties?.has?.("nat")));
+    if (!hasOtherEquippedWeapon) return true;
+    const msg = `${actor.name} can't attack with ${item.name} — it isn't equipped (another weapon is in hand). Equip ${item.name} first, or turn off "Block Un-Equipped Weapon Attacks" in ACE settings.`;
+    try { showCenterToast?.(msg); } catch (_) { /* toast is best-effort */ }
+    ui.notifications?.warn(msg);
+    return false;   // cancels the swing before it rolls
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

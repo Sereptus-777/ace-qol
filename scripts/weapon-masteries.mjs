@@ -36,6 +36,7 @@
 
 import { aceWithinFt } from "./geometry-utils.mjs";
 import { CombatState } from "./combat-state.mjs";
+import { AttackAbilityResolver } from "./attack-ability-resolver.mjs";
 
 const MODULE_ID = "ace-qol";
 const TAG       = `${MODULE_ID} | Mastery`;
@@ -407,17 +408,12 @@ export class WeaponMasteries {
                          : attackerDoc?.getActiveTokens?.()[0] ?? null;
     const attackerDisp = attackerToken?.document?.disposition ?? 0;
 
-    // Within 5 ft of the original target — nearest-edge, size-aware, 3D (canonical).
-    const adjacent = canvas.tokens?.placeables?.filter(t =>
-      t !== origTok &&                                          // not the original target
-      t.id !== attackerToken?.id &&                             // not the attacker themselves
-      t.actor &&                                                // has an actor
-      t.document.disposition !== attackerDisp &&                // not on attacker's side
-      aceWithinFt(t, origTok, 5)                                // within 5 ft of original target
-    ) ?? [];
+    // Within 5 ft of the original target — shared, HP-aware helper (alive only,
+    // never a downed/dead creature; same list the damage-card cleave path uses).
+    const adjacent = WeaponMasteries.findCleaveAdjacent(attackerToken, origTok);
 
     if (!adjacent.length) {
-      ui.notifications?.warn("Cleave: no adjacent creatures within 5 ft of the original target.");
+      ui.notifications?.warn("Cleave: no living creatures within 5 ft of the original target.");
       return;
     }
 
@@ -486,19 +482,12 @@ export class WeaponMasteries {
       return;
     }
 
-    // Compute the attacker's ability modifier for THIS weapon's attack.
-    // dnd5e 5.x: weapon attack ability defaults to STR for melee, DEX for
-    // finesse/ranged, set by item.system.ability or item.system.attack.ability.
+    // Compute the attacker's ability modifier for THIS weapon's swing — via the
+    // shared, resolver-aware helper (honors Pact of the Blade / Hex Warrior CHA,
+    // not the weapon's static STR default). RAW: only a POSITIVE mod is removed
+    // ("doesn't take the damage from your STR/DEX modifier" — a bonus only).
     const attActor = attackerToken?.actor ?? attackerDoc?.actor ?? attackerDoc;
-    let abilityKey = item.system?.attack?.ability || item.system?.ability || "";
-    if (abilityKey instanceof Set || abilityKey instanceof Array) abilityKey = [...abilityKey][0] ?? "";
-    abilityKey = String(abilityKey || "").toLowerCase().trim() || "str";
-    const abilityMod = attActor?.system?.abilities?.[abilityKey]?.mod ?? 0;
-
-    // RAW: don't subtract a NEGATIVE ability mod (don't add to the second
-    // creature's damage). PHB text: "doesn't take the damage from your
-    // STR/DEX modifier" — implicitly only applies if the mod was a bonus.
-    const subtractedMod = Math.max(0, abilityMod);
+    const { abilityKey, subtracted: subtractedMod } = WeaponMasteries.getAttackAbilityMod(item, attActor);
     const cleaveDamage = Math.max(0, origEntry.totalFinal - subtractedMod);
 
     if (cleaveDamage <= 0) {
@@ -904,12 +893,28 @@ export class WeaponMasteries {
    *     damage from your STR/DEX modifier" if that modifier was a bonus
    */
   static getAttackAbilityMod(item, actor) {
-    let abilityKey = item?.system?.attack?.ability || item?.system?.ability || "";
-    if (abilityKey instanceof Set || abilityKey instanceof Array) {
-      abilityKey = [...abilityKey][0] ?? "";
+    // Pact of the Blade (2024) / Hex Warrior (2014) dynamically swap the swing's
+    // ability to CHARISMA at roll time. The weapon itself carries no static
+    // ability, so reading item.system.ability alone falls back to STR — the
+    // Blood Halberd cleave bug: it subtracted +1 STR when the swing was actually
+    // +5 CHA. Ask the SAME resolver the attack used, so Cleave removes exactly
+    // the ability modifier that was added.
+    let abilityKey = "";
+    let abilityMod = null;
+    try {
+      const override = AttackAbilityResolver.getOverride?.(actor, item);
+      if (override && Number.isFinite(override.mod)) {
+        abilityKey = String(override.ability || "").toLowerCase().trim();
+        abilityMod = override.mod;
+      }
+    } catch (_) { /* resolver unavailable — fall through to the weapon's static ability */ }
+
+    if (!abilityKey) {
+      let staticKey = item?.system?.attack?.ability || item?.system?.ability || "";
+      if (staticKey instanceof Set || staticKey instanceof Array) staticKey = [...staticKey][0] ?? "";
+      abilityKey = String(staticKey || "").toLowerCase().trim() || "str";
     }
-    abilityKey = String(abilityKey || "").toLowerCase().trim() || "str";
-    const abilityMod = actor?.system?.abilities?.[abilityKey]?.mod ?? 0;
+    if (abilityMod === null) abilityMod = actor?.system?.abilities?.[abilityKey]?.mod ?? 0;
     return { abilityKey, abilityMod, subtracted: Math.max(0, abilityMod) };
   }
 
@@ -928,6 +933,7 @@ export class WeaponMasteries {
       t !== origTok &&
       t.id !== attackerToken?.id &&
       t.actor &&
+      (t.actor?.system?.attributes?.hp?.value ?? 0) > 0 &&   // ALIVE only — never cleave a downed/dead creature
       t.document.disposition !== attackerDisp &&
       aceWithinFt(t, origTok, 5)
     ) ?? [];

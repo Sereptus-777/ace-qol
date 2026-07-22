@@ -31,7 +31,7 @@ import { ConditionLibrary } from "./condition-library.mjs";
 // so concentration-widget.mjs can import it without creating a circular
 // dependency through ace-qol.mjs. We re-export it here so existing
 // imports of `safeShowForRoll` from damage-engine.mjs keep working.
-import { safeShowForRoll } from "./dsn-utils.mjs";
+import { safeShowForRoll, awaitDiceSettle } from "./dsn-utils.mjs";
 export { safeShowForRoll };
 
 export class DamageConstants {
@@ -525,6 +525,11 @@ export class DamageEngine {
             const cf       = message.flags?.[MODULE_ID] ?? {};
             const first    = (cf.damageResults ?? [])[0];
             const attActor = cf.actorId ? game.actors?.get?.(cf.actorId) : null;
+            // Already cleaved this turn (RAW once-per-turn) → hide the button.
+            if (game.combat?.started && attActor?.getFlag?.(MODULE_ID, "cleave.usedThisTurn")) {
+              cleaveBtn.style.display = "none";
+              return;
+            }
             const attTok   = attActor?.getActiveTokens?.()[0] ?? null;
             const origTok  = first?.tokenDocId ? canvas.tokens?.get?.(first.tokenDocId) : null;
             if (!attTok || !origTok) return;   // can't evaluate — leave the button
@@ -784,6 +789,29 @@ export class DamageEngine {
               // HP application to the GM, who runs them exactly as before with
               // its own dice suppressed (skipDice) so the animation isn't doubled.
               console.log(`${MODULE_ID} | Player ${game.user.name} rolling their own damage for message ${message.id}`);
+
+              // ── Pact of the Blade per-attack chooser — PLAYER side ──
+              // The damage BUILD runs on the GM (below, over the socket), and the
+              // type chooser lives inside that build — so on a player-owned pact
+              // weapon it would pop on the GM's screen. Prompt HERE, on the
+              // roller's own client, before handing off; the pick rides the socket
+              // so the GM applies it and its own chooser never re-pops GM-side.
+              let pactDamageType = null;
+              try {
+                if (QolSettings.get?.("pactBladePromptPerAttack")) {
+                  const _pactActor = game.actors.get(flags.actorId);
+                  const _pactItem  = _pactActor?.items?.get(flags.itemId)
+                                  ?? (flags.itemUuid ? await fromUuid(flags.itemUuid) : null);
+                  const wdc = await import("./warlock-damage-chooser.mjs");
+                  if (_pactActor && _pactItem && wdc.hasPactOfTheBlade(_pactActor)) {
+                    await wdc.promptPactTypePerAttack(_pactActor, _pactItem);
+                    pactDamageType = wdc.getPactBladeType(_pactActor) ?? null;
+                  }
+                }
+              } catch (err) {
+                console.warn(`${MODULE_ID} | player-side pact chooser failed (non-fatal):`, err);
+              }
+
               try { DamageCardRenderer.showPreRolledDice(flags.preRolled); } catch (_) {}
               game.socket.emit(`module.${MODULE_ID}`, {
                 action: "rollDamage",
@@ -791,6 +819,7 @@ export class DamageEngine {
                 userId: game.user.id,
                 userName: game.user.name,
                 skipDice: true,
+                pactDamageType,
               });
               rollDmgBtn.innerHTML = '<i class="fas fa-check"></i> Rolled ✓';
             }
@@ -1219,6 +1248,15 @@ export class DamageEngine {
       return;
     }
 
+    // RAW 2024: Cleave can be used only ONCE per turn. Block a second one this
+    // turn (in-combat only — no "turns" exist outside combat).
+    if (game.combat?.started && attActor?.getFlag?.(MODULE_ID, "cleave.usedThisTurn")) {
+      ui.notifications.info(`Cleave: ${attActor.name} has already cleaved this turn (once per turn, RAW).`);
+      cleaveBtn.disabled = true;
+      cleaveBtn.innerHTML = '<i class="fas fa-hourglass-end"></i> CLEAVED THIS TURN';
+      return;
+    }
+
     // 2. Resolve the original target token on canvas (need its position to
     //    find adjacent enemies). Try the recorded sceneId first; fall back
     //    to current canvas.
@@ -1279,6 +1317,79 @@ export class DamageEngine {
         `Cleave: ${origTok.name}'s damage was ${origEntry.totalFinal} − ${subtracted} ${abilityKey.toUpperCase()} = 0. Nothing to cleave.`
       );
       return;
+    }
+
+    // RAW: committing the cleave (target chosen, damage > 0) consumes the
+    // once-per-turn use — whether the attack roll below HITS or MISSES.
+    if (game.combat?.started) CombatState.markCleaveUsed(attActor);
+
+    // 7b. Strict 2024 RAW — Cleave is a SECOND ATTACK ROLL against the chosen
+    //     creature (it CAN miss). Setting `cleaveRawAttackRoll` (default ON);
+    //     OFF = auto-hit (the old automatic-damage behaviour). Rolled on THIS
+    //     (the roller's) client so the player rolls their own cleave attack; the
+    //     d20 posts to chat (DSN animates it for the table). To-hit is the base
+    //     ability mod (resolver-aware: Pact CHA etc.) + proficiency + magic
+    //     bonus — situational bonuses (Bless, Archery, etc.) aren't re-derived.
+    if (QolSettings.get?.("cleaveRawAttackRoll")) {
+      const targetAC   = Number(chosen.actor?.system?.attributes?.ac?.value ?? 10) || 10;
+      const { abilityMod } = WeaponMasteries.getAttackAbilityMod(item, attActor);
+      const prof       = Number(attActor?.system?.attributes?.prof ?? 2) || 0;
+      const magicBonus = Number(item?.system?.magicalBonus ?? 0) || 0;
+      const toHit      = abilityMod + prof + magicBonus;
+      const roll       = await new Roll("1d20 + @toHit", { toHit }).evaluate();
+      const d20        = roll.dice?.[0]?.results?.find(r => r.active)?.result
+                      ?? roll.dice?.[0]?.results?.[0]?.result ?? null;
+      const nat20 = d20 === 20;
+      const nat1  = d20 === 1;
+      const hit   = nat20 || (!nat1 && roll.total >= targetAC);
+      // ── Branded ACE cleave-attack card (NOT a vanilla roll card) ──
+      // Matches the attack/damage cards: black d20 face + to-hit chips + AC +
+      // HIT/MISS/CRIT badge. DSN animates the d20 (fire-and-forget, broadcast).
+      const _esc   = foundry.utils.escapeHTML;
+      const _bd20  = DamageConstants.getBD20ImagePath(d20 ?? 0);
+      const _chips = [];
+      if (abilityMod) _chips.push(`<span class="ace-qol-mod-labeled">${abilityMod >= 0 ? "+" : ""}${abilityMod} <span class="ace-qol-mod-label">${_esc((abilityKey || "MOD").toUpperCase())}</span></span>`);
+      if (prof)       _chips.push(`<span class="ace-qol-mod-labeled">+${prof} <span class="ace-qol-mod-label">PROF</span></span>`);
+      if (magicBonus) _chips.push(`<span class="ace-qol-mod-labeled">+${magicBonus} <span class="ace-qol-mod-label ace-qol-mod-magic">MAGIC</span></span>`);
+      let _badgeLabel, _badgeStyle;
+      if (nat20)    { _badgeLabel = "CRIT HIT"; _badgeStyle = "background:linear-gradient(180deg,#f0d27a,#b8912f);color:#1a1206;"; }
+      else if (hit) { _badgeLabel = "HIT";      _badgeStyle = "background:#1f7a3a;color:#eafff0;"; }
+      else          { _badgeLabel = nat1 ? "MISS · NAT 1" : "MISS"; _badgeStyle = "background:#5a2020;color:#ffdede;"; }
+      const _cardHtml = `<div class="ace-qol-card ace-qol-cleave-attack-card" style="background:linear-gradient(180deg,#141216,#0b0b0d);border:2px solid #d4af37;border-radius:8px;padding:11px 13px;box-shadow:0 2px 10px rgba(0,0,0,.55);">`
+        + `<div style="display:flex;align-items:center;gap:9px;margin-bottom:8px;padding-bottom:7px;border-bottom:1px solid #2a2118;">`
+        + `<i class="fa-solid fa-axe-battle" style="color:#d4af37;font-size:19px;"></i>`
+        + `<span style="color:#e8c766;font-size:15px;font-weight:800;letter-spacing:1px;">CLEAVE</span>`
+        + `<span style="color:#7f7a70;font-size:11px;margin-left:auto;">${_esc(item.name)}</span></div>`
+        + `<div style="color:#cfcabf;font-size:13px;margin-bottom:9px;"><strong style="color:#f0e4c0;">${_esc(attActor?.name ?? "Attacker")}</strong>`
+        + `<i class="fa-solid fa-angles-right" style="color:#8a7;font-size:11px;margin:0 5px;"></i>`
+        + `<strong style="color:#f0e4c0;">${_esc(chosen.name)}</strong></div>`
+        + `<div style="display:flex;align-items:center;gap:11px;">`
+        + `<span style="position:relative;display:inline-flex;align-items:center;justify-content:center;width:46px;height:46px;flex:0 0 auto;">`
+        + `<img src="${_bd20}" alt="d20 ${d20}" style="width:46px;height:46px;object-fit:contain;filter:drop-shadow(0 1px 2px #000)${nat20 ? " drop-shadow(0 0 5px #e8c766)" : ""};" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">`
+        + `<span style="display:none;flex-direction:column;align-items:center;justify-content:center;width:46px;height:46px;background:radial-gradient(circle at 50% 35%,#2a2a30,#0c0c0e);border:1.5px solid #4a4a52;border-radius:9px;"><span style="font-size:20px;font-weight:800;color:#f0e4c0;">${d20 ?? "?"}</span><span style="font-size:8px;color:#7a7a82;">d20</span></span></span>`
+        + `<div style="flex:1;min-width:0;line-height:1.55;"><div style="font-size:12px;color:#c8c6c0;">${_chips.join(" ")}</div>`
+        + `<div style="font-size:11px;color:#8a8a92;">vs AC <strong style="color:#cfcabf;">${targetAC}</strong></div></div>`
+        + `<div style="text-align:right;flex:0 0 auto;"><div style="font-size:23px;font-weight:800;color:#fff;line-height:1;">${roll.total}</div>`
+        + `<span style="display:inline-block;margin-top:5px;padding:2px 9px;border-radius:4px;font-size:11px;font-weight:800;letter-spacing:.5px;${_badgeStyle}">${_badgeLabel}</span></div>`
+        + `</div></div>`;
+      // Fire the d20, then WAIT for it to settle before revealing the card —
+      // same path the attack / damage / save result cards use so the card never
+      // beats the dice (safeShowForRoll broadcasts; awaitDiceSettle is a fixed,
+      // hang-immune delay that no-ops when DSN is off).
+      safeShowForRoll(roll, "cleave attack");
+      await awaitDiceSettle();
+      try {
+        await ChatMessage.create({
+          speaker: ChatMessage.getSpeaker({ actor: attActor }),
+          content: _cardHtml,
+          flags:   { [MODULE_ID]: { type: "cleaveAttack" } },
+        });
+      } catch (_) { /* non-fatal — the roll result still gates the damage below */ }
+      if (!hit) {
+        cleaveBtn.disabled = true;
+        cleaveBtn.innerHTML = '<i class="fas fa-xmark"></i> CLEAVE MISSED';
+        return;   // RAW: a missed cleave deals no damage
+      }
     }
 
     // 8. Hand off to addTargetToCard. We pass the ORIGINAL target's components

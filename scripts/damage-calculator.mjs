@@ -213,6 +213,12 @@ export class DamageCalculator {
         try {
           const dmgConfig = activity.getDamageConfig({}, { rollData });
           const rolls = dmgConfig?.rolls ?? [];
+          // Declared at the ACTIVITY scope — NOT inside the roll loop — so the
+          // metadata block further down (which lives OUTSIDE the roll loop) can
+          // read it. Inner-scoping it was a Fix B regression: "inheritedMeta is
+          // not defined" threw the whole native damage build to the manual
+          // fallback for every item (2026-07-14).
+          let inheritedMeta = null;   // {ability, mod} when a null-ability damage borrows the attack's ability
 
           for (let i = 0; i < rolls.length; i++) {
             const rollCfg = rolls[i];
@@ -220,9 +226,11 @@ export class DamageCalculator {
             if (!parts.length) continue;
 
             // Off-hand swing (RAW): the damage gets NO ability mod. Drop the @mod
-            // term here; combat-state adds it back as a bonus only when the 2014
-            // TWF style / 2024 Light rule qualifies. (Belt-and-suspenders with the
-            // data.mod=0 below, in case @mod resolves via data instead of a part.)
+            // term here; combat-state adds it back as a bonus only when the
+            // Two-Weapon Fighting fighting style (or the Dual Wielder house-rule
+            // toggle) qualifies — NOT from Dual Wielder alone, and NOT auto in
+            // 2024. (Belt-and-suspenders with the data.mod=0 below, in case @mod
+            // resolves via data instead of a part.)
             if (CombatState.isOffhandSwing(item?.uuid)) {
               parts = parts.filter(p => String(p).trim() !== "@mod");
             }
@@ -245,16 +253,43 @@ export class DamageCalculator {
             // builds rollCfg.data from the ACTIVITY's ability — re-assert the
             // character-rule mod there or the swap above is silently undone.
             let data = rollCfg.data ?? rollData;
+            inheritedMeta = null;   // reset per roll; declared at activity scope above
             if (abilityOverride && Number.isFinite(Number(data.mod)) && abilityOverride.mod > Number(data.mod)) {
               console.log(`${MODULE_ID} | [ability-resolver] ${actor.name}: "${item.name}" damage roll uses ${abilityOverride.ability.toUpperCase()} +${abilityOverride.mod} (was +${data.mod}) — ${abilityOverride.why}`);
               data.mod = abilityOverride.mod;
               overrideApplied = true;
             }
+            // A damage activity with NO ability of its own drops the mod entirely —
+            // "1d4 + @mod" resolves @mod to 0 (Johnny 2026-07-13: Polearm Master
+            // butt-end attacked at +5 CHA, but its DAMAGE activity carries
+            // ability=null, so it rolled 1d4 + 0). RAW: a weapon/feat-attack's
+            // damage uses the SAME ability as its attack roll — inherit it from the
+            // item's ATTACK activity. Skips off-hand (RAW drops the mod there) and
+            // only fires when @mod truly resolved to nothing, so a normal weapon
+            // whose damage ability matches its attack is untouched.
+            if (!overrideApplied && activity?.ability == null && !CombatState.isOffhandSwing(item?.uuid)
+                && formula.includes("@mod") && Number(data?.mod || 0) === 0) {
+              try {
+                const _acts = item?.system?.activities;
+                const _list = _acts ? (typeof _acts.values === "function" ? [..._acts.values()] : Object.values(_acts)) : [];
+                const _atk = _list.find(a => a?.type === "attack");
+                let _ab = _atk?.attack?.ability ?? _atk?.ability ?? null;
+                if (_ab instanceof Set || Array.isArray(_ab)) _ab = [..._ab][0];
+                const _mod = (_ab && typeof _ab === "string" && _ab !== "none") ? Number(rollData?.abilities?.[_ab]?.mod) : NaN;
+                if (Number.isFinite(_mod) && _mod !== 0) {
+                  data = (data === rollData) ? { ...data } : data;   // don't mutate shared rollData
+                  data.mod = _mod;
+                  inheritedMeta = { ability: _ab, mod: _mod };
+                  console.log(`${MODULE_ID} | [dmg-inherit] "${item?.name}" damage activity has no ability — inheriting ${_ab.toUpperCase()} ${_mod >= 0 ? "+" : ""}${_mod} from the attack activity (RAW: damage uses the attack's ability).`);
+                }
+              } catch (_) { /* leave data.mod as-is */ }
+            }
             // Off-hand: @mod resolves to 0 (cloned so shared rollData isn't touched).
             if (CombatState.isOffhandSwing(item?.uuid)) {
               data = { ...data, mod: 0 };
-              console.log(`${MODULE_ID} | off-hand: ability mod stripped from "${item.name}" native damage (RAW: none unless TWF style / 2024 Light — combat-state restores if it qualifies)`);
+              console.log(`${MODULE_ID} | off-hand: ability mod stripped from "${item.name}" native damage (RAW: off-hand gets no ability mod in either edition; combat-state restores it only for the Two-Weapon Fighting style, or the Dual Wielder house-rule toggle)`);
             }
+            try { console.log(`${MODULE_ID} | [dmg-diag] "${item?.name}" act.type=${activity?.type} act.ability=${JSON.stringify(activity?.ability)} offhand=${CombatState.isOffhandSwing(item?.uuid)} formula="${formula}" data.mod=${data?.mod}`); } catch (_) {}
             const result = await DamageCalculator.rollWithCrit(formula, data, isCrit, critRule, `Base ${type}`, item);
             components.push({ name: item.name, ...result, type });
           }
@@ -300,6 +335,12 @@ export class DamageCalculator {
               // The chip must tell the truth about what actually rolled.
               abilName = abilityOverride.ability.toUpperCase();
               abilMod = abilityOverride.mod;
+            } else if (inheritedMeta) {
+              // Damage borrowed the attack's ability (null-ability activity) — the
+              // chip must say the real ability (CHA +5), not the STR default the
+              // metadata guessed from the item's melee actionType.
+              abilName = inheritedMeta.ability.toUpperCase();
+              abilMod = inheritedMeta.mod;
             }
             const _offhandZero = CombatState.isOffhandSwing(item?.uuid);
             components[0]._modMeta = {
@@ -354,7 +395,8 @@ export class DamageCalculator {
               if (abilityOverride && abilityOverride.mod > abilityMod) { abilityMod = abilityOverride.mod; overrideApplied = true; }
               // Off-hand swing: RAW an off-hand attack adds NO ability mod to its
               // damage. Strip it here; the qualifying TWF block in combat-state
-              // (2014 style / 2024 Light) restores it as its own bonus when due.
+              // (Two-Weapon Fighting fighting style, or the Dual Wielder house
+              // rule) restores it as its own bonus when due.
               const _offhandNoMod = CombatState.isOffhandSwing(item?.uuid);
               if (abilityMod !== 0 && !_offhandNoMod) formula += abilityMod >= 0 ? `+${abilityMod}` : `${abilityMod}`;
 

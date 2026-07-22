@@ -8,6 +8,7 @@ import { QolSettings } from "./settings.mjs";
 import { DescriptionParser } from "./description-parser.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
 import { DamageConstants, safeShowForRoll } from "./damage-engine.mjs";
+import { awaitDiceSettle } from "./dsn-utils.mjs";
 import { MergeCard } from "./merge-card.mjs";
 import { awaitDsnRoll } from "./attack-prompt.mjs";
 import { WeaponMasteries } from "./weapon-masteries.mjs";
@@ -501,7 +502,13 @@ export class DamageCardRenderer {
             else if (t.type === "num" && t.number < 0) formulaParts.push(`- ${Math.abs(t.number)}`);
             else if (t.type === "op") formulaParts.push(t.operator);
           }
-          const formula = formulaParts.join(" ") || c.formula;
+          let formula = (formulaParts.join(" ") || c.formula || "").trim();
+          // A zero-value mod term is skipped above, which can leave a DANGLING
+          // operator — "1d4 +" — and that crashes Roll's parser with "end of
+          // input found" (Johnny 2026-07-13, Polearm Master butt-end with a 0
+          // mod). Strip any leading "+ * /" and any trailing "+ - * /" so the
+          // dice still show cleanly. (Leading "-" is a real negation — kept.)
+          formula = formula.replace(/^[\s+*/]+/, "").replace(/[\s+\-*/]+$/, "").trim();
           if (!formula) continue;
 
           const roll = new Roll(formula);
@@ -542,11 +549,48 @@ export class DamageCardRenderer {
 
     console.log(`${MODULE_ID} | postPreRolledDamageCard: ${preRolled.length} pre-rolled targets`);
 
+    // ── Re-apply the CURRENT Pact of the Blade type to the pre-roll ──
+    // The damage is pre-rolled at ATTACK time, which bakes in whatever pact type
+    // was current THEN (type + resistance). But the per-attack chooser runs later,
+    // at ROLL DAMAGE time, on the roller's own client — so without this the card
+    // would show the PREVIOUS pick (the one-step lag, 2026-07-12). By now the
+    // chooser + socket have set the flag, so re-type the base-weapon components to
+    // match and recompute each target's resistance for the new type. The dice are
+    // untouched — only the damage TYPE and its resistance-adjusted total change.
+    let _pactPreferred = null;
+    try {
+      const { hasPactOfTheBlade, getPactBladeType } = await import("./warlock-damage-chooser.mjs");
+      if (actor && hasPactOfTheBlade(actor)) {
+        const p = getPactBladeType(actor);
+        if (p && p !== "weapon") _pactPreferred = p;
+      }
+    } catch (_) { /* non-fatal — leave the pre-rolled type as-is */ }
+
     // Reconstruct damageResults from serialized data
     const damageResults = preRolled.map(pr => {
       const scene = game.scenes.get(pr.sceneId) ?? canvas.scene;
       const tokenDoc = scene?.tokens?.get(pr.tokenDocId);
       const targetActor = tokenDoc?.actor ?? game.actors.get(pr.actorId);
+
+      // Re-type the base-weapon components + recompute resistance for THIS target.
+      if (_pactPreferred) {
+        try {
+          const _dmgMods = targetActor?.system ? DamageCalculator.getTargetDamageModifiers(targetActor) : {};
+          let _retyped = false;
+          for (const comp of (pr.components ?? [])) {
+            if (comp.name !== itemName || comp.type === _pactPreferred) continue;
+            comp._pactBladeFrom = comp.type;
+            comp.type = _pactPreferred;
+            const [re] = DamageCalculator.applyDamageModifiers([comp], _dmgMods);
+            if (re) { comp.raw = re.raw; comp.final = re.final; comp.modifier = re.modifier; comp.reason = re.reason; }
+            _retyped = true;
+          }
+          if (_retyped) {
+            pr.totalRaw   = (pr.components ?? []).reduce((s, c) => s + (c.raw ?? c.total ?? 0), 0);
+            pr.totalFinal = (pr.components ?? []).reduce((s, c) => s + (c.final ?? c.raw ?? c.total ?? 0), 0);
+          }
+        } catch (err) { console.warn(`${MODULE_ID} | pre-rolled pact re-type failed (non-fatal):`, err); }
+      }
 
       const components = pr.components.map(c => ({
         ...c,
@@ -580,7 +624,15 @@ export class DamageCardRenderer {
     // Skipped when the CASTER already rolled these dice on their own client
     // (player-rolls-own-damage): their DSN sync already broadcast the tumble to
     // the whole table, so re-firing here on the GM would double the animation.
-    if (!opts.skipDice) DamageCardRenderer.showPreRolledDice(preRolled);
+    if (!opts.skipDice) {
+      DamageCardRenderer.showPreRolledDice(preRolled);
+      // Let the tumble actually LAND before the card reveals the total — otherwise
+      // the card pops in mid-roll (Johnny 2026-07-13: "the damage card comes up
+      // before the roll even stops"). Fixed, hang-immune delay; instant no-op when
+      // DSN is off. Skipped on the player-rolls-own path (opts.skipDice) since the
+      // caster already tumbled + settled these dice on their own client.
+      await awaitDiceSettle();
+    }
 
     // ── Post the damage card AFTER dice finish rolling ──
     // Carry refund state forward: damage card links back to the button card,

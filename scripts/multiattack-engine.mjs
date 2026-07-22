@@ -82,6 +82,17 @@ export class MultiattackEngine {
     Hooks.on("combatRound", () => MultiattackEngine._chained.clear());
     Hooks.on("deleteCombat", () => { MultiattackEngine._chained.clear(); MultiattackEngine._inFlight.clear(); MultiattackEngine._activeChains.clear(); });
 
+    // Immediate chain abort (Johnny 2026-07-13): fumbleEndsTurn fires this the
+    // instant a nat-1 ends the turn, so an OPEN multiattack pop-up closes RIGHT
+    // AWAY instead of lingering until the 750ms turn-advance lands. Closing the
+    // dialog settles _promptOne(null) → the chain loop breaks → its finally resets.
+    Hooks.on(`${MODULE_ID}.multiattackAbort`, (p) => {
+      try {
+        const dlg = MultiattackEngine._openPrompts.get(p?.actorId);
+        if (dlg) { try { dlg.close(); } catch (_) { /* window gone */ } }
+      } catch (_) { /* non-fatal */ }
+    });
+
     console.debug(`${MODULE_ID} | MultiattackEngine online.`);
   }
 
@@ -175,14 +186,16 @@ export class MultiattackEngine {
    *   • HIT  → resolve when the damage-RESULT card is created — i.e. the
    *     moment Roll Damage was pushed and finished. Chat messages replicate
    *     to all clients, so this works wherever the prompt lives.
-   * The timeout is NOT a flow driver — it is a defect alarm. If it ever
-   * fires, a resolution path failed to signal; we WARN loudly and continue
-   * rather than hang the chain forever.
+   * The timeout is a LAST-RESORT abandonment backstop, NOT a flow driver — a HIT
+   * waits for Roll Damage however long the player/GM takes (Johnny 2026-07-14:
+   * "either Roll Damage is pushed, or the pop-up doesn't come up"). It's set very
+   * long so it only fires when a swing is genuinely walked away from. A MISS still
+   * resolves instantly via its own signal, so the long timeout never delays one.
    * @param {Actor}  actor
-   * @param {number} [timeoutMs=60000]
+   * @param {number} [timeoutMs=1800000]  30 min — abandonment backstop only
    * @returns {Promise<string>} why: "miss" | "damage" | "resolved" | "timeout"
    */
-  static _awaitSwingResolved(actor, timeoutMs = 15000) {
+  static _awaitSwingResolved(actor, timeoutMs = 1800000) {
     const t0 = performance.now?.() ?? 0;
     return new Promise((resolve) => {
       let done = false;
@@ -206,6 +219,13 @@ export class MultiattackEngine {
         try {
           const aid = p?.actor?.id ?? p?.actorId ?? p?.actor;
           if (aid !== actor.id) return;
+          // A whole-swing MISS never rolls damage — resolve now. A HIT keeps
+          // waiting for the damage card (Roll Damage), with only the long
+          // abandonment backstop behind it, so the pop-up never jumps ahead of
+          // Roll Damage. NOTE: attackComplete is LOCAL to the PROCESSOR (the GM
+          // for a player-rolled swing), which is exactly why the 15s alarm used to
+          // fire on the roller — so the roller's chain leans on the BROADCAST
+          // attackResolved (sigHook) for the miss + the replicated damage card.
           if ((p?.hits?.length ?? 0) === 0) setTimeout(() => finish("miss"), 100);
         } catch (_) { /* non-fatal */ }
       });
@@ -220,9 +240,11 @@ export class MultiattackEngine {
       const sigHook = Hooks.on(`${MODULE_ID}.attackResolved`, (p) => {
         if (p?.actorId === actor.id) setTimeout(() => finish("resolved"), 100);
       });
-      // DEFECT ALARM, not flow: if this fires, a path failed to signal.
+      // ABANDONMENT BACKSTOP, not flow: only fires if a swing is walked away from
+      // (Roll Damage never pushed for ~30 min). A hit waits for the damage card; a
+      // miss resolves via its own signal — so this never jumps ahead of Roll Damage.
       net = setTimeout(() => {
-        console.warn(`${MODULE_ID} | Multiattack: no swing-resolution signal for ${actor.name} within ${timeoutMs / 1000}s — a roll path missed its signal (report this). Continuing the chain.`);
+        console.warn(`${MODULE_ID} | Multiattack: ${actor.name} — no resolution in ${Math.round(timeoutMs / 60000)} min; releasing the abandoned chain.`);
         finish("timeout");
       }, timeoutMs);
     });
@@ -255,9 +277,30 @@ export class MultiattackEngine {
       if (it.type === "spell") continue;
       // For PCs, skip unequipped carried weapons (don't surface backpack daggers).
       if (it.type === "weapon" && actor.hasPlayerOwner && it.system?.equipped === false) continue;
+      // MAIN weapon list only: a bonus-action-ONLY attack (Polearm Master butt-
+      // end, Crossbow Expert's bonus shot, Flurry of Blows) is NOT a main Attack-
+      // action weapon — it belongs in the blue BONUS row (_getBonusAttacks), not
+      // the "pick a weapon" list. (Johnny 2026-07-13: "Polearm Master shouldn't
+      // be in the weapon list — it's a feature, not a weapon.")
+      if (!this._hasMainActionAttack(it)) continue;
       out.push(it);
     }
     return out;
+  }
+
+  /**
+   * True if the item can attack with the ATTACK ACTION (not bonus-only).
+   * A weapon with no attack-activity data is a normal Attack-action weapon.
+   * A feat/feature whose ONLY attack activity is bonus-action (Polearm Master
+   * butt-end etc.) returns false — it lives in the bonus row, not the main list.
+   */
+  static _hasMainActionAttack(item) {
+    if (!item) return false;
+    const acts = item.system?.activities;
+    const list = acts ? (typeof acts.values === "function" ? [...acts.values()] : Object.values(acts)) : [];
+    const attackActs = list.filter(a => a?.type === "attack");
+    if (item.type === "weapon" && !attackActs.length) return true;
+    return attackActs.some(a => (a?.activation?.type ?? "action") !== "bonus");
   }
 
   // (retired 2026-07-10: the pop-up is roller-local now — dnd5e roll hooks
@@ -477,6 +520,16 @@ export class MultiattackEngine {
       // no more swings once it isn't this actor's turn (2026-07-10).
       if (game.combat?.started && game.combat.combatant?.actor?.id !== actor.id) {
         console.log(`${MODULE_ID} | [chain] ${actor.name} is no longer the active combatant — ending chain`);
+        break;
+      }
+      // Fumble ended the turn (Johnny's table rule): the fumble-engine marked
+      // this actor when a swing came up a natural 1 with "Fumble Ends the Turn"
+      // on. It marks SYNCHRONOUSLY (the turn-advance itself runs on a short beat),
+      // so we consume the one-shot mark here and stop BEFORE opening the next
+      // pop-up — that's what stops an attack sneaking through during that beat.
+      // The turn-end toast is posted by the fumble-engine, so we stay quiet here.
+      if (CombatState.consumeMultiattackFumble(actor.id)) {
+        console.log(`${MODULE_ID} | [chain] ${actor.name} fumbled — turn ending, chain stopped.`);
         break;
       }
       const choice = await this._promptOne(actor, state, bonusAttacks);
@@ -700,9 +753,10 @@ export class MultiattackEngine {
     this._inFlight.add(actor.id);
     // Two-weapon OFF-HAND: flag this swing so the damage calculator strips the
     // base ability mod (RAW: off-hand damage gets none) and combat-state restores
-    // it only when the 2014 TWF style / 2024 Light rule qualifies. A NON-off-hand
-    // swing of the same weapon clears any stale flag, so a main-hand swing right
-    // after an off-hand one keeps its mod.
+    // it only for the Two-Weapon Fighting fighting style (both editions), or the
+    // Dual Wielder house-rule toggle. A NON-off-hand swing of the same weapon
+    // clears any stale flag, so a main-hand swing right after an off-hand one
+    // keeps its mod.
     if (item?.uuid) {
       if (isOffhand) CombatState.markOffhandSwing(item.uuid);
       else CombatState.clearOffhandSwing(item.uuid);

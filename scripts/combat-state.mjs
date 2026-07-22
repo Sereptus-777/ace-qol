@@ -24,7 +24,8 @@ export class CombatState {
   // The multiattack engine stamps an off-hand swing here right before it fires,
   // so the damage calculator knows to STRIP the base ability mod (RAW: an
   // off-hand attack's damage gets NO ability mod) and the TWF block below knows
-  // to RESTORE it only when the 2014 fighting style / 2024 Light rule qualifies.
+  // to RESTORE it only for the Two-Weapon Fighting fighting style (both editions),
+  // or the Dual Wielder house-rule toggle.
   // Keyed by item uuid with a short TTL so it can't bleed into a later main-hand
   // swing of the same weapon.
   static _offhandSwings = new Map();
@@ -40,6 +41,24 @@ export class CombatState {
     if (!exp) return false;
     if (Date.now() > exp) { CombatState._offhandSwings.delete(uuid); return false; }
     return true;
+  }
+
+  // Multiattack fumble mark (Johnny's table rule, 2026-07-13): when "Fumble Ends
+  // the Turn" fires, the fumble-engine (which sees the d20) marks the fumbler here
+  // SYNCHRONOUSLY — the turn-advance runs on a 750ms beat, so this mark is what
+  // stops the roller-local multiattack chain from popping the next swing during
+  // that beat. Keyed by actor id with a short TTL so a stale mark can't bleed into
+  // a later turn. One-shot — consume deletes it.
+  static _multiattackFumbles = new Map();
+  static markMultiattackFumble(actorId) {
+    if (actorId) CombatState._multiattackFumbles.set(actorId, Date.now() + 10000);
+  }
+  static consumeMultiattackFumble(actorId) {
+    if (!actorId) return false;
+    const exp = CombatState._multiattackFumbles.get(actorId);
+    if (!exp) return false;
+    CombatState._multiattackFumbles.delete(actorId);   // one-shot
+    return Date.now() <= exp;                            // stale mark → treated as no fumble
   }
 
   /**
@@ -78,6 +97,11 @@ export class CombatState {
     // Collect all advantage/disadvantage sources with reasons
     const advantageSources = [];
     const disadvantageSources = [];
+    // Informational notes: rules that ALMOST applied but were cancelled, with
+    // the reason. These don't change the adv/dis math — they exist so a "NORMAL"
+    // outcome can still explain itself on the card (e.g. the target sees through
+    // magical darkness via truesight, so the attacker's darkness gives no edge).
+    const situationalNotes = [];
 
     // ═════════════════════════════════════════════════════════════════════════
     //  ATTACKER STATE
@@ -994,49 +1018,61 @@ export class CombatState {
       }
     }
 
-    // ── Two-Weapon Fighting — edition-aware off-hand ability mod ──
-    // 2014 RAW: Off-hand attack adds ability modifier to damage ONLY if the
-    //           actor has the Two-Weapon Fighting fighting style.
-    // 2024 RAW: The ability-mod rule moved onto the Light weapon property
-    //           itself — any Light-weapon bonus-action swing gets the mod
-    //           automatically; no fighting style required.
+    // ── Two-Weapon Fighting — off-hand ability mod (edition-independent RAW) ──
+    // RAW, BOTH 2014 and 2024: an off-hand attack's damage does NOT get your
+    // ability modifier. The ONLY thing that grants it is the Two-Weapon Fighting
+    // fighting style. The Dual Wielder feat does NOT grant it in either edition
+    // (2024 Enhanced Dual Wielding, verbatim: "you don't add your ability
+    // modifier to the extra attack's damage unless that modifier is negative").
+    // The 2024 rules did NOT move the mod onto the Light property — that was a
+    // myth this code used to encode (it auto-granted for any 2024 Light swing).
+    // Corrected + proven 2026-07-12 (aidedd.org 2024 feat text; D&D Beyond forums).
     //
-    // The dnd5e system unconditionally strips the off-hand ability mod on its
-    // damage path (dnd5e.mjs ~28326), so feature-aware code (us) owns the
-    // restoration. Both editions still require: Light property + a second
-    // equipped Light weapon + positive ability mod.
+    // dnd5e strips the off-hand mod on its damage path AND our damage calculator
+    // strips it on the ACE path, so this block is the SOLE authority that
+    // restores it — only when it qualifies. Main-hand swings aren't marked as
+    // off-hand, so they skip this entirely and keep their base mod.
+    //
+    // HOUSE RULE: `dualWielderGrantsOffhandMod` (default OFF) lets a table grant
+    // the mod to anyone with the Dual Wielder feat, as if they had the fighting
+    // style — a very common table variant, but NOT RAW. OFF = strict RAW.
     if (isMelee && CombatState.isOffhandSwing(item?.uuid)) {
-      // OFF-HAND swing only. RAW: the off-hand attack's damage gets the ability
-      // mod ONLY with the 2014 Two-Weapon Fighting style, or automatically under
-      // the 2024 Light property. The damage calculator strips the base mod on an
-      // off-hand swing (see damage-calculator), so this block is the sole
-      // authority that restores it — and only when it qualifies. Main-hand swings
-      // aren't marked, so they skip this entirely and keep their base mod.
       const itemSysX = item?.system ?? {};
-      const propsX = itemSysX.properties ?? new Set();
-      if (propsX.has?.("lgt")) {
-        const otherWeapons = (attackerActor.items ?? []).filter(i =>
-          i !== item && i.type === "weapon" && i.system?.equipped && (i.system?.properties?.has?.("lgt"))
-        );
-        if (otherWeapons.length > 0) {
-          const twfEdition = CombatState.getActiveEdition(attackerActor);
-          const hasTWFStyle = CombatState._hasFeature(attackerActor, "Two-Weapon Fighting");
-          // 2014 requires the fighting style; 2024 does not.
-          const qualifies = twfEdition === "2024" || hasTWFStyle;
-          if (qualifies) {
-            const abilKey = itemSysX.ability || (propsX.has?.("fin") ? "dex" : "str");
-            const abilMod = attackerActor.system?.abilities?.[abilKey]?.mod ?? 0;
-            if (abilMod > 0) {
-              const reasonSource = twfEdition === "2024"
-                ? "Light property bonus-action attack"
-                : "Two-Weapon Fighting style + Light weapon";
-              attackerBonuses.push({
-                name: "Two-Weapon Fighting",
-                formula: `${abilMod}`,
-                type: damageTypes[0] ?? "untyped",
-                reason: `Off-hand ability mod (${twfEdition}) → +${abilMod} (${reasonSource})`,
-              });
-            }
+      const propsX   = itemSysX.properties ?? new Set();
+      const hasDualWielder = CombatState._hasFeature(attackerActor, "Dual Wielder");
+
+      // Valid two-weapon-fighting configuration:
+      //  • Base rules — the off-hand weapon is Light AND a second Light weapon is
+      //    equipped.
+      //  • Dual Wielder feat — the pair may be non-Light one-handed melee weapons
+      //    (the feat drops the Light requirement; still no Two-Handed weapon).
+      const offhandIsLight     = !!propsX.has?.("lgt");
+      const offhandIsTwoHanded = !!propsX.has?.("two");
+      const otherEquipped = (attackerActor.items ?? []).filter(i =>
+        i !== item && i.type === "weapon" && i.system?.equipped && !(i.system?.properties?.has?.("two"))
+      );
+      const otherLight = otherEquipped.filter(i => i.system?.properties?.has?.("lgt"));
+
+      const baseConfigOk        = offhandIsLight && otherLight.length > 0;
+      const dualWielderConfigOk = hasDualWielder && !offhandIsTwoHanded && otherEquipped.length > 0;
+
+      if (baseConfigOk || dualWielderConfigOk) {
+        const hasTWFStyle = CombatState._hasFeature(attackerActor, "Two-Weapon Fighting");
+        const dwHouseRule = !!QolSettings.get?.("dualWielderGrantsOffhandMod") && hasDualWielder;
+        // Fighting style = RAW; Dual Wielder grant = explicit house rule only.
+        if (hasTWFStyle || dwHouseRule) {
+          const abilKey = itemSysX.ability || (propsX.has?.("fin") ? "dex" : "str");
+          const abilMod = attackerActor.system?.abilities?.[abilKey]?.mod ?? 0;
+          if (abilMod > 0) {
+            const reasonSource = hasTWFStyle
+              ? "Two-Weapon Fighting style"
+              : "Dual Wielder feat (house rule)";
+            attackerBonuses.push({
+              name: hasTWFStyle ? "Two-Weapon Fighting" : "Dual Wielder (House Rule)",
+              formula: `${abilMod}`,
+              type: damageTypes[0] ?? "untyped",
+              reason: `Off-hand ability mod → +${abilMod} (${reasonSource})`,
+            });
           }
         }
       }
@@ -1300,6 +1336,11 @@ export class CombatState {
           });
           if (!atkSees.canSee && /darkness|fog|obscure/i.test(atkSees.why)) {
             disadvantageSources.push({ source: "environment", reason: `Attacker can't see target — ${atkSees.why} → attack disadvantage` });
+          } else if (atkSees.pierced) {
+            // The obscurement WOULD have blinded the attacker, but one of the
+            // attacker's senses cut through it → no disadvantage. This is about
+            // the ATTACKER's OWN senses — safe for a player to see (gmOnly:false).
+            situationalNotes.push({ gmOnly: false, text: `You see the target through the ${atkSees.pierced.kindLabel}${atkSees.pierced.spell ? ` (${atkSees.pierced.spell})` : ""} via ${atkSees.pierced.how} — no disadvantage from the darkness` });
           }
         }
         // Target → attacker: unseen attacker gets advantage. The why-filter
@@ -1310,6 +1351,15 @@ export class CombatState {
         });
         if (!tgtSees.canSee && /darkness|fog|obscure/i.test(tgtSees.why)) {
           advantageSources.push({ source: "environment", reason: `Target can't see the attacker — ${tgtSees.why} → attack advantage` });
+        } else if (tgtSees.pierced) {
+          // The attacker is standing in obscurement that WOULD hide them, but
+          // the target sees through it (truesight / devil's sight / blindsight)
+          // → no unseen-attacker advantage. This is the "why is there no
+          // advantage on Demogorgon?" case: state it instead of going silent.
+          const tName = targetToken.document?.name ?? targetToken.name ?? targetActor.name ?? "The target";
+          // Reveals the TARGET's hidden senses (a monster's truesight/devil's
+          // sight) → GM-only by default so players can't metagame it.
+          situationalNotes.push({ gmOnly: true, text: `${tName} sees you through the ${tgtSees.pierced.kindLabel}${tgtSees.pierced.spell ? ` (${tgtSees.pierced.spell})` : ""} via ${tgtSees.pierced.how} — you're not hidden, so no advantage` });
         }
       }
     } catch (err) {
@@ -1335,14 +1385,15 @@ export class CombatState {
     // ── Situational narration: surface the FULL read (the "show me a clue" switch) ──
     // Light dedup so the dual rollAttack/rollAttackV2 hooks don't double-print.
     try {
-      const key = `${attackerActor?.id}|${targetActor?.id}|${finalRollMode}|${advantageSources.length}|${disadvantageSources.length}`;
+      const key = `${attackerActor?.id}|${targetActor?.id}|${finalRollMode}|${advantageSources.length}|${disadvantageSources.length}|${situationalNotes.length}`;
       if (CombatState._lastNarrationKey !== key) {
         CombatState._lastNarrationKey = key;
         const lines = [
           ...advantageSources.map(s => `+ ${s.reason}`),
           ...disadvantageSources.map(s => `− ${s.reason}`),
+          ...situationalNotes.map(n => `· ${n.text}${n.gmOnly ? " (GM-only)" : ""}`),
         ];
-        lines.push(lines.length ? `NET → ${finalRollMode.toUpperCase()}` : "no modifiers → straight roll");
+        lines.push((advantageSources.length || disadvantageSources.length) ? `NET → ${finalRollMode.toUpperCase()}` : "no modifiers → straight roll");
         Situation.narrate(lines, { context: `${attackerActor?.name} → ${targetActor?.name}` });
       }
     } catch (_) { /* non-fatal */ }
@@ -1383,6 +1434,7 @@ export class CombatState {
       finalRollMode,
       advantageSources,
       disadvantageSources,
+      situationalNotes,
       autoCrit,
       autoCritReasons,
       critRange,
@@ -2413,6 +2465,26 @@ export class CombatState {
     try {
       if (actor.getFlag?.(MODULE_ID, "sneakAttack.usedThisTurn")) {
         await actor.unsetFlag(MODULE_ID, "sneakAttack.usedThisTurn");
+      }
+    } catch (_) { /* non-fatal */ }
+  }
+
+  /** Mark the Cleave weapon mastery used this turn — RAW 2024: once per turn. */
+  static async markCleaveUsed(actor) {
+    if (!actor) return;
+    try {
+      await actor.setFlag(MODULE_ID, "cleave.usedThisTurn", true);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Failed to mark Cleave used:`, err);
+    }
+  }
+
+  /** Clear the once-per-turn Cleave flag (turn-end / combat start / combat end). */
+  static async clearCleaveFlag(actor) {
+    if (!actor) return;
+    try {
+      if (actor.getFlag?.(MODULE_ID, "cleave.usedThisTurn")) {
+        await actor.unsetFlag(MODULE_ID, "cleave.usedThisTurn");
       }
     } catch (_) { /* non-fatal */ }
   }
