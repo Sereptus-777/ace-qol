@@ -1493,47 +1493,11 @@ Hooks.once("ready", () => {
     console.error(`${MODULE_ID} | Reaction engine init failed:`, err);
   }
 
-  // ── v0.7.274 — ROOT FIX: gate summon PLACEMENT on the counter verdict ──
-  // A counterspelled summon must NEVER land. placeSummons runs on the CASTER's
-  // client (GM for GM-casts, the player for player-casts); we await ACE's summon
-  // verdict there and, if the cast was countered, skip placement entirely. No
-  // token is created, so Automated Animations has nothing to react to — no
-  // animation, no sound, no lighting, and no straggler cleanup needed. Fail-open:
-  // no barrier / no verdict / timeout → places normally. The token+FX cleanup
-  // stays only as a safety net for the race where placement beats the counter.
-  try {
-    const _summonCls = CONFIG.DND5E?.activityTypes?.summon?.documentClass;
-    if (_summonCls?.prototype?.placeSummons && !_summonCls.prototype._aceQolPlacementGated) {
-      const _target = "CONFIG.DND5E.activityTypes.summon.documentClass.prototype.placeSummons";
-      const _gate = async function (wrapped, ...args) {
-        try {
-          const verdict = await ReactionEngine.awaitSummonVerdict(this);
-          if (verdict?.abort) {
-            console.log(`${MODULE_ID} | summon placement CANCELLED — "${this?.item?.name ?? "?"}" was counterspelled (no token placed).`);
-            return;   // skip the original — nothing lands
-          }
-        } catch (err) {
-          console.warn(`${MODULE_ID} | summon-placement verdict check failed (non-fatal, placing normally):`, err);
-        }
-        return wrapped(...args);
-      };
-      const _direct = () => {
-        const orig = _summonCls.prototype.placeSummons;
-        _summonCls.prototype.placeSummons = async function (...a) {
-          return _gate.call(this, (...x) => orig.apply(this, x), ...a);
-        };
-      };
-      if (game.modules.get("lib-wrapper")?.active && globalThis.libWrapper) {
-        try { globalThis.libWrapper.register(MODULE_ID, _target, _gate, "MIXED"); console.log(`${MODULE_ID} | summon placement gated on counter verdict (libWrapper).`); }
-        catch (e) { console.warn(`${MODULE_ID} | libWrapper register for placeSummons failed — direct patch:`, e); _direct(); }
-      } else {
-        _direct(); console.log(`${MODULE_ID} | summon placement gated on counter verdict (direct patch).`);
-      }
-      _summonCls.prototype._aceQolPlacementGated = true;
-    } else if (!_summonCls?.prototype?.placeSummons) {
-      console.warn(`${MODULE_ID} | summon-placement gate: SummonActivity.placeSummons not found (dnd5e version?) — skipped.`);
-    }
-  } catch (err) { console.warn(`${MODULE_ID} | summon-placement gate setup failed (non-fatal):`, err); }
+  // NOTE (v0.7.280): the summon-PLACEMENT gate (0.7.274) was reverted — delaying
+  // placeSummons to wait for the counter broke dnd5e's summon↔concentration link
+  // (a countered-OR-uncountered fey wouldn't vanish on a concentration break). A
+  // countered summon is instead cleaned up AFTER it lands (createToken straggler +
+  // reactive sweep), so placement runs untouched and the dnd5e link stays intact.
 
   // Invisibility breaker — RAW: attack/cast ends Invisibility spell (not Greater).
   // Runs on the casting/attacking actor's owner client (PC owner OR GM for NPCs).

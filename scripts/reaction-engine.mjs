@@ -325,79 +325,30 @@ export class ReactionEngine {
     return result;
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  //  v0.7.274 — SUMMON PLACEMENT GATE (caster-side)
-  //  The general cast barrier is GM-only, so a PLAYER-cast summon has no local
-  //  barrier for its placement to wait on. This dedicated gate runs on the
-  //  CASTER's client: GM-casts defer to the local barrier; player-casts wait on
-  //  a small promise the GM's verdict resolves over the socket. It never touches
-  //  the general barrier, so no other spell path is affected.
-  // ═══════════════════════════════════════════════════════════════════════════
-  static _summonGates = new Map();      // activityKey -> { promise, resolve, timer }
-  static _summonVerdicts = new Map();   // activityKey -> result (verdict that beat the gate)
-
-  /** Caster-side: does this cast get countered before we place the summon?
-   *  Returns { abort:boolean }. Fail-open on timeout (place normally). */
-  static async awaitSummonVerdict(activity) {
-    // GM cast: the real barrier lives on this client — reuse it.
-    if (game.user.isGM) return ReactionEngine.awaitCastBarrier(activity);
-    // Player cast: wait for the GM to relay the verdict.
-    const key = ReactionEngine._activityKey(activity);
-    // Verdict already arrived (counter resolved before we reached placement)?
-    if (ReactionEngine._summonVerdicts.has(key)) {
-      const r = ReactionEngine._summonVerdicts.get(key);
-      ReactionEngine._summonVerdicts.delete(key);
-      return r ?? { abort: false, reason: "verdict_prearrived" };
-    }
-    const existing = ReactionEngine._summonGates.get(key);
-    if (existing) return existing.promise;
-    let resolve;
-    const promise = new Promise((r) => { resolve = r; });
-    const timer = setTimeout(() => {
-      ReactionEngine._summonGates.delete(key);
-      resolve({ abort: false, reason: "summon_gate_timeout" });   // fail-open
-    }, 30000);
-    ReactionEngine._summonGates.set(key, { promise, resolve, timer });
-    return promise;
-  }
-
-  /** Caster-side: the GM relayed the verdict for this cast — resolve the gate
-   *  (or stash it if placement hasn't reached the gate yet). */
+  // ── v0.7.280 — Relay the counter to the CASTER's client for FX cleanup ──
+  //  The summon-PLACEMENT gate (0.7.274) was reverted — delaying placeSummons to
+  //  wait for the counter broke dnd5e's summon↔concentration link. But the
+  //  caster's client still needs to KNOW a summon cast was countered, because AA
+  //  plays its animation where the CASTER is (the player's screen for a player
+  //  cast) and the counterspelled registry is otherwise GM-only. The GM relays the
+  //  verdict over the socket; this records it here so the summon-FX listener +
+  //  cleanup can end AA's animation on the caster's side. Player-side only — the
+  //  GM already has it via _markCastCounterspelled.
   static _resolveSummonVerdict(activity, result) {
     try {
-      const key = ReactionEngine._activityKey(activity);
-      // v0.7.279 — If countered, mark this caster counterspelled ON THIS CLIENT
-      // too. AA plays its summon animation where the CASTER is (the player's
-      // screen), but the counterspelled registry is otherwise GM-only — so the
-      // player's summon-FX listener never knew to end it. Populating it here (the
-      // verdict already crossed the socket for the placement gate) lets the
-      // listener end AA's animation the instant it fires. Player-side only; the
-      // GM already has this via _markCastCounterspelled.
-      if (result?.abort && !game.user.isGM) {
-        const casterActor = activity?.item?.actor ?? activity?.actor ?? null;
-        const casterTokenUuid = casterActor?.getActiveTokens?.()?.[0]?.document?.uuid ?? null;
-        if (!ReactionEngine._counterspelledCasts.some(c => c.activityUuid && c.activityUuid === activity?.uuid)) {
-          ReactionEngine._counterspelledCasts.push({
-            itemUuid: activity?.item?.uuid ?? null,
-            activityUuid: activity?.uuid ?? null,
-            casterTokenUuid,
-            casterName: casterActor?.name ?? "?",
-            expiresAt: Date.now() + 30000,
-          });
-        }
-        ReactionEngine._endCounterspelledCastEffects();   // end any AA FX already on screen
+      if (!result?.abort || game.user.isGM) return;
+      const casterActor = activity?.item?.actor ?? activity?.actor ?? null;
+      const casterTokenUuid = casterActor?.getActiveTokens?.()?.[0]?.document?.uuid ?? null;
+      if (!ReactionEngine._counterspelledCasts.some(c => c.activityUuid && c.activityUuid === activity?.uuid)) {
+        ReactionEngine._counterspelledCasts.push({
+          itemUuid: activity?.item?.uuid ?? null,
+          activityUuid: activity?.uuid ?? null,
+          casterTokenUuid,
+          casterName: casterActor?.name ?? "?",
+          expiresAt: Date.now() + 30000,
+        });
       }
-      const g = ReactionEngine._summonGates.get(key);
-      if (g) {
-        clearTimeout(g.timer);
-        ReactionEngine._summonGates.delete(key);
-        g.resolve(result ?? { abort: false });
-        return;
-      }
-      // Placement hasn't hit the gate yet — stash the verdict briefly so
-      // awaitSummonVerdict picks it up when it's called.
-      ReactionEngine._summonVerdicts.set(key, result ?? { abort: false });
-      setTimeout(() => ReactionEngine._summonVerdicts.delete(key), 30000);
+      ReactionEngine._endCounterspelledCastEffects();   // end any AA FX already on screen
     } catch (_) { /* non-fatal */ }
   }
 
