@@ -4264,10 +4264,14 @@ Hooks.once("ready", () => {
           const message  = payload.messageId ? game.messages.get(payload.messageId) : null;
           if (activity && reactionEngine) {
             await reactionEngine._onSpellCast(activity, message);
-            // ── v0.7.274 — Relay the counter VERDICT to the caster's client so
-            //   its summon-placement gate knows whether to place. Source of truth
-            //   for "countered": the flag _onSpellCast set on the usage message. ──
-            const countered = !!message?.getFlag?.(MODULE_ID, "counterspelled");
+            // ── v0.7.275 — Relay the counter VERDICT to the caster's client so
+            //   its summon-placement gate knows whether to place. The message flag
+            //   needs the synced usage card (can race), so we ALSO consult the
+            //   counterspelled-casts registry _markCastCounterspelled fills GM-side
+            //   on a successful counter — robust regardless of message sync. ──
+            const countered = ReactionEngine._isCounterspelledOrigin(activity?.uuid)
+                           || ReactionEngine._isCounterspelledOrigin(activity?.item?.uuid)
+                           || !!message?.getFlag?.(MODULE_ID, "counterspelled");
             game.socket.emit(SOCKET_NAME, {
               action: "summonVerdict",
               activityUuid: payload.activityUuid,
