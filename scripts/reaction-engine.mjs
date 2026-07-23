@@ -197,17 +197,31 @@ export class ReactionEngine {
       // Also end summon FX RECORDED at creation from these casters — AA plays its
       // persistent sign on the CAST, often before the counter resolves, so the
       // live getEffects() scan alone can miss it (already fired, still on screen).
+      if (toEnd.length) EM.endEffects({ effects: toEnd });
+      // Recorded-at-creation summon FX from these casters (AA fires its sign on
+      // the CAST, so the live scan above can miss it). End by object ref, which
+      // doesn't need an id that may not be set yet.
       const recorded = ReactionEngine._recentSummonFx.filter(e => e.expiresAt > now && casterUuids.has(e.srcUuid));
-      for (const e of recorded) if (!toEnd.includes(e.id)) toEnd.push(e.id);
+      for (const e of recorded) ReactionEngine._killSummonEffect(e);
       if (recorded.length) {
-        const doneIds = new Set(recorded.map(e => e.id));
-        ReactionEngine._recentSummonFx = ReactionEngine._recentSummonFx.filter(e => !doneIds.has(e.id));
+        const done = new Set(recorded);
+        ReactionEngine._recentSummonFx = ReactionEngine._recentSummonFx.filter(e => !done.has(e));
       }
-      if (toEnd.length) {
-        EM.endEffects({ effects: toEnd });
-        ReactionEngine._sdebug(`[COUNTER-CLEANUP] ended ${toEnd.length} summon/cast effect(s) (live + recorded)`);
+      if (toEnd.length || recorded.length) {
+        console.log(`${MODULE_ID} | [COUNTER-CLEANUP] killed summon FX — live=${toEnd.length} recorded=${recorded.length}`);
       }
     } catch (err) { console.warn(`${MODULE_ID} | counterspell Sequencer-FX cleanup failed (non-fatal):`, err); }
+  }
+
+  /** End a recorded summon effect by whatever handle we have — the CanvasEffect's
+   *  own endEffect() (needs no id) first, then EffectManager by id as a fallback.
+   *  Both broadcast/clear locally; belt-and-suspenders. */
+  static _killSummonEffect(rec) {
+    try { rec?.effect?.endEffect?.(); } catch (_) {}
+    try {
+      const id = rec?.id ?? rec?.effect?.id ?? rec?.effect?.data?._id ?? null;
+      if (id) globalThis.Sequencer?.EffectManager?.endEffects?.({ effects: [id] });
+    } catch (_) {}
   }
 
   /**
@@ -352,6 +366,27 @@ export class ReactionEngine {
   static _resolveSummonVerdict(activity, result) {
     try {
       const key = ReactionEngine._activityKey(activity);
+      // v0.7.279 — If countered, mark this caster counterspelled ON THIS CLIENT
+      // too. AA plays its summon animation where the CASTER is (the player's
+      // screen), but the counterspelled registry is otherwise GM-only — so the
+      // player's summon-FX listener never knew to end it. Populating it here (the
+      // verdict already crossed the socket for the placement gate) lets the
+      // listener end AA's animation the instant it fires. Player-side only; the
+      // GM already has this via _markCastCounterspelled.
+      if (result?.abort && !game.user.isGM) {
+        const casterActor = activity?.item?.actor ?? activity?.actor ?? null;
+        const casterTokenUuid = casterActor?.getActiveTokens?.()?.[0]?.document?.uuid ?? null;
+        if (!ReactionEngine._counterspelledCasts.some(c => c.activityUuid && c.activityUuid === activity?.uuid)) {
+          ReactionEngine._counterspelledCasts.push({
+            itemUuid: activity?.item?.uuid ?? null,
+            activityUuid: activity?.uuid ?? null,
+            casterTokenUuid,
+            casterName: casterActor?.name ?? "?",
+            expiresAt: Date.now() + 30000,
+          });
+        }
+        ReactionEngine._endCounterspelledCastEffects();   // end any AA FX already on screen
+      }
       const g = ReactionEngine._summonGates.get(key);
       if (g) {
         clearTimeout(g.timer);
@@ -536,14 +571,15 @@ export class ReactionEngine {
         const d = fx?.data ?? {};
         const src = (typeof d.source === "string" ? d.source : d.source?.uuid) ?? null;
         const SUMMON_FX = /conjuration|summon|magic.?sign|portal|autoanimations\.static/i;
-        if (!fx.id || !src || !SUMMON_FX.test(`${d.file ?? ""} ${d.name ?? ""}`)) return;
+        if (!src || !SUMMON_FX.test(`${d.file ?? ""} ${d.name ?? ""}`)) return;   // NB: don't require fx.id — it isn't set yet at hook time
         const now = Date.now();
         ReactionEngine._recentSummonFx = ReactionEngine._recentSummonFx.filter(e => e.expiresAt > now);
-        ReactionEngine._recentSummonFx.push({ id: fx.id, srcUuid: src, expiresAt: now + 8000 });
+        const rec = { effect: fx, id: fx.id ?? d._id ?? null, srcUuid: src, expiresAt: now + 8000 };
+        ReactionEngine._recentSummonFx.push(rec);
         const casters = ReactionEngine._counterspelledCasts.filter(c => c.expiresAt > now).map(c => c.casterTokenUuid);
         if (casters.includes(src)) {
-          globalThis.Sequencer?.EffectManager?.endEffects?.({ effects: [fx.id] });
-          ReactionEngine._sdebug(`[COUNTER-CLEANUP] ended AA summon effect (already-countered caster)`);
+          console.log(`${MODULE_ID} | [COUNTER-CLEANUP] killing AA summon FX at creation (caster already countered): ${d.file ?? d.name ?? "?"}`);
+          ReactionEngine._killSummonEffect(rec);
         }
       } catch (_) { /* non-fatal */ }
     });
