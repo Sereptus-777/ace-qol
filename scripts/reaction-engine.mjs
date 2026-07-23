@@ -372,6 +372,30 @@ export class ReactionEngine {
       } catch (err) { console.warn(`${MODULE_ID} | postSummon cleanup failed (non-fatal):`, err); }
     });
 
+    // ── v0.7.271 — Late-placement straggler (the player-cast gap) ──
+    // dnd5e.postSummon fires on the CLIENT that placed the summon, so a summon a
+    // PLAYER casts and places AFTER the counter resolves never reaches the GM-only
+    // cleanup above → a "zombie" fey lands with the caster no longer concentrating.
+    // createToken is BROADCAST to every client, so it DOES fire on the GM here no
+    // matter who dropped the token — match the summoned actor's origin to a
+    // counterspelled cast and delete it GM-side. Cheap no-op when nothing was
+    // counterspelled recently (the length guard skips the timer entirely).
+    Hooks.on("createToken", (tokenDoc) => {
+      if (!ReactionEngine._counterspelledCasts.length) return;   // nothing pending — fast exit
+      setTimeout(async () => {
+        try {
+          if (game.users?.activeGM !== game.user) return;
+          const fresh = canvas?.scene?.tokens?.get?.(tokenDoc.id);
+          if (!fresh) return;
+          const origin = fresh.actor?.getFlag?.("dnd5e", "summon.origin")
+                      ?? fresh.actor?.flags?.dnd5e?.summon?.origin;
+          if (!ReactionEngine._isCounterspelledOrigin(origin)) return;
+          await fresh.delete();
+          ReactionEngine._sdebug(`[COUNTER-CLEANUP] deleted late-placed summon token ${tokenDoc.id} (counterspelled cast)`);
+        } catch (err) { console.warn(`${MODULE_ID} | createToken cleanup failed (non-fatal):`, err); }
+      }, 150);
+    });
+
     // flags.dnd5e.origin populates ~async on V13, so re-check on a short delay.
     Hooks.on("createMeasuredTemplate", (tdoc) => {
       setTimeout(async () => {
