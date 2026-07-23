@@ -1031,8 +1031,19 @@ export class ReactionEngine {
     }
     detailRows.push({ label: "Range", value: "60 ft (must see caster)" });
 
-    // Prompt all eligible reactors simultaneously — first to accept wins
-    const result = await this._promptMultipleReactors(reactors, {
+    // ── v0.7.269 — SEQUENTIAL COUNTERSPELL CASCADE ──
+    // RAW: every creature that can see the caster may try to counter the SAME
+    // cast. So we don't fire all reactors at once and stop at the first to
+    // click — we go ONE AT A TIME, closest first:
+    //   • decline          → offer the next reactor
+    //   • accept + SUCCESS  → spell countered, STOP (nobody else is prompted)
+    //   • accept + FAIL     → the spell is still resolving, so offer the next
+    // (Johnny 2026-07-22: Kasimir declines or whiffs → Syrax STILL gets his
+    //  shot; if Kasimir lands it, Syrax is never bothered.) The cast barrier's
+    //  30s safety net upstream still bounds the whole cascade.
+    const orderedReactors = [...reactors].sort((a, b) => (a.distance ?? 0) - (b.distance ?? 0));
+
+    const promptOpts = {
       type: "counterspell",
       title: "Counterspell",
       description: `<strong>${casterActor.name}</strong> is casting <strong>${item.name}</strong> (Level ${spellLevel} spell)${targetNames ? ` on <strong>${targetNames}</strong>` : ""}.`,
@@ -1044,10 +1055,29 @@ export class ReactionEngine {
       accentColor: "#ab47bc",
       // Pass extra data for slot picker
       extraData: { targetSpellLevel: spellLevel },
-    });
+    };
 
-    if (result.accepted) {
-      const reactor = result.reactor;
+    for (let i = 0; i < orderedReactors.length; i++) {
+      const reactor = orderedReactors[i];
+
+      // A failed counter earlier in this cascade already spent that reactor's
+      // reaction (and a linked actor can appear on two tokens) — skip anyone
+      // no longer holding a reaction.
+      if (this._hasUsedReaction(reactor.actor)) continue;
+
+      const result = await this._promptReaction({
+        ...promptOpts,
+        reactorActor: reactor.actor,
+        reactorToken: reactor.token,
+        availableSlots: reactor.slots,
+      });
+
+      // Declined → pass the shot down the line to the next eligible reactor.
+      if (!result.accepted) {
+        this._debug(`Counterspell: ${reactor.actor.name} declined — cascading (${i + 1}/${orderedReactors.length}).`);
+        continue;
+      }
+
       const slotLevel = result.choiceData?.slotLevel ?? 3;
       // v0.7.21: honor the "Consume Spell Slot" checkbox from the dialog.
       // Defaults to true for PCs, false for NPCs (GM convenience). When
@@ -1169,17 +1199,21 @@ export class ReactionEngine {
           counterspeller: reactor.actor.name,
         });
 
-      } else {
-        await this._postReactionChat(reactor.actor, "Counterspell",
-          `${reactor.actor.name} attempts to counterspell ${casterActor.name}'s ${item.name} but fails! (Check: ${checkResult} vs DC ${10 + spellLevel})`,
-          "#ef5350");
-        // Counter failed — cast continues
-        ReactionEngine._resolveCastBarrier(activity, { abort: false, reason: "counter_failed" });
+        // Spell is dead — nobody further down the cascade is prompted.
+        return;
       }
-    } else {
-      // User declined the counterspell prompt — cast continues
-      ReactionEngine._resolveCastBarrier(activity, { abort: false, reason: "declined" });
+
+      // ── Failed counter — the spell is STILL being cast, so cascade to the
+      //    NEXT reactor. Do NOT resolve the barrier here: that would let the
+      //    cast resolve before the next reactor even answers. ──
+      await this._postReactionChat(reactor.actor, "Counterspell",
+        `${reactor.actor.name} attempts to counterspell ${casterActor.name}'s ${item.name} but fails!${checkResult !== null ? ` (Check: ${checkResult} vs DC ${10 + spellLevel})` : ""}`,
+        "#ef5350");
+      this._debug(`Counterspell: ${reactor.actor.name} failed — cascading to the next reactor if any.`);
     }
+
+    // Every eligible reactor declined or whiffed — the cast goes through.
+    ReactionEngine._resolveCastBarrier(activity, { abort: false, reason: "no_counter" });
   }
 
   /**
