@@ -92,8 +92,13 @@ export class ReactionEngine {
       const itemUuid = activity?.item?.uuid ?? null;
       const activityUuid = activity?.uuid ?? null;
       if (!itemUuid && !activityUuid) return;
+      // Caster's token uuid — some summon animations (Automated Animations) play
+      // ON THE CASTER with origin=null, so we clean those up by source token.
+      const casterActor = activity?.item?.actor ?? activity?.actor ?? null;
+      let casterTokenUuid = null;
+      try { casterTokenUuid = casterActor?.getActiveTokens?.()?.[0]?.document?.uuid ?? null; } catch (_) {}
       ReactionEngine._counterspelledCasts.push({
-        itemUuid, activityUuid,
+        itemUuid, activityUuid, casterTokenUuid,
         casterName: activity?.item?.actor?.name ?? "?",
         expiresAt: Date.now() + 30000,   // 30s window covers a slow summon dialog
       });
@@ -158,22 +163,39 @@ export class ReactionEngine {
     }
   }
 
-  /** v0.7.272 — End Sequencer effects tied to any still-active counterspelled
-   *  cast. Automated Animations tags every effect `.origin(item.uuid)` (verified
-   *  in autoanimations dist), so a summon's on-drop flourish is ended by matching
-   *  that origin. Sequencer's endEffects broadcasts the removal to every client
-   *  (push=true default), so the orphan clears on all screens. Fire-and-forget
-   *  (never await an external-module promise). No-op without Sequencer / when
-   *  nothing is pending. */
+  /** v0.7.273 — End Sequencer effects tied to a counterspelled cast. Two match
+   *  routes, because animation modules tag effects inconsistently:
+   *    (a) origin — some modules set `.origin(item.uuid)`; match it directly.
+   *    (b) Automated Animations plays a summon flourish ON THE CASTER'S token
+   *        with origin=null (proven via live probe: file
+   *        "autoanimations.static.magicsign.conjuration…", source = caster token).
+   *        So also end any conjuration/summon-type effect SOURCED at the
+   *        counterspelled caster's token. The file/name pattern keeps it off
+   *        ACE's own counterspell bursts (jb2a.shield / jb2a.healing_generic,
+   *        which don't match) and off unrelated caster auras.
+   *  Ends by effect id (precise) via endEffects, which broadcasts the removal to
+   *  every client. Fire-and-forget. No-op without Sequencer / when nothing is
+   *  pending. */
   static _endCounterspelledCastEffects() {
     try {
       const EM = globalThis.Sequencer?.EffectManager;
-      if (!EM?.endEffects) return;
+      if (!EM?.getEffects || !EM?.endEffects) return;
       const now = Date.now();
-      for (const c of ReactionEngine._counterspelledCasts) {
-        if (c.expiresAt <= now) continue;
-        if (c.itemUuid) EM.endEffects({ origin: c.itemUuid });
-        if (c.activityUuid && c.activityUuid !== c.itemUuid) EM.endEffects({ origin: c.activityUuid });
+      const casts = ReactionEngine._counterspelledCasts.filter(c => c.expiresAt > now);
+      if (!casts.length) return;
+      const casterUuids = new Set(casts.map(c => c.casterTokenUuid).filter(Boolean));
+      const SUMMON_FX = /conjuration|summon|magic.?sign|portal|autoanimations\.static/i;
+      const toEnd = [];
+      for (const fx of (EM.getEffects() ?? [])) {
+        const d = fx?.data ?? {};
+        const originHit = d.origin && casts.some(c => d.origin === c.itemUuid || d.origin === c.activityUuid);
+        const srcUuid = (typeof d.source === "string" ? d.source : d.source?.uuid) ?? null;
+        const summonHit = srcUuid && casterUuids.has(srcUuid) && SUMMON_FX.test(`${d.file ?? ""} ${d.name ?? ""}`);
+        if ((originHit || summonHit) && fx.id) toEnd.push(fx.id);
+      }
+      if (toEnd.length) {
+        EM.endEffects({ effects: toEnd });
+        ReactionEngine._sdebug(`[COUNTER-CLEANUP] ended ${toEnd.length} orphan summon/cast effect(s)`);
       }
     } catch (err) { console.warn(`${MODULE_ID} | counterspell Sequencer-FX cleanup failed (non-fatal):`, err); }
   }
