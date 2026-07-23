@@ -512,6 +512,45 @@ export class ReactionEngine {
       }, 150);
     });
 
+    // ── v0.7.277 — Kill AA's summon animation + sound at the source ──
+    // Automated Animations fires on dnd5e.postUseActivity (the spell USE, not the
+    // token), so the placement gate can't stop it — a countered summon still
+    // triggers AA's flourish + audio. These persistent listeners catch AA's own
+    // Sequencer output the instant it renders and end it, scoped to a
+    // counterspelled cast. Near-zero cost when nothing was countered (fast exit).
+    Hooks.on("createSequencerEffect", (fx) => {
+      try {
+        const now = Date.now();
+        const casts = ReactionEngine._counterspelledCasts.filter(c => c.expiresAt > now);
+        if (!casts.length) return;
+        const casterUuids = new Set(casts.map(c => c.casterTokenUuid).filter(Boolean));
+        const d = fx?.data ?? {};
+        const src = (typeof d.source === "string" ? d.source : d.source?.uuid) ?? null;
+        const SUMMON_FX = /conjuration|summon|magic.?sign|portal|autoanimations\.static/i;
+        const originHit = d.origin && casts.some(c => d.origin === c.itemUuid || d.origin === c.activityUuid);
+        const summonHit = src && casterUuids.has(src) && SUMMON_FX.test(`${d.file ?? ""} ${d.name ?? ""}`);
+        if ((originHit || summonHit) && fx.id) {
+          globalThis.Sequencer?.EffectManager?.endEffects?.({ effects: [fx.id] });
+          ReactionEngine._sdebug(`[COUNTER-CLEANUP] ended AA summon effect at source (${d.file ?? d.name ?? "?"})`);
+        }
+      } catch (_) { /* non-fatal */ }
+    });
+    Hooks.on("createSequencerSound", (snd) => {
+      try {
+        const now = Date.now();
+        // AA's summon sound carries no id/origin/source we can match, so match on
+        // TIME: a counter landed in the last few seconds (its cast entry is <4s
+        // old). ACE's own counter FX are silent, so nothing legit plays then.
+        const freshCounter = ReactionEngine._counterspelledCasts.some(c => c.expiresAt > now && (c.expiresAt - now) > 26000);
+        if (!freshCounter) return;
+        const id = snd?.id ?? snd?.data?._id ?? null;
+        if (id) {
+          globalThis.Sequencer?.SoundManager?.endSounds?.({ sounds: [id] });
+          ReactionEngine._sdebug(`[COUNTER-CLEANUP] ended AA summon sound at source`);
+        }
+      } catch (_) { /* non-fatal */ }
+    });
+
     // ── v0.4.22.12: Reset all reactionUsed flags on world reload ──
     // The flag is stored on actor.flags so it persists across saves.
     // Without this cleanup, a session that ends mid-combat would
