@@ -918,6 +918,15 @@ export class QolSettings {
       default: true,
     });
 
+    s("counterspellAnyCaster", {
+      name:    "Counterspell Any Caster (RAW)",
+      hint:    "RAW, Counterspell interrupts ANY creature you can see casting within 60 ft — ally OR enemy. By DEFAULT (OFF) ACE only offers it against an ENEMY caster, so your counterspeller isn't pestered every time a teammate casts a spell. Turn ON for strict RAW: the pop-up also offers on same-side casts (e.g. countering a dominated ally).",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: false,
+    });
+
     s("autoBreakInvisibility", {
       name:    "Auto-Break Invisibility on Attack / Spell-Cast (RAW)",
       hint:    "When a creature with the Invisibility spell active makes an attack or casts a spell, automatically end the spell and make them visible (RAW 2014 + 2024). Greater Invisibility persists (intentional — that's the point of the spell). Natural invisibility from monster traits (Will-o'-Wisp, Invisible Stalker) is not touched.",

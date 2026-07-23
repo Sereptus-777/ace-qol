@@ -24,7 +24,7 @@ const TABS = [
   { id: "saves",      label: "Saves",              icon: "fa-solid fa-shield-heart",
     settings: ["targetStateAssessment", "autoRollNpcSaves", "concentrationTracking", "concentrationWidget", "concentrationOnDamage", "concentrationDamageMinDC", "unifyConcentrationMarker", "bonusActionSpellRule", "bonusActionSpellStrict"] },
   { id: "reactions",  label: "Reactions",          icon: "fa-solid fa-bolt",
-    settings: ["enableReactions", "autoShield", "autoCounterspell", "skipOfflineCounterspell", "autoAbsorbElements", "autoLegendaryResistance"] },
+    settings: ["enableReactions", "autoShield", "autoCounterspell", "skipOfflineCounterspell", "counterspellAnyCaster", "autoAbsorbElements", "autoLegendaryResistance"] },
   { id: "effects",    label: "Conditions & Effects", icon: "fa-solid fa-wand-sparkles",
     settings: ["extendedEffects", "autoApplyConditions", "effectTransferRules", "enableDurationTracker", "expireEffectsOnTurnChange", "notifyOnExpiry", "expiryNotifyAll", "combatWindDownEnabled", "combatWindDownThresholdMin"] },
   { id: "cover",      label: "Cover",              icon: "fa-solid fa-shield-alt",

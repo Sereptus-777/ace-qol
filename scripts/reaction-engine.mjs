@@ -73,6 +73,87 @@ export class ReactionEngine {
   static _castBarriers = new Map();
 
   /**
+   * v0.7.265 — Counterspell NATIVE-resolution cleanup.
+   * The cast barrier stops ACE's OWN downstream engines when a spell is
+   * countered — but dnd5e resolves SUMMONS and zone TEMPLATES natively, which
+   * ACE never touches, so the barrier can't stop them and the summoned
+   * creature / template lands anyway. This kill-list records recently
+   * counterspelled casts. A reactive sweep (in _onSpellCast) deletes anything
+   * already placed; postSummon / createMeasuredTemplate hooks delete anything
+   * that lands AFTER the async counter prompt resolves (the common case — the
+   * prompt usually finishes after dnd5e has already summoned). Match is by the
+   * casting item's uuid, carried on summoned tokens (flags.dnd5e.summon.origin)
+   * and templates (flags.dnd5e.origin).
+   */
+  static _counterspelledCasts = [];   // [{ itemUuid, activityUuid, casterName, expiresAt }]
+
+  static _markCastCounterspelled(activity) {
+    try {
+      const itemUuid = activity?.item?.uuid ?? null;
+      const activityUuid = activity?.uuid ?? null;
+      if (!itemUuid && !activityUuid) return;
+      ReactionEngine._counterspelledCasts.push({
+        itemUuid, activityUuid,
+        casterName: activity?.item?.actor?.name ?? "?",
+        expiresAt: Date.now() + 30000,   // 30s window covers a slow summon dialog
+      });
+    } catch (_) { /* non-fatal */ }
+  }
+
+  /** True if `origin` (a token/template dnd5e origin string) traces to a
+   *  recently counterspelled cast. Prunes expired entries as it scans. */
+  static _isCounterspelledOrigin(origin) {
+    if (!origin) return false;
+    const now = Date.now();
+    ReactionEngine._counterspelledCasts = ReactionEngine._counterspelledCasts.filter(c => c.expiresAt > now);
+    return ReactionEngine._counterspelledCasts.some(c =>
+      (c.activityUuid && origin === c.activityUuid) ||
+      (c.itemUuid && typeof origin === "string" && origin.startsWith(c.itemUuid))
+    );
+  }
+
+  /**
+   * v0.7.265 — Reactive sweep: on a successful counter, delete anything dnd5e
+   * already resolved natively for THIS cast that the barrier can't stop —
+   * summoned tokens + the cast's own zone template. Straggler hooks catch
+   * whatever lands after this runs. GM-only (deletes need GM perms).
+   */
+  static async _sweepCounterspelledResolution(activity) {
+    try {
+      if (game.users?.activeGM !== game.user) return;
+      const itemUuid = activity?.item?.uuid ?? null;
+      const activityUuid = activity?.uuid ?? null;
+      const matches = (origin) => !!origin && typeof origin === "string" && (
+        (activityUuid && origin === activityUuid) ||
+        (itemUuid && origin.startsWith(itemUuid))
+      );
+
+      // 1) Summoned tokens.
+      const tokenIds = [];
+      for (const t of (canvas?.scene?.tokens ?? [])) {
+        const so = t.actor?.getFlag?.("dnd5e", "summon.origin") ?? t.actor?.flags?.dnd5e?.summon?.origin;
+        if (matches(so)) tokenIds.push(t.id);
+      }
+      if (tokenIds.length) {
+        await canvas.scene.deleteEmbeddedDocuments("Token", tokenIds);
+        ReactionEngine._sdebug(`[COUNTER-CLEANUP] deleted ${tokenIds.length} summoned token(s)`);
+      }
+
+      // 2) Zone template(s).
+      const tplIds = [];
+      for (const tpl of (canvas?.scene?.templates ?? [])) {
+        if (matches(tpl?.flags?.dnd5e?.origin)) tplIds.push(tpl.id);
+      }
+      if (tplIds.length) {
+        await canvas.scene.deleteEmbeddedDocuments("MeasuredTemplate", tplIds);
+        ReactionEngine._sdebug(`[COUNTER-CLEANUP] deleted ${tplIds.length} template(s)`);
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | counterspell cleanup sweep failed (non-fatal):`, err);
+    }
+  }
+
+  /**
    * v0.7.21 — Generate a stable key for the activity.
    * UUID-first; composite fallback when UUID is missing. The previous code
    * fell back to the activity object reference, which collided on parallel
@@ -271,6 +352,37 @@ export class ReactionEngine {
       } catch (err) {
         console.warn(`${MODULE_ID} | rest reaction-reset failed:`, err);
       }
+    });
+
+    // ── v0.7.265 — Counterspell native-resolution cleanup (stragglers) ──
+    // dnd5e summons/templates usually land AFTER the async counter prompt
+    // resolves. These GM-only hooks delete anything whose origin traces to a
+    // counterspelled cast (paired with the reactive sweep in _onSpellCast for
+    // anything already placed by the time the counter lands).
+    Hooks.on("dnd5e.postSummon", async (activity, _profile, createdTokens) => {
+      try {
+        if (game.users?.activeGM !== game.user) return;
+        const origin = activity?.item?.uuid ?? activity?.uuid;
+        if (!ReactionEngine._isCounterspelledOrigin(origin)) return;
+        const ids = (createdTokens ?? []).map(t => t?.id ?? t?.document?.id).filter(Boolean);
+        if (ids.length) {
+          await canvas?.scene?.deleteEmbeddedDocuments("Token", ids);
+          ReactionEngine._sdebug(`[COUNTER-CLEANUP] postSummon deleted ${ids.length} straggler token(s)`);
+        }
+      } catch (err) { console.warn(`${MODULE_ID} | postSummon cleanup failed (non-fatal):`, err); }
+    });
+
+    // flags.dnd5e.origin populates ~async on V13, so re-check on a short delay.
+    Hooks.on("createMeasuredTemplate", (tdoc) => {
+      setTimeout(async () => {
+        try {
+          if (game.users?.activeGM !== game.user) return;
+          const fresh = canvas?.scene?.templates?.get?.(tdoc.id);
+          if (!fresh || !ReactionEngine._isCounterspelledOrigin(fresh?.flags?.dnd5e?.origin)) return;
+          await fresh.delete();
+          ReactionEngine._sdebug(`[COUNTER-CLEANUP] deleted straggler template ${tdoc.id}`);
+        } catch (err) { console.warn(`${MODULE_ID} | template cleanup failed (non-fatal):`, err); }
+      }, 150);
     });
 
     // ── v0.4.22.12: Reset all reactionUsed flags on world reload ──
@@ -985,6 +1097,30 @@ export class ReactionEngine {
           });
         }
 
+        // ── v0.7.265 — Kill the native resolution the barrier can't stop:
+        //    summoned creatures + this cast's own zone template. Mark the cast
+        //    so stragglers (anything that lands after this) get deleted too, and
+        //    sweep anything dnd5e already placed.
+        ReactionEngine._markCastCounterspelled(activity);
+        await ReactionEngine._sweepCounterspelledResolution(activity);
+
+        // ── v0.7.265 — End the caster's concentration on the countered spell.
+        //    RAW: a countered spell fails entirely, so no concentration should
+        //    linger. Registered spells get this from the pipeline, but NATIVE
+        //    ones (Summon Fey) never hit it — so we do it here for EVERY
+        //    counter. Idempotent (no-op if nothing to end). dnd5e can create
+        //    the Concentrating effect a TICK after our barrier resolves, so
+        //    retry once (same pattern the pipeline uses).
+        try {
+          const { SpellPipeline } = await import("./spell-pipeline/pipeline.mjs");
+          await SpellPipeline._endConcentrationForCancelledSpell(casterActor, item);
+          setTimeout(() => {
+            SpellPipeline._endConcentrationForCancelledSpell(casterActor, item).catch(() => {});
+          }, 400);
+        } catch (err) {
+          console.warn(`${MODULE_ID} | counterspell concentration cleanup failed (non-fatal):`, err);
+        }
+
         // ── v0.7.17b — Play counterspell animations ──
         // Ward bubble on counterspeller (Varek) → 300ms wait → counter-burst
         // on the original caster (Kasimir). One animation per side, both
@@ -1107,13 +1243,19 @@ export class ReactionEngine {
     if (!canvas.tokens?.placeables) return reactors;
 
     const casterDisposition = casterToken.document?.disposition ?? 1;
+    // RAW opt-in (`counterspellAnyCaster`): offer against ANY caster you can
+    // see, ally included. Default OFF = enemies-only. Read ONCE, defensively —
+    // a settings hiccup must never throw and kill the whole counterspell check.
+    let counterAnyCaster = false;
+    try { counterAnyCaster = QolSettings.get("counterspellAnyCaster") === true; } catch (_) { counterAnyCaster = false; }
 
     for (const token of canvas.tokens.placeables) {
       if (!token.actor) continue;
       if (token.actor.id === casterActor.id) continue;
 
-      // Same disposition = ally, skip (enemies counter enemies)
-      if (token.document?.disposition === casterDisposition) continue;
+      // Same disposition = ally, skip (enemies counter enemies) — unless the
+      // RAW opt-in read above is on (counter ANY caster you can see).
+      if (token.document?.disposition === casterDisposition && !counterAnyCaster) continue;
 
       // Must be alive
       if ((token.actor.system?.attributes?.hp?.value ?? 1) <= 0) continue;

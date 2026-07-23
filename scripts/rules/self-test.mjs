@@ -291,6 +291,32 @@ export class SelfTest {
     } catch (err) { t("live", "suite crashed", false, err?.message ?? String(err)); }
 
     // ═════════════════════════════════════════════════════════════════════
+    //  SUITE 7 — Counterspell native-cleanup origin matcher (regression)
+    //  Guards the summon/template kill-list logic so a countered Summon Fey
+    //  can never silently start leaking its creature again. Side-effect-free:
+    //  saves + restores the live kill-list.
+    // ═════════════════════════════════════════════════════════════════════
+    try {
+      const { ReactionEngine } = await import("../reaction-engine.mjs");
+      const saved = ReactionEngine._counterspelledCasts;
+      ReactionEngine._counterspelledCasts = [];
+      ReactionEngine._markCastCounterspelled({
+        uuid: "Actor.aaa.Item.bbb.Activity.ccc",
+        item: { uuid: "Actor.aaa.Item.bbb", actor: { name: "SelfTest" } },
+      });
+      t("counterspell", "matches summoned-token origin (item uuid)",
+        ReactionEngine._isCounterspelledOrigin("Actor.aaa.Item.bbb") === true);
+      t("counterspell", "matches template origin (activity uuid)",
+        ReactionEngine._isCounterspelledOrigin("Actor.aaa.Item.bbb.Activity.ccc") === true);
+      t("counterspell", "ignores an unrelated origin",
+        ReactionEngine._isCounterspelledOrigin("Actor.zzz.Item.qqq") === false);
+      ReactionEngine._counterspelledCasts = [{ itemUuid: "X", activityUuid: "Y", expiresAt: Date.now() - 1 }];
+      t("counterspell", "prunes an expired counterspelled cast",
+        ReactionEngine._isCounterspelledOrigin("X") === false);
+      ReactionEngine._counterspelledCasts = Array.isArray(saved) ? saved : [];
+    } catch (err) { t("counterspell", "suite crashed", false, err?.message ?? String(err)); }
+
+    // ═════════════════════════════════════════════════════════════════════
     //  Scorecard
     // ═════════════════════════════════════════════════════════════════════
     const passed = results.filter(r => r.pass).length;
