@@ -4199,6 +4199,23 @@ Hooks.once("ready", () => {
       if (game.users?.activeGM !== game.user) return;
       if (!payload?.action) return;
 
+      // ── v0.7.268 — A PLAYER cast a spell → run the counterspell check HERE,
+      //    GM-side (the offer routes prompts to reactor owners, and the fizzle
+      //    cleanup deletes GM-owned summons/templates). Reconstruct the live
+      //    activity from its uuid + grab the synced usage card, then run the
+      //    same _onSpellCast the GM-cast path uses. ──
+      if (payload.action === "playerSpellCast") {
+        try {
+          const activity = payload.activityUuid ? await fromUuid(payload.activityUuid) : null;
+          const message  = payload.messageId ? game.messages.get(payload.messageId) : null;
+          if (activity && reactionEngine) await reactionEngine._onSpellCast(activity, message);
+          else console.warn(`${MODULE_ID} | playerSpellCast: could not resolve activity ${payload.activityUuid}`);
+        } catch (err) {
+          console.warn(`${MODULE_ID} | playerSpellCast handling failed (non-fatal):`, err);
+        }
+        return;
+      }
+
       // FlagsEngine optional prompt responses from players
       if (payload.action === "optionalPromptResult") {
         FlagsEngine.handleSocketMessage(payload);

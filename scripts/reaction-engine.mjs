@@ -424,9 +424,29 @@ export class ReactionEngine {
     // We check if it is a spell and look for Counterspell reactors.
     Hooks.on("dnd5e.postCreateUsageMessage", async (activity, message) => {
       this._debug(`[REACTION-V2-HOOK] entry for ${activity?.item?.name ?? '?'} isGM=${game.user.isGM} reactions=${QolSettings.get("enableReactions")} cs=${QolSettings.get("autoCounterspell")}`);
-      if (!game.user.isGM) return;
       if (!QolSettings.get("enableReactions")) return;
       if (!QolSettings.get("autoCounterspell")) return;
+      if (activity?.item?.type !== "spell") return;
+      if ((activity?.item?.system?.level ?? 0) === 0) return; // cantrips can't be countered
+
+      // ── v0.7.268 — PLAYER cast path. This hook fires on the CASTER's client,
+      // but the counterspell check must run GM-side: it routes prompts to each
+      // reactor's owner and its cleanup deletes GM-owned summons/templates,
+      // which a player client can't do. So when a PLAYER casts, socket the GM
+      // the exact activity uuid; the GM reconstructs it with fromUuid and runs
+      // the same _onSpellCast (mirrors ACE's existing player-cast save/heal
+      // routing). GM casts fall through and run it directly. ──
+      if (!game.user.isGM) {
+        try {
+          game.socket.emit(SOCKET_NAME, {
+            action: "playerSpellCast",
+            activityUuid: activity?.uuid ?? null,
+            messageId: message?.id ?? null,
+          });
+        } catch (e) { console.warn(`${MODULE_ID} | playerSpellCast emit failed (non-fatal):`, e); }
+        return;
+      }
+
       this._debug(`[REACTION-V2-HOOK] passed gates, calling _onSpellCast for ${activity?.item?.name ?? '?'}`);
       // Mark BEFORE processing so the legacy hook (which fires after
       // this synchronous return) sees the handled state.
