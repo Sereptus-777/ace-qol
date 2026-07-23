@@ -1493,6 +1493,48 @@ Hooks.once("ready", () => {
     console.error(`${MODULE_ID} | Reaction engine init failed:`, err);
   }
 
+  // ── v0.7.274 — ROOT FIX: gate summon PLACEMENT on the counter verdict ──
+  // A counterspelled summon must NEVER land. placeSummons runs on the CASTER's
+  // client (GM for GM-casts, the player for player-casts); we await ACE's summon
+  // verdict there and, if the cast was countered, skip placement entirely. No
+  // token is created, so Automated Animations has nothing to react to — no
+  // animation, no sound, no lighting, and no straggler cleanup needed. Fail-open:
+  // no barrier / no verdict / timeout → places normally. The token+FX cleanup
+  // stays only as a safety net for the race where placement beats the counter.
+  try {
+    const _summonCls = CONFIG.DND5E?.activityTypes?.summon?.documentClass;
+    if (_summonCls?.prototype?.placeSummons && !_summonCls.prototype._aceQolPlacementGated) {
+      const _target = "CONFIG.DND5E.activityTypes.summon.documentClass.prototype.placeSummons";
+      const _gate = async function (wrapped, ...args) {
+        try {
+          const verdict = await ReactionEngine.awaitSummonVerdict(this);
+          if (verdict?.abort) {
+            console.log(`${MODULE_ID} | summon placement CANCELLED — "${this?.item?.name ?? "?"}" was counterspelled (no token placed).`);
+            return;   // skip the original — nothing lands
+          }
+        } catch (err) {
+          console.warn(`${MODULE_ID} | summon-placement verdict check failed (non-fatal, placing normally):`, err);
+        }
+        return wrapped(...args);
+      };
+      const _direct = () => {
+        const orig = _summonCls.prototype.placeSummons;
+        _summonCls.prototype.placeSummons = async function (...a) {
+          return _gate.call(this, (...x) => orig.apply(this, x), ...a);
+        };
+      };
+      if (game.modules.get("lib-wrapper")?.active && globalThis.libWrapper) {
+        try { globalThis.libWrapper.register(MODULE_ID, _target, _gate, "MIXED"); console.log(`${MODULE_ID} | summon placement gated on counter verdict (libWrapper).`); }
+        catch (e) { console.warn(`${MODULE_ID} | libWrapper register for placeSummons failed — direct patch:`, e); _direct(); }
+      } else {
+        _direct(); console.log(`${MODULE_ID} | summon placement gated on counter verdict (direct patch).`);
+      }
+      _summonCls.prototype._aceQolPlacementGated = true;
+    } else if (!_summonCls?.prototype?.placeSummons) {
+      console.warn(`${MODULE_ID} | summon-placement gate: SummonActivity.placeSummons not found (dnd5e version?) — skipped.`);
+    }
+  } catch (err) { console.warn(`${MODULE_ID} | summon-placement gate setup failed (non-fatal):`, err); }
+
   // Invisibility breaker — RAW: attack/cast ends Invisibility spell (not Greater).
   // Runs on the casting/attacking actor's owner client (PC owner OR GM for NPCs).
   try {
@@ -4084,6 +4126,18 @@ Hooks.once("ready", () => {
         return;
       }
 
+      // ── v0.7.274 — Summon-placement verdict (broadcast). The GM relays whether
+      //   a cast was countered so the CASTER's client resolves its summon gate —
+      //   the gate the placement waits on. Runs on ALL clients before the GM gate;
+      //   only the caster (who created the gate) actually resolves anything.
+      if (payload?.action === "summonVerdict") {
+        try {
+          const act = payload.activityUuid ? await fromUuid(payload.activityUuid) : null;
+          if (act) ReactionEngine._resolveSummonVerdict(act, payload.result ?? { abort: false });
+        } catch (err) { console.warn(`${MODULE_ID} | summonVerdict handling failed (non-fatal):`, err); }
+        return;
+      }
+
       // ── Fumble-ends-turn relay: a player fumbled; the GM advances combat ──
       // (players can't advance the turn themselves). activeGM-gated + re-checks
       // the combatant so it can't double-advance. (Johnny's table rule.)
@@ -4208,8 +4262,20 @@ Hooks.once("ready", () => {
         try {
           const activity = payload.activityUuid ? await fromUuid(payload.activityUuid) : null;
           const message  = payload.messageId ? game.messages.get(payload.messageId) : null;
-          if (activity && reactionEngine) await reactionEngine._onSpellCast(activity, message);
-          else console.warn(`${MODULE_ID} | playerSpellCast: could not resolve activity ${payload.activityUuid}`);
+          if (activity && reactionEngine) {
+            await reactionEngine._onSpellCast(activity, message);
+            // ── v0.7.274 — Relay the counter VERDICT to the caster's client so
+            //   its summon-placement gate knows whether to place. Source of truth
+            //   for "countered": the flag _onSpellCast set on the usage message. ──
+            const countered = !!message?.getFlag?.(MODULE_ID, "counterspelled");
+            game.socket.emit(SOCKET_NAME, {
+              action: "summonVerdict",
+              activityUuid: payload.activityUuid,
+              result: { abort: countered, reason: countered ? "counterspelled" : "not_countered" },
+            });
+          } else {
+            console.warn(`${MODULE_ID} | playerSpellCast: could not resolve activity ${payload.activityUuid}`);
+          }
         } catch (err) {
           console.warn(`${MODULE_ID} | playerSpellCast handling failed (non-fatal):`, err);
         }

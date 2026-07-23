@@ -301,6 +301,61 @@ export class ReactionEngine {
     return result;
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  v0.7.274 — SUMMON PLACEMENT GATE (caster-side)
+  //  The general cast barrier is GM-only, so a PLAYER-cast summon has no local
+  //  barrier for its placement to wait on. This dedicated gate runs on the
+  //  CASTER's client: GM-casts defer to the local barrier; player-casts wait on
+  //  a small promise the GM's verdict resolves over the socket. It never touches
+  //  the general barrier, so no other spell path is affected.
+  // ═══════════════════════════════════════════════════════════════════════════
+  static _summonGates = new Map();      // activityKey -> { promise, resolve, timer }
+  static _summonVerdicts = new Map();   // activityKey -> result (verdict that beat the gate)
+
+  /** Caster-side: does this cast get countered before we place the summon?
+   *  Returns { abort:boolean }. Fail-open on timeout (place normally). */
+  static async awaitSummonVerdict(activity) {
+    // GM cast: the real barrier lives on this client — reuse it.
+    if (game.user.isGM) return ReactionEngine.awaitCastBarrier(activity);
+    // Player cast: wait for the GM to relay the verdict.
+    const key = ReactionEngine._activityKey(activity);
+    // Verdict already arrived (counter resolved before we reached placement)?
+    if (ReactionEngine._summonVerdicts.has(key)) {
+      const r = ReactionEngine._summonVerdicts.get(key);
+      ReactionEngine._summonVerdicts.delete(key);
+      return r ?? { abort: false, reason: "verdict_prearrived" };
+    }
+    const existing = ReactionEngine._summonGates.get(key);
+    if (existing) return existing.promise;
+    let resolve;
+    const promise = new Promise((r) => { resolve = r; });
+    const timer = setTimeout(() => {
+      ReactionEngine._summonGates.delete(key);
+      resolve({ abort: false, reason: "summon_gate_timeout" });   // fail-open
+    }, 30000);
+    ReactionEngine._summonGates.set(key, { promise, resolve, timer });
+    return promise;
+  }
+
+  /** Caster-side: the GM relayed the verdict for this cast — resolve the gate
+   *  (or stash it if placement hasn't reached the gate yet). */
+  static _resolveSummonVerdict(activity, result) {
+    try {
+      const key = ReactionEngine._activityKey(activity);
+      const g = ReactionEngine._summonGates.get(key);
+      if (g) {
+        clearTimeout(g.timer);
+        ReactionEngine._summonGates.delete(key);
+        g.resolve(result ?? { abort: false });
+        return;
+      }
+      // Placement hasn't hit the gate yet — stash the verdict briefly so
+      // awaitSummonVerdict picks it up when it's called.
+      ReactionEngine._summonVerdicts.set(key, result ?? { abort: false });
+      setTimeout(() => ReactionEngine._summonVerdicts.delete(key), 30000);
+    } catch (_) { /* non-fatal */ }
+  }
+
   constructor() {
     /** Pending reaction prompts awaiting player response.
      *  v0.4.22.12: switched from plain object to Map for cleaner
