@@ -4681,8 +4681,11 @@ Hooks.once("ready", () => {
   Hooks.on("renderChatMessage", (message, html) => {
     // ONLY suppress messages with D&D 5e system flags — nothing else
     if (!message.flags?.dnd5e) return;
-    // Double-check: never touch our own messages
-    if (message.flags?.[MODULE_ID]) return;
+    // Exempt ONLY ACE's own CREATED cards — those carry a `.type` marker. A bare
+    // ACE STATE flag on a dnd5e card (counterspelled / applied / rolled) must NOT
+    // exempt it: it's still a system card and has to be hidden. dnd5e cards never
+    // carry an ace-qol `.type`, so this suppresses every one of them. (0.7.270)
+    if (message.flags?.[MODULE_ID]?.type) return;
 
     const el = html instanceof HTMLElement ? html : html?.[0] ?? html;
     if (!el?.querySelector) return;
@@ -4778,7 +4781,7 @@ Hooks.once("ready", () => {
   const _aceHideSystemCard = (message, html) => {
     try {
       if (!message?.flags?.dnd5e) return;               // only dnd5e system cards
-      if (message.flags?.[MODULE_ID]) return;            // never our own ACE cards
+      if (message.flags?.[MODULE_ID]?.type) return;      // exempt only ACE's OWN created cards (they carry a .type); a dnd5e card we merely state-tagged (counterspelled/applied/…) still hides. dnd5e cards never carry an ace-qol .type. (0.7.270)
       if (QolSettings.get("suppressSystemCards") === false) return;
       const el = html instanceof HTMLElement ? html : html?.[0] ?? html;
       if (!el || el.dataset?.aceHidden) return;
