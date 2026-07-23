@@ -148,9 +148,34 @@ export class ReactionEngine {
         await canvas.scene.deleteEmbeddedDocuments("MeasuredTemplate", tplIds);
         ReactionEngine._sdebug(`[COUNTER-CLEANUP] deleted ${tplIds.length} template(s)`);
       }
+
+      // 3) End any Sequencer effects tied to this cast. Automated Animations
+      //    plays a summon flourish (JB2A) via .origin(item.uuid), so a countered
+      //    summon's animation would otherwise linger on the caster with no fey.
+      ReactionEngine._endCounterspelledCastEffects();
     } catch (err) {
       console.warn(`${MODULE_ID} | counterspell cleanup sweep failed (non-fatal):`, err);
     }
+  }
+
+  /** v0.7.272 — End Sequencer effects tied to any still-active counterspelled
+   *  cast. Automated Animations tags every effect `.origin(item.uuid)` (verified
+   *  in autoanimations dist), so a summon's on-drop flourish is ended by matching
+   *  that origin. Sequencer's endEffects broadcasts the removal to every client
+   *  (push=true default), so the orphan clears on all screens. Fire-and-forget
+   *  (never await an external-module promise). No-op without Sequencer / when
+   *  nothing is pending. */
+  static _endCounterspelledCastEffects() {
+    try {
+      const EM = globalThis.Sequencer?.EffectManager;
+      if (!EM?.endEffects) return;
+      const now = Date.now();
+      for (const c of ReactionEngine._counterspelledCasts) {
+        if (c.expiresAt <= now) continue;
+        if (c.itemUuid) EM.endEffects({ origin: c.itemUuid });
+        if (c.activityUuid && c.activityUuid !== c.itemUuid) EM.endEffects({ origin: c.activityUuid });
+      }
+    } catch (err) { console.warn(`${MODULE_ID} | counterspell Sequencer-FX cleanup failed (non-fatal):`, err); }
   }
 
   /**
@@ -391,6 +416,7 @@ export class ReactionEngine {
                       ?? fresh.actor?.flags?.dnd5e?.summon?.origin;
           if (!ReactionEngine._isCounterspelledOrigin(origin)) return;
           await fresh.delete();
+          ReactionEngine._endCounterspelledCastEffects();   // also cut AA's on-drop summon flourish
           ReactionEngine._sdebug(`[COUNTER-CLEANUP] deleted late-placed summon token ${tokenDoc.id} (counterspelled cast)`);
         } catch (err) { console.warn(`${MODULE_ID} | createToken cleanup failed (non-fatal):`, err); }
       }, 150);
