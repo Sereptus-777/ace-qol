@@ -2004,6 +2004,51 @@ Hooks.once("ready", () => {
         console.warn(`${MODULE_ID} | [concentration-end:${source}] template cleanup threw:`, err);
       }
 
+      // v0.7.281: Also remove any SUMMONED creatures this caster conjured with
+      // this spell. dnd5e tags a summoned token's actor with
+      // `flags.dnd5e.summon.origin` = the casting item's uuid, but — unlike
+      // templates — it does NOT register the token as a concentration dependent,
+      // so dnd5e never deletes it when concentration ends (verified in dnd5e
+      // 5.3.1 — no dependentOn linkage for summons). RAW the creature "disappears
+      // when the spell ends", so ACE does it: match by summon.origin (owned by
+      // this caster; origin item name = this spell when we can resolve it) and
+      // delete GM-side. Grace period skips a just-placed summon in case a spurious
+      // concentration-end fires right after the cast.
+      const SUMMON_GRACE_MS = 2500;
+      try {
+        const scene = canvas?.scene;
+        if (scene) {
+          const now = Date.now();
+          const wantName = spellName ? String(spellName).toLowerCase() : null;
+          const summonIds = [];
+          for (const tokenDoc of scene.tokens.contents) {
+            const origin = tokenDoc.actor?.getFlag?.("dnd5e", "summon.origin")
+                        ?? tokenDoc.actor?.flags?.dnd5e?.summon?.origin ?? null;
+            if (!origin || typeof origin !== "string") continue;
+            // Ownership: the origin item uuid carries the caster's actor id.
+            if (!origin.includes(casterId)) continue;
+            // Spell match by the origin item's name, when we have one + can resolve
+            // it. A caster only concentrates on one spell at a time, so ownership
+            // alone is already tight; the name check is extra precision.
+            if (wantName) {
+              let originName = "";
+              try { originName = String(fromUuidSync?.(origin)?.name ?? "").toLowerCase(); } catch (_) {}
+              if (originName && originName !== wantName) continue;
+            }
+            // Grace: don't delete a summon placed in the last SUMMON_GRACE_MS.
+            const created = tokenDoc._stats?.createdTime ?? 0;
+            if (created && (now - created) < SUMMON_GRACE_MS) continue;
+            summonIds.push(tokenDoc.id);
+          }
+          if (summonIds.length > 0) {
+            await scene.deleteEmbeddedDocuments("Token", summonIds);
+            console.log(`${MODULE_ID} | [concentration-end:${source}] removed ${summonIds.length} summoned creature(s) for ${spellName ?? "(any spell)"} on caster ${casterName ?? casterId}`);
+          }
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | [concentration-end:${source}] summon cleanup threw:`, err);
+      }
+
       return removed;
     };
 
