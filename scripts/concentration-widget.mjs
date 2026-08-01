@@ -522,6 +522,23 @@ export class ConcentrationWidget {
     const scene = templateDoc?.parent ?? canvas?.scene;
     if (!templateDoc || !scene) return;
 
+    // ── SECOND GUARD, FACT-BASED (2026-07-28) ──
+    // The name check above is not enough. It resolves the ITEM's name through
+    // the rules brain, but a magic item's area ability is an ACTIVITY: the
+    // Stormforger's storm is keyed "thunderstorm of misery" with an alias on
+    // "stormforger", while the item itself is "Staff of the Stormforger" —
+    // which normalizes to a key that matches NEITHER. The guard sailed straight
+    // past and this path built a SECOND difficult-terrain region on top of the
+    // rules engine's, doubling the movement penalty on every cast.
+    //
+    // So don't ask "should the engine own this?" by name. Ask the map whether
+    // the engine ALREADY owns this exact template. That can't be fooled by a
+    // naming mismatch.
+    if (scene.regions?.find?.(r => r.getFlag?.(MODULE_ID, "spaceFor") === templateDoc.id)) {
+      console.debug(`${TAG} | rules engine already owns a space for template ${templateDoc.id} — not adding a second terrain region`);
+      return;
+    }
+
     // Don't double-create — canvasReady re-attachment can re-fire the create.
     const existing = scene.regions?.find?.(r => r.getFlag?.(MODULE_ID, "difficultTerrainFor") === templateDoc.id);
     if (existing) { tracker.difficultTerrainRegionId = existing.id; return; }
@@ -542,6 +559,11 @@ export class ConcentrationWidget {
     // the create — re-check before writing.
     if (!scene.templates?.get?.(templateDoc.id)) return;
     if (scene.regions?.find?.(r => r.getFlag?.(MODULE_ID, "difficultTerrainFor") === templateDoc.id)) return;
+    // Re-check the engine's claim too. The shape retry above can burn ~600ms,
+    // and space-effects creates its region on a 150ms delay — so the engine can
+    // stake this template AFTER our first guard ran and BEFORE we write. Both
+    // ends of that window have to be covered or we're back to two regions.
+    if (scene.regions?.find?.(r => r.getFlag?.(MODULE_ID, "spaceFor") === templateDoc.id)) return;
 
     const raw = tracker.timing.difficultTerrain;
     const mult = (raw === true) ? 2 : (Number(raw) > 0 ? Number(raw) : 2);
@@ -574,18 +596,29 @@ export class ConcentrationWidget {
   }
 
   /**
-   * Map a difficulty multiplier onto every non-derived movement action
-   * (walk/climb/swim/crawl/…). Actions that derive their terrain difficulty
-   * (e.g. fly) are left out so they keep their own derivation. Falls back to
-   * walk-only if the movement-action config can't be read.
+   * Map a difficulty multiplier onto the movement actions the terrain actually
+   * impedes — ground travel by default.
+   *
+   * ⚠️ FLYING (fixed 2026-07-27). This used to charge every non-derived action
+   * and claimed fly was "derived". It isn't: of Foundry V13's nine movement
+   * actions only crawl, climb, jump, blink and displace carry
+   * `deriveTerrainDifficulty`, so walk, fly, swim and burrow were ALL charged
+   * and a flier 35 ft above a grease slick paid double for ground it never
+   * touched. Not RAW. Everything not named is pinned to 1, and the derived
+   * actions resolve themselves (crawl/climb follow walk, jump takes the max).
+   *
+   * This is the LEGACY path — spells with no rules entry. Ground-only is right
+   * for nearly all of them; entries that need "fly" live in the rules registry
+   * and go through SpaceEffects._terrainDifficulties instead.
    */
-  _buildTerrainDifficulties(mult) {
+  _buildTerrainDifficulties(mult, modes = null) {
+    const want = new Set(Array.isArray(modes) && modes.length ? modes : ["walk"]);
     const out = {};
     try {
       const actions = CONFIG?.Token?.movement?.actions ?? {};
       for (const [key, cfg] of Object.entries(actions)) {
-        if (cfg?.deriveTerrainDifficulty) continue; // derived (e.g. fly) — leave to derive
-        out[key] = mult;
+        if (cfg?.deriveTerrainDifficulty) continue;  // crawl/climb/jump/blink/displace derive
+        out[key] = want.has(key) ? mult : 1;
       }
     } catch (_) { /* fall through to fallback */ }
     if (!Object.keys(out).length) out.walk = mult;

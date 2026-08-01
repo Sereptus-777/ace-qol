@@ -22,6 +22,12 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
 import { CombatState } from "./combat-state.mjs";
 import { DamageConstants, safeShowForRoll } from "./damage-engine.mjs";
+import { awaitDiceSettle } from "./dsn-utils.mjs";
+// The target-side snapshot. The save pipeline asks THIS what a creature is
+// immune to, what its saves are, what conditions it carries — instead of
+// reaching into the actor and guessing at data shapes. (2026-07-28)
+import { buildTargetProfile } from "./profiles/target-profile.mjs";
+import { Situation } from "./situation.mjs";
 import { DamageApplicator } from "./damage-applicator.mjs";
 import { getSpellTiming, TIMING } from "./spell-timing.mjs";
 import { CoverEngine } from "./cover-engine.mjs";
@@ -41,7 +47,7 @@ const ACE_DICE_DIR = "modules/ace-qol/Assets/Dice%20Dice/BD20";
  * @param {{size?:number}} opts  Pixel size of the die (default 30).
  * @returns {string}            HTML for a glowing black d20 showing that face.
  */
-function aceD20FaceImg(face, { size = 30, glow = true } = {}) {
+export function aceD20FaceImg(face, { size = 30, glow = true } = {}) {
   const n = Number(face);
   const valid = Number.isInteger(n) && n >= 1 && n <= 20;
   const src = `${ACE_DICE_DIR}/BD20-${valid ? n : 20}_nobg.png`;
@@ -134,6 +140,33 @@ export class SaveEngine {
     Hooks.on("dnd5e.useActivity", (activity, usageConfig, dialogConfig, messageConfig) => {
       console.log(`${MODULE_ID} | useActivity fired (legacy):`, activity?.item?.name);
       this._onUseActivity(activity);
+    });
+
+    // ── CARD-INDEPENDENT SAFETY NET (2026-07-28) ──
+    // Every detection path above is tied, directly or indirectly, to a chat
+    // message existing. That was a hidden dependency and it bit us: as of
+    // 0.7.332 ACE stops dnd5e's usage card from ever being created, and it
+    // deliberately posts no ACE card for save activities either — so for a
+    // save there is now NO message at all, and the createChatMessage fallback
+    // below can never fire again. Detecting "a creature must make a saving
+    // throw" should never have depended on a card being drawn.
+    //
+    // dnd5e.postUseActivity fires for every activity use regardless of cards,
+    // dialogs or suppression. Dedupe is shared with the other paths, so when
+    // the standard hook already handled this cast this is a no-op.
+    Hooks.on("dnd5e.postUseActivity", (activity) => {
+      try {
+        if (game.users?.activeGM !== game.user) return;
+        if (activity?.type !== "save" && !activity?.save?.ability) return;
+        const key = activity?.uuid;
+        if (!key) return;
+        const prev = this._processedActivityIds.get(key);
+        if (prev != null && (Date.now() - prev) < 5000) return;   // already handled this cast
+        console.log(`${MODULE_ID} | save detected via postUseActivity (card-independent):`, activity?.item?.name);
+        this._onUseActivity(activity);
+      } catch (err) {
+        console.warn(`${MODULE_ID} | postUseActivity save detection threw:`, err);
+      }
     });
 
     // ── v0.4.22 FALLBACK: createChatMessage detection for non-standard cast paths ──
@@ -565,7 +598,7 @@ export class SaveEngine {
             activity,
             item,
             actor,
-            damageTypes: damageType ? [damageType] : CombatState._getItemDamageTypes(item),
+            damageTypes: damageType ? [damageType] : CombatState._getItemDamageTypes(item, activity),
             damageFormula: formula,
             timing: getSpellTiming(item),
             activityId: activity.id,
@@ -634,16 +667,17 @@ export class SaveEngine {
     // unresolved at 0. Use the caster's spell save DC so the save isn't a free
     // auto-pass (DC 0 = everyone succeeds, which silently breaks Web etc.).
     if (!(Number(saveDC) > 0)) {
-      const sysDC = actor?.system?.attributes?.spelldc
-                 ?? actor?.system?.attributes?.spell?.dc
-                 ?? null;
+      // The CASTER's spell save DC. Attacker-side, so it doesn't belong to the
+      // target profile — but it IS a fact about a creature, so it comes from
+      // the same single reader both profiles are built on. (2026-07-28)
+      const sysDC = Situation.readCreature(actor)?.spellDC || null;
       saveDC = Number(sysDC) > 0 ? Number(sysDC) : 10;
       console.debug(`${MODULE_ID} | Save DC for "${item.name}" was 0/unset — using caster spell DC ${saveDC}`);
     }
     const isSpell = item.type === "spell";
 
-    // Get damage info
-    const damageTypes = CombatState._getItemDamageTypes(item);
+    // Get damage info — from the ACTIVITY being used, never the whole item.
+    const damageTypes = CombatState._getItemDamageTypes(item, activity);
     const halfOnSave = this._detectHalfDamage(item, activity);
 
     // Get spell timing classification
@@ -665,7 +699,35 @@ export class SaveEngine {
                       ?? item.system?.target?.type
                       ?? "";
 
+    // ── Is that template type one this system can ACTUALLY place? ──
+    // (2026-07-28) King's Ghostly Howl carries template type "emanation", a
+    // 2024-era word that does not exist anywhere in dnd5e 5.3.1. The system
+    // still tries: AbilityTemplate.fromActivity looks the type up, finds
+    // nothing, and returns null — then dnd5e's own #placeTemplate does
+    // `for (const t of null)` and throws "Failed to place measured template".
+    // No template is ever created, so waiting for one below meant waiting
+    // FOREVER: no save card, no roll, nobody frightened, and the only clue was
+    // a system error that looks like somebody else's problem.
+    //
+    // So don't take the template type on faith. If the system has no shape for
+    // it, treat the ability as template-less and fall through to the targets /
+    // picker path, which is what actually resolves the save. One GM warning
+    // names the bad data so it can be corrected at the source.
+    let templatePlaceable = true;
     if (templateType) {
+      try {
+        const known = CONFIG?.DND5E?.areaTargetTypes ?? globalThis.dnd5e?.config?.areaTargetTypes ?? {};
+        templatePlaceable = !!known[templateType]?.template;
+      } catch (_) { templatePlaceable = true; }   // can't tell → behave as before
+      if (!templatePlaceable) {
+        console.warn(`${MODULE_ID} | "${item.name}" declares template type "${templateType}", which this dnd5e build cannot place — resolving the save without a template.`);
+        if (game.user?.isGM) {
+          ui.notifications?.warn(`${item.name}: unknown area type "${templateType}" — save resolved without a template. Fix the ability's target settings.`);
+        }
+      }
+    }
+
+    if (templateType && templatePlaceable) {
       // Spell has a template — stash data, wait for createMeasuredTemplate hook
       this._pendingSaveSpell = {
         activity,
@@ -796,18 +858,20 @@ export class SaveEngine {
     // and posting the result card. The GM can always pre-target multiple
     // creatures or include a PC if they want the confirmation step.
     const isNpcOnlySingleTarget = tokens.length === 1
-      && !tokens[0].actor?.hasPlayerOwner;
+      && !SaveEngine.isPlayerCharacter(tokens[0].actor);
     if (isNpcOnlySingleTarget) {
       console.log(`${MODULE_ID} | Single NPC target detected — skipping live-target-card, rolling immediately`);
       await this._fastResolveSingleNpcSave(item, actor, tokens[0], {
         saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing,
         activity,
       });
-      // PUNCH-LIST #11 (Johnny): a PRE-targeted single creature KEEPS its target
-      // for the follow-up swing/multiattack. But a PICKER-chosen target is
-      // transient — release it so the next cast re-opens the picker instead of
-      // silently re-hitting this creature.
-      if (_pickerDriven) this._releaseUserTargets();
+      // TARGET-STICK (Johnny 2026-07-24): a SINGLE-creature action KEEPS its
+      // target, full stop — pre-targeted OR picker-chosen. He wants to keep
+      // hammering the same creature without re-picking every cast; the picker
+      // is only meant to appear when NOTHING is targeted. (This used to release
+      // a picker-chosen single target, which is the exact "I lose my target"
+      // complaint.) Only area / multi-creature actions release — and this
+      // fast-path is single-NPC by construction, so it never releases.
       return;
     }
 
@@ -816,10 +880,12 @@ export class SaveEngine {
       activityId: activity.id,
       spellLevel,
     });
-    // PUNCH-LIST #11 (Johnny): a PRE-targeted single creature keeps its target
-    // for the next action; a MULTI-creature OR PICKER-chosen set releases so the
-    // next cast starts clean and the picker re-opens.
-    if (tokens.length > 1 || _pickerDriven) this._releaseUserTargets();
+    // TARGET-STICK (Johnny 2026-07-24): ONLY a multi-creature action releases.
+    // A single creature — pre-targeted OR picker-chosen — KEEPS its target so
+    // the next action re-hits it without re-picking. (Dropped the old
+    // `|| _pickerDriven` clause: it was releasing single picker-chosen targets,
+    // which is the "target won't stick" bug.)
+    if (tokens.length > 1) this._releaseUserTargets();
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -897,6 +963,27 @@ export class SaveEngine {
   }
 
   /**
+   * THE player-character test — OWNERSHIP-BASED BY DESIGN. DO NOT "FIX" THIS.
+   *
+   * `hasPlayerOwner` is deliberate (Johnny, and he re-confirmed it 2026-07-27):
+   * it is the "is a real player behind this creature" test. A creature nobody
+   * owns is handled like an NPC — ACE rolls for it — which is exactly what he
+   * wants when a player isn't at the table. Do NOT widen this to
+   * `type === "character"`: that would force a whispered prompt for absent
+   * players' characters and hang the turn waiting on someone who isn't there.
+   *
+   * (I widened it once on 2026-07-27 after a PC's save auto-rolled, assuming a
+   * bug. It wasn't — that PC's player simply wasn't connected. Reverted.)
+   *
+   * Kept as ONE named helper so every decision point reads the same rule and
+   * this note travels with it.
+   */
+  static isPlayerCharacter(actor) {
+    if (!actor) return false;
+    try { return actor.hasPlayerOwner === true; } catch (_) { return false; }
+  }
+
+  /**
    * Is a PC save-target's owning player currently online (active, non-GM)?
    * Handles linked actors AND unlinked synthetic token actors.
    */
@@ -930,7 +1017,7 @@ export class SaveEngine {
       saveBonuses: tgt.saveBonuses, damageModifiers: tgt.damageModifiers,
       currentHP: tgt.currentHP, maxHP: tgt.maxHP, castId,
     }}};
-    await this._rollPcSave(fakeMsg);
+    return await this._rollPcSave(fakeMsg);
   }
 
   /** Called on the GM when the caster's client replies with its target choice. */
@@ -995,8 +1082,9 @@ export class SaveEngine {
     // Build the target context the way _postLiveTargetCard does so
     // _rollSingleSave gets a normalized input.
     const tActor = token.actor;
-    const rawMod = tActor?.system?.abilities?.[saveAbility]?.save;
-    const saveMod = typeof rawMod === "number" ? rawMod : (rawMod?.value ?? rawMod?.mod ?? 0);
+    // Save modifier via the target profile — ONE reader for a fact that was
+    // being decoded seven different ways in this file alone.
+    const saveMod = SaveEngine._targetProfileFor(tActor, { tokenDocId: token?.document?.id, sceneId: token?.scene?.id })?.saveMod(saveAbility) ?? 0;
     const tgt = {
       tokenId:    token.id,
       tokenDocId: token.document?.id ?? token.id,
@@ -1008,11 +1096,18 @@ export class SaveEngine {
       saveAbilityUpper: saveAbility.toUpperCase(),
       saveMod,
       saveBonus: saveMod,
-      autoFailSave: false,
+      // ── RAW AUTO-FAIL, ASKED NOT ASSUMED (2026-07-28) ──
+      // This was hardcoded `false`. RAW: Petrified, Paralyzed, Stunned and
+      // Unconscious all AUTOMATICALLY FAIL Strength and Dexterity saving
+      // throws — so a petrified creature going through this path was being
+      // allowed to roll, and could pass a save it cannot pass. The profile
+      // knows its conditions; ask it.
+      autoFailSave: SaveEngine._targetProfileFor(tActor, { tokenDocId: token?.document?.id, sceneId: token?.scene?.id })?.autoFailsSave(saveAbility) ?? false,
       superSaver: false,
       damageModifiers: tActor ? DamageCalculator.getTargetDamageModifiers(tActor, item) : {},
-      currentHP: tActor?.system?.attributes?.hp?.value ?? 0,
-      maxHP:     tActor?.system?.attributes?.hp?.max ?? 0,
+      // Snapshot for the card row — profile, same as every other target fact.
+      currentHP: SaveEngine._targetProfileFor(tActor, { tokenDocId: token?.document?.id, sceneId: token?.scene?.id })?.hp.value ?? 0,
+      maxHP:     SaveEngine._targetProfileFor(tActor, { tokenDocId: token?.document?.id, sceneId: token?.scene?.id })?.hp.max ?? 0,
     };
 
     // Roll the save
@@ -1262,9 +1357,9 @@ export class SaveEngine {
   /** Slim banner: "🪄 Chudd casts Frostbite on Steel Defender". Shared by the
    *  save card AND the results/damage card so the announcement survives the
    *  target-card collapse and the two cards read as one continuous story. */
-  _castAnnouncementHtml(item, casterActor, targets) {
+  _castAnnouncementHtml(item, casterActor, targets, activityId = null) {
     const caster = casterActor?.name ?? "Someone";
-    const spell  = item?.name ?? "a spell";
+    const spell  = this._abilityLabel(item, activityId);
     const tgts   = this._formatTargetNames(targets);
     return `<div class="ace-qol-save-cast-line">`
       + `<i class="fas fa-wand-magic-sparkles"></i> `
@@ -1366,11 +1461,10 @@ export class SaveEngine {
       });
       if (!state) continue;
 
-      const isPC = token.actor?.hasPlayerOwner ?? false;
-      const rawMod = token.actor?.system?.abilities?.[saveAbility]?.save;
-      const saveMod = typeof rawMod === "number" ? rawMod
-                    : typeof rawMod === "object" ? (rawMod?.value ?? rawMod?.total ?? 0)
-                    : Number(rawMod) || 0;
+      const isPC = SaveEngine.isPlayerCharacter(token.actor);
+      // Save modifier via the target profile — ONE reader for a fact that
+      // was being decoded seven different ways in this file alone.
+      const saveMod = SaveEngine._targetProfileFor(token.actor, { tokenDocId: token?.document?.id, sceneId: token?.scene?.id })?.saveMod(saveAbility) ?? 0;
 
       // Sum numeric save bonuses (Aura of Protection, ability-specific bonus,
       // cover) into the displayed mod. Non-numeric bonuses (Bless's "+1d4")
@@ -1444,6 +1538,7 @@ export class SaveEngine {
     // Skips 0-value / empty / non-meaningful bonus entries so we don't show
     // useless chips like "0 DEX bonus".
     const _renderModBreakdown = (t) => {
+      // (footnote builder lives at SaveEngine._modFootnote — see below)
       const baseStr = t.saveModBase >= 0 ? `+${t.saveModBase}` : `${t.saveModBase}`;
       const bonusChips = (t.saveBonuses ?? [])
         .filter(b => {
@@ -1541,18 +1636,13 @@ export class SaveEngine {
     `}).join("");
 
     // ── Assemble card ──
-    // Headline the specific power (activity) when it differs from the item
-    // name — a multi-power item like the Holy Symbol of Ravenkind otherwise
-    // just reads "Holy Symbol of Ravenkind" with no hint of whether it's Hold
-    // Vampires, Turn Undead, etc. Item name drops to a subtitle.
-    const _saveAct   = item.system?.activities?.get?.(activityId);
-    const _actName   = _saveAct?.name ?? "";
-    const _hasPower  = _actName && _actName !== item.name;
-    const _cardTitle = _hasPower ? _actName : item.name;
+    const _actName   = this._abilityLabel(item, activityId, { rawOnly: true });
+    const _hasPower  = !!_actName;
+    const _cardTitle = this._abilityLabel(item, activityId);
     const _effectLine = this._effectSummaryLine(item, { halfOnSave, damageTypes });
     const cardHtml = `
       <div class="ace-qol-save-card">
-        ${this._castAnnouncementHtml(item, actor, tokens)}
+        ${this._castAnnouncementHtml(item, actor, tokens, activityId)}
         <div class="ace-qol-save-header">
           <img src="${item.img || "icons/svg/spell.svg"}" class="ace-qol-save-item-img" />
           <div>
@@ -1576,6 +1666,8 @@ export class SaveEngine {
           </div>
         ` : ""}
 
+        ${this._modFootnote([...(npcs ?? []), ...(pcs ?? [])])}
+
         <div class="ace-qol-save-actions ace-qol-gm-only">
           <button class="ace-qol-btn ace-qol-btn-roll" data-action="aceQolRollNpcSaves">
             <i class="fas fa-dice-d20"></i> ${
@@ -1588,6 +1680,11 @@ export class SaveEngine {
       </div>
     `;
 
+    // Decided BEFORE the card exists, because the claim is stamped into it.
+    const _iAmActiveGM  = game.users?.activeGM === game.user;
+    const _autoRollOn   = QolSettings.get?.("autoRollNpcSaves") !== false;
+    const _iDriveTheCard = _autoRollOn && _iAmActiveGM;
+
     const targetListMsg = await ChatMessage.create({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor }),
@@ -1598,6 +1695,13 @@ export class SaveEngine {
       flags: {
         [MODULE_ID]: {
           type: "saveTargetList",
+          // THE CLAIM, STAMPED AT BIRTH (2026-07-28). This flow drives the
+          // results card itself, in order, after resolving the saves it owns.
+          // The claim has to live IN the message: a flag set after creation can
+          // lose to this card's own render, which is precisely the kind of race
+          // being removed here. The render hook stands down when it sees this,
+          // and takes over only if driving fails and clears it.
+          gmDrivesResults: _iDriveTheCard,
           itemId: item.id,
           itemUuid: item.uuid,
           actorId: actor.id,
@@ -1625,17 +1729,76 @@ export class SaveEngine {
     //    "the GM must always be able to roll for absent players, across all
     //    saves"). The manual roll-on-behalf die stays on the card for online
     //    PCs too, so the GM can still roll for a present player if they want.
-    const _iAmActiveGM = game.users?.activeGM === game.user;
+    // ── NO TARGET MAY DEAD-END THE CAST (2026-07-28) ──
+    // This loop was unguarded. When the offline auto-roll threw (a ReferenceError
+    // that shipped in the profile conversion), the exception escaped the loop and
+    // killed the REST of this method — so the save never rolled, no prompt was
+    // sent, the 30s GM nudge was never armed (it's armed inside _sendPcSavePrompt),
+    // and the template was never cleaned up. One bad target, whole cast dead, and
+    // the card just sat on "WAITING FOR PLAYER" with nothing coming.
+    //
+    // Now: each target is isolated, and a failed auto-roll FALLS BACK to a prompt
+    // — which arms the nudge, so the GM always gets a "ROLL FOR THEM" card. There
+    // is no path from here that leaves the table with nothing to click.
+    const _promptOpts = { saveAbility, saveDC, halfOnSave, damageTypes, isSpell, castId };
+
+    // ── RESOLVE FIRST, RENDER ONCE (2026-07-28 rebuild) ──
+    // The results card used to be fired independently by this card's RENDER
+    // hook, while these rolls were still running. Two async paths reconciling
+    // through the chat log: the card searched for results that hadn't been
+    // posted yet, showed WAITING FOR PLAYER, and the answer arrived a beat
+    // later. Hence a card that flickered from "waiting" to a result nobody was
+    // ever actually waiting for.
+    //
+    // The claim is already stamped into the card (gmDrivesResults), so the
+    // render hook has stood down. Resolve every save we are responsible for,
+    // hand the results over DIRECTLY, and only then build the card. A save
+    // nobody is waiting on is never rendered as waiting, because by the time
+    // the card exists it is already answered.
+    this._autoRolledSaves ??= new Set();
+    if (_iDriveTheCard) this._autoRolledSaves.add(targetListMsg.id);
+
+    const gmRolledPcResults = {};   // tokenDocId → resolved result, handed over directly
     for (const tgt of pcs) {
-      if (_iAmActiveGM && !this._pcOwnerActive(tgt)) {
-        console.log(`${MODULE_ID} | PC "${tgt.name}" owner is offline — GM auto-rolling their save (no hang).`);
-        await this._gmRollPcSaveOffline(item, actor, tgt, {
-          saveAbility, saveDC, halfOnSave, damageTypes, isSpell, castId,
-        });
-      } else {
-        await this._sendPcSavePrompt(item, actor, tgt, {
-          saveAbility, saveDC, halfOnSave, damageTypes, isSpell, castId,
-        });
+      try {
+        if (_iAmActiveGM && !this._pcOwnerActive(tgt)) {
+          console.log(`${MODULE_ID} | PC "${tgt.name}" owner is offline — GM rolling their save now, before the card is built.`);
+          const res = await this._gmRollPcSaveOffline(item, actor, tgt, _promptOpts);
+          if (res?.tokenDocId) gmRolledPcResults[res.tokenDocId] = res;
+          continue;
+        }
+        // Owner is connected — this one legitimately waits on a human.
+        await this._sendPcSavePrompt(item, actor, tgt, _promptOpts);
+      } catch (err) {
+        console.error(`${MODULE_ID} | PC save routing failed for "${tgt.name}" — falling back to a prompt so the cast can't dead-end:`, err);
+        try {
+          await this._sendPcSavePrompt(item, actor, tgt, _promptOpts);
+        } catch (err2) {
+          console.error(`${MODULE_ID} | Fallback prompt ALSO failed for "${tgt.name}":`, err2);
+          ui.notifications?.error(`ACE: couldn't route ${tgt.name}'s save — roll it manually.`);
+        }
+      }
+    }
+
+    // Park them on this card too, so a reload or a re-render can rebuild the
+    // results without going back to the chat log for them.
+    if (Object.keys(gmRolledPcResults).length) {
+      try { await targetListMsg.setFlag(MODULE_ID, "gmRolledPcResults", gmRolledPcResults); }
+      catch (err) { console.warn(`${MODULE_ID} | couldn't park GM-rolled PC results on the cast card:`, err); }
+    }
+
+    // Everything we own is now answered — build the card.
+    if (_iDriveTheCard) {
+      try {
+        await this._rollNpcSavesFromTargetList(targetListMsg, gmRolledPcResults);
+        await targetListMsg.setFlag(MODULE_ID, "rolled", true);
+      } catch (err) {
+        console.error(`${MODULE_ID} | driving the save results card failed:`, err);
+        // Hand the card BACK to the render hook rather than stranding the cast:
+        // release both the in-memory claim and the stamped one, so the fallback
+        // fires on the next render.
+        this._autoRolledSaves.delete(targetListMsg.id);
+        try { await targetListMsg.setFlag(MODULE_ID, "gmDrivesResults", false); } catch (_) { /* best effort */ }
       }
     }
 
@@ -1665,7 +1828,7 @@ export class SaveEngine {
   // ═══════════════════════════════════════════════════════════════════════════
 
   async _postSaveCard(item, actor, targetStates, opts) {
-    const { saveAbility, saveDC, halfOnSave: rawHalfOnSave, damageTypes, isSpell } = opts;
+    const { saveAbility, saveDC, halfOnSave: rawHalfOnSave, damageTypes, isSpell, activityId = null } = opts;
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
     // Same hasDamage gate as _postLiveTargetCard — suppresses bogus
     // "HALF ON SAVE" badge on save-only-condition spells (Hold Person etc.)
@@ -1721,7 +1884,7 @@ export class SaveEngine {
             <img src="${ts.target.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-target-img" />
             <span class="ace-qol-save-target-name">${ts.target.name}</span>
             <span class="ace-qol-save-target-mod">
-              ${saveAbility.toUpperCase()} save: +${(() => { const r = ts.targetActor.system?.abilities?.[saveAbility]?.save; return typeof r === "number" ? r : r?.value ?? r?.total ?? 0; })()}
+              ${saveAbility.toUpperCase()} save: +${SaveEngine._targetProfileFor(ts.targetActor, ts)?.saveMod(saveAbility) ?? 0}
             </span>
           </div>
           ${tagHtml ? `<div class="ace-qol-atk-tags">${tagHtml}</div>` : ""}
@@ -1734,7 +1897,7 @@ export class SaveEngine {
         <div class="ace-qol-save-header">
           <img src="${item.img || "icons/svg/spell.svg"}" class="ace-qol-save-item-img" />
           <div>
-            <strong class="ace-qol-save-item-name">${item.name}</strong>
+            <strong class="ace-qol-save-item-name">${this._abilityLabel(item, activityId)}</strong>
             <span class="ace-qol-save-dc">DC ${saveDC} ${abilityLabel} Save</span>
           </div>
           ${halfOnSave ? '<span class="ace-qol-save-half-badge">HALF ON SAVE</span>' : ""}
@@ -1889,7 +2052,12 @@ export class SaveEngine {
     if (pcRollBtns?.length) {
       // Check for existing PC results to gray out already-rolled PCs (same cast only)
       const thisCastId = message.id;
-      const recentMsgs = game.messages.contents.slice(-30);
+      // Scan from the cast forward, not a fixed window — see the note in
+      // _rollNpcSavesFromTargetList. A result can only follow its own cast.
+      const _all = game.messages.contents;
+      let _from = _all.findIndex(m => m.id === thisCastId);
+      if (_from < 0) _from = Math.max(0, _all.length - 200);
+      const recentMsgs = _all.slice(_from);
       const rolledPcs = new Set();
       for (const m of recentMsgs) {
         const f = m.flags?.[MODULE_ID];
@@ -1925,7 +2093,10 @@ export class SaveEngine {
           if (!tokenDocId) return;
 
           // Check if this PC already rolled (race condition guard)
-          const alreadyRolled = game.messages.contents.slice(-30).some(m => {
+          const _a2 = game.messages.contents;
+          let _f2 = _a2.findIndex(m => m.id === message.id);
+          if (_f2 < 0) _f2 = Math.max(0, _a2.length - 200);
+          const alreadyRolled = _a2.slice(_f2).some(m => {
             const f = m.flags?.[MODULE_ID];
             return f?.type === "pcSaveResult" && f.tokenDocId === tokenDocId && f.castId === message.id;
           });
@@ -2034,7 +2205,14 @@ export class SaveEngine {
         // it fires exactly once across re-renders and clients.
         this._autoRolledSaves ??= new Set();
         const _autoRollNpc = QolSettings.get?.("autoRollNpcSaves") !== false;
-        if (_autoRollNpc && game.user === game.users?.activeGM
+        // STAND DOWN IF THE CAST FLOW OWNS THIS CARD (2026-07-28). Firing from
+        // here in parallel with the cast's own PC rolls is what produced a
+        // results card built before its results existed. The caster resolves
+        // and then builds, in order; this hook is now only the fallback for
+        // when that flow didn't claim the card, or claimed it and failed.
+        const _castFlowOwnsThis = flags.gmDrivesResults === true && !flags.rolled;
+        if (!_castFlowOwnsThis
+            && _autoRollNpc && game.user === game.users?.activeGM
             && !flags.rolled && !this._autoRolledSaves.has(message.id)) {
           this._autoRolledSaves.add(message.id);
           rollNpcBtn.disabled = true;
@@ -2391,9 +2569,10 @@ export class SaveEngine {
       });
       if (!state) continue;
 
-      const isPC = token.actor?.hasPlayerOwner ?? false;
-      const rawSM = token.actor?.system?.abilities?.[flags.saveAbility]?.save;
-      const saveMod = typeof rawSM === "number" ? rawSM : (rawSM?.value ?? rawSM?.total ?? (Number(rawSM) || 0));
+      const isPC = SaveEngine.isPlayerCharacter(token.actor);
+      // Save modifier via the target profile — ONE reader for a fact that
+      // was being decoded seven different ways in this file alone.
+      const saveMod = SaveEngine._targetProfileFor(token.actor, { tokenDocId: token?.document?.id, sceneId: token?.scene?.id })?.saveMod(flags.saveAbility) ?? 0;
       const numericBonusTotal2 = (state.saveBonuses ?? []).reduce((sum, b) => {
         const raw = String(b?.value ?? "").replace(/^\+/, "").trim();
         const n = Number(raw);
@@ -2439,6 +2618,60 @@ export class SaveEngine {
   /**
    * Update the NPC/PC section header counts after removing a target.
    */
+  /**
+   * Fold any already-posted pcSaveResult into still-pending rows, in place.
+   *
+   * ⚠️ WHY THIS EXISTS (2026-07-28, proven from live data). The card scans for
+   * existing PC results EARLY, then waits on the dice animation before posting.
+   * A GM auto-roll for an absent player lands INSIDE that gap: the scan came
+   * back empty, so the card posted "WAITING FOR PLAYER" — while a result with
+   * the identical castId and tokenDocId already sat in the log saying PASS.
+   * Nothing ever revisited it, so it waited forever on a save already rolled.
+   *
+   * Scanning once and trusting the answer is the bug. Re-check late, and again
+   * on render, so a result can never arrive "too early" to be seen.
+   *
+   * @returns {number} rows merged
+   */
+
+  static _mergePendingPcResults(results, castId, halfOnSave = false) {
+    if (!castId || !Array.isArray(results)) return 0;
+    if (!results.some(r => r?.pending)) return 0;   // nothing to heal
+
+    const byToken = new Map();
+    for (const m of game.messages.contents) {
+      const f = m.flags?.[MODULE_ID];
+      if (f?.type === "pcSaveResult" && f.castId === castId && f.tokenDocId) {
+        byToken.set(f.tokenDocId, f);
+      }
+    }
+    if (!byToken.size) return 0;
+
+    let merged = 0;
+    for (const r of results) {
+      if (!r?.pending) continue;
+      const f = byToken.get(r.tokenDocId);
+      if (!f) continue;
+
+      const passed = f.passed;
+      const superSaver = f.superSaver;
+      let damageMultiplier;
+      if (passed) damageMultiplier = superSaver ? 0 : (halfOnSave ? 0.5 : 0);
+      else        damageMultiplier = superSaver ? 0.5 : 1;
+
+      r.pending    = false;
+      r.saveTotal  = f.saveTotal;
+      r.dieResult  = f.dieResult ?? null;
+      r.passed     = passed;
+      r.resultLabel = f.resultLabel;
+      r.isAutoFail = f.autoFailSave;
+      r.superSaver = superSaver;
+      r.damageMultiplier = damageMultiplier;
+      merged++;
+    }
+    return merged;
+  }
+
   _updateSectionCounts(el, targets) {
     const npcs = targets.filter(t => !t.isPC);
     const pcs = targets.filter(t => t.isPC);
@@ -2452,7 +2685,14 @@ export class SaveEngine {
   //  Roll NPC Saves from Target List Card
   // ═══════════════════════════════════════════════════════════════════════════
 
-  async _rollNpcSavesFromTargetList(message) {
+  /**
+   * @param {ChatMessage} message  the cast (target list) card
+   * @param {object} [handedOver]  tokenDocId → result, resolved by the caller
+   *        BEFORE this ran. Passing them in is the whole point: this method used
+   *        to go looking in the chat log for results the caller was holding, and
+   *        raced its own dice animation to find them.
+   */
+  async _rollNpcSavesFromTargetList(message, handedOver = null) {
     const flags = message.flags?.[MODULE_ID];
     if (!flags) return;
 
@@ -2463,6 +2703,10 @@ export class SaveEngine {
     const casterActor = game.actors.get(actorId);
 
     // ── Separate NPC and PC targets ──
+    // Split stays on isPC: an offline PC has ALREADY been auto-rolled by
+    // _postLiveTargetCard, and its result arrives here via existingPcResults.
+    // Routing it into the NPC roller instead would roll a second, different
+    // save and throw away the one the table already saw.
     const npcTargets = targets.filter(t => !t.isPC);
     const pcTargets = targets.filter(t => t.isPC);
 
@@ -2560,12 +2804,41 @@ export class SaveEngine {
 
     // ── Build PC results — check if they already rolled (same cast only) ──
     const thisCastId = message.id; // target list message ID = cast ID
-    const recentMsgs = game.messages.contents.slice(-30);
+
+    // ── SEARCH THE WHOLE CAST, NOT THE LAST 30 MESSAGES (2026-07-28) ──
+    // This used to scan `contents.slice(-30)`. A save result can only exist
+    // AFTER its own cast, but there's no ceiling on how much chat lands in
+    // between — result cards, damage cards, nudges, other combatants' turns.
+    // Push past thirty and the result scrolled out of the window, the card
+    // couldn't find it, and the row sat on "WAITING FOR PLAYER" forever for a
+    // save that had already been rolled. That's exactly what Johnny hit with
+    // an OFFLINE player whose save the GM had auto-rolled: it was rolled, the
+    // result existed, the card just wasn't looking far enough back.
+    //
+    // The cast's own message is the natural floor — nothing before it can
+    // belong to this cast — so scan from there to the end. Bounded, and it
+    // cannot miss.
+    // ── 1. RESULTS WE WERE HANDED (the normal path) ──
+    // The caller resolved every save it owns before calling us and passed them
+    // in. Nothing to find, nothing to race. If it also parked them on the cast
+    // card, read those too so a reload rebuilds identically.
     const existingPcResults = new Map();
-    for (const m of recentMsgs) {
-      const f = m.flags?.[MODULE_ID];
+    const handed = handedOver ?? message.flags?.[MODULE_ID]?.gmRolledPcResults ?? null;
+    for (const [tokenDocId, res] of Object.entries(handed ?? {})) {
+      if (tokenDocId && res) existingPcResults.set(tokenDocId, res);
+    }
+
+    // ── 2. RESULTS A PLAYER POSTED FROM THEIR OWN CLIENT ──
+    // These genuinely arrive as chat messages from another client, so this is a
+    // legitimate read of the log rather than us hunting for our own data. Scan
+    // from the cast's own message: nothing before it can belong to this cast.
+    const all = game.messages.contents;
+    let from = all.findIndex(m => m.id === thisCastId);
+    if (from < 0) from = Math.max(0, all.length - 200);   // card not in the log → generous fallback
+    for (let i = from; i < all.length; i++) {
+      const f = all[i]?.flags?.[MODULE_ID];
       if (f?.type === "pcSaveResult" && f.tokenDocId && f.castId === thisCastId) {
-        existingPcResults.set(f.tokenDocId, f);
+        if (!existingPcResults.has(f.tokenDocId)) existingPcResults.set(f.tokenDocId, f);
       }
     }
 
@@ -2611,6 +2884,15 @@ export class SaveEngine {
     });
 
     // ── PC prompts already sent when target list card was posted ──
+
+    // RE-CHECK LATE. The scan above ran before the dice animation; a GM
+    // auto-roll for an absent player finishes during that wait, so its result
+    // exists by now even though the scan missed it. Do this BEFORE conditions
+    // are applied — a PC who actually failed must still get the condition.
+    {
+      const _healed = SaveEngine._mergePendingPcResults(pcResults, thisCastId, halfOnSave);
+      if (_healed) console.log(`${MODULE_ID} | Save card: folded in ${_healed} PC result(s) that landed while the dice were rolling.`);
+    }
 
     // ── Detect whether this spell deals damage at all ──
     // Save-or-condition spells (Hold Person, Charm Person, Sleep, Bane,
@@ -2661,6 +2943,14 @@ export class SaveEngine {
       timingType, templateDocId, templateSceneId,
       hasDamage,
       appliedConditions,
+      // The MULTI-TARGET path forgot this while the single-target path passed
+      // it, so an 11-creature storm produced a phase-1 card with no record of
+      // which ability made it — and phase 2 then rolled the wrong dice and
+      // printed the wrong name. (2026-07-28)
+      activityId,
+      // Which cast this card belongs to, so an incoming PC result can find THIS
+      // card instead of whichever save card happens to be newest in the log.
+      castId: thisCastId,
     });
 
     // ── ONE CLEAN CARD (Johnny 2026-07-11) ──
@@ -2704,10 +2994,9 @@ export class SaveEngine {
 
       // Build the roll formula
       // dnd5e 5.2.5: abilities.dex.save may be a number OR an object with .value
-      const rawSaveMod = targetActor?.system?.abilities?.[saveAbility]?.save;
-      const saveMod = typeof rawSaveMod === "number" ? rawSaveMod
-                    : typeof rawSaveMod === "object" ? (rawSaveMod?.value ?? rawSaveMod?.total ?? 0)
-                    : Number(rawSaveMod) || 0;
+      // Save modifier via the target profile — ONE reader for a fact that
+      // was being decoded seven different ways in this file alone.
+      const saveMod = SaveEngine._targetProfileFor(targetActor, tgt)?.saveMod(saveAbility) ?? 0;
       const allBonusParts = (tgt.saveBonuses ?? []).map(b => b.value);
 
       // ── Cover DEX save bonus (half cover +2, three-quarters +5) ──
@@ -2840,9 +3129,35 @@ export class SaveEngine {
     const sys = item?.system ?? {};
     const activities = sys.activities;
     if (activities) {
-      const actList = (typeof activities.forEach === "function")
+      let actList = (typeof activities.forEach === "function")
         ? [...(activities.values?.() ?? activities)]
         : (typeof activities === "object" ? Object.values(activities) : []);
+
+      // ── ROLL THE ABILITY THAT WAS ACTUALLY USED (2026-07-28) ──
+      // This loop takes the FIRST activity that has damage and breaks. On a
+      // single-activity item that's the right answer by luck. On a multi-
+      // activity magic item it is simply wrong: firing the Staff of the
+      // Stormforger's Thunderstorm of Misery (8d6 lightning, activity #4)
+      // rolled Tornado Takedown's 1d6 bludgeoning + 2d6 lightning instead,
+      // because Tornado Takedown is activity #1 and has damage. The save was
+      // correct, the targets were correct, the DC was correct — only the dice
+      // were somebody else's. Johnny caught it on the card:
+      // "It rolled three fucking dice. It's got the wrong formula for it."
+      //
+      // When the caller knows which activity was used, that is the ONLY one we
+      // consider. The old first-with-damage scan stays as the fallback for
+      // callers that genuinely can't say.
+      const usedId = opts.activityId ?? opts.activity?.id ?? null;
+      if (usedId) {
+        const only = actList.filter(a => a?.id === usedId);
+        if (only.length) actList = only;
+        else console.warn(`${MODULE_ID} | _rollSpellDamage: activity ${usedId} not found on "${item?.name}" — falling back to first-with-damage.`);
+      } else {
+        const withDamage = actList.filter(a => a?.damage?.parts?.length);
+        if (withDamage.length > 1) {
+          console.warn(`${MODULE_ID} | _rollSpellDamage: "${item?.name}" has ${withDamage.length} damaging activities and no activityId was supplied — rolling "${withDamage[0]?.name ?? withDamage[0]?.type}". Pass opts.activityId to be exact.`);
+        }
+      }
 
       for (const activity of actList) {
         if (!activity?.damage?.parts?.length) continue;
@@ -3103,6 +3418,31 @@ export class SaveEngine {
         }
       }
     });
+
+    // ── Hand back to the GM if nobody rolls (2026-07-28) ──
+    // The player's dice stay theirs — we never auto-roll for someone who's
+    // online. But an empty chair must not freeze the table, so after the grace
+    // period the GM gets a whispered ROLL FOR THEM card. This used to exist
+    // only for repeating saves; every waiting save now shares the one timer.
+    try {
+      const { PcSaveNudge } = await import("./pc-save-nudge.mjs");
+      const ownerName = (tgt.ownerIds ?? [])
+        .map(id => game.users.get(id))
+        .find(u => u && !u.isGM && u.active)?.name ?? "the player";
+      PcSaveNudge.arm({
+        key: `${castId}:${tgt.tokenDocId}`,
+        targetName: tgt.name ?? "Target",
+        playerName: ownerName,
+        abilityLabel,
+        dc: saveDC,
+        sourceName: item?.name ?? "",
+        onRoll: () => this._gmRollPcSaveOffline(item, casterActor, tgt, {
+          saveAbility, saveDC, halfOnSave, damageTypes, isSpell, castId,
+        }),
+      });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | couldn't arm the save nudge (non-fatal):`, err);
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -3142,8 +3482,19 @@ export class SaveEngine {
       else if (saveAdvantage) rollMode = "advantage";
       else if (saveDisadvantage) rollMode = "disadvantage";
 
-      const rawPcMod = targetActor.system?.abilities?.[saveAbility]?.save;
-      const saveMod = typeof rawPcMod === "number" ? rawPcMod : (rawPcMod?.value ?? rawPcMod?.total ?? (Number(rawPcMod) || 0));
+      // Save modifier via the target profile — ONE reader for a fact that
+      // was being decoded seven different ways in this file alone.
+      //
+      // ⚠️ `tgt` DID NOT EXIST IN THIS SCOPE (2026-07-28). This function takes a
+      // MESSAGE, not a target row — the identifier was never declared here, so
+      // every call threw a ReferenceError before it could roll. _rollPcSave is
+      // the only roller both for a player's own save AND for the GM's roll on
+      // behalf of an absent player, so BOTH died silently and the row sat on
+      // "WAITING FOR PLAYER" forever. `node --check` cannot catch this — an
+      // undefined identifier is valid syntax and only explodes at runtime.
+      // Copy-pasting a line out of _rollSingleSave(tgt, …) is how it got here.
+      const _row = { tokenDocId, sceneId, actorId };
+      const saveMod = SaveEngine._targetProfileFor(targetActor, _row)?.saveMod(saveAbility) ?? 0;
       const allBonusParts = (saveBonuses ?? []).map(b => b.value);
 
       // ── Cover DEX save bonus (half cover +2, three-quarters +5) ──
@@ -3303,6 +3654,18 @@ export class SaveEngine {
         }
       }
     }
+
+    // HAND THE RESULT BACK (2026-07-28). This used to return nothing, so the
+    // only way for anything else to learn the outcome was to go looking for the
+    // chat message it had just posted — which is what made the results card
+    // search the log, and what made it lose a race to its own dice animation.
+    // A caller that is standing right here should never have to go find this.
+    return {
+      tokenDocId, actorId, sceneId,
+      saveTotal, dieResult, passed, resultLabel,
+      autoFailSave, superSaver, damageMultiplier,
+      saveAbility,
+    };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -3312,6 +3675,13 @@ export class SaveEngine {
   _onPcSaveResultPosted(resultFlags) {
     console.log(`${MODULE_ID} | _onPcSaveResultPosted fired for tokenDocId:`, resultFlags.tokenDocId, "passed:", resultFlags.passed);
     const { tokenDocId, saveTotal, dieResult, passed, resultLabel, autoFailSave, superSaver } = resultFlags;
+
+    // The player rolled — stand the GM nudge down before it ever fires, and
+    // retire the card if it already did.
+    try {
+      import("./pc-save-nudge.mjs").then(({ PcSaveNudge }) =>
+        PcSaveNudge.disarm(`${resultFlags.castId}:${tokenDocId}`, "The player rolled it themselves."));
+    } catch (_) { /* non-fatal */ }
 
     // Determine damage multiplier
     let damageMultiplier;
@@ -3351,7 +3721,7 @@ export class SaveEngine {
     }
 
     // Cosmetic card updates — each shielded so one failing can't break the rest.
-    try { this._updateMainCardPcResult(tokenDocId, pcResult); }
+    try { this._updateMainCardPcResult(tokenDocId, pcResult, resultFlags?.castId ?? null); }
     catch (err) { console.warn(`${MODULE_ID} | main-card PC result update failed:`, err); }
     try { this._updateTargetListPcRow(tokenDocId, pcResult); }
     catch (err) { console.warn(`${MODULE_ID} | target-list PC row update failed:`, err); }
@@ -3444,14 +3814,40 @@ export class SaveEngine {
   //  Update Main Save Results Card with PC Save Result
   // ═══════════════════════════════════════════════════════════════════════════
 
-  async _updateMainCardPcResult(tokenDocId, pcResult) {
-    const messages = game.messages.contents.slice(-20).reverse();
+  async _updateMainCardPcResult(tokenDocId, pcResult, castId = null) {
+    // ⚠️ MATCH THE CAST, NOT "THE NEWEST CARD" (2026-07-28).
+    // This used to take the first saveResults card it found scanning backwards —
+    // ANY cast's. Cast the same power at three creatures in a row and a result
+    // lands on the wrong card: two unrelated targets sharing one card, and the
+    // right card left sitting on WAITING FOR PLAYER because its own result was
+    // written somewhere else.
+    //
+    // castId is the target-list card's id for a normal cast, and the results
+    // card's OWN id for targets added to an existing card — accept either.
+    // If nothing matches, write NOTHING: the pcSaveResult message still exists
+    // and the card picks it up by castId when it is built. Writing into an
+    // unrelated card is strictly worse than writing nowhere.
+    // No window. It used to take the last 120 messages, which is just a slower
+    // version of the 30-message bug: a player who rolls after a busy stretch
+    // falls off the end and their result goes nowhere. Now that this is keyed
+    // by cast, the whole log is the correct search space and the match is exact.
+    const messages = [...game.messages.contents].reverse();
     let msg = null;
     for (const m of messages) {
       const f = m.flags?.[MODULE_ID];
-      if (f?.type === "saveResults" && Array.isArray(f.allResults)) { msg = m; break; }
+      if (f?.type !== "saveResults" || !Array.isArray(f.allResults)) continue;
+      if (castId) {
+        if (f.castId === castId || m.id === castId) { msg = m; break; }
+        continue;
+      }
+      // No castId to match on (legacy card) — at least require that the card
+      // already knows about this target rather than grabbing a stranger's.
+      if (f.allResults.some(r => r?.tokenDocId === tokenDocId)) { msg = m; break; }
     }
-    if (!msg) return;
+    if (!msg) {
+      console.debug(`${MODULE_ID} | PC result for ${tokenDocId} has no matching save card yet (cast ${castId ?? "?"}) — the card will read it back by castId when built.`);
+      return;
+    }
 
     // Serialize writes per message — two PCs rolling in the same ~200ms window
     // both call this function, both read stale allResults, and the second write
@@ -3498,8 +3894,14 @@ export class SaveEngine {
         resultLabel: pcResult.resultLabel,
         damageMultiplier: pcResult.damageMultiplier,
         damageModifiers: {},
-        currentHP:  actor?.system?.attributes?.hp?.value ?? 0,
-        maxHP:      actor?.system?.attributes?.hp?.max ?? 0,
+        // ⚠️ `r` IS IN ITS TEMPORAL DEAD ZONE HERE (2026-07-28). `const r` is
+        // declared BELOW this block, so reading it here throws "Cannot access
+        // 'r' before initialization" — killing the whole update for any PC not
+        // already on the card. Same copy-paste class as the `tgt` bug in
+        // _rollPcSave, and equally invisible to `node --check`.
+        // The row is being CREATED here; key the profile off this token.
+        currentHP:  SaveEngine._targetProfileFor(actor, { tokenDocId, sceneId: scene?.id })?.hp.value ?? 0,
+        maxHP:      SaveEngine._targetProfileFor(actor, { tokenDocId, sceneId: scene?.id })?.hp.max ?? 0,
         isPC:       true,
         pending:    false,
       });
@@ -3521,6 +3923,10 @@ export class SaveEngine {
       const scene = game.scenes.get(r.sceneId) ?? canvas.scene;
       const tokenDoc = scene?.tokens?.get(r.tokenDocId);
       const actor = tokenDoc?.actor ?? game.actors.get(r.actorId);
+      // ⚠️ LIVE READ ON PURPOSE — do NOT route through the profile. This
+      // deliberately refreshes HP immediately before damage is applied; a
+      // cached snapshot would hand back the value from before the last hit and
+      // damage would be calculated against stale HP.
       if (actor) r.currentHP = actor.system?.attributes?.hp?.value ?? r.currentHP;
     } catch (_) { /* keep cached HP if refresh fails */ }
 
@@ -3565,6 +3971,7 @@ export class SaveEngine {
         cardHtml = this._buildPhase2CardHtml(item, casterActor, allResults, damageComponents, {
           saveAbility: flags.saveAbility, saveDC: flags.saveDC,
           halfOnSave: flags.halfOnSave, damageTypes: flags.damageTypes,
+          activityId: flags.activityId ?? null,
         });
       } else {
         cardHtml = this._buildPhase1CardHtml(item, allResults, {
@@ -3634,9 +4041,11 @@ export class SaveEngine {
     // Roll damage once and apply per target with multipliers
     const damageComponents = await this._rollSpellDamage(item, casterActor, {
       spellLevel: flags.spellLevel ?? null,
+      activityId: flags.activityId ?? null,   // roll THIS ability's dice, not the item's first damaging one
     });
     await this._postSaveResults(item, casterActor, results, {
       saveAbility, saveDC, halfOnSave, damageTypes, isSpell,
+      activityId: flags.activityId ?? null,
     }, damageComponents);
   }
 
@@ -3766,6 +4175,16 @@ export class SaveEngine {
     //   effect so RepeatingSaveEngine can fire end-of-turn re-saves
     //   (Hold Person, Banishment, etc.). If omitted, we try to recover the
     //   ability/DC from the item's first save activity as a fallback.
+    //
+    // ── NOTHING LANDS BEFORE THE DICE DO (2026-07-28) ──
+    // Petrified and Restrained were appearing on the token while the d20 was
+    // still tumbling — the consequence arriving before the roll that caused it.
+    // Four different call sites reach this method and NONE of them waited, so
+    // the guard goes HERE, at the one door they all come through, rather than
+    // as four patches that the fifth caller would miss. Costs nothing when
+    // there are no dice in flight (Dice So Nice off, or already settled).
+    await awaitDiceSettle();
+
     const applied = [];
 
     if (!item || !results?.length) {
@@ -3981,6 +4400,38 @@ export class SaveEngine {
       return applied;
     }
 
+    // ── Staged petrification (basilisk / medusa Petrifying Gaze) ──
+    // The description parser yields BOTH "restrained" AND "petrified" for a gaze,
+    // and the loop below would apply BOTH the instant a save fails — skipping the
+    // entire RAW middle. RAW: a failed save → restrained ("turning to stone"); the
+    // creature re-saves at the END of its NEXT turn; only a SECOND failure petrifies.
+    // Collapse to: apply Restrained now, carry a repeating end-of-turn save that
+    // ESCALATES to petrified on failure, with one grace turn. This is the exact
+    // two-stage behavior the (passive) gaze engine builds — the ACTIVE item path
+    // was applying both at once (live console, 2026-07-24).
+    let stagedPetrifyMeta = null;
+    {
+      const hasRestrained = failConditions.some(c => /restrain/i.test(String(c.condition ?? "")));
+      const hasPetrified  = failConditions.some(c => /petrif/i.test(String(c.condition ?? "")));
+      if (hasRestrained && hasPetrified && resolvedSaveDC) {
+        failConditions = [{ condition: "restrained", requiresSave: true, staged: "petrify" }];
+        stagedPetrifyMeta = {
+          ability:            String(resolvedSaveAbility || "con").toLowerCase(),
+          dc:                 Number(resolvedSaveDC),
+          trigger:            "endOfTurn",
+          spellName:          item.name,
+          onFailureApply:     "petrified",
+          skipFirstEndOfTurn: true,
+          // THE GAZE TAG (Johnny 2026-07-27): pin the staged restraint to THIS
+          // exact power + caster so escalation/cleanup can never confuse it
+          // with a restraint from a net, Web, or another creature's ability.
+          sourceItemUuid:     item.uuid ?? null,
+          casterId:           item.actor?.id ?? null,
+        };
+        console.log(`${MODULE_ID} | ${item.name}: staged petrification — Restrained now; re-save at end of NEXT turn escalates to Petrified (RAW two-stage).`);
+      }
+    }
+
     const autoApply = QolSettings.get("autoApplyConditions") ?? true;
     if (!autoApply) {
       console.log(`${MODULE_ID} | autoApplyConditions OFF — skipping condition application for ${item.name}`);
@@ -3996,6 +4447,42 @@ export class SaveEngine {
     // Genuine fails set passed === false; PCs get their conditions applied
     // later by the PC-result handler once their roll resolves.
     const failed = results.filter(r => r && r.pending !== true && r.passed === false);
+    // ── THE GAZE TAG RULE, pass side (Johnny 2026-07-27) ─────────────────────
+    // A PASSED save vs this spell IS the repeat save — it ENDS this spell's
+    // staged restraint on that target (only OUR tag; restrained from a net /
+    // Web / anything else is untouched). This is what kills stale-stage rot:
+    // a pass always cleans the tag, so an old "turning to stone" can never
+    // linger through passes and instantly stone the target on a later fail
+    // (Kasimir's live sequence, 2026-07-27).
+    if (stagedPetrifyMeta) {
+      const spellLc = String(item.name ?? "").toLowerCase();
+      for (const r of (results ?? []).filter(x => x?.passed === true)) {
+        try {
+          const scene = game.scenes.get(r.sceneId) ?? canvas.scene;
+          const tokenDoc = r.tokenDocId ? scene?.tokens?.get(r.tokenDocId) : null;
+          const base = r.actorId ? game.actors.get(r.actorId) : null;
+          const tActor = tokenDoc?.actor ?? (base?.prototypeToken?.actorLink ? base : null);
+          if (!tActor?.effects) continue;
+          const staged = (tActor.effects.contents ?? []).filter(e => {
+            const rs = e.flags?.[MODULE_ID]?.repeatingSave;
+            return rs?.onFailureApply === "petrified"
+              && String(rs?.spellName ?? "").toLowerCase() === spellLc;
+          });
+          if (!staged.length) continue;
+          for (const e of staged) { try { await e.delete(); } catch (_) { /* already gone */ } }
+          console.log(`${MODULE_ID} | ${item.name}: ${tActor.name} PASSED while turning to stone — staged restraint ends, tag cleaned.`);
+          try {
+            await ChatMessage.create({
+              speaker: ChatMessage.getSpeaker({ actor: tActor }),
+              content: `<b>${tActor.name}</b> resists <b>${item.name}</b> — the petrification is halted and the restraint ends.`,
+            });
+          } catch (_) { /* informational only */ }
+        } catch (err) {
+          console.warn(`${MODULE_ID} | gaze pass-side tag cleanup failed (non-fatal):`, err);
+        }
+      }
+    }
+
     if (!failed.length) {
       console.log(`${MODULE_ID} | ${item.name}: no resolved failed saves — no conditions to apply`);
       return applied;
@@ -4009,27 +4496,177 @@ export class SaveEngine {
       // a tokenDocId, before finally dropping to the world actor.
       let tokenDoc = r.tokenDocId ? scene?.tokens?.get(r.tokenDocId) : null;
       if (!tokenDoc && r.actorId) {
-        tokenDoc = scene?.tokens?.find(t => t.actorId === r.actorId)
-          ?? canvas.tokens?.placeables.find(t => t.actor?.id === r.actorId)?.document
-          ?? null;
+        // ── Exact-token targeting (2026-07-26) ──
+        // The old fallback grabbed the FIRST scene token using this base actor.
+        // With two+ UNLINKED copies of the same monster (two ogres dropped from
+        // one sidebar entry) that could petrify/condition the WRONG copy. Now:
+        // one match → use it; several LINKED → any (they share one sheet, the
+        // write lands identically); several UNLINKED → refuse and tell the GM
+        // rather than guess.
+        const pool = scene?.tokens?.contents ?? canvas.tokens?.placeables.map(p => p.document) ?? [];
+        const matches = pool.filter(t => t.actorId === r.actorId);
+        if (matches.length === 1) tokenDoc = matches[0];
+        else if (matches.length > 1) {
+          const linked = matches.find(t => t.actorLink);
+          if (linked) tokenDoc = linked;
+          else {
+            console.warn(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — ${matches.length} unlinked "${r.name}" tokens share one base actor and no exact token reference survived; skipping condition auto-apply for this target rather than risk the wrong copy.`);
+            ui.notifications?.warn(`${item.name}: couldn't tell which "${r.name}" was the target — apply the condition manually.`);
+            continue;
+          }
+        }
       }
-      const actor = tokenDoc?.actor ?? game.actors.get(r.actorId);
+      // Base-actor fallback ONLY when that actor is genuinely the creature's one
+      // sheet (linked prototype). Writing a condition onto the shared sidebar
+      // actor of UNLINKED copies would contaminate every future drop of it.
+      let actor = tokenDoc?.actor ?? null;
+      if (!actor && r.actorId) {
+        const base = game.actors.get(r.actorId);
+        if (base?.prototypeToken?.actorLink) actor = base;
+        else if (base) {
+          console.warn(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — target token for "${r.name}" is gone and its base actor is unlinked-prototype; skipping rather than contaminate the sidebar actor.`);
+          continue;
+        }
+      }
       if (!actor) {
         console.warn(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — could not resolve actor for failed target ${r.name} (sceneId=${r.sceneId} tokenDocId=${r.tokenDocId} actorId=${r.actorId})`);
         continue;
       }
 
-      const condImmunities = new Set(
-        (actor.system?.traits?.ci?.value ?? []).map(s => String(s).toLowerCase())
-      );
+      // ── IMMUNITY GATE — BEFORE ANY BRANCH (2026-07-28, second pass) ──
+      // The first fix put the immunity check inside the per-condition loop.
+      // The staged-petrification branch below sits ABOVE that loop and
+      // `continue`s past it, calling ConditionLibrary.applyEffect directly —
+      // which also skips the library's own guard. So an Earth Elemental that
+      // is explicitly immune to Petrified got staged into "turning to stone"
+      // and then escalated straight to stone on its second failure. Johnny's
+      // console said it out loud: "ESCALATED straight to Petrified."
+      //
+      // RAW: if a creature cannot be petrified, the gaze does NOTHING to it —
+      // not the stone, and not the restraint, because that restraint exists
+      // ONLY as stage one of becoming stone. Gate the whole chain, at the top,
+      // where no later branch can route around it.
+      // ⚠️ READ THE STAGED METADATA, NOT JUST failConditions. The staging block
+      // above REASSIGNS failConditions to restrained-only and moves "petrified"
+      // into stagedPetrifyMeta.onFailureApply. A gate that only scans
+      // failConditions sees "restrained", concludes the chain is harmless, and
+      // waves the immune creature straight through to the stone. (I wrote that
+      // gate first. It was wrong for exactly this reason.)
+      const _tp = SaveEngine._targetProfileFor(actor, r);
+      const _terminal = String(stagedPetrifyMeta?.onFailureApply ?? "").toLowerCase();
+      const _chainConds = (failConditions ?? [])
+        .map(c => String(c?.condition ?? "").toLowerCase()).filter(Boolean);
+
+      // TWO DIFFERENT RULES, because a staged chain is not a list of independent
+      // conditions:
+      //
+      //  • STAGED (gaze): RAW says the creature "begins to turn to stone and is
+      //    restrained" — that restraint EXISTS ONLY as stage one of becoming
+      //    stone. It is not a restraint in its own right. So immunity to the
+      //    TERMINAL condition voids the entire chain. This is the Earth
+      //    Elemental: immune to Petrified, NOT immune to Restrained. An
+      //    every()-style test would let it be staged as "turning to stone" and
+      //    then escalate — the exact bug, one step later.
+      //
+      //  • UNSTAGED: independent conditions. Only skip if immune to ALL of them;
+      //    immunity to one must not cancel the others.
+      const _voided = _terminal
+        ? _tp?.immuneToCondition(_terminal)
+        : (_chainConds.length && _chainConds.every(c => _tp?.immuneToCondition(c)));
+
+      if (_voided) {
+        const _names = _terminal ? [_terminal] : [...new Set(_chainConds)];
+        console.log(`${MODULE_ID} | ${item.name}: ${actor.name} is IMMUNE to ${_names.join("/")} — whole chain skipped (no staging, no escalation).`);
+        applied.push({
+          targetName: r.name ?? actor.name,
+          tokenDocId: r.tokenDocId,
+          conditions: [],
+          immune: _names,
+        });
+        continue;
+      }
+
+      // ── ASK THE TARGET PROFILE (2026-07-28) ──
+      // This used to read the actor directly:
+      //     (actor.system?.traits?.ci?.value ?? []).map(...)
+      // which assumes an ARRAY. dnd5e stores condition immunities as a SET —
+      // Situation._traitSet handles both precisely because of that — so `.map`
+      // isn't a function and this set came out wrong. It also ignored the
+      // free-text custom immunity box entirely. Net result: an Earth Elemental
+      // explicitly immune to Petrified got petrified, and the card announced it.
+      //
+      // The profile answers the question instead of handing over a structure to
+      // guess at: it reads the structured list AND the custom text, and knows
+      // "petrification" in prose means the petrified status. One reader, every
+      // shape, every pipeline.
+      const tProfile = SaveEngine._targetProfileFor(actor, r);
+
+      // ── Staged petrification: SECOND failed save = STONE, right now ──────
+      // If this target is ALREADY "turning to stone" from this same gaze (it
+      // carries the staged Restrained with the escalate-to-petrified re-save
+      // tag), a NEW failed save doesn't restart stage one — it completes the
+      // petrification immediately. RAW: a creature restrained by the gaze that
+      // fails again is petrified — that repeat save normally comes at the end
+      // of its turn, but another USE of the gaze forces the save early and a
+      // failure means the same thing. Without this, re-casting deleted the
+      // staged Restrained (same-condition dedupe) and re-applied stage one
+      // forever — Kasimir's "failed his second save and still just restrained"
+      // (live test 2026-07-26). Escalation mirrors the repeating-save engine:
+      // staging effect deleted FIRST, then the end state applied.
+      if (stagedPetrifyMeta) {
+        // THE GAZE TAG RULE, fail side: escalate ONLY off a LIVE, ENABLED staged
+        // restraint from THIS spell (the tag) — never off a stale/disabled scrap
+        // and never off a restraint from any other source. Delete EVERY tagged
+        // staging effect (belt against duplicates), then stone him.
+        const spellLc = String(item.name ?? "").toLowerCase();
+        const staged = (actor.effects?.contents ?? []).filter(e => {
+          if (e.disabled) return false;
+          const rs = e.flags?.[MODULE_ID]?.repeatingSave;
+          return rs?.onFailureApply === "petrified"
+            && String(rs?.spellName ?? "").toLowerCase() === spellLc;
+        });
+        if (staged.length) {
+          try {
+            for (const e of staged) { try { await e.delete(); } catch (_) { /* already gone */ } }
+            // REPORT WHAT ACTUALLY HAPPENED (2026-07-28). This used to push
+            // "→ Petrified" unconditionally, without looking at the return
+            // value — so when the library refused the apply, the card still
+            // announced the stone. The gate above means an immune creature
+            // never reaches here, but a card must never claim a condition
+            // landed just because we asked for it.
+            const _eff = await ConditionLibrary.applyEffect(actor, "petrified", { source: item.name });
+            if (_eff) {
+              console.log(`${MODULE_ID} | ${item.name}: ${actor.name} was already turning to stone and FAILED AGAIN — ESCALATED straight to Petrified.`);
+              applied.push({
+                targetName: r.name ?? actor.name,
+                tokenDocId: r.tokenDocId,
+                conditions: ["petrified"],
+              });
+            } else {
+              console.log(`${MODULE_ID} | ${item.name}: escalation REFUSED for ${actor.name} (immune) — staging cleared, no stone.`);
+              applied.push({
+                targetName: r.name ?? actor.name,
+                tokenDocId: r.tokenDocId,
+                conditions: [],
+                immune: ["petrified"],
+              });
+            }
+          } catch (err) {
+            console.warn(`${MODULE_ID} | staged-petrify escalation failed for ${actor.name}:`, err);
+          }
+          continue;   // this target is stone — nothing further to apply
+        }
+      }
 
       const appliedForThisTarget = [];
+      const immuneForThisTarget = [];   // so the card can say IMMUNE instead of lying
 
       for (const cond of failConditions) {
         const condKey = String(cond.condition ?? "").toLowerCase().trim();
         if (!condKey) continue;
-        if (condImmunities.has(condKey)) {
+        if (tProfile?.immuneToCondition(condKey)) {
           console.log(`${MODULE_ID} | ${actor.name} IMMUNE to ${condKey} — ${item.name} condition skipped`);
+          immuneForThisTarget.push(condKey);
           continue;
         }
         try {
@@ -4054,6 +4691,26 @@ export class SaveEngine {
           const applyOpts = {};
           if (concentrationOrigin) applyOpts.concentrationOrigin = concentrationOrigin;
           if (repeatingSaveMeta)   applyOpts.repeatingSave       = repeatingSaveMeta;
+          if (stagedPetrifyMeta) {
+            // ── Grace turn is PER-TARGET, not unconditional (2026-07-25) ──
+            // RAW: a failed gaze save → restrained; re-save "at the END of its
+            // NEXT turn." Whether the tagging turn's own end counts depends on
+            // WHOSE turn it is when the target is tagged:
+            //   • Tagged DURING the target's own turn (passive start-of-turn gaze)
+            //     → the end of THIS turn is the grace; the save is the turn after
+            //     → skipFirstEndOfTurn = true.
+            //   • Tagged OUTSIDE the target's turn (ACTIVE item used on the
+            //     basilisk's/GM's action) → the target's very NEXT turn-end already
+            //     IS "the end of its next turn" → skipFirstEndOfTurn = false,
+            //     otherwise the petrify lands a full turn late (Johnny's "not
+            //     firing on the right turns", 2026-07-24).
+            const _combatant = game.combat?.started ? game.combat.combatant : null;
+            const _taggedOnOwnTurn = !!_combatant && (
+              _combatant.actor === actor ||
+              (!!tokenDoc && _combatant.tokenId === tokenDoc.id)
+            );
+            applyOpts.repeatingSave = { ...stagedPetrifyMeta, skipFirstEndOfTurn: _taggedOnOwnTurn };  // staged petrification wins
+          }
           if (breakFreeMeta)       applyOpts.breakFree           = breakFreeMeta;
 
           // Area-denial family (Stinking Cloud, etc.): description-parsed
@@ -4129,6 +4786,17 @@ export class SaveEngine {
           conditions: appliedForThisTarget,
         });
       }
+      // An immunity that stops a condition is a RESULT, not a silence. The card
+      // said "Earth Elemental → Petrified" for a creature that cannot be
+      // petrified; the table deserves "immune" instead of a lie or a blank.
+      if (immuneForThisTarget.length) {
+        applied.push({
+          targetName: r.name ?? actor.name,
+          tokenDocId: r.tokenDocId,
+          conditions: [],
+          immune: immuneForThisTarget,
+        });
+      }
     }
 
     return applied;
@@ -4144,10 +4812,7 @@ export class SaveEngine {
   _buildPhase1CardHtml(item, results, opts) {
     const { saveAbility, saveDC, hasDamage = true, halfOnSave = false, appliedConditions = [], activityId = null } = opts;
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
-    // Headline the specific power (activity) when it differs from the item name.
-    const _p1Act   = item.system?.activities?.get?.(activityId);
-    const _p1Name  = _p1Act?.name ?? "";
-    const _p1Title = (_p1Name && _p1Name !== item.name) ? _p1Name : item.name;
+    const _p1Title = this._abilityLabel(item, activityId);
 
     const targetRows = results.map(r => {
       const removeBtn = `<button class="ace-qol-save-phase1-remove" data-action="aceQolRemovePhase1" data-token-doc-id="${r.tokenDocId}" title="Remove this target before damage rolls"><i class="fas fa-xmark"></i></button>`;
@@ -4157,8 +4822,8 @@ export class SaveEngine {
             <div class="ace-qol-save-result-target">
               <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
               <span class="ace-qol-save-tgt-name">${r.name}</span>
-              <span class="ace-qol-save-result-label ace-qol-save-pending">\u23f3 Waiting for save...</span>
               ${removeBtn}
+              <span class="ace-qol-save-result-label ace-qol-save-pending">WAITING FOR PLAYER</span>
             </div>
           </div>
         `;
@@ -4254,10 +4919,20 @@ export class SaveEngine {
           <i class="fas fa-shield-halved"></i> ${anyoneFailed ? "Resolved — no damage to apply" : "Saved — no damage"}
         </div>`;
     } else if (appliedConditions?.length) {
+      const cap = (c) => c.charAt(0).toUpperCase() + c.slice(1).toLowerCase();
       const lines = appliedConditions.map(a => {
-        const condList = a.conditions.map(c =>
-          c.charAt(0).toUpperCase() + c.slice(1).toLowerCase()
-        ).join(", ");
+        // IMMUNE rows read as a shield in blue, not a skull in red \u2014 the
+        // creature shrugged it off, which is a different story from being hit.
+        if (a.immune?.length) {
+          return `<div style="display:flex;align-items:center;gap:6px;padding:2px 0;">
+            <i class="fas fa-shield-halved" style="color:#6bcbff;font-size:11px;"></i>
+            <span style="color:#ffffff;font-weight:700;">${foundry.utils.escapeHTML(a.targetName)}</span>
+            <span style="color:#888;">\u2192</span>
+            <span style="color:#6bcbff;font-weight:700;letter-spacing:0.5px;white-space:nowrap;">IMMUNE to ${foundry.utils.escapeHTML(a.immune.map(cap).join(", "))}</span>
+          </div>`;
+        }
+        const condList = a.conditions.map(cap).join(", ");
+        if (!condList) return "";
         return `<div style="display:flex;align-items:center;gap:6px;padding:2px 0;">
           <i class="fas fa-skull-crossbones" style="color:#ff5555;font-size:11px;"></i>
           <span style="color:#ffffff;font-weight:700;">${foundry.utils.escapeHTML(a.targetName)}</span>
@@ -4275,8 +4950,20 @@ export class SaveEngine {
       // Otherwise we'd show a misleading "all resisted" message when in fact
       // a target failed but the parser couldn't extract the condition (e.g.,
       // homebrew description format we don't recognize yet).
+      // ⚠️ A PENDING TARGET IS NEITHER PASSED NOR FAILED (2026-07-28).
+      // This asked only "did anyone fail?" — so a row still sitting on WAITING
+      // FOR PLAYER counted as not-failed and the card printed the green
+      // "All targets resisted" underneath it. The card announced the outcome of
+      // a save nobody had rolled yet. "All targets resisted" is a claim about a
+      // FINISHED set; don't make it until the set is finished.
+      const anyPending   = (results ?? []).some(r => r?.pending);
       const anyoneFailed = (results ?? []).some(r => r && !r.passed && !r.pending);
-      if (anyoneFailed) {
+      if (anyPending) {
+        const n = (results ?? []).filter(r => r?.pending).length;
+        actionsHtml = `<div class="ace-qol-save-no-effect" style="padding:6px 12px;text-align:center;color:#b9a978;font-size:11px;font-style:italic;">
+          <i class="fas fa-hourglass-half"></i> Waiting on ${n} save${n === 1 ? "" : "s"}…
+        </div>`;
+      } else if (anyoneFailed) {
         // A target failed but no condition auto-applied. For properly-wired
         // save-or-condition powers this shouldn't happen \u2014 the condition
         // applies and renders above. NEVER surface a defeatist "apply manually"
@@ -4292,7 +4979,7 @@ export class SaveEngine {
 
     return `
       <div class="ace-qol-save-results-card" data-phase="1">
-        ${this._castAnnouncementHtml(item, item.actor, results)}
+        ${this._castAnnouncementHtml(item, item.actor, results, activityId)}
         <div class="ace-qol-save-header">
           <img src="${item.img || "icons/svg/spell.svg"}" class="ace-qol-save-item-img" />
           <div>
@@ -4303,6 +4990,7 @@ export class SaveEngine {
         <div class="ace-qol-save-results">
           ${targetRows}
         </div>
+        ${this._modFootnote(results)}
         ${actionsHtml}
       </div>
     `;
@@ -4311,9 +4999,13 @@ export class SaveEngine {
   async _postSaveResultsPhase1(item, casterActor, results, opts) {
     const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell,
             timingType, templateDocId, templateSceneId, hasDamage = true,
-            appliedConditions = [] } = opts;
+            appliedConditions = [], activityId = null } = opts;
 
     const cardHtml = this._buildPhase1CardHtml(item, results, opts);
+
+    // THE DICE LAND FIRST. Never post a result before the roll that
+    // produced it has visibly stopped. (feedback_chat_cards_use_the_room)
+    await awaitDiceSettle();
 
     await ChatMessage.create({
       content: cardHtml,
@@ -4327,6 +5019,17 @@ export class SaveEngine {
           phase: 1,
           itemId: item.id,
           itemUuid: item.uuid,
+          // WHICH CAST this card belongs to (2026-07-28). Without it,
+          // _updateMainCardPcResult had no way to tell one Petrifying Gaze from
+          // the next and simply grabbed the newest save card in the log — so a
+          // result could land on a PREVIOUS cast's card. Two different targets
+          // ending up on one card was exactly this.
+          castId: opts.castId ?? null,
+          // WHICH ability fired. Phase 2 reads this back off the card to roll
+          // the right dice and headline the right name — without it the damage
+          // roller falls back to "first activity with damage" and a four-power
+          // staff rolls the wrong ability's damage. (2026-07-28)
+          activityId,
           actorId: casterActor?.id,
           // Owning player(s) of the caster — they see the ROLL DAMAGE button and
           // roll their OWN spell damage (Johnny 2026-07-11: "PCs always roll
@@ -4397,6 +5100,7 @@ export class SaveEngine {
     // ── 1. Roll damage dice (with cantrip + upcast scaling) ──
     const damageComponents = await this._rollSpellDamage(item, casterActor, {
       spellLevel: Number.isFinite(spellLevel) ? spellLevel : null,
+      activityId: flags.activityId ?? null,   // roll THIS ability's dice, not the item's first damaging one
     });
     const baseDamageTotal = damageComponents.reduce((sum, c) => sum + c.total, 0);
 
@@ -4405,6 +5109,7 @@ export class SaveEngine {
     // ── 3. Build Phase 2 card HTML with full damage data ──
     const cardHtml = this._buildPhase2CardHtml(item, casterActor, allResults, damageComponents, {
       saveAbility, saveDC, halfOnSave, damageTypes,
+      activityId: flags.activityId ?? null,
     });
 
     // ── 4. Compute damageResults for flag storage ──
@@ -4460,11 +5165,10 @@ export class SaveEngine {
         saveAbility: flags.saveAbility, isSpell: flags.isSpell, damageTypes: flags.damageTypes,
       });
       if (!state) continue;
-      const isPC = token.actor?.hasPlayerOwner ?? false;
-      const rawMod = token.actor?.system?.abilities?.[flags.saveAbility]?.save;
-      const saveMod = typeof rawMod === "number" ? rawMod
-                    : typeof rawMod === "object" ? (rawMod?.value ?? rawMod?.total ?? 0)
-                    : Number(rawMod) || 0;
+      const isPC = SaveEngine.isPlayerCharacter(token.actor);
+      // Save modifier via the target profile — ONE reader for a fact that
+      // was being decoded seven different ways in this file alone.
+      const saveMod = SaveEngine._targetProfileFor(token.actor, { tokenDocId: token?.document?.id, sceneId: token?.scene?.id })?.saveMod(flags.saveAbility) ?? 0;
       newTargetData.push({
         tokenId:        token.id,
         tokenDocId:     token.document?.id ?? token.id,
@@ -4618,8 +5322,26 @@ export class SaveEngine {
     }
 
     // ── Send prompts to any new PCs ──
+    // OFFLINE OWNERS AUTO-ROLL HERE TOO (2026-07-28). This path prompted every
+    // PC unconditionally while the main cast path checked first and rolled for
+    // absent players. So a save aimed at an offline character through THIS door
+    // sat on "waiting for player" forever, waiting on someone who wasn't in the
+    // building. Same rule, both doors — an absent player is treated like an NPC.
+    const _iAmActiveGM2 = game.users?.activeGM === game.user;
     for (const tgt of newPcs) {
       try {
+        if (_iAmActiveGM2 && !this._pcOwnerActive(tgt)) {
+          console.log(`${MODULE_ID} | PC "${tgt.name}" owner is offline — GM auto-rolling their save (added target).`);
+          await this._gmRollPcSaveOffline(item, actor, tgt, {
+            saveAbility:  flags.saveAbility,
+            saveDC:       flags.saveDC,
+            halfOnSave:   flags.halfOnSave,
+            damageTypes:  flags.damageTypes,
+            isSpell:      flags.isSpell,
+            castId:       message.id,
+          });
+          continue;
+        }
         await this._sendPcSavePrompt(item, actor, tgt, {
           saveAbility:  flags.saveAbility,
           saveDC:       flags.saveDC,
@@ -4654,6 +5376,19 @@ export class SaveEngine {
       const scene = game.scenes.get(sceneId);
       const tmpl  = scene?.templates?.get(tmplId);
       if (!tmpl) return;
+
+      // ── Release anything bound to this template FIRST (2026-07-28) ──
+      // Sequencer effects can be attached to a MeasuredTemplate — ours or
+      // another module's (Automated Animations especially). Deleting the
+      // template out from under them leaves the effect pointing at an object
+      // that no longer exists, and Sequencer throws a red banner across the
+      // GM's canvas: "could not find object with ID: …MeasuredTemplate…".
+      // The template is ours and we chose to delete it, so cleaning up after
+      // ourselves is our job, not something the GM should have to ignore.
+      try {
+        globalThis.Sequencer?.EffectManager?.endEffects?.({ object: tmpl });
+      } catch (_) { /* Sequencer absent or nothing attached — fine */ }
+
       await tmpl.delete();
       console.log(`${MODULE_ID} | Auto-deleted instant template ${tmplId}`);
     } catch (err) {
@@ -4666,7 +5401,7 @@ export class SaveEngine {
   // ═══════════════════════════════════════════════════════════════════════════
 
   _buildPhase2CardHtml(item, casterActor, results, damageComponents, opts) {
-    const { saveAbility, saveDC, halfOnSave, damageTypes } = opts;
+    const { saveAbility, saveDC, halfOnSave, damageTypes, activityId = null } = opts;
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
     const baseDamageTotal = damageComponents.reduce((sum, c) => sum + c.total, 0);
 
@@ -4686,7 +5421,7 @@ export class SaveEngine {
             <div class="ace-qol-save-result-target">
               <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
               <span class="ace-qol-save-tgt-name">${r.name}</span>
-              <span class="ace-qol-save-result-label ace-qol-save-pending">\u23f3 Waiting for save...</span>
+              <span class="ace-qol-save-result-label ace-qol-save-pending">WAITING FOR PLAYER</span>
             </div>
           </div>
         `;
@@ -4797,7 +5532,7 @@ export class SaveEngine {
             <button class="ace-qol-save-ovr${_a(1)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="1">1</button>
             <button class="ace-qol-save-ovr${_a(2)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="2">2</button>
             <span class="ace-qol-save-ovr-spacer"></span>
-            <span class="ace-qol-save-result-dmg">${dmgDisplay}</span>${isDead ? '<span class="ace-qol-save-skull">\u2620</span>' : '<span class="ace-qol-save-skull" style="display:none">\u2620</span>'}
+            <span class="ace-qol-save-result-dmg">${dmgDisplay}<span class="ace-qol-dmg-unit">DMG</span></span>${isDead ? '<span class="ace-qol-save-skull">\u2620</span>' : '<span class="ace-qol-save-skull" style="display:none">\u2620</span>'}
             <span class="ace-qol-save-result-hp">HP: <span class="ace-qol-hp-cur">${r.currentHP}</span>\u2192<span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span></span>
           </div>
         </div>
@@ -4812,11 +5547,11 @@ export class SaveEngine {
 
     return `
       <div class="ace-qol-save-results-card" data-phase="2">
-        ${this._castAnnouncementHtml(item, casterActor, results)}
+        ${this._castAnnouncementHtml(item, casterActor, results, activityId)}
         <div class="ace-qol-save-header">
           <img src="${item.img || "icons/svg/spell.svg"}" class="ace-qol-save-item-img" />
           <div>
-            <strong class="ace-qol-save-item-name">${item.name} \u2014 Save Results</strong>
+            <strong class="ace-qol-save-item-name">${this._abilityLabel(item, activityId)} \u2014 Save Results</strong>
             <span class="ace-qol-save-dc">DC ${saveDC} ${abilityLabel}</span>
           </div>
         </div>
@@ -4840,14 +5575,143 @@ export class SaveEngine {
   //  Save Results + Damage Card (Legacy / Direct Post)
   // ═══════════════════════════════════════════════════════════════════════════
 
+  /**
+   * THE target profile for one creature in a save flow. (2026-07-28)
+   *
+   * First step of pointing the save pipeline at the profile layer instead of
+   * reaching into the actor. The audit found the profile builders had almost no
+   * consumers — the target profile had NONE — while this engine read raw actor
+   * data in seventeen places and got condition immunity wrong because of it.
+   *
+   * Cached per resolution pass so a twelve-target storm builds each creature's
+   * snapshot once, not once per question asked about it.
+   */
+  static _profileCache = new Map();
+
+  static _targetProfileFor(actor, row = null) {
+    if (!actor) return null;
+    const key = row?.tokenDocId ?? actor.uuid ?? actor.id;
+    const hit = SaveEngine._profileCache.get(key);
+    if (hit) return hit;
+    let profile = null;
+    try {
+      const scene = row?.sceneId ? game.scenes.get(row.sceneId) : canvas?.scene;
+      const tokenDoc = row?.tokenDocId ? scene?.tokens?.get(row.tokenDocId) : null;
+      profile = buildTargetProfile(actor, { token: tokenDoc?.object ?? tokenDoc ?? null });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | target profile build failed for ${actor?.name}:`, err);
+    }
+    if (profile) {
+      SaveEngine._profileCache.set(key, profile);
+      // Short-lived: a creature's state changes DURING a fight, so a cached
+      // snapshot must never outlive the resolution that built it.
+      setTimeout(() => SaveEngine._profileCache.delete(key), 5000);
+    }
+    return profile;
+  }
+
+  /**
+   * FOOTNOTES — where every modifier on a save card explains itself. (2026-07-28)
+   *
+   * A card that shows a bare "+3" makes the GM go and work out where it came
+   * from. Firaxis has Constitution 2, so his save reads like it should be −4;
+   * it's actually +0 (proficiency cancels the penalty) plus +3 from his own
+   * Paladin Aura of Protection. Nothing on the card said so, and it took a
+   * console probe to answer.
+   *
+   * Folding it into the formula would produce an unreadable string, so it goes
+   * at the BOTTOM of the card as footnotes — one line per source, naming who it
+   * applied to. Johnny 2026-07-28: "Footnotes at the bottom would be better in
+   * any case. We're not looking for real estate. We have lots."
+   *
+   * @param {Array} rows  Target rows carrying { name, saveBonuses:[{value,label}] }
+   */
+  _modFootnote(rows) {
+    try {
+      const bySource = new Map();          // label → { value, names:Set }
+      for (const r of (rows ?? [])) {
+        for (const b of (r?.saveBonuses ?? [])) {
+          const raw = String(b?.value ?? "").trim();
+          if (!raw) continue;
+          const n = Number(raw.replace(/^\+/, ""));
+          if (Number.isFinite(n) && n === 0) continue;    // "+0" explains nothing
+          const label = String(b?.label ?? "Bonus").trim();
+          const key = `${label}|${raw}`;
+          if (!bySource.has(key)) bySource.set(key, { label, value: raw, names: new Set() });
+          if (r?.name) bySource.get(key).names.add(String(r.name));
+        }
+      }
+      if (!bySource.size) return "";
+
+      const esc = foundry.utils.escapeHTML;
+      const lines = [...bySource.values()].map(s => {
+        const v = s.value.startsWith("+") || s.value.startsWith("-") ? s.value : `+${s.value}`;
+        const who = [...s.names];
+        // Name everyone when it's a couple of creatures; collapse when it's the
+        // whole room, so a 12-target storm doesn't print a paragraph.
+        const whoTxt = who.length === 0 ? ""
+          : who.length <= 3 ? ` — ${esc(who.join(", "))}`
+          : ` — ${who.length} creatures`;
+        return `<div class="ace-qol-save-note">
+                  <span class="ace-qol-save-note-val">${esc(v)}</span>
+                  <span class="ace-qol-save-note-label">${esc(s.label)}</span>
+                  <span class="ace-qol-save-note-who">${whoTxt}</span>
+                </div>`;
+      });
+      return `<div class="ace-qol-save-notes">
+                <div class="ace-qol-save-notes-head">Modifiers applied</div>
+                ${lines.join("")}
+              </div>`;
+    } catch (_) { return ""; }
+  }
+
+  /**
+   * THE reader for what to CALL an action on a card. (2026-07-28)
+   *
+   * A multi-power item that headlines its own name tells the table nothing:
+   * "Stormforger — Save Results" could be the storm, the tornado, or the
+   * flight. Name the ABILITY — "Thunderstorm of Misery" — and let the item
+   * name drop to a subtitle where the layout has room for one.
+   *
+   * Two half-versions of this logic already existed on two different cards,
+   * which is exactly why the other four still said the item name. One reader,
+   * every card.
+   *
+   * dnd5e leaves an activity's name blank when there's only one, falling back
+   * to a generic type label; a blank or type-echo name is worthless as a title,
+   * so those correctly yield the item name instead.
+   *
+   * @param {Item5e} item
+   * @param {string} [activityId]
+   * @param {object} [o]
+   * @param {boolean} [o.rawOnly]  Return "" instead of the item name when the
+   *                               activity has no distinct name of its own.
+   */
+  _abilityLabel(item, activityId = null, { rawOnly = false } = {}) {
+    let name = "";
+    try {
+      const act = activityId ? item?.system?.activities?.get?.(activityId) : null;
+      name = String(act?.name ?? "").trim();
+      // A name that's just the activity type ("Save", "Attack", "Utility") is
+      // dnd5e's placeholder, not a title.
+      const generic = new Set(["save", "saving throw", "attack", "damage", "heal",
+        "healing", "utility", "cast", "summon", "enchant", "check", "effect", "use"]);
+      if (generic.has(name.toLowerCase())) name = "";
+      if (name && item?.name && name === item.name) name = "";
+    } catch (_) { name = ""; }
+    if (rawOnly) return name;
+    return name || item?.name || "Ability";
+  }
+
   async _postSaveResults(item, casterActor, results, opts, damageComponents) {
-    const { saveAbility, saveDC, halfOnSave, damageTypes, spellLevel } = opts;
+    const { saveAbility, saveDC, halfOnSave, damageTypes, spellLevel, activityId } = opts;
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
 
     // If damageComponents not provided, roll them (with cantrip + upcast scaling)
     if (!damageComponents) {
       damageComponents = await this._rollSpellDamage(item, casterActor, {
         spellLevel: Number.isFinite(spellLevel) ? spellLevel : null,
+        activityId: activityId ?? null,   // roll THIS ability's dice, not the item's first damaging one
       });
     }
 
@@ -4862,7 +5726,7 @@ export class SaveEngine {
             <div class="ace-qol-save-result-target">
               <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
               <span class="ace-qol-save-tgt-name">${r.name}</span>
-              <span class="ace-qol-save-result-label ace-qol-save-pending">\u23f3 Waiting for save...</span>
+              <span class="ace-qol-save-result-label ace-qol-save-pending">WAITING FOR PLAYER</span>
             </div>
           </div>
         `;
@@ -4981,7 +5845,7 @@ export class SaveEngine {
             <button class="ace-qol-save-ovr${_a(1)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="1">1</button>
             <button class="ace-qol-save-ovr${_a(2)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="2">2</button>
             <span class="ace-qol-save-ovr-spacer"></span>
-            <span class="ace-qol-save-result-dmg">${dmgDisplay}</span>${isDead ? '<span class="ace-qol-save-skull">\u2620</span>' : '<span class="ace-qol-save-skull" style="display:none">\u2620</span>'}
+            <span class="ace-qol-save-result-dmg">${dmgDisplay}<span class="ace-qol-dmg-unit">DMG</span></span>${isDead ? '<span class="ace-qol-save-skull">\u2620</span>' : '<span class="ace-qol-save-skull" style="display:none">\u2620</span>'}
             <span class="ace-qol-save-result-hp">HP: <span class="ace-qol-hp-cur">${r.currentHP}</span>\u2192<span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span></span>
           </div>
         </div>
@@ -4996,11 +5860,11 @@ export class SaveEngine {
 
     const cardHtml = `
       <div class="ace-qol-save-results-card">
-        ${this._castAnnouncementHtml(item, casterActor, results)}
+        ${this._castAnnouncementHtml(item, casterActor, results, activityId)}
         <div class="ace-qol-save-header">
           <img src="${item.img || "icons/svg/spell.svg"}" class="ace-qol-save-item-img" />
           <div>
-            <strong class="ace-qol-save-item-name">${item.name} \u2014 Save Results</strong>
+            <strong class="ace-qol-save-item-name">${this._abilityLabel(item, activityId)} \u2014 Save Results</strong>
             <span class="ace-qol-save-dc">DC ${saveDC} ${abilityLabel}</span>
           </div>
         </div>
@@ -5019,6 +5883,10 @@ export class SaveEngine {
       </div>
     `;
 
+    // THE DICE LAND FIRST. Never post a result before the roll that
+    // produced it has visibly stopped. (feedback_chat_cards_use_the_room)
+    await awaitDiceSettle();
+
     await ChatMessage.create({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor: casterActor }),
@@ -5031,6 +5899,7 @@ export class SaveEngine {
           phase: 2,
           itemId: item.id,
           itemUuid: item.uuid,
+          activityId,        // survives re-renders and any later re-read
           actorId: casterActor?.id,
           saveAbility,
           saveDC,
@@ -5144,6 +6013,8 @@ export class SaveEngine {
       if (!actor) continue;
 
       // Restore to HP they had before damage was applied
+      // ⚠️ LIVE READ ON PURPOSE — undo path writes HP back; must see reality,
+      // never a cached snapshot.
       const restoredHP = r.currentHP ?? actor.system?.attributes?.hp?.value ?? 0;
       await actor.update({ "system.attributes.hp.value": restoredHP });
     }

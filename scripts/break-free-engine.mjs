@@ -261,11 +261,16 @@ export class BreakFreeEngine {
       ?? null;
     try {
       let roll = null;
+      // ACE owns the pause — dnd5e's roll dialog must never appear. In dnd5e
+      // 5.x the SECOND arg is the DIALOG config (`{configure:false}`) and the
+      // THIRD is the message config (`{create:false}`); passing
+      // `{chatMessage:false}` as the 2nd arg silently let the dialog through.
+      // (Suite-wide dialog sweep, 2026-07-27.)
       if (typeof actor.rollAbilityCheck === "function") {
-        const r = await actor.rollAbilityCheck({ ability }, { chatMessage: false });
+        const r = await actor.rollAbilityCheck({ ability }, { configure: false }, { create: false });
         roll = Array.isArray(r) ? r[0] : r;
       } else if (typeof actor.rollAbilityTest === "function") {
-        roll = await actor.rollAbilityTest(ability, { chatMessage: false });
+        roll = await actor.rollAbilityTest(ability, { chatMessage: false, fastForward: true });
       } else {
         roll = await (new Roll(`1d20 + @abilities.${ability}.mod`, actor.getRollData())).evaluate();
       }

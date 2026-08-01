@@ -42,7 +42,9 @@ export class DeathSaves {
         const combatant = combat?.combatant;
         const actor = combatant?.actor;
         if (!actor) return;
-        // Only PCs (NPCs die at 0 HP via death-pipeline, no death saves)
+        // Only PCs (NPCs die at 0 HP via death-pipeline, no death saves).
+        // Ownership-based BY DESIGN — see SaveEngine.isPlayerCharacter. An
+        // unowned creature is treated like an NPC on purpose. Do not widen.
         if (!actor.hasPlayerOwner) return;
         const hp = actor.system?.attributes?.hp;
         if (!hp || Number(hp.value ?? 0) > 0) return;

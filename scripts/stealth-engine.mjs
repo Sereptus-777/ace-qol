@@ -189,8 +189,9 @@ export class StealthEngine {
     // Roll DEX(Stealth). dnd5e: actor.rollSkill("ste") or actor.rollSkillV2
     let stealthRoll;
     try {
-      const result = await (actor.rollSkillV2?.({ skill: "ste" })
-                          ?? actor.rollSkill?.("ste"));
+      // configure:false — ACE owns the pause (suite-wide dialog sweep 2026-07-27).
+      const result = await (actor.rollSkillV2?.({ skill: "ste" }, { configure: false })
+                          ?? actor.rollSkill?.("ste", { fastForward: true }));
       // V12 returns Roll, V13 may return { rolls: [Roll] }
       stealthRoll = result?.rolls?.[0] ?? result;
     } catch (err) {

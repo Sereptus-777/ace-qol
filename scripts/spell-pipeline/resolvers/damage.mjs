@@ -8,7 +8,34 @@ import { DamageCalculator } from "../../damage-calculator.mjs";
 import { DamageCardRenderer } from "../../damage-card-renderer.mjs";
 import { TargetState } from "../../target-state.mjs";
 import { CombatState } from "../../combat-state.mjs";
+import { Situation } from "../../situation.mjs";   // ⚠️ WAS NEVER IMPORTED — see below
+import { safeShowForRoll } from "../../dsn-utils.mjs";
 import { AnimationHelper } from "../animation.mjs";
+
+// ─── Creature snapshot access (2026-07-28) ───────────────────────────────────
+// Facts about a creature come from the ONE reader, never from actor.system —
+// the audit found every pipeline reaching into raw data and getting shapes
+// wrong. Cached briefly; expired fast because state changes mid-fight.
+const _aceCreatureCache = new Map();
+function _aceCreature(actor, token = null) {
+  if (!actor) return {};
+  const key = actor.uuid ?? actor.id;
+  const hit = _aceCreatureCache.get(key);
+  if (hit) return hit;
+  let c = {};
+  // ⚠️ `Situation` WAS NEVER IMPORTED INTO THIS FILE (found 2026-07-28 by a
+  // no-undef lint pass). Every call threw a ReferenceError, the swallow-catch
+  // below turned it into an empty object, and this resolver has been reading a
+  // BLANK creature snapshot ever since the profile conversion — silently, with
+  // the conversion reported as done. A catch that discards the error hides a
+  // missing import just as well as it hides a bad actor.
+  try { c = Situation.readCreature(actor, token) ?? {}; }
+  catch (err) { console.warn(`${MODULE_ID} | damage resolver: creature read failed for ${actor?.name}:`, err); c = {}; }
+  _aceCreatureCache.set(key, c);
+  setTimeout(() => _aceCreatureCache.delete(key), 3000);
+  return c;
+}
+
 
 export class DamageResolver {
 
@@ -126,8 +153,8 @@ export class DamageResolver {
         target: {
           name:      token.name ?? targetActor.name,
           img:       targetActor.img ?? token.document?.texture?.src,
-          currentHP: targetActor.system?.attributes?.hp?.value ?? 0,
-          maxHP:     targetActor.system?.attributes?.hp?.max ?? 0,
+          currentHP: _aceCreature(targetActor)?.hp?.value ?? 0,
+          maxHP:     _aceCreature(targetActor)?.hp?.max ?? 0,
         },
         targetActor,
         targetToken: token,
@@ -137,7 +164,7 @@ export class DamageResolver {
         damageModifiers: DamageCalculator.getTargetDamageModifiers(targetActor, item),
         name: token.name ?? targetActor.name,
         img:  targetActor.img ?? token.document?.texture?.src,
-        ac:   targetActor.system?.attributes?.ac?.value ?? 0,
+        ac:   _aceCreature(targetActor)?.ac ?? 0,
         // The DamageCalculator looks for this magicMissileOverride field.
         // Reusing the same field name keeps backward compatibility with
         // the v0.7.17 fork; future "distribute" spells (Scorching Ray) can
@@ -196,9 +223,7 @@ export class DamageResolver {
       // two targets split them front-loaded on the first pick, etc.
       const picked = (result?.targets ?? []).map(t => t?.actor).filter(Boolean);
       if (picked.length) {
-        const charLevel = actor.system?.details?.level
-          ?? actor.system?.details?.spellLevel
-          ?? actor.system?.attributes?.spell?.level
+        const charLevel = _aceCreature(actor)?.level
           ?? 1;
         const N = entry.countResolver?.(ctx.castLevel, charLevel) ?? picked.length;
         distribution = DamageResolver._distributeUnits(picked, N);
@@ -260,7 +285,10 @@ export class DamageResolver {
     let agonizingPerUnit = 0;
     try {
       if (/eldritch\s*blast/i.test(item.name ?? "")) {
-        agonizingPerUnit = CombatState.getAgonizingBlastBonus?.(actor) ?? 0;
+        // The live helper requires the spell item (it verifies the spell IS
+        // Eldritch Blast); calling it with only the actor returned 0 forever,
+        // so every beam silently lost +CHA. (Audit, 2026-07-27.)
+        agonizingPerUnit = CombatState.getAgonizingBlastBonus?.(actor, item) ?? 0;
       }
     } catch (_) { agonizingPerUnit = 0; }
 
@@ -274,7 +302,7 @@ export class DamageResolver {
       const token = targetActor.getActiveTokens?.()?.[0]
                  ?? canvas.tokens?.placeables.find(t => t.actor?.id === targetActor.id);
       if (!token) continue;
-      const ac = targetActor.system?.attributes?.ac?.value ?? 10;
+      const ac = _aceCreature(targetActor)?.ac ?? 10;
       const targetName = token.name ?? targetActor.name;
 
       // Situational brain — the SAME assess the weapon pipeline uses, so
@@ -314,7 +342,10 @@ export class DamageResolver {
 
         volleyRows.push({ target: targetName, n: unitNo, d20: kept, total: roll.total, ac, hit, crit: isCrit, fumble: isFumble, situNote });
         // 3D dice — fire-and-forget; awaiting external modules is how we hang.
-        try { game.dice3d?.showForRoll?.(roll, game.user, true); } catch (_) {}
+        // Through safeShowForRoll so the animation is REGISTERED: a raw call
+        // here left awaitDiceSettle with nothing to wait on, and the volley
+        // card could post while these dice were still in the air.
+        safeShowForRoll(roll, "volley attack");
       }
 
       if (!unitHits) continue;
@@ -338,8 +369,8 @@ export class DamageResolver {
         target: {
           name:      targetName,
           img:       targetActor.img ?? token.document?.texture?.src,
-          currentHP: targetActor.system?.attributes?.hp?.value ?? 0,
-          maxHP:     targetActor.system?.attributes?.hp?.max ?? 0,
+          currentHP: _aceCreature(targetActor)?.hp?.value ?? 0,
+          maxHP:     _aceCreature(targetActor)?.hp?.max ?? 0,
         },
         targetActor,
         targetToken: token,
@@ -403,9 +434,9 @@ export class DamageResolver {
       const label = activity?.labels?.toHit ?? item?.labels?.toHit ?? null;
       if (label != null) bonus = parseInt(String(label).replace(/\s/g, ""), 10);
       if (!Number.isFinite(bonus)) {
-        const castKey = actor.system?.attributes?.spellcasting || "int";
-        const mod = actor.system?.abilities?.[castKey]?.mod ?? 0;
-        const prof = actor.system?.attributes?.prof ?? 0;
+        const _c = _aceCreature(actor);
+        const mod = _c?.spellMod ?? 0;
+        const prof = _c?.prof ?? 0;
         bonus = mod + prof;
       }
       const die = advantage ? "2d20kh" : disadvantage ? "2d20kl" : "1d20";

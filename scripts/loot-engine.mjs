@@ -1083,8 +1083,20 @@ export class LootEngine {
       const parentActor = item.parent;
       if (!parentActor || parentActor.type !== "character" || !parentActor.hasPlayerOwner) return;
 
-      // Search recent chat messages for loot cards
-      const messages = game.messages.contents.slice(-50);  // Last 50 messages
+      // ── NO ARBITRARY WINDOW (2026-07-28) ──
+      // This took the last 50 messages. A loot card that had scrolled past 50 —
+      // trivial on a busy night — simply stopped being found, so items looted
+      // from it were never marked and the card never closed out. Silent, and
+      // worse the longer the session runs. Same failure the save card hit with
+      // its 30-message window.
+      //
+      // A loot card is only a candidate while it is NOT fully looted, so filter
+      // on the actual condition instead of on recency. That set is tiny — open
+      // loot cards are a handful at most — and it cannot age out.
+      const messages = game.messages.contents.filter(m => {
+        const f = m.flags?.[MODULE_ID];
+        return f?.type === "lootCard" && !f.fullyLooted;
+      });
 
       for (const msg of messages) {
         const msgFlags = msg.flags?.[MODULE_ID];

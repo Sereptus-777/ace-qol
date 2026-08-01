@@ -124,6 +124,30 @@ export class TurnMarker {
     }
   }
 
+  /**
+   * JB2A ships as TWO module ids with the SAME library layout — free
+   * ("JB2A_DnD5e") and Patreon ("jb2a_patreon"). Our defaults (and any stored
+   * setting values) may point at whichever variant the path was written for;
+   * if THAT variant isn't active but the sibling is, rewrite the prefix so the
+   * marker art loads from the collection actually installed. Self-heals old
+   * worlds whose stored setting still says the free path. (2026-07-27 —
+   * Johnny runs the Patreon Complete Collection; the free shell was broken.)
+   */
+  static _resolveJb2aVariant(p) {
+    try {
+      const path = String(p ?? "");
+      const freeOn   = game.modules.get("JB2A_DnD5e")?.active === true;
+      const patreonOn = game.modules.get("jb2a_patreon")?.active === true;
+      if (path.includes("modules/JB2A_DnD5e/") && !freeOn && patreonOn) {
+        return path.replace("modules/JB2A_DnD5e/", "modules/jb2a_patreon/");
+      }
+      if (path.includes("modules/jb2a_patreon/") && !patreonOn && freeOn) {
+        return path.replace("modules/jb2a_patreon/", "modules/JB2A_DnD5e/");
+      }
+      return path;
+    } catch (_) { return p; }
+  }
+
   async _placeMarker(token, type = "current") {
     const isNext = type === "next";
     const propName = isNext ? "_nextMarker" : "_currentMarker";
@@ -134,9 +158,10 @@ export class TurnMarker {
       this[propName] = null;
     }
 
-    const imagePath = isNext
+    let imagePath = isNext
       ? (QolSettings.get("turnMarkerImageNext") || DEFAULT_MARKER_NEXT)
       : (QolSettings.get("turnMarkerImage")     || DEFAULT_MARKER_CURRENT);
+    imagePath = TurnMarker._resolveJb2aVariant(imagePath);
 
     const _load = async (p) => (await foundry.canvas.loadTexture?.(p)) ?? (await PIXI.Assets.load(p));
     let texture;

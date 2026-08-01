@@ -425,6 +425,14 @@ const SPELL_EFFECTS = {
   hold_person: {
     name: "Hold Person",
     icon: "icons/magic/control/debuff-chains-blue.webp",
+    // THE PARALYZED STATUS IS THE MECHANIC (audit fix, 2026-07-27). Without it
+    // the target was never actually paralyzed: the can-act gate reads STATUSES
+    // (Situation.readStatuses), `flags.ace-qol.incapacitated` has ZERO readers
+    // anywhere in the module, condition immunity is skipped entirely when the
+    // statuses array is empty (so Freedom of Movement / immune creatures were
+    // still held), and no token icon showed. A held creature could act, attack
+    // and cast. `statuses` also auto-expands to the incapacitated rider.
+    statuses: ["paralyzed"],
     description: "Target is paralyzed (WIS save negates). Repeat save at end of each turn.",
     changes: [
       { key: "flags.ace-qol.incapacitated", mode: 0, value: "1" },
@@ -442,6 +450,8 @@ const SPELL_EFFECTS = {
   hold_monster: {
     name: "Hold Monster",
     icon: "icons/magic/control/debuff-chains-purple.webp",
+    // See hold_person — the paralyzed STATUS is what actually holds them.
+    statuses: ["paralyzed"],
     description: "Target is paralyzed (WIS save negates). Works on any creature. Repeat save at end of each turn.",
     changes: [
       { key: "flags.ace-qol.incapacitated", mode: 0, value: "1" },
@@ -1597,12 +1607,47 @@ export class ConditionLibrary {
    * @param {number} [options.combatTurn] — current combat turn for duration stamping
    * @returns {ActiveEffect|null} — the created effect, or null if definition not found
    */
+  /**
+   * THE STATUS READER (2026-07-28). Library keys are not status ids — 20 of 20
+   * core entries declare `statusId` and no `statuses` array, which is exactly
+   * why the original immunity guard never ran for any condition. Anything that
+   * needs to know "what status(es) does this library key actually represent"
+   * asks HERE, so the derivation can never drift between call sites again.
+   *
+   * @param   {string} key   library key, e.g. "petrified"
+   * @returns {string[]}     status ids, lowercased; empty if the key is unknown
+   */
+  static statusesFor(key) {
+    const def = ALL_EFFECTS[key];
+    if (!def) return [];
+    const out = (Array.isArray(def.statuses) && def.statuses.length)
+      ? def.statuses.map(s => String(s).toLowerCase())
+      : [];
+    if (def.statusId) {
+      const sid = String(def.statusId).toLowerCase();
+      if (!out.includes(sid)) out.push(sid);
+    }
+    return out;
+  }
+
+  /**
+   * Is `actor` immune to EVERY status this library key represents? Unknown keys
+   * and empty status lists answer false — never block an application on a fact
+   * we couldn't read.
+   */
+  static immuneTo(actor, key) {
+    const statuses = ConditionLibrary.statusesFor(key);
+    if (!statuses.length) return false;
+    return statuses.every(s => CombatContext.conditionImmune(actor, s));
+  }
+
   static async applyEffect(actor, key, options = {}) {
     let def = ALL_EFFECTS[key];
     if (!def) {
       console.warn(`${MODULE_ID} | ConditionLibrary: unknown effect key "${key}"`);
       return null;
     }
+
     // Edition-aware def overrides (e.g. Barkskin's AC floor: 16 in 2014, 17 in
     // 2024). GUARDED — a no-op for the ~all defs that have no `byEdition` block,
     // so it can't affect anything but the handful that opt in. Keyed by
@@ -1649,8 +1694,22 @@ export class ConditionLibrary {
     // Stun, Sleep unconscious, charmed/incapacitated/prone/stunned/dead — landed
     // its flag but NEVER its Foundry status, so the attack pipeline's
     // actor.statuses gate let held/stunned/asleep creatures still act.)
-    const statuses = Array.isArray(def.statuses) ? [...def.statuses] : [];
-    if (def.statusId && !statuses.includes(def.statusId)) statuses.push(def.statusId);
+    // ── DERIVE FROM statusId WHEN NO EXPLICIT LIST (2026-07-28) ──
+    // This used to read ONLY `def.statuses`, leaving it empty for every entry
+    // that declares a single `statusId` instead — which is most of them,
+    // Petrified included. The immunity guard below is gated on
+    // `statuses.length`, so an empty list meant the guard NEVER RAN: ACE
+    // happily applied Petrified to an Earth Elemental that is flatly immune to
+    // it, dnd5e silently refused the status, and the chat card announced a
+    // petrification that never happened. Johnny caught the lie on the card.
+    //
+    // This gap was found once before and patched on TWO entries by hand (Hold
+    // Person, Hold Monster) rather than at the source, so every other entry
+    // kept the hole. Deriving it here fixes the whole class at once.
+    // Derivation lives in ONE place now — ConditionLibrary.statusesFor() — so
+    // this guard, the repeating-save voider, and anything added later can never
+    // disagree about which statuses a library key represents.
+    const statuses = ConditionLibrary.statusesFor(key);
 
     // ── Condition immunity (RAW, both editions) ──
     // Don't apply a condition the target is flatly immune to — undead vs Charmed/
@@ -1701,6 +1760,12 @@ export class ConditionLibrary {
           concentration: def.concentration ?? false,
           specialDuration: options.specialDuration ?? def.specialDuration ?? null,
           description: def.description,
+          // Caller-supplied extras, merged in at CREATION time rather than
+          // patched on afterwards. That ordering matters: a staged condition
+          // (gaze engine) stamps its `repeatingSave` directive here, and if it
+          // were applied as a follow-up update a turn could end in between and
+          // the re-save would be missed entirely.
+          ...(options.extraFlags ?? {}),
         },
       },
     };
@@ -2206,10 +2271,19 @@ export class ConditionLibrary {
                 ability:        String(options.repeatingSave.ability).toLowerCase(),
                 dc:             Number(options.repeatingSave.dc),
                 trigger:        String(options.repeatingSave.trigger),
-                spellName:      options.concentrationOrigin?.spellName ?? null,
+                spellName:      options.repeatingSave.spellName ?? options.concentrationOrigin?.spellName ?? null,
                 castWorldTime:  Number(options.repeatingSave.castWorldTime ?? game.time?.worldTime ?? 0),
                 durationSeconds: Number(options.repeatingSave.durationSeconds) || null,
                 stampedAt:      Date.now(),
+                // Staged-condition escalation (petrifying gaze): a failed re-save
+                // ADVANCES to a worse condition rather than merely persisting, and
+                // skipFirstEndOfTurn grants the RAW one-turn grace before the first
+                // re-save. Passed straight through so the save-engine's ITEM path
+                // gets the same two-stage behavior the gaze engine builds directly.
+                // (This stamp used to hard-drop both fields — that's why the active
+                // Petrifying Gaze item never staged, 2026-07-24.)
+                ...(options.repeatingSave.onFailureApply ? { onFailureApply: String(options.repeatingSave.onFailureApply) } : {}),
+                ...(options.repeatingSave.skipFirstEndOfTurn ? { skipFirstEndOfTurn: true } : {}),
               };
             }
 

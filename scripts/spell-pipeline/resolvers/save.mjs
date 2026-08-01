@@ -19,6 +19,24 @@ import { MODULE_ID } from "../../ace-qol.mjs";
 import { CombatState } from "../../combat-state.mjs";
 import { ConditionLibrary } from "../../condition-library.mjs";
 import { SpellPipeline } from "../pipeline.mjs";
+import { Situation } from "../../situation.mjs";
+import { safeShowForRoll } from "../../dsn-utils.mjs";
+
+// ─── Creature snapshot access (2026-07-28) ───────────────────────────────────
+// Facts about a creature come from the ONE reader, never from actor.system.
+const _aceCreatureCache = new Map();
+function _aceCreature(actor, token = null) {
+  if (!actor) return {};
+  const key = actor.uuid ?? actor.id;
+  const hit = _aceCreatureCache.get(key);
+  if (hit) return hit;
+  let c = {};
+  try { c = Situation.readCreature(actor, token) ?? {}; } catch (_) { c = {}; }
+  _aceCreatureCache.set(key, c);
+  setTimeout(() => _aceCreatureCache.delete(key), 3000);
+  return c;
+}
+
 
 export class SaveResolver {
 
@@ -85,7 +103,7 @@ export class SaveResolver {
     if (!tActor) return;
     SaveResolver._setUserTarget(target.token);
 
-    const cur = Number(tActor.system?.attributes?.hp?.value ?? 0);
+    const cur = Number(_aceCreature(tActor)?.hp?.value ?? 0);
     const thr = Number(entry.instantKill?.hpThreshold ?? 100);
     const modern = CombatState.getActiveRulesVersion(actor) !== "legacy";  // honors ACE gameRulesEdition override
     const accent = "#b71c1c";
@@ -113,7 +131,11 @@ export class SaveResolver {
       try {
         const roll = await new Roll(String(entry.instantKill.overDamage)).evaluate();
         total = roll.total;
-        try { if (game.dice3d) await game.dice3d.showForRoll(roll, game.user, true); } catch (_) {}
+        // Was `await game.dice3d.showForRoll(...)` — a bare await on an external
+        // module's promise, the exact shape that hung the damage pipeline in
+        // v0.4.21 when a renderer broke. Fire-and-forget + registered, so the
+        // card still waits for these dice without being able to hang on them.
+        safeShowForRoll(roll, "instant-kill overdamage");
       } catch (_) {}
       const dtype = entry.instantKill.overDamageType ?? "psychic";
       if (total > 0 && typeof tActor.applyDamage === "function") {
@@ -155,13 +177,13 @@ export class SaveResolver {
     let targets = (canvas.tokens?.placeables ?? []).filter(t => {
       if (!t.actor) return false;
       if (t === source && filter.allowSelf !== true) return false;
-      if (filter.excludeDead !== false && (t.actor.system?.attributes?.hp?.value ?? 1) <= 0) return false;
+      if (filter.excludeDead !== false && (_aceCreature(t.actor)?.hp?.value ?? 1) <= 0) return false;
       // "all" = every creature in range (Ghostly Howl); "enemies"/"allies" gate
       // by disposition relative to the source.
       if (affects === "enemies" && t.document?.disposition === srcDisp) return false;
       if (affects === "allies"  && t.document?.disposition !== srcDisp) return false;
       if (filter.creatureTypeFilter) {
-        const type = String(t.actor.system?.details?.type?.value ?? "").toLowerCase();
+        const type = String(_aceCreature(t.actor)?.type ?? "").toLowerCase();
         if (type !== String(filter.creatureTypeFilter).toLowerCase()) return false;
       }
       return aceWithinFt(source, t, rangeFt);
@@ -218,7 +240,9 @@ export class SaveResolver {
     let damageTypes = [];
     try {
       const { CombatState } = await import("../../combat-state.mjs");
-      damageTypes = CombatState._getItemDamageTypes?.(item) ?? [];
+      // The USED activity only — an item-wide sweep merges every other ability's
+      // damage into this one (see CombatState._getItemDamageTypes).
+      damageTypes = CombatState._getItemDamageTypes?.(item, ctx.activity ?? null) ?? [];
     } catch (_) { /* condition-only ability */ }
 
     const saveAbility = entry.save?.ability ?? "wis";
@@ -349,7 +373,7 @@ export class SaveResolver {
             spellItem,
             castLevel,
             saveAbility: entry.save?.ability ?? "wis",
-            saveDC: SaveResolver._computeSaveDC(casterActor, spellItem, casterActor?.system?.attributes?.spellmod ?? 0),
+            saveDC: SaveResolver._computeSaveDC(casterActor, spellItem, _aceCreature(casterActor)?.spellMod ?? 0),
             halvesDamage: entry.save?.halfOnPass === true,
           });
         }
@@ -409,13 +433,14 @@ export class SaveResolver {
         }
 
         // Roll save at end of target's turn
-        const abilityMod = targetActor.system?.abilities?.[saveAbility]?.mod ?? 0;
-        const saveBonus = Number(targetActor.system?.abilities?.[saveAbility]?.bonuses?.save ?? 0);
-        const profBonus = targetActor.system?.attributes?.prof ?? 0;
-        const isProficient = targetActor.system?.abilities?.[saveAbility]?.proficient > 0;
-        const profPart = isProficient ? ` + ${profBonus}` : "";
-        const bonusPart = saveBonus ? ` + ${saveBonus}` : "";
-        const formula = `1d20 + ${abilityMod}${profPart}${bonusPart}`;
+        // ── ONE save modifier, not a fourth hand-rolled one (2026-07-28) ──
+        // This rebuilt the save from scratch — ability mod, then bonuses.save,
+        // then proficiency IF proficient — a fourth independent implementation
+        // of a number the creature snapshot already holds, free to disagree
+        // with the other three. The snapshot's `save` is what dnd5e itself
+        // computes and what the character sheet displays.
+        const totalSaveMod = Number(_aceCreature(targetActor)?.abilities?.[saveAbility]?.save ?? 0) || 0;
+        const formula = `1d20 ${totalSaveMod >= 0 ? "+" : "-"} ${Math.abs(totalSaveMod)}`;
         const roll = await new Roll(formula).evaluate();
         const total = roll.total;
         const passed = total >= saveDC;
@@ -500,11 +525,11 @@ export class SaveResolver {
     if (Number.isFinite(activitySaveDC) && activitySaveDC > 0) return activitySaveDC;
 
     // Fall back to actor's spell DC
-    const spellDC = actor?.system?.attributes?.spelldc;
+    const spellDC = _aceCreature(actor)?.spellDC;
     if (Number.isFinite(spellDC) && spellDC > 0) return spellDC;
 
     // Last resort: 8 + spellMod + prof
-    const prof = actor?.system?.attributes?.prof ?? 2;
+    const prof = _aceCreature(actor)?.prof ?? 2;
     return 8 + (spellMod ?? 0) + prof;
   }
 }

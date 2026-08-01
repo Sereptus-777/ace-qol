@@ -18,6 +18,25 @@
 
 import { MODULE_ID } from "../ace-qol.mjs";
 import { aceDistanceFt } from "../geometry-utils.mjs";
+import { Situation } from "../situation.mjs";
+
+// ─── Creature snapshot access (2026-07-28) ───────────────────────────────────
+// Facts about a creature come from the ONE reader, never from actor.system —
+// the audit found every pipeline reaching into raw data and getting shapes
+// wrong. Cached briefly; expired fast because state changes mid-fight.
+const _aceCreatureCache = new Map();
+function _aceCreature(actor, token = null) {
+  if (!actor) return {};
+  const key = actor.uuid ?? actor.id;
+  const hit = _aceCreatureCache.get(key);
+  if (hit) return hit;
+  let c = {};
+  try { c = Situation.readCreature(actor, token) ?? {}; } catch (_) { c = {}; }
+  _aceCreatureCache.set(key, c);
+  setTimeout(() => _aceCreatureCache.delete(key), 3000);
+  return c;
+}
+
 
 export class UnifiedSpellPicker {
 
@@ -56,9 +75,7 @@ export class UnifiedSpellPicker {
     }
 
     // Compute N for shapes that need it
-    const charLevel = actor.system?.details?.level
-      ?? actor.system?.details?.spellLevel
-      ?? actor.system?.attributes?.spell?.level
+    const charLevel = _aceCreature(actor)?.level
       ?? 1;
     const N = entry.countResolver?.(castLevel, charLevel) ?? 1;
 
@@ -124,12 +141,12 @@ export class UnifiedSpellPicker {
       }
 
       if (excludeDead) {
-        const hp = actor.system?.attributes?.hp?.value ?? 0;
+        const hp = _aceCreature(actor)?.hp?.value ?? 0;
         if (hp <= 0) continue;
       }
 
       if (creatureFilter) {
-        const type = String(actor.system?.details?.type?.value ?? "").toLowerCase();
+        const type = String(_aceCreature(actor)?.type ?? "").toLowerCase();
         if (type !== creatureFilter.toLowerCase()) continue;
       }
 
@@ -144,9 +161,9 @@ export class UnifiedSpellPicker {
         token: tok,
         name: tok.name ?? actor.name,
         img: tok.document?.texture?.src ?? actor.img,
-        ac: actor.system?.attributes?.ac?.value ?? null,
-        hp: actor.system?.attributes?.hp?.value ?? 0,
-        maxHP: actor.system?.attributes?.hp?.max ?? actor.system?.attributes?.hp?.value ?? 0,
+        ac: _aceCreature(actor)?.ac ?? null,
+        hp: _aceCreature(actor)?.hp?.value ?? 0,
+        maxHP: _aceCreature(actor)?.hp?.max ?? _aceCreature(actor)?.hp?.value ?? 0,
         distFt,
         inRange,
         isSelf,

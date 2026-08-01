@@ -25,6 +25,7 @@ import { InvisibilityBreaker } from "./invisibility-breaker.mjs";
 import { AceFX } from "./ace-fx.mjs";
 import { AttackAbilityResolver } from "./attack-ability-resolver.mjs";
 import { pickHiddenReasonLine, showGmHiddenReasonNotice } from "./hidden-reason-notice.mjs";
+import { safeShowForRoll } from "./dsn-utils.mjs";  // registers the animation so cards can wait for THESE dice
 import { RulesBrain } from "./rules/rules-brain.mjs";
 import { SpaceEffects } from "./rules/space-effects.mjs";
 import { SelfTest } from "./rules/self-test.mjs";
@@ -39,9 +40,11 @@ import { BloodiedEngine }       from "./bloodied-engine.mjs";
 import { FaerieFireFX }         from "./faerie-fire-fx.mjs";
 import { VisibilityEngine }     from "./visibility-engine.mjs";
 import { ConditionLibrary }     from "./condition-library.mjs";
+import { ConditionSheetIntegration } from "./condition-sheet-integration.mjs";
 import { SpellTargetPicker }    from "./spell-target-picker.mjs";
 import { DescriptionParser }    from "./description-parser.mjs";
 import { RepeatingSaveEngine }  from "./repeating-save-engine.mjs";
+import { GazeEngine }           from "./gaze-engine.mjs";
 import { BreakFreeEngine }      from "./break-free-engine.mjs";
 import { RestrainedMovement }   from "./restrained-movement.mjs";
 import { TransformationEngine } from "./transformation-engine.mjs";
@@ -66,7 +69,7 @@ import { MergeCard }            from "./merge-card.mjs";
 import { LootEngine }           from "./loot-engine.mjs";
 import { DeathPipeline }        from "./death-pipeline.mjs";
 import * as Diagnostics         from "./diagnostics.mjs";
-import { showCenterToast, showAdvantagePrompt, pendingAttackChoices }
+import { showCenterToast, showAdvantagePrompt, promptAttackChoice, pendingAttackChoices }
   from "./attack-prompt.mjs";
 import { EffectsPanel } from "./effects-panel.mjs";
 import { XpEngine } from "./xp-engine.mjs";
@@ -366,6 +369,32 @@ Hooks.once("init", () => {
     console.log(`${MODULE_ID} | Module disabled — skipping init subsystems.`);
     return;
   }
+
+  // ── Usage cards (2026-07-27) ──
+  // dnd5e's item-usage card is never CREATED (not hidden — never created), and
+  // ACE posts its own card for every activity ACE doesn't already card.
+  // Registered at INIT, in its own module, deliberately NOT inside the ready
+  // block: card suppression must not depend on ~3900 lines of unrelated startup
+  // work completing without a throw.
+  import("./usage-card.mjs")
+    .then(({ UsageCard }) => UsageCard.init())
+    .catch(err => console.error(`${MODULE_ID} | Usage Card init failed:`, err));
+
+  // ── "Player hasn't rolled" GM nudge (2026-07-28) ──
+  // ONE timer + card + button for every path that waits on a human. Registered
+  // at init so it's live before any save can be cast.
+  import("./pc-save-nudge.mjs")
+    .then(({ PcSaveNudge }) => {
+      PcSaveNudge.init();
+      game.aceQol = game.aceQol ?? {};
+      game.aceQol.saveNudge = PcSaveNudge;
+    })
+    .catch(err => console.error(`${MODULE_ID} | PC save nudge init failed:`, err));
+
+  // ── Storm flourish (2026-07-27) — rules-driven, not item-specific ──
+  import("./storm-visuals.mjs")
+    .then(({ StormVisuals }) => StormVisuals.init())
+    .catch(err => console.error(`${MODULE_ID} | Storm Visuals init failed:`, err));
 
   // Initialize Extended Active Effects engine (must be early — before effects process)
   try {
@@ -1319,6 +1348,16 @@ Hooks.once("ready", () => {
     console.error(`${MODULE_ID} | Condition RAW Hooks init failed:`, err);
   }
 
+  // Sheet integration — teach the dnd5e condition pips to recognize ACE's
+  // labeled conditions: light the pip when the creature has the status, and let
+  // a click remove ACE's effect (clean toggle-off) instead of flickering. Self-
+  // schedules its own ready-time patch; safe to call here. (2026-07-25)
+  try {
+    ConditionSheetIntegration.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Condition Sheet Integration init failed:`, err);
+  }
+
   // Shared combat engine — the single brain both weapons + spells funnel through
   // for can-act gates, advantage/disadvantage, and defense reads. (2026-06-25)
   try {
@@ -1637,6 +1676,77 @@ Hooks.once("ready", () => {
   // as proof-of-concept; other spells fall through to dnd5e default flow.
   // Exposed on game.aceQol.SpellPipeline so spell-auto-damage can check
   // pipeline ownership before its own handlers fire (avoids double-dispatch).
+  // Species tag — permanent creature identity stamped at drop; engines read
+  // this (via speciesOf) instead of trusting names. (Johnny 2026-07-26.)
+  import("./species-tag.mjs").then(({ SpeciesTag }) => {
+    SpeciesTag.init();
+    game.aceQol = game.aceQol ?? {};
+    game.aceQol.speciesOf = (t) => SpeciesTag.speciesOf(t);
+    game.aceQol.SpeciesTag = SpeciesTag;
+  }).catch(err => console.error(`${MODULE_ID} | Species Tag init failed:`, err));
+
+  // ── Chat log open on load (Johnny 2026-07-27) ──────────────────────────
+  // Foundry restores whatever sidebar state this client last had, so a
+  // collapsed sidebar or a different active tab persists across reloads and
+  // the chat log "always comes out closed". Put it back on Chat, expanded.
+  // Client-scoped setting — each person decides for their own screen.
+  try {
+    if (QolSettings.get("chatOpenOnLoad") !== false) {
+      setTimeout(() => {
+        try {
+          if (ui.sidebar?.expanded === false) ui.sidebar.expand?.();
+          ui.sidebar?.activateTab?.("chat");
+          ui.chat?.scrollBottom?.();
+        } catch (err) { console.debug(`${MODULE_ID} | chat-open-on-load skipped:`, err?.message ?? err); }
+      }, 600);   // after Foundry has restored its own sidebar state
+    }
+  } catch (_) { /* setting not registered yet — non-fatal */ }
+
+  // ACE owns the consumption dialog too — dnd5e's "Consume Item Use?" replaced
+  // by our own prompt (cancel → prompt → re-fire). (Johnny 2026-07-27.)
+  import("./activity-use-prompt.mjs").then(({ ActivityUsePrompt }) => {
+    ActivityUsePrompt.init();
+  }).catch(err => console.error(`${MODULE_ID} | Activity Use Prompt init failed:`, err));
+
+  // Flight visuals — whirlwind + hovering shadow + real elevation for ANY
+  // flying creature (rebuilt in-house after the free Flying Tokens module
+  // vanished with the same wipe that took Sequencer/JB2A). (Johnny 2026-07-27.)
+  import("./flight-visuals.mjs").then(({ FlightVisuals }) => {
+    FlightVisuals.init();
+    game.aceQol = game.aceQol ?? {};
+    game.aceQol.flight = FlightVisuals;
+  }).catch(err => console.error(`${MODULE_ID} | Flight Visuals init failed:`, err));
+
+  // Rules watchdog — declared RAW invariants checked on turn change + condition
+  // churn; a violation = GM toast + console line. Reports, never repairs.
+  // (Johnny's idea, 2026-07-27: "can't it give me a toast if it notices?")
+  import("./rules-watchdog.mjs").then(({ RulesWatchdog }) => {
+    RulesWatchdog.init();
+    game.aceQol = game.aceQol ?? {};
+    game.aceQol.watchdog = RulesWatchdog;
+  }).catch(err => console.error(`${MODULE_ID} | Rules Watchdog init failed:`, err));
+
+  // GM off-switch for spell spaces (2026-07-28). A timed, non-concentration
+  // space had no end trigger, so its region outlived the spell and overlapping
+  // regions MULTIPLIED movement cost — a 15-ft walk billed as hundreds of feet.
+  // Spaces now expire on their own; this is the manual override for when the GM
+  // just wants the board clear.
+  //   game.aceQol.clearSpaces()              → current scene
+  //   game.aceQol.clearSpaces({ all: true }) → every scene
+  // Attached SYNCHRONOUSLY on purpose. SpaceEffects is already a static import
+  // at the top of this file, so routing it through a dynamic import() added an
+  // async hop for no benefit and left a window where game.aceQol.clearSpaces
+  // was still undefined. A GM's panic button must exist the moment the API
+  // does, not one microtask later.
+  try {
+    game.aceQol = game.aceQol ?? {};
+    game.aceQol.clearSpaces           = (opts)  => SpaceEffects.clearSpaces(opts);
+    game.aceQol.sweepExpiredSpaces    = ()      => SpaceEffects.sweepExpired();
+    game.aceQol.clearMovementHistory  = (token) => SpaceEffects.clearMovementHistory(token);
+  } catch (err) {
+    console.error(`${MODULE_ID} | clearSpaces wiring failed:`, err);
+  }
+
   try {
     SpellPipeline.initialize();
     game.aceQol = game.aceQol ?? {};
@@ -2405,7 +2515,7 @@ Hooks.once("ready", () => {
           // card — the styled button card below already shows the result inline, so
           // toMessage() was just an ugly duplicate (Johnny 2026-07-14). Fire-and-
           // forget + broadcast; no-ops cleanly if DSN isn't installed.
-          try { game.dice3d?.showForRoll?.(roll, game.user, true); } catch (_) { /* DSN optional */ }
+          safeShowForRoll(roll, "concentration save");
           if (!passed) {
             try { await effect.delete(); } catch (_) { /* non-fatal */ }
             btn.textContent = `BROKEN — ${total} vs DC ${dc}`;
@@ -2690,6 +2800,14 @@ Hooks.once("ready", () => {
   // end-of-turn re-saves for Hold Person, Banishment, Tasha's, etc.
   try {
     RepeatingSaveEngine.init();
+    // PASSIVE gaze engine DISABLED (2026-07-24). It auto-fired the petrifying
+    // gaze on EVERY creature that started its turn near the basilisk, which
+    // collided with the ACTIVE "cast Petrifying Gaze" item Johnny actually uses
+    // — an untargeted second Ogre got gazed just for standing nearby. The
+    // active-item path (save-engine staged petrification) is the single source
+    // of truth now. Re-enable + gate behind a GM setting if we ever want the
+    // RAW auto-gaze back.
+    // GazeEngine.init();
   } catch (err) {
     console.error(`${MODULE_ID} | Repeating Save Engine init failed:`, err);
   }
@@ -3507,17 +3625,35 @@ Hooks.once("ready", () => {
       setTimeout(() => _deathProcessed.delete(dedupeKey), 2000);
 
       // ── Determine killer from recent chat messages ──
+      // ⚠️ NOT A FIVE-MESSAGE WINDOW (2026-07-29, found by an outside review).
+      // This walked back exactly 5 chat messages looking for the last player
+      // roll. A killing blow now posts an attack card, a damage card, and often
+      // a save or nudge card — so on a busy round the actual killer falls out
+      // of the window and the kill is credited to the wrong player, or to
+      // nobody. That feeds loot, XP and deed logging, so it's wrong twice.
+      //
+      // Same disease as the save card's 30-message window. My own sweep for it
+      // missed this one because the pattern here uses optional chaining and my
+      // search required plain dots — worth remembering: grep the SHAPE, not the
+      // punctuation.
+      //
+      // Walk back until we find a player roll or run out of plausible history.
+      // Bounded (a kill is attributed by something recent, never by a message
+      // from an hour ago) but the bound is TIME, which is what actually makes a
+      // roll relevant to this death — not a raw message count.
       let killerName = "";
       try {
-        const recentMsgs = game.messages?.contents?.slice(-5) ?? [];
-        for (const msg of recentMsgs.reverse()) {
-          if (msg.rolls?.length && msg.speaker?.alias) {
-            const speakerActor = game.actors?.get(msg.speaker?.actor);
-            if (speakerActor?.hasPlayerOwner) {
-              killerName = msg.speaker.alias;
-              break;
-            }
-          }
+        const all = game.messages?.contents ?? [];
+        const NOW = all.at?.(-1)?.timestamp ?? Number.MAX_SAFE_INTEGER;
+        const WINDOW_MS = 30_000;   // a kill is credited to the last ~30s of rolling
+        for (let i = all.length - 1; i >= 0; i--) {
+          const msg = all[i];
+          if (!msg) continue;
+          // Stop once we're clearly out of this exchange.
+          if (Number.isFinite(msg.timestamp) && (NOW - msg.timestamp) > WINDOW_MS) break;
+          if (!msg.rolls?.length || !msg.speaker?.alias) continue;
+          const speakerActor = game.actors?.get(msg.speaker?.actor);
+          if (speakerActor?.hasPlayerOwner) { killerName = msg.speaker.alias; break; }
         }
       } catch (err) { console.debug("ace-qol | NPC death killer-search best-effort:", err); }
 
@@ -4250,6 +4386,29 @@ Hooks.once("ready", () => {
         }
         return;
       }
+
+      // ── Re-save roll — the GM is asking THIS player (the owner) to roll their
+      //    OWN end-of-turn save for their PC / summon / pet. Roll on the owner's
+      //    client (dnd5e's native dialog + their dice), send the total back so the
+      //    GM engine resolves. (Owner rolls their own dice — Johnny 2026-07-25.)
+      if (payload.action === "showReSaveRoll") {
+        try {
+          const info = await RepeatingSaveEngine.playerRollReSave(payload);
+          game.socket.emit(SOCKET_NAME, { action: "reSaveRollResult", requestId: payload.requestId, info });
+        } catch (err) {
+          console.error(`${MODULE_ID} | showReSaveRoll handler failed:`, err);
+          game.socket.emit(SOCKET_NAME, { action: "reSaveRollResult", requestId: payload.requestId, info: null });
+        }
+        return;
+      }
+
+      // ── The GM rolled this save instead (ROLL FOR THEM) — retire my prompt ──
+      // Without this the player's dialog stayed open and they could roll a
+      // SECOND time into an already-resolved request (live, 2026-07-27).
+      if (payload.action === "closeReSavePrompt") {
+        RepeatingSaveEngine.closePlayerPrompt(payload.requestId);
+        return;
+      }
     });
 
     console.debug(`${MODULE_ID} | Player-side attack bridge registered`);
@@ -4317,6 +4476,14 @@ Hooks.once("ready", () => {
       if (payload.action === "spellPickerChoice") {
         console.log(`${MODULE_ID} | GM received spellPickerChoice (requestId=${payload.requestId}, targets=${Array.isArray(payload.tokenIds) ? payload.tokenIds.length : "cancelled"})`);
         saveEngine?.resolveSpellPickerChoice?.(payload.requestId, payload.tokenIds);
+        return;
+      }
+
+      // ── Player rolled their OWN end-of-turn re-save — hand the total back to
+      //    the repeating-save engine so it resolves (pass → ends, fail → persists
+      //    or escalates) and posts the outcome card. (2026-07-25)
+      if (payload.action === "reSaveRollResult") {
+        RepeatingSaveEngine.resolveReSaveRequest(payload.requestId, payload.info);
         return;
       }
 
@@ -4579,7 +4746,18 @@ Hooks.once("ready", () => {
   }
 
   // Expose module API
-  game.aceQol = {
+  //
+  // ⚠️ MERGE, DO NOT REPLACE (2026-07-28). This used to be a bare
+  // `game.aceQol = { … }` object literal, ~3,000 lines after a dozen other
+  // subsystems had already hung their own entry points off game.aceQol
+  // (watchdog, flight, speciesOf, clearSpaces, holy symbol, loot, item
+  // validator…). Every one of those was silently ERASED the moment this line
+  // ran, and the only symptom was "game.aceQol.whatever is not a function" with
+  // no error anywhere — two modules had already grown comments describing the
+  // workaround instead of fixing the cause. Object.assign onto the existing
+  // object keeps earlier registrations alive; keys defined here still win, so
+  // nothing that worked before changes.
+  game.aceQol = Object.assign(game.aceQol ?? {}, {
     VERSION: 1,
     MODULE_ID,
     auditItems,   // read-only item sanity audit — game.aceQol.auditItems()
@@ -4717,7 +4895,7 @@ Hooks.once("ready", () => {
 
     /** Diagnostics — run from console: game.aceQol.diagnostics.runAll() */
     diagnostics: Diagnostics,
-  };
+  });
 
   // Register APIs that need game.aceQol to exist
   try { CoverEngine.registerAPI(); } catch (err) { console.debug("ace-qol | CoverEngine.registerAPI non-critical:", err); }
@@ -4856,20 +5034,14 @@ Hooks.once("ready", () => {
   // card on anything" true in V13.
   // ──────────────────────────────────────────────────────────────────────────
 
-  // (a) Hide EVERY dnd5e system card — attacks, spells, item uses, all of it.
-  const _aceHideSystemCard = (message, html) => {
-    try {
-      if (!message?.flags?.dnd5e) return;               // only dnd5e system cards
-      if (message.flags?.[MODULE_ID]?.type) return;      // exempt only ACE's OWN created cards (they carry a .type); a dnd5e card we merely state-tagged (counterspelled/applied/…) still hides. dnd5e cards never carry an ace-qol .type. (0.7.270)
-      if (QolSettings.get("suppressSystemCards") === false) return;
-      const el = html instanceof HTMLElement ? html : html?.[0] ?? html;
-      if (!el || el.dataset?.aceHidden) return;
-      el.style.display = "none";
-      el.dataset.aceHidden = "1";
-    } catch (_) { /* non-fatal */ }
-  };
-  Hooks.on("renderChatMessage", _aceHideSystemCard);
-  Hooks.on("renderChatMessageHTML", _aceHideSystemCard);
+  // (a) MOVED OUT (2026-07-27) — "hide EVERY dnd5e system card" now lives in
+  // scripts/usage-card.mjs and registers at INIT. It sat here, ~3900 lines deep
+  // inside this single ready callback, which meant any throw earlier in the
+  // block silently took card suppression down with it and dnd5e chrome leaked
+  // into chat with no error to point at. Suppression must not depend on the
+  // rest of startup succeeding. dnd5e's own usage card is additionally stopped
+  // at CREATION there (dnd5e.preCreateUsageMessage → create:false), so it never
+  // becomes a document at all — no hidden ghost row left behind.
 
   // (b) Hide third-party status-effect spam (Bloodied/Concentrating "Applied to…").
   const _aceHideStatusCard = (message, html) => {
@@ -4943,13 +5115,101 @@ Hooks.once("ready", () => {
       const _origCreateRiders = AEClass.prototype.createRiderConditions;
       AEClass.prototype.createRiderConditions = async function (...args) {
         try { if (this?.flags?.[MODULE_ID]?.conditionKey) return []; } catch (_) { /* fall through */ }
-        return _origCreateRiders.apply(this, args);
+        // ── Collision-proof the dnd5e rider spawn (2026-07-25) ──
+        // dnd5e's createRiderConditions creates its static-ID rider effects with
+        // { keepId:true }, guarding only against duplicates it can see in the LIVE
+        // effects map (this.parent.effects.get(...)). On an UNLINKED token the
+        // synthetic actor's live map can drift out of sync with the stored
+        // ActorDelta: a `dnd5eincapacitat` record can sit in the delta yet be
+        // absent from the live map, so the guard misses it and the keepId create
+        // throws — UNCAUGHT — "The _id [dnd5eincapacitat] already exists within the
+        // parent collection: ActorDelta … effects". That half-applies the
+        // condition, so it never renders on the sheet and can't be toggled. (A
+        // race between two concurrent rider spawns for the same status fails the
+        // same way.) The rider ALREADY existing IS the intended end state, so we
+        // swallow that specific collision and re-mirror the delta so the record
+        // becomes live/consistent again — everything else still throws normally.
+        try {
+          return await _origCreateRiders.apply(this, args);
+        } catch (err) {
+          if (!/already exists/i.test(err?.message ?? "")) throw err;
+          console.warn(`${MODULE_ID} | rider condition already present — swallowed a keepId ActorDelta collision and re-syncing (non-fatal):`, err?.message ?? err);
+          const _actor = this?.parent ?? null;
+          // Deferred so we never re-enter the in-flight create workflow.
+          setTimeout(() => {
+            try {
+              _actor?.reset?.();
+              if (_actor?.sheet?.rendered) _actor.sheet.render(false);
+            } catch (_) { /* best-effort re-sync */ }
+          }, 0);
+          return [];
+        }
       };
       AEClass.prototype._aceRiderPatched = true;
       console.log(`${MODULE_ID} | createRiderConditions patched — ACE conditions own their statuses`);
     }
   } catch (err) {
     console.warn(`${MODULE_ID} | createRiderConditions patch failed (non-fatal):`, err);
+  }
+
+  // ── Collision-proof the SECOND keepId door: Actor#toggleStatusEffect ──
+  // (2026-07-27, Kasimir live-fire.) toggleStatusEffect creates dnd5e's
+  // static-ID condition effects with keepId, guarded only by the LIVE effects
+  // map — the exact same desync class as the rider spawn hardened above, just
+  // through a different entrance (this one hit a LINKED actor). Same cure:
+  // the record already existing IS the intended end state, so swallow that
+  // specific collision, re-mirror the actor, and continue. Anything else
+  // still throws normally.
+  try {
+    const ActorCls = CONFIG.Actor?.documentClass;
+    if (ActorCls?.prototype?.toggleStatusEffect && !ActorCls.prototype._aceToggleGuard) {
+      const _origToggle = ActorCls.prototype.toggleStatusEffect;
+      ActorCls.prototype.toggleStatusEffect = async function (...args) {
+        // ── PRE-FLIGHT desync repair (root cure, 2026-07-27) ──
+        // Foundry's toggleStatusEffect looks for the status ONLY in the LIVE
+        // effects map (`this.effects.get(status._id)`) and, when it doesn't
+        // find it, creates with { keepId: true }. If that record exists in the
+        // actor's STORED data but has drifted out of the live map, the guard
+        // misses it and the fixed-ID create collides — the exact
+        // "dnd5eincapacitat already exists" failure, here on a LINKED actor.
+        // Re-mirror BEFORE delegating so the built-in guard can see it: the
+        // collision never happens instead of being caught after the fact.
+        try {
+          const statusId = args?.[0];
+          const st = CONFIG.statusEffects?.find(e => e.id === statusId);
+          const sid = st?._id;
+          if (sid && !this.effects?.get?.(sid)
+              && (this._source?.effects ?? []).some(e => e?._id === sid)) {
+            console.warn(`${MODULE_ID} | status "${statusId}" is desynced on ${this.name} (stored but not live) — re-syncing before toggle`);
+            this.reset?.();
+          }
+        } catch (_) { /* pre-flight is best-effort */ }
+
+        try {
+          return await _origToggle.apply(this, args);
+        } catch (err) {
+          if (!/already exists/i.test(err?.message ?? "")) throw err;
+          // Name the CALLER so a recurring trigger can be root-caused instead of
+          // just netted. (Our own frames are stripped — the first foreign frame
+          // is whoever asked for the toggle.)
+          const _who = (new Error().stack ?? "").split("\n")
+            .filter(l => !/ace-qol\.mjs|toggleStatusEffect/.test(l)).slice(1, 4).join(" ← ").trim();
+          console.warn(`${MODULE_ID} | toggleStatusEffect keepId collision swallowed (status already present) — re-syncing ${this?.name ?? "actor"}. Caller: ${_who || "unknown"} |`, err?.message ?? err);
+          const _actor = this;
+          setTimeout(() => {
+            try {
+              _actor?.reset?.();
+              if (_actor?.sheet?.rendered) _actor.sheet.render(false);
+            } catch (_) { /* best-effort re-sync */ }
+          }, 0);
+          return undefined;
+        }
+      };
+      ActorCls.prototype._aceToggleGuard = true;
+      console.log(`${MODULE_ID} | toggleStatusEffect collision guard active`);
+    }
+  } catch (err) {
+    console.warn(`${MODULE_ID} | toggleStatusEffect guard failed (non-fatal):`, err);
   }
 
   // ── Suppress system's ActivityChoiceDialog for ALL weapon uses ──
@@ -4974,12 +5234,38 @@ Hooks.once("ready", () => {
     // pipeline. Utility/non-attack feats stay out — no attack activity.
     const _aceUseHandlesAttack = (it) => {
       try {
+        const acts = it.system?.activities;
+        const list = acts ? (typeof acts.values === "function" ? [...acts.values()] : Object.values(acts)) : [];
+
+        // ── A genuine CHOICE is not ours to make (Johnny 2026-07-27) ────────
+        // If the item offers an attack AND something else (the Stormforger
+        // staff: melee swing OR cast the spell; wands, artefact weapons), we
+        // must NOT assume "attack". This branch demands a target, RANGE-CHECKS
+        // it, prompts, then fast-forwards past dnd5e's activity dialog — so a
+        // user who only wanted to cast got "out of reach" and never saw a
+        // choice. Step back: let dnd5e ask which activity, and if they pick the
+        // attack it still lands in our attack pipeline (the preRollAttack choke
+        // point does the range check, ACE prompt and advantage the same as
+        // ever). Items whose activities are ALL attacks (multiple attack modes)
+        // stay ours — there's no ambiguity to resolve.
+        const hasAttack    = list.some(a => a?.type === "attack");
+        const hasNonAttack = list.some(a => a && a.type !== "attack");
+
+        // A weapon-type item with activities but NO attack among them is not an
+        // attack action at all — it's a magic implement that happens to be a
+        // quarterstaff. The Stormforger staff is exactly this: its four
+        // activities are two saves and two utilities, and RAW even says "this
+        // staff is not meant for melee attacks". Claiming it here ran the melee
+        // gauntlet (require target → RANGE CHECK → "out of reach") and then
+        // fast-forwarded into the FIRST activity, so Johnny got Tornado
+        // Takedown every time with no choice offered. (2026-07-27.)
+        if (list.length && !hasAttack) return false;
+
+        // Offers an attack AND something else → the choice is the user's.
+        if (hasAttack && hasNonAttack) return false;
+
         if (it.type === "weapon") return true;
-        if (it.type === "feat") {
-          const acts = it.system?.activities;
-          const list = acts ? (typeof acts.values === "function" ? [...acts.values()] : Object.values(acts)) : [];
-          return list.some(a => a?.type === "attack");
-        }
+        if (it.type === "feat")   return hasAttack;
       } catch (_) {}
       return false;
     };
@@ -4992,7 +5278,11 @@ Hooks.once("ready", () => {
         const isOA = OA_IN_FLIGHT.has(this.actor?.id);
 
         // ── Block attacks from incapacitated attackers (BEFORE the prompt) ───
-        const atkStatuses = this.actor.statuses ?? new Set();
+        // THE status reader (converged 2026-07-27). Read via CombatContext —
+        // situation.mjs imports MODULE_ID from THIS file, so a static import of
+        // Situation here would be a cycle; CombatContext._statuses delegates to
+        // the same reader, so the gate still sees exactly what the engines see.
+        const atkStatuses = CombatContext._statuses(this.actor);
         const blockingConditions = ["paralyzed", "stunned", "unconscious", "incapacitated", "petrified"];
         const blocker = blockingConditions.find(c => atkStatuses.has(c));
         if (blocker) {
@@ -5036,72 +5326,12 @@ Hooks.once("ready", () => {
         }
 
         // ── Show the advantage prompt (if enabled) ───────────────────────────
+        // Assessment + reasons + hidden-reason handling all live in the shared
+        // promptAttackChoice helper (attack-prompt.mjs) — ONE pause for weapons,
+        // spell attacks, and every future attack shape. (2026-07-26.)
         if (!isOA && QolSettings.get("advantagePrompt") !== false) {
           const target = game.user.targets.first();
-          let suggested = "normal";
-          let reasons   = [];
-          try {
-            const cs = CombatState.assess(this.actor, target, this);
-            suggested = cs?.finalRollMode || "normal";
-            // SHOW THE WORK, always (2026-07-10): a "normal" produced by
-            // advantage and disadvantage CANCELING is a rules outcome the
-            // table deserves to see — "no modifiers detected" when the engine
-            // weighed four of them reads as a miss (the goblin-in-darkness
-            // confusion). Winner shows its sources; a cancel shows BOTH sides.
-            const advS = cs?.advantageSources ?? [], disS = cs?.disadvantageSources ?? [];
-            const allNotes = cs?.situationalNotes ?? [];
-            // Situational notes explain a CANCELLED rule. Some reveal the
-            // TARGET's hidden senses (a monster's truesight). HARD RULE, no
-            // setting: the GM always sees them; players NEVER do — they get a
-            // mystery line and the GM gets the pop-up + record card. Notes about
-            // the player's OWN senses (gmOnly:false) still show to them.
-            const revealNotes = game.user.isGM;
-            const visibleNotes = allNotes.filter(n => revealNotes || !n.gmOnly);
-            // gmOnly notes hidden from THIS (player) viewer = the secret the GM
-            // needs flagged, and the player gets a vague mystery line instead.
-            const suppressed = revealNotes ? [] : allNotes.filter(n => n.gmOnly);
-
-            if (suggested === "advantage")         reasons = advS;
-            else if (suggested === "disadvantage") reasons = disS;
-            else if (advS.length || disS.length)   reasons = [...advS.map(s => ({ reason: `ADV: ${s.reason}` })),
-                                                              ...disS.map(s => ({ reason: `DIS: ${s.reason}` })),
-                                                              { reason: "→ they cancel: straight roll (RAW)" }];
-            else if (visibleNotes.length)          reasons = visibleNotes.map(n => ({ reason: n.text }));
-            // No adv, no dis, nothing visible — but a reason WAS hidden. Give the
-            // player a rotating mystery line instead of "no modifiers detected".
-            else if (suppressed.length)            reasons = [{ reason: pickHiddenReasonLine() }];
-            else                                   reasons = [];
-
-            // ── GM heads-up (three gates): a PLAYER rolled AND a reason was
-            // actually hidden. The GM-roller path already sees it inline above,
-            // so this only fires client-side for a player. De-dupe is GM-side.
-            if (suppressed.length && !game.user.isGM) {
-              try {
-                game.socket.emit(SOCKET_NAME, {
-                  action:       "gmHiddenReason",
-                  attackerName: this.actor.token?.name ?? this.actor.name ?? "Attacker",
-                  targetName:   target.actor?.name ?? target.name ?? "Target",
-                  realReasons:  suppressed.map(n => n.text),
-                  playerLine:   reasons[0]?.reason ?? "",
-                  attackerId:   this.actor.id,
-                  targetId:     target.actor?.id ?? target.id ?? null,
-                  combatId:     game.combat?.id ?? null,
-                });
-              } catch (e) { console.warn(`${MODULE_ID} | gmHiddenReason emit failed:`, e); }
-            }
-          } catch (err) {
-            console.warn(`${MODULE_ID} | CombatState.assess failed in prompt:`, err);
-          }
-
-          const choice = await showAdvantagePrompt({
-            attacker:     this.actor.token?.name ?? this.actor.name ?? "Attacker",
-            target:       target.actor?.name ?? target.name ?? "Target",
-            suggested,
-            reasons,
-            attackerIsPC: !!this.actor?.hasPlayerOwner,
-            targetIsPC:   !!target.actor?.hasPlayerOwner,
-          });
-
+          const choice = await promptAttackChoice(this.actor, target, this);
           if (!choice) return null; // Esc cancels the attack
           pendingAttackChoices.set(this.actor.id, choice);
         }
@@ -5149,8 +5379,13 @@ Hooks.once("ready", () => {
           if (!el2?.isConnected) return;   // dialog resolved/closed — first click landed
           const acts = item?.system?.activities;
           if (acts && el2.querySelector) {
-            for (const a of acts) {
-              if (a.type === "attack") {
+            // Same rule as the first pass: a genuine multi-activity item keeps
+            // its choice — the retry must not steal what the first pass spared.
+            const all2 = [...acts];
+            const offered2 = all2.filter(a => !!el2.querySelector(`button[data-activity-id="${a.id}"]`));
+            if (offered2.length <= 1) {
+              for (const a of all2) {
+                if (a.type !== "attack") continue;
                 const btn2 = el2.querySelector(`button[data-activity-id="${a.id}"]`);
                 if (btn2) {
                   console.log(`${MODULE_ID} | Stranded ActivityChoiceDialog — retrying Attack auto-click: ${app.title}`);
@@ -5180,18 +5415,86 @@ Hooks.once("ready", () => {
       (el?.closest?.(".activity-choice") ?? el)?.classList?.add?.("ace-choice-show");
     };
 
-    // Try to find the Attack activity on this item
+    // ── GENUINE multi-activity items keep their choice (Johnny 2026-07-27) ──
+    // This used to auto-click the Attack activity whenever the item had one,
+    // FULL STOP. On an item that legitimately offers more than one thing —
+    // the Stormforger staff (melee attack AND a spell), a wand that can be
+    // swung or channelled, most artefact weapons — that silently forced the
+    // melee swing every time, and the range check then refused with "out of
+    // reach" while the user was only ever trying to cast. The choice was
+    // stolen before they saw it.
+    //
+    // The suppression's real job is the BG3-HUD case: a bogus dialog raised for
+    // a weapon that has exactly ONE usable activity. So only auto-pick when the
+    // attack IS the only real option; otherwise reveal the dialog and let the
+    // user choose. (Forge-templated items are handled by their own exception
+    // below and keep working the same way.)
     if (item && el?.querySelector) {
       const activities = item.system?.activities;
       if (activities) {
-        for (const a of activities) {
-          if (a.type === "attack") {
-            const btn = el.querySelector(`button[data-activity-id="${a.id}"]`);
-            if (btn) {
-              console.log(`${MODULE_ID} | Auto-selecting Attack in ActivityChoiceDialog: ${app.title}`);
-              setTimeout(() => btn.click(), 0);
+        const all = [...activities];
+        const attackActs = all.filter(a => a.type === "attack");
+        const buttonFor = (a) => el.querySelector(`button[data-activity-id="${a.id}"]`);
+        // Count what the dialog is ACTUALLY offering — an activity with no
+        // button isn't a choice the user can make.
+        const offered = all.filter(a => !!buttonFor(a));
+
+        if (offered.length > 1) {
+          // ACE OWNS THE PAUSE. dnd5e's chooser stays hidden (our CSS hides all
+          // .activity-choice dialogs); we show OUR branded picker and then click
+          // the chosen row's hidden button, so dnd5e's use-flow runs untouched.
+          // Falls back to revealing dnd5e's own dialog if ours can't open, so a
+          // failure can never swallow the action. (Johnny 2026-07-27.)
+          console.log(`${MODULE_ID} | ActivityChoiceDialog offers ${offered.length} activities (${offered.map(a => a.type).join(", ")}) — showing ACE's picker: ${app.title}`);
+          const _costOf = (a) => {
+            try {
+              const t = (a.consumption?.targets ?? [])[0];
+              const n = Number(t?.value ?? 0);
+              return Number.isFinite(n) && n > 0 ? `${n}` : "";
+            } catch (_) { return ""; }
+          };
+          const rows = offered.map(a => ({
+            id: a.id,
+            type: a.type ?? "",
+            cost: _costOf(a),
+            // dnd5e already renders the human label on the button — reuse it so
+            // ours reads identically (activity .name is often blank).
+            label: (buttonFor(a)?.textContent ?? "").trim() || a.name || a.type || "Action",
+          }));
+          const uses = (Number.isFinite(Number(item.system?.uses?.max)) && Number(item.system.uses.max) > 0)
+            ? { value: item.system.uses.value, max: item.system.uses.max } : null;
+          import("./attack-prompt.mjs").then(async ({ showActivityChoice }) => {
+            let chosen = null;
+            try {
+              chosen = await showActivityChoice({ itemName: item.name, itemImg: item.img, activities: rows, uses });
+            } catch (err) {
+              console.warn(`${MODULE_ID} | ACE activity picker failed — revealing dnd5e's dialog:`, err);
+              _revealChoice();
               return;
             }
+            if (!chosen) { try { app.close(); } catch (_) {} return; }   // cancelled
+            // The consume decision was made HERE, on the one dialog — hand it to
+            // the use-prompt so it doesn't ask a second time.
+            try {
+              const { ActivityUsePrompt } = await import("./activity-use-prompt.mjs");
+              ActivityUsePrompt.presetConsume(item.uuid, chosen.consume);
+            } catch (_) { /* prompt module optional */ }
+            const btn = el.querySelector(`button[data-activity-id="${chosen.id}"]`);
+            if (btn) btn.click();
+            else { console.warn(`${MODULE_ID} | chosen activity button vanished — revealing dnd5e's dialog`); _revealChoice(); }
+          }).catch(err => {
+            console.warn(`${MODULE_ID} | couldn't load the ACE picker — revealing dnd5e's dialog:`, err);
+            _revealChoice();
+          });
+          return;
+        }
+
+        for (const a of attackActs) {
+          const btn = buttonFor(a);
+          if (btn) {
+            console.log(`${MODULE_ID} | Auto-selecting Attack in ActivityChoiceDialog (sole activity): ${app.title}`);
+            setTimeout(() => btn.click(), 0);
+            return;
           }
         }
       }

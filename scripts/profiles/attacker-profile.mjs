@@ -116,5 +116,34 @@ export function buildAttackerProfile(actor, { token = null, item = null, activit
 
     // can they even do it
     gate,
+
+    // ── THE NUMBERS PIPELINES ACTUALLY ASK FOR (2026-07-28) ──
+    // Ability modifiers, proficiency, HP, size, type and exhaustion all come
+    // from the creature snapshot — ONE source, so attacker and target profiles
+    // can never drift apart on the same fact. Everything below is an accessor
+    // over `creature`; there is deliberately no second copy of the data here.
+
+    /** Ability modifier. */
+    abilityMod(key) { return Number(creature.abilities?.[String(key ?? "").toLowerCase()]?.mod ?? 0) || 0; },
+    /** Raw ability score (for DCs computed off the score, not the mod). */
+    abilityScore(key) { return Number(creature.abilities?.[String(key ?? "").toLowerCase()]?.score ?? 10) || 10; },
+    /** Proficiency bonus. */
+    get prof() { return Number(creature.prof ?? 0) || 0; },
+    /** Exhaustion level. */
+    get exhaustion() { return Number(creature.exhaustion ?? 0) || 0; },
+    /** Size key ("tiny"|"sm"|"med"|"lg"|"huge"|"grg"). */
+    get size() { return String(creature.size ?? "med"); },
+    /** Creature type ("undead", "construct", …). */
+    get creatureType() { return String(creature.type ?? ""); },
+    /** Armour proficiencies, as a Set. */
+    get armorProf() { return creature.armorProf ?? new Set(); },
+    /** Current / max / temp hit points. */
+    get hitPoints() { return creature.hp ?? { value: 0, max: 0, temp: 0 }; },
+    /** Does this creature have a condition right now? */
+    hasCondition(id) {
+      const s = String(id ?? "").toLowerCase();
+      const c = creature.conditions ?? [];
+      return (c.includes?.(s) ?? false) || (c.has?.(s) ?? false);
+    },
   };
 }

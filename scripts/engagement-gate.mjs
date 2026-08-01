@@ -560,6 +560,17 @@ export class EngagementGate {
         // ── SYNCHRONOUS check 0: target requirement (zero targets, wrong count) ──
         const targetReqBlock = EngagementGate._checkTargetRequirement(item, activity, targets, source);
         if (targetReqBlock?.blocked) {
+          // ATTACK-roll spell with NO target → open the target picker instead of
+          // a dead-end toast. Save spells and Magic Missile always had a picker;
+          // attack cantrips (Fire Bolt) fell through the crack and just blocked
+          // (Johnny 2026-07-26). Same cancel-now → async dialog → re-fire pattern
+          // as the concentration confirm below; picking a target re-fires the
+          // cast, cancelling the picker leaves the cast cancelled.
+          if (activity?.type === "attack" && !targets.length) {
+            console.log(`${MODULE_ID} | EngagementGate: ${item.name} has no target — opening the target picker`);
+            EngagementGate._handleAttackTargetPickAsync(activity, source, item);
+            return false; // cancel the original cast (synchronous)
+          }
           showCenterToast(targetReqBlock.reason, 3500);
           console.log(`${MODULE_ID} | EngagementGate BLOCKED: ${targetReqBlock.reason}`);
           return false;
@@ -608,6 +619,37 @@ export class EngagementGate {
    * synchronous hook AFTER it has already returned false to cancel the
    * original cast.
    */
+  /**
+   * Attack-roll spell cast with no target: open the SpellTargetPicker on THIS
+   * client (whoever is casting — GM or player), set the pick as the user's
+   * target, then re-fire the cast through the confirmed-uuid bypass. Cancelling
+   * the picker leaves the cast cancelled. (Fire Bolt parity — 2026-07-26.)
+   */
+  static async _handleAttackTargetPickAsync(activity, source, item) {
+    try {
+      const { SpellTargetPicker } = await import("./spell-target-picker.mjs");
+      const rangeFt = Number(activity?.range?.value ?? item.system?.range?.value ?? 0) || null;
+      const maxTargets = Number(activity?.target?.affects?.count) || 1;
+      const picked = await SpellTargetPicker.pick({ spellItem: item, casterActor: source, maxTargets, rangeFt, allowSelf: false });
+      if (!picked?.length) return;   // GM/player cancelled — cast stays cancelled
+      // V13: no bulk target ops — set each picked token individually.
+      let first = true;
+      for (const a of picked) {
+        const tok = a?.getActiveTokens?.()?.[0]
+          ?? canvas.tokens?.placeables.find(t => t.actor?.id === a?.id)
+          ?? null;
+        if (!tok) continue;
+        tok.setTarget(true, { user: game.user, releaseOthers: first });
+        first = false;
+      }
+      if (first) return;             // nothing resolvable to a token — stay cancelled
+      if (activity?.uuid) EngagementGate._confirmedActivityUuids.add(activity.uuid);
+      await activity.use();
+    } catch (err) {
+      console.warn(`${MODULE_ID} | attack-spell target pick failed (cast stays cancelled):`, err);
+    }
+  }
+
   static async _handleConcentrationConfirmAsync(activity, source, item, oldSpellName) {
     let ok = false;
     try {

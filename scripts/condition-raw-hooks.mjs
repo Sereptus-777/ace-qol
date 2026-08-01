@@ -201,7 +201,123 @@ export class ConditionRawHooks {
       }
     });
 
+    // ── RAW: incapacitation breaks concentration (2026-07-27) ──────────────
+    // PHB (2014 + 2024): concentration ends when you become INCAPACITATED or
+    // die — not just on the damage save. Nothing enforced this: dnd5e only
+    // breaks concentration on the damage CON save or a manual click, so a
+    // concentrating wizard turned to stone (or paralyzed, stunned, knocked
+    // unconscious, killed) kept his spell running. When any effect lands (or
+    // is re-enabled) carrying an incapacitating status on a CONCENTRATING
+    // creature, end all their concentration with a chat line saying why.
+    // Found while answering "can a restrained creature concentrate?" — the
+    // Rule-#1 sweep of the class. activeGM-gated; one client acts.
+    const INCAPACITATING = new Set(["incapacitated", "petrified", "paralyzed", "stunned", "unconscious", "dead"]);
+    const _breakConcIfIncapacitated = async (effect) => {
+      try {
+        if (game.users?.activeGM !== game.user) return;
+        if (effect?.disabled) return;
+        const actor = effect?.parent instanceof Actor ? effect.parent
+          : (effect?.parent?.parent instanceof Actor ? effect.parent.parent : null);
+        if (!actor) return;
+        const statuses = [...(effect.statuses ?? [])];
+        const trigger = statuses.find(s => INCAPACITATING.has(s));
+        if (!trigger) return;
+        const concEffects = actor.concentration?.effects;
+        if (!concEffects?.size) return;                       // not concentrating — nothing to break
+        const spellNames = [...concEffects].map(e =>
+          e.getFlag?.("dnd5e", "item")?.name ?? e.name ?? "a spell");
+        await actor.endConcentration();                        // no arg = end ALL (RAW)
+        console.log(`${MODULE_ID} | Concentration RAW: ${actor.name} became ${trigger} — concentration broken (${spellNames.join(", ")}).`);
+        try {
+          await ChatMessage.create({
+            speaker: ChatMessage.getSpeaker({ actor }),
+            content: `<b>${actor.name}</b> is ${trigger === "dead" ? "slain" : trigger} — concentration on <b>${spellNames.join("</b>, <b>")}</b> is broken.`,
+          });
+        } catch (_) { /* informational only */ }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | incapacitation concentration-break failed (non-fatal):`, err);
+      }
+    };
+    Hooks.on("createActiveEffect", (effect) => { _breakConcIfIncapacitated(effect); });
+    Hooks.on("updateActiveEffect", (effect, changes) => {
+      // Covers a disabled incapacitating effect being switched back ON.
+      if (changes?.disabled === false) _breakConcIfIncapacitated(effect);
+    });
+
+    // Heal desynced condition "ghosts" on load and on every scene switch — see
+    // reconcileConditionGhosts() below. Cheap: only writes when a ghost exists.
+    Hooks.on("canvasReady", () => { ConditionRawHooks.reconcileConditionGhosts(); });
+
     console.debug(`${MODULE_ID} | ConditionRawHooks online — ${RAW_TRIGGERS.size} keys watched`);
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // GHOST RECONCILE — heal desynced dnd5e static-ID rider effects
+  // ═════════════════════════════════════════════════════════════════════════
+
+  /**
+   * On an UNLINKED token, a dnd5e static-ID rider effect (dnd5eincapacitat,
+   * dnd5epetrified…) can end up STORED in the ActorDelta yet MISSING from the
+   * synthetic actor's live effects map — a desync. While it's desynced it:
+   *   (a) doesn't render on the character sheet,
+   *   (b) can't be toggled from the sheet or token HUD, and
+   *   (c) makes the next attempt to (re)create that condition throw a keepId
+   *       "already exists within ActorDelta … effects" collision.
+   * It can also linger as a plain live DUPLICATE of a status one of OUR labeled
+   * conditions already owns (a bare "incapacitated" sitting under a Petrified).
+   *
+   * On canvas load / scene switch we re-mirror any token that has such a ghost
+   * (DataModel#reset surfaces the stored record back into the live map) and drop
+   * the bare rider duplicates our conditions own — never a standalone condition
+   * nothing of ours owns. activeGM-gated; one client writes, the change syncs.
+   * (2026-07-25 — root fix for the "petrified but not on the sheet / can't
+   * toggle incapacitated" report.)
+   */
+  static async reconcileConditionGhosts() {
+    try {
+      if (game.users?.activeGM !== game.user) return;
+      const scene = canvas?.scene;
+      if (!scene) return;
+
+      for (const token of scene.tokens ?? []) {
+        try {
+          if (token.actorLink) continue;            // linked actors have no per-token delta ghosts
+          const actor = token.actor;
+          if (!actor?.effects) continue;
+
+          // A desynced ghost = a stored dnd5e static-ID effect absent from the live map.
+          const srcEffects = token.delta?._source?.effects ?? [];
+          const hasGhost = srcEffects.some(e =>
+            typeof e?._id === "string" && e._id.startsWith("dnd5e") && !actor.effects.has(e._id));
+          if (hasGhost) {
+            try { actor.reset(); } catch (_) { /* best-effort surface into the live map */ }
+          }
+
+          // Drop any bare dnd5e static-ID rider effect whose EVERY status is already
+          // owned by one of OUR live labeled conditions (leftover incapacitated under
+          // a Petrified, etc.). A standalone condition nothing of ours owns is kept.
+          const aceConds = [...actor.effects].filter(e => e.flags?.[MODULE_ID]?.conditionKey);
+          if (aceConds.length) {
+            const toDelete = [];
+            for (const e of actor.effects) {
+              if (!(typeof e.id === "string" && e.id.startsWith("dnd5e"))) continue;
+              if (e.flags?.[MODULE_ID]?.conditionKey) continue;   // never one of ours
+              const s = [...(e.statuses ?? [])];
+              if (!s.length) continue;
+              if (aceConds.some(a => s.every(x => a.statuses?.has?.(x)))) toDelete.push(e.id);
+            }
+            if (toDelete.length) {
+              await actor.deleteEmbeddedDocuments("ActiveEffect", [...new Set(toDelete)]);
+              console.log(`${MODULE_ID} | Reconciled ${toDelete.length} orphaned rider condition(s) on ${token.name}.`);
+            }
+          }
+        } catch (err) {
+          console.warn(`${MODULE_ID} | condition-ghost reconcile failed for ${token?.name} (non-fatal):`, err);
+        }
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | reconcileConditionGhosts failed (non-fatal):`, err);
+    }
   }
 
   // ═════════════════════════════════════════════════════════════════════════

@@ -7,6 +7,8 @@
 import { MODULE_ID } from "./ace-qol.mjs";
 import { ExtendedEffects } from "./extended-effects.mjs";
 import { FlagsEngine } from "./flags-engine.mjs";
+import { CombatState } from "./combat-state.mjs";
+import { Situation } from "./situation.mjs";
 import { NullificationWalker } from "./target-state-registry/walker.mjs";
 
 // ─── Conditions that affect combat ──────────────────────────────────────────
@@ -51,7 +53,11 @@ export class TargetState {
     const attrs = sys.attributes ?? {};
     const details = sys.details ?? {};
     const hp = attrs.hp ?? {};
-    const statuses = actor.statuses ?? new Set();
+    // THE status reader (Rule #1 convergence, 2026-07-27). This path used to
+    // read `actor.statuses` alone — narrower than the attack flow, which also
+    // unioned live effect statuses. That asymmetry is exactly how the two
+    // flows drifted (the Magic Resistance lesson); both now read identically.
+    const statuses = Situation.readStatuses(actor);
     const itemProps = item?.system?.properties ?? new Set();
     const isSpell = opts.isSpell ?? (item?.type === "spell");
     const isMelee = opts.isMelee ?? ["mwak", "msak"].includes(item?.system?.actionType);
@@ -161,9 +167,14 @@ export class TargetState {
         autoFailSave = true;
       }
 
-      // Magic resistance — advantage on saves vs spells
+      // Magic resistance — advantage on saves vs spells. Checks the FLAG paths
+      // AND the printed sheet FEATURE (every MM monster with "Magic Resistance"
+      // in its statblock). The feature check was missing here while the
+      // attack-side badge (combat-state) had it — so statblock monsters rolled
+      // saves vs spells with NO advantage. (Audit find, 2026-07-27.)
       const magicRes = FlagsEngine.hasMagicResistance(actor)
-                    || ExtendedEffects.hasMagicResistance(actor);
+                    || ExtendedEffects.hasMagicResistance(actor)
+                    || CombatState._hasFeature(actor, "Magic Resistance");
       if (magicRes && isSpell) {
         saveAdvantage = true;
       }
@@ -328,7 +339,7 @@ export class TargetState {
       saveDisadvantage,
       autoFailSave,
       saveBonuses,
-      magicResistance: (FlagsEngine.hasMagicResistance(actor) || ExtendedEffects.hasMagicResistance(actor)) && isSpell,
+      magicResistance: (FlagsEngine.hasMagicResistance(actor) || ExtendedEffects.hasMagicResistance(actor) || CombatState._hasFeature(actor, "Magic Resistance")) && isSpell,
 
       // Evasion / Shield Master
       superSaver,

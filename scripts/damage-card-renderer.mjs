@@ -23,7 +23,7 @@ export class DamageCardRenderer {
    * Post a slim card with a ROLL DAMAGE button. Pre-rolls damage while item
    * still exists (Beneos/BG3 HUD deletes items after attack).
    */
-  static async postDamageButton(item, actor, hits, consumedRiders = []) {
+  static async postDamageButton(item, actor, hits, consumedRiders = [], activityId = null) {
     const critRule = QolSettings.get("critRule") ?? "maxPlusRoll";
     const anyCrit = hits.some(h => h.hitResult === "critical");
     const targetNames = hits.map(h => h.name ?? h.target?.name ?? "target").join(", ");
@@ -34,7 +34,7 @@ export class DamageCardRenderer {
     try {
       for (const hit of hits) {
         const isCrit = hit.hitResult === "critical";
-        let components = await DamageCalculator.rollDamageComponents(item, actor, hit, isCrit, critRule);
+        let components = await DamageCalculator.rollDamageComponents(item, actor, hit, isCrit, critRule, activityId);
 
         // ── ABSORB ELEMENTS — target reaction to halve elemental damage ──
         try {
@@ -182,6 +182,10 @@ export class DamageCardRenderer {
           type: "damageButton",
           itemId: item.id,
           itemUuid: item.uuid,
+          // WHICH activity produced this damage — the button path re-rolls from
+          // the card, and without this it would fall back to "first damaging
+          // activity" and can pick a sibling on a multi-activity item.
+          activityId: activityId ?? null,
           itemName: item.name,
           itemImg: item.img || "icons/svg/sword.svg",
           actorId: actor.id,
@@ -208,7 +212,7 @@ export class DamageCardRenderer {
    * Does the same pre-rolling as postDamageButton, but wraps the output
    * in MergeCard's combined layout that includes attack results above.
    */
-  static async postMergeDamageButton(item, actor, hits, consumedRiders = []) {
+  static async postMergeDamageButton(item, actor, hits, consumedRiders = [], activityId = null) {
     const critRule = QolSettings.get("critRule") ?? "maxPlusRoll";
 
     // ── Pre-roll damage (same as postDamageButton) ──
@@ -217,7 +221,7 @@ export class DamageCardRenderer {
     try {
       for (const hit of hits) {
         const isCrit = hit.hitResult === "critical";
-        const components = await DamageCalculator.rollDamageComponents(item, actor, hit, isCrit, critRule);
+        const components = await DamageCalculator.rollDamageComponents(item, actor, hit, isCrit, critRule, activityId);
         const applied = DamageCalculator.applyDamageModifiers(components, hit.damageModifiers ?? {});
         const totalRaw = applied.reduce((sum, c) => sum + c.raw, 0);
         const totalFinal = applied.reduce((sum, c) => sum + c.final, 0);
@@ -291,7 +295,7 @@ export class DamageCardRenderer {
   //  Full Damage Card — Batch Results with Apply/Undo
   // ═══════════════════════════════════════════════════════════════════════════
 
-  static async postDamageCard(item, actor, damageResults, critRule, consumedRiders = null, refundLink = null) {
+  static async postDamageCard(item, actor, damageResults, critRule, consumedRiders = null, refundLink = null, activityId = null) {
     if (!damageResults.length) return;
 
     // ── Shared formula display (from first target's raw roll — same roll for all) ──
@@ -445,6 +449,10 @@ export class DamageCardRenderer {
         [MODULE_ID]: {
           type: "damageResult",
           itemUuid: item.uuid,
+          // WHICH activity produced this damage — the button path re-rolls from
+          // the card, and without this it would fall back to "first damaging
+          // activity" and can pick a sibling on a multi-activity item.
+          activityId: activityId ?? null,
           actorId: actor.id,
           rawComponents,
           totalRaw,
@@ -642,7 +650,7 @@ export class DamageCardRenderer {
       alreadyRefunded: message.flags?.[MODULE_ID]?.refundedRiders ?? [],
     };
     try {
-      await DamageCardRenderer.postDamageCard(fakeItem, actor, damageResults, critRule, flags.consumedRiders, refundLink);
+      await DamageCardRenderer.postDamageCard(fakeItem, actor, damageResults, critRule, flags.consumedRiders, refundLink, flags?.activityId ?? null);
     } catch (err) {
       console.error(`${MODULE_ID} | postPreRolledDamageCard CRASHED:`, err);
       return false;
@@ -764,7 +772,7 @@ export class DamageCardRenderer {
         ${flavorHintHtml}
         <div class="ace-qol-dmg-gm-controls">
           <div class="ace-qol-dmg-hp-line">
-            <span class="ace-qol-dmg-row-dmg">${totalFinal}</span>
+            <span class="ace-qol-dmg-row-dmg">${totalFinal}<span class="ace-qol-dmg-unit">DMG</span></span>
             ${isDead ? '<span class="ace-qol-dmg-skull">☠</span>' : ''}
             <span class="ace-qol-dmg-row-hp">HP: <span class="ace-qol-hp-cur">${currentHP}</span> → <span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span><span class="ace-qol-hp-max">/${maxHP}</span></span>
           </div>

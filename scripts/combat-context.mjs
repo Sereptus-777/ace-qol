@@ -27,6 +27,7 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { CombatState } from "./combat-state.mjs";
+import { Situation } from "./situation.mjs";
 // Rules-engine space query (Phase 1, 2026-07-09): the verbal-casting gate
 // reads live Silence spaces. Function-time reads only — import cycle inert.
 import { SpaceEffects } from "./rules/space-effects.mjs";
@@ -66,7 +67,12 @@ export class CombatContext {
   }
 
   static _statuses(actor) {
-    return actor?.statuses instanceof Set ? actor.statuses : new Set();
+    // THE status reader (Rule #1 convergence, 2026-07-27). This is the HARD
+    // can-act gate's condition source — it read `actor.statuses` alone, so a
+    // status carried by a live effect but missing from that set (desync) could
+    // let an incapacitated creature act. Same reader as the attack + save
+    // flows now, so a gate can never disagree with an engine.
+    return Situation.readStatuses(actor);
   }
 
   /** Spell component flags, reading both the 5.x `properties` Set and legacy `components`. */

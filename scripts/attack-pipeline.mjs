@@ -16,13 +16,121 @@ import { FlagsEngine } from "./flags-engine.mjs";
 import { MergeCard } from "./merge-card.mjs";
 import { CoverEngine } from "./cover-engine.mjs";
 import { RiderEngine } from "./rider-engine.mjs";
-import { pendingAttackChoices, awaitDsnRoll, showCenterToast } from "./attack-prompt.mjs";
+import { pendingAttackChoices, awaitDsnRoll, showCenterToast, promptAttackChoice } from "./attack-prompt.mjs";
 import { WeaponMasteries } from "./weapon-masteries.mjs";
 import { CombatContext } from "./combat-context.mjs";
 import { OA_IN_FLIGHT } from "./oa-transient.mjs";
 import { AttackAbilityResolver } from "./attack-ability-resolver.mjs";
+// The two creature snapshots. This pipeline asks THESE what a creature is
+// rather than reaching into actor.system and guessing at data shapes — the
+// audit found the profile layer was built and never wired. (2026-07-28)
+import { buildAttackerProfile } from "./profiles/attacker-profile.mjs";
+import { buildTargetProfile } from "./profiles/target-profile.mjs";
+
+// ─── Profile access for this pipeline (2026-07-28) ───────────────────────────
+// Cached per swing so a multi-beam attack (Eldritch Blast, Scorching Ray) builds
+// each creature's snapshot once rather than once per beam, and expires fast so a
+// snapshot can never outlive the exchange that built it. A creature's state
+// changes DURING a fight — a long-lived cache would be worse than raw reads.
+const _aceProfileCache = new Map();
+const _aceCached = (key, build) => {
+  if (!key) return build();
+  const hit = _aceProfileCache.get(key);
+  if (hit) return hit;
+  let p = null;
+  try { p = build(); } catch (err) {
+    console.warn(`${MODULE_ID} | profile build failed:`, err);
+  }
+  if (p) {
+    _aceProfileCache.set(key, p);
+    setTimeout(() => _aceProfileCache.delete(key), 4000);
+  }
+  return p;
+};
+
+/** The attacker's snapshot — ability mods, proficiency, conditions, gate. */
+function _aceAttackerProfile(actor, item = null, activity = null) {
+  if (!actor) return null;
+  const key = `atk:${actor.uuid ?? actor.id}:${item?.id ?? ""}:${activity?.id ?? ""}`;
+  return _aceCached(key, () => buildAttackerProfile(actor, { item, activity }));
+}
+
+/** The target's snapshot — ability mods, saves, immunities, conditions. */
+function _aceTargetProfile(actor, token = null) {
+  if (!actor) return null;
+  const key = `tgt:${token?.document?.id ?? token?.id ?? actor.uuid ?? actor.id}`;
+  return _aceCached(key, () => buildTargetProfile(actor, { token }));
+}
 
 export class AttackPipeline {
+
+  /**
+   * WHAT is giving this creature its attack bonus? Returns a short label for
+   * the chat card ("STORMFORGER"), or null if nothing obvious grants one.
+   *
+   * Johnny, 2026-07-29, looking at a Fire Bolt card carrying his staff's +2:
+   * "it says '+2 BONUS'. It doesn't say for what."
+   *
+   * The old code guessed from a hand-written list of buff names (Bless,
+   * Bardic Inspiration, …). Anything not on the list — every magic item, every
+   * piece of homebrew — fell through to a bare "BONUS". So instead of matching
+   * names, ASK THE DATA: walk the active effects and find the one whose changes
+   * actually write to an attack-bonus field. That names a homebrew ring as
+   * readily as it names Bless, and needs no maintenance.
+   *
+   * Prefers the SOURCE ITEM's name over the effect's, because effects are often
+   * named for their mechanic ("Ranged Spell Attack") while the item is what the
+   * table recognises ("Staff of the Stormforger").
+   */
+  static _attackBonusSourceLabel(actor) {
+    try {
+      if (!actor) return null;
+      // Every field dnd5e reads for an attack-roll bonus.
+      const ATTACK_BONUS = /^system\.bonuses\.(mwak|rwak|msak|rsak)\.attack$|^system\.bonuses\.All$/i;
+
+      for (const eff of actor.effects ?? []) {
+        if (eff.disabled || eff.isSuppressed) continue;
+        const hits = (eff.changes ?? []).some(c => ATTACK_BONUS.test(String(c?.key ?? "")));
+        if (!hits) continue;
+
+        // The item the effect came from, if we can reach it.
+        let sourceName = null;
+        try {
+          const origin = eff.parent?.documentName === "Item" ? eff.parent : null;
+          sourceName = origin?.name ?? null;
+          if (!sourceName && eff.origin) {
+            const doc = fromUuidSync?.(eff.origin);
+            if (doc?.documentName === "Item") sourceName = doc.name;
+          }
+        } catch (_) { /* effect name will do */ }
+
+        const label = AttackPipeline._shortSourceLabel(sourceName ?? eff.name);
+        if (label) return label;
+      }
+    } catch (_) { /* naming a bonus must never break a card */ }
+    return null;
+  }
+
+  /**
+   * "Staff of the Stormforger" → "STORMFORGER".
+   * Magic items are overwhelmingly "<thing> of <the> <Name>", and the tail is
+   * the part a table actually says out loud. Chat chips are small, so this has
+   * to stay short or it wraps and wrecks the row.
+   */
+  static _shortSourceLabel(raw) {
+    try {
+      let s = String(raw ?? "").trim();
+      if (!s) return null;
+      // Drop a leading item-type phrase: "Staff of the ", "Ring of ", …
+      s = s.replace(/^(?:the\s+)?(?:staff|wand|rod|ring|amulet|cloak|robe|gauntlets?|boots|belt|helm|crown|orb|tome|blade|sword|axe|bow|shield|talisman|charm|periapt|circlet|bracers?)\s+of\s+(?:the\s+)?/i, "");
+      s = s.replace(/^(?:the)\s+/i, "").trim();
+      if (!s) return null;
+      // Two words at most, and never long enough to break the chip row.
+      const words = s.split(/\s+/).slice(0, 2).join(" ");
+      const out = words.toUpperCase();
+      return out.length > 14 ? out.slice(0, 14) : out;
+    } catch (_) { return null; }
+  }
 
   constructor() {
     /** @type {WeakSet<Roll>} v0.4.22.9 — dedupe Set keyed on Roll object
@@ -236,11 +344,38 @@ export class AttackPipeline {
     // Assess combat state for the first target (primary target)
     // If multiple targets, use the first — advantage is per-attack, not per-target
     const combatState = CombatState.assess(actor, firstTarget, item);
-    if (!combatState) return;
+    if (!combatState) {
+      // Even without an assessment, dnd5e's config dialog must not render —
+      // ACE owns the attack pause (Johnny 2026-07-26). Roll straight.
+      if (dialog) dialog.configure = false;
+      return;
+    }
 
     // Store the combat state for the post-roll handler
     this._lastCombatState = combatState;
     this._lastCombatStates = CombatState.assessAll(actor, item);
+
+    // ── ALL attacks pause on ACE's OWN prompt — dnd5e's dialog NEVER shows ──
+    // (Johnny 2026-07-26: "all attacks, spell attacks, weapon attacks, future
+    // attacks go through our pipeline, not DD5E.")
+    // If this roll is about to open dnd5e's config dialog (dialog.configure is
+    // not already false — i.e. nothing upstream fast-forwarded it: not the
+    // weapon Item.use prompt path, not OA auto-fire, not a multiattack chain
+    // swing, not our own re-fire), cancel it, show the ACE advantage prompt,
+    // and re-fire fast-forwarded with the choice. This is the ONE choke point
+    // every attack passes through, so it also catches paths that bypass the
+    // Item.use patch (the BG3 HUD's cached reference — spell attacks' whole
+    // problem, and stray weapon paths too).
+    const userChoicePending = pendingAttackChoices.has(actor.id);
+    if (!userChoicePending && dialog?.configure !== false
+        && !OA_IN_FLIGHT.has(actor.id)
+        && QolSettings.get("advantagePrompt") !== false) {
+      this._promptThenRefire(config, message, actor, firstTarget, item, subject);
+      return false; // cancel this roll — the re-fire carries the GM/player's choice
+    }
+    // ACE owns the pause — with a stored choice (or prompt disabled) the roll
+    // proceeds now, and dnd5e's box stays suppressed either way.
+    if (dialog) dialog.configure = false;
 
     // ── Inject advantage/disadvantage into the roll dialog + config ──
     // Set the dialog's default button so the correct mode is pre-selected
@@ -290,6 +425,32 @@ export class AttackPipeline {
     }
 
     // Don't return false — let the roll continue
+  }
+
+  /**
+   * The cancelled roll's second act: show the ACE advantage prompt (shared with
+   * the weapon path), stash the choice, then re-fire the SAME attack fast-
+   * forwarded — the re-entry consumes the stored choice and dnd5e's dialog
+   * stays suppressed. Esc on the prompt leaves the attack cancelled, exactly
+   * like the weapon path. (2026-07-26 — ACE owns every attack pause.)
+   */
+  async _promptThenRefire(config, message, actor, targetToken, item, subject) {
+    try {
+      const choice = await promptAttackChoice(actor, targetToken, item);
+      if (!choice) return;   // Esc — the attack stays cancelled
+      pendingAttackChoices.set(actor.id, choice);
+      // Carry over the parts of the original roll that were already decided
+      // (ammo, attack mode, weapon mastery) so the re-fire is the same attack.
+      const refire = {};
+      for (const k of ["ammunition", "attackMode", "mastery"]) {
+        if (config?.[k] !== undefined) refire[k] = config[k];
+      }
+      refire.event = { shiftKey: true, target: document.body };   // fast-forward
+      await subject.rollAttack(refire, { configure: false }, {});
+    } catch (err) {
+      console.warn(`${MODULE_ID} | ACE attack prompt/re-fire failed — attack cancelled:`, err);
+      try { pendingAttackChoices.delete(actor.id); } catch (_) {}
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -437,7 +598,8 @@ export class AttackPipeline {
           const isRedirected = redirectVal >= threshold;
 
           if (isRedirected) {
-            const dexMod = targetActor.system?.abilities?.dex?.mod ?? 0;
+            // Duplicate's AC is 10 + the target's Dex mod — ask the target profile.
+            const dexMod = _aceTargetProfile(targetActor)?.abilityMod("dex") ?? 0;
             const duplicateAC = 10 + dexMod;
             const hitDuplicate = adjustedAttackTotal >= duplicateAC;
 
@@ -500,10 +662,15 @@ export class AttackPipeline {
         // Mirror Image redirected the attack to a duplicate — the real target
         // takes no damage regardless of whether the duplicate was hit.
         hitResult = "miss";
-      } else if (isCritRoll || cs.autoCrit) {
-        hitResult = "critical";
+      } else if (isCritRoll) {
+        hitResult = "critical";           // natural 20 always hits + crits
       } else if (adjustedAttackTotal >= effectiveAC) {
-        hitResult = "hit";
+        // RAW: auto-crit conditions (melee vs paralyzed/unconscious, Assassinate
+        // vs surprised, auto-crit flags) upgrade a HIT to a critical — they do
+        // NOT make a miss into one. `cs.autoCrit` was tested BEFORE the AC
+        // comparison, so a swing that missed an AC-18 target while it was Held
+        // was reported as a CRIT and rolled doubled damage. (Audit, 2026-07-27.)
+        hitResult = cs.autoCrit ? "critical" : "hit";
       } else {
         hitResult = "miss";
       }
@@ -664,8 +831,11 @@ export class AttackPipeline {
 
     // ── Ability modifier — use the activity's computed ability (handles Battle Smith,
     //    finesse, spell attacks, thrown weapons, etc. automatically via the system) ──
-    const actorAbilities = actor.system?.abilities ?? {};
-    const profBonus = actor.system?.attributes?.prof ?? 0;
+    // Attacker numbers from the profile. This exact pair was duplicated at two
+    // sites, both reading raw actor data — one reader now serves both.
+    const _atk = _aceAttackerProfile(actor, item, opts.subject);
+    // (no ability MAP on the profile by design — ask it per ability)
+    const profBonus = _atk?.prof ?? 0;
     const activity = opts.subject; // AttackActivity from dnd5e.rollAttackV2 hook
 
     // activity.ability resolves: explicit override → spellcasting → availableAbilities
@@ -676,15 +846,18 @@ export class AttackPipeline {
     if (resolvedAbility instanceof Set || resolvedAbility instanceof Array) resolvedAbility = [...resolvedAbility][0] ?? "";
     if (typeof resolvedAbility !== "string") resolvedAbility = String(resolvedAbility || "");
     let abilityLabel = resolvedAbility.toUpperCase() || "";
-    let abilityMod = resolvedAbility ? (actorAbilities[resolvedAbility]?.mod ?? 0) : 0;
+    let abilityMod = resolvedAbility ? (_atk?.abilityMod(resolvedAbility) ?? 0) : 0;
 
     // Fallback only if activity wasn't available (e.g., old dnd5e version)
     if (!abilityLabel) {
       const actionType = activity?.actionType ?? item.system?.actionType ?? "mwak";
       const isFinesse = item.system?.properties?.has?.("fin");
       const isThrown = item.system?.properties?.has?.("thr");
-      const strMod = actorAbilities.str?.mod ?? 0;
-      const dexMod = actorAbilities.dex?.mod ?? 0;
+      // The profile hands back plain numbers, not dnd5e ability objects — a
+      // `.mod` here would read undefined and silently score every finesse
+      // comparison as 0, picking the wrong ability without ever erroring.
+      const strMod = _atk?.abilityMod("str") ?? 0;
+      const dexMod = _atk?.abilityMod("dex") ?? 0;
 
       if (isFinesse) {
         if (dexMod > strMod) { abilityLabel = "DEX"; abilityMod = dexMod; }
@@ -763,25 +936,36 @@ export class AttackPipeline {
       // that add to attack rolls: Bless (1d4), Bardic Inspiration (d4-d12),
       // Inspiring Leader, Guidance (some tables), Aid (no but a flag-style
       // version exists). Add to this list as we encounter more in play.
-      let label = isSummon ? "SUMMON" : "BONUS";
-      try {
-        const effectNames = (actor?.effects ?? [])
-          .filter(e => !e.disabled && !e.isSuppressed)
-          .map(e => String(e.name ?? "").toLowerCase());
-        // Order matters: more specific names checked first so partial-string
-        // matches don't claim broader effects (e.g. "Bardic Inspiration"
-        // before "Inspiration").
-        if      (effectNames.some(n => n.includes("bardic inspiration"))) label = "INSPIRE";
-        else if (effectNames.some(n => n.includes("bless")))              label = "BLESS";
-        else if (effectNames.some(n => n.includes("guidance")))           label = "GUIDE";
-        else if (effectNames.some(n => n.includes("inspiring leader")))   label = "LEADER";
-        else if (effectNames.some(n => n.includes("haste")))              label = "HASTE";
-        else if (effectNames.some(n => n.includes("enlarge")))            label = "ENLARGE";
-        else if (effectNames.some(n => n.includes("hex"))
-                 || effectNames.some(n => n.includes("hunter's mark")))   label = "MARK";
-      } catch (_) { /* fall back to "BONUS" / "SUMMON" */ }
+      // NAME THE SOURCE FIRST (2026-07-29). Johnny, looking at a Fire Bolt card
+      // carrying his staff's +2: "it says '+2 BONUS'. It doesn't say for what."
+      // Ask which effect actually GRANTS an attack bonus rather than guessing
+      // from a curated name list — that names a homebrew ring as readily as
+      // Bless, and needs no maintenance.
+      // Ask what ACTUALLY grants an attack bonus (walks the effects' changes),
+      // then fall back to the curated buff names, then to a bare label.
+      let label = AttackPipeline._attackBonusSourceLabel(actor);
+      if (!label) {
+        label = isSummon ? "SUMMON" : "BONUS";
+        try {
+          const effectNames = (actor?.effects ?? [])
+            .filter(e => !e.disabled && !e.isSuppressed)
+            .map(e => String(e.name ?? "").toLowerCase());
+          // Order matters: more specific names checked first so partial-string
+          // matches don't claim broader effects (e.g. "Bardic Inspiration"
+          // before "Inspiration").
+          if      (effectNames.some(n => n.includes("bardic inspiration"))) label = "INSPIRE";
+          else if (effectNames.some(n => n.includes("bless")))              label = "BLESS";
+          else if (effectNames.some(n => n.includes("guidance")))           label = "GUIDE";
+          else if (effectNames.some(n => n.includes("inspiring leader")))   label = "LEADER";
+          else if (effectNames.some(n => n.includes("haste")))              label = "HASTE";
+          else if (effectNames.some(n => n.includes("enlarge")))            label = "ENLARGE";
+          else if (effectNames.some(n => n.includes("hex"))
+                   || effectNames.some(n => n.includes("hunter's mark")))   label = "MARK";
+        } catch (_) { /* fall back to "BONUS" / "SUMMON" */ }
+      }
 
-      formulaParts.push(`<span class="ace-qol-mod-chip"><span class="ace-qol-mod-num">${missingBonus >= 0 ? "+" : ""}${missingBonus}</span><span class="ace-qol-mod-label">${label}</span></span>`);
+      const _named = (label !== "BONUS" && label !== "SUMMON") ? " ace-qol-mod-source" : "";
+      formulaParts.push(`<span class="ace-qol-mod-chip"><span class="ace-qol-mod-num">${missingBonus >= 0 ? "+" : ""}${missingBonus}</span><span class="ace-qol-mod-label${_named}">${label}</span></span>`);
     }
 
     const formulaStr = formulaParts.join(" ");
@@ -923,8 +1107,10 @@ export class AttackPipeline {
     const d20 = r0.d20Result;
     const parts = [];
 
-    const actorAbilities = actor.system?.abilities ?? {};
-    const profBonus = actor.system?.attributes?.prof ?? 0;
+    // Same profile-sourced numbers as the first site above.
+    const _atk2 = _aceAttackerProfile(actor, item, opts.subject);
+    // (no ability MAP on the profile by design — ask it per ability)
+    const profBonus = _atk2?.prof ?? 0;
     const activity = opts.subject;
 
     let resolvedAbility2 = activity?.ability
@@ -932,14 +1118,17 @@ export class AttackPipeline {
     if (resolvedAbility2 instanceof Set || resolvedAbility2 instanceof Array) resolvedAbility2 = [...resolvedAbility2][0] ?? "";
     if (typeof resolvedAbility2 !== "string") resolvedAbility2 = String(resolvedAbility2 || "");
     let abilityLabel = resolvedAbility2.toUpperCase() || "";
-    let abilityMod = resolvedAbility2 ? (actorAbilities[resolvedAbility2]?.mod ?? 0) : 0;
+    let abilityMod = resolvedAbility2 ? (_atk2?.abilityMod(resolvedAbility2) ?? 0) : 0;
 
     if (!abilityLabel) {
       const actionType = activity?.actionType ?? item.system?.actionType ?? "mwak";
       const isFinesse = item.system?.properties?.has?.("fin");
       const isThrown = item.system?.properties?.has?.("thr");
-      const strMod = actorAbilities.str?.mod ?? 0;
-      const dexMod = actorAbilities.dex?.mod ?? 0;
+      // The profile hands back plain numbers, not dnd5e ability objects — a
+      // `.mod` here would read undefined and silently score every finesse
+      // comparison as 0, picking the wrong ability without ever erroring.
+      const strMod = _atk2?.abilityMod("str") ?? 0;
+      const dexMod = _atk2?.abilityMod("dex") ?? 0;
       if (isFinesse) {
         if (dexMod > strMod) { abilityLabel = "DEX"; abilityMod = dexMod; }
         else { abilityLabel = "STR"; abilityMod = strMod; }
@@ -998,8 +1187,12 @@ export class AttackPipeline {
     const missingBonus = expectedBonus - displayedSum;
     if (missingBonus !== 0 && Number.isFinite(missingBonus)) {
       const isSummon = !!actor?.flags?.dnd5e?.summon;
-      const label = isSummon ? "SUMMON" : "BONUS";
-      parts.push(`<span class="ace-qol-mod-chip"><span class="ace-qol-mod-num">${missingBonus >= 0 ? "+" : ""}${missingBonus}</span><span class="ace-qol-mod-label">${label}</span></span>`);
+      // Same attribution as the main card — this path was showing a bare
+      // "+2 BONUS" too, and half-naming a modifier is worse than not naming it.
+      const label = AttackPipeline._attackBonusSourceLabel(actor)
+                 ?? (isSummon ? "SUMMON" : "BONUS");
+      const _named = (label !== "BONUS" && label !== "SUMMON") ? " ace-qol-mod-source" : "";
+      parts.push(`<span class="ace-qol-mod-chip"><span class="ace-qol-mod-num">${missingBonus >= 0 ? "+" : ""}${missingBonus}</span><span class="ace-qol-mod-label${_named}">${label}</span></span>`);
     }
 
     this._lastFormulaPartsHtml = parts.join(" ");

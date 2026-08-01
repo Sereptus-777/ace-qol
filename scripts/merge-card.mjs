@@ -486,7 +486,7 @@ export class MergeCard {
           ${compLines ? `<div class="ace-qol-dmg-type-breakdown">${compLines}</div>` : ""}
           <div class="ace-qol-dmg-gm-controls">
             <div class="ace-qol-dmg-hp-line">
-              <span class="ace-qol-dmg-row-dmg">${totalFinal}</span>
+              <span class="ace-qol-dmg-row-dmg">${totalFinal}<span class="ace-qol-dmg-unit">DMG</span></span>
               ${isDead ? '<span class="ace-qol-dmg-skull">&#9760;</span>' : ''}
               <span class="ace-qol-dmg-row-hp">HP: <span class="ace-qol-hp-cur">${currentHP}</span> &rarr; <span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span><span class="ace-qol-hp-max">/${maxHP}</span></span>
             </div>

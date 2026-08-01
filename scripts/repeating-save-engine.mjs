@@ -18,11 +18,24 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { safeShowForRoll, awaitDiceSettle } from "./dsn-utils.mjs";
 
 const MIN_RT_FOR_OOC_SAVE = 6;     // 1 round = 6s
 const MAX_OOC_SAVES_PER_EVENT = 10; // cap for big time jumps
 
 export class RepeatingSaveEngine {
+
+  // Pending owner-roll round-trips, keyed by requestId → resolve fn. The GM emits
+  // a "showReSaveRoll" to the owning player and awaits their "reSaveRollResult".
+  static _reSaveRequests = new Map();
+  // Same key → { actor, ability, dc, spell, ownerName } so the GM's nudge card
+  // (and its ROLL FOR THEM button) can roll the right save later.
+  static _reSaveContexts = new Map();
+  /** How long before the GM gets the "roll for them" card. Never auto-rolls. */
+  static GM_NUDGE_MS = 30000;
+  /** Player-side: requestId → the open save prompt, so the GM rolling instead
+   *  can close it remotely (otherwise the player could roll a second time). */
+  static _openPlayerPrompts = new Map();
 
   /**
    * Wire up combat + worldTime hooks. Idempotent — calling init() twice does
@@ -33,25 +46,20 @@ export class RepeatingSaveEngine {
     this._initialized = true;
 
     // ── Combat turn change ──
-    // We use `combatTurn` because it fires AFTER the turn pointer advances —
-    // the previous turn (= the turn that just ended) is in `combat.previous.turn`.
-    // For round transitions, this also fires (with previous.round = old round,
-    // previous.turn = last combatant of old round).
-    Hooks.on("combatTurn", async (combat, _updateData, _opts) => {
+    // `combatTurnChange` hands us the PRIOR state EXPLICITLY: (combat, prior,
+    // current), where prior.combatantId is exactly whose turn just ended —
+    // for plain turn advances AND round rollovers. The old approach read
+    // `combat.previous.turn` inside `combatTurn`/`combatRound`, but that field
+    // is not yet refreshed when those hooks fire, so "whose turn ended" LAGGED
+    // A FULL TURN — every creature's end-of-turn was credited to the creature
+    // before it, and no re-save ever fired for the right actor (proven from
+    // Johnny's live heartbeat log, 2026-07-27: advancing past Kasimir
+    // processed "ended=Syrax").
+    Hooks.on("combatTurnChange", async (combat, prior, _current) => {
       try {
-        await this._onCombatTurn(combat);
+        await this._onTurnChange(combat, prior);
       } catch (err) {
-        console.warn(`${MODULE_ID} | RepeatingSaveEngine.combatTurn failed:`, err);
-      }
-    });
-
-    // Some flows route through `combatRound` only (e.g. when round advances
-    // and turn 0 is already set). Wire it as a safety net — same handler.
-    Hooks.on("combatRound", async (combat, _updateData, _opts) => {
-      try {
-        await this._onCombatTurn(combat);
-      } catch (err) {
-        console.warn(`${MODULE_ID} | RepeatingSaveEngine.combatRound failed:`, err);
+        console.warn(`${MODULE_ID} | RepeatingSaveEngine.combatTurnChange failed:`, err);
       }
     });
 
@@ -64,23 +72,325 @@ export class RepeatingSaveEngine {
       }
     });
 
+    // ── GM nudge card button: "ROLL FOR THEM" ──
+    // Both hook names for V12 + V13 (renderChatMessage was replaced by
+    // renderChatMessageHTML in V13 — the suite pattern).
+    const wireNudgeButton = (_message, html) => {
+      try {
+        const el = html instanceof HTMLElement ? html : html?.[0] ?? html;
+        const btn = el?.querySelector?.('[data-action="ace-resave-gm-roll"]');
+        if (!btn || btn.dataset.aceWired === "1") return;
+        btn.dataset.aceWired = "1";
+        btn.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          RepeatingSaveEngine.gmRollForPlayer(btn.dataset.requestId, btn);
+        });
+      } catch (_) { /* never break chat rendering */ }
+    };
+    Hooks.on("renderChatMessage", wireNudgeButton);
+    Hooks.on("renderChatMessageHTML", wireNudgeButton);
+
     console.debug(`${MODULE_ID} | Repeating Save Engine online (combat + worldTime hooks)`);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Who rolls? — the owner rolls their own dice; the GM only rolls NPCs
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /** The active, connected, non-GM user who OWNS this actor (PC, summon,
+   *  familiar, pet). That player rolls its saves. Null for a GM-only NPC, or
+   *  when the owner is offline. Mirrors SaveEngine._casterUser. */
+  static _ownerUser(actor) {
+    if (!actor) return null;
+    try {
+      const assigned = game.users?.find(u => u.active && !u.isGM && u.character?.id === actor.id);
+      if (assigned) return assigned;
+      return game.users?.find(u => u.active && !u.isGM && actor.testUserPermission?.(u, "OWNER")) ?? null;
+    } catch (_) { return null; }
+  }
+
+  /** Pull the natural d20 out of a roll (for the card's breakdown). Hardened:
+   *  walks .dice AND raw .terms so an exotic roll shape can't hide the die —
+   *  the card must ALWAYS show the number rolled (Johnny's card rule). */
+  static _extractNat(roll) {
+    try {
+      let d = (roll?.dice ?? []).find(x => Number(x?.faces) === 20) ?? (roll?.dice ?? [])[0] ?? null;
+      if (!d && Array.isArray(roll?.terms)) {
+        d = roll.terms.find(t => Number(t?.faces) === 20 && Array.isArray(t?.results)) ?? null;
+      }
+      const res = d?.results?.find?.(r => r?.active !== false) ?? d?.results?.[0] ?? null;
+      const n = Number(res?.result ?? NaN);
+      return Number.isFinite(n) ? n : null;
+    } catch (_) { return null; }
+  }
+
+  /**
+   * Get a save roll for a re-save. If a player owns this actor and is online,
+   * THEY roll their own dice (dnd5e's native dialog on their client); otherwise
+   * the GM rolls silently so the turn never hangs.
+   * Returns { total, natural, roll? } — `roll` is set ONLY for a GM-side roll
+   * (used to fire DSN GM-side; a player's roll already animated on their client).
+   */
+  static async _obtainReSaveRoll(actor, ability, dc, spell) {
+    const owner = this._ownerUser(actor);
+    if (owner) {
+      try {
+        const info = await this._requestOwnerRoll(owner, actor, ability, dc, spell);
+        if (info && Number.isFinite(info.total)) return info;   // player rolled
+        // timeout / cancel / bad reply → fall through to a GM roll
+      } catch (err) {
+        console.warn(`${MODULE_ID} | re-save owner round-trip failed — GM rolling instead:`, err);
+      }
+    }
+    return this._gmRollSave(actor, ability, dc);
+  }
+
+  /** GM-side silent roll (no dialog) — NPCs, and the offline-owner fallback. */
+  static async _gmRollSave(actor, ability, dc) {
+    try {
+      const rolls = await actor.rollSavingThrow({ ability, target: dc }, { configure: false }, { create: false });
+      const roll = Array.isArray(rolls) ? rolls[0] : rolls;
+      if (!roll) return null;
+      const total = Number(roll.total ?? roll._total ?? NaN);
+      if (!Number.isFinite(total)) return null;
+      return { total, natural: this._extractNat(roll), roll };
+    } catch (err) {
+      console.warn(`${MODULE_ID} | GM re-save roll failed for ${actor?.name}:`, err);
+      return null;
+    }
+  }
+
+  /** GM → owner socket round-trip: the owner's client rolls the save (native
+   *  dnd5e dialog, their own dice + DSN); we await the total. 45s safety timeout
+   *  so a turn never hangs on an idle player. Returns { total, natural } or null. */
+  static async _requestOwnerRoll(owner, actor, ability, dc, spell) {
+    const requestId = foundry.utils.randomID();
+    let resolveFn;
+    const reply = new Promise(res => { resolveFn = res; });
+    this._reSaveRequests.set(requestId, resolveFn);
+    this._reSaveContexts.set(requestId, { actor, ability, dc, spell, ownerName: owner.name, ownerUserId: owner.id });
+    // NEVER auto-roll for a connected player (Johnny 2026-07-27: "I don't want
+    // it rolling automatically for him"). The wait is OPEN-ENDED — the player's
+    // dice are theirs. After a nudge delay the GM gets a small chat card with a
+    // ROLL FOR THEM button (for the genuinely-AFK case); nothing resolves until
+    // the player rolls or the GM clicks that button.
+    // CONVERGED onto the shared nudge (2026-07-28). This engine used to own the
+    // only copy of the "waited too long, hand it to the GM" behaviour, so the
+    // MAIN save flow silently had none and hung forever. The timer, card and
+    // button now live in pc-save-nudge.mjs and every waiting path uses them;
+    // only the "what actually rolls it" callback differs per engine.
+    let PcSaveNudge = null;
+    try {
+      ui.notifications?.info(`${actor.name}: waiting for ${owner.name} to roll their save…`);
+      game.socket.emit(`module.${MODULE_ID}`, {
+        action: "showReSaveRoll",
+        requestId, userId: owner.id,
+        actorUuid: actor.uuid, ability, dc, spell,   // spell names the source on ACE's prompt
+      });
+      try {
+        ({ PcSaveNudge } = await import("./pc-save-nudge.mjs"));
+        PcSaveNudge.arm({
+          key: requestId,
+          targetName: actor.name,
+          playerName: owner.name,
+          abilityLabel: (CONFIG.DND5E?.abilities?.[ability]?.label) ?? String(ability).toUpperCase(),
+          dc,
+          sourceName: spell ?? "Repeating save",
+          onRoll: () => RepeatingSaveEngine.gmRollForPlayer(requestId, null),
+        });
+      } catch (err) {
+        console.warn(`${MODULE_ID} | couldn't arm the re-save nudge (non-fatal):`, err);
+      }
+      return await reply;   // { total, natural } — from the player OR the GM's button
+    } finally {
+      try { PcSaveNudge?.disarm(requestId, `${actor.name}'s save is settled.`); } catch (_) {}
+      this._reSaveRequests.delete(requestId);
+      this._reSaveContexts.delete(requestId);
+    }
+  }
+
+  /** GM-only nudge card: "<player> hasn't rolled — [ROLL FOR THEM]". Posted
+   *  only after the nudge delay, and only while the request is still pending. */
+  static async _postGmRollForPlayerCard(requestId) {
+    try {
+      if (!this._reSaveRequests.has(requestId)) return;   // already rolled — no card
+      const ctx = this._reSaveContexts.get(requestId);
+      if (!ctx) return;
+      const abilityLabel = (CONFIG.DND5E?.abilities?.[ctx.ability]?.label) ?? String(ctx.ability).toUpperCase();
+      const html = `
+        <div class="ace-qol-rsv2">
+          <div class="ace-qol-rsv2-head">
+            <i class="fas fa-hourglass-half"></i>&nbsp;<b>${ctx.spell ?? "Repeating save"}</b>&nbsp;— waiting on ${ctx.ownerName}
+          </div>
+          <div class="ace-qol-rsv2-foot">
+            <b>${ctx.actor.name}</b> hasn't rolled their ${abilityLabel} save (DC ${ctx.dc}) yet.
+          </div>
+          <button type="button" data-action="ace-resave-gm-roll" data-request-id="${requestId}"
+                  style="width:100%;margin-top:6px;font-weight:700;">
+            <i class="fas fa-dice-d20"></i> ROLL FOR THEM
+          </button>
+        </div>`;
+      await ChatMessage.create({
+        content: html,
+        whisper: ChatMessage.getWhisperRecipients("GM").map(u => u.id),
+        speaker: ChatMessage.getSpeaker({ actor: ctx.actor }),
+        flags: { [MODULE_ID]: { type: "reSaveGmNudge", requestId } },
+      });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | GM nudge card failed (non-fatal):`, err);
+    }
+  }
+
+  /** Retire a nudge card once its save is settled — so a stale "ROLLING…"
+   *  button can never sit there implying the roll is still pending. */
+  static async _markNudgeCardDone(requestId, note) {
+    try {
+      const msg = game.messages?.contents?.slice(-40).reverse()
+        .find(m => m.flags?.[MODULE_ID]?.type === "reSaveGmNudge"
+                && m.flags?.[MODULE_ID]?.requestId === requestId);
+      if (!msg) return;
+      await msg.update({
+        content: `<div class="ace-qol-rsv2"><div class="ace-qol-rsv2-foot">
+          <i class="fas fa-check"></i> ${note}</div></div>`,
+      });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | couldn't retire the nudge card (non-fatal):`, err);
+    }
+  }
+
+  /** GM clicked ROLL FOR THEM — roll GM-side and resolve the pending request. */
+  static async gmRollForPlayer(requestId, buttonEl = null) {
+    try {
+      const ctx = this._reSaveContexts.get(requestId);
+      if (!ctx || !this._reSaveRequests.has(requestId)) {
+        ui.notifications?.info("That save was already resolved.");
+        if (buttonEl) buttonEl.disabled = true;
+        return;
+      }
+      if (buttonEl) { buttonEl.disabled = true; buttonEl.innerHTML = `<i class="fas fa-dice-d20"></i> Rolling…`; }
+      const info = await this._gmRollSave(ctx.actor, ctx.ability, ctx.dc);
+      if (!info) { ui.notifications?.warn("Roll failed — try again."); if (buttonEl) buttonEl.disabled = false; return; }
+      // NOTE: do NOT fire DSN here — the main path (_rollAndResolve) fires it,
+      // waits for the dice to settle, then posts the card. Firing it here too
+      // rolled the dice TWICE on screen (live, 2026-07-27).
+
+      // The player's prompt is now moot — close it on their client so they
+      // can't roll a second time into a request that's already resolved.
+      try {
+        game.socket.emit(`module.${MODULE_ID}`, {
+          action: "closeReSavePrompt", requestId, userId: ctx.ownerUserId ?? null,
+        });
+      } catch (_) { /* best-effort */ }
+
+      this.resolveReSaveRequest(requestId, info);
+      RepeatingSaveEngine._markNudgeCardDone(requestId, `Rolled by the GM — ${info.total} vs DC ${ctx.dc}`);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | gmRollForPlayer failed:`, err);
+    }
+  }
+
+  /** GM-side: the owner's client replied with their roll. Resolves the pending
+   *  promise so _obtainReSaveRoll continues. Called by the socket handler. */
+  static resolveReSaveRequest(requestId, data) {
+    const fn = this._reSaveRequests.get(requestId);
+    if (!fn) return;
+    // A null reply = the player cancelled/closed the prompt. That is NOT
+    // permission to roll for them — surface the GM's ROLL FOR THEM card
+    // immediately and keep waiting. Only a real roll resolves this.
+    if (!data || !Number.isFinite(data.total)) {
+      RepeatingSaveEngine._postGmRollForPlayerCard(requestId);
+      return;
+    }
+    this._reSaveRequests.delete(requestId);
+    fn(data);
+  }
+
+  /** Player-side: roll MY actor's save with dnd5e's native dialog (I roll my own
+   *  dice; DSN fires on my client + broadcasts). The system chat card is
+   *  suppressed — the GM posts the single ACE outcome card. Returns { total,
+   *  natural } or null. Called by the socket handler on the owning player. */
+  /** Player-side: the GM rolled instead — close this player's open prompt so
+   *  they can't roll into an already-resolved request. */
+  static closePlayerPrompt(requestId) {
+    try {
+      const dlg = RepeatingSaveEngine._openPlayerPrompts?.get(requestId);
+      if (dlg) {
+        RepeatingSaveEngine._openPlayerPrompts.delete(requestId);
+        try { dlg.close(); } catch (_) { /* already gone */ }
+        ui.notifications?.info("The GM rolled that save for you.");
+      }
+    } catch (_) { /* non-fatal */ }
+  }
+
+  static async playerRollReSave({ actorUuid, ability, dc, spell, requestId }) {
+    try {
+      const resolved = await fromUuid(actorUuid);
+      const actor = resolved?.actor ?? resolved;
+      if (!actor) return null;
+      // ACE OWNS THE PAUSE (Johnny 2026-07-27). This used to pass
+      // `{ configure: true }`, which opened dnd5e's own "Constitution Saving
+      // Throw" dialog on the player's screen — exactly what must never happen.
+      // Now: ACE's own save prompt, then roll FAST-FORWARDED with their choice.
+      const { showSavePrompt } = await import("./attack-prompt.mjs");
+      const abilityLabel = (CONFIG.DND5E?.abilities?.[ability]?.label) ?? String(ability).toUpperCase();
+      const choice = await showSavePrompt({
+        creature: actor.name,
+        abilityLabel, dc,
+        sourceName: spell ?? "",
+        suggested: "normal",
+        isPC: !!actor.hasPlayerOwner,
+        // Registered so the GM's "ROLL FOR THEM" can close this prompt remotely.
+        registerAs: requestId ? (dlg) => RepeatingSaveEngine._openPlayerPrompts.set(requestId, dlg) : null,
+      });
+      if (requestId) RepeatingSaveEngine._openPlayerPrompts.delete(requestId);
+      if (!choice) return null;   // closed/cancelled — GM's nudge card takes over
+      const cfg = { ability, target: dc };
+      if (choice === "advantage") cfg.advantage = true;
+      else if (choice === "disadvantage") cfg.disadvantage = true;
+      const rolls = await actor.rollSavingThrow(cfg, { configure: false }, { create: false });
+      const roll = Array.isArray(rolls) ? rolls[0] : rolls;
+      if (!roll) return null;
+      const total = Number(roll.total ?? roll._total ?? NaN);
+      if (!Number.isFinite(total)) return null;
+      // THE DICE RULE: let the player's dice finish + a 500ms beat BEFORE the
+      // result goes back to the GM — so the GM's card can never beat the dice
+      // the table is watching. Raced against a 3s cap (DSN-hang protection).
+      // Was a hand-rolled copy of awaitDiceSettle (show → race 3s → +500ms).
+      // Same behaviour, but it called showForRoll RAW, so the animation was
+      // never registered and no other card could wait on it. One door now.
+      safeShowForRoll(roll, "player re-save");
+      await awaitDiceSettle();
+      return { total, natural: this._extractNat(roll) };
+    } catch (err) {
+      console.warn(`${MODULE_ID} | player re-save roll failed:`, err);
+      return null;
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
   //  Combat turn handler
   // ═══════════════════════════════════════════════════════════════════════════
 
-  static async _onCombatTurn(combat) {
+  static async _onTurnChange(combat, prior) {
     if (game.users?.activeGM !== game.user) return;  // activeGM: save cards must only fire once
     if (!combat?.started) return;
 
-    // Resolve which combatant's turn just ENDED
-    const prevIdx = combat.previous?.turn;
-    if (prevIdx === undefined || prevIdx === null) return;
-    const prevCombatant = combat.turns?.[prevIdx];
+    // Resolve which combatant's turn just ENDED — from the hook's EXPLICIT
+    // prior state, never from combat.previous (which lags a full turn).
+    const prevCombatant = (prior?.combatantId ? combat.combatants?.get(prior.combatantId) : null)
+      ?? (Number.isInteger(prior?.turn) ? combat.turns?.[prior.turn] : null);
     const actor = prevCombatant?.actor;
     if (!actor) return;
+
+    // ── Diagnostic heartbeat (2026-07-27) ──
+    // One line per turn change: whose turn ended + how many of their effects
+    // carry a repeating-save tag. tagged=0 on a staged creature = stamp failed;
+    // no line at all = hook resolution failed.
+    try {
+      const taggedCount = (actor.effects?.contents ?? []).filter(e =>
+        String(e.flags?.[MODULE_ID]?.repeatingSave?.trigger ?? "").includes("endOfTurn")).length;
+      console.log(`${MODULE_ID} | RepeatingSave[turn-change] ended=${prevCombatant?.name ?? actor.name} tagged=${taggedCount}`);
+    } catch (_) { /* diagnostics never block */ }
 
     await this._processActorEndOfTurn(actor, "combatTurn");
   }
@@ -167,6 +477,10 @@ export class RepeatingSaveEngine {
     // Effect still present?
     const stillPresent = actor.effects?.get?.(eff.id);
     if (!stillPresent) return;
+
+    // Same voiding rule as the in-combat path — an out-of-combat batch must not
+    // grind through saves for a chain that cannot land.
+    if (await RepeatingSaveEngine._voidIfImmuneToEscalation(actor, stillPresent, meta, "ooc")) return;
 
     // ── Compute remaining-duration cap (math-correct) ──
     let durationRounds = MAX_OOC_SAVES_PER_EVENT; // fallback when duration unknown
@@ -293,6 +607,48 @@ export class RepeatingSaveEngine {
    * effect + post chat card. On failure: post chat card. Returns true if the
    * effect persisted (failed or no roll), false if it was removed.
    */
+  /**
+   * A staged chain that can only ever end in a condition the creature is IMMUNE
+   * to is void — RAW, the creature "begins to turn to stone" only because it is
+   * becoming stone. If it cannot be petrified, it was never turning to stone.
+   *
+   * So: drop the staging effect and skip the save entirely. Rolling a re-save
+   * whose only possible consequence is impossible is theatre — and worse, the
+   * escalation used to fire regardless and stone an immune creature.
+   * (Earth Elemental, live console 2026-07-28.)
+   *
+   * @returns {Promise<boolean>} true if the chain was voided and the caller
+   *                             should stop processing this effect.
+   */
+  static async _voidIfImmuneToEscalation(actor, eff, meta, source) {
+    if (!meta?.onFailureApply) return false;
+    try {
+      const { CombatContext } = await import("./combat-context.mjs");
+      const { ConditionLibrary } = await import("./condition-library.mjs");
+      // The library key ("petrified") maps to the status id(s) immunity is
+      // actually stored against — ask it rather than assuming they're equal.
+      const statuses = ConditionLibrary.statusesFor?.(meta.onFailureApply)
+        ?? [String(meta.onFailureApply).toLowerCase()];
+      if (!statuses.length) return false;
+      if (!statuses.every(s => CombatContext.conditionImmune(actor, s))) return false;
+
+      try { await eff.delete(); } catch (_) { /* already gone */ }
+      console.log(`${MODULE_ID} | RepeatingSave[${source}] ${actor.name} is IMMUNE to "${meta.onFailureApply}" — staged chain VOID, effect removed, no save rolled.`);
+      // An effect vanishing off a token with no explanation is an invisible
+      // outcome — the GM is left wondering why the restraint dropped. Tell them,
+      // via a notification rather than a new card format (no parallel formats).
+      // GM-only: this is cleanup of impossible state, not a table-facing event.
+      if (game.user?.isGM) {
+        ui.notifications?.info(`${actor.name} is immune to ${meta.onFailureApply} — "${eff.name}" was void and has been removed.`);
+      }
+      return true;
+    } catch (err) {
+      // Never let an immunity read break a turn — fall through and save normally.
+      console.warn(`${MODULE_ID} | RepeatingSave: immunity pre-check failed for ${actor.name}:`, err);
+      return false;
+    }
+  }
+
   static async _rollAndResolve(actor, eff, source) {
     const meta = eff.flags?.[MODULE_ID]?.repeatingSave;
     if (!meta?.ability || !Number.isFinite(meta?.dc)) return true;
@@ -301,49 +657,61 @@ export class RepeatingSaveEngine {
     const stillPresent = actor.effects?.get?.(eff.id);
     if (!stillPresent) return false;
 
+    if (await RepeatingSaveEngine._voidIfImmuneToEscalation(actor, stillPresent, meta, source)) return false;
+
+    // RAW staged conditions (petrifying gaze): the creature is tagged at the
+    // START of its turn and re-saves "at the end of its NEXT turn". The first
+    // end-of-turn after tagging is therefore a grace turn, not a save. Consume
+    // the one-shot flag and roll normally from the following turn onward.
+    if (meta.skipFirstEndOfTurn) {
+      try { await stillPresent.update({ [`flags.${MODULE_ID}.repeatingSave.skipFirstEndOfTurn`]: false }); }
+      catch (err) { console.warn(`${MODULE_ID} | RepeatingSave: couldn't clear skipFirstEndOfTurn for ${actor.name}:`, err); }
+      console.log(`${MODULE_ID} | RepeatingSave[${source}] ${actor.name} — grace turn, re-save comes at the end of the NEXT turn ("${eff.name}")`);
+      return true;
+    }
+
     const ability = String(meta.ability).toLowerCase();
     const dc      = Number(meta.dc);
     const spell   = meta.spellName ?? eff.name;
 
-    // ── Roll the save through dnd5e's API ──
-    // Use the actor's standard save roll so flags/buffs/penalties all apply.
-    let rollResult = null;
-    let rollTotal  = null;
-    try {
-      // dnd5e 5.x API: rollSavingThrow returns array OR single roll
-      const rolls = await actor.rollSavingThrow({
-        ability,
-        target: dc,
-        // We don't want a chat card from the system itself — we'll post
-        // our own custom one with the spell context. messageConfig=false
-        // suppresses the system's auto-chat.
-      }, undefined, { create: false });
-
-      const roll = Array.isArray(rolls) ? rolls[0] : rolls;
-      if (roll) {
-        rollResult = roll;
-        rollTotal  = Number(roll.total ?? roll._total ?? null);
-      }
-    } catch (err) {
-      console.warn(`${MODULE_ID} | RepeatingSave: rollSavingThrow failed for ${actor.name}:`, err);
-      return true; // effect persists if we can't roll
+    // ── Roll the save — the OWNER rolls their own dice ─────────────────────
+    // A player-owned actor (PC, summon, familiar, pet) rolls its OWN re-save on
+    // the owner's client — dnd5e's native save dialog, their own DSN dice. Only
+    // a GM-only NPC — or a player-owned actor whose owner is offline — rolls
+    // silently on the GM side, so a turn never hangs. (Johnny 2026-07-25: "the
+    // owner rolls for summons and whatever else — I don't want automatic rolls.")
+    const rollInfo = await this._obtainReSaveRoll(actor, ability, dc, spell);
+    if (!rollInfo || !Number.isFinite(rollInfo.total)) {
+      console.warn(`${MODULE_ID} | RepeatingSave: no roll obtained for ${actor.name} re-save vs ${spell}`);
+      return true; // effect persists if we couldn't roll
     }
-
-    if (!Number.isFinite(rollTotal)) {
-      console.warn(`${MODULE_ID} | RepeatingSave: no roll total for ${actor.name} re-save vs ${spell}`);
-      return true;
-    }
-
+    const rollTotal = rollInfo.total;
+    const natural   = Number.isFinite(rollInfo.natural) ? rollInfo.natural : null;
+    const modifier  = (natural != null) ? rollTotal - natural : null;
     const passed = rollTotal >= dc;
     const abilityLabel = (CONFIG.DND5E?.abilities?.[ability]?.label) ?? ability.toUpperCase();
 
-    // ── Post chat card ──
-    await this._postChatCard({
-      actor, spell, ability, abilityLabel, dc,
-      total: rollTotal, passed,
-      roll: rollResult,
-      source,
-    });
+    // DSN: a GM-side roll (NPC / offline owner) fires the dice here; a player's
+    // OWN roll already animated (and settled — see playerRollReSave) on their
+    // client, so `rollInfo.roll` is set only for the GM-side path.
+    // THE DICE RULE (Johnny 2026-07-27): the card NEVER appears while the dice
+    // are still rolling — wait for DSN to finish + a 500ms beat. Raced against
+    // a 3s cap so a wedged DSN can never stall the turn (the await-external-
+    // promises lesson: never trust an external module's promise unguarded).
+    if (rollInfo.roll) {
+      safeShowForRoll(rollInfo.roll, "repeating save");
+      await awaitDiceSettle();
+    }
+
+    // ⚠️ RESOLVE FIRST, ANNOUNCE SECOND (2026-07-28).
+    // The card used to be posted HERE, before either branch ran, and decided
+    // whether to say "petrified" from meta.onFailureApply — the condition we
+    // INTENDED to apply. So a refused or failed escalation still produced a
+    // card announcing the stone. Johnny read that card and reasonably believed
+    // his immune Earth Elemental had been petrified; the token never was.
+    // The card now posts after the outcome is known and reports the condition
+    // that ACTUALLY landed (null if none did).
+    let escalatedTo = null;
 
     if (passed) {
       // Effect ends — delete. Existing cleanup chain handles dependents.
@@ -358,9 +726,58 @@ export class RepeatingSaveEngine {
           console.warn(`${MODULE_ID} | RepeatingSave: failed to delete "${eff.name}" from ${actor.name}:`, err);
         }
       }
+      await this._postChatCard({
+        actor, spell, ability, abilityLabel, dc,
+        total: rollTotal, natural, modifier, passed,
+        onFailureApply: null, source,
+      });
       return false;
     } else {
+      // ── Escalation on failure (staged conditions, e.g. a petrifying gaze) ──
+      // Optional directive stamped by the gaze engine. Normally a failed
+      // re-save just means the effect persists; for a STAGED condition a
+      // failure ADVANCES it to something worse (turning-to-stone → petrified).
+      // Fail-safe: if anything here throws we fall through and simply leave
+      // the staging effect in place. A bug must never break a turn.
+      if (meta.onFailureApply) {
+        try {
+          const { ConditionLibrary } = await import("./condition-library.mjs");
+          // Remove the staging effect FIRST, while we still hold a live
+          // reference to it, THEN apply the end state. Doing it the other way
+          // around left the "turning to stone" restrained tag stuck on the
+          // token alongside the petrified condition.
+          try { await stillPresent.delete(); } catch (_) { /* already gone */ }
+          // Check the RESULT before announcing it. This used to log "ESCALATED"
+          // unconditionally — so a refused apply (immunity) still printed the
+          // escalation to console and still drove the card's petrified styling.
+          // A log that reports what we ASKED for instead of what HAPPENED sent
+          // me chasing the wrong root cause for an hour.
+          const applied = await ConditionLibrary.applyEffect(actor, meta.onFailureApply, { source: spell });
+          if (applied) {
+            escalatedTo = meta.onFailureApply;
+            console.log(`${MODULE_ID} | RepeatingSave[${source}] ${actor.name} FAILED ${abilityLabel} ${rollTotal} vs DC ${dc} — ESCALATED to "${meta.onFailureApply}" (${spell})`);
+          } else {
+            console.log(`${MODULE_ID} | RepeatingSave[${source}] ${actor.name} FAILED ${abilityLabel} ${rollTotal} vs DC ${dc} — but is IMMUNE to "${meta.onFailureApply}"; staging cleared, nothing applied (${spell})`);
+          }
+          await this._postChatCard({
+            actor, spell, ability, abilityLabel, dc,
+            total: rollTotal, natural, modifier, passed,
+            onFailureApply: escalatedTo, source,
+          });
+          return false;
+        } catch (err) {
+          console.warn(`${MODULE_ID} | RepeatingSave: escalation to "${meta.onFailureApply}" failed for ${actor.name} — leaving staging effect in place:`, err);
+        }
+      }
       console.log(`${MODULE_ID} | RepeatingSave[${source}] ${actor.name} FAILED ${abilityLabel} ${rollTotal} vs DC ${dc} — "${eff.name}" persists`);
+      // Reached either because there was no escalation directive, or because the
+      // escalation threw and we deliberately left the staging effect in place.
+      // Either way nothing new landed — the card must not claim it did.
+      await this._postChatCard({
+        actor, spell, ability, abilityLabel, dc,
+        total: rollTotal, natural, modifier, passed,
+        onFailureApply: null, source,
+      });
       return true;
     }
   }
@@ -434,45 +851,61 @@ export class RepeatingSaveEngine {
     }
   }
 
-  static async _postChatCard({ actor, spell, ability, abilityLabel, dc, total, passed, roll, source }) {
+  static async _postChatCard({ actor, spell, ability, abilityLabel, dc, total, natural, modifier, passed, onFailureApply, source }) {
+    // SAME look as the regular save card (Johnny 2026-07-27: "it still is just a
+    // save card — why did you make up a new format?"). Black-gold d20 face from
+    // the save engine's own helper, "raw = total" in result colors, PASS/FAIL
+    // badge, and the footer line carries the outcome (→ Petrified / breaks free).
+    const petrifies   = !passed && onFailureApply === "petrified";
+    const resultLabel = passed ? "PASS" : "FAIL";
+    const sourceLabel = String(source ?? "").startsWith("worldTime") ? "out of combat" : "end of turn";
+    const footer = passed
+      ? `<b>${actor.name}</b> breaks free — the effect ends.`
+      : (petrifies
+          ? `<i class="fas fa-skull"></i> <b>${actor.name}</b> → <b class="ace-qol-rsv2-petr">Petrified</b>`
+          : `<i class="fas fa-skull"></i> <b>${actor.name}</b> → still <b>Restrained</b> — re-save at the end of their next turn`);
     try {
-      const resultClass = passed ? "ace-qol-rs-pass" : "ace-qol-rs-fail";
-      const resultLabel = passed ? "SUCCESS" : "FAIL";
-      const sourceLabel = source.startsWith("worldTime") ? "out of combat" : "end of turn";
-
+      const { aceD20FaceImg } = await import("./save-engine.mjs");
+      const numCls = passed ? "ace-qol-rsv2-green" : "ace-qol-rsv2-red";
       const html = `
-        <div class="ace-qol-repeating-save">
-          <div class="ace-qol-rs-header">
-            <i class="fas fa-redo-alt"></i>
-            <strong>${actor.name}</strong> — Repeating save vs <strong>${spell}</strong>
-            <span class="ace-qol-rs-source">(${sourceLabel})</span>
+        <div class="ace-qol-rsv2">
+          <div class="ace-qol-rsv2-head">
+            <i class="fas fa-hourglass-half"></i>&nbsp;<b>${spell}</b>&nbsp;— repeating ${abilityLabel} save, DC ${dc}
+            <span class="ace-qol-rsv2-src">${sourceLabel}</span>
           </div>
-          <div class="ace-qol-rs-body">
-            <span class="ace-qol-rs-ability">${abilityLabel} save</span>
-            <span class="ace-qol-rs-roll">${total}</span>
-            <span class="ace-qol-rs-dc">vs DC ${dc}</span>
-            <span class="ace-qol-rs-result ${resultClass}">${resultLabel}</span>
+          <div class="ace-qol-rsv2-row">
+            ${aceD20FaceImg(Number.isFinite(natural) ? natural : total, { size: 46 })}
+            <span class="ace-qol-rsv2-name">${actor.name}</span>
+            <span class="ace-qol-rsv2-math"><span class="${numCls}">${Number.isFinite(natural) ? natural : "—"}</span> = <span class="${numCls}">${Number.isFinite(total) ? total : "—"}</span></span>
+            <span class="ace-qol-rsv2-badge ${passed ? "ace-qol-rsv2-pass" : "ace-qol-rsv2-fail"}">${resultLabel}</span>
           </div>
-          ${passed ? `<div class="ace-qol-rs-outcome">${actor.name} shakes off the effect.</div>`
-                   : `<div class="ace-qol-rs-outcome">${actor.name} remains affected.</div>`}
+          <div class="ace-qol-rsv2-foot ${passed ? "ace-qol-rsv2-foot-pass" : "ace-qol-rsv2-foot-fail"}">${footer}</div>
         </div>
       `;
-
-      await ChatMessage.create({
+      const msg = await ChatMessage.create({
         speaker: ChatMessage.getSpeaker({ actor }),
         content: html,
-        rolls: roll ? [roll] : [],
-        type: roll ? CONST.CHAT_MESSAGE_STYLES?.ROLL ?? 0 : 0,
         flags: {
           [MODULE_ID]: {
             type: "repeatingSave",
             actorId: actor.id,
-            spell, ability, dc, total, passed, source,
+            spell, ability, dc, total, natural, modifier, passed, source,
           },
         },
       });
+      console.log(`${MODULE_ID} | RepeatingSave card posted (${passed ? "PASS" : (petrifies ? "FAIL → Petrified" : "FAIL")}) for ${actor.name} — message ${msg?.id ?? "?"}`);
     } catch (err) {
-      console.warn(`${MODULE_ID} | RepeatingSave: chat card failed:`, err);
+      // A re-save must NEVER resolve invisibly — if the styled card failed,
+      // post a bare-bones one so the table always sees the outcome.
+      console.warn(`${MODULE_ID} | RepeatingSave: styled card failed — posting fallback:`, err);
+      try {
+        await ChatMessage.create({
+          speaker: ChatMessage.getSpeaker({ actor }),
+          content: `<b>${actor.name}</b> — ${spell} re-save: <b>${total}</b> vs DC ${dc} — <b>${resultLabel}${petrifies ? " → Petrified" : ""}</b>`,
+        });
+      } catch (err2) {
+        console.error(`${MODULE_ID} | RepeatingSave: even the fallback card failed:`, err2);
+      }
     }
   }
 }

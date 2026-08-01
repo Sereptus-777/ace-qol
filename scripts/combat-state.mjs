@@ -15,6 +15,40 @@ import { Situation } from "./situation.mjs";
 import { RulesBrain } from "./rules/rules-brain.mjs";
 import { aceDistanceFt } from "./geometry-utils.mjs";
 
+// ─── Creature snapshot access (2026-07-28) ───────────────────────────────────
+// combat-state sits BELOW the profile layer — attacker-profile imports this
+// file, so importing the profiles back would be circular. It goes straight to
+// the single reader instead, which is the same source the profiles are built
+// from: one set of facts, whichever door you come through.
+//
+// This file had 25 raw `actor.system.*` reads — ability modifiers a dozen
+// times, proficiency four times, HP five, plus size, creature type, exhaustion
+// and armour proficiency. That is what "the pipeline doesn't read the creature"
+// looked like in practice.
+//
+// Cached briefly so one attack resolution doesn't rebuild the same snapshot a
+// dozen times, and expired fast because a creature's state changes mid-fight.
+const _aceCreatureCache = new Map();
+function _aceCreature(actor, token = null) {
+  if (!actor) return {};
+  const key = actor.uuid ?? actor.id;
+  const hit = _aceCreatureCache.get(key);
+  if (hit) return hit;
+  let c = {};
+  try { c = Situation.readCreature(actor, token) ?? {}; } catch (_) { c = {}; }
+  _aceCreatureCache.set(key, c);
+  setTimeout(() => _aceCreatureCache.delete(key), 3000);
+  return c;
+}
+/** Ability modifier straight from the snapshot. */
+const _aceMod   = (actor, k) => Number(_aceCreature(actor)?.abilities?.[k]?.mod ?? 0) || 0;
+/** Raw ability score (DCs computed off the score rather than the modifier). */
+const _aceScore = (actor, k) => Number(_aceCreature(actor)?.abilities?.[k]?.score ?? 10) || 10;
+/** Proficiency bonus. */
+const _aceProf  = (actor, dflt = 0) => Number(_aceCreature(actor)?.prof ?? dflt) || dflt;
+/** Hit points. */
+const _aceHp    = (actor) => _aceCreature(actor)?.hp ?? { value: 0, max: 0, temp: 0 };
+
 // ─── Physical damage types (bypass checks) ──────────────────────────────────
 const PHYSICAL_TYPES = new Set(["bludgeoning", "piercing", "slashing"]);
 
@@ -158,7 +192,7 @@ export class CombatState {
     // 2024 RAW: 10-level flat -N penalty model — the dnd5e system applies
     //           its own per-level d20 penalty via addRollExhaustion. ACE QOL
     //           must NOT stack 2014-style disadvantage on top in 2024 worlds.
-    const exhaustion = attackerActor.system?.attributes?.exhaustion ?? 0;
+    const exhaustion = _aceCreature(attackerActor)?.exhaustion ?? 0;
     if (exhaustion >= 3 && CombatState.getActiveEdition(attackerActor) === "2014") {
       disadvantageSources.push({ source: "attacker", reason: `Attacker EXHAUSTION ${exhaustion} (2014 L3+) → attack disadvantage` });
     }
@@ -302,7 +336,7 @@ export class CombatState {
     } catch (_) { /* non-fatal */ }
 
     // ── Heavy Weapon + Small Creature ───────────────────────────────────
-    const atkSize = attackerActor.system?.traits?.size ?? attackerActor.system?.details?.size ?? "medium";
+    const atkSize = _aceCreature(attackerActor)?.size ?? "medium";
     if (["tiny", "sm"].includes(atkSize) && itemProps.has("hvy")) {
       disadvantageSources.push({ source: "attacker", reason: "SMALL CREATURE + HEAVY WEAPON → attack disadvantage" });
     }
@@ -335,7 +369,7 @@ export class CombatState {
       } catch (_) { /* defensive — never break combat-state on a malformed item */ }
       if (equippedArmor) {
         const profKey = ARMOR_TYPE_TO_PROF[equippedArmor.system.armor.type];
-        const profs = attackerActor.system?.traits?.armorProf?.value;
+        const profs = _aceCreature(attackerActor)?.armorProf;
         const hasProf = (profs?.has?.(profKey) === true)
                      || (Array.isArray(profs) && profs.includes(profKey));
         if (!hasProf) {
@@ -466,7 +500,7 @@ export class CombatState {
 
     // ── Protection from Evil/Good on Target ─────────────────────────────
     if (CombatState._hasEffect(targetActor, "Protection from Evil and Good")) {
-      const atkType = attackerActor.system?.details?.type?.value ?? "";
+      const atkType = _aceCreature(attackerActor)?.type ?? "";
       if (["aberration", "celestial", "elemental", "fey", "fiend", "undead"].includes(atkType)) {
         disadvantageSources.push({ source: "target", reason: `Target has PROTECTION FROM EVIL/GOOD → disadvantage (attacker is ${atkType})` });
       }
@@ -985,7 +1019,7 @@ export class CombatState {
       if (gwmEdition === "2024") {
         const propsX = item?.system?.properties ?? new Set();
         if (propsX.has?.("hvy")) {
-          const prof = attackerActor.system?.attributes?.prof ?? 2;
+          const prof = _aceProf(attackerActor, 2);
           attackerBonuses.push({
             name: "Great Weapon Master",
             formula: `${prof}`,
@@ -1008,7 +1042,7 @@ export class CombatState {
     if (isRanged && CombatState._hasFeature(attackerActor, "Sharpshooter")) {
       const shsEdition = CombatState.getActiveEdition(attackerActor);
       if (shsEdition === "2024") {
-        const prof = attackerActor.system?.attributes?.prof ?? 2;
+        const prof = _aceProf(attackerActor, 2);
         attackerBonuses.push({
           name: "Sharpshooter",
           formula: `${prof}`,
@@ -1062,7 +1096,7 @@ export class CombatState {
         // Fighting style = RAW; Dual Wielder grant = explicit house rule only.
         if (hasTWFStyle || dwHouseRule) {
           const abilKey = itemSysX.ability || (propsX.has?.("fin") ? "dex" : "str");
-          const abilMod = attackerActor.system?.abilities?.[abilKey]?.mod ?? 0;
+          const abilMod = _aceMod(attackerActor, abilKey);
           if (abilMod > 0) {
             const reasonSource = hasTWFStyle
               ? "Two-Weapon Fighting style"
@@ -1089,7 +1123,7 @@ export class CombatState {
     // Curse is stored as `flags.ace-qol.hexbladeCurse = { targetUuid, appliedAt }`
     // — set via `CombatState.applyHexbladeCurse(attacker, targetToken)`.
     if (CombatState._isHexbladeCursedTarget(attackerActor, targetToken)) {
-      const prof = attackerActor.system?.attributes?.prof ?? 2;
+      const prof = _aceProf(attackerActor, 2);
       attackerBonuses.push({ name: "Hexblade's Curse", formula: `${prof}`, type: damageTypes[0] ?? "force", reason: `Hexblade's Curse → +${prof} damage vs cursed target` });
     }
 
@@ -1181,7 +1215,7 @@ export class CombatState {
         });
       } else {
         // 2014 RAW: CHA modifier (minimum 1), necrotic, no choice.
-        const chaMod = attackerActor.system?.abilities?.cha?.mod ?? 0;
+        const chaMod = _aceMod(attackerActor, "cha");
         const damage = Math.max(1, chaMod);
         attackerBonuses.push({
           name: "Lifedrinker",
@@ -1297,12 +1331,12 @@ export class CombatState {
             const isRanged = String(item.system?.actionType ?? "").startsWith("r")
               || item.system?.type?.value === "martialR" || item.system?.type?.value === "simpleR";
             const abil = isRanged ? "dex" : "str";
-            const score = Number(attackerActor.system?.abilities?.[abil]?.value ?? 10);
+            const score = _aceScore(attackerActor, abil);
             if (score < 13) {
               disadvantageSources.push({ source: "weapon", reason: `Heavy weapon with ${abil.toUpperCase()} ${score} (< 13) → attack disadvantage (2024 Heavy property)` });
             }
           } else {
-            const size = String(attackerActor.system?.traits?.size ?? "med");
+            const size = String(_aceCreature(attackerActor)?.size ?? "med");
             if (size === "sm" || size === "tiny") {
               disadvantageSources.push({ source: "weapon", reason: "Small creature wielding a Heavy weapon → attack disadvantage (2014 Heavy property)" });
             }
@@ -1602,18 +1636,13 @@ export class CombatState {
   }
 
   /** Get all statuses from an actor — checks actor.statuses + effects + token */
-  static _getStatuses(actor, token = null) {
-    const statuses = new Set(actor.statuses ?? []);
-    // Also check effects directly
-    for (const effect of actor.effects ?? []) {
-      if (effect.disabled) continue;
-      for (const s of (effect.statuses ?? [])) statuses.add(s);
-    }
-    // Check token document
-    if (token?.document?.hasStatusEffect) {
-      // Can't iterate all, but at least we have the Set from above
-    }
-    return statuses;
+  static _getStatuses(actor, _token = null) {
+    // Delegates to THE status reader (Rule #1 convergence, 2026-07-27). The
+    // union logic that used to live here now lives in Situation.readStatuses,
+    // so the attack flow, the save flow, the profiles and the watchdog all see
+    // exactly the same conditions — no more divergent copies to drift apart
+    // (the Magic Resistance lesson).
+    return Situation.readStatuses(actor);
   }
 
   /**
@@ -1696,7 +1725,7 @@ export class CombatState {
       const blocker = blockingStatuses.find(s => ally.statuses?.has(s));
       if (blocker) { log(`  ✗ ${tokName}: status "${blocker}"`); continue; }
 
-      const allyHp = ally.system?.attributes?.hp?.value;
+      const allyHp = _aceHp(ally)?.value;
       if (allyHp !== undefined && allyHp !== null && allyHp <= 0) {
         log(`  ✗ ${tokName}: HP ${allyHp}`); continue;
       }
@@ -1824,10 +1853,11 @@ export class CombatState {
   }
 
   static _hasFeature(actor, name) {
-    const lower = name.toLowerCase();
-    return actor.items?.some(i =>
-      (i.type === "feat" || i.type === "class") && i.name?.toLowerCase().includes(lower)
-    ) ?? false;
+    // Delegates to THE one feature reader (Rule #1 convergence, 2026-07-27) —
+    // every attack-flow feature check (Pack Tactics, Assassinate, Magic
+    // Resistance, cleave detection, …) and every save-flow check now runs
+    // through the same roster the profiles carry. Same match semantics.
+    return Situation.hasFeature(actor, name);
   }
 
   /** Check if actor has a named active effect */
@@ -1885,7 +1915,7 @@ export class CombatState {
       if (blockingStatuses.some(s => token.actor.statuses?.has(s))) continue;
 
       // HP block — token at 0 HP doesn't count even if no status set
-      const allyHp = token.actor.system?.attributes?.hp?.value;
+      const allyHp = _aceHp(token.actor)?.value;
       if (allyHp !== undefined && allyHp !== null && allyHp <= 0) continue;
 
       // Defeated-combatant block — combat tracker explicitly defeated
@@ -1968,7 +1998,7 @@ export class CombatState {
       const auraRange = paladinLevel >= 18 ? 30 : 10;
 
       if (dist <= auraRange) {
-        const chaMod = token.actor.system?.abilities?.cha?.mod ?? 0;
+        const chaMod = _aceMod(token.actor, "cha");
         if (chaMod > bestBonus) bestBonus = chaMod;
       }
     }
@@ -2055,8 +2085,36 @@ export class CombatState {
     return 0;
   }
 
-  /** Get all damage types from an item */
-  static _getItemDamageTypes(item) {
+  /**
+   * Damage types for an action.
+   *
+   * ⚠️ PASS THE ACTIVITY (2026-07-28). This used to take the item alone and
+   * union the damage of EVERY activity on it. On a single-activity item that's
+   * harmless, but on a multi-activity magic item it is flatly wrong: firing the
+   * Staff of the Stormforger's Thunderstorm of Misery (8d6 lightning) also
+   * dragged in Tornado Takedown's 1d6 bludgeoning + 2d6 lightning, so the save
+   * card advertised bludgeoning damage the storm does not deal. Johnny caught it
+   * live — "I did not push Tornado Takedown. I pushed the Storm one."
+   *
+   * When the used activity is known it is the ONLY source. The item-wide sweep
+   * survives solely as the fallback for callers that genuinely have no activity
+   * (legacy pre-activity data), and it is exactly as wrong as it always was —
+   * so give it an activity wherever one exists.
+   *
+   * @param {Item5e} item          The item.
+   * @param {Activity} [activity]  The activity actually being used.
+   */
+  static _getItemDamageTypes(item, activity = null) {
+    if (activity) {
+      const types = new Set();
+      for (const part of (activity.damage?.parts ?? [])) {
+        if (part?.types) for (const t of part.types) types.add(t);
+      }
+      // An activity that deals no damage (pure condition save) legitimately
+      // returns nothing — do NOT fall back to the item, or we reintroduce the
+      // bug for every save-only ability on a mixed item.
+      return [...types];
+    }
     const types = new Set();
     const sys = item?.system ?? {};
     if (sys.activities) {
@@ -2134,7 +2192,7 @@ export class CombatState {
       if (actor.getFlag?.(MODULE_ID, "radiantSoul.usedThisTurn")) return 0;
     } catch (_) { /* flag access failed — treat as unused */ }
 
-    const chaMod = Number(actor.system?.abilities?.cha?.mod ?? 0);
+    const chaMod = _aceMod(actor, "cha");
     if (chaMod <= 0) return 0;
 
     return chaMod;
@@ -2185,7 +2243,7 @@ export class CombatState {
       if (game.settings.get(MODULE_ID, "empoweredEvocationEnabled") === false) return 0;
     } catch (_) { /* setting not registered yet — proceed */ }
     if (!CombatState._hasFeature(actor, "Empowered Evocation")) return 0;
-    const intMod = Number(actor.system?.abilities?.int?.mod ?? 0);
+    const intMod = _aceMod(actor, "int");
     return intMod > 0 ? intMod : 0;
   }
 
@@ -2205,7 +2263,7 @@ export class CombatState {
       if (game.settings.get(MODULE_ID, "agonizingBlastEnabled") === false) return 0;
     } catch (_) { /* setting not registered yet — proceed */ }
     if (!CombatState._hasFeature(actor, "Agonizing Blast")) return 0;
-    const chaMod = Number(actor.system?.abilities?.cha?.mod ?? 0);
+    const chaMod = _aceMod(actor, "cha");
     return chaMod > 0 ? chaMod : 0;
   }
 
@@ -2231,7 +2289,7 @@ export class CombatState {
       if (game.settings.get(MODULE_ID, "potentSpellcastingEnabled") === false) return 0;
     } catch (_) { /* setting not registered yet — proceed */ }
     if (!CombatState._hasFeature(actor, "Potent Spellcasting")) return 0;
-    const wisMod = Number(actor.system?.abilities?.wis?.mod ?? 0);
+    const wisMod = _aceMod(actor, "wis");
     return wisMod > 0 ? wisMod : 0;
   }
 
@@ -2304,7 +2362,7 @@ export class CombatState {
     const school = String(spellItem.system?.school ?? "").toLowerCase();
     if (school !== "evo" && school !== "evocation") return 0;
 
-    const intMod = Number(actor.system?.abilities?.int?.mod ?? 0);
+    const intMod = _aceMod(actor, "int");
     return intMod > 0 ? intMod : 0;
   }
 
@@ -2337,7 +2395,7 @@ export class CombatState {
     // Feature presence — Agonizing Blast is typically a feat / invocation item.
     if (!CombatState._hasFeature(actor, "Agonizing Blast")) return 0;
 
-    const chaMod = Number(actor.system?.abilities?.cha?.mod ?? 0);
+    const chaMod = _aceMod(actor, "cha");
     return chaMod > 0 ? chaMod : 0;
   }
 
@@ -2368,7 +2426,7 @@ export class CombatState {
     // feature named "Potent Spellcasting" in the SRD content.
     if (!CombatState._hasFeature(actor, "Potent Spellcasting")) return 0;
 
-    const wisMod = Number(actor.system?.abilities?.wis?.mod ?? 0);
+    const wisMod = _aceMod(actor, "wis");
     return wisMod > 0 ? wisMod : 0;
   }
 
@@ -2632,11 +2690,11 @@ export class CombatState {
       if (opts.cursedTargetDied) {
         const warlockClass = attackerActor.items?.find(i => i.type === "class" && i.name?.toLowerCase().includes("warlock"));
         const warlockLevel = warlockClass?.system?.levels ?? 0;
-        const chaMod       = attackerActor.system?.abilities?.cha?.mod ?? 0;
+        const chaMod       = _aceMod(attackerActor, "cha");
         const heal         = Math.max(1, warlockLevel + chaMod);
         if (heal > 0 && warlockLevel > 0) {
-          const currentHP = attackerActor.system?.attributes?.hp?.value ?? 0;
-          const maxHP     = attackerActor.system?.attributes?.hp?.max ?? 0;
+          const currentHP = _aceHp(attackerActor)?.value ?? 0;
+          const maxHP     = _aceHp(attackerActor)?.max ?? 0;
           const newHP     = Math.min(maxHP, currentHP + heal);
           await attackerActor.update({ "system.attributes.hp.value": newHP });
           if (!opts.silent) {
@@ -2809,8 +2867,8 @@ export class CombatState {
     const curse = attackerActor.getFlag?.(MODULE_ID, "hexbladeCurse");
     if (!curse) return false;
 
-    const hp = attackerActor.system?.attributes?.hp?.value ?? null;
-    const statuses = attackerActor.statuses ?? new Set();
+    const hp = _aceHp(attackerActor)?.value ?? null;
+    const statuses = Situation.readStatuses(attackerActor);   // THE status reader (converged 2026-07-27)
     const INCAP_STATUSES = ["incapacitated", "stunned", "paralyzed", "petrified", "unconscious", "dead"];
     const isIncap = (hp !== null && hp <= 0) || INCAP_STATUSES.some(s => statuses.has?.(s));
     if (!isIncap) return false;

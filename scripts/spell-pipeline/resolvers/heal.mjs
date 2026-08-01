@@ -10,6 +10,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "../../ace-qol.mjs";
+import { safeShowForRoll } from "../../dsn-utils.mjs";
 
 export class HealResolver {
 
@@ -131,7 +132,7 @@ export class HealResolver {
 
         try {
           // Sound: rolling-the-dice + heal pop (optional, depends on dnd5e SFX config)
-          if (game.dice3d) game.dice3d.showForRoll(roll, game.user, true);
+          safeShowForRoll(roll, "healing");
         } catch (_) { /* non-fatal */ }
       } catch (err) {
         console.error(`${MODULE_ID} | HealResolver: roll/apply failed for ${c.name}:`, err);

@@ -19,6 +19,9 @@
 // supporting shape lands (save-area, summon, teleport, …).
 // ──────────────────────────────────────────────────────────────────────────────
 
+/** Spectral purple for the Ghostly Howl wave (Johnny 2026-07-29 — was pale blue). */
+const GHOSTLY_WAVE_COLOR = 0xa46bff;
+
 export const FEATURE_REGISTRY = {
   // ── Frightful Presence (emanation save) ──────────────────────────────────
   // Each enemy within range makes a Wis save or is Frightened for 1 min, with
@@ -81,7 +84,19 @@ export const FEATURE_REGISTRY = {
     // Deafened creatures (and, later, sound-blocked ones) auto-ignore it.
     requiresHearing: true,
     picker: { allowSelf: false, excludeDead: true },
-    fx: { kind: "ghostlyWave", radiusFt: 30, color: 0xbfeaff, sound: "PCs/KING/Wolf Howl.ogg" },
+    // ⚠️ NO DEFAULT SOUND — ON PURPOSE (2026-07-29).
+    // The original default pointed at a file that doesn't exist, so ACE was
+    // silent here and the howl Johnny always heard came from ANOTHER source
+    // (Automated Animations matches items by name — see forge-aa-integration).
+    // "Fixing" the dead path on 07-28 didn't restore a missing howl, it added a
+    // SECOND one: a short blip over the top of the real howl. Johnny, live:
+    // "it goes beep and then plays… it didn't use to do that."
+    //
+    // Silent by default is correct — we don't own this creature's audio. A GM
+    // who wants ACE to play the sound sets `ghostlyHowlSound`, and that still
+    // overrides. Do not put a file back here without checking what else is
+    // already making noise for this item.
+    fx: { kind: "ghostlyWave", radiusFt: 30, color: GHOSTLY_WAVE_COLOR },
     flavorOnConfirm: "King lets out a mournful howl — every creature within 30 ft must make a DC 13 Wisdom save or be Frightened.",
   },
 

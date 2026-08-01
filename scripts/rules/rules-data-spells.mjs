@@ -201,7 +201,7 @@ export const SPELL_RULES = {
     level: 3, school: "con",
     concentration: true,
     expectedArea: { type: "sphere", size: 20 },
-    space: { obscurement: "heavy", kind: "magicalDarkness", pierceBy: ["truesight", "blindsight"], silence: false, difficultTerrain: 2, light: { mode: "override", level: 1 }, stampInside: ["blinded"] },
+    space: { obscurement: "heavy", kind: "magicalDarkness", pierceBy: ["truesight", "blindsight"], silence: false, difficultTerrain: 2, terrainModes: ["walk", "fly"], light: { mode: "override", level: 1 }, stampInside: ["blinded"] },
     notes: "Blinded stamped while inside the void (v1 center-based; RAW says fully within). Cold/acid damage phases stay with spell-timing. Devil's Sight deliberately NOT on the pierce list.",
   },
 
@@ -211,7 +211,7 @@ export const SPELL_RULES = {
     level: 5, school: "con",
     concentration: true,
     expectedArea: { type: "sphere", size: 20 },
-    space: { obscurement: "light", kind: null, pierceBy: [], silence: false, difficultTerrain: 2, light: null },
+    space: { obscurement: "light", kind: null, pierceBy: [], silence: false, difficultTerrain: 2, terrainModes: ["walk", "fly"], light: null },
     notes: "Lightly obscured + difficult terrain. Damage machinery stays with spell-timing.",
   },
 
@@ -223,7 +223,8 @@ export const SPELL_RULES = {
     concentration: false,
     expectedArea: { type: "cube", size: 10 },
     space: { obscurement: null, kind: null, pierceBy: [], silence: false, difficultTerrain: 2, light: null },
-    notes: "Prone save on entry/turn stays with spell-timing. 1-minute duration, no concentration — region dies with the template.",
+    durationSeconds: 60,   // 1 minute, no concentration — expires on its own
+    notes: "Prone save on entry/turn stays with spell-timing. 1-minute duration, no concentration. Before 2026-07-28 nothing ever removed the template, so the region lived forever and stacked with every re-cast.",
   },
 
   // ── Spike Growth — SRD ──────────────────────────────────────────────────────
@@ -282,7 +283,7 @@ export const SPELL_RULES = {
     level: 6, school: "con",
     concentration: true,
     expectedArea: { type: "wall", size: 60 },
-    space: { obscurement: null, kind: null, pierceBy: [], silence: false, difficultTerrain: 4, light: null },
+    space: { obscurement: null, kind: null, pierceBy: [], silence: false, difficultTerrain: 4, terrainModes: ["walk", "fly"], light: null },
     notes: "Blocks line of sight RAW ('blocks line of sight') — sight-blocker walls are a later phase; terrain + the movement-damage path cover the mechanics now.",
   },
 
@@ -307,11 +308,55 @@ export const SPELL_RULES = {
                               // (sight), not blocked — Phase 2 nuance
       silence: false,
       difficultTerrain: 2,
+      terrainModes: ["walk", "fly"],   // webs FILL the cube — flying through is just as slow
       light: null,
     },
     notes: "Flammable: fire burns 5-ft cubes away (2d4 fire, later phase). Needs anchoring surfaces or the web collapses (GM call). Save/restrain machinery remains with save-engine + concentration-widget.",
   },
+
+  // ── Thunderstorm of Misery — Stormforger staff (magic item) ───────────────
+  // "Summon a powerful storm around you in a 50ft radius for 1 minute. The storm
+  //  creates dangerous terrain, making the ground slippery and filled with
+  //  debris, making it difficult for creatures within the area of effect to move
+  //  around. The winds, lightning strikes and heavy rain make it hard for
+  //  creatures to see or hear, imposing disadvantage on any perception checks
+  //  made while within the storm."
+  //
+  // The 8d6 lightning DEX save is the item's own save ACTIVITY and stays there —
+  // this entry owns THE SPACE, exactly like Web: difficult terrain + the
+  // see/hear penalty. Light obscurement is the RAW-equivalent encoding of
+  // "hard to see" (disadvantage on sight Perception, not blocked); `deafened`
+  // is stamped for "hard to hear", which the hearing gate already consumes for
+  // components and audible triggers. (Built 2026-07-27.)
+  "thunderstorm of misery": {
+    srd: false,
+    level: 0, school: "evo",
+    concentration: false,
+    expectedArea: { type: "radius", size: 50 },
+    space: {
+      obscurement: "light",
+      kind: "storm",
+      pierceBy: [],            // driving rain + debris blinds everyone equally
+      silence: false,          // NOT silence — sound exists, it's just drowned out
+      difficultTerrain: 2,     // slippery ground + debris
+      light: null,
+      stampInside: ["deafened"],
+    },
+    durationSeconds: 60,   // 1 minute, no concentration — expires on its own
+    notes: "Stormforger staff, 9 charges, 1 minute, 50-ft radius centred on the wielder. The 8d6 lightning DEX save is the item's save activity. Space owns: difficult terrain + light obscurement (disadvantage on sight Perception) + deafened while inside (howling wind/rain).",
+  },
 };
+
+// ── Item-name aliases ───────────────────────────────────────────────────────
+// The brain looks a space up by the ITEM's name, but a magic item's area
+// ability is an ACTIVITY inside it — the Stormforger staff's storm is one of
+// four activities, so a lookup on "Stormforger" would miss the entry keyed to
+// the ability. Aliasing the item name to the same entry closes that gap, and it
+// is SAFE because a space is only ever built when a TEMPLATE is placed
+// (SpaceEffects hooks createMeasuredTemplate): of this staff's four activities
+// only Thunderstorm of Misery places one — Tornado Takedown targets a single
+// creature and the two flight abilities are self-only. (2026-07-27.)
+SPELL_RULES["stormforger"] = SPELL_RULES["thunderstorm of misery"];
 
 /**
  * Validate one entry against schema v1. Returns an array of problem strings —
@@ -333,6 +378,19 @@ export function validateSpellRuleEntry(name, entry) {
     }
     if (s.difficultTerrain != null && !(Number(s.difficultTerrain) > 1))
       problems.push(`${name}: space.difficultTerrain must be a multiplier > 1 or null`);
+    // Which movement types the terrain actually impedes. Omitted = ground only
+    // (walk), which is RAW for nearly all difficult terrain — a flier above
+    // grease or slippery ground is unaffected. Volume-filling effects opt in
+    // to "fly". Only non-derived actions are meaningful here; crawl/climb/jump
+    // resolve themselves from walk and fly.
+    if (s.terrainModes != null) {
+      if (!Array.isArray(s.terrainModes) || !s.terrainModes.length)
+        problems.push(`${name}: space.terrainModes must be a non-empty array or omitted`);
+      else for (const m of s.terrainModes) {
+        if (!["walk", "fly", "swim", "burrow"].includes(m))
+          problems.push(`${name}: space.terrainModes contains unknown movement "${m}"`);
+      }
+    }
     if (s.light != null && (s.light.mode !== "override" || !(s.light.level >= 0 && s.light.level <= 1)))
       problems.push(`${name}: space.light must be { mode: "override", level: 0..1 } or null`);
   }

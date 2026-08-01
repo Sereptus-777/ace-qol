@@ -1510,6 +1510,18 @@ export class QolSettings {
       default: true,
     });
 
+    // Johnny 2026-07-27: "when I reload, the chat log comes up closed. I want
+    // them open by default with a setting." Foundry has no core option for
+    // this — it restores whatever tab/collapse state the client last had.
+    s("chatOpenOnLoad", {
+      name:    "Open the Chat Log on Load",
+      hint:    "After every world load, switch the sidebar to Chat and expand it if it was collapsed. Client-scoped — each person chooses for themselves.",
+      scope:   "client",
+      config:  true,
+      type:    Boolean,
+      default: true,
+    });
+
     s("suppressSystemCards", {
       name:    "Suppress D&D 5e System Chat Cards",
       hint:    "Hide the system's item-use and attack-roll chat cards entirely. Our ace-qol attack card embeds the item description (collapsed under a chevron) so nothing is lost. Disable to fall back to the legacy collapse behavior.",

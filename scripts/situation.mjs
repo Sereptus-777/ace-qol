@@ -53,10 +53,30 @@ export class Situation {
    * Read everything that matters about one creature, RIGHT NOW. Pure / read-only.
    * @returns {object} a structured CreatureRead (see fields below). Null-safe.
    */
+  /**
+   * THE status reader (Rule #1 convergence, 2026-07-27). Union of the actor's
+   * own status set AND the statuses carried by its live, ENABLED effects —
+   * belt-and-braces, because `actor.statuses` can lag or miss a status that an
+   * active effect plainly carries (the robustness combat-state had privately;
+   * now everyone gets it). Every ACE flow — attack, save, watchdog, profiles —
+   * reads conditions through this one function.
+   */
+  static readStatuses(actor) {
+    const out = new Set();
+    try {
+      for (const s of (actor?.statuses ?? [])) out.add(s);
+      for (const effect of (actor?.effects ?? [])) {
+        if (effect.disabled) continue;
+        for (const s of (effect.statuses ?? [])) out.add(s);
+      }
+    } catch (_) { /* null-safe by contract */ }
+    return out;
+  }
+
   static readCreature(actor, token = null) {
     if (!actor) return null;
     const sys = actor.system ?? {};
-    const statuses = actor.statuses instanceof Set ? actor.statuses : new Set();
+    const statuses = Situation.readStatuses(actor);
     const senses = sys.attributes?.senses ?? {};
     const traits = sys.traits ?? {};
 
@@ -105,13 +125,98 @@ export class Situation {
       dr: Situation._traitSet(traits.dr),
       dv: Situation._traitSet(traits.dv),
       ci: Situation._traitSet(traits.ci),
-      magicResistance: !!(traits.dm?.amount || actor.appliedEffects?.some?.(e => /magic\s+resistance/i.test(e.name ?? ""))),
+      // Comprehensive: printed sheet FEATURE + effect-name + trait field. The
+      // feature check was missing here too (Rule #1 sweep, 2026-07-27).
+      magicResistance: Situation.hasFeature(actor, "Magic Resistance")
+        || !!(traits.dm?.amount || actor.appliedEffects?.some?.(e => /magic\s+resistance/i.test(e.name ?? ""))),
       legendaryResistance: Number(sys.resources?.legres?.value ?? 0),
 
       // ── resources (Phase 1 essentials; extend in later phases) ──
       concentrating: !!(actor.appliedEffects ?? actor.effects ?? []).find?.(e =>
         e.statuses?.has?.("concentration") || e.flags?.dnd5e?.concentration),
+
+      // ── features (COMPREHENSIVE roster — Rule #1, 2026-07-27) ──
+      // EVERY feat / class / subclass item on the sheet, name-indexed, so any
+      // engine — attacker side or target side — asks "does it have X" through
+      // ONE reader (Situation.hasFeature) instead of ad-hoc item greps. Both
+      // profiles carry this automatically via the creature snapshot.
+      features: Situation._featureList(actor),
+
+      // ── THE PLAIN NUMBERS (2026-07-28) ──
+      // Added because combat-state was reading these off the actor in 25
+      // places — ability mods a dozen times, proficiency four times, HP five,
+      // exhaustion, armour proficiency. Every one of those is a fact about the
+      // creature, so it belongs in the creature snapshot and both profiles get
+      // it for free. Anything the engines ask about a creature lives HERE.
+      abilities: Object.fromEntries(
+        Object.entries(sys.abilities ?? {}).map(([k, a]) => [k, {
+          mod:   Number(a?.mod ?? 0) || 0,
+          score: Number(a?.value ?? 10) || 10,
+          save:  Number(a?.save?.value ?? a?.save ?? a?.mod ?? 0) || 0,
+        }])
+      ),
+      prof: Number(sys.attributes?.prof ?? 0) || 0,
+      exhaustion: Number(sys.attributes?.exhaustion ?? 0) || 0,
+      hp: {
+        value: Number(sys.attributes?.hp?.value ?? 0) || 0,
+        max:   Number(sys.attributes?.hp?.max ?? 0) || 0,
+        temp:  Number(sys.attributes?.hp?.temp ?? 0) || 0,
+      },
+      armorProf: Situation._traitSet(traits.armorProf),
+
+      // Defense + caster facts the spell pipeline and damage engine ask for.
+      // Same rule as the block above: it's a fact about the creature, so it
+      // lives in the creature snapshot, not re-derived at each call site.
+      ac: Number(sys.attributes?.ac?.value ?? 10) || 10,
+      subtype: String(sys.details?.type?.subtype ?? ""),
+      /** Character level for a PC; CR-derived caster level for an NPC. */
+      level: Number(
+        sys.details?.level
+        ?? sys.details?.spellLevel
+        ?? sys.attributes?.spell?.level
+        ?? 0
+      ) || 0,
+      /** The creature's spellcasting ability key ("int"|"wis"|"cha"|…). */
+      spellcasting: String(sys.attributes?.spellcasting ?? "") || null,
+      /** The creature's spell save DC as the system computes it. */
+      spellDC: Number(sys.attributes?.spelldc ?? sys.attributes?.spell?.dc ?? 0) || 0,
+      /** Spellcasting modifier — the system's own value wins, else the ability. */
+      spellMod: Number(
+        sys.attributes?.spellmod
+        ?? sys.abilities?.[sys.attributes?.spellcasting ?? "int"]?.mod
+        ?? 0
+      ) || 0,
     };
+  }
+
+  /** Full feature roster: every feat / class / subclass item on the sheet. */
+  static _featureList(actor) {
+    try {
+      return (actor.items?.contents ?? actor.items ?? [])
+        .filter(i => i.type === "feat" || i.type === "class" || i.type === "subclass")
+        .map(i => ({ name: i.name ?? "", nameLc: String(i.name ?? "").toLowerCase() }));
+    } catch (_) { return []; }
+  }
+
+  /**
+   * THE feature reader (Rule #1 convergence, 2026-07-27). Accepts a live Actor
+   * OR a readCreature snapshot (or a profile's `creature`). Substring match,
+   * case-insensitive — identical semantics to the old ad-hoc checks, so every
+   * delegated caller behaves exactly as before, from one source of truth.
+   */
+  static hasFeature(subject, name) {
+    const lower = String(name ?? "").toLowerCase();
+    if (!lower) return false;
+    try {
+      if (Array.isArray(subject?.features)) {
+        return subject.features.some(f => f.nameLc.includes(lower));
+      }
+      const actor = subject?.ref ?? subject;
+      return actor?.items?.some?.(i =>
+        (i.type === "feat" || i.type === "class" || i.type === "subclass")
+        && i.name?.toLowerCase().includes(lower)
+      ) ?? false;
+    } catch (_) { return false; }
   }
 
   static _traitSet(t) {

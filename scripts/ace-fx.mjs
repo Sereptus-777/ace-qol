@@ -36,6 +36,11 @@ const DAMAGE_THEME = {
 };
 const DEFAULT_COLOR = 0xbfe2ff;   // soft arcane blue
 
+// Ghostly wave (Ghostly Howl and anything else emanating a sound wave).
+// Was 1150ms — too fast to read as anything, and you couldn't judge the reach.
+// Johnny 2026-07-29: "it could last for one second longer."
+const GHOSTLY_WAVE_MS = 2300;
+
 // Damage types that look right as a body-encrusting impact (frost, char, etc.).
 // Pure physical (bludgeoning/piercing/slashing) is excluded — a sword hit
 // shouldn't coat a creature in frost. Those can get a lighter impact later.
@@ -278,7 +283,25 @@ export class AceFX {
         else { console.warn(`${MODULE_ID} | AceFX: unresolved Sequencer sound key "${src}" — skipping.`); return; }
       }
       const AH = foundry.audio?.AudioHelper ?? globalThis.AudioHelper;
-      AH?.play({ src: file, volume: 0.8, autoplay: true, loop: false });
+
+      // ── Probe before playing (2026-07-28) ──
+      // A configured sound that isn't on disk used to reach AudioHelper and
+      // throw a red "Failed to load audio element …" banner across the GM's
+      // screen mid-combat. That happens for ordinary reasons — the path points
+      // at a world file the GM hasn't added yet, or at a sample-library module
+      // that's installed but empty. A missing OPTIONAL sound is a silent
+      // no-sound, never an error the table has to look at.
+      const url = foundry.utils.getRoute?.(file) ?? file;
+      fetch(url, { method: "HEAD" })
+        .then(res => {
+          if (res.ok) return AH?.play({ src: file, volume: 0.8, autoplay: true, loop: false });
+          console.warn(`${MODULE_ID} | AceFX: sound "${file}" not found — playing silently.`);
+        })
+        .catch(() => {
+          // Probe itself failed (odd host, CORS) — don't let the check block a
+          // sound that might be perfectly fine. Try it.
+          try { AH?.play({ src: file, volume: 0.8, autoplay: true, loop: false }); } catch (_) {}
+        });
     } catch (err) { console.warn(`${MODULE_ID} | AceFX sound play failed:`, err); }
   }
 
@@ -334,11 +357,21 @@ export class AceFX {
       g.blendMode = PIXI.BLEND_MODES.ADD;   // spectral glow reads over dark maps
       layer.addChild(g);
 
-      const start = performance.now();
-      const durMs = 1150;
-      const WAVES = 3;              // staggered ripples
-      const stagger = 0.18;        // fraction of the cycle between waves
-      const lineW = Math.max(3, R * 0.02);
+      // ── A WAVEFORM, NOT A RIPPLE (Johnny 2026-07-29) ──
+      // "I wish it was more like a waveform… a purple waveform emanating out
+      //  from him… it could last for one second longer."
+      // Perfect circles read as a pond ripple. A howl is SOUND, so each ring
+      // now undulates — its radius is modulated around the circle — and the
+      // undulation rolls as the ring travels, which is what sells it as a
+      // wavefront rather than a spreading disc.
+      const start   = performance.now();
+      const durMs   = GHOSTLY_WAVE_MS;
+      const WAVES   = 4;            // staggered wavefronts
+      const stagger = 0.14;         // fraction of the cycle between them
+      const lineW   = Math.max(3, R * 0.022);
+      const LOBES   = 7;            // undulations around the ring — odd = less "flowery"
+      const AMP     = 0.045;        // ±4.5% of the radius; more than this reads as a blob
+      const SEGS    = 72;           // points per ring — smooth at any size
 
       const tick = () => {
         if (g.destroyed) return;
@@ -350,12 +383,26 @@ export class AceFX {
           const wt = t - i * stagger;              // this wave's own progress
           if (wt <= 0 || wt >= 1) continue;
           const ease = 1 - Math.pow(1 - wt, 2);    // ease-out expansion
-          const r = R * ease;
-          const a = (1 - wt) * 0.9;                // fade as it travels
-          // Faint filled wash inside the leading edge, brighter ring on the edge.
-          g.beginFill(color, 0.06 * a); g.drawCircle(0, 0, r); g.endFill();
+          const r    = R * ease;
+          const a    = (1 - wt) * 0.9;             // fade as it travels
+          // Each front rolls at its own rate and starts turned, so they never
+          // line up into one thick wobbling band.
+          const roll = wt * Math.PI * 1.6 + i * 0.9;
+          // Undulation eases in — a wavefront leaves the throat clean and
+          // develops its shape as it travels.
+          const amp  = AMP * Math.min(1, wt * 3);
+
+          const pts = [];
+          for (let s = 0; s <= SEGS; s++) {
+            const th = (s / SEGS) * Math.PI * 2;
+            const rr = r * (1 + amp * Math.sin(LOBES * th + roll));
+            pts.push(Math.cos(th) * rr, Math.sin(th) * rr);
+          }
+
+          // Faint wash inside the leading edge, brighter crest on the edge.
+          g.beginFill(color, 0.05 * a); g.drawPolygon(pts); g.endFill();
           g.lineStyle(lineW * (1 - wt * 0.5), color, a);
-          g.drawCircle(0, 0, r);
+          g.drawPolygon(pts);
         }
         requestAnimationFrame(tick);
       };

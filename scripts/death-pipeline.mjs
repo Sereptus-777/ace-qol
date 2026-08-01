@@ -274,15 +274,18 @@ export class DeathPipeline {
     const { allowPC = false, keepOriginalToken = false, reason = null } = options;
     console.log(`${LOG_PREFIX} ▶ processNPCDeath("${name}")${reason ? ` reason=${reason}` : ""}${allowPC ? " [allowPC]" : ""}${keepOriginalToken ? " [keepToken]" : ""} starting`);
     try {
-      // ── Guard: setting enabled? — auto-recover if disabled ──
+      // ── Guard: setting enabled? OFF MEANS OFF ──────────────────────────
+      // This used to "auto-recover" a disabled setting: it wrote the setting
+      // back to TRUE and converted the corpse anyway, so a GM who deliberately
+      // turned corpse-art off had that choice silently overridden on the next
+      // NPC death — and would only notice by reopening the config panel and
+      // seeing the box re-ticked. A user's switch is the user's switch.
+      // (Audit fix, 2026-07-27.) If something ELSE is flipping this setting
+      // off unexpectedly, this log is now the honest evidence of it rather
+      // than a papered-over symptom.
       if (!game.settings.get(MODULE_ID, "enableDeathPipeline")) {
-        console.warn(`${LOG_PREFIX}   ✗ enableDeathPipeline is OFF — auto-enabling`);
-        try { await game.settings.set(MODULE_ID, "enableDeathPipeline", true); } catch (_) {}
-        // Retry: the setting may have been intentionally off this session
-        if (!game.settings.get(MODULE_ID, "enableDeathPipeline")) {
-          console.warn(`${LOG_PREFIX}   ✗ Could not enable — aborting`);
-          return;
-        }
+        console.log(`${LOG_PREFIX}   ✗ "Convert NPC Tokens to Dead Art" is OFF — skipping (setting respected)`);
+        return;
       }
 
       // ── Invisible-death restore (Johnny 2026-07-10) ──

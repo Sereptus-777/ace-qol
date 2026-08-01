@@ -33,6 +33,29 @@ export class DamageCalculator {
    * Resolves PB / proficiency to a number so the roll needs no @refs.
    * @returns {{formula:string, type:string}|null}
    */
+  /**
+   * Narrow a list of activities to the ONE that was actually used.
+   *
+   * Both damage paths below walk the item's activities and stop at the first
+   * one carrying damage. That is right for a sword and wrong for a staff with
+   * four abilities. When we know which activity fired, hand back only that one
+   * so "first with damage" can't pick a sibling. When we don't, hand the list
+   * back untouched — old behaviour, which is correct for single-activity items.
+   */
+  static _onlyUsedActivity(list, activityId, itemName = "item") {
+    try {
+      if (!activityId || !Array.isArray(list) || list.length < 2) return list;
+      const match = list.find(a => a?.id === activityId || a?._id === activityId);
+      if (!match) {
+        // Told which activity fired but it isn't on this item — don't silently
+        // roll a sibling's dice off the back of a bad id; say so and carry on.
+        console.warn(`${MODULE_ID} | damage: activity "${activityId}" not found on "${itemName}" — falling back to first damaging activity.`);
+        return list;
+      }
+      return [match];
+    } catch (_) { return list; }
+  }
+
   static _parseHitDamage(item, rollData, actor) {
     try {
       const raw = item?.system?.description?.value ?? "";
@@ -50,7 +73,21 @@ export class DamageCalculator {
     } catch (_) { return null; }
   }
 
-  static async rollDamageComponents(item, actor, targetState, isCrit, critRule) {
+  /**
+   * @param {string|null} [activityId]  WHICH activity was actually used.
+   *
+   * ⚠️ WITHOUT THIS, A MULTI-ACTIVITY ITEM ROLLS THE WRONG DICE (2026-07-29).
+   * The activity loop below takes the FIRST activity carrying damage parts and
+   * breaks. On an item with several damaging abilities that is a coin toss:
+   * press one ability, get another one's dice and damage types, with nothing in
+   * the UI to say so. Same failure that rolled Thunderstorm of Misery's 8d6 for
+   * Tornado Takedown — this is the weapon/attack half of it, which survived
+   * that fix because it lives in a different file. Found by an outside review.
+   *
+   * Passing null keeps the old behaviour, which is correct for single-activity
+   * items and for legacy data with no activities at all.
+   */
+  static async rollDamageComponents(item, actor, targetState, isCrit, critRule, activityId = null) {
     const components = [];
     const sys = item.system ?? {};
 
@@ -111,7 +148,7 @@ export class DamageCalculator {
         // Empowered Evocation rider — applies once per spell, on this target only.
         if (targetState.applyEmpoweredEvocation && item?.system?.school === "evo") {
           try {
-            const intBonus = CombatState.getEmpoweredEvocationBonus(actor);
+            const intBonus = CombatState.getEmpoweredEvocationBonus(actor, item);
             if (intBonus > 0) {
               const flatRoll = new Roll(`${intBonus}`);
               await flatRoll.evaluate();
@@ -202,9 +239,11 @@ export class DamageCalculator {
     let usedNativeConfig = false;
     const activities = sys.activities;
     if (activities) {
-      const actList = (typeof activities.forEach === "function")
-        ? [...(activities.values?.() ?? activities)]
-        : (typeof activities === "object" ? Object.values(activities) : []);
+      const actList = DamageCalculator._onlyUsedActivity(
+        (typeof activities.forEach === "function")
+          ? [...(activities.values?.() ?? activities)]
+          : (typeof activities === "object" ? Object.values(activities) : []),
+        activityId, item?.name);
 
       for (const activity of actList) {
         if (!activity?.damage?.parts?.length) continue;
@@ -363,9 +402,11 @@ export class DamageCalculator {
     // ── Fallback: manual formula construction (legacy or getDamageConfig unavailable) ──
     if (!usedNativeConfig) {
       if (activities) {
-        const actList = (typeof activities.forEach === "function")
-          ? [...(activities.values?.() ?? activities)]
-          : (typeof activities === "object" ? Object.values(activities) : []);
+        const actList = DamageCalculator._onlyUsedActivity(
+          (typeof activities.forEach === "function")
+            ? [...(activities.values?.() ?? activities)]
+            : (typeof activities === "object" ? Object.values(activities) : []),
+          activityId, item?.name);
 
         for (const activity of actList) {
           if (!activity?.damage?.parts?.length) continue;
@@ -620,7 +661,7 @@ export class DamageCalculator {
     // the damage card shows the +mod as a clearly-labeled line.
     try {
       if (item?.type === "spell" && item.system?.school === "evo") {
-        const intBonus = CombatState.getEmpoweredEvocationBonus(actor);
+        const intBonus = CombatState.getEmpoweredEvocationBonus(actor, item);
         if (intBonus > 0 && components.length > 0) {
           const flatRoll = new Roll(`${intBonus}`);
           await flatRoll.evaluate();
@@ -651,7 +692,7 @@ export class DamageCalculator {
     // this), GM can manually adjust via the per-component override UI.
     try {
       if (item?.type === "spell" && /eldritch\s*blast/i.test(item.name ?? "")) {
-        const chaBonus = CombatState.getAgonizingBlastBonus(actor);
+        const chaBonus = CombatState.getAgonizingBlastBonus(actor, item);
         if (chaBonus > 0 && components.length > 0) {
           for (const comp of components) {
             comp.total = (comp.total ?? 0) + chaBonus;
@@ -693,7 +734,7 @@ export class DamageCalculator {
     // druid cantrips.) Cantrip-level gate via item.system.level === 0.
     try {
       if (item?.type === "spell" && Number(item.system?.level) === 0) {
-        const wisBonus = CombatState.getPotentSpellcastingBonus(actor);
+        const wisBonus = CombatState.getPotentSpellcastingBonus(actor, item);
         if (wisBonus > 0 && components.length > 0) {
           const flatRoll = new Roll(`${wisBonus}`);
           await flatRoll.evaluate();

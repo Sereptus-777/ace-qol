@@ -30,6 +30,25 @@ import { HealResolver } from "./resolvers/heal.mjs";
 import { BuffResolver } from "./resolvers/buff.mjs";
 import { TemplateResolver } from "./resolvers/template.mjs";
 import { SelfResolver } from "./resolvers/self.mjs";
+import { Situation } from "../situation.mjs";
+
+// ─── Creature snapshot access (2026-07-28) ───────────────────────────────────
+// Facts about a creature come from the ONE reader, never from actor.system —
+// the audit found every pipeline reaching into raw data and getting shapes
+// wrong. Cached briefly; expired fast because state changes mid-fight.
+const _aceCreatureCache = new Map();
+function _aceCreature(actor, token = null) {
+  if (!actor) return {};
+  const key = actor.uuid ?? actor.id;
+  const hit = _aceCreatureCache.get(key);
+  if (hit) return hit;
+  let c = {};
+  try { c = Situation.readCreature(actor, token) ?? {}; } catch (_) { c = {}; }
+  _aceCreatureCache.set(key, c);
+  setTimeout(() => _aceCreatureCache.delete(key), 3000);
+  return c;
+}
+
 
 export class SpellPipeline {
 
@@ -44,9 +63,14 @@ export class SpellPipeline {
   // string. dnd5e 5.x clones/wraps activities between hooks, so the WeakSet
   // dedup silently missed re-fires → double dispatch → double slot consumption
   // + double effect application. (Audit-mandated 2026-06-08.)
-  static _handledActivities = new Set();
+  // key → timestamp. A Map, not a Set: presence alone can't tell a same-cast
+  // double-fire from a legitimate re-cast, and the difference between those two
+  // is the difference between a working ability and a mystery 30s cooldown.
+  static _handledActivities = new Map();
 
-  // Auto-evict handled-activity entries after 30s — bounded memory.
+  // Auto-evict handled-activity entries — bounded memory only. The real
+  // decision is the per-key time window at the call site, so this just stops
+  // the map growing over a long session.
   static _evictHandledActivity(key) {
     setTimeout(() => SpellPipeline._handledActivities.delete(key), 30000);
   }
@@ -158,13 +182,30 @@ export class SpellPipeline {
         // blocked a legit SECOND cast for 30s (Johnny 2026-07-11: "Ghostly Howl
         // won't fire twice in a row — I have to wait ~30s"). Message id has no
         // such collision. Fall back to _cacheKey only when there's no message.
-        const dedupKey = message?.id ?? SpellPipeline._cacheKey(activity);
-        if (SpellPipeline._handledActivities.has(dedupKey)) {
-          console.debug(`${MODULE_ID} | SpellPipeline: duplicate postCreateUsageMessage for ${activity.item?.name} (key=${dedupKey}) — skipped`);
+        // ── REGRESSION GUARD (2026-07-28) ──
+        // The message-id key above assumed a usage message always exists. As of
+        // 0.7.332 ACE stops dnd5e creating one, so `message` arrives as plain
+        // config data with NO id — and this fell straight back to the activity
+        // UUID, which is STABLE across casts. That silently re-armed the exact
+        // 30-second block Johnny reported on 2026-07-11: Ghostly Howl refused to
+        // fire twice in a row until the evict timer expired.
+        //
+        // So the WINDOW has to match how unique the key actually is. A real
+        // message id belongs to exactly one cast, so holding it 30s is free.
+        // The activity UUID belongs to every cast forever, so it may only guard
+        // against dnd5e firing this hook twice for the SAME cast — a same-tick
+        // event. Anything longer is a cooldown the game never asked for.
+        const msgId    = message?.id ?? null;
+        const dedupKey = msgId ?? SpellPipeline._cacheKey(activity);
+        const windowMs = msgId ? 30000 : 400;
+
+        const seenAt = SpellPipeline._handledActivities.get(dedupKey);
+        if (seenAt != null && (Date.now() - seenAt) < windowMs) {
+          console.debug(`${MODULE_ID} | SpellPipeline: duplicate postCreateUsageMessage for ${activity.item?.name} (key=${dedupKey}, within ${windowMs}ms) — skipped`);
           return;
         }
-        SpellPipeline._handledActivities.add(dedupKey);
-        SpellPipeline._evictHandledActivity(dedupKey);  // 30s auto-evict (safety only)
+        SpellPipeline._handledActivities.set(dedupKey, Date.now());
+        SpellPipeline._evictHandledActivity(dedupKey);  // housekeeping only
 
         SpellPipeline._dispatch(activity, message)
           .catch(err => console.error(`${MODULE_ID} | SpellPipeline dispatch threw for ${activity?.item?.name}:`, err));
@@ -248,8 +289,7 @@ export class SpellPipeline {
                     : Number.isFinite(activityLevel)      ? activityLevel
                     : baseLevel;
 
-    const spellMod = actor?.system?.attributes?.spellmod
-                  ?? actor?.system?.abilities?.[actor?.system?.attributes?.spellcasting ?? "int"]?.mod
+    const spellMod = _aceCreature(actor)?.spellMod
                   ?? 0;
 
     const ctx = { entry, item, actor, activity, castLevel, spellMod, message };
@@ -443,9 +483,7 @@ export class SpellPipeline {
 
     const { entry, item, actor, castLevel } = ctx;
     const isSingle  = pickerType === "single" || pickerType === "single-adjacent";
-    const charLevel = actor.system?.details?.level
-      ?? actor.system?.details?.spellLevel
-      ?? actor.system?.attributes?.spell?.level
+    const charLevel = _aceCreature(actor)?.level
       ?? 1;
     const N         = isSingle ? 1 : (entry.countResolver?.(castLevel, charLevel) ?? 1);
     // v0.7.74 AUDIT FIX — was hardcoding rangeFt to 5 for single-adjacent

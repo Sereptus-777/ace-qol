@@ -32,6 +32,25 @@ import { ConditionLibrary } from "./condition-library.mjs";
 // dependency through ace-qol.mjs. We re-export it here so existing
 // imports of `safeShowForRoll` from damage-engine.mjs keep working.
 import { safeShowForRoll, awaitDiceSettle } from "./dsn-utils.mjs";
+import { Situation } from "./situation.mjs";
+
+// ─── Creature snapshot access (2026-07-28) ───────────────────────────────────
+// Facts about a creature come from the ONE reader, never from actor.system —
+// the audit found every pipeline reaching into raw data and getting shapes
+// wrong. Cached briefly; expired fast because state changes mid-fight.
+const _aceCreatureCache = new Map();
+function _aceCreature(actor, token = null) {
+  if (!actor) return {};
+  const key = actor.uuid ?? actor.id;
+  const hit = _aceCreatureCache.get(key);
+  if (hit) return hit;
+  let c = {};
+  try { c = Situation.readCreature(actor, token) ?? {}; } catch (_) { c = {}; }
+  _aceCreatureCache.set(key, c);
+  setTimeout(() => _aceCreatureCache.delete(key), 3000);
+  return c;
+}
+
 export { safeShowForRoll };
 
 export class DamageConstants {
@@ -901,18 +920,18 @@ export class DamageEngine {
       const availableRiders = RiderEngine.detectRiders(actor, {
         actor: targetActor,
         token: firstHit.targetToken,
-        creatureType: targetActor?.system?.details?.type?.value ?? firstHit.target?.creatureType,
-        creatureSubtype: targetActor?.system?.details?.type?.subtype,
-        creatureSize: targetActor?.system?.traits?.size ?? firstHit.target?.creatureSize,
-        currentHP: targetActor?.system?.attributes?.hp?.value ?? firstHit.target?.currentHP,
-        maxHP: targetActor?.system?.attributes?.hp?.max ?? firstHit.target?.maxHP,
+        creatureType: _aceCreature(targetActor)?.type || firstHit.target?.creatureType,
+        creatureSubtype: _aceCreature(targetActor)?.subtype,
+        creatureSize: _aceCreature(targetActor)?.size || firstHit.target?.creatureSize,
+        currentHP: _aceCreature(targetActor)?.hp?.value ?? firstHit.target?.currentHP,
+        maxHP: _aceCreature(targetActor)?.hp?.max ?? firstHit.target?.maxHP,
       }, { isMelee, isRanged, isCrit, item });
 
-      console.log(`${MODULE_ID} | Rider scan: actor=${actor.name}, isMelee=${isMelee}, targetType=${targetActor?.system?.details?.type?.value ?? "unknown"}, riders found=${availableRiders.length}`, availableRiders.map(r => r.name));
+      console.log(`${MODULE_ID} | Rider scan: actor=${actor.name}, isMelee=${isMelee}, targetType=${_aceCreature(targetActor)?.type || "unknown"}, riders found=${availableRiders.length}`, availableRiders.map(r => r.name));
 
       if (availableRiders.length > 0) {
         const targetName = firstHit.target?.name ?? firstHit.name ?? "target";
-        const targetCreatureType = targetActor?.system?.details?.type?.value ?? "";
+        const targetCreatureType = _aceCreature(targetActor)?.type ?? "";
 
         const riderContext = {
           attackerName: actor.name,
@@ -1032,9 +1051,9 @@ export class DamageEngine {
     this._pendingConsumedRiders = null;
 
     if (MergeCard.isEnabled) {
-      await DamageCardRenderer.postMergeDamageButton(item, actor, hits, consumedRiders);
+      await DamageCardRenderer.postMergeDamageButton(item, actor, hits, consumedRiders, subject?.id ?? null);
     } else {
-      await DamageCardRenderer.postDamageButton(item, actor, hits, consumedRiders);
+      await DamageCardRenderer.postDamageButton(item, actor, hits, consumedRiders, subject?.id ?? null);
     }
   }
 
@@ -1189,7 +1208,11 @@ export class DamageEngine {
     const damageResults = [];
     for (const hit of flags.hits) {
       const isCrit = hit.hitResult === "critical";
-      const components = await DamageCalculator.rollDamageComponents(item, actor, hit, isCrit, critRule);
+      // Re-rolling from the card: recover WHICH activity made it, stamped into
+      // the card's flags when it was posted. Without this the roll falls back to
+      // "first damaging activity" and a multi-activity item rolls a sibling's
+      // dice — different from what the attack itself rolled.
+      const components = await DamageCalculator.rollDamageComponents(item, actor, hit, isCrit, critRule, flags?.activityId ?? null);
       const applied = DamageCalculator.applyDamageModifiers(components, hit.damageModifiers ?? {});
       const totalRaw = applied.reduce((sum, c) => sum + c.raw, 0);
       const totalFinal = applied.reduce((sum, c) => sum + c.final, 0);
@@ -1197,7 +1220,7 @@ export class DamageEngine {
       const tokenDoc = scene?.tokens?.get(hit.tokenDocId);
       const targetActor = tokenDoc?.actor ?? game.actors.get(hit.actorId);
       damageResults.push({
-        target: { name: hit.name, img: hit.img, currentHP: targetActor?.system?.attributes?.hp?.value ?? hit.currentHP, maxHP: hit.maxHP },
+        target: { name: hit.name, img: hit.img, currentHP: _aceCreature(targetActor)?.hp?.value ?? hit.currentHP, maxHP: hit.maxHP },
         targetToken: { id: hit.tokenId, document: { id: hit.tokenDocId } },
         targetActor: targetActor ?? { id: hit.actorId },
         isCrit, components: applied, totalRaw, totalFinal,
@@ -1205,7 +1228,7 @@ export class DamageEngine {
     }
 
     try {
-      await DamageCardRenderer.postDamageCard(item, actor, damageResults, critRule);
+      await DamageCardRenderer.postDamageCard(item, actor, damageResults, critRule, null, null, flags?.activityId ?? null);
     } catch (err) {
       console.error(`${MODULE_ID} | postDamageCard (legacy) CRASHED:`, err);
       return false;
@@ -1331,9 +1354,9 @@ export class DamageEngine {
     //     ability mod (resolver-aware: Pact CHA etc.) + proficiency + magic
     //     bonus — situational bonuses (Bless, Archery, etc.) aren't re-derived.
     if (QolSettings.get?.("cleaveRawAttackRoll")) {
-      const targetAC   = Number(chosen.actor?.system?.attributes?.ac?.value ?? 10) || 10;
+      const targetAC   = Number(_aceCreature(chosen.actor)?.ac ?? 10) || 10;
       const { abilityMod } = WeaponMasteries.getAttackAbilityMod(item, attActor);
-      const prof       = Number(attActor?.system?.attributes?.prof ?? 2) || 0;
+      const prof       = Number(_aceCreature(attActor)?.prof ?? 2) || 0;
       const magicBonus = Number(item?.system?.magicalBonus ?? 0) || 0;
       const toHit      = abilityMod + prof + magicBonus;
       const roll       = await new Roll("1d20 + @toHit", { toHit }).evaluate();

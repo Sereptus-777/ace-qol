@@ -71,6 +71,28 @@ export class SpaceEffects {
       }
     });
 
+    // ── EXPIRY (2026-07-28) ──
+    // A space used to have exactly ONE way to end: someone deletes its template.
+    // For a concentration spell that's fine — dropping concentration removes the
+    // template and the region follows. But a TIMED, non-concentration space
+    // (Thunderstorm of Misery, Grease, Tricksy) had no such trigger, so every
+    // cast left its template AND its region on the scene permanently.
+    //
+    // That is not a cosmetic leak. Foundry gives each overlapping region its own
+    // terrain effect and they MULTIPLY, so a few repeat casts turned a 15-ft walk
+    // into hundreds of feet and made the map impassable. Spaces now carry their
+    // own expiry in world-time and clear themselves the moment it passes —
+    // in combat or out, since advancing a turn advances world time.
+    Hooks.on("updateWorldTime", () => {
+      if (game.users?.activeGM !== game.user) return;
+      SpaceEffects.sweepExpired().catch(err => console.warn(`${TAG} expiry sweep failed:`, err));
+    });
+    Hooks.once("ready", () => {
+      if (game.users?.activeGM !== game.user) return;
+      // Catch anything that expired while the world was closed.
+      SpaceEffects.sweepExpired().catch(() => {});
+    });
+
     // ── Region dies (any path) → its stamps come off everyone ──
     Hooks.on("deleteRegion", (regionDoc) => {
       if (game.users?.activeGM !== game.user) return;
@@ -256,7 +278,7 @@ export class SpaceEffects {
       behaviors.push({
         type: "modifyMovementCost",
         name: "Difficult Terrain",
-        system: { difficulties: SpaceEffects._terrainDifficulties(Number(space.difficultTerrain) || 2) },
+        system: { difficulties: SpaceEffects._terrainDifficulties(Number(space.difficultTerrain) || 2, space.terrainModes) },
       });
     }
     if (space.light?.mode === "override") {
@@ -291,6 +313,12 @@ export class SpaceEffects {
       flags: {
         [MODULE_ID]: {
           spaceFor: templateDoc.id,
+          // When this space ends on its own, in world-time seconds. Null for
+          // spaces that genuinely last until dispelled (Plant Growth) and for
+          // concentration spells, which end when concentration does.
+          expiresAt: Number(entry?.durationSeconds) > 0
+            ? Number(game.time?.worldTime ?? 0) + Number(entry.durationSeconds)
+            : null,
           space: {
             spell: RulesBrain.normalizeName(item.name),
             edition,
@@ -381,21 +409,158 @@ export class SpaceEffects {
   }
 
   /**
-   * Difficulty multipliers for every non-derived movement action — mirror of
-   * the proven concentration-widget builder (kept in both places deliberately:
-   * the legacy path still owns spells without rules entries).
+   * Difficulty multipliers per movement action — mirror of the proven
+   * concentration-widget builder (kept in both places deliberately: the legacy
+   * path still owns spells without rules entries).
+   *
+   * ⚠️ FLYING (fixed 2026-07-27). The old version applied the multiplier to
+   * EVERY non-derived action and the comment claimed fly was "derived". It
+   * isn't: Foundry V13 defines nine actions and only crawl, climb, jump, blink
+   * and displace carry `deriveTerrainDifficulty` — walk, fly, swim and burrow
+   * all got charged. So a creature flying 35 ft above a patch of grease or a
+   * storm's slippery ground paid double movement for terrain it never touched,
+   * which is not RAW: ground-based difficult terrain doesn't reach a flier.
+   *
+   * `modes` names the movement types the terrain actually impedes, defaulting
+   * to ground travel. A volume-filling effect (Web, Hunger of Hadar, Wall of
+   * Thorns, Insect Plague) declares `["walk","fly"]` because flying THROUGH it
+   * is just as slow. Everything not listed is pinned to 1 — unaffected.
+   *
+   * The derived actions resolve themselves afterwards from what we set here:
+   * crawl and climb follow walk, jump takes max(walk, fly).
    */
-  static _terrainDifficulties(mult) {
+  static _terrainDifficulties(mult, modes = null) {
+    const want = new Set(Array.isArray(modes) && modes.length ? modes : ["walk"]);
     const out = {};
     try {
       const actions = CONFIG?.Token?.movement?.actions ?? {};
       for (const [key, cfg] of Object.entries(actions)) {
-        if (cfg?.deriveTerrainDifficulty) continue;   // derived (e.g. fly) — leave to derive
-        out[key] = mult;
+        if (cfg?.deriveTerrainDifficulty) continue;   // crawl/climb/jump/blink/displace derive
+        out[key] = want.has(key) ? mult : 1;
       }
     } catch (_) { /* fall through */ }
     if (!Object.keys(out).length) out.walk = mult;
     return out;
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  //  Lifecycle — spaces end on their own, and the GM can always end them early
+  // ────────────────────────────────────────────────────────────────────────────
+
+  /** Delete every ACE space whose duration has run out. Returns the count. */
+  static async sweepExpired() {
+    const now = Number(game.time?.worldTime ?? 0);
+    let removed = 0;
+    for (const sc of (game.scenes ?? [])) {
+      const dead = [...(sc.regions ?? [])].filter(r => {
+        const exp = r.getFlag?.(MODULE_ID, "expiresAt");
+        return typeof exp === "number" && now >= exp;
+      });
+      if (!dead.length) continue;
+      removed += await SpaceEffects._deleteSpaces(sc, dead);
+    }
+    if (removed) console.log(`${TAG} expired ${removed} space(s)`);
+    return removed;
+  }
+
+  /**
+   * The GM's off-switch. Clears ACE-created spaces — the regions AND the
+   * templates that spawned them — so a scene can always be put back to normal
+   * without hunting through the region layer by hand.
+   *
+   *   game.aceQol.clearSpaces()              → this scene
+   *   game.aceQol.clearSpaces({ all: true }) → every scene in the world
+   */
+  static async clearSpaces({ scene = null, all = false, quiet = false } = {}) {
+    if (!game.user?.isGM) {
+      ui.notifications?.warn("Only the GM can clear spell spaces.");
+      return 0;
+    }
+    const scenes = all ? [...(game.scenes ?? [])] : [scene ?? canvas?.scene].filter(Boolean);
+    let removed = 0;
+    for (const sc of scenes) {
+      // BOTH creators. ACE has two paths that write terrain regions and they
+      // use different flags: the rules engine stamps `spaceFor`/`space`, while
+      // the older concentration-widget creator stamps `difficultTerrainFor`.
+      // Sweeping only the first left the legacy ones behind still multiplying
+      // movement cost, which is exactly the "I cleared it but it's still wrong"
+      // trap. Anything ACE created, this clears.
+      const mine = [...(sc.regions ?? [])].filter(r =>
+        r.getFlag?.(MODULE_ID, "space")
+        || r.getFlag?.(MODULE_ID, "spaceFor")
+        || r.getFlag?.(MODULE_ID, "difficultTerrainFor"));
+      if (mine.length) removed += await SpaceEffects._deleteSpaces(sc, mine);
+    }
+    if (!quiet) {
+      ui.notifications?.info(removed
+        ? `Cleared ${removed} spell space${removed === 1 ? "" : "s"}${all ? " (all scenes)" : ""}.`
+        : "No ACE spell spaces to clear.");
+    }
+    console.log(`${TAG} GM cleared ${removed} space(s)`);
+    return removed;
+  }
+
+  /**
+   * Wipe banked movement history.
+   *
+   * Deleting a bad terrain region does NOT retroactively fix distances already
+   * recorded while it was live — Foundry banks the cost of each step in the
+   * token's movement history, so a creature that walked through a stack of
+   * runaway regions keeps showing hundreds of feet used even after the regions
+   * are gone. Clearing the regions fixes the FUTURE; this fixes the PAST.
+   * (Found the hard way 2026-07-28: Chudd stayed broken until his history was
+   * wiped by hand.)
+   *
+   * Deliberately NOT automatic inside clearSpaces — wiping history mid-turn
+   * hands a creature its movement back, which is a real ruling, not cleanup.
+   *
+   *   game.aceQol.clearMovementHistory()             → every token on this scene
+   *   game.aceQol.clearMovementHistory(token)        → just that one
+   */
+  static async clearMovementHistory(target = null) {
+    if (!game.user?.isGM) {
+      ui.notifications?.warn("Only the GM can clear movement history.");
+      return 0;
+    }
+    const docs = target
+      ? [target.document ?? target].filter(Boolean)
+      : [...(canvas?.scene?.tokens ?? [])];
+    let done = 0;
+    for (const doc of docs) {
+      try {
+        if (typeof doc.clearMovementHistory === "function") {
+          await doc.clearMovementHistory();
+          done++;
+        }
+      } catch (err) {
+        console.warn(`${TAG} movement-history clear failed for ${doc?.name}:`, err);
+      }
+    }
+    ui.notifications?.info(`Cleared movement history on ${done} token${done === 1 ? "" : "s"}.`);
+    console.log(`${TAG} cleared movement history on ${done} token(s)`);
+    return done;
+  }
+
+  /** Remove regions + the templates that spawned them. Templates first: the
+   *  template-delete hook cascades to its region, so this stays consistent even
+   *  if one of the two deletes fails. */
+  static async _deleteSpaces(scene, regions) {
+    if (!scene || !regions?.length) return 0;
+    try {
+      const tplIds = [...new Set(regions
+        .map(r => r.getFlag?.(MODULE_ID, "spaceFor"))
+        .filter(id => id && scene.templates?.get?.(id)))];
+      if (tplIds.length) {
+        await scene.deleteEmbeddedDocuments("MeasuredTemplate", tplIds).catch(() => {});
+      }
+      // Anything the cascade didn't take (template already gone) goes now.
+      const ids = regions.map(r => r.id).filter(id => scene.regions?.get?.(id));
+      if (ids.length) await scene.deleteEmbeddedDocuments("Region", ids).catch(() => {});
+      return regions.length;
+    } catch (err) {
+      console.warn(`${TAG} space delete failed:`, err);
+      return 0;
+    }
   }
 
   // ────────────────────────────────────────────────────────────────────────────
