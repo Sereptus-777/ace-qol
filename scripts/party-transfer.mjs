@@ -98,6 +98,7 @@ export class PartyTransfer {
   static _placing       = false;   // re-entrancy lock — see _placeAt
   static _crowded       = 0;       // how many had to stack this placement
   static _wallWarned    = false;   // one-shot guard on the wall-API warning
+  static _wallHits      = 0;       // squares rejected for walls — 0 means it's dead
   static _aim           = null;    // live crosshair session — see beginAim
   static _selected      = new Set(); // panel selection; survives re-renders
   static _aimInstalled  = false;
@@ -1406,23 +1407,35 @@ export class PartyTransfer {
    * (returns true) if the collision API isn't where we expect — a geometry
    * check that throws must never block a placement.
    */
+  /**
+   * ⚠️ THE ONLY WALL TEST THAT WORKS — live-proven on 13.351, 2026-08-06.
+   *
+   *   CONFIG.Canvas.polygonBackends.move.testCollision(origin, destination,
+   *                                                    {type:"move", mode:"any"})
+   *
+   * `canvas.walls.checkCollision` DOES NOT EXIST on this build (typeof =
+   * "undefined") and `Ray` is not a global — both earlier attempts threw into a
+   * catch that returned "no wall", so placement ignored walls entirely twice
+   * over. `cover-engine.mjs` had been using the polygon backend correctly all
+   * along; this is the same call with the move backend.
+   *
+   * Verify against the live API before changing this. Do not "fix" it from
+   * documentation.
+   */
   static _wallBlocked(from, to) {
+    const backend = CONFIG?.Canvas?.polygonBackends?.move;
+    if (typeof backend?.testCollision !== "function") {
+      this._warnNoWallApi();
+      return false;
+    }
     try {
-      // ⚠️ V13 signature is checkCollision(DESTINATION, {origin, type, mode}) —
-      // NOT checkCollision(ray, {...}). And `Ray` is no longer a global; it moved
-      // to foundry.canvas.geometry.Ray. Building one the old way threw a
-      // ReferenceError that this function's own catch swallowed, so it silently
-      // reported "no wall" for every single test and creatures landed inside
-      // walls and doorways. Never let a geometry helper fail open in silence.
-      const walls = canvas?.walls;
-      if (typeof walls?.checkCollision !== "function") {
-        this._warnNoWallApi();
-        return false;
-      }
-      return !!walls.checkCollision(
-        { x: to.x, y: to.y },
-        { origin: { x: from.x, y: from.y }, type: "move", mode: "any" }
+      const hit = !!backend.testCollision(
+        { x: from.x, y: from.y },
+        { x: to.x,   y: to.y   },
+        { type: "move", mode: "any" }
       );
+      if (hit) this._wallHits++;
+      return hit;
     } catch (err) {
       this._warnNoWallApi(err);
       return false;
@@ -1433,7 +1446,7 @@ export class PartyTransfer {
   static _warnNoWallApi(err) {
     if (this._wallWarned) return;
     this._wallWarned = true;
-    console.error(`${MODULE_ID} | Party Transfer — WALL CHECKING IS OFF: canvas.walls.checkCollision is unavailable or threw. Creatures may land through walls.`, err ?? "");
+    console.error(`${MODULE_ID} | Party Transfer — WALL CHECKING IS OFF: CONFIG.Canvas.polygonBackends.move.testCollision is unavailable or threw. Creatures may land through walls.`, err ?? "");
     ui.notifications?.warn("ACE — Wall checking is unavailable; placement can't avoid walls. Check the console.");
   }
 
@@ -1611,6 +1624,7 @@ export class PartyTransfer {
     if (removeCopies) for (const e of entries) await this._removeExistingCopies(scene, e);
 
     this._crowded = 0;
+    this._wallHits = 0;
     const taken  = this._occupiedSquares(scene);
     const points = this._landingPoints(entries, centre, taken, leaderId);
 
@@ -1690,6 +1704,13 @@ export class PartyTransfer {
     this._lastPlaced = (madeDocs ?? []).map(d => d.id).filter(Boolean);
     await this._followCombat(scene, this._lastPlaced);
     this._selectPlaced(this._lastPlaced);
+
+    // A wall-hit count of zero on a walled scene means the check is dead again.
+    // It has silently failed twice; make it observable rather than assumed.
+    console.debug(`${MODULE_ID} | Party Transfer — placed ${placedIds.length}, rejected ${this._wallHits} square(s) for walls, ${this._crowded} stacked. (scene has ${scene.walls?.size ?? 0} walls)`);
+    if (!this._wallHits && (scene.walls?.size ?? 0) > 0 && placedIds.length > 1) {
+      console.warn(`${MODULE_ID} | Party Transfer — NO squares were rejected for walls on a scene with ${scene.walls.size} walls. If creatures landed through a wall, the collision test is broken again — check CONFIG.Canvas.polygonBackends.move.testCollision.`);
+    }
 
     ui.notifications?.info(`ACE — Placed ${placedIds.length} creature${placedIds.length === 1 ? "" : "s"} on "${scene.name}".`);
     if (this._crowded) {

@@ -164,19 +164,14 @@ export class CoverEngine {
       );
       if (result !== undefined) return !!result;
 
-      // Fallback: the WallsLayer helper.
-      // ⚠️ V13 signature is checkCollision(DESTINATION, {origin, type, mode}) —
-      // and `Ray` is NOT a global any more (it moved to
-      // foundry.canvas.geometry.Ray). The old `new Ray(...)` here threw a
-      // ReferenceError straight into the catch below, which returns false =
-      // "no wall in the way" = cover silently never applied. Same fail-open
-      // trap that disabled wall checking in party-transfer.mjs.
-      if (typeof canvas.walls?.checkCollision === "function") {
-        return !!canvas.walls.checkCollision(
-          { x: destination.x, y: destination.y },
-          { origin: { x: origin.x, y: origin.y }, type: "sight", mode: "any" }
-        );
-      }
+      // ⚠️ NO canvas.walls FALLBACK. `canvas.walls.checkCollision` does not
+      // exist on V13 (live-verified 13.351: typeof === "undefined"), and the
+      // `new Ray(...)` that used to be here threw a ReferenceError straight
+      // into the catch below — which returns false, meaning "nothing in the
+      // way", meaning cover silently never applied. A fallback to a method
+      // that isn't there is worse than no fallback: it looks like resilience
+      // and behaves like a lie. The polygon backend above IS the API.
+      console.warn(`${MODULE_ID} | Cover: polygonBackends.sight.testCollision returned undefined — cover cannot be evaluated.`);
 
       return false;
     } catch (err) {
