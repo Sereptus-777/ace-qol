@@ -41,6 +41,26 @@ const INCAPACITATING = ["incapacitated", "petrified", "paralyzed", "stunned", "u
  */
 const INVARIANTS = [
   {
+    // THE SPECTER INVARIANT (2026-08-06, ONE_GATE phase 0). A creature that is
+    // dead must not be carrying an ACE effect that only exists as stage one of
+    // something still resolving — a corpse mid-way through turning to stone
+    // means a save pipeline ran against a target the Gate should have refused.
+    // The Gate now refuses it, so this rule should never fire again; it is here
+    // precisely so we FIND OUT if it does, instead of a player noticing first.
+    id: "dead-with-pending-resolution",
+    label: "The dead hold no pending saves",
+    test: (c) => {
+      const dead = c.statuses?.has?.("dead")
+        || (c.ref?.type !== "character" && (Number(c.ref?.system?.attributes?.hp?.value ?? 1) || 0) <= 0);
+      if (!dead) return null;
+      const pending = (c.ref?.effects?.contents ?? []).filter(e =>
+        !e.disabled && e.flags?.[MODULE_ID]?.repeatingSave);
+      return pending.length
+        ? `is DEAD but still holds ${pending.length} pending save effect(s) — "${pending[0]?.name}". A dead creature should never have reached a save.`
+        : null;
+    },
+  },
+  {
     id: "conc-while-incapacitated",
     label: "Concentration survives incapacitation",
     test: (c) => {

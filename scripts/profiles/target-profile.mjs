@@ -150,5 +150,46 @@ export function buildTargetProfile(actor, { token = null } = {}) {
 
     /** Remaining legendary resistances. */
     get legendaryResistances() { return Number(creature.legendaryResistance ?? 0) || 0; },
+
+    // ── LIVENESS (2026-08-06, THE ONE GATE phase 0) ────────────────────────
+    // A dead Specter rolled two saving throws against Petrifying Gaze and was
+    // then told it was immune to the result. The save engine had never asked
+    // whether the target was alive — every HP read in it existed to draw the
+    // skull glyph and the HP arrow AFTER the roll.
+    //
+    // ⚠️ 0 HP IS NOT THE SAME THING AS DEAD, and getting this wrong breaks
+    // the game in the opposite direction. RAW, both 2014 and 2024:
+    //   • A MONSTER at 0 HP dies (unless the GM rules otherwise).
+    //   • A PLAYER CHARACTER at 0 HP falls UNCONSCIOUS and is dying — still a
+    //     legal target, still rolls saves, and auto-fails STR/DEX because it
+    //     is unconscious (see autoFailsSave above). Gating PCs on HP would
+    //     silently stop a downed party member being affected by anything,
+    //     which is a worse bug than the one being fixed.
+    // So the HP branch applies to NPCs only; the explicit `dead` marker
+    // applies to everyone.
+
+    /**
+     * Is this creature dead? The `dead` status (what Foundry sets when a
+     * combatant is marked defeated) is authoritative for anyone. Falling to
+     * 0 HP additionally means death for non-player creatures.
+     */
+    get isDead() {
+      if (this.hasCondition("dead")) return true;
+      if (this.isPC) return false;              // downed PC ≠ dead — see above
+      return (Number(this.hp?.value ?? 0) || 0) <= 0;
+    },
+
+    /**
+     * Can this creature take an action or reaction right now? Not the same
+     * question as `isDead` — an unconscious or paralyzed creature is alive and
+     * can still be forced to make saving throws, but cannot ACT. Reaction-based
+     * resolution (counterspell, Shield, Absorb Elements) must ask this one.
+     */
+    get canAct() {
+      if (this.isDead) return false;
+      return !(this.hasCondition("unconscious") || this.hasCondition("paralyzed")
+            || this.hasCondition("stunned")     || this.hasCondition("petrified")
+            || this.hasCondition("incapacitated"));
+    },
   };
 }

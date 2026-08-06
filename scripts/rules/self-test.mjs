@@ -25,6 +25,9 @@ import { ConditionVisuals } from "../condition-visuals.mjs";
 import { ATTACK_MULTI_SPELLS, validateAllAttackMultiSpells } from "../spell-pipeline/registry/attack-multi-spells.mjs";
 import { DamageResolver } from "../spell-pipeline/resolvers/damage.mjs";
 import { HearingGate } from "./hearing-gate.mjs";
+// THE GATE's pure verdict helpers (suite 9). save-engine.mjs imports nothing
+// from rules/, so this direction adds no cycle.
+import { SaveEngine } from "../save-engine.mjs";
 
 /** Minimal fake item — enough for the parser, brain, and drafter. */
 function fakeItem(name, descriptionHtml, { type = "feat", sourceRules = null, flags = {} } = {}) {
@@ -275,6 +278,65 @@ export class SelfTest {
       t("hearing", "ungated spell passes deaf targets through",
         noGate.entry === null && noGate.allowed.length === 1 && noGate.blocked.length === 0);
     } catch (err) { t("hearing", "suite crashed", false, err?.message ?? String(err)); }
+
+    // ═════════════════════════════════════════════════════════════════════
+    //  SUITE 9 — THE GATE (ONE_GATE phase 0, 2026-08-06)
+    //  Born from a DEAD Specter rolling two saves against Petrifying Gaze and
+    //  then being told it was immune to the result. Nothing here touches the
+    //  world — these are pure verdicts against hand-built profiles.
+    // ═════════════════════════════════════════════════════════════════════
+    try {
+      // Minimal stand-in for a target profile: only the fields the Gate reads.
+      const prof = ({ hp = 10, pc = false, conds = [], immune = [] }) => ({
+        isPC: pc,
+        hp: { value: hp, max: 10, temp: 0 },
+        hasCondition(id) { return conds.includes(String(id).toLowerCase()); },
+        immuneToCondition(id) { return immune.includes(String(id).toLowerCase()); },
+        get isDead() {
+          if (this.hasCondition("dead")) return true;
+          if (this.isPC) return false;
+          return (Number(this.hp?.value ?? 0) || 0) <= 0;
+        },
+      });
+      const V = (p, o) => SaveEngine._preRollVerdict(p, o);
+
+      // THE SPECTER. 0 HP monster → no die, ever.
+      t("gate", "dead NPC (0 HP) does not roll", V(prof({ hp: 0 }))?.reason === "dead");
+      t("gate", "NPC marked dead does not roll", V(prof({ hp: 9, conds: ["dead"] }))?.reason === "dead");
+
+      // ⚠️ THE OPPOSITE MISTAKE, guarded just as hard: a downed PC is NOT dead.
+      // Gating players on HP would stop a dying party member being healed,
+      // affected, or targeted at all — a worse bug than the one being fixed.
+      t("gate", "downed PC (0 HP) STILL rolls — unconscious ≠ dead", V(prof({ hp: 0, pc: true })) === null);
+      t("gate", "PC marked dead does not roll", V(prof({ hp: 0, pc: true, conds: ["dead"] }))?.reason === "dead");
+      t("gate", "healthy creature rolls normally", V(prof({ hp: 10 })) === null);
+
+      // Immunity, decided BEFORE the die rather than announced after it.
+      t("gate", "immune to the only outcome → no save",
+        V(prof({ immune: ["petrified"] }), { outcomeConditions: ["petrified"] })?.reason === "immune");
+      t("gate", "immune to SOME outcomes → still rolls",
+        V(prof({ immune: ["petrified"] }), { outcomeConditions: ["petrified", "restrained"] }) === null);
+      // A damaging spell still needs the save — it is doing work for half damage.
+      t("gate", "immune but the spell deals damage → still rolls",
+        V(prof({ immune: ["petrified"] }), { outcomeConditions: ["petrified"], dealsDamage: true }) === null);
+      // Never block on a fact we could not read.
+      t("gate", "unknown outcomes → rolls (fails open)",
+        V(prof({ immune: ["petrified"] }), { outcomeConditions: [] }) === null);
+      t("gate", "no profile → rolls (fails open)", V(null) === null);
+
+      // Dead beats immune: the first decisive answer wins, in order.
+      t("gate", "dead is decided before immunity",
+        V(prof({ hp: 0, immune: ["petrified"] }), { outcomeConditions: ["petrified"] })?.reason === "dead");
+
+      // A gated row must never be mistaken for a failed save downstream —
+      // that is how a corpse would collect conditions it never rolled for.
+      t("gate", "no-roll row is NOT a failed save",
+        SaveEngine._failedTheSave({ passed: false, noRoll: "dead" }) === false);
+      t("gate", "pending PC is NOT a failed save",
+        SaveEngine._failedTheSave({ passed: false, pending: true }) === false);
+      t("gate", "a genuine fail still reads as a failure",
+        SaveEngine._failedTheSave({ passed: false }) === true);
+    } catch (err) { t("gate", "suite crashed", false, err?.message ?? String(err)); }
 
     // ═════════════════════════════════════════════════════════════════════
     //  SUITE 6 — Live state (what's actually loaded right now)

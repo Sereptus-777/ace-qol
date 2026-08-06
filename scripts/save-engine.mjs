@@ -1111,7 +1111,10 @@ export class SaveEngine {
     };
 
     // Roll the save
-    const result = await this._rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, casterActor?.id);
+    const result = await this._rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, casterActor?.id, {
+      outcomeConditions: SaveEngine._outcomeConditionsFor(item),
+      dealsDamage: Array.isArray(damageTypes) && damageTypes.some(t => t && t !== "none"),
+    });
 
     // Emit saveComplete hook
     try {
@@ -1761,6 +1764,13 @@ export class SaveEngine {
     const gmRolledPcResults = {};   // tokenDocId → resolved result, handed over directly
     for (const tgt of pcs) {
       try {
+        // THE GATE, before a human is ever asked to pick up a die.
+        const _pcVerdict = SaveEngine._verdictForTargetRow(tgt);
+        if (_pcVerdict) {
+          console.log(`${MODULE_ID} | GATE: ${tgt.name} (PC) — ${_pcVerdict.reason.toUpperCase()}, no prompt sent.`);
+          gmRolledPcResults[tgt.tokenDocId] = SaveEngine._noRollRow(tgt, _pcVerdict, { isPC: true });
+          continue;
+        }
         if (_iAmActiveGM && !this._pcOwnerActive(tgt)) {
           console.log(`${MODULE_ID} | PC "${tgt.name}" owner is offline — GM rolling their save now, before the card is built.`);
           const res = await this._gmRollPcSaveOffline(item, actor, tgt, _promptOpts);
@@ -2717,8 +2727,14 @@ export class SaveEngine {
     // 5 full seconds with the per-die delay summed.
     const isMulti = npcTargets.length > 1;
     const npcResults = [];
+    // What this action can actually inflict — read ONCE per cast, before any
+    // die, so the Gate can answer "immune to everything this does".
+    const _gateCtx = {
+      outcomeConditions: SaveEngine._outcomeConditionsFor(item),
+      dealsDamage: Array.isArray(damageTypes) && damageTypes.some(t => t && t !== "none"),
+    };
     for (const tgt of npcTargets) {
-      const result = await this._rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, actorId, { isMultiTarget: isMulti });
+      const result = await this._rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, actorId, { isMultiTarget: isMulti, ..._gateCtx });
       npcResults.push(result);
     }
 
@@ -2843,6 +2859,24 @@ export class SaveEngine {
     }
 
     const pcResults = pcTargets.map(tgt => {
+      // ── THE GATE, player side (2026-08-06, ONE_GATE phase 0) ─────────────
+      // The NPC path is gated inside _rollSingleSave, but players never go
+      // through that method — they get a prompt and roll their own dice. A
+      // dead character would still be asked to roll. Gate here, where the
+      // prompt row is built, so the socket round-trip is untouched.
+      //
+      // ⚠️ A PC at 0 HP is NOT dead — they are unconscious and dying, still a
+      // legal target, and still roll (auto-failing STR/DEX). isDead only
+      // answers true for a player when the `dead` marker is actually set, so
+      // this cannot silently stop a downed party member being affected.
+      {
+        const _v = SaveEngine._verdictForTargetRow(tgt);
+        if (_v) {
+          console.log(`${MODULE_ID} | GATE: ${tgt.name} (PC) — ${_v.reason.toUpperCase()}, no prompt sent.`);
+          return SaveEngine._noRollRow(tgt, _v, { isPC: true });
+        }
+      }
+
       const existing = existingPcResults.get(tgt.tokenDocId);
       if (existing) {
         // PC already rolled — build resolved result
@@ -2972,10 +3006,145 @@ export class SaveEngine {
   //  Roll a Single NPC Save
   // ═══════════════════════════════════════════════════════════════════════════
 
+  /**
+   * THE GATE (2026-08-06, phase 0 of ONE_GATE_ARCHITECTURE.md)
+   *
+   * Read the target and answer whether a die should be thrown at all. Returns
+   * null when the answer is "roll normally", or a verdict when it is not.
+   *
+   * This is deliberately the FIRST thing _rollSingleSave does, because that
+   * method is the single door all three roll call sites come through
+   * (_fastResolveSingleNpcSave, _rollNpcSavesFromTargetList, _rollAllSaves).
+   * Gating here means a fourth caller added next month is gated by
+   * construction rather than by somebody remembering. Phase 1 lifts this
+   * shape into the real ActionGate and adds the attacker + environment scans.
+   *
+   * Ordering matters and mirrors the plan: legality first, then whether the
+   * action can do anything at all. Stop at the first decisive answer.
+   *
+   * @returns {null|{reason:string, label:string, tone:string}}
+   */
+  static _preRollVerdict(profile, { outcomeConditions = [], dealsDamage = false } = {}) {
+    if (!profile) return null;
+
+    // 1. LEGAL TARGET — a dead creature does not roll. This is the Specter.
+    if (profile.isDead) {
+      return { reason: "dead", label: "DEAD — no save", tone: "dead" };
+    }
+
+    // 3. CAN THE ACTION DO ANYTHING? Immunity to every outcome, checked BEFORE
+    //    the die rather than after it. Only decisive when nothing else is left
+    //    to resolve: if the action also deals damage the save still matters
+    //    (half on a success), so it rolls and the card notes the immunity.
+    if (!dealsDamage && outcomeConditions.length) {
+      const immune = outcomeConditions.filter(c => profile.immuneToCondition(c));
+      if (immune.length === outcomeConditions.length) {
+        const names = [...new Set(immune)].map(c => c.charAt(0).toUpperCase() + c.slice(1));
+        return { reason: "immune", label: `IMMUNE to ${names.join(", ")} — no save`, tone: "immune" };
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * What conditions can this action actually inflict? Needed BEFORE the roll,
+   * so the Gate can tell "immune to everything this does" from "roll it".
+   *
+   * The authoritative pre-roll source is the spell registry: the pipeline entry
+   * carries the effect key the spell applies on a failed save, and
+   * ConditionLibrary turns that key into the status ids it really represents.
+   * Both are plain lookups — no description parsing, nothing that needs the
+   * roll to have happened.
+   *
+   * ⚠️ Returns [] when the item isn't registry-driven, and [] deliberately
+   * makes the immunity gate INERT for that item — it rolls as before. Never
+   * block a save on a fact we could not read; the same principle
+   * ConditionLibrary.immuneTo already states. Phase 1 widens this source to
+   * the staged-chain metadata and the parsed description, which today are only
+   * computed after the fact inside _applyFailedSaveConditions.
+   */
+  static _outcomeConditionsFor(item) {
+    try {
+      const key = game.aceQol?.SpellPipeline?._getEntry?.(item)?.effect?.key ?? null;
+      if (!key) return [];
+      return ConditionLibrary.statusesFor(key) ?? [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  /**
+   * The Gate's verdict for a target ROW (the {tokenDocId, actorId, sceneId, …}
+   * shape the save engine passes around), resolving the actor for you.
+   * Returns null to mean "proceed normally".
+   */
+  static _verdictForTargetRow(tgt, opts = {}) {
+    try {
+      const scene = game.scenes.get(tgt?.sceneId) ?? canvas.scene;
+      const actor = scene?.tokens?.get(tgt?.tokenDocId)?.actor ?? game.actors.get(tgt?.actorId);
+      return SaveEngine._preRollVerdict(SaveEngine._targetProfileFor(actor, tgt), opts);
+    } catch (err) {
+      // A Gate that throws must not stop the game — fail OPEN (roll normally)
+      // and say so loudly, rather than silently swallowing every target the
+      // way the wall checks did twice on 2026-08-06.
+      console.error(`${MODULE_ID} | GATE: verdict failed for "${tgt?.name}" — proceeding with the roll:`, err);
+      return null;
+    }
+  }
+
+  /**
+   * Build the standard no-roll result row from a verdict. One shape, so the
+   * NPC path, the PC path and the late-added-targets path can't drift.
+   */
+  static _noRollRow(tgt, verdict, { isPC = false } = {}) {
+    return {
+      name: tgt.name, img: tgt.img,
+      tokenDocId: tgt.tokenDocId, actorId: tgt.actorId, sceneId: tgt.sceneId,
+      saveTotal: null, passed: false, isAutoFail: false,
+      resultLabel: verdict.label,
+      damageMultiplier: 0,
+      dieResult: null, roll: null,
+      damageModifiers: tgt.damageModifiers,
+      currentHP: tgt.currentHP, maxHP: tgt.maxHP,
+      isPC, pending: false,
+      noRoll: verdict.reason, noRollLabel: verdict.label, noRollTone: verdict.tone,
+    };
+  }
+
+  /**
+   * Did this target actually FAIL a saving throw?
+   *
+   * `passed === false` is NOT the same question, and conflating them is how a
+   * gated target would get consequences it never rolled for. Three distinct
+   * states share that falsy value:
+   *   • pending  — a PC who has not rolled yet (the Jeth/Web bug, 2026-07-27)
+   *   • noRoll   — the Gate refused; no die was ever thrown (2026-08-06)
+   *   • genuine  — a die was thrown and it lost
+   * Only the third is a failure. ONE reader so a fifth consumer can't get it
+   * wrong the way four of them nearly did.
+   */
+  static _failedTheSave(r) {
+    return !!r && r.pending !== true && !r.noRoll && r.passed === false;
+  }
+
   async _rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, casterActorId = null, options = {}) {
     const scene = game.scenes.get(tgt.sceneId) ?? canvas.scene;
     const tokenDoc = scene?.tokens?.get(tgt.tokenDocId);
     const targetActor = tokenDoc?.actor ?? game.actors.get(tgt.actorId);
+
+    // ── THE GATE — nothing below this line rolls without passing it ─────────
+    // No roll happened, so nothing lands and nothing is dealt. A dead creature
+    // taking splash damage from a fireball it never saved against would be the
+    // same class of nonsense in reverse — _noRollRow zeroes the multiplier.
+    const _verdict = SaveEngine._verdictForTargetRow(tgt, {
+      outcomeConditions: options.outcomeConditions ?? [],
+      dealsDamage: !!options.dealsDamage,
+    });
+    if (_verdict) {
+      console.log(`${MODULE_ID} | GATE: ${tgt.name} — ${_verdict.reason.toUpperCase()}, no save rolled.`);
+      return SaveEngine._noRollRow(tgt, _verdict, { isPC: false });
+    }
 
     let saveTotal = 0;
     let passed = false;
@@ -3945,7 +4114,7 @@ export class SaveEngine {
       // gated like the NPC path (no-damage powers, or any power with break-free
       // enabled) and guarded so repeated card rebuilds don't double-apply.
       try {
-        if (r.passed === false && r.pending !== true && !r._condApplied) {
+        if (SaveEngine._failedTheSave(r) && !r._condApplied) {
           const breakFreeEnabled = item.getFlag?.(MODULE_ID, "breakFreeConfig")?.enabled === true;
           const hasDmg = Array.isArray(flags.damageTypes) && flags.damageTypes.some(t => t && t !== "none");
           if (!hasDmg || breakFreeEnabled) {
@@ -4014,8 +4183,14 @@ export class SaveEngine {
     // the full single-target delay per die.
     const isMultiLegacy = (targets?.length ?? 0) > 1;
 
+    // What this action can actually inflict — read ONCE per cast, before any
+    // die, so the Gate can answer "immune to everything this does".
+    const _gateCtx = {
+      outcomeConditions: SaveEngine._outcomeConditionsFor(item),
+      dealsDamage: Array.isArray(damageTypes) && damageTypes.some(t => t && t !== "none"),
+    };
     for (const tgt of targets) {
-      const result = await this._rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, actorId, { isMultiTarget: isMultiLegacy });
+      const result = await this._rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, actorId, { isMultiTarget: isMultiLegacy, ..._gateCtx });
       results.push(result);
 
       // Emit saveComplete hook for duration tracker (isSave expiry)
@@ -4360,7 +4535,7 @@ export class SaveEngine {
       console.log(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — routing to Polymorph pipeline (skipping normal condition path)`);
       const activityId = saveCtx?.activityId ?? null;
       const casterActor = saveCtx?.casterActor ?? null;
-      const failed = results.filter(r => r && !r.passed);
+      const failed = results.filter(r => SaveEngine._failedTheSave(r));
       if (!failed.length) {
         console.log(`${MODULE_ID} | ${item.name}: no failed saves — no transformation`);
         return applied;
@@ -4446,7 +4621,7 @@ export class SaveEngine {
     // (Bug: Jeth passed Web's Dex save 26 vs DC 22 but was Restrained anyway.)
     // Genuine fails set passed === false; PCs get their conditions applied
     // later by the PC-result handler once their roll resolves.
-    const failed = results.filter(r => r && r.pending !== true && r.passed === false);
+    const failed = results.filter(r => SaveEngine._failedTheSave(r));
     // ── THE GAZE TAG RULE, pass side (Johnny 2026-07-27) ─────────────────────
     // A PASSED save vs this spell IS the repeat save — it ENDS this spell's
     // staged restraint on that target (only OUR tag; restrained from a net /
@@ -4828,9 +5003,40 @@ export class SaveEngine {
           </div>
         `;
       }
+      const portrait = `<img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" style="width:46px;height:46px;border-radius:8px;flex-shrink:0;border:1px solid #555;object-fit:cover;" />`;
+
+      // ── GATED — no die was thrown (2026-08-06, ONE_GATE phase 0) ──────────
+      // Johnny: "I want us to be able to see it." A target the Gate refused is
+      // never silently dropped from the card; it gets a row that says WHY, so
+      // the GM can tell "the engine skipped this on purpose" apart from "the
+      // engine forgot about this one". No d20, because no d20 was rolled —
+      // showing a blank die face would be its own small lie.
+      if (r.noRoll) {
+        const tone = r.noRollTone === "immune"
+          ? { colour: "#ffaa44", icon: "fa-shield-halved" }   // shrugged it off
+          : { colour: "#9a9aa2", icon: "fa-skull" };          // dead — grey, not red
+        return `
+          <div class="ace-qol-save-result-row ace-qol-save-result-noroll" data-token-doc-id="${r.tokenDocId}"
+               style="display:flex;align-items:center;gap:12px;padding:10px 12px;border-bottom:1px solid rgba(212,175,55,0.15);opacity:0.9;">
+            <div style="display:flex;flex-direction:column;align-items:center;gap:5px;flex-shrink:0;">
+              ${portrait}
+            </div>
+            <div style="flex:1;min-width:0;">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px;">
+                <span class="ace-qol-save-tgt-name" style="flex:1;font-weight:bold;color:#fff;font-size:16px;line-height:1.2;white-space:nowrap;">${foundry.utils.escapeHTML(r.name ?? "")}</span>
+                ${removeBtn}
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;">
+                <i class="fas ${tone.icon}" style="color:${tone.colour};font-size:13px;"></i>
+                <span style="color:${tone.colour};font-weight:700;font-size:15px;letter-spacing:0.5px;">${foundry.utils.escapeHTML(r.noRollLabel ?? "")}</span>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
       const passClass = r.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
       const verdictText = r.passed ? "PASS" : "FAIL";
-      const portrait = `<img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" style="width:46px;height:46px;border-radius:8px;flex-shrink:0;border:1px solid #555;object-fit:cover;" />`;
 
       // The glowing d20 face goes UNDER the portrait (left column); the math
       // breakdown (raw +mod = total) sits to the right with the verdict.
@@ -4896,7 +5102,7 @@ export class SaveEngine {
     // single target saved against Entangling Rope, which deals no damage on a
     // save — there's nothing to roll or apply, so show a clean "no damage"
     // result instead of a ROLL DAMAGE / APPLY ALL card.
-    const anyWillTakeDamage = hasDamage && results.some(r => !r.pending && (!r.passed || halfOnSave));
+    const anyWillTakeDamage = hasDamage && results.some(r => !r.pending && !r.noRoll && (!r.passed || halfOnSave));
     let actionsHtml;
     if (hasDamage && anyPending) {
       actionsHtml = `<div class="ace-qol-dmg-actions ace-qol-roll-dmg-gate">
@@ -4914,28 +5120,43 @@ export class SaveEngine {
     } else if (hasDamage) {
       // Damaging power, but every resolved target saved and it deals no damage
       // on a successful save → no damage step at all.
-      const anyoneFailed = results.some(r => r && !r.passed && !r.pending);
+      const anyoneFailed = results.some(r => SaveEngine._failedTheSave(r));
       actionsHtml = `<div class="ace-qol-save-no-effect" style="padding:8px 12px;text-align:center;color:#88c878;font-size:13px;font-weight:600;">
           <i class="fas fa-shield-halved"></i> ${anyoneFailed ? "Resolved — no damage to apply" : "Saved — no damage"}
         </div>`;
     } else if (appliedConditions?.length) {
       const cap = (c) => c.charAt(0).toUpperCase() + c.slice(1).toLowerCase();
       const lines = appliedConditions.map(a => {
-        // IMMUNE rows read as a shield in blue, not a skull in red \u2014 the
+        // IMMUNE rows read as a shield in ORANGE, not a skull in red \u2014 the
         // creature shrugged it off, which is a different story from being hit.
+        //
+        // \u26a0\ufe0f TWO FIXES HERE, 2026-08-06 (ONE_GATE phase 0):
+        //  \u2022 The colour was #6bcbff, a cold blue that reads as informational \u2014
+        //    the same blue used for neutral hints. Immunity is a WARNING: the
+        //    thing you cast did nothing. It now uses #ffaa44, the orange
+        //    already in the ACE palette.
+        //  \u2022 The name was breaking mid-word \u2014 "Specte / r". Cause: the IMMUNE
+        //    label carried white-space:nowrap, so it refused to shrink, and the
+        //    name was the only flexible box left in the row. It got crushed
+        //    until the word itself broke. Fix is BOTH halves: the name gets
+        //    nowrap too, and the row is allowed to wrap, so when they can't sit
+        //    side by side the label drops to its own line instead of eating the
+        //    name. A creature's name is never the thing that gets sacrificed.
+        const nameSpan = (txt) =>
+          `<span style="color:#ffffff;font-weight:700;white-space:nowrap;">${foundry.utils.escapeHTML(txt)}</span>`;
         if (a.immune?.length) {
-          return `<div style="display:flex;align-items:center;gap:6px;padding:2px 0;">
-            <i class="fas fa-shield-halved" style="color:#6bcbff;font-size:11px;"></i>
-            <span style="color:#ffffff;font-weight:700;">${foundry.utils.escapeHTML(a.targetName)}</span>
+          return `<div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:2px 0;">
+            <i class="fas fa-shield-halved" style="color:#ffaa44;font-size:11px;"></i>
+            ${nameSpan(a.targetName)}
             <span style="color:#888;">\u2192</span>
-            <span style="color:#6bcbff;font-weight:700;letter-spacing:0.5px;white-space:nowrap;">IMMUNE to ${foundry.utils.escapeHTML(a.immune.map(cap).join(", "))}</span>
+            <span style="color:#ffaa44;font-weight:700;letter-spacing:0.5px;white-space:nowrap;">IMMUNE to ${foundry.utils.escapeHTML(a.immune.map(cap).join(", "))}</span>
           </div>`;
         }
         const condList = a.conditions.map(cap).join(", ");
         if (!condList) return "";
-        return `<div style="display:flex;align-items:center;gap:6px;padding:2px 0;">
+        return `<div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:2px 0;">
           <i class="fas fa-skull-crossbones" style="color:#ff5555;font-size:11px;"></i>
-          <span style="color:#ffffff;font-weight:700;">${foundry.utils.escapeHTML(a.targetName)}</span>
+          ${nameSpan(a.targetName)}
           <span style="color:#888;">\u2192</span>
           <span style="color:#ff5555;font-weight:700;letter-spacing:0.5px;">${foundry.utils.escapeHTML(condList)}</span>
         </div>`;
@@ -4957,7 +5178,7 @@ export class SaveEngine {
       // a save nobody had rolled yet. "All targets resisted" is a claim about a
       // FINISHED set; don't make it until the set is finished.
       const anyPending   = (results ?? []).some(r => r?.pending);
-      const anyoneFailed = (results ?? []).some(r => r && !r.passed && !r.pending);
+      const anyoneFailed = (results ?? []).some(r => SaveEngine._failedTheSave(r));
       if (anyPending) {
         const n = (results ?? []).filter(r => r?.pending).length;
         actionsHtml = `<div class="ace-qol-save-no-effect" style="padding:6px 12px;text-align:center;color:#b9a978;font-size:11px;font-style:italic;">
@@ -5060,6 +5281,12 @@ export class SaveEngine {
             maxHP: r.maxHP,
             isPC: r.isPC,
             pending: r.pending,
+            // The Gate's verdict must survive serialization, or a card rebuild
+            // (a PC resolving later, "add targets", a re-render) turns a
+            // "DEAD — no save" row back into a red FAIL. (2026-08-06)
+            noRoll: r.noRoll ?? null,
+            noRollLabel: r.noRollLabel ?? null,
+            noRollTone: r.noRollTone ?? null,
           })),
           timingType:      timingType ?? null,
           templateDocId:   templateDocId ?? null,
@@ -5330,6 +5557,14 @@ export class SaveEngine {
     const _iAmActiveGM2 = game.users?.activeGM === game.user;
     for (const tgt of newPcs) {
       try {
+        // THE GATE — a target added to a live card gets the same scan as one
+        // that was there from the start. Skipping it here is how "add targets"
+        // would quietly become the one door with no lock on it.
+        const _addVerdict = SaveEngine._verdictForTargetRow(tgt);
+        if (_addVerdict) {
+          console.log(`${MODULE_ID} | GATE: ${tgt.name} (PC, added) — ${_addVerdict.reason.toUpperCase()}, no prompt sent.`);
+          continue;
+        }
         if (_iAmActiveGM2 && !this._pcOwnerActive(tgt)) {
           console.log(`${MODULE_ID} | PC "${tgt.name}" owner is offline — GM auto-rolling their save (added target).`);
           await this._gmRollPcSaveOffline(item, actor, tgt, {
@@ -5422,6 +5657,26 @@ export class SaveEngine {
               <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
               <span class="ace-qol-save-tgt-name">${r.name}</span>
               <span class="ace-qol-save-result-label ace-qol-save-pending">WAITING FOR PLAYER</span>
+            </div>
+          </div>
+        `;
+      }
+
+      // Gated by the Gate — carry the verdict onto the damage card too, so a
+      // target that never rolled doesn't reappear here wearing a red "FAIL".
+      // (2026-08-06, ONE_GATE phase 0)
+      if (r.noRoll) {
+        const tone = r.noRollTone === "immune"
+          ? { colour: "#ffaa44", icon: "fa-shield-halved" }
+          : { colour: "#9a9aa2", icon: "fa-skull" };
+        return `
+          <div class="ace-qol-save-result-row ace-qol-save-result-noroll" data-token-doc-id="${r.tokenDocId}" style="opacity:0.9;">
+            <div class="ace-qol-save-result-target">
+              <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
+              <span class="ace-qol-save-tgt-name" style="white-space:nowrap;">${foundry.utils.escapeHTML(r.name ?? "")}</span>
+              <span style="display:inline-flex;align-items:center;gap:6px;color:${tone.colour};font-weight:700;letter-spacing:0.5px;">
+                <i class="fas ${tone.icon}"></i>${foundry.utils.escapeHTML(r.noRollLabel ?? "")}
+              </span>
             </div>
           </div>
         `;

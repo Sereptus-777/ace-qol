@@ -1,6 +1,7 @@
 # THE ONE GATE — a single resolution path for every action
 
-**Status:** plan, not built · **Author:** Johnny + Claude, 2026-08-06
+**Status:** **Phase 0 BUILT (0.7.397, 2026-08-06)** — awaiting live confirm. Phases 1–4 planned.
+**Author:** Johnny + Claude, 2026-08-06
 **Trigger:** a dead Specter rolled two saves against Petrifying Gaze, then was told
 it was immune to the outcome. Johnny: *"It's an attack! It has to go through the
 attack pipeline."*
@@ -182,9 +183,51 @@ A fix that isn't enforced is a fix that comes back. Three layers:
 
 ## 6. Delivery order
 
-**Phase 0 — visible now (~1 hour).** Dead targets shown as "dead, no save"; immunity
-checked before the roll; card colour + name wrapping. Removes the absurdity Johnny is
-looking at without touching architecture.
+**Phase 0 — ✅ BUILT in 0.7.397 (2026-08-06).** Dead targets shown as "dead, no save";
+immunity checked before the roll; card colour + name wrapping.
+
+What actually shipped, and where:
+
+| Piece | Location |
+|---|---|
+| `isDead` / `canAct` accessors | `profiles/target-profile.mjs` |
+| `_preRollVerdict(profile, {outcomeConditions, dealsDamage})` | `save-engine.mjs` |
+| `_verdictForTargetRow(tgt, opts)` — resolves the actor | `save-engine.mjs` |
+| `_noRollRow(tgt, verdict, {isPC})` — one row shape | `save-engine.mjs` |
+| `_outcomeConditionsFor(item)` — pre-roll outcome source | `save-engine.mjs` |
+| `_failedTheSave(r)` — the "one reader" for failure | `save-engine.mjs` |
+| Gate suite, 15 cases | `rules/self-test.mjs` (suite 9) |
+| `dead-with-pending-resolution` invariant | `rules-watchdog.mjs` |
+
+**The chokepoint arrived early.** The gate sits at the top of `_rollSingleSave`, which is
+the single door all three NPC roll sites come through — so a fourth caller added later is
+gated by construction, not by somebody remembering. The three PC entry points (prompt
+dispatch, the pcResults builder, and "add targets") call the same `_verdictForTargetRow`.
+
+**RAW calls made, and why they matter:**
+- **A PC at 0 HP is NOT dead** — unconscious and dying, still a legal target, still rolls
+  (auto-failing STR/DEX). Gating players on HP would stop a downed party member being
+  affected by *anything*, which is a worse bug than the one being fixed. Only the `dead`
+  marker gates a player; the HP branch is NPC-only. Both editions agree monsters die at 0.
+- **Immunity only cancels the save when nothing else is left to resolve.** Immune to the
+  condition but the spell also deals damage → it still rolls, because the save is doing
+  work for half damage. The card notes the immunity.
+
+**Fails OPEN, deliberately.** No profile, unreadable outcomes, or a throw inside the Gate
+all mean "roll normally", loudly logged. A gate that fails closed would silently delete
+saves — the same shape as the wall checks that returned "no wall" from a catch block twice
+on 2026-08-06.
+
+**Downstream was the real risk.** A no-roll row carries `passed: false`, which six call
+sites read as *failed the save* — that would have applied conditions to the corpse. All six
+now route through `_failedTheSave`.
+
+⚠️ **Known limit, for Phase 1:** `_outcomeConditionsFor` reads only the spell registry.
+Items whose conditions come from the staged-chain metadata or the parsed description return
+`[]`, so the immunity gate is inert for them and they roll as before — correct, but not yet
+complete. Also, `_targetProfileFor` caches for 5 s, so a creature that dies *during* a
+resolution can be seen as alive for that window. Neither affects the Specter case (already
+dead before the cast), but both belong in the real Gate.
 
 **Phase 1 — build the Gate (~half a day).** `action-gate.mjs` with the three scans and
 the verdict object. Route the **save engine** through it first — that is where the
