@@ -97,6 +97,7 @@ export class PartyTransfer {
   static _lastPlaced    = [];
   static _placing       = false;   // re-entrancy lock — see _placeAt
   static _crowded       = 0;       // how many had to stack this placement
+  static _wallWarned    = false;   // one-shot guard on the wall-API warning
   static _aim           = null;    // live crosshair session — see beginAim
   static _selected      = new Set(); // panel selection; survives re-renders
   static _aimInstalled  = false;
@@ -1407,13 +1408,33 @@ export class PartyTransfer {
    */
   static _wallBlocked(from, to) {
     try {
+      // ⚠️ V13 signature is checkCollision(DESTINATION, {origin, type, mode}) —
+      // NOT checkCollision(ray, {...}). And `Ray` is no longer a global; it moved
+      // to foundry.canvas.geometry.Ray. Building one the old way threw a
+      // ReferenceError that this function's own catch swallowed, so it silently
+      // reported "no wall" for every single test and creatures landed inside
+      // walls and doorways. Never let a geometry helper fail open in silence.
       const walls = canvas?.walls;
-      if (!walls?.checkCollision) return false;
-      const ray = new Ray(from, to);
-      return !!walls.checkCollision(ray, { type: "move", mode: "any" });
-    } catch (_) {
+      if (typeof walls?.checkCollision !== "function") {
+        this._warnNoWallApi();
+        return false;
+      }
+      return !!walls.checkCollision(
+        { x: to.x, y: to.y },
+        { origin: { x: from.x, y: from.y }, type: "move", mode: "any" }
+      );
+    } catch (err) {
+      this._warnNoWallApi(err);
       return false;
     }
+  }
+
+  /** Say it ONCE, loudly. A silent wall check is worse than none. */
+  static _warnNoWallApi(err) {
+    if (this._wallWarned) return;
+    this._wallWarned = true;
+    console.error(`${MODULE_ID} | Party Transfer — WALL CHECKING IS OFF: canvas.walls.checkCollision is unavailable or threw. Creatures may land through walls.`, err ?? "");
+    ui.notifications?.warn("ACE — Wall checking is unavailable; placement can't avoid walls. Check the console.");
   }
 
   /**

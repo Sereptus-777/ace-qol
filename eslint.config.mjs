@@ -19,7 +19,14 @@ const FOUNDRY_GLOBALS = [
   "renderTemplate", "loadTemplates", "TextEditor", "Handlebars",
   "fromUuid", "fromUuidSync", "duplicate", "mergeObject", "getProperty",
   "setProperty", "randomID", "jQuery", "$", "Actors", "Items", "ChatLog",
-  "SettingsConfig", "KeybindingsConfig", "Tour", "ProseMirror", "Ray",
+  "SettingsConfig", "KeybindingsConfig", "Tour", "ProseMirror",
+  // ⚠️ `Ray` was REMOVED from this list 2026-08-06. It is NOT a global in V13 —
+  // it lives at foundry.canvas.geometry.Ray. Listing it here is what let
+  // `new Ray(a,b)` ship inside a try/catch in party-transfer.mjs, where it threw
+  // a ReferenceError on every call, was swallowed, and silently disabled wall
+  // checking so creatures landed inside walls and doorways.
+  // NEVER add a name here to silence no-undef. Verify it is a real global first
+  // — a false entry turns this lint from a safety net into a blindfold.
   // Third-party modules ACE talks to
   "Sequence", "Sequencer", "PIXI", "TokenMagic", "warpgate",
   // Browser / platform

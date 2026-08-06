@@ -164,10 +164,18 @@ export class CoverEngine {
       );
       if (result !== undefined) return !!result;
 
-      // Fallback: Foundry v11 canvas.walls API
-      if (canvas.walls?.checkCollision) {
-        const ray = new Ray(origin, destination);
-        return canvas.walls.checkCollision(ray, { type: "sight", mode: "any" });
+      // Fallback: the WallsLayer helper.
+      // ⚠️ V13 signature is checkCollision(DESTINATION, {origin, type, mode}) —
+      // and `Ray` is NOT a global any more (it moved to
+      // foundry.canvas.geometry.Ray). The old `new Ray(...)` here threw a
+      // ReferenceError straight into the catch below, which returns false =
+      // "no wall in the way" = cover silently never applied. Same fail-open
+      // trap that disabled wall checking in party-transfer.mjs.
+      if (typeof canvas.walls?.checkCollision === "function") {
+        return !!canvas.walls.checkCollision(
+          { x: destination.x, y: destination.y },
+          { origin: { x: origin.x, y: origin.y }, type: "sight", mode: "any" }
+        );
       }
 
       return false;
