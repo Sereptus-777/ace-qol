@@ -74,6 +74,7 @@ import { showCenterToast, showAdvantagePrompt, promptAttackChoice, pendingAttack
 import { EffectsPanel } from "./effects-panel.mjs";
 import { XpEngine } from "./xp-engine.mjs";
 import { QuickSelectTools } from "./quick-select-tools.mjs";
+import { PartyTransfer } from "./party-transfer.mjs";
 import { TurnMarker } from "./turn-marker.mjs";
 import { MovementTracker } from "./movement-tracker.mjs";
 import { LootableTile } from "./lootable-tile.mjs";
@@ -3469,6 +3470,15 @@ Hooks.once("ready", () => {
     console.error(`${MODULE_ID} | Quick select tools init failed:`, err);
   }
 
+  // Party Transfer ("the Hand") — GM only. Lift a party off one scene and land
+  // it on another with no leftovers and no duplicates. Also reports anything
+  // still in hand from a previous session.
+  try {
+    PartyTransfer.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Party Transfer init failed:`, err);
+  }
+
   // Turn Marker — ALL users (rotating marker on canvas + your-turn notif/sound)
   try {
     turnMarker = new TurnMarker();
@@ -4871,6 +4881,9 @@ Hooks.once("ready", () => {
     effectsPanel,
     xpEngine,
     quickSelectTools,
+    /** Party Transfer ("the Hand") — move a party between scenes with no
+     *  leftovers and no duplicates. game.aceQol.partyTransfer.openTransfer() */
+    partyTransfer: PartyTransfer,
     turnMarker,
     movementTracker,
     lootableTile,
