@@ -969,9 +969,19 @@ export class ReactionEngine {
         // nullification sweep uses, so MM-vs-active-Shield and MM-vs-cast-Shield
         // share the same "absorbed it" visual language.
         try {
-          const { AnimationHelper } = await import("../spell-pipeline/animation.mjs");
+          // ⚠️ PATH WAS "../spell-pipeline/…" AND RESOLVED TO NOTHING (fixed
+          // 2026-08-06). reaction-engine.mjs lives IN scripts/, so ".." climbs
+          // out to the module root; the folder is scripts/spell-pipeline/. The
+          // failed import landed in the catch below and was written off as
+          // "non-fatal", so the Shield-absorbs-Magic-Missile flash has never
+          // played once — silently, since a missing visual raises no complaint.
+          // Found by resolving all 864 relative imports in the suite against
+          // the filesystem; node --check never follows an import.
+          const { AnimationHelper } = await import("./spell-pipeline/animation.mjs");
           AnimationHelper.flashNullification(targetToken, "#42a5f5").catch(() => {});
-        } catch (_) { /* non-fatal */ }
+        } catch (err) {
+          console.warn(`${MODULE_ID} | Shield nullification flash unavailable:`, err?.message ?? err);
+        }
 
         // ── Post chat caption noting the negation ──
         await this._postReactionChat(
