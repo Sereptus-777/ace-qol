@@ -181,6 +181,15 @@ export class ConditionVisuals {
         if (!disc || !token.children?.includes(disc)) ConditionVisuals._applyStoneBackdisc(token);   // redraw dropped it → re-add
         const gr = token._aceStoneGranite;
         if (!gr || !token.children?.includes(gr)) ConditionVisuals._applyStoneGranite(token);        // redraw dropped it → re-add
+
+        // ⚠️ AND SYNC THE TRANSFORM — EVERY refresh, not just on rebuild.
+        // This was the second half of the ghost (2026-08-06). The three lines
+        // above only act when a layer went MISSING, so on an ordinary refresh —
+        // a move, a rotation — nothing here ran. _syncStoneTransforms was called
+        // exactly once, at build, and never again. The real art turned with the
+        // token; the granite did not. Johnny: "it doesn't follow the token if I
+        // spin the token around."
+        ConditionVisuals._syncStoneTransforms(token);
       } catch (_) { /* non-fatal */ }
     });
     Hooks.on("deleteToken", (tokenDoc) => ConditionVisuals._teardown(tokenDoc.id));
@@ -421,6 +430,7 @@ export class ConditionVisuals {
         fill.anchor.set(g.ax, g.ay); fill.width = g.w; fill.height = g.h;
         fill.position.set(g.ox, g.oy);
         fill.tint = 0xffffff; fill.alpha = 0.9;
+        backing._aceFill = fill;                           // handles for the self-heal pass
         const silhouette = new PIXI.Sprite(tex);           // same art → same shape/size
         silhouette.anchor.set(g.ax, g.ay); silhouette.width = g.w; silhouette.height = g.h;
         silhouette.position.set(g.ox, g.oy);
@@ -429,6 +439,7 @@ export class ConditionVisuals {
         // copy of the token's art. Sprite masks are sampled by the filter, not
         // by the normal draw, so this costs the mask nothing.
         silhouette.renderable = false;
+        backing._aceSilhouette = silhouette;
         backing.addChild(silhouette);                      // mask must live in the tree
         fill.mask = silhouette;
         backing.addChild(fill);
@@ -488,9 +499,27 @@ export class ConditionVisuals {
       // raw texture pixels. Believe the mesh, but verify it.
       const m = token?.mesh;
       const mw = Number(m?.width), mh = Number(m?.height);
+
+      // ⚠️ "IS IT SANE?" WAS THE WRONG QUESTION (2026-08-06).
+      // The old guard accepted any value up to base × 6 — and that ceiling
+      // SCALES WITH THE TOKEN, so the bigger the creature the more raw-texture
+      // sizes it waved through. A Large ogre has a 240px token, giving a 1440px
+      // ceiling; the ogre art is 1068 × 1090. Comfortably "plausible", and drawn
+      // at 4.4× actual size. A Medium creature with the same art has a 720px
+      // ceiling, so it failed the check and looked fine — which is exactly why
+      // this presented as "only some creatures, only sometimes".
+      //
+      // The right question is not "is this number sane" but "has Foundry
+      // actually resized the mesh yet?" — and there is a definitive answer:
+      // before resize, mesh.width IS the raw texture width. Compare them.
+      const src = m?.texture?.orig ?? m?.texture ?? null;
+      const rawW = Number(src?.width), rawH = Number(src?.height);
+      const unresized = Number.isFinite(rawW) && rawW > 0
+        && Math.abs(mw - rawW) < 1 && Math.abs(mh - rawH) < 1;
+
       const plausible = (v, base) => Number.isFinite(v) && v > 0 && v <= base * 6;
 
-      if (plausible(mw, baseW) && plausible(mh, baseH)) {
+      if (!unresized && plausible(mw, baseW) && plausible(mh, baseH)) {
         out.w = mw;
         out.h = mh;
         if (Number.isFinite(m?.anchor?.x)) out.ax = m.anchor.x;
@@ -583,19 +612,33 @@ export class ConditionVisuals {
       // its square (Izek) rendered as a visible second, smaller copy otherwise.
       const g = ConditionVisuals._meshGeometry(token);
 
-      const CMF = PIXI.filters?.ColorMatrixFilter ?? PIXI.ColorMatrixFilter ?? null;
-      if (CMF) {
-        const form = new PIXI.Sprite(tex);
-        form.anchor.set(g.ax, g.ay);
-        form.width = g.w; form.height = g.h;
-        form.position.set(g.ox, g.oy);
-        const cm = new CMF();
-        cm.desaturate();                       // full greyscale — skin tone gone
-        cm.brightness(STONE_BRIGHT, true);     // keep the darks reading as shadow
-        form.filters = [cm];
-        form.tint = STONE_TINT;                // cool granite cast over the grey
-        cont.addChild(form);
-      }
+      // ⚠️ THE CREATURE IS DRAWN ONCE. NEVER TWICE. (2026-08-06)
+      //
+      // There used to be a `form` sprite here: a second full copy of the token
+      // art, greyed and tinted, laid over the real one. But _applyStoneMesh
+      // ALREADY welds a desaturate+brightness filter onto the real mesh — the
+      // actual art is already stone. So the creature was being rendered twice:
+      // once by Foundry (always perfectly sized, positioned and rotated) and
+      // once by us (geometry guessed).
+      //
+      // Two copies means every disagreement between them is a visible ghost,
+      // and they disagreed on BOTH axes:
+      //   • size — the plausibility clamp below let a 1068px raw texture pass
+      //     as "sane" on a 240px Large token, drawing a 4.4× monster;
+      //   • rotation — the transform was synced once at build and never again,
+      //     so the real art turned and the copy did not.
+      // Johnny saw both: a screen-filling grey ogre, then a doubled ogre inside
+      // its own square after he moved and turned it.
+      //
+      // Aligning a duplicate more carefully is not a fix — it is a bug waiting
+      // for the next timing change. Deleting it is the fix. What remains below
+      // is granite GRAIN clipped to the creature's outline: a texture pass, not
+      // a second creature. If the grain is ever a few pixels off, it reads as
+      // stone; a misplaced copy of the creature reads as a ghost.
+      //
+      // The cool granite cast that `form.tint` used to provide now comes from
+      // the grain layer's own tint + blend below, which is where a surface
+      // treatment belongs anyway.
 
       // Granite fills the token square; the silhouette clips it to the body.
       // GRANITE_SCALE >1 pushes the texture's own feathered edge outside the
@@ -605,6 +648,7 @@ export class ConditionVisuals {
       stone.width = g.w * GRANITE_SCALE; stone.height = g.h * GRANITE_SCALE;
       stone.position.set(g.ox, g.oy);
       stone.alpha = GRANITE_ALPHA;
+      stone.tint = STONE_TINT;    // the cool cast the deleted `form` copy used to carry
       // Blend is a live knob at the top of this file. MULTIPLY keeps the form's
       // light and shade readable; NORMAL lays flatter, heavier stone.
       stone.blendMode = PIXI.BLEND_MODES[GRANITE_BLEND] ?? PIXI.BLEND_MODES.NORMAL;
@@ -621,6 +665,11 @@ export class ConditionVisuals {
 
       token.addChild(cont);                                // ON TOP of the art
       token._aceStoneGranite = cont;
+      // Keep handles on the two sprites so _syncStoneTransforms can CORRECT
+      // their geometry later, not just their rotation. Without this, an overlay
+      // built during a bad frame stayed wrong for the life of the token.
+      cont._aceStone = stone;
+      cont._aceSilhouette = silhouette;
       ConditionVisuals._syncStoneTransforms(token);
     } catch (err) {
       console.warn(`${MODULE_ID} | [conditions] granite overlay failed (non-fatal):`, err);
@@ -655,6 +704,44 @@ export class ConditionVisuals {
         : ((token?.document?.rotation ?? 0) * Math.PI) / 180;
       if (token._aceStoneBackdisc) token._aceStoneBackdisc.rotation = rot;
       if (token._aceStoneGranite)  token._aceStoneGranite.rotation  = rot;
+
+      // ── SELF-HEAL THE GEOMETRY (2026-08-06) ────────────────────────────
+      // Rotation alone was not enough. If an overlay was ever built during a
+      // frame where the mesh had not been sized, it stayed wrong forever —
+      // nothing recomputed it. Now every refresh re-measures and corrects, so
+      // a bad first frame fixes itself on the very next one instead of
+      // persisting as a giant grey ghost for the rest of the session.
+      const cont = token?._aceStoneGranite;
+      const back = token?._aceStoneBackdisc;
+      if (!cont && !back) return;
+      const g = ConditionVisuals._meshGeometry(token);
+      const changed = (a, b) => !Number.isFinite(a) || Math.abs(a - b) > 0.5;
+
+      // The white backing is masked, so bad geometry shows as a pale blob
+      // rather than a duplicate creature — but it is the same failure and gets
+      // the same correction.
+      for (const spr of [back?._aceFill, back?._aceSilhouette]) {
+        if (!spr) continue;
+        if (changed(spr.width, g.w) || changed(spr.height, g.h)) {
+          spr.anchor.set(g.ax, g.ay);
+          spr.width = g.w; spr.height = g.h;
+          spr.position.set(g.ox, g.oy);
+        }
+      }
+      if (!cont) return;
+
+      const sil = cont._aceSilhouette;
+      if (sil && (changed(sil.width, g.w) || changed(sil.height, g.h))) {
+        sil.anchor.set(g.ax, g.ay);
+        sil.width = g.w; sil.height = g.h;
+        sil.position.set(g.ox, g.oy);
+      }
+      const st = cont._aceStone;
+      const wantW = g.w * GRANITE_SCALE, wantH = g.h * GRANITE_SCALE;
+      if (st && (changed(st.width, wantW) || changed(st.height, wantH))) {
+        st.width = wantW; st.height = wantH;
+        st.position.set(g.ox, g.oy);
+      }
     } catch (_) { /* non-fatal */ }
   }
 
