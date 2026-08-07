@@ -29,6 +29,24 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
 
 const IMAGE_EXTS = [".webp", ".png", ".jpg", ".jpeg", ".gif", ".svg"];
+
+/**
+ * The FilePicker class, resolved the V13 way.
+ *
+ * ⚠️ A BARE `FilePicker` GLOBAL IS A TRAP (swept 2026-08-06). In V13 the class
+ * lives at foundry.applications.apps.FilePicker.implementation; the old global
+ * is deprecated. When it is absent, `FilePicker.browse(...)` throws a
+ * ReferenceError — and both call sites in ace-qol caught that and reported it
+ * as something else entirely ("the folder may not exist" / silence). The same
+ * mistake silenced every creature sound in ace-engine, and the same shape
+ * disabled wall checking twice in party-transfer. Resolve it, and if it is
+ * genuinely missing, SAY SO rather than blaming the data.
+ */
+function _acePicker() {
+  return foundry?.applications?.apps?.FilePicker?.implementation
+      ?? globalThis.FilePicker
+      ?? null;
+}
 const CACHE_SETTING_KEY = "tokenImageCacheData";
 const FOLDERS_SETTING_KEY = "tokenImageFolders";
 
@@ -37,6 +55,7 @@ export class TokenCache {
   static _scanning = false;
   static _initialized = false;
   static _lastScanInfo = null;  // { paths, fileCount, uniqueCount, durationSec, timestamp }
+  static _warnedNoPicker = false;   // report a missing FilePicker once, not per folder
 
   // ═══════════════════════════════════════════════════════════════════════════
   //  Init / public API
@@ -275,10 +294,27 @@ export class TokenCache {
 
   static async _walkRecursive(path, source = "data") {
     const files = [];
+    const FP = _acePicker();
+    if (!FP?.browse) {
+      // Once per session, not once per folder — a recursive walk would spam.
+      if (!TokenCache._warnedNoPicker) {
+        TokenCache._warnedNoPicker = true;
+        console.error("ACE QOL | No FilePicker implementation available — token art cannot be scanned. This is a Foundry API problem, not an empty folder.");
+      }
+      return files;
+    }
+
     let result;
     try {
-      result = await FilePicker.browse(source, path);
+      result = await FP.browse(source, path);
     } catch (err) {
+      // A genuinely absent folder is normal during a recursive walk and stays
+      // quiet; anything else is worth seeing, because returning an empty list
+      // for a real failure is how a broken scan looks exactly like an empty one.
+      const msg = String(err?.message ?? err);
+      if (!/does not exist|not found|ENOENT/i.test(msg)) {
+        console.warn(`ACE QOL | Token art scan failed for "${path}":`, msg);
+      }
       return files;
     }
 

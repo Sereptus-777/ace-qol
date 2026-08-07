@@ -15,6 +15,24 @@
 const MODULE_ID = "ace-qol";
 const LOG_PREFIX = `${MODULE_ID} | Death:`;
 
+/**
+ * The FilePicker class, resolved the V13 way.
+ *
+ * ⚠️ A BARE `FilePicker` GLOBAL IS A TRAP (swept 2026-08-06). In V13 the class
+ * lives at foundry.applications.apps.FilePicker.implementation; the old global
+ * is deprecated. When it is absent, `FilePicker.browse(...)` throws a
+ * ReferenceError — and both call sites in ace-qol caught that and reported it
+ * as something else entirely ("the folder may not exist" / silence). The same
+ * mistake silenced every creature sound in ace-engine, and the same shape
+ * disabled wall checking twice in party-transfer. Resolve it, and if it is
+ * genuinely missing, SAY SO rather than blaming the data.
+ */
+function _acePicker() {
+  return foundry?.applications?.apps?.FilePicker?.implementation
+      ?? globalThis.FilePicker
+      ?? null;
+}
+
 // ─── Asset base path ───────────────────────────────────────────────────────
 const DEAD_ART_PATH = `modules/${MODULE_ID}/Assets/Dead`;
 
@@ -135,8 +153,14 @@ export class DeathPipeline {
     this._artCache.clear();
     this._cacheReady = false;
 
+    const FP = _acePicker();
+    if (!FP?.browse) {
+      console.error(`${LOG_PREFIX} No FilePicker implementation available — dead-token art cannot be indexed. This is a Foundry API problem, not a missing folder.`);
+      return;
+    }
+
     try {
-      const result = await FilePicker.browse("data", DEAD_ART_PATH);
+      const result = await FP.browse("data", DEAD_ART_PATH);
 
       // ── Index root-level files ──
       for (const file of result.files || []) {
@@ -146,7 +170,7 @@ export class DeathPipeline {
       // ── Index subfolders (beasts/, humans/, etc.) ──
       for (const dir of result.dirs || []) {
         try {
-          const subResult = await FilePicker.browse("data", dir);
+          const subResult = await FP.browse("data", dir);
           for (const file of subResult.files || []) {
             this._indexFile(file);
           }
