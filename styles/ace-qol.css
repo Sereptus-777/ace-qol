@@ -1297,9 +1297,22 @@
   background: #151518;
 }
 
+/* ⚠️ WRAP GROUPS, NEVER CLIP THEM (2026-08-14).
+   This row was `display: flex` with no wrap — which defaults to "one line, no
+   matter what" — so on a Breath Weapon card the HP readout ran off the right
+   edge of the chat log and Johnny could see "HP: 163 →" and nothing after it.
+   The browser was never confused about the width; it had been told not to wrap.
+
+   The rule for every ACE card row: the CONTAINER wraps, and each logical group
+   inside it refuses to break in half. That way "1 +9 = 10" and a FAIL badge
+   drop to the next line together as one readable chunk, instead of the roll
+   sitting on one line and its result on another. Never shrink the text to make
+   something fit — Johnny, same day: "Don't have to try and make it smaller." */
 .ace-qol-save-target-header, .ace-qol-save-result-target {
   display: flex; align-items: center; gap: 6px;
+  flex-wrap: wrap; row-gap: 4px;
 }
+.ace-qol-save-target-header > *, .ace-qol-save-result-target > * { white-space: nowrap; }
 
 .ace-qol-save-target-img {
   width: 24px; height: 24px; border-radius: 50%; border: 1px solid #444; object-fit: cover;
@@ -5437,3 +5450,206 @@
 }
 .ace-qol-save-note-label { font-weight: 600; white-space: nowrap; }
 .ace-qol-save-note-who   { color: #9a9aa2; min-width: 0; overflow-wrap: anywhere; }
+
+/* ─── ACE QOL — Action Bar ──────────────────────────────────────────────────
+   The auto-filled action row that sits above Foundry's macro hotbar.
+   Full opacity by design: Johnny asked for it explicitly on 2026-08-14 —
+   BG3's fade-until-hover meant the bar was unreadable exactly when you were
+   trying to read it. It is either on screen or it is not.
+   ────────────────────────────────────────────────────────────────────────── */
+
+#ace-qol-action-bar.ace-qol-ab {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  margin: 0 auto 4px auto;
+  pointer-events: none;              /* the gaps let clicks through to canvas */
+}
+#ace-qol-action-bar.ace-qol-ab-visible { display: flex; }
+#ace-qol-action-bar * { pointer-events: auto; }
+
+/* ── Condition / aura strip ───────────────────────────────────────────── */
+.ace-qol-ab-strip {
+  display: flex;
+  gap: 3px;
+  min-height: 0;
+}
+.ace-qol-ab-badge {
+  width: 24px; height: 24px;
+  border: 1px solid #d4af37;
+  border-radius: 3px;
+  background: #0a0a0c;
+  overflow: hidden;
+  box-shadow: 0 0 4px rgba(0, 0, 0, .8);
+}
+.ace-qol-ab-badge img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* ── The bar proper ───────────────────────────────────────────────────── */
+.ace-qol-ab-main {
+  display: flex;
+  align-items: flex-end;             /* slots sit on the baseline; portrait towers */
+  gap: 6px;
+  padding: 4px 6px;
+  background: linear-gradient(180deg, #111114 0%, #0a0a0c 100%);
+  border: 1px solid #d4af37;
+  border-radius: 5px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .85);
+}
+
+/* ── Portrait ─────────────────────────────────────────────────────────────
+   ⚠️ TWICE THE MACRO SQUARE, AND IT SHOWS THE ACTOR PORTRAIT — NOT THE TOKEN.
+   Both were wrong in the first cut (2026-08-14). Token art is drawn to read at
+   an inch across on a battlemap: crop it into a small square and you get a
+   dark, squashed smear that defeats the entire point, which is recognising at a
+   glance who you have selected. The portrait is the picture of the character.
+   ────────────────────────────────────────────────────────────────────────── */
+.ace-qol-ab-portrait {
+  position: relative;
+  width: 104px; height: 104px;       /* 2 × the 50px macro square, plus the gap */
+  border: 2px solid #d4af37;
+  border-radius: 5px;
+  overflow: hidden;
+  background: #000;
+  flex: 0 0 auto;
+}
+.ace-qol-ab-portrait > img {
+  width: 100%; height: 100%;
+  object-fit: cover; object-position: center top;   /* faces, not chests */
+  display: block;
+}
+.ace-qol-ab-vitals {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  display: flex; justify-content: space-between;
+  padding: 1px 4px;
+  font-size: 13px; font-weight: 700; line-height: 1.35;
+  background: rgba(0, 0, 0, .8);
+  color: #f0e4c0;
+}
+
+/* The d20, revealed on hover — left-click rolls initiative, right-click opens
+   the ability/skill list. Always present: a control that vanishes once used
+   reads exactly like a broken one. */
+.ace-qol-ab-dice {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, .55);
+  color: #ffeaa7; font-size: 34px;
+  opacity: 0; transition: opacity .12s ease;
+  cursor: pointer;
+}
+.ace-qol-ab-portrait:hover .ace-qol-ab-dice { opacity: 1; }
+.ace-qol-ab-dice:hover { color: #fff; }
+.ace-qol-ab-hp span { opacity: .65; font-weight: 400; }
+/* ⚠️ A LABEL, NOT A GLYPH. A Font Awesome codepoint that is not in the loaded
+   set renders as an empty box, and which shield glyph ships free has moved
+   between FA versions. Two characters of text cannot break. */
+.ace-qol-ab-ac::before { content: "AC "; opacity: .6; font-weight: 400; }
+
+/* Multiattack is a LABEL, never a slot — see action-bar.mjs header. */
+.ace-qol-ab-multi {
+  position: absolute; top: 0; left: 0;
+  padding: 0 3px;
+  font-size: 9px; font-weight: 800; letter-spacing: .5px;
+  background: #8c1c1c; color: #fff;
+  border-bottom-right-radius: 3px;
+}
+.ace-qol-ab-init {
+  position: absolute; top: 0; right: 0;
+  min-width: 17px; height: 17px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700;
+  background: rgba(0, 0, 0, .8); color: #d4af37;
+  border-bottom-left-radius: 3px;
+}
+.ace-qol-ab-init-needed { cursor: pointer; color: #fff; background: #7a5c12; }
+.ace-qol-ab-init-needed:hover { background: #d4af37; color: #1a1a1a; }
+
+/* ── Action slots ─────────────────────────────────────────────────────── */
+.ace-qol-ab-slots { display: flex; gap: 3px; }
+.ace-qol-ab-slot {
+  position: relative;
+  width: 50px; height: 50px;
+  border: 1px solid #3a3a40;
+  border-radius: 4px;
+  background: #17171b;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color .12s ease, transform .12s ease;
+}
+.ace-qol-ab-slot:hover { border-color: #d4af37; transform: translateY(-2px); }
+.ace-qol-ab-slot > img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ace-qol-ab-empty { cursor: default; background: #0e0e11; border-style: dashed; }
+.ace-qol-ab-empty:hover { border-color: #3a3a40; transform: none; }
+
+.ace-qol-ab-name {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  padding: 1px 2px;
+  font-size: 9px; line-height: 1.15;
+  text-align: center;
+  color: #f0e4c0;
+  background: rgba(0, 0, 0, .82);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ace-qol-ab-uses {
+  position: absolute; top: 1px; right: 2px;
+  font-size: 10px; font-weight: 700; color: #fff;
+  text-shadow: 0 0 3px #000, 0 0 3px #000;
+}
+.ace-qol-ab-lvl {
+  position: absolute; top: 1px; left: 2px;
+  font-size: 10px; font-weight: 700; color: #9ecbff;
+  text-shadow: 0 0 3px #000, 0 0 3px #000;
+}
+
+/* ── Compact ability / skill list (right-click the d20) ───────────────────
+   Johnny liked BG3's version specifically because it was "a small, very small,
+   compact list" — so two dense columns, no dialog chrome, dismissed by the next
+   click anywhere. Anything bigger and you may as well open the sheet. */
+.ace-qol-ab-checks {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  display: flex; gap: 10px;
+  padding: 8px 10px;
+  background: linear-gradient(180deg, #17171b 0%, #0a0a0c 100%);
+  border: 1px solid #d4af37;
+  border-radius: 5px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .9);
+  z-index: 80;
+}
+.ace-qol-ab-checks-col { display: flex; flex-direction: column; min-width: 96px; }
+.ace-qol-ab-checks-skills {
+  display: grid; grid-template-columns: repeat(2, minmax(96px, 1fr));
+  grid-auto-flow: column; grid-template-rows: repeat(10, auto);
+}
+.ace-qol-ab-checks-head {
+  font-size: 11px; font-weight: 800; letter-spacing: .8px; text-transform: uppercase;
+  color: #d4af37; padding: 0 4px 3px 4px; margin-bottom: 2px;
+  border-bottom: 1px solid #3a3a40;
+}
+.ace-qol-ab-checks-skills .ace-qol-ab-checks-head { grid-column: 1 / -1; }
+.ace-qol-ab-check {
+  font-size: 13px; line-height: 1.5;
+  padding: 1px 6px; border-radius: 3px;
+  color: #f0e4c0; cursor: pointer; white-space: nowrap;
+}
+.ace-qol-ab-check:hover { background: #d4af37; color: #1a1a1a; }
+
+/* The bar is the positioning context for that popup. */
+#ace-qol-action-bar.ace-qol-ab { position: relative; }
+
+/* ── End turn ─────────────────────────────────────────────────────────── */
+.ace-qol-ab-turn { display: flex; align-items: center; }
+.ace-qol-ab-endturn {
+  width: auto; min-width: 50px; height: 50px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 1px; padding: 0 8px;
+  border: 1px solid #d4af37; border-radius: 4px;
+  background: linear-gradient(180deg, #7a5c12 0%, #4a3708 100%);
+  color: #ffeaa7;
+  font-size: 10px; font-weight: 800; letter-spacing: .6px;
+  cursor: pointer; line-height: 1;
+}
+.ace-qol-ab-endturn i { font-size: 15px; }
+.ace-qol-ab-endturn:hover { background: linear-gradient(180deg, #d4af37 0%, #a8871f 100%); color: #1a1a1a; }

@@ -68,12 +68,20 @@ export class MultiattackEngine {
     Hooks.on("dnd5e.rollAttack",   trigger);
 
     // Per-turn gating reset
-    Hooks.on("combatTurn",  () => {
+    // ⚠️ `combatTurnChange`, not `combatTurn`. Foundry fires combatTurn BEFORE
+    // it applies the update, so `game.combat.combatant` there is still the
+    // creature whose turn is ENDING — this closed the pop-up belonging to the
+    // creature about to act and left open the one that just finished.
+    // (audit F-022, 2026-08-07)
+    Hooks.on("combatTurnChange",  (combat, prior, current) => {
       MultiattackEngine._chained.clear();
       // Close any open chain pop-up for an actor who is no longer the active
       // combatant — covers fumble-ends-turn + GM manual skip (2026-07-10).
       try {
-        const curId = game.combat?.combatant?.actor?.id;
+        const _cur = current?.combatantId
+          ? combat?.combatants?.get(current.combatantId)
+          : game.combat?.combatant;
+        const curId = _cur?.actor?.id;
         for (const [aid, dlg] of MultiattackEngine._openPrompts) {
           if (aid !== curId) { try { dlg?.close?.(); } catch (_) {} }
         }

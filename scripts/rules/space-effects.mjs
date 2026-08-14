@@ -87,11 +87,20 @@ export class SpaceEffects {
       if (game.users?.activeGM !== game.user) return;
       SpaceEffects.sweepExpired().catch(err => console.warn(`${TAG} expiry sweep failed:`, err));
     });
-    Hooks.once("ready", () => {
+    // Catch anything that expired while the world was closed.
+    //
+    // ⚠️ 🔴 THIS NEVER RAN (fixed 2026-08-12). `register()` is called from
+    // inside ace-qol's own ready handler, so a bare `Hooks.once("ready", …)`
+    // here waits on an event that has ALREADY fired. Result: spell-space regions
+    // — Darkness, Web, Silence, Fog Cloud — that ran out while the world was
+    // shut stayed on the map forever, and nothing said so. Same trap that left
+    // 13 condition ghosts unswept the same day.
+    const sweep = () => {
       if (game.users?.activeGM !== game.user) return;
-      // Catch anything that expired while the world was closed.
       SpaceEffects.sweepExpired().catch(() => {});
-    });
+    };
+    if (game.ready) sweep();
+    else Hooks.once("ready", sweep);
 
     // ── Region dies (any path) → its stamps come off everyone ──
     Hooks.on("deleteRegion", (regionDoc) => {

@@ -35,6 +35,7 @@
 // and prevents the entire Weapon Mastery system from registering.
 
 import { aceWithinFt } from "./geometry-utils.mjs";
+import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { CombatState } from "./combat-state.mjs";
 import { AttackAbilityResolver } from "./attack-ability-resolver.mjs";
 
@@ -264,8 +265,10 @@ export class WeaponMasteries {
     // Register on both hook names — V13 fires renderChatMessageHTML (with
     // a raw HTMLElement); V12 fires renderChatMessage (with a jQuery wrap).
     // The data-bound guard prevents double-binding if both fire.
-    Hooks.on("renderChatMessageHTML", _bindMasteryButtons);  // V13
-    Hooks.on("renderChatMessage",     _bindMasteryButtons);  // V12 fallback
+    // Both render hooks + a sweep of cards that were drawn before this
+    // registered. See chat-render-utils — the raw hooks leave those
+    // undecorated forever, which is how GM-only content reached a player.
+    registerChatCardHandler(_bindMasteryButtons, "weapon-mastery cards");
 
     // ── GM-side socket handler for player-initiated mastery actions ─────
     // Players don't have permission to update chat messages they don't own
@@ -458,6 +461,12 @@ export class WeaponMasteries {
     for (const msg of recentMsgs) {
       const fl = msg.flags?.[MODULE_ID];
       if (fl?.type !== "damageResult") continue;
+      // ⚠️ A FALL IS NOT AN ATTACK. Falling posts a real damage card (so it gets
+      // Apply/Undo and resistance display like everything else), and it carries
+      // no itemUuid — which means the "unknown item, accept it" branch below
+      // would happily match it. A creature shoved off a ledge would then have
+      // its mastery push resolved against its own fall card. (2026-08-12)
+      if (fl?.aceFall) continue;
       if (fl?.itemUuid && fl.itemUuid !== itemUuid) continue;
       const hasOrigInResults = (fl?.damageResults ?? []).some(r =>
         r.tokenDocId === originalTokId || r.tokenId === originalTokId

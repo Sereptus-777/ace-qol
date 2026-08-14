@@ -24,7 +24,9 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { awaitDsnRoll } from "./attack-prompt.mjs";
+import { abilityMod } from "./rolldata-utils.mjs";
 
 // Real black-d20 die art (per-face) with a gold glow — the same dice the save
 // cards use, so a break-free Strength check shows the player exactly what they
@@ -70,8 +72,10 @@ export class BreakFreeEngine {
     });
 
     // Resolve button clicks on the prompt card.
-    Hooks.on("renderChatMessage",    (msg, html) => this._wireCard(msg, html));
-    Hooks.on("renderChatMessageHTML", (msg, html) => this._wireCard(msg, html));
+    // Both render hooks + a sweep of cards that were drawn before this
+    // registered. See chat-render-utils — the raw hooks leave those
+    // undecorated forever, which is how GM-only content reached a player.
+    registerChatCardHandler((msg, html) => this._wireCard(msg, html), "break-free cards");
 
     console.log(`${MODULE_ID} | BreakFreeEngine online — action-to-escape prompts at start of turn.`);
   }
@@ -272,13 +276,13 @@ export class BreakFreeEngine {
       } else if (typeof actor.rollAbilityTest === "function") {
         roll = await actor.rollAbilityTest(ability, { chatMessage: false, fastForward: true });
       } else {
-        roll = await (new Roll(`1d20 + @abilities.${ability}.mod`, actor.getRollData())).evaluate();
+        roll = await (new Roll(`1d20 + ${abilityMod(actor.getRollData?.() ?? {}, ability)}`)).evaluate();
       }
       total = roll?.total ?? 0;
       dieFace = _grabFace(roll);
     } catch (_) {
       try {
-        const roll = await (new Roll(`1d20 + @abilities.${ability}.mod`, actor.getRollData())).evaluate();
+        const roll = await (new Roll(`1d20 + ${abilityMod(actor.getRollData?.() ?? {}, ability)}`)).evaluate();
         total = roll.total;
         dieFace = _grabFace(roll);
       } catch (__) { total = 0; }

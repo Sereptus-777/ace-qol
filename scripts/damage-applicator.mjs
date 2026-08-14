@@ -52,8 +52,53 @@ export class DamageApplicator {
       return { currentHP: actor?.system?.attributes?.hp?.value ?? 0, newHP: actor?.system?.attributes?.hp?.value ?? 0, excess: 0, applied: Promise.resolve() };
     }
 
-    const damage    = Math.max(0, Number(damageAmount) || 0);
+    let damage      = Math.max(0, Number(damageAmount) || 0);
     const currentHP = Number(actor?.system?.attributes?.hp?.value ?? 0);
+
+    // ── 🔴 ACE DAMAGE MUST ANNOUNCE ITSELF (audit fix, 2026-08-07) ──────────
+    // Everything below this line writes hit points with a raw actor.update, so
+    // dnd5e's own "damage is being applied" notification NEVER fired for the
+    // most common event in the game — an APPLY ALL from the damage card.
+    //
+    // That single gap silently killed SIX features that all listen for it:
+    //   • Heavy Armor Master  — the -3 reduction never applied. The feat was dead.
+    //   • Massive-damage instant death (PHB 197) — never fired on a normal hit.
+    //   • Hide reveals on damage — a hidden creature stayed hidden after being hit.
+    //   • Charm break / Dominate re-save on damage.
+    //   • Forge's per-item on-hit FX.
+    //   • (heal side, below) Sword of Wounding's heal-block.
+    //
+    // condition-raw-hooks.mjs found this on 2026-06-24 and patched ONE consumer
+    // (waking a sleeper). Nobody went back for the other eight listeners.
+    //
+    // Emitted with Hooks.call and the identical (actor, amount, updates, options)
+    // signature dnd5e uses, so a listener that MUTATES options.damages (Heavy
+    // Armor Master) or RETURNS FALSE (a hard cancel) behaves exactly as it would
+    // on a system-routed hit. We re-read the damages afterwards and honour both.
+    const _damages = Array.isArray(opts.damages) && opts.damages.length
+      ? opts.damages.map(d => ({ ...d }))
+      : [{ value: damage, type: (Array.isArray(opts.types) ? opts.types[0] : opts.types) || "none", properties: new Set() }];
+    const _updates = {};
+    try {
+      const proceed = Hooks.call("dnd5e.preApplyDamage", actor, damage, _updates, {
+        ...(opts.hookOptions ?? {}),
+        damages: _damages,
+        aceQol: true,          // listeners can tell ACE's emission from dnd5e's own
+      });
+      if (proceed === false) {
+        console.log(`${MODULE_ID} | applyHPDamage: a listener cancelled the damage on ${actor?.name}.`);
+        return { currentHP, newHP: currentHP, excess: 0, applied: false, tempUsed: 0, newTemp: Number(actor?.system?.attributes?.hp?.temp ?? 0) };
+      }
+      // Honour reductions a listener wrote back into the damage entries.
+      const reduced = _damages.reduce((sum, d) => sum + Math.max(0, Number(d?.value) || 0), 0);
+      if (Number.isFinite(reduced) && reduced !== damage) {
+        console.log(`${MODULE_ID} | applyHPDamage: a listener adjusted the damage on ${actor?.name}: ${damage} → ${reduced}.`);
+        damage = Math.max(0, reduced);
+      }
+    } catch (err) {
+      // A broken listener must never stop damage landing.
+      console.warn(`${MODULE_ID} | applyHPDamage: a dnd5e.preApplyDamage listener threw (damage still applies):`, err);
+    }
     const tempHP    = Math.max(0, Number(actor?.system?.attributes?.hp?.temp ?? 0));
 
     // ── Temp HP absorbs first (RAW, 2014 + 2024) ──
@@ -266,6 +311,38 @@ export class DamageApplicator {
     const heal      = Math.max(0, Number(healAmount) || 0);
     const currentHP = Number(actor?.system?.attributes?.hp?.value ?? 0);
     const maxHP     = Number(actor?.system?.attributes?.hp?.max ?? 0);
+
+    // ── HEALS ANNOUNCE THEMSELVES TOO (audit fix, 2026-08-07) ──────────────
+    // dnd5e represents healing as NEGATIVE damage through the same
+    // notification, and Sword of Wounding blocks a heal by returning false to
+    // it. This path wrote hit points raw, so a creature with open wounds could
+    // be healed by ACE's per-type undo, regeneration, or an aura — the exact
+    // thing the wound is supposed to prevent.
+    //
+    // ⚠️ EXCEPT A CORRECTION, WHICH IS NOT A HEAL (same day, second pass).
+    // An UNDO is the GM rewinding the ledger, not the creature recovering. If it
+    // went through the notification, a target with open wounds would make the
+    // UNDO button silently do nothing — the GM clicks, hit points don't move,
+    // and it looks like the button is broken. It would also wake sleepers and
+    // trip on-heal riders for an event that never happened in the fiction.
+    // `opts.correction` says "put it back", and nothing gets a vote.
+    if (opts.correction === true) {
+      console.log(`${MODULE_ID} | applyHPHeal: CORRECTION (${opts.label ?? "undo"}) — restoring ${heal} to ${actor?.name}, not announced as healing.`);
+    } else {
+      try {
+        const proceed = Hooks.call("dnd5e.preApplyDamage", actor, -heal, {}, {
+          damages: [{ value: -heal, type: "healing", properties: new Set() }],
+          isHealing: true,
+          aceQol: true,
+        });
+        if (proceed === false) {
+          console.log(`${MODULE_ID} | applyHPHeal: a listener blocked the heal on ${actor?.name} (e.g. Sword of Wounding).`);
+          return { currentHP, newHP: currentHP, healedAmount: 0, applied: false };
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | applyHPHeal: a dnd5e.preApplyDamage listener threw (heal still applies):`, err);
+      }
+    }
     const newHP     = Math.min(maxHP, currentHP + heal);
     const healedAmount = newHP - currentHP;
 
@@ -276,6 +353,42 @@ export class DamageApplicator {
     }
 
     return { currentHP, newHP, healedAmount, applied: true };
+  }
+
+  /**
+   * Describe damage by TYPE for the dnd5e notification.
+   *
+   * Heavy Armor Master reduces bludgeoning / piercing / slashing by 3 EACH and
+   * skips anything magical, so it needs the per-type split and the magical flag
+   * — a single lumped total tells it nothing. Everything else that listens only
+   * needs the total, so this is the one caller-supplied detail that matters.
+   *
+   * @param {Array}  components  the card's damage components ({type, final})
+   * @param {number} multiplier  the row's override (¼ / ½ / 1 / 2×)
+   * @param {Item|null} item     the attacking item, for the magical check
+   */
+  static describeDamages(components, multiplier = 1, item = null) {
+    // "Magical" is what stops HAM reducing a +1 sword. Read it off the item:
+    // dnd5e marks a magic weapon with a magical bonus and/or the "mgc" property.
+    let magical = false;
+    try {
+      const props = item?.system?.properties;
+      magical = Number(item?.system?.magicalBonus ?? 0) > 0
+             || props?.has?.("mgc") === true
+             || (Array.isArray(props) && props.includes("mgc"));
+    } catch (_) { /* unknown → treated as non-magical */ }
+
+    const out = [];
+    for (const c of (components ?? [])) {
+      const value = Math.floor((Number(c?.final) || 0) * multiplier);
+      if (value <= 0) continue;
+      out.push({
+        value,
+        type: String(c?.type ?? "none").toLowerCase(),
+        properties: magical ? new Set(["mgc"]) : new Set(),
+      });
+    }
+    return out;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -321,6 +434,12 @@ export class DamageApplicator {
     const flags = message.flags?.[MODULE_ID];
     const data = flags?.damageResults;
     if (!data?.length) return;
+
+    // Resolved ONCE for the whole card — the magical flag is per-item, not
+    // per-target, and fromUuidSync on every row would be wasteful.
+    let _srcItem = null;
+    try { if (flags.itemUuid) _srcItem = fromUuidSync?.(flags.itemUuid) ?? null; }
+    catch (_) { _srcItem = null; }
 
     let applied = 0;
     for (const entry of data) {
@@ -374,9 +493,21 @@ export class DamageApplicator {
       // We used to inline all three of those here, which duplicated logic
       // and meant any future change to the polymorph rules needed two
       // edits. Grok audit catch.
+      // The components that are ACTUALLY being applied on this pass (already-
+      // applied ones are excluded above), described by type so Heavy Armor
+      // Master and anything else type-aware can act on them.
+      const _pending = components.filter((_, i) => !appliedComps.includes(i));
+      const _hpBefore = Number(actor?.system?.attributes?.hp?.value ?? 0);
       await DamageApplicator.applyHPDamage(actor, damageToApply, {
         label: `APPLY ALL ${entry.name}`,
+        types: [...typesApplied],
+        damages: DamageApplicator.describeDamages(_pending, override, _srcItem),
       });
+      // What the hit points ACTUALLY moved by — after temp-HP absorption and
+      // after any listener reduction. This is what UNDO must give back; the
+      // nominal damage figure would over-heal. (audit fix 2026-08-07)
+      const _hpAfter = Number(actor?.system?.attributes?.hp?.value ?? 0);
+      const _realDelta = Math.max(0, _hpBefore - _hpAfter);
 
       // Signal the damage types this creature just took, so the OverTime engine
       // can honor RAW regeneration shut-offs (a troll that took fire/acid, or a
@@ -396,9 +527,12 @@ export class DamageApplicator {
         const compDmg = Math.floor(components[i].final * override);
         perCompUpdate[`flags.${MODULE_ID}.perCompApplied.${entry.tokenDocId}.${i}`] = compDmg;
       }
+      const _prevDelta = flags?.hpDelta?.[entry.tokenDocId] ?? 0;
       await message.update({
         [`flags.${MODULE_ID}.appliedComps.${entry.tokenDocId}`]: allIndices,
         [`flags.${MODULE_ID}.perTypeApplied.${entry.tokenDocId}`]: prevPerType + damageToApply,
+        // The true hit-point movement, which is what UNDO gives back.
+        [`flags.${MODULE_ID}.hpDelta.${entry.tokenDocId}`]: _prevDelta + _realDelta,
         ...perCompUpdate,
       });
 
@@ -441,6 +575,25 @@ export class DamageApplicator {
     const data = message.getFlag(MODULE_ID, "damageResults");
     if (!data?.length) return;
 
+    // ── 🔴 UNDO GIVES BACK WHAT IT TOOK (audit fix, 2026-08-07) ────────────
+    // This used to set hit points back to `entry.currentHP` — the snapshot taken
+    // when the CARD WAS CREATED. An absolute restore, not a relative one, so
+    // anything that touched the creature in between was silently erased:
+    //
+    //   goblin at 30 → apply 10 (now 20) → steps in a trap for 5 (now 15)
+    //   → click UNDO on the old card → goblin goes back to 30. Trap damage gone.
+    //
+    // Same for two damage cards in flight, and for a card where only ONE damage
+    // type was applied (undo handed back the full pre-card total regardless).
+    //
+    // `hpDelta` records the TRUE hit-point movement at apply time — after temp
+    // HP absorbed its share and after any listener reduction — so healing it
+    // back is exact. The per-type undo directly below already worked this way;
+    // this brings UNDO ALL into line with it.
+    const _flags     = message.flags?.[MODULE_ID] ?? {};
+    const _hpDeltas  = _flags.hpDelta ?? {};
+    const _perType   = _flags.perTypeApplied ?? {};
+
     let undoneCount = 0;
     for (const entry of data) {
       const actor = DamageApplicator.resolveTargetActor(entry);
@@ -449,9 +602,25 @@ export class DamageApplicator {
         continue;
       }
 
-      const restoredHP = Math.min(entry.currentHP, actor.system.attributes.hp.max);
-      await actor.update({ "system.attributes.hp.value": restoredHP });
-      console.log(`${MODULE_ID} | Undid damage on ${actor.name}: ${actor.system.attributes.hp.value} → restored to ${restoredHP}`);
+      // Preference order: the true movement → the nominal applied total (cards
+      // created before this fix) → nothing at all. A card that was never applied
+      // has nothing to undo, and must NOT be treated as "restore to snapshot".
+      let giveBack = Number(_hpDeltas[entry.tokenDocId]);
+      let source   = "true hit-point movement";
+      if (!Number.isFinite(giveBack)) {
+        giveBack = Number(_perType[entry.tokenDocId]);
+        source   = "applied total (card predates the hpDelta fix)";
+      }
+      if (!Number.isFinite(giveBack) || giveBack <= 0) {
+        console.log(`${MODULE_ID} | UNDO: nothing was applied to ${entry.name} on this card — leaving its hit points alone.`);
+        continue;
+      }
+
+      const { currentHP, newHP } = await DamageApplicator.applyHPHeal(actor, giveBack, {
+        label: `UNDO ${entry.name}`,
+        correction: true,   // rewinding the ledger, not healing — nothing may block it
+      });
+      console.log(`${MODULE_ID} | UNDO on ${actor.name}: gave back ${giveBack} (${source}) — ${currentHP} → ${newHP}`);
       undoneCount++;
     }
 
@@ -460,6 +629,7 @@ export class DamageApplicator {
       [`flags.${MODULE_ID}.perTypeApplied`]: {},
       [`flags.${MODULE_ID}.appliedComps`]: {},
       [`flags.${MODULE_ID}.perCompApplied`]: {},
+      [`flags.${MODULE_ID}.hpDelta`]: {},
       [`flags.${MODULE_ID}.applied`]: false,
     });
 
@@ -827,14 +997,21 @@ export class DamageApplicator {
           // truth for HP mutation. Grok audit follow-on.
           const { currentHP, newHP: restoredHP } = await DamageApplicator.applyHPHeal(actor, appliedAmount, {
             label: `per-type UNDO ${dmgType}`,
+            correction: true,   // rewinding the ledger, not healing — nothing may block it
           });
 
           const newApplied = currentApplied.filter(i => i !== idx);
           const prevTotal = message.flags?.[MODULE_ID]?.perTypeApplied?.[tokenDocId] ?? 0;
+          const _prevDelta3 = message.flags?.[MODULE_ID]?.hpDelta?.[tokenDocId] ?? 0;
+          // What the heal ACTUALLY put back (it clamps at max hit points).
+          const _restored   = Math.max(0, Number(restoredHP) - Number(currentHP));
           const flagUpdate = {
             [`flags.${MODULE_ID}.appliedComps.${tokenDocId}`]: newApplied,
             [`flags.${MODULE_ID}.perTypeApplied.${tokenDocId}`]: Math.max(0, prevTotal - appliedAmount),
             [`flags.${MODULE_ID}.perCompApplied.${tokenDocId}.${idx}`]: null,
+            // Take the same amount back off the true-movement tally, so a later
+            // UNDO ALL doesn't hand this component's hit points back twice.
+            [`flags.${MODULE_ID}.hpDelta.${tokenDocId}`]: Math.max(0, _prevDelta3 - _restored),
           };
           if (message.flags?.[MODULE_ID]?.applied) {
             flagUpdate[`flags.${MODULE_ID}.applied`] = false;
@@ -860,9 +1037,18 @@ export class DamageApplicator {
         // polymorph excess-damage capture, and the actor.update. Replaces
         // inline duplication (same fix pattern as APPLY ALL in v0.7.3).
         // Grok audit follow-on.
+        // ONE typed entry — Heavy Armor Master needs to know this is (say)
+        // 7 slashing from a non-magical weapon, not just "7 damage".
+        const _comp = entry.components?.[idx] ?? null;
+        const _hpBefore = Number(actor?.system?.attributes?.hp?.value ?? 0);
         const { currentHP, newHP } = await DamageApplicator.applyHPDamage(actor, amount, {
           label: `per-type ${dmgType}`,
+          types: [String(dmgType).toLowerCase()],
+          damages: _comp
+            ? DamageApplicator.describeDamages([{ ...(_comp), final: amount }], 1, null)
+            : [{ value: amount, type: String(dmgType).toLowerCase(), properties: new Set() }],
         });
+        const _realDelta = Math.max(0, _hpBefore - Number(actor?.system?.attributes?.hp?.value ?? 0));
 
         // Feed the OverTime regeneration shut-off tracker (RAW: a creature that
         // took its weakness this round doesn't regenerate at its next turn).
@@ -877,10 +1063,13 @@ export class DamageApplicator {
         console.log(`${MODULE_ID} | Per-type apply: comp ${idx} (${amount} ${dmgType}${overrideLabel}) to ${entry.name}: HP ${currentHP} → ${newHP}`);
 
         const updatedComps = [...currentApplied, idx];
+        const _prevDelta2 = message.flags?.[MODULE_ID]?.hpDelta?.[tokenDocId] ?? 0;
         await message.update({
           [`flags.${MODULE_ID}.perTypeApplied.${tokenDocId}`]: prevApplied + amount,
           [`flags.${MODULE_ID}.appliedComps.${tokenDocId}`]: updatedComps,
           [`flags.${MODULE_ID}.perCompApplied.${tokenDocId}.${idx}`]: amount,
+          // Keep the true-movement tally in step so a later UNDO ALL is exact.
+          [`flags.${MODULE_ID}.hpDelta.${tokenDocId}`]: _prevDelta2 + _realDelta,
         });
 
         DamageApplicator.overrideCache.delete(cacheKey);

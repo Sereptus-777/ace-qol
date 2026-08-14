@@ -6,6 +6,33 @@
 
 export const SAVE_SPELLS = {
 
+  // ── Command (1st level, 1 round, NO concentration) ──────────────────────
+  //
+  // ⚠️ dnd5e OWNS THE WORD. The premium PHB ships Command with one ACTIVITY per
+  // word — Approach, Flee, Grovel, Halt — and that picker already works. We do
+  // NOT rebuild it; the save card already prints the chosen word ("Vampire casts
+  // Grovel on Izek"). ACE's job is the part nothing did: land an effect on a
+  // failed save so the table can SEE the creature is under a command.
+  //
+  // ⚠️ NO RE-SAVE, AND NO CONCENTRATION. Duration is 1 round: the target obeys
+  // on its NEXT turn and it is over. Anything that adds an end-of-turn re-save
+  // here is wrong. (Contrast Hold Person directly above, which does re-save.)
+  //
+  // ⚠️ THE EFFECT IS A MARKER, NOT AN ENFORCEMENT. RAW the creature acts out the
+  // command on its own turn — Grovel means it drops prone and ends its turn.
+  // Applying prone at CAST time would be a full turn early, so we mark and let
+  // the GM play it. Word-specific behaviour is the follow-up, and per
+  // rule_check_premades_before_writing_a_spell.md I want to read how Chris's
+  // Premades and the Midi showcase handled it before automating that part.
+  "command": {
+    shape: "save-single",
+    range: 60,
+    save: { ability: "wis", onFail: "effect" },   // deliberately no repeatAt
+    effect: { key: "command", duration: { rounds: 1 } },
+    picker: { allowSelf: false, excludeDead: true },
+    flavorOnConfirm: "One creature must succeed on a Wisdom save or follow a one-word command on its next turn. No effect on undead, on a creature that does not understand your language, or if the command is directly harmful.",
+  },
+
   "hold person": {
     shape: "save-single",
     range: 60,

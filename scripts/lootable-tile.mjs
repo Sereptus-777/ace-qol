@@ -23,6 +23,8 @@
 import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
 import { aceEdgeGapFt } from "./geometry-utils.mjs";
+import { lootFraming, readCreatureType } from "./loot-framing.mjs";
+import { canHarvest } from "./sustenance.mjs";
 
 // ─── Container detection (cross-module shared flag namespace) ──────────────
 // Both ACE QOL and ACE Forge read these flags. ACE QOL uses them for the
@@ -1117,15 +1119,62 @@ export class LootableTile {
     this._hoverIconTileId = null;
   }
 
+  /**
+   * Does this dead thing read as meat rather than treasure?
+   *
+   * ⚠️ Delegates to `sustenance.canHarvest`, which is where the beasts-only
+   * rule lives. Do NOT re-implement the creature-type test here — there must be
+   * exactly one place that decides what may be butchered, and it is not this
+   * file. A humanoid returns false and simply shows the ordinary loot badge.
+   */
+  _isHarvestable(tile) {
+    try {
+      const doc = tile?.document ?? tile;
+      if (doc?.documentName !== "Token") return false;      // tiles are never meat
+      const actor = tile?.actor ?? doc?.actor ?? null;
+      if (!actor) return false;
+      return canHarvest(actor).ok === true;
+    } catch (_) {
+      return false;   // never let the badge decision throw the hover handler
+    }
+  }
+
   _showHoverIcon(tile) {
     try {
       const tileDoc = tile.document ?? tile;
       if (!tileDoc) return;
-      // v0.4.22.11: same 0-width fallback fix
-      const w = (Number(tileDoc.width)  > 0) ? Number(tileDoc.width)  : 100;
-      const h = (Number(tileDoc.height) > 0) ? Number(tileDoc.height) : 100;
-      const cx = tileDoc.x + w / 2;
-      const cy = tileDoc.y + h / 2;
+
+      // ⚠️ A TILE AND A TOKEN DO NOT MEASURE THEMSELVES THE SAME WAY.
+      // TileDocument width/height are PIXELS. TokenDocument width/height are
+      // GRID SQUARES — a medium creature is `width: 1`. This function was
+      // written for tiles and later reused for dead tokens, so every corpse
+      // was centred at `x + 0.5` — half a pixel from its top-left corner.
+      // That is why the icon sat in the north-west corner instead of on the
+      // body. Ask the PLACEABLE for its bounds, which are in world pixels for
+      // both kinds, and only fall back to document maths if there is no
+      // placeable to ask.
+      let cx, cy, worldW, worldH;
+      const bounds = (typeof tile.bounds === "object" && tile.bounds) ? tile.bounds : null;
+      if (bounds && Number(bounds.width) > 0) {
+        worldW = Number(bounds.width);
+        worldH = Number(bounds.height);
+        cx = Number(bounds.x) + worldW / 2;
+        cy = Number(bounds.y) + worldH / 2;
+      } else if (tile.center && Number.isFinite(tile.center.x)) {
+        cx = tile.center.x;
+        cy = tile.center.y;
+        const gs = Number(canvas?.grid?.size) || 100;
+        worldW = (Number(tileDoc.width)  || 1) * (tileDoc.documentName === "Token" ? gs : 1);
+        worldH = (Number(tileDoc.height) || 1) * (tileDoc.documentName === "Token" ? gs : 1);
+      } else {
+        // Last resort: document maths, with the grid conversion tokens need.
+        const gs = Number(canvas?.grid?.size) || 100;
+        const isToken = tileDoc.documentName === "Token";
+        worldW = (Number(tileDoc.width)  > 0 ? Number(tileDoc.width)  : 1) * (isToken ? gs : 1);
+        worldH = (Number(tileDoc.height) > 0 ? Number(tileDoc.height) : 1) * (isToken ? gs : 1);
+        cx = Number(tileDoc.x) + worldW / 2;
+        cy = Number(tileDoc.y) + worldH / 2;
+      }
       // Convert world → screen via canvas.stage
       const screen = canvas.stage.toGlobal({ x: cx, y: cy });
       const canvasEl = document.getElementById("board") ?? canvas?.app?.view;
@@ -1134,24 +1183,45 @@ export class LootableTile {
       const left = rect.left + screen.x;
       const top  = rect.top  + screen.y;
 
+      // ── Scale the badge to the body it sits on ──────────────────────────
+      // Johnny, 2026-08-09: "I would just rather have the loot icon as big as
+      // the corpse is. It's very visible inside the square of the corpse."
+      // 70% of the token, not 100%: a badge that fills the square swallows the
+      // token underneath, and the GM still needs to click the corpse itself to
+      // open its sheet and put hit points back after a resurrection. The
+      // remaining ring is that click target. Clamped so a rat is still hittable
+      // and a dragon's badge is not absurd.
+      const zoom  = Number(canvas?.stage?.scale?.x) || 1;
+      const onScreen = Math.min(worldW, worldH) * zoom;
+      const size  = Math.max(36, Math.min(140, Math.round(onScreen * 0.7)));
+      const glyph = Math.round(size * 0.5);
+
+      // A carcass someone can butcher reads as meat, not treasure — and it is
+      // the same slot, so players meet the harvest affordance where they
+      // already look for the loot one.
+      const harvestable = this._isHarvestable?.(tile) ?? false;
+
       const icon = document.createElement("div");
       icon.className = "ace-qol-loot-hover-icon";
-      // fa-sack-dollar is Font Awesome 6 Free (Foundry V13 bundles Free).
-      // Previously used fa-treasure-chest, which is Pro-only — the icon
-      // div rendered as a blank circle on Free installations.
-      icon.innerHTML = `<i class="fas fa-sack-dollar" aria-hidden="true"></i>`;
+      // fa-sack-dollar and fa-drumstick-bite are both Font Awesome 6 FREE
+      // (Foundry V13 bundles Free). fa-treasure-chest is Pro-only and rendered
+      // as a blank circle — do not reach for it again.
+      icon.innerHTML = harvestable
+        ? `<i class="fas fa-drumstick-bite" aria-hidden="true"></i>`
+        : `<i class="fas fa-sack-dollar" aria-hidden="true"></i>`;
       icon.style.cssText = `
         position: fixed;
         left: ${left}px;
         top: ${top}px;
         transform: translate(-50%, -50%);
-        width: 40px; height: 40px;
+        width: ${size}px; height: ${size}px;
+        --ace-glyph: ${glyph}px;
         display: flex; align-items: center; justify-content: center;
-        background: rgba(212, 175, 55, 0.95);
-        border: 2px solid #d4af37;
+        background: ${harvestable ? "rgba(214, 122, 127, 0.95)" : "rgba(212, 175, 55, 0.95)"};
+        border: 2px solid ${harvestable ? "#c05f66" : "#d4af37"};
         border-radius: 50%;
         color: #1a1a1e;
-        font-size: 20px;
+        font-size: ${glyph}px;
         cursor: pointer;
         box-shadow: 0 2px 8px rgba(0,0,0,0.55);
         z-index: 60;
@@ -1544,10 +1614,30 @@ export class LootableTile {
       </div>
     ` : "";
 
+    // ── How this drop should be DESCRIBED ────────────────────────────────
+    // A construct is salvaged, an ooze is cut open, a beast is simply dead
+    // with things lying on it. Only humanoids and their kin actually carried
+    // what they're holding. Read order matters: the snapshot recorded the
+    // type at the moment of death, the token flag is the same value, and the
+    // world actor is the LAST resort because for an unlinked token it's a
+    // different copy of the creature. (2026-08-08)
+    const deadCreatureType = isDead
+      ? (readCreatureType(flags.lootSnapshot)
+         || String(flags.creatureType ?? "").toLowerCase()
+         || readCreatureType(actor))
+      : "";
+    const framing = lootFraming(deadCreatureType);
+
     // Subtitle: creature type for dead bodies, "Container" for chests
     const subtitle = isDead
-      ? (flags.creatureType ?? "")
+      ? (deadCreatureType ? deadCreatureType.charAt(0).toUpperCase() + deadCreatureType.slice(1) : "")
       : "Container";
+
+    // One plain line explaining WHY this isn't pocket loot. Empty for the
+    // ordinary case, so a goblin's card looks exactly as it always has.
+    const framingNoteHtml = (isDead && framing.note)
+      ? `<div class="ace-qol-tile-loot-framing" style="margin:6px 0 2px;padding:7px 10px;border-radius:4px;background:#191b22;border-left:3px solid #d4af37;color:#cfc4a8;font-size:14px;line-height:1.4;">${foundry.utils.escapeHTML(framing.note)}</div>`
+      : "";
 
     // GM-only "Repost Loot Card" button — recreates the ACE Loot chat card
     // for this tile if the original card was lost / accidentally deleted.
@@ -1573,6 +1663,7 @@ export class LootableTile {
           ${revealAllBtn}
           ${repostBtn}
         </div>
+        ${framingNoteHtml}
         ${lockBanner}
         ${goldHtml}
         <div class="ace-qol-tile-loot-items">${itemRowsHtml}</div>
@@ -1587,10 +1678,11 @@ export class LootableTile {
       actorImg:  actor?.img ?? actor?.prototypeToken?.texture?.src ?? "icons/svg/skull.svg",
       items,
       currency,
+      creatureType: deadCreatureType,
     };
 
     const dlg = await foundry.applications.api.DialogV2.wait({
-      window: { title: `Loot — ${displayName}` },
+      window: { title: `${framing.verb} — ${displayName}` },
       classes: ["ace-qol-tile-loot-dialog-window"],
       content,
       buttons: [{ action: "close", label: "Close", icon: "fa-solid fa-xmark", default: true }],

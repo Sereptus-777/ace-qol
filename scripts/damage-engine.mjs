@@ -11,6 +11,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { QolSettings } from "./settings.mjs";
 import { DescriptionParser } from "./description-parser.mjs";
 import { RiderEngine } from "./rider-engine.mjs";
@@ -746,7 +747,19 @@ export class DamageEngine {
         const _ownerIds = flags.attackerOwnerUserIds ?? null;
         const _canRoll = game.user.isGM
           || (Array.isArray(_ownerIds) ? _ownerIds.includes(game.user.id) : (_dmgActor?.isOwner === true));
-        if (!_canRoll) rollDmgBtn.style.setProperty("display", "none", "important");
+        if (!_canRoll) {
+          rollDmgBtn.style.setProperty("display", "none", "important");
+          // ⚠️ HIDE THE WHOLE CARD, NOT JUST THE BUTTON (2026-08-07).
+          // Hiding only the button left players staring at an empty black box
+          // reading "→ Chudd Buckland" — no information the attack card right
+          // above it does not already carry, and it looks broken. If you cannot
+          // roll this damage, the card has nothing to say to you.
+          // A player who OWNS the attacker (companion, summon, wild shape) hits
+          // the _canRoll branch instead and still sees the card and the button.
+          const _cardRoot = rollDmgBtn.closest?.("[data-message-id]")
+            ?? rollDmgBtn.closest?.(".ace-qol-dmg-btn-card");
+          if (_cardRoot) _cardRoot.style.setProperty("display", "none", "important");
+        }
 
         if (flags.rolled || flags.bundledFired) {
           rollDmgBtn.disabled = true;
@@ -879,8 +892,11 @@ export class DamageEngine {
       }
     };
 
-    Hooks.on("renderChatMessage", _cardRenderHandler);
-    Hooks.on("renderChatMessageHTML", _cardRenderHandler);  // V13 hook
+    // Registers BOTH render hooks and sweeps cards that were painted before we
+    // were listening. See chat-render-utils for why that sweep is load-bearing:
+    // without it a player who refreshes mid-session sees ROLL DAMAGE and
+    // APPLY ALL on every card above the fold. Proven live 2026-08-07.
+    registerChatCardHandler(_cardRenderHandler, "damage cards");
 
     console.debug(`${MODULE_ID} | Damage engine hooks registered`);
   }

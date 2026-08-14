@@ -28,9 +28,11 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { QolSettings } from "./settings.mjs";
 import { DamageApplicator } from "./damage-applicator.mjs";
 import { aceWithinFt } from "./geometry-utils.mjs";
+import { saveBonus, naturalD20 } from "./rolldata-utils.mjs";
 
 export class OverTimeEngine {
 
@@ -73,8 +75,10 @@ export class OverTimeEngine {
 
       this._wireOverTimeButtons(el, message, flags);
     };
-    Hooks.on("renderChatMessage", _wireOverTimeCard);       // V12
-    Hooks.on("renderChatMessageHTML", _wireOverTimeCard);   // V13
+    // Both render hooks + a sweep of cards that were drawn before this
+    // registered. See chat-render-utils — the raw hooks leave those
+    // undecorated forever, which is how GM-only content reached a player.
+    registerChatCardHandler(_wireOverTimeCard, "over-time cards");
 
     // ── combatTurnChange (some modules/systems fire this custom hook) ──
     Hooks.on("combatTurnChange", (combat, prior, current) => {
@@ -378,12 +382,19 @@ export class OverTimeEngine {
     let conditionRemoved = false;
 
     // ── Step 1: Saving Throw (if required) ──
-    if (otData.saveDC > 0 && otData.saveAbility) {
+    const saveRequired = otData.saveDC > 0 && !!otData.saveAbility;
+    if (saveRequired) {
       saveResult = await this._rollSave(actor, otData.saveAbility, otData.saveDC);
     }
 
+    // ⚠️ THREE STATES, NOT TWO. "no save called for" and "a save was called for
+    // but could not be rolled" both arrive here as a null saveResult, and they
+    // are not the same event. Both fall through to failure — that is the safe
+    // default for an ongoing effect — but the second one has already put a loud
+    // error in front of the GM from _rollSave, because a creature that silently
+    // fails every save can never shake the effect off. That was the bug.
     const savePassed = saveResult?.passed ?? false;
-    const saveFailed = saveResult ? !saveResult.passed : true; // No save = treated as fail
+    const saveFailed = saveResult ? !saveResult.passed : true;
 
     // ── Step 2: Damage Roll ──
     if (otData.damageRoll) {
@@ -484,52 +495,74 @@ export class OverTimeEngine {
 
   /**
    * Roll a saving throw for an actor.
-   * For NPC actors (GM-owned), rolls directly.
-   * For PC actors, rolls on their behalf (GM has permission in combat context).
+   *
+   * ⚠️ 🔴 THIS FUNCTION SILENTLY AUTO-FAILED EVERY OVERTIME SAVE. Found in the
+   * 2026-08-12 audit. It called `actor.rollAbilitySave?.(…)` — a dnd5e **4.x**
+   * method that does not exist anywhere in 5.x. The optional-call returned
+   * `undefined` instead of throwing, so:
+   *
+   *   • `total` fell through to the `?? 0` and scored **0**,
+   *   • `passed` was therefore always false,
+   *   • the `catch` never ran, making BOTH fallbacks below it unreachable code.
+   *
+   * A burning creature could never put itself out; a poisoned one could never
+   * shake it; every `saveRemove` effect was permanent. The card even printed a
+   * confident "FAIL" beside it. Three layers of fallback and all three were
+   * broken — the second used the 4.x single-object signature (which in 5.x
+   * neither fast-forwards nor suppresses the card), and the third built
+   * `1d20 + ` out of the ability's save value, which in 5.x is an OBJECT and
+   * throws `Unresolved StringTerm`.
+   *
+   * Lesson, the same one as the prone card: `await obj.method?.()` on a method
+   * that has been RENAMED is not defensive — it is a silent no-op wearing a
+   * result's clothes. See lesson_logs_and_cards_must_report_outcome.md.
    *
    * @param {Actor}  actor   - The actor rolling
    * @param {string} ability - Ability abbreviation ("con", "dex", etc.)
    * @param {number} dc      - Difficulty Class
-   * @returns {{ total: number, passed: boolean, ability: string, dc: number }}
+   * @returns {{ total: number, natural: number|null, passed: boolean,
+   *            ability: string, dc: number }|null}  null only if no roll was
+   *            possible at all — the caller must NOT read that as a failed save.
    */
   async _rollSave(actor, ability, dc) {
+    // ── The system's own roller, in the 5.x three-argument form. ──
+    // `{configure:false}` suppresses the dialog; `{create:false}` suppresses
+    // dnd5e's own chat card so ours is the only one. (⚠️ `chatMessage:false`
+    // does NOT suppress it in 5.x — that is the 4.x spelling.)
     try {
-      // Use the D&D 5e system's built-in save rolling
-      // actor.rollAbilitySave returns a Roll or array of Rolls
-      const roll = await actor.rollAbilitySave?.(ability, {
-        fastForward: true,     // Skip dialog
-        chatMessage: false,    // Don't post to chat (we'll post our own card)
-        targetValue: dc,
-      });
-
-      // Handle both single Roll and array of Rolls
-      const rollObj = Array.isArray(roll) ? roll[0] : roll;
-      const total = rollObj?.total ?? 0;
-      const passed = total >= dc;
-
-      this._debug(`Save: ${actor.name} ${ability.toUpperCase()} DC ${dc} → ${total} (${passed ? "PASS" : "FAIL"})`);
-
-      return { total, passed, ability, dc };
-    } catch (err) {
-      // Fallback: if rollAbilitySave is unavailable, try rollSavingThrow (dnd5e v4+)
-      try {
-        const roll = await actor.rollSavingThrow?.({
-          ability,
-          target: dc,
-          event: { shiftKey: true, target: document.body }, // fast-forward (target preserved for dnd5e buildPost)
-          chatMessage: false,
-        });
-        const rollObj = Array.isArray(roll) ? roll[0] : roll;
-        const total = rollObj?.total ?? 0;
-        return { total, passed: total >= dc, ability, dc };
-      } catch (err2) {
-        console.error(`${MODULE_ID} | OverTime save roll failed for ${actor.name}:`, err, err2);
-        // Manual fallback: roll a d20 + ability mod
-        const mod = actor.system?.abilities?.[ability]?.save ?? 0;
-        const fallbackRoll = await new Roll(`1d20 + ${mod}`).evaluate();
-        const total = fallbackRoll.total;
-        return { total, passed: total >= dc, ability, dc };
+      const rolls = await actor.rollSavingThrow(
+        { ability, target: dc },
+        { configure: false },
+        { create: false },
+      );
+      const roll = Array.isArray(rolls) ? rolls[0] : rolls;
+      const total = Number(roll?.total ?? NaN);
+      if (Number.isFinite(total)) {
+        const passed = total >= dc;
+        this._debug(`Save: ${actor.name} ${ability.toUpperCase()} DC ${dc} → ${total} (${passed ? "PASS" : "FAIL"})`);
+        return { total, natural: naturalD20(roll), passed, ability, dc };
       }
+      console.warn(`${MODULE_ID} | OverTime: rollSavingThrow gave no usable total for ${actor?.name} — rolling manually.`);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | OverTime: rollSavingThrow threw for ${actor?.name} — rolling manually.`, err);
+    }
+
+    // ── Manual fallback: a legitimate d20 + the creature's save bonus. ──
+    // The bonus goes through numberFromRollData because dnd5e 5.x stores it as
+    // an object; interpolating it raw produced "1d20 + [object Object]".
+    try {
+      const bonus = saveBonus(actor?.getRollData?.() ?? {}, ability);
+      const roll = await new Roll(`1d20 + ${bonus}`).evaluate();
+      const total = Number(roll.total);
+      const passed = total >= dc;
+      this._debug(`Save (manual): ${actor.name} ${ability.toUpperCase()} DC ${dc} → ${total} (${passed ? "PASS" : "FAIL"})`);
+      return { total, natural: naturalD20(roll), passed, ability, dc };
+    } catch (err2) {
+      // ⚠️ SAY SO — do NOT return a zero. A fabricated 0 is what made this bug
+      // invisible for as long as it lasted: it reads as a real failed save.
+      console.error(`${MODULE_ID} | OverTime: could not roll a ${ability} save for ${actor?.name} at all.`, err2);
+      ui.notifications?.error(`ACE could not roll ${actor?.name ?? "a creature"}'s ${String(ability).toUpperCase()} save — roll it manually.`);
+      return null;
     }
   }
 

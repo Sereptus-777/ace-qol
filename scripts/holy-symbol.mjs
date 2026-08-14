@@ -23,6 +23,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { aceDistanceFt } from "./geometry-utils.mjs";
 
 const ITEM_RE  = /holy symbol of ravenkind/i;
@@ -147,8 +148,10 @@ export class HolySymbol {
     const _wireHolyCard = (msg, html) => {
       try { HolySymbol._wireCardButtons(msg, html); } catch (_) {}
     };
-    Hooks.on("renderChatMessage", _wireHolyCard);       // V12
-    Hooks.on("renderChatMessageHTML", _wireHolyCard);   // V13
+    // Both render hooks + a sweep of cards that were drawn before this
+    // registered. See chat-render-utils — the raw hooks leave those
+    // undecorated forever, which is how GM-only content reached a player.
+    registerChatCardHandler(_wireHolyCard, "holy-symbol cards");
 
     // Expose for the attack pipeline (sunlight-disadvantage check) + macros.
     game.aceQol = game.aceQol ?? {};

@@ -28,6 +28,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { CustomPolymorph } from "./custom-polymorph.mjs";
 import { QolSettings } from "./settings.mjs";
 import { TokenCache } from "./token-cache.mjs";
@@ -160,8 +161,10 @@ export class TransformationEngine {
         console.warn(`${MODULE_ID} | revert-button binding failed:`, err);
       }
     };
-    Hooks.on("renderChatMessage",     _onRenderChat); // V12
-    Hooks.on("renderChatMessageHTML", _onRenderChat); // V13
+    // Both render hooks + a sweep of cards that were drawn before this
+    // registered. See chat-render-utils — the raw hooks leave those
+    // undecorated forever, which is how GM-only content reached a player.
+    registerChatCardHandler(_onRenderChat, "transformation cards");
 
     // ── Concentration linkage ──
     // The existing `dnd5e.dependentOn` chain (Layer 1-5 in ace-qol.mjs) takes
@@ -315,7 +318,10 @@ export class TransformationEngine {
           const forge = game.modules.get("ace-artificer");
           // Dynamic import — soft dependency; works only if Forge is installed.
           if (forge?.active) {
-            const { PolymorphPipeline } = await import("/modules/ace-artificer/scripts/polymorph-pipeline.mjs");
+            const { PolymorphPipeline } = // Relative cross-module import on purpose — resolves against this
+            // file's own URL, so a configured route prefix is honored. The
+            // absolute "/modules/…" form 404s on prefixed deployments.
+            await import("../../ace-artificer/scripts/polymorph-pipeline.mjs");
             await PolymorphPipeline?.revertActor?.(target);
           }
         } catch (err) {

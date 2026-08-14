@@ -67,13 +67,21 @@ export class GazeEngine {
     if (this._initialized) return;
     this._initialized = true;
 
-    Hooks.on("combatTurn", async (combat) => {
-      try { await this._onTurnStart(combat); }
-      catch (err) { console.warn(`${MODULE_ID} | GazeEngine.combatTurn failed:`, err); }
-    });
-    Hooks.on("combatRound", async (combat) => {
-      try { await this._onTurnStart(combat); }
-      catch (err) { console.warn(`${MODULE_ID} | GazeEngine.combatRound failed:`, err); }
+    // ⚠️ NOT `combatTurn` / `combatRound`. Foundry fires both BEFORE applying the
+    // update (client/documents/combat.mjs:291), so `combat.combatant` inside them
+    // is still the creature whose turn is ENDING. The start-of-turn gaze was
+    // therefore rolled against the creature that had JUST FINISHED acting — and
+    // the creature actually standing in front of the medusa got nothing. RAW is
+    // "at the start of its turn". A prime suspect for the long-standing
+    // "gaze initial-save auto-rolling a PC" report, since it fires the save at a
+    // moment nobody at the table expects.
+    //
+    // `combatTurnChange` fires after the state has moved and hands the new turn
+    // in directly. It also covers round changes, so the second listener is gone.
+    // (audit F-022, 2026-08-07)
+    Hooks.on("combatTurnChange", async (combat, prior, current) => {
+      try { await this._onTurnStart(combat, current); }
+      catch (err) { console.warn(`${MODULE_ID} | GazeEngine.combatTurnChange failed:`, err); }
     });
 
     console.debug(`${MODULE_ID} | Gaze Engine online (start-of-turn gaze attacks)`);
@@ -83,12 +91,21 @@ export class GazeEngine {
   //  Start-of-turn sweep
   // ═══════════════════════════════════════════════════════════════════════════
 
-  static async _onTurnStart(combat) {
+  /**
+   * @param {Combat} combat
+   * @param {object} [current]  the turn state the hook handed us. Preferred over
+   *   `combat.combatant`, which is only correct once the update has landed —
+   *   see the registration above.
+   */
+  static async _onTurnStart(combat, current = null) {
     // activeGM only — otherwise every client rolls its own gaze save.
     if (game.users?.activeGM !== game.user) return;
     if (!combat?.started) return;
 
-    const victimToken = combat.combatant?.token;
+    const _combatant = current?.combatantId
+      ? combat.combatants?.get(current.combatantId)
+      : combat.combatant;
+    const victimToken = _combatant?.token;
     const victimActor = combat.combatant?.actor;
     if (!victimToken || !victimActor) return;
 

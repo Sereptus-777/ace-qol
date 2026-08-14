@@ -75,6 +75,9 @@ export class DeathPipeline {
   constructor() {
     /** @type {Map<string, string>}  normalized file stem → full file path */
     this._artCache = new Map();
+    /** @type {Map<string, string[]>}  bare stem → every numbered variant of it,
+     *  so a creature with several corpse images doesn't always show the same one. */
+    this._artVariants = new Map();
     /** @type {boolean} Whether the cache has been built at least once */
     this._cacheReady = false;
   }
@@ -151,6 +154,7 @@ export class DeathPipeline {
    */
   async buildArtCache() {
     this._artCache.clear();
+    this._artVariants.clear();
     this._cacheReady = false;
 
     const FP = _acePicker();
@@ -196,14 +200,58 @@ export class DeathPipeline {
     const fileName = filePath.split("/").pop();
     if (!fileName) return;
 
-    const stem = fileName
+    const stem = decodeURIComponent(fileName)
       .replace(/\.(png|webp|jpg|jpeg|gif|svg|webm|mp4|m4v|ogv)$/i, "")
       .toLowerCase();
 
-    // Don't overwrite — first match wins (root beats subfolder).
-    if (!this._artCache.has(stem)) {
-      this._artCache.set(stem, filePath);
+    // ── ⚠️ THE FILENAME MUST BE NORMALISED THE SAME WAY THE ACTOR NAME IS ──
+    // This used to store the raw lowercased stem and nothing else. The RESOLVER
+    // normalises the creature's name (spaces and punctuation → hyphens), so it
+    // asked for "dead-stone-golem" while the cache held "dead-stone golem".
+    // Those never match, so every lookup fell all the way through to the
+    // generic type art.
+    //
+    // Johnny killed a Stone Golem, had a hand-drawn corpse for it sitting right
+    // there in the folder, and got the plain construct. On his machine SIXTEEN
+    // of 82 corpse images were unreachable this way — the mind flayer, the
+    // carrion crawler, the rust monster, the barbed devil, both aarakocra —
+    // every single file with a SPACE in its name. Silently, because falling
+    // back to generic art looks like a deliberate choice.
+    //
+    // Both spellings are indexed: the normalised one (what the resolver asks
+    // for) and the raw one (so an exact-match filename still works).
+    const norm = DeathPipeline.normaliseKey(stem);
+    for (const key of new Set([norm, stem])) {
+      if (key && !this._artCache.has(key)) this._artCache.set(key, filePath);
     }
+
+    // ── VARIANT NUMBERING ──
+    // Art packs ship "dead-bandit-human-11.png", "dead-kobold 11.png",
+    // "dead-dragon (2).png" — a trailing number is a VARIANT of the creature,
+    // not part of its name. Index the bare stem too so a Kobold finds
+    // "dead-kobold 11". Variants are collected so one can be chosen at random
+    // rather than always showing the same corpse.
+    const bare = DeathPipeline.stripVariant(norm);
+    if (bare && bare !== norm) {
+      if (!this._artCache.has(bare)) this._artCache.set(bare, filePath);
+      const list = this._artVariants.get(bare) ?? [];
+      if (!list.includes(filePath)) list.push(filePath);
+      this._artVariants.set(bare, list);
+    }
+  }
+
+  /** Same rule the resolver uses on a creature's name. One function, so the two
+   *  sides can never drift apart again. */
+  static normaliseKey(text) {
+    return String(text ?? "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/(^-|-$)/g, "");
+  }
+
+  /** Drop a trailing variant number: "dead-kobold-11" → "dead-kobold". */
+  static stripVariant(key) {
+    return String(key ?? "").replace(/-\d{1,3}$/, "");
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -276,7 +324,16 @@ export class DeathPipeline {
       cp: c.cp ?? 0,
     };
 
-    return { items, currency };
+    // Creature type, recorded HERE and not looked up later. For an unlinked
+    // token the synthetic actor is destroyed once the corpse settles, and the
+    // world-sidebar prototype is a different copy — so anything that reads the
+    // type after death reads the wrong creature or nothing at all. The loot
+    // card's wording depends on it ("Salvage — Stone Golem", not "Loot"), and
+    // players resolve their card from this snapshot, not from the actor.
+    const creatureType    = (actor?.system?.details?.type?.value ?? "").toLowerCase();
+    const creatureSubtype = (actor?.system?.details?.type?.subtype ?? "").toLowerCase();
+
+    return { items, currency, creatureType, creatureSubtype };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -542,6 +599,11 @@ export class DeathPipeline {
           [`flags.${MODULE_ID}.originalActorId`]:     actor.id,
           [`flags.${MODULE_ID}.originalName`]:        actor.name,
           [`flags.${MODULE_ID}.combatLocked`]:        !!game.combat?.started,
+          // Creature type on the token itself. The loot dialog has read this
+          // field for its subtitle since it was written, but NOTHING ever set
+          // it — so the subtitle was blank for every corpse. It also drives
+          // the card's wording (a golem is salvaged, not looted). (2026-08-08)
+          [`flags.${MODULE_ID}.creatureType`]:        lootSnapshot.creatureType ?? "",
         });
         console.log(`${LOG_PREFIX}   ✓ Token texture swapped to dead-art: ${deadArtPath}`);
       } catch (swapErr) {
@@ -673,6 +735,19 @@ export class DeathPipeline {
    * @param {Actor} actor - The Foundry Actor document.
    * @returns {string|null} Full file path to dead art image, or null.
    */
+  /** Pick from a creature's numbered variants when it has several, so the same
+   *  corpse image doesn't appear every time that creature dies. Falls back to
+   *  the single cached path when there is only one. */
+  _pickArt(key) {
+    const variants = this._artVariants.get(key);
+    if (variants?.length > 1) return variants[Math.floor(Math.random() * variants.length)];
+    // ⚠️ READS THE CACHE. Never call _pickArt from here — a blanket
+    // find-and-replace that routed every `this._artCache.get(` through this
+    // helper rewrote THIS line too, so the function called itself forever and
+    // Foundry very nearly went down with it. (2026-08-07)
+    return this._artCache.get(key) ?? null;
+  }
+
   _resolveDeadArt(actor) {
     if (!this._cacheReady || this._artCache.size === 0) return null;
 
@@ -688,14 +763,14 @@ export class DeathPipeline {
     // ── Tier 1: Exact creature name ──
     const exactKey = `dead-${normalizedName}`;
     if (this._artCache.has(exactKey)) {
-      return this._artCache.get(exactKey);
+      return this._pickArt(exactKey);
     }
 
     // ── Tier 2a: Creature subtype (check before generic type) ──
     if (creatureSubtype) {
       const subtypeKey = `dead-${creatureSubtype.replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "")}`;
       if (this._artCache.has(subtypeKey)) {
-        return this._artCache.get(subtypeKey);
+        return this._pickArt(subtypeKey);
       }
     }
 
@@ -711,7 +786,7 @@ export class DeathPipeline {
     if (baseName && baseName !== normalizedName) {
       const baseKey = `dead-${baseName}`;
       if (this._artCache.has(baseKey)) {
-        return this._artCache.get(baseKey);
+        return this._pickArt(baseKey);
       }
     }
 
@@ -724,7 +799,7 @@ export class DeathPipeline {
     if (isIncorporeal) {
       const remnantKey = "dead-remnant-ash-pile";
       if (this._artCache.has(remnantKey)) {
-        return this._artCache.get(remnantKey);
+        return this._pickArt(remnantKey);
       }
     }
 
@@ -732,7 +807,7 @@ export class DeathPipeline {
     for (const [pattern, remnantStem] of Object.entries(ELEMENTAL_REMNANTS)) {
       if (normalizedName.includes(pattern.replace(/\s+/g, "-")) || rawName.includes(pattern)) {
         if (this._artCache.has(remnantStem)) {
-          return this._artCache.get(remnantStem);
+          return this._pickArt(remnantStem);
         }
       }
     }
@@ -742,7 +817,7 @@ export class DeathPipeline {
       for (const [pattern, remnantStem] of Object.entries(ELEMENTAL_REMNANTS)) {
         if (creatureSubtype.includes(pattern)) {
           if (this._artCache.has(remnantStem)) {
-            return this._artCache.get(remnantStem);
+            return this._pickArt(remnantStem);
           }
         }
       }
@@ -752,7 +827,7 @@ export class DeathPipeline {
     if (TYPE_REMNANTS[creatureType]) {
       const typeRemnantKey = TYPE_REMNANTS[creatureType];
       if (this._artCache.has(typeRemnantKey)) {
-        return this._artCache.get(typeRemnantKey);
+        return this._pickArt(typeRemnantKey);
       }
     }
 
@@ -761,7 +836,7 @@ export class DeathPipeline {
       const cleanType = creatureType.replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
       const typeKey = `dead-${cleanType}`;
       if (this._artCache.has(typeKey)) {
-        return this._artCache.get(typeKey);
+        return this._pickArt(typeKey);
       }
 
       // ── Tier 4b: Typo-tolerant lookup for common misspellings ──
@@ -772,14 +847,14 @@ export class DeathPipeline {
         const variantKey = `dead-${variant}`;
         if (this._artCache.has(variantKey)) {
           console.log(`${LOG_PREFIX}   Typo-match: ${typeKey} → ${variantKey}`);
-          return this._artCache.get(variantKey);
+          return this._pickArt(variantKey);
         }
       }
     }
 
     // ── Tier 5: Generic fallback ──
     if (this._artCache.has("dead-generic")) {
-      return this._artCache.get("dead-generic");
+      return this._pickArt("dead-generic");
     }
 
     // ── Nothing found — skip conversion (log available keys for debugging) ──

@@ -26,6 +26,30 @@ export const NULLIFICATION_REGISTRY = [
   ...BACKGROUND_FEATURES,
 ];
 
+/**
+ * Find a registry entry by the name printed on the item, or null.
+ *
+ * ⚠️ THE LOOKUP LIVES HERE, NOT IN THE CALLER. Added 2026-08-13 when the unknown
+ * scout needed to ask "does ACE already cover this?" — the alternative was the
+ * scout walking this array itself, which is a second definition of "registered"
+ * that drifts the moment the entry shape changes. One reader, here.
+ *
+ * ⚠️ ALIASES MATTER. Entries carry them precisely because the same thing ships
+ * under different names ("Shield" vs "Shield Spell"), and matching only `name`
+ * would report a covered item as missing.
+ */
+export function findByName(name) {
+  const q = String(name ?? "").trim().toLowerCase();
+  if (!q) return null;
+  for (const entry of NULLIFICATION_REGISTRY) {
+    if (String(entry?.name ?? "").trim().toLowerCase() === q) return entry;
+    for (const alias of (entry?.aliases ?? [])) {
+      if (String(alias).trim().toLowerCase() === q) return entry;
+    }
+  }
+  return null;
+}
+
 // Diagnostic helper — count entries per category
 export function getRegistryStats() {
   return {

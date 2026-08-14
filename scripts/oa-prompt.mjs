@@ -25,6 +25,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { QolSettings } from "./settings.mjs";
 import { CombatState } from "./combat-state.mjs";
 import { OA_IN_FLIGHT } from "./oa-transient.mjs";
@@ -636,7 +637,9 @@ const _bindOAButtons = (message, html) => {
       btn.disabled = true; // immediate local feedback
 
       try {
-        const { OAPrompt } = await import("/modules/ace-qol/scripts/oa-prompt.mjs");
+        const { OAPrompt } = // Relative self-import on purpose — an absolute "/modules/…" path
+        // ignores any configured route prefix and 404s there (audit 2026-08-07).
+        await import("./oa-prompt.mjs");
 
         if (status === "taken") {
           // Fire the real attack on THIS client (the clicker). If the weapon
@@ -672,5 +675,7 @@ const _bindOAButtons = (message, html) => {
   } catch (err) { /* non-fatal */ }
 };
 
-Hooks.on("renderChatMessage",     _bindOAButtons); // V12
-Hooks.on("renderChatMessageHTML", _bindOAButtons); // V13
+// Both render hooks + a sweep of cards that were drawn before this
+// registered. See chat-render-utils — the raw hooks leave those
+// undecorated forever, which is how GM-only content reached a player.
+registerChatCardHandler(_bindOAButtons, "opportunity-attack cards");

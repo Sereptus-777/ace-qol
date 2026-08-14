@@ -37,8 +37,18 @@ export class TurnMarker {
 
   _registerHooks() {
     Hooks.on("combatStart",  (combat) => this._updateMarker(combat));
-    Hooks.on("combatTurn",   (combat) => this._updateMarker(combat));
-    Hooks.on("combatRound",  (combat) => this._updateMarker(combat));
+    // ⚠️ NOT `combatTurn` / `combatRound`. Foundry fires both BEFORE it applies
+    // the update (client/documents/combat.mjs:291), so `combat.combatant` is
+    // still the creature whose turn is ENDING — the marker was being built for
+    // the wrong token every single turn.
+    //
+    // The POSITION hid it: the animation tick re-reads `game.combat.combatant`
+    // every frame, so the marker snapped onto the right token a frame later and
+    // looked fine. The SIZE did not — `_placeMarker` sizes the marker from the
+    // token it was given, so an ogre following a goblin got a goblin-sized
+    // marker that then sat on the ogre. `combatTurnChange` fires after the state
+    // has actually moved. (audit F-022, 2026-08-07)
+    Hooks.on("combatTurnChange", (combat) => this._updateMarker(combat));
     Hooks.on("deleteCombat", ()       => this._removeMarker());
 
     // Re-place after canvas reload (scene change, refresh, etc.)

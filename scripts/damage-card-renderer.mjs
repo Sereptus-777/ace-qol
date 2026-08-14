@@ -295,12 +295,26 @@ export class DamageCardRenderer {
   //  Full Damage Card — Batch Results with Apply/Undo
   // ═══════════════════════════════════════════════════════════════════════════
 
-  static async postDamageCard(item, actor, damageResults, critRule, consumedRiders = null, refundLink = null, activityId = null) {
-    if (!damageResults.length) return;
-
-    // ── Shared formula display (from first target's raw roll — same roll for all) ──
-    const firstResult = damageResults[0];
-    const formulaRows = firstResult.components.map(c => {
+  /**
+   * Render the dice-and-modifier rows for a set of damage components — the
+   * real die faces, the bonus chips, and the "= N type" total.
+   *
+   * ⚠️ EXTRACTED 2026-08-12 so the FALL card can show dice too. It was inline
+   * inside postDamageCard, which is why a fall printed a bare number: there was
+   * no way to reach this without an attacker and an item, and hand-rolling a
+   * second copy is exactly the "built beside instead of on" mistake. Every card
+   * that shows damage dice must come through here, so the configured die colour
+   * and the crit/rider labelling stay identical everywhere.
+   *
+   * @param {object[]} components  damage components, each optionally carrying `roll`
+   * @param {object}  [opts]
+   * @param {string}  [opts.baseName]  the component treated as the "base" row,
+   *        which gets no source caption. For a weapon that is the item's name;
+   *        for a fall it is the fall row itself, since the header already says it.
+   * @returns {string} HTML
+   */
+  static buildComponentRowsHtml(components, { baseName = null } = {}) {
+    return (components ?? []).map(c => {
       const dieResults = [];
       const flatMods = [];
       const meta = c._modMeta;
@@ -361,7 +375,7 @@ export class DamageCardRenderer {
       // weapon base row stays uncaptioned by design — its source is implicit.
       // Caption sits on its own line, in the same color as the damage type
       // (not dimmed), one size smaller than the main row.
-      const isWeaponBase = c.name === item.name;
+      const isWeaponBase = c.name === baseName;
       const sourceCaption = (!isWeaponBase && c.name && c.name !== "Bonus")
         ? `<div class="ace-qol-dmg-source-caption" style="color:${color};">${c.name}</div>`
         : "";
@@ -372,8 +386,16 @@ export class DamageCardRenderer {
       return `<div class="ace-qol-dmg-component ace-qol-dmg-row">`
         + `${critDisplay}${dieDisplay}${modDisplay}${typeTotal}`
         + `${sourceCaption}`
-        + `</div>`;
-    }).join("");
+        + `</div>`;    }).join("");
+  }
+
+  static async postDamageCard(item, actor, damageResults, critRule, consumedRiders = null, refundLink = null, activityId = null) {
+    if (!damageResults.length) return;
+
+    // ── Shared formula display (from first target's raw roll — same roll for all) ──
+    const firstResult = damageResults[0];
+    const formulaRows = DamageCardRenderer.buildComponentRowsHtml(
+      firstResult.components, { baseName: item?.name });
 
     const totalRaw = firstResult.totalRaw;
 
@@ -771,17 +793,24 @@ export class DamageCardRenderer {
         ${compLines ? `<div class="ace-qol-dmg-type-breakdown">${compLines}</div>` : ""}
         ${flavorHintHtml}
         <div class="ace-qol-dmg-gm-controls">
-          <div class="ace-qol-dmg-hp-line">
-            <span class="ace-qol-dmg-row-dmg">${totalFinal}<span class="ace-qol-dmg-unit">DMG</span></span>
-            ${isDead ? '<span class="ace-qol-dmg-skull">☠</span>' : ''}
-            <span class="ace-qol-dmg-row-hp">HP: <span class="ace-qol-hp-cur">${currentHP}</span> → <span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span><span class="ace-qol-hp-max">/${maxHP}</span></span>
-          </div>
+          <!-- ⚠️ ORDER IS JOHNNY'S, 2026-08-14, AND IT IS THE RIGHT ONE.
+               Multipliers and the resulting damage share the top line — they are
+               one thought ("how much is this going to be?"). The HP readout sits
+               UNDERNEATH on its own line, because it is the consequence and it
+               is the longest item. Previously HP shared the top line and got
+               pushed off the right edge of the chat log, so the GM could read
+               "HP: 163 →" and not the number that actually mattered. -->
           <div class="ace-qol-dmg-ovr-line">
             <button class="ace-qol-dmg-ovr-x" data-action="aceQolDmgRemove" data-token-doc-id="${tDocId}">×</button>
             <button class="ace-qol-dmg-ovr${_a(0.25)}" data-action="aceQolDmgOverride" data-token-doc-id="${tDocId}" data-multiplier="0.25">¼</button>
             <button class="ace-qol-dmg-ovr${_a(0.5)}" data-action="aceQolDmgOverride" data-token-doc-id="${tDocId}" data-multiplier="0.5">½</button>
             <button class="ace-qol-dmg-ovr${_a(1)}" data-action="aceQolDmgOverride" data-token-doc-id="${tDocId}" data-multiplier="1">1</button>
             <button class="ace-qol-dmg-ovr${_a(2)}" data-action="aceQolDmgOverride" data-token-doc-id="${tDocId}" data-multiplier="2">2</button>
+            <span class="ace-qol-dmg-row-dmg">${totalFinal}<span class="ace-qol-dmg-unit">DMG</span></span>
+            ${isDead ? '<span class="ace-qol-dmg-skull">☠</span>' : ''}
+          </div>
+          <div class="ace-qol-dmg-hp-line">
+            <span class="ace-qol-dmg-row-hp">HP: <span class="ace-qol-hp-cur">${currentHP}</span> → <span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span><span class="ace-qol-hp-max">/${maxHP}</span></span>
           </div>
         </div>
       </div>

@@ -393,7 +393,7 @@ export class SaveResolver {
 
   /**
    * Wire a save-at-end-of-turn loop for spells like Hold Person.
-   * Listens to combatTurn — when the affected target's turn ends, the target
+   * Listens to combatTurnChange — when the affected target's turn ends, the target
    * rolls a save. On success, the effect is removed (spell ends on them).
    * On fail, the effect persists; the loop continues until concentration
    * ends, the effect is removed manually, or the save passes.
@@ -402,32 +402,39 @@ export class SaveResolver {
    * etc.) — checks effect existence each turn.
    */
   static _wireEndOfTurnSave({ targetActor, targetTokenDocId, targetEffectId, effectKey, casterActor, spellItem, castLevel, saveAbility, saveDC, halvesDamage }) {
-    const hookId = Hooks.on("combatTurn", async (combat, updateData, opts) => {
+    // ── FIRE ON THE TURN THAT ACTUALLY ENDED (audit F-022, 2026-08-07) ──
+    // This listened to `combatTurn` and worked the answer out by hand:
+    //     prevTurnIdx = (combat.turn - 1 + len) % len
+    // Foundry fires combatTurn BEFORE it applies the update, so `combat.turn`
+    // there is ALREADY the turn that is ending — subtracting one stepped back
+    // to the turn before that, and the re-save fired a full turn LATE. A Hold
+    // Person target got its escape attempt one combatant too late, every time.
+    //
+    // `combatTurnChange` hands the state directly: `prior.combatantId` IS the
+    // combatant whose turn just ended, with no arithmetic to get wrong. This is
+    // the rule already recorded in memory — it was written about this exact
+    // mistake, and this site still had it.
+    const hookId = Hooks.on("combatTurnChange", async (combat, prior, current) => {
       try {
-        // v0.7.74 — multi-GM safety. combatTurn fires on every client.
-        // isGM is true for ALL connected GMs, so two GMs would double-
-        // process the end-of-turn save (double chat card + double save
-        // roll + double effect delete on success). activeGM-gate ensures
-        // ONE client owns the state change. Matches the multi-GM audit
-        // pattern (2026-06-15).
+        // v0.7.74 — multi-GM safety. The hook fires on every client, and isGM
+        // is true for ALL connected GMs, so two GMs would double-process the
+        // end-of-turn save (double chat card + double roll + double delete).
+        // activeGM-gate ensures ONE client owns the state change.
         if (game.users?.activeGM !== game.user) return;
-        // Only fire when the AFFECTED target's turn just ENDED — i.e. the
-        // PREVIOUS turn's combatant matches this target.
-        const prevTurn = combat?.previous?.turn ?? combat?.turns?.[combat?.turn - 1]?._id;
-        const prevCombatant = combat?.combatants?.find?.(c => c.tokenId === targetTokenDocId);
-        if (!prevCombatant) return;
-        // Detect "this combatant just finished their turn" — current turn pointer is past them
-        const currentTurnIdx = combat?.turn ?? 0;
-        const prevTurnIdx = (currentTurnIdx - 1 + combat.turns.length) % combat.turns.length;
-        const prevTurnCombatant = combat?.turns?.[prevTurnIdx];
-        if (prevTurnCombatant?.tokenId !== targetTokenDocId) return;
+
+        // Whose turn just ENDED — asked, not computed.
+        const endedId = prior?.combatantId ?? null;
+        if (!endedId) return;
+        const endedCombatant = combat?.combatants?.get(endedId);
+        if (!endedCombatant) return;
+        if (endedCombatant.tokenId !== targetTokenDocId) return;
 
         // Check if effect still exists — if not (caster ended concentration,
         // dispel, manual delete), kill the hook.
         const stillEffected = targetActor.effects?.get?.(targetEffectId)
           ?? targetActor.effects?.find?.(e => e.id === targetEffectId);
         if (!stillEffected) {
-          Hooks.off("combatTurn", hookId);
+          Hooks.off("combatTurnChange", hookId);
           console.debug(`${MODULE_ID} | SaveResolver: ${effectKey} effect on ${targetActor.name} gone — end-of-turn save loop unhooked`);
           return;
         }
@@ -485,7 +492,7 @@ export class SaveResolver {
             await stillEffected.setFlag(MODULE_ID, "_replacedNotEnded", true); // suppress post-end hooks
             await stillEffected.delete();
           } catch (_) { /* non-fatal */ }
-          Hooks.off("combatTurn", hookId);
+          Hooks.off("combatTurnChange", hookId);
           console.debug(`${MODULE_ID} | SaveResolver: ${targetActor.name} saved at end of turn vs ${spellItem.name} — effect removed`);
         }
       } catch (err) {
@@ -495,7 +502,7 @@ export class SaveResolver {
 
     // Safety net: also kill the hook on combat end / world reload (mirrors
     // ReactionEngine cleanup pattern)
-    Hooks.once("deleteCombat", () => Hooks.off("combatTurn", hookId));
+    Hooks.once("deleteCombat", () => Hooks.off("combatTurnChange", hookId));
 
     console.debug(`${MODULE_ID} | SaveResolver: wired end-of-turn save loop for ${targetActor.name} vs ${spellItem.name}`);
   }

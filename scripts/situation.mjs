@@ -33,6 +33,30 @@ const ATTACK_DISADV_SELF = ["prone", "poisoned", "restrained", "blinded", "frigh
 
 export class Situation {
 
+  /**
+   * A sense's range in feet, read from EITHER dnd5e shape.
+   *
+   * ⚠️ 🔴 dnd5e 5.3 MOVED these to `senses.ranges.*`, and touching the old path
+   * fires a deprecation warning on EVERY read. `readCreature` runs on every
+   * damage event, so one fight filled Johnny's console with 251 issues
+   * (2026-08-13) — noise that buries the errors that actually matter.
+   *
+   * ⚠️ AND IT IS A REAL DEADLINE, not just noise: dnd5e 6.1 REMOVES the old
+   * path. On that day every darkvision, blindsight, tremorsense and truesight
+   * read in ACE would silently return 0 — every creature suddenly blind in the
+   * dark, with nothing thrown and nothing logged.
+   *
+   * New shape first so the deprecated getter is never touched when 5.3+ is
+   * running; the old path stays as the fallback for older dnd5e.
+   */
+  static senseRange(senses, key) {
+    try {
+      const modern = senses?.ranges?.[key];
+      if (modern !== undefined && modern !== null) return Number(modern) || 0;
+      return Number(senses?.[key]) || 0;
+    } catch (_) { return 0; }
+  }
+
   static edition() {
     try {
       // Honor the ACE QOL gameRulesEdition master override before the dnd5e
@@ -107,10 +131,10 @@ export class Situation {
 
       // ── senses (ranges in ft; 0/undefined = none) ──
       senses: {
-        darkvision:  Number(senses.darkvision)  || 0,
-        blindsight:  Number(senses.blindsight)  || 0,
-        tremorsense: Number(senses.tremorsense) || 0,
-        truesight:   Number(senses.truesight)   || 0,
+        darkvision:  Situation.senseRange(senses, "darkvision"),
+        blindsight:  Situation.senseRange(senses, "blindsight"),
+        tremorsense: Situation.senseRange(senses, "tremorsense"),
+        truesight:   Situation.senseRange(senses, "truesight"),
         special:     String(senses.special ?? ""),
       },
       seeInvisibility: Situation._hasSeeInvisibility(actor, senses),
@@ -248,7 +272,7 @@ export class Situation {
   static _hasSeeInvisibility(actor, senses = null) {
     try {
       senses ??= actor?.system?.attributes?.senses ?? {};
-      if (Number(senses.truesight) > 0) return true;
+      if (Situation.senseRange(senses, "truesight") > 0) return true;
       if (/see\s+invis|truesight/i.test(String(senses.special ?? ""))) return true;
       if (actor?.flags?.[MODULE_ID]?.seeInvisible === true) return true;
       const re = /see\s+invisibility|truesight/i;
@@ -289,8 +313,8 @@ export class Situation {
 
       const vStatuses = viewer.statuses instanceof Set ? viewer.statuses : new Set();
       const senses = viewer.system?.attributes?.senses ?? {};
-      const blindsightOK  = inRange(Number(senses.blindsight));
-      const tremorsenseOK = inRange(Number(senses.tremorsense));
+      const blindsightOK  = inRange(Situation.senseRange(senses, "blindsight"));
+      const tremorsenseOK = inRange(Situation.senseRange(senses, "tremorsense"));
 
       // A BLINDED viewer perceives nothing by sight — only via blindsight/tremorsense.
       if (vStatuses.has("blinded")) {
@@ -320,7 +344,7 @@ export class Situation {
       // INVISIBLE subject — needs a sense that pierces invisibility.
       const sStatuses = subject.statuses instanceof Set ? subject.statuses : new Set();
       if (sStatuses.has("invisible")) {
-        if (inRange(Number(senses.truesight))) return { canSee: true, why: "truesight" };
+        if (inRange(Situation.senseRange(senses, "truesight"))) return { canSee: true, why: "truesight" };
         if (Situation._hasSeeInvisibility(viewer, senses)) return { canSee: true, why: "see invisibility" };
         if (blindsightOK)  return { canSee: true, why: "blindsight" };
         if (tremorsenseOK && !Situation._isAirborne(sToken)) return { canSee: true, why: "tremorsense" };
@@ -446,9 +470,9 @@ export class Situation {
         const kindLabel = kind === "magicalDarkness" ? "magical darkness"
                         : kind === "fog" ? "fog" : `heavy obscurement (${kind})`;
         const verdict = Situation.canPierce(space, {
-          darkvision: Number(senses.darkvision) || 0,
-          blindsight: Number(senses.blindsight) || 0,
-          truesight: Number(senses.truesight) || 0,
+          darkvision: Situation.senseRange(senses, "darkvision"),
+          blindsight: Situation.senseRange(senses, "blindsight"),
+          truesight: Situation.senseRange(senses, "truesight"),
           devilsSight: Situation._hasDevilsSight(viewer, senses),
           dist,
         });

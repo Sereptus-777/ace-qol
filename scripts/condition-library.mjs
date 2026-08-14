@@ -16,6 +16,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { CombatState } from "./combat-state.mjs";
 import { CombatContext } from "./combat-context.mjs";
 
@@ -932,6 +933,41 @@ const SPELL_EFFECTS = {
   },
 
   // ── Charm Person (1st level, 1 hour, NOT concentration) ──
+  // ── Guiding Bolt (1st level) — the rider, not the damage ──
+  // ⚠️ `.once`, NOT `.all`. RAW: "the next attack roll made against this target
+  // before the end of your next turn has advantage." ONE attack. Using the
+  // persistent `.all` flag here — which is what Faerie Fire correctly uses —
+  // would give the party advantage on every attack for a round. one-shot-grants
+  // deletes this the moment an attack resolves against the target, hit or miss.
+  guiding_bolt: {
+    name: "Guiding Bolt — Outlined",
+    icon: "icons/magic/light/beam-rays-yellow.webp",
+    description: "Wreathed in shimmering light. The NEXT attack roll against this creature has advantage — hit or miss, it is then spent.",
+    statuses: [],
+    changes: [
+      { key: "flags.ace-qol.grants.advantage.attack.once", mode: 0, value: "1" },
+    ],
+    concentration: false,
+    duration: { rounds: 1 },
+  },
+
+  // ── Command (1st level, 1 round) ──
+  // ⚠️ NOT a `charmed` status. Command does not charm — it compels one action on
+  // the creature's next turn. Stamping charmed here would make every
+  // charm-immunity check wrongly negate it, and would light up "charmed" on the
+  // token for something that is not that condition.
+  command: {
+    name: "Commanded",
+    icon: "icons/magic/control/energy-stream-link-teal.webp",
+    description: "Compelled to obey a one-word command on its next turn, then the spell ends. RAW: no effect on undead, on a creature that does not understand the caster's language, or if the command is directly harmful.",
+    statuses: [],
+    changes: [
+      { key: "flags.ace-qol.commanded", mode: 0, value: "1" },
+    ],
+    concentration: false,
+    duration: { rounds: 1 },
+  },
+
   charm_person: {
     name: "Charmed by Caster",
     icon: "icons/magic/control/silhouette-grow-shrink-blue.webp",
@@ -2635,5 +2671,7 @@ const _bindStunningStrikeButtons = (message, html) => {
     console.warn(`${MODULE_ID} | Stunning Strike bind threw:`, err);
   }
 };
-Hooks.on("renderChatMessage",     _bindStunningStrikeButtons); // V12
-Hooks.on("renderChatMessageHTML", _bindStunningStrikeButtons); // V13
+// Both render hooks + a sweep of cards that were drawn before this
+// registered. See chat-render-utils — the raw hooks leave those
+// undecorated forever, which is how GM-only content reached a player.
+registerChatCardHandler(_bindStunningStrikeButtons, "stunning-strike cards");

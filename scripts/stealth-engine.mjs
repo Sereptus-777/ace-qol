@@ -108,10 +108,18 @@ export class StealthEngine {
     });
 
     // ── Round 2: clear surprised flags and the standard surprised status ──
-    Hooks.on("combatRound", async (combat) => {
+    //
+    // ⚠️ READ THE ROUND WE ARE MOVING *INTO*. Foundry fires combatRound BEFORE
+    // it applies the update (client/documents/combat.mjs:235), so `combat.round`
+    // inside this handler is still the round that is ENDING. Advancing into
+    // round 2 read "1" and bailed; surprise only cleared on the way into round
+    // THREE — a surprised creature stayed surprised for a whole extra round.
+    // `updateData.round` is the round being entered. (audit F-022, 2026-08-07)
+    Hooks.on("combatRound", async (combat, updateData) => {
       try {
         if (game.users?.activeGM !== game.user) return;
-        if ((combat?.round ?? 0) < 2) return;
+        const enteringRound = Number(updateData?.round ?? combat?.round ?? 0);
+        if (enteringRound < 2) return;
         for (const c of combat.combatants ?? []) {
           const td = c.token;
           if (!td) continue;
@@ -186,20 +194,41 @@ export class StealthEngine {
       return null;
     }
 
-    // Roll DEX(Stealth). dnd5e: actor.rollSkill("ste") or actor.rollSkillV2
+    // ── Roll DEX (Stealth). ────────────────────────────────────────────────
+    // ⚠️ 🔴 THIS ROLLED A BARE d20 FOR MONTHS. Found in the 2026-08-12 audit.
+    // The old line was:
+    //     actor.rollSkillV2?.({skill:"ste"}, …) ?? actor.rollSkill?.("ste", …)
+    // `rollSkillV2` does not exist in dnd5e 5.x — nor anywhere in Foundry — so
+    // the optional-call returned undefined and `??` handed off to the second
+    // one, which is the **4.x** signature. In 5.x the first argument is a
+    // CONFIG OBJECT and the method reads `config.skill`; given the string
+    // "ste", `config.skill` is undefined, no skill resolves, and no ability
+    // resolves either. A rogue with +11 Stealth was hiding on a flat d20 — and
+    // the Hide DC written to the token was that flat number.
+    //
+    // `{configure:false}` is what suppresses the dialog in 5.x — `fastForward`
+    // is the 4.x spelling and does nothing. `{create:false}` keeps dnd5e's own
+    // card out of the log so ours is the only one.
     let stealthRoll;
     try {
-      // configure:false — ACE owns the pause (suite-wide dialog sweep 2026-07-27).
-      const result = await (actor.rollSkillV2?.({ skill: "ste" }, { configure: false })
-                          ?? actor.rollSkill?.("ste", { fastForward: true }));
-      // V12 returns Roll, V13 may return { rolls: [Roll] }
-      stealthRoll = result?.rolls?.[0] ?? result;
+      const rolls = await actor.rollSkill(
+        { skill: "ste" },
+        { configure: false },
+        { create: false },
+      );
+      stealthRoll = Array.isArray(rolls) ? rolls[0] : (rolls?.rolls?.[0] ?? rolls);
     } catch (err) {
       console.warn(`${MODULE_ID} | Hide: stealth roll failed`, err);
       return null;
     }
-    if (!stealthRoll) return null;
-    const total = stealthRoll.total ?? 0;
+    const total = Number(stealthRoll?.total ?? NaN);
+    if (!Number.isFinite(total)) {
+      // ⚠️ Do NOT stamp a 0 hide DC — that is a creature that everything sees,
+      // reported as a successful hide. Say so and take no action.
+      console.warn(`${MODULE_ID} | Hide: no usable Stealth total for ${actor.name} — not hiding.`);
+      ui.notifications?.error(`ACE could not roll ${actor.name}'s Stealth — Hide cancelled.`);
+      return null;
+    }
 
     // Stamp the hide on the token
     await td.setFlag?.(FLAG_NS, FLAG_HIDDEN, {

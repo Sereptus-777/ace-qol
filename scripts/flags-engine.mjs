@@ -165,8 +165,14 @@ export class FlagsEngine {
    * @returns {boolean}
    */
   static grantsAttackAdvantage(targetActor, actionType) {
+    // ⚠️ `.once` IS READ HERE TOO. A one-shot grant ("the NEXT attack against
+    // this target has advantage" — Guiding Bolt and friends) must be honoured by
+    // the attack pipeline exactly like a persistent one; the only difference is
+    // that one-shot-grants.mjs DELETES it after the attack resolves. Reading it
+    // here is what lets the mechanism exist without touching the pipeline.
     return FlagsEngine._checkFlag(targetActor,
       "grants.advantage.attack.all",
+      "grants.advantage.attack.once",
       `grants.advantage.attack.${actionType}`
     );
   }
@@ -180,8 +186,10 @@ export class FlagsEngine {
    * @returns {boolean}
    */
   static grantsAttackDisadvantage(targetActor, actionType) {
+    // `.once` — see the note on grantsAttackAdvantage above.
     return FlagsEngine._checkFlag(targetActor,
       "grants.disadvantage.attack.all",
+      "grants.disadvantage.attack.once",
       `grants.disadvantage.attack.${actionType}`
     );
   }

@@ -82,11 +82,23 @@ export class InitiativeTools {
       ui.notifications?.warn("No active combat encounter.");
       return;
     }
-    const targets = (combat.combatants?.contents ?? []).filter(c =>
-      c.actor && !c.actor.hasPlayerOwner && c.initiative === null
+    // ⚠️ "NOBODY IS HERE" AND "EVERYBODY HAS ROLLED" ARE DIFFERENT ANSWERS.
+    // This used to filter straight to the unrolled ones and, on an empty list,
+    // say "All NPCs already rolled initiative." An encounter containing no NPCs
+    // at all produced that exact sentence — so Johnny (2026-08-14) hit a button
+    // on an EMPTY combat and was told everyone had already rolled. He could see
+    // the tracker was empty, which made the module look broken and untrustworthy
+    // for something it simply mis-worded. Count the roster first, then decide.
+    const npcs = (combat.combatants?.contents ?? []).filter(c =>
+      c.actor && !c.actor.hasPlayerOwner
     );
+    if (!npcs.length) {
+      ui.notifications?.warn("There are no NPCs in this combat — add their tokens to the encounter first.");
+      return;
+    }
+    const targets = npcs.filter(c => c.initiative === null);
     if (!targets.length) {
-      ui.notifications?.info("All NPCs already rolled initiative.");
+      ui.notifications?.info(`All ${npcs.length} NPC${npcs.length === 1 ? " has" : "s have"} already rolled initiative.`);
       return;
     }
     for (const c of targets) {
@@ -111,11 +123,16 @@ export class InitiativeTools {
       ui.notifications?.warn("No active combat encounter.");
       return;
     }
-    const targets = (combat.combatants?.contents ?? []).filter(c =>
-      c.actor?.hasPlayerOwner && c.initiative === null
-    );
+    // ⚠️ Same distinction as rollAllNpcs — see the note there. An empty encounter
+    // must never be reported as "everyone has already rolled".
+    const pcs = (combat.combatants?.contents ?? []).filter(c => c.actor?.hasPlayerOwner);
+    if (!pcs.length) {
+      ui.notifications?.warn("There are no player characters in this combat — add their tokens to the encounter first.");
+      return;
+    }
+    const targets = pcs.filter(c => c.initiative === null);
     if (!targets.length) {
-      ui.notifications?.info("All PCs already rolled initiative.");
+      ui.notifications?.info(`All ${pcs.length} PC${pcs.length === 1 ? " has" : "s have"} already rolled initiative.`);
       return;
     }
 

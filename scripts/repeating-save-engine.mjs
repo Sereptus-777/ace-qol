@@ -18,7 +18,9 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { safeShowForRoll, awaitDiceSettle } from "./dsn-utils.mjs";
+import { saveBonus, naturalD20 } from "./rolldata-utils.mjs";
 
 const MIN_RT_FOR_OOC_SAVE = 6;     // 1 round = 6s
 const MAX_OOC_SAVES_PER_EVENT = 10; // cap for big time jumps
@@ -87,8 +89,10 @@ export class RepeatingSaveEngine {
         });
       } catch (_) { /* never break chat rendering */ }
     };
-    Hooks.on("renderChatMessage", wireNudgeButton);
-    Hooks.on("renderChatMessageHTML", wireNudgeButton);
+    // Both render hooks + a sweep of cards that were drawn before this
+    // registered. See chat-render-utils — the raw hooks leave those
+    // undecorated forever, which is how GM-only content reached a player.
+    registerChatCardHandler(wireNudgeButton, "repeating-save cards");
 
     console.debug(`${MODULE_ID} | Repeating Save Engine online (combat + worldTime hooks)`);
   }
@@ -112,16 +116,10 @@ export class RepeatingSaveEngine {
   /** Pull the natural d20 out of a roll (for the card's breakdown). Hardened:
    *  walks .dice AND raw .terms so an exotic roll shape can't hide the die —
    *  the card must ALWAYS show the number rolled (Johnny's card rule). */
+  /** The natural d20 face. Delegates to the shared reader — the overtime engine
+   *  needs the same thing, and two copies of this drift apart. */
   static _extractNat(roll) {
-    try {
-      let d = (roll?.dice ?? []).find(x => Number(x?.faces) === 20) ?? (roll?.dice ?? [])[0] ?? null;
-      if (!d && Array.isArray(roll?.terms)) {
-        d = roll.terms.find(t => Number(t?.faces) === 20 && Array.isArray(t?.results)) ?? null;
-      }
-      const res = d?.results?.find?.(r => r?.active !== false) ?? d?.results?.[0] ?? null;
-      const n = Number(res?.result ?? NaN);
-      return Number.isFinite(n) ? n : null;
-    } catch (_) { return null; }
+    return naturalD20(roll);
   }
 
   /**
@@ -515,20 +513,32 @@ export class RepeatingSaveEngine {
 
     const ability = String(meta.ability).toLowerCase();
     const dc      = Number(meta.dc);
-    const formula = `1d20 + @abilities.${ability}.save`;
     const rollData = actor.getRollData?.() ?? {};
+    // ⚠️ Resolve the bonus to a NUMBER before it goes near the formula. In
+    // dnd5e 5.x `@abilities.x.save` is an object, and interpolating it produced
+    // an unevaluatable StringTerm that killed every out-of-combat save.
+    const bonus   = saveBonus(rollData, ability);
+    const formula = `1d20 + ${bonus}`;
+
+    // ⚠️ KEEP THE DIE, NOT JUST THE TOTAL. A card that shows "22" and nothing
+    // else gives the GM no way to tell a real roll from a bug — which is
+    // exactly what happened when this path was silently throwing and Johnny
+    // could not see why the number looked wrong. The standing rule is that the
+    // d20 is always shown, silent batch or not.
+    let bestFace = null;
 
     for (let i = 0; i < cap; i++) {
       attempts++;
-      let total;
+      let total, face = null;
       try {
         const r = await new Roll(formula, rollData).evaluate();
         total = Number(r.total);
+        face  = this._extractNat(r);   // THE die reader — walks .dice and .terms
       } catch (err) {
         console.warn(`${MODULE_ID} | RepeatingSave: silent roll failed for ${actor.name}:`, err);
         return;
       }
-      if (total > bestTotal) bestTotal = total;
+      if (total > bestTotal) { bestTotal = total; bestFace = face; }
       if (total >= dc) {
         passed = true;
         passOnAttempt = attempts;
@@ -556,6 +566,8 @@ export class RepeatingSaveEngine {
       passed,
       passOnAttempt,
       bestTotal: bestTotal === -Infinity ? null : bestTotal,
+      bestFace,
+      bonus,
       ended: passed ? "save" : null,
     });
   }
@@ -790,48 +802,60 @@ export class RepeatingSaveEngine {
    * Single summary card for a silent OOC batch. Designed to be informative
    * but quiet — no roll dice, no per-attempt detail. Just outcome + count.
    */
-  static async _postOOCSummaryCard(actor, meta, { attempts, passed, passOnAttempt, bestTotal, ended }) {
+  static async _postOOCSummaryCard(actor, meta, {
+    attempts, passed, passOnAttempt, bestTotal, bestFace, bonus, ended,
+  }) {
     try {
       const ability = String(meta.ability ?? "").toLowerCase();
       const abilityLabel = (CONFIG.DND5E?.abilities?.[ability]?.label) ?? ability.toUpperCase();
       const spell = meta.spellName ?? "spell";
       const dc = Number(meta.dc);
+      const esc = (v) => foundry.utils.escapeHTML(String(v ?? ""));
 
-      let bodyHtml;
+      // ⚠️ STACKED LINES, NOT A FLEX ROW.
+      // This card used to put the name, "Repeating saves vs", the effect name
+      // and a parenthetical on ONE line, then four more items on a second.
+      // A chat sidebar is about 280px wide, so all eight wrapped independently
+      // and the card came apart — Johnny's screenshot had the creature's name
+      // broken across three lines and "vs DC 12" stacked vertically.
+      // Each line below owns its own row and is allowed to be long.
+      const S = {
+        wrap:  "padding:2px 0;line-height:1.5;",
+        who:   "font-size:15px;font-weight:700;color:#f0e4c0;",
+        what:  "font-size:13px;color:#b3a88a;margin-bottom:5px;",
+        roll:  "font-size:15px;color:#f0e4c0;margin-top:2px;",
+        dim:   "color:#8c7a4b;",
+        good:  "color:#7fc98b;font-weight:700;",
+        bad:   "color:#d67a7f;font-weight:700;",
+        note:  "font-size:13px;color:#b3a88a;margin-top:4px;font-style:italic;",
+      };
+
+      // ⚠️ THE d20 IS ALWAYS SHOWN. This card was explicitly built "silent —
+      // no roll dice", which left the GM staring at a bare total with no way to
+      // tell a real roll from a broken one. Johnny's standing card rule wins.
+      const sign = (Number(bonus) || 0) < 0 ? "−" : "+";
+      const working = (bestFace !== null && bestFace !== undefined && bonus !== undefined)
+        ? `<span style="${S.dim}">d20</span> (<b>${esc(bestFace)}</b>) <span style="${S.dim}">${sign}</span> ${Math.abs(Number(bonus) || 0)} <span style="${S.dim}">=</span> <b>${esc(bestTotal)}</b>`
+        : `<b>${esc(bestTotal ?? "—")}</b>`;
+
+      let rollLine, noteLine;
       if (ended === "duration") {
-        bodyHtml = `
-          <div class="ace-qol-rs-body">
-            <span class="ace-qol-rs-result ace-qol-rs-pass">DURATION ENDED</span>
-          </div>
-          <div class="ace-qol-rs-outcome">${actor.name} is no longer affected — the spell's duration ran out.</div>`;
+        rollLine = `<div style="${S.roll}"><span style="${S.good}">DURATION ENDED</span></div>`;
+        noteLine = `<div style="${S.note}">The spell ran its course — ${esc(actor.name)} is free of it.</div>`;
       } else if (passed) {
-        bodyHtml = `
-          <div class="ace-qol-rs-body">
-            <span class="ace-qol-rs-ability">${abilityLabel} save</span>
-            <span class="ace-qol-rs-roll">${bestTotal}</span>
-            <span class="ace-qol-rs-dc">vs DC ${dc}</span>
-            <span class="ace-qol-rs-result ace-qol-rs-pass">SUCCESS</span>
-          </div>
-          <div class="ace-qol-rs-outcome">${actor.name} broke free on attempt ${passOnAttempt} of ${attempts}.</div>`;
+        rollLine = `<div style="${S.roll}">${working} <span style="${S.dim}">vs DC ${esc(dc)}</span> — <span style="${S.good}">SUCCESS</span></div>`;
+        noteLine = `<div style="${S.note}">Broke free on ${attempts === 1 ? "the first attempt" : `attempt ${esc(passOnAttempt)} of ${esc(attempts)}`}, out of combat.</div>`;
       } else {
-        bodyHtml = `
-          <div class="ace-qol-rs-body">
-            <span class="ace-qol-rs-ability">${abilityLabel} save</span>
-            <span class="ace-qol-rs-roll">${bestTotal ?? "—"}</span>
-            <span class="ace-qol-rs-dc">vs DC ${dc}</span>
-            <span class="ace-qol-rs-result ace-qol-rs-fail">PERSISTS</span>
-          </div>
-          <div class="ace-qol-rs-outcome">${actor.name} failed all ${attempts} attempts (best roll shown). Still affected.</div>`;
+        rollLine = `<div style="${S.roll}">${working} <span style="${S.dim}">vs DC ${esc(dc)}</span> — <span style="${S.bad}">HELD</span></div>`;
+        noteLine = `<div style="${S.note}">${attempts === 1 ? "One attempt" : `${esc(attempts)} attempts`} out of combat, best roll shown. Still affected.</div>`;
       }
 
       const html = `
-        <div class="ace-qol-repeating-save">
-          <div class="ace-qol-rs-header">
-            <i class="fas fa-redo-alt"></i>
-            <strong>${actor.name}</strong> — Repeating saves vs <strong>${spell}</strong>
-            <span class="ace-qol-rs-source">(out of combat — ${attempts} silent roll${attempts === 1 ? "" : "s"})</span>
-          </div>
-          ${bodyHtml}
+        <div class="ace-qol-repeating-save" style="${S.wrap}">
+          <div style="${S.who}"><i class="fas fa-redo-alt" style="${S.dim}"></i> ${esc(actor.name)}</div>
+          <div style="${S.what}">Repeating save — ${esc(spell)} (${esc(abilityLabel)})</div>
+          ${rollLine}
+          ${noteLine}
         </div>
       `;
 

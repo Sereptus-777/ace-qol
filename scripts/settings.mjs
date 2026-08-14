@@ -245,13 +245,24 @@ export class QolSettings {
     //  by movement-trail.mjs, which wraps the ruler's style hooks. Default OFF so
     //  we never change Foundry's behavior for a table that hasn't asked.
     // ═══════════════════════════════════════════════════════════════════════════
+    // ⚠️ DEFAULT ON, DELIBERATELY — and it shipped wrong once. This setting was
+    // requested for exactly one reason: to make Foundry's movement trail go
+    // away. It shipped defaulting to OFF, which is the one position in which it
+    // does nothing, so the feature existed and the trail still drew. Nobody had
+    // "turned it on" — the trail is core behaviour and our suppressor was idle.
+    //
+    // Worth remembering as a shape, not just a bug: a setting phrased as a
+    // NEGATIVE ("hide X") whose default is false reads, to everyone including
+    // the person who asked for it, as "X is off". It isn't. It means "the
+    // hiding is off". When a toggle exists solely to suppress an annoyance,
+    // the useful default is the one that suppresses it.
     s("hideMovementTrail", {
       name:    "Hide token movement trail",
-      hint:    "Foundry V13 draws the path a token took during its turn (a trail of dots) and redraws it every time you pick the token up. Turn this ON to hide that trail — your live drag-distance ruler is unaffected. Default: OFF.",
+      hint:    "Foundry draws the path a token took during its turn (a trail of dots) and redraws it every time you hover or pick the token up — core ships no way to turn this off. ON (default) hides that trail. Your live drag ruler and distance readout are unaffected, and the path is still recorded underneath, so the combat tracker's 'clear movement history' button and anything measuring how far a creature moved still work. Turn OFF to see the trails again.",
       scope:   "world",
       config:  false,   // lives in the ACE config panel (Movement tab)
       type:    Boolean,
-      default: false,
+      default: true,
       onChange: () => {
         try {
           for (const t of (canvas?.tokens?.placeables ?? [])) t.renderFlags?.set?.({ refreshRuler: true });
@@ -1839,6 +1850,68 @@ export class QolSettings {
       config:  false,
       type:    Object,
       default: { map: {}, paths: [], fileCount: 0, uniqueCount: 0, durationSec: 0, timestamp: 0 },
+    });
+
+    // ── THE CLOCK: time outside combat ─────────────────────────────────
+    // Johnny asked for this directly (2026-08-11): "We do have a setting to
+    // turn time off or something like that, right?" — we did not.
+    // ⚠️ The master switch is honoured at the CHOKEPOINT (TheClock.spend), so
+    // turning it off silences every consumer at once. A per-feature opt-out
+    // would leave some path still writing world time.
+    s("clockEnabled", {
+      name:    "Track time outside combat",
+      hint:    "Searching, resting, butchering and walking advance the world clock. Combat is never affected — Foundry already counts 6 seconds a round. Turn this off and ACE stops touching the clock entirely.",
+      scope:   "world",
+      config:  true,
+      type:    Boolean,
+      default: true,
+    });
+
+    s("clockMovementEnabled", {
+      name:    "Walking costs time",
+      hint:    "Moving player tokens advances the clock by distance and the scene's pace. Off means only deliberate actions — searches, rests, meals — cost time. Ignored entirely when 'Track time outside combat' is off.",
+      scope:   "world",
+      config:  true,
+      type:    Boolean,
+      default: true,
+    });
+
+    // ── THE CLOCK: food and water ──────────────────────────────────────
+    // Johnny chose ON by default (2026-08-10): "We're building a feature that
+    // we want on that nobody knows about… if they're surprised by it in the
+    // middle of a dungeon, a DM can just slide some rations over to them."
+    // The first meal posts a one-time explainer so it is discoverable rather
+    // than silent.
+    s("sustenanceEnabled", {
+      name:    "Track food and water",
+      hint:    "On a long rest the party eats from a shared pool of rations. Going without food past 3 + your Constitution modifier days brings exhaustion. Beasts you kill can be butchered for meat.",
+      scope:   "world",
+      config:  true,
+      type:    Boolean,
+      default: true,
+    });
+
+    // ⚠️ Water OFF by default and deliberately low-profile. RAW is a gallon per
+    // person per day and a waterskin holds HALF a gallon, so a party of four
+    // needs eight full skins a day — which nobody carries, because RAW assumes
+    // you refill from streams and wells constantly. Checked every rest, it
+    // would fire false exhaustion nightly and the whole feature would get
+    // switched off. Turn it on for a desert crossing and leave it off otherwise.
+    s("sustenanceTrackWater", {
+      name:    "Also track water (arid regions)",
+      hint:    "Leave this off unless the party is somewhere with no water. RAW needs a gallon per person per day, which assumes constant refilling — tracked everywhere it will report thirst every single night.",
+      scope:   "world",
+      config:  true,
+      type:    Boolean,
+      default: false,
+    });
+
+    s("sustenanceExplained", {
+      name:    "Sustenance explainer shown (internal)",
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: false,
     });
 
     console.debug(`${MODULE_ID} | Settings registered (all combat features ON by default)`);

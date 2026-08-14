@@ -19,6 +19,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { QolSettings } from "./settings.mjs";
 import { CombatState } from "./combat-state.mjs";
 import { DamageConstants, safeShowForRoll } from "./damage-engine.mjs";
@@ -307,7 +308,10 @@ export class SaveEngine {
       if (!game.user.isGM) return;
       const casterActor = activity?.actor ?? this._pendingSaveSpell?.actor;
       if (!casterActor) return;
-      const casterToken = canvas.tokens.placeables.find(t => t.actor?.id === casterActor.id);
+      // THE token that cast, not "a token with that actor". With several
+      // unlinked copies of one creature the old search snapped the template to
+      // whichever copy Foundry listed first. (audit F-019)
+      const casterToken = SaveEngine.casterTokenDoc(casterActor, { sceneId: canvas.scene?.id })?.object;
       if (!casterToken) return;
       for (const tmpl of (templates ?? [])) {
         const doc = tmpl.document ?? tmpl;
@@ -432,8 +436,10 @@ export class SaveEngine {
         this._collapseTargetListCard(flags);
       }
     };
-    Hooks.on("renderChatMessage", _onRenderChatMessage);
-    Hooks.on("renderChatMessageHTML", _onRenderChatMessage);
+    // Both render hooks + a sweep of cards drawn before this registered.
+    // A save card carries roll buttons that must not appear for the wrong
+    // player, and an undecorated card shows all of them. See chat-render-utils.
+    registerChatCardHandler(_onRenderChatMessage, "save cards");
 
     // ── createChatMessage — reliable hook for PC save results (fires on ALL clients) ──
     Hooks.on("createChatMessage", (message) => {
@@ -984,6 +990,101 @@ export class SaveEngine {
   }
 
   /**
+   * WHICH PLAYERS OWN THIS CREATURE — asked, not reconstructed. (audit F-020)
+   *
+   * Three places built this by walking the ownership record and skipping the
+   * "default" key. That misses every actor whose player access comes from the
+   * DEFAULT level rather than a named entry — a party-shared character, a
+   * familiar the whole table can drive. Such an actor still answers TRUE to
+   * `hasPlayerOwner`, so it IS treated as a player character, but the owner list
+   * came back EMPTY. In Foundry an empty whisper list means PUBLIC, so that
+   * player's private "roll your save" prompt was posted to the entire table —
+   * and anyone could click it.
+   *
+   * `testUserPermission` is the engine's own answer and honours the default
+   * level, per-user entries and role-based access alike. It is already what
+   * `_pcOwnerActive` and the ROLL DAMAGE gate use, so this makes all of them
+   * agree. GMs are excluded: they see every whisper anyway and use the card's
+   * own dice button.
+   */
+  static ownerUserIds(actor) {
+    if (!actor) return [];
+    try {
+      return (game.users?.filter(u => !u.isGM && actor.testUserPermission?.(u, "OWNER")) ?? [])
+        .map(u => u.id);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | couldn't read owners of ${actor?.name}:`, err);
+      return [];
+    }
+  }
+
+  /**
+   * THE caster's token — the exact body that acted. (audit F-019)
+   *
+   * ⚠️ `find(t => t.actor?.id === casterActor.id)` is NOT this. For UNLINKED
+   * tokens the synthetic actor's id IS the base actor's id, so with nine goblins
+   * dropped from one sidebar entry that search returns whichever Foundry lists
+   * first — not the one that cast. It was deciding where a spell template landed
+   * and whose line of sight cover was measured along.
+   *
+   * A synthetic actor knows its own TokenDocument, and that answer is exact.
+   * Only fall back to searching for a linked actor, where every copy shares one
+   * sheet. If several UNLINKED copies match and nothing tells them apart, return
+   * null and say so — the caller then skips the position-dependent step rather
+   * than doing it from the wrong body. Same principle as the exact-token rule
+   * already used when applying conditions.
+   */
+  static casterTokenDoc(casterActor, { sceneId = null, quiet = false } = {}) {
+    try {
+      if (!casterActor) return null;
+      // Unlinked synthetic — its own token, no ambiguity possible.
+      if (casterActor.token) return casterActor.token;
+
+      const docs = casterActor.getActiveTokens?.(false, true) ?? [];
+      const pool = sceneId ? docs.filter(d => d.parent?.id === sceneId) : docs;
+      if (pool.length === 1) return pool[0];
+      if (pool.length > 1) {
+        // Linked copies share one sheet; position still differs, so say which
+        // one was taken rather than pretending the question was unambiguous.
+        if (!quiet) console.debug(`${MODULE_ID} | ${casterActor.name} has ${pool.length} tokens here — using the first for position.`);
+        return pool[0];
+      }
+      return null;
+    } catch (err) {
+      console.warn(`${MODULE_ID} | couldn't resolve the caster's token for ${casterActor?.name}:`, err);
+      return null;
+    }
+  }
+
+  /**
+   * The caster's token when all we were given is an ACTOR ID (the save cards
+   * store ids, not object references). Prefers the exact token the card stamped
+   * at cast time; falls back to a scan that REFUSES to guess between unlinked
+   * copies rather than measure cover from the wrong one.
+   */
+  static casterTokenDocById(casterActorId, scene, stampedTokenDocId = null) {
+    try {
+      if (stampedTokenDocId) {
+        const exact = scene?.tokens?.get(stampedTokenDocId);
+        if (exact) return exact;
+      }
+      if (!casterActorId || !scene) return null;
+      const matches = (scene.tokens?.contents ?? []).filter(t => t.actorId === casterActorId);
+      if (matches.length === 1) return matches[0];
+      if (matches.length > 1) {
+        const linked = matches.find(t => t.actorLink);
+        if (linked) return linked;
+        console.debug(`${MODULE_ID} | ${matches.length} unlinked copies share caster actor ${casterActorId} and no exact token was stamped — skipping the position-dependent step rather than using the wrong one.`);
+        return null;
+      }
+      return null;
+    } catch (err) {
+      console.warn(`${MODULE_ID} | caster token lookup by id failed:`, err);
+      return null;
+    }
+  }
+
+  /**
    * Is a PC save-target's owning player currently online (active, non-GM)?
    * Handles linked actors AND unlinked synthetic token actors.
    */
@@ -1011,6 +1112,10 @@ export class SaveEngine {
       itemId:   item?.id ?? null,
       saveAbility, saveDC, halfOnSave, damageTypes, isSpell,
       tokenDocId: tgt.tokenDocId, actorId: tgt.actorId, sceneId: tgt.sceneId,
+      // The real caster + the exact body, so cover works on the GM-rolls-for-an-
+      // absent-player path too. (audit F-019)
+      casterActorId:    actor?.id ?? null,
+      casterTokenDocId: SaveEngine.casterTokenDoc(actor, { sceneId: tgt.sceneId })?.id ?? null,
       targetName: tgt.name, targetImg: tgt.img,
       autoFailSave: tgt.autoFailSave, saveAdvantage: tgt.saveAdvantage, saveDisadvantage: tgt.saveDisadvantage,
       superSaver: tgt.superSaver, semiSuperSaver: tgt.semiSuperSaver,
@@ -1114,6 +1219,8 @@ export class SaveEngine {
     const result = await this._rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, casterActor?.id, {
       outcomeConditions: SaveEngine._outcomeConditionsFor(item),
       dealsDamage: Array.isArray(damageTypes) && damageTypes.some(t => t && t !== "none"),
+      // The exact body that cast, for the cover check. (audit F-019)
+      casterTokenDocId: SaveEngine.casterTokenDoc(casterActor, { sceneId: canvas.scene?.id })?.id ?? null,
     });
 
     // Emit saveComplete hook
@@ -1504,9 +1611,10 @@ export class SaveEngine {
         currentHP: state.target.currentHP,
         maxHP: state.target.maxHP,
         // For owners — which players own this PC
-        ownerIds: isPC ? Object.entries(token.actor?.ownership ?? {})
-          .filter(([id, level]) => level >= 3 && id !== "default" && !game.users.get(id)?.isGM)
-          .map(([id]) => id) : [],
+        // ASK, don't reconstruct — see SaveEngine.ownerUserIds. Walking the
+        // ownership record missed every actor owned through the DEFAULT level,
+        // and an empty whisper list means PUBLIC. (audit F-020)
+        ownerIds: isPC ? SaveEngine.ownerUserIds(token.actor) : [],
       });
     }
 
@@ -1708,6 +1816,10 @@ export class SaveEngine {
           itemId: item.id,
           itemUuid: item.uuid,
           actorId: actor.id,
+          // WHICH BODY CAST IT. An actor id alone cannot pick one of nine
+          // goblins apart, and cover is measured from a position. Stamped here,
+          // at the cast, where the answer is still exact. (audit F-019)
+          casterTokenDocId: SaveEngine.casterTokenDoc(actor, { sceneId: canvas.scene?.id })?.id ?? null,
           saveAbility,
           saveDC,
           halfOnSave,
@@ -2142,6 +2254,10 @@ export class SaveEngine {
             tokenDocId: tgt.tokenDocId,
             actorId: tgt.actorId,
             sceneId: tgt.sceneId,
+            // The cast card knows both — carry them so the GM's dice button
+            // measures cover from the caster, not from the target. (F-019)
+            casterActorId:    flags.actorId ?? null,
+            casterTokenDocId: flags.casterTokenDocId ?? null,
             targetName: tgt.name,
             targetImg: tgt.img,
             autoFailSave: tgt.autoFailSave,
@@ -2306,15 +2422,38 @@ export class SaveEngine {
   //  Auto-Collapse Target List Card
   // ═══════════════════════════════════════════════════════════════════════════
 
+  /**
+   * Retire THE cast card this results card came from — and only that one.
+   *
+   * ⚠️ This used to take `resultsFlags`, ignore it completely, and collapse
+   * EVERY `.ace-qol-save-card` in the chat log. The collapse class is a full
+   * hide (max-height:0; opacity:0), and the render hook calls this on every
+   * render of any results card — including the sweep over cards that were
+   * already drawn. So: cast at a player and wait for them to roll, resolve
+   * anything else in the meantime, and the first cast's live target card
+   * vanished from every client while it was still waiting on that player. The
+   * GM lost the pending list and the roll-on-behalf dice with it.
+   * (audit F-018, 2026-08-07)
+   *
+   * Two precise rules, no sweep:
+   *   • the card whose id IS this cast — that is the one being superseded;
+   *   • any card whose own `superseded` flag is set — it has already retired
+   *     itself and is only being re-applied because a re-render cleared the CSS.
+   */
   _collapseTargetListCard(resultsFlags) {
-    // Find the target list card that spawned this results card and collapse it
     const chatLog = document.querySelector("#chat-log, .chat-log");
     if (!chatLog) return;
-    const targetCards = chatLog.querySelectorAll(".ace-qol-save-card");
-    for (const card of targetCards) {
-      // Collapse the entire chat message containing this card
-      const msg = card.closest(".chat-message");
-      if (msg) msg.classList.add("ace-qol-save-collapsed");
+    const castId = resultsFlags?.castId ?? null;
+
+    for (const card of chatLog.querySelectorAll(".ace-qol-save-card")) {
+      const msgEl = card.closest(".chat-message");
+      if (!msgEl) continue;
+      const id = msgEl.dataset?.messageId;
+      if (!id) continue;
+
+      const isThisCast = !!castId && id === castId;
+      const alreadyRetired = game.messages.get(id)?.flags?.[MODULE_ID]?.superseded === true;
+      if (isThisCast || alreadyRetired) msgEl.classList.add("ace-qol-save-collapsed");
     }
   }
 
@@ -2612,9 +2751,8 @@ export class SaveEngine {
         damageModifiers: state.damageModifiers,
         currentHP: state.target.currentHP,
         maxHP: state.target.maxHP,
-        ownerIds: isPC ? Object.entries(token.actor?.ownership ?? {})
-          .filter(([id, level]) => level >= 3 && id !== "default" && !game.users.get(id)?.isGM)
-          .map(([id]) => id) : [],
+        // ASK, don't reconstruct — see SaveEngine.ownerUserIds. (audit F-020)
+        ownerIds: isPC ? SaveEngine.ownerUserIds(token.actor) : [],
       });
     }
 
@@ -2732,6 +2870,8 @@ export class SaveEngine {
     const _gateCtx = {
       outcomeConditions: SaveEngine._outcomeConditionsFor(item),
       dealsDamage: Array.isArray(damageTypes) && damageTypes.some(t => t && t !== "none"),
+      // The exact body that cast, for the cover check. (audit F-019)
+      casterTokenDocId: flags.casterTokenDocId ?? null,
     };
     for (const tgt of npcTargets) {
       const result = await this._rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, actorId, { isMultiTarget: isMulti, ..._gateCtx });
@@ -2743,20 +2883,50 @@ export class SaveEngine {
     const reactionEng = game.aceQol?.reactionEngine;
     if (reactionEng) {
       try {
-        // Enrich results with actor references for the reaction engine
-        const enriched = npcResults.map(r => ({
-          ...r,
-          actor: game.actors.get(r.actorId),
-          ability: saveAbility,
-          dc: saveDC,
-          total: r.saveTotal,
-          saved: r.passed,
-          sourceName: item?.name ?? null,   // names the resisted effect in the LR prompt
-        }));
+        // ── ONLY A REAL FAILED SAVE REACHES THE REACTION ENGINE (2026-08-07) ──
+        // Every NPC row used to be handed over, INCLUDING the ones the Gate
+        // refused. A gated row carries `passed: false` and `saveTotal: null`,
+        // and the reaction engine only asks "did it fail, and was there an
+        // ability and a DC" — nothing tells it no die was ever thrown. So a
+        // legendary creature the Gate excused (dead, or immune to everything the
+        // power does) was offered:
+        //
+        //   "X failed a WIS save against Hold Monster. Spend Legendary
+        //    Resistance to succeed instead?"   Roll vs DC: null vs 17
+        //
+        // Accept it and a Legendary Resistance charge is burned on a save that
+        // never happened. `_failedTheSave` is the one reader that already knows
+        // the difference between pending, gated and genuinely failed — use it,
+        // and carry the original index so the write-back can't drift.
+        const enriched = [];
+        npcResults.forEach((r, idx) => {
+          if (r.noRoll) {
+            console.log(`${MODULE_ID} | GATE: ${r.name} never rolled (${r.noRoll}) — no reaction offered.`);
+            return;
+          }
+          if (r.pending) return;
+          // The TOKEN's own actor, so spending Legendary Resistance on one
+          // unlinked copy doesn't drain the shared sidebar actor for all of them.
+          const _scene = game.scenes.get(r.sceneId) ?? canvas.scene;
+          const _actor = _scene?.tokens?.get(r.tokenDocId)?.actor ?? game.actors.get(r.actorId);
+          enriched.push({
+            ...r,
+            _idx: idx,
+            actor: _actor,
+            ability: saveAbility,
+            dc: saveDC,
+            total: r.saveTotal,
+            saved: r.passed,
+            sourceName: item?.name ?? null,   // names the resisted effect in the LR prompt
+          });
+        });
+
         const modified = await reactionEng.checkPostSaveReactions(enriched);
         // Apply any changes (Legendary Resistance flips saved to true)
-        for (let i = 0; i < modified.length; i++) {
-          if (modified[i].legendaryResistance && modified[i].saved) {
+        for (const m of (modified ?? [])) {
+          const i = m?._idx;
+          if (!Number.isInteger(i) || !npcResults[i]) continue;
+          if (m.legendaryResistance && m.saved) {
             npcResults[i].passed = true;
             npcResults[i].legendaryResistance = true;
             npcResults[i].resultLabel = "LEGENDARY RESISTANCE";
@@ -2904,12 +3074,27 @@ export class SaveEngine {
         };
       }
       // PC hasn't rolled yet — pending placeholder
+      //
+      // ⚠️ SAY WHO YOU ARE WAITING FOR, AND NEVER NAME SOMEBODY WHO ISN'T THERE.
+      // Johnny hurled a flame at Hammer — a test character owned only by the GM
+      // — and the card sat on "Waiting for save…" with no button he could press,
+      // on any screen, before eventually rolling itself (2026-08-14). Nothing was
+      // broken: with no connected owner the engine correctly falls through to a
+      // GM auto-roll. The CARD was the liar. It announced a wait on a player who
+      // does not exist, so a working auto-roll read as a hang.
+      //
+      // Same failure shape as the empty-encounter initiative message from the
+      // same night: "nobody is here" and "somebody has not answered yet" are
+      // different facts and must never print the same sentence.
+      const _ownerOnline = this._pcOwnerActive(tgt);
       return {
         name: tgt.name, img: tgt.img,
         tokenDocId: tgt.tokenDocId, actorId: tgt.actorId, sceneId: tgt.sceneId,
         saveTotal: null, passed: null,
         isAutoFail: tgt.autoFailSave,
-        resultLabel: "\u23f3 Waiting for save...",
+        ownerOnline: _ownerOnline,
+        resultLabel: _ownerOnline ? "⏳ Waiting for save..."
+                                  : "⏳ No player online — GM rolling…",
         damageMultiplier: null,
         roll: null, damageModifiers: tgt.damageModifiers,
         currentHP: tgt.currentHP, maxHP: tgt.maxHP,
@@ -3172,7 +3357,11 @@ export class SaveEngine {
       if (saveAbility === "dex" && tokenDoc && casterActorId) {
         try {
           if (QolSettings.get("enableCoverCalculation")) {
-            const casterTokenDoc = scene?.tokens?.find(t => t.actorId === casterActorId);
+            // Cover is measured from a POSITION, so it needs the exact body that
+            // cast — the card stamped it at cast time. The old search took the
+            // first token sharing the caster's actor, which with several unlinked
+            // copies is a different creature standing somewhere else. (F-019)
+            const casterTokenDoc = SaveEngine.casterTokenDocById(casterActorId, scene, options.casterTokenDocId);
             if (casterTokenDoc) {
               const coverResult = CoverEngine.calculateCover(casterTokenDoc, tokenDoc);
               if (coverResult?.dexSaveBonus > 0) {
@@ -3548,9 +3737,30 @@ export class SaveEngine {
       </div>
     `;
 
-    // Whisper to the player(s) who own this PC only (GM has dice icon on target list)
-    // Filter out GM users — they have ownership on all actors but don't need prompt cards
-    const whisperIds = (tgt.ownerIds ?? []).filter(id => !game.users.get(id)?.isGM);
+    // ── WHO SEES THIS PROMPT — and it is NEVER "everyone" (audit F-020) ──
+    // Whisper to the player(s) who own this creature. The GM doesn't need one;
+    // they have the dice button on the cast card.
+    //
+    // ⚠️ AN EMPTY WHISPER LIST IS PUBLIC IN FOUNDRY. That is the whole bug: a
+    // character owned through the DEFAULT level produced an empty list, so its
+    // private "roll your save" card went to the whole table and anyone could
+    // click it. `ownerIds` is now built by asking the engine, but this is the
+    // last gate, so it re-asks the live actor and — if there is genuinely
+    // nobody — falls back to the GM. A prompt meant for one person must never
+    // become an open invitation just because a lookup came back empty.
+    let whisperIds = (tgt.ownerIds ?? []).filter(id => !game.users.get(id)?.isGM);
+    if (!whisperIds.length) {
+      const scene = game.scenes.get(tgt.sceneId) ?? canvas.scene;
+      const tActor = scene?.tokens?.get(tgt.tokenDocId)?.actor ?? game.actors.get(tgt.actorId);
+      whisperIds = SaveEngine.ownerUserIds(tActor);
+      if (whisperIds.length) {
+        console.debug(`${MODULE_ID} | save prompt for ${tgt.name}: owner list was empty, re-read ${whisperIds.length} owner(s) from the actor.`);
+      }
+    }
+    if (!whisperIds.length) {
+      whisperIds = (game.users?.filter(u => u.isGM) ?? []).map(u => u.id);
+      console.warn(`${MODULE_ID} | save prompt for ${tgt.name}: no player owns this creature — whispering to the GM instead of posting it publicly.`);
+    }
 
     // Let NPC save dice settle before posting the result card.
     await awaitDsnRoll();
@@ -3567,6 +3777,15 @@ export class SaveEngine {
           actorId: tgt.actorId,
           tokenDocId: tgt.tokenDocId,
           sceneId: tgt.sceneId,
+          // ── WHO CAST IT (audit F-019, 2026-08-07) ──
+          // `casterActorId` was NEVER written on a save prompt, and the cover
+          // lookup in _rollPcSave falls back to `flags.actorId` — which on this
+          // message is the TARGET's own actor. So cover was measured from the
+          // target to itself, always came back zero, and the DEX-save cover
+          // bonus has never once applied to a player character. Write the real
+          // caster, plus the exact token, because cover is about a position.
+          casterActorId:    casterActor?.id ?? null,
+          casterTokenDocId: SaveEngine.casterTokenDoc(casterActor, { sceneId: tgt.sceneId })?.id ?? null,
           saveAbility,
           saveDC,
           halfOnSave,
@@ -3670,9 +3889,10 @@ export class SaveEngine {
       if (saveAbility === "dex" && tokenDoc) {
         try {
           if (QolSettings.get("enableCoverCalculation")) {
-            // Find caster token from the flags
+            // The exact caster token the cast card stamped — see the matching
+            // note in _rollSingleSave. (F-019)
             const casterActorId = flags.casterActorId ?? flags.actorId;
-            const casterTokenDoc = scene?.tokens?.find(t => t.actorId === casterActorId);
+            const casterTokenDoc = SaveEngine.casterTokenDocById(casterActorId, scene, flags.casterTokenDocId);
             if (casterTokenDoc) {
               const coverResult = CoverEngine.calculateCover(casterTokenDoc, tokenDoc);
               if (coverResult?.dexSaveBonus > 0) {
@@ -3712,6 +3932,21 @@ export class SaveEngine {
     // Extract d20 face for display on the results card
     const _pcD20 = rollResult?.dice?.[0];
     const dieResult = _pcD20?.total ?? null;
+
+    // ── HOW MUCH DAMAGE THIS SAVE EARNED — DECIDED HERE, ONCE (2026-08-07) ──
+    // Computed at the roll, where `halfOnSave` is actually in scope, and stamped
+    // INTO the result message below. The GM-side handler used to re-derive this
+    // from the message and assumed every successful save meant half damage
+    // ("most common for AoE"), which is wrong for every power that deals NOTHING
+    // on a success — Word of Radiance, Thunderclap, Sword Burst, Toll the Dead.
+    // A player who SAVED was taking half anyway.
+    //
+    // Same principle as the rest of this file's 07-28 rebuild: the roller RETURNS
+    // its result and stamps its claim into the message; nobody downstream
+    // re-derives a fact they don't have the inputs for.
+    const _pcMultiplier = passed
+      ? (superSaver ? 0 : (halfOnSave ? 0.5 : 0))
+      : (superSaver ? 0.5 : 1);
 
     // Determine result label
     let resultLabel;
@@ -3785,6 +4020,9 @@ export class SaveEngine {
           saveAbility,                       // needed so the GM can re-fire saveComplete
           itemUuid: flags.itemUuid ?? null,
           rolledByGm: game.user.isGM,        // so a PC's client can show "GM" + grey its button
+          // THE CLAIM, STAMPED AT BIRTH. The GM reads these instead of guessing.
+          halfOnSave: halfOnSave === true,
+          damageMultiplier: _pcMultiplier,
         }
       }
     });
@@ -3852,14 +4090,31 @@ export class SaveEngine {
         PcSaveNudge.disarm(`${resultFlags.castId}:${tokenDocId}`, "The player rolled it themselves."));
     } catch (_) { /* non-fatal */ }
 
-    // Determine damage multiplier
-    let damageMultiplier;
-    if (passed) {
-      if (superSaver) damageMultiplier = 0;
-      else damageMultiplier = 0.5; // half on save (most common for AoE)
-    } else {
-      if (superSaver) damageMultiplier = 0.5;
-      else damageMultiplier = 1;
+    // ── HOW MUCH DAMAGE THIS SAVE EARNED — READ, NEVER GUESSED (2026-08-07) ──
+    // This block used to be:
+    //     if (passed) { superSaver ? 0 : 0.5 }   // "half on save (most common for AoE)"
+    // It never looked at whether the power ACTUALLY grants half damage on a
+    // success. For every power that deals NOTHING on a success — Word of
+    // Radiance, Thunderclap, Sword Burst, Toll the Dead — a player who SAVED
+    // was handed a half-damage multiplier, and this is the LAST writer for the
+    // normal case (card posts "waiting for player", player rolls). Straight
+    // through Phase 2 and APPLY ALL into their hit points.
+    //
+    // The roller already worked this out with `halfOnSave` in scope and stamped
+    // it into the message. Read that. The fallbacks below exist only for a
+    // result message written before this fix, and each one still reads the real
+    // flag rather than assuming a value.
+    let damageMultiplier = Number(resultFlags.damageMultiplier);
+    if (!Number.isFinite(damageMultiplier)) {
+      let half = resultFlags.halfOnSave;
+      if (typeof half !== "boolean") {
+        // Older message: ask the cast card this result belongs to.
+        half = SaveEngine._halfOnSaveForCast(resultFlags.castId);
+      }
+      damageMultiplier = passed
+        ? (superSaver ? 0 : (half ? 0.5 : 0))
+        : (superSaver ? 0.5 : 1);
+      console.debug(`${MODULE_ID} | pcSaveResult had no stamped multiplier — derived ${damageMultiplier} (halfOnSave=${half}).`);
     }
 
     const pcResult = { saveTotal, dieResult: dieResult ?? null, passed, resultLabel, autoFailSave, damageMultiplier };
@@ -3906,6 +4161,30 @@ export class SaveEngine {
         }
       }
     }
+  }
+
+  /**
+   * Does the power behind this cast deal half damage on a SUCCESSFUL save?
+   *
+   * Only used to rescue a `pcSaveResult` message written before the multiplier
+   * was stamped at the roll. Keyed by cast, so it reads THIS cast's card and
+   * never the newest one in the log. Returns false when it genuinely cannot
+   * tell — a power that grants nothing on a success is the safe reading, and
+   * assuming "half" is the exact bug this replaces.
+   */
+  static _halfOnSaveForCast(castId) {
+    if (!castId) return false;
+    try {
+      const direct = game.messages.get(castId)?.flags?.[MODULE_ID];
+      if (typeof direct?.halfOnSave === "boolean") return direct.halfOnSave;
+      for (const m of game.messages.contents) {
+        const f = m.flags?.[MODULE_ID];
+        if (f?.castId === castId && typeof f.halfOnSave === "boolean") return f.halfOnSave;
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | couldn't read halfOnSave for cast ${castId}:`, err);
+    }
+    return false;
   }
 
   /**
@@ -4188,6 +4467,8 @@ export class SaveEngine {
     const _gateCtx = {
       outcomeConditions: SaveEngine._outcomeConditionsFor(item),
       dealsDamage: Array.isArray(damageTypes) && damageTypes.some(t => t && t !== "none"),
+      // The exact body that cast, for the cover check. (audit F-019)
+      casterTokenDocId: flags.casterTokenDocId ?? null,
     };
     for (const tgt of targets) {
       const result = await this._rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, actorId, { isMultiTarget: isMultiLegacy, ..._gateCtx });
@@ -5344,6 +5625,11 @@ export class SaveEngine {
     for (const r of allResults) {
       if (r.pending) continue;
       let targetDamage = 0;
+      // Keep the per-TYPE split, not just the total. It costs nothing here and
+      // it lets the apply step describe the damage properly to anything
+      // listening (Heavy Armor Master and friends) instead of handing over one
+      // anonymous lump. The parts always sum to totalFinal by construction.
+      const byType = [];
       for (const c of damageComponents) {
         let dmg = Math.floor(c.total * r.damageMultiplier);
         const mod = r.damageModifiers?.[c.type];
@@ -5351,12 +5637,14 @@ export class SaveEngine {
         else if (mod?.modifier === "resistant") dmg = Math.floor(dmg / 2);
         else if (mod?.modifier === "vulnerable") dmg = dmg * 2;
         targetDamage += dmg;
+        if (dmg > 0) byType.push({ type: c.type, value: dmg });
       }
       damageResults.push({
         targetId: r.actorId,
         tokenDocId: r.tokenDocId,
         sceneId: r.sceneId,
         totalFinal: targetDamage,
+        byType,
         currentHP: r.currentHP,
       });
     }
@@ -5409,8 +5697,8 @@ export class SaveEngine {
         autoFailSave:   state.autoFailSave,
         superSaver:     state.superSaver,
         damageModifiers: state.damageModifiers,
-        ownerIds:       isPC ? Object.entries(token.actor?.ownership ?? {})
-          .filter(([uid, lvl]) => uid !== "default" && lvl >= 3).map(([uid]) => uid) : null,
+        // ASK, don't reconstruct — see SaveEngine.ownerUserIds. (audit F-020)
+        ownerIds:       isPC ? SaveEngine.ownerUserIds(token.actor) : [],
       });
     }
     if (!newTargetData.length) return;
@@ -6218,6 +6506,9 @@ export class SaveEngine {
     if (!flags?.damageResults?.length) return;
 
     const baseDmg = flags.baseDamageTotal ?? 0;
+    // What the hit points ACTUALLY moved by, per target. UNDO gives back exactly
+    // this and nothing else — see _undoAllSaveDamage. (audit F-016, 2026-08-07)
+    const hpDelta = { ...(flags.hpDelta ?? {}) };
 
     for (const r of flags.damageResults) {
       const scene = game.scenes.get(r.sceneId) ?? canvas.scene;
@@ -6235,9 +6526,25 @@ export class SaveEngine {
         continue;
       }
 
-      const damageToApply = (typeof cachedValue === "number")
+      const overridden = (typeof cachedValue === "number");
+      const damageToApply = overridden
         ? Math.floor(baseDmg * cachedValue)
         : (r.totalFinal ?? 0);
+
+      // Describe the damage BY TYPE so a listener that cares about types can act
+      // on it. The parts must sum to what is actually being applied — a mismatch
+      // would let applyHPDamage's reduction check rewrite the number. When the
+      // GM has overridden the multiplier the stored split no longer matches, so
+      // fall back to one entry carrying the whole overridden amount.
+      const _parts = (!overridden && Array.isArray(r.byType) && r.byType.length)
+        ? r.byType.map(p => ({
+            value: Math.max(0, Number(p.value) || 0),
+            type: String(p.type ?? "none").toLowerCase(),
+            properties: new Set(),
+          }))
+        : null;
+
+      const _hpBefore = Number(actor?.system?.attributes?.hp?.value ?? 0);
 
       // Single source of truth — handles polymorph excess capture + clamp
       // Pass the spell's damage type(s) so applyHPDamage's FX chokepoint (which
@@ -6246,20 +6553,52 @@ export class SaveEngine {
       await DamageApplicator.applyHPDamage(actor, damageToApply, {
         label: "save-apply-all",
         types: flags.damageTypes ?? [],
+        ...(_parts ? { damages: _parts } : {}),
       });
+
+      const _hpAfter = Number(actor?.system?.attributes?.hp?.value ?? 0);
+      const _moved = Math.max(0, _hpBefore - _hpAfter);
+      hpDelta[r.tokenDocId] = (Number(hpDelta[r.tokenDocId]) || 0) + _moved;
 
       // Clear cache entry after applying
       SaveEngine.overrideCache.delete(cacheKey);
     }
+
+    try { await message.update({ [`flags.${MODULE_ID}.hpDelta`]: hpDelta }, { render: false }); }
+    catch (err) { console.warn(`${MODULE_ID} | couldn't record the applied hit-point movement (UNDO will fall back to the card total):`, err); }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
   //  Undo All Save Damage
   // ═══════════════════════════════════════════════════════════════════════════
 
+  /**
+   * UNDO GIVES BACK WHAT IT TOOK. (audit F-016, 2026-08-07)
+   *
+   * This used to set hit points back to `r.currentHP` — the snapshot taken when
+   * the damage card was BUILT. An absolute restore, not a relative one, so
+   * anything that touched the creature in between was silently erased:
+   *
+   *   goblin at 30 → Fireball applies 10 (now 20) → it steps in a trap for 5
+   *   (now 15) → UNDO the Fireball → goblin is back at 30. The trap is gone.
+   *
+   * It also wrote hit points with a raw actor.update(), so the heal never
+   * announced itself and Sword of Wounding couldn't refuse it — the same gap
+   * cured on the damage side in 0.7.405. This is the identical bug that was
+   * fixed on the ATTACK damage card the day before and missed here, which is
+   * exactly what lesson_ace_damage_must_announce_itself warns about: fix the
+   * chokepoint, not just the consumer that surfaced it.
+   *
+   * `hpDelta` is the true hit-point movement recorded at apply time — after
+   * temp HP absorbed its share and after any listener reduction — so handing
+   * that back is exact.
+   */
   async _undoAllSaveDamage(message) {
     const flags = message.flags?.[MODULE_ID];
     if (!flags?.damageResults?.length) return;
+
+    const hpDeltas = flags.hpDelta ?? {};
+    let undone = 0;
 
     for (const r of flags.damageResults) {
       const scene = game.scenes.get(r.sceneId) ?? canvas.scene;
@@ -6267,11 +6606,34 @@ export class SaveEngine {
       const actor = tokenDoc?.actor ?? game.actors.get(r.targetId);
       if (!actor) continue;
 
-      // Restore to HP they had before damage was applied
-      // ⚠️ LIVE READ ON PURPOSE — undo path writes HP back; must see reality,
-      // never a cached snapshot.
-      const restoredHP = r.currentHP ?? actor.system?.attributes?.hp?.value ?? 0;
-      await actor.update({ "system.attributes.hp.value": restoredHP });
+      // Preference order: the true movement → the card's own total (cards built
+      // before this fix) → nothing at all. A target whose row was × removed
+      // before APPLY was never damaged, so it must NOT be "restored" to a
+      // snapshot — that would heal it for damage it took elsewhere.
+      let giveBack = Number(hpDeltas[r.tokenDocId]);
+      let source = "true hit-point movement";
+      if (!Number.isFinite(giveBack)) {
+        giveBack = Number(r.totalFinal);
+        source = "card total (card predates the hpDelta fix)";
+      }
+      if (!Number.isFinite(giveBack) || giveBack <= 0) {
+        console.log(`${MODULE_ID} | UNDO: nothing was applied to ${actor.name} on this card — leaving its hit points alone.`);
+        continue;
+      }
+
+      const { currentHP, newHP } = await DamageApplicator.applyHPHeal(actor, giveBack, {
+        label: `UNDO save damage (${message.id})`,
+        correction: true,   // rewinding the ledger, not healing — nothing may block it
+      });
+      console.log(`${MODULE_ID} | UNDO on ${actor.name}: gave back ${giveBack} (${source}) — ${currentHP} → ${newHP}`);
+      undone++;
     }
+
+    // The card's damage is no longer on the table; clear the tally so a second
+    // UNDO (or a re-render) can't hand the same hit points back twice.
+    try { await message.update({ [`flags.${MODULE_ID}.hpDelta`]: {} }, { render: false }); }
+    catch (_) { /* best effort — the undone flag still gates the button */ }
+
+    console.log(`${MODULE_ID} | UNDO ALL (save): restored ${undone} target(s).`);
   }
 }

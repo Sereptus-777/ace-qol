@@ -6,6 +6,7 @@
 export const MODULE_ID = "ace-qol";
 
 import { QolSettings }       from "./settings.mjs";
+import { registerChatCardHandler, registerForeignChatCardHandler, sweepDrawnCards } from "./chat-render-utils.mjs";
 import { ExtendedEffects }   from "./extended-effects.mjs";
 import { AttackPipeline }    from "./attack-pipeline.mjs";
 import { HealPipeline }      from "./heal-pipeline.mjs";
@@ -83,11 +84,28 @@ import { WeaponMasteries }   from "./weapon-masteries.mjs";
 import { BladeCantrips }     from "./blade-cantrips.mjs";
 import { HolySymbol }        from "./holy-symbol.mjs";
 import { MovementTrail }     from "./movement-trail.mjs";
+import { ActionBar }         from "./action-bar.mjs";
 import { Banishment }        from "./banishment.mjs";
 import { ConditionRawHooks } from "./condition-raw-hooks.mjs";
 import { CombatContext } from "./combat-context.mjs";
 import { FeatEffects }       from "./feat-effects.mjs";
 import { SwordOfWounding }   from "./sword-of-wounding.mjs";
+// THE CLOCK — time outside combat. TheClock is the only thing in ACE that
+// advances world time; the other two feed it.
+import { TheClock }          from "./the-clock.mjs";
+import { MovementClock }     from "./movement-clock.mjs";
+import { ClockWiring }       from "./clock-wiring.mjs";
+import { FallPipeline }      from "./fall-pipeline.mjs";
+import { ProneArt }          from "./prone-art.mjs";
+import { ConditionGhostSweeper } from "./condition-ghost-sweeper.mjs";
+import { PlatformContract, checkContract } from "./platform-contract.mjs";
+import { UnknownScout } from "./unknown-scout.mjs";
+import { OneShotGrants } from "./one-shot-grants.mjs";
+import { CommandSpell } from "./command-spell.mjs";
+import { OnHitRiders } from "./on-hit-riders.mjs";
+import { BootReport } from "./boot-report.mjs";
+import { SunkenFloors } from "./sunken-floors.mjs";
+import { aceDistanceFt, aceWithinFt } from "./geometry-utils.mjs";
 
 // ─── Module state ────────────────────────────────────────────────────────────
 let extendedEffects      = null;
@@ -741,6 +759,27 @@ Hooks.on("preCreateActiveEffect", (effect, data, _options, _userId) => {
 // GM-only because the bug surfaces on the GM client (full action grid).
 Hooks.once("ready", () => {
   if (!game.user.isGM) return;
+
+  // ⚠️ 🔴 ONLY ARM THIS IF BG3 HUD IS ACTUALLY INSTALLED (2026-08-13).
+  //
+  // Wrapping `console.error` makes OUR file the call site of every error logged
+  // anywhere in the world. Johnny hit a Terrain Mapper crash and the trace read
+  // `ace-qol.mjs:827` at the top — so the obvious conclusion was that ACE broke
+  // his region, when the failure was entirely inside terrainmapper's
+  // BlockingWallsRegionBehaviorType. We were the reporter, not the cause, and
+  // nothing on screen said so.
+  //
+  // For a module people PAY for, that is worse than a cosmetic problem: it
+  // silently attributes every other module's bug to us, in the one place a user
+  // looks when something breaks. So the wrapper now exists only in worlds that
+  // actually run the HUD it heals — everywhere else console.error is left alone.
+  const BG3_IDS = ["bg3-inspired-hotbar", "bg3-hud-core", "bg3-hud-dnd5e"];
+  const bg3Active = BG3_IDS.some(id => game.modules.get(id)?.active);
+  if (!bg3Active) {
+    console.debug(`${MODULE_ID} | BG3 HUD not installed — leaving console.error untouched.`);
+    return;
+  }
+
   let _bg3HealActive = false;
   let _bg3HealActiveSince = 0;  // timestamp when flag was set — staleness check
   let _bg3HealQueued = null;
@@ -1330,6 +1369,15 @@ Hooks.once("ready", () => {
     console.error(`${MODULE_ID} | Movement Trail init failed:`, err);
   }
 
+  // Action Bar — the auto-filled action row above Foundry's macro hotbar.
+  // Replaces what Johnny kept from BG3 Inspired Hotbar after dropping it
+  // (2026-08-14): portrait, the selected creature's actions, end turn.
+  try {
+    ActionBar.register();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Action Bar init failed:`, err);
+  }
+
   // Banishment RAW visuals — on the Banished effect's lifecycle: hide the token
   // from players (GM still sees it), GM card, un-hide in place on spell end
   // (or leave it gone permanently if the full minute elapsed).
@@ -1521,8 +1569,8 @@ Hooks.once("ready", () => {
       concentrationWidget?._wireMovementDamageUndo?.(message, html);
     } catch (_) { /* non-fatal */ }
   };
-  Hooks.on("renderChatMessage", wireMovementUndo);
-  Hooks.on("renderChatMessageHTML", wireMovementUndo);
+  // + sweeps cards drawn before this registered — see chat-render-utils.
+  registerChatCardHandler(wireMovementUndo, "movement-undo cards");
 
   // Reaction engine — ALL users (players receive reaction prompts via socket)
   try {
@@ -1587,6 +1635,36 @@ Hooks.once("ready", () => {
   // Each registration guarded SEPARATELY — a failure in one must never
   // silently take the others down with it (2026-07-09 hardening).
   try { RulesBrain.selfCheck(); } catch (err) { console.error(`${MODULE_ID} | RulesBrain self-check failed:`, err); }
+  try { ConditionGhostSweeper.register(); } catch (err) { console.error(`${MODULE_ID} | ConditionGhostSweeper init failed:`, err); }
+  // Report any platform API that has been renamed out from under us BEFORE
+  // the features that call it start failing quietly. See platform-contract.mjs.
+  try { PlatformContract.register(); } catch (err) { console.error(`${MODULE_ID} | PlatformContract init failed:`, err); }
+  // Whisper the GM when a spell or feature ACE has never heard of gets used,
+  // with links to how the community libraries handled it. See unknown-scout.mjs.
+  try { UnknownScout.register(); } catch (err) { console.error(`${MODULE_ID} | UnknownScout init failed:`, err); }
+  // "The NEXT attack against this target has advantage" — spent after one
+  // attack roll, hit or miss. See one-shot-grants.mjs.
+  try { OneShotGrants.register(); } catch (err) { console.error(`${MODULE_ID} | OneShotGrants init failed:`, err); }
+  // Command: the RAW gates (undead / language), the announcement naming the
+  // WORD, and the reminder on the commanded creature's own turn.
+  try { CommandSpell.register(); } catch (err) { console.error(`${MODULE_ID} | CommandSpell init failed:`, err); }
+  // ⚠️ AFTER OneShotGrants, DELIBERATELY. Both listen to attackComplete;
+  // Foundry calls hooks in registration order, so spent grants are consumed
+  // BEFORE a new one is applied. See the header of on-hit-riders.mjs.
+  try { OnHitRiders.register(); } catch (err) { console.error(`${MODULE_ID} | OnHitRiders init failed:`, err); }
+  // ⚠️ LAST, DELIBERATELY. It reports on what the checks above found, so it
+  // must register after them. Tells the GM in CHAT whether ACE came up
+  // clean — nobody reads a console. See boot-report.mjs.
+  try { BootReport.register(); } catch (err) { console.error(`${MODULE_ID} | BootReport init failed:`, err); }
+  // Foundry draws the map background at elevation 0 and sorts the canvas by
+  // elevation, so anyone standing below ground renders UNDER the scenery.
+  // Push the background down. See sunken-floors.mjs.
+  try { SunkenFloors.register(); } catch (err) { console.error(`${MODULE_ID} | SunkenFloors init failed:`, err); }
+
+  try { ProneArt.register(); } catch (err) { console.error(`${MODULE_ID} | ProneArt init failed:`, err); }
+  try { ClockWiring.register(); } catch (err) { console.error(`${MODULE_ID} | ClockWiring init failed:`, err); }
+  try { MovementClock.register(); } catch (err) { console.error(`${MODULE_ID} | MovementClock init failed:`, err); }
+  try { TheClock.register(); } catch (err) { console.error(`${MODULE_ID} | TheClock init failed:`, err); }
   try { SpaceEffects.register(); } catch (err) { console.error(`${MODULE_ID} | SpaceEffects init failed:`, err); }
   try { ActionInterceptor.register(); } catch (err) { console.error(`${MODULE_ID} | ActionInterceptor init failed:`, err); }
   try { registerCoverageButton(); } catch (err) { console.error(`${MODULE_ID} | coverage toolbar button failed:`, err); }
@@ -2530,8 +2608,8 @@ Hooks.once("ready", () => {
         }
       });
     };
-    Hooks.on("renderChatMessage", _wireConcButton);
-    Hooks.on("renderChatMessageHTML", _wireConcButton);
+    // + sweeps cards drawn before this registered — see chat-render-utils.
+    registerChatCardHandler(_wireConcButton, "concentration cards");
 
     // 2. Suppress vanilla dnd5e concentration challenge card — we own this now.
     //    dnd5e doesn't fire a hook before posting the card; the actual escape
@@ -3522,8 +3600,8 @@ Hooks.once("ready", () => {
         console.error(`${MODULE_ID} | Loot card render hook failed:`, err);
       }
     };
-    Hooks.on("renderChatMessage", _wireLootCard);       // V12
-    Hooks.on("renderChatMessageHTML", _wireLootCard);   // V13
+    // + sweeps cards drawn before this registered — see chat-render-utils.
+    registerChatCardHandler(_wireLootCard, "loot cards");
 
     // Hook: detect items dragged to PC sheets (all users — tracks looting)
     Hooks.on("preCreateItem", async (item, data, context) => {
@@ -3798,6 +3876,7 @@ Hooks.once("ready", () => {
           [`flags.${MODULE_ID}.-=preDeathSnapshot`]:   null,
           [`flags.${MODULE_ID}.-=preDeathOwnership`]:  null,
           [`flags.${MODULE_ID}.-=lootSnapshot`]:       null,
+          [`flags.${MODULE_ID}.-=creatureType`]:       null,
           [`flags.${MODULE_ID}.-=deathArtPath`]:       null,
           [`flags.${MODULE_ID}.-=deathReason`]:        null,
           [`flags.${MODULE_ID}.-=diedAt`]:             null,
@@ -3935,6 +4014,7 @@ Hooks.once("ready", () => {
                 [`flags.${MODULE_ID}.-=originalName`]:       null,
                 [`flags.${MODULE_ID}.-=combatLocked`]:       null,
                 [`flags.${MODULE_ID}.-=lootSnapshot`]:       null,
+                [`flags.${MODULE_ID}.-=creatureType`]:       null,
                 [`flags.${MODULE_ID}.-=preDeathSnapshot`]:   null,
                 [`flags.${MODULE_ID}.-=preDeathOwnership`]:  null,
                 [`flags.${MODULE_ID}.-=deathArtPath`]:       null,
@@ -4025,7 +4105,9 @@ Hooks.once("ready", () => {
     }
 
     // Wire chat-card button + hide for non-GM
-    Hooks.on("renderChatMessageHTML", (msg, html /*, data*/) => {
+    // Both render hooks + a sweep of cards drawn before this registered.
+    // See chat-render-utils: the raw hooks leave old cards undecorated.
+    registerChatCardHandler((msg, html /*, data*/) => {
       try {
         const root = html instanceof HTMLElement ? html : html?.[0];
         if (!root) return;
@@ -4384,7 +4466,11 @@ Hooks.once("ready", () => {
           const casterActor = resolved?.actor ?? resolved;
           if (!item || !casterActor) throw new Error("could not resolve spell item or caster actor");
           console.log(`${MODULE_ID} | [picker-timing] resolved "${item?.name}" for ${casterActor?.name} — calling SpellTargetPicker.pick (building dialog)`);
-          const { SpellTargetPicker } = await import("/modules/ace-qol/scripts/spell-target-picker.mjs");
+          const { SpellTargetPicker } = // Relative on purpose — an absolute "/modules/…" path ignores any
+          // configured route prefix and 404s on prefixed deployments (audit
+          // 2026-08-07). Relative resolves against THIS module's URL, which
+          // already carries the prefix.
+          await import("./spell-target-picker.mjs");
           const picked = await SpellTargetPicker.pick({ spellItem: item, casterActor, maxTargets, rangeFt, allowSelf });
           const tokenIds = (picked ?? [])
             .map(a => a.getActiveTokens?.()?.[0]?.id ?? canvas.tokens?.placeables.find(t => t.actor?.id === a.id)?.id)
@@ -4436,6 +4522,14 @@ Hooks.once("ready", () => {
       //    cleanup deletes GM-owned summons/templates). Reconstruct the live
       //    activity from its uuid + grab the synced usage card, then run the
       //    same _onSpellCast the GM-cast path uses. ──
+      // A player did something that costs time. Only a GM can write world
+      // time, so they ask and we spend it — after TheClock verifies the sender.
+      if (payload.action === TheClock.SOCKET_ACTION) {
+        try { await TheClock.onSocket(payload); }
+        catch (err) { console.error(`${MODULE_ID} | TheClock socket failed:`, err); }
+        return;
+      }
+
       if (payload.action === "playerSpellCast") {
         try {
           const activity = payload.activityUuid ? await fromUuid(payload.activityUuid) : null;
@@ -4502,7 +4596,8 @@ Hooks.once("ready", () => {
       //    The player already fired the actual attack on their own client.
       if (payload.action === "oaResolve") {
         try {
-          const { OAPrompt } = await import("/modules/ace-qol/scripts/oa-prompt.mjs");
+          const { OAPrompt } = // Relative on purpose — see the route-prefix note above.
+          await import("./oa-prompt.mjs");
           await OAPrompt.resolveOAPrompt(payload.messageId, payload.status);
         } catch (err) {
           console.error(`${MODULE_ID} | oaResolve socket handler failed:`, err);
@@ -4768,6 +4863,44 @@ Hooks.once("ready", () => {
   // object keeps earlier registrations alive; keys defined here still win, so
   // nothing that worked before changes.
   game.aceQol = Object.assign(game.aceQol ?? {}, {
+    // THE CLOCK — the one place ACE advances world time. Exposed so the sibling
+    // modules (Forge, Engine) can charge for their own actions WITHOUT importing
+    // across module folders, which would hard-break them if qol were absent.
+    // Callers must treat it as optional: `game.aceQol?.clock?.spend?.(...)`.
+    // Dice So Nice, shared with the sibling modules so a Forge roll animates
+    // like a qol one. Optional-chained by callers — Forge must still work with
+    // ace-qol absent, it just rolls without the 3D dice.
+    dice: { show: safeShowForRoll, settle: (ms) => import("./dsn-utils.mjs").then(m => m.awaitDiceSettle(ms)) },
+    // ⚠️ EDGE-TO-EDGE, SIZE- AND ELEVATION-AWARE. ace-engine has been calling
+    // `game.aceQol.distanceFt` since it was written and silently falling back to
+    // centre-to-centre every single time, because nobody ever exposed it. That
+    // fallback is right for two Medium tokens and WRONG for anything Large or
+    // bigger, which reads as further away than it is.
+    distanceFt: (a, b, opts) => aceDistanceFt(a, b, opts),
+    withinFt:   (a, b, ft, opts) => aceWithinFt(a, b, ft, opts),
+    // ⚠️ SHARED SO THE SIBLINGS STOP LOSING BUTTONS. Foundry paints the chat log
+    // ONCE — a card already there when a render handler registers is decorated
+    // by nobody, forever, so its buttons are dead for anyone who refreshed
+    // mid-session. ace-qol fixed that on 2026-08-07; ace-engine still had the
+    // hole in 2026-08-12. The SWEEP is the half that matters — a module that
+    // already registers its own render hooks must not register them twice, so
+    // it takes this and nothing else. Pass your own module id as `namespace`.
+    // (See lesson_cards_drawn_before_the_handler_registered.md.)
+    sweepDrawnCards,
+    falling: FallPipeline,
+    proneArt: ProneArt,
+    ghosts: ConditionGhostSweeper,
+    scout: UnknownScout,
+    oneShot: OneShotGrants,
+    command: CommandSpell,
+    onHitRiders: OnHitRiders,
+    bootReport: BootReport,
+    sunkenFloors: SunkenFloors,
+    // Re-runnable on demand so a live test does not mean scrolling the log.
+    contract: { check: checkContract, report: () => PlatformContract.report() },
+    clock: TheClock,
+    movement: MovementClock,
+    harvest: (t) => ClockWiring.harvest(t ?? canvas.tokens?.controlled?.[0]?.document),
     VERSION: 1,
     MODULE_ID,
     auditItems,   // read-only item sanity audit — game.aceQol.auditItems()
@@ -4918,7 +5051,10 @@ Hooks.once("ready", () => {
   // ── Suppress "Bloodied" and other status effect chat cards ──
   // These come from modules like BLFS/DFreds and show "Bloodied - Applied to X" /
   // "Bloodied - Removed from X" messages. We hide them entirely — GM and players.
-  Hooks.on("renderChatMessage", (message, html) => {
+  // Foreign cards, so the sweep must NOT filter to ACE-flagged messages —
+  // those are exactly the ones this handler ignores. Before this, any
+  // status-effect card already in the log stayed visible all session.
+  registerForeignChatCardHandler((message, html) => {
     // Never touch our own messages
     if (message.flags?.[MODULE_ID]) return;
 
@@ -4948,7 +5084,8 @@ Hooks.once("ready", () => {
   // Only collapse messages that have dnd5e flags (system-generated cards).
   // Our ace-qol messages have MODULE_ID flags — they are NEVER touched.
   // This is flag-based detection only — no DOM selectors that could match our cards.
-  Hooks.on("renderChatMessage", (message, html) => {
+  // Foreign cards — same reasoning as the status-card handler above.
+  registerForeignChatCardHandler((message, html) => {
     // ONLY suppress messages with D&D 5e system flags — nothing else
     if (!message.flags?.dnd5e) return;
     // Exempt ONLY ACE's own CREATED cards — those carry a `.type` marker. A bare
@@ -5012,7 +5149,8 @@ Hooks.once("ready", () => {
   // ── Wire chevron toggle on our attack-result cards ──
   // Click the chevron in the card header to expand/collapse the embedded
   // item description + property tags.
-  Hooks.on("renderChatMessage", (message, html) => {
+  // Both hooks + sweep — see chat-render-utils.
+  registerChatCardHandler((message, html) => {
     if (message.flags?.[MODULE_ID]?.type !== "attackResult") return;
     const el = html instanceof HTMLElement ? html : html?.[0] ?? html;
     if (!el) return;
@@ -5071,8 +5209,9 @@ Hooks.once("ready", () => {
       if (flagged || looksStatus) { el.style.display = "none"; el.dataset.aceHidden = "1"; }
     } catch (_) { /* non-fatal */ }
   };
-  Hooks.on("renderChatMessage", _aceHideStatusCard);
-  Hooks.on("renderChatMessageHTML", _aceHideStatusCard);
+  // + sweeps cards drawn before this registered. Without it a status card
+  // that loaded before the handler stays visible forever. See chat-render-utils.
+  registerChatCardHandler(_aceHideStatusCard, "status cards");
 
   // (c) Wire the chevron toggle on OUR attack-result cards (was V12-only too, so
   //     the item-description expand/collapse was silently dead in V13).
@@ -5096,8 +5235,8 @@ Hooks.once("ready", () => {
       });
     } catch (_) { /* non-fatal */ }
   };
-  Hooks.on("renderChatMessage", _aceWireAttackChevron);
-  Hooks.on("renderChatMessageHTML", _aceWireAttackChevron);
+  // + sweeps cards drawn before this registered — see chat-render-utils.
+  registerChatCardHandler(_aceWireAttackChevron, "attack cards");
 
   // ── ACE skin: strip the "Place Measured Template" row from the cast/use dialog ──
   // The gold styling lives in ace-qol-overrides.css; this removes the template

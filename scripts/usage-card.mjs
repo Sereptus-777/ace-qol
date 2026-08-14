@@ -28,6 +28,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID }   from "./ace-qol.mjs";
+import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { QolSettings } from "./settings.mjs";
 
 export class UsageCard {
@@ -89,8 +90,10 @@ export class UsageCard {
         el.dataset.aceHidden = "1";
       } catch (_) { /* non-fatal */ }
     };
-    Hooks.on("renderChatMessageHTML", hideSystemCard);
-    Hooks.on("renderChatMessage", hideSystemCard);
+    // Both render hooks + a sweep of cards that were drawn before this
+    // registered. See chat-render-utils — the raw hooks leave those
+    // undecorated forever, which is how GM-only content reached a player.
+    registerChatCardHandler(hideSystemCard, "usage cards");
 
     // ── (4) Description chevron ──
     const wire = (message, html) => {
@@ -113,8 +116,10 @@ export class UsageCard {
         }
       });
     };
-    Hooks.on("renderChatMessageHTML", wire);
-    Hooks.on("renderChatMessage", wire);
+    // Both render hooks + a sweep of cards that were drawn before this
+    // registered. See chat-render-utils — the raw hooks leave those
+    // undecorated forever, which is how GM-only content reached a player.
+    registerChatCardHandler(wire, "usage cards");
 
     console.debug(`${MODULE_ID} | Usage Card online — dnd5e usage cards are never created; ACE cards every uncarded activity`);
   }

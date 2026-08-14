@@ -26,6 +26,7 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
+import { saveBonus } from "./rolldata-utils.mjs";
 
 export class ConditionRawHooks {
 
@@ -416,25 +417,39 @@ export class ConditionRawHooks {
       const saveAbility = "wis";
       const saveDC = ConditionRawHooks._effectSaveDC(effect) ?? 13;
 
-      // Build the save roll using dnd5e's own rollAbilitySave if available
-      // (so feats/bonuses/proficiency apply correctly). Fall back to a
-      // plain 1d20 + WIS-mod build if the API isn't present.
+      // Build the save roll through dnd5e's own roller so feats, bonuses and
+      // proficiency apply. Fall back to a plain 1d20 + WIS build if it fails.
+      //
+      // ⚠️ 2026-08-12 audit. The options here were the dnd5e **4.x** spelling:
+      // `fastForward` does not suppress the dialog in 5.x (`{configure:false}`
+      // in the SECOND argument does), and `chatMessage:false` in the config
+      // position does not suppress the card (`{create:false}` in the THIRD
+      // does). So every time a dominated creature took damage, a save dialog
+      // popped and dnd5e printed its own card beside ours.
       let total = 0;
       let formula = "";
       try {
-        const roll = await actor.rollSavingThrow?.({ ability: saveAbility, fastForward: true, chatMessage: false });
-        // dnd5e 5.x: rollSavingThrow returns a Roll[] in some versions,
-        // a single Roll in others — accept either shape.
+        const roll = await actor.rollSavingThrow(
+          { ability: saveAbility, target: saveDC },
+          { configure: false },
+          { create: false },
+        );
+        // dnd5e 5.x returns a Roll[]; older builds returned a single Roll.
         const r = Array.isArray(roll) ? roll[0] : roll;
         total = Number(r?.total ?? 0);
         formula = r?.formula ?? "";
-      } catch (_) { /* fall through */ }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Dominate re-save: system roller failed for ${actor?.name} — rolling manually.`, err);
+      }
 
       if (!total) {
-        const mod = Number(actor.system?.abilities?.[saveAbility]?.mod ?? 0);
-        const prof = Number(actor.system?.attributes?.prof ?? 0);
-        const profBonus = (actor.system?.abilities?.[saveAbility]?.proficient ?? 0) > 0 ? prof : 0;
-        const roll = await new Roll(`1d20 + ${mod} + ${profBonus}`).evaluate();
+        // The creature's real save bonus, resolved through the shared reader —
+        // in dnd5e 5.x the save value is an OBJECT, and interpolating it raw
+        // produced "1d20 + [object Object]" and an Unresolved StringTerm throw.
+        // This also beats rebuilding mod + proficiency by hand, which missed
+        // every bonus a feat or item contributes.
+        const bonus = saveBonus(actor?.getRollData?.() ?? {}, saveAbility);
+        const roll = await new Roll(`1d20 + ${bonus}`).evaluate();
         total = roll.total;
         formula = roll.formula;
       }

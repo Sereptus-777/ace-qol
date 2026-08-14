@@ -24,6 +24,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { registerChatCardHandler } from "./chat-render-utils.mjs";
 
 export class PcSaveNudge {
 
@@ -90,8 +91,10 @@ export class PcSaveNudge {
         }
       });
     };
-    Hooks.on("renderChatMessageHTML", onRender);
-    Hooks.on("renderChatMessage", onRender);
+    // Both render hooks + a sweep of cards that were drawn before this
+    // registered. See chat-render-utils — the raw hooks leave those
+    // undecorated forever, which is how GM-only content reached a player.
+    registerChatCardHandler(onRender, "save-nudge cards");
 
     console.debug(`${MODULE_ID} | PC save nudge online — every waiting save hands back to the GM after ${PcSaveNudge.DELAY_MS / 1000}s`);
   }

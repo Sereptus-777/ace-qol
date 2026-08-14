@@ -23,6 +23,7 @@
 // ============================================================================
 
 import { aceWithinFt } from "./geometry-utils.mjs";
+import { registerChatCardHandler } from "./chat-render-utils.mjs";
 
 const MODULE_ID = "ace-qol";
 const TAG       = `${MODULE_ID} | BladeCantrips`;
@@ -60,8 +61,10 @@ export class BladeCantrips {
         });
       });
     };
-    Hooks.on("renderChatMessage", _wireBladeCard);       // V12
-    Hooks.on("renderChatMessageHTML", _wireBladeCard);   // V13
+    // Both render hooks + a sweep of cards that were drawn before this
+    // registered. See chat-render-utils — the raw hooks leave those
+    // undecorated forever, which is how GM-only content reached a player.
+    registerChatCardHandler(_wireBladeCard, "blade-cantrip cards");
 
     // Booming Blade — auto-fire bonus thunder damage if the marked target
     // moves on its turn. updateToken fires on EVERY position change (drag,

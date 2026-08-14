@@ -393,9 +393,32 @@ export class ReactionEngine {
 
   _registerHooks() {
     // ── Reset reaction at the START of each combatant's turn ──
-    Hooks.on("combatTurn", (combat, updateData, opts) => {
+    //
+    // ⚠️ THIS USED TO LISTEN TO `combatTurn`, AND IT RESET THE WRONG CREATURE.
+    // Proven from Foundry V13's own source (client/documents/combat.mjs:291):
+    //
+    //     Hooks.callAll("combatTurn", this, updateData, updateOptions);
+    //     await this.update(updateData, updateOptions);
+    //
+    // The hook fires BEFORE the update lands, so `combat.current` still points
+    // at the combatant whose turn is ENDING. So every turn we cleared the
+    // reaction of the creature just finishing — who had already had their
+    // chance — while the creature actually starting its turn kept its spent
+    // flag. A creature that used a reaction before its own turn (opportunity
+    // attack, Shield, Counterspell, Absorb Elements) could not react again
+    // until the top of the NEXT round, when the combatRound sweep below
+    // happened to clear everyone. RAW: you get it back at the start of YOUR
+    // turn. Silently denied reactions, all fight.
+    //
+    // `combatTurnChange` fires from `_manageTurnEvents` AFTER the state has
+    // moved, and hands the new state in directly — the same hook, and the same
+    // reasoning, as the turn-end work elsewhere in the suite. It also fires no
+    // matter HOW the turn changed (clicking a combatant in the tracker, a
+    // module writing combat.turn), which the four nextTurn/previousTurn call
+    // sites never covered. (audit F-022, 2026-08-07)
+    Hooks.on("combatTurnChange", (combat, prior, current) => {
       if (game.users?.activeGM !== game.user) return;  // activeGM: reaction reset writes must only fire once
-      this._resetCurrentCombatantReaction(combat);
+      this._resetCurrentCombatantReaction(combat, current);
     });
 
     // ── Reset ALL combatants' reactions on round change ──
@@ -730,12 +753,22 @@ export class ReactionEngine {
   }
 
   /**
-   * Reset reaction for the current combatant at the start of their turn.
+   * Reset reaction for the combatant whose turn is STARTING.
+   *
+   * @param {Combat} combat
+   * @param {object} [current]  the turn state the hook handed us. Preferred over
+   *   reading `combat.current` — see the combatTurnChange registration above for
+   *   why reading it off the combat was resetting the wrong creature. Falls back
+   *   to `combat.current` only for a caller that has nothing better.
    */
-  async _resetCurrentCombatantReaction(combat) {
-    if (!combat?.current?.combatantId) return;
-    const combatant = combat.combatants.get(combat.current.combatantId);
-    const actor = combatant?.actor;
+  async _resetCurrentCombatantReaction(combat, current = null) {
+    const state = current ?? combat?.current;
+    const combatantId = state?.combatantId;
+    if (!combatantId) return;
+    const combatant = combat?.combatants?.get(combatantId);
+    // The TOKEN's actor, so one unlinked copy's reaction doesn't clear the
+    // shared sidebar actor's flag for every other copy of that creature.
+    const actor = combatant?.token?.actor ?? combatant?.actor;
     if (!actor) return;
 
     // Only reset if currently marked as used
@@ -1677,6 +1710,19 @@ export class ReactionEngine {
       // stops the LR prompt from popping when no save was ever called for.
       // (RAW: attacks never trigger LR either; those don't carry ability+dc.)
       if (!result.ability || !Number.isFinite(Number(result.dc))) {
+        modified.push(result);
+        continue;
+      }
+
+      // ── AND ONLY IF A DIE WAS ACTUALLY THROWN (2026-08-07) ──
+      // A caller can hand over a row for a creature whose save was REFUSED
+      // before the roll — dead, or immune to everything the power does (ACE's
+      // Gate). Those carry a failed-looking shape with no total, and the checks
+      // above wave them straight through: the GM gets "X failed a WIS save…
+      // Roll vs DC: null vs 17" and can burn a Legendary Resistance charge on a
+      // save that never happened. The save engine filters these out at source;
+      // this is the belt, so a future caller can't reintroduce it.
+      if (result.noRoll || result.pending || !Number.isFinite(Number(result.total))) {
         modified.push(result);
         continue;
       }

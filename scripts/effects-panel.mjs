@@ -728,12 +728,48 @@ export class EffectsPanel {
       row.addEventListener("contextmenu", async (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
+
+        // ⚠️ REMOVING A CONDITION IS THE GM'S CALL, NOT THE PLAYER'S (2026-08-14).
+        // This handler had no permission check at all, so any player who owned
+        // their token could right-click Prone — or Restrained, Frightened,
+        // Poisoned, anything — and clear it off themselves. Johnny found it and
+        // was blunt: "I don't think that's their job."
+        //
+        // He is right beyond the etiquette of it: every condition ACE applies is
+        // the OUTCOME of a resolved rule — a failed save, a fall, a grapple. Let
+        // the affected player delete it and the rules engine is no longer the
+        // authority on the state of the board, silently, with nothing logged.
+        //
+        // Players keep the panel and keep left-click for descriptions. They can
+        // see exactly what is on them; they just cannot be the one to take it off.
+        if (!game.user.isGM) {
+          ui.notifications?.info("Only the GM can remove a condition — ask them.");
+          return;
+        }
+
         const action = QolSettings.get("effectsPanelAction") ?? "disable";
         const verb = action === "delete" ? "Delete" : "Disable";
         const proceed = await this._confirm(`${verb} "${effect.name}"?`);
         if (!proceed) return;
         try {
-          if (action === "delete") await effect.delete();
+          // ⚠️ A CONDITION MUST BE DELETED, NEVER DISABLED. THIS WAS THE BUG.
+          // dnd5e gives conditions FIXED ids ("dnd5eprone000000"). Disabling one
+          // leaves the record in place while removing it from `actor.statuses`,
+          // so it is invisible everywhere AND permanently blocks re-application:
+          // `toggleStatusEffect` sees no prone, tries to create, collides on the
+          // fixed id, and RETURNS TRUE while doing nothing.
+          //
+          // Found 2026-08-12: Firaxis and Strahd each carried a disabled prone
+          // record. NOTHING could knock either of them down, by any route, and
+          // there was no symptom until a fall claimed "Lands prone" three times
+          // in a row on a creature that stayed standing.
+          //
+          // "Disable" remains valid for ordinary effects (a suspended buff),
+          // which is why the setting survives — it just must not apply to a
+          // status-bearing condition.
+          const isCondition = (effect.statuses?.size ?? 0) > 0
+            || /^dnd5e[a-z]+0*$/i.test(String(effect.id ?? ""));
+          if (action === "delete" || isCondition) await effect.delete();
           else await effect.update({ disabled: true });
         } catch (err) {
           console.warn(`${MODULE_ID} | Effects panel ${action} failed:`, err);

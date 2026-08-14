@@ -48,6 +48,45 @@ const _aceCached = (key, build) => {
   return p;
 };
 
+
+/**
+ * The proficiency bonus that is ACTUALLY in this attack roll.
+ *
+ * ⚠️ 🔴 NOT SIMPLY THE ACTOR'S PROFICIENCY. Found live 2026-08-13: Johnny swung
+ * a NON-proficient magic battleaxe and the card read
+ *
+ *     11  +5 STR  +1 PROF  +3 MAGIC  -1 BONUS  = 19
+ *
+ * dnd5e had rolled 11 + 5 + 3 = 19 with no proficiency at all. ACE printed a
+ * PROF chip the roll never contained, then quietly absorbed the difference into
+ * a "BONUS" chip so the arithmetic still added up. The total was right and the
+ * explanation was a lie — and the lie is worse, because the breakdown is the
+ * whole reason the card exists.
+ *
+ * ⚠️ AND IT SCALES WITH THE CHARACTER. At level 20 the same mistake reads
+ * "+6 PROF … -6 BONUS", which looks like a curse rather than a display bug.
+ *
+ * A spell attack is always proficient. A weapon is proficient only if the
+ * ITEM says so — `system.prof.hasProficiency` is dnd5e's own answer, and this
+ * very file already uses it further down to print a PROFICIENT tag.
+ */
+function _aceRealProfBonus(actor, item, actorProf) {
+  try {
+    const prof = Number(actorProf) || 0;
+    if (!item) return prof;
+    if (item.type === "spell") return prof;          // always proficient
+    const p = item.system?.prof;
+    if (p && typeof p === "object") {
+      if (!p.hasProficiency) return 0;
+      const flat = Number(p.flat);
+      return Number.isFinite(flat) ? flat : prof;
+    }
+    // Older/odd shapes: 0 means explicitly not proficient, null means "work it out".
+    if (item.system?.proficient === 0) return 0;
+    return prof;
+  } catch (_) { return Number(actorProf) || 0; }
+}
+
 /** The attacker's snapshot — ability mods, proficiency, conditions, gate. */
 function _aceAttackerProfile(actor, item = null, activity = null) {
   if (!actor) return null;
@@ -835,7 +874,7 @@ export class AttackPipeline {
     // sites, both reading raw actor data — one reader now serves both.
     const _atk = _aceAttackerProfile(actor, item, opts.subject);
     // (no ability MAP on the profile by design — ask it per ability)
-    const profBonus = _atk?.prof ?? 0;
+    const profBonus = _aceRealProfBonus(actor, item, _atk?.prof ?? 0);
     const activity = opts.subject; // AttackActivity from dnd5e.rollAttackV2 hook
 
     // activity.ability resolves: explicit override → spellcasting → availableAbilities
@@ -1110,7 +1149,7 @@ export class AttackPipeline {
     // Same profile-sourced numbers as the first site above.
     const _atk2 = _aceAttackerProfile(actor, item, opts.subject);
     // (no ability MAP on the profile by design — ask it per ability)
-    const profBonus = _atk2?.prof ?? 0;
+    const profBonus = _aceRealProfBonus(actor, item, _atk2?.prof ?? 0);
     const activity = opts.subject;
 
     let resolvedAbility2 = activity?.ability

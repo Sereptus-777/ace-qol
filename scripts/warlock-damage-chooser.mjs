@@ -16,7 +16,19 @@
 // Values: "weapon" (Pact only — keeps the weapon's natural type) | "necrotic" | "psychic" | "radiant"
 // ──────────────────────────────────────────────────────────────────────────────
 
-import { MODULE_ID } from "./ace-qol.mjs";
+// ⚠️ MODULE_ID IS DECLARED HERE, NOT IMPORTED FROM ace-qol.mjs.
+// This file used to import it and then use it at module level, on the line
+// below. That is a temporal-dead-zone landmine: the moment anyone adds a
+// STATIC import of this file to ace-qol.mjs, the two form a cycle, the imported
+// binding is not yet assigned while this file evaluates, and the top-level use
+// THROWS — aborting ace-qol.mjs itself and taking every feature registered
+// after it down with it. It only survived because this file is loaded by
+// dynamic `import()`.
+//
+// That exact crash happened on 2026-08-11 with prone-art.mjs: Johnny could not
+// select a single token, and the error surfaced in a completely unrelated file.
+// See lesson_one_throw_kills_every_registration_below.md.
+const MODULE_ID = "ace-qol";
 
 const FLAG_NS         = MODULE_ID;
 const PACT_BLADE_KEY  = "warlock.pactBladeType";

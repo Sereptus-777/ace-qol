@@ -39,6 +39,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { QolSettings } from "./settings.mjs";
 import { HealTargetPicker } from "./heal-target-picker.mjs";
 import { HealCardRenderer } from "./heal-card-renderer.mjs";
@@ -213,8 +214,10 @@ export class HealPipeline {
       if (el.dataset) el.dataset.aceqolHealWired = "1";
       HealCardRenderer.wireButtons(el, message, flags);
     };
-    Hooks.on("renderChatMessage",     wireRender);
-    Hooks.on("renderChatMessageHTML", wireRender);
+    // Both render hooks + a sweep of cards that were drawn before this
+    // registered. See chat-render-utils — the raw hooks leave those
+    // undecorated forever, which is how GM-only content reached a player.
+    registerChatCardHandler(wireRender, "healing cards");
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

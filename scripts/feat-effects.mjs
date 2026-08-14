@@ -27,6 +27,7 @@
 // ============================================================================
 
 import { CombatState } from "./combat-state.mjs";
+import { registerChatCardHandler } from "./chat-render-utils.mjs";
 
 const MODULE_ID = "ace-qol";
 const TAG       = `${MODULE_ID} | FeatEffects`;
@@ -62,8 +63,10 @@ export class FeatEffects {
         });
       });
     };
-    Hooks.on("renderChatMessage", _wireFeatCard);       // V12
-    Hooks.on("renderChatMessageHTML", _wireFeatCard);   // V13
+    // Both render hooks + a sweep of cards that were drawn before this
+    // registered. See chat-render-utils — the raw hooks leave those
+    // undecorated forever, which is how GM-only content reached a player.
+    registerChatCardHandler(_wireFeatCard, "feat cards");
     console.log(`${TAG} | Feat-effect handlers online (Polearm Master, Crusher, Slasher, Piercer).`);
   }
 

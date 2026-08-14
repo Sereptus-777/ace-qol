@@ -17,6 +17,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { CombatState } from "./combat-state.mjs";
 
 const GOLD = "#c9a76b";
@@ -38,8 +39,10 @@ export class HexDeathWatch {
         HexDeathWatch._wireMoveCard(message, html instanceof HTMLElement ? html : html?.[0]);
       } catch (_) { /* non-fatal */ }
     };
-    Hooks.on("renderChatMessage", wire);       // V12
-    Hooks.on("renderChatMessageHTML", wire);   // V13
+    // Both render hooks + a sweep of cards that were drawn before this
+    // registered. See chat-render-utils — the raw hooks leave those
+    // undecorated forever, which is how GM-only content reached a player.
+    registerChatCardHandler(wire, "hex cards");
 
     console.debug(`${MODULE_ID} | HexDeathWatch online — Hex moves, Hexblade's Curse heals, on target death`);
   }

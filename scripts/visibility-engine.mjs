@@ -13,6 +13,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { QolSettings } from "./settings.mjs";
 
 export class VisibilityEngine {
@@ -30,8 +31,10 @@ export class VisibilityEngine {
     // V13 hooks (V13 `renderChatMessageHTML` was missing → message-visibility
     // masking didn't run on V13).
     const _filter = (message, html) => VisibilityEngine.filterMessageContent(message, html);
-    Hooks.on("renderChatMessage", _filter);       // V12
-    Hooks.on("renderChatMessageHTML", _filter);   // V13
+    // Both render hooks + a sweep of cards that were drawn before this
+    // registered. See chat-render-utils — the raw hooks leave those
+    // undecorated forever, which is how GM-only content reached a player.
+    registerChatCardHandler(_filter, "visibility-masked cards");
 
     console.debug(`${MODULE_ID} | Visibility engine hooks registered`);
   }

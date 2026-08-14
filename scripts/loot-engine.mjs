@@ -3,8 +3,11 @@
 // Picks items based on CR tier, creature type, and rarity filters.
 // Posts draggable loot cards to GM chat.
 //
-// Self-contained — no imports from other ace-qol files to avoid circular deps.
+// Near-self-contained — the ONLY import is loot-framing.mjs, a leaf module
+// that imports nothing itself, so there is no cycle to create.
 // ──────────────────────────────────────────────────────────────────────────────
+
+import { lootFraming, readCreatureType } from "./loot-framing.mjs";
 
 const MODULE_ID = "ace-qol";
 const LOG_PREFIX = `${MODULE_ID} | Loot:`;
@@ -415,6 +418,7 @@ export class LootEngine {
         actorId:       src.actorId ?? null,
         actorName:     src.displayName ?? "Recovered Loot",
         actorImg:      src.actorImg ?? "icons/svg/skull.svg",
+        creatureType:  src.creatureType ?? "",
         items:         itemsArray,
         currency,
         currencySplit: false,
@@ -456,6 +460,10 @@ export class LootEngine {
     const actorId   = flags.actorId ?? "";
     const actorName = flags.actorName ?? "Unknown";
     const actorImg  = flags.actorImg ?? "icons/svg/skull.svg";
+    // Framing — a golem is salvaged, not looted. Falls back to the ordinary
+    // "Loot" wording whenever the type is absent, so cards posted before this
+    // shipped keep rendering exactly as they did. (2026-08-08)
+    const framing   = lootFraming(flags.creatureType ?? "");
     const items     = flags.items ?? [];
     const currency  = flags.currency ?? {};
     const hasCurrency = ((currency.pp ?? 0) + (currency.gp ?? 0) + (currency.ep ?? 0)
@@ -506,12 +514,18 @@ export class LootEngine {
     ctrlButtons.push(`<button class="ace-qol-loot-spawn-tile-btn" data-action="aceQolSpawnTile" title="Spawn a loot tile on the current scene from this card's contents — use if the original tile was deleted">Spawn Tile</button>`);
     const controlsHTML = `<div class="ace-qol-loot-controls">${ctrlButtons.join("")}</div>`;
 
+    const framingHTML = framing.note
+      ? `<div class="ace-qol-loot-framing" style="margin:4px 0 6px;padding:6px 9px;border-radius:4px;background:#191b22;border-left:3px solid #d4af37;color:#cfc4a8;font-size:13px;line-height:1.4;">${foundry.utils.escapeHTML(framing.note)}</div>`
+      : "";
+
     return `
 <div class="ace-qol-loot-card" data-actor-id="${actorId}">
   <div class="ace-qol-loot-header">
     <img src="${actorImg}" class="ace-qol-loot-portrait">
     <span class="ace-qol-loot-name">${foundry.utils.escapeHTML(actorName)}</span>
+    <span class="ace-qol-loot-verb" style="margin-left:auto;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#8c7a4b;">${foundry.utils.escapeHTML(framing.verb)}</span>
   </div>
+  ${framingHTML}
   ${currencyHTML}
   ${itemListHTML}
   ${controlsHTML}
@@ -614,6 +628,7 @@ export class LootEngine {
           rarity: item.system?.rarity ?? "common",
         })),
         actor: actor.name,
+        creatureType,
       };
 
       console.log(`${LOG_PREFIX} Loot generated for ${actor.name}:`,
@@ -651,6 +666,7 @@ export class LootEngine {
       const creatureName = lootData.actor ?? "Unknown";
       const goldAmount = lootData.gold ?? 0;
       const items = lootData.items ?? [];
+      const framing = lootFraming(lootData.creatureType ?? "");
 
       // ── Build item list HTML ──
       let itemListHTML = "";
@@ -666,9 +682,14 @@ export class LootEngine {
       }
 
       // ── Assemble the card ──
+      const framingHTML = framing.note
+        ? `<div class="ace-qol-loot-framing" style="margin:4px 0 6px;padding:6px 9px;border-radius:4px;background:#191b22;border-left:3px solid #d4af37;color:#cfc4a8;font-size:13px;line-height:1.4;">${foundry.utils.escapeHTML(framing.note)}</div>`
+        : "";
+
       const content = `
 <div class="ace-qol-loot-card">
-  <h3>\u{1FA99} Loot \u2014 ${creatureName}</h3>
+  <h3>\u{1FA99} ${framing.verb} \u2014 ${creatureName}</h3>
+  ${framingHTML}
   <p class="ace-qol-loot-gold">${goldAmount} gp</p>
   ${itemListHTML}
 </div>`.trim();
@@ -718,6 +739,10 @@ export class LootEngine {
       const actorId = actor.id;
       const actorName = actor.name ?? "Unknown Creature";
       const actorImg = actor.img ?? actor.prototypeToken?.texture?.src ?? "icons/svg/skull.svg";
+      // Read the type from the ACTOR while it still exists — for an unlinked
+      // token this synthetic copy is destroyed once the corpse settles.
+      const creatureType = options.creatureType ?? lootData?.creatureType ?? readCreatureType(actor);
+      const framing = lootFraming(creatureType);
 
       // ── Gather currency from the actor ──
       const curr = actor.system?.currency ?? {};
@@ -798,12 +823,18 @@ export class LootEngine {
       const controlsHTML = `<div class="ace-qol-loot-controls">${ctrlButtons.join("")}</div>`;
 
       // ── Assemble the full card ──
+      const framingHTML = framing.note
+        ? `<div class="ace-qol-loot-framing" style="margin:4px 0 6px;padding:6px 9px;border-radius:4px;background:#191b22;border-left:3px solid #d4af37;color:#cfc4a8;font-size:13px;line-height:1.4;">${foundry.utils.escapeHTML(framing.note)}</div>`
+        : "";
+
       const content = `
 <div class="ace-qol-loot-card" data-actor-id="${actorId}">
   <div class="ace-qol-loot-header">
     <img src="${actorImg}" class="ace-qol-loot-portrait">
     <span class="ace-qol-loot-name">${actorName}</span>
+    <span class="ace-qol-loot-verb" style="margin-left:auto;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#8c7a4b;">${foundry.utils.escapeHTML(framing.verb)}</span>
   </div>
+  ${framingHTML}
   ${currencyHTML}
   ${itemListHTML}
   ${controlsHTML}
@@ -819,6 +850,7 @@ export class LootEngine {
             actorId,
             actorName,
             actorImg,
+            creatureType,
             items:         itemsArray,
             currency,
             currencySplit: false,

@@ -1,7 +1,14 @@
 // ─── ACE: QOL — Flight Visuals ────────────────────────────────────────────────
-// Makes a flying creature LOOK airborne: a swirling whirlwind under the token,
-// an offset drop-shadow that hovers (the "float" read), and the token's actual
-// elevation set so rulers, vision and other modules agree.
+// Makes a flying creature LOOK airborne: an offset drop-shadow that pulls away
+// from the feet, a slight lift and a slow bob, and the token's actual elevation
+// set so rulers, vision and other modules agree.
+//
+// ⚠️ TWO THINGS THIS DELIBERATELY DOES NOT DO (both 2026-08-11):
+//   • It does NOT treat elevation as flight. A guard on a balcony is 30 ft up
+//     and standing on stone. Only the `flying` STATUS counts.
+//   • It does NOT put a whirlwind under an ordinary flier. A person under a Fly
+//     spell is not standing in a tornado. `_addWhirlwind` survives for things
+//     that really are a vortex; nothing calls it for plain flight.
 //
 // WHY OURS (Johnny 2026-07-27): he had this via the free "Flying Tokens"
 // module, which uninstalled itself along with Sequencer and JB2A. Rebuilding it
@@ -93,31 +100,66 @@ export class FlightVisuals {
         // to the GM meant nothing ran at all when Alex used the staff (live,
         // 2026-07-27). The using client is already the right single client, and
         // a player owns their own token so the elevation write is permitted.
-        const name = String(activity?.name ?? "").toLowerCase();
-        const actor = activity?.actor ?? activity?.item?.actor;
-        if (!actor || !name) return;
-        const token = actor.getActiveTokens?.(true)?.[0];
-        if (!token) return;
+        // ⚠️ READ THE ITEM'S NAME, NOT JUST THE ACTIVITY'S.
+        // A spell's activity is usually called "Cast" or "Utility" — casting
+        // the actual FLY spell produced an activity named nothing like "fly",
+        // so the match failed and the spell did nothing at all. The staff only
+        // worked because its activity happens to be called "Aerial Ascension".
+        // Johnny, 2026-08-11: "when you're using the spell, you can set the
+        // elevation, and it looks like it's hovering… the same for levitation."
+        const actName  = String(activity?.name ?? "").toLowerCase();
+        const itemName = String(activity?.item?.name ?? "").toLowerCase();
+        const name = `${actName} ${itemName}`.trim();
+        const caster = activity?.actor ?? activity?.item?.actor;
+        if (!caster || !name) return;
 
-        const isAscend  = /ascen|take\s*flight|\bfly\b|levitat|soar/.test(name);
-        const isDescend = /descen|land\b|touch\s*down|alight/.test(name);
+        // ⚠️ AN ATTACK IS NEVER A TAKEOFF. Without this, a flying snake's BITE
+        // matched on the word "Flying" and asked the snake how high it wanted
+        // to go. Creature names carry their movement mode; their attacks do not.
+        if (activity?.type === "attack") return;
+
+        const isAscend  = /ascen|take\s*flight|fly|flight|levitat|soar|hover/.test(name);
+        const isDescend = /descen|land|touch\s*down|alight/.test(name);
         if (!isAscend && !isDescend) return;
 
-        if (isDescend) { await FlightVisuals.descend(token); return; }
+        // ⚠️ THE SPELL LIFTS ITS TARGET, NOT ITS CASTER.
+        // Fly: "You touch a willing creature." Levitate: "One creature or
+        // object of your choice." A wizard casting Fly on the barbarian must
+        // put the BARBARIAN in the air. Fall back to the caster for
+        // self-targeted abilities like the staff's ascension.
+        const targets = [...(game.user?.targets ?? [])].filter(t => t?.document);
+        const subjects = targets.length
+          ? targets
+          : (caster.getActiveTokens?.(true) ?? []).slice(0, 1);
+        if (!subjects.length) return;
 
-        // Altitude cap from the ability's own text when it states one
-        // ("maximum altitude ... 30ft"), else uncapped.
-        let maxFt = null;
+        if (isDescend) {
+          for (const t of subjects) await FlightVisuals.descend(t);
+          return;
+        }
+
+        // How high this particular magic can lift you.
+        // Levitate is explicitly 20 ft in RAW, so it is capped whatever the
+        // item text says. Anything else takes a cap from its own description
+        // ("maximum altitude ... 30ft") and is otherwise uncapped.
+        let maxFt = /levitat/.test(name) ? 20 : null;
         try {
           const txt = String(activity.description?.chatFlavor ?? "")
                     + String(activity.item?.system?.description?.value ?? "");
           const m = txt.replace(/<[^>]*>/g, " ").match(/maximum altitude[^.]*?(\d+)\s*(?:ft|feet)/i);
-          if (m) maxFt = Number(m[1]);
+          if (m) maxFt = Math.min(maxFt ?? Infinity, Number(m[1]));
         } catch (_) { /* no cap declared */ }
 
-        const ft = await FlightVisuals.promptAltitude(token, { defaultFt: Math.min(15, maxFt ?? 15), maxFt });
-        if (!Number.isFinite(ft)) return;   // cancelled — they keep the charges spent, GM can refund
-        await FlightVisuals.ascend(token, ft);
+        // A storm item lifts you on a vortex; a spell just flies.
+        const vortex = FlightVisuals.isVortexSource(activity?.item);
+
+        for (const subject of subjects) {
+          const ft = await FlightVisuals.promptAltitude(subject, {
+            defaultFt: Math.min(15, maxFt ?? 15), maxFt,
+          });
+          if (!Number.isFinite(ft)) continue;   // cancelled for this one only
+          await FlightVisuals.ascend(subject, ft, { vortex });
+        }
       } catch (err) {
         console.warn(`${MODULE_ID} | flight activity wiring failed (non-fatal):`, err);
       }
@@ -129,11 +171,58 @@ export class FlightVisuals {
   /** Tokens we're currently decorating (client-local). */
   static _live = new Set();
 
+  /**
+   * Tokens whose flight is a STORM, not just flight.
+   *
+   * ⚠️ OPT-IN AND REMEMBERED. Johnny asked for the tornado back for the Staff of
+   * the Stormforger only — "I don't want it fucking around with the other code
+   * for elevations." So nothing infers it: an item must declare itself. It is
+   * held here rather than re-derived because `_applyVisuals` is called again on
+   * every elevation change and token redraw, and it has no idea what lifted the
+   * creature in the first place.
+   */
+  static _vortex = new Set();
+
+  /**
+   * Does this item lift its user on a storm?
+   * A flag wins; otherwise the name is enough for the obvious cases, so a GM's
+   * homebrew tempest staff works without any setup.
+   */
+  static isVortexSource(item) {
+    try {
+      const flag = item?.getFlag?.(MODULE_ID, "vortexFlight");
+      if (flag !== undefined) return !!flag;
+      return /stormforger|tempest|tornado|whirlwind|cyclone|storm/i.test(String(item?.name ?? ""));
+    } catch (_) { return false; }
+  }
+
+  /**
+   * Is this creature actually FLYING?
+   *
+   * ⚠️ ELEVATION IS NOT FLIGHT. This used to answer yes to anything above
+   * elevation 0, which meant a guard on a balcony, a sniper on a rooftop, an
+   * NPC at the top of a staircase or anyone on an upper floor was treated as
+   * airborne and got a whirlwind spinning under their feet.
+   *
+   * Johnny, 2026-08-11: "one of my guys is standing on a balcony 30 ft up above
+   * the party… that should only be for a spell, like flying."
+   *
+   * Height is a position in space. Flight is a STATE, and 5e already has a
+   * status for it. Only the status counts — set by the Fly spell, Levitate, a
+   * griffon's wings, or our own ascend(). Nothing infers it from geometry.
+   */
   static isFlying(token) {
     try {
-      return !!(token?.actor?.statuses?.has?.("flying")
-        || Number(token?.document?.elevation ?? 0) > 0);
+      return !!token?.actor?.statuses?.has?.("flying");
     } catch (_) { return false; }
+  }
+
+  /**
+   * Where the creature is, regardless of how it got there. Kept separate so no
+   * future caller is tempted to reach for isFlying() when it means "is up high".
+   */
+  static elevationFt(token) {
+    return Number(token?.document?.elevation ?? 0) || 0;
   }
 
   /**
@@ -141,13 +230,20 @@ export class FlightVisuals {
    * @param {Token}  token
    * @param {number} [feet] — omitted → ask (default 15)
    */
-  static async ascend(token, feet = null) {
+  static async ascend(token, feet = null, { vortex = false } = {}) {
     try {
       if (!token?.document) return;
+      if (vortex) FlightVisuals._vortex.add(token.id);
       let ft = Number(feet);
       if (!Number.isFinite(ft)) ft = await FlightVisuals.promptAltitude(token);
       if (!Number.isFinite(ft)) return;               // cancelled
       await token.document.update({ elevation: ft });
+      // ⚠️ FLYING IS A STATE, SO SET IT. `isFlying` now reads only the status
+      // (elevation alone is a balcony, not flight), which means ascending
+      // without stamping it would leave the creature looking airborne while
+      // every rule that asks "is this thing flying?" said no — and the visuals
+      // would drop off at the next elevation change.
+      await FlightVisuals._setFlyingStatus(token, true);
       FlightVisuals._applyVisuals(token);
       console.log(`${MODULE_ID} | ${token.name} ascends to ${ft} ft`);
     } catch (err) {
@@ -160,10 +256,29 @@ export class FlightVisuals {
     try {
       if (!token?.document) return;
       await token.document.update({ elevation: 0 });
+      FlightVisuals._vortex.delete(token.id);
+      await FlightVisuals._setFlyingStatus(token, false);
       FlightVisuals._removeVisuals(token);
       console.log(`${MODULE_ID} | ${token.name} descends safely to the ground`);
     } catch (err) {
       console.warn(`${MODULE_ID} | descend failed:`, err);
+    }
+  }
+
+  /**
+   * Turn the `flying` status on or off, quietly.
+   * Best-effort: a creature that is already flying (a griffon, a Fly spell
+   * already running) must not have its existing effect disturbed.
+   */
+  static async _setFlyingStatus(token, on) {
+    try {
+      const actor = token?.actor;
+      if (!actor?.toggleStatusEffect) return;
+      const has = !!actor.statuses?.has?.("flying");
+      if (has === !!on) return;                 // already in the right state
+      await actor.toggleStatusEffect("flying", { active: !!on });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not ${on ? "set" : "clear"} the flying status (visuals still applied):`, err);
     }
   }
 
@@ -211,7 +326,17 @@ export class FlightVisuals {
     try {
       FlightVisuals._live.add(token.id);
       FlightVisuals._addHoverShadow(token);
-      FlightVisuals._addWhirlwind(token);
+      FlightVisuals._addAltitudeScale(token);
+      // Only for flight that IS a storm — see `_vortex`.
+      if (FlightVisuals._vortex.has(token.id)) FlightVisuals._addWhirlwind(token);
+
+      // ⚠️ NO WHIRLWIND BY DEFAULT. Johnny, 2026-08-11: "I think maybe that's a
+      // little bit too much anyways, that whirlwind underneath, even if they're
+      // flying." He is right — a person under a Fly spell is not standing in a
+      // tornado. The read we want is the SHADOW pulling away from the feet and
+      // a slight lift, which is how the eye judges height.
+      // `_addWhirlwind` is kept and exposed for things that genuinely ARE a
+      // vortex (a djinni, an actual Whirlwind), just not for ordinary flight.
     } catch (err) {
       console.warn(`${MODULE_ID} | flight visuals apply failed (non-fatal):`, err);
     }
@@ -221,7 +346,13 @@ export class FlightVisuals {
     FlightVisuals._live.delete(token.id);
     // TMFX filter
     try {
-      if (globalThis.TokenMagic?.deleteFilters) TokenMagic.deleteFilters(token, TMFX_ID);
+      if (globalThis.TokenMagic?.deleteFilters) {
+        TokenMagic.deleteFilters(token, TMFX_ID);
+        // ⚠️ The lift filter is a SECOND filter id. Deleting only the shadow
+        // would leave a token permanently 12% oversized and gently bobbing
+        // after it lands.
+        TokenMagic.deleteFilters(token, `${TMFX_ID}-lift`);
+      }
     } catch (_) { /* TMFX absent or already clean */ }
     // Sequencer whirlwind
     try {
@@ -269,7 +400,38 @@ export class FlightVisuals {
     }
   }
 
-  /** Swirling wind beneath the token, looping until they land. */
+  /**
+   * A touch bigger the higher you go — the oldest depth cue there is.
+   * Deliberately small: 30 ft of altitude is about 6% larger, enough for the
+   * eye to read "up there" without the token looking like a different creature.
+   */
+  static _addAltitudeScale(token) {
+    try {
+      if (!globalThis.TokenMagic?.addUpdateFilters) return;
+      const elev = Math.max(0, Number(token.document?.elevation ?? 0));
+      if (elev <= 0) return;
+      const scale = 1 + Math.min(0.12, elev * 0.002);   // caps at +12%
+      TokenMagic.addUpdateFilters(token, [{
+        filterType: "transform",
+        filterId:   `${TMFX_ID}-lift`,
+        scaleX: scale, scaleY: scale,
+        animated: {
+          translationY: {
+            active: true, loopDuration: 3200, animType: "sinOscillation",
+            val1: -0.012, val2: 0.012,        // a slow, shallow bob
+          },
+        },
+      }]);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | altitude scale failed (non-fatal):`, err);
+    }
+  }
+
+  /**
+   * Swirling wind beneath the token, looping until they land.
+   * ⚠️ NOT part of ordinary flight any more — see `_applyVisuals`. Call it
+   * deliberately for creatures that really are a vortex.
+   */
   static _addWhirlwind(token) {
     try {
       const Seq = globalThis.Sequence;
