@@ -85,6 +85,7 @@ import { BladeCantrips }     from "./blade-cantrips.mjs";
 import { HolySymbol }        from "./holy-symbol.mjs";
 import { MovementTrail }     from "./movement-trail.mjs";
 import { ActionBar }         from "./action-bar.mjs";
+import { Intent }            from "./intent-reader.mjs";
 import { Banishment }        from "./banishment.mjs";
 import { ConditionRawHooks } from "./condition-raw-hooks.mjs";
 import { CombatContext } from "./combat-context.mjs";
@@ -4888,6 +4889,9 @@ Hooks.once("ready", () => {
     // (See lesson_cards_drawn_before_the_handler_registered.md.)
     sweepDrawnCards,
     falling: FallPipeline,
+    // The Intent Reader — one read of a pressed button, consumed by every
+    // downstream layer so they can never disagree. See intent-reader.mjs.
+    intent: Intent,
     proneArt: ProneArt,
     ghosts: ConditionGhostSweeper,
     scout: UnknownScout,

@@ -1095,7 +1095,34 @@ export class SaveEngine {
         a = game.scenes.get(tgt.sceneId)?.tokens?.get(tgt.tokenDocId)?.actor ?? null;
       }
       if (!a) return false;
-      return game.users?.some(u => u.active && !u.isGM && a.testUserPermission?.(u, "OWNER")) ?? false;
+
+      // ⚠️ "SOMEBODY MAY TOUCH THIS" IS NOT "SOMEBODY IS RESPONSIBLE FOR THIS".
+      //
+      // This asked `testUserPermission(u, "OWNER")`, which — as ownerUserIds
+      // documents a few lines up — HONOURS THE DEFAULT OWNERSHIP LEVEL. So an
+      // actor whose default is Owner is "owned" by every connected player at
+      // once, none of whom is that character's player. The engine then waited
+      // for a human who was never going to answer.
+      //
+      // Johnny hit this within an hour of my telling him to set the shared test
+      // dummy's default to Owner (2026-08-14): Fireball sat waiting on Hammer,
+      // who has no player at all, and on Firaxis, whose player was offline.
+      // Fixing the permission created the bug — the check was always this
+      // fragile, it just had not been provoked.
+      //
+      // Waiting is only correct when a SPECIFIC person is expected to roll:
+      // their assigned character, or an EXPLICIT per-user grant. A blanket
+      // default is a convenience for the table, not a promise that anyone is
+      // sitting behind that sheet. Whispering still uses the broad answer —
+      // showing the card to everyone who can see it is right; blocking on them
+      // is not.
+      const OWNER = CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER;
+      return game.users?.some(u => {
+        if (!u.active || u.isGM) return false;
+        if (u.character?.id === a.id) return true;              // it is their character
+        const explicit = a.ownership?.[u.id];                   // NOT `default`
+        return Number.isFinite(explicit) && explicit >= OWNER;
+      }) ?? false;
     } catch (_) { return false; }
   }
 
