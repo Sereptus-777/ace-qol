@@ -77,10 +77,21 @@ export class ActionBar {
         if (item.system?.equipped === false) continue;
 
         // Prepared-spell respect: an unprepared spell is not castable at will.
+        //
+        // ⚠️ `system.preparation` IS DEPRECATED — dnd5e 5.1 split it into
+        // `system.method` and `system.prepared`, and it disappears in 6.0.
+        // Reading the old shape did not just risk a future break: every access
+        // logged a compatibility warning, and this runs for EVERY spell on
+        // EVERY re-render. On a caster carrying a full spell list that is
+        // hundreds of stack-trace writes per redraw, which is exactly the
+        // "super glitchy, everything's all fucked up when I move the map"
+        // Johnny reported (2026-08-14). A deprecation notice is cheap once and
+        // ruinous in a render loop.
         if (item.type === "spell") {
-          const prep = item.system?.preparation?.mode;
-          const prepared = item.system?.preparation?.prepared;
-          const alwaysReady = ["always", "atwill", "innate", "pact"].includes(prep);
+          const sys = item.system ?? {};
+          const method = sys.method ?? sys.preparation?.mode;         // 5.1+ first
+          const prepared = sys.prepared ?? sys.preparation?.prepared;
+          const alwaysReady = ["always", "atwill", "innate", "pact", "ritual"].includes(method);
           if (!alwaysReady && prepared === false) continue;
           spells.push(item);
           continue;
