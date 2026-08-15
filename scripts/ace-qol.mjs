@@ -508,6 +508,22 @@ Hooks.once("ready", () => {
 
 // for the player.
 Hooks.once("ready", () => {
+  // ⚠️ GATE THIS ON BG3 ACTUALLY BEING INSTALLED (2026-08-15 audit).
+  // This whole routine exists ONLY to force BG3 Inspired Hotbar to redraw its
+  // portrait and action bar, by deselecting and reselecting the controlled
+  // token on world load. Johnny disabled BG3 on 2026-08-14 — so on every load
+  // since, ACE has been quietly fiddling with his token selection to fix a
+  // module that is not there. The console-error filter beside it was already
+  // gated; this one was missed.
+  //
+  // Harmless-looking, but it changes selection state behind the GM's back at
+  // the exact moment a session starts, and it would be a genuinely confusing
+  // thing to debug for any user who never had BG3 in the first place.
+  const BG3_IDS = ["bg3-inspired-hotbar", "bg3-hud-core", "bg3-hud-dnd5e"];
+  if (!BG3_IDS.some(id => game.modules.get(id)?.active)) {
+    console.debug(`${MODULE_ID} | BG3 HUD not active — skipping the selection nudge.`);
+    return;
+  }
   setTimeout(() => {
     try {
       const controlled = canvas?.tokens?.controlled ?? [];
