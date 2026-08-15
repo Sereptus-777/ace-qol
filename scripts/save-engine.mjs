@@ -474,9 +474,42 @@ export class SaveEngine {
    * @param {MeasuredTemplateDocument} templateDoc
    * @returns {Token[]} array of Token placeables inside the template
    */
+  /**
+   * Wait until Foundry has actually computed the template's shape.
+   *
+   * ⚠️ THE SHAPE DOES NOT EXIST WHEN THE TEMPLATE IS CREATED (proven 2026-08-15).
+   * Measured live on Johnny's scene: at the `createMeasuredTemplate` hook the
+   * placeable exists but `shape` is null, and it is STILL null immediately after
+   * the create resolves. It appears around 60ms later, once the placeable draws.
+   *
+   * `_getTokensInTemplate` returned an empty array for a missing shape, and the
+   * caller read that as "nobody is standing in the cone" — so a Green Dragon
+   * breath weapon aimed straight at a target logged "0 tokens in area — skipping
+   * save card" and no save was ever rolled. Nothing errored. The geometry was
+   * correct all along; we asked before the answer existed.
+   *
+   * @returns {Promise<boolean>} true once the shape is available
+   */
+  static async _awaitTemplateShape(templateDoc, maxMs = 600) {
+    const step = 25;
+    for (let waited = 0; waited <= maxMs; waited += step) {
+      if (templateDoc?.object?.shape) return true;
+      await new Promise(r => setTimeout(r, step));
+    }
+    return !!templateDoc?.object?.shape;
+  }
+
   static _getTokensInTemplate(templateDoc) {
     const templateObject = templateDoc.object;
-    if (!templateObject?.shape) return [];
+    if (!templateObject?.shape) {
+      // ⚠️ NEVER SILENT, AND NEVER THE SAME ANSWER AS "NOBODY IS THERE".
+      // An empty array here used to be indistinguishable from a genuinely empty
+      // area. Callers must await _awaitTemplateShape first; if this still fires,
+      // something is wrong with the placeable, not with the battlefield.
+      console.warn(`${MODULE_ID} | _getTokensInTemplate: template ${templateDoc?.id} has NO SHAPE yet — ` +
+        `this is not "no targets", it is "cannot tell". The caller should have awaited SaveEngine._awaitTemplateShape.`);
+      return [];
+    }
 
     const shape = templateObject.shape;
     const templateX = templateDoc.x;
@@ -1339,6 +1372,18 @@ export class SaveEngine {
     // ── Fallback: template geometry if GM had nothing targeted ──
     if (!tokens.length) {
       try {
+        // ⚠️ WAIT FOR THE SHAPE FIRST. It does not exist yet at this point in the
+        // lifecycle — see _awaitTemplateShape. Measuring immediately returns an
+        // empty array that reads exactly like an empty battlefield, which is how
+        // a cone aimed at a target produced "0 tokens in area — skipping save
+        // card" (2026-08-15).
+        const ready = await SaveEngine._awaitTemplateShape(templateDoc);
+        if (!ready) {
+          console.error(`${MODULE_ID} | template ${templateDoc?.id} never produced a shape — ` +
+            `cannot determine who is in the area. No save card; this is a FAILURE, not an empty area.`);
+          ui.notifications?.warn("ACE QOL: could not read the spell area — nobody was rolled for. See the console.");
+          return;
+        }
         tokens = SaveEngine._getTokensInTemplate(templateDoc);
         console.log(`${MODULE_ID} | _getTokensInTemplate found ${tokens.length} tokens:`, tokens.map(t => t.name));
       } catch (err) {
