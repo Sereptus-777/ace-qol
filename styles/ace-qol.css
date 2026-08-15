@@ -5653,3 +5653,13 @@
 }
 .ace-qol-ab-endturn i { font-size: 15px; }
 .ace-qol-ab-endturn:hover { background: linear-gradient(180deg, #d4af37 0%, #a8871f 100%); color: #1a1a1a; }
+
+/* ⚠️ GM CONTROL ROWS WRAP BY GROUP, NEVER CLIP (2026-08-15).
+   Both lines already declare flex-wrap, but a child that is itself too wide
+   would still spill past the chat log's edge. Marking each child nowrap means
+   a group like "HP: 163 → 154/163" moves to the next line INTACT rather than
+   being cut in half — which is what Johnny asked for: give each calculation its
+   own row and bump the next one down, never shrink it to fit. */
+.ace-qol-dmg-gm-controls { min-width: 0; }
+.ace-qol-dmg-hp-line, .ace-qol-dmg-ovr-line { max-width: 100%; }
+.ace-qol-dmg-hp-line > *, .ace-qol-dmg-ovr-line > * { white-space: nowrap; }

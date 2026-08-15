@@ -484,18 +484,26 @@ export class MergeCard {
             ${isCrit ? '<span class="ace-qol-dmg-crit-badge">CRIT</span>' : ""}
           </div>
           ${compLines ? `<div class="ace-qol-dmg-type-breakdown">${compLines}</div>` : ""}
+          <!-- ⚠️ TWO BUILDERS, ONE LAYOUT — FIX BOTH OR FIX NEITHER (2026-08-15).
+               damage-card-renderer.mjs was reordered on 08-14 so the multipliers
+               and the damage share the top line and HP sits underneath, because
+               HP is the longest item and was running off the right edge of the
+               chat log. THIS builder produces the merged save-results card and
+               was left on the old layout, so Johnny watched "HP: 10…" disappear
+               past the edge on a card he had already been told was fixed.
+               Grep for the CLASS NAMES, not the file you happen to be in. -->
           <div class="ace-qol-dmg-gm-controls">
-            <div class="ace-qol-dmg-hp-line">
-              <span class="ace-qol-dmg-row-dmg">${totalFinal}<span class="ace-qol-dmg-unit">DMG</span></span>
-              ${isDead ? '<span class="ace-qol-dmg-skull">&#9760;</span>' : ''}
-              <span class="ace-qol-dmg-row-hp">HP: <span class="ace-qol-hp-cur">${currentHP}</span> &rarr; <span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span><span class="ace-qol-hp-max">/${maxHP}</span></span>
-            </div>
             <div class="ace-qol-dmg-ovr-line">
               <button class="ace-qol-dmg-ovr-x" data-action="aceQolDmgRemove" data-token-doc-id="${tokenDocId}">&times;</button>
               <button class="ace-qol-dmg-ovr${_a(0.25)}" data-action="aceQolDmgOverride" data-token-doc-id="${tokenDocId}" data-multiplier="0.25">&frac14;</button>
               <button class="ace-qol-dmg-ovr${_a(0.5)}" data-action="aceQolDmgOverride" data-token-doc-id="${tokenDocId}" data-multiplier="0.5">&frac12;</button>
               <button class="ace-qol-dmg-ovr${_a(1)}" data-action="aceQolDmgOverride" data-token-doc-id="${tokenDocId}" data-multiplier="1">1</button>
               <button class="ace-qol-dmg-ovr${_a(2)}" data-action="aceQolDmgOverride" data-token-doc-id="${tokenDocId}" data-multiplier="2">2</button>
+              <span class="ace-qol-dmg-row-dmg">${totalFinal}<span class="ace-qol-dmg-unit">DMG</span></span>
+              ${isDead ? '<span class="ace-qol-dmg-skull">&#9760;</span>' : ''}
+            </div>
+            <div class="ace-qol-dmg-hp-line">
+              <span class="ace-qol-dmg-row-hp">HP: <span class="ace-qol-hp-cur">${currentHP}</span> &rarr; <span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span><span class="ace-qol-hp-max">/${maxHP}</span></span>
             </div>
           </div>
         </div>
