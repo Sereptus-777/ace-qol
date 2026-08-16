@@ -1334,6 +1334,60 @@ export class SaveEngine {
   //  Template Created — Resolve Pending Save Spell
   // ═══════════════════════════════════════════════════════════════════════════
 
+  /**
+   * Rebuild the pending-save payload from a template's own origin flag.
+   *
+   * ⚠️ MIRRORS THE postCreateUsageMessage EXTRACTION EXACTLY — same Set
+   * handling for the save ability, same DC fallback to the caster's spell DC,
+   * same activity-not-item damage read. If that extraction changes, change
+   * this with it. Returns null for anything that is not a save activity, and
+   * for hand-drawn templates, which carry no origin flag.
+   */
+  _pendingFromTemplate(templateDoc) {
+    try {
+      const originUuid = templateDoc?.flags?.dnd5e?.origin;
+      if (!originUuid) return null;
+      const activity = fromUuidSync(originUuid);
+      if (!activity || activity.type !== "save") return null;
+      const item = activity.item ?? activity.parent?.parent ?? null;
+      const actor = item?.actor ?? null;
+      if (!item || !actor) return null;
+
+      const save = activity.save ?? {};
+      const saveAbility = (save.ability instanceof Set || save.ability instanceof Array)
+        ? [...save.ability][0]
+        : (typeof save.ability === "string" ? save.ability : String(save.ability ?? ""));
+      if (!saveAbility) return null;
+
+      let saveDC = save.dc?.value ?? save.dc ?? 0;
+      if (!(Number(saveDC) > 0)) {
+        const sysDC = Situation.readCreature(actor)?.spellDC || null;
+        saveDC = Number(sysDC) > 0 ? Number(sysDC) : 10;
+      }
+
+      let spellLevel = null;
+      try {
+        if (item.type === "spell" && Number.isFinite(Number(item.system?.level))) {
+          spellLevel = Number(item.system.level);
+        }
+      } catch (_) { /* non-fatal */ }
+
+      return {
+        activity, item, actor,
+        saveAbility, saveDC,
+        halfOnSave: this._detectHalfDamage(item, activity),
+        damageTypes: CombatState._getItemDamageTypes(item, activity),
+        isSpell: item.type === "spell",
+        timing: getSpellTiming(item),
+        activityId: activity.id,
+        spellLevel,
+      };
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not rebuild a pending save from template ${templateDoc?.id}:`, err);
+      return null;
+    }
+  }
+
   async _onTemplateCreated(templateDoc) {
     console.log(`${MODULE_ID} | _onTemplateCreated fired, pending save:`, !!this._pendingSaveSpell, "pending movement-damage:", !!this._pendingMovementDamageSpell);
 
@@ -1360,10 +1414,37 @@ export class SaveEngine {
       return;
     }
 
-    if (!this._pendingSaveSpell) return;
-
-    const pending = this._pendingSaveSpell;
+    // ⚠️ THE PENDING SAVE LIVES ON ONE CLIENT; THE TEMPLATE IS PROCESSED ON
+    // ANOTHER. Split-brain, proven live 2026-08-15.
+    //
+    // `_pendingSaveSpell` is set by dnd5e's postCreateUsageMessage hook, which
+    // fires ONLY on the client that performed the cast. This handler runs ONLY
+    // on the activeGM's client. With one GM connected those are the same
+    // machine and everything works — which is why every solo test passed. The
+    // moment a second GM is connected (Johnny's idle session left open in his
+    // room, or my tester account), Foundry may crown the OTHER client
+    // activeGM: the caster's client holds the pending and is not allowed to
+    // process; the activeGM's client processes and finds pending = null; this
+    // line returned silently and the whole cast produced nothing. No save
+    // card, no targets, and the template never deleted. Same disease as the
+    // Ground Level two-writer bug, inverted: state on one client, authority on
+    // another.
+    //
+    // The fix is to stop carrying state between hooks at all when we can help
+    // it: dnd5e stamps the originating ACTIVITY's UUID on every template it
+    // places (flags.dnd5e.origin). Whichever client processes the template can
+    // rebuild everything from that — same item, same activity, same extraction
+    // code as the usage-message path. A hand-drawn GM template has no origin
+    // flag and is correctly ignored.
+    let pending = this._pendingSaveSpell;
     this._pendingSaveSpell = null; // consume it
+    if (!pending) {
+      pending = this._pendingFromTemplate(templateDoc);
+      if (pending) {
+        console.log(`${MODULE_ID} | pending save rebuilt from the template's own origin flag (cast happened on another client).`);
+      }
+    }
+    if (!pending) return;
 
     // ── Primary: use game.user.targets (GM already targeted who they want) ──
     let tokens = [...game.user.targets];
@@ -1425,6 +1506,16 @@ export class SaveEngine {
       // widget never tracked persistent spells with empty initial areas.
       if (!tokens.length) {
         console.warn(`${MODULE_ID} | Instant ${item.name}: 0 tokens in area — skipping save card`);
+        // ⚠️ DELETE THE TEMPLATE ANYWAY (2026-08-15). Auto-delete only ran
+        // downstream of a POSTED card, so every skipped cast leaked its
+        // template onto the scene — with template visuals hidden, as an
+        // invisible one the GM cannot even see to clean up. An empty area
+        // still consumes the template: the spell happened, it just hit nobody.
+        await this._deleteInstantTemplate({
+          timingType: timing?.timing ?? TIMING.INSTANT,
+          templateDocId: templateDoc.id,
+          templateSceneId: templateDoc.parent?.id ?? canvas.scene?.id,
+        });
         return;
       }
       console.log(`${MODULE_ID} | Posting instant save card for ${item.name} → ${tokens.length} targets`);
