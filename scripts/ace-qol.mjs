@@ -2758,7 +2758,11 @@ Hooks.once("ready", () => {
   // produces "Failed data preparation ... Cannot read properties of null
   // (reading 'effects')" errors every prepareData cycle. Sweep once on ready,
   // unset anything that isn't a valid UUID string. Idempotent.
-  Hooks.once("ready", async () => {
+  // ⚠️ WAS Hooks.once("ready") REGISTERED FROM INSIDE THE READY HANDLER
+  // (this file's own, L1186–L5797) — an event already in progress, so it NEVER
+  // fired and this cleanup NEVER ran, while its comment claimed otherwise.
+  // Third instance of the 08-12 class, found in the 08-16 full audit.
+  const _runDependentOnCleanup = async () => {
     if (!game.user.isGM) return;
     try {
       let fixedCount = 0;
@@ -2797,7 +2801,8 @@ Hooks.once("ready", () => {
     } catch (err) {
       console.warn(`${MODULE_ID} | dependentOn cleanup threw (non-fatal):`, err);
     }
-  });
+  };
+  if (game.ready) _runDependentOnCleanup(); else Hooks.once("ready", _runDependentOnCleanup);
 
   // ─── v0.7.21: Clear stale targets on turn change ─────────────────────────
   // Fireball-style template-save spells leave game.user.targets populated
@@ -4005,7 +4010,9 @@ Hooks.once("ready", () => {
     //  (HP 0 + flags set), this leaves it alone. Only positive-HP + flags
     //  combinations get cleaned.
     // ══════════════════════════════════════════════════════════════════════════
-    Hooks.once("ready", async () => {
+    // ⚠️ WAS Hooks.once("ready") FROM INSIDE ready — never fired, sweep never
+    // ran. See the 08-12 lesson; fixed in the 08-16 full audit.
+    const _runDeadFlagsCleanup = async () => {
       if (!game.user.isGM) return;
       try {
         let cleaned = 0;
@@ -4052,7 +4059,8 @@ Hooks.once("ready", () => {
       } catch (err) {
         console.error(`${MODULE_ID} | Stale-flag cleanup hook failed:`, err);
       }
-    });
+    };
+    if (game.ready) _runDeadFlagsCleanup(); else Hooks.once("ready", _runDeadFlagsCleanup);
     console.debug(`${MODULE_ID} | Stale-flag auto-cleanup hook registered`);
 
     // ══════════════════════════════════════════════════════════════════════════
