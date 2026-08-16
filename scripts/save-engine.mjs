@@ -303,7 +303,68 @@ export class SaveEngine {
       }
     });
 
-    // ── Snap template origin to caster token ──
+    // ── ENFORCE self-origin templates on the caster's own space ─────────────
+    //
+    // ⚠️ THE OLD "SNAP" BELOW WAS FAKE, proven 2026-08-16. It fires when the
+    // PREVIEW is built, seeds its starting position — and then the user drags
+    // the preview wherever they like and the drag wins. Johnny: "I can place
+    // that template any way I fuckin' want, a hundred feet away." He could.
+    // The log line "Snapped template origin" only ever described the preview's
+    // STARTING point, not a constraint.
+    //
+    // THIS hook is the real one: it fires on the creating client just before
+    // the document is written, so updateSource here persists for every client.
+    //
+    // The rule is RANGE-driven, not shape-driven (RAW): an effect with range
+    // SELF is measured from the caster's space — cone (breath weapons, Burning
+    // Hands), line (Lightning Bolt), even Thunderwave's cube. A ranged AoE
+    // (Fireball's 150 ft sphere) places freely. For a Large or Huge creature
+    // the origin may be ANY point of its occupied space — so we CLAMP the
+    // placed origin into the token's rectangle: aim northeast and the origin
+    // lands on the northeast face of the creature, never its centre, never
+    // empty air. Direction is untouched.
+    Hooks.on("preCreateMeasuredTemplate", (doc, data) => {
+      try {
+        const originUuid = data?.flags?.dnd5e?.origin ?? doc?.flags?.dnd5e?.origin;
+        if (!originUuid) return;                       // hand-drawn GM template — free
+        const activity = fromUuidSync(originUuid);
+        if (!activity) return;
+        const rangeUnits = activity.range?.units ?? activity.item?.system?.range?.units ?? null;
+        if (rangeUnits !== "self" && rangeUnits !== "touch") return;   // ranged AoE — free
+
+        const actor = activity.item?.actor ?? null;
+        const casterToken = SaveEngine.casterTokenDoc(actor, { sceneId: doc.parent?.id })?.object
+                         ?? SaveEngine.casterTokenDoc(actor, {})?.object;
+        if (!casterToken) return;
+
+        // The creature's occupied rectangle in world pixels.
+        const rx0 = casterToken.x, ry0 = casterToken.y;
+        const rx1 = rx0 + casterToken.w, ry1 = ry0 + casterToken.h;
+        const px = Number(data?.x ?? doc.x) || 0;
+        const py = Number(data?.y ?? doc.y) || 0;
+        let cx = Math.min(Math.max(px, rx0), rx1);
+        let cy = Math.min(Math.max(py, ry0), ry1);
+
+        // On a gridded scene, land on the nearest grid vertex so the shape
+        // covers whole squares cleanly — then re-clamp so rounding cannot
+        // push the origin off the creature.
+        const gs = canvas?.grid?.size || 0;
+        if (gs > 1) {
+          cx = Math.min(Math.max(Math.round(cx / (gs / 2)) * (gs / 2), rx0), rx1);
+          cy = Math.min(Math.max(Math.round(cy / (gs / 2)) * (gs / 2), ry0), ry1);
+        }
+
+        if (cx !== px || cy !== py) {
+          doc.updateSource({ x: cx, y: cy });
+          console.log(`${MODULE_ID} | self-origin template pulled onto ${casterToken.name}'s space ` +
+            `(${Math.round(px)},${Math.round(py)}) → (${Math.round(cx)},${Math.round(cy)})`);
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | self-origin template clamp failed (template left where placed):`, err);
+      }
+    });
+
+    // ── Seed the PREVIEW at the caster (cosmetic — the clamp above is the law) ──
     Hooks.on("dnd5e.createActivityTemplate", (activity, templates) => {
       if (!game.user.isGM) return;
       const casterActor = activity?.actor ?? this._pendingSaveSpell?.actor;
