@@ -4874,12 +4874,25 @@ Hooks.once("ready", () => {
             console.warn(`${MODULE_ID} | Mirror Image socket-path redirect failed (non-blocking):`, err);
           }
 
+          // ⚠️ THIS ORDER IS THE RULES. It must match AttackPipeline exactly —
+          // see the identical block there, and the note on it from 2026-07-27.
+          //
+          // A PLAYER-ROLLED ATTACK IS THE SAME ATTACK AS A GM-ROLLED ONE.
+          // This socket copy tested `cs.autoCrit` BEFORE comparing to AC, so a
+          // player's 12 against an AC-18 target that happened to be Held or
+          // Paralyzed was reported as a CRITICAL and rolled doubled damage.
+          // The GM path was fixed months ago; this copy was not, so the table
+          // was running two different rules engines depending on who clicked.
+          // (Grok audit 2026-08-18.)
+          //
+          // RAW: auto-crit conditions upgrade a HIT to a critical. They never
+          // turn a miss into one. Only a natural 20 hits regardless of AC.
           let hitResult;
           if (isFumbleRoll) hitResult = "fumble";
           else if (coverResult?.isFullCover) hitResult = "miss";
           else if (mirrorImageRedirect) hitResult = "miss"; // Mirror Image absorbed
-          else if (isCritRoll || cs.autoCrit) hitResult = "critical";
-          else if (attackTotal >= effectiveAC) hitResult = "hit";
+          else if (isCritRoll) hitResult = "critical";      // natural 20 always hits + crits
+          else if (attackTotal >= effectiveAC) hitResult = cs.autoCrit ? "critical" : "hit";
           else hitResult = "miss";
 
           results.push({
