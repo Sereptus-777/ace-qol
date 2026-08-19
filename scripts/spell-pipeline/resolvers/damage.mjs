@@ -516,17 +516,52 @@ export class DamageResolver {
   }
 
   /**
-   * Single-target damage shape (Vampiric Touch, future). Stub for Phase 2.
+   * Single-target damage shape (Vampiric Touch, future). NOT IMPLEMENTED.
+   *
+   * ⚠️ AN UNIMPLEMENTED RESOLVER MUST NOT RETURN QUIETLY (2026-08-19).
+   * These were `console.warn` and nothing else, so a spell routed here would
+   * consume its slot, post no card, roll no damage, and leave a line in a
+   * console the GM is not reading. From the table it looks like the spell
+   * fizzled for no reason — the single most confusing failure a rules engine
+   * can produce.
+   *
+   * Nothing currently routes here: neither Vampiric Touch nor Chain Lightning
+   * is in the registry (Chain Lightning is commented out awaiting a real
+   * ChainResolver), so both fall through to the generic save path and work,
+   * minus the chaining. This is the guard for the day somebody registers one.
+   *
+   * Refuses loudly, tells the GM in plain language, and refunds the slot —
+   * a spell that did nothing must not also cost a resource.
    */
-  static async runSingle(_ctx, _result) {
-    console.warn(`${MODULE_ID} | DamageResolver.runSingle not yet implemented (Phase 2).`);
+  static async runSingle(ctx, _result) {
+    return DamageResolver._notImplemented(ctx, "single-target damage");
   }
 
   /**
-   * Chained shape (Chain Lightning). Stub for Phase 2.
+   * Chained shape (Chain Lightning). NOT IMPLEMENTED — see runSingle.
    */
-  static async runChained(_ctx, _result) {
-    console.warn(`${MODULE_ID} | DamageResolver.runChained not yet implemented (Phase 2).`);
+  static async runChained(ctx, _result) {
+    return DamageResolver._notImplemented(ctx, "chained damage");
+  }
+
+  /** Shared refusal: say it, show it, and give the slot back. */
+  static async _notImplemented(ctx, shapeLabel) {
+    const name = ctx?.item?.name ?? "This spell";
+    console.error(`${MODULE_ID} | DamageResolver: "${name}" routed to the ${shapeLabel} shape, ` +
+      `which is not implemented. NOTHING was resolved — no damage, no card. Slot refunded.`);
+    ui.notifications?.error(
+      `ACE: "${name}" uses a spell shape ACE cannot resolve yet. Nothing was applied — resolve it manually.`,
+      { permanent: true });
+    // ⚠️ LAZY IMPORT, DELIBERATELY. pipeline.mjs imports THIS file, so a static
+    // `import { SpellPipeline }` here would close a module-scope cycle — the
+    // exact shape that made every token on the canvas unclickable on
+    // 2026-08-11. Resolved at call time, long after both modules have loaded.
+    try {
+      const { SpellPipeline } = await import("../pipeline.mjs");
+      await SpellPipeline._refundSlotIfDeferred(ctx?.activity);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not refund the slot for "${name}":`, err);
+    }
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
