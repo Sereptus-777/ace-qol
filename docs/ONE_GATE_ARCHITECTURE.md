@@ -1,6 +1,25 @@
 # THE ONE GATE — a single resolution path for every action
 
-**Status:** **Phase 0 BUILT (0.7.397, 2026-08-06)** — awaiting live confirm. Phases 1–4 planned.
+**Status:** **DESIGN. Nothing in this document is built as a Gate.** Phases 0–4 all outstanding.
+
+> ⚠️ **This header used to say "Phase 0 BUILT" and it was misleading** (external
+> review, 2026-08-19). There is no `scripts/gate/` directory and no
+> `action-gate.mjs`. What shipped in 0.7.397 were the SYMPTOM fixes Phase 0
+> listed — dead targets shown as "dead, no save", immunity checked before the
+> roll — patched into the save engine directly. That is one pipeline deciding
+> for itself, which is precisely the failure this document was written to end.
+>
+> The distinction matters because the original bug was a DEAD SPECTER ROLLING
+> TWICE. A local patch in the save engine stops that one path. It does nothing
+> for the next pipeline that forgets to ask. Calling the symptom fix "Phase 0
+> BUILT" made the architecture look underway when the structural problem was
+> untouched, and a status line that flatters the work is how a plan quietly
+> stops being a plan.
+>
+> What genuinely exists today: `ActionInterceptor`, whose stated contract is
+> **observe, never steer** — it logs and does not stop anything;
+> `EngagementGate`, which covers creature type and concentration confirmation;
+> and `PlatformContract`, which is a boot-time report, not a gate.
 **Author:** Johnny + Claude, 2026-08-06
 **Trigger:** a dead Specter rolled two saves against Petrifying Gaze, then was told
 it was immune to the outcome. Johnny: *"It's an attack! It has to go through the
@@ -183,8 +202,10 @@ A fix that isn't enforced is a fix that comes back. Three layers:
 
 ## 6. Delivery order
 
-**Phase 0 — ✅ BUILT in 0.7.397 (2026-08-06).** Dead targets shown as "dead, no save";
-immunity checked before the roll; card colour + name wrapping.
+**Phase 0 — NOT BUILT AS A GATE.** The symptom fixes it described did ship in
+0.7.397: dead targets shown as "dead, no save", immunity checked before the
+roll, card colour and name wrapping. They live inside the save engine as local
+checks, not behind a Gate, so every other pipeline still decides for itself.
 
 What actually shipped, and where:
 

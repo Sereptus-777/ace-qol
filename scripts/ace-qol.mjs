@@ -1,6 +1,15 @@
 // ─── ACE: Quality of Life — Entry Point ───────────────────────────────────────
-// Comprehensive D&D 5e combat automation engine.
-// Replaces Midi-QOL + DAE in one clean module. Everything ON by default.
+// Combat automation for dnd5e 5.x on Foundry V13. One module, no dependency
+// chain. New worlds start on the Conservative preset.
+//
+// ⚠️ THIS USED TO SAY "Replaces Midi-QOL + DAE". It does not, and saying so on
+// a paid product is a refund waiting to happen. What ACE covers is the happy
+// path, very well: attacks, damage by type, saves, concentration, reactions,
+// cover, conditions, durations. What it is NOT is a drop-in for a table that
+// depends on Midi's full surface — the spell registry is 122 of roughly 320
+// SRD entries, several template resolvers are deliberate no-ops that exist so
+// slot deferral can wrap them, and the summon registry is empty on purpose.
+// Those are honest engineering choices. The banner above them was not.
 // ──────────────────────────────────────────────────────────────────────────────
 
 export const MODULE_ID = "ace-qol";
@@ -537,6 +546,16 @@ Hooks.once("init", () => {
 //      wrong. Swallowed for everyone (GM included), routed to the console.
 // Guarded + once so we never double-wrap or break the UI (the signature is
 // preserved: message, type, options).
+// ⚠️ TOP-LEVEL, not nested inside another ready handler. A ready hook
+// registered from INSIDE a ready handler waits on an event already in progress
+// and never fires — the 2026-08-12 lesson that left 13 condition ghosts and a
+// boot check that only ever ran when typed by hand. This one is at file scope,
+// so it runs.
+Hooks.once("ready", () => {
+  QolSettings.applyPresetOnFirstRun()
+    .catch(err => console.warn(`${MODULE_ID} | First-run preset check threw:`, err));
+});
+
 Hooks.once("ready", () => {
   try {
     const notif = ui?.notifications;

@@ -696,24 +696,45 @@ export class ReactionEngine {
           console.warn(`${MODULE_ID} | Rejected reactionResponse — names no real user.`);
           return true;
         }
-        if (senderUser.isGM) {
-          console.warn(`${MODULE_ID} | Rejected reactionResponse — claims GM "${senderUser.name}"; ` +
-            `reaction prompts go to players, and a GM answers on its own client.`);
+
+        // ⚠️ THE ADDRESSEE IS THE TEST, NOT "IS THEY A PLAYER". An earlier
+        // version of this hardening refused every GM claim, on the reasoning
+        // that reaction prompts go to players. That is true of the ordinary
+        // path and FALSE of `forceGM` — Legendary Resistance deliberately
+        // prompts a GM, and with a second GM connected that prompt goes over
+        // the socket to them. Refusing their answer would have looked exactly
+        // like "Legendary Resistance stopped working, sometimes", which is the
+        // worst kind of bug: intermittent and dependent on who is logged in.
+        //
+        // The pending record already knows who was asked. Comparing against
+        // that is both stronger than a role check and correct for forceGM.
+        if (pending.targetUserId && senderUserId !== pending.targetUserId) {
+          const asked = game.users?.get(pending.targetUserId)?.name ?? pending.targetUserId;
+          console.warn(`${MODULE_ID} | Rejected reactionResponse — "${senderUser.name}" answered a ` +
+            `prompt sent to "${asked}".`);
           return true;
         }
-        if (!expectedActorId) {
-          console.warn(`${MODULE_ID} | Rejected reactionResponse — the request did not record whose ` +
-            `reaction it was, so there is nothing to check "${senderUser.name}" against.`);
-          return true;
+
+        // Ownership, only where it is meaningful: a player answering for a
+        // creature must own it. A GM answering a forceGM prompt owns
+        // everything by definition, and the addressee check above already
+        // established it was sent to them.
+        if (!senderUser.isGM) {
+          if (!expectedActorId) {
+            console.warn(`${MODULE_ID} | Rejected reactionResponse — the request did not record whose ` +
+              `reaction it was, so there is nothing to check "${senderUser.name}" against.`);
+            return true;
+          }
+          const actor = game.actors?.get(expectedActorId);
+          if (!actor?.testUserPermission?.(senderUser, "OWNER")) {
+            console.warn(`${MODULE_ID} | Rejected reactionResponse from ${senderUser.name}: does not own actor ${expectedActorId}`);
+            return true;
+          }
         }
-        const actor = game.actors?.get(expectedActorId);
-        if (!actor?.testUserPermission?.(senderUser, "OWNER")) {
-          console.warn(`${MODULE_ID} | Rejected reactionResponse from ${senderUser.name}: does not own actor ${expectedActorId}`);
-          return true;
-        }
+
         // Echo-actor sanity check: if responder echoed an actorId, it must
         // match the stored one.
-        if (reactorActorId && reactorActorId !== expectedActorId) {
+        if (reactorActorId && expectedActorId && reactorActorId !== expectedActorId) {
           console.warn(`${MODULE_ID} | Rejected reactionResponse: actor mismatch ${reactorActorId} vs ${expectedActorId}`);
           return true;
         }
@@ -2197,7 +2218,14 @@ export class ReactionEngine {
     // upstream still prevents spell-pipeline hangs.
 
     // Determine who should see this prompt
-    const ownerId = forceGM ? game.users.find(u => u.isGM)?.id : this._getOwnerUserId(reactorActor);
+    // ⚠️ `find(u => u.isGM)` returns the FIRST GM in the list, which need not be
+    // the GM actually running this save. With two GMs connected that sent a
+    // Legendary Resistance prompt across the socket to the other one for no
+    // reason — the same split-brain class as the save-template bug on 08-15.
+    // Prefer this client when it is a GM; only go remote if it genuinely is not.
+    const ownerId = forceGM
+      ? (game.user.isGM ? game.user.id : (game.users.activeGM?.id ?? game.users.find(u => u.isGM)?.id))
+      : this._getOwnerUserId(reactorActor);
 
     // If the owner is the current user (GM or player), show locally
     if (ownerId === game.user.id) {

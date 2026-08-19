@@ -29,6 +29,36 @@ async function _cleanAndVerifyPathSetting(key, value, label = "path") {
 
 // ── Preset definitions: which settings each level sets ──────────────────────
 const PRESETS = {
+  // ⚠️ THE FIRST-RUN PROFILE. A new customer installing a combat automation
+  // module for the first time should not have their table's rules quietly
+  // decided for them mid-session. Conservative is the "show me, do not do it"
+  // setting: ACE works out hits, resistances, cover, save halving and posts
+  // the cards, and every APPLY is a click. Nothing fires a reaction, applies
+  // damage, applies a condition or ends a turn without a human.
+  //
+  // This is not "minimal". Minimal turns features OFF. Conservative leaves
+  // them on and takes ACE's hands off the wheel.
+  conservative: {
+    autoCheckHit: true, autoTargetTemplates: true, damageTypeSeparation: true,
+    autoCheckResistances: true, halfDamageOnSave: true, concentrationTracking: true,
+    concentrationWidget: true, batchResultsCard: true, targetStateAssessment: true,
+    slayerAutoDetect: true, flanking: false, autoApplyConditions: false,
+    autoRollDamage: false, autoApplyDamage: false,
+    // Reactions still OFFER — the prompt appears, the player decides. What is
+    // off is ACE answering the prompt for them.
+    enableReactions: true, autoShield: false, autoCounterspell: false,
+    autoAbsorbElements: false, autoLegendaryResistance: false,
+    enableSpeedRolls: true, enableMergeCard: false, enableHealPipeline: true,
+    extendedEffects: true, effectTransferRules: false,
+    enableOnUseHooks: true, enableOverTimeEffects: true, autoApplyOverTimeDamage: false, autoApplyOverTimeHeal: false,
+    enableFlagsSystem: true, enableOptionalPrompts: true, midiCompatibility: true,
+    enableDurationTracker: true, expireEffectsOnTurnChange: false, notifyOnExpiry: true,
+    expiryNotifyAll: false,
+    enableCoverCalculation: true, creatureAsCover: false, showCoverIndicator: true,
+    ignoreCoverForAdjacent: true,
+    enableBloodied: true, announceBloodied: true, enableDeadMarker: true,
+    hideSaveDC: false, hideNPCNames: false, playersSeeBloodied: true,
+  },
   recommended: {
     autoCheckHit: true, autoTargetTemplates: true, damageTypeSeparation: true,
     autoCheckResistances: true, halfDamageOnSave: true, concentrationTracking: true,
@@ -89,21 +119,76 @@ const PRESETS = {
 };
 
 // ── Settings that presets control (hidden when not "custom") ────────────────
-const PRESET_MANAGED_KEYS = new Set(Object.keys(PRESETS.recommended));
+// ⚠️ THE UNION, not one preset's keys. Deriving this from "recommended" alone
+// meant a key that only another preset touched was never hidden and never
+// managed — a silent gap that grows every time a preset gains an entry.
+const PRESET_MANAGED_KEYS = new Set(Object.values(PRESETS).flatMap(p => Object.keys(p)));
 
 export class QolSettings {
 
   /**
    * Apply a preset by batch-setting all managed toggles.
    */
-  static async applyPreset(presetName) {
+  /**
+   * FIRST RUN: make the dropdown tell the truth.
+   *
+   * ⚠️🔴 THE PRESET WAS A LABEL, NOT A BOOT PATH (Brock, 2026-08-19).
+   * applyPreset only ever ran from the setting's onChange, so a brand-new
+   * install never applied anything. The world came up on the per-key registered
+   * defaults — which are almost all `true`, i.e. effectively Full Automation —
+   * while the dropdown displayed "Recommended". The dropdown lied until
+   * somebody happened to toggle it, and the manifest said "everything ON by
+   * default", which was the only honest sentence in the set.
+   *
+   * ⚠️ AND IT MUST NOT TOUCH AN EXISTING WORLD. Applying a preset on upgrade
+   * would silently overwrite settings a GM has spent months tuning. So this
+   * needs an exact test for "brand new", not a heuristic.
+   *
+   * There is one: Foundry only stores a Setting document for a setting that has
+   * actually been SET. A world that has never saved a single ace-qol setting has
+   * never been configured. That is not a guess about intent, it is the absence
+   * of the data itself.
+   */
+  static async applyPresetOnFirstRun() {
+    if (!game.user?.isGM) return;
+    try {
+      if (game.settings.get(MODULE_ID, "presetInitialised")) return;
+
+      const stored = game.settings.storage?.get?.("world") ?? [];
+      const everSaved = [...stored].some(setting =>
+        String(setting?.key ?? "").startsWith(`${MODULE_ID}.`));
+
+      if (everSaved) {
+        // An existing world. Whatever is on disk is the GM's, not ours to
+        // rewrite. Record that we looked, change nothing, say nothing.
+        await game.settings.set(MODULE_ID, "presetInitialised", true);
+        console.log(`${MODULE_ID} | Existing world — settings left exactly as they are.`);
+        return;
+      }
+
+      // Genuinely fresh. Start Conservative: a combat automation module should
+      // not decide a stranger's table rules before they have seen it work once.
+      await QolSettings.applyPreset("conservative", { quiet: true });
+      await game.settings.set(MODULE_ID, "automationLevel", "conservative");
+      await game.settings.set(MODULE_ID, "presetInitialised", true);
+      console.log(`${MODULE_ID} | Fresh install — started on the Conservative preset.`);
+      ui.notifications?.info(
+        "ACE QOL is set to Conservative: it works out hits, resistances and cover, " +
+        "and you click to apply. Change it any time in the module settings.",
+        { permanent: true });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | First-run preset check failed:`, err);
+    }
+  }
+
+  static async applyPreset(presetName, { quiet = false } = {}) {
     const preset = PRESETS[presetName];
     if (!preset) return;
     for (const [key, value] of Object.entries(preset)) {
       try { await game.settings.set(MODULE_ID, key, value); }
       catch (_) { /* setting may not exist yet */ }
     }
-    ui.notifications?.info(`ACE QOL: Applied "${presetName}" automation preset.`);
+    if (!quiet) ui.notifications?.info(`ACE QOL: Applied "${presetName}" automation preset.`);
   }
 
   static register() {
@@ -405,6 +490,14 @@ export class QolSettings {
     //  AUTOMATION LEVEL PRESET — controls 30+ toggles with one dropdown
     // ═══════════════════════════════════════════════════════════════════════════
 
+    // Have we ever decided what this world starts on? See applyPresetOnFirstRun.
+    s("presetInitialised", {
+      scope:   "world",
+      config:  false,
+      type:    Boolean,
+      default: false,
+    });
+
     s("automationLevel", {
       name:    "Automation Level",
       hint:    "Quick preset for all combat automation. Use the 'Open Configuration' button above for full per-setting control via the tabbed panel.",
@@ -413,10 +506,11 @@ export class QolSettings {
       type:    String,
       default: "recommended",
       choices: {
-        recommended: "Recommended — sensible defaults, most features ON",
-        minimal:     "Minimal — basic hit checking and damage only",
-        full:        "Full Automation — everything ON, maximum automation",
-        custom:      "Custom — leave individual settings as-is (use the panel)",
+        conservative: "Conservative — ACE works it out, you click to apply",
+        recommended:  "Recommended — sensible defaults, most features ON",
+        minimal:      "Minimal — basic hit checking and damage only",
+        full:         "Full Automation — everything ON, maximum automation",
+        custom:       "Custom — leave individual settings as-is (use the panel)",
       },
       onChange: (value) => {
         if (value !== "custom") QolSettings.applyPreset(value);
