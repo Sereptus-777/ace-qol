@@ -94,7 +94,6 @@ import { initAATools }       from "./aa-tools/aa-tools-init.mjs";
 import { WeaponMasteries }   from "./weapon-masteries.mjs";
 import { BladeCantrips }     from "./blade-cantrips.mjs";
 import { HolySymbol }        from "./holy-symbol.mjs";
-import { MovementTrail }     from "./movement-trail.mjs";
 import { ActionBar }         from "./action-bar.mjs";
 import { Intent }            from "./intent-reader.mjs";
 import { Banishment }        from "./banishment.mjs";
@@ -1462,14 +1461,6 @@ Hooks.once("ready", () => {
     HolySymbol.init();
   } catch (err) {
     console.error(`${MODULE_ID} | Holy Symbol init failed:`, err);
-  }
-
-  // Hide-V13-movement-trail toggle — patches the core token ruler so the
-  // "Hide token movement trail" setting can suppress the history path.
-  try {
-    MovementTrail.init();
-  } catch (err) {
-    console.error(`${MODULE_ID} | Movement Trail init failed:`, err);
   }
 
   // Action Bar — the auto-filled action row above Foundry's macro hotbar.

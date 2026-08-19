@@ -53,7 +53,7 @@ const TABS = [
   { id: "turnmarker", label: "Turn Marker",        icon: "fa-solid fa-circle-notch",
     settings: ["enableTurnMarker", "turnMarkerImage", "turnMarkerImageNext", "turnMarkerScale", "turnMarkerSpeed", "turnMarkerAlpha", "turnMarkerNextAlpha", "enableNextTurnMarker", "enableYourTurnNotification", "enableYourTurnSound", "yourTurnSound", "enableTurnMarkerAutoPan"] },
   { id: "movement",   label: "Movement",           icon: "fa-solid fa-route",
-    settings: ["enableMovementTracker", "movementTrackerOnlyInCombat", "movementTrackerAlpha", "hideMovementTrail"] },
+    settings: ["enableMovementTracker", "movementTrackerOnlyInCombat", "movementTrackerAlpha"] },
   { id: "effectspanel", label: "Effects Panel",     icon: "fa-solid fa-list",
     settings: ["enableEffectsPanel", "effectsPanelPosition", "effectsPanelAction", "effectsPanelFor", "effectsPanelShowAuras"] },
   { id: "ui",         label: "UI / Cards",         icon: "fa-solid fa-window-maximize",

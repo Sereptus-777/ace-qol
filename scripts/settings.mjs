@@ -320,40 +320,20 @@ export class QolSettings {
       default: true,
     });
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    //  HIDE V13 TOKEN MOVEMENT TRAIL — restores the off-switch Foundry refused
+    // ⚠️ "hideMovementTrail" WAS HERE AND IS GONE (2026-08-19). It patched four
+    // of core's token-ruler style hooks to blank the history path that Foundry
+    // draws when you hover a token. It was removed at Johnny's request, and the
+    // reasoning is worth keeping: the trail is core behaviour, we never read it
+    // for anything, and suppressing somebody else's rendering to hide a
+    // cosmetic annoyance cost hours of misdiagnosis - every investigation into
+    // "what is drawing this" had to see past our own filter first.
     //
-    //  Foundry V13's native token ruler redraws the path a token took during its
-    //  turn (a trail with dots) every time you pick it back up, and core ships no
-    //  setting to disable it (foundryvtt#12254, "not planned"). This toggle hides
-    //  ONLY that history trail; the live drag-distance ruler still works. Applied
-    //  by movement-trail.mjs, which wraps the ruler's style hooks. Default OFF so
-    //  we never change Foundry's behavior for a table that hasn't asked.
-    // ═══════════════════════════════════════════════════════════════════════════
-    // ⚠️ DEFAULT ON, DELIBERATELY — and it shipped wrong once. This setting was
-    // requested for exactly one reason: to make Foundry's movement trail go
-    // away. It shipped defaulting to OFF, which is the one position in which it
-    // does nothing, so the feature existed and the trail still drew. Nobody had
-    // "turned it on" — the trail is core behaviour and our suppressor was idle.
-    //
-    // Worth remembering as a shape, not just a bug: a setting phrased as a
-    // NEGATIVE ("hide X") whose default is false reads, to everyone including
-    // the person who asked for it, as "X is off". It isn't. It means "the
-    // hiding is off". When a toggle exists solely to suppress an annoyance,
-    // the useful default is the one that suppresses it.
-    s("hideMovementTrail", {
-      name:    "Hide token movement trail",
-      hint:    "Foundry draws the path a token took during its turn (a trail of dots) and redraws it every time you hover or pick the token up — core ships no way to turn this off. ON (default) hides that trail. Your live drag ruler and distance readout are unaffected, and the path is still recorded underneath, so the combat tracker's 'clear movement history' button and anything measuring how far a creature moved still work. Turn OFF to see the trails again.",
-      scope:   "world",
-      config:  false,   // lives in the ACE config panel (Movement tab)
-      type:    Boolean,
-      default: true,
-      onChange: () => {
-        try {
-          for (const t of (canvas?.tokens?.placeables ?? [])) t.renderFlags?.set?.({ refreshRuler: true });
-        } catch (_) { /* non-fatal */ }
-      },
-    });
+    // If it comes up again: core's BaseTokenRuler#isVisible is
+    //   token.hover || layer.highlightObjects || token.showRuler || token.isDragged
+    // with no setting anywhere, and the history is stored on the token document
+    // so it survives reloads. Core clears it when that token's TURN STARTS.
+    // The honest fix is to advance the turn or call
+    // game.aceQol.clearMovementHistory(), not to paint over the renderer.
 
     // ═══════════════════════════════════════════════════════════════════════════
     //  MODULE MASTER ENABLED — global kill-switch, sits at top of settings page
