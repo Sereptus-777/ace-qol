@@ -1290,13 +1290,65 @@ export class ReactionEngine {
       // Determine success
       let countered = false;
       let checkResult = null;
+      // ⚠️ The two editions roll DIFFERENT dice against DIFFERENT DCs, so the
+      // card cannot describe the result with one hardcoded sentence. Each
+      // branch says what it actually did.
+      let resultLabel = null;
 
-      if (slotLevel >= spellLevel) {
-        // Auto-success: counterspell slot >= spell level
+      // ⚠️ THE TWO EDITIONS RESOLVE COUNTERSPELL COMPLETELY DIFFERENTLY, and
+      // ACE only implemented 2014 (Grok audit 2026-08-18). They are not a
+      // tweak apart — the die is rolled by a different creature.
+      //
+      //   2014: the COUNTERSPELLER acts. Slot >= spell level auto-succeeds;
+      //         otherwise they make a spellcasting ABILITY CHECK vs DC 10 +
+      //         the spell's level.
+      //   2024: the TARGET CASTER makes a CONSTITUTION SAVING THROW against
+      //         the counterspeller's spell save DC. Fail = spell countered.
+      //         There is no slot-level comparison and no auto-success at all;
+      //         a 3rd-level Counterspell can stop a 9th-level spell, and an
+      //         upcast one cannot "overpower" anything.
+      //
+      // Running 2014 rules at a 2024 table silently hands the advantage to
+      // whoever has the bigger slot, which is exactly backwards.
+      const edition = CombatState.getActiveEdition(reactor.actor);
+      let saveRoll = null;
+
+      if (edition === "2024") {
+        // The caster resists. DC is the COUNTERSPELLER's spell save DC.
+        const counterDC = reactor.actor.system?.attributes?.spelldc
+                       ?? reactor.actor.system?.attributes?.spell?.dc
+                       ?? 13;
+        try {
+          if (typeof casterActor.rollSavingThrow !== "function") {
+            throw new Error("Actor#rollSavingThrow missing on this dnd5e build");
+          }
+          const result = await casterActor.rollSavingThrow(
+            { ability: "con", target: counterDC },
+            { configure: false },
+            { create: false }
+          );
+          saveRoll = Array.isArray(result) ? result[0] : result;
+        } catch (err) {
+          console.warn(`${MODULE_ID} | Counterspell (2024): CON save failed to roll for ${casterActor.name}:`, err);
+        }
+        if (!saveRoll || typeof saveRoll.total !== "number") {
+          // ⚠️ Never silently decide the spell resolved. Say why.
+          console.error(`${MODULE_ID} | Counterspell (2024): no valid save from ${casterActor.name} — treating as NOT countered.`);
+          ui.notifications?.warn(`ACE: ${casterActor.name}'s Counterspell save did not roll. Resolve manually.`);
+          countered = false;
+        } else {
+          checkResult = saveRoll.total;
+          countered = checkResult < counterDC;   // FAILED save = countered
+          resultLabel = `${casterActor.name} CON save ${checkResult} vs DC ${counterDC}`;
+          this._debug(`Counterspell 2024: ${resultLabel} → ${countered ? "COUNTERED" : "resisted"}`);
+        }
+      } else if (slotLevel >= spellLevel) {
+        // 2014 auto-success: counterspell slot >= spell level
         countered = true;
-        this._debug(`Counterspell AUTO-SUCCESS: ${reactor.actor.name} (slot ${slotLevel} >= spell ${spellLevel})`);
+        resultLabel = `auto-success — L${slotLevel} slot vs L${spellLevel} spell`;
+        this._debug(`Counterspell AUTO-SUCCESS (2014): ${reactor.actor.name} (slot ${slotLevel} >= spell ${spellLevel})`);
       } else {
-        // Ability check required: DC = 10 + spell level
+        // 2014 ability check: DC = 10 + spell level
         const dc = 10 + spellLevel;
         const spellcastingAbility = this._getSpellcastingAbility(reactor.actor);
         const abilityMod = reactor.actor.system?.abilities?.[spellcastingAbility]?.mod ?? 0;
@@ -1310,7 +1362,8 @@ export class ReactionEngine {
         checkResult = roll.total;
         countered = checkResult >= dc;
 
-        this._debug(`Counterspell CHECK: ${reactor.actor.name} rolled ${checkResult} vs DC ${dc} → ${countered ? "SUCCESS" : "FAIL"}`);
+        resultLabel = `check ${checkResult} vs DC ${dc}`;
+        this._debug(`Counterspell CHECK (2014): ${reactor.actor.name} rolled ${checkResult} vs DC ${dc} → ${countered ? "SUCCESS" : "FAIL"}`);
       }
 
       if (countered) {
@@ -1323,7 +1376,7 @@ export class ReactionEngine {
           `${casterActor.name}'s ${item.name} dissolves mid-cast, the weave torn apart.`,
         ];
         const flavorText = flavorOptions[Math.floor(Math.random() * flavorOptions.length)];
-        const mechanical = `${reactor.actor.name} counterspells ${casterActor.name}'s ${item.name}!${checkResult !== null ? ` (Check: ${checkResult} vs DC ${10 + spellLevel})` : " (auto-success)"}`;
+        const mechanical = `${reactor.actor.name} counterspells ${casterActor.name}'s ${item.name}!${resultLabel ? ` (${resultLabel})` : ""}`;
         const flavorBlock = `<div style="margin-top:10px;padding-top:8px;border-top:1px dashed #6b5230;font-size:15px;font-style:italic;color:#e1bee7;font-weight:600;">— ${flavorText}</div>`;
         await this._postReactionChat(reactor.actor, "Counterspell",
           `${mechanical}${flavorBlock}`,
@@ -1400,7 +1453,7 @@ export class ReactionEngine {
       //    NEXT reactor. Do NOT resolve the barrier here: that would let the
       //    cast resolve before the next reactor even answers. ──
       await this._postReactionChat(reactor.actor, "Counterspell",
-        `${reactor.actor.name} attempts to counterspell ${casterActor.name}'s ${item.name} but fails!${checkResult !== null ? ` (Check: ${checkResult} vs DC ${10 + spellLevel})` : ""}`,
+        `${reactor.actor.name} attempts to counterspell ${casterActor.name}'s ${item.name} but fails!${resultLabel ? ` (${resultLabel})` : ""}`,
         "#ef5350");
       this._debug(`Counterspell: ${reactor.actor.name} failed — cascading to the next reactor if any.`);
     }
