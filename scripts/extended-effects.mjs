@@ -414,10 +414,33 @@ export class ExtendedEffects {
           console.warn(`${MODULE_ID} | Macro not found: "${macroRef}"`);
         }
       } else if (inlineCommand && trigger === "onApply") {
-        // Execute inline command (only on apply for safety)
-        const fn = new Function("actor", "effect", "item", "token", "trigger", inlineCommand);
-        fn.call(null, ownerActor, effect, item, token, trigger);
-        this._debug(`Inline macro executed (${trigger}) on ${ownerActor?.name}`);
+        // ⚠️🔴 INLINE SCRIPT = eval, AND THE SOURCE IS ACTOR DATA (2026-08-19).
+        //
+        // `new Function(...)` on a string pulled from an Active Effect flag runs
+        // arbitrary code with full Foundry privileges. That flag can arrive from
+        // a compendium, a shared adventure, a Discord .json, a DDB import, or
+        // anything a player can write to on an actor they own. Nobody reads an
+        // effect's flags before dragging an item onto their sheet.
+        //
+        // On a GM's client that is total control of the world: read every key
+        // in settings, rewrite actors, post as anyone, hit the network.
+        //
+        // ⚠️ A SETTING WOULD NOT MAKE THIS SAFE. The person who imports the
+        // content is not the person who wrote it, so "GM opted in" does not
+        // mean "GM read this script". Macros are the supported path precisely
+        // because a Macro document is visible, reviewable, and permissioned.
+        //
+        // The inline path is therefore REFUSED, loudly, with the effect and the
+        // actor named so the GM can convert it into a real macro. Silently
+        // ignoring it would leave people wondering why their effect stopped.
+        console.error(`${MODULE_ID} | REFUSED an inline script on effect "${effect?.name}" ` +
+          `(actor: ${ownerActor?.name}). ACE does not execute code stored in actor data. ` +
+          `Move it into a Macro and reference it by name or UUID.`);
+        if (game.user?.isGM) {
+          ui.notifications?.warn(
+            `ACE: "${effect?.name}" tried to run an inline script. Blocked — put it in a Macro instead.`,
+            { permanent: true });
+        }
       }
     } catch (err) {
       console.error(`${MODULE_ID} | Macro execution failed (${trigger}):`, err);

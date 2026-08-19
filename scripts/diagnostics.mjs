@@ -507,7 +507,13 @@ export function checkIntegrations() {
     } else {
       // ACE suite modules — optional
       if (active) {
-        const hasApi = apiPath ? !!eval(apiPath) : true;
+        // ⚠️ WAS `eval(apiPath)`. Not a vulnerability — the paths are a
+        // hardcoded literal list a few lines up, never user input — but eval
+        // in shipped code fails every audit on sight, and a reader has to go
+        // find that list to prove it is safe. A property walk needs no proof.
+        const hasApi = apiPath
+          ? apiPath.split(".").reduce((o, k) => (o == null ? o : o[k]), globalThis) != null
+          : true;
         _log(OK, label, `Active${hasApi ? " — API available" : ""}`);
         results.push({ module: id, status: OK, active: true });
       } else {
