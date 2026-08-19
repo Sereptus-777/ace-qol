@@ -9,6 +9,36 @@ import { DamageCardRenderer } from "./damage-card-renderer.mjs";
 import { DamageConstants } from "./damage-engine.mjs";
 import { TransformationEngine } from "./transformation-engine.mjs";
 
+/**
+ * Per-actor write queue for hit-point changes.
+ *
+ * ⚠️ APPLYING DAMAGE IS READ-MODIFY-WRITE, AND IT WAS NOT SERIALISED
+ * (Grok audit 2026-08-18). `applyHPDamage` reads `hp.value`, fires
+ * `dnd5e.preApplyDamage` (which listeners may await), computes the new total
+ * from the value it read, and writes. Two applications landing together on the
+ * same creature both read 50, both compute 40, and both write 40 — ten damage
+ * simply gone, with no error and nothing in the log to notice.
+ *
+ * That is not exotic. It is a GM double-clicking APPLY ALL, two damage cards
+ * resolved back to back, an area spell and an opportunity attack in the same
+ * beat, or a rider firing while the parent hit applies.
+ *
+ * Every HP mutation now chains behind the previous one FOR THAT ACTOR, and the
+ * current total is re-read INSIDE the critical section. Different creatures
+ * still apply in parallel — the lock is per actor, not global.
+ */
+const _hpQueues = new Map();   // actorId → Promise
+
+function _withActorHpLock(actor, fn) {
+  const id = actor?.id ?? actor?.uuid ?? "unknown";
+  const prev = _hpQueues.get(id) ?? Promise.resolve();
+  // ⚠️ Chain off a SETTLED promise. A rejection upstream must not poison the
+  // queue for every later application on this creature.
+  const next = prev.catch(() => {}).then(fn);
+  _hpQueues.set(id, next.catch(() => {}));
+  return next;
+}
+
 export class DamageApplicator {
 
   /** In-memory override cache for per-row damage multipliers.
@@ -52,7 +82,10 @@ export class DamageApplicator {
       return { currentHP: actor?.system?.attributes?.hp?.value ?? 0, newHP: actor?.system?.attributes?.hp?.value ?? 0, excess: 0, applied: Promise.resolve() };
     }
 
+    // Serialise every HP mutation for this creature — see _withActorHpLock.
+    return _withActorHpLock(actor, async () => {
     let damage      = Math.max(0, Number(damageAmount) || 0);
+    // ⚠️ READ INSIDE THE LOCK. Reading before the queue is what lost the update.
     const currentHP = Number(actor?.system?.attributes?.hp?.value ?? 0);
 
     // ── 🔴 ACE DAMAGE MUST ANNOUNCE ITSELF (audit fix, 2026-08-07) ──────────
@@ -164,6 +197,7 @@ export class DamageApplicator {
     // Don't call it explicitly here — would double-fire.
 
     return { currentHP, newHP, excess, applied: true, tempUsed, newTemp };
+    });   // ← end per-actor HP lock
   }
 
   /**
@@ -308,6 +342,11 @@ export class DamageApplicator {
       return { currentHP: actor?.system?.attributes?.hp?.value ?? 0, newHP: actor?.system?.attributes?.hp?.value ?? 0, applied: Promise.resolve(), healedAmount: 0 };
     }
 
+    // ⚠️ SAME QUEUE AS DAMAGE, NOT A SEPARATE ONE. Healing is the same
+    // read-modify-write on the same field. A heal and a hit resolving together
+    // lose one of the two just as surely as two hits do, and an area heal plus
+    // a lingering-damage tick in the same beat is an ordinary round.
+    return _withActorHpLock(actor, async () => {
     const heal      = Math.max(0, Number(healAmount) || 0);
     const currentHP = Number(actor?.system?.attributes?.hp?.value ?? 0);
     const maxHP     = Number(actor?.system?.attributes?.hp?.max ?? 0);
@@ -353,6 +392,7 @@ export class DamageApplicator {
     }
 
     return { currentHP, newHP, healedAmount, applied: true };
+    });   // ← end per-actor HP lock (shared with applyHPDamage)
   }
 
   /**
