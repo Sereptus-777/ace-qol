@@ -20,6 +20,89 @@ export class BuffResolver {
    * @param {object} ctx - { entry, item, actor, castLevel, ... }
    * @param {object} result - { targets: candidate[] } from UnifiedSpellPicker._showMultiPicker
    */
+
+  /**
+   * Resolve an HP-pool spell (2014 Sleep, Color Spray).
+   *
+   * RAW: roll the pool, then starting with the creature that has the LOWEST
+   * current hit points, subtract each creature's current HP from the pool.
+   * A creature whose HP the pool can cover is affected; the moment the pool
+   * cannot cover the next creature, the spell stops — it does not skip ahead
+   * to a smaller one further down the list.
+   *
+   * ⚠️ THE ORDER IS THE RULE, not a nicety. Sorting by lowest HP first is what
+   * makes Sleep a crowd-clearer rather than a boss-killer, and it is exactly
+   * what the old implementation threw away by applying to everyone picked.
+   *
+   * Undead and creatures immune to being charmed are unaffected by Sleep and
+   * do not consume any of the pool.
+   *
+   * @returns {Array|null} the creatures the pool actually covered
+   */
+  static async _applyHpPool(ctx, result) {
+    const { entry, item, actor, castLevel } = ctx;
+    const cfg = entry.hpPool ?? {};
+    try {
+      // Pool formula, scaled for upcasting (Sleep: 5d8 + 2d8 per level above 1st).
+      const base = cfg.formula ?? "5d8";
+      const perLevel = cfg.perLevel ?? null;
+      const extra = (perLevel && castLevel > (cfg.baseLevel ?? 1))
+        ? ` + ${castLevel - (cfg.baseLevel ?? 1)}${perLevel}` : "";
+      const roll = await new Roll(`${base}${extra}`).evaluate();
+      let pool = roll.total;
+
+      try { game.aceQol?.dice?.show?.(roll, "sleep-pool"); } catch (_) {}
+
+      // Eligibility: undead / charm-immune are simply not affected.
+      const eligible = [];
+      const immune = [];
+      for (const c of (result?.targets ?? [])) {
+        const a = c.actor;
+        if (!a) continue;
+        const type = String(a.system?.details?.type?.value ?? "").toLowerCase();
+        const ci = Array.from(a.system?.traits?.ci?.value ?? [])
+          .map(v => String(v).toLowerCase());
+        if ((cfg.excludeTypes ?? []).includes(type) || ci.includes("charmed")) { immune.push(c); continue; }
+        eligible.push(c);
+      }
+
+      // Lowest current HP first.
+      eligible.sort((x, y) =>
+        (x.actor.system?.attributes?.hp?.value ?? 0) - (y.actor.system?.attributes?.hp?.value ?? 0));
+
+      const affected = [];
+      const spared = [];
+      for (const c of eligible) {
+        const hp = Number(c.actor.system?.attributes?.hp?.value ?? 0) || 0;
+        if (hp <= pool) { pool -= hp; affected.push(c); }
+        else { spared.push(c); break; }             // RAW: stop, do not skip ahead
+      }
+
+      const say = (list) => list.map(c => c.actor?.name ?? "?").join(", ") || "nobody";
+      console.log(`${MODULE_ID} | ${item.name}: pool ${roll.total} (${roll.formula}) → affected ${say(affected)}` +
+        `${spared.length ? ` | not enough left for ${say(spared)}` : ""}` +
+        `${immune.length ? ` | unaffected: ${say(immune)}` : ""}`);
+
+      await ChatMessage.create({
+        speaker: ChatMessage.getSpeaker({ actor }),
+        flavor: `${item.name} — ${roll.total} hit points of sleep`,
+        content: `<div class="ace-qol-sleep-pool">` +
+          `<p><strong>${roll.formula}</strong> → <strong>${roll.total}</strong> HP pool, lowest hit points first.</p>` +
+          `<p><strong>Affected:</strong> ${say(affected)}</p>` +
+          (spared.length ? `<p><strong>Pool ran out at:</strong> ${say(spared)}</p>` : "") +
+          (immune.length ? `<p><strong>Unaffected:</strong> ${say(immune)}</p>` : "") +
+          `</div>`,
+      });
+
+      return affected;
+    } catch (err) {
+      // ⚠️ Never silently fall through to "everyone sleeps" — that IS the bug.
+      console.error(`${MODULE_ID} | ${item?.name}: HP pool failed to resolve — nobody affected:`, err);
+      ui.notifications?.error(`ACE: ${item?.name} could not roll its HP pool. Resolve manually.`);
+      return [];
+    }
+  }
+
   static async runMulti(ctx, result) {
     const { entry, item, actor, castLevel } = ctx;
     const targets = result?.targets ?? [];
@@ -42,6 +125,18 @@ export class BuffResolver {
     // Haste, …) have no entry.save and keep the unconditional apply below.
     if (entry.save?.ability) {
       return BuffResolver._runMultiWithSave(ctx, result);
+    }
+
+    // ── HP-POOL spells (2014 Sleep, Color Spray) ────────────────────────
+    // These have no save. Instead the spell rolls a pool of hit points and
+    // works its way UP from the lowest-HP creature until the pool runs out.
+    // Without that, "multi-buff with no save" means every creature the GM
+    // picked drops unconditionally — so a 1st-level Sleep put a 40 HP boss
+    // to sleep. (Grok audit 2026-08-18.)
+    if (entry.hpPool) {
+      const pooled = await BuffResolver._applyHpPool(ctx, result);
+      if (pooled) result.targets = pooled;          // survivors are filtered OUT
+      if (!result.targets?.length) return;          // pool covered nobody
     }
 
     // Find the caster's concentration effect for this spell — needed to wire

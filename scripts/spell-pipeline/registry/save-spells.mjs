@@ -267,8 +267,13 @@ export const SAVE_SPELLS = {
     flavorOnConfirm: "Each creature of your choice in the area must make a Wisdom save or fall asleep (Unconscious). Any damage wakes them.",
     byEdition: {
       legacy: {
-        save: null,                 // 2014: NO save — HP-pool, pick who drops
+        save: null,                 // 2014: NO save — the HP pool decides
         range: 90,
+        // ⚠️ THE POOL IS THE SPELL. Without it "no save" meant every creature
+        // the GM picked fell unconscious, so a 1st-level Sleep dropped a 40 HP
+        // boss. 5d8, +2d8 per slot level above 1st, lowest current HP first,
+        // undead unaffected. (Grok audit 2026-08-18.)
+        hpPool: { formula: "5d8", perLevel: "d8", baseLevel: 1, excludeTypes: ["undead"] },
         effect: { key: "sleep_unconscious", duration: { rounds: 10 } },  // 2014 = 1 min, NOT concentration
         flavorOnConfirm: "No save (2014 RAW): choose creatures (5d8 HP pool, lowest current HP first) to fall unconscious; any damage wakes them.",
       },
@@ -280,11 +285,14 @@ export const SAVE_SPELLS = {
     // unconditionally; the GM picks who drops. (Was save-single w/ a phantom WIS save.)
     shape: "multi-buff",
     range: 15,
-    countResolver: () => 999,  // GM chooses who's blinded (6d10 HP pool, lowest current HP first)
+    countResolver: () => 999,  // candidates; the HP pool below decides who is blinded
+    // ⚠️ Same fix as Sleep — the comment already said "6d10 HP pool" while the
+    // code blinded everyone picked. 6d10, +2d10 per level above 1st.
+    hpPool: { formula: "6d10", perLevel: "d10", baseLevel: 1, excludeTypes: [] },
     // RAW: blinded until the END OF YOUR NEXT TURN = 1 round, not 1 minute.
     // Was {rounds:10} → 10× too long. (Audit 2026-06-27.)
     effect: { key: "blinded", duration: { rounds: 1 } },
     picker: { allowSelf: false, excludeDead: true },
-    flavorOnConfirm: "Dazzling colors blind creatures in a 15 ft cone (HP pool — pipeline simplification).",
+    flavorOnConfirm: "Dazzling colors blind creatures in a 15 ft cone — 6d10 HP pool, lowest current hit points first.",
   },
 };
