@@ -194,12 +194,20 @@ export class ConcentrationWidget {
       if (changes.x === undefined && changes.y === undefined) return;
 
       // v0.6.4: Read NEW positions from the `changes` payload, not from
-      // tokenDoc.x/y. Diagnostic showed tokenDoc.x/y was being mutated
-      // by other modules (autoRotation in user's setup) between the hook
-      // fire and our setTimeout(0) handler — by the time our code ran,
-      // td.y had reverted to a partial / pre-move value, making our
-      // hit-test miss entries. The `changes` payload is the immutable
-      // intent of THIS update, so it's safe to read.
+      // tokenDoc.x/y. By the time our setTimeout(0) handler ran, td.y had
+      // reverted to a partial / pre-move value, making our hit-test miss
+      // entries. The `changes` payload is the immutable intent of THIS
+      // update, so it is safe to read. That reasoning stands on its own and
+      // is the right way round regardless of cause.
+      //
+      // ⚠️ THIS COMMENT USED TO BLAME "autoRotation in user's setup" for
+      // mutating x/y, and the shipped source does not support that (checked
+      // 2026-08-19). TheRipper93 hub's rotation hook reads x/y and writes
+      // only `rotation` back to the update; it never assigns a position.
+      // Naming an innocent module as the cause is the same failure as a
+      // catch that invents one — the next person debugging this goes and
+      // reads the wrong module. If the stale read comes back, find the real
+      // writer before naming anybody.
       const pre = this._preMovePositions.get(tokenDoc.id);
       this._preMovePositions.delete(tokenDoc.id);
       const newX = (changes.x !== undefined) ? changes.x : tokenDoc.x;
