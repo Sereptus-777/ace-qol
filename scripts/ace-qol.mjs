@@ -1505,10 +1505,20 @@ Hooks.once("ready", () => {
     console.error(`${MODULE_ID} | Sword of Wounding init failed:`, err);
   }
 
-  // Heavy Armor Master (2014 PHB / 2024 PHB variant)
-  // RAW (2014): "While you are wearing heavy armor, bludgeoning, piercing,
-  // and slashing damage that you take from nonmagical weapons is reduced
-  // by 3."
+  // Heavy Armor Master — EDITION-AWARE (fixed 2026-08-18, Grok audit)
+  //
+  // ⚠️ THE 2024 FEAT IS A DIFFERENT FEAT. ACE applied the 2014 version to
+  // everyone, so a 2024 character got the wrong number against the wrong
+  // damage — and the error runs BOTH ways:
+  //
+  //   2014: reduce B/P/S from NONMAGICAL weapons by a flat 3.
+  //   2024: reduce B/P/S from ATTACKS by your PROFICIENCY BONUS. Magical
+  //         attacks are INCLUDED — the nonmagical clause is gone entirely.
+  //
+  // So at 2024 a level-1 fighter was over-reduced (3 instead of PB 2), a
+  // level-9 fighter was under-reduced (3 instead of 4), and every magical
+  // weapon in the game wrongly bypassed the feat completely — which is the
+  // damage that matters most, because that is what the boss is swinging.
   // Hook: dnd5e.preApplyDamage — fires before HP reduction. We mutate the
   // damage descriptors in place when the actor has the HAM feat AND is
   // wearing heavy armor AND the damage type is B/P/S. Magical-bypass: we
@@ -1533,23 +1543,40 @@ Hooks.once("ready", () => {
         if (!wearingHeavy) return;
 
         // dnd5e calls preApplyDamage with descriptors in opts.damages (array
-        // of { value, type, properties }). Reduce qualifying entries by 3.
+        // of { value, type, properties }).
         const damages = Array.isArray(opts?.damages) ? opts.damages : null;
         if (!damages?.length) return;
+
+        // Which feat is this table actually playing?
+        const is2024 = CombatState.getActiveEdition(actor) === "2024";
+        const prof = Number(actor.system?.attributes?.prof ?? 0) || 0;
+        const cutBy = is2024 ? prof : 3;
+        if (cutBy <= 0) return;
+
         let reduced = 0;
         const BPS = new Set(["bludgeoning", "piercing", "slashing"]);
         for (const d of damages) {
           if (!BPS.has(String(d?.type ?? "").toLowerCase())) continue;
-          // Skip if magical-property surfaced
-          const props = d?.properties;
-          const isMagical = props instanceof Set ? props.has("mgc") : Array.isArray(props) ? props.includes("mgc") : false;
-          if (isMagical) continue;
-          const cut = Math.min(3, d.value ?? 0);
+
+          // ⚠️ 2014 ONLY. The 2024 feat deleted the nonmagical restriction, so
+          // skipping magical damage there would be the single biggest error —
+          // magical weapons are exactly what a heavily-armoured PC faces late.
+          if (!is2024) {
+            const props = d?.properties;
+            const isMagical = props instanceof Set ? props.has("mgc")
+                            : Array.isArray(props) ? props.includes("mgc")
+                            : false;
+            if (isMagical) continue;
+          }
+
+          const cut = Math.min(cutBy, d.value ?? 0);
           d.value = (d.value ?? 0) - cut;
           reduced += cut;
         }
         if (reduced > 0) {
-          console.log(`${MODULE_ID} | Heavy Armor Master: ${actor.name} reduced ${reduced} non-magical B/P/S damage.`);
+          console.log(`${MODULE_ID} | Heavy Armor Master (${is2024 ? "2024" : "2014"}): ` +
+            `${actor.name} reduced ${reduced} B/P/S damage (−${cutBy} per instance` +
+            `${is2024 ? ", magical included" : ", nonmagical only"}).`);
         }
       } catch (err) {
         console.warn(`${MODULE_ID} | Heavy Armor Master hook failed (non-fatal):`, err);
