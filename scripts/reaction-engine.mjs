@@ -2620,7 +2620,7 @@ export class ReactionEngine {
 
       // Spontaneous casters (sorcerer, bard, warlock) don't need preparation
       // They just have the spell in their list
-      if (!prep.mode || prep.mode === "") return true;
+      if (!mode) return true;
     }
 
     return false;
