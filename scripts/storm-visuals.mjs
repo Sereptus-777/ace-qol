@@ -133,6 +133,27 @@ async function pickAllExisting(key, paths) {
     } catch (_) { /* try the next candidate */ }
   }
   _picked.set(key, found);
+
+  // ⚠️ SAY WHEN NOTHING RESOLVED. This returned an empty list in silence, and
+  // on 2026-08-19 an audit found that EVERY candidate path for every storm
+  // sound was a 404 — the ace-qol/Assets/Sounds folder does not exist, and the
+  // ace-engine paths point at .../elemental/ while the files actually sit in
+  // .../UNUSABLE/elemental/. So the storm has been mute since it shipped, and
+  // nothing anywhere said so: "no audio configured" and "every path is wrong"
+  // looked identical from the outside.
+  //
+  // Rejecting a path because the owning module is absent is CORRECT and stays
+  // quiet — that is a sibling enhancement degrading properly. What gets said
+  // out loud is finding nothing at all.
+  if (!found.length) {
+    const installed = paths.filter(p => game.modules.get(p.split("/")[1])?.active);
+    if (installed.length) {
+      console.warn(`${MODULE_ID} | Storm audio "${key}": none of the ${installed.length} candidate ` +
+        `file(s) exist, so this will be silent. Tried: ${installed.join(", ")}`);
+    } else {
+      console.debug(`${MODULE_ID} | Storm audio "${key}": no candidate module installed — silent by design.`);
+    }
+  }
   return found;
 }
 
