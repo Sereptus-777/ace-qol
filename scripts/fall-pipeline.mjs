@@ -76,8 +76,27 @@ export class FallPipeline {
       }
 
       // ── Where do they actually land? Not necessarily the floor. ──────────
+      //
+      // ⚠️🔴 THE DEFAULT IS `toFt`, NOT ZERO. This method used to pass a
+      // hardcoded 0 as the fallback landing height, and that made it contradict
+      // itself inside ten lines: `drop` above is fromFt - toFt, so stepping from
+      // 0 ft into a room whose floor is -30 ft passed the minimum-fall gate as a
+      // 30 ft drop — and then `distance` came out as 0 - 0 = 0 and the whole
+      // thing bailed. Live on 2026-08-19: "left 0 ft but the computed fall is
+      // only 0 ft (0 ground region(s) beneath)" while Forge had, one line
+      // earlier, moved the same token from 0 to -30.
+      //
+      // The caller ALREADY resolved the destination. ground-level.mjs reads the
+      // region behaviour, sets the token's elevation to it, and passes it here
+      // as toFt. Re-deriving that from scene geometry and then trusting the
+      // re-derivation over the answer we were handed is how a fall silently
+      // becomes no fall: any failure in the region scan reads as "flat ground".
+      //
+      // The scan stays, but as a REFINEMENT only — it exists to catch an
+      // intermediate ledge between the height they left and the floor they were
+      // heading for. It can no longer zero out a fall by finding nothing.
       const grounds = FallPipeline._groundsBelow(tokenDoc, fromFt);
-      const landsAt = landingElevation(grounds, fromFt, 0);
+      const landsAt = landingElevation(grounds, fromFt, Number(toFt) || 0);
       const distance = fromFt - landsAt;
       if (distance < MIN_FALL_FT) {
         // ⚠️ NEVER BAIL SILENTLY HERE. This was a bare `return`, and on
@@ -124,8 +143,14 @@ export class FallPipeline {
    *
    * @param {TokenDocument} tokenDoc
    * @param {number} fromFt   the height they left
+   * @param {number} [toFt]   the height they were heading for. Defaults to the
+   *                          token's CURRENT elevation, because by the time
+   *                          anyone runs this the move has already happened and
+   *                          that is exactly where the ground-level behaviour
+   *                          put them. Passing 0 here instead was what made the
+   *                          live path and this diagnostic disagree.
    */
-  static explain(tokenDoc, fromFt = 0) {
+  static explain(tokenDoc, fromFt = 0, toFt = Number(tokenDoc?.elevation) || 0) {
     const out = [];
     const say = (t) => { out.push(t); return out; };
     try {
@@ -146,9 +171,12 @@ export class FallPipeline {
       say(`ACE ground-level regions found beneath it: ${grounds.length}` +
           (grounds.length ? ` (floors at ${grounds.map(g => g.elevation + " ft").join(", ")})` : ""));
 
-      const landsAt = landingElevation(grounds, fromFt, 0);
+      // ⚠️ Same default as the live path. A diagnostic that computes it
+      // differently is worse than none — it describes a code path nobody runs.
+      const landsAt = landingElevation(grounds, fromFt, Number(toFt) || 0);
       const distance = fromFt - landsAt;
-      say(`Lands at ${landsAt} ft, so the fall is ${distance} ft.`);
+      say(`Lands at ${landsAt} ft, so the fall is ${distance} ft.`
+          + (grounds.length ? "" : ` (no region detected beneath, so this used the destination height ${Number(toFt) || 0} ft that the ground-level behaviour resolved)`));
       if (distance < MIN_FALL_FT) {
         return say("STOPS HERE: after working out what is underneath, the fall is under the minimum. " +
                    "If that looks wrong, the region beneath is not being detected — check its shape and that it carries the ACE Ground Level behaviour.");
