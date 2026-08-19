@@ -108,6 +108,64 @@ import { BootReport } from "./boot-report.mjs";
 import { SunkenFloors } from "./sunken-floors.mjs";
 import { aceDistanceFt, aceWithinFt } from "./geometry-utils.mjs";
 
+/**
+ * Authorise an inbound PLAYER-PROXY socket payload.
+ *
+ * ⚠️ FOUNDRY DOES NOT TELL US WHO SENT A MODULE SOCKET MESSAGE. The payload
+ * is whatever the sending client typed, `userId` included. So "is the sender a
+ * GM?" is not a check — a player can put the real GM's id in the payload and
+ * pass it. (Grok audit 2026-08-18 found exactly that in Forge's ReloadAll.)
+ *
+ * What CAN be defended:
+ *   1. The claimed user must exist.
+ *   2. The claimed user must NOT be a GM. Every handler using this is a
+ *      player-proxy path — a GM rolls locally and never needs to proxy — so a
+ *      payload claiming GM identity is either forged or a bug. Refusing it
+ *      closes the impersonate-the-GM hole outright.
+ *   3. The claimed user must actually OWN the actor being acted for. A player
+ *      forging another PLAYER's id gains nothing they could not already do,
+ *      and cannot reach an actor they do not own.
+ *
+ * That is the strongest guarantee available without a server-side relay. The
+ * remaining residue is player-impersonates-player within their own permission
+ * set, which is not a privilege escalation.
+ *
+ * @returns {User|null} the authorised user, or null (already logged)
+ */
+function _authorisePlayerSocket(payload, actor, label) {
+  try {
+    const claimedId = payload?.userId ?? payload?.fromUserId ?? null;
+    const user = claimedId ? game.users?.get?.(claimedId) : null;
+    if (!user) {
+      console.warn(`${MODULE_ID} | SOCKET REJECTED (${label}): unknown user id "${claimedId}".`);
+      return null;
+    }
+    if (user.isGM) {
+      console.warn(`${MODULE_ID} | SOCKET REJECTED (${label}): payload claims GM identity "${user.name}". ` +
+        `GMs resolve locally and never proxy — this is forged or a bug.`);
+      return null;
+    }
+    if (!actor) {
+      console.warn(`${MODULE_ID} | SOCKET REJECTED (${label}): no actor resolved to authorise against.`);
+      return null;
+    }
+    const level = actor.getUserLevel?.(user)
+               ?? actor.ownership?.[user.id]
+               ?? actor.ownership?.default ?? 0;
+    if (level < CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER) {
+      console.warn(`${MODULE_ID} | SOCKET REJECTED (${label}): "${user.name}" is not an owner of ` +
+        `"${actor.name}" (level ${level}).`);
+      ui.notifications?.warn(`ACE: rejected a ${label} request from "${user.name}" — not an owner of ${actor.name}.`);
+      return null;
+    }
+    return user;
+  } catch (err) {
+    console.error(`${MODULE_ID} | socket authorisation threw — REJECTING (${label}):`, err);
+    return null;   // ⚠️ fail CLOSED, never open
+  }
+}
+
+
 // ─── Module state ────────────────────────────────────────────────────────────
 let extendedEffects      = null;
 let attackPipeline       = null;
@@ -4367,6 +4425,9 @@ Hooks.once("ready", () => {
       }
     });
 
+
+
+
     // ── PLAYER SIDE: listen for GM commands via socket ──
     game.socket.on(SOCKET_NAME, async (payload) => {
       // FlagsEngine optional prompts — routed to specific player
@@ -4636,10 +4697,16 @@ Hooks.once("ready", () => {
       //    effects, and owns HP application — with its own dice suppressed
       //    (skipDice) so the animation isn't doubled.
       if (payload.action === "rollDamage") {
-        console.log(`${MODULE_ID} | GM finishing ${payload.userName}'s damage roll for message ${payload.messageId}`);
         try {
           const message = game.messages.get(payload.messageId);
           if (!message) { console.warn(`${MODULE_ID} | rollDamage: message not found ${payload.messageId}`); return; }
+
+          // ⚠️ AUTHORISE against the actor the card belongs to — otherwise any
+          // client could name any message id and make the GM apply HP damage.
+          const _dmgActor = ChatMessage.getSpeakerActor?.(message.speaker) ?? null;
+          if (!_authorisePlayerSocket(payload, _dmgActor, "rollDamage")) return;
+
+          console.log(`${MODULE_ID} | GM finishing ${payload.userName}'s damage roll for message ${payload.messageId}`);
 
           // The player chose their per-attack Pact of the Blade damage type on
           // THEIR screen; the pick rides the socket. Apply it here BEFORE the
@@ -4675,6 +4742,11 @@ Hooks.once("ready", () => {
         try {
           const message = game.messages.get(payload.messageId);
           if (!message) { console.warn(`${MODULE_ID} | rollSaveDamage: message not found ${payload.messageId}`); return; }
+
+          // ⚠️ AUTHORISE — same reasoning as rollDamage.
+          const _savActor = ChatMessage.getSpeakerActor?.(message.speaker) ?? null;
+          if (!_authorisePlayerSocket(payload, _savActor, "rollSaveDamage")) return;
+
           console.log(`${MODULE_ID} | GM rolling ${payload.userName ?? "caster"}'s save-spell damage for message ${payload.messageId}`);
           await saveEngine?._completeSaveResultsPhase2?.(message);
         } catch (err) {
@@ -4685,12 +4757,17 @@ Hooks.once("ready", () => {
 
       if (payload.action !== "attackRoll") return;
 
-      console.log(`${MODULE_ID} | GM received attack from player ${payload.userName}: ${payload.itemName} → ${payload.targets.length} targets`);
-
       try {
         // Resolve the actor and item on the GM side (GM has full data access)
         const actor = game.actors.get(payload.actorId);
         if (!actor) { console.warn(`${MODULE_ID} | Socket: actor not found ${payload.actorId}`); return; }
+
+        // ⚠️ AUTHORISE BEFORE ROLLING ANYTHING. Without this, any connected
+        // client could craft an attackRoll payload naming any actor and the GM
+        // would resolve it as a real hit against real targets. (Grok 2026-08-18)
+        if (!_authorisePlayerSocket(payload, actor, "attackRoll")) return;
+
+        console.log(`${MODULE_ID} | GM received attack from player ${payload.userName}: ${payload.itemName} → ${payload.targets.length} targets`);
 
         // Try to find the item — first by UUID, then by ID on the actor, then by name
         let item = null;
