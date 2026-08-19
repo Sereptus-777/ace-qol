@@ -624,6 +624,54 @@ export class SaveEngine {
     const actor = activity.actor;
     if (!item || !actor) return;
 
+    // ══════════════════════════════════════════════════════════════════════
+    //  ⚠️ THE DEDUPE GATE — AT THE TOP, WHERE EVERY PATH ARRIVES
+    //
+    //  FOUR hooks funnel into this method: postCreateUsageMessage,
+    //  useActivity (legacy), postUseActivity, and the createChatMessage
+    //  fallback. Only two of them checked whether the cast had already been
+    //  handled; postCreateUsageMessage and useActivity both called straight
+    //  in with no guard at all. The marker was written PARTWAY DOWN this
+    //  method, so on any dnd5e build that fires both, the entire save flow
+    //  ran twice — two target scans, two save cards, two sets of prompts,
+    //  and every save rolled twice. (Grok audit 2026-08-18.)
+    //
+    //  The dedupe belonged here from the start. A guard written inside the
+    //  work it is meant to prevent cannot prevent it.
+    //
+    //  ⚠️ Marked on BOTH uuid and id, matching the write further down: items
+    //  can share the default activity id ("dnd5eactivity000"), so id alone
+    //  would suppress a genuinely different cast, and uuid alone would let
+    //  the id-keyed fallback through.
+    // ══════════════════════════════════════════════════════════════════════
+    //  ⚠️ WINDOW: DUPLICATE HOOKS, NOT DELIBERATE RE-CASTS. Redundant hooks for
+    //  ONE cast fire within the same tick — milliseconds apart; the widest is
+    //  the createChatMessage fallback at +250ms. A human casting the same spell
+    //  again, or a dragon breathing twice in a round, is a second apart at
+    //  minimum. The existing marker used a 5s window, which would have
+    //  swallowed a legitimate second cast now that this gate covers EVERY
+    //  path. 1200ms is ~5x the widest real duplicate and far under any
+    //  intentional re-use.
+    {
+      const _now = Date.now();
+      const _keys = [activity?.uuid, activity?.id].filter(Boolean);
+      for (const k of _keys) {
+        const prev = this._processedActivityIds.get(k);
+        if (prev != null && (_now - prev) < 1200) {
+          console.debug(`${MODULE_ID} | _onUseActivity: "${item.name}" already handled ${_now - prev}ms ago — ignoring duplicate hook.`);
+          return;
+        }
+      }
+      // Claim the cast IMMEDIATELY. This method awaits later on, and a second
+      // hook firing during that await would otherwise sail past a check that
+      // had not yet written its marker.
+      for (const k of _keys) this._processedActivityIds.set(k, _now);
+      const cutoff = _now - 5000;
+      for (const [k, ts] of this._processedActivityIds) {
+        if (ts < cutoff) this._processedActivityIds.delete(k);
+      }
+    }
+
     // v0.6.5: Detect movement-damage concentration spells (Spike Growth,
     // Wall of Thorns, etc.) that have a template + damage but NO save.
     // These don't fit the save-engine's save-on-entry model, but they
