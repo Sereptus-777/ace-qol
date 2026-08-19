@@ -2598,18 +2598,25 @@ export class ReactionEngine {
       if (item.type !== "spell") continue;
       if (!item.name?.toLowerCase().includes(lcName)) continue;
 
-      // Check preparation mode — always-prepared, prepared, pact, innate, atwill
-      const prep = item.system?.preparation;
-      if (!prep) return true; // No preparation data = always available (e.g., innate)
+      // ⚠️ Read `method`/`prepared` first — dnd5e 5.1 split `preparation` into
+      // those two, and touching the old name at all logs a stack-trace-building
+      // compatibility warning. This used to read `system.preparation` directly
+      // with no fallback, so it fired for every spell on every reaction check.
+      // Removed outright in dnd5e 6.0, at which point the old read returns
+      // undefined and every spell here would count as "always available".
+      const sys  = item.system ?? {};
+      const mode = sys.method ?? sys.preparation?.mode;
+      const isPrepared = sys.prepared ?? sys.preparation?.prepared;
+      if (!mode) return true; // no preparation data = always available (e.g. innate)
 
       // "always" and "atwill" are always available
-      if (prep.mode === "always" || prep.mode === "atwill" || prep.mode === "innate") return true;
+      if (mode === "always" || mode === "atwill" || mode === "innate") return true;
 
       // "prepared" mode must be currently prepared
-      if (prep.mode === "prepared" && prep.prepared) return true;
+      if (mode === "prepared" && isPrepared) return true;
 
       // Pact magic spells are always prepared
-      if (prep.mode === "pact") return true;
+      if (mode === "pact") return true;
 
       // Spontaneous casters (sorcerer, bard, warlock) don't need preparation
       // They just have the spell in their list

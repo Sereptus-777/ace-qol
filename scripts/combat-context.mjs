@@ -102,8 +102,14 @@ export class CombatContext {
    *  components are required. */
   static _isInnateCaster(actor, item) {
     try {
-      // dnd5e marks innate/at-will casting on the spell's preparation mode.
-      const mode = item?.system?.preparation?.mode ?? item?.system?.method;
+      // ⚠️ NEW FIELD FIRST. dnd5e 5.1 split preparation into `method` and
+      // `prepared`, and reading the old name logs a compatibility warning that
+      // builds a full stack trace EVERY time. With `??` the right-hand side is
+      // only evaluated when the left is missing, so this order costs nothing on
+      // 5.1+ and still works on 5.0. Written the other way round it fired on
+      // every spell of every caster — action-bar.mjs was fixed for exactly this
+      // and these two were left behind. Removed outright in dnd5e 6.0.
+      const mode = item?.system?.method ?? item?.system?.preparation?.mode;
       if (mode === "innate" || mode === "atwill") return true;
     } catch (_) { /* fall through */ }
     return false;
