@@ -15,6 +15,8 @@
 export const MODULE_ID = "ace-qol";
 
 import { QolSettings }       from "./settings.mjs";
+import { DayRollover }       from "./day-rollover.mjs";
+import { HungerWarning }     from "./hunger-warning.mjs";
 import { installHookDebugGuard, setHookDebug } from "./hook-debug-guard.mjs";
 import { replyOwnerIsAuthorised } from "./socket-authority.mjs";
 import { registerChatCardHandler, registerForeignChatCardHandler, sweepDrawnCards } from "./chat-render-utils.mjs";
@@ -553,6 +555,18 @@ Hooks.once("init", () => {
 //      wrong. Swallowed for everyone (GM included), routed to the console.
 // Guarded + once so we never double-wrap or break the UI (the signature is
 // preserved: message, type, options).
+// ── The day turning over, and telling them before it bites ──────────────────
+// ⚠️ FILE SCOPE. Both of these were nearly written into the big ready handler
+// below, where a `Hooks.once("ready")` registered from inside `ready` never
+// fires (2026-08-12) and where one throw above kills every registration under
+// it (2026-08-09). Registering here costs nothing and cannot be skipped.
+Hooks.once("ready", () => {
+  try { DayRollover.init(); }
+  catch (err) { console.error(`${MODULE_ID} | Day rollover init failed:`, err); }
+  try { HungerWarning.register(); }
+  catch (err) { console.error(`${MODULE_ID} | Hunger warning init failed:`, err); }
+});
+
 // ⚠️ TOP-LEVEL, not nested inside another ready handler. A ready hook
 // registered from INSIDE a ready handler waits on an event already in progress
 // and never fires — the 2026-08-12 lesson that left 13 condition ghosts and a
