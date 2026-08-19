@@ -31,12 +31,37 @@ def srcfiles(mod):
                     out.append(os.path.join(dp, fn))
     return out
 
+def strip_comments(src):
+    """Blank comments while preserving offsets. Without this the audit matches
+    its OWN warning text: several files document these exact bugs by name."""
+    out, i, n_, NL = list(src), 0, len(src), chr(10)
+    while i < n_:
+        c = src[i]
+        if c in "\"'`":
+            q = c; i += 1
+            while i < n_ and src[i] != q:
+                if src[i] == chr(92): i += 1
+                i += 1
+            i += 1; continue
+        if src.startswith("//", i):
+            while i < n_ and src[i] != NL:
+                out[i] = " "; i += 1
+            continue
+        if src.startswith("/*", i):
+            while i < n_ and not src.startswith("*/", i):
+                if src[i] != NL: out[i] = " "
+                i += 1
+            for k in range(i, min(i + 2, n_)): out[k] = " "
+            i += 2; continue
+        i += 1
+    return "".join(out)
+
 FILES = {m: srcfiles(m) for m in MODS}
 TEXT = {}
 for m in MODS:
     for f in FILES[m]:
         try:
-            TEXT[f] = open(f, encoding="utf-8", errors="ignore").read()
+            TEXT[f] = strip_comments(open(f, encoding="utf-8", errors="ignore").read())
         except Exception:
             TEXT[f] = ""
 
@@ -91,70 +116,12 @@ for m in MODS:
             continue
         flag("NEVER IMPORTED", f"{rel(f)}  ({len(TEXT[f].splitlines())} lines)")
 
-# ── 3. duplicate keys at the SAME nesting level of the SAME literal ─────────
-def dup_keys(txt, fname):
-    # Walk the text tracking brace depth; collect keys per (depth, block-id).
-    depth = 0
-    block_stack = []        # (start_line, {key: count})
-    i, n = 0, len(txt)
-    line = 1
-    in_s = None
-    while i < n:
-        c = txt[i]
-        if c == "\n":
-            line += 1
-        if in_s:
-            if c == "\\":
-                i += 2
-                continue
-            if c == in_s:
-                in_s = None
-            i += 1
-            continue
-        if c in "\"'`":
-            in_s = c
-            i += 1
-            continue
-        if txt.startswith("//", i):
-            j = txt.find("\n", i)
-            i = n if j < 0 else j
-            continue
-        if txt.startswith("/*", i):
-            j = txt.find("*/", i)
-            line += txt[i:(n if j < 0 else j)].count("\n")
-            i = n if j < 0 else j + 2
-            continue
-        if c == "{":
-            block_stack.append([line, {}])
-            i += 1
-            continue
-        if c == "}":
-            if block_stack:
-                start_line, keys = block_stack.pop()
-                for k, cnt in keys.items():
-                    if cnt > 1:
-                        flag("DUPLICATE KEY",
-                             f"{fname}:{start_line}  '{k}' defined {cnt}x in the SAME object literal "
-                             f"(JS keeps the LAST - this is how Haste granted only +2 AC)")
-            i += 1
-            continue
-        # a key at this level
-        mt = re.match(r'([A-Za-z_$][\w$]*|"[^"]+"|\'[^\']+\')\s*:', txt[i:])
-        if mt and block_stack:
-            prev = txt[max(0, i - 1)]
-            if prev in "{,\n \t":
-                k = mt.group(1).strip("\"'")
-                block_stack[-1][1][k] = block_stack[-1][1].get(k, 0) + 1
-                i += mt.end()
-                continue
-        i += 1
-
-for m in MODS:
-    for f in FILES[m]:
-        try:
-            dup_keys(TEXT[f], rel(f))
-        except Exception as e:
-            flag("AUDIT ERROR", f"dup-key scan failed on {rel(f)}: {e}")
+# ── 3. duplicate keys — DELEGATED TO ESLINT, deliberately ──────────────────
+# A hand-rolled brace-tracking scanner lived here and produced 26 false
+# positives against 2 real hits: it could not tell one object literal from a
+# nested one, so 85 conditions each having a `name` read as "name defined 85x".
+# ESLint's `no-dupe-keys` uses a real parser, gets it right for free, and is now
+# an ERROR in all four eslint configs. Run the lint; do not re-add a scanner.
 
 # ── 4. socket actions: only inside a real socket.emit(...) ─────────────────
 EMIT = re.compile(r'socket\.emit\(\s*[^,]+,\s*\{(.{0,400}?)\}', re.S)
@@ -169,7 +136,11 @@ for m in MODS:
             v = re.search(r'action\s*:\s*(?:this\.|[\w.]+\.)?([A-Z_]+)\b', mt.group(1))
             if v:
                 emitted.add("<var:" + v.group(1) + ">")
-        for mt in re.finditer(r'action\s*===\s*["\']([\w]+)["\']', txt):
+        # ⚠️ `!==` COUNTS AS HANDLING. The common shape is an early-return
+        # guard: `if (data?.action !== "aiResponse") return;`. Matching only
+        # `===` reported three live, correctly-handled relay replies as
+        # orphans.
+        for mt in re.finditer(r'action\s*[=!]==\s*["\']([\w]+)["\']', txt):
             handled.add(mt.group(1))
         for mt in re.finditer(r'case\s+["\']([\w]+)["\']\s*:', txt):
             handled.add(mt.group(1))
@@ -181,23 +152,29 @@ for a in sorted(emitted):
     if a not in handled:
         flag("SOCKET EMITTED, NO HANDLER", a)
 
-# ── 5. ready registered from inside ready ──────────────────────────────────
-for m in MODS:
-    for f in FILES[m]:
-        txt = TEXT[f]
-        # find top-level ready blocks and their extent
-        tops = [mt.start() for mt in re.finditer(r'^Hooks\.once\(\s*["\']ready["\']', txt, re.M)]
-        for mt in re.finditer(r'^\s+Hooks\.once\(\s*["\']ready["\']', txt, re.M):
-            ln = txt[:mt.start()].count("\n") + 1
-            inside_top = any(t < mt.start() for t in tops)
-            flag("INDENTED ready HOOK",
-                 f"{rel(f)}:{ln}" + ("  <-- a top-level ready exists ABOVE it in this file" if inside_top else ""))
+# ── 5. ready reachability — SEE tools/ready-hook-check.py ─────────────────
+# An indentation test lived here. It used `^\s+`, and `\s` matches a NEWLINE,
+# so every top-level hook following a blank line was flagged: eight false
+# positives, and it missed all four real ones. Indentation was never the
+# question — what matters is whether the enclosing code runs during `ready`.
+# ready-hook-check.py answers that properly, and is verified to go red when a
+# guard is deliberately removed.
 
 # ── 6. removed dnd5e APIs ──────────────────────────────────────────────────
 for api in ["rollAbilitySave", "rollAbilityTest", "rollSkillV2"]:
     for m in MODS:
         for f in FILES[m]:
             for mt in re.finditer(r'\b' + api + r'\s*\??\.?\(', TEXT[f]):
+                # ⚠️ A `typeof x.api === "function"` fallback is the CORRECT
+                # way to support two dnd5e majors at once - it is not a defect,
+                # and flagging it trains people to ignore this whole category.
+                window = TEXT[f][max(0, mt.start() - 400): mt.start() + 120]
+                if "typeof" in window and api in window:
+                    continue
+                # platform-contract.mjs NAMES these on purpose: it is the
+                # inventory of every platform call ACE depends on, not a caller.
+                if "platform-contract" in rel(f):
+                    continue
                 ln = TEXT[f][:mt.start()].count("\n") + 1
                 flag("REMOVED dnd5e API", f"{rel(f)}:{ln}  {api}")
 
@@ -212,7 +189,8 @@ for m in MODS:
             if "??" in ln_txt and ln_txt.index("preparation") < ln_txt.index("??"):
                 ln = txt[:mt.start()].count("\n") + 1
                 flag("DEPRECATED FIELD READ FIRST", f"{rel(f)}:{ln}")
-            elif "??" not in ln_txt and "=" in ln_txt:
+            elif ("??" not in ln_txt and "=" in ln_txt
+                  and not re.search(r'\.preparation[\w.]*\s*=', ln_txt)):
                 ln = txt[:mt.start()].count("\n") + 1
                 flag("DEPRECATED FIELD, NO FALLBACK", f"{rel(f)}:{ln}")
 
