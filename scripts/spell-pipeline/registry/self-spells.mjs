@@ -163,10 +163,38 @@ export const SELF_SPELLS = {
   // ─── Phase 3.A additions — utility / movement / cantrip self-buffs ───
 
   "true strike": {
-    shape: "self",
-    range: 30,
-    effect: { key: "true_strike", duration: { rounds: 1 } },
-    flavorOnConfirm: "You gain advantage on your next attack roll against the target.",
+    // ⚠️ TWO COMPLETELY DIFFERENT SPELLS SHARING A NAME (Grok 2026-08-18).
+    // The old entry — shape:"self", a flag on the caster — matched NEITHER.
+    //
+    //   2014: a targeting cantrip. You point at a creature; on your NEXT turn
+    //         you have advantage on your FIRST attack roll against THAT
+    //         creature. Concentration, 1 round. The target matters — advantage
+    //         against the goblin is worthless if you swing at the ogre — and
+    //         the old self-flag recorded no target at all.
+    //
+    //   2024: not a buff in any sense. It IS an attack: you make a weapon
+    //         attack using your spellcasting ability, with bonus radiant
+    //         damage scaling at 5/11/17. dnd5e resolves that natively through
+    //         its own attack activity.
+    //
+    // So 2024 is deliberately NOT registered as a pipeline shape — automating
+    // it would mean applying a phantom buff on top of an attack the system
+    // already runs correctly. Doing nothing is the correct behaviour, and the
+    // pipeline only claims spells it can actually resolve.
+    shape: "attack-single",
+    range: 5,
+    flavorOnConfirm: "You attack with the weapon you are holding, using your spellcasting ability, adding radiant damage on a hit.",
+    byEdition: {
+      legacy: {
+        // 2014: mark the TARGET so the advantage is against that creature.
+        shape: "multi-buff",
+        range: 30,
+        countResolver: () => 1,
+        effect: { key: "true_strike", duration: { rounds: 1 } },
+        picker: { allowSelf: false, excludeDead: true },
+        flavorOnConfirm: "You point at a creature. On your next turn you have advantage on your first attack roll against it.",
+      },
+    },
   },
 
   "detect magic": {

@@ -1104,11 +1104,19 @@ const SPELL_EFFECTS = {
   // changes can be added later via the nullification registry. The name
   // matches what the nullification walker looks for.
 
+  // ⚠️ 2014 ONLY. Lives on the TARGET, not the caster — the whole spell is
+  // "advantage against THAT creature", and a flag on the caster cannot say
+  // which one. Uses the same one-shot grant the attack pipeline already reads
+  // for Guiding Bolt, so the advantage is spent by the first attack roll and
+  // gone, hit or miss, exactly as RAW says.
   true_strike: {
-    name: "True Strike",
+    name: "True Strike — Marked",
     icon: "icons/magic/perception/eye-slit-pink.webp",
-    description: "Advantage on next attack against the target.",
-    changes: [{ key: "flags.ace-qol.trueStrike", mode: 0, value: "1" }],
+    description: "The caster's first attack roll against this creature on their next turn has advantage. Spent on that roll, hit or miss.",
+    changes: [
+      { key: "flags.ace-qol.grants.advantage.attack.once", mode: 0, value: "1" },
+      { key: "flags.ace-qol.trueStrike", mode: 0, value: "1" },
+    ],
     concentration: true, duration: { rounds: 1 },
   },
   detect_magic: {
