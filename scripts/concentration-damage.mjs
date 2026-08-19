@@ -96,7 +96,9 @@ export class ConcentrationDamage {
       }
     });
 
-    console.debug(`${MODULE_ID} | ConcentrationDamage online`);
+    // (No "online" log here — this subsystem returns above by design, so the
+    //  line could never print. Removed rather than left as unreachable code
+    //  that reads like a registration.)
   }
 
   /**

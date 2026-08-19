@@ -98,7 +98,9 @@ const MIDI_HOOK_MAP = {
   "damageRollComplete":   "postDamageRoll",
   "preSaveComplete":      "preSave",
   "savesComplete":        "postSave",
-  "preDamageApplication": "preDamageApplication",
+  // ⚠️ "preDamageApplication" was listed HERE as well as in the block above.
+  // Same value both times so nothing broke, but a map that defines a key twice
+  // is one edit away from the Haste bug: JS keeps the LAST, silently.
   "DamageDealt":          "postDamageApplication",
 };
 

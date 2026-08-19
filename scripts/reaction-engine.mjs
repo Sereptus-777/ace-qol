@@ -562,10 +562,19 @@ export class ReactionEngine {
     // The flag is stored on actor.flags so it persists across saves.
     // Without this cleanup, a session that ends mid-combat would
     // leave stale flags forever.
-    Hooks.once("ready", () => {
+    // ⚠️🔴 THIS NEVER RAN. `Hooks.once("ready")` registered from INSIDE `ready`
+    // waits on an event already in progress (2026-08-12 lesson). ReactionEngine
+    // is constructed inside ace-qol.mjs's ready handler, so this reset has been
+    // dead since it was written - meaning a session that ended mid-combat left
+    // `reactionUsed` set on every creature that had reacted, FOREVER. Those
+    // creatures could never take another reaction: no Shield, no Opportunity
+    // Attack, no Counterspell, and nothing on screen to explain it.
+    const _resetReactionFlagsOnBoot = () => {
       if (!game.user.isGM) return;
       this._resetAllReactionFlags("world startup");
-    });
+    };
+    if (game.ready) _resetReactionFlagsOnBoot();
+    else Hooks.once("ready", _resetReactionFlagsOnBoot);
 
     // ── Track opportunity attacks as reaction usage ──
     // When an OA is made, mark the attacker's reaction as used.

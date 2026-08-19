@@ -139,7 +139,13 @@ export class EffectsPanel {
 
     // MutationObserver on #sidebar-content for INSTANT reposition during the
     // collapse animation — same approach ace-engine uses for smooth tracking.
-    Hooks.once("ready", () => this._bindSidebarObserver());
+    // ⚠️🔴 NEVER RAN - see the 2026-08-12 lesson. EffectsPanel is constructed
+    // inside ace-qol.mjs's ready handler, so this registration waited on an
+    // event already in progress and the observer was never bound: the panel
+    // did not follow the sidebar during its collapse animation.
+    const _bindObs = () => this._bindSidebarObserver();
+    if (game.ready) _bindObs();
+    else Hooks.once("ready", _bindObs);
 
     // v0.4.22.13: debounced resize handler. Without the 120ms gate,
     // a fluid window-drag fired `_applyPosition` dozens of times per

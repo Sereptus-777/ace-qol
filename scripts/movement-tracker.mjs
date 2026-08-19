@@ -27,8 +27,16 @@ export class MovementTracker {
   }
 
   _registerHooks() {
-    // Hook into the canvas-ready event so Token class is guaranteed available
-    Hooks.once("ready", () => this._patchTokenDrag());
+    // Hook into ready so the Token class is guaranteed available.
+    //
+    // ⚠️🔴 THIS NEVER RAN. MovementTracker is constructed inside ace-qol.mjs's
+    // own ready handler, and a `Hooks.once("ready")` registered from inside
+    // ready waits on an event already in progress (2026-08-12 lesson). The
+    // token-drag patch was therefore never applied and movement tracking did
+    // nothing - silently, with a healthy-looking log.
+    const _patch = () => this._patchTokenDrag();
+    if (game.ready) _patch();
+    else Hooks.once("ready", _patch);
   }
 
   _patchTokenDrag() {
