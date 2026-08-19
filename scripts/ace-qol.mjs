@@ -6,6 +6,7 @@
 export const MODULE_ID = "ace-qol";
 
 import { QolSettings }       from "./settings.mjs";
+import { replyOwnerIsAuthorised } from "./socket-authority.mjs";
 import { registerChatCardHandler, registerForeignChatCardHandler, sweepDrawnCards } from "./chat-render-utils.mjs";
 import { ExtendedEffects }   from "./extended-effects.mjs";
 import { AttackPipeline }    from "./attack-pipeline.mjs";
@@ -4492,6 +4493,12 @@ Hooks.once("ready", () => {
       // (players can't advance the turn themselves). activeGM-gated + re-checks
       // the combatant so it can't double-advance. (Johnny's table rule.)
       if (payload?.action === "fumbleEndTurn") {
+        // ⚠️ Being the current combatant was the ONLY test. That let any client
+        // end whoever's turn was live — another player's, or the GM's monster
+        // mid-multiattack. Ending a turn discards everything unspent on it.
+        // The creature must belong to whoever is asking.
+        const _fumbleActor = game.actors?.get?.(payload.actorId);
+        if (!replyOwnerIsAuthorised(payload, _fumbleActor, "fumbleEndTurn")) return;
         if (game.users?.activeGM === game.user && game.combat?.started
             && game.combat.combatant?.actor?.id === payload.actorId) {
           setTimeout(() => {
@@ -4549,6 +4556,7 @@ Hooks.once("ready", () => {
             action: "riderChoice",
             requestId,
             selectedRiders,
+            userId: game.user.id,   // ⚠️ required: the GM checks this against who it asked
           });
         } catch (err) {
           console.error(`${MODULE_ID} | Player rider popup failed:`, err);
@@ -4556,6 +4564,7 @@ Hooks.once("ready", () => {
             action: "riderChoice",
             requestId,
             selectedRiders: [],
+            userId: game.user.id,
           });
         }
         return;
@@ -4588,10 +4597,10 @@ Hooks.once("ready", () => {
           const tokenIds = (picked ?? [])
             .map(a => a.getActiveTokens?.()?.[0]?.id ?? canvas.tokens?.placeables.find(t => t.actor?.id === a.id)?.id)
             .filter(Boolean);
-          game.socket.emit(SOCKET_NAME, { action: "spellPickerChoice", requestId, tokenIds });
+          game.socket.emit(SOCKET_NAME, { action: "spellPickerChoice", requestId, tokenIds, userId: game.user.id });
         } catch (err) {
           console.error(`${MODULE_ID} | showSpellPicker handler failed:`, err);
-          game.socket.emit(SOCKET_NAME, { action: "spellPickerChoice", requestId, tokenIds: null });
+          game.socket.emit(SOCKET_NAME, { action: "spellPickerChoice", requestId, tokenIds: null, userId: game.user.id });
         }
         return;
       }
@@ -4603,10 +4612,10 @@ Hooks.once("ready", () => {
       if (payload.action === "showReSaveRoll") {
         try {
           const info = await RepeatingSaveEngine.playerRollReSave(payload);
-          game.socket.emit(SOCKET_NAME, { action: "reSaveRollResult", requestId: payload.requestId, info });
+          game.socket.emit(SOCKET_NAME, { action: "reSaveRollResult", requestId: payload.requestId, info, userId: game.user.id });
         } catch (err) {
           console.error(`${MODULE_ID} | showReSaveRoll handler failed:`, err);
-          game.socket.emit(SOCKET_NAME, { action: "reSaveRollResult", requestId: payload.requestId, info: null });
+          game.socket.emit(SOCKET_NAME, { action: "reSaveRollResult", requestId: payload.requestId, info: null, userId: game.user.id });
         }
         return;
       }
@@ -4646,6 +4655,13 @@ Hooks.once("ready", () => {
       if (payload.action === "playerSpellCast") {
         try {
           const activity = payload.activityUuid ? await fromUuid(payload.activityUuid) : null;
+          // ⚠️ This announces "I am casting", which drives counterspell offers
+          // and the summon-placement verdict. Unauthed, a forged one fires a
+          // counterspell prompt at the table for a spell nobody cast, and can
+          // spend a real reaction answering it. The claimant must own the
+          // creature doing the casting.
+          const _castActor = activity?.actor ?? activity?.item?.actor ?? null;
+          if (!replyOwnerIsAuthorised(payload, _castActor, "playerSpellCast")) return;
           const message  = payload.messageId ? game.messages.get(payload.messageId) : null;
           if (activity && reactionEngine) {
             await reactionEngine._onSpellCast(activity, message);
@@ -4685,14 +4701,14 @@ Hooks.once("ready", () => {
       // ── Player responds to rider popup (Divine Smite, Eldritch Smite, etc.) ──
       if (payload.action === "riderChoice") {
         console.log(`${MODULE_ID} | GM received riderChoice from player (requestId=${payload.requestId}, riders=${payload.selectedRiders?.length ?? 0})`);
-        damageEngine.resolveRiderChoice(payload.requestId, payload.selectedRiders);
+        damageEngine.resolveRiderChoice(payload.requestId, payload.selectedRiders, payload);
         return;
       }
 
       // ── Player (the caster) replied with their spell target choice ──
       if (payload.action === "spellPickerChoice") {
         console.log(`${MODULE_ID} | GM received spellPickerChoice (requestId=${payload.requestId}, targets=${Array.isArray(payload.tokenIds) ? payload.tokenIds.length : "cancelled"})`);
-        saveEngine?.resolveSpellPickerChoice?.(payload.requestId, payload.tokenIds);
+        saveEngine?.resolveSpellPickerChoice?.(payload.requestId, payload.tokenIds, payload);
         return;
       }
 
@@ -4700,7 +4716,7 @@ Hooks.once("ready", () => {
       //    the repeating-save engine so it resolves (pass → ends, fail → persists
       //    or escalates) and posts the outcome card. (2026-07-25)
       if (payload.action === "reSaveRollResult") {
-        RepeatingSaveEngine.resolveReSaveRequest(payload.requestId, payload.info);
+        RepeatingSaveEngine.resolveReSaveRequest(payload.requestId, payload.info, payload);
         return;
       }
 
@@ -4711,7 +4727,7 @@ Hooks.once("ready", () => {
         try {
           const { OAPrompt } = // Relative on purpose — see the route-prefix note above.
           await import("./oa-prompt.mjs");
-          await OAPrompt.resolveOAPrompt(payload.messageId, payload.status);
+          await OAPrompt.resolveOAPrompt(payload.messageId, payload.status, payload);
         } catch (err) {
           console.error(`${MODULE_ID} | oaResolve socket handler failed:`, err);
         }

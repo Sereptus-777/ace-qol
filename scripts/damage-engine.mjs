@@ -11,6 +11,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { replyIsFromTheUserWeAsked } from "./socket-authority.mjs";
 import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { QolSettings } from "./settings.mjs";
 import { DescriptionParser } from "./description-parser.mjs";
@@ -1128,7 +1129,10 @@ export class DamageEngine {
         resolve([]);
       }, NETWORK_SAFETY_MS);
 
-      this._pendingRiderRequests[requestId] = { resolve, timeout };
+      // ⚠️ REMEMBER WHO WE ASKED. Without this the GM has no way to tell a
+      // reply from the smiting paladin apart from a reply typed by anyone else
+      // at the table, and a rider choice spends somebody's spell slots.
+      this._pendingRiderRequests[requestId] = { resolve, timeout, askedUserId: targetUser.id };
 
       game.socket.emit(`module.${MODULE_ID}`, {
         action: "showRiderPopup",
@@ -1140,12 +1144,14 @@ export class DamageEngine {
     });
   }
 
-  resolveRiderChoice(requestId, selectedRiders) {
+  resolveRiderChoice(requestId, selectedRiders, payload = null) {
     const pending = this._pendingRiderRequests[requestId];
     if (!pending) {
       console.warn(`${MODULE_ID} | No pending rider request for ${requestId}`);
       return;
     }
+    // A reply may only come from the player the popup was sent to.
+    if (payload && !replyIsFromTheUserWeAsked(pending.askedUserId, payload, "riderChoice")) return;
     clearTimeout(pending.timeout);
     delete this._pendingRiderRequests[requestId];
     pending.resolve(selectedRiders ?? []);

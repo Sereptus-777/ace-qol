@@ -19,6 +19,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { replyIsFromTheUserWeAsked } from "./socket-authority.mjs";
 import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { QolSettings } from "./settings.mjs";
 import { CombatState } from "./combat-state.mjs";
@@ -639,10 +640,23 @@ export class SaveEngine {
     //  The dedupe belonged here from the start. A guard written inside the
     //  work it is meant to prevent cannot prevent it.
     //
-    //  ⚠️ Marked on BOTH uuid and id, matching the write further down: items
-    //  can share the default activity id ("dnd5eactivity000"), so id alone
-    //  would suppress a genuinely different cast, and uuid alone would let
-    //  the id-keyed fallback through.
+    //  ⚠️🔴 KEYED ON UUID ONLY, AND THE FIRST VERSION OF THIS GATE GOT IT
+    //  WRONG (Brock audit, 2026-08-19). It read the activity ID as well, which
+    //  looked like belt-and-braces and was in fact a live bug: dnd5e assigns
+    //  the STATIC id "dnd5eactivity000" to the activity it auto-generates when
+    //  migrating any legacy item (dnd5e.mjs, Activity.INITIAL_ID = staticID
+    //  ("dnd5eactivity")). Every migrated and every imported item therefore
+    //  carries the SAME activity id. Reading that id meant one wizard casting
+    //  Fireball silently swallowed a completely different spell cast by anyone
+    //  else within the 1200 ms window — no card, no saves, no error.
+    //
+    //  The uuid is unique per activity per item per actor, and the duplicate
+    //  hooks this gate exists to stop all describe the SAME cast, so they all
+    //  carry the same uuid. Uuid alone is both sufficient and safe.
+    //
+    //  The id is still WRITTEN further down, because the createChatMessage
+    //  fallback keys on `uuid || id` and needs a stamp for the rare flag shape
+    //  that has no uuid. Writing it is harmless; READING it here was not.
     // ══════════════════════════════════════════════════════════════════════
     //  ⚠️ WINDOW: DUPLICATE HOOKS, NOT DELIBERATE RE-CASTS. Redundant hooks for
     //  ONE cast fire within the same tick — milliseconds apart; the widest is
@@ -654,18 +668,23 @@ export class SaveEngine {
     //  intentional re-use.
     {
       const _now = Date.now();
-      const _keys = [activity?.uuid, activity?.id].filter(Boolean);
-      for (const k of _keys) {
-        const prev = this._processedActivityIds.get(k);
+      const _key = activity?.uuid ?? null;
+      if (_key) {
+        const prev = this._processedActivityIds.get(_key);
         if (prev != null && (_now - prev) < 1200) {
           console.debug(`${MODULE_ID} | _onUseActivity: "${item.name}" already handled ${_now - prev}ms ago — ignoring duplicate hook.`);
           return;
         }
+        // Claim the cast IMMEDIATELY. This method awaits later on, and a second
+        // hook firing during that await would otherwise sail past a check that
+        // had not yet written its marker.
+        this._processedActivityIds.set(_key, _now);
+      } else {
+        // No uuid means nothing safe to key on — the id is shared across every
+        // migrated item, so using it would suppress unrelated casts. Say so
+        // rather than dedupe on a value that cannot identify this cast.
+        console.debug(`${MODULE_ID} | _onUseActivity: "${item.name}" has no activity uuid — cannot dedupe this one.`);
       }
-      // Claim the cast IMMEDIATELY. This method awaits later on, and a second
-      // hook firing during that await would otherwise sail past a check that
-      // had not yet written its marker.
-      for (const k of _keys) this._processedActivityIds.set(k, _now);
       const cutoff = _now - 5000;
       for (const [k, ts] of this._processedActivityIds) {
         if (ts < cutoff) this._processedActivityIds.delete(k);
@@ -1063,7 +1082,8 @@ export class SaveEngine {
     const requestId = foundry.utils.randomID();
     let resolveFn;
     const reply = new Promise(res => { resolveFn = res; });
-    this._pickerRequests.set(requestId, resolveFn);
+    // ⚠️ store the addressee beside the resolver — see socket-authority.mjs
+    this._pickerRequests.set(requestId, { resolve: resolveFn, askedUserId: casterUser.id });
     try {
       game.socket.emit(`module.${MODULE_ID}`, {
         action: "showSpellPicker",
@@ -1295,9 +1315,13 @@ export class SaveEngine {
   }
 
   /** Called on the GM when the caster's client replies with its target choice. */
-  resolveSpellPickerChoice(requestId, tokenIds) {
-    const resolve = this._pickerRequests.get(requestId);
-    if (resolve) { this._pickerRequests.delete(requestId); resolve(tokenIds); }
+  resolveSpellPickerChoice(requestId, tokenIds, payload = null) {
+    const pending = this._pickerRequests.get(requestId);
+    if (!pending) return;
+    // Only the caster we asked may say where their own spell lands.
+    if (payload && !replyIsFromTheUserWeAsked(pending.askedUserId, payload, "spellPickerChoice")) return;
+    this._pickerRequests.delete(requestId);
+    pending.resolve(tokenIds);
   }
 
   /**

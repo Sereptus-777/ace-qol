@@ -25,6 +25,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { replyOwnerIsAuthorised } from "./socket-authority.mjs";
 import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { QolSettings } from "./settings.mjs";
 import { CombatState } from "./combat-state.mjs";
@@ -553,7 +554,7 @@ export class OAPrompt {
    * @param {string} messageId
    * @param {"taken"|"passed"} status
    */
-  static async resolveOAPrompt(messageId, status) {
+  static async resolveOAPrompt(messageId, status, payload = null) {
     const msg = game.messages?.get?.(messageId);
     if (!msg) return;
     const flags = msg.flags?.[MODULE_ID];
@@ -563,6 +564,12 @@ export class OAPrompt {
     const reactorId = flags.reactorId;
     const moverId   = flags.moverId;
     const reactor   = game.actors.get(reactorId);
+    // ⚠️ This one is not keyed to a pending request, so there is no "who did we
+    // ask" to compare against — the check is ownership of the creature whose
+    // reaction is being spent. Unguarded, any client could burn another
+    // creature's reaction, which is exactly how you disable somebody's Shield
+    // or their own opportunity attack later in the round.
+    if (payload && !replyOwnerIsAuthorised(payload, reactor, "oaResolve")) return;
     const mover     = game.actors.get(moverId);
     // Prefer the token names that were captured when the card was posted
     // (they include disambiguators like "Assassin 1"). Fall back to actor
@@ -655,7 +662,7 @@ const _bindOAButtons = (message, html) => {
         if (game.user.isGM) {
           await OAPrompt.resolveOAPrompt(msgId, status);
         } else {
-          game.socket.emit(`module.${MODULE_ID}`, { action: "oaResolve", messageId: msgId, status });
+          game.socket.emit(`module.${MODULE_ID}`, { action: "oaResolve", messageId: msgId, status, userId: game.user.id });
         }
       } catch (err) {
         console.warn(`${MODULE_ID} | OA resolve threw:`, err);

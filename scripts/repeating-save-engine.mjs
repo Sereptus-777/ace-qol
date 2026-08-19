@@ -18,6 +18,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { replyIsFromTheUserWeAsked } from "./socket-authority.mjs";
 import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { safeShowForRoll, awaitDiceSettle } from "./dsn-utils.mjs";
 import { saveBonus, naturalD20 } from "./rolldata-utils.mjs";
@@ -289,9 +290,17 @@ export class RepeatingSaveEngine {
 
   /** GM-side: the owner's client replied with their roll. Resolves the pending
    *  promise so _obtainReSaveRoll continues. Called by the socket handler. */
-  static resolveReSaveRequest(requestId, data) {
+  static resolveReSaveRequest(requestId, data, payload = null) {
     const fn = this._reSaveRequests.get(requestId);
     if (!fn) return;
+    // ⚠️ Only the owner we asked may answer. The addressee is already recorded
+    // in the context map, so nothing new needs storing — it was simply never
+    // consulted. A stranger answering here reports a save result on a creature
+    // that is not theirs, which decides whether a condition ends.
+    if (payload) {
+      const ctx = this._reSaveContexts.get(requestId);
+      if (!replyIsFromTheUserWeAsked(ctx?.ownerUserId, payload, "reSaveRollResult")) return;
+    }
     // A null reply = the player cancelled/closed the prompt. That is NOT
     // permission to roll for them — surface the GM's ROLL FOR THEM card
     // immediately and keep waiting. Only a real roll resolves this.

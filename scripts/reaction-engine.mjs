@@ -613,6 +613,7 @@ export class ReactionEngine {
         try {
           game.socket.emit(SOCKET_NAME, {
             action: "playerSpellCast",
+            userId: game.user.id,   // ⚠️ the GM checks this owns the caster
             activityUuid: activity?.uuid ?? null,
             messageId: message?.id ?? null,
           });
@@ -673,26 +674,46 @@ export class ReactionEngine {
       const pending = this._pendingRequests.get(requestId);
       if (!pending) return true;
 
-      // v0.4.22.12: Ownership validation (defense-in-depth).
-      // Without this, a malicious or buggy client with a known
-      // requestId could resolve a reaction belonging to a different
-      // actor. Validate that the responder either owns the reactor
-      // actor or is a GM.
-      if (senderUserId) {
-        const senderUser = game.users?.get(senderUserId);
+      // ⚠️🔴 THIS CHECK EXISTED SINCE v0.4.22.12 AND FAILED OPEN THREE WAYS
+      // (Brock audit, 2026-08-19). All three are the same mistake: treating a
+      // missing field as "nothing to verify" instead of "cannot verify".
+      //
+      //   1. The whole block hung off `if (senderUserId)`, so a payload that
+      //      simply OMITTED the sender skipped every check below it. Leaving
+      //      the field out was easier than forging it.
+      //   2. A GM claim passed. Foundry attaches no trusted sender, so a
+      //      player types the GM's id and is waved through. Every reaction
+      //      prompt is sent to a specific player; a GM answers locally.
+      //   3. A missing stored actor id skipped the ownership test.
+      //
+      // Now: the reply must name a real, non-GM user, the request must know
+      // whose reaction it is, and that user must own the creature. Anything
+      // missing is a refusal, not a pass.
+      {
         const expectedActorId = pending.reactorActorId;
-        if (senderUser && expectedActorId) {
-          const isGm = !!senderUser.isGM;
-          const actor = game.actors?.get(expectedActorId);
-          const ownsActor = !!actor?.testUserPermission?.(senderUser, "OWNER");
-          if (!isGm && !ownsActor) {
-            console.warn(`${MODULE_ID} | Rejected reactionResponse from ${senderUser.name}: not GM and doesn't own actor ${expectedActorId}`);
-            return true; // silently drop
-          }
+        const senderUser = senderUserId ? game.users?.get(senderUserId) : null;
+        if (!senderUser) {
+          console.warn(`${MODULE_ID} | Rejected reactionResponse — names no real user.`);
+          return true;
         }
-        // Echo-actor sanity check: if responder echoed an actorId,
-        // it must match the stored one.
-        if (reactorActorId && expectedActorId && reactorActorId !== expectedActorId) {
+        if (senderUser.isGM) {
+          console.warn(`${MODULE_ID} | Rejected reactionResponse — claims GM "${senderUser.name}"; ` +
+            `reaction prompts go to players, and a GM answers on its own client.`);
+          return true;
+        }
+        if (!expectedActorId) {
+          console.warn(`${MODULE_ID} | Rejected reactionResponse — the request did not record whose ` +
+            `reaction it was, so there is nothing to check "${senderUser.name}" against.`);
+          return true;
+        }
+        const actor = game.actors?.get(expectedActorId);
+        if (!actor?.testUserPermission?.(senderUser, "OWNER")) {
+          console.warn(`${MODULE_ID} | Rejected reactionResponse from ${senderUser.name}: does not own actor ${expectedActorId}`);
+          return true;
+        }
+        // Echo-actor sanity check: if responder echoed an actorId, it must
+        // match the stored one.
+        if (reactorActorId && reactorActorId !== expectedActorId) {
           console.warn(`${MODULE_ID} | Rejected reactionResponse: actor mismatch ${reactorActorId} vs ${expectedActorId}`);
           return true;
         }

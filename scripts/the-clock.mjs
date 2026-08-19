@@ -227,14 +227,66 @@ export class TheClock {
    */
   static async onSocket(payload) {
     if (!game.user.isGM) return;
+
+    // ⚠️🔴 THE PAYLOAD USED TO NAME ITS OWN PRICE (Brock audit, 2026-08-19).
+    // `minutes` and `force` were taken straight from the wire, so any client
+    // could advance world time by any amount. That is not a cosmetic clock:
+    // world time expires conditions and spell durations, moves daylight, and
+    // decides when a rest is available. A player could skip a night, burn off
+    // a curse, or push a hunt past dawn from their own console.
+    //
+    // The fix is not a bigger number check. It is that THE COST TABLE IS THE
+    // AUTHORITY, not the message. For every key with a fixed cost the payload's
+    // minutes are ignored outright, which removes the attack from most of the
+    // table. Only genuinely dynamic keys (travel, harvest, conversation) carry
+    // a number, and those are clamped.
     const sender = game.users?.get(payload?.userId);
     if (!sender) {
       console.warn(`${LOG} | ignored a time request from an unknown user.`);
       return;
     }
+    if (sender.isGM) {
+      console.warn(`${LOG} | refused a time request claiming GM "${sender.name}" — a GM spends locally.`);
+      return;
+    }
+    if (!sender.active) {
+      console.warn(`${LOG} | refused a time request from "${sender.name}", who is not connected.`);
+      return;
+    }
+
+    const entry = TIME_COSTS[payload?.key];
+    if (!entry) {
+      console.warn(`${LOG} | refused a time request from "${sender.name}" — "${payload?.key}" is not a known action.`);
+      return;
+    }
+
+    // Fixed-cost key: the table decides, full stop.
+    let minutes = payload?.minutes;
+    if (Number.isFinite(entry.minutes)) {
+      minutes = undefined;
+    } else {
+      // Dynamic key. It must be a real number, and it is capped at the longest
+      // legitimate entry in the table (a long rest, 480 minutes) so no single
+      // player action can advance more than a day's worth of world time.
+      const asked = Number(minutes);
+      if (!Number.isFinite(asked) || asked < 0) {
+        console.warn(`${LOG} | refused "${payload.key}" from "${sender.name}" — no usable duration.`);
+        return;
+      }
+      const CAP = 480;
+      if (asked > CAP) {
+        console.warn(`${LOG} | clamped "${payload.key}" from "${sender.name}": asked ${asked} min, capped at ${CAP}.`);
+      }
+      minutes = Math.min(asked, CAP);
+    }
+
     await this.spend(payload.key, {
-      minutes: payload.minutes, detail: payload.detail,
-      force: payload.force, quiet: payload.quiet,
+      minutes,
+      detail: typeof payload.detail === "string" ? payload.detail.slice(0, 200) : undefined,
+      // ⚠️ `force` means "spend even during combat", which is a GM override.
+      // A player asking for it is asking to bypass the combat guard.
+      force: false,
+      quiet: !!payload.quiet,
     });
   }
 }

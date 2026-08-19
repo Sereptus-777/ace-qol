@@ -12,6 +12,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { replyIsFromTheUserWeAsked } from "./socket-authority.mjs";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 const MIDI_ID = "midi-qol";
@@ -1133,7 +1134,8 @@ export class FlagsEngine {
       }, NETWORK_SAFETY_MS);
 
       // Store the pending request so the socket handler can resolve it
-      FlagsEngine._pendingPrompts.set(requestId, { resolve, timer, rollTotal });
+      // ⚠️ record the addressee — see socket-authority.mjs
+      FlagsEngine._pendingPrompts.set(requestId, { resolve, timer, rollTotal, askedUserId: ownerUser.id });
 
       // Send to the owning player
       const socketName = `module.${MODULE_ID}`;
@@ -1177,6 +1179,7 @@ export class FlagsEngine {
       game.socket.emit(socketName, {
         action: "optionalPromptResult",
         requestId: payload.requestId,
+        userId: game.user.id,   // ⚠️ required: the GM checks this against who it asked
         newTotal: result.newTotal,
         bonuses: result.bonuses.map(b => ({
           name: b.name,
@@ -1193,6 +1196,8 @@ export class FlagsEngine {
     if (payload.action === "optionalPromptResult") {
       const pending = FlagsEngine._pendingPrompts.get(payload.requestId);
       if (!pending) return;
+      // Only the player we asked may add their own bonus to their own roll.
+      if (!replyIsFromTheUserWeAsked(pending.askedUserId, payload, "optionalPromptResult")) return;
 
       clearTimeout(pending.timer);
       FlagsEngine._pendingPrompts.delete(payload.requestId);

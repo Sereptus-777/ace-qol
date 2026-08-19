@@ -131,7 +131,7 @@ export class FumbleEngine {
       if (game.users?.activeGM === game.user) {
         FumbleEngine._advanceAfterFumble(actor.id);
       } else {
-        try { game.socket.emit(`module.${MODULE_ID}`, { action: "fumbleEndTurn", actorId: actor.id }); }
+        try { game.socket.emit(`module.${MODULE_ID}`, { action: "fumbleEndTurn", actorId: actor.id, userId: game.user.id }); }
         catch (err) { console.warn(`${MODULE_ID} | fumble socket relay failed:`, err); }
       }
     } catch (err) {

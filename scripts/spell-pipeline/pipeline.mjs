@@ -334,7 +334,13 @@ export class SpellPipeline {
       switch (entry.shape) {
         case "self":
           await SelfResolver.run(ctx);
-          await SpellPipeline._commitSlotIfDeferred(activity, castLevel);
+          // ⚠️ SWEEP THE CLASS, NOT THE INSTANCE. Every branch that could ever
+          // involve a template now goes through the same helper, which asks the
+          // activity whether it declares one and commits immediately when it
+          // does not. That way a spell added to the registry later cannot
+          // quietly land in a branch that burns the slot on cancel — which is
+          // how "aura" ended up as the one shape left behind.
+          await SpellPipeline._commitSlotOnTemplatePlaced(activity, castLevel);
           break;
 
         case "distribute":
@@ -361,7 +367,7 @@ export class SpellPipeline {
           // Emanation save — no picker; everyone in range saves. (Frightful
           // Presence, aura-of-fear, gaze pulses.)
           await SaveResolver.runArea(ctx);
-          await SpellPipeline._commitSlotIfDeferred(activity, castLevel);
+          await SpellPipeline._commitSlotOnTemplatePlaced(activity, castLevel);
           break;
 
         case "touch":
@@ -382,7 +388,17 @@ export class SpellPipeline {
 
         case "aura":
           await TemplateResolver.runAura(ctx);
-          await SpellPipeline._commitSlotIfDeferred(activity, castLevel);
+          // ⚠️ THE THIRD TEMPLATE SHAPE, LEFT BEHIND (Brock audit, 2026-08-19).
+          // template-save and template-trigger were given "cancel = no slot
+          // lost" and this one was not, so cancelling Spirit Guardians burned
+          // a 3rd-level slot — the exact bug the other two were fixed for, one
+          // case-block further down. Fixing two of three is how a fix becomes
+          // a bug report.
+          //
+          // Safe for the non-template auras too: the helper checks whether the
+          // activity actually declares a template and commits immediately when
+          // it does not, so Aura of Vitality and Holy Weapon are unaffected.
+          await SpellPipeline._commitSlotOnTemplatePlaced(activity, castLevel);
           break;
 
         case "chained":
@@ -391,7 +407,7 @@ export class SpellPipeline {
 
         case "attack-single":
           // Fall through to dnd5e attack flow — no pipeline action needed
-          await SpellPipeline._commitSlotIfDeferred(activity, castLevel);
+          await SpellPipeline._commitSlotOnTemplatePlaced(activity, castLevel);
           break;
 
         default:
