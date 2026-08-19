@@ -15,6 +15,7 @@
 export const MODULE_ID = "ace-qol";
 
 import { QolSettings }       from "./settings.mjs";
+import { installHookDebugGuard, setHookDebug } from "./hook-debug-guard.mjs";
 import { replyOwnerIsAuthorised } from "./socket-authority.mjs";
 import { registerChatCardHandler, registerForeignChatCardHandler, sweepDrawnCards } from "./chat-render-utils.mjs";
 import { ExtendedEffects }   from "./extended-effects.mjs";
@@ -442,6 +443,13 @@ async function _applySpellEffectWithConcentration(targetActor, libraryKey, caste
 
 // ─── Init: register settings ─────────────────────────────────────────────────
 Hooks.once("init", () => {
+  // ⚠️ FIRST, AND IN ITS OWN TRY. Everything below can throw, and one throw
+  // kills every registration under it (2026-08-09). This guard is the cheapest
+  // line in the file and the one with the largest effect on load time, so it
+  // must not be able to be skipped by an unrelated failure beneath it.
+  try { installHookDebugGuard(); }
+  catch (err) { console.warn(`${MODULE_ID} | hook-debug guard failed to install:`, err); }
+
   try {
     QolSettings.register();
     LootEngine.registerSettings();
@@ -5040,6 +5048,10 @@ Hooks.once("ready", () => {
   // object keeps earlier registrations alive; keys defined here still win, so
   // nothing that worked before changes.
   game.aceQol = Object.assign(game.aceQol ?? {}, {
+    // Turn Foundry's hook tracer on DELIBERATELY. ACE refuses it by default
+    // because another module switches it on at init and it costs minutes of
+    // load time. See hook-debug-guard.mjs.
+    debugHooks: setHookDebug,
     // THE CLOCK — the one place ACE advances world time. Exposed so the sibling
     // modules (Forge, Engine) can charge for their own actions WITHOUT importing
     // across module folders, which would hard-break them if qol were absent.
