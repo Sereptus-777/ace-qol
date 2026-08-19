@@ -1803,13 +1803,21 @@ export class QolSettings {
     });
 
     // ── Movement Tracker (colored squares while dragging tokens) ────────
+    // ⚠️ DEFAULT OFF, AND IT WAS NEVER REALLY "ON" BEFORE (2026-08-19).
+    // This shipped defaulting to true, but the drag patch that draws it was
+    // registered from a dead ready hook and had never once executed. So the
+    // feature has never been seen by anybody, and "default on" was a decision
+    // nobody made - it was just an untested value on code that never ran.
+    // Repairing that hook in the same session would have switched an unknown
+    // overlay on across every table without a word. Reviving dead code is a
+    // behaviour change, and it gets the same scrutiny as a new feature.
     s("enableMovementTracker", {
       name:    "Enable Movement Tracker",
-      hint:    "Show colored grid squares while dragging a token: green = within walk speed, yellow = within Dash (2× walk), red = beyond Dash.",
+      hint:    "Show colored grid squares while dragging a token: green = within walk speed, yellow = within Dash (2x walk), red = beyond Dash. Off by default - turn it on if you want the overlay.",
       scope:   "world",
       config:  false,
       type:    Boolean,
-      default: true,
+      default: false,
     });
 
     s("movementTrackerOnlyInCombat", {
