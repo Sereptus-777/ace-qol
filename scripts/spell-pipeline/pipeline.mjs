@@ -370,12 +370,14 @@ export class SpellPipeline {
 
         case "template-save":
           await TemplateResolver.runSave(ctx);
-          await SpellPipeline._commitSlotIfDeferred(activity, castLevel);
+          // Slot rides on the template actually landing — see the helper.
+          await SpellPipeline._commitSlotOnTemplatePlaced(activity, castLevel);
           break;
 
         case "template-trigger":
           await TemplateResolver.runTrigger(ctx);
-          await SpellPipeline._commitSlotIfDeferred(activity, castLevel);
+          // Slot rides on the template actually landing — see the helper.
+          await SpellPipeline._commitSlotOnTemplatePlaced(activity, castLevel);
           break;
 
         case "aura":
@@ -574,6 +576,75 @@ export class SpellPipeline {
   // ═══════════════════════════════════════════════════════════════════════════
   // SLOT MANAGEMENT — deferred consumption
   // ═══════════════════════════════════════════════════════════════════════════
+
+
+  /**
+   * Commit the slot only if a template actually reaches the canvas.
+   *
+   * ⚠️ THE WHOLE POINT OF PUTTING FIREBALL IN THE PIPELINE WAS "cancel = no
+   * slot lost" — and it never worked. The template resolvers are deliberate
+   * no-ops (see resolvers/template.mjs), so `runSave()` returns instantly and
+   * the very next line committed the slot. dnd5e then showed the placement
+   * preview; the caster right-clicked to cancel; the slot was already gone.
+   * Fireball, Lightning Bolt, Web and Spirit Guardians were registered
+   * specifically TO GET this behaviour and were the only shapes that did not.
+   * (Grok audit 2026-08-18.)
+   *
+   * A template arriving is the only honest proof the cast happened, so we wait
+   * for `createMeasuredTemplate` carrying this activity's origin.
+   *
+   * ⚠️ THE TIMEOUT *IS* THE CANCEL SIGNAL. There is no "user cancelled" hook —
+   * dnd5e simply never creates the template. My first version treated the
+   * timeout as "could not tell" and committed anyway, which meant cancel still
+   * burned the slot, just 30 seconds later. That is the same bug wearing a
+   * hat.
+   *
+   * So: if this activity DECLARES a template and none arrives, the cast was
+   * abandoned and the slot is kept. If it declares no template, there is
+   * nothing to wait for and we commit immediately — that is the only case
+   * where waiting would wrongly hand back a slot.
+   */
+  static async _commitSlotOnTemplatePlaced(activity, castLevel, { timeoutMs = 30000 } = {}) {
+    if (!activity?._aceSlotDeferred) return;
+    const wanted = activity.uuid;
+    if (!wanted) { await SpellPipeline._commitSlotIfDeferred(activity, castLevel); return; }
+
+    // Does this activity actually place a template? If not, there is nothing
+    // to wait for and holding the slot open would be wrong.
+    const declaresTemplate = !!(activity.target?.template?.type
+                             ?? activity.item?.system?.target?.template?.type);
+    if (!declaresTemplate) {
+      await SpellPipeline._commitSlotIfDeferred(activity, castLevel);
+      return;
+    }
+
+    const placed = await new Promise((resolve) => {
+      let done = false;
+      const finish = (val) => {
+        if (done) return;
+        done = true;
+        Hooks.off("createMeasuredTemplate", onCreate);
+        clearTimeout(timer);
+        resolve(val);
+      };
+      const onCreate = (doc) => {
+        try {
+          const origin = doc?.flags?.dnd5e?.origin ?? doc?.getFlag?.("dnd5e", "origin");
+          if (origin && String(origin) === String(wanted)) finish(true);
+        } catch (_) { /* keep waiting */ }
+      };
+      const timer = setTimeout(() => finish(false), timeoutMs);  // no template = abandoned
+      Hooks.on("createMeasuredTemplate", onCreate);
+    });
+
+    if (!placed) {
+      console.log(`${MODULE_ID} | SpellPipeline: no template placed for "${activity?.item?.name}" ` +
+        `within ${timeoutMs}ms — treating as CANCELLED, slot kept.`);
+      await SpellPipeline._refundSlotIfDeferred(activity);
+      return;
+    }
+    await SpellPipeline._commitSlotIfDeferred(activity, castLevel);
+  }
 
   static async _commitSlotIfDeferred(activity, castLevel) {
     if (!activity?._aceSlotDeferred) return;
