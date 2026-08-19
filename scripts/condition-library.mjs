@@ -393,19 +393,8 @@ const SPELL_EFFECTS = {
   },
 
   // ── Haste (3rd level, concentration) ──────────────────────────────────────
-  haste: {
-    name: "Haste",
-    icon: "icons/magic/control/buff-flight-wings-blue.webp",
-    description: "Double speed, +2 AC, advantage on DEX saves, additional action (Attack/Dash/Disengage/Hide/Use Object). Lethargy on end.",
-    changes: [
-      { key: "system.attributes.movement.walk", mode: 1, value: "2" },
-      { key: "system.attributes.ac.bonus", mode: 2, value: "+2" },
-      { key: "flags.ace-qol.advantage.save.dex", mode: 0, value: "1" },
-      { key: "flags.ace-qol.haste", mode: 0, value: "1" },
-    ],
-    concentration: true,
-    duration: { rounds: 10 },
-  },
+  // ⚠️ REMOVED: dead duplicate `haste` — its changes were merged into the
+  // surviving definition further down. See the note there.
 
   // ── Slow (3rd level, concentration) ───────────────────────────────────────
   slow: {
@@ -647,16 +636,13 @@ const SPELL_EFFECTS = {
   },
 
   // ── Fly (3rd level, concentration) ────────────────────────────────────────
-  fly: {
-    name: "Fly",
-    icon: "icons/magic/control/buff-flight-wings-blue.webp",
-    description: "Gain 60ft flying speed. Falls when spell ends.",
-    changes: [
-      { key: "system.attributes.movement.fly", mode: 5, value: "60" },
-    ],
-    concentration: true,
-    duration: { rounds: 100 }, // 10 minutes
-  },
+  // ⚠️ REMOVED: a SECOND `fly:` key was defined here (2026-08-18 audit).
+  // JavaScript object literals take the LAST definition of a duplicate key
+  // silently — no error, no warning — so this earlier one had never been
+  // live. It also lacked the `flags.ace-qol.canFly` marker the later
+  // definition carries, meaning anyone "fixing" a bug by editing this copy
+  // would have been editing dead code and watching nothing change. The
+  // surviving definition is further down with the other spell effects.
 
   // ── Invisibility (2nd level, concentration) ───────────────────────────────
   invisibility: {
@@ -864,16 +850,8 @@ const SPELL_EFFECTS = {
   },
 
   // ── Longstrider (1st level) ───────────────────────────────────────────────
-  longstrider: {
-    name: "Longstrider",
-    icon: "icons/magic/movement/trail-streak-impact-blue.webp",
-    description: "+10ft walking speed for 1 hour.",
-    changes: [
-      { key: "system.attributes.movement.walk", mode: 2, value: "10" },
-    ],
-    concentration: false,
-    duration: { seconds: 3600 },
-  },
+  // ⚠️ REMOVED: dead duplicate `longstrider` — an identical/equivalent
+  // definition lower in this file was the one JavaScript kept.
 
   // ── Freedom of Movement (4th level) ───────────────────────────────────────
   freedom_of_movement: {
@@ -891,16 +869,8 @@ const SPELL_EFFECTS = {
   },
 
   // ── Death Ward (4th level) ────────────────────────────────────────────────
-  death_ward: {
-    name: "Death Ward",
-    icon: "icons/magic/holy/barrier-shield-winged-cross.webp",
-    description: "First time the target drops to 0 HP, it drops to 1 HP instead. Also negates instant-death effects once.",
-    changes: [
-      { key: "flags.ace-qol.deathWard", mode: 0, value: "1" },
-    ],
-    concentration: false,
-    duration: { seconds: 28800 }, // 8 hours
-  },
+  // ⚠️ REMOVED: dead duplicate `death_ward` — an identical/equivalent
+  // definition lower in this file was the one JavaScript kept.
 
   // ── Warding Bond (2nd level) ──────────────────────────────────────────────
   warding_bond: {
@@ -1216,11 +1186,24 @@ const SPELL_EFFECTS = {
     description: "1d4+1 additional turns in a row.",
     changes: [], concentration: false, duration: { rounds: 5 },
   },
+  // ⚠️ HASTE WAS DEFINED TWICE AND THE LIVE COPY DID TWO-THIRDS OF NOTHING
+  // (2026-08-18 audit). A duplicate key higher in this file carried the speed
+  // doubling and the Dex-save advantage; JavaScript silently keeps the LAST
+  // definition, so this one won — and it granted only +2 AC. Its own
+  // description promised "Speed doubled, advantage on Dex saves" while the
+  // changes array delivered neither. Nothing errored, and reading either copy
+  // in isolation looked correct.
+  //
+  // The two copies also used DIFFERENT flag names (`haste` vs `hasted`), so
+  // any future consumer written against the dead copy's flag would silently
+  // never fire either.
   haste: {
     name: "Haste", icon: "icons/magic/time/clock-stopwatch-white-blue.webp",
     description: "Speed doubled, +2 AC, advantage on Dex saves, +1 action per turn.",
     changes: [
+      { key: "system.attributes.movement.walk", mode: 1, value: "2" },   // doubled
       { key: "system.attributes.ac.bonus", mode: 2, value: "+2" },
+      { key: "flags.ace-qol.advantage.save.dex", mode: 0, value: "1" },
       { key: "flags.ace-qol.hasted", mode: 0, value: "1" },
     ],
     concentration: true, duration: { rounds: 10 },

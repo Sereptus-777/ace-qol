@@ -143,10 +143,21 @@ export const SELF_SPELLS = {
   },
 
   "fly": {
-    shape: "self",
+    // ⚠️ WAS shape:"self" — you could not Fly the fighter (Grok 2026-08-18).
+    // RAW, both editions: "You touch a willing creature. The target gains a
+    // flying speed of 60 feet for the duration. When you cast this spell using
+    // a spell slot of 4th level or higher, you can target one additional
+    // creature for each slot level above 3rd."
+    //
+    // Self-only made it a personal mobility spell, which is not what it is and
+    // not why anyone prepares it — the whole point is getting the melee out of
+    // a pit or over a chasm. Same touch-buff pattern as Foresight above.
+    shape: "multi-buff",
     range: 5,
+    countResolver: (castLevel) => 1 + Math.max(0, (Number(castLevel) || 3) - 3),
     effect: { key: "fly", duration: { minutes: 10 } },
-    flavorOnConfirm: "You gain a flying speed of 60 feet for the duration.",
+    picker: { allowSelf: true, preHighlightSelf: true, requiresAdjacent: true, excludeDead: true },
+    flavorOnConfirm: "You touch a willing creature, granting it a flying speed of 60 feet for the duration.",
   },
 
   // ─── Phase 3.A additions — utility / movement / cantrip self-buffs ───
