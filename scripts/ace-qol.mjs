@@ -17,6 +17,7 @@ export const MODULE_ID = "ace-qol";
 import { QolSettings }       from "./settings.mjs";
 import { DayRollover }       from "./day-rollover.mjs";
 import { HungerWarning }     from "./hunger-warning.mjs";
+import { RestRaw }           from "./rest-raw.mjs";
 import { installHookDebugGuard, setHookDebug } from "./hook-debug-guard.mjs";
 import { replyOwnerIsAuthorised } from "./socket-authority.mjs";
 import { registerChatCardHandler, registerForeignChatCardHandler, sweepDrawnCards } from "./chat-render-utils.mjs";
@@ -565,6 +566,8 @@ Hooks.once("ready", () => {
   catch (err) { console.error(`${MODULE_ID} | Day rollover init failed:`, err); }
   try { HungerWarning.register(); }
   catch (err) { console.error(`${MODULE_ID} | Hunger warning init failed:`, err); }
+  try { RestRaw.register(); }
+  catch (err) { console.error(`${MODULE_ID} | Rest RAW init failed:`, err); }
 });
 
 // ⚠️ TOP-LEVEL, not nested inside another ready handler. A ready hook
@@ -5057,6 +5060,8 @@ Hooks.once("ready", () => {
     // because another module switches it on at init and it costs minutes of
     // load time. See hook-debug-guard.mjs.
     debugHooks: setHookDebug,
+    // Why was (or wasn't) this long rest allowed? RAW conditions, in English.
+    restExplain: (actor) => RestRaw.explain(actor ?? canvas?.tokens?.controlled?.[0]?.actor),
     // THE CLOCK — the one place ACE advances world time. Exposed so the sibling
     // modules (Forge, Engine) can charge for their own actions WITHOUT importing
     // across module folders, which would hard-break them if qol were absent.

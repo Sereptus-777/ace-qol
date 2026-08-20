@@ -89,23 +89,36 @@ export class ClockWiring {
       try {
         if (!game.user.isGM) return;
 
-        if (config?.advanceTime || result?.advanceTime) {
-          console.log(`${LOG} | rest not charged — dnd5e advanced the clock itself (advanceTime is on).`);
-          return;
-        }
+        // ⚠️🔴 SKIPPING THE CHARGE MUST NOT SKIP THE MEAL (2026-08-19).
+        // This used to `return` here when dnd5e had advanced the clock itself,
+        // which correctly avoided double-counting the time AND silently threw
+        // away everything below: the movement settle, and the party eating. So
+        // with "Advance Time" ticked in the rest dialog, nobody ever ate, hunger
+        // never accumulated, and the whole sustenance system did nothing — with
+        // one reassuring log line saying the clock was fine.
+        //
+        // Exactly the shape of the fall-damage bug on 08-14: a guard that skips
+        // a WRITE also skipped the DECISION after it. The guard now covers only
+        // the thing it is about.
+        const dnd5eAlreadyAdvanced = !!(config?.advanceTime || result?.advanceTime);
 
         // Walking done before bedding down belongs to the day just finished.
         await MovementClock.settle("the party stopped to rest");
 
         const long = (config?.type ?? result?.type) === "long"
                   || result?.longRest === true;
-        const key  = long ? "rest.long" : "rest.short";
 
-        // Shared: the whole party resting together is ONE rest, so the second
-        // character through this hook rides the first one's window.
-        await TheClock.spend(key, { detail: actor?.name });
+        if (dnd5eAlreadyAdvanced) {
+          console.log(`${LOG} | rest not charged — dnd5e advanced the clock itself (advanceTime is on). Everything else still runs.`);
+        } else {
+          const key = long ? "rest.long" : "rest.short";
+          // Shared: the whole party resting together is ONE rest, so the second
+          // character through this hook rides the first one's window.
+          await TheClock.spend(key, { detail: actor?.name });
+        }
 
         // A long rest is when people eat. A short one is not a meal.
+        // ⚠️ OUTSIDE the clock branch, deliberately — see above.
         if (long) await this.feedTheParty();
       } catch (err) {
         console.error(`${LOG} | rest hook failed — the rest itself was unaffected.`, err);
