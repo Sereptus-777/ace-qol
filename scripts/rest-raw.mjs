@@ -28,7 +28,18 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 
-const LOG = `${MODULE_ID} | Rest`;
+// ⚠️🔴 LITERAL STRING, NOT THE IMPORTED MODULE_ID. Every file in this folder
+// does the same, and this is why: ace-qol.mjs imports this file, and this file
+// imports MODULE_ID back from ace-qol.mjs. ES modules evaluate every import
+// BEFORE the importing module's own body runs, so at the moment this line
+// executes `export const MODULE_ID` has not been assigned yet and reading it
+// throws "Cannot access 'MODULE_ID' before initialization".
+//
+// That throw happens at MODULE LOAD, which kills the WHOLE of ace-qol - no
+// settings registered, no subsystems, the module simply absent from Foundry's
+// settings list while still showing as enabled. Shipped exactly that way on
+// 2026-08-19. Inside a function it is fine; at module scope it is fatal.
+const LOG = "ace-qol | Rest";
 const DAY_SECONDS = 24 * 60 * 60;
 
 /** When did this creature last finish a long rest, in world seconds? */

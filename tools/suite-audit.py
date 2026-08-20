@@ -194,6 +194,52 @@ for m in MODS:
                 ln = txt[:mt.start()].count("\n") + 1
                 flag("DEPRECATED FIELD, NO FALLBACK", f"{rel(f)}:{ln}")
 
+# ── 8. MODULE_ID used at MODULE SCOPE in a file that imports it back ────────
+# ⚠️🔴 THIS KILLED THE WHOLE MODULE ON 2026-08-19. ace-qol.mjs imports these
+# files; they import MODULE_ID back from it. ES modules evaluate every import
+# BEFORE the importing module's body runs, so at module scope MODULE_ID is
+# still in its temporal dead zone and reading it throws "Cannot access
+# 'MODULE_ID' before initialization". That throw happens at LOAD, so the entire
+# module fails to register anything - it shows as enabled in the module list and
+# is completely absent from the settings list. Inside a function it is fine.
+for m in MODS:
+    for f in FILES[m]:
+        txt = TEXT[f]
+        # ⚠️ ONLY FILES THAT *IMPORT* IT. A file that declares its own
+        # `const MODULE_ID = "..."` locally has no cycle and no dead zone -
+        # that is how all of ace-engine is written, and flagging it reported 18
+        # perfectly safe files. The trap needs BOTH halves: an import of the
+        # constant, and a read of it at module scope.
+        head = txt[:4000]
+        imports_it = ("MODULE_ID" in head
+                      and "import" in head
+                      and re.search(r'import[^;]{0,200}MODULE_ID[^;]{0,200}from', head, re.S))
+        declares_it = re.search(r'^\s*(?:export\s+)?const\s+MODULE_ID\s*=', txt, re.M)
+        if not imports_it or declares_it:
+            continue
+            continue
+        depth = 0
+        for ln_no, line in enumerate(txt.split(chr(10)), 1):
+            stripped = line.strip()
+            # ⚠️ A ONE-LINE FUNCTION IS NOT MODULE SCOPE. `function f() { return
+            # `${MODULE_ID}`; }` opens and closes its scope on the same line, so
+            # a depth counter that only looks between lines reads it as top
+            # level. ace-fx.mjs does exactly this - deliberately, with a comment
+            # explaining the trap - and got flagged for it.
+            # ⚠️ Discount the braces of `${...}` first. The very thing being
+            # detected is a template literal, so counting its braces made every
+            # real hit look like a one-line function and the check silently
+            # stopped catching anything at all.
+            _nolit = line.replace("${", "")
+            opens_scope = ("function" in line or "=>" in line or "{" in _nolit)
+            if depth == 0 and not opens_scope                and re.search(r'\$\{\s*MODULE_ID\s*\}', line)                and not stripped.startswith(("//", "*", "/*")):
+                flag("MODULE_ID AT MODULE SCOPE",
+                     f"{rel(f)}:{ln_no}  reads MODULE_ID outside any function - "
+                     f"throws at load and kills the whole module. Use a literal.")
+            depth += line.count("{") + line.count("(") - line.count("}") - line.count(")")
+            if depth < 0:
+                depth = 0
+
 # ── report ─────────────────────────────────────────────────────────────────
 print("=" * 76)
 print("ACE SUITE AUDIT - three modules")
