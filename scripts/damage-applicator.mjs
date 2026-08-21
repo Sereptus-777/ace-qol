@@ -553,8 +553,17 @@ export class DamageApplicator {
       // can honor RAW regeneration shut-offs (a troll that took fire/acid, or a
       // vampire that took radiant, doesn't regenerate at the start of its next turn).
       try {
+        // ⚠️ CARRY WHAT ACTUALLY HAPPENED, not just that something was applied.
+        // `hpDelta` is the real hit-point movement after immunity, resistance
+        // and temp HP. A listener that only knows "damage was applied" cannot
+        // tell a solid hit from one that bounced clean off, and those two need
+        // completely different things to happen next.
         Hooks.callAll(`${MODULE_ID}.damageApplied`, {
           actor, tokenDocId: entry.tokenDocId, types: [...typesApplied],
+          hpDelta: _realDelta,
+          nominal: damageToApply,
+          absorbed: damageToApply > 0 && _realDelta === 0,
+          dead: Number(actor?.system?.attributes?.hp?.value ?? 1) <= 0,
         });
       } catch (_) { /* non-fatal */ }
 

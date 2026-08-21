@@ -32,6 +32,23 @@ import { MODULE_ID } from "./ace-qol.mjs";
  * @returns {Promise<void>}
  */
 export async function awaitDsnRoll(fallbackMs = null, { messageId = null } = {}) {
+  // ⚠️🔴 THIS USED TO BE A TIMER RACING A HOOK, AND THE TIMER USUALLY WON.
+  // It resolved on whichever came first: diceSoNiceRollComplete, or a flat
+  // 3-second cap. So on a big handful of dice or a slow renderer the card
+  // appeared while the dice were still rolling - the exact thing Johnny asked
+  // me to actually verify rather than assume (2026-08-21).
+  //
+  // Meanwhile dsn-utils.mjs already had the correct implementation, waiting on
+  // the promises Dice So Nice itself resolves when the dice stop. It was in use
+  // by the save and damage paths and NOT by the attack path, so attacks - the
+  // most-watched rolls at the table - had the weakest check in the suite.
+  // One delegation fixes all ten call sites.
+  const { awaitDiceSettle } = await import("./dsn-utils.mjs");
+  return awaitDiceSettle(fallbackMs ?? undefined, { messageId });
+}
+
+/** @deprecated kept only so the old body is not resurrected by accident. */
+async function _awaitDsnRollLegacy(fallbackMs = null, { messageId = null } = {}) {
   if (!game.dice3d) return; // DSN not active or disabled
   let cap = fallbackMs;
   if (cap == null) {

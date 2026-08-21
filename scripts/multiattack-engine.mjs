@@ -203,7 +203,17 @@ export class MultiattackEngine {
    * @param {number} [timeoutMs=1800000]  30 min — abandonment backstop only
    * @returns {Promise<string>} why: "miss" | "damage" | "resolved" | "timeout"
    */
-  static _awaitSwingResolved(actor, timeoutMs = 1800000) {
+  /**
+   * @param {string[]} [targetIds]  Token ids this swing was aimed at. When
+   *   given, only damage applied to ONE OF THESE releases the chain.
+   *
+   * ⚠️ WITHOUT THIS IT UNLOCKS ON ANY DAMAGE ANYWHERE (Johnny, 2026-08-21).
+   * A table applying damage from something unrelated - a trap, a second
+   * creature's card still sitting in chat, a player tidying up an earlier hit -
+   * would release the multiattack early, which is the same wrong-target class
+   * of bug this gate exists to prevent.
+   */
+  static _awaitSwingResolved(actor, timeoutMs = 1800000, targetIds = null) {
     const t0 = performance.now?.() ?? 0;
     return new Promise((resolve) => {
       let done = false;
@@ -250,15 +260,30 @@ export class MultiattackEngine {
       //
       // Everything now halts on APPLY. The pop-up still opens immediately - it
       // just waits, and says why (see _promptOne).
+      const wanted = Array.isArray(targetIds) && targetIds.length ? new Set(targetIds) : null;
+      const isOurTarget = (p) => {
+        if (!wanted) return true;                       // no targets known: accept any
+        const id = p?.tokenDocId ?? p?.tokenId ?? p?.token?.id;
+        return id ? wanted.has(id) : false;             // unknown id: not ours
+      };
       const appliedHook = Hooks.on(`${MODULE_ID}.damageApplied`, (p) => {
         try {
-          const aid = p?.actor?.id ?? p?.actorId;
-          // Any application counts: the damage belongs to the TARGET, not to
-          // the attacker, so this fires for whoever just took it.
-          if (aid || p) setTimeout(() => finish("applied"), 100);
+          if (!isOurTarget(p)) return;
+          // Remember HOW it landed. The next pop-up reads this to warn that the
+          // blow did nothing, or that the target is down.
+          MultiattackEngine._lastOutcome = {
+            absorbed: !!p?.absorbed,
+            dead: !!p?.dead,
+            types: Array.isArray(p?.types) ? p.types : [],
+            name: p?.actor?.name ?? "the target",
+          };
+          setTimeout(() => finish("applied"), 100);
         } catch (_) { /* non-fatal */ }
       });
-      const hpHook = Hooks.on(`${MODULE_ID}.hpApplied`, () => setTimeout(() => finish("applied"), 100));
+      const hpHook = Hooks.on(`${MODULE_ID}.hpApplied`, (p) => {
+        try { if (isOurTarget(p)) setTimeout(() => finish("applied"), 100); }
+        catch (_) { /* non-fatal */ }
+      });
       // Clean-miss signal — socket-relayed everywhere (player-side prompts).
       const sigHook = Hooks.on(`${MODULE_ID}.attackResolved`, (p) => {
         if (p?.actorId === actor.id) setTimeout(() => finish("resolved"), 100);
@@ -618,7 +643,7 @@ export class MultiattackEngine {
       //          almost at once.
       //   Hit  → resolves when the damage is APPLIED, so nothing can be swung
       //          again until the target's hit points have actually moved.
-      pendingGate = this._awaitSwingResolved(actor);
+      pendingGate = this._awaitSwingResolved(actor, 1800000, lastTargetIds);
     }
 
     } finally {
@@ -668,6 +693,29 @@ export class MultiattackEngine {
    *   simply does not appear is indistinguishable from a broken chain, which is
    *   what made this feel muddled.
    */
+  /** How the last blow was shrugged off, in words that fit the damage. */
+  static _absorbedLine(types = []) {
+    const t = String(types[0] ?? "").toLowerCase();
+    const lines = {
+      fire:        "The flames wash over it and die without a mark.",
+      cold:        "The cold rolls off it as if it were never there.",
+      lightning:   "The lightning earths itself harmlessly across its hide.",
+      thunder:     "The sound breaks against it and scatters.",
+      acid:        "The acid beads up and runs off, leaving nothing behind.",
+      poison:      "The poison finds nothing in it to poison.",
+      necrotic:    "The withering passes straight through it.",
+      radiant:     "The light breaks over it and fades.",
+      psychic:     "The assault finds no mind to take hold of.",
+      force:       "The force splashes away without purchase.",
+      bludgeoning: "The blow lands solidly and barely marks it.",
+      slashing:    "The edge skates off without biting.",
+      piercing:    "The point turns aside without finding a way in.",
+    };
+    return lines[t] ?? "The blow lands, and does nothing at all.";
+  }
+
+  static _lastOutcome = null;
+
   static _promptOne(actor, state, bonusAttacks, gate = null) {
     const portrait = actor.img ?? actor.prototypeToken?.texture?.src ?? "icons/svg/mystery-man.svg";
     const BONUS_ACCENT = "#6fa8dc";
@@ -719,6 +767,7 @@ export class MultiattackEngine {
           </div>
         </div>
         <div style="font-size:13px;color:#c0b288;margin-bottom:10px;">${subhead}</div>
+        <div class="ace-ma-note" style="display:none;align-items:center;gap:8px;margin:0 0 10px;padding:8px 10px;background:#241a12;border:1px solid #e08a7a;border-radius:5px;font-size:14px;line-height:1.45;color:#f0e4c0;"></div>
         <div class="ace-ma-wait" style="display:${gate ? "flex" : "none"};align-items:center;gap:8px;margin:0 0 10px;padding:8px 10px;background:#2a1f0a;border:1px solid ${ACCENT}66;border-radius:5px;font-size:14px;color:#f0e4c0;">
           <i class="fas fa-hourglass-half" style="color:${ACCENT};"></i>
           <span>Waiting for the GM to apply damage before carrying on…</span>
@@ -773,6 +822,28 @@ export class MultiattackEngine {
             Promise.resolve(gate).then(() => {
               if (settled) return;
               if (waitBar) waitBar.style.display = "none";
+              // ⚠️ A HIT THAT DID NOTHING MUST NOT LOOK LIKE A HIT THAT LANDED.
+              // Johnny, 2026-08-21: if the target shrugged it off, the player
+              // needs to know before choosing the next swing - otherwise they
+              // spend the whole turn hitting something that cannot be hurt this
+              // way. Same for a target that just died: the next attack needs a
+              // new one.
+              const out = MultiattackEngine._lastOutcome;
+              MultiattackEngine._lastOutcome = null;
+              const note = node.querySelector(".ace-ma-note");
+              if (out && note && (out.absorbed || out.dead)) {
+                note.style.display = "flex";
+                if (out.dead) {
+                  note.style.borderColor = "#7fc98b";
+                  note.innerHTML = `<i class="fas fa-skull" style="color:#7fc98b;"></i>` +
+                    `<span><strong>${out.name} is down.</strong> Pick a new target on the canvas before your next attack.</span>`;
+                } else {
+                  note.style.borderColor = "#e08a7a";
+                  note.innerHTML = `<i class="fas fa-shield-halved" style="color:#e08a7a;"></i>` +
+                    `<span><strong>No damage got through.</strong> ${MultiattackEngine._absorbedLine(out.types)} ` +
+                    `Try a different damage type, a different ability, or another target.</span>`;
+                }
+              }
               grids().forEach(b => {
                 b.style.pointerEvents = "";
                 b.style.opacity = "";

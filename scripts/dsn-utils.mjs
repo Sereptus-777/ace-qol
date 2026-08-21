@@ -157,6 +157,29 @@ export async function awaitDiceSettle(maxMs = 3000, { messageId = null, graceMs 
   // A renderer that breaks mid-animation never resolves its promise and hung
   // the whole pipeline in v0.4.21. The cap makes that impossible: we wait as
   // long as the dice need, but never forever.
-  const cap = new Promise(resolve => setTimeout(resolve, Math.max(250, Number(maxMs) || 3000)));
+  //
+  // ⚠️ THE CAP DEPENDS ON WHETHER WE HAVE A REAL SIGNAL (2026-08-21).
+  // With live showForRoll promises in hand we KNOW dice are tumbling and we
+  // know we will be told when they stop, so a 3-second cap is not a safety net
+  // - it is a deadline that fires while the dice are still on screen. A big
+  // damage handful on a slow renderer takes longer than that, and then the card
+  // beats the dice, which is the one thing a roll must never do. Johnny asked
+  // for "an actual check that the dice have stopped rolling, not a delay", and
+  // this is where the delay was hiding.
+  //
+  // So: real promises in flight -> a long backstop that only catches a broken
+  // renderer. Nothing in flight -> the short cap, because there is nothing to
+  // wait for and the hook may never come.
+  const hadRealSignal = _inFlight.size > 0;
+  const capMs = hadRealSignal
+    ? Math.max(15000, Number(maxMs) || 3000)
+    : Math.max(250, Number(maxMs) || 3000);
+  const cap = new Promise(resolve => setTimeout(() => {
+    if (hadRealSignal) {
+      console.warn(`${"ace-qol"} | dice never reported finishing after ${capMs}ms - releasing. ` +
+        `If cards are beating the dice, the Dice So Nice renderer is the place to look.`);
+    }
+    resolve();
+  }, capMs));
   return Promise.race([settled, cap]);
 }
