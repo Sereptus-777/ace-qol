@@ -215,7 +215,8 @@ export class MultiattackEngine {
           const secs = ((performance.now?.() ?? 0) - t0) / 1000;
           console.log(`${MODULE_ID} | [chain] swing resolved via "${why}" after ${secs.toFixed(1)}s for ${actor.name}`);
         } catch (_) { /* logging only */ }
-        try { Hooks.off("createChatMessage", cardHook); } catch (_) { /* non-fatal */ }
+        try { Hooks.off(`${MODULE_ID}.damageApplied`, appliedHook); } catch (_) { /* non-fatal */ }
+        try { Hooks.off(`${MODULE_ID}.hpApplied`, hpHook); } catch (_) { /* non-fatal */ }
         try { Hooks.off(`${MODULE_ID}.attackResolved`, sigHook); } catch (_) { /* non-fatal */ }
         try { Hooks.off(`${MODULE_ID}.attackComplete`, verdictHook); } catch (_) { /* non-fatal */ }
         if (net) clearTimeout(net);
@@ -237,13 +238,27 @@ export class MultiattackEngine {
           if ((p?.hits?.length ?? 0) === 0) setTimeout(() => finish("miss"), 100);
         } catch (_) { /* non-fatal */ }
       });
-      // HIT path ground truth: the damage-RESULT card landed (Roll Damage done).
-      const cardHook = Hooks.on("createChatMessage", (msg) => {
+      // ⚠️🔴 HIT RESOLVES WHEN THE DAMAGE IS *APPLIED*, NOT WHEN IT IS ROLLED
+      // (Johnny, 2026-08-21). This used to finish the moment the damage-RESULT
+      // card was created - i.e. the instant Roll Damage was pushed - and the
+      // comment below the loop said so plainly: "the next pop-up comes up while
+      // the GM applies the damage". That is the muddle: swing two is being
+      // offered while swing one's hit points have not moved, so the target's HP,
+      // its bloodied state, whether it is even still standing, and every
+      // reaction that keys off damage are all still pending when the next attack
+      // is chosen.
+      //
+      // Everything now halts on APPLY. The pop-up still opens immediately - it
+      // just waits, and says why (see _promptOne).
+      const appliedHook = Hooks.on(`${MODULE_ID}.damageApplied`, (p) => {
         try {
-          const f = msg?.flags?.[MODULE_ID];
-          if (f?.type === "damageResult" && f.actorId === actor.id) setTimeout(() => finish("damage"), 100);
+          const aid = p?.actor?.id ?? p?.actorId;
+          // Any application counts: the damage belongs to the TARGET, not to
+          // the attacker, so this fires for whoever just took it.
+          if (aid || p) setTimeout(() => finish("applied"), 100);
         } catch (_) { /* non-fatal */ }
       });
+      const hpHook = Hooks.on(`${MODULE_ID}.hpApplied`, () => setTimeout(() => finish("applied"), 100));
       // Clean-miss signal — socket-relayed everywhere (player-side prompts).
       const sigHook = Hooks.on(`${MODULE_ID}.attackResolved`, (p) => {
         if (p?.actorId === actor.id) setTimeout(() => finish("resolved"), 100);
@@ -523,6 +538,7 @@ export class MultiattackEngine {
     let lastTargetIds = [...initialTargetIds];
 
     try {
+    let pendingGate = null;   // previous swing's resolution; locks the next pop-up
     while (remainingCount() > 0 || (bonusAttacks.length && !state.bonusUsed)) {
       // Turn ended out from under us (fumble-ends-turn, GM skip)? Stop offering —
       // no more swings once it isn't this actor's turn (2026-07-10).
@@ -540,7 +556,13 @@ export class MultiattackEngine {
         console.log(`${MODULE_ID} | [chain] ${actor.name} fumbled — turn ending, chain stopped.`);
         break;
       }
-      const choice = await this._promptOne(actor, state, bonusAttacks);
+      // ⚠️ THE POP-UP OPENS NOW, GATED - it does not wait to appear. `pendingGate`
+      // is the previous swing's resolution, started but never awaited here, so
+      // the window is up immediately saying what it is waiting for while the GM
+      // applies the damage. Awaiting BEFORE opening is what made the second
+      // attack feel like it had gone missing.
+      const choice = await this._promptOne(actor, state, bonusAttacks, pendingGate);
+      pendingGate = null;
       if (!choice) break;   // End Attacks / window closed → chain over
 
       // A chain swing must never fire target-less — the pipeline would skip
@@ -590,11 +612,13 @@ export class MultiattackEngine {
       const moreToOffer = remainingCount() > 0 || (bonusAttacks.length && !state.bonusUsed);
       if (!moreToOffer) break;
 
-      // More to offer → wait for THIS swing to resolve first.
-      // Miss → resolves the moment the verdict lands (next pop-up right away).
-      // Hit  → resolves when the damage card is created (right after Roll
-      // Damage) — the next pop-up comes up while the GM applies the damage.
-      await this._awaitSwingResolved(actor);
+      // More to offer → START this swing's resolution, but do NOT await it here.
+      // The next pass opens the pop-up immediately and locks it on this promise.
+      //   Miss → resolves the moment the verdict lands, so the buttons are live
+      //          almost at once.
+      //   Hit  → resolves when the damage is APPLIED, so nothing can be swung
+      //          again until the target's hit points have actually moved.
+      pendingGate = this._awaitSwingResolved(actor);
     }
 
     } finally {
@@ -635,7 +659,16 @@ export class MultiattackEngine {
    * choice and closes the dialog INSTANTLY. Resolves null on End Attacks / X.
    * @returns {Promise<null | { itemId, activityId: string|null, bonus: boolean }>}
    */
-  static _promptOne(actor, state, bonusAttacks) {
+  /**
+   * @param {Promise|null} gate  While this is pending the pop-up is OPEN but
+   *   every attack button is locked, and it says why. Johnny, 2026-08-21: "I
+   *   want everything to pause until the damage is applied... I want their
+   *   pop-up to come up, but it should say waiting for GM to apply damage."
+   *   Opening it locked rather than withholding it is the point - a pop-up that
+   *   simply does not appear is indistinguishable from a broken chain, which is
+   *   what made this feel muddled.
+   */
+  static _promptOne(actor, state, bonusAttacks, gate = null) {
     const portrait = actor.img ?? actor.prototypeToken?.texture?.src ?? "icons/svg/mystery-man.svg";
     const BONUS_ACCENT = "#6fa8dc";
 
@@ -686,6 +719,10 @@ export class MultiattackEngine {
           </div>
         </div>
         <div style="font-size:13px;color:#c0b288;margin-bottom:10px;">${subhead}</div>
+        <div class="ace-ma-wait" style="display:${gate ? "flex" : "none"};align-items:center;gap:8px;margin:0 0 10px;padding:8px 10px;background:#2a1f0a;border:1px solid ${ACCENT}66;border-radius:5px;font-size:14px;color:#f0e4c0;">
+          <i class="fas fa-hourglass-half" style="color:${ACCENT};"></i>
+          <span>Waiting for the GM to apply damage before carrying on…</span>
+        </div>
         <div class="ace-ma-grid" style="display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-start;">${buttons}</div>
         ${bonusAttacks.length ? `
         <div style="border-top:1px dashed #3a4a5a;margin-top:12px;padding-top:9px;">
@@ -720,6 +757,32 @@ export class MultiattackEngine {
           const root = jq?.[0] ?? jq;
           const node = root?.querySelector?.(".ace-ma-prompt") ?? root;
           if (!node) return;
+
+          // ⚠️ LOCKED, NOT HIDDEN. Every attack button is unclickable and dimmed
+          // while the previous swing's damage is still unapplied. When the gate
+          // opens the banner goes and the buttons come alive - no re-render, so
+          // nothing flickers and no listener is lost.
+          const grids = () => [...node.querySelectorAll(".ace-ma-btn, .ace-ma-bonus-btn")];
+          const waitBar = node.querySelector(".ace-ma-wait");
+          if (gate) {
+            grids().forEach(b => {
+              b.style.pointerEvents = "none";
+              b.style.opacity = "0.35";
+              b.style.filter = "grayscale(0.7)";
+            });
+            Promise.resolve(gate).then(() => {
+              if (settled) return;
+              if (waitBar) waitBar.style.display = "none";
+              grids().forEach(b => {
+                b.style.pointerEvents = "";
+                b.style.opacity = "";
+                b.style.filter = state.bonusUsed && b.classList.contains("ace-ma-bonus-btn") ? "grayscale(0.6)" : "";
+              });
+            }).catch(() => { /* a failed gate must never leave it locked */
+              if (waitBar) waitBar.style.display = "none";
+              grids().forEach(b => { b.style.pointerEvents = ""; b.style.opacity = ""; b.style.filter = ""; });
+            });
+          }
           node.querySelectorAll(".ace-ma-btn").forEach(b => {
             b.addEventListener("mouseenter", () => { b.style.borderColor = ACCENT; b.style.boxShadow = `0 0 8px ${ACCENT}88`; });
             b.addEventListener("mouseleave", () => { b.style.borderColor = `${ACCENT}55`; b.style.boxShadow = "none"; });
