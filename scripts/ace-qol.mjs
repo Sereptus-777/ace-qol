@@ -15,6 +15,7 @@
 export const MODULE_ID = "ace-qol";
 
 import { QolSettings }       from "./settings.mjs";
+import { installSliderGuard } from "./slider-guard.mjs";
 import { DayRollover }       from "./day-rollover.mjs";
 import { HungerWarning }     from "./hunger-warning.mjs";
 import { RestRaw }           from "./rest-raw.mjs";
@@ -562,6 +563,7 @@ Hooks.once("init", () => {
 // fires (2026-08-12) and where one throw above kills every registration under
 // it (2026-08-09). Registering here costs nothing and cannot be skipped.
 Hooks.once("ready", () => {
+  try { installSliderGuard(); } catch (_) { /* cosmetic guard, never fatal */ }
   try { DayRollover.init(); }
   catch (err) { console.error(`${MODULE_ID} | Day rollover init failed:`, err); }
   try { HungerWarning.register(); }

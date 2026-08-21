@@ -637,7 +637,7 @@ export class QolSettings {
 
     s("bonusActionSpellStrict", {
       name:    "Bonus Action Spell Rule — Strict",
-      hint:    "When ON, the rule BLOCKS the cast (sync-cancels via dnd5e.preUseActivity). When OFF, only WARNS via toast and lets the cast proceed (table-style override). Default ON.",
+      hint:    "When ON, the rule stops the cast outright. When OFF it only warns you and lets it through, so you can rule on it yourself. Default ON.",
       scope:   "world",
       config:  false,
       type:    Boolean,
@@ -687,7 +687,7 @@ export class QolSettings {
     });
     s("hideActionEnabled", {
       name: "Hide Action Enabled",
-      hint: "Allow the game.aceQol.StealthEngine.hide(token) API and the Hide token-toolbar action.",
+      hint: "Adds a Hide button to the token toolbar.",
       scope: "world", config: false, type: Boolean, default: true,
     });
     s("hideRevealsOnAttack", {
@@ -751,7 +751,7 @@ export class QolSettings {
     // ── Loadout / hands enforcement ──────────────────────────────────────
     s("enforceLoadout", {
       name: "Enforce Weapon Loadout (Hands)",
-      hint: "When ON (default), a player character can't equip more than their hands can hold — two one-handed weapons, OR one two-handed weapon, OR a one-handed weapon + shield. Two non-Light one-handed weapons require the Dual Wielder feat. Natural weapons and unarmed strikes use no hands. Set the flag `ace-qol.handCount` on a creature to raise its hand budget (a marilith has six arms). NPCs are not enforced — their stat blocks are GM-managed. When OFF, the dnd5e equip checkbox behaves normally (equip anything).",
+      hint: "When ON (default), a player character can't equip more than their hands can hold — two one-handed weapons, OR one two-handed weapon, OR a one-handed weapon + shield. Two non-Light one-handed weapons require the Dual Wielder feat. Natural weapons and unarmed strikes use no hands. Set the flag a setting on the creature on a creature to raise its hand budget (a marilith has six arms). NPCs are not enforced — their stat blocks are GM-managed. When OFF, the dnd5e equip checkbox behaves normally (equip anything).",
       scope: "world", config: false, type: Boolean, default: true,
     });
 
@@ -1905,14 +1905,14 @@ export class QolSettings {
 
     s("polymorphMode", {
       name:    "Polymorph Implementation",
-      hint:    "Choose the engine that handles Polymorph spell + trap transformations. CUSTOM is ace-qol's own implementation: stat-override Active Effect + token swap, ~3 database writes, 1-3 seconds even on hosted servers. DND5E NATIVE uses the system's built-in transformInto API which creates a brand-new actor in the world; mechanically perfect RAW but slow on hosted servers (60-120 seconds when many modules listen on actor/token hooks).",
+      hint:    "Choose the engine that handles Polymorph spell + trap transformations. ACE handles it itself - quick, and works the same on a hosted server. DND5E NATIVE hands it to the game system instead - exactly by the book, but it can take a minute or two on a hosted server.",
       scope:   "world",
       config:  false,
       type:    String,
       default: "custom",
       choices: {
         custom: "Custom — fast (ace-qol implementation, ~3s)",
-        dnd5e:  "dnd5e Native — slow but RAW-perfect (transformInto)",
+        dnd5e:  "Game system — by the book, but slower",
       },
     });
 
