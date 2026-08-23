@@ -566,6 +566,8 @@ export class AceQolConfigPanel extends ApplicationV2 {
     root.querySelector("[data-action='preset-select']")?.addEventListener("change", (ev) => {
       const preset = ev.target.value;
       if (preset) this._applyPreset(preset);
+      // ALLOW-SILENT: this is the preset PICKER resetting to its placeholder,
+      // not a setting field. _applyPreset has already written the real values.
       ev.target.value = "";
     });
 
