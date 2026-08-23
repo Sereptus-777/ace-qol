@@ -165,6 +165,29 @@ export class HolySymbol {
     return !!item && (ITEM_RE.test(item.name ?? "") || item.getFlag?.(MODULE_ID, "holySymbol"));
   }
 
+  /**
+   * Does this ability create real sunlight?
+   *
+   * Name first, then the text, because the rulebook says it outright: Sunbeam
+   * and Sunburst both state "this light is sunlight", and so does the Holy
+   * Symbol. A GM can also mark anything with the `sunlightSource` flag.
+   *
+   * ⚠️ Never Daylight. It is the obvious near-miss and RAW it is not sunlight.
+   */
+  static _isSunlightSource(item, activity) {
+    if (!item) return false;
+    try { if (item.getFlag?.(MODULE_ID, "sunlightSource")) return true; } catch (_) {}
+
+    const name = `${item.name ?? ""} ${activity?.name ?? ""}`.toLowerCase();
+    if (/\bdaylight\b/.test(name) && !/\bsunlight\b/.test(name)) return false;
+    if (/\bsun\s*(light|beam|burst)\b|\bsunlight\b/.test(name)) return true;
+
+    // The text is allowed to say so on its own, which catches homebrew.
+    const text = String(item.system?.description?.value ?? "")
+      .replace(/<[^>]*>/g, " ").toLowerCase();
+    return /this light is sunlight|counts? as sunlight|is considered sunlight/.test(text);
+  }
+
   static _casterToken(item) {
     const actor = item?.actor;
     if (!actor) return null;
@@ -240,9 +263,33 @@ export class HolySymbol {
     // Only the user who activated runs this (Sequencer broadcasts the visual).
     if (message?.author?.id && message.author.id !== game.user.id) return;
     const item = activity?.item;
-    if (!HolySymbol._isHolySymbol(item)) return;
-
     const power = String(activity?.name ?? "");
+
+    // ⚠️🔴 SUNLIGHT IS A THING THAT EXISTS, NOT A CHARGE ON ONE ITEM (2026-08-22).
+    //
+    // Every line below used to sit behind `if (!_isHolySymbol(item)) return`,
+    // so the ONLY sunlight ACE understood was a charge of the Holy Symbol of
+    // Ravenkind. Johnny cast a SPELL called Sunlight, standing next to a
+    // vampire, and nothing happened at all — the animation played because that
+    // comes from elsewhere, and the module that knows what sunlight does to a
+    // vampire never even looked.
+    //
+    // Sunbeam and Sunburst say "this light is sunlight" in as many words, and a
+    // GM may have any number of homebrew sources. All of them should burn a
+    // vampire. So the ZONE is now available to anything that makes sunlight,
+    // and the Holy Symbol is simply one such thing.
+    //
+    // ⚠️ DAYLIGHT IS DELIBERATELY NOT ON THE LIST. RAW it does not create
+    // sunlight, and a vampire standing in it takes nothing. Getting that wrong
+    // in the generous direction would quietly rewrite the monster.
+    if (!HolySymbol._isHolySymbol(item)) {
+      if (HolySymbol._isSunlightSource(item, activity)) {
+        const t = HolySymbol._casterToken(item);
+        if (t) HolySymbol._activateSunlight(t, item);
+      }
+      return;
+    }
+
     const token = HolySymbol._casterToken(item);
     if (!token) return;
 

@@ -118,8 +118,8 @@ export class FlightVisuals {
         // to go. Creature names carry their movement mode; their attacks do not.
         if (activity?.type === "attack") return;
 
-        const isAscend  = /ascen|take\s*flight|fly|flight|levitat|soar|hover/.test(name);
-        const isDescend = /descen|land|touch\s*down|alight/.test(name);
+        const isAscend  = /ascen|take\s*flight|\bfly\b|\bflight\b|levitat|soar|hover/.test(name);
+        const isDescend = /descen|\bland\b|touch\s*down|alight/.test(name);
         if (!isAscend && !isDescend) return;
 
         // ⚠️ THE SPELL LIFTS ITS TARGET, NOT ITS CASTER.
@@ -192,7 +192,7 @@ export class FlightVisuals {
     try {
       const flag = item?.getFlag?.(MODULE_ID, "vortexFlight");
       if (flag !== undefined) return !!flag;
-      return /stormforger|tempest|tornado|whirlwind|cyclone|storm/i.test(String(item?.name ?? ""));
+      return /stormforger|tempest|tornado|whirlwind|cyclone|storm\b/i.test(String(item?.name ?? ""));
     } catch (_) { return false; }
   }
 

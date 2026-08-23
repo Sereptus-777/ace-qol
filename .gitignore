@@ -18,3 +18,4 @@ config.local.json
 
 # Node
 node_modules/
+tools/__pycache__/

@@ -564,6 +564,11 @@ Hooks.once("init", () => {
 // it (2026-08-09). Registering here costs nothing and cannot be skipped.
 Hooks.once("ready", () => {
   try { installSliderGuard(); } catch (_) { /* cosmetic guard, never fatal */ }
+  // Keep Sequencer's "missing template" banner off screen when WE deleted the
+  // template. Narrow, time-boxed, and it logs everything it hides.
+  import("./template-noise.mjs")
+    .then(({ installTemplateNoiseGuard }) => installTemplateNoiseGuard())
+    .catch(() => { /* guard optional, never fatal */ });
   try { DayRollover.init(); }
   catch (err) { console.error(`${MODULE_ID} | Day rollover init failed:`, err); }
   try { HungerWarning.register(); }

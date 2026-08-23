@@ -6204,9 +6204,24 @@ export class SaveEngine {
       // GM's canvas: "could not find object with ID: …MeasuredTemplate…".
       // The template is ours and we chose to delete it, so cleaning up after
       // ourselves is our job, not something the GM should have to ignore.
+      // ⚠️ AWAIT IT. This was fire-and-forget, so the delete below raced the
+      // very cleanup meant to prevent the error. endEffects returns a promise;
+      // not awaiting it means the template can vanish while Sequencer is still
+      // detaching from it, which produces exactly the red banner this block
+      // exists to avoid. Johnny has been dismissing that toast after every
+      // single area spell.
       try {
-        globalThis.Sequencer?.EffectManager?.endEffects?.({ object: tmpl });
+        await globalThis.Sequencer?.EffectManager?.endEffects?.({ object: tmpl });
       } catch (_) { /* Sequencer absent or nothing attached — fine */ }
+
+      // ⚠️ Belt and braces for the case awaiting cannot fix: the effect may
+      // be owned by ANOTHER client's Sequencer (a player's, or Automated
+      // Animations mid-flight), and we cannot end that one from here. Arm a
+      // short, narrow window that swallows only this one message.
+      try {
+        const { armTemplateNoiseGuard } = await import("./template-noise.mjs");
+        armTemplateNoiseGuard();
+      } catch (_) { /* guard optional */ }
 
       await tmpl.delete();
       console.log(`${MODULE_ID} | Auto-deleted instant template ${tmplId}`);

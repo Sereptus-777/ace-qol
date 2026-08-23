@@ -391,6 +391,34 @@ export class DamageApplicator {
       console.log(`${MODULE_ID} | applyHPHeal [${opts.label}]: ${actor.name} ${currentHP} → ${newHP} (+${healedAmount})`);
     }
 
+    // ── ANNOUNCE THE HEAL ────────────────────────────────────────────────
+    // ⚠️ There was no hook here, so nothing outside this file could know a heal
+    // had happened or to WHOM. ACE Engine's only record of healing was a
+    // running total on the healer's own sheet: it knew Chudd had healed 240
+    // points and had no idea a single one of them went to a dying enemy.
+    //
+    // Johnny, 2026-08-21, on healing Vilnius in the Amber Temple to keep him
+    // alive: "is it recorded?" It was not. His history holds Vilnius BEGGING to
+    // be spared and no record that anyone spared him.
+    //
+    // ⚠️ Corrections are flagged, not hidden. An undo restoring hit points is
+    // not an act of mercy and must never be logged as one.
+    if (healedAmount > 0) {
+      try {
+        Hooks.callAll(`${MODULE_ID}.healApplied`, {
+          actor,
+          tokenDocId: opts.tokenDocId ?? null,
+          amount: healedAmount,
+          currentHP, newHP,
+          label: opts.label ?? "",
+          isCorrection: !!opts.isCorrection || /undo|correction|restore/i.test(opts.label ?? ""),
+          wasDying: currentHP <= 0,
+        });
+      } catch (err) {
+        console.warn(`${MODULE_ID} | a healApplied listener threw (the heal still applied):`, err);
+      }
+    }
+
     return { currentHP, newHP, healedAmount, applied: true };
     });   // ← end per-actor HP lock (shared with applyHPDamage)
   }

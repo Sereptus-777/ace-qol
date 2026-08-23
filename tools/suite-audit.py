@@ -15,7 +15,12 @@ import os, re, json
 from collections import defaultdict, Counter
 
 ROOT = r"D:\FoundryVTT\Data\modules"
-MODS = ["ace-qol", "ace-engine", "ace-artificer"]
+# ⚠️ FIVE, NOT THREE. ace-token-art was split out of ace-engine and
+# ace-envoy keeps its code under src/, so both were invisible to every
+# "whole suite" sweep. The 2026-08-16 audit recorded exactly this:
+# "every prior all-four sweep audited THREE." Missing modules are how a
+# clean report and a broken module coexist.
+MODS = ["ace-qol", "ace-engine", "ace-artificer", "ace-token-art", "ace-envoy"]
 
 def srcfiles(mod):
     out = []
@@ -242,7 +247,8 @@ for m in MODS:
 
 # ── report ─────────────────────────────────────────────────────────────────
 print("=" * 76)
-print("ACE SUITE AUDIT - three modules")
+import os as _os
+print(f"ACE SUITE AUDIT - {len([m for m in MODS if _os.path.isdir(_os.path.join(ROOT, m))])} modules present")
 print("=" * 76)
 for m in MODS:
     print(f"  {m:<16} {len(FILES[m]):>3} source files, "
