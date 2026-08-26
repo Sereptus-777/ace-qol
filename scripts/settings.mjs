@@ -4,6 +4,7 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { normalizeFoundryPath, verifyFoundryPath } from "./path-utils.mjs";
+import { registerRuleSettings } from "./rules-edition.mjs";
 
 // ── Auto-clean a pasted file-path setting ───────────────────────────────────
 // Users copy a path from Windows File Explorer (absolute, backslashes) and
@@ -227,18 +228,69 @@ export class QolSettings {
     //  2014 — the larger of the two player bases per market surveys as of
     //  2026 (roughly 50% want 2014 vs 25% want 2024; remainder split).
     // ═══════════════════════════════════════════════════════════════════════════
+    // ⚠️ AUTO IS GONE, BY INSTRUCTION (2026-08-23). Johnny: "I don't want
+    // fucking Auto Detect. That's just going to screw things up." For a sold
+    // product he is right — a per-actor sniff means two creatures in one fight
+    // can run different rules, and no support conversation can begin with "it
+    // depends what ACE decided about that goblin". Worlds still on Auto are
+    // migrated once, to the answer Auto was already giving them, so nothing
+    // changes underneath a live campaign. See rules-edition.mjs.
+    //
+    // ⚠️ AND IT SYNCS WITH ACE ENGINE. The old hint asked the GM to "mirror
+    // this with the same setting in ACE QOL" — the module asking a human to keep
+    // two settings in step by hand. Setting either one now sets both.
     s("gameRulesEdition", {
       name: "D&D 5e Rules Edition",
-      hint: "Which 5e ruleset should ACE follow for class features, magic items, and feats with edition-specific behavior (Lifedrinker, Hunter's Mark, Counterspell, etc.). Default: Auto — sniffs each actor's class items for 2024 markers. Override to lock everything to one edition.",
+      hint: "Which ruleset ACE follows for the rules that actually differ — Weapon Mastery, Exhaustion, Great Weapon Master, Sharpshooter, Crusher/Slasher, Lifedrinker, Stunning Strike and Command. Custom lets you mix them one by one on the ACE QOL panel. This is shared with ACE Engine: change it here and it changes there.",
       scope: "world",
       config: true,
       type: String,
       choices: {
-        auto:   "Auto — detect per actor from their class items (recommended)",
-        "2014": "2014 Rules (original 5e Player's Handbook)",
-        "2024": "2024 Rules (new Player's Handbook / One D&D)",
+        "2014":  "2014 Rules (original 5e Player's Handbook)",
+        "2024":  "2024 Rules (new Player's Handbook / One D&D)",
+        custom:  "Custom — choose each rule yourself (Homebrew)",
       },
-      default: "auto",
+      default: "2024",
+      onChange: (value) => {
+        import("./rules-edition.mjs").then(async (m) => {
+          // Picking a plain edition sets every individual rule to match, so a
+          // later switch to Custom starts from where they actually were rather
+          // than from an unrelated default.
+          if (value === "2014" || value === "2024") await m.setAllRules(value);
+          await m.syncEditionTo("ace-engine", value);
+          m.reportEdition();
+        }).catch(err => console.warn("ace-qol | rules-edition sync failed:", err));
+      },
+    });
+
+    // The eight rules that genuinely differ. Hidden from the native list — they
+    // mean nothing unless the mode is Custom, and eight dead rows is noise for
+    // the tables who pick an edition and move on.
+    try { registerRuleSettings(s); }
+    catch (err) { console.warn("ace-qol | could not register the per-rule edition settings:", err); }
+
+    // ⚠️🔴 A SETTING THAT OVERRIDES YOUR EDITION MUST LIVE BESIDE IT (2026-08-23).
+    //
+    // This was `config: false`, surfaced only on ACE's own Weapon Masteries tab.
+    // So a switch that makes 2024 masteries fire inside a 2014 world was
+    // INVISIBLE in the place a GM goes to look at settings.
+    //
+    // Johnny spent an evening on it: he set his world to 2014, kept seeing Vex
+    // and Topple, and said "I don't see anywhere where it says houserule
+    // override active." He was looking in Game Settings. It was not there.
+    //
+    // Registered immediately after the edition picker so it appears next to the
+    // thing it overrides — Foundry lists settings in registration order, so
+    // position here is the whole fix. It stays on the ACE panel too; a setting
+    // can appear in both places, and the one place it must appear is the
+    // obvious one.
+    s("weaponMasteryAllowIn2014", {
+      name:    "Weapon Mastery — use it in 2014 rules anyway (houserule)",
+      hint:    "OVERRIDES the Rules Edition above for Weapon Mastery only. Weapon Mastery is a 2024 feature and does not exist in 2014, so it normally does nothing in a 2014 world. Turn this ON only if you deliberately want to import Vex, Topple, Graze and the rest into a 2014 game as a houserule. If you set the edition to 2014 and are still seeing masteries fire, this is why.",
+      scope:   "world",
+      config:  true,
+      type:    Boolean,
+      default: false,
     });
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -439,15 +491,6 @@ export class QolSettings {
     //  system to fire even when dnd5e's rulesVersion is "legacy".
     //
     //  Default OFF (pure 2014 RAW). Flip ON for hybrid play.
-    s("weaponMasteryAllowIn2014", {
-      name:    "Weapon Mastery — Allow in 2014 (Legacy) mode",
-      hint:    "By default, Weapon Mastery only fires in 2024 (Modern) mode because it's a 2024 PHB feature. Enable this if you're running 2014 rules but want to use the Weapon Mastery system as a houserule import.",
-      scope:   "world",
-      config:  false,   // surfaced via the ACE config panel (Weapon Masteries tab), not native settings
-      type:    Boolean,
-      default: false,
-    });
-
     s("cleaveRawAttackRoll", {
       name:    "Cleave — Roll to Hit (RAW)",
       hint:    "ON (default, 2024 RAW): the Cleave weapon mastery (Greataxe/Halberd) makes a real attack roll against the second creature — it CAN miss. On a hit, the second creature takes the weapon's damage minus your ability modifier. OFF: the cleave auto-hits (faster; treats the second hit as automatic damage, the old behaviour). Only affects Cleave.",

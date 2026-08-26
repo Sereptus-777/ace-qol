@@ -125,6 +125,28 @@ export class AceFX {
       });
     } catch (_) { /* already registered */ }
 
+    // ⚠️🔴 THIS SETTING WAS READ AND NEVER REGISTERED (found 2026-08-23).
+    //
+    // _enabled() below reads "autoAnimations" and the only other mention of it
+    // in the whole module is that read. game.settings.get THROWS on a key that
+    // was never registered, so every call landed in a catch that returned true,
+    // and the comment there said so out loud: "setting not registered yet".
+    //
+    // Net effect: the cast flourish and the silhouette encrust were permanently
+    // ON, with no switch anywhere to turn them off. A GM who finds them
+    // distracting had nothing to click and nothing to find. That is a feature
+    // with a toggle that does not exist — the same shape as a button wired to
+    // nothing.
+    //
+    // Registered now, visible, defaulting to ON so nobody's world changes.
+    try {
+      game.settings.register(MODULE_ID, "autoAnimations", {
+        name: "Spell Flourish and Impact Effects",
+        hint: "The coloured flourish when a spell is cast, and the brief silhouette flash when a creature is hit. Purely cosmetic — turning it off changes no rules. Default: ON.",
+        scope: "world", config: true, type: Boolean, default: true,
+      });
+    } catch (_) { /* already registered */ }
+
     // ── FX socket — runs on EVERY client (ungated). Only acts on aceFx:* actions,
     //    so it lives happily beside the existing module-socket dispatch. ──
     try {

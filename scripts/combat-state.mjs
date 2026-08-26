@@ -14,6 +14,7 @@ import { Situation } from "./situation.mjs";
 // Weapon rules entries (Lance etc.) — function-time reads only; cycle inert.
 import { RulesBrain } from "./rules/rules-brain.mjs";
 import { aceDistanceFt } from "./geometry-utils.mjs";
+import { hasTurns } from "./action-economy.mjs";
 
 // ─── Creature snapshot access (2026-07-28) ───────────────────────────────────
 // combat-state sits BELOW the profile layer — attacker-profile imports this
@@ -944,7 +945,11 @@ export class CombatState {
     // Flag `sneakAttack.usedThisTurn` is cleared on this actor's turn-end.
     const sneakAttack = CombatState._checkSneakAttack(attackerActor, targetToken, item, isMelee, advantageSources.length > 0, disadvantageSources.length > 0);
     if (sneakAttack.eligible) {
-      const alreadyUsed = !!attackerActor.getFlag?.(MODULE_ID, "sneakAttack.usedThisTurn");
+      // ⚠️ ONCE PER TURN NEEDS A TURN. This flag is cleared on turn-end, a
+      // hook that never fires outside combat — so the first use out of a
+      // fight would stick for ever and the rider could never trigger again.
+      const alreadyUsed = hasTurns(attackerActor)
+        && !!attackerActor.getFlag?.(MODULE_ID, "sneakAttack.usedThisTurn");
       if (!alreadyUsed) {
         sneakAttack.isOncePerTurn = "sneakAttack"; // marker consumed downstream to set flag
         attackerBonuses.push(sneakAttack);
@@ -1148,7 +1153,11 @@ export class CombatState {
     // actor's turn-end via the combatTurnChange handler in ace-qol.mjs.
     // Pattern mirrors Radiant Soul (Celestial Warlock 6+).
     if (CombatState._hasFeature(attackerActor, "Divine Strike") || CombatState._hasFeature(attackerActor, "Blessed Strikes")) {
-      const alreadyUsed = !!attackerActor.getFlag?.(MODULE_ID, "divineStrike.usedThisTurn");
+      // ⚠️ ONCE PER TURN NEEDS A TURN. This flag is cleared on turn-end, a
+      // hook that never fires outside combat — so the first use out of a
+      // fight would stick for ever and the rider could never trigger again.
+      const alreadyUsed = hasTurns(attackerActor)
+        && !!attackerActor.getFlag?.(MODULE_ID, "divineStrike.usedThisTurn");
       if (!alreadyUsed) {
         const blessedStrikes = CombatState._hasFeature(attackerActor, "Blessed Strikes");
         attackerBonuses.push({
@@ -1993,8 +2002,23 @@ export class CombatState {
       if (token.actor.statuses?.has("unconscious"))   continue;
 
       const dist = CombatState._getDistance(token, targetToken);
-      // 10ft base, 30ft at 18th level
       const paladinLevel = token.actor.items?.find(i => i.type === "class" && i.name?.toLowerCase().includes("paladin"))?.system?.levels ?? 0;
+
+      // ⚠️🔴 AURA OF PROTECTION IS A PALADIN 6 FEATURE. This read the
+      // level and used it ONLY to pick the radius, never to decide whether the
+      // aura exists at all — so any character carrying the feature item got the
+      // full +CHA to every save from level 1.
+      //
+      // Johnny's Syrax Razeson is Paladin 2 / Warlock 7 and was rolling a
+      // Dexterity save at +15 off a sheet that says +5 (2026-08-24).
+      //
+      // ⚠️ SIX LEVELS OF PALADIN, NOT SIX CHARACTER LEVELS. Multiclassing
+      // does not advance a class feature — a Paladin 2 / Warlock 7 is a level 9
+      // character with a level 2 paladin's features. The class item's own
+      // `levels` is already the right number; it just was not being asked.
+      if (paladinLevel < 6) continue;
+
+      // 10ft base, 30ft at 18th level
       const auraRange = paladinLevel >= 18 ? 30 : 10;
 
       if (dist <= auraRange) {
@@ -2189,7 +2213,8 @@ export class CombatState {
 
     // Once-per-turn check
     try {
-      if (actor.getFlag?.(MODULE_ID, "radiantSoul.usedThisTurn")) return 0;
+      // ⚠️ Once per turn needs a turn — see the note on Sneak Attack above.
+      if (hasTurns(actor) && actor.getFlag?.(MODULE_ID, "radiantSoul.usedThisTurn")) return 0;
     } catch (_) { /* flag access failed — treat as unused */ }
 
     const chaMod = _aceMod(actor, "cha");

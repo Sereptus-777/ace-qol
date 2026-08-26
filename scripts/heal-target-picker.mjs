@@ -245,6 +245,15 @@ export class HealTargetPicker {
             callback: () => resolve({ tokens: [], consume: false }),
           },
         ],
+        // ⚠️🔴 DISMISSAL MUST RESOLVE, OR THE CALLER WAITS FOREVER.
+        // rejectClose:false settles DialogV2's OWN promise on dismissal — but
+        // this code wraps the dialog and resolves an outer promise only from the
+        // button callbacks. Closing with the X or Escape fired neither, so the
+        // await above never returned: the spell silently never completed, with
+        // no error and nothing on screen.
+        // magic-missile-picker.mjs had this line from the start. The other two
+        // pickers did not, which is fixing the instance and not the class.
+        close: () => resolve({ tokens: [], consume: false }),
       });
       // v0.7.21: await the render Promise so the DOM is guaranteed mounted
       // before we wire click handlers. The previous setTimeout(50ms) raced

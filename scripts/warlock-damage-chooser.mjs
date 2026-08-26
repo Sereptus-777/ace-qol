@@ -261,6 +261,12 @@ export async function openWarlockDamageDialog(actor) {
   return new Promise(resolve => {
     new Dialog({
       title: `Warlock Damage Type — ${actor.name}`,
+      // ⚠️ DISMISSAL RESOLVES THE SAME AS CANCEL. Without this, closing with
+      // the X or Escape fires no button callback, the wrapping promise never
+      // settles, and the caller awaits forever — no error, nothing on screen.
+      // The Cancel button here already resolves null, so dismissal matches it
+      // rather than inventing a value the caller has not been taught to expect.
+      close: () => resolve(null),
       content,
       buttons: {
         save: {

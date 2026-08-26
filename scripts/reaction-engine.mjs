@@ -22,6 +22,7 @@
 const MODULE_ID = "ace-qol";
 import { QolSettings } from "./settings.mjs";
 import { CombatState } from "./combat-state.mjs";
+import { hasTurns } from "./action-economy.mjs";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Constants
@@ -1104,7 +1105,14 @@ export class ReactionEngine {
     } catch (_) { /* fall through */ }
 
     // Reaction already used?
-    if (this._hasUsedReaction(actor)) return { canUse: false, slots: [], reason: "Reaction already used this round" };
+    // ⚠️ A REACTION BUDGET IS A PER-ROUND BUDGET, and rounds only exist in a
+    // fight. Out of combat the flag that records "used" is never cleared,
+    // because the hook that clears it is `combatTurnChange` — so one reaction
+    // taken outside a fight would forbid every reaction until somebody rolled
+    // initiative. Same class as the bonus-action spell gate.
+    if (hasTurns(actor) && this._hasUsedReaction(actor)) {
+      return { canUse: false, slots: [], reason: "Reaction already used this round" };
+    }
 
     // Has Shield spell prepared/known?
     const hasShield = this._hasSpellPrepared(actor, "Shield");
@@ -1668,6 +1676,161 @@ export class ReactionEngine {
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
+   * Uncanny Dodge — halve the damage of one attack you can see coming.
+   *
+   * PHB Rogue 5: "When an attacker that you can see hits you with an attack
+   * roll, you can use your reaction to halve the attack's damage against you."
+   *
+   * ⚠️ EVERY CLAUSE OF THAT SENTENCE IS A GATE, and they are all here:
+   *   "an attacker"        - there has to be one; a trap or a falling rock is not
+   *   "that you can see"   - line of sight FROM THE TARGET, and not blinded, and
+   *                          the attacker not invisible or hidden
+   *   "hits you"           - the attack landed
+   *   "with an attack roll"- a saving-throw spell is not an attack roll
+   *   "your reaction"      - costs it, and only in combat is there one to spend
+   *   "halve the damage"   - ALL of it, every type, not just the weapon dice
+   *
+   * ⚠️ THE FEATURE IS READ FROM THE REGISTRY, NOT MATCHED BY NAME. The
+   * class-features registry already knows what Uncanny Dodge is, including the
+   * Rogue-5 requirement and any homebrew override, and `NullificationWalker` is
+   * its reader. Name-matching here would drift from it the first time somebody
+   * renamed the feature on a sheet.
+   */
+  async _checkUncannyDodge(damageComponents, targetActor, targetToken, attacker, attackItem, hit) {
+    const no = { used: false, result: { modifiedComponents: damageComponents, absorbed: false } };
+    try {
+      if (!targetActor || !targetToken) return no;
+
+      // "your reaction" — no turns, no reaction to spend.
+      if (!hasTurns(targetActor)) return no;
+      if (this._hasUsedReaction(targetActor)) return no;
+
+      // "with an attack roll" — a save-based spell never triggers this.
+      if (hit && hit.hitResult !== "hit" && hit.hitResult !== "critical") return no;
+      if (hit && !hit.hitResult) return no;
+
+      // "an attacker" — a hazard with no creature behind it does not qualify.
+      if (!attacker) return no;
+
+      // ⚠️🔴 DO NOT IMPORT THE REGISTRY WALKER FROM THIS FILE.
+      // `walker.mjs` imports `ace-qol.mjs`, and `ace-qol.mjs` imports THIS
+      // module — which is why the top of this file hardcodes MODULE_ID with a
+      // comment saying so. Adding that import closed the cycle and took large
+      // parts of the suite down mid-session (2026-08-24): spells stopped
+      // resolving, templates appeared only sometimes. A circular import does
+      // not throw a clean error, it leaves bindings undefined at evaluation
+      // time, which is exactly what 'sometimes it works' looks like.
+      //
+      // `CombatState` is already imported here and already owns feature
+      // detection, so the check goes through it. The class level is read the
+      // same way Aura of Protection reads paladin levels: from the class item,
+      // because multiclassing does not advance a class feature.
+      if (!CombatState._hasFeature?.(targetActor, "Uncanny Dodge")) return no;
+      const rogueLevel = targetActor.items?.find(i => i.type === "class"
+        && i.name?.toLowerCase().includes("rogue"))?.system?.levels ?? 0;
+      if (rogueLevel < 5) return no;
+
+      // "that you can see"
+      const visible = this._canTargetSeeAttacker(targetToken, attacker);
+      if (!visible.can) {
+        console.log(`${MODULE_ID} | Uncanny Dodge not offered to ${targetActor.name}: ${visible.why}`);
+        return no;
+      }
+
+      const total = damageComponents.reduce((sum, c) => sum + (c.total ?? c.raw ?? 0), 0);
+      if (total <= 0) return no;
+
+      const halved = Math.floor(total / 2);
+      const promptResult = await this._promptReaction({
+        reactorActor: targetActor,
+        reactorToken: targetToken,
+        type: "uncannyDodge",
+        title: "Uncanny Dodge",
+        description: `<strong>${targetActor.name}</strong> is hit by <strong>${attacker?.name ?? "an attacker"}</strong>`
+                   + `${attackItem?.name ? ` with ${attackItem.name}` : ""}. Roll with it?`,
+        details: [
+          { label: "Damage", value: `${total}` },
+          { label: "If you dodge", value: `${halved} (halved)` },
+          { label: "Cost", value: "Your reaction" },
+        ],
+        acceptLabel: `Halve it — take ${halved}`,
+        declineLabel: `Take all ${total}`,
+        icon: "fa-person-running",
+        accentColor: "#9ecbff",
+      });
+
+      if (!promptResult.accepted) return no;
+
+      await this._markReactionUsed(targetActor, "uncannyDodge");
+
+      // ⚠️ HALVE THE ATTACK, NOT EACH COMPONENT SEPARATELY. Rounding each
+      // one down on its own loses a point per damage type: 7 slashing + 3 fire
+      // is 10, halved is 5 — but floor(7/2) + floor(3/2) is 3 + 1 = 4. The
+      // rogue would be silently robbed on every multi-type hit. Halve the
+      // TOTAL, then distribute the loss across the components.
+      let remaining = halved;
+      const modifiedComponents = damageComponents.map((c, idx) => {
+        const isLast = idx === damageComponents.length - 1;
+        const raw = c.total ?? c.raw ?? 0;
+        const share = isLast ? remaining : Math.floor(raw * halved / total);
+        remaining -= share;
+        return { ...c, total: Math.max(0, share), uncannyDodged: true };
+      });
+
+      console.log(`${MODULE_ID} | Uncanny Dodge: ${targetActor.name} halves ${total} to ${halved} `
+        + `from ${attacker?.name ?? "an attacker"}.`);
+
+      return { used: true, result: { modifiedComponents, absorbed: false, uncannyDodged: true } };
+    } catch (err) {
+      // ⚠️ FAIL OPEN AND LOUD. A reaction that throws must never eat the
+      // damage roll — the hit still lands, at full value, and the console says
+      // why rather than the rogue quietly losing the feature again.
+      console.error(`${MODULE_ID} | Uncanny Dodge check failed — the hit lands in full:`, err);
+      return no;
+    }
+  }
+
+  /**
+   * Can the TARGET see the attacker? Not "can the current client see them".
+   *
+   * ⚠️ `token.visible` IS THE WRONG TOOL HERE. It answers "can the person
+   * sitting at this keyboard see it", and this runs on the GM's client, who can
+   * usually see everything. A blinded rogue would be offered a reaction they are
+   * not entitled to. This asks about the creatures instead: the target's own
+   * senses, the attacker's own concealment, and a wall between them.
+   */
+  _canTargetSeeAttacker(targetToken, attacker) {
+    try {
+      const targetActor = targetToken?.actor;
+      if (targetActor?.statuses?.has?.("blinded")) return { can: false, why: "they are blinded" };
+
+      const attackerToken = attacker?.getActiveTokens?.(false, false)?.[0] ?? null;
+      if (!attackerToken) return { can: true, why: "" };   // no token to hide behind
+
+      const aActor = attackerToken.actor ?? attacker;
+      if (aActor?.statuses?.has?.("invisible")) return { can: false, why: "the attacker is invisible" };
+      if (attackerToken.document?.hidden) return { can: false, why: "the attacker is hidden from view" };
+
+      // ⚠️ THE V13 COLLISION CALL, NAMED. `canvas.walls.checkCollision` does
+      // NOT exist in V13 and `Ray` is not a global — both were tried and both
+      // threw into a catch that reported "no wall", silently disabling wall
+      // checks twice (2026-08-06).
+      const backend = CONFIG.Canvas?.polygonBackends?.sight;
+      if (typeof backend?.testCollision === "function") {
+        const blocked = backend.testCollision(
+          targetToken.center, attackerToken.center, { type: "sight", mode: "any" });
+        if (blocked) return { can: false, why: "a wall is between them" };
+      }
+      return { can: true, why: "" };
+    } catch (err) {
+      // Cannot tell → allow. Losing the feature is worse than a rare wrong offer,
+      // and the GM is watching the prompt either way.
+      console.warn(`${MODULE_ID} | could not test line of sight for Uncanny Dodge — allowing:`, err);
+      return { can: true, why: "" };
+    }
+  }
+
+  /**
    * Check if a target can use Absorb Elements against incoming damage.
    * Called from DamageEngine before damage is applied.
    *
@@ -1678,8 +1841,48 @@ export class ReactionEngine {
    * @param {Item} attackItem - The weapon/spell that caused damage
    * @returns {{ modifiedComponents: object[], absorbed: boolean, absorbedType: string|null }}
    */
-  async checkPreDamageReactions(damageComponents, targetActor, targetToken, attacker, attackItem) {
+  async checkPreDamageReactions(damageComponents, targetActor, targetToken, attacker, attackItem, hit = null) {
     if (!QolSettings.get("enableReactions")) return { modifiedComponents: damageComponents, absorbed: false };
+
+    // ── UNCANNY DODGE, offered before Absorb Elements ──────────────────────
+    //
+    // ⚠️🔴 THIS FEATURE HAD NEVER ONCE FIRED. `class-features-registry.mjs`
+    // declared it on 2026-07 as `special: { uncannyDodge: true }` and NOTHING in
+    // the entire suite ever read that flag. One declaration, zero consumers, so
+    // every rogue in Johnny's campaign has taken full damage from every hit
+    // since it was written. Johnny, 2026-08-24: "Uncanny Dodge should be firing
+    // just like Counterspell does in the middle of combat. I don't know how we
+    // missed that." It is the building-a-profile-is-not-consulting-it failure,
+    // exactly.
+    //
+    // It goes FIRST because its trigger is narrower: a hit from an attack roll
+    // by an attacker you can see. Absorb Elements answers any elemental damage
+    // from any source. Both cost the same reaction, so whichever is offered and
+    // taken locks the other out — and on a physical hit the rogue wants this one.
+    // ⚠️🔴 DISABLED 2026-08-24, MID-SESSION, ON JOHNNY'S INSTRUCTION.
+    //
+    // Uncanny Dodge was added to this hot path the same day his spells stopped
+    // producing damage cards - Magic Missile, Fireball and a magic staff all
+    // silently doing nothing. This runs for EVERY target of EVERY damage roll
+    // and it AWAITS a user prompt, so any path where that prompt fails to
+    // resolve stalls the damage card forever and the spell looks dead.
+    //
+    // I have NOT proven that is the cause. That is exactly why it is off: the
+    // damage pipeline is the single most load-bearing thing in the suite and it
+    // does not get a suspect sitting inside it during a live game. His words:
+    // "If it's the reaction-engine, then tear it out or whatever. Stop it,
+    // block it. But figure out what it is."
+    //
+    // Restore by deleting this constant and its guard - the implementation
+    // below is untouched and complete. Do NOT restore it without first
+    // reproducing the original fault with it off, so we know what fixed what.
+    const UNCANNY_DODGE_ENABLED = false;
+    if (UNCANNY_DODGE_ENABLED) {
+      const dodge = await this._checkUncannyDodge(
+        damageComponents, targetActor, targetToken, attacker, attackItem, hit);
+      if (dodge.used) return dodge.result;
+    }
+
     if (!QolSettings.get("autoAbsorbElements")) return { modifiedComponents: damageComponents, absorbed: false };
 
     // Check if any damage component is an elemental type

@@ -31,7 +31,8 @@ export class SpellTargetPicker {
    * @param {boolean}[opts.allowSelf]  — caster can be a target (default true)
    * @returns {Promise<Actor[]>}
    */
-  static async pick({ spellItem, casterActor, maxTargets, rangeFt, allowSelf = true }) {
+  static async pick({ spellItem, casterActor, maxTargets, rangeFt, allowSelf = true,
+                      verb = "Cast", icon = "fa-solid fa-sparkles" }) {
     if (!spellItem || !casterActor) return [];
 
     // Resolve range from spell item if not explicitly passed
@@ -87,7 +88,61 @@ export class SpellTargetPicker {
       preSelected,
       maxTargets: Math.max(1, Number(maxTargets) || 1),
       rangeFt: resolvedRange,
+      verb,
+      icon,
     });
+  }
+
+  /**
+   * One target for a weapon attack, chosen from what is actually in reach.
+   *
+   * ⚠️ THIS REPLACES REFUSING THE ATTACK. Johnny, 2026-08-23: "why don't we
+   * put up the portrait picker? ... it just might help identify which one they
+   * really want to hit, because goblins can look exactly the same with just
+   * small differences." Telling somebody to go and pick a target punishes them
+   * for a click they already made; showing them the choices finishes the job.
+   *
+   * ⚠️ ONE CANDIDATE MEANS NO DIALOG. A popup with a single button is
+   * friction, not help — if exactly one creature is in reach, that is who is
+   * being hit, and the attack carries on without a pause.
+   *
+   * @returns {Promise<Token|null>} the chosen token, or null if cancelled
+   */
+  static async pickAttackTarget({ weaponItem, attackerActor, reachFt }) {
+    if (!weaponItem || !attackerActor) return null;
+
+    const attackerToken = attackerActor.getActiveTokens?.()?.[0]
+      ?? canvas.tokens?.placeables.find(t => t.actor?.id === attackerActor.id)
+      ?? null;
+    if (!attackerToken) return null;
+
+    const all = SpellTargetPicker._buildCandidates(attackerToken, attackerActor, reachFt, false);
+    // Only creatures that could actually be hit: in reach, and still standing.
+    const reachable = all.filter(c => c.inRange && !c.isDead);
+
+    if (!reachable.length) {
+      ui.notifications?.warn(
+        `${weaponItem.name}: nothing within ${Math.round(reachFt)} ft to attack.`);
+      return null;
+    }
+    if (reachable.length === 1) {
+      const only = reachable[0];
+      console.log(`ace-qol | Only ${only.name} is within ${Math.round(reachFt)} ft — targeting them without asking.`);
+      return only.token;
+    }
+
+    const picked = await SpellTargetPicker._showDialog({
+      spellItem: weaponItem,
+      candidates: reachable,
+      preSelected: new Set(),
+      maxTargets: 1,
+      rangeFt: reachFt,
+      verb: "Attack with",
+      icon: "fa-solid fa-gavel",
+    });
+    const chosenActor = picked?.[0] ?? null;
+    if (!chosenActor) return null;
+    return reachable.find(c => c.actor?.id === chosenActor.id)?.token ?? null;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -156,6 +211,12 @@ export class SpellTargetPicker {
         img: tok.actor.img ?? tok.document?.texture?.src ?? "icons/svg/mystery-man.svg",
         isSelf,
         distFt,
+        // ⚠️ WHICH WAY, NOT JUST HOW FAR. Johnny, 2026-08-23: "goblins can
+        // look exactly the same with just small differences, and the player
+        // could still not be sure which one he wants to attack... it delays the
+        // game." Four identical goblins at 10 ft are four identical rows;
+        // "10 ft north" and "10 ft southeast" are two different creatures.
+        bearing: isSelf ? "" : SpellTargetPicker._bearing(casterToken, tok),
         inRange,
         disposition,
         isPlayerOwned,
@@ -170,6 +231,33 @@ export class SpellTargetPicker {
     });
 
     return out;
+  }
+
+  /**
+   * Which way the target lies, as a compass point.
+   *
+   * ⚠️ SCREEN DOWN IS NORTH-LESS. Canvas Y grows DOWNWARD, so a token with a
+   * larger Y is BELOW you on screen, which every player reads as south. Using
+   * the raw angle would label the whole map upside down — the one mistake that
+   * would make this feature worse than useless, because a confident wrong
+   * direction is harder to ignore than no direction at all.
+   *
+   * Eight points, because sixteen is more precision than a battlemap has and
+   * nobody says "north-northeast" at the table.
+   */
+  static _bearing(fromToken, toToken) {
+    try {
+      const dx = (toToken.center?.x ?? 0) - (fromToken.center?.x ?? 0);
+      const dy = (toToken.center?.y ?? 0) - (fromToken.center?.y ?? 0);
+      if (!dx && !dy) return "";
+      // Negate dy so that up-the-screen is north.
+      const deg = (Math.atan2(-dy, dx) * 180 / Math.PI + 360) % 360;
+      const POINTS = ["east", "northeast", "north", "northwest",
+                      "west", "southwest", "south", "southeast"];
+      return POINTS[Math.round(deg / 45) % 8];
+    } catch (_) {
+      return "";
+    }
   }
 
   // Nearest-edge, size-aware, 3D distance in feet (canonical — geometry-utils).
@@ -207,7 +295,8 @@ export class SpellTargetPicker {
   //  Dialog Render
   // ═══════════════════════════════════════════════════════════════════════════
 
-  static async _showDialog({ spellItem, candidates, preSelected, maxTargets, rangeFt }) {
+  static async _showDialog({ spellItem, candidates, preSelected, maxTargets, rangeFt,
+                             verb = "Cast", icon = "fa-solid fa-sparkles" }) {
     const rangeLabel = !Number.isFinite(rangeFt) ? "any range"
                      : rangeFt === 0 ? "self only"
                      : rangeFt === 5 ? "5 ft (touch)"
@@ -250,15 +339,15 @@ export class SpellTargetPicker {
 
     return await new Promise((resolve) => {
       const dlg = new foundry.applications.api.DialogV2({
-        window: { title: `Cast ${spellItem.name} — Pick Targets` },
+        window: { title: `${verb} ${spellItem.name} — Pick Targets` },
         content,
         rejectClose: false,
         position: { width: 600 },
         buttons: [
           {
             action: "confirm",
-            label: `Cast ${spellItem.name}`,
-            icon: "fa-solid fa-sparkles",
+            label: `${verb} ${spellItem.name}`,
+            icon,
             default: true,
             callback: (_event, _button, dialog) => {
               const root = dialog?.element ?? document;
@@ -273,6 +362,15 @@ export class SpellTargetPicker {
             callback: () => resolve([]),
           },
         ],
+        // ⚠️🔴 DISMISSAL MUST RESOLVE, OR THE CALLER WAITS FOREVER.
+        // rejectClose:false settles DialogV2's OWN promise on dismissal — but
+        // this code wraps the dialog and resolves an outer promise only from the
+        // button callbacks. Closing with the X or Escape fired neither, so the
+        // await above never returned: the spell silently never completed, with
+        // no error and nothing on screen.
+        // magic-missile-picker.mjs had this line from the start. The other two
+        // pickers did not, which is fixing the instance and not the class.
+        close: () => resolve([]),
       });
       // v0.7.21: await the render Promise so the DOM is guaranteed mounted
       // before we wire click handlers. The previous setTimeout(50ms) raced
@@ -293,7 +391,8 @@ export class SpellTargetPicker {
   }
 
   static _renderTokenRow(c, preSelected) {
-    const distLabel = c.isSelf ? "self" : `${Math.round(c.distFt)} ft`;
+    const distLabel = c.isSelf ? "self"
+      : `${Math.round(c.distFt)} ft${c.bearing ? ` ${c.bearing}` : ""}`;
     const distClass = c.isSelf ? "self" : (c.inRange ? "in-range" : "out-of-range");
     const validClass = c.inRange && !c.isDead ? "valid" : "invalid";
     const selectedClass = preSelected ? "selected" : "";
@@ -328,10 +427,81 @@ export class SpellTargetPicker {
   //  Selection Logic
   // ═══════════════════════════════════════════════════════════════════════════
 
+  /**
+   * Light the real token up on the map while the pointer is over its portrait.
+   *
+   * ⚠️ THE PORTRAIT IS NOT ENOUGH ON ITS OWN. Johnny, 2026-08-23: "what if
+   * they have all got the same token art and it is genuinely hard? Let's say he
+   * is in a room full of 20 goblins: which one is he hitting?" Distance and a
+   * compass point narrow it down; seeing the actual creature light up on the
+   * battlemap settles it before he commits.
+   *
+   * ⚠️ IT PUTS EVERYTHING BACK. A hover effect that leaves a token glowing
+   * after the dialog closes looks exactly like a targeting bug, and the GM has
+   * no way to clear it. Every listener is removed and every token released when
+   * the picker goes away, whichever way it goes away.
+   */
+  static _wireHoverHighlight(root) {
+    const grid = root.querySelector?.(".ace-qol-spell-pickr-grid");
+    if (!grid) return () => {};
+
+    let lit = null;
+    const release = () => {
+      try {
+        if (lit && !lit._destroyed) lit._onHoverOut?.(new Event("mouseout"), { hoverOutOthers: false });
+      } catch (_) { /* the token may already be gone */ }
+      lit = null;
+    };
+    const light = (tokenId) => {
+      try {
+        release();
+        const tok = canvas.tokens?.get(tokenId);
+        if (!tok || tok._destroyed) return;
+        tok._onHoverIn?.(new Event("mouseover"), { hoverOutOthers: false });
+        lit = tok;
+      } catch (_) { /* highlighting is a nicety; never break the picker over it */ }
+    };
+
+    const rows = [...grid.querySelectorAll(".ace-qol-spell-pickr-tok")];
+    const pairs = [];
+    for (const el of rows) {
+      const onIn = () => light(el.dataset.tokenId);
+      const onOut = () => release();
+      el.addEventListener("mouseenter", onIn);
+      el.addEventListener("mouseleave", onOut);
+      pairs.push([el, onIn, onOut]);
+    }
+
+    return () => {
+      release();
+      for (const [el, onIn, onOut] of pairs) {
+        el.removeEventListener("mouseenter", onIn);
+        el.removeEventListener("mouseleave", onOut);
+      }
+    };
+  }
+
   static _wireGrid(root, maxTargets) {
     const grid = root.querySelector?.(".ace-qol-spell-pickr-grid");
     const counter = root.querySelector?.(".ace-qol-spell-pickr-count");
     if (!grid) return;
+
+    // Hovering a portrait lights the real creature up on the battlemap.
+    const stopHover = SpellTargetPicker._wireHoverHighlight(root);
+    // ⚠️ Tear it down whichever way the dialog dies — confirm, cancel, or
+    // the window being closed with the X. Attaching only to the confirm path is
+    // how a token stays lit forever after a cancel.
+    try {
+      const app = root.closest?.(".application") ?? root.closest?.(".dialog");
+      const obs = new MutationObserver(() => {
+        if (!document.body.contains(app ?? root)) { stopHover(); obs.disconnect(); }
+      });
+      obs.observe(document.body, { childList: true, subtree: true });
+    } catch (_) {
+      // Observer unavailable — fall back to releasing when the pointer leaves
+      // the grid, which covers the common case.
+      grid.addEventListener("mouseleave", () => stopHover());
+    }
 
     grid.querySelectorAll(".ace-qol-spell-pickr-tok").forEach(el => {
       el.addEventListener("click", (ev) => {

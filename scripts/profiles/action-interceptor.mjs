@@ -23,6 +23,7 @@
 import { MODULE_ID } from "../ace-qol.mjs";
 import { buildAttackerProfile } from "./attacker-profile.mjs";
 import { RulesBrain } from "../rules/rules-brain.mjs";
+import { SpellPipeline } from "../spell-pipeline/pipeline.mjs";
 
 // dnd5e 5.x activity types we know exist. Anything outside this set is a
 // coverage hole worth a one-time warning.
@@ -33,6 +34,32 @@ const KNOWN_ACTIVITY_TYPES = new Set([
 
 // Which ACE system is expected to own each activity type today. Informational —
 // this is the audit's map of the engine, printed with each sighting.
+/**
+ * Who is ACTUALLY going to handle this action?
+ *
+ * ⚠️🔴 THE TABLE BELOW ANSWERS FROM THE ACTIVITY TYPE ALONE, AND THAT IS
+ * NOT WHO HANDLES IT. Eldritch Blast is an "attack" activity, so this line said
+ * `owner=attack-pipeline` on every cast — while the SPELL pipeline rolled every
+ * beam and the attack pipeline stood down. The one job of this line is to name
+ * the owner, and it named the wrong one for every spell ACE casts itself.
+ *
+ * Johnny read that line looking for the duplicate-picker bug on 2026-08-25 and
+ * it pointed him at the wrong file.
+ *
+ * ⚠️ ASK THE OWNER, THEN FALL BACK TO THE TABLE. The pipeline knows whether
+ * it owns a spell; the table is only a guess for everything else.
+ */
+function _ownerOf(item, aType) {
+  try {
+    if (SpellPipeline.owns(item)) {
+      return SpellPipeline.ownsAttackRoll(item)
+        ? "spell-pipeline (native attack roll suppressed)"
+        : "spell-pipeline";
+    }
+  } catch (_) { /* fall through to the guess */ }
+  return EXPECTED_OWNER[aType] ?? "?";
+}
+
 const EXPECTED_OWNER = {
   attack: "attack-pipeline",
   save: "save-engine",
@@ -96,7 +123,7 @@ export class ActionInterceptor {
     console.debug(
       `${MODULE_ID} | [interceptor #${ActionInterceptor._rollingCount}] `
       + `${actor.name} uses "${item.name}" [${item.type}/${aType}] `
-      + `owner=${EXPECTED_OWNER[aType] ?? "?"} `
+      + `owner=${_ownerOf(item, aType)} `
       + `edition=${profile?.edition ?? "?"} `
       + `rules-entry=${rules ? "YES" : "no"} `
       + `gate=${profile?.gate?.ok === false ? `BLOCKED(${profile.gate.reason})` : "ok"}`,

@@ -38,6 +38,7 @@ import { aceWithinFt } from "./geometry-utils.mjs";
 import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { CombatState } from "./combat-state.mjs";
 import { AttackAbilityResolver } from "./attack-ability-resolver.mjs";
+import { editionFor } from "./rules-edition.mjs";
 
 const MODULE_ID = "ace-qol";
 const TAG       = `${MODULE_ID} | Mastery`;
@@ -791,7 +792,11 @@ export class WeaponMasteries {
     // as a houserule import from 2024 — the `weaponMasteryAllowIn2014`
     // setting lets them opt in. Defaults to false (pure RAW).
     try {
-      const rv = CombatState.getActiveRulesVersion(actor);  // honors ACE gameRulesEdition override
+      // ⚠️ ASK ABOUT THIS RULE, NOT ABOUT THE WORLD. Reading the top-level
+      // edition ignores the Custom tab — a GM who set Weapon Mastery to 2024
+      // inside an otherwise-2014 world would be overruled here, with nothing on
+      // screen to explain why.
+      const rv = editionFor("weaponMastery") === "2024" ? "modern" : "legacy";
       if (rv === "legacy") {
         const allowIn2014 = game.settings.get?.(MODULE_ID, "weaponMasteryAllowIn2014") === true;
         if (!allowIn2014) {
@@ -833,7 +838,11 @@ export class WeaponMasteries {
     if (!item || !actor) return false;
     // Edition gate (2024, or 2014 + override)
     try {
-      const rv = CombatState.getActiveRulesVersion(actor);  // honors ACE gameRulesEdition override
+      // ⚠️ ASK ABOUT THIS RULE, NOT ABOUT THE WORLD. Reading the top-level
+      // edition ignores the Custom tab — a GM who set Weapon Mastery to 2024
+      // inside an otherwise-2014 world would be overruled here, with nothing on
+      // screen to explain why.
+      const rv = editionFor("weaponMastery") === "2024" ? "modern" : "legacy";
       if (rv === "legacy") {
         const allow = game.settings.get?.(MODULE_ID, "weaponMasteryAllowIn2014") === true;
         if (!allow) return false;
@@ -866,7 +875,11 @@ export class WeaponMasteries {
     if (!item || !actor) return false;
     // Edition gate (2024 or 2014 + override)
     try {
-      const rv = CombatState.getActiveRulesVersion(actor);  // honors ACE gameRulesEdition override
+      // ⚠️ ASK ABOUT THIS RULE, NOT ABOUT THE WORLD. Reading the top-level
+      // edition ignores the Custom tab — a GM who set Weapon Mastery to 2024
+      // inside an otherwise-2014 world would be overruled here, with nothing on
+      // screen to explain why.
+      const rv = editionFor("weaponMastery") === "2024" ? "modern" : "legacy";
       if (rv === "legacy") {
         const allow = game.settings.get?.(MODULE_ID, "weaponMasteryAllowIn2014") === true;
         if (!allow) return false;

@@ -99,6 +99,8 @@ import { WeaponMasteries }   from "./weapon-masteries.mjs";
 import { BladeCantrips }     from "./blade-cantrips.mjs";
 import { HolySymbol }        from "./holy-symbol.mjs";
 import { ActionBar }         from "./action-bar.mjs";
+import { DispositionOutline } from "./disposition-outline.mjs";
+import { DialogSuppression } from "./dialog-suppression.mjs";
 import { Intent }            from "./intent-reader.mjs";
 import { Banishment }        from "./banishment.mjs";
 import { ConditionRawHooks } from "./condition-raw-hooks.mjs";
@@ -1331,6 +1333,111 @@ Hooks.once("ready", () => {
     console.warn(`${MODULE_ID} | hideSpellTemplateVisuals: prototype patch failed`, err);
   }
 
+  // ── Self-origin templates are PINNED to the caster, from the first frame ──
+  //
+  // ⚠️🔴 THE OLD CODE ANNOUNCED A SNAP THAT HAD ALREADY BEEN UNDONE.
+  //
+  // Two things used to claim to do this and neither one held:
+  //
+  //   1. `dnd5e.createActivityTemplate` set the preview's x/y to the caster.
+  //      dnd5e then starts its own preview listener, and EVERY mouse move
+  //      overwrites x/y from the cursor. Our value survived about one frame.
+  //   2. `preCreateMeasuredTemplate` clamped the origin into the caster's
+  //      rectangle — but that fires only on CONFIRM, after the drag is over.
+  //      It logged "Snapped template origin to Firaxis Greenbeard" every time,
+  //      which is how a fix that does nothing survives: Johnny, 2026-08-24,
+  //      "just because it says it snapped, it didn't snap." Report the outcome,
+  //      never the intention.
+  //
+  // dnd5e's `_onMovePlacement` feeds `this.getSnappedPosition(center)` straight
+  // into `updateSource`, so THAT is the only lever that governs where the apex
+  // is on every frame of the drag. Patch it and the origin can never leave the
+  // caster in the first place — the same prototype lever the square-cube snap
+  // below already uses.
+  //
+  // The cursor then does the only job left worth doing: it AIMS. Mouse position
+  // sets `direction`, so a cone points wherever you are pointing, which is what
+  // a breath weapon does and what every player expects.
+  //
+  // ⚠️ THE APEX SITS ON THE CREATURE'S EDGE, NOT ITS MIDDLE. RAW, a big
+  // creature's area starts anywhere in its space, and a Gargantuan dragon
+  // breathing from its own centre wastes the first 15 feet of the cone inside
+  // its own body. The apex is clamped to the point of the token's rectangle
+  // nearest the cursor, so it leaves the face you are aiming with.
+  try {
+    const MTClass = CONFIG?.MeasuredTemplate?.objectClass;
+    if (MTClass && !MTClass.prototype.__aceQolSelfOriginPinned) {
+      const _origGetSnapped = MTClass.prototype.getSnappedPosition;
+
+      MTClass.prototype.getSnappedPosition = function(position) {
+        try {
+          // Resolved ONCE per preview, not on every mouse move. This runs
+          // inside a 20 ms-throttled drag handler and a uuid lookup per frame
+          // is exactly the kind of cost that makes a canvas feel broken.
+          if (this.__aceSelfPin === undefined) {
+            this.__aceSelfPin = null;
+            const originUuid = this.document?.flags?.dnd5e?.origin;
+            if (originUuid) {
+              const resolve = foundry?.utils?.fromUuidSync
+                ?? (typeof fromUuidSync === "function" ? fromUuidSync : null);
+              const activity = resolve?.(originUuid);
+              const units = activity?.range?.units
+                        ?? activity?.item?.system?.range?.units
+                        ?? null;
+              if (units === "self" || units === "touch") {
+                const actor = activity?.item?.actor ?? null;
+                // THE token that is casting, not "a token with that actor" —
+                // several unlinked copies of one creature would otherwise pin
+                // the cone to whichever Foundry listed first.
+                const tokens = actor?.getActiveTokens?.(false, false) ?? [];
+                const onScene = tokens.filter(t => t?.scene?.id === canvas.scene?.id || t?.document?.parent?.id === canvas.scene?.id);
+                const controlled = onScene.find(t => t.controlled);
+                const tok = controlled ?? onScene[0] ?? tokens[0] ?? null;
+                if (tok) {
+                  this.__aceSelfPin = tok;
+                  // ⚠️ NAME THE TOKEN. "It snapped" is worthless; WHICH creature
+                  // it snapped to is the whole question, and a screenshot of a
+                  // cone cannot answer it. Once per preview, not per frame.
+                  console.log(`${MODULE_ID} | self-origin pin: "${activity?.item?.name ?? "?"}" `
+                    + `anchored to ${tok.name} (${tok.document?.id}) — cursor sets direction only.`);
+                } else if (actor) {
+                  console.warn(`${MODULE_ID} | self-origin pin: ${actor.name} has no token on this scene — `
+                    + `template can be placed anywhere.`);
+                }
+              }
+            }
+          }
+
+          const tok = this.__aceSelfPin;
+          if (tok) {
+            const p = position ?? this.document;
+            const x0 = tok.x, y0 = tok.y;
+            const x1 = x0 + (tok.w ?? canvas.grid.size);
+            const y1 = y0 + (tok.h ?? canvas.grid.size);
+            // Aim from the CENTRE so the angle is stable even when the cursor
+            // is inside the creature's own space; place the apex on the edge.
+            const cx = x0 + (x1 - x0) / 2;
+            const cy = y0 + (y1 - y0) / 2;
+            const direction = Math.toDegrees(Math.atan2(p.y - cy, p.x - cx));
+            return {
+              x: Math.min(Math.max(p.x, x0), x1),
+              y: Math.min(Math.max(p.y, y0), y1),
+              direction,
+            };
+          }
+        } catch (err) {
+          console.warn(`${MODULE_ID} | self-origin pin failed — template placed freely:`, err);
+        }
+        return _origGetSnapped.call(this, position);
+      };
+
+      MTClass.prototype.__aceQolSelfOriginPinned = true;
+      console.log(`${MODULE_ID} | self-origin templates pinned to the caster (cone/line/emanation aim with the cursor)`);
+    }
+  } catch (err) {
+    console.warn(`${MODULE_ID} | self-origin pin patch failed:`, err);
+  }
+
   // ── Square-cube grid snap — preview side ──
   // Core's template snap allows CENTER | VERTEX | CORNER | SIDE_MIDPOINT, so a
   // 5e cube's origin can land on a cell CENTER or side-midpoint — the square
@@ -1494,6 +1601,21 @@ Hooks.once("ready", () => {
     ActionBar.register();
   } catch (err) {
     console.error(`${MODULE_ID} | Action Bar init failed:`, err);
+  }
+
+  // One rule for every dnd5e roll dialog, replacing three scattered mechanisms.
+  try {
+    DialogSuppression.register();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Dialog suppression init failed:`, err);
+  }
+
+  // Disposition outlines — a coloured ring on every token this client can see.
+  // Off by default; the GM flips it from the Token toolbar when a room is dark.
+  try {
+    DispositionOutline.register();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Disposition Outline init failed:`, err);
   }
 
   // Banishment RAW visuals — on the Banished effect's lifecycle: hide the token
@@ -1784,6 +1906,23 @@ Hooks.once("ready", () => {
   // Report any platform API that has been renamed out from under us BEFORE
   // the features that call it start failing quietly. See platform-contract.mjs.
   try { PlatformContract.register(); } catch (err) { console.error(`${MODULE_ID} | PlatformContract init failed:`, err); }
+
+  // ⚠️ Retire "Auto" once, and say what the edition actually is. A Custom mix
+  // has to be answerable in one glance or the first support question becomes
+  // "what is in your Custom tab?" — and eight clicks to find out is eight
+  // clicks nobody takes.
+  import("./rules-edition.mjs").then(async (m) => {
+    await m.migrateAutoAway();
+    m.reportEdition();
+  }).catch(err => console.warn(`${MODULE_ID} | rules edition check failed:`, err));
+  // ⚠️ A broken item picture makes a paid product look unfinished, whoever
+  // caused it. This replaces one on screen the moment the browser reports it
+  // cannot load, and offers a permanent repair on request.
+  try {
+    import("./item-icon-repair.mjs")
+      .then(({ installIconRepair }) => installIconRepair())
+      .catch(err => console.warn(`${MODULE_ID} | icon repair could not install:`, err));
+  } catch (err) { console.warn(`${MODULE_ID} | icon repair init failed:`, err); }
   // Whisper the GM when a spell or feature ACE has never heard of gets used,
   // with links to how the community libraries handled it. See unknown-scout.mjs.
   try { UnknownScout.register(); } catch (err) { console.error(`${MODULE_ID} | UnknownScout init failed:`, err); }
@@ -2197,19 +2336,49 @@ Hooks.once("ready", () => {
       // template-attached case. GM-only because endEffects writes through
       // the socket. Wrapped in try/catch because Sequencer isn't a hard
       // dependency.
+      // ⚠️🔴 THIS RAN TOO LATE, AND THE COMMENT THAT SAID OTHERWISE WAS
+      // WRONG. It claimed "UUID works after the doc is gone from the canvas".
+      // It does not: handed a string, Sequencer looks the object up in the
+      // scene and THROWS when it cannot find it. By the time this hook fires
+      // the template is already deleted, so the lookup could never succeed.
+      //
+      // Every instant spell printed a stack trace. The on-screen toast was
+      // being swallowed by `template-noise.mjs`, so the visible half looked
+      // handled while the console kept filling up — a fix wired to the symptom
+      // rather than the cause. Johnny's Fireball, 2026-08-25.
+      //
+      // The work now happens in `preDeleteMeasuredTemplate` below, while the
+      // document still exists. Nothing to do here.
+    });
+
+    // ── End Sequencer effects BEFORE the template goes away ──────────────
+    //
+    // ⚠️ AND ONLY WHEN THERE IS SOMETHING TO END. Most instant templates
+    // carry no Sequencer effect at all, and asking Sequencer to end effects for
+    // a source it has never heard of is how a routine cast produced an error.
+    // The effect list is filtered here rather than by handing Sequencer a
+    // filter, because its own filter path runs the same validator that throws.
+    Hooks.on("preDeleteMeasuredTemplate", (tdoc) => {
       try {
-        if (game.users?.activeGM !== game.user) return;  // activeGM: endEffects socket must only fire once
+        if (game.users?.activeGM !== game.user) return;   // endEffects writes through the socket
         if (!game.modules?.get?.("sequencer")?.active) return;
         const uuid = tdoc?.uuid;
         if (!uuid) return;
-        // Sequencer accepts `source` as a UUID string or a Document; UUID
-        // works after the doc is gone from the canvas. Fire-and-forget
-        // (don't await — keeps the delete-hook handler non-blocking).
-        Sequencer?.EffectManager?.endEffects?.({ source: uuid })
-          ?.then?.(() => console.log(`${MODULE_ID} | Sequencer effects ended for deleted template ${tdoc.id}`))
-          ?.catch?.(err => console.warn(`${MODULE_ID} | Sequencer endEffects (template) failed:`, err));
+
+        const all = Sequencer?.EffectManager?.getEffects?.({}) ?? [];
+        const mine = all.filter(e => {
+          const src = e?.data?.source ?? e?.source ?? null;
+          return typeof src === "string" && src === uuid;
+        });
+        if (!mine.length) return;    // nothing attached — say nothing, do nothing
+
+        Sequencer.EffectManager.endEffects({ source: uuid })
+          ?.then?.(() => console.log(`${MODULE_ID} | ended ${mine.length} Sequencer effect(s) `
+            + `attached to template ${tdoc.id} before deleting it.`))
+          ?.catch?.(err => console.warn(`${MODULE_ID} | could not end the Sequencer effects on `
+            + `template ${tdoc.id}:`, err));
       } catch (err) {
-        console.warn(`${MODULE_ID} | Sequencer cleanup on template delete threw:`, err);
+        console.warn(`${MODULE_ID} | Sequencer cleanup before template delete threw:`, err);
       }
     });
 
@@ -5107,6 +5276,20 @@ Hooks.once("ready", () => {
     sunkenFloors: SunkenFloors,
     // Re-runnable on demand so a live test does not mean scrolling the log.
     contract: { check: checkContract, report: () => PlatformContract.report() },
+
+    /**
+     * Find every item pointing at a picture that is not there. Reports only;
+     * pass { fix: true } to write the system default in permanently.
+     */
+    repairItemIcons: (opts) =>
+      import("./item-icon-repair.mjs").then(m => m.repairItemIcons(opts)),
+
+    /**
+     * Every weapon whose description names a reach its field is missing.
+     * Reports only; pass { fix: true } to write them in.
+     */
+    repairWeaponReach: (opts) =>
+      import("./reach-repair.mjs").then(m => m.repairWeaponReach(opts)),
     clock: TheClock,
     movement: MovementClock,
     harvest: (t) => ClockWiring.harvest(t ?? canvas.tokens?.controlled?.[0]?.document),
@@ -5800,13 +5983,112 @@ Hooks.once("ready", () => {
         // button isn't a choice the user can make.
         const offered = all.filter(a => !!buttonFor(a));
 
-        if (offered.length > 1) {
+        // ── ⚠️🔴 MACHINERY IS NOT A CHOICE ─────────────────────────────
+        //
+        // dnd5e renders a button for EVERY activity, including the internal
+        // ones a spell fires at itself. Johnny's Magic Missile has four, and he
+        // was being asked to pick between them every single cast:
+        //
+        //     Damage · Use · Magic Missile Bolt · Magic Missile Bolt: Flat
+        //
+        // The two "Bolt" rows carry activation type "special", which is dnd5e's
+        // OWN marker for something that is not an action a person takes — it is
+        // the machinery the spell uses to throw each dart. Putting them in front
+        // of the caster is like asking which piston he would like to fire.
+        //
+        // ⚠️ ASK THE SYSTEM, DO NOT KEEP A LIST. `activityActivationTypes`
+        // already marks every one of these (special, turnStart, turnEnd,
+        // encounter, shortRest, longRest). A hand-maintained list here would go
+        // stale the first time dnd5e adds a category.
+        //
+        // ⚠️ AND NEVER SWALLOW THE ACTION. If filtering leaves nothing, the
+        // unfiltered list stands — a picker showing too much beats a press that
+        // does nothing.
+        const _isMachinery = (a) => {
+          try { return !!CONFIG.DND5E?.activityActivationTypes?.[a?.activation?.type]?.passive; }
+          catch (_) { return false; }
+        };
+        const real = offered.filter(a => !_isMachinery(a));
+        const choosable = real.length ? real : offered;
+
+        if (offered.length > choosable.length) {
+          console.log(`${MODULE_ID} | "${item.name}": hid `
+            + `${offered.length - choosable.length} internal activit`
+            + `${offered.length - choosable.length === 1 ? "y" : "ies"} `
+            + `(${offered.filter(_isMachinery).map(a => a.name || a.type).join(", ")}) `
+            + `— the spell fires those itself, they are not choices.`);
+        }
+
+        // ── ⚠️🔴 A SPELL ACE CASTS ITSELF NEVER ASKS WHICH ROW ────────
+        //
+        // When the spell pipeline owns a spell it decides what the spell DOES —
+        // Magic Missile throws 3 darts of 1d4+1 force, plus one per upcast, and
+        // the activity the cast happened to start from changes none of that.
+        // Johnny's imported copy has two activities that both cost an action and
+        // both burn a slot, so he was being stopped and asked to choose between
+        // "Damage" and "Use" before the spell could even begin.
+        //
+        // Johnny, 2026-08-25: "How the fuck is that useful to me? It's got to be
+        // just like a normal thing where I consume a spell slot: what level do
+        // you want to cast it at? How many darts?"
+        //
+        // ⚠️ PICK A REAL CAST, NOT JUST THE FIRST ROW. A "utility" activity is
+        // frequently an empty stub that does nothing on its own, so it goes last;
+        // anything that actually resolves comes first. Slot level, upcasting and
+        // dart count are then dnd5e's usage dialog and the pipeline's job, which
+        // is exactly where that decision belongs.
+        if (choosable.length > 1 && SpellPipeline.owns(item)) {
+          const RANK = { attack: 0, save: 1, damage: 2, heal: 3, summon: 4, enchant: 5, check: 6, utility: 9 };
+          const best = [...choosable].sort((a, b) =>
+            (RANK[a.type] ?? 7) - (RANK[b.type] ?? 7))[0];
+          const btn = buttonFor(best);
+          if (btn) {
+            console.log(`${MODULE_ID} | "${item.name}" is cast by ACE's spell pipeline — `
+              + `not asking which activity. Using the "${best.name || best.type}" one; `
+              + `the pipeline decides what the spell does either way.`);
+            setTimeout(() => btn.click(), 0);
+            return;
+          }
+        }
+
+        // ── ONE REAL CHOICE IS NOT A CHOICE ────────────────────────────────
+        // With the machinery gone most items have exactly one thing to do, and
+        // a dialog asking a question with a single answer is a click stolen
+        // from the table. Fire it and say nothing.
+        if (choosable.length === 1 && offered.length > 1) {
+          const only = buttonFor(choosable[0]);
+          if (only) {
+            console.log(`${MODULE_ID} | "${item.name}": one real activity after `
+              + `hiding internals — using it without asking.`);
+            setTimeout(() => only.click(), 0);
+            return;
+          }
+        }
+
+        if (choosable.length > 1) {
           // ACE OWNS THE PAUSE. dnd5e's chooser stays hidden (our CSS hides all
           // .activity-choice dialogs); we show OUR branded picker and then click
           // the chosen row's hidden button, so dnd5e's use-flow runs untouched.
           // Falls back to revealing dnd5e's own dialog if ours can't open, so a
           // failure can never swallow the action. (Johnny 2026-07-27.)
-          console.log(`${MODULE_ID} | ActivityChoiceDialog offers ${offered.length} activities (${offered.map(a => a.type).join(", ")}) — showing ACE's picker: ${app.title}`);
+          console.log(`${MODULE_ID} | ActivityChoiceDialog offers ${choosable.length} `
+            + `real activities (${choosable.map(a => a.type).join(", ")}) — showing ACE's picker: ${app.title}`);
+
+          // ⚠️ TWO THINGS THAT BOTH COST AN ACTION AND BOTH BURN A SLOT ARE A
+          // DUPLICATE IN THE ITEM, not a decision. Johnny's imported Magic
+          // Missile carries exactly that. ACE cannot safely guess which one he
+          // meant, so it shows both and names the problem instead of hiding it.
+          try {
+            const casters = choosable.filter(a => a.consumption?.spellSlot
+              && a.activation?.type === "action");
+            if (casters.length > 1) {
+              console.warn(`${MODULE_ID} | "${item.name}" has ${casters.length} activities that `
+                + `each cost an action AND each spend a spell slot `
+                + `(${casters.map(a => a.name || a.type).join(", ")}). That is a duplicate left `
+                + `by whatever imported the item, not a real choice — delete the spare on the `
+                + `item sheet and this dialog stops appearing.`);
+            }
+          } catch (_) { /* diagnostics must never block the cast */ }
           const _costOf = (a) => {
             try {
               const t = (a.consumption?.targets ?? [])[0];
@@ -5814,13 +6096,32 @@ Hooks.once("ready", () => {
               return Number.isFinite(n) && n > 0 ? `${n}` : "";
             } catch (_) { return ""; }
           };
-          const rows = offered.map(a => ({
+          const rows = choosable.map(a => ({
             id: a.id,
             type: a.type ?? "",
             cost: _costOf(a),
             // dnd5e already renders the human label on the button — reuse it so
             // ours reads identically (activity .name is often blank).
-            label: (buttonFor(a)?.textContent ?? "").trim() || a.name || a.type || "Action",
+            //
+            // ⚠️ A BARE TYPE NAME IS NOT A LABEL. When an activity has no name
+            // of its own the button just says "Damage", and an item with two of
+            // them offers the caster a choice between "Damage" and "Damage".
+            // The dice tell them apart, so the dice go on the row.
+            label: (() => {
+              const base = (buttonFor(a)?.textContent ?? "").trim() || a.name || a.type || "Action";
+              if (a.name) return base;               // it has a real name; leave it alone
+              try {
+                const parts = a.damage?.parts ?? [];
+                const bits = parts.map(pt => {
+                  const n = Number(pt?.number ?? 0);
+                  const d = Number(pt?.denomination ?? 0);
+                  const dice = (n && d) ? `${n}d${d}` : (pt?.custom?.formula ?? "");
+                  const type = [...(pt?.types ?? [])][0] ?? "";
+                  return [dice, type].filter(Boolean).join(" ");
+                }).filter(Boolean);
+                return bits.length ? `${base} — ${bits.join(" + ")}` : base;
+              } catch (_) { return base; }
+            })(),
           }));
           const uses = (Number.isFinite(Number(item.system?.uses?.max)) && Number(item.system.uses.max) > 0)
             ? { value: item.system.uses.value, max: item.system.uses.max } : null;

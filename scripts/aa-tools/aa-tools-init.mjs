@@ -16,16 +16,52 @@
 // ============================================================
 
 import { AAStore } from "./aa-store.mjs";
+import { whyNoAnimation } from "./aa-diagnose.mjs";
 
 const MODULE_ID = "ace-qol";
 const TAG       = `${MODULE_ID} | AA Tools`;
 
 export function initAATools() {
+  // ── ⚠️🔴 THE DIAGNOSTIC REGISTERS FIRST, AND UNCONDITIONALLY ──────────
+  //
+  // This used to sit BELOW the "is AutoAnimations installed" guard, which meant
+  // the tool for working out why animations do not run only existed when
+  // animations were already working. Johnny asked the game why his Rapier was
+  // silent and got "whyNoAnimation is not a function" — the diagnostic was
+  // behind the very door it was built to open.
+  //
+  // ⚠️ A DIAGNOSTIC MUST NOT DEPEND ON THE THING IT DIAGNOSES. It now
+  // registers before every guard and before any other work in this file, so it
+  // is there whether AA is missing, disabled, or broken. It reports AA's
+  // absence as an answer rather than by not existing.
+  //
+  // ⚠️ Object.assign, never a fresh object literal — reassigning game.aceQol
+  // wiped a dozen registrations once already (2026-06).
+  try {
+    game.aceQol = game.aceQol ?? {};
+    Object.assign(game.aceQol, {
+      whyNoAnimation: (name = null) => whyNoAnimation(name),
+      enableAnimationRecognition: () => AAStore.enableAutorec(),
+      animationRecognitionDisabled: () => AAStore.autorecDisabled(),
+    });
+  } catch (err) {
+    console.error(`${TAG} | could not register the animation diagnostic:`, err);
+  }
+
   if (!AAStore.isInstalled()) {
-    console.log(`${TAG} | AutoAnimations not installed — AA tools skipped.`);
+    console.log(`${TAG} | AutoAnimations not installed — AA tools skipped. `
+      + `game.aceQol.whyNoAnimation() still works and will say so.`);
     return;
   }
   console.log(`${TAG} | initializing — registering "Tweak Animation" context-menu entry.`);
+
+  // ── ⚠️ IS THE ANIMATION LIBRARY SWITCHED OFF AT THE WALL? ──────────────
+  // ACE adds entries to AA's recognition catalogue, so ACE has to notice when
+  // that catalogue is being ignored. Without this the failure surfaces as AA's
+  // own "No Item or Source Token", which blames the token and the item when
+  // both are fine. Cost Johnny an evening on 2026-08-25.
+  try { AAStore.reportAutorecState(); }
+  catch (err) { console.warn(`${TAG} | could not check AA's recognition state:`, err); }
 
   // Add "Tweak Animation" to dnd5e's item context menu (right-click on
   // any spell in the inventory).

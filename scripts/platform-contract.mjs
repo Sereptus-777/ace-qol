@@ -71,6 +71,66 @@ export const GLOBALS = [
     used: "Forge's Ground Level and Trap region behaviours" },
 ];
 
+/**
+ * DATA FIELDS ACE reads out of item and actor documents.
+ *
+ * ⚠️🔴 WHY THIS CATEGORY EXISTS (2026-08-23). Everything above checks that a
+ * METHOD still exists. On 08-23 the same class of drift hit a FIELD instead,
+ * and nothing here could see it.
+ *
+ * Johnny's Spiked Chain says "reach 10 ft." and ACE refused the attack with
+ * "out of range — 10ft away (melee reach 5ft)". A weapon's range block has four
+ * slots — value, long, reach, units — and melee reach lives in `reach`. ACE
+ * read `value`. It had not always been wrong: dnd5e ships a migration whose own
+ * description is "migrate the range value to the reach field for melee weapons
+ * without the thrown property". The number was moved out from under us and
+ * every melee weapon in the world was rewritten.
+ *
+ * Nothing threw. An empty slot and a genuine five-foot weapon are the same
+ * thing from the reader's side, so the fallback to 5 ft looked like an answer
+ * rather than a question. Months of reach weapons quietly not reaching.
+ *
+ * ⚠️ A MISSING FIELD IS AS SILENT AS A MISSING METHOD, AND MORE LIKELY. Methods
+ * get renamed at major versions and make noise in release notes. Fields get
+ * migrated quietly, because the system rewrites your data so ITS code keeps
+ * working — and ours is left reading a slot that is now always empty.
+ *
+ * Add a row whenever you read a new field out of system data. One line.
+ */
+export const DATA_FIELDS = [
+  { doc: "Item", type: "weapon", path: "range.reach",
+    used: "melee reach — how far a reach weapon can actually hit",
+    note: "dnd5e MIGRATED this out of range.value; reading value alone gives every reach weapon 5ft" },
+  { doc: "Item", type: "weapon", path: "range.value",  used: "ranged normal range" },
+  { doc: "Item", type: "weapon", path: "range.long",   used: "ranged long range, and telling thrown from pure melee" },
+  { doc: "Item", type: "weapon", path: "range.units",  used: "converting a metric table's reach to the feet the canvas measures in" },
+  { doc: "Item", type: "weapon", path: "properties",   used: "reach, thrown, finesse, ammunition and the rest" },
+  { doc: "Item", type: "weapon", path: "type.value",   used: "telling a monster's natural attack from a PC's martial weapon" },
+];
+
+/**
+ * Does a field still exist in a document type's schema?
+ *
+ * ⚠️ IT RETURNS "unknown", NOT "missing", WHEN IT CANNOT TELL. If the schema
+ * cannot be reached — a Foundry version that moved it, a system that does not
+ * register data models — reporting every field as missing would produce a wall
+ * of false alarms, and an audit that cries wolf is one nobody reads. A wrong
+ * report is worse than no report.
+ */
+function fieldState({ doc, type, path }) {
+  try {
+    const model = CONFIG?.[doc]?.dataModels?.[type];
+    const schema = model?.schema;
+    if (!schema) return "unknown";
+    if (typeof schema.getField === "function") {
+      return schema.getField(path) ? "present" : "missing";
+    }
+    return "unknown";
+  } catch (_) {
+    return "unknown";
+  }
+}
+
 /** Walk a dotted path without throwing. */
 function at(path) {
   try {
@@ -111,7 +171,21 @@ export function checkContract() {
     if (at(g.path) === undefined) missing.push({ ...g, name: g.path, on: "global" });
   }
 
-  return { missing, checked };
+  // ⚠️ Fields we READ, as opposed to methods we CALL. Only a definite "missing"
+  // is reported; "unknown" means the schema could not be inspected and is
+  // counted as unverified rather than guessed at.
+  let unverified = 0;
+  for (const f of DATA_FIELDS) {
+    checked++;
+    const state = fieldState(f);
+    if (state === "missing") {
+      missing.push({ ...f, name: `${f.type}.system.${f.path}`, on: `${f.doc} data` });
+    } else if (state === "unknown") {
+      unverified++;
+    }
+  }
+
+  return { missing, checked, unverified };
 }
 
 export class PlatformContract {
@@ -125,10 +199,17 @@ export class PlatformContract {
    */
   static report({ toast = true } = {}) {
     const result = checkContract();
-    const { missing, checked } = result;
+    const { missing, checked, unverified = 0 } = result;
+
+    // ⚠️ SAY WHAT COULD NOT BE CHECKED. A count of "all present" that quietly
+    // includes rows nothing could inspect is the same lie as an audit claiming
+    // coverage it did not have. Unverified is a third state, and it is printed.
+    const unver = unverified
+      ? ` (${unverified} data field${unverified === 1 ? "" : "s"} could not be inspected on this build and were NOT verified)`
+      : "";
 
     if (!missing.length) {
-      console.log(`${LOG} | ✅ ${checked} platform APIs present — dnd5e ${game.system?.version}, Foundry ${game.version}.`);
+      console.log(`${LOG} | ✅ ${checked - unverified} of ${checked} platform APIs confirmed present — dnd5e ${game.system?.version}, Foundry ${game.version}.${unver}`);
       return result;
     }
 
@@ -142,8 +223,24 @@ export class PlatformContract {
       if (m.note) console.error(`      ${m.note}`);
     }
     if (toast) {
+      // ⚠️ RED, AND IT STAYS UNTIL DISMISSED. Johnny, 2026-08-23: "I want that
+      // as a red toast that stays on the screen... obviously attacking is the
+      // important part in this whole game." A platform rename or a moved data
+      // field silently disables automation, so the one thing that must not
+      // happen is this scrolling past unread.
+      //
+      // ⚠️ IT NO LONGER CALLS EVERYTHING A "function". Data fields joined this
+      // check on 08-23, and telling a GM a function is missing when a FIELD
+      // moved sends them looking in the wrong place entirely.
+      const _fields = missing.filter(m => String(m.on || "").endsWith("data")).length;
+      const _fns = missing.length - _fields;
+      const _what = _fields && _fns ? `${_fns} game-system function(s) and ${_fields} data field(s)`
+                  : _fields        ? `${_fields} game-system data field(s)`
+                  :                  `${_fns} game-system function(s)`;
       ui.notifications?.error(
-        `ACE: ${missing.length} game-system function${missing.length === 1 ? "" : "s"} ACE relies on ${missing.length === 1 ? "is" : "are"} missing — some automation will silently do nothing. See the console (F12).`,
+        `ACE: ${_what} ACE relies on ${missing.length === 1 ? "is" : "are"} MISSING on this version of dnd5e. `
+        + `Automation that uses ${missing.length === 1 ? "it" : "them"} will silently do nothing — attacks, saves and damage are affected. `
+        + `See the console (F12) for exactly which.`,
         { permanent: true });
     }
     return result;

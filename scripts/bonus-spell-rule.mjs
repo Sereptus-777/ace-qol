@@ -31,6 +31,7 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
+import { hasTurns } from "./action-economy.mjs";
 
 const FLAG_NS  = "ace-qol";
 const FLAG_KEY = "bonusSpellTurn";
@@ -45,6 +46,19 @@ export class BonusSpellRule {
         if (!item || item.type !== "spell") return;
         const actor = activity?.actor ?? item?.actor;
         if (!actor) return;
+
+        // ⚠️🔴 NO TURNS, NO ACTION ECONOMY. The whole rule is "you cannot
+        // cast another levelled spell on the same TURN". Outside combat there
+        // are no turns, so there is nothing to be on the same one as.
+        //
+        // Johnny, 2026-08-24, testing spells on Varek Thalor: "it says he's
+        // already taking a turn casting the spell. Outside of combat, that
+        // cannot happen... you can cast as many spells as you have ready."
+        //
+        // The old code only skipped RECORDING the cast out of combat and still
+        // ran the check, so a stale flag from a previous fight kept refusing
+        // spells with no fight anywhere in sight.
+        if (!hasTurns(actor)) return;
 
         const allowed = BonusSpellRule._evaluate(actor, activity, item);
         if (allowed.ok) {
@@ -73,16 +87,53 @@ export class BonusSpellRule {
       }
     });
 
-    // Reset per-turn state at end of each combatant's turn
-    Hooks.on("combatTurnChange", (combat /*, prior, current */) => {
+    // Reset per-turn state as turns change.
+    //
+    // ⚠️🔴 TWO BUGS LIVED HERE AND TOGETHER THEY WEDGED A CASTER SHUT.
+    // Johnny, mid-session 2026-08-24: "Cyrax is trying to cast sacred flame and
+    // it's saying that he already cast a spell, which he hasn't. His turn just
+    // started."
+    //
+    // 1. WRITTEN TO ONE DOCUMENT, CLEARED ON ANOTHER. `_recordCast` sets the
+    //    flag on the CASTING actor, which for an unlinked token is that token's
+    //    own synthetic copy. This cleared it with `game.actors.get(actorId)`,
+    //    which returns the BASE world actor — a different document. For every
+    //    unlinked creature the flag was set and then never cleared, so the
+    //    second spell they ever cast was refused, for ever. Same family as the
+    //    two-writers fall bug (2026-08-14): the write and the clear have to
+    //    address the same object or the state is immortal.
+    //
+    // 2. READ `combat.previous` INSTEAD OF THE ARGUMENTS THE HOOK HANDS OVER.
+    //    Foundry calls combat hooks BEFORE the update lands, so state read off
+    //    the combat object inside them describes the turn that is ENDING — the
+    //    exact trap written up on 2026-08-07, where six listeners acted on the
+    //    wrong creature. `combatTurnChange` passes `prior` and `current`
+    //    precisely so nobody has to guess; this ignored both.
+    //
+    // ⚠️ AND IT NOW CLEARS THE CREATURE WHOSE TURN IS STARTING, not only the
+    // one that just ended. Clearing on the way out depends on a clean exit from
+    // every turn — a reload, a crashed round, a creature removed from the
+    // tracker mid-fight, and the flag survives into their next turn. Clearing on
+    // the way IN cannot be skipped, because a turn beginning is the only moment
+    // the budget is definitionally empty.
+    const _clearTurnState = (combatant, why) => {
       try {
-        const priorActorId = combat?.previous?.combatantId
-          ? combat?.combatants?.get?.(combat.previous.combatantId)?.actorId
-          : null;
-        if (priorActorId) {
-          const priorActor = game.actors.get(priorActorId);
-          if (priorActor) priorActor.unsetFlag(FLAG_NS, FLAG_KEY).catch(() => {});
-        }
+        // THE COMBATANT'S OWN ACTOR — resolves an unlinked token to the copy
+        // that actually holds the flag. Never `game.actors.get`.
+        const actor = combatant?.actor ?? null;
+        if (!actor) return;
+        if (actor.getFlag?.(FLAG_NS, FLAG_KEY) === undefined) return;
+        actor.unsetFlag(FLAG_NS, FLAG_KEY).catch(() => {});
+        console.log(`${MODULE_ID} | bonus-action budget reset for ${actor.name} (${why}).`);
+      } catch (_) { /* non-fatal — never break a turn change */ }
+    };
+
+    Hooks.on("combatTurnChange", (combat, prior, current) => {
+      try {
+        const priorC = prior?.combatantId ? combat?.combatants?.get?.(prior.combatantId) : null;
+        const currentC = current?.combatantId ? combat?.combatants?.get?.(current.combatantId) : null;
+        if (priorC) _clearTurnState(priorC, "their turn ended");
+        if (currentC) _clearTurnState(currentC, "their turn began");
       } catch (_) { /* non-fatal */ }
     });
 

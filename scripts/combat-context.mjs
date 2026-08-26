@@ -37,7 +37,15 @@ import { SpaceEffects } from "./rules/space-effects.mjs";
 // Incapacitated creature "can't take actions, bonus actions, or reactions"
 // (2024 wording; 2014 says actions + reactions — bonus actions blocked by Sage
 // Advice). Same list both editions.
-const CANT_ACT = ["incapacitated", "paralyzed", "stunned", "unconscious", "petrified"];
+// ⚠️🔴 "dead" WAS MISSING FROM THIS LIST UNTIL 2026-08-25, AND IT IS THE
+// LIST BOTH SHARED BRAINS USE. dnd5e marks a dying PC "unconscious" but a
+// dropped NPC "dead" — a different status id — so every check here caught
+// the PC and waved the monster through. That is how a DEAD SPECTER rolled
+// two saving throws on 2026-08-06, the event that caused THE ONE GATE to be
+// designed. ACE's own bloodied engine applies this status at 0 HP, and
+// three other files list it correctly; these two, the ones every pipeline
+// actually asks, did not.
+const CANT_ACT = ["dead", "incapacitated", "paralyzed", "stunned", "unconscious", "petrified"];
 
 // Activation costs that the can't-act gate applies to — the per-turn / per-round
 // action economy. Passive / "special" / "none" / out-of-combat casts are NOT

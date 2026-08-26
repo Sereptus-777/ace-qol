@@ -70,9 +70,18 @@ export function installTemplateNoiseGuard() {
     n[level] = (...args) => {
       if (_shouldSwallow(args)) {
         _swallowed++;
-        // ⚠️ Say it somewhere. Hidden from the GM's screen, never from a log.
-        console.debug(`${LOG} | suppressed a Sequencer "missing template" ${level} ` +
-                      `right after ACE deleted an instant template (${_swallowed} so far this session).`);
+        // ⚠️🔴 THIS SHOULD NO LONGER HAPPEN, SO IT IS NOT A DEBUG LINE.
+        // The cause was ACE ending Sequencer effects AFTER deleting the
+        // template, which can never resolve; that moved to the pre-delete hook
+        // on 2026-08-25. This guard stays because a muted toast is still the
+        // right end-user experience, but a mute that whispers is how a fixed
+        // bug comes back unnoticed. If this fires now, something ELSE is
+        // deleting templates out from under Sequencer and wants finding.
+        console.warn(`${LOG} | suppressed a Sequencer "missing template" ${level}. ` +
+                     `This should not happen any more — the effect cleanup moved to ` +
+                     `preDeleteMeasuredTemplate. Something else is deleting a template ` +
+                     `while Sequencer still holds effects on it. (${_swallowed} this session.)`,
+                     ...args);
         return null;
       }
       return original(...args);

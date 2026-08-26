@@ -174,12 +174,37 @@ export async function awaitDiceSettle(maxMs = 3000, { messageId = null, graceMs 
   const capMs = hadRealSignal
     ? Math.max(15000, Number(maxMs) || 3000)
     : Math.max(250, Number(maxMs) || 3000);
-  const cap = new Promise(resolve => setTimeout(() => {
-    if (hadRealSignal) {
-      console.warn(`${"ace-qol"} | dice never reported finishing after ${capMs}ms - releasing. ` +
-        `If cards are beating the dice, the Dice So Nice renderer is the place to look.`);
-    }
-    resolve();
-  }, capMs));
-  return Promise.race([settled, cap]);
+
+  // ⚠️🔴 THE BACKSTOP USED TO FIRE EVEN WHEN THE DICE HAD ALREADY LANDED.
+  //
+  // `Promise.race` picks a winner; it does not cancel the loser. So the timer
+  // kept running after the real signal arrived, and fifteen seconds later it
+  // printed "dice never reported finishing" about dice that had finished long
+  // before. Johnny's console, 2026-08-25: the settle completed at 20:26:52 and
+  // this warning appeared at 20:27:04, in the middle of an unrelated Rapier
+  // swing, pointing at the Dice So Nice renderer as the culprit.
+  //
+  // ⚠️ A LOG THAT ANNOUNCES A FAILURE THAT DID NOT HAPPEN IS WORSE THAN NO
+  // LOG. It manufactures a false root cause and sends the next person hunting
+  // in a module that was working perfectly. Report the outcome, never the
+  // intention: the warning now fires only when the cap actually WON.
+  //
+  // ⚠️ AND THE TIMER IS CLEARED. One leaked timer per roll adds up across a
+  // four-hour session, and each one was still holding its closure alive.
+  let capTimer = null;
+  const cap = new Promise(resolve => {
+    capTimer = setTimeout(() => {
+      capTimer = null;                      // it fired; nothing left to clear
+      if (hadRealSignal) {
+        console.warn(`ace-qol | the dice did not report finishing within ${capMs}ms, `
+          + `so the card is being released anyway. If cards are beating the dice, `
+          + `the Dice So Nice renderer is the place to look.`);
+      }
+      resolve();
+    }, capMs);
+  });
+
+  return Promise.race([settled, cap]).finally(() => {
+    if (capTimer !== null) { clearTimeout(capTimer); capTimer = null; }
+  });
 }

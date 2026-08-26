@@ -604,13 +604,53 @@
 .ace-qol-hp-dead { color: #ff1744; font-weight: 800; font-size: 1.1rem; }
 
 /* ─── Per-type damage breakdown inside target rows ─────────────────── */
+/* ⚠️ SIZED TO BE READ, NOT TO FIT. This is the line that tells a player
+   what actually landed on them ("6 bludgeoning", "2 necrotic"), and at 0.84rem
+   on a dark card Johnny could not read it across the desk (2026-08-23). The
+   chat log has the width; use it. */
 .ace-qol-dmg-type-breakdown {
-  display: flex; flex-direction: column; gap: 1px;
-  padding: 3px 10px 3px 36px; font-size: 0.84rem;
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 4px 10px 4px 36px; font-size: 1rem;
 }
+/* ⚠️ WRAPPED ROWS, NEVER A SQUEEZED COLUMN — the standing rule for every ACE
+   chat card. A flex row that cannot wrap has to destroy something to fit, and
+   it always picks the text: "necrotic" came out as "nec / roti / c" and a
+   struck-through 10 came out as a 1 stacked on a 0 (2026-08-23). Johnny:
+   "Wrapped rows should be the rule... I don't care if something gets bumped
+   down to the next row. I'm not looking for more real estate here."
+
+   The numbers and the damage type share a wrapping row; the outcome chip takes
+   a row of its own, deliberately, because he asked for it there. */
 .ace-qol-dmg-type-line {
-  display: flex; align-items: center; gap: 6px;
-  font-size: 0.84rem; font-weight: 600;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 5px;
+  font-size: 1rem; font-weight: 600;
+}
+.ace-qol-dmg-type-main {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 7px;
+}
+.ace-qol-dmg-mod-row { display: flex; }
+
+/* Nothing on a damage card may be chopped mid-word to fit a width. Foundry's
+   own chat styling permits it, so this has to be said explicitly. */
+.ace-qol-dmg-type-line, .ace-qol-dmg-type-line *,
+.ace-qol-dmg-component, .ace-qol-dmg-component * {
+  overflow-wrap: normal;
+  word-break: normal;
+  hyphens: none;
+}
+.ace-qol-dmg-type-name, .ace-qol-dmg-raw-was,
+.ace-qol-dmg-final, .ace-qol-dmg-mod { white-space: nowrap; }
+.ace-qol-dmg-type-name { font-weight: 600; }
+
+/* The pre-modifier number, struck through. Secondary information, but it still
+   has to be legible: #666 on this card was 2.6:1, which is not text, it is a
+   smudge. #9e9e9e clears 5:1 and still reads as "this was the old number". */
+.ace-qol-dmg-raw-was {
+  color: #9e9e9e;
+  text-decoration: line-through;
+  text-decoration-thickness: 2px;
+  font-size: 1.2rem;          /* a third up from 0.9rem, Johnny 2026-08-23 */
+  font-weight: 600;
 }
 .ace-qol-dmg-type-clickable {
   cursor: pointer; padding: 3px 8px; border-radius: 4px;
@@ -715,7 +755,8 @@
 }
 
 .ace-qol-dmg-component {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; flex-wrap: wrap;        /* wrap, never squeeze — see above */
+  align-items: center; justify-content: space-between;
   gap: 8px; font-size: 0.85rem;
   padding: 4px 0; color: #e8e6e0;
   min-height: 38px;
@@ -870,31 +911,45 @@
   font-weight: 700; font-size: 0.9rem; margin-left: auto;
 }
 
+/* ─── What HAPPENED to the damage: immune / resist / vulnerable ────────────
+   ⚠️ THESE ARE THE THREE WORDS THAT EXPLAIN THE NUMBER, so they are sized
+   to be read at a glance and their contrast is checked, not guessed:
+
+     IMMUNE      #fff    on #d32f2f  4.98:1
+     ½ RESIST   #1a1a1a on #ef8f00  7.13:1
+     ×2 VULN    #fff    on #9c27b0  6.30:1
+
+   (Measured at the LIGHT end of each gradient, which is the worst case, with
+   the real WCAG relative-luminance formula. Numbers written from a calculator,
+   not from an impression of how it looks.)
+
+   Orange takes DARK text. White on #ffa000 is 2.0:1 and fails outright, which
+   is how this chip stayed unreadable even before the damage type was painting
+   over it. Every one of these clears the 4.5:1 floor with room to spare.
+   ────────────────────────────────────────────────────────────────────────── */
 .ace-qol-dmg-mod {
-  font-size: 0.6rem; font-weight: 700; padding: 1px 5px; border-radius: 2px;
-  text-transform: uppercase;
+  font-size: 1.05rem; font-weight: 800; padding: 2px 9px; border-radius: 3px;
+  line-height: 1.25; letter-spacing: 0.4px; text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .ace-qol-dmg-immune {
-  background: linear-gradient(180deg, #e53935 0%, #c62828 100%);
-  color: #fff; font-weight: 800; padding: 2px 8px; border-radius: 3px;
-  font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px;
+  background: linear-gradient(180deg, #d32f2f 0%, #b71c1c 100%);
+  color: #fff;
   box-shadow: 0 1px 4px rgba(211,47,47,0.5), inset 0 1px 0 rgba(255,255,255,0.2);
-  text-shadow: 0 1px 1px rgba(0,0,0,0.4);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.55);
 }
 .ace-qol-dmg-resist {
-  background: linear-gradient(180deg, #ffa000 0%, #e68900 100%);
-  color: #fff; font-weight: 800; padding: 2px 8px; border-radius: 3px;
-  font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px;
-  box-shadow: 0 1px 4px rgba(255,143,0,0.4), inset 0 1px 0 rgba(255,255,255,0.25);
-  text-shadow: 0 1px 1px rgba(0,0,0,0.3);
+  background: linear-gradient(180deg, #ffb300 0%, #ef8f00 100%);
+  color: #1a1a1a;
+  box-shadow: 0 1px 4px rgba(255,143,0,0.45), inset 0 1px 0 rgba(255,255,255,0.35);
+  text-shadow: none;
 }
 .ace-qol-dmg-vuln {
-  background: linear-gradient(180deg, #ab47bc 0%, #8e24aa 100%);
-  color: #fff; font-weight: 800; padding: 2px 8px; border-radius: 3px;
-  font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px;
-  box-shadow: 0 1px 4px rgba(171,71,188,0.4), inset 0 1px 0 rgba(255,255,255,0.2);
-  text-shadow: 0 1px 1px rgba(0,0,0,0.4);
+  background: linear-gradient(180deg, #9c27b0 0%, #7b1fa2 100%);
+  color: #fff;
+  box-shadow: 0 1px 4px rgba(171,71,188,0.45), inset 0 1px 0 rgba(255,255,255,0.2);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.5);
 }
 
 /* ─── HP line ────────────────────────────────────────────────────────── */
@@ -5506,7 +5561,9 @@
    ────────────────────────────────────────────────────────────────────────── */
 .ace-qol-ab-portrait {
   position: relative;
-  width: 104px; height: 104px;       /* 2 × the 50px macro square, plus the gap */
+  width: 103px; height: 103px;       /* + 2px border each side = 107, the exact
+                                        height of two 52px slot rows and the
+                                        3px gap between them */
   border: 2px solid #d4af37;
   border-radius: 5px;
   overflow: hidden;
@@ -5566,7 +5623,16 @@
 .ace-qol-ab-init-needed:hover { background: #d4af37; color: #1a1a1a; }
 
 /* ── Action slots ─────────────────────────────────────────────────────── */
-.ace-qol-ab-slots { display: flex; gap: 3px; }
+/* Ten across, two rows. Slot 1 is top-left and slot 20 is bottom-right, and
+   the automatic fill runs in that same reading order, so the top row always
+   fills before the bottom one (Johnny, 2026-08-23). A grid rather than a flex
+   row because the wrap point has to be exactly ten, never "whatever fits". */
+.ace-qol-ab-slots {
+  display: grid;
+  grid-template-columns: repeat(10, 50px);
+  grid-auto-rows: 50px;
+  gap: 3px;
+}
 .ace-qol-ab-slot {
   position: relative;
   width: 50px; height: 50px;
@@ -5602,6 +5668,146 @@
   text-shadow: 0 0 3px #000, 0 0 3px #000;
 }
 
+/* ── Weapon swap prompt ────────────────────────────────────────────────────
+   Sits over Foundry's own dialog chrome, so it takes the bigger type from the
+   contrast-and-size rule: 16px for the choice, 14px for the reasoning. A player
+   is reading this mid-turn with the table waiting.
+   ────────────────────────────────────────────────────────────────────────── */
+.ace-qol-swap { display: flex; flex-direction: column; gap: 8px; color: #1a1a1a; }
+.ace-qol-swap-head { font-size: 16px; line-height: 1.4; margin-bottom: 2px; }
+.ace-qol-swap-row {
+  display: flex; align-items: flex-start; gap: 9px;
+  padding: 8px 10px; border: 1px solid #b9a97a; border-radius: 5px;
+  background: rgba(255, 255, 255, .45); cursor: pointer;
+}
+.ace-qol-swap-row:hover { border-color: #8a6d1f; background: rgba(255, 255, 255, .75); }
+.ace-qol-swap-main { display: flex; flex-direction: column; gap: 2px; }
+.ace-qol-swap-label { font-size: 16px; font-weight: 700; }
+.ace-qol-swap-cost {
+  font-size: 14px; font-weight: 700; color: #2e6b2e;
+  text-transform: uppercase; letter-spacing: .4px;
+}
+.ace-qol-swap-cost.ace-qol-swap-costly { color: #a12020; }
+.ace-qol-swap-note { font-size: 14px; line-height: 1.35; color: #3a3428; }
+
+.ace-qol-swap-card-line { font-size: 15px; }
+.ace-qol-swap-card-cost {
+  font-size: 13px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .5px; color: #4caf50; margin-top: 2px;
+}
+.ace-qol-swap-card-cost.ace-qol-swap-costly { color: #ff5252; }
+
+/* ── The hover card on a slot ─────────────────────────────────────────────
+   ⚠️ SIZED FOR A GM RUNNING TWELVE CREATURES THEY HAVE NEVER READ. This is
+   the one place the bar explains itself, so it takes real type: 15px for the
+   name, 14px for the body. Anything smaller and it is decoration, not help.
+   Width is capped so a long monster routine wraps into a readable column
+   instead of one enormous line across the screen.
+   ────────────────────────────────────────────────────────────────────────── */
+.ace-qol-ab-tip { max-width: 340px; text-align: left; }
+.ace-qol-ab-tip-name {
+  font-size: 15px; font-weight: 800; color: #d4af37;
+  letter-spacing: .2px; margin-bottom: 3px;
+}
+.ace-qol-ab-tip-cost {
+  font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px;
+  color: #9ecbff; margin-bottom: 2px;
+}
+.ace-qol-ab-tip-meta { font-size: 13px; color: #c9b071; margin-bottom: 4px; }
+.ace-qol-ab-tip-desc {
+  font-size: 14px; line-height: 1.4; color: #f0e4c0;
+  border-top: 1px solid #3a3a40; padding-top: 4px;
+  /* Wrapped rows, never squeezed columns - the standing rule. */
+  overflow-wrap: normal; word-break: normal; hyphens: none;
+}
+
+/* ── Drag and drop ────────────────────────────────────────────────────────
+   The slot you are hovering is the slot the item WILL take. Everything from
+   there rightward shifts along by one, wrapping into the bottom row, so the
+   highlight has to read as "here", not "somewhere near here".
+   ────────────────────────────────────────────────────────────────────────── */
+.ace-qol-ab-slot.ace-qol-ab-over {
+  border-color: #d4af37;
+  border-style: solid;
+  box-shadow: inset 0 0 0 1px #d4af37, 0 0 8px rgba(212, 175, 55, .55);
+  background: #241f10;
+}
+.ace-qol-ab-slot.ace-qol-ab-dragging { opacity: .35; }
+
+/* ── "there are more, they are on the sheet" ──────────────────────────────
+   Not a pager. Johnny explicitly does not want sixty macros down there, but
+   stopping at twenty and saying nothing was the actual bug: 258 creatures in
+   his world can do more than ten things and Strahd can do thirty-nine.
+   ────────────────────────────────────────────────────────────────────────── */
+.ace-qol-ab-more {
+  align-self: center;
+  padding: 3px 6px;
+  border: 1px dashed #6a5a2a;
+  border-radius: 4px;
+  background: #14120c;
+  color: #c9b071;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: help;
+}
+
+/* ── The item menu (right-click a slot) ───────────────────────────────────
+   The same actions the sheet offers, in the sheet's own words. Anchored over
+   the slot it came from and clamped inside the bar, so the rightmost slot
+   never opens a menu off the edge of the screen.
+   ────────────────────────────────────────────────────────────────────────── */
+.ace-qol-ab-menu {
+  position: absolute;
+  z-index: 70;
+  min-width: 190px;
+  padding: 3px;
+  background: #0a0a0c;
+  border: 1px solid #d4af37;
+  border-radius: 5px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .9);
+}
+.ace-qol-ab-menu-head {
+  padding: 5px 8px 6px;
+  border-bottom: 1px solid #2f2a18;
+  margin-bottom: 3px;
+  color: #d4af37;
+  font-size: 14px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ace-qol-ab-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 3px;
+  color: #f0e4c0;
+  font-size: 14px;
+  line-height: 1.25;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ace-qol-ab-menu-row i,
+.ace-qol-ab-menu-row dnd5e-icon { width: 14px; text-align: center; opacity: .85; }
+.ace-qol-ab-menu-row:hover { background: #d4af37; color: #1a1a1a; }
+.ace-qol-ab-menu-row:hover i { opacity: 1; }
+/* The one entry on this menu that destroys something. It is separated by a
+   rule, sits last, and says "the character sheet" in its own words — but it
+   also has to LOOK different, because a person reaching for "delete" on a
+   hotbar is not reading carefully. */
+.ace-qol-ab-menu-row.ace-qol-ab-menu-danger { color: #ff8a80; }
+.ace-qol-ab-menu-row.ace-qol-ab-menu-danger:hover { background: #b71c1c; color: #fff; }
+
+.ace-qol-ab-menu-row.ace-qol-ab-menu-rule {
+  border-top: 1px solid #2f2a18;
+  margin-top: 3px;
+  padding-top: 6px;
+}
+
 /* ── Compact ability / skill list (right-click the d20) ───────────────────
    Johnny liked BG3's version specifically because it was "a small, very small,
    compact list" — so two dense columns, no dialog chrome, dismissed by the next
@@ -5610,7 +5816,7 @@
   position: absolute;
   bottom: calc(100% + 6px);
   left: 0;
-  display: flex; gap: 10px;
+  display: flex; gap: 10px; flex-wrap: wrap;
   padding: 8px 10px;
   background: linear-gradient(180deg, #17171b 0%, #0a0a0c 100%);
   border: 1px solid #d4af37;
@@ -5635,6 +5841,22 @@
   color: #f0e4c0; cursor: pointer; white-space: nowrap;
 }
 .ace-qol-ab-check:hover { background: #d4af37; color: #1a1a1a; }
+/* Only drawn once a creature's bar has actually been arranged by hand — a
+   reset that is always on screen invites a click that undoes nothing. */
+.ace-qol-ab-checks-foot {
+  flex: 0 0 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 5px 6px;
+  border-top: 1px solid #2f2a18;
+  color: #c9b071;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ace-qol-ab-checks-foot:hover { background: #d4af37; color: #1a1a1a; }
 
 /* The bar is the positioning context for that popup. */
 #ace-qol-action-bar.ace-qol-ab { position: relative; }

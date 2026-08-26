@@ -48,8 +48,26 @@ export function registerChatCardHandler(handler, label = "chat cards", { sweepAl
         return;
     }
 
-    Hooks.on("renderChatMessage", handler);        // V12
-    Hooks.on("renderChatMessageHTML", handler);    // V13
+    // ⚠️🔴 REGISTERING THE V12 HOOK ON V13 IS TWO BUGS, NOT ONE.
+    //
+    // Core V13 fires `renderChatMessageHTML`, and then checks whether anything
+    // is listening on the old `renderChatMessage` and fires that too:
+    //
+    //     if ( "renderChatMessage" in Hooks.events ) { logCompatibilityWarning(...) }
+    //
+    // So registering both meant (a) a deprecation warning on Johnny's console
+    // for every session, and (b) EVERY handler that came through this helper
+    // running TWICE on every card. This is the shared entry point for all four
+    // ACE modules, so both problems were suite-wide. The double-fire is the
+    // same shape as the 2026-08-16 double-damage bug, which was cured at one
+    // consumer and left in the helper that caused it.
+    //
+    // Read the generation, not `isNewerVersion(game.version, "13")` — that
+    // comparison is FALSE on a hypothetical 13.0 and would silently drop us
+    // back to the V12 name on the very version this is guarding.
+    const generation = game.release?.generation ?? parseInt(game.version) ?? 0;
+    if (generation >= 13) Hooks.on("renderChatMessageHTML", handler);
+    else Hooks.on("renderChatMessage", handler);
 
     sweepDrawnCards(handler, { label, sweepAll, namespace });
 }

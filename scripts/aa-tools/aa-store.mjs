@@ -24,6 +24,73 @@ export class AAStore {
   }
 
   /**
+   * Is AA's automatic recognition switched OFF?
+   *
+   * ⚠️🔴 THIS ONE SETTING SILENTLY KILLS EVERY ANIMATION. When it is on,
+   * AA skips its library search completely, so its whole autorec catalogue is
+   * ignored and only items carrying an explicit per-item AA flag animate. AA
+   * then reports the failure as "No Item or Source Token", which reads like a
+   * broken token or a broken item and sends you looking in the wrong place.
+   *
+   * Johnny's world on 2026-08-25: recognition disabled, with 563 on-token, 219
+   * template, 160 ranged and 121 melee entries sitting there unreachable.
+   * Nothing animated for Rapier +3, Scimitar +2 or Magic Missile, and the
+   * console blamed the token.
+   *
+   * ⚠️ ACE WRITES INTO THAT LIBRARY. `saveRecord` below adds entries to the
+   * very catalogue this setting switches off, so ACE has a duty to notice and
+   * say so. Writing to a disabled store and reporting success is the same lie
+   * as a log that announces an intention.
+   */
+  static autorecDisabled() {
+    try { return !!game.settings.get(AA_MODULE, "disableAutoRec"); }
+    catch (_) { return false; }     // setting unavailable on this AA version
+  }
+
+  /** Turn AA's automatic recognition back on. */
+  static async enableAutorec() {
+    await game.settings.set(AA_MODULE, "disableAutoRec", false);
+    ui.notifications?.info("Automated Animations: automatic recognition is back on.");
+  }
+
+  /**
+   * Say something if the animation library is switched off at the wall.
+   *
+   * ⚠️ IT COUNTS WHAT IS BEING LOST. "Recognition is disabled" is abstract;
+   * "1,063 animation entries are being ignored" is a fact a GM can act on.
+   */
+  static reportAutorecState() {
+    if (!AAStore.isInstalled() || !AAStore.autorecDisabled()) return false;
+
+    let entries = 0;
+    for (const cat of AA_CATEGORIES) {
+      try {
+        const v = game.settings.get(AA_MODULE, `aaAutorec-${cat}`);
+        entries += Array.isArray(v) ? v.length : 0;
+      } catch (_) { /* category missing on this AA version */ }
+    }
+
+    console.warn(
+      `ACE: QOL | Automated Animations has AUTOMATIC RECOGNITION TURNED OFF.
+`
+      + `ACE: QOL | ${entries} animation entries are installed and every one of them `
+      + `is being ignored, so weapons and spells will not animate.
+`
+      + `ACE: QOL | AA reports this as "No Item or Source Token", which is misleading `
+      + `- the token and the item are both fine.
+`
+      + `ACE: QOL | Turn it back on in Automated Animations' module settings, or run:
+`
+      + `ACE: QOL |     game.aceQol.enableAnimationRecognition()`);
+
+    ui.notifications?.warn(
+      `Automated Animations has automatic recognition switched off, so ${entries} `
+      + `installed animations are being ignored and nothing will animate. See the console.`,
+      { permanent: true });
+    return true;
+  }
+
+  /**
    * Read all records from all categories and merge into a single object
    * shaped like the legacy `aaAutorec` setting:
    *   { melee: {...}, range: {...}, templatefx: {...}, ... }

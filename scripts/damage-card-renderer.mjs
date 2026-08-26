@@ -40,11 +40,21 @@ export class DamageCardRenderer {
         try {
           const reactionEng = game.aceQol?.reactionEngine;
           if (reactionEng && hit.targetActor && hit.targetToken) {
-            const absorbResult = await reactionEng.checkPreDamageReactions(
-              components, hit.targetActor, hit.targetToken, actor, item
+            // ⚠️ PASS THE HIT. Uncanny Dodge only triggers on an ATTACK
+            // ROLL that landed, so the reaction engine has to be able to see
+            // which it was; without it a save-based spell would offer a
+            // reaction the rules do not allow.
+            const preResult = await reactionEng.checkPreDamageReactions(
+              components, hit.targetActor, hit.targetToken, actor, item, hit
             );
-            if (absorbResult.absorbed) {
-              components = absorbResult.modifiedComponents;
+            // ⚠️ TAKE THE COMPONENTS WHENEVER SOMETHING CHANGED THEM, not
+            // only when `absorbed` is set. Uncanny Dodge halves damage without
+            // absorbing anything, and testing the old flag alone would have
+            // thrown its result away and left the rogue on full damage — the
+            // same "declared but never consulted" shape this feature already
+            // died of once.
+            if (preResult.absorbed || preResult.uncannyDodged) {
+              components = preResult.modifiedComponents;
             }
           }
         } catch (err) {
@@ -366,7 +376,13 @@ export class DamageCardRenderer {
       const critDisplay = c.isCrit ? `<span class="ace-qol-dmg-crit-label">${c.normalTotal !== undefined ? `MAX ${c.normalTotal}` : "CRIT"}</span> + ` : "";
 
       const color = DamageConstants.DAMAGE_COLORS[c.type] ?? "#ccc";
-      const typeTotal = `<span class="ace-qol-dmg-equals">=</span> <span class="ace-qol-dmg-type-total" style="color:${color}"><span class="ace-qol-dmg-type-num">${c.final}</span> ${c.type}</span>`;
+      // ⚠️ THE ROLL, NOT ONE TARGET'S SHARE OF IT. This row sits above every
+      // target and used to print `c.final`, which is the FIRST target's number
+      // after their resistances — so a resisted hit read "5 + 5 = 5 necrotic".
+      // `c.raw` is the total the dice actually made, which is true for
+      // everybody; who resisted what belongs in their own box underneath.
+      const rolled = c.raw ?? c.final;
+      const typeTotal = `<span class="ace-qol-dmg-equals">=</span> <span class="ace-qol-dmg-type-total" style="color:${color}"><span class="ace-qol-dmg-type-num">${rolled}</span> ${c.type}</span>`;
 
       // ── Rider source caption (v0.7.15) ──
       // Identify rows that came from a rider/bonus (Searing Smite, Divine
@@ -740,13 +756,21 @@ export class DamageCardRenderer {
 
       if (c.modifier === "immune") {
         // Truth-only badge AND truth-only row — players don't see this row at all
-        modBadge = `<span class="ace-qol-dmg-mod ace-qol-dmg-immune ace-qol-dmg-truth-only" style="background:${color}; color:#000">IMMUNE</span>`;
+        // ⚠️ NO INLINE COLOUR HERE. These badges used to be painted with the
+        // DAMAGE TYPE's colour, which silently beat the class that styles them:
+        // necrotic is #ce93d8, a light purple, and the resist chip is orange, so
+        // the label came out light-purple-on-orange at about 1.2:1 contrast.
+        // Johnny, 2026-08-23: "I can barely read that on that orange background."
+        // The badge says what HAPPENED (immune / resist / vulnerable) and gets a
+        // fixed semantic colour; the damage TYPE is already coloured on the
+        // number and the word right beside it. Colouring both was the bug.
+        modBadge = `<span class="ace-qol-dmg-mod ace-qol-dmg-immune ace-qol-dmg-truth-only">IMMUNE</span>`;
         strikeStyle = `text-decoration: line-through; text-decoration-color: ${color}; opacity: 0.6;`;
         rowClasses = " ace-qol-dmg-truth-row";
         if (!flavorTrigger.immune) flavorTrigger.immune = c.type;
       } else if (c.modifier === "resistant") {
         // Truth-only badge — players see the halved number but no "RESIST" label
-        modBadge = `<span class="ace-qol-dmg-mod ace-qol-dmg-resist ace-qol-dmg-truth-only" style="border-color:${color}; color:${color}">½ RESIST</span>`;
+        modBadge = `<span class="ace-qol-dmg-mod ace-qol-dmg-resist ace-qol-dmg-truth-only">½ RESIST</span>`;
         if (!flavorTrigger.resistant) flavorTrigger.resistant = c.type;
       } else if (c.modifier === "vulnerable") {
         // Truth-only badge — players see the doubled number but no "VULN" label
@@ -757,14 +781,24 @@ export class DamageCardRenderer {
       // Show the raw→final transition only for GM (it leaks the modifier);
       // players see only the final number, no strikethrough hint.
       const rawFinalSpan = (c.raw !== c.final && c.modifier !== "normal")
-        ? `<span class="ace-qol-dmg-truth-only" style="color:#666; text-decoration:line-through; font-size:0.75rem">${c.raw}</span> `
+        ? `<span class="ace-qol-dmg-truth-only ace-qol-dmg-raw-was">${c.raw}</span> `
         : "";
-      const dmgDisplay = `${rawFinalSpan}<strong style="color:${color}">${c.final}</strong>`;
+      const dmgDisplay = `${rawFinalSpan}<strong class="ace-qol-dmg-final" style="color:${color}">${c.final}</strong>`;
       const clickable = c.final > 0 ? `data-action="aceQolApplyType" data-damage-type="${c.type}" data-damage-amount="${c.final}" data-comp-index="${idx}" title="Click to apply ${c.final} ${c.type} damage"` : "";
       const clickClass = c.final > 0 ? " ace-qol-dmg-type-clickable" : "";
+      // ⚠️ WRAPPED ROWS, NEVER A SQUEEZED COLUMN. This was one flex row with no
+      // wrap, so when the RESIST chip refused to shrink the only thing left that
+      // could give was the text — and Foundry's chat CSS chops mid-word. Johnny
+      // watched "necrotic" become "nec / roti / c" and a struck-through 10
+      // become a 1 stacked on a 0 (2026-08-23). Vertical space in the chat log
+      // is free; nothing here is ever allowed to be chopped to fit a width.
+      // The chip now gets its OWN row, by his instruction, not by accident.
       return `
         <div class="ace-qol-dmg-type-line${clickClass}${rowClasses}" ${clickable} style="${strikeStyle}">
-          ${dmgDisplay} <span style="color:${color}; font-weight:600">${c.type}</span> ${modBadge}
+          <div class="ace-qol-dmg-type-main">
+            ${dmgDisplay} <span class="ace-qol-dmg-type-name" style="color:${color}">${c.type}</span>
+          </div>
+          ${modBadge ? `<div class="ace-qol-dmg-mod-row">${modBadge}</div>` : ""}
         </div>
       `;
     }).join("");

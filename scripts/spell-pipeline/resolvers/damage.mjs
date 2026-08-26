@@ -9,7 +9,7 @@ import { DamageCardRenderer } from "../../damage-card-renderer.mjs";
 import { TargetState } from "../../target-state.mjs";
 import { CombatState } from "../../combat-state.mjs";
 import { Situation } from "../../situation.mjs";   // ⚠️ WAS NEVER IMPORTED — see below
-import { safeShowForRoll } from "../../dsn-utils.mjs";
+import { safeShowForRoll, awaitDiceSettle } from "../../dsn-utils.mjs";
 import { AnimationHelper } from "../animation.mjs";
 
 // ─── Creature snapshot access (2026-07-28) ───────────────────────────────────
@@ -391,6 +391,25 @@ export class DamageResolver {
       });
       firstHit = false;
     }
+
+    // ── ⚠️🔴 LET THE DICE LAND. THIS IS THE HALF THAT WAS NEVER DONE.
+    //
+    // The comment forty lines up says it outright: a raw dice call "left
+    // awaitDiceSettle with nothing to wait on, and the volley card could post
+    // while these dice were still in the air." Whoever wrote that fixed the
+    // REGISTERING half — the roll goes through safeShowForRoll so the animation
+    // is tracked — and never added the wait it was registered FOR. So every
+    // beam's d20 was dutifully recorded as in flight, and then the card posted
+    // immediately anyway.
+    //
+    // Johnny has been reporting this for months: "the dice still doesn't stop
+    // rolling before the card comes up." The damage card learned to wait on
+    // 2026-07-13. The ATTACK card never did.
+    //
+    // ⚠️ THIS WAITS ON THE REAL ANIMATIONS, NOT A DURATION. It resolves the
+    // moment the last die reports landing, and has its own backstop for a
+    // renderer that breaks mid-tumble.
+    await awaitDiceSettle();
 
     // ── The volley card — every to-hit on the table, misses included ──
     await DamageResolver._postVolleyCard(item, actor, volleyRows, noun);

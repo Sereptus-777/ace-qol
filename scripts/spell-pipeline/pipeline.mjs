@@ -162,8 +162,7 @@ export class SpellPipeline {
       try {
         const item = config?.subject?.item;
         if (!item) return;
-        const entry = SpellPipeline._getEntry(item);
-        if (entry?.shape === "attack-multi") {
+        if (SpellPipeline.ownsAttackRoll(item)) {
           console.log(`${MODULE_ID} | pipeline owns "${item.name}" (attack-multi) — native attack roll suppressed`);
           return false;
         }
@@ -227,6 +226,59 @@ export class SpellPipeline {
    * Used by other engines (spell-auto-damage, engagement-gate) to check
    * whether the pipeline owns a given spell.
    */
+  /**
+   * Does the pipeline own this item at all?
+   *
+   * ⚠️🔴 IF ACE IS GOING TO CAST IT, ACE MUST NOT ASK WHICH BUTTON TO
+   * PRESS. Johnny's imported Magic Missile carries two activities that both
+   * cost an action and both burn a slot, so dnd5e stopped and asked him to
+   * choose between "Damage" and "Use" before anything could happen. Neither
+   * answer means anything: the pipeline is going to throw 3 darts of 1d4+1
+   * force, plus one more per upcast, whichever row he picks.
+   *
+   * Johnny, 2026-08-25: "How the fuck is that useful to me? It's got to be just
+   * like a normal thing where I consume a spell slot: what level do you want to
+   * cast it at? How many darts?"
+   *
+   * He is right. The activity is an implementation detail of the item; the
+   * pipeline is the thing that decides what the spell does. So when the answer
+   * is "ACE handles this spell", the question never gets asked.
+   *
+   * @param {Item5e} item
+   * @returns {boolean}
+   */
+  static owns(item) {
+    try { return !!SpellPipeline._getEntry(item); }
+    catch (_) { return false; }
+  }
+
+  /**
+   * Does THIS pipeline own the native attack roll for this item?
+   *
+   * ⚠️🔴 TWO PLACES ASKED THIS AND ONLY ONE KNEW THE ANSWER. The spell
+   * pipeline cancels dnd5e's own attack roll for multi-beam spells because it
+   * has already rolled every beam itself. The ATTACK pipeline did not know
+   * that, so when the cancelled roll reached it with no target left selected,
+   * it helpfully opened its own "who are you hitting?" picker — for a roll that
+   * was about to be thrown away.
+   *
+   * Johnny cast Eldritch Blast on 2026-08-25 and got the target picker twice:
+   * once from the spell pipeline, which worked, and then a second one that did
+   * nothing at all when he pressed it, because the roll behind it had already
+   * been cancelled. "I push it and it does nothing."
+   *
+   * ⚠️ SO THE TEST LIVES IN ONE PLACE AND BOTH SIDES CALL IT. A second copy
+   * of "is this attack-multi" in the attack pipeline would answer correctly
+   * today and wrongly the first time a shape is added here.
+   *
+   * @param {Item5e} item
+   * @returns {boolean}
+   */
+  static ownsAttackRoll(item) {
+    try { return SpellPipeline._getEntry(item)?.shape === "attack-multi"; }
+    catch (_) { return false; }
+  }
+
   static _getEntry(item) {
     if (!item) return null;
     const type = item.type;

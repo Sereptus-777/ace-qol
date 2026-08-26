@@ -328,15 +328,31 @@ export class SaveEngine {
       try {
         const originUuid = data?.flags?.dnd5e?.origin ?? doc?.flags?.dnd5e?.origin;
         if (!originUuid) return;                       // hand-drawn GM template — free
-        const activity = fromUuidSync(originUuid);
-        if (!activity) return;
+        const resolve = foundry?.utils?.fromUuidSync
+          ?? (typeof fromUuidSync === "function" ? fromUuidSync : null);
+        const activity = resolve?.(originUuid);
+        if (!activity) {
+          console.warn(`${MODULE_ID} | self-origin clamp: could not resolve ${originUuid} - template left where placed.`);
+          return;
+        }
         const rangeUnits = activity.range?.units ?? activity.item?.system?.range?.units ?? null;
-        if (rangeUnits !== "self" && rangeUnits !== "touch") return;   // ranged AoE — free
+        if (rangeUnits !== "self" && rangeUnits !== "touch") return;   // ranged AoE - free
 
         const actor = activity.item?.actor ?? null;
         const casterToken = SaveEngine.casterTokenDoc(actor, { sceneId: doc.parent?.id })?.object
                          ?? SaveEngine.casterTokenDoc(actor, {})?.object;
-        if (!casterToken) return;
+        // ⚠️ A BREATH WEAPON THAT DOES NOT SNAP IS THIS LINE. It used to return
+        // in silence, so "it is not snapping to the token" had no console trace
+        // at all and looked like the feature was never written. Johnny, 2026-08-24:
+        // "I asked for breath weapon to snap to the token itself... It's not
+        // doing that behavior if you've already coded something in there for that."
+        // It was coded. It was giving up here without saying so.
+        if (!casterToken) {
+          console.warn(`${MODULE_ID} | self-origin clamp: "${activity.item?.name ?? "?"}" emanates from `
+            + `${actor?.name ?? "an unknown actor"}, but no token for them was found on this scene - `
+            + `template left where placed.`);
+          return;
+        }
 
         // The creature's occupied rectangle in world pixels.
         const rx0 = casterToken.x, ry0 = casterToken.y;
@@ -467,8 +483,26 @@ export class SaveEngine {
 
       // ── PC Save Prompt card (whispered to player) ──
       if (flags.type === "pcSavePrompt") {
-        if (game.user.isGM) {
-          // GM sees all whispers — hide prompt cards on GM side (GM uses dice icon instead)
+        // ⚠️🔴 A GM WHO ALSO PLAYS A CHARACTER STILL NEEDS THE BUTTON.
+        //
+        // This hid the prompt from EVERY GM, on the reasoning that a GM sees all
+        // whispers and would otherwise drown in other people's cards. True for
+        // other people's characters. Not true for their own.
+        //
+        // Johnny runs the table AND plays Jeth. So his own save prompt was
+        // collapsed on the only screen he has, the die was never wired, and the
+        // card sat there saying "WAITING FOR PLAYER" while the player it was
+        // waiting for was him, looking at a card with nothing to press
+        // (2026-08-24): "it doesn't give me a button to push to save on the
+        // client side!"
+        //
+        // The test is not "is this person a GM". It is "is this MY character" —
+        // exactly the distinction that nearly killed NPC memory and Legendary
+        // Resistance when a fail-closed check asked the wrong question
+        // (2026-08-19). Own the actor, get the button. Somebody else's, stay
+        // collapsed and use ROLL FOR THEM on the main card as before.
+        const mine = SaveEngine._promptIsMine(flags);
+        if (game.user.isGM && !mine) {
           const chatMsg = el.closest?.(".chat-message") ?? el;
           chatMsg.classList.add("ace-qol-save-collapsed");
           return;
@@ -589,20 +623,59 @@ export class SaveEngine {
 
       let isInside = false;
 
-      // Check every grid square the token occupies
+      // ⚠️🔴 ONE POINT PER SQUARE IS NOT "IS THE CREATURE IN THE AREA".
+      //
+      // This tested the exact CENTRE of each occupied square and nothing else,
+      // which is the strictest reading possible and it fails visibly:
+      //
+      // ⚠️ AND THEN I MEASURED IT, AND IT CHANGED NOTHING. Swept every
+      // square around a 15 ft cone, grid-aligned and half-offset: ZERO squares
+      // change answer between centre-only and half-coverage. That is a property
+      // of convex shapes - if most of a square is inside a cone or a circle, its
+      // centre is inside too. So this did NOT fix the bug it was written for, and
+      // saying otherwise in a comment would mislead whoever reads it next.
+      // (`tools/template-coverage-check.mjs` is the bench that proved it.)
+      //
+      // It is kept because it is the printed rule and it is not free of value:
+      // it only ever differs for a CONCAVE footprint - a wall bending round a
+      // corner, a traced region - where a square can be mostly covered while its
+      // centre sits in the notch. Cones and spheres are unaffected.
+      //
+      // THE ACTUAL CAUSE of Johnny's goblin (2026-08-24) was geometric: he had
+      // placed the cone's APEX on the goblin. A cone has zero width at its tip,
+      // so the creature you aim AT by dropping the origin on it is the one
+      // creature guaranteed to be outside the shape. Fixed by pinning the apex
+      // to the caster instead - see the self-origin pin in ace-qol.mjs.
+      //
+      // The 2014 DMG (p.251, Areas of Effect on a Grid) states the rule this
+      // now implements: an area affects a square when it covers AT LEAST HALF
+      // of it. Sampling a 3x3 lattice inset inside each square and requiring a
+      // majority is a direct, cheap approximation of that — nine points, five
+      // to count. The centre is still tried first as a fast path, so the common
+      // case costs exactly what it did before.
+      //
+      // ⚠️ A LATTICE, NOT A RANDOM SAMPLE. Deterministic: the same board
+      // state always gives the same answer, so a save that fires once fires
+      // every time. Nothing about this may depend on frame timing or ordering.
+      const SAMPLES = [1 / 6, 3 / 6, 5 / 6];
+      const inShape = (wx, wy) => shape.contains(wx - templateX, wy - templateY);
+
       for (let gx = 0; gx < tokenGridW && !isInside; gx++) {
         for (let gy = 0; gy < tokenGridH && !isInside; gy++) {
-          // Center of this grid square in world coordinates
-          const centerX = tokenX + (gx + 0.5) * gridSize;
-          const centerY = tokenY + (gy + 0.5) * gridSize;
+          const sqX = tokenX + gx * gridSize;
+          const sqY = tokenY + gy * gridSize;
 
-          // Convert to template-local coordinates
-          const localX = centerX - templateX;
-          const localY = centerY - templateY;
+          // Fast path — dead centre, which is what most hits are.
+          if (inShape(sqX + gridSize / 2, sqY + gridSize / 2)) { isInside = true; break; }
 
-          if (shape.contains(localX, localY)) {
-            isInside = true;
+          // Otherwise ask how much of the square the area actually covers.
+          let covered = 0;
+          for (const fx of SAMPLES) {
+            for (const fy of SAMPLES) {
+              if (inShape(sqX + fx * gridSize, sqY + fy * gridSize)) covered++;
+            }
           }
+          if (covered >= 5) isInside = true;      // at least half the square
         }
       }
 
@@ -1476,21 +1549,82 @@ export class SaveEngine {
    * this with it. Returns null for anything that is not a save activity, and
    * for hand-drawn templates, which carry no origin flag.
    */
+  /**
+   * Is this save prompt for a character the current user actually owns?
+   *
+   * ⚠️ RESOLVED FROM THE ACTOR, NOT FROM THE WHISPER LIST. A GM is whispered
+   * every prompt, so "was I whispered this" answers yes for everybody's card and
+   * would un-collapse the lot. Ownership of the creature being asked to save is
+   * the only question that separates "my character" from "someone else's".
+   */
+  static _promptIsMine(flags) {
+    try {
+      const actor = game.actors?.get?.(flags?.actorId)
+        ?? (flags?.tokenDocId && flags?.sceneId
+              ? game.scenes?.get?.(flags.sceneId)?.tokens?.get?.(flags.tokenDocId)?.actor
+              : null);
+      if (!actor) return false;
+      // OWNER, not OBSERVER: seeing a sheet is not playing the character. A GM
+      // owns every actor implicitly, so ask about the explicit per-user level.
+      const level = actor.ownership?.[game.user.id]
+        ?? actor.ownership?.default
+        ?? CONST.DOCUMENT_OWNERSHIP_LEVELS.NONE;
+      return level === CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER;
+    } catch (err) {
+      // A GM who cannot be identified as the owner keeps the OLD behaviour:
+      // collapsed, and ROLL FOR THEM still works. Never fail into a state where
+      // every whisper in the log unfolds.
+      console.warn(`${MODULE_ID} | could not tell whether this save prompt is the user's own:`, err);
+      return false;
+    }
+  }
+
   _pendingFromTemplate(templateDoc) {
+    // ⚠️🔴 EVERY GATE BELOW USED TO RETURN null IN SILENCE, and the caller
+    // then returned in silence too. A breath weapon that produced no save card
+    // printed exactly one line - "pending save: false" - and then nothing, so
+    // there was no way to tell a hand-drawn template apart from a broken one.
+    // Johnny, 2026-08-24: "the save pipeline, for some reason, is dropping it.
+    // I have no idea why." Neither did I, and that is the defect: five ways to
+    // fail and not one of them said which.
+    //
+    // "Absent" and "broken" must never print the same message. Now each gate
+    // says what it looked for and what it got, once, at the moment it gives up.
+    const why = (reason) => {
+      console.warn(`${MODULE_ID} | no save card: ${reason} `
+        + `(template ${templateDoc?.id}, origin ${templateDoc?.flags?.dnd5e?.origin ?? "none"})`);
+      return null;
+    };
     try {
       const originUuid = templateDoc?.flags?.dnd5e?.origin;
+      // A GM template drawn by hand genuinely has no origin. That is normal and
+      // silent - it is the ONLY case here that is not a problem.
       if (!originUuid) return null;
-      const activity = fromUuidSync(originUuid);
-      if (!activity || activity.type !== "save") return null;
+
+      const resolve = foundry?.utils?.fromUuidSync
+        ?? (typeof fromUuidSync === "function" ? fromUuidSync : null);
+      if (!resolve) return why("Foundry has no fromUuidSync to resolve the origin with");
+
+      const activity = resolve(originUuid);
+      if (!activity) return why(`the origin uuid resolved to nothing - the item may have been deleted`);
+      if (activity.type !== "save") {
+        return why(`the activity is type "${activity.type}", not "save" - `
+          + `this ability places a template but has no saving throw on it`);
+      }
+
       const item = activity.item ?? activity.parent?.parent ?? null;
       const actor = item?.actor ?? null;
-      if (!item || !actor) return null;
+      if (!item) return why("the activity has no parent item");
+      if (!actor) return why(`"${item.name}" is not on an actor (a compendium or sidebar item cannot cast)`);
 
       const save = activity.save ?? {};
       const saveAbility = (save.ability instanceof Set || save.ability instanceof Array)
         ? [...save.ability][0]
         : (typeof save.ability === "string" ? save.ability : String(save.ability ?? ""));
-      if (!saveAbility) return null;
+      if (!saveAbility) {
+        return why(`"${item.name}" has a save activity with NO ability set on it - `
+          + `open the item, find the save activity, and choose Dexterity/Constitution/etc.`);
+      }
 
       let saveDC = save.dc?.value ?? save.dc ?? 0;
       if (!(Number(saveDC) > 0)) {
@@ -1577,7 +1711,15 @@ export class SaveEngine {
         console.log(`${MODULE_ID} | pending save rebuilt from the template's own origin flag (cast happened on another client).`);
       }
     }
-    if (!pending) return;
+    // ⚠️ `_pendingFromTemplate` has already said why it gave up, EXCEPT for a
+    // hand-drawn template with no origin flag, which is the one legitimate case.
+    // Say that one here so the log always accounts for itself.
+    if (!pending) {
+      if (!templateDoc?.flags?.dnd5e?.origin) {
+        console.log(`${MODULE_ID} | template ${templateDoc?.id} was drawn by hand (no ability behind it) - no save card, as intended.`);
+      }
+      return;
+    }
 
     // ── Primary: use game.user.targets (GM already targeted who they want) ──
     let tokens = [...game.user.targets];

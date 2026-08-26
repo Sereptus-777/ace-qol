@@ -96,11 +96,53 @@ export class SpellAutoDamage {
         console.warn(`${MODULE_ID} | preUseActivity target-clear failed (non-fatal):`, err);
       }
 
-      // Auto-clear after 5s — covers slot dialog wait + cast finalize.
-      setTimeout(() => {
-        SpellAutoDamage._unmarkActiveCast(actor.id, itemId);
-        SpellAutoDamage._castLevels.delete(SpellAutoDamage._key(actor.id, itemId));
-      }, 5000);
+      // ⚠️🔴 THE FIVE-SECOND CLEAR THAT USED TO BE HERE IS GONE.
+      //
+      // It wiped this marker five seconds after the button was pressed. If the
+      // spell-slot dialog was still open at that moment — you are talking, a
+      // player asks a question, you are choosing a slot — the cast forgot
+      // itself and Magic Missile did nothing at all. In place since 10 July,
+      // which is exactly why it "worked for months": you normally click through
+      // in under five seconds. Johnny lost it mid-session on 2026-08-24.
+      //
+      // ⚠️ AND IT WAS NEVER NEEDED. Read what the original comment said its
+      // job was: "If user cancels at slot dialog, marker expires harmlessly."
+      // It was tidying up after an ABANDONED cast, because nobody looked for an
+      // event that says so. But work out what a stale marker actually costs:
+      //
+      //   The marker makes dnd5e's `rollDamage` return [] for this actor+item.
+      //   If the cast was abandoned, nothing is going to roll damage anyway —
+      //   so the marker suppresses a roll that is not happening. Harmless.
+      //   The next real cast re-marks it and proceeds normally, and the four
+      //   completion points further down this file clear it when a cast
+      //   genuinely finishes.
+      //
+      // So the timer was solving a problem that does not exist, and creating
+      // one that does. A cast may now sit at the slot dialog for as long as you
+      // like, because nothing is counting.
+      //
+      // ⚠️ THE ONE CASE THAT DOES NEED CLEARING is a GM switching this
+      // pipeline off mid-session with a marker still set — then dnd5e would
+      // find its own damage suppressed by a feature that is no longer running.
+      // That is a real event, so it is handled as one, below.
+    });
+
+    // ⚠️ SWITCHING THE PIPELINE OFF IS AN EVENT, SO LISTEN FOR IT. Without
+    // this, a marker set before the toggle keeps suppressing dnd5e's own damage
+    // roll after ACE has stopped posting cards — the exact silent-nothing this
+    // whole file is being repaired for, just triggered by a settings click
+    // instead of a clock.
+    Hooks.on("updateSetting", (setting) => {
+      try {
+        if (setting?.key !== `${MODULE_ID}.spellAutoDamageEnabled`) return;
+        if (QolSettings.get?.("spellAutoDamageEnabled") !== false) return;
+        SpellAutoDamage._activeCasts.clear();
+        SpellAutoDamage._castLevels.clear();
+        console.log(`${MODULE_ID} | SpellAutoDamage switched off — cleared every active cast marker `
+          + `so dnd5e's own damage flow is not left suppressed.`);
+      } catch (err) {
+        console.warn(`${MODULE_ID} | could not clear cast markers on settings change:`, err);
+      }
     });
 
     // ── Re-capture cast level AFTER the slot dialog confirms ─────────

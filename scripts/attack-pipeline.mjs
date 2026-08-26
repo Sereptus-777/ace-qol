@@ -24,27 +24,51 @@ import { AttackAbilityResolver } from "./attack-ability-resolver.mjs";
 // The two creature snapshots. This pipeline asks THESE what a creature is
 // rather than reaching into actor.system and guessing at data shapes — the
 // audit found the profile layer was built and never wired. (2026-07-28)
-import { buildAttackerProfile } from "./profiles/attacker-profile.mjs";
+import { buildAttackerProfile, describeAttacker } from "./profiles/attacker-profile.mjs";
+import { resolveReach } from "./reach-reader.mjs";
 import { buildTargetProfile } from "./profiles/target-profile.mjs";
+import { SpellPipeline } from "./spell-pipeline/pipeline.mjs";
 
-// ─── Profile access for this pipeline (2026-07-28) ───────────────────────────
+// ─── Profile access for this pipeline (2026-07-28, re-cut 2026-08-25) ────────
+//
 // Cached per swing so a multi-beam attack (Eldritch Blast, Scorching Ray) builds
-// each creature's snapshot once rather than once per beam, and expires fast so a
-// snapshot can never outlive the exchange that built it. A creature's state
-// changes DURING a fight — a long-lived cache would be worse than raw reads.
+// each creature's snapshot once rather than once per beam.
+//
+// ⚠️🔴 IT USED TO EXPIRE ON A FOUR-SECOND TIMER, AND THAT WAS A BUG.
+// A wall clock has nothing to do with when a creature's state changes. Four
+// seconds is most of a turn: swing, get knocked prone, swing again inside the
+// window, and the second swing reads the FIRST swing's conditions. A creature
+// could be knocked out, restrained or KILLED between two rolls and the gate
+// would still be looking at the healthy snapshot — which is precisely the
+// failure THE ONE GATE exists to prevent, reintroduced by its own cache.
+//
+// Same shape as the five-second Magic Missile amnesia, and the same rule
+// applies: no timers unless a timer genuinely makes sense. This one never did.
+//
+// ⚠️ SO THE SCOPE IS AN EVENT, NOT A DURATION. Every attack bumps the
+// generation; entries stamped with an older one are never returned, whether
+// that was four seconds ago or four minutes. Within one attack the snapshot is
+// stable (all beams see the same creature, which is correct); across two
+// attacks it is always rebuilt.
 const _aceProfileCache = new Map();
+let _aceProfileGen = 0;
+
+/** Start a new profile generation. Called once per attack event. */
+function _aceNewProfileGen() {
+  _aceProfileGen++;
+  _aceProfileCache.clear();
+}
+
 const _aceCached = (key, build) => {
   if (!key) return build();
-  const hit = _aceProfileCache.get(key);
+  const stamped = `${_aceProfileGen}|${key}`;
+  const hit = _aceProfileCache.get(stamped);
   if (hit) return hit;
   let p = null;
   try { p = build(); } catch (err) {
     console.warn(`${MODULE_ID} | profile build failed:`, err);
   }
-  if (p) {
-    _aceProfileCache.set(key, p);
-    setTimeout(() => _aceProfileCache.delete(key), 4000);
-  }
+  if (p) _aceProfileCache.set(stamped, p);
   return p;
 };
 
@@ -88,10 +112,14 @@ function _aceRealProfBonus(actor, item, actorProf) {
 }
 
 /** The attacker's snapshot — ability mods, proficiency, conditions, gate. */
-function _aceAttackerProfile(actor, item = null, activity = null) {
+function _aceAttackerProfile(actor, item = null, activity = null, token = null) {
   if (!actor) return null;
-  const key = `atk:${actor.uuid ?? actor.id}:${item?.id ?? ""}:${activity?.id ?? ""}`;
-  return _aceCached(key, () => buildAttackerProfile(actor, { item, activity }));
+  // ⚠️ THE TOKEN IS PART OF THE ANSWER, so it is part of the key. Elevation,
+  // disposition and hidden are token facts, and nine unlinked goblins share one
+  // actor — keying on the actor alone hands goblin #7 goblin #1's position.
+  const tokenId = token?.document?.id ?? token?.id ?? "";
+  const key = `atk:${actor.uuid ?? actor.id}:${tokenId}:${item?.id ?? ""}:${activity?.id ?? ""}`;
+  return _aceCached(key, () => buildAttackerProfile(actor, { token, item, activity }));
 }
 
 /** The target's snapshot — ability mods, saves, immunities, conditions. */
@@ -315,7 +343,42 @@ export class AttackPipeline {
   _onPreAttackRoll(config, dialog, message) {
     // Runs on ALL clients (GM + players) — handles advantage/disadvantage detection,
     // range checks, and incapacitation blocks. The pre-roll dialog is client-local.
+    // The GM has switched ACE's hit checking off. That is them turning ACE OFF,
+    // not ACE failing — dnd5e's own behaviour, dialog included, is correct here.
     if (!QolSettings.get("autoCheckHit")) return;
+
+    // ⚠️ A NEW ATTACK IS A NEW READING OF EVERYONE. Nothing cached from the
+    // previous swing may be reused, no matter how recently it was built.
+    _aceNewProfileGen();
+
+    // ── ⚠️🔴 SUPPRESS FIRST. EVERY EARLY RETURN BELOW USED TO LEAK. ─────
+    //
+    // dnd5e's Attack Roll window opens BY DEFAULT. Staying hidden is not a
+    // setting we flip once — ACE has to flip this switch on every single swing,
+    // and it used to do so near the END of this function, as a consequence of
+    // having successfully handled the attack.
+    //
+    // So every check that bailed out early skipped it: no target, no item, no
+    // actor, no activity. Johnny hit the no-target one and dnd5e's dialog
+    // appeared, which his standing rule (2026-07-26) calls a defect outright:
+    // "I want all attacks, spell attacks, weapon attacks, future attacks to go
+    // through our pipeline, not DD5E."
+    //
+    // Making it a PRECONDITION instead of a consequence closes every one of
+    // those paths at once — including paths nobody has written yet, which is the
+    // whole point. Anything below this line may return freely.
+    //
+    // ⚠️ AND IT NO LONGER LIVES HERE AT ALL (2026-08-25). Hoisting it to the
+    // top of this function closed every early return in THIS file, and did
+    // nothing for the other two places that were also suppressing dialogs their
+    // own way — one of which was a prototype patch driven by a five-second
+    // timer, and that is what stopped Magic Missile working.
+    //
+    // dnd5e fires ONE hook for every roll it makes (`dnd5e.preRoll`, the
+    // empty-suffix one, which is always appended to `config.hookNames`), so
+    // there is exactly one place this decision can be made and it is
+    // `dialog-suppression.mjs`. Do not re-add it here: three sites with a hole
+    // between them is what we just finished removing.
 
     const subject = config?.subject;
     if (!subject) return;
@@ -334,15 +397,105 @@ export class AttackPipeline {
     // Hard gate — can the attacker even act? Shared brain (CombatContext.canAct),
     // identical to the spell path, so weapons and spells can never drift apart
     // again (the gap that let an incapacitated caster still cast). (2026-06-25)
-    const actGate = CombatContext.canAct(actor, { isSpell: false, item, activationType: "action", verb: "attack" });
-    if (!actGate.ok) {
-      showCenterToast(actGate.reason, 2500);
-      ui.notifications?.warn(`ACE QOL: ${actGate.reason}`);
+    // ══ THE GATE — READ THE ATTACKER BEFORE THE DICE, NOT AFTER ═══════════
+    //
+    // ⚠️🔴 THIS IS THE HOOK THAT CAN STILL SAY NO. `_onAttackRoll` runs
+    // after dnd5e has already rolled, so a refusal there leaves a bare d20 on
+    // screen with nothing resolved. Everything the Gate decides belongs HERE.
+    //
+    // The profile carries the liveness gate, every condition, the edition, the
+    // action's reach and properties, the action economy and any aura this
+    // creature projects. It is read ONCE and handed down, so the range check,
+    // the melee test and the console line can never disagree about the same
+    // creature — which is the entire point of a gate.
+    const attacker = _aceAttackerProfile(actor, item, subject ?? null);
+
+    // The shared action gate lives inside the profile now; this reads the
+    // answer rather than asking the same question a second time.
+    if (attacker && !attacker.canAct) {
+      const reason = attacker.cannotActBecause || attacker.gate?.reason
+        || `${attacker.name} cannot act.`;
+      console.warn(`${MODULE_ID} | Gate/attacker | BLOCKED: ${reason}`);
+      showCenterToast(reason, 2500);
+      ui.notifications?.warn(`ACE QOL: ${reason}`);
       return false; // Block the roll
     }
 
+    // ⚠️ SAY WHAT WAS READ, EVERY TIME. Johnny's definition of done: you name
+    // a thing on the sheet, and I show you the console line where the pipeline
+    // read it. Without this, "did it check the aura?" is answered by me reading
+    // code and guessing, which is what the whole of 24 August was.
+    if (attacker) {
+      console.log(`${MODULE_ID} | Gate/attacker | ${describeAttacker(attacker)}`);
+      if (attacker.problems.length) {
+        console.warn(`${MODULE_ID} | Gate/attacker | could not read everything about `
+          + `${attacker.name}: ${attacker.problems.join("; ")}. `
+          + `Anything below that depends on those fields is running blind.`);
+      }
+    }
+
+    // ── ⚠️🔴 HANDS OFF A ROLL THAT IS ABOUT TO BE CANCELLED ────────────
+    //
+    // The spell pipeline rolls every beam of a multi-beam spell itself and then
+    // cancels dnd5e's own attack roll. That cancelled roll still arrives HERE
+    // first, with the targets already released — so this pipeline saw an attack
+    // with nobody targeted and helpfully opened its "who are you hitting?"
+    // picker for a roll that no longer existed.
+    //
+    // Johnny cast Eldritch Blast on 2026-08-25 and got the picker TWICE: the
+    // spell pipeline's, which worked and dealt the damage, then a second one
+    // that did nothing when he pressed it. "It does nothing." It could not do
+    // anything — the roll behind it was already dead.
+    //
+    // ⚠️ ONE OWNER TEST, ASKED OF THE PIPELINE THAT OWNS IT. Copying the
+    // condition here is how the two would drift the first time a new shape is
+    // added over there.
+    //
+    // ⚠️🔴 SYNCHRONOUS, AND IT HAS TO BE. This handler cancels rolls by
+    // returning false, and a hook that returns a Promise cannot cancel anything
+    // — making this function async to allow a dynamic import would have quietly
+    // disabled EVERY block in this file, including the incapacitated-attacker
+    // gate. The import is static (checked: nothing under spell-pipeline/ imports
+    // back into this file, so there is no cycle).
+    // The Gate above has already read and reported this attacker, which is
+    // what Johnny asked for on every button press. What gets skipped from
+    // here down is the RESOLUTION half: targeting, the picker, hit checking
+    // - all of which the spell pipeline is doing itself.
+    try {
+      if (SpellPipeline?.ownsAttackRoll?.(item)) {
+        console.log(`${MODULE_ID} | "${item.name}" is owned by the spell pipeline — `
+          + `the attack pipeline read it and stands down (no picker, no second prompt).`);
+        return;
+      }
+    } catch (err) {
+      // Absent and broken must not look the same. If the check itself failed we
+      // carry on, because refusing every attack is far worse than one duplicate
+      // prompt — but the reason is named rather than swallowed.
+      console.warn(`${MODULE_ID} | could not ask the spell pipeline about `
+        + `"${item.name}" — continuing as an ordinary attack:`, err);
+    }
+
+    // ── ⚠️ NO TARGET? ASK WHO, DON'T WALK AWAY. ───────────────────
+    //
+    // This used to return, which meant ACE had no idea who was being hit and
+    // the roll went ahead with no pause at all. Johnny, 2026-08-23: "why don't
+    // we put up the portrait picker? ... goblins can look exactly the same with
+    // just small differences, and the player could still not be sure which one
+    // he wants to attack. It delays the game."
+    //
+    // Refusing the attack was the other option and it is worse — it punishes a
+    // click already made. The picker turns a dead end into the thing they
+    // wanted, and it is the SAME picker spells already use, with distance and a
+    // compass point on every row and the real token lighting up on hover.
+    //
+    // ⚠️ It cancels this roll and re-fires from the picker's own path, because
+    // targeting has to be settled BEFORE advantage, range and cover are read —
+    // all of which are computed below from the target.
     const targets = game.user.targets;
-    if (!targets.size) return; // Item.use shim hard-blocks no-target weapons; silent fallback for other paths
+    if (!targets.size) {
+      this._pickTargetThenRefire(config, message, actor, item, subject);
+      return false;
+    }
 
     // ── Melee multi-target lockout ──
     // A melee weapon swings at one creature unless the actor has a cleave-style
@@ -371,7 +524,7 @@ export class AttackPipeline {
     // combat-state assessment) — only the range *check* is OA-gated. v0.7.24.
     const firstTarget = targets.first();
     if (!OA_IN_FLIGHT.has(actor.id)) {
-      const rangeCheck = this._checkRange(actor, firstTarget, item, subject);
+      const rangeCheck = this._checkRange(actor, firstTarget, item, subject, attacker);
       if (rangeCheck.blocked) {
         const msg = `Out of range — ${rangeCheck.distanceFt}ft away (${rangeCheck.rangeDesc})`;
         showCenterToast(msg, 2500);
@@ -386,7 +539,7 @@ export class AttackPipeline {
     if (!combatState) {
       // Even without an assessment, dnd5e's config dialog must not render —
       // ACE owns the attack pause (Johnny 2026-07-26). Roll straight.
-      if (dialog) dialog.configure = false;
+      // (Suppression is handled once, in dialog-suppression.mjs.)
       return;
     }
 
@@ -414,7 +567,7 @@ export class AttackPipeline {
     }
     // ACE owns the pause — with a stored choice (or prompt disabled) the roll
     // proceeds now, and dnd5e's box stays suppressed either way.
-    if (dialog) dialog.configure = false;
+    // (Suppression is handled once, in dialog-suppression.mjs.)
 
     // ── Inject advantage/disadvantage into the roll dialog + config ──
     // Set the dialog's default button so the correct mode is pre-selected
@@ -467,12 +620,70 @@ export class AttackPipeline {
   }
 
   /**
+   * How far this weapon can reach, in FEET.
+   *
+   * ⚠️ EXTRACTED 2026-08-23 so the range check and the target picker share
+   * one answer. The picker uses it to decide who is close enough to be
+   * offered at all; the range check uses it to decide whether a swing lands.
+   * Those two must never disagree — a creature offered as a target and then
+   * refused as out of range is a worse experience than either alone.
+   */
+  static _reachFor(item, subject) {
+    // ⚠️ THE RESOLVER LIVES IN `reach-reader.mjs` NOW, so the attacker profile
+    // and this pipeline can never disagree about how far a Spiked Chain reaches.
+    // Everything it used to do lives there unchanged, with the reason for every
+    // step. This path DOES ask for the repair: it is the one place we know a
+    // real swing happened, and a profile is built more than once per attack.
+    return resolveReach(item, subject, { repair: true }).reachFt;
+  }
+
+  /**
    * The cancelled roll's second act: show the ACE advantage prompt (shared with
    * the weapon path), stash the choice, then re-fire the SAME attack fast-
    * forwarded — the re-entry consumes the stored choice and dnd5e's dialog
    * stays suppressed. Esc on the prompt leaves the attack cancelled, exactly
    * like the weapon path. (2026-07-26 — ACE owns every attack pause.)
    */
+  /**
+   * Nobody is targeted — ask who, then run the attack again for real.
+   *
+   * ⚠️ IT SETS THE REAL TARGET, not a private note. Everything downstream —
+   * advantage, cover, range, the damage card, the engagement gate — reads
+   * `game.user.targets`. Stashing the choice somewhere of our own would mean
+   * every one of those had to learn about it, and the ones that did not would
+   * quietly disagree with the ones that did.
+   *
+   * ⚠️ THE RE-FIRE IS AN ORDINARY ATTACK. It goes back through this same hook
+   * with a target set, so range, reach, advantage and ACE's own prompt all run
+   * normally. No second code path to drift.
+   */
+  async _pickTargetThenRefire(config, message, actor, item, subject) {
+    try {
+      const { SpellTargetPicker } = await import("./spell-target-picker.mjs");
+
+      // Reach decides who is even offered, so a reach weapon shows the
+      // creatures it can genuinely hit rather than everything on the map.
+      const reachFt = AttackPipeline._reachFor(item, subject);
+
+      const token = await SpellTargetPicker.pickAttackTarget({
+        weaponItem: item,
+        attackerActor: actor,
+        reachFt,
+      });
+      if (!token) return;   // cancelled — the attack stays cancelled
+
+      token.setTarget(true, { user: game.user, releaseOthers: true });
+
+      const refire = {};
+      for (const k of ["ammunition", "attackMode", "mastery"]) {
+        if (config?.[k] !== undefined) refire[k] = config[k];
+      }
+      await subject.rollAttack(refire, { configure: false }, {});
+    } catch (err) {
+      console.warn(`${MODULE_ID} | ACE target picker/re-fire failed — attack cancelled:`, err);
+    }
+  }
+
   async _promptThenRefire(config, message, actor, targetToken, item, subject) {
     try {
       const choice = await promptAttackChoice(actor, targetToken, item);
@@ -515,6 +726,54 @@ export class AttackPipeline {
 
     const roll = rolls?.[0];
     if (!roll) return;
+
+    // ══ THE GATE — READ THE ATTACKER BEFORE ANYTHING IS DECIDED ═══════
+    //
+    // ⚠️🔴 THIS PROFILE HAS BEEN BUILT ON EVERY ATTACK SINCE 2026-07-28 AND
+    // ASKED FOR THREE NUMBERS. It carried the liveness gate, every condition,
+    // the edition and the action gate, and this pipeline read proficiency and
+    // two ability modifiers off it and threw the rest away. Johnny, 2026-08-25:
+    // "When I push a button, a whole block of code should read the attacker's
+    // profile, everything about them, and all the conditions... before anything
+    // happens." It now does, and it says out loud what it read.
+    //
+    // ⚠️ BUILT IS NOT CONSULTED. That gap is what killed Uncanny Dodge and
+    // Aura of Warding, both written correctly and read by nothing.
+    // `tools/profile-consumers-check.py` goes red when a field the profile
+    // reports has no reader anywhere in the suite.
+    const attackerToken = subject?.token?.object
+      ?? actor.getActiveTokens?.(false, false)?.[0]
+      ?? null;
+    const attacker = _aceAttackerProfile(actor, item, subject, attackerToken);
+
+    // ⚠️🔴 THE LIVENESS GATE, WHICH EXISTED AND WAS NEVER ASKED HERE.
+    // `_onPreAttackRoll` already blocks an incapacitated attacker before the
+    // dice, which is the right place and stays the primary defence. This is the
+    // backstop for everything that reaches the roll by another road — a macro,
+    // a re-fire, a socket, an activity used straight off the sheet. The roll has
+    // already happened by the time we are here, so it resolves nothing and says
+    // why, rather than leaving a bare d20 on screen with no explanation.
+    if (attacker && !attacker.canAct) {
+      console.warn(`${MODULE_ID} | Gate/attacker | ${attacker.name} cannot act `
+        + `(${attacker.cannotActBecause}) — nothing resolved from this roll.`);
+      ui.notifications?.warn(`${attacker.name} cannot act: ${attacker.cannotActBecause}.`);
+      return;
+    }
+
+    // ⚠️ SAY WHAT WAS READ, EVERY TIME. Johnny's definition of done: you name
+    // a thing on the sheet, and I show you the console line where the pipeline
+    // read it. Without this, "did it check the aura?" is answered by me reading
+    // code and guessing, which is what the whole of 24 August was.
+    // ⚠️ THE BACKSTOP DOES NOT NARRATE. The pre-roll gate has already
+    // printed this creature's line for this swing; printing it again here put
+    // the same sentence in the console twice for every attack, which is how a
+    // log stops being read. It speaks only when it has something the pre-roll
+    // line did not say.
+    if (attacker?.problems.length) {
+      console.warn(`${MODULE_ID} | Gate/attacker | could not read everything about `
+        + `${attacker.name}: ${attacker.problems.join("; ")}. `
+        + `Anything below that depends on those fields is running blind.`);
+    }
 
     // Get targeted tokens
     const targets = game.user.targets;
@@ -1472,43 +1731,63 @@ export class AttackPipeline {
     return false;
   }
 
-  _checkRange(attackerActor, targetToken, item, subject = null) {
-    const atkToken = attackerActor.getActiveTokens?.()?.[0]
+  _checkRange(attackerActor, targetToken, item, subject = null, attacker = null) {
+    // ══ EVERY FACT BELOW COMES OFF THE ATTACKER PROFILE ═══════════════════
+    //
+    // ⚠️ THE PROFILE IS PASSED IN, NOT REBUILT. The pre-roll gate already
+    // read this creature; rebuilding here could read it a second time and, if
+    // anything changed in between, quietly answer a different question than the
+    // gate did. When no profile is handed down (the item-use wrapper in
+    // `ace-qol.mjs` calls this with no activity), one is built from the item's
+    // OWN first activity, so this check is never left reading an item that
+    // dnd5e 5.x no longer stores the answers on.
+    // ⚠️ RESOLVE THE ACTIVITY ONCE, AND USE THE SAME ONE EVERYWHERE BELOW.
+    // The item-use wrapper in `ace-qol.mjs` calls this with no activity at all,
+    // and in dnd5e 5.x the action type, the range and the reach all live on the
+    // activity — so that path was classifying a swing from an item that no
+    // longer stores the answers.
+    const activity = subject ?? item?.system?.activities?.contents?.[0] ?? null;
+    const profile = attacker ?? _aceAttackerProfile(attackerActor, item, activity);
+
+    // ⚠️ THE PROFILE KNOWS WHICH TOKEN IS SWINGING. This used to take the
+    // actor's first active token and, failing that, whatever the user happened
+    // to have selected — so a GM with a different creature selected could have
+    // the range measured from the wrong square entirely.
+    const atkToken = profile?.token
+                  ?? attackerActor.getActiveTokens?.()?.[0]
                   ?? canvas.tokens.controlled?.[0];
     if (!atkToken || !targetToken) return { blocked: false, distanceFt: 0, rangeDesc: "", isRanged: false };
 
-    // Measure distance — edge-to-edge for correct Large/Huge/Gargantuan handling
+    // Measure distance — edge-to-edge for correct Large/Huge/Gargantuan
+    // handling, and elevation-aware, so a flying attacker is not in melee
+    // reach of the ground just because the squares line up.
     let distanceFt = CombatState._getDistance(atkToken, targetToken);
     distanceFt = Math.round(distanceFt);
 
     const sys = item.system ?? {};
-    // dnd5e 5.x moved actionType + range onto the ACTIVITY. Reading only
-    // item.system here is why monster natural attacks (Ram/Bite/Claw — weapon
-    // type "natural", actionType empty on the item) were classified "unknown"
-    // and skipped the gate entirely. Prefer the activity, fall back to legacy.
-    const actionType  = subject?.actionType ?? sys.actionType ?? "";
-    const range       = subject?.range ?? sys.range ?? {};
-    const normalRange = range.value ?? 5;
-    const longRange   = range.long ?? 0;
+    const act = profile?.action ?? null;
 
-    // Determine weapon reach for melee — reach property, or an explicit small
-    // melee range from the activity (5/10/15 ft), else default 5.
-    const props = sys.properties ? new Set(sys.properties) : new Set();
-    let meleeReach = props.has("rch") ? 10 : 5;
-    // Honor the activity's OWN declared range. A "melee spell attack" (msak) can
-    // legitimately reach 30ft — dnd5e mislabels some ranged cantrips (Produce
-    // Flame) as msak. Gate by the real range, not a hardcoded 5, so we never
-    // block a spell the caster can throw across the room. (2026-06-28)
-    if (range.units === "ft" && range.value > 0 && longRange === 0) {
-      meleeReach = range.value;
-    }
+    // dnd5e 5.x moved actionType + range onto the ACTIVITY. Reading only the
+    // item here is why monster natural attacks (Ram/Bite/Claw — weapon type
+    // "natural", actionType empty on the item) were classified "unknown" and
+    // skipped the gate entirely. The profile already asked the activity first.
+    const actionType  = activity?.actionType ?? sys.actionType ?? "";
+    const normalRange = act ? (act.rangeNormal || 5) : (activity?.range?.value ?? sys.range?.value ?? 5);
+    const longRange   = act ? act.rangeLong : (activity?.range?.long ?? sys.range?.long ?? 0);
+
+    // ⚠️ ONE REACH RESOLVER, AND THE PROFILE ALREADY RAN IT. The target
+    // picker, the chat card and the hover tooltip all read the same number from
+    // `reach-reader.mjs`; asking again here is how four different answers to
+    // "how far does this reach" got into the codebase in the first place.
+    const props = act?.properties ?? (sys.properties ? new Set(sys.properties) : new Set());
+    const meleeReach = act?.reachFt || AttackPipeline._reachFor(item, activity);
 
     // Classify melee via the shared, activity-aware helper, plus weapon type
     // (natural = monster attacks; simpleM/martialM = PC melee). isRanged covers
     // weapon attacks and spell attacks (rsak).
     const weaponType = sys.type?.value ?? "";
     const isThrown   = props.has("thr");
-    const isMelee = AttackPipeline._isMeleeAttack(item, subject)
+    const isMelee = AttackPipeline._isMeleeAttack(item, activity)
       || weaponType === "natural"
       || weaponType.includes("simpleM") || weaponType.includes("martialM");
     const isRanged = actionType === "rwak" || actionType === "rsak"
@@ -1582,7 +1861,14 @@ export class AttackPipeline {
     if (activationType) tags.push(String(activationType).toUpperCase());
 
     // Range / reach
-    const reach     = sys.range?.reach ?? (sys.range?.units === "ft" && !sys.range?.long ? sys.range?.value : null);
+    // ⚠️🔴 THE CARD MUST NOT PRINT A DIFFERENT REACH THAN THE GATE USED.
+    // This read the item's range slot only — no activity, no description
+    // fallback — so a Spiked Chain whose reach lives in its description showed
+    // no REACH tag at all while the range check happily used 10 ft. A card that
+    // disagrees with the rule it is reporting is worse than a card with no tag.
+    // ⚠️ `repair: false` — a card can re-render many times and rendering is
+    // not a swing. The write-back belongs to the attack path.
+    const reach     = resolveReach(item, sys.activities?.contents?.[0] ?? null, { repair: false }).reachFt;
     const rangeVal  = sys.range?.value;
     const rangeLong = sys.range?.long;
     const rangeUnits = sys.range?.units ?? "ft";
