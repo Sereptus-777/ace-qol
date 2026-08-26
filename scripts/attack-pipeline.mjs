@@ -101,11 +101,17 @@ const _aceCached = (key, build) => {
 /**
  * Say that a swing is NOT going to happen after all.
  *
- * ⚠️🔴 A HOLD THAT IS NEVER RELEASED IS AN ANIMATION THAT NEVER PLAYS
- * AGAIN. Forge FX holds a weapon's effects until `attackCommitted`, so every
- * path that abandons an attack has to say so — otherwise a single out-of-range
- * click leaves that weapon silent for the rest of the session and the held
- * entry sits in a map forever.
+ * ⚠️🔴 A HOLD THAT IS NEVER RELEASED LOSES THAT SWING'S ANIMATION.
+ * Forge FX holds a weapon's effects from `postCreateUsageMessage` until
+ * `attackCommitted`, so every path that abandons an attack has to say so.
+ *
+ * ⚠️ BE ACCURATE ABOUT THE COST. An earlier version of this comment said a
+ * missed release leaves the weapon "silent for the rest of the session". It
+ * does not — Forge writes its hold with `.set()`, so the next use of the same
+ * item overwrites a stale one and plays normally. What is lost is THIS use's
+ * animation, plus a stale entry in a map. That is a real bug and worth every
+ * one of these calls; it is not a session-ending one, and overstating it is
+ * how the next reader learns to discount the warning beside the real thing.
  *
  * ⚠️ EVERY GIVE-UP PATH CALLS THIS. Out of range, cannot act, the melee
  * lockout, and Escape on the advantage prompt. If a new refusal is added and
@@ -737,7 +743,15 @@ export class AttackPipeline {
       }
       await subject.rollAttack(refire, { configure: false }, {});
     } catch (err) {
+      // ⚠️🔴 PATH FOUR. This message has said "attack cancelled" since it
+      // was written, and it never told anyone. The caller has ALREADY returned
+      // false to kill the original roll, betting on this re-fire arriving; if
+      // this throws, no roll ever happens and nothing commits.
+      //
+      // Forge is still holding this weapon's FX from postCreateUsageMessage.
+      // Announce, or the swing that never came takes the animation with it.
       console.warn(`${MODULE_ID} | ACE target picker/re-fire failed — attack cancelled:`, err);
+      _announceAttackCancelled(item, actor, `the target picker or re-fire threw: ${err?.message ?? err}`);
     }
   }
 
@@ -760,8 +774,14 @@ export class AttackPipeline {
       refire.event = { shiftKey: true, target: document.body };   // fast-forward
       await subject.rollAttack(refire, { configure: false }, {});
     } catch (err) {
+      // ⚠️🔴 PATH FIVE, and the same shape as path four. The advantage
+      // prompt's caller killed the original roll expecting this re-fire. A
+      // throw here means no roll, no commit, and a held animation nobody
+      // releases. It already cleans up its own pending-choice entry; the FX
+      // hold is the other half of the same cleanup.
       console.warn(`${MODULE_ID} | ACE attack prompt/re-fire failed — attack cancelled:`, err);
       try { pendingAttackChoices.delete(actor.id); } catch (_) {}
+      _announceAttackCancelled(item, actor, `the advantage prompt or re-fire threw: ${err?.message ?? err}`);
     }
   }
 
