@@ -20,14 +20,23 @@ import { pendingAttackChoices, awaitDsnRoll, showCenterToast, promptAttackChoice
 import { WeaponMasteries } from "./weapon-masteries.mjs";
 import { CombatContext } from "./combat-context.mjs";
 import { OA_IN_FLIGHT } from "./oa-transient.mjs";
-import { AttackAbilityResolver } from "./attack-ability-resolver.mjs";
 // The two creature snapshots. This pipeline asks THESE what a creature is
 // rather than reaching into actor.system and guessing at data shapes — the
 // audit found the profile layer was built and never wired. (2026-07-28)
 import { buildAttackerProfile, describeAttacker } from "./profiles/attacker-profile.mjs";
+import { buildAttackProfile, describeAttack } from "./profiles/attack-profile.mjs";
+import { resolveAttack } from "./profiles/resolver.mjs";
 import { resolveReach } from "./reach-reader.mjs";
 import { buildTargetProfile } from "./profiles/target-profile.mjs";
+// The third profile of THE ONE GATE: what lies between the two creatures.
+// Built PER TARGET inside the resolution loop, because distance, cover,
+// light and elevation all belong to a PAIR, not to a swing.
+import { buildEnvironmentProfile } from "./profiles/environment-profile.mjs";
 import { SpellPipeline } from "./spell-pipeline/pipeline.mjs";
+// Shared "why didn't that happen" reporters. why-not.mjs is a leaf that
+// imports nothing, so it cannot join the static import cycles ace-qol.mjs
+// sits at the centre of.
+import { gateOff } from "./why-not.mjs";
 
 // ─── Profile access for this pipeline (2026-07-28, re-cut 2026-08-25) ────────
 //
@@ -74,41 +83,41 @@ const _aceCached = (key, build) => {
 
 
 /**
- * The proficiency bonus that is ACTUALLY in this attack roll.
+ * ⚠️🔴 REMOVED 2026-08-26 - THE RESOLVER OWNS THIS NOW.
  *
- * ⚠️ 🔴 NOT SIMPLY THE ACTOR'S PROFICIENCY. Found live 2026-08-13: Johnny swung
- * a NON-proficient magic battleaxe and the card read
+ * `_aceRealProfBonus` decided whether the proficiency bonus applied, from raw
+ * item data, at two call sites. It has moved into `resolveProficiency` in
+ * profiles/resolver.mjs, which asks the same questions in the same order AND
+ * adds the one it never asked: is this creature actually trained with this
+ * weapon? The old function handed out proficiency to anyone holding anything.
  *
- *     11  +5 STR  +1 PROF  +3 MAGIC  -1 BONUS  = 19
- *
- * dnd5e had rolled 11 + 5 + 3 = 19 with no proficiency at all. ACE printed a
- * PROF chip the roll never contained, then quietly absorbed the difference into
- * a "BONUS" chip so the arithmetic still added up. The total was right and the
- * explanation was a lie — and the lie is worse, because the breakdown is the
- * whole reason the card exists.
- *
- * ⚠️ AND IT SCALES WITH THE CHARACTER. At level 20 the same mistake reads
- * "+6 PROF … -6 BONUS", which looks like a curse rather than a display bug.
- *
- * A spell attack is always proficient. A weapon is proficient only if the
- * ITEM says so — `system.prof.hasProficiency` is dnd5e's own answer, and this
- * very file already uses it further down to print a PROFICIENT tag.
+ * ⚠️ THAT CHANGE NEARLY WENT OUT WRONG. The first version matched the
+ * categories on "simple" and "martial"; dnd5e stores them as "sim" and "mar",
+ * so it would have matched nothing and silently stripped the proficiency bonus
+ * from every character whose sheet lists only categories. Found by reading his
+ * actual character data before shipping. See tools/resolver-check.mjs.
  */
-function _aceRealProfBonus(actor, item, actorProf) {
+
+/**
+ * Say that a swing is NOT going to happen after all.
+ *
+ * ⚠️🔴 A HOLD THAT IS NEVER RELEASED IS AN ANIMATION THAT NEVER PLAYS
+ * AGAIN. Forge FX holds a weapon's effects until `attackCommitted`, so every
+ * path that abandons an attack has to say so — otherwise a single out-of-range
+ * click leaves that weapon silent for the rest of the session and the held
+ * entry sits in a map forever.
+ *
+ * ⚠️ EVERY GIVE-UP PATH CALLS THIS. Out of range, cannot act, the melee
+ * lockout, and Escape on the advantage prompt. If a new refusal is added and
+ * this is not called from it, that weapon goes quiet — which is exactly the
+ * class of silent failure that cost tonight.
+ */
+function _announceAttackCancelled(item, actor, why) {
   try {
-    const prof = Number(actorProf) || 0;
-    if (!item) return prof;
-    if (item.type === "spell") return prof;          // always proficient
-    const p = item.system?.prof;
-    if (p && typeof p === "object") {
-      if (!p.hasProficiency) return 0;
-      const flat = Number(p.flat);
-      return Number.isFinite(flat) ? flat : prof;
-    }
-    // Older/odd shapes: 0 means explicitly not proficient, null means "work it out".
-    if (item.system?.proficient === 0) return 0;
-    return prof;
-  } catch (_) { return Number(actorProf) || 0; }
+    Hooks.callAll(`${MODULE_ID}.attackCancelled`, { item, actor, why });
+  } catch (err) {
+    console.warn(`${MODULE_ID} | attackCancelled listeners threw (non-fatal):`, err);
+  }
 }
 
 /** The attacker's snapshot — ability mods, proficiency, conditions, gate. */
@@ -120,6 +129,15 @@ function _aceAttackerProfile(actor, item = null, activity = null, token = null) 
   const tokenId = token?.document?.id ?? token?.id ?? "";
   const key = `atk:${actor.uuid ?? actor.id}:${tokenId}:${item?.id ?? ""}:${activity?.id ?? ""}`;
   return _aceCached(key, () => buildAttackerProfile(actor, { token, item, activity }));
+}
+
+/** The button's snapshot — reach, range, properties, damage, mastery offered. */
+function _aceAttackProfile(item, activity = null) {
+  if (!item) return null;
+  const key = `act:${item.uuid ?? item.id}:${activity?.id ?? ""}`;
+  // ⚠️ `repairReach: true` — this is a real swing, so an item whose reach
+  // had to be read out of its description gets the field written back once.
+  return _aceCached(key, () => buildAttackProfile(item, activity, { repairReach: true }));
 }
 
 /** The target's snapshot — ability mods, saves, immunities, conditions. */
@@ -345,7 +363,10 @@ export class AttackPipeline {
     // range checks, and incapacitation blocks. The pre-roll dialog is client-local.
     // The GM has switched ACE's hit checking off. That is them turning ACE OFF,
     // not ACE failing — dnd5e's own behaviour, dialog included, is correct here.
-    if (!QolSettings.get("autoCheckHit")) return;
+    if (!QolSettings.get("autoCheckHit")) {
+      gateOff("automatic hit checking", "autoCheckHit");
+      return;
+    }
 
     // ⚠️ A NEW ATTACK IS A NEW READING OF EVERYONE. Nothing cached from the
     // previous swing may be reused, no matter how recently it was built.
@@ -418,6 +439,7 @@ export class AttackPipeline {
       console.warn(`${MODULE_ID} | Gate/attacker | BLOCKED: ${reason}`);
       showCenterToast(reason, 2500);
       ui.notifications?.warn(`ACE QOL: ${reason}`);
+      _announceAttackCancelled(item, actor, reason);
       return false; // Block the roll
     }
 
@@ -425,8 +447,18 @@ export class AttackPipeline {
     // a thing on the sheet, and I show you the console line where the pipeline
     // read it. Without this, "did it check the aura?" is answered by me reading
     // code and guessing, which is what the whole of 24 August was.
+    // ⚠️ TWO LINES, ONE PER SUBJECT. The creature says what it is; the
+    // button says what it is. Spliced together they produced
+    // "Lich (Legacy): concentrating · reach 120 ft", which reads as though the
+    // Lich has a 120-foot reach.
+    const attack = _aceAttackProfile(item, subject);
     if (attacker) {
       console.log(`${MODULE_ID} | Gate/attacker | ${describeAttacker(attacker)}`);
+      if (attack) console.log(`${MODULE_ID} | Gate/attack   | ${describeAttack(attack)}`);
+      if (attack?.problems.length) {
+        console.warn(`${MODULE_ID} | Gate/attack | could not read everything about `
+          + `"${attack.name}": ${attack.problems.join("; ")}.`);
+      }
       if (attacker.problems.length) {
         console.warn(`${MODULE_ID} | Gate/attacker | could not read everything about `
           + `${attacker.name}: ${attacker.problems.join("; ")}. `
@@ -509,6 +541,7 @@ export class AttackPipeline {
       showCenterToast(msg, 2500);
       ui.notifications?.warn(`ACE QOL: ${msg}`);
       this._debug(`Blocked: ${actor.name} melee attack with ${targets.size} targets, no cleave/whirlwind feature`);
+      _announceAttackCancelled(item, actor, msg);
       return false; // Block the roll
     }
 
@@ -529,6 +562,7 @@ export class AttackPipeline {
         const msg = `Out of range — ${rangeCheck.distanceFt}ft away (${rangeCheck.rangeDesc})`;
         showCenterToast(msg, 2500);
         ui.notifications?.warn(`ACE QOL: ${msg}`);
+        _announceAttackCancelled(item, actor, msg);
         return false; // Block the roll
       }
     }
@@ -670,7 +704,30 @@ export class AttackPipeline {
         attackerActor: actor,
         reachFt,
       });
-      if (!token) return;   // cancelled — the attack stays cancelled
+      if (!token) {
+        // ⚠️🔴 THIS IS A GIVE-UP PATH AND IT WAS NOT ANNOUNCING ITSELF.
+        //
+        // `token` is the target the GM picked, so no token means they closed
+        // the picker. The sibling below (`_promptThenRefire`, Escape on the
+        // advantage prompt) calls _announceAttackCancelled for exactly this
+        // reason; this one never did. Forge holds a weapon's FX until
+        // `attackCommitted`, keyed by item, so a dismissed picker left a hold
+        // that nothing ever released — and that weapon stayed silent for the
+        // rest of the session.
+        //
+        // The comment on _announceAttackCancelled says "EVERY GIVE-UP PATH
+        // CALLS THIS". I wrote that sentence tonight and then missed this
+        // path in the same change. Found by reading my own diff.
+        //
+        // ⚠️ AND THE MESSAGE HERE WAS WRONG. It said "the attacker has no
+        // token on this scene", which describes a different failure entirely
+        // and would send the next person hunting the attacker instead of the
+        // picker. Closing a dialog is a CHOICE, not a fault, so it is a debug
+        // line and not a warning.
+        _announceAttackCancelled(item, actor, "the target picker was closed without picking");
+        this._debug(`target picker closed for "${item.name}" — no attack, FX hold released`);
+        return;   // cancelled — the attack stays cancelled
+      }
 
       token.setTarget(true, { user: game.user, releaseOthers: true });
 
@@ -687,7 +744,12 @@ export class AttackPipeline {
   async _promptThenRefire(config, message, actor, targetToken, item, subject) {
     try {
       const choice = await promptAttackChoice(actor, targetToken, item);
-      if (!choice) return;   // Esc — the attack stays cancelled
+      if (!choice) {
+        // Esc — the attack stays cancelled, and anything holding an animation
+        // for it has to be told, or that weapon never animates again.
+        _announceAttackCancelled(item, actor, "the advantage prompt was dismissed");
+        return;
+      }
       pendingAttackChoices.set(actor.id, choice);
       // Carry over the parts of the original roll that were already decided
       // (ammo, attack mode, weapon mastery) so the re-fire is the same attack.
@@ -712,6 +774,7 @@ export class AttackPipeline {
    * Assesses all targets and determines hit/miss/crit.
    */
   async _onAttackRoll(rolls, data) {
+    // SILENT-OK: GM-only handler; every client sees this hook
     if (!game.user.isGM) return;
 
     const subject = data?.subject;
@@ -722,10 +785,22 @@ export class AttackPipeline {
     if (!item || !actor) return;
 
     // Check if auto-check hit is enabled
-    if (!QolSettings.get("autoCheckHit")) return;
+    if (!QolSettings.get("autoCheckHit")) {
+      // ⚠️ RELEASE THE HOLD. Forge holds a weapon's FX from the moment the
+      // item is used until ACE says the attack is committed. With hit checking
+      // off, ACE never commits anything - so without this the hold is never
+      // released and that weapon never animates again, for the whole session,
+      // in a configuration that is otherwise perfectly valid.
+      gateOff("automatic hit checking", "autoCheckHit");
+      _announceAttackCancelled(item, actor, "ACE is not checking hits, so it resolves nothing");
+      return;
+    }
 
     const roll = rolls?.[0];
-    if (!roll) return;
+    if (!roll) {
+      _announceAttackCancelled(item, actor, "the roll carried no dice");
+      return;
+    }
 
     // ══ THE GATE — READ THE ATTACKER BEFORE ANYTHING IS DECIDED ═══════
     //
@@ -757,6 +832,10 @@ export class AttackPipeline {
       console.warn(`${MODULE_ID} | Gate/attacker | ${attacker.name} cannot act `
         + `(${attacker.cannotActBecause}) — nothing resolved from this roll.`);
       ui.notifications?.warn(`${attacker.name} cannot act: ${attacker.cannotActBecause}.`);
+      // ⚠️ A REFUSED ATTACK IS STILL AN ABANDONED ATTACK. The Gate stopping
+      // the swing is exactly the case Forge is waiting on - tell it, or the
+      // weapon of anyone who was ever stunned mid-swing goes quiet for good.
+      _announceAttackCancelled(item, actor, `${attacker.name} cannot act: ${attacker.cannotActBecause}`);
       return;
     }
 
@@ -773,6 +852,40 @@ export class AttackPipeline {
       console.warn(`${MODULE_ID} | Gate/attacker | could not read everything about `
         + `${attacker.name}: ${attacker.problems.join("; ")}. `
         + `Anything below that depends on those fields is running blind.`);
+    }
+
+    // ── ⚠️🔴 THE ATTACK IS COMMITTED. NOTHING CAN INTERRUPT IT NOW. ────
+    //
+    // Johnny, 2026-08-26: "I don't want the animation to play until the second
+    // button has been pushed — the portrait picker closes, the
+    // advantage/disadvantage button closes, the consume spell slot closes.
+    // THEN I want the animation to run."
+    //
+    // He also asked which actions have no second button. The answer is that
+    // enumerating them would be the wrong design: the list would be wrong the
+    // day somebody adds a prompt, and an animation that waits for a button that
+    // never comes never plays at all. So instead of a list, there is ONE signal,
+    // fired from the one place every attack reaches with every pause behind it —
+    // the roll itself. An attack with no prompt simply reaches it sooner.
+    //
+    // For the record, these reach it with NO second button, and they are
+    // documentation rather than logic:
+    //   • opportunity attacks (auto-fired the instant they trigger)
+    //   • multiattack chain swings (the chain dialog already asked)
+    //   • the re-fire after an advantage prompt (the choice is already made)
+    //   • any table with the advantage prompt switched off
+    //   • at-will cantrips on an already-selected target (no slot, no picker)
+    //   • self-targeted spells (nothing to pick)
+    //
+    // ⚠️ EMITTED BEFORE THE TARGET CHECK, DELIBERATELY. A swing at nobody is
+    // still a swing that happened, and its sound should still play.
+    try {
+      Hooks.callAll(`${MODULE_ID}.attackCommitted`, {
+        item, actor, subject,
+        targets: [...(game.user.targets ?? [])],
+      });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | attackCommitted listeners threw (non-fatal):`, err);
     }
 
     // Get targeted tokens
@@ -832,6 +945,29 @@ export class AttackPipeline {
       ? this._lastCombatStates
       : CombatState.assessAll(actor, item);
 
+    // ── ⚠️🔴 SAY HOW MANY TARGETS THIS SWING IS ABOUT TO RESOLVE ──────
+    //
+    // Johnny swung a rapier at a targeted Arcanaloth and NO CHAT CARD APPEARED.
+    // Chasing it took four dead theories, because every layer was silent: the
+    // roll happened, the Gate printed, the card builder was reached and
+    // returned instantly on an EMPTY results array, and nothing anywhere said
+    // "I had nothing to resolve".
+    //
+    // ⚠️ AN EMPTY RESOLUTION IS A FINDING, NOT A NO-OP. A swing that lands on
+    // nobody is either a bug or a fact the GM needs; either way it must never
+    // be silent. This names where the states came from, because "the pre-roll
+    // stored none" and "assessing them now found none" are different faults.
+    const _statesFrom = this._lastCombatStates?.length ? "the pre-roll assessment" : "a fresh assessment";
+    if (!combatStates.length) {
+      console.warn(`${MODULE_ID} | ${actor.name}'s "${item.name}": `
+        + `${_statesFrom} produced NO combat states, so there is nothing to resolve `
+        + `and no card will post. Targets right now: `
+        + `${[...(game.user.targets ?? [])].map(t => t.name).join(", ") || "(none)"}. `
+        + `This is a bug — a targeted swing must always resolve to something.`);
+    } else {
+      this._debug(`${combatStates.length} combat state(s) from ${_statesFrom}`);
+    }
+
     // ── Calculate cover for each target and build results ──
     const atkToken = CoverEngine.getAttackerToken(actor);
     const results = [];
@@ -853,6 +989,87 @@ export class AttackPipeline {
         }
       } catch (err) {
         console.warn(`${MODULE_ID} | Cover calculation failed (non-blocking):`, err);
+      }
+
+      // ── ⚠️🔴 THE SPACE BETWEEN THEM ───────────────────────────────────
+      //
+      // The environment profile answers the third question of THE ONE GATE:
+      // not who is swinging and not who is being hit, but what is in between.
+      // It was written on 2026-08-25 and, until now, imported by NOTHING —
+      // 358 lines of correct code that no pipeline ever asked. That is the
+      // exact failure the "a layer isn't done until its consumers are wired"
+      // rule exists to prevent, and I wrote the rule down the same night.
+      //
+      // ⚠️ IT IS BUILT PER TARGET, NOT PER ATTACK. Distance, cover, light and
+      // elevation are all properties of a PAIR. One profile per swing would
+      // be right for the first target and wrong for every other one.
+      //
+      // ⚠️ COVER IS NOT APPLIED FROM HERE. CoverEngine above is the single
+      // authority and has already adjusted effectiveAC; taking the profile's
+      // coverAcBonus as well would silently double it. The profile reads the
+      // same engine, so the two must agree — and if they ever stop agreeing,
+      // that is a real defect and the cross-check below says so rather than
+      // letting one of them quietly win.
+      let env = null;
+      try {
+        env = buildEnvironmentProfile(atkToken, cs.targetToken);
+
+        if (coverResult && env.coverAcBonus !== coverResult.acBonus) {
+          console.warn(`${MODULE_ID} | the two cover readings disagree for `
+            + `${cs.target.name}: CoverEngine says +${coverResult.acBonus} `
+            + `(${coverResult.label}), the environment profile says `
+            + `+${env.coverAcBonus} (${env.coverLevel}). CoverEngine's number `
+            + `was used. One of the two paths has drifted.`);
+        }
+
+        // ── Is the target actually within reach or range? ────────────────
+        //
+        // ⚠️ NOTHING IN ACE CHECKED THIS. Chudd cast Frostbite at a creature
+        // 60 ft away horizontally and 30 ft below him on 2026-08-26 and no
+        // part of the suite objected. Distance was measured everywhere and
+        // compared to the attack's own limit nowhere.
+        //
+        // ⚠️ IT REPORTS, IT DOES NOT REFUSE. A GM has every right to let a
+        // shot go that the rules would not, and a pipeline that silently
+        // blocks the swing would be worse than one that silently allows it.
+        // The number and the limit go on the record; the call stays his.
+        const _envAtk = _aceAttackProfile(item, subject);
+        const _isRanged = _envAtk?.attackKind === "rwak" || _envAtk?.attackKind === "rsak"
+          || (_envAtk?.rangeLong > 0);
+        const _limit = _isRanged
+          ? (_envAtk?.rangeLong || _envAtk?.rangeNormal || 0)
+          : (_envAtk?.reachFt || 0);
+        if (_limit > 0 && Number.isFinite(env.distanceFt)) {
+          env.withinLimitFt = _limit;
+          env.withinLimit = env.distanceFt <= _limit;
+          if (!env.withinLimit) {
+            console.warn(`${MODULE_ID} | ${cs.target.name} is ${env.distanceFt} `
+              + `${env.gridUnits} away but ${item.name} reaches ${_limit} `
+              + `${env.gridUnits}`
+              + (env.elevationDeltaFt
+                  ? ` (including ${Math.abs(env.elevationDeltaFt)} ${env.gridUnits} of elevation)`
+                  : "")
+              + `. The swing was allowed — this is a note, not a block.`);
+          }
+        }
+
+        // Obscurement and blocked sight are the other two things that change
+        // a roll and were never surfaced anywhere.
+        if (env.heavilyObscuredAtTarget || env.sightBlocked === true) {
+          this._debug(`ENVIRONMENT: ${cs.target.name} is `
+            + `${env.sightBlocked === true ? "out of line of sight" : "heavily obscured"} `
+            + `(light at target: ${env.lightAtTarget}, ${env.lightAtTargetBasis})`);
+        }
+        if (env.problems?.length) {
+          this._debug(`ENVIRONMENT: could not read everything about the space to `
+            + `${cs.target.name}: ${env.problems.join("; ")}`);
+        }
+      } catch (err) {
+        // ⚠️ NEVER LOSE THE SWING OVER A MEASUREMENT. The attack is real and
+        // the dice are rolled; a profile that throws must not delete a result.
+        console.error(`${MODULE_ID} | the environment profile failed for `
+          + `${cs.target?.name ?? "a target"} — the attack resolves without it:`, err);
+        env = null;
       }
 
       // ── CUTTING WORDS — Lore Bard reaction to reduce attack roll ──
@@ -980,6 +1197,9 @@ export class AttackPipeline {
         ac: cs.target.ac,
         effectiveAC,
         coverResult,
+        // The space between attacker and target, as measured for THIS pair.
+        // Null only if the measurement itself threw, which is logged above.
+        environment: env,
         hitResult,
         attackTotal: adjustedAttackTotal,
         originalAttackTotal: attackTotal,
@@ -1001,10 +1221,44 @@ export class AttackPipeline {
     if (reactionEng) {
       try {
         const modifiedResults = await reactionEng.checkPostHitReactions(results, item, actor);
-        // Replace results in-place if modified (Shield may flip hit→miss)
-        if (modifiedResults) {
+
+        // ── ⚠️🔴 THIS DELETED EVERY ATTACK CARD IN THE GAME ─────────────
+        //
+        // `checkPostHitReactions` returns THE SAME ARRAY on its early-return
+        // paths — `if (!enableReactions) return results;`. So `modifiedResults`
+        // and `results` were one object, and this:
+        //
+        //     results.length = 0;              // empties BOTH — same reference
+        //     results.push(...modifiedResults) // spreads what was just emptied
+        //
+        // wiped the results and put back nothing. An empty array is truthy, so
+        // the guard let it through. One line later the card builder received
+        // zero results and returned instantly, and no card appeared — ever,
+        // for any creature, on any weapon.
+        //
+        // Johnny had `enableReactions` OFF, which is the exact path that
+        // returns the original array. It ended a live session on 2026-08-24
+        // and cost most of a night to find, because every layer was silent:
+        // the roll happened, the Gate printed, the loop ran, the builder was
+        // reached. Only the results had been deleted in between.
+        //
+        // ⚠️ NEVER MUTATE AN ARRAY YOU MIGHT HAVE HANDED OUT. The fix is to
+        // treat the return as a value, not as permission to destroy the input:
+        // if it is the same object there is nothing to do, and if it is a
+        // different one it replaces the contents wholesale.
+        if (Array.isArray(modifiedResults) && modifiedResults !== results) {
           results.length = 0;
           results.push(...modifiedResults);
+        }
+
+        // ⚠️ AND SAY SO IF A REACTION EVER EMPTIES A SWING. Shield can flip a
+        // hit to a miss; it can never make a targeted attack resolve to
+        // nothing. If that happens again it is a bug, and it announces itself
+        // rather than quietly costing another evening.
+        if (!results.length) {
+          console.error(`${MODULE_ID} | post-hit reactions left "${item.name}" with NO results `
+            + `where there were some before. That should be impossible — a reaction may change `
+            + `an outcome, never delete it.`);
         }
       } catch (err) {
         console.error(`${MODULE_ID} | Post-hit reaction check failed:`, err);
@@ -1047,7 +1301,51 @@ export class AttackPipeline {
     this._debug(`Attack: ${item.name} (${attackTotal}) → ${hits.length} hits, ${misses.length} misses`);
 
     // ── Post attack results to chat ──
+    // ── ⚠️🔴 A SWING MUST NEVER VANISH ────────────────────────────
+    //
+    // Johnny swung a rapier, a scimitar and a Spiked Chain on 2026-08-26 and
+    // NO CHAT CARD APPEARED for any of them. The animation played, the Gate
+    // printed both its lines, the multiattack chain resolved — and the card,
+    // which is the only part he can actually see, was simply gone. Nothing in
+    // the console said why, because a throw in here propagates into an awaited
+    // call nobody catches and the swing evaporates.
+    //
+    // ⚠️ THIS IS THE SAME LESSON AS THE HALF-REGISTERED MODULE (08-09): a
+    // broken thing must never look like a working one. If the card builder
+    // fails, the GM is told, the console names the throw, and a plain fallback
+    // card still posts with the roll on it — because a d20 that landed and
+    // resolved is a fact about the game, and losing it silently is worse than
+    // any formatting problem.
+    try {
+      // ⚠️ AND SAY IT AGAIN IF THE LOOP ITSELF DROPPED THEM. States in,
+    // nothing out, is a different fault from having no states at all.
+    if (combatStates.length && !results.length) {
+      console.error(`${MODULE_ID} | ${actor.name}'s "${item.name}": `
+        + `${combatStates.length} combat state(s) went into the resolution loop and `
+        + `ZERO results came out. The card cannot build. This should be impossible.`);
+    }
+
     await this._postAttackResults(item, actor, results, { isMelee, isSpell, roll, subject });
+    } catch (err) {
+      console.error(`${MODULE_ID} | THE ATTACK CARD FAILED TO BUILD for "${item?.name}". `
+        + `The roll happened; only the card is missing. This is the bug:`, err);
+      ui.notifications?.error(
+        `ACE could not build the attack card for ${item?.name}. The console names the cause.`);
+      // A bare card beats no card. It carries the totals ACE already resolved,
+      // so the table can keep playing while this gets fixed.
+      try {
+        const rows = results.map(r =>
+          `${r.name ?? "target"}: ${r.attackTotal ?? "?"} vs AC ${r.effectiveAC ?? r.ac ?? "?"}`
+          + ` — ${String(r.hitResult ?? "?").toUpperCase()}`).join("<br>");
+        await ChatMessage.create({
+          speaker: ChatMessage.getSpeaker({ actor }),
+          content: `<div><strong>${item?.name ?? "Attack"}</strong> `
+            + `<em>(ACE fell back to a plain card — see the console)</em><br>${rows}</div>`,
+        });
+      } catch (fallbackErr) {
+        console.error(`${MODULE_ID} | even the fallback card failed:`, fallbackErr);
+      }
+    }
 
     // ── RAW: Attack ends Invisibility spell (NOT Greater Invisibility) ──
     // Fires AFTER the attack results post so the order in chat reads:
@@ -1132,19 +1430,46 @@ export class AttackPipeline {
     // Attacker numbers from the profile. This exact pair was duplicated at two
     // sites, both reading raw actor data — one reader now serves both.
     const _atk = _aceAttackerProfile(actor, item, opts.subject);
-    // (no ability MAP on the profile by design — ask it per ability)
-    const profBonus = _aceRealProfBonus(actor, item, _atk?.prof ?? 0);
     const activity = opts.subject; // AttackActivity from dnd5e.rollAttackV2 hook
 
-    // activity.ability resolves: explicit override → spellcasting → availableAbilities
-    // (Battle Smith INT, finesse highest of STR/DEX, spell CHA/INT/WIS, ranged DEX, melee STR)
-    let resolvedAbility = activity?.ability
-      || item.system?.attack?.ability || item.system?.ability || "";
-    // dnd5e v5: ability can be a Set — unwrap it
-    if (resolvedAbility instanceof Set || resolvedAbility instanceof Array) resolvedAbility = [...resolvedAbility][0] ?? "";
-    if (typeof resolvedAbility !== "string") resolvedAbility = String(resolvedAbility || "");
+    // ══ ⚠️🔴 THE RESOLVER DECIDES; THIS CODE USED TO ═══════════════════
+    //
+    // Which ability, and whether proficiency applies, were worked out HERE, in
+    // two places, from raw item and actor data. Neither the attacker nor the
+    // attack can answer those alone — the rapier knows it is finesse and not
+    // whose hand it is in; the fighter knows STR +2 and DEX +4 and not that the
+    // weapon wants the better one. That pairing now has one home.
+    //
+    // Johnny, 2026-08-25: "That puts the dexterity behind the rapier attack."
+    //
+    // ⚠️ THE ANSWER IS UNCHANGED, THE REASON IS NEW. The resolver defers to
+    // dnd5e's own computed ability wherever the system has one — it already
+    // handles finesse, Battle Smith and Hexblade correctly — and supplies the
+    // explanation. Where the two would disagree it says so instead of picking
+    // silently. See tools/resolver-check.mjs.
+    const _atkProf = _aceAttackProfile(item, activity);
+    const _plan = resolveAttack({ attacker: _atk, attack: _atkProf });
+
+    const profBonus = _plan.proficiencyApplies
+      ? _plan.proficiencyBonus
+      : 0;
+    let resolvedAbility = _plan.ability ?? "";
     let abilityLabel = resolvedAbility.toUpperCase() || "";
-    let abilityMod = resolvedAbility ? (_atk?.abilityMod(resolvedAbility) ?? 0) : 0;
+    let abilityMod = Number(_plan.abilityMod) || 0;
+
+    if (_plan.abilityBecause) {
+      console.debug(`${MODULE_ID} | Resolver | ${item.name}: ${abilityLabel} `
+        + `${abilityMod >= 0 ? "+" : ""}${abilityMod} — ${_plan.abilityBecause}`
+        + (profBonus ? ` · proficiency +${profBonus} (${_plan.proficiencyBecause})` : "")
+        + (_plan.proficiencyApplies ? "" : ` · NO proficiency: ${_plan.proficiencyBecause}`));
+    }
+    // ⚠️ A DISAGREEMENT IS NEVER BURIED. If ACE's own reasoning would have
+    // picked a different ability than dnd5e did, that is either an odd item or
+    // one of the two being wrong, and both deserve a look.
+    if (_plan.abilityDisagreement) {
+      console.warn(`${MODULE_ID} | Resolver | ${item.name}: dnd5e chose ${abilityLabel}, `
+        + `but ${_plan.abilityDisagreement}`);
+    }
 
     // Fallback only if activity wasn't available (e.g., old dnd5e version)
     if (!abilityLabel) {
@@ -1169,16 +1494,13 @@ export class AttackPipeline {
       }
     }
 
-    // Resolver-aware label: when the ability resolver swapped this swing to CHA
-    // (Pact of the Blade / Hex Warrior), show the REAL ability + value — otherwise
-    // the breakdown splits it into a stale "+1 STR" plus a phantom "+4 BONUS".
-    try {
-      const ov = AttackAbilityResolver.getOverride(actor, item);
-      if (ov && Number(ov.mod) > Number(abilityMod)) {
-        abilityLabel = String(ov.ability).toUpperCase();
-        abilityMod = Number(ov.mod);
-      }
-    } catch (_) { /* renderer never breaks on resolver issues */ }
+    // ⚠️🔴 THE PACT-WEAPON SWAP LIVES IN THE RESOLVER NOW.
+    // This corrected the ability AFTER it had been derived, in two places, so
+    // the stated reason said "a melee weapon attack, STR" while the roll
+    // actually used Charisma. `resolveAbility` asks
+    // `AttackAbilityResolver.getOverride` itself, so the number and the reason
+    // now come out of one decision instead of two that could disagree.
+
 
     // Build the display formula
     const bd20Path = `modules/ace-qol/Assets/Dice%20Dice/BD20/BD20-${d20}_nobg.png`;
@@ -1406,17 +1728,20 @@ export class AttackPipeline {
     const parts = [];
 
     // Same profile-sourced numbers as the first site above.
+    // ⚠️ THE SAME PLAN, ASKED THE SAME WAY. This site and the one above were
+    // two hand-written copies of the same derivation; that is how they drift.
+    // Both call the resolver now.
     const _atk2 = _aceAttackerProfile(actor, item, opts.subject);
-    // (no ability MAP on the profile by design — ask it per ability)
-    const profBonus = _aceRealProfBonus(actor, item, _atk2?.prof ?? 0);
     const activity = opts.subject;
+    const _plan2 = resolveAttack({
+      attacker: _atk2,
+      attack: _aceAttackProfile(item, activity),
+    });
 
-    let resolvedAbility2 = activity?.ability
-      || item.system?.attack?.ability || item.system?.ability || "";
-    if (resolvedAbility2 instanceof Set || resolvedAbility2 instanceof Array) resolvedAbility2 = [...resolvedAbility2][0] ?? "";
-    if (typeof resolvedAbility2 !== "string") resolvedAbility2 = String(resolvedAbility2 || "");
+    const profBonus = _plan2.proficiencyApplies ? _plan2.proficiencyBonus : 0;
+    let resolvedAbility2 = _plan2.ability ?? "";
     let abilityLabel = resolvedAbility2.toUpperCase() || "";
-    let abilityMod = resolvedAbility2 ? (_atk2?.abilityMod(resolvedAbility2) ?? 0) : 0;
+    let abilityMod = Number(_plan2.abilityMod) || 0;
 
     if (!abilityLabel) {
       const actionType = activity?.actionType ?? item.system?.actionType ?? "mwak";
@@ -1439,16 +1764,13 @@ export class AttackPipeline {
       }
     }
 
-    // Resolver-aware label — same fix as _postAttackResults: show the swapped
-    // ability (CHA via Pact of the Blade / Hex Warrior) instead of a stale
-    // "+1 STR" chip plus a phantom "+4 BONUS" remainder.
-    try {
-      const ov = AttackAbilityResolver.getOverride(actor, item);
-      if (ov && Number(ov.mod) > Number(abilityMod)) {
-        abilityLabel = String(ov.ability).toUpperCase();
-        abilityMod = Number(ov.mod);
-      }
-    } catch (_) { /* renderer never breaks on resolver issues */ }
+    // ⚠️🔴 THE PACT-WEAPON SWAP LIVES IN THE RESOLVER NOW.
+    // This corrected the ability AFTER it had been derived, in two places, so
+    // the stated reason said "a melee weapon attack, STR" while the roll
+    // actually used Charisma. `resolveAbility` asks
+    // `AttackAbilityResolver.getOverride` itself, so the number and the reason
+    // now come out of one decision instead of two that could disagree.
+
 
     const bd20Path = `modules/ace-qol/Assets/Dice%20Dice/BD20/BD20-${d20}_nobg.png`;
     parts.push(
@@ -1765,7 +2087,12 @@ export class AttackPipeline {
     distanceFt = Math.round(distanceFt);
 
     const sys = item.system ?? {};
-    const act = profile?.action ?? null;
+
+    // ⚠️🔴 THE ATTACK IS ITS OWN PROFILE NOW. This used to read
+    // `profile.action` — 32 fields about a rapier that were living inside the
+    // creature. Johnny, 2026-08-25: "There are two separate things here: the
+    // attack and the attacker." Same numbers, asked of the right object.
+    const act = _aceAttackProfile(item, activity);
 
     // dnd5e 5.x moved actionType + range onto the ACTIVITY. Reading only the
     // item here is why monster natural attacks (Ram/Bite/Claw — weapon type

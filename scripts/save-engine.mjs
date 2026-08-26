@@ -38,6 +38,12 @@ import { ConditionLibrary } from "./condition-library.mjs";
 import { awaitDsnRoll } from "./attack-prompt.mjs";
 import { PolymorphSpellPipeline } from "./polymorph-spell-pipeline.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
+// Shared "why didn't that happen" reporters. why-not.mjs is a leaf that
+// imports nothing, so it cannot join the static import cycles ace-qol.mjs
+// sits at the centre of.
+import { gateOff, cannotDo, rejectedReply } from "./why-not.mjs";
+// Wait for the condition, not for the clock. See wait-for.mjs.
+import { waitUntil } from "./wait-for.mjs";
 
 // Real black d20 die art (per-face). These are the dice the GM already sees;
 // we use them everywhere a save result or prompt appears instead of the flat
@@ -158,6 +164,7 @@ export class SaveEngine {
     // the standard hook already handled this cast this is a no-op.
     Hooks.on("dnd5e.postUseActivity", (activity) => {
       try {
+        // SILENT-OK: not the active GM; this hook fires on every client and only one may act
         if (game.users?.activeGM !== game.user) return;
         if (activity?.type !== "save" && !activity?.save?.ability) return;
         const key = activity?.uuid;
@@ -191,6 +198,7 @@ export class SaveEngine {
     Hooks.on("createChatMessage", async (message) => {
       try {
         const _fbDetectMs = performance.now();   // [picker-timing] slow path — stamped before the ~250ms of built-in waits below
+        // SILENT-OK: not the active GM; this hook fires on every client and only one may act
         if (game.users?.activeGM !== game.user) return;
         const dnd5eFlag = message.flags?.dnd5e;
         const activityFlag = dnd5eFlag?.activity;
@@ -235,17 +243,27 @@ export class SaveEngine {
         // 200ms PC-save merge timeout, target sets), and the visible
         // symptom is first-cast-after-reload producing no save card.
         //
-        // We wait 200ms. If `dnd5e.postCreateUsageMessage` fires in that
-        // window, the standard handler's `_onUseActivity` will have set
-        // the dedup synchronously at the top of the function — we re-check
-        // and bail. The fallback only engages when the standard path
-        // genuinely did not run (the case it was built for).
-        await new Promise(r => setTimeout(r, 200));
-
-        // Re-check after the yield, same time-aware rule: only a FRESH stamp (the
-        // standard hook having fired during our 200ms wait) should make us bail.
-        const _prevTs2 = this._processedActivityIds.get(dedupKey);
-        if (_prevTs2 != null && (Date.now() - _prevTs2) < 5000) return;
+        // ⚠️🔴 WATCH FOR THE STAMP, DO NOT SLEEP THROUGH THE WINDOW.
+        //
+        // This used to sleep a flat 200ms and then look ONCE. That is the
+        // worst of both worlds: every cast paid the full 200ms even when the
+        // standard hook had already fired 2ms in, AND a table busy enough to
+        // push the hook past 200ms still got the double-handling this guard
+        // exists to prevent. The number was chosen on an idle machine; his
+        // runs four players, Dice So Nice and a loaded scene.
+        //
+        // Now it watches for the stamp and stops the instant it appears —
+        // usually within one 20ms step. Because waiting longer costs nothing
+        // once the condition is being checked continuously, the deadline is
+        // 600ms rather than 200, which survives a far busier moment.
+        const _standardHookRan = () => {
+          const ts = this._processedActivityIds.get(dedupKey);
+          return ts != null && (Date.now() - ts) < 5000;
+        };
+        if (await waitUntil(_standardHookRan, {
+          maxMs: 600, stepMs: 20, quiet: true,
+          what: "dnd5e's own postCreateUsageMessage handler",
+        })) return;   // the standard path ran; this fallback must not run too
 
         // Resolve the live activity. UUID path is the primary route in
         // modern dnd5e; the actor/item-id fallback handles older flag
@@ -383,6 +401,7 @@ export class SaveEngine {
 
     // ── Seed the PREVIEW at the caster (cosmetic — the clamp above is the law) ──
     Hooks.on("dnd5e.createActivityTemplate", (activity, templates) => {
+      // SILENT-OK: GM-only handler; every client sees this hook
       if (!game.user.isGM) return;
       const casterActor = activity?.actor ?? this._pendingSaveSpell?.actor;
       if (!casterActor) return;
@@ -410,6 +429,7 @@ export class SaveEngine {
     // activeGM guard: only the primary GM processes the template, preventing
     // duplicate save cards when two GMs are connected simultaneously.
     Hooks.on("createMeasuredTemplate", (templateDoc, context, userId) => {
+      // SILENT-OK: not the active GM; this hook fires on every client and only one may act
       if (game.users?.activeGM !== game.user) return;
       // Small delay to let the PIXI shape render
       setTimeout(async () => {
@@ -587,12 +607,16 @@ export class SaveEngine {
    * @returns {Promise<boolean>} true once the shape is available
    */
   static async _awaitTemplateShape(templateDoc, maxMs = 600) {
-    const step = 25;
-    for (let waited = 0; waited <= maxMs; waited += step) {
-      if (templateDoc?.object?.shape) return true;
-      await new Promise(r => setTimeout(r, step));
-    }
-    return !!templateDoc?.object?.shape;
+    // ⚠️ THIS LOOP WAS RIGHT ALL ALONG, and it is now the shared one. It was
+    // written here first, correctly: ask for the real condition, stop the
+    // moment it holds, give up at a deadline. When the same shape was needed
+    // for the two hook races on 2026-08-26 the honest move was to lift it out
+    // rather than write a third copy - "built beside instead of on" is a
+    // mistake this codebase has already paid for.
+    return waitUntil(() => !!templateDoc?.object?.shape, {
+      maxMs, stepMs: 25,
+      what: `the measured template ${templateDoc?.id ?? ""} to gain its shape`.trim(),
+    });
   }
 
   static _getTokensInTemplate(templateDoc) {
@@ -692,6 +716,7 @@ export class SaveEngine {
   // ═══════════════════════════════════════════════════════════════════════════
 
   async _onUseActivity(activity, usageConfig, dialogConfig, messageConfig) {
+    // SILENT-OK: not the active GM; this hook fires on every client and only one may act
     if (game.users?.activeGM !== game.user) return;
 
     const item = activity.item;
@@ -1273,6 +1298,7 @@ export class SaveEngine {
     try {
       if (!casterActor) return null;
       // Unlinked synthetic — its own token, no ambiguity possible.
+      // SILENT-OK: a success return: the unlinked token IS the answer, not a bail
       if (casterActor.token) return casterActor.token;
 
       const docs = casterActor.getActiveTokens?.(false, true) ?? [];
@@ -1353,6 +1379,7 @@ export class SaveEngine {
       // is not.
       const OWNER = CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER;
       return game.users?.some(u => {
+        // SILENT-OK: a predicate inside some(); returning false, not exiting
         if (!u.active || u.isGM) return false;
         if (u.character?.id === a.id) return true;              // it is their character
         const explicit = a.ownership?.[u.id];                   // NOT `default`
@@ -1390,9 +1417,15 @@ export class SaveEngine {
   /** Called on the GM when the caster's client replies with its target choice. */
   resolveSpellPickerChoice(requestId, tokenIds, payload = null) {
     const pending = this._pickerRequests.get(requestId);
-    if (!pending) return;
+    if (!pending) {
+      cannotDo("a spell target choice", "no picker was waiting for it - it arrived late, or twice");
+      return;
+    }
     // Only the caster we asked may say where their own spell lands.
-    if (payload && !replyIsFromTheUserWeAsked(pending.askedUserId, payload, "spellPickerChoice")) return;
+    if (payload && !replyIsFromTheUserWeAsked(pending.askedUserId, payload, "spellPickerChoice")) {
+      rejectedReply("the spell target picker", pending.askedUserId, payload);
+      return;
+    }
     this._pickerRequests.delete(requestId);
     pending.resolve(tokenIds);
   }
@@ -1409,6 +1442,7 @@ export class SaveEngine {
   _releaseUserTargets() {
     try {
       const targets = [...(game.user?.targets ?? [])];
+      // SILENT-OK: nothing is targeted; releasing none is a no-op, not a failure
       if (!targets.length) return;
       // V13-correct: User#updateTokenTargets was removed, so toggle each
       // token off (snapshot first — setTarget(false) mutates the set during
@@ -2575,7 +2609,10 @@ export class SaveEngine {
           if (!scene) return;
           const tokenDoc = scene.tokens.get(tokenId);
           const token = tokenDoc?.object;
-          if (!token) return;
+          if (!token) {
+            cannotDo("panning to that creature", "its token is not on this scene");
+            return;
+          }
           token.control({ releaseOthers: true });
           canvas.animatePan({ x: token.center.x, y: token.center.y, duration: 250 });
         });
@@ -2913,7 +2950,10 @@ export class SaveEngine {
           if (!scene) return;
           const tokenDoc = scene.tokens.get(tokenDocId);
           const token = tokenDoc?.object;
-          if (!token) return;
+          if (!token) {
+            cannotDo("panning to that creature", "its token is not on this scene");
+            return;
+          }
           token.control({ releaseOthers: true });
           canvas.animatePan({ x: token.center.x, y: token.center.y, duration: 250 });
         };
@@ -2961,6 +3001,7 @@ export class SaveEngine {
     // anywhere) but fail silently on the message.update — leaving them with
     // a desynced view from the GM. Discovered during the .update() audit
     // sweep (Gemini P1-3).
+    // SILENT-OK: GM-only handler; every client sees this hook
     if (!game.user.isGM) return;
     const phase1RemoveBtns = el.querySelectorAll?.("[data-action='aceQolRemovePhase1']");
     if (phase1RemoveBtns?.length) {
@@ -3021,7 +3062,10 @@ export class SaveEngine {
           if (!scene) return;
           const tokenDoc = scene.tokens.get(tokenDocId);
           const token = tokenDoc?.object;
-          if (!token) return;
+          if (!token) {
+            cannotDo("panning to that creature", "its token is not on this scene");
+            return;
+          }
           // Select the token
           token.control({ releaseOthers: true });
           // Pan camera to it
@@ -3222,6 +3266,7 @@ export class SaveEngine {
 
   static _mergePendingPcResults(results, castId, halfOnSave = false) {
     if (!castId || !Array.isArray(results)) return 0;
+    // SILENT-OK: nothing is pending; a no-op, and the line already says so
     if (!results.some(r => r?.pending)) return 0;   // nothing to heal
 
     const byToken = new Map();
@@ -3655,7 +3700,7 @@ export class SaveEngine {
       return { reason: "dead", label: "DEAD — no save", tone: "dead" };
     }
 
-    // 3. CAN THE ACTION DO ANYTHING? Immunity to every outcome, checked BEFORE
+    // 2. CAN THE ACTION DO ANYTHING? Immunity to every outcome, checked BEFORE
     //    the die rather than after it. Only decisive when nothing else is left
     //    to resolve: if the action also deals damage the save still matters
     //    (half on a success), so it rolls and the card notes the immunity.
@@ -6329,7 +6374,10 @@ export class SaveEngine {
   async _deleteInstantTemplate(flags) {
     try {
       if (!flags) return;
-      if (game.settings.get(MODULE_ID, "autoDeleteInstantTemplates") === false) return;
+      if (game.settings.get(MODULE_ID, "autoDeleteInstantTemplates") === false) {
+        gateOff("instant-template cleanup", "autoDeleteInstantTemplates");
+        return;
+      }
       if (flags.timingType !== TIMING.INSTANT) return;
       const sceneId = flags.templateSceneId;
       const tmplId  = flags.templateDocId;
@@ -6383,7 +6431,9 @@ export class SaveEngine {
 
     // ── Sort: highest save roll first, pending PCs at bottom ──
     const sorted = [...results].sort((a, b) => {
+      // SILENT-OK: a sort comparator returning an order, not an exit
       if (a.pending && !b.pending) return 1;
+      // SILENT-OK: a sort comparator returning an order, not an exit
       if (!a.pending && b.pending) return -1;
       return (b.saveTotal ?? -999) - (a.saveTotal ?? -999);
     });

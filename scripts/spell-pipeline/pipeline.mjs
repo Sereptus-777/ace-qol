@@ -31,6 +31,7 @@ import { BuffResolver } from "./resolvers/buff.mjs";
 import { TemplateResolver } from "./resolvers/template.mjs";
 import { SelfResolver } from "./resolvers/self.mjs";
 import { Situation } from "../situation.mjs";
+import { buildAttackerProfile } from "../profiles/attacker-profile.mjs";
 
 // ─── Creature snapshot access (2026-07-28) ───────────────────────────────────
 // Facts about a creature come from the ONE reader, never from actor.system —
@@ -164,6 +165,40 @@ export class SpellPipeline {
         if (!item) return;
         if (SpellPipeline.ownsAttackRoll(item)) {
           console.log(`${MODULE_ID} | pipeline owns "${item.name}" (attack-multi) — native attack roll suppressed`);
+          return false;
+        }
+      } catch (_) { /* never block foreign rolls on an error here */ }
+    });
+
+    // ── ⚠️🔴 THE MYSTERY d4 ────────────────────────────────────────
+    //
+    // Johnny cast Magic Missile and a four-sided die dropped on the canvas,
+    // meaning nothing, attached to nothing (2026-08-25, and again on 08-26 with
+    // a screenshot). It is dnd5e rolling the "Damage" activity's OWN damage:
+    //
+    //     DamageActivity.rollDamage (mixin.mjs:925)
+    //
+    // ACE picks a real casting activity to get the cast moving, and if that
+    // activity happens to be the damage one, dnd5e dutifully rolls 1d4+1 for a
+    // single dart while the pipeline is separately rolling all four properly.
+    // The stray die is that roll, orphaned.
+    //
+    // ⚠️ SAFE BECAUSE EVERY SHAPE ROLLS ITS OWN. Checked all thirteen shapes
+    // in the registry: distribute, attack-multi, save-single, save-area, touch,
+    // chained, template-save, multi-heal and the rest all route to an ACE
+    // resolver that does its own dice. The pipeline has never once depended on
+    // dnd5e's native damage roll for a spell it owns, so refusing it here
+    // cannot leave a cast with no damage.
+    //
+    // ⚠️ AND IT SAYS SO. A suppressed roll that logs nothing is
+    // indistinguishable from a broken one.
+    Hooks.on("dnd5e.preRollDamageV2", (config) => {
+      try {
+        const item = config?.subject?.item;
+        if (!item) return;
+        if (SpellPipeline.owns(item)) {
+          console.log(`${MODULE_ID} | pipeline owns "${item.name}" — native damage roll suppressed `
+            + `(ACE rolls this itself; the loose die was dnd5e rolling one unit on its own)`);
           return false;
         }
       } catch (_) { /* never block foreign rolls on an error here */ }
@@ -553,8 +588,20 @@ export class SpellPipeline {
 
     const { entry, item, actor, castLevel } = ctx;
     const isSingle  = pickerType === "single" || pickerType === "single-adjacent";
-    const charLevel = _aceCreature(actor)?.level
-      ?? 1;
+  // ⚠️🔴 READ THE CASTER'S LEVEL PROPERLY, NOT `?? 1`.
+  // Every level field is empty on an imported Lich, so this used to read 0,
+  // default to 1, and fire ONE beam of Eldritch Blast from a CR 21 spellcaster.
+  // The attacker profile climbs a ladder - class levels, declared caster level,
+  // the highest spell slot it owns read backwards through RAW's table, then CR -
+  // and says which rung answered. See tools/caster-level-check.mjs.
+  const _atkProfile = buildAttackerProfile(actor, { item, activity: null });
+  const charLevel = _atkProfile?.casterLevel
+    || _aceCreature(actor)?.level
+    || 1;
+  if (_atkProfile?.casterLevel) {
+    console.log(`${MODULE_ID} | ${actor.name}: caster level ${_atkProfile.casterLevel} `
+      + `(from ${_atkProfile.casterLevelSource})`);
+  }
     const N         = isSingle ? 1 : (entry.countResolver?.(castLevel, charLevel) ?? 1);
     // v0.7.74 AUDIT FIX — was hardcoding rangeFt to 5 for single-adjacent
     // pickers regardless of entry.range. That silently capped Healing Word

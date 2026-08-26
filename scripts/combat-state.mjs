@@ -15,6 +15,10 @@ import { Situation } from "./situation.mjs";
 import { RulesBrain } from "./rules/rules-brain.mjs";
 import { aceDistanceFt } from "./geometry-utils.mjs";
 import { hasTurns } from "./action-economy.mjs";
+// Shared "why didn't that happen" reporters. why-not.mjs is a leaf that
+// imports nothing, so it cannot join the static import cycles ace-qol.mjs
+// sits at the centre of.
+import { gateOff, cannotDo } from "./why-not.mjs";
 
 // ─── Creature snapshot access (2026-07-28) ───────────────────────────────────
 // combat-state sits BELOW the profile layer — attacker-profile imports this
@@ -1663,7 +1667,10 @@ export class CombatState {
    * @returns {string|null} Name of the flanking ally if found, else null.
    */
   static _isFlanking(attackerActor, targetToken) {
-    if (!canvas.tokens?.placeables) return null;
+    if (!canvas.tokens?.placeables) {
+      cannotDo("the flanking check", "the canvas has no tokens yet");
+      return null;
+    }
 
     const atkToken = attackerActor.getActiveTokens?.()?.[0];
     if (!atkToken) return null;
@@ -1879,7 +1886,10 @@ export class CombatState {
 
   /** Check if a hostile creature is within range of the attacker */
   static _isHostileNearAttacker(attackerActor, targetToken, rangeFt = 5) {
-    if (!canvas.tokens?.placeables) return false;
+    if (!canvas.tokens?.placeables) {
+      cannotDo("the hostile-nearby check", "the canvas has no tokens yet");
+      return false;
+    }
     const atkToken = attackerActor.getActiveTokens?.()?.[0];
     if (!atkToken) return false;
 
@@ -1902,7 +1912,10 @@ export class CombatState {
 
   /** Check if an ally is near a target */
   static _isAllyNearTarget(attacker, targetToken, rangeFt = 5) {
-    if (!canvas.tokens?.placeables) return false;
+    if (!canvas.tokens?.placeables) {
+      cannotDo("this positional check", "the canvas has no tokens yet");
+      return false;
+    }
     const atkDisposition = attacker.prototypeToken?.disposition ?? attacker.token?.disposition ?? 1;
 
     // v0.4.22.8: Match the blocking-status set already used by `_isFlanking`.
@@ -1943,7 +1956,10 @@ export class CombatState {
    * within 5ft who can see you AND isn't incapacitated triggers it.
    */
   static _hasHostileWithinReach(attacker, rangeFt = 5) {
-    if (!canvas.tokens?.placeables) return false;
+    if (!canvas.tokens?.placeables) {
+      cannotDo("this positional check", "the canvas has no tokens yet");
+      return false;
+    }
     const atkDisposition = attacker.prototypeToken?.disposition ?? attacker.token?.disposition ?? 1;
     // Find the attacker's token on canvas
     const atkToken = attacker.getActiveTokens?.()?.[0]
@@ -1984,7 +2000,10 @@ export class CombatState {
    *  OWN aura, since RAW PHB: "you OR a friendly creature within 10 feet"
    *  — the paladin's own aura applies to their own saves). */
   static _getAuraOfProtectionBonus(targetToken) {
-    if (!canvas.tokens?.placeables) return 0;
+    if (!canvas.tokens?.placeables) {
+      cannotDo("this positional check", "the canvas has no tokens yet");
+      return 0;
+    }
     let bestBonus = 0;
 
     for (const token of canvas.tokens.placeables) {
@@ -2200,7 +2219,10 @@ export class CombatState {
 
     // Setting kill switch
     try {
-      if (game.settings.get(MODULE_ID, "radiantSoulRiderEnabled") === false) return 0;
+      if (game.settings.get(MODULE_ID, "radiantSoulRiderEnabled") === false) {
+        gateOff("Radiant Soul", "radiantSoulRiderEnabled");
+        return 0;
+      }
     } catch (_) { /* setting not registered yet — proceed */ }
 
     // Type gate — RAW: fire OR radiant only
@@ -2214,6 +2236,7 @@ export class CombatState {
     // Once-per-turn check
     try {
       // ⚠️ Once per turn needs a turn — see the note on Sneak Attack above.
+      // SILENT-OK: already used this turn; a once-per-turn no-op, not a failure
       if (hasTurns(actor) && actor.getFlag?.(MODULE_ID, "radiantSoul.usedThisTurn")) return 0;
     } catch (_) { /* flag access failed — treat as unused */ }
 
@@ -2265,7 +2288,10 @@ export class CombatState {
   static getEmpoweredEvocationBonus(actor) {
     if (!actor) return 0;
     try {
-      if (game.settings.get(MODULE_ID, "empoweredEvocationEnabled") === false) return 0;
+      if (game.settings.get(MODULE_ID, "empoweredEvocationEnabled") === false) {
+        gateOff("Empowered Evocation", "empoweredEvocationEnabled");
+        return 0;
+      }
     } catch (_) { /* setting not registered yet — proceed */ }
     if (!CombatState._hasFeature(actor, "Empowered Evocation")) return 0;
     const intMod = _aceMod(actor, "int");
@@ -2285,7 +2311,10 @@ export class CombatState {
   static getAgonizingBlastBonus(actor) {
     if (!actor) return 0;
     try {
-      if (game.settings.get(MODULE_ID, "agonizingBlastEnabled") === false) return 0;
+      if (game.settings.get(MODULE_ID, "agonizingBlastEnabled") === false) {
+        gateOff("Agonizing Blast", "agonizingBlastEnabled");
+        return 0;
+      }
     } catch (_) { /* setting not registered yet — proceed */ }
     if (!CombatState._hasFeature(actor, "Agonizing Blast")) return 0;
     const chaMod = _aceMod(actor, "cha");
@@ -2311,7 +2340,10 @@ export class CombatState {
   static getPotentSpellcastingBonus(actor) {
     if (!actor) return 0;
     try {
-      if (game.settings.get(MODULE_ID, "potentSpellcastingEnabled") === false) return 0;
+      if (game.settings.get(MODULE_ID, "potentSpellcastingEnabled") === false) {
+        gateOff("Potent Spellcasting", "potentSpellcastingEnabled");
+        return 0;
+      }
     } catch (_) { /* setting not registered yet — proceed */ }
     if (!CombatState._hasFeature(actor, "Potent Spellcasting")) return 0;
     const wisMod = _aceMod(actor, "wis");

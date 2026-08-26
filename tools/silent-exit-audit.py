@@ -48,7 +48,25 @@ RISKY = re.compile(
     r"\bpending\b|\bcanvas\b|\btoken\b", re.I)
 
 # A gate that already explains itself.
-SPEAKS = re.compile(r"console\.(log|warn|error|debug)|ui\.notifications")
+SPEAKS = re.compile(r"console\.(log|warn|error|debug)|ui\.notifications|"
+                    r"_gateOff\(|_cannotCheck\(|decline\(")
+
+# ⚠️ AN AUDIT WITH NO WAY TO SAY "CORRECT AS IT IS" BECOMES AN AUDIT NOBODY
+# RUNS. Roughly half the early returns in reaction-engine.mjs are "this event
+# is not mine to handle" - wrong client, not the active GM, not the addressed
+# user. Those fire on EVERY client for EVERY event, and making them speak
+# would bury every player's console in noise. Noise gets logging switched
+# off, and then nothing is reported at all.
+#
+# So a deliberately silent gate is marked in the source:
+#
+#     // SILENT-OK: not this client's event; every client sees every hook
+#     if (game.users?.activeGM !== game.user) return;
+#
+# The reason is REQUIRED. A bare marker would let anyone silence a real
+# finding by typing eight characters, which is how a check becomes a rubber
+# stamp. Marked gates are counted and shown separately, never hidden.
+SILENT_OK = re.compile(r"//\s*SILENT-OK:\s*(?P<why>\S.*)")
 
 RETURN = re.compile(r"^\s*(?:if\s*\((?P<cond>[^{]*?)\)\s*)?return\s*;?\s*$")
 IF_RETURN = re.compile(r"^\s*if\s*\((?P<cond>.+?)\)\s*return\b")
@@ -58,12 +76,13 @@ def main():
     print("SILENT EXITS IN THE ROLL PIPELINES")
     print("=" * 78)
     total = 0
+    allowed_total = 0
     for name in PIPELINE:
         path = os.path.join(ROOT, name)
         if not os.path.isfile(path):
             continue
         lines = io.open(path, encoding="utf-8", errors="ignore").read().split("\n")
-        hits = []
+        hits, allowed = [], []
         for i, line in enumerate(lines):
             m = IF_RETURN.match(line) or RETURN.match(line)
             if not m:
@@ -71,11 +90,18 @@ def main():
             cond = (m.groupdict().get("cond") or "").strip()
             if not cond or not RISKY.search(cond):
                 continue
+            # Marked as deliberately silent, with a stated reason?
+            marker = (SILENT_OK.search(line)
+                      or (i > 0 and SILENT_OK.search(lines[i - 1])))
+            if marker:
+                allowed.append((i + 1, marker.group("why").strip()[:70]))
+                continue
             # Does anything in the three lines above explain the refusal?
             window = "\n".join(lines[max(0, i - 3):i + 1])
             if SPEAKS.search(window):
                 continue
             hits.append((i + 1, cond[:84]))
+        allowed_total += len(allowed)
         if hits:
             total += len(hits)
             print(f"\n  {name}  ({len(hits)})")
@@ -83,6 +109,9 @@ def main():
                 print(f"     :{ln:<6} if ({cond}) return;")
 
     print("\n" + "=" * 78)
+    if allowed_total:
+        print(f"{allowed_total} gate(s) marked SILENT-OK with a stated reason "
+              f"- deliberately quiet, counted, not hidden.")
     print(f"{total} early return(s) in the roll path that give up without a word.")
     print()
     print("Each is a place where a real failure is indistinguishable from a normal")

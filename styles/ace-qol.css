@@ -5885,3 +5885,25 @@
 .ace-qol-dmg-gm-controls { min-width: 0; }
 .ace-qol-dmg-hp-line, .ace-qol-dmg-ovr-line { max-width: 100%; }
 .ace-qol-dmg-hp-line > *, .ace-qol-dmg-ovr-line > * { white-space: nowrap; }
+/* ── The reaction that changed a target's number ──
+   ⚠️ IT SAYS WHAT IT WAS AND WHAT IT BECAME. Uncanny Dodge used to halve the
+   total while the breakdown above still showed the original roll, so the card
+   contradicted itself: "7 +5 STR +1 =" and then "6 slashing". This line is what
+   makes the sum readable again — the breakdown is the roll, this is the
+   reaction, and the HP line is the result.
+
+   ⚠️ A WRAPPED ROW, NEVER A SQUEEZED ONE. It sits on its own line and is
+   allowed to wrap; nothing here is ever crushed to fit. */
+.ace-qol-dmg-reaction-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 4px 0 2px;
+  font-size: 0.95rem;
+  line-height: 1.35;
+  color: #9ecbff;
+}
+.ace-qol-dmg-reaction-line strong { color: #c7e2ff; font-weight: 700; }
+.ace-qol-dmg-reaction-line i { font-size: 0.9em; opacity: 0.9; }
+

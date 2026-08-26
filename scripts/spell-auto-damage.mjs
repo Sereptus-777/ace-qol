@@ -135,6 +135,7 @@ export class SpellAutoDamage {
     Hooks.on("updateSetting", (setting) => {
       try {
         if (setting?.key !== `${MODULE_ID}.spellAutoDamageEnabled`) return;
+        // SILENT-OK: the setting is still on; the branch below reports the switch-off and says so
         if (QolSettings.get?.("spellAutoDamageEnabled") !== false) return;
         SpellAutoDamage._activeCasts.clear();
         SpellAutoDamage._castLevels.clear();
@@ -190,8 +191,24 @@ export class SpellAutoDamage {
     });
 
     // ── Suppress dnd5e's damage flow via prototype patch ──
-    // dnd5e 5.3.1 has NO preRollDamage hook (only post-roll
-    // rollDamage / rollDamageV2). The damage dialog is opened inside
+    //
+    // ⚠️🔴 THE CLAIM BELOW IS FALSE ON 5.3.3, AND IT IS WHY THIS IS A
+    // PROTOTYPE PATCH RATHER THAN A HOOK. dnd5e DOES fire a cancellable
+    // pre-roll hook for damage — `dnd5e.preRollDamageV2`, dispatched from the
+    // shared roller with `if (Hooks.call(...) === false) return []`. Verified
+    // in the shipped source, 2026-08-26. Whether it was absent in 5.3.1 or was
+    // never looked for, the comment has been telling everyone since that the
+    // supported path does not exist.
+    //
+    // ⚠️ A WRONG STATEMENT ABOUT THE PLATFORM IS WORSE THAN NO COMMENT. It
+    // does not just fail to help — it argues against the simpler fix, and the
+    // next person believes it. The spell pipeline now uses the hook.
+    //
+    // The patch stays for now because it is proven and load-bearing, and
+    // swapping a monkey patch for a hook is not a change to make at the end of
+    // a long night. But it is a patch by inertia, not by necessity.
+    //
+    // The damage dialog is opened inside
     // activity.rollDamage(). To stop both the dialog AND the
     // resulting chat card, we wrap rollDamage on the damage-activity
     // prototype: if our marker is active, return [] (empty rolls,
@@ -510,6 +527,7 @@ export class SpellAutoDamage {
   static _clearUserTargets() {
     try {
       const targets = Array.from(game.user.targets ?? []);
+      // SILENT-OK: nothing is targeted; clearing none is a no-op, not a failure
       if (targets.length === 0) return;
       for (const tok of targets) {
         try {

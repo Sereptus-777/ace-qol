@@ -21,6 +21,12 @@
 // NOTE: MODULE_ID hardcoded to avoid circular import (ace-qol.mjs imports us)
 const MODULE_ID = "ace-qol";
 import { QolSettings } from "./settings.mjs";
+// The shared "why didn't that happen" reporters. ONE implementation for the
+// whole roll path - these methods used to hold a second copy, which is the
+// "built beside instead of on" mistake this codebase has paid for before.
+import { gateOff as _gateOff, cannotDo as _cannotDo } from "./why-not.mjs";
+// Wait for the condition, not for the clock. See wait-for.mjs.
+import { waitUntil } from "./wait-for.mjs";
 import { CombatState } from "./combat-state.mjs";
 import { hasTurns } from "./action-economy.mjs";
 
@@ -127,6 +133,7 @@ export class ReactionEngine {
    */
   static async _sweepCounterspelledResolution(activity) {
     try {
+      // SILENT-OK: not the active GM; this hook fires on every connected client and only one may act
       if (game.users?.activeGM !== game.user) return;
       const itemUuid = activity?.item?.uuid ?? null;
       const activityUuid = activity?.uuid ?? null;
@@ -337,6 +344,7 @@ export class ReactionEngine {
   //  GM already has it via _markCastCounterspelled.
   static _resolveSummonVerdict(activity, result) {
     try {
+      // SILENT-OK: player-side only; the GM already recorded this via _markCastCounterspelled
       if (!result?.abort || game.user.isGM) return;
       const casterActor = activity?.item?.actor ?? activity?.actor ?? null;
       const casterTokenUuid = casterActor?.getActiveTokens?.()?.[0]?.document?.uuid ?? null;
@@ -418,6 +426,7 @@ export class ReactionEngine {
     // module writing combat.turn), which the four nextTurn/previousTurn call
     // sites never covered. (audit F-022, 2026-08-07)
     Hooks.on("combatTurnChange", (combat, prior, current) => {
+      // SILENT-OK: not the active GM; this hook fires on every connected client and only one may act
       if (game.users?.activeGM !== game.user) return;  // activeGM: reaction reset writes must only fire once
       this._resetCurrentCombatantReaction(combat, current);
     });
@@ -428,6 +437,7 @@ export class ReactionEngine {
     // for individual combatants may not fire — so every combatant's reaction
     // would stay stale. Refresh everyone in the combat. v0.7.21 fix.
     Hooks.on("combatRound", async (combat, updateData, opts) => {
+      // SILENT-OK: not the active GM; this hook fires on every connected client and only one may act
       if (game.users?.activeGM !== game.user) return;  // activeGM: reaction reset writes must only fire once
       try {
         const cleared = [];
@@ -452,6 +462,7 @@ export class ReactionEngine {
     // combats. Next combat, they'd appear to have already used their
     // reaction even though it's a new fight.
     Hooks.on("deleteCombat", () => {
+      // SILENT-OK: not the active GM; this hook fires on every connected client and only one may act
       if (game.users?.activeGM !== game.user) return;  // activeGM: reaction flag clear must only run once
       this._resetAllReactionFlags("combat ended");
     });
@@ -466,6 +477,7 @@ export class ReactionEngine {
     // miss player rests, whose hook never fires on the GM's client).
     Hooks.on("dnd5e.restCompleted", async (actor, result, config) => {
       try {
+        // SILENT-OK: only the resting actor's own client clears its own flag; a GM gate would miss player rests
         if (!actor?.isOwner) return;
         if (actor.getFlag(MODULE_ID, FLAG_REACTION_USED)) {
           await actor.unsetFlag(MODULE_ID, FLAG_REACTION_USED);
@@ -483,6 +495,7 @@ export class ReactionEngine {
     // anything already placed by the time the counter lands).
     Hooks.on("dnd5e.postSummon", async (activity, _profile, createdTokens) => {
       try {
+        // SILENT-OK: not the active GM; this hook fires on every connected client and only one may act
         if (game.users?.activeGM !== game.user) return;
         const origin = activity?.item?.uuid ?? activity?.uuid;
         if (!ReactionEngine._isCounterspelledOrigin(origin)) return;
@@ -506,6 +519,7 @@ export class ReactionEngine {
       if (!ReactionEngine._counterspelledCasts.length) return;   // nothing pending — fast exit
       setTimeout(async () => {
         try {
+          // SILENT-OK: not the active GM; this hook fires on every connected client and only one may act
           if (game.users?.activeGM !== game.user) return;
           const fresh = canvas?.scene?.tokens?.get?.(tokenDoc.id);
           if (!fresh) return;
@@ -523,6 +537,7 @@ export class ReactionEngine {
     Hooks.on("createMeasuredTemplate", (tdoc) => {
       setTimeout(async () => {
         try {
+          // SILENT-OK: not the active GM; this hook fires on every connected client and only one may act
           if (game.users?.activeGM !== game.user) return;
           const fresh = canvas?.scene?.templates?.get?.(tdoc.id);
           if (!fresh || !ReactionEngine._isCounterspelledOrigin(fresh?.flags?.dnd5e?.origin)) return;
@@ -571,6 +586,7 @@ export class ReactionEngine {
     // creatures could never take another reaction: no Shield, no Opportunity
     // Attack, no Counterspell, and nothing on screen to explain it.
     const _resetReactionFlagsOnBoot = () => {
+      // SILENT-OK: GM-only handler; every client sees this hook and only the GM resolves it
       if (!game.user.isGM) return;
       this._resetAllReactionFlags("world startup");
     };
@@ -582,6 +598,7 @@ export class ReactionEngine {
     // We detect OAs via the dnd5e system's "opportunity" flag if available,
     // or via the custom hook other modules emit.
     Hooks.on(`${MODULE_ID}.opportunityAttack`, (actorId) => {
+      // SILENT-OK: GM-only handler; every client sees this hook and only the GM resolves it
       if (!game.user.isGM) return;
       const actor = game.actors.get(actorId);
       if (actor) this._markReactionUsed(actor, "opportunityAttack");
@@ -592,9 +609,10 @@ export class ReactionEngine {
     // AutoDamage, etc.) await this barrier in their postCreateUsageMessage
     // handlers so reactions resolve modally before downstream effects.
     Hooks.on("dnd5e.preUseActivity", (activity, usageConfig) => {
+      // SILENT-OK: GM-only handler; every client sees this hook and only the GM resolves it
       if (!game.user.isGM) return;
-      if (!QolSettings.get("enableReactions")) return;
-      if (!QolSettings.get("autoCounterspell")) return;
+        if (!QolSettings.get("enableReactions")) return this._gateOff("Counterspell", "enableReactions");
+        if (!QolSettings.get("autoCounterspell")) return this._gateOff("Counterspell", "autoCounterspell");
       const item = activity?.item;
       if (!item || item.type !== "spell") return;
       const lvl = item.system?.level ?? 0;
@@ -607,8 +625,8 @@ export class ReactionEngine {
     // We check if it is a spell and look for Counterspell reactors.
     Hooks.on("dnd5e.postCreateUsageMessage", async (activity, message) => {
       this._debug(`[REACTION-V2-HOOK] entry for ${activity?.item?.name ?? '?'} isGM=${game.user.isGM} reactions=${QolSettings.get("enableReactions")} cs=${QolSettings.get("autoCounterspell")}`);
-      if (!QolSettings.get("enableReactions")) return;
-      if (!QolSettings.get("autoCounterspell")) return;
+        if (!QolSettings.get("enableReactions")) return this._gateOff("Counterspell", "enableReactions");
+        if (!QolSettings.get("autoCounterspell")) return this._gateOff("Counterspell", "autoCounterspell");
       if (activity?.item?.type !== "spell") return;
       if ((activity?.item?.system?.level ?? 0) === 0) return; // cantrips can't be countered
 
@@ -645,14 +663,27 @@ export class ReactionEngine {
     // BEFORE the spell's chat card renders (which happens at
     // dnd5e.postCreateUsageMessage, not dnd5e.useActivity). v0.7.21 fix.
     Hooks.on("dnd5e.useActivity", async (activity) => {
+      // SILENT-OK: GM-only handler; every client sees this hook and only the GM resolves it
       if (!game.user.isGM) return;
-      if (!QolSettings.get("enableReactions")) return;
-      if (!QolSettings.get("autoCounterspell")) return;
-      // Defer to give the V2 hook (postCreateUsageMessage) a chance to fire and
-      // mark this activity as handled. If V2 fires, this hook bails. If V2
-      // never fires (old dnd5e), this hook proceeds after the wait.
-      await new Promise(r => setTimeout(r, 250));
-      if (activity && this._handledActivityRefs.has(activity)) return;
+      if (!QolSettings.get("enableReactions")) return this._gateOff("Counterspell", "enableReactions");
+      if (!QolSettings.get("autoCounterspell")) return this._gateOff("Counterspell", "autoCounterspell");
+      // ⚠️🔴 WATCH FOR THE CLAIM, DO NOT SLEEP THROUGH THE WINDOW.
+      //
+      // This used to sleep a flat 250ms and then check once. Every spell cast
+      // on the GM's client paid that quarter second, and a table busy enough
+      // to push postCreateUsageMessage past 250ms got Counterspell offered
+      // TWICE for one cast - the exact double this guard exists to prevent.
+      //
+      // It now stops the moment the V2 hook marks the activity, normally
+      // within one 20ms step, and the deadline can be 750ms because waiting
+      // longer costs nothing when the condition is WATCHED rather than slept
+      // through. If V2 never fires (older dnd5e), this legacy path proceeds
+      // as it always did.
+      if (activity && await waitUntil(
+        () => this._handledActivityRefs.has(activity),
+        { maxMs: 750, stepMs: 20, quiet: true,
+          what: "the V2 postCreateUsageMessage hook claiming this cast" },
+      )) return;   // V2 owns this cast; the legacy path must not run as well
       await this._onSpellCast(activity, null);
     });
 
@@ -682,7 +713,10 @@ export class ReactionEngine {
     if (payload.action === "reactionResponse") {
       const { requestId, accepted, choiceData, senderUserId, reactorActorId } = payload;
       const pending = this._pendingRequests.get(requestId);
-      if (!pending) return true;
+      if (!pending) {
+        return this._cannotCheck("a reaction response",
+          "no prompt was waiting for it - it arrived late, or twice") ?? true;
+      }
 
       // ⚠️🔴 THIS CHECK EXISTED SINCE v0.4.22.12 AND FAILED OPEN THREE WAYS
       // (Brock audit, 2026-08-19). All three are the same mistake: treating a
@@ -759,6 +793,7 @@ export class ReactionEngine {
     // ── GM sends a reaction prompt to a player ──
     if (payload.action === "showReactionPrompt") {
       // Only the targeted player should handle this
+      // SILENT-OK: this socket payload is addressed to a different user
       if (payload.targetUserId !== game.user.id) return true;
       const result = await ReactionEngine.showReactionDialog(payload.promptData);
       // Send response back to GM. v0.4.22.12: include senderUserId
@@ -816,7 +851,10 @@ export class ReactionEngine {
   async _resetCurrentCombatantReaction(combat, current = null) {
     const state = current ?? combat?.current;
     const combatantId = state?.combatantId;
-    if (!combatantId) return;
+    if (!combatantId) {
+      return this._cannotCheck("the reaction reset",
+        "the turn change named no combatant");
+    }
     const combatant = combat?.combatants?.get(combatantId);
     // The TOKEN's actor, so one unlinked copy's reaction doesn't clear the
     // shared sidebar actor's flag for every other copy of that creature.
@@ -874,8 +912,30 @@ export class ReactionEngine {
    * @returns {object[]} Modified results array (hitResult may change to "miss" if Shield turns a hit into a miss)
    */
   async checkPostHitReactions(results, attackItem, attacker) {
-    if (!QolSettings.get("enableReactions")) return results;
-    if (!QolSettings.get("autoShield")) return results;
+    // ── ⚠️🔴 RETURN A COPY, NEVER THE CALLER'S OWN ARRAY ────────────────
+    //
+    // These two early returns used to hand back `results` — the very array the
+    // caller passed in. The caller then did `results.length = 0` before
+    // refilling from what it thought was a separate list, and because they were
+    // ONE OBJECT it emptied both and put back nothing.
+    //
+    // Every attack card in the game disappeared, for any creature, on any
+    // weapon, whenever reactions were switched off. It ended a live session on
+    // 2026-08-24 and stayed invisible because nothing threw and nothing logged:
+    // the roll happened, the loop ran, the builder was reached, and the results
+    // had been deleted on the way.
+    //
+    // ⚠️ A COPY COSTS NOTHING AND CLOSES THE WHOLE CLASS. The caller is also
+    // fixed to check identity, but a function that returns its own input while
+    // the caller is entitled to mutate it is a trap for the next person too.
+    if (!QolSettings.get("enableReactions")) {
+      this._gateOff("post-hit reactions (Shield)", "enableReactions");
+      return [...results];
+    }
+    if (!QolSettings.get("autoShield")) {
+      this._gateOff("Shield", "autoShield");
+      return [...results];
+    }
 
     const modified = [];
 
@@ -988,8 +1048,14 @@ export class ReactionEngine {
    * @returns {Promise<Map<Actor, number>>} Filtered distribution (shielded removed)
    */
   async checkMagicMissileShield(distribution, caster, spellItem) {
-    if (!QolSettings.get("enableReactions")) return distribution;
-    if (!QolSettings.get("autoShield")) return distribution;
+    if (!QolSettings.get("enableReactions")) {
+      this._gateOff("Shield vs Magic Missile", "enableReactions");
+      return distribution;
+    }
+    if (!QolSettings.get("autoShield")) {
+      this._gateOff("Shield vs Magic Missile", "autoShield");
+      return distribution;
+    }
     if (!distribution || distribution.size === 0) return distribution;
 
     const modified = new Map();
@@ -1599,7 +1665,9 @@ export class ReactionEngine {
    */
   _findCounterspellReactors(casterToken, casterActor) {
     const reactors = [];
-    if (!canvas.tokens?.placeables) return reactors;
+    if (!canvas.tokens?.placeables) {
+      return this._cannotCheck("Shield", "the canvas has no tokens yet") ?? reactors;
+    }
 
     const casterDisposition = casterToken.document?.disposition ?? 1;
     // RAW opt-in (`counterspellAnyCaster`): offer against ANY caster you can
@@ -1698,19 +1766,36 @@ export class ReactionEngine {
    */
   async _checkUncannyDodge(damageComponents, targetActor, targetToken, attacker, attackItem, hit) {
     const no = { used: false, result: { modifiedComponents: damageComponents, absorbed: false } };
+
+    // ⚠️🔴 EVERY REFUSAL BELOW SAYS WHY. This function used to hold SEVEN
+    // silent `return no` paths, and on 2026-08-26 one of them ate the feature
+    // outright. The post-roll caller passes the damage result as `hit`; a
+    // damage result carried `isCrit` and no `hitResult`; and the line
+    // `if (hit && !hit.hitResult) return no;` bailed on every hit in the game
+    // without a word. Firaxis CRIT Jeth for 18 and Jeth was offered nothing,
+    // twice, while I hunted the reaction engine's registration instead.
+    //
+    // ⚠️ THE ORDER IS THE DESIGN, not tidiness. OWNERSHIP IS CHECKED FIRST so
+    // that everything after it can be loud without burying the console: a
+    // creature who does not have Uncanny Dodge is the overwhelmingly common
+    // case and stays at debug level, while a rogue who COULD have used it and
+    // was not asked always states the reason at log level. A refusal nobody
+    // can see is indistinguishable from a feature that is not wired up, and I
+    // have now lost two test runs to exactly that confusion.
+    const decline = (why, loud = true) => {
+      const msg = `${MODULE_ID} | Uncanny Dodge not offered to `
+        + `${targetActor?.name ?? "a target"}: ${why}`;
+      if (loud) console.log(msg);
+      else console.debug(msg);
+      return no;
+    };
+
     try {
-      if (!targetActor || !targetToken) return no;
-
-      // "your reaction" — no turns, no reaction to spend.
-      if (!hasTurns(targetActor)) return no;
-      if (this._hasUsedReaction(targetActor)) return no;
-
-      // "with an attack roll" — a save-based spell never triggers this.
-      if (hit && hit.hitResult !== "hit" && hit.hitResult !== "critical") return no;
-      if (hit && !hit.hitResult) return no;
-
-      // "an attacker" — a hazard with no creature behind it does not qualify.
-      if (!attacker) return no;
+      if (!targetActor || !targetToken) {
+        return decline(!targetActor
+          ? "the target actor could not be resolved"
+          : "the target has no token on this scene");
+      }
 
       // ⚠️🔴 DO NOT IMPORT THE REGISTRY WALKER FROM THIS FILE.
       // `walker.mjs` imports `ace-qol.mjs`, and `ace-qol.mjs` imports THIS
@@ -1725,20 +1810,102 @@ export class ReactionEngine {
       // detection, so the check goes through it. The class level is read the
       // same way Aura of Protection reads paladin levels: from the class item,
       // because multiclassing does not advance a class feature.
-      if (!CombatState._hasFeature?.(targetActor, "Uncanny Dodge")) return no;
-      const rogueLevel = targetActor.items?.find(i => i.type === "class"
-        && i.name?.toLowerCase().includes("rogue"))?.system?.levels ?? 0;
-      if (rogueLevel < 5) return no;
+      // ⚠️🔴 ASK THE TARGET PROFILE, DO NOT RE-DERIVE IT HERE.
+      //
+      // This used to hunt the actor for a feature by name and dig the rogue
+      // level out of the class items, at the moment damage landed, on every
+      // target, on every roll. Johnny, 2026-08-26: "why isn't our target
+      // pipeline picking up that Jeth has a reaction at his level and his class
+      // and everything else?" It should, and now it does — the profile reports
+      // what this creature OWNS and can AFFORD, and this function decides
+      // whether it answers THIS hit, which is the pairing only it can judge.
+      //
+      // ⚠️ THE PROFILE ALREADY GATES ON ROGUE 5, per class and not character
+      // level. One reader, so a multiclass rogue can never be judged two
+      // different ways by two different features.
+      // ⚠️🔴 IMPORTED LAZILY, AND THAT IS NOT FUSSINESS. A static import
+      // here closes the cycle this whole file is built to avoid:
+      //
+      //     reaction-engine → target-profile → situation → ace-qol → reaction-engine
+      //
+      // ⚠️ AND THE HEADER'S CLAIM THAT THIS FILE HAS NO CYCLE IS ALREADY
+      // FALSE. Mapping every static import on 2026-08-26 found 130+ cycles in
+      // ace-qol, including one straight back into this file:
+      //
+      //     reaction-engine → settings → ace-qol → reaction-engine
+      //
+      // So hardcoding MODULE_ID here never actually kept this module out of the
+      // loop. ES modules tolerate cycles; what broke on 08-24 was a binding
+      // USED AT EVALUATION TIME inside one, not the loop existing. The lazy
+      // import below is still right — it costs nothing and cannot participate
+      // in evaluation-order problems — but it is a seatbelt, not the cure, and
+      // saying otherwise would be the kind of confident-and-wrong comment that
+      // sent me hunting the wrong file twice tonight.
+      //
+      // That is the same loop that took large parts of the suite down mid-game
+      // on 2026-08-24 — spells stopped resolving, templates appeared only
+      // sometimes. A circular import throws nothing; it leaves bindings
+      // undefined at evaluation time, which is exactly what "sometimes it
+      // works" looks like. The MODULE_ID at the top of this file is hardcoded
+      // for the same reason.
+      //
+      // ⚠️ A DYNAMIC IMPORT INSIDE AN ASYNC FUNCTION IS SAFE, because the
+      // module graph is fully evaluated long before any damage lands. I wrote
+      // the static version first, in this file, two days after the cycle it
+      // caused. Checked before shipping rather than after.
+      let profile = null;
+      try {
+        const { buildTargetProfile } = await import("./profiles/target-profile.mjs");
+        profile = buildTargetProfile(targetActor, { token: targetToken });
+      } catch (err) {
+        console.warn(`${MODULE_ID} | could not read the target profile:`, err);
+      }
+
+      const owns = profile?.reactiveDefences?.find(d => d.key === "uncannyDodge") ?? null;
+      // Quiet: almost nothing on the board is a rogue of the right level.
+      if (!owns) return decline("they do not have the feature (rogue level 5 or later)", false);
+
+      // ── From here the creature genuinely owns it, so nothing is quiet ──
+
+      // "your reaction" — outside a combat there are no turns to spend one on.
+      if (!hasTurns(targetActor)) {
+        return decline("they are not in the encounter, so they have no reaction to spend");
+      }
+      if (profile?.reactionSpent || this._hasUsedReaction(targetActor)) {
+        return decline("their reaction is already spent this round");
+      }
+
+      // "an attacker" — a hazard with no creature behind it does not qualify.
+      if (!attacker) {
+        return decline("nothing is attacking; Uncanny Dodge answers an attacker, not a hazard");
+      }
+
+      // ── "when an attacker that you can see hits you with an attack" ──
+      //
+      // ⚠️ READ THE OUTCOME FROM EITHER SHAPE. Two different objects arrive
+      // here as `hit`: the attack pipeline's hit record, which carries
+      // `hitResult`, and the post-roll damage result, which was rebuilt
+      // without it. The rebuild now carries it, and the fallback below stays
+      // as a belt: a pre-rolled damage entry is only ever created inside
+      // `for (const hit of hits)`, so its existence already means the attack
+      // landed, and `isCrit` then separates a crit from an ordinary hit.
+      const outcome = hit?.hitResult
+        ?? (typeof hit?.isCrit === "boolean" ? (hit.isCrit ? "critical" : "hit") : null);
+
+      if (hit && !outcome) {
+        return decline("this damage carries no attack outcome, so it cannot be confirmed "
+          + `as a hit that landed (fields present: ${Object.keys(hit).join(", ")})`);
+      }
+      if (outcome && outcome !== "hit" && outcome !== "critical") {
+        return decline(`the attack resolved as "${outcome}", not a hit`);
+      }
 
       // "that you can see"
       const visible = this._canTargetSeeAttacker(targetToken, attacker);
-      if (!visible.can) {
-        console.log(`${MODULE_ID} | Uncanny Dodge not offered to ${targetActor.name}: ${visible.why}`);
-        return no;
-      }
+      if (!visible.can) return decline(visible.why);
 
       const total = damageComponents.reduce((sum, c) => sum + (c.total ?? c.raw ?? 0), 0);
-      if (total <= 0) return no;
+      if (total <= 0) return decline("the hit deals no damage to halve");
 
       const halved = Math.floor(total / 2);
       const promptResult = await this._promptReaction({
@@ -1759,7 +1926,14 @@ export class ReactionEngine {
         accentColor: "#9ecbff",
       });
 
-      if (!promptResult.accepted) return no;
+      if (!promptResult.accepted) {
+        // Their choice, not a failure - but it goes in the record, because
+        // "no prompt appeared" and "the prompt was declined" look identical
+        // from the outside and I have already chased that difference once.
+        console.log(`${MODULE_ID} | Uncanny Dodge declined by ${targetActor.name}: `
+          + `taking all ${total}.`);
+        return no;
+      }
 
       await this._markReactionUsed(targetActor, "uncannyDodge");
 
@@ -1841,8 +2015,11 @@ export class ReactionEngine {
    * @param {Item} attackItem - The weapon/spell that caused damage
    * @returns {{ modifiedComponents: object[], absorbed: boolean, absorbedType: string|null }}
    */
-  async checkPreDamageReactions(damageComponents, targetActor, targetToken, attacker, attackItem, hit = null) {
-    if (!QolSettings.get("enableReactions")) return { modifiedComponents: damageComponents, absorbed: false };
+  async checkPreDamageReactions(damageComponents, targetActor, targetToken, attacker, attackItem, hit = null, opts = {}) {
+    if (!QolSettings.get("enableReactions")) {
+      this._gateOff("pre-damage reactions (Uncanny Dodge, Absorb Elements)", "enableReactions");
+      return { modifiedComponents: damageComponents, absorbed: false };
+    }
 
     // ── UNCANNY DODGE, offered before Absorb Elements ──────────────────────
     //
@@ -1876,14 +2053,39 @@ export class ReactionEngine {
     // Restore by deleting this constant and its guard - the implementation
     // below is untouched and complete. Do NOT restore it without first
     // reproducing the original fault with it off, so we know what fixed what.
-    const UNCANNY_DODGE_ENABLED = false;
-    if (UNCANNY_DODGE_ENABLED) {
+    // ⚠️🔴 THE KILL SWITCH IS GONE, AND THE SUSPECT WAS INNOCENT.
+    //
+    // `UNCANNY_DODGE_ENABLED = false` was set mid-session on 2026-08-24 because
+    // this was the newest thing in the damage path on the night his spells
+    // stopped producing cards, and the damage pipeline does not get a suspect
+    // sitting in it during a live game. The comment above it said: do not
+    // restore this without first reproducing the original fault with it off.
+    //
+    // That condition is now met. The fault was found on 2026-08-26 and it was
+    // nothing to do with reactions: `checkPostHitReactions` returned the
+    // CALLER'S OWN ARRAY on its early-return paths, and the caller wiped it
+    // before refilling from itself. Introduced 2026-04-04, five months before
+    // Uncanny Dodge existed. See tools/results-survival-check.mjs.
+    //
+    // ⚠️ SO THE FEATURE COMES BACK ON, and it is worth saying that it has
+    // still NEVER RUN ONCE — declared in the registry in July, read by nothing,
+    // then written properly and immediately switched off. Every rogue in the
+    // campaign has taken full damage from every hit since it was written.
+    // ⚠️🔴 NOT WHILE THE DICE ARE STILL IN THE CUP. The attack-card path
+    // passes `skipUncannyDodge` because it runs BEFORE the player presses Roll
+    // Damage — ACE pre-rolls behind the scenes, so offering "halve 14 to 7"
+    // there asks somebody to react to dice nobody has seen thrown. It is called
+    // again from `postPreRolledDamageCard`, once the damage is on screen.
+    if (!opts.skipUncannyDodge) {
       const dodge = await this._checkUncannyDodge(
         damageComponents, targetActor, targetToken, attacker, attackItem, hit);
       if (dodge.used) return dodge.result;
     }
 
-    if (!QolSettings.get("autoAbsorbElements")) return { modifiedComponents: damageComponents, absorbed: false };
+    if (!QolSettings.get("autoAbsorbElements")) {
+      this._gateOff("Absorb Elements", "autoAbsorbElements");
+      return { modifiedComponents: damageComponents, absorbed: false };
+    }
 
     // Check if any damage component is an elemental type
     const elementalComponents = damageComponents.filter(c => ABSORB_ELEMENT_TYPES.has(c.type));
@@ -2002,8 +2204,14 @@ export class ReactionEngine {
    * @returns {object[]} Modified results (saved may flip to true)
    */
   async checkPostSaveReactions(saveResults) {
-    if (!QolSettings.get("enableReactions")) return saveResults;
-    if (!QolSettings.get("autoLegendaryResistance")) return saveResults;
+    if (!QolSettings.get("enableReactions")) {
+      this._gateOff("post-save reactions", "enableReactions");
+      return [...saveResults];
+    }
+    if (!QolSettings.get("autoLegendaryResistance")) {
+      this._gateOff("Legendary Resistance", "autoLegendaryResistance");
+      return [...saveResults];
+    }
 
     const modified = [];
 
@@ -2179,10 +2387,17 @@ export class ReactionEngine {
    * @returns {{ rerolled: boolean, newTotal: number|null, barber: Actor|null }}
    */
   async checkSilveryBarbs(opts) {
-    if (!QolSettings.get("enableReactions")) return { rerolled: false };
+    if (!QolSettings.get("enableReactions")) {
+      this._gateOff("Silvery Barbs", "enableReactions");
+      return { rerolled: false };
+    }
 
     const { actor, token, rollType, total, dc, description } = opts;
-    if (!actor || !token) return { rerolled: false };
+    if (!actor || !token) {
+      return this._cannotCheck("Silvery Barbs",
+        `the roll named no ${!actor ? "actor" : "token"} to react to`)
+        ?? { rerolled: false };
+    }
 
     // Find eligible Silvery Barbs casters within 60ft (opponents of the succeeding creature)
     const reactors = this._findSilveryBarbsReactors(token, actor);
@@ -2254,7 +2469,9 @@ export class ReactionEngine {
    */
   _findSilveryBarbsReactors(successToken, successActor) {
     const reactors = [];
-    if (!canvas.tokens?.placeables) return reactors;
+    if (!canvas.tokens?.placeables) {
+      return this._cannotCheck("Silvery Barbs", "the canvas has no tokens yet") ?? reactors;
+    }
 
     const successDisposition = successToken.document?.disposition ?? 1;
 
@@ -2305,10 +2522,17 @@ export class ReactionEngine {
    * @returns {{ reduced: boolean, reduction: number, newTotal: number }}
    */
   async checkCuttingWords(opts) {
-    if (!QolSettings.get("enableReactions")) return { reduced: false, reduction: 0 };
+    if (!QolSettings.get("enableReactions")) {
+      this._gateOff("Cutting Words", "enableReactions");
+      return { reduced: false, reduction: 0 };
+    }
 
     const { actor, token, rollType, total, description } = opts;
-    if (!actor || !token) return { reduced: false, reduction: 0 };
+    if (!actor || !token) {
+      return this._cannotCheck("Cutting Words",
+        `the roll named no ${!actor ? "actor" : "token"} to react to`)
+        ?? { reduced: false, reduction: 0 };
+    }
 
     // Find eligible Lore Bards within 60ft
     const reactors = this._findCuttingWordsReactors(token, actor);
@@ -2362,7 +2586,9 @@ export class ReactionEngine {
    */
   _findCuttingWordsReactors(targetToken, targetActor) {
     const reactors = [];
-    if (!canvas.tokens?.placeables) return reactors;
+    if (!canvas.tokens?.placeables) {
+      return this._cannotCheck("Cutting Words", "the canvas has no tokens yet") ?? reactors;
+    }
 
     const targetDisposition = targetToken.document?.disposition ?? 1;
 
@@ -2914,6 +3140,7 @@ export class ReactionEngine {
       if (userId === "default") continue;
       if (level >= CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER) {
         const user = game.users.get(userId);
+        // SILENT-OK: a getter returning the owner it found, not an early exit
         if (user && user.active && !user.isGM) return userId;
       }
     }
@@ -3044,6 +3271,54 @@ export class ReactionEngine {
         console.log(`${MODULE_ID} | REACTION | ${msg}`);
       }
     } catch { /* settings not ready */ }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Why a reaction did not happen
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  // ⚠️🔴 THE WHOLE FILE USED TO REFUSE IN SILENCE. An audit on 2026-08-26
+  // counted 38 early returns here that gave up without a word, and the same
+  // week two of them cost real time:
+  //
+  //   · Switching "Enable Reactions" off made EVERY attack card in the game
+  //     vanish, and nothing anywhere said the setting was involved. It ended
+  //     a live session on 24 August.
+  //   · Uncanny Dodge declined every hit for an hour because the object it
+  //     was handed carried no attack outcome. No prompt, no warning, nothing
+  //     to tell a broken feature from a feature deciding not to fire.
+  //
+  // ⚠️ BUT LOUD IS NOT THE ANSWER EVERYWHERE, and that distinction is the
+  // point of having two helpers instead of one. Roughly half the early
+  // returns in this file are "this event is not mine to handle" — wrong
+  // client, not the active GM, not the targeted user. Those fire on every
+  // client for every event, and making them speak would bury the console in
+  // noise on every player's machine. Noise gets logging switched off, and
+  // then nothing is reported at all. Those stay silent ON PURPOSE and are
+  // marked so the next audit does not "fix" them.
+  //
+  // What speaks is: a setting that is off (once, so it cannot flood), and
+  // something missing that should have been there (always, it is a defect).
+
+  /**
+   * A reaction is switched off by a setting. Said ONCE per feature per
+   * session, so a hook that fires on every spell cast cannot flood the log,
+   * while the answer to "why did Counterspell never come up" is still one
+   * line in the console rather than a hunt through the settings menu.
+   *
+   * Returns undefined so a void guard can `return this._gateOff(...)`.
+   */
+  _gateOff(feature, settingKey) {
+    return _gateOff(feature, settingKey);
+  }
+
+  /**
+   * A reaction could not be checked because something it needs is absent.
+   * Always says so: this is a defect, not a preference, and it is exactly
+   * the case that reads as "the feature is broken" from the player's chair.
+   */
+  _cannotCheck(feature, what) {
+    return _cannotDo(feature, what);
   }
 
   /** Static sibling of _debug — used by the static barrier methods
@@ -3329,13 +3604,45 @@ export function injectReactionCSS() {
 /* ── Buttons ──
    v0.7.71: bumped to 16px min per CLAUDE.md §4b — the accept button
    especially needs to read clearly under time pressure. */
+/* ⚠️🔴 ONE BUTTON HAD flex:1 AND THE OTHER HAD NOTHING.
+   So the decline button took its natural width - and "TAKE ALL 14" is wide -
+   while the accept button was squeezed into whatever was left. "HALVE IT -
+   TAKE 7" then wrapped across FOUR lines and the row grew to ~86px tall to
+   contain it. The height was never the problem; the crushed width was.
+
+   Johnny's standing rule, 2026-08-23: WRAPPED ROWS, NEVER SQUEEZED COLUMNS.
+   A row that cannot wrap destroys the text to fit - "necrotic" became
+   nec/roti/c, and a struck 10 became a 1 over a 0. Here it destroyed the one
+   control the player most needs to read under time pressure.
+
+   ⚠️ EQUAL BASIS, NOT JUST EQUAL GROW. flex:1 alone still lets a wide
+   label push its own button wider, because the default basis is the content.
+   flex:1 1 0 makes both start from zero and share the space evenly, so the
+   two buttons are the same width whatever the numbers say.
+
+   ⚠️ AND NO BACKTICKS IN HERE. This CSS lives inside a JS template
+   literal, so a backtick in a comment ends the string and the whole module
+   stops parsing. Caught by node --check on the way in. */
 .ace-qol-reaction-buttons {
   display: flex;
   gap: 10px;
   padding: 12px 14px;
+  align-items: stretch;
+}
+.ace-qol-reaction-buttons > button {
+  flex: 1 1 0;
+  min-width: 0;              /* a flex child will not shrink below its content without this */
+  min-height: 44px;          /* a comfortable click target, and no taller */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  /* ⚠️ THE LABEL STAYS ON ONE LINE. It is a short phrase with a number in
+     it; breaking it mid-phrase is what produced the four-line button. */
+  white-space: nowrap;
+  line-height: 1.2;
 }
 .ace-qol-reaction-accept {
-  flex: 1;
   padding: 10px 18px;
   font-size: 1rem;          /* 16px — body min */
   font-weight: 800;
@@ -3352,6 +3659,8 @@ export function injectReactionCSS() {
   box-shadow: 0 0 12px rgba(212,175,55,0.25);
 }
 .ace-qol-reaction-decline {
+  /* Width, height and wrapping all come from the shared rule above, so the two
+     buttons cannot drift apart again the next time one of them is edited. */
   padding: 10px 18px;
   font-size: 1rem;          /* 16px — body min */
   font-weight: 700;

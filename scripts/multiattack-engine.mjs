@@ -268,6 +268,7 @@ export class MultiattackEngine {
       };
       const appliedHook = Hooks.on(`${MODULE_ID}.damageApplied`, (p) => {
         try {
+          // SILENT-OK: not one of our targets; this hook sees every token
           if (!isOurTarget(p)) return;
           // Remember HOW it landed. The next pop-up reads this to warn that the
           // blow did nothing, or that the target is down.
@@ -662,6 +663,7 @@ export class MultiattackEngine {
    * per-token setTarget). Returns false when nothing living can be targeted.
    */
   static _ensureTargets(lastTargetIds) {
+    // SILENT-OK: a success return: targets are already set, nothing to assert
     if ((game.user.targets?.size ?? 0) > 0) return true;
     let asserted = false;
     for (const tid of (lastTargetIds ?? [])) {

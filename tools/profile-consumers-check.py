@@ -111,6 +111,25 @@ def profile_vars(src):
             for i, a in enumerate(args):
                 if a == v and i < len(params) and re.fullmatch(r"[\w$]+", params[i]):
                     names.add(params[i])
+
+    # ⚠️🔴 A FILE CAN CONSUME A PROFILE WITHOUT EVER BUILDING ONE, and
+    # v2 of this check could not see those files at all. profiles/resolver.mjs
+    # takes the profile as a DESTRUCTURED PARAMETER - resolveAttack({ attacker,
+    # attack, environment, target }) - so no `const x = buildAttackerProfile(`
+    # line exists, the variable list came back empty, and the whole file was
+    # skipped. It reads FOURTEEN fields. The check reported five of those as
+    # "read by nothing" on 2026-08-26 and I nearly deleted them.
+    #
+    # ⚠️ AN AUDIT THAT UNDER-REPORTS CONSUMERS IS THE DANGEROUS DIRECTION.
+    # Over-reporting wastes a look; under-reporting argues for deleting live
+    # code. Both of this tool's earlier versions were wrong, in both
+    # directions, and each time the number looked authoritative.
+    #
+    # A parameter DOCUMENTED as coming from a builder is a profile. The
+    # documentation is the contract; if it lies, that is a separate bug.
+    for b in BUILDERS:
+        doc = (r"@param\s+\{[^}]*\}\s+(?:\[)?(?:[\w$]+\.)?([\w$]+)\]?\s+(?:from|built by)\s+" + re.escape(b))
+        names |= set(re.findall(doc, src))
     return names
 
 
@@ -146,9 +165,58 @@ def consumers(fields):
     return found
 
 
+def described_fields(fields):
+    """Fields the profile's own describe() renders, IF anything calls it.
+
+    ⚠️ A DESCRIBE FUNCTION IS A REAL CONSUMER WHEN SOMETHING CALLS IT.
+    describeAttacker lives inside the profile file, so this check skipped it -
+    but attack-pipeline.mjs calls it and logs the result on EVERY attack, so
+    the fields it renders reach the GM's console every time. Calling those
+    "read by nothing" argued for deleting information that is on screen.
+
+    ⚠️ AND ONLY IF SOMETHING CALLS IT. A describe function nobody invokes
+    is decoration describing decoration, and must not launder a dead field
+    into a live one.
+    """
+    src = io.open(PROFILE, encoding="utf-8", errors="ignore").read()
+    m = re.search(r"export function (describe\w+)\s*\(", src)
+    if not m:
+        return set(), None
+    fn = m.group(1)
+
+    called_from = []
+    for mod in MODULES:
+        for dp, dn, fns in os.walk(os.path.join(ROOT, mod)):
+            dn[:] = [d for d in dn if d not in SKIP]
+            for f in fns:
+                if not f.endswith(".mjs"):
+                    continue
+                full = os.path.join(dp, f)
+                if os.path.abspath(full) == os.path.abspath(PROFILE):
+                    continue
+                try:
+                    t = io.open(full, encoding="utf-8", errors="ignore").read()
+                except OSError:
+                    continue
+                if re.search(r"(?<![\w$])" + fn + r"\s*\(", t):
+                    called_from.append(os.path.relpath(full, ROOT).replace("\\", "/"))
+    if not called_from:
+        return set(), None
+
+    body = src[src.index("export function " + fn):]
+    end = body.find(chr(10) + "}")
+    body = body[:end if end > 0 else len(body)]
+    seen = set(re.findall(r"(?<![\w$])p\s*\??\.\s*([A-Za-z_$][\w$]*)", body))
+    return (seen & set(fields)), called_from[0]
+
+
 def main():
     fields = profile_fields()
     found = consumers(fields)
+    shown, describer = described_fields(fields)
+    for f in shown:
+        if not found[f]:
+            found[f] = ["%s (via describe, logged every attack)" % describer]
     read = {f: v for f, v in found.items() if v}
     unread = [f for f, v in found.items() if not v]
 
@@ -170,10 +238,24 @@ def main():
     if unread:
         print(f"{len(unread)} field(s) the profile reports and nobody consults.")
         print()
-        print("This is the exact shape of the Aura of Warding bug: the information")
-        print("is gathered correctly and then thrown away. Either wire a pipeline to")
-        print("read the field, or drop it from the returned object so the profile")
-        print("stops promising something it does not deliver.")
+        print("This is the shape of the Aura of Warding bug: information gathered")
+        print("correctly and then thrown away. But READ THE LIST BEFORE ACTING ON IT,")
+        print("because two different things land here and they need opposite fixes:")
+        print()
+        print("  1. A SECOND ANSWER TO A SOLVED QUESTION. Delete it and name the")
+        print("     authority in a comment. selfAttackDisadvantage was one of these:")
+        print("     a bare boolean sitting beside CombatState, which answers the same")
+        print("     question with the REASON attached. Removed 2026-08-26.")
+        print()
+        print("  2. DECLARED SURFACE THE GATE HAS NOT REACHED YET. The attack")
+        print("     pipeline consults this profile; the save, damage, spell and heal")
+        print("     paths do not. Those fields are not dead - they are waiting on a")
+        print("     consumer that is a DESIGN decision, not a wiring job.")
+        print()
+        print("  ⚠️ NEVER INVENT A CONSUMER TO TURN THIS GREEN. A fake reader is")
+        print("     worse than a red number: the red is honest about how far the Gate")
+        print("     has actually been adopted, and green bought with a pretend")
+        print("     consumer removes the only signal that says otherwise.")
         sys.exit(1)
 
     print("Every field the attacker profile reports is read by a pipeline.")

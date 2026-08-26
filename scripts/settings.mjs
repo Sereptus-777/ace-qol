@@ -1,5 +1,16 @@
 // ─── ACE: QOL — Settings Registration ─────────────────────────────────────────
-// Everything ON by default. Toggle OFF if you want.
+//
+// ACE STARTS CONSERVATIVE. It works out hits, resistances, cover and saves,
+// and the GM clicks to apply. Anything where ACE would ACT ON ITS OWN —
+// applying damage, applying conditions, or answering a player's reaction for
+// them — registers OFF and is opted into, never out of.
+//
+// ⚠️ THIS FILE USED TO SAY "Everything ON by default. Toggle OFF if you want."
+// That was true of the registrations and false of the product: a first-run
+// hook overlaid the Conservative preset on top. Two sources of truth, and the
+// safe one only won when a ready hook completed. The defaults below now ARE
+// Conservative, so a first run that never fires lands somewhere safe rather
+// than somewhere loud. (2026-08-26, external audit.)
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
@@ -527,7 +538,17 @@ export class QolSettings {
       scope:   "world",
       config:  true,
       type:    String,
-      default: "recommended",
+      // ⚠️🔴 CONSERVATIVE IS THE DEFAULT, NOT AN OVERLAY ON TOP OF ONE.
+      //
+      // This read "recommended" while applyPresetOnFirstRun wrote
+      // "conservative" over it at first boot. Two sources of truth, and the
+      // safe one only won if a ready hook fired and completed. If that first
+      // run threw - a settings read failing, a migration ahead of it dying -
+      // the table silently came up on Recommended, with ACE answering Shield
+      // and Counterspell for the players.
+      //
+      // A safe default must be the DEFAULT. External audit, 2026-08-26.
+      default: "conservative",
       choices: {
         conservative: "Conservative — ACE works it out, you click to apply",
         recommended:  "Recommended — sensible defaults, most features ON",
@@ -541,7 +562,8 @@ export class QolSettings {
     });
 
     // ═══════════════════════════════════════════════════════════════════════════
-    //  COMBAT WORKFLOW — all ON by default
+    //  COMBAT WORKFLOW — the read-only half is ON, the acting half is OFF.
+    //  Working out a hit is safe; applying damage without being asked is not.
     // ═══════════════════════════════════════════════════════════════════════════
 
     s("autoCheckHit", {
@@ -975,7 +997,7 @@ export class QolSettings {
       scope:   "world",
       config:  false,
       type:    Boolean,
-      default: true,
+      default: false,
     });
 
     s("autoRollDamage", {
@@ -1025,7 +1047,7 @@ export class QolSettings {
       scope:   "world",
       config:  false,
       type:    Boolean,
-      default: true,
+      default: false,
     });
 
     s("autoCounterspell", {
@@ -1034,7 +1056,7 @@ export class QolSettings {
       scope:   "world",
       config:  false,
       type:    Boolean,
-      default: true,
+      default: false,
     });
 
     s("skipOfflineCounterspell", {
@@ -1070,7 +1092,7 @@ export class QolSettings {
       scope:   "world",
       config:  false,
       type:    Boolean,
-      default: true,
+      default: false,
     });
 
     s("autoLegendaryResistance", {
@@ -1079,7 +1101,7 @@ export class QolSettings {
       scope:   "world",
       config:  false,
       type:    Boolean,
-      default: true,
+      default: false,
     });
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1215,7 +1237,7 @@ export class QolSettings {
       scope:   "world",
       config:  false,
       type:    Boolean,
-      default: true,
+      default: false,
     });
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1255,7 +1277,7 @@ export class QolSettings {
       scope:   "world",
       config:  false,
       type:    Boolean,
-      default: true,
+      default: false,
     });
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1318,7 +1340,7 @@ export class QolSettings {
       scope:   "world",
       config:  false,
       type:    Boolean,
-      default: true,
+      default: false,
     });
 
     s("notifyOnExpiry", {

@@ -191,5 +191,114 @@ export function buildTargetProfile(actor, { token = null } = {}) {
             || this.hasCondition("stunned")     || this.hasCondition("petrified")
             || this.hasCondition("incapacitated"));
     },
+
+    // ── ⚠️🔴 WHAT THIS CREATURE CAN DO ABOUT BEING HIT ─────────────────
+    //
+    // Johnny, 2026-08-26: "why isn't our target pipeline picking up that Jeth
+    // has a reaction at his level and his class and everything else?"
+    //
+    // He is right that it should. Every reactive defence in the suite hunts the
+    // actor for its own feature by name and re-derives the class level at the
+    // moment damage lands, on every target, on every roll — the same shape as
+    // reach being resolved in four different places. A creature's defences are
+    // a FACT ABOUT THE CREATURE and belong here, read once.
+    //
+    // ⚠️ IT REPORTS WHAT IS OWNED AND AFFORDABLE, NOT WHETHER IT APPLIES.
+    // "Can Uncanny Dodge answer THIS hit" needs the attacker, the attack and the
+    // line of sight between them — that is the resolver's pairing, not a fact
+    // about the target alone.
+    reactionSpent: (() => {
+      try { return !!actor.getFlag?.("ace-qol", "reactionUsed"); }
+      catch (_) { return false; }
+    })(),
+
+    // ⚠️ PER CLASS, NOT CHARACTER LEVEL. Uncanny Dodge is Rogue 5, and a
+    // Rogue 2 / Fighter 7 is a level 9 character with a level 2 rogue's
+    // features. The same mistake that handed a 2nd-level paladin a full Aura of
+    // Protection.
+    classLevels: (() => {
+      const out = {};
+      try {
+        for (const it of actor.items ?? []) {
+          if (it.type !== "class") continue;
+          const key = String(it.name ?? "").toLowerCase().trim();
+          if (key) out[key] = Number(it.system?.levels ?? 0) || 0;
+        }
+      } catch (_) { /* a monster with no class items is normal */ }
+      return out;
+    })(),
+
+    /**
+     * Which reactive defences does this creature actually own AND meet the
+     * level requirement for?
+     *
+     * ⚠️ OWNING THE FEATURE IS NOT ENOUGH. A sheet can carry a feature item
+     * from a subclass the character has not reached; the class level is what
+     * makes it real.
+     */
+    reactiveDefences: (() => {
+      const out = [];
+      const lvl = (cls) => {
+        try {
+          const it = (actor.items ?? []).find(i => i.type === "class"
+            && String(i.name ?? "").toLowerCase().includes(cls));
+          return Number(it?.system?.levels ?? 0) || 0;
+        } catch (_) { return 0; }
+      };
+      const has = (name) => {
+        try {
+          const want = String(name).toLowerCase();
+          return (actor.items ?? []).some(i => i.type === "feat"
+            && String(i.name ?? "").toLowerCase().includes(want));
+        } catch (_) { return false; }
+      };
+      const hasSpell = (name) => {
+        try {
+          const want = String(name).toLowerCase();
+          return (actor.items ?? []).some(i => i.type === "spell"
+            && String(i.name ?? "").toLowerCase().includes(want));
+        } catch (_) { return false; }
+      };
+
+      if (has("uncanny dodge") && lvl("rogue") >= 5) {
+        out.push({ key: "uncannyDodge", label: "Uncanny Dodge",
+          costsReaction: true, needsSlot: false,
+          answers: "one attack roll that hits, from an attacker it can see" });
+      }
+      if (has("deflect missile")) {
+        out.push({ key: "deflectMissiles", label: "Deflect Missiles",
+          costsReaction: true, needsSlot: false,
+          answers: "a ranged weapon attack" });
+      }
+      if (has("parry")) {
+        out.push({ key: "parry", label: "Parry",
+          costsReaction: true, needsSlot: false, answers: "a melee attack that hits" });
+      }
+      if (hasSpell("shield")) {
+        out.push({ key: "shield", label: "Shield",
+          costsReaction: true, needsSlot: true, slotLevel: 1,
+          answers: "an attack that would hit, by raising AC 5" });
+      }
+      if (hasSpell("absorb elements")) {
+        out.push({ key: "absorbElements", label: "Absorb Elements",
+          costsReaction: true, needsSlot: true, slotLevel: 1,
+          answers: "elemental damage from any source" });
+      }
+      return out;
+    })(),
+
+    /** Lowest-level slot with a charge left, or 0 — what a reaction can pay with. */
+    lowestAvailableSlot: (() => {
+      try {
+        let best = 0;
+        for (const [key, slot] of Object.entries(actor.system?.spells ?? {})) {
+          if (!(Number(slot?.value ?? 0) > 0)) continue;
+          const m = /^spell(\d)$/.exec(key);
+          const lv = m ? Number(m[1]) : Number(slot?.level ?? 0) || 0;
+          if (lv > 0 && (best === 0 || lv < best)) best = lv;
+        }
+        return best;
+      } catch (_) { return 0; }
+    })(),
   };
 }

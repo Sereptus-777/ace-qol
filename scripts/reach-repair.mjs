@@ -73,7 +73,24 @@ function reachMentions(sys) {
  */
 export function proposedReachFor(item) {
   try {
-    if (!item || item.type !== "weapon") return 0;
+    // ⚠️🔴 THE READER ACCEPTS ANY ITEM; THE WRITER ONLY ACCEPTED WEAPONS.
+    // Johnny's Spiked Chain is a FEATURE, not a weapon — the log says
+    // `[feat/attack]` — so this refused to write, silently, forever. That is
+    // why "no reach set on the item, but its description says reach 10ft"
+    // printed on every reload and every hover, months after the repair was
+    // supposedly done. He spotted it: "I thought we wrote it before that if it
+    // doesn't have a reach set, the first time that our code interjects it into
+    // the item permanently."
+    //
+    // ⚠️ A MONSTER'S CLAW IS A FEAT TOO. Natural attacks, lair actions and
+    // most statblock attacks are features, and they are exactly the items whose
+    // reach lives in prose rather than in the field. Restricting the repair to
+    // weapons excluded the majority of the things that need it.
+    //
+    // ⚠️ STILL NOTHING THAT CANNOT ATTACK. A spell, a piece of loot or a
+    // background has no business gaining a melee reach field.
+    if (!item) return 0;
+    if (item.type !== "weapon" && item.type !== "feat") return 0;
     if (item.pack) return 0;                    // never write into a compendium
     const sys = item.system ?? {};
     // Rule 2 — an existing value is never touched.
@@ -146,7 +163,12 @@ export async function repairWeaponReach({ fix = false } = {}) {
   let checked = 0;
 
   const inspect = (item, ownerName) => {
-    if (item?.type !== "weapon") return;
+    // ⚠️ SAME WIDENING AS THE SINGLE-ITEM WRITER. The bulk pass had the
+    // identical weapon-only filter, so a sweep would have reported "nothing to
+    // fix" while every feature-based attack in the world still had an empty
+    // reach field. Fixing one and leaving the other is how a class of bug
+    // survives its own repair.
+    if (item?.type !== "weapon" && item?.type !== "feat") return;
     checked++;
     const sys = item.system ?? {};
     if (Number(sys.range?.reach) > 0) return;

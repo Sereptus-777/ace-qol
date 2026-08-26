@@ -65,13 +65,56 @@ COSMETIC = re.compile(
     r"opacity|transition|flash|toast|fade|highlight|blink|pulse")
 
 
+# ⚠️🔴 v2, AFTER THE TOOL CRIED WOLF THIRTY-ONE TIMES OUT OF THIRTY-THREE.
+#
+# On 2026-08-26 this reported "33 timers the pipeline STOPS on". Reading all
+# 33 by hand found TWO. The rest were cache expiry, fire-and-forget UI updates,
+# and user-configurable pacing that is documented and deliberate. A check that
+# is wrong 94% of the time does not get run twice, and then the two real ones
+# live forever.
+#
+# Two things were wrong. It searched a multi-line WINDOW for `await`, so any
+# plain setTimeout sitting near an awaited one was called a blocking wait. And
+# its fallback was `return "WAIT"`, so every setTimeout it could not otherwise
+# explain became a pipeline stall by default.
+TTL = re.compile(r"setTimeout\(\s*\(\)\s*=>\s*[\w.$]*\.?"
+                 r"(?:delete|clear|unset|remove|revoke)\(")
+
+# A duration the USER chose is not a guess about somebody else's code. These
+# are pacing for the human eye - "let players SEE the NPC save roll" - and they
+# are documented, defaulted and exposed in the settings menu.
+SETTING = re.compile(r"QolSettings\.get|game\.settings\.get")
+
+# A human has read this one and signed it off, with a reason. Same contract as
+# SILENT-OK in silent-exit-audit.py: the reason is REQUIRED, and signed timers
+# are counted and shown, never hidden.
+PACING_OK = re.compile(r"//\s*PACING-OK:\s*(?P<why>\S.*)")
+
+
 def classify(window, line):
+    if PACING_OK.search(window):
+        return "SIGNED"
     if COSMETIC.search(line):
         return "COSMETIC"
+    if TTL.search(line):
+        return "TTL"
     if "setInterval" in line:
         return "POLL"
-    if AWAITED.search(window):
+    # ⚠️ THE AWAIT MUST BE ON THIS TIMER, not merely nearby.
+    if AWAITED.search(line):
+        if SETTING.search(window):
+            return "PACED"
         return "WAIT"
+    if re.search(r"Promise\.race|_inFlight|allSettled|hookId|Hooks\.on", window):
+        return "BACKSTOP"
+    m = DELAY.search(line)
+    if m and int(m.group(1)) <= 50:
+        return "DEFER"
+    # ⚠️ NOT "WAIT". A setTimeout nobody awaits does not stop anything;
+    # it schedules work for later. That can still be a race, but it is a
+    # different bug with a different fix, and calling it a stall is how this
+    # tool lost its credibility the first time.
+    return "DEFERRED-WORK"
     # A cap that races something real is a backstop, not a wait.
     if re.search(r"Promise\.race|_inFlight|allSettled|hookId|Hooks\.on", window):
         return "BACKSTOP"
@@ -84,7 +127,7 @@ def classify(window, line):
 def main():
     print("TIMERS IN THE ROLL PIPELINES")
     print("=" * 78)
-    counts = {"WAIT": 0, "POLL": 0, "DEFER": 0, "BACKSTOP": 0, "COSMETIC": 0}
+    counts = {"WAIT": 0, "POLL": 0, "DEFER": 0, "BACKSTOP": 0, "COSMETIC": 0, "TTL": 0, "PACED": 0, "SIGNED": 0, "DEFERRED-WORK": 0}
     findings = []
 
     for name in PIPELINE:
@@ -102,7 +145,7 @@ def main():
             ms = DELAY.search(line)
             findings.append((kind, name, i + 1, (ms.group(1) + "ms") if ms else "-", line.strip()[:88]))
 
-    for kind in ("WAIT", "POLL", "BACKSTOP", "DEFER", "COSMETIC"):
+    for kind in ("WAIT", "POLL", "BACKSTOP", "DEFERRED-WORK", "PACED", "TTL", "DEFER", "SIGNED", "COSMETIC"):
         rows = [f for f in findings if f[0] == kind]
         if not rows:
             continue
@@ -113,9 +156,12 @@ def main():
 
     print("\n" + "=" * 78)
     bad = counts["WAIT"] + counts["POLL"]
-    print(f"WAIT {counts['WAIT']}  ·  POLL {counts['POLL']}  ·  "
-          f"BACKSTOP {counts['BACKSTOP']}  ·  DEFER {counts['DEFER']}  ·  "
-          f"COSMETIC {counts['COSMETIC']} (ignored)")
+    print(f"BLOCKING: WAIT {counts['WAIT']}  ·  POLL {counts['POLL']}")
+    print(f"REVIEWED: PACED {counts['PACED']} (duration comes from a setting)  ·  "
+          f"SIGNED {counts['SIGNED']} (PACING-OK with a reason)")
+    print(f"NOT A STALL: BACKSTOP {counts['BACKSTOP']}  ·  "
+          f"DEFERRED-WORK {counts['DEFERRED-WORK']}  ·  TTL {counts['TTL']}  ·  "
+          f"DEFER {counts['DEFER']}  ·  COSMETIC {counts['COSMETIC']}")
     if bad:
         print(f"\n{bad} timer(s) the pipeline STOPS on. Each one is a guess about how long")
         print("somebody else's code takes, and each one holds in testing and fails at a")

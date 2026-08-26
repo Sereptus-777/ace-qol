@@ -118,6 +118,84 @@ function _flag(actor, key) {
   try { return actor.getFlag?.("ace-qol", key); } catch (_) { return undefined; }
 }
 
+/**
+ * What level of spellcaster is this creature?
+ *
+ * ⚠️🔴 A CR 21 LICH FIRED ONE BEAM OF ELDRITCH BLAST BECAUSE OF THIS.
+ * Every field ACE looked at came back empty on Johnny's Lich:
+ *
+ *     details.level        undefined
+ *     details.spellLevel   undefined
+ *     attributes.spell     { level: 0 }
+ *     cr                   21
+ *
+ * It read 0, the caller defaulted it to 1, and the beam table returned one
+ * beam. A 21-CR spellcaster threw a single dart at a Flameskull, silently.
+ *
+ * ⚠️ AN EMPTY FIELD IS A QUESTION, NOT AN ANSWER. Johnny, 2026-08-25, on
+ * the reach reader: "we were making some real progress with reading the
+ * description, getting the values from the right places, having fallbacks...
+ * That was really giving me hope." Same ladder here. Each rung says which one
+ * answered, so a GM can see WHY a monster is casting at the level it is.
+ *
+ * The ladder, in order of how much it actually knows:
+ *   1. A PC's own class levels    — exact
+ *   2. The NPC's declared caster level fields — exact when the import set them
+ *   3. The HIGHEST SPELL SLOT the creature owns — a 9th-level slot means an
+ *      17th+ level caster; this is RAW's own table read backwards
+ *   4. Challenge rating — a rough but honest floor for a monster
+ *
+ * ⚠️ RUNG 3 BEFORE RUNG 4, DELIBERATELY. Slots are what the statblock
+ * actually grants; CR is a difficulty rating that happens to correlate.
+ *
+ * @returns {{level:number, source:string}}
+ */
+function _casterLevel(actor, classLevels, characterLevel) {
+  const sys = actor?.system ?? {};
+
+  // 1. A PC casts at their character level.
+  if (actor?.type === "character" && characterLevel > 0) {
+    return { level: characterLevel, source: "the character's own levels" };
+  }
+
+  // 2. Whatever the statblock or the importer declared.
+  const declared = Number(
+    sys.details?.spellLevel
+    ?? sys.attributes?.spell?.level
+    ?? sys.details?.level
+    ?? 0
+  ) || 0;
+  if (declared > 0) return { level: declared, source: "the creature's declared caster level" };
+
+  // 3. Read the slots backwards. Slot level N first appears at caster level:
+  //    1st@1  2nd@3  3rd@5  4th@7  5th@9  6th@11  7th@13  8th@15  9th@17
+  try {
+    const MIN_LEVEL_FOR_SLOT = { 1: 1, 2: 3, 3: 5, 4: 7, 5: 9, 6: 11, 7: 13, 8: 15, 9: 17 };
+    let best = 0;
+    for (const [key, slot] of Object.entries(sys.spells ?? {})) {
+      if (!(Number(slot?.max ?? 0) > 0)) continue;
+      const m = /^spell(\d)$/.exec(key);
+      const lvl = m ? Number(m[1]) : Number(slot?.level ?? 0) || 0;
+      if (MIN_LEVEL_FOR_SLOT[lvl] > best) best = MIN_LEVEL_FOR_SLOT[lvl];
+    }
+    if (best > 0) {
+      return { level: best, source: `the highest spell slot it owns (level ${
+        Object.entries(MIN_LEVEL_FOR_SLOT).find(([, v]) => v === best)?.[0]})` };
+    }
+  } catch (_) { /* no slots is normal for a warrior */ }
+
+  // 4. Challenge rating, as a floor. Rough, and it says so.
+  // ⚠️ ONLY WHEN IT ROUNDS TO A REAL LEVEL. A CR 1/4 goblin rounds to zero,
+  // and crediting "challenge rating" for an answer of 0 is the same small lie
+  // as reporting a range as a reach: the number is right, the explanation
+  // sends the reader somewhere that did not decide anything.
+  const cr = Number(sys.details?.cr ?? 0) || 0;
+  const fromCr = Math.round(cr);
+  if (fromCr >= 1) return { level: fromCr, source: `its challenge rating (${cr}), as a rough floor` };
+
+  return { level: 0, source: "nothing on this creature says what level it casts at" };
+}
+
 /** Levels PER CLASS, lowercased — `{ paladin: 2, warlock: 7 }`. */
 function _classLevels(actor) {
   const out = {};
@@ -164,84 +242,27 @@ export function buildAttackerProfile(actor, { token = null, item = null, activit
     problems.push(`could not resolve the edition: ${err?.message ?? err}`);
   }
 
-  // ── action normalization — plain facts about WHAT is being used ──
-  // ⚠️ ASK THE ACTIVITY, NOT THE ITEM. An item is a container; what it does
-  // lives in its activities, and reading the item's own type alone gets a
-  // dragon's Breath Weapon wrong.
-  const sys = item?.system ?? {};
-  const rangeSrc = activity?.range ?? sys.range ?? {};
-  const props = sys.properties ? new Set(sys.properties) : new Set();
-  const _reach = item
-    ? (() => {
-        try { return resolveReach(item, activity, { repair: false }); }
-        catch (err) {
-          problems.push(`could not resolve reach: ${err?.message ?? err}`);
-          return { reachFt: 0, source: "could not be read" };
-        }
-      })()
-    : { reachFt: 0, source: "no item" };
-  const action = item ? {
-    name: item.name ?? "",
-    normalizedName: String(item.name ?? "").toLowerCase().trim(),
-    uuid: item.uuid ?? null,
-    itemType: item.type ?? "",                       // "weapon" | "spell" | "feat" | ...
-    activityType: activity?.type ?? null,            // "attack" | "save" | "damage" | "utility" | ...
-    activationType: activity?.activation?.type ?? sys.activation?.type ?? null,
-    isSpell: item.type === "spell",
-    isWeapon: item.type === "weapon",
-    level: Number(sys.level ?? 0) || 0,              // spell level (0 = cantrip / non-spell)
-    school: sys.school ?? null,
-    // The feature's OWN edition outranks the world's (mixed-edition worlds are
-    // real — the Pact of the Blade lesson, 2026-07-09).
-    sourceRules: String(sys.source?.rules ?? "") || null,
-    concentration: !!(sys.properties?.has?.("concentration") || sys.duration?.concentration),
-    components: CombatContext._components(item),      // { v, s, m }
-    // Target/area declaration as dnd5e knows it — the rules entry may disagree;
-    // that disagreement is exactly what the discrepancy report surfaces.
-    target: {
-      templateType: sys.target?.template?.type ?? null,   // "sphere" | "cube" | "cone" | ...
-      templateSize: Number(sys.target?.template?.size ?? 0) || null,  // ft
-      affectsType: sys.target?.affects?.type ?? null,
-    },
-    range: {
-      value: Number(rangeSrc.value ?? 0) || null,
-      units: rangeSrc.units ?? null,
-    },
-
-    // ── REACH AND RANGE, FROM THE ONE RESOLVER ──
-    // ⚠️🔴 THIS FIELD IS WHY `reach-reader.mjs` EXISTS. It first read the
-    // range slot directly, which is the naive answer dnd5e stopped storing in
-    // 2026-08-23's migration — five feet for every glaive in the game. The
-    // pipeline already had the real resolver (activity, then item, then the
-    // statblock text, then the reach property), so it was lifted out and both
-    // call it. `reachSource` says WHERE the number came from, because "5 ft
-    // because the item says so" and "5 ft because nothing said anything" are
-    // different facts and printing them alike is what hid the bug.
-    //
-    // ⚠️ NO REPAIR FROM HERE. A profile is pure by contract and is built more
-    // than once per attack; the write-back belongs to the pipeline, which knows
-    // a real swing happened.
-    rangeUnits: rangeSrc.units ?? "ft",
-    isSelfRanged: (rangeSrc.units ?? "") === "self",
-    reachFt: _reach.reachFt,
-    reachSource: _reach.source,
-    rangeNormal: Number(rangeSrc.value ?? 0) || 0,
-    rangeLong: Number(rangeSrc.long ?? 0) || 0,
-
-    // ── weapon properties, as facts ──
-    properties: props,
-    twoHanded: props.has("two"),
-    versatile: props.has("ver"),
-    finesse: props.has("fin"),
-    thrown: props.has("thr"),
-    ammunition: props.has("amm"),
-    magical: props.has("mgc"),
-
-    equipped: sys.equipped,
-    attackAbility: activity?.ability || sys.attack?.ability || "",
-    mastery: sys.mastery ?? null,          // 2024 only; the edition decides use
-    spellLevel: item.type === "spell" ? (Number(sys.level ?? 0) || 0) : null,
-  } : null;
+  // ── ⚠️🔴 THE ATTACK USED TO LIVE HERE, AND IT DOES NOT ANY MORE ──
+  //
+  // Thirty-two fields describing the BUTTON sat inside this profile under
+  // `action` — reach, finesse, mastery, which ability it wants. Those are
+  // facts about a rapier, and they were being reported as facts about the
+  // creature holding it. The console line read
+  //
+  //     Lich (Legacy): conditions: concentrating · reach 120 ft · in combat
+  //
+  // which is two subjects in one sentence, and a 120-foot cantrip does not
+  // have "reach" at all.
+  //
+  // Johnny, 2026-08-25: "There are two separate things here: the attack and
+  // the attacker. The attacker profile should be separate from the attack
+  // profile." They are `profiles/attack-profile.mjs` and this file now.
+  //
+  // ⚠️ THIS PROFILE STILL TAKES `item` AND `activity`, and deliberately so.
+  // Two answers here genuinely depend on what is being used — whether the
+  // creature may take THIS action at all (a silenced caster, no free hand),
+  // and whether the item is equipped. Everything else about the button now
+  // belongs to the attack profile.
 
   // ── hard gates — CAN this creature act at all? (shared brain) ──
   let gate = { ok: true };
@@ -249,7 +270,7 @@ export function buildAttackerProfile(actor, { token = null, item = null, activit
     gate = CombatContext.canAct(actor, {
       isSpell: item?.type === "spell",
       item,
-      activationType: action?.activationType ?? "action",
+      activationType: activity?.activation?.type ?? item?.system?.activation?.type ?? "action",
     }) ?? { ok: true };
   } catch (err) {
     problems.push(`could not run the action gate: ${err?.message ?? err}`);
@@ -337,6 +358,9 @@ export function buildAttackerProfile(actor, { token = null, item = null, activit
 
   // ── auras this creature projects onto everyone else ──
   const classLevels = _classLevels(actor);
+  const _charLevel = Object.values(classLevels).reduce((a, b) => a + b, 0)
+    || Number(actor.system?.details?.level ?? 0) || 0;
+  const _caster = _casterLevel(actor, classLevels, _charLevel);
   const projectedAuras = [];
   try {
     // An unconscious or incapacitated paladin projects nothing.
@@ -386,6 +410,34 @@ export function buildAttackerProfile(actor, { token = null, item = null, activit
     characterLevel: Object.values(classLevels).reduce((a, b) => a + b, 0)
       || Number(actor.system?.details?.level ?? 0) || 0,
 
+    // ⚠️🔴 THE NUMBER THAT COST THREE BEAMS. See _casterLevel above.
+    casterLevel: _caster.level,
+    casterLevelSource: _caster.source,
+    cr: Number(actor.system?.details?.cr ?? 0) || 0,
+
+    // ⚠️ WHICH WEAPONS THIS CREATURE HAS MASTERY WITH — a Set of BASE ITEM
+    // keys ("rapier", "longsword"), not mastery names. That is how dnd5e stores
+    // it and how RAW works: you learn mastery WITH A WEAPON. The attack profile
+    // reports what the weapon OFFERS; only together do they mean anything.
+    masteryWeapons: (() => {
+      try {
+        const v = actor.system?.traits?.weaponProf?.mastery?.value;
+        return v instanceof Set ? new Set(v) : new Set(v ?? []);
+      } catch (_) { return new Set(); }
+    })(),
+    weaponProficiencies: (() => {
+      try {
+        const v = actor.system?.traits?.weaponProf?.value;
+        return v instanceof Set ? new Set(v) : new Set(v ?? []);
+      } catch (_) { return new Set(); }
+    })(),
+    armorProficiencies: (() => {
+      try {
+        const v = actor.system?.traits?.armorProf?.value;
+        return v instanceof Set ? new Set(v) : new Set(v ?? []);
+      } catch (_) { return new Set(); }
+    })(),
+
     // The players who should be prompted about this creature's choices.
     ownerUserIds: (() => {
       try {
@@ -405,9 +457,6 @@ export function buildAttackerProfile(actor, { token = null, item = null, activit
     // the full creature snapshot (conditions, senses incl. devilsSight,
     // speeds, defenses, concentration) — Situation.readCreature's shape
     creature,
-
-    // what they're doing
-    action,
 
     // can they even do it
     gate,
@@ -470,8 +519,19 @@ export function buildAttackerProfile(actor, { token = null, item = null, activit
       const c = creature.conditions ?? [];
       return (c.includes?.(s) ?? false) || (c.has?.(s) ?? false);
     },
-    /** Does the creature's own state impose disadvantage on its attacks? */
-    get selfAttackDisadvantage() { return !!creature.selfAttackDisadv; },
+    // ⚠️🔴 selfAttackDisadvantage WAS HERE AND IS DELIBERATELY GONE.
+    //
+    // It returned a bare boolean for "does this creature's own state impose
+    // disadvantage on its attacks". CombatState already answers that question
+    // properly: blinded, poisoned, frightened, restrained, prone, the 2014
+    // exhaustion cascade and Sunlight Sensitivity, each with the REASON
+    // attached so the card can say why.
+    //
+    // Two answers to one question is worse than one answer. A boolean sitting
+    // beside a fully reasoned implementation invites the next person to read
+    // the boolean, and they lose every reason in the process - and if the two
+    // ever disagree, nothing says which is right. CombatState.assess owns
+    // advantage and disadvantage. Ask it.
   };
 }
 
@@ -493,25 +553,13 @@ export function describeAttacker(p) {
   const conds = [...(p.conditions ?? [])].filter(Boolean);
   if (conds.length) bits.push(`conditions: ${conds.join(", ")}`);
   if (p.exhaustion) bits.push(`exhaustion ${p.exhaustion} (${p.edition} rules)`);
-  // ⚠️🔴 A 120-FOOT SPELL DOES NOT HAVE REACH. The resolver promotes a
-  // declared range into the reach number so a melee spell attack that dnd5e
-  // mislabels (Produce Flame) is not refused at 30 ft — correct for the range
-  // CHECK, wrong on the label. Johnny's Eldritch Blast printed "reach 120 ft",
-  // which is not a thing. Reach is a melee word; when the number came from a
-  // declared range it is reported as a range, using the source the resolver
-  // already hands back.
-  const fromRange = /declared range/.test(p.action?.reachSource ?? "");
-  if (p.action?.reachFt && !fromRange) {
-    bits.push(`reach ${p.action.reachFt} ${p.action.rangeUnits}`);
-  } else if (p.action?.rangeNormal) {
-    bits.push(`range ${p.action.rangeNormal}`
-      + (p.action.rangeLong ? `/${p.action.rangeLong}` : "")
-      + ` ${p.action.rangeUnits}`);
-  } else if (p.action?.reachFt) {
-    bits.push(`reach ${p.action.reachFt} ${p.action.rangeUnits}`);
-  }
-  if (p.action?.mastery) bits.push(`mastery ${p.action.mastery}`);
-  if (p.action?.equipped === false) bits.push("NOT EQUIPPED");
+
+  // ⚠️🔴 THE ATTACKER DOES NOT SPEAK FOR THE WEAPON. Reach, mastery and
+  // "not equipped" were printed here, which is how a Lich ended up claiming a
+  // cantrip's 120-foot range as its own reach. Those live on the attack
+  // profile and print on its own line now. What follows is the creature.
+  if (p.casterLevel) bits.push(`caster level ${p.casterLevel}`);
+  if (p.masteryWeapons?.size) bits.push(`mastery trained: ${[...p.masteryWeapons].join(", ")}`);
   if (p.resources?.concentratingOn) bits.push(`concentrating on ${p.resources.concentratingOn}`);
   bits.push(p.economy?.hasTurns ? (p.economy.isTheirTurn ? "their turn" : "in combat") : "no turns");
   if (p.economy?.reactionUsed) bits.push("reaction spent");

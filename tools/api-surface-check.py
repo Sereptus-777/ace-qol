@@ -20,6 +20,12 @@
 #
 # So: gather what the API actually defines, gather every place it is read, and
 # print the difference. The pass condition is ZERO.
+#
+# --- ITS SIBLING: api-published-check.py -------------------------------------
+# This file checks that a member EXISTS on the object. It cannot see a name
+# that exists as a variable somewhere but is never assigned onto game.aceQol -
+# reactionEngine passed here and was still undefined at every call site on
+# 2026-08-26. api-published-check.py covers that. Run both.
 import io
 import os
 import re

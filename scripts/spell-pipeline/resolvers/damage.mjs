@@ -11,6 +11,7 @@ import { CombatState } from "../../combat-state.mjs";
 import { Situation } from "../../situation.mjs";   // ⚠️ WAS NEVER IMPORTED — see below
 import { safeShowForRoll, awaitDiceSettle } from "../../dsn-utils.mjs";
 import { AnimationHelper } from "../animation.mjs";
+import { buildAttackerProfile } from "../../profiles/attacker-profile.mjs";
 
 // ─── Creature snapshot access (2026-07-28) ───────────────────────────────────
 // Facts about a creature come from the ONE reader, never from actor.system —
@@ -223,8 +224,14 @@ export class DamageResolver {
       // two targets split them front-loaded on the first pick, etc.
       const picked = (result?.targets ?? []).map(t => t?.actor).filter(Boolean);
       if (picked.length) {
-        const charLevel = _aceCreature(actor)?.level
-          ?? 1;
+        // ⚠️🔴 THE SAME `?? 1` THAT COST A CR 21 LICH THREE BEAMS.
+        // The attacker profile climbs a ladder for this - class levels, the
+        // declared caster level, the highest spell slot it owns read backwards
+        // through RAW's own table, then challenge rating - and names the rung
+        // that answered. See tools/caster-level-check.mjs.
+        const charLevel = buildAttackerProfile(actor, { item })?.casterLevel
+          || _aceCreature(actor)?.level
+          || 1;
         const N = entry.countResolver?.(ctx.castLevel, charLevel) ?? picked.length;
         distribution = DamageResolver._distributeUnits(picked, N);
       }

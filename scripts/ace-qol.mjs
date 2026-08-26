@@ -694,11 +694,23 @@ Hooks.once("ready", () => {
 });
 
 // ─── Module-conflict detection on world ready (audit P2-4) ───────────────────
-// ACE QOL is a comprehensive replacement for Midi-QOL + DAE + Times-Up +
-// Convenient Effects + Cover modules. Users migrating from those modules
-// may leave them active during the transition — which causes double-firing
-// on damage application, double active-effect handling, conflicting reaction
-// prompts, etc. Detect on world load, warn ONCE with a dismissible message.
+//
+// ⚠️🔴 THIS SAID ACE WAS "a comprehensive replacement for Midi-QOL + DAE +
+// Times-Up + Convenient Effects + Cover modules". Line 5 of this same file
+// retracts exactly that claim and calls it a refund waiting to happen — and
+// then this notice went on making it, in the one place a paying GM actually
+// reads: a chat card telling them to disable the modules their table runs on.
+//
+// A retraction in a header comment that the shipped text contradicts is not a
+// retraction. External audit, 2026-08-26.
+//
+// ⚠️ THE CONFLICT IS REAL; THE CLAIM WAS NOT. Two engines automating the same
+// rolls genuinely do double-fire, so the warning stays. What it must not say
+// is that ACE covers what they cover. The spell registry is roughly 122 of
+// ~320 SRD entries and the summon registry is empty on purpose — a GM who
+// disables Midi on our say-so and loses summons has been mis-sold.
+//
+// So: name the conflict, state the trade honestly, and let the GM choose.
 //
 // GM-only because GMs install/disable modules; players see no actionable UI.
 // Warning is suppressible via a settings-stored flag so users only see it
@@ -737,8 +749,16 @@ Hooks.once("ready", () => {
           <i class="fas fa-triangle-exclamation"></i> ACE QOL — Module Conflict Warning
         </div>
         <p style="margin:4px 0 6px 0;font-size:12px;">
-          ACE QOL replaces these modules — running them simultaneously will cause double-firing damage,
-          conflicting effect application, and inconsistent behavior. Consider disabling them for a clean experience.
+          These modules automate the same rolls ACE does. Running both at once causes double-firing
+          damage, conflicting effect application, and duplicate reaction prompts, so you should pick
+          <em>one</em> engine for combat.
+        </p>
+        <p style="margin:4px 0 6px 0;font-size:12px;">
+          <strong>ACE is not a drop-in replacement for all of them.</strong> It covers the common path
+          thoroughly — attacks, damage by type, saves, concentration, reactions, cover, conditions and
+          durations — but its spell registry is about 122 of the roughly 320 SRD spells, and it does not
+          automate summoning. If your table depends on the rest of Midi&#39;s surface, keep Midi and turn
+          ACE&#39;s overlapping automation off instead.
         </p>
         <ul style="margin:4px 0 0 18px;font-size:12px;line-height:1.5;">${labelList}</ul>
         <p style="margin:8px 0 0 0;font-size:11px;color:#c0b288;font-style:italic;">
@@ -1842,6 +1862,44 @@ Hooks.once("ready", () => {
   // Reaction engine — ALL users (players receive reaction prompts via socket)
   try {
     reactionEngine = new ReactionEngine();
+
+    // ⚠️🔴 PUT IT ON THE API. SIX FILES ASK FOR IT AND IT WAS NEVER THERE.
+    //
+    // `reactionEngine` is a module-local in this file, and six other files
+    // read `game.aceQol?.reactionEngine` — the attack pipeline's Cutting Words
+    // and Silvery Barbs, the damage card's Absorb Elements and Uncanny Dodge,
+    // post-hit saves, the save engine, spell auto-damage, and the spell
+    // pipeline's damage resolver. Every one used optional chaining, so an
+    // undefined lookup did nothing and said nothing. Those reactions never
+    // fired FROM THOSE PATHS.
+    //
+    // ⚠️ "From those paths" is the whole qualifier, and it matters. The GM
+    // socket handler in THIS file calls the module-local directly, so Shield
+    // has always worked when a spell arrived that way. A bug that is real on
+    // six routes and absent on a seventh is exactly the kind that survives
+    // being reported as "X has never worked" and then dismissed when X works.
+    //
+    // Found 2026-08-26 when Uncanny Dodge produced no prompt AND no warning
+    // after being moved to the post-roll path. The guard was false because the
+    // engine was not there, and the guard was silent because I wrote it that
+    // way — the third silent skip of the night, in code hunting the first two.
+    //
+    // ⚠️ Object.assign, NEVER a fresh object literal. Reassigning
+    // `game.aceQol` wiped a dozen registrations once already.
+    //
+    // The class of bug is now checked: `tools/api-published-check.py` fails on
+    // any `game.aceQol.<name>` that is read anywhere in the suite and assigned
+    // nowhere. It self-tests against this exact bug before it audits.
+    try {
+      game.aceQol = game.aceQol ?? {};
+      Object.assign(game.aceQol, { reactionEngine });
+      console.log(`${MODULE_ID} | reaction engine published on the API `
+        + `(${Object.keys(game.aceQol).length} entries) — Cutting Words, Silvery Barbs, `
+        + `Shield, Absorb Elements and Uncanny Dodge can now be reached by the pipelines.`);
+    } catch (err) {
+      console.error(`${MODULE_ID} | could not publish the reaction engine — `
+        + `every reaction in the suite will silently do nothing:`, err);
+    }
     injectReactionCSS();
     console.debug(`${MODULE_ID} | Reaction engine online`);
   } catch (err) {
@@ -5169,7 +5227,26 @@ Hooks.once("ready", () => {
         if (reactionEngine) {
           try {
             const modifiedResults = await reactionEngine.checkPostHitReactions(results, item, actor);
-            if (modifiedResults) {
+
+            // ⚠️🔴 THE SECOND COPY OF THE BUG THAT ATE EVERY CHAT CARD.
+            //
+            // Identical to the one in attack-pipeline.mjs: `checkPostHitReactions`
+            // used to return THE CALLER'S OWN ARRAY on its early-return paths, so
+            // `results.length = 0` emptied both and the refill put back nothing.
+            // This is the SOCKET path — the one a player's attack takes when the
+            // GM resolves it — so with reactions switched off, player attacks lost
+            // their cards on the GM's screen exactly the same way.
+            //
+            // ⚠️ FOUND BY SEARCHING FOR THE PATTERN, NOT BY IT SURFACING. Johnny
+            // asked whether reactions were behind the failed session; checking that
+            // properly meant grepping every wipe-and-refill in the suite rather than
+            // answering from the one site that had already bitten. Fixing only the
+            // instance that showed up is how a bug survives its own repair.
+            //
+            // The engine now returns a copy, which already protects this site — but
+            // a caller that destroys an array it was handed is a trap for whoever
+            // touches the engine next.
+            if (Array.isArray(modifiedResults) && modifiedResults !== results) {
               results.length = 0;
               results.push(...modifiedResults);
             }

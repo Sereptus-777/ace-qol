@@ -35,6 +35,10 @@ import { ConditionLibrary } from "./condition-library.mjs";
 // imports of `safeShowForRoll` from damage-engine.mjs keep working.
 import { safeShowForRoll, awaitDiceSettle } from "./dsn-utils.mjs";
 import { Situation } from "./situation.mjs";
+// Shared "why didn't that happen" reporters. why-not.mjs is a leaf that
+// imports nothing, so it cannot join the static import cycles ace-qol.mjs
+// sits at the centre of.
+import { rejectedReply } from "./why-not.mjs";
 
 // ─── Creature snapshot access (2026-07-28) ───────────────────────────────────
 // Facts about a creature come from the ONE reader, never from actor.system —
@@ -173,9 +177,11 @@ export class DamageEngine {
     // here, the ready hook had already fired, and the nested registration
     // never landed. Result: the GM socket listener was never attached, so
     // player CLEAVE clicks emitted into the void. Register directly instead.
+    // SILENT-OK: GM-only handler; every client sees this hook
     if (!game.user?.isGM) return;
     game.socket?.on?.(`module.${MODULE_ID}`, async (data) => {
       try {
+        // SILENT-OK: a socket message of another type; this listener sees them all
         if (data?.type !== "addCleaveTarget") return;
 
         // Validate the requesting user actually exists, owns the ATTACKER
@@ -260,6 +266,7 @@ export class DamageEngine {
    * GM-only — only the GM has permission to update the damage card's flags.
    */
   static _armDamageCardPushStamp(actorId, itemUuid) {
+    // SILENT-OK: GM-only handler; every client sees this hook
     if (!game.user?.isGM) return;
     if (!actorId || !itemUuid) return;
     let resolved = false;
@@ -436,6 +443,7 @@ export class DamageEngine {
           addBtn.textContent = "⊕ CLICK TOKEN...";
 
           const pickHook = Hooks.on("controlToken", async (token, controlled) => {
+            // SILENT-OK: controlToken also fires on DESELECT; only a selection picks a target
             if (!controlled || !token) return;
             Hooks.off("controlToken", pickHook);
             addBtn.classList.remove("ace-qol-btn-picking");
@@ -602,6 +610,7 @@ export class DamageEngine {
           cleaveBtn.textContent = `⚔ ${overkill} DMG — CLICK TOKEN...`;
 
           const pickHook = Hooks.on("controlToken", async (token, controlled) => {
+            // SILENT-OK: controlToken also fires on DESELECT; only a selection picks a target
             if (!controlled || !token) return;
             Hooks.off("controlToken", pickHook);
             cleaveBtn.classList.remove("ace-qol-btn-picking");
@@ -1151,7 +1160,10 @@ export class DamageEngine {
       return;
     }
     // A reply may only come from the player the popup was sent to.
-    if (payload && !replyIsFromTheUserWeAsked(pending.askedUserId, payload, "riderChoice")) return;
+    if (payload && !replyIsFromTheUserWeAsked(pending.askedUserId, payload, "riderChoice")) {
+      rejectedReply("the rider choice", pending.askedUserId, payload);
+      return;
+    }
     clearTimeout(pending.timeout);
     delete this._pendingRiderRequests[requestId];
     pending.resolve(selectedRiders ?? []);

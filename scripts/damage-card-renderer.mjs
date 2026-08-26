@@ -36,7 +36,25 @@ export class DamageCardRenderer {
         const isCrit = hit.hitResult === "critical";
         let components = await DamageCalculator.rollDamageComponents(item, actor, hit, isCrit, critRule, activityId);
 
-        // ── ABSORB ELEMENTS — target reaction to halve elemental damage ──
+        // ── ⚠️🔴 UNCANNY DODGE DOES NOT BELONG HERE ANY MORE ────────
+        //
+        // This runs while the ATTACK card is being built, before the player has
+        // pressed Roll Damage. ACE pre-rolls the damage behind the scenes, so it
+        // could confidently offer "halve 14 to 7" for dice nobody had seen
+        // thrown. Johnny, 2026-08-26:
+        //
+        //   "The dice didn't even roll yet. He didn't roll the damage. It's
+        //    going to have to be AFTER the guy rolls the damage. That's where
+        //    the hook has to go. Otherwise it's going to look awfully funny."
+        //
+        // He is right, and it is how it plays at a table: the damage is rolled,
+        // everyone sees the number, THEN the rogue decides. The Uncanny Dodge
+        // call moved to `postPreRolledDamageCard`, after the dice are on screen.
+        //
+        // ⚠️ ABSORB ELEMENTS STAYS. It answers elemental damage from any
+        // source, including saves that never produce an attack card, and it has
+        // worked from here for months. Moving both would be one change too many
+        // in a hot path at the end of a long night.
         try {
           const reactionEng = game.aceQol?.reactionEngine;
           if (reactionEng && hit.targetActor && hit.targetToken) {
@@ -45,7 +63,8 @@ export class DamageCardRenderer {
             // which it was; without it a save-based spell would offer a
             // reaction the rules do not allow.
             const preResult = await reactionEng.checkPreDamageReactions(
-              components, hit.targetActor, hit.targetToken, actor, item, hit
+              components, hit.targetActor, hit.targetToken, actor, item, hit,
+              { skipUncannyDodge: true }
             );
             // ⚠️ TAKE THE COMPONENTS WHENEVER SOMETHING CHANGED THEM, not
             // only when `absorbed` is set. Uncanny Dodge halves damage without
@@ -427,6 +446,9 @@ export class DamageCardRenderer {
       totalFinal: dr.totalFinal,
       isCrit: dr.isCrit,
       components: dr.components,
+      // ⚠️ WHAT CHANGED THE NUMBER, so the row can say so instead of quietly
+      // printing a total that does not match its own breakdown.
+      reactionApplied: dr.reactionApplied ?? null,
     })).join("");
 
     const critRuleLabel = { doubleDice: "Double Dice", maxPlusRoll: "Max + Roll", maxAll: "Max All" }[critRule] ?? critRule;
@@ -657,6 +679,17 @@ export class DamageCardRenderer {
         targetToken: { id: pr.tokenId, document: { id: pr.tokenDocId } },
         targetActor: targetActor ?? { id: pr.actorId },
         isCrit: pr.isCrit,
+        // ⚠️🔴 CARRY THE ATTACK OUTCOME. This object is handed to the
+        // post-roll reaction pass as the "hit", and Uncanny Dodge refuses
+        // anything it cannot confirm was an attack that landed. Both pre-roll
+        // sites store `hitResult` in the payload; this rebuild dropped it, so
+        // the reaction engine saw a hit with no outcome and declined EVERY
+        // time, silently. Firaxis critted Jeth for 18 on 2026-08-26 and Jeth
+        // was never asked. The field was three lines away the whole time.
+        hitResult: pr.hitResult,
+        // Same reason: the secondary-roll riders distinguish a true natural 20
+        // from a crit inside an expanded range, and they read it from here.
+        naturalRoll: pr.naturalRoll ?? null,
         components,
         totalRaw: pr.totalRaw,
         totalFinal: pr.totalFinal,
@@ -678,6 +711,86 @@ export class DamageCardRenderer {
       // DSN is off. Skipped on the player-rolls-own path (opts.skipDice) since the
       // caster already tumbled + settled these dice on their own client.
       await awaitDiceSettle();
+    }
+
+    // ── ⚠️🔴 UNCANNY DODGE, NOW THAT THE DICE ARE ON THE TABLE ────────
+    //
+    // This used to run while the ATTACK card was being built, before Roll
+    // Damage was pressed — offering "halve 14 to 7" for dice nobody had seen
+    // thrown. Johnny, 2026-08-26: "The dice didn't even roll yet... It's going
+    // to have to be AFTER the guy rolls the damage. That's where the hook has
+    // to go."
+    //
+    // Here the tumble has landed and the number is visible, so the rogue is
+    // deciding about damage everyone can see — the way it happens at a table.
+    //
+    // ⚠️ AND THE HALVING IS RECORDED, NOT SMUGGLED IN. The card used to show
+    // the original component breakdown against the halved total, so it
+    // contradicted itself: "7 +5 STR +1 =" and then "6 slashing". Seven plus
+    // five plus one is thirteen. Each target now carries what it was and what it
+    // became, and the card says which reaction did it.
+    try {
+      const reactionEng = game.aceQol?.reactionEngine;
+      if (!reactionEng?.checkPreDamageReactions) {
+        // ⚠️ NOT SILENT. This exact guard was false for months because the
+        // engine was never published on the API, and because it said nothing
+        // the missing feature looked identical to a feature choosing not to
+        // fire. tools/api-published-check.py now fails the build on that
+        // cause; this says so out loud if it ever happens again.
+        console.warn(`${MODULE_ID} | no post-roll reactions this card: the reaction `
+          + `engine is ${reactionEng ? "published but has no checkPreDamageReactions" : "not on game.aceQol"}. `
+          + `Uncanny Dodge and Absorb Elements cannot be offered.`);
+      } else {
+        for (const dr of damageResults) {
+          // ⚠️🔴 THIS SKIP USED TO BE SILENT, AND IT COST A TEST RUN.
+          // Written 20 minutes before it failed: if either lookup came back
+          // empty the loop just moved on, so Jeth was offered nothing and the
+          // console said nothing about why. A skip that explains itself is the
+          // whole lesson of tonight, and I wrote a new one anyway.
+          const tActor = dr.targetActor?.documentName === "Actor" ? dr.targetActor : null;
+          // ⚠️ TRY BOTH IDS. The pre-roll stores `tokenId` (the placeable) and
+          // `tokenDocId` (the document); on an unlinked token they are not
+          // always the same object, and the canvas is keyed by the document id.
+          const tToken = canvas?.tokens?.get?.(dr.targetToken?.document?.id)
+                      ?? canvas?.tokens?.get?.(dr.targetToken?.id)
+                      ?? (tActor ? tActor.getActiveTokens?.(false, false)?.[0] : null)
+                      ?? null;
+          if (!tActor || !tToken) {
+            console.warn(`${MODULE_ID} | no post-roll reaction offered to `
+              + `"${dr.target?.name ?? "a target"}": `
+              + `${!tActor ? "the target actor could not be resolved" : "its token is not on this canvas"} `
+              + `(actor=${dr.targetActor?.id ?? "?"}, tokenDoc=${dr.targetToken?.document?.id ?? "?"}, `
+              + `token=${dr.targetToken?.id ?? "?"}). Uncanny Dodge and Absorb Elements `
+              + `cannot be offered without both.`);
+            continue;
+          }
+
+          const before = dr.components.reduce((sum, c) => sum + (c.total ?? c.raw ?? 0), 0);
+          const res = await reactionEng.checkPreDamageReactions(
+            dr.components, tActor, tToken, actor, fakeItem, dr);
+
+          if (!res) {
+            console.warn(`${MODULE_ID} | the reaction check returned nothing for `
+              + `"${dr.target?.name ?? "a target"}" — taking full damage.`);
+            continue;
+          }
+          // A plain decline is already explained by the engine, which states
+          // the reason for every refusal. Nothing to add here.
+          if (!res.uncannyDodged) continue;
+          dr.components = res.modifiedComponents;
+          const after = dr.components.reduce((sum, c) => sum + (c.total ?? c.raw ?? 0), 0);
+          // What the card needs to tell the truth about the sum.
+          dr.reactionApplied = { label: "Uncanny Dodge", from: before, to: after };
+          dr.totalFinal = after;
+          console.log(`${MODULE_ID} | Uncanny Dodge applied after the roll: `
+            + `${dr.target?.name} takes ${after} instead of ${before}.`);
+        }
+      }
+    } catch (err) {
+      // ⚠️ NEVER LOSE THE CARD OVER A REACTION. The damage is real and the
+      // dice are on screen; a failed prompt must not swallow the result.
+      console.error(`${MODULE_ID} | the post-roll reaction pass failed — `
+        + `the card posts with FULL damage:`, err);
     }
 
     // ── Post the damage card AFTER dice finish rolling ──
@@ -738,7 +851,7 @@ export class DamageCardRenderer {
    * Build HTML for a single target row in the damage card.
    * Normalized input — works for both initial render and dynamic ADD/CLEAVE.
    */
-  static buildTargetRowHtml({ tokenDocId, actorId, sceneId, name, img, currentHP, maxHP, totalFinal, isCrit, components }) {
+  static buildTargetRowHtml({ tokenDocId, actorId, sceneId, name, img, currentHP, maxHP, totalFinal, isCrit, components, reactionApplied = null }) {
     const tDocId = tokenDocId ?? "unknown";
     const portrait = img || "icons/svg/mystery-man.svg";
     const newHP = Math.max(0, currentHP - totalFinal);
@@ -843,6 +956,11 @@ export class DamageCardRenderer {
             <span class="ace-qol-dmg-row-dmg">${totalFinal}<span class="ace-qol-dmg-unit">DMG</span></span>
             ${isDead ? '<span class="ace-qol-dmg-skull">☠</span>' : ''}
           </div>
+          ${reactionApplied ? `
+          <div class="ace-qol-dmg-reaction-line">
+            <i class="fas fa-person-running"></i>
+            <span><strong>${reactionApplied.label}</strong> — ${reactionApplied.from} halved to ${reactionApplied.to}</span>
+          </div>` : ""}
           <div class="ace-qol-dmg-hp-line">
             <span class="ace-qol-dmg-row-hp">HP: <span class="ace-qol-hp-cur">${currentHP}</span> → <span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span><span class="ace-qol-hp-max">/${maxHP}</span></span>
           </div>
