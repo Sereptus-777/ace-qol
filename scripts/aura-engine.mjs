@@ -142,6 +142,25 @@ const TURN_OFF_STATUS_KEYS = new Set(["incapacitated", "unconscious", "stunned",
 
 export class AuraEngine {
 
+  /**
+   * Does this engine actually drive the named item?
+   *
+   * ⚠️ EXISTS SO A NO-OP CANNOT LIE. TemplateResolver.runAura did nothing
+   * and said "handled by aura-engine". For Spirit Guardians that was false:
+   * this engine knows five PALADIN CLASS FEATURES and no spells at all, so the
+   * cast fell through three layers and resolved nowhere.
+   *
+   * A hand-off has to be answerable by the receiver, or it is just a hope
+   * written in a comment.
+   */
+  static knowsAura(item) {
+    try {
+      const name = String(item?.name ?? "").toLowerCase().trim();
+      if (!name) return false;
+      return AURAS.some(a => name.includes(String(a.sourceFeatureName ?? "").toLowerCase()));
+    } catch (_) { return false; }
+  }
+
   static init() {
     // ⚠️🔴 canvasReady HAS ALREADY FIRED BY THE TIME THIS RUNS.
     //

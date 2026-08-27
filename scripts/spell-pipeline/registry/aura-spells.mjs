@@ -25,7 +25,26 @@ export const AURA_SPELLS = {
   // creatures' first entry per turn or at the start of their turn inside.
   // WIS save half. Halves their speed while inside.
   "spirit guardians": {
-    shape: "aura",
+    shape: "template-trigger",
+    // ⚠️🔴 WAS shape "aura", WHICH RESOLVED TO NOTHING AT ALL.
+    //
+    // "aura" dispatches to TemplateResolver.runAura, a no-op whose comment
+    // said the work was "handled by aura-engine". aura-engine knows five
+    // PALADIN CLASS FEATURES and no spells, so this cast fell through three
+    // layers and landed nowhere. Johnny, 2026-08-27: "Spirit Guardians did
+    // absolutely nothing: no animation, nothing."
+    //
+    // ⚠️ IT IS MOONBEAM WITH A DIFFERENT ORIGIN. Persistent template,
+    // save on entering and again at the start of a turn inside, half on a
+    // success - which is exactly what template-trigger drives, and Moonbeam
+    // has been proving that path works. spell-timing.mjs already tags this
+    // ENTER_START with a WIS save and half on pass, so the data was ready and
+    // only the dispatch was wrong.
+    //
+    // ⚠️ THE ONE REAL DIFFERENCE is that it is centred on the caster and
+    // travels with them. The concentration tracker already fires entry saves
+    // when a TEMPLATE MOVES onto somebody, so dragging it along with the
+    // caster resolves correctly. What it will not do is move itself.
     range: 0,
     save: { ability: "wis", halfOnPass: true },
     flavorOnConfirm: "A 15-ft emanation of guardian spirits surrounds the caster. Hostile creatures: 3d8 radiant or necrotic on first entry per turn / start of turn inside (WIS save half). Speed halved inside.",

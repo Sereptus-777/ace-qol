@@ -48,11 +48,41 @@ export function fallDamageFormula(feet) {
  * Things that stop a fall without anyone spending a reaction.
  * @returns {{negated: boolean, reason: string}}
  */
-export function autoNegates(actor) {
+export function autoNegates(actor, tokenDoc = null) {
   try {
+    // ⚠️🔴 HOW THEY MOVED, NOT JUST WHAT THEY ARE.
+    //
+    // Every check here asked about the CREATURE - flying, hovering, wearing
+    // Feather Fall - and none asked how it got there. So Misty Step off a
+    // balcony prompted "did he fall, or climb down?", which is neither: he
+    // was never in the air. Johnny, 2026-08-27: "I went from the balcony down
+    // to the floor, and it asked me if I fell or not."
+    //
+    // Foundry V13 tags a token's movement with an action, and a teleport is
+    // recorded as "displace". That is the authoritative signal - it does not
+    // care which spell did it, so Misty Step, Dimension Door, Thunder Step,
+    // a Scroll of Teleport and a GM dragging with the teleport tool are all
+    // covered by one check.
+    const action = tokenDoc?.movement?.action ?? null;
+    if (["displace", "teleport", "blink"].includes(String(action))) {
+      return { negated: true, reason: `moved by ${action}, which is not falling` };
+    }
+
     const statuses = actor?.statuses;
     if (statuses?.has?.("flying"))    return { negated: true, reason: "is flying" };
     if (statuses?.has?.("hovering"))  return { negated: true, reason: "is hovering" };
+
+    // ⚠️ A CLIMBING SPEED IS THE ANSWER TO "did he climb down?". RAW, a
+    // creature with a climb speed descends a wall as ordinary movement. Asking
+    // its owner whether it climbed is asking a question the sheet already
+    // answers - and Spider Climb grants exactly this.
+    const climb = Number(actor?.system?.attributes?.movement?.climb ?? 0);
+    if (climb > 0) {
+      return { negated: true, reason: `has a climbing speed of ${climb} feet, so it climbed down` };
+    }
+    const spider = actor?.items?.some?.(i => /spider\s*climb/i.test(String(i?.name ?? "")))
+      || actor?.effects?.some?.(e => /spider\s*climb/i.test(String(e?.name ?? "")));
+    if (spider) return { negated: true, reason: "has Spider Climb, so it climbed down" };
 
     // A Ring of Feather Falling is always on — it costs nobody a reaction and
     // must never open a prompt.

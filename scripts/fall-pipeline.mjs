@@ -69,7 +69,7 @@ export class FallPipeline {
       const profile = buildTargetProfile(actor, { token: tokenDoc.object ?? tokenDoc });
 
       // ── Free catches: no prompt, no reaction, nothing spent ──────────────
-      const auto = autoNegates(actor);
+      const auto = autoNegates(actor, tokenDoc);
       if (auto.negated) {
         console.log(`${LOG} | ${tokenDoc.name} left a ${drop} feet height but ${auto.reason} — no fall.`);
         return;
@@ -163,9 +163,9 @@ export class FallPipeline {
       say(`Raw drop: ${drop} feet (minimum for any fall is ${MIN_FALL_FT} feet).`);
       if (drop < MIN_FALL_FT) return say("STOPS HERE: the drop is under the minimum, so RAW says nothing happens.");
 
-      const auto = autoNegates(actor);
+      const auto = autoNegates(actor, tokenDoc);
       if (auto.negated) return say(`STOPS HERE: no fall because it ${auto.reason}.`);
-      say("Not flying, hovering, or wearing Feather Fall.");
+      say("Not a teleport, not flying or hovering, no climbing speed, no Feather Fall.");
 
       const grounds = FallPipeline._groundsBelow(tokenDoc, fromFt);
       say(`ACE ground-level regions found beneath it: ${grounds.length}` +

@@ -69,8 +69,44 @@ export class TemplateResolver {
    * filtering + per-turn damage.
    */
   static async runAura(ctx) {
-    if (ctx?.entry?._debug) {
-      console.debug(`${MODULE_ID} | TemplateResolver.runAura: ${ctx.item?.name} no-op (handled by aura-engine)`);
+    // ⚠️🔴 THIS NO-OP SAID IT WAS "handled by aura-engine" AND FOR
+    // SPIRIT GUARDIANS THAT WAS NOT TRUE.
+    //
+    // aura-engine.mjs knows exactly five things, and all five are paladin
+    // CLASS FEATURES: Aura of Protection, Warding, Courage, Hate and The
+    // Guardian. It has never heard of a SPELL. So a spell tagged shape
+    // "aura" dispatched here, this did nothing, and the engine it named did
+    // nothing either - three layers each certain another one had it.
+    //
+    // Johnny, 2026-08-27: "Spirit Guardians did absolutely nothing: no
+    // animation, nothing."
+    //
+    // ⚠️ A COMMENT THAT NAMES ITS SUCCESSOR MUST BE CHECKABLE. The other
+    // two no-ops in this file are honest - save-engine really does own
+    // template-save, and concentration-widget really does own
+    // template-trigger. This one named an owner that could not accept it, and
+    // nothing anywhere would ever have said so. Now it asks.
+    const name = ctx?.item?.name ?? "this spell";
+    let owned = false;
+    try {
+      const { AuraEngine } = await import("../../aura-engine.mjs");
+      owned = !!AuraEngine?.knowsAura?.(ctx?.item);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not ask the aura engine about "${name}":`, err);
+      return;
     }
+
+    if (owned) {
+      if (ctx?.entry?._debug) {
+        console.debug(`${MODULE_ID} | TemplateResolver.runAura: ${name} - aura-engine owns it`);
+      }
+      return;
+    }
+
+    console.warn(`${MODULE_ID} | "${name}" is registered with shape "aura", which hands it to `
+      + `the aura engine - and the aura engine only knows paladin class-feature auras, not `
+      + `spells. Nothing is going to resolve this cast. If it places a template and deals `
+      + `damage on a save, its shape should be "template-trigger" (like Moonbeam), which `
+      + `the concentration tracker already drives.`);
   }
 }
