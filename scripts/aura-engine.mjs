@@ -143,15 +143,36 @@ const TURN_OFF_STATUS_KEYS = new Set(["incapacitated", "unconscious", "stunned",
 export class AuraEngine {
 
   static init() {
-    // Full recompute when canvas is ready (handles initial load + scene change)
-    Hooks.on("canvasReady", () => {
+    // ⚠️🔴 canvasReady HAS ALREADY FIRED BY THE TIME THIS RUNS.
+    //
+    // AuraEngine.init() is called from ace-qol.mjs's own `ready` handler, and
+    // Foundry fires `canvasReady` during startup - before we get here. So this
+    // listener was waiting for an event already in the past: the ring layer
+    // never attached, `recomputeAll` never ran, and nothing threw or logged.
+    // The rings only appeared if the GM happened to change scene.
+    //
+    // Johnny, 2026-08-27: "I'm still not getting the animation that I liked."
+    // His diagnostic said it plainly - paladin 9, feature present, engine
+    // enabled, mode "rings", and "ring container: NOT ON CANVAS".
+    //
+    // ⚠️ THIS IS THE 2026-08-12 BUG WITH A DIFFERENT EVENT NAME. That one
+    // was `Hooks.once("ready")` registered from inside `ready` and it cost
+    // thirteen surviving condition ghosts. The rule is not about `ready`; it
+    // is about ANY lifecycle event that may already have happened: run it now
+    // if the world is already in that state, and subscribe for next time.
+    const start = () => {
       try {
         if (QolSettings.get?.("auraEngineEnabled") === false) return;
         AuraVisualLayer.attach(); // visual ring renderer (all clients)
         if (game.users?.activeGM !== game.user) return;  // activeGM: recomputeAll applies effects — must only fire once
         AuraEngine.recomputeAll();
       } catch (err) { console.warn(`${MODULE_ID} | AuraEngine canvasReady threw:`, err); }
-    });
+    };
+
+    // Every future scene change...
+    Hooks.on("canvasReady", start);
+    // ...and the scene that is already open right now.
+    if (canvas?.ready) start();
 
     // Token moved → recompute the aura state of EVERY token (cheap; we only
     // touch differences). A token's movement can affect:

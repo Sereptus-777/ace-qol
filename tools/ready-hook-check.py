@@ -181,3 +181,60 @@ if problems:
     print('Fix: const run = () => {...}; if (game.ready) run(); else Hooks.once("ready", run);')
     sys.exit(1)
 print("  every ready registration is reachable, or guarded with game.ready")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  canvasReady is the SAME TRAP with a different event name
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# 2026-08-27. The aura rings never drew. AuraEngine.init() registers a
+# `canvasReady` listener, and init() is called from ace-qol.mjs's own `ready`
+# handler - by which time Foundry has ALREADY fired canvasReady. The listener
+# waited for an event in the past: the ring layer never attached, recomputeAll
+# never ran, nothing threw and nothing logged. Rings appeared only if the GM
+# changed scene.
+#
+# Identical in shape to the `Hooks.once("ready")` inside `ready` bug of
+# 2026-08-12 that left thirteen condition ghosts alive. The rule is not about
+# `ready` specifically: it is about ANY lifecycle event that may already have
+# happened. Run it now if the world is already in that state, AND subscribe
+# for next time.
+#
+# ⚠️ THIS SECTION REPORTS, IT DOES NOT ACCUSE. A canvasReady listener
+# registered at module top level fires at import, long before canvasReady, and
+# is perfectly correct. Only one registered from inside a ready handler is
+# broken - and that is not decidable by reading a single line. A first sweep
+# flagged 28 of these and most were fine. Treat this as a list to review.
+print("")
+print("canvasReady LISTENERS - review, do not mass-edit")
+print("=" * 74)
+_unguarded = 0
+for _mod in MODS:
+    _root = os.path.join(ROOT, _mod, "scripts")
+    if not os.path.isdir(_root):
+        continue
+    for _dp, _dn, _fns in os.walk(_root):
+        for _fn in _fns:
+            if not _fn.endswith(".mjs"):
+                continue
+            _f = os.path.join(_dp, _fn)
+            try:
+                _src = open(_f, encoding="utf-8", errors="ignore").read()
+            except OSError:
+                continue
+            _code = re.sub(r"/\*.*?\*/", "", _src, flags=re.S)
+            _code = re.sub(r"^\s*//.*$", "", _code, flags=re.M)
+            for _m in re.finditer(r"Hooks\.(?:on|once)\(\s*[\"']canvasReady[\"']", _code):
+                _ln = _code[:_m.start()].count(chr(10)) + 1
+                _line = _code.split(chr(10))[_ln - 1]
+                _toplevel = not _line.startswith(" ")
+                _win = _code[max(0, _m.start() - 1500):_m.start() + 900]
+                _guarded = "canvas?.ready" in _win or "canvas.ready" in _win
+                if _toplevel or _guarded:
+                    continue
+                _unguarded += 1
+                print("   %s:%d" % (os.path.relpath(_f, ROOT).replace("\\", "/"), _ln))
+print("")
+print("   %d nested canvasReady listener(s) with no already-ready guard." % _unguarded)
+print("   Each is only a bug if its registration runs AFTER canvasReady has")
+print("   fired - typically from inside a ready handler. Check the caller.")
