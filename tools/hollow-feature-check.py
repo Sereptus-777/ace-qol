@@ -39,6 +39,8 @@ import sys
 import tempfile
 
 FOUNDRY_APP = r"D:\FoundryVTT\Foundry Virtual Tabletop\resources\app"
+# Written where he actually looks, as text. A JSON dump is not a report.
+REPORT_DIR = r"C:\Users\johnp\OneDrive\Desktop\ACE Project\Coverage Reports"
 
 # Phrases that promise an actual mechanical change. Deliberately narrow: a
 # feature saying "you have advantage on checks to climb" is not something a
@@ -246,6 +248,47 @@ def main():
             print("    %-30s %-38s %d actors" % (e["name"][:30], e["why"], e["npcs"]))
         if len(others) > 15:
             print("    ... and %d more" % (len(others) - 15))
+
+    # Same list, as a file he can read at camp.
+    try:
+        os.makedirs(REPORT_DIR, exist_ok=True)
+        path = os.path.join(REPORT_DIR, "ACE HOLLOW FEATURES - %s.txt"
+                            % os.path.basename(sys.argv[1].rstrip("/" + chr(92))))
+        with io.open(path, "w", encoding="utf-8") as fh:
+            w = lambda t="": fh.write(t + chr(10))
+            w("=" * 78)
+            w("FEATURES THAT PROMISE A NUMBER AND CARRY NOTHING TO PRODUCE IT")
+            w("=" * 78)
+            w("")
+            w("These items have rules text describing a mechanical change and no")
+            w("Active Effect, flag or activity that could produce it. The text came")
+            w("across from the importer; the mechanics did not.")
+            w("")
+            w("ACE has not altered anything. It cannot safely: writing the missing")
+            w("effect would double up with anything else that handles the feature,")
+            w("and would rewrite your characters without asking.")
+            w("")
+            w("%d items scanned." % len(rows))
+            w("")
+            w("-" * 78)
+            w("ON PLAYER CHARACTERS - these change rolls at your table right now")
+            w("-" * 78)
+            w("")
+            for e in on_pcs:
+                w("  %s" % e["name"])
+                w("      should give: %s" % e["why"])
+                w("      carried by : %s" % ", ".join(sorted(e["pcs"])))
+                w("")
+            w("-" * 78)
+            w("ON NPCs ONLY (%d) - lower priority" % len(others))
+            w("-" * 78)
+            w("")
+            for e in others:
+                w("  %-34s %-40s %d actors" % (e["name"][:34], e["why"][:40], e["npcs"]))
+        print("")
+        print("  written: %s" % path)
+    except OSError as err:
+        print("  (could not write the report file: %s)" % err)
 
     print("")
     print("=" * 78)

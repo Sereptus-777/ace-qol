@@ -40,6 +40,8 @@ import tempfile
 
 MODULES = r"D:\FoundryVTT\Data\modules"
 FOUNDRY_APP = r"D:\FoundryVTT\Foundry Virtual Tabletop\resources\app"
+# Reports go where he actually looks, not into the module folder.
+REPORT_DIR = r"C:\Users\johnp\OneDrive\Desktop\ACE Project\Coverage Reports"
 TYPES = ("spell", "weapon", "feat", "equipment", "consumable")
 
 
@@ -258,10 +260,84 @@ def main():
     if len(gaps) > 30:
         print("    ... and %d more" % (len(gaps) - 30))
 
-    out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "world-coverage.json")
-    json.dump(rows, open(out, "w", encoding="utf-8"), indent=1)
+    # ⚠️ WRITE IT AS SOMETHING A HUMAN READS. The first version dumped
+    # JSON and Johnny asked the obvious question: "am I not supposed to read
+    # it?" A report nobody can read is a report that does not exist - the same
+    # lesson as raw JSONL transcripts versus the timestamped readable ones.
+    out = REPORT_DIR
+    try:
+        os.makedirs(out, exist_ok=True)
+        path = os.path.join(out, "ACE COVERAGE - %s.txt"
+                            % os.path.basename(sys.argv[1].rstrip("/\\")))
+    except OSError:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "coverage-report.txt")
+
+    with io.open(path, "w", encoding="utf-8") as fh:
+        w = lambda t="": fh.write(t + chr(10))
+        w("=" * 78)
+        w("ACE COVERAGE OF %s" % os.path.basename(sys.argv[1].rstrip("/\\")).upper())
+        w("=" * 78)
+        w("")
+        w("HOW TO READ THIS")
+        w("  LIBRARY       a curated ACE entry names this item")
+        w("  ENGINE        a dedicated ACE engine names it")
+        w("  SELF-LEARNED  no entry, but ACE drafted a rule from the item's own text")
+        w("  NOT MODELED   has real rules text and nothing NAMED it")
+        w("  NO TEXT       nothing to model in the first place")
+        w("")
+        w("  NOT MODELED does NOT mean broken. A Longsword needs no ACE entry;")
+        w("  dnd5e rolls it correctly. Multiattack sits in that column on 1,241")
+        w("  actors and is driven by MultiattackEngine every round.")
+        w("")
+        w("-" * 78)
+        w("TOTALS")
+        w("-" * 78)
+        w("")
+        w("  %-12s %8s %7s %13s %12s %8s" % (("type",) + order))
+        for t in TYPES:
+            c = dict((bk, 0) for bk in order)
+            for r in rows:
+                if r["type"] == t:
+                    c[r["bucket"]] += 1
+            if sum(c.values()):
+                w("  %-12s %8d %7d %13d %12d %8d" % ((t,) + tuple(c[bk] for bk in order)))
+        w("  %-12s %8d %7d %13d %12d %8d" % (("TOTAL",) + tuple(tot[bk] for bk in order)))
+        w("")
+        w("  %d of %d items carrying rules text are handled somewhere: %.0f%%"
+          % (handled, modelable, 100.0 * handled / max(1, modelable)))
+        w("")
+        w("-" * 78)
+        w("UNHANDLED AND CARRIED BY A PLAYER CHARACTER (%d)" % len(gaps))
+        w("Look at these first. A monster-only gap can wait.")
+        w("-" * 78)
+        w("")
+        for r in gaps:
+            w("  %-11s %-46s %d PC(s), %d actors"
+              % (r["type"], r["name"][:46], r["pcs"], r["count"]))
+        w("")
+        w("-" * 78)
+        w("EVERYTHING ELSE UNHANDLED, MOST COMMON FIRST")
+        w("-" * 78)
+        w("")
+        rest = sorted([r for r in rows if r["bucket"] == "NOT MODELED" and not r["pcs"]],
+                      key=lambda r: -r["count"])
+        for r in rest:
+            w("  %-11s %-46s %d actors" % (r["type"], r["name"][:46], r["count"]))
+        w("")
+        w("-" * 78)
+        w("WHAT ACE ALREADY HANDLES, FOR REFERENCE")
+        w("-" * 78)
+        for bucket in ("LIBRARY", "ENGINE", "SELF-LEARNED"):
+            got = sorted([r for r in rows if r["bucket"] == bucket],
+                         key=lambda r: (r["type"], r["name"].lower()))
+            w("")
+            w("  %s (%d)" % (bucket, len(got)))
+            for r in got:
+                extra = ("  [" + ", ".join(r["found"]) + "]") if r.get("found") else ""
+                w("    %-11s %-44s %d actors%s"
+                  % (r["type"], r["name"][:44], r["count"], extra))
     print("")
-    print("  full data: %s" % out)
+    print("  written: %s" % path)
 
 
 if __name__ == "__main__":
