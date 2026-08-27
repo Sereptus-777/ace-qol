@@ -614,7 +614,7 @@ export class EffectsPanel {
         <img src="${s.icon}" class="ace-qol-effect-icon" alt="" />
         <div class="ace-qol-effect-info">
           <span class="ace-qol-effect-name">${foundry.utils.escapeHTML(s.name)}</span>
-          <span class="ace-qol-effect-duration">${s.rounds}r</span>
+          <span class="ace-qol-effect-duration">${s.rounds} round${s.rounds === 1 ? "" : "s"}</span>
         </div>
         <i class="fas fa-times ace-qol-sunlight-dismiss" title="Extinguish sunlight" style="margin-left:auto;padding:0 6px;cursor:pointer;color:#ffd86b;"></i>
       </div>
@@ -651,15 +651,30 @@ export class EffectsPanel {
     `;
   }
 
+  /**
+   * How much longer, in words.
+   *
+   * ⚠️ SPELLED OUT, NOT ABBREVIATED. This used to emit "1r", which the
+   * panel's uppercase styling turned into "1 R" - and a GM reading a
+   * Commanded creature could not tell whether that meant a round, a reaction
+   * or something else. Johnny, 2026-08-27: "It should say one round. It's not
+   * like we don't have the room there to put it."
+   *
+   * There is room. A duration badge exists to be understood at a glance, and a
+   * single letter is only shorter, not clearer.
+   */
   _formatRemaining(effect) {
     const dur = effect.duration ?? {};
+    const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
     if (dur.seconds) {
-      const s = dur.remaining ?? dur.seconds;
-      if (s >= 60) return `${Math.ceil(s / 60)}m`;
-      return `${Math.ceil(s)}s`;
+      const s = Math.ceil(dur.remaining ?? dur.seconds);
+      if (s >= 3600) return plural(Math.ceil(s / 3600), "hour");
+      if (s >= 60)   return plural(Math.ceil(s / 60), "min");
+      return plural(s, "sec");
     }
-    if (dur.rounds) return `${dur.remaining ?? dur.rounds}r`;
-    if (dur.turns)  return `${dur.remaining ?? dur.turns}t`;
+    if (dur.rounds) return plural(dur.remaining ?? dur.rounds, "round");
+    if (dur.turns)  return plural(dur.remaining ?? dur.turns, "turn");
     return "";
   }
 

@@ -1573,6 +1573,44 @@ for (const [key, def] of Object.entries(FEATURE_EFFECTS))  ALL_EFFECTS[key] = { 
 //  ConditionLibrary — Public API
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/**
+ * The five words Command can carry, and what each one does.
+ *
+ * ⚠️🔴 THE EFFECT SAID "COMMANDED" AND NOTHING ELSE. A GM looking at the
+ * token could see a creature was under a Command with no way to learn WHICH
+ * one - which is the only part that matters, because the whole spell is the
+ * difference between dropping a sword and falling prone.
+ *
+ * Johnny, 2026-08-27: "it didn't say what he was commanded to do... let's add
+ * some descriptions, like grovel: Firaxis is groveling at the feet of the Lich."
+ *
+ * ⚠️ RAW, AND THE SAME FIVE IN BOTH EDITIONS. 2014 and 2024 print the same
+ * list with the same effects, so this needs no edition branch. The wording is
+ * the printed effect rather than a paraphrase.
+ */
+export const COMMAND_WORDS = {
+  approach: "moves toward you by the shortest and most direct route, ending its turn if it moves within 5 feet of you.",
+  drop:     "drops whatever it is holding and then ends its turn.",
+  flee:     "spends its turn moving away from you by the fastest available means.",
+  grovel:   "falls prone and then ends its turn.",
+  halt:     "doesn't move and takes no actions. A flying creature stays aloft if it is able to — if it must move to stay aloft, it flies the minimum distance needed.",
+};
+
+/**
+ * Which of the five words is this, if any?
+ *
+ * ⚠️ MATCHED FROM THE ACTIVITY NAME, because dnd5e ships Command with one
+ * ACTIVITY PER WORD and that is where the GM's choice actually lands. Reading
+ * the spell's own name could only ever return "Command".
+ */
+export function commandWordFrom(name) {
+  const n = String(name ?? "").toLowerCase();
+  for (const word of Object.keys(COMMAND_WORDS)) {
+    if (n.includes(word)) return word;
+  }
+  return null;
+}
+
 export class ConditionLibrary {
 
   // ─── Lookup ─────────────────────────────────────────────────────────────
@@ -1774,8 +1812,24 @@ export class ConditionLibrary {
     // duplicate of the status itself too. Rider lifecycle is handled by the
     // deleteActiveEffect cleanup in condition-raw-hooks.mjs instead. (2026-06-24.)
     const effectData = {
-      name: def.name,
+      name: options.nameOverride ?? def.name,
+      // ⚠️ BOTH FIELD NAMES. Foundry renamed ActiveEffect#icon to #img at
+      // v11 and has carried a shim since. ACE reads both everywhere and wrote
+      // only the old one, which is a silent-no-op waiting for the release that
+      // drops the shim - the effect would simply lose its picture and nothing
+      // would say why.
       icon: def.icon,
+      img: def.icon,
+      // ⚠️🔴 THE DESCRIPTION WENT INTO OUR OWN FLAG AND NOWHERE ELSE.
+      // ActiveEffect has had a real `description` field since v11 and it is what
+      // the sheet shows when you expand an effect. So every ACE condition
+      // carried a perfectly good sentence that no player could ever read:
+      // Johnny, 2026-08-27, on a Commanded creature - "if you press under the
+      // effects and it says Command and had no description".
+      //
+      // The flag copy stays; other ACE code reads it and moving it would be a
+      // second change for no gain.
+      description: options.descriptionOverride ?? def.description ?? "",
       origin: options.origin ?? null,
       changes,
       duration,

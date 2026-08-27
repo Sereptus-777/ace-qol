@@ -23,6 +23,9 @@ import { replyIsFromTheUserWeAsked } from "./socket-authority.mjs";
 import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { QolSettings } from "./settings.mjs";
 import { CombatState } from "./combat-state.mjs";
+// THE one answer to "is this creature in that area", shared with the
+// concentration tracker so cast-time and entry can never disagree.
+import { isTokenInTemplate, anyOverlapCounts } from "./template-geometry.mjs";
 import { DamageConstants, safeShowForRoll } from "./damage-engine.mjs";
 import { awaitDiceSettle } from "./dsn-utils.mjs";
 // The target-side snapshot. The save pipeline asks THIS what a creature is
@@ -619,96 +622,34 @@ export class SaveEngine {
     });
   }
 
+  /**
+   * Everyone the area actually catches.
+   *
+   * ⚠️🔴 THE GEOMETRY LIVES IN template-geometry.mjs NOW, because ACE
+   * had two of them. This one used the half-coverage rule; the concentration
+   * tracker's entry test used a single centre point. A creature standing half
+   * inside a Moonbeam was therefore caught when it was CAST and took nothing
+   * walking back in - the same creature, the same beam, two answers.
+   *
+   * Both call one function now. It is also edition-aware: 2014 wants about
+   * half the square covered, 2024 counts any overlap.
+   */
   static _getTokensInTemplate(templateDoc) {
     const templateObject = templateDoc.object;
     if (!templateObject?.shape) {
       // ⚠️ NEVER SILENT, AND NEVER THE SAME ANSWER AS "NOBODY IS THERE".
-      // An empty array here used to be indistinguishable from a genuinely empty
-      // area. Callers must await _awaitTemplateShape first; if this still fires,
-      // something is wrong with the placeable, not with the battlefield.
-      console.warn(`${MODULE_ID} | _getTokensInTemplate: template ${templateDoc?.id} has NO SHAPE yet — ` +
-        `this is not "no targets", it is "cannot tell". The caller should have awaited SaveEngine._awaitTemplateShape.`);
+      // An empty array here used to be indistinguishable from a genuinely
+      // empty area. Callers must await _awaitTemplateShape first; if this
+      // still fires, something is wrong with the placeable, not the
+      // battlefield.
+      console.warn(`${MODULE_ID} | _getTokensInTemplate: template ${templateDoc?.id} has NO SHAPE yet — `
+        + `this is not "no targets", it is "cannot tell". The caller should have awaited SaveEngine._awaitTemplateShape.`);
       return [];
     }
 
-    const shape = templateObject.shape;
-    const templateX = templateDoc.x;
-    const templateY = templateDoc.y;
-    const gridSize = canvas.grid.size;
-
-    const tokensInside = [];
-
-    for (const token of canvas.tokens.placeables) {
-      const tokenDoc = token.document;
-      const tokenGridW = tokenDoc.width ?? 1;   // width in grid squares
-      const tokenGridH = tokenDoc.height ?? 1;  // height in grid squares
-      const tokenX = tokenDoc.x;
-      const tokenY = tokenDoc.y;
-
-      let isInside = false;
-
-      // ⚠️🔴 ONE POINT PER SQUARE IS NOT "IS THE CREATURE IN THE AREA".
-      //
-      // This tested the exact CENTRE of each occupied square and nothing else,
-      // which is the strictest reading possible and it fails visibly:
-      //
-      // ⚠️ AND THEN I MEASURED IT, AND IT CHANGED NOTHING. Swept every
-      // square around a 15 ft cone, grid-aligned and half-offset: ZERO squares
-      // change answer between centre-only and half-coverage. That is a property
-      // of convex shapes - if most of a square is inside a cone or a circle, its
-      // centre is inside too. So this did NOT fix the bug it was written for, and
-      // saying otherwise in a comment would mislead whoever reads it next.
-      // (`tools/template-coverage-check.mjs` is the bench that proved it.)
-      //
-      // It is kept because it is the printed rule and it is not free of value:
-      // it only ever differs for a CONCAVE footprint - a wall bending round a
-      // corner, a traced region - where a square can be mostly covered while its
-      // centre sits in the notch. Cones and spheres are unaffected.
-      //
-      // THE ACTUAL CAUSE of Johnny's goblin (2026-08-24) was geometric: he had
-      // placed the cone's APEX on the goblin. A cone has zero width at its tip,
-      // so the creature you aim AT by dropping the origin on it is the one
-      // creature guaranteed to be outside the shape. Fixed by pinning the apex
-      // to the caster instead - see the self-origin pin in ace-qol.mjs.
-      //
-      // The 2014 DMG (p.251, Areas of Effect on a Grid) states the rule this
-      // now implements: an area affects a square when it covers AT LEAST HALF
-      // of it. Sampling a 3x3 lattice inset inside each square and requiring a
-      // majority is a direct, cheap approximation of that — nine points, five
-      // to count. The centre is still tried first as a fast path, so the common
-      // case costs exactly what it did before.
-      //
-      // ⚠️ A LATTICE, NOT A RANDOM SAMPLE. Deterministic: the same board
-      // state always gives the same answer, so a save that fires once fires
-      // every time. Nothing about this may depend on frame timing or ordering.
-      const SAMPLES = [1 / 6, 3 / 6, 5 / 6];
-      const inShape = (wx, wy) => shape.contains(wx - templateX, wy - templateY);
-
-      for (let gx = 0; gx < tokenGridW && !isInside; gx++) {
-        for (let gy = 0; gy < tokenGridH && !isInside; gy++) {
-          const sqX = tokenX + gx * gridSize;
-          const sqY = tokenY + gy * gridSize;
-
-          // Fast path — dead centre, which is what most hits are.
-          if (inShape(sqX + gridSize / 2, sqY + gridSize / 2)) { isInside = true; break; }
-
-          // Otherwise ask how much of the square the area actually covers.
-          let covered = 0;
-          for (const fx of SAMPLES) {
-            for (const fy of SAMPLES) {
-              if (inShape(sqX + fx * gridSize, sqY + fy * gridSize)) covered++;
-            }
-          }
-          if (covered >= 5) isInside = true;      // at least half the square
-        }
-      }
-
-      if (isInside) {
-        tokensInside.push(token);
-      }
-    }
-
-    return tokensInside;
+    const overlap = anyOverlapCounts(CombatState.getActiveEdition);
+    return canvas.tokens.placeables.filter(
+      token => isTokenInTemplate(token, templateObject, null, { anyOverlapCounts: overlap }));
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -4682,7 +4623,24 @@ export class SaveEngine {
     {
 
       const passClass = pcResult.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
-      const verdictText = pcResult.passed ? "PASS" : "FAIL";
+      // ⚠️🔴 THE PC ROW THREW THE REASON AWAY. This read
+      // `passed ? "PASS" : "FAIL"` and nothing else, so a player who took an
+      // unexpected amount of damage got no explanation at all - while the NPC
+      // path a few hundred lines up has built "FAIL (EVASION: HALF)" the whole
+      // time.
+      //
+      // Johnny, 2026-08-27: Jet failed a Fireball save and took half. That is
+      // Evasion working exactly to RAW (succeed for none, fail for half), and
+      // ACE had it right - it just never said so, so it read as a bug. Being
+      // right and silent is indistinguishable from being wrong.
+      //
+      // ⚠️ PREFER THE LABEL THE ENGINE ALREADY BUILT, and only compose one
+      // if it is genuinely absent - two places deciding the same wording is how
+      // they drift apart.
+      const verdictText = pcResult.resultLabel
+        ?? (pcResult.passed
+              ? (pcResult.superSaver ? "PASS (EVASION)" : "PASS")
+              : (pcResult.superSaver ? "FAIL (EVASION: HALF)" : "FAIL"));
 
       // Replace the dice button + mod with the FULL d20 breakdown (face + raw +mod = total)
       const modSpan = row.querySelector(".ace-qol-save-tgt-mod");

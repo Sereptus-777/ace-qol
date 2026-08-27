@@ -1741,65 +1741,12 @@
   transition: all 0.3s ease;
 }
 
-/* ─── Concentration Widget ─────────────────────────────────── */
-.ace-qol-conc-widget {
-  background: #1a1a1e; border: 1px solid rgba(212,175,55,0.4);
-  border-radius: 6px; padding: 8px; min-width: 280px; max-width: 340px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.6);
-}
-.ace-qol-conc-header {
-  display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
-}
-.ace-qol-conc-spell-img {
-  width: 28px; height: 28px; border-radius: 3px;
-  border: 1px solid #d4af37; object-fit: cover;
-}
-.ace-qol-conc-info {
-  flex: 1; display: flex; flex-direction: column;
-}
-.ace-qol-conc-info strong {
-  font-size: 0.9rem; color: #e8e6e0;
-}
-.ace-qol-conc-dc {
-  font-size: 0.75rem; color: #d4af37; font-weight: 600;
-}
-.ace-qol-conc-dismiss {
-  background: none; border: none; color: #666; cursor: pointer;
-  padding: 4px; font-size: 0.8rem; transition: color 0.15s;
-}
-.ace-qol-conc-dismiss:hover { color: #ff1744; }
-
-.ace-qol-conc-timing {
-  font-size: 0.7rem; color: #888; padding: 2px 0 4px;
-  border-bottom: 1px solid rgba(255,255,255,0.08);
-  margin-bottom: 4px;
-}
-.ace-qol-conc-timing i { color: #d4af37; margin-right: 4px; }
-
-.ace-qol-conc-targets {
-  max-height: 150px; overflow-y: auto; margin-bottom: 6px;
-}
-.ace-qol-conc-tgt-row {
-  display: flex; align-items: center; gap: 6px;
-  padding: 2px 4px; margin: 1px 0;
-}
-.ace-qol-conc-empty {
-  font-size: 0.75rem; color: #666; font-style: italic; text-align: center;
-  padding: 8px;
-}
-
-.ace-qol-conc-actions {
-  display: flex; gap: 6px;
-}
-.ace-qol-btn-inflict {
-  width: 100%; padding: 6px; font-size: 0.8rem; font-weight: 700;
-  text-transform: uppercase; background: rgba(255,152,0,0.15);
-  border: 1px solid rgba(255,152,0,0.4); color: #ff9800;
-  border-radius: 3px; cursor: pointer; transition: all 0.15s;
-}
-.ace-qol-btn-inflict:hover {
-  background: rgba(255,152,0,0.25); border-color: #ff9800;
-}
+/* The floating concentration widget was removed on 2026-08-27 and its styles
+   went with it. Every trigger it offered already fires by itself, so its
+   INFLICT DAMAGE button only re-rolled an area for no reason, and the card
+   repeated what the save card already showed. The concentration TRACKING it
+   was named after is untouched: it is what makes Moonbeam and Spirit
+   Guardians damage anybody at all. */
 
 /* ─── HP Max Label ──── */
 .ace-qol-hp-max { color: #666; font-size: 0.8rem; font-weight: 400; }
@@ -4193,6 +4140,9 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* The badge now reads "1 round" rather than "1 R", so it must never squeeze
+   or hyphenate to fit. Height is free; a badge that breaks "round" across two
+   lines is worse than the abbreviation it replaced. */
 .ace-qol-effect-duration {
   font-size: 16px;
   color: #1a1a1a;
@@ -4202,6 +4152,8 @@
   font-weight: 800;
   letter-spacing: 0.3px;
   line-height: 1.3;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 /* ── Passive expandable footer ── */
@@ -4710,7 +4662,11 @@
   0%   { background: rgba(255, 23, 68, 0.35); box-shadow: 0 0 12px rgba(255, 23, 68, 0.7); }
   100% { background: transparent;             box-shadow: none; }
 }
-.ace-qol-spell-pickr-tok.ace-qol-pickr-reject-flash {
+/* The heal picker refuses out-of-range and blocked targets the same way
+   the spell picker does. One animation, both grids - the reject flash was
+   already here and a second copy would only drift. */
+.ace-qol-spell-pickr-tok.ace-qol-pickr-reject-flash,
+.ace-qol-heal-pickr-tok.ace-qol-pickr-reject-flash {
   animation: ace-qol-pickr-reject-flash 350ms ease-out;
 }
 .ace-qol-spell-pickr-tok.selected {

@@ -53,7 +53,7 @@ const PRESETS = {
   conservative: {
     autoCheckHit: true, autoTargetTemplates: true, damageTypeSeparation: true,
     autoCheckResistances: true, halfDamageOnSave: true, concentrationTracking: true,
-    concentrationWidget: true, batchResultsCard: true, targetStateAssessment: true,
+    batchResultsCard: true, targetStateAssessment: true,
     slayerAutoDetect: true, flanking: false, autoApplyConditions: false,
     autoRollDamage: false, autoApplyDamage: false,
     // Reactions still OFFER — the prompt appears, the player decides. What is
@@ -74,7 +74,7 @@ const PRESETS = {
   recommended: {
     autoCheckHit: true, autoTargetTemplates: true, damageTypeSeparation: true,
     autoCheckResistances: true, halfDamageOnSave: true, concentrationTracking: true,
-    concentrationWidget: true, batchResultsCard: true, targetStateAssessment: true,
+    batchResultsCard: true, targetStateAssessment: true,
     slayerAutoDetect: true, flanking: false, autoApplyConditions: true,
     autoRollDamage: false, autoApplyDamage: false,
     enableReactions: true, autoShield: true, autoCounterspell: true,
@@ -93,7 +93,7 @@ const PRESETS = {
   minimal: {
     autoCheckHit: true, autoTargetTemplates: false, damageTypeSeparation: true,
     autoCheckResistances: true, halfDamageOnSave: true, concentrationTracking: false,
-    concentrationWidget: false, batchResultsCard: true, targetStateAssessment: false,
+    batchResultsCard: true, targetStateAssessment: false,
     slayerAutoDetect: false, flanking: false, autoApplyConditions: false,
     autoRollDamage: false, autoApplyDamage: false,
     enableReactions: false, autoShield: false, autoCounterspell: false,
@@ -112,7 +112,7 @@ const PRESETS = {
   full: {
     autoCheckHit: true, autoTargetTemplates: true, damageTypeSeparation: true,
     autoCheckResistances: true, halfDamageOnSave: true, concentrationTracking: true,
-    concentrationWidget: true, batchResultsCard: true, targetStateAssessment: true,
+    batchResultsCard: true, targetStateAssessment: true,
     slayerAutoDetect: true, flanking: true, autoApplyConditions: true,
     autoRollDamage: true, autoApplyDamage: true,
     enableReactions: true, autoShield: true, autoCounterspell: true,
@@ -638,14 +638,14 @@ export class QolSettings {
       default: true,
     });
 
-    s("concentrationWidget", {
-      name:    "Floating Concentration Widget",
-      hint:    "Show a persistent floating card for active concentration spells with Re-apply Damage button.",
-      scope:   "world",
-      config:  false,
-      type:    Boolean,
-      default: true,
-    });
+    // ⚠️ "concentrationWidget" WAS REGISTERED HERE AND IS DELIBERATELY GONE
+    // (2026-08-27). It switched a floating card that has been removed: every
+    // trigger the card offered already fires on its own, so its button only
+    // ever re-rolled an area for no reason. A setting that controls nothing is
+    // worse than no setting - it tells the GM a feature exists.
+    //
+    // The concentration TRACKING it was named after is untouched and is not
+    // optional: it is what makes Moonbeam and Spirit Guardians damage anyone.
 
     // Whether ace-qol owns the persistent-spell animation layer (Sequencer
     // chain attached to the template). Default false — Automated Animations

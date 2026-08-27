@@ -22,7 +22,7 @@ const TABS = [
     settings: ["autoRollDamage", "autoApplyDamage", "halfDamageOnSave", "dsnRevealDelayMs",
                "npcSaveAnimationDelay", "npcSaveAnimationDelayMulti", "npcDamageAnimationDelay"] },
   { id: "saves",      label: "Saves",              icon: "fa-solid fa-shield-heart",
-    settings: ["targetStateAssessment", "autoRollNpcSaves", "concentrationTracking", "concentrationWidget", "concentrationOnDamage", "concentrationDamageMinDC", "unifyConcentrationMarker", "bonusActionSpellRule", "bonusActionSpellStrict"] },
+    settings: ["targetStateAssessment", "autoRollNpcSaves", "concentrationTracking", "concentrationOnDamage", "concentrationDamageMinDC", "unifyConcentrationMarker", "bonusActionSpellRule", "bonusActionSpellStrict"] },
   { id: "reactions",  label: "Reactions",          icon: "fa-solid fa-bolt",
     settings: ["enableReactions", "autoShield", "autoCounterspell", "skipOfflineCounterspell", "counterspellAnyCaster", "autoAbsorbElements", "autoLegendaryResistance"] },
   { id: "effects",    label: "Conditions & Effects", icon: "fa-solid fa-wand-sparkles",

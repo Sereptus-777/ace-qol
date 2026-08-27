@@ -12,7 +12,7 @@
 
 // NOTE: MODULE_ID hardcoded to avoid circular import (ace-qol.mjs imports us)
 const MODULE_ID = "ace-qol";
-import { TIMING, getSpellTiming } from "./spell-timing.mjs";
+import { getSpellTiming } from "./spell-timing.mjs";
 import { QolSettings } from "./settings.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
 // dsn-utils is a dependency-free leaf module — safe to import here even
@@ -23,6 +23,12 @@ import { safeShowForRoll } from "./dsn-utils.mjs";
 // inside function bodies, so the ace-qol.mjs import cycle stays inert —
 // the same proven pattern situation.mjs uses.
 import { buildRegionShapeFromTemplate } from "./geometry-utils.mjs";
+// THE one answer to "is this creature in that area". Shared with the save
+// engine so entry detection and cast-time targeting can never disagree.
+import { isTokenInTemplate, anyOverlapCounts } from "./template-geometry.mjs";
+// Only for getActiveEdition. template-geometry.mjs takes the resolver as an
+// argument precisely so IT stays a leaf and never joins an import cycle.
+import { CombatState } from "./combat-state.mjs";
 import { RulesBrain } from "./rules/rules-brain.mjs";
 
 const TAG = `${MODULE_ID} | ConcWidget`;
@@ -1275,46 +1281,19 @@ export class ConcentrationWidget {
    * `positions` is the pre/post move coord pair — we use the post-move
    * (new) center for "currently inside" determination.
    */
+  /**
+   * ⚠️🔴 DELEGATES. This used to test ONE point - the centre of the
+   * whole token - while the save engine used the half-coverage rule. So a
+   * creature standing half inside a Moonbeam was caught when it was CAST and
+   * then walked back in to take nothing, because his middle was still
+   * outside. Same creature, same beam, two answers.
+   *
+   * template-geometry.mjs is now the only place that answers this.
+   */
   _tokenInsideTemplate(token, template, positions) {
-    if (!token || !template) return false;
-    const tokenDoc = token.document;
-    const w = (Number(tokenDoc.width)  > 0) ? Number(tokenDoc.width)  : 1;
-    const h = (Number(tokenDoc.height) > 0) ? Number(tokenDoc.height) : 1;
-    const gridSize = canvas.grid?.size ?? 100;
-    const cx = positions.newX + (w * gridSize) / 2;
-    const cy = positions.newY + (h * gridSize) / 2;
-
-    // v0.6.4: Permissive hit-test. User's diagnostic showed
-    // `template.containsPoint` is a function but returns `undefined`
-    // (not boolean) for circle templates in their Foundry/dnd5e build —
-    // my previous code took that as falsy and missed valid entries.
-    // `template.shape.contains` returned reliable booleans in the same
-    // diagnostic. Now: try BOTH methods, treat as inside if EITHER
-    // returns a strict `true`. Either method's `false` (or non-boolean)
-    // doesn't override the other's `true`.
-    let containsPointResult = null;
-    if (typeof template.containsPoint === "function") {
-      try {
-        const r = template.containsPoint({ x: cx, y: cy });
-        if (typeof r === "boolean") containsPointResult = r;
-      } catch (_) { /* ignore — fall through */ }
-    }
-    let shapeContainsResult = null;
-    if (typeof template.shape?.contains === "function") {
-      try {
-        shapeContainsResult = template.shape.contains(cx - template.x, cy - template.y);
-      } catch (_) { /* ignore — fall through */ }
-    }
-    if (containsPointResult === true || shapeContainsResult === true) return true;
-
-    // Either method returned a clean false → trust it
-    if (containsPointResult === false || shapeContainsResult === false) return false;
-
-    // Both methods unavailable / threw → bounds-only fallback
-    const b = template.bounds;
-    if (!b) return false;
-    return cx >= b.x && cx <= b.x + b.width
-        && cy >= b.y && cy <= b.y + b.height;
+    return isTokenInTemplate(token, template,
+      { x: positions?.newX, y: positions?.newY },
+      { anyOverlapCounts: anyOverlapCounts(CombatState.getActiveEdition) });
   }
 
   /**
@@ -1329,47 +1308,12 @@ export class ConcentrationWidget {
    * @param {{newX, newY}} positions
    * @returns {boolean}
    */
+  /** Same one rule, with the spell's own "wholly within" clause applied. */
   _tokenWhollyInsideTemplate(token, template, positions) {
-    if (!token || !template) return false;
-    const tokenDoc = token.document;
-    const w = (Number(tokenDoc.width)  > 0) ? Number(tokenDoc.width)  : 1;
-    const h = (Number(tokenDoc.height) > 0) ? Number(tokenDoc.height) : 1;
-    const gridSize = canvas.grid?.size ?? 100;
-
-    const x = positions.newX;
-    const y = positions.newY;
-    // Insets keep the corners slightly inside the actual token bounds so
-    // a token sitting exactly on the template edge doesn't fail purely
-    // due to floating-point rounding on the boundary line.
-    const inset = Math.max(1, gridSize * 0.02);
-    const corners = [
-      { x: x + inset,                y: y + inset },
-      { x: x + w * gridSize - inset, y: y + inset },
-      { x: x + inset,                y: y + h * gridSize - inset },
-      { x: x + w * gridSize - inset, y: y + h * gridSize - inset },
-    ];
-
-    const testPoint = (pt) => {
-      let cp = null, sp = null;
-      if (typeof template.containsPoint === "function") {
-        try { const r = template.containsPoint(pt); if (typeof r === "boolean") cp = r; } catch (_) {}
-      }
-      if (typeof template.shape?.contains === "function") {
-        try { sp = template.shape.contains(pt.x - template.x, pt.y - template.y); } catch (_) {}
-      }
-      if (cp === true || sp === true) return true;
-      if (cp === false || sp === false) return false;
-      // Last resort: bounding box
-      const b = template.bounds;
-      if (!b) return false;
-      return pt.x >= b.x && pt.x <= b.x + b.width
-          && pt.y >= b.y && pt.y <= b.y + b.height;
-    };
-
-    for (const c of corners) {
-      if (!testPoint(c)) return false;
-    }
-    return true;
+    return isTokenInTemplate(token, template,
+      { x: positions?.newX, y: positions?.newY },
+      { anyOverlapCounts: anyOverlapCounts(CombatState.getActiveEdition),
+        whollyInside: true });
   }
 
   /**
@@ -2270,236 +2214,39 @@ export class ConcentrationWidget {
     this._renderWidgets();
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  //  Widget Rendering
-  // ═══════════════════════════════════════════════════════════════
-
-  _ensureContainer() {
-    if (this._container && document.body.contains(this._container)) return;
-    this._container = document.createElement("div");
-    this._container.id = "ace-qol-concentration-widgets";
-    // v0.6.0: Default position is top-center (was bottom-right which got
-    // hidden behind the chat panel). User-draggable via the title bar
-    // (`#ace-qol-conc-drag-handle`); after a drag, position is preserved
-    // for the rest of the session via internal _userPos coordinates.
-    const initialLeft = this._userPos?.left ?? "50%";
-    const initialTop  = this._userPos?.top  ?? "12px";
-    const transform   = (this._userPos) ? "none" : "translateX(-50%)";
-    this._container.style.cssText = `
-      position: fixed; top: ${initialTop}; left: ${initialLeft};
-      transform: ${transform}; z-index: 100;
-      display: flex; flex-direction: column; gap: 8px;
-      pointer-events: auto; max-height: 60vh; overflow-y: auto;
-    `;
-    document.body.appendChild(this._container);
-    this._attachDragHandlers();
-  }
-
-  /**
-   * v0.6.0 — Drag handlers for the concentration widget.
-   * The widget can be moved by clicking and dragging anywhere on the
-   * container that isn't a button. We capture pointerdown on the
-   * container, track movement via pointermove on document, and release
-   * on pointerup. The user's chosen position survives until next reload.
-   */
-  _attachDragHandlers() {
-    if (!this._container) return;
-    let dragging = false;
-    let startX = 0, startY = 0;
-    let originLeft = 0, originTop = 0;
-
-    const onPointerDown = (ev) => {
-      // Don't start drag if the user clicked an interactive control
-      if (ev.target.closest?.("button, a, input, select, textarea")) return;
-      dragging = true;
-      startX = ev.clientX;
-      startY = ev.clientY;
-      const rect = this._container.getBoundingClientRect();
-      originLeft = rect.left;
-      originTop  = rect.top;
-      // Drop the centering transform on first drag so subsequent
-      // positions are stored in raw pixel coordinates.
-      this._container.style.transform = "none";
-      this._container.style.left = `${originLeft}px`;
-      this._container.style.top  = `${originTop}px`;
-      document.addEventListener("pointermove", onPointerMove);
-      document.addEventListener("pointerup",   onPointerUp, { once: true });
-      ev.preventDefault();
-    };
-    const onPointerMove = (ev) => {
-      if (!dragging) return;
-      const dx = ev.clientX - startX;
-      const dy = ev.clientY - startY;
-      // Clamp to viewport so the widget can't be dragged off-screen
-      const maxLeft = window.innerWidth  - 80;
-      const maxTop  = window.innerHeight - 80;
-      const newLeft = Math.max(0, Math.min(maxLeft, originLeft + dx));
-      const newTop  = Math.max(0, Math.min(maxTop,  originTop  + dy));
-      this._container.style.left = `${newLeft}px`;
-      this._container.style.top  = `${newTop}px`;
-    };
-    const onPointerUp = () => {
-      if (!dragging) return;
-      dragging = false;
-      document.removeEventListener("pointermove", onPointerMove);
-      // Persist for the rest of this session
-      this._userPos = {
-        left: this._container.style.left,
-        top:  this._container.style.top,
-      };
-    };
-
-    this._container.style.cursor = "move";
-    this._container.addEventListener("pointerdown", onPointerDown);
-  }
-
+  // ═══ THE FLOATING WIDGET IS GONE ════════════════════════════
+  //
+  // ⚠️🔴 RIPPED OUT, NOT HIDDEN (2026-08-27). It drew a draggable card
+  // per persistent template listing who stood inside, and an INFLICT DAMAGE
+  // button. Every trigger it offered already fires by itself: walking into
+  // the area, starting a turn inside it, and the template being MOVED onto
+  // someone. The button re-rolled the whole area for no reason, and the card
+  // duplicated what the save card already says.
+  //
+  // Johnny, 2026-08-27: "I don't want it hidden. I want it ripped out. I told
+  // you that we don't need it. Well, never gonna need it. And about the
+  // floating card, I don't need it at all."
+  //
+  // ⚠️ THE TRACKING STAYS AND IS THE WHOLE POINT OF THIS FILE. `_activeSpells`
+  // still records every persistent template, and entry / start-of-turn /
+  // end-of-turn / template-move detection all run exactly as before. Only the
+  // drawing is gone. Deleting the tracker would silently stop Moonbeam and
+  // Spirit Guardians damaging anything.
+  //
+  // ⚠️ `_renderWidgets` IS KEPT AS A TEARDOWN, not deleted. Five call sites
+  // invoke it, and it must still remove a container left over from a client
+  // that loaded an older build before this reload.
   _renderWidgets() {
-    // v0.6.1: Gate UI rendering behind the existing `concentrationWidget`
-    // setting (Saves tab → "Floating Concentration Widget"). v0.6.0
-    // accidentally registered a duplicate `showConcentrationWidget` that
-    // wasn't in any tab — removed in v0.6.1.
-    //
-    // The DATA tracking (this._activeSpells Map) and entry-detection logic
-    // continue to run regardless — only the visible widget is suppressed
-    // when the setting is off. That way auto save-card flow still works
-    // even with the widget hidden.
-    let widgetEnabled = true;
-    try {
-      widgetEnabled = QolSettings.get?.("concentrationWidget") !== false;
-    } catch (_) { /* setting not registered yet during boot */ }
-
-    if (!widgetEnabled || !this._activeSpells.size) {
-      if (this._container) {
-        this._container.remove();
-        this._container = null;
-      }
-      return;
-    }
-
-    // Filter out spells that don't need a visible widget:
-    //   - Movement-damage variants (Spike Growth, Wall of Thorns): no save,
-    //     auto damage on movement — widget's INFLICT DAMAGE meaningless.
-    //   - Area-denial family (Stinking Cloud, Cloudkill, etc.): entry / start-of-
-    //     turn / exit saves all auto-fire, damage auto-applies — widget is
-    //     redundant clutter.
-    // The tracker stays in `_activeSpells` (entry / save / cleanup logic keeps
-    // firing) — we just don't draw the floating card.
-    const renderable = [...this._activeSpells.values()]
-      .filter(t => !!t.saveAbility && t.timing?.family !== "areaDenial");
-
-    if (!renderable.length) {
-      if (this._container) {
-        this._container.remove();
-        this._container = null;
-      }
-      return;
-    }
-
-    this._ensureContainer();
-    this._container.innerHTML = "";
-
-    for (const tracker of renderable) {
-      const card = this._buildWidgetCard(tracker);
-      this._container.appendChild(card);
+    if (this._container) {
+      this._container.remove();
+      this._container = null;
     }
   }
 
-  _buildWidgetCard(tracker) {
-    const div = document.createElement("div");
-    div.className = "ace-qol-conc-widget";
-    div.dataset.templateId = tracker.templateId;
-
-    const timingLabel = tracker.timing.timing.replace(/\+/g, " + ").replace(/([A-Z])/g, " $1").trim();
-    const isAreaDenial = tracker.timing?.family === "areaDenial";
-
-    // dnd5e 5.x: abilities[].save is an OBJECT { value, dc, ... } not a
-    // raw number — unwrap it. Older shapes return a number directly.
-    const _numOrValue = (v) => {
-      if (typeof v === "number") return v;
-      if (v && typeof v === "object" && Number.isFinite(v.value)) return v.value;
-      return 0;
-    };
-
-    // Target list
-    const targetRows = tracker.tokens.map(t => {
-      const actor = t.actor;
-      const saveMod = _numOrValue(actor?.system?.abilities?.[tracker.saveAbility]?.save);
-      const modSign = saveMod >= 0 ? "+" : "";
-      return `
-        <div class="ace-qol-conc-tgt-row">
-          <img src="${actor?.img || t.document?.texture?.src || 'icons/svg/mystery-man.svg'}" class="ace-qol-save-tgt-img" />
-          <span class="ace-qol-save-tgt-name">${t.name || actor?.name || "Unknown"}</span>
-          <span class="ace-qol-save-tgt-mod">${(tracker.saveAbility || "").toUpperCase()} ${modSign}${saveMod}</span>
-        </div>
-      `;
-    }).join("") || '<div class="ace-qol-conc-empty">No targets in area</div>';
-
-    // Area-denial family auto-rolls all saves (entry / start-of-turn /
-    // exit-with-advantage) — INFLICT DAMAGE button is redundant noise.
-    const actionsHTML = isAreaDenial ? "" : `
-      <div class="ace-qol-conc-actions">
-        <button class="ace-qol-btn ace-qol-btn-inflict" data-template-id="${tracker.templateId}">
-          <i class="fas fa-bolt"></i> INFLICT DAMAGE
-        </button>
-      </div>
-    `;
-
-    div.innerHTML = `
-      <div class="ace-qol-conc-header">
-        <img src="${tracker.item?.img || 'icons/svg/spell.svg'}" class="ace-qol-conc-spell-img" />
-        <div class="ace-qol-conc-info">
-          <strong>${tracker.item?.name || "Unknown Spell"}</strong>
-          <span class="ace-qol-conc-dc">DC ${tracker.saveDC} ${(tracker.saveAbility || "").toUpperCase()}</span>
-        </div>
-        <button class="ace-qol-conc-dismiss" title="Dismiss widget">
-          <i class="fas fa-xmark"></i>
-        </button>
-      </div>
-      <div class="ace-qol-conc-timing">
-        <i class="fas fa-clock"></i> ${timingLabel}
-        ${isAreaDenial ? ' <span class="ace-qol-save-half-badge" style="background:#3a2a10;color:#d4af37;">AUTO-SAVES</span>' : ''}
-        ${tracker.halfOnSave ? ' <span class="ace-qol-save-half-badge">HALF ON SAVE</span>' : ''}
-      </div>
-      <div class="ace-qol-conc-targets">
-        ${targetRows}
-      </div>
-      ${actionsHTML}
-    `;
-
-    // Wire dismiss button
-    div.querySelector(".ace-qol-conc-dismiss")?.addEventListener("click", () => {
-      this._activeSpells.delete(tracker.templateId);
-      this._renderWidgets();
-    });
-
-    // Wire inflict damage button
-    div.querySelector(".ace-qol-btn-inflict")?.addEventListener("click", async () => {
-      if (!tracker.tokens.length) {
-        ui.notifications.warn("No targets in the template area.");
-        return;
-      }
-      await this._triggerBatchSave(tracker);
-    });
-
-    return div;
-  }
-
-  /**
-   * Trigger a batch save for all tokens currently in the persistent spell's template.
-   */
-  async _triggerBatchSave(tracker) {
-    if (this._saveEngine?._postSaveCardForTargets) {
-      await this._saveEngine._postSaveCardForTargets(tracker.item, tracker.actor, tracker.tokens, {
-        saveAbility: tracker.saveAbility,
-        saveDC: tracker.saveDC,
-        halfOnSave: tracker.halfOnSave,
-        damageTypes: tracker.damageTypes,
-        isSpell: true,
-        isPersistent: true,
-        templateId: tracker.templateId,
-      });
-    }
-  }
+  // ⚠️ _triggerBatchSave WAS HERE AND WENT WITH THE BUTTON (2026-08-27).
+  // Its only caller was the widget's INFLICT DAMAGE control, and that control
+  // was removed because every trigger it offered already fires on its own.
+  // A private method with no callers is dead weight that reads like a feature.
 
   // ═══════════════════════════════════════════════════════════════
   //  Public API

@@ -18,6 +18,9 @@
 import { MODULE_ID } from "../../ace-qol.mjs";
 import { CombatState } from "../../combat-state.mjs";
 import { ConditionLibrary } from "../../condition-library.mjs";
+// Command ships one ACTIVITY PER WORD in dnd5e, so the GM's chosen word is
+// only knowable from the activity - see commandWordFrom.
+import { COMMAND_WORDS, commandWordFrom } from "../../condition-library.mjs";
 import { SpellPipeline } from "../pipeline.mjs";
 import { Situation } from "../../situation.mjs";
 import { safeShowForRoll } from "../../dsn-utils.mjs";
@@ -86,7 +89,7 @@ export class SaveResolver {
     // Listen for the save result for this target, then apply effect on fail.
     // Uses a one-shot hook to catch the saveComplete event.
     if (entry.effect?.key) {
-      SaveResolver._wireEffectOnFail(target.token, entry, castLevel, item, actor);
+      SaveResolver._wireEffectOnFail(target.token, entry, castLevel, item, actor, ctx.activity);
     }
   }
 
@@ -272,7 +275,7 @@ export class SaveResolver {
     }
 
     if (entry.effect?.key) {
-      for (const t of targets) SaveResolver._wireEffectOnFail(t, entry, castLevel, item, actor);
+      for (const t of targets) SaveResolver._wireEffectOnFail(t, entry, castLevel, item, actor, ctx.activity);
     }
   }
 
@@ -284,7 +287,7 @@ export class SaveResolver {
    *
    * Auto-removes the hook after firing once (or after 60s timeout).
    */
-  static _wireEffectOnFail(targetToken, entry, castLevel, spellItem, casterActor) {
+  static _wireEffectOnFail(targetToken, entry, castLevel, spellItem, casterActor, activity = null) {
     const targetTokenDocId = targetToken?.document?.id ?? targetToken?.id;
     if (!targetTokenDocId) return;
 
@@ -320,9 +323,28 @@ export class SaveResolver {
           try { await existingSame.delete(); } catch (_) {}
         }
 
+        // ⚠️ NAME THE WORD. "Commanded" alone tells a GM nothing - the
+        // whole spell is which of the five words was spoken. dnd5e puts the
+        // GM's choice in the ACTIVITY name, so that is where it is read from.
+        let nameOverride = null;
+        let descriptionOverride = null;
+        if (effectKey === "command") {
+          const word = commandWordFrom(activity?.name);
+          if (word) {
+            const pretty = word.charAt(0).toUpperCase() + word.slice(1);
+            nameOverride = `Commanded: ${pretty}`;
+            descriptionOverride = `<p><strong>${targetActor.name} was commanded to ${word}.</strong></p>`
+              + `<p>On its next turn it ${COMMAND_WORDS[word]}</p>`
+              + `<p>The spell then ends. It has no effect on undead, on a creature that does `
+              + `not understand the caster's language, or if the command is directly harmful to it.</p>`;
+          }
+        }
+
         const targetEffect = await ConditionLibrary.applyEffect(targetActor, effectKey, {
           castLevel,
           spellItem,
+          nameOverride,
+          descriptionOverride,
           spellLevel: castLevel,
           sourceActorId: casterActor?.id,
           origin: spellItem.uuid,

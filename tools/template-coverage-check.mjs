@@ -20,20 +20,28 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const SRC = path.join(here, "..", "scripts", "save-engine.mjs");
+// The geometry moved out of save-engine.mjs on 2026-08-27, because ACE had
+// TWO of them: the save engine used half-coverage and the concentration
+// tracker used a single centre point, so a creature half inside a Moonbeam
+// was caught on the cast and took nothing walking back in. One function now.
+//
+// This bench FAILED LOUDLY when the constants vanished rather than passing
+// on an empty extraction, which is the only reason the move was noticed at
+// all. Keep it that way.
+const SRC = path.join(here, "..", "scripts", "template-geometry.mjs");
 const src = fs.readFileSync(SRC, "utf8");
 
 // Lift, never retype.
 const sampleLine = src.split("\n").find(l => l.includes("const SAMPLES = ["));
 const thresholdLine = src.split("\n").find(l => l.includes("covered >= "));
 if (!sampleLine || !thresholdLine) {
-  console.error("FAIL — could not find the sampling constants in save-engine.mjs.");
+  console.error("FAIL — could not find the sampling constants in template-geometry.mjs.");
   console.error("       Fix this extractor; do not delete it, or the rule goes untested.");
   process.exit(1);
 }
 const SAMPLES = eval(sampleLine.replace(/^\s*const\s+SAMPLES\s*=\s*/, "").replace(/;\s*$/, ""));
 const THRESHOLD = Number(/covered >= (\d+)/.exec(thresholdLine)[1]);
-console.log(`lifted from save-engine.mjs: SAMPLES=${JSON.stringify(SAMPLES)} threshold=${THRESHOLD} of ${SAMPLES.length ** 2}\n`);
+console.log(`lifted from template-geometry.mjs: SAMPLES=${JSON.stringify(SAMPLES)} threshold=${THRESHOLD} of ${SAMPLES.length ** 2}\n`);
 
 // A 5e cone: apex at the origin, 53.13 degrees wide, pointing along +x.
 // (dnd5e uses a cone whose width at distance L equals L.)

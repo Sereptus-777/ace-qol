@@ -131,6 +131,31 @@ export class HealTargetPicker {
    *   - "enemy":    rare — drain/transfer effects
    *   - undead/construct exclusion handled by description, not enforced here
    */
+  /**
+   * Is something solid between the caster and this target?
+   *
+   * @returns {boolean|null} true blocked, false clear, null could not be tested
+   */
+  static _sightBlocked(casterActor, token) {
+    try {
+      const from = casterActor?.getActiveTokens?.()?.[0]?.center
+                ?? casterActor?.token?.object?.center ?? null;
+      const to = token?.center ?? null;
+      if (!from || !to) return null;
+      const backend = CONFIG?.Canvas?.polygonBackends?.sight;
+      if (!backend?.testCollision) {
+        console.debug(`${MODULE_ID} | no sight polygon backend on this build - `
+          + `line of sight was not tested for the heal picker.`);
+        return null;
+      }
+      return !!backend.testCollision(from, to, { type: "sight", mode: "any" });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | the heal picker's line-of-sight test threw `
+        + `(${err?.message ?? err}) - treating the path as clear.`);
+      return null;
+    }
+  }
+
   static _checkValidity(token, casterActor, classification, distFt) {
     const affects = classification.affectsType;
     const isSelf  = token.actor?.id === casterActor?.id;
@@ -142,6 +167,18 @@ export class HealTargetPicker {
     // Range check (Infinity passes)
     if (Number.isFinite(classification.rangeFt) && distFt > classification.rangeFt + 0.01) {
       return { valid: false, reason: `${Math.round(distFt)}ft > ${classification.rangeFt}ft range` };
+    }
+
+    // ⚠️🔴 AND A WALL STOPS A HEAL. Distance was measured here from
+    // the beginning; line of sight never was, so a target through two rooms of
+    // stone read as perfectly legal as long as the number was small enough.
+    // RAW: a spell needs a clear path to its target unless it says otherwise.
+    //
+    // ⚠️ null MEANS "COULD NOT TEST", NOT "CLEAR". Answering false on a
+    // missing backend is what silently disabled wall checking twice before.
+    if (!isSelf) {
+      const blocked = HealTargetPicker._sightBlocked(casterActor, token);
+      if (blocked === true) return { valid: false, reason: "no line of sight - a wall is in the way" };
     }
 
     if (affects === "self" && !isSelf) return { valid: false, reason: "self-only heal" };
@@ -311,6 +348,24 @@ export class HealTargetPicker {
       el.addEventListener("click", (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
+
+        // ⚠️🔴 THE GREY-OUT WAS DECORATION. This grid has always
+        // computed validity, rendered the row as `invalid`, greyed the distance
+        // and written data-valid="false" - and then let you click it anyway.
+        //
+        // Johnny, 2026-08-27: he picked a greyed-out target two rooms away,
+        // far beyond a Mass Healing Word's 60 ft and through several walls,
+        // and it healed him. Showing a rule and not enforcing it is worse than
+        // not showing it: the picker taught him the range mattered, then
+        // proved it did not.
+        if (el.dataset.valid === "false") {
+          const why = el.getAttribute("title") || "this target is out of range";
+          ui.notifications?.warn(`${why}.`);
+          el.classList.add("ace-qol-pickr-reject-flash");
+          setTimeout(() => el.classList.remove("ace-qol-pickr-reject-flash"), 350);
+          return;
+        }
+
         const isSelected = el.classList.contains("selected");
         if (!isSelected) {
           // Enforce max count — if we'd exceed it, deselect oldest
