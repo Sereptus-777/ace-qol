@@ -117,6 +117,111 @@ function _lightAt(point, problems) {
 }
 
 /** Terrain-ish regions standing at a point, by name. */
+// ═══ WHAT ARE THEY STANDING IN? ══════════════════════════════════
+//
+// ⚠️🔴 THIS PROFILE HAD 26 FIELDS AND NOT ONE OF THEM WAS TERRAIN. It knew
+// how far apart two creatures were, what cover stood between them and how
+// bright it was, and had no idea whether they were on an icy ledge, waist deep
+// in a river, or standing in a boat.
+//
+// Johnny, 2026-08-27: "it's got to consider the environment too. Does it know
+// what map it's on? Dude doesn't know where they are. Are they out on an icy
+// cliff somewhere? Are they in the middle of a river in a boat or just
+// swimming?"
+//
+// ⚠️ TWO SIGNALS, AND THEY ARE NOT EQUALLY GOOD. Say which one answered.
+//
+//   modifyMovementCost   a CORE Foundry region behaviour. If a region carries
+//                        it, difficult terrain is a FACT, not a reading.
+//   the region's NAME    everything else. Foundry has no native concept of
+//                        water, ice or lava, so "Frozen Lake" is the only
+//                        clue there is - and it is a GUESS. A GM who names a
+//                        region "The Icehouse" gets ice they did not mean.
+//
+// So both are reported, tagged with where they came from, and a consumer that
+// wants to refuse an action can decide how much it trusts each. Nothing here
+// decides anything: the profile reports, the resolver judges.
+
+/** Region-name words that suggest a terrain kind. Best effort, never a fact. */
+const TERRAIN_WORDS = {
+  water:  ["water", "river", "lake", "sea", "ocean", "pond", "flood", "shallows", "surf", "canal", "moat"],
+  deep:   ["deep water", "underwater", "submerged", "depths", "drowning"],
+  ice:    ["ice", "icy", "frozen", "glacier", "frost", "sleet"],
+  snow:   ["snow", "drift", "blizzard"],
+  lava:   ["lava", "magma", "molten"],
+  swamp:  ["swamp", "bog", "marsh", "mire", "quagmire", "mud"],
+  rubble: ["rubble", "debris", "scree", "gravel", "wreck"],
+  brush:  ["brush", "undergrowth", "briar", "thicket", "bramble"],
+  sand:   ["sand", "dune", "desert"],
+  boat:   ["boat", "ship", "raft", "deck", "vessel", "barge"],
+};
+
+/**
+ * Everything readable about the ground under one token.
+ *
+ * @returns {object} kinds, difficulty, and WHERE each answer came from
+ */
+function _terrainAt(tok, problems) {
+  const out = {
+    regions: [],
+    kinds: [],
+    difficult: null,          // null = could not tell, not "no"
+    movementCostMultiplier: null,
+    difficultSource: "nothing declares it",
+    kindSource: "nothing declares it",
+  };
+  try {
+    const doc = tok?.document ?? tok;
+    if (!doc) return out;
+
+    const named = [];
+    for (const region of canvas?.scene?.regions ?? []) {
+      try {
+        if (!region.tokens?.has?.(doc)) continue;
+        const name = region.name ?? "(unnamed region)";
+        out.regions.push(name);
+        named.push(String(name).toLowerCase());
+
+        for (const b of region.behaviors ?? []) {
+          if (b?.disabled) continue;
+          if (b?.type !== "modifyMovementCost") continue;
+          // ⚠️ THE FACT PATH. A movement cost above 1 IS difficult terrain
+          // by definition - no name-guessing involved.
+          const terrain = b.system?.terrain ?? {};
+          const worst = Math.max(...Object.values(terrain)
+            .map(v => Number(v)).filter(Number.isFinite), 1);
+          if (worst > 1) {
+            out.difficult = true;
+            out.movementCostMultiplier = worst;
+            out.difficultSource = `the region "${name}" costs ${worst}x movement`;
+          }
+        }
+      } catch (_) { /* a region that cannot answer is not one we count */ }
+    }
+
+    // ⚠️ NAME MATCHING IS A GUESS AND IS LABELLED AS ONE.
+    const hay = named.join(" | ");
+    if (hay) {
+      for (const [kind, words] of Object.entries(TERRAIN_WORDS)) {
+        if (words.some(w => hay.includes(w))) out.kinds.push(kind);
+      }
+      if (out.kinds.length) {
+        out.kindSource = `guessed from the region name(s): ${out.regions.join(", ")}`;
+      }
+    }
+
+    // Being in ANY region but reading no movement behaviour is a real answer:
+    // it is not difficult terrain as far as Foundry is concerned.
+    if (out.difficult === null && out.regions.length) {
+      out.difficult = false;
+      out.difficultSource = "no region here modifies movement cost";
+    }
+  } catch (err) {
+    problems.push(`could not read the terrain: ${err?.message ?? err}`);
+  }
+  return out;
+}
+
 function _regionsAt(tok, problems) {
   const out = [];
   try {
@@ -298,6 +403,21 @@ export function buildEnvironmentProfile(attackerToken, targetToken = null) {
     // ── Ground ──
     regionsAtAttacker: aDoc ? _regionsAt(attackerToken, problems) : [],
     regionsAtTarget: tDoc ? _regionsAt(targetToken, problems) : [],
+
+    // ── WHERE THEY ARE STANDING ─────────────────────────────────
+    //
+    // ⚠️ EVERY ANSWER CARRIES ITS SOURCE. `difficult` from a region's
+    // movement-cost behaviour is a FACT; `kinds` guessed from a region's NAME
+    // is a guess, and a consumer is entitled to treat them differently. null
+    // means "could not tell", never "no".
+    terrainAtAttacker: aDoc ? _terrainAt(attackerToken, problems) : null,
+    terrainAtTarget: tDoc ? _terrainAt(targetToken, problems) : null,
+
+    // ⚠️ AND WHICH MAP THIS IS. Johnny: "Does it know what map it's on?
+    // Dude doesn't know where they are." It did not - the profile could
+    // measure the gap between two creatures without knowing the room existed.
+    sceneName: canvas?.scene?.name ?? null,
+    sceneId: canvas?.scene?.id ?? null,
     spacesAtAttacker,
     spacesAtTarget,
     attackerSilenced,
@@ -328,6 +448,77 @@ export function buildEnvironmentProfile(attackerToken, targetToken = null) {
  * one must never look the same — that is how wall checking stayed dead for two
  * weeks in June.
  */
+/**
+ * Underwater combat, RAW (PHB "Underwater Combat").
+ *
+ * ⚠️ NOTHING IN ACE IMPLEMENTED THIS. A party fighting in a flooded room
+ * rolled exactly as if they were on dry land: no disadvantage on a longsword,
+ * a longbow working perfectly at full range.
+ *
+ * The printed rules:
+ *   • A MELEE weapon attack has disadvantage unless the weapon is a dagger,
+ *     javelin, shortsword, spear or trident. A creature with a SWIMMING SPEED
+ *     is exempt entirely.
+ *   • A RANGED weapon attack automatically MISSES beyond its normal range,
+ *     and has disadvantage within it - unless the weapon is a crossbow, a net,
+ *     or a thrown javelin, spear, trident or dart.
+ *
+ * ⚠️ IT ANSWERS, IT DOES NOT APPLY. Whether "underwater" is even true here
+ * is a guess off a region name, so this returns a verdict WITH its reasoning
+ * and the caller decides whether to act on it. Applying disadvantage because a
+ * GM called a region "Waterfall Overlook" would be worse than doing nothing.
+ *
+ * @param {object} env      an environment profile
+ * @param {object} attack   an attack profile (for baseItem / kind)
+ * @param {object} attacker an attacker profile (for a swim speed)
+ * @returns {{applies:boolean, disadvantage:boolean, autoMiss:boolean, why:string}}
+ */
+export function underwaterRules(env, attack, attacker) {
+  const no = { applies: false, disadvantage: false, autoMiss: false,
+               why: "not underwater as far as anything on this scene says" };
+  try {
+    const t = env?.terrainAtAttacker;
+    const wet = !!t && (t.kinds?.includes("deep") || t.kinds?.includes("water"));
+    if (!wet) return no;
+
+    const MELEE_OK  = ["dagger", "javelin", "shortsword", "spear", "trident"];
+    const RANGED_OK = ["crossbow", "handcrossbow", "lightcrossbow", "heavycrossbow",
+                       "net", "javelin", "spear", "trident", "dart"];
+    const base = String(attack?.baseItem ?? "").toLowerCase();
+    const isRanged = attack?.attackKind === "rwak" || attack?.attackKind === "rsak";
+
+    if (!isRanged) {
+      // A swimming speed removes the melee penalty outright.
+      const swims = Number(attacker?.creature?.speeds?.swim ?? attacker?.speeds?.swim ?? 0) > 0;
+      if (swims) {
+        return { applies: true, disadvantage: false, autoMiss: false,
+                 why: `${t.kindSource} - underwater, but this creature has a swimming speed` };
+      }
+      const fine = MELEE_OK.some(w => base.includes(w));
+      return { applies: true, disadvantage: !fine, autoMiss: false,
+               why: fine
+                 ? `underwater, but a ${base} is one of the weapons that works there`
+                 : `underwater and a ${base || "this weapon"} is not one of the five that works there (${t.kindSource})` };
+    }
+
+    const fine = RANGED_OK.some(w => base.includes(w));
+    const beyondNormal = Number.isFinite(env?.distanceFt) && attack?.rangeNormal > 0
+      && env.distanceFt > attack.rangeNormal;
+    return {
+      applies: true,
+      disadvantage: !fine,
+      autoMiss: !fine && beyondNormal,
+      why: fine
+        ? `underwater, but a ${base} is one of the ranged weapons that works there`
+        : beyondNormal
+          ? `underwater and ${env.distanceFt} feet away, past this weapon's normal range - RAW that is an automatic miss (${t.kindSource})`
+          : `underwater with a ${base || "ranged weapon"} that is not exempt (${t.kindSource})`,
+    };
+  } catch (_) {
+    return no;
+  }
+}
+
 export function describeEnvironment(p) {
   if (!p) return "(no environment profile)";
   const bits = [];
@@ -354,5 +545,17 @@ export function describeEnvironment(p) {
   }
   if (p.problems?.length) bits.push(`PROBLEMS: ${p.problems.join("; ")}`);
 
-  return bits.length ? bits.join(" · ") : "nothing between them";
+  
+  // ⚠️ THE GROUND GOES IN THE LINE. A Gate line that says how far apart
+  // two creatures are and not that one of them is waist deep in a river is
+  // describing half a situation.
+  const _ground = [];
+  const _t = p?.terrainAtAttacker;
+  if (_t?.difficult === true) _ground.push(`difficult terrain (${_t.difficultSource})`);
+  if (_t?.kinds?.length)      _ground.push(_t.kinds.join(" + "));
+  const _where = p?.sceneName ? ` on "${p.sceneName}"` : "";
+  const _groundTxt = _ground.length ? ` · ground: ${_ground.join(", ")}` : "";
+
+  const _core = bits.length ? bits.join(" · ") : "nothing between them";
+  return _core + _where + _groundTxt;
 }

@@ -56,7 +56,7 @@ export class FeatEffects {
         btn.setAttribute("data-bound", "1");
         btn.addEventListener("click", () => {
           try {
-            this._pushTarget5 feet(btn.dataset.attackerUuid, btn.dataset.targetUuid);
+            this._pushTarget5ft(btn.dataset.attackerUuid, btn.dataset.targetUuid);
             btn.disabled = true;
             btn.innerHTML = `<i class="fas fa-check"></i> Pushed`;
           } catch (err) { console.warn(`${TAG} | Crusher push click failed:`, err); }
@@ -269,7 +269,7 @@ export class FeatEffects {
   //  Buttons
   // ──────────────────────────────────────────────────────────────────────────
 
-  static async _pushTarget5 feet(attackerUuid, targetUuid) {
+  static async _pushTarget5ft(attackerUuid, targetUuid) {
     const attTokenDoc = await fromUuid(attackerUuid).catch(() => null);
     const tgtTokenDoc = await fromUuid(targetUuid).catch(() => null);
     const attTok = attTokenDoc?.documentName === "Token" ? attTokenDoc
