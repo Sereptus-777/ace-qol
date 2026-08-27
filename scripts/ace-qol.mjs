@@ -4418,6 +4418,27 @@ Hooks.once("ready", () => {
     if (game.ready) _runDeadFlagsCleanup(); else Hooks.once("ready", _runDeadFlagsCleanup);
     console.debug(`${MODULE_ID} | Stale-flag auto-cleanup hook registered`);
 
+    // — Features that promise a number and carry nothing to produce it —
+    //
+    // ⚠️🔴 A SWEEP OF A REAL WORLD FOUND TEN OF THESE ON PLAYER SHEETS
+    // (2026-08-26), every one applying nothing. Ireena's Archery should give +2
+    // on every ranged attack and gives zero; she has been rolling two low for
+    // months. The rules text came from the importer and the mechanics did not.
+    //
+    // Nothing in ACE is wrong when this happens, which is exactly why nobody
+    // ever finds it: a feature with no effect looks identical to one that is
+    // pure flavour. So ACE says it out loud, once, to the GM.
+    //
+    // ⚠️ Its own try/catch. One throw here must not take down whatever
+    // registers after it.
+    try {
+      import("./hollow-feature-warning.mjs")
+        .then(({ registerHollowFeatureWarning }) => registerHollowFeatureWarning())
+        .catch(err => console.warn(`${MODULE_ID} | hollow-feature warning unavailable:`, err));
+    } catch (err) {
+      console.warn(`${MODULE_ID} | hollow-feature warning could not be scheduled:`, err);
+    }
+
     // ══════════════════════════════════════════════════════════════════════════
     //  PERMANENT-DEATH OVERRIDE — Vorpal revoke button (chat card + actor sheet
     //  + token right-click menu)
