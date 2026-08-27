@@ -8,7 +8,7 @@
 //                       The base 1d8 thunder is handled by the cantrip's own
 //                       activity. We add the movement-trigger reminder card.
 //   • Green-Flame Blade — weapon hit + 1d8 fire (scaling at L5/11/17); a
-//                         second creature within 5 ft of the target takes
+//                         second creature within 5 feet of the target takes
 //                         ability-mod fire damage. The base 1d8 is handled
 //                         by the cantrip; we surface the secondary-target
 //                         damage as a one-click chat button.
@@ -194,7 +194,7 @@ export class BladeCantrips {
       const secondaryDice = cantripDice - 1; // 2024: ability mod at L1, +Xd8 at L5+
       const damageDescPart = secondaryDice > 0 ? `${secondaryDice}d8 + ` : "";
       this._postCantripCard("green-flame-blade", item, actor, target,
-        `A second creature within 5 ft of <strong>${targetName}</strong> takes <strong>${damageDescPart}${abilMod} fire</strong> damage.`,
+        `A second creature within 5 feet of <strong>${targetName}</strong> takes <strong>${damageDescPart}${abilMod} fire</strong> damage.`,
         "#7ed957", "fa-fire",
         `<div style="margin-top:6px;">
           <button class="ace-qol-btn ace-qol-gfb-secondary-btn"
@@ -272,7 +272,7 @@ export class BladeCantrips {
       ui.notifications?.warn("Green-Flame Blade: primary target not on canvas — pick adjacent manually.");
       return;
     }
-    // RAW GFB: a different creature within 5 ft of the primary target.
+    // RAW GFB: a different creature within 5 feet of the primary target.
     // Nearest-edge, size-aware, 3D (canonical — geometry-utils).
     const candidates = canvas.tokens?.placeables?.filter(t =>
       t !== primaryTok &&
@@ -280,7 +280,7 @@ export class BladeCantrips {
       aceWithinFt(t, primaryTok, 5)
     ) ?? [];
     if (!candidates.length) {
-      ui.notifications?.warn("Green-Flame Blade: no creatures within 5 ft of the primary target.");
+      ui.notifications?.warn("Green-Flame Blade: no creatures within 5 feet of the primary target.");
       return;
     }
     // For simplicity, hit the FIRST adjacent. GM can repick by targeting first.

@@ -99,7 +99,7 @@ export class RetaliationEngine {
     }
     if (!formula) return null;
 
-    // ── Range (default 5 ft) ──
+    // ── Range (default 5 feet) ──
     const rm = desc.match(/within\s+(\d+)\s*(?:ft|feet|foot)/i);
     return { formula, type: String(type ?? "fire").toLowerCase(), range: rm ? Number(rm[1]) : 5, source: feat.name };
   }

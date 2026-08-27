@@ -146,7 +146,7 @@ export const SPELL_EFFECTS = [
   {
     name: "Crusader's Mantle", matchType: "effect",
     nullifications: { special: { crusadersMantleActive: true } },
-    source: "PHB Crusader's Mantle p.230 — +1d4 radiant from allies in 30ft",
+    source: "PHB Crusader's Mantle p.230 — +1d4 radiant from allies in 30 feet",
   },
   {
     name: "Counterspell", matchType: "effect",

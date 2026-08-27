@@ -7,12 +7,12 @@
 // ranged.
 //
 // The heuristic (Johnny's pick over silently retagging item data): a SPELL
-// attack tagged melee whose range is beyond touch (> 5 ft) is treated as
+// attack tagged melee whose range is beyond touch (> 5 feet) is treated as
 // RANGED for attack bonuses — the actor's ranged-spell-attack bonus is added
 // to the roll at build time. The item is never modified.
 //
 // Guards:
-//   • spells only, melee-spell-attack label only, range > 5 ft only
+//   • spells only, melee-spell-attack label only, range > 5 feet only
 //   • skipped when the actor ALSO has a melee-spell-attack bonus (dnd5e
 //     already applied one; adding ours would double-dip)
 //   • idempotent per roll config (dual-hook safe)

@@ -63,7 +63,7 @@ import { resolveReach } from "../reach-reader.mjs";
  * Both bugs live here now, gated, in one table.
  *
  * ⚠️ RADIUS IS A FUNCTION OF LEVEL, not a constant — both paladin auras go
- * from 10 ft to 30 ft at 18th level, in both editions.
+ * from 10 feet to 30 feet at 18th level, in both editions.
  */
 const PROJECTED_AURAS = [
   {
@@ -249,7 +249,7 @@ export function buildAttackerProfile(actor, { token = null, item = null, activit
   // facts about a rapier, and they were being reported as facts about the
   // creature holding it. The console line read
   //
-  //     Lich (Legacy): conditions: concentrating · reach 120 ft · in combat
+  //     Lich (Legacy): conditions: concentrating · reach 120 feet · in combat
   //
   // which is two subjects in one sentence, and a 120-foot cantrip does not
   // have "reach" at all.
@@ -565,7 +565,7 @@ export function describeAttacker(p) {
   if (p.economy?.reactionUsed) bits.push("reaction spent");
   if (p.projectedAuras?.length) {
     bits.push("projects " + p.projectedAuras
-      .map(a => `${a.feature} ${a.radiusFt}ft${a.suppressed ? " (SUPPRESSED)" : ""}`)
+      .map(a => `${a.feature} ${a.radiusFt} feet${a.suppressed ? " (SUPPRESSED)" : ""}`)
       .join(" + "));
   }
   if (p.problems?.length) bits.push(`PROBLEMS: ${p.problems.join("; ")}`);

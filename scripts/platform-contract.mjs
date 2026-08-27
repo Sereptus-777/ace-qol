@@ -78,8 +78,8 @@ export const GLOBALS = [
  * METHOD still exists. On 08-23 the same class of drift hit a FIELD instead,
  * and nothing here could see it.
  *
- * Johnny's Spiked Chain says "reach 10 ft." and ACE refused the attack with
- * "out of range — 10ft away (melee reach 5ft)". A weapon's range block has four
+ * Johnny's Spiked Chain says "reach 10 feet." and ACE refused the attack with
+ * "out of range — 10 feet away (melee reach 5 feet)". A weapon's range block has four
  * slots — value, long, reach, units — and melee reach lives in `reach`. ACE
  * read `value`. It had not always been wrong: dnd5e ships a migration whose own
  * description is "migrate the range value to the reach field for melee weapons
@@ -87,7 +87,7 @@ export const GLOBALS = [
  * every melee weapon in the world was rewritten.
  *
  * Nothing threw. An empty slot and a genuine five-foot weapon are the same
- * thing from the reader's side, so the fallback to 5 ft looked like an answer
+ * thing from the reader's side, so the fallback to 5 feet looked like an answer
  * rather than a question. Months of reach weapons quietly not reaching.
  *
  * ⚠️ A MISSING FIELD IS AS SILENT AS A MISSING METHOD, AND MORE LIKELY. Methods
@@ -100,7 +100,7 @@ export const GLOBALS = [
 export const DATA_FIELDS = [
   { doc: "Item", type: "weapon", path: "range.reach",
     used: "melee reach — how far a reach weapon can actually hit",
-    note: "dnd5e MIGRATED this out of range.value; reading value alone gives every reach weapon 5ft" },
+    note: "dnd5e MIGRATED this out of range.value; reading value alone gives every reach weapon 5 feet" },
   { doc: "Item", type: "weapon", path: "range.value",  used: "ranged normal range" },
   { doc: "Item", type: "weapon", path: "range.long",   used: "ranged long range, and telling thrown from pure melee" },
   { doc: "Item", type: "weapon", path: "range.units",  used: "converting a metric table's reach to the feet the canvas measures in" },

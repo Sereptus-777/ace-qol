@@ -455,7 +455,7 @@ export class DamageEngine {
       }
 
       // ── PUSH button (2024 RAW Push mastery on the damage card) ──
-      // Push moves the first damage target 10 ft directly away from the
+      // Push moves the first damage target 10 feet directly away from the
       // attacker. Lives on the damage card so the player sees damage FIRST,
       // then decides whether the push is worth doing (e.g., skip if the
       // target already died). Permission-aware: GM does the token-move
@@ -545,7 +545,7 @@ export class DamageEngine {
 
         // ── Suppress the button when there's nothing to cleave ──
         // Cleave (mastery OR overkill carryover) both need a hostile creature
-        // within 5 ft of the one you hit. If there's none, don't show a dead
+        // within 5 feet of the one you hit. If there's none, don't show a dead
         // button — on the GM's screen OR the player's. (The render handler is
         // sync; run the canvas check in a microtask. The import resolves from
         // cache, so the button hides effectively instantly.) 2026-06-24.
@@ -675,7 +675,7 @@ export class DamageEngine {
       // ── PC "ROLL DAMAGE + PUSH 10 FT?" bundled button (push mastery only) ──
       // Lives on the pre-damage button card right under the regular ROLL DAMAGE.
       // Orange + blinking to grab attention. ONE click commits both actions:
-      // (1) push target 10 ft directly away, with forced-movement flag so no
+      // (1) push target 10 feet directly away, with forced-movement flag so no
       //     OA prompt fires; (2) trigger the regular ROLL DAMAGE flow. Damage
       // result card that follows will be stamped with pushFired:true so its
       // own PUSH 10 FT button renders as already-greyed "PUSHED ✓" for the
@@ -1335,10 +1335,10 @@ export class DamageEngine {
       return;
     }
 
-    // 4. Find adjacent enemies (within 5 ft of original target, hostile)
+    // 4. Find adjacent enemies (within 5 feet of original target, hostile)
     const adjacent = WeaponMasteries.findCleaveAdjacent(attTok, origTok);
     if (!adjacent.length) {
-      ui.notifications.warn(`Cleave: no adjacent creatures within 5 ft of ${origTok.name}.`);
+      ui.notifications.warn(`Cleave: no adjacent creatures within 5 feet of ${origTok.name}.`);
       return;
     }
 

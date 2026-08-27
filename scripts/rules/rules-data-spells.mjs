@@ -121,7 +121,7 @@ export const SPELL_RULES = {
       difficultTerrain: null,
       light: null,
     },
-    notes: "Wind (moderate+) disperses it early — GM call, not modeled. Radius grows +20 ft per slot level above 1st (region traces the actual template, so upcasting is covered by construction).",
+    notes: "Wind (moderate+) disperses it early — GM call, not modeled. Radius grows +20 feet per slot level above 1st (region traces the actual template, so upcasting is covered by construction).",
   },
 
   // ── Silence — SRD 5.1 p.275 / SRD 5.2 ──────────────────────────────────────
@@ -150,14 +150,14 @@ export const SPELL_RULES = {
 
   // ── Cloudkill — SRD ─────────────────────────────────────────────────────────
   // 20-ft-radius sphere of poisonous fog; area heavily obscured. The cloud
-  // moving 10 ft away each round is not modeled (template is static — GM drags).
+  // moving 10 feet away each round is not modeled (template is static — GM drags).
   "cloudkill": {
     srd: true,
     level: 5, school: "con",
     concentration: true,
     expectedArea: { type: "sphere", size: 20 },
     space: { obscurement: "heavy", kind: "fog", pierceBy: ["blindsight"], silence: false, difficultTerrain: null, light: null },
-    notes: "Save/damage machinery stays with the areaDenial path (spell-timing). Moves 10 ft/round away from caster — GM drags the template; the region follows on recreation.",
+    notes: "Save/damage machinery stays with the areaDenial path (spell-timing). Moves 10 feet/round away from caster — GM drags the template; the region follows on recreation.",
   },
 
   // ── Stinking Cloud — SRD ────────────────────────────────────────────────────
@@ -177,7 +177,7 @@ export const SPELL_RULES = {
     concentration: true,
     expectedArea: { type: "sphere", size: 20 },
     space: { obscurement: "heavy", kind: "fog", pierceBy: ["blindsight"], silence: false, difficultTerrain: null, light: null },
-    notes: "Damage machinery stays with the areaDenial path. Moves 10 ft/round — GM drags.",
+    notes: "Damage machinery stays with the areaDenial path. Moves 10 feet/round — GM drags.",
   },
 
   // ── Sleet Storm — SRD ───────────────────────────────────────────────────────
@@ -276,7 +276,7 @@ export const SPELL_RULES = {
   },
 
   // ── Wall of Thorns — SRD ────────────────────────────────────────────────────
-  // Moving through the wall is slowed (4 ft per 1 ft) and deals damage —
+  // Moving through the wall is slowed (4 feet per 1 feet) and deals damage —
   // the damage stays with the movement-damage path; the ×4 cost lives here.
   "wall of thorns": {
     srd: true,
@@ -315,7 +315,7 @@ export const SPELL_RULES = {
   },
 
   // ── Thunderstorm of Misery — Stormforger staff (magic item) ───────────────
-  // "Summon a powerful storm around you in a 50ft radius for 1 minute. The storm
+  // "Summon a powerful storm around you in a 50 feet radius for 1 minute. The storm
   //  creates dangerous terrain, making the ground slippery and filled with
   //  debris, making it difficult for creatures within the area of effect to move
   //  around. The winds, lightning strikes and heavy rain make it hard for

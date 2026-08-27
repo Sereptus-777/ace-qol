@@ -215,7 +215,7 @@ export class MovementTracker {
     const status = totalDistance <= t.walkSpeed ? "WALK"
                  : totalDistance <= t.dashSpeed ? "DASH"
                                                 : "OVER";
-    t.label.text = `${distRounded}ft  ·  ${status}  ·  ${t.walkSpeed}/${t.dashSpeed}`;
+    t.label.text = `${distRounded} feet  ·  ${status}  ·  ${t.walkSpeed}/${t.dashSpeed}`;
     t.label.position.set(cursorWorld.x + 24, cursorWorld.y);
   }
 

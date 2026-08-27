@@ -53,8 +53,8 @@ export class MovementClock {
    * fake token id, which was silently fatal: `journeyDistance` takes the
    * FURTHEST traveller (a max, deliberately — four PCs down one corridor is one
    * walk), so the carry COMPETED with the next step instead of adding to it.
-   * Walking 20 ft eight times left the journey pinned at 20 ft and charged
-   * nothing, forever. Johnny walked well past 100 ft and no time ever passed.
+   * Walking 20 feet eight times left the journey pinned at 20 feet and charged
+   * nothing, forever. Johnny walked well past 100 feet and no time ever passed.
    */
   static _carryFeet = 0;
   static _timer = null;
@@ -125,11 +125,11 @@ export class MovementClock {
 
       if (!stamped) {
         console.warn(`${LOG} | ${tokenDoc.name}: no pre-move position was stamped — ` +
-          `measured ${Math.round(feet)} ft, which may be wrong. preUpdateToken did not fire first.`);
+          `measured ${Math.round(feet)} feet, which may be wrong. preUpdateToken did not fire first.`);
       }
 
       if (feet < MIN_FEET) {
-        console.log(`${LOG} | ${tokenDoc.name}: ${Math.round(feet)} ft — under the ${MIN_FEET} ft floor, treated as a nudge.`);
+        console.log(`${LOG} | ${tokenDoc.name}: ${Math.round(feet)} feet — under the ${MIN_FEET} feet floor, treated as a nudge.`);
         return;
       }
 
@@ -139,7 +139,7 @@ export class MovementClock {
       delete tokenDoc._acePriorY;
 
       this._legs.push({ id: tokenDoc.id, feet });
-      console.log(`${LOG} | ${tokenDoc.name}: +${Math.round(feet)} ft buffered (${this._legs.length} leg(s), ${Math.round(this._carryFeet)} ft carried) — settling in ${SETTLE_MS / 1000}s`);
+      console.log(`${LOG} | ${tokenDoc.name}: +${Math.round(feet)} feet buffered (${this._legs.length} leg(s), ${Math.round(this._carryFeet)} feet carried) — settling in ${SETTLE_MS / 1000}s`);
       this._restartTimer();
     } catch (err) {
       // Movement must never break because timekeeping threw.
@@ -162,7 +162,7 @@ export class MovementClock {
   static _discard(why) {
     if (this._timer) { clearTimeout(this._timer); this._timer = null; }
     if (this._legs.length || this._carryFeet) {
-      console.log(`${LOG} | dropped ${this._legs.length} buffered leg(s) + ${Math.round(this._carryFeet)} ft carried — ${why}`);
+      console.log(`${LOG} | dropped ${this._legs.length} buffered leg(s) + ${Math.round(this._carryFeet)} feet carried — ${why}`);
     }
     this._legs = [];
     this._carryFeet = 0;
@@ -195,7 +195,7 @@ export class MovementClock {
 
     // ⚠️ ADVANCE SECONDS, NOT WHOLE MINUTES.
     // This used to charge only complete minutes and bank the remainder, which
-    // meant you could walk 95 ft of a dungeon — most of a level — and watch the
+    // meant you could walk 95 feet of a dungeon — most of a level — and watch the
     // clock do absolutely nothing. Johnny: "it is not working at 100, even
     // though it says banked 95". The arithmetic was right and the behaviour was
     // useless: with no visible movement there is no way to tell a working
@@ -205,7 +205,7 @@ export class MovementClock {
     if (seconds < 1) { this._carryFeet = feet; return null; }
 
     const speed = paceSetFor(kind)[pace]?.feetPerMinute ?? "?";
-    const detail = `${Math.round(feet)} ft at ${speed} ft/min`;
+    const detail = `${Math.round(feet)} feet at ${speed} feet/min`;
 
     // Log a line only once the walking adds up to something worth reading, but
     // ALWAYS move the clock. Short hops still count; they just do not each earn
@@ -228,7 +228,7 @@ export class MovementClock {
     } else {
       this._carryFeet = feet;
       this._sinceLogged = Math.max(0, (this._sinceLogged ?? 0) - seconds);
-      console.log(`${LOG} | ${Math.round(feet)} ft NOT charged (${spent?.reason ?? "no result"}) — kept for next time.`);
+      console.log(`${LOG} | ${Math.round(feet)} feet NOT charged (${spent?.reason ?? "no result"}) — kept for next time.`);
       return spent;
     }
 

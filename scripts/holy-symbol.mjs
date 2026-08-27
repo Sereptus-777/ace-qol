@@ -15,9 +15,9 @@
 //
 // RAW (Curse of Strahd, Holy Symbol of Ravenkind):
 //   • 10 charges, regains 1d6+4 at dawn.
-//   • Hold Vampires (1 charge): each vampire/vampire spawn within 30 ft that
+//   • Hold Vampires (1 charge): each vampire/vampire spawn within 30 feet that
 //     can see the symbol — DC 15 Wis save or paralyzed until the symbol drops.
-//   • Turn Undead (3 charges): each undead within 30 ft — DC 15 Wis save or
+//   • Turn Undead (3 charges): each undead within 30 feet — DC 15 Wis save or
 //     turned (frightened) for 1 minute or until it takes damage.
 //   • Sunlight (5 charges): 30-ft bright + 30-ft dim real sunlight for 10 min.
 // ──────────────────────────────────────────────────────────────────────────────
@@ -98,7 +98,7 @@ export class HolySymbol {
 
     // Pre-target the eligible creature type for the AREA save powers BEFORE the
     // save engine reads targets: Hold Vampires → vampires only, Turn Undead →
-    // undead only ("each X within 30 ft"). Returning false cancels the use when
+    // undead only ("each X within 30 feet"). Returning false cancels the use when
     // nothing eligible is in range, so a charge isn't wasted.
     Hooks.on("dnd5e.preUseActivity", (activity) => {
       try { return HolySymbol._onPreUse(activity); }
@@ -244,7 +244,7 @@ export class HolySymbol {
       && HolySymbol._tokenDistFt(casterToken, t) <= rangeFt + 0.1);
 
     if (!eligible.length) {
-      ui.notifications?.warn(`No ${label} within ${rangeFt} ft — ${power} affects no one.`);
+      ui.notifications?.warn(`No ${label} within ${rangeFt} feet — ${power} affects no one.`);
       return false;   // cancel: don't burn a charge on an empty area
     }
 
@@ -255,7 +255,7 @@ export class HolySymbol {
     for (const t of eligible) {
       t.setTarget?.(true, { user: game.user, releaseOthers: false, groupSelection: false });
     }
-    console.log(`${MODULE_ID} | ${power}: auto-targeted ${eligible.length} ${label}(s) within ${rangeFt} ft.`);
+    console.log(`${MODULE_ID} | ${power}: auto-targeted ${eligible.length} ${label}(s) within ${rangeFt} feet.`);
   }
 
   // ─── Use dispatch ────────────────────────────────────────────────────────
@@ -305,7 +305,7 @@ export class HolySymbol {
   // ─── Animations ──────────────────────────────────────────────────────────
   // Sequencer's `.size(n, {gridUnits:true})` measures n in GRID SQUARES, not
   // feet. Convert a real distance (e.g. a 60-ft diameter) into squares using
-  // the scene's ft-per-square so a "30-ft" effect is actually 30 ft, not 300.
+  // the scene's ft-per-square so a "30-ft" effect is actually 30 feet, not 300.
   static _gridUnits(distanceFt) {
     return distanceFt / (canvas.grid?.distance || 5);
   }
@@ -327,7 +327,7 @@ export class HolySymbol {
           .effect()
             .file(file)
             .atLocation(token)
-            .size(HolySymbol._gridUnits(SUN_RADIUS * 2), { gridUnits: true })   // 60 ft diameter = 30 ft radius
+            .size(HolySymbol._gridUnits(SUN_RADIUS * 2), { gridUnits: true })   // 60 feet diameter = 30 feet radius
             .tint(fx.color)
             .opacity(0.9)
             .fadeIn(150)

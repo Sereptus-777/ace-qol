@@ -5956,7 +5956,7 @@ Hooks.once("ready", () => {
             if (target && ap?._checkRange) {
               const rangeCheck = ap._checkRange(this.actor, target, this);
               if (rangeCheck?.blocked) {
-                const msg = `Out of range — ${rangeCheck.distanceFt}ft away (${rangeCheck.rangeDesc})`;
+                const msg = `Out of range — ${rangeCheck.distanceFt} feet away (${rangeCheck.rangeDesc})`;
                 showCenterToast(msg, 2500);
                 ui.notifications?.warn(`ACE QOL: ${msg}`);
                 return null;  // cancel the attack

@@ -2,7 +2,7 @@
 //
 // Lets a creature stand BELOW zero elevation and still be seen.
 //
-// ⚠️ THE BUG, confirmed live 2026-08-13. Johnny built a cellar at -30 ft, walked
+// ⚠️ THE BUG, confirmed live 2026-08-13. Johnny built a cellar at -30 feet, walked
 // Firaxis into it, and the token became a dark silhouette — visible only because
 // the PC glow ring is drawn separately. Every property said the token was fine:
 // `visible: true`, `renderable: true`, `meshAlpha: 1`, texture loaded. It was
@@ -62,11 +62,11 @@ export class SunkenFloors {
       if (G) {
         if (G.BACKGROUND_ELEVATION > BACKGROUND_DEPTH) {
           G.BACKGROUND_ELEVATION = BACKGROUND_DEPTH;
-          console.log(`${LOG} | background default set to ${BACKGROUND_DEPTH} ft.`);
+          console.log(`${LOG} | background default set to ${BACKGROUND_DEPTH} feet.`);
         }
         ok = true;
       } else {
-        console.warn(`${LOG} | PrimaryCanvasGroup not found — creatures below 0 ft will render under the map.`);
+        console.warn(`${LOG} | PrimaryCanvasGroup not found — creatures below 0 feet will render under the map.`);
       }
     } catch (err) {
       console.warn(`${LOG} | could not set the background default:`, err);

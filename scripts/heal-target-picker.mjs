@@ -166,7 +166,7 @@ export class HealTargetPicker {
 
     // Range check (Infinity passes)
     if (Number.isFinite(classification.rangeFt) && distFt > classification.rangeFt + 0.01) {
-      return { valid: false, reason: `${Math.round(distFt)}ft > ${classification.rangeFt}ft range` };
+      return { valid: false, reason: `${Math.round(distFt)} feet > ${classification.rangeFt} feet range` };
     }
 
     // ⚠️🔴 AND A WALL STOPS A HEAL. Distance was measured here from
@@ -210,8 +210,8 @@ export class HealTargetPicker {
     const rangeDisplay = !Number.isFinite(classification.rangeFt)
       ? "any range"
       : classification.rangeFt === 0 ? "self only"
-      : classification.rangeFt === 5 ? "5 ft (touch)"
-      : `${classification.rangeFt} ft`;
+      : classification.rangeFt === 5 ? "5 feet (touch)"
+      : `${classification.rangeFt} feet`;
 
     const tempHPBadge = classification.isTempHP
       ? `<span class="ace-qol-heal-pickr-tag ace-qol-heal-pickr-tag-temp">TEMP HP</span>`
@@ -307,7 +307,7 @@ export class HealTargetPicker {
 
   static _renderTokenRow(c, preSelected) {
     const hpPct = c.maxHp > 0 ? Math.max(0, Math.min(100, (c.currentHp / c.maxHp) * 100)) : 0;
-    const distLabel = c.isSelf ? "self" : `${Math.round(c.distFt)} ft`;
+    const distLabel = c.isSelf ? "self" : `${Math.round(c.distFt)} feet`;
     const distClass = c.isSelf ? "self" : (c.valid ? "in-range" : "out-of-range");
     const validClass = c.valid ? "valid" : "invalid";
     const selectedClass = preSelected ? "selected" : "";
@@ -354,7 +354,7 @@ export class HealTargetPicker {
         // and written data-valid="false" - and then let you click it anyway.
         //
         // Johnny, 2026-08-27: he picked a greyed-out target two rooms away,
-        // far beyond a Mass Healing Word's 60 ft and through several walls,
+        // far beyond a Mass Healing Word's 60 feet and through several walls,
         // and it healed him. Showing a rule and not enforcing it is worse than
         // not showing it: the picker taught him the range mattered, then
         // proved it did not.

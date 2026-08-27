@@ -121,8 +121,8 @@ export class ConcentrationWidget {
 
     // ── 1-cell cube snap fix ──
     // Foundry's default snap behavior for `rect` templates is to snap the
-    // anchor to a grid VERTEX (corner of cells), which puts a 5ft cube
-    // straddling 4 cells. RAW intent for a 5ft cube is to occupy ONE cell.
+    // anchor to a grid VERTEX (corner of cells), which puts a 5 feet cube
+    // straddling 4 cells. RAW intent for a 5 feet cube is to occupy ONE cell.
     // This hook detects 1-cell cubes (rect with distance = 1 cell, either
     // direct or rotated 45°) and shifts the anchor so the cube's CENTER
     // aligns with the nearest cell's center. Larger cubes left alone.
@@ -132,7 +132,7 @@ export class ConcentrationWidget {
         const gridDist = canvas.scene?.grid?.distance ?? 5;
         const gridSize = canvas.grid?.size ?? 100;
         const dist = templateDoc.distance;
-        // dnd5e stores 5ft cubes as rect with distance = 5 OR distance = 5*√2 (rotated 45°)
+        // dnd5e stores 5 feet cubes as rect with distance = 5 OR distance = 5*√2 (rotated 45°)
         const isSingleCellCube = Math.abs(dist - gridDist) < 0.1
                               || Math.abs(dist - gridDist * Math.SQRT2) < 0.1;
         if (!isSingleCellCube) return;
@@ -226,7 +226,7 @@ export class ConcentrationWidget {
       // `updateToken` after animation settle, which can be 1+ seconds
       // after the initial fire. The previous 500ms window was too short
       // and missed the second tick — the bug the user pointed out (move
-      // 5ft, see 2d4 roll, ~1s pause, see ANOTHER 2d4 roll).
+      // 5 feet, see 2d4 roll, ~1s pause, see ANOTHER 2d4 roll).
       const moveKey = `${tokenDoc.id}:${oldX},${oldY}>${newX},${newY}`;
       const lastSeen = this._recentMoveKeys.get(moveKey);
       const now = Date.now();
@@ -617,7 +617,7 @@ export class ConcentrationWidget {
    * and claimed fly was "derived". It isn't: of Foundry V13's nine movement
    * actions only crawl, climb, jump, blink and displace carry
    * `deriveTerrainDifficulty`, so walk, fly, swim and burrow were ALL charged
-   * and a flier 35 ft above a grease slick paid double for ground it never
+   * and a flier 35 feet above a grease slick paid double for ground it never
    * touched. Not RAW. Everything not named is pinned to 1, and the derived
    * actions resolve themselves (crawl/climb follow walk, jump takes the max).
    *
@@ -1202,7 +1202,7 @@ export class ConcentrationWidget {
       if (!tracker.tokensInside) tracker.tokensInside = new Set();
 
       // ── Phase 2: Spike Growth-style movement damage ──
-      // Spells with damage but NO save are continuous — apply per 5ft
+      // Spells with damage but NO save are continuous — apply per 5 feet
       // of movement traversed inside the template area. EXCEPT
       // areaDenialAuto (Cloud of Daggers) which has its own entry-based
       // mechanic and must NOT route through movement damage.
@@ -1558,7 +1558,7 @@ export class ConcentrationWidget {
   /**
    * For Phase 2 (Spike Growth, Wall of Thorns) — measure how many feet of
    * the token's move-vector lay INSIDE the template's polygon. Uses
-   * Foundry's grid distance scale (typically 5 ft per cell). Returns 0 if
+   * Foundry's grid distance scale (typically 5 feet per cell). Returns 0 if
    * no portion of the movement passed through the template.
    */
   _distanceMovedInsideTemplate(template, positions) {
@@ -1897,7 +1897,7 @@ export class ConcentrationWidget {
   /**
    * Phase 2 movement damage (Spike Growth, Wall of Thorns). Roll the
    * spell's damage formula scaled by feet traversed (e.g. Spike Growth
-   * is `2d4` per 5ft; ft / 5 = number of "tickets" of damage to roll).
+   * is `2d4` per 5 feet; ft / 5 = number of "tickets" of damage to roll).
    */
   async _applyMovementDamage(tracker, token, ftMoved) {
     const ftPerTick = canvas.scene?.grid?.distance ?? 5;
@@ -1913,7 +1913,7 @@ export class ConcentrationWidget {
     // (RAW Spike Growth: 2d4 *for every 5 feet*). Previous version used
     // `${ticks}*(${formulaPerTick})` which Foundry's Roll parses as
     // multiplication — it rolls 2d4 ONCE and multiplies the result by the
-    // tick count, so 5ft and 25ft both showed only 2 dice. RAW expects
+    // tick count, so 5 feet and 25 feet both showed only 2 dice. RAW expects
     // per-tick rolls (more dice, more variance). The chained `+` form
     // makes Foundry roll each instance independently — e.g. 5 ticks of
     // 2d4 yields a 10-die DSN animation and the correct probability
@@ -1995,8 +1995,8 @@ export class ConcentrationWidget {
         ? ` <span style="${badgeStyle}background:#1e6b1e;color:#e8ffe8">APPLIED</span>`
         : (finalDamage === 0 ? "" : ` <span style="${badgeStyle}background:#5a5a5a;color:#ddd">NOT APPLIED</span>`);
 
-      // Round the displayed distance to the nearest 5ft (grid increment) so
-      // a 14ft inside-path reads as "15ft", 23ft as "25ft", etc. The damage
+      // Round the displayed distance to the nearest 5 feet (grid increment) so
+      // a 14 feet inside-path reads as "15 feet", 23 feet as "25 feet", etc. The damage
       // tick count above is already grid-aligned (`Math.floor(ftMoved/5)`);
       // this just makes the human-readable label match.
       const gridFt = canvas?.scene?.grid?.distance ?? 5;
@@ -2008,7 +2008,7 @@ export class ConcentrationWidget {
       const cardStyle = "background:#15161a;border:1px solid #3a3a44;border-radius:5px;padding:8px 10px;color:#dfe2ea;font-size:0.9em;line-height:1.4em;";
       const flavor = `<div style="${cardStyle}">`
                    + `<strong style="color:#d4af37">${tracker.item?.name ?? "Persistent area"}</strong>`
-                   + ` &mdash; ${token.name} moved ${displayFt}ft through area${appliedTag}`
+                   + ` &mdash; ${token.name} moved ${displayFt} feet through area${appliedTag}`
                    + `<br><em style="color:#a8aab2">${ticks} × ${formulaPerTick} ${damageType} = ${rawTotal}${modBadge}`
                    + (modifier !== "normal" ? ` → <strong style="color:#fff">${finalDamage}</strong>` : "")
                    + `</em>${reasonLine}`
@@ -2054,7 +2054,7 @@ export class ConcentrationWidget {
           },
         },
       });
-      console.log(`${TAG} | Movement damage: ${token.name} took ${finalDamage}/${rawTotal} ${damageType} from ${tracker.item?.name} (${Math.round(ftMoved)}ft) — ${modifier}, applied=${applied}`);
+      console.log(`${TAG} | Movement damage: ${token.name} took ${finalDamage}/${rawTotal} ${damageType} from ${tracker.item?.name} (${Math.round(ftMoved)} feet) — ${modifier}, applied=${applied}`);
     } catch (err) {
       console.error(`${TAG} | _applyMovementDamage failed:`, err);
     }

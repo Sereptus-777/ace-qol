@@ -338,7 +338,7 @@ export class StormVisuals {
     if (!bed && !strike) return;                      // no storm assets — nothing to draw
 
     // Size the bed to the entry's OWN radius, so a future 20-ft storm is drawn
-    // at 20 ft without touching this file.
+    // at 20 feet without touching this file.
     const radiusFt = Number(entry.expectedArea?.size) || 20;
     const gridDist = Number(canvas?.grid?.distance) || 5;
     const gridSize = Number(canvas?.grid?.size) || 100;

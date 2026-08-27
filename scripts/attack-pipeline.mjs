@@ -455,7 +455,7 @@ export class AttackPipeline {
     // code and guessing, which is what the whole of 24 August was.
     // ⚠️ TWO LINES, ONE PER SUBJECT. The creature says what it is; the
     // button says what it is. Spliced together they produced
-    // "Lich (Legacy): concentrating · reach 120 ft", which reads as though the
+    // "Lich (Legacy): concentrating · reach 120 feet", which reads as though the
     // Lich has a 120-foot reach.
     const attack = _aceAttackProfile(item, subject);
     if (attacker) {
@@ -565,7 +565,7 @@ export class AttackPipeline {
     if (!OA_IN_FLIGHT.has(actor.id)) {
       const rangeCheck = this._checkRange(actor, firstTarget, item, subject, attacker);
       if (rangeCheck.blocked) {
-        const msg = `Out of range — ${rangeCheck.distanceFt}ft away (${rangeCheck.rangeDesc})`;
+        const msg = `Out of range — ${rangeCheck.distanceFt} feet away (${rangeCheck.rangeDesc})`;
         showCenterToast(msg, 2500);
         ui.notifications?.warn(`ACE QOL: ${msg}`);
         _announceAttackCancelled(item, actor, msg);
@@ -1045,7 +1045,7 @@ export class AttackPipeline {
         // ── Is the target actually within reach or range? ────────────────
         //
         // ⚠️ NOTHING IN ACE CHECKED THIS. Chudd cast Frostbite at a creature
-        // 60 ft away horizontally and 30 ft below him on 2026-08-26 and no
+        // 60 feet away horizontally and 30 feet below him on 2026-08-26 and no
         // part of the suite objected. Distance was measured everywhere and
         // compared to the attack's own limit nowhere.
         //
@@ -1286,7 +1286,7 @@ export class AttackPipeline {
     }
 
     // ── SILVERY BARBS — force reroll on successful attacks ──
-    // Opponents within 60ft can force the attacker to reroll the d20.
+    // Opponents within 60 feet can force the attacker to reroll the d20.
     if (reactionEng) {
       try {
         for (let i = 0; i < results.length; i++) {
@@ -2144,22 +2144,22 @@ export class AttackPipeline {
     if (isThrown || (isMelee && longRange > 0)) {
       if (distanceFt <= meleeReach) {
         // Within melee reach — treat as melee
-        return { blocked: false, distanceFt, rangeDesc: `melee reach ${meleeReach}ft`, isRanged: false };
+        return { blocked: false, distanceFt, rangeDesc: `melee reach ${meleeReach} feet`, isRanged: false };
       } else if (distanceFt <= (longRange || normalRange)) {
         // Beyond melee but within thrown/ranged — treat as ranged
-        return { blocked: false, distanceFt, rangeDesc: `thrown ${normalRange}/${longRange}ft`, isRanged: true };
+        return { blocked: false, distanceFt, rangeDesc: `thrown ${normalRange}/${longRange} feet`, isRanged: true };
       } else {
         // Beyond all ranges
-        return { blocked: true, distanceFt, rangeDesc: `reach ${meleeReach}ft / thrown ${normalRange}/${longRange}ft`, isRanged: true };
+        return { blocked: true, distanceFt, rangeDesc: `reach ${meleeReach} feet / thrown ${normalRange}/${longRange} feet`, isRanged: true };
       }
     }
 
     // Pure melee weapon (incl. monster natural attacks)
     if (isMelee && !isRanged) {
       if (distanceFt <= meleeReach) {
-        return { blocked: false, distanceFt, rangeDesc: `melee reach ${meleeReach}ft`, isRanged: false };
+        return { blocked: false, distanceFt, rangeDesc: `melee reach ${meleeReach} feet`, isRanged: false };
       } else {
-        return { blocked: true, distanceFt, rangeDesc: `melee reach ${meleeReach}ft`, isRanged: false };
+        return { blocked: true, distanceFt, rangeDesc: `melee reach ${meleeReach} feet`, isRanged: false };
       }
     }
 
@@ -2167,9 +2167,9 @@ export class AttackPipeline {
     if (isRanged) {
       const maxRange = longRange || normalRange;
       if (distanceFt <= maxRange) {
-        return { blocked: false, distanceFt, rangeDesc: `range ${normalRange}/${longRange}ft`, isRanged: true };
+        return { blocked: false, distanceFt, rangeDesc: `range ${normalRange}/${longRange} feet`, isRanged: true };
       } else {
-        return { blocked: true, distanceFt, rangeDesc: `range ${normalRange}/${longRange}ft`, isRanged: true };
+        return { blocked: true, distanceFt, rangeDesc: `range ${normalRange}/${longRange} feet`, isRanged: true };
       }
     }
 
@@ -2211,7 +2211,7 @@ export class AttackPipeline {
     // ⚠️🔴 THE CARD MUST NOT PRINT A DIFFERENT REACH THAN THE GATE USED.
     // This read the item's range slot only — no activity, no description
     // fallback — so a Spiked Chain whose reach lives in its description showed
-    // no REACH tag at all while the range check happily used 10 ft. A card that
+    // no REACH tag at all while the range check happily used 10 feet. A card that
     // disagrees with the rule it is reporting is worse than a card with no tag.
     // ⚠️ `repair: false` — a card can re-render many times and rendering is
     // not a swing. The write-back belongs to the attack path.

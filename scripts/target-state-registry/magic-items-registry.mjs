@@ -396,7 +396,7 @@ export const MAGIC_ITEMS = [
   // ── Holy items ──────────────────────────────────────────────────────────
   {
     name: "Holy Avenger", matchType: "item", equipped: true, requiresAttunement: true,
-    nullifications: { special: { holyAvenger: true } }, // 30ft aura — magic resistance for allies vs spells from fiends/undead
+    nullifications: { special: { holyAvenger: true } }, // 30 feet aura — magic resistance for allies vs spells from fiends/undead
     source: "DMG Holy Avenger p.174",
   },
 

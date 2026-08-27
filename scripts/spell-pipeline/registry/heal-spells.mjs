@@ -32,7 +32,7 @@ export const HEAL_SPELLS = {
   "mass cure wounds": {
     shape: "multi-heal",
     range: 60,
-    countResolver: () => 6,  // up to 6 creatures within 30ft of point
+    countResolver: () => 6,  // up to 6 creatures within 30 feet of point
     heal: {
       formula: (castLvl, spellMod) => `${3 + Math.max(0, castLvl - 5)}d8 + ${spellMod}`,
     },

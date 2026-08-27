@@ -1243,7 +1243,7 @@ export class ReactionEngine {
 
   /**
    * Internal handler for spell cast detection.
-   * Checks for Counterspell reactors within 60ft.
+   * Checks for Counterspell reactors within 60 feet.
    */
   async _onSpellCast(activity, message) {
     // EVERY exit point must resolve the cast barrier so downstream engines
@@ -1289,7 +1289,7 @@ export class ReactionEngine {
       return;
     }
 
-    // Find all eligible Counterspell reactors within 60ft
+    // Find all eligible Counterspell reactors within 60 feet
     let reactors = this._findCounterspellReactors(casterToken, casterActor);
     // Drop reactors whose player owner isn't connected — an offline player can't
     // answer the pop-up, so we don't raise a dead prompt (Johnny 2026-07-13:
@@ -1347,7 +1347,7 @@ export class ReactionEngine {
     if (targetNames) {
       detailRows.push({ label: "Target", value: targetNames });
     }
-    detailRows.push({ label: "Range", value: "60 ft (must see caster)" });
+    detailRows.push({ label: "Range", value: "60 feet (must see caster)" });
 
     // ── v0.7.269 — SEQUENTIAL COUNTERSPELL CASCADE ──
     // RAW: every creature that can see the caster may try to counter the SAME
@@ -1660,7 +1660,7 @@ export class ReactionEngine {
   }
 
   /**
-   * Find all creatures within 60ft that can cast Counterspell.
+   * Find all creatures within 60 feet that can cast Counterspell.
    * Excludes the caster and allies of the caster.
    */
   _findCounterspellReactors(casterToken, casterActor) {
@@ -1697,13 +1697,13 @@ export class ReactionEngine {
       const slots = this._getAvailableSlots(token.actor, 3);
       if (!slots.length) continue;
 
-      // Must be within 60ft (Counterspell's range)
+      // Must be within 60 feet (Counterspell's range)
       const distance = CombatState._getDistance(token, casterToken);
       if (distance > 60) continue;
 
       // Must have LINE OF SIGHT to the caster — RAW, you have to SEE the
-      // creature casting. The 60ft check alone let a reactor counterspell
-      // through walls / a locked door, even ~200ft away across rooms
+      // creature casting. The 60 feet check alone let a reactor counterspell
+      // through walls / a locked door, even ~200 feet away across rooms
       // (reported 2026-06-28). Test for a sight-blocking wall between the two
       // token centers. Optional-chained + try/caught so a Foundry API shift
       // can't break reactor detection — on any failure we fall through rather
@@ -2399,7 +2399,7 @@ export class ReactionEngine {
         ?? { rerolled: false };
     }
 
-    // Find eligible Silvery Barbs casters within 60ft (opponents of the succeeding creature)
+    // Find eligible Silvery Barbs casters within 60 feet (opponents of the succeeding creature)
     const reactors = this._findSilveryBarbsReactors(token, actor);
     if (!reactors.length) return { rerolled: false };
 
@@ -2451,7 +2451,7 @@ export class ReactionEngine {
         "#ce93d8");
 
       // Emit hook for the ally advantage portion
-      // Reactor chooses an ally within 30ft to gain advantage on next roll
+      // Reactor chooses an ally within 30 feet to gain advantage on next roll
       Hooks.callAll(`${MODULE_ID}.silveryBarbsCast`, {
         caster: reactor.actor,
         target: actor,
@@ -2495,7 +2495,7 @@ export class ReactionEngine {
       const slots = this._getAvailableSlots(token.actor, 1);
       if (!slots.length) continue;
 
-      // Must be within 60ft
+      // Must be within 60 feet
       const distance = CombatState._getDistance(token, successToken);
       if (distance > 60) continue;
 
@@ -2534,7 +2534,7 @@ export class ReactionEngine {
         ?? { reduced: false, reduction: 0 };
     }
 
-    // Find eligible Lore Bards within 60ft
+    // Find eligible Lore Bards within 60 feet
     const reactors = this._findCuttingWordsReactors(token, actor);
     if (!reactors.length) return { reduced: false, reduction: 0 };
 
@@ -2612,7 +2612,7 @@ export class ReactionEngine {
       const biUses = this._getBardicInspirationUses(token.actor);
       if (biUses <= 0) continue;
 
-      // Must be within 60ft
+      // Must be within 60 feet
       const distance = CombatState._getDistance(token, targetToken);
       if (distance > 60) continue;
 

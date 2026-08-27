@@ -5,14 +5,14 @@
 //   2. Anything that catches them for free (flying, a Ring of Feather Falling)
 //      stops here — no prompt, no fuss.
 //   3. THE GM IS ASKED, ONCE. "Did he fall, or climb down?" Default: fall.
-//   4. Everyone within 60 ft who could cast Feather Fall gets the window.
+//   4. Everyone within 60 feet who could cast Feather Fall gets the window.
 //   5. Damage, and prone.
 //
 // ⚠️ WHY THE GM IS ASKED. The staircase off Johnny's balcony and the balcony
 // rail produce an identical region exit and an identical elevation change.
 // Nothing in the data distinguishes them. Guessing "fall" every time means a
 // player eats 3d6 walking downstairs; guessing "climbed" means nobody ever
-// falls. So we ask — but only on drops of 10 ft or more, and the default is the
+// falls. So we ask — but only on drops of 10 feet or more, and the default is the
 // dramatic one, because that is the case worth interrupting for.
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -43,7 +43,7 @@ export class FallPipeline {
       if (game.users?.activeGM !== game.user) return;      // one client decides
       const drop = (Number(fromFt) || 0) - (Number(toFt) || 0);
       if (drop < MIN_FALL_FT) {
-        console.debug(`${LOG} | ${tokenDoc?.name} dropped ${drop} ft — under the ${MIN_FALL_FT} ft minimum, RAW says nothing happens.`);
+        console.debug(`${LOG} | ${tokenDoc?.name} dropped ${drop} feet — under the ${MIN_FALL_FT} feet minimum, RAW says nothing happens.`);
         return;
       }
 
@@ -71,7 +71,7 @@ export class FallPipeline {
       // ── Free catches: no prompt, no reaction, nothing spent ──────────────
       const auto = autoNegates(actor);
       if (auto.negated) {
-        console.log(`${LOG} | ${tokenDoc.name} left a ${drop} ft height but ${auto.reason} — no fall.`);
+        console.log(`${LOG} | ${tokenDoc.name} left a ${drop} feet height but ${auto.reason} — no fall.`);
         return;
       }
 
@@ -80,10 +80,10 @@ export class FallPipeline {
       // ⚠️🔴 THE DEFAULT IS `toFt`, NOT ZERO. This method used to pass a
       // hardcoded 0 as the fallback landing height, and that made it contradict
       // itself inside ten lines: `drop` above is fromFt - toFt, so stepping from
-      // 0 ft into a room whose floor is -30 ft passed the minimum-fall gate as a
-      // 30 ft drop — and then `distance` came out as 0 - 0 = 0 and the whole
-      // thing bailed. Live on 2026-08-19: "left 0 ft but the computed fall is
-      // only 0 ft (0 ground region(s) beneath)" while Forge had, one line
+      // 0 feet into a room whose floor is -30 feet passed the minimum-fall gate as a
+      // 30 feet drop — and then `distance` came out as 0 - 0 = 0 and the whole
+      // thing bailed. Live on 2026-08-19: "left 0 feet but the computed fall is
+      // only 0 feet (0 ground region(s) beneath)" while Forge had, one line
       // earlier, moved the same token from 0 to -30.
       //
       // The caller ALREADY resolved the destination. ground-level.mjs reads the
@@ -100,11 +100,11 @@ export class FallPipeline {
       const distance = fromFt - landsAt;
       if (distance < MIN_FALL_FT) {
         // ⚠️ NEVER BAIL SILENTLY HERE. This was a bare `return`, and on
-        // 2026-08-13 creatures walked off a balcony to -30 ft with no prompt and
+        // 2026-08-13 creatures walked off a balcony to -30 feet with no prompt and
         // nothing logged anywhere — "no fall" and "the fall logic gave up" were
         // indistinguishable. Say which, and say enough to act on.
-        console.warn(`${LOG} | ${tokenDoc.name} left ${fromFt} ft but the computed fall is only ${distance} ft ` +
-          `(landing worked out as ${landsAt} ft from ${grounds.length} ground region(s) beneath). No prompt. ` +
+        console.warn(`${LOG} | ${tokenDoc.name} left ${fromFt} feet but the computed fall is only ${distance} feet ` +
+          `(landing worked out as ${landsAt} feet from ${grounds.length} ground region(s) beneath). No prompt. ` +
           `If that is wrong, the region underneath is not being detected — run game.aceQol.falling.explain(token.document, ${fromFt}).`);
         return;
       }
@@ -134,7 +134,7 @@ export class FallPipeline {
    * Why did (or didn't) a fall happen? Returns plain English.
    *
    * ⚠️ BUILT BECAUSE THE PIPELINE BAILED SILENTLY. On 2026-08-13 creatures were
-   * stepping off a balcony and simply arriving at -30 ft with no prompt and
+   * stepping off a balcony and simply arriving at -30 feet with no prompt and
    * nothing logged. Every early return in `onLeftHeight` was a bare `return`,
    * so "no fall" and "the fall logic gave up" looked identical from the outside.
    * Call this instead of guessing:
@@ -157,10 +157,10 @@ export class FallPipeline {
       const actor = tokenDoc?.actor;
       if (!actor) return say("No actor on that token — nothing can fall.");
 
-      say(`Creature: ${actor.name}, currently at ${tokenDoc.elevation} ft, treated as leaving ${fromFt} ft.`);
+      say(`Creature: ${actor.name}, currently at ${tokenDoc.elevation} feet, treated as leaving ${fromFt} feet.`);
 
       const drop = (Number(fromFt) || 0) - (Number(tokenDoc.elevation) || 0);
-      say(`Raw drop: ${drop} ft (minimum for any fall is ${MIN_FALL_FT} ft).`);
+      say(`Raw drop: ${drop} feet (minimum for any fall is ${MIN_FALL_FT} feet).`);
       if (drop < MIN_FALL_FT) return say("STOPS HERE: the drop is under the minimum, so RAW says nothing happens.");
 
       const auto = autoNegates(actor);
@@ -175,14 +175,14 @@ export class FallPipeline {
       // differently is worse than none — it describes a code path nobody runs.
       const landsAt = landingElevation(grounds, fromFt, Number(toFt) || 0);
       const distance = fromFt - landsAt;
-      say(`Lands at ${landsAt} ft, so the fall is ${distance} ft.`
-          + (grounds.length ? "" : ` (no region detected beneath, so this used the destination height ${Number(toFt) || 0} ft that the ground-level behaviour resolved)`));
+      say(`Lands at ${landsAt} feet, so the fall is ${distance} feet.`
+          + (grounds.length ? "" : ` (no region detected beneath, so this used the destination height ${Number(toFt) || 0} feet that the ground-level behaviour resolved)`));
       if (distance < MIN_FALL_FT) {
         return say("STOPS HERE: after working out what is underneath, the fall is under the minimum. " +
                    "If that looks wrong, the region beneath is not being detected — check its shape and that it carries the ACE Ground Level behaviour.");
       }
 
-      say(`WOULD PROMPT: a ${distance} ft fall, ${Math.min(20, Math.floor(distance / 10))}d6 bludgeoning if it lands.`);
+      say(`WOULD PROMPT: a ${distance} feet fall, ${Math.min(20, Math.floor(distance / 10))}d6 bludgeoning if it lands.`);
       return out;
     } catch (err) {
       return say(`The check itself threw: ${err?.message ?? err}`);
@@ -264,7 +264,7 @@ export class FallPipeline {
         title: "A long way down",
         content,
         buttons: {
-          fall:  { label: `They fall — ${distance} ft`, icon: '<i class="fas fa-arrow-down"></i>',
+          fall:  { label: `They fall — ${distance} feet`, icon: '<i class="fas fa-arrow-down"></i>',
                    callback: () => finish(true) },
           climb: { label: "They climbed down safely", icon: '<i class="fas fa-shoe-prints"></i>',
                    callback: () => finish(false) },
@@ -324,7 +324,7 @@ export class FallPipeline {
             content: `<div style="padding:6px 2px;font-size:14px;line-height:1.5">
               <strong>${foundry.utils.escapeHTML(token.name)}</strong> catches
               <strong>${foundry.utils.escapeHTML(tokenDoc.name)}</strong> with
-              <em>Feather Fall</em> — they drift the ${distance} ft and land on their feet.</div>`,
+              <em>Feather Fall</em> — they drift the ${distance} feet and land on their feet.</div>`,
             speaker: { alias: "Feather Fall" },
           });
           return true;
@@ -485,7 +485,7 @@ export class FallPipeline {
     // `component.roll.terms` — without it the card printed a bare number and no
     // dice at all, which is exactly what Johnny saw on 2026-08-12.
     const components = [{
-      name: `Fall — ${result.distanceFt} ft`,
+      name: `Fall — ${result.distanceFt} feet`,
       type: "bludgeoning", raw: roll.total, final, modifier,
       formula: result.formula, roll,
     }];
@@ -509,7 +509,7 @@ export class FallPipeline {
     });
 
     const notes = [];
-    if (slowFallFt > 0) notes.push(`Slow Fall absorbs ${slowFallFt} ft.`);
+    if (slowFallFt > 0) notes.push(`Slow Fall absorbs ${slowFallFt} feet.`);
     if (result.prone)   notes.push("Lands prone.");
 
     // ⚠️ 🔴 THE STRUCTURE HERE IS LOAD-BEARING — it is not decoration.
@@ -534,7 +534,7 @@ export class FallPipeline {
       content: `<div class="ace-qol-damage-card">
           <div class="ace-qol-dmg-header">
             <img src="${portraitImg}" class="ace-qol-dmg-item-img" alt="" />
-            <strong class="ace-qol-dmg-item-name">${name} falls ${result.distanceFt} ft</strong>
+            <strong class="ace-qol-dmg-item-name">${name} falls ${result.distanceFt} feet</strong>
           </div>
           <div class="ace-qol-dmg-roll-section">
             <div class="ace-qol-dmg-components">${diceRows}</div>

@@ -96,7 +96,7 @@ export class RiderEngine {
           formula: `${numDice}d10`,
           type: weaponType,
           resource: null, // no slot cost — Brutal Strike is a swing-time choice
-          description: `${numDice}d10 ${weaponType} + Forceful Blow (push 15 ft) or Hamstring Blow (speed -15 ft)`,
+          description: `${numDice}d10 ${weaponType} + Forceful Blow (push 15 feet) or Hamstring Blow (speed -15 feet)`,
           icon: "fa-axe-battle",
           highlight: "FORGO RECKLESS",
           isMeleeOnly: true,
@@ -688,7 +688,7 @@ export class RiderEngine {
     const maneuverDefs = [
       { id: "trip",        name: "Trip Attack",        effect: "STR save or PRONE",        save: { ability: "str" } },
       { id: "menacing",    name: "Menacing Attack",    effect: "WIS save or FRIGHTENED",   save: { ability: "wis" } },
-      { id: "pushing",     name: "Pushing Attack",     effect: "STR save or PUSHED 15ft",  save: { ability: "str" } },
+      { id: "pushing",     name: "Pushing Attack",     effect: "STR save or PUSHED 15 feet",  save: { ability: "str" } },
       { id: "distracting", name: "Distracting Strike", effect: "Next attack has ADV",       save: null },
       { id: "goading",     name: "Goading Attack",     effect: "WIS save or DISADV vs others", save: { ability: "wis" } },
       { id: "maneuvering", name: "Maneuvering Attack",  effect: "Ally can reposition",      save: null },

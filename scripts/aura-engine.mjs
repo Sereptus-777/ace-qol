@@ -16,7 +16,7 @@
 // extend — add an entry to AURAS at the top.
 //
 // Range:
-//   - Paladin Aura of Protection: 10ft → 30ft at L18
+//   - Paladin Aura of Protection: 10 feet → 30 feet at L18
 //   - Most other paladin auras same range pattern
 //   - Override per-aura via `range(level)` function
 //
@@ -114,7 +114,7 @@ const AURAS = [
     sourceClass: "paladin",
     minLevel: 7,
     range: (lvl) => lvl >= 18 ? 30 : 10,
-    appliesTo: "allies", // RAW: paladin + fiends/undead within 10ft, but for our table we apply to allies
+    appliesTo: "allies", // RAW: paladin + fiends/undead within 10 feet, but for our table we apply to allies
     suppressedBy: ["incapacitated", "unconscious"],
     includesSource: true,
     icon: "icons/svg/skull.svg",
@@ -490,7 +490,7 @@ export class AuraEngine {
   /**
    * Distance in feet between two tokens — nearest-edge, size-aware, 3D, via the
    * suite's canonical helper (geometry-utils). Grid-counted the 5e-default way:
-   * two ADJACENT creatures are 5 ft apart, one empty cell between = 10 ft, etc.
+   * two ADJACENT creatures are 5 feet apart, one empty cell between = 10 feet, etc.
    * So "within 10 feet" correctly includes adjacent + one-cell-away, per RAW.
    *
    * (Previously a raw edge-GAP — adjacent counted as 0 — which made every aura
@@ -680,7 +680,7 @@ export class AuraVisualLayer {
       const cy = (t.y ?? 0) + th / 2;
 
       // Ring radius extends from the source's EDGE, matching RAW edge-to-edge
-      // measurement. So a Medium source (5ft) with 10ft aura draws at:
+      // measurement. So a Medium source (5 feet) with 10 feet aura draws at:
       //   ringRadiusPx = (10ft + 2.5ft halfSourceSize) px-converted
       // = 12.5ft from center = 250px on a 100px/5ft grid.
       // Result: any target whose body overlaps the ring is in range, matching

@@ -214,7 +214,7 @@ const CONDITIONS = {
     name: "Paralyzed",
     icon: "icons/svg/paralysis.svg",
     statusId: "paralyzed",
-    description: "Incapacitated. Can't move or speak. Auto-fails STR and DEX saves. Attacks have advantage. Melee hits within 5ft are auto-crits.",
+    description: "Incapacitated. Can't move or speak. Auto-fails STR and DEX saves. Attacks have advantage. Melee hits within 5 feet are auto-crits.",
     changes: [
       { key: "flags.ace-qol.incapacitated", mode: 0, value: "1" },
       { key: "flags.ace-qol.fail.save.str", mode: 0, value: "1" },
@@ -268,7 +268,7 @@ const CONDITIONS = {
     name: "Prone",
     icon: "icons/svg/falling.svg",
     statusId: "prone",
-    description: "Disadvantage on attack rolls. Melee attacks within 5ft have advantage against the creature. Ranged attacks against have disadvantage. Must crawl or use half movement to stand.",
+    description: "Disadvantage on attack rolls. Melee attacks within 5 feet have advantage against the creature. Ranged attacks against have disadvantage. Must crawl or use half movement to stand.",
     changes: [
       { key: "flags.ace-qol.disadvantage.attack.all", mode: 0, value: "1" },
       { key: "flags.ace-qol.grants.advantage.attack.melee", mode: 0, value: "1" },
@@ -313,7 +313,7 @@ const CONDITIONS = {
     name: "Unconscious",
     icon: "icons/svg/unconscious.svg",
     statusId: "unconscious",
-    description: "Incapacitated. Can't move or speak. Unaware of surroundings. Drops held items, falls prone. Auto-fails STR/DEX saves. Attacks have advantage. Melee hits within 5ft are auto-crits.",
+    description: "Incapacitated. Can't move or speak. Unaware of surroundings. Drops held items, falls prone. Auto-fails STR/DEX saves. Attacks have advantage. Melee hits within 5 feet are auto-crits.",
     changes: [
       { key: "flags.ace-qol.incapacitated", mode: 0, value: "1" },
       { key: "flags.ace-qol.fail.save.str", mode: 0, value: "1" },
@@ -498,7 +498,7 @@ const SPELL_EFFECTS = {
   darkness: {
     name: "Darkness",
     icon: "icons/magic/unholy/orb-glowing-purple.webp",
-    description: "Magical darkness fills a 15ft sphere. Creatures with darkvision can't see through it. Light spells of 2nd level or lower are dispelled.",
+    description: "Magical darkness fills a 15 feet sphere. Creatures with darkvision can't see through it. Light spells of 2nd level or lower are dispelled.",
     changes: [
       { key: "flags.ace-qol.darkness", mode: 0, value: "1" },
     ],
@@ -678,7 +678,7 @@ const SPELL_EFFECTS = {
   spirit_guardians: {
     name: "Spirit Guardians",
     icon: "icons/magic/holy/saint-glass-portrait-halo.webp",
-    description: "15ft radius: halves speed on entry, 3d8 radiant/necrotic damage (WIS save half) on enter or start of turn.",
+    description: "15 feet radius: halves speed on entry, 3d8 radiant/necrotic damage (WIS save half) on enter or start of turn.",
     changes: [
       { key: "flags.ace-qol.spiritGuardians", mode: 0, value: "1" },
       { key: "flags.ace-qol.aura.damage", mode: 0, value: "3d8" },
@@ -707,7 +707,7 @@ const SPELL_EFFECTS = {
   aura_of_vitality: {
     name: "Aura of Vitality",
     icon: "icons/magic/holy/chalice-glowing-gold.webp",
-    description: "30ft aura. Use bonus action to heal 2d6 HP to one creature in the aura.",
+    description: "30 feet aura. Use bonus action to heal 2d6 HP to one creature in the aura.",
     changes: [
       { key: "flags.ace-qol.auraOfVitality", mode: 0, value: "1" },
     ],
@@ -719,7 +719,7 @@ const SPELL_EFFECTS = {
   fire_shield: {
     name: "Fire Shield",
     icon: "icons/magic/defensive/shield-barrier-flaming-pentagon-red.webp",
-    description: "Resistance to cold (warm) or fire (chill). Melee attackers take 2d8 fire/cold damage. Sheds bright light 10ft, dim light 10ft.",
+    description: "Resistance to cold (warm) or fire (chill). Melee attackers take 2d8 fire/cold damage. Sheds bright light 10 feet, dim light 10 feet.",
     changes: [
       { key: "system.traits.dr.value", mode: 2, value: "cold" },
       { key: "flags.ace-qol.fireShield", mode: 0, value: "warm" },
@@ -761,7 +761,7 @@ const SPELL_EFFECTS = {
   crusaders_mantle: {
     name: "Crusader's Mantle",
     icon: "icons/magic/holy/projectiles-blades-salvo-yellow.webp",
-    description: "30ft aura: nonmagical weapon attacks deal an extra 1d4 radiant damage.",
+    description: "30 feet aura: nonmagical weapon attacks deal an extra 1d4 radiant damage.",
     changes: [
       { key: "system.bonuses.mwak.damage", mode: 2, value: "+1d4[radiant]" },
       { key: "system.bonuses.rwak.damage", mode: 2, value: "+1d4[radiant]" },
@@ -857,7 +857,7 @@ const SPELL_EFFECTS = {
   freedom_of_movement: {
     name: "Freedom of Movement",
     icon: "icons/magic/movement/abstract-ribbons-red-orange.webp",
-    description: "Immune to paralyzed and restrained conditions. Difficult terrain costs no extra movement. Can spend 5ft to escape nonmagical restraints/grapples.",
+    description: "Immune to paralyzed and restrained conditions. Difficult terrain costs no extra movement. Can spend 5 feet to escape nonmagical restraints/grapples.",
     changes: [
       { key: "system.traits.ci.value", mode: 2, value: "paralyzed" },
       { key: "system.traits.ci.value", mode: 2, value: "restrained" },
@@ -1070,7 +1070,7 @@ const SPELL_EFFECTS = {
   fly: {
     name: "Fly",
     icon: "icons/magic/control/buff-flight-wings-blue.webp",
-    description: "Flying speed of 60 ft for the duration. Falls if concentration breaks while aloft.",
+    description: "Flying speed of 60 feet for the duration. Falls if concentration breaks while aloft.",
     changes: [
       { key: "system.attributes.movement.fly", mode: 5, value: "60" },
       { key: "flags.ace-qol.canFly", mode: 0, value: "1" },
@@ -1121,12 +1121,12 @@ const SPELL_EFFECTS = {
   },
   detect_magic: {
     name: "Detect Magic", icon: "icons/magic/perception/eye-ringed-green.webp",
-    description: "Sense magic within 30 ft.",
+    description: "Sense magic within 30 feet.",
     changes: [], concentration: true, duration: { rounds: 100 },
   },
   detect_evil_and_good: {
     name: "Detect Evil and Good", icon: "icons/magic/perception/orb-eye-scrying.webp",
-    description: "Sense aberrations, celestials, elementals, fey, fiends, undead within 30 ft.",
+    description: "Sense aberrations, celestials, elementals, fey, fiends, undead within 30 feet.",
     changes: [], concentration: true, duration: { rounds: 100 },
   },
   see_invisibility: {
@@ -1147,7 +1147,7 @@ const SPELL_EFFECTS = {
   },
   longstrider: {
     name: "Longstrider", icon: "icons/skills/movement/figure-running-gray.webp",
-    description: "+10 ft movement speed.",
+    description: "+10 feet movement speed.",
     changes: [{ key: "system.attributes.movement.walk", mode: 2, value: "+10" }],
     concentration: false, duration: { rounds: 600 },
   },
@@ -1159,12 +1159,12 @@ const SPELL_EFFECTS = {
   },
   misty_step: {
     name: "Misty Step", icon: "icons/magic/movement/abstract-ribbons-red-orange.webp",
-    description: "Teleport up to 30 ft.",
+    description: "Teleport up to 30 feet.",
     changes: [], concentration: false, duration: { rounds: 0 },
   },
   dimension_door: {
     name: "Dimension Door", icon: "icons/magic/movement/portal-vortex-orange.webp",
-    description: "Teleport up to 500 ft.",
+    description: "Teleport up to 500 feet.",
     changes: [], concentration: false, duration: { rounds: 0 },
   },
   death_ward: {
@@ -1290,7 +1290,7 @@ const SPELL_EFFECTS = {
   // spells did nothing mechanically. Removed the empty duplicates; the real defs win.
   spirit_shroud: {
     name: "Spirit Shroud", icon: "icons/magic/death/projectile-skull-flaming-yellow.webp",
-    description: "+1d8 radiant/necrotic/cold damage to attacks within 10 ft.",
+    description: "+1d8 radiant/necrotic/cold damage to attacks within 10 feet.",
     changes: [{ key: "flags.ace-qol.spiritShroudActive", mode: 0, value: "1" }],
     concentration: true, duration: { rounds: 10 },
   },
@@ -1342,7 +1342,7 @@ const SPELL_EFFECTS = {
   sleep_unconscious: {
     name: "Sleep",
     icon: "icons/svg/unconscious.svg",
-    description: "Magically asleep. Incapacitated, can't move/speak, auto-fails STR/DEX saves, melee hits in 5ft are auto-crits. Any damage wakes target.",
+    description: "Magically asleep. Incapacitated, can't move/speak, auto-fails STR/DEX saves, melee hits in 5 feet are auto-crits. Any damage wakes target.",
     // statuses:["unconscious"] is REQUIRED — combat-state.mjs reads the literal
     // "unconscious" status for melee auto-crit + attack advantage (PHB). dnd5e
     // auto-spawns prone + incapacitated RIDER conditions from it (on every effect
@@ -1487,7 +1487,7 @@ const FEATURE_EFFECTS = {
   aura_of_protection: {
     name: "Aura of Protection",
     icon: "icons/magic/holy/barrier-shield-winged-blue.webp",
-    description: "+CHA modifier to all saving throws for allies within 10ft (30ft at 18th level).",
+    description: "+CHA modifier to all saving throws for allies within 10 feet (30 feet at 18th level).",
     changes: [
       { key: "system.bonuses.abilities.save", mode: 2, value: "+@abilities.cha.mod" },
     ],

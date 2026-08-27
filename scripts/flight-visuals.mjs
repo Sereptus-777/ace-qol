@@ -4,7 +4,7 @@
 // set so rulers, vision and other modules agree.
 //
 // ⚠️ TWO THINGS THIS DELIBERATELY DOES NOT DO (both 2026-08-11):
-//   • It does NOT treat elevation as flight. A guard on a balcony is 30 ft up
+//   • It does NOT treat elevation as flight. A guard on a balcony is 30 feet up
 //     and standing on stone. Only the `flying` STATUS counts.
 //   • It does NOT put a whirlwind under an ordinary flier. A person under a Fly
 //     spell is not standing in a tornado. `_addWhirlwind` survives for things
@@ -139,9 +139,9 @@ export class FlightVisuals {
         }
 
         // How high this particular magic can lift you.
-        // Levitate is explicitly 20 ft in RAW, so it is capped whatever the
+        // Levitate is explicitly 20 feet in RAW, so it is capped whatever the
         // item text says. Anything else takes a cap from its own description
-        // ("maximum altitude ... 30ft") and is otherwise uncapped.
+        // ("maximum altitude ... 30 feet") and is otherwise uncapped.
         let maxFt = /levitat/.test(name) ? 20 : null;
         try {
           const txt = String(activity.description?.chatFlavor ?? "")
@@ -204,7 +204,7 @@ export class FlightVisuals {
    * NPC at the top of a staircase or anyone on an upper floor was treated as
    * airborne and got a whirlwind spinning under their feet.
    *
-   * Johnny, 2026-08-11: "one of my guys is standing on a balcony 30 ft up above
+   * Johnny, 2026-08-11: "one of my guys is standing on a balcony 30 feet up above
    * the party… that should only be for a spell, like flying."
    *
    * Height is a position in space. Flight is a STATE, and 5e already has a
@@ -245,7 +245,7 @@ export class FlightVisuals {
       // would drop off at the next elevation change.
       await FlightVisuals._setFlyingStatus(token, true);
       FlightVisuals._applyVisuals(token);
-      console.log(`${MODULE_ID} | ${token.name} ascends to ${ft} ft`);
+      console.log(`${MODULE_ID} | ${token.name} ascends to ${ft} feet`);
     } catch (err) {
       console.warn(`${MODULE_ID} | ascend failed:`, err);
     }
@@ -282,9 +282,9 @@ export class FlightVisuals {
     }
   }
 
-  /** "How high?" — defaults to 15 ft, the staff's comfortable hover. */
+  /** "How high?" — defaults to 15 feet, the staff's comfortable hover. */
   static async promptAltitude(token, { defaultFt = 15, maxFt = null } = {}) {
-    const capNote = maxFt ? ` (max ${maxFt} ft)` : "";
+    const capNote = maxFt ? ` (max ${maxFt} feet)` : "";
     const content = `
       <div class="ace-qol-adv-prompt">
         <div class="ace-qol-adv-targets">
@@ -402,7 +402,7 @@ export class FlightVisuals {
 
   /**
    * A touch bigger the higher you go — the oldest depth cue there is.
-   * Deliberately small: 30 ft of altitude is about 6% larger, enough for the
+   * Deliberately small: 30 feet of altitude is about 6% larger, enough for the
    * eye to read "up there" without the token looking like a different creature.
    */
   static _addAltitudeScale(token) {

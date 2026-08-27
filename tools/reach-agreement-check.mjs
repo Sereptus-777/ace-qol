@@ -88,7 +88,7 @@ const CASES = [
     item: item({ range: { units: "ft" } }),
     activity: null,
     want: 5,
-    wantSource: "the 5 ft default (nothing declared it)",
+    wantSource: "the 5 feet default (nothing declared it)",
   },
   {
     title: "Whip — the reach property and nothing else",

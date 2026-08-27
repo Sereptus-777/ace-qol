@@ -235,7 +235,7 @@ export class SaveResolver {
     }
 
     if (!targets.length) {
-      ui.notifications?.info(`${item.name}: no creatures within ${rangeFt} ft.`);
+      ui.notifications?.info(`${item.name}: no creatures within ${rangeFt} feet.`);
       return;
     }
 

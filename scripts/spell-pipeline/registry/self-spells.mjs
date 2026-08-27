@@ -12,7 +12,7 @@ export const SELF_SPELLS = {
     shape: "self",
     range: 0,
     effect: { key: "fire_shield", duration: { rounds: 100 } },  // 10 minutes
-    flavorOnConfirm: "Flames wreathe you for 10 minutes — you gain resistance to cold or fire, and a creature within 5 ft that hits you in melee takes 2d8 of the opposite damage.",
+    flavorOnConfirm: "Flames wreathe you for 10 minutes — you gain resistance to cold or fire, and a creature within 5 feet that hits you in melee takes 2d8 of the opposite damage.",
   },
 
   // ── Smite spells (migrated from SPELL_AUTO_APPLY 2026-06-25) ──────────────────
@@ -40,7 +40,7 @@ export const SELF_SPELLS = {
     effect: { key: "thunderous_smite", duration: "concentration" },
     // 2024: smites are no longer concentration — flat 1-minute duration.
     byEdition: { modern: { effect: { key: "thunderous_smite", duration: { minutes: 1 } } } },
-    flavorOnConfirm: "Your weapon rings with thunder — your next hit deals +2d6 thunder; the target makes a STR save or is pushed 10 ft and knocked prone.",
+    flavorOnConfirm: "Your weapon rings with thunder — your next hit deals +2d6 thunder; the target makes a STR save or is pushed 10 feet and knocked prone.",
   },
   "blinding smite": {
     shape: "self", range: 0,

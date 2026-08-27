@@ -8,7 +8,7 @@
 //   - Portrait grid: every viable target on the current scene
 //     (all NPC tokens + non-self PC tokens; skips dead targets)
 //   - Per-target widget: − / current count / + buttons
-//   - Distance-from-caster in feet (color-coded vs spell range 120ft)
+//   - Distance-from-caster in feet (color-coded vs spell range 120 feet)
 //   - Out-of-range tokens dimmed but still selectable (GM houserule allows
 //     it; player accepts the cost)
 //   - Confirm button greyed until total === dart pool
@@ -187,7 +187,7 @@ export class MagicMissilePicker {
               <div style="${META_STYLE}">
                 <span>AC ${c.ac ?? "?"}</span>
                 <span>HP ${c.hp}/${c.maxHP}</span>
-                <span style="color: ${rangeColor(c.distFt, c.inRange)}">${c.distFt} ft${c.inRange ? "" : " (out of range)"}</span>
+                <span style="color: ${rangeColor(c.distFt, c.inRange)}">${c.distFt} feet${c.inRange ? "" : " (out of range)"}</span>
               </div>
             </div>
             <div style="${COUNTER_STYLE}">

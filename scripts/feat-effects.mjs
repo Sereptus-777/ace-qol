@@ -8,11 +8,11 @@
 //                       Pike, Quarterstaff, Spear), post a "bonus-action
 //                       butt attack" reminder. Damage = 1d4 + ability mod
 //                       (same mod as primary), type bludgeoning.
-//   • Crusher         — bludgeoning hit: card with "Push 5 ft" button +
+//   • Crusher         — bludgeoning hit: card with "Push 5 feet" button +
 //                       crit bonus: card noting "advantage on next attack
 //                       vs this target until start of your next turn".
 //                       Once per turn.
-//   • Slasher         — slashing hit: card with "Speed -10 ft until start
+//   • Slasher         — slashing hit: card with "Speed -10 feet until start
 //                       of your next turn" reminder + crit bonus: target
 //                       has Disadvantage on attack rolls vs anyone except
 //                       you. Once per turn.
@@ -56,7 +56,7 @@ export class FeatEffects {
         btn.setAttribute("data-bound", "1");
         btn.addEventListener("click", () => {
           try {
-            this._pushTarget5ft(btn.dataset.attackerUuid, btn.dataset.targetUuid);
+            this._pushTarget5 feet(btn.dataset.attackerUuid, btn.dataset.targetUuid);
             btn.disabled = true;
             btn.innerHTML = `<i class="fas fa-check"></i> Pushed`;
           } catch (err) { console.warn(`${TAG} | Crusher push click failed:`, err); }
@@ -153,14 +153,14 @@ export class FeatEffects {
       const attUuid = actor.uuid;
       const tgtUuid = target?.document?.uuid ?? target?.uuid;
       this._postFeatCard("crusher", item, actor, target,
-        `${actor.name} may push <strong>${targetName} 5 ft</strong> to an unoccupied space.`,
+        `${actor.name} may push <strong>${targetName} 5 feet</strong> to an unoccupied space.`,
         "#b07050", "fa-hammer",
         `<div style="margin-top:6px;">
           <button class="ace-qol-btn ace-qol-crusher-push-btn"
                   data-attacker-uuid="${attUuid}"
                   data-target-uuid="${tgtUuid}"
                   style="background:#3a1a0a; color:#ffe1c8; border:1px solid #b07050; border-radius:4px; padding:4px 10px; font-size:12px;">
-            <i class="fas fa-hand-back-fist"></i> Push 5 ft
+            <i class="fas fa-hand-back-fist"></i> Push 5 feet
           </button>
         </div>`
       );
@@ -201,7 +201,7 @@ export class FeatEffects {
     if (!alreadyUsed) {
       await actor.setFlag(MODULE_ID, "slasher.usedThisTurn", true);
       this._postFeatCard("slasher", item, actor, target,
-        `${targetName}'s speed is reduced by <strong>10 ft</strong> until the start of ${actor.name}'s next turn.`,
+        `${targetName}'s speed is reduced by <strong>10 feet</strong> until the start of ${actor.name}'s next turn.`,
         "#a02828", "fa-sword"
       );
     }
@@ -269,7 +269,7 @@ export class FeatEffects {
   //  Buttons
   // ──────────────────────────────────────────────────────────────────────────
 
-  static async _pushTarget5ft(attackerUuid, targetUuid) {
+  static async _pushTarget5 feet(attackerUuid, targetUuid) {
     const attTokenDoc = await fromUuid(attackerUuid).catch(() => null);
     const tgtTokenDoc = await fromUuid(targetUuid).catch(() => null);
     const attTok = attTokenDoc?.documentName === "Token" ? attTokenDoc
@@ -281,7 +281,7 @@ export class FeatEffects {
     const dy = tgtTok.y - attTok.y;
     const dist = Math.hypot(dx, dy) || 1;
     const cell = canvas.grid?.size ?? 100;
-    const pushPx = cell * 1; // 5 ft
+    const pushPx = cell * 1; // 5 feet
     await tgtTok.update({
       x: Math.round(tgtTok.x + (dx / dist) * pushPx),
       y: Math.round(tgtTok.y + (dy / dist) * pushPx),

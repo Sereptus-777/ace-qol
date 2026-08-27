@@ -122,12 +122,12 @@ export class SpellTargetPicker {
 
     if (!reachable.length) {
       ui.notifications?.warn(
-        `${weaponItem.name}: nothing within ${Math.round(reachFt)} ft to attack.`);
+        `${weaponItem.name}: nothing within ${Math.round(reachFt)} feet to attack.`);
       return null;
     }
     if (reachable.length === 1) {
       const only = reachable[0];
-      console.log(`ace-qol | Only ${only.name} is within ${Math.round(reachFt)} ft — targeting them without asking.`);
+      console.log(`ace-qol | Only ${only.name} is within ${Math.round(reachFt)} feet — targeting them without asking.`);
       return only.token;
     }
 
@@ -157,7 +157,7 @@ export class SpellTargetPicker {
     const v = Number(range.value);
     const u = String(range.units ?? "").toLowerCase();
     if (!Number.isFinite(v) || v <= 0) {
-      // Touch / self / special — treat as 5ft default
+      // Touch / self / special — treat as 5 feet default
       if (u === "touch") return 5;
       if (u === "self") return 0;
       return 30; // sensible fallback
@@ -214,8 +214,8 @@ export class SpellTargetPicker {
         // ⚠️ WHICH WAY, NOT JUST HOW FAR. Johnny, 2026-08-23: "goblins can
         // look exactly the same with just small differences, and the player
         // could still not be sure which one he wants to attack... it delays the
-        // game." Four identical goblins at 10 ft are four identical rows;
-        // "10 ft north" and "10 ft southeast" are two different creatures.
+        // game." Four identical goblins at 10 feet are four identical rows;
+        // "10 feet north" and "10 feet southeast" are two different creatures.
         bearing: isSelf ? "" : SpellTargetPicker._bearing(casterToken, tok),
         inRange,
         disposition,
@@ -299,8 +299,8 @@ export class SpellTargetPicker {
                              verb = "Cast", icon = "fa-solid fa-sparkles" }) {
     const rangeLabel = !Number.isFinite(rangeFt) ? "any range"
                      : rangeFt === 0 ? "self only"
-                     : rangeFt === 5 ? "5 ft (touch)"
-                     : `${rangeFt} ft`;
+                     : rangeFt === 5 ? "5 feet (touch)"
+                     : `${rangeFt} feet`;
 
     const headerHtml = `
       <div class="ace-qol-spell-pickr-header">
@@ -392,7 +392,7 @@ export class SpellTargetPicker {
 
   static _renderTokenRow(c, preSelected) {
     const distLabel = c.isSelf ? "self"
-      : `${Math.round(c.distFt)} ft${c.bearing ? ` ${c.bearing}` : ""}`;
+      : `${Math.round(c.distFt)} feet${c.bearing ? ` ${c.bearing}` : ""}`;
     const distClass = c.isSelf ? "self" : (c.inRange ? "in-range" : "out-of-range");
     const validClass = c.inRange && !c.isDead ? "valid" : "invalid";
     const selectedClass = preSelected ? "selected" : "";
@@ -511,7 +511,7 @@ export class SpellTargetPicker {
         // ── v0.7.21: Hard-enforce range + dead state ──
         // Previously the .invalid class greyed the token visually but the
         // click handler ignored it — user could still click + cast Haste on
-        // a target 60ft away when the spell's range is 30ft. Now blocked.
+        // a target 60 feet away when the spell's range is 30 feet. Now blocked.
         // (Bug found in testing 2026-06-09.)
         if (el.classList.contains("invalid")) {
           // Brief flash to make it clear the click was rejected

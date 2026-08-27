@@ -111,7 +111,7 @@ export class Intent {
     if (!finalShape.type && prose.shape) {
       finalShape = { type: prose.shape, size: prose.size ?? null, units: "ft", fromProse: true };
       src.push("description:shape");
-      flags.push(`No template on the activity — took a ${prose.shape}${prose.size ? ` of ${prose.size} ft` : ""} from the description.`);
+      flags.push(`No template on the activity — took a ${prose.shape}${prose.size ? ` of ${prose.size} feet` : ""} from the description.`);
     } else if (finalShape.type && prose.shape && prose.shape !== finalShape.type) {
       flags.push(`Template is a ${finalShape.type} but the description says ${prose.shape}.`);
     }

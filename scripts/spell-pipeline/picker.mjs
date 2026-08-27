@@ -5,7 +5,7 @@
 // Variants:
 //   distribute       — +/- counters per portrait, total = N (Magic Missile)
 //   single           — click one portrait (Hold Person, Disintegrate)
-//   single-adjacent  — single, filtered to ≤ 5 ft (Cure Wounds touch)
+//   single-adjacent  — single, filtered to ≤ 5 feet (Cure Wounds touch)
 //   multi            — click up to N portraits (Bless, Faerie Fire)
 //
 // Phase 1 ships DISTRIBUTE fully implemented (Magic Missile proof of concept).
@@ -92,7 +92,7 @@ export class UnifiedSpellPicker {
           ...opts, candidates, preTargets, N: 1, casterToken,
         });
       case "single-adjacent":
-        // Filter to adjacent candidates only (≤ 5 ft)
+        // Filter to adjacent candidates only (≤ 5 feet)
         return UnifiedSpellPicker._showSinglePicker({
           ...opts,
           candidates: candidates.filter(c => c.distFt <= 5 || c.isSelf),
@@ -242,7 +242,7 @@ export class UnifiedSpellPicker {
               <div style="${META_STYLE}">
                 <span>AC ${c.ac ?? "?"}</span>
                 <span>HP ${c.hp}/${c.maxHP}</span>
-                <span style="color: ${rangeColor(c.distFt, c.inRange)}">${c.distFt} ft${c.inRange ? "" : " (out of range)"}</span>
+                <span style="color: ${rangeColor(c.distFt, c.inRange)}">${c.distFt} feet${c.inRange ? "" : " (out of range)"}</span>
               </div>
             </div>
             <div style="${COUNTER_STYLE}">
@@ -394,7 +394,7 @@ export class UnifiedSpellPicker {
               <div style="${STYLES.META}">
                 <span>AC ${c.ac ?? "?"}</span>
                 <span>HP ${c.hp}/${c.maxHP}</span>
-                <span style="color: ${UnifiedSpellPicker._rangeColor(c.distFt, c.inRange, entry.range)}">${c.distFt} ft${c.inRange ? "" : " (out of range)"}</span>
+                <span style="color: ${UnifiedSpellPicker._rangeColor(c.distFt, c.inRange, entry.range)}">${c.distFt} feet${c.inRange ? "" : " (out of range)"}</span>
               </div>
             </div>
             <div style="flex-shrink:0;">${isSelected ? `<i class="fas fa-circle-check" style="color:#7ec97e;font-size:22px;"></i>` : `<i class="far fa-circle" style="color:#6b5230;font-size:22px;"></i>`}</div>
@@ -538,9 +538,9 @@ export class UnifiedSpellPicker {
 
       const distChip = (c) => {
         if (c.isSelf) return { text: "SELF", style: DIST_SELF };
-        if (!c.inRange) return { text: `${c.distFt} ft (OOR)`, style: DIST_OUT };
-        if (c.distFt > rangeFt * 0.66) return { text: `${c.distFt} ft`, style: DIST_NEAR };
-        return { text: `${c.distFt} ft`, style: DIST_IN };
+        if (!c.inRange) return { text: `${c.distFt} feet (OOR)`, style: DIST_OUT };
+        if (c.distFt > rangeFt * 0.66) return { text: `${c.distFt} feet`, style: DIST_NEAR };
+        return { text: `${c.distFt} feet`, style: DIST_IN };
       };
 
       const buildTileHtml = (c) => {
@@ -679,7 +679,7 @@ export class UnifiedSpellPicker {
   }
 
   static _headerHtml(item, castLevel, entry, candidateCount, subtitleSuffix = "") {
-    const rangeStr = entry.range === 0 ? "Self" : entry.range >= 999 ? "Sight" : `${entry.range} ft`;
+    const rangeStr = entry.range === 0 ? "Self" : entry.range >= 999 ? "Sight" : `${entry.range} feet`;
     return `
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid #4a3a28;">
         <i class="fas ${entry.shape === "save-single" ? "fa-dice" : entry.shape === "touch" ? "fa-hand-holding-heart" : "fa-bullseye"}" style="color:#c9a76b;font-size:28px;"></i>

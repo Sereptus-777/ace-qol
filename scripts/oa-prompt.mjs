@@ -162,7 +162,7 @@ export class OAPrompt {
       const reactorW = (td.width  ?? 1) * gridSize;
       const reactorH = (td.height ?? 1) * gridSize;
       // Snap sub-cell (Tiny) footprints out to their whole 5-ft square so an
-      // adjacent Tiny reactor/mover measures 5 ft, not 10 (see aceSnapSubCellRect).
+      // adjacent Tiny reactor/mover measures 5 feet, not 10 (see aceSnapSubCellRect).
       const reactorRect = aceSnapSubCellRect({
         x: td.x, y: td.y, w: reactorW, h: reactorH,
         elev:  Number(td.elevation ?? 0) || 0,
@@ -189,8 +189,8 @@ export class OAPrompt {
       // 2014 Polearm Master (Tasha's expanded list): an enemy entering your
       // reach while you wield a qualifying polearm provokes an OA.
       // 2024 Polearm Master "Reactive Strike": same trigger, narrower weapon
-      // list (no Spear). Reach pulled from the weapon (10 ft for reach-property
-      // weapons, 5 ft otherwise). Mover must have been OUTSIDE the polearm's
+      // list (no Spear). Reach pulled from the weapon (10 feet for reach-property
+      // weapons, 5 feet otherwise). Mover must have been OUTSIDE the polearm's
       // reach before and INSIDE it after.
       const polearmData = OAPrompt._getPolearmReachData(t.actor);
       if (polearmData) {
@@ -201,7 +201,7 @@ export class OAPrompt {
           // "Assassin" for every duplicate). Falls back to actor name if
           // the token doc somehow lacks a name.
           const moverDisplayName = moverDoc?.name ?? moverActor.name;
-          const reasonText = `can make an OA against <strong>${moverDisplayName}</strong> entering polearm reach (${polearmData.weaponName}, ${polearmData.reachFt} ft, ${polearmData.edition} RAW).`;
+          const reasonText = `can make an OA against <strong>${moverDisplayName}</strong> entering polearm reach (${polearmData.weaponName}, ${polearmData.reachFt} feet, ${polearmData.edition} RAW).`;
           await OAPrompt._postPromptCard(t.actor, moverActor, td, moverDoc, { reasonText });
         }
       }
@@ -217,9 +217,9 @@ export class OAPrompt {
    *   2014 (Tasha's expanded): Glaive, Halberd, Pike, Quarterstaff, Spear.
    *   2024 (Reactive Strike):  Glaive, Halberd, Pike, Quarterstaff.
    *
-   * Reach: weapons carrying the "rch" property = 10 ft total reach;
-   * otherwise 5 ft. Pulled per-weapon rather than from a single setting so
-   * Glaive/Halberd/Pike fire at 10 ft and Quarterstaff/Spear fire at 5 ft.
+   * Reach: weapons carrying the "rch" property = 10 feet total reach;
+   * otherwise 5 feet. Pulled per-weapon rather than from a single setting so
+   * Glaive/Halberd/Pike fire at 10 feet and Quarterstaff/Spear fire at 5 feet.
    *
    * @param {Actor} reactorActor
    * @returns {{ reachFt: number, weaponName: string, edition: string } | null}

@@ -609,7 +609,7 @@ export class SpellAutoDamage {
     // rollDamage prototype patch silently suppresses the dialog + chat card.
     //
     // Covers:
-    //   - NO_SAVE_AUTO (Spike Growth, Wall of Thorns): per-5ft movement damage
+    //   - NO_SAVE_AUTO (Spike Growth, Wall of Thorns): per-5 feet movement damage
     //   - areaDenialAuto (Cloud of Daggers): per-entry / per-start-of-turn damage
     //   - areaDenial    (Stinking Cloud, Cloudkill, etc): handled via save flow,
     //                    no cast-time damage roll

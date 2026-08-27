@@ -769,7 +769,7 @@ export class QolSettings {
     // ── Ranged-in-melee disadvantage (PHB 195) ──────────────────────────
     s("rangedInMeleeDisadvantage", {
       name: "Ranged in Melee = Disadvantage (PHB 195)",
-      hint: "Disadvantage on ranged attack rolls when a hostile creature within 5ft can see the attacker (and isn't incapacitated/unconscious/etc).",
+      hint: "Disadvantage on ranged attack rolls when a hostile creature within 5 feet can see the attacker (and isn't incapacitated/unconscious/etc).",
       scope: "world", config: false, type: Boolean, default: true,
     });
 
@@ -801,7 +801,7 @@ export class QolSettings {
     });
     s("opportunityAttackReach", {
       name: "Opportunity Attack — Default Reach (ft)",
-      hint: "Default reach distance for OA detection. Most actors use 5ft; reach weapons (10ft) handled per-weapon as a future enhancement.",
+      hint: "Default reach distance for OA detection. Most actors use 5 feet; reach weapons (10 feet) handled per-weapon as a future enhancement.",
       scope: "world", config: false, type: Number, default: 5,
       range: { min: 5, max: 30, step: 5 },
     });
@@ -1052,7 +1052,7 @@ export class QolSettings {
 
     s("autoCounterspell", {
       name:    "Auto-Prompt Counterspell",
-      hint:    "When a creature casts a spell, prompt eligible opponents within 60ft to Counterspell.",
+      hint:    "When a creature casts a spell, prompt eligible opponents within 60 feet to Counterspell.",
       scope:   "world",
       config:  false,
       type:    Boolean,
@@ -1070,7 +1070,7 @@ export class QolSettings {
 
     s("counterspellAnyCaster", {
       name:    "Counterspell Any Caster (RAW)",
-      hint:    "RAW, Counterspell interrupts ANY creature you can see casting within 60 ft — ally OR enemy. By DEFAULT (OFF) ACE only offers it against an ENEMY caster, so your counterspeller isn't pestered every time a teammate casts a spell. Turn ON for strict RAW: the pop-up also offers on same-side casts (e.g. countering a dominated ally).",
+      hint:    "RAW, Counterspell interrupts ANY creature you can see casting within 60 feet — ally OR enemy. By DEFAULT (OFF) ACE only offers it against an ENEMY caster, so your counterspeller isn't pestered every time a teammate casts a spell. Turn ON for strict RAW: the pop-up also offers on same-side casts (e.g. countering a dominated ally).",
       scope:   "world",
       config:  false,
       type:    Boolean,
@@ -1426,7 +1426,7 @@ export class QolSettings {
 
     s("ignoreCoverForAdjacent", {
       name:    "Ignore Cover for Adjacent Targets",
-      hint:    "Targets within 5ft of the attacker ignore cover (they are too close for obstacles to matter).",
+      hint:    "Targets within 5 feet of the attacker ignore cover (they are too close for obstacles to matter).",
       scope:   "world",
       config:  false,
       type:    Boolean,
@@ -1886,7 +1886,7 @@ export class QolSettings {
 
     s("flankingAllowReachWeapons", {
       name:    "Flanking — Allow Reach Weapons (Houserule)",
-      hint:    "When ON, an ally with an equipped reach weapon (Glaive, Halberd, Pike, Whip, Lance, etc.) can grant flanking from 10ft. RAW only allows flanking at 5ft (adjacent).",
+      hint:    "When ON, an ally with an equipped reach weapon (Glaive, Halberd, Pike, Whip, Lance, etc.) can grant flanking from 10 feet. RAW only allows flanking at 5 feet (adjacent).",
       scope:   "world",
       config:  false,
       type:    Boolean,
@@ -1914,7 +1914,7 @@ export class QolSettings {
 
     s("lootMaxDistanceFt", {
       name:    "Max Loot Distance (ft)",
-      hint:    "How close a player's character has to be to a corpse or container to open the loot dialog. Doesn't apply to the GM — GMs can loot from anywhere. Set to 0 to disable the distance gate entirely. Default: 10 ft (one move action's reach for an adjacent body / right next to a chest).",
+      hint:    "How close a player's character has to be to a corpse or container to open the loot dialog. Doesn't apply to the GM — GMs can loot from anywhere. Set to 0 to disable the distance gate entirely. Default: 10 feet (one move action's reach for an adjacent body / right next to a chest).",
       scope:   "world",
       config:  false,
       type:    Number,

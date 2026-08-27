@@ -4,11 +4,11 @@
 // RAW 5e measures from the NEAREST EDGE of each creature's space, not its
 // centre, and counts in 5-ft grid steps where a diagonal costs the same as a
 // straight step (the PHB default — NOT Pythagorean). Adjacent (footprints
-// touching) = 5 ft; one empty square between = 10 ft; and so on. This matches
+// touching) = 5 feet; one empty square between = 10 feet; and so on. This matches
 // the in-game ruler a player drags across the grid.
 //
 // It is also SIZE-AWARE (a Large vampire's near edge, not its middle) and
-// 3D-AWARE: each creature occupies a cube of its size (Medium 5 ft tall, Large
+// 3D-AWARE: each creature occupies a cube of its size (Medium 5 feet tall, Large
 // 10, Huge 15, Gargantuan 20) and vertical separation counts in the same 5-ft
 // steps. When everyone is on the ground (elevation 0) the vertical gap is zero
 // and the result is identical to flat 2D — 3D only changes the answer once
@@ -17,7 +17,7 @@
 // Two flavours, because the rules use both:
 //   • GAP   — empty space between footprints. 0 when adjacent/touching. This is
 //             what reach uses ("the gap is under my reach").
-//   • DISTANCE — gap PLUS the target's own cell. Adjacent = 5 ft. This is what
+//   • DISTANCE — gap PLUS the target's own cell. Adjacent = 5 feet. This is what
 //             "within 30 feet" / spell range / aura radius use.
 //   distance = gap + one cell.
 //
@@ -72,7 +72,7 @@ function _rectOf(t, gs, gd) {
  * distance — but its token is < 1 cell and Foundry centres it inside the square,
  * leaving a fractional-cell gap to a neighbour. aceEdgeGapFt's ceil() then rounds
  * that part-cell sliver UP to a whole 5-ft cell, so an ADJACENT tiny creature
- * wrongly reads as 10 ft instead of 5 ft. Snapping each sub-cell dimension to its
+ * wrongly reads as 10 feet instead of 5 feet. Snapping each sub-cell dimension to its
  * enclosing cell makes the edge math see the square the creature truly occupies.
  *
  * Idempotent and safe on any rect: a side already >= 1 cell is left untouched, so
@@ -148,7 +148,7 @@ export function aceTokenGapFt(a, b, opts = {}) {
 
 /**
  * Nearest-edge DISTANCE in feet between two tokens — the gap plus the target's
- * own cell, so two adjacent creatures are 5 ft apart. Size-aware and 3D-aware.
+ * own cell, so two adjacent creatures are 5 feet apart. Size-aware and 3D-aware.
  * This is the number to use for "within X feet", spell range, and aura radius.
  *
  * Accepts a Token placeable or a TokenDocument for each argument.
@@ -165,7 +165,7 @@ export function aceDistanceFt(a, b, opts = {}) {
 
 /**
  * Convenience boolean: is b within rangeFt of a (nearest-edge, 3D-aware)?
- * A tiny epsilon absorbs float wobble so an exact 30-ft reach includes 30 ft.
+ * A tiny epsilon absorbs float wobble so an exact 30-ft reach includes 30 feet.
  *
  * @param {Token|TokenDocument} a
  * @param {Token|TokenDocument} b

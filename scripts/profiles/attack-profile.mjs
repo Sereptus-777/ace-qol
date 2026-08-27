@@ -7,7 +7,7 @@
 // attack lived INSIDE it, under `action` — 32 fields describing a rapier
 // reported as facts about the creature holding it. The console line read
 //
-//     Lich (Legacy): conditions: concentrating · reach 120 ft · in combat
+//     Lich (Legacy): conditions: concentrating · reach 120 feet · in combat
 //
 // which is two subjects spliced into one sentence. Johnny, 2026-08-25:
 //
@@ -25,7 +25,7 @@
 //   • IT ASKS, IT DOES NOT ASSUME. `masteryDeclared` is what the weapon
 //     OFFERS. Whether the wielder has trained with it is the attacker's fact.
 //   • IT SAYS WHERE EVERY NUMBER CAME FROM. `reachSource` exists because
-//     "5 ft because the item says so" and "5 ft because nothing said anything"
+//     "5 feet because the item says so" and "5 feet because nothing said anything"
 //     are different facts, and printing them alike hid a bug for months.
 //
 // ⚠️ ASK THE ACTIVITY, NEVER JUST THE ITEM. An item is a container; what it
@@ -380,7 +380,7 @@ export function buildAttackProfile(item, activity = null, { repairReach = false 
  *
  * ⚠️ THE ATTACK SPEAKS FOR ITSELF AND ONLY ITSELF. It does not mention the
  * creature; that is the attacker's line. Splicing the two is what produced
- * "Lich (Legacy): ... reach 120 ft" and made a 120-foot spell sound like a
+ * "Lich (Legacy): ... reach 120 feet" and made a 120-foot spell sound like a
  * melee weapon.
  */
 export function describeAttack(p) {

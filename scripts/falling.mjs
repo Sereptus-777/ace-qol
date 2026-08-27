@@ -4,7 +4,7 @@
 //
 // ⚠️ FEATHER FALL IS THE ONLY REACTION THAT CATCHES A FALL. Fly and Levitate
 // are both a full ACTION, so nobody can cast them mid-drop — Feather Fall's
-// entire reason to exist is this moment (reaction, 60 ft, up to five creatures,
+// entire reason to exist is this moment (reaction, 60 feet, up to five creatures,
 // negates the damage). That is why the catch window is shaped like counterspell:
 // the designers built the same shape.
 //
@@ -12,7 +12,7 @@
 // staircase and being shoved over the rail look identical from here — same
 // region exit, same elevation change. Guess wrong and every trip downstairs
 // costs 3d6 and lands the player prone, and the feature gets switched off inside
-// one session. So the GM is asked, once, on drops of 10 ft or more, and the
+// one session. So the GM is asked, once, on drops of 10 feet or more, and the
 // default is FALL. He knows whether there is a rope there; this never will.
 //
 // LEAF MODULE — pure rules, no Foundry calls, provable outside the app.
@@ -110,11 +110,11 @@ export function landingElevation(groundsBelow, from, floor = 0) {
   if (!candidates.length) return floor;
   // ⚠️ 🔴 DO NOT PUT `floor` IN THIS MAX. It was `Math.max(...candidates, floor)`,
   // and with a sunken room at -30 that reads Math.max(-30, 0) = 0 — so the
-  // landing came out AT ground level, the fall computed as 0 ft, and the whole
+  // landing came out AT ground level, the fall computed as 0 feet, and the whole
   // pipeline returned without a word. Found 2026-08-13: creatures walked off a
   // balcony into a cellar and simply arrived, no prompt, no damage.
   //
-  // Balcony-to-ground falls hid it perfectly: from 30 ft onto a floor at 0,
+  // Balcony-to-ground falls hid it perfectly: from 30 feet onto a floor at 0,
   // Math.max(0, 0) is 0 and everything looked correct. Only a floor BELOW zero
   // exposes it.
   //
@@ -138,7 +138,7 @@ export function resolveFall({ from, to = 0, caught = false, slowFallFt = 0 } = {
 
   if (distanceFt < MIN_FALL_FT) {
     return { distanceFt, dice: 0, formula: null, prone: false, negated: true,
-             reason: `only ${distanceFt} ft — not far enough to hurt` };
+             reason: `only ${distanceFt} feet — not far enough to hurt` };
   }
   if (caught) {
     // ⚠️ Feather Fall negates the damage AND the landing. RAW: "when it lands

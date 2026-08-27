@@ -1,10 +1,10 @@
 // ─── Write the reach into the item, not just into the moment ─────────────────
 //
 // ⚠️ WHY. ACE can already read a weapon's reach out of its description when the
-// reach field is empty — that is what let Johnny's Spiked Chain hit at 10 ft
+// reach field is empty — that is what let Johnny's Spiked Chain hit at 10 feet
 // again. But it only fixes the swing in front of it. The item stays wrong, so
-// dnd5e's own sheet still says 5 ft, its tooltip still says 5 ft, every other
-// module reading that weapon still says 5 ft, and ACE re-parses prose on every
+// dnd5e's own sheet still says 5 feet, its tooltip still says 5 feet, every other
+// module reading that weapon still says 5 feet, and ACE re-parses prose on every
 // single attack forever.
 //
 // Johnny, 2026-08-23: "If we do find the field, which we clearly do in the
@@ -23,7 +23,7 @@
 //      guess. The runtime fallback keeps handling those, out loud.
 //
 //   2. NEVER OVERWRITE A VALUE. Only an empty field is filled. A GM who typed
-//      5 ft on purpose is never overruled.
+//      5 feet on purpose is never overruled.
 //
 //   3. NEVER DURING THE ROLL. The attack hook is mid-flight, the write is
 //      async, and a PLAYER swinging a monster's weapon has no permission to
@@ -76,7 +76,7 @@ export function proposedReachFor(item) {
     // ⚠️🔴 THE READER ACCEPTS ANY ITEM; THE WRITER ONLY ACCEPTED WEAPONS.
     // Johnny's Spiked Chain is a FEATURE, not a weapon — the log says
     // `[feat/attack]` — so this refused to write, silently, forever. That is
-    // why "no reach set on the item, but its description says reach 10ft"
+    // why "no reach set on the item, but its description says reach 10 feet"
     // printed on every reload and every hover, months after the repair was
     // supposedly done. He spotted it: "I thought we wrote it before that if it
     // doesn't have a reach set, the first time that our code interjects it into
@@ -98,7 +98,7 @@ export function proposedReachFor(item) {
     // Rule 1 — ambiguity means hands off.
     if (reachMentions(sys) !== 1) return 0;
     const ft = reachFromDescription(sys, sys.range?.units || "ft", toFeet);
-    // A described 5 ft on an empty field is the default anyway; writing it adds
+    // A described 5 feet on an empty field is the default anyway; writing it adds
     // nothing and touches his data for no gain.
     return ft > 5 ? ft : 0;
   } catch (_) {
@@ -129,9 +129,9 @@ export function queueReachHeal(item) {
     setTimeout(async () => {
       try {
         await item.update({ "system.range.reach": ft });
-        console.log(`${LOG} | Wrote reach ${ft} ft onto "${item.name}" — its description said so and the field was empty. `
+        console.log(`${LOG} | Wrote reach ${ft} feet onto "${item.name}" — its description said so and the field was empty. `
           + `dnd5e's own sheet and tooltip will now agree.`);
-        ui.notifications?.info(`ACE: set "${item.name}" reach to ${ft} ft from its description.`);
+        ui.notifications?.info(`ACE: set "${item.name}" reach to ${ft} feet from its description.`);
       } catch (err) {
         console.warn(`${LOG} | Could not write reach onto "${item?.name}":`, err);
       } finally {

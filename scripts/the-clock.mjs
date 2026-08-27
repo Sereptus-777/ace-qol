@@ -140,8 +140,8 @@ export class TheClock {
     }
 
     try {
-      // ⚠️ SECONDS, NOT MINUTES. Callers may pass a fraction — walking 95 ft at
-      // 100 ft/min is 0.95 of a minute, and `{minute: 0.95}` would be floored
+      // ⚠️ SECONDS, NOT MINUTES. Callers may pass a fraction — walking 95 feet at
+      // 100 feet/min is 0.95 of a minute, and `{minute: 0.95}` would be floored
       // away to nothing by Foundry, which is exactly how the clock appeared
       // dead while the party crossed a dungeon.
       await game.time.advance({ second: Math.round(mins * 60) });

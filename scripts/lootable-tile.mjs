@@ -1430,7 +1430,7 @@ export class LootableTile {
           };
           const distFt = aceEdgeGapFt(playerRect, tileRect, { threeD: false });
           if (distFt > maxFt) {
-            ui.notifications?.warn(`Too far to loot — ${Math.round(distFt)} ft away (max ${maxFt} ft). Move closer.`);
+            ui.notifications?.warn(`Too far to loot — ${Math.round(distFt)} feet away (max ${maxFt} feet). Move closer.`);
             return;
           }
         } catch (distErr) {

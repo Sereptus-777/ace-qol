@@ -232,7 +232,7 @@ export class FlagsEngine {
 
   /**
    * Check if a target grants auto-crit to attackers.
-   * Used for Paralyzed-within-5ft or similar generic flags.
+   * Used for Paralyzed-within-5 feet or similar generic flags.
    *
    * @param {Actor} targetActor - The target
    * @param {string} actionType - "mwak", "rwak", "msak", or "rsak"

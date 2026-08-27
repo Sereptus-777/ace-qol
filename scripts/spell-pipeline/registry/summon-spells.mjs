@@ -48,7 +48,7 @@ export const SUMMON_SPELLS = {
  */
 export const PLANNED_SUMMONS = Object.freeze({
 
-  // ── Find Familiar (1st ritual, V·S·M, 10 ft, 1 hour cast) ───────────────
+  // ── Find Familiar (1st ritual, V·S·M, 10 feet, 1 hour cast) ───────────────
   "find familiar": {
     range: 10,
     crByLevel: () => "1/8",
@@ -57,10 +57,10 @@ export const PLANNED_SUMMONS = Object.freeze({
     spawnDisposition: "ally",
     concentration: false,
     duration: { hours: 999 },     // permanent until dismissed
-    flavorOnConfirm: "Summon a familiar spirit in beast form (rat, owl, cat, etc.) at a chosen point within 10 ft.",
+    flavorOnConfirm: "Summon a familiar spirit in beast form (rat, owl, cat, etc.) at a chosen point within 10 feet.",
   },
 
-  // ── Animate Dead (3rd, V·S·M, 10 ft, 1 min cast, 24h duration) ──────────
+  // ── Animate Dead (3rd, V·S·M, 10 feet, 1 min cast, 24h duration) ──────────
   "animate dead": {
     range: 10,
     crByLevel: (lvl) => Math.max(1, lvl - 2),   // 3rd: 1 zombie/skeleton; +1 per upcast
@@ -72,7 +72,7 @@ export const PLANNED_SUMMONS = Object.freeze({
     flavorOnConfirm: "Animate a corpse or skeleton as a zombie or skeleton. Upcast adds more or re-asserts control for 24 hours.",
   },
 
-  // ── Conjure Animals (3rd, V·S, 60 ft, 1 hour, conc.) ────────────────────
+  // ── Conjure Animals (3rd, V·S, 60 feet, 1 hour, conc.) ────────────────────
   "conjure animals": {
     range: 60,
     crByLevel: () => 2,        // RAW: max CR 2 base; PHB pick tier
@@ -84,7 +84,7 @@ export const PLANNED_SUMMONS = Object.freeze({
     flavorOnConfirm: "Summon fey spirits in beast form. RAW: 1 CR-2 / 2 CR-1 / 4 CR-1/2 / 8 CR-1/4 (more on upcast).",
   },
 
-  // ── Summon Beast (2nd, V·S·M, 90 ft, 1 hour, conc., 2024) ───────────────
+  // ── Summon Beast (2nd, V·S·M, 90 feet, 1 hour, conc., 2024) ───────────────
   "summon beast": {
     range: 90,
     crByLevel: (lvl) => lvl + 1,   // statblock scales with cast level
@@ -96,7 +96,7 @@ export const PLANNED_SUMMONS = Object.freeze({
     flavorOnConfirm: "Summon a Bestial Spirit (Air / Land / Water). Player picks the form at cast time. 2024 statblock.",
   },
 
-  // ── Summon Fey (3rd, V·S·M, 90 ft, 1 hour, conc., 2024) ─────────────────
+  // ── Summon Fey (3rd, V·S·M, 90 feet, 1 hour, conc., 2024) ─────────────────
   "summon fey": {
     range: 90,
     crByLevel: (lvl) => lvl,
@@ -108,7 +108,7 @@ export const PLANNED_SUMMONS = Object.freeze({
     flavorOnConfirm: "Summon a Fey Spirit (Fuming / Mirthful / Tricksy). Player picks the form at cast time.",
   },
 
-  // ── Summon Undead (3rd, V·S·M, 90 ft, 1 hour, conc., 2024) ──────────────
+  // ── Summon Undead (3rd, V·S·M, 90 feet, 1 hour, conc., 2024) ──────────────
   "summon undead": {
     range: 90,
     crByLevel: (lvl) => lvl,
@@ -120,7 +120,7 @@ export const PLANNED_SUMMONS = Object.freeze({
     flavorOnConfirm: "Summon an Undead Spirit (Ghostly / Putrid / Skeletal). Player picks the form at cast time.",
   },
 
-  // ── Summon Celestial (5th, V·S·M, 90 ft, 1 hour, conc., 2024) ───────────
+  // ── Summon Celestial (5th, V·S·M, 90 feet, 1 hour, conc., 2024) ───────────
   "summon celestial": {
     range: 90,
     crByLevel: (lvl) => lvl,
@@ -132,7 +132,7 @@ export const PLANNED_SUMMONS = Object.freeze({
     flavorOnConfirm: "Summon a Celestial Spirit (Avenger / Defender).",
   },
 
-  // ── Summon Fiend (6th, V·S·M, 90 ft, 1 hour, conc., 2024) ───────────────
+  // ── Summon Fiend (6th, V·S·M, 90 feet, 1 hour, conc., 2024) ───────────────
   "summon fiend": {
     range: 90,
     crByLevel: (lvl) => lvl,
@@ -144,7 +144,7 @@ export const PLANNED_SUMMONS = Object.freeze({
     flavorOnConfirm: "Summon a Fiendish Spirit (Demon / Devil / Yugoloth).",
   },
 
-  // ── Summon Elemental (4th, V·S·M, 90 ft, 1 hour, conc., 2024) ───────────
+  // ── Summon Elemental (4th, V·S·M, 90 feet, 1 hour, conc., 2024) ───────────
   "summon elemental": {
     range: 90,
     crByLevel: (lvl) => lvl,
@@ -156,7 +156,7 @@ export const PLANNED_SUMMONS = Object.freeze({
     flavorOnConfirm: "Summon an Elemental Spirit (Air / Earth / Fire / Water).",
   },
 
-  // ── Summon Construct (4th, V·S·M, 90 ft, 1 hour, conc., 2024) ───────────
+  // ── Summon Construct (4th, V·S·M, 90 feet, 1 hour, conc., 2024) ───────────
   "summon construct": {
     range: 90,
     crByLevel: (lvl) => lvl,
@@ -168,7 +168,7 @@ export const PLANNED_SUMMONS = Object.freeze({
     flavorOnConfirm: "Summon a Construct Spirit (Clay / Metal / Stone).",
   },
 
-  // ── Summon Aberration (4th, V·S·M, 90 ft, 1 hour, conc., 2024) ──────────
+  // ── Summon Aberration (4th, V·S·M, 90 feet, 1 hour, conc., 2024) ──────────
   "summon aberration": {
     range: 90,
     crByLevel: (lvl) => lvl,

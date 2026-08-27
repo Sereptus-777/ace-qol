@@ -84,7 +84,7 @@ const RAW = {
 
   // ── Cantrips — melee spell attacks (msak) ───────────────────────────────────
   "shocking grasp": { kind:"spell", attack:"msak", reach:5,  damage:"1d8",  dtype:"lightning" },
-  "thorn whip":     { kind:"spell", attack:"msak", reach:30, damage:"1d6",  dtype:"piercing" },  // the whip reaches 30 ft
+  "thorn whip":     { kind:"spell", attack:"msak", reach:30, damage:"1d6",  dtype:"piercing" },  // the whip reaches 30 feet
   "primal savagery":{ kind:"spell", attack:"msak", reach:5,  damage:"1d10", dtype:"acid" },
 
   // ── Cantrips — saving throws (save) ─────────────────────────────────────────
@@ -226,8 +226,8 @@ export function compareToRaw(item, raw, edition = "2014", actor = null) {
 
     // Reach sanity — melee only, ft units only, never for thrown weapons, and scaled
     // by the wielder's SIZE + reach property + any reach-granting feature. So a
-    // longsword on a Large creature correctly reaches 10ft; a reach-feat creature is
-    // accounted for; a dagger's 60ft throw range is never treated as melee reach.
+    // longsword on a Large creature correctly reaches 10 feet; a reach-feat creature is
+    // accounted for; a dagger's 60 feet throw range is never treated as melee reach.
     if (MELEE_TYPES.has(eff.attack) && !eff.noReachCheck && !isThrown) {
       const units = atk.range?.units ?? "";
       if (units === "ft") {   // touch / self / special ranges are not a reach error
@@ -242,8 +242,8 @@ export function compareToRaw(item, raw, edition = "2014", actor = null) {
           if (hasReach) bits.push("reach weapon");
           if (featReach) bits.push("reach feature");
           const ctx = bits.length ? ` (${bits.join(", ")})` : "";
-          return V("reach", `${r} ft`, `${expected} ft`,
-            `RAW reach${ctx} is ${expected} ft. This item: ${r} ft — too far.`);
+          return V("reach", `${r} feet`, `${expected} feet`,
+            `RAW reach${ctx} is ${expected} feet. This item: ${r} feet — too far.`);
         }
       }
     }

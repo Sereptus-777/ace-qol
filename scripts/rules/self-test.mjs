@@ -157,8 +157,8 @@ export class SelfTest {
 
       t("sight", "darkvision does NOT pierce magical darkness", P(MAGICAL, { darkvision: 60, dist: 20 }) === false);
       t("sight", "darkvision DOES pierce plain darkness", P(PLAIN, { darkvision: 60, dist: 20 }) === true);
-      t("sight", "devil's sight pierces magical darkness (≤120ft)", P(MAGICAL, { devilsSight: true, dist: 100 }) === true);
-      t("sight", "devil's sight fails beyond 120ft", P(MAGICAL, { devilsSight: true, dist: 150 }) === false);
+      t("sight", "devil's sight pierces magical darkness (≤120 feet)", P(MAGICAL, { devilsSight: true, dist: 100 }) === true);
+      t("sight", "devil's sight fails beyond 120 feet", P(MAGICAL, { devilsSight: true, dist: 150 }) === false);
       t("sight", "devil's sight does NOT pierce fog", P(FOG, { devilsSight: true, dist: 10 }) === false);
       t("sight", "truesight does NOT pierce fog (RAW)", P(FOG, { truesight: 120, dist: 10 }) === false);
       t("sight", "truesight pierces magical darkness", P(MAGICAL, { truesight: 120, dist: 10 }) === true);

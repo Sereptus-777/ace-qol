@@ -354,7 +354,7 @@ export class EngagementGate {
       return 1 + Math.max(0, castLevel - 5);
     }
     if (name === "charm person") {
-      // 1 + 1/slot above 1 (must be within 30ft of each other)
+      // 1 + 1/slot above 1 (must be within 30 feet of each other)
       return 1 + Math.max(0, castLevel - 1);
     }
     if (name === "banishment") {

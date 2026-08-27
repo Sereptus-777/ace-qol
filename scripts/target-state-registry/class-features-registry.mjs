@@ -439,7 +439,7 @@ export const CLASS_FEATURES = [
   {
     name: "Mage Slayer", matchType: "feature",
     nullifications: { saves: { advantage: ["spell"] }, special: { mageSlayerOA: true } },
-    source: "PHB Mage Slayer feat p.168 — advantage on saves vs spells from within 5ft",
+    source: "PHB Mage Slayer feat p.168 — advantage on saves vs spells from within 5 feet",
   },
   {
     name: "Mobile", matchType: "feature",

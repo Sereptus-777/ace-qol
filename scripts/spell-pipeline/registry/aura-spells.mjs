@@ -40,15 +40,15 @@ export const AURA_SPELLS = {
     flavorOnConfirm: "A 30-ft emanation of healing energy follows the caster. Bonus action: heal one creature in range for 2d6 HP.",
   },
 
-  // ── Holy Weapon (5th, V·S, self, 60 ft, 1 min, conc.) ───────────────────
+  // ── Holy Weapon (5th, V·S, self, 60 feet, 1 min, conc.) ───────────────────
   // 2014 ER: caster's weapon becomes magical, +2d10 radiant damage on hit,
-  // burst 30 ft on dismiss (CON save vs 4d10 radiant, half). No aura per se;
+  // burst 30 feet on dismiss (CON save vs 4d10 radiant, half). No aura per se;
   // the emanation behaviour is on the dismiss burst. Aura-engine handles
   // the burst on dismiss event via the buff's Active Effect lifecycle.
   "holy weapon": {
     shape: "aura",
     range: 0,
     save: { ability: "con", halfOnPass: true },
-    flavorOnConfirm: "Your weapon glows with radiant power — +2d10 radiant per hit. As a bonus action, dismiss to burst 30 ft radiant (4d10 CON save half).",
+    flavorOnConfirm: "Your weapon glows with radiant power — +2d10 radiant per hit. As a bonus action, dismiss to burst 30 feet radiant (4d10 CON save half).",
   },
 };

@@ -260,7 +260,7 @@ export class Situation {
   }
 
   /** True if this creature has Devil's Sight — sees normally in darkness, BOTH
-   *  magical and nonmagical, out to 120 ft. Warlock PCs carry it as an
+   *  magical and nonmagical, out to 120 feet. Warlock PCs carry it as an
    *  INVOCATION (a feat-type item), not a senses note — the senses.special
    *  string alone missed Syrax entirely (2026-07-09). Read all three homes:
    *  the senses string, feat/class items, and active effects. */
@@ -380,7 +380,7 @@ export class Situation {
    *     fog no — it isn't darkness, invisibility, or illusion).
    *   • darkvision pierces only kinds that list it (PLAIN darkness yes;
    *     magical darkness and fog NEVER).
-   *   • Devil's Sight pierces listed kinds out to 120 ft.
+   *   • Devil's Sight pierces listed kinds out to 120 feet.
    *
    * @param {object} space   { pierceBy: [...] } from a rules entry / region flag
    * @param {object} senses  { darkvision, blindsight, truesight, devilsSight, dist }

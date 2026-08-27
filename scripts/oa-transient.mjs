@@ -11,7 +11,7 @@
 // Why: RAW, an opportunity attack "occurs right before the creature leaves your
 // reach" (PHB 195). But by the time the player clicks "Take OA," the token has
 // already finished its move and is sitting out of reach — so the normal range
-// check would wrongly cancel the swing ("out of range — 10ft away"). The OA was
+// check would wrongly cancel the swing ("out of range — 10 feet away"). The OA was
 // already validated as in-reach at trigger time, so we suppress the re-check.
 //
 // In-memory only, per client. Both fireOAAttack and the pre-roll hook run on the

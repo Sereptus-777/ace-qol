@@ -38,13 +38,13 @@ export const FEATURE_REGISTRY = {
 
   // ── Banish (2024 Paladin legendary action — NOT the Banishment spell) ────
   // Target makes a CHA save. On fail: takes 3d6 force damage AND vanishes
-  // until the start of the user's next turn, then reappears within 120 ft
+  // until the start of the user's next turn, then reappears within 120 feet
   // of where it left. RAW reference: PHB 2024 Oath of Watchers / generic
   // monster "Banish" legendary actions (Strahd, Marquise of Pain, etc.).
   //
   // Notable contrast with the Banishment spell:
   //   • spell = CHA save → 1-minute concentration banish → permanent if full duration
-  //   • feature = CHA save → end of user's next turn → ALWAYS returns within 120 ft
+  //   • feature = CHA save → end of user's next turn → ALWAYS returns within 120 feet
   //
   // Damage rides the activity's own damage parts via save-engine (not declared
   // here — every Banish item should already carry its 3d6 force on the save
@@ -58,14 +58,14 @@ export const FEATURE_REGISTRY = {
     range: 60,
     save: { ability: "cha" },
     picker: { allowSelf: false, excludeDead: true },
-    flavorOnConfirm: "Target makes a Charisma save — on a fail, takes 3d6 force damage and vanishes until the start of your next turn, then reappears within 120 ft.",
+    flavorOnConfirm: "Target makes a Charisma save — on a fail, takes 3d6 force damage and vanishes until the start of your next turn, then reappears within 120 feet.",
   },
 
   // ── Ghostly Howl (King, the Spectral Dire Wolf — 2026-07-10) ─────────────
   // CONFIRMED against King's own actor JSON (2026-07-11): "King lets out a
   // mournful howl. Each creature of his choice within 30 feet must succeed on
   // a DC 13 Wisdom saving throw or become Frightened for 1 minute." Johnny's
-  // spec: no target-pick — everyone in 30 ft saves at once (the source's
+  // spec: no target-pick — everyone in 30 feet saves at once (the source's
   // position is the origin; save-area shape). On a fail → Frightened 1 min.
   // The `fx` fires the expanding ghostly waves + King's own wolf-howl sound
   // (broadcast to all clients, synced with the visual). The GM setting
@@ -75,7 +75,7 @@ export const FEATURE_REGISTRY = {
     range: 30,
     save: { ability: "wis", dc: 13, repeatAt: "endOfTurn" },
     effect: { key: "frightened", duration: { rounds: 10 } },  // 1 minute
-    // "Each CREATURE within 30 ft" (statblock) — not just King's enemies.
+    // "Each CREATURE within 30 feet" (statblock) — not just King's enemies.
     // King was friendly-disposition, so "enemies" wrongly skipped the whole
     // party (live-fire 2026-07-11). "all" = everyone in range saves; the GM
     // narrates whom King spares. Frightened re-saves at end of each turn.
@@ -97,7 +97,7 @@ export const FEATURE_REGISTRY = {
     // overrides. Do not put a file back here without checking what else is
     // already making noise for this item.
     fx: { kind: "ghostlyWave", radiusFt: 30, color: GHOSTLY_WAVE_COLOR },
-    flavorOnConfirm: "King lets out a mournful howl — every creature within 30 ft must make a DC 13 Wisdom save or be Frightened.",
+    flavorOnConfirm: "King lets out a mournful howl — every creature within 30 feet must make a DC 13 Wisdom save or be Frightened.",
   },
 
   // Phase 2: more save-area / save-single / summon / teleport entries land here

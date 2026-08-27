@@ -293,6 +293,6 @@ export const SAVE_SPELLS = {
     // Was {rounds:10} → 10× too long. (Audit 2026-06-27.)
     effect: { key: "blinded", duration: { rounds: 1 } },
     picker: { allowSelf: false, excludeDead: true },
-    flavorOnConfirm: "Dazzling colors blind creatures in a 15 ft cone — 6d10 HP pool, lowest current hit points first.",
+    flavorOnConfirm: "Dazzling colors blind creatures in a 15 feet cone — 6d10 HP pool, lowest current hit points first.",
   },
 };

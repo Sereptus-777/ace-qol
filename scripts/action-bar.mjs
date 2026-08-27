@@ -313,8 +313,8 @@ export class ActionBar {
       const bits = [];
       // Reach or range, from THE resolver — the same one the attack gate uses.
       // ⚠️ THE TOOLTIP IS A PROMISE. Johnny asked for hover text that says what
-      // a thing does; a tooltip reading "Reach 5 ft" over a weapon the pipeline
-      // will happily swing at 10 ft is a lie told in his own UI. This used to
+      // a thing does; a tooltip reading "Reach 5 feet" over a weapon the pipeline
+      // will happily swing at 10 feet is a lie told in his own UI. This used to
       // read the activity's range slot alone, so a weapon whose reach sits in
       // its description showed no reach line at all.
       // ⚠️ `repair: false` — the bar redraws on every selection change, and

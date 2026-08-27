@@ -10,11 +10,11 @@
 //   │ Pattern                   │ Examples                                  │
 //   ├───────────────────────────┼───────────────────────────────────────────┤
 //   │ Self only                 │ Second Wind, Lay on Hands (self)          │
-//   │ Touch (5ft + self)        │ Cure Wounds (2014), Lay on Hands          │
-//   │ Single ranged             │ Healing Word (60ft)                       │
-//   │ Multi single-target       │ Mass Healing Word (up to 6 in 60ft)       │
+//   │ Touch (5 feet + self)        │ Cure Wounds (2014), Lay on Hands          │
+//   │ Single ranged             │ Healing Word (60 feet)                       │
+//   │ Multi single-target       │ Mass Healing Word (up to 6 in 60 feet)       │
 //   │ Multi-self counts         │ Aura of Vitality (one per round)          │
-//   │ AoE template              │ Prayer of Healing (30ft sphere)           │
+//   │ AoE template              │ Prayer of Healing (30 feet sphere)           │
 //   │ Temp HP                   │ Heroism, Inspiring Leader                 │
 //   │ At 0 HP / Stable          │ Spare the Dying (separate flow, vanilla)  │
 //   └───────────────────────────┴───────────────────────────────────────────┘
@@ -237,7 +237,7 @@ export class HealPipeline {
     if (!item || !actor) return;
 
     const classification = this._classify(activity);
-    console.log(`${MODULE_ID} | HealPipeline: ${item.name} → shape=${classification.shape} count=${classification.count} range=${classification.rangeFt}ft tempHP=${classification.isTempHP}`);
+    console.log(`${MODULE_ID} | HealPipeline: ${item.name} → shape=${classification.shape} count=${classification.count} range=${classification.rangeFt} feet tempHP=${classification.isTempHP}`);
 
     // Pre-flight resource check — abort if no spell slots / charges remaining.
     // Without this guard, the user picks targets and rolls only to find out

@@ -340,7 +340,7 @@ export class SaveEngine {
     // The rule is RANGE-driven, not shape-driven (RAW): an effect with range
     // SELF is measured from the caster's space — cone (breath weapons, Burning
     // Hands), line (Lightning Bolt), even Thunderwave's cube. A ranged AoE
-    // (Fireball's 150 ft sphere) places freely. For a Large or Huge creature
+    // (Fireball's 150 feet sphere) places freely. For a Large or Huge creature
     // the origin may be ANY point of its occupied space — so we CLAMP the
     // placed origin into the token's rectangle: aim northeast and the origin
     // lands on the northeast face of the creature, never its centre, never
@@ -1904,7 +1904,7 @@ export class SaveEngine {
       // Hand-tuned blurbs (read after "On a failed save: ").
       const BLURBS = {
         "frostbite":                 "cold damage, and disadvantage on its next weapon attack before its next turn",
-        "ray of frost":              "cold damage, and its speed drops by 10 ft",
+        "ray of frost":              "cold damage, and its speed drops by 10 feet",
         "hold person":               "Paralyzed — it repeats the save at the end of each of its turns",
         "hold monster":              "Paralyzed — it repeats the save at the end of each of its turns",
         "command":                   "it obeys a one-word command on its next turn",

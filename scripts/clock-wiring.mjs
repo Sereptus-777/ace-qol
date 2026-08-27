@@ -41,7 +41,7 @@ export class ClockWiring {
         const kindOpts = Object.entries(SCENE_KINDS)
           .map(([k, v]) => `<option value="${k}" ${k === kind ? "selected" : ""}>${v.label}</option>`).join("");
         const paceOpts = Object.entries(set)
-          .map(([k, v]) => `<option value="${k}" ${k === pace ? "selected" : ""}>${v.label} — ${v.feetPerMinute} ft/min</option>`).join("");
+          .map(([k, v]) => `<option value="${k}" ${k === pace ? "selected" : ""}>${v.label} — ${v.feetPerMinute} feet/min</option>`).join("");
 
         const block = document.createElement("div");
         block.className = "ace-clock-scene";

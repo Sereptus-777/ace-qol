@@ -9,10 +9,10 @@
 //    • Cleave   — Greataxe, Halberd: extra attack on adjacent foe
 //    • Graze    — Glaive, Greatsword: ability mod damage on a miss
 //    • Nick     — Dagger, Light Hammer, Sickle, Scimitar: extra Light attack
-//    • Push     — Greatclub, Pike, Warhammer (heavy), Heavy Crossbow: push 10 ft
+//    • Push     — Greatclub, Pike, Warhammer (heavy), Heavy Crossbow: push 10 feet
 //    • Sap      — Mace, Quarterstaff (or Spear), Morningstar, War Pick:
 //                 target has disadvantage on next attack roll
-//    • Slow     — Club, Javelin, ranged: target speed reduced 10 ft
+//    • Slow     — Club, Javelin, ranged: target speed reduced 10 feet
 //    • Topple   — Battleaxe, Flail, Glaive, Lance, Maul, Trident, Warhammer:
 //                 CON save vs prone
 //    • Vex      — Dagger, Rapier, Scimitar, Shortsword, ranged crossbows:
@@ -117,7 +117,7 @@ const MASTERY_ICONS = {
 };
 
 const MASTERY_DESCRIPTIONS = {
-  cleave: "If the target is within 5 ft of another creature in your reach, you may attack that second creature with the same weapon (no ability modifier to that damage).",
+  cleave: "If the target is within 5 feet of another creature in your reach, you may attack that second creature with the same weapon (no ability modifier to that damage).",
   graze:  "Miss with this weapon? The target still takes damage equal to the ability modifier you used to attack.",
   nick:   "When you make the extra attack of the Light property, you can make it as part of the Attack action instead of as a Bonus Action.",
   push:   "You can push the target 10 feet straight away from you.",
@@ -338,7 +338,7 @@ export class WeaponMasteries {
   }
 
   /**
-   * Push target 10 ft (2 squares on standard grid) directly away from attacker.
+   * Push target 10 feet (2 squares on standard grid) directly away from attacker.
    * @param {string} attackerUuid
    * @param {string} targetUuid
    */
@@ -358,7 +358,7 @@ export class WeaponMasteries {
     const dy = tgtTok.y - attTok.y;
     const dist = Math.hypot(dx, dy) || 1;
     const cell = canvas.grid?.size ?? 100;
-    const pushPx = cell * 2; // 10 ft on standard 5 ft grid
+    const pushPx = cell * 2; // 10 feet on standard 5 feet grid
     const newX = Math.round(tgtTok.x + (dx / dist) * pushPx);
     const newY = Math.round(tgtTok.y + (dy / dist) * pushPx);
     // ── aceForcedMovement flag ──
@@ -368,7 +368,7 @@ export class WeaponMasteries {
     // it must NOT provoke opportunity attacks. OAPrompt's updateToken hook
     // checks for this flag and short-circuits when it sees it.
     await tgtTok.update({ x: newX, y: newY }, { aceForcedMovement: true });
-    console.log(`${TAG} | Pushed ${tgtTok.name} 10 ft away from ${attTok.name} (forced movement — OA suppressed)`);
+    console.log(`${TAG} | Pushed ${tgtTok.name} 10 feet away from ${attTok.name} (forced movement — OA suppressed)`);
   }
 
   /**
@@ -400,7 +400,7 @@ export class WeaponMasteries {
 
     // ── Resolve the attacker token so we filter by ATTACKER's disposition ──
     // (not target's — that was the bug that made Syrax cleave himself).
-    // Cleave RAW: damage to a "second creature within 5 ft of the first."
+    // Cleave RAW: damage to a "second creature within 5 feet of the first."
     // Practically: any creature other than the attacker AND the original
     // target. We additionally filter out same-disposition (allies) so the
     // player doesn't accidentally cleave their wizard standing next to the
@@ -412,12 +412,12 @@ export class WeaponMasteries {
                          : attackerDoc?.getActiveTokens?.()[0] ?? null;
     const attackerDisp = attackerToken?.document?.disposition ?? 0;
 
-    // Within 5 ft of the original target — shared, HP-aware helper (alive only,
+    // Within 5 feet of the original target — shared, HP-aware helper (alive only,
     // never a downed/dead creature; same list the damage-card cleave path uses).
     const adjacent = WeaponMasteries.findCleaveAdjacent(attackerToken, origTok);
 
     if (!adjacent.length) {
-      ui.notifications?.warn("Cleave: no living creatures within 5 ft of the original target.");
+      ui.notifications?.warn("Cleave: no living creatures within 5 feet of the original target.");
       return;
     }
 
@@ -593,7 +593,7 @@ export class WeaponMasteries {
         </style>
         <div style="color:#e0e0e0; padding:6px 0;">
           <p style="margin:0 0 10px 0; font-size:13px;">
-            Choose which adjacent creature to attack (within 5 ft of <strong>${foundry.utils.escapeHTML(origName)}</strong>):
+            Choose which adjacent creature to attack (within 5 feet of <strong>${foundry.utils.escapeHTML(origName)}</strong>):
           </p>
           <div class="ace-qol-cleave-picker"
                style="display:flex; flex-wrap:wrap; gap:10px; justify-content:center;">
@@ -941,7 +941,7 @@ export class WeaponMasteries {
   }
 
   /**
-   * Find enemies adjacent (within 5 ft / 1.5 grid cells) to the original
+   * Find enemies adjacent (within 5 feet / 1.5 grid cells) to the original
    * target, excluding the attacker and the original target themselves, and
    * filtering out allies of the attacker (matched by disposition).
    * Same filter logic as the old _cleaveSecondAttack — extracted so the
@@ -950,7 +950,7 @@ export class WeaponMasteries {
   static findCleaveAdjacent(attackerToken, origTok) {
     if (!attackerToken || !origTok) return [];
     const attackerDisp = attackerToken?.document?.disposition ?? 0;
-    // Within 5 ft of the original target — nearest-edge, size-aware, 3D (canonical).
+    // Within 5 feet of the original target — nearest-edge, size-aware, 3D (canonical).
     return canvas.tokens?.placeables?.filter(t =>
       t !== origTok &&
       t.id !== attackerToken?.id &&
@@ -1052,25 +1052,25 @@ export class WeaponMasteries {
     } catch (err) { console.warn(`${TAG} | Sap apply failed:`, err); }
   }
 
-  /** Slow — reduce target speed 10 ft until your next turn (informational card; system-level speed mod is a follow-up). */
+  /** Slow — reduce target speed 10 feet until your next turn (informational card; system-level speed mod is a follow-up). */
   static async _fireSlow(item, actor, targetToken) {
     const tName = targetToken?.name ?? game.i18n?.localize?.("ACE_QOL.common.target") ?? "The target";
     this._postMasteryCard("slow", item, actor, targetToken,
       this._l10nFire("slow", { attacker: actor.name, target: tName },
-        `${tName}'s speed is <strong>reduced by 10 ft</strong> until the start of ${actor.name}'s next turn.`)
+        `${tName}'s speed is <strong>reduced by 10 feet</strong> until the start of ${actor.name}'s next turn.`)
     );
   }
 
-  /** Push — chat card with a Push button (auto-push 10 ft away). */
+  /** Push — chat card with a Push button (auto-push 10 feet away). */
   static async _firePush(item, actor, targetToken) {
     const targetTokenDoc = targetToken?.document ?? targetToken;
     const tgtUuid = targetTokenDoc?.uuid;
     const attUuid = actor.uuid;
     const tName = targetToken?.name ?? game.i18n?.localize?.("ACE_QOL.common.target") ?? "the target";
-    const pushBtnLabel = game.i18n?.localize?.("ACE_QOL.mastery.buttons.push") ?? "Push 10 ft";
+    const pushBtnLabel = game.i18n?.localize?.("ACE_QOL.mastery.buttons.push") ?? "Push 10 feet";
     this._postMasteryCard("push", item, actor, targetToken,
       this._l10nFire("push", { attacker: actor.name, target: tName },
-        `${actor.name} may <strong>push ${tName} 10 ft</strong> straight away.`),
+        `${actor.name} may <strong>push ${tName} 10 feet</strong> straight away.`),
       `<div style="margin-top:6px;">
          <button class="ace-qol-btn ace-qol-mastery-push-btn"
                  data-attacker-uuid="${attUuid}"
@@ -1129,7 +1129,7 @@ export class WeaponMasteries {
     const cleaveBtnLabel = game.i18n?.localize?.("ACE_QOL.mastery.buttons.cleave") ?? "Attack Adjacent";
     this._postMasteryCard("cleave", item, actor, targetToken,
       this._l10nFire("cleave", { attacker: actor.name, weapon: itemName, target: tName },
-        `${actor.name} may make a <strong>second attack with ${itemName}</strong> against another creature within 5 ft of ${tName} that's also within their reach. No ability modifier to that damage.`),
+        `${actor.name} may make a <strong>second attack with ${itemName}</strong> against another creature within 5 feet of ${tName} that's also within their reach. No ability modifier to that damage.`),
       `<div style="margin-top:6px;">
          <button class="ace-qol-btn ace-qol-mastery-cleave-btn"
                  data-attacker-uuid="${actor.uuid}"

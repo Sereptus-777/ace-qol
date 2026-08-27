@@ -212,7 +212,7 @@ export class CombatState {
     // ── Pack Tactics ────────────────────────────────────────────────────
     if (CombatState._hasFeature(attackerActor, "Pack Tactics")) {
       if (CombatState._isAllyNearTarget(attackerActor, targetToken, 5)) {
-        advantageSources.push({ source: "attacker", reason: "PACK TACTICS → ally within 5ft of target" });
+        advantageSources.push({ source: "attacker", reason: "PACK TACTICS → ally within 5 feet of target" });
       }
     }
 
@@ -229,7 +229,7 @@ export class CombatState {
       }
     } catch { /* setting not registered yet */ }
 
-    // ── Ranged attack within 5ft of a hostile → disadvantage (PHB 195) ───
+    // ── Ranged attack within 5 feet of a hostile → disadvantage (PHB 195) ───
     // RAW: "You have disadvantage on a ranged attack roll if you are within
     // 5 feet of a hostile creature who can see you and who isn't
     // incapacitated."
@@ -238,7 +238,7 @@ export class CombatState {
         if (CombatState._hasHostileWithinReach(attackerActor, 5)) {
           disadvantageSources.push({
             source: "attacker",
-            reason: "RANGED IN MELEE → hostile within 5ft (PHB 195)",
+            reason: "RANGED IN MELEE → hostile within 5 feet (PHB 195)",
           });
         }
       }
@@ -474,11 +474,11 @@ export class CombatState {
     if (tgtStatuses.has("incapacitated")) tgtConditions.add("incapacitated");
     if (tgtStatuses.has("deafened") || tgtStatuses.has("deaf")) tgtConditions.add("deafened");
 
-    // ── Ranged Attack Within 5ft of Hostile ─────────────────────────────
+    // ── Ranged Attack Within 5 feet of Hostile ─────────────────────────────
     if (isRanged) {
       const hostileNear = CombatState._isHostileNearAttacker(attackerActor, targetToken, 5);
       if (hostileNear) {
-        disadvantageSources.push({ source: "situation", reason: "RANGED ATTACK within 5ft of hostile creature → disadvantage" });
+        disadvantageSources.push({ source: "situation", reason: "RANGED ATTACK within 5 feet of hostile creature → disadvantage" });
       }
     }
 
@@ -489,7 +489,7 @@ export class CombatState {
       const normalRange = item?.system?.range?.value ?? 0;
       const longRange = item?.system?.range?.long ?? 0;
       if (normalRange && distance > normalRange && longRange && distance <= longRange) {
-        disadvantageSources.push({ source: "situation", reason: `RANGED at LONG RANGE (${Math.round(distance)}ft > ${normalRange}ft normal) → disadvantage` });
+        disadvantageSources.push({ source: "situation", reason: `RANGED at LONG RANGE (${Math.round(distance)} feet > ${normalRange} feet normal) → disadvantage` });
       }
     }
 
@@ -943,7 +943,7 @@ export class CombatState {
     const attackerBonuses = [];
 
     // Sneak Attack — once per turn (RAW, both 2014 and 2024).
-    // Detection covers finesse/ranged weapon + (advantage OR ally within 5 ft).
+    // Detection covers finesse/ranged weapon + (advantage OR ally within 5 feet).
     // Once-per-turn enforcement gates re-fire on subsequent hits this turn
     // (Two-Weapon Fighting, Action Surge, Bonus-Action Attack, etc.).
     // Flag `sneakAttack.usedThisTurn` is cleared on this actor's turn-end.
@@ -1266,8 +1266,8 @@ export class CombatState {
           formula: "1d8",
           type: "radiant",
           reason: dist !== null
-            ? `Spirit Shroud → +1d8 radiant (target ${Math.round(dist)}ft, within 10ft range)`
-            : "Spirit Shroud → +1d8 radiant per hit (within 10ft)",
+            ? `Spirit Shroud → +1d8 radiant (target ${Math.round(dist)} feet, within 10 feet range)`
+            : "Spirit Shroud → +1d8 radiant per hit (within 10 feet)",
           isSpellDerived: true,
         });
       }
@@ -1327,7 +1327,7 @@ export class CombatState {
         const wEntry = RulesBrain.lookup(item, { actor: attackerActor })?.entry;
         const withinFt = Number(wEntry?.attack?.disadvantageWithinFt);
         if (withinFt > 0 && distanceToTarget != null && distanceToTarget <= withinFt) {
-          disadvantageSources.push({ source: "weapon", reason: `${item.name} used within ${withinFt} ft → attack disadvantage (weapon rule)` });
+          disadvantageSources.push({ source: "weapon", reason: `${item.name} used within ${withinFt} feet → attack disadvantage (weapon rule)` });
         }
       }
       // ── Heavy property (RAW, edition-split — 2026-07-10) ──
@@ -1620,12 +1620,12 @@ export class CombatState {
     // weapon, on the assumption that dnd5e would set actionType to "rwak" when
     // actually throwing. But dnd5e 5.x doesn't always do that — actionType can
     // stay "mwak" even when the player is throwing the weapon at long range.
-    // Result: a player throwing a spear from 30ft was getting flanking
+    // Result: a player throwing a spear from 30 feet was getting flanking
     // advantage as if it were a melee attack, because flanking only gates on
     // `isMelee` (which was true).
     //
     // Correct test: distance to target. Thrown weapons used within melee reach
-    // (5ft) are melee swings; anything further is a thrown attack and counts
+    // (5 feet) are melee swings; anything further is a thrown attack and counts
     // as ranged for flanking, ranged-disadvantage-from-adjacent-hostile, etc.
     if (props.has("thr")) {
       if (Number.isFinite(distanceToTarget) && distanceToTarget > 5) {
@@ -1638,10 +1638,10 @@ export class CombatState {
     const normalRange = sys.range?.value ?? 0;
     const longRange = sys.range?.long ?? 0;
     if (normalRange > 10 && longRange > 0) return true;
-    // Even without long range, if normal range > 30ft it's clearly ranged
+    // Even without long range, if normal range > 30 feet it's clearly ranged
     if (normalRange > 30) return true;
 
-    // If it's a spell with range > 10ft and actionType is msak, could be ranged
+    // If it's a spell with range > 10 feet and actionType is msak, could be ranged
     // But msak is explicitly melee spell attack, so leave it
     if (item.type === "spell" && ["rsak"].includes(actionType)) return true;
 
@@ -1661,7 +1661,7 @@ export class CombatState {
   /**
    * Flanking check — line-through method.
    * Draw a line from attacker through target center. If an ally is within
-   * 5ft of the target on the opposite side of that line, flanking applies.
+   * 5 feet of the target on the opposite side of that line, flanking applies.
    */
   /**
    * @returns {string|null} Name of the flanking ally if found, else null.
@@ -1704,10 +1704,10 @@ export class CombatState {
       : targetSize <= 3 ? -0.64
       :                   -0.5;
 
-    // Per RAW (DMG p251): both attackers must be ADJACENT to the target (5ft).
+    // Per RAW (DMG p251): both attackers must be ADJACENT to the target (5 feet).
     // _getDistance() measures edge-to-edge, so this works for ALL target sizes:
-    //   - Medium target: ally must be in one of the 8 adjacent squares (5ft)
-    //   - Gargantuan target: ally must be touching one of its edges (0–5ft)
+    //   - Medium target: ally must be in one of the 8 adjacent squares (5 feet)
+    //   - Gargantuan target: ally must be touching one of its edges (0–5 feet)
     // Reach weapons explicitly do NOT grant flanking per RAW.
     const FLANK_MAX_DISTANCE = 5;
 
@@ -1750,9 +1750,9 @@ export class CombatState {
       if (combatant?.defeated) { log(`  ✗ ${tokName}: marked defeated`); continue; }
 
       // Must be within melee reach of the target.
-      // RAW (DMG p251): adjacent = 5ft. Houserule: if ally has a reach weapon
+      // RAW (DMG p251): adjacent = 5 feet. Houserule: if ally has a reach weapon
       // equipped (Glaive, Halberd, Pike, Whip, Lance, etc.), they can flank
-      // from 10ft when the `flankingAllowReachWeapons` setting is on.
+      // from 10 feet when the `flankingAllowReachWeapons` setting is on.
       const distToTarget = CombatState._getDistance(token, targetToken);
       let maxDist = FLANK_MAX_DISTANCE;
       let usedReach = false;
@@ -1772,7 +1772,7 @@ export class CombatState {
       } catch (_) { /* setting not registered yet */ }
 
       if (distToTarget > maxDist) {
-        log(`  ✗ ${tokName}: distance ${distToTarget}ft > ${maxDist}ft (not in melee reach of target)`);
+        log(`  ✗ ${tokName}: distance ${distToTarget} feet > ${maxDist} feet (not in melee reach of target)`);
         continue;
       }
 
@@ -1788,7 +1788,7 @@ export class CombatState {
       const angleDeg = (Math.acos(Math.max(-1, Math.min(1, dot))) * 180 / Math.PI).toFixed(0);
 
       if (dot <= FLANK_DOT_THRESHOLD) {
-        log(`  ✓ ${tokName}: distance=${distToTarget}ft, ally-vector (${allyNx.toFixed(2)}, ${allyNy.toFixed(2)}), dot=${dot.toFixed(2)}, angle=${angleDeg}° → FLANKING`);
+        log(`  ✓ ${tokName}: distance=${distToTarget} feet, ally-vector (${allyNx.toFixed(2)}, ${allyNy.toFixed(2)}), dot=${dot.toFixed(2)}, angle=${angleDeg}° → FLANKING`);
         return tokName;
       } else {
         log(`  ✗ ${tokName}: ally-vector (${allyNx.toFixed(2)}, ${allyNy.toFixed(2)}), dot=${dot.toFixed(2)}, angle=${angleDeg}° (need ≤ ${FLANK_DOT_THRESHOLD}, i.e. ≥ ~148°)`);
@@ -1953,7 +1953,7 @@ export class CombatState {
   /**
    * Check if any HOSTILE creature is within `rangeFt` of the attacker.
    * Used for ranged-attack-in-melee disadvantage (PHB 195): a hostile
-   * within 5ft who can see you AND isn't incapacitated triggers it.
+   * within 5 feet who can see you AND isn't incapacitated triggers it.
    */
   static _hasHostileWithinReach(attacker, rangeFt = 5) {
     if (!canvas.tokens?.placeables) {
@@ -1987,7 +1987,7 @@ export class CombatState {
    * D&D 5e rule: distance is from the nearest edge of one creature's
    * space to the nearest edge of the other's. This handles Large (2×2),
    * Huge (3×3), and Gargantuan (4×4) tokens correctly — adjacent tokens
-   * are always 5ft apart regardless of size.
+   * are always 5 feet apart regardless of size.
    */
   // Nearest-edge, size-aware, 3D-aware distance in feet. Canonical math lives in
   // geometry-utils.mjs (aceDistanceFt) so every reach/range check in the suite
@@ -2037,7 +2037,7 @@ export class CombatState {
       // `levels` is already the right number; it just was not being asked.
       if (paladinLevel < 6) continue;
 
-      // 10ft base, 30ft at 18th level
+      // 10 feet base, 30 feet at 18th level
       const auraRange = paladinLevel >= 18 ? 30 : 10;
 
       if (dist <= auraRange) {
@@ -2114,7 +2114,7 @@ export class CombatState {
       return {
         eligible: true, name: "Sneak Attack", formula: `${dice}d6`,
         type: item?.system?.damage?.parts?.[0]?.[1] ?? "piercing",
-        reason: hasAdvantage ? "Sneak Attack (have advantage)" : "Sneak Attack (ally within 5ft)",
+        reason: hasAdvantage ? "Sneak Attack (have advantage)" : "Sneak Attack (ally within 5 feet)",
       };
     }
     return { eligible: false, reason: "No advantage and no ally near target" };
@@ -2620,7 +2620,7 @@ export class CombatState {
   //  HEXBLADE'S CURSE (Warlock — Hexblade Patron, 2014 PHB / Tasha's)
   // ════════════════════════════════════════════════════════════════════════
   //
-  //  RAW: As a bonus action, choose one creature within 30 ft. The target is
+  //  RAW: As a bonus action, choose one creature within 30 feet. The target is
   //  cursed for 1 minute. While cursed:
   //   • +Proficiency Bonus to damage rolls against the cursed target
   //   • Attack rolls vs cursed target crit on 19-20

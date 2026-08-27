@@ -7,9 +7,9 @@
 //   • Console —  game.aceQol.auditItems()   ("scene" | "selected" | "all")
 //
 // Catches the classes that bit us live:
-//   • Produce Flame — typed melee-spell (msak) but a 30ft range → should be ranged.
+//   • Produce Flame — typed melee-spell (msak) but a 30 feet range → should be ranged.
 //   • The goat's Ram — an attack with NO melee/ranged type → reach gate can't classify.
-// Size-aware: a Gargantuan dragon's 20ft reach is correct and is NOT flagged.
+// Size-aware: a Gargantuan dragon's 20 feet reach is correct and is NOT flagged.
 //
 // PHASE 2 (next): a curated RAW reference (2014 + 2024) so we validate against
 // canonical book values, not just internal consistency — kills the special-reach
@@ -42,11 +42,11 @@ function _checkActivity(item, activity, actor) {
     const value = Number(range?.value) || 0;
     const props = item.system?.properties ? new Set(item.system.properties) : new Set();
 
-    // 1. Melee SPELL attack with a >5ft range → likely ranged (rsak), UNLESS it's a
+    // 1. Melee SPELL attack with a >5 feet range → likely ranged (rsak), UNLESS it's a
     //    conjuration that PLACES a weapon (Spiritual Weapon, Bigby's Hand) where the
     //    range is the placement range and the attack really is melee.
     if (actionType === "msak" && units === "ft" && value > 5) {
-      return { kind: "msak→rsak?", issue: `Melee spell attack (msak) but range is ${value}ft. If the caster attacks a creature at that range (Produce Flame) it should be RANGED (rsak) — else attack bonuses and the reach check misfire. NOTE: conjuration spells that PLACE a weapon (Spiritual Weapon, Bigby's Hand) are legitimately msak — verify before changing.` };
+      return { kind: "msak→rsak?", issue: `Melee spell attack (msak) but range is ${value} feet. If the caster attacks a creature at that range (Produce Flame) it should be RANGED (rsak) — else attack bonuses and the reach check misfire. NOTE: conjuration spells that PLACE a weapon (Spiritual Weapon, Bigby's Hand) are legitimately msak — verify before changing.` };
     }
 
     // 2. Attack with NO classification → ACE can't tell its reach or apply bonuses.
@@ -55,7 +55,7 @@ function _checkActivity(item, activity, actor) {
     }
 
     // 3. Melee WEAPON attack beyond the creature's SIZE-appropriate reach. A
-    //    Gargantuan dragon's 20ft tail is correct; a 600ft "melee" longbow is not.
+    //    Gargantuan dragon's 20 feet tail is correct; a 600 feet "melee" longbow is not.
     //    Thrown weapons (thr) are skipped — their range is the throw distance.
     if (actionType === "mwak" && units === "ft" && value > 0 && !props.has("thr")) {
       const size = actor?.system?.traits?.size ?? "med";
@@ -63,8 +63,8 @@ function _checkActivity(item, activity, actor) {
       if (value > reach) {
         const clearlyRanged = value > 30 || value >= reach * 3;
         return clearlyRanged
-          ? { kind: "mwak→ranged?", issue: `Melee weapon attack (mwak) reaching ${value}ft — far past a ${size} creature's ~${reach}ft reach. Almost certainly a RANGED weapon/ability mislabeled as melee (or a thrown weapon missing the Thrown property).` }
-          : { kind: "reach-check",  issue: `Melee weapon attack (mwak) reaches ${value}ft, past this ${size} creature's ~${reach}ft reach — verify the reach is intended, or add the Reach property.` };
+          ? { kind: "mwak→ranged?", issue: `Melee weapon attack (mwak) reaching ${value} feet — far past a ${size} creature's ~${reach} feet reach. Almost certainly a RANGED weapon/ability mislabeled as melee (or a thrown weapon missing the Thrown property).` }
+          : { kind: "reach-check",  issue: `Melee weapon attack (mwak) reaches ${value} feet, past this ${size} creature's ~${reach} feet reach — verify the reach is intended, or add the Reach property.` };
       }
     }
 
@@ -83,8 +83,8 @@ function _checkItem(item, actor, edition = "2014") {
   const out = [];
   try {
     // MONSTER ATTACKS ARE BESPOKE — defined by the creature's stat block, not the
-    // generic catalog. A Balor's "Whip" is its 30ft Flame Whip, not a 10ft martial
-    // whip; a Bugbear's morningstar reaches 10ft via Long-Limbed. Judging an NPC's
+    // generic catalog. A Balor's "Whip" is its 30 feet Flame Whip, not a 10 feet martial
+    // whip; a Bugbear's morningstar reaches 10 feet via Long-Limbed. Judging an NPC's
     // attacks by generic weapon/spell values false-flags every special monster, so
     // for NPCs we only flag the one thing wrong regardless of the creature — a
     // missing melee/ranged type. The correct per-creature ruling (vs the canonical

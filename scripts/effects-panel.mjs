@@ -37,7 +37,7 @@ const CLASS_AURAS = [
     description: (actor, lvl) => {
       const cha = actor.system?.abilities?.cha?.mod ?? 0;
       const r = lvl >= 18 ? 30 : 10;
-      return `All friendly creatures within ${r}ft (including you) gain a +${cha} bonus to saving throws.`;
+      return `All friendly creatures within ${r} feet (including you) gain a +${cha} bonus to saving throws.`;
     },
   },
   {
@@ -47,7 +47,7 @@ const CLASS_AURAS = [
     radius: (lvl) => lvl >= 18 ? 30 : 10,
     description: (_, lvl) => {
       const r = lvl >= 18 ? 30 : 10;
-      return `You and friendly creatures within ${r}ft can't be frightened while you are conscious.`;
+      return `You and friendly creatures within ${r} feet can't be frightened while you are conscious.`;
     },
   },
   {
@@ -55,14 +55,14 @@ const CLASS_AURAS = [
     name: "Aura of Devotion",
     icon: "icons/magic/holy/angel-wings-gray.webp",
     radius: (lvl) => lvl >= 18 ? 30 : 10,
-    description: (_, lvl) => `You and friendly creatures within ${lvl >= 18 ? 30 : 10}ft can't be charmed.`,
+    description: (_, lvl) => `You and friendly creatures within ${lvl >= 18 ? 30 : 10} feet can't be charmed.`,
   },
   {
     className: "paladin", levelMin: 7, subclass: "ancients",
     name: "Aura of Warding",
     icon: "icons/magic/nature/leaf-glow-green.webp",
     radius: (lvl) => lvl >= 18 ? 30 : 10,
-    description: (_, lvl) => `You and friendly creatures within ${lvl >= 18 ? 30 : 10}ft have resistance to damage from spells.`,
+    description: (_, lvl) => `You and friendly creatures within ${lvl >= 18 ? 30 : 10} feet have resistance to damage from spells.`,
   },
   {
     className: "paladin", levelMin: 7, subclass: "vengeance",
@@ -71,7 +71,7 @@ const CLASS_AURAS = [
     radius: (lvl) => lvl >= 18 ? 30 : 10,
     description: (actor, lvl) => {
       const cha = actor.system?.abilities?.cha?.mod ?? 0;
-      return `You and any fiends/undead within ${lvl >= 18 ? 30 : 10}ft gain a +${cha} bonus to melee weapon damage rolls.`;
+      return `You and any fiends/undead within ${lvl >= 18 ? 30 : 10} feet gain a +${cha} bonus to melee weapon damage rolls.`;
     },
   },
 ];
@@ -636,7 +636,7 @@ export class EffectsPanel {
   }
 
   _renderAuraRow(aura) {
-    const radiusBadge = aura.radius ? `<span class="ace-qol-effect-duration">${aura.radius}ft</span>` : "";
+    const radiusBadge = aura.radius ? `<span class="ace-qol-effect-duration">${aura.radius} feet</span>` : "";
     return `
       <div class="ace-qol-effect-row ace-qol-aura-row" data-aura-id="${aura.id}" title="${foundry.utils.escapeHTML(aura.name)}">
         <img src="${aura.icon}" class="ace-qol-effect-icon" alt="" />
@@ -669,9 +669,12 @@ export class EffectsPanel {
 
     if (dur.seconds) {
       const s = Math.ceil(dur.remaining ?? dur.seconds);
+      // ⚠️ SPELLED OUT ALL THE WAY. "1 min" is an abbreviation wearing a
+      // word's clothes. Johnny, 2026-08-27: "it also says one min instead of
+      // one minute... let's just use actual measurements spelled out."
       if (s >= 3600) return plural(Math.ceil(s / 3600), "hour");
-      if (s >= 60)   return plural(Math.ceil(s / 60), "min");
-      return plural(s, "sec");
+      if (s >= 60)   return plural(Math.ceil(s / 60), "minute");
+      return plural(s, "second");
     }
     if (dur.rounds) return plural(dur.remaining ?? dur.rounds, "round");
     if (dur.turns)  return plural(dur.remaining ?? dur.turns, "turn");

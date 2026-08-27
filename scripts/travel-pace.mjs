@@ -35,15 +35,15 @@
  * ⚠️ RAW TRAVEL PACE IS FOR ROADS. Fast 400 / normal 300 / slow 200 describe
  * walking somewhere all day, unbothered. They are NOT the speed of advancing
  * into a corridor with a torch up and a weapon out. I first shipped the road
- * numbers for dungeons and Johnny caught it immediately: "100 ft in 30 seconds
+ * numbers for dungeons and Johnny caught it immediately: "100 feet in 30 seconds
  * in a dungeon… that just doesn't seem right." It isn't — that is a brisk
  * stroll. Nobody crosses a dungeon like that.
  *
- * So a dungeon is ONE STEP SLOWER at every pace. 100 ft/min also makes the
+ * So a dungeon is ONE STEP SLOWER at every pace. 100 feet/min also makes the
  * arithmetic legible at the table: a hundred feet is a minute.
  *
  * Older editions solved this by folding all the caution INTO one very slow rate
- * (120 feet per ten-minute turn — about 12 ft/min). We do not, because we bill
+ * (120 feet per ten-minute turn — about 12 feet/min). We do not, because we bill
  * searching, listening and door-forcing SEPARATELY. Bundling caution into the
  * walk as well would charge for it twice.
  */

@@ -84,7 +84,7 @@ export const ARTIFACTS = [
   },
   {
     name: "Holy Avenger", matchType: "item", equipped: true, requiresAttunement: true,
-    nullifications: { special: { holyAvenger: true, spellAdvantageAura: 30 } }, // 30ft aura — advantage on saves vs spells from fiend/undead
+    nullifications: { special: { holyAvenger: true, spellAdvantageAura: 30 } }, // 30 feet aura — advantage on saves vs spells from fiend/undead
     source: "DMG Holy Avenger p.174",
   },
 

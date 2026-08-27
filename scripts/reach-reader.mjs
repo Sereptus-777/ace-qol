@@ -27,7 +27,7 @@ import { MODULE_ID } from "./ace-qol.mjs";
 /**
  * Convert a distance to FEET, which is what the canvas measures in.
  *
- * ⚠️ D&D's metric convention is 1.5 m to 5 ft, NOT a true 3.28. Using the real
+ * ⚠️ D&D's metric convention is 1.5 m to 5 feet, NOT a true 3.28. Using the real
  * ratio would silently shrink every reach on a metric table.
  *
  * @returns {number} feet, or 0 for anything that is not a positive number
@@ -45,7 +45,7 @@ export function toFeet(n, units) {
 /**
  * Pull a reach out of an item's own description text.
  *
- * Every dnd5e statblock renders melee attacks as "reach 10 ft." — a fixed
+ * Every dnd5e statblock renders melee attacks as "reach 10 feet." — a fixed
  * phrase with a number after it. This looks for exactly that and nothing else.
  * It is called ONLY when the item's reach field and its activity are both
  * empty, so a well-formed item never touches this path.
@@ -62,7 +62,7 @@ export function reachFromDescription(sys, fallbackUnits, convert = toFeet) {
   try {
     const raw = String(sys?.description?.value ?? "");
     if (!raw) return 0;
-    // Strip tags so "reach 10 ft." split across markup still reads as one phrase.
+    // Strip tags so "reach 10 feet." split across markup still reads as one phrase.
     const text = raw.replace(/<[^>]+>/g, " ").replace(/&nbsp;/gi, " ").replace(/\s+/g, " ");
     const m = text.match(/\breach\s+(\d+(?:\.\d+)?)\s*(ft\.?|feet|foot|m\.?|meters?|metres?)?/i);
     if (!m) return 0;
@@ -76,8 +76,8 @@ export function reachFromDescription(sys, fallbackUnits, convert = toFeet) {
 /**
  * How far can this item reach, and where did that number come from?
  *
- * ⚠️ THE SOURCE IS PART OF THE ANSWER. "5 ft because the item says so" and
- * "5 ft because nothing said anything" are completely different facts, and
+ * ⚠️ THE SOURCE IS PART OF THE ANSWER. "5 feet because the item says so" and
+ * "5 feet because nothing said anything" are completely different facts, and
  * printing them the same way is how an empty data slot passed for a deliberate
  * five-foot weapon for months.
  *
@@ -99,8 +99,8 @@ export function resolveReach(item, activity = null, { repair = true } = {}) {
   // ── ⚠️🔴 MELEE REACH LIVES IN ITS OWN SLOT, AND WE WERE READING THE WRONG
   //    ONE (2026-08-23) ──────────────────────────────────────────────────────
   //
-  // Johnny's Spiked Chain says "reach 10 ft." on the item, and ACE refused the
-  // attack with "out of range — 10ft away (melee reach 5ft)".
+  // Johnny's Spiked Chain says "reach 10 feet." on the item, and ACE refused the
+  // attack with "out of range — 10 feet away (melee reach 5 feet)".
   //
   // The item's range block has FOUR slots: value, long, reach, units. Melee
   // reach is in `reach`. The old code only ever read `value`, found it empty for
@@ -142,7 +142,7 @@ export function resolveReach(item, activity = null, { repair = true } = {}) {
   //    Johnny, 2026-08-23: "if it has an empty reach box, read the
   //    description... usually it will be in the description or somewhere else
   //    on the item." He is right, and his own Spiked Chain proves it: the sheet
-  //    reads "Melee Attack Roll: +9, reach 10 ft., one target."
+  //    reads "Melee Attack Roll: +9, reach 10 feet., one target."
   //
   //    ⚠️ READING A DESCRIPTION IS NORMALLY A MISTAKE and this is the narrow
   //    exception. A description names a creature's ENEMIES, its origins, its
@@ -160,7 +160,7 @@ export function resolveReach(item, activity = null, { repair = true } = {}) {
       reachFt = described;
       source = "the item's description";
       console.log(`${MODULE_ID} | "${item?.name}" has no reach set on the item, but its description says `
-        + `reach ${described}ft. Using that.`);
+        + `reach ${described} feet. Using that.`);
 
       // ⚠️ AND FIX IT PROPERLY, once. Reading the description saves this swing;
       // writing the field saves every future one and makes dnd5e's own sheet,
@@ -181,19 +181,19 @@ export function resolveReach(item, activity = null, { repair = true } = {}) {
     }
   }
 
-  // 4. Still nothing? The reach PROPERTY, then 5 ft — the same default dnd5e
+  // 4. Still nothing? The reach PROPERTY, then 5 feet — the same default dnd5e
   //    itself uses when the slot is empty.
   if (reachFt <= 0) {
     reachFt = props.has("rch") ? 10 : 5;
-    source = props.has("rch") ? "the reach property" : "the 5 ft default (nothing declared it)";
+    source = props.has("rch") ? "the reach property" : "the 5 feet default (nothing declared it)";
   }
 
   // 5. Honor an activity's OWN declared range. A "melee spell attack" can
-  //    legitimately reach 30ft — dnd5e mislabels some ranged cantrips (Produce
+  //    legitimately reach 30 feet — dnd5e mislabels some ranged cantrips (Produce
   //    Flame) as melee spell attacks. Gate by the real range, not a hardcoded 5,
   //    so we never block a spell the caster can throw across the room.
   //    (2026-06-28) — kept, but it may only ever EXTEND the reach. It used to
-  //    overwrite it, which would hand a 10ft chain a 5ft range whenever the
+  //    overwrite it, which would hand a 10 feet chain a 5 feet range whenever the
   //    activity happened to carry one.
   const declared = toFeet(range.value, units);
   if (declared > reachFt && longRange === 0) {

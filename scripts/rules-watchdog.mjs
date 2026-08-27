@@ -135,7 +135,7 @@ const INVARIANTS = [
     test: (c) => {
       if (!c.statuses?.has?.("restrained")) return null;
       const walk = Number(c.speeds?.walk ?? 0);
-      return walk > 0 ? `is Restrained but still has ${walk}ft walk speed — RAW: restrained speed is 0` : null;
+      return walk > 0 ? `is Restrained but still has ${walk} feet walk speed — RAW: restrained speed is 0` : null;
     },
   },
 ];

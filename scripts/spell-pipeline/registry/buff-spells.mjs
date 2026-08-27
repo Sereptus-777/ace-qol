@@ -150,11 +150,11 @@ export const BUFF_SPELLS = {
 
   "pass without trace": {
     shape: "multi-buff",
-    range: 0,  // 30ft radius aura
+    range: 0,  // 30 feet radius aura
     countResolver: () => 999,
     effect: { key: "pass_without_trace", duration: "concentration" },
     picker: { allowSelf: true, preHighlightSelf: true, excludeDead: true },
-    flavorOnConfirm: "All within 30 ft gain +10 to Stealth checks and leave no trace.",
+    flavorOnConfirm: "All within 30 feet gain +10 to Stealth checks and leave no trace.",
   },
 
   "resistance": {
@@ -226,13 +226,13 @@ export const BUFF_SPELLS = {
     shape: "self",  // self-centered emanation — self apply
     range: 0,
     effect: { key: "crusaders_mantle", duration: "concentration" },
-    flavorOnConfirm: "Holy energy radiates 30 ft — friendly creatures gain +1d4 radiant damage on weapon attacks.",
+    flavorOnConfirm: "Holy energy radiates 30 feet — friendly creatures gain +1d4 radiant damage on weapon attacks.",
   },
 
   "spirit shroud": {
     shape: "self",
     range: 0,
     effect: { key: "spirit_shroud", duration: "concentration" },
-    flavorOnConfirm: "Spectral ribbons surround you — your attacks within 10 ft deal +1d8 radiant/necrotic/cold damage.",
+    flavorOnConfirm: "Spectral ribbons surround you — your attacks within 10 feet deal +1d8 radiant/necrotic/cold damage.",
   },
 };

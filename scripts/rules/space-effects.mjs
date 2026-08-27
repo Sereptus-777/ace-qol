@@ -226,7 +226,7 @@ export class SpaceEffects {
     // no more silent misses that need a debugging session to explain.
     let hit = item ? RulesBrain.spaceEntry(item, { actor: item.actor }) : null;
     console.log(
-      `${TAG} template ${templateDoc.id} (${templateDoc.t}/${templateDoc.distance}ft) `
+      `${TAG} template ${templateDoc.id} (${templateDoc.t}/${templateDoc.distance} feet) `
       + `origin=${origin ? "yes" : "NONE"} `
       + `item=${item ? `"${item.name}" → key "${RulesBrain.normalizeName(item.name)}"` : "UNRESOLVED"} `
       + `space-entry=${hit ? "YES" : "no"}`
@@ -409,8 +409,8 @@ export class SpaceEffects {
         && (actualSize < Number(exp.size) || typeOff);
       if (typeOff || sizeOff) {
         console.warn(
-          `${TAG} DISCREPANCY: "${item.name}" placed a ${actualT} template of ${actualSize} ft, `
-          + `but the rules say ${exp.type} of ${exp.size} ft. The placed template stands; `
+          `${TAG} DISCREPANCY: "${item.name}" placed a ${actualT} template of ${actualSize} feet, `
+          + `but the rules say ${exp.type} of ${exp.size} feet. The placed template stands; `
           + `check the item's target configuration.`
         );
       }
@@ -426,7 +426,7 @@ export class SpaceEffects {
    * EVERY non-derived action and the comment claimed fly was "derived". It
    * isn't: Foundry V13 defines nine actions and only crawl, climb, jump, blink
    * and displace carry `deriveTerrainDifficulty` — walk, fly, swim and burrow
-   * all got charged. So a creature flying 35 ft above a patch of grease or a
+   * all got charged. So a creature flying 35 feet above a patch of grease or a
    * storm's slippery ground paid double movement for terrain it never touched,
    * which is not RAW: ground-based difficult terrain doesn't reach a flier.
    *

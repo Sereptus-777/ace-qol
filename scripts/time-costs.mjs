@@ -53,7 +53,7 @@ export const TIME_COSTS = {
   // handled where it belongs — `journeyDistance` takes the FURTHEST traveller,
   // so four PCs down one corridor produce one distance. Marking travel shared
   // as WELL made every walk within 90 s of the last one ride free: Johnny
-  // walked 300 ft and the clock moved half a minute. Two consecutive journeys
+  // walked 300 feet and the clock moved half a minute. Two consecutive journeys
   // are two journeys; the shared turn is for four people declaring the SAME
   // action at the SAME moment, which walking never is.
   "travel":           { minutes: null, shared: false, label: "Travelling",
