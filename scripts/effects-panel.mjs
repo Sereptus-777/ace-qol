@@ -589,7 +589,26 @@ export class EffectsPanel {
     this._wireSunlightRows(el);
   }
 
+  /**
+   * One row.
+   *
+   * ⚠️ ONE BAD EFFECT MUST NOT BLANK THE WHOLE LIST. These are joined
+   * with `.map(...).join("")`, so a single throw anywhere in here takes the
+   * entire section with it and the panel simply shows nothing - which is
+   * exactly what "that list is gone" looks like from the GM's chair, with no
+   * clue which effect caused it.
+   */
   _renderEffectRow(effect) {
+    try {
+      return this._renderEffectRowInner(effect);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | effects panel: could not draw the row for `
+        + `"${effect?.name ?? effect?.id ?? "an effect"}" - the rest of the list still renders:`, err);
+      return "";
+    }
+  }
+
+  _renderEffectRowInner(effect) {
     const icon = effect.img ?? effect.icon ?? "icons/svg/aura.svg";
     const name = effect.name ?? effect.label ?? "Effect";
     const remaining = this._formatRemaining(effect);

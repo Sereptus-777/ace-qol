@@ -171,8 +171,29 @@ export class AuraEngine {
 
     // Every future scene change...
     Hooks.on("canvasReady", start);
-    // ...and the scene that is already open right now.
-    if (canvas?.ready) start();
+    // ⚠️🔴 THE CATCH-UP DRAWS ONLY. IT MUST NOT RECOMPUTE.
+    //
+    // The first version of this called the whole `start()` immediately and
+    // BROKE HIS GAME. recomputeAll treats "I found no aura sources" as
+    // "delete every aura effect on the board", and at this point in boot a
+    // token's `.actor` may not be hydrated yet: no actors read, no sources
+    // found, every aura marker stripped off every creature. Johnny, minutes
+    // after that shipped: "none of my tokens are concentrating or have the
+    // aura... that list is gone."
+    //
+    // Attaching the ring layer is pure drawing and cannot damage data, so
+    // the catch-up does that and only that. The effect recompute stays on
+    // the real canvasReady, where the world is genuinely loaded.
+    //
+    // ⚠️ A FIX FOR A SILENT-NO-OP MUST NOT BECOME A SILENT DELETE. The
+    // original bug was a listener registered too late; the cure was running
+    // the same work too EARLY, which was worse - it destroyed data instead
+    // of failing to draw.
+    if (canvas?.ready) {
+      try {
+        if (QolSettings.get?.("auraEngineEnabled") !== false) AuraVisualLayer.attach();
+      } catch (err) { console.warn(`${MODULE_ID} | aura ring catch-up failed:`, err); }
+    }
 
     // Token moved → recompute the aura state of EVERY token (cheap; we only
     // touch differences). A token's movement can affect:
@@ -298,7 +319,22 @@ export class AuraEngine {
     }
 
     if (!sources.length) {
-      // No aura sources on canvas — clean up any orphaned aura effects
+      // ⚠️🔴 "I FOUND NO SOURCES" IS NOT "THERE ARE NO SOURCES".
+      //
+      // The line below deletes every aura effect on the board, so it must
+      // only run when we were genuinely able to LOOK. During boot, or mid
+      // scene-swap, a placeable can exist with `.actor` still null - and
+      // reading zero actors then produces zero sources, which strips the
+      // auras off an entire party. Same shape as a wall test answering "no
+      // wall" because it threw.
+      const readable = tokens.filter(t => t.actor).length;
+      if (!readable) {
+        console.warn(`${MODULE_ID} | AuraEngine: ${tokens.length} token(s) on this scene `
+          + `and NONE has a readable actor yet, so whether anyone projects an aura cannot `
+          + `be determined. Leaving every existing aura effect alone rather than deleting.`);
+        return;
+      }
+      // Genuinely nobody projects an aura - clean up the leftovers.
       await AuraEngine._cleanupOrphanedAuras(tokens, []);
       return;
     }
