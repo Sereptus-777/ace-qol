@@ -578,8 +578,49 @@ export class AuraVisualLayer {
     const mode = QolSettings.get?.("auraVisualMode") ?? "auto";
     if (mode === "off")   return false;
     if (mode === "rings") return true;
-    // "auto": render rings only if AA is NOT active
-    return !game.modules?.get?.("autoanimations")?.active;
+
+    // ⚠️🔴 "AUTO" USED TO MEAN "AA IS INSTALLED, SO IT IS AA'S JOB".
+    // That is a hand-off, and a hand-off must check that somebody caught it.
+    //
+    // Johnny, 2026-08-27: "figure out why I don't see an animation for Aura of
+    // Protection... I used to see those animations." His world had
+    // auraVisualMode "auto" and Automated Animations active - so ACE stood
+    // down - while AA's own `aaAutorec-aura` list was EMPTY. Two systems, each
+    // correctly assuming the other had it, and no ring on the board.
+    //
+    // Nothing was broken in either module. The aura entries had been lost from
+    // AA's config at some point, and ACE had no way to notice it was deferring
+    // to nobody.
+    //
+    // ⚠️ SO ASK WHETHER AA ACTUALLY HAS AURA AUTOMATIONS, not merely
+    // whether AA exists. If its aura list is empty, drawing our own rings is
+    // strictly better than drawing nothing, and it says so once.
+    const aa = game.modules?.get?.("autoanimations");
+    if (!aa?.active) return true;               // AA absent -> we draw
+
+    let aaHasAuras = null;                      // null = could not tell
+    try {
+      const raw = game.settings.get("autoanimations", "aaAutorec-aura");
+      const list = typeof raw === "string" ? JSON.parse(raw) : raw;
+      aaHasAuras = Array.isArray(list) ? list.length > 0 : null;
+    } catch (_) {
+      // ⚠️ "COULD NOT READ IT" IS NOT "IT IS EMPTY". A future AA that
+      // renames or removes this setting must not make ACE start drawing rings
+      // over AA's own, so an unknown answer defers exactly as before.
+      aaHasAuras = null;
+    }
+
+    if (aaHasAuras === false) {
+      if (!AuraEngine._warnedAaEmpty) {
+        AuraEngine._warnedAaEmpty = true;
+        console.warn(`${MODULE_ID} | Automated Animations is active but its aura list `
+          + `is empty, so nothing was drawing aura rings at all. ACE is drawing its own. `
+          + `Set "Aura Visual Style" to Off if you would rather have none.`);
+      }
+      return true;
+    }
+
+    return false;   // AA is active and has auras configured - its job
   }
 
   /**

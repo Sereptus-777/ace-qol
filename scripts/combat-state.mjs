@@ -2041,7 +2041,19 @@ export class CombatState {
       const auraRange = paladinLevel >= 18 ? 30 : 10;
 
       if (dist <= auraRange) {
-        const chaMod = _aceMod(token.actor, "cha");
+        // ⚠️🔴 "WITH A MINIMUM BONUS OF +1" - and it was missing.
+        //
+        // RAW, both editions: "the creature gains a bonus to the saving throw
+        // equal to your Charisma modifier (with a minimum bonus of +1)". This
+        // used the bare modifier, so a paladin with Charisma 11 or lower gave
+        // +0 and the aura did nothing at all - which is exactly the paladin who
+        // most needs the floor. A dumped-CHA oath-of-the-crown tank protected
+        // nobody.
+        //
+        // ⚠️ THE FLOOR IS PER-PALADIN, not per-target. Applying it after
+        // picking the best aura would hand +1 to a creature standing near NO
+        // qualifying paladin at all.
+        const chaMod = Math.max(1, _aceMod(token.actor, "cha"));
         if (chaMod > bestBonus) bestBonus = chaMod;
       }
     }
