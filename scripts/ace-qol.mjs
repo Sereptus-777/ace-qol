@@ -15,6 +15,7 @@
 export const MODULE_ID = "ace-qol";
 
 import { QolSettings }       from "./settings.mjs";
+import { whyNoAnimation, animationFor, invalidate } from "./animation/autorec.mjs";
 import { readActionFacts, describeActionFacts } from "./inference/action-facts.mjs";
 import { classifyItem, describeClassification } from "./inference/classify-item.mjs";
 import { LearnedStore } from "./inference/learned-store.mjs";
@@ -5504,6 +5505,10 @@ Hooks.once("ready", () => {
     //   game.aceQol.reviewInference()    everything it worked out for the party
     //   game.aceQol.correctShape(i, s)   overrule it, permanently
     //   game.aceQol.forgetLearned()      make it read everything again
+    // ── Borrowed animations ─────────────────────────────────────────────
+    //   game.aceQol.whyNoAnimation(item)   plain English, three possible causes
+    whyNoAnimation, animationFor, invalidateAnimationIndex: invalidate,
+
     readActionFacts, describeActionFacts,
     classifyItem, describeClassification,
     LearnedStore, readWeather, describeWeather, ActionGate,

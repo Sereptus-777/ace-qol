@@ -7,6 +7,10 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "../ace-qol.mjs";
+// ⚠️ A spell ACE resolves with a PICKER never creates a template, and
+// Automated Animations cannot reach it. These borrow AA's own curated choice
+// and play it directly. See animation/autorec.mjs for the whole story.
+import { whoOwnsThisCast, playCuratedAnimation } from "../animation/spell-animator.mjs";
 
 export class AnimationHelper {
 
@@ -17,12 +21,33 @@ export class AnimationHelper {
    */
   static async play(ctx, result) {
     try {
-      const aa = globalThis.AutomatedAnimations ?? window.AutomatedAnimations;
-      if (!aa?.playAnimation) return;
-
       const casterToken = ctx.actor.getActiveTokens?.()?.[0]
         ?? canvas.tokens?.placeables.find(t => t.actor?.id === ctx.actor.id);
       if (!casterToken) return;
+
+      // ── WHO OWNS THIS CAST ───────────────────────────────────────
+      //
+      // ⚠️ DECIDED ONCE, BEFORE EITHER FIRES. Two animations for one cast is
+      // worse than none, and Johnny's rule is one sound for the source and one
+      // for the primary. If the item places a template, Automated Animations
+      // owns it and has always worked. If it does not, AA has nothing to hang a
+      // templatefx entry on - which is exactly why Colour Spray was curated,
+      // correct and completely invisible - so ACE plays AA's own choice itself.
+      if (whoOwnsThisCast(ctx.item, ctx.entry) === "ace") {
+        const targetsForAnim = AnimationHelper._extractTargets(result);
+        if (targetsForAnim.length > 0) AnimationHelper._setUserTargets(targetsForAnim);
+        await playCuratedAnimation({ casterToken, item: ctx.item, targets: targetsForAnim });
+        return;
+      }
+
+      const aa = globalThis.AutomatedAnimations ?? window.AutomatedAnimations;
+      if (!aa?.playAnimation) {
+        // ⚠️ A SILENT RETURN HERE READS AS "THIS SPELL HAS NO ANIMATION".
+        console.warn(`${MODULE_ID} | Automated Animations is not exposing `
+          + `playAnimation, so "${ctx.item?.name}" will not animate. `
+          + `Its API may have been renamed.`);
+        return;
+      }
 
       // Resolve targets from picker result into Token objects
       const targets = AnimationHelper._extractTargets(result);
