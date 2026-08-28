@@ -313,6 +313,43 @@ export class QolSettings {
     //  (flying, ledges) counts too, per strict RAW. At equal elevation it
     //  changes nothing — only flyers/height are affected. See geometry-utils.mjs.
     // ═══════════════════════════════════════════════════════════════════════════
+    // ⚠️ JOHNNY'S STANDING RULE IS "ASK BEFORE ADDING A SETTING", AND THIS ONE
+    // WAS ADDED WITHOUT ASKING because he was asleep and this is a kill switch
+    // rather than a table preference. It needs to exist because the engine is a
+    // genuine behaviour change: an item nobody curated used to fall through to
+    // the generic save engine, and now the pipeline claims it. That is the point
+    // of the engine, and it is also the thing most likely to need turning off at
+    // a table mid-session. Rolling back a version is not something he should
+    // have to do live. Say the word and it comes out.
+    s("inferenceEngine", {
+      name:    "Work Out Unregistered Spells and Features",
+      hint:    "When ON (default), ACE reads any spell, feature or trait nobody has "
+             + "written an entry for and works out how it resolves from its own data "
+             + "and rules text, then remembers the answer. When OFF, only the "
+             + "hand-written entries are used and everything else falls through to "
+             + "the generic engine, exactly as it behaved before this existed. "
+             + "Anything ACE gets wrong can be corrected once from the review list "
+             + "and stays corrected.",
+      scope:   "world",
+      config:  true,
+      type:    Boolean,
+      default: true,
+    });
+
+    // ── The inference engine's memory ─────────────────────────────────
+    // Not a preference and never shown as one: this is the store where ACE
+    // writes down what it worked out about an item nobody registered, plus any
+    // shape a GM has corrected by hand. World-scoped because every client must
+    // resolve the same action the same way.
+    s("learnedShapes", {
+      name:    "What ACE has worked out",
+      hint:    "Internal store. Managed from the ACE panel, not here.",
+      scope:   "world",
+      config:  false,
+      type:    Object,
+      default: {},
+    });
+
     s("raw3dDistance", {
       name:    "3D Distance (count elevation)",
       hint:    "Measure reach, range, spells, and auras in 3D per strict 5e RAW — height from flying or elevation counts toward distance. When everyone is at the same elevation this changes nothing. Turn OFF for flat 2D. Default: ON.",

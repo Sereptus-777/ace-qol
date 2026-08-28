@@ -221,6 +221,13 @@ export class ConcentrationWidget {
       const oldX = pre?.x ?? newX;
       const oldY = pre?.y ?? newY;
 
+      // ⚠️ BEFORE THE DEDUP GUARDS, DELIBERATELY. Everything below this
+      // point exists to stop movement DAMAGE firing twice, and it returns
+      // early to do it. Moving an emanation is idempotent - the second call
+      // writes the same coordinates and Foundry diffs it away - so it must
+      // not sit behind a guard built for a different question.
+      this._followCasterTemplates(tokenDoc, newX, newY);
+
       // Dedup #1 (vector-exact): same `oldXY > newXY` within 2 seconds is
       // a duplicate fire. Foundry's V13 token movement can re-emit
       // `updateToken` after animation settle, which can be 1+ seconds
@@ -402,10 +409,59 @@ export class ConcentrationWidget {
       damageFormula,                  // v0.6.5: needed for Spike Growth-style movement damage
       tokens: tokens ?? [],
       createdAt: Date.now(),
+
+      // ⚠️🔴 AN EMANATION TRAVELS WITH ITS CASTER, AND UNTIL NOW NOTHING
+      // MOVED IT. Spirit Guardians is a 15 foot emanation centred on the
+      // caster: the cleric walks, the spirits walk. ACE placed the circle and
+      // left it on the floor, so a cleric who took one step was out of their
+      // own spell and every creature they walked into was untouched.
+      //
+      // Johnny, 2026-08-27: "I thought you said Spirit Guardians was cast on
+      // yourself, and they follow you around."
+      //
+      // ⚠️ AND THE CASTER MUST BE EXEMPT, or the fix is worse than the bug.
+      // A template that follows you is a template you are permanently standing
+      // in, so the cleric would have been asked to save against their own
+      // spirits on entry and again at the start of every single turn, forever.
+      // RAW backs the exemption outright: "you can designate any number of
+      // creatures you can see to be unaffected by it."
+      followsCaster:  timing?.followsCaster === true,
+      casterTokenId:  null,   // filled in below, once the token is resolved
+      exemptTokenIds: new Set(),
       // Area-denial state — only populated for spells with timing.family === "areaDenial"
       failedSavesThisRound: new Set(),  // tokenDocIds who failed a save this round
       entrySavesThisTurn:   new Set(),  // tokenDocIds who already saved on entry this turn (cap = 1)
     };
+
+    // Resolve the caster's own token so the emanation has something to follow
+    // and somebody to exempt. Identity match on the ACTOR, which is correct for
+    // an unlinked token too: its `actor` IS its own delta actor.
+    if (tracker.followsCaster) {
+      const own = (canvas?.tokens?.placeables ?? [])
+        .filter(t => t.actor && actor && t.actor.id === actor.id);
+      if (own.length === 1) {
+        tracker.casterTokenId = own[0].id;
+        // ⚠️ HIS EXISTING TOGGLE DECIDES THIS, NOT A NEW ONE. `excludeCasterFromTemplates`
+        // already filters the caster out of the token list at cast time, so the
+        // ongoing saves must answer to the same switch or one cast would exclude
+        // him and the next turn would not. Decided here, at registration, for the
+        // same reason the cast-time filter decides at cast time.
+        if (QolSettings.get?.("excludeCasterFromTemplates") !== false) {
+          tracker.exemptTokenIds.add(own[0].id);
+        }
+      } else if (own.length > 1) {
+        // ⚠️ Several tokens share this actor. Following the wrong copy would
+        // drag the spell across the map, so follow none of them and SAY SO -
+        // a silently stationary emanation is the exact bug being fixed here.
+        console.warn(`${TAG} | ${item?.name} should follow its caster, but `
+          + `${own.length} tokens on this scene share the actor "${actor?.name}". `
+          + `ACE cannot tell which one cast it, so the area will stay where it `
+          + `was placed and must be dragged by hand.`);
+      } else {
+        console.warn(`${TAG} | ${item?.name} should follow its caster, but no token `
+          + `for "${actor?.name}" is on this scene. The area will stay where it was placed.`);
+      }
+    }
 
     this._activeSpells.set(templateDoc.id, tracker);
     const variant = saveAbility
@@ -737,6 +793,55 @@ export class ConcentrationWidget {
   // ═══════════════════════════════════════════════════════════════
   //  Template Movement — Re-target
   // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * Keep every self-centred emanation sitting on its caster.
+   *
+   * ⚠️ THE TEMPLATE MOVE IS THE WHOLE MECHANIC, NOT A VISUAL. Re-centring
+   * fires `updateMeasuredTemplate`, which is what `_onTemplateMove` listens to,
+   * which is what gives a creature the emanation walked onto its saving throw.
+   * So this one write does the following AND the catching, and nothing else
+   * needs to know the spell moved.
+   *
+   * ⚠️ A CIRCLE TEMPLATE'S x/y IS ITS CENTRE, not a corner - unlike a token,
+   * whose x/y is its top-left. Feeding a token's anchor straight in would hang
+   * the spirits off the cleric's shoulder, half a token up and to the left, and
+   * on a Large creature that is a full square of error.
+   */
+  _followCasterTemplates(tokenDoc, newX, newY) {
+    try {
+      const grid = canvas?.grid?.size ?? 100;
+      const w = Number(tokenDoc.width) > 0 ? Number(tokenDoc.width) : 1;
+      const h = Number(tokenDoc.height) > 0 ? Number(tokenDoc.height) : 1;
+      const cx = newX + (w * grid) / 2;
+      const cy = newY + (h * grid) / 2;
+
+      for (const tracker of this._activeSpells.values()) {
+        if (!tracker.followsCaster) continue;
+        if (tracker.casterTokenId !== tokenDoc.id) continue;
+
+        const doc = canvas?.scene?.templates?.get?.(tracker.templateId);
+        if (!doc) {
+          // ⚠️ "COULD NOT FIND IT" IS NOT "IT IS FINE". A tracker pointing at
+          // a template that is no longer on the scene means the spell is being
+          // tracked with nothing on the board, and it is said out loud.
+          console.warn(`${TAG} | ${tracker.item?.name} should follow `
+            + `${tokenDoc.name} but its template is not on this scene any more.`);
+          continue;
+        }
+        if (Math.abs(doc.x - cx) < 1 && Math.abs(doc.y - cy) < 1) continue;
+
+        doc.update({ x: cx, y: cy }).catch(err =>
+          console.warn(`${TAG} | ${tracker.item?.name} could not follow ${tokenDoc.name}:`, err));
+        console.log(`${TAG} | ${tracker.item?.name} follows ${tokenDoc.name} `
+          + `to ${Math.round(cx)},${Math.round(cy)}`);
+      }
+    } catch (err) {
+      // ⚠️ Never let this take the movement handler down with it: movement
+      // damage and entry saves for every OTHER area run below this call.
+      console.warn(`${TAG} | emanation follow failed for ${tokenDoc?.name}:`, err);
+    }
+  }
 
   async _onTemplateMove(templateDoc) {
     const tracker = this._activeSpells.get(templateDoc.id);
@@ -1613,6 +1718,15 @@ export class ConcentrationWidget {
    */
   async _onTokenEnteredTemplate(tracker, token, opts = {}) {
     const phase = opts.phase ?? "entry";
+
+    // ⚠️ ONE GATE FOR ALL FOUR CALLERS. Entry, start of turn, end of turn
+    // and template-move all arrive here, so the exemption is checked once
+    // rather than in four places that would drift apart.
+    if (tracker.exemptTokenIds?.has?.(token?.id)) {
+      console.log(`${TAG} | ${token?.name} is exempt from ${tracker.item?.name} `
+        + `(own caster of a self-centred emanation) - no save on ${phase}`);
+      return;
+    }
 
     // ── RAW auto-success on condition immunity ──
     // Stinking Cloud (and any spell with `autoSucceedIfCondImmune`):

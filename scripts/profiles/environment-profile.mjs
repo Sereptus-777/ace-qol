@@ -39,6 +39,10 @@
 import { aceDistanceFt } from "../geometry-utils.mjs";
 import { CoverEngine } from "../cover-engine.mjs";
 import { SpaceEffects } from "../rules/space-effects.mjs";
+// ⚠️ Weather is part of WHERE THEY ARE, so it belongs on this profile and
+// not in a corner of the attack pipeline. Johnny asked for it by name: "are they
+// in the rain, are they slipping around, is it snowing".
+import { readWeather } from "../rules/weather.mjs";
 
 /** A point the polygon backends will accept, from a token or token document. */
 function _centerOf(tok) {
@@ -416,6 +420,19 @@ export function buildEnvironmentProfile(attackerToken, targetToken = null) {
     // ⚠️ AND WHICH MAP THIS IS. Johnny: "Does it know what map it's on?
     // Dude doesn't know where they are." It did not - the profile could
     // measure the gap between two creatures without knowing the room existed.
+    // ── Weather and footing ───────────────────────────────────────
+    // Read for the ATTACKER's footing, because that is whose ranged attack the
+    // wind spoils and whose feet go out from under them on the ice.
+    weather: (() => {
+      try {
+        const kinds = aDoc ? (_terrainAt(attackerToken, problems)?.kinds ?? []) : [];
+        return readWeather(canvas?.scene, kinds);
+      } catch (err) {
+        problems.push(`the weather could not be read: ${err?.message ?? err}`);
+        return null;
+      }
+    })(),
+
     sceneName: canvas?.scene?.name ?? null,
     sceneId: canvas?.scene?.id ?? null,
     spacesAtAttacker,

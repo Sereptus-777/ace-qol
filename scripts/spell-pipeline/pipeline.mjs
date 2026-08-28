@@ -20,6 +20,7 @@
 
 import { MODULE_ID } from "../ace-qol.mjs";
 import { CombatState } from "../combat-state.mjs";
+import { QolSettings } from "../settings.mjs";
 import { SPELL_REGISTRY } from "./registry/_index.mjs";
 import { FEATURE_REGISTRY } from "./registry/features.mjs";
 import { UnifiedSpellPicker } from "./picker.mjs";
@@ -32,6 +33,13 @@ import { TemplateResolver } from "./resolvers/template.mjs";
 import { SelfResolver } from "./resolvers/self.mjs";
 import { Situation } from "../situation.mjs";
 import { buildAttackerProfile } from "../profiles/attacker-profile.mjs";
+// ── The inference engine ───────────────────────────────────────────────
+// The registry below is a hand-written cache of 125 names. These read an item
+// nobody ever registered and work out the same kind of entry from what it is.
+import { classifyItem } from "../inference/classify-item.mjs";
+import { LearnedStore } from "../inference/learned-store.mjs";
+import { DescriptionParser } from "../description-parser.mjs";
+import { getSpellTiming } from "../spell-timing.mjs";
 
 // ─── Creature snapshot access (2026-07-28) ───────────────────────────────────
 // Facts about a creature come from the ONE reader, never from actor.system —
@@ -328,8 +336,68 @@ export class SpellPipeline {
     const raw = (type === "feat")
       ? (FEATURE_REGISTRY[name] ?? SPELL_REGISTRY[name])
       : SPELL_REGISTRY[name];
-    if (!raw) return null;
-    return SpellPipeline._applyEdition(raw);
+    if (raw) return SpellPipeline._applyEdition(raw);
+
+    // ── Nothing hand-written. Work it out. ─────────────────────────
+    //
+    // ⚠️ IT MAY ONLY FILL GAPS. This runs ONLY when the curated registry has
+    // nothing, so no spell that works today can start behaving differently.
+    // Measured against Johnny's own world the classifier agrees with the human
+    // entries 75 times in 101, and 75% is nowhere near good enough to overrule
+    // a ruling somebody made deliberately. It is far better than the nothing
+    // those other 1,400 items have now.
+    //
+    // ⚠️ HIGH CONFIDENCE ONLY. Medium means the description filled a gap the
+    // sheet left, or a duration was used to assume something. Those fall through
+    // to the generic save-and-damage engine exactly as they do today, because a
+    // confident wrong plan is worse than no plan.
+    return SpellPipeline._inferEntry(item);
+  }
+
+  /** Session cache: `_getEntry` is called on every render, classification is not. */
+  static _inferCache = new Map();
+
+  static _inferEntry(item) {
+    try {
+      // ⚠️ OFF MEANS EXACTLY AS IT BEHAVED BEFORE THIS EXISTED, not "off but
+      // still remembers". Returning null here is the same answer `_getEntry` gave
+      // for an unregistered item on 2026-08-27, so the generic save engine picks
+      // it up unchanged.
+      if (QolSettings.get?.("inferenceEngine") === false) return null;
+
+      const key = `${item.id ?? item.name}:${item.type}`;
+      if (SpellPipeline._inferCache.has(key)) return SpellPipeline._inferCache.get(key);
+
+      let plan = null;
+      const parsed = (() => { try { return DescriptionParser.parse(item); } catch (_) { return null; } })();
+      const timing = (() => { try { return getSpellTiming(item); } catch (_) { return null; } })();
+      const result = classifyItem(item, { parsed, timing });
+
+      // A shape a human corrected outranks everything, including a fresh reading.
+      const learned = LearnedStore.get(item, result.facts);
+      if (learned?.correctedByHuman && learned.entry) {
+        plan = { ...learned.entry, inferred: true, corrected: true };
+      } else if (result.shape && result.confidence === "high") {
+        plan = result.entry;
+        // Fire and forget: `_getEntry` is synchronous and callers must not wait
+        // on a settings write to find out what a spell is.
+        if (!learned) {
+          LearnedStore.remember(item, result)
+            .catch(err => console.warn(`${MODULE_ID} | could not remember "${item.name}":`, err));
+          console.log(`${MODULE_ID} | worked out "${item.name}" as ${result.shape}: `
+            + result.evidence.join("; "));
+        }
+      }
+
+      SpellPipeline._inferCache.set(key, plan);
+      return plan;
+    } catch (err) {
+      // ⚠️ FAIL TO "NOT OURS". A throw here must leave the spell running the
+      // way it ran before this engine existed, never stop it.
+      console.warn(`${MODULE_ID} | could not work out what "${item?.name}" is `
+        + `(it will run through the generic engine):`, err);
+      return null;
+    }
   }
 
   /**

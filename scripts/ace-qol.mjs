@@ -15,6 +15,12 @@
 export const MODULE_ID = "ace-qol";
 
 import { QolSettings }       from "./settings.mjs";
+import { readActionFacts, describeActionFacts } from "./inference/action-facts.mjs";
+import { classifyItem, describeClassification } from "./inference/classify-item.mjs";
+import { LearnedStore } from "./inference/learned-store.mjs";
+import * as InferenceReview from "./inference/review.mjs";
+import { readWeather, describeWeather } from "./rules/weather.mjs";
+import { ActionGate } from "./gate/action-gate.mjs";
 import { installSliderGuard } from "./slider-guard.mjs";
 import { DayRollover }       from "./day-rollover.mjs";
 import { HungerWarning }     from "./hunger-warning.mjs";
@@ -1519,8 +1525,11 @@ Hooks.once("ready", () => {
   // dnd5e to skip template creation at USE time — config.create.measuredTemplate
   // = false, honored at dnd5e's Activity#placeTemplate (dnd5e.mjs ~17471), set
   // via `??=` so our false sticks — which kills the prompt with zero cast
-  // disruption. Scoped to anything the pipeline classifies as shape "self"; auras
-  // (Spirit Guardians = "aura") and real area spells are untouched. Only fires
+  // disruption. Scoped to anything the pipeline classifies as shape "self"; real
+  // area spells are untouched, and so are emanations that project a TRACKED zone:
+  // Spirit Guardians is shape "template-trigger" (it was "aura", a shape nothing
+  // resolved, until 2026-08-27) and needs its circle on the board, because that
+  // circle is what the concentration tracker moves and hit-tests. Only fires
   // when there's actually a template target to suppress. Gate: suppressSelfSpellTemplates.
   Hooks.on("dnd5e.preUseActivity", (activity, usageConfig /*, dialogConfig, messageConfig */) => {
     try {
@@ -1535,6 +1544,44 @@ Hooks.once("ready", () => {
       console.log(`${MODULE_ID} | suppressSelfSpellTemplates: "${item.name}" emanates from the caster — skipping the template placement prompt.`);
     } catch (err) {
       console.warn(`${MODULE_ID} | self-spell template suppression failed (allowing template):`, err);
+    }
+  });
+
+  // ── A spell cast in mid-air explodes in mid-air ────────────────────
+  //
+  // ⚠️ WITHOUT THIS, THE HEIGHT RULE WOULD MAKE THINGS WORSE, NOT BETTER. Every
+  // template Foundry creates starts at elevation 0. Teach the hit-test about
+  // height but leave every fireball nailed to the floor, and a wizard hovering
+  // at eighty feet would blast the ground under his own feet and hit nothing he
+  // was aiming at. The area has to start where the caster is.
+  //
+  // Johnny asked the right question on 2026-08-28: "what if a character who's
+  // flying at 30 ft. and casts Fireball at a bunch of other flying creatures?"
+  // RAW it is a point you choose, not a point on the ground, so the caster's own
+  // altitude is the sensible default and the template's elevation box is there
+  // to change it. On the ground that box reads 0, which is exactly today.
+  //
+  // ⚠️ NEVER OVERWRITE A DELIBERATE VALUE. Only an unset / zero elevation is
+  // filled in, so anything that placed a template on purpose keeps its choice.
+  Hooks.on("preCreateMeasuredTemplate", (templateDoc, data /*, opts, userId */) => {
+    try {
+      if (Number(data?.elevation ?? 0) !== 0) return;      // already deliberate
+      const origin = templateDoc?.flags?.dnd5e?.origin ?? data?.flags?.dnd5e?.origin;
+      if (!origin) return;
+      const doc = fromUuidSync?.(origin);
+      const actor = doc?.item?.actor ?? doc?.actor ?? doc?.parent?.actor ?? null;
+      if (!actor) return;
+      const tok = (canvas?.tokens?.placeables ?? []).find(t => t.actor?.id === actor.id);
+      const elev = Number(tok?.document?.elevation ?? 0) || 0;
+      if (!elev) return;                                    // caster on the ground = nothing to do
+      templateDoc.updateSource({ elevation: elev });
+      console.log(`${MODULE_ID} | ${doc?.item?.name ?? "spell"} cast from ${elev} feet up — `
+        + `its area starts at that height, not on the ground.`);
+    } catch (err) {
+      // ⚠️ Its own try/catch: a throw here would kill every registration below
+      // it in this file and leave a module that looks perfectly healthy.
+      console.warn(`${MODULE_ID} | could not give a template the caster's elevation `
+        + `(it will sit at ground level):`, err);
     }
   });
 
@@ -4439,6 +4486,17 @@ Hooks.once("ready", () => {
       console.warn(`${MODULE_ID} | hollow-feature warning could not be scheduled:`, err);
     }
 
+    // ⚠️ Its own try/catch, same reason: one throw here must not take down
+    // whatever registers below it. A flat run of registrations is a chain of
+    // fuses, and a half-registered module must never look like a working one.
+    try {
+      import("./inference/boot-report.mjs")
+        .then(({ registerInferenceBootReport }) => registerInferenceBootReport())
+        .catch(err => console.warn(`${MODULE_ID} | inference boot report unavailable:`, err));
+    } catch (err) {
+      console.warn(`${MODULE_ID} | inference boot report could not be scheduled:`, err);
+    }
+
     // ══════════════════════════════════════════════════════════════════════════
     //  PERMANENT-DEATH OVERRIDE — Vorpal revoke button (chat card + actor sheet
     //  + token right-click menu)
@@ -5438,6 +5496,22 @@ Hooks.once("ready", () => {
       console.log(`ace-qol | rules coverage: ${rows.length - gaps}/${rows.length} world spells have entries (${gaps} gap${gaps === 1 ? "" : "s"})`);
       return rows;
     },
+    // ── The inference engine ───────────────────────────────────────────
+    // Reads any item and works out how it resolves, without anybody having
+    // written an entry for it. See docs/INFERENCE_ENGINE.md.
+    //
+    //   game.aceQol.explain(item)        what ACE makes of one thing, and why
+    //   game.aceQol.reviewInference()    everything it worked out for the party
+    //   game.aceQol.correctShape(i, s)   overrule it, permanently
+    //   game.aceQol.forgetLearned()      make it read everything again
+    readActionFacts, describeActionFacts,
+    classifyItem, describeClassification,
+    LearnedStore, readWeather, describeWeather, ActionGate,
+    explain: (item) => InferenceReview.explain(item),
+    reviewInference: (actor = null) => InferenceReview.postReviewCard(actor),
+    correctShape: (item, shape) => InferenceReview.correct(item, shape),
+    forgetLearned: (opts) => LearnedStore.forget(null, opts ?? {}),
+
     bloodiedEngine,
     CoverEngine,
     VisibilityEngine,

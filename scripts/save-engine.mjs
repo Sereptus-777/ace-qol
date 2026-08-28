@@ -23,6 +23,10 @@ import { replyIsFromTheUserWeAsked } from "./socket-authority.mjs";
 import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { QolSettings } from "./settings.mjs";
 import { CombatState } from "./combat-state.mjs";
+// ⚠️ THE ONE GATE. The pre-roll decision lives in scripts/gate/action-gate.mjs
+// so every pipeline asks the same door, instead of each engine growing its own
+// checks and forgetting a different one. See docs/ONE_GATE_ARCHITECTURE.md.
+import { ActionGate } from "./gate/action-gate.mjs";
 // THE one answer to "is this creature in that area", shared with the
 // concentration tracker so cast-time and entry can never disagree.
 import { isTokenInTemplate, anyOverlapCounts } from "./template-geometry.mjs";
@@ -1741,6 +1745,25 @@ export class SaveEngine {
       if (before !== after) {
         console.log(`${MODULE_ID} | Excluded caster ${actor?.name} from save targets (${before} → ${after})`);
       }
+    }
+
+    // ⚠️ SAY WHO THE HEIGHT RULE TOOK OUT. The area hit-test understands
+    // elevation as of 2026-08-28, and it can only ever REMOVE creatures. A flyer
+    // that gets no save card looks exactly like ACE forgetting it, so the two
+    // numbers that decided it go on screen. Cast time only: the same exclusion
+    // happens on every walk-in and would bury the log.
+    try {
+      const { ElevationGate } = await import("./rules/elevation-gate.mjs");
+      const outOfReach = ElevationGate.findOutOfReach(
+        templateDoc, tokens, CombatState.getActiveEdition, actor);
+      if (outOfReach.length) {
+        await ElevationGate.postOutOfReachCard(item, actor, outOfReach);
+        console.log(`${MODULE_ID} | ${outOfReach.length} creature(s) were over "${item.name}" `
+          + `but outside it vertically: `
+          + outOfReach.map(o => `${o.token.name} at ${o.feet} feet`).join(", "));
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | out-of-reach report failed (non-blocking):`, err);
     }
 
     console.log(`${MODULE_ID} | Template resolved: spell="${item.name}", timing=`, timing, `isInstant=${timing?.isInstant}, tokens=${tokens.length}`);
@@ -3633,27 +3656,30 @@ export class SaveEngine {
    *
    * @returns {null|{reason:string, label:string, tone:string}}
    */
-  static _preRollVerdict(profile, { outcomeConditions = [], dealsDamage = false } = {}) {
-    if (!profile) return null;
-
-    // 1. LEGAL TARGET — a dead creature does not roll. This is the Specter.
-    if (profile.isDead) {
-      return { reason: "dead", label: "DEAD — no save", tone: "dead" };
-    }
-
-    // 2. CAN THE ACTION DO ANYTHING? Immunity to every outcome, checked BEFORE
-    //    the die rather than after it. Only decisive when nothing else is left
-    //    to resolve: if the action also deals damage the save still matters
-    //    (half on a success), so it rolls and the card notes the immunity.
-    if (!dealsDamage && outcomeConditions.length) {
-      const immune = outcomeConditions.filter(c => profile.immuneToCondition(c));
-      if (immune.length === outcomeConditions.length) {
-        const names = [...new Set(immune)].map(c => c.charAt(0).toUpperCase() + c.slice(1));
-        return { reason: "immune", label: `IMMUNE to ${names.join(", ")} — no save`, tone: "immune" };
-      }
-    }
-
-    return null;
+  static _preRollVerdict(profile, {
+    outcomeConditions = [], dealsDamage = false,
+    attackerToken = null, targetToken = null,
+    rangeFt = null, originIsAttacker = false,
+  } = {}) {
+    // ⚠️ THIS BODY MOVED INTO THE GATE (Phase 1, 2026-08-28). It used to hold
+    // the dead check and the immunity check as LOCAL logic, which is precisely
+    // what docs/ONE_GATE_ARCHITECTURE.md was written to end: "That is one
+    // pipeline deciding for itself." The checks are identical; they now live
+    // where the attack, damage and heal pipelines can reach them too.
+    //
+    // ⚠️ AND THE ENVIRONMENT SCAN NOW RUNS FOR SAVES. It never had. Pass the
+    // two tokens and the Gate measures distance, cover, light and line of
+    // effect, and carries that onto the verdict whether or not it is decisive.
+    // Range and line of effect only DECIDE when the caller proves they apply:
+    // an area's targets are already inside the template, and RAW measures an
+    // area's line of effect from its own point of origin, not from the caster.
+    return ActionGate.verdictFor({
+      targetProfile: profile,
+      targetActor: profile?.actor ?? null,
+      attackerToken, targetToken, rangeFt, originIsAttacker,
+      outcomes: outcomeConditions,
+      dealsDamage,
+    });
   }
 
   /**

@@ -7,6 +7,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { readWeather } from "./rules/weather.mjs";
 import { ExtendedEffects } from "./extended-effects.mjs";
 import { QolSettings } from "./settings.mjs";
 import { FlagsEngine } from "./flags-engine.mjs";
@@ -141,6 +142,42 @@ export class CombatState {
     // outcome can still explain itself on the card (e.g. the target sees through
     // magical darkness via truesight, so the attacker's darkness gives no edge).
     const situationalNotes = [];
+
+    // ── The weather over the fight ────────────────────────────────
+    //
+    // ⚠️ RANGED *WEAPON* ATTACKS ONLY. The DMG gives strong wind disadvantage
+    // on ranged weapon attack rolls. It says nothing about spell attacks and
+    // nothing about melee, and widening it because it feels right would quietly
+    // rewrite every archer AND every druid in a storm. `rsak` is a ranged SPELL
+    // attack and is deliberately excluded.
+    //
+    // ⚠️ AND IT GOES HERE, NOT IN THE ATTACK PIPELINE. This is the one place
+    // that collects every reason a roll is not straight, and a weather rule
+    // living anywhere else would be invisible to the card that explains the
+    // roll - which is the whole reason these carry a `reason` string.
+    try {
+      const isWeaponAttack = actionType === "rwak" || actionType === "mwak";
+      if (isRanged && isWeaponAttack) {
+        // ⚠️ NO TERRAIN IS PASSED, ON PURPOSE. The first version of this line
+        // called `CombatState._terrainKindsUnder?.(targetToken)`, a method that
+        // does not exist on this class. `?.()` returns undefined instead of
+        // throwing, so it would have looked like it worked forever — the exact
+        // shape of the dnd5e API drift that made every OverTime save score 0
+        // for months. Terrain only feeds the icy-footing check, which belongs to
+        // whoever is standing on the ice and not to this attack roll, so the
+        // wind question genuinely needs nothing from the ground.
+        const w = readWeather(canvas?.scene, []);
+        if (w?.known && w.effects?.rangedWeaponDisadvantage) {
+          disadvantageSources.push({ source: "environment",
+            reason: `${w.summary} → ranged weapon attack disadvantage` });
+        }
+      }
+    } catch (err) {
+      // ⚠️ Never let the weather stop the swing. Unreadable weather means the
+      // roll is straight, said out loud rather than silently.
+      console.warn(`${MODULE_ID} | could not read the weather for this attack `
+        + `(rolling straight):`, err);
+    }
 
     // ═════════════════════════════════════════════════════════════════════════
     //  ATTACKER STATE

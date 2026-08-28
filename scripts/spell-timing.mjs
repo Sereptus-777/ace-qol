@@ -60,6 +60,10 @@ function _checkFlagOverride(item) {
     failEffect:   flags.failEffect ?? null,
     breakFree:    flags.breakFree ?? null,
     difficultTerrain: flags.difficultTerrain ?? null,
+    // ⚠️ THIS LIST IS EXPLICIT, NOT A SPREAD. A field added to the table
+    // and not added here is dropped in transit: the entry is right, the
+    // reader is right, and the value never arrives.
+    followsCaster: flags.followsCaster === true,
   };
 }
 
@@ -252,7 +256,17 @@ const SPELL_TABLE = {
 
   // ────── ENTER + START OF TURN ──────
   "moonbeam":              { timing: TIMING.ENTER_START, save: "con", onSave: "half", notes: "Shapechanger disadvantage" },
-  "spirit guardians":      { timing: TIMING.ENTER_START, save: "wis", onSave: "half", notes: "Moves with caster, halves speed" },
+  // ⚠️🔴 followsCaster IS A MECHANIC, NOT A NOTE. This entry has said
+  // "Moves with caster" in prose since it was written, and prose does not move
+  // a template. Johnny, 2026-08-27: "I thought you said Spirit Guardians was
+  // cast on yourself, and they follow you around."
+  //
+  // He is right and it is the whole shape of the spell: a 15 foot emanation
+  // CENTRED ON THE CASTER, not a circle dropped on the floor. Re-pointing it
+  // to template-trigger got the entry and start-of-turn saves working, and
+  // would still have left the template standing where it was cast while the
+  // cleric walked away from it.
+  "spirit guardians":      { timing: TIMING.ENTER_START, save: "wis", onSave: "half", followsCaster: true, notes: "15 ft emanation centred on the caster; travels with them, halves speed" },
   "blade barrier":         { timing: TIMING.ENTER_START, save: "dex", onSave: "half" },
   "dawn":                  { timing: TIMING.ENTER_START, save: "con", onSave: "half", notes: "Caster can move beam" },
   "create bonfire":        { timing: TIMING.ENTER_START, save: "dex", onSave: "none" },
@@ -474,6 +488,10 @@ function _fromTableEntry(entry) {
     failEffect:   entry.failEffect ?? null,
     breakFree:    entry.breakFree ?? null,
     difficultTerrain: entry.difficultTerrain ?? null,
+    // ⚠️ THIS LIST IS EXPLICIT, NOT A SPREAD. A field added to the table
+    // and not added here is dropped in transit: the entry is right, the
+    // reader is right, and the value never arrives.
+    followsCaster: entry.followsCaster === true,
     autoSucceedIfCondImmune: entry.autoSucceedIfCondImmune ?? null,
   };
 }
@@ -487,6 +505,7 @@ function _makeResult(timing, fromTable, unclassified = false) {
     fromFlag:     false,
     fromParsing:  false,
     unclassified,
+    followsCaster: false,   // no table entry behind this result to say otherwise
     save:   null,
     onSave: null,
     notes:  null,
