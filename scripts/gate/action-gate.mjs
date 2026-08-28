@@ -182,6 +182,40 @@ export class ActionGate {
   }
 
   /**
+   * Every Active Effect bearing on this roll, from both creatures.
+   *
+   * ⚠️ UNTIL 2026-08-28 THE GATE COULD NOT SEE A SINGLE BONUS IN THE GAME.
+   * No profile read what an effect actually does, so Bless, Shield of Faith, a
+   * magic item's resistance and every homebrew effect on every sheet were
+   * invisible to the thing deciding rolls.
+   *
+   * ⚠️ IT RETURNS TWO LISTS, NOT A TOTAL. dnd5e records no "only against undead"
+   * or "only while raging" anywhere, so `needsJudging` is handed back for a
+   * human or a caller with more context. Summing it here would be confidently
+   * wrong on every conditional effect and invisibly so.
+   *
+   * @returns {{applies: object[], needsJudging: object[], sources: string[]}}
+   */
+  static effectsOn({ attackerProfile = null, targetProfile = null, group = "attack" } = {}) {
+    const applies = [], needsJudging = [], sources = [];
+    try {
+      for (const [who, profile] of [["attacker", attackerProfile], ["target", targetProfile]]) {
+        if (!profile?.modifiersFor) continue;
+        const m = profile.modifiersFor(group);
+        for (const r of (m.always ?? [])) {
+          applies.push({ ...r, on: who });
+          sources.push(`${r.effect} (${r.value}) on the ${who}`);
+        }
+        for (const r of (m.conditional ?? [])) needsJudging.push({ ...r, on: who });
+      }
+      return { applies, needsJudging, sources };
+    } catch (err) {
+      console.warn(`${TAG} | could not work out the modifiers (rolling straight):`, err);
+      return { advantage: false, disadvantage: false, sources };
+    }
+  }
+
+  /**
    * Verdicts for a whole target list — the shape the architecture doc specifies,
    * and what the attack, damage and heal pipelines call in Phase 2.
    */

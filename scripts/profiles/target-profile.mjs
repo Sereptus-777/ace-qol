@@ -17,6 +17,9 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { Situation } from "../situation.mjs";
+// ⚠️ Until 2026-08-28 no profile read what an Active Effect actually DOES,
+// so every bonus and penalty in the game was invisible to the Gate.
+import { readEffects, modifiersFor } from "./effects-reader.mjs";
 
 /**
  * Build the target-side profile for one creature.
@@ -35,6 +38,22 @@ export function buildTargetProfile(actor, { token = null } = {}) {
 
   return {
     kind: "target-profile",
+    // ── What is modifying this creature ─────────────────────────────
+    // ⚠️ Modifiers are carried WITH their conditions, never collapsed into a
+    // number. dnd5e records no "only against undead" field anywhere, so a single
+    // total would be confidently wrong on every conditional effect.
+    effects: (() => {
+      try { return readEffects(actor); }
+      catch (err) {
+        console.warn("ace-qol | the effect layer failed for this creature:", err);
+        return { modifiers: [], byGroup: {}, suppressed: [], conditionalCount: 0,
+                 problems: ["the effect layer threw"], readable: false };
+      }
+    })(),
+
+    /** Modifiers touching one thing, split into always-apply and needs-judging. */
+    modifiersFor(group) { return modifiersFor(this.effects, group); },
+
     schema: 1,
 
     // identity
