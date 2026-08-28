@@ -27,6 +27,9 @@
 import { buildTargetProfile }      from "../profiles/target-profile.mjs";
 import { buildAttackerProfile }    from "../profiles/attacker-profile.mjs";
 import { buildEnvironmentProfile } from "../profiles/environment-profile.mjs";
+// ⚠️ Settles "+2 versus undead" against the profiles instead of handing it
+// back as somebody else's problem. See condition-evaluator.mjs.
+import { resolveConditionals } from "../profiles/condition-evaluator.mjs";
 
 const TAG = "ace-qol | ActionGate";
 
@@ -196,22 +199,48 @@ export class ActionGate {
    *
    * @returns {{applies: object[], needsJudging: object[], sources: string[]}}
    */
-  static effectsOn({ attackerProfile = null, targetProfile = null, group = "attack" } = {}) {
-    const applies = [], needsJudging = [], sources = [];
+  static effectsOn({ attackerProfile = null, targetProfile = null,
+                     attackProfile = null, environment = null,
+                     group = "attack" } = {}) {
+    const applies = [], ruledOut = [], needsJudging = [], sources = [];
     try {
+      // ⚠️ THE CONDITIONALS ARE SETTLED HERE, NOT HANDED BACK. "+2 versus
+      // undead" is a lookup: the target profile has carried `creatureType` the
+      // whole time. Reporting it as "somebody has to judge this" was the
+      // pipeline refusing to use what it already knew.
+      const ctx = { attacker: attackerProfile, target: targetProfile,
+                    attack: attackProfile, environment };
+
       for (const [who, profile] of [["attacker", attackerProfile], ["target", targetProfile]]) {
         if (!profile?.modifiersFor) continue;
         const m = profile.modifiersFor(group);
+
         for (const r of (m.always ?? [])) {
           applies.push({ ...r, on: who });
           sources.push(`${r.effect} (${r.value}) on the ${who}`);
         }
-        for (const r of (m.conditional ?? [])) needsJudging.push({ ...r, on: who });
+
+        const judged = resolveConditionals(m.conditional ?? [], ctx);
+        for (const r of judged.applies) {
+          applies.push({ ...r, on: who });
+          sources.push(`${r.effect} (${r.value}) on the ${who} — ${r.evaluation.why}`);
+        }
+        for (const r of judged.doesNotApply) {
+          // ⚠️ KEPT, NOT DISCARDED. "Your +2 versus undead did not apply because
+          // it is a giant" is exactly the sentence that stops a GM wondering
+          // whether ACE forgot the bonus.
+          ruledOut.push({ ...r, on: who });
+        }
+        // ⚠️ Only what genuinely cannot be settled from state survives here:
+        // once per turn, GM discretion, wording no rule recognises yet.
+        for (const r of judged.unknown) needsJudging.push({ ...r, on: who });
       }
-      return { applies, needsJudging, sources };
+      return { applies, ruledOut, needsJudging, sources };
     } catch (err) {
-      console.warn(`${TAG} | could not work out the modifiers (rolling straight):`, err);
-      return { advantage: false, disadvantage: false, sources };
+      // ⚠️ An unreadable effect list must not silently mean "no bonuses".
+      console.warn(`${TAG} | could not work out which effects bear on this roll:`, err);
+      return { applies, ruledOut, needsJudging, sources,
+               problem: String(err?.message ?? err) };
     }
   }
 

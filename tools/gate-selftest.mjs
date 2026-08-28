@@ -81,5 +81,51 @@ console.log("\nRANGE AND LINE OF EFFECT ONLY DECIDE WHEN PROVEN TO APPLY");
 check("no tokens: range cannot decide anything",
   ActionGate.verdictFor({ targetProfile: profile(), rangeFt: 5 }), null);
 
-console.log("\n" + pass + " passed, " + fail + " failed");
+console.log("");
+console.log("THE GATE SETTLES CONDITIONAL EFFECTS INSTEAD OF PUNTING");
+const withEffects = (rows) => ({
+  modifiersFor: (group) => ({
+    always:      rows.filter(r => r.group === group && !r.conditional),
+    conditional: rows.filter(r => r.group === group && r.conditional),
+  }),
+});
+const slayerRows = [
+  { effect: "Undead Slayer", group: "attack", value: "+2",
+    conditional: "+2 to attack rolls against undead." },
+  { effect: "Bless", group: "attack", value: "+1d4", conditional: null },
+];
+const vsUndead = ActionGate.effectsOn({
+  attackerProfile: withEffects(slayerRows),
+  targetProfile: { creatureType: "undead", size: "med", hasCondition: () => false },
+  group: "attack",
+});
+check("Bless always applies", vsUndead.applies.some(a => a.effect === "Bless"), true);
+check("+2 vs undead APPLIES against a skeleton",
+  vsUndead.applies.some(a => a.effect === "Undead Slayer"), true);
+check("nothing is left for the GM to judge", vsUndead.needsJudging.length, 0);
+
+const vsGiant = ActionGate.effectsOn({
+  attackerProfile: withEffects(slayerRows),
+  targetProfile: { creatureType: "giant", size: "lg", hasCondition: () => false },
+  group: "attack",
+});
+check("+2 vs undead does NOT apply against a giant",
+  vsGiant.applies.some(a => a.effect === "Undead Slayer"), false);
+check("and it is kept, so the card can say why",
+  vsGiant.ruledOut.map(r => r.effect).join(","), "Undead Slayer");
+check("with the reason attached",
+  /giant/.test(vsGiant.ruledOut[0]?.evaluation?.why ?? ""), true);
+
+const unknowable = ActionGate.effectsOn({
+  attackerProfile: withEffects([{ effect: "Lucky", group: "attack", value: "+1",
+    conditional: "once per turn" }]),
+  targetProfile: { creatureType: "undead", hasCondition: () => false },
+  group: "attack",
+});
+check("what genuinely cannot be settled is still handed over",
+  unknowable.needsJudging.map(r => r.effect).join(","), "Lucky");
+check("and is NOT quietly counted as applying", unknowable.applies.length, 0);
+
+console.log("");
+console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
