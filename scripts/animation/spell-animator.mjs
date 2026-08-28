@@ -121,8 +121,24 @@ export async function playCuratedAnimation({ casterToken, item, targets = [] } =
       }
     } else {
       const e = seq.effect().file(anim.path).atLocation(casterToken);
-      // A cone or a directional burst should face the targets rather than east.
-      if (aim.length === 1) { try { e.rotateTowards(aim[0]); } catch (_) {} }
+      // ⚠️ A CONE MUST POINT WHERE HE AIMED IT. Rotating only when there is
+      // exactly one target left Colour Spray - which blinds a whole group -
+      // firing due east no matter where the group was standing, which reads as
+      // broken far more loudly than no animation at all. Aim at the middle of
+      // everyone caught.
+      if (aim.length === 1) {
+        try { e.rotateTowards(aim[0]); } catch (_) {}
+      } else if (aim.length > 1) {
+        try {
+          const pts = aim.map(t => t.center ?? { x: t.x, y: t.y }).filter(p => Number.isFinite(p?.x));
+          if (pts.length) {
+            e.rotateTowards({
+              x: pts.reduce((s, p) => s + p.x, 0) / pts.length,
+              y: pts.reduce((s, p) => s + p.y, 0) / pts.length,
+            });
+          }
+        } catch (_) { /* an un-rotated cone still beats no cone */ }
+      }
       _applyOptions(e, o);
     }
 
