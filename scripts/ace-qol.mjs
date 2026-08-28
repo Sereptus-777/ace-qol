@@ -4490,6 +4490,15 @@ Hooks.once("ready", () => {
     // ⚠️ Its own try/catch, same reason: one throw here must not take down
     // whatever registers below it. A flat run of registrations is a chain of
     // fuses, and a half-registered module must never look like a working one.
+    // ⚠️ Its own try/catch: a flat run of registrations is a chain of fuses.
+    try {
+      import("./area-pool.mjs")
+        .then(({ registerAreaPool }) => registerAreaPool())
+        .catch(err => console.warn(`${MODULE_ID} | area pools unavailable:`, err));
+    } catch (err) {
+      console.warn(`${MODULE_ID} | area pools could not be scheduled:`, err);
+    }
+
     try {
       import("./inference/boot-report.mjs")
         .then(({ registerInferenceBootReport }) => registerInferenceBootReport())

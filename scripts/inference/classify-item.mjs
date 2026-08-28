@@ -29,6 +29,11 @@ export const KNOWN_SHAPES = new Set([
   "save-single", "save-area", "template-save", "template-trigger",
   "attack-single", "attack-multi", "multi-buff", "multi-heal",
   "touch", "self", "distribute", "chained", "summon",
+  // ⚠️ `template-pool` is dispatchable, so a human may correct a reading to it,
+  // but nothing INFERS it: a hit-point pool is a per-spell ruling that appears
+  // nowhere in an item's data. Colour Spray's sheet claims a Constitution save
+  // it does not have.
+  "template-pool",
 ]);
 
 /**

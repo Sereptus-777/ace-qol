@@ -38,7 +38,12 @@ import { animationFor } from "./autorec.mjs";
  * So: the SHAPE decides, because the shape is what determines whether a template
  * is ever made.
  */
-const TEMPLATE_SHAPES = new Set(["template-save", "template-trigger"]);
+// ⚠️ `template-pool` BELONGS HERE, AND LEAVING IT OUT WOULD PLAY THE ANIMATION
+// TWICE. Colour Spray now draws its cone again, so Automated Animations sees a
+// real template and animates it the way it always meant to. If ACE also played
+// the borrowed copy, one cast would fire two cones and two sounds — which is
+// worse than the silence this whole thread started with.
+const TEMPLATE_SHAPES = new Set(["template-save", "template-trigger", "template-pool"]);
 
 /**
  * Which system should animate this cast?

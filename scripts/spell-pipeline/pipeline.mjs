@@ -535,6 +535,16 @@ export class SpellPipeline {
           await SpellPipeline._commitSlotOnTemplatePlaced(activity, castLevel);
           break;
 
+        case "template-pool":
+          // ⚠️ DELIBERATELY DOES NOTHING, like the other template shapes. The
+          // whole point is to STOP intervening: dnd5e places the spell's own
+          // area, and area-pool.mjs reads who is inside it and applies the
+          // hit-point pool. ACE showing a picker instead of the cone is what
+          // broke the animation, the geometry and the GM's ability to see the
+          // spell at all.
+          await SpellPipeline._commitSlotOnTemplatePlaced(activity, castLevel);
+          break;
+
         case "template-trigger":
           await TemplateResolver.runTrigger(ctx);
           // Slot rides on the template actually landing — see the helper.

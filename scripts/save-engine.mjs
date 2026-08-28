@@ -937,6 +937,23 @@ export class SaveEngine {
       }
     }
 
+    // ⚠️ A POOL SPELL HAS NO SAVING THROW, WHATEVER ITS SHEET CLAIMS. Colour
+    // Spray is a 6d10 hit-point pool in both editions, and his own copy carries a
+    // phantom Constitution save at DC 22 that an importer invented. Arming a
+    // pending save here would roll that invented save at every creature in the
+    // cone. area-pool.mjs owns this template instead.
+    try {
+      const _poolEntry = game.aceQol?.SpellPipeline?._getEntry?.(item);
+      if (_poolEntry?.shape === "template-pool") {
+        console.log(`${MODULE_ID} | "${item.name}" resolves by a hit-point pool, `
+          + `not a saving throw — no save card will be armed for its area.`);
+        return;
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not check whether "${item?.name}" is a `
+        + `pool spell (continuing as a normal save):`, err);
+    }
+
     if (templateType && templatePlaceable) {
       // Spell has a template — stash data, wait for createMeasuredTemplate hook
       this._pendingSaveSpell = {

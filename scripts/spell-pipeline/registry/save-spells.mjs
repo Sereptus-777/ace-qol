@@ -283,9 +283,20 @@ export const SAVE_SPELLS = {
   "color spray": {
     // RAW: NO save (HP-pool). Multi-buff so chosen creatures are blinded
     // unconditionally; the GM picks who drops. (Was save-single w/ a phantom WIS save.)
-    shape: "multi-buff",
+    // ⚠️🔴 IT IS A CONE. DRAW THE CONE. This said `multi-buff` until
+    // 2026-08-28, which meant ACE popped a target picker and never put the
+    // 15 foot cone on the map at all. Johnny: "It pops a target picker instead.
+    // The animation was set to play when the cone appears. Well, that's your
+    // fucking fault." It was. The curated animation was waiting for a cone that
+    // ACE had decided not to draw, and cover, elevation and terrain had no area
+    // to test anybody against either.
+    //
+    // `template-pool` places the spell's own area and lets area-pool.mjs apply
+    // the hit-point pool to whoever is standing in it. The picker existed to
+    // escape this sheet's phantom Constitution save, and the save engine now
+    // stands aside for pool spells instead.
+    shape: "template-pool",
     range: 15,
-    countResolver: () => 999,  // candidates; the HP pool below decides who is blinded
     // ⚠️ Same fix as Sleep — the comment already said "6d10 HP pool" while the
     // code blinded everyone picked. 6d10, +2d10 per level above 1st.
     hpPool: { formula: "6d10", perLevel: "d10", baseLevel: 1, excludeTypes: [] },
