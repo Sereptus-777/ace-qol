@@ -4492,6 +4492,14 @@ Hooks.once("ready", () => {
     // fuses, and a half-registered module must never look like a working one.
     // ⚠️ Its own try/catch: a flat run of registrations is a chain of fuses.
     try {
+      import("./geometry-contradiction-check.mjs")
+        .then(({ registerGeometryContradictionCheck }) => registerGeometryContradictionCheck())
+        .catch(err => console.warn(`${MODULE_ID} | discarded-area check unavailable:`, err));
+    } catch (err) {
+      console.warn(`${MODULE_ID} | discarded-area check could not be scheduled:`, err);
+    }
+
+    try {
       import("./area-pool.mjs")
         .then(({ registerAreaPool }) => registerAreaPool())
         .catch(err => console.warn(`${MODULE_ID} | area pools unavailable:`, err));
