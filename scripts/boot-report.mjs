@@ -18,7 +18,10 @@
 //
 // So: the answer comes to HIM, in the chat log, in one card, in plain English.
 //
-// ⚠️ QUIET WHEN CLEAN, LOUD WHEN NOT. A green one-liner if everything is fine.
+// ⚠️ QUIET WHEN CLEAN, LOUD WHEN NOT — AND IT MEANS IT NOW. This said exactly
+// that from the day it was written while posting a green card at every load,
+// which is how a status report becomes furniture. Nothing reaches chat unless
+// something is actually wrong.
 // If something is actually wrong it says what, in words that name the FEATURE
 // rather than the function — "saves and overtime effects", not "rollSavingThrow".
 // ──────────────────────────────────────────────────────────────────────────────
@@ -78,14 +81,30 @@ export class BootReport {
     const clean = r.problems.length === 0;
     const vers = Object.entries(r.versions).map(([k, v]) => `${k.replace("ace-", "")} ${v}`).join(" · ");
 
-    const head = clean ? "ACE started clean" : "ACE started — needs your attention";
-    const colour = clean ? "#7ec97e" : "#d46a6a";
+    // ⚠️🔴 NOTHING IS POSTED WHEN THERE IS NOTHING TO SAY. Johnny, 2026-08-28:
+    // "I'm really getting tired of this pop-up in the chat saying that
+    // everything's working fine, right on. Good. Get rid of that."
+    //
+    // He is right, and this file's own header has claimed "QUIET WHEN CLEAN,
+    // LOUD WHEN NOT" since the day it was written while posting a green card at
+    // every single load. A card that appears every time carries no information:
+    // it becomes furniture, and the one load where it turns red is the one
+    // nobody looks at.
+    //
+    // ⚠️ THE FAILURE PATH IS UNCHANGED AND MUST STAY THAT WAY. He asked for
+    // this card in the first place on 2026-08-13, because the checks it reports
+    // were shouting into a console nobody reads and one of them had never run at
+    // all. Silence when clean is the point; silence when broken is the bug.
+    if (clean) {
+      console.log(`${LOG} | clean — no dead condition records`
+        + `${r.contract ? `, all ${r.contract.checked} game-system functions present` : ""}`
+        + `. Nothing posted to chat; there is nothing to report.`);
+      return;
+    }
 
-    const body = clean
-      ? `<div style="color:#f0e4c0;font-size:16px;line-height:1.5;">
-           No dead condition records. ${r.contract ? `All ${r.contract.checked} game-system functions present.` : ""}
-         </div>`
-      : `<ul style="color:#f0e4c0;font-size:16px;line-height:1.55;margin:6px 0 0;padding-left:20px;">
+    const head = "ACE started — needs your attention";
+    const colour = "#d46a6a";
+    const body = `<ul style="color:#f0e4c0;font-size:16px;line-height:1.55;margin:6px 0 0;padding-left:20px;">
            ${r.problems.map(p => `<li style="margin-bottom:5px;">${p}</li>`).join("")}
          </ul>`;
 
@@ -99,7 +118,7 @@ export class BootReport {
       flags: { [MODULE_ID]: { type: "bootReport" } },
     }).catch(err => console.warn(`${LOG} | could not post the boot report:`, err));
 
-    console.log(`${LOG} | ${clean ? "clean" : `${r.problems.length} problem(s)`} — reported to the GM in chat.`);
+    console.log(`${LOG} | ${r.problems.length} problem(s) — reported to the GM in chat.`);
   }
 
   static register() {
