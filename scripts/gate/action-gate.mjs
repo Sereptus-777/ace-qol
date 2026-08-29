@@ -215,12 +215,14 @@ export class ActionGate {
         if (!profile?.modifiersFor) continue;
         const m = profile.modifiersFor(group);
 
-        for (const r of (m.always ?? [])) {
-          applies.push({ ...r, on: who });
-          sources.push(`${r.effect} (${r.value}) on the ${who}`);
-        }
-
-        const judged = resolveConditionals(m.conditional ?? [], ctx);
+        // ⚠️ EVERY ROW GOES THROUGH THE ONE DECIDER, including the ones the
+        // reader did not flag. The reader spots conditionality from wording,
+        // which it will sometimes miss; anything it missed would otherwise be
+        // counted unconditionally and never questioned. An unmatched row comes
+        // back "unconditional" and applies, so this costs nothing and closes the
+        // gap where a real gate is worded in a way the hint list does not catch.
+        const judged = resolveConditionals(
+          [...(m.always ?? []), ...(m.conditional ?? [])], ctx);
         for (const r of judged.applies) {
           applies.push({ ...r, on: who });
           sources.push(`${r.effect} (${r.value}) on the ${who} — ${r.evaluation.why}`);

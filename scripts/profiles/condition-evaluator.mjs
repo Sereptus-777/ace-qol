@@ -272,11 +272,20 @@ function _bloodied(profile, who) {
  *
  * @param {string} text  the wording that made it conditional
  * @param {object} ctx   {attacker, target, attack, environment} profiles
- * @returns {{verdict: true|false|"unknown", rule, matched, why}}
+ * @returns {{verdict: true|false|"unknown"|"unconditional", rule, matched, why}}
+ *   true          a rule matched and the state satisfies it
+ *   false         a rule matched and the state does not satisfy it
+ *   unknown       a rule matched and cannot be settled from state
+ *   unconditional no rule matched, so nothing gates this
  */
 export function evaluateCondition(text, ctx = {}) {
   const hay = String(text ?? "");
-  if (!hay.trim()) return { verdict: "unknown", rule: null, matched: null, why: "there is no condition text to read" };
+  // ⚠️ NO CONDITION TEXT MEANS NOTHING GATES IT. This returned "unknown", which
+  // sent Bless — a plain, unconditional +1d4 — to the GM to adjudicate.
+  if (!hay.trim()) {
+    return { verdict: "unconditional", rule: null, matched: null,
+             why: "no condition is attached to it" };
+  }
 
   for (const rule of RULES) {
     let m = null;
@@ -290,10 +299,18 @@ export function evaluateCondition(text, ctx = {}) {
                why: `the rule threw: ${err?.message ?? err}` };
     }
   }
-  // ⚠️ NO RULE MATCHED IS NOT "IT APPLIES". An unrecognised condition stays out
-  // of the arithmetic and gets named, so the gap is visible instead of guessed.
-  return { verdict: "unknown", rule: null, matched: null,
-           why: "ACE does not recognise this condition yet" };
+  // ⚠️🔴 NO RULE MATCHED MEANS UNCONDITIONAL, AND THE OPPOSITE READING WAS
+  // A REGRESSION. This returned "unknown" at first, and measuring against his
+  // world showed what that costs: 134 effects were flagged conditional because
+  // a trigger word appeared ANYWHERE in their prose, and only 9 were genuinely
+  // conditional. Shield, Boots of Striding and Springing, Half Speed, and every
+  // coloured Light effect were pushed out of the arithmetic - so Shield's +5 AC
+  // would simply not have counted.
+  //
+  // Conditionality is decided by a RULE MATCHING, never by spotting the word
+  // "when" in flavour text. If nothing here recognises a gate, there is no gate.
+  return { verdict: "unconditional", rule: null, matched: null,
+           why: "nothing in its wording gates this, so it always applies" };
 }
 
 /**
@@ -306,7 +323,10 @@ export function resolveConditionals(rows, ctx = {}) {
   for (const row of (rows ?? [])) {
     const r = evaluateCondition(row.conditional, ctx);
     const out = { ...row, evaluation: r };
-    if (r.verdict === true) applies.push(out);
+    // ⚠️ `unconditional` COUNTS AS APPLYING. Nothing gates it, so it applies -
+    // treating "no rule matched" as doubtful is what silently dropped Shield's
+    // +5 AC out of the total.
+    if (r.verdict === true || r.verdict === "unconditional") applies.push(out);
     else if (r.verdict === false) doesNotApply.push(out);
     else unknown.push(out);
   }

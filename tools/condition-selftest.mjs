@@ -76,8 +76,13 @@ check("underwater, target is in water",
 console.log("\nWHAT IT HONESTLY CANNOT SETTLE");
 check("once per turn stays unknown", V("once per turn", {}), "unknown");
 check("GM discretion stays unknown", V("at the GM's discretion", {}), "unknown");
-check("an unrecognised phrase stays unknown, never true",
-  V("whenever the moon is gibbous", {}), "unknown");
+// ⚠️ UNRECOGNISED MEANS UNCONDITIONAL, NOT DOUBTFUL, and this assertion was
+// backwards at first. Measured against his world, treating "no rule matched" as
+// unknown flagged 134 effects as conditional when only 9 were - Shield, Half
+// Speed and every coloured Light effect among them - because a trigger word
+// appeared somewhere in their prose. Shield's +5 AC would have stopped counting.
+check("an unrecognised phrase is unconditional, so it applies",
+  V("whenever the moon is gibbous", {}), "unconditional");
 check("no rule matched means no rule is claimed",
   evaluateCondition("whenever the moon is gibbous", {}).rule, null);
 
