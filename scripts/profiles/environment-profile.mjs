@@ -43,6 +43,10 @@ import { SpaceEffects } from "../rules/space-effects.mjs";
 // not in a corner of the attack pipeline. Johnny asked for it by name: "are they
 // in the rain, are they slipping around, is it snowing".
 import { readWeather } from "../rules/weather.mjs";
+// ⚠️ The third effects source: what a PLACE imposes, as opposed to what is
+// riding on either creature. It stays silent about anything already applied,
+// because ACE's aura engine writes real effects and counting both would double.
+import { readSpaceEffects } from "./space-effects-reader.mjs";
 
 /** A point the polygon backends will accept, from a token or token document. */
 function _centerOf(tok) {
@@ -429,6 +433,17 @@ export function buildEnvironmentProfile(attackerToken, targetToken = null) {
         return readWeather(canvas?.scene, kinds);
       } catch (err) {
         problems.push(`the weather could not be read: ${err?.message ?? err}`);
+        return null;
+      }
+    })(),
+
+    // ── What the SPACE itself offers ───────────────────────────────
+    // Auras reaching the target's square and regions covering it. Anything
+    // already on the creature's sheet is deliberately NOT repeated here.
+    spaceAtTarget: (() => {
+      try { return tDoc ? readSpaceEffects(targetToken) : null; }
+      catch (err) {
+        problems.push(`the space around the target could not be read: ${err?.message ?? err}`);
         return null;
       }
     })(),
