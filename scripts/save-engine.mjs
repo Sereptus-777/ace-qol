@@ -943,8 +943,7 @@ export class SaveEngine {
     // pending save here would roll that invented save at every creature in the
     // cone. area-pool.mjs owns this template instead.
     try {
-      const _poolEntry = game.aceQol?.SpellPipeline?._getEntry?.(item);
-      if (_poolEntry?.shape === "template-pool") {
+      if (SaveEngine._isPoolSpell(item)) {
         console.log(`${MODULE_ID} | "${item.name}" resolves by a hit-point pool, `
           + `not a saving throw — no save card will be armed for its area.`);
         return;
@@ -1575,6 +1574,32 @@ export class SaveEngine {
     }
   }
 
+  /**
+   * Does this action resolve by a hit-point pool rather than a saving throw?
+   *
+   * ⚠️🔴 ONE READER, BECAUSE TWO PLACES ARM A SAVE AND I ONLY GUARDED ONE.
+   * Live proof, 2026-08-29: the guard at the arming site fired correctly and
+   * logged "no save card will be armed for its area" - and then
+   * `_pendingFromTemplate` REBUILT the pending save from the template's own
+   * origin flag, because a null pending reads as "the cast happened on another
+   * client". Colour Spray posted a DC 20 Constitution card, the Flameskull
+   * rolled 16, failed, and was Blinded by a save the spell does not have.
+   *
+   * The pool had already answered correctly on the same cast: 36 hit points
+   * against a Flameskull, unaffected. So the creature was both correctly spared
+   * and wrongly blinded, one second apart.
+   */
+  static _isPoolSpell(item) {
+    try {
+      return game.aceQol?.SpellPipeline?._getEntry?.(item)?.shape === "template-pool";
+    } catch (err) {
+      // ⚠️ Unknown must not silently suppress a real save card.
+      console.warn(`${MODULE_ID} | could not tell whether "${item?.name}" resolves `
+        + `by a pool (treating it as a normal save):`, err);
+      return false;
+    }
+  }
+
   _pendingFromTemplate(templateDoc) {
     // ⚠️🔴 EVERY GATE BELOW USED TO RETURN null IN SILENCE, and the caller
     // then returned in silence too. A breath weapon that produced no save card
@@ -1611,6 +1636,12 @@ export class SaveEngine {
       const item = activity.item ?? activity.parent?.parent ?? null;
       const actor = item?.actor ?? null;
       if (!item) return why("the activity has no parent item");
+      // ⚠️ THE SAME QUESTION THE ARMING SITE ASKS. Rebuilding a pending save
+      // for a pool spell is how Colour Spray blinded a creature its own pool had
+      // just spared.
+      if (SaveEngine._isPoolSpell(item)) {
+        return why(`"${item.name}" resolves by a hit-point pool, not a saving throw`);
+      }
       if (!actor) return why(`"${item.name}" is not on an actor (a compendium or sidebar item cannot cast)`);
 
       const save = activity.save ?? {};
@@ -1986,6 +2017,19 @@ export class SaveEngine {
   }
 
   async _postLiveTargetCard(item, actor, tokens, opts) {
+    // ⚠️🔴 THE LAST DOOR, GUARDED BECAUSE TWO EARLIER ONES WERE NOT ENOUGH.
+    // Colour Spray's phantom Constitution save got past a guard at the arming
+    // site by being REBUILT from the template's origin flag. Both of those are
+    // fixed, and this is the single function every save card comes through, so
+    // it asks the same question one last time. A spell that resolves by a
+    // hit-point pool has no saving throw to show, whatever route got here.
+    if (SaveEngine._isPoolSpell(item)) {
+      console.warn(`${MODULE_ID} | refused to post a save card for "${item?.name}": `
+        + `it resolves by a hit-point pool and has no saving throw. Something `
+        + `upstream still thinks it does — worth finding.`);
+      return;
+    }
+
     // v0.4.22.4: Pace the save card behind the spell/feat animation.
     // Without this delay the save card can land 1-2 seconds before the
     // visual effect, eating the dramatic beat. Configurable via
