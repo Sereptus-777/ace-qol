@@ -940,19 +940,27 @@ export class DamageCardRenderer {
         ${compLines ? `<div class="ace-qol-dmg-type-breakdown">${compLines}</div>` : ""}
         ${flavorHintHtml}
         <div class="ace-qol-dmg-gm-controls">
-          <!-- ⚠️ ORDER IS JOHNNY'S, 2026-08-14, AND IT IS THE RIGHT ONE.
-               Multipliers and the resulting damage share the top line — they are
-               one thought ("how much is this going to be?"). The HP readout sits
-               UNDERNEATH on its own line, because it is the consequence and it
-               is the longest item. Previously HP shared the top line and got
-               pushed off the right edge of the chat log, so the GM could read
-               "HP: 163 →" and not the number that actually mattered. -->
+          <!-- ⚠️🔴 ONE THING PER ROW. EVERY ROW WRAPS. Johnny, 2026-08-30:
+               "Put the x, the quarter damage, the half damage, and everything on
+               its own row. All rows should have their own flex to push things to
+               the next row. I can never see the goddamn damage results."
+
+               The previous layout put five buttons, the damage total and the
+               skull on ONE line and relied on flex-wrap to cope. It could not:
+               a 30px left indent ate the width and every child was nowrap, so
+               the damage number — the one number the GM is actually reading —
+               got pushed to the right edge and clipped.
+
+               Height is free. A row that cannot wrap destroys its contents to
+               fit, and this is the third card in this suite to learn that. -->
           <div class="ace-qol-dmg-ovr-line">
             <button class="ace-qol-dmg-ovr-x" data-action="aceQolDmgRemove" data-token-doc-id="${tDocId}">×</button>
             <button class="ace-qol-dmg-ovr${_a(0.25)}" data-action="aceQolDmgOverride" data-token-doc-id="${tDocId}" data-multiplier="0.25">¼</button>
             <button class="ace-qol-dmg-ovr${_a(0.5)}" data-action="aceQolDmgOverride" data-token-doc-id="${tDocId}" data-multiplier="0.5">½</button>
             <button class="ace-qol-dmg-ovr${_a(1)}" data-action="aceQolDmgOverride" data-token-doc-id="${tDocId}" data-multiplier="1">1</button>
             <button class="ace-qol-dmg-ovr${_a(2)}" data-action="aceQolDmgOverride" data-token-doc-id="${tDocId}" data-multiplier="2">2</button>
+          </div>
+          <div class="ace-qol-dmg-total-line">
             <span class="ace-qol-dmg-row-dmg">${totalFinal}<span class="ace-qol-dmg-unit">DMG</span></span>
             ${isDead ? '<span class="ace-qol-dmg-skull">☠</span>' : ''}
           </div>

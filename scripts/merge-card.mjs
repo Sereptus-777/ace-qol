@@ -499,6 +499,11 @@ export class MergeCard {
               <button class="ace-qol-dmg-ovr${_a(0.5)}" data-action="aceQolDmgOverride" data-token-doc-id="${tokenDocId}" data-multiplier="0.5">&frac12;</button>
               <button class="ace-qol-dmg-ovr${_a(1)}" data-action="aceQolDmgOverride" data-token-doc-id="${tokenDocId}" data-multiplier="1">1</button>
               <button class="ace-qol-dmg-ovr${_a(2)}" data-action="aceQolDmgOverride" data-token-doc-id="${tokenDocId}" data-multiplier="2">2</button>
+            </div>
+            <!-- ⚠️ Split out of the button row on 2026-08-30, same as the
+                 damage card. This file renders the SAME row and would have kept
+                 the old crammed layout on every merged card. -->
+            <div class="ace-qol-dmg-total-line">
               <span class="ace-qol-dmg-row-dmg">${totalFinal}<span class="ace-qol-dmg-unit">DMG</span></span>
               ${isDead ? '<span class="ace-qol-dmg-skull">&#9760;</span>' : ''}
             </div>

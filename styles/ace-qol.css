@@ -551,10 +551,31 @@
 }
 
 /* ─── Override buttons per target row ──────────────────────────────── */
+/* ⚠️🔴 THE DAMAGE NUMBER WAS BEING PUSHED OFF THE CARD. Johnny, 2026-08-30:
+   "I can never see the goddamn damage results."
+
+   The row already had flex-wrap and it still could not cope, because of two
+   things that beat it: a 30px LEFT INDENT eating the width before anything was
+   laid out, and `white-space: nowrap` on every child so nothing could give.
+   Five buttons plus the total plus the skull plus HP on one indented line, in a
+   chat log that is about 300px wide, clips the one number the GM is reading.
+
+   Fixed at the cause: no indent, and the total gets its own row. */
 .ace-qol-dmg-ovr-line {
-  display: flex; align-items: center; gap: 3px;
-  flex-wrap: wrap; row-gap: 3px;          /* override pills wrap on narrow chats */
-  padding: 2px 0 2px 30px; font-size: 0.75rem;
+  display: flex; align-items: center; gap: 4px;
+  flex-wrap: wrap; row-gap: 4px;
+  padding: 2px 0; font-size: 0.75rem;
+}
+
+/* The number the GM is actually reading. Its own row, and big enough to read
+   at a glance across the table. */
+.ace-qol-dmg-total-line {
+  display: flex; align-items: baseline; gap: 6px;
+  flex-wrap: wrap; row-gap: 2px;
+  padding: 3px 0 1px;
+}
+.ace-qol-dmg-total-line .ace-qol-dmg-row-dmg {
+  font-size: 1.15rem; font-weight: 700; line-height: 1.2;
 }
 .ace-qol-dmg-ovr-x {
   background: linear-gradient(180deg, rgba(255,23,68,0.15) 0%, rgba(200,10,50,0.1) 100%);
@@ -5839,8 +5860,16 @@
    being cut in half — which is what Johnny asked for: give each calculation its
    own row and bump the next one down, never shrink it to fit. */
 .ace-qol-dmg-gm-controls { min-width: 0; }
-.ace-qol-dmg-hp-line, .ace-qol-dmg-ovr-line { max-width: 100%; }
-.ace-qol-dmg-hp-line > *, .ace-qol-dmg-ovr-line > * { white-space: nowrap; }
+/* ⚠️ EVERY ROW WRAPS, AND ONLY THE BUTTONS REFUSE TO BREAK. `nowrap` on
+   every child of every row is what stopped the total and the HP readout from
+   giving way when the chat log is narrow. A button legend must not break; a
+   number is free to move to the next line. */
+.ace-qol-dmg-hp-line,
+.ace-qol-dmg-ovr-line,
+.ace-qol-dmg-total-line { max-width: 100%; flex-wrap: wrap; }
+.ace-qol-dmg-ovr-line > button { white-space: nowrap; }
+.ace-qol-dmg-hp-line > *,
+.ace-qol-dmg-total-line > * { min-width: 0; }
 /* ── The reaction that changed a target's number ──
    ⚠️ IT SAYS WHAT IT WAS AND WHAT IT BECAME. Uncanny Dodge used to halve the
    total while the breakdown above still showed the original roll, so the card
