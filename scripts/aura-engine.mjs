@@ -686,13 +686,6 @@ const AURA_BORDER_TINT = {
   "aura-of-hate":         "purple",
   "aura-of-the-guardian": "blue",
 };
-const AURA_AURA_TINT = {
-  "aura-of-protection":   "yellow",
-  "aura-of-warding":      "bluepurple",
-  "aura-of-courage":      "orangepurple",
-  "aura-of-hate":         "orangepurple",
-  "aura-of-the-guardian": "bluepurple",
-};
 
 // Every effect this layer places is named with this prefix so it can find and
 // end exactly its own, and never somebody else's.
@@ -792,7 +785,10 @@ export class AuraVisualLayer {
    * This now plays real JB2A assets through Sequencer:
    *   per creature  jb2a.token_border.circle.spinning.<colour>  — the little
    *                 turning ring around anyone actually carrying the effect
-   *   per source    jb2a.template_circle.aura.01.complete       — the reach
+   *
+   * The source gets the same ring as everybody else and nothing more — Aura of
+   * Protection includes its own caster, so the paladin is simply one of the
+   * covered. A separate range circle on top of that buried him in particles.
    *
    * ⚠️ DIFFED, NEVER REDRAWN. The old code cleared and rebuilt every graphic on
    * every token move. Doing that with animations would restart each one several
@@ -818,31 +814,23 @@ export class AuraVisualLayer {
     try {
       const wanted = new Map();   // effect name -> {token, path, scale, colour}
 
-      // ── The reach of each source ─────────────────────────────────────────
-      const grid  = canvas.scene.grid?.size ?? 100;
-      const ftPer = canvas.scene.grid?.distance ?? 5;
-
-      for (const src of AuraEngine.getActiveSources()) {
-        const t = src.token;
-        if (!t) continue;
-        const tw = (t.document?.width ?? 1) * grid;
-        const th = (t.document?.height ?? 1) * grid;
-        const sourceHalfFt = (Math.max(tw, th) / grid * ftPer) / 2;
-        const diameterPx = ((src.rangeFt + sourceHalfFt) * 2 / ftPer) * grid;
-
-        const path = AuraVisualLayer._resolve([
-          `jb2a.template_circle.aura.01.complete.large.${AURA_AURA_TINT[src.aura.id] ?? "green"}`,
-          `jb2a.template_circle.aura.01.complete.small.${AURA_AURA_TINT[src.aura.id] ?? "green"}`,
-        ]);
-        if (!path) continue;
-
-        wanted.set(`${EFFECT_PREFIX}reach:${t.id}:${src.aura.id}`, {
-          token: t, path,
-          // The asset is authored square; size it to the aura's true diameter.
-          sizePx: diameterPx,
-          opacity: 0.35,
-        });
-      }
+      // ── No reach circle ─────────────────────────────────────────
+      //
+      // ⚠️ THE SOURCE GETS THE SAME RING AS EVERYBODY ELSE, NOTHING MORE.
+      // Johnny, 2026-09-01: "Why is Firaxis spewing out a bunch of, I don't know
+      // what aura that is? I don't want that. I just want his order the same as
+      // the other auras... the blue one with the floaty things around it. That's
+      // a good aura. Leave that alone."
+      //
+      // The big `template_circle.aura` I put on each source was a range
+      // indicator, and it buried the paladin under particles. The per-creature
+      // ring already carries the information that matters - who is covered - and
+      // Aura of Protection includes its own caster, so Firaxis gets a ring from
+      // the loop below like everyone else.
+      //
+      // ⚠️ Range is still visible on demand: hovering the aura in the effects
+      // panel shows the feet, and the engine measures it edge to edge regardless
+      // of what is drawn.
 
       // ── The people actually carrying the effect ──────────────────────────
       //
