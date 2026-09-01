@@ -650,30 +650,54 @@ export class AuraEngine {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  AuraVisualLayer — PIXI ring renderer for source tokens
+//  AuraVisualLayer — JB2A aura animations, played through Sequencer
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// Independent of Automated Animations / Sequencer. Draws a translucent
-// circle at each aura source's position with the configured range. Color-
-// coded per aura type. Updates on token movement, creation, deletion, and
-// engine recomputes.
+// A spinning JB2A token border on every creature actually carrying an aura
+// effect, and a JB2A aura circle showing each source's reach.
 //
-// Why custom: AA's Sequencer-based aura visuals leave orphaned animations
-// when active effects are deleted, spam the console with "use Sequencer
-// Effect Manager" warnings, and don't update reliably on token movement.
-// PIXI Graphics is direct, fast, and we control the lifecycle.
+// ⚠️🔴 THIS HEADER USED TO ARGUE FOR DRAWING THEM BY HAND, and the argument was
+// wrong on the only points that mattered. It said PIXI was chosen because "AA's
+// Sequencer-based aura visuals leave orphaned animations when active effects are
+// deleted... and don't update reliably on token movement". The orphan problem is
+// solved by naming every effect and ending it by name. The movement problem does
+// not exist: `attachTo` makes Sequencer carry the effect with the token, which
+// is most of what the hand-rolled container existed to do.
 //
-// All clients render the same rings (the data is just the active aura
-// sources on canvas). No socket needed.
+// What drawn circles cannot do is look like anything. Johnny, 2026-09-01:
+// "That is just drawn circles. That is not the animation that I had before. If
+// you're drawing them, quit fucking drawing them."
+//
+// ⚠️ THE ACTING GM PLACES THEM, EVERYONE SEES THEM. A persistent Sequencer
+// effect is broadcast, so one created per client would put one copy on the board
+// per connected user. That is the opposite of the old PIXI layer, where every
+// client had to draw its own.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const AURA_RING_COLORS = {
-  "aura-of-protection":    0xffd700,  // gold
-  "aura-of-warding":       0x4488ff,  // blue
-  "aura-of-courage":       0xffaa00,  // amber
-  "aura-of-hate":          0xaa00aa,  // purple
-  "aura-of-the-guardian":  0x00aaff,  // cyan
+// ⚠️ JB2A SHIPS A FIXED PALETTE AND GOLD IS NOT IN IT. The token borders come
+// in blue, green, orange and purple; the aura circles in bluepurple, green,
+// orangepurple and yellow. Aura of Protection reads as gold in the rules and is
+// mapped to the warmest thing that exists rather than silently failing to a
+// colour nobody chose.
+const AURA_BORDER_TINT = {
+  "aura-of-protection":   "orange",
+  "aura-of-warding":      "blue",
+  "aura-of-courage":      "orange",
+  "aura-of-hate":         "purple",
+  "aura-of-the-guardian": "blue",
 };
+const AURA_AURA_TINT = {
+  "aura-of-protection":   "yellow",
+  "aura-of-warding":      "bluepurple",
+  "aura-of-courage":      "orangepurple",
+  "aura-of-hate":         "orangepurple",
+  "aura-of-the-guardian": "bluepurple",
+};
+
+// Every effect this layer places is named with this prefix so it can find and
+// end exactly its own, and never somebody else's.
+const EFFECT_PREFIX = "ace-qol-aura:";
+
 
 export class AuraVisualLayer {
   /** PIXI.Container holding all aura ring graphics */
@@ -734,183 +758,195 @@ export class AuraVisualLayer {
   }
 
   /**
-   * Attach the aura ring container to the canvas. Idempotent.
+   * Bring the scene's aura animations up to date. Idempotent.
+   *
+   * ⚠️ THERE IS NO CANVAS CONTAINER ANY MORE. This used to build a PIXI
+   * layer and draw circles into it. Sequencer owns the effects now, attaches
+   * them to the tokens itself, and moves them when the tokens move - which is
+   * most of what the old container existed to do by hand.
    */
   static attach() {
     if (!canvas?.tokens) return;
-    if (!this._shouldRender()) {
-      this.detach();
-      return;
-    }
-    if (this.container && !this.container.destroyed) {
-      this.refresh();
-      return;
-    }
-    try {
-      this.container = new PIXI.Container();
-      this.container.name = "ace-qol-aura-rings";
-      this.container.eventMode = "none"; // pass clicks through
-      this.container.zIndex = -1; // below tokens
-      // Insert at index 0 so it's BELOW token sprites (under their feet)
-      canvas.tokens.addChildAt(this.container, 0);
-      this.refresh();
-      console.log(`${MODULE_ID} | AuraVisualLayer attached to canvas.tokens`);
-    } catch (err) {
-      console.warn(`${MODULE_ID} | AuraVisualLayer attach failed:`, err);
-    }
+    if (!this._shouldRender()) { this.detach(); return; }
+    this.refresh();
   }
 
   /**
    * Re-draw all aura rings from scratch. Cheap (Graphics is GPU-accelerated).
    * Auto-noops if rendering is disabled (e.g., AA is active and mode=auto).
    */
+  /**
+   * ⚠️🔴 DRAWN CIRCLES ARE NOT ANIMATIONS, AND HE HAS SAID SO TWICE.
+   * Johnny, 2026-09-01, looking at a board full of flat PIXI discs:
+   *
+   *   "That is just drawn circles. That is not the animation that I had before.
+   *    If you're drawing them, quit fucking drawing them. This is what we use
+   *    Automated Animations for, or JB2A... I want the animation, the circle,
+   *    slight, whatever."
+   *
+   * He is right, and the PIXI layer was never the answer — it was a stopgap I
+   * shipped on 2026-08-27 when ACE and Automated Animations were each deferring
+   * to the other and nothing appeared at all. A stopgap that stays becomes the
+   * product.
+   *
+   * This now plays real JB2A assets through Sequencer:
+   *   per creature  jb2a.token_border.circle.spinning.<colour>  — the little
+   *                 turning ring around anyone actually carrying the effect
+   *   per source    jb2a.template_circle.aura.01.complete       — the reach
+   *
+   * ⚠️ DIFFED, NEVER REDRAWN. The old code cleared and rebuilt every graphic on
+   * every token move. Doing that with animations would restart each one several
+   * times a second and look like a strobe. Only what changed is touched.
+   *
+   * ⚠️ ONE CLIENT CREATES THEM. Sequencer broadcasts a persistent effect to
+   * everybody, so if every client created its own the board would carry one copy
+   * per connected user. The activeGM places them; everyone sees them.
+   */
   static refresh() {
-    if (!this._shouldRender()) {
-      this.detach();
+    if (!this._shouldRender()) { this.detach(); return; }
+    if (typeof Sequence === "undefined" || !globalThis.Sequencer?.EffectManager) {
+      // ⚠️ Say it rather than fall back to drawing. Silently reverting to PIXI
+      // discs is how the stopgap became the product in the first place.
+      console.warn(`${MODULE_ID} | Sequencer is not available, so aura animations `
+        + `cannot play. No rings will be drawn.`);
       return;
     }
-    if (!this.container || this.container.destroyed) {
-      this.attach();
-      return;
-    }
-    // Clear existing graphics
-    this.container.removeChildren().forEach(c => c.destroy?.());
+    // Only the acting GM writes effects; every client sees them.
+    if (game.users?.activeGM !== game.user) return;
+    if (!canvas?.scene) return;
 
-    if (!canvas.scene) return;
-
-    const sources = AuraEngine.getActiveSources();
-    const grid = canvas.scene.grid?.size ?? 100;
-    const ftPer = canvas.scene.grid?.distance ?? 5;
-
-    // ⚠️ TWO AURAS AT THE SAME RADIUS DRAW ON TOP OF EACH OTHER. Firaxis is
-    // an Oath of the Ancients paladin 9, so Protection (gold) and Warding (blue)
-    // are BOTH 10 feet - identical circles, and whichever draws second wins.
-    // Johnny saw "that plain blue circle" and reasonably concluded Protection
-    // was not working. It was; it was underneath.
-    const ringsPerToken = new Map();
-
-    for (const src of sources) {
-      const t = src.token;
-      const tw = (t.document?.width  ?? 1) * grid;
-      const th = (t.document?.height ?? 1) * grid;
-      const cx = (t.x ?? 0) + tw / 2;
-      const cy = (t.y ?? 0) + th / 2;
-
-      // Ring radius extends from the source's EDGE, matching RAW edge-to-edge
-      // measurement. So a Medium source (5 feet) with 10 feet aura draws at:
-      //   ringRadiusPx = (10ft + 2.5ft halfSourceSize) px-converted
-      // = 12.5ft from center = 250px on a 100px/5ft grid.
-      // Result: any target whose body overlaps the ring is in range, matching
-      // the visual to the engine's edge-to-edge distance check exactly.
-      const sourceHalfFt = (Math.max(tw, th) / grid * ftPer) / 2;
-      const visualRadiusFt = src.rangeFt + sourceHalfFt;
-      // Each additional aura on the same creature steps inward a little so every
-      // one of them is visible. The engine still measures the true radius; only
-      // the drawing is nudged.
-      const nth = ringsPerToken.get(t.id) ?? 0;
-      ringsPerToken.set(t.id, nth + 1);
-      const radiusPx = ((visualRadiusFt / ftPer) * grid) - (nth * Math.max(6, grid * 0.06));
-      const color = AURA_RING_COLORS[src.aura.id] ?? 0xffffff;
-
-      const g = new PIXI.Graphics();
-      // Outer ring (thicker, opaque)
-      g.lineStyle({ width: 3, color, alpha: 0.7, alignment: 0 });
-      g.drawCircle(cx, cy, radiusPx);
-      // Inner glow (filled, very translucent)
-      g.beginFill(color, 0.08);
-      g.drawCircle(cx, cy, radiusPx);
-      g.endFill();
-      // Inner ring (subtle, slightly inside)
-      g.lineStyle({ width: 1.5, color, alpha: 0.4, alignment: 0 });
-      g.drawCircle(cx, cy, radiusPx - 4);
-
-      this.container.addChild(g);
-    }
-
-    // ── The people it is actually protecting ────────────────────────────────
-    //
-    // ⚠️🔴 A RING ROUND THE PALADIN SHOWS RANGE. IT DOES NOT SHOW THAT ANYONE IS
-    // PROTECTED. Johnny, 2026-09-01:
-    //
-    //   "each person that came within 10 feet of the paladin suddenly got a
-    //    little glowing aura around them, the same as the one the paladin had...
-    //    I'm not sure that aura works. It probably does, but I liked the little
-    //    bit of an animation when they step near the paladin, so that they knew
-    //    the aura of protection was protecting them."
-    //
-    // That was Automated Animations' own aura visual, and his AA aura list is
-    // EMPTY — the entries were lost from his config. On 2026-08-27 I made ACE
-    // draw a source ring when AA has nothing, which put something on the board
-    // and answered the wrong question.
-    //
-    // ⚠️ THIS IS DRAWN FROM THE APPLIED EFFECT, NOT FROM THE DISTANCE. That is
-    // the whole point: it is evidence the effect actually landed. A creature
-    // standing well inside the ring with no glow means the aura engine has not
-    // caught up, and that is exactly the bug worth seeing rather than assuming
-    // away. Three aura bugs this fortnight were invisible for want of this.
     try {
-      const sourceIds = new Set(sources.map(s => s.token?.id).filter(Boolean));
-      for (const t of (canvas.tokens?.placeables ?? [])) {
-        if (!t.actor || sourceIds.has(t.id)) continue;   // the source has its ring
+      const wanted = new Map();   // effect name -> {token, path, scale, colour}
 
-        // ⚠️ ONE HALO PER AURA, NOT PER CREATURE. This used to `break` after
-        // the first one, so somebody standing in both Protection and Warding got
-        // a single halo in whichever colour happened to come first - arbitrary,
-        // and it hid the fact that two different things were protecting them.
-        let nth = 0;
+      // ── The reach of each source ─────────────────────────────────────────
+      const grid  = canvas.scene.grid?.size ?? 100;
+      const ftPer = canvas.scene.grid?.distance ?? 5;
+
+      for (const src of AuraEngine.getActiveSources()) {
+        const t = src.token;
+        if (!t) continue;
+        const tw = (t.document?.width ?? 1) * grid;
+        const th = (t.document?.height ?? 1) * grid;
+        const sourceHalfFt = (Math.max(tw, th) / grid * ftPer) / 2;
+        const diameterPx = ((src.rangeFt + sourceHalfFt) * 2 / ftPer) * grid;
+
+        const path = AuraVisualLayer._resolve([
+          `jb2a.template_circle.aura.01.complete.large.${AURA_AURA_TINT[src.aura.id] ?? "green"}`,
+          `jb2a.template_circle.aura.01.complete.small.${AURA_AURA_TINT[src.aura.id] ?? "green"}`,
+        ]);
+        if (!path) continue;
+
+        wanted.set(`${EFFECT_PREFIX}reach:${t.id}:${src.aura.id}`, {
+          token: t, path,
+          // The asset is authored square; size it to the aura's true diameter.
+          sizePx: diameterPx,
+          opacity: 0.35,
+        });
+      }
+
+      // ── The people actually carrying the effect ──────────────────────────
+      //
+      // ⚠️ DRIVEN BY THE APPLIED EFFECT, NOT BY DISTANCE. That is the whole
+      // point of the per-creature ring: it is evidence the aura landed. Somebody
+      // standing inside the reach with no ring means the engine has not caught
+      // up, which is a bug worth seeing rather than papering over.
+      for (const t of (canvas.tokens?.placeables ?? [])) {
+        if (!t.actor) continue;
         for (const eff of (t.actor.effects ?? [])) {
           const f = eff.flags?.[FLAG_NS];
-          if (!f?.[FLAG_AURA_APPLIED]) continue;
-          if (eff.disabled) continue;                    // switched off is not protected
+          if (!f?.[FLAG_AURA_APPLIED] || eff.disabled) continue;
 
-          const colour = AURA_RING_COLORS[f.auraId] ?? 0xffffff;
-          const tw = (t.document?.width  ?? 1) * grid;
-          const th = (t.document?.height ?? 1) * grid;
-          const cx = (t.x ?? 0) + tw / 2;
-          const cy = (t.y ?? 0) + th / 2;
-          // ⚠️🔴 THIS LAYER SITS *UNDER* THE TOKEN SPRITES, ON PURPOSE. The
-          // container is added at index 0 with zIndex -1 so the big source ring
-          // reads as light on the floor rather than a hoop over the art.
-          //
-          // The first version of this halo used `half the token + 4px`, which is
-          // the token's own footprint — so it drew flawlessly and was covered
-          // completely by the creature standing on it. Johnny reloaded and saw
-          // "that plain blue circle and that's it."
-          //
-          // It has to extend past the sprite to exist at all. A quarter of a
-          // grid cell of glow shows on the floor around their feet at any token
-          // size and on any grid scale, which is what he described seeing before.
-          const r = (Math.max(tw, th) / 2) + (grid * 0.28) + (nth * Math.max(4, grid * 0.05));
-          nth++;
+          const tint = AURA_BORDER_TINT[f.auraId] ?? "blue";
+          const path = AuraVisualLayer._resolve([
+            `jb2a.token_border.circle.spinning.${tint}.001`,
+            `jb2a.token_border.circle.spinning.blue.001`,
+            `jb2a.token_border.circle.static.${tint}.001`,
+          ]);
+          if (!path) continue;
 
-          const halo = new PIXI.Graphics();
-          // Soft pool of light, brightest at the rim where it clears the sprite.
-          halo.beginFill(colour, 0.16);
-          halo.drawCircle(cx, cy, r);
-          halo.endFill();
-          halo.lineStyle({ width: 3, color: colour, alpha: 0.85, alignment: 0 });
-          halo.drawCircle(cx, cy, r);
-          halo.lineStyle({ width: 1.5, color: colour, alpha: 0.4, alignment: 0 });
-          halo.drawCircle(cx, cy, r + Math.max(3, grid * 0.05));
-          this.container.addChild(halo);
+          wanted.set(`${EFFECT_PREFIX}on:${t.id}:${f.auraId}`, {
+            token: t, path, scale: 1.05, opacity: 0.9, fadeIn: 400,
+          });
+        }
+      }
+
+      // ── Diff against what is already playing ─────────────────────────────
+      const live = new Set();
+      try {
+        for (const e of (Sequencer.EffectManager.getEffects({ name: `${EFFECT_PREFIX}*` }) ?? [])) {
+          const n = e?.data?.name ?? e?.name;
+          if (n) live.add(n);
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | could not read the running aura effects:`, err);
+      }
+
+      for (const name of live) {
+        if (wanted.has(name)) continue;
+        try { Sequencer.EffectManager.endEffects({ name }); }
+        catch (err) { console.warn(`${MODULE_ID} | could not end "${name}":`, err); }
+      }
+
+      for (const [name, spec] of wanted) {
+        if (live.has(name)) continue;                   // already turning
+        try {
+          const seq = new Sequence();
+          const e = seq.effect()
+            .file(spec.path)
+            .attachTo(spec.token, { bindAlpha: false })
+            .persist()
+            .name(name)
+            .opacity(spec.opacity ?? 0.85)
+            .fadeIn(spec.fadeIn ?? 300)
+            .fadeOut(300)
+            .zIndex(0);
+          // A reach ring is sized in pixels; a token ring scales to its wearer.
+          if (spec.sizePx) e.size(spec.sizePx);
+          else e.scaleToObject(spec.scale ?? 1.05);
+          seq.play().catch(err =>
+            console.warn(`${MODULE_ID} | aura animation "${name}" failed to play:`, err));
+        } catch (err) {
+          console.warn(`${MODULE_ID} | could not start the aura animation "${name}":`, err);
         }
       }
     } catch (err) {
-      // ⚠️ Never let the halo take the source rings down with it.
-      console.warn(`${MODULE_ID} | could not draw the protected-creature halos:`, err);
+      console.warn(`${MODULE_ID} | the aura visual refresh failed:`, err);
     }
+  }
+
+  /** First of these paths this JB2A install actually contains. */
+  static _resolve(candidates) {
+    for (const c of candidates) {
+      try { if (Sequencer?.Database?.entryExists?.(c)) return c; } catch (_) { /* next */ }
+    }
+    // ⚠️ Named, not silent: a missing asset and a disabled engine must not look
+    // the same in the console.
+    console.warn(`${MODULE_ID} | none of these aura assets are in this JB2A `
+      + `install, so nothing will show: ${candidates.join(", ")}`);
+    return null;
   }
 
   /**
    * Detach + cleanup (called on canvas tear-down or module disable).
    */
   static detach() {
+    // ⚠️ A PERSISTENT SEQUENCER EFFECT OUTLIVES A RELOAD. It is stored on the
+    // scene, so an aura left running when the engine is switched off would still
+    // be turning tomorrow with nothing left to remove it. Ending them by name
+    // touches only the ones this layer placed.
+    try {
+      Sequencer?.EffectManager?.endEffects?.({ name: `${EFFECT_PREFIX}*` });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not end the aura animations:`, err);
+    }
+    // Legacy: destroy the old drawn-circle container if a previous version left
+    // one on the canvas. Harmless when there is none.
     if (this.container && !this.container.destroyed) {
       this.container.removeChildren().forEach(c => c.destroy?.());
       this.container.parent?.removeChild(this.container);
       this.container.destroy();
-      this.container = null;
     }
+    this.container = null;
   }
 }
 
