@@ -83,7 +83,15 @@ export function whoOwnsThisCast(item, entry = null) {
 export async function playCuratedAnimation({ casterToken, item, targets = [] } = {}) {
   try {
     if (!casterToken || !item) return false;
-    if (typeof Sequencer === "undefined") {
+    // ⚠️🔴 `Sequence` IS THE CONSTRUCTOR. `Sequencer` IS THE NAMESPACE.
+    // This checked `typeof Sequencer` and then called `new Sequencer.Sequence()`,
+    // so the guard passed (the namespace exists, it holds Database) and the very
+    // next line threw "Sequencer.Sequence is not a constructor" on every cast.
+    // Magic Missile resolved its curated animation correctly and then died one
+    // line later. Every other file in the suite already used `new Sequence()`.
+    //
+    // Guard on the thing actually being called, never on its neighbour.
+    if (typeof Sequence === "undefined") {
       console.warn(`${MODULE_ID} | Sequencer is not available, so "${item.name}" `
         + `cannot be animated by ACE.`);
       return false;
@@ -101,7 +109,7 @@ export async function playCuratedAnimation({ casterToken, item, targets = [] } =
     }
 
     const o = anim.options;
-    const seq = new Sequencer.Sequence();
+    const seq = new Sequence();
 
     // ── The sound: one, at the source ─────────────────────────────────────
     if (anim.sound?.file) {
