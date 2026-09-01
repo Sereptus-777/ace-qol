@@ -214,6 +214,40 @@ export class AuraEngine {
       } catch (err) { console.warn(`${MODULE_ID} | aura ring catch-up failed:`, err); }
     }
 
+    // ── The halo has to appear the moment the effect lands ───────────────
+    //
+    // ⚠️ MOVEMENT WAS THE ONLY TRIGGER, AND IT IS THE WRONG ONE FOR THIS. The
+    // rings redraw when a token moves, which was enough when the only thing
+    // drawn was a circle round a stationary paladin. The per-creature halo is
+    // drawn from the APPLIED EFFECT, so the event that changes it is the effect
+    // being created or deleted - and that happens on the GM's client while
+    // everyone else's screen still shows the old picture.
+    //
+    // ⚠️ These fire on EVERY client, which is the point. The effect write is
+    // still activeGM-only; only the drawing is universal.
+    for (const hook of ["createActiveEffect", "deleteActiveEffect"]) {
+      Hooks.on(hook, (effect) => {
+        try {
+          if (QolSettings.get?.("auraEngineEnabled") === false) return;
+          if (!effect?.flags?.[FLAG_NS]?.[FLAG_AURA_APPLIED]) return;
+          AuraVisualLayer.refresh();
+        } catch (err) {
+          console.warn(`${MODULE_ID} | aura halo refresh failed on ${hook}:`, err);
+        }
+      });
+    }
+
+    // An aura effect being switched off is a creature no longer protected.
+    Hooks.on("updateActiveEffect", (effect, changes) => {
+      try {
+        if (changes?.disabled === undefined) return;
+        if (!effect?.flags?.[FLAG_NS]?.[FLAG_AURA_APPLIED]) return;
+        AuraVisualLayer.refresh();
+      } catch (err) {
+        console.warn(`${MODULE_ID} | aura halo refresh failed on updateActiveEffect:`, err);
+      }
+    });
+
     // Token moved → recompute the aura state of EVERY token (cheap; we only
     // touch differences). A token's movement can affect:
     //   - The token itself (entering/leaving someone else's aura)
@@ -779,6 +813,63 @@ export class AuraVisualLayer {
       g.drawCircle(cx, cy, radiusPx - 4);
 
       this.container.addChild(g);
+    }
+
+    // ── The people it is actually protecting ────────────────────────────────
+    //
+    // ⚠️🔴 A RING ROUND THE PALADIN SHOWS RANGE. IT DOES NOT SHOW THAT ANYONE IS
+    // PROTECTED. Johnny, 2026-09-01:
+    //
+    //   "each person that came within 10 feet of the paladin suddenly got a
+    //    little glowing aura around them, the same as the one the paladin had...
+    //    I'm not sure that aura works. It probably does, but I liked the little
+    //    bit of an animation when they step near the paladin, so that they knew
+    //    the aura of protection was protecting them."
+    //
+    // That was Automated Animations' own aura visual, and his AA aura list is
+    // EMPTY — the entries were lost from his config. On 2026-08-27 I made ACE
+    // draw a source ring when AA has nothing, which put something on the board
+    // and answered the wrong question.
+    //
+    // ⚠️ THIS IS DRAWN FROM THE APPLIED EFFECT, NOT FROM THE DISTANCE. That is
+    // the whole point: it is evidence the effect actually landed. A creature
+    // standing well inside the ring with no glow means the aura engine has not
+    // caught up, and that is exactly the bug worth seeing rather than assuming
+    // away. Three aura bugs this fortnight were invisible for want of this.
+    try {
+      const sourceIds = new Set(sources.map(s => s.token?.id).filter(Boolean));
+      for (const t of (canvas.tokens?.placeables ?? [])) {
+        if (!t.actor || sourceIds.has(t.id)) continue;   // the source has its ring
+
+        for (const eff of (t.actor.effects ?? [])) {
+          const f = eff.flags?.[FLAG_NS];
+          if (!f?.[FLAG_AURA_APPLIED]) continue;
+          if (eff.disabled) continue;                    // switched off is not protected
+
+          const colour = AURA_RING_COLORS[f.auraId] ?? 0xffffff;
+          const tw = (t.document?.width  ?? 1) * grid;
+          const th = (t.document?.height ?? 1) * grid;
+          const cx = (t.x ?? 0) + tw / 2;
+          const cy = (t.y ?? 0) + th / 2;
+          // Hug the token rather than sit at the aura's radius: this is a
+          // "you are covered" mark, not a second range indicator.
+          const r  = (Math.max(tw, th) / 2) + 4;
+
+          const halo = new PIXI.Graphics();
+          halo.beginFill(colour, 0.14);
+          halo.drawCircle(cx, cy, r);
+          halo.endFill();
+          halo.lineStyle({ width: 2, color: colour, alpha: 0.75, alignment: 0 });
+          halo.drawCircle(cx, cy, r);
+          halo.lineStyle({ width: 1, color: colour, alpha: 0.35, alignment: 0 });
+          halo.drawCircle(cx, cy, r + 3);
+          this.container.addChild(halo);
+          break;   // one halo per creature, even under two paladins
+        }
+      }
+    } catch (err) {
+      // ⚠️ Never let the halo take the source rings down with it.
+      console.warn(`${MODULE_ID} | could not draw the protected-creature halos:`, err);
     }
   }
 
