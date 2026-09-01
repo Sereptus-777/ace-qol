@@ -56,9 +56,32 @@ function _rectOf(t, gs, gd) {
   const hU = Number(d.height ?? 1) || 1;
   // Snap sub-cell (Tiny) footprints out to their whole 5-ft square — see
   // aceSnapSubCellRect for the full why. No-op for Medium / Large / +.
+  // ⚠️🔴 THE DOCUMENT IS THE TRUTH. THE PLACEABLE IS AN ANIMATION IN PROGRESS.
+  //
+  // This read `t.x` first and only fell back to the document, and in Foundry
+  // V13 `PlaceableObject#x` is literally `return this._bounds.x` — the display
+  // bounds, which the movement animation drives frame by frame. `document.x` is
+  // set immediately and is where the token actually IS.
+  //
+  // Every rules decision that measured distance therefore ran against the
+  // position the token was LEAVING. The aura engine recomputes 80ms after a
+  // move; a token crossing one 332px square animates for far longer than that,
+  // so it read the old square every time.
+  //
+  // Johnny, 2026-09-01, describing it exactly: "If I move another token in, it
+  // doesn't draw it right away until I move another token... It's not checking
+  // every move." It was checking every move. It was measuring the previous one.
+  //
+  // ⚠️ THIS IS NOT ONLY AURAS. Everything downstream of aceDistanceFt reads this:
+  // spell range, weapon reach, cover, aura radius. All of them were one move
+  // stale whenever a decision landed during an animation.
+  //
+  // The same lesson, in a different file: the concentration widget was fixed on
+  // 2026-06-xx to read the NEW position from the update payload rather than a
+  // value that had reverted under it. Same class of bug, same conclusion.
   return aceSnapSubCellRect({
-    x: Number(t?.x ?? d.x ?? 0) || 0,
-    y: Number(t?.y ?? d.y ?? 0) || 0,
+    x: Number(d.x ?? t?.x ?? 0) || 0,
+    y: Number(d.y ?? t?.y ?? 0) || 0,
     w: wU * gs,
     h: hU * gs,
     elev:  Number(d.elevation ?? 0) || 0,
@@ -134,8 +157,21 @@ export function aceTokenGapFt(a, b, opts = {}) {
   } catch (err) {
     console.warn("ace-qol | aceTokenGapFt failed — centre-to-centre fallback:", err);
     try {
-      const ca = a?.center ?? { x: a?.x ?? 0, y: a?.y ?? 0 };
-      const cb = b?.center ?? { x: b?.x ?? 0, y: b?.y ?? 0 };
+      // ⚠️ THE SAME STALE-POSITION TRAP AS `_rectOf` ABOVE. `token.center` is
+      // derived from the display bounds, so mid-animation it is the old square.
+      // Build the centre from the DOCUMENT, and only fall back to the placeable.
+      const _centre = (t) => {
+        const d = t?.document ?? t ?? {};
+        const gs = _gridSize();
+        const x = Number(d.x ?? t?.x), y = Number(d.y ?? t?.y);
+        if (Number.isFinite(x) && Number.isFinite(y)) {
+          return { x: x + ((Number(d.width) || 1) * gs) / 2,
+                   y: y + ((Number(d.height) || 1) * gs) / 2 };
+        }
+        return t?.center ?? { x: 0, y: 0 };
+      };
+      const ca = _centre(a);
+      const cb = _centre(b);
       const gd = _ftPerCell();
       const d = canvas?.grid?.measurePath
         ? (canvas.grid.measurePath([ca, cb]).distance ?? Infinity)
