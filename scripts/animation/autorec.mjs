@@ -120,6 +120,28 @@ export function pathFor(video) {
         if (Sequencer?.Database?.entryExists?.(candidate)) return candidate;
       } catch (_) { /* fall through to the next candidate */ }
     }
+
+    // ⚠️🔴 THE CURATED COLOUR OFTEN DOES NOT EXIST, AND THAT KILLED MAGIC MISSILE.
+    // His record asks for `magicmissile / 01 / purple`. JB2A ships Magic Missile
+    // in blue and darkred only. The key never resolved, so one of the most basic
+    // spells in the game played nothing at all, silently.
+    //
+    // JB2A does not ship every colour for every animation, and an autorec record
+    // can outlive the pack it was picked against. Asking Sequencer what actually
+    // exists under the parent is the difference between the right animation in
+    // the wrong colour and no animation whatsoever.
+    try {
+      const parent = ["autoanimations", dbSection, menuType, animation, variant]
+        .filter(Boolean).join(".");
+      const under = Sequencer?.Database?.getPathsUnder?.(parent) ?? [];
+      if (under.length) {
+        const pick = `${parent}.${under[0]}`;
+        console.warn(`ace-qol | "${animation}" has no "${color}" in this JB2A install `
+          + `(it has ${under.join(", ")}). Using ${under[0]} rather than playing nothing.`);
+        return pick;
+      }
+    } catch (_) { /* nothing under it either; fall through and say so */ }
+
     return null;
   } catch (err) {
     console.warn("ace-qol | could not work out an animation path:", err);
