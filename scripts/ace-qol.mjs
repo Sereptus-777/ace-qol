@@ -15,6 +15,7 @@
 export const MODULE_ID = "ace-qol";
 
 import { QolSettings }       from "./settings.mjs";
+import { whyNoAura } from "./aura-diagnose.mjs";
 import { whyNoAnimation, animationFor, invalidate } from "./animation/autorec.mjs";
 import { readActionFacts, describeActionFacts } from "./inference/action-facts.mjs";
 import { classifyItem, describeClassification } from "./inference/classify-item.mjs";
@@ -5534,6 +5535,8 @@ Hooks.once("ready", () => {
     // ── Borrowed animations ─────────────────────────────────────────────
     //   game.aceQol.whyNoAnimation(item)   plain English, three possible causes
     whyNoAnimation, animationFor, invalidateAnimationIndex: invalidate,
+    //   game.aceQol.whyNoAura()   where in the chain an aura stopped
+    whyNoAura,
 
     readActionFacts, describeActionFacts,
     classifyItem, describeClassification,
