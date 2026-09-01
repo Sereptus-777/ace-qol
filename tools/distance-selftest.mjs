@@ -97,5 +97,42 @@ check("adjacent creatures have no gap between them",
 check("one square between them is a 5 foot gap",
   aceTokenGapFt(still(0, 0), still(200, 0)), 5);
 
-console.log("\n" + pass + " passed, " + fail + " failed");
+console.log("");
+console.log("THE TABLE'S DIAGONAL RULE IS READ, NOT ASSUMED");
+// ⚠️ Johnny's own board, 2026-09-01: one diagonal square between Firaxis and
+// Chudd. Under the PHB rule that is 10 feet. Under the DMG's optional rule the
+// second diagonal costs 10, so it is 15 — which is what his ruler said while
+// ACE said 10. Neither was broken; they were following different rules, and
+// ACE was not reading the setting at all.
+const setRule = (v) => {
+  globalThis.game.settings.get = (ns, key) =>
+    (ns === "core" && key === "gridDiagonals") ? v : false;
+};
+
+setRule(0);   // EQUIDISTANT — every diagonal 5 feet
+check("equidistant: two diagonal steps is 10 feet",
+  aceDistanceFt(still(0, 0), still(200, 200)), 10);
+check("equidistant: four diagonal steps is 20 feet",
+  aceDistanceFt(still(0, 0), still(400, 400)), 20);
+
+setRule(4);   // ALTERNATING_1 — 5, 10, 5, 10
+check("alternating: two diagonal steps is 15 feet",
+  aceDistanceFt(still(0, 0), still(200, 200)), 15);
+check("alternating: four diagonal steps is 30 feet",
+  aceDistanceFt(still(0, 0), still(400, 400)), 30);
+check("alternating: a STRAIGHT line is unaffected",
+  aceDistanceFt(still(0, 0), still(400, 0)), 20);
+check("alternating: one diagonal is still 5 feet",
+  aceDistanceFt(still(0, 0), still(100, 100)), 5);
+
+setRule(3);   // RECTILINEAR — a diagonal costs two squares
+check("rectilinear: one diagonal step costs two squares",
+  aceDistanceFt(still(0, 0), still(100, 100)), 10);
+
+setRule(undefined);   // nothing set
+check("an unreadable setting falls back to the PHB default",
+  aceDistanceFt(still(0, 0), still(200, 200)), 10);
+
+console.log("");
+console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

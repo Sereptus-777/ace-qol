@@ -2,10 +2,14 @@
 // ONE place measures the distance between two tokens for the whole suite.
 //
 // RAW 5e measures from the NEAREST EDGE of each creature's space, not its
-// centre, and counts in 5-ft grid steps where a diagonal costs the same as a
-// straight step (the PHB default — NOT Pythagorean). Adjacent (footprints
-// touching) = 5 feet; one empty square between = 10 feet; and so on. This matches
-// the in-game ruler a player drags across the grid.
+// centre, and counts in whole grid steps. Adjacent (footprints touching) = 5
+// feet; one empty square between = 10 feet.
+//
+// ⚠️ WHAT A DIAGONAL COSTS IS THE TABLE'S CHOICE, AND ACE USED TO ASSUME IT.
+// Foundry has a core `gridDiagonals` setting; this file now reads it. The PHB
+// default is every diagonal 5 feet, the DMG's optional rule is 5-10-5-10, and a
+// real diagonal is 7.07. A table on the optional rule used to get one number
+// from its own ruler and a different one from every ACE range check.
 //
 // It is also SIZE-AWARE (a Large vampire's near edge, not its middle) and
 // 3D-AWARE: each creature occupies a cube of its size (Medium 5 feet tall, Large
@@ -128,20 +132,100 @@ export function aceSnapSubCellRect(rect) {
  * @param {{threeD?: boolean}} [opts]
  * @returns {number} gap in feet (a clean multiple of the scene's ft/cell)
  */
-export function aceEdgeGapFt(rectA, rectB, opts = {}) {
+/**
+ * What does a diagonal cost at THIS table?
+ *
+ * ⚠️🔴 ACE ASSUMED THE SIMPLE RULE AND NEVER READ THE SETTING. Foundry has
+ * a core `gridDiagonals` option and dnd5e honours it, so a table running the
+ * DMG's optional rule got one number from their own ruler and a different one
+ * from every ACE range check. Invisible to Johnny, whose table wants the simple
+ * rule, and wrong for anyone who ships with the other.
+ *
+ * A real diagonal is 5 x sqrt(2) = 7.07 feet. Neither rule is honest; they are
+ * two ways of avoiding an irrational number at the table.
+ *
+ *   EQUIDISTANT (0)     every diagonal 5 feet. The PHB default in both
+ *                       editions. Fast, and worth about 41% free movement.
+ *   ALTERNATING (4, 5)  5, 10, 5, 10. Averages 7.5, within 6% of the truth,
+ *                       at the cost of tracking diagonal parity.
+ *   EXACT (1)           the real sqrt(2), which stops producing multiples of 5.
+ *   RECTILINEAR (3)     a diagonal costs two squares.
+ *
+ * @returns {"equidistant"|"alternating"|"exact"|"rectilinear"}
+ */
+function _diagonalRule() {
+  try {
+    // A scene may override the world setting; prefer what the scene says.
+    const scene = canvas?.scene?.grid?.diagonals;
+    const raw = (scene ?? null) !== null && scene !== undefined
+      ? scene
+      : game?.settings?.get?.("core", "gridDiagonals");
+    switch (Number(raw)) {
+      case 1: return "exact";
+      case 2: return "alternating";   // APPROXIMATE, 1.5 per diagonal
+      case 3: return "rectilinear";
+      case 4:
+      case 5: return "alternating";
+      default: return "equidistant";
+    }
+  } catch (_) {
+    // ⚠️ Unknown falls to the PHB default, which is what both editions print.
+    return "equidistant";
+  }
+}
+
+/**
+ * Cost of moving `straights` orthogonal cells and `diagonals` diagonal cells,
+ * under the table's rule, in feet.
+ */
+function _cellsToFeet(straights, diagonals, gd) {
+  switch (_diagonalRule()) {
+    case "alternating":
+      // 1st diagonal 5, 2nd 10, 3rd 5, 4th 10 ... = 5n + 5*floor(n/2)
+      return (straights * gd) + (diagonals * gd) + (Math.floor(diagonals / 2) * gd);
+    case "rectilinear":
+      return (straights * gd) + (diagonals * gd * 2);
+    case "exact": {
+      // Kept on the grid: the true length, rounded to whole squares so the
+      // answer is still a multiple of the grid distance.
+      const exact = Math.hypot(straights + diagonals, diagonals);
+      return Math.round(exact) * gd;
+    }
+    default:
+      return (straights + diagonals) * gd;
+  }
+}
+
+/**
+ * The gap between two rectangles, as a count of orthogonal and diagonal steps.
+ *
+ * ⚠️ THE TWO AXES ARE KEPT SEPARATE. Collapsing them with `Math.max` up
+ * front throws away the information every rule except equidistant needs.
+ */
+function _gapSteps(rectA, rectB, opts) {
   const gs = _gridSize();
   const gd = _ftPerCell();
   const dxPx = Math.max(0, rectA.x - (rectB.x + rectB.w), rectB.x - (rectA.x + rectA.w));
   const dyPx = Math.max(0, rectA.y - (rectB.y + rectB.h), rectB.y - (rectA.y + rectA.h));
-  let cells = Math.max(Math.ceil(dxPx / gs), Math.ceil(dyPx / gs));
+  const cx = Math.ceil(dxPx / gs);
+  const cy = Math.ceil(dyPx / gs);
+  let diagonals = Math.min(cx, cy);
+  let straights = Math.max(cx, cy) - diagonals;
 
   if (_use3D(opts)) {
     const aBot = Number(rectA.elev ?? 0) || 0, aH = Number(rectA.hgtFt ?? 0) || 0;
     const bBot = Number(rectB.elev ?? 0) || 0, bH = Number(rectB.hgtFt ?? 0) || 0;
-    const gapZ = Math.max(0, aBot - (bBot + bH), bBot - (aBot + aH)); // ft
-    cells = Math.max(cells, Math.ceil(gapZ / gd));
+    const gapZ = Math.max(0, aBot - (bBot + bH), bBot - (aBot + aH));
+    const cz = Math.ceil(gapZ / gd);
+    // Vertical separation is counted in the same steps; it can only lengthen.
+    if (cz > straights + diagonals) straights = cz - diagonals;
   }
-  return cells * gd;
+  return { straights, diagonals };
+}
+
+export function aceEdgeGapFt(rectA, rectB, opts = {}) {
+  const { straights, diagonals } = _gapSteps(rectA, rectB, opts);
+  return _cellsToFeet(straights, diagonals, _ftPerCell());
 }
 
 /**
@@ -195,8 +279,31 @@ export function aceTokenGapFt(a, b, opts = {}) {
  * @returns {number} Distance in feet, or Infinity if it cannot be measured.
  */
 export function aceDistanceFt(a, b, opts = {}) {
-  const gap = aceTokenGapFt(a, b, opts);
-  return Number.isFinite(gap) ? gap + _ftPerCell() : gap;
+  try {
+    if (!a || !b) return Infinity;
+    const gs = _gridSize();
+    const gd = _ftPerCell();
+    const { straights, diagonals } = _gapSteps(_rectOf(a, gs, gd), _rectOf(b, gs, gd), opts);
+
+    // ⚠️🔴 THE TARGET'S OWN SQUARE IS A STEP, AND IT FOLLOWS THE SAME RULE.
+    // This used to be `gap + oneCell` - a flat five feet bolted on outside the
+    // diagonal logic. Under the alternating rule that is wrong: two diagonal
+    // steps cost 5 then 10, so a creature one diagonal square away is 15 feet,
+    // and adding a flat 5 to a 5-foot gap produced 10.
+    //
+    // The extra step travels in the same direction as the rest of the journey:
+    // diagonally if any part of it was diagonal, straight otherwise. Two
+    // touching creatures have no gap at all and are one step apart, which is
+    // 5 feet under every rule that matters.
+    const goesDiagonally = diagonals > 0 || (straights === 0 && diagonals === 0);
+    return _cellsToFeet(
+      straights + (goesDiagonally ? 0 : 1),
+      diagonals + (goesDiagonally ? 1 : 0),
+      gd);
+  } catch (err) {
+    console.warn("ace-qol | aceDistanceFt failed:", err);
+    return Infinity;
+  }
 }
 
 /**
