@@ -573,6 +573,15 @@ Hooks.once("init", () => {
 // it (2026-08-09). Registering here costs nothing and cannot be skipped.
 Hooks.once("ready", () => {
   try { installSliderGuard(); } catch (_) { /* cosmetic guard, never fatal */ }
+  // ⚠️ File scope, its own try/catch: one throw in a flat run of registrations
+  // kills every one below it.
+  try {
+    import("./hover-distance.mjs")
+      .then(({ HoverDistance }) => HoverDistance.register())
+      .catch(err => console.warn(`${MODULE_ID} | hover distance unavailable:`, err));
+  } catch (err) {
+    console.warn(`${MODULE_ID} | hover distance could not be scheduled:`, err);
+  }
   // Keep Sequencer's "missing template" banner off screen when WE deleted the
   // template. Narrow, time-boxed, and it logs everything it hides.
   import("./template-noise.mjs")

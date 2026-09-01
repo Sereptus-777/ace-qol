@@ -350,6 +350,20 @@ export class QolSettings {
       default: {},
     });
 
+    // ⚠️ Asked for by name, 2026-09-01, after turning off a third-party
+    // hover module that was reporting distances the rules engine disagreed with.
+    s("hoverDistance", {
+      name:    "Show Distance On Hover",
+      hint:    "With one token selected, hovering another shows how far apart they are — "
+             + "measured edge to edge with the same function ACE uses for spell range, reach "
+             + "and aura radius, so the number on screen and the number in the rules are the "
+             + "same number.",
+      scope:   "client",
+      config:  true,
+      type:    Boolean,
+      default: true,
+    });
+
     s("raw3dDistance", {
       name:    "3D Distance (count elevation)",
       hint:    "Measure reach, range, spells, and auras in 3D per strict 5e RAW — height from flying or elevation counts toward distance. When everyone is at the same elevation this changes nothing. Turn OFF for flat 2D. Default: ON.",
