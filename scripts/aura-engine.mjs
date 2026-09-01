@@ -782,6 +782,13 @@ export class AuraVisualLayer {
     const grid = canvas.scene.grid?.size ?? 100;
     const ftPer = canvas.scene.grid?.distance ?? 5;
 
+    // ⚠️ TWO AURAS AT THE SAME RADIUS DRAW ON TOP OF EACH OTHER. Firaxis is
+    // an Oath of the Ancients paladin 9, so Protection (gold) and Warding (blue)
+    // are BOTH 10 feet - identical circles, and whichever draws second wins.
+    // Johnny saw "that plain blue circle" and reasonably concluded Protection
+    // was not working. It was; it was underneath.
+    const ringsPerToken = new Map();
+
     for (const src of sources) {
       const t = src.token;
       const tw = (t.document?.width  ?? 1) * grid;
@@ -797,7 +804,12 @@ export class AuraVisualLayer {
       // the visual to the engine's edge-to-edge distance check exactly.
       const sourceHalfFt = (Math.max(tw, th) / grid * ftPer) / 2;
       const visualRadiusFt = src.rangeFt + sourceHalfFt;
-      const radiusPx = (visualRadiusFt / ftPer) * grid;
+      // Each additional aura on the same creature steps inward a little so every
+      // one of them is visible. The engine still measures the true radius; only
+      // the drawing is nudged.
+      const nth = ringsPerToken.get(t.id) ?? 0;
+      ringsPerToken.set(t.id, nth + 1);
+      const radiusPx = ((visualRadiusFt / ftPer) * grid) - (nth * Math.max(6, grid * 0.06));
       const color = AURA_RING_COLORS[src.aura.id] ?? 0xffffff;
 
       const g = new PIXI.Graphics();
@@ -841,6 +853,11 @@ export class AuraVisualLayer {
       for (const t of (canvas.tokens?.placeables ?? [])) {
         if (!t.actor || sourceIds.has(t.id)) continue;   // the source has its ring
 
+        // ⚠️ ONE HALO PER AURA, NOT PER CREATURE. This used to `break` after
+        // the first one, so somebody standing in both Protection and Warding got
+        // a single halo in whichever colour happened to come first - arbitrary,
+        // and it hid the fact that two different things were protecting them.
+        let nth = 0;
         for (const eff of (t.actor.effects ?? [])) {
           const f = eff.flags?.[FLAG_NS];
           if (!f?.[FLAG_AURA_APPLIED]) continue;
@@ -851,20 +868,31 @@ export class AuraVisualLayer {
           const th = (t.document?.height ?? 1) * grid;
           const cx = (t.x ?? 0) + tw / 2;
           const cy = (t.y ?? 0) + th / 2;
-          // Hug the token rather than sit at the aura's radius: this is a
-          // "you are covered" mark, not a second range indicator.
-          const r  = (Math.max(tw, th) / 2) + 4;
+          // ⚠️🔴 THIS LAYER SITS *UNDER* THE TOKEN SPRITES, ON PURPOSE. The
+          // container is added at index 0 with zIndex -1 so the big source ring
+          // reads as light on the floor rather than a hoop over the art.
+          //
+          // The first version of this halo used `half the token + 4px`, which is
+          // the token's own footprint — so it drew flawlessly and was covered
+          // completely by the creature standing on it. Johnny reloaded and saw
+          // "that plain blue circle and that's it."
+          //
+          // It has to extend past the sprite to exist at all. A quarter of a
+          // grid cell of glow shows on the floor around their feet at any token
+          // size and on any grid scale, which is what he described seeing before.
+          const r = (Math.max(tw, th) / 2) + (grid * 0.28) + (nth * Math.max(4, grid * 0.05));
+          nth++;
 
           const halo = new PIXI.Graphics();
-          halo.beginFill(colour, 0.14);
+          // Soft pool of light, brightest at the rim where it clears the sprite.
+          halo.beginFill(colour, 0.16);
           halo.drawCircle(cx, cy, r);
           halo.endFill();
-          halo.lineStyle({ width: 2, color: colour, alpha: 0.75, alignment: 0 });
+          halo.lineStyle({ width: 3, color: colour, alpha: 0.85, alignment: 0 });
           halo.drawCircle(cx, cy, r);
-          halo.lineStyle({ width: 1, color: colour, alpha: 0.35, alignment: 0 });
-          halo.drawCircle(cx, cy, r + 3);
+          halo.lineStyle({ width: 1.5, color: colour, alpha: 0.4, alignment: 0 });
+          halo.drawCircle(cx, cy, r + Math.max(3, grid * 0.05));
           this.container.addChild(halo);
-          break;   // one halo per creature, even under two paladins
         }
       }
     } catch (err) {
