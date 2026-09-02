@@ -25,12 +25,57 @@ const FLAG_NS = "ace-qol";
 import { AuraEngine } from "./aura-engine.mjs";
 import { aceDistanceFt } from "./geometry-utils.mjs";
 
-export function whyNoAura() {
+/** How many aura effects are applied across the scene right now. */
+function _countApplied() {
+  let n = 0;
+  try {
+    for (const t of (canvas?.tokens?.placeables ?? [])) {
+      for (const e of (t.actor?.effects ?? [])) {
+        if (e.flags?.[FLAG_NS]?.auraApplied && !e.disabled) n++;
+      }
+    }
+  } catch (_) { /* counted what we could */ }
+  return n;
+}
+
+export async function whyNoAura() {
   const out = [];
   const say = (s) => { out.push(s); console.log(s); };
 
   try {
     if (!canvas?.scene) { say("No scene."); return out; }
+
+    // ⚠️🔴 FORCE A RECOMPUTE FIRST, AND SAY WHETHER IT CHANGED ANYTHING.
+    // This is the question the first version could not answer. On 2026-09-02 the
+    // table said Virric SHOULD have the aura at 10 feet and had none, while the
+    // engine's own summary printed nothing at all — and that summary only prints
+    // when something changed. So either the recompute was never triggered by
+    // that move, or it ran and decided differently from this table using the
+    // very same distance function.
+    //
+    // Those are opposite bugs in opposite places, and guessing between them has
+    // already cost days. Running one here and reporting before and after settles
+    // it in a single command:
+    //
+    //   0 before, more after   the recompute WORKS and was never triggered
+    //   0 both times           the recompute runs and DECIDES wrong
+    const before = _countApplied();
+    try {
+      await AuraEngine.recomputeAll();
+      const after = _countApplied();
+      say("");
+      say(`FORCED A RECOMPUTE: ${before} aura effect(s) before, ${after} after.`);
+      if (after > before) {
+        say("   -> The recompute WORKS and was simply never triggered by that move.");
+        say("      The bug is in what fires it, not in what it decides.");
+      } else {
+        say("   -> The recompute ran and changed nothing. If a row below still says");
+        say("      SHOULD yes with EFFECT 0, then the engine decides differently");
+        say("      from this table, and both use the same distance function.");
+      }
+    } catch (err) {
+      say(`The forced recompute threw: ${err?.message ?? err}`);
+    }
 
     // ── 1. Sources ───────────────────────────────────────────────────────
     let sources = [];
