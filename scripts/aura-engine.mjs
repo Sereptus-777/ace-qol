@@ -257,15 +257,42 @@ export class AuraEngine {
         if (QolSettings.get?.("auraEngineEnabled") === false) return;
         const moved = changes.x !== undefined || changes.y !== undefined;
         if (!moved) return;
-        // Visual layer refreshes on every client (so everyone sees the rings)
-        AuraVisualLayer.refresh();
-        // Effect-application is activeGM-only (prevent duplicate effect writes with 2 GMs)
-        if (game.users?.activeGM !== game.user) return;
-        // Coalesce rapid drag-moves through the shared 80ms debounce instead of
-        // queuing a full recompute per move-commit (a fast drag across many squares
-        // fired one recompute each). The debounce also covers the commit defer. (perf 2026-06-25)
-        AuraEngine._scheduleRecompute();
-      } catch (err) { /* non-fatal */ }
+
+        // ⚠️🔴 THE RULES ARE SCHEDULED BEFORE THE DRAWING, AND THE DRAWING
+        // CANNOT STOP THEM. This is why Virric kept losing his aura.
+        //
+        // This block used to call `AuraVisualLayer.refresh()` FIRST, inside the
+        // same try, and then schedule the recompute. When refresh threw - and
+        // it can, it talks to Sequencer, the EffectManager and three settings -
+        // the catch below swallowed it and `_scheduleRecompute` was never
+        // reached. Silently. On some moves and not others, depending on what
+        // Sequencer was doing at that instant.
+        //
+        // His log, 2026-09-02: he moved Virric to 10 feet at 07:28:34 and no
+        // recompute ran for the next 4.6 seconds, while a forced one on the same
+        // board went from 6 aura effects to 8. The engine was never wrong. It
+        // was never asked.
+        //
+        // Same shape as the 2026-08-09 lesson one level down: a flat run of
+        // statements in one try is a chain of fuses, and the first one that
+        // blows takes everything after it.
+        if (game.users?.activeGM === game.user) {
+          try { AuraEngine._scheduleRecompute(); }
+          catch (err) { console.warn(`${MODULE_ID} | could not schedule an aura recompute:`, err); }
+        }
+
+        // Now the drawing, in its own try, where a failure costs a frame and
+        // nothing else. Every client redraws so everyone sees the rings.
+        try { AuraVisualLayer.refresh(); }
+        catch (err) { console.warn(`${MODULE_ID} | aura redraw failed (rules unaffected):`, err); }
+        // (The 80ms debounce inside _scheduleRecompute still coalesces a fast
+        // drag across many squares into one recompute — see that method.)
+      } catch (err) {
+        // ⚠️ NOT SILENT ANY MORE. This catch used to swallow whatever went wrong
+        // and move on, which is exactly how a redraw failure turned into a lost
+        // recompute nobody could see.
+        console.warn(`${MODULE_ID} | the aura movement handler threw:`, err);
+      }
     });
 
     // Token created or deleted → recompute
