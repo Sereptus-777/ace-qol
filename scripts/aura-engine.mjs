@@ -439,6 +439,27 @@ export class AuraEngine {
             && t.document.disposition === src.token.document.disposition) continue;
         // Distance check
         const dist = AuraEngine._tokenDistanceFt(t, src.token);
+
+        // ⚠️🔴 RECORD THE POSITION THIS DECISION WAS MADE FROM.
+        // On 2026-09-02 the engine removed Virric's auras on the move that put
+        // him at 10 feet - the correct answer for the 15 feet he had just left.
+        // The trigger was fixed by then and fired on every move, so the only
+        // remaining explanation is that the recompute measured a position the
+        // token no longer occupied. Reading `document.x` was supposed to settle
+        // that and did not.
+        //
+        // Guessing has cost days. This records the exact numbers the decision
+        // used, so the next report is a fact instead of another theory. Kept on
+        // the object, not logged, so it costs nothing until something changes.
+        AuraEngine._lastRead ??= new Map();
+        AuraEngine._lastRead.set(`${t.id}:${src.aura.id}`, {
+          token: t.name,
+          readX: t.document?.x, readY: t.document?.y,
+          drawnX: t.x, drawnY: t.y,
+          srcX: src.token.document?.x, srcY: src.token.document?.y,
+          dist, range: src.rangeFt, verdict: dist <= src.rangeFt,
+        });
+
         if (dist > src.rangeFt) continue;
         myMap.set(src.aura.id, src.token.id);
       }
@@ -540,7 +561,22 @@ export class AuraEngine {
 
     if (QolSettings.get?.("debugMode") || appliedCount + removedCount > 0) {
       console.log(`${MODULE_ID} | AuraEngine: ${sources.length} source(s), +${appliedCount} applied / -${removedCount} removed`);
+      // ⚠️ WHEN THE ANSWER CHANGED, SAY WHAT IT WAS MEASURED FROM. A summary
+      // that reports only the outcome cannot distinguish "decided correctly" from
+      // "decided correctly about the wrong position", and that distinction has
+      // been the whole difficulty here.
+      try {
+        for (const [, r] of (AuraEngine._lastRead ?? new Map())) {
+          const stale = (r.readX !== r.drawnX) || (r.readY !== r.drawnY);
+          console.log(`${MODULE_ID} |    ${r.token}: measured ${r.dist} ft against a `
+            + `${r.range} ft aura -> ${r.verdict ? "inside" : "outside"}`
+            + `  [read x=${r.readX} y=${r.readY}`
+            + (stale ? `, but the SPRITE is at x=${r.drawnX} y=${r.drawnY}` : "")
+            + `, source at x=${r.srcX} y=${r.srcY}]`);
+        }
+      } catch (_) { /* reporting must never break the recompute */ }
     }
+    AuraEngine._lastRead = new Map();
   }
 
   /**
