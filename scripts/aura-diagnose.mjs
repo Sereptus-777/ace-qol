@@ -97,7 +97,11 @@ export function whyNoAura() {
       //   should yes, effect 0   -> the engine is not applying
       //   effect >0, ring 0      -> the drawing is not keeping up
       //   effect 0, ring >0      -> a stale ring nobody ended
-      const flag = (should === "yes" && has === 0) ? "   <- ENGINE NOT APPLYING"
+      // ⚠️ "NOT APPLIED" AND "NOT APPLIED YET" ARE DIFFERENT, AND THE FIRST
+      // WORDING SENT ME LOOKING FOR THE WRONG BUG. Virric showed 0 here while
+      // the world database held both his effects, enabled: the diagnosis had
+      // caught a moment between the move and the recompute. Run it twice.
+      const flag = (should === "yes" && has === 0) ? "   <- NOT APPLIED YET (run again in a few seconds)"
                  : (has > 0 && rings === 0)        ? "   <- APPLIED BUT NOT DRAWN"
                  : (has === 0 && rings > 0)        ? "   <- STALE RING"
                  : "";
@@ -109,6 +113,9 @@ export function whyNoAura() {
     say("");
     say("Any row with an arrow is the broken step. No arrows means the engine and");
     say("the drawing agree, and the problem is somewhere else entirely.");
+    say("");
+    say("⚠️ RUN IT TWICE. A row that clears on the second run was not broken, it");
+    say("was late — which is a different bug in a different place.");
   } catch (err) {
     say(`The diagnosis itself failed: ${err?.message ?? err}`);
     console.error(err);

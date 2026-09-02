@@ -852,8 +852,14 @@ export class AuraVisualLayer {
           ]);
           if (!path) continue;
 
+          // ⚠️ TWO AURAS ON ONE CREATURE MUST LOOK LIKE TWO. Firaxis carries
+          // Protection AND Warding; both rings were scaled identically, so they
+          // sat exactly on top of each other and read as one. Each additional
+          // one steps outward a little.
+          const nth = (wanted._perToken ??= new Map()).get(t.id) ?? 0;
+          wanted._perToken.set(t.id, nth + 1);
           wanted.set(`${EFFECT_PREFIX}on:${t.id}:${f.auraId}`, {
-            token: t, path, scale: 1.05, opacity: 0.9, fadeIn: 400,
+            token: t, path, scale: 1.05 + (nth * 0.16), opacity: 0.9, fadeIn: 400,
           });
         }
       }
@@ -887,6 +893,13 @@ export class AuraVisualLayer {
             .opacity(spec.opacity ?? 0.85)
             .fadeIn(spec.fadeIn ?? 300)
             .fadeOut(300)
+            // ⚠️ UNDER THE ART, ALWAYS. Sequencer puts effects ABOVE tokens by
+            // default, which drew the ring across the creature's face. Johnny:
+            // "it's drawing it right over top of his token. I don't want that
+            // shit." The old hand-drawn layer got this right by sitting at
+            // index 0 with a negative zIndex; the Sequencer version has to ask
+            // for the same thing explicitly.
+            .belowTokens()
             .zIndex(0);
           // A reach ring is sized in pixels; a token ring scales to its wearer.
           if (spec.sizePx) e.size(spec.sizePx);
