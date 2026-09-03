@@ -57,6 +57,15 @@ export const TOKEN_METHODS = [
   { name: "setFlag",    used: "hidden state, loot snapshots, identity" },
   { name: "unsetFlag",  used: "clearing the above" },
   { name: "toggleCombat", optional: true, used: "combat toggling" },
+  // ⚠️ A PROPERTY, NOT A METHOD, WHICH IS WHY IT IS MARKED OPTIONAL HERE. The
+  // check above tests for a function and this is a getter, so a required entry
+  // would report a permanent false alarm. It is listed because it IS a platform
+  // dependency: Forge's Ground Level behaviour reads it to tell a token being
+  // PLACED in a low region apart from one descending into it, and without that
+  // distinction dropping a creature onto a balcony floor asks whether it fell.
+  // The reader itself warns once per load if the field is gone.
+  { name: "movementHistory", optional: true,
+    used: "telling a placement apart from a fall (Forge Ground Level)" },
 ];
 
 /** Globals and namespaced calls ACE cannot work without. */
