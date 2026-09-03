@@ -1121,7 +1121,24 @@ export class LootableTile {
       try { this._hoverIconEl.remove(); } catch (_) {}
       this._hoverIconEl = null;
     }
+    // ⚠️ TAKE THE LISTENER DOWN WITH THE ICON. A `canvasPan` handler left
+    // registered would keep moving an element that no longer exists, once per
+    // frame of every pan, for the rest of the session.
+    if (this._hoverPanHook) {
+      try { Hooks.off("canvasPan", this._hoverPanHook); } catch (_) {}
+      this._hoverPanHook = null;
+    }
+    this._hoverIconTarget = null;
     this._hoverIconTileId = null;
+  }
+
+  /** Follow the token while the badge is up. */
+  _trackHoverIcon() {
+    if (this._hoverPanHook) return;
+    this._hoverPanHook = () => this._repositionHoverIcon();
+    // ⚠️ `canvasPan` COVERS THE ZOOM TOO. Foundry fires it for both, which is
+    // the whole reason the badge can be resized in the same handler.
+    Hooks.on("canvasPan", this._hoverPanHook);
   }
 
   /**
@@ -1141,6 +1158,56 @@ export class LootableTile {
       return canHarvest(actor).ok === true;
     } catch (_) {
       return false;   // never let the badge decision throw the hover handler
+    }
+  }
+
+  /**
+   * Put the icon back on the token's centre, at the size this zoom calls for.
+   *
+   * ⚠️ SIZE AS WELL AS PLACE. The badge is 75% of a grid square as it appears
+   * ON SCREEN, so a zoom that does not also resize it leaves a badge that is
+   * right where it belongs and the wrong size for the square under it.
+   */
+  _repositionHoverIcon() {
+    const icon = this._hoverIconEl;
+    const tile = this._hoverIconTarget;
+    if (!icon || !tile) return;
+    try {
+      const tileDoc = tile.document ?? tile;
+      if (!tileDoc) return;
+      const bounds = (typeof tile.bounds === "object" && tile.bounds) ? tile.bounds : null;
+      let cx, cy;
+      if (bounds && Number(bounds.width) > 0) {
+        cx = Number(bounds.x) + Number(bounds.width) / 2;
+        cy = Number(bounds.y) + Number(bounds.height) / 2;
+      } else if (tile.center && Number.isFinite(tile.center.x)) {
+        cx = tile.center.x; cy = tile.center.y;
+      } else {
+        const gs = Number(canvas?.grid?.size) || 100;
+        const isToken = tileDoc.documentName === "Token";
+        cx = Number(tileDoc.x) + ((Number(tileDoc.width) || 1) * (isToken ? gs : 1)) / 2;
+        cy = Number(tileDoc.y) + ((Number(tileDoc.height) || 1) * (isToken ? gs : 1)) / 2;
+      }
+      const screen = canvas.stage.toGlobal({ x: cx, y: cy });
+      const canvasEl = document.getElementById("board") ?? canvas?.app?.view;
+      if (!canvasEl) return;
+      const rect = canvasEl.getBoundingClientRect();
+      const zoom = Number(canvas?.stage?.scale?.x) || 1;
+      const size = Math.max(24, Math.min(96,
+        Math.round((Number(canvas?.grid?.size) || 100) * zoom * 0.75)));
+      const glyph = Math.round(size * 0.5);
+      icon.style.left = `${rect.left + screen.x}px`;
+      icon.style.top  = `${rect.top + screen.y}px`;
+      icon.style.width = `${size}px`;
+      icon.style.height = `${size}px`;
+      icon.style.fontSize = `${glyph}px`;
+      icon.style.setProperty("--ace-glyph", `${glyph}px`);
+    } catch (err) {
+      // ⚠️ A BADGE IN THE WRONG PLACE IS WORSE THAN NO BADGE, because he will
+      // click where it is and hit the map instead.
+      console.warn(`${MODULE_ID} | could not keep the loot badge on its token, so it `
+        + `is being taken down rather than left floating:`, err);
+      this._cancelHoverIcon();
     }
   }
 
@@ -1209,6 +1276,12 @@ export class LootableTile {
       const zoom  = Number(canvas?.stage?.scale?.x) || 1;
       const onScreen = (Number(canvas?.grid?.size) || 100) * zoom;
       const size  = Math.max(24, Math.min(96, Math.round(onScreen * 0.75)));
+      // ⚠️ REMEMBER WHAT THIS IS ANCHORED TO. The icon is a fixed-position DOM
+      // element in SCREEN coordinates, so a pan or a zoom moves the token out
+      // from under it — Johnny, 2026-09-03: "when I scroll now, that loot starts
+      // scrolling outside of the token itself." `_repositionHoverIcon` below
+      // recomputes both the place and the size, and `canvasPan` drives it.
+      this._hoverIconTarget = tile;
       const glyph = Math.round(size * 0.5);
 
       // A carcass someone can butcher reads as meat, not treasure — and it is
@@ -1253,6 +1326,9 @@ export class LootableTile {
       icon.addEventListener("mousemove", (ev) => ev.stopPropagation());
       document.body.appendChild(icon);
       this._hoverIconEl = icon;
+      // Follow the token from here on: pan, zoom, or the body being dragged.
+      this._trackHoverIcon();
+      this._repositionHoverIcon();
     } catch (err) {
       console.warn(`${MODULE_ID} | hover-icon show failed:`, err);
     }
@@ -1945,6 +2021,9 @@ export class LootableTile {
           await this._syncSnapshotCurrencyZeroed(tile);
         } else if (source === "snapshot") {
           await this._splitSnapshotGold(tile, pcRecipients);
+          // ⚠️ This path zeroes the snapshot itself and never touches the
+          // currency helper, so it needs the empty check of its own.
+          await this._stripIfEmpty(tile);
         }
         splitBtn.disabled = true;
         splitBtn.textContent = "Split Done";
@@ -2319,6 +2398,59 @@ export class LootableTile {
    *   3. Anything already claimed is filtered out of both, so a revive and a
    *      second death cannot hand out the same sword twice.
    */
+  /**
+   * An emptied body stops being lootable, on the spot.
+   *
+   * Johnny, 2026-09-03: "once loot has been distributed, whether it's one item
+   * or all the items and all the gold, it is stripped off that particular
+   * token... Once it doesn't have anything left, and I mean anything, I mean
+   * money or any lootable items, then the little loot bag icon should not show
+   * up."
+   *
+   * ⚠️ THE ICON TEST ALREADY RETURNS FALSE FOR AN EMPTY BODY, AND THAT IS NOT
+   * THE SAME THING. It computes the answer fresh every hover from a snapshot, a
+   * claim list and possibly a world actor, so an empty body stays a lootable
+   * body that happens to contain nothing — three sources that must all still
+   * agree, forever, for the icon to stay away. Clearing the flag removes the
+   * question instead of answering it again every time.
+   *
+   * ⚠️ THIS TOKEN, NOT THE ACTOR. "Just the one on the canvas" — nine goblins
+   * off one prototype must not all empty because one was looted.
+   *
+   * ⚠️ AND IT MUST RUN AFTER EVERY ROUTE OUT. One item, all items, the gold, a
+   * split, a delete. Anything that can be the LAST thing to leave a body has to
+   * call this, or the bag hangs around on a corpse with nothing in it.
+   */
+  async _stripIfEmpty(tile) {
+    try {
+      const tileDoc = tile?.document ?? tile;
+      const flags = tileDoc?.flags?.[MODULE_ID] ?? {};
+      if (!flags.isDeadToken && !flags.isDeadLootable) return false;
+
+      const loot = this._deadLootFor(tileDoc);
+      const coins = loot.currency ?? {};
+      const hasCoin = ((coins.pp ?? 0) + (coins.gp ?? 0) + (coins.ep ?? 0)
+                     + (coins.sp ?? 0) + (coins.cp ?? 0)) > 0;
+      if (loot.items.length > 0 || hasCoin) return false;
+
+      await tileDoc.update({
+        [`flags.${MODULE_ID}.-=isDeadLootable`]: null,
+        [`flags.${MODULE_ID}.-=lootSnapshot`]: null,
+        [`flags.${MODULE_ID}.lootEmptied`]: true,
+      });
+      // If the badge is on screen for this very body, take it down now rather
+      // than leaving it until the cursor happens to move off.
+      if (this._hoverIconTileId === (tileDoc.id ?? null)) this._cancelHoverIcon();
+      console.log(`${MODULE_ID} | "${tileDoc.name}" has nothing left on it — `
+        + `it is no longer lootable.`);
+      return true;
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not check whether this body is empty, so its `
+        + `loot badge may still show with nothing behind it:`, err);
+      return false;
+    }
+  }
+
   _deadLootFor(tileDoc) {
     const empty = { items: [], currency: { pp: 0, gp: 0, ep: 0, sp: 0, cp: 0 }, source: "none" };
     try {
@@ -2331,6 +2463,8 @@ export class LootableTile {
       // greatsword. The fire engine clears the corpse flags too; this is the
       // guard that does not depend on it having managed to.
       if (flags.isAsh) return { ...empty, source: "ash" };
+      // Emptied by hand. Nothing below can put anything back.
+      if (flags.lootEmptied) return { ...empty, source: "emptied" };
 
       const claimed = new Set(flags.lootClaimed ?? []);
       const snap = flags.lootSnapshot ?? null;
@@ -2703,15 +2837,23 @@ export class LootableTile {
       console.warn(`${MODULE_ID} | gave the item away but could not remove it from the body, `
         + `so it may be lootable again after a revive:`, err);
     }
+
+    // ⚠️ INSIDE THE HELPER, NOT AT ITS FOUR CALL SITES. Three of them existed
+    // before tonight and a fourth will exist eventually; putting the check here
+    // means the route that finally empties a body cannot be the one that forgot.
+    await this._stripIfEmpty(tile);
   }
 
   async _syncSnapshotCurrencyZeroed(tile) {
     try {
       const tileDoc = tile?.document ?? tile;
-      if (!tileDoc?.flags?.[MODULE_ID]?.lootSnapshot) return;
-      await tileDoc.update({
-        [`flags.${MODULE_ID}.lootSnapshot.currency`]: { pp: 0, gp: 0, ep: 0, sp: 0, cp: 0 },
-      });
+      if (tileDoc?.flags?.[MODULE_ID]?.lootSnapshot) {
+        await tileDoc.update({
+          [`flags.${MODULE_ID}.lootSnapshot.currency`]: { pp: 0, gp: 0, ep: 0, sp: 0, cp: 0 },
+        });
+      }
+      // The coins may have been the last thing on it.
+      await this._stripIfEmpty(tile);
     } catch (err) {
       console.warn(`${MODULE_ID} | Snapshot currency sync failed (non-blocking):`, err);
     }
