@@ -81,7 +81,10 @@ export function safeShowForRoll(roll, label = "dice animation") {
  * safeShowForRoll keeps every one, so we wait on the ACTUAL animations, plus
  * DSN's diceSoNiceRollComplete hook for rolls that came in via a chat message.
  * Then `graceMs` so the last die stops visibly wobbling. Land in 900ms → the
- * card posts at 1400ms. No guessed duration anywhere.
+ * card posts at 1200ms. No guessed duration anywhere.
+ *
+ * ⚠️ 300ms IS JOHNNY'S NUMBER, 2026-09-03. It was 500. This is the ONLY place
+ * it is written down; every card in the suite reads it from here.
  *
  * `maxMs` is a CEILING, not a wait. Awaiting DSN unguarded hung the whole
  * damage pipeline in v0.4.21 when a renderer broke and its promise never
@@ -99,7 +102,7 @@ export function safeShowForRoll(roll, label = "dice animation") {
  *
  * @param {number}  [maxMs=3000]        — ceiling, not a delay
  * @param {string}  [opts.messageId]    — only honour the hook for this message
- * @param {number}  [opts.graceMs=500]  — settle beat after the dice land
+ * @param {number}  [opts.graceMs=300]  — settle beat after the dice land
  * @returns {Promise<void>}
  */
 /**
@@ -174,7 +177,7 @@ function _takeArmed() {
   return _armed.shift() ?? null;
 }
 
-export async function awaitDiceSettle(maxMs = 3000, { messageId = null, graceMs = 500, useArmed = false } = {}) {
+export async function awaitDiceSettle(maxMs = 3000, { messageId = null, graceMs = 300, useArmed = false } = {}) {
   try {
     if (!game?.dice3d?.isEnabled?.()) return;
   } catch (_) { return; }
