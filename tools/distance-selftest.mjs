@@ -31,8 +31,8 @@ globalThis.foundry = {
 };
 globalThis.ChatMessage = { create: async () => {}, getSpeaker: () => ({}) };
 
-const { aceDistanceFt, aceTokenGapFt } = await import(
-  "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/geometry-utils.mjs");
+const { aceDistanceFt, aceTokenGapFt, aceNoteTokenPosition, aceForgetTokenPosition } =
+  await import("file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/geometry-utils.mjs");
 
 let pass = 0, fail = 0;
 const check = (label, got, want) => {
@@ -45,9 +45,10 @@ const check = (label, got, want) => {
  * A token placeable the way Foundry actually presents one mid-move: the
  * document already at the destination, the display bounds still lagging.
  */
-const token = ({ docX, docY, drawnX, drawnY, w = 1, h = 1 }) => ({
+let _nextId = 0;
+const token = ({ docX, docY, drawnX, drawnY, w = 1, h = 1, id }) => ({
   x: drawnX, y: drawnY,                       // the animated position
-  document: { x: docX, y: docY, width: w, height: h, elevation: 0 },
+  document: { id: id ?? `t${++_nextId}`, x: docX, y: docY, width: w, height: h, elevation: 0 },
 });
 
 const still = (x, y, w = 1, h = 1) => token({ docX: x, docY: y, drawnX: x, drawnY: y, w, h });
@@ -132,6 +133,62 @@ check("rectilinear: one diagonal step costs two squares",
 setRule(undefined);   // nothing set
 check("an unreadable setting falls back to the PHB default",
   aceDistanceFt(still(0, 0), still(200, 200)), 10);
+
+console.log("");
+console.log("THE UPDATE OUTRANKS THE DOCUMENT");
+// ⚠️ THE CASE THE V13 FIX ABOVE DID NOT COVER, AND IT COST TWO MORE DAYS.
+// Johnny's log, 2026-09-02: the aura engine read x=15604 for Virric 400ms after
+// updateToken announced x=15936, with the document and the sprite AGREEING on
+// the old number. Reading `document.x` cannot help when the document itself is
+// the thing lagging. The hook writes down what the update said; distance reads
+// that in preference.
+setRule(0);
+// His board is a 332px grid; this one is 100px, so the same geometry is used
+// with round numbers. Firaxis at the origin, Virric two squares across and one
+// down (10 feet, inside), stepping out to three squares across (15 feet).
+const src    = still(0, 0);
+const lagged = token({ docX: 200, docY: 100, drawnX: 200, drawnY: 100, id: "virric" });
+
+check("without a note, a lagging document is believed (the old square)",
+  aceDistanceFt(src, lagged), 10);
+
+aceNoteTokenPosition("virric", { x: 300, y: 100 });
+check("the update said he stepped out, so he is 15 feet away and OUTSIDE",
+  aceDistanceFt(src, lagged), 15);
+check("...and that is still true on a second read",
+  aceDistanceFt(src, lagged), 15);
+
+// The note must die the moment the document catches up, or it becomes a
+// permanent lie about a token that has since moved somewhere else entirely.
+const caughtUp = token({ docX: 300, docY: 100, drawnX: 300, drawnY: 100, id: "virric" });
+check("once the document agrees, the note is consumed",
+  aceDistanceFt(src, caughtUp), 15);
+const movedBack = token({ docX: 200, docY: 100, drawnX: 200, drawnY: 100, id: "virric" });
+check("a later move is measured from the document, not the dead note",
+  aceDistanceFt(src, movedBack), 10);
+
+// A note about one token must never be applied to another.
+aceNoteTokenPosition("virric", { x: 900, y: 100 });
+const other = token({ docX: 200, docY: 100, drawnX: 200, drawnY: 100, id: "chudd" });
+check("a note is keyed to its own token and leaks to nobody",
+  aceDistanceFt(src, other), 10);
+aceForgetTokenPosition("virric");
+check("a forgotten note leaves the document in charge",
+  aceDistanceFt(src, lagged), 10);
+
+console.log("");
+console.log("ELEVATION COMES FROM THE UPDATE TOO");
+// A creature that flies while it moves must not be measured at its old height.
+// ⚠️ 3D IS EXPLICIT HERE ONLY BECAUSE THE HARNESS STUBS EVERY SETTING TO false.
+// Live it is on unless the table turns `raw3dDistance` off.
+check("on the ground he is 10 feet away",
+  aceDistanceFt(src, lagged, { threeD: true }), 10);
+aceNoteTokenPosition("virric", { x: 200, y: 100, elevation: 30 });
+check("thirty feet straight up is thirty feet away, not ten",
+  aceDistanceFt(src, lagged, { threeD: true }), 30);
+check("and an elevation-only note is NOT mistaken for the document catching up",
+  aceDistanceFt(src, lagged, { threeD: true }), 30);
+aceForgetTokenPosition("virric");
 
 console.log("");
 console.log(pass + " passed, " + fail + " failed");

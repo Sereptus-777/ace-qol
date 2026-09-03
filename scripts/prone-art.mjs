@@ -64,7 +64,48 @@ export class ProneArt {
 
   /* ─── The index ───────────────────────────────────────────────────────── */
 
+  /**
+   * ⚠️ A CACHE THAT CANNOT NOTICE A RESCAN IS A CACHE THAT GOES STALE FOREVER.
+   * The art module can be rescanned at any moment from its own dialog, and the
+   * old code held whatever it indexed the first time a creature fell over. The
+   * fingerprint is the source's size plus its first and last path, which changes
+   * whenever the folder list or its contents do.
+   */
+  static _fingerprint(paths) {
+    return `${paths.length}|${paths[0] ?? ""}|${paths[paths.length - 1] ?? ""}`;
+  }
+
+  /** ACE Token Art's prone index, built on demand. Null when it is not there. */
+  static async _artModuleIndex() {
+    const mod = game.modules?.get?.("ace-token-art");
+    if (!mod?.active) return null;
+    const api = mod.api;
+    if (typeof api?.getProneIndex !== "function") {
+      console.warn(`${LOG} | ACE Token Art is active but exposes no prone index, so its `
+        + `"Prone Art Folders" setting cannot be read. Falling back to ${PRONE_ART_PATH}.`);
+      return null;
+    }
+    let idx = api.getProneIndex();
+    // Not built yet - ask, once, rather than reporting "no art" for a folder
+    // that simply has not been read at this point in the load.
+    if (!idx?.ready && typeof api.rescanProneArt === "function") {
+      try { await api.rescanProneArt({ silent: true }); idx = api.getProneIndex(); }
+      catch (err) { console.warn(`${LOG} | asking ACE Token Art to build its prone index failed:`, err); }
+    }
+    return idx ?? null;
+  }
+
   static async buildCache({ force = false } = {}) {
+    if (this._cache && !force) {
+      // Cheap staleness check against the art module before trusting the cache.
+      try {
+        const idx = game.modules?.get?.("ace-token-art")?.api?.getProneIndex?.();
+        if (idx?.ready) {
+          const fp = this._fingerprint((idx.all ?? []).map(e => e.path));
+          if (fp !== this._sourceFingerprint) force = true;
+        }
+      } catch (_) { /* an unreadable index is not a reason to throw the cache away */ }
+    }
     if (this._cache && !force) return this._cache;
     const cache = new Map();
     try {
@@ -78,15 +119,49 @@ export class ProneArt {
       }
 
       const seen = [];
-      const walk = async (dir) => {
-        const res = await FP.browse("data", dir);
-        for (const f of res.files ?? []) seen.push(f);
-        for (const sub of res.dirs ?? []) {
-          try { await walk(sub); }
-          catch (err) { console.warn(`${LOG} | could not scan "${sub}":`, err); }
+
+      // ⚠️🔴 ACE TOKEN ART OWNS THE FOLDER LIST. Johnny, 2026-09-02: "our prone
+      // pipeline has got to check the folders in Ace token art." Its Prone tab
+      // has a "Prone Art Folders" setting, and if this kept walking its own
+      // hardcoded path regardless then the moment he pointed that setting
+      // anywhere else the picker would show art this resolver could never find,
+      // and matching by creature name would quietly stop working while the tab
+      // looked full.
+      //
+      // ⚠️ AND IT MUST NOT FALL BACK QUIETLY WHEN THAT LIST COMES BACK EMPTY.
+      // The first version did, so "the art module's folders are misconfigured"
+      // and "the art module is not installed" produced identical behaviour and
+      // identical silence - which is exactly how his folders came to be scanned
+      // by nobody while the rescan reported success.
+      const taIndex = await ProneArt._artModuleIndex();
+      if (taIndex) {
+        for (const e of (taIndex.all ?? [])) if (e?.path) seen.push(e.path);
+        if (seen.length) {
+          console.log(`${LOG} | using ACE Token Art's prone folders (${seen.length} file(s)).`);
+        } else {
+          let configured = [];
+          try { configured = game.settings.get("ace-token-art", "tokenArtProneFolders") ?? []; }
+          catch (_) { /* reported as unknown below */ }
+          console.warn(`${LOG} | ACE Token Art is in charge of prone folders and its index is `
+            + `EMPTY. Configured: ${configured.length ? configured.join(", ") : "(none)"}. `
+            + `No creature will get prone art until that list points at images. `
+            + `Set it under "Prone Art Folders", or in the folder dialog's Prone tab.`);
         }
-      };
-      await walk(PRONE_ART_PATH);
+      } else {
+        // Standalone: ace-qol must still work with the art module absent.
+        console.log(`${LOG} | ACE Token Art is not available, so prone art comes from `
+          + `${PRONE_ART_PATH} instead.`);
+        const walk = async (dir) => {
+          const res = await FP.browse("data", dir);
+          for (const f of res.files ?? []) seen.push(f);
+          for (const sub of res.dirs ?? []) {
+            try { await walk(sub); }
+            catch (err) { console.warn(`${LOG} | could not scan "${sub}":`, err); }
+          }
+        };
+        await walk(PRONE_ART_PATH);
+      }
+      this._sourceFingerprint = ProneArt._fingerprint(seen);
 
       for (const file of seen) {
         if (!/\.(png|webp|jpe?g|gif|avif)$/i.test(file)) continue;   // no .psd
@@ -138,6 +213,18 @@ export class ProneArt {
    * corpse resolver — a Goblin Boss falls back to a goblin, then a humanoid.
    */
   static async artFor(actor) {
+    // ⚠️🔴 THE PICK IS READ BEFORE THE INDEX, AND THE ORDER IS THE POINT.
+    // ACE Token Art's Prone tab writes this flag. A GM who chose a picture for
+    // this creature has already answered the question the name matching below
+    // is guessing at, so `prone-goblin.png` must never override it.
+    //
+    // ⚠️ AND IT IS READ BEFORE THE EMPTY-INDEX BAIL. Checking it further down
+    // meant a GM with an empty prone folder and a deliberately picked file got
+    // nothing at all: the guard returned null before the flag was ever looked
+    // at. The pick does not need the index to exist.
+    const picked = actor?.getFlag?.(MODULE_ID, "proneArt");
+    if (picked) return picked;
+
     const cache = await this.buildCache();
     if (!cache.size) return null;
 
@@ -252,13 +339,14 @@ export class ProneArt {
    * (PIXI, not DOM), so CSS cannot touch them; the icon has to be removed from
    * the sprite container after Foundry builds it.
    *
-   * Only for tokens we actually swapped — a creature with no prone art keeps
-   * its arrow, because otherwise it would have no prone indicator at all.
+   * ⚠️ EVERY PRONE TOKEN NOW, NOT ONLY THE ONES WE SWAPPED. It used to leave
+   * the badge on a creature with no prone art so it would have SOME indicator,
+   * and the orbiting arrows were the other half of that. Johnny removed both on
+   * 2026-09-02: "I don't want anything drawing prone, including us." So the
+   * badge goes for everybody, and a creature with no prone art shows nothing.
    */
   static _hideProneBadge(token) {
     try {
-      const doc = token?.document ?? token;
-      if (!doc?.getFlag?.(MODULE_ID, FLAG_PREV)) return;     // we did not swap it
       const kids = token?.effects?.children ?? [];
       for (const child of kids) {
         const src = child?.texture?.baseTexture?.resource?.src
@@ -268,7 +356,7 @@ export class ProneArt {
           child.visible = false;
         }
       }
-    } catch (_) { /* a visible arrow is far better than a broken token */ }
+    } catch (_) { /* a stray badge is far better than a broken token */ }
   }
 
   /* ─── Wiring ──────────────────────────────────────────────────────────── */

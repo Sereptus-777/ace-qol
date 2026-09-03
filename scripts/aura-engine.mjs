@@ -43,7 +43,7 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
-import { aceDistanceFt } from "./geometry-utils.mjs";
+import { aceDistanceFt, aceMeasuredPosition } from "./geometry-utils.mjs";
 
 // Hardcoded literal — TDZ-safe (see stealth-engine.mjs comment)
 const FLAG_NS = "ace-qol";
@@ -452,11 +452,14 @@ export class AuraEngine {
         // used, so the next report is a fact instead of another theory. Kept on
         // the object, not logged, so it costs nothing until something changes.
         AuraEngine._lastRead ??= new Map();
+        const usedT = aceMeasuredPosition(t);
+        const usedS = aceMeasuredPosition(src.token);
         AuraEngine._lastRead.set(`${t.id}:${src.aura.id}`, {
-          token: t.name,
-          readX: t.document?.x, readY: t.document?.y,
+          token: t.name, aura: src.aura.sourceFeatureName, source: src.token.name,
+          readX: usedT.x, readY: usedT.y, fromUpdate: usedT.fromUpdate,
+          docX: t.document?.x, docY: t.document?.y,
           drawnX: t.x, drawnY: t.y,
-          srcX: src.token.document?.x, srcY: src.token.document?.y,
+          srcX: usedS.x, srcY: usedS.y,
           dist, range: src.rangeFt, verdict: dist <= src.rangeFt,
         });
 
@@ -567,11 +570,13 @@ export class AuraEngine {
       // been the whole difficulty here.
       try {
         for (const [, r] of (AuraEngine._lastRead ?? new Map())) {
-          const stale = (r.readX !== r.drawnX) || (r.readY !== r.drawnY);
-          console.log(`${MODULE_ID} |    ${r.token}: measured ${r.dist} ft against a `
-            + `${r.range} ft aura -> ${r.verdict ? "inside" : "outside"}`
-            + `  [read x=${r.readX} y=${r.readY}`
-            + (stale ? `, but the SPRITE is at x=${r.drawnX} y=${r.drawnY}` : "")
+          // ⚠️ NAME THE AURA AND ITS SOURCE. Every creature printed twice with
+          // identical numbers because Firaxis projects two 10 foot auras, and
+          // two anonymous identical lines read as a duplication bug.
+          const lagged = r.fromUpdate ? `, the document still says x=${r.docX} y=${r.docY}` : "";
+          console.log(`${MODULE_ID} |    ${r.token}: ${r.dist} ft from ${r.source}, `
+            + `against ${r.aura} at ${r.range} ft -> ${r.verdict ? "inside" : "outside"}`
+            + `  [measured from x=${r.readX} y=${r.readY}${lagged}`
             + `, source at x=${r.srcX} y=${r.srcY}]`);
         }
       } catch (_) { /* reporting must never break the recompute */ }
@@ -742,267 +747,77 @@ export class AuraEngine {
 // orangepurple and yellow. Aura of Protection reads as gold in the rules and is
 // mapped to the warmest thing that exists rather than silently failing to a
 // colour nobody chose.
-const AURA_BORDER_TINT = {
-  "aura-of-protection":   "orange",
-  "aura-of-warding":      "blue",
-  "aura-of-courage":      "orange",
-  "aura-of-hate":         "purple",
-  "aura-of-the-guardian": "blue",
-};
 
 // Every effect this layer places is named with this prefix so it can find and
 // end exactly its own, and never somebody else's.
 const EFFECT_PREFIX = "ace-qol-aura:";
 
 
+/**
+ * ⚠️🔴 ACE DOES NOT DRAW AURAS. AUTOMATED ANIMATIONS DOES.
+ *
+ * Johnny, 2026-09-02, after the token report showed FOUR animations on Virric:
+ * "Rip out ACE's rings and let Automated Animations do it."
+ *
+ *   Aura of Protection <token id>  ->  autoanimations.static.particles.swirl.02.white
+ *   Aura of Warding    <token id>  ->  autoanimations.static.particles.swirl.01.blue
+ *   ace-qol-aura:on:<token>:aura-of-protection  ->  jb2a.token_border.circle.spinning.orange
+ *   ace-qol-aura:on:<token>:aura-of-warding     ->  jb2a.token_border.circle.spinning.blue
+ *
+ * The first two are Automated Animations, matching the effect BY NAME and
+ * playing the moment the effect lands. The blue swirl is the one he has been
+ * asking for since 2026-08-27: "the blue one with the floaty things around it.
+ * That's a good aura. Leave that alone." It was never missing. ACE was drawing
+ * a second set of graphics on top of a job another module already had.
+ *
+ * ⚠️ THE HAND-OFF WORKS BECAUSE ACE APPLIES THE EFFECT. That is the contract
+ * now: the engine decides who is covered and writes the Active Effect, and
+ * whatever the table has configured for that effect name draws it. Nothing in
+ * ACE draws an aura, and the `auraVisualMode` setting that used to choose is
+ * gone with the drawing it chose between.
+ *
+ * ⚠️ THIS CLASS STILL EXISTS ON PURPOSE. Nine call sites refresh it on every
+ * move, every token created or deleted, and every effect change. They now feed
+ * a sweeper instead of a renderer: any `ace-qol-aura:*` still turning on a
+ * scene from a previous version is ended. Deleting the class instead would have
+ * meant editing nine callers to remove a call that still has a job.
+ */
 export class AuraVisualLayer {
-  /** PIXI.Container holding all aura ring graphics */
+  /** Legacy: an old PIXI container may still exist on a long-lived canvas. */
   static container = null;
 
-  /**
-   * Returns true if our PIXI ring renderer should be active.
-   * Auto-disables when Automated Animations is active (it draws its own
-   * particle swirls for aura effects). User can override via setting.
-   */
-  static _shouldRender() {
-    const mode = QolSettings.get?.("auraVisualMode") ?? "auto";
-    if (mode === "off")   return false;
-    if (mode === "rings") return true;
-
-    // ⚠️🔴 "AUTO" USED TO MEAN "AA IS INSTALLED, SO IT IS AA'S JOB".
-    // That is a hand-off, and a hand-off must check that somebody caught it.
-    //
-    // Johnny, 2026-08-27: "figure out why I don't see an animation for Aura of
-    // Protection... I used to see those animations." His world had
-    // auraVisualMode "auto" and Automated Animations active - so ACE stood
-    // down - while AA's own `aaAutorec-aura` list was EMPTY. Two systems, each
-    // correctly assuming the other had it, and no ring on the board.
-    //
-    // Nothing was broken in either module. The aura entries had been lost from
-    // AA's config at some point, and ACE had no way to notice it was deferring
-    // to nobody.
-    //
-    // ⚠️ SO ASK WHETHER AA ACTUALLY HAS AURA AUTOMATIONS, not merely
-    // whether AA exists. If its aura list is empty, drawing our own rings is
-    // strictly better than drawing nothing, and it says so once.
-    const aa = game.modules?.get?.("autoanimations");
-    if (!aa?.active) return true;               // AA absent -> we draw
-
-    let aaHasAuras = null;                      // null = could not tell
-    try {
-      const raw = game.settings.get("autoanimations", "aaAutorec-aura");
-      const list = typeof raw === "string" ? JSON.parse(raw) : raw;
-      aaHasAuras = Array.isArray(list) ? list.length > 0 : null;
-    } catch (_) {
-      // ⚠️ "COULD NOT READ IT" IS NOT "IT IS EMPTY". A future AA that
-      // renames or removes this setting must not make ACE start drawing rings
-      // over AA's own, so an unknown answer defers exactly as before.
-      aaHasAuras = null;
-    }
-
-    if (aaHasAuras === false) {
-      if (!AuraEngine._warnedAaEmpty) {
-        AuraEngine._warnedAaEmpty = true;
-        console.warn(`${MODULE_ID} | Automated Animations is active but its aura list `
-          + `is empty, so nothing was drawing aura rings at all. ACE is drawing its own. `
-          + `Set "Aura Visual Style" to Off if you would rather have none.`);
-      }
-      return true;
-    }
-
-    return false;   // AA is active and has auras configured - its job
-  }
+  static attach() { this.refresh(); }
 
   /**
-   * Bring the scene's aura animations up to date. Idempotent.
+   * End every aura animation ACE ever placed.
    *
-   * ⚠️ THERE IS NO CANVAS CONTAINER ANY MORE. This used to build a PIXI
-   * layer and draw circles into it. Sequencer owns the effects now, attaches
-   * them to the tokens itself, and moves them when the tokens move - which is
-   * most of what the old container existed to do by hand.
-   */
-  static attach() {
-    if (!canvas?.tokens) return;
-    if (!this._shouldRender()) { this.detach(); return; }
-    this.refresh();
-  }
-
-  /**
-   * Re-draw all aura rings from scratch. Cheap (Graphics is GPU-accelerated).
-   * Auto-noops if rendering is disabled (e.g., AA is active and mode=auto).
-   */
-  /**
-   * ⚠️🔴 DRAWN CIRCLES ARE NOT ANIMATIONS, AND HE HAS SAID SO TWICE.
-   * Johnny, 2026-09-01, looking at a board full of flat PIXI discs:
+   * ⚠️ BY OUR OWN PREFIX, NEVER BY ANYTHING BROADER. Automated Animations names
+   * its effects after the effect plus the token id, so a wider match would end
+   * the swirls he actually wants. `ace-qol-aura:` only ever named ours.
    *
-   *   "That is just drawn circles. That is not the animation that I had before.
-   *    If you're drawing them, quit fucking drawing them. This is what we use
-   *    Automated Animations for, or JB2A... I want the animation, the circle,
-   *    slight, whatever."
-   *
-   * He is right, and the PIXI layer was never the answer — it was a stopgap I
-   * shipped on 2026-08-27 when ACE and Automated Animations were each deferring
-   * to the other and nothing appeared at all. A stopgap that stays becomes the
-   * product.
-   *
-   * This now plays real JB2A assets through Sequencer:
-   *   per creature  jb2a.token_border.circle.spinning.<colour>  — the little
-   *                 turning ring around anyone actually carrying the effect
-   *
-   * The source gets the same ring as everybody else and nothing more — Aura of
-   * Protection includes its own caster, so the paladin is simply one of the
-   * covered. A separate range circle on top of that buried him in particles.
-   *
-   * ⚠️ DIFFED, NEVER REDRAWN. The old code cleared and rebuilt every graphic on
-   * every token move. Doing that with animations would restart each one several
-   * times a second and look like a strobe. Only what changed is touched.
-   *
-   * ⚠️ ONE CLIENT CREATES THEM. Sequencer broadcasts a persistent effect to
-   * everybody, so if every client created its own the board would carry one copy
-   * per connected user. The activeGM places them; everyone sees them.
+   * ⚠️ AND IT IS NOT A ONE-SHOT. A persistent Sequencer effect is stored on the
+   * scene, so copies survive reloads and sit on scenes he has not opened yet.
+   * Leaving the sweep on the existing refresh calls clears each scene the first
+   * time anything happens on it.
    */
   static refresh() {
-    if (!this._shouldRender()) { this.detach(); return; }
-    if (typeof Sequence === "undefined" || !globalThis.Sequencer?.EffectManager) {
-      // ⚠️ Say it rather than fall back to drawing. Silently reverting to PIXI
-      // discs is how the stopgap became the product in the first place.
-      console.warn(`${MODULE_ID} | Sequencer is not available, so aura animations `
-        + `cannot play. No rings will be drawn.`);
-      return;
-    }
-    // Only the acting GM writes effects; every client sees them.
-    if (game.users?.activeGM !== game.user) return;
-    if (!canvas?.scene) return;
-
+    if (game.users?.activeGM !== game.user) return;   // one client writes
+    if (!globalThis.Sequencer?.EffectManager) return;
     try {
-      const wanted = new Map();   // effect name -> {token, path, scale, colour}
-
-      // ── No reach circle ─────────────────────────────────────────
-      //
-      // ⚠️ THE SOURCE GETS THE SAME RING AS EVERYBODY ELSE, NOTHING MORE.
-      // Johnny, 2026-09-01: "Why is Firaxis spewing out a bunch of, I don't know
-      // what aura that is? I don't want that. I just want his order the same as
-      // the other auras... the blue one with the floaty things around it. That's
-      // a good aura. Leave that alone."
-      //
-      // The big `template_circle.aura` I put on each source was a range
-      // indicator, and it buried the paladin under particles. The per-creature
-      // ring already carries the information that matters - who is covered - and
-      // Aura of Protection includes its own caster, so Firaxis gets a ring from
-      // the loop below like everyone else.
-      //
-      // ⚠️ Range is still visible on demand: hovering the aura in the effects
-      // panel shows the feet, and the engine measures it edge to edge regardless
-      // of what is drawn.
-
-      // ── The people actually carrying the effect ──────────────────────────
-      //
-      // ⚠️ DRIVEN BY THE APPLIED EFFECT, NOT BY DISTANCE. That is the whole
-      // point of the per-creature ring: it is evidence the aura landed. Somebody
-      // standing inside the reach with no ring means the engine has not caught
-      // up, which is a bug worth seeing rather than papering over.
-      for (const t of (canvas.tokens?.placeables ?? [])) {
-        if (!t.actor) continue;
-        for (const eff of (t.actor.effects ?? [])) {
-          const f = eff.flags?.[FLAG_NS];
-          if (!f?.[FLAG_AURA_APPLIED] || eff.disabled) continue;
-
-          const tint = AURA_BORDER_TINT[f.auraId] ?? "blue";
-          const path = AuraVisualLayer._resolve([
-            `jb2a.token_border.circle.spinning.${tint}.001`,
-            `jb2a.token_border.circle.spinning.blue.001`,
-            `jb2a.token_border.circle.static.${tint}.001`,
-          ]);
-          if (!path) continue;
-
-          // ⚠️ TWO AURAS ON ONE CREATURE MUST LOOK LIKE TWO. Firaxis carries
-          // Protection AND Warding; both rings were scaled identically, so they
-          // sat exactly on top of each other and read as one. Each additional
-          // one steps outward a little.
-          const nth = (wanted._perToken ??= new Map()).get(t.id) ?? 0;
-          wanted._perToken.set(t.id, nth + 1);
-          wanted.set(`${EFFECT_PREFIX}on:${t.id}:${f.auraId}`, {
-            token: t, path, scale: 1.05 + (nth * 0.16), opacity: 0.9, fadeIn: 400,
-          });
-        }
-      }
-
-      // ── Diff against what is already playing ─────────────────────────────
-      const live = new Set();
-      try {
-        for (const e of (Sequencer.EffectManager.getEffects({ name: `${EFFECT_PREFIX}*` }) ?? [])) {
-          const n = e?.data?.name ?? e?.name;
-          if (n) live.add(n);
-        }
-      } catch (err) {
-        console.warn(`${MODULE_ID} | could not read the running aura effects:`, err);
-      }
-
-      for (const name of live) {
-        if (wanted.has(name)) continue;
-        try { Sequencer.EffectManager.endEffects({ name }); }
-        catch (err) { console.warn(`${MODULE_ID} | could not end "${name}":`, err); }
-      }
-
-      for (const [name, spec] of wanted) {
-        if (live.has(name)) continue;                   // already turning
-        try {
-          const seq = new Sequence();
-          const e = seq.effect()
-            .file(spec.path)
-            .attachTo(spec.token, { bindAlpha: false })
-            .persist()
-            .name(name)
-            .opacity(spec.opacity ?? 0.85)
-            .fadeIn(spec.fadeIn ?? 300)
-            .fadeOut(300)
-            // ⚠️ UNDER THE ART, ALWAYS. Sequencer puts effects ABOVE tokens by
-            // default, which drew the ring across the creature's face. Johnny:
-            // "it's drawing it right over top of his token. I don't want that
-            // shit." The old hand-drawn layer got this right by sitting at
-            // index 0 with a negative zIndex; the Sequencer version has to ask
-            // for the same thing explicitly.
-            .belowTokens()
-            .zIndex(0);
-          // A reach ring is sized in pixels; a token ring scales to its wearer.
-          if (spec.sizePx) e.size(spec.sizePx);
-          else e.scaleToObject(spec.scale ?? 1.05);
-          seq.play().catch(err =>
-            console.warn(`${MODULE_ID} | aura animation "${name}" failed to play:`, err));
-        } catch (err) {
-          console.warn(`${MODULE_ID} | could not start the aura animation "${name}":`, err);
-        }
-      }
+      const stale = Sequencer.EffectManager.getEffects({ name: `${EFFECT_PREFIX}*` }) ?? [];
+      if (!stale.length) return;
+      Sequencer.EffectManager.endEffects({ name: `${EFFECT_PREFIX}*` });
+      console.log(`${MODULE_ID} | removed ${stale.length} leftover ACE aura ring(s). `
+        + `Aura animations are Automated Animations' job now.`);
     } catch (err) {
-      console.warn(`${MODULE_ID} | the aura visual refresh failed:`, err);
+      console.warn(`${MODULE_ID} | could not clear the leftover aura rings:`, err);
     }
   }
 
-  /** First of these paths this JB2A install actually contains. */
-  static _resolve(candidates) {
-    for (const c of candidates) {
-      try { if (Sequencer?.Database?.entryExists?.(c)) return c; } catch (_) { /* next */ }
-    }
-    // ⚠️ Named, not silent: a missing asset and a disabled engine must not look
-    // the same in the console.
-    console.warn(`${MODULE_ID} | none of these aura assets are in this JB2A `
-      + `install, so nothing will show: ${candidates.join(", ")}`);
-    return null;
-  }
-
-  /**
-   * Detach + cleanup (called on canvas tear-down or module disable).
-   */
+  /** Canvas tear-down / module disable. */
   static detach() {
-    // ⚠️ A PERSISTENT SEQUENCER EFFECT OUTLIVES A RELOAD. It is stored on the
-    // scene, so an aura left running when the engine is switched off would still
-    // be turning tomorrow with nothing left to remove it. Ending them by name
-    // touches only the ones this layer placed.
-    try {
-      Sequencer?.EffectManager?.endEffects?.({ name: `${EFFECT_PREFIX}*` });
-    } catch (err) {
-      console.warn(`${MODULE_ID} | could not end the aura animations:`, err);
-    }
+    try { Sequencer?.EffectManager?.endEffects?.({ name: `${EFFECT_PREFIX}*` }); }
+    catch (err) { console.warn(`${MODULE_ID} | could not end the aura animations:`, err); }
     // Legacy: destroy the old drawn-circle container if a previous version left
     // one on the canvas. Harmless when there is none.
     if (this.container && !this.container.destroyed) {

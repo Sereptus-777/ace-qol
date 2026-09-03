@@ -360,6 +360,120 @@ export class MultiattackEngine {
    * @returns {null | {mode:"parsed", entries:[{item,count}], attackItems}
    *                 | {mode:"fallback", total:number, remaining:number, attackItems}}
    */
+  /**
+   * HOW MANY ATTACKS, AND WHICH — for anything that wants to SHOW it.
+   *
+   * ⚠️🔴 THE NUMBER EXISTED AND NOTHING PUT IT ON SCREEN. Johnny, 2026-09-02:
+   * "There is a number that each creature has for what attacks it can make in
+   * multi-attack, and anywhere that I see multi-attack, I want to see that
+   * number." This engine has parsed that number since it was written, and used
+   * it only to badge the buttons inside its own pop-up. Every other place
+   * Multiattack appears showed the imported description, which on his shadow
+   * dragon reads "The Shadow Dragon (Huge) uses Multiattack."
+   *
+   * ⚠️ IT REPORTS HOW IT KNOWS. `exact` is true when the creature's own text
+   * named a count, and false when this fell back to the usual two. A number
+   * presented with the same confidence either way is the kind of quiet guess
+   * that makes a GM trust a tool once and stop trusting it afterwards.
+   *
+   * @returns {null|{total:number, exact:boolean, entries:Array, label:string}}
+   */
+  /**
+   * The text that actually describes this creature's Multiattack.
+   *
+   * ⚠️🔴 THE ITEM'S DESCRIPTION IS USUALLY WORTHLESS AND THE CREATURE'S IS NOT.
+   * Johnny, 2026-09-02: "Its description is one sentence with no number in it.
+   * That's almost all of them. You understand? That's almost all of them."
+   *
+   * Importers routinely write the Multiattack feat as "The Shadow Dragon (Huge)
+   * uses Multiattack." while the real line - "makes three attacks: one with its
+   * bite and two with its claws" - sits in the CREATURE's stat block text,
+   * because that is where it lived in the source book. Reading only the item
+   * and giving up is reading the one copy that was thrown away.
+   *
+   * So: the item first when it says something useful, then the creature's own
+   * biography, taking the passage that follows the word Multiattack rather than
+   * the whole page - a stat block is full of numbers and "three attacks" could
+   * as easily come from a legendary action further down.
+   */
+  static _multiattackText(actor, maFeature) {
+    const saysSomething = (t) => !!t && /\b(one|two|three|four|five|six|seven|eight|\d+)\b[^.]{0,40}\battacks?\b/i.test(t);
+
+    const fromItem = this._plainText(maFeature?.system?.description?.value ?? "");
+    if (saysSomething(fromItem)) return fromItem;
+
+    // ⚠️ EVERY PLACE dnd5e KEEPS CREATURE PROSE, because importers disagree
+    // about which one they fill in and an empty field is not evidence.
+    const d = actor?.system?.details ?? {};
+    const sources = [
+      d.biography?.value, d.biography?.public,
+      d.description?.value, d.description?.full, d.source?.custom,
+    ];
+
+    for (const raw of sources) {
+      const text = this._plainText(raw ?? "");
+      if (!text) continue;
+      const at = text.search(/multi[\s-]?attack/i);
+      if (at < 0) continue;
+      // ⚠️🔴 STOP AT THE NEXT ABILITY, OR THE COUNT IS THE WHOLE PAGE.
+      // A flat 400-character window ran a lich's Multiattack straight into its
+      // Legendary Actions and read "two attacks with its paralyzing touch" plus
+      // "five attacks with its staff" as seven. Caught by the self-test, which
+      // is the only reason it is not in his game. `_plainText` flattens the
+      // paragraph breaks away, so the section HEADING is what marks the edge.
+      let slice = text.slice(at, at + 400);
+      const nextSection = slice.slice(1).search(
+        /\b(?:legendary|lair|mythic|villain|regional)\s+action|\breactions?\b|\bbonus\s+actions?\b/i);
+      if (nextSection > 0) slice = slice.slice(0, nextSection + 1);
+      if (saysSomething(slice)) return slice;
+    }
+
+    // ⚠️ RETURN THE ITEM TEXT, NOT NOTHING. The caller still wants whatever
+    // there was so it can say it could not find a count, rather than behaving
+    // as though the creature has no Multiattack at all.
+    return fromItem;
+  }
+
+  static summaryFor(actor) {
+    try {
+      const maFeature = actor?.items?.find(i => /multiattack/i.test(i.name ?? ""));
+      if (!maFeature) return null;
+
+      const text = this._multiattackText(actor, maFeature);
+      const attackItems = this._getAttackItems(actor) ?? [];
+
+      // Best case: the text names the weapons, so we can say "2 claws, 1 bite".
+      const parsed = this._parseMultiattack(text, attackItems);
+      if (parsed?.length) {
+        const total = parsed.reduce((sum, e) => sum + e.count, 0);
+        if (total > 0) {
+          const parts = parsed.map(e => `${e.count} ${e.item?.name ?? "attack"}`);
+          return { total, exact: true, entries: parsed,
+                   label: `${total} attacks: ${parts.join(", ")}` };
+        }
+      }
+
+      // Next: the text gives a bare count without naming weapons.
+      const m = text.match(/\b(one|two|three|four|five|six|seven|eight|\d+)\b\s+(?:\w+\s+){0,2}attacks?\b/i);
+      if (m) {
+        const v = NUM_WORDS[m[1].toLowerCase()] ?? parseInt(m[1], 10);
+        if (v >= 1 && v <= 10) {
+          return { total: v, exact: true, entries: [],
+                   label: `${v} attack${v === 1 ? "" : "s"}` };
+        }
+      }
+
+      // ⚠️ NOTHING IN THE TEXT SAYS A NUMBER, AND THAT IS THE COMMON CASE ON
+      // HIS SHEETS. Say two, and say that it is assumed, rather than printing a
+      // confident 2 that came from nowhere.
+      return { total: 2, exact: false, entries: [],
+               label: "2 attacks (assumed — this creature's Multiattack text does not say)" };
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not work out this creature's attack count:`, err);
+      return null;
+    }
+  }
+
   static _buildPlan(actor, triggerItem) {
     const attackItems = this._getAttackItems(actor);
     if (!attackItems.length) return null;
@@ -386,7 +500,10 @@ export class MultiattackEngine {
 
     // ── PARSED mode (NPC Multiattack naming specific attacks) ──
     if (maFeature) {
-      const text = this._plainText(maFeature.system?.description?.value ?? "");
+      // ⚠️ THE SAME READER THE LABEL USES. Two functions reaching for the
+      // creature's attack count in different places is how the badge and the
+      // pop-up come to disagree in front of a table.
+      const text = this._multiattackText(actor, maFeature);
       const parsed = this._parseMultiattack(text, attackItems);
       if (parsed && parsed.length) {
         this._decrementTrigger(parsed, triggerItem);   // the first swing already happened
@@ -399,7 +516,7 @@ export class MultiattackEngine {
     // ── FALLBACK mode (generic text or PC Extra Attack) ──
     let n = 2;   // covers most Extra Attack + generic "two attacks"
     if (maFeature) {
-      const t = this._plainText(maFeature.system?.description?.value ?? "");
+      const t = this._multiattackText(actor, maFeature);
       const m = t.match(/\b(one|two|three|four|five|six|seven|eight|\d+)\b\s+(?:\w+\s+){0,2}attacks?\b/i);
       if (m) {
         const v = NUM_WORDS[m[1].toLowerCase()] ?? parseInt(m[1], 10);

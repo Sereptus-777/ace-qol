@@ -448,11 +448,43 @@ export class EffectsPanel {
     return out;
   }
 
-  _collectPassive(actor) {
+  /**
+   * ⚠️🔴 THE PANEL MUST NEVER SAY THE SAME THING TWICE.
+   *
+   * Johnny's Firaxis, 2026-09-02: Aura of Protection appeared THREE times in one
+   * panel, and Aura of Warding twice. Nothing was broken and nothing was
+   * duplicated on the sheet - three different true statements about one aura
+   * were each being rendered as their own row:
+   *
+   *   1. the AURAS block, which describes what he PROJECTS and how far
+   *   2. the paladin class feature's own Active Effect, which is what grants it
+   *   3. ACE's applied marker effect, which records that he is standing in it
+   *      (Aura of Protection includes its own source, so the paladin gets one)
+   *
+   * A reader cannot tell those apart, and should not have to. The aura already
+   * has a row that names it and gives its radius, so the other two are noise
+   * that pushes the effects he actually needs to see below the fold.
+   *
+   * They also brought the ugly part with them: 2 and 3 are the only rows in that
+   * screenshot with flat white monochrome icons, because dnd5e ships class
+   * features with plain SVG glyphs. Dropping the duplicates is what removes them.
+   *
+   * ⚠️ ONLY WHERE THE AURAS BLOCK ALREADY SPEAKS. If the AURAS block is switched
+   * off, or does not know about that aura, the effect is the only evidence the
+   * creature has it and it stays. Hiding a row nothing else reports would be the
+   * silent refusal all over again.
+   */
+  _collectPassive(actor, auras = []) {
+    const shown = new Set(auras.map(a => String(a.name ?? "").toLowerCase().trim()));
     const out = [];
     for (const effect of actor.allApplicableEffects?.() ?? actor.effects ?? []) {
       if (effect.disabled) continue;
       if (!this._isPassive(effect)) continue;
+      // ACE's own bookkeeping marker. It exists so the rules engine can find
+      // what it applied; it is not a thing the GM needs a row for.
+      if (effect.flags?.["ace-qol"]?.auraApplied) continue;
+      // The feature that grants an aura the AURAS block is already describing.
+      if (shown.has(String(effect.name ?? "").toLowerCase().trim())) continue;
       out.push(effect);
     }
     return out;
@@ -524,7 +556,7 @@ export class EffectsPanel {
 
     const active   = this._collectActive(this._currentActor);
     const auras    = this._collectAuras(this._currentActor);
-    const passives = this._collectPassive(this._currentActor);
+    const passives = this._collectPassive(this._currentActor, auras);
     // Synthetic, panel-only indicators (no token icon) — e.g. the Holy Symbol's
     // Sunlight zone the controlled actor cast, with rounds remaining. Imported
     // directly (not via game.aceQol) so a later registry reassignment can't

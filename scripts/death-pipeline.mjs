@@ -664,6 +664,50 @@ export class DeathPipeline {
         console.warn(`${LOG_PREFIX}   ✗ Dead status suppression / combatant marker failed (visual death still applied):`, statusErr);
       }
 
+      // ── A corpse is not bloodied, incapacitated or prone ────────────────
+      //
+      // ⚠️🔴 THE PIPELINE KILLED THE CREATURE AND LEFT ITS CONDITIONS ON IT.
+      // Johnny's shadow dragon, 2026-09-02: dead on the board and still carrying
+      // bloodied, incapacitated and prone. Those describe a living creature in
+      // trouble. Nothing that happens to a corpse is affected by any of them,
+      // and the effects panel reads as though the fight is still going.
+      //
+      // ⚠️ CONDITIONS ONLY, NEVER TRAITS. An effect qualifies here if it
+      // carries a 5e STATUS - that is what makes something a condition rather
+      // than a feature. Sunlight Sensitivity and Legendary Resistance carry no
+      // status; they are permanent properties of that creature and they must
+      // survive, or bumping its hit points brings back a shadow dragon missing
+      // half of what a shadow dragon is. His words: "we gotta keep the other
+      // things, so just the conditions."
+      //
+      // ⚠️ THE `dead` STATUS IS ALREADY GONE by the time this runs - the block
+      // above removes it deliberately so the skull does not stack on the corpse
+      // art. This sweep would take it anyway; that is the same answer.
+      //
+      // ⚠️ AND IT REPORTS WHAT IT REMOVED, BY NAME. "Cleared 3 conditions" is
+      // the kind of line that reads fine and hides the one that did not go.
+      try {
+        const conditions = (tokenDoc.actor?.effects?.contents ?? []).filter(e =>
+          (e.statuses?.size ?? 0) > 0);
+        if (conditions.length) {
+          const names = conditions.map(e => e.name);
+          await tokenDoc.actor.deleteEmbeddedDocuments("ActiveEffect",
+            conditions.map(e => e.id));
+          const left = (tokenDoc.actor?.effects?.contents ?? [])
+            .filter(e => (e.statuses?.size ?? 0) > 0).map(e => e.name);
+          console.log(`${LOG_PREFIX}   ✓ Conditions cleared from the corpse: ${names.join(", ")}`);
+          if (left.length) {
+            console.warn(`${LOG_PREFIX}   ✗ Still carrying a condition after the sweep: `
+              + `${left.join(", ")}. Something is re-applying it.`);
+          }
+        }
+      } catch (condErr) {
+        // ⚠️ NAMED, NOT SWALLOWED. "The corpse still looks prone" and "the
+        // sweep threw" must never look the same from the console.
+        console.warn(`${LOG_PREFIX}   ✗ Could not clear the conditions from `
+          + `"${name}", so it may still read as bloodied or prone:`, condErr);
+      }
+
       console.log(`${LOG_PREFIX} ✓ processNPCDeath("${name}") complete`);
     } catch (err) {
       // Death pipeline must NEVER crash the combat flow.

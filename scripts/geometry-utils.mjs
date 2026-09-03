@@ -54,6 +54,139 @@ function _ftPerCell() {
  * Build a footprint rectangle for a token or token document:
  *   { x, y (top-left px), w, h (px), elev (ft), hgtFt (ft, cube height) }.
  */
+/* ─── Where a token actually ended up, when the document has not caught up ───
+ *
+ * ⚠️🔴 READING `document.x` WAS SUPPOSED TO SETTLE THIS AND DID NOT.
+ *
+ * The comment below `_rectOf` is right about the placeable: `Token#x` is the
+ * animated display bounds. So the read was moved to `document.x`, and on
+ * 2026-09-02 Johnny's log showed the aura engine STILL deciding about the
+ * square he had left:
+ *
+ *   17:04:03.123  updateToken   Virric   changes={"x":15936}
+ *   17:04:03.537  aura engine   Virric   read x=15604  -> inside a 10 ft aura
+ *
+ * 15604 is where he came FROM. And the instrumentation printed no "but the
+ * SPRITE is at" clause, which means the document and the sprite AGREED on the
+ * old number four hundred milliseconds after the update announced the new one.
+ * So this is not the animation. Something in his setup - a third party
+ * `autoRotation.js` is in the same stack, bundling a rotation into the move -
+ * leaves the document behind for longer than the engine waits.
+ *
+ * ⚠️ THE POINT IS THAT WE WERE ALREADY TOLD. `changes.x` in the hook is
+ * Foundry's own statement of the checkpoint the token committed to; it is
+ * assigned in `TokenDocument#_preUpdate` as `changed[k] = destination[k]`.
+ * Re-deriving that later from a field somebody else can hold stale adds a race
+ * and buys nothing. So the hook writes it down here, and every measurement in
+ * the suite - aura radius, spell range, weapon reach, cover - reads the same
+ * note.
+ *
+ * ⚠️ A NOTE THAT OUTLIVES ITS MOVE WOULD BE A PERMANENT LIE, so it is deleted
+ * the instant the document agrees with it, and expires on its own regardless.
+ * Our own perception watcher has preferred `changes.x` since June for exactly
+ * this reason, in one file, for one feature. This is that fix for everybody.
+ */
+const _knownPos = new Map();          // token id -> { x, y, elevation, at }
+const _KNOWN_TTL_MS = 3000;           // a backstop; the normal exit is agreement
+let _knownWarned = false;
+
+/** Record where an update says a token landed. Called from the updateToken hook. */
+export function aceNoteTokenPosition(id, pos) {
+  if (!id || !pos) return;
+  _knownPos.set(id, {
+    x: Number(pos.x), y: Number(pos.y),
+    elevation: pos.elevation === undefined ? undefined : Number(pos.elevation),
+    at: performance.now(),
+  });
+}
+
+/**
+ * The position a measurement WOULD use for this token right now.
+ *
+ * ⚠️ FOR REPORTING ONLY, AND IT EXISTS BECAUSE A LOG THAT PRINTS THE INTENTION
+ * MANUFACTURES A FALSE ROOT CAUSE. The aura engine records `document.x` beside
+ * every verdict. Now that distance can measure from the note instead, that line
+ * would keep printing the stale number and read as "still broken" when it was
+ * fixed. It must say what the decision was actually made from.
+ */
+export function aceMeasuredPosition(t) {
+  const d = t?.document ?? t ?? {};
+  const known = _authoritative(d);
+  return {
+    x: known ? known.x : (Number(d.x ?? t?.x ?? 0) || 0),
+    y: known ? known.y : (Number(d.y ?? t?.y ?? 0) || 0),
+    fromUpdate: !!known,
+  };
+}
+
+/** Forget a note (a deleted token, a scene change). */
+export function aceForgetTokenPosition(id) { _knownPos.delete(id); }
+
+/**
+ * The position to measure from: the note if the document is behind it,
+ * otherwise the document itself.
+ */
+function _authoritative(d) {
+  const id = d?.id;
+  if (!id) return null;
+  const note = _knownPos.get(id);
+  if (!note) return null;
+
+  if (performance.now() - note.at > _KNOWN_TTL_MS) { _knownPos.delete(id); return null; }
+
+  const docX = Number(d.x ?? 0) || 0;
+  const docY = Number(d.y ?? 0) || 0;
+  // ⚠️ ELEVATION COUNTS AS THE DOCUMENT BEING BEHIND. Comparing only x and y
+  // threw away a note about a creature that rose thirty feet without moving
+  // across the floor, which is every Fly, every Levitate and every dragon
+  // lifting off. Caught by the self-test the same hour this was written.
+  const docE = Number(d.elevation ?? 0) || 0;
+  const noteE = note.elevation === undefined ? docE : note.elevation;
+  if (docX === note.x && docY === note.y && docE === noteE) {
+    _knownPos.delete(id);
+    return null;
+  }
+
+  // ⚠️ SAY IT THE FIRST TIME, THEN STOP. Silence here would hide how often the
+  // document lags and for how long, which is the one thing still unexplained.
+  if (!_knownWarned) {
+    _knownWarned = true;
+    console.warn("ace-qol | the token document is behind the move it just "
+      + `reported (document says x=${docX} y=${docY}, the update said `
+      + `x=${note.x} y=${note.y}, ${Math.round(performance.now() - note.at)}ms ago). `
+      + "Measuring from the update. Said once per load.");
+  }
+  return note;
+}
+
+/**
+ * Register the tracker. Idempotent.
+ *
+ * ⚠️ `Hooks.once("ready")` FROM INSIDE `ready` NEVER FIRES - every ACE
+ * subsystem starts from the entry file's own ready handler (2026-08-12).
+ */
+let _tracking = false;
+export function aceRegisterPositionTracking() {
+  if (_tracking) return;
+  _tracking = true;
+  Hooks.on("updateToken", (doc, changes) => {
+    try {
+      if (changes?.x === undefined && changes?.y === undefined
+          && changes?.elevation === undefined) return;
+      aceNoteTokenPosition(doc?.id, {
+        x: changes.x ?? doc?.x, y: changes.y ?? doc?.y,
+        elevation: changes.elevation ?? doc?.elevation,
+      });
+    } catch (err) {
+      console.warn("ace-qol | could not record where a token landed:", err);
+    }
+  });
+  Hooks.on("deleteToken", (doc) => aceForgetTokenPosition(doc?.id));
+  Hooks.on("canvasTearDown", () => _knownPos.clear());
+  console.debug("ace-qol | position tracking online — distance measures from the "
+    + "position an update reported, not from a document that may lag it.");
+}
+
 function _rectOf(t, gs, gd) {
   const d = t?.document ?? t ?? {};
   const wU = Number(d.width  ?? 1) || 1;
@@ -83,12 +216,16 @@ function _rectOf(t, gs, gd) {
   // The same lesson, in a different file: the concentration widget was fixed on
   // 2026-06-xx to read the NEW position from the update payload rather than a
   // value that had reverted under it. Same class of bug, same conclusion.
+  // ⚠️ THE UPDATE OUTRANKS THE DOCUMENT. See `_authoritative` above: on
+  // 2026-09-02 the document was still reporting the square Virric had left,
+  // 400ms after the update announced the one he had reached.
+  const known = _authoritative(d);
   return aceSnapSubCellRect({
-    x: Number(d.x ?? t?.x ?? 0) || 0,
-    y: Number(d.y ?? t?.y ?? 0) || 0,
+    x: known ? known.x : (Number(d.x ?? t?.x ?? 0) || 0),
+    y: known ? known.y : (Number(d.y ?? t?.y ?? 0) || 0),
     w: wU * gs,
     h: hU * gs,
-    elev:  Number(d.elevation ?? 0) || 0,
+    elev:  Number((known?.elevation ?? d.elevation) ?? 0) || 0,
     hgtFt: Math.max(wU, hU) * gd,
   });
 }

@@ -250,8 +250,22 @@ print("=" * 76)
 import os as _os
 print(f"ACE SUITE AUDIT - {len([m for m in MODS if _os.path.isdir(_os.path.join(ROOT, m))])} modules present")
 print("=" * 76)
+# ⚠️🔴 "NOT INSTALLED" AND "HAS NO CODE" MUST NOT PRINT THE SAME LINE.
+# On 2026-09-02 this reported "ace-envoy   0 source files, 0 lines", which
+# reads as an empty module inside a healthy suite. Envoy is not in the modules
+# folder at all; the only copies are under AAA-BAKUPS and a March WIP backup.
+# A sweep that cannot tell those apart is the same silent refusal the suite
+# spends its comments warning about, wearing an audit's hat.
 for m in MODS:
-    print(f"  {m:<16} {len(FILES[m]):>3} source files, "
+    present = _os.path.isdir(_os.path.join(ROOT, m))
+    if not present:
+        print(f"  {m:<16}  NOT INSTALLED - nothing here was audited")
+        continue
+    n = len(FILES[m])
+    if n == 0:
+        print(f"  {m:<16}  installed but NO source files found under scripts/ or src/")
+        continue
+    print(f"  {m:<16} {n:>3} source files, "
           f"{sum(len(TEXT[f].splitlines()) for f in FILES[m]):>7,} lines")
 print()
 tot = 0

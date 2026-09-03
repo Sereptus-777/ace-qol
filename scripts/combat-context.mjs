@@ -153,6 +153,41 @@ export class CombatContext {
    * @param {Item5e}  opts.item            the weapon or spell
    * @param {string}  opts.verb            display verb ("attack"|"cast"|…)
    */
+  /**
+   * "dead" / "at 0 hit points", or null when the creature is up.
+   *
+   * ⚠️ THE FLAG AND THE HIT POINTS, NEVER THE STATUS. ACE's death pipeline
+   * strips the dead status on purpose, so it is the one signal that is
+   * guaranteed absent on an actual corpse.
+   *
+   * ⚠️ A PC AT ZERO IS DYING, NOT DEAD, AND STILL CANNOT ACT. The wording
+   * differs so the refusal message does not tell a table its paladin is dead
+   * when they are one death save from standing up.
+   */
+  static _deathState(actor) {
+    try {
+      for (const t of (actor?.getActiveTokens?.(true) ?? [])) {
+        if (t?.document?.flags?.["ace-qol"]?.isDead) return "dead";
+      }
+      if (actor?.token?.flags?.["ace-qol"]?.isDead) return "dead";
+
+      const raw = actor?.system?.attributes?.hp?.value;
+      const hp = Number(raw);
+      // ⚠️ An actor with no hit points at all (a vehicle, a group) is not a
+      // corpse, it is a thing this test does not apply to. NaN must never read
+      // as zero here.
+      if (!Number.isFinite(hp)) return null;
+      if (hp > 0) return null;
+      return actor?.type === "character" ? "at 0 hit points" : "dead";
+    } catch (err) {
+      // ⚠️ FAIL OPEN AND SAY SO. Refusing every action because this threw would
+      // be far worse than the bug it prevents.
+      console.warn("ace-qol | could not tell whether this creature is dead, so it "
+        + "is being allowed to act:", err);
+      return null;
+    }
+  }
+
   static canAct(actor, { activationType = "action", isSpell = false, item = null, verb } = {}) {
     if (!actor) return { ok: true };
     verb ??= isSpell ? "cast" : "act";
@@ -161,6 +196,26 @@ export class CombatContext {
     if (activationType && !ACTION_ECONOMY.has(activationType)) return { ok: true };
 
     const statuses = this._statuses(actor);
+
+    // ── (0) Dead is a FACT, not an icon ──────────────────────────────────
+    //
+    // ⚠️🔴 A DEAD SHADOW DRAGON ATTACKED A PLAYER AND HIT (2026-09-02), AND
+    // OUR OWN DEATH PIPELINE IS WHY.
+    //
+    // The list below tests `statuses.has("dead")`. The death pipeline
+    // deliberately REMOVES the dead status, so Foundry's skull overlay does not
+    // stack on top of the corpse artwork, and as of today it also clears every
+    // remaining condition off a body. Both are right on their own terms. The
+    // result is a creature with no statuses at all, which every check that asks
+    // "is it dead" by looking for a marker reads as perfectly healthy.
+    //
+    // ⚠️ SO ASK THE HIT POINTS AND OUR OWN FLAG, WHICH NOTHING COSMETIC TOUCHES.
+    // This is the same lesson as the disabled-condition ghosts: a marker that
+    // something else is free to remove cannot be the thing rules depend on.
+    const down = CombatContext._deathState(actor);
+    if (down) {
+      return { ok: false, condition: "dead", reason: `${this._name(actor)} is ${down} — cannot ${verb}.` };
+    }
 
     // (a) Incapacitating conditions — block EVERYTHING (RAW, both editions).
     const blocking = CANT_ACT.find(c => statuses.has(c));

@@ -85,6 +85,9 @@ import { LoadoutEngine }        from "./loadout-engine.mjs";
 import { OA_IN_FLIGHT }         from "./oa-transient.mjs";
 import { InitiativeTools }      from "./initiative-tools.mjs";
 import { AuraEngine }           from "./aura-engine.mjs";
+import { MultiattackLabel }     from "./multiattack-label.mjs";
+import { DeadTokenLock }        from "./dead-token-lock.mjs";
+import { FireEngine }           from "./fire-engine.mjs";
 import { PolymorphSpellPipeline } from "./polymorph-spell-pipeline.mjs";
 import { TokenCache }            from "./token-cache.mjs";
 import { DurationTracker }      from "./duration-tracker.mjs";
@@ -130,7 +133,7 @@ import { CommandSpell } from "./command-spell.mjs";
 import { OnHitRiders } from "./on-hit-riders.mjs";
 import { BootReport } from "./boot-report.mjs";
 import { SunkenFloors } from "./sunken-floors.mjs";
-import { aceDistanceFt, aceWithinFt } from "./geometry-utils.mjs";
+import { aceDistanceFt, aceWithinFt, aceRegisterPositionTracking } from "./geometry-utils.mjs";
 
 /**
  * Authorise an inbound PLAYER-PROXY socket payload.
@@ -3914,6 +3917,44 @@ Hooks.once("ready", () => {
     InitiativeTools.init();
   } catch (err) {
     console.error(`${MODULE_ID} | Initiative Tools init failed:`, err);
+  }
+
+  // Fire: bodies, drawn areas, spread, and a timer anchored to world time.
+  try {
+    FireEngine.register();
+  } catch (err) {
+    console.error(`${MODULE_ID} | the fire engine failed to register, so nothing `
+      + `can be set alight and any fire already burning will never go out:`, err);
+  }
+
+  // A corpse does not turn to face anything and does not place targets.
+  try {
+    DeadTokenLock.register();
+  } catch (err) {
+    console.error(`${MODULE_ID} | the dead-token locks failed to register, so a corpse `
+      + `can still swing round and put reticles on the party:`, err);
+  }
+
+  // Multiattack says how many attacks it is. ⚠️ WIRED HERE OR IT IS A LAYER
+  // NOTHING CALLS — the count has existed inside the multiattack engine since
+  // the day it was written and nothing ever put it on screen.
+  try {
+    MultiattackLabel.register();
+  } catch (err) {
+    console.error(`${MODULE_ID} | the Multiattack count failed to register, so `
+      + `Multiattack will show its imported description and nothing else:`, err);
+  }
+
+  // ⚠️🔴 BEFORE ANYTHING THAT MEASURES. Records where each update says a token
+  // landed, so distance never reads a document that is still reporting the
+  // square the token left. See `_authoritative` in geometry-utils for the proof
+  // from Johnny's 2026-09-02 log. This is the wiring — the reader is useless
+  // without it, and a layer nothing calls is the same bug wearing a hat.
+  try {
+    aceRegisterPositionTracking();
+  } catch (err) {
+    console.error(`${MODULE_ID} | position tracking failed to register — every `
+      + `distance in the suite may now measure a stale position:`, err);
   }
 
   // Aura Engine — replaces broken ActiveAuras module (dnd5e 5.x incompat).

@@ -108,15 +108,30 @@ export function findHollowFeatures() {
 }
 
 /**
- * Say it once, to the GM, at boot.
+ * Print the hollow features, on demand.
  *
- * ⚠️ ONCE PER SESSION AND GM ONLY. A player cannot fix an item they do not own
- * and cannot edit, so telling them only makes the table feel broken.
+ * ⚠️🔴 THIS USED TO POST A CHAT CARD AT EVERY LOAD AND JOHNNY KILLED IT
+ * (2026-09-02): "I don't want this shit." He was right. The card had already
+ * done its job the day it was written - it found ten dead features on real
+ * player sheets - and after that it was a wall of text repeating a fact he
+ * already knew, on every single load, listing his own test dummies back at him.
+ *
+ * A one-time discovery does not belong on a recurring schedule. It is a
+ * command now:
+ *
+ *     game.aceQol.hollowFeatures()
+ *
+ * ⚠️ IT STILL TELLS, IT STILL NEVER FIXES. Writing the missing effect would
+ * double up with any other module that handles the feature and would silently
+ * rewrite somebody's characters on load.
  */
 export function warnAboutHollowFeatures() {
-  if (!game.user?.isGM) return [];
   const hollow = findHollowFeatures();
-  if (!hollow.length) return [];
+  if (!hollow.length) {
+    console.log(`${MODULE_ID} | every numeric feature on a player sheet carries `
+      + `machinery behind it. Nothing is hollow.`);
+    return [];
+  }
 
   console.warn(`${MODULE_ID} | ${hollow.length} feature(s) on player characters `
     + `promise a number and carry nothing to produce it:`);
@@ -124,31 +139,6 @@ export function warnAboutHollowFeatures() {
     console.warn(`${MODULE_ID} |   ${h.actor} — "${h.feature}" should give ${h.promise}, `
       + `and applies nothing. The item has no Active Effect behind it.`);
   }
-
-  const lines = hollow
-    .map(h => `<li><strong>${h.actor}</strong> — ${h.feature}: <em>${h.promise}</em></li>`)
-    .join("");
-  ChatMessage.create({
-    whisper: game.users.filter(u => u.isGM).map(u => u.id),
-    flags: { [MODULE_ID]: { type: "hollowFeatures" } },
-    content: `
-      <div style="background:#1a0e0e;border:2px solid #c74420;border-radius:6px;padding:10px 14px;color:#f0e4c0;">
-        <div style="font-family:'Cinzel Decorative','Cinzel',serif;color:#ff6b3d;font-size:15px;font-weight:700;letter-spacing:1px;margin-bottom:6px;">
-          <i class="fas fa-triangle-exclamation"></i> ACE — features that do nothing
-        </div>
-        <p style="margin:4px 0 8px 0;font-size:14px;line-height:1.5;">
-          These features are on player sheets and carry no Active Effect, so they change
-          no roll. The rules text came across from the importer; the mechanics did not.
-          ACE has not altered anything.
-        </p>
-        <ul style="margin:4px 0 8px 18px;font-size:14px;line-height:1.6;">${lines}</ul>
-        <p style="margin:8px 0 0 0;font-size:13px;color:#c0b288;font-style:italic;">
-          Fix them on the sheet, or re-import the feature from a compendium that includes
-          its effect. Shown once per load, to GMs only.
-        </p>
-      </div>`,
-  }).catch(err => console.warn(`${MODULE_ID} | hollow-feature notice failed to post:`, err));
-
   return hollow;
 }
 
@@ -160,9 +150,18 @@ export function warnAboutHollowFeatures() {
  * and a boot API check that only ever ran when typed by hand (2026-08-12).
  */
 export function registerHollowFeatureWarning() {
-  const run = () => { try { warnAboutHollowFeatures(); } catch (err) {
-    console.error(`${MODULE_ID} | hollow-feature warning failed:`, err);
-  } };
-  if (game.ready) run();
-  else Hooks.once("ready", run);
+  const expose = () => {
+    try {
+      game.aceQol = game.aceQol ?? {};
+      game.aceQol.hollowFeatures = () => warnAboutHollowFeatures();
+    } catch (err) {
+      console.error(`${MODULE_ID} | could not expose game.aceQol.hollowFeatures:`, err);
+    }
+  };
+  // ⚠️ `Hooks.once("ready")` FROM INSIDE `ready` NEVER FIRES. Every ACE
+  // subsystem starts from the entry file's own ready handler, so waiting on
+  // `ready` here would wait on an event already in progress: nothing throws,
+  // nothing logs, and the command silently never exists (2026-08-12).
+  if (game.ready) expose();
+  else Hooks.once("ready", expose);
 }

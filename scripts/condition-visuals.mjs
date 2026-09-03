@@ -6,7 +6,6 @@
 //     stunned        → gold stars, fast orbit
 //     incapacitated  → gold stars, slow orbit
 //     unconscious    → orange Z's
-//     prone          → red down-arrows
 //   COATS (tint washes masked to the creature's own silhouette):
 //     poisoned   → sickly green wash
 //     paralyzed  → pale ice-blue + periodic electric flicker
@@ -44,6 +43,9 @@ const CV_BUILD = "0.7.215";
 
 /** Conditions this engine renders on the body — their token squares are suppressed. */
 export const BODY_VISUAL_STATUSES = new Set([
+  // ⚠️ `prone` IS STILL HERE AND IT NO LONGER MEANS "WE DRAW IT". It is in this
+  // list purely to keep Foundry's square icon suppressed, because he asked for
+  // NOTHING to draw prone. Removing it from the list would hand the square back.
   "prone", "restrained", "poisoned", "paralyzed", "stunned", "incapacitated",
   "frightened", "blinded", "charmed", "unconscious", "petrified", "grappled",
   "deafened",
@@ -937,8 +939,8 @@ export class ConditionVisuals {
     }
 
     // ── ORBIT FAMILY — glyphs circling above the head ──
-    // One shared look: stunned/incap = gold stars, unconscious = orange Z's,
-    // prone = red down-arrows. Count/speed express severity.
+    // One shared look: stunned/incap = gold stars, unconscious = orange Z's.
+    // Count/speed express severity. Prone draws nothing — see below.
     //
     // PETRIFIED SUPPRESSES ORBITS TOO (Johnny 2026-07-24): the coats already
     // collapse to bare stone above, but the orbit glyphs did not — and petrified
@@ -951,7 +953,20 @@ export class ConditionVisuals {
       if (has("stunned"))            orbits.push({ n: 3, period: 1500, mk: () => ConditionVisuals._star(Math.max(5, w * 0.075), 0xf2c14e) });
       else if (has("incapacitated")) orbits.push({ n: 2, period: 2600, mk: () => ConditionVisuals._star(Math.max(5, w * 0.075), 0xf2c14e) });
       if (has("unconscious"))        orbits.push({ n: 3, period: 3000, mk: () => ConditionVisuals._zGlyph(h) });
-      if (has("prone"))              orbits.push({ n: 3, period: 2200, mk: () => ConditionVisuals._downArrow(Math.max(6, w * 0.085)) });
+      // ⚠️🔴 PRONE DRAWS NOTHING. Johnny, 2026-09-02: "I don't want anything
+      // drawing prone, including us. Remove the three red down arrows."
+      //
+      // The arrows were the fallback for a creature with no prone artwork, and
+      // the artwork is the feature he actually asked for back on 2026-08-11:
+      // "it's way better than just some arrows because the token image still
+      // looks like it's standing and ready to fight." Prone art still swaps, so
+      // anyone with a file in Assets/Prone lies down properly.
+      //
+      // ⚠️ A CREATURE WITH NO PRONE ART NOW SHOWS NOTHING AT ALL. Seven files
+      // exist and they are all party members, so every monster that goes prone
+      // is invisible to the eye and lives only in the effects panel. Said out
+      // loud rather than left to be discovered mid-combat. Adding a file named
+      // for the creature is what brings its visual back.
     }
 
     let ring = 0;
@@ -1225,15 +1240,6 @@ export class ConditionVisuals {
     return g;
   }
 
-  static _downArrow(s) {
-    const g = new PIXI.Graphics();
-    g.beginFill(0xd83a3a, 0.95).lineStyle(1.5, 0xffffff, 0.85);
-    // Chunky ▼ with a short tail — unmistakable at token scale.
-    g.drawPolygon([-s * 0.42, -s * 0.9, s * 0.42, -s * 0.9, s * 0.42, -s * 0.25,
-                   s * 0.8, -s * 0.25, 0, s * 0.75, -s * 0.8, -s * 0.25, -s * 0.42, -s * 0.25]);
-    g.endFill();
-    return g;
-  }
 
   static _zGlyph(h) {
     const t = new PIXI.Text("Z", {

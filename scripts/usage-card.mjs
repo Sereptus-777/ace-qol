@@ -48,6 +48,50 @@ export class UsageCard {
    */
   static KEEP_SYSTEM_CARD = new Set(["enchant"]);
 
+  /**
+   * Features whose card can only ever say "X uses X".
+   *
+   * ⚠️🔴 A CARD THAT REPEATS THE BUTTON IS NOT INFORMATION. Johnny, 2026-09-02:
+   * "'Oh, the dragon uses multi-attack.' Well, that doesn't tell me anything,
+   * or 'Oh, the dragon uses legendary actions.' Does it tell me anything?"
+   *
+   * He is right, and these are a distinct kind of thing. Multiattack is a
+   * RULES HEADER: it tells the GM how many attacks follow, and the attacks
+   * themselves each post their own card with a roll, a target and damage. The
+   * header rolls nothing, targets nobody and changes no number, so its card is
+   * a row of chat saying an action happened, wedged between the cards that say
+   * what actually happened.
+   *
+   * ⚠️ A SHORT, CERTAIN LIST, NOT A CLEVER TEST. The obvious structural rule -
+   * "suppress any utility activity that rolls nothing" - would also kill
+   * Aerial Ascension, which is the exact case this whole card was written for
+   * (see the header). Guessing from shape finds far more and is wrong far more
+   * often, which is the same conclusion the hollow-feature checker reached.
+   *
+   * ⚠️ SUPPRESSED AT CARD TIME, NOT SCANNED AT TOKEN DROP. He asked for a sweep
+   * when a token is dropped; this covers strictly more, because it also catches
+   * every creature already standing on his maps and anything summoned,
+   * polymorphed or imported later, none of which a drop-time sweep sees.
+   */
+  static NO_CARD_FEATURES = new Set([
+    "multiattack",
+    "legendary actions", "legendary action", "legendary action uses",
+    "legendary resistance uses",
+    "lair actions", "lair action",
+    "mythic actions", "mythic action",
+    "villain actions", "villain action",
+  ]);
+
+  static _normName(n) {
+    return String(n ?? "").toLowerCase()
+      .replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+  }
+
+  /** True when this item's whole card would be "the creature used its name". */
+  static _saysNothing(item) {
+    return UsageCard.NO_CARD_FEATURES.has(UsageCard._normName(item?.name));
+  }
+
   /** activity uuid → timestamp, so a re-fire can't post the card twice. */
   static _recent = new Map();
 
@@ -131,6 +175,8 @@ export class UsageCard {
   static async _maybePost(activity) {
     if (QolSettings.get("suppressSystemCards") === false) return;  // dnd5e's own card is showing — don't double up
     if (!activity?.item) return;
+    // A rules header, not an action — see NO_CARD_FEATURES.
+    if (UsageCard._saysNothing(activity.item)) return;
     if (UsageCard.CARDED_ELSEWHERE.has(activity.type)) return;     // attack/save/heal/damage card is coming
     if (UsageCard.KEEP_SYSTEM_CARD.has(activity.type)) return;     // dnd5e's card survived — don't double up
 

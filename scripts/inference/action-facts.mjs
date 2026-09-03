@@ -156,7 +156,16 @@ function readCost(item, acts, why) {
 
   const isSpell = _s(item?.type) === "spell";
   const level = isSpell ? _n(sys.level) : null;
-  const prepared = isSpell ? _s(sys.preparation?.mode) || null : null;
+  // ⚠️🔴 `system.preparation` IS DEPRECATED AND DIES IN dnd5e 6.0. Verified in
+  // the installed 5.3.3 source: SpellData#preparation logs a compatibility
+  // warning and says to use `method` in its place, "until: DnD5e 6.0". Reading
+  // only the old shape means this quietly starts answering null on the version
+  // after next, and "not prepared" and "could not tell" would then be the same
+  // answer. The new field first, the old one only as a fallback for data that
+  // has not been migrated yet.
+  const prepared = isSpell
+    ? (_s(sys.method) || _s(sys.preparation?.mode) || null)
+    : null;
 
   if (maxUses) why.push(`it has limited uses${recovery.length ? `, back on a ${recovery.join(" and ")}` : ""}`);
   if (isSpell && level === 0) why.push("it is a cantrip, so it costs no slot");

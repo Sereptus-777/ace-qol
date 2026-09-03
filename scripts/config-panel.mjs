@@ -34,7 +34,7 @@ const TABS = [
   { id: "templates",  label: "Templates",          icon: "fa-solid fa-circle-dot",
     settings: ["enforceSquareCubes", "spellDifficultTerrain", "autoTargetTemplates", "autoDeleteInstantTemplates", "excludeCasterFromTemplates", "hideSpellTemplateVisuals", "suppressSelfSpellTemplates"] },
   { id: "auras",      label: "Auras",              icon: "fa-solid fa-circle-radiation",
-    settings: ["auraEngineEnabled", "auraVisualMode"] },
+    settings: ["auraEngineEnabled"] },
   { id: "death",      label: "Death",              icon: "fa-solid fa-skull",
     settings: ["enableDeadMarker", "enableDeathPipeline", "deleteTokenOnDeath", "notifyDeadArtFallback", "enableBloodied", "announceBloodied",
                "autoDeathSaves", "massiveDamageDeath", "autoResetOnHeal"] },

@@ -1077,21 +1077,24 @@ export class LootableTile {
         ((c?.pp ?? 0) + (c?.gp ?? 0) + (c?.ep ?? 0) + (c?.sp ?? 0) + (c?.cp ?? 0)) > 0;
 
       if (isDead) {
-        // Prefer the live actor; fall back to the lootSnapshot if the actor
-        // was deleted (Curse of Strahd module purge, GM cleanup, etc.).
-        const actor = flags.originalActorId ? game.actors.get(flags.originalActorId) : null;
-        if (actor) {
-          const items = actor.items?.contents?.filter(i => this._isLootableItem(i)) ?? [];
-          if (items.length > 0) return true;
-          if (currencyHasValue(actor.system?.currency)) return true;
-          return false;
-        }
-        const snapshot = flags.lootSnapshot ?? null;
-        if (snapshot) {
-          if ((snapshot.items?.length ?? 0) > 0) return true;
-          if (currencyHasValue(snapshot.currency)) return true;
-        }
-        return false;
+        // ⚠️🔴 TWO ANSWERS TO ONE QUESTION, AND THEY DISAGREED.
+        //
+        // This decided whether to show the loot icon by reading the LIVE ACTOR
+        // first and only falling back to the snapshot. The dialog that opens
+        // when you press that icon does the exact opposite: it prefers the
+        // snapshot and falls back to the actor. Giving loot away prunes the
+        // snapshot, so the dialog correctly emptied while this kept reading a
+        // world actor nobody had pruned, and the icon never went away.
+        //
+        // Johnny, 2026-09-02: "Right now, if I push the loot icon, even though
+        // it's been given all away, it still comes up."
+        //
+        // ⚠️ SO THERE IS ONE READER NOW AND BOTH CALL IT. Two functions that
+        // answer the same question in opposite orders will always drift; this
+        // is the same shape as the cast-time and entry checks disagreeing about
+        // who was standing in a Moonbeam (2026-08-27).
+        const loot = this._deadLootFor(tileDoc);
+        return (loot.items.length > 0) || currencyHasValue(loot.currency);
       }
 
       // Container tile
@@ -1191,9 +1194,19 @@ export class LootableTile {
       // open its sheet and put hit points back after a resurrection. The
       // remaining ring is that click target. Clamped so a rat is still hittable
       // and a dragon's badge is not absurd.
+      // ⚠️🔴 ONE SQUARE, NEVER THE CREATURE. This scaled to the body it sat on,
+      // so a Huge dragon wore a badge nine times the area of a goblin's and it
+      // dominated that corner of the map. Johnny, 2026-09-02: "the loot icon
+      // doesn't have to scale with the size of the creature. It can just stay
+      // within a 5 ft by 5 ft square, in fact, smaller, 75%."
+      //
+      // So the size comes from the GRID, not from `worldW/worldH`. A badge on a
+      // dragon and a badge on a rat are now the same size, which is what makes
+      // a row of corpses readable at a glance. Still scaled by zoom, or it would
+      // be a speck when he pulls the camera back.
       const zoom  = Number(canvas?.stage?.scale?.x) || 1;
-      const onScreen = Math.min(worldW, worldH) * zoom;
-      const size  = Math.max(36, Math.min(140, Math.round(onScreen * 0.7)));
+      const onScreen = (Number(canvas?.grid?.size) || 100) * zoom;
+      const size  = Math.max(24, Math.min(96, Math.round(onScreen * 0.75)));
       const glyph = Math.round(size * 0.5);
 
       // A carcass someone can butcher reads as meat, not treasure — and it is
@@ -1474,17 +1487,25 @@ export class LootableTile {
       })();
       const useSnapshot = !!snapshot && (snapshotHasItems || snapshotHasGold);
 
+      // ⚠️ WHAT WAS ALREADY HANDED OUT NEVER APPEARS AGAIN. Reviving a corpse
+      // clears its snapshot and killing it a second time rebuilds one from a
+      // sheet that may still hold everything, which is how Johnny's shadow
+      // dragon offered its entire hoard twice (2026-09-02). The claim list
+      // outlives both, so this filter is the backstop behind the deletion.
+      const _claimed = new Set(flags.lootClaimed ?? []);
       if (useSnapshot) {
         source = "snapshot";
         // Snapshot revealable whenever the entry is unidentified — we can
         // flip the stored flag even when the source actor is gone (the
         // reveal handler updates the snapshot.items entry in-place).
-        items = (snapshot.items ?? []).map(it => LootableTile._buildStoredItemRow(it, { revealable: it.identified === false }));
+        items = (snapshot.items ?? [])
+          .filter(it => !_claimed.has(it.id ?? it.uuid))
+          .map(it => LootableTile._buildStoredItemRow(it, { revealable: it.identified === false }));
         currency = snapshot.currency ?? {};
       } else if (actor) {
         source = "actor";
         items = actor.items.contents
-          .filter(i => this._isLootableItem(i))
+          .filter(i => this._isLootableItem(i) && !_claimed.has(i.id))
           .map(i => this._buildLootItemRow(i));
         currency = actor.system?.currency ?? {};
       } else {
@@ -2271,6 +2292,72 @@ export class LootableTile {
    * Claws, etc.), improvised weapons, unequippable abilities.
    * Accepts: actual gear, weapons, consumables, treasure, etc.
    */
+  /**
+   * THE reader for "what is still on this corpse".
+   *
+   * ⚠️ ONE FUNCTION, BECAUSE TWO OF THEM DISAGREED FOR MONTHS. The hover icon
+   * asked the world actor first; the dialog asked the snapshot first. Giving
+   * loot away pruned only the snapshot, so the dialog emptied and the icon
+   * stayed lit forever.
+   *
+   * Order, and the reasons for it:
+   *   1. The SNAPSHOT wins when it exists. It is the record of what this body
+   *      was carrying at the moment it died, and it is the thing that gets
+   *      pruned as items are handed out. For the unlinked NPCs that make up
+   *      nearly every monster it is also the only record there is.
+   *   2. The world actor is the fallback, for a linked creature that died
+   *      before snapshots existed.
+   *   3. Anything already claimed is filtered out of both, so a revive and a
+   *      second death cannot hand out the same sword twice.
+   */
+  _deadLootFor(tileDoc) {
+    const empty = { items: [], currency: { pp: 0, gp: 0, ep: 0, sp: 0, cp: 0 }, source: "none" };
+    try {
+      const flags = tileDoc?.flags?.[MODULE_ID] ?? {};
+
+      // ⚠️🔴 ASH HAS NOTHING TO GIVE, AND THE FALLBACK BELOW WOULD HAVE GIVEN
+      // IT EVERYTHING. Burning a body to ash clears its loot snapshot, and the
+      // world-actor fallback further down reads a sheet that still owns the
+      // whole hoard — so a pile of cinders would have handed out the dragon's
+      // greatsword. The fire engine clears the corpse flags too; this is the
+      // guard that does not depend on it having managed to.
+      if (flags.isAsh) return { ...empty, source: "ash" };
+
+      const claimed = new Set(flags.lootClaimed ?? []);
+      const snap = flags.lootSnapshot ?? null;
+
+      if (snap) {
+        return {
+          items: (snap.items ?? []).filter(i => !claimed.has(i.id ?? i.uuid)),
+          currency: snap.currency ?? empty.currency,
+          source: "snapshot",
+        };
+      }
+
+      const live = flags.originalActorId ? game.actors.get(flags.originalActorId) : null;
+      if (live) {
+        return {
+          items: (live.items?.contents ?? [])
+            .filter(i => this._isLootableItem(i) && !claimed.has(i.id)),
+          currency: live.system?.currency ?? empty.currency,
+          source: "actor",
+        };
+      }
+
+      // ⚠️ "NOTHING LEFT" AND "COULD NOT LOOK" MUST NOT READ THE SAME. A corpse
+      // with neither a snapshot nor an actor is a bug upstream, not an empty body.
+      if (flags.isDeadToken) {
+        console.warn(`${MODULE_ID} | "${tileDoc?.name ?? "a corpse"}" has no loot snapshot `
+          + `and no actor behind it, so what it was carrying cannot be determined. `
+          + `Showing nothing rather than guessing.`);
+      }
+      return empty;
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not read what is on this body:`, err);
+      return empty;
+    }
+  }
+
   _isLootableItem(item) {
     if (!item) return false;
     const type = item.type;
@@ -2544,16 +2631,61 @@ export class LootableTile {
   // ── Snapshot maintenance — keep tile.flags.lootSnapshot in sync with the
   //    live actor as the GM transfers items / splits gold from the dialog.
   //    Players read from the snapshot since they typically lack actor permission.
+  /**
+   * ⚠️🔴 REMOVING IT FROM THE SNAPSHOT IS NOT REMOVING IT FROM THE BODY.
+   *
+   * Johnny's shadow dragon, 2026-09-02: "This guy's already been looted of
+   * everything, I've already given it away, yet it's still got a loot icon...
+   * If I revive the dragon to one hit point and I kill it again, then I still
+   * get all that loot."
+   *
+   * The snapshot path assumed the source actor was gone, which is true for the
+   * unlinked NPCs it was written for and false for anything linked. So the item
+   * was copied to the player, pruned from the snapshot, and left sitting on the
+   * corpse. Reviving clears the snapshot; killing again rebuilds it from an
+   * actor that still owns everything, and the whole hoard comes back.
+   *
+   * ⚠️ AND THE CLAIM IS RECORDED, not merely acted on. A second death must know
+   * what was already taken even if the item somehow survives on the sheet.
+   */
   async _syncSnapshotItemRemoved(tile, itemId) {
+    const tileDoc = tile?.document ?? tile;
     try {
-      const tileDoc = tile?.document ?? tile;
       const snap = tileDoc?.flags?.[MODULE_ID]?.lootSnapshot;
-      if (!snap?.items) return;
-      const updatedItems = snap.items.filter(s => s.id !== itemId);
-      if (updatedItems.length === snap.items.length) return;  // nothing changed
-      await tileDoc.update({ [`flags.${MODULE_ID}.lootSnapshot.items`]: updatedItems });
+      if (snap?.items) {
+        const updatedItems = snap.items.filter(s => s.id !== itemId);
+        if (updatedItems.length !== snap.items.length) {
+          await tileDoc.update({ [`flags.${MODULE_ID}.lootSnapshot.items`]: updatedItems });
+        }
+      }
     } catch (err) {
       console.warn(`${MODULE_ID} | Snapshot item sync failed (non-blocking):`, err);
+    }
+
+    // Record the claim so a later death cannot hand it out again.
+    try {
+      const claimed = new Set(tileDoc?.flags?.[MODULE_ID]?.lootClaimed ?? []);
+      if (!claimed.has(itemId)) {
+        claimed.add(itemId);
+        await tileDoc.update({ [`flags.${MODULE_ID}.lootClaimed`]: [...claimed] });
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not record that "${itemId}" was claimed, so a `
+        + `revive-and-rekill could offer it again:`, err);
+    }
+
+    // Take it off the body too, when there still is one.
+    try {
+      const actorId = tileDoc?.flags?.[MODULE_ID]?.originalActorId;
+      const live = actorId ? game.actors.get(actorId) : null;
+      const onBody = live?.items?.get?.(itemId);
+      if (onBody) {
+        await onBody.delete();
+        console.log(`${MODULE_ID} | removed "${onBody.name}" from ${live.name}'s body after it was given away.`);
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | gave the item away but could not remove it from the body, `
+        + `so it may be lootable again after a revive:`, err);
     }
   }
 

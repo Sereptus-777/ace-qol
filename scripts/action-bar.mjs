@@ -85,6 +85,7 @@
 import { MODULE_ID } from "./ace-qol.mjs";
 import { WeaponSwap } from "./weapon-swap.mjs";
 import { resolveReach } from "./reach-reader.mjs";
+import { MultiattackEngine } from "./multiattack-engine.mjs";
 
 const LOG = "ace-qol | ActionBar";
 
@@ -665,7 +666,23 @@ export class ActionBar {
                 </div>`;
       }).join("");
 
-      const badgeHtml = badges.map(b =>
+      // ⚠️ THE MULTIATTACK BADGE CARRIES ITS COUNT. It has been a picture with a
+      // name on hover since 2026-08-14, which told a GM the creature has
+      // Multiattack and nothing about how many attacks that is. Johnny,
+      // 2026-09-02: "anywhere that I see multi-attack, I want to see that
+      // number." An unsure count is marked, never dressed up as a known one.
+      let maSummary = null;
+      try { maSummary = MultiattackEngine.summaryFor?.(actor) ?? null; }
+      catch (err) { console.warn(`${LOG} | could not read the attack count:`, err); }
+      const maBadge = maSummary
+        ? `<div class="ace-qol-ab-badge ace-qol-ab-ma" data-tooltip="${esc(maSummary.label)}"
+             style="display:flex;align-items:center;justify-content:center;
+                    font-size:17px;font-weight:800;
+                    color:${maSummary.exact ? "#f0d98a" : "#c9b48a"};">
+             &times;${maSummary.total}${maSummary.exact ? "" : "?"}</div>`
+        : "";
+
+      const badgeHtml = maBadge + badges.map(b =>
         `<div class="ace-qol-ab-badge" data-tooltip="${esc(b.name)}"><img src="${esc(b.img ?? "")}" alt=""></div>`
       ).join("");
 
