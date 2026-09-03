@@ -96,6 +96,17 @@ const COLUMNS = 10;
 const ROWS = 2;
 const SLOT_COUNT = COLUMNS * ROWS;
 
+/**
+ * Four across, two rows. At or below this the slots go wide and the whole name
+ * fits; above it they collapse back to the squares.
+ *
+ * ⚠️ EIGHT IS NOT ARBITRARY. It is what four wide slots across two rows holds,
+ * and it is also roughly the fattest spell level a real 20th-level caster has
+ * (a wizard's first and second levels run about eight). So the common case is
+ * readable and the outlier still fits.
+ */
+const WIDE_MAX = 8;
+
 /** Item types that are equipment rather than abilities. */
 const GEAR_TYPES = ["consumable", "tool", "equipment", "loot", "container", "backpack"];
 
@@ -918,7 +929,29 @@ export class ActionBar {
       // The empty slots are not waste, they are the drop targets and the shape
       // he has learned. Shrinking a bar he arranges by hand moves every slot he
       // put somewhere on purpose.
-      const slotHtml = Array.from({ length: SLOT_COUNT }, (_, i) => {
+      // ⚠️🔴 THE SLOT GROWS SIDEWAYS WHEN THERE IS ROOM, AND THE NAME IS WHY.
+      //
+      // Johnny, 2026-09-03: "You can only read so much in those little things...
+      // I know it says Power Word something, but is it Kill?" A 50px square
+      // gives about nine characters and cuts the rest, which is useless on
+      // exactly the spells whose names differ at the end.
+      //
+      // ⚠️ WIDER, NOT TALLER. A bigger square would push the bar up over the
+      // canvas and still leave a cramped strip of text under the picture. The
+      // icon keeps its 48px, the name takes the rest of the width, and the bar's
+      // height never changes.
+      //
+      // ⚠️ AND IT COLLAPSES BACK. Eight or fewer in the tab you are looking at
+      // gets the wide rows; more returns to the squares with the hover carrying
+      // the full name. Twelve ninth-level spells are squares, a Cloud Giant's
+      // five are wide. Same bar, sized to what is in front of you.
+      //
+      // ⚠️ BOTH ROWS EITHER WAY. Shrinking to one row took his top row away on
+      // 2026-09-03, and the empty slots are the drop targets.
+      const wide = shown.length > 0 && shown.length <= WIDE_MAX;
+      const slotCount = wide ? WIDE_MAX : SLOT_COUNT;
+
+      const slotHtml = Array.from({ length: slotCount }, (_, i) => {
         const item = shown[i];
         if (!item) {
           // ⚠️ EMPTY SLOTS ARE STILL DROP TARGETS, so the index has to be here.
@@ -992,7 +1025,7 @@ export class ActionBar {
               <i class="fas fa-dice-d20"></i>
             </div>
           </div>
-          <div class="ace-qol-ab-slots">${slotHtml}</div>
+          <div class="ace-qol-ab-slots${wide ? " ace-qol-ab-slots-wide" : ""}">${slotHtml}</div>
           ${moreHtml}
           <div class="ace-qol-ab-turn">
             ${isMyTurn ? `<button type="button" class="ace-qol-ab-endturn" data-tooltip="End this creature's turn">

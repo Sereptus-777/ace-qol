@@ -5692,6 +5692,43 @@
 .ace-qol-ab-empty { cursor: default; background: #0e0e11; border-style: dashed; }
 .ace-qol-ab-empty:hover { border-color: #3a3a40; transform: none; }
 
+/* ── Wide slots ───────────────────────────────────────────────────────── */
+/* Four across instead of ten, same height. The icon keeps its 48px square on
+   the left and the name takes the rest, so "Power Word Kill" fits where the
+   square gave "Power W...". Only used when the tab holds eight or fewer. */
+.ace-qol-ab-slots-wide {
+  grid-template-columns: repeat(4, 128px);
+}
+.ace-qol-ab-slots-wide .ace-qol-ab-slot {
+  width: 128px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 6px;
+}
+.ace-qol-ab-slots-wide .ace-qol-ab-slot > img {
+  width: 48px; height: 48px;
+  flex: 0 0 auto;
+  border-right: 1px solid #3a3a40;
+}
+/* The name stops being an overlay strip and becomes the rest of the button. */
+.ace-qol-ab-slots-wide .ace-qol-ab-name {
+  position: static;
+  background: none;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1.2;
+  text-align: left;
+  white-space: normal;
+  /* Two lines at most, then the hover carries it - a name that pushes the row
+     taller would change the bar's height, which is the thing this avoids. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.ace-qol-ab-slots-wide .ace-qol-ab-read > img { width: 46px; }
+
 .ace-qol-ab-name {
   position: absolute; left: 0; right: 0; bottom: 0;
   padding: 1px 2px;
