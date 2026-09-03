@@ -374,8 +374,19 @@ export class ActionBar {
    * and on a cold read it strips the syntax rather than showing it.
    */
   static _plainDescription(item, limit = 260) {
-    try { return aceDescriptionTextSync(item, { limit }); }
-    catch (_) { return ""; }
+    try {
+      // ⚠️ MULTIATTACK'S OWN DESCRIPTION IS ALMOST NEVER ITS DESCRIPTION. The
+      // importer writes "The Cloud Giant (Legacy) uses Multiattack" and leaves
+      // the real line in the creature's stat block text. The engine already
+      // finds that passage; showing the item's field here would show the useless
+      // sentence on the one feature that most needs its rules read out.
+      if (ActionBar._isMultiattack(item)) {
+        const s = MultiattackEngine.summaryFor?.(item?.actor);
+        if (s?.text) return s.text.length > limit ? s.text.slice(0, limit - 1).trimEnd() + "…" : s.text;
+        if (s?.label) return s.label;
+      }
+      return aceDescriptionTextSync(item, { limit });
+    } catch (_) { return ""; }
   }
 
   /** Activities as a plain array, whatever shape the system hands them over in. */
@@ -669,23 +680,14 @@ export class ActionBar {
                 </div>`;
       }).join("");
 
-      // ⚠️ THE MULTIATTACK BADGE CARRIES ITS COUNT. It has been a picture with a
-      // name on hover since 2026-08-14, which told a GM the creature has
-      // Multiattack and nothing about how many attacks that is. Johnny,
-      // 2026-09-02: "anywhere that I see multi-attack, I want to see that
-      // number." An unsure count is marked, never dressed up as a known one.
-      let maSummary = null;
-      try { maSummary = MultiattackEngine.summaryFor?.(actor) ?? null; }
-      catch (err) { console.warn(`${LOG} | could not read the attack count:`, err); }
-      const maBadge = maSummary
-        ? `<div class="ace-qol-ab-badge ace-qol-ab-ma" data-tooltip="${esc(maSummary.label)}"
-             style="display:flex;align-items:center;justify-content:center;
-                    font-size:17px;font-weight:800;
-                    color:${maSummary.exact ? "#f0d98a" : "#c9b48a"};">
-             &times;${maSummary.total}${maSummary.exact ? "" : "?"}</div>`
-        : "";
-
-      const badgeHtml = maBadge + badges.map(b =>
+      // ⚠️🔴 THE FLOATING ×2 IS GONE. Johnny, 2026-09-03: "that times two down
+      // there does not do me anything at all. I don't even know if that's for
+      // Mount Multi-Attack." Fair — dnd5e already prints ×2 beside Multiattack
+      // on the sheet, so a second identical badge floating over the bar with no
+      // label attached to it was a number with no question. The count still
+      // reads where it means something: on the Multiattack entry itself and in
+      // its tooltip, both of which say what they are counting.
+      const badgeHtml = badges.map(b =>
         `<div class="ace-qol-ab-badge" data-tooltip="${esc(b.name)}"><img src="${esc(b.img ?? "")}" alt=""></div>`
       ).join("");
 

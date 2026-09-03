@@ -442,13 +442,29 @@ export class MultiattackEngine {
       const text = this._multiattackText(actor, maFeature);
       const attackItems = this._getAttackItems(actor) ?? [];
 
+      // ⚠️🔴 HAND BACK THE SENTENCE, NOT ONLY THE NUMBER. Johnny, 2026-09-03,
+      // looking at a Cloud Giant tooltip reading "The Cloud Giant (Legacy) uses
+      // Multiattack": "I want the full description on every freaking
+      // multi-attack I ever see for that creature."
+      //
+      // The real line — "the giant makes two attacks, using Thunderous Mace or
+      // Thundercloud in any combination" — is in the creature's stat block text,
+      // which `_multiattackText` already goes and finds. It was being read for
+      // its number and then thrown away.
+      //
+      // ⚠️ NULL WHEN IT IS THE IMPORTER'S USELESS SENTENCE. "X uses Multiattack"
+      // is not a description; showing it instead of the item's own text would
+      // trade one worthless line for the same worthless line.
+      const useless = /^\s*the\s+.{0,60}?\s+uses\s+multi[\s-]?attack\.?\s*$/i;
+      const passage = (text && !useless.test(text)) ? text.trim() : null;
+
       // Best case: the text names the weapons, so we can say "2 claws, 1 bite".
       const parsed = this._parseMultiattack(text, attackItems);
       if (parsed?.length) {
         const total = parsed.reduce((sum, e) => sum + e.count, 0);
         if (total > 0) {
           const parts = parsed.map(e => `${e.count} ${e.item?.name ?? "attack"}`);
-          return { total, exact: true, entries: parsed,
+          return { total, exact: true, entries: parsed, text: passage,
                    label: `${total} attacks: ${parts.join(", ")}` };
         }
       }
@@ -458,7 +474,7 @@ export class MultiattackEngine {
       if (m) {
         const v = NUM_WORDS[m[1].toLowerCase()] ?? parseInt(m[1], 10);
         if (v >= 1 && v <= 10) {
-          return { total: v, exact: true, entries: [],
+          return { total: v, exact: true, entries: [], text: passage,
                    label: `${v} attack${v === 1 ? "" : "s"}` };
         }
       }
@@ -466,7 +482,7 @@ export class MultiattackEngine {
       // ⚠️ NOTHING IN THE TEXT SAYS A NUMBER, AND THAT IS THE COMMON CASE ON
       // HIS SHEETS. Say two, and say that it is assumed, rather than printing a
       // confident 2 that came from nowhere.
-      return { total: 2, exact: false, entries: [],
+      return { total: 2, exact: false, entries: [], text: passage,
                label: "2 attacks (assumed — this creature's Multiattack text does not say)" };
     } catch (err) {
       console.warn(`${MODULE_ID} | could not work out this creature's attack count:`, err);

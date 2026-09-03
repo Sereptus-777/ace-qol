@@ -57,11 +57,21 @@ export class MultiattackLabel {
   static _html(summary) {
     const colour = summary.exact ? "#f0d98a" : "#c9b48a";
     const label = foundry.utils.escapeHTML(String(summary.label ?? ""));
+    // ⚠️ THE SENTENCE, WHERE THERE IS ONE. The item's own description is the
+    // importer's "The Cloud Giant (Legacy) uses Multiattack", which tells a GM
+    // nothing. The real line lives in the creature's stat block text and the
+    // engine already reads it. Johnny, 2026-09-03: "I want the full description
+    // on every freaking multi-attack I ever see for that creature."
+    const passage = summary.text
+      ? `<div style="margin:6px 0 0 0;font-size:15px;font-weight:400;line-height:1.45;
+                     color:#f0e4c0;">${foundry.utils.escapeHTML(String(summary.text))}</div>`
+      : "";
     return `<div class="ace-qol-ma-count" style="
-        margin:0 0 8px 0; padding:7px 10px; border-radius:5px;
+        margin:0 0 8px 0; padding:8px 11px; border-radius:5px;
         background:#1d1710; border:1px solid #6b5530;
-        color:${colour}; font-size:15px; font-weight:700; line-height:1.35;">
-        <i class="fas fa-burst" style="margin-right:6px;"></i>${label}
+        color:${colour}; font-size:15px; line-height:1.35;">
+        <div style="font-weight:700;"><i class="fas fa-burst" style="margin-right:6px;"></i>${label}</div>
+        ${passage}
       </div>`;
   }
 
