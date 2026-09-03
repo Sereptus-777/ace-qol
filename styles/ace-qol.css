@@ -5613,14 +5613,18 @@
 /* The portrait is the drag handle; this puts it back. Small and quiet - it is
    an escape hatch, not a feature anybody uses twice a session. */
 .ace-qol-ab-gear {
+  position: absolute;
+  right: -30px; bottom: 4px;
   width: 24px; height: 24px; padding: 0;
-  align-self: center; margin-left: 4px;
   display: flex; align-items: center; justify-content: center;
   font-size: 13px; color: #6b5530;
-  background: transparent; border: 1px solid #3a3a40; border-radius: 4px;
+  background: #17171b; border: 1px solid #3a3a40; border-radius: 4px;
   cursor: pointer;
-  transition: color .12s ease, border-color .12s ease;
+  opacity: 0; pointer-events: none;
+  transition: opacity .12s ease, color .12s ease, border-color .12s ease;
 }
+/* Only while the mouse is on the bar. It is an escape hatch, not furniture. */
+#ace-qol-action-bar:hover .ace-qol-ab-gear { opacity: 1; pointer-events: auto; }
 .ace-qol-ab-gear:hover { color: #d4af37; border-color: #d4af37; }
 
 /* ── Tabs and spell levels ────────────────────────────────────────────── */

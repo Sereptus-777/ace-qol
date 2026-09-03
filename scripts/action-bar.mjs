@@ -850,29 +850,30 @@ export class ActionBar {
   /* ── Where he put it ──────────────────────────────────────────────────── */
 
   /**
-   * The bar's position, remembered per user.
+   * The bar's offset from where it normally sits, remembered per user.
    *
-   * Johnny, 2026-09-03: "I have to be able to move this hot bar around if it's
-   * in my way... I also have to have it be able to be re-centered back on the
-   * screen as well."
+   * ⚠️🔴 AN OFFSET, NOT A POSITION, AND THE FIRST VERSION GOT THIS WRONG.
+   * Johnny, 2026-09-03: "as soon as I went to move it, it jumped over to the
+   * right." It did. Switching the bar to `position: fixed` took it out of the
+   * flow, so it lost the parent width it was centring itself inside and
+   * snapped to its own content width before the drag had moved a pixel.
    *
-   * ⚠️ PER USER, NOT PER SCENE. Per scene was the other option and it is more
-   * work for a worse result: he would move it once on every map, and a bar that
-   * is somewhere different on each board is a bar he cannot reach without
-   * looking. One place, learned once.
+   * A transform moves it without changing its layout at all. Nothing reflows,
+   * nothing recentres, and the bar starts the drag exactly where it was sitting.
    *
-   * ⚠️ CLAMPED ON READ, NOT ONLY ON WRITE. A position saved on the desktop's
-   * 4K screen puts the bar off the edge of the camp laptop, and a control he
-   * cannot see is a control he cannot recentre. Anything outside the window
-   * comes back inside on load.
+   * ⚠️ PER USER, NOT PER SCENE. Per scene means moving it once on every map and
+   * a bar that lives somewhere different on each board.
    */
   static _readPos() {
     try {
       const raw = JSON.parse(localStorage.getItem("ace-qol-action-bar-pos") ?? "null");
-      if (!raw || !Number.isFinite(raw.left) || !Number.isFinite(raw.bottom)) return null;
-      const left = Math.max(0, Math.min(raw.left, Math.max(0, window.innerWidth - 120)));
-      const bottom = Math.max(0, Math.min(raw.bottom, Math.max(0, window.innerHeight - 60)));
-      return { left, bottom };
+      if (!raw || !Number.isFinite(raw.dx) || !Number.isFinite(raw.dy)) return null;
+      // ⚠️ CLAMPED ON READ, NOT ONLY ON WRITE. An offset saved on the desktop's
+      // screen can put the bar off the edge of the camp laptop, and a bar he
+      // cannot see is one he cannot drag back.
+      const dx = Math.max(-window.innerWidth + 120, Math.min(raw.dx, window.innerWidth - 120));
+      const dy = Math.max(-window.innerHeight + 80, Math.min(raw.dy, window.innerHeight - 80));
+      return { dx, dy };
     } catch (_) { return null; }
   }
 
@@ -888,84 +889,61 @@ export class ActionBar {
   /** Put it back where it started. */
   static recentre() {
     ActionBar._writePos(null);
-    const el = ActionBar._el;
-    if (el) {
-      el.style.position = "";
-      el.style.left = "";
-      el.style.bottom = "";
-      el.style.margin = "";
-    }
+    if (ActionBar._el) ActionBar._el.style.transform = "";
     ui.notifications?.info("Action bar back in its usual place.");
   }
 
-  /** Apply the remembered position, or leave it in the flow if there is none. */
   static _applyPos(el) {
     const pos = ActionBar._readPos();
-    if (!pos) {
-      el.style.position = "";
-      el.style.left = "";
-      el.style.bottom = "";
-      el.style.margin = "";
-      return;
-    }
-    el.style.position = "fixed";
-    el.style.left = `${pos.left}px`;
-    el.style.bottom = `${pos.bottom}px`;
-    el.style.margin = "0";
+    el.style.transform = pos ? `translate(${pos.dx}px, ${pos.dy}px)` : "";
   }
 
   /**
    * Drag it by the portrait.
    *
    * ⚠️ THE PORTRAIT, NOT THE WHOLE BAR. Every slot is a button and a drop
-   * target; making the bar draggable anywhere would mean a slightly-moved click
-   * on a weapon drags the bar instead of swinging it.
+   * target; a draggable bar would mean a slightly-moved click on a weapon drags
+   * the bar instead of swinging it.
    *
-   * ⚠️ AND A DRAG IS NOT A CLICK. The portrait opens things on click, so this
-   * only takes over once the mouse has actually travelled a few pixels.
+   * ⚠️ AND THE CURSOR IS LEFT ALONE. The first version set it to grab and
+   * grabbing. Johnny: "I don't like the little hand because we already have a
+   * little hand when we're hovering over the portrait." Two hands fighting over
+   * one element is worse than none.
    */
   static _wireDrag(el) {
     const handle = el.querySelector(".ace-qol-ab-portrait");
     if (!handle || handle.dataset.aceDrag) return;
     handle.dataset.aceDrag = "1";
-    handle.style.cursor = "grab";
 
     let start = null;
     handle.addEventListener("mousedown", (ev) => {
       if (ev.button !== 0) return;
-      const box = el.getBoundingClientRect();
-      start = { x: ev.clientX, y: ev.clientY,
-                left: box.left, bottom: window.innerHeight - box.bottom, moved: false };
+      const held = ActionBar._readPos() ?? { dx: 0, dy: 0 };
+      start = { x: ev.clientX, y: ev.clientY, dx: held.dx, dy: held.dy, moved: false };
     });
 
     const onMove = (ev) => {
       if (!start) return;
-      const dx = ev.clientX - start.x;
-      const dy = ev.clientY - start.y;
-      if (!start.moved && Math.hypot(dx, dy) < 4) return;   // still a click
+      const mx = ev.clientX - start.x;
+      const my = ev.clientY - start.y;
+      // ⚠️ A DRAG IS NOT A CLICK. The portrait opens things, so this only takes
+      // over once the mouse has actually travelled.
+      if (!start.moved && Math.hypot(mx, my) < 5) return;
       start.moved = true;
-      handle.style.cursor = "grabbing";
-      const left = Math.max(0, Math.min(start.left + dx, window.innerWidth - 120));
-      const bottom = Math.max(0, Math.min(start.bottom - dy, window.innerHeight - 60));
-      el.style.position = "fixed";
-      el.style.margin = "0";
-      el.style.left = `${left}px`;
-      el.style.bottom = `${bottom}px`;
+      el.style.transform = `translate(${start.dx + mx}px, ${start.dy + my}px)`;
     };
 
-    const onUp = () => {
+    const onUp = (ev) => {
       if (!start) return;
-      const box = el.getBoundingClientRect();
       if (start.moved) {
-        ActionBar._writePos({ left: Math.round(box.left),
-                              bottom: Math.round(window.innerHeight - box.bottom) });
+        ActionBar._writePos({ dx: Math.round(start.dx + (ev.clientX - start.x)),
+                              dy: Math.round(start.dy + (ev.clientY - start.y)) });
       }
-      handle.style.cursor = "grab";
       start = null;
     };
 
     // ⚠️ ON THE DOCUMENT, or letting go outside the bar leaves it stuck to the
-    // mouse — the drag never ends and every later move drags it again.
+    // mouse and every later move drags it again.
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
   }
@@ -1157,7 +1135,15 @@ export class ActionBar {
           ).join("")}</div>`
         : "";
 
+      // ⚠️ OUTSIDE THE BAR, NOT IN IT. Johnny, 2026-09-03: "I don't like that
+      // little settings bar being inside the bar itself... I'd rather have that
+      // on the outside when you hover over the bar." It sits off the right edge
+      // and only appears on hover, so it costs no width and no attention.
       el.innerHTML = `
+        <button type="button" class="ace-qol-ab-gear"
+                data-tooltip="Drag the portrait to move this bar. Click to put it back.">
+          <i class="fas fa-gear"></i>
+        </button>
         <div class="ace-qol-ab-strip">${badgeHtml}</div>
         ${tabHtml}${levelHtml}
         <div class="ace-qol-ab-main">
@@ -1178,10 +1164,6 @@ export class ActionBar {
           </div>
           <div class="ace-qol-ab-slots${wide ? " ace-qol-ab-slots-wide" : ""}">${slotHtml}</div>
           ${moreHtml}
-          <button type="button" class="ace-qol-ab-gear"
-                  data-tooltip="Drag the portrait to move this bar. Click to put it back.">
-            <i class="fas fa-gear"></i>
-          </button>
           <div class="ace-qol-ab-turn">
             ${isMyTurn ? `<button type="button" class="ace-qol-ab-endturn" data-tooltip="End this creature's turn">
                             <i class="fas fa-hourglass-end"></i><span>NEXT TURN</span></button>` : ""}
