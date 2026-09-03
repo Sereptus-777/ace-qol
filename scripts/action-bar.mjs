@@ -391,10 +391,15 @@ export class ActionBar {
   static _tabsFor(actor, ordered) {
     const tabs = [{ id: "all", label: "All", items: ordered }];
     try {
-      const attacks = [], actions = [], spells = [], features = [];
+      const attacks = [], actions = [], spells = [], features = [], inventory = [];
       for (const item of ordered) {
         if (ActionBar._isPassiveBadge(actor, item)) { features.push(item); continue; }
         if (item.type === "spell") { spells.push(item); continue; }
+        // ⚠️ GEAR BEFORE THE ATTACK TEST, or a thrown dagger and a wand end up
+        // under Attacks and the Inventory tab is empty of the things he reaches
+        // for. Johnny, 2026-09-03: "we need an inventory button in the tab up
+        // top... A guy could drink a potion real quick, like an action."
+        if (GEAR_TYPES.includes(item.type)) { inventory.push(item); continue; }
         const list = ActionBar._activityList(item.system?.activities);
         if (ActionBar._hasType(list, "attack")) { attacks.push(item); continue; }
         if (ActionBar._isMultiattack(item)) { attacks.push(item); continue; }
@@ -404,6 +409,10 @@ export class ActionBar {
       if (attacks.length)  tabs.push({ id: "attacks",  label: "Attacks",  items: attacks });
       if (actions.length)  tabs.push({ id: "actions",  label: "Actions",  items: actions });
       if (spells.length)   tabs.push({ id: "spells",   label: "Spells",   items: spells, levels: true });
+      // ⚠️ USABLE GEAR, NOT A FULL PACK LIST. Rope and rations carry no
+      // activity, so they never reach the bar at all — this is the potion you
+      // drink and the wand you point, which is what he asked the tab for.
+      if (inventory.length) tabs.push({ id: "inventory", label: "Inventory", items: inventory });
       if (features.length) tabs.push({ id: "features", label: "Features", items: features });
     } catch (err) {
       console.warn(`${LOG} | could not group this creature's actions into tabs:`, err);
@@ -504,6 +513,19 @@ export class ActionBar {
       const actCfg = CONFIG.DND5E?.activityActivationTypes?.[actType];
       const cost = actCfg?.label ? game.i18n.localize(actCfg.label) : null;
       if (cost) kind.push(cost);
+
+      // ⚠️ WHICH BOOK THIS CAME OUT OF. Johnny, 2026-09-03: "our engine has to
+      // detect whether it's a 2014 legacy monster or a 2024 monster because I
+      // don't know which one I'm using." He spent an hour tonight comparing his
+      // Cloud Giant's Multiattack against the 2024 text and concluding ACE was
+      // broken; it was reading the 2014 stat block correctly and neither of us
+      // could see which one was on the sheet.
+      //
+      // ⚠️ THE FIELD, NOT THE NAME. dnd5e stamps the ruleset on the item itself.
+      // "(Legacy)" in a name is a convention some importers follow and others do
+      // not, and a creature can carry 2014 items under a 2024 name.
+      const rules = String(sys.source?.rules ?? "").trim();
+      if (rules) kind.push(rules === "2014" ? "2014 rules" : `${rules} rules`);
       if (kind.length) rows.push('<div class="ace-qol-ab-tip-cost">' + esc(kind.join("  \u00b7  ")) + '</div>');
 
       const bits = [];
@@ -557,7 +579,13 @@ export class ActionBar {
 
       // ── The rules text, whole, and as markup ──────────────────────────
       const body = ActionBar._describeForTooltip(item);
-      if (body) rows.push('<div class="ace-qol-ab-tip-desc">' + body + '</div>');
+      if (body) {
+        rows.push('<div class="ace-qol-ab-tip-desc">' + body + '</div>');
+        // ⚠️ SAY THE LOCK EXISTS. A scrollable panel nobody knows they can pin
+        // is the same as no panel: the hover vanishes the moment he reaches for
+        // the wheel. dnd5e's own tooltips carry this line for the same reason.
+        rows.push('<div class="ace-qol-ab-tip-more">Middle-click to keep this open</div>');
+      }
 
       return '<div class="ace-qol-ab-tip"><div class="ace-qol-ab-tip-name">'
         + esc(item.name) + '</div>' + rows.join("") + '</div>';
@@ -819,6 +847,129 @@ export class ActionBar {
    * own — while a GM who clicks a different creature mid-turn to check something
    * expects to see THAT creature, not whoever the tracker says is up.
    */
+  /* ── Where he put it ──────────────────────────────────────────────────── */
+
+  /**
+   * The bar's position, remembered per user.
+   *
+   * Johnny, 2026-09-03: "I have to be able to move this hot bar around if it's
+   * in my way... I also have to have it be able to be re-centered back on the
+   * screen as well."
+   *
+   * ⚠️ PER USER, NOT PER SCENE. Per scene was the other option and it is more
+   * work for a worse result: he would move it once on every map, and a bar that
+   * is somewhere different on each board is a bar he cannot reach without
+   * looking. One place, learned once.
+   *
+   * ⚠️ CLAMPED ON READ, NOT ONLY ON WRITE. A position saved on the desktop's
+   * 4K screen puts the bar off the edge of the camp laptop, and a control he
+   * cannot see is a control he cannot recentre. Anything outside the window
+   * comes back inside on load.
+   */
+  static _readPos() {
+    try {
+      const raw = JSON.parse(localStorage.getItem("ace-qol-action-bar-pos") ?? "null");
+      if (!raw || !Number.isFinite(raw.left) || !Number.isFinite(raw.bottom)) return null;
+      const left = Math.max(0, Math.min(raw.left, Math.max(0, window.innerWidth - 120)));
+      const bottom = Math.max(0, Math.min(raw.bottom, Math.max(0, window.innerHeight - 60)));
+      return { left, bottom };
+    } catch (_) { return null; }
+  }
+
+  static _writePos(pos) {
+    try {
+      if (pos) localStorage.setItem("ace-qol-action-bar-pos", JSON.stringify(pos));
+      else localStorage.removeItem("ace-qol-action-bar-pos");
+    } catch (err) {
+      console.warn(`${LOG} | could not remember where the bar was moved to:`, err);
+    }
+  }
+
+  /** Put it back where it started. */
+  static recentre() {
+    ActionBar._writePos(null);
+    const el = ActionBar._el;
+    if (el) {
+      el.style.position = "";
+      el.style.left = "";
+      el.style.bottom = "";
+      el.style.margin = "";
+    }
+    ui.notifications?.info("Action bar back in its usual place.");
+  }
+
+  /** Apply the remembered position, or leave it in the flow if there is none. */
+  static _applyPos(el) {
+    const pos = ActionBar._readPos();
+    if (!pos) {
+      el.style.position = "";
+      el.style.left = "";
+      el.style.bottom = "";
+      el.style.margin = "";
+      return;
+    }
+    el.style.position = "fixed";
+    el.style.left = `${pos.left}px`;
+    el.style.bottom = `${pos.bottom}px`;
+    el.style.margin = "0";
+  }
+
+  /**
+   * Drag it by the portrait.
+   *
+   * ⚠️ THE PORTRAIT, NOT THE WHOLE BAR. Every slot is a button and a drop
+   * target; making the bar draggable anywhere would mean a slightly-moved click
+   * on a weapon drags the bar instead of swinging it.
+   *
+   * ⚠️ AND A DRAG IS NOT A CLICK. The portrait opens things on click, so this
+   * only takes over once the mouse has actually travelled a few pixels.
+   */
+  static _wireDrag(el) {
+    const handle = el.querySelector(".ace-qol-ab-portrait");
+    if (!handle || handle.dataset.aceDrag) return;
+    handle.dataset.aceDrag = "1";
+    handle.style.cursor = "grab";
+
+    let start = null;
+    handle.addEventListener("mousedown", (ev) => {
+      if (ev.button !== 0) return;
+      const box = el.getBoundingClientRect();
+      start = { x: ev.clientX, y: ev.clientY,
+                left: box.left, bottom: window.innerHeight - box.bottom, moved: false };
+    });
+
+    const onMove = (ev) => {
+      if (!start) return;
+      const dx = ev.clientX - start.x;
+      const dy = ev.clientY - start.y;
+      if (!start.moved && Math.hypot(dx, dy) < 4) return;   // still a click
+      start.moved = true;
+      handle.style.cursor = "grabbing";
+      const left = Math.max(0, Math.min(start.left + dx, window.innerWidth - 120));
+      const bottom = Math.max(0, Math.min(start.bottom - dy, window.innerHeight - 60));
+      el.style.position = "fixed";
+      el.style.margin = "0";
+      el.style.left = `${left}px`;
+      el.style.bottom = `${bottom}px`;
+    };
+
+    const onUp = () => {
+      if (!start) return;
+      const box = el.getBoundingClientRect();
+      if (start.moved) {
+        ActionBar._writePos({ left: Math.round(box.left),
+                              bottom: Math.round(window.innerHeight - box.bottom) });
+      }
+      handle.style.cursor = "grab";
+      start = null;
+    };
+
+    // ⚠️ ON THE DOCUMENT, or letting go outside the bar leaves it stuck to the
+    // mouse — the drag never ends and every later move drags it again.
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }
+
   static _currentToken() {
     const controlled = canvas?.tokens?.controlled ?? [];
     return controlled.length === 1 ? controlled[0] : null;
@@ -1027,6 +1178,10 @@ export class ActionBar {
           </div>
           <div class="ace-qol-ab-slots${wide ? " ace-qol-ab-slots-wide" : ""}">${slotHtml}</div>
           ${moreHtml}
+          <button type="button" class="ace-qol-ab-gear"
+                  data-tooltip="Drag the portrait to move this bar. Click to put it back.">
+            <i class="fas fa-gear"></i>
+          </button>
           <div class="ace-qol-ab-turn">
             ${isMyTurn ? `<button type="button" class="ace-qol-ab-endturn" data-tooltip="End this creature's turn">
                             <i class="fas fa-hourglass-end"></i><span>NEXT TURN</span></button>` : ""}
@@ -1035,6 +1190,16 @@ export class ActionBar {
 
       ActionBar._wire(el, actor, combatant);
       ActionBar._wireDragAndDrop(el, actor);
+      // ⚠️ RE-APPLIED ON EVERY RENDER. `innerHTML` is rewritten each time the
+      // selection changes, so the drag handle and the gear are new elements and
+      // the inline position on the container has to be put back with them.
+      ActionBar._applyPos(el);
+      ActionBar._wireDrag(el);
+      el.querySelector(".ace-qol-ab-gear")?.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        ActionBar.recentre();
+      });
     } catch (err) {
       console.error(`${LOG} | render failed:`, err);
     }
@@ -1099,6 +1264,35 @@ export class ActionBar {
           ui.notifications?.error(`${item.name} could not be used — see the console.`);
         }
       });
+      // ── Middle-click pins the hover so it can be read and scrolled ──────
+      //
+      // ⚠️ A HOVER CANNOT BE SCROLLED, BECAUSE REACHING FOR THE WHEEL MOVES THE
+      // MOUSE OFF THE SLOT AND THE TOOLTIP GOES. Prismatic Spray is nine
+      // paragraphs. Foundry's own locked tooltips take pointer events and stay
+      // until dismissed, which is the mechanism dnd5e uses for exactly this.
+      slot.addEventListener("auxclick", (ev) => {
+        if (ev.button !== 1) return;          // middle only
+        ev.preventDefault();
+        ev.stopPropagation();
+        try {
+          const item = actor.items.get(slot.dataset.itemId);
+          if (!item) return;
+          const box = slot.getBoundingClientRect();
+          game.tooltip?.createLockedTooltip?.(
+            { top: `${Math.round(box.top)}px`, left: `${Math.round(box.right + 8)}px` },
+            ActionBar._tooltipFor(item),
+            { cssClass: "ace-qol-ab-tip-locked" }
+          );
+        } catch (err) {
+          // ⚠️ NAMED. "The pin does nothing" and "this Foundry has no locked
+          // tooltips" must not look the same.
+          console.warn(`${LOG} | could not pin that tooltip:`, err);
+          ui.notifications?.warn("This Foundry version cannot pin a tooltip open.");
+        }
+      });
+      // Middle-click on a link-ish element scrolls or opens a tab by default.
+      slot.addEventListener("mousedown", (ev) => { if (ev.button === 1) ev.preventDefault(); });
+
       // ⚠️ RIGHT-CLICK IS THE SHEET'S OWN MENU, NOT A SHORTCUT TO THE SHEET.
       // Johnny, 2026-08-23: "it should have a pop-up... where I can edit it,
       // just like anything, or tweak it, just like I would be able to from the

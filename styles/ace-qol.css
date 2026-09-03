@@ -5609,6 +5609,20 @@
 .ace-qol-ab-init-needed { cursor: pointer; color: #fff; background: #7a5c12; }
 .ace-qol-ab-init-needed:hover { background: #d4af37; color: #1a1a1a; }
 
+/* ── Move and recentre ────────────────────────────────────────────────── */
+/* The portrait is the drag handle; this puts it back. Small and quiet - it is
+   an escape hatch, not a feature anybody uses twice a session. */
+.ace-qol-ab-gear {
+  width: 24px; height: 24px; padding: 0;
+  align-self: center; margin-left: 4px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; color: #6b5530;
+  background: transparent; border: 1px solid #3a3a40; border-radius: 4px;
+  cursor: pointer;
+  transition: color .12s ease, border-color .12s ease;
+}
+.ace-qol-ab-gear:hover { color: #d4af37; border-color: #d4af37; }
+
 /* ── Tabs and spell levels ────────────────────────────────────────────── */
 /* Above the slots, per Johnny 2026-09-03. A monster with only attacks never
    sees these; a caster gets Spells and, inside it, one button per level, which
@@ -5800,7 +5814,25 @@
   border-top: 1px solid #3a3a40; padding-top: 4px;
   /* Wrapped rows, never squeezed columns - the standing rule. */
   overflow-wrap: normal; word-break: normal; hyphens: none;
+  /* ⚠️ A HOVER LONGER THAN THE SCREEN IS NOT A HOVER. Johnny, 2026-09-03:
+     "when I hover over some spells, it's so long, like Prismatic Spray... I
+     cannot read the whole description. We have to have it be able to scroll."
+     Capped here so the tooltip stays on screen; the middle-click lock below is
+     what makes the rest reachable, because a passing hover cannot be scrolled. */
+  max-height: 46vh;
+  overflow-y: auto;
 }
+.ace-qol-ab-tip-more {
+  margin-top: 5px; padding-top: 4px; border-top: 1px solid #3a3a40;
+  font-size: 13px; color: #c0b288; font-style: italic;
+}
+/* ⚠️ THE LOCKED COPY IS THE ONE YOU CAN ACTUALLY READ. Foundry's locked
+   tooltips take pointer events, so this one scrolls under the mouse and stays
+   put until dismissed. Taller and wider, because there is no cursor to avoid. */
+#tooltip.locked-tooltip .ace-qol-ab-tip { max-width: 520px; }
+#tooltip.locked-tooltip .ace-qol-ab-tip-desc { max-height: 70vh; }
+
+
 
 /* ── Drag and drop ────────────────────────────────────────────────────────
    The slot you are hovering is the slot the item WILL take. Everything from
