@@ -14,6 +14,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { aceDescriptionText } from "./description-reader.mjs";
 
 export class ActivityUsePrompt {
 
@@ -122,24 +123,13 @@ export class ActivityUsePrompt {
    * so the dialog stays a decision, not a wall of rules text.
    */
   static async _summary(activity) {
-    try {
-      let raw = activity?.description?.chatFlavor
-             || activity?.item?.system?.description?.value
-             || "";
-      raw = String(raw).trim();
-      if (!raw) return "";
-      const TE = foundry.applications?.ux?.TextEditor?.implementation ?? globalThis.TextEditor;
-      if (TE?.enrichHTML) {
-        raw = await TE.enrichHTML(raw, {
-          rollData:   activity.getRollData?.() ?? {},
-          relativeTo: activity.item,
-          secrets:    false,
-        });
-      }
-      // Strip to plain text and cap it — the full text lives on the item.
-      const text = String(raw).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-      return text.length > 240 ? text.slice(0, 237).trimEnd() + "…" : text;
-    } catch (_) { return ""; }
+    // ⚠️ THROUGH THE SHARED READER, which enriches and then flattens. Its roll
+    // data falls back from the activity to the ITEM, and the item's is what
+    // carries the creature's name — `[[lookup @name]]` asked of an activity
+    // alone resolves to nothing, which is the exact placeholder that started
+    // this on 2026-09-03.
+    try { return await aceDescriptionText(activity?.item, { activity, limit: 240 }); }
+    catch (_) { return ""; }
   }
 
   static async _promptThenRefire(activity, usageConfig, messageConfig, spend) {

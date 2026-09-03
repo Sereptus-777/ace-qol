@@ -1,4 +1,5 @@
 // ─── ACE: QOL — Death Pipeline ──────────────────────────────────────────────
+import { aceDescriptionHtml } from "./description-reader.mjs";
 // Handles NPC death visuals: converts dead NPC tokens to tile art.
 // When an NPC drops to 0 HP, this engine finds matching dead-creature art,
 // places a tile at the token's position, and removes the original token.
@@ -269,7 +270,15 @@ export class DeathPipeline {
    * @param {Actor} actor
    * @returns {{items: Array, currency: object}}
    */
-  _buildLootSnapshot(actor) {
+  /**
+   * ⚠️ ASYNC BECAUSE THE DESCRIPTIONS ARE ENRICHED HERE, AND HERE IS THE ONLY
+   * PLACE THEY CAN BE. A snapshot exists precisely so a corpse can be looted
+   * after its actor is gone; storing the raw text and enriching at display time
+   * would mean enriching against an item that no longer exists, and `[[lookup
+   * @name]]` would have nothing to resolve against. The creature is alive-ish
+   * and on the board at this moment, so this is when its name is knowable.
+   */
+  async _buildLootSnapshot(actor) {
     const REJECT_TYPES = new Set([
       "feat", "spell", "class", "subclass", "background", "race",
       "species", "facility", "feature", "trait", "spelllist",
@@ -309,7 +318,7 @@ export class DeathPipeline {
         uuid:   item.uuid,
         type:   item.type,
         rarity: item.system?.rarity ?? "common",
-        description: item.system?.description?.value ?? "",
+        description: await aceDescriptionHtml(item),
         identified:  item.system?.identified !== false,
         data,    // full toObject() — used by loot dialog to recreate on recipient
       });
@@ -545,7 +554,7 @@ export class DeathPipeline {
       // Snapshot the actor's lootable items + currency at time of death.
       // Stored on the TOKEN flag (not a tile, since we don't make tiles
       // anymore). The loot dialog reads from here.
-      const lootSnapshot = this._buildLootSnapshot(actor);
+      const lootSnapshot = await this._buildLootSnapshot(actor);
 
       // Snapshot pre-death visual state for revive reversal.
       const preDeathSnapshot = {

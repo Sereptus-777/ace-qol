@@ -30,6 +30,7 @@
 import { MODULE_ID }   from "./ace-qol.mjs";
 import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { QolSettings } from "./settings.mjs";
+import { aceDescriptionHtml } from "./description-reader.mjs";
 
 export class UsageCard {
 
@@ -320,21 +321,12 @@ export class UsageCard {
 
   /** Description under a chevron — collapsed by default so the card stays small. */
   static async _description(activity, item, actor) {
-    let raw = activity.description?.chatFlavor || item.system?.description?.value || "";
-    raw = String(raw).trim();
-    if (!raw) return "";
-
-    let enriched = raw;
-    try {
-      const TE = foundry.applications?.ux?.TextEditor?.implementation ?? globalThis.TextEditor;
-      if (TE?.enrichHTML) {
-        enriched = await TE.enrichHTML(raw, {
-          rollData:   activity.getRollData?.() ?? actor?.getRollData?.() ?? {},
-          relativeTo: item,
-          secrets:    false,
-        });
-      }
-    } catch (_) { /* fall back to the raw text */ }
+    // ⚠️ THROUGH THE SHARED READER. This file had the enrichment RIGHT while the
+    // action bar had it wrong and the loot dialog had it lossy — three answers
+    // to one question. The reader is the one answer; the behaviour here is
+    // unchanged, it is just no longer a private copy that can drift.
+    const enriched = await aceDescriptionHtml(item, { activity, actor });
+    if (!enriched) return "";
 
     return `
       <div class="ace-qol-use-desc">

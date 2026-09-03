@@ -25,6 +25,7 @@ import { QolSettings } from "./settings.mjs";
 import { aceEdgeGapFt } from "./geometry-utils.mjs";
 import { lootFraming, readCreatureType } from "./loot-framing.mjs";
 import { canHarvest } from "./sustenance.mjs";
+import { aceDescriptionTextSync, acePrimeDescriptions, aceDescriptionHtml } from "./description-reader.mjs";
 
 // ─── Container detection (cross-module shared flag namespace) ──────────────
 // Both ACE QOL and ACE Forge read these flags. ACE QOL uses them for the
@@ -552,7 +553,8 @@ export class LootableTile {
           uuid:        createdOnActor?.uuid ?? item.uuid,
           type:        item.type,
           rarity:      item.system?.rarity ?? "common",
-          description: item.system?.description?.value ?? "",
+          // Enriched here, where the item still exists — a snapshot outlives it.
+          description: await aceDescriptionHtml(item),
           identified:  item.system?.identified !== false,
           data:        itemData,
         });
@@ -1493,6 +1495,13 @@ export class LootableTile {
       // dragon offered its entire hoard twice (2026-09-02). The claim list
       // outlives both, so this filter is the backstop behind the deletion.
       const _claimed = new Set(flags.lootClaimed ?? []);
+      // ⚠️ WARM THE DESCRIPTIONS BEFORE THE ROWS ARE BUILT. `_buildLootItemRow`
+      // is synchronous and enrichment is not, so without this the first open of
+      // a body shows its items with the enricher text stripped instead of
+      // resolved. Priming here costs nothing and the dialog is built after it.
+      try { acePrimeDescriptions(actor?.items ?? []); }
+      catch (err) { console.warn(`${MODULE_ID} | could not pre-read the loot descriptions:`, err); }
+
       if (useSnapshot) {
         source = "snapshot";
         // Snapshot revealable whenever the entry is unidentified — we can
@@ -2221,7 +2230,7 @@ export class LootableTile {
             uuid:        created.uuid,
             type:        created.type,
             rarity:      created.system?.rarity ?? "common",
-            description: created.system?.description?.value ?? "",
+            description: await aceDescriptionHtml(created),
             identified:  created.system?.identified !== false,
             data:        created.toObject(),
           });
@@ -2238,7 +2247,7 @@ export class LootableTile {
         uuid:        sourceItem.uuid,
         type:        sourceItem.type,
         rarity:      sourceItem.system?.rarity ?? "common",
-        description: sourceItem.system?.description?.value ?? "",
+        description: await aceDescriptionHtml(sourceItem),
         identified:  sourceItem.system?.identified !== false,
         data:        itemData,
       });
@@ -2421,7 +2430,14 @@ export class LootableTile {
     const unidentName = sys.unidentified?.name ?? "";
     const displayName = isIdentified ? realName : (unidentName || realName);
 
-    const realDesc = LootableTile.cleanItemDescription(sys.description?.value ?? "");
+    // ⚠️🔴 ENRICH FIRST, THEN CLEAN. `cleanItemDescription` is a good FLOOR and a
+    // poor ceiling: it deletes `[[lookup @name]]` rather than resolving it, so a
+    // sword whose text names its wielder reads with a hole in it. The sync
+    // reader answers from the cache the loot dialog primes below, resolves the
+    // placeholders, and only falls back to stripping when it cannot. Either way
+    // nothing bracketed reaches the dialog.
+    const realDesc = LootableTile.cleanItemDescription(
+      aceDescriptionTextSync(item) || (sys.description?.value ?? ""));
     const unidentDesc = LootableTile.cleanItemDescription(sys.unidentified?.description ?? "");
     const rawDesc = isIdentified ? realDesc : (unidentDesc || ""); // mundane shows real; magical-unid shows unident
     const description = LootableTile.truncateDescription(rawDesc, 220);

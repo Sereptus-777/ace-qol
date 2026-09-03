@@ -88,6 +88,8 @@ import { AuraEngine }           from "./aura-engine.mjs";
 import { MultiattackLabel }     from "./multiattack-label.mjs";
 import { DeadTokenLock }        from "./dead-token-lock.mjs";
 import { FireEngine }           from "./fire-engine.mjs";
+import { aceDescriptionHtml, aceDescriptionText, aceDescriptionTextSync }
+  from "./description-reader.mjs";
 import { PolymorphSpellPipeline } from "./polymorph-spell-pipeline.mjs";
 import { TokenCache }            from "./token-cache.mjs";
 import { DurationTracker }      from "./duration-tracker.mjs";
@@ -3917,6 +3919,23 @@ Hooks.once("ready", () => {
     InitiativeTools.init();
   } catch (err) {
     console.error(`${MODULE_ID} | Initiative Tools init failed:`, err);
+  }
+
+  // ⚠️ THE DESCRIPTION READER IS PUBLISHED, because the sibling modules have the
+  // same bug and cannot import across module folders — the standalone rule.
+  // ace-engine's item card stripped tags and left `[[lookup @name]]` on screen
+  // exactly as the action bar did. Optional-chained by every caller, so Forge
+  // and the Engine still work with ACE QOL absent.
+  try {
+    game.aceQol = game.aceQol ?? {};
+    Object.assign(game.aceQol, {
+      descriptionHtml:     (item, opts) => aceDescriptionHtml(item, opts),
+      descriptionText:     (item, opts) => aceDescriptionText(item, opts),
+      descriptionTextSync: (item, opts) => aceDescriptionTextSync(item, opts),
+    });
+  } catch (err) {
+    console.error(`${MODULE_ID} | the description reader failed to publish, so the `
+      + `sibling modules will fall back to stripping enricher text:`, err);
   }
 
   // Fire: bodies, drawn areas, spread, and a timer anchored to world time.

@@ -86,6 +86,7 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { WeaponSwap } from "./weapon-swap.mjs";
 import { resolveReach } from "./reach-reader.mjs";
 import { MultiattackEngine } from "./multiattack-engine.mjs";
+import { aceDescriptionTextSync, acePrimeDescriptions } from "./description-reader.mjs";
 
 const LOG = "ace-qol | ActionBar";
 
@@ -360,27 +361,21 @@ export class ActionBar {
   /**
    * An item's description as readable prose.
    *
-   * ⚠️ STRIPPED, NOT ENRICHED. Descriptions carry markup and dnd5e enricher
-   * syntax like `[[/damage 2d6]]`, and a tooltip is not the place to resolve
-   * them - a half-rendered enricher reads as corruption. Tags out, entities
-   * decoded, whitespace collapsed, cut on a WORD boundary so it never ends
-   * mid-syllable.
+   * ⚠️🔴 THIS USED TO STRIP THE TAGS AND NOTHING ELSE, AND THE COMMENT DEFENDING
+   * THAT WAS HALF RIGHT. It argued that "a half-rendered enricher reads as
+   * corruption", which is true, and missed that an UNRENDERED one reads worse.
+   * Taking the tags out of `<p>[[lookup @name]] is a beholder</p>` leaves the
+   * square brackets sitting on his screen in full, which is exactly what he
+   * found on a beholder's lair action (2026-09-03): "It's supposed to be saying
+   * what the name is, not 'lookup at name'."
+   *
+   * The shared reader enriches first, so the placeholder becomes the creature's
+   * name. It answers immediately from a cache the bar primes on every redraw,
+   * and on a cold read it strips the syntax rather than showing it.
    */
   static _plainDescription(item, limit = 260) {
-    try {
-      const raw = item.system?.description?.value ?? "";
-      if (!raw) return "";
-      const el = document.createElement("div");
-      el.innerHTML = raw;
-      let text = (el.textContent ?? "").replace(/\s+/g, " ").trim();
-      if (!text) return "";
-      if (text.length > limit) {
-        const cut = text.slice(0, limit);
-        const lastSpace = cut.lastIndexOf(" ");
-        text = (lastSpace > limit * 0.6 ? cut.slice(0, lastSpace) : cut) + "…";
-      }
-      return text;
-    } catch (_) { return ""; }
+    try { return aceDescriptionTextSync(item, { limit }); }
+    catch (_) { return ""; }
   }
 
   /** Activities as a plain array, whatever shape the system hands them over in. */
@@ -638,6 +633,14 @@ export class ActionBar {
       const ordered = ActionBar._orderedFor(actor);
       const shown   = ordered.slice(0, SLOT_COUNT);
       const overflow = Math.max(0, ordered.length - SLOT_COUNT);
+      // ⚠️ WARM THE DESCRIPTIONS BEFORE HE CAN HOVER ONE. The sync reader is
+      // honest on a cold cache — it strips the enricher syntax rather than
+      // showing it — but stripping loses the creature's name, and the name is
+      // the whole thing he asked for. Priming here means the first hover after
+      // a redraw already has the enriched text.
+      try { acePrimeDescriptions(actor?.items ?? []); }
+      catch (err) { console.warn(`${LOG} | could not pre-read the descriptions:`, err); }
+
       const badges  = ActionBar._badgesFor(actor);
       const multi   = ActionBar._multiattack(actor);
       const hp      = actor.system?.attributes?.hp ?? {};
