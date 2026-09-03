@@ -322,6 +322,26 @@ export class ActionBar {
    * ⚠️ FEATURES ONLY. A backpack has no activity either and is not a trait, and
    * admitting gear here would refill the bar with rope and rations.
    */
+  /**
+   * A slot you read rather than press.
+   *
+   * ⚠️🔴 I BUILT MULTIATTACK A BUTTON AND HE DID NOT ASK FOR ONE. Johnny,
+   * 2026-09-03: "I just want to hover so I know how many attacks to do. I don't
+   * want a button to push, for fuck's sake."
+   *
+   * He had said "it's called an action, actually" and I read that as "make it
+   * pressable" when it meant "put it in the bar with the actions instead of on
+   * the portrait". Position and pressability are two different questions and I
+   * answered the wrong one.
+   *
+   * ⚠️ THE STYLING IS THE HONEST PART. These get no hover lift and no pointer
+   * cursor, so nothing invites a press in the first place — which is better
+   * than a click that fires a notification saying it did nothing.
+   */
+  static _isReadOnlySlot(actor, item) {
+    return ActionBar._isMultiattack(item) || ActionBar._isPassiveBadge(actor, item);
+  }
+
   static _isPassiveBadge(actor, item) {
     try {
       if (item?.type !== "feat") return false;
@@ -890,10 +910,15 @@ export class ActionBar {
       // ⚠️ AND THE BAR IS LEFT-ALIGNED SO SLOT 1 NEVER MOVES. A bar that
       // re-centres itself on every selection puts a different button under the
       // same pixel each time, which is worse than the wasted space it saves.
-      const used = shown.length;
-      const wanted = Math.min(SLOT_COUNT, Math.max(COLUMNS, Math.ceil((used + 1) / COLUMNS) * COLUMNS));
-
-      const slotHtml = Array.from({ length: wanted }, (_, i) => {
+      // ⚠️🔴 BOTH ROWS ALWAYS. I shrank this to one row for a creature with five
+      // actions and took his top row away with it. Johnny, 2026-09-03: "I've
+      // lost the top row bars. I want them up there... I want the two rows still
+      // there."
+      //
+      // The empty slots are not waste, they are the drop targets and the shape
+      // he has learned. Shrinking a bar he arranges by hand moves every slot he
+      // put somewhere on purpose.
+      const slotHtml = Array.from({ length: SLOT_COUNT }, (_, i) => {
         const item = shown[i];
         if (!item) {
           // ⚠️ EMPTY SLOTS ARE STILL DROP TARGETS, so the index has to be here.
@@ -904,7 +929,8 @@ export class ActionBar {
         const spent = showUses ? `<span class="ace-qol-ab-uses">${uses.value ?? 0}/${uses.max}</span>` : "";
         const lvl = item.type === "spell" && item.system?.level > 0
           ? `<span class="ace-qol-ab-lvl">${item.system.level}</span>` : "";
-        return `<div class="ace-qol-ab-slot" draggable="true"
+        const readOnly = ActionBar._isReadOnlySlot(actor, item) ? " ace-qol-ab-read" : "";
+        return `<div class="ace-qol-ab-slot${readOnly}" draggable="true"
                      data-item-id="${item.id}" data-index="${i}" data-type="${esc(item.type)}"
                      data-tooltip-html="${esc(ActionBar._tooltipFor(item))}">
                   <img src="${esc(item.img)}" alt="" draggable="false">
@@ -1009,37 +1035,13 @@ export class ActionBar {
         const item = actor.items.get(slot.dataset.itemId);
         if (!item) return ui.notifications?.warn("That item is no longer on this creature.");
 
-        // ⚠️ A BADGE IS READ, NEVER PRESSED. Johnny, 2026-09-03: "You can't ever
-        // do anything with these things, like innate spell casting. It just lets
-        // me know it's a badge." Calling `item.use()` on Keen Smell would post a
-        // card announcing that a wolf can smell, which is noise dressed as an
-        // action. It says so once rather than doing nothing silently, because a
-        // slot that does nothing at all reads as a broken slot.
-        if (ActionBar._isPassiveBadge(actor, item)) {
-          ui.notifications?.info(`${item.name} is always on. Hover it to read what it does.`);
-          return;
-        }
+        // ⚠️ READ, NEVER PRESSED — AND IT LOOKS THAT WAY, WHICH IS THE POINT.
+        // Multiattack and the passives carry no click behaviour at all. The
+        // first cut fired a notification saying nothing had happened, which is
+        // a worse answer than a slot that never looked pressable: it makes him
+        // click it to find out, once per creature, forever.
+        if (ActionBar._isReadOnlySlot(actor, item)) return;
 
-        // ⚠️ MULTIATTACK IS THE HEADER, AND PRESSING IT SAYS SO.
-        //
-        // It has a slot because it is an action and it belongs where a GM reads
-        // left to right, but it is the one entry on a stat block that is not
-        // itself a swing: it says how many swings follow. Calling `item.use()`
-        // would post a card announcing that the giant used Multiattack, which is
-        // the useless line he has been chasing all night, in card form.
-        //
-        // ⚠️ THE CHAIN POP-UP IS NOT WIRED HERE ON PURPOSE. It is built to open
-        // AFTER the first swing, off the attack roll, and it carries that
-        // swing's targets forward. Faking a standalone entry point at 01:00
-        // without following that state through is exactly how the volley card
-        // came to have a fix that was only ever a comment. Told, not pretended.
-        if (ActionBar._isMultiattack(item)) {
-          const summary = MultiattackEngine.summaryFor?.(actor);
-          ui.notifications?.info(summary?.label
-            ? `${actor.name}: ${summary.label}. Take them from the bar; the chain pop-up follows the first swing.`
-            : `${actor.name} has Multiattack, but how many attacks it makes could not be read from its stat block.`);
-          return;
-        }
 
         try {
           // ⚠️ ASK BEFORE SWINGING SOMETHING THEY ARE NOT HOLDING, but only

@@ -25,6 +25,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { aceStripEnrichers } from "./description-reader.mjs";
 import { CombatState } from "./combat-state.mjs";
 
 const NUM_WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8 };
@@ -455,8 +456,19 @@ export class MultiattackEngine {
       // ⚠️ NULL WHEN IT IS THE IMPORTER'S USELESS SENTENCE. "X uses Multiattack"
       // is not a description; showing it instead of the item's own text would
       // trade one worthless line for the same worthless line.
+      // ⚠️ THE JUNK SENTENCE IS APPENDED, NOT INSTEAD OF. His Cloud Giant reads
+      // "The giant makes two morningstar attacks. The <name> uses <item name>."
+      // The first half is the real rule out of the book; the second is the
+      // importer's boilerplate riding along behind it. Testing whether the WHOLE
+      // string was junk let the tail through, so it is cut wherever it appears.
+      const junk = /\s*(?:the\s+)?\S[^.]{0,60}?\s+uses\s+[^.]{0,60}?\.?\s*$/i;
+      let cleaned = String(text ?? "").trim();
+      // Only cut it when something real is left in front of it.
+      const trimmed = cleaned.replace(junk, "").trim();
+      if (trimmed.length > 20) cleaned = trimmed;
+
       const useless = /^\s*the\s+.{0,60}?\s+uses\s+multi[\s-]?attack\.?\s*$/i;
-      const passage = (text && !useless.test(text)) ? text.trim() : null;
+      const passage = (cleaned && !useless.test(cleaned)) ? cleaned : null;
 
       // Best case: the text names the weapons, so we can say "2 claws, 1 bite".
       const parsed = this._parseMultiattack(text, attackItems);
@@ -576,8 +588,20 @@ export class MultiattackEngine {
     if (e && e.count > 0) e.count -= 1;
   }
 
+  /**
+   * ⚠️🔴 THE ENRICHER SYNTAX GOT ALL THE WAY TO HIS SCREEN THROUGH HERE.
+   *
+   * The description reader was built on 2026-09-03 so that nothing bracketed
+   * could ever reach a tooltip, and then this file handed a stat block passage
+   * straight to the action bar without going near it. Johnny, an hour later:
+   * "If you'll notice, it's still doing that: look up name, fucking bullshit."
+   *
+   * He is right and the reader was not the problem — the problem is that a
+   * second path existed at all. `aceStripEnrichers` is that reader's floor, so
+   * this uses it rather than growing a third answer to the same question.
+   */
   static _plainText(html) {
-    return String(html ?? "")
+    return aceStripEnrichers(String(html ?? ""))
       .replace(/<[^>]+>/g, " ")
       .replace(/&[a-z]+;/gi, " ")
       .replace(/\s+/g, " ")

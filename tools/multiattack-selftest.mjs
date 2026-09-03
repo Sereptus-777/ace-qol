@@ -116,6 +116,25 @@ const plain = {
 check("reports nothing rather than inventing a count",
   MultiattackEngine.summaryFor(plain), null);
 
+console.log("\nHIS CLOUD GIANT — the real sentence, then the importer's junk");
+// ⚠️ THE EXACT STRING OFF HIS SCREEN, 2026-09-03 01:23. The first half is the
+// rule out of the book; the second is boilerplate riding along behind it, and
+// its enricher syntax reached his tooltip in full because the multiattack
+// passage never went through the description reader.
+const giant = creature({
+  itemText: "<p>The Cloud Giant (Legacy) uses Multiattack.</p>",
+  bio: "<p><strong>Multiattack.</strong> The giant makes two morningstar attacks. "
+     + "The [[lookup @name]] uses [[lookup @item.name]].</p>",
+  weapons: ["Morningstar", "Rock"],
+});
+s = MultiattackEngine.summaryFor(giant);
+check("the count is right", s?.total, 2);
+check("nothing bracketed survives", /\[\[|\]\]/.test(String(s?.text ?? "")), false);
+check("the importer's tail is cut", /\buses\b/i.test(String(s?.text ?? "")), false);
+check("the real sentence is kept whole",
+  String(s?.text ?? "").includes("makes two morningstar attacks"), true);
+
+
 console.log("\nTHE LEGENDARY ACTION FURTHER DOWN THE PAGE IS NOT MULTIATTACK");
 const lich = creature({
   itemText: "<p>The lich uses Multiattack.</p>",

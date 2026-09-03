@@ -5681,6 +5681,14 @@
 }
 .ace-qol-ab-slot:hover { border-color: #d4af37; transform: translateY(-2px); }
 .ace-qol-ab-slot > img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* ⚠️ A SLOT YOU READ, NOT ONE YOU PRESS. Multiattack and the passive badges
+   carry no click behaviour, so nothing here may invite one: no pointer, no
+   lift. The muted left edge is the only mark, so they still read as part of the
+   row rather than as something broken. Johnny, 2026-09-03: "I just want to
+   hover so I know how many attacks to do. I don't want a button to push." */
+.ace-qol-ab-read { cursor: help; border-left: 3px solid #6b5530; }
+.ace-qol-ab-read:hover { border-color: #6b5530; border-left-color: #d4af37; transform: none; }
+
 .ace-qol-ab-empty { cursor: default; background: #0e0e11; border-style: dashed; }
 .ace-qol-ab-empty:hover { border-color: #3a3a40; transform: none; }
 
