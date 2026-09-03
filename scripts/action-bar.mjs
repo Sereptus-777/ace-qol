@@ -86,7 +86,8 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { WeaponSwap } from "./weapon-swap.mjs";
 import { resolveReach } from "./reach-reader.mjs";
 import { MultiattackEngine } from "./multiattack-engine.mjs";
-import { aceDescriptionTextSync, acePrimeDescriptions } from "./description-reader.mjs";
+import { aceDescriptionTextSync, aceDescriptionHtmlSync, acePrimeDescriptions }
+  from "./description-reader.mjs";
 
 const LOG = "ace-qol | ActionBar";
 
@@ -141,6 +142,26 @@ export class ActionBar {
    * automatic fill, not to the rule about what may sit on a bar.
    */
   static _ineligible(actor, item) {
+    // ⚠️🔴 MULTIATTACK IS A SLOT NOW, AND IT USED TO BE A BADGE ON THE PORTRAIT.
+    // That was Johnny's call in August and he reversed it on 2026-09-03: "I
+    // don't need it on the portrait... I want it on the hot bar, just like
+    // Morningstar and Rock are on there. It's called an action, actually."
+    // He is right: it has an activation cost and it drives the attack chain, so
+    // it is a button. Its slot opens that chain rather than doing nothing.
+    if (ActionBar._isMultiattack(item)) return null;
+
+    // ⚠️ A PASSIVE IS A BADGE, NOT AN ACTION, AND IT STILL BELONGS HERE.
+    // Johnny, 2026-09-03: "Keen Smell's got to be there, sort of... You can't
+    // ever do anything with these things. It just lets me know it's a badge
+    // that says, hey, this thing has keen smell, and when I hover over it, it
+    // better say exactly what this creature has about keen smell."
+    //
+    // So they are admitted, and `_actionsFor` puts them last where they cannot
+    // displace anything that can actually be pressed. The old rule — "passives
+    // belong in the effects panel" — was right about what they ARE and wrong
+    // about where a GM looks for them mid-turn.
+    if (ActionBar._isPassiveBadge(actor, item)) return null;
+
     const list = ActionBar._activityList(item.system?.activities);
     if (!list.length) {
       return `${item.name} has nothing to activate, so it cannot sit on a bar. `
@@ -240,8 +261,8 @@ export class ActionBar {
    * the hard way - reading `item.type` alone gets Breath Weapon wrong.
    */
   static _actionsFor(actor) {
-    const weaponAttacks = [], otherAttacks = [], feats = [];
-    const attackSpells = [], healing = [], otherSpells = [], gear = [];
+    const multi = [], weaponAttacks = [], otherAttacks = [], feats = [];
+    const attackSpells = [], healing = [], otherSpells = [], gear = [], passives = [];
 
     // ⚠️ ONE SLOT PER NAME. Jeth genuinely carries Spiked Chain THREE times as
     // three separate items, all with attack activities, and the bar drew all
@@ -257,6 +278,11 @@ export class ActionBar {
         const name = String(item.name ?? "").trim().toLowerCase();
         if (name && seenNames.has(name)) continue;
         if (name) seenNames.add(name);
+
+        // ⚠️ MULTIATTACK LEADS, because it tells you how to read everything to
+        // its right, and a GM reads the bar left to right.
+        if (ActionBar._isMultiattack(item)) { multi.push(item); continue; }
+        if (ActionBar._isPassiveBadge(actor, item)) { passives.push(item); continue; }
 
         const list = ActionBar._activityList(item.system?.activities);
         const has = (t) => ActionBar._hasType(list, t);
@@ -278,8 +304,109 @@ export class ActionBar {
         console.warn(`${LOG} | could not classify "${item?.name}":`, err);
       }
     }
-    return [...weaponAttacks, ...otherAttacks, ...feats,
-            ...attackSpells, ...healing, ...otherSpells, ...gear];
+    // ⚠️ PASSIVES FILL FROM THE BACK AND NEVER PUSH AN ACTION OUT. On a Cloud
+    // Giant that is five things and a comfortable row; on a wizard with fifty
+    // spells the badges simply do not fit, which is correct — nobody needs
+    // Darkvision taking a slot from a spell list.
+    return [...multi, ...weaponAttacks, ...otherAttacks, ...feats,
+            ...attackSpells, ...healing, ...otherSpells, ...gear, ...passives];
+  }
+
+  /**
+   * A fact about the creature rather than something it does.
+   *
+   * ⚠️ NO ACTIVITY, OR NOTHING TAKEABLE. Keen Smell and Darkvision have no
+   * activity at all; Innate Spellcasting usually has one whose activation the
+   * system flags passive. Both are badges: you read them, you never press them.
+   *
+   * ⚠️ FEATURES ONLY. A backpack has no activity either and is not a trait, and
+   * admitting gear here would refill the bar with rope and rations.
+   */
+  static _isPassiveBadge(actor, item) {
+    try {
+      if (item?.type !== "feat") return false;
+      if (ActionBar._isMultiattack(item)) return false;
+      const list = ActionBar._activityList(item.system?.activities);
+      if (!list.length) return true;
+      return !list.some(a => ActionBar._isTakeable(a));
+    } catch (_) { return false; }
+  }
+
+
+  /* ── Tabs ─────────────────────────────────────────────────────────────── */
+
+  /**
+   * The tab strip, and what is in each tab.
+   *
+   * ⚠️🔴 TABS, NOT PAGES, AND SPELLS GROUP BY LEVEL. Johnny, 2026-09-03: "the
+   * only time that the bar will be completely full is with something like a
+   * spellcaster, in which he has maybe 50 spells, so it's not all gonna fit...
+   * I don't even know what spells they have because it runs out as soon as it's
+   * got all the first-level spells on there."
+   *
+   * Pages fail here for the exact reason he gave: the problem is not knowing
+   * what is there, and "page 2 of 5" is not a map. Levels are. A wizard's fifty
+   * spells become nine short rows he can navigate the way he reads a sheet.
+   *
+   * ⚠️ "ALL" IS FIRST AND IT IS THE OLD BAR, HAND ARRANGEMENT INCLUDED. The
+   * per-creature arrangement is a flat twenty-slot order, and partitioning it
+   * into tabs would quietly throw away an evening's work. So the tabs are
+   * ADDITIVE: All behaves exactly as the bar did, and the rest are filters over
+   * it.
+   *
+   * ⚠️ A TAB WITH NOTHING IN IT IS NOT DRAWN, and when only All has anything
+   * the strip does not draw at all. Most monsters never see a tab.
+   */
+  static _tabsFor(actor, ordered) {
+    const tabs = [{ id: "all", label: "All", items: ordered }];
+    try {
+      const attacks = [], actions = [], spells = [], features = [];
+      for (const item of ordered) {
+        if (ActionBar._isPassiveBadge(actor, item)) { features.push(item); continue; }
+        if (item.type === "spell") { spells.push(item); continue; }
+        const list = ActionBar._activityList(item.system?.activities);
+        if (ActionBar._hasType(list, "attack")) { attacks.push(item); continue; }
+        if (ActionBar._isMultiattack(item)) { attacks.push(item); continue; }
+        if (item.type === "feat") { features.push(item); continue; }
+        actions.push(item);
+      }
+      if (attacks.length)  tabs.push({ id: "attacks",  label: "Attacks",  items: attacks });
+      if (actions.length)  tabs.push({ id: "actions",  label: "Actions",  items: actions });
+      if (spells.length)   tabs.push({ id: "spells",   label: "Spells",   items: spells, levels: true });
+      if (features.length) tabs.push({ id: "features", label: "Features", items: features });
+    } catch (err) {
+      console.warn(`${LOG} | could not group this creature's actions into tabs:`, err);
+    }
+    // Only All has anything worth a tab -> no strip.
+    return tabs.length > 1 ? tabs : [];
+  }
+
+  /**
+   * Spell levels present on this creature, in order, cantrips first.
+   *
+   * ⚠️ ONLY THE LEVELS THEY ACTUALLY HAVE. Drawing 0 through 9 for a creature
+   * with two cantrips and a first-level spell is nine buttons, seven of which
+   * are lies about what is in there.
+   */
+  static _spellLevels(items) {
+    const seen = new Map();
+    for (const item of items) {
+      const lvl = Number(item.system?.level ?? 0);
+      if (!seen.has(lvl)) seen.set(lvl, []);
+      seen.get(lvl).push(item);
+    }
+    return [...seen.entries()].sort((a, b) => a[0] - b[0])
+      .map(([level, list]) => ({ level, items: list,
+        label: level === 0 ? "Cantrips" : ActionBar._ordinal(level) }));
+  }
+
+  /** Which tab this creature is on. Remembered so a redraw does not reset it. */
+  static _tabState = new Map();
+
+  static _currentTab(actorId, tabs) {
+    const held = ActionBar._tabState.get(actorId);
+    if (held && tabs.some(t => t.id === held.tab)) return held;
+    return { tab: tabs[0]?.id ?? "all", level: null };
   }
 
   /* ── What a slot actually IS, on hover ──────────────────────────── */
@@ -299,93 +426,159 @@ export class ActionBar {
    * `cleanHTML` sanitiser. Putting markup in the plain one shows the user
    * angle brackets.
    */
-  static _tooltipFor(item, { descChars = 260 } = {}) {
+  /**
+   * Everything a GM needs to decide whether to press this, and nothing less.
+   *
+   * ⚠️🔴 THE HOVER IS THE PRODUCT. Johnny, 2026-09-03: "The description is the
+   * most important part when you're dealing with a hot bar, right? The hover
+   * over, what the fuck this does, is important, not just some whatever." And
+   * on spells: "I have to have the full description pop up: what it does, who
+   * it affects, all that, because I don't know every freaking spell."
+   *
+   * So the description is NOT truncated any more. It was capped at 260
+   * characters, which is roughly one sentence of a spell, and cutting a spell
+   * off at "each creature in a 20-foot-radius sphere must make a..." is worse
+   * than showing nothing, because it reads as the whole rule.
+   *
+   * ⚠️ AND IT GOES IN AS MARKUP, NOT ESCAPED TEXT. The old version ran the body
+   * through `escapeHTML`, so a description that arrived as markup left as
+   * visible angle brackets. Only the fields ACE composes itself are escaped,
+   * because those are the ones that can carry a creature's name.
+   */
+  static _tooltipFor(item) {
     const esc = foundry.utils.escapeHTML;
     try {
       const rows = [];
       const list = ActionBar._activityList(item.system?.activities);
       const first = list[0] ?? null;
+      const sys = item.system ?? {};
+
+      // ── What KIND of thing this is ────────────────────────────────────
+      // A spell's level and school is the first thing a caster reads, and it
+      // was not in here at all.
+      const kind = [];
+      if (item.type === "spell") {
+        const lvl = Number(sys.level ?? 0);
+        const schoolKey = CONFIG.DND5E?.spellSchools?.[sys.school]?.label;
+        const school = schoolKey ? game.i18n.localize(schoolKey) : "";
+        kind.push(lvl === 0
+          ? (school ? school + " cantrip" : "Cantrip")
+          : ActionBar._ordinal(lvl) + "-level " + (school || "spell"));
+        if (ActionBar._hasProperty(sys, "ritual")) kind.push("Ritual");
+        if (ActionBar._hasProperty(sys, "concentration")) kind.push("Concentration");
+      }
 
       // Cost: Action / Bonus Action / Reaction / Legendary, in the system's words.
       const actType = first?.activation?.type;
       const actCfg = CONFIG.DND5E?.activityActivationTypes?.[actType];
       const cost = actCfg?.label ? game.i18n.localize(actCfg.label) : null;
-      if (cost) rows.push(`<div class="ace-qol-ab-tip-cost">${esc(cost)}</div>`);
+      if (cost) kind.push(cost);
+      if (kind.length) rows.push('<div class="ace-qol-ab-tip-cost">' + esc(kind.join("  \u00b7  ")) + '</div>');
 
       const bits = [];
-      // Reach or range, from THE resolver — the same one the attack gate uses.
-      // ⚠️ THE TOOLTIP IS A PROMISE. Johnny asked for hover text that says what
-      // a thing does; a tooltip reading "Reach 5 feet" over a weapon the pipeline
-      // will happily swing at 10 feet is a lie told in his own UI. This used to
-      // read the activity's range slot alone, so a weapon whose reach sits in
-      // its description showed no reach line at all.
-      // ⚠️ `repair: false` — the bar redraws on every selection change, and
-      // rendering a tooltip is not a swing.
+      // Reach or range, from THE resolver, the same one the attack gate uses.
+      // ⚠️ THE TOOLTIP IS A PROMISE. A tooltip reading "Reach 5 feet" over a
+      // weapon the pipeline will happily swing at 10 feet is a lie told in his
+      // own UI. `repair: false` because rendering a tooltip is not a swing.
       const r = first?.range ?? {};
       if (r.units === "self") bits.push("Self");
-      else if (r.value && r.long) bits.push(`Range ${r.value}/${r.long} ${r.units ?? "ft"}`);
-      else if (r.value) bits.push(`Range ${r.value} ${r.units ?? "ft"}`);
+      else if (r.value && r.long) bits.push("Range " + r.value + "/" + r.long + " " + (r.units ?? "ft"));
+      else if (r.value) bits.push("Range " + r.value + " " + (r.units ?? "ft"));
       else {
         const reach = resolveReach(item, first, { repair: false });
-        if (reach.reachFt > 0) bits.push(`Reach ${reach.reachFt} ${reach.units ?? "ft"}`);
+        if (reach.reachFt > 0) bits.push("Reach " + reach.reachFt + " " + (reach.units ?? "ft"));
       }
 
+      // ⚠️ WHO IT AFFECTS, IN HIS WORDS: "what it does, who it affects, all
+      // that." A shape and a count are different answers and a spell can carry
+      // either, a 20 ft sphere or three creatures.
       const tpl = first?.target?.template;
-      if (tpl?.type && tpl?.size) bits.push(`${tpl.size} ${tpl.units ?? "ft"} ${tpl.type}`);
+      if (tpl?.type && tpl?.size) bits.push(tpl.size + " " + (tpl.units ?? "ft") + " " + tpl.type);
+      const aff = first?.target?.affects;
+      if (aff?.type) {
+        const key = CONFIG.DND5E?.individualTargetTypes?.[aff.type]?.label ?? aff.type;
+        const label = game.i18n.localize(key);
+        const count = Number(aff.count) || 0;
+        bits.push(count > 1 ? count + " " + label + "s" : label);
+      }
 
       // Attack or save, whichever this is.
       const save = first?.save;
       const saveAbil = save?.ability instanceof Set ? [...save.ability][0] : save?.ability;
       if (saveAbil) {
-        const label = CONFIG.DND5E?.abilities?.[saveAbil]?.label ?? String(saveAbil).toUpperCase();
+        const key = CONFIG.DND5E?.abilities?.[saveAbil]?.label;
+        const label = key ? game.i18n.localize(key) : String(saveAbil).toUpperCase();
         const dc = save?.dc?.value ?? save?.dc?.formula ?? null;
-        bits.push(`${dc ? `DC ${dc} ` : ""}${label} save`);
+        bits.push((dc ? "DC " + dc + " " : "") + label + " save");
       }
 
-      const uses = item.system?.uses ?? {};
+      // How long it lasts. Choosing between two spells needs this.
+      const dur = first?.duration ?? sys.duration ?? {};
+      if (dur.units && dur.units !== "inst") {
+        bits.push(dur.value ? dur.value + " " + dur.units : String(dur.units));
+      }
+
+      const uses = sys.uses ?? {};
       if (Number.isFinite(uses.max) && uses.max > 0) {
-        bits.push(`${uses.value ?? 0}/${uses.max} uses`);
+        bits.push((uses.value ?? 0) + "/" + uses.max + " uses");
       }
-      if (bits.length) rows.push(`<div class="ace-qol-ab-tip-meta">${esc(bits.join("  ·  "))}</div>`);
+      if (bits.length) rows.push('<div class="ace-qol-ab-tip-meta">' + esc(bits.join("  \u00b7  ")) + '</div>');
 
-      const text = ActionBar._plainDescription(item, descChars);
-      if (text) rows.push(`<div class="ace-qol-ab-tip-desc">${esc(text)}</div>`);
+      // ── The rules text, whole, and as markup ──────────────────────────
+      const body = ActionBar._describeForTooltip(item);
+      if (body) rows.push('<div class="ace-qol-ab-tip-desc">' + body + '</div>');
 
-      return `<div class="ace-qol-ab-tip"><div class="ace-qol-ab-tip-name">${esc(item.name)}</div>${rows.join("")}</div>`;
+      return '<div class="ace-qol-ab-tip"><div class="ace-qol-ab-tip-name">'
+        + esc(item.name) + '</div>' + rows.join("") + '</div>';
     } catch (err) {
-      console.debug(`${LOG} | could not build a tooltip for "${item?.name}":`, err);
-      return `<div class="ace-qol-ab-tip"><div class="ace-qol-ab-tip-name">${esc(item?.name ?? "")}</div></div>`;
+      console.debug(LOG + " | could not build a tooltip for \"" + item?.name + "\":", err);
+      return '<div class="ace-qol-ab-tip"><div class="ace-qol-ab-tip-name">'
+        + esc(item?.name ?? "") + '</div></div>';
     }
   }
 
+  /** dnd5e 5.x keeps item properties in a Set; older data used an Array. */
+  static _hasProperty(sys, key) {
+    const props = sys?.properties;
+    if (!props) return false;
+    if (typeof props.has === "function") return props.has(key);
+    if (Array.isArray(props)) return props.includes(key);
+    return false;
+  }
+
+  static _ordinal(n) {
+    const suffix = ["th", "st", "nd", "rd"];
+    const v = n % 100;
+    return n + (suffix[(v - 20) % 10] ?? suffix[v] ?? suffix[0]);
+  }
+
   /**
-   * An item's description as readable prose.
+   * The rules text for the hover: enriched markup, whole, never cut.
    *
-   * ⚠️🔴 THIS USED TO STRIP THE TAGS AND NOTHING ELSE, AND THE COMMENT DEFENDING
-   * THAT WAS HALF RIGHT. It argued that "a half-rendered enricher reads as
-   * corruption", which is true, and missed that an UNRENDERED one reads worse.
-   * Taking the tags out of `<p>[[lookup @name]] is a beholder</p>` leaves the
-   * square brackets sitting on his screen in full, which is exactly what he
-   * found on a beholder's lair action (2026-09-03): "It's supposed to be saying
-   * what the name is, not 'lookup at name'."
-   *
-   * The shared reader enriches first, so the placeholder becomes the creature's
-   * name. It answers immediately from a cache the bar primes on every redraw,
-   * and on a cold read it strips the syntax rather than showing it.
+   * ⚠️ MULTIATTACK'S OWN DESCRIPTION IS ALMOST NEVER ITS DESCRIPTION. The
+   * importer writes "The Cloud Giant (Legacy) uses Multiattack" and leaves the
+   * real line in the creature's stat block text. The engine already finds that
+   * passage; reading the item's field here would show the useless sentence on
+   * the one action that most needs its rules read out.
    */
-  static _plainDescription(item, limit = 260) {
+  static _describeForTooltip(item) {
+    const esc = foundry.utils.escapeHTML;
     try {
-      // ⚠️ MULTIATTACK'S OWN DESCRIPTION IS ALMOST NEVER ITS DESCRIPTION. The
-      // importer writes "The Cloud Giant (Legacy) uses Multiattack" and leaves
-      // the real line in the creature's stat block text. The engine already
-      // finds that passage; showing the item's field here would show the useless
-      // sentence on the one feature that most needs its rules read out.
       if (ActionBar._isMultiattack(item)) {
-        const s = MultiattackEngine.summaryFor?.(item?.actor);
-        if (s?.text) return s.text.length > limit ? s.text.slice(0, limit - 1).trimEnd() + "…" : s.text;
-        if (s?.label) return s.label;
+        const summary = MultiattackEngine.summaryFor?.(item?.actor);
+        const head = summary?.label
+          ? '<div style="font-weight:700;margin-bottom:4px;">' + esc(summary.label) + '</div>'
+          : "";
+        if (summary?.text) return head + "<div>" + esc(summary.text) + "</div>";
+        if (head) return head;
       }
-      return aceDescriptionTextSync(item, { limit });
+      // ⚠️ HTML WHEN THE CACHE IS WARM, SAFE PROSE WHEN IT IS NOT. Enrichment
+      // is async and a tooltip is built synchronously, so this reads the cache
+      // the bar primes on every redraw. Neither path can show enricher syntax.
+      const cached = aceDescriptionHtmlSync(item);
+      if (cached) return cached;
+      const plain = aceDescriptionTextSync(item);
+      return plain ? esc(plain) : "";
     } catch (_) { return ""; }
   }
 
@@ -642,8 +835,28 @@ export class ActionBar {
 
       const esc = foundry.utils.escapeHTML;
       const ordered = ActionBar._orderedFor(actor);
-      const shown   = ordered.slice(0, SLOT_COUNT);
-      const overflow = Math.max(0, ordered.length - SLOT_COUNT);
+
+      // ⚠️ THE TAB DECIDES WHAT IS DRAWN, and All is the bar exactly as it was.
+      const tabs = ActionBar._tabsFor(actor, ordered);
+      const state = ActionBar._currentTab(actor.id, tabs);
+      const active = tabs.find(t => t.id === state.tab) ?? null;
+
+      let pool = active?.items ?? ordered;
+      let levels = [];
+      if (active?.levels) {
+        levels = ActionBar._spellLevels(active.items);
+        // Default to the lowest level present rather than showing every spell
+        // at once, which is the pile he cannot read.
+        const pick = levels.find(l => l.level === state.level) ?? levels[0] ?? null;
+        state.level = pick?.level ?? null;
+        pool = pick?.items ?? [];
+      } else {
+        state.level = null;
+      }
+      ActionBar._tabState.set(actor.id, { tab: state.tab, level: state.level });
+
+      const shown   = pool.slice(0, SLOT_COUNT);
+      const overflow = Math.max(0, pool.length - SLOT_COUNT);
       // ⚠️ WARM THE DESCRIPTIONS BEFORE HE CAN HOVER ONE. The sync reader is
       // honest on a cold cache — it strips the enricher syntax rather than
       // showing it — but stripping loses the creature's name, and the name is
@@ -653,7 +866,6 @@ export class ActionBar {
       catch (err) { console.warn(`${LOG} | could not pre-read the descriptions:`, err); }
 
       const badges  = ActionBar._badgesFor(actor);
-      const multi   = ActionBar._multiattack(actor);
       const hp      = actor.system?.attributes?.hp ?? {};
       const ac      = actor.system?.attributes?.ac?.value ?? "—";
 
@@ -661,7 +873,27 @@ export class ActionBar {
       const isMyTurn  = !!combatant && game.combat?.combatant?.id === combatant.id;
       const needsInit = !!combatant && combatant.initiative === null;
 
-      const slotHtml = Array.from({ length: SLOT_COUNT }, (_, i) => {
+      // ⚠️🔴 SHRINK TO WHAT IS THERE, AND KEEP SLOT 1 WHERE IT WAS. Johnny,
+      // 2026-09-03: "if we're not using the room, then why not shrink it? In
+      // fact, I don't know why we don't do that with all of them."
+      //
+      // A Cloud Giant has five things and was getting twenty boxes, fifteen of
+      // them dashed and empty, which reads as a bar that failed to load.
+      //
+      // ⚠️ THE COUNT IS ROUNDED UP TO A WHOLE ROW, AND ONE SPARE SLOT IS KEPT.
+      // Two reasons, both learned rather than guessed. A ragged right edge on a
+      // ten-wide grid looks broken rather than tidy. And the empty slots are the
+      // drop targets — shrinking to exactly the used count would leave nowhere
+      // to drag a new action onto, which is how a feature disappears without
+      // anybody removing it.
+      //
+      // ⚠️ AND THE BAR IS LEFT-ALIGNED SO SLOT 1 NEVER MOVES. A bar that
+      // re-centres itself on every selection puts a different button under the
+      // same pixel each time, which is worse than the wasted space it saves.
+      const used = shown.length;
+      const wanted = Math.min(SLOT_COUNT, Math.max(COLUMNS, Math.ceil((used + 1) / COLUMNS) * COLUMNS));
+
+      const slotHtml = Array.from({ length: wanted }, (_, i) => {
         const item = shown[i];
         if (!item) {
           // ⚠️ EMPTY SLOTS ARE STILL DROP TARGETS, so the index has to be here.
@@ -699,8 +931,25 @@ export class ActionBar {
         ? `<div class="ace-qol-ab-more" data-tooltip="${overflow} more action${overflow === 1 ? "" : "s"} on the sheet. Drag one in to put it on the bar.">+${overflow}</div>`
         : "";
 
+      // ⚠️ ABOVE THE SLOTS, per his answer on 2026-09-03: "yes, I want the tabs
+      // above." Easier to hit than a left rail, at the cost of a little height.
+      const tabHtml = tabs.length
+        ? `<div class="ace-qol-ab-tabs">${tabs.map(t =>
+            `<button type="button" class="ace-qol-ab-tab${t.id === state.tab ? " ace-qol-ab-tab-on" : ""}"
+                     data-tab="${esc(t.id)}">${esc(t.label)}<span>${t.items.length}</span></button>`
+          ).join("")}</div>`
+        : "";
+
+      const levelHtml = levels.length > 1
+        ? `<div class="ace-qol-ab-levels">${levels.map(l =>
+            `<button type="button" class="ace-qol-ab-level${l.level === state.level ? " ace-qol-ab-level-on" : ""}"
+                     data-level="${l.level}">${esc(l.label)}<span>${l.items.length}</span></button>`
+          ).join("")}</div>`
+        : "";
+
       el.innerHTML = `
         <div class="ace-qol-ab-strip">${badgeHtml}</div>
+        ${tabHtml}${levelHtml}
         <div class="ace-qol-ab-main">
           <div class="ace-qol-ab-portrait" data-tooltip="${esc(actor.name)}">
             <img src="${esc(actor.img)}" alt="">
@@ -708,7 +957,8 @@ export class ActionBar {
               <span class="ace-qol-ab-hp">${hp.value ?? "—"}<span>/${hp.max ?? "—"}</span></span>
               <span class="ace-qol-ab-ac">${ac}</span>
             </div>
-            ${multi ? `<div class="ace-qol-ab-multi" data-tooltip-html="${esc(ActionBar._tooltipFor(multi, { descChars: 600 }))}">MULTI</div>` : ""}
+            <!-- The MULTI badge was here. It is a slot on the bar now, per
+                 Johnny 2026-09-03: "I do not need it on the portrait." -->
             ${combatant && !needsInit
               ? `<div class="ace-qol-ab-init" data-tooltip="Initiative ${combatant.initiative}">${combatant.initiative}</div>`
               : ""}
@@ -732,12 +982,65 @@ export class ActionBar {
   }
 
   static _wire(el, actor, combatant) {
+    // ── Tabs and spell levels ───────────────────────────────────────────
+    // ⚠️ REDRAW, DO NOT HIDE. Showing every tab's slots and toggling display
+    // would keep 50 spells in the DOM with 50 tooltips attached to them for a
+    // creature the GM is only glancing at.
+    for (const btn of el.querySelectorAll(".ace-qol-ab-tab")) {
+      btn.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ActionBar._tabState.set(actor.id, { tab: btn.dataset.tab, level: null });
+        ActionBar.render();
+      });
+    }
+    for (const btn of el.querySelectorAll(".ace-qol-ab-level")) {
+      btn.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        const held = ActionBar._tabState.get(actor.id) ?? { tab: "spells" };
+        ActionBar._tabState.set(actor.id, { tab: held.tab, level: Number(btn.dataset.level) });
+        ActionBar.render();
+      });
+    }
+
     // ── Use an action ───────────────────────────────────────────────────
     for (const slot of el.querySelectorAll(".ace-qol-ab-slot[data-item-id]")) {
       slot.addEventListener("click", async (ev) => {
         ev.preventDefault();
         const item = actor.items.get(slot.dataset.itemId);
         if (!item) return ui.notifications?.warn("That item is no longer on this creature.");
+
+        // ⚠️ A BADGE IS READ, NEVER PRESSED. Johnny, 2026-09-03: "You can't ever
+        // do anything with these things, like innate spell casting. It just lets
+        // me know it's a badge." Calling `item.use()` on Keen Smell would post a
+        // card announcing that a wolf can smell, which is noise dressed as an
+        // action. It says so once rather than doing nothing silently, because a
+        // slot that does nothing at all reads as a broken slot.
+        if (ActionBar._isPassiveBadge(actor, item)) {
+          ui.notifications?.info(`${item.name} is always on. Hover it to read what it does.`);
+          return;
+        }
+
+        // ⚠️ MULTIATTACK IS THE HEADER, AND PRESSING IT SAYS SO.
+        //
+        // It has a slot because it is an action and it belongs where a GM reads
+        // left to right, but it is the one entry on a stat block that is not
+        // itself a swing: it says how many swings follow. Calling `item.use()`
+        // would post a card announcing that the giant used Multiattack, which is
+        // the useless line he has been chasing all night, in card form.
+        //
+        // ⚠️ THE CHAIN POP-UP IS NOT WIRED HERE ON PURPOSE. It is built to open
+        // AFTER the first swing, off the attack roll, and it carries that
+        // swing's targets forward. Faking a standalone entry point at 01:00
+        // without following that state through is exactly how the volley card
+        // came to have a fix that was only ever a comment. Told, not pretended.
+        if (ActionBar._isMultiattack(item)) {
+          const summary = MultiattackEngine.summaryFor?.(actor);
+          ui.notifications?.info(summary?.label
+            ? `${actor.name}: ${summary.label}. Take them from the bar; the chain pop-up follows the first swing.`
+            : `${actor.name} has Multiattack, but how many attacks it makes could not be read from its stat block.`);
+          return;
+        }
+
         try {
           // ⚠️ ASK BEFORE SWINGING SOMETHING THEY ARE NOT HOLDING, but only
           // in a live fight. Out of combat this never fires and the weapon is

@@ -5499,6 +5499,16 @@
   pointer-events: none;              /* the gaps let clicks through to canvas */
 }
 #ace-qol-action-bar.ace-qol-ab-visible { display: flex; }
+/* ⚠️ THE BAR STAYS CENTRED OVER FOUNDRY'S HOTBAR, AND I OWE JOHNNY A CORRECTION
+   ON THIS. I proposed anchoring it left so slot 1 never moves when the bar
+   shrinks, and then found that the hotbar underneath is itself centred: a
+   hard-left bar detaches from it and sits alone at the edge of the screen.
+   Centred means slot 1 does shift a little as the bar resizes. Left-anchored
+   means the bar no longer lines up with the row it belongs to. This is the
+   lesser of the two and it is one line to change if he would rather have the
+   other. */
+#ace-qol-action-bar .ace-qol-ab-main { width: max-content; }
+.ace-qol-ab-tabs, .ace-qol-ab-levels { align-self: flex-start; }
 #ace-qol-action-bar * { pointer-events: auto; }
 
 /* ── Condition / aura strip ───────────────────────────────────────────── */
@@ -5599,6 +5609,46 @@
 .ace-qol-ab-init-needed { cursor: pointer; color: #fff; background: #7a5c12; }
 .ace-qol-ab-init-needed:hover { background: #d4af37; color: #1a1a1a; }
 
+/* ── Tabs and spell levels ────────────────────────────────────────────── */
+/* Above the slots, per Johnny 2026-09-03. A monster with only attacks never
+   sees these; a caster gets Spells and, inside it, one button per level, which
+   is how a caster reads their own sheet. */
+.ace-qol-ab-tabs,
+.ace-qol-ab-levels {
+  display: flex;
+  gap: 4px;
+  width: max-content;
+  margin: 0 0 4px 0;
+  flex-wrap: wrap;
+}
+.ace-qol-ab-tab,
+.ace-qol-ab-level {
+  display: flex; align-items: center; gap: 5px;
+  padding: 4px 10px;
+  font-family: "Signika", sans-serif;
+  /* 14px is the floor for a hint in this suite; these are targets, not hints. */
+  font-size: 14px; font-weight: 600; line-height: 1;
+  color: #c9b48a;
+  background: #17171b;
+  border: 1px solid #3a3a40;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: border-color .12s ease, color .12s ease, background .12s ease;
+}
+.ace-qol-ab-tab:hover,
+.ace-qol-ab-level:hover { border-color: #d4af37; color: #f0e4c0; }
+.ace-qol-ab-tab-on,
+.ace-qol-ab-level-on {
+  background: #d4af37; color: #15110d; border-color: #f0d98a;
+}
+/* The count rides along so he can see how much is behind a tab before pressing
+   it — the whole complaint was not knowing what was there. */
+.ace-qol-ab-tab > span,
+.ace-qol-ab-level > span {
+  font-size: 12px; font-weight: 700; opacity: .75;
+}
+.ace-qol-ab-levels { margin-top: -1px; }
+
 /* ── Action slots ─────────────────────────────────────────────────────── */
 /* Ten across, two rows. Slot 1 is top-left and slot 20 is bottom-right, and
    the automatic fill runs in that same reading order, so the top row always
@@ -5606,8 +5656,17 @@
    row because the wrap point has to be exactly ten, never "whatever fits". */
 .ace-qol-ab-slots {
   display: grid;
+  /* Ten across, and NEVER "whatever fits" - the wrap point has to be exactly
+     ten so slot 11 is always the start of the second row (Johnny, 2026-08-23).
+     `max-content` lets the grid stop where the slots stop, which is what makes
+     the bar shrink to a creature with five actions instead of drawing fifteen
+     empty boxes after them (2026-09-03). The COLUMN width is still fixed, so
+     shrinking never resizes a button. */
   grid-template-columns: repeat(10, 50px);
   grid-auto-rows: 50px;
+  grid-auto-flow: row;
+  justify-content: start;
+  width: max-content;
   gap: 3px;
 }
 .ace-qol-ab-slot {

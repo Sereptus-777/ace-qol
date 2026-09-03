@@ -159,6 +159,23 @@ export function aceDescriptionTextSync(item, { limit = 0, activity = null } = {}
   return _flatten(aceStripEnrichers(raw), limit);
 }
 
+/**
+ * Enriched HTML right now, or empty when the cache is cold.
+ *
+ * ⚠️ EMPTY MEANS "NOT YET", NOT "NOTHING". The caller must have a fallback —
+ * `aceDescriptionTextSync` is the one to use — because returning the raw source
+ * here would put enricher syntax straight into a tooltip, which is the whole
+ * thing this file exists to prevent. It warms the cache on the way past.
+ */
+export function aceDescriptionHtmlSync(item, { activity = null } = {}) {
+  const raw = _raw(item, { activity });
+  if (!raw) return "";
+  const hit = _cache.get(_key(item, raw));
+  if (hit) return hit;
+  aceDescriptionHtml(item, { activity }).catch(() => {});
+  return "";
+}
+
 /** Enrich these items' descriptions in the background so the sync read is warm. */
 export function acePrimeDescriptions(items) {
   try {
