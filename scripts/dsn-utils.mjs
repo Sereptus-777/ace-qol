@@ -102,10 +102,94 @@ export function safeShowForRoll(roll, label = "dice animation") {
  * @param {number}  [opts.graceMs=500]  — settle beat after the dice land
  * @returns {Promise<void>}
  */
-export async function awaitDiceSettle(maxMs = 3000, { messageId = null, graceMs = 500 } = {}) {
+/**
+ * Dice thrown by somebody else, watched from the moment they are thrown.
+ *
+ * ⚠️🔴 THIS IS THE HOLE THAT SURVIVED MONTHS OF FIXES. Johnny, 2026-09-03: "the
+ * chat card is still coming up... I've been saying this for months. Why is this
+ * such a fucking problem?"
+ *
+ * Everything above waits on animations ACE STARTED. ACE does not roll the attack
+ * d20 — dnd5e does, and Dice So Nice animates it off the chat message dnd5e
+ * creates. So by the time the attack card is built there is nothing in
+ * `_inFlight`, the helper concludes nothing is rolling, waits its short probe
+ * and posts. A d20 tumble is two seconds; the probe is about six hundred
+ * milliseconds.
+ *
+ * The completion hook was meant to cover that, and could not: it was installed
+ * when the CARD was built, which is after the dice were already in the air. If
+ * the animation finished in that gap the event had already fired and would
+ * never fire again.
+ *
+ * ⚠️ SO THE LISTENER GOES ON AT ROLL TIME, NOT CARD TIME. `aceArmDiceWatch` is
+ * called the instant the system reports a roll, long before the card exists.
+ * Its promise resolves whenever the animation completes — including before
+ * anybody asks — so consuming it later is instant rather than a missed event.
+ *
+ * ⚠️ EVERY ROUND OF THIS BEFORE NOW REPLACED THE WAITING MECHANISM: a flat
+ * timer, then a timer racing an event, then the real animation promises. Each
+ * was a genuine improvement to the waiting. None of them was the problem.
+ *
+ * ⚠️ FIFO, AND THAT IS AN ASSUMPTION WORTH NAMING. Watches are consumed oldest
+ * first, which matches roll order to card order for the sequential attacks a
+ * single client makes. Two rolls genuinely overlapping would pair the first
+ * card with the first roll's dice, which is at worst the old behaviour.
+ */
+const _armed = [];
+const ARM_CAP_MS = 20000;
+
+export function aceArmDiceWatch() {
+  try {
+    if (!game?.dice3d?.isEnabled?.()) return null;
+  } catch (_) { return null; }
+
+  let hookId = null;
+  let timer = null;
+  const entry = { at: Date.now() };
+  entry.promise = new Promise((resolve) => {
+    const finish = () => {
+      try { if (hookId != null) Hooks.off("diceSoNiceRollComplete", hookId); } catch (_) {}
+      if (timer) { clearTimeout(timer); timer = null; }
+      resolve();
+    };
+    try { hookId = Hooks.on("diceSoNiceRollComplete", finish); }
+    catch (_) { /* no listener — the cap still resolves */ }
+    // ⚠️ A WATCH THAT NEVER RESOLVES WOULD HANG THE CARD FOREVER, which is the
+    // failure the whole helper was built to make impossible (v0.4.21).
+    timer = setTimeout(finish, ARM_CAP_MS);
+  });
+
+  _armed.push(entry);
+  // ⚠️ NEVER LET THIS GROW. A card that is never posted (a cancelled attack, a
+  // refused gate) leaves its watch behind, and one per swing across a session
+  // adds up. Anything older than the cap can no longer be waiting on anything.
+  const cutoff = Date.now() - ARM_CAP_MS;
+  while (_armed.length && _armed[0].at < cutoff) _armed.shift();
+  while (_armed.length > 20) _armed.shift();
+  return entry;
+}
+
+/** The oldest armed watch, removed from the queue. */
+function _takeArmed() {
+  return _armed.shift() ?? null;
+}
+
+export async function awaitDiceSettle(maxMs = 3000, { messageId = null, graceMs = 500, useArmed = false } = {}) {
   try {
     if (!game?.dice3d?.isEnabled?.()) return;
   } catch (_) { return; }
+
+  // ⚠️ AN ARMED WATCH BEATS EVERYTHING ELSE, because it was listening before
+  // the dice landed. If its animation has already completed the promise is
+  // already resolved and this returns after the grace beat alone.
+  if (useArmed) {
+    const watch = _takeArmed();
+    if (watch) {
+      await watch.promise;
+      await new Promise(r => setTimeout(r, graceMs));
+      return;
+    }
+  }
 
   // ── EVENT-BASED, NOT A GUESSED DELAY (2026-07-28) ──
   // This was a flat setTimeout: every card waited exactly 1800ms whether the

@@ -31,7 +31,7 @@ import { MODULE_ID } from "./ace-qol.mjs";
  *                 chat message (omit = first completion after we start waiting)
  * @returns {Promise<void>}
  */
-export async function awaitDsnRoll(fallbackMs = null, { messageId = null } = {}) {
+export async function awaitDsnRoll(fallbackMs = null, { messageId = null, useArmed = false } = {}) {
   // ⚠️🔴 THIS USED TO BE A TIMER RACING A HOOK, AND THE TIMER USUALLY WON.
   // It resolved on whichever came first: diceSoNiceRollComplete, or a flat
   // 3-second cap. So on a big handful of dice or a slow renderer the card
@@ -44,7 +44,7 @@ export async function awaitDsnRoll(fallbackMs = null, { messageId = null } = {})
   // most-watched rolls at the table - had the weakest check in the suite.
   // One delegation fixes all ten call sites.
   const { awaitDiceSettle } = await import("./dsn-utils.mjs");
-  return awaitDiceSettle(fallbackMs ?? undefined, { messageId });
+  return awaitDiceSettle(fallbackMs ?? undefined, { messageId, useArmed });
 }
 
 /** @deprecated kept only so the old body is not resurrected by accident. */

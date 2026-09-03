@@ -17,6 +17,7 @@ import { MergeCard } from "./merge-card.mjs";
 import { CoverEngine } from "./cover-engine.mjs";
 import { RiderEngine } from "./rider-engine.mjs";
 import { pendingAttackChoices, awaitDsnRoll, showCenterToast, promptAttackChoice } from "./attack-prompt.mjs";
+import { aceArmDiceWatch } from "./dsn-utils.mjs";
 import { WeaponMasteries } from "./weapon-masteries.mjs";
 import { CombatContext } from "./combat-context.mjs";
 import { OA_IN_FLIGHT } from "./oa-transient.mjs";
@@ -271,6 +272,17 @@ export class AttackPipeline {
     // effect: only the first swing per ~10 seconds posted a card.
     const dedupedAttackHandler = (rolls, data) => {
       try {
+        // ⚠️🔴 ARM THE DICE WATCH HERE, BEFORE ANYTHING ELSE. This is the moment
+        // the dice exist. Waiting for them at card-build time meant installing a
+        // listener after the animation had already started, and often after it
+        // had already finished, so the card beat its own dice for months.
+        // Armed after the dedupe would be wrong too: the dual hook fires twice
+        // and only one card follows.
+        try {
+          const rollRef0 = rolls?.[0];
+          if (!rollRef0 || !this._processedAttackRolls.has(rollRef0)) aceArmDiceWatch();
+        } catch (_) { /* no watch is the old behaviour, not a new failure */ }
+
         const rollRef = rolls?.[0];
         if (rollRef && typeof rollRef === "object") {
           if (this._processedAttackRolls.has(rollRef)) {
@@ -1716,9 +1728,11 @@ export class AttackPipeline {
       </div>
     `;
 
-    // Wait for DSN dice to finish tumbling before posting the result card —
-    // otherwise the chat card spoils the d20 result while dice are still rolling.
-    await awaitDsnRoll();
+    // ⚠️ THE WATCH ARMED AT ROLL TIME, not a fresh listener installed now. See
+    // `aceArmDiceWatch` — ACE does not throw the attack d20, so it has no
+    // animation of its own to wait on and a listener installed at this point is
+    // already too late.
+    await awaitDsnRoll(null, { useArmed: true });
 
     await ChatMessage.create({
       content: cardHtml,
