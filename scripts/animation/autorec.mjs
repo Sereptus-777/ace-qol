@@ -210,9 +210,39 @@ export function animationFor(item) {
  * Nobody curated it, the curated path is not in this JB2A install, or ACE never
  * asked because a template already owns the cast.
  */
-export function whyNoAnimation(item) {
+/**
+ * @param {Item|string} subject  an item, or the NAME of one.
+ *
+ * ⚠️🔴 IT TOOK AN ITEM AND SAID NOTHING WHEN GIVEN A NAME. Johnny,
+ * 2026-09-03, ran `whyNoAnimation("Tornado Takedown")` and got: Automated
+ * Animations has no entry called "undefined". The string went in as an item,
+ * `item.name` was undefined, and the diagnostic confidently reported that
+ * nobody had curated an animation for a thing it had never looked up.
+ *
+ * ⚠️ A DIAGNOSTIC THAT LIES IS WORSE THAN NO DIAGNOSTIC, and this one lied
+ * in the most expensive way available: it named a real cause for a real
+ * problem, and the cause was an artefact of how it had been called. The sibling
+ * in aa-tools has always taken a name; two tools with the same name and
+ * different arguments is the trap.
+ */
+export function whyNoAnimation(subject) {
   const out = [];
   try {
+    // A bare name, an item, or nothing (fall back to what is selected).
+    let item = subject;
+    if (typeof subject === "string") {
+      const wanted = _norm(subject);
+      const pool = canvas?.tokens?.controlled?.[0]?.actor?.items ?? game.items ?? [];
+      item = [...pool].find(i => _norm(i.name) === wanted)
+          ?? [...pool].find(i => _norm(i.name).includes(wanted))
+          ?? { name: subject };
+    } else if (!subject) {
+      item = canvas?.tokens?.controlled?.[0]?.actor?.items?.contents?.[0] ?? null;
+      if (!item) {
+        return _say(["Select a token, or pass an item or a name: "
+          + `game.aceQol.whyNoAnimation("Tornado Takedown")`]);
+      }
+    }
     const key = _norm(item?.name);
     const hit = buildIndex().get(key);
     if (!hit) {

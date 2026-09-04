@@ -125,13 +125,41 @@ export class FlightVisuals {
         // ⚠️ THE SPELL LIFTS ITS TARGET, NOT ITS CASTER.
         // Fly: "You touch a willing creature." Levitate: "One creature or
         // object of your choice." A wizard casting Fly on the barbarian must
-        // put the BARBARIAN in the air. Fall back to the caster for
-        // self-targeted abilities like the staff's ascension.
-        const targets = [...(game.user?.targets ?? [])].filter(t => t?.document);
+        // put the BARBARIAN in the air.
+        //
+        // ⚠️🔴 BUT A SELF ABILITY LIFTS ITS USER, AND THIS NEVER CHECKED.
+        // It preferred any target the user happened to have, and only fell back
+        // to the caster when there were none. The old comment even said "fall
+        // back to the caster for self-targeted abilities like the staff's
+        // ascension" — which is not a check, it is a hope that nothing else is
+        // targeted.
+        //
+        // Johnny, 2026-09-03: he was testing Tornado Takedown, still had that
+        // creature targeted, then used Aerial Ascension and the STAFF LIFTED THE
+        // ENEMY. "I was under the impression Aerial Ascension is only for the
+        // person who is holding the staff." It is.
+        //
+        // ⚠️ READ THE ACTIVITY, NOT THE NAME. The ability declares its own
+        // reach: range units "self", or a target that affects "self". Guessing
+        // from the name would break the moment somebody writes a homebrew one.
+        const selfOnly = (() => {
+          try {
+            if (String(activity?.range?.units ?? "") === "self") return true;
+            const aff = activity?.target?.affects?.type;
+            if (String(aff ?? "") === "self") return true;
+          } catch (_) { /* unreadable → treat as not self, the old behaviour */ }
+          return false;
+        })();
+
+        const targets = selfOnly ? [] : [...(game.user?.targets ?? [])].filter(t => t?.document);
         const subjects = targets.length
           ? targets
           : (caster.getActiveTokens?.(true) ?? []).slice(0, 1);
         if (!subjects.length) return;
+        if (selfOnly) {
+          console.log(`${MODULE_ID} | ${activity?.item?.name ?? "this ability"} is self-targeted, `
+            + `so it lifts its user and not whoever happens to be targeted.`);
+        }
 
         if (isDescend) {
           for (const t of subjects) await FlightVisuals.descend(t);
