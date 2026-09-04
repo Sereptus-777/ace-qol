@@ -36,6 +36,8 @@ const { FlightVisuals } = await import(
   "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/flight-visuals.mjs");
 const { SpaceEffects } = await import(
   "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/rules/space-effects.mjs");
+const { VisualOwnership } = await import(
+  "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/visual-ownership.mjs");
 
 let pass = 0, fail = 0;
 const check = (label, got, want) => {
@@ -107,6 +109,56 @@ check("no shape and no sprite is null, not a guess",
   SpaceEffects._spaceFxGeometry({ shapes: [] }), null);
 check("a degenerate polygon does not become a zero-size effect",
   SpaceEffects._spaceFxGeometry({ shapes: [{ points: [10, 10, 10, 10] }] }), null);
+
+console.log("\nDOES THE SPACE OUTLIVE THE TEMPLATE THAT AIMED IT?");
+// ⚠️ HIS EXACT CAST. The storm was created at world time 0 with a minute on
+// it, and the save engine tidied the template away 26 seconds later. The region
+// must still have 34 seconds left and must NOT be swept with the template.
+check("34 seconds still on the clock when the template goes",
+  SpaceEffects.timeLeft(60, 26), 34);
+check("a concentration space has no clock, so it dies with its template",
+  SpaceEffects.timeLeft(null, 26), null);
+check("neither does one with no flag at all",
+  SpaceEffects.timeLeft(undefined, 26), null);
+// ⚠️ null AND 0 ARE DIFFERENT ANSWERS, and Number(null) is 0 — the same trap
+// that capped every uncapped climb at zero an hour ago.
+check("expiring exactly now is over, not a minute of life",
+  SpaceEffects.timeLeft(26, 26), null);
+check("already run out is over", SpaceEffects.timeLeft(10, 26), null);
+check("a space created at world time 0 is not read as 'no clock'",
+  SpaceEffects.timeLeft(0, -5), 5);
+check("a junk expiry is treated as no clock, not as year zero",
+  SpaceEffects.timeLeft("soon", 26), null);
+
+console.log("\nWHO OWNS THE PICTURE? (Forge asks this before it invents one)");
+// The Stormforger: four abilities, and only ONE of them makes a space.
+const staff = { name: "Stormforger", system: { activities: { a: {}, b: {}, c: {}, d: {} } } };
+const act = (name, type = "save") => ({ name, type, item: staff });
+check("the storm is owned",
+  VisualOwnership.owns(staff, act("Thunderstorm of Misery")).owned, true);
+check("and it names what owns it",
+  VisualOwnership.owns(staff, act("Thunderstorm of Misery")).by, "the storm space ACE draws on the map");
+check("the takedown is owned by the tornado",
+  VisualOwnership.owns(staff, act("Tornado Takedown")).by, "ACE's tornado whirlwind");
+check("the ascension is owned by the flight visuals",
+  VisualOwnership.owns(staff, act("Aerial Ascension", "utility")).by, "ACE's flight visuals");
+check("the descent too",
+  VisualOwnership.owns(staff, act("Aerial Descent", "utility")).by, "ACE's flight visuals");
+// ⚠️ THE ITEM MUST NOT ANSWER FOR ALL FOUR. Asking "does this staff make a
+// storm?" says yes for every ability on it, which is how pressing Tornado
+// Takedown once played the storm's graphics (2026-07-29).
+check("the item alone does not claim every ability it has",
+  VisualOwnership.owns(staff, null).owned, false);
+// A single-activity item IS its ability, so the item name is the right answer.
+check("a one-ability item answers by its own name",
+  VisualOwnership.owns({ name: "Fog Cloud", system: { activities: { a: {} } } }, null).owned, true);
+check("something ACE has no picture for is not claimed",
+  VisualOwnership.owns({ name: "Longsword", system: { activities: { a: {} } } },
+    { name: "Attack", type: "attack" }).owned, false);
+// ⚠️ AN ATTACK IS NEVER A TAKEOFF — a flying snake's bite must not be claimed.
+check("a Flying Snake's bite is not a flight",
+  VisualOwnership.owns({ name: "Flying Snake", system: { activities: { a: {} } } },
+    { name: "Bite", type: "attack", item: { name: "Flying Snake" } }).owned, false);
 
 console.log("");
 console.log(pass + " passed, " + fail + " failed");

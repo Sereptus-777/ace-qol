@@ -50,6 +50,17 @@ const WHIRLWIND_CANDIDATES = [
  */
 const aceNum = (v) => (v === null || v === undefined || v === "" ? NaN : Number(v));
 
+/**
+ * What reads as taking off, and what reads as landing.
+ *
+ * ⚠️ ONE COPY. These were written inline in the use handler, and Forge now has
+ * to ask the same question before it invents an animation of its own. Two
+ * copies of a name list is two answers to one question the first time either
+ * is edited.
+ */
+const ASCEND_RE  = /ascen|take\s*flight|\bfly\b|\bflight\b|levitat|soar|hover/;
+const DESCEND_RE = /descen|\bland\b|touch\s*down|alight/;
+
 /** Sequencer effect name — one per token, so ending it is unambiguous. */
 const fxName = (token) => `ace-flight-${token.id ?? token.document?.id}`;
 /** Our TMFX filter id — namespaced so we never clobber another module's. */
@@ -145,8 +156,8 @@ export class FlightVisuals {
         // to go. Creature names carry their movement mode; their attacks do not.
         if (activity?.type === "attack") return;
 
-        const isAscend  = /ascen|take\s*flight|\bfly\b|\bflight\b|levitat|soar|hover/.test(name);
-        const isDescend = /descen|\bland\b|touch\s*down|alight/.test(name);
+        const isAscend  = ASCEND_RE.test(name);
+        const isDescend = DESCEND_RE.test(name);
         if (!isAscend && !isDescend) return;
 
         // ⚠️ THE SPELL LIFTS ITS TARGET, NOT ITS CASTER.
@@ -221,6 +232,23 @@ export class FlightVisuals {
     });
 
     console.debug(`${MODULE_ID} | Flight Visuals online`);
+  }
+
+  /**
+   * Does this file draw the picture for this action?
+   *
+   * Asked by `visual-ownership.mjs` on Forge's behalf, so a guessed animation
+   * stands down rather than playing an explosion over a takeoff.
+   */
+  static ownsFlight(activity) {
+    try {
+      const name = `${String(activity?.name ?? "")} ${String(activity?.item?.name ?? "")}`
+        .toLowerCase().trim();
+      if (!name) return false;
+      if (!ASCEND_RE.test(name) && !DESCEND_RE.test(name)) return false;
+      // An attack is never a takeoff — a flying snake's BITE must not count.
+      return activity?.type !== "attack";
+    } catch (_) { return false; }
   }
 
   /** Tokens we're currently decorating (client-local). */

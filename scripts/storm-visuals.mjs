@@ -56,11 +56,18 @@ const STORM_BED = [
 ];
 
 /** Thunder, rotated so six bolts don't fire the same clap six times. */
+//
+// ⚠️🔴 THE FILES WERE ALWAYS THERE. Every path here pointed at
+// `sounds/creatures/elemental/`, and the thunder actually sits one folder
+// deeper in `creatures/UNUSABLE/elemental/` — so the storm has been silent
+// since the day it shipped. An audit noticed on 2026-08-19, the warning was
+// added, and the paths were never corrected; his log tonight still printed all
+// four 404s. Finding a fault and leaving it is not finding it.
 const THUNDER = [
   "modules/ace-qol/Assets/Sounds/thunder-crack.mp3",
-  "modules/ace-engine/sounds/creatures/elemental/thunder-crack.mp3",
-  "modules/ace-engine/sounds/creatures/elemental/thunder-close.mp3",
-  "modules/ace-engine/sounds/creatures/elemental/thunder-deep.mp3",
+  "modules/ace-qol/Assets/Sounds/thunder-close.mp3",
+  "modules/ace-qol/Assets/Sounds/thunder-deep.mp3",
+  "modules/ace-qol/Assets/Sounds/thunder-rumble.mp3",
 ];
 
 /**
@@ -121,9 +128,9 @@ const TORNADO_MS = 4000;
  * neither is the flourish simply plays silent.
  */
 const WIND = [
-  "modules/ace-qol/Assets/Sounds/halloween-wind.mp3",
-  "modules/ace-engine/sounds/creatures/elemental/scary-graveyard-wind.mp3",
-  "modules/ace-engine/sounds/creatures/elemental/dark-storm-wind.mp3",
+  "modules/ace-qol/Assets/Sounds/dark-storm-wind.mp3",
+  "modules/ace-engine/sounds/creatures/elemental/wind-howling.mp3",
+  "modules/ace-engine/sounds/creatures/elemental/abstract-wind-howl.mp3",
 ];
 
 /**
@@ -255,6 +262,18 @@ export class StormVisuals {
    * activity's own target descriptors are the fallback for anything that has
    * already released.
    */
+  /**
+   * Does this file draw the whirlwind for this action?
+   *
+   * ⚠️ EXPORTED SO NOBODY COPIES THE TEST. Forge asks before it invents an
+   * animation of its own, through `game.aceQol.ownsVisual`. A second copy of
+   * `TORNADO_RE` living in another file is a copy that drifts.
+   */
+  static ownsTornado(activity) {
+    try { return TORNADO_RE.test(String(activity?.name ?? "")); }
+    catch (_) { return false; }
+  }
+
   static async _maybeTornado(activity) {
     const name = String(activity?.name ?? "");
     if (!TORNADO_RE.test(name)) return;

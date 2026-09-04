@@ -53,14 +53,49 @@ export class SpaceEffects {
       }, 150);
     });
 
-    // ── DELETE: template gone (any end path) → cascade our region ──
+    // ── DELETE: template gone → cascade our region, UNLESS it has its own clock ──
+    //
+    // ⚠️🔴 THE TEMPLATE IS THE AIMING DEVICE. THE REGION IS THE SPACE.
+    //
+    // Johnny, 2026-09-03, on Thunderstorm of Misery: "It still did not persist."
+    // The picture drew correctly and the region was created correctly, and then
+    // twenty-six seconds later this ran and took both away. Straight from his
+    // log:
+    //
+    //     Auto-deleted instant template ImL2yyPXv6UJeDIX
+    //     removed 1 space region(s) for deleted template ImL2yyPXv6UJeDIX
+    //
+    // The save engine is RIGHT to delete that template. The staff's damage is a
+    // one-shot: 1d6 bludgeoning and 2d6 lightning, rolled once, and leaving the
+    // circle on the map afterwards litters the scene with an invisible template
+    // the GM cannot even see to clean up. What is wrong is treating the tidying
+    // away of the aiming circle as the end of the storm.
+    //
+    // ⚠️ SO THE TEST IS "DOES THIS SPACE KNOW WHEN IT ENDS", not "is its template
+    // still there". A space with `expiresAt` in the future already has an owner
+    // for its own death — the sweeper below — and does not need this one. A
+    // concentration space has no clock, ends when concentration does, and its
+    // template going away IS that signal, so it still cascades here.
+    //
+    // ⚠️ AND AN INSTANT SPELL IS NOT THE SAME AS AN INSTANT SPACE. Those are two
+    // different questions about one cast, and answering the first was standing
+    // in for the second. Nothing here changes the damage timing.
     Hooks.on("deleteMeasuredTemplate", (templateDoc) => {
       if (game.users?.activeGM !== game.user) return;
       try {
         const scene = templateDoc?.parent ?? canvas?.scene;
-        const ids = scene?.regions
-          ?.filter?.(r => r.getFlag?.(MODULE_ID, "spaceFor") === templateDoc.id)
-          ?.map?.(r => r.id) ?? [];
+        const mine = scene?.regions
+          ?.filter?.(r => r.getFlag?.(MODULE_ID, "spaceFor") === templateDoc.id) ?? [];
+
+        const now = Number(game.time?.worldTime ?? 0);
+        const ids = [];
+        for (const r of mine) {
+          const left = SpaceEffects.timeLeft(r.getFlag?.(MODULE_ID, "expiresAt"), now);
+          if (left == null) { ids.push(r.id); continue; }
+          console.log(`${TAG} "${r.name}" outlives its template — it ends on its own clock `
+            + `in ${Math.round(left)} seconds of game time.`);
+        }
+
         if (ids.length) {
           scene.deleteEmbeddedDocuments("Region", ids)
             .then(() => console.log(`${TAG} removed ${ids.length} space region(s) for deleted template ${templateDoc.id}`))
@@ -667,6 +702,24 @@ export class SpaceEffects {
   // ────────────────────────────────────────────────────────────────────────────
 
   /** Delete every ACE space whose duration has run out. Returns the count. */
+  /**
+   * How much game time a space has left, or null when it has no clock of its
+   * own and must be ended by whatever created it.
+   *
+   * ⚠️ PURE, BECAUSE GETTING IT WRONG COSTS A FEATURE. This one comparison
+   * decides whether a space survives the tidying-away of its template, and it
+   * has three genuinely different answers hiding in it: a clock with time on it,
+   * a clock that has run out, and no clock at all. A concentration space has no
+   * `expiresAt` and MUST still die with its template.
+   */
+  static timeLeft(expiresAt, now) {
+    const until = (expiresAt === null || expiresAt === undefined || expiresAt === "")
+      ? NaN : Number(expiresAt);
+    if (!Number.isFinite(until)) return null;      // no clock -> not ours to keep
+    const left = until - (Number(now) || 0);
+    return left > 0 ? left : null;                 // already run out -> let it go
+  }
+
   static async sweepExpired() {
     const now = Number(game.time?.worldTime ?? 0);
     let removed = 0;

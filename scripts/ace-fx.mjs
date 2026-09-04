@@ -53,9 +53,41 @@ const ENCRUST_TYPES = new Set([
 const _recentEncrust = new Map();
 
 /** First recognised damage type on the item (activity-first, then legacy). */
-function _itemDamageType(item) {
+/**
+ * The damage type that should colour the flourish.
+ *
+ * ⚠️🔴 ASK THE ACTIVITY THAT WAS USED. Without an activity this walks every
+ * ability on the item and takes the first damage type it recognises, which on
+ * a multi-activity magic item is very often the wrong one: the Stormforger's
+ * first activity is Tornado Takedown, whose first damage part is bludgeoning,
+ * so every creature caught in an 8d6 LIGHTNING storm was encrusted as though
+ * it had been clubbed (Johnny's log, 2026-09-03).
+ *
+ * ⚠️ AND THE ITEM'S OWN BASE DAMAGE IS NOT THE ANSWER EITHER. Stormforger is
+ * a quarterstaff: `system.damage.base` is 1d6 bludgeoning and has nothing to do
+ * with any of its four abilities. That fallback stays for genuinely legacy
+ * items with no activities at all, and is now reached only when nothing else
+ * answered.
+ */
+function _itemDamageType(item, activityId = null) {
   try {
     const acts = item?.system?.activities;
+
+    // The one that was actually used wins, outright.
+    if (activityId && acts) {
+      const used = acts.get?.(activityId)
+        ?? (typeof acts.values === "function"
+              ? [...acts.values()].find(a => a?.id === activityId)
+              : (acts ?? {})[activityId]);
+      for (const p of (used?.damage?.parts ?? [])) {
+        const t = (p?.types && [...p.types][0]) ?? (Array.isArray(p) ? p[1] : null);
+        if (t && DAMAGE_THEME[t]) return t;
+      }
+      // A used activity that deals no themed damage is an ANSWER: Aerial
+      // Ascension has no damage at all and must not borrow the tornado's.
+      if (used) return null;
+    }
+
     if (acts) {
       const list = typeof acts.values === "function" ? [...acts.values()] : Object.values(acts ?? {});
       for (const a of list) {
@@ -226,7 +258,7 @@ export class AceFX {
         if (!tk) return;
         let item = null;
         if (data?.itemUuid) item = await fromUuid(data.itemUuid).catch(() => null);
-        const dt = _itemDamageType(item);              // first recognised damage type, or null
+        const dt = _itemDamageType(item, data?.activityId ?? null);
         console.log(`${MODULE_ID} | [ace-fx] SAVE-FAIL encrust: item="${item?.name ?? "?"}" dmgType=${dt ?? "none"} target=${tk?.name}`);
         if (!dt || !ENCRUST_TYPES.has(dt)) return;     // ice/encrust only for elemental-damage spells
         // Resolve the impact sound. Honor a configured `aceFxSounds[type]` ONLY when it's

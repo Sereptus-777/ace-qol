@@ -510,6 +510,14 @@ Hooks.once("init", () => {
     .then(({ StormVisuals }) => StormVisuals.init())
     .catch(err => console.error(`${MODULE_ID} | Storm Visuals init failed:`, err));
 
+  // ── Who draws what (2026-09-03) ──
+  // Registered here, beside the storm, because arbitrating between ACE's own
+  // pictures and Forge's derived ones is what it is for. Forge asks through
+  // `game.aceQol.ownsVisual`; with this absent Forge simply behaves as before.
+  import("./visual-ownership.mjs")
+    .then(({ VisualOwnership }) => VisualOwnership.register())
+    .catch(err => console.error(`${MODULE_ID} | Visual ownership init failed:`, err));
+
   // Initialize Extended Active Effects engine (must be early — before effects process)
   try {
     extendedEffects = new ExtendedEffects();
@@ -6340,19 +6348,41 @@ Hooks.once("ready", () => {
           console.log(`${MODULE_ID} | ActivityChoiceDialog offers ${choosable.length} `
             + `real activities (${choosable.map(a => a.type).join(", ")}) — showing ACE's picker: ${app.title}`);
 
-          // ⚠️ TWO THINGS THAT BOTH COST AN ACTION AND BOTH BURN A SLOT ARE A
-          // DUPLICATE IN THE ITEM, not a decision. Johnny's imported Magic
-          // Missile carries exactly that. ACE cannot safely guess which one he
-          // meant, so it shows both and names the problem instead of hiding it.
+          // ⚠️ TWO IDENTICAL ABILITIES ARE A DUPLICATE. Two DIFFERENT ones are
+          // an item. Johnny's imported Magic Missile carries a genuine
+          // duplicate and this is how he finds it.
+          //
+          // ⚠️🔴 BUT THE TEST USED TO BE "both cost an action and both set
+          // spellSlot", AND THAT IS NOT A DUPLICATE TEST. `consumption.spellSlot`
+          // is true by default on a magic item's activities even when the item
+          // spends CHARGES and no slot is involved at all, so the Stormforger's
+          // four genuinely different abilities — Tornado Takedown, Aerial
+          // Ascension, Aerial Descent, Thunderstorm of Misery — tripped it every
+          // single cast. ACE told him, on screen, to go and delete abilities his
+          // item is supposed to have (2026-09-03).
+          //
+          // A wrong warning is worse than none: it is a confident instruction to
+          // damage his own data. The test is now whether two of them are
+          // actually indistinguishable — the same name, or the same type with
+          // the same cost — which is what a duplicated import looks like.
           try {
-            const casters = choosable.filter(a => a.consumption?.spellSlot
-              && a.activation?.type === "action");
-            if (casters.length > 1) {
-              console.warn(`${MODULE_ID} | "${item.name}" has ${casters.length} activities that `
-                + `each cost an action AND each spend a spell slot `
-                + `(${casters.map(a => a.name || a.type).join(", ")}). That is a duplicate left `
-                + `by whatever imported the item, not a real choice — delete the spare on the `
-                + `item sheet and this dialog stops appearing.`);
+            const sig = (a) => {
+              const t = (a.consumption?.targets ?? [])[0];
+              return `${a.type}|${t?.type ?? ""}|${t?.value ?? ""}|${a.activation?.type ?? ""}`;
+            };
+            const byName = new Map(), bySig = new Map();
+            for (const a of choosable) {
+              const n = String(a.name ?? "").trim().toLowerCase();
+              if (n) byName.set(n, (byName.get(n) ?? 0) + 1);
+              bySig.set(sig(a), (bySig.get(sig(a)) ?? 0) + 1);
+            }
+            const twins = [...byName.entries()].filter(([, n]) => n > 1).map(([k]) => k);
+            const clones = [...bySig.entries()].filter(([, n]) => n > 1).map(([k]) => k);
+            if (twins.length || clones.length) {
+              console.warn(`${MODULE_ID} | "${item.name}" has activities that look identical `
+                + `${twins.length ? `by name (${twins.join(", ")})` : `by type and cost (${clones.join(", ")})`}. `
+                + `That is usually a duplicate left by whatever imported the item — check the `
+                + `item sheet. Abilities with different names and different costs are NOT this.`);
             }
           } catch (_) { /* diagnostics must never block the cast */ }
           const _costOf = (a) => {

@@ -1486,9 +1486,16 @@ export class SaveEngine {
 
     // Emit saveComplete hook
     try {
+      // ⚠️🔴 THE ABILITY, NOT JUST THE ITEM. A listener handed only the item
+      // has to guess which of its abilities went off, and ace-fx guessed wrong
+      // every time: it walked the Stormforger's four activities, took the first
+      // damage type it recognised, and encrusted everyone in BLUDGEONING off
+      // the quarterstaff's base damage while they were being hit by 8d6 of
+      // lightning (Johnny's log, 2026-09-03). The item is a staff. The activity
+      // is the storm.
       Hooks.callAll(`${MODULE_ID}.saveComplete`, {
         actor: tActor, tokenDocId: result.tokenDocId, saveAbility, passed: result.passed,
-        itemUuid: item?.uuid ?? null,
+        itemUuid: item?.uuid ?? null, activityId,
       });
     } catch (_) { /* non-fatal */ }
 
@@ -3491,7 +3498,9 @@ export class SaveEngine {
         const tokenDoc = scene?.tokens?.get(r.tokenDocId);
         const actor = tokenDoc?.actor ?? game.actors.get(r.actorId);
         if (actor) {
-          Hooks.callAll(`${MODULE_ID}.saveComplete`, { actor, tokenDocId: r.tokenDocId, saveAbility, passed: r.passed, itemUuid: item?.uuid ?? null });
+          Hooks.callAll(`${MODULE_ID}.saveComplete`, { actor, tokenDocId: r.tokenDocId,
+            saveAbility, passed: r.passed, itemUuid: item?.uuid ?? null,
+            activityId: flags?.activityId ?? null });
         }
       } catch (_) { /* non-fatal */ }
     }
@@ -4530,6 +4539,7 @@ export class SaveEngine {
           castId,
           saveAbility,                       // needed so the GM can re-fire saveComplete
           itemUuid: flags.itemUuid ?? null,
+          activityId: flags.activityId ?? null,   // WHICH ability, not just which item
           rolledByGm: game.user.isGM,        // so a PC's client can show "GM" + grey its button
           // THE CLAIM, STAMPED AT BIRTH. The GM reads these instead of guessing.
           halfOnSave: halfOnSave === true,
@@ -4541,7 +4551,9 @@ export class SaveEngine {
     // ── Emit saveComplete hook for PC save (duration tracker isSave expiry) ──
     try {
       if (targetActor) {
-        Hooks.callAll(`${MODULE_ID}.saveComplete`, { actor: targetActor, tokenDocId, saveAbility, passed, itemUuid: flags.itemUuid ?? null });
+        Hooks.callAll(`${MODULE_ID}.saveComplete`, { actor: targetActor, tokenDocId,
+          saveAbility, passed, itemUuid: flags.itemUuid ?? null,
+          activityId: flags.activityId ?? null });
       }
     } catch (_) { /* non-fatal */ }
 
@@ -4648,6 +4660,7 @@ export class SaveEngine {
           Hooks.callAll(`${MODULE_ID}.saveComplete`, {
             actor, tokenDocId, saveAbility: resultFlags.saveAbility,
             passed, itemUuid: resultFlags.itemUuid ?? null,
+            activityId: resultFlags.activityId ?? null,
           });
         }
       }
