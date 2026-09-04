@@ -349,6 +349,72 @@ export async function showSavePrompt({ creature, abilityLabel, dc, sourceName, s
 }
 
 /**
+ * The same three-button pause, for an ability check or a skill check.
+ *
+ * ⚠️🔴 WRITTEN BECAUSE THE ROLL WENT PAST HIM IN SILENCE. Johnny, 2026-09-04:
+ * "the guy that's inside the lich did a Perception check, and it just
+ * automatically rolled disadvantage. It didn't show up in the chat."
+ *
+ * The step before this was worse in the other direction — dnd5e's own dialog,
+ * which is not ours and which he should never see. Suppressing it left a roll
+ * that happened with no pause and no card, which is the same bug as a silent
+ * early return: right answer, no evidence.
+ *
+ * ⚠️ IT IS THE SAME PROMPT AS A SAVING THROW ON PURPOSE. `showSavePrompt` right
+ * above this is the shape the table already knows: the creature, what is being
+ * rolled, what ACE thinks and why, and three buttons with ACE's answer already
+ * lit. A check is the same event with a different name, so it gets the same
+ * pause rather than a second design.
+ *
+ * Returns "advantage" | "normal" | "disadvantage", or null if cancelled.
+ */
+export async function showCheckPrompt({ creature, checkLabel, suggested = "normal",
+                                        reasons = [], isPC = false, modifier = null }) {
+  const reasonText = reasons.length
+    ? reasons.map(r => r.reason ?? r).filter(Boolean).join(" • ")
+    : "Nothing on this creature changes this check";
+  const suggestedLabel = suggested === "advantage" ? "ADVANTAGE"
+                       : suggested === "disadvantage" ? "DISADVANTAGE" : "NORMAL";
+  const cls = isPC ? "ace-qol-adv-pc" : "ace-qol-adv-npc";
+  const mod = Number.isFinite(Number(modifier))
+    ? ` ${Number(modifier) >= 0 ? "+" : ""}${Number(modifier)}` : "";
+  const content = `
+    <div class="ace-qol-adv-prompt">
+      <div class="ace-qol-adv-targets">
+        <span class="ace-qol-adv-attacker ${cls}">${foundry.utils.escapeHTML(creature)}</span>
+        <i class="fas fa-dice-d20"></i>
+        <span class="ace-qol-adv-target">${foundry.utils.escapeHTML(checkLabel)}${mod}</span>
+      </div>
+      <div class="ace-qol-adv-suggested">
+        ACE-QOL Suggests: <strong class="ace-qol-adv-${suggested}">${suggestedLabel}</strong>
+      </div>
+      <div class="ace-qol-adv-reason">${foundry.utils.escapeHTML(reasonText)}</div>
+    </div>`;
+  const buttons = [
+    { action: "advantage",    label: "Advantage",    icon: "fa-solid fa-arrow-up",   default: suggested === "advantage" },
+    { action: "normal",       label: "Normal",       icon: "fa-solid fa-equals",     default: suggested === "normal" },
+    { action: "disadvantage", label: "Disadvantage", icon: "fa-solid fa-arrow-down", default: suggested === "disadvantage" },
+  ];
+  try {
+    const result = await foundry.applications.api.DialogV2.wait({
+      window: { title: "Check" },
+      classes: ["ace-qol-adv-dialog"],
+      content, buttons,
+      rejectClose: false,
+      position: { width: 440 },
+      render: (event, dialog) => {
+        const root = dialog?.element ?? event?.currentTarget ?? document;
+        root.querySelector?.(`button[data-action="${suggested}"]`)?.classList.add("ace-qol-suggested-btn");
+      },
+    });
+    return result ?? null;
+  } catch (err) {
+    console.error(`${MODULE_ID} | showCheckPrompt FAILED — falling back to "${suggested}"`, err?.message ?? err);
+    return suggested;
+  }
+}
+
+/**
  * Full ACE attack pause for ONE attack: assess attacker vs target (advantage /
  * disadvantage + reasons, hidden-reason handling), show the three-button ACE
  * prompt, return the choice ("advantage" | "normal" | "disadvantage") or null

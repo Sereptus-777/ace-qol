@@ -1703,31 +1703,7 @@ export class ActionBar {
         const { kind, key } = row.dataset;
         close();
         try {
-          // ⚠️🔴 ACE DOES NOT SHOW dnd5e's ROLL DIALOG. Johnny, 2026-09-04,
-          // seeing a "Wisdom (Perception) Check" box with ADVANTAGE / NORMAL /
-          // DISADVANTAGE buttons: "That's not ours. Why am I seeing that, and
-          // why would I ever see it?" It IS ours — these two lines opened it, by
-          // asking dnd5e to roll and never telling it to skip its own dialog.
-          //
-          // ⚠️ AND THE FIX WAS ALREADY WRITTEN, IN THIS CODEBASE, WITH A COMMENT
-          // EXPLAINING IT. `stealth-engine.mjs` passes `{configure:false}` and
-          // says in so many words that this is the 5.x spelling and that
-          // `fastForward` is the 4.x one that does nothing. Every saving throw in
-          // the suite does the same. These two callers were written without
-          // copying it, which is the whole of the bug: a pattern living in one
-          // file is a coincidence, not a fix.
-          //
-          // ⚠️ THE EVENT IS PASSED ON PURPOSE. dnd5e reads the advantage and
-          // disadvantage keybinds off it, so holding the modifier still works and
-          // he keeps the choice the dialog was offering — without a box in the
-          // way of every ordinary roll. Nothing here re-implements that.
-          if (kind === "skill") {
-            if (typeof actor.rollSkill !== "function") throw new Error("Actor#rollSkill is missing");
-            await actor.rollSkill({ skill: key, event: ev }, { configure: false });
-          } else {
-            if (typeof actor.rollAbilityCheck !== "function") throw new Error("Actor#rollAbilityCheck is missing");
-            await actor.rollAbilityCheck({ ability: key, event: ev }, { configure: false });
-          }
+          await ActionBar._rollCheck(actor, kind, key);
         } catch (err) {
           console.error(`${LOG} | ${kind} check "${key}" failed for ${actor.name}:`, err);
           ui.notifications?.error(`That check could not be rolled — see the console.`);
@@ -1743,6 +1719,125 @@ export class ActionBar {
   static _closeMenus(el) {
     el.querySelector(".ace-qol-ab-checks")?.remove();
     el.querySelector(".ace-qol-ab-menu")?.remove();
+  }
+
+  /**
+   * Where dnd5e keeps the resolved advantage state for a check.
+   *
+   * ⚠️ THE SYSTEM ALREADY WORKED IT OUT. `AdvantageModeField` counts every
+   * source that touches these paths and resolves them to -1, 0 or 1, and the
+   * passive score is computed from the same number. Re-deriving it here would
+   * be a second answer to a question dnd5e has already answered, and the two
+   * would disagree the first time anything unusual applied.
+   */
+  static _modePathFor(kind, key) {
+    return kind === "skill"
+      ? `system.skills.${key}.roll.mode`
+      : `system.abilities.${key}.check.roll.mode`;
+  }
+
+  /** ACE's answer for this check: the mode, and every effect that argued for it. */
+  static _readCheckMode(actor, kind, key) {
+    const out = { mode: 0, reasons: [], modifier: null, label: key };
+    try {
+      if (kind === "skill") {
+        const sk = actor.system?.skills?.[key];
+        out.mode = Number(sk?.roll?.mode ?? 0) || 0;
+        out.modifier = Number.isFinite(Number(sk?.total)) ? Number(sk.total) : null;
+        out.label = `${CONFIG.DND5E?.skills?.[key]?.label ?? key} check`;
+      } else {
+        const ab = actor.system?.abilities?.[key];
+        out.mode = Number(ab?.check?.roll?.mode ?? 0) || 0;
+        out.modifier = Number.isFinite(Number(ab?.mod)) ? Number(ab.mod) : null;
+        out.label = `${CONFIG.DND5E?.abilities?.[key]?.label ?? key} check`;
+      }
+    } catch (_) { /* the prompt still opens, just without a suggestion */ }
+
+    // ⚠️ NAME WHAT DID IT. "ACE suggests disadvantage" with no reason is the
+    // same as no explanation at all — he cannot tell a rule from a bug.
+    // ⚠️ AND CHECK THE ABILITY PATH TOO. A skill check is also an ability
+    // check, so an effect on Wisdom checks reaches Perception; reading only the
+    // skill path would show a suggestion with no reason beside it.
+    const wanted = new Set([ActionBar._modePathFor(kind, key)]);
+    if (kind === "skill") {
+      const ability = actor.system?.skills?.[key]?.ability
+        ?? CONFIG.DND5E?.skills?.[key]?.ability;
+      if (ability) wanted.add(`system.abilities.${ability}.check.roll.mode`);
+    }
+    try {
+      for (const e of (actor.effects ?? [])) {
+        if (e.disabled) continue;
+        for (const c of (e.changes ?? [])) {
+          if (!wanted.has(c.key)) continue;
+          const v = Number(c.value);
+          if (v !== -1 && v !== 1) continue;
+          out.reasons.push({ reason: `${e.name}: ${v === 1 ? "advantage" : "disadvantage"}` });
+        }
+      }
+    } catch (_) { /* reasons are a courtesy; the mode still stands */ }
+    return out;
+  }
+
+  /**
+   * One check, ACE's way: our pause, our suggestion, dnd5e's roll and card.
+   *
+   * ⚠️🔴 THE CHOICE HAS TO BE FORCED, NOT REQUESTED. Passing
+   * `{advantage: true}` does NOT override an effect that already imposes
+   * disadvantage — dnd5e nets the two to normal, and asking for "normal" while
+   * an effect says disadvantage leaves the disadvantage standing. Proven from
+   * the system source: `_configureRolls` builds the mode from those flags, and
+   * dnd5e's OWN dialog does not use them either — `_finalizeRolls` writes
+   * `advantageMode` straight onto the roll after configuration.
+   *
+   * So this does the same thing at the same moment, through the documented
+   * `dnd5e.postRollConfiguration` hook, which fires after configuration and
+   * before evaluation. Anything less would give him three buttons where two of
+   * them quietly do nothing.
+   */
+  static async _rollCheck(actor, kind, key) {
+    const fn = kind === "skill" ? "rollSkill" : "rollAbilityCheck";
+    if (typeof actor[fn] !== "function") throw new Error(`Actor#${fn} is missing`);
+
+    const read = ActionBar._readCheckMode(actor, kind, key);
+    const suggested = read.mode > 0 ? "advantage" : read.mode < 0 ? "disadvantage" : "normal";
+
+    const { showCheckPrompt } = await import("./attack-prompt.mjs");
+    const choice = await showCheckPrompt({
+      creature: actor.name,
+      checkLabel: read.label,
+      suggested,
+      reasons: read.reasons,
+      modifier: read.modifier,
+      isPC: actor.hasPlayerOwner === true,
+    });
+    if (!choice) return;                       // cancelled — nothing rolls
+
+    const MODE = { advantage: 1, normal: 0, disadvantage: -1 }[choice] ?? 0;
+
+    // ⚠️ SCOPED TO THIS ROLL AND REMOVED EITHER WAY. A listener left behind
+    // would silently rewrite the next check anybody made.
+    const force = (rolls, config) => {
+      try {
+        if (config?.subject !== actor) return;
+        for (const roll of (rolls ?? [])) {
+          roll.options.advantageMode = MODE;
+          roll.configureModifiers?.();
+        }
+      } catch (err) {
+        console.warn(`${LOG} | could not force ${choice} on this check:`, err);
+      }
+    };
+    Hooks.on("dnd5e.postRollConfiguration", force);
+    try {
+      // configure:false keeps dnd5e's dialog shut — ACE already asked.
+      // The card is left ON: he asked for the result to land in chat, and
+      // dnd5e's own roll card is what Dice So Nice already animates.
+      await actor[fn]({ [kind === "skill" ? "skill" : "ability"]: key }, { configure: false });
+      console.log(`${LOG} | ${actor.name} rolled ${read.label} at ${choice}`
+        + (read.reasons.length ? ` (${read.reasons.map(r => r.reason).join("; ")})` : ""));
+    } finally {
+      Hooks.off("dnd5e.postRollConfiguration", force);
+    }
   }
 
   /** Dismiss on the next click anywhere else, and on Escape. */
