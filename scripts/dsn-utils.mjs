@@ -145,6 +145,24 @@ export function safeShowForRoll(roll, label = "dice animation") {
 const _armed = [];
 const ARM_CAP_MS = 20000;
 
+/**
+ * Arm a watch for dice SOMEBODY ELSE is about to throw.
+ *
+ * ⚠️🔴 ONLY FOR DICE WE DO NOT THROW OURSELVES. This waits on
+ * `diceSoNiceRollComplete`, which fires for dice Dice So Nice shows from a CHAT
+ * MESSAGE. It is the right tool for an attack, where dnd5e creates the message
+ * and animates the d20 and ACE has to be listening beforehand or it misses the
+ * moment.
+ *
+ * It is the WRONG tool for a roll ACE animates itself with `safeShowForRoll`.
+ * There is no message, so the hook never fires, so the watch sits out its full
+ * twenty-second cap and the card lands twenty seconds late looking for all the
+ * world like a deliberate delay. That is exactly what the check gate did on
+ * 2026-09-04: rolled at 12:32:01.564, posted at 12:32:21.
+ *
+ * If you called `safeShowForRoll`, call plain `awaitDiceSettle()` — it waits on
+ * the promise DSN itself resolves when those dice stop, then fifty milliseconds.
+ */
 export function aceArmDiceWatch() {
   try {
     if (!game?.dice3d?.isEnabled?.()) return null;

@@ -221,8 +221,6 @@ export class CheckGate {
     let rolls = null;
     Hooks.on("dnd5e.postRollConfiguration", force);
     try {
-      const { aceArmDiceWatch } = await import("./dsn-utils.mjs");
-      aceArmDiceWatch();
       const cfg = kind === "skill" ? { skill: key } : { ability: key };
       if (kind === "save" && Number.isFinite(dc)) cfg.target = dc;
       // create:false so dnd5e posts nothing — ACE throws the dice and cards it.
@@ -266,9 +264,24 @@ export class CheckGate {
    */
   static async postCard(actor, read, choice, roll, dc = null) {
     try {
+      // ⚠️🔴 WAIT ON THE DICE WE THREW, NOT ON A HOOK THAT WILL NEVER FIRE.
+      //
+      // This used to arm a watch first and then wait on it. That watch listens
+      // for `diceSoNiceRollComplete`, which fires for dice Dice So Nice shows
+      // from a CHAT MESSAGE — and this card creates no message until after the
+      // dice land, so the hook had nothing to fire from. The watch then sat out
+      // its entire twenty-second cap and the card arrived twenty seconds late.
+      // Johnny's console, 2026-09-04: rolled at 12:32:01.564, posted at
+      // 12:32:21. "Don't need a fucking timer on it."
+      //
+      // ⚠️ THE REAL SIGNAL WAS ALREADY IN HAND. `showForRoll` returns a promise
+      // that DSN resolves the moment the dice stop, `safeShowForRoll` keeps it,
+      // and the plain `awaitDiceSettle` waits on exactly that and then fifty
+      // milliseconds. As long as the dice need, never a beat longer, and never
+      // a guessed duration. The armed path is for rolls somebody ELSE throws.
       const { safeShowForRoll, awaitDiceSettle } = await import("./dsn-utils.mjs");
       safeShowForRoll(roll, `${actor.name} ${read.label}`);
-      await awaitDiceSettle(undefined, { useArmed: true });
+      await awaitDiceSettle();
 
       const { DamageConstants } = await import("./damage-engine.mjs");
       const esc = foundry.utils.escapeHTML;
