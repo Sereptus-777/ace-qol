@@ -179,6 +179,14 @@ check("a saving throw is ours",
 // ⚠️ THE ATTACK PIPELINE ALREADY OWNS ATTACKS. Two owners of one roll is
 // the bug this whole file exists to avoid.
 check("an attack is NOT ours", shape(["attack", "d20Test", ""], { ability: "str" }), null);
+// ⚠️🔴 THE SECOND BREAK 0.13.0 SHIPPED. `rollInitiativeDialog` lists
+// "abilityCheck" and "d20Test" beside its own name, so the generic branch took
+// it — and cancelling that build loses the ROLL, not just the card: dnd5e reads
+// `rolls.length === 0` and returns, so the creature never rolls initiative at
+// all. Silently. Initiative gets its pause by wrapping the method instead.
+check("initiative is NEVER taken as an ability check",
+  shape(["initiativeDialog", "abilityCheck", "d20Test", ""], { ability: "dex" }), null);
+
 check("a tool check is ours",
   shape(["tool", "abilityCheck", "d20Test", ""], { tool: "thief" }), { kind: "tool", key: "thief" });
 check("something with no shape at all is not ours", shape([""]), null);
@@ -226,6 +234,29 @@ const brave = { name: "Ireena", effects: [{ name: "Aura of Protection", disabled
   system: { abilities: { dex: { save: { roll: { mode: 1 }, value: 7 } } } } };
 check("a death save keeps its own mode, not Constitution's",
   CheckGate.modePathFor("death", "death"), "system.attributes.death.roll.mode");
+check("initiative keeps its own mode",
+  CheckGate.modePathFor("initiative", "init"), "system.attributes.init.roll.mode");
+// ⚠️ AND COMBINES, like a skill: the initiative attribute's mode plus the
+// check mode of whichever ability initiative uses.
+check("advantage on initiative alone shows",
+  CheckGate.read({ system: { attributes: { init: { roll: { mode: 1 }, total: 4, ability: "dex" } },
+      abilities: { dex: { check: { roll: { mode: 0 } } } } }, effects: [] },
+    "initiative", "init").mode, 1);
+check("disadvantage on DEX checks reaches initiative",
+  CheckGate.read({ system: { attributes: { init: { roll: { mode: 0 }, total: 4, ability: "dex" } },
+      abilities: { dex: { check: { roll: { mode: -1 } } } } }, effects: [] },
+    "initiative", "init").mode, -1);
+check("and they cancel",
+  CheckGate.read({ system: { attributes: { init: { roll: { mode: 1 }, total: 4, ability: "dex" } },
+      abilities: { dex: { check: { roll: { mode: -1 } } } } }, effects: [] },
+    "initiative", "init").mode, 0);
+check("initiative names the effect behind it",
+  CheckGate.read({ system: { attributes: { init: { roll: { mode: 1 }, ability: "dex" } },
+      abilities: { dex: { check: { roll: { mode: 0 } } } } },
+    effects: [{ name: "Alert", disabled: false,
+      changes: [{ key: "system.attributes.init.roll.mode", value: "1" }] }] },
+    "initiative", "init").reasons, [{ reason: "Alert: advantage" }]);
+
 check("so does concentration",
   CheckGate.modePathFor("concentration", "con"), "system.attributes.concentration.roll.mode");
 const dying = { name: "Jeth",

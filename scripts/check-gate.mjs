@@ -52,7 +52,196 @@ export class CheckGate {
         return undefined;
       }
     });
+    CheckGate._wrapInitiative();
+    CheckGate._registerHitDice();
     console.debug(`${LOG} | online — every check and save a person clicks gets ACE's pause and ACE's card`);
+  }
+
+  /* ── Initiative ──────────────────────────────────────────────────────── */
+
+  /**
+   * Initiative gets the pause by WRAPPING THE METHOD, not by cancelling the roll.
+   *
+   * ⚠️🔴 CANCELLING IT DOES NOT WORK, and does not fail loudly either.
+   * `rollInitiativeDialog` builds its roll with `evaluate: false`, caches it, and
+   * hands it to Foundry's combat flow, which is what actually evaluates it and
+   * writes the number into the tracker. Refuse the build and dnd5e reads
+   * `rolls.length === 0`, returns, and the creature simply never rolls. No
+   * error, no card, no initiative.
+   *
+   * ⚠️ AND A PROMPT CANNOT LIVE IN THAT HOOK ANYWAY. `preRollD20Test` is
+   * synchronous; returning a promise from it reads as truthy and lets dnd5e roll
+   * as well. Wrapping the async method is the only place an await belongs.
+   *
+   * So: ACE asks first, dnd5e then does the whole of its own job with its dialog
+   * suppressed and the chosen mode forced onto the roll it builds. Foundry still
+   * posts the initiative message, because the tracker and that message are one
+   * mechanism and replacing half of it would be two owners of one number.
+   */
+  static _wrapInitiative() {
+    try {
+      const cls = CONFIG.Actor?.documentClass;
+      const original = cls?.prototype?.rollInitiativeDialog;
+      if (typeof original !== "function") {
+        console.warn(`${LOG} | Actor#rollInitiativeDialog is missing on this dnd5e build — `
+          + `initiative keeps dnd5e's own dialog.`);
+        return;
+      }
+      if (cls.prototype.rollInitiativeDialog.__aceWrapped) return;
+
+      cls.prototype.rollInitiativeDialog = async function (rollOptions = {}, dialog = {}) {
+        try {
+          // Already answered by ACE (our own re-entry), or somebody deliberately
+          // suppressed the dialog — either way, straight through.
+          if (rollOptions?.__aceChosen || dialog?.configure === false) {
+            return original.call(this, rollOptions, dialog);
+          }
+
+          const read = CheckGate.read(this, "initiative", "init");
+          const suggested = read.mode > 0 ? "advantage" : read.mode < 0 ? "disadvantage" : "normal";
+          const { showCheckPrompt } = await import("./attack-prompt.mjs");
+          const choice = await showCheckPrompt({
+            creature: this.name,
+            checkLabel: read.label,
+            suggested,
+            reasons: read.reasons,
+            modifier: read.modifier,
+            isPC: this.hasPlayerOwner === true,
+          });
+          if (!choice) return;                       // cancelled — nobody rolls
+
+          const MODE = { advantage: 1, normal: 0, disadvantage: -1 }[choice] ?? 0;
+          const force = (rolls, cfg) => {
+            try {
+              if (cfg?.subject !== this) return;
+              for (const r of (rolls ?? [])) {
+                r.options.advantageMode = MODE;
+                r.configureModifiers?.();
+              }
+            } catch (err) { console.warn(`${LOG} | could not force ${choice} on initiative:`, err); }
+          };
+          Hooks.on("dnd5e.postRollConfiguration", force);
+          try {
+            return await original.call(this, { ...rollOptions, __aceChosen: true },
+              foundry.utils.mergeObject({ configure: false }, dialog));
+          } finally {
+            Hooks.off("dnd5e.postRollConfiguration", force);
+          }
+        } catch (err) {
+          // ⚠️ NEVER SWALLOW INITIATIVE. A creature that cannot roll it cannot
+          // take a turn, so any fault here falls back to dnd5e's own dialog
+          // rather than to nothing.
+          console.error(`${LOG} | initiative pause failed — using dnd5e's own dialog:`, err);
+          return original.call(this, rollOptions, dialog);
+        }
+      };
+      cls.prototype.rollInitiativeDialog.__aceWrapped = true;
+      console.debug(`${LOG} | initiative asks ACE first`);
+    } catch (err) {
+      console.error(`${LOG} | could not wrap initiative — dnd5e's dialog stands:`, err);
+    }
+  }
+
+  /* ── Hit dice ────────────────────────────────────────────────────────── */
+
+  /**
+   * A hit die is not a check, so it gets no pause — only ACE's card.
+   *
+   * ⚠️ THERE IS NO ADVANTAGE ON A HIT DIE, in either edition, so a three-button
+   * prompt would be three buttons that all mean the same thing. dnd5e agrees:
+   * `rollHitDie` defaults its own dialog to `configure: false`.
+   *
+   * ⚠️ AND IT IS NOT CANCELLED EITHER. `rollHitDie` is what spends the die and
+   * applies the healing, and both happen after the roll and independently of the
+   * card. So the card is switched off on the way in and ACE posts its own on the
+   * way out — nothing is re-driven and no bookkeeping can be lost.
+   */
+  static _registerHitDice() {
+    Hooks.on("dnd5e.preRollHitDieV2", (config, dialog, message) => {
+      try {
+        if (message?.create === false) return;      // an engine rolling for itself
+        message.create = false;                     // ACE posts instead
+        message.__aceOwns = true;
+      } catch (err) {
+        console.warn(`${LOG} | could not claim this hit die card:`, err);
+      }
+    });
+
+    // Fires after the roll with the pending updates, before they are applied —
+    // which is exactly where the healing and the die spend can be read.
+    Hooks.on("dnd5e.rollHitDieV2", (rolls, data) => {
+      try {
+        CheckGate._postHitDieCard(rolls, data)
+          .catch(err => console.error(`${LOG} | hit die card failed:`, err));
+      } catch (err) {
+        console.error(`${LOG} | hit die card threw:`, err);
+      }
+    });
+  }
+
+  static async _postHitDieCard(rolls, data) {
+    const actor = data?.subject;
+    const roll = (Array.isArray(rolls) ? rolls[0] : rolls) ?? null;
+    if (!actor || !roll) return;
+
+    const { safeShowForRoll, awaitDiceSettle } = await import("./dsn-utils.mjs");
+    safeShowForRoll(roll, `${actor.name} hit die`);
+    await awaitDiceSettle();
+
+    const { DamageConstants } = await import("./damage-engine.mjs");
+    const esc = foundry.utils.escapeHTML;
+
+    const dice = [];
+    for (const term of (roll.terms ?? [])) {
+      if (!term.faces) continue;
+      for (const r of (term.results ?? [])) {
+        const img = DamageConstants.getDiceImagePath(term.faces, r.result);
+        const icon = DamageConstants.DIE_ICONS?.[term.faces] ?? "fa-dice";
+        dice.push(
+          `<span class="ace-qol-die">`
+          + `<img class="ace-qol-die-img" src="${img}" alt="d${term.faces}"`
+          + ` onerror="this.style.display='none';this.nextElementSibling.style.display='inline'">`
+          + `<i class="fas ${icon} ace-qol-die-fallback" style="display:none"></i>`
+          + `<span class="ace-qol-die-result" style="font-size:18px;font-weight:700;">${r.result}</span>`
+          + `</span>`);
+      }
+    }
+
+    // ⚠️ THE HEALING IS THE POINT, AND IT IS NOT THE TOTAL. A hit die rolled at
+    // one hit point below full heals one, not eight, and dnd5e has already
+    // worked that out into the pending update. Printing the die total as
+    // "healed" would overstate it every time somebody tops up.
+    const hp = actor.system?.attributes?.hp ?? {};
+    const newHp = Number(data?.updates?.actor?.["system.attributes.hp.value"]);
+    const healed = Number.isFinite(newHp) ? Math.max(0, newHp - (Number(hp.value) || 0)) : null;
+
+    // Hit dice left AFTER this one. The spend is in the same pending update.
+    const spentAfter = Number(data?.updates?.class?.["system.hd.spent"]);
+    const left = Number.isFinite(spentAfter)
+      ? null                                    // per-class; the sheet shows it better than we can
+      : (Number.isFinite(Number(actor.system?.attributes?.hd?.value))
+          ? Math.max(0, Number(actor.system.attributes.hd.value) - 1) : null);
+
+    await ChatMessage.create({
+      speaker: ChatMessage.getSpeaker({ actor }),
+      rollMode: CONST.DICE_ROLL_MODES.PUBLIC,
+      content:
+        `<div style="background:#141118;border:1px solid #c9a76b55;border-left:3px solid #c9a76b;`
+        + `border-radius:4px;padding:9px 11px;color:#e8dcc3;">`
+        + `<div style="font-size:18px;font-weight:700;line-height:1.3;">${esc(actor.name)}</div>`
+        + `<div style="font-size:16px;margin-top:2px;">Hit die</div>`
+        + `<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:8px;">`
+        +   dice.join("")
+        +   `<span style="font-size:30px;font-weight:700;margin-left:auto;">${esc(String(roll.total ?? "?"))}</span>`
+        + `</div>`
+        + (healed === null ? ""
+            : `<div style="font-size:16px;margin-top:6px;color:#7ee081;font-weight:700;">`
+              + `Healed ${healed}${healed !== Number(roll.total) ? " (capped at full hit points)" : ""}</div>`)
+        + (left === null ? ""
+            : `<div style="font-size:14px;opacity:0.85;margin-top:4px;">${left} hit dice left</div>`)
+        + `</div>`,
+      flags: { [MODULE_ID]: { hitDieCard: true } },
+    });
   }
 
   /**
@@ -87,6 +276,17 @@ export class CheckGate {
     // NONE of the concentration bookkeeping, so a failed check would no longer
     // have broken concentration. Death saves escaped only by luck: they set no
     // ability at all, so `!shape.key` bailed for them. Luck is not a guard.
+    // ⚠️🔴 NEVER TAKE INITIATIVE HERE. `rollInitiativeDialog` lists
+    // "abilityCheck" and "d20Test" alongside its own name, so the generic
+    // branch below took it — and cancelling that build does not merely lose a
+    // card, it loses the ROLL: dnd5e checks `if (!rolls.length) return`, caches
+    // the roll it never got, and initiative silently does not happen. Shipped
+    // in 0.13.0 and live until now.
+    //
+    // Initiative gets ACE's pause a different way, by wrapping the method
+    // instead of cancelling the roll. See `_wrapInitiative`.
+    if (names.has("initiativedialog") || names.has("initiative")) return null;
+
     if (names.has("deathsave")) return { kind: "death", key: "death" };
     if (names.has("concentration") || config?.isConcentration === true) {
       return { kind: "concentration", key: config.ability || "con" };
@@ -140,6 +340,7 @@ export class CheckGate {
     // a concentration check keeps its own mode, so an effect granting advantage
     // on CON saves does not automatically reach either. dnd5e models them as
     // their own attributes and so does this.
+    if (kind === "initiative") return "system.attributes.init.roll.mode";
     if (kind === "death") return "system.attributes.death.roll.mode";
     if (kind === "concentration") return "system.attributes.concentration.roll.mode";
     return `system.abilities.${key}.check.roll.mode`;
@@ -211,6 +412,17 @@ export class CheckGate {
         out.modifier = Number.isFinite(Number(ab?.save?.value)) ? Number(ab.save.value)
                      : (Number.isFinite(Number(ab?.save)) ? Number(ab.save) : null);
         out.label = `${CONFIG.DND5E?.abilities?.[key]?.label ?? key} saving throw`;
+      } else if (kind === "initiative") {
+        // ⚠️ TWO FIELDS AGAIN, like a skill. dnd5e combines the initiative
+        // attribute's mode with the check mode of whichever ability initiative
+        // uses — which is Dexterity for nearly everybody and configurable.
+        const init = actor.system?.attributes?.init;
+        const ability = init?.ability || CONFIG.DND5E?.defaultAbilities?.initiative || "dex";
+        const abMode = actor.system?.abilities?.[ability]?.check?.roll?.mode;
+        out.mode = CheckGate.combineModes([init?.roll?.mode, abMode]);
+        out.modifier = Number.isFinite(Number(init?.total)) ? Number(init.total)
+                     : (Number.isFinite(Number(init?.mod)) ? Number(init.mod) : null);
+        out.label = "Initiative";
       } else if (kind === "death") {
         const d = actor.system?.attributes?.death;
         out.mode = Number(d?.roll?.mode ?? 0) || 0;
@@ -243,6 +455,11 @@ export class CheckGate {
     if (kind === "skill" || kind === "tool") {
       const ability = CheckGate.abilityFor(actor, kind, key);
       if (ability) wanted.add(`system.abilities.${ability}.check.roll.mode`);
+    }
+    if (kind === "initiative") {
+      const ability = actor.system?.attributes?.init?.ability
+        || CONFIG.DND5E?.defaultAbilities?.initiative || "dex";
+      wanted.add(`system.abilities.${ability}.check.roll.mode`);
     }
     try {
       for (const e of (actor.effects ?? [])) {
