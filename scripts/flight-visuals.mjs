@@ -113,6 +113,18 @@ export class FlightVisuals {
         const caster = activity?.actor ?? activity?.item?.actor;
         if (!caster || !name) return;
 
+        // ⚠️ A TAKEDOWN IS THE SAME TORNADO, POINTED AT SOMEBODY ELSE. It picks
+        // a creature up and slams it down, so it borrows Aerial Ascension's
+        // whirlwind and plays it once on the target rather than on the wielder.
+        // Checked BEFORE the attack bail below, because a takedown IS an attack.
+        if (/tornado|takedown|whirlwind|cyclone/.test(name)
+            && FlightVisuals.isVortexSource(activity?.item)) {
+          const hit = [...(game.user?.targets ?? [])].filter(t => t?.document);
+          const on = hit.length ? hit : (caster.getActiveTokens?.(true) ?? []).slice(0, 1);
+          for (const t of on) FlightVisuals.playWhirlwindOnce(t);
+          if (activity?.type === "attack") return;   // nothing else to do for a swing
+        }
+
         // ⚠️ AN ATTACK IS NEVER A TAKEOFF. Without this, a flying snake's BITE
         // matched on the word "Flying" and asked the snake how high it wanted
         // to go. Creature names carry their movement mode; their attacks do not.
@@ -460,6 +472,51 @@ export class FlightVisuals {
    * ⚠️ NOT part of ordinary flight any more — see `_applyVisuals`. Call it
    * deliberately for creatures that really are a vortex.
    */
+  /**
+   * The same whirlwind, played once on somebody who is not flying.
+   *
+   * ⚠️🔴 THIS IS THE ANIMATION HE ALREADY HAS AND NOBODY COULD FIND. Aerial
+   * Ascension's tornado is ACE's own effect, drawn here, not an Automated
+   * Animations record — which is why every probe into AA came back empty and
+   * why `hasItemAnimation` read false on an item that visibly animates. I
+   * reported that emptiness as an answer and it was not one.
+   *
+   * Johnny, 2026-09-03: "the funny thing about Tornado Takedown and Aerial
+   * Ascension is it's the same animation. I don't mind it being the same
+   * animation. It actually looks perfect."
+   *
+   * ⚠️ NOT PERSISTENT. A takedown is a thing that happens, not a state you are
+   * in. Persisting it would leave a tornado on a creature standing still.
+   */
+  static playWhirlwindOnce(token, { seconds = 3 } = {}) {
+    try {
+      const Seq = globalThis.Sequence;
+      if (!Seq || !globalThis.Sequencer || !token) return;
+      const file = FlightVisuals._whirlwindFile();
+      if (!file) return;
+      new Seq()
+        .effect()
+          .file(file)
+          .attachTo(token, { bindAlpha: false })
+          .belowTokens()
+          .scaleToObject(1.5)
+          .opacity(0.85)
+          .fadeIn(300)
+          .duration(Math.max(1000, seconds * 1000))
+          .fadeOut(600)
+        .play();
+    } catch (err) {
+      console.warn(`${MODULE_ID} | one-shot whirlwind failed (non-fatal):`, err);
+    }
+  }
+
+  /** The first whirlwind file this JB2A install actually has. */
+  static _whirlwindFile() {
+    return WHIRLWIND_CANDIDATES.find(p => {
+      try { return !!game.modules.get(p.split("/")[1])?.active; } catch (_) { return false; }
+    }) ?? null;
+  }
+
   static _addWhirlwind(token) {
     try {
       const Seq = globalThis.Sequence;
@@ -468,9 +525,7 @@ export class FlightVisuals {
       const existing = Sequencer.EffectManager.getEffects?.({ name: fxName(token) }) ?? [];
       if (existing.length) return;
 
-      const file = WHIRLWIND_CANDIDATES.find(p => {
-        try { return !!game.modules.get(p.split("/")[1])?.active; } catch (_) { return false; }
-      });
+      const file = FlightVisuals._whirlwindFile();
       if (!file) return;                                      // no JB2A installed
 
       new Seq()

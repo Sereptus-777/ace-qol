@@ -103,6 +103,15 @@ export class SpaceEffects {
     else Hooks.once("ready", sweep);
 
     // ── Region dies (any path) → its stamps come off everyone ──
+    // ⚠️ THE PICTURE COMES DOWN ON EVERY CLIENT, not only the GM's — a
+    // persistent Sequencer effect is stored on the scene and outlives a reload,
+    // so a storm nobody ended would still be raining tomorrow.
+    Hooks.on("deleteRegion", (regionDoc) => SpaceEffects._endSpaceFx(regionDoc?.id));
+    Hooks.on("canvasReady", () => {
+      try { SpaceEffects.redrawSpaceFx(); }
+      catch (err) { console.warn(`${TAG} could not redraw the spaces on this scene:`, err); }
+    });
+
     Hooks.on("deleteRegion", (regionDoc) => {
       if (game.users?.activeGM !== game.user) return;
       if (!regionDoc?.getFlag?.(MODULE_ID, "space")?.stampInside) return;
@@ -133,6 +142,110 @@ export class SpaceEffects {
 
   /** tokenDocId → Set(regionIds) the token was inside at last check. */
   static _lastSpaces = new Map();
+
+  /* ── What a space LOOKS like ──────────────────────────────────────────── */
+
+  /**
+   * A persistent effect for the whole life of a space.
+   *
+   * ⚠️🔴 IT DID NOT STAY, AND IT SAT ON TOP OF PEOPLE. Johnny, 2026-09-03, on
+   * Thunderstorm of Misery: "it's not persistent, which it should be for however
+   * long it's supposed to go for. It should always be beneath the tokens' feet."
+   *
+   * What he was seeing was a one-shot fired at the moment of casting, which is
+   * all an animation hung off a chat card can be. A space that lasts a minute
+   * needs an effect that lasts a minute, and the only thing that knows how long
+   * that is, is the region.
+   *
+   * ⚠️ SO THE REGION OWNS IT. Created with the region, ended when the region is
+   * deleted, redrawn on every client that loads the scene. The region already
+   * carries the expiry and already has a sweeper; hanging the picture on
+   * anything else would be a second thing to keep in step.
+   *
+   * ⚠️ AND IT IS THE LOOPING FILE. JB2A ships each circular template twice,
+   * `_Complete` and `_Loop`. The Complete one plays through and stops, which is
+   * what makes a storm read as "solid circles that appear and sit there" — his
+   * words were that the lightning looked fake. The Loop is the one that keeps
+   * moving underfoot.
+   */
+  static _spaceFxName(regionId) { return `ace-qol-space:${regionId}`; }
+
+  /** Ordered candidates per space kind. First one this JB2A install has wins. */
+  static _spaceFxFiles(kind) {
+    const L = "modules/jb2a_patreon/Library";
+    const A = "modules/JB2A_DnD5e/Library";
+    const byKind = {
+      storm: [
+        `${L}/Generic/Template/Circle/Lightning/TemplateCircleLightning01_01_Regular_BluePurple_Loop_700x700.webm`,
+        `${A}/Generic/Template/Circle/Lightning/TemplateCircleLightning01_01_Regular_BluePurple_Loop_700x700.webm`,
+      ],
+    };
+    return byKind[kind] ?? [];
+  }
+
+  static _drawSpaceFx(region) {
+    try {
+      if (typeof Sequence === "undefined" || !globalThis.Sequencer?.EffectManager) return;
+      const space = region?.flags?.[MODULE_ID]?.space;
+      if (!space?.kind) return;
+
+      const name = SpaceEffects._spaceFxName(region.id);
+      // ⚠️ NEVER TWICE. `play()` returns before Sequencer registers the effect,
+      // so a second draw in the same beat stacks a duplicate — seventeen aura
+      // rings on one token is what that looks like at scale (2026-09-02).
+      try {
+        const live = Sequencer.EffectManager.getEffects({ name }) ?? [];
+        if (live.length) return;
+      } catch (_) { /* unreadable -> fall through and draw once */ }
+
+      const file = SpaceEffects._spaceFxFiles(space.kind)
+        .find(p => { try { return !!game.modules.get(p.split("/")[1])?.active; } catch (_) { return false; } });
+      if (!file) {
+        // ⚠️ NAMED, NOT SILENT. A wrong path and a missing module look identical
+        // on screen — both are no storm — and I shipped a 1600x1600 filename for
+        // a 700x700 file once already today.
+        console.warn(`${TAG} no installed file for a "${space.kind}" space, so it will `
+          + `have no picture. The rules are unaffected. Looked for: `
+          + SpaceEffects._spaceFxFiles(space.kind).join(", "));
+        return;
+      }
+
+      const b = region.object?.bounds;
+      if (!b?.width) return;
+
+      new Sequence().effect()
+        .file(file)
+        .atLocation({ x: b.x + b.width / 2, y: b.y + b.height / 2 })
+        .size({ width: b.width, height: b.height })
+        // ⚠️ UNDER THE ART. A storm drawn over the tokens hides the creatures
+        // standing in it, which is the one thing the GM needs to see.
+        .belowTokens()
+        .opacity(0.75)
+        .fadeIn(600).fadeOut(800)
+        .persist()
+        .name(name)
+        .play()
+        .catch(err => console.warn(`${TAG} space effect failed to play:`, err));
+    } catch (err) {
+      console.warn(`${TAG} could not draw this space:`, err);
+    }
+  }
+
+  static _endSpaceFx(regionId) {
+    try { Sequencer?.EffectManager?.endEffects?.({ name: SpaceEffects._spaceFxName(regionId) }); }
+    catch (err) { console.warn(`${TAG} could not end a space effect:`, err); }
+  }
+
+  /**
+   * ⚠️ EVERY CLIENT DRAWS. A player who joins mid-storm, or anyone changing
+   * scene, has no effect for a region that was created before they arrived —
+   * the same shape as chat cards drawn before their handler registered.
+   */
+  static redrawSpaceFx() {
+    for (const region of (canvas?.scene?.regions ?? [])) {
+      if (region.flags?.[MODULE_ID]?.space) SpaceEffects._drawSpaceFx(region);
+    }
+  }
 
   static _announceCrossings(tokenDoc) {
     try {
@@ -347,6 +460,8 @@ export class SpaceEffects {
     try {
       const created = await scene.createEmbeddedDocuments("Region", [regionData]);
       console.log(`${TAG} "${item.name}" [${edition}] → live space region ${created?.[0]?.id} (${props.join(", ") || "properties only"})`);
+      // The picture lasts as long as the space does. See _drawSpaceFx.
+      if (created?.[0]) setTimeout(() => SpaceEffects._drawSpaceFx(created[0]), 100);
       // Tokens ALREADY standing where the space appeared (cast on top of
       // someone) get their crossing processed immediately — stamps and
       // whispers apply at cast time, not only on the next move.
