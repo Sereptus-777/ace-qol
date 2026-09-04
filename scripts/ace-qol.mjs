@@ -2234,6 +2234,9 @@ Hooks.once("ready", () => {
     game.aceQol = game.aceQol ?? {};
     game.aceQol.clearSpaces           = (opts)  => SpaceEffects.clearSpaces(opts);
     game.aceQol.sweepExpiredSpaces    = ()      => SpaceEffects.sweepExpired();
+    // "Nothing happened when I walked in" has two causes that look the same:
+    // the space ignored them, or they were never inside it. This answers which.
+    game.aceQol.whereAmI              = (tok)   => SpaceEffects.describeSpacesAt(tok);
     game.aceQol.clearMovementHistory  = (token) => SpaceEffects.clearMovementHistory(token);
   } catch (err) {
     console.error(`${MODULE_ID} | clearSpaces wiring failed:`, err);

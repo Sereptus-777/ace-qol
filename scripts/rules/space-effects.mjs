@@ -386,8 +386,29 @@ export class SpaceEffects {
     try {
       const tok = tokenDoc?.object;
       if (!tok || tok.destroyed) return;
-      const inside = SpaceEffects.spacesAtToken(tok)
-        .filter(s => s.space?.obscurement === "heavy" || s.space?.silence);
+      // ⚠️🔴 EVERY SPACE, NOT THE TWO THIS WAS WRITTEN FOR.
+      //
+      // This filtered to `obscurement === "heavy" || silence` — correct on the
+      // day it was written, when the only job here was whispering about darkness
+      // and Silence. Everything added since hangs off this same walk: stamping a
+      // condition on entry, taking it off on exit, and now imposing disadvantage.
+      // All of it was gated behind a filter that predates all of it.
+      //
+      // Johnny, 2026-09-03: he moved the Lich and a wizard into Thunderstorm of
+      // Misery and got "absolutely nothing". The storm is LIGHTLY obscured and
+      // not silent, so it was dropped on this line before anything could happen
+      // to anybody standing in it. Fog Cloud, Grease, Spike Growth and every
+      // other lightly-obscured or difficult-terrain space had the same hole.
+      //
+      // ⚠️ AND IT ALSO BROKE LEAVING. `_lastSpaces` was fed from this filtered
+      // list, so a space that never got in could never be recorded as left, and
+      // `_unstamp` was never called for it. The marks would have outlived the
+      // space.
+      //
+      // The filter now lives where it belongs: a space that has nothing to SAY
+      // simply produces no line, below, while still being tracked and still
+      // applying whatever it applies.
+      const inside = SpaceEffects.spacesAtToken(tok);
       const nowIds = new Set(inside.map(s => s.region.id));
       const prev = SpaceEffects._lastSpaces.get(tokenDoc.id) ?? new Set();
       SpaceEffects._lastSpaces.set(tokenDoc.id, nowIds);
@@ -435,16 +456,29 @@ export class SpaceEffects {
             ? `sees normally inside (${verdict.how})`
             : `UNSEEN from outside — its attacks out gain ADVANTAGE; attacks into the dark at DISADVANTAGE (it still sees out from the edge)`);
         }
+        if (space.obscurement === "light") {
+          bits.push("LIGHTLY OBSCURED — disadvantage on sight Perception; it is not hidden by this alone");
+        }
         if (space.silence) bits.push("in SILENCE — no verbal casting");
+        if (Number(space.difficultTerrain) > 1) {
+          bits.push(`DIFFICULT TERRAIN ×${Number(space.difficultTerrain)}`);
+        }
         if (space.stampInside?.length) bits.push(`${space.stampInside.join(" + ").toUpperCase()} while inside`);
         if (space.disadvantage?.skills?.length) {
           bits.push(`DISADVANTAGE on ${space.disadvantage.skills
             .map(k => CONFIG.DND5E?.skills?.[k]?.label ?? k).join(" and ")} checks while inside`);
         }
+        // A space with nothing to say is still tracked; it just gets no line.
+        if (!bits.length) continue;
         lines.push(`<b>${foundry.utils.escapeHTML(tok.name)}</b> entered <b>${foundry.utils.escapeHTML(region.name)}</b>: ${bits.join("; ")}.`);
       }
-      if (left.length && !entered.length) {
-        lines.push(`<b>${foundry.utils.escapeHTML(tok.name)}</b> left the obscured/silenced area.`);
+      for (const regionId of left) {
+        // ⚠️ NAME WHAT THEY LEFT. "left the obscured/silenced area" was written
+        // when there were only two kinds; with several spaces overlapping, a
+        // creature stepping out of one and staying in another needs to know
+        // WHICH one let go of it.
+        const name = canvas?.scene?.regions?.get?.(regionId)?.name ?? "an ACE space";
+        lines.push(`<b>${foundry.utils.escapeHTML(tok.name)}</b> left <b>${foundry.utils.escapeHTML(name)}</b>.`);
       }
       if (!lines.length) return;
 
@@ -876,6 +910,45 @@ export class SpaceEffects {
       console.debug(`${TAG} spacesAtPoint failed (returning none — permissive):`, err);
     }
     return out;
+  }
+
+  /**
+   * Plain English: which ACE spaces is this token standing in, and if none,
+   * how far outside each one is it?
+   *
+   * ⚠️ BECAUSE "NOTHING HAPPENED" HAS TWO CAUSES AND THEY LOOK IDENTICAL.
+   * Either the space did not act on a creature inside it, or the creature was
+   * never inside. Johnny hit the first on 2026-09-03 and there was no way to
+   * rule out the second without arithmetic on log coordinates. Containment is
+   * v1 CENTRE-BASED: a big creature half in the circle is out.
+   */
+  static describeSpacesAt(token = null) {
+    const tok = token ?? canvas?.tokens?.controlled?.[0];
+    if (!tok) return "Select a token first.";
+    const doc = tok.document ?? tok;
+    const centre = tok.center ?? {
+      x: (doc.x ?? 0) + ((doc.width ?? 1) * (canvas?.grid?.size ?? 100)) / 2,
+      y: (doc.y ?? 0) + ((doc.height ?? 1) * (canvas?.grid?.size ?? 100)) / 2,
+    };
+    const perFt = (canvas?.grid?.size ?? 100) / (canvas?.grid?.distance ?? 5);
+    const rows = [];
+    for (const region of (doc.parent?.regions ?? canvas?.scene?.regions ?? [])) {
+      const space = region.getFlag?.(MODULE_ID, "space");
+      if (!space) continue;
+      let inside = false;
+      try { inside = region.testPoint?.({ ...centre, elevation: Number(doc.elevation ?? 0) }) ?? false; }
+      catch (_) { /* reported as not inside, and the distance below still tells him why */ }
+      const g = SpaceEffects._spaceFxGeometry(region);
+      const away = g ? Math.round(Math.hypot(centre.x - g.x, centre.y - g.y) / perFt) : null;
+      const across = g ? Math.round((g.size / 2) / perFt) : null;
+      rows.push(`${inside ? "INSIDE" : "outside"} "${region.name}"`
+        + (away == null ? "" : ` — its centre is ${away} ft from the middle of a space that reaches ${across} ft`)
+        + ` [${space.kind ?? "space"}${space.disadvantage?.skills?.length
+            ? `, disadvantage on ${space.disadvantage.skills.join("/")}` : ""}`
+        + `${Number(space.difficultTerrain) > 1 ? `, difficult terrain ×${space.difficultTerrain}` : ""}]`);
+    }
+    if (!rows.length) return `There are no ACE spaces on this scene, so ${tok.name} cannot be in one.`;
+    return `${tok.name} (elevation ${Number(doc.elevation ?? 0)} ft):\n  ` + rows.join("\n  ");
   }
 
   /** All ACE space records containing this token's center. */
