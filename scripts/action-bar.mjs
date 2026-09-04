@@ -1828,15 +1828,89 @@ export class ActionBar {
       }
     };
     Hooks.on("dnd5e.postRollConfiguration", force);
+    let rolls = null;
     try {
-      // configure:false keeps dnd5e's dialog shut — ACE already asked.
-      // The card is left ON: he asked for the result to land in chat, and
-      // dnd5e's own roll card is what Dice So Nice already animates.
-      await actor[fn]({ [kind === "skill" ? "skill" : "ability"]: key }, { configure: false });
-      console.log(`${LOG} | ${actor.name} rolled ${read.label} at ${choice}`
-        + (read.reasons.length ? ` (${read.reasons.map(r => r.reason).join("; ")})` : ""));
+      // ⚠️ configure:false keeps dnd5e's dialog shut — ACE already asked.
+      //
+      // ⚠️🔴 AND THE MESSAGE IS ASKED FOR OUT LOUD. Johnny, 2026-09-04: "I'm
+      // still not getting the chat card. Players need to see the results. Why
+      // wouldn't I want a chat card?" dnd5e defaults `create` to true and
+      // nothing in ACE blocks a check card, so leaving the message config empty
+      // SHOULD have posted one — relying on a default that is not arriving is
+      // how a roll happens in silence.
+      //
+      // ⚠️ PUBLIC, DELIBERATELY. A check the party needs to see is no use
+      // whispered, and Foundry's core roll mode is a sticky global: whatever it
+      // was last set to for something else would silently decide who gets to
+      // see this. Naming it here means the answer does not depend on a setting
+      // nobody remembers changing.
+      rolls = await actor[fn](
+        { [kind === "skill" ? "skill" : "ability"]: key },
+        { configure: false },
+        { create: true, rollMode: CONST.DICE_ROLL_MODES.PUBLIC },
+      );
     } finally {
       Hooks.off("dnd5e.postRollConfiguration", force);
+    }
+
+    const list = Array.isArray(rolls) ? rolls : (rolls ? [rolls] : []);
+    const total = Number(list[0]?.total);
+    console.log(`${LOG} | ${actor.name} rolled ${read.label} at ${choice}`
+      + (Number.isFinite(total) ? ` = ${total}` : "")
+      + (read.reasons.length ? ` (${read.reasons.map(r => r.reason).join("; ")})` : ""));
+
+    // ⚠️ REPORT THE OUTCOME, NOT THE INTENTION. `buildPost` hangs the created
+    // message off each roll as `parent`, so this asks whether a card actually
+    // exists rather than assuming one does because we asked for it. If dnd5e
+    // did not post, ACE posts, and says why — a roll nobody can see is the same
+    // bug as no roll at all.
+    if (list.length && !list[0]?.parent) {
+      console.warn(`${LOG} | dnd5e did not post a card for ${read.label} — ACE is posting one.`);
+      await ActionBar._postCheckCard(actor, read, choice, list[0]);
+    }
+  }
+
+  /**
+   * ACE's own card for a check, used only when dnd5e's did not appear.
+   *
+   * ⚠️ NOT THE NORMAL PATH ON PURPOSE. dnd5e's roll card is the one the table
+   * already knows, the one Dice So Nice animates and the one every other module
+   * decorates. Replacing it wholesale would be building beside a working engine.
+   * This exists so that "no card" can never be the outcome.
+   */
+  static async _postCheckCard(actor, read, choice, roll) {
+    try {
+      // The card never lands before the dice stop — house rule, and it is the
+      // difference between a result and a spoiler.
+      try {
+        const { awaitDiceSettle } = await import("./dsn-utils.mjs");
+        await awaitDiceSettle();
+      } catch (_) { /* no Dice So Nice, or it never fired — post anyway */ }
+
+      const esc = foundry.utils.escapeHTML;
+      const badge = choice === "advantage"
+        ? `<span style="color:#7ee081;font-weight:700;">ADVANTAGE</span>`
+        : choice === "disadvantage"
+        ? `<span style="color:#e08b7e;font-weight:700;">DISADVANTAGE</span>` : "";
+      const why = read.reasons.length
+        ? `<div style="font-size:14px;opacity:0.85;margin-top:4px;">${esc(read.reasons.map(r => r.reason).join(" • "))}</div>`
+        : "";
+      await ChatMessage.create({
+        speaker: ChatMessage.getSpeaker({ actor }),
+        rolls: roll ? [roll] : [],
+        rollMode: CONST.DICE_ROLL_MODES.PUBLIC,
+        content: `<div style="background:#141118;border:1px solid #c9a76b55;border-left:3px solid #c9a76b;`
+          + `border-radius:4px;padding:8px 10px;color:#e8dcc3;">`
+          + `<div style="font-size:18px;font-weight:700;">${esc(actor.name)}</div>`
+          + `<div style="font-size:16px;margin-top:2px;">${esc(read.label)} ${badge}</div>`
+          + `<div style="font-size:28px;font-weight:700;margin-top:6px;">${esc(String(roll?.total ?? "?"))}</div>`
+          + why
+          + `</div>`,
+        flags: { [MODULE_ID]: { checkCard: true } },
+      });
+    } catch (err) {
+      console.error(`${LOG} | could not post a card for ${read.label}:`, err);
+      ui.notifications?.warn(`${actor.name}'s ${read.label} rolled ${roll?.total ?? "?"}, but no card could be posted.`);
     }
   }
 
