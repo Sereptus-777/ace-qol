@@ -170,17 +170,107 @@ export class SpaceEffects {
    */
   static _spaceFxName(regionId) { return `ace-qol-space:${regionId}`; }
 
-  /** Ordered candidates per space kind. First one this JB2A install has wins. */
-  static _spaceFxFiles(kind) {
-    const L = "modules/jb2a_patreon/Library";
-    const A = "modules/JB2A_DnD5e/Library";
+  /**
+   * What a space of this kind looks like, as a SEQUENCER DATABASE KEY.
+   *
+   * ⚠️ THE DATABASE, NOT A FILE PATH. Johnny picked this one out of JB2A's own
+   * viewer and named it: "jb2a.whirlwind.bluegrey ... that is pretty much
+   * perfect right there ... It should call this animation from JB2A from the
+   * sequencer database, and that's what should play." (2026-09-03.)
+   *
+   * A key is also the safer thing to hold. A hardcoded path breaks the day JB2A
+   * renames a file or he switches between the free and Patreon collections, and
+   * it breaks SILENTLY — a 404 texture draws nothing at all. The key resolves
+   * against whichever library is installed, and `entryExists` gives a true
+   * answer before anything is played.
+   *
+   * The raw path is kept only as the fallback for an install with the files but
+   * no Sequencer database registered.
+   */
+  static _spaceFxAsset(kind) {
     const byKind = {
-      storm: [
-        `${L}/Generic/Template/Circle/Lightning/TemplateCircleLightning01_01_Regular_BluePurple_Loop_700x700.webm`,
-        `${A}/Generic/Template/Circle/Lightning/TemplateCircleLightning01_01_Regular_BluePurple_Loop_700x700.webm`,
-      ],
+      storm: {
+        key: "jb2a.whirlwind.bluegrey",
+        files: [
+          "modules/jb2a_patreon/Library/7th_Level/Whirlwind/Whirlwind_01_BlueGrey_01_400x400.webm",
+          "modules/JB2A_DnD5e/Library/7th_Level/Whirlwind/Whirlwind_01_BlueGrey_01_400x400.webm",
+        ],
+      },
     };
-    return byKind[kind] ?? [];
+    const want = byKind[kind];
+    if (!want) return null;
+
+    try {
+      if (globalThis.Sequencer?.Database?.entryExists?.(want.key)) {
+        return { asset: want.key, how: `the Sequencer database entry ${want.key}` };
+      }
+    } catch (_) { /* no database -> fall through to the files */ }
+
+    const file = want.files.find(f => {
+      try { return !!game.modules.get(f.split("/")[1])?.active; } catch (_) { return false; }
+    });
+    if (file) return { asset: file, how: `the file ${file} (no Sequencer database entry for ${want.key})` };
+
+    // ⚠️ NAMED, NOT SILENT. "no animation configured" and "every path is wrong"
+    // look identical on screen, and both of them look like a deleted feature.
+    console.warn(`${TAG} nothing installed to draw a "${kind}" space, so it will have no `
+      + `picture. The rules are unaffected. Wanted ${want.key}, or one of: ${want.files.join(", ")}`);
+    return null;
+  }
+
+  /**
+   * Where the space is and how big, read from the REGION'S OWN SHAPE.
+   *
+   * ⚠️ NOT `region.object.bounds`. That is the rendered placeable, and it does
+   * not exist yet on the beat the region is created, nor on any client that has
+   * not drawn this scene — which made the picture depend on whether the canvas
+   * happened to be ready, and fail without a word when it was not. The shape is
+   * data and is always there.
+   */
+  static _spaceFxGeometry(region) {
+    const shape = region?.shapes?.[0];
+    if (shape) {
+      // ⚠️ A CIRCLE IS USUALLY A POLYGON. On a gridded scene Foundry snaps a
+      // circular template to the grid and hands back PIXI.Polygon points rather
+      // than a radius, so the polygon branch is the NORMAL case for a 50-foot
+      // storm, not an exotic one. Checking radius first and giving up would have
+      // meant no picture on every gridded map — which is every map he uses.
+      const pts = shape.points;
+      if (Array.isArray(pts) && pts.length >= 6) {
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (let i = 0; i + 1 < pts.length; i += 2) {
+          const px = Number(pts[i]), py = Number(pts[i + 1]);
+          if (!Number.isFinite(px) || !Number.isFinite(py)) continue;
+          if (px < minX) minX = px;
+          if (px > maxX) maxX = px;
+          if (py < minY) minY = py;
+          if (py > maxY) maxY = py;
+        }
+        if (Number.isFinite(minX) && maxX > minX) {
+          return { x: (minX + maxX) / 2, y: (minY + maxY) / 2,
+                   size: Math.max(maxX - minX, maxY - minY) };
+        }
+      }
+
+      const x = Number(shape.x), y = Number(shape.y);
+      if (Number.isFinite(x) && Number.isFinite(y)) {
+        // A circle's x/y is its CENTRE; a rectangle's is its top-left corner.
+        if (Number.isFinite(Number(shape.radius)) && Number(shape.radius) > 0) {
+          return { x, y, size: Number(shape.radius) * 2 };
+        }
+        if (Number.isFinite(Number(shape.radiusX)) && Number(shape.radiusX) > 0) {
+          return { x, y, size: Number(shape.radiusX) * 2 };
+        }
+        const w = Number(shape.width), h = Number(shape.height);
+        if (Number.isFinite(w) && w > 0 && Number.isFinite(h) && h > 0) {
+          return { x: x + w / 2, y: y + h / 2, size: Math.max(w, h) };
+        }
+      }
+    }
+    const b = region?.object?.bounds;
+    if (b?.width) return { x: b.x + b.width / 2, y: b.y + b.height / 2, size: Math.max(b.width, b.height) };
+    console.warn(`${TAG} could not work out where "${region?.name ?? "this space"}" is, so it has no picture.`);
+    return null;
   }
 
   static _drawSpaceFx(region) {
@@ -198,34 +288,38 @@ export class SpaceEffects {
         if (live.length) return;
       } catch (_) { /* unreadable -> fall through and draw once */ }
 
-      const file = SpaceEffects._spaceFxFiles(space.kind)
-        .find(p => { try { return !!game.modules.get(p.split("/")[1])?.active; } catch (_) { return false; } });
-      if (!file) {
-        // ⚠️ NAMED, NOT SILENT. A wrong path and a missing module look identical
-        // on screen — both are no storm — and I shipped a 1600x1600 filename for
-        // a 700x700 file once already today.
-        console.warn(`${TAG} no installed file for a "${space.kind}" space, so it will `
-          + `have no picture. The rules are unaffected. Looked for: `
-          + SpaceEffects._spaceFxFiles(space.kind).join(", "));
-        return;
-      }
+      const pick = SpaceEffects._spaceFxAsset(space.kind);
+      if (!pick) return;                       // already said why, out loud
+      const where = SpaceEffects._spaceFxGeometry(region);
+      if (!where) return;                      // already said why, out loud
 
-      const b = region.object?.bounds;
-      if (!b?.width) return;
+      // ⚠️ NO WALL-CLOCK TIMER. Johnny asked for "a timer for one minute", and
+      // the minute that matters is a minute of GAME time: ten rounds, however
+      // long the table takes over them. The region already holds `expiresAt` in
+      // world seconds and already has a sweeper that deletes it — so the picture
+      // simply persists and dies with the region. A `.duration()` here would cut
+      // the storm off mid-combat after sixty real-world seconds.
+      const expiresAt = Number(region.flags?.[MODULE_ID]?.expiresAt);
+      const left = Number.isFinite(expiresAt)
+        ? Math.max(0, expiresAt - Number(game.time?.worldTime ?? 0)) : null;
 
       new Sequence().effect()
-        .file(file)
-        .atLocation({ x: b.x + b.width / 2, y: b.y + b.height / 2 })
-        .size({ width: b.width, height: b.height })
-        // ⚠️ UNDER THE ART. A storm drawn over the tokens hides the creatures
-        // standing in it, which is the one thing the GM needs to see.
+        .file(pick.asset)
+        .atLocation({ x: where.x, y: where.y })
+        .size({ width: where.size, height: where.size })
+        // ⚠️ UNDER THE ART. "It should always be beneath the tokens' feet."
+        // A storm drawn over the tokens hides the creatures standing in it,
+        // which is the one thing the GM needs to see.
         .belowTokens()
-        .opacity(0.75)
-        .fadeIn(600).fadeOut(800)
+        .opacity(0.8)
+        .fadeIn(800).fadeOut(1200)
         .persist()
         .name(name)
         .play()
         .catch(err => console.warn(`${TAG} space effect failed to play:`, err));
+
+      console.log(`${TAG} "${region.name}" is drawn with ${pick.how}, under the tokens, `
+        + (left == null ? "until it is removed." : `for ${left} seconds of game time.`));
     } catch (err) {
       console.warn(`${TAG} could not draw this space:`, err);
     }
@@ -461,7 +555,8 @@ export class SpaceEffects {
       const created = await scene.createEmbeddedDocuments("Region", [regionData]);
       console.log(`${TAG} "${item.name}" [${edition}] → live space region ${created?.[0]?.id} (${props.join(", ") || "properties only"})`);
       // The picture lasts as long as the space does. See _drawSpaceFx.
-      if (created?.[0]) setTimeout(() => SpaceEffects._drawSpaceFx(created[0]), 100);
+      // No delay: the geometry comes from the region's shape, not its sprite.
+      if (created?.[0]) SpaceEffects._drawSpaceFx(created[0]);
       // Tokens ALREADY standing where the space appeared (cast on top of
       // someone) get their crossing processed immediately — stamps and
       // whispers apply at cast time, not only on the next move.

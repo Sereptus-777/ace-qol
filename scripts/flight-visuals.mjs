@@ -23,8 +23,8 @@
 // costs that layer — elevation still changes, and nothing throws.
 //
 // Public API (game.aceQol.flight):
-//   ascend(token, feet)  — set elevation + visuals (prompts if feet omitted)
-//   descend(token)       — land: elevation 0, visuals off
+//   ascend(token, climbFt) — rise climbFt ABOVE where it already is (prompts if omitted)
+//   descend(token)         — land on the ground beneath it, visuals off
 //   isFlying(token)
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -36,6 +36,19 @@ const WHIRLWIND_CANDIDATES = [
   "modules/jb2a_patreon/Library/7th_Level/Whirlwind/Whirlwind_01_BlueGrey_01_400x400.webm",
   "modules/JB2A_DnD5e/Library/7th_Level/Whirlwind/Whirlwind_01_BlueWhite_400x400.webm",
 ];
+
+/**
+ * A number, where "nothing" stays nothing.
+ *
+ * ⚠️🔴 `Number(null)` IS 0, AND 0 IS FINITE. That one line meant an UNCAPPED
+ * climb was capped at zero: `climbTo(-30, 30)` returned -30 and the creature
+ * never left the floor. Caught by the self-test on the same day the relative
+ * climb was written (2026-09-03), which is the only reason it is not live.
+ *
+ * The same trap sat under the landing: a token with no remembered takeoff
+ * reported that it had taken off from zero, with a message saying so.
+ */
+const aceNum = (v) => (v === null || v === undefined || v === "" ? NaN : Number(v));
 
 /** Sequencer effect name — one per token, so ending it is unambiguous. */
 const fxName = (token) => `ace-flight-${token.id ?? token.document?.id}`;
@@ -72,8 +85,15 @@ export class FlightVisuals {
         if (!("elevation" in (changes ?? {}))) return;
         const token = tokenDoc.object;
         if (!token) return;
-        if (Number(changes.elevation) <= 0) FlightVisuals._removeVisuals(token);
-        else if (FlightVisuals.isFlying(token)) FlightVisuals._applyVisuals(token);
+        // ⚠️🔴 "ON THE GROUND" IS NOT "AT OR BELOW ZERO". This read the sign
+        // of the elevation, which was survivable only while every creature took
+        // off from zero. The moment a climb became relative (2026-09-03), a
+        // wielder rising from -30 to 0 was declared landed and stripped of the
+        // whirlwind at the top of his ascent, and one rising from -60 to -30
+        // never got it at all. This very file already says elevation is a
+        // position and flight is a state; the check now agrees with it.
+        if (FlightVisuals.isFlying(token)) FlightVisuals._applyVisuals(token);
+        else FlightVisuals._removeVisuals(token);
       } catch (_) { /* non-fatal */ }
     });
 
@@ -113,17 +133,12 @@ export class FlightVisuals {
         const caster = activity?.actor ?? activity?.item?.actor;
         if (!caster || !name) return;
 
-        // ⚠️ A TAKEDOWN IS THE SAME TORNADO, POINTED AT SOMEBODY ELSE. It picks
-        // a creature up and slams it down, so it borrows Aerial Ascension's
-        // whirlwind and plays it once on the target rather than on the wielder.
-        // Checked BEFORE the attack bail below, because a takedown IS an attack.
-        if (/tornado|takedown|whirlwind|cyclone/.test(name)
-            && FlightVisuals.isVortexSource(activity?.item)) {
-          const hit = [...(game.user?.targets ?? [])].filter(t => t?.document);
-          const on = hit.length ? hit : (caster.getActiveTokens?.(true) ?? []).slice(0, 1);
-          for (const t of on) FlightVisuals.playWhirlwindOnce(t);
-          if (activity?.type === "attack") return;   // nothing else to do for a swing
-        }
+        // ⚠️ THE TORNADO IS NOT DRAWN HERE, AND MUST NOT BE. `storm-visuals.mjs`
+        // has owned the takedown whirlwind since 2026-07-29 (`_maybeTornado`),
+        // off the same hook. I added a second one here on 2026-09-03 without
+        // grepping for it first, which is the exact thing that keeps going
+        // wrong: build BESIDE an engine and you get two owners of one picture,
+        // and the next bug lives in whichever one you are not reading.
 
         // ⚠️ AN ATTACK IS NEVER A TAKEOFF. Without this, a flying snake's BITE
         // matched on the word "Flying" and asked the snake how high it wanted
@@ -266,17 +281,79 @@ export class FlightVisuals {
   }
 
   /**
-   * Take off. Sets the token's real elevation and turns the look on.
-   * @param {Token}  token
-   * @param {number} [feet] — omitted → ask (default 15)
+   * Where a climb of `climbFt` from `fromFt` puts you.
+   *
+   * ⚠️ PURE ON PURPOSE. This is the sum that was wrong (a token at -30 told to
+   * climb 30 was written to 30), and a sum that lives inside a document write
+   * cannot be proven without a canvas. It is here, alone, so the self-test can
+   * hold it to account.
+   *
+   * @param {number} fromFt  where the creature already is, negative included
+   * @param {number} climbFt how far up, never down
+   * @param {number|null} maxFt cap on the CLIMB, not on the resulting altitude
    */
-  static async ascend(token, feet = null, { vortex = false } = {}) {
+  static climbTo(fromFt, climbFt, maxFt = null) {
+    const from = aceNum(fromFt) || 0;
+    let climb = aceNum(climbFt);
+    if (!Number.isFinite(climb)) return NaN;
+    climb = Math.max(0, climb);
+    const cap = aceNum(maxFt);
+    if (Number.isFinite(cap)) climb = Math.min(climb, cap);
+    return from + climb;
+  }
+
+  /**
+   * Where "the ground" is for a creature coming down.
+   *
+   * @param {Array<{elevation:number}>} grounds ACE ground-level regions below
+   * @param {number|null} tookOffFrom where the ascent started, if remembered
+   * @returns {{ft:number, how:string}}
+   */
+  static landingElevation(grounds, tookOffFrom = null) {
+    const floors = (Array.isArray(grounds) ? grounds : [])
+      .map(g => Number(g?.elevation))
+      .filter(Number.isFinite);
+    // The HIGHEST floor below, not the lowest: standing on the third storey of a
+    // tower means landing on the third storey, not in the cellar.
+    if (floors.length) return { ft: Math.max(...floors), how: "the floor beneath them" };
+    const took = aceNum(tookOffFrom);
+    if (Number.isFinite(took)) return { ft: took, how: "where they took off from" };
+    return { ft: 0, how: "the scene floor, having nothing better to go on" };
+  }
+
+  /**
+   * Take off.
+   *
+   * ⚠️🔴 THE NUMBER IS A CLIMB, NOT AN ALTITUDE, AND THIS USED TO WRITE IT RAW.
+   * Johnny, 2026-09-03: his wielder was standing at elevation -30, the staff
+   * caps the climb at 30 feet, and the token was put at 30 — thirty feet above
+   * the map's zero rather than thirty feet above HIM. "He was at -30, so if I
+   * fly up 30 ft ... he should have been at 0 ft ... the math has to go into the
+   * token itself: what elevation it's at."
+   *
+   * A creature that takes off from a balcony, an upper floor, a ship's deck or
+   * the bottom of a pit rises from THERE. Nothing in 5e measures flight from the
+   * scene's zero, and the only reason this ever looked right is that most
+   * creatures happen to be standing at zero when they cast.
+   *
+   * ⚠️ AND WHERE HE LEFT FROM IS REMEMBERED, on the token, so a descent has
+   * somewhere to go back to. A flag rather than a Map: it survives a reload and
+   * every client can read it, and the landing may well be handled by a
+   * different client than the takeoff.
+   *
+   * @param {Token}  token
+   * @param {number} [climbFt] — how far UP. Omitted → ask (default 15).
+   */
+  static async ascend(token, climbFt = null, { vortex = false } = {}) {
     try {
       if (!token?.document) return;
       if (vortex) FlightVisuals._vortex.add(token.id);
-      let ft = Number(feet);
-      if (!Number.isFinite(ft)) ft = await FlightVisuals.promptAltitude(token);
-      if (!Number.isFinite(ft)) return;               // cancelled
+      const from = FlightVisuals.elevationFt(token);
+      let climb = Number(climbFt);
+      if (!Number.isFinite(climb)) climb = await FlightVisuals.promptAltitude(token);
+      if (!Number.isFinite(climb)) return;               // cancelled
+      const ft = FlightVisuals.climbTo(from, climb);     // the prompt already capped it
+      await token.document.setFlag(MODULE_ID, "tookOffFrom", from);
       await token.document.update({ elevation: ft });
       // ⚠️ FLYING IS A STATE, SO SET IT. `isFlying` now reads only the status
       // (elevation alone is a balcony, not flight), which means ascending
@@ -285,21 +362,54 @@ export class FlightVisuals {
       // would drop off at the next elevation change.
       await FlightVisuals._setFlyingStatus(token, true);
       FlightVisuals._applyVisuals(token);
-      console.log(`${MODULE_ID} | ${token.name} ascends to ${ft} feet`);
+      console.log(`${MODULE_ID} | ${token.name} climbs ${climb} feet from ${from} `
+        + `and is now at ${ft} feet.`);
     } catch (err) {
       console.warn(`${MODULE_ID} | ascend failed:`, err);
     }
   }
 
-  /** Land. Elevation to 0 and the look off. */
+  /**
+   * Land.
+   *
+   * ⚠️🔴 "THE GROUND" IS NOT ZERO. This wrote elevation 0, so a creature who
+   * took off from a pit at -30 landed thirty feet above the floor he had been
+   * standing on, in mid-air. The staff's own text says "you can use your action
+   * to safely descend to the ground" — the ground, meaning the one underneath
+   * him, not the scene's origin.
+   *
+   * Three answers, in order of how much they actually know:
+   *   1. The highest ACE ground-level region below him. This is the real floor
+   *      and it is already modelled — `fall-pipeline.mjs` reads exactly this to
+   *      decide how far a falling creature drops, and it would be absurd for
+   *      landing and falling to disagree about where the ground is.
+   *   2. Where he took off from, remembered by `ascend`.
+   *   3. Zero, and only then.
+   *
+   * ⚠️ IMPORTED LATE ON PURPOSE. `fall-pipeline.mjs` pulls in the damage engine,
+   * the profiles and the combat context; a top-level import here would drag all
+   * of that into the load order for a file that only needs one number.
+   */
   static async descend(token) {
     try {
       if (!token?.document) return;
-      await token.document.update({ elevation: 0 });
+      const from = FlightVisuals.elevationFt(token);
+      let below = [];
+      try {
+        const { FallPipeline } = await import("./fall-pipeline.mjs");
+        below = FallPipeline._groundsBelow?.(token.document, from) ?? [];
+      } catch (err) {
+        console.warn(`${MODULE_ID} | could not read the ground below ${token.name}:`, err);
+      }
+      const tookOff = token.document.getFlag?.(MODULE_ID, "tookOffFrom");
+      const { ft: ground, how } = FlightVisuals.landingElevation(below, tookOff);
+
+      await token.document.update({ elevation: ground });
+      try { await token.document.unsetFlag(MODULE_ID, "tookOffFrom"); } catch (_) { /* nothing stored */ }
       FlightVisuals._vortex.delete(token.id);
       await FlightVisuals._setFlyingStatus(token, false);
       FlightVisuals._removeVisuals(token);
-      console.log(`${MODULE_ID} | ${token.name} descends safely to the ground`);
+      console.log(`${MODULE_ID} | ${token.name} descends from ${from} to ${ground} feet (${how}).`);
     } catch (err) {
       console.warn(`${MODULE_ID} | descend failed:`, err);
     }
@@ -324,7 +434,17 @@ export class FlightVisuals {
 
   /** "How high?" — defaults to 15 feet, the staff's comfortable hover. */
   static async promptAltitude(token, { defaultFt = 15, maxFt = null } = {}) {
-    const capNote = maxFt ? ` (max ${maxFt} feet)` : "";
+    // ⚠️ TELL HIM WHERE HE IS AND WHERE HE WILL END UP. The old box said
+    // "Altitude" and took the number literally, which is how a creature at -30
+    // asking to climb ended up below where he thought he was going. A number
+    // that means "up from here" has to be labelled as one, and the answer has
+    // to be on screen before he presses the button.
+    const from = FlightVisuals.elevationFt(token);
+    const start = Math.min(defaultFt, maxFt ?? defaultFt);
+    const capNote = maxFt ? ` (up to ${maxFt} feet)` : "";
+    const standing = from === 0
+      ? "on the ground"
+      : `at ${from} feet`;
     const content = `
       <div class="ace-qol-adv-prompt">
         <div class="ace-qol-adv-targets">
@@ -332,13 +452,16 @@ export class FlightVisuals {
           <i class="fas fa-wind"></i>
           <span class="ace-qol-adv-target">takes flight${capNote}</span>
         </div>
-        <div class="ace-qol-adv-reason">
+        <div class="ace-qol-adv-reason" style="font-size:15px;">
           <label style="display:flex;align-items:center;gap:10px;justify-content:center;font-size:1.05em;">
-            Altitude
-            <input type="number" name="ft" value="${defaultFt}" min="0" ${maxFt ? `max="${maxFt}"` : ""} step="5"
+            Climb
+            <input type="number" name="ft" value="${start}" min="0" ${maxFt ? `max="${maxFt}"` : ""} step="5"
                    style="width:90px;text-align:center;font-size:1.15em;font-weight:700;">
             ft
           </label>
+          <div style="text-align:center;margin-top:8px;opacity:0.9;">
+            Standing ${standing} &rarr; <b class="ace-flight-dest">${from + start}</b> ft
+          </div>
         </div>
       </div>`;
     try {
@@ -346,9 +469,23 @@ export class FlightVisuals {
         window: { title: "Take Flight" },
         classes: ["ace-qol-adv-dialog"],
         content,
+        render: (_ev, dialog) => {
+          try {
+            const root = dialog?.element ?? dialog;
+            const input = root?.querySelector?.("input[name=ft]");
+            const dest  = root?.querySelector?.(".ace-flight-dest");
+            if (!input || !dest) return;
+            input.addEventListener("input", () => {
+              let v = Number(input.value);
+              if (!Number.isFinite(v)) v = 0;
+              if (maxFt) v = Math.min(v, maxFt);
+              dest.textContent = String(from + Math.max(0, v));
+            });
+          } catch (_) { /* the readout is a courtesy; the number still works */ }
+        },
         buttons: [
           { action: "fly", label: "Fly", icon: "fa-solid fa-feather", default: true,
-            callback: (ev, btn) => Number(btn.form?.elements?.ft?.value ?? defaultFt) },
+            callback: (ev, btn) => Number(btn.form?.elements?.ft?.value ?? start) },
           { action: "cancel", label: "Cancel", icon: "fa-solid fa-xmark", callback: () => null },
         ],
         rejectClose: false,
@@ -356,7 +493,10 @@ export class FlightVisuals {
       if (result == null) return NaN;
       const ft = Number(result);
       if (!Number.isFinite(ft)) return NaN;
-      return maxFt ? Math.min(ft, maxFt) : ft;
+      // ⚠️ A CLIMB, SO NEVER NEGATIVE — typing -50 into a takeoff box must not
+      // bury the creature. The cap is on how far up, which is how Johnny reads
+      // the staff's "maximum altitude ... is 30ft": thirty feet of climb.
+      return Math.max(0, maxFt ? Math.min(ft, maxFt) : ft);
     } catch (_) { return NaN; }
   }
 
@@ -411,10 +551,24 @@ export class FlightVisuals {
    * installed Token Magic's own `shadow` filter shape; the oscillation uses
    * TMFX's documented syncCosOscillation animator.
    */
+  /**
+   * How far above its own ground this token is.
+   *
+   * ⚠️ NOT ITS ELEVATION. A creature hovering ten feet above the floor of a pit
+   * sits at -20, and reading that as its height gave it no shadow and no lift
+   * at all — it looked exactly like a creature standing still. Height is
+   * measured from where it took off; absolute elevation is a map coordinate.
+   */
+  static _heightAboveGround(token) {
+    const now = Number(token?.document?.elevation ?? 0) || 0;
+    const from = aceNum(token?.document?.getFlag?.(MODULE_ID, "tookOffFrom"));
+    return Math.max(0, now - (Number.isFinite(from) ? from : 0));
+  }
+
   static _addHoverShadow(token) {
     try {
       if (!globalThis.TokenMagic?.addUpdateFilters) return;   // TMFX optional
-      const elev = Math.max(0, Number(token.document?.elevation ?? 0));
+      const elev = FlightVisuals._heightAboveGround(token);
       // Higher up = shadow further away = reads as more altitude.
       const base = Math.min(60, 12 + elev * 0.8);
       TokenMagic.addUpdateFilters(token, [{
@@ -448,7 +602,7 @@ export class FlightVisuals {
   static _addAltitudeScale(token) {
     try {
       if (!globalThis.TokenMagic?.addUpdateFilters) return;
-      const elev = Math.max(0, Number(token.document?.elevation ?? 0));
+      const elev = FlightVisuals._heightAboveGround(token);
       if (elev <= 0) return;
       const scale = 1 + Math.min(0.12, elev * 0.002);   // caps at +12%
       TokenMagic.addUpdateFilters(token, [{
@@ -472,44 +626,6 @@ export class FlightVisuals {
    * ⚠️ NOT part of ordinary flight any more — see `_applyVisuals`. Call it
    * deliberately for creatures that really are a vortex.
    */
-  /**
-   * The same whirlwind, played once on somebody who is not flying.
-   *
-   * ⚠️🔴 THIS IS THE ANIMATION HE ALREADY HAS AND NOBODY COULD FIND. Aerial
-   * Ascension's tornado is ACE's own effect, drawn here, not an Automated
-   * Animations record — which is why every probe into AA came back empty and
-   * why `hasItemAnimation` read false on an item that visibly animates. I
-   * reported that emptiness as an answer and it was not one.
-   *
-   * Johnny, 2026-09-03: "the funny thing about Tornado Takedown and Aerial
-   * Ascension is it's the same animation. I don't mind it being the same
-   * animation. It actually looks perfect."
-   *
-   * ⚠️ NOT PERSISTENT. A takedown is a thing that happens, not a state you are
-   * in. Persisting it would leave a tornado on a creature standing still.
-   */
-  static playWhirlwindOnce(token, { seconds = 3 } = {}) {
-    try {
-      const Seq = globalThis.Sequence;
-      if (!Seq || !globalThis.Sequencer || !token) return;
-      const file = FlightVisuals._whirlwindFile();
-      if (!file) return;
-      new Seq()
-        .effect()
-          .file(file)
-          .attachTo(token, { bindAlpha: false })
-          .belowTokens()
-          .scaleToObject(1.5)
-          .opacity(0.85)
-          .fadeIn(300)
-          .duration(Math.max(1000, seconds * 1000))
-          .fadeOut(600)
-        .play();
-    } catch (err) {
-      console.warn(`${MODULE_ID} | one-shot whirlwind failed (non-fatal):`, err);
-    }
-  }
-
   /** The first whirlwind file this JB2A install actually has. */
   static _whirlwindFile() {
     return WHIRLWIND_CANDIDATES.find(p => {

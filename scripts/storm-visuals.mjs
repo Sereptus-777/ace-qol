@@ -82,10 +82,28 @@ const STRIKE = [
  * ability on the staff reads as one item rather than a grab bag of effects.
  */
 const WHIRLWIND = [
-  "modules/jb2a_patreon/Library/7th_Level/Whirlwind/Whirlwind_01_BlueWhite_400x400.webm",
   "modules/jb2a_patreon/Library/7th_Level/Whirlwind/Whirlwind_01_BlueGrey_01_400x400.webm",
-  "modules/JB2A_DnD5e/Library/7th_Level/Whirlwind/Whirlwind_01_BlueWhite_400x400.webm",
+  "modules/jb2a_patreon/Library/7th_Level/Whirlwind/Whirlwind_01_BlueWhite_400x400.webm",
+  "modules/JB2A_DnD5e/Library/7th_Level/Whirlwind/Whirlwind_01_BlueGrey_01_400x400.webm",
 ];
+
+/**
+ * The same whirlwind, asked for by name instead of by path.
+ *
+ * ⚠️ THE DATABASE ANSWERS, THE PATH LIST GUESSES. `jb2a.whirlwind.bluegrey` is
+ * the key Johnny picked out of JB2A's own viewer, and it resolves against
+ * whichever collection is installed. The paths above stay as the fallback for
+ * an install with the files but no database.
+ */
+const WHIRL_KEY = "jb2a.whirlwind.bluegrey";
+
+/** The key if the database knows it, else the first file that exists, else null. */
+async function pickWhirlwind() {
+  try {
+    if (globalThis.Sequencer?.Database?.entryExists?.(WHIRL_KEY)) return WHIRL_KEY;
+  } catch (_) { /* no database -> the files below */ }
+  return await pickExisting("whirl", WHIRLWIND);
+}
 
 /**
  * Single-target abilities that conjure a whirlwind ON THE TARGET rather than a
@@ -241,17 +259,34 @@ export class StormVisuals {
     const name = String(activity?.name ?? "");
     if (!TORNADO_RE.test(name)) return;
 
+    // ⚠️🔴 EVERY DOOR OUT OF HERE NOW SAYS WHICH DOOR IT WAS.
+    //
+    // Johnny, 2026-09-03: "Tornado Takedown got no animation, but as before,
+    // everything else is correct, just no animation." Four separate silent
+    // returns lived below this line, and from the outside they are one symptom
+    // with four possible causes — no Sequencer, no asset, no target, or the
+    // hook never firing at all. Reading the file could not tell them apart and
+    // neither could he, so the next round of this was going to be guesswork
+    // again. It is not a debug log: it only prints once a tornado has actually
+    // been used and has then failed to draw.
+    const giveUp = (why) => console.warn(`${MODULE_ID} | "${name}" drew no whirlwind: ${why}`);
+
     const Seq = globalThis.Sequence;
-    if (!Seq || !globalThis.Sequencer) return;
+    if (!Seq || !globalThis.Sequencer) return giveUp("Sequencer is not installed or not ready.");
 
     const [whirl, wind] = await Promise.all([
-      pickExisting("whirl", WHIRLWIND),
+      pickWhirlwind(),
       pickExisting("wind", WIND),
     ]);
-    if (!whirl) return;
+    if (!whirl) return giveUp(`no whirlwind asset — neither ${WHIRL_KEY} nor any of the `
+      + `fallback files resolved on this install.`);
 
     const targets = StormVisuals._targetTokens(activity);
-    if (!targets.length) return;
+    if (!targets.length) return giveUp("nothing is targeted and the activity carried no target, "
+      + "so there is nowhere to put it.");
+
+    console.log(`${MODULE_ID} | "${name}" whirlwind on `
+      + `${targets.map(t => t.name ?? "?").join(", ")} via ${whirl}`);
 
     const seq = new Seq();
     for (const t of targets) {
