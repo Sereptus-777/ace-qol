@@ -1722,229 +1722,24 @@ export class ActionBar {
   }
 
   /**
-   * Where dnd5e keeps the resolved advantage state for a check.
+   * A check from the bar goes through the SAME door as one from the sheet.
    *
-   * ⚠️ THE SYSTEM ALREADY WORKED IT OUT. `AdvantageModeField` counts every
-   * source that touches these paths and resolves them to -1, 0 or 1, and the
-   * passive score is computed from the same number. Re-deriving it here would
-   * be a second answer to a question dnd5e has already answered, and the two
-   * would disagree the first time anything unusual applied.
-   */
-  static _modePathFor(kind, key) {
-    return kind === "skill"
-      ? `system.skills.${key}.roll.mode`
-      : `system.abilities.${key}.check.roll.mode`;
-  }
-
-  /** ACE's answer for this check: the mode, and every effect that argued for it. */
-  static _readCheckMode(actor, kind, key) {
-    const out = { mode: 0, reasons: [], modifier: null, label: key };
-    try {
-      if (kind === "skill") {
-        const sk = actor.system?.skills?.[key];
-        out.mode = Number(sk?.roll?.mode ?? 0) || 0;
-        out.modifier = Number.isFinite(Number(sk?.total)) ? Number(sk.total) : null;
-        out.label = `${CONFIG.DND5E?.skills?.[key]?.label ?? key} check`;
-      } else {
-        const ab = actor.system?.abilities?.[key];
-        out.mode = Number(ab?.check?.roll?.mode ?? 0) || 0;
-        out.modifier = Number.isFinite(Number(ab?.mod)) ? Number(ab.mod) : null;
-        out.label = `${CONFIG.DND5E?.abilities?.[key]?.label ?? key} check`;
-      }
-    } catch (_) { /* the prompt still opens, just without a suggestion */ }
-
-    // ⚠️ NAME WHAT DID IT. "ACE suggests disadvantage" with no reason is the
-    // same as no explanation at all — he cannot tell a rule from a bug.
-    // ⚠️ AND CHECK THE ABILITY PATH TOO. A skill check is also an ability
-    // check, so an effect on Wisdom checks reaches Perception; reading only the
-    // skill path would show a suggestion with no reason beside it.
-    const wanted = new Set([ActionBar._modePathFor(kind, key)]);
-    if (kind === "skill") {
-      const ability = actor.system?.skills?.[key]?.ability
-        ?? CONFIG.DND5E?.skills?.[key]?.ability;
-      if (ability) wanted.add(`system.abilities.${ability}.check.roll.mode`);
-    }
-    try {
-      for (const e of (actor.effects ?? [])) {
-        if (e.disabled) continue;
-        for (const c of (e.changes ?? [])) {
-          if (!wanted.has(c.key)) continue;
-          const v = Number(c.value);
-          if (v !== -1 && v !== 1) continue;
-          out.reasons.push({ reason: `${e.name}: ${v === 1 ? "advantage" : "disadvantage"}` });
-        }
-      }
-    } catch (_) { /* reasons are a courtesy; the mode still stands */ }
-    return out;
-  }
-
-  /**
-   * One check, ACE's way: our pause, our suggestion, dnd5e's roll and card.
+   * ⚠️🔴 THIS FILE USED TO OWN THE WHOLE THING — the mode read, the prompt,
+   * the dice and the card — and that was the bug. Clicking Perception on the
+   * character sheet is a different caller and got none of it. Johnny: "now do
+   * the same for all things rolled right?" There is no doing it again for each
+   * caller; the implementation moved to `check-gate.mjs`, which hooks the ROLL
+   * rather than any one button.
    *
-   * ⚠️🔴 THE CHOICE HAS TO BE FORCED, NOT REQUESTED. Passing
-   * `{advantage: true}` does NOT override an effect that already imposes
-   * disadvantage — dnd5e nets the two to normal, and asking for "normal" while
-   * an effect says disadvantage leaves the disadvantage standing. Proven from
-   * the system source: `_configureRolls` builds the mode from those flags, and
-   * dnd5e's OWN dialog does not use them either — `_finalizeRolls` writes
-   * `advantageMode` straight onto the roll after configuration.
-   *
-   * So this does the same thing at the same moment, through the documented
-   * `dnd5e.postRollConfiguration` hook, which fires after configuration and
-   * before evaluation. Anything less would give him three buttons where two of
-   * them quietly do nothing.
+   * ⚠️ IT CALLS THE GATE DIRECTLY rather than letting the hook catch it. The
+   * gate's own re-roll is made with no dialog and no card, which is precisely
+   * how it recognises an engine and stands aside — so going through
+   * `actor.rollSkill` from here would be caught, cancelled and re-fired for no
+   * reason. One call, one roll.
    */
   static async _rollCheck(actor, kind, key) {
-    const fn = kind === "skill" ? "rollSkill" : "rollAbilityCheck";
-    if (typeof actor[fn] !== "function") throw new Error(`Actor#${fn} is missing`);
-
-    const read = ActionBar._readCheckMode(actor, kind, key);
-    const suggested = read.mode > 0 ? "advantage" : read.mode < 0 ? "disadvantage" : "normal";
-
-    const { showCheckPrompt } = await import("./attack-prompt.mjs");
-    const choice = await showCheckPrompt({
-      creature: actor.name,
-      checkLabel: read.label,
-      suggested,
-      reasons: read.reasons,
-      modifier: read.modifier,
-      isPC: actor.hasPlayerOwner === true,
-    });
-    if (!choice) return;                       // cancelled — nothing rolls
-
-    const MODE = { advantage: 1, normal: 0, disadvantage: -1 }[choice] ?? 0;
-
-    // ⚠️ SCOPED TO THIS ROLL AND REMOVED EITHER WAY. A listener left behind
-    // would silently rewrite the next check anybody made.
-    const force = (rolls, config) => {
-      try {
-        if (config?.subject !== actor) return;
-        for (const roll of (rolls ?? [])) {
-          roll.options.advantageMode = MODE;
-          roll.configureModifiers?.();
-        }
-      } catch (err) {
-        console.warn(`${LOG} | could not force ${choice} on this check:`, err);
-      }
-    };
-    Hooks.on("dnd5e.postRollConfiguration", force);
-    let rolls = null;
-    try {
-      // ⚠️🔴 THE CARD IS OURS. Johnny, 2026-09-04: "It better be our fucking
-      // card." The step before this asked dnd5e to post its own and only fell
-      // back to an ACE card when that did not arrive, which put the table's view
-      // of a check in the hands of whichever module decorated dnd5e's card last.
-      //
-      // create:false so dnd5e rolls and posts nothing. configure:false so its
-      // dialog stays shut. ACE already asked, ACE throws the dice, and ACE posts.
-      const { aceArmDiceWatch } = await import("./dsn-utils.mjs");
-      aceArmDiceWatch();
-      rolls = await actor[fn](
-        { [kind === "skill" ? "skill" : "ability"]: key },
-        { configure: false },
-        { create: false },
-      );
-    } finally {
-      Hooks.off("dnd5e.postRollConfiguration", force);
-    }
-
-    const list = Array.isArray(rolls) ? rolls : (rolls ? [rolls] : []);
-    const roll = list[0] ?? null;
-    console.log(`${LOG} | ${actor.name} rolled ${read.label} at ${choice}`
-      + (Number.isFinite(Number(roll?.total)) ? ` = ${roll.total}` : " (no roll came back)")
-      + (read.reasons.length ? ` (${read.reasons.map(r => r.reason).join("; ")})` : ""));
-
-    // ⚠️ A ROLL THAT PRODUCED NOTHING MUST SAY SO, not quietly post an empty
-    // card. "Cancelled" and "broken" have to look different.
-    if (!roll) {
-      ui.notifications?.warn(`${actor.name}'s ${read.label} did not roll — see the console.`);
-      return;
-    }
-    await ActionBar._postCheckCard(actor, read, choice, roll);
-  }
-
-  /**
-   * ACE's card for a check.
-   *
-   * ⚠️ EVERY DIE IS SHOWN, INCLUDING THE ONE THAT LOST. On advantage or
-   * disadvantage two d20s are rolled and one is thrown away; showing only the
-   * survivor hides the whole reason the pause existed. The discarded one is
-   * struck through and dimmed, and it keeps its full width — a struck number
-   * squeezed into a narrow column is how a 10 once read as a 1 over a 0.
-   *
-   * ⚠️ AND IT WAITS FOR THE DICE. dnd5e is not posting this card, so nothing
-   * else is animating the roll: ACE throws the dice itself and holds the card
-   * until they stop. A card that beats its own dice is a spoiler.
-   *
-   * ⚠️ PUBLIC. The table needs to see a check; that is the entire point of the
-   * card. Foundry's core roll mode is a sticky global and must not get a vote.
-   */
-  static async _postCheckCard(actor, read, choice, roll) {
-    try {
-      const { safeShowForRoll, awaitDiceSettle } = await import("./dsn-utils.mjs");
-      safeShowForRoll(roll, `${actor.name} ${read.label}`);
-      await awaitDiceSettle(undefined, { useArmed: true });
-
-      const { DamageConstants } = await import("./damage-engine.mjs");
-      const esc = foundry.utils.escapeHTML;
-
-      // ── the dice, winners and losers alike ──
-      const dice = [];
-      for (const term of (roll.terms ?? [])) {
-        if (!term.faces) continue;
-        for (const r of (term.results ?? [])) {
-          const dropped = r.active === false || r.discarded === true;
-          const img = DamageConstants.getDiceImagePath(term.faces, r.result);
-          const icon = DamageConstants.DIE_ICONS?.[term.faces] ?? "fa-dice";
-          dice.push(
-            `<span class="ace-qol-die" style="${dropped ? "opacity:0.45;" : ""}">`
-            + `<img class="ace-qol-die-img" src="${img}" alt="d${term.faces}"`
-            + ` onerror="this.style.display='none';this.nextElementSibling.style.display='inline'">`
-            + `<i class="fas ${icon} ace-qol-die-fallback" style="display:none"></i>`
-            + `<span class="ace-qol-die-result" style="font-size:18px;font-weight:700;`
-            + `${dropped ? "text-decoration:line-through;" : ""}">${r.result}</span>`
-            + `</span>`);
-        }
-      }
-
-      const badge = choice === "advantage"
-        ? `<span style="color:#7ee081;font-weight:700;font-size:14px;letter-spacing:0.5px;">ADVANTAGE</span>`
-        : choice === "disadvantage"
-        ? `<span style="color:#e08b7e;font-weight:700;font-size:14px;letter-spacing:0.5px;">DISADVANTAGE</span>`
-        : "";
-
-      const why = read.reasons.length
-        ? `<div style="font-size:14px;opacity:0.85;margin-top:6px;line-height:1.35;">`
-          + `${esc(read.reasons.map(r => r.reason).join(" • "))}</div>`
-        : "";
-
-      const mod = Number.isFinite(Number(read.modifier))
-        ? `<span style="opacity:0.8;">${Number(read.modifier) >= 0 ? "+" : ""}${Number(read.modifier)}</span>` : "";
-
-      await ChatMessage.create({
-        speaker: ChatMessage.getSpeaker({ actor }),
-        rollMode: CONST.DICE_ROLL_MODES.PUBLIC,
-        // ⚠️ NO `rolls` ARRAY. The dice have already been thrown above; handing
-        // them to the message as well makes Dice So Nice animate the same roll a
-        // second time, after the card is already on screen showing the answer.
-        content:
-          `<div style="background:#141118;border:1px solid #c9a76b55;border-left:3px solid #c9a76b;`
-          + `border-radius:4px;padding:9px 11px;color:#e8dcc3;">`
-          + `<div style="font-size:18px;font-weight:700;line-height:1.3;">${esc(actor.name)}</div>`
-          + `<div style="font-size:16px;margin-top:2px;display:flex;flex-wrap:wrap;gap:8px;align-items:baseline;">`
-          +   `<span>${esc(read.label)} ${mod}</span>${badge}</div>`
-          + `<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:8px;">`
-          +   dice.join("")
-          +   `<span style="font-size:30px;font-weight:700;margin-left:auto;">${esc(String(roll.total ?? "?"))}</span>`
-          + `</div>`
-          + why
-          + `</div>`,
-        flags: { [MODULE_ID]: { checkCard: true } },
-      });
-    } catch (err) {
-      console.error(`${LOG} | could not post the card for ${read.label}:`, err);
-      ui.notifications?.warn(`${actor.name}'s ${read.label} rolled ${roll?.total ?? "?"}, but no card could be posted.`);
-    }
+    const { CheckGate } = await import("./check-gate.mjs");
+    return CheckGate.run(actor, kind, key);
   }
 
   /** Dismiss on the next click anywhere else, and on Escape. */

@@ -18,7 +18,8 @@ globalThis.CONFIG = {
   Actor: {}, Token: {}, Item: {},
   DND5E: {
     skills: { prc: { label: "Perception", ability: "wis" }, ste: { label: "Stealth", ability: "dex" } },
-    abilities: { wis: { label: "Wisdom" }, str: { label: "Strength" } },
+    abilities: { wis: { label: "Wisdom" }, str: { label: "Strength" },
+                 dex: { label: "Dexterity" } },
   },
 };
 class _App { static DEFAULT_OPTIONS = {}; constructor() {} render() {} close() {} }
@@ -33,8 +34,10 @@ globalThis.foundry = {
 };
 globalThis.canvas = { grid: { size: 100, distance: 5 }, scene: { regions: [] } };
 
-const { ActionBar } = await import(
-  "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/action-bar.mjs");
+const { CheckGate } = await import(
+  "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/check-gate.mjs");
+const ActionBar = { _readCheckMode: (a, k, y) => CheckGate.read(a, k, y),
+                    _modePathFor:   (k, y)    => CheckGate.modePathFor(k, y) };
 
 let pass = 0, fail = 0;
 const check = (label, got, want) => {
@@ -114,6 +117,48 @@ check("advantage is read as advantage",
     system: { skills: { prc: { roll: { mode: 1 }, ability: "wis" } }, abilities: { wis: {} } } },
     "skill", "prc"),
   { mode: 1, reasons: [{ reason: "Guidance-ish: advantage" }], modifier: null, label: "Perception check" });
+
+console.log("\nWHAT THE GATE TAKES, AND WHAT IT LEAVES ALONE");
+const shape = (hookNames, extra = {}) => CheckGate._shapeOf({ hookNames, ...extra });
+check("a skill check is ours",
+  shape(["skill", "abilityCheck", "d20Test", ""], { skill: "prc" }), { kind: "skill", key: "prc" });
+check("an ability check is ours",
+  shape(["AbilityCheck", "d20Test", ""], { ability: "str" }), { kind: "ability", key: "str" });
+check("a saving throw is ours",
+  shape(["SavingThrow", "d20Test", ""], { ability: "dex" }), { kind: "save", key: "dex" });
+// ⚠️ THE ATTACK PIPELINE ALREADY OWNS ATTACKS. Two owners of one roll is
+// the bug this whole file exists to avoid.
+check("an attack is NOT ours", shape(["attack", "d20Test", ""], { ability: "str" }), null);
+check("a tool check is not ours yet", shape(["tool", "abilityCheck", "d20Test", ""]), null);
+check("something with no shape at all is not ours", shape([""]), null);
+
+console.log("\nAN ENGINE ROLLING FOR ITSELF PASSES STRAIGHT THROUGH");
+const cfg = { hookNames: ["skill", "abilityCheck", "d20Test", ""], skill: "prc",
+              subject: { name: "Someone", system: { skills: { prc: { roll: { mode: 0 } } } }, effects: [] } };
+// ⚠️ NO DIALOG AND NO CARD MEANS AN ENGINE. Every internal roll in the suite
+// is made that way, and so is the gate's own re-roll — which is what stops this
+// from re-entering itself forever.
+check("no dialog and no card is left alone",
+  CheckGate._intercept({ ...cfg }, { configure: false }, { create: false }), undefined);
+// ⚠️ A SHIFT-CLICK IS STILL A PERSON. Foundry's keybinds set configure:false
+// and nothing else; the pause is what gets skipped, never the record.
+check("a hurried click still gets a card",
+  CheckGate._intercept({ ...cfg }, { configure: false }, {}), false);
+check("a plain sheet click is taken",
+  CheckGate._intercept({ ...cfg }, {}, {}), false);
+check("an actor we cannot name is left alone",
+  CheckGate._intercept({ hookNames: ["skill", "d20Test"], skill: "prc" }, {}, {}), undefined);
+
+console.log("\nSAVES READ THE SAVE PATH, NOT THE CHECK PATH");
+check("a save uses the save mode", CheckGate.modePathFor("save", "dex"), "system.abilities.dex.save.roll.mode");
+check("an ability check uses the check mode", CheckGate.modePathFor("ability", "dex"), "system.abilities.dex.check.roll.mode");
+const brave = { name: "Ireena", effects: [{ name: "Aura of Protection", disabled: false,
+  changes: [{ key: "system.abilities.dex.save.roll.mode", value: "1" }] }],
+  system: { abilities: { dex: { save: { roll: { mode: 1 }, value: 7 } } } } };
+check("a save reads its own mode and names its source",
+  CheckGate.read(brave, "save", "dex"),
+  { mode: 1, reasons: [{ reason: "Aura of Protection: advantage" }], modifier: 7,
+    label: "Dexterity saving throw" });
 
 console.log("");
 console.log(pass + " passed, " + fail + " failed");

@@ -510,6 +510,13 @@ Hooks.once("init", () => {
     .then(({ StormVisuals }) => StormVisuals.init())
     .catch(err => console.error(`${MODULE_ID} | Storm Visuals init failed:`, err));
 
+  // ── One door for every check and save a person clicks (2026-09-04) ──
+  // Hooks the ROLL, not any one button, so the sheet, the action bar, a macro
+  // and a chat button all get ACE's pause and ACE's card.
+  import("./check-gate.mjs")
+    .then(({ CheckGate }) => CheckGate.register())
+    .catch(err => console.error(`${MODULE_ID} | Check gate init failed:`, err));
+
   // ── Who draws what (2026-09-03) ──
   // Registered here, beside the storm, because arbitrating between ACE's own
   // pictures and Forge's derived ones is what it is for. Forge asks through
