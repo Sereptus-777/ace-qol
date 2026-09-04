@@ -187,6 +187,14 @@ check("an attack is NOT ours", shape(["attack", "d20Test", ""], { ability: "str"
 check("initiative is NEVER taken as an ability check",
   shape(["initiativeDialog", "abilityCheck", "d20Test", ""], { ability: "dex" }), null);
 
+// ⚠️ HIT DICE AND RECHARGE NEVER REACH THE GATE. Neither lists "d20Test", and
+// neither is a check: there is no advantage on either in either edition, so a
+// three-button pause would be three buttons meaning the same thing. They are
+// handled by their own hooks, which suppress dnd5e's card and post ACE's after
+// the roll — nothing is cancelled, so nothing dnd5e does with them can be lost.
+check("a hit die is not a check", shape(["hitDie", ""]), null);
+check("a recharge is not a check", shape(["recharge", ""]), null);
+
 check("a tool check is ours",
   shape(["tool", "abilityCheck", "d20Test", ""], { tool: "thief" }), { kind: "tool", key: "thief" });
 check("something with no shape at all is not ours", shape([""]), null);

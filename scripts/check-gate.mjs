@@ -54,7 +54,176 @@ export class CheckGate {
     });
     CheckGate._wrapInitiative();
     CheckGate._registerHitDice();
+    CheckGate._registerRecharge();
     console.debug(`${LOG} | online — every check and save a person clicks gets ACE's pause and ACE's card`);
+  }
+
+  /**
+   * Which of the three shapes is this, or null when it is not ours.
+   *
+   * ⚠️🔴 MATCHED WITHOUT CASE, BECAUSE dnd5e SPELLS THEM BOTH WAYS. A skill
+   * roll builds `["skill", "abilityCheck", "d20Test"]`, all lower camel. A
+   * direct ability check or saving throw builds `[name, "d20Test"]` where the
+   * name is "AbilityCheck" or "SavingThrow", capitalised. A case-sensitive
+   * match therefore caught skill checks and silently ignored every ability
+   * check and every saving throw in the game — the gate would have looked like
+   * it worked, because the one thing anybody tests first is a skill.
+   *
+   * Caught by the self-test before it shipped, which is the only reason this
+   * comment is not a bug report.
+   */
+  static _shapeOf(config) {
+    const names = new Set((config?.hookNames ?? []).map(n => String(n).toLowerCase()));
+    if (names.has("attack")) return null;                 // the attack pipeline owns it
+
+    // ⚠️🔴 THESE TWO MUST BE READ BEFORE "savingThrow", BECAUSE THEY ARE ONE.
+    //
+    // dnd5e builds both on top of an ordinary saving throw: `rollDeathSave` and
+    // `rollConcentration` each add their own hook name and then call
+    // `rollSavingThrow`, which appends "SavingThrow" and "d20Test". So a death
+    // save and a concentration check arrive here looking exactly like a plain
+    // save, and the generic branch below would take them.
+    //
+    // ⚠️ AND IT DID. Shipped in 0.13.0: concentration sets `config.ability` to
+    // a real ability, so the gate cancelled dnd5e's roll and re-ran it as an
+    // ordinary Constitution save — which rolls the right dice and then does
+    // NONE of the concentration bookkeeping, so a failed check would no longer
+    // have broken concentration. Death saves escaped only by luck: they set no
+    // ability at all, so `!shape.key` bailed for them. Luck is not a guard.
+    // ⚠️🔴 NEVER TAKE INITIATIVE HERE. `rollInitiativeDialog` lists
+    // "abilityCheck" and "d20Test" alongside its own name, so the generic
+    // branch below took it — and cancelling that build does not merely lose a
+    // card, it loses the ROLL: dnd5e checks `if (!rolls.length) return`, caches
+    // the roll it never got, and initiative silently does not happen. Shipped
+    // in 0.13.0 and live until now.
+    //
+    // Initiative gets ACE's pause a different way, by wrapping the method
+    // instead of cancelling the roll. See `_wrapInitiative`.
+    if (names.has("initiativedialog") || names.has("initiative")) return null;
+
+    if (names.has("deathsave")) return { kind: "death", key: "death" };
+    if (names.has("concentration") || config?.isConcentration === true) {
+      return { kind: "concentration", key: config.ability || "con" };
+    }
+
+    if (names.has("skill")) return { kind: "skill", key: config.skill };
+    if (names.has("tool")) return { kind: "tool", key: config.tool };
+    if (names.has("savingthrow")) return { kind: "save", key: config.ability };
+    if (names.has("abilitycheck")) return { kind: "ability", key: config.ability };
+    return null;
+  }
+
+  static _intercept(config, dialog, message) {
+    const shape = CheckGate._shapeOf(config);
+    if (!shape?.key) return undefined;
+
+    // An engine rolling for itself: no dialog AND no card asked for.
+    if (dialog?.configure === false && message?.create === false) return undefined;
+
+    const actor = config?.subject;
+    if (!actor?.name) return undefined;                   // not something we can card
+
+    // ⚠️ SAY WHO TOOK IT. A roll that vanishes from dnd5e and reappears as an
+    // ACE card is confusing if the console is silent about the hand-off.
+    console.log(`${LOG} | taking ${actor.name}'s ${shape.kind} "${shape.key}" — ACE will prompt and card it.`);
+
+    // Cancel dnd5e's roll and run ours. Deliberately not awaited: a preRoll hook
+    // is synchronous and returning a promise would be read as truthy, which
+    // would let dnd5e roll it as well and produce two of everything.
+    CheckGate.run(actor, shape.kind, shape.key, { dc: Number(config?.target) })
+      .catch(err => console.error(`${LOG} | ${shape.kind} "${shape.key}" failed for ${actor.name}:`, err));
+    return false;
+  }
+
+  /* ── The one card ────────────────────────────────────────────────────── */
+
+  /**
+   * Every die in a roll, drawn the ACE way.
+   *
+   * ⚠️ ONE COPY. This was written out three times over an afternoon — for a
+   * check, a hit die and a recharge — which is three places to fix the next time
+   * the die art moves, and three places for them to drift apart. The face images
+   * come from `DamageConstants.getDiceImagePath`, which already reads the
+   * configured colour, rather than a path spelled out again here.
+   *
+   * ⚠️ A DISCARDED DIE IS STILL SHOWN, struck through and dimmed at full width.
+   * On advantage two d20s are rolled and one is thrown away; hiding the loser
+   * hides the whole reason the pause existed. Full width because a struck number
+   * squeezed into a narrow column is how a 10 once read as a 1 over a 0.
+   */
+  static async _diceHtml(roll) {
+    const { DamageConstants } = await import("./damage-engine.mjs");
+    const out = [];
+    for (const term of (roll?.terms ?? [])) {
+      if (!term.faces) continue;
+      for (const r of (term.results ?? [])) {
+        const dropped = r.active === false || r.discarded === true;
+        const img = DamageConstants.getDiceImagePath(term.faces, r.result);
+        const icon = DamageConstants.DIE_ICONS?.[term.faces] ?? "fa-dice";
+        out.push(
+          `<span class="ace-qol-die" style="${dropped ? "opacity:0.45;" : ""}">`
+          + `<img class="ace-qol-die-img" src="${img}" alt="d${term.faces}"`
+          + ` onerror="this.style.display='none';this.nextElementSibling.style.display='inline'">`
+          + `<i class="fas ${icon} ace-qol-die-fallback" style="display:none"></i>`
+          + `<span class="ace-qol-die-result" style="font-size:18px;font-weight:700;`
+          + `${dropped ? "text-decoration:line-through;" : ""}">${r.result}</span>`
+          + `</span>`);
+      }
+    }
+    return out.join("");
+  }
+
+  /**
+   * The ACE card shell every roll in this file posts through.
+   *
+   * ⚠️ ROWS WRAP, NEVER SQUEEZE. Height is free; a row that cannot wrap destroys
+   * the text to fit it, which is how "necrotic" once became three broken pieces.
+   *
+   * ⚠️ AND IT WAITS FOR THE DICE. Nothing else is animating these rolls — ACE
+   * threw them — so the card is held until they stop and then fifty
+   * milliseconds. A card that beats its own dice is a spoiler.
+   *
+   * ⚠️ PUBLIC. The table needs to see the roll, and Foundry's core roll mode is
+   * a sticky global that must not get a vote in it.
+   */
+  static async _postCard({ actor, roll, title, subtitle = "", extra = "", flag = "checkCard", label = "" }) {
+    try {
+      if (roll) {
+        const { safeShowForRoll, awaitDiceSettle } = await import("./dsn-utils.mjs");
+        safeShowForRoll(roll, `${actor?.name ?? "?"} ${label || title}`);
+        await awaitDiceSettle();
+      }
+      const esc = foundry.utils.escapeHTML;
+      const dice = roll ? await CheckGate._diceHtml(roll) : "";
+      await ChatMessage.create({
+        speaker: ChatMessage.getSpeaker({ actor }),
+        rollMode: CONST.DICE_ROLL_MODES.PUBLIC,
+        // ⚠️ NO `rolls` ARRAY. The dice were thrown above; handing them to the
+        // message as well makes Dice So Nice animate the same roll a second
+        // time, over a card already showing the answer.
+        content:
+          `<div style="background:#141118;border:1px solid #c9a76b55;border-left:3px solid #c9a76b;`
+          + `border-radius:4px;padding:9px 11px;color:#e8dcc3;">`
+          + `<div style="font-size:18px;font-weight:700;line-height:1.3;">${esc(actor?.name ?? "?")}</div>`
+          + (subtitle
+              ? `<div style="font-size:16px;margin-top:2px;display:flex;flex-wrap:wrap;gap:8px;align-items:baseline;">`
+                + subtitle + `</div>`
+              : "")
+          + (dice || roll
+              ? `<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:8px;">`
+                + dice
+                + `<span style="font-size:30px;font-weight:700;margin-left:auto;">`
+                + `${esc(String(roll?.total ?? "?"))}</span></div>`
+              : "")
+          + extra
+          + `</div>`,
+        flags: { [MODULE_ID]: { [flag]: true } },
+      });
+    } catch (err) {
+      console.error(`${LOG} | could not post the card for ${label || title}:`, err);
+      ui.notifications?.warn(`${actor?.name ?? "That creature"} rolled `
+        + `${roll?.total ?? "?"}, but no card could be posted.`);
+    }
   }
 
   /* ── Initiative ──────────────────────────────────────────────────────── */
@@ -179,146 +348,107 @@ export class CheckGate {
     });
   }
 
+  /* ── Recharge ────────────────────────────────────────────────────────── */
+
+  /**
+   * A recharge test is a d6 against a number, and it gets no pause.
+   *
+   * ⚠️ NOTHING GIVES ADVANTAGE ON A RECHARGE in either edition, so the three
+   * buttons would all mean the same thing. dnd5e agrees and defaults that dialog
+   * off itself.
+   *
+   * ⚠️ AND IT IS NOT CANCELLED. `rollRecharge` is what restores the uses on a
+   * success, after the roll and independently of the card, so the card is
+   * switched off on the way in and ACE posts its own on the way out. Cancelling
+   * and re-driving would risk the one thing the roll is for.
+   *
+   * ⚠️ THE SUBJECT IS AN ITEM OR AN ACTIVITY, not an actor. A dragon's breath
+   * recharges on the ACTIVITY; a wand's on the item. Both carry `.actor`, which
+   * is what the card is spoken by, and reading `subject.actor` handles either
+   * without asking which it is.
+   */
+  static _registerRecharge() {
+    Hooks.on("dnd5e.preRollRechargeV2", (config, dialog, message) => {
+      try {
+        if (message?.create === false) return;      // an engine rolling for itself
+        message.create = false;                     // ACE posts instead
+      } catch (err) {
+        console.warn(`${LOG} | could not claim this recharge card:`, err);
+      }
+    });
+
+    Hooks.on("dnd5e.rollRechargeV2", (rolls, data) => {
+      try {
+        CheckGate._postRechargeCard(rolls, data)
+          .catch(err => console.error(`${LOG} | recharge card failed:`, err));
+      } catch (err) {
+        console.error(`${LOG} | recharge card threw:`, err);
+      }
+    });
+  }
+
+  static async _postRechargeCard(rolls, data) {
+    const subject = data?.subject;
+    const roll = (Array.isArray(rolls) ? rolls[0] : rolls) ?? null;
+    const actor = subject?.actor ?? subject?.item?.actor ?? null;
+    if (!subject || !roll || !actor) return;
+
+    const esc = foundry.utils.escapeHTML;
+    const target = Number(roll.options?.target);
+    // ⚠️ ASK THE ROLL, DO NOT COMPARE IT YOURSELF. `isSuccess` is what dnd5e uses
+    // one line later to decide whether the uses come back, so anything else here
+    // could disagree with what actually happened.
+    const made = roll.isSuccess === true;
+
+    const verdict = `<div style="margin-top:6px;font-size:16px;font-weight:700;`
+      + `color:${made ? "#7ee081" : "#e08b7e"};">`
+      + `${made ? "RECHARGED" : "NOT YET"}`
+      + (Number.isFinite(target) ? ` <span style="opacity:0.8;font-weight:400;">`
+          + `(needs ${esc(String(target))} or better)</span>` : "")
+      + `</div>`;
+
+    await CheckGate._postCard({
+      actor, roll, flag: "rechargeCard", label: "recharge",
+      title: "Recharge",
+      subtitle: `<span>${esc(subject.name ?? "Recharge")} — recharge</span>`,
+      extra: verdict,
+    });
+  }
+
   static async _postHitDieCard(rolls, data) {
     const actor = data?.subject;
     const roll = (Array.isArray(rolls) ? rolls[0] : rolls) ?? null;
     if (!actor || !roll) return;
 
-    const { safeShowForRoll, awaitDiceSettle } = await import("./dsn-utils.mjs");
-    safeShowForRoll(roll, `${actor.name} hit die`);
-    await awaitDiceSettle();
-
-    const { DamageConstants } = await import("./damage-engine.mjs");
-    const esc = foundry.utils.escapeHTML;
-
-    const dice = [];
-    for (const term of (roll.terms ?? [])) {
-      if (!term.faces) continue;
-      for (const r of (term.results ?? [])) {
-        const img = DamageConstants.getDiceImagePath(term.faces, r.result);
-        const icon = DamageConstants.DIE_ICONS?.[term.faces] ?? "fa-dice";
-        dice.push(
-          `<span class="ace-qol-die">`
-          + `<img class="ace-qol-die-img" src="${img}" alt="d${term.faces}"`
-          + ` onerror="this.style.display='none';this.nextElementSibling.style.display='inline'">`
-          + `<i class="fas ${icon} ace-qol-die-fallback" style="display:none"></i>`
-          + `<span class="ace-qol-die-result" style="font-size:18px;font-weight:700;">${r.result}</span>`
-          + `</span>`);
-      }
-    }
-
-    // ⚠️ THE HEALING IS THE POINT, AND IT IS NOT THE TOTAL. A hit die rolled at
-    // one hit point below full heals one, not eight, and dnd5e has already
-    // worked that out into the pending update. Printing the die total as
-    // "healed" would overstate it every time somebody tops up.
+    // ⚠️ THE HEALING IS THE POINT, AND IT IS NOT THE TOTAL. A hit die rolled one
+    // hit point below full heals one, not eight, and dnd5e has already worked
+    // that out into the pending update. Printing the die total as "healed" would
+    // overstate it every time somebody tops up.
     const hp = actor.system?.attributes?.hp ?? {};
     const newHp = Number(data?.updates?.actor?.["system.attributes.hp.value"]);
     const healed = Number.isFinite(newHp) ? Math.max(0, newHp - (Number(hp.value) || 0)) : null;
 
-    // Hit dice left AFTER this one. The spend is in the same pending update.
-    const spentAfter = Number(data?.updates?.class?.["system.hd.spent"]);
-    const left = Number.isFinite(spentAfter)
-      ? null                                    // per-class; the sheet shows it better than we can
-      : (Number.isFinite(Number(actor.system?.attributes?.hd?.value))
-          ? Math.max(0, Number(actor.system.attributes.hd.value) - 1) : null);
+    // Hit dice left AFTER this one. A class-based spend is shown better by the
+    // sheet than guessed at here, so that case simply says nothing.
+    const perClass = Number.isFinite(Number(data?.updates?.class?.["system.hd.spent"]));
+    const pool = Number(actor.system?.attributes?.hd?.value);
+    const left = (!perClass && Number.isFinite(pool)) ? Math.max(0, pool - 1) : null;
 
-    await ChatMessage.create({
-      speaker: ChatMessage.getSpeaker({ actor }),
-      rollMode: CONST.DICE_ROLL_MODES.PUBLIC,
-      content:
-        `<div style="background:#141118;border:1px solid #c9a76b55;border-left:3px solid #c9a76b;`
-        + `border-radius:4px;padding:9px 11px;color:#e8dcc3;">`
-        + `<div style="font-size:18px;font-weight:700;line-height:1.3;">${esc(actor.name)}</div>`
-        + `<div style="font-size:16px;margin-top:2px;">Hit die</div>`
-        + `<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:8px;">`
-        +   dice.join("")
-        +   `<span style="font-size:30px;font-weight:700;margin-left:auto;">${esc(String(roll.total ?? "?"))}</span>`
-        + `</div>`
-        + (healed === null ? ""
-            : `<div style="font-size:16px;margin-top:6px;color:#7ee081;font-weight:700;">`
-              + `Healed ${healed}${healed !== Number(roll.total) ? " (capped at full hit points)" : ""}</div>`)
+    const esc = foundry.utils.escapeHTML;
+    await CheckGate._postCard({
+      actor, roll, flag: "hitDieCard", label: "hit die",
+      title: "Hit die",
+      subtitle: `<span>Hit die</span>`,
+      extra:
+        (healed === null ? ""
+          : `<div style="font-size:16px;margin-top:6px;color:#7ee081;font-weight:700;">`
+            + `Healed ${esc(String(healed))}`
+            + (healed !== Number(roll.total) ? ` <span style="opacity:0.8;font-weight:400;">`
+                + `(capped at full hit points)</span>` : "")
+            + `</div>`)
         + (left === null ? ""
-            : `<div style="font-size:14px;opacity:0.85;margin-top:4px;">${left} hit dice left</div>`)
-        + `</div>`,
-      flags: { [MODULE_ID]: { hitDieCard: true } },
+          : `<div style="font-size:14px;opacity:0.85;margin-top:4px;">${esc(String(left))} hit dice left</div>`),
     });
-  }
-
-  /**
-   * Which of the three shapes is this, or null when it is not ours.
-   *
-   * ⚠️🔴 MATCHED WITHOUT CASE, BECAUSE dnd5e SPELLS THEM BOTH WAYS. A skill
-   * roll builds `["skill", "abilityCheck", "d20Test"]`, all lower camel. A
-   * direct ability check or saving throw builds `[name, "d20Test"]` where the
-   * name is "AbilityCheck" or "SavingThrow", capitalised. A case-sensitive
-   * match therefore caught skill checks and silently ignored every ability
-   * check and every saving throw in the game — the gate would have looked like
-   * it worked, because the one thing anybody tests first is a skill.
-   *
-   * Caught by the self-test before it shipped, which is the only reason this
-   * comment is not a bug report.
-   */
-  static _shapeOf(config) {
-    const names = new Set((config?.hookNames ?? []).map(n => String(n).toLowerCase()));
-    if (names.has("attack")) return null;                 // the attack pipeline owns it
-
-    // ⚠️🔴 THESE TWO MUST BE READ BEFORE "savingThrow", BECAUSE THEY ARE ONE.
-    //
-    // dnd5e builds both on top of an ordinary saving throw: `rollDeathSave` and
-    // `rollConcentration` each add their own hook name and then call
-    // `rollSavingThrow`, which appends "SavingThrow" and "d20Test". So a death
-    // save and a concentration check arrive here looking exactly like a plain
-    // save, and the generic branch below would take them.
-    //
-    // ⚠️ AND IT DID. Shipped in 0.13.0: concentration sets `config.ability` to
-    // a real ability, so the gate cancelled dnd5e's roll and re-ran it as an
-    // ordinary Constitution save — which rolls the right dice and then does
-    // NONE of the concentration bookkeeping, so a failed check would no longer
-    // have broken concentration. Death saves escaped only by luck: they set no
-    // ability at all, so `!shape.key` bailed for them. Luck is not a guard.
-    // ⚠️🔴 NEVER TAKE INITIATIVE HERE. `rollInitiativeDialog` lists
-    // "abilityCheck" and "d20Test" alongside its own name, so the generic
-    // branch below took it — and cancelling that build does not merely lose a
-    // card, it loses the ROLL: dnd5e checks `if (!rolls.length) return`, caches
-    // the roll it never got, and initiative silently does not happen. Shipped
-    // in 0.13.0 and live until now.
-    //
-    // Initiative gets ACE's pause a different way, by wrapping the method
-    // instead of cancelling the roll. See `_wrapInitiative`.
-    if (names.has("initiativedialog") || names.has("initiative")) return null;
-
-    if (names.has("deathsave")) return { kind: "death", key: "death" };
-    if (names.has("concentration") || config?.isConcentration === true) {
-      return { kind: "concentration", key: config.ability || "con" };
-    }
-
-    if (names.has("skill")) return { kind: "skill", key: config.skill };
-    if (names.has("tool")) return { kind: "tool", key: config.tool };
-    if (names.has("savingthrow")) return { kind: "save", key: config.ability };
-    if (names.has("abilitycheck")) return { kind: "ability", key: config.ability };
-    return null;
-  }
-
-  static _intercept(config, dialog, message) {
-    const shape = CheckGate._shapeOf(config);
-    if (!shape?.key) return undefined;
-
-    // An engine rolling for itself: no dialog AND no card asked for.
-    if (dialog?.configure === false && message?.create === false) return undefined;
-
-    const actor = config?.subject;
-    if (!actor?.name) return undefined;                   // not something we can card
-
-    // ⚠️ SAY WHO TOOK IT. A roll that vanishes from dnd5e and reappears as an
-    // ACE card is confusing if the console is silent about the hand-off.
-    console.log(`${LOG} | taking ${actor.name}'s ${shape.kind} "${shape.key}" — ACE will prompt and card it.`);
-
-    // Cancel dnd5e's roll and run ours. Deliberately not awaited: a preRoll hook
-    // is synchronous and returning a promise would be read as truthy, which
-    // would let dnd5e roll it as well and produce two of everything.
-    CheckGate.run(actor, shape.kind, shape.key, { dc: Number(config?.target) })
-      .catch(err => console.error(`${LOG} | ${shape.kind} "${shape.key}" failed for ${actor.name}:`, err));
-    return false;
   }
 
   /* ── Reading what ACE already knows ──────────────────────────────────── */
@@ -608,111 +738,51 @@ export class CheckGate {
    * Foundry's core roll mode is a sticky global and must not get a vote.
    */
   static async postCard(actor, read, choice, roll, dc = null) {
-    try {
-      // ⚠️🔴 WAIT ON THE DICE WE THREW, NOT ON A HOOK THAT WILL NEVER FIRE.
-      //
-      // This used to arm a watch first and then wait on it. That watch listens
-      // for `diceSoNiceRollComplete`, which fires for dice Dice So Nice shows
-      // from a CHAT MESSAGE — and this card creates no message until after the
-      // dice land, so the hook had nothing to fire from. The watch then sat out
-      // its entire twenty-second cap and the card arrived twenty seconds late.
-      // Johnny's console, 2026-09-04: rolled at 12:32:01.564, posted at
-      // 12:32:21. "Don't need a fucking timer on it."
-      //
-      // ⚠️ THE REAL SIGNAL WAS ALREADY IN HAND. `showForRoll` returns a promise
-      // that DSN resolves the moment the dice stop, `safeShowForRoll` keeps it,
-      // and the plain `awaitDiceSettle` waits on exactly that and then fifty
-      // milliseconds. As long as the dice need, never a beat longer, and never
-      // a guessed duration. The armed path is for rolls somebody ELSE throws.
-      const { safeShowForRoll, awaitDiceSettle } = await import("./dsn-utils.mjs");
-      safeShowForRoll(roll, `${actor.name} ${read.label}`);
-      await awaitDiceSettle();
+    const esc = foundry.utils.escapeHTML;
 
-      const { DamageConstants } = await import("./damage-engine.mjs");
-      const esc = foundry.utils.escapeHTML;
+    const badge = choice === "advantage"
+      ? `<span style="color:#7ee081;font-weight:700;font-size:14px;letter-spacing:0.5px;">ADVANTAGE</span>`
+      : choice === "disadvantage"
+      ? `<span style="color:#e08b7e;font-weight:700;font-size:14px;letter-spacing:0.5px;">DISADVANTAGE</span>`
+      : "";
 
-      const dice = [];
-      for (const term of (roll.terms ?? [])) {
-        if (!term.faces) continue;
-        for (const r of (term.results ?? [])) {
-          const dropped = r.active === false || r.discarded === true;
-          const img = DamageConstants.getDiceImagePath(term.faces, r.result);
-          const icon = DamageConstants.DIE_ICONS?.[term.faces] ?? "fa-dice";
-          dice.push(
-            `<span class="ace-qol-die" style="${dropped ? "opacity:0.45;" : ""}">`
-            + `<img class="ace-qol-die-img" src="${img}" alt="d${term.faces}"`
-            + ` onerror="this.style.display='none';this.nextElementSibling.style.display='inline'">`
-            + `<i class="fas ${icon} ace-qol-die-fallback" style="display:none"></i>`
-            + `<span class="ace-qol-die-result" style="font-size:18px;font-weight:700;`
-            + `${dropped ? "text-decoration:line-through;" : ""}">${r.result}</span>`
-            + `</span>`);
-        }
-      }
+    const mod = Number.isFinite(Number(read.modifier))
+      ? `<span style="opacity:0.8;">${Number(read.modifier) >= 0 ? "+" : ""}${Number(read.modifier)}</span>` : "";
 
-      const badge = choice === "advantage"
-        ? `<span style="color:#7ee081;font-weight:700;font-size:14px;letter-spacing:0.5px;">ADVANTAGE</span>`
-        : choice === "disadvantage"
-        ? `<span style="color:#e08b7e;font-weight:700;font-size:14px;letter-spacing:0.5px;">DISADVANTAGE</span>`
-        : "";
-
-      // Only a save has something to pass or fail against. A check has no DC
-      // until somebody sets one, and inventing a verdict for it would be a lie.
-      let verdict = "";
-      if (Number.isFinite(dc) && Number.isFinite(Number(roll.total))) {
-        const made = Number(roll.total) >= Number(dc);
-        verdict = `<span style="font-size:16px;font-weight:700;color:${made ? "#7ee081" : "#e08b7e"};">`
-          + `${made ? "SUCCESS" : "FAILURE"} vs DC ${esc(String(dc))}</span>`;
-      }
-
-      // ⚠️ A DEATH SAVE'S RESULT IS THE TALLY, NOT THE NUMBER. "17 versus DC 10"
-      // says nothing a table cares about; "two successes, one failure" is the
-      // whole tension of the moment. Read AFTER the roll, because
-      // `rollDeathSave` has already written the new count by the time we get
-      // here — reading it before would print the state one save out of date.
-      let tally = "";
-      if (read.kind === "death") {
-        const d = actor.system?.attributes?.death ?? {};
-        const succ = Math.max(0, Math.min(3, Number(d.success) || 0));
-        const fail = Math.max(0, Math.min(3, Number(d.failure) || 0));
-        const pips = (n) => "●".repeat(n) + "○".repeat(3 - n);
-        tally = `<div style="font-size:16px;margin-top:6px;display:flex;flex-wrap:wrap;gap:14px;">`
-          + `<span style="color:#7ee081;">Successes ${pips(succ)}</span>`
-          + `<span style="color:#e08b7e;">Failures ${pips(fail)}</span></div>`;
-      }
-
-      const why = read.reasons.length
-        ? `<div style="font-size:14px;opacity:0.85;margin-top:6px;line-height:1.35;">`
-          + `${esc(read.reasons.map(r => r.reason).join(" • "))}</div>`
-        : "";
-
-      const mod = Number.isFinite(Number(read.modifier))
-        ? `<span style="opacity:0.8;">${Number(read.modifier) >= 0 ? "+" : ""}${Number(read.modifier)}</span>` : "";
-
-      await ChatMessage.create({
-        speaker: ChatMessage.getSpeaker({ actor }),
-        rollMode: CONST.DICE_ROLL_MODES.PUBLIC,
-        // ⚠️ NO `rolls` ARRAY. The dice were thrown above; handing them to the
-        // message as well makes Dice So Nice animate the same roll a second
-        // time, after the card is already on screen showing the answer.
-        content:
-          `<div style="background:#141118;border:1px solid #c9a76b55;border-left:3px solid #c9a76b;`
-          + `border-radius:4px;padding:9px 11px;color:#e8dcc3;">`
-          + `<div style="font-size:18px;font-weight:700;line-height:1.3;">${esc(actor.name)}</div>`
-          + `<div style="font-size:16px;margin-top:2px;display:flex;flex-wrap:wrap;gap:8px;align-items:baseline;">`
-          +   `<span>${esc(read.label)} ${mod}</span>${badge}</div>`
-          + `<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:8px;">`
-          +   dice.join("")
-          +   `<span style="font-size:30px;font-weight:700;margin-left:auto;">${esc(String(roll.total ?? "?"))}</span>`
-          + `</div>`
-          + (verdict ? `<div style="margin-top:6px;">${verdict}</div>` : "")
-          + tally
-          + why
-          + `</div>`,
-        flags: { [MODULE_ID]: { checkCard: true } },
-      });
-    } catch (err) {
-      console.error(`${LOG} | could not post the card for ${read.label}:`, err);
-      ui.notifications?.warn(`${actor.name}'s ${read.label} rolled ${roll?.total ?? "?"}, but no card could be posted.`);
+    // Only a save has something to pass or fail against. A check has no DC until
+    // somebody sets one, and inventing a verdict for it would be a lie.
+    let verdict = "";
+    if (Number.isFinite(dc) && Number.isFinite(Number(roll?.total))) {
+      const made = Number(roll.total) >= Number(dc);
+      verdict = `<div style="margin-top:6px;"><span style="font-size:16px;font-weight:700;`
+        + `color:${made ? "#7ee081" : "#e08b7e"};">`
+        + `${made ? "SUCCESS" : "FAILURE"} vs DC ${esc(String(dc))}</span></div>`;
     }
+
+    // ⚠️ A DEATH SAVE'S RESULT IS THE TALLY, NOT THE NUMBER. "17 versus DC 10"
+    // says nothing a table cares about; two successes and one failure is the
+    // whole tension of the moment. Read AFTER the roll, because `rollDeathSave`
+    // has already written the new count by the time we get here.
+    let tally = "";
+    if (read.kind === "death") {
+      const d = actor.system?.attributes?.death ?? {};
+      const clamp = (n) => Math.max(0, Math.min(3, Number(n) || 0));
+      const pips = (n) => "●".repeat(n) + "○".repeat(3 - n);
+      tally = `<div style="font-size:16px;margin-top:6px;display:flex;flex-wrap:wrap;gap:14px;">`
+        + `<span style="color:#7ee081;">Successes ${pips(clamp(d.success))}</span>`
+        + `<span style="color:#e08b7e;">Failures ${pips(clamp(d.failure))}</span></div>`;
+    }
+
+    const why = read.reasons.length
+      ? `<div style="font-size:14px;opacity:0.85;margin-top:6px;line-height:1.35;">`
+        + `${esc(read.reasons.map(r => r.reason).join(" • "))}</div>`
+      : "";
+
+    await CheckGate._postCard({
+      actor, roll, flag: "checkCard", label: read.label,
+      title: read.label,
+      subtitle: `<span>${esc(read.label)} ${mod}</span>${badge}`,
+      extra: verdict + tally + why,
+    });
   }
 }
