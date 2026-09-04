@@ -255,7 +255,19 @@ export const SAVE_SPELLS = {
     //    Unconscious on the SECOND fail) is the next refinement; this ships the
     //    WIS save + Unconscious + concentration + wake-on-damage now.
     // ── 2014 PHB (legacy) ── NO save, 5d8-HP pool (byEdition override below).
-    shape: "multi-buff",
+    //
+    // ⚠️🔴 IT IS A 20 FOOT SPHERE. DRAW THE SPHERE. This said `multi-buff`,
+    // which popped a target picker and never put the area on the map at all —
+    // the same bug Colour Spray had until 2026-08-28, and the same fix.
+    //
+    // The picker was not only slower, it was WRONG about who could be caught: a
+    // GM could pick a creature standing well outside the sphere, and cover,
+    // elevation and the terrain under it had no area to test anybody against.
+    //
+    // ⚠️ THE SAVE ENGINE ALREADY DOES THE REST. It reads this entry's
+    // `effect.key` and applies it to whoever fails inside the template — its own
+    // log line calls that "the template-save hand-off". Data, not a new path.
+    shape: "template-save",
     range: 60,
     save: { ability: "wis" },   // 2024: per-target Wisdom save; only failures fall asleep
     countResolver: () => 999,
@@ -273,6 +285,10 @@ export const SAVE_SPELLS = {
         // the GM picked fell unconscious, so a 1st-level Sleep dropped a 40 HP
         // boss. 5d8, +2d8 per slot level above 1st, lowest current HP first,
         // undead unaffected. (Grok audit 2026-08-18.)
+        // ⚠️ 2014 IS A POOL, NOT A SAVE, so it takes the pool shape. Colour Spray
+        // proved this path: dnd5e places the area and area-pool.mjs applies the
+        // hit-point pool to whoever is standing in it.
+        shape: "template-pool",
         hpPool: { formula: "5d8", perLevel: "d8", baseLevel: 1, excludeTypes: ["undead"] },
         effect: { key: "sleep_unconscious", duration: { rounds: 10 } },  // 2014 = 1 min, NOT concentration
         flavorOnConfirm: "No save (2014 RAW): choose creatures (5d8 HP pool, lowest current HP first) to fall unconscious; any damage wakes them.",

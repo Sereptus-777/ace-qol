@@ -68,9 +68,20 @@ export const BUFF_SPELLS = {
   // Slow — multi-target WITH the Wisdom save the legacy auto-apply was MISSING (a
   // RAW fix: slow lets each target save to avoid it). Same both editions. 2026-06-25.
   "slow": {
-    shape: "multi-buff",
+    // ⚠️🔴 IT IS A 40 FOOT CUBE. DRAW THE CUBE. This said `multi-buff`, so
+    // ACE popped a picker and the cube never went on the map — a GM could pick a
+    // creature standing outside it, and nothing had an area to test cover,
+    // elevation or terrain against. Same bug and same fix as Colour Spray and
+    // Sleep.
+    //
+    // ⚠️ RAW SAYS "UP TO SIX CREATURES OF YOUR CHOICE" AND THAT CAP IS NO LONGER
+    // ENFORCED. With the area drawn, everyone inside it saves. A 40 foot cube
+    // rarely holds more than six, and the honest trade is a real area that
+    // occasionally catches a seventh over a picker that let the GM reach outside
+    // the cube entirely. `countResolver` stays as the record of what RAW says.
+    shape: "template-save",
     range: 120,
-    countResolver: () => 6,   // up to six creatures in a 40-ft cube
+    countResolver: () => 6,   // RAW cap, not enforced now the area is drawn
     effect: { key: "slow", duration: "concentration" },
     save: { ability: "wis", onSuccess: "negate" },
     picker: { allowSelf: false, excludeDead: true },
