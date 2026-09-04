@@ -480,12 +480,23 @@ export class EffectsPanel {
     for (const effect of actor.allApplicableEffects?.() ?? actor.effects ?? []) {
       if (effect.disabled) continue;
       if (!this._isPassive(effect)) continue;
-      // ACE's own bookkeeping marker. It exists so the rules engine can find
-      // what it applied; it is not a thing the GM needs a row for.
-      if (effect.flags?.["ace-qol"]?.auraApplied) continue;
-      // The feature that grants an aura the AURAS block is already describing.
-      if (shown.has(String(effect.name ?? "").toLowerCase().trim())) continue;
-      out.push(effect);
+      // ⚠️🔴 ONLY HIDE IT WHEN THE AURAS BLOCK IS ALREADY SAYING IT.
+      //
+      // This dropped EVERY aura marker unconditionally, and that was wrong for
+      // everyone except the paladin. The AURAS block lists what a creature
+      // PROJECTS, so on Firaxis the marker is a duplicate and on Ireena — who
+      // projects nothing and is merely standing in his aura — the marker was the
+      // only evidence she had it. Johnny, 2026-09-03: "Ireena only has
+      // Sharpshooter and Divine Order... nobody else has any effects panel
+      // except for Firaxis, so there's something broken there."
+      //
+      // He was right, and the aura was on her the whole time. Hiding the one row
+      // that proves a rule is live reads as the rule not being live, which is
+      // the same shape as every silent-refusal bug in this suite.
+      const name = String(effect.name ?? "").toLowerCase().trim();
+      if (!shown.has(name)) { out.push(effect); continue; }
+      // Named by the AURAS block above: the marker and the granting feature are
+      // both duplicates of a row that already carries the radius.
     }
     return out;
   }
