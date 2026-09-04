@@ -1703,12 +1703,30 @@ export class ActionBar {
         const { kind, key } = row.dataset;
         close();
         try {
+          // ⚠️🔴 ACE DOES NOT SHOW dnd5e's ROLL DIALOG. Johnny, 2026-09-04,
+          // seeing a "Wisdom (Perception) Check" box with ADVANTAGE / NORMAL /
+          // DISADVANTAGE buttons: "That's not ours. Why am I seeing that, and
+          // why would I ever see it?" It IS ours — these two lines opened it, by
+          // asking dnd5e to roll and never telling it to skip its own dialog.
+          //
+          // ⚠️ AND THE FIX WAS ALREADY WRITTEN, IN THIS CODEBASE, WITH A COMMENT
+          // EXPLAINING IT. `stealth-engine.mjs` passes `{configure:false}` and
+          // says in so many words that this is the 5.x spelling and that
+          // `fastForward` is the 4.x one that does nothing. Every saving throw in
+          // the suite does the same. These two callers were written without
+          // copying it, which is the whole of the bug: a pattern living in one
+          // file is a coincidence, not a fix.
+          //
+          // ⚠️ THE EVENT IS PASSED ON PURPOSE. dnd5e reads the advantage and
+          // disadvantage keybinds off it, so holding the modifier still works and
+          // he keeps the choice the dialog was offering — without a box in the
+          // way of every ordinary roll. Nothing here re-implements that.
           if (kind === "skill") {
             if (typeof actor.rollSkill !== "function") throw new Error("Actor#rollSkill is missing");
-            await actor.rollSkill({ skill: key });
+            await actor.rollSkill({ skill: key, event: ev }, { configure: false });
           } else {
             if (typeof actor.rollAbilityCheck !== "function") throw new Error("Actor#rollAbilityCheck is missing");
-            await actor.rollAbilityCheck({ ability: key });
+            await actor.rollAbilityCheck({ ability: key, event: ev }, { configure: false });
           }
         } catch (err) {
           console.error(`${LOG} | ${kind} check "${key}" failed for ${actor.name}:`, err);
