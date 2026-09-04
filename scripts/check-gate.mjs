@@ -72,6 +72,26 @@ export class CheckGate {
   static _shapeOf(config) {
     const names = new Set((config?.hookNames ?? []).map(n => String(n).toLowerCase()));
     if (names.has("attack")) return null;                 // the attack pipeline owns it
+
+    // ⚠️🔴 THESE TWO MUST BE READ BEFORE "savingThrow", BECAUSE THEY ARE ONE.
+    //
+    // dnd5e builds both on top of an ordinary saving throw: `rollDeathSave` and
+    // `rollConcentration` each add their own hook name and then call
+    // `rollSavingThrow`, which appends "SavingThrow" and "d20Test". So a death
+    // save and a concentration check arrive here looking exactly like a plain
+    // save, and the generic branch below would take them.
+    //
+    // ⚠️ AND IT DID. Shipped in 0.13.0: concentration sets `config.ability` to
+    // a real ability, so the gate cancelled dnd5e's roll and re-ran it as an
+    // ordinary Constitution save — which rolls the right dice and then does
+    // NONE of the concentration bookkeeping, so a failed check would no longer
+    // have broken concentration. Death saves escaped only by luck: they set no
+    // ability at all, so `!shape.key` bailed for them. Luck is not a guard.
+    if (names.has("deathsave")) return { kind: "death", key: "death" };
+    if (names.has("concentration") || config?.isConcentration === true) {
+      return { kind: "concentration", key: config.ability || "con" };
+    }
+
     if (names.has("skill")) return { kind: "skill", key: config.skill };
     if (names.has("tool")) return null;                   // no ACE card for tools yet
     if (names.has("savingthrow")) return { kind: "save", key: config.ability };
@@ -115,12 +135,18 @@ export class CheckGate {
   static modePathFor(kind, key) {
     if (kind === "skill") return `system.skills.${key}.roll.mode`;
     if (kind === "save")  return `system.abilities.${key}.save.roll.mode`;
+    // ⚠️ NOT AN ABILITY PATH. A death save belongs to nobody's Constitution and
+    // a concentration check keeps its own mode, so an effect granting advantage
+    // on CON saves does not automatically reach either. dnd5e models them as
+    // their own attributes and so does this.
+    if (kind === "death") return "system.attributes.death.roll.mode";
+    if (kind === "concentration") return "system.attributes.concentration.roll.mode";
     return `system.abilities.${key}.check.roll.mode`;
   }
 
   /** ACE's answer for this roll: the mode, its modifier, and what argued for it. */
   static read(actor, kind, key) {
-    const out = { mode: 0, reasons: [], modifier: null, label: key };
+    const out = { kind, mode: 0, reasons: [], modifier: null, label: key };
     try {
       if (kind === "skill") {
         const sk = actor.system?.skills?.[key];
@@ -133,6 +159,21 @@ export class CheckGate {
         out.modifier = Number.isFinite(Number(ab?.save?.value)) ? Number(ab.save.value)
                      : (Number.isFinite(Number(ab?.save)) ? Number(ab.save) : null);
         out.label = `${CONFIG.DND5E?.abilities?.[key]?.label ?? key} saving throw`;
+      } else if (kind === "death") {
+        const d = actor.system?.attributes?.death;
+        out.mode = Number(d?.roll?.mode ?? 0) || 0;
+        // ⚠️ NO MODIFIER SHOWN. A death save is a bare d20 for almost everybody;
+        // Diamond Soul adds proficiency and a bonus can be configured, and there
+        // is no single field that already totals them. Printing a number we had
+        // to assemble ourselves would be a second answer to what the roll is
+        // about to say for certain, so the card shows the dice and the total.
+        out.modifier = null;
+        out.label = "Death saving throw";
+      } else if (kind === "concentration") {
+        const c = actor.system?.attributes?.concentration;
+        out.mode = Number(c?.roll?.mode ?? 0) || 0;
+        out.modifier = null;                    // same reasoning as above
+        out.label = "Concentration";
       } else {
         const ab = actor.system?.abilities?.[key];
         out.mode = Number(ab?.check?.roll?.mode ?? 0) || 0;
@@ -180,7 +221,17 @@ export class CheckGate {
    * through the documented `dnd5e.postRollConfiguration` hook.
    */
   static async run(actor, kind, key, { dc = null } = {}) {
+    // ⚠️🔴 EACH GOES BACK THROUGH ITS OWN METHOD, NEVER A PLAIN SAVE.
+    // `rollDeathSave` is what increments the successes and failures, revives on
+    // a natural twenty, doubles a failure on a natural one and posts the
+    // stabilised-or-died line. `rollConcentration` is what actually breaks
+    // concentration when the check fails. All of that happens inside those
+    // methods, independently of whether a card is created — so suppressing the
+    // card costs nothing, and rolling an ordinary Constitution save instead
+    // would cost the lot.
     const fn = kind === "skill" ? "rollSkill"
+             : kind === "death" ? "rollDeathSave"
+             : kind === "concentration" ? "rollConcentration"
              : kind === "save" ? "rollSavingThrow" : "rollAbilityCheck";
     if (typeof actor[fn] !== "function") {
       console.error(`${LOG} | Actor#${fn} is missing on this dnd5e build — nothing rolled.`);
@@ -221,8 +272,14 @@ export class CheckGate {
     let rolls = null;
     Hooks.on("dnd5e.postRollConfiguration", force);
     try {
-      const cfg = kind === "skill" ? { skill: key } : { ability: key };
-      if (kind === "save" && Number.isFinite(dc)) cfg.target = dc;
+      const cfg = kind === "skill" ? { skill: key }
+                : (kind === "death" || kind === "concentration") ? {}
+                : { ability: key };
+      // ⚠️ CARRY THE DC BACK. A concentration check's DC is worked out by
+      // whatever triggered it — half the damage taken, minimum 10 — and lives on
+      // the config we just cancelled. Re-rolling without it would quietly reset
+      // every concentration check in the game to DC 10.
+      if (Number.isFinite(dc) && kind !== "skill") cfg.target = dc;
       // create:false so dnd5e posts nothing — ACE throws the dice and cards it.
       // These two flags are also what tells the gate above to let this through
       // rather than intercepting our own re-roll.
@@ -319,6 +376,22 @@ export class CheckGate {
           + `${made ? "SUCCESS" : "FAILURE"} vs DC ${esc(String(dc))}</span>`;
       }
 
+      // ⚠️ A DEATH SAVE'S RESULT IS THE TALLY, NOT THE NUMBER. "17 versus DC 10"
+      // says nothing a table cares about; "two successes, one failure" is the
+      // whole tension of the moment. Read AFTER the roll, because
+      // `rollDeathSave` has already written the new count by the time we get
+      // here — reading it before would print the state one save out of date.
+      let tally = "";
+      if (read.kind === "death") {
+        const d = actor.system?.attributes?.death ?? {};
+        const succ = Math.max(0, Math.min(3, Number(d.success) || 0));
+        const fail = Math.max(0, Math.min(3, Number(d.failure) || 0));
+        const pips = (n) => "●".repeat(n) + "○".repeat(3 - n);
+        tally = `<div style="font-size:16px;margin-top:6px;display:flex;flex-wrap:wrap;gap:14px;">`
+          + `<span style="color:#7ee081;">Successes ${pips(succ)}</span>`
+          + `<span style="color:#e08b7e;">Failures ${pips(fail)}</span></div>`;
+      }
+
       const why = read.reasons.length
         ? `<div style="font-size:14px;opacity:0.85;margin-top:6px;line-height:1.35;">`
           + `${esc(read.reasons.map(r => r.reason).join(" • "))}</div>`
@@ -344,6 +417,7 @@ export class CheckGate {
           +   `<span style="font-size:30px;font-weight:700;margin-left:auto;">${esc(String(roll.total ?? "?"))}</span>`
           + `</div>`
           + (verdict ? `<div style="margin-top:6px;">${verdict}</div>` : "")
+          + tally
           + why
           + `</div>`,
         flags: { [MODULE_ID]: { checkCard: true } },

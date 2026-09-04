@@ -116,7 +116,7 @@ check("advantage is read as advantage",
       { key: "system.skills.prc.roll.mode", value: "1" }] }],
     system: { skills: { prc: { roll: { mode: 1 }, ability: "wis" } }, abilities: { wis: {} } } },
     "skill", "prc"),
-  { mode: 1, reasons: [{ reason: "Guidance-ish: advantage" }], modifier: null, label: "Perception check" });
+  { kind: "skill", mode: 1, reasons: [{ reason: "Guidance-ish: advantage" }], modifier: null, label: "Perception check" });
 
 console.log("\nWHAT THE GATE TAKES, AND WHAT IT LEAVES ALONE");
 const shape = (hookNames, extra = {}) => CheckGate._shapeOf({ hookNames, ...extra });
@@ -131,6 +131,24 @@ check("a saving throw is ours",
 check("an attack is NOT ours", shape(["attack", "d20Test", ""], { ability: "str" }), null);
 check("a tool check is not ours yet", shape(["tool", "abilityCheck", "d20Test", ""]), null);
 check("something with no shape at all is not ours", shape([""]), null);
+
+// ⚠️🔴 THE ONE THAT SHIPPED BROKEN IN 0.13.0. dnd5e builds both of these on top
+// of an ordinary saving throw, so they arrive carrying "SavingThrow" and
+// "d20Test" and the generic branch took them. A concentration check re-rolled
+// as a plain Constitution save rolls the right dice and then does NONE of the
+// bookkeeping — a failure would no longer break concentration.
+check("a concentration check is its own thing, not a CON save",
+  shape(["concentration", "SavingThrow", "d20Test", ""], { ability: "con", isConcentration: true }),
+  { kind: "concentration", key: "con" });
+check("recognised by the flag alone if the hook name is missing",
+  shape(["SavingThrow", "d20Test", ""], { ability: "con", isConcentration: true }),
+  { kind: "concentration", key: "con" });
+// ⚠️ DEATH SAVES ESCAPED THE SAME BUG ONLY BY LUCK: they carry no ability, so
+// the empty-key bail caught them. Luck is not a guard.
+check("a death save is its own thing",
+  shape(["deathSave", "SavingThrow", "d20Test", ""], {}), { kind: "death", key: "death" });
+check("an ordinary save is still an ordinary save",
+  shape(["SavingThrow", "d20Test", ""], { ability: "wis" }), { kind: "save", key: "wis" });
 
 console.log("\nAN ENGINE ROLLING FOR ITSELF PASSES STRAIGHT THROUGH");
 const cfg = { hookNames: ["skill", "abilityCheck", "d20Test", ""], skill: "prc",
@@ -155,9 +173,29 @@ check("an ability check uses the check mode", CheckGate.modePathFor("ability", "
 const brave = { name: "Ireena", effects: [{ name: "Aura of Protection", disabled: false,
   changes: [{ key: "system.abilities.dex.save.roll.mode", value: "1" }] }],
   system: { abilities: { dex: { save: { roll: { mode: 1 }, value: 7 } } } } };
+check("a death save keeps its own mode, not Constitution's",
+  CheckGate.modePathFor("death", "death"), "system.attributes.death.roll.mode");
+check("so does concentration",
+  CheckGate.modePathFor("concentration", "con"), "system.attributes.concentration.roll.mode");
+const dying = { name: "Jeth",
+  system: { attributes: { death: { roll: { mode: -1 }, success: 1, failure: 2 } } },
+  effects: [{ name: "Broken ribs", disabled: false,
+    changes: [{ key: "system.attributes.death.roll.mode", value: "-1" }] }] };
+check("a death save reads its own mode and names its source",
+  CheckGate.read(dying, "death", "death"),
+  { kind: "death", mode: -1, reasons: [{ reason: "Broken ribs: disadvantage" }],
+    modifier: null, label: "Death saving throw" });
+// ⚠️ AN EFFECT ON CONSTITUTION SAVES MUST NOT LEAK INTO EITHER. dnd5e models
+// them as separate attributes, and they are separate rules at the table.
+check("a CON save effect does not reach a death save",
+  CheckGate.read({ system: { attributes: { death: { roll: { mode: 0 } } } },
+    effects: [{ name: "Bless-ish", disabled: false,
+      changes: [{ key: "system.abilities.con.save.roll.mode", value: "1" }] }] },
+    "death", "death").reasons, []);
+
 check("a save reads its own mode and names its source",
   CheckGate.read(brave, "save", "dex"),
-  { mode: 1, reasons: [{ reason: "Aura of Protection: advantage" }], modifier: 7,
+  { kind: "save", mode: 1, reasons: [{ reason: "Aura of Protection: advantage" }], modifier: 7,
     label: "Dexterity saving throw" });
 
 console.log("");
