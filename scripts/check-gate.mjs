@@ -93,7 +93,7 @@ export class CheckGate {
     }
 
     if (names.has("skill")) return { kind: "skill", key: config.skill };
-    if (names.has("tool")) return null;                   // no ACE card for tools yet
+    if (names.has("tool")) return { kind: "tool", key: config.tool };
     if (names.has("savingthrow")) return { kind: "save", key: config.ability };
     if (names.has("abilitycheck")) return { kind: "ability", key: config.ability };
     return null;
@@ -134,6 +134,7 @@ export class CheckGate {
    */
   static modePathFor(kind, key) {
     if (kind === "skill") return `system.skills.${key}.roll.mode`;
+    if (kind === "tool")  return `system.tools.${key}.roll.mode`;
     if (kind === "save")  return `system.abilities.${key}.save.roll.mode`;
     // ⚠️ NOT AN ABILITY PATH. A death save belongs to nobody's Constitution and
     // a concentration check keeps its own mode, so an effect granting advantage
@@ -144,15 +145,66 @@ export class CheckGate {
     return `system.abilities.${key}.check.roll.mode`;
   }
 
+  /**
+   * Which ability a skill or a tool is rolled against.
+   *
+   * A tool's default lives in CONFIG; a character can override it on the sheet,
+   * and dnd5e reads the override first.
+   */
+  static abilityFor(actor, kind, key) {
+    try {
+      if (kind === "skill") {
+        return actor.system?.skills?.[key]?.ability ?? CONFIG.DND5E?.skills?.[key]?.ability ?? null;
+      }
+      if (kind === "tool") {
+        return actor.system?.tools?.[key]?.ability ?? CONFIG.DND5E?.tools?.[key]?.ability ?? null;
+      }
+    } catch (_) { /* no ability known */ }
+    return null;
+  }
+
+  /**
+   * Combine several advantage modes the way dnd5e does.
+   *
+   * ⚠️🔴 A SKILL CHECK READS TWO FIELDS, AND I WAS READING ONE. dnd5e resolves a
+   * skill or tool check with `AdvantageModeField.combineFields` over BOTH the
+   * ability's check mode and the skill's or tool's own mode. Shipped in 0.13.0
+   * reading only the second, so a creature with disadvantage on Wisdom CHECKS —
+   * exhaustion, most obviously — was offered NORMAL for Perception while dnd5e
+   * was about to roll it at disadvantage. The prompt would have been confidently
+   * wrong, which is worse than absent.
+   *
+   * ⚠️ AND THEY CANCEL. dnd5e's resolveMode is `sign(advantages) -
+   * sign(disadvantages)`, so any advantage together with any disadvantage is a
+   * straight roll, however many of each. Ten sources of disadvantage and one of
+   * advantage is normal, exactly as at the table.
+   *
+   * An ability check or a saving throw reads a SINGLE field and is not combined
+   * with anything, which is why only skills and tools come through here.
+   */
+  static combineModes(modes) {
+    let adv = false, dis = false;
+    for (const m of modes) {
+      const n = Number(m) || 0;
+      if (n > 0) adv = true;
+      else if (n < 0) dis = true;
+    }
+    return (adv ? 1 : 0) - (dis ? 1 : 0);
+  }
+
   /** ACE's answer for this roll: the mode, its modifier, and what argued for it. */
   static read(actor, kind, key) {
     const out = { kind, mode: 0, reasons: [], modifier: null, label: key };
     try {
-      if (kind === "skill") {
-        const sk = actor.system?.skills?.[key];
-        out.mode = Number(sk?.roll?.mode ?? 0) || 0;
-        out.modifier = Number.isFinite(Number(sk?.total)) ? Number(sk.total) : null;
-        out.label = `${CONFIG.DND5E?.skills?.[key]?.label ?? key} check`;
+      if (kind === "skill" || kind === "tool") {
+        const own = kind === "skill" ? actor.system?.skills?.[key] : actor.system?.tools?.[key];
+        const ability = CheckGate.abilityFor(actor, kind, key);
+        const abMode = ability ? actor.system?.abilities?.[ability]?.check?.roll?.mode : 0;
+        out.mode = CheckGate.combineModes([own?.roll?.mode, abMode]);
+        out.modifier = Number.isFinite(Number(own?.total)) ? Number(own.total) : null;
+        out.label = kind === "skill"
+          ? `${CONFIG.DND5E?.skills?.[key]?.label ?? key} check`
+          : `${CheckGate._toolLabel(key)} check`;
       } else if (kind === "save") {
         const ab = actor.system?.abilities?.[key];
         out.mode = Number(ab?.save?.roll?.mode ?? 0) || 0;
@@ -188,8 +240,8 @@ export class CheckGate {
     // ability check, so an effect on Wisdom checks reaches Perception, and
     // reading only the skill path would show a suggestion with no reason.
     const wanted = new Set([CheckGate.modePathFor(kind, key)]);
-    if (kind === "skill") {
-      const ability = actor.system?.skills?.[key]?.ability ?? CONFIG.DND5E?.skills?.[key]?.ability;
+    if (kind === "skill" || kind === "tool") {
+      const ability = CheckGate.abilityFor(actor, kind, key);
       if (ability) wanted.add(`system.abilities.${ability}.check.roll.mode`);
     }
     try {
@@ -204,6 +256,23 @@ export class CheckGate {
       }
     } catch (_) { /* reasons are a courtesy; the mode still stands */ }
     return out;
+  }
+
+  /**
+   * A tool's name for the prompt and the card.
+   *
+   * ⚠️ TOOLS ARE NOT LABELLED IN CONFIG THE WAY SKILLS ARE. `CONFIG.DND5E.tools`
+   * maps an id to its ability and a compendium item, and the readable name comes
+   * out of the trait system. That helper is asked for it first; the id is the
+   * fallback, so the worst case is a card that says "thief" rather than one that
+   * says undefined.
+   */
+  static _toolLabel(key) {
+    try {
+      const label = globalThis.dnd5e?.documents?.Trait?.keyLabel?.(key, { trait: "tool" });
+      if (label) return label;
+    } catch (_) { /* fall through to the id */ }
+    return CONFIG.DND5E?.tools?.[key]?.label ?? String(key);
   }
 
   /* ── The roll ────────────────────────────────────────────────────────── */
@@ -230,6 +299,7 @@ export class CheckGate {
     // card costs nothing, and rolling an ordinary Constitution save instead
     // would cost the lot.
     const fn = kind === "skill" ? "rollSkill"
+             : kind === "tool" ? "rollToolCheck"
              : kind === "death" ? "rollDeathSave"
              : kind === "concentration" ? "rollConcentration"
              : kind === "save" ? "rollSavingThrow" : "rollAbilityCheck";
@@ -273,13 +343,14 @@ export class CheckGate {
     Hooks.on("dnd5e.postRollConfiguration", force);
     try {
       const cfg = kind === "skill" ? { skill: key }
+                : kind === "tool" ? { tool: key }
                 : (kind === "death" || kind === "concentration") ? {}
                 : { ability: key };
       // ⚠️ CARRY THE DC BACK. A concentration check's DC is worked out by
       // whatever triggered it — half the damage taken, minimum 10 — and lives on
       // the config we just cancelled. Re-rolling without it would quietly reset
       // every concentration check in the game to DC 10.
-      if (Number.isFinite(dc) && kind !== "skill") cfg.target = dc;
+      if (Number.isFinite(dc) && kind !== "skill" && kind !== "tool") cfg.target = dc;
       // create:false so dnd5e posts nothing — ACE throws the dice and cards it.
       // These two flags are also what tells the gate above to let this through
       // rather than intercepting our own re-roll.

@@ -82,6 +82,56 @@ check("and is labelled as an ability check",
 check("skills use the skill path", ActionBar._modePathFor("skill", "prc"), "system.skills.prc.roll.mode");
 check("abilities use the check path", ActionBar._modePathFor("ability", "wis"), "system.abilities.wis.check.roll.mode");
 
+console.log("\nA SKILL OR TOOL COMBINES TWO MODES, THE WAY dnd5e DOES");
+// ⚠️🔴 SHIPPED READING ONLY ONE IN 0.13.0. dnd5e resolves a skill or tool check
+// over BOTH the ability's check mode and the skill's own, so a creature with
+// disadvantage on Wisdom checks was being offered NORMAL for Perception while
+// dnd5e was about to roll it at disadvantage. A confidently wrong prompt is
+// worse than no prompt.
+check("disadvantage from the ABILITY alone still shows",
+  CheckGate.read({ system: {
+      skills: { prc: { roll: { mode: 0 }, total: 5, ability: "wis" } },
+      abilities: { wis: { check: { roll: { mode: -1 } } } } },
+    effects: [] }, "skill", "prc").mode, -1);
+check("disadvantage from the SKILL alone still shows",
+  CheckGate.read({ system: {
+      skills: { prc: { roll: { mode: -1 }, total: 5, ability: "wis" } },
+      abilities: { wis: { check: { roll: { mode: 0 } } } } },
+    effects: [] }, "skill", "prc").mode, -1);
+// ⚠️ AND THEY CANCEL. dnd5e's resolveMode is sign(adv) - sign(dis), so one of
+// each is a straight roll however many sources there are.
+check("one of each cancels to a straight roll",
+  CheckGate.read({ system: {
+      skills: { prc: { roll: { mode: 1 }, total: 5, ability: "wis" } },
+      abilities: { wis: { check: { roll: { mode: -1 } } } } },
+    effects: [] }, "skill", "prc").mode, 0);
+check("combineModes: many disadvantages and one advantage is normal",
+  CheckGate.combineModes([-1, -1, -1, 1]), 0);
+check("combineModes: nothing is normal", CheckGate.combineModes([]), 0);
+check("combineModes: junk is ignored", CheckGate.combineModes(["x", null, undefined]), 0);
+// ⚠️ A SAVE READS ONE FIELD AND IS NOT COMBINED. Proven from the system source:
+// an ability check and a saving throw read ability[type].roll.mode alone.
+check("a save is NOT combined with the ability's CHECK mode",
+  CheckGate.read({ system: { abilities: { dex: {
+      save: { roll: { mode: 0 }, value: 3 }, check: { roll: { mode: -1 } } } } },
+    effects: [] }, "save", "dex").mode, 0);
+check("a tool reads its own mode and its ability's",
+  CheckGate.read({ system: {
+      tools: { thief: { roll: { mode: 0 }, total: 7, ability: "dex" } },
+      abilities: { dex: { check: { roll: { mode: -1 } } } } },
+    effects: [] }, "tool", "thief").mode, -1);
+check("a tool with nothing on it is normal",
+  CheckGate.read({ system: { tools: { thief: { roll: { mode: 0 }, total: 7, ability: "dex" } },
+      abilities: { dex: { check: { roll: { mode: 0 } } } } }, effects: [] },
+    "tool", "thief").mode, 0);
+check("tools use the tool path", CheckGate.modePathFor("tool", "thief"), "system.tools.thief.roll.mode");
+check("a tool names the effect on its ability",
+  CheckGate.read({ system: { tools: { thief: { roll: { mode: 0 }, ability: "dex" } },
+      abilities: { dex: { check: { roll: { mode: -1 } } } } },
+    effects: [{ name: "Slippery gloves", disabled: false,
+      changes: [{ key: "system.abilities.dex.check.roll.mode", value: "-1" }] }] },
+    "tool", "thief").reasons, [{ reason: "Slippery gloves: disadvantage" }]);
+
 console.log("\nAN EFFECT ON THE ABILITY REACHES ITS SKILLS");
 // ⚠️ A SKILL CHECK IS ALSO AN ABILITY CHECK. Reading only the skill path would
 // show "ACE suggests disadvantage" with nothing beside it to explain why.
@@ -129,7 +179,8 @@ check("a saving throw is ours",
 // ⚠️ THE ATTACK PIPELINE ALREADY OWNS ATTACKS. Two owners of one roll is
 // the bug this whole file exists to avoid.
 check("an attack is NOT ours", shape(["attack", "d20Test", ""], { ability: "str" }), null);
-check("a tool check is not ours yet", shape(["tool", "abilityCheck", "d20Test", ""]), null);
+check("a tool check is ours",
+  shape(["tool", "abilityCheck", "d20Test", ""], { tool: "thief" }), { kind: "tool", key: "thief" });
 check("something with no shape at all is not ours", shape([""]), null);
 
 // ⚠️🔴 THE ONE THAT SHIPPED BROKEN IN 0.13.0. dnd5e builds both of these on top
