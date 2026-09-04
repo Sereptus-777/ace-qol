@@ -37,6 +37,14 @@
 //     stampInside: ["deafened"],  // conditions STAMPED on tokens while inside
 //                                 // (applied on entry, removed on exit/region
 //                                 // delete; v1 center-based containment)
+//     disadvantage: { skills: ["prc"] },
+//                                 // makes a check HARDER without inflicting a
+//                                 // condition. Use this whenever the text says
+//                                 // "disadvantage on X" — reaching for the
+//                                 // nearest CONDITION instead is how a storm
+//                                 // that imposes disadvantage on Perception
+//                                 // ended up DEAFENING everyone in it, which
+//                                 // auto-fails hearing checks outright.
 //   },
 //   byEdition: { "2014": {...}, "2024": {...} },  // shallow overrides when the
 //                                 // editions genuinely differ (top level = shared)
@@ -340,10 +348,22 @@ export const SPELL_RULES = {
       silence: false,          // NOT silence — sound exists, it's just drowned out
       difficultTerrain: 2,     // slippery ground + debris
       light: null,
-      stampInside: ["deafened"],
+      // ⚠️🔴 NOT DEAFENED. This stamped the deafened condition, and deafened in
+      // 5e is "can't hear and AUTOMATICALLY FAILS any ability check that
+      // requires hearing" — far stronger than what the staff actually does.
+      //
+      // The item's own words: "The winds, lightning strikes and heavy rain make
+      // it hard for creatures to see or hear, imposing disadvantage on any
+      // perception checks made while within the storm." Disadvantage, not an
+      // auto-fail, and on Perception as a whole rather than on hearing alone.
+      //
+      // ⚠️ AND IT IS THE ITEM THAT DECIDES. The rules text on the thing being
+      // used outranks whatever a table entry once approximated.
+      stampInside: null,
+      disadvantage: { skills: ["prc"] },
     },
     durationSeconds: 60,   // 1 minute, no concentration — expires on its own
-    notes: "Stormforger staff, 9 charges, 1 minute, 50-ft radius centred on the wielder. The 8d6 lightning DEX save is the item's save activity. Space owns: difficult terrain + light obscurement (disadvantage on sight Perception) + deafened while inside (howling wind/rain).",
+    notes: "Stormforger staff, 9 charges, 1 minute, 50-ft radius centred on the wielder. The 8d6 lightning DEX save is the item's save activity. Space owns: difficult terrain + light obscurement + disadvantage on Perception checks while inside, exactly as the item's text reads (it does NOT deafen).",
   },
 };
 
@@ -393,6 +413,20 @@ export function validateSpellRuleEntry(name, entry) {
     }
     if (s.light != null && (s.light.mode !== "override" || !(s.light.level >= 0 && s.light.level <= 1)))
       problems.push(`${name}: space.light must be { mode: "override", level: 0..1 } or null`);
+    if (s.disadvantage != null) {
+      const sk = s.disadvantage.skills;
+      if (!Array.isArray(sk) || !sk.length)
+        problems.push(`${name}: space.disadvantage needs { skills: [...] } or null`);
+      else for (const k of sk) {
+        // ⚠️ CHECKED AGAINST THE SYSTEM WHEN THE SYSTEM IS THERE. A typo'd
+        // skill key writes an active effect nothing reads, which looks exactly
+        // like a working feature. Skipped silently before CONFIG.DND5E exists
+        // rather than warning falsely at boot; `_hinder` checks again at the
+        // moment it matters.
+        const known = globalThis.CONFIG?.DND5E?.skills;
+        if (known && !known[k]) problems.push(`${name}: space.disadvantage.skills has unknown skill "${k}"`);
+      }
+    }
   }
   if (entry.expectedArea && (!entry.expectedArea.type || !(Number(entry.expectedArea.size) > 0)))
     problems.push(`${name}: expectedArea needs { type, size>0 }`);

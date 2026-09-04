@@ -149,7 +149,13 @@ export class SpaceEffects {
 
     Hooks.on("deleteRegion", (regionDoc) => {
       if (game.users?.activeGM !== game.user) return;
-      if (!regionDoc?.getFlag?.(MODULE_ID, "space")?.stampInside) return;
+      // ⚠️🔴 EVERY KIND OF MARK, NOT JUST THE FIRST ONE WRITTEN. This tested
+      // `stampInside` alone, so the day a space started imposing disadvantage
+      // instead of a condition, its marks would have survived the storm and
+      // stayed on every creature permanently. A new field added beside an old
+      // gate that still reads the old field is the same bug every time.
+      const sp = regionDoc?.getFlag?.(MODULE_ID, "space");
+      if (!sp?.stampInside?.length && !sp?.disadvantage) return;
       const scene = regionDoc.parent ?? canvas?.scene;
       for (const tokDoc of (scene?.tokens ?? [])) {
         const tok = tokDoc.object;
@@ -398,6 +404,8 @@ export class SpaceEffects {
         for (const cond of (space.stampInside ?? [])) {
           SpaceEffects._stamp(tok, region, cond).catch(() => {});
         }
+        // A space can also make something HARDER without inflicting a condition.
+        if (space.disadvantage) SpaceEffects._hinder(tok, region, space.disadvantage).catch(() => {});
       }
       for (const regionId of left) {
         SpaceEffects._unstamp(tok, regionId).catch(() => {});
@@ -429,6 +437,10 @@ export class SpaceEffects {
         }
         if (space.silence) bits.push("in SILENCE — no verbal casting");
         if (space.stampInside?.length) bits.push(`${space.stampInside.join(" + ").toUpperCase()} while inside`);
+        if (space.disadvantage?.skills?.length) {
+          bits.push(`DISADVANTAGE on ${space.disadvantage.skills
+            .map(k => CONFIG.DND5E?.skills?.[k]?.label ?? k).join(" and ")} checks while inside`);
+        }
         lines.push(`<b>${foundry.utils.escapeHTML(tok.name)}</b> entered <b>${foundry.utils.escapeHTML(region.name)}</b>: ${bits.join("; ")}.`);
       }
       if (left.length && !entered.length) {
@@ -580,6 +592,10 @@ export class SpaceEffects {
             difficultTerrain: terrainLive ? Number(space.difficultTerrain) : null,
             light: space.light ?? null,
             stampInside: Array.isArray(space.stampInside) && space.stampInside.length ? space.stampInside : null,
+            // ⚠️ EXPLICIT, LIKE EVERY FIELD HERE. A value added to the table and
+            // not added to this list is dropped in transit: the entry is right,
+            // the reader is right, and the value never arrives.
+            disadvantage: space.disadvantage ?? null,
             casterActorId: item.actor?.id ?? null,
           },
         },
@@ -909,6 +925,71 @@ export class SpaceEffects {
       console.log(`${TAG} stamped ${id} on ${token.name} (inside ${region.name})`);
     } catch (err) {
       console.warn(`${TAG} stamp failed (non-fatal):`, err);
+    }
+  }
+
+  /**
+   * Make something HARDER while inside, without inflicting a condition.
+   *
+   * ⚠️🔴 WHY THIS IS NOT JUST ANOTHER STAMP. Thunderstorm of Misery stamped
+   * `deafened` to model "hard to hear", and deafened is a much bigger hammer
+   * than the staff swings: RAW it auto-fails every check that needs hearing.
+   * The item says disadvantage on Perception. There was no way to express that,
+   * so the nearest condition was used instead, and the nearest condition was
+   * wrong.
+   *
+   * ⚠️ THE SYSTEM'S OWN FIELD, NOT A MADE-UP FLAG. dnd5e 5.x models this as
+   * `system.skills.<key>.roll.mode`, where -1 is disadvantage, and `AdvantageModeField`
+   * counts SOURCES rather than overwriting: mode ADD registers one more source,
+   * so this stacks correctly with anything else and unwinds correctly when the
+   * storm lifts. Passive Perception drops by 5 on its own, because the system
+   * computes the passive score from that same mode. Nothing here re-implements
+   * a rule the system already has.
+   *
+   * ⚠️ AND IT CARRIES THE SAME `spaceStamp` FLAG as a condition stamp, so
+   * `_unstamp` removes it on the way out with no second cleanup path to keep in
+   * step.
+   */
+  static async _hinder(token, region, spec) {
+    try {
+      const actor = token?.actor;
+      if (!actor || !spec) return;
+
+      // Already marked by THIS region? (re-entry within the same region)
+      if (actor.effects.some(e => e.getFlag?.(MODULE_ID, "spaceHinder") === region.id)) return;
+
+      const changes = [];
+      const named = [];
+      for (const key of (spec.skills ?? [])) {
+        const id = String(key).toLowerCase();
+        // ⚠️ A TYPO MUST NOT BE SILENT. An unknown skill key writes a change
+        // nothing reads, which looks exactly like a working feature.
+        if (!CONFIG.DND5E?.skills?.[id]) {
+          console.warn(`${TAG} "${region.name}" wants disadvantage on skill "${id}", `
+            + `which this system does not have. Skipping it. Known keys: `
+            + Object.keys(CONFIG.DND5E?.skills ?? {}).join(", "));
+          continue;
+        }
+        changes.push({
+          key: `system.skills.${id}.roll.mode`,
+          mode: CONST.ACTIVE_EFFECT_MODES.ADD,
+          value: "-1",
+          priority: 20,
+        });
+        named.push(CONFIG.DND5E.skills[id].label ?? id);
+      }
+      if (!changes.length) return;
+
+      await actor.createEmbeddedDocuments("ActiveEffect", [{
+        name: `${named.join(" + ")} disadvantage (${region.name})`,
+        img: "icons/svg/downgrade.svg",
+        changes,
+        flags: { [MODULE_ID]: { spaceStamp: region.id, spaceHinder: region.id } },
+      }]);
+      console.log(`${TAG} ${token.name} has disadvantage on ${named.join(" and ")} `
+        + `while inside ${region.name}.`);
+    } catch (err) {
+      console.warn(`${TAG} could not apply this space's disadvantage:`, err);
     }
   }
 

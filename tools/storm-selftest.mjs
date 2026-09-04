@@ -16,7 +16,8 @@ globalThis.game = { settings: { get: () => false, register: () => {} }, user: { 
   modules: { get: () => ({ active: true }) }, i18n: { localize: (k) => k }, time: { worldTime: 0 } };
 globalThis.Hooks = { on: () => {}, once: () => {}, off: () => {}, callAll: () => {} };
 globalThis.ui = { notifications: { info: () => {}, warn: () => {}, error: () => {} } };
-globalThis.CONFIG = { Actor: {}, Token: {}, Item: {} };
+globalThis.CONFIG = { Actor: {}, Token: {}, Item: {},
+  DND5E: { skills: { prc: { label: "Perception" }, ste: { label: "Stealth" } } } };
 // Enough of Foundry for the import chain to load. `ApplicationV2` has to be a
 // real class: several ACE files extend it at module scope, so an undefined
 // stands in the extends clause and the whole import throws before any test runs.
@@ -159,6 +160,23 @@ check("something ACE has no picture for is not claimed",
 check("a Flying Snake's bite is not a flight",
   VisualOwnership.owns({ name: "Flying Snake", system: { activities: { a: {} } } },
     { name: "Bite", type: "attack", item: { name: "Flying Snake" } }).owned, false);
+
+console.log("\nTHE STORM DOES WHAT THE STAFF SAYS IT DOES");
+const { SPELL_RULES, validateSpellRuleEntry } = await import(
+  "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/rules/rules-data-spells.mjs");
+const storm = SPELL_RULES["thunderstorm of misery"];
+// ⚠️ THE ITEM SAYS "disadvantage on any perception checks". It does NOT say
+// deafened, which in 5e AUTO-FAILS every check that requires hearing.
+check("it does not deafen anybody", storm.space.stampInside, null);
+check("it imposes disadvantage on Perception", storm.space.disadvantage, { skills: ["prc"] });
+check("it still lightly obscures", storm.space.obscurement, "light");
+check("and it still lasts a minute", storm.durationSeconds, 60);
+check("the alias points at the same entry", SPELL_RULES["stormforger"], storm);
+check("the entry is schema-clean", validateSpellRuleEntry("thunderstorm of misery", storm), []);
+check("a made-up skill key is caught at boot, not at the table",
+  validateSpellRuleEntry("bad", { space: { pierceBy: [], disadvantage: { skills: ["perception"] } } }).length, 1);
+check("an empty skill list is a malformed entry, not a silent nothing",
+  validateSpellRuleEntry("bad", { space: { pierceBy: [], disadvantage: { skills: [] } } }).length, 1);
 
 console.log("");
 console.log(pass + " passed, " + fail + " failed");
