@@ -1830,86 +1830,119 @@ export class ActionBar {
     Hooks.on("dnd5e.postRollConfiguration", force);
     let rolls = null;
     try {
-      // ⚠️ configure:false keeps dnd5e's dialog shut — ACE already asked.
+      // ⚠️🔴 THE CARD IS OURS. Johnny, 2026-09-04: "It better be our fucking
+      // card." The step before this asked dnd5e to post its own and only fell
+      // back to an ACE card when that did not arrive, which put the table's view
+      // of a check in the hands of whichever module decorated dnd5e's card last.
       //
-      // ⚠️🔴 AND THE MESSAGE IS ASKED FOR OUT LOUD. Johnny, 2026-09-04: "I'm
-      // still not getting the chat card. Players need to see the results. Why
-      // wouldn't I want a chat card?" dnd5e defaults `create` to true and
-      // nothing in ACE blocks a check card, so leaving the message config empty
-      // SHOULD have posted one — relying on a default that is not arriving is
-      // how a roll happens in silence.
-      //
-      // ⚠️ PUBLIC, DELIBERATELY. A check the party needs to see is no use
-      // whispered, and Foundry's core roll mode is a sticky global: whatever it
-      // was last set to for something else would silently decide who gets to
-      // see this. Naming it here means the answer does not depend on a setting
-      // nobody remembers changing.
+      // create:false so dnd5e rolls and posts nothing. configure:false so its
+      // dialog stays shut. ACE already asked, ACE throws the dice, and ACE posts.
+      const { aceArmDiceWatch } = await import("./dsn-utils.mjs");
+      aceArmDiceWatch();
       rolls = await actor[fn](
         { [kind === "skill" ? "skill" : "ability"]: key },
         { configure: false },
-        { create: true, rollMode: CONST.DICE_ROLL_MODES.PUBLIC },
+        { create: false },
       );
     } finally {
       Hooks.off("dnd5e.postRollConfiguration", force);
     }
 
     const list = Array.isArray(rolls) ? rolls : (rolls ? [rolls] : []);
-    const total = Number(list[0]?.total);
+    const roll = list[0] ?? null;
     console.log(`${LOG} | ${actor.name} rolled ${read.label} at ${choice}`
-      + (Number.isFinite(total) ? ` = ${total}` : "")
+      + (Number.isFinite(Number(roll?.total)) ? ` = ${roll.total}` : " (no roll came back)")
       + (read.reasons.length ? ` (${read.reasons.map(r => r.reason).join("; ")})` : ""));
 
-    // ⚠️ REPORT THE OUTCOME, NOT THE INTENTION. `buildPost` hangs the created
-    // message off each roll as `parent`, so this asks whether a card actually
-    // exists rather than assuming one does because we asked for it. If dnd5e
-    // did not post, ACE posts, and says why — a roll nobody can see is the same
-    // bug as no roll at all.
-    if (list.length && !list[0]?.parent) {
-      console.warn(`${LOG} | dnd5e did not post a card for ${read.label} — ACE is posting one.`);
-      await ActionBar._postCheckCard(actor, read, choice, list[0]);
+    // ⚠️ A ROLL THAT PRODUCED NOTHING MUST SAY SO, not quietly post an empty
+    // card. "Cancelled" and "broken" have to look different.
+    if (!roll) {
+      ui.notifications?.warn(`${actor.name}'s ${read.label} did not roll — see the console.`);
+      return;
     }
+    await ActionBar._postCheckCard(actor, read, choice, roll);
   }
 
   /**
-   * ACE's own card for a check, used only when dnd5e's did not appear.
+   * ACE's card for a check.
    *
-   * ⚠️ NOT THE NORMAL PATH ON PURPOSE. dnd5e's roll card is the one the table
-   * already knows, the one Dice So Nice animates and the one every other module
-   * decorates. Replacing it wholesale would be building beside a working engine.
-   * This exists so that "no card" can never be the outcome.
+   * ⚠️ EVERY DIE IS SHOWN, INCLUDING THE ONE THAT LOST. On advantage or
+   * disadvantage two d20s are rolled and one is thrown away; showing only the
+   * survivor hides the whole reason the pause existed. The discarded one is
+   * struck through and dimmed, and it keeps its full width — a struck number
+   * squeezed into a narrow column is how a 10 once read as a 1 over a 0.
+   *
+   * ⚠️ AND IT WAITS FOR THE DICE. dnd5e is not posting this card, so nothing
+   * else is animating the roll: ACE throws the dice itself and holds the card
+   * until they stop. A card that beats its own dice is a spoiler.
+   *
+   * ⚠️ PUBLIC. The table needs to see a check; that is the entire point of the
+   * card. Foundry's core roll mode is a sticky global and must not get a vote.
    */
   static async _postCheckCard(actor, read, choice, roll) {
     try {
-      // The card never lands before the dice stop — house rule, and it is the
-      // difference between a result and a spoiler.
-      try {
-        const { awaitDiceSettle } = await import("./dsn-utils.mjs");
-        await awaitDiceSettle();
-      } catch (_) { /* no Dice So Nice, or it never fired — post anyway */ }
+      const { safeShowForRoll, awaitDiceSettle } = await import("./dsn-utils.mjs");
+      safeShowForRoll(roll, `${actor.name} ${read.label}`);
+      await awaitDiceSettle(undefined, { useArmed: true });
 
+      const { DamageConstants } = await import("./damage-engine.mjs");
       const esc = foundry.utils.escapeHTML;
+
+      // ── the dice, winners and losers alike ──
+      const dice = [];
+      for (const term of (roll.terms ?? [])) {
+        if (!term.faces) continue;
+        for (const r of (term.results ?? [])) {
+          const dropped = r.active === false || r.discarded === true;
+          const img = DamageConstants.getDiceImagePath(term.faces, r.result);
+          const icon = DamageConstants.DIE_ICONS?.[term.faces] ?? "fa-dice";
+          dice.push(
+            `<span class="ace-qol-die" style="${dropped ? "opacity:0.45;" : ""}">`
+            + `<img class="ace-qol-die-img" src="${img}" alt="d${term.faces}"`
+            + ` onerror="this.style.display='none';this.nextElementSibling.style.display='inline'">`
+            + `<i class="fas ${icon} ace-qol-die-fallback" style="display:none"></i>`
+            + `<span class="ace-qol-die-result" style="font-size:18px;font-weight:700;`
+            + `${dropped ? "text-decoration:line-through;" : ""}">${r.result}</span>`
+            + `</span>`);
+        }
+      }
+
       const badge = choice === "advantage"
-        ? `<span style="color:#7ee081;font-weight:700;">ADVANTAGE</span>`
+        ? `<span style="color:#7ee081;font-weight:700;font-size:14px;letter-spacing:0.5px;">ADVANTAGE</span>`
         : choice === "disadvantage"
-        ? `<span style="color:#e08b7e;font-weight:700;">DISADVANTAGE</span>` : "";
-      const why = read.reasons.length
-        ? `<div style="font-size:14px;opacity:0.85;margin-top:4px;">${esc(read.reasons.map(r => r.reason).join(" • "))}</div>`
+        ? `<span style="color:#e08b7e;font-weight:700;font-size:14px;letter-spacing:0.5px;">DISADVANTAGE</span>`
         : "";
+
+      const why = read.reasons.length
+        ? `<div style="font-size:14px;opacity:0.85;margin-top:6px;line-height:1.35;">`
+          + `${esc(read.reasons.map(r => r.reason).join(" • "))}</div>`
+        : "";
+
+      const mod = Number.isFinite(Number(read.modifier))
+        ? `<span style="opacity:0.8;">${Number(read.modifier) >= 0 ? "+" : ""}${Number(read.modifier)}</span>` : "";
+
       await ChatMessage.create({
         speaker: ChatMessage.getSpeaker({ actor }),
-        rolls: roll ? [roll] : [],
         rollMode: CONST.DICE_ROLL_MODES.PUBLIC,
-        content: `<div style="background:#141118;border:1px solid #c9a76b55;border-left:3px solid #c9a76b;`
-          + `border-radius:4px;padding:8px 10px;color:#e8dcc3;">`
-          + `<div style="font-size:18px;font-weight:700;">${esc(actor.name)}</div>`
-          + `<div style="font-size:16px;margin-top:2px;">${esc(read.label)} ${badge}</div>`
-          + `<div style="font-size:28px;font-weight:700;margin-top:6px;">${esc(String(roll?.total ?? "?"))}</div>`
+        // ⚠️ NO `rolls` ARRAY. The dice have already been thrown above; handing
+        // them to the message as well makes Dice So Nice animate the same roll a
+        // second time, after the card is already on screen showing the answer.
+        content:
+          `<div style="background:#141118;border:1px solid #c9a76b55;border-left:3px solid #c9a76b;`
+          + `border-radius:4px;padding:9px 11px;color:#e8dcc3;">`
+          + `<div style="font-size:18px;font-weight:700;line-height:1.3;">${esc(actor.name)}</div>`
+          + `<div style="font-size:16px;margin-top:2px;display:flex;flex-wrap:wrap;gap:8px;align-items:baseline;">`
+          +   `<span>${esc(read.label)} ${mod}</span>${badge}</div>`
+          + `<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:8px;">`
+          +   dice.join("")
+          +   `<span style="font-size:30px;font-weight:700;margin-left:auto;">${esc(String(roll.total ?? "?"))}</span>`
+          + `</div>`
           + why
           + `</div>`,
         flags: { [MODULE_ID]: { checkCard: true } },
       });
     } catch (err) {
-      console.error(`${LOG} | could not post a card for ${read.label}:`, err);
+      console.error(`${LOG} | could not post the card for ${read.label}:`, err);
       ui.notifications?.warn(`${actor.name}'s ${read.label} rolled ${roll?.total ?? "?"}, but no card could be posted.`);
     }
   }
