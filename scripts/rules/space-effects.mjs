@@ -456,21 +456,48 @@ export class SpaceEffects {
             ? `sees normally inside (${verdict.how})`
             : `UNSEEN from outside — its attacks out gain ADVANTAGE; attacks into the dark at DISADVANTAGE (it still sees out from the edge)`);
         }
+        // ⚠️🔴 SAY A PENALTY ONCE. Light obscurement's whole mechanical effect is
+        // disadvantage on SIGHT Perception. This storm ALSO declares disadvantage
+        // on Perception outright, because the staff's text extends it to hearing
+        // as well. Those are one penalty of different widths, and I announced
+        // both on 2026-09-03: "LIGHTLY OBSCURED — disadvantage on sight
+        // Perception" immediately followed by "DISADVANTAGE on Perception checks
+        // while inside".
+        //
+        // Johnny saw it before I did. On screen that reads as two stacking
+        // penalties, and disadvantage does not stack — one source and ten
+        // sources roll the same two dice. Only ONE effect was ever applied; the
+        // card was lying about the count.
+        //
+        // ⚠️ THE WIDER ONE WINS AND ABSORBS THE OTHER. Never print both.
+        const wideSkills = space.disadvantage?.skills ?? [];
+        const coversPerception = wideSkills.includes("prc");
+        const skillNames = (ks) => ks.map(k => CONFIG.DND5E?.skills?.[k]?.label ?? k).join(" and ");
+
         if (space.obscurement === "light") {
-          bits.push("LIGHTLY OBSCURED — disadvantage on sight Perception; it is not hidden by this alone");
+          bits.push(coversPerception
+            ? "LIGHTLY OBSCURED — disadvantage on ALL Perception checks inside, sight and hearing alike; it does not hide anyone by itself"
+            : "LIGHTLY OBSCURED — disadvantage on sight Perception; it does not hide anyone by itself");
+        } else if (coversPerception || wideSkills.length) {
+          bits.push(`DISADVANTAGE on ${skillNames(wideSkills)} checks while inside`);
         }
         if (space.silence) bits.push("in SILENCE — no verbal casting");
         if (Number(space.difficultTerrain) > 1) {
           bits.push(`DIFFICULT TERRAIN ×${Number(space.difficultTerrain)}`);
         }
+        // Anything the obscurement line did not already absorb.
+        const leftover = space.obscurement === "light"
+          ? wideSkills.filter(k => k !== "prc") : [];
+        if (leftover.length) bits.push(`DISADVANTAGE on ${skillNames(leftover)} checks while inside`);
         if (space.stampInside?.length) bits.push(`${space.stampInside.join(" + ").toUpperCase()} while inside`);
-        if (space.disadvantage?.skills?.length) {
-          bits.push(`DISADVANTAGE on ${space.disadvantage.skills
-            .map(k => CONFIG.DND5E?.skills?.[k]?.label ?? k).join(" and ")} checks while inside`);
-        }
+        // (the disadvantage line is built above, where it can absorb the
+        // obscurement's overlapping half instead of repeating it)
         // A space with nothing to say is still tracked; it just gets no line.
         if (!bits.length) continue;
-        lines.push(`<b>${foundry.utils.escapeHTML(tok.name)}</b> entered <b>${foundry.utils.escapeHTML(region.name)}</b>: ${bits.join("; ")}.`);
+        // ⚠️ BACKSTOP. The logic above is what stops a penalty being said twice;
+        // this only catches a future line that slips through word-for-word.
+        const said = [...new Set(bits)];
+        lines.push(`<b>${foundry.utils.escapeHTML(tok.name)}</b> entered <b>${foundry.utils.escapeHTML(region.name)}</b>: ${said.join("; ")}.`);
       }
       for (const regionId of left) {
         // ⚠️ NAME WHAT THEY LEFT. "left the obscured/silenced area" was written
