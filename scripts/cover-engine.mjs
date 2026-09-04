@@ -10,6 +10,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { aceMeasuredCenter } from "./geometry-utils.mjs";
 import { QolSettings } from "./settings.mjs";
 import { CombatState } from "./combat-state.mjs";
 
@@ -68,7 +69,7 @@ export class CoverEngine {
     if (method === "center") {
       // Simple center-to-center — single ray
       totalRays = 1;
-      blockedCount = CoverEngine._isRayBlocked(attacker.center, target.center) ? 1 : 0;
+      blockedCount = CoverEngine._isRayBlocked(aceMeasuredCenter(attacker), aceMeasuredCenter(target)) ? 1 : 0;
     } else {
       // Corner-to-corner: cast rays from each attacker corner to each target corner
       const attackerCorners = CoverEngine._getTokenCorners(attacker);
@@ -229,8 +230,9 @@ export class CoverEngine {
   static _checkCreatureCover(attacker, target) {
     if (!canvas.tokens?.placeables) return 0;
 
-    const atkCenter = attacker.center;
-    const tgtCenter = target.center;
+    // Cover is a RULE. Measured from the update, not the sprite.
+    const atkCenter = aceMeasuredCenter(attacker);
+    const tgtCenter = aceMeasuredCenter(target);
 
     // Build a ray from attacker center to target center
     // (v13: Ray namespaced under foundry.canvas.geometry.Ray)
@@ -257,7 +259,7 @@ export class CoverEngine {
 
       // Check if this token's center is roughly between attacker and target
       // Project the token center onto the ray and check distance from line
-      const tokenCenter = token.center;
+      const tokenCenter = aceMeasuredCenter(token);
       const closestPoint = CoverEngine._closestPointOnSegment(atkCenter, tgtCenter, tokenCenter);
       const distFromLine = Math.hypot(tokenCenter.x - closestPoint.x, tokenCenter.y - closestPoint.y);
 

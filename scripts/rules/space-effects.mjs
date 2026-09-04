@@ -35,7 +35,7 @@ import { QolSettings } from "../settings.mjs";
 import { RulesBrain } from "./rules-brain.mjs";
 import { SpaceDrafter } from "./space-drafter.mjs";
 import { Situation } from "../situation.mjs";
-import { buildRegionShapeFromTemplate } from "../geometry-utils.mjs";
+import { buildRegionShapeFromTemplate, aceMeasuredPosition } from "../geometry-utils.mjs";
 
 const TAG = "ace-qol | [space-effects]";
 
@@ -982,13 +982,31 @@ export class SpaceEffects {
   static spacesAtToken(token) {
     try {
       const doc = token?.document ?? token;
-      const obj = token?.center ? token : doc?.object;
-      const center = obj?.center ?? {
-        x: (doc?.x ?? 0) + ((doc?.width ?? 1) * (canvas?.grid?.size ?? 100)) / 2,
-        y: (doc?.y ?? 0) + ((doc?.height ?? 1) * (canvas?.grid?.size ?? 100)) / 2,
+
+      // ⚠️🔴 NEVER THE SPRITE. This read `token.center`, which is the ANIMATED
+      // display position — where the picture is on its way to somewhere, not
+      // where the creature is. Crossings are announced 200ms after the move,
+      // which is still inside a normal walk animation, so the sprite was
+      // typically still standing in the square it had left.
+      //
+      // The effect was that every message described the PREVIOUS move. Johnny,
+      // 2026-09-04: "I move these guys out, and it says they entered. When I
+      // entered, it says I moved them out." Walking out was announced as
+      // entering, because the picture had not caught up yet.
+      //
+      // ⚠️ AND THE DOCUMENT LAGS TOO. His own console said so in the same
+      // breath: "the token document is behind the move it just reported
+      // (document says x=13618 y=17227, the update said x=13944 y=15272, 100ms
+      // ago)". The update outranks the document, and `aceMeasuredPosition` is
+      // THE reader that knows it — every distance in the suite already goes
+      // through it. This one asked neither and invented a third answer.
+      const pos = aceMeasuredPosition(doc);
+      const g = canvas?.grid?.size ?? 100;
+      const center = {
+        x: pos.x + ((doc?.width ?? 1) * g) / 2,
+        y: pos.y + ((doc?.height ?? 1) * g) / 2,
       };
-      const elevation = Number(doc?.elevation ?? 0);
-      return SpaceEffects.spacesAtPoint(center, { scene: doc?.parent, elevation });
+      return SpaceEffects.spacesAtPoint(center, { scene: doc?.parent, elevation: pos.elevation });
     } catch (_) { return []; }
   }
 

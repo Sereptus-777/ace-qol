@@ -103,11 +103,16 @@ export function aceNoteTokenPosition(id, pos) {
 /**
  * The position a measurement WOULD use for this token right now.
  *
- * ⚠️ FOR REPORTING ONLY, AND IT EXISTS BECAUSE A LOG THAT PRINTS THE INTENTION
- * MANUFACTURES A FALSE ROOT CAUSE. The aura engine records `document.x` beside
- * every verdict. Now that distance can measure from the note instead, that line
- * would keep printing the stale number and read as "still broken" when it was
- * fixed. It must say what the decision was actually made from.
+ * ⚠️ IT STARTED AS A REPORTING HELPER and is now load-bearing. It was written
+ * so a log line could print what a decision was actually made from rather than
+ * the stale document value, because a log that prints the intention manufactures
+ * a false root cause. On 2026-09-04 it became the answer to a real question as
+ * well: anything that needs to know WHERE A TOKEN IS must ask here, not the
+ * document and never the sprite.
+ *
+ * ⚠️ ELEVATION COMES TOO. It is part of the same answer and lags in exactly
+ * the same way; returning x and y alone invites the next caller to read a fresh
+ * position against a stale height.
  */
 export function aceMeasuredPosition(t) {
   const d = t?.document ?? t ?? {};
@@ -115,7 +120,38 @@ export function aceMeasuredPosition(t) {
   return {
     x: known ? known.x : (Number(d.x ?? t?.x ?? 0) || 0),
     y: known ? known.y : (Number(d.y ?? t?.y ?? 0) || 0),
+    elevation: Number((known?.elevation ?? d.elevation) ?? 0) || 0,
     fromUpdate: !!known,
+  };
+}
+
+/**
+ * The centre of a token, measured from where it ACTUALLY IS.
+ *
+ * ⚠️🔴 `token.center` IS THE SPRITE. It is the animated display position:
+ * where the picture is on its way to somewhere, not where the creature is. Any
+ * RULE decided from it during a move is decided about the square the creature
+ * has left. Space crossings read it and announced every move one move late
+ * — walking out was reported as walking in (2026-09-04).
+ *
+ * ⚠️ AND THE DOCUMENT LAGS ITS OWN UPDATE, so this is not simply "use the
+ * document instead". `aceMeasuredPosition` prefers the position the update
+ * announced, and only while the document still disagrees with it — the note
+ * expires on a timer and deletes itself the moment the document catches up. So
+ * this is identical to the sprite centre in every ordinary moment and correct
+ * in the one window that matters.
+ *
+ * ⚠️ A PICTURE SHOULD STILL FOLLOW THE PICTURE. Anything drawing a sprite on a
+ * token — a flourish, an aura ring, scrolling text — wants `token.center` and
+ * should keep it. This is for decisions, not for decoration.
+ */
+export function aceMeasuredCenter(t) {
+  const d = t?.document ?? t ?? {};
+  const pos = aceMeasuredPosition(d);
+  const g = canvas?.grid?.size ?? 100;
+  return {
+    x: pos.x + ((Number(d.width) || 1) * g) / 2,
+    y: pos.y + ((Number(d.height) || 1) * g) / 2,
   };
 }
 

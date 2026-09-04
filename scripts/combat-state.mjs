@@ -14,7 +14,7 @@ import { FlagsEngine } from "./flags-engine.mjs";
 import { Situation } from "./situation.mjs";
 // Weapon rules entries (Lance etc.) — function-time reads only; cycle inert.
 import { RulesBrain } from "./rules/rules-brain.mjs";
-import { aceDistanceFt } from "./geometry-utils.mjs";
+import { aceDistanceFt , aceMeasuredCenter } from "./geometry-utils.mjs";
 import { hasTurns } from "./action-economy.mjs";
 // Shared "why didn't that happen" reporters. why-not.mjs is a leaf that
 // imports nothing, so it cannot join the static import cycles ace-qol.mjs
@@ -1712,8 +1712,10 @@ export class CombatState {
     const atkToken = attackerActor.getActiveTokens?.()?.[0];
     if (!atkToken) return null;
 
-    const atkCenter = atkToken.center;
-    const tgtCenter = targetToken.center;
+    // Flanking is a RULE, so it measures from where the creatures are, not
+    // from where their sprites have got to. See aceMeasuredCenter.
+    const atkCenter = aceMeasuredCenter(atkToken);
+    const tgtCenter = aceMeasuredCenter(targetToken);
     const atkDisposition = atkToken.document?.disposition ?? 1;
 
     // Normalized vector from target to attacker
@@ -1814,7 +1816,7 @@ export class CombatState {
       }
 
       // Angle check
-      const allyCenter = token.center;
+      const allyCenter = aceMeasuredCenter(token);
       const allyDx = allyCenter.x - tgtCenter.x;
       const allyDy = allyCenter.y - tgtCenter.y;
       const allyLen = Math.hypot(allyDx, allyDy);
