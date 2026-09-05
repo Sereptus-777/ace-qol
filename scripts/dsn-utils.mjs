@@ -49,6 +49,32 @@ const _inFlight = new Set();
 
 export function safeShowForRoll(roll, label = "dice animation") {
   if (!roll) return;
+
+  // ⚠️🔴 THE SAME DICE MUST NEVER TUMBLE TWICE. Johnny, live on
+  // 2026-09-05: "when Firaxis did that heal, it rolled 4d6, so there's a
+  // doubling up somewhere... two d6, and then maybe two seconds later it
+  // rolled another two d6."
+  //
+  // Nothing rolled twice. The 2d6 was ANIMATED twice, and the two-second gap
+  // was the settle wait in between. The pattern is: a resolver shows the dice,
+  // waits for them to land, then posts a card — and the card helper shows the
+  // same roll again on its way out. At the table that is indistinguishable
+  // from rolling 4d6 and keeping the second pair.
+  //
+  // ⚠️ FIXED HERE RATHER THAN IN THE CARD, because every caller that shows
+  // dice and then posts a card has this exact shape, and the next one written
+  // would have it too. A re-roll for advantage builds a NEW Roll, so a genuine
+  // second roll is unaffected.
+  if (roll._aceDsnShown) {
+    console.debug(`${MODULE_ID} | DSN ${label}: these dice have already been shown — `
+      + `not animating them a second time.`);
+    return;
+  }
+  try {
+    Object.defineProperty(roll, "_aceDsnShown", { value: true, enumerable: false,
+                                                  configurable: true, writable: true });
+  } catch (_) { /* a frozen roll simply loses the guard, never the animation */ }
+
   try {
     const p = game.dice3d?.showForRoll?.(roll, game.user, true);
     if (p && typeof p.then === "function") {

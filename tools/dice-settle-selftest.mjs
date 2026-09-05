@@ -28,7 +28,7 @@ globalThis.ui = { notifications: { info: () => {}, warn: () => {}, error: () => 
 globalThis.canvas = { grid: { size: 100 } };
 globalThis.foundry = { utils: { escapeHTML: (s) => String(s) } };
 
-const { aceArmDiceWatch, awaitDiceSettle } = await import(
+const { aceArmDiceWatch, awaitDiceSettle, safeShowForRoll } = await import(
   "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/dsn-utils.mjs");
 
 let pass = 0, fail = 0;
@@ -107,6 +107,36 @@ console.log("\nNO DICE SO NICE, NO WAIT AT ALL");
   check("returns immediately when 3D dice are off", Date.now() - t0 < 50, true);
   check("and arming is a no-op", aceArmDiceWatch(), null);
   dsnEnabled = true;
+}
+
+console.log("\nTHE SAME DICE NEVER TUMBLE TWICE");
+// ⚠️🔴 HE SAW THIS LIVE AND READ IT AS 4d6. Johnny, 2026-09-05: "when
+// Firaxis did that heal, it rolled 4d6... two d6, and then maybe two seconds
+// later it rolled another two d6." Nothing rolled twice. The 2d6 was ANIMATED
+// twice, and the two-second gap was the settle wait in between: the resolver
+// shows the dice, waits for them to land, posts a card, and the card helper
+// shows the SAME roll again on its way out.
+{
+  const shown = [];
+  dsnEnabled = true;
+  game.dice3d.showForRoll = (roll) => { shown.push(roll); return Promise.resolve(); };
+
+  const roll = { total: 6, dice: [] };
+  safeShowForRoll(roll, "the heal");
+  safeShowForRoll(roll, "the card");            // what _postCard does on the way out
+  check("one roll is animated once, however many times it is shown", shown.length, 1);
+
+  // ⚠️ A GENUINE SECOND ROLL IS UNAFFECTED. A re-roll for advantage builds a
+  // new Roll, and suppressing that would hide real dice.
+  safeShowForRoll({ total: 11, dice: [] }, "a different roll");
+  check("a different roll still animates", shown.length, 2);
+
+  // ⚠️ AND IT IS THE ROLL THAT IS MARKED, NOT A COUNTER. Showing the first
+  // roll again, later, after other rolls, is still the same dice.
+  safeShowForRoll(roll, "the same heal again, much later");
+  check("the first roll stays suppressed afterwards", shown.length, 2);
+
+  game.dice3d.showForRoll = null;
 }
 
 console.log("");
