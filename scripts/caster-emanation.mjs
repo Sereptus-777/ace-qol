@@ -46,6 +46,27 @@ export const CASTER_CENTRED_SHAPES = new Set([
   "aura",
 ]);
 
+/**
+ * Shapes whose circle must actually EXIST on the board, not just be drawn once.
+ *
+ * ⚠️🔴 SPIRIT GUARDIANS NEEDS ITS TEMPLATE AND AURA OF VITALITY DOES NOT.
+ * The concentration tracker MOVES a template with its caster and hit-tests
+ * creatures against it every turn — that circle is the spell. Take it away and
+ * the spirits stop catching anybody (2026-08-27).
+ *
+ * An emanation heal measures its own distance from the caster and never reads a
+ * template, so creating one just puts a circle on the map that something else
+ * then tidies away. Johnny, 2026-09-05: "It draws a template 30 ft and then
+ * disappears right away... can't we get rid of the template?" For those, the
+ * wave IS the feedback.
+ */
+const NEEDS_A_REAL_TEMPLATE = new Set([
+  "template-trigger",   // Spirit Guardians, Moonbeam-style areas that keep catching
+  "template-save",
+  "template-pool",
+  "aura",
+]);
+
 /** Does this template shape have a direction that has to be chosen? */
 function _isOmnidirectional(templateType) {
   try {
@@ -157,6 +178,22 @@ export async function drawCasterEmanation(activity, entry) {
   if (typeof Cls?.fromActivity !== "function") {
     console.error(`${LOG} | dnd5e.canvas.AbilityTemplate.fromActivity is missing on this build — `
       + `${item.name} keeps dnd5e's placement prompt.`);
+    return null;
+  }
+
+  // ⚠️ ONLY WHEN SOMETHING WILL READ IT. See NEEDS_A_REAL_TEMPLATE.
+  const wantsTemplate = NEEDS_A_REAL_TEMPLATE.has(entry?.shape);
+  if (!wantsTemplate) {
+    const radiusOnly = Number(entry?.emanation?.radiusFt
+      ?? activity?.target?.template?.size
+      ?? item?.system?.target?.template?.size) || 0;
+    playEmanationBurst({
+      token, radiusFt: radiusOnly, item,
+      heals: !!(entry?.heal || activity?.healing || String(activity?.type) === "heal"),
+      damageTypes: _damageTypesOf(activity),
+    }).catch(err => console.warn(`${LOG} | wave failed for ${item.name}:`, err));
+    console.log(`${LOG} | ${item.name}: no template drawn — nothing reads one for a `
+      + `"${entry?.shape ?? "shapeless"}" spell, so the wave is the whole picture.`);
     return null;
   }
 

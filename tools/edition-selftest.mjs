@@ -33,7 +33,7 @@ globalThis.game = { settings: { get: () => false, register: () => {} }, user: { 
   users: [], i18n: { localize: (k) => k }, time: { worldTime: 0 },
   modules: { get: () => ({ active: true }) }, items: [], actors: [] };
 
-const { SpellPipeline } = await import(
+const { SpellPipeline, DISPATCHABLE_SHAPES } = await import(
   "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/spell-pipeline/pipeline.mjs");
 const { SPELL_REGISTRY } = await import(
   "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/spell-pipeline/registry/_index.mjs");
@@ -123,6 +123,41 @@ console.log("\nA SUFFIX MUST NOT BEAT THE WHOLE REGISTRY");
     SpellPipeline._getEntry(spell("Grond's Bespoke Fireworks (Legacy)"))?.shape ?? null, null);
   check("the normaliser is the shared one",
     SpellPipeline._normalizedKey("Sleep (Legacy)"), "sleep");
+}
+
+console.log("\nEVERY REGISTRY ENTRY NAMES A SHAPE SOMETHING CAN FINISH");
+// ⚠️🔴 AN ENTRY NOTHING RESOLVES IS WORSE THAN NO ENTRY. With no entry
+// the pipeline does not claim the spell and dnd5e resolves it natively, which
+// works. With an unhandled shape, ACE claims it, DEFERS the spell slot, reaches
+// the dispatch default, refunds the slot and does nothing — the spell simply
+// fails to happen.
+//
+// This is not hypothetical. Eleven summon entries carried shape "summon" and
+// the dispatcher has never had a case for it. They were harmless only because
+// "Summon Fey (Legacy)" did not match the key "summon fey" — until the name fix
+// of 0.14.2 made it match. Johnny found it within the hour: "my druid, I can't
+// find where I can summon fey anymore."
+{
+  const { FEATURE_REGISTRY } = await import(
+    "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/spell-pipeline/registry/features.mjs");
+
+  const bad = [];
+  for (const [name, entry] of Object.entries({ ...SPELL_REGISTRY, ...FEATURE_REGISTRY })) {
+    const shapes = new Set([entry?.shape]);
+    for (const branch of Object.values(entry?.byEdition ?? {})) {
+      if (branch?.shape) shapes.add(branch.shape);
+    }
+    // ⚠️ A MISSING SHAPE IS THE FAILING CASE, NOT AN EXEMPT ONE. The first
+    // version of this test wrote `if (sh && ...)` and passed cleanly while
+    // eleven summon entries had no shape field at all — which is exactly the
+    // bug it was written to catch.
+    for (const sh of shapes) {
+      if (!sh) { bad.push(`${name} -> NO SHAPE`); continue; }
+      if (!DISPATCHABLE_SHAPES.has(sh)) bad.push(`${name} -> "${sh}"`);
+    }
+  }
+  check("no entry names a shape the dispatcher cannot finish", bad, []);
+  check("and the dispatcher's list is not empty", DISPATCHABLE_SHAPES.size > 10, true);
 }
 
 console.log("");

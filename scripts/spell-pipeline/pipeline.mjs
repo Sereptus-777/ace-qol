@@ -66,6 +66,29 @@ function _aceCreature(actor, token = null) {
 }
 
 
+/**
+ * Every shape the dispatcher can actually resolve.
+ *
+ * ⚠️🔴 A REGISTRY ENTRY WHOSE SHAPE NOTHING HANDLES IS WORSE THAN NO ENTRY.
+ * With no entry the pipeline does not claim the spell and dnd5e resolves it on
+ * its own sheet, which works. With an unhandled one, ACE claims it, defers the
+ * spell slot, reaches the dispatch default, refunds the slot and does nothing —
+ * the spell simply fails to happen.
+ *
+ * ⚠️ AND MY OWN FIX CAUSED IT. Before the "(Legacy)" name fix of 0.14.2,
+ * "Summon Fey (Legacy)" did not match the key "summon fey", so ACE ignored it
+ * and dnd5e summoned perfectly well. Making names match handed ACE eleven
+ * summon spells it has no resolver for, and Johnny found it within the hour:
+ * "my druid, I can't find where I can summon fey anymore."
+ *
+ * The list is generated from nothing — it is written here and a self-test walks
+ * the whole registry against it, so an entry with an unhandled shape cannot
+ * ship again.
+ */
+export const DISPATCHABLE_SHAPES = new Set([
+  "attack-multi", "attack-single", "aura", "chained", "distribute", "emanation-heal", "multi-buff", "multi-heal", "save-area", "save-single", "self", "template-heal", "template-pool", "template-save", "template-trigger", "touch",
+]);
+
 export class SpellPipeline {
 
   // Cache cast level captured between preUseActivity and useActivity hooks
@@ -104,6 +127,15 @@ export class SpellPipeline {
       try {
         const entry = SpellPipeline._getEntry(activity?.item);
         if (!entry) return; // not ours — fall through to dnd5e
+
+        // ⚠️🔴 NOT OURS EITHER IF WE CANNOT FINISH IT. Claiming a spell and
+        // then reaching the dispatch default means the slot is deferred and
+        // refunded and the spell never happens. Standing aside hands it back to
+        // dnd5e, which is exactly how these worked before ACE knew their names.
+        if (!DISPATCHABLE_SHAPES.has(entry.shape)) {
+          SpellPipeline._noteUndispatchable(activity?.item, entry.shape);
+          return;
+        }
 
         // Stamp a per-cast token onto the activity so _cacheKey can produce
         // a stable, collision-free key across simultaneous casts of the same
@@ -305,8 +337,16 @@ export class SpellPipeline {
    * @returns {boolean}
    */
   static owns(item) {
-    try { return !!SpellPipeline._getEntry(item); }
-    catch (_) { return false; }
+    try {
+      // ⚠️🔴 OWNING MEANS "WE WILL FINISH IT". This used to be "is there an
+      // entry", and the eleven summon entries have NO `shape` field at all —
+      // they are data for a resolver nobody wrote. So ACE claimed every summon
+      // spell, deferred its slot, reached the dispatch default and refunded it.
+      // The spell simply did not happen, and everything else in the suite that
+      // asks "who owns this cast?" was told ACE did, so nothing else stepped in.
+      const entry = SpellPipeline._getEntry(item);
+      return !!entry && DISPATCHABLE_SHAPES.has(entry.shape);
+    } catch (_) { return false; }
   }
 
   /**
@@ -399,6 +439,25 @@ export class SpellPipeline {
    */
   static _normalizedKey(name) {
     return spellKey(name);
+  }
+
+  /** Shapes already reported this session, so one cast is one line. */
+  static _undispatchable = new Set();
+
+  /**
+   * Say it once, loudly, when a registry entry names a shape nothing resolves.
+   *
+   * ⚠️ THIS IS A CODE FAULT, NOT HIS DATA. The entry was written by us and
+   * the resolver was not, so the message says so and points at the file.
+   */
+  static _noteUndispatchable(item, shape) {
+    const key = `${shape}`;
+    if (SpellPipeline._undispatchable.has(key)) return;
+    SpellPipeline._undispatchable.add(key);
+    console.warn(`${MODULE_ID} | SpellPipeline: "${item?.name}" has a registry entry with `
+      + `shape "${shape}", which no resolver handles. ACE is standing aside and dnd5e will `
+      + `resolve it natively. Either add a case for "${shape}" to the dispatcher or remove `
+      + `the entry — an entry nothing can finish is worse than none.`);
   }
 
   /** Names already reported, so eight casts do not print eight lines. */
