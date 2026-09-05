@@ -545,6 +545,12 @@ export class SpellPipeline {
           await SpellPipeline._commitSlotOnTemplatePlaced(activity, castLevel);
           break;
 
+        case "template-heal":
+          // Place the area, choose from who is inside it, heal them.
+          await TemplateResolver.runHeal(ctx);
+          await SpellPipeline._commitSlotOnTemplatePlaced(activity, castLevel);
+          break;
+
         case "template-trigger":
           await TemplateResolver.runTrigger(ctx);
           // Slot rides on the template actually landing — see the helper.

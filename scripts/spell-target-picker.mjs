@@ -32,7 +32,7 @@ export class SpellTargetPicker {
    * @returns {Promise<Actor[]>}
    */
   static async pick({ spellItem, casterActor, maxTargets, rangeFt, allowSelf = true,
-                      verb = "Cast", icon = "fa-solid fa-sparkles" }) {
+                      verb = "Cast", icon = "fa-solid fa-sparkles", only = null }) {
     if (!spellItem || !casterActor) return [];
 
     // Resolve range from spell item if not explicitly passed
@@ -53,8 +53,24 @@ export class SpellTargetPicker {
     }
 
     // Build the candidate list
+    //
+    // ⚠️ AN AREA DECIDES WHO IS ELIGIBLE, NOT A RANGE FROM THE CASTER. Mass Cure
+    // Wounds is "up to six creatures in a 30-foot-radius sphere centred on a
+    // point you choose within 60 feet" — so the sphere has already answered who
+    // may be chosen, and measuring 60 feet from the caster instead would offer
+    // people standing nowhere near it. When `only` is supplied it IS the answer;
+    // the range is not consulted at all.
     const _tb0 = performance.now();
-    const candidates = SpellTargetPicker._buildCandidates(casterToken, casterActor, resolvedRange, allowSelf);
+    let candidates;
+    if (only) {
+      const allowed = new Set([...only].map(t => t?.id ?? t).filter(Boolean));
+      candidates = SpellTargetPicker._buildCandidates(casterToken, casterActor, Infinity, allowSelf)
+        .filter(c => allowed.has(c?.token?.id ?? c?.tokenId ?? c?.id));
+      console.log(`ace-qol | [picker] restricted to ${candidates.length} of ${allowed.size} `
+        + `creature(s) inside the area for ${spellItem.name}`);
+    } else {
+      candidates = SpellTargetPicker._buildCandidates(casterToken, casterActor, resolvedRange, allowSelf);
+    }
     console.log(`ace-qol | [picker-timing] _buildCandidates → ${candidates.length} candidates in ${Math.round(performance.now() - _tb0)}ms`);
     if (!candidates.length) {
       ui.notifications?.warn(`${spellItem.name}: no valid targets on this scene.`);

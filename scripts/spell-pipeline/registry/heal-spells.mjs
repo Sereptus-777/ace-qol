@@ -29,15 +29,44 @@ export const HEAL_SPELLS = {
     flavorOnConfirm: "A word of healing restores 1d4 + spellcasting modifier (+1d4 per upcast).",
   },
 
+  // ── Mass Cure Wounds (5th) ────────────────────────────────────────────────
+  // ⚠️🔴 IT WAS A BARE PICKER, AND THAT DROPPED BOTH HALVES OF THE SPELL.
+  // "Choose up to six creatures in a 30-foot-radius Sphere centered on a point
+  // you choose within range" — so there is a 60-foot limit on where the wave
+  // lands AND a requirement that the six be standing together. A picker enforces
+  // neither: a cleric could heal six people scattered across the battlefield.
+  //
+  // ⚠️ THE PICK ITSELF IS RAW AND STAYS. Johnny asked whether it could be
+  // automatic and answered it himself: seven allies in the sphere and only six
+  // heals. Choosing is the caster's decision, and RAW says creatures rather than
+  // allies, so an enemy in the sphere is offered too.
+  //
+  // ⚠️ THE EDITIONS DIFFER IN BOTH DICE AND SCOPE. 2014 is 3d8 and has no effect
+  // on undead or constructs; 2024 is 5d8 and dropped that clause. His own copy
+  // is the 2024 one, and the engine reads the item, so a 2014 caster at the same
+  // table still gets 2014.
   "mass cure wounds": {
-    shape: "multi-heal",
+    shape: "template-heal",
     range: 60,
-    countResolver: () => 6,  // up to 6 creatures within 30 feet of point
+    expectedArea: { type: "sphere", size: 30 },
+    countResolver: () => 6,
     heal: {
-      formula: (castLvl, spellMod) => `${3 + Math.max(0, castLvl - 5)}d8 + ${spellMod}`,
+      // 2024 baseline. `byEdition` below carries the legacy one.
+      formula: (castLvl, spellMod) => `${5 + Math.max(0, castLvl - 5)}d8 + ${spellMod}`,
     },
     picker: { allowSelf: true, preHighlightSelf: false, excludeDead: false },
-    flavorOnConfirm: "Up to six creatures heal 3d8 + spellcasting modifier (+1d8 per upcast above 5th).",
+    byEdition: {
+      "2014": {
+        heal: {
+          formula: (castLvl, spellMod) => `${3 + Math.max(0, castLvl - 5)}d8 + ${spellMod}`,
+          excludeTypes: ["undead", "construct"],
+        },
+        flavorOnConfirm: "Up to six creatures in the sphere heal 3d8 + spellcasting modifier "
+          + "(+1d8 per upcast above 5th). No effect on undead or constructs.",
+      },
+    },
+    flavorOnConfirm: "Up to six creatures in the sphere heal 5d8 + spellcasting modifier "
+      + "(+1d8 per upcast above 5th).",
   },
 
   "mass healing word": {
