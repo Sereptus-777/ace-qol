@@ -49,7 +49,7 @@ import { InvisibilityBreaker } from "./invisibility-breaker.mjs";
 import { AceFX } from "./ace-fx.mjs";
 import { AttackAbilityResolver } from "./attack-ability-resolver.mjs";
 import { pickHiddenReasonLine, showGmHiddenReasonNotice } from "./hidden-reason-notice.mjs";
-import { safeShowForRoll } from "./dsn-utils.mjs";  // registers the animation so cards can wait for THESE dice
+import { safeShowForRoll, awaitDiceSettle } from "./dsn-utils.mjs";  // registers the animation so cards can wait for THESE dice
 import { RulesBrain } from "./rules/rules-brain.mjs";
 import { SpaceEffects } from "./rules/space-effects.mjs";
 import { SelfTest } from "./rules/self-test.mjs";
@@ -3082,6 +3082,23 @@ Hooks.once("ready", () => {
           // toMessage() was just an ugly duplicate (Johnny 2026-07-14). Fire-and-
           // forget + broadcast; no-ops cleanly if DSN isn't installed.
           safeShowForRoll(roll, "concentration save");
+
+          // ⚠️🔴 THE ANSWER MUST NOT BEAT THE DICE. Johnny, 2026-09-05:
+          // "It said 'maintained' before the dice even rolled... You want the
+          // roll to end before the chat card changes."
+          //
+          // `safeShowForRoll` is deliberately fire-and-forget, so without this
+          // the next line rewrote the button while the dice were still in the
+          // air. Same fault as the save card in July, and his standing rule
+          // since: a card never lands before the dice settle.
+          //
+          // `awaitDiceSettle` waits on the animation's own promise rather than
+          // a guessed delay, and caps itself so a broken renderer cannot hang
+          // the button. With Dice So Nice off it returns immediately.
+          btn.textContent = "ROLLING…";
+          try { await awaitDiceSettle(3000, { graceMs: 350 }); }
+          catch (err) { console.warn(`${MODULE_ID} | concentration dice wait failed:`, err); }
+
           if (!passed) {
             try { await effect.delete(); } catch (_) { /* non-fatal */ }
             btn.textContent = `BROKEN — ${total} vs DC ${dc}`;
