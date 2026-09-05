@@ -23,7 +23,18 @@
 const MODULE_ID = "ace-qol";
 
 /** Shapes that actually put a template on the map. */
-const DRAWS_AN_AREA = new Set(["template-save", "template-trigger", "template-pool"]);
+const DRAWS_AN_AREA = new Set(["template-save", "template-trigger", "template-pool", "template-heal"]);
+
+/**
+ * Shapes whose area is real and measured, just not as a template.
+ *
+ * ⚠️ AN EMANATION HAS NOTHING TO PLACE. It is centred on the caster and moves
+ * with them, so there is no template and none is missing. Calling that a
+ * contradiction is how this check ended up naming four spells that were all
+ * correct — the question is not "did ACE draw it" but "is anything measuring
+ * it", and here something is.
+ */
+const MEASURES_ITS_OWN = new Set(["emanation-heal"]);
 
 /**
  * Shapes where discarding a declared area is a deliberate, correct call:
@@ -54,6 +65,20 @@ export function findGeometryContradictions() {
         const entry = pipeline._getEntry(item);
         if (!entry?.shape) continue;          // ACE is not driving this one
         if (DRAWS_AN_AREA.has(entry.shape)) continue;   // they agree
+        if (MEASURES_ITS_OWN.has(entry.shape)) continue; // measured, just not drawn
+
+        // ⚠️🔴 A SELECTION RADIUS IS NOT A LOST AREA. Pass without Trace picks
+        // who benefits at the moment of casting and the bonus then travels with
+        // them for the hour; Heroes' Feast's cube is where the food appears.
+        // Neither leaves anything on the ground for cover, elevation or an
+        // animation to measure, so drawing a circle would be inventing one.
+        //
+        // Johnny, 2026-09-04, on this card appearing every load: "I want to know
+        // what it's saying and why." Three of the four it named were correct by
+        // design, which is a reporter crying wolf until nobody reads it. An
+        // entry now says so about ITSELF rather than this file keeping a list of
+        // exceptions that would drift from the entries it describes.
+        if (entry.areaIsSelection === true) continue;
 
         seen.add(key);
         out.push({

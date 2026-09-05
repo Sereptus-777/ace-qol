@@ -510,6 +510,13 @@ Hooks.once("init", () => {
     .then(({ StormVisuals }) => StormVisuals.init())
     .catch(err => console.error(`${MODULE_ID} | Storm Visuals init failed:`, err));
 
+  // ── Emanations that heal (2026-09-04) ──
+  // Aura of Vitality and anything shaped like it: offered again each turn, and
+  // ended when its concentration is.
+  import("./spell-pipeline/resolvers/emanation.mjs")
+    .then(({ EmanationResolver }) => EmanationResolver.register())
+    .catch(err => console.error(`${MODULE_ID} | Emanation resolver init failed:`, err));
+
   // ── One door for every check and save a person clicks (2026-09-04) ──
   // Hooks the ROLL, not any one button, so the sheet, the action bar, a macro
   // and a chat button all get ACE's pause and ACE's card.

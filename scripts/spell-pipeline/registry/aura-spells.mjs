@@ -52,11 +52,30 @@ export const AURA_SPELLS = {
 
   // ── Aura of Vitality (3rd, V, self, 30-ft emanation, 1 min, conc.) ──────
   // Bonus action: heal one creature in range for 2d6 HP. No damage, no save.
+  // ── Aura of Vitality ───────────────────────────────────────────────
+  // ⚠️🔴 THIS SAID `shape: "aura"` AND THAT MEANT NOTHING HAPPENED. The aura
+  // shape hands off to the aura engine, and that engine knows five things, all
+  // paladin class features. It has never heard of a spell. The cast reached an
+  // owner that could not accept it and died there, leaving one console warning.
+  //
+  // ⚠️ AN EMANATION IS NOT A TEMPLATE AND NOT A CLASS AURA. It is centred on
+  // the caster, moves with them, and its whole use is a decision the caster
+  // makes on their turn. That is its own shape.
+  //
+  // ⚠️ THE EDITIONS AGREE ON THE SIZE AND THE DICE, AND DIFFER ON THE COST.
+  // 2014 spends a BONUS ACTION on a later turn; 2024 gives it "when you create
+  // it and at the start of each of your turns". Both are offered once a turn, so
+  // the card names the cost rather than pretending they are the same.
   "aura of vitality": {
-    shape: "aura",
+    shape: "emanation-heal",
     range: 0,
     save: null,
-    flavorOnConfirm: "A 30-ft emanation of healing energy follows the caster. Bonus action: heal one creature in range for 2d6 HP.",
+    emanation: { radiusFt: 30, cost: "when you create it and at the start of each of your turns" },
+    heal: { formula: () => "2d6" },
+    byEdition: {
+      "2014": { emanation: { radiusFt: 30, cost: "bonus action" } },
+    },
+    flavorOnConfirm: "A 30-ft emanation of healing energy follows the caster, restoring 2d6 hit points to one creature in it.",
   },
 
   // ── Holy Weapon (5th, V·S, self, 60 feet, 1 min, conc.) ───────────────────
@@ -64,10 +83,17 @@ export const AURA_SPELLS = {
   // burst 30 feet on dismiss (CON save vs 4d10 radiant, half). No aura per se;
   // the emanation behaviour is on the dismiss burst. Aura-engine handles
   // the burst on dismiss event via the buff's Active Effect lifecycle.
-  "holy weapon": {
-    shape: "aura",
-    range: 0,
-    save: { ability: "con", halfOnPass: true },
-    flavorOnConfirm: "Your weapon glows with radiant power — +2d10 radiant per hit. As a bonus action, dismiss to burst 30 feet radiant (4d10 CON save half).",
-  },
+  // ── Holy Weapon ── DELIBERATELY NOT REGISTERED ───────────────────────
+  //
+  // ⚠️🔴 ITS ENTRY WAS DEAD AND ITS NUMBERS WERE WRONG. It carried
+  // `shape: "aura"`, which hands off to the paladin class-feature engine and
+  // therefore did nothing at all — the same fault as Aura of Vitality. And the
+  // flavour promised +2d10 on hit and 4d10 on the burst; RAW is 2d8 and 4d8.
+  //
+  // ⚠️ AN ENTRY THAT IS WRONG IS WORSE THAN NO ENTRY. With none, the pipeline
+  // does not claim the spell and dnd5e resolves the item on its own sheet —
+  // which for a weapon buff with a dismiss burst is a working outcome, and the
+  // inference engine still reads it. With a dead one, ACE claimed it and dropped
+  // it. Nobody at this table owns the spell, so there is no live data to build a
+  // proper shape against; it goes back to dnd5e until somebody does.
 };

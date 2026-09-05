@@ -159,7 +159,12 @@ export const BUFF_SPELLS = {
     flavorOnConfirm: "Target's speed doubles, +2 AC, advantage on Dex saves, +1 action per turn.",
   },
 
+  // ⚠️ THE 30 FEET CHOOSES WHO BENEFITS, and the bonus then travels with them
+  // for the hour wherever they go. Nothing is left on the ground, so there is no
+  // area to draw and none is missing. See `areaIsSelection` in the geometry
+  // contradiction check.
   "pass without trace": {
+    areaIsSelection: true,
     shape: "multi-buff",
     range: 0,  // 30 feet radius aura
     countResolver: () => 999,
@@ -186,7 +191,11 @@ export const BUFF_SPELLS = {
     flavorOnConfirm: "Target adds 1d4 to one ability check of their choice within the next minute.",
   },
 
+  // ⚠️ THE 10-FOOT CUBE IS WHERE THE FOOD APPEARS. Up to twelve creatures spend
+  // an hour eating it and the benefit lasts a day; nothing happens to anyone for
+  // standing in the cube afterwards.
   "heroes' feast": {
+    areaIsSelection: true,
     aliases: ["heroes feast"],
     shape: "multi-buff",
     range: 30,

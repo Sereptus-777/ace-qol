@@ -545,6 +545,11 @@ export class SpellPipeline {
           await SpellPipeline._commitSlotOnTemplatePlaced(activity, castLevel);
           break;
 
+        case "emanation-heal":
+          // Centred on the caster, moves with them, offered again each turn.
+          await (await import("./resolvers/emanation.mjs")).EmanationResolver.runHeal(ctx);
+          break;
+
         case "template-heal":
           // Place the area, choose from who is inside it, heal them.
           await TemplateResolver.runHeal(ctx);
