@@ -1600,8 +1600,23 @@
 .ace-qol-save-result-row {
   border-bottom: 1px solid rgba(255,255,255,0.06);
 }
+/* ⚠️🔴 THESE ROWS MUST WRAP, AND THEY DID NOT.
+   Johnny's screenshot, 2026-09-05: the HP box on every target ran off the right
+   edge of the card and was cut in half — "HP: 32-", "HP: 201", "HP: 156". Not
+   squeezed, CLIPPED, so the number he needs is simply not on screen.
+
+   A flex row with no `flex-wrap` defaults to nowrap. The override line carries
+   five buttons, the damage number and the HP chip, and the chip is deliberately
+   `flex-shrink: 0; white-space: nowrap` so "32→28" can never break mid-number.
+   Correct on its own, fatal on a row that cannot wrap: something has to give and
+   what gave was the right-hand edge.
+
+   ⚠️ HEIGHT IS FREE. That is the standing rule for every card in this suite,
+   and it is exactly what these three rows were missing. row-gap keeps the second
+   line from touching the first. */
 .ace-qol-save-result-line {
   display: flex; align-items: center; gap: 4px;
+  flex-wrap: wrap; row-gap: 3px;
   padding: 3px 4px; min-height: 26px;
 }
 .ace-qol-save-result-line .ace-qol-save-tgt-name {
@@ -1649,6 +1664,7 @@
 /* ─── Override Button Sub-Line (beneath each target row) ──── */
 .ace-qol-save-ovr-line {
   display: flex; align-items: center; gap: 3px;
+  flex-wrap: wrap; row-gap: 4px;
   padding: 1px 4px 3px; margin-top: -1px;
 }
 .ace-qol-save-ovr-x {
@@ -1661,8 +1677,14 @@
 .ace-qol-save-ovr-x:hover {
   background: rgba(255,82,82,0.25); border-color: #ff5252; color: #fff;
 }
+/* ⚠️ THE SPACER PUSHES HP RIGHT ON A FULL-WIDTH ROW AND MUST NOT SURVIVE A
+   WRAP. `flex: 1` on a wrapping row still eats the remaining space on the first
+   line, which is what we want, but it must never grow so far that it forces the
+   chip onto a line of its own while there is room beside it. Capping the basis
+   at zero lets it fill the gap without inventing one. */
 .ace-qol-save-ovr-spacer {
-  flex: 1;
+  flex: 1 1 0;
+  min-width: 0;
 }
 .ace-qol-save-ovr {
   padding: 0 7px; font-size: 0.75rem; border-radius: 3px;
@@ -1739,6 +1761,7 @@
 }
 .ace-qol-save-pc-result-line {
   display: flex; align-items: center; gap: 6px;
+  flex-wrap: wrap; row-gap: 3px;
 }
 .ace-qol-save-pc-result-line .ace-qol-save-tgt-img {
   width: 24px; height: 24px; border-radius: 50%; object-fit: cover;
