@@ -92,6 +92,21 @@ export function emanatesFromCaster(entry, activity) {
   return { yes: false, radiusFt: null, why: "it is aimed somewhere other than the caster" };
 }
 
+
+/** Every damage type this action states, however dnd5e stores them. */
+function _damageTypesOf(activity) {
+  const out = [];
+  try {
+    for (const part of (activity?.damage?.parts ?? [])) {
+      const t = part?.types;
+      if (t instanceof Set) out.push(...t);
+      else if (Array.isArray(t)) out.push(...t);
+      else if (t) out.push(t);
+    }
+  } catch (_) { /* no damage stated is a normal answer */ }
+  return [...new Set(out.map(String))];
+}
+
 /**
  * The caster's own token on this scene, or null with a reason.
  *
@@ -153,5 +168,147 @@ export async function drawCasterEmanation(activity, entry) {
   const created = await canvas.scene.createEmbeddedDocuments("MeasuredTemplate", data);
   console.log(`${LOG} | ${item.name}: drew a ${data[0]?.distance ?? "?"} foot area centred on `
     + `${token.name ?? actor.name} — nothing to place.`);
+
+  // ⚠️ AND SHOW HIM IT HAPPENED. Read straight off the activity rather than
+  // from a profile, so this works for an NPC's ability and for homebrew the
+  // registry has never heard of — which is the whole point of the burst.
+  const radiusFt = Number(entry?.emanation?.radiusFt ?? data[0]?.distance) || 0;
+  playEmanationBurst({
+    token, radiusFt, item,
+    heals: !!(entry?.heal || activity?.healing || String(activity?.type) === "heal"),
+    damageTypes: _damageTypesOf(activity),
+  }).catch(err => console.warn(`${LOG} | burst failed for ${item.name}:`, err));
+
   return created;
+}
+
+/* ── The burst ─────────────────────────────────────────────────────────────
+ *
+ * Johnny, 2026-09-05: "I would like something drawn, just for a 3-second
+ * animation or whatever, that just visually lets the guy know that he has cast
+ * it... Just show us some sort of burst, and do the same thing for any spell
+ * that's a circle and self-emanation... colour-coded to what it would be."
+ *
+ * ⚠️🔴 AND IT IS NOW THE ONLY THING THAT SHOWS A CAST AT ALL. Automated
+ * Animations hangs its effect on a TEMPLATE. That is why it works so well for
+ * Fireball and why nothing here touches it. But ACE has just stopped these
+ * spells from placing a template, so AA has nothing to attach to and the cast
+ * became completely invisible — the same way Colour Spray was correct and
+ * unseen. Drawing this is not decoration, it is the only feedback there is.
+ *
+ * ⚠️ EVERY PATH BELOW WAS READ OFF HIS DISK, NOT REMEMBERED. The database
+ * keys and the file paths both come from his installed jb2a_patreon library, so
+ * a key that has been renamed still falls back to a file that exists.
+ */
+
+/**
+ * What colour is this spell, and which effect says so.
+ *
+ * ⚠️ A TABLE, KEYED BY WHAT THE SPELL DOES. Healing first, because a spell
+ * that heals is green whatever else it carries, and Aura of Vitality is the
+ * reason this exists. Then the damage type, which is the thing a player reads
+ * a colour as. Anything with neither gets a neutral shimmer rather than an
+ * explosion, because a buff that looks like a fireball is a lie.
+ */
+export function burstFor({ heals = false, damageTypes = [] } = {}) {
+  if (heals) {
+    return { key: "jb2a.healing_generic.burst.greenorange",
+             file: "modules/jb2a_patreon/Library/Generic/Healing/HealingAbility_02_Regular_GreenOrange_Burst_600x600.webm",
+             tint: null, why: "it heals" };
+  }
+  const BY_TYPE = {
+    necrotic:    ["purple", "necrotic"],
+    poison:      ["green",  "poison"],
+    acid:        ["green",  "acid"],
+    fire:        ["orange", "fire"],
+    cold:        ["blue",   "cold"],
+    lightning:   ["blue",   "lightning"],
+    thunder:     ["blue",   "thunder"],
+    force:       ["purple", "force"],
+    psychic:     ["purple", "psychic"],
+    radiant:     ["yellow", "radiant"],
+    bludgeoning: ["orange", "impact"],
+    piercing:    ["orange", "impact"],
+    slashing:    ["orange", "impact"],
+  };
+  for (const t of damageTypes) {
+    const hit = BY_TYPE[String(t).toLowerCase()];
+    if (hit) {
+      return { key: `jb2a.explosion.01.${hit[0]}`,
+               file: `modules/jb2a_patreon/Library/Generic/Explosion/Explosion_01_${
+                 hit[0].charAt(0).toUpperCase() + hit[0].slice(1)}_400x400.webm`,
+               tint: null, why: `it deals ${hit[1]} damage` };
+    }
+  }
+  if (damageTypes.length) {
+    return { key: "jb2a.explosion.01.orange",
+             file: "modules/jb2a_patreon/Library/Generic/Explosion/Explosion_01_Orange_400x400.webm",
+             tint: null, why: "it deals damage" };
+  }
+  // ⚠️ NOTHING STATED IS NOT AN EXPLOSION. A blur of blue reads as "something
+  // happened here" without claiming the spell hurt anybody.
+  return { key: "jb2a.healing_generic.burst.bluewhite",
+           file: "modules/jb2a_patreon/Library/Generic/Healing/HealingAbility_02_Regular_BlueWhite_Burst_600x600.webm",
+           tint: null, why: "it neither heals nor damages, so it gets a neutral flare" };
+}
+
+/** Casts already drawn, so one press cannot stack bursts. */
+const _burstsInFlight = new Set();
+
+/**
+ * Draw the burst.
+ *
+ * ⚠️🔴 COALESCED, BECAUSE `play()` RETURNS BEFORE SEQUENCER KNOWS. That is
+ * the 2026-09-02 lesson that put seventeen copies of one aura ring on one
+ * token: presence-testing what is on screen does not work, because nothing is
+ * on screen yet. So the in-flight work is tracked here, by cast, and a repeat
+ * within the same second is refused.
+ */
+export async function playEmanationBurst({ token, radiusFt, item, heals, damageTypes }) {
+  if (!token) return;
+  const Seq = globalThis.Sequencer;
+  if (!Seq || typeof globalThis.Sequence !== "function") {
+    // ⚠️ SAID ONCE, NOT SILENTLY. Without Sequencer these spells have no
+    // picture at all now, and "no animation module" must not look like "the
+    // spell did nothing".
+    if (!playEmanationBurst._warned) {
+      playEmanationBurst._warned = true;
+      console.warn(`${LOG} | Sequencer is not installed, so self-emanating spells will `
+        + `have no visible burst. The rules are unaffected.`);
+    }
+    return;
+  }
+
+  const key = `${token.id}|${item?.id ?? item?.name ?? "?"}`;
+  if (_burstsInFlight.has(key)) {
+    console.debug(`${LOG} | a burst for ${item?.name} on ${token.name} is already playing.`);
+    return;
+  }
+  _burstsInFlight.add(key);
+  setTimeout(() => _burstsInFlight.delete(key), 1000);
+
+  const pick = burstFor({ heals, damageTypes });
+  let asset = null;
+  try { if (Seq.Database?.entryExists?.(pick.key)) asset = pick.key; } catch (_) { /* fall through */ }
+  if (!asset) asset = pick.file;
+
+  // A 30 foot emanation is 60 feet across. Sequencer sizes in grid units, so
+  // the burst is exactly as wide as the area it represents.
+  const diameter = Math.max(5, (Number(radiusFt) || 0) * 2);
+
+  try {
+    await new globalThis.Sequence()
+      .effect()
+      .file(asset)
+      .atLocation(token)
+      .size(diameter, { gridUnits: true })
+      .duration(3000)
+      .fadeIn(150)
+      .fadeOut(600)
+      .play();
+    console.log(`${LOG} | ${item?.name}: drew a ${diameter} foot burst on ${token.name} `
+      + `(${pick.why}).`);
+  } catch (err) {
+    console.warn(`${LOG} | could not draw the burst for ${item?.name}:`, err);
+  }
 }

@@ -24,7 +24,7 @@ globalThis.CONFIG = { DND5E: { areaTargetTypes: {
 globalThis.canvas = { tokens: { placeables: [] }, scene: null };
 globalThis.ui = { notifications: { info: () => {}, warn: () => {}, error: () => {} } };
 
-const { emanatesFromCaster, CASTER_CENTRED_SHAPES } = await import(
+const { emanatesFromCaster, CASTER_CENTRED_SHAPES, burstFor } = await import(
   "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/caster-emanation.mjs");
 
 let pass = 0, fail = 0;
@@ -90,6 +90,46 @@ check("a template type dnd5e does not know keeps the prompt",
 console.log("\nTHE LIST IS A TABLE, SO ADDING TO IT IS THE FIX");
 check("the caster-centred shapes are enumerated, not hardcoded in a branch",
   [...CASTER_CENTRED_SHAPES].sort(), ["aura", "emanation-heal", "self"]);
+
+console.log("\nTHE BURST IS COLOUR-CODED TO WHAT THE SPELL DOES");
+// ⚠️ HEALING WINS OVER EVERYTHING. Aura of Vitality is why this exists, and
+// a spell that restores hit points is green whatever else it carries.
+check("healing is the green healing burst",
+  burstFor({ heals: true }).key, "jb2a.healing_generic.burst.greenorange");
+check("healing beats a damage type on the same item",
+  burstFor({ heals: true, damageTypes: ["fire"] }).key, "jb2a.healing_generic.burst.greenorange");
+
+check("necrotic is purple",  burstFor({ damageTypes: ["necrotic"] }).key,  "jb2a.explosion.01.purple");
+check("fire is orange",      burstFor({ damageTypes: ["fire"] }).key,      "jb2a.explosion.01.orange");
+check("cold is blue",        burstFor({ damageTypes: ["cold"] }).key,      "jb2a.explosion.01.blue");
+check("poison is green",     burstFor({ damageTypes: ["poison"] }).key,    "jb2a.explosion.01.green");
+check("radiant is yellow",   burstFor({ damageTypes: ["radiant"] }).key,   "jb2a.explosion.01.yellow");
+check("psychic is purple",   burstFor({ damageTypes: ["psychic"] }).key,   "jb2a.explosion.01.purple");
+check("a damage type is read case-insensitively",
+  burstFor({ damageTypes: ["Necrotic"] }).key, "jb2a.explosion.01.purple");
+check("an unknown damage type still gets a damage burst",
+  burstFor({ damageTypes: ["chocolate"] }).key, "jb2a.explosion.01.orange");
+
+// ⚠️ A BUFF IS NOT AN EXPLOSION. Detect Magic bursting like a fireball would
+// tell the table something violent had happened.
+check("nothing stated gets a neutral flare, not an explosion",
+  burstFor({}).key, "jb2a.healing_generic.burst.bluewhite");
+check("and it says why", burstFor({}).why, "it neither heals nor damages, so it gets a neutral flare");
+
+console.log("\nEVERY FALLBACK FILE IS ONE THAT ACTUALLY EXISTS");
+// ⚠️🔴 READ OFF HIS DISK, NOT REMEMBERED. A Sequencer database key that has
+// been renamed falls back to a file path, and a path that does not exist is a
+// spell with no picture and a console warning nobody reads. These are checked
+// against the installed library.
+{
+  const fs = await import("node:fs");
+  const cases = [{ heals: true }, {}, { damageTypes: ["necrotic"] }, { damageTypes: ["fire"] },
+                 { damageTypes: ["cold"] }, { damageTypes: ["poison"] },
+                 { damageTypes: ["radiant"] }, { damageTypes: ["nonsense"] }];
+  const missing = cases.map(c => burstFor(c).file)
+    .filter(f => !fs.existsSync("D:/FoundryVTT/Data/" + f));
+  check("every burst falls back to a file that is installed", missing, []);
+}
 
 console.log("");
 console.log(pass + " passed, " + fail + " failed");
