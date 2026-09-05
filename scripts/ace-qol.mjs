@@ -510,6 +510,13 @@ Hooks.once("init", () => {
     .then(({ StormVisuals }) => StormVisuals.init())
     .catch(err => console.error(`${MODULE_ID} | Storm Visuals init failed:`, err));
 
+  // ── Does the registry agree with his items? (2026-09-04) ──
+  // A curated entry that disagrees with the item is the worst kind of wrong: the
+  // spell still resolves and quietly uses somebody else's numbers.
+  import("./registry-audit.mjs")
+    .then(({ RegistryAudit }) => RegistryAudit.register())
+    .catch(err => console.error(`${MODULE_ID} | Registry audit init failed:`, err));
+
   // ── Emanations that heal (2026-09-04) ──
   // Aura of Vitality and anything shaped like it: offered again each turn, and
   // ended when its concentration is.
