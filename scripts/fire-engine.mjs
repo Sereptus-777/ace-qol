@@ -1034,7 +1034,12 @@ export class FireEngine {
           name: "ace-douse-fire",
           order: 99011,
           title: "ACE — Put it out",
-          icon: "fas fa-fire-flame-simple ace-douse-tool",
+          // ⚠️🔴 THE SAME GLYPH, WHICH IS WHAT HE ASKED FOR: "the exact same
+          // icon with a slash through it, but blue." It was `fa-fire-flame-simple`,
+          // a different flame that may not even exist in the Font Awesome build
+          // Foundry ships — an icon that renders as nothing is a button he
+          // cannot find, which is exactly what happened.
+          icon: "fas fa-fire ace-douse-tool",
           button: true,
           visible: true,
           onChange: () => FireEngine.douse(),

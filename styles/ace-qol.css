@@ -6097,3 +6097,26 @@
 #controls .ace-undo-fire-tool,
 .scene-control .ace-undo-fire-tool,
 .control-tool .ace-undo-fire-tool { color: #f0c060; }
+
+
+/* ⚠️🔴 CONTAINER-INDEPENDENT, ON PURPOSE. The first version of these rules
+   required #controls / .scene-control / .control-tool as an ancestor, and if
+   Foundry's toolbar markup is not one of those the colour silently never
+   applies — a button that looks like every other button, which is how he ended
+   up pressing the wrong flame. The class is on the icon itself, so match on
+   the class alone and let nothing else decide.
+   no-wrap-ok: a toolbar button is one glyph. */
+i.ace-fire-tool       { color: #ff4d2d !important; }
+i.ace-douse-tool      { color: #4db8ff !important; position: relative; }
+i.ace-undo-fire-tool  { color: #f0c060 !important; }
+
+i.ace-douse-tool::after {
+  content: "";
+  position: absolute;
+  left: -2px; right: -2px; top: 50%;
+  height: 2px;
+  background: #4db8ff;
+  transform: rotate(-45deg);
+  transform-origin: center;
+  pointer-events: none;
+}
