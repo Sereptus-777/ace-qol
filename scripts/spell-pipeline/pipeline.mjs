@@ -94,6 +94,9 @@ export class SpellPipeline {
   // ═══════════════════════════════════════════════════════════════════════════
 
   static initialize() {
+    // A misspelled edition key is silent forever otherwise — see auditEditionKeys.
+    SpellPipeline.auditEditionKeys();
+
     // ── Pre-cast: registry check + slot deferral + stale-target clear ──
     Hooks.on("dnd5e.preUseActivity", (activity, usageConfig) => {
       try {
@@ -444,8 +447,59 @@ export class SpellPipeline {
     } catch (_) {
       editionKey = CombatState.getActiveRulesVersion();
     }
-    if (!entry.byEdition?.[editionKey]) return entry;
-    return { ...entry, ...entry.byEdition[editionKey] };
+
+    // ⚠️🔴 THE REGISTRY SPEAKS TWO DIALECTS AND I ONLY TAUGHT IT ONE.
+    //
+    // Ten entries key their overrides `legacy` / `modern`; eleven key them
+    // "2014" / "2024". `getActiveRulesVersion()` returns legacy/modern, so
+    // before 2026-09-05 the first ten worked and the other eleven had NEVER
+    // fired — including four I added the same night. Switching this to
+    // `resolveEdition`, which returns 2014/2024, fixed those eleven and killed
+    // the ten. A straight trade of one silent breakage for another, shipped in
+    // 0.13.12 and caught twenty minutes later by the audit reporting Sleep.
+    //
+    // ⚠️ SLEEP IS WHY IT MATTERS. Its 2014 branch is not a tweak, it is a
+    // different spell: no save at all and a 5d8 hit-point pool instead of a
+    // Wisdom save. A 2014 caster was getting the 2024 rules outright.
+    //
+    // ⚠️ SO BOTH SPELLINGS ARE ACCEPTED, and the boot check below names any
+    // entry using a word that is neither. Normalising all 21 entries to one
+    // vocabulary is the tidier fix and is a separate job; making ten live
+    // spells work again is tonight's.
+    const ALIASES = { "2014": ["2014", "legacy"], "2024": ["2024", "modern"] };
+    for (const key of (ALIASES[editionKey] ?? [editionKey])) {
+      if (entry.byEdition?.[key]) return { ...entry, ...entry.byEdition[key] };
+    }
+    return entry;
+  }
+
+  /**
+   * Say so at boot if an entry keys its override with a word nothing reads.
+   *
+   * ⚠️ THE FAILURE IS TOTALLY SILENT OTHERWISE. A misspelled edition key does
+   * not throw, does not warn, and does not change the shape of anything — the
+   * spell simply resolves with the other edition's rules forever. Two different
+   * spellings lived in this registry for months and nothing anywhere said so.
+   */
+  static auditEditionKeys() {
+    const KNOWN = new Set(["2014", "2024", "legacy", "modern"]);
+    const bad = [];
+    try {
+      for (const [name, entry] of Object.entries(SPELL_REGISTRY ?? {})) {
+        for (const key of Object.keys(entry?.byEdition ?? {})) {
+          if (!KNOWN.has(key)) bad.push(`${name}: byEdition.${key}`);
+        }
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not check the edition keys:`, err);
+      return [];
+    }
+    if (bad.length) {
+      console.warn(`${MODULE_ID} | ${bad.length} spell entr(ies) key an edition override with a `
+        + `word nothing reads, so that branch never fires and the spell silently uses the other `
+        + `edition's rules: ${bad.join(", ")}. Valid keys are 2014, 2024, legacy, modern.`);
+    }
+    return bad;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
