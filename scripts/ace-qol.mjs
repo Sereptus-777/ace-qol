@@ -55,6 +55,7 @@ import { SpaceEffects } from "./rules/space-effects.mjs";
 import { SelfTest } from "./rules/self-test.mjs";
 import { openRulesCoverage, registerCoverageButton } from "./rules/coverage-report.mjs";
 import { ActionInterceptor } from "./profiles/action-interceptor.mjs";
+import { RulesIndex } from "./rules/rules-index.mjs";
 import { ConditionVisuals, BODY_VISUAL_STATUSES } from "./condition-visuals.mjs";
 import { SpellPipeline } from "./spell-pipeline/pipeline.mjs";
 import { HookAPI }              from "./hook-api.mjs";
@@ -483,6 +484,23 @@ Hooks.once("init", () => {
     console.log(`${MODULE_ID} | Module disabled — skipping init subsystems.`);
     return;
   }
+
+  // ── THE READING (2026-09-05) — FIRST, BEFORE ANYTHING MAY CANCEL ──
+  //
+  // ⚠️🔴 REGISTERED AT INIT ON PURPOSE, AND THAT IS THE WHOLE FIX. Every
+  // other handler on `dnd5e.preUseActivity` registers during ready, and
+  // Foundry's `Hooks.call` STOPS THE CHAIN at the first handler that returns
+  // false. The heal pipeline registers at line ~1871 and returns false, so the
+  // universal audit that used to register at ~2103 had never once seen a heal
+  // — which is why three dead heal spells went unreported for months while a
+  // module whose entire job is watching every button watched none of them.
+  //
+  // Registering here puts the engine ahead of all of them. It still never
+  // cancels and never steers; it reads, checks the books, and refuses to let a
+  // dead button pass without saying so.
+  try { ActionInterceptor.register(); }
+  catch (err) { console.error(`${MODULE_ID} | THE READING failed to start — every pipeline `
+    + `falls back to guessing on its own:`, err); }
 
   // ── Usage cards (2026-07-27) ──
   // dnd5e's item-usage card is never CREATED (not hidden — never created), and
@@ -2100,7 +2118,9 @@ Hooks.once("ready", () => {
   try { MovementClock.register(); } catch (err) { console.error(`${MODULE_ID} | MovementClock init failed:`, err); }
   try { TheClock.register(); } catch (err) { console.error(`${MODULE_ID} | TheClock init failed:`, err); }
   try { SpaceEffects.register(); } catch (err) { console.error(`${MODULE_ID} | SpaceEffects init failed:`, err); }
-  try { ActionInterceptor.register(); } catch (err) { console.error(`${MODULE_ID} | ActionInterceptor init failed:`, err); }
+  // ActionInterceptor now registers at INIT (see "THE READING" above) so it is
+  // ahead of every handler that can cancel a cast. Registering it here as well
+  // would read every button twice and warn about every disagreement twice.
   try { registerCoverageButton(); } catch (err) { console.error(`${MODULE_ID} | coverage toolbar button failed:`, err); }
   try { ConditionVisuals.register(); } catch (err) { console.error(`${MODULE_ID} | ConditionVisuals init failed:`, err); }
 
@@ -5629,6 +5649,15 @@ Hooks.once("ready", () => {
     whyNoAnimation, animationFor, invalidateAnimationIndex: invalidate,
     //   game.aceQol.whyNoAura()   where in the chain an aura stopped
     whyNoAura,
+
+    // ── THE READING + THE BOOKS (2026-09-05) ────────────────────────────
+    //   game.aceQol.readings()          every button pressed this session,
+    //                                   what ACE read it as, who owned it, and
+    //                                   whether anything actually appeared
+    //   game.aceQol.rulesIndexReport()  which rule books got indexed
+    //   game.aceQol.checkAgainstBooks() every item on every PC vs the books
+    readings: () => ActionInterceptor.report(),
+    rulesIndexReport: () => RulesIndex.report(),
 
     readActionFacts, describeActionFacts,
     classifyItem, describeClassification,

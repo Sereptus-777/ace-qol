@@ -43,6 +43,13 @@ import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { QolSettings } from "./settings.mjs";
 import { HealTargetPicker } from "./heal-target-picker.mjs";
 import { HealCardRenderer } from "./heal-card-renderer.mjs";
+// ⚠️ THE HEAL PIPELINE NOW ASKS INSTEAD OF GUESSING. It used to work out what
+// a spell was entirely on its own, in `_classify`, and got a different answer
+// than the file next door — which is how Aura of Vitality was suppressed as an
+// emanation by one part of ACE and awaited as a template by this one, in the
+// same second.
+import { SpellPipeline } from "./spell-pipeline/pipeline.mjs";
+import { ActionInterceptor } from "./profiles/action-interceptor.mjs";
 
 export class HealPipeline {
 
@@ -174,11 +181,62 @@ export class HealPipeline {
         console.log(`${MODULE_ID} | HealPipeline: not a heal (type=${activity.type}) — pass through`);
         return;
       }
+      // ⚠️🔴 STAND ASIDE WHEN THE REGISTRY OWNS THE SPELL. This is the
+      // fix for three spells that were dead on his sheet for months.
+      //
+      // Returning false below cancels dnd5e's cast outright, and Foundry's
+      // `Hooks.call` STOPS THE WHOLE CHAIN at the first false — so every
+      // handler registered after this one never runs. The spell pipeline
+      // registers after this one. So for any heal the registry owns, this
+      // pipeline was killing the cast before the pipeline that actually knew
+      // the spell could see it.
+      //
+      // Aura of Vitality has had a complete, correct, edition-aware entry the
+      // whole time (emanation-heal, 30 ft, 2d6, bonus action in 2014) AND a
+      // working resolver. Mass Cure Wounds has one (template-heal, 60 ft,
+      // 30 ft sphere, 6 targets). Mass Healing Word has one (multi-heal). None
+      // of them were ever reached.
+      const item = activity.item;
+      if (!item) return;
+
+      if (SpellPipeline.owns?.(item)) {
+        console.log(`${MODULE_ID} | HealPipeline: "${item.name}" belongs to the spell `
+          + `pipeline — standing aside so it can run.`);
+        return;                                     // no false: the chain continues
+      }
+
+      // ⚠️🔴 A TEMPLATE HEAL MUST NOT CANCEL THE CAST. The old code
+      // returned false here and THEN waited for `dnd5e.createActivityTemplate`
+      // — an event fired by the very cast it had just cancelled. It could never
+      // arrive. The spell was stashed in a variable and sat there until reload,
+      // with no message of any kind. That is what "I press Mass Cure Wounds and
+      // get absolutely nothing" was.
+      //
+      // dnd5e places the template when its flow is allowed to run, and its
+      // usage card is already suppressed elsewhere (`usage-card.mjs`), so
+      // letting the cast proceed costs nothing and makes the wait finite.
+      const classification = this._classify(activity);
+      if (classification.shape === "template") {
+        this._pendingTemplateHeal = { activity, classification, usageConfig };
+        ActionInterceptor.claim?.(activity, "heal-pipeline (placing a template)");
+        console.log(`${MODULE_ID} | HealPipeline: ${item.name} needs a template placed — `
+          + `letting dnd5e place it, then collecting who is inside.`);
+        return;                                     // no false: dnd5e places it
+      }
+
       console.log(`${MODULE_ID} | HealPipeline: INTERCEPTED ${activity.item?.name} → canceling vanilla flow, running pipeline`);
+      ActionInterceptor.claim?.(activity, "heal-pipeline");
 
       // Run our pipeline asynchronously
       this._onHealActivityIntercept(activity, usageConfig)
-        .catch(err => console.error(`${MODULE_ID} | HealPipeline intercept threw:`, err));
+        .catch(err => {
+          // ⚠️ THE CAST IS ALREADY CANCELLED BY THE TIME THIS RUNS. A throw
+          // here means nothing rolled and nothing will, so it cannot be a
+          // console line: that is indistinguishable from a broken feature.
+          console.error(`${MODULE_ID} | HealPipeline intercept threw for "${item.name}":`, err);
+          ui.notifications?.error(`${item.name}: ACE cancelled the cast and then failed. `
+            + `Nothing was healed — see the console.`);
+        });
 
       // Cancel the vanilla flow entirely — no dialog, no auto-roll, no chat
       return false;
@@ -248,9 +306,20 @@ export class HealPipeline {
       return;
     }
 
-    // Template heals: wait for template placement
+    // ⚠️🔴 TEMPLATE HEALS ARE DECIDED AT THE HOOK NOW, AND NEVER REACH HERE.
+    // This used to be the whole handling for a template heal: stash it in a
+    // variable and return. No message, no template, no card. The cast had
+    // already been cancelled ten lines earlier, so the event it was waiting for
+    // could never fire. Three spells died on this line.
+    //
+    // It is kept as a guard rather than deleted, because if the decision above
+    // ever stops catching a shape, the failure must be a sentence on his screen
+    // and not a silent return.
     if (classification.shape === "template") {
-      this._pendingTemplateHeal = { activity, classification, usageConfig };
+      console.error(`${MODULE_ID} | HealPipeline: "${item.name}" reached the async path as a `
+        + `template heal, which should have been handled at the hook. Nothing was cast.`);
+      ui.notifications?.error(`${item.name}: ACE could not place its template. Nothing happened `
+        + `— see the console.`);
       return;
     }
 
