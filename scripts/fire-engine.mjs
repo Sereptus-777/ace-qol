@@ -583,10 +583,6 @@ export class FireEngine {
   static async _toAsh(doc) {
     try {
       const art = await FireEngine._ashArt();   // null = keep his own picture
-      const centreX = doc.x + (doc.width * (canvas?.grid?.size ?? 100)) / 2;
-      const centreY = doc.y + (doc.height * (canvas?.grid?.size ?? 100)) / 2;
-      const gs = canvas?.grid?.size ?? 100;
-
       // ⚠️🔴 TAKE THE "BEFORE" OR THERE IS NOTHING TO UNDO. Turning a body
       // to ash renames it, shrinks it to one square, moves it, drops its
       // rotation and CLEARS THE LOOT SNAPSHOT. None of that can be worked out
@@ -604,10 +600,17 @@ export class FireEngine {
         [`flags.${FLAG_NS}.preAsh`]: before,
         name: `Ashes of ${doc.flags?.[FLAG_NS]?.originalName ?? doc.name}`,
         ...(art ? { "texture.src": art } : {}),
-        width: 1, height: 1,
-        x: Math.round(centreX - gs / 2),
-        y: Math.round(centreY - gs / 2),
-        rotation: 0,
+        // ⚠️🔴 THE TOKEN IS NOT RESIZED OR MOVED ANY MORE. This shrank
+        // every burnt body to a single 5-foot square and repositioned it from
+        // its own centre — which does not land on the grid, so a Large corpse
+        // became a small square sitting between lines. Johnny: "it made my
+        // token a 5-foot square and not snap to grid, which is annoying... you
+        // can't have it changing sizes to 5-foot squares."
+        //
+        // A pile of ash where a dragon lay IS dragon-sized. Nothing about
+        // burning makes a thing move, and a rotation the fire never set is not
+        // the fire's to clear.
+        rotation: doc.rotation ?? 0,
         [`flags.${FLAG_NS}.isAsh`]: true,
         // ⚠️🔴 CLEARING THE SNAPSHOT ALONE WOULD HAND THE LOOT STRAIGHT BACK.
         // Caught auditing this the hour it was written. The loot reader takes
@@ -821,7 +824,14 @@ export class FireEngine {
           // a different flame that may not even exist in the Font Awesome build
           // Foundry ships — an icon that renders as nothing is a button he
           // cannot find, which is exactly what happened.
-          icon: "fas fa-fire ace-douse-tool",
+          // ⚠️🔴 A DIFFERENT GLYPH, BECAUSE THE COLOUR IS NOT ARRIVING.
+          // He asked for the same flame with a blue slash, and that needs CSS
+          // to land on Foundry's own markup — which it plainly is not doing:
+          // "I've got two fire buttons at the bottom, and they both say Set
+          // Fire... None of them are different colours." Two identical flames
+          // with no colour is worse than a different icon. An extinguisher is
+          // unmistakable at a glance, which is the whole job of an icon.
+          icon: "fas fa-fire-extinguisher ace-douse-tool",
           button: true,
           visible: true,
           onChange: () => FireEngine.douse(),
@@ -859,7 +869,39 @@ export class FireEngine {
    * ⚠️ BOTH HALVES ARE NEEDED. The hook alone misses the toolbar that is
    * already on screen; the direct injection alone misses every later re-render.
    */
+  /**
+   * Paint the three tools after the toolbar renders.
+   *
+   * ⚠️🔴 THE STYLESHEET NEVER LANDED. Two attempts at CSS selectors both
+   * failed, and I cannot see his DOM to find out why. Setting the colour on
+   * the element is not elegant, but it depends on nothing except the class
+   * being on the icon, which I control. It runs on every render because
+   * Foundry rebuilds the toolbar whenever the active control changes.
+   */
+  static _paintTools() {
+    const COLOURS = {
+      "ace-fire-tool":      "#ff4d2d",
+      "ace-douse-tool":     "#4db8ff",
+      "ace-undo-fire-tool": "#f0c060",
+    };
+    try {
+      for (const [cls, colour] of Object.entries(COLOURS)) {
+        for (const el of document.querySelectorAll(`.${cls}`)) {
+          el.style.color = colour;
+        }
+      }
+    } catch (err) {
+      console.warn(`${LOG} | could not colour the fire tools:`, err);
+    }
+  }
+
   static _injectPostReady() {
+    // ⚠️ EVERY RENDER, because Foundry rebuilds the toolbar each time the
+    // active control group changes, and a colour applied once is a colour lost
+    // the first time he clicks anything else.
+    Hooks.on("renderSceneControls", () => FireEngine._paintTools());
+    Hooks.on("renderApplicationV2", () => FireEngine._paintTools());
+
     Hooks.on("getSceneControlButtons", (controls) => {
       try { FireEngine._injectTools(controls); }
       catch (err) { console.warn(`${LOG} | could not add the fire tools:`, err); }
