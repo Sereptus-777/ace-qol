@@ -128,6 +128,22 @@ check("a self-range spell is not compared against a number",
   await auditOf([item("Aura of Vitality", { range: { units: "self" } })],
     { "aura of vitality": { range: 30 } }),
   []);
+// ⚠️🔴 THE ONE THAT CAUSED DAMAGE. This audit reported a Cleric 17's Spare
+// the Dying at 120 feet as a disagreement, because ACE's entry held 5. The item
+// was RIGHT: 2024 Spare the Dying is a cantrip whose range doubles at 5th, 11th
+// and 17th level, so 15, 30, 60 and 120 are all correct depending on who is
+// casting it. I believed the audit over his sheet and told him to change items
+// that were already right. An audit confidently wrong about his data does not
+// merely fail to help — it causes damage.
+check("a CANTRIP's range is never compared, whatever the entry says",
+  await auditOf([item("Spare the Dying", { level: 0, range: { units: "ft", value: 120 } })],
+    { "spare the dying": { range: 5 } }),
+  []);
+check("but a levelled spell's range still is",
+  await auditOf([item("Banishment", { level: 4, range: { units: "ft", value: 30 } })],
+    { "banishment": { range: 60 } }),
+  ["Banishment: range: ACE says 60 ft, the item says 30 ft"]);
+
 check("an item with no ACE entry at all is skipped",
   await auditOf([item("Prayer of Healing", { activities: healAct(2, 8) })], {}),
   []);

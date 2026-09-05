@@ -169,14 +169,22 @@ export const HEAL_SPELLS = {
   // through the pipeline. Set excludeDead: false so the dying / dead
   // creature is actually selectable. (revivesDead / stabilizes flags still
   // drive the resolver's restore logic; HealResolver checks them.)
-  // ⚠️🔴 BOTH SIDES WERE WRONG HERE, which is the case an audit is actually
-  // for. ACE said 5 feet, the 2014 "touch" converted; his 2024 item says 120
-  // feet, which is not a number this spell has ever had and looks like an
-  // importer's default. 2024 is 15 feet. The entry now says so; the ITEM still
-  // says 120 and only he can change that.
+  // ⚠️🔴 I CALLED HIS ITEM WRONG AND IT WAS RIGHT. The audit reported ACE at
+  // 5 feet against an item at 120, and I wrote "120 is not a number this spell
+  // has ever had". It is. 2024 Spare the Dying is a cantrip whose range DOUBLES
+  // at 5th, 11th and 17th level: 15, 30, 60, 120. Akra is a Cleric 17, so 120
+  // was correct, and the several copies at different ranges across his sheets
+  // were the scaling, not duplicates. I read a mess in his data that was in my
+  // own head, and told him to change items that were already right.
+  //
+  // ⚠️ SO THE ENTRY HOLDS NO RANGE AT ALL. A spell whose reach depends on the
+  // caster's level cannot be one number in a table. Omitting it makes the picker
+  // read the ITEM's range, which is where the right answer already lives and
+  // where it stays right as the character levels. The same is true of any
+  // scaling cantrip, which is why this is not a special case for one spell.
   "spare the dying": {
     shape: "touch",
-    range: 5,
+    // range: deliberately absent — read off the item. See above.
     heal: {
       formula: () => "0",
       stabilizes: true,  // Clears death saves but doesn't restore HP

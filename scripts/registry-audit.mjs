@@ -187,7 +187,20 @@ export class RegistryAudit {
       }
 
       // ── 2. The range ──
-      if (Number.isFinite(Number(entry?.range)) && Number(entry.range) > 0) {
+      //
+      // ⚠️🔴 A CANTRIP'S RANGE CAN DEPEND ON THE CASTER'S LEVEL, and then no
+      // single number in a table is right. 2024 Spare the Dying doubles at 5th,
+      // 11th and 17th: 15, 30, 60, 120. This audit reported a Cleric 17's
+      // correct 120 as a disagreement, I believed it, and I told him to change
+      // an item that was already right. An audit that is confidently wrong
+      // about his data is worse than no audit — it does not merely fail to
+      // help, it causes damage.
+      //
+      // ⚠️ SO A CANTRIP'S RANGE IS NEVER COMPARED. The entry for a scaling
+      // cantrip should carry no range at all and read the item's, which this
+      // now assumes rather than second-guesses.
+      const isCantrip = Number(item.system?.level) === 0;
+      if (!isCantrip && Number.isFinite(Number(entry?.range)) && Number(entry.range) > 0) {
         const theirs = _itemRangeFt(item);
         if (typeof theirs === "number" && theirs !== Number(entry.range)) {
           issues.push(`range: ACE says ${entry.range} ft, the item says ${theirs} ft`);
