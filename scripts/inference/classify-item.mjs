@@ -60,6 +60,98 @@ export const KNOWN_SHAPES = new Set([
 ]);
 
 /**
+ * Everything his item does not say, taken from the book entry for the same
+ * spell in the same edition.
+ *
+ * ⚠️🔴 THE BOOK ARRIVED AFTER THE VERDICT, AND HE CAUGHT IT.
+ * Johnny, 2026-09-05: "It did not compare it to the actual spell itself that we
+ * have in memory, or somewhere on the disk, or somewhere in the monster manual."
+ * He was right. The book was being opened after the shape had already been
+ * decided, purely to complain about differences. It was an auditor, not a
+ * source. This is the book being consulted BEFORE the decision.
+ *
+ * ⚠️ HIS ITEM ALWAYS WINS WHERE IT SPEAKS. Only silence is filled. His copy
+ * is what is being cast, and a book value that overwrote a stated one would be
+ * the Spare the Dying mistake again — where I believed a canonical number over
+ * his sheet and had him change items that were already correct.
+ *
+ * ⚠️ AND EVERY FILL IS NAMED. A shape that came out right because the book
+ * supplied the radius must not look like a shape read off his own item, or the
+ * next person to debug it starts from a false picture.
+ */
+export function fillFromBook(mine, book) {
+  const bookFacts = (() => {
+    try { return readActionFacts(book); } catch (_) { return null; }
+  })();
+  if (!bookFacts?.readable) return mine;
+
+  const why = [...(mine.evidence ?? [])];
+  const took = [];
+  const out = {
+    ...mine,
+    scope: { ...mine.scope }, delivery: { ...mine.delivery },
+    resolution: { ...mine.resolution }, change: { ...mine.change },
+    duration: { ...mine.duration },
+  };
+
+  // The radius. This is the one that matters most: without it a healing aura is
+  // indistinguishable from a spell that only touches the caster.
+  if (!out.delivery.template && bookFacts.delivery.template) {
+    out.delivery.template = bookFacts.delivery.template;
+    if (out.delivery.kind !== "emanation" && bookFacts.delivery.kind === "emanation") {
+      out.delivery.kind = "emanation";
+    }
+    took.push(`its ${bookFacts.delivery.template.size ?? ""} foot `
+      + `${bookFacts.delivery.template.type ?? "area"}`.replace(/\s+/g, " "));
+  }
+  if (out.delivery.rangeFt == null && bookFacts.delivery.rangeFt != null) {
+    out.delivery.rangeFt = bookFacts.delivery.rangeFt;
+    took.push(`its ${bookFacts.delivery.rangeFt} foot range`);
+  }
+  // What it does.
+  if (!out.change.heals && bookFacts.change.heals) {
+    out.change.heals = true;
+    took.push("that it heals");
+  }
+  if (!out.change.healing && bookFacts.change.healing) {
+    out.change.healing = bookFacts.change.healing;
+    took.push(`its healing of ${bookFacts.change.healing.formula}`);
+  }
+  if (!out.change.damage.length && bookFacts.change.damage.length) {
+    out.change.damage = bookFacts.change.damage;
+    out.change.damageTypes = bookFacts.change.damageTypes;
+    took.push(`its damage of ${bookFacts.change.damage.map(d => d.formula).join(" + ")}`);
+  }
+  // How it is decided.
+  if (out.resolution.kind !== "save" && out.resolution.kind !== "attack"
+      && (bookFacts.resolution.kind === "save" || bookFacts.resolution.kind === "attack")) {
+    out.resolution = { ...bookFacts.resolution };
+    took.push(bookFacts.resolution.kind === "save"
+      ? `that it calls for a ${String(bookFacts.resolution.saveAbility ?? "").toUpperCase()} save`
+      : "that it is an attack roll");
+  }
+  // How many, and for how long.
+  if ((out.scope.count == null || out.scope.count <= 1) && (bookFacts.scope.count ?? 0) > 1) {
+    out.scope.count = bookFacts.scope.count;
+    out.scope.kind = bookFacts.scope.kind;
+    took.push(`that it reaches ${bookFacts.scope.count} creatures`);
+  }
+  if (!out.duration.concentration && bookFacts.duration.concentration) {
+    out.duration.concentration = true;
+    took.push("that it needs concentration");
+  }
+
+  if (took.length) {
+    why.push(`his copy did not say ${took.join(", ")}, so the `
+      + `book entry was used for that`);
+  }
+  out.evidence = why;
+  out.usedBook = took.length > 0;
+  out.bookFilled = took;
+  return out;
+}
+
+/**
  * Work out what happens when this button is pushed.
  *
  * @param {object} item             raw item data (a Foundry Item works too)
@@ -72,8 +164,10 @@ export const KNOWN_SHAPES = new Set([
  * @param {object} [opts.facts]     pre-read facts, to avoid reading twice
  * @returns {{shape, entry, confidence, evidence, facts}}
  */
-export function classifyItem(item, { parsed = null, timing = null, facts = null } = {}) {
-  const f = facts ?? readActionFacts(item, { parsed });
+export function classifyItem(item, { parsed = null, timing = null, facts = null,
+                                     book = null } = {}) {
+  const mine = facts ?? readActionFacts(item, { parsed });
+  const f = book ? fillFromBook(mine, book) : mine;
   const why = [...(f.evidence ?? [])];
   let assumed = false;
 
@@ -81,7 +175,8 @@ export function classifyItem(item, { parsed = null, timing = null, facts = null 
     if (!f.readable) return { shape: null, confidence: "low", evidence: why, facts: f };
 
     let shape = null;
-    const { trigger, scope, delivery, resolution, change, duration, interference } = f;
+    const { trigger, scope, delivery, resolution, change, duration, interference,
+            cost } = f;
 
     // ⚠️ A PASSIVE IS NOT A PLAN. Magic Resistance and Pack Tactics are real and
     // matter enormously, but nothing is ever "cast" and there is nothing for the
@@ -224,6 +319,24 @@ export function classifyItem(item, { parsed = null, timing = null, facts = null 
       // turn" is a per-spell ruling. Guessing it either robs a creature of its
       // only escape or hands it one it never had, and both are invisible.
       if (interference.repeatSave) entry.save.repeatAt = interference.repeatSave;
+    }
+    // ⚠️🔴 A CORRECT SHAPE WITH NOTHING IN IT IS STILL A DEAD BUTTON. The
+    // entry is what the resolver actually runs on. An emanation heal that
+    // arrives without a radius has no aura to draw and nobody to offer, and a
+    // template heal without dice rolls nothing — both would look like the shape
+    // worked and the spell did not, which is the hardest kind of failure to see.
+    if (delivery.template?.size != null) {
+      if (shape === "emanation-heal") {
+        entry.emanation = { radiusFt: delivery.template.size,
+                            cost: cost?.action === "bonus" ? "bonus action" : "action" };
+      } else {
+        entry.expectedArea = { type: delivery.template.type ?? "sphere",
+                               size: delivery.template.size };
+      }
+    }
+    if (change.healing?.formula) {
+      const dice = change.healing.formula;
+      entry.heal = { formula: () => dice };
     }
     if (change.conditions.length) entry.effect = { key: change.conditions[0] };
     if (duration.concentration) entry.concentration = true;

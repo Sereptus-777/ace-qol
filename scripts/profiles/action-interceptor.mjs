@@ -136,8 +136,14 @@ export class ActionInterceptor {
     // The books, indexed in the background. Nothing waits on it: a press that
     // lands before it finishes gets "the index is not ready", which is a real
     // answer, not a wrong one.
-    RulesIndex.build().catch(err =>
-      console.error(`${LOG} | the rules index failed to build — book checking is off:`, err));
+    // ⚠️ INDEX, THEN WARM. Indexing gives us the names; warming pulls the
+    // actual book entry for everything anybody in this world can press, so that
+    // at press time the books are a memory read rather than a fetch that
+    // arrives after the decision has already been made.
+    RulesIndex.build()
+      .then(() => RulesIndex.warm())
+      .catch(err =>
+        console.error(`${LOG} | the rules index failed to build — book checking is off:`, err));
 
     console.log(`${LOG} | online — every button is read before anything may cancel it`);
   }
@@ -254,6 +260,14 @@ export class ActionInterceptor {
       activityType: aType,
       edition,
       shape, source, confidence,
+      // ⚠️ THE WHOLE READING TRAVELS, NOT JUST THE LABEL. Johnny, 2026-09-05:
+      // "It read everything and used almost none of it." Everything the engine
+      // worked out is published here so a consumer is not limited to one word
+      // from a list, and so `game.aceQol.readings()` can show him what it knew.
+      facts: entry?.facts ?? null,
+      evidence: entry?.evidence ?? null,
+      usedBook: entry?.usedBook ?? false,
+      bookFilled: entry?.bookFilled ?? [],
       owner: _ownerOf(item, aType),
       profile,
       curated,

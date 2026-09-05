@@ -306,6 +306,79 @@ export class RulesIndex {
     return { ...res, doc: await RulesIndex.document(res.hits[0]) };
   }
 
+  /* ── Warming ───────────────────────────────────────────────────────────── */
+
+  /**
+   * Load the book entry for everything anybody in this world can actually press.
+   *
+   * ⚠️🔴 THE BOOK HAS TO BE IN MEMORY BEFORE THE BUTTON IS PRESSED, NOT
+   * FETCHED AFTER. Johnny, 2026-09-05: "It has to compare it to the actual
+   * written rules... I want it to fucking check immediately... in microseconds."
+   *
+   * A compendium document load is asynchronous, and the hook that decides what a
+   * spell is is synchronous. Fetching at press time therefore means the answer
+   * is decided BEFORE the book arrives — which is exactly the fault he caught:
+   * the book turned up after the verdict, as an auditor, instead of before it,
+   * as a source. Warming makes the press-time lookup a memory read.
+   *
+   * ⚠️ AND IT SAYS WHAT IT COULD NOT WARM. A spell whose book entry never
+   * loaded is decided from his item alone, which is a real answer, but the
+   * evidence has to say so rather than let it look like the book agreed.
+   */
+  static async warm({ actors = true, items = true } = {}) {
+    if (!game?.ready) return { warmed: 0, skipped: 0, ms: 0 };
+    const started = Date.now();
+    const wanted = new Map();          // uuid -> hit
+
+    const consider = (item) => {
+      try {
+        if (!item?.name) return;
+        if (item.type !== "spell" && item.type !== "feat" && item.type !== "weapon"
+            && item.type !== "equipment" && item.type !== "consumable") return;
+        const edition = String(item.system?.source?.rules ?? "") === "2024" ? "2024" : "2014";
+        const res = RulesIndex.lookup(item.name, { edition, type: item.type });
+        if (res.status !== "found") return;
+        const hit = res.hits[0];
+        if (!RulesIndex._docs.has(hit.uuid)) wanted.set(hit.uuid, hit);
+      } catch (_) { /* one bad item must not stop the warm */ }
+    };
+
+    if (actors) for (const a of (game.actors ?? [])) for (const i of (a.items ?? [])) consider(i);
+    if (items)  for (const i of (game.items ?? [])) consider(i);
+
+    let warmed = 0, failed = 0;
+    for (const hit of wanted.values()) {
+      const doc = await RulesIndex.document(hit);
+      doc ? warmed++ : failed++;
+    }
+
+    const ms = Date.now() - started;
+    RulesIndex._status.warmed = warmed;
+    RulesIndex._status.warmFailed = failed;
+    console.log(`${LOG} | warmed ${warmed} book entr${warmed === 1 ? "y" : "ies"} for items in `
+      + `this world in ${ms}ms${failed ? ` (${failed} would not load)` : ""} — `
+      + `the books are now read at press time, not after it`);
+    return { warmed, failed, ms };
+  }
+
+  /**
+   * The book entry, from memory only. Never fetches.
+   *
+   * Returns { status, doc, note }. `status` is the same vocabulary as `lookup`,
+   * plus "cold" — found in the index but its text has not been loaded yet, which
+   * is different from "not in the books" and must never print the same way.
+   */
+  static findSync(name, { edition = "2014", type = null } = {}) {
+    const res = RulesIndex.lookup(name, { edition, type });
+    if (res.status !== "found") return { ...res, doc: null };
+    const hit = res.hits[0];
+    if (!RulesIndex._docs.has(hit.uuid)) {
+      return { ...res, status: "cold", doc: null,
+               note: `"${name}" is in the ${edition} books but its entry is not loaded yet` };
+    }
+    return { ...res, doc: RulesIndex._docs.get(hit.uuid) };
+  }
+
   /* ── Report ────────────────────────────────────────────────────────────── */
 
   /** What got indexed, printed as a table. `game.aceQol.rulesIndexReport()`. */

@@ -26,6 +26,7 @@ import { CombatState } from "../combat-state.mjs";
 // and its own data files, all of which this file already has.
 import { RulesBrain } from "../rules/rules-brain.mjs";
 import { spellKey } from "../rules/spell-name.mjs";
+import { RulesIndex } from "../rules/rules-index.mjs";
 import { QolSettings } from "../settings.mjs";
 import { SPELL_REGISTRY } from "./registry/_index.mjs";
 import { FEATURE_REGISTRY } from "./registry/features.mjs";
@@ -431,14 +432,32 @@ export class SpellPipeline {
       let plan = null;
       const parsed = (() => { try { return DescriptionParser.parse(item); } catch (_) { return null; } })();
       const timing = (() => { try { return getSpellTiming(item); } catch (_) { return null; } })();
-      const result = classifyItem(item, { parsed, timing });
+      // ⚠️🔴 THE BOOK, BEFORE THE DECISION. Read from memory only — the
+      // index is warmed at boot precisely so this costs microseconds and cannot
+      // turn a synchronous decision into an asynchronous one. A book entry that
+      // is not loaded yet returns nothing and the item is read on its own,
+      // which is a real answer and is said out loud in the evidence.
+      const book = (() => {
+        try {
+          const edition = RulesBrain.resolveEdition(item);
+          const found = RulesIndex.findSync(item.name, { edition, type: item.type });
+          return found.doc ?? null;
+        } catch (_) { return null; }
+      })();
+      const result = classifyItem(item, { parsed, timing, book });
 
       // A shape a human corrected outranks everything, including a fresh reading.
       const learned = LearnedStore.get(item, result.facts);
       if (learned?.correctedByHuman && learned.entry) {
         plan = { ...learned.entry, inferred: true, corrected: true };
       } else if (result.shape && result.confidence === "high") {
-        plan = result.entry;
+        // ⚠️ THE WORKING OUT TRAVELS WITH THE ANSWER. Without this the only
+        // thing that survives the classification is the shape word, and the
+        // reading has nothing to show him about WHY — which is the whole
+        // complaint: it read everything and used almost none of it.
+        plan = { ...result.entry, facts: result.facts, evidence: result.evidence,
+                 usedBook: result.facts?.usedBook ?? false,
+                 bookFilled: result.facts?.bookFilled ?? [] };
         // Fire and forget: `_getEntry` is synchronous and callers must not wait
         // on a settings write to find out what a spell is.
         if (!learned) {

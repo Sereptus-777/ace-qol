@@ -337,6 +337,25 @@ function readChange(item, acts, parsed, why) {
   }
 
   const heals = acts.some(a => _s(a?.type) === "heal");
+
+  // ⚠️🔴 HOW MUCH IT HEALS, NOT JUST THAT IT DOES. `heals` was a bare
+  // boolean, so a shape worked out from the item knew a spell restored hit
+  // points and had no idea how many. An emanation heal or a template heal that
+  // reaches the resolver without dice cannot roll anything, which would be a
+  // dead button wearing a correct shape.
+  let healing = null;
+  for (const a of acts) {
+    const h = a?.healing;
+    if (!h) continue;
+    const formula = h.custom?.enabled ? String(h.custom.formula)
+      : (h.number && h.denomination)
+        ? `${h.number}d${h.denomination}${h.bonus ? ` + ${h.bonus}` : ""}`
+        : (h.formula ? String(h.formula) : null);
+    if (!formula) continue;
+    healing = { formula: formula.trim(), types: _arr(h.types),
+                scales: !!h.scaling?.mode };
+    break;
+  }
   const summons = acts.some(a => _s(a?.type) === "summon");
   if (summons) why.push("it puts a creature on the board");
   const effectIds = acts.flatMap(a => _arr(a?.effects).map(e => e?._id).filter(Boolean));
@@ -344,7 +363,8 @@ function readChange(item, acts, parsed, why) {
   const conditions = _arr(parsed?.conditions);
 
   if (damage.length) why.push(`it deals ${damage.map(d => d.formula + " " + (d.types[0] ?? "")).join(" and ").trim()}`);
-  if (heals) why.push("it restores hit points");
+  if (heals) why.push(healing ? `it restores ${healing.formula} hit points`
+                             : "it restores hit points");
   if (conditions.length) why.push(`its text can leave a target ${conditions.join(" or ")}`);
   else if (effectIds.length || ownEffects) why.push("it applies a lasting effect");
 
@@ -352,6 +372,7 @@ function readChange(item, acts, parsed, why) {
     damage,
     damageTypes: [...new Set(damage.flatMap(d => d.types))],
     heals,
+    healing,          // { formula, types, scales } or null
     summons,
     conditions,
     appliesEffect: effectIds.length > 0 || ownEffects > 0,

@@ -181,5 +181,49 @@ console.log("\nHEALING THAT COVERS GROUND, WORKED OUT WITHOUT THE NAME");
         target: { template: { type: "sphere", size: 30 } } } } } }).shape, "self");
 }
 
+console.log("\nTHE BOOK IS READ BEFORE THE DECISION, NOT AFTER IT");
+// ⚠️🔴 HIS EXACT COMPLAINT, 2026-09-05: "It did not compare it to the
+// actual spell itself that we have in memory, or somewhere on the disk." The
+// book was being opened AFTER the shape was decided, only to complain about
+// differences. These cases prove it now decides with it.
+{
+  const thin = { name: "Aura of Vitality", type: "spell", system: {
+    level: 3, properties: [], range: { units: "self" }, target: {},
+    description: { value: "" },
+    activities: { a: { type: "heal", activation: { type: "action" },
+      range: { units: "self" }, target: {} } } } };
+
+  // The book's copy: complete, the way the compendium ships it.
+  const book = { name: "Aura of Vitality", type: "spell", system: {
+    level: 3, properties: ["concentration"],
+    range: { units: "self" }, target: { template: { type: "sphere", size: 30 } },
+    description: { value: "" },
+    activities: { a: { type: "heal", activation: { type: "bonus" },
+      range: { units: "self" }, target: { template: { type: "sphere", size: 30 } },
+      healing: { number: 2, denomination: 6, types: ["healing"] } } } } };
+
+  check("on its own, a stripped item cannot be an aura",
+    classifyItem(thin).shape, "touch");
+  check("with the book, it is an emanation heal",
+    classifyItem(thin, { book }).shape, "emanation-heal");
+  check("and the radius came from the book",
+    classifyItem(thin, { book }).entry?.emanation?.radiusFt, 30);
+  check("and so did the dice",
+    classifyItem(thin, { book }).entry?.heal?.formula(), "2d6");
+  // ⚠️ EVERY FILL IS NAMED. A shape that only came out right because the
+  // book supplied the radius must not read like it came off his own item.
+  check("it says the book filled the gap",
+    /his copy did not say/.test(classifyItem(thin, { book }).evidence.join(" ")), true);
+
+  // ⚠️🔴 HIS ITEM WINS WHERE IT SPEAKS. Overwriting a stated value with a
+  // canonical one is the Spare the Dying mistake: I believed the book over his
+  // sheet and had him change items that were already right.
+  const bigger = JSON.parse(JSON.stringify(thin));
+  bigger.system.target = { template: { type: "sphere", size: 60 } };
+  bigger.system.activities.a.target = { template: { type: "sphere", size: 60 } };
+  check("a radius HE states is not overwritten by the book",
+    classifyItem(bigger, { book }).entry?.emanation?.radiusFt, 60);
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
