@@ -28,13 +28,17 @@ import { MODULE_ID } from "./ace-qol.mjs";
 function _socket() { return `module.${MODULE_ID}`; }
 
 // Damage-type → theme colour (drives both the cast bloom and the impact tint).
-const DAMAGE_THEME = {
+export const DAMAGE_THEME = {
   cold:      0x9fd8ff, fire:    0xff7a3c, lightning: 0x9fd0ff, thunder: 0xc9b6ff,
   acid:      0x9be04a, poison:  0x86d36b, necrotic:  0x8a63b8, radiant: 0xffe9a3,
   psychic:   0xff8fd6, force:   0xc6a9ff,
   bludgeoning: 0xd6d6d6, piercing: 0xd6d6d6, slashing: 0xd6d6d6,
 };
-const DEFAULT_COLOR = 0xbfe2ff;   // soft arcane blue
+export const DEFAULT_COLOR = 0xbfe2ff;   // soft arcane blue
+// ⚠️ HEALING IS NOT A DAMAGE TYPE, so it is not in the table above — but a
+// wave of healing must not come out arcane blue. Same green ACE's heal cards
+// already use, so the colour means the same thing wherever he sees it.
+export const HEAL_COLOR = 0x7ee081;
 
 // Ghostly wave (Ghostly Howl and anything else emanating a sound wave).
 // Was 1150ms — too fast to read as anything, and you couldn't judge the reach.

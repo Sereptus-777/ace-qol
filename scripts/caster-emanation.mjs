@@ -27,6 +27,8 @@
 // everything else keeps its prompt.
 // ──────────────────────────────────────────────────────────────────────────────
 
+import { AceFX, DAMAGE_THEME, DEFAULT_COLOR, HEAL_COLOR } from "./ace-fx.mjs";
+
 const MODULE_ID = "ace-qol";
 const LOG = `${MODULE_ID} | emanation`;
 
@@ -184,131 +186,87 @@ export async function drawCasterEmanation(activity, entry) {
 
 /* ── The burst ─────────────────────────────────────────────────────────────
  *
- * Johnny, 2026-09-05: "I would like something drawn, just for a 3-second
- * animation or whatever, that just visually lets the guy know that he has cast
- * it... Just show us some sort of burst, and do the same thing for any spell
- * that's a circle and self-emanation... colour-coded to what it would be."
+ * Johnny, 2026-09-05: "It got a little poof. That was it. It didn't even
+ * emanate out... It didn't even reach 30 feet. I said I wanted some sort of
+ * visual, not just a little plop. Go look at what ghostly howl does for an
+ * animation. I want something like that."
  *
- * ⚠️🔴 AND IT IS NOW THE ONLY THING THAT SHOWS A CAST AT ALL. Automated
- * Animations hangs its effect on a TEMPLATE. That is why it works so well for
- * Fireball and why nothing here touches it. But ACE has just stopped these
- * spells from placing a template, so AA has nothing to attach to and the cast
- * became completely invisible — the same way Colour Spray was correct and
- * unseen. Drawing this is not decoration, it is the only feedback there is.
+ * ⚠️🔴 AND ACE ALREADY HAD IT. `AceFX.ghostlyWave` was written for exactly
+ * this in July, for his Spectral Wolf King, and he tuned it twice — 2026-07-10
+ * "push it, visual waves go out 30 feet", and 2026-07-29 "I wish it was more
+ * like a waveform, a purple waveform emanating out from him, it could last for
+ * one second longer". It takes a radius in FEET, converts it against the
+ * scene's own grid, undulates so it reads as a wavefront rather than a pond
+ * ripple, and broadcasts to every client.
  *
- * ⚠️ EVERY PATH BELOW WAS READ OFF HIS DISK, NOT REMEMBERED. The database
- * keys and the file paths both come from his installed jb2a_patreon library, so
- * a key that has been renamed still falls back to a file that exists.
+ * I did not grep for it and drew a 400-pixel JB2A explosion instead. That is
+ * the "grep for the CAPABILITY, not the feature name" rule, broken again, and
+ * this comment is here because the code did not say it the first time.
+ *
+ * The damage-type colour table was sitting in the same file.
  */
 
 /**
- * What colour is this spell, and which effect says so.
+ * What colour is this action's wave, and why.
  *
- * ⚠️ A TABLE, KEYED BY WHAT THE SPELL DOES. Healing first, because a spell
- * that heals is green whatever else it carries, and Aura of Vitality is the
- * reason this exists. Then the damage type, which is the thing a player reads
- * a colour as. Anything with neither gets a neutral shimmer rather than an
- * explosion, because a buff that looks like a fireball is a lie.
+ * ⚠️ HEALING FIRST AND IT BEATS EVERYTHING. A spell that restores hit points
+ * is green whatever else it carries, and Aura of Vitality is why this exists.
  */
 export function burstFor({ heals = false, damageTypes = [] } = {}) {
-  if (heals) {
-    return { key: "jb2a.healing_generic.burst.greenorange",
-             file: "modules/jb2a_patreon/Library/Generic/Healing/HealingAbility_02_Regular_GreenOrange_Burst_600x600.webm",
-             tint: null, why: "it heals" };
-  }
-  const BY_TYPE = {
-    necrotic:    ["purple", "necrotic"],
-    poison:      ["green",  "poison"],
-    acid:        ["green",  "acid"],
-    fire:        ["orange", "fire"],
-    cold:        ["blue",   "cold"],
-    lightning:   ["blue",   "lightning"],
-    thunder:     ["blue",   "thunder"],
-    force:       ["purple", "force"],
-    psychic:     ["purple", "psychic"],
-    radiant:     ["yellow", "radiant"],
-    bludgeoning: ["orange", "impact"],
-    piercing:    ["orange", "impact"],
-    slashing:    ["orange", "impact"],
-  };
+  if (heals) return { color: HEAL_COLOR, why: "it heals" };
   for (const t of damageTypes) {
-    const hit = BY_TYPE[String(t).toLowerCase()];
-    if (hit) {
-      return { key: `jb2a.explosion.01.${hit[0]}`,
-               file: `modules/jb2a_patreon/Library/Generic/Explosion/Explosion_01_${
-                 hit[0].charAt(0).toUpperCase() + hit[0].slice(1)}_400x400.webm`,
-               tint: null, why: `it deals ${hit[1]} damage` };
+    const key = String(t).toLowerCase();
+    if (DAMAGE_THEME[key] !== undefined) {
+      return { color: DAMAGE_THEME[key], why: `it deals ${key} damage` };
     }
   }
   if (damageTypes.length) {
-    return { key: "jb2a.explosion.01.orange",
-             file: "modules/jb2a_patreon/Library/Generic/Explosion/Explosion_01_Orange_400x400.webm",
-             tint: null, why: "it deals damage" };
+    return { color: DEFAULT_COLOR, why: `it deals ${damageTypes[0]} damage, which has no colour of its own` };
   }
-  // ⚠️ NOTHING STATED IS NOT AN EXPLOSION. A blur of blue reads as "something
-  // happened here" without claiming the spell hurt anybody.
-  return { key: "jb2a.healing_generic.burst.bluewhite",
-           file: "modules/jb2a_patreon/Library/Generic/Healing/HealingAbility_02_Regular_BlueWhite_Burst_600x600.webm",
-           tint: null, why: "it neither heals nor damages, so it gets a neutral flare" };
+  // ⚠️ A BUFF IS NOT AN EXPLOSION. Detect Magic washing out blood-red would
+  // tell the table something violent had happened.
+  return { color: DEFAULT_COLOR, why: "it neither heals nor damages, so it gets the neutral arcane wave" };
 }
 
-/** Casts already drawn, so one press cannot stack bursts. */
+/** Casts already drawn, so one press cannot stack waves. */
 const _burstsInFlight = new Set();
 
 /**
- * Draw the burst.
+ * Send the wave out to the full radius.
  *
- * ⚠️🔴 COALESCED, BECAUSE `play()` RETURNS BEFORE SEQUENCER KNOWS. That is
- * the 2026-09-02 lesson that put seventeen copies of one aura ring on one
- * token: presence-testing what is on screen does not work, because nothing is
- * on screen yet. So the in-flight work is tracked here, by cast, and a repeat
- * within the same second is refused.
+ * ⚠️🔴 COALESCED, BECAUSE THE PLAYER RETURNS BEFORE THE EFFECT REGISTERS.
+ * That is the 2026-09-02 lesson that put seventeen copies of one aura ring on
+ * one token: presence-testing what is on screen does not work, because nothing
+ * is on screen yet. In-flight work is tracked here, by cast.
  */
 export async function playEmanationBurst({ token, radiusFt, item, heals, damageTypes }) {
   if (!token) return;
-  const Seq = globalThis.Sequencer;
-  if (!Seq || typeof globalThis.Sequence !== "function") {
-    // ⚠️ SAID ONCE, NOT SILENTLY. Without Sequencer these spells have no
-    // picture at all now, and "no animation module" must not look like "the
-    // spell did nothing".
-    if (!playEmanationBurst._warned) {
-      playEmanationBurst._warned = true;
-      console.warn(`${LOG} | Sequencer is not installed, so self-emanating spells will `
-        + `have no visible burst. The rules are unaffected.`);
-    }
-    return;
-  }
 
   const key = `${token.id}|${item?.id ?? item?.name ?? "?"}`;
   if (_burstsInFlight.has(key)) {
-    console.debug(`${LOG} | a burst for ${item?.name} on ${token.name} is already playing.`);
+    console.debug(`${LOG} | a wave for ${item?.name} on ${token.name} is already playing.`);
     return;
   }
   _burstsInFlight.add(key);
   setTimeout(() => _burstsInFlight.delete(key), 1000);
 
+  // ⚠️ NEVER SHRINK TO A DEFAULT. The first version floored this at 5 feet,
+  // so a radius that failed to read produced a one-square poof that looked
+  // exactly like a working animation doing nothing. An unknown radius draws
+  // NOTHING and says so.
+  const ft = Number(radiusFt);
+  if (!Number.isFinite(ft) || ft <= 0) {
+    console.warn(`${LOG} | ${item?.name} has no readable radius (${radiusFt}), so no wave was `
+      + `drawn. The spell is unaffected.`);
+    return;
+  }
+
   const pick = burstFor({ heals, damageTypes });
-  let asset = null;
-  try { if (Seq.Database?.entryExists?.(pick.key)) asset = pick.key; } catch (_) { /* fall through */ }
-  if (!asset) asset = pick.file;
-
-  // A 30 foot emanation is 60 feet across. Sequencer sizes in grid units, so
-  // the burst is exactly as wide as the area it represents.
-  const diameter = Math.max(5, (Number(radiusFt) || 0) * 2);
-
   try {
-    await new globalThis.Sequence()
-      .effect()
-      .file(asset)
-      .atLocation(token)
-      .size(diameter, { gridUnits: true })
-      .duration(3000)
-      .fadeIn(150)
-      .fadeOut(600)
-      .play();
-    console.log(`${LOG} | ${item?.name}: drew a ${diameter} foot burst on ${token.name} `
+    AceFX.ghostlyWaveBroadcast(token, ft, pick.color);
+    console.log(`${LOG} | ${item?.name}: a ${ft} foot wave off ${token.name} `
       + `(${pick.why}).`);
   } catch (err) {
-    console.warn(`${LOG} | could not draw the burst for ${item?.name}:`, err);
+    console.warn(`${LOG} | could not draw the wave for ${item?.name}:`, err);
   }
 }
