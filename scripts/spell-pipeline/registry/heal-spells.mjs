@@ -53,6 +53,9 @@ export const HEAL_SPELLS = {
     heal: {
       // 2024 baseline. `byEdition` below carries the legacy one.
       formula: (castLvl, spellMod) => `${5 + Math.max(0, castLvl - 5)}d8 + ${spellMod}`,
+      // "Each target regains Hit Points equal to 5d8 plus your modifier" — one
+      // wave, one roll, applied to all of them.
+      rollOnce: true,
     },
     picker: { allowSelf: true, preHighlightSelf: false, excludeDead: false },
     byEdition: {
@@ -60,6 +63,7 @@ export const HEAL_SPELLS = {
         heal: {
           formula: (castLvl, spellMod) => `${3 + Math.max(0, castLvl - 5)}d8 + ${spellMod}`,
           excludeTypes: ["undead", "construct"],
+          rollOnce: true,
         },
         flavorOnConfirm: "Up to six creatures in the sphere heal 3d8 + spellcasting modifier "
           + "(+1d8 per upcast above 5th). No effect on undead or constructs.",
@@ -69,15 +73,32 @@ export const HEAL_SPELLS = {
       + "(+1d8 per upcast above 5th).",
   },
 
+  // ⚠️ "each of them regains hit points equal to 1d4 + your spellcasting ability
+  // modifier" — one roll for the whole word, not one per creature.
   "mass healing word": {
     shape: "multi-heal",
     range: 60,
     countResolver: () => 6,  // up to 6 creatures
     heal: {
-      formula: (castLvl, spellMod) => `${1 + Math.max(0, castLvl - 3)}d4 + ${spellMod}`,
+      // ⚠️🔴 2024 IS 2d4, AND THIS WAS SHIPPING 1d4 TO 2024 CASTERS: half the
+      // healing, every cast. Read straight off his own copy: "regain Hit Points
+      // equal to 2d4 plus your spellcasting ability modifier ... increases by
+      // 1d4 for each spell slot level above 3." 2014 is the 1d4 version and is
+      // kept below rather than lost.
+      formula: (castLvl, spellMod) => `${2 + Math.max(0, castLvl - 3)}d4 + ${spellMod}`,
+      rollOnce: true,
     },
     picker: { allowSelf: true, preHighlightSelf: false, excludeDead: false },
-    flavorOnConfirm: "Up to six creatures heal 1d4 + spellcasting modifier (+1d4 per upcast above 3rd).",
+    byEdition: {
+      "2014": {
+        heal: {
+          formula: (castLvl, spellMod) => `${1 + Math.max(0, castLvl - 3)}d4 + ${spellMod}`,
+          rollOnce: true,
+        },
+        flavorOnConfirm: "Up to six creatures heal 1d4 + spellcasting modifier (+1d4 per upcast above 3rd).",
+      },
+    },
+    flavorOnConfirm: "Up to six creatures heal 2d4 + spellcasting modifier (+1d4 per upcast above 3rd).",
   },
 
   "heal": {
@@ -157,16 +178,27 @@ export const HEAL_SPELLS = {
     flavorOnConfirm: "Return a creature dead up to 10 days to life with all HP restored. They have -4 penalty to attacks/saves/checks for 4 long rests.",
   },
 
+  // Same spell under another name; the same one-roll rule applies.
   "healing word group": {
     aliases: ["mass healing word group"],
     shape: "multi-heal",
     range: 60,
     countResolver: () => 6,
     heal: {
-      formula: (castLvl, spellMod) => `${1 + Math.max(0, castLvl - 3)}d4 + ${spellMod}`,
+      formula: (castLvl, spellMod) => `${2 + Math.max(0, castLvl - 3)}d4 + ${spellMod}`,
+      rollOnce: true,
     },
     picker: { allowSelf: true, preHighlightSelf: false, excludeDead: false },
-    flavorOnConfirm: "Up to six creatures heal 1d4 + spellcasting modifier (+1d4 per upcast).",
+    byEdition: {
+      "2014": {
+        heal: {
+          formula: (castLvl, spellMod) => `${1 + Math.max(0, castLvl - 3)}d4 + ${spellMod}`,
+          rollOnce: true,
+        },
+        flavorOnConfirm: "Up to six creatures heal 1d4 + spellcasting modifier (+1d4 per upcast).",
+      },
+    },
+    flavorOnConfirm: "Up to six creatures heal 2d4 + spellcasting modifier (+1d4 per upcast above 3rd).",
   },
 };
 

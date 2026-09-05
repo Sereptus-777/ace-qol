@@ -46,6 +46,29 @@ export class HealResolver {
     const isRevive = entry.heal?.revivesDead === true;       // Revivify, Raise Dead
     const isStabilize = entry.heal?.stabilizes === true;     // Spare the Dying
     const clearStatuses = Array.isArray(entry.heal?.clearStatuses) ? entry.heal.clearStatuses : null;
+
+    // ⚠️🔴 ONE ROLL OR ONE EACH, AND THE SPELL DECIDES.
+    //
+    // This rolled fresh dice for every target with a comment claiming that was
+    // RAW. For a mass heal it is not. "Each target regains Hit Points equal to
+    // 5d8 plus your spellcasting ability modifier" is one roll shared by all of
+    // them — the same convention as area damage, and what dnd5e's own
+    // implementation does. Rolling per target hands one ally a 9 and another a
+    // 34 off a single wave of healing energy.
+    //
+    // ⚠️ BUT IT IS NOT TRUE OF EVERYTHING HERE, which is why it is a per-entry
+    // flag and not a blanket change. Nothing else in the registry heals several
+    // creatures with dice, so today this only moves the two mass words — but a
+    // future spell that genuinely rolls per creature keeps working by saying
+    // nothing.
+    const rollOnce = entry.heal?.rollOnce === true;
+    let sharedRoll = null;
+    if (rollOnce && targets.length > 1) {
+      sharedRoll = await new Roll(formula, actor.getRollData()).evaluate();
+      console.log(`${MODULE_ID} | ${item.name}: one roll of ${formula} = ${sharedRoll.total}, `
+        + `applied to ${targets.length} creature(s).`);
+    }
+
     const results = [];
 
     for (const c of targets) {
@@ -64,8 +87,8 @@ export class HealResolver {
           }
         }
 
-        // Roll fresh per target so each gets their own dice (RAW per spell text)
-        const roll = await new Roll(formula, actor.getRollData()).evaluate();
+        // One shared roll where the spell says so; otherwise fresh per target.
+        const roll = sharedRoll ?? await new Roll(formula, actor.getRollData()).evaluate();
         const healAmount = Math.max(0, roll.total);
         const beforeHP = targetActor.system?.attributes?.hp?.value ?? 0;
         const maxHP = targetActor.system?.attributes?.hp?.max ?? 0;
