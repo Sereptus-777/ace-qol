@@ -23,6 +23,7 @@
 // ============================================================================
 
 import { aceWithinFt } from "./geometry-utils.mjs";
+import { spellKey } from "./rules/spell-name.mjs";
 import { registerChatCardHandler } from "./chat-render-utils.mjs";
 
 const MODULE_ID = "ace-qol";
@@ -145,7 +146,11 @@ export class BladeCantrips {
 
     const item = activity?.item;
     if (!item || item.type !== "spell") return;
-    const nameLower = String(item.name ?? "").toLowerCase().trim();
+    // ⚠️ THE SUFFIX AGAIN. His 2014 content is named "Booming Blade
+    // (Legacy)", and every test below is an exact match, so the whole feature
+    // missed his own cantrips. Same fault that hid the entire spell registry
+    // from him until 0.14.2. One normaliser, shared.
+    const nameLower = spellKey(item.name);
     const actor = item.actor;
     if (!actor) return;
 

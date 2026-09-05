@@ -152,6 +152,10 @@ export class SaveEngine {
       this._onUseActivity(activity);
     });
     // Fallback for older dnd5e versions that might use useActivity
+    // ⚠️ DEAD, AND DELIBERATELY LEFT. `dnd5e.useActivity` is not a hook any
+    // supported dnd5e emits, so this fallback has never run. The live path is
+    // the handler directly above. Kept because it costs nothing and documents
+    // the older shape; flagged by tools/hook-check.py so nobody chases it.
     Hooks.on("dnd5e.useActivity", (activity, usageConfig, dialogConfig, messageConfig) => {
       console.log(`${MODULE_ID} | useActivity fired (legacy):`, activity?.item?.name);
       this._onUseActivity(activity);

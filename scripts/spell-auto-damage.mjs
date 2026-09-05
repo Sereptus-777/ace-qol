@@ -153,6 +153,11 @@ export class SpellAutoDamage {
     // dnd5e.useActivity fires AFTER the user picks a slot. Overwrite
     // the cached cast level with the real upcast level so Magic Missile
     // at slot 5 → 7 darts, not 3.
+    // ⚠️ DEAD, BUT THE UPCAST STILL WORKS. `dnd5e.useActivity` is not emitted
+    // by dnd5e 5.3.3. Magic Missile at slot 5 still gives 7 darts because the
+    // resolver reads `message.system.spellLevel` FIRST and only falls back to
+    // this cache. Defence-in-depth that was never depth; flagged, not repointed,
+    // because postUseActivity lands after the resolver has already read it.
     Hooks.on("dnd5e.useActivity", (activity, usageConfig) => {
       if (!SpellAutoDamage._isAutoHitDamageSpell(activity)) return;
       const actor = activity?.item?.actor;

@@ -7,6 +7,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { spellKey } from "./rules/spell-name.mjs";
 import { readWeather } from "./rules/weather.mjs";
 import { ExtendedEffects } from "./extended-effects.mjs";
 import { QolSettings } from "./settings.mjs";
@@ -1884,7 +1885,8 @@ export class CombatState {
         // never had. Any populated mastery = 2024 schema in use.
         if (it.type === "weapon" && it.system?.mastery) return "2024";
         // 2024-exclusive feats / features
-        const nameLower = String(it.name ?? "").toLowerCase();
+        // ⚠️ Suffix-tolerant like every other name match in the suite.
+        const nameLower = spellKey(it.name);
         if (nameLower === "innate sorcery") return "2024";
         if (nameLower === "weapon mastery") return "2024";
       }

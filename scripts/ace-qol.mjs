@@ -1617,18 +1617,41 @@ Hooks.once("ready", () => {
       console.log(`${MODULE_ID} | ${item.name} radiates from the caster (${verdict.why}) — `
         + `no placement prompt; ACE draws it.`);
 
-      // ⚠️ DRAWN ON THE CAST, NOT ON THE INTENT. Placing it here would leave
-      // a circle on the floor for a spell he then cancelled out of the dialog.
-      // `dnd5e.useActivity` fires only once the cast actually happens.
-      Hooks.once("dnd5e.useActivity", (used) => {
-        if (used !== activity) return;
-        drawCasterEmanation(activity, entry).catch(err => {
-          console.error(`${MODULE_ID} | could not draw ${item.name}'s area:`, err);
-          ui.notifications?.error(`${item.name}: ACE could not draw its area — see the console.`);
-        });
-      });
+      // The drawing itself happens on `dnd5e.postUseActivity`, below — see the
+      // permanent handler. Nothing is registered per-cast here.
     } catch (err) {
       console.warn(`${MODULE_ID} | self-spell template suppression failed (allowing template):`, err);
+    }
+  });
+
+  // ── And DRAW it, once the cast has actually happened ──────────────────
+  //
+  // ⚠️🔴 `dnd5e.useActivity` IS NOT A HOOK. dnd5e 5.3.3 emits
+  // `preUseActivity` and `postUseActivity` and nothing between them. The first
+  // version of this listened for `useActivity`, which registers happily and
+  // waits forever: nothing throws, nothing warns, and the feature is simply
+  // absent. That is why Johnny got "a little plop within 5 ft" twice — no
+  // template and no wave were ever drawn, and what he saw was ACE's own cast
+  // flourish. Five other ACE features are still on that dead name; they are in
+  // the audit, not flipped on overnight.
+  //
+  // ⚠️ AND IT IS ONE PERMANENT HANDLER, NOT A `once` PER CAST. A `once`
+  // registered while arming and then never matched — because he backed out of
+  // the cast dialog — stays registered and is consumed by the NEXT spell,
+  // which silently loses its own drawing. Stateless is the fix.
+  Hooks.on("dnd5e.postUseActivity", (activity) => {
+    try {
+      if (!game.settings.get(MODULE_ID, "suppressSelfSpellTemplates")) return;
+      const item = activity?.item;
+      if (!item) return;
+      const entry = SpellPipeline?._getEntry?.(item);
+      if (!emanatesFromCaster(entry, activity).yes) return;
+      drawCasterEmanation(activity, entry).catch(err => {
+        console.error(`${MODULE_ID} | could not draw ${item.name}'s area:`, err);
+        ui.notifications?.error(`${item.name}: ACE could not draw its area — see the console.`);
+      });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | caster-emanation drawing failed:`, err);
     }
   });
 

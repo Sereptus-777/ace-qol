@@ -39,7 +39,17 @@ export class InvisibilityBreaker {
     // ── Spell-cast trigger: every spell cast ends Invisibility ──
     // Fires AFTER the user picks slot / confirms cast (not preUseActivity,
     // which fires before commit — we want only committed casts to count).
-    Hooks.on("dnd5e.useActivity", (activity, _usageConfig) => {
+    // ⚠️🔴 THIS WAS ON `dnd5e.useActivity`, WHICH dnd5e DOES NOT EMIT.
+    // 5.3.3 fires `preUseActivity` and `postUseActivity` and nothing between
+    // them, so this listener registered without complaint and never once ran:
+    // casting a spell has never broken Invisibility. Nothing threw, nothing
+    // warned, and the only other hooks in this file watch effects being added
+    // and removed, so there was no second path to cover it.
+    //
+    // Found 2026-09-05 by `tools/hook-check.py`, which exists because of it.
+    // `postUseActivity` is what the comment above always meant: after the slot
+    // is picked and the cast is committed.
+    Hooks.on("dnd5e.postUseActivity", (activity, _usageConfig) => {
       try {
         if (activity?.item?.type !== "spell") return;
         const actor = activity?.actor || activity?.item?.actor;

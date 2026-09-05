@@ -151,6 +151,10 @@ export class SpellPipeline {
     });
 
     // ── Mid-cast: capture the real upcast level after user picks slot ──
+    // ⚠️ DEAD, AND THE UPCAST IS COVERED ANYWAY. `dnd5e.useActivity` is not a
+    // hook dnd5e 5.3.3 emits. `_dispatch` resolves the cast level from
+    // `message.system.spellLevel` and `message.flags.dnd5e.use.spellLevel`
+    // before it ever consults this cache, so upcasting resolves correctly.
     Hooks.on("dnd5e.useActivity", (activity, usageConfig) => {
       try {
         const entry = SpellPipeline._getEntry(activity?.item);

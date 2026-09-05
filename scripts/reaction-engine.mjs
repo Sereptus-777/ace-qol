@@ -662,6 +662,11 @@ export class ReactionEngine {
     // V2 hook can claim the activity. This prevents the prompt from appearing
     // BEFORE the spell's chat card renders (which happens at
     // dnd5e.postCreateUsageMessage, not dnd5e.useActivity). v0.7.21 fix.
+    // ⚠️ DEAD AND SUPERSEDED. `dnd5e.useActivity` is not emitted by dnd5e
+    // 5.3.3, so this has never run. Counterspell is handled by the LIVE
+    // `dnd5e.postCreateUsageMessage` handler below, which is exactly what this
+    // one's own comment says it wanted. Left in place rather than repointed:
+    // waking it would prompt for Counterspell twice on every cast.
     Hooks.on("dnd5e.useActivity", async (activity) => {
       // SILENT-OK: GM-only handler; every client sees this hook and only the GM resolves it
       if (!game.user.isGM) return;
