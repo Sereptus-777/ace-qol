@@ -288,6 +288,68 @@ check("a save reads its own mode and names its source",
   { kind: "save", mode: 1, reasons: [{ reason: "Aura of Protection: advantage" }], modifier: 7,
     label: "Dexterity saving throw" });
 
+console.log("\nEACH KIND GOES BACK THROUGH ITS OWN dnd5e METHOD");
+// ⚠️🔴 THE WIRING MOST LIKELY TO BE WRONG AND LEAST LIKELY TO BE NOTICED.
+// The gate CANCELS dnd5e's roll, so if a death save is re-rolled as a plain
+// saving throw it rolls the right dice and does none of the bookkeeping: no
+// pips, no revive on a natural twenty, no stabilised-or-died line. That is
+// exactly what concentration was doing when 0.13.0 shipped, and the dice looked
+// perfect the whole time.
+{
+  const calls = [];
+  const stub = (name) => function (cfg, dialog, message) {
+    calls.push({ name, cfg, dialog, message });
+    return Promise.resolve([]);        // no rolls back -> run() stops after this
+  };
+  const actor = {
+    name: "Test", hasPlayerOwner: false,
+    system: { skills: { prc: { roll: { mode: 0 }, ability: "wis" } },
+              tools: { thief: { roll: { mode: 0 }, ability: "dex" } },
+              abilities: { wis: { check: { roll: { mode: 0 } } },
+                           dex: { check: { roll: { mode: 0 } }, save: { roll: { mode: 0 } } } },
+              attributes: { death: { roll: { mode: 0 } }, concentration: { roll: { mode: 0 } },
+                            init: { roll: { mode: 0 }, ability: "dex" } } },
+    effects: [],
+    rollSkill: stub("rollSkill"), rollToolCheck: stub("rollToolCheck"),
+    rollAbilityCheck: stub("rollAbilityCheck"), rollSavingThrow: stub("rollSavingThrow"),
+    rollDeathSave: stub("rollDeathSave"), rollConcentration: stub("rollConcentration"),
+    getRollData: () => ({}),
+  };
+  // The prompt is stubbed to always answer "normal" so run() reaches the roll.
+  const realWait = foundry.applications.api.DialogV2.wait;
+  foundry.applications.api.DialogV2.wait = async () => "normal";
+
+  const ran = async (kind, key, dc) => {
+    calls.length = 0;
+    await CheckGate.run(actor, kind, key, { dc });
+    return calls[0];
+  };
+
+  check("a skill check calls rollSkill", (await ran("skill", "prc"))?.name, "rollSkill");
+  check("a tool check calls rollToolCheck", (await ran("tool", "thief"))?.name, "rollToolCheck");
+  check("an ability check calls rollAbilityCheck", (await ran("ability", "wis"))?.name, "rollAbilityCheck");
+  check("a save calls rollSavingThrow", (await ran("save", "dex"))?.name, "rollSavingThrow");
+  check("a death save calls rollDeathSave", (await ran("death", "death"))?.name, "rollDeathSave");
+  check("concentration calls rollConcentration", (await ran("concentration", "con"))?.name, "rollConcentration");
+
+  console.log("\nAND IT ALWAYS ASKS FOR NO DIALOG AND NO CARD");
+  // ⚠️ THIS IS ALSO WHAT STOPS THE GATE RE-ENTERING ITSELF. The re-roll is
+  // recognised as an engine's own roll by exactly these two flags.
+  {
+    const c = await ran("skill", "prc");
+    check("dnd5e's dialog is suppressed", c?.dialog?.configure, false);
+    check("dnd5e's card is suppressed", c?.message?.create, false);
+  }
+  // ⚠️ AND THE DC IS CARRIED BACK. A concentration DC is half the damage taken;
+  // dropping it would reset every concentration check in the game to 10.
+  check("a concentration DC survives the re-roll", (await ran("concentration", "con", 17))?.cfg?.target, 17);
+  check("a save DC survives the re-roll", (await ran("save", "dex", 15))?.cfg?.target, 15);
+  // ⚠️ A SKILL HAS NOTHING TO PASS OR FAIL AGAINST, so no target is invented.
+  check("a skill check is given no DC", (await ran("skill", "prc", 15))?.cfg?.target, undefined);
+
+  foundry.applications.api.DialogV2.wait = realWait;
+}
+
 console.log("");
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

@@ -47,6 +47,15 @@ export const ACTOR_METHODS = [
   { name: "rollSkill",        used: "the Hide action, searching" },
   { name: "rollDeathSave",    used: "death saves" },
   { name: "rollConcentration",used: "concentration checks" },
+  // ── The check gate (2026-09-05) ──
+  // ⚠️ EVERY ONE OF THESE IS CALLED BY `check-gate.mjs`, which now stands
+  // between the player and every check, save, tool check, initiative roll, hit
+  // die and recharge in the game. If dnd5e renames one of them the gate does
+  // not throw: `typeof actor[fn] !== "function"` is the only thing standing
+  // between that and a roll that silently never happens.
+  { name: "rollToolCheck",       used: "tool checks through the check gate" },
+  { name: "rollInitiativeDialog", used: "initiative, wrapped so ACE can ask first" },
+  { name: "rollHitDie",          used: "hit dice on a rest" },
   { name: "applyDamage",      used: "THE damage chokepoint — every point of damage ACE deals" },
   { name: "toggleStatusEffect", used: "applying and clearing every condition" },
   { name: "getRollData",      used: "every formula ACE builds" },
@@ -106,6 +115,39 @@ export const GLOBALS = [
  *
  * Add a row whenever you read a new field out of system data. One line.
  */
+/**
+ * The dice machinery whose existence the check gate's HOOKS depend on.
+ *
+ * ⚠️🔴 A HOOK CANNOT BE PROBED, WHICH IS WHY THIS EXISTS. There is no way to
+ * ask Foundry "will `dnd5e.preRollD20TestV2` ever fire?" — a listener on a name
+ * nothing emits registers happily and waits forever. That is the exact shape of
+ * every silent failure found on 2026-09-05: an edition key nothing read, a
+ * `useArmed` watch waiting on a hook that had nothing to fire it.
+ *
+ * ⚠️ SO IT CHECKS WHAT EMITS THEM. Every hook the gate listens to is built
+ * inside `BasicRoll.buildConfigure` from the roll's own `hookNames`. If those
+ * classes or their build methods are gone or renamed, every one of those hooks
+ * is gone with them, and THAT is checkable.
+ *
+ * The names, and what puts each one in `hookNames`:
+ *   dnd5e.preRollD20TestV2         every skill, ability, save and attack ("d20Test")
+ *   dnd5e.postRollConfiguration    every roll (buildConfigure appends "")
+ *   dnd5e.preRollHitDieV2          rollHitDie ("hitDie")
+ *   dnd5e.preRollRechargeV2        rollRecharge ("recharge")
+ *   dnd5e.rollHitDieV2             emitted by name, after the roll
+ *   dnd5e.rollRechargeV2           emitted by name, after the roll
+ */
+export const DICE_APIS = [
+  { path: "CONFIG.Dice.BasicRoll.buildConfigure",
+    used: "emits every preRoll and postRollConfiguration hook the check gate uses" },
+  { path: "CONFIG.Dice.BasicRoll.build",
+    used: "hit dice and recharge run through it" },
+  { path: "CONFIG.Dice.D20Roll.build",
+    used: "checks, saves and initiative run through it" },
+  { path: "CONFIG.Dice.D20Roll.ADV_MODE",
+    used: "the advantage values the gate forces onto a roll (-1, 0, 1)" },
+];
+
 export const DATA_FIELDS = [
   { doc: "Item", type: "weapon", path: "range.reach",
     used: "melee reach — how far a reach weapon can actually hit",
@@ -178,6 +220,12 @@ export function checkContract() {
   for (const g of GLOBALS) {
     checked++;
     if (at(g.path) === undefined) missing.push({ ...g, name: g.path, on: "global" });
+  }
+
+  // The dice machinery that EMITS the check gate's hooks. See DICE_APIS.
+  for (const d of DICE_APIS) {
+    checked++;
+    if (at(d.path) === undefined) missing.push({ ...d, name: d.path, on: "dice" });
   }
 
   // ⚠️ Fields we READ, as opposed to methods we CALL. Only a definite "missing"

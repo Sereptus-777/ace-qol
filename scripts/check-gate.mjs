@@ -131,7 +131,17 @@ export class CheckGate {
     // is synchronous and returning a promise would be read as truthy, which
     // would let dnd5e roll it as well and produce two of everything.
     CheckGate.run(actor, shape.kind, shape.key, { dc: Number(config?.target) })
-      .catch(err => console.error(`${LOG} | ${shape.kind} "${shape.key}" failed for ${actor.name}:`, err));
+      .catch(err => {
+        // ⚠️🔴 THIS GATE CANCELS dnd5e's ROLL. If our own path then fails, the
+        // roll does not happen AT ALL and the only trace is a console line
+        // nobody is watching. That is worse than any bug it could be replacing:
+        // the player clicks, nothing moves, and there is nothing on screen to
+        // say why. A console.error alone would have been exactly the silent
+        // refusal this suite has been bitten by all night.
+        console.error(`${LOG} | ${shape.kind} "${shape.key}" failed for ${actor.name}:`, err);
+        ui.notifications?.error(`${actor.name}'s ${shape.kind} roll was cancelled by ACE and `
+          + `then failed. Nothing was rolled — see the console.`);
+      });
     return false;
   }
 
@@ -341,7 +351,15 @@ export class CheckGate {
     Hooks.on("dnd5e.rollHitDieV2", (rolls, data) => {
       try {
         CheckGate._postHitDieCard(rolls, data)
-          .catch(err => console.error(`${LOG} | hit die card failed:`, err));
+          .catch(err => {
+            // ⚠️ dnd5e's CARD WAS ALREADY SUPPRESSED on the way in. The die was
+            // rolled and the healing applied; if ours does not post, the table
+            // sees nothing at all happen.
+            console.error(`${LOG} | hit die card failed:`, err);
+            const total = (Array.isArray(rolls) ? rolls[0] : rolls)?.total;
+            ui.notifications?.warn(`${data?.subject?.name ?? "That creature"} rolled a hit die `
+              + `(${total ?? "?"}) but no card could be posted — see the console.`);
+          });
       } catch (err) {
         console.error(`${LOG} | hit die card threw:`, err);
       }
@@ -380,7 +398,14 @@ export class CheckGate {
     Hooks.on("dnd5e.rollRechargeV2", (rolls, data) => {
       try {
         CheckGate._postRechargeCard(rolls, data)
-          .catch(err => console.error(`${LOG} | recharge card failed:`, err));
+          .catch(err => {
+            // Same shape as the hit die above: dnd5e's card is already off.
+            console.error(`${LOG} | recharge card failed:`, err);
+            const roll = (Array.isArray(rolls) ? rolls[0] : rolls);
+            ui.notifications?.warn(`${data?.subject?.name ?? "That item"} rolled to recharge `
+              + `(${roll?.total ?? "?"}, ${roll?.isSuccess ? "recharged" : "not yet"}) but no card `
+              + `could be posted — see the console.`);
+          });
       } catch (err) {
         console.error(`${LOG} | recharge card threw:`, err);
       }
