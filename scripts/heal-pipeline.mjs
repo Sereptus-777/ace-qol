@@ -199,9 +199,23 @@ export class HealPipeline {
       const item = activity.item;
       if (!item) return;
 
-      if (SpellPipeline.owns?.(item)) {
+      // ⚠️ READ THE ANSWER, DO NOT ASK AGAIN. The reading ran ahead of this
+      // handler and already worked out who owns this button. Asking a second
+      // time is how two parts of ACE came to disagree about Aura of Vitality in
+      // the same second. `owns()` stays only as a fallback for the case where
+      // the reading itself failed, and that case now says so out loud.
+      const reading = ActionInterceptor.readingFor?.(activity) ?? null;
+      if (!reading) {
+        console.warn(`${MODULE_ID} | HealPipeline: no reading for "${item.name}" — the engine `
+          + `did not get to this button first. Falling back to asking the registry directly.`);
+      }
+      const ownedBySpells = reading
+        ? String(reading.owner ?? "").startsWith("spell-pipeline")
+        : !!SpellPipeline.owns?.(item);
+
+      if (ownedBySpells) {
         console.log(`${MODULE_ID} | HealPipeline: "${item.name}" belongs to the spell `
-          + `pipeline — standing aside so it can run.`);
+          + `pipeline (${reading?.shape ?? "registry"}) — standing aside so it can run.`);
         return;                                     // no false: the chain continues
       }
 

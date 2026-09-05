@@ -35,7 +35,6 @@
 import { buildAttackerProfile } from "./attacker-profile.mjs";
 import { RulesBrain } from "../rules/rules-brain.mjs";
 import { SpellPipeline } from "../spell-pipeline/pipeline.mjs";
-import { classifyItem } from "../inference/classify-item.mjs";
 import { RulesIndex } from "../rules/rules-index.mjs";
 import { readMechanics, compareToBook, isCantrip, filterForCantrip } from "../rules/rules-compare.mjs";
 
@@ -44,9 +43,6 @@ import { readMechanics, compareToBook, isCantrip, filterForCantrip } from "../ru
 // load and kills the module (2026-08-28).
 const MODULE_ID = "ace-qol";
 const LOG = `${MODULE_ID} | reading`;
-
-/** How long to wait for something to appear before calling it silence. */
-const SILENCE_MS = 2500;
 
 // dnd5e 5.x activity types we know exist. Anything outside this set is a
 // coverage hole worth a one-time warning.
@@ -108,6 +104,13 @@ export class ActionInterceptor {
 
   static _witnessesWired = false;
 
+  /**
+   * How long to wait for something to appear before calling it silence.
+   * A static rather than a const so the self-test can shorten it: a watchdog
+   * that is never exercised is the same as no watchdog.
+   */
+  static silenceMs = 2500;
+
   /* ── Boot ──────────────────────────────────────────────────────────────── */
 
   static register() {
@@ -156,6 +159,13 @@ export class ActionInterceptor {
     Hooks.on("createMeasuredTemplate", saw("a template was placed"));
     Hooks.on("renderDialogV2", saw("a dialog opened"));
     Hooks.on("renderRollConfigurationDialog", saw("a roll dialog opened"));
+    // ⚠️ NOT EVERY WORKING BUTTON POSTS A CARD. A buff that lands as an
+    // effect and a summon that puts a creature on the board are both plainly
+    // "something happened", and calling either of them a dead button would be
+    // crying wolf at his table — which is the fastest way to make him stop
+    // reading these, exactly like the "areas that are never drawn" card.
+    Hooks.on("createActiveEffect", saw("an effect was applied"));
+    Hooks.on("createToken", saw("a creature appeared"));
   }
 
   /* ── The reading ───────────────────────────────────────────────────────── */
@@ -194,22 +204,35 @@ export class ActionInterceptor {
     }
 
     const profile = _safe(() => buildAttackerProfile(actor, { item, activity }), null);
-    const curated = _safe(() => RulesBrain.lookup(item, { actor }), null);
     const edition = _safe(() => RulesBrain.resolveEdition(item, actor), "2014");
 
-    // ⚠️ THE CURATED ENTRY WINS WHERE ONE EXISTS — it encodes rulings no
-    // structure can express (Colour Spray's hit-point pool is not in any
-    // field). Everything else is WORKED OUT from the item, which is the whole
-    // point: a hand-written list of 124 spells can never cover his world.
-    let shape = curated?.entry?.shape ?? null;
-    let source = shape ? "curated" : null;
-    let confidence = shape ? "curated" : null;
-    if (!shape) {
-      const worked = _safe(() => classifyItem(item), null);
-      shape = worked?.shape ?? null;
-      confidence = worked?.confidence ?? null;
-      source = shape ? "worked-out" : "unknown";
-    }
+    // ⚠️🔴 ONE DECIDER, AND IT ALREADY EXISTED. `SpellPipeline._getEntry`
+    // IS the question "what is this item": it tries the curated registry first,
+    // then a shape a human corrected by hand, then works it out from the item,
+    // and caches the result. Every pipeline that resolves anything already asks
+    // it.
+    //
+    // The first version of this file, written four hours before this line,
+    // asked `RulesBrain.lookup` (eighteen environment entries) and then
+    // `classifyItem` raw — skipping the 124-entry registry AND the learned
+    // store. So it would have reported a shape for Aura of Vitality that
+    // disagreed with the shape actually used to resolve it, and printed that
+    // disagreement into his console as though it were the truth.
+    //
+    // That is two answers to one question, which is the exact fault this whole
+    // night was spent finding. Written down here because I did it again while
+    // fixing it: it is not enough to know the rule.
+    const entry = _safe(() => SpellPipeline._getEntry(item), null);
+    const shape = entry?.shape ?? null;
+    const source = !entry ? "unknown"
+                 : entry.corrected ? "corrected-by-you"
+                 : entry.inferred  ? "worked-out"
+                 : "curated";
+    const confidence = entry?.inferred ? (entry.confidence ?? "worked-out") : source;
+
+    // The environment/space rules record, which is a DIFFERENT question from
+    // the shape and is kept beside it rather than confused with it.
+    const curated = _safe(() => RulesBrain.lookup(item, { actor }), null);
 
     const reading = {
       id: activity.id,
@@ -307,7 +330,7 @@ export class ActionInterceptor {
       ui.notifications?.error(
         `${reading.itemName} did nothing. ${why}. See the console for what ACE read it as.`,
         { permanent: true });
-    }, SILENCE_MS);
+    }, ActionInterceptor.silenceMs);
   }
 
   /* ── Report ────────────────────────────────────────────────────────────── */
