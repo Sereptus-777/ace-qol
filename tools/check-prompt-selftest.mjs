@@ -288,6 +288,87 @@ check("a save reads its own mode and names its source",
   { kind: "save", mode: 1, reasons: [{ reason: "Aura of Protection: advantage" }], modifier: 7,
     label: "Dexterity saving throw" });
 
+console.log("\nA FIXED INITIATIVE SCORE IS NOT ASKED ABOUT");
+// ⚠️ THREE BUTTONS THAT ALL DO THE SAME THING READ AS A BROKEN FEATURE.
+// dnd5e's "initiative score" setting can replace the roll with a flat number,
+// for everybody or for NPCs only. When it does, `rollInitiativeDialog` never
+// builds a d20 at all, so advantage has nothing to apply to. The gate asks
+// dnd5e whether this creature is fixed rather than re-deriving the setting,
+// so the two cannot drift apart.
+{
+  let asked = 0;
+  const realWait = foundry.applications.api.DialogV2.wait;
+  foundry.applications.api.DialogV2.wait = async () => { asked++; return "normal"; };
+
+  let wentThrough = 0;
+  class FakeActor {
+    constructor(fixed) { this.name = "Test"; this._fixed = fixed; this.system = {
+      attributes: { init: { roll: { mode: 0 }, ability: "dex", total: 2 } },
+      abilities: { dex: { check: { roll: { mode: 0 } } } } }; this.effects = []; }
+    getInitiativeRollConfig() { return { options: { fixed: this._fixed } }; }
+    async rollInitiativeDialog() { wentThrough++; }
+  }
+  CONFIG.Actor.documentClass = FakeActor;
+  CheckGate._wrapInitiative();
+
+  asked = 0; wentThrough = 0;
+  await new FakeActor(14).rollInitiativeDialog();
+  check("a fixed score rolls with no prompt", [asked, wentThrough], [0, 1]);
+
+  asked = 0; wentThrough = 0;
+  await new FakeActor(undefined).rollInitiativeDialog();
+  check("an ordinary creature still gets the prompt", [asked, wentThrough], [1, 1]);
+
+  // ⚠️ AND A FAULT IN THAT TEST MUST NOT COST HIM INITIATIVE. A creature
+  // that cannot roll it cannot take a turn, so the wrapper asks anyway rather
+  // than failing shut.
+  class ThrowingActor extends FakeActor {
+    getInitiativeRollConfig() { throw new Error("no such method on this build"); }
+  }
+  asked = 0; wentThrough = 0;
+  await new ThrowingActor(undefined).rollInitiativeDialog();
+  check("if the fixed-score test throws, initiative still happens", wentThrough, 1);
+
+  foundry.applications.api.DialogV2.wait = realWait;
+}
+
+console.log("\nCONCENTRATION READS BOTH FIELDS dnd5e READS");
+// ⚠️🔴 READ ONE OF TWO AND SHIPPED. Proven from the dnd5e source:
+// rollConcentration builds advantage from the concentration attribute, then
+// rollSavingThrow builds its own from the ability's SAVE mode and merges them
+// with ||. The gate FORCES what the prompt returns, so suggesting "normal" to a
+// creature with advantage on Constitution saves does not mislabel the roll, it
+// takes the advantage away. Same shape as the skill bug in 0.13.0.
+{
+  const conc = (concMode, conSaveMode, effects = []) => CheckGate.read({
+    system: { attributes: { concentration: { ability: "con", roll: { mode: concMode } } },
+              abilities: { con: { save: { roll: { mode: conSaveMode } } } } },
+    effects,
+  }, "concentration", "con");
+  check("advantage from the CONCENTRATION attribute shows", conc(1, 0).mode, 1);
+  check("advantage from the CONSTITUTION SAVE shows", conc(0, 1).mode, 1);
+  check("disadvantage from the save alone shows", conc(0, -1).mode, -1);
+  check("one of each cancels", conc(1, -1).mode, 0);
+  check("neither is normal", conc(0, 0).mode, 0);
+  // ⚠️ AND THE REASON HAS TO NAME IT. A suggestion with nothing beside it
+  // cannot be told apart from a bug, which is the whole argument for this file.
+  check("an effect on Constitution saves is named",
+    conc(0, -1, [{ name: "Poisoned by the fumes", disabled: false,
+      changes: [{ key: "system.abilities.con.save.roll.mode", value: "-1" }] }]).reasons,
+    [{ reason: "Poisoned by the fumes: disadvantage" }]);
+  check("an effect on concentration itself is still named",
+    conc(1, 0, [{ name: "War Caster", disabled: false,
+      changes: [{ key: "system.attributes.concentration.roll.mode", value: "1" }] }]).reasons,
+    [{ reason: "War Caster: advantage" }]);
+  // ⚠️ A DEATH SAVE IS NOT COMBINED, and that is not an oversight: rollDeathSave
+  // passes NO ability, so dnd5e's save path finds nothing and reads death.roll.mode
+  // alone. An effect granting advantage on CON saves must not reach it.
+  check("a death save ignores the Constitution save mode",
+    CheckGate.read({ system: { attributes: { death: { roll: { mode: 0 } } },
+      abilities: { con: { save: { roll: { mode: 1 } } } } }, effects: [] },
+      "death", "death").mode, 0);
+}
+
 console.log("\nEACH KIND GOES BACK THROUGH ITS OWN dnd5e METHOD");
 // ⚠️🔴 THE WIRING MOST LIKELY TO BE WRONG AND LEAST LIKELY TO BE NOTICED.
 // The gate CANCELS dnd5e's roll, so if a death save is re-rolled as a plain

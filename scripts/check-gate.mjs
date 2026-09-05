@@ -276,6 +276,26 @@ export class CheckGate {
             return original.call(this, rollOptions, dialog);
           }
 
+          // ⚠️🔴 A FIXED INITIATIVE NEVER ROLLS A d20, so there is nothing for
+          // advantage to mean. dnd5e's "initiative score" setting can fix it for
+          // everybody or for NPCs only, and when it does, `rollInitiativeDialog`
+          // skips the whole build and constructs a flat number instead. ACE was
+          // still opening a three-button prompt over it: three buttons that all
+          // produced the same result, which reads as a broken feature and is
+          // the same "confidently wrong prompt" the mode reader exists to avoid.
+          //
+          // Tested the way dnd5e tests it rather than by re-deriving the
+          // setting, so the two cannot drift apart. `getInitiativeRollConfig`
+          // is a pure read.
+          try {
+            if (this.getInitiativeRollConfig?.(rollOptions)?.options?.fixed !== undefined) {
+              return original.call(this, rollOptions, dialog);
+            }
+          } catch (err) {
+            console.warn(`${LOG} | could not tell whether initiative is a fixed `
+              + `score for ${this.name}; asking anyway:`, err);
+          }
+
           const read = CheckGate.read(this, "initiative", "init");
           const suggested = read.mode > 0 ? "advantage" : read.mode < 0 ? "disadvantage" : "normal";
           const { showCheckPrompt } = await import("./attack-prompt.mjs");
@@ -589,8 +609,22 @@ export class CheckGate {
         out.modifier = null;
         out.label = "Death saving throw";
       } else if (kind === "concentration") {
+        // ⚠️🔴 TWO FIELDS, AND I HAD READ ONE. Proven from the dnd5e source:
+        // `rollConcentration` builds its advantage from the concentration
+        // attribute, then hands the roll to `rollSavingThrow`, which builds its
+        // OWN from the ability's SAVE mode and merges the two with `||`. So a
+        // creature with advantage on Constitution saves has advantage on the
+        // concentration check, and this read said normal.
+        //
+        // That is not a mislabelled prompt. The gate FORCES whatever the prompt
+        // came back with, so a suggestion of normal that he accepts would have
+        // stripped advantage the creature was entitled to. Reading one field of
+        // two is exactly what shipped for skills in 0.13.0.
         const c = actor.system?.attributes?.concentration;
-        out.mode = Number(c?.roll?.mode ?? 0) || 0;
+        const ability = (c?.ability && actor.system?.abilities?.[c.ability]) ? c.ability
+          : (CONFIG.DND5E?.defaultAbilities?.concentration || "con");
+        const abMode = actor.system?.abilities?.[ability]?.save?.roll?.mode;
+        out.mode = CheckGate.combineModes([c?.roll?.mode, abMode]);
         out.modifier = null;                    // same reasoning as above
         out.label = "Concentration";
       } else {
@@ -615,6 +649,11 @@ export class CheckGate {
       const ability = actor.system?.attributes?.init?.ability
         || CONFIG.DND5E?.defaultAbilities?.initiative || "dex";
       wanted.add(`system.abilities.${ability}.check.roll.mode`);
+    }
+    if (kind === "concentration") {
+      const ability = actor.system?.attributes?.concentration?.ability
+        || CONFIG.DND5E?.defaultAbilities?.concentration || "con";
+      wanted.add(`system.abilities.${ability}.save.roll.mode`);
     }
     try {
       for (const e of (actor.effects ?? [])) {
