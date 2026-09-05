@@ -35,6 +35,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { onCanvasReady } from "./ready-utils.mjs";
 
 const CHAIN_TEXTURE_PATH = "modules/ace-qol/Assets/Conditions/restrained-chain.png";
 // Build stamp — printed at startup so "did the new file load" is answerable
@@ -157,7 +158,7 @@ export class ConditionVisuals {
     Hooks.on("updateActiveEffect", syncActor);
 
     // Token lifecycle.
-    Hooks.on("canvasReady", () => ConditionVisuals.syncAll());
+    onCanvasReady( () => ConditionVisuals.syncAll());
     Hooks.on("drawToken", (token) => ConditionVisuals.sync(token));
     // Foundry rebuilds token.mesh on redraws (elevation, art swaps, some refreshes),
     // wiping our welded stone filter. Cheaply re-weld it if it went missing on a

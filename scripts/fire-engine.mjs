@@ -42,6 +42,7 @@ const MODULE_ID = "ace-qol";
 const FLAG_NS = "ace-qol";
 
 import { TheClock } from "./the-clock.mjs";
+import { onCanvasReady } from "./ready-utils.mjs";
 import { buildRegionShapeFromTemplate } from "./geometry-utils.mjs";
 
 const LOG = `${MODULE_ID} | Fire`;
@@ -828,7 +829,7 @@ export class FireEngine {
     });
 
     // Flames and smoke are drawn per client and are lost on a scene change.
-    Hooks.on("canvasReady", () => {
+    onCanvasReady( () => {
       try { FireEngine.redrawAll(); }
       catch (err) { console.warn(`${LOG} | could not redraw the fires on this scene:`, err); }
     });

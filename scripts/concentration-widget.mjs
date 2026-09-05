@@ -13,6 +13,7 @@
 // NOTE: MODULE_ID hardcoded to avoid circular import (ace-qol.mjs imports us)
 const MODULE_ID = "ace-qol";
 import { getSpellTiming } from "./spell-timing.mjs";
+import { onCanvasReady } from "./ready-utils.mjs";
 import { QolSettings } from "./settings.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
 // dsn-utils is a dependency-free leaf module — safe to import here even
@@ -83,7 +84,7 @@ export class ConcentrationWidget {
       );
     };
     _doReattach();                            // handles initial boot
-    Hooks.on("canvasReady", _doReattach);     // handles scene switches
+    onCanvasReady( _doReattach);     // handles scene switches
 
     // Template moved — re-target
     Hooks.on("updateMeasuredTemplate", (templateDoc, changes, opts, userId) => {

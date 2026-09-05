@@ -31,6 +31,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "../ace-qol.mjs";
+import { onCanvasReady } from "../ready-utils.mjs";
 import { QolSettings } from "../settings.mjs";
 import { RulesBrain } from "./rules-brain.mjs";
 import { SpaceDrafter } from "./space-drafter.mjs";
@@ -142,7 +143,7 @@ export class SpaceEffects {
     // persistent Sequencer effect is stored on the scene and outlives a reload,
     // so a storm nobody ended would still be raining tomorrow.
     Hooks.on("deleteRegion", (regionDoc) => SpaceEffects._endSpaceFx(regionDoc?.id));
-    Hooks.on("canvasReady", () => {
+    onCanvasReady( () => {
       try { SpaceEffects.redrawSpaceFx(); }
       catch (err) { console.warn(`${TAG} could not redraw the spaces on this scene:`, err); }
     });

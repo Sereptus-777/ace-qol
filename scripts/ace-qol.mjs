@@ -56,6 +56,7 @@ import { SelfTest } from "./rules/self-test.mjs";
 import { openRulesCoverage, registerCoverageButton } from "./rules/coverage-report.mjs";
 import { ActionInterceptor } from "./profiles/action-interceptor.mjs";
 import { RulesIndex } from "./rules/rules-index.mjs";
+import { onCanvasReady } from "./ready-utils.mjs";
 import { emanatesFromCaster, drawCasterEmanation } from "./caster-emanation.mjs";
 import { ConditionVisuals, BODY_VISUAL_STATUSES } from "./condition-visuals.mjs";
 import { SpellPipeline } from "./spell-pipeline/pipeline.mjs";
@@ -1724,7 +1725,7 @@ Hooks.once("ready", () => {
     }
   };
   _reapplyVisualHiddenToTemplates();              // handles initial boot
-  Hooks.on("canvasReady", _reapplyVisualHiddenToTemplates); // handles scene switches
+  onCanvasReady(_reapplyVisualHiddenToTemplates, "re-apply visual-hidden to templates");
 
   // Attack pipeline — ALL users
   // Pre-roll hook (advantage/disadvantage, range check) runs on the attacking client.
@@ -4240,7 +4241,7 @@ Hooks.once("ready", () => {
       DeathPipeline.registerAPI(deathPipeline);
 
       // Rebuild art cache on scene change
-      Hooks.on("canvasReady", () => {
+      onCanvasReady(() => {
         if (deathPipeline) deathPipeline.buildArtCache();
       });
 

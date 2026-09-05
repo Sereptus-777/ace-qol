@@ -20,6 +20,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { onCanvasReady } from "./ready-utils.mjs";
 import { QolSettings } from "./settings.mjs";
 import { HolySymbol } from "./holy-symbol.mjs";
 
@@ -130,7 +131,7 @@ export class EffectsPanel {
 
     // canvasReady fires on initial login + every scene change. Check for
     // already-controlled tokens (controlToken hook doesn't fire for those).
-    Hooks.on("canvasReady", () => {
+    onCanvasReady( () => {
       setTimeout(() => {
         const controlled = canvas.tokens?.controlled ?? [];
         if (controlled.length > 0) this._onControlToken(controlled[0], true);

@@ -273,8 +273,34 @@ export class DamageApplicator {
       } catch (_) { /* non-fatal */ }
     } else {
       // NPC path — auto-roll, show result, on fail delete the effect.
-      const roll = await new Roll(formula).evaluate();
-      const total = roll.total;
+      //
+      // ⚠️🔴 THIS ROLLED A FLAT d20 AND IGNORED ADVANTAGE. It built
+      // "1d20 + CON + prof" as a string and threw it with a bare Roll, so a
+      // monster with advantage on concentration saves — a Warcaster-equivalent
+      // trait, an effect, a legendary feature — rolled straight. The PC button
+      // was fixed to go through `rollConcentration` in 0.15.2; this branch was
+      // the other half of the same bug.
+      //
+      // ⚠️ NO PROMPT FOR AN NPC. Asking `configure:false` and `create:false`
+      // is exactly how the check gate recognises an engine rolling for itself,
+      // so it stands aside and dnd5e resolves the advantage from the
+      // concentration attribute AND the Constitution save, as RAW requires.
+      const npcRolls = await actor.rollConcentration?.({ target: dc },
+                                                       { configure: false },
+                                                       { create: false });
+      const roll = (Array.isArray(npcRolls) ? npcRolls[0] : npcRolls)
+        ?? await new Roll(formula).evaluate();   // only if the method is gone
+      const total = Number(roll?.total);
+      if (!Number.isFinite(total)) {
+        // ⚠️ NEVER LET A CONCENTRATION CHECK EVAPORATE. A monster that keeps
+        // concentration because the roll silently failed is a spell that never
+        // ends, and nobody at the table would ever know why.
+        console.error(`${MODULE_ID} | ${actor.name}'s concentration roll produced nothing; `
+          + `concentration left in place.`);
+        ui.notifications?.error(`${actor.name}: the concentration check did not roll. `
+          + `Concentration was left as it was — see the console.`);
+        return;
+      }
       const passed = total >= dc;
       const resultColor = passed ? "#7ec97e" : "#e57373";
       const resultLabel = passed ? "MAINTAINED" : "BROKEN";
@@ -311,13 +337,14 @@ export class DamageApplicator {
       } catch (_) { /* non-fatal */ }
 
       if (!passed) {
-        // Delete the Concentrating effect — dnd5e auto-cleans dependents
-        try {
-          await concEffect.delete();
-          console.log(`${MODULE_ID} | Concentration BROKEN: ${actor.name} failed concentration save (${total} vs DC ${dc}) — effect deleted`);
-        } catch (err) {
-          console.warn(`${MODULE_ID} | Failed to delete concentration effect:`, err);
-        }
+        // ⚠️🔴 THE EFFECT IS NOT DELETED HERE ANY MORE — ONE WRITER ONLY.
+        // Now that this branch rolls through `rollConcentration`, the single
+        // listener in `check-gate.mjs` (`_registerConcentrationOutcome`) fires
+        // on `dnd5e.rollConcentrationV2` and ends it. Deleting here as well
+        // would be two writers on one decision, which is how a corpse kept its
+        // concentration and a live caster lost it twice.
+        console.log(`${MODULE_ID} | Concentration BROKEN: ${actor.name} failed `
+          + `(${total} vs DC ${dc}) — the outcome listener ends it.`);
       } else {
         console.log(`${MODULE_ID} | Concentration MAINTAINED: ${actor.name} passed concentration save (${total} vs DC ${dc})`);
       }

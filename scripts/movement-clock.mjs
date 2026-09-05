@@ -28,6 +28,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { onCanvasReady } from "./ready-utils.mjs";
 import { TheClock } from "./the-clock.mjs";
 import {
   SCENE_KINDS, DEFAULT_PACE, paceSetFor,
@@ -254,7 +255,7 @@ export class MovementClock {
     Hooks.on("combatStart", () => this._discard("combat started"));
 
     // Changing scene ends the journey; unsettled legs belong to the old map.
-    Hooks.on("canvasReady", () => this._discard("scene changed"));
+    onCanvasReady( () => this._discard("scene changed"));
 
     console.log(`${LOG} | online — walking accrues silently and settles ${SETTLE_MS / 1000}s after the party stops.`);
   }

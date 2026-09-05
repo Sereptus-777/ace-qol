@@ -28,6 +28,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { onCanvasReady } from "./ready-utils.mjs";
 import { Situation } from "./situation.mjs";
 
 /** Statuses that RAW make a creature incapacitated (concentration-breaking). */
@@ -173,7 +174,7 @@ export class RulesWatchdog {
         setTimeout(() => RulesWatchdog.checkCombat(combat), 250);
       } catch (_) { /* non-fatal */ }
     });
-    Hooks.on("canvasReady", () => {
+    onCanvasReady( () => {
       try {
         if (game.users?.activeGM !== game.user) return;
         if (!game.combat?.started) return;

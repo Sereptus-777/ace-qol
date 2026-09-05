@@ -83,6 +83,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { onCanvasReady } from "./ready-utils.mjs";
 import { WeaponSwap } from "./weapon-swap.mjs";
 import { resolveReach } from "./reach-reader.mjs";
 import { MultiattackEngine } from "./multiattack-engine.mjs";
@@ -1786,7 +1787,7 @@ export class ActionBar {
     // The end-turn button and the initiative pip both depend on combat state.
     Hooks.on("updateCombat", redraw);
     Hooks.on("deleteCombat", redraw);
-    Hooks.on("canvasReady", redraw);
+    onCanvasReady( redraw);
 
     // ⚠️ `Hooks.once("ready")` FROM INSIDE ready NEVER FIRES. Every ACE subsystem
     // starts from the entry file's own ready handler, so waiting on `ready` here

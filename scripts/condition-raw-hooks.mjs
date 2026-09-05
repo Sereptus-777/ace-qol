@@ -25,6 +25,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { onCanvasReady } from "./ready-utils.mjs";
 import { QolSettings } from "./settings.mjs";
 import { saveBonus } from "./rolldata-utils.mjs";
 
@@ -247,7 +248,7 @@ export class ConditionRawHooks {
 
     // Heal desynced condition "ghosts" on load and on every scene switch — see
     // reconcileConditionGhosts() below. Cheap: only writes when a ghost exists.
-    Hooks.on("canvasReady", () => { ConditionRawHooks.reconcileConditionGhosts(); });
+    onCanvasReady( () => { ConditionRawHooks.reconcileConditionGhosts(); });
 
     console.debug(`${MODULE_ID} | ConditionRawHooks online — ${RAW_TRIGGERS.size} keys watched`);
   }

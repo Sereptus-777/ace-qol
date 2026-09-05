@@ -20,6 +20,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { onCanvasReady } from "./ready-utils.mjs";
 
 // ─── Special duration types ─────────────────────────────────────────────────
 // Stored in flags.ace-qol.specialDuration on each ActiveEffect.
@@ -88,7 +89,7 @@ export class DurationTracker {
     // duration elapsed while the world was closed (Ctrl+F5) would linger.
     // canvasReady fires on initial load and every scene switch; also sweep once
     // now since init() runs during the `ready` hook (canvas is already up).
-    Hooks.on("canvasReady", () => { try { this.sweepStaleEffects(); } catch (_) {} });
+    onCanvasReady( () => { try { this.sweepStaleEffects(); } catch (_) {} });
     try { this.sweepStaleEffects(); } catch (_) {}
 
     console.debug(`${MODULE_ID} | Duration Tracker initialized`);

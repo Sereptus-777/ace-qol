@@ -10,6 +10,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { onCanvasReady } from "./ready-utils.mjs";
 import { QolSettings } from "./settings.mjs";
 import { showCenterToast } from "./attack-prompt.mjs";
 
@@ -52,7 +53,7 @@ export class TurnMarker {
     Hooks.on("deleteCombat", ()       => this._removeMarker());
 
     // Re-place after canvas reload (scene change, refresh, etc.)
-    Hooks.on("canvasReady", () => {
+    onCanvasReady( () => {
       if (game.combat?.started) this._updateMarker(game.combat);
     });
   }

@@ -34,6 +34,7 @@
 // ⚠️ AND DELETING IT LEFT THREE DANGLING IMPORTS that would have stopped ace-qol
 // loading entirely. Never remove a module without grepping for its references.
 // ──────────────────────────────────────────────────────────────────────────────
+import { onCanvasReady } from "./ready-utils.mjs";
 
 // ⚠️ Local — importing MODULE_ID from ace-qol.mjs forms the cycle that made every
 // token unclickable on 2026-08-11.
@@ -98,7 +99,7 @@ export class SunkenFloors {
     // ⚠️ RE-ASSERT ON EVERY DRAW. A scene loaded before we ran, or another
     // module resetting the static, would silently put the map back on top of
     // anyone standing in a cellar.
-    Hooks.on("canvasReady", () => SunkenFloors.apply());
+    onCanvasReady( () => SunkenFloors.apply());
 
     console.log(`${LOG} | online`);
   }

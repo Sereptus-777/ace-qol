@@ -29,6 +29,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { onCanvasReady } from "./ready-utils.mjs";
 import { Situation } from "./situation.mjs";
 
 const HAND_KEY            = "partyHand";
@@ -1250,7 +1251,7 @@ export class PartyTransfer {
     }, true);
 
     // Never leave a crosshair armed across a scene change or a closed panel.
-    Hooks.on("canvasReady", () => this.cancelAim(true));
+    onCanvasReady( () => this.cancelAim(true));
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

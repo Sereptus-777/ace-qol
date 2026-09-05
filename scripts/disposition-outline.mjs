@@ -41,6 +41,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { onCanvasReady } from "./ready-utils.mjs";
 
 const LOG = "ace-qol | DispositionOutline";
 
@@ -345,7 +346,7 @@ export class DispositionOutline {
     // creature that just walked behind a wall, which is precisely the leak this
     // feature has to avoid.
     Hooks.on("sightRefresh", () => DispositionOutline.refreshAll());
-    Hooks.on("canvasReady", () => DispositionOutline.refreshAll());
+    onCanvasReady( () => DispositionOutline.refreshAll());
 
     // Disposition, hidden state and ownership all change the answer.
     Hooks.on("updateToken", (doc, changes) => {
