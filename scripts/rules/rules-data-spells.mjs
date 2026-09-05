@@ -229,7 +229,7 @@ export const SPELL_RULES = {
     srd: true,
     level: 1, school: "con",
     concentration: false,
-    expectedArea: { type: "cube", size: 10 },
+    expectedArea: { type: "square", size: 10 },
     space: { obscurement: null, kind: null, pierceBy: [], silence: false, difficultTerrain: 2, light: null },
     durationSeconds: 60,   // 1 minute, no concentration — expires on its own
     notes: "Prone save on entry/turn stays with spell-timing. 1-minute duration, no concentration. Before 2026-07-28 nothing ever removed the template, so the region lived forever and stacked with every re-cast.",
@@ -251,11 +251,16 @@ export const SPELL_RULES = {
   // "Grasping weeds and vines sprout... turning the ground in the area into
   //  difficult terrain." The STR save / restrained machinery stays with the
   //  parser + save-engine; the SPACE (terrain) lives here.
+  // ⚠️ A FLAT AREA ON THE GROUND, AND THESE TWO NAMED IT DIFFERENTLY. Entangle
+  // said square while its item says cube; Grease said cube while its item says
+  // square. Both render the same rectangle, so nothing at the table changed —
+  // but two entries contradicting each other about one shape is how a real
+  // discrepancy gets lost among false ones. Both now say what their item says.
   "entangle": {
     srd: true,
     level: 1, school: "con",
     concentration: true,
-    expectedArea: { type: "square", size: 20 },
+    expectedArea: { type: "cube", size: 20 },
     space: { obscurement: null, kind: null, pierceBy: [], silence: false, difficultTerrain: 2, light: null },
     notes: "STR save vs restrained on cast (and to break free) stays with the save flow. Area is lightly obscured per some readings — RAW says only difficult terrain; kept terrain-only.",
   },

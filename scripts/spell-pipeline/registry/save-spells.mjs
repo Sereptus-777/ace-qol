@@ -45,9 +45,12 @@ export const SAVE_SPELLS = {
     flavorOnConfirm: "A humanoid must succeed on a Wisdom save or be paralyzed. Re-saves at end of each turn.",
   },
 
+  // ⚠️ 2024 REACHES 90 FEET; 2014 REACHED 60. His copy is the 2024 one, and the
+  // entry was refusing targets thirty feet inside the spell's own range.
   "hold monster": {
     shape: "save-single",
-    range: 60,
+    range: 90,
+    byEdition: { "2014": { range: 60 } },
     save: { ability: "wis", onFail: "effect", repeatAt: "endOfTurn" },  // RAW: re-save at end of each turn
     // v0.7.72: spell-specific entry, same reasoning as Hold Person above.
     effect: { key: "hold_monster", duration: "concentration" },

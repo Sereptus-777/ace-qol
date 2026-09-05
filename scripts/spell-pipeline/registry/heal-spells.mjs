@@ -9,24 +9,50 @@
 
 export const HEAL_SPELLS = {
 
+  // ⚠️🔴 2024 DOUBLED THE DICE AND THIS ENTRY KEPT 2014's. Found by
+  // `game.aceQol.auditSpellRules()` against his own sheets on 2026-09-04, which
+  // is the only reason it was ever found: the spell resolved, posted a card and
+  // healed half, and nothing anywhere disagreed with itself.
   "cure wounds": {
     shape: "touch",
     range: 5,
     heal: {
-      formula: (castLvl, spellMod) => `${castLvl}d8 + ${spellMod}`,
+      // ⚠️ THE UPCAST IS INFERRED, NOT READ. The audit proved the base is 2d8;
+      // his Healing Word text proved 2024 doubled BOTH the base and the per-level
+      // step there (2d4 base, +2d4 per level), and Cure Wounds is the same pair of
+      // changes. If his copy says +1d8 per level instead, this line is the one to
+      // change and nothing else moves.
+      formula: (castLvl, spellMod) => `${2 * Math.max(1, castLvl)}d8 + ${spellMod}`,
     },
     picker: { allowSelf: true, preHighlightSelf: true, requiresAdjacent: true, excludeDead: false },
-    flavorOnConfirm: "A touch heals 1d8 + spellcasting modifier (+1d8 per upcast).",
+    byEdition: {
+      "2014": {
+        heal: { formula: (castLvl, spellMod) => `${castLvl}d8 + ${spellMod}` },
+        flavorOnConfirm: "A touch heals 1d8 + spellcasting modifier (+1d8 per upcast).",
+      },
+    },
+    flavorOnConfirm: "A touch heals 2d8 + spellcasting modifier (+2d8 per upcast).",
   },
 
+  // ⚠️🔴 2024 IS 2d4 AND UPCASTS AT 2d4, NOT 1d4 AT EITHER. Straight off his
+  // own copy: "regains Hit Points equal to 2d4 plus your spellcasting ability
+  // modifier ... The healing increases by 2d4 for each spell slot level above
+  // 1." The entry had 1d4 for both, so a 2024 cleric was healing half and
+  // upcasting at half again.
   "healing word": {
     shape: "touch",  // single-target, ranged — touch-pattern picker (single-adjacent filter is bypassed by range > 5)
     range: 60,
     heal: {
-      formula: (castLvl, spellMod) => `${castLvl}d4 + ${spellMod}`,
+      formula: (castLvl, spellMod) => `${2 * Math.max(1, castLvl)}d4 + ${spellMod}`,
     },
     picker: { allowSelf: true, preHighlightSelf: true, requiresAdjacent: false, excludeDead: false },
-    flavorOnConfirm: "A word of healing restores 1d4 + spellcasting modifier (+1d4 per upcast).",
+    byEdition: {
+      "2014": {
+        heal: { formula: (castLvl, spellMod) => `${castLvl}d4 + ${spellMod}` },
+        flavorOnConfirm: "A word of healing restores 1d4 + spellcasting modifier (+1d4 per upcast).",
+      },
+    },
+    flavorOnConfirm: "A word of healing restores 2d4 + spellcasting modifier (+2d4 per upcast).",
   },
 
   // ── Mass Cure Wounds (5th) ────────────────────────────────────────────────
@@ -143,6 +169,11 @@ export const HEAL_SPELLS = {
   // through the pipeline. Set excludeDead: false so the dying / dead
   // creature is actually selectable. (revivesDead / stabilizes flags still
   // drive the resolver's restore logic; HealResolver checks them.)
+  // ⚠️🔴 BOTH SIDES WERE WRONG HERE, which is the case an audit is actually
+  // for. ACE said 5 feet, the 2014 "touch" converted; his 2024 item says 120
+  // feet, which is not a number this spell has ever had and looks like an
+  // importer's default. 2024 is 15 feet. The entry now says so; the ITEM still
+  // says 120 and only he can change that.
   "spare the dying": {
     shape: "touch",
     range: 5,

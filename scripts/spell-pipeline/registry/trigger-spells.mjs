@@ -89,16 +89,21 @@ export const TRIGGER_SPELLS = {
   // 3d6 bludgeoning on entry/start-of-turn (no save for damage in 2014;
   // 2024 wraps it under one DEX save). Restrained on fail (STR or DEX save
   // depending on edition).
+  // ⚠️🔴 2024 MADE IT A STRENGTH SAVE AND THE ENTRY STAYED ON DEXTERITY. His
+  // own item says STR. A save against the wrong ability is not a rounding
+  // error: it is a different creature failing.
   "evard's black tentacles": {
     shape: "template-trigger",
     range: 90,
-    save: { ability: "dex", halfOnPass: false },
+    save: { ability: "str", halfOnPass: false },
+    byEdition: { "2014": { save: { ability: "dex", halfOnPass: false } } },
     flavorOnConfirm: "Squirming black tentacles fill the 20-ft square. 3d6 bludgeoning on entry / start of turn. Save or be restrained — STR (or DEX) check to break free.",
   },
   "black tentacles": {  // alias — some dnd5e items omit Evard's prefix
     shape: "template-trigger",
     range: 90,
-    save: { ability: "dex", halfOnPass: false },
+    save: { ability: "str", halfOnPass: false },
+    byEdition: { "2014": { save: { ability: "dex", halfOnPass: false } } },
     flavorOnConfirm: "Squirming black tentacles fill the 20-ft square. 3d6 bludgeoning on entry / start of turn. Save or be restrained.",
   },
 };
