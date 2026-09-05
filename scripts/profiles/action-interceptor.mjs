@@ -166,6 +166,18 @@ export class ActionInterceptor {
     // reading these, exactly like the "areas that are never drawn" card.
     Hooks.on("createActiveEffect", saw("an effect was applied"));
     Hooks.on("createToken", saw("a creature appeared"));
+    // ⚠️🔴 A DIALOG WAITING FOR HIM IS NOT A DEAD BUTTON. Caught live on
+    // the first real press: Aura of Vitality opened dnd5e's own cast dialog,
+    // sat there waiting for him to choose a slot, and ACE called it dead two
+    // and a half seconds later. dnd5e's usage dialog is an ActivityUsageDialog,
+    // not a DialogV2, so the witness above never saw it.
+    //
+    // Every subclass gets its own render hook name, so all of them are listed:
+    // a summon, an enchant, an order and a transform each open their own.
+    for (const cls of ["ActivityUsageDialog", "SummonUsageDialog", "EnchantUsageDialog",
+                       "OrderUsageDialog", "TransformUsageDialog", "Dialog5e"]) {
+      Hooks.on(`render${cls}`, saw("a cast dialog opened and is waiting for you"));
+    }
   }
 
   /* ── The reading ───────────────────────────────────────────────────────── */

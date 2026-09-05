@@ -159,6 +159,22 @@ Hooks.call("createToken", {});                // a creature appeared
 await sleep(120);
 check("a summoned creature counts too", notified.filter(x => x[0] === "error").length, 0);
 
+notified = [];
+ActionInterceptor.read(press("Aura of Vitality"));
+Hooks.call("renderActivityUsageDialog", {});  // dnd5e's own cast dialog, waiting on him
+await sleep(120);
+// ⚠️ CAUGHT LIVE ON THE FIRST REAL PRESS. dnd5e's cast dialog is an
+// ActivityUsageDialog, not a DialogV2, so it opened, sat there waiting for him
+// to pick a slot, and ACE called the button dead underneath it.
+check("dnd5e's own cast dialog counts as something happening",
+  notified.filter(x => x[0] === "error").length, 0);
+
+notified = [];
+ActionInterceptor.read(press("Summon Fey"));
+Hooks.call("renderSummonUsageDialog", {});
+await sleep(120);
+check("and so does a summon's dialog", notified.filter(x => x[0] === "error").length, 0);
+
 console.log("\nCLAIMING IS NOT DOING");
 // ⚠️🔴 THIS IS EXACTLY THE HEAL PIPELINE'S TEMPLATE BRANCH. It took the button
 // and produced nothing. A claim must NOT silence the warning, or the one bug

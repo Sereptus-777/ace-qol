@@ -25,6 +25,7 @@ import { CombatState } from "../combat-state.mjs";
 // item says nothing. Safe to import: rules-brain pulls in ace-qol, combat-state
 // and its own data files, all of which this file already has.
 import { RulesBrain } from "../rules/rules-brain.mjs";
+import { spellKey } from "../rules/spell-name.mjs";
 import { QolSettings } from "../settings.mjs";
 import { SPELL_REGISTRY } from "./registry/_index.mjs";
 import { FEATURE_REGISTRY } from "./registry/features.mjs";
@@ -335,16 +336,41 @@ export class SpellPipeline {
     const type = item.type;
     // The doorway: the pipeline now accepts FEATURES (feats), not just spells.
     if (type !== "spell" && type !== "feat") return null;
-    const name = String(item.name ?? "").trim().toLowerCase();
-    if (!name) return null;
+    // ⚠️🔴 THE SUFFIX WAS BEATING THE WHOLE REGISTRY. This was
+    // `item.name.trim().toLowerCase()` and nothing else. His 2014 content is
+    // named "Aura of Vitality (Legacy)", "Sleep (Legacy)", and so on, straight
+    // from the importer. The registry keys are "aura of vitality" and "sleep".
+    // They never matched. Every Legacy-suffixed spell on every sheet in his
+    // world silently missed the entire curated registry and fell through to the
+    // inference engine, which worked out a different shape.
+    //
+    // That is why Aura of Vitality read as "self" instead of "emanation-heal"
+    // on 2026-09-05, with its correct entry and its working resolver sitting
+    // right there. Not a missing entry. A name.
+    //
+    // ⚠️ ONE NORMALISER, THE ONE EVERYTHING ELSE USES. `RulesBrain.normalizeName`
+    // strips parentheticals and brackets and collapses spacing, and the rules
+    // index built tonight follows the same rules. A fourth private version of
+    // this is how the drift started.
+    //
+    // The exact name is tried FIRST, so an entry deliberately keyed with a
+    // parenthetical still wins for the item it was written for.
+    const exact = String(item.name ?? "").trim().toLowerCase();
+    if (!exact) return null;
+    const stripped = SpellPipeline._normalizedKey(item.name);
+    const names = (stripped && stripped !== exact) ? [exact, stripped] : [exact];
     // Spells use the spell registry. Features check the feature registry first,
     // then fall back to the spell registry — so an ability identical to a spell
     // (a monster's Banishment, Hold-type gaze, Bless-like buff) reuses that
     // spell's entry + resolver with zero duplication. "Banish is Banish."
-    const raw = (type === "feat")
-      ? (FEATURE_REGISTRY[name] ?? SPELL_REGISTRY[name])
-      : SPELL_REGISTRY[name];
-    if (raw) return SpellPipeline._applyEdition(raw, item);
+    for (const name of names) {
+      const raw = (type === "feat")
+        ? (FEATURE_REGISTRY[name] ?? SPELL_REGISTRY[name])
+        : SPELL_REGISTRY[name];
+      if (!raw) continue;
+      if (name !== exact) SpellPipeline._noteSuffixRescue(item.name, name);
+      return SpellPipeline._applyEdition(raw, item);
+    }
 
     // ── Nothing hand-written. Work it out. ─────────────────────────
     //
@@ -360,6 +386,32 @@ export class SpellPipeline {
     // to the generic save-and-damage engine exactly as they do today, because a
     // confident wrong plan is worse than no plan.
     return SpellPipeline._inferEntry(item);
+  }
+
+  /**
+   * The registry key for an item's name. Delegates to the one normaliser so a
+   * fourth private copy of these rules cannot appear.
+   */
+  static _normalizedKey(name) {
+    return spellKey(name);
+  }
+
+  /** Names already reported, so eight casts do not print eight lines. */
+  static _suffixRescued = new Set();
+
+  /**
+   * Say it out loud when a name only matched after the suffix came off.
+   *
+   * ⚠️ THIS IS THE SCALE REPORT. Before this fix every one of these was a
+   * spell quietly resolving on a worked-out guess while its hand-written entry
+   * sat unused. He should be able to see how many, not take my word for it.
+   */
+  static _noteSuffixRescue(original, key) {
+    if (SpellPipeline._suffixRescued.has(original)) return;
+    SpellPipeline._suffixRescued.add(original);
+    console.log(`${MODULE_ID} | SpellPipeline: "${original}" matched the registry entry `
+      + `"${key}" once its suffix was ignored. Before 0.14.2 this spell missed its own `
+      + `entry. (${SpellPipeline._suffixRescued.size} so far this session.)`);
   }
 
   /** Session cache: `_getEntry` is called on every render, classification is not. */

@@ -32,6 +32,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { spellKey } from "./rules/spell-name.mjs";
 import { QolSettings } from "./settings.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
 import { DamageCardRenderer } from "./damage-card-renderer.mjs";
@@ -255,7 +256,7 @@ export class SpellAutoDamage {
         if (!item || item.type !== "spell") return;
 
         // Pipeline-owned spell list. Expand as new shapes ship.
-        const name = String(item.name ?? "").trim().toLowerCase();
+        const name = spellKey(item.name);   // "(Legacy)" copies must match too
         // v0.7.20 Phase 2.5: only suppress for shapes where the pipeline
         // actually posts its OWN enriched chat card. Shapes that delegate to
         // existing engines (template-save, template-trigger, aura, chained)
@@ -429,7 +430,7 @@ export class SpellAutoDamage {
     try {
       const item = activity?.item;
       if (!item) return false;
-      const name = String(item.name ?? "").trim().toLowerCase();
+      const name = spellKey(item.name);   // "(Legacy)" copies must match too
       return name === "magic missile";
     } catch (_) {
       return false;

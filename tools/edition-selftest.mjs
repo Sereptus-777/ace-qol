@@ -95,6 +95,36 @@ check("and a 2014 caster gets the hit-point pool, not the Wisdom save",
 check("while a 2024 caster gets the save",
   SpellPipeline._applyEdition(sleep, item("2024")).save?.ability, "wis");
 
+console.log("\nA SUFFIX MUST NOT BEAT THE WHOLE REGISTRY");
+// ⚠️🔴 THIS COST MONTHS. The registry lookup was `name.trim().toLowerCase()`
+// and nothing else, while his 2014 content is named "Aura of Vitality (Legacy)"
+// and the entry is keyed "aura of vitality". It never matched. Every
+// Legacy-suffixed spell in his world missed its own hand-written entry and fell
+// through to the inference engine, which worked out a different shape — so Aura
+// of Vitality read as "self" with "emanation-heal" sitting right there.
+//
+// Proven live on 2026-09-05: the console said shape=self (worked-out) for a
+// spell with a complete curated entry.
+{
+  const spell = (name) => ({ name, type: "spell", system: { source: { rules: "2014" } } });
+  check("the plain name still matches",
+    SpellPipeline._getEntry(spell("Aura of Vitality"))?.shape, "emanation-heal");
+  check("and so does the Legacy-suffixed one HE actually owns",
+    SpellPipeline._getEntry(spell("Aura of Vitality (Legacy)"))?.shape, "emanation-heal");
+  check("a suffix match is the CURATED entry, not a worked-out guess",
+    SpellPipeline._getEntry(spell("Aura of Vitality (Legacy)"))?.inferred, undefined);
+  check("Mass Cure Wounds (Legacy) finds its entry too",
+    SpellPipeline._getEntry(spell("Mass Cure Wounds (Legacy)"))?.shape, "template-heal");
+  check("and it still takes the 2014 branch after the rename",
+    typeof SpellPipeline._getEntry(spell("Mass Cure Wounds (Legacy)"))?.heal?.formula, "function");
+  // ⚠️ AND A NAME THAT IS GENUINELY NOT OURS STAYS NOT OURS. Stripping too
+  // eagerly would hand a homebrew spell somebody else's rules.
+  check("a spell nobody wrote an entry for is still unregistered",
+    SpellPipeline._getEntry(spell("Grond's Bespoke Fireworks (Legacy)"))?.shape ?? null, null);
+  check("the normaliser is the shared one",
+    SpellPipeline._normalizedKey("Sleep (Legacy)"), "sleep");
+}
+
 console.log("");
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

@@ -18,6 +18,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "../ace-qol.mjs";
+import { spellKey } from "./spell-name.mjs";
 import { CombatState } from "../combat-state.mjs";
 import { SPELL_RULES, validateAllSpellRules, RULES_SCHEMA_VERSION } from "./rules-data-spells.mjs";
 import { WEAPON_RULES, validateAllWeaponRules } from "./rules-data-weapons.mjs";
@@ -32,12 +33,10 @@ export class RulesBrain {
    *  "Fog Cloud [Legacy]" all resolve to the same rule the plain spell uses.
    *  (The fey's decorated Darkness missing the engine, 2026-07-09.) */
   static normalizeName(name) {
-    return String(name ?? "")
-      .toLowerCase()
-      .replace(/\s*\([^)]*\)\s*/g, " ")   // parentheticals: "(1/day)", "(mirthful only)"
-      .replace(/\s*\[[^\]]*\]\s*/g, " ")  // brackets: "[legacy]", "[2024]"
-      .replace(/\s+/g, " ")
-      .trim();
+    // ⚠️ ONE COPY OF THESE RULES, IN `spell-name.mjs`. Four places had their
+    // own and only this one stripped suffixes, so every "(Legacy)" spell in his
+    // world missed the curated registry.
+    return spellKey(name);
   }
 
   /**

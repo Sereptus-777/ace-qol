@@ -27,6 +27,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID, SPELL_AUTO_APPLY } from "./ace-qol.mjs";
+import { spellKey } from "./rules/spell-name.mjs";
 import { DescriptionParser } from "./description-parser.mjs";
 import { showCenterToast } from "./attack-prompt.mjs";
 import { SpellAutoDamage } from "./spell-auto-damage.mjs";
@@ -309,7 +310,11 @@ export class EngagementGate {
   // ═══════════════════════════════════════════════════════════════════════════
   static _catalogedMaxTargets(item, activity) {
     if (item?.type !== "spell") return null;
-    const name = String(item.name ?? "").toLowerCase().trim();
+    // ⚠️🔴 SIXTEEN SPELLS BELOW WERE MATCHED BY RAW NAME AND EVERY ONE OF
+    // THEM MISSED HIS "(Legacy)" COPIES — Magic Missile, Hold Person, Bless,
+    // Mass Cure Wounds and the rest. So the target counts they exist to supply
+    // silently never applied to the versions he actually casts.
+    const name = spellKey(item.name);
     const baseLevel = Number(item.system?.level ?? 0);
 
     // Resolve cast slot level. Try activity-level usage data first (dnd5e
