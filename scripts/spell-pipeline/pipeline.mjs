@@ -20,6 +20,11 @@
 
 import { MODULE_ID } from "../ace-qol.mjs";
 import { CombatState } from "../combat-state.mjs";
+// The one reader for "which edition is this item written for". It reads
+// system.source.rules first and only falls back to the world setting when the
+// item says nothing. Safe to import: rules-brain pulls in ace-qol, combat-state
+// and its own data files, all of which this file already has.
+import { RulesBrain } from "../rules/rules-brain.mjs";
 import { QolSettings } from "../settings.mjs";
 import { SPELL_REGISTRY } from "./registry/_index.mjs";
 import { FEATURE_REGISTRY } from "./registry/features.mjs";
@@ -336,7 +341,7 @@ export class SpellPipeline {
     const raw = (type === "feat")
       ? (FEATURE_REGISTRY[name] ?? SPELL_REGISTRY[name])
       : SPELL_REGISTRY[name];
-    if (raw) return SpellPipeline._applyEdition(raw);
+    if (raw) return SpellPipeline._applyEdition(raw, item);
 
     // ── Nothing hand-written. Work it out. ─────────────────────────
     //
@@ -412,9 +417,33 @@ export class SpellPipeline {
   // EDITION HANDLING
   // ═══════════════════════════════════════════════════════════════════════════
 
-  static _applyEdition(entry) {
-    // Honors the ACE QOL gameRulesEdition master override (was a raw dnd5e read).
-    const editionKey = CombatState.getActiveRulesVersion();
+  /**
+   * Pick the edition branch for THIS item.
+   *
+   * ⚠️🔴 IT READ THE WORLD SETTING AND NEVER LOOKED AT THE ITEM. That is the
+   * exact fault the Colour Spray session wrote a rule about on 2026-08-29: his
+   * world setting and the item can disagree, and THE ITEM IS WHAT IS BEING CAST.
+   *
+   * His library holds both copies of a dozen spells — "Cure Wounds" beside
+   * "Cure Wounds (Legacy)", "Black Tentacles" beside "Evard's Black Tentacles" —
+   * and every one of them was resolving on whichever edition the world was set
+   * to. Found by `game.aceQol.auditSpellRules()` on 2026-09-04: with the world
+   * on 2024, the 2014 Evard's took the 2024 Strength save while its own sheet
+   * says Dexterity. Before tonight there were no byEdition branches on these
+   * entries at all, so the fault had nothing to express itself through; adding
+   * them is what made it visible.
+   *
+   * ⚠️ THE BRAIN ALREADY DOES THIS CORRECTLY. `RulesBrain.resolveEdition` reads
+   * `system.source.rules` and only falls back to the world when the item says
+   * nothing. Two readers, one answer.
+   */
+  static _applyEdition(entry, item = null) {
+    let editionKey;
+    try {
+      editionKey = RulesBrain.resolveEdition(item);
+    } catch (_) {
+      editionKey = CombatState.getActiveRulesVersion();
+    }
     if (!entry.byEdition?.[editionKey]) return entry;
     return { ...entry, ...entry.byEdition[editionKey] };
   }

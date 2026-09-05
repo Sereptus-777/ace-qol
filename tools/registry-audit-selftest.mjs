@@ -147,6 +147,26 @@ console.log("\nIT SAYS WHAT IT LOOKED AT");
     /Read 2 distinct spells and feats\. 1 carry an ACE entry/.test(r.text), true);
 }
 
+console.log("\nTHE EDITION COMES FROM THE ITEM, NOT THE WORLD");
+// ⚠️🔴 THE ROOT OF EVERY EDITION BUG TONIGHT. `_applyEdition` read the
+// world setting and never looked at the item, so with the world on 2024 a 2014
+// Evard's Black Tentacles took the 2024 Strength save while its own sheet says
+// Dexterity. His library holds both copies of a dozen spells side by side.
+{
+  const { RulesBrain } = await import(
+    "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/rules/rules-brain.mjs");
+  const withRules = (r) => ({ system: { source: { rules: r } } });
+  check("an item stamped 2014 is 2014", RulesBrain.resolveEdition(withRules("2014")), "2014");
+  check("an item stamped 2024 is 2024", RulesBrain.resolveEdition(withRules("2024")), "2024");
+  // ⚠️ AND ONLY THEN THE WORLD. An item that says nothing still has to get an
+  // answer, and the world setting is the right fallback — it is just not the
+  // first question.
+  check("an item that says nothing falls back without throwing",
+    ["2014", "2024"].includes(RulesBrain.resolveEdition({ system: {} })), true);
+  check("garbage in the field does not become a third edition",
+    ["2014", "2024"].includes(RulesBrain.resolveEdition(withRules("banana"))), true);
+}
+
 console.log("");
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
