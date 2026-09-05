@@ -56,6 +56,7 @@ import { SelfTest } from "./rules/self-test.mjs";
 import { openRulesCoverage, registerCoverageButton } from "./rules/coverage-report.mjs";
 import { ActionInterceptor } from "./profiles/action-interceptor.mjs";
 import { RulesIndex } from "./rules/rules-index.mjs";
+import { emanatesFromCaster, drawCasterEmanation } from "./caster-emanation.mjs";
 import { ConditionVisuals, BODY_VISUAL_STATUSES } from "./condition-visuals.mjs";
 import { SpellPipeline } from "./spell-pipeline/pipeline.mjs";
 import { HookAPI }              from "./hook-api.mjs";
@@ -1600,11 +1601,32 @@ Hooks.once("ready", () => {
       const item = activity?.item;
       if (!item) return;
       const entry = SpellPipeline?._getEntry?.(item);
-      if (entry?.shape !== "self") return;                 // only self-emanation spells
-      if (!activity?.target?.template?.type) return;        // no template to suppress anyway
+
+      // ⚠️🔴 THIS USED TO READ `entry.shape !== "self"` AND NOTHING ELSE, AND
+      // MY OWN FIX THE SAME NIGHT BROKE IT. Once the registry started matching
+      // his "(Legacy)" names again, Aura of Vitality's shape became
+      // "emanation-heal" instead of "self" — better in every way, and instantly
+      // invisible to a test that knew one word. He got the placement prompt
+      // back for a spell that radiates from his own body. A two-way branch
+      // broke on the third kind, exactly as the 2026-09-02 lesson says.
+      const verdict = emanatesFromCaster(entry, activity);
+      if (!verdict.yes) return;
+
       usageConfig.create ??= {};
       usageConfig.create.measuredTemplate = false;
-      console.log(`${MODULE_ID} | suppressSelfSpellTemplates: "${item.name}" emanates from the caster — skipping the template placement prompt.`);
+      console.log(`${MODULE_ID} | ${item.name} radiates from the caster (${verdict.why}) — `
+        + `no placement prompt; ACE draws it.`);
+
+      // ⚠️ DRAWN ON THE CAST, NOT ON THE INTENT. Placing it here would leave
+      // a circle on the floor for a spell he then cancelled out of the dialog.
+      // `dnd5e.useActivity` fires only once the cast actually happens.
+      Hooks.once("dnd5e.useActivity", (used) => {
+        if (used !== activity) return;
+        drawCasterEmanation(activity, entry).catch(err => {
+          console.error(`${MODULE_ID} | could not draw ${item.name}'s area:`, err);
+          ui.notifications?.error(`${item.name}: ACE could not draw its area — see the console.`);
+        });
+      });
     } catch (err) {
       console.warn(`${MODULE_ID} | self-spell template suppression failed (allowing template):`, err);
     }
