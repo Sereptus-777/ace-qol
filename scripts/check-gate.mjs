@@ -37,6 +37,7 @@
 // Hardcoded rather than imported: an imported const at the top level of a module
 // caught in an import cycle throws at load and takes the whole module with it.
 const MODULE_ID = "ace-qol";
+const MODULE_ID_DND = "dnd5e";   // the namespace a concentration effect stores its item under
 const LOG = "ace-qol | CheckGate";
 
 export class CheckGate {
@@ -55,6 +56,7 @@ export class CheckGate {
     CheckGate._wrapInitiative();
     CheckGate._registerHitDice();
     CheckGate._registerRecharge();
+    CheckGate._registerConcentrationOutcome();
     console.debug(`${LOG} | online — every check and save a person clicks gets ACE's pause and ACE's card`);
   }
 
@@ -339,6 +341,88 @@ export class CheckGate {
     } catch (err) {
       console.error(`${LOG} | could not wrap initiative — dnd5e's dialog stands:`, err);
     }
+  }
+
+  /* ── What a failed concentration save actually does ──────────────────── */
+
+  /**
+   * End concentration when the save fails. One listener, every route.
+   *
+   * ⚠️🔴 dnd5e ROLLS THIS SAVE AND THEN DOES NOTHING WITH IT. Read from the
+   * system source on 2026-09-05: `rollConcentration` rolls, fires its hooks and
+   * returns. Nothing in dnd5e ends concentration on a failure — the only
+   * `endConcentration` calls are the token HUD, the effects panel and a new
+   * cast replacing an old one. So this consequence is ACE's, and it has to
+   * exist or a caster keeps every spell through every hit.
+   *
+   * ⚠️ AND IT LIVES IN EXACTLY ONE PLACE. It used to be inside the button on
+   * ACE's own concentration card, which meant it only happened when he clicked
+   * THAT button. dnd5e's own request card, a macro, a module, or the sheet all
+   * rolled the same save and ended nothing. Every route fires this hook.
+   *
+   * ⚠️ THE DC IS READ, NEVER ASSUMED. A concentration DC is half the damage
+   * taken, minimum 10, so guessing 10 would preserve concentration that should
+   * have broken on every big hit. If the DC cannot be read, the roll is left
+   * alone and he is TOLD — a wrong outcome that looks right is worse than a
+   * visible refusal.
+   */
+  static _registerConcentrationOutcome() {
+    Hooks.on("dnd5e.rollConcentrationV2", (rolls, data) => {
+      CheckGate._endConcentrationIfFailed(rolls, data?.subject).catch(err => {
+        console.error(`${LOG} | concentration outcome failed:`, err);
+        ui.notifications?.error(`ACE could not finish ${data?.subject?.name ?? "that"}'s `
+          + `concentration check. Concentration was left as it was — see the console.`);
+      });
+    });
+  }
+
+  static async _endConcentrationIfFailed(rolls, actor) {
+    const roll = Array.isArray(rolls) ? rolls[0] : rolls;
+    const total = Number(roll?.total);
+    if (!actor || !Number.isFinite(total)) return;
+
+    const dc = Number(roll?.options?.target);
+    if (!Number.isFinite(dc)) {
+      console.warn(`${LOG} | ${actor.name}'s concentration roll carried no DC, so nothing `
+        + `was decided. The roll was ${total}.`, roll);
+      ui.notifications?.warn(`${actor.name} rolled ${total} for concentration but ACE could not `
+        + `read the DC, so concentration was left in place. See the console.`);
+      return;
+    }
+
+    if (total >= dc) {
+      console.log(`${LOG} | ${actor.name} held concentration (${total} vs DC ${dc}).`);
+      return;
+    }
+
+    const effects = [...(actor.concentration?.effects ?? [])];
+    if (!effects.length) {
+      // ⚠️ NOT AN ERROR. The GM may have ended it by hand between the damage
+      // and the roll, and saying nothing here is right — but saying it in the
+      // log matters, because "failed and nothing happened" and "failed and
+      // there was nothing to end" must be tellable apart.
+      console.log(`${LOG} | ${actor.name} failed concentration (${total} vs DC ${dc}) `
+        + `but was not concentrating on anything.`);
+      return;
+    }
+
+    const lost = [];
+    for (const effect of effects) {
+      const name = effect.getFlag?.(MODULE_ID_DND, "item")?.name ?? effect.name ?? "a spell";
+      try {
+        await actor.endConcentration(effect);
+        lost.push(name);
+      } catch (err) {
+        console.error(`${LOG} | could not end ${actor.name}'s concentration on ${name}:`, err);
+        ui.notifications?.error(`${actor.name} failed the concentration check but ACE could not `
+          + `end ${name}. It is still running — see the console.`);
+      }
+    }
+    if (!lost.length) return;
+    console.log(`${LOG} | ${actor.name} lost concentration on ${lost.join(", ")} `
+      + `(${total} vs DC ${dc}).`);
+    ui.notifications?.info(`${actor.name} lost concentration on ${lost.join(", ")} `
+      + `(${total} vs DC ${dc}).`);
   }
 
   /* ── Hit dice ────────────────────────────────────────────────────────── */

@@ -3072,41 +3072,46 @@ Hooks.once("ready", () => {
             btn.textContent = "ALREADY ENDED";
             return;
           }
+          // ⚠️🔴 THIS USED TO BE ITS OWN LITTLE ROLLER, AND IT WAS THE ONLY
+          // CONCENTRATION SAVE IN THE GAME THAT NOBODY CHECKED.
+          //
+          // It built "1d20 + CON + prof" as a string and threw it with a bare
+          // Roll. That is a FLAT d20: it never read the concentration
+          // attribute's advantage, never read the Constitution save's, and so
+          // War Caster — whose entire text is advantage on concentration saves —
+          // did nothing here. It also skipped dnd5e's own concentration path
+          // entirely, so no hook fired and nothing else in the game could know
+          // the save had happened.
+          //
+          // It now goes through `rollConcentration` like every other route, so
+          // the check gate takes it: ACE's pause with the right mode already
+          // lit, ACE's card, and the dice settled before anything is announced.
+          //
+          // ⚠️ THE EFFECT IS NOT DELETED HERE ANY MORE. dnd5e rolls the save
+          // and deliberately does NOT end concentration on a failure, so that
+          // is ACE's job — but it belongs in ONE listener that catches every
+          // route, not in this button. See `_registerConcentrationOutcome` in
+          // check-gate.mjs. Two writers is how a corpse kept its
+          // concentration and a live caster lost it twice.
           btn.disabled = true;
-          btn.textContent = "ROLLING...";
-          const roll = await new Roll(formula).evaluate();
-          const total = roll.total;
-          const passed = total >= dc;
-          // Tumble the dice via Dice So Nice, but do NOT post dnd5e's vanilla roll
-          // card — the styled button card below already shows the result inline, so
-          // toMessage() was just an ugly duplicate (Johnny 2026-07-14). Fire-and-
-          // forget + broadcast; no-ops cleanly if DSN isn't installed.
-          safeShowForRoll(roll, "concentration save");
-
-          // ⚠️🔴 THE ANSWER MUST NOT BEAT THE DICE. Johnny, 2026-09-05:
-          // "It said 'maintained' before the dice even rolled... You want the
-          // roll to end before the chat card changes."
-          //
-          // `safeShowForRoll` is deliberately fire-and-forget, so without this
-          // the next line rewrote the button while the dice were still in the
-          // air. Same fault as the save card in July, and his standing rule
-          // since: a card never lands before the dice settle.
-          //
-          // `awaitDiceSettle` waits on the animation's own promise rather than
-          // a guessed delay, and caps itself so a broken renderer cannot hang
-          // the button. With Dice So Nice off it returns immediately.
           btn.textContent = "ROLLING…";
-          try { await awaitDiceSettle(3000, { graceMs: 350 }); }
-          catch (err) { console.warn(`${MODULE_ID} | concentration dice wait failed:`, err); }
 
-          if (!passed) {
-            try { await effect.delete(); } catch (_) { /* non-fatal */ }
-            btn.textContent = `BROKEN — ${total} vs DC ${dc}`;
-            btn.style.background = "#e57373";
-          } else {
-            btn.textContent = `MAINTAINED — ${total} vs DC ${dc}`;
-            btn.style.background = "#7ec97e";
+          const rolls = await actor.rollConcentration({ target: dc });
+          const roll = Array.isArray(rolls) ? rolls[0] : rolls;
+          const total = Number(roll?.total);
+
+          if (!Number.isFinite(total)) {
+            // ⚠️ CANCELLED AND FAILED MUST NOT LOOK THE SAME. He can close
+            // ACE's prompt deliberately; that is not a broken button, and the
+            // save still has to be rollable afterwards.
+            btn.disabled = false;
+            btn.textContent = "ROLL CONCENTRATION SAVE";
+            return;
           }
+
+          const passed = total >= dc;
+          btn.textContent = `${passed ? "MAINTAINED" : "BROKEN"} — ${total} vs DC ${dc}`;
+          btn.style.background = passed ? "#7ec97e" : "#e57373";
         } catch (err) {
           console.error(`${MODULE_ID} | concentration roll button failed:`, err);
         }

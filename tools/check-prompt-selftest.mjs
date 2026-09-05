@@ -332,6 +332,60 @@ console.log("\nA FIXED INITIATIVE SCORE IS NOT ASKED ABOUT");
   foundry.applications.api.DialogV2.wait = realWait;
 }
 
+console.log("\nA FAILED CONCENTRATION SAVE ACTUALLY ENDS IT");
+// ⚠️🔴 dnd5e ROLLS THIS SAVE AND DOES NOTHING WITH IT. Read from the
+// system source: rollConcentration rolls, fires its hooks and returns. Nothing
+// in the system ends concentration on a failure. That consequence used to live
+// INSIDE the button on ACE's own card, so it only happened when he clicked that
+// one button — dnd5e's own request card, the sheet, a macro or a module all
+// rolled the same save and ended nothing.
+{
+  const ended = [];
+  const actor = (dc, concentrating = ["Aura of Vitality"]) => ({
+    name: "Firaxis Greenbeard",
+    concentration: { effects: new Set(concentrating.map(n => ({ name: n }))) },
+    endConcentration: async (e) => { ended.push(e.name); },
+  });
+  const roll = (total, dc) => [{ total, options: dc == null ? {} : { target: dc } }];
+
+  ended.length = 0;
+  await CheckGate._endConcentrationIfFailed(roll(7, 10), actor());
+  check("a failed save ends the spell", ended, ["Aura of Vitality"]);
+
+  ended.length = 0;
+  await CheckGate._endConcentrationIfFailed(roll(10, 10), actor());
+  check("meeting the DC holds it", ended, []);
+
+  ended.length = 0;
+  await CheckGate._endConcentrationIfFailed(roll(19, 10), actor());
+  check("beating it holds it", ended, []);
+
+  // ⚠️🔴 THE DC IS HALF THE DAMAGE TAKEN, MINIMUM 10. A 40-point hit is a
+  // DC 20 check, so assuming 10 whenever the DC could not be read would keep
+  // concentration through every big hit in the game, silently.
+  ended.length = 0;
+  await CheckGate._endConcentrationIfFailed(roll(14, 20), actor());
+  check("a 14 against a DC 20 hit still ends it", ended, ["Aura of Vitality"]);
+
+  ended.length = 0;
+  await CheckGate._endConcentrationIfFailed(roll(14, null), actor());
+  check("no DC on the roll ends NOTHING rather than guessing", ended, []);
+
+  // ⚠️ AND NOT CONCENTRATING IS NOT AN ERROR. The GM may have ended it by
+  // hand between the damage and the roll.
+  ended.length = 0;
+  await CheckGate._endConcentrationIfFailed(roll(3, 10), actor(10, []));
+  check("failing while concentrating on nothing is quiet", ended, []);
+
+  // ⚠️ A CANCELLED ROLL IS NOT A FAILED ONE. He can close ACE's prompt.
+  ended.length = 0;
+  await CheckGate._endConcentrationIfFailed([], actor());
+  check("a cancelled roll ends nothing", ended, []);
+  ended.length = 0;
+  await CheckGate._endConcentrationIfFailed(null, actor());
+  check("no roll at all ends nothing", ended, []);
+}
+
 console.log("\nCONCENTRATION READS BOTH FIELDS dnd5e READS");
 // ⚠️🔴 READ ONE OF TWO AND SHIPPED. Proven from the dnd5e source:
 // rollConcentration builds advantage from the concentration attribute, then
