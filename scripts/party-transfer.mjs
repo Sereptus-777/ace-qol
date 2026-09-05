@@ -243,7 +243,6 @@ export class PartyTransfer {
         title: "Transfer party off this scene (pick up into the Hand)",
         icon: "fa-solid fa-people-arrows",
         button: true, visible: true, order: 99007,
-        onClick:  () => PartyTransfer.openTransfer(),
         onChange: () => PartyTransfer.openTransfer(),
       },
       {
@@ -251,7 +250,6 @@ export class PartyTransfer {
         title: "Place held creatures onto this scene",
         icon: "fa-solid fa-hand-holding-hand",
         button: true, visible: true, order: 99008,
-        onClick:  () => PartyTransfer.openPlace(),
         onChange: () => PartyTransfer.openPlace(),
       },
     ];

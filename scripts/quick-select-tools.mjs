@@ -175,7 +175,9 @@ export class QuickSelectTools {
       button: true,
       visible: true,
       order,
-      onClick:  () => selectByFilter(filterFn),
+      // ⚠️🔴 ONE HANDLER. Foundry V13 fires BOTH `onClick` and `onChange`
+      // for a button tool, so every one of these selected twice — which is why
+      // Johnny's console read "Selected 9 tokens" two times from one press.
       onChange: () => selectByFilter(filterFn),
     });
 
@@ -187,7 +189,10 @@ export class QuickSelectTools {
         t => t.actor?.type === "character" && t.actor?.hasPlayerOwner, 99001),
       makeBtn("ace-select-npcs",     "Select all NPCs on this scene",                "fas fa-skull",
         t => t.actor?.type === "npc", 99002),
-      makeBtn("ace-select-hostile",  "Select all Hostile tokens (red disposition)",  "fas fa-fire",
+      // ⚠️🔴 NOT A FLAME. This was `fas fa-fire`, identical to the fire
+      // engine's own tool, so he pressed it expecting to set something alight
+      // and selected every hostile on the scene instead — twice.
+      makeBtn("ace-select-hostile",  "Select all Hostile tokens (red disposition)",  "fas fa-hand-fist",
         t => t.document?.disposition === -1, 99003),
       makeBtn("ace-select-friendly", "Select all Friendly tokens (green disposition)","fas fa-handshake",
         t => t.document?.disposition === 1, 99004),

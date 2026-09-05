@@ -116,7 +116,6 @@ Hooks.on("getSceneControlButtons", (controls) => {
       active: DispositionOutline.enabled(),
       visible: true,
       order: 99006,
-      onClick:  () => DispositionOutline.toggle(),
       onChange: () => DispositionOutline.toggle(),
     };
 

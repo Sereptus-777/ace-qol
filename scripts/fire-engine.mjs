@@ -1010,8 +1010,13 @@ export class FireEngine {
         // be blue. It should be the exact same icon with a slash through it."
         // Foundry's toolbar does not colour tool icons, so the colour is set on
         // the rendered element by the pass below rather than left to chance.
+        // ⚠️🔴 AN `order` IS NOT OPTIONAL IN V13. The other ACE tools all
+        // carry one and appear; these three did not, and Johnny could not find
+        // the douse or undo buttons at all. High numbers so they sort after
+        // every other module's tools, the same trick quick-select-tools uses.
         const tool = {
           name: "ace-set-fire",
+          order: 99010,
           title: "ACE — Set fire",
           icon: "fas fa-fire ace-fire-tool",
           button: true,
@@ -1027,6 +1032,7 @@ export class FireEngine {
         // mistake had to be waited out. This is its own button.
         const douse = {
           name: "ace-douse-fire",
+          order: 99011,
           title: "ACE — Put it out",
           icon: "fas fa-fire-flame-simple ace-douse-tool",
           button: true,
@@ -1039,6 +1045,7 @@ export class FireEngine {
         // gone by then.
         const undoTool = {
           name: "ace-undo-fire",
+          order: 99012,
           title: "ACE — Undo the fire",
           icon: "fas fa-rotate-left ace-undo-fire-tool",
           button: true,
