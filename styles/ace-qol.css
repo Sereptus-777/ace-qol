@@ -171,7 +171,7 @@
 }
 
 .ace-qol-atk-header {
-  display: flex;
+  display: flex; flex-wrap: wrap; row-gap: 4px;
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
@@ -219,7 +219,7 @@
  * a new row, the "= 13 HIT" wraps with them — no longer stranded on the
  * right while a chip floats alone on the left. */
 .ace-qol-atk-roll {
-  display: flex;
+  display: flex; flex-wrap: wrap; row-gap: 4px;
   align-items: center;
   padding: 4px 10px 6px;
   background: #111114;
@@ -356,7 +356,7 @@
 }
 
 .ace-qol-atk-target {
-  display: flex;
+  display: flex; flex-wrap: wrap; row-gap: 4px;
   align-items: center;
   gap: 6px;
 }
@@ -458,7 +458,7 @@
 }
 
 .ace-qol-dmg-header {
-  display: flex;
+  display: flex; flex-wrap: wrap; row-gap: 4px;
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
@@ -612,7 +612,7 @@
    applied damage everywhere (2026-07-27). */
 .ace-qol-dmg-row-dmg {
   font-size: 1.5rem; font-weight: 800; color: #ff5c5c; line-height: 1;
-  display: inline-flex; align-items: baseline; gap: 3px;
+  display: inline-flex; flex-wrap: wrap; row-gap: 4px; align-items: baseline; gap: 3px;
   text-shadow: 0 0 6px rgba(255, 50, 50, 0.4), 0 1px 1px rgba(0,0,0,0.5);
 }
 .ace-qol-dmg-skull { font-size: 0.9rem; margin-left: 2px; }
@@ -649,7 +649,7 @@
 .ace-qol-dmg-type-main {
   display: flex; flex-wrap: wrap; align-items: baseline; gap: 7px;
 }
-.ace-qol-dmg-mod-row { display: flex; }
+.ace-qol-dmg-mod-row { display: flex; flex-wrap: wrap; row-gap: 4px; }
 
 /* Nothing on a damage card may be chopped mid-word to fit a width. Foundry's
    own chat styling permits it, so this has to be said explicitly. */
@@ -984,7 +984,7 @@
    cleave has fired, the message's `cleaveFired` flag is set and the button
    renders as disabled with "CLEAVED ✓". */
 .ace-qol-dmg-cleave-row {
-  display: flex;
+  display: flex; flex-wrap: wrap; row-gap: 4px;
   justify-content: center;
   padding: 8px 12px;
   background: linear-gradient(180deg, rgba(255, 152, 0, 0.06) 0%, rgba(0, 0, 0, 0) 100%);
@@ -1003,7 +1003,7 @@
    and GM. Either can click. Persistent `pushFired` flag greys the button
    on re-render. */
 .ace-qol-dmg-push-row {
-  display: flex;
+  display: flex; flex-wrap: wrap; row-gap: 4px;
   justify-content: center;
   padding: 8px 12px;
   background: linear-gradient(180deg, rgba(232, 138, 90, 0.08) 0%, rgba(0, 0, 0, 0) 100%);
@@ -1332,7 +1332,7 @@
 
 /* ── Auto-generated "on a failed save" effect hint ── */
 .ace-qol-save-effect-line {
-  display: flex; align-items: baseline; gap: 6px;
+  display: flex; flex-wrap: wrap; row-gap: 4px; align-items: baseline; gap: 6px;
   padding: 5px 11px 7px 11px;
   color: #aab6c8; font-size: 12px; font-style: italic; line-height: 1.35;
   border-bottom: 1px solid rgba(255,255,255,0.05);
@@ -1340,7 +1340,7 @@
 .ace-qol-save-effect-line i { color: #6ba4ff; font-style: normal; font-size: 10px; }
 
 .ace-qol-save-header {
-  display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  display: flex; flex-wrap: wrap; row-gap: 4px; align-items: center; gap: 8px; padding: 6px 10px;
   background: linear-gradient(135deg, #1a1a1e 0%, #1a1a2a 100%);
   border-bottom: 1px solid #333;
 }
@@ -1849,7 +1849,7 @@
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
 }
 .ace-qol-rider-row-bottom {
-  display: flex; align-items: center; gap: 12px;
+  display: flex; flex-wrap: wrap; row-gap: 4px; align-items: center; gap: 12px;
   padding-left: 28px;     /* indent under the icon */
 }
 
@@ -1920,7 +1920,7 @@
 }
 
 .ace-qol-rider-actions {
-  display: flex; justify-content: center; gap: 10px;
+  display: flex; flex-wrap: wrap; row-gap: 4px; justify-content: center; gap: 10px;
   margin-top: 8px; padding-top: 8px;
   border-top: 1px solid rgba(255,255,255,0.1);
 }
@@ -1984,7 +1984,7 @@
 
 /* ─── Merge Header ─────────────────────────────────────────────────────── */
 .ace-qol-merge-header {
-  display: flex;
+  display: flex; flex-wrap: wrap; row-gap: 4px;
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
@@ -2044,7 +2044,7 @@
 }
 
 .ace-qol-merge-row-header {
-  display: flex; align-items: center; gap: 6px;
+  display: flex; flex-wrap: wrap; row-gap: 4px; align-items: center; gap: 6px;
   padding: 5px 10px;
   background: linear-gradient(180deg, #111116 0%, #0e0e12 100%);
 }
@@ -2065,7 +2065,7 @@
 }
 
 .ace-qol-merge-target-row {
-  display: flex; align-items: center; gap: 6px;
+  display: flex; flex-wrap: wrap; row-gap: 4px; align-items: center; gap: 6px;
   padding: 5px 10px;
   background: #111114;
 }
@@ -2159,7 +2159,7 @@
 
 /* ─── Header: portrait + creature name ──────────────────────────────── */
 .ace-qol-loot-header {
-  display: flex;
+  display: flex; flex-wrap: wrap; row-gap: 4px;
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
@@ -2233,6 +2233,7 @@
 
 .ace-qol-loot-item {
   display: flex !important;
+  flex-wrap: wrap; row-gap: 4px;
   align-items: flex-start;
   gap: 6px;
   padding: 3px 8px;
@@ -2593,7 +2594,7 @@
 
 /* ─── + TARGET SELECTED button on save target list card ────────────────── */
 .ace-qol-save-target-selected-row {
-  display: flex;
+  display: flex; flex-wrap: wrap; row-gap: 4px;
   justify-content: center;
   padding: 4px 0 6px 0;
 }
@@ -3666,7 +3667,7 @@
   line-height: 1.4;
 }
 .ace-qol-tile-loot-header {
-  display: flex;
+  display: flex; flex-wrap: wrap; row-gap: 4px;
   align-items: baseline;
   gap: 10px;
   padding: 10px 6px 12px;
@@ -3879,7 +3880,7 @@
   letter-spacing: 0.2px;
 }
 .ace-qol-tile-loot-item-head {
-  display: flex;
+  display: flex; flex-wrap: wrap; row-gap: 4px;
   align-items: center;
   gap: 12px;
 }
@@ -3927,7 +3928,7 @@
 }
 .ace-qol-tile-loot-item-actions {
   flex-shrink: 0;
-  display: flex;
+  display: flex; flex-wrap: wrap; row-gap: 4px;
   align-items: center;
   gap: 6px;
 }
@@ -4344,7 +4345,7 @@
   box-shadow: 0 2px 12px rgba(0,0,0,0.5), 0 0 8px rgba(92,242,138,0.12);
 }
 .ace-qol-heal-card-header {
-  display: flex; align-items: center; gap: 10px; padding-bottom: 6px;
+  display: flex; flex-wrap: wrap; row-gap: 4px; align-items: center; gap: 10px; padding-bottom: 6px;
   border-bottom: 1px solid rgba(92,242,138,0.25);
 }
 .ace-qol-heal-card-icon {
@@ -4425,7 +4426,7 @@
   display: flex; flex-direction: column; gap: 6px; margin-top: 8px;
 }
 .ace-qol-heal-card-target {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; flex-wrap: wrap; row-gap: 4px; align-items: center; gap: 8px;
   padding: 6px 8px; background: rgba(255,255,255,0.03); border-radius: 4px;
   border: 1px solid rgba(212,175,55,0.18);
 }
@@ -4445,7 +4446,7 @@
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .ace-qol-heal-card-target-hpline {
-  display: flex; align-items: center; gap: 4px; font-size: 11px;
+  display: flex; flex-wrap: wrap; row-gap: 4px; align-items: center; gap: 4px; font-size: 11px;
 }
 .ace-qol-heal-card-target-hp-before { color: #aaa; }
 .ace-qol-heal-card-target-arrow { color: #5cf28a; font-size: 9px; }
@@ -4495,7 +4496,7 @@
 .ace-qol-heal-card-applyall-row {
   margin-top: 8px; padding-top: 8px;
   border-top: 1px solid rgba(212,175,55,0.2);
-  display: flex; justify-content: center;
+  display: flex; flex-wrap: wrap; row-gap: 4px; justify-content: center;
 }
 .ace-qol-heal-card-applyall {
   font-family: "Rajdhani", sans-serif; font-weight: 700; font-size: 12px;
@@ -5027,7 +5028,7 @@
 
 /* Transform card actions row (Revert Now button) */
 .ace-qol-tx-actions {
-  display: flex; justify-content: center; gap: 8px;
+  display: flex; flex-wrap: wrap; row-gap: 4px; justify-content: center; gap: 8px;
   margin-top: 6px;
   padding-top: 6px;
   border-top: 1px solid rgba(212,175,55,0.2);
