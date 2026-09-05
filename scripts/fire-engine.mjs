@@ -772,6 +772,120 @@ export class FireEngine {
     }
   }
 
+
+  /**
+   * Add the three fire tools to a controls object.
+   *
+   * ⚠️ TAKES THE CONTROLS RATHER THAN REACHING FOR THEM, so the same code
+   * serves the init-time hook and the after-ready injection. Two builders would
+   * drift, and one of them would be the one nobody tested.
+   */
+  static _injectTools(controls) {
+      try {
+        if (!game.user?.isGM) return;
+        const grp = Array.isArray(controls)
+          ? controls.find(c => c?.name === "token" || c?.name === "tokens")
+          : (controls?.tokens ?? controls?.token);
+        if (!grp) return;
+        // ⚠️ TWO BUTTONS, AND THEY LOOK LIKE WHAT THEY DO. Johnny: "I want
+        // the fire button icon to be red-coloured, and the extinguish button to
+        // be blue. It should be the exact same icon with a slash through it."
+        // Foundry's toolbar does not colour tool icons, so the colour is set on
+        // the rendered element by the pass below rather than left to chance.
+        // ⚠️🔴 AN `order` IS NOT OPTIONAL IN V13. The other ACE tools all
+        // carry one and appear; these three did not, and Johnny could not find
+        // the douse or undo buttons at all. High numbers so they sort after
+        // every other module's tools, the same trick quick-select-tools uses.
+        const tool = {
+          name: "ace-set-fire",
+          order: 99010,
+          title: "ACE — Set fire",
+          icon: "fas fa-fire ace-fire-tool",
+          button: true,
+          visible: true,
+          // ⚠️🔴 ONE HANDLER, NOT TWO. Foundry V13 fires BOTH `onClick` and
+          // `onChange` for a scene-control button, so having both opened the
+          // dialog twice, stacked, on every single press. Johnny: "I get two
+          // pop-ups that are exactly the same."
+          onChange: () => FireEngine.prompt(),
+        };
+        // ⚠️🔴 PUSHING "SET FIRE" AGAIN DOES NOT PUT IT OUT, and he found
+        // that out by trying. Only the timer ended a fire, so a fire lit by
+        // mistake had to be waited out. This is its own button.
+        const douse = {
+          name: "ace-douse-fire",
+          order: 99011,
+          title: "ACE — Put it out",
+          // ⚠️🔴 THE SAME GLYPH, WHICH IS WHAT HE ASKED FOR: "the exact same
+          // icon with a slash through it, but blue." It was `fa-fire-flame-simple`,
+          // a different flame that may not even exist in the Font Awesome build
+          // Foundry ships — an icon that renders as nothing is a button he
+          // cannot find, which is exactly what happened.
+          icon: "fas fa-fire ace-douse-tool",
+          button: true,
+          visible: true,
+          onChange: () => FireEngine.douse(),
+        };
+
+        // ⚠️ AND A WAY BACK. Reviving the token restores its art and nothing
+        // else — the name, the size, the position and the LOOT are already
+        // gone by then.
+        const undoTool = {
+          name: "ace-undo-fire",
+          order: 99012,
+          title: "ACE — Undo the fire",
+          icon: "fas fa-rotate-left ace-undo-fire-tool",
+          button: true,
+          visible: true,
+          onChange: () => FireEngine.undo(),
+        };
+
+        for (const t of [tool, douse, undoTool]) {
+          if (Array.isArray(grp.tools)) {
+            if (!grp.tools.some(x => x?.name === t.name)) grp.tools.push(t);
+          } else if (grp.tools && typeof grp.tools === "object") {
+            grp.tools[t.name] = t;
+          }
+        }
+      } catch (err) {
+        console.warn(`${LOG} | the fire button could not be added to the toolbar, so `
+          + `game.aceQol.setFire() is the only way in:`, err);
+      }
+  }
+
+  /**
+   * Put them in now, and keep putting them in on every future render.
+   *
+   * ⚠️ BOTH HALVES ARE NEEDED. The hook alone misses the toolbar that is
+   * already on screen; the direct injection alone misses every later re-render.
+   */
+  static _injectPostReady() {
+    Hooks.on("getSceneControlButtons", (controls) => {
+      try { FireEngine._injectTools(controls); }
+      catch (err) { console.warn(`${LOG} | could not add the fire tools:`, err); }
+    });
+    const now = () => {
+      try {
+        const ctrl = ui.controls?.controls;
+        if (!ctrl) return false;
+        FireEngine._injectTools(ctrl);
+        try { ui.controls.render?.(); } catch (_) { /* the hook will catch the next render */ }
+        return true;
+      } catch (err) {
+        console.warn(`${LOG} | could not add the fire tools to the open toolbar:`, err);
+        return false;
+      }
+    };
+    // ⚠️ THE TOOLBAR IS NOT ALWAYS BUILT THE INSTANT READY FIRES on a cold
+    // reload, so this retries briefly rather than giving up in silence.
+    if (!now()) {
+      let tries = 0;
+      const t = setInterval(() => {
+        if (now() || ++tries > 20) clearInterval(t);
+      }, 100);
+    }
+  }
+
   /* ═══ The look ═══════════════════════════════════════════════════════════ */
 
   static _endFx(name) {
@@ -998,78 +1112,17 @@ export class FireEngine {
     // not use mid-session. Both array and object tool shapes are handled because
     // Foundry changed that structure between versions and picking one would make
     // the button silently absent on the other.
-    Hooks.on("getSceneControlButtons", (controls) => {
-      try {
-        if (!game.user?.isGM) return;
-        const grp = Array.isArray(controls)
-          ? controls.find(c => c?.name === "token" || c?.name === "tokens")
-          : (controls?.tokens ?? controls?.token);
-        if (!grp) return;
-        // ⚠️ TWO BUTTONS, AND THEY LOOK LIKE WHAT THEY DO. Johnny: "I want
-        // the fire button icon to be red-coloured, and the extinguish button to
-        // be blue. It should be the exact same icon with a slash through it."
-        // Foundry's toolbar does not colour tool icons, so the colour is set on
-        // the rendered element by the pass below rather than left to chance.
-        // ⚠️🔴 AN `order` IS NOT OPTIONAL IN V13. The other ACE tools all
-        // carry one and appear; these three did not, and Johnny could not find
-        // the douse or undo buttons at all. High numbers so they sort after
-        // every other module's tools, the same trick quick-select-tools uses.
-        const tool = {
-          name: "ace-set-fire",
-          order: 99010,
-          title: "ACE — Set fire",
-          icon: "fas fa-fire ace-fire-tool",
-          button: true,
-          visible: true,
-          // ⚠️🔴 ONE HANDLER, NOT TWO. Foundry V13 fires BOTH `onClick` and
-          // `onChange` for a scene-control button, so having both opened the
-          // dialog twice, stacked, on every single press. Johnny: "I get two
-          // pop-ups that are exactly the same."
-          onChange: () => FireEngine.prompt(),
-        };
-        // ⚠️🔴 PUSHING "SET FIRE" AGAIN DOES NOT PUT IT OUT, and he found
-        // that out by trying. Only the timer ended a fire, so a fire lit by
-        // mistake had to be waited out. This is its own button.
-        const douse = {
-          name: "ace-douse-fire",
-          order: 99011,
-          title: "ACE — Put it out",
-          // ⚠️🔴 THE SAME GLYPH, WHICH IS WHAT HE ASKED FOR: "the exact same
-          // icon with a slash through it, but blue." It was `fa-fire-flame-simple`,
-          // a different flame that may not even exist in the Font Awesome build
-          // Foundry ships — an icon that renders as nothing is a button he
-          // cannot find, which is exactly what happened.
-          icon: "fas fa-fire ace-douse-tool",
-          button: true,
-          visible: true,
-          onChange: () => FireEngine.douse(),
-        };
-
-        // ⚠️ AND A WAY BACK. Reviving the token restores its art and nothing
-        // else — the name, the size, the position and the LOOT are already
-        // gone by then.
-        const undoTool = {
-          name: "ace-undo-fire",
-          order: 99012,
-          title: "ACE — Undo the fire",
-          icon: "fas fa-rotate-left ace-undo-fire-tool",
-          button: true,
-          visible: true,
-          onChange: () => FireEngine.undo(),
-        };
-
-        for (const t of [tool, douse, undoTool]) {
-          if (Array.isArray(grp.tools)) {
-            if (!grp.tools.some(x => x?.name === t.name)) grp.tools.push(t);
-          } else if (grp.tools && typeof grp.tools === "object") {
-            grp.tools[t.name] = t;
-          }
-        }
-      } catch (err) {
-        console.warn(`${LOG} | the fire button could not be added to the toolbar, so `
-          + `game.aceQol.setFire() is the only way in:`, err);
-      }
-    });
+    // ⚠️🔴 V13 FIRES `getSceneControlButtons` ONCE, AT INIT. This hook used
+    // to be registered here, inside register(), which runs at READY — after
+    // that event has already been and gone. So the three fire tools were never
+    // added to the toolbar at all, and no amount of fixing their icons or their
+    // order was ever going to make them appear.
+    //
+    // `quick-select-tools.mjs` states this in its own header and does it the
+    // only way that works: register the hook at MODULE LOAD, and also inject
+    // straight into the already-built controls after ready. Its buttons appear;
+    // mine did not; the difference was entirely this.
+    FireEngine._injectPostReady();
 
     const expose = () => {
       game.aceQol = game.aceQol ?? {};
