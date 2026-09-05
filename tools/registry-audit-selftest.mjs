@@ -148,12 +148,31 @@ check("an item with no ACE entry at all is skipped",
   await auditOf([item("Prayer of Healing", { activities: healAct(2, 8) })], {}),
   []);
 
+console.log("\nIT SAYS WHOSE COPY IT READ");
+// ⚠️ A FINDING HE CANNOT GO AND LOOK AT IS NOT A FINDING. It reported Sleep at
+// 90 feet while his own Sleep card plainly read 60. The offender was another
+// actor's copy, stamped 2024 but carrying the 2014 range, and the report gave
+// him no way to tell which one to open.
+{
+  const a = { name: "Ilvara", items: [item("Sleep", { range: { units: "ft", value: 90 } })] };
+  const b = { name: "Akra",   items: [item("Sleep", { range: { units: "ft", value: 60 } })] };
+  game.items = [];
+  game.actors = [a, b];
+  for (const k of Object.keys(ENTRIES)) delete ENTRIES[k];
+  Object.assign(ENTRIES, { sleep: { range: 60 } });
+  const r = await RegistryAudit.run({ quiet: true });
+  check("it names the actor the offending copy came from", r.rows[0]?.owner, "Ilvara");
+  check("and says how many copies of that name exist", r.rows[0]?.copies, 2);
+  check("the report prints both", /read from Ilvara, 2 copies/.test(r.text), true);
+}
+
 console.log("\nIT SAYS WHAT IT LOOKED AT");
 // ⚠️ A SILENT AUDIT THAT FINDS NOTHING IS INDISTINGUISHABLE FROM ONE THAT NEVER
 // RAN. The counts are the proof it did.
 {
   ITEMS = [item("A", {}), item("B", {}), { name: "C", type: "weapon", system: {} }];
   game.items = ITEMS;
+  game.actors = [{ items: [] }];        // the block above left its own actors here
   for (const k of Object.keys(ENTRIES)) delete ENTRIES[k];
   Object.assign(ENTRIES, { a: { range: 30 } });
   const r = await RegistryAudit.run({ quiet: true });

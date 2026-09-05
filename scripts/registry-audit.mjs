@@ -36,20 +36,30 @@
 const MODULE_ID = "ace-qol";
 const LOG = "ace-qol | RegistryAudit";
 
-/** Every spell and feat in the world, once per distinct name. */
+/**
+ * Every spell and feat in the world, once per distinct name.
+ *
+ * ⚠️🔴 AND IT REMEMBERS WHOSE COPY IT READ. His library holds many copies of
+ * one spell across many sheets, and they do not all agree. Reporting "Sleep says
+ * 90 feet" while his own Sleep card plainly reads 60 sent him looking at the
+ * wrong item; the offender was some other actor's copy, stamped 2024 but
+ * carrying the 2014 range. A finding he cannot go and look at is not a finding.
+ */
 function _allItems() {
   const byName = new Map();
-  const add = (item) => {
+  const add = (item, owner) => {
     if (!item) return;
     if (item.type !== "spell" && item.type !== "feat") return;
     const key = String(item.name ?? "").trim().toLowerCase();
-    if (!key || byName.has(key)) return;
-    byName.set(key, item);
+    if (!key) return;
+    const seen = byName.get(key);
+    if (seen) { seen.copies++; return; }
+    byName.set(key, { item, owner, copies: 1 });
   };
-  try { for (const i of (game.items ?? [])) add(i); } catch (_) { /* keep going */ }
+  try { for (const i of (game.items ?? [])) add(i, "the world items list"); } catch (_) { /* keep going */ }
   try {
     for (const a of (game.actors ?? [])) {
-      for (const i of (a.items ?? [])) add(i);
+      for (const i of (a.items ?? [])) add(i, a.name);
     }
   } catch (_) { /* keep going */ }
   return [...byName.values()];
@@ -167,7 +177,7 @@ export class RegistryAudit {
     const rows = [];
     let withEntry = 0, compared = 0;
 
-    for (const item of items) {
+    for (const { item, owner, copies } of items) {
       let entry = null;
       try { entry = pipeline._getEntry(item); } catch (_) { entry = null; }
       const spaceEntry = SPELL_RULES[normalize(item.name)] ?? null;
@@ -253,7 +263,7 @@ export class RegistryAudit {
 
       compared++;
       if (issues.length) {
-        rows.push({ name: item.name, edition: edition ?? "unstated", issues });
+        rows.push({ name: item.name, edition: edition ?? "unstated", owner, copies, issues });
       }
     }
 
@@ -273,7 +283,8 @@ export class RegistryAudit {
       say("an edit of yours. This names them and changes nothing.");
       say("");
       for (const r of rows) {
-        say(`  ${r.name}  [${r.edition}]`);
+        say(`  ${r.name}  [${r.edition}]  — read from ${r.owner}`
+          + (r.copies > 1 ? `, ${r.copies} copies of this name exist and they may differ` : ""));
         for (const i of r.issues) say(`      ${i}`);
       }
     }
