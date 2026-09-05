@@ -124,8 +124,19 @@ export const IGNITION = {
 const ASH_ART = [
   `modules/${MODULE_ID}/Assets/Fire/ash.webp`,
   `modules/${MODULE_ID}/Assets/Fire/ash.png`,
-  "icons/environment/settlement/building-rubble.webp",
 ];
+
+// ⚠️🔴 NO FOUNDRY STOCK ART ON HIS TOKENS. The fallback used to be
+// `icons/environment/settlement/building-rubble.webp`, so a body that burned
+// out turned into a core Foundry pile of rubble. Johnny, seeing it: "I don't
+// like whatever fucking picture you have underneath it. It should take the
+// token and just do the fire."
+//
+// So the token now KEEPS ITS OWN ART unless he has supplied a file above. It
+// is still renamed, still flagged as ash, still holds the loot — only the
+// picture is left alone. A missing asset must not mean a picture he never
+// chose.
+const ASH_ART_HINT = `modules/${MODULE_ID}/Assets/Fire/ash.webp`;
 
 export class FireEngine {
 
@@ -184,11 +195,12 @@ export class FireEngine {
         if ((res.files ?? []).some(f => decodeURIComponent(f) === decodeURIComponent(path))) return path;
       } catch (_) { /* that folder does not exist; try the next */ }
     }
-    // ⚠️ SAY WHICH ONE HE GOT AND WHERE TO PUT HIS OWN. Falling through to core
-    // art without a word is how a placeholder becomes the product.
-    console.log(`${LOG} | using Foundry's rubble icon for ash. Drop your own at `
-      + `modules/${MODULE_ID}/Assets/Fire/ash.webp and it will be preferred.`);
-    return ASH_ART[ASH_ART.length - 1];
+    // ⚠️ NULL MEANS "LEAVE HIS TOKEN ALONE", and that is the right answer
+    // when he has not chosen a picture. Substituting core Foundry art put a
+    // pile of rubble on his map that he never picked.
+    console.log(`${LOG} | no ash art supplied, so burnt-out tokens keep their own `
+      + `picture. Drop one at ${ASH_ART_HINT} and it will be used instead.`);
+    return null;
   }
 
   /* ═══ Igniting ═══════════════════════════════════════════════════════════ */
@@ -214,6 +226,15 @@ export class FireEngine {
       const size = doc.actor?.system?.traits?.size ?? "med";
       const spec = FUELS[fuel] ?? FUELS.body;
       const minutes = fuel === "body" ? (BODY_MINUTES[size] ?? 5) : spec.minutes;
+      // ⚠️ SAY WHY IT BURNS THAT LONG. Johnny lit a body and it burned for
+      // one minute; a body's clock comes from its SIZE, and one minute is the
+      // Tiny row. Without this line the only way to tell a wrong size from a
+      // wrong table is to read the source.
+      if (fuel === "body") {
+        console.log(`${LOG} | ${doc.name} is size "${size}", so its body burns for `
+          + `${minutes} minute${minutes === 1 ? "" : "s"} `
+          + `(tiny 1 · small 3 · medium 5 · large 15 · huge 30 · gargantuan 60).`);
+      }
       const src = IGNITION[ignition] ?? IGNITION.torch;
 
       const record = {
@@ -537,14 +558,14 @@ export class FireEngine {
    */
   static async _toAsh(doc) {
     try {
-      const art = await FireEngine._ashArt();
+      const art = await FireEngine._ashArt();   // null = keep his own picture
       const centreX = doc.x + (doc.width * (canvas?.grid?.size ?? 100)) / 2;
       const centreY = doc.y + (doc.height * (canvas?.grid?.size ?? 100)) / 2;
       const gs = canvas?.grid?.size ?? 100;
 
       await doc.update({
         name: `Ashes of ${doc.flags?.[FLAG_NS]?.originalName ?? doc.name}`,
-        "texture.src": art,
+        ...(art ? { "texture.src": art } : {}),
         width: 1, height: 1,
         x: Math.round(centreX - gs / 2),
         y: Math.round(centreY - gs / 2),
@@ -596,6 +617,40 @@ export class FireEngine {
   }
 
   /** Every fire on this scene, out, now. */
+  /**
+   * Put out what he has selected — or everything, if he has selected nothing.
+   *
+   * ⚠️🔴 UNTIL NOW THE ONLY WAY A FIRE ENDED WAS ITS OWN TIMER. Johnny
+   * found that out the hard way: "pushing the fire button again does not
+   * extinguish it. Just the timer does. I need a button that extinguishes it."
+   * A thirty-minute timber fire lit by accident had to be waited out.
+   *
+   * ⚠️ SELECTION IS THE SCOPE, and it says which it did. Putting out the
+   * whole map when he meant one corpse is not something he can undo.
+   */
+  static async douse() {
+    if (!FireEngine._isActiveGM()) {
+      ui.notifications?.warn("Only the acting GM can put fires out.");
+      return;
+    }
+    const picked = canvas?.tokens?.controlled ?? [];
+    if (!picked.length) return FireEngine.extinguishAll();
+
+    let n = 0;
+    const names = [];
+    for (const t of picked) {
+      const doc = t.document ?? t;
+      if (!doc?.flags?.[FLAG_NS]?.fire) continue;
+      await FireEngine.extinguishToken(doc, { quiet: true });
+      names.push(doc.name);
+      n++;
+    }
+    ui.notifications?.info(n
+      ? `Put out: ${names.join(", ")}.`
+      : `Nothing you have selected is on fire. Select nothing and press it again `
+        + `to put out every fire on the scene.`);
+  }
+
   static async extinguishAll() {
     if (!FireEngine._isActiveGM()) {
       ui.notifications?.warn("Only the acting GM can put fires out.");
@@ -848,19 +903,41 @@ export class FireEngine {
           ? controls.find(c => c?.name === "token" || c?.name === "tokens")
           : (controls?.tokens ?? controls?.token);
         if (!grp) return;
+        // ⚠️ TWO BUTTONS, AND THEY LOOK LIKE WHAT THEY DO. Johnny: "I want
+        // the fire button icon to be red-coloured, and the extinguish button to
+        // be blue. It should be the exact same icon with a slash through it."
+        // Foundry's toolbar does not colour tool icons, so the colour is set on
+        // the rendered element by the pass below rather than left to chance.
         const tool = {
           name: "ace-set-fire",
           title: "ACE — Set fire",
-          icon: "fas fa-fire",
+          icon: "fas fa-fire ace-fire-tool",
           button: true,
           visible: true,
-          onClick: () => FireEngine.prompt(),
+          // ⚠️🔴 ONE HANDLER, NOT TWO. Foundry V13 fires BOTH `onClick` and
+          // `onChange` for a scene-control button, so having both opened the
+          // dialog twice, stacked, on every single press. Johnny: "I get two
+          // pop-ups that are exactly the same."
           onChange: () => FireEngine.prompt(),
         };
-        if (Array.isArray(grp.tools)) {
-          if (!grp.tools.some(t => t?.name === tool.name)) grp.tools.push(tool);
-        } else if (grp.tools && typeof grp.tools === "object") {
-          grp.tools[tool.name] = tool;
+        // ⚠️🔴 PUSHING "SET FIRE" AGAIN DOES NOT PUT IT OUT, and he found
+        // that out by trying. Only the timer ended a fire, so a fire lit by
+        // mistake had to be waited out. This is its own button.
+        const douse = {
+          name: "ace-douse-fire",
+          title: "ACE — Put it out",
+          icon: "fas fa-fire-flame-simple ace-douse-tool",
+          button: true,
+          visible: true,
+          onChange: () => FireEngine.douse(),
+        };
+
+        for (const t of [tool, douse]) {
+          if (Array.isArray(grp.tools)) {
+            if (!grp.tools.some(x => x?.name === t.name)) grp.tools.push(t);
+          } else if (grp.tools && typeof grp.tools === "object") {
+            grp.tools[t.name] = t;
+          }
         }
       } catch (err) {
         console.warn(`${LOG} | the fire button could not be added to the toolbar, so `
@@ -875,6 +952,7 @@ export class FireEngine {
         setFire: (opts) => FireEngine.prompt(opts),
         fireReport: () => FireEngine.report(),
         extinguishAll: () => FireEngine.extinguishAll(),
+        douse: () => FireEngine.douse(),
       });
     };
     if (game.ready) expose(); else Hooks.once("ready", expose);

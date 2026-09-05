@@ -6056,3 +6056,38 @@
 .ace-qol-dmg-reaction-line strong { color: #c7e2ff; font-weight: 700; }
 .ace-qol-dmg-reaction-line i { font-size: 0.9em; opacity: 0.9; }
 
+
+/* ── The fire tools in the token toolbar ──────────────────────────────────
+   Johnny, 2026-09-05: "I want the fire button icon to be red-coloured, and
+   the extinguish button to be blue. It should be the exact same icon with a
+   slash through it, but blue."
+
+   ⚠️ FOUNDRY DOES NOT COLOUR TOOL ICONS, so this is the only place the colour
+   can come from. The slash is drawn here too rather than using a different
+   Font Awesome glyph, because he asked for the SAME icon struck through and
+   the struck-out flame does not exist in the free set. no-wrap-ok: a toolbar
+   button is one glyph, there is nothing to wrap. */
+#controls .ace-fire-tool,
+.scene-control .ace-fire-tool,
+.control-tool .ace-fire-tool { color: #ff4d2d; }
+
+#controls .ace-douse-tool,
+.scene-control .ace-douse-tool,
+.control-tool .ace-douse-tool { color: #4db8ff; position: relative; }
+
+/* The slash: a bar across the flame, in the same blue, so the pair reads as
+   "fire" and "not fire" at a glance. */
+#controls .ace-douse-tool::after,
+.scene-control .ace-douse-tool::after,
+.control-tool .ace-douse-tool::after {
+  content: "";
+  position: absolute;
+  left: -2px;
+  right: -2px;
+  top: 50%;
+  height: 2px;
+  background: #4db8ff;
+  transform: rotate(-45deg);
+  transform-origin: center;
+  pointer-events: none;
+}
