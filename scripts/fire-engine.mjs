@@ -161,6 +161,11 @@ export class FireEngine {
    */
   static _resolveFx(candidates) {
     for (const c of candidates) {
+      // ⚠️ A PLAIN FILE PATH IS A VALID ANSWER. Database keys get renamed
+      // between JB2A releases; the file on disk does not. Anything with a slash
+      // is taken as a path and used as-is, so a renamed key still leaves a
+      // working picture instead of a warning nobody reads.
+      if (typeof c === "string" && c.includes("/")) return c;
       try { if (globalThis.Sequencer?.Database?.entryExists?.(c)) return c; } catch (_) { /* next */ }
     }
     console.warn(`${LOG} | none of these fire effects are in this JB2A install, so `
@@ -168,11 +173,30 @@ export class FireEngine {
     return null;
   }
 
-  /** The flame that sits on a burning token or square. */
+  /**
+   * The flame that sits on a burning token or square.
+   *
+   * ⚠️🔴 A CAMPFIRE ASSET DRAWS A CAMPFIRE. This asked for
+   * `jb2a.campfire.01.orange` first, and that effect is not "fire" — it is a
+   * hearth, logs and a ring of stones included. So every burning corpse on his
+   * map had a campfire painted under it. Johnny: "The first one's got a
+   * campfire, for fuck's sake... It should take the token and just do the
+   * fire."
+   *
+   * The Flames03 set is what he actually wants: bare flame, authored at 5x5 and
+   * 10x10 feet, nothing underneath it. Paths are used rather than database keys
+   * because these were read off his own install and a renamed key would put the
+   * campfire back.
+   */
   static _flamePath(big = false) {
+    const F = "modules/jb2a_patreon/Library/Generic/Fire/Flame";
     return FireEngine._resolveFx(big
-      ? ["jb2a.bonfire.01.orange", "jb2a.campfire.01.orange", "jb2a.flames.01.orange"]
-      : ["jb2a.campfire.01.orange", "jb2a.bonfire.01.orange", "jb2a.flames.01.orange"]);
+      ? [`${F}/Flames03_01_Regular_Orange_10x10ft_400x400.webm`,
+         `${F}/Flames03_02_Regular_Orange_10x10ft_400x400.webm`,
+         "jb2a.flames.01.orange"]
+      : [`${F}/Flames03_01_Regular_Orange_05x05ft_300x300.webm`,
+         `${F}/Flames03_02_Regular_Orange_05x05ft_300x300.webm`,
+         "jb2a.flames.01.orange"]);
   }
 
   /** The smoke left behind on the ash. */
@@ -563,7 +587,21 @@ export class FireEngine {
       const centreY = doc.y + (doc.height * (canvas?.grid?.size ?? 100)) / 2;
       const gs = canvas?.grid?.size ?? 100;
 
+      // ⚠️🔴 TAKE THE "BEFORE" OR THERE IS NOTHING TO UNDO. Turning a body
+      // to ash renames it, shrinks it to one square, moves it, drops its
+      // rotation and CLEARS THE LOOT SNAPSHOT. None of that can be worked out
+      // afterwards. Johnny asked for an undo button and the only way to have
+      // one is to save this here, before any of it is thrown away.
+      const before = {
+        name: doc.name,
+        textureSrc: doc.texture?.src ?? null,
+        width: doc.width, height: doc.height,
+        x: doc.x, y: doc.y, rotation: doc.rotation ?? 0,
+        flags: foundry.utils.deepClone(doc.flags?.[FLAG_NS] ?? {}),
+      };
+
       await doc.update({
+        [`flags.${FLAG_NS}.preAsh`]: before,
         name: `Ashes of ${doc.flags?.[FLAG_NS]?.originalName ?? doc.name}`,
         ...(art ? { "texture.src": art } : {}),
         width: 1, height: 1,
@@ -668,6 +706,70 @@ export class FireEngine {
       n++;
     }
     ui.notifications?.info(n ? `${n} fire(s) put out.` : "Nothing was burning.");
+  }
+
+  /**
+   * Put back what the fire took — the picture, the name, the size, the loot.
+   *
+   * ⚠️🔴 REVIVING THE TOKEN IS NOT AN UNDO. That is what he had to do
+   * instead: "I brought it back to life, which brought back the icon." It
+   * restores the art because the death pipeline owns that, but the ash step
+   * had already renamed the token, shrunk it to one square, moved it and
+   * DELETED ITS LOOT SNAPSHOT — a dragon's hoard, gone, with no way back.
+   *
+   * ⚠️ RESTORES ONLY WHAT IT SAVED, AND SAYS SO WHEN IT CANNOT. Ash made
+   * before this shipped has no snapshot, and inventing plausible values for a
+   * token's size and position is how you quietly move somebody's dragon.
+   */
+  static async undo() {
+    if (!FireEngine._isActiveGM()) {
+      ui.notifications?.warn("Only the acting GM can undo a fire.");
+      return;
+    }
+    const picked = (canvas?.tokens?.controlled ?? []).map(t => t.document ?? t);
+    const pool = picked.length ? picked : [...(canvas?.scene?.tokens ?? [])];
+
+    const restored = [], noSnapshot = [];
+    for (const doc of pool) {
+      const f = doc.flags?.[FLAG_NS] ?? {};
+      if (!f.isAsh && !f.fire) continue;
+      const before = f.preAsh;
+      if (!before) { noSnapshot.push(doc.name); continue; }
+
+      FireEngine._endFx(`${FX_PREFIX}ash:${doc.id}`);
+      FireEngine._endFx(`${FX_PREFIX}tok:${doc.id}`);
+      try {
+        await doc.update({
+          name: before.name,
+          ...(before.textureSrc ? { "texture.src": before.textureSrc } : {}),
+          width: before.width, height: before.height,
+          x: before.x, y: before.y, rotation: before.rotation ?? 0,
+          [`flags.${FLAG_NS}`]: before.flags ?? {},
+          [`flags.${FLAG_NS}.-=isAsh`]: null,
+          [`flags.${FLAG_NS}.-=preAsh`]: null,
+          [`flags.${FLAG_NS}.-=fire`]: null,
+        });
+        const burning = (doc.actor?.effects ?? []).filter(e => e.flags?.[FLAG_NS]?.fireBurning);
+        for (const e of burning) { try { await e.delete(); } catch (_) { /* already gone */ } }
+        restored.push(before.name);
+      } catch (err) {
+        console.error(`${LOG} | could not undo the fire on ${doc.name}:`, err);
+      }
+    }
+
+    if (restored.length) ui.notifications?.info(`Put back: ${restored.join(", ")}.`);
+    if (noSnapshot.length) {
+      // ⚠️ NAMED, NOT SWALLOWED. He needs to know WHICH ones cannot come back.
+      console.warn(`${LOG} | no "before" was saved for: ${noSnapshot.join(", ")} — they `
+        + `burned before undo existed, so nothing was changed.`);
+      ui.notifications?.warn(`${noSnapshot.length} of these burned before undo existed, so `
+        + `ACE has no record of what they were. Left untouched — see the console.`);
+    }
+    if (!restored.length && !noSnapshot.length) {
+      ui.notifications?.info(picked.length
+        ? "Nothing you have selected has been burned."
+        : "Nothing on this scene has been burned.");
+    }
   }
 
   /* ═══ The look ═══════════════════════════════════════════════════════════ */
@@ -932,7 +1034,19 @@ export class FireEngine {
           onChange: () => FireEngine.douse(),
         };
 
-        for (const t of [tool, douse]) {
+        // ⚠️ AND A WAY BACK. Reviving the token restores its art and nothing
+        // else — the name, the size, the position and the LOOT are already
+        // gone by then.
+        const undoTool = {
+          name: "ace-undo-fire",
+          title: "ACE — Undo the fire",
+          icon: "fas fa-rotate-left ace-undo-fire-tool",
+          button: true,
+          visible: true,
+          onChange: () => FireEngine.undo(),
+        };
+
+        for (const t of [tool, douse, undoTool]) {
           if (Array.isArray(grp.tools)) {
             if (!grp.tools.some(x => x?.name === t.name)) grp.tools.push(t);
           } else if (grp.tools && typeof grp.tools === "object") {
@@ -953,6 +1067,7 @@ export class FireEngine {
         fireReport: () => FireEngine.report(),
         extinguishAll: () => FireEngine.extinguishAll(),
         douse: () => FireEngine.douse(),
+        undoFire: () => FireEngine.undo(),
       });
     };
     if (game.ready) expose(); else Hooks.once("ready", expose);

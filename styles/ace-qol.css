@@ -6091,3 +6091,9 @@
   transform-origin: center;
   pointer-events: none;
 }
+
+/* The undo tool, beside the red flame and the blue struck flame.
+   no-wrap-ok: a toolbar button is one glyph. */
+#controls .ace-undo-fire-tool,
+.scene-control .ace-undo-fire-tool,
+.control-tool .ace-undo-fire-tool { color: #f0c060; }
