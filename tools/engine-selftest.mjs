@@ -123,5 +123,63 @@ const named = readWeather({ name: "The Blizzard Pass" });
 check("a scene name is a source when the field is empty", named.kind, "snow");
 check("and a blizzard is cold", named.cold, true);
 
+console.log("\nHEALING THAT COVERS GROUND, WORKED OUT WITHOUT THE NAME");
+// ⚠️🔴 THE ANSWER TO "WHY COULDN'T IT FIGURE IT OUT FROM THE DESCRIPTION?"
+// The pipeline dispatches sixteen shapes; the classifier was permitted
+// fourteen. `emanation-heal` and `template-heal` were not words it could say,
+// so Aura of Vitality could only ever come back "self" no matter how perfectly
+// its text was read, and Mass Cure Wounds threw its 30-foot sphere away.
+//
+// These cases use a NONSENSE NAME on purpose. If they pass, the engine worked
+// it out from the item, which is the entire point.
+{
+  const heal = (over = {}) => ({
+    name: "Nameless Homebrew",
+    type: "spell",
+    system: {
+      level: 3,
+      properties: ["concentration"],
+      range: over.range ?? { units: "self" },
+      target: over.target ?? { template: { type: "sphere", size: 30 } },
+      description: { value: "" },
+      activities: { a: {
+        type: "heal", activation: { type: "action" },
+        range: over.range ?? { units: "self" },
+        target: over.target ?? { template: { type: "sphere", size: 30 } },
+        healing: { number: 2, denomination: 6, types: ["healing"] },
+      } },
+    },
+  });
+
+  check("healing that radiates from the caster is an emanation heal",
+    classifyItem(heal()).shape, "emanation-heal");
+  check("and it says why, in plain words",
+    /radiates healing 30 feet from the caster/.test(
+      classifyItem(heal()).evidence.join(" ")), true);
+  check("healing inside an area it places is a template heal",
+    classifyItem(heal({ range: { units: "ft", value: 60 } })).shape, "template-heal");
+  // ⚠️ SECOND WIND IS SELF-RANGED HEALING AND IS NOT AN EMANATION. It has no
+  // radius. Widening this to "heals and is self" would swallow it and hang a
+  // zero-foot aura on a fighter catching their breath.
+  check("self healing with no radius stays self",
+    classifyItem(heal({ target: { affects: { type: "self" } } })).shape, "self");
+  // ⚠️ AND WITH NO TARGET BLOCK AT ALL IT IS "touch", WHICH IS RIGHT. An item
+  // that states no target and no radius has not said it is an emanation, and
+  // reading one into it would hang a zero-foot aura on a fighter catching their
+  // breath. My first version of this case asserted "self" and the engine was
+  // the one that had it right.
+  check("healing with no target stated at all is a touch, not an aura",
+    classifyItem(heal({ target: {} })).shape, "touch");
+  // ⚠️ AND AN EMANATION THAT DOES NOT HEAL IS UNTOUCHED. Detect Magic is
+  // range self with a 30-foot radius and asks nothing of anyone inside it.
+  check("a non-healing emanation is still the caster's own spell",
+    classifyItem({ name: "y", type: "spell", system: { level: 1, properties: [],
+      range: { units: "self" }, target: { template: { type: "sphere", size: 30 } },
+      description: { value: "" },
+      activities: { a: { type: "utility", activation: { type: "action" },
+        range: { units: "self" },
+        target: { template: { type: "sphere", size: 30 } } } } } }).shape, "self");
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

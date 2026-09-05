@@ -28,7 +28,30 @@ import { readActionFacts } from "./action-facts.mjs";
 export const KNOWN_SHAPES = new Set([
   "save-single", "save-area", "template-save", "template-trigger",
   "attack-single", "attack-multi", "multi-buff", "multi-heal",
-  "touch", "self", "distribute", "chained", "summon",
+  "touch", "self", "distribute", "chained",
+  // ⚠️🔴 THESE TWO WERE MISSING, AND THAT IS THE WHOLE ANSWER TO "WHY
+  // COULDN'T IT WORK IT OUT FROM THE DESCRIPTION?".
+  //
+  // Johnny, 2026-09-05, on being told a name suffix was why Aura of Vitality
+  // did nothing: "You're telling me that because the name wasn't quite right,
+  // it couldn't figure out from the description or from the other data that
+  // this was Aura of Vitality."
+  //
+  // He was right to push. The name was one bug. This was the real one: the
+  // pipeline can dispatch SIXTEEN shapes and this list only permitted
+  // FOURTEEN. `emanation-heal` and `template-heal` were not words the engine
+  // was allowed to say, so no amount of reading the text could ever produce
+  // them. Aura of Vitality's description states everything needed — radiates
+  // from you, 30-foot radius, moves with you, 2d6 to one creature — and the
+  // best answer available was "self". Mass Cure Wounds could never have been
+  // worked out either.
+  "emanation-heal", "template-heal",
+  // ⚠️ `summon` IS DELIBERATELY NOT HERE ANY MORE. The pipeline has no
+  // `case "summon"` at all, so an inferred summon reached the dispatch's
+  // default arm, which warns and refunds the slot. Falling through to dnd5e,
+  // which summons perfectly well on its own, is the honest outcome. (The
+  // registry's own 11 summon entries still carry that shape and still reach
+  // that default — flagged separately, not fixed blind.)
   // ⚠️ `template-pool` is dispatchable, so a human may correct a reading to it,
   // but nothing INFERS it: a hit-point pool is a per-spell ruling that appears
   // nowhere in an item's data. Colour Spray's sheet claims a Constitution save
@@ -72,6 +95,33 @@ export function classifyItem(item, { parsed = null, timing = null, facts = null 
 
     if (change.summons) {
       shape = "summon";
+
+    // ── HEALING THAT COVERS GROUND ───────────────────────────────────────
+    // ⚠️🔴 BOTH OF THESE USED TO FALL PAST EVERYTHING AND LAND WRONG.
+    //
+    // An emanation that heals hit the "self" branch below, because that branch
+    // takes ANY emanation, and it sits above the healing check. So Aura of
+    // Vitality — which is 30 feet of healing that follows the caster — was read
+    // as a spell that acts only on the caster.
+    //
+    // And a template that heals was excluded from the area branch by its own
+    // `!change.heals` guard, correctly, since healing is not an area attack —
+    // but nothing caught it afterwards, so Mass Cure Wounds became a plain
+    // "multi-heal" with its 30-foot sphere thrown away.
+    //
+    // ⚠️ THE EMANATION TEST COMES FIRST AND NEEDS BOTH HALVES. Second Wind
+    // heals and is self-ranged, and it is not an emanation: it has no radius.
+    // `delivery.kind` is only "emanation" when there is a template AND the
+    // range is self, which is exactly the distinction.
+    } else if (change.heals && delivery.kind === "emanation") {
+      shape = "emanation-heal";
+      why.push(`it radiates healing ${delivery.template?.size ?? ""} feet from the caster `
+        + `and moves with them`.replace(/\s+/g, " "));
+
+    } else if (change.heals && delivery.template) {
+      shape = "template-heal";
+      why.push(`it heals the creatures inside a ${delivery.template.size ?? ""} foot `
+        + `${delivery.template.type ?? "area"} it places`.replace(/\s+/g, " "));
 
     // ── AREAS ────────────────────────────────────────────────────────────
     // ⚠️ AN EMANATION THAT ASKS NOTHING OF ANYBODY IS NOT AN AREA. Detect Magic
