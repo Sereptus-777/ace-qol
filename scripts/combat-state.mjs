@@ -109,6 +109,19 @@ export class CombatState {
     const targetActor = targetToken?.actor;
     if (!attackerActor || !targetActor) return null;
 
+    // ⚠️🔴 READ THE PROFILE THE CALLER ALREADY BUILT, DO NOT RE-DERIVE.
+    // A sweep on 2026-09-05 found 17 of the attacker profile's 33 fields read
+    // by nothing at all — gathered on every attack and thrown away, which is
+    // the exact shape of every fault found that night. The rules below were
+    // correct; they were simply asking the actor a second time.
+    //
+    // ⚠️ PASSED IN, NEVER BUILT HERE. `attacker-profile.mjs` imports this
+    // file, so importing it back would be a cycle — and a const read at top
+    // level inside a cycle throws at load and takes the module with it
+    // (2026-08-28). The caller that has a profile hands it over; everything
+    // else falls back to the same reader the profile itself is built from, so
+    // the two can never disagree.
+    const atkProfile = opts.attackerProfile ?? null;
     const isSpell = opts.isSpell ?? (item?.type === "spell");
     const actionType = item?.system?.actionType ?? "mwak";
     const itemProps = item?.system?.properties ?? new Set();
@@ -235,7 +248,7 @@ export class CombatState {
     // 2024 RAW: 10-level flat -N penalty model — the dnd5e system applies
     //           its own per-level d20 penalty via addRollExhaustion. ACE QOL
     //           must NOT stack 2014-style disadvantage on top in 2024 worlds.
-    const exhaustion = _aceCreature(attackerActor)?.exhaustion ?? 0;
+    const exhaustion = atkProfile?.exhaustion ?? _aceCreature(attackerActor)?.exhaustion ?? 0;
     if (exhaustion >= 3 && CombatState.getActiveEdition(attackerActor) === "2014") {
       disadvantageSources.push({ source: "attacker", reason: `Attacker EXHAUSTION ${exhaustion} (2014 L3+) → attack disadvantage` });
     }
@@ -379,7 +392,7 @@ export class CombatState {
     } catch (_) { /* non-fatal */ }
 
     // ── Heavy Weapon + Small Creature ───────────────────────────────────
-    const atkSize = _aceCreature(attackerActor)?.size ?? "medium";
+    const atkSize = atkProfile?.size ?? _aceCreature(attackerActor)?.size ?? "medium";
     if (["tiny", "sm"].includes(atkSize) && itemProps.has("hvy")) {
       disadvantageSources.push({ source: "attacker", reason: "SMALL CREATURE + HEAVY WEAPON → attack disadvantage" });
     }
@@ -412,7 +425,7 @@ export class CombatState {
       } catch (_) { /* defensive — never break combat-state on a malformed item */ }
       if (equippedArmor) {
         const profKey = ARMOR_TYPE_TO_PROF[equippedArmor.system.armor.type];
-        const profs = _aceCreature(attackerActor)?.armorProf;
+        const profs = atkProfile?.armorProf ?? _aceCreature(attackerActor)?.armorProf;
         const hasProf = (profs?.has?.(profKey) === true)
                      || (Array.isArray(profs) && profs.includes(profKey));
         if (!hasProf) {
@@ -543,7 +556,7 @@ export class CombatState {
 
     // ── Protection from Evil/Good on Target ─────────────────────────────
     if (CombatState._hasEffect(targetActor, "Protection from Evil and Good")) {
-      const atkType = _aceCreature(attackerActor)?.type ?? "";
+      const atkType = atkProfile?.creatureType ?? _aceCreature(attackerActor)?.type ?? "";
       if (["aberration", "celestial", "elemental", "fey", "fiend", "undead"].includes(atkType)) {
         disadvantageSources.push({ source: "target", reason: `Target has PROTECTION FROM EVIL/GOOD → disadvantage (attacker is ${atkType})` });
       }
@@ -1387,7 +1400,7 @@ export class CombatState {
               disadvantageSources.push({ source: "weapon", reason: `Heavy weapon with ${abil.toUpperCase()} ${score} (< 13) → attack disadvantage (2024 Heavy property)` });
             }
           } else {
-            const size = String(_aceCreature(attackerActor)?.size ?? "med");
+            const size = String(atkProfile?.size ?? _aceCreature(attackerActor)?.size ?? "med");
             if (size === "sm" || size === "tiny") {
               disadvantageSources.push({ source: "weapon", reason: "Small creature wielding a Heavy weapon → attack disadvantage (2014 Heavy property)" });
             }

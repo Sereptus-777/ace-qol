@@ -46,6 +46,25 @@ import sys
 ROOT = r"D:\FoundryVTT\Data\modules"
 PROFILE = os.path.join(ROOT, "ace-qol", "scripts", "profiles", "attacker-profile.mjs")
 BUILDERS = ["buildAttackerProfile", "_aceAttackerProfile"]
+
+# A profile HANDED TO a function is a profile.
+#
+# ⚠️🔴 v4 COULD NOT SEE ADOPTION AT ALL, WHICH IS THE THING IT MEASURES.
+# It only recognised a variable assigned directly from a builder. But the normal
+# shape of adoption is a callee RECEIVING one:
+#
+#     CombatState.assess(actor, target, item, { attackerProfile: attacker })
+#     const atkProfile = opts.attackerProfile ?? null;   <- invisible to v4
+#
+# So combat-state could read four fields off a real profile and the count would
+# not move. A measurement that cannot register the fix is worse than no
+# measurement: it argues the work was not done.
+#
+# ⚠️ THIS IS NOT SOFTENING THE NUMBER. The reads still have to be off a
+# variable that genuinely holds a profile, and the variable still has to be
+# assigned from one of these names. Nothing counts because a field name appears
+# somewhere.
+RECEIVED = ["opts.attackerProfile", "options.attackerProfile", "attackerProfile"]
 MODULES = ["ace-qol", "ace-engine", "ace-artificer"]
 SKIP = {"node_modules", ".git", "packs", "assets", "sounds", "icons", "tools"}
 
@@ -90,7 +109,7 @@ def profile_vars(src):
     # every .mjs and .py in the suite for exactly this and would have caught it
     # in one second -- the tool existed and simply was not run.
     EDGE_L, EDGE_R = r"(?<![\w$])", r"(?![\w$])"
-    for b in BUILDERS:
+    for b in BUILDERS + RECEIVED:
         head = r"(?:const|let|var)\s+([\w$]+)\s*=\s*[^;]*?"
         tail = r"\s*\("
         names |= set(re.findall(head + b + tail, src))
@@ -149,7 +168,13 @@ def consumers(fields):
                     src = io.open(full, encoding="utf-8", errors="ignore").read()
                 except OSError:
                     continue
-                if not any(b in src for b in BUILDERS):
+                # ⚠️ THE FILE GATE MUST MATCH THE VARIABLE DETECTION. This
+                # skipped any file that never names a builder — which is every
+                # callee that RECEIVES a profile, i.e. exactly what adoption
+                # looks like. combat-state read four fields off a real profile
+                # and the count did not move, because the file was discarded
+                # before it was ever examined.
+                if not any(b in src for b in BUILDERS + RECEIVED):
                     continue
                 variables = profile_vars(src)
                 if not variables:

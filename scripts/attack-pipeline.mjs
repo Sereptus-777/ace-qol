@@ -587,7 +587,12 @@ export class AttackPipeline {
 
     // Assess combat state for the first target (primary target)
     // If multiple targets, use the first — advantage is per-attack, not per-target
-    const combatState = CombatState.assess(actor, firstTarget, item);
+    // ⚠️ HAND OVER THE PROFILE WE ALREADY BUILT. `assess` used to ask the
+    // actor for size, exhaustion, armour proficiency and creature type all over
+    // again, while the profile holding every one of them sat unread.
+    const combatState = CombatState.assess(actor, firstTarget, item, {
+      attackerProfile: attacker,   // built at the top of this method — one profile, one cast
+    });
     if (!combatState) {
       // Even without an assessment, dnd5e's config dialog must not render —
       // ACE owns the attack pause (Johnny 2026-07-26). Roll straight.
