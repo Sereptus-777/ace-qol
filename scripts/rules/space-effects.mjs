@@ -314,6 +314,55 @@ export class SpaceEffects {
     return null;
   }
 
+  /**
+   * The elevation to draw a space at so it sits under everyone standing in it.
+   *
+   * ⚠️🔴 `belowTokens()` IS A LAYER, NOT A HEIGHT. Read straight out of
+   * Sequencer: it is `sortLayer(600)` and nothing more. Foundry V13 sorts the
+   * canvas by ELEVATION FIRST and only then by layer, so a creature standing at
+   * -30 feet renders underneath an effect sitting at 0 no matter what layer the
+   * effect is on.
+   *
+   * Johnny, 2026-09-05, on Thunderstorm of Misery over a party thirty feet down:
+   * "the tokens are not above it ... I put a couple tokens at 0 ft and the
+   * animation is going beneath their feet." He had it exactly right, and his fix
+   * is the one used here: find the lowest creature the space actually covers and
+   * draw below THAT.
+   *
+   * ⚠️ A MARGIN, NOT AN EXACT MATCH. Equal elevations fall back to layer
+   * order, which is the ambiguity this is trying to escape. Ten feet is a clear
+   * gap at any grid scale and still nowhere near another storey.
+   *
+   * ⚠️ KNOWN LIMIT, WORTH SAYING OUT LOUD: this is measured when the space is
+   * drawn. A creature that walks in afterwards from lower down will be under it.
+   * Redrawing on every crossing would fix that and is not worth the churn for a
+   * picture; if he ever sees it, this comment is the reason.
+   */
+  static _spaceFxElevation(region) {
+    const MARGIN = 10;
+    let lowest = null;
+    try {
+      const g = canvas?.grid?.size ?? 100;
+      for (const t of (canvas?.tokens?.placeables ?? [])) {
+        const d = t?.document;
+        if (!d) continue;
+        const pos = aceMeasuredPosition(d);
+        const centre = { x: pos.x + ((Number(d.width) || 1) * g) / 2,
+                         y: pos.y + ((Number(d.height) || 1) * g) / 2 };
+        let inside = false;
+        try { inside = region.testPoint?.({ ...centre, elevation: pos.elevation }) ?? false; }
+        catch (_) { inside = false; }
+        if (!inside) continue;
+        lowest = (lowest === null) ? pos.elevation : Math.min(lowest, pos.elevation);
+      }
+    } catch (err) {
+      console.warn(`${TAG} could not work out how low this space needs to sit:`, err);
+    }
+    // Nobody inside: there is nobody to be under, so the layer alone will do.
+    if (lowest === null) return null;
+    return lowest - MARGIN;
+  }
+
   static _drawSpaceFx(region) {
     try {
       if (typeof Sequence === "undefined" || !globalThis.Sequencer?.EffectManager) return;
@@ -344,22 +393,29 @@ export class SpaceEffects {
       const left = Number.isFinite(expiresAt)
         ? Math.max(0, expiresAt - Number(game.time?.worldTime ?? 0)) : null;
 
-      new Sequence().effect()
+      const floorAt = SpaceEffects._spaceFxElevation(region);
+
+      const fx = new Sequence().effect()
         .file(pick.asset)
         .atLocation({ x: where.x, y: where.y })
         .size({ width: where.size, height: where.size })
         // ⚠️ UNDER THE ART. "It should always be beneath the tokens' feet."
         // A storm drawn over the tokens hides the creatures standing in it,
-        // which is the one thing the GM needs to see.
+        // which is the one thing the GM needs to see. The layer alone is not
+        // enough when anyone is standing below zero — see _spaceFxElevation.
         .belowTokens()
         .opacity(0.8)
         .fadeIn(800).fadeOut(1200)
         .persist()
-        .name(name)
-        .play()
+        .name(name);
+
+      if (floorAt !== null) fx.elevation(floorAt, { absolute: true });
+
+      fx.play()
         .catch(err => console.warn(`${TAG} space effect failed to play:`, err));
 
-      console.log(`${TAG} "${region.name}" is drawn with ${pick.how}, under the tokens, `
+      console.log(`${TAG} "${region.name}" is drawn with ${pick.how}, `
+        + (floorAt === null ? "under the tokens, " : `at ${floorAt} feet so it sits under everyone in it, `)
         + (left == null ? "until it is removed." : `for ${left} seconds of game time.`));
     } catch (err) {
       console.warn(`${TAG} could not draw this space:`, err);

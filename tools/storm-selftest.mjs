@@ -111,6 +111,33 @@ check("no shape and no sprite is null, not a guess",
 check("a degenerate polygon does not become a zero-size effect",
   SpaceEffects._spaceFxGeometry({ shapes: [{ points: [10, 10, 10, 10] }] }), null);
 
+console.log("\nHOW LOW MUST THE PICTURE SIT?");
+// ⚠️🔴 `belowTokens()` IS A LAYER, NOT A HEIGHT. Sequencer implements it as
+// sortLayer(600); Foundry V13 sorts by ELEVATION first and layer second, so a
+// creature at -30 renders under an effect at 0 whatever layer it is on. Johnny
+// cast Thunderstorm of Misery over a party thirty feet down and the storm sat
+// on top of them.
+{
+  const g = 100;
+  const tok = (x, y, elev) => ({ document: { id: `t${x}-${y}-${elev}`, x, y, width: 1, height: 1, elevation: elev } });
+  const regionWith = (...tokens) => {
+    globalThis.canvas = { grid: { size: g, distance: 5 }, tokens: { placeables: tokens },
+                          scene: { regions: [] } };
+    return { name: "storm", testPoint: () => true };
+  };
+  check("below the lowest creature it covers, with a margin",
+    SpaceEffects._spaceFxElevation(regionWith(tok(0, 0, 0), tok(100, 0, -30))), -40);
+  check("everyone at ground level still gets a gap",
+    SpaceEffects._spaceFxElevation(regionWith(tok(0, 0, 0))), -10);
+  check("a flier does not drag it upwards",
+    SpaceEffects._spaceFxElevation(regionWith(tok(0, 0, 60), tok(100, 0, 0))), -10);
+  // ⚠️ NOBODY INSIDE MEANS NOBODY TO BE UNDER. Returning a number there would
+  // pin the storm to an elevation chosen from no evidence at all.
+  check("nobody inside leaves the layer to decide",
+    SpaceEffects._spaceFxElevation(regionWith()), null);
+  globalThis.canvas = { grid: { size: 100, distance: 5 }, scene: { regions: [] } };
+}
+
 console.log("\nDOES THE SPACE OUTLIVE THE TEMPLATE THAT AIMED IT?");
 // ⚠️ HIS EXACT CAST. The storm was created at world time 0 with a minute on
 // it, and the save engine tidied the template away 26 seconds later. The region
