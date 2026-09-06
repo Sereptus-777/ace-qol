@@ -899,8 +899,11 @@ export class FireEngine {
     // ⚠️ EVERY RENDER, because Foundry rebuilds the toolbar each time the
     // active control group changes, and a colour applied once is a colour lost
     // the first time he clicks anything else.
+    // ⚠️ NOT ON EVERY APPLICATION RENDER. That fires for every window, every
+    // sheet and every dialog in the game, and each call walked the whole DOM
+    // three times to colour three icons. The toolbar is the only thing that can
+    // change them, so watch the toolbar.
     Hooks.on("renderSceneControls", () => FireEngine._paintTools());
-    Hooks.on("renderApplicationV2", () => FireEngine._paintTools());
 
     Hooks.on("getSceneControlButtons", (controls) => {
       try { FireEngine._injectTools(controls); }
