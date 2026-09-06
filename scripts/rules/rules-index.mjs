@@ -343,21 +343,62 @@ export class RulesIndex {
       } catch (_) { /* one bad item must not stop the warm */ }
     };
 
-    if (actors) for (const a of (game.actors ?? [])) for (const i of (a.items ?? [])) consider(i);
-    if (items)  for (const i of (game.items ?? [])) consider(i);
+    // ⚠️🔴 THIS USED TO WALK EVERY ACTOR IN THE WORLD, ON EVERY CLIENT.
+    // In Johnny's world that is 1,975 book entries and it took 198 SECONDS,
+    // measured in his own console — and it ran unconditionally, so five players
+    // connecting at the start of a session would each pull the same two
+    // thousand compendium documents at once. Found the morning of a game day.
+    //
+    // ⚠️ WARM WHAT WILL ACTUALLY BE PRESSED. A button gets pressed by a
+    // player character, or by something standing on the scene in front of him.
+    // Every other stat block in a 2,000-actor library is a spell nobody is
+    // going to cast tonight, and a cold entry is already a handled answer: the
+    // engine reads the item and the button works, it just gets no book check.
+    const onScene = new Set();
+    try {
+      for (const t of (canvas?.scene?.tokens ?? [])) {
+        if (t.actor?.id) onScene.add(t.actor.id);
+      }
+    } catch (_) { /* no scene drawn yet; the party pass below still runs */ }
 
-    let warmed = 0, failed = 0;
+    if (actors) {
+      for (const a of (game.actors ?? [])) {
+        if (!a?.hasPlayerOwner && !onScene.has(a.id)) continue;
+        for (const i of (a.items ?? [])) consider(i);
+      }
+    }
+    // ⚠️ WORLD ITEMS ONLY IF THERE ARE FEW. A big loot library is not worth
+    // three minutes, and nothing in it is being cast at anybody.
+    if (items && (game.items?.size ?? 0) <= 300) {
+      for (const i of (game.items ?? [])) consider(i);
+    }
+
+    // ⚠️ YIELD, SO THIS NEVER OWNS THE FRAME. Even a short warm is a few
+    // hundred awaits in a row; handing the thread back keeps the canvas and the
+    // chat responsive while it runs.
+    let warmed = 0, failed = 0, since = 0;
     for (const hit of wanted.values()) {
       const doc = await RulesIndex.document(hit);
       doc ? warmed++ : failed++;
+      if (++since >= 25) {
+        since = 0;
+        await new Promise(r => setTimeout(r, 0));
+      }
     }
 
     const ms = Date.now() - started;
     RulesIndex._status.warmed = warmed;
     RulesIndex._status.warmFailed = failed;
-    console.log(`${LOG} | warmed ${warmed} book entr${warmed === 1 ? "y" : "ies"} for items in `
-      + `this world in ${ms}ms${failed ? ` (${failed} would not load)` : ""} — `
-      + `the books are now read at press time, not after it`);
+    console.log(`${LOG} | warmed ${warmed} book entr${warmed === 1 ? "y" : "ies"} in ${ms}ms `
+      + `(the party and whoever is on this scene)${failed ? ` — ${failed} would not load` : ""}. `
+      + `Anything else gets read from its own item, with no book check.`);
+    // ⚠️ A SLOW WARM IS A REPORTABLE FAULT, not something to leave in a log
+    // nobody reads. Three minutes of this on five clients at once is a session
+    // starting badly.
+    if (ms > 20000) {
+      console.warn(`${LOG} | that warm took ${Math.round(ms / 1000)}s, which is long enough `
+        + `to be felt. If this repeats, narrow it further or turn it off.`);
+    }
     return { warmed, failed, ms };
   }
 
