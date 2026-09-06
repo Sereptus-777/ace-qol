@@ -725,6 +725,39 @@ export class ActionBar {
    */
   static TOOLTIP_DELAY_MS = 2000;
 
+  /**
+   * Give EVERY tooltip in the game the same wait, not just this bar's.
+   *
+   * ⚠️ HE ASKED FOR ALL OF THEM: "if you can put every fucking tooltip to a
+   * full 2 seconds, it would be greatly appreciated." Foundry keeps its delay
+   * as ONE static on the tooltip manager, shared by every tooltip Foundry and
+   * every module raise, so setting it once covers the sheets, the toolbar, the
+   * chat log and everything else.
+   *
+   * ⚠️🔴 ONE NUMBER, NOT TWO. This bar draws its own tooltips because it
+   * needed a delay before Foundry could give it one; both now read
+   * TOOLTIP_DELAY_MS, so they can never drift to different waits and leave him
+   * wondering why the bar feels different from the sheet.
+   */
+  static _setGlobalTooltipDelay() {
+    try {
+      const TM = globalThis.foundry?.helpers?.interaction?.TooltipManager
+        ?? globalThis.TooltipManager;
+      if (!TM) {
+        console.warn(`${LOG} | could not find Foundry's tooltip manager, so only the `
+          + `action bar waits ${ActionBar.TOOLTIP_DELAY_MS}ms. Every other tooltip keeps `
+          + `Foundry's own delay.`);
+        return;
+      }
+      const was = TM.TOOLTIP_ACTIVATION_MS;
+      TM.TOOLTIP_ACTIVATION_MS = ActionBar.TOOLTIP_DELAY_MS;
+      console.log(`${LOG} | every tooltip in the game now waits `
+        + `${ActionBar.TOOLTIP_DELAY_MS}ms (Foundry's own was ${was}ms).`);
+    } catch (err) {
+      console.warn(`${LOG} | could not change the global tooltip delay:`, err);
+    }
+  }
+
   static _tipTimer = null;
 
   /**
@@ -1826,6 +1859,10 @@ export class ActionBar {
   /* ── Wiring ───────────────────────────────────────────────────────────── */
 
   static register() {
+    // ⚠️ SET ONCE, AT REGISTRATION. It is a static on a singleton, so this
+    // is not something to reapply on every render.
+    ActionBar._setGlobalTooltipDelay();
+
     const redraw = () => ActionBar._renderDebounced();
     // ⚠️ MATCHED BY UUID, NOT ID. Two unlinked goblins from the same stat block
     // share an actor id, so an id comparison redraws the bar for the wrong one
