@@ -91,6 +91,7 @@ import { AuraEngine }           from "./aura-engine.mjs";
 import { MultiattackLabel }     from "./multiattack-label.mjs";
 import { DeadTokenLock }        from "./dead-token-lock.mjs";
 import { FireEngine }           from "./fire-engine.mjs";
+import { VersatileDefault }     from "./versatile-default.mjs";
 import { aceDescriptionHtml, aceDescriptionText, aceDescriptionTextSync }
   from "./description-reader.mjs";
 import { PolymorphSpellPipeline } from "./polymorph-spell-pipeline.mjs";
@@ -4056,6 +4057,14 @@ Hooks.once("ready", () => {
   } catch (err) {
     console.error(`${MODULE_ID} | the description reader failed to publish, so the `
       + `sibling modules will fall back to stripping enricher text:`, err);
+  }
+
+  // A versatile weapon defaults to its two-handed die when both hands are free.
+  try {
+    VersatileDefault.register();
+  } catch (err) {
+    console.error(`${MODULE_ID} | the versatile default failed to register, so every `
+      + `versatile weapon keeps dnd5e's one-handed die:`, err);
   }
 
   // Fire: bodies, drawn areas, spread, and a timer anchored to world time.
