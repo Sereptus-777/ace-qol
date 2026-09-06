@@ -36,7 +36,7 @@ globalThis.foundry = {
                   ux: {}, apps: {}, handlebars: {} },
 };
 
-const { emanatesFromCaster, CASTER_CENTRED_SHAPES, burstFor } = await import(
+const { emanatesFromCaster, CASTER_CENTRED_SHAPES, burstFor, suppressesTemplate } = await import(
   "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/caster-emanation.mjs");
 const { DAMAGE_THEME, DEFAULT_COLOR, HEAL_COLOR } = await import(
   "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/ace-fx.mjs");
@@ -163,6 +163,29 @@ console.log("\nTHE WAVE IS COLOUR-CODED TO WHAT THE SPELL DOES");
     hex(burstFor({}).color), hex(DEFAULT_COLOR));
   check("and it says why",
     burstFor({}).why, "it neither heals nor damages, so it gets the neutral arcane wave");
+}
+
+console.log("\nSUPPRESSING AND DRAWING ARE TWO DIFFERENT QUESTIONS");
+// ⚠️🔴 MISTY STEP, MID-SESSION. Before 0.16.0 the rule was "a self-shaped
+// spell with a template does not prompt". Narrowing that to circles only - to
+// protect Burning Hands' cone - stopped suppressing Misty Step's template, so a
+// teleport left a circle on the map that nothing cleans up.
+{
+  const cone = { range: { units: "self" }, target: { template: { type: "cone", size: 15 } } };
+  const none = { range: { units: "self" }, target: { template: {} } };
+  check("a self spell's template is suppressed whatever its geometry",
+    suppressesTemplate({ shape: "self" }, cone), true);
+  check("a self spell with NO template has nothing to suppress",
+    suppressesTemplate({ shape: "self" }, none), false);
+  check("a template spell is not suppressed - it is aimed",
+    suppressesTemplate({ shape: "template-save" }, cone), false);
+  // ⚠️ AND A SPELL THAT DRAWS ITSELF KEEPS ITS WHOLE FLOW, template included.
+  check("a spell with its own effects is left whole",
+    suppressesTemplate({ shape: "self", fx: { kind: "ghostlyWave" } }, cone), false);
+  // ⚠️ THE DRAWING STILL REFUSES A CONE. Suppressing its prompt is one thing;
+  // placing an un-aimed cone on the caster's head is another.
+  check("but a cone is still never DRAWN by us",
+    emanatesFromCaster({ shape: "self" }, act({ type: "cone", size: 15 })).yes, false);
 }
 
 console.log("");

@@ -80,6 +80,31 @@ function _isOmnidirectional(templateType) {
 }
 
 /**
+ * Should dnd5e's template placement be suppressed for this?
+ *
+ * ⚠️🔴 SUPPRESSING AND DRAWING ARE TWO DIFFERENT QUESTIONS AND I MERGED
+ * THEM. Before 0.16.0 the rule was simply "a self-shaped spell with a template
+ * does not prompt". I narrowed that to circles only, to protect Burning Hands'
+ * cone — and in doing so stopped suppressing Misty Step's, so a teleport left a
+ * circle sitting on the map that nothing ever cleans up. Johnny, mid-session:
+ * "Misty stepped worked, but the template did not go away. First time I've ever
+ * seen that."
+ *
+ * ⚠️ THE GEOMETRY GUARD BELONGS TO DRAWING, NOT TO SUPPRESSING. A cone
+ * needs aiming, so ACE must not place it — but a cone never belongs to a
+ * caster-centred SHAPE in the first place: Burning Hands is a template spell,
+ * not a "self" one. So suppression can safely key on the shape, which is what
+ * it did for months, and only the drawing needs to care which way the thing
+ * points.
+ */
+export function suppressesTemplate(entry, activity) {
+  const tpl = activity?.target?.template ?? activity?.item?.system?.target?.template ?? {};
+  if (!String(tpl?.type ?? "")) return false;          // nothing to suppress
+  if (entry?.fx) return false;                          // it draws its own — leave it whole
+  return CASTER_CENTRED_SHAPES.has(entry?.shape);
+}
+
+/**
  * Does this action radiate from the caster, with no aiming to do?
  *
  * @param {object} entry     the pipeline's entry for the item, if any

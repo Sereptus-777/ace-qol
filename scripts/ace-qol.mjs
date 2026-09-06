@@ -57,7 +57,7 @@ import { openRulesCoverage, registerCoverageButton } from "./rules/coverage-repo
 import { ActionInterceptor } from "./profiles/action-interceptor.mjs";
 import { RulesIndex } from "./rules/rules-index.mjs";
 import { onCanvasReady } from "./ready-utils.mjs";
-import { emanatesFromCaster, drawCasterEmanation } from "./caster-emanation.mjs";
+import { emanatesFromCaster, drawCasterEmanation, suppressesTemplate } from "./caster-emanation.mjs";
 import { ConditionVisuals, BODY_VISUAL_STATUSES } from "./condition-visuals.mjs";
 import { SpellPipeline } from "./spell-pipeline/pipeline.mjs";
 import { HookAPI }              from "./hook-api.mjs";
@@ -1611,8 +1611,10 @@ Hooks.once("ready", () => {
       // invisible to a test that knew one word. He got the placement prompt
       // back for a spell that radiates from his own body. A two-way branch
       // broke on the third kind, exactly as the 2026-09-02 lesson says.
+      // ⚠️ SUPPRESS ON THE SHAPE, DRAW ON THE GEOMETRY. Merging these two
+      // questions is what left a Misty Step circle on the map.
       const verdict = emanatesFromCaster(entry, activity);
-      if (!verdict.yes) return;
+      if (!verdict.yes && !suppressesTemplate(entry, activity)) return;
 
       usageConfig.create ??= {};
       usageConfig.create.measuredTemplate = false;
