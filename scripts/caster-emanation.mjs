@@ -87,6 +87,25 @@ function _isOmnidirectional(templateType) {
  * @returns {{yes:boolean, radiusFt:number|null, why:string}}
  */
 export function emanatesFromCaster(entry, activity) {
+  // ⚠️🔴 A SPELL WITH ITS OWN VISUALS IS NOT MINE TO DRAW. Ghostly Howl
+  // is a registry spell: shape "save-area", carrying its own expanding wave AND
+  // the sound Johnny configured for it. Its own resolver draws that correctly
+  // and has for months.
+  //
+  // This feature then looked at the same item, saw "range self with a radius",
+  // suppressed its template and drew a SECOND wave — neutral blue, silent —
+  // over the top. Johnny, the next morning: "my ghostly howl on King was
+  // working fucking yesterday. I didn't tell you to touch it... it's got a
+  // completely different growl."
+  //
+  // ⚠️ ONE OWNER PER CAST. This exists for emanations nothing else handles.
+  // If the pipeline has an entry with its own effects, it owns the picture, the
+  // sound and the template, and this stands entirely aside.
+  if (entry?.fx) {
+    return { yes: false, radiusFt: null,
+             why: `the spell pipeline draws this one itself (${entry.fx.kind ?? "its own effect"})` };
+  }
+
   const tpl = activity?.target?.template ?? activity?.item?.system?.target?.template ?? {};
   const type = String(tpl?.type ?? "");
   if (!type) return { yes: false, radiusFt: null, why: "it places no template at all" };

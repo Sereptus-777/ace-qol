@@ -73,6 +73,30 @@ check("no entry at all: range self plus a radius is an emanation",
 check("a sphere counts", emanatesFromCaster(null, act({ type: "sphere" })).yes, true);
 check("so does a cylinder", emanatesFromCaster(null, act({ type: "cylinder" })).yes, true);
 
+console.log("\nA SPELL THAT DRAWS ITSELF IS NOT OURS TO DRAW");
+// ⚠️🔴 GHOSTLY HOWL, 2026-09-06. It is a registry spell carrying its own
+// expanding wave and the sound he configured, drawn by its own resolver for
+// months. This feature saw "range self with a radius" on the same item,
+// suppressed its template and drew a SECOND wave over the top - silent, and the
+// wrong colour. "My ghostly howl was working fucking yesterday. I didn't tell
+// you to touch it... it's got a completely different growl."
+//
+// ONE OWNER PER CAST. An entry with its own effects owns the picture, the sound
+// and the template.
+check("a spell with its own effects is left entirely alone",
+  emanatesFromCaster({ shape: "save-area", fx: { kind: "ghostlyWave", radiusFt: 30 } }, act()).yes,
+  false);
+check("and it says who owns it",
+  /spell pipeline draws this one itself/.test(
+    emanatesFromCaster({ shape: "save-area", fx: { kind: "ghostlyWave" } }, act()).why), true);
+// ⚠️ EVEN WHEN THE SHAPE IS ONE OF OURS. An entry may be caster-centred AND
+// carry its own effect; the effect wins, or we draw twice.
+check("its own effects beat a caster-centred shape",
+  emanatesFromCaster({ shape: "emanation-heal", fx: { kind: "ghostlyWave" } }, act()).yes, false);
+// ⚠️ AND AN ENTRY WITHOUT EFFECTS IS STILL OURS.
+check("an entry with no effects of its own is still drawn here",
+  emanatesFromCaster({ shape: "emanation-heal" }, act()).yes, true);
+
 console.log("\nBUT A SHAPE WITH A DIRECTION KEEPS ITS PROMPT");
 // ⚠️🔴 BURNING HANDS. Range self, 15 foot cone, and it must be aimed.
 check("a cone from self is still placed by hand",
