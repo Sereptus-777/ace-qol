@@ -39,6 +39,7 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { editionMode } from "./rules-edition.mjs";
+import { LoadoutEngine } from "./loadout-engine.mjs";
 
 const LOG = "ace-qol | WeaponSwap";
 
@@ -76,6 +77,16 @@ export class WeaponSwap {
    * this list is worn or carried, never in a hand.
    */
   static _occupiesAHand(item) {
+    // ⚠️🔴 YOU CANNOT DROP YOUR FISTS. Every weapon-type item counted as
+    // being in a hand, and in dnd5e an Unarmed Strike IS a weapon item and is
+    // marked equipped — so Johnny's druid was offered "Drop Unarmed Strike and
+    // Stormforger on the ground" (2026-09-06). Natural weapons are the same:
+    // a bear cannot sheathe its claws.
+    //
+    // ⚠️ THE SAME TEST THE LOADOUT ENGINE ALREADY USES, not a third copy of
+    // it. That one checks the identifier as well as the name, so it catches a
+    // renamed unarmed strike that a name match alone would miss.
+    if (LoadoutEngine._isNaturalOrUnarmed?.(item)) return false;
     if (item.type === "weapon") return true;
     // A shield is the one piece of equipment that genuinely fills a hand.
     return item.type === "equipment" && (item.system?.type?.value ?? "") === "shield";
