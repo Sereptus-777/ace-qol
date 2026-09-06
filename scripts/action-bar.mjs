@@ -710,6 +710,65 @@ export class ActionBar {
     return out;
   }
 
+  /* ── The hover ─────────────────────────────────────────────────────────── */
+
+  /**
+   * How long the pointer must rest on a slot before its card appears.
+   *
+   * ⚠️ JOHNNY'S NUMBER, 2026-09-06: "we have to settle down the tooltip on
+   * the hover on the hotbar. Let's try 2,000 ms." Foundry's own delay is 500ms,
+   * which is right for a toolbar button and far too eager for a bar the GM
+   * sweeps across mid-turn — every slot he passes over threw up a full spell
+   * description.
+   *
+   * This is the ONLY place the number is written.
+   */
+  static TOOLTIP_DELAY_MS = 2000;
+
+  static _tipTimer = null;
+
+  /**
+   * Hold the tooltip until the pointer has actually settled.
+   *
+   * ⚠️🔴 NOT `data-tooltip-html`. Foundry activates that itself after its
+   * own 500ms and there is no per-element way to change that number, so the
+   * markup now carries `data-ace-tip` — invisible to Foundry — and this hands
+   * it to the tooltip manager by hand once the delay is up. Leaving both
+   * attributes on would show the card twice at two different times.
+   */
+  static _wireHover(root) {
+    if (!root) return;
+    const cancel = () => {
+      if (ActionBar._tipTimer) { clearTimeout(ActionBar._tipTimer); ActionBar._tipTimer = null; }
+      try { game.tooltip?.deactivate?.(); } catch (_) { /* nothing showing */ }
+    };
+
+    root.addEventListener("pointerleave", cancel, true);
+    // ⚠️ A CLICK KILLS IT IMMEDIATELY. Pressing a slot and then reading a
+    // description that arrives half a second later, over the card he just
+    // rolled, is worse than no tooltip at all.
+    root.addEventListener("pointerdown", cancel, true);
+
+    root.addEventListener("pointerover", (ev) => {
+      const slot = ev.target?.closest?.(".ace-qol-ab-slot");
+      if (!slot) { cancel(); return; }
+      const html = slot.getAttribute("data-ace-tip");
+      if (!html) return;
+      cancel();
+      ActionBar._tipTimer = setTimeout(() => {
+        ActionBar._tipTimer = null;
+        try {
+          // Still under the pointer? A slow hand that moved on must not be
+          // shown a card for a slot it has already left.
+          if (!slot.matches(":hover")) return;
+          game.tooltip?.activate?.(slot, { html, direction: "UP" });
+        } catch (err) {
+          console.warn(`${LOG} | could not show the tooltip:`, err);
+        }
+      }, ActionBar.TOOLTIP_DELAY_MS);
+    }, true);
+  }
+
   /* ── The hand-arranged order ──────────────────────────────────────────── */
 
   /** This creature's stored arrangement, always as a usable shape. */
@@ -1095,7 +1154,7 @@ export class ActionBar {
         const readOnly = ActionBar._isReadOnlySlot(actor, item) ? " ace-qol-ab-read" : "";
         return `<div class="ace-qol-ab-slot${readOnly}" draggable="true"
                      data-item-id="${item.id}" data-index="${i}" data-type="${esc(item.type)}"
-                     data-tooltip-html="${esc(ActionBar._tooltipFor(item))}">
+                     data-ace-tip="${esc(ActionBar._tooltipFor(item))}">
                   <img src="${esc(item.img)}" alt="" draggable="false">
                   <span class="ace-qol-ab-name">${esc(item.name)}</span>${spent}${lvl}
                 </div>`;
@@ -1172,6 +1231,10 @@ export class ActionBar {
         </div>`;
 
       ActionBar._wire(el, actor, combatant);
+      // ⚠️ WIRED HERE, WITH THE REST. A hover controller nothing calls is a
+      // delay that never happens and a tooltip that never shows — the same
+      // "built but not wired" fault that has cost this project whole days.
+      ActionBar._wireHover(el);
       ActionBar._wireDragAndDrop(el, actor);
       // ⚠️ RE-APPLIED ON EVERY RENDER. `innerHTML` is rewritten each time the
       // selection changes, so the drag handle and the gear are new elements and
