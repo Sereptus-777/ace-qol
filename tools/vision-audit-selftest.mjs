@@ -39,10 +39,16 @@ const check = (label, got, want) => {
 const { VisionAudit } = await import(
   "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/vision-audit.mjs");
 
-const mk = (name, senses = {}, proto = {}) => {
+// ⚠️🔴 dnd5e 5.3 MOVED THESE. `senses.darkvision` became
+// `senses.ranges.darkvision`; the old path still answers through a shim that
+// logs a deprecation on EVERY read, so auditing two thousand actors printed
+// four warnings apiece. The harness builds BOTH shapes so the reader is proven
+// against a migrated world and an unmigrated one.
+const mk = (name, senses = {}, proto = {}, { legacy = false } = {}) => {
+  const shaped = legacy ? { ...senses } : { ranges: { ...senses } };
   const actor = {
     name, type: "npc",
-    system: { attributes: { senses } },
+    system: { attributes: { senses: shaped } },
     prototypeToken: {
       sight: { enabled: false, range: 0, visionMode: "basic" },
       detectionModes: [],
@@ -184,6 +190,24 @@ console.log("\nANOTHER MODULE'S DETECTION MODE IS NOT DELETED");
   await VisionAudit.repair();
   check("the foreign mode survived",
     a.prototypeToken.detectionModes.some(m => m.id === "someOtherModule"), true);
+}
+
+console.log("\nBOTH SHAPES OF THE SENSES FIELD");
+{
+  // The world he is running today is migrated. A world that is not must still
+  // audit correctly rather than silently report every creature as blind.
+  const modern = mk("Drow", { darkvision: 120 });
+  check("the current shape reads", VisionAudit._sense(modern, "darkvision"), 120);
+
+  const old = mk("Drow", { darkvision: 120 }, {}, { legacy: true });
+  check("and the pre-5.3 shape still reads", VisionAudit._sense(old, "darkvision"), 120);
+
+  // ⚠️ A sense the creature does not have must read as zero in both shapes,
+  // not as undefined and not as NaN.
+  check("a missing sense is zero", VisionAudit._sense(modern, "truesight"), 0);
+  check("and zero in the old shape too", VisionAudit._sense(old, "truesight"), 0);
+  check("an actor with no senses at all is zero",
+    VisionAudit._sense({ system: { attributes: {} } }, "darkvision"), 0);
 }
 
 console.log("");

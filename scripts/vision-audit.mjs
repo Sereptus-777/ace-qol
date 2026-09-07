@@ -42,9 +42,27 @@ const SENSE_DETECTION = {
 
 export class VisionAudit {
 
-  /** Feet of a sense, or 0. dnd5e stores these as numbers on the actor. */
+  /**
+   * Feet of a sense, or 0.
+   *
+   * ⚠️🔴 THEY MOVED IN dnd5e 5.3. `senses.darkvision` became
+   * `senses.ranges.darkvision`, and the old path still answers through a
+   * compatibility shim that logs a deprecation every single time it is read.
+   * Auditing two thousand actors through the shim printed four warnings per
+   * creature. It worked, and it filled his console with red.
+   *
+   * ⚠️ THE NEW PATH FIRST, THE OLD ONE AS A FALLBACK. The shim is scheduled
+   * for removal in 5e 6.1, and reading the old path first would mean going
+   * through the deprecation even on a world that has already migrated. Reading
+   * the new one first means a migrated world never touches the shim at all,
+   * and an unmigrated one still works.
+   */
   static _sense(actor, key) {
-    const raw = actor?.system?.attributes?.senses?.[key];
+    const senses = actor?.system?.attributes?.senses;
+    if (!senses) return 0;
+    const raw = (senses.ranges && key in senses.ranges)
+      ? senses.ranges[key]
+      : senses[key];
     const n = Number(raw);
     return Number.isFinite(n) && n > 0 ? n : 0;
   }
