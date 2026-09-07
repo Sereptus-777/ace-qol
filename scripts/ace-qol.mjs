@@ -88,6 +88,7 @@ import { LoadoutEngine }        from "./loadout-engine.mjs";
 import { OA_IN_FLIGHT }         from "./oa-transient.mjs";
 import { InitiativeTools }      from "./initiative-tools.mjs";
 import { FlightControl }       from "./flight.mjs";
+import { Perspective }         from "./perspective.mjs";
 import { AuraEngine }           from "./aura-engine.mjs";
 import { MultiattackLabel }     from "./multiattack-label.mjs";
 import { DeadTokenLock }        from "./dead-token-lock.mjs";
@@ -4046,6 +4047,7 @@ Hooks.once("ready", () => {
   try {
     InitiativeTools.init();
     FlightControl.register();
+    Perspective.register();
   } catch (err) {
     console.error(`${MODULE_ID} | Initiative Tools init failed:`, err);
   }
@@ -5805,6 +5807,7 @@ Hooks.once("ready", () => {
     OAPrompt,
     InitiativeTools,
     FlightControl,
+    Perspective,
     rollAllNpcs: () => InitiativeTools.rollAllNpcs(),
     rollAllPcs:  () => InitiativeTools.rollAllPcs(),
     AuraEngine,
