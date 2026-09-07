@@ -158,13 +158,58 @@ export class ActionInterceptor {
   static _wireWitnesses() {
     if (ActionInterceptor._witnessesWired) return;
     ActionInterceptor._witnessesWired = true;
-    const saw = (why) => () => {
-      for (const r of ActionInterceptor._inFlight) if (!r.sawSomething) r.sawSomething = why;
+    // ⚠️🔴 A WITNESS HAS TO BELONG TO THE PRESS. Johnny, 2026-09-07:
+    // *"spells that don't do anything at all when I push them. I thought we
+    // built an engine to look at every time I push a button."* The engine was
+    // looking. It was being answered for.
+    //
+    // These hooks are global, and this used to mark EVERY reading in flight as
+    // satisfied the moment anything at all appeared. At a five-person table
+    // there is always something in chat within two and a half seconds — another
+    // player's roll, an NPC resolving, one of ACE's own cards — so a genuinely
+    // dead button was routinely excused by somebody else's activity. The
+    // watchdog was not broken; it was drowned out.
+    //
+    // ⚠️ THE USER IS THE CHEAPEST HONEST TEST. Every `create*` hook is handed
+    // the id of the user who caused it, so anything another client did can
+    // never vouch for a button HE pressed. That alone removes the whole
+    // cross-player case.
+    //
+    // ⚠️ AND THE ITEM WHERE IT IS KNOWABLE. A card or an effect that names its
+    // origin can be tied to one reading exactly, so his own second press cannot
+    // vouch for his first either. Where nothing names an origin the user test
+    // still applies — loose enough not to cry wolf, tight enough to stop the
+    // silence this fixes.
+    const originOf = (doc) => {
+      try {
+        return String(
+          doc?.origin
+          ?? doc?.flags?.dnd5e?.origin
+          ?? doc?.flags?.dnd5e?.use?.itemUuid
+          ?? doc?.getFlag?.("dnd5e", "origin")
+          ?? "");
+      } catch (_) { return ""; }
     };
+
+    const saw = (why, { attributable = true } = {}) => (doc, _options, userId) => {
+      // Somebody else's world activity never vouches for his button.
+      if (attributable && userId && userId !== game.user?.id) return;
+      const origin = attributable ? originOf(doc) : "";
+      for (const r of ActionInterceptor._inFlight) {
+        if (r.sawSomething) continue;
+        // If the thing that appeared names an item, it must be THIS item.
+        if (origin && r.itemUuid && !origin.includes(r.itemUuid)) continue;
+        r.sawSomething = why;
+      }
+    };
+
     Hooks.on("createChatMessage", saw("a chat card appeared"));
     Hooks.on("createMeasuredTemplate", saw("a template was placed"));
-    Hooks.on("renderDialogV2", saw("a dialog opened"));
-    Hooks.on("renderRollConfigurationDialog", saw("a roll dialog opened"));
+    // ⚠️ A DIALOG IS LOCAL TO THIS CLIENT, so there is no user id to check and
+    // nothing to attribute. It is his dialog by definition.
+    Hooks.on("renderDialogV2", saw("a dialog opened", { attributable: false }));
+    Hooks.on("renderRollConfigurationDialog",
+      saw("a roll dialog opened", { attributable: false }));
     // ⚠️ NOT EVERY WORKING BUTTON POSTS A CARD. A buff that lands as an
     // effect and a summon that puts a creature on the board are both plainly
     // "something happened", and calling either of them a dead button would be
@@ -182,7 +227,8 @@ export class ActionInterceptor {
     // a summon, an enchant, an order and a transform each open their own.
     for (const cls of ["ActivityUsageDialog", "SummonUsageDialog", "EnchantUsageDialog",
                        "OrderUsageDialog", "TransformUsageDialog", "Dialog5e"]) {
-      Hooks.on(`render${cls}`, saw("a cast dialog opened and is waiting for you"));
+      Hooks.on(`render${cls}`,
+        saw("a cast dialog opened and is waiting for you", { attributable: false }));
     }
   }
 
@@ -257,6 +303,8 @@ export class ActionInterceptor {
       at: Date.now(),
       actor, actorName: actor.name,
       item, itemName: item.name, itemType: item.type,
+      // ⚠️ RECORDED SO A WITNESS CAN BE TIED TO THIS PRESS AND NOT ANOTHER.
+      itemUuid: item?.uuid ?? "",
       activityType: aType,
       edition,
       shape, source, confidence,

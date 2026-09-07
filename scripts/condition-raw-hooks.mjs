@@ -26,6 +26,7 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { onCanvasReady } from "./ready-utils.mjs";
+import { readActivities } from "./read-activities.mjs";
 import { QolSettings } from "./settings.mjs";
 import { saveBonus } from "./rolldata-utils.mjs";
 
@@ -532,7 +533,8 @@ export class ConditionRawHooks {
       const item = fromUuidSync?.(origin);
       const realItem = item?.documentName === "Item" ? item : item?.item;
       if (realItem?.system?.activities) {
-        for (const act of Object.values(realItem.system.activities)) {
+        // ⚠️ Object.values on a Collection is always empty; this loop never ran.
+        for (const act of readActivities(realItem)) {
           const dc = Number(act?.save?.dc?.value);
           if (Number.isFinite(dc) && dc > 0) return dc;
         }

@@ -47,6 +47,8 @@
 // Foundry and runs offline over a copy of the world for measuring, and it can
 // never join ace-qol.mjs's import cycles.
 
+import { readActivities } from "../read-activities.mjs";
+
 const _s = (v) => String(v ?? "").trim().toLowerCase();
 const _n = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
 const _arr = (v) => Array.isArray(v) ? v : [];
@@ -234,8 +236,31 @@ function readDelivery(item, acts, text, why) {
   // `range: {units: "self", override: false}`. Taken literally every rapier in
   // the world becomes a self-targeting action and no melee attack ever reaches
   // anybody. Only an activity that SAYS it overrides gets to speak.
-  const act = acts.find(a => a?.range?.override === true)
-    ?? (_s(sys.range?.units) ? null : acts.find(a => _s(a?.range?.units)));
+  // ⚠️🔴 AN OVERRIDE THAT SAYS NOTHING MUST NOT WIN. Surfaced the moment
+  // activities became visible at all: Hunter's Mark has a damage activity
+  // marked `override: true` with units `"spec"` — "special, see the text" — and
+  // Silent Image has a check activity the same. Those hijacked the range vote
+  // and left the reading as "unstated" while the item's own 90 feet sat there
+  // unused. While activities were invisible the blindness accidentally hid it.
+  //
+  // So an activity earns the override only when it states a distance somebody
+  // could measure. `spec` and a blank are not distances; they are a note to
+  // read the paragraph.
+  // ⚠️ AN OVERRIDE MAY REFINE, IT MAY NOT BLUR. `spec` and `any` are not
+  // distances, they are notes saying "read the paragraph" and "wherever". A
+  // rider activity carrying one of those must not erase a concrete range the
+  // item states: Hunter's Mark says 90 feet on the item and carries a damage
+  // activity marked `override: true, units: "any"`, which turned a 90 foot
+  // spell into an unlimited one the moment activities became visible.
+  //
+  // If the ITEM has no concrete range either, a vague activity is still better
+  // than nothing and gets to speak.
+  const VAGUE = new Set(["", "any", "spec", "special"]);
+  const concrete = (r) => !VAGUE.has(_s(r?.units));
+  const itemIsConcrete = concrete(sys.range);
+  const act = acts.find(a => a?.range?.override === true
+                          && (concrete(a.range) || !itemIsConcrete))
+    ?? (itemIsConcrete ? null : acts.find(a => _s(a?.range?.units)));
   const range = act?.range ?? sys.range ?? {};
 
   const units = _s(range.units);
@@ -243,8 +268,40 @@ function readDelivery(item, acts, text, why) {
   const value = _n(range.value);
   const long = _n(range.long);
 
-  const tmplSrc = acts.find(a => a?.target?.override === true)?.target?.template
-    ?? sys.target?.template ?? {};
+  // ⚠️🔴 THE OVERRIDE TRAP AGAIN, AND THE TWO FIELDS ARE NOT SYMMETRICAL.
+  //
+  // This line was a copy of the range guard above, and for range that guard is
+  // right: an item HAS its own `system.range`, so an activity that does not
+  // override should fall back to it. A spell item has NO `system.target` at
+  // all — proven from dnd5e's own SpellData schema, which defines `range` and
+  // never defines `target`. Targeting lives entirely on activities in 5.x.
+  //
+  // So for a template the fallback could never contain anything, and every
+  // spell whose activity says `override: false` — which is nearly all of them,
+  // because false means "I do not override the item", not "I have no template"
+  // — was read as having no area whatsoever.
+  //
+  // Johnny, 2026-09-07, after Fear did nothing at all: his item said cone, 30
+  // feet, save, prompt true, and the classifier called it a self-buff. Not
+  // because the cone was hidden, but because the one line that gathers it
+  // refused to look at the activity carrying it. Cone of Cold escaped only by
+  // having a hand-written registry entry and never reaching this code.
+  //
+  // ⚠️ AN OVERRIDING ACTIVITY STILL WINS. If one genuinely declares itself
+  // authoritative, it is preferred; otherwise the first activity that actually
+  // has a template speaks, and the item-level field remains the last resort for
+  // the item types that really do have one (weapons, consumables, features).
+  // ⚠️🔴 AND AN OVERRIDE WITH AN EMPTY TEMPLATE MUST NOT WIN EITHER. Same
+  // shape as the range fault above, found the same way: an activity marked
+  // `override: true` whose template has no `type` returned an empty object,
+  // which is not nullish, so `??` stopped there and the item's real template
+  // was never reached. Grease, Entangle and Minor Illusion all lost their area
+  // that way. Every clause now has to produce a template that names a shape.
+  const withShape = (a) => _s(a?.target?.template?.type) ? a.target.template : null;
+  const tmplSrc = acts.filter(a => a?.target?.override === true).map(withShape).find(Boolean)
+    ?? acts.map(withShape).find(Boolean)
+    ?? (_s(sys.target?.template?.type) ? sys.target.template : null)
+    ?? {};
   const tmplShape = _s(tmplSrc.type) || null;
 
   const needs = [];
@@ -264,6 +321,11 @@ function readDelivery(item, acts, text, why) {
   else if (reach)                   { kind = "reach";  rangeFt = reach; why.push(`it reaches ${reach} feet`); }
   else if (value)                   { kind = "ranged"; rangeFt = value;
                                       why.push(`it reaches ${value} feet${long ? `, ${long} at long range` : ""}`); }
+  else if (units === "spec" || units === "special") {
+    // ⚠️ "SEE THE TEXT" IS AN ANSWER, JUST NOT A NUMBER. Calling it "unstated"
+    // reads as missing data and invites something downstream to guess.
+    kind = "special"; why.push("its reach is described in its own text rather than as a distance");
+  }
   else if (!acts.length)            { kind = "none";      why.push("it is always in effect and does not travel"); }
   else                              { kind = "unstated";  why.push("nothing states how far it reaches"); }
 
@@ -446,7 +508,13 @@ export function readActionFacts(item, { parsed = null } = {}) {
   const why = [];
   try {
     const sys = item?.system ?? {};
-    const acts = Object.values(sys.activities ?? {});
+    // ⚠️🔴 THIS WAS `Object.values(sys.activities)`, WHICH IS ALWAYS EMPTY.
+    // `activities` is a Collection, which is a Map, and Object.values on a Map
+    // returns []. Every reader below — trigger, cost, scope, delivery,
+    // resolution, change — has therefore been working from an empty list since
+    // dnd5e 5.x moved targeting, ranges and saves onto activities. The whole
+    // inference engine has been reading items with half the sheet invisible.
+    const acts = readActivities(item);
     const text = String(sys.description?.value ?? "").replace(/<[^>]*>/g, " ");
 
     const trigger    = readTrigger(item, acts, why);

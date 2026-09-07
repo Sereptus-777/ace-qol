@@ -16,6 +16,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "../../ace-qol.mjs";
+import { firstActivityOfType } from "../../read-activities.mjs";
 import { CombatState } from "../../combat-state.mjs";
 import { ConditionLibrary } from "../../condition-library.mjs";
 // Command ships one ACTIVITY PER WORD in dnd5e, so the GM's chosen word is
@@ -548,9 +549,9 @@ export class SaveResolver {
 
   static _computeSaveDC(actor, item, spellMod) {
     // Try the spell's own save DC first (dnd5e stores it on activities)
-    const activitySaveDC = item?.system?.activities
-      ? Object.values(item.system.activities ?? {}).find(a => a.type === "save")?.save?.dc?.value
-      : null;
+    // ⚠️ Object.values on a Collection is always empty, so this never found a
+    // save activity and every spell fell through to the actor's generic DC.
+    const activitySaveDC = firstActivityOfType(item, "save")?.save?.dc?.value ?? null;
     if (Number.isFinite(activitySaveDC) && activitySaveDC > 0) return activitySaveDC;
 
     // Fall back to actor's spell DC
