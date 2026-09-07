@@ -89,6 +89,7 @@ import { OA_IN_FLIGHT }         from "./oa-transient.mjs";
 import { InitiativeTools }      from "./initiative-tools.mjs";
 import { FlightControl }       from "./flight.mjs";
 import { Perspective }         from "./perspective.mjs";
+import { VisionAudit }         from "./vision-audit.mjs";
 import { AuraEngine }           from "./aura-engine.mjs";
 import { MultiattackLabel }     from "./multiattack-label.mjs";
 import { DeadTokenLock }        from "./dead-token-lock.mjs";
@@ -4048,6 +4049,7 @@ Hooks.once("ready", () => {
     InitiativeTools.init();
     FlightControl.register();
     Perspective.register();
+    VisionAudit.register();
   } catch (err) {
     console.error(`${MODULE_ID} | Initiative Tools init failed:`, err);
   }
