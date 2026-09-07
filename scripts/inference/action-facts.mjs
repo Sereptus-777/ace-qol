@@ -422,7 +422,22 @@ function readChange(item, acts, parsed, why) {
   if (summons) why.push("it puts a creature on the board");
   const effectIds = acts.flatMap(a => _arr(a?.effects).map(e => e?._id).filter(Boolean));
   const ownEffects = _arr(item?.effects).length;
-  const conditions = _arr(parsed?.conditions);
+  // ⚠️🔴 THE PARSER RETURNS OBJECTS, NOT NAMES. `DescriptionParser` gives
+  // `{ condition, requiresSave }` per condition, and every reader here treated
+  // the list as strings. Found on 2026-09-07 in the engine's own explanation of
+  // Fear, which read: *"its text can leave a target [object Object]"*.
+  //
+  // It was never only cosmetic. The classifier builds a spell's effect from
+  // `change.conditions[0]`, so the key it wrote was an object rather than
+  // "frightened", and the learned store fingerprints an item by joining the
+  // same list, so every condition-applying item in the world shared one value
+  // on that field and could not be told apart.
+  //
+  // Names here, details beside them for anything that needs the save flag.
+  const conditionDetails = _arr(parsed?.conditions)
+    .map(c => (typeof c === "string" ? { condition: c, requiresSave: false } : c))
+    .filter(c => c?.condition);
+  const conditions = conditionDetails.map(c => String(c.condition));
 
   if (damage.length) why.push(`it deals ${damage.map(d => d.formula + " " + (d.types[0] ?? "")).join(" and ").trim()}`);
   if (heals) why.push(healing ? `it restores ${healing.formula} hit points`
@@ -436,7 +451,8 @@ function readChange(item, acts, parsed, why) {
     heals,
     healing,          // { formula, types, scales } or null
     summons,
-    conditions,
+    conditions,        // names, e.g. ["frightened"]
+    conditionDetails,  // [{ condition, requiresSave }]
     appliesEffect: effectIds.length > 0 || ownEffects > 0,
     // A passive with no activity and no effect still DOES something, and the only
     // record of what is its own prose. Saying so is better than reporting nothing.

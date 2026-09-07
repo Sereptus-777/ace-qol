@@ -21,6 +21,7 @@ import { readActionFacts, describeActionFacts } from "./inference/action-facts.m
 import { classifyItem, describeClassification } from "./inference/classify-item.mjs";
 import { LearnedStore } from "./inference/learned-store.mjs";
 import * as InferenceReview from "./inference/review.mjs";
+import { resolveItem, printSnapshot } from "./inference/snapshot.mjs";
 import { readWeather, describeWeather } from "./rules/weather.mjs";
 import { ActionGate } from "./gate/action-gate.mjs";
 import { installSliderGuard } from "./slider-guard.mjs";
@@ -5736,7 +5737,11 @@ Hooks.once("ready", () => {
     // Reads any item and works out how it resolves, without anybody having
     // written an entry for it. See docs/INFERENCE_ENGINE.md.
     //
-    //   game.aceQol.explain(item)        what ACE makes of one thing, and why
+    //   game.aceQol.explain("Fear")      the whole snapshot: how ACE thinks
+    //                                    it functions, where that came from,
+    //                                    and the evidence for every line.
+    //                                    Takes a name, a uuid or an item, and
+    //                                    needs no press.
     //   game.aceQol.reviewInference()    everything it worked out for the party
     //   game.aceQol.correctShape(i, s)   overrule it, permanently
     //   game.aceQol.forgetLearned()      make it read everything again
@@ -5747,18 +5752,33 @@ Hooks.once("ready", () => {
     whyNoAura,
 
     // ── THE READING + THE BOOKS (2026-09-05) ────────────────────────────
-    //   game.aceQol.readings()          every button pressed this session,
-    //                                   what ACE read it as, who owned it, and
-    //                                   whether anything actually appeared
+    //   game.aceQol.readings()          the snapshot for the LAST button
+    //                                   pressed, then the press log underneath
+    //   game.aceQol.readings("Fear")    the snapshot for one spell, with what
+    //                                   happened the last time it was pressed
     //   game.aceQol.rulesIndexReport()  which rule books got indexed
     //   game.aceQol.checkAgainstBooks() every item on every PC vs the books
-    readings: () => ActionInterceptor.report(),
+    readings: (opts) => ActionInterceptor.report(opts ?? {}),
     rulesIndexReport: () => RulesIndex.report(),
 
     readActionFacts, describeActionFacts,
     classifyItem, describeClassification,
     LearnedStore, readWeather, describeWeather, ActionGate,
-    explain: (item) => InferenceReview.explain(item),
+    // ⚠️ THE SNAPSHOT, NOT THE ONE-LINE SHAPE. `InferenceReview.explain`
+    // returns the classifier's verdict and is still what the review card is
+    // built from; what he asks for at the console is the whole picture.
+    explain: (what) => {
+      const log = ActionInterceptor._log ?? [];
+      const found = resolveItem(what, { lastPress: log[log.length - 1] ?? null });
+      if (!found.item) { console.warn(`ace-qol | ${found.note}`); return null; }
+      console.log(`ace-qol | ${found.note}`);
+      // If he HAS pressed this thing, say what happened when he did.
+      const uuid = found.item?.uuid ?? null;
+      const press = [...log].reverse().find(r => r.item === found.item
+        || (uuid && r.item?.uuid === uuid)) ?? null;
+      return printSnapshot(found.item, { actor: found.actor, press }).text;
+    },
+    classify: (item) => InferenceReview.explain(item),
     reviewInference: (actor = null) => InferenceReview.postReviewCard(actor),
     correctShape: (item, shape) => InferenceReview.correct(item, shape),
     forgetLearned: (opts) => LearnedStore.forget(null, opts ?? {}),

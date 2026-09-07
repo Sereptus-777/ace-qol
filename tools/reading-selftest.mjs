@@ -124,8 +124,12 @@ await sleep(120);
 check("nothing happened, so he is told", notified.filter(x => x[0] === "error").length, 1);
 check("and the message names the item",
   /Mass Cure Wounds/.test(notified.find(x => x[0] === "error")?.[1] ?? ""), true);
-check("and says nothing claimed it",
-  /nothing in ACE claimed it/.test(notified.find(x => x[0] === "error")?.[1] ?? ""), true);
+// ⚠️ IT USED TO SAY "nothing in ACE claimed it", which reads as the cause.
+// It is not: the heal pipeline is the only thing in the suite that claims at
+// all, so that was true of nearly every button in the game.
+check("and says no pipeline reported taking it, without calling that the fault",
+  /no pipeline reported taking it .*not the fault/
+    .test(notified.find(x => x[0] === "error")?.[1] ?? ""), true);
 
 console.log("\nBUT A BUTTON THAT WORKED SAYS NOTHING");
 notified = [];
@@ -209,6 +213,116 @@ check("a pipeline can read the answer by activity",
   ActionInterceptor.readingFor(a2)?.shape, "template-heal");
 check("an unknown activity reads back null, not a guess",
   ActionInterceptor.readingFor({ id: "nope" }), null);
+
+/* ── The key collision ──────────────────────────────────────────────────── */
+console.log("\nTWO SPELLS THAT SHARE AN ACTIVITY ID");
+// ⚠️🔴 THIS IS THE BUG THE OLD HARNESS COULD NOT SEE. Every fake press above
+// gets an id of its own, so a store keyed on the activity id passed for months.
+// dnd5e does not work that way: counted out of its two shipped spell books on
+// 2026-09-07, 518 of 659 spells carry the id "dnd5eactivity000", Fear and Cone
+// of Cold among them, in BOTH editions. One Map keyed on that held exactly one
+// of those spells at a time and destroyed the rest without a word.
+const sharedPress = (name, actorName = "Varek Thalor") => ({
+  id: "dnd5eactivity000", type: "save",
+  item: { name, type: "spell", uuid: `Item.${name}`, id: name,
+          system: { source: { rules: "2014" } }, flags: {}, actor: null },
+  actor: { name: actorName, system: {}, effects: [], flags: {} },
+});
+
+entryToReturn = { shape: "template-save" };
+const heldBefore = ActionInterceptor._log.length;
+const fear = sharedPress("Fear");
+const cone = sharedPress("Cone of Cold");
+ActionInterceptor.read(fear);
+ActionInterceptor.read(cone);
+
+check("both presses are kept", ActionInterceptor._log.length - heldBefore, 2);
+check("the first is still readable by its own activity",
+  ActionInterceptor.readingFor(fear)?.itemName, "Fear");
+check("and so is the second",
+  ActionInterceptor.readingFor(cone)?.itemName, "Cone of Cold");
+
+// ⚠️ AND THE CLAIM MUST LAND ON THE RIGHT ONE. Under the old key a pipeline
+// claiming Fear marked Cone of Cold instead, because they were the same slot.
+ActionInterceptor.claim(fear, "spell-pipeline");
+check("a claim lands on the spell it was made for",
+  ActionInterceptor.readingFor(fear)?.claimedBy, "spell-pipeline");
+check("and not on the other spell sharing the id",
+  ActionInterceptor.readingFor(cone)?.claimedBy, null);
+check("an activity nobody read reads back null, not a guess",
+  ActionInterceptor.readingFor({ id: "dnd5eactivity000" }), null);
+
+/* ── The report ─────────────────────────────────────────────────────────── */
+console.log("\nTHE REPORT ANSWERS ABOUT ONE THING, NOT IN ROWS");
+{
+  const out = ActionInterceptor.report({ log: false, why: false });
+  check("it describes the last button pressed",
+    /Cone of Cold/.test(out.snapshot ?? ""), true);
+  check("and says what it does, not just what it is called",
+    /arrives by|decided by|could not be read/.test(out.snapshot ?? ""), true);
+  check("the press log is still kept underneath", out.presses.length > 0, true);
+}
+
+console.log("\nAND IT NAMES AN OPTION IT DOES NOT UNDERSTAND");
+{
+  // ⚠️🔴 2026-09-07: I told him `readings({ raw: true })` would say so if there
+  // were no such option. It took no arguments at all and swallowed it in
+  // silence. "I do not understand that" and "there is nothing there" must never
+  // print the same, which is the oldest standing rule in this codebase.
+  const warns = [];
+  const realWarn = console.warn;
+  console.warn = (...a) => warns.push(a.map(String).join(" "));
+  ActionInterceptor.report({ raw: true, log: false, why: false });
+  console.warn = realWarn;
+  check("the unknown option is named",
+    /does not understand "raw"/.test(warns.join("\n")), true);
+  check("and the real options are listed",
+    /item\s+a spell name/.test(warns.join("\n")), true);
+}
+
+/* ── Finding the thing he means ─────────────────────────────────────────── */
+console.log("\nASKING BY NAME");
+{
+  const { resolveItem } = await import(
+    "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/inference/snapshot.mjs");
+
+  const mkItem = (name) => ({ name, type: "spell", uuid: `Item.${name}`, id: name,
+                              system: {}, flags: {} });
+  const strahd = { name: "Strahd", type: "npc", items: [mkItem("Fireball")] };
+  const akra = { name: "Akra", type: "character", hasPlayerOwner: true,
+                 items: [mkItem("Cone of Cold"), mkItem("Fear (Legacy)")] };
+  game.actors = [strahd, akra];
+  canvas.tokens.controlled = [{ actor: strahd }];
+
+  check("a name is found on a player character",
+    resolveItem("Cone of Cold").item?.name, "Cone of Cold");
+  check("case does not matter", resolveItem("cone of cold").item?.name, "Cone of Cold");
+
+  // ⚠️ HIS 2014 ITEMS ARE NAMED "(Legacy)". Matching the raw name only is the
+  // fault from 2026-09-05 that made every Legacy spell miss its registry entry.
+  check("a Legacy suffix still answers to the spell's name",
+    resolveItem("Fear").item?.name, "Fear (Legacy)");
+
+  // ⚠️ THE SELECTED TOKEN IS NEAREST. Asking about a spell while a creature is
+  // selected must mean THAT creature's copy.
+  check("the selected token is searched first",
+    resolveItem("Fireball").actor?.name, "Strahd");
+
+  // ⚠️ AND "I DID NOT FIND IT" NAMES WHERE IT LOOKED. A bare null here is the
+  // silent refusal this codebase has a standing rule against.
+  const missing = resolveItem("Prismatic Wall");
+  check("a miss returns no item", missing.item, null);
+  check("and says what it searched",
+    /selected.*player character.*actor/s.test(missing.note), true);
+
+  check("an item handed over directly is used as-is",
+    resolveItem(mkItem("Bless")).item?.name, "Bless");
+  check("and a non-item object is refused in words",
+    /not an item/.test(resolveItem({ nonsense: true }).note), true);
+
+  game.actors = [];
+  canvas.tokens.controlled = [];
+}
 
 console.log("");
 console.log(pass + " passed, " + fail + " failed");

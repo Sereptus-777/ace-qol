@@ -37,6 +37,7 @@ import { RulesBrain } from "../rules/rules-brain.mjs";
 import { SpellPipeline } from "../spell-pipeline/pipeline.mjs";
 import { RulesIndex } from "../rules/rules-index.mjs";
 import { readMechanics, compareToBook, isCantrip, filterForCantrip } from "../rules/rules-compare.mjs";
+import { resolveItem, printSnapshot } from "../inference/snapshot.mjs";
 
 // ⚠️ HARDCODED. This file is reached from the entry file; importing MODULE_ID
 // back would be a cycle, and a const read at top level inside a cycle throws at
@@ -96,8 +97,45 @@ export class ActionInterceptor {
 
   static _rollingCount = 0;
 
-  /** The most recent reading per activity id, for the pipelines to read. */
-  static _readings = new Map();
+  // ⚠️🔴 THE KEY WAS THE ACTIVITY ID, AND dnd5e GIVES 518 OF ITS 659
+  // SHIPPED SPELLS THE SAME ONE. Counted straight out of the two shipped spell
+  // books on 2026-09-07:
+  //     distinct activity ids across 817 activities : 276
+  //     dnd5eactivity000 -> 518 spells
+  //     dnd5eactivity100 ->  12   dnd5eactivity200 -> 10   dnd5eactivity300 -> 4
+  // Fear and Cone of Cold are both dnd5eactivity000, in BOTH editions.
+  //
+  // A Map keyed on that id can therefore hold ONE of those 518 spells at a
+  // time. Every press destroyed the last one. Johnny cast Cone of Cold, opened
+  // the report and was shown Fear, and I spent two turns explaining a table
+  // that was structurally incapable of showing him anything else.
+  //
+  // ⚠️ AND IT WAS NOT ONLY THE REPORT. `claim` and `readingFor` looked up by
+  // the same key, so a pipeline claiming one spell marked a different one.
+  //
+  // The log is the record: one entry per press, in order, nothing overwritten.
+  /** Every press this session, oldest first. */
+  static _log = [];
+
+  /** Newest reading per item-and-activity, for the pipelines to read. */
+  static _byKey = new Map();
+
+  /** How many presses to keep. Old ones fall off the front and the report says so. */
+  static logCap = 500;
+
+  /** How many presses have fallen off the front. */
+  static _dropped = 0;
+
+  /**
+   * The lookup key for a pipeline asking "what did you read for this?".
+   *
+   * ⚠️ THE ITEM IS PART OF THE KEY. The activity id alone is not unique
+   * across items and never was.
+   */
+  static _keyFor(activity) {
+    const uuid = activity?.item?.uuid ?? activity?.parent?.uuid ?? "";
+    return `${uuid}::${activity?.id ?? ""}`;
+  }
 
   /** Presses still waiting to see something happen. */
   static _inFlight = new Set();
@@ -198,13 +236,13 @@ export class ActionInterceptor {
    * suppressing it.
    */
   static claim(activity, who) {
-    const r = ActionInterceptor._readings.get(activity?.id);
+    const r = ActionInterceptor._byKey.get(ActionInterceptor._keyFor(activity));
     if (r) r.claimedBy = String(who ?? "someone");
   }
 
   /** The answer for an activity, for any pipeline that wants it. */
   static readingFor(activity) {
-    return ActionInterceptor._readings.get(activity?.id) ?? null;
+    return ActionInterceptor._byKey.get(ActionInterceptor._keyFor(activity)) ?? null;
   }
 
   static read(activity) {
@@ -276,7 +314,12 @@ export class ActionInterceptor {
       claimedBy: null,
       sawSomething: false,
     };
-    ActionInterceptor._readings.set(activity.id, reading);
+    ActionInterceptor._log.push(reading);
+    ActionInterceptor._byKey.set(ActionInterceptor._keyFor(activity), reading);
+    while (ActionInterceptor._log.length > ActionInterceptor.logCap) {
+      ActionInterceptor._log.shift();
+      ActionInterceptor._dropped++;
+    }
 
     ActionInterceptor._rollingCount++;
     console.log(`${LOG} | #${ActionInterceptor._rollingCount} ${actor.name} used "${item.name}" `
@@ -343,9 +386,15 @@ export class ActionInterceptor {
 
       // ⚠️ NAME THE ITEM, THE OWNER AND THE REASON. "Nothing happened" on its
       // own is the same silence in a nicer font.
+      // ⚠️ A BLANK CLAIM IS NOT THE FAULT, AND MUST NOT READ AS ONE. Every
+      // module was grepped on 2026-09-07: the heal pipeline is the only thing
+      // in this suite that ever claims a press. So "nothing claimed it" was
+      // true of almost every button in the game and sent him hunting a cause
+      // that was never there.
       const why = reading.claimedBy
         ? `${reading.claimedBy} took it and produced nothing`
-        : `nothing in ACE claimed it`;
+        : `no pipeline reported taking it (only the heal pipeline reports today, `
+          + `so that alone is not the fault)`;
       const shapeSays = reading.shape
         ? `ACE read it as "${reading.shape}"`
         : `ACE could not work out what it does`;
@@ -361,9 +410,66 @@ export class ActionInterceptor {
 
   /* ── Report ────────────────────────────────────────────────────────────── */
 
-  /** `game.aceQol.readings()` — what the engine has seen this session. */
-  static report() {
-    const rows = [...ActionInterceptor._readings.values()].map(r => ({
+  /**
+   * `game.aceQol.readings()` — a snapshot of one thing, then the press log.
+   *
+   * Johnny, 2026-09-07: *"why does it read things in fucking rows? Why can't it
+   * take a snapshot and say, okay, this is Cone of Cold, this is how it
+   * functions?"* It can, and it always could: the engine has answered all eight
+   * questions on every press since it was built and this function threw seven
+   * of them away to print one word per column.
+   *
+   * ⚠️ AN OPTION IT DOES NOT UNDERSTAND SAYS SO. I told him
+   * `readings({ raw: true })` would tell him if there were no such option. It
+   * took no arguments at all and swallowed it without a word, which is the
+   * silent refusal this codebase has a standing rule against.
+   *
+   * @param {object|string} [opts]  an item/name/uuid, or an options object
+   */
+  static report(opts = {}) {
+    // A bare name is the common case: readings("Cone of Cold").
+    if (typeof opts === "string" || (opts && typeof opts === "object" && opts.system)) {
+      opts = { item: opts };
+    }
+    const KNOWN = new Set(["item", "log", "why", "limit"]);
+    const unknown = Object.keys(opts ?? {}).filter(k => !KNOWN.has(k));
+    if (unknown.length) {
+      console.warn([
+        `${LOG} | readings() does not understand `
+          + `${unknown.map(k => `"${k}"`).join(", ")} and ignored it. It takes:`,
+        `    item   a spell name, a uuid or an item (default: the last button pressed)`,
+        `    log    false to hide the press list`,
+        `    why    false to drop the evidence lines`,
+        `    limit  how many presses to list (default 20)`,
+      ].join("\n"));
+    }
+
+    const log = ActionInterceptor._log;
+    const last = log[log.length - 1] ?? null;
+
+    /* ── The snapshot ── */
+    const asked = opts?.item ?? null;
+    const found = resolveItem(asked, { lastPress: last });
+    let text = null;
+    if (!found.item) {
+      // ⚠️ NOT SILENT, AND NOT A GUESS. It says where it looked.
+      console.warn(`${LOG} | ${found.note}`);
+    } else {
+      const uuid = found.item?.uuid ?? null;
+      const press = asked
+        ? ([...log].reverse().find(r => r.item === found.item
+            || (uuid && r.item?.uuid === uuid)) ?? null)
+        : last;
+      console.log(`${LOG} | ${found.note}`);
+      text = printSnapshot(found.item,
+        { actor: found.actor, press, why: opts?.why !== false }).text;
+    }
+
+    /* ── The press log ── */
+    const limit = Number.isFinite(opts?.limit) ? Math.max(1, Math.trunc(opts.limit)) : 20;
+    const shown = log.slice(-limit);
+    const rows = shown.map(r => ({
+      at: _safe(() => new Date(r.at).toLocaleTimeString(), ""),
       actor: r.actorName, item: r.itemName, type: `${r.itemType}/${r.activityType}`,
       edition: r.edition, shape: r.shape ?? "?", from: r.source,
       owner: r.owner, book: r.book?.status ?? "?",
@@ -371,8 +477,22 @@ export class ActionInterceptor {
       claimedBy: r.claimedBy ?? "-",
       appeared: r.sawSomething || "NOTHING",
     }));
-    console.table(rows);
-    return rows;
+
+    if (opts?.log !== false) {
+      if (!log.length) {
+        console.log(`${LOG} | no button has been pressed yet this session.`);
+      } else {
+        const dropped = ActionInterceptor._dropped;
+        console.log(`${LOG} | ${log.length} press(es) held`
+          + `${dropped ? `, ${dropped} older one(s) already dropped` : ""}`
+          + `${log.length > limit ? `, showing the last ${limit}` : ""}`
+          + `. Ask about any one of them with:  game.aceQol.readings("<name>")`);
+        console.table(rows);
+      }
+    }
+
+    return { snapshot: text, presses: rows, held: log.length,
+             dropped: ActionInterceptor._dropped };
   }
 }
 

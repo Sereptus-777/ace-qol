@@ -124,6 +124,34 @@ console.log("\nAND NOTHING BREAKS WHEN THERE ARE NO ACTIVITIES AT ALL");
   check("and it does not throw", typeof facts?.delivery?.kind, "string");
 }
 
+console.log("\nA CONDITION IS A NAME, NOT AN OBJECT");
+{
+  // ⚠️🔴 CAUGHT IN THE ENGINE'S OWN WORDS ON 2026-09-07: asked what Fear does,
+  // it answered *"its text can leave a target [object Object]"*. The description
+  // parser returns `{ condition, requiresSave }` per condition and every reader
+  // downstream treated the list as strings.
+  //
+  // Not cosmetic: the classifier builds a spell's effect from the first entry,
+  // so the key it wrote was an object rather than "frightened", and the learned
+  // store fingerprints an item by joining the same list, so every
+  // condition-applying item in the world shared one value on that field.
+  const { readActionFacts, describeActionFacts } = await import(
+    "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/inference/action-facts.mjs");
+  const item = spell("Fear", { template: CONE30 });
+  const parsed = { conditions: [{ condition: "frightened", requiresSave: true }] };
+  const facts = readActionFacts(item, { parsed });
+
+  check("the list holds names", facts?.change?.conditions, ["frightened"]);
+  check("nothing stringifies to an object",
+    /\[object Object\]/.test(describeActionFacts(facts)), false);
+  check("and the save flag is still available beside it",
+    facts?.change?.conditionDetails?.[0]?.requiresSave, true);
+
+  // A parser that already hands over plain strings must not be broken by the fix.
+  const plain = readActionFacts(item, { parsed: { conditions: ["prone"] } });
+  check("a plain string list still reads", plain?.change?.conditions, ["prone"]);
+}
+
 console.log("");
 console.log(pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;
