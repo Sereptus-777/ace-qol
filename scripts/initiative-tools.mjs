@@ -69,6 +69,98 @@ export class InitiativeTools {
   }
 
   /**
+   * Get the encounter, creating it if there is not one yet.
+   *
+   * ⚠️🔴 THE WHOLE POINT OF PRESSING "ROLL INITIATIVE" IS TO START THE FIGHT.
+   * Johnny, 2026-09-06: *"PCs and even NPCs cannot just roll initiative and
+   * start an encounter... I need to fucking start by initiative, not by me
+   * creating an encounter."* Three separate places in ACE answered a press with
+   * some version of "there is no encounter, make one first", which turns the
+   * one gesture the table actually performs into a prerequisite for itself.
+   * RAW, any combatant can initiate: the assassin out of stealth, the knife in
+   * the tavern. Rolling IS the start.
+   *
+   * @returns {Promise<Combat|null>}
+   */
+  static async ensureCombat() {
+    if (game.combat) return game.combat;
+    if (!game.user.isGM) {
+      // A player has no permission to create the document. The patched
+      // `Actor#rollInitiative` routes that through the GM by socket, so the
+      // single-creature paths still work; a bulk roll is GM-only anyway.
+      ui.notifications?.warn("Only the GM can open a new encounter from here.");
+      return null;
+    }
+    const scene = canvas?.scene ?? game.scenes?.viewed;
+    if (!scene) {
+      ui.notifications?.error("ACE: cannot start an encounter — no scene is being viewed.");
+      return null;
+    }
+    try {
+      // ⚠️ `getDocumentClass` RATHER THAN THE BARE `Combat` GLOBAL. Foundry V13
+      // still exposes the legacy globals, V14 does not, and this is the call
+      // core itself makes.
+      const cls = foundry.utils.getDocumentClass?.("Combat") ?? globalThis.Combat;
+      return await cls.create({ scene: scene.id, active: true });
+    } catch (err) {
+      console.error(`${MODULE_ID} | could not open an encounter:`, err);
+      ui.notifications?.error("ACE: could not open an encounter — see the console.");
+      return null;
+    }
+  }
+
+  /**
+   * Put the creatures of one kind into the encounter.
+   *
+   * ⚠️ SELECTION FIRST, THE SCENE SECOND, AND IT SAYS WHICH. A GM with tokens
+   * selected means those tokens. A GM with nothing selected pressing "Roll
+   * NPCs" means the fight in front of him. Guessing silently between those two
+   * is how a button becomes untrustworthy, so the notification names what it
+   * used and how many it added.
+   *
+   * ⚠️ AN EXISTING ROSTER IS NEVER INVADED. This only runs when the encounter
+   * has nobody of that kind in it. A GM who deliberately left two of the four
+   * wolves out keeps them out.
+   *
+   * @param {Combat} combat
+   * @param {"npc"|"pc"} kind
+   * @returns {Promise<{added:number, from:string}>}
+   */
+  static async _populate(combat, kind) {
+    const wantsPC = kind === "pc";
+    const isKind = (actor) => !!actor && (!!actor.hasPlayerOwner === wantsPC);
+
+    const controlled = (canvas?.tokens?.controlled ?? []).filter(t => isKind(t.actor));
+    const from = controlled.length ? "the tokens you have selected" : "every one on this scene";
+    const pool = controlled.length
+      ? controlled
+      : (canvas?.tokens?.placeables ?? []).filter(t => isKind(t.actor));
+
+    const toCreate = [];
+    for (const t of pool) {
+      if (t.inCombat) continue;
+      toCreate.push({
+        tokenId: t.id,
+        sceneId: t.scene?.id ?? canvas.scene?.id,
+        actorId: t.actor?.id,
+        // ⚠️ A HIDDEN TOKEN STAYS HIDDEN. An ambush that announces itself in
+        // the tracker is not an ambush. `preCreateCombatant` may hide NPCs on
+        // top of this when the GM has asked for that.
+        hidden: !!t.document?.hidden,
+      });
+    }
+    if (!toCreate.length) return { added: 0, from };
+    try {
+      await combat.createEmbeddedDocuments("Combatant", toCreate);
+    } catch (err) {
+      console.error(`${MODULE_ID} | could not add ${kind} combatants:`, err);
+      ui.notifications?.error(`ACE: could not add those creatures to the encounter — see the console.`);
+      return { added: 0, from };
+    }
+    return { added: toCreate.length, from };
+  }
+
+  /**
    * Roll initiative for every NPC combatant in the current encounter who
    * hasn't already rolled.
    */
@@ -77,11 +169,12 @@ export class InitiativeTools {
       ui.notifications?.warn("Only the GM can roll NPC initiative in bulk.");
       return;
     }
-    const combat = game.combat;
-    if (!combat) {
-      ui.notifications?.warn("No active combat encounter.");
-      return;
-    }
+    // ⚠️ PRESSING THIS IS HOW THE FIGHT STARTS. It used to answer "No active
+    // combat encounter." and stop, which made the roll depend on the thing the
+    // roll is supposed to cause.
+    const combat = await InitiativeTools.ensureCombat();
+    if (!combat) return;
+
     // ⚠️ "NOBODY IS HERE" AND "EVERYBODY HAS ROLLED" ARE DIFFERENT ANSWERS.
     // This used to filter straight to the unrolled ones and, on an empty list,
     // say "All NPCs already rolled initiative." An encounter containing no NPCs
@@ -89,12 +182,18 @@ export class InitiativeTools {
     // on an EMPTY combat and was told everyone had already rolled. He could see
     // the tracker was empty, which made the module look broken and untrustworthy
     // for something it simply mis-worded. Count the roster first, then decide.
-    const npcs = (combat.combatants?.contents ?? []).filter(c =>
+    const rosterOf = () => (combat.combatants?.contents ?? []).filter(c =>
       c.actor && !c.actor.hasPlayerOwner
     );
+    let npcs = rosterOf();
     if (!npcs.length) {
-      ui.notifications?.warn("There are no NPCs in this combat — add their tokens to the encounter first.");
-      return;
+      const { added, from } = await InitiativeTools._populate(combat, "npc");
+      if (!added) {
+        ui.notifications?.warn("There are no NPC tokens to add — drop them on the scene, or select the ones you want.");
+        return;
+      }
+      ui.notifications?.info(`Opened the encounter with ${added} NPC${added === 1 ? "" : "s"} from ${from}.`);
+      npcs = rosterOf();
     }
     const targets = npcs.filter(c => c.initiative === null);
     if (!targets.length) {
@@ -118,17 +217,21 @@ export class InitiativeTools {
       ui.notifications?.warn("Only the GM can issue PC initiative prompts.");
       return;
     }
-    const combat = game.combat;
-    if (!combat) {
-      ui.notifications?.warn("No active combat encounter.");
-      return;
-    }
+    const combat = await InitiativeTools.ensureCombat();
+    if (!combat) return;
+
     // ⚠️ Same distinction as rollAllNpcs — see the note there. An empty encounter
     // must never be reported as "everyone has already rolled".
-    const pcs = (combat.combatants?.contents ?? []).filter(c => c.actor?.hasPlayerOwner);
+    const rosterOf = () => (combat.combatants?.contents ?? []).filter(c => c.actor?.hasPlayerOwner);
+    let pcs = rosterOf();
     if (!pcs.length) {
-      ui.notifications?.warn("There are no player characters in this combat — add their tokens to the encounter first.");
-      return;
+      const { added, from } = await InitiativeTools._populate(combat, "pc");
+      if (!added) {
+        ui.notifications?.warn("There are no player-character tokens to add — drop them on the scene, or select the ones you want.");
+        return;
+      }
+      ui.notifications?.info(`Opened the encounter with ${added} player character${added === 1 ? "" : "s"} from ${from}.`);
+      pcs = rosterOf();
     }
     const targets = pcs.filter(c => c.initiative === null);
     if (!targets.length) {

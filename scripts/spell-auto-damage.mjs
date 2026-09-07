@@ -158,6 +158,7 @@ export class SpellAutoDamage {
     // resolver reads `message.system.spellLevel` FIRST and only falls back to
     // this cache. Defence-in-depth that was never depth; flagged, not repointed,
     // because postUseActivity lands after the resolver has already read it.
+    // dead-hook-ok: upcast cache; the resolver reads message.system.spellLevel first, so Magic Missile upcasts correctly without it
     Hooks.on("dnd5e.useActivity", (activity, usageConfig) => {
       if (!SpellAutoDamage._isAutoHitDamageSpell(activity)) return;
       const actor = activity?.item?.actor;

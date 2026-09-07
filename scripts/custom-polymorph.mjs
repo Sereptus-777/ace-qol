@@ -378,7 +378,7 @@ export class CustomPolymorph {
       if (polymorphRecord.effectId) {
         const eff = target.effects?.get?.(polymorphRecord.effectId);
         if (eff) {
-          try { await eff.delete(); } catch (_) {}
+          try { await eff.delete(); } catch (err) { console.warn(`ace-qol | a delete did not save:`, err); }
         }
       }
       // Belt-and-suspenders: also delete any stray polymorph effects we own
@@ -386,7 +386,7 @@ export class CustomPolymorph {
         e.flags?.[FLAG_NS]?.polymorphEffect === true
       );
       for (const e of strayEffects) {
-        try { await e.delete(); } catch (_) {}
+        try { await e.delete(); } catch (err) { console.warn(`ace-qol | a delete did not save:`, err); }
       }
 
       // 2. Delete the beast attack items we added
@@ -394,7 +394,7 @@ export class CustomPolymorph {
         .filter(i => i.flags?.[FLAG_NS]?.polymorphAdded === true)
         .map(i => i.id);
       if (allAddedItemIds.length) {
-        try { await target.deleteEmbeddedDocuments("Item", allAddedItemIds); } catch (_) {}
+        try { await target.deleteEmbeddedDocuments("Item", allAddedItemIds); } catch (err) { console.warn(`ace-qol | a deleteEmbeddedDocuments did not save:`, err); }
       }
 
       // 3. Clear suppressed flag from original items
@@ -427,7 +427,7 @@ export class CustomPolymorph {
           });
         }
         if (tokenRestores.length) {
-          try { await canvas.scene.updateEmbeddedDocuments("Token", tokenRestores); } catch (_) {}
+          try { await canvas.scene.updateEmbeddedDocuments("Token", tokenRestores); } catch (err) { console.warn(`ace-qol | a updateEmbeddedDocuments did not save:`, err); }
         }
       }
 

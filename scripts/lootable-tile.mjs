@@ -1003,6 +1003,10 @@ export class LootableTile {
     // DOM what's actually at the top of the layer stack right now.
     const topEl = document.elementFromPoint(ev.clientX, ev.clientY);
     const canvasEl = document.getElementById("board") ?? canvas?.app?.view ?? null;
+    // ⚠️ KEPT DELIBERATELY AFTER THE BADGE STOPPED TAKING CLICKS. With
+    // `pointer-events: none` the badge can no longer BE the top element, so
+    // this is always false today — but if anything ever makes the badge
+    // interactive again, losing this line makes it cancel its own hover.
     const overIcon = this._hoverIconEl
       && (topEl === this._hoverIconEl || this._hoverIconEl.contains(topEl));
     if (topEl && canvasEl && topEl !== canvasEl && !overIcon) {
@@ -1297,6 +1301,24 @@ export class LootableTile {
       icon.innerHTML = harvestable
         ? `<i class="fas fa-drumstick-bite" aria-hidden="true"></i>`
         : `<i class="fas fa-sack-dollar" aria-hidden="true"></i>`;
+      // ⚠️🔴 A BADGE, NOT A BUTTON — note the `pointer-events: none` below.
+      // Johnny, 2026-09-06: *"The loot icon is interfering with my own shit:
+      // trying to move it around and out of the fucking way and shit like that,
+      // or even bring it back to life... The players tried to give a couple hit
+      // points to one of the dead things, and they couldn't target it."*
+      //
+      // This was a fixed-position DOM circle covering 75% of the square, sat
+      // dead centre on the body, taking pointer events, at a z-index above the
+      // canvas. Every gesture that starts in the middle of a token — select it,
+      // drag it, put a reticle on it — landed on the badge instead. The corpse
+      // was not hard to click; it was unreachable, and the only click target
+      // left was the thin ring around the outside.
+      //
+      // ⚠️ AND IT COST NOTHING TO GIVE UP. Opening the loot was never only here:
+      // a right-click anywhere on the body is the PRIMARY path and has been
+      // since this was written. So the badge goes back to being what it looks
+      // like — a mark that says there is something to take — and the token
+      // underneath gets all of its clicks back.
       icon.style.cssText = `
         position: fixed;
         left: ${left}px;
@@ -1313,17 +1335,9 @@ export class LootableTile {
         cursor: pointer;
         box-shadow: 0 2px 8px rgba(0,0,0,0.55);
         z-index: 60;
-        pointer-events: auto;
+        pointer-events: none;
         animation: ace-qol-loot-pulse 1.4s ease-in-out infinite;
       `;
-      icon.addEventListener("click", (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        this._cancelHoverIcon();
-        this._openLootDialog(tile);
-      });
-      // Don't let the icon's own pointer events trigger our hover-out cleanup
-      icon.addEventListener("mousemove", (ev) => ev.stopPropagation());
       document.body.appendChild(icon);
       this._hoverIconEl = icon;
       // Follow the token from here on: pan, zoom, or the body being dragged.

@@ -11,6 +11,7 @@ import { spellKey } from "./rules/spell-name.mjs";
 import { readWeather } from "./rules/weather.mjs";
 import { ExtendedEffects } from "./extended-effects.mjs";
 import { QolSettings } from "./settings.mjs";
+import { isOutOfTheFight } from "./is-down.mjs";
 import { FlagsEngine } from "./flags-engine.mjs";
 import { Situation } from "./situation.mjs";
 // Weapon rules entries (Lance etc.) — function-time reads only; cycle inert.
@@ -526,12 +527,18 @@ export class CombatState {
     if (tgtStatuses.has("deafened") || tgtStatuses.has("deaf")) tgtConditions.add("deafened");
 
     // ── Ranged Attack Within 5 feet of Hostile ─────────────────────────────
-    if (isRanged) {
-      const hostileNear = CombatState._isHostileNearAttacker(attackerActor, targetToken, 5);
-      if (hostileNear) {
-        disadvantageSources.push({ source: "situation", reason: "RANGED ATTACK within 5 feet of hostile creature → disadvantage" });
-      }
-    }
+    //
+    // ⚠️🔴 THIS WAS THE SECOND COPY OF ONE RULE, IN THE SAME FUNCTION.
+    // `assess` tested ranged-in-melee twice, ~240 lines apart, through two
+    // different helpers with two different filters, and this one:
+    //   • was NOT gated on `rangedInMeleeDisadvantage`, so switching the rule
+    //     off changed nothing;
+    //   • excluded the TARGET from counting, which is backwards — RAW the enemy
+    //     you are shooting at IS an enemy within five feet of you;
+    //   • filtered on statuses only, so the corpse Johnny tried to throw a spear
+    //     over on 2026-09-06 counted as a live threat.
+    // The surviving check is the one further up, beside the other advantage
+    // rules. See `_hasHostileWithinReach`.
 
     // ── Ranged Attack at Long Range ─────────────────────────────────────
     if (isRanged && targetToken && attackerActor.getActiveTokens?.()?.[0]) {
@@ -1938,30 +1945,17 @@ export class CombatState {
     ) ?? false;
   }
 
-  /** Check if a hostile creature is within range of the attacker */
-  static _isHostileNearAttacker(attackerActor, targetToken, rangeFt = 5) {
-    if (!canvas.tokens?.placeables) {
-      cannotDo("the hostile-nearby check", "the canvas has no tokens yet");
-      return false;
-    }
-    const atkToken = attackerActor.getActiveTokens?.()?.[0];
-    if (!atkToken) return false;
-
-    const atkDisposition = atkToken.document?.disposition ?? 1;
-
-    for (const token of canvas.tokens.placeables) {
-      if (!token.actor || token.actor.id === attackerActor.id) continue;
-      if (token.id === targetToken?.id) continue; // Target itself doesn't count for this rule
-
-      const disp = token.document?.disposition ?? 0;
-      // Hostile = opposite disposition
-      if (disp === atkDisposition) continue; // Same team
-      if (token.actor.statuses?.has("incapacitated") || token.actor.statuses?.has("unconscious")) continue;
-
-      const dist = CombatState._getDistance(atkToken, token);
-      if (dist <= rangeFt) return true;
-    }
-    return false;
+  /**
+   * Check if a hostile creature is within range of the attacker.
+   *
+   * ⚠️🔴 THIS HAD ITS OWN LOOP AND ITS OWN, WORSE, FILTER. Two answers to one
+   * question inside one function. It now delegates, so the two cannot drift
+   * apart again — and `targetToken` is deliberately ignored, because excluding
+   * the creature you are shooting at was the bug: RAW, the enemy in your face
+   * is exactly the one that spoils the shot.
+   */
+  static _isHostileNearAttacker(attackerActor, _targetToken, rangeFt = 5) {
+    return CombatState._hasHostileWithinReach(attackerActor, rangeFt);
   }
 
   /** Check if an ally is near a target */
@@ -1972,27 +1966,21 @@ export class CombatState {
     }
     const atkDisposition = attacker.prototypeToken?.disposition ?? attacker.token?.disposition ?? 1;
 
-    // v0.4.22.8: Match the blocking-status set already used by `_isFlanking`.
-    // The previous check only excluded `incapacitated` and `unconscious`,
-    // which let DEAD allies (token still on canvas with status="dead") count
-    // as "near target." Symptom: Jeth was getting Sneak Attack on every
-    // attack near Lord Soth because Dorian Blackthorne's corpse was
-    // adjacent. Pack Tactics had the same blind spot since it uses this
-    // function too. RAW: only conscious, combat-capable allies provide the
-    // distraction needed for these features.
-    const blockingStatuses = ["incapacitated", "unconscious", "dead", "paralyzed", "petrified", "stunned"];
-
+    // v0.4.22.8: only conscious, combat-capable allies provide the distraction
+    // these features need. The symptom that produced this: Jeth was getting
+    // Sneak Attack on every attack near Lord Soth because Dorian Blackthorne's
+    // corpse was adjacent. Pack Tactics had the same blind spot, since it comes
+    // through here.
+    //
+    // ⚠️ 2026-09-06: this had a status list AND a hit-point test, which is two
+    // thirds of the answer — it could not see ACE's own death flag, so a body
+    // whose token still reports hit points went on helping. One reader now.
     for (const token of canvas.tokens.placeables) {
       if (!token.actor || token.actor.id === attacker.id) continue;
       if (token.id === targetToken.id) continue;
       if (token.document?.disposition !== atkDisposition) continue;
 
-      // Status block — dead/incapacitated/etc. allies don't count
-      if (blockingStatuses.some(s => token.actor.statuses?.has(s))) continue;
-
-      // HP block — token at 0 HP doesn't count even if no status set
-      const allyHp = _aceHp(token.actor)?.value;
-      if (allyHp !== undefined && allyHp !== null && allyHp <= 0) continue;
+      if (isOutOfTheFight(token)) continue;
 
       // Defeated-combatant block — combat tracker explicitly defeated
       const combatant = game.combat?.combatants?.find(c => c.token?.id === token.document?.id);
@@ -2025,10 +2013,18 @@ export class CombatState {
       // Hostile = opposite disposition
       if (token.document?.disposition === atkDisposition) continue;
       if (token.document?.disposition === 0) continue; // neutral doesn't trigger
-      // RAW: hostile must be able to see + not incapacitated
-      if (token.actor.statuses?.has("incapacitated") || token.actor.statuses?.has("unconscious")
-       || token.actor.statuses?.has("paralyzed") || token.actor.statuses?.has("petrified")
-       || token.actor.statuses?.has("stunned") || token.actor.statuses?.has("blinded")) continue;
+      // RAW: the hostile must be able to SEE you and must not be incapacitated.
+      //
+      // ⚠️🔴 THIS IS THE ONE JOHNNY HIT (2026-09-06): *"I had a guy trying to
+      // throw a spear across a dead guy onto a live guy. It said he had
+      // disadvantage because the fucking dead guy was in his way."* The list
+      // below was statuses only, and a corpse in this world carries no status
+      // at all — the death pipeline removes them on purpose. So every body on
+      // the floor went on threatening the archer standing over it.
+      if (isOutOfTheFight(token)) continue;
+      // Blinded is NOT out of the fight, it is the other half of the rule: an
+      // enemy who cannot see you does not spoil your aim.
+      if (token.actor.statuses?.has("blinded")) continue;
 
       const dist = CombatState._getDistance(atkToken, token);
       if (dist <= rangeFt) return true;
@@ -2070,9 +2066,10 @@ export class CombatState {
       if (token.document?.disposition !== targetToken.document?.disposition) continue;
       // Has Aura of Protection
       if (!CombatState._hasFeature(token.actor, "Aura of Protection")) continue;
-      // Not incapacitated (per RAW the aura suppresses if paladin is unconscious)
-      if (token.actor.statuses?.has("incapacitated")) continue;
-      if (token.actor.statuses?.has("unconscious"))   continue;
+      // Not incapacitated (per RAW the aura suppresses if the paladin is
+      // unconscious) — and a DEAD paladin projects nothing either, which the
+      // status test could not see. See is-down.mjs.
+      if (isOutOfTheFight(token)) continue;
 
       const dist = CombatState._getDistance(token, targetToken);
       const paladinLevel = token.actor.items?.find(i => i.type === "class" && i.name?.toLowerCase().includes("paladin"))?.system?.levels ?? 0;

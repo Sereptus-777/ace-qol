@@ -27,6 +27,8 @@
 // removed from the update, never the update.
 const MODULE_ID = "ace-qol";
 
+import { isDead as isDeadFact } from "./is-down.mjs";
+
 export class DeadTokenLock {
 
   /** Say each refusal once per token, not once per mouse movement. */
@@ -42,22 +44,11 @@ export class DeadTokenLock {
    * to attack a player character.
    */
   static isDead(tokenDoc) {
-    try {
-      const doc = tokenDoc?.document ?? tokenDoc;
-      if (doc?.flags?.[MODULE_ID]?.isDead) return true;
-      const raw = doc?.actor?.system?.attributes?.hp?.value;
-      const hp = Number(raw);
-      // An actor with no hit points at all is not a corpse, it is a thing this
-      // question does not apply to. NaN must never read as zero.
-      if (!Number.isFinite(hp)) return false;
-      return hp <= 0;
-    } catch (err) {
-      // ⚠️ FAIL OPEN AND SAY SO. Locking a token he cannot then unlock would be
-      // far worse than the thing this prevents.
-      console.warn(`${MODULE_ID} | could not tell whether this token is dead, so it `
-        + `keeps its facing and targeting:`, err);
-      return false;
-    }
+    // ⚠️🔴 THE BODY OF THIS MOVED TO `is-down.mjs` ON 2026-09-06, UNCHANGED.
+    // It was the second of two private copies of the same reader. The method
+    // stays — it is called all over this file and sits on the public API — but
+    // there is now exactly one implementation behind it.
+    return isDeadFact(tokenDoc);
   }
 
   static _sayOnce(key, message) {
@@ -189,7 +180,19 @@ export class DeadTokenLock {
               // yes with a flag that skips this branch. Trying to await here
               // would return a promise to Foundry, which expects nothing, and
               // the reticle would land before he ever saw the question.
-              if (!context?.aceDeadTargetConfirmed && DeadTokenLock.isDead(this)) {
+              // ⚠️🔴 THE QUESTION IS FOR THE GM, AND ONLY THE GM. Johnny,
+              // 2026-09-06: *"They have to be able to be selectable even by the
+              // players. The players tried to give a couple hit points to one
+              // of the dead things, and they couldn't target it."*
+              //
+              // The GM has a floor covered in bodies and this exists to stop
+              // his stray click putting a spell into one. A player has one or
+              // two reticles a turn and every corpse they aim at, they aim at
+              // ON PURPOSE — a healing word into a downed friend is the whole
+              // reason to target a body. Asking them is friction in front of
+              // the one thing that has to be quick.
+              if (game.user?.isGM
+               && !context?.aceDeadTargetConfirmed && DeadTokenLock.isDead(this)) {
                 DeadTokenLock._askBeforeTargeting(this, context);
                 return;
               }

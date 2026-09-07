@@ -12,6 +12,7 @@
 import { MODULE_ID } from "./ace-qol.mjs";
 import { aceMeasuredCenter } from "./geometry-utils.mjs";
 import { QolSettings } from "./settings.mjs";
+import { isOutOfTheFight } from "./is-down.mjs";
 import { CombatState } from "./combat-state.mjs";
 
 // ─── Cover level constants ──────────────────────────────────────────────────
@@ -249,13 +250,19 @@ export class CoverEngine {
       const size = token.document?.width ?? 1;
       if (size < 1) continue;
 
-      // Skip dead/unconscious creatures (they're prone — could still provide cover
-      // but we'll be lenient and skip them)
-      const actor = token.actor;
-      if (actor) {
-        const hp = actor.system?.attributes?.hp?.value ?? 0;
-        if (hp <= 0) continue;
-      }
+      // ⚠️🔴 A BODY ON THE FLOOR IS NOT COVER. Johnny, 2026-09-06:
+      // *"the same goes for cover. He's not covered or anything."*
+      //
+      // This asked the hit points and nothing else, which is right for a
+      // creature killed the ordinary way and WRONG for every corpse whose token
+      // still reports hit points — a swapped-in body, a linked actor healed
+      // back at the sheet, anything ACE's death pipeline flagged rather than
+      // zeroed. `isOutOfTheFight` asks the hit points AND our own death flag AND
+      // the holding conditions, which is the same answer the attack path uses.
+      //
+      // ⚠️ AND `?? 0` MEANT "NO HIT POINTS AT ALL" READ AS DEAD. A creature
+      // whose sheet has no hp block was silently skipped as a corpse.
+      if (isOutOfTheFight(token)) continue;
 
       // Check if this token's center is roughly between attacker and target
       // Project the token center onto the ray and check distance from line

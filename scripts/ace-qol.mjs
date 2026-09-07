@@ -87,6 +87,7 @@ import { MultiattackEngine }    from "./multiattack-engine.mjs";
 import { LoadoutEngine }        from "./loadout-engine.mjs";
 import { OA_IN_FLIGHT }         from "./oa-transient.mjs";
 import { InitiativeTools }      from "./initiative-tools.mjs";
+import { FlightControl }       from "./flight.mjs";
 import { AuraEngine }           from "./aura-engine.mjs";
 import { MultiattackLabel }     from "./multiattack-label.mjs";
 import { DeadTokenLock }        from "./dead-token-lock.mjs";
@@ -1124,7 +1125,11 @@ Hooks.once("ready", () => {
           // Direct create path (works for GM; throws for player without
           // permission — that's the trigger to fall through to socket).
           try {
-            const combat = await Combat.create({ scene: sceneId, active: true });
+            // ⚠️ `getDocumentClass` RATHER THAN THE BARE `Combat` GLOBAL.
+            // V13 still exposes the legacy globals and V14 does not, and this
+            // is the call core itself makes.
+            const CombatCls = foundry.utils.getDocumentClass?.("Combat") ?? globalThis.Combat;
+            const combat = await CombatCls.create({ scene: sceneId, active: true });
             if (combat && token) {
               try {
                 await combat.createEmbeddedDocuments("Combatant", [{
@@ -2428,7 +2433,7 @@ Hooks.once("ready", () => {
     // activity has zero targets).
     const _templateCreatedAt = new Map();
     Hooks.on("createMeasuredTemplate", (tdoc, _tOpts, tUserId) => {
-      try { _templateCreatedAt.set(tdoc.id, Date.now()); } catch (_) {}
+      try { _templateCreatedAt.set(tdoc.id, Date.now()); } catch (_) {}   // an in-memory Map, not a save
 
       // ── Release targets once a spell template lands (2026-07-09) ──
       // Casting an area spell used to leave the caster's old targets locked in
@@ -2517,7 +2522,7 @@ Hooks.once("ready", () => {
     });
 
     Hooks.on("deleteMeasuredTemplate", (tdoc) => {
-      try { _templateCreatedAt.delete(tdoc.id); } catch (_) {}
+      try { _templateCreatedAt.delete(tdoc.id); } catch (_) {}   // an in-memory Map, not a save
 
       // Difficult terrain — remove the movement-cost Region we created for this
       // template (Web, Spike Growth, etc.). Keyed by our own flag so it fires
@@ -4040,6 +4045,7 @@ Hooks.once("ready", () => {
   // tracker header.
   try {
     InitiativeTools.init();
+    FlightControl.register();
   } catch (err) {
     console.error(`${MODULE_ID} | Initiative Tools init failed:`, err);
   }
@@ -4526,6 +4532,13 @@ Hooks.once("ready", () => {
         if (snap.textureScaleY !== null) tokenUpdate["texture.scaleY"] = snap.textureScaleY;
         if (snap.width)  tokenUpdate.width  = snap.width;
         if (snap.height) tokenUpdate.height = snap.height;
+        // ⚠️ BACK UP OUT OF THE CORPSE LAYER. The death pipeline drops a body's
+        // draw order so the living can walk over it; getting up has to undo
+        // that or the revived creature stays underneath everybody. Older
+        // corpses have no `sort` in their snapshot, so they come back to 0,
+        // which is Foundry's own default and where a token sits unless
+        // somebody moved it.
+        tokenUpdate.sort = Number.isFinite(snap.sort) ? snap.sort : 0;
 
         try {
           await tokenDoc.update(tokenUpdate);
@@ -5451,7 +5464,7 @@ Hooks.once("ready", () => {
                 let newCount = dupes;
                 if (hitDuplicate) {
                   newCount = dupes - 1;
-                  try { await targetActor.setFlag(MODULE_ID, "mirrorImage", newCount); } catch (_) {}
+                  try { await targetActor.setFlag(MODULE_ID, "mirrorImage", newCount); } catch (err) { console.warn(`ace-qol | a setFlag did not save:`, err); }
                   if (newCount === 0) {
                     try {
                       const eff = targetActor.effects?.find(e => String(e.name ?? "").toLowerCase() === "mirror image");
@@ -5791,6 +5804,7 @@ Hooks.once("ready", () => {
     FumbleEngine,
     OAPrompt,
     InitiativeTools,
+    FlightControl,
     rollAllNpcs: () => InitiativeTools.rollAllNpcs(),
     rollAllPcs:  () => InitiativeTools.rollAllPcs(),
     AuraEngine,

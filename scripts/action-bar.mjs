@@ -1397,8 +1397,23 @@ export class ActionBar {
         ev.preventDefault();
         ev.stopPropagation();
         try {
-          if (!game.combat) {
-            ui.notifications?.warn("There is no combat running — start one first.");
+          // ⚠️🔴 THIS REFUSED THE PRESS THAT STARTS THE FIGHT. It used to say
+          // "There is no combat running — start one first", which makes the roll
+          // wait on the thing the roll causes. Johnny, 2026-09-06: *"I need to
+          // fucking start by initiative, not by me creating an encounter."*
+          //
+          // Nothing needs building here. `rollInitiativeDialog` reaches
+          // `Actor#rollInitiative`, and that already opens the encounter: core
+          // Foundry does it for a GM, and ACE's own patch routes a player's
+          // request through the GM by socket. The guard was the only thing
+          // stopping it.
+          if (!game.combat && !game.user.isGM
+              && !game.settings.get("ace-qol", "playerCanStartCombat")) {
+            // ⚠️ SAY WHICH SWITCH. A player pressing this with the setting off
+            // would otherwise get Foundry's bare "no active encounter" and no
+            // idea that a GM can turn it on.
+            ui.notifications?.warn("There is no encounter yet, and \"Players Can Start Combat\" "
+              + "is switched off — ask your GM to start it, or to turn that setting on.");
             return;
           }
           // ⚠️ NAMED, NOT OPTIONAL-CHAINED. `?.()` on a method that no longer

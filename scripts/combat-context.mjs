@@ -26,6 +26,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { deathState } from "./is-down.mjs";
 import { CombatState } from "./combat-state.mjs";
 import { Situation } from "./situation.mjs";
 // Rules-engine space query (Phase 1, 2026-07-09): the verbal-casting gate
@@ -165,27 +166,11 @@ export class CombatContext {
    * when they are one death save from standing up.
    */
   static _deathState(actor) {
-    try {
-      for (const t of (actor?.getActiveTokens?.(true) ?? [])) {
-        if (t?.document?.flags?.["ace-qol"]?.isDead) return "dead";
-      }
-      if (actor?.token?.flags?.["ace-qol"]?.isDead) return "dead";
-
-      const raw = actor?.system?.attributes?.hp?.value;
-      const hp = Number(raw);
-      // ⚠️ An actor with no hit points at all (a vehicle, a group) is not a
-      // corpse, it is a thing this test does not apply to. NaN must never read
-      // as zero here.
-      if (!Number.isFinite(hp)) return null;
-      if (hp > 0) return null;
-      return actor?.type === "character" ? "at 0 hit points" : "dead";
-    } catch (err) {
-      // ⚠️ FAIL OPEN AND SAY SO. Refusing every action because this threw would
-      // be far worse than the bug it prevents.
-      console.warn("ace-qol | could not tell whether this creature is dead, so it "
-        + "is being allowed to act:", err);
-      return null;
-    }
+    // ⚠️🔴 THE BODY OF THIS MOVED TO `is-down.mjs` ON 2026-09-06, UNCHANGED.
+    // It was one of two private copies of the same reader, and on that day the
+    // positional rules turned out to have a THIRD way of asking — statuses —
+    // which a corpse in this world does not carry. One reader, or they drift.
+    return deathState(actor);
   }
 
   static canAct(actor, { activationType = "action", isSpell = false, item = null, verb } = {}) {

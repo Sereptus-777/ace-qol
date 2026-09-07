@@ -667,6 +667,7 @@ export class ReactionEngine {
     // `dnd5e.postCreateUsageMessage` handler below, which is exactly what this
     // one's own comment says it wanted. Left in place rather than repointed:
     // waking it would prompt for Counterspell twice on every cast.
+    // dead-hook-ok: superseded by the live postCreateUsageMessage handler below; waking it would prompt Counterspell twice per cast
     Hooks.on("dnd5e.useActivity", async (activity) => {
       // SILENT-OK: GM-only handler; every client sees this hook and only the GM resolves it
       if (!game.user.isGM) return;
@@ -879,26 +880,76 @@ export class ReactionEngine {
    * ended). Ensures stale flags don't persist across saves or
    * between combats. GM-gated by callers.
    *
+   * ⚠️🔴 `game.actors` DOES NOT CONTAIN THE CREATURES ON THE BOARD.
+   * Johnny, 2026-09-06, mid-session: *"I need to reset the reactions on every
+   * token on the board."* He needed a snippet because THIS did not do it.
+   *
+   * An unlinked token does not use its world actor. It carries an ActorDelta
+   * and `token.actor` is a synthetic built from it, so `setFlag` writes to the
+   * DELTA and the world actor never hears about it. This loop walked
+   * `game.actors` and nothing else, which means for the entire life of the
+   * feature it cleared LINKED actors — the PCs — and left every unlinked NPC
+   * holding a spent reaction through combat end AND through a world reload.
+   * The one boot reset written to guarantee a clean slate never touched the
+   * creatures the reactions were mostly being spent by.
+   *
+   * ⚠️ EVERY SCENE, NOT JUST THE VIEWED ONE. A fight that ended on the scene he
+   * has since left is exactly the state this exists to clean up, and the
+   * combatants are still sitting there with the flag set.
+   *
+   * ⚠️ DEDUPED BY ACTOR UUID. A linked actor with six tokens is one actor and
+   * one write; without this the count lies and the same unset fires six times.
+   *
    * @param {string} reason  Human-readable trigger source for log line.
    */
   async _resetAllReactionFlags(reason) {
-    let cleared = 0;
-    for (const actor of game.actors ?? []) {
+    const seen = new Set();
+    let checked = 0, cleared = 0;
+
+    const clear = async (actor, label) => {
       try {
-        if (actor.getFlag(MODULE_ID, FLAG_REACTION_USED)) {
-          await actor.unsetFlag(MODULE_ID, FLAG_REACTION_USED);
-          cleared += 1;
-        }
+        if (!actor || seen.has(actor.uuid)) return;
+        seen.add(actor.uuid);
+        checked += 1;
+        if (!actor.getFlag(MODULE_ID, FLAG_REACTION_USED)) return;
+        await actor.unsetFlag(MODULE_ID, FLAG_REACTION_USED);
+        cleared += 1;
       } catch (err) {
         // Permission errors on actors we don't own are expected;
         // skip them silently. Genuine failures get logged.
         if (!String(err?.message ?? "").toLowerCase().includes("permission")) {
-          console.warn(`${MODULE_ID} | _resetAllReactionFlags: failed to clear flag on ${actor?.name}:`, err);
+          console.warn(`${MODULE_ID} | _resetAllReactionFlags: failed to clear flag on ${label}:`, err);
         }
       }
+    };
+
+    // ── The world actors: every PC, and the base of every linked token ──
+    // ⚠️ THIS PASS GOES FIRST ON PURPOSE. A synthetic actor is its base merged
+    // with its delta, so clearing the base here removes any INHERITED flag and
+    // leaves the token pass with only genuinely token-local ones to find.
+    for (const actor of game.actors ?? []) await clear(actor, actor?.name);
+
+    // ── And the creatures actually on the boards ──
+    for (const scene of game.scenes ?? []) {
+      for (const tokenDoc of scene.tokens ?? []) {
+        // A linked token IS its world actor, already done above.
+        if (tokenDoc.isLinked) continue;
+
+        // ⚠️ READ THE STORED DELTA, DO NOT BUILD THE ACTOR TO ASK IT.
+        // `tokenDoc.actor` MATERIALISES the synthetic actor for an unlinked
+        // token, and this loop covers every scene in the world. Touching
+        // `.actor` on all of them would construct thousands of actors to
+        // discover that almost none of them have the flag. The delta's own
+        // source data answers the question with a property read, and the
+        // actor is only built for the handful that say yes.
+        const stored = tokenDoc._source?.delta?.flags?.[MODULE_ID]?.[FLAG_REACTION_USED];
+        if (!stored) continue;
+        await clear(tokenDoc.actor, `${tokenDoc.name} on ${scene.name}`);
+      }
     }
+
     if (cleared > 0) {
-      this._debug(`Reaction flags reset on ${cleared} actor(s) (${reason})`);
+      this._debug(`Reaction flags reset on ${cleared} of ${checked} creature(s) (${reason})`);
     }
   }
 

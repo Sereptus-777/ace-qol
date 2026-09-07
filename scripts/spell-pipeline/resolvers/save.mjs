@@ -124,7 +124,7 @@ export class SaveResolver {
     };
 
     if (cur <= thr) {
-      try { await tActor.update({ "system.attributes.hp.value": 0 }); } catch (_) {}
+      try { await tActor.update({ "system.attributes.hp.value": 0 }); } catch (err) { console.warn(`ace-qol | a update did not save:`, err); }
       card(`${item.name} — ${tActor.name} slain`, `<strong>${tActor.name}</strong> has ${cur} HP (≤ ${thr}) and <strong>dies instantly</strong> — no save.`);
       return;
     }
@@ -319,8 +319,8 @@ export class SaveResolver {
           || String(e.name ?? "").toLowerCase().trim() === String(effectKey).replace(/_/g, " ").toLowerCase().trim()
         );
         if (existingSame) {
-          try { await existingSame.setFlag(MODULE_ID, "_replacedNotEnded", true); } catch (_) {}
-          try { await existingSame.delete(); } catch (_) {}
+          try { await existingSame.setFlag(MODULE_ID, "_replacedNotEnded", true); } catch (err) { console.warn(`ace-qol | a setFlag did not save:`, err); }
+          try { await existingSame.delete(); } catch (err) { console.warn(`ace-qol | a delete did not save:`, err); }
         }
 
         // ⚠️ NAME THE WORD. "Commanded" alone tells a GM nothing - the

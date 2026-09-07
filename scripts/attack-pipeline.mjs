@@ -573,15 +573,47 @@ export class AttackPipeline {
     // OAPrompt.fireOAAttack around item.use() on this same client. v0.7.23.
     // NB: firstTarget is declared at function scope (it's reused below for the
     // combat-state assessment) — only the range *check* is OA-gated. v0.7.24.
-    const firstTarget = targets.first();
+    //
+    // ⚠️🔴 IT USED TO MEASURE `targets.first()` AND REFUSE THE WHOLE SWING.
+    // Johnny, 2026-09-06, with a creature at arm's length: *"he's standing
+    // right beside this fucking thing, and it says he's out of range. 45
+    // feet."* He was. Something else on the far side of the room was ALSO
+    // targeted, `first()` on a Set returns whatever went in first rather than
+    // whatever is nearest, and one distant reticle cancelled an attack on the
+    // creature he was touching.
+    //
+    // ⚠️ SO MEASURE EVERY TARGET AND REFUSE ONLY IF NONE OF THEM IS REACHABLE.
+    // With one target this is exactly what it always did. With several it stops
+    // an arbitrary set order deciding whether a fight happens.
+    const ranged = [];
+    for (const t of targets) {
+      ranged.push({ token: t, ...this._checkRange(actor, t, item, subject, attacker) });
+    }
+    const reachable = ranged.filter(r => !r.blocked);
+    const unreachable = ranged.filter(r => r.blocked);
+    const nearest = (list) => list.slice().sort((a, b) => a.distanceFt - b.distanceFt)[0];
+
+    // ⚠️ THE PRIMARY TARGET IS THE NEAREST ONE HE CAN ACTUALLY HIT, not the
+    // first one the Set happens to hold. Everything downstream — the advantage
+    // assessment, the card — reads this, and pointing it at a creature across
+    // the room was giving the wrong answer quietly.
+    const firstTarget = nearest(reachable)?.token ?? nearest(ranged)?.token ?? targets.first();
+
     if (!OA_IN_FLIGHT.has(actor.id)) {
-      const rangeCheck = this._checkRange(actor, firstTarget, item, subject, attacker);
-      if (rangeCheck.blocked) {
-        const msg = `Out of range — ${rangeCheck.distanceFt} feet away (${rangeCheck.rangeDesc})`;
+      if (unreachable.length && !reachable.length) {
+        const worst = nearest(unreachable);
+        const msg = `Out of range — ${worst.distanceFt} feet away (${worst.rangeDesc})`;
         showCenterToast(msg, 2500);
         ui.notifications?.warn(`ACE QOL: ${msg}`);
         _announceAttackCancelled(item, actor, msg);
         return false; // Block the roll
+      }
+      // ⚠️ AND SAY WHICH ONES WERE DROPPED. Quietly attacking three of five
+      // targets is the kind of silence that reads as a miscount at the table.
+      if (unreachable.length) {
+        for (const r of unreachable) targets.delete(r.token);
+        ui.notifications?.info(`ACE QOL: out of range and not attacked — `
+          + `${unreachable.map(r => `${r.token?.name ?? "?"} (${r.distanceFt} ft)`).join(", ")}.`);
       }
     }
 
@@ -797,7 +829,7 @@ export class AttackPipeline {
       // releases. It already cleans up its own pending-choice entry; the FX
       // hold is the other half of the same cleanup.
       console.warn(`${MODULE_ID} | ACE attack prompt/re-fire failed — attack cancelled:`, err);
-      try { pendingAttackChoices.delete(actor.id); } catch (_) {}
+      try { pendingAttackChoices.delete(actor.id); } catch (_) {}   // an in-memory Map, not a save
       _announceAttackCancelled(item, actor, `the advantage prompt or re-fire threw: ${err?.message ?? err}`);
     }
   }
@@ -1159,7 +1191,7 @@ export class AttackPipeline {
             let newCount = dupes;
             if (hitDuplicate) {
               newCount = dupes - 1;
-              try { await targetActor.setFlag(MODULE_ID, "mirrorImage", newCount); } catch (_) {}
+              try { await targetActor.setFlag(MODULE_ID, "mirrorImage", newCount); } catch (err) { console.warn(`ace-qol | a setFlag did not save:`, err); }
               if (newCount === 0) {
                 try {
                   const eff = targetActor.effects?.find(e => String(e.name ?? "").toLowerCase() === "mirror image");

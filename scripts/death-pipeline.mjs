@@ -14,6 +14,11 @@ import { aceDescriptionHtml } from "./description-reader.mjs";
 // ──────────────────────────────────────────────────────────────────────────────
 
 const MODULE_ID = "ace-qol";
+// ⚠️ THE DRAW ORDER A BODY DROPS TO. Well below anything a GM sets by
+// hand (Foundry's own send-to-back works in ones), so bodies land as a
+// layer beneath the living and keep their order among themselves.
+const CORPSE_SORT = -1000;
+
 const LOG_PREFIX = `${MODULE_ID} | Death:`;
 
 /**
@@ -79,8 +84,16 @@ export class DeathPipeline {
     /** @type {Map<string, string[]>}  bare stem → every numbered variant of it,
      *  so a creature with several corpse images doesn't always show the same one. */
     this._artVariants = new Map();
+    /** @type {Map<string, string>}  a WORD out of a filename → that file.
+     *  Consulted only after the named cache, so a real filename always wins. */
+    this._fragmentCache = new Map();
+    /** @type {Set<string>}  every key that is a real filename, so a fragment
+     *  can never register over one. */
+    this._exactKeys = new Set();
     /** @type {boolean} Whether the cache has been built at least once */
     this._cacheReady = false;
+    /** @type {boolean} One free rescan per build, spent on the first miss. */
+    this._rescannedOnMiss = false;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -136,6 +149,14 @@ export class DeathPipeline {
         processNPCDeath: instance.processNPCDeath.bind(instance),
         buildArtCache:   instance.buildArtCache.bind(instance),
         getAvailableArt: () => new Map(instance._artCache),
+        // What every NPC would get as a corpse, and which one new file would
+        // cover the most creatures. Read-only.
+        //   game.aceQol.DeathPipeline.report()
+        report:          (opts) => instance.deadArtReport(opts),
+        // Pin a corpse image to one creature, for good. Beats every rule.
+        //   game.aceQol.DeathPipeline.setDeadArt(actor, "modules/.../x.png")
+        setDeadArt:      (actor, path) => actor?.setFlag(MODULE_ID, "deadArt", path),
+        clearDeadArt:    (actor) => actor?.unsetFlag(MODULE_ID, "deadArt"),
       };
       console.log(`${LOG_PREFIX} API registered on game.aceQol.DeathPipeline`);
     } catch (err) {
@@ -155,6 +176,8 @@ export class DeathPipeline {
    */
   async buildArtCache() {
     this._artCache.clear();
+    this._fragmentCache.clear();
+    this._exactKeys.clear();
     this._artVariants.clear();
     this._cacheReady = false;
 
@@ -185,7 +208,9 @@ export class DeathPipeline {
       }
 
       this._cacheReady = true;
-      console.log(`${LOG_PREFIX} Art cache built — ${this._artCache.size} images indexed`);
+      this._rescannedOnMiss = false;
+      console.log(`${LOG_PREFIX} Art cache built — ${this._artCache.size} named `
+        + `+ ${this._fragmentCache.size} by-fragment`);
     } catch (err) {
       // Folder may not exist yet — that's fine, just means no dead art available.
       console.warn(`${LOG_PREFIX} Could not build art cache (Assets/Dead folder may not exist):`, err.message ?? err);
@@ -224,6 +249,33 @@ export class DeathPipeline {
     const norm = DeathPipeline.normaliseKey(stem);
     for (const key of new Set([norm, stem])) {
       if (key && !this._artCache.has(key)) this._artCache.set(key, filePath);
+      if (key) this._exactKeys.add(key);
+    }
+
+    // ── FRAGMENTS ───────────────────────────────────────────────────
+    //
+    // ⚠️🔴 THE MATCHER IS FORGIVING SO HE DOES NOT HAVE TO BE. Johnny,
+    // 2026-09-06, having killed an Arcanaloth and got a generic fiend with
+    // `dead-arcanaloth-fiend.png` sitting right there in the folder. Eighty-six
+    // files named five different ways — `dead-arcanaloth-fiend`,
+    // `dead-bandit-human-11`, `Dead-Rust Monster`, `dead-ash zombie` — and any
+    // design where he has to name files to a spec fails the next time he is
+    // tired. So a file answers to each PART of its name as well as the whole.
+    //
+    // ⚠️ AND A FRAGMENT NEVER OUTRANKS A REAL FILENAME. `dead-fiend.png` beats
+    // the word "fiend" borrowed out of `dead-arcanaloth-fiend.png`. Without that
+    // rule a fragment quietly steals from the art he made on purpose, which is
+    // a worse bug than the one this fixes because it would look deliberate.
+    const words = norm.replace(/^dead-/, "").split("-").filter(w => w.length > 2);
+    const fragments = new Set();
+    for (let i = 0; i < words.length; i++) {
+      fragments.add(words[i]);
+      if (i + 1 < words.length) fragments.add(`${words[i]}-${words[i + 1]}`);
+    }
+    for (const frag of fragments) {
+      const key = `dead-${frag}`;
+      if (this._exactKeys.has(key)) continue;              // a real file owns it
+      if (!this._fragmentCache.has(key)) this._fragmentCache.set(key, filePath);
     }
 
     // ── VARIANT NUMBERING ──
@@ -248,6 +300,92 @@ export class DeathPipeline {
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/(^-|-$)/g, "");
+  }
+
+  /**
+   * Every filename that WOULD have matched this creature, best first.
+   *
+   * ⚠️ ONE LIST, TWO CONSUMERS. The fallback log tells him what to add and the
+   * gap report ranks what to draw next; both must name the same files or the
+   * report sends him to draw something the matcher will not look for.
+   */
+  static deadArtKeysFor(actor) {
+    const name = DeathPipeline.normaliseKey(actor?.name ?? "");
+    const sub  = DeathPipeline.normaliseKey(actor?.system?.details?.type?.subtype ?? "");
+    const type = DeathPipeline.normaliseKey(actor?.system?.details?.type?.value ?? "");
+    const base = DeathPipeline.normaliseKey(
+      String(actor?.name ?? "").replace(/\s*\(.*?\)\s*/g, "").replace(/\s*\d+\s*$/g, ""));
+    const out = [];
+    for (const part of [name, base, sub, type]) {
+      if (!part) continue;
+      const key = `dead-${part}`;
+      if (!out.includes(key)) out.push(key);
+    }
+    return out;
+  }
+
+  /**
+   * What every NPC in the world would get as a corpse today, and which single
+   * new file would cover the most creatures.
+   *
+   * ⚠️ THE POINT IS THE RANKING, NOT THE LIST. Johnny has 86 corpse images and
+   * a couple of thousand monsters; a flat list of what is missing is another
+   * thing to read. Ranked by how many creatures one file would fix, it becomes
+   * a short to-do where the top line is worth an evening of art. His Arcanaloth
+   * is the example that produced this: one `dead-yugoloth.png` covers
+   * Arcanaloth, Mezzoloth, Nycaloth, Ultroloth and Dhergoloth, because the
+   * subtype step is already in the ladder.
+   *
+   * Read-only. Changes nothing.
+   */
+  deadArtReport({ log = true } = {}) {
+    const covered = [];
+    const gaps = new Map();     // suggested key → { creatures:Set, why }
+    for (const actor of (game.actors ?? [])) {
+      if (actor?.type !== "npc" || actor.hasPlayerOwner) continue;
+      const hand = (() => { try { return actor.getFlag(MODULE_ID, "deadArt"); } catch { return null; } })();
+      if (hand) { covered.push({ name: actor.name, art: hand, how: "picked by hand" }); continue; }
+      const found = this._resolveDeadArt(actor);
+      const keys = DeathPipeline.deadArtKeysFor(actor);
+      if (found) {
+        // ⚠️ "Covered by the generic type art" is not covered. That is exactly
+        // the state he is complaining about, so it counts as a gap.
+        //
+        // ⚠️🔴 COMPARED AS A WHOLE KEY, NOT AS A SUBSTRING. My first version
+        // asked whether the filename CONTAINED the type word, so
+        // `dead-arcanaloth-fiend.png` — the exact art he drew for that creature
+        // — was reported as a generic fiend and listed as a gap. The report
+        // would have sent him to draw a file he already had.
+        const typeKey = `dead-${DeathPipeline.normaliseKey(
+          actor?.system?.details?.type?.value ?? "")}`;
+        const stem = DeathPipeline.normaliseKey(
+          String(found).split("/").pop().replace(/\.[^.]+$/, ""));
+        const generic = typeKey !== "dead-"
+          && (stem === typeKey || DeathPipeline.stripVariant(stem) === typeKey);
+        if (!generic) { covered.push({ name: actor.name, art: found.split("/").pop(), how: "matched" }); continue; }
+      }
+      // The best key worth adding is the most specific one that is not the type.
+      const suggest = keys.find(k => k !== `dead-${DeathPipeline.normaliseKey(
+        actor?.system?.details?.type?.value ?? "")}`) ?? keys[0];
+      const bySub = keys.length >= 3 ? keys[keys.length - 2] : suggest;
+      const key = bySub || suggest;
+      if (!gaps.has(key)) gaps.set(key, new Set());
+      gaps.get(key).add(actor.name);
+    }
+    const ranked = [...gaps.entries()]
+      .map(([key, set]) => ({ file: `${key}.png`, covers: set.size, creatures: [...set].sort() }))
+      .sort((a, b) => b.covers - a.covers);
+
+    if (log) {
+      console.log(`%cACE corpse art — ${covered.length} covered, ${ranked.length} file(s) would `
+        + `cover ${ranked.reduce((n, r) => n + r.covers, 0)} more`,
+        "color:#d4af37;font-weight:bold");
+      console.table(ranked.slice(0, 40).map(r => ({
+        "add this file": r.file, covers: r.covers,
+        examples: r.creatures.slice(0, 4).join(", ") + (r.creatures.length > 4 ? "…" : ""),
+      })));
+    }
+    return { covered, ranked };
   }
 
   /** Drop a trailing variant number: "dead-kobold-11" → "dead-kobold". */
@@ -445,6 +583,26 @@ export class DeathPipeline {
       // 3. Token's own image (shows the creature as-is, just dead status)
       // 4. Foundry stock skull icon — absolute last resort
       let deadArtPath = this._resolveDeadArt(actor);
+
+      // ⚠️🔴 THE FOLDER IS READ ONCE, AT STARTUP. He is actively building this
+      // library, so the likeliest reason for a miss is a file he added five
+      // minutes ago. One rescan per session, spent on the first miss, costs a
+      // single folder listing and saves a reload; after that a miss is a real
+      // miss and rescanning every death would be a directory read per corpse.
+      if (!deadArtPath && !this._rescannedOnMiss) {
+        this._rescannedOnMiss = true;
+        console.log(`${LOG_PREFIX}   • no art for ${actor.name} — rescanning the folder once `
+          + `in case it was added since startup`);
+        try {
+          await this.buildArtCache();
+          this._rescannedOnMiss = true;      // buildArtCache resets it
+          deadArtPath = this._resolveDeadArt(actor);
+          if (deadArtPath) console.log(`${LOG_PREFIX}   ✓ found it after the rescan`);
+        } catch (err) {
+          console.warn(`${LOG_PREFIX}   rescan failed (non-fatal):`, err);
+        }
+      }
+
       let fallbackUsed = null;
 
       if (!deadArtPath) {
@@ -472,7 +630,14 @@ export class DeathPipeline {
 
       if (fallbackUsed) {
         const creatureType = actor.system?.details?.type?.value ?? "(none)";
-        console.log(`${LOG_PREFIX}   • Using fallback "${fallbackUsed}" (no matching dead-art for type="${creatureType}")`);
+        // ⚠️🔴 SAY WHAT IT WANTED, NOT JUST THAT IT GAVE UP. This line used to
+        // name the type and nothing else, so the library grew blind: he could
+        // see a generic corpse but never the filename that would have stopped
+        // it. Naming both keys turns every fallback into a one-line to-do.
+        const want = DeathPipeline.deadArtKeysFor(actor);
+        console.log(`${LOG_PREFIX}   • no corpse art for ${actor.name}. `
+          + `Add any of: ${want.map(k => k + ".png").join(", ")} to Assets/Dead, `
+          + `or pick one by hand on the token. Used "${fallbackUsed}".`);
 
         // Informational chat notice — opt-in via `notifyDeadArtFallback`
         // setting (default OFF). The notice clutters chat for every dying
@@ -564,6 +729,9 @@ export class DeathPipeline {
         textureScaleY: tokenDoc.texture?.scaleY ?? null,
         width:         tokenDoc.width,
         height:        tokenDoc.height,
+        // ⚠️ THE LAYER IT WAS ON, so getting up puts it back where it stood in
+        // the stack rather than at whatever the corpse layer is.
+        sort:          tokenDoc.sort ?? 0,
       };
 
       // Snapshot actor ownership so revive restores it exactly.
@@ -590,6 +758,24 @@ export class DeathPipeline {
       try {
         await tokenDoc.update({
           "texture.src": deadArtPath,
+          // ⚠️🔴 A BODY GOES UNDER THE LIVING. Johnny, 2026-09-06: *"people are
+          // trying to step over dead tokens in the camp because they're at the
+          // front."* A corpse kept whatever draw order it had in life, so it sat
+          // on top of whoever walked over it and ate their click.
+          //
+          // ⚠️ `sort`, NEVER `elevation`. Foundry orders placeables by elevation
+          // FIRST and sort second (proven from the comparator in foundry.mjs),
+          // so either would work visually — but elevation is a RULES input.
+          // Areas have height in this suite, and dropping a body to -1000 feet
+          // would take it out of every emanation, every template and every
+          // reach check on the board. `sort` is pure draw order and nothing
+          // measures it.
+          //
+          // ⚠️ AND IT IS STILL CLICKABLE. Draw order only decides who wins where
+          // two tokens OVERLAP, which is exactly the case he wants: grab the
+          // living one standing on the body. A corpse with nothing on top of it
+          // is still the thing under the cursor.
+          sort: CORPSE_SORT,
           // New token-pipeline flags
           [`flags.${MODULE_ID}.isDead`]:              true,
           [`flags.${MODULE_ID}.isDeadLootable`]:      true,
@@ -652,7 +838,7 @@ export class DeathPipeline {
           (e.statuses?.has?.("dead")) || /^dead$/i.test(e.name ?? "")
         ) ?? [];
         for (const ef of deadEffects) {
-          try { await ef.delete(); } catch (_) {}
+          try { await ef.delete(); } catch (err) { console.warn(`ace-qol | a delete did not save:`, err); }
         }
         // Explicitly mark the combatant as defeated in the tracker so the
         // ✗ stays even if dead-status removal would have cleared it. Only
@@ -791,7 +977,22 @@ export class DeathPipeline {
   /** Pick from a creature's numbered variants when it has several, so the same
    *  corpse image doesn't appear every time that creature dies. Falls back to
    *  the single cached path when there is only one. */
+  /**
+   * Is there art for this key, from a real filename or from a fragment?
+   *
+   * ⚠️ ORDER IS THE WHOLE RULE. Exact first, always. The ladder in
+   * `_resolveDeadArt` decides WHICH question to ask; this decides how hard we
+   * look for an answer, and it must never answer a specific question with a
+   * general picture when a specific one exists.
+   */
+  _hasArt(key) {
+    return this._artCache.has(key) || this._fragmentCache.has(key);
+  }
+
   _pickArt(key) {
+    if (!this._artCache.has(key) && this._fragmentCache.has(key)) {
+      return this._fragmentCache.get(key);
+    }
     const variants = this._artVariants.get(key);
     if (variants?.length > 1) return variants[Math.floor(Math.random() * variants.length)];
     // ⚠️ READS THE CACHE. Never call _pickArt from here — a blanket
@@ -802,6 +1003,25 @@ export class DeathPipeline {
   }
 
   _resolveDeadArt(actor) {
+    // ── Step 0: he picked one by hand ────────────────────────────────
+    //
+    // ⚠️🔴 THE ONLY WAY OUT OF A WRONG MATCH. Johnny, 2026-09-06: token art,
+    // portrait and prone art all already write back to the sidebar actor, so
+    // the next one he drags out is already right. Dead art had no equivalent
+    // at all, which meant a creature the folder matched badly — his Arcanaloth
+    // getting a generic fiend — could not be corrected by hand at any price.
+    //
+    // ⚠️ AND IT IS FIRST, ABOVE THE NAME. A deliberate choice outranks every
+    // clever thing below it. That is the standing rule in this suite: the item
+    // he set outranks anything worked out about it.
+    //
+    // ⚠️ CHECKED BEFORE THE CACHE GUARD, because a hand-picked path does not
+    // live in the folder index and must work even when the folder is empty.
+    try {
+      const chosen = actor?.getFlag?.(MODULE_ID, "deadArt");
+      if (chosen) return chosen;
+    } catch (_) { /* unreadable flags fall through to matching */ }
+
     if (!this._cacheReady || this._artCache.size === 0) return null;
 
     // ── Normalize the actor name ──
@@ -815,14 +1035,14 @@ export class DeathPipeline {
 
     // ── Tier 1: Exact creature name ──
     const exactKey = `dead-${normalizedName}`;
-    if (this._artCache.has(exactKey)) {
+    if (this._hasArt(exactKey)) {
       return this._pickArt(exactKey);
     }
 
     // ── Tier 2a: Creature subtype (check before generic type) ──
     if (creatureSubtype) {
       const subtypeKey = `dead-${creatureSubtype.replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "")}`;
-      if (this._artCache.has(subtypeKey)) {
+      if (this._hasArt(subtypeKey)) {
         return this._pickArt(subtypeKey);
       }
     }
@@ -838,7 +1058,7 @@ export class DeathPipeline {
 
     if (baseName && baseName !== normalizedName) {
       const baseKey = `dead-${baseName}`;
-      if (this._artCache.has(baseKey)) {
+      if (this._hasArt(baseKey)) {
         return this._pickArt(baseKey);
       }
     }
@@ -851,7 +1071,7 @@ export class DeathPipeline {
 
     if (isIncorporeal) {
       const remnantKey = "dead-remnant-ash-pile";
-      if (this._artCache.has(remnantKey)) {
+      if (this._hasArt(remnantKey)) {
         return this._pickArt(remnantKey);
       }
     }
@@ -859,7 +1079,7 @@ export class DeathPipeline {
     // ── Tier 3b: Elemental remnant — check full name first, then subtype ──
     for (const [pattern, remnantStem] of Object.entries(ELEMENTAL_REMNANTS)) {
       if (normalizedName.includes(pattern.replace(/\s+/g, "-")) || rawName.includes(pattern)) {
-        if (this._artCache.has(remnantStem)) {
+        if (this._hasArt(remnantStem)) {
           return this._pickArt(remnantStem);
         }
       }
@@ -869,7 +1089,7 @@ export class DeathPipeline {
     if (creatureSubtype) {
       for (const [pattern, remnantStem] of Object.entries(ELEMENTAL_REMNANTS)) {
         if (creatureSubtype.includes(pattern)) {
-          if (this._artCache.has(remnantStem)) {
+          if (this._hasArt(remnantStem)) {
             return this._pickArt(remnantStem);
           }
         }
@@ -879,7 +1099,7 @@ export class DeathPipeline {
     // ── Tier 3c: Type-specific remnants (ooze, plant) ──
     if (TYPE_REMNANTS[creatureType]) {
       const typeRemnantKey = TYPE_REMNANTS[creatureType];
-      if (this._artCache.has(typeRemnantKey)) {
+      if (this._hasArt(typeRemnantKey)) {
         return this._pickArt(typeRemnantKey);
       }
     }
@@ -888,7 +1108,7 @@ export class DeathPipeline {
     if (creatureType) {
       const cleanType = creatureType.replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
       const typeKey = `dead-${cleanType}`;
-      if (this._artCache.has(typeKey)) {
+      if (this._hasArt(typeKey)) {
         return this._pickArt(typeKey);
       }
 
@@ -898,7 +1118,7 @@ export class DeathPipeline {
       const variants = this._generateTypeVariants(cleanType);
       for (const variant of variants) {
         const variantKey = `dead-${variant}`;
-        if (this._artCache.has(variantKey)) {
+        if (this._hasArt(variantKey)) {
           console.log(`${LOG_PREFIX}   Typo-match: ${typeKey} → ${variantKey}`);
           return this._pickArt(variantKey);
         }
@@ -906,7 +1126,7 @@ export class DeathPipeline {
     }
 
     // ── Tier 5: Generic fallback ──
-    if (this._artCache.has("dead-generic")) {
+    if (this._hasArt("dead-generic")) {
       return this._pickArt("dead-generic");
     }
 

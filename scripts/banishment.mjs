@@ -104,7 +104,7 @@ export const Banishment = {
     const permanent = !isShort && (rem != null && rem <= 0);
 
     if (permanent) {
-      for (const t of tokens) { try { await t.document?.unsetFlag(MODULE_ID, RETURN_FLAG); } catch (_) {} }
+      for (const t of tokens) { try { await t.document?.unsetFlag(MODULE_ID, RETURN_FLAG); } catch (err) { console.warn(`ace-qol | a unsetFlag did not save:`, err); } }
       await Banishment._postCard(actor, tokens[0], "permanent");
       return;   // leave the token hidden — GM decides whether to delete it
     }

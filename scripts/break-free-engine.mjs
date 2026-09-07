@@ -290,7 +290,7 @@ export class BreakFreeEngine {
 
     // Lock the prompt (so it can't be rolled again from another screen) and let
     // the 3D dice finish settling before the result card reveals pass/fail.
-    if (promptMsg) { try { await promptMsg.setFlag(MODULE_ID, "breakFreeResolved", true); } catch (_) {} }
+    if (promptMsg) { try { await promptMsg.setFlag(MODULE_ID, "breakFreeResolved", true); } catch (err) { console.warn(`ace-qol | a setFlag did not save:`, err); } }
     try { await awaitDsnRoll(); } catch (_) {}
 
     const passed = total >= dc;

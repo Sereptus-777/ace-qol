@@ -507,15 +507,34 @@ export class QolSettings {
     //  to create Combat documents emit a socket request to the GM client,
     //  which handles the creation on their behalf and emits acknowledgment.
     //
-    //  Defaults ON because this is RAW-correct behavior and what every
-    //  commercial customer will expect.
+    //  ⚠️🔴 THIS WAS TURNED OFF AND THEN HIDDEN, IN TWO SEPARATE PASSES,
+    //  AND NEITHER WAS A DECISION ABOUT INITIATIVE.
+    //    • 2026-06-01 (c447971, "Gemini code-review polish round — defaults
+    //      OFF") flipped `default: true` to `false` as part of a blanket sweep.
+    //      The comment block directly above still said "Defaults ON because
+    //      this is RAW-correct behavior", so the file has contradicted itself
+    //      ever since — which is exactly why nobody spotted it.
+    //    • 2026-07-22 (e1b0982) flipped `config: true` to `false`, moving it
+    //      off the settings page, against a decision recorded on 2026-06-11:
+    //      "Kept on main page deliberately: ... playerCanStartCombat ...
+    //      (Johnny wants those visible)."
+    //  So the behaviour was switched off and then the switch was put away.
+    //  Johnny, 2026-09-06, mid-session: *"PCs and even NPCs cannot just roll
+    //  initiative and start an encounter. Again, how did that get rolled
+    //  fucking back?"* Both reversals are undone here.
+    //
+    //  ⚠️ A "DEFAULTS OFF" REVIEW IS NOT A RULE. It is right for anything that
+    //  changes numbers, cards or automation under a GM who has not asked. It is
+    //  wrong for a setting whose OFF state is "the button you pressed does
+    //  nothing" — RAW, any combatant can start a fight, and a table installing a
+    //  combat module expects rolling initiative to start one.
     s("playerCanStartCombat", {
       name:    "Players Can Start Combat (RAW)",
-      hint:    "When enabled, any player rolling initiative auto-creates a combat encounter if none exists. Restores standard D&D flow (any combatant can initiate). Default OFF so installing ACE QOL doesn't change Foundry's default GM-only combat-creation behavior without an explicit opt-in.",
+      hint:    "Rolling initiative starts the encounter. When no combat exists, the roll creates one and adds the roller — the standard D&D flow where any combatant can initiate (an ambush, a surprise attack). Turn this off for GM-only combat creation.",
       scope:   "world",
-      config:  false,   // surfaced via the ACE config panel (Initiative tab), not native settings
+      config:  true,
       type:    Boolean,
-      default: false,
+      default: true,
     });
 
     // ── Hidden NPC Initiative ──────────────────────────────────────────────

@@ -152,6 +152,9 @@ export class TargetState {
     let saveDisadvantage = false;
     let saveBonuses = [];
     let autoFailSave = false;
+    // ⚠️ NAMED, NOT JUST TRUE. A save that silently rolls two dice and takes
+    // the worse one reads as a bug at the table. The card says why.
+    let saveDisadvantageReason = "";
 
     if (saveAbility) {
       // Check flags via FlagsEngine (checks ace-qol + midi-qol automatically)
@@ -187,6 +190,30 @@ export class TargetState {
         if (conditions.has("restrained") && saveAbility === "dex") {
           saveDisadvantage = true;
         }
+      }
+
+      // ── The thing being resisted can make itself harder to resist ───────
+      //
+      // Everything above this line asks the TARGET. That is right for nearly
+      // all of it — advantage on saves is usually something you have. But a
+      // handful of effects live on the other side: Shami-Amourae's dark gift in
+      // the Amber Temple reads *"saving throws against the spell have
+      // disadvantage"*, and there was no way to say that at all.
+      //
+      // ⚠️ THE ITEM FIRST, THE CREATURE SECOND. `TargetState.assess` already
+      // receives the item and the attacker, so this needs no new plumbing. The
+      // item flag is the one to reach for — it makes ONE button harder to
+      // resist, which is what a dark gift, a cursed relic or a legendary
+      // monster action actually is. The actor flag is the broad version, for a
+      // creature whose every effect bites harder.
+      const HARD_TO_RESIST = "saveDisadvantage";
+      const itemImposes = item?.getFlag?.(MODULE_ID, HARD_TO_RESIST) === true;
+      const actorImposes = attackerActor?.getFlag?.(MODULE_ID, "imposeSaveDisadvantage") === true;
+      if (itemImposes || actorImposes) {
+        saveDisadvantage = true;
+        saveDisadvantageReason = itemImposes
+          ? `saves against ${item?.name ?? "that"} are made with disadvantage`
+          : `${attackerActor?.name ?? "the caster"} makes their effects harder to resist`;
       }
 
       // Bless check — look for active effect adding to saves
@@ -337,6 +364,7 @@ export class TargetState {
       saveAbility,
       saveAdvantage,
       saveDisadvantage,
+      saveDisadvantageReason,
       autoFailSave,
       saveBonuses,
       magicResistance: (FlagsEngine.hasMagicResistance(actor) || ExtendedEffects.hasMagicResistance(actor) || CombatState._hasFeature(actor, "Magic Resistance")) && isSpell,

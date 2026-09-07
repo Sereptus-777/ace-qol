@@ -500,7 +500,7 @@ export class RepeatingSaveEngine {
       // silently (the duration tracker should have done this anyway, but
       // belt-and-braces).
       if (durationRounds <= 0) {
-        try { await stillPresent.delete(); } catch (_) {}
+        try { await stillPresent.delete(); } catch (err) { console.warn(`ace-qol | a delete did not save:`, err); }
         await this._postOOCSummaryCard(actor, meta, {
           attempts: 0,
           passed: true,

@@ -187,6 +187,7 @@ export class SpellPipeline {
     // hook dnd5e 5.3.3 emits. `_dispatch` resolves the cast level from
     // `message.system.spellLevel` and `message.flags.dnd5e.use.spellLevel`
     // before it ever consults this cache, so upcasting resolves correctly.
+    // dead-hook-ok: upcast cache; _dispatch resolves the cast level from the message before consulting it
     Hooks.on("dnd5e.useActivity", (activity, usageConfig) => {
       try {
         const entry = SpellPipeline._getEntry(activity?.item);
@@ -409,9 +410,45 @@ export class SpellPipeline {
     // (a monster's Banishment, Hold-type gaze, Bless-like buff) reuses that
     // spell's entry + resolver with zero duplication. "Banish is Banish."
     for (const name of names) {
-      const raw = (type === "feat")
-        ? (FEATURE_REGISTRY[name] ?? SPELL_REGISTRY[name])
-        : SPELL_REGISTRY[name];
+      let raw = null;
+      if (type === "feat") {
+        raw = FEATURE_REGISTRY[name];
+        if (!raw) {
+          // ⚠️🔴 A SPELL NAME IS OFTEN JUST AN ENGLISH WORD. Johnny,
+          // 2026-09-06: *"random PCs are getting under command this turn right
+          // now, and on PCs I've never even cast command on... I even took
+          // command off of one person and then it just appeared again."*
+          //
+          // The borrow above is a good idea and it has no brakes. "Banish is
+          // Banish" holds for Banishment, Bless and Ghostly Howl. It does not
+          // hold for Command, Shield, Fly, Bane, Sleep, Slow, Haste, Light,
+          // Darkness, Fear, Web or Silence — all of them spells, and all of
+          // them names a statblock hands to a legendary action, a bark, or a
+          // piece of scenery. A monster feature called "Command" was inheriting
+          // the 1st-level enchantment's whole entry: a Wisdom save nobody wrote,
+          // and a "Commanded" condition stamped on whoever failed it.
+          //
+          // ⚠️ SO THE FEATURE HAS TO ALREADY DO THE THING. A borrowed entry that
+          // demands a Wisdom save may only be taken by a feature whose own sheet
+          // declares that same save. This is the item outranking the registry,
+          // which is the standing rule here, and it costs the real cases
+          // nothing: a monster's Banishment has the Charisma save written on it.
+          const lent = SPELL_REGISTRY[name];
+          if (lent) {
+            const why = SpellPipeline._featureMayBorrow(item, lent, name);
+            if (why.ok) raw = lent;
+            else {
+              // ⚠️ SAY IT. A silent refusal here is indistinguishable from a
+              // registry that never had the entry, and this one is worth
+              // knowing about: it means somebody named a feature after a spell.
+              console.debug(`${MODULE_ID} | "${item.name}" is a feature, not the `
+                + `${name} spell, so it does not borrow that entry — ${why.reason}.`);
+            }
+          }
+        }
+      } else {
+        raw = SPELL_REGISTRY[name];
+      }
       if (!raw) continue;
       if (name !== exact) SpellPipeline._noteSuffixRescue(item.name, name);
       return SpellPipeline._applyEdition(raw, item);
@@ -431,6 +468,63 @@ export class SpellPipeline {
     // to the generic save-and-damage engine exactly as they do today, because a
     // confident wrong plan is worse than no plan.
     return SpellPipeline._inferEntry(item);
+  }
+
+  /**
+   * May this FEATURE take that SPELL's entry?
+   *
+   * Only when the feature's own sheet already does what the entry describes.
+   * The registry is a cache of rulings; the item is the thing being used, and
+   * where they disagree the item wins.
+   *
+   * ⚠️ THE SAVE IS THE TEST THAT MATTERS. Every case that went wrong was an
+   * entry that imposes a saving throw landing on a feature that imposes none,
+   * so a creature rolled a save nobody asked for and took a condition nobody
+   * cast. If the entry names a save ability, the feature must name the same one.
+   *
+   * ⚠️ AN ENTRY WITH NO SAVE IS STILL LENT FREELY. Buffs, heals and auras
+   * borrow as they always did; this narrows exactly one thing.
+   *
+   * @returns {{ok: boolean, reason: string}}
+   */
+  static _featureMayBorrow(item, entry, name) {
+    try {
+      const wants = String(entry?.save?.ability ?? "").toLowerCase();
+      if (!wants) return { ok: true, reason: "the entry imposes no save" };
+
+      const acts = item?.system?.activities?.contents ?? [];
+      const abilities = new Set();
+      let sawSave = false;
+      for (const a of acts) {
+        const ab = a?.save?.ability;
+        if (ab === undefined || ab === null) continue;
+        // dnd5e 5.x stores this as a Set; older data as a plain string.
+        const list = ab instanceof Set ? [...ab] : [ab];
+        for (const one of list) {
+          const v = String(one ?? "").toLowerCase();
+          if (!v) continue;
+          sawSave = true;
+          abilities.add(v);
+        }
+      }
+
+      if (!sawSave) {
+        return { ok: false, reason: `the ${name} entry imposes a ${wants.toUpperCase()} `
+          + `save and this feature declares no saving throw at all` };
+      }
+      if (!abilities.has(wants)) {
+        return { ok: false, reason: `the ${name} entry imposes a ${wants.toUpperCase()} save `
+          + `and this feature asks for ${[...abilities].join("/").toUpperCase()}` };
+      }
+      return { ok: true, reason: `both ask for a ${wants.toUpperCase()} save` };
+    } catch (err) {
+      // ⚠️ FAIL CLOSED, AND SAY SO. Guessing "yes" here is how the bug got out;
+      // guessing "no" only sends the item to the inference engine, which reads
+      // the item itself.
+      console.warn(`${MODULE_ID} | could not tell whether "${item?.name}" may borrow `
+        + `the ${name} entry, so it will be read from the item instead:`, err);
+      return { ok: false, reason: "the feature could not be read" };
+    }
   }
 
   /**

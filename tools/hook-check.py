@@ -60,6 +60,9 @@ DYNAMIC = [
 ]
 
 
+MARK = re.compile(r"dead-hook-ok:\s*(.+?)\s*$")
+
+
 def system_source():
     if not SYSTEM.exists():
         print(f"dnd5e source not found at {SYSTEM} - cannot check anything.")
@@ -90,6 +93,20 @@ def emitted(name, src):
     return False
 
 
+def _excuse(path, line_no):
+    """The stated reason a dead listener is deliberate, or None."""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception:
+        return None
+    for idx in (line_no - 1, line_no - 2):     # same line, or the one above
+        if 0 <= idx < len(lines):
+            m = MARK.search(lines[idx])
+            if m and m.group(1).strip():
+                return m.group(1).strip()
+    return None
+
+
 def main():
     src = system_source()
     found = {}          # name -> [(file, line)]
@@ -115,6 +132,35 @@ def main():
 
     dead = {n: v for n, v in dnd.items() if not emitted(n, src)}
 
+    # -- Deliberately dead listeners -------------------------------------
+    #
+    # A gate that is permanently red is a gate nobody reads, and this one has
+    # been red for a day over four listeners that are dead ON PURPOSE: legacy
+    # fallbacks, and paths that would double-prompt if they ever woke up.
+    # With no way to say so, the next genuinely dead hook would arrive into a
+    # report that already says "1 hook name nothing fires" and be invisible.
+    #
+    # So a listener can declare itself, exactly like card-wrap-check's
+    # `no-wrap-ok`, by carrying a reason on the same line or the line above:
+    #
+    #     Hooks.on("dnd5e.useActivity", fn);   // dead-hook-ok: legacy fallback
+    #
+    # The reason is required. "dead-hook-ok" with nothing after it does not
+    # count, because a bare marker is how a real one gets waved through.
+    live_dead = {}
+    excused = []
+    for name, sites in dead.items():
+        kept = []
+        for f, ln in sites:
+            reason = _excuse(MODULES / f, ln)
+            if reason:
+                excused.append((name, f, ln, reason))
+            else:
+                kept.append((f, ln))
+        if kept:
+            live_dead[name] = kept
+    dead = live_dead
+
     print("=" * 74)
     print("HOOKS ACE LISTENS FOR THAT dnd5e NEVER FIRES")
     print("=" * 74)
@@ -123,8 +169,16 @@ def main():
     print("builds those from class names at runtime.")
     print()
 
+    if excused:
+        print(f"{len(excused)} listener(s) are dead ON PURPOSE and say why:")
+        for name, f, ln, reason in sorted(excused):
+            print(f"  {name}  {f}:{ln}")
+            print(f"      {reason}")
+        print()
+
     if not dead:
-        print("Every dnd5e hook ACE listens for is one dnd5e actually emits.")
+        print("Every dnd5e hook ACE listens for is one dnd5e actually emits,")
+        print("or is declared dead on purpose with a reason.")
         return 0
 
     for name in sorted(dead):

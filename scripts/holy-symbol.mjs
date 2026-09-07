@@ -598,7 +598,7 @@ export class HolySymbol {
       if (inLight && !existing) {
         await HolySymbol._applySunlightAffliction(actor, sens.hyper);
       } else if (!inLight && existing) {
-        try { await existing.delete(); } catch (_) {}
+        try { await existing.delete(); } catch (err) { console.warn(`ace-qol | a delete did not save:`, err); }
       }
     }
   }

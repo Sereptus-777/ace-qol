@@ -172,7 +172,7 @@ export class CommandSpell {
     // ⚠️ STAMP THE WORD ONTO THE EFFECT. The reminder on the creature's own turn
     // fires long after the cast, when the activity context is gone. Without this
     // it can only say "must obey" — exactly what Johnny got and objected to.
-    if (word) { try { await effect.setFlag(MODULE_ID, "commandWord", String(word)); } catch (_) {} }
+    if (word) { try { await effect.setFlag(MODULE_ID, "commandWord", String(word)); } catch (err) { console.warn(`ace-qol | a setFlag did not save:`, err); } }
 
     // ── Announce ────────────────────────────────────────────────────────
     const wordText = word ? ` to <strong style="color:#ffd970;">${esc(word)}</strong>` : "";
