@@ -44,9 +44,11 @@ globalThis.game = { settings: { get: () => "2024", register: () => {} },
 globalThis.canvas = { grid: { size: 100, distance: 5 }, tokens: { placeables: [] } };
 
 const { readActionFacts } = await import(pathToFileURL(`${QOL}/scripts/inference/action-facts.mjs`).href);
-const { planFor } = await import(pathToFileURL(`${QOL}/scripts/inference/spell-plan.mjs`).href);
+const { planFor, initialSaveOwed } = await import(
+  pathToFileURL(`${QOL}/scripts/inference/spell-plan.mjs`).href);
 const { DescriptionParser } = await import(pathToFileURL(`${QOL}/scripts/description-parser.mjs`).href);
-const { getSpellTiming } = await import(pathToFileURL(`${QOL}/scripts/spell-timing.mjs`).href);
+const { getSpellTiming, TIMING } = await import(
+  pathToFileURL(`${QOL}/scripts/spell-timing.mjs`).href);
 const { classifyItem } = await import(pathToFileURL(`${QOL}/scripts/inference/classify-item.mjs`).href);
 const { SPELL_REGISTRY } = await import(
   pathToFileURL(`${QOL}/scripts/spell-pipeline/registry/_index.mjs`).href);
@@ -63,7 +65,8 @@ const PACKS = [`${SYSTEM}/packs/spells`, `${SYSTEM}/packs/spells24`];
 let total = 0, complete = 0, passive = 0, incomplete = 0;
 const gapReasons = new Map();
 const incompleteNames = [];
-const robbed = [];        // has an initial save, current system throws it away
+const robbed = [];        // owed an initial save the save engine was not posting
+const waits = [];         // its text really does wait for you to walk in
 const disagreements = [];
 const withEntry = { total: 0, agree: 0 };
 
@@ -117,18 +120,25 @@ for (const path of PACKS) {
       for (const g of plan.gaps) bump(gapReasons, g.replace(/"[^"]*"/g, '"..."'));
     }
 
-    /* ── 3. Spells the CURRENT system robs of their initial save ────────
-       The classifier answers EITHER "resolves once when it lands" OR
-       "catches creatures entering it", never both. A spell whose activity
-       carries a real saving throw and which is labelled template-trigger has
-       its initial save dropped on the floor: that resolver is a no-op and the
-       concentration widget only watches entry and turn start. */
-    const cls = (() => { try { return classifyItem(item, { parsed, timing }); } catch (_) { return null; } })();
-    const shape = cls?.shape ?? null;
-    if (shape === "template-trigger" && plan.decide?.kind === "save") {
-      robbed.push({ name: doc.name,
-                    save: plan.decide.ability?.toUpperCase(),
-                    stated: plan.persist.recatchConfidence });
+    /* ── 3. Spells whose initial save the save engine was dropping ──────
+       Reproduces the exact branch in save-engine._onTemplateResolved rather
+       than a proxy for it: a persistent area spell, not area-denial, whose
+       timing is neither ENTER_START nor ENTER_END, posts no card at all. */
+    const isArea = !!plan.place?.template;
+    const forcesSave = plan.decide?.kind === "save";
+    const persistent = timing && !timing.isInstant;
+    const enterTrigger = timing?.timing === TIMING.ENTER_START
+                      || timing?.timing === TIMING.ENTER_END;
+    const areaDenial = timing?.family === "areaDenial";
+    if (isArea && forcesSave && persistent && !enterTrigger && !areaDenial) {
+      const owed = initialSaveOwed(item, { hasSave: true });
+      if (owed === true || owed === "unknown") {
+        robbed.push({ name: doc.name, save: plan.decide.ability?.toUpperCase(),
+                      why: owed === true ? "its text says so" : "its text does not say",
+                      timing: `${timing?.timing}${timing?.unclassified ? " (a guess)" : ""}` });
+      } else {
+        waits.push(doc.name);
+      }
     }
 
     /* ── 2. Where a plan disagrees with a hand-written entry ────────────── */
@@ -207,13 +217,18 @@ if (incompleteNames.length) {
 }
 
 console.log("");
-console.log("SPELLS THE CURRENT SYSTEM ROBS OF THEIR INITIAL SAVE");
+console.log("PERSISTENT AREA SPELLS AND THEIR INITIAL SAVE");
 console.log("-".repeat(74));
-console.log("  labelled template-trigger, whose resolver is a no-op, while the item");
-console.log("  itself carries a real saving throw that nothing ever rolls.");
-console.log(`  count: ${robbed.length}`);
+console.log("  A persistent area spell posted an initial card only when its timing was");
+console.log("  ENTER_START or ENTER_END. spell-timing DEFAULTS an unknown one to");
+console.log("  START_OF_TURN, so these carried a saving throw nothing ever rolled.");
+console.log("");
+console.log(`  now save when it lands   : ${robbed.length}`);
+console.log(`  really do wait for entry : ${waits.length}  (${waits.slice(0, 8).join(", ")}${
+  waits.length > 8 ? ", ..." : ""})`);
+console.log("");
 for (const r of robbed.slice(0, 25)) {
-  console.log(`    ${r.name.padEnd(34)} ${r.save} save   re-catch: ${r.stated}`);
+  console.log(`    ${r.name.padEnd(28)} ${String(r.save).padEnd(4)} ${r.why.padEnd(24)} timing ${r.timing}`);
 }
 if (robbed.length > 25) console.log(`    +${robbed.length - 25} more`);
 

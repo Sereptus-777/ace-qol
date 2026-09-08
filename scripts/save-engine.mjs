@@ -39,6 +39,9 @@ import { buildTargetProfile } from "./profiles/target-profile.mjs";
 import { Situation } from "./situation.mjs";
 import { DamageApplicator } from "./damage-applicator.mjs";
 import { getSpellTiming, TIMING } from "./spell-timing.mjs";
+// ⚠️ ONE DECIDER FOR "DOES ANYBODY SAVE WHEN THIS LANDS". The plan asks the
+// same function, so the card and the report can never disagree.
+import { initialSaveOwed } from "./inference/spell-plan.mjs";
 import { CoverEngine } from "./cover-engine.mjs";
 import { DescriptionParser } from "./description-parser.mjs";
 import { ConditionLibrary } from "./condition-library.mjs";
@@ -1888,7 +1891,44 @@ export class SaveEngine {
                           || timing.timing === TIMING.ENTER_END;
       const isAreaDenial = timing?.family === "areaDenial";
 
-      if (triggerOnEnter && tokens.length && !isAreaDenial) {
+      // ⚠️🔴 THE HOLE FEAR FELL THROUGH, AND IT IS A CLASS OF SIXTY.
+      //
+      // Johnny cast Fear on 2026-09-07 and got an animation, no save card, and
+      // nothing else. Fear is not in spell-timing's hand-written table, so its
+      // HEURISTIC fired: any persistent area spell with concentration is
+      // defaulted to START_OF_TURN and the answer is flagged `unclassified`.
+      // START_OF_TURN is neither ENTER_START nor ENTER_END, so this branch was
+      // false, and the concentration widget only auto-rolls for the area-denial
+      // family. Nobody rolled anything. Ever.
+      //
+      // ⚠️ A DEFAULT IS NOT A FINDING. That guess decided a rules question the
+      // spell answers in its own first sentence:
+      //     Fear         "Each creature in a 30-foot Cone must succeed on a
+      //                   Wisdom saving throw"                     -> save NOW
+      //     Moonbeam     "When the Cylinder appears, each creature in it makes
+      //                   a Constitution saving throw"             -> save NOW
+      //     Stinking Cl. "Each creature that starts its turn in the Sphere"
+      //                                                            -> not yet
+      //     Web          "each creature that starts its turn ... or enters"
+      //                                                            -> not yet
+      // Measured across dnd5e's own books, 60 shipped spells carry a saving
+      // throw this branch was throwing away.
+      //
+      // ⚠️ IT ONLY EVER ADDS. Where the text says the area waits for you to walk
+      // in, this stays false and behaves exactly as it did. Where the text does
+      // not say either way, RAW's ordinary reading applies: a spell that forces
+      // a save catches who is standing in it.
+      const owed = initialSaveOwed(item, { hasSave: !!saveAbility });
+      const textSaysNow = owed === true || owed === "unknown";
+      if (textSaysNow && !triggerOnEnter) {
+        console.log(`${MODULE_ID} | "${item.name}": its text says whoever is already `
+          + `inside saves when it lands${owed === "unknown"
+            ? " (its text does not say otherwise, so RAW's default applies)" : ""}`
+          + `, and its timing (${timing?.timing}${timing?.unclassified
+            ? ", which was a guess" : ""}) would have skipped that.`);
+      }
+
+      if ((triggerOnEnter || textSaysNow) && tokens.length && !isAreaDenial) {
         await this._postLiveTargetCard(item, actor, tokens, {
           saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activityId,
           persistentInitial: true,

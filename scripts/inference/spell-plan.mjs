@@ -243,6 +243,191 @@ function planApply(facts, why) {
   };
 }
 
+/* ── Does the area catch you when it lands, or only when you walk in? ──── */
+
+// ⚠️🔴 dnd5e's 2024 TEXT IS NOT PROSE UNTIL FOUNDRY ENRICHES IT. Fireball's
+// description on disk begins:
+//     [[lookup @labels.description.affects capitalize]] in a
+//     [[lookup @labels.description.template]] centered on that point makes a
+//     Dexterity saving throw
+// The words "each creature" appear nowhere in it. Any pattern looking for them
+// reads the whole 2024 book as saying nothing, which is a silent blind spot
+// across hundreds of spells rather than an error anybody would notice.
+const _expand = (t) => String(t ?? "")
+  .replace(/\[\[lookup\s+@labels\.description\.affects[^\]]*\]\]/gi, "each creature")
+  .replace(/\[\[lookup\s+@labels\.description\.template[^\]]*\]\]/gi, "the area")
+  .replace(/\[\[lookup[^\]]*\]\]/gi, " ")
+  .replace(/\[\[\/save[^\]]*\]\]/gi, "saving throw")
+  .replace(/\[\[\/damage[^\]]*\]\]/gi, "damage")
+  .replace(/\[\[\/[a-z]+[^\]]*\]\]/gi, " ")
+  // &Reference[frightened]{frightened} and &Reference[prone apply=false]
+  .replace(/(?:&amp;|&)Reference\[(\w+)[^\]]*\](?:\{([^}]*)\})?/gi, (_m, id, label) => label || id);
+
+const _strip = (html) => _expand(html)
+  .replace(/<[^>]+>/g, " ")
+  .replace(/&(?:amp|nbsp|quot|#\d+);/gi, " ")
+  .replace(/\s+/g, " ")
+  .trim();
+
+/** A sentence that gates its save on movement or the turn cycle. */
+const GATED = /\b(?:enters?|entering|moves? into|moves? within|starts? its turn|ends? its turn|starts? their turn|ends? their turn|for the first time on a turn)\b/i;
+
+/**
+ * A sentence whose SUBJECT is a group, which is what an area save reads like.
+ *
+ * ⚠️🔴 "IN THE AREA" IS THE WRONG TEST, and trying it first proved it. Real
+ * rules text puts anything it likes between the noun and the area:
+ *     "Each Humanoid in a 20-foot-radius Sphere..."        Calm Emotions
+ *     "each creature on the ground in the area makes..."   Earthquake
+ *     "Each creature (other than you) in the area..."      Entangle
+ *     "Each creature under the cloud when it appears..."   Storm of Vengeance
+ *
+ * What actually separates an area save from every other save in a spell's text
+ * is that the sentence is ABOUT a group. Compare the ones that must not count,
+ * where the save belongs to somebody the spell singles out later:
+ *     "the attacker must succeed on a CON save"            Holy Aura
+ *     "If you probe deeper, the target makes a WIS save"   Detect Thoughts
+ *     "A creature can make a DEX save to grab a fixed..."  Reverse Gravity
+ *     "The target makes a Dexterity saving throw"          Conjure Celestial
+ *
+ * So: strip any leading "When ...," or "If ...," clause, then ask whether what
+ * remains begins with each / every / any / all.
+ */
+const LEADING_CLAUSE = /^(?:when|if|at|on|until|while|after|before)\b[^,]{0,120},\s*/i;
+
+/**
+ * Who is being asked to roll, taken from the words BEFORE the forcing verb.
+ *
+ * ⚠️ "STARTS WITH EACH" IS TOO NARROW, and the book proves it in four places:
+ *     "A creature in the area when you cast the spell must succeed..."  Entangle
+ *     "The target and each creature within 5 feet of it must succeed"   Ice Knife
+ * while these, which must NOT count, are singular things the spell has already
+ * singled out, and carry no group word before the verb at all:
+ *     "The target makes a Dexterity saving throw"          Conjure Celestial
+ *     "the attacker must succeed on a CON saving throw"    Holy Aura
+ *     "A Frightened target makes a WIS saving throw at the end of each of its
+ *      turns"                                              Weird's escape clause
+ * That last one is why the group word has to be found before the verb rather
+ * than anywhere in the sentence: its "each" belongs to "each of its turns".
+ */
+const GROUP_MARKER = /\b(?:each|every|any|all)\b|\ba\s+creature\b|\bcreatures\b/i;
+
+/**
+ * The sentence forces the roll rather than offering it.
+ *
+ * ⚠️ FAERIE FIRE NEVER SAYS "MUST". It says "Each creature in the Cube is also
+ * outlined if it FAILS a Dexterity saving throw", and a pattern that only knew
+ * "must succeed" and "makes a save" read the whole spell as asking nobody
+ * anything. "can make" stays out on purpose: Reverse Gravity OFFERS a save to
+ * grab something on the way up, and an offer is not a card.
+ */
+const FORCED = /\bmust\s+(?:\w+\s+){0,2}(?:succeed|make)\b|\bmakes?\s+(?:a|an|another)\s+[\w-]+\s+(?:saving\s+throw|save)\b|\bfails?\s+(?:a|an|the)\s+[\w-]+\s+(?:saving\s+throw|save)\b/i;
+
+// ⚠️ THE ADVERB NEARLY COST GREASE ITS SECOND HALF. Its follow-up sentence is
+// "A creature that enters the area or ends its turn there must ALSO succeed on
+// that save", and a pattern demanding "must succeed on" back to back missed it,
+// so the spell read as catching who was standing there and nobody afterwards.
+const SAVE_PHRASE = /\bsaving\s+throw\b|\bmust\s+(?:\w+\s+){0,2}succeed\s+on\b|\bmakes?\s+(?:a|another)\s+\w+\s+save\b|\bon\s+(?:that|this)\s+save\b/i;
+
+/**
+ * Read the rules text for WHEN an area asks for its saving throw.
+ *
+ * ⚠️🔴 THIS IS THE ANSWER SPELL-TIMING GUESSES AT. Its heuristic sends any
+ * persistent area spell with concentration to start-of-turn and marks the answer
+ * `unclassified`; classify-item then read that guess as a finding, so every area
+ * spell missing from its hand-written table lost its initial save.
+ *
+ * The text says it plainly, and the two cases read completely differently:
+ *
+ *   Fear      "Each creature in a 30-foot Cone must succeed on a Wisdom save"
+ *   Moonbeam  "When the Cylinder appears, each creature in it makes a CON save"
+ *   Grease    "When the grease appears, each creature standing in its area..."
+ *                ...and also "A creature that enters the area or ends its turn"
+ *   Sleet     "When a creature enters the Cylinder for the first time on a turn
+ *              or starts its turn there, it must succeed on a DEX save"
+ *   Stinking  "Each creature that starts its turn in the Sphere must succeed"
+ *
+ * Grease is why these are two answers and not one: it catches who is standing
+ * there AND who walks in later.
+ *
+ * @returns {{initial: boolean|null, recatch: boolean|null, evidence: string[]}}
+ *          `null` means the text does not say, which is not the same as "no".
+ */
+export function readAreaTiming(html) {
+  const text = _strip(html);
+  if (!text) return { initial: null, recatch: null, evidence: [] };
+
+  let initial = null, recatch = null, sawSave = false;
+  const evidence = [];
+  // Sentences, keeping it simple: rules text is written in short ones.
+  for (const raw of text.split(/(?<=[.!?])\s+/)) {
+    const s = raw.trim();
+    if (!s || !SAVE_PHRASE.test(s)) continue;
+    sawSave = true;
+
+    // ⚠️ A SENTENCE CAN BE BOTH, which is why these are not an if/else.
+    // Grease says "When the grease appears, each creature standing in its area
+    // must succeed", and then "A creature that enters the area or ends its turn
+    // there must ALSO succeed on that save".
+    if (GATED.test(s)) recatch = true;
+
+    const body = s.replace(LEADING_CLAUSE, "");
+    const forced = FORCED.exec(body);
+    const before = forced ? body.slice(0, forced.index) : "";
+    // ⚠️ AN OFFER IS NOT A CARD. Reverse Gravity says "A creature CAN MAKE a
+    // Dexterity saving throw to grab a fixed object it can reach"; the same
+    // words as a forced save with one auxiliary in front of them, and a card
+    // for everyone in the area would be wrong.
+    const offered = /\b(?:can|may|could|might)\s*$/i.test(before);
+    if (forced && !offered && !GATED.test(body) && GROUP_MARKER.test(before)) {
+      initial = true;
+      evidence.push(`"${s.slice(0, 110)}"`);
+    }
+  }
+  return { initial, recatch, sawSave, evidence };
+}
+
+/**
+ * Does anybody standing in this area save the moment it lands?
+ *
+ * ⚠️🔴 THE QUESTION THAT WAS NEVER ASKED, AND THE ONE THAT KILLED FEAR. An
+ * area spell either catches whoever is standing there when it appears, or it
+ * only catches whoever walks in afterwards, and the sheet does not record which.
+ * The text does, in one sentence, and the save engine had no way to ask.
+ *
+ * ⚠️ THREE ANSWERS, NEVER TWO. "Its text does not say" is not "no". Where the
+ * text is silent the RAW default holds: a spell that forces a save at all
+ * catches who is in it, which is how every instant area spell in the game works
+ * and is the reading that cannot silently do nothing.
+ *
+ * ⚠️ ONE DECIDER. The plan and the save engine both call this rather than each
+ * working it out, which is the fault this whole rebuild exists to end.
+ *
+ * @param {object} item
+ * @param {object} [opts]
+ * @param {boolean} [opts.hasSave]  whether anything forces a saving throw
+ * @returns {true|false|"unknown"}
+ */
+export function initialSaveOwed(item, { hasSave = true } = {}) {
+  if (!hasSave) return false;
+  const t = readAreaTiming(item?.system?.description?.value);
+  if (t.initial === true) return true;
+  // It says only "when you enter, or start your turn here". Standing in it when
+  // it lands is neither, so nobody saves yet. Web, Sleet Storm, Stinking Cloud.
+  if (t.recatch === true) return false;
+  // ⚠️🔴 THE TEXT NAMES A SAVE, AND IT IS NOT THE AREA'S. Holy Aura saves
+  // the ATTACKER who hits somebody in the aura. Detect Thoughts saves the mind
+  // you probe. Conjure Celestial saves whoever the spirit attacks. Reverse
+  // Gravity offers an optional grab. Wall of Stone saves a creature the wall
+  // would enclose. Every one of them is a real save on the sheet, and posting a
+  // card for everyone standing in the area would be a card that should not
+  // exist — which is the same fault as the silence, wearing the other face.
+  if (t.sawSave) return false;
+  // The text names no saving throw at all, yet the sheet carries one. Nothing
+  // to read, so RAW's ordinary reading holds: it catches who is in it.
+  return "unknown";
+}
+
 /* ── 5. DOES IT KEEP WORKING ───────────────────────────────────────────── */
 
 /**
@@ -255,7 +440,7 @@ function planApply(facts, why) {
  * `unclassified`. That default was being read as a finding, so every persistent
  * area spell missing from its table lost its initial save.
  */
-function planPersist(facts, timing, why) {
+function planPersist(facts, timing, item, decide, why) {
   const d = facts?.duration ?? {};
   const t = timing ?? null;
   const said = _s(t?.timing);
@@ -263,17 +448,26 @@ function planPersist(facts, timing, why) {
   const looksLikeRecatch = said.includes("enter") || said.includes("start")
     || said.includes("end");
 
+  // ⚠️ THE TEXT OUTRANKS THE GUESS. spell-timing's heuristic is a default; the
+  // spell's own words are evidence.
+  const fromText = readAreaTiming(item?.system?.description?.value);
+
   let recatches = false, confidence = "no";
-  if (stated && looksLikeRecatch) { recatches = true; confidence = "stated"; }
+  if (fromText.recatch === true) { recatches = true; confidence = "stated in its text"; }
+  else if (stated && looksLikeRecatch) { recatches = true; confidence = "stated"; }
   else if (stated) { recatches = false; confidence = "stated"; }
   else if (looksLikeRecatch) {
     // Assumed, and SAID to be assumed. It never suppresses the initial save.
     recatches = true; confidence = "assumed";
   }
 
+  const initialSave = initialSaveOwed(item, { hasSave: decide?.kind === "save" });
+
   if (recatches) {
     why.push(`creatures entering it are caught again (${confidence})`);
   }
+  if (initialSave === true) why.push("whoever is in it when it lands saves too");
+  else if (initialSave === false && recatches) why.push("nobody saves until they walk in");
   const conc = !!d.concentration;
   if (conc) why.push("concentration");
 
@@ -282,6 +476,8 @@ function planPersist(facts, timing, why) {
     value: _n(d.value), units: _s(d.units) || null,
     concentration: conc,
     recatches, recatchConfidence: confidence,
+    // true / false / "unknown" — three answers, never two.
+    initialSave, initialSaveEvidence: fromText.evidence,
     followsCaster: !!t?.followsCaster,
     // An escape at the end of each turn, only ever taken from stated text.
     repeatSave: facts?.interference?.repeatSave ?? null,
@@ -320,7 +516,7 @@ export function planFor(item, { facts = null, parsed = null, timing = null } = {
   const apply = planApply(f, why.apply);
   const decide = planDecide(f, gaps, why.decide);
   const who = planWho(f, place, apply, decide, gaps, why.who);
-  const persist = planPersist(f, timing, why.persist);
+  const persist = planPersist(f, timing, item, decide, why.persist);
 
   // ⚠️ A PASSIVE IS NOT AN INCOMPLETE PLAN. It has no button to press, so
   // reporting it as a failure would bury the real ones.
@@ -393,8 +589,16 @@ export function describePlan(plan) {
     `    lasts            ${lasts}`,
   ];
 
-  // ⚠️ THE LINE THAT WOULD HAVE CAUGHT FEAR. Said out loud, every time, so a
-  // spell that re-catches is never mistaken for one that has no initial save.
+  // ⚠️🔴 THE LINE THAT WOULD HAVE CAUGHT FEAR. Whether anybody saves when it
+  // lands is its own sentence, printed for every area spell, so it can never
+  // again be mistaken for the question about re-catching.
+  if (p.template) {
+    lines.push(`    on arrival       ${
+      s.initialSave === true ? "everyone already inside saves now"
+      : s.initialSave === false ? "nobody saves until they enter or start a turn in it"
+      : s.initialSave === "unknown" ? "its text does not say, so everyone inside saves now"
+      : "nothing to save against"}`);
+  }
   if (s.recatches) {
     lines.push(`    and again        creatures entering it, or starting their turn `
       + `in it, are caught again (${s.recatchConfidence})`);

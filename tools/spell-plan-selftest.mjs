@@ -198,6 +198,204 @@ console.log("\nAND IT NEVER THROWS ON RUBBISH");
   }
 }
 
+/* ── DOES ANYBODY SAVE WHEN IT LANDS ────────────────────────────────────── */
+console.log("\nREADING THE TEXT FOR WHEN THE AREA ASKS");
+{
+  const { readAreaTiming, initialSaveOwed } = await import(
+    "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/inference/spell-plan.mjs");
+
+  // ⚠️ THE REAL SENTENCES, COPIED OUT OF dnd5e's OWN 2024 BOOK. A harness that
+  // invents its own phrasing proves nothing about his game.
+  const TEXTS = {
+    Fear: "Each creature in a 30-foot Cone must succeed on a Wisdom saving throw "
+      + "or drop whatever it is holding and have the Frightened condition for the duration.",
+    Moonbeam: "A silvery beam of pale light shines down in a 5-foot-radius Cylinder. "
+      + "When the Cylinder appears, each creature in it makes a Constitution saving throw.",
+    Grease: "Nonflammable grease covers the ground in a 10-foot square. When the grease "
+      + "appears, each creature standing in its area must succeed on a Dexterity saving "
+      + "throw or have the Prone condition. A creature that enters the area or ends its "
+      + "turn there must also succeed on that save or fall Prone.",
+    "Stinking Cloud": "You create a 20-foot-radius Sphere of gas. Each creature that "
+      + "starts its turn in the Sphere must succeed on a Constitution saving throw.",
+    "Sleet Storm": "Until the spell ends, sleet falls in a Cylinder. When a creature "
+      + "enters the Cylinder for the first time on a turn or starts its turn there, it "
+      + "must succeed on a Dexterity saving throw or have the Prone condition.",
+    "Spike Growth": "The ground sprouts hard spikes. When a creature moves into or "
+      + "within the area, it takes damage for every 5 feet it travels.",
+  };
+
+  check("Fear catches whoever is standing in the cone",
+    readAreaTiming(TEXTS.Fear).initial, true);
+  check("so does Moonbeam, which says when it appears",
+    readAreaTiming(TEXTS.Moonbeam).initial, true);
+  // ⚠️ GREASE IS WHY THESE ARE TWO ANSWERS AND NOT ONE. It catches who is
+  // standing there AND who walks in later.
+  check("Grease catches who is standing there", readAreaTiming(TEXTS.Grease).initial, true);
+  check("and also who walks in", readAreaTiming(TEXTS.Grease).recatch, true);
+
+  check("Stinking Cloud waits for your turn",
+    readAreaTiming(TEXTS["Stinking Cloud"]).initial, null);
+  check("Sleet Storm waits for you to enter",
+    readAreaTiming(TEXTS["Sleet Storm"]).initial, null);
+  check("and both are recorded as re-catching",
+    [readAreaTiming(TEXTS["Stinking Cloud"]).recatch,
+     readAreaTiming(TEXTS["Sleet Storm"]).recatch], [true, true]);
+  check("a spell with no save at all claims neither",
+    readAreaTiming(TEXTS["Spike Growth"]),
+    { initial: null, recatch: null, sawSave: false, evidence: [] });
+
+  // ⚠️🔴 dnd5e's 2024 TEXT IS NOT PROSE UNTIL FOUNDRY ENRICHES IT. Fireball's
+  // description on disk never contains the words "each creature".
+  const fireballRaw = "<p>A bright streak flashes from you to a point you choose within "
+    + "range. [[lookup @labels.description.affects capitalize]] in a "
+    + "[[lookup @labels.description.template]] centered on that point makes a Dexterity "
+    + "saving throw, taking 8d6 Fire damage on a failed save.</p>";
+  check("the 2024 lookup form is expanded, not read as silence",
+    readAreaTiming(fireballRaw).initial, true);
+
+  const refRaw = "<p>Each creature in the area must succeed on a Wisdom saving throw or "
+    + "have the &Reference[frightened apply=false] condition.</p>";
+  check("a Reference tag does not break the sentence",
+    readAreaTiming(refRaw).initial, true);
+}
+
+console.log("\nA SAVE THAT BELONGS TO SOMEBODY ELSE IS NOT AN AREA SAVE");
+{
+  const { readAreaTiming } = await import(
+    "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/inference/spell-plan.mjs");
+
+  // ⚠️🔴 "IN THE AREA" IS THE WRONG TEST, and trying it first proved it. Every
+  // sentence below is copied out of dnd5e's 2024 book. The left column is what
+  // RAW says, checked by hand.
+  const CASES = [
+    // Area saves the engine must post when the spell lands.
+    [true, "Calm Emotions", "Each Humanoid in a 20-foot-radius Sphere centered on a "
+      + "point you choose within range must succeed on a Charisma saving throw."],
+    [true, "Earthquake", "When you cast this spell and at the end of each of your turns "
+      + "for the duration, each creature on the ground in the area makes a Dexterity "
+      + "saving throw."],
+    [true, "Entangle", "Each creature (other than you) in the area when you cast the "
+      + "spell must succeed on a Strength saving throw or have the restrained condition."],
+    [true, "Storm of Vengeance", "Each creature under the cloud when it appears must "
+      + "succeed on a Constitution saving throw or take 2d6 Thunder damage."],
+    [true, "Blade Barrier", "Any creature in the wall's space makes a Dexterity saving throw."],
+    [true, "Slow", "Each target must succeed on a Wisdom saving throw or be affected "
+      + "by this spell for the duration."],
+    // ⚠️ FAERIE FIRE NEVER SAYS "MUST" ANYWHERE IN ITS TEXT.
+    [true, "Faerie Fire", "Each creature in the Cube is also outlined if it fails a "
+      + "Dexterity saving throw."],
+    // ⚠️ NOT EVERY AREA SAVE OPENS WITH THE GROUP.
+    [true, "Ice Knife", "The target and each creature within 5 feet of it must succeed "
+      + "on a Dexterity saving throw or take 2d6 Cold damage."],
+    [true, "Entangle 2014", "A creature in the area when you cast the spell must succeed "
+      + "on a Strength saving throw or be Restrained by the entangling Plants."],
+
+    // Saves that belong to somebody the spell singles out later. Posting a card
+    // for everyone standing in the area would be a card that should not exist.
+    [false, "Holy Aura", "In addition, when a Fiend or an Undead hits an affected "
+      + "creature with a melee attack roll, the attacker must succeed on a Constitution "
+      + "saving throw or have the Blinded condition."],
+    [false, "Detect Thoughts", "If you probe deeper, the target makes a Wisdom saving throw."],
+    [false, "Conjure Celestial", "The target makes a Dexterity saving throw, taking 6d12 "
+      + "Radiant damage on a failed save."],
+    // ⚠️ AN OFFER IS NOT A CARD. The same words as a forced save with one
+    // auxiliary in front of them, and a group subject to boot.
+    [false, "Reverse Gravity", "A creature can make a Dexterity saving throw to grab a "
+      + "fixed object it can reach, thus avoiding the fall upward."],
+    [false, "Forcecage", "If the creature tries to use teleportation or interplanar "
+      + "travel to leave, it must first make a saving throw."],
+    [false, "Phantasmal Force", "The target can use its action to examine the illusion "
+      + "and make an Intelligence saving throw."],
+    [false, "Wall of Stone", "If a creature would be surrounded on all sides by the wall, "
+      + "that creature can make a Dexterity saving throw."],
+    // ⚠️ "at the end of each of its turns" contains the word "each". A looser
+    // test that only looked for that word anywhere would call this an area save.
+    [false, "Weird's escape clause", "A Frightened target makes a Wisdom saving throw at "
+      + "the end of each of its turns."],
+  ];
+  for (const [want, name, text] of CASES) {
+    check(`${name}`, readAreaTiming(text).initial === true, want);
+  }
+}
+
+console.log("\nTHREE ANSWERS, NEVER TWO");
+{
+  const { initialSaveOwed } = await import(
+    "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/inference/spell-plan.mjs");
+  const withText = (t) => ({ system: { description: { value: t } } });
+
+  check("a spell that forces no save owes none",
+    initialSaveOwed(withText("Each creature in the area is blinded."), { hasSave: false }), false);
+  check("a text that says so owes one",
+    initialSaveOwed(withText("Each creature in the Cone must succeed on a Wisdom saving throw.")),
+    true);
+  check("a text that only names entry owes none yet",
+    initialSaveOwed(withText("Each creature that starts its turn in the Sphere must succeed "
+      + "on a Constitution saving throw.")), false);
+  // ⚠️🔴 A SAVE THAT BELONGS TO SOMEBODY ELSE IS NOT THE AREA'S. Holy Aura
+  // saves the ATTACKER who hits someone in the aura. A card for everyone
+  // standing in it is a card that should not exist, which is the same fault as
+  // the silence wearing the other face.
+  check("a save the text pins on somebody else owes none",
+    initialSaveOwed(withText("When a Fiend or an Undead hits an affected creature with "
+      + "a melee attack roll, the attacker must succeed on a Constitution saving throw.")),
+    false);
+
+  // ⚠️ SILENCE IS ITS OWN ANSWER, AND IT MUST NOT READ AS "NO". A sheet that
+  // carries a save whose text never mentions one leaves nothing to read, and
+  // reporting that as "no save" is how a working spell becomes a dead button.
+  check("a text that names no save at all is unknown, not no",
+    initialSaveOwed(withText("A shimmering barrier springs into being.")), "unknown");
+  check("and no text at all is unknown too", initialSaveOwed({}), "unknown");
+}
+
+console.log("\nAND THE PLAN SAYS IT OUT LOUD");
+{
+  const fear = spell("Fear", { template: CONE30, save: "wis",
+    duration: "minute", durationValue: 1, concentration: true });
+  fear.system.description.value = "Each creature in a 30-foot Cone must succeed on a "
+    + "Wisdom saving throw or have the Frightened condition for the duration.";
+  const plan = planFor(fear, { timing: timing("startOfTurn", { unclassified: true }) });
+  check("Fear's initial save is owed", plan.persist.initialSave, true);
+  check("and the plan prints it",
+    /on arrival\s+everyone already inside saves now/.test(describePlan(plan)), true);
+
+  const web = spell("Web", { units: "ft", value: 60,
+    template: { type: "cube", size: 20, units: "ft" }, save: "dex",
+    duration: "hour", durationValue: 1, concentration: true });
+  web.system.description.value = "Each creature that starts its turn in the webs or that "
+    + "enters them during its turn must make a Dexterity saving throw.";
+  const webPlan = planFor(web, { timing: timing("enterStart", { fromTable: true }) });
+  check("Web owes no initial save", webPlan.persist.initialSave, false);
+  check("and the plan says nobody saves yet",
+    /on arrival\s+nobody saves until they enter/.test(describePlan(webPlan)), true);
+}
+
+console.log("\nTHE SAVE ENGINE'S BRANCH ONLY EVER ADDS");
+{
+  // ⚠️🔴 THE SAFETY PROPERTY, WRITTEN AS A TEST. save-engine changed
+  //     (triggerOnEnter)            && tokens && !areaDenial
+  // to  (triggerOnEnter || textNow) && tokens && !areaDenial
+  // A card that was posted before must still be posted. Nothing may stop.
+  const before = (enter, tokens, denial) => enter && tokens && !denial;
+  const after = (enter, textNow, tokens, denial) => (enter || textNow) && tokens && !denial;
+  let regressions = 0, additions = 0;
+  for (const enter of [true, false]) {
+    for (const textNow of [true, false]) {
+      for (const tokens of [true, false]) {
+        for (const denial of [true, false]) {
+          const b = before(enter, tokens, denial);
+          const a = after(enter, textNow, tokens, denial);
+          if (b && !a) regressions++;
+          if (!b && a) additions++;
+        }
+      }
+    }
+  }
+  check("no case that posted a card stops posting one", regressions, 0);
+  check("and it does add cards where the text asks", additions > 0, true);
+}
+
 console.log("");
 console.log(pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;
