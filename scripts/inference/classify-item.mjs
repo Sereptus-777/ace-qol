@@ -23,6 +23,11 @@
 // nothing falls through to the generic engine, which already handles any
 // save-and-damage item competently. Declining is a real answer.
 import { readActionFacts } from "./action-facts.mjs";
+// ⚠️ ONE DECIDER FOR THE TEMPLATE FORK. The plan reads the spell's own words;
+// asking it here rather than re-deriving the answer is the whole point.
+import { planFor, templateForkFromPlan } from "./spell-plan.mjs";
+
+const _safe = (fn, fallback) => { try { return fn(); } catch (_) { return fallback; } };
 
 /** Shapes the pipeline can actually dispatch. Anything else is not a plan. */
 export const KNOWN_SHAPES = new Set([
@@ -245,6 +250,30 @@ export function classifyItem(item, { parsed = null, timing = null, facts = null,
         assumed = true;
         why.push("nothing states whether it re-catches creatures, so its lasting "
           + "duration was used to assume it does");
+      }
+
+      // ⚠️🔴 AND THE SPELL'S OWN WORDS OUTRANK BOTH THE TABLE AND THE GUESS.
+      // Everything above this line asks spell-timing, which has a hand-written
+      // table and, for anything missing from it, a heuristic that DEFAULTS an
+      // unknown persistent area to start-of-turn. Fear is not in that table, so
+      // a default chose between two resolvers and its saving throw was never
+      // rolled by anything (2026-09-07).
+      //
+      // ⚠️ IT SPEAKS ONLY WHEN THE TEXT DOES. Measured across both shipped
+      // books: of the 163 spells that reach this fork, the text has no opinion
+      // on 119 and they are left exactly as they were, it agrees on 38, and it
+      // overrules on 6 — Fear and Hypnotic Pattern, whose areas are gone the
+      // moment they land, and Prismatic Wall and Wall of Ice, which say plainly
+      // that entering them catches you.
+      const settled = _safe(() => templateForkFromPlan(
+        planFor(item, { facts: f, parsed, timing })), null);
+      if (settled && settled !== shape) {
+        why.push(settled === "template-save"
+          ? "its own text says the area is gone once it resolves, so nothing "
+            + "re-catches in it"
+          : "its own text says entering it catches you again");
+        shape = settled;
+        assumed = false;
       }
 
     // ── ATTACK ROLLS ─────────────────────────────────────────────────────

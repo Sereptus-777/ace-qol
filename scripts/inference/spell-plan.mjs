@@ -272,8 +272,19 @@ const _strip = (html) => _expand(html)
   .replace(/\s+/g, " ")
   .trim();
 
-/** A sentence that gates its save on movement or the turn cycle. */
-const GATED = /\b(?:enters?|entering|moves? into|moves? within|starts? its turn|ends? its turn|starts? their turn|ends? their turn|for the first time on a turn)\b/i;
+/**
+ * A sentence that gates its save on walking into the area or starting a turn
+ * standing in it. This is what "re-catches" means.
+ *
+ * ⚠️🔴 AN ESCAPE IS NOT A RE-CATCH, AND CONFLATING THEM MISREAD SEVEN SPELLS.
+ * Slow says "the target repeats the save at the END of each of its turns"; that
+ * is the victim shaking the spell off, not the cube catching somebody new, and
+ * counting it made Slow a lingering trigger area. Fear's "if the creature ends
+ * its turn where it can't see you, it makes a Wisdom saving throw" is the same
+ * thing. An end-of-turn save belongs to `repeatSave`, which the facts already
+ * read from stated text and never guess at.
+ */
+const GATED = /\b(?:enters?|entering|moves? into|moves? within|starts? its turn|starts? their turn|for the first time on a turn)\b/i;
 
 /**
  * A sentence whose SUBJECT is a group, which is what an area save reads like.
@@ -648,6 +659,115 @@ export function planFor(item, { facts = null, parsed = null, timing = null } = {
     place, who, decide, apply, persist,
     facts: f,
   };
+}
+
+/**
+ * Settle the one fork that killed Fear, and ONLY where the spell's own text
+ * settles it.
+ *
+ * ⚠️🔴 THE FORK. classify-item asks spell-timing whether a spell "catches
+ * creatures entering it" and answers EITHER template-trigger OR template-save.
+ * spell-timing has a hand-written table and, for anything missing from it, a
+ * heuristic that DEFAULTS to start-of-turn. So a default was choosing between
+ * two resolvers, and Fear lost its saving throw to it.
+ *
+ * ⚠️ IT ANSWERS ONLY WHEN THE TEXT DOES, AND STAYS SILENT OTHERWISE. Measured
+ * across both books, letting it answer everywhere would move Slow, Weird and
+ * Flaming Sphere on the strength of the same guess it exists to overrule.
+ * Returning null leaves the existing answer exactly as it is.
+ *
+ * @param {object} plan
+ * @returns {"template-save"|"template-trigger"|null} null = no opinion
+ */
+export function templateForkFromPlan(plan) {
+  const s = plan?.persist;
+  if (!s) return null;
+
+  // ⚠️ NOTHING RE-CATCHES IN AN AREA THAT IS NOT THERE. A cone is a direction
+  // you fired in; Fear's frightened creatures last a minute, its cone does not.
+  if (s.areaLasts === false) return "template-save";
+
+  // The spell says in its own words whether walking in catches you.
+  if (s.recatchConfidence === "stated in its text") {
+    return s.recatches ? "template-trigger" : "template-save";
+  }
+  return null;
+}
+
+/**
+ * Which of the pipeline's resolvers this plan describes.
+ *
+ * ⚠️🔴 THE SHAPE IS A CONSEQUENCE OF THE PLAN, NOT A GUESS THAT PRECEDES IT.
+ * Johnny, 2026-09-07: *"we have all the information."* The sixteen shape words
+ * are sixteen points in the five columns above, so the word can be worked out
+ * rather than decided, and the fork that killed Fear disappears with it:
+ * "does it re-catch" and "does its area last" are separate questions, and only
+ * a spell that answers yes to BOTH is a lingering trigger.
+ *
+ * ⚠️ NULL MEANS ACE DOES NOT CLAIM IT, WHICH IS SAFE. dnd5e resolves an
+ * unclaimed spell on its own sheet and that works. Claiming one and then
+ * mishandling it is the failure this whole rebuild exists to end, so anything
+ * that does not clearly match a resolver's contract returns null.
+ *
+ * @param {object} plan  from `planFor`
+ * @returns {string|null}
+ */
+export function shapeFromPlan(plan) {
+  if (!plan || plan.passive || !plan.complete) return null;
+  const { place, who, decide, apply, persist } = plan;
+  const tmpl = place?.template ?? null;
+  const heals = !!(apply?.healing || apply?.heals);
+  const onCasterOnly = who?.kind === "the caster";
+
+  if (apply?.summon) return "summon";
+
+  // ── Healing that covers ground ──
+  // ⚠️ THE EMANATION TEST NEEDS BOTH HALVES. Second Wind heals and is self
+  // ranged and is not an emanation: it has no radius.
+  if (heals && tmpl && place.kind === "emanation") return "emanation-heal";
+  if (heals && tmpl) return "template-heal";
+
+  // ── Areas that ask something of the people standing in them ──
+  // ⚠️ AN EMANATION THAT ASKS NOTHING OF ANYBODY IS NOT AN AREA. Detect Magic
+  // carries a 30 foot radius and does nothing to anyone in it.
+  if (tmpl && !heals && !onCasterOnly
+      && (decide?.kind === "save" || (apply?.damage?.length ?? 0) > 0
+          || place.kind === "area")) {
+    // ⚠️🔴 TWO QUESTIONS, AND THE OLD CODE ASKED ONE. A lingering trigger has
+    // to BOTH re-catch creatures AND still be there to re-catch them in. Fear
+    // re-catches (its frightened creatures re-save to shake it off) and its cone
+    // is gone the moment it lands, so it is not a trigger area at all: it is an
+    // area that resolved once, which is what nobody ever rolled for.
+    // ⚠️🔴 AND AN ASSUMED RE-CATCH MAY NOT DECIDE IT. spell-timing's heuristic
+    // guess is what started all of this; letting it back in here would make
+    // Slow, Weird and Flaming Sphere lingering trigger areas on the strength of
+    // the same default. Recorded as an assumption, never acted on as one.
+    const lingeringTrigger = persist?.recatches === true
+      && persist?.recatchConfidence !== "assumed"
+      && persist?.areaLasts !== false;
+    return lingeringTrigger ? "template-trigger" : "template-save";
+  }
+
+  if (decide?.kind === "attack") return decide.attacks > 1 ? "attack-multi" : "attack-single";
+
+  if (decide?.kind === "save") return (who?.count ?? 1) > 1 ? "save-area" : "save-single";
+
+  // ⚠️ SELF BEFORE THE EFFECT CHECK, AND THE ORDER IS THE WHOLE POINT. Divine
+  // Favour and Fire Shield apply an effect and act only on the caster; testing
+  // for an effect first puts a target picker in front of a spell with nobody
+  // to pick.
+  if (onCasterOnly || place.kind === "self" || place.kind === "emanation") return "self";
+
+  // ⚠️ ORDERED BY WHAT THE RESOLVERS DO, NOT BY WHAT THEY ARE CALLED. In this
+  // pipeline "touch" means pick one adjacent creature and heal or hurt it, and
+  // "multi-buff" means pick creatures and leave something on them. Stoneskin
+  // and Death Ward are delivered by touch and are buffs.
+  if (apply?.effect) return "multi-buff";
+  if (heals) return (who?.kind === "picked inside the area" || (who?.count ?? 1) > 1)
+    ? "multi-heal" : "touch";
+  if (place.kind === "touch") return "touch";
+
+  return null;
 }
 
 /**

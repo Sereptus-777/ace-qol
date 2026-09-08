@@ -422,6 +422,58 @@ console.log("\nTHE SPELL'S DURATION IS NOT THE AREA'S DURATION");
     areaLingers(withText("You gain 5 temporary hit points."), { hasTemplate: false }), false);
 }
 
+/* ── THE FORK THAT KILLED FEAR ──────────────────────────────────────────── */
+console.log("\nTHE FORK IS SETTLED BY THE SPELL, AND ONLY WHEN THE SPELL SETTLES IT");
+{
+  const { templateForkFromPlan } = await import(
+    "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/inference/spell-plan.mjs");
+
+  const areaSpell = (name, text, { shape = "cone", tim = null } = {}) => {
+    const it = spell(name, { template: { type: shape, size: 30, units: "ft" },
+      save: "wis", duration: "minute", durationValue: 1, concentration: true });
+    it.system.description.value = text;
+    return planFor(it, { timing: tim });
+  };
+
+  // ⚠️🔴 THE ONE. Its cone is gone the moment it lands, so nothing re-catches
+  // in it, whatever spell-timing guessed.
+  check("Fear is settled as resolving once",
+    templateForkFromPlan(areaSpell("Fear",
+      "Each creature in a 30-foot Cone must succeed on a Wisdom saving throw.",
+      { tim: timing("startOfTurn", { unclassified: true }) })),
+    "template-save");
+
+  // ⚠️ A SPELL THAT SAYS ENTERING CATCHES YOU IS A TRIGGER AREA, and a cube
+  // stays put, so the shape rule does not overrule its own text.
+  check("Web is settled as a trigger area",
+    templateForkFromPlan(areaSpell("Web",
+      "The webs fill a 20-foot Cube there for the duration. Each creature that "
+      + "starts its turn in the webs or that enters them must make a Dexterity "
+      + "saving throw.", { shape: "cube" })),
+    "template-trigger");
+
+  // ⚠️🔴 SILENCE MEANS SILENCE. Measured across both books, 119 of the 163
+  // spells that reach this fork give the text no opinion, and every one of them
+  // must be left exactly as the existing chain had it. Answering here on a
+  // guess is the fault this function exists to remove.
+  check("a sphere whose text says neither is left alone",
+    templateForkFromPlan(areaSpell("Odd Cloud",
+      "A cloud of odd vapour fills the area for the duration.", { shape: "sphere" })),
+    null);
+
+  // ⚠️ AN ESCAPE IS NOT A RE-CATCH. Slow's "the target repeats the save at the
+  // end of each of its turns" is the victim shaking it off, not the cube
+  // catching somebody new, and counting it made Slow a lingering trigger area.
+  check("an end-of-turn escape does not make it a trigger area",
+    templateForkFromPlan(areaSpell("Slow",
+      "Each target must succeed on a Wisdom saving throw. The target repeats the "
+      + "save at the end of each of its turns, ending the spell on itself on a "
+      + "success.", { shape: "cube" })),
+    null);
+
+  check("and no plan at all has no opinion", templateForkFromPlan(null), null);
+}
+
 console.log("\nTHE SAVE ENGINE'S BRANCH ONLY EVER ADDS");
 {
   // ⚠️🔴 THE SAFETY PROPERTY, WRITTEN AS A TEST. save-engine changed
