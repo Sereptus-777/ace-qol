@@ -371,6 +371,57 @@ console.log("\nAND THE PLAN SAYS IT OUT LOUD");
     /on arrival\s+nobody saves until they enter/.test(describePlan(webPlan)), true);
 }
 
+/* ── DOES THE AREA ITSELF LAST ──────────────────────────────────────────── */
+console.log("\nTHE SPELL'S DURATION IS NOT THE AREA'S DURATION");
+{
+  const { readAreaPersistence, areaLingers } = await import(
+    "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/inference/spell-plan.mjs");
+
+  // ⚠️🔴 THE SENTENCE THAT NEARLY GOT THIS WRONG, copied out of the 2014 book.
+  // It contains an area word AND a duration phrase and is not about the cone:
+  // the cone is where you stood, and the minute belongs to the frightened
+  // creature. Fear's cone played on his map for five minutes because of it.
+  const fear2014 = "Each creature in a 30-foot cone must succeed on a Wisdom saving "
+    + "throw or drop whatever it is holding and become Frightened for the duration.";
+  check("a person lasting is not an area lasting",
+    readAreaPersistence(fear2014).lingers, null);
+
+  const LASTING = [
+    ["Web", "The webs fill a 20-foot Cube there for the duration."],
+    ["Cloudkill", "The fog lasts for the duration."],
+    ["Spike Growth", "The area becomes Difficult Terrain for the duration."],
+    // ⚠️ THE PHRASE CAN COME FIRST, with the area named after it.
+    ["Sleet Storm", "Until the spell ends, sleet falls in a 20-foot-radius Cylinder."],
+    // ⚠️ AND THE AREA WORD CAN BE NINETY CHARACTERS AWAY FROM IT.
+    ["Gust of Wind", "A line of strong wind 60 feet long and 10 feet wide blasts from "
+      + "you in a direction you choose for the spell's duration."],
+  ];
+  for (const [name, text] of LASTING) {
+    check(`${name}'s area lasts`, readAreaPersistence(text).lingers, true);
+  }
+  check("and one that says it vanishes says no",
+    readAreaPersistence("The pattern appears for a moment and vanishes.").lingers, false);
+
+  // ⚠️ A CONE OR A LINE IS A MOMENT, NOT A PLACE. Checked against every
+  // cone-or-line spell in both books carrying a lasting duration: seven, and
+  // the four whose text states it agree with this.
+  const withText = (t) => ({ system: { description: { value: t } } });
+  check("a cone whose text says nothing does not linger",
+    areaLingers(withText("Each creature in a 30-foot Cone must succeed on a Wisdom "
+      + "saving throw."), { shape: "cone" }), false);
+  check("nor does a line", areaLingers(withText("A beam flashes out."), { shape: "line" }), false);
+
+  // ⚠️ AND ONLY "false" ACTS. Taking away an area that should have stayed loses
+  // the GM something they cannot get back, so silence leaves it alone.
+  check("a sphere whose text says nothing is left where it lands",
+    areaLingers(withText("A shimmering globe surrounds you."), { shape: "sphere" }), "unknown");
+  check("a stated lasting area wins over the shape",
+    areaLingers(withText("Until the spell ends, sleet falls in the Cylinder."),
+      { shape: "cone" }), true);
+  check("and a spell with no area at all lingers nowhere",
+    areaLingers(withText("You gain 5 temporary hit points."), { hasTemplate: false }), false);
+}
+
 console.log("\nTHE SAVE ENGINE'S BRANCH ONLY EVER ADDS");
 {
   // ⚠️🔴 THE SAFETY PROPERTY, WRITTEN AS A TEST. save-engine changed

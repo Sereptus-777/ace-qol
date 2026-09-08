@@ -41,7 +41,7 @@ import { DamageApplicator } from "./damage-applicator.mjs";
 import { getSpellTiming, TIMING } from "./spell-timing.mjs";
 // ⚠️ ONE DECIDER FOR "DOES ANYBODY SAVE WHEN THIS LANDS". The plan asks the
 // same function, so the card and the report can never disagree.
-import { initialSaveOwed } from "./inference/spell-plan.mjs";
+import { initialSaveOwed, areaLingers } from "./inference/spell-plan.mjs";
 import { CoverEngine } from "./cover-engine.mjs";
 import { DescriptionParser } from "./description-parser.mjs";
 import { ConditionLibrary } from "./condition-library.mjs";
@@ -1870,16 +1870,44 @@ export class SaveEngine {
 
     } else {
       // ── Persistent spell (Moonbeam, Spirit Guardians, etc.) ──
-      // Emit hook for concentration widget — fires REGARDLESS of whether
-      // any tokens are currently in the area. The widget needs to track
-      // the spell so it can fire the entry-trigger save card later when
-      // a token walks in.
-      Hooks.callAll("ace-qol.persistentSpellCreated", {
-        item, actor, templateDoc, timing, saveAbility, saveDC,
-        halfOnSave, damageTypes, tokens,
-      });
+      //
+      // ⚠️🔴 THE SPELL'S DURATION IS NOT THE AREA'S DURATION. Johnny, 2026-09-08:
+      // *"Should Fear just consistently play until I end concentration, because
+      // that's what it's still doing?"* No. Fear is "1 minute, concentration",
+      // and every second of it belongs to the FRIGHTENED CONDITION on the
+      // creatures it caught. There is no lingering Fear cone; nothing walks into
+      // one. But it was judged persistent, so its template was never deleted,
+      // and the Forge FX anchored to that template never ended: one guess, three
+      // symptoms, the third of which played on his map for five minutes.
+      //
+      // The ones that really do linger say so, about the SPACE:
+      //     Web          "The webs fill a 20-foot Cube there for the duration"
+      //     Sleet Storm  "Until the spell ends, sleet falls in a Cylinder"
+      //     Spike Growth "The area becomes Difficult Terrain for the duration"
+      // and a cone or a line is a direction you fired in, never a place.
+      //
+      // ⚠️ ONLY "false" ACTS. "Its text does not say" leaves the area exactly
+      // where it lands, which is today's behaviour, because taking away an area
+      // that should have stayed loses the GM something they cannot get back.
+      const shape = templateDoc?.t ?? null;
+      const lasts = areaLingers(item, { hasTemplate: true, shape });
 
-      console.log(`${MODULE_ID} | Persistent spell "${item.name}" — emitted ace-qol.persistentSpellCreated (${tokens.length} tokens initially in area)`);
+      if (lasts === false) {
+        console.log(`${MODULE_ID} | "${item.name}": its area does not last `
+          + `(${shape ?? "no shape"}), so it resolves once and is taken off the map. `
+          + `Its duration belongs to what it did to people.`);
+      } else {
+        // Emit hook for concentration widget — fires REGARDLESS of whether
+        // any tokens are currently in the area. The widget needs to track
+        // the spell so it can fire the entry-trigger save card later when
+        // a token walks in.
+        Hooks.callAll("ace-qol.persistentSpellCreated", {
+          item, actor, templateDoc, timing, saveAbility, saveDC,
+          halfOnSave, damageTypes, tokens,
+        });
+
+        console.log(`${MODULE_ID} | Persistent spell "${item.name}" — emitted ace-qol.persistentSpellCreated (${tokens.length} tokens initially in area)`);
+      }
 
       // If timing includes "enter" trigger, post initial save for tokens already in area.
       //
@@ -1931,7 +1959,22 @@ export class SaveEngine {
       if ((triggerOnEnter || textSaysNow) && tokens.length && !isAreaDenial) {
         await this._postLiveTargetCard(item, actor, tokens, {
           saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activityId,
+          // ⚠️ AN AREA THAT DOES NOT LAST OWNS ITS TEMPLATE, exactly like an
+          // instant one, so the card can take it away when it is done. Without
+          // this the auto-delete has nothing to delete and the cone stays.
+          ...(lasts === false ? { templateDoc, areaResolvesOnce: true } : {}),
           persistentInitial: true,
+        });
+      }
+
+      // ⚠️ AND IT GOES EVEN WHEN NOBODY WAS STANDING IN IT. A Fear cone aimed
+      // at an empty corridor still happened; leaving the cone and its animation
+      // behind because it caught nobody is the same bug with better luck.
+      if (lasts === false && !(tokens.length && !isAreaDenial)) {
+        await this._deleteInstantTemplate({
+          timingType: TIMING.INSTANT,
+          templateDocId: templateDoc.id,
+          templateSceneId: templateDoc.parent?.id ?? canvas.scene?.id,
         });
       }
     }
@@ -2376,7 +2419,14 @@ export class SaveEngine {
           isSpell,
           activityId,
           spellLevel: Number.isFinite(spellLevel) ? spellLevel : null,
-          timingType: timing?.timing ?? TIMING.INSTANT,
+          // ⚠️ THIS FLAG HAS EXACTLY ONE READER: the guard inside
+          // `_deleteInstantTemplate`. Its only job is "may this template be
+          // cleaned up once the card is done", so a spell whose AREA resolves
+          // once says INSTANT here even when the spell itself lasts a minute.
+          // Fear's cone is gone; Fear's frightened creatures are not.
+          timingType: opts.areaResolvesOnce
+            ? TIMING.INSTANT
+            : (timing?.timing ?? TIMING.INSTANT),
           targets: targetData,
           persistentInitial: opts.persistentInitial ?? false,
           templateDocId:   opts.templateDoc?.id ?? null,

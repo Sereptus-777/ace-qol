@@ -44,7 +44,7 @@ globalThis.game = { settings: { get: () => "2024", register: () => {} },
 globalThis.canvas = { grid: { size: 100, distance: 5 }, tokens: { placeables: [] } };
 
 const { readActionFacts } = await import(pathToFileURL(`${QOL}/scripts/inference/action-facts.mjs`).href);
-const { planFor, initialSaveOwed } = await import(
+const { planFor, initialSaveOwed, areaLingers } = await import(
   pathToFileURL(`${QOL}/scripts/inference/spell-plan.mjs`).href);
 const { DescriptionParser } = await import(pathToFileURL(`${QOL}/scripts/description-parser.mjs`).href);
 const { getSpellTiming, TIMING } = await import(
@@ -67,6 +67,9 @@ const gapReasons = new Map();
 const incompleteNames = [];
 const robbed = [];        // owed an initial save the save engine was not posting
 const waits = [];         // its text really does wait for you to walk in
+const areaGoes = [];      // its area resolves once and is taken off the map
+const areaStays = [];     // its area is stated to last
+const areaUnsure = [];    // its text does not say, so it is left where it lands
 const disagreements = [];
 const withEntry = { total: 0, agree: 0 };
 
@@ -139,6 +142,16 @@ for (const path of PACKS) {
       } else {
         waits.push(doc.name);
       }
+    }
+
+    /* ── 4. Does the AREA last, or only what it did to people? ────────── */
+    if (isArea && persistent) {
+      const shape = plan.place?.template?.shape ?? null;
+      const lasts = areaLingers(item, { hasTemplate: true, shape });
+      const row = `${doc.name} (${shape})`;
+      if (lasts === false) areaGoes.push(row);
+      else if (lasts === true) areaStays.push(row);
+      else areaUnsure.push(row);
     }
 
     /* ── 2. Where a plan disagrees with a hand-written entry ────────────── */
@@ -232,6 +245,16 @@ for (const r of robbed.slice(0, 25)) {
 }
 if (robbed.length > 25) console.log(`    +${robbed.length - 25} more`);
 
+console.log("");
+console.log("DOES THE AREA ITSELF LAST?");
+console.log("-".repeat(74));
+console.log("  A spell's duration is not its area's duration. Fear is a minute of");
+console.log("  FRIGHTENED on people, not a minute of cone on the map.");
+console.log("");
+console.log(`  its text says the area lasts : ${areaStays.length}`);
+console.log(`  resolves once, area removed  : ${areaGoes.length}  `
+  + `${[...new Set(areaGoes)].join(", ")}`);
+console.log(`  text does not say, left alone: ${areaUnsure.length}  (unchanged behaviour)`);
 console.log("");
 console.log("THE PLAN VERSUS THE 110 HAND-WRITTEN ENTRIES");
 console.log("-".repeat(74));

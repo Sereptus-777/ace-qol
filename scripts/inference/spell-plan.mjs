@@ -67,6 +67,9 @@ const _n = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
 /** Ranges that are a note to read the paragraph rather than a distance. */
 const UNPLACEABLE = new Set(["unlimited", "unstated", "special", "none"]);
 
+/** Shapes that are a direction you fired in, not a place that stays. */
+const ONE_SHOT_SHAPES = new Set(["cone", "line", "ray"]);
+
 /* ── 1. WHERE IT LANDS ─────────────────────────────────────────────────── */
 
 function planPlace(facts, gaps, why) {
@@ -387,6 +390,116 @@ export function readAreaTiming(html) {
   return { initial, recatch, sawSave, evidence };
 }
 
+/* ── Does the AREA last, or only what it did to people? ────────────────── */
+
+/** The words a spell uses for the space it occupies. */
+const AREA_NOUN = /\b(?:area|cube|sphere|cylinder|cone|line|wall|walls|webs?|fog|mist|cloud|smoke|gas|ice|flames?|grease|spikes?|ground|terrain|square|space|barrier|dome|zone|storm|vines?|plants?|tentacles?|darkness|silence|light|globe|sheet|blade|water|sleet|swarm|circle)\b/i;
+
+/**
+ * Words that mean a PERSON is what lasts, not the ground.
+ *
+ * ⚠️🔴 THE SENTENCE THAT NEARLY GOT THIS WRONG. 2014 Fear reads "Each creature
+ * in a 30-foot cone must succeed on a Wisdom saving throw or drop whatever it is
+ * holding and become Frightened FOR THE DURATION." It contains an area word
+ * ("cone") and a duration phrase, and it is not about the cone at all: the cone
+ * is where you stood, and the minute belongs to the frightened creature.
+ */
+const PERSON_WORD = /\b(?:creatures?|targets?|condition|frightened|charmed|poisoned|restrained|prone|blinded|deafened|paralyz(?:ed|es)|stunned|incapacitated|unconscious|invisible)\b/i;
+
+/** A phrase that pins something to the spell's clock. */
+const LASTS = /\bfor\s+the\s+duration\b|\buntil\s+the\s+spell\s+ends\b|\blasts?\s+(?:for\s+the\s+duration|until)\b|\bremains?\s+(?:for|until)\b|\bfor\s+the\s+spell'?s?\s+duration\b/i;
+
+/** A phrase that says the area is gone the moment it has done its work. */
+const VANISHES = /\bfor\s+a\s+moment\s+and\s+(?:then\s+)?vanish|\bvanishes?\s+immediately\b|\bdisappears?\s+immediately\b|\bappears?\s+for\s+an?\s+instant\b/i;
+
+/**
+ * Does the area itself stay on the map, or does only its effect on people last?
+ *
+ * ⚠️🔴 THE SPELL'S DURATION IS NOT THE AREA'S DURATION, AND CONFLATING THEM IS
+ * WHY FEAR'S CONE PLAYED FOR FIVE MINUTES. Fear is "1 minute, concentration",
+ * and every one of those seconds belongs to the FRIGHTENED CONDITION on the
+ * creatures it caught:
+ *
+ *     "Each creature in a 30-foot Cone must succeed on a Wisdom saving throw or
+ *      drop whatever it is holding and have the Frightened condition FOR THE
+ *      DURATION."
+ *
+ * There is no lingering Fear cone. Nothing walks into one. But the cone was
+ * judged persistent, so the template was never auto-deleted, and the Forge FX
+ * anchored to that template never ended.
+ *
+ * ⚠️ THE ONES THAT REALLY DO LINGER ALL SAY SO, ABOUT THE SPACE:
+ *     Web          "The webs fill a 20-foot Cube there for the duration"
+ *     Sleet Storm  "Until the spell ends, sleet falls in a Cylinder"
+ *     Cloudkill    "The fog lasts for the duration"
+ *     Spike Growth "The area becomes Difficult Terrain for the duration"
+ * and the ones that do not are silent about the space, or say it outright:
+ *     Hypnotic P.  "The pattern appears for a moment and vanishes"
+ *
+ * @returns {{lingers: boolean|null, evidence: string[]}} null = its text does
+ *          not say, which is not the same as "no".
+ */
+export function readAreaPersistence(html) {
+  const text = _strip(html);
+  if (!text) return { lingers: null, evidence: [] };
+
+  let lingers = null;
+  const evidence = [];
+  for (const raw of text.split(/(?<=[.!?])\s+/)) {
+    const s = raw.trim();
+    if (!s) continue;
+    if (VANISHES.test(s)) {
+      evidence.push(`"${s.slice(0, 110)}"`);
+      return { lingers: false, evidence };
+    }
+    // ⚠️ IT IS NOT ENOUGH FOR BOTH TO BE IN THE SENTENCE. What matters is WHAT
+    // is being timed, so only the words right beside the duration phrase get a
+    // vote. An area word there means the ground lasts; a person word there
+    // means the creature does.
+    const m = LASTS.exec(s);
+    if (!m) continue;
+    // "Until the spell ends, sleet falls in a Cylinder" puts the phrase first,
+    // so when there is nothing in front of it, read what comes after.
+    // ⚠️ THE WHOLE CLAUSE IN FRONT OF IT, not a fixed number of characters.
+    // Gust of Wind opens "A line of strong wind 60 feet long and 10 feet wide
+    // blasts from you in a direction you choose for the spell's duration": the
+    // word "line" is ninety characters from the phrase that times it.
+    const before = s.slice(0, m.index);
+    const window = before.trim() ? before : s.slice(m.index + m[0].length);
+    if (!AREA_NOUN.test(window) || PERSON_WORD.test(window)) continue;
+    lingers = true;
+    evidence.push(`"${s.slice(0, 110)}"`);
+  }
+  return { lingers, evidence };
+}
+
+/**
+ * Should this spell's area be taken off the map once it has resolved?
+ *
+ * @param {object} item
+ * @param {object} [opts]
+ * @param {boolean} [opts.hasTemplate]  whether it puts an area on the map at all
+ * @returns {true|false|"unknown"}
+ */
+export function areaLingers(item, { hasTemplate = true, shape = null } = {}) {
+  if (!hasTemplate) return false;
+  const t = readAreaPersistence(item?.system?.description?.value);
+  if (t.lingers === true) return true;
+  if (t.lingers === false) return false;
+
+  // ⚠️ A CONE OR A LINE IS A MOMENT, NOT A PLACE. Checked against every
+  // cone-or-line spell in both books that carries a lasting duration, seven of
+  // them, and the text settles all seven the same way this does:
+  //     Earthquake, Gust of Wind, Passwall, Sunbeam   say the area lasts
+  //     Colour Spray, Dragon's Breath, Fear           say nothing about it,
+  //                                                   and none of them lingers
+  // Nothing walks into a Fear cone afterwards. Every other shape falls through
+  // to "unknown", which changes nothing about how it behaves today.
+  if (ONE_SHOT_SHAPES.has(_s(shape))) return false;
+  return "unknown";
+}
+
+
 /**
  * Does anybody standing in this area save the moment it lands?
  *
@@ -462,6 +575,8 @@ function planPersist(facts, timing, item, decide, why) {
   }
 
   const initialSave = initialSaveOwed(item, { hasSave: decide?.kind === "save" });
+  const shape = facts?.delivery?.template?.shape ?? null;
+  const areaLasts = areaLingers(item, { hasTemplate: !!shape, shape });
 
   if (recatches) {
     why.push(`creatures entering it are caught again (${confidence})`);
@@ -478,6 +593,9 @@ function planPersist(facts, timing, item, decide, why) {
     recatches, recatchConfidence: confidence,
     // true / false / "unknown" — three answers, never two.
     initialSave, initialSaveEvidence: fromText.evidence,
+    // ⚠️ THE SPELL'S DURATION IS NOT THE AREA'S DURATION. Fear is a minute of
+    // FRIGHTENED on people, not a minute of cone on the map.
+    areaLasts,
     followsCaster: !!t?.followsCaster,
     // An escape at the end of each turn, only ever taken from stated text.
     repeatSave: facts?.interference?.repeatSave ?? null,
@@ -598,6 +716,12 @@ export function describePlan(plan) {
       : s.initialSave === false ? "nobody saves until they enter or start a turn in it"
       : s.initialSave === "unknown" ? "its text does not say, so everyone inside saves now"
       : "nothing to save against"}`);
+  }
+  if (p.template) {
+    lines.push(`    the area itself  ${
+      s.areaLasts === true ? "stays on the map until the spell ends"
+      : s.areaLasts === false ? "is gone the moment it resolves"
+      : "its text does not say, so it is left where it lands"}`);
   }
   if (s.recatches) {
     lines.push(`    and again        creatures entering it, or starting their turn `
