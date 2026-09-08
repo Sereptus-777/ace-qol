@@ -2196,6 +2196,15 @@ export class SaveEngine {
         autoFailSave: state.autoFailSave,
         saveAdvantage: state.saveAdvantage,
         saveDisadvantage: state.saveDisadvantage,
+        // ⚠️🔴 THE REASON TRAVELS WITH THE VERDICT. Johnny, 2026-09-08:
+        // *"my high-powered 30th-level wizard gets advantage on his save,
+        // although it doesn't say why. That should be put in there."* Every
+        // place that decides advantage already records WHY, in words, and every
+        // copy out of the target state took the boolean and left the reason
+        // behind — so the card rolled two dice and explained nothing. An
+        // unexplained verdict is the same silence in a nicer font.
+        saveAdvReasons: state.saveAdvReasons ?? [],
+        saveDisadvReasons: state.saveDisadvReasons ?? [],
         superSaver: state.superSaver,
         semiSuperSaver: state.semiSuperSaver,
         saveBonuses: state.saveBonuses,
@@ -2283,9 +2292,29 @@ export class SaveEngine {
     // ── Helper: status badges (auto-fail / evasion / damage indicator) ──
     const _renderBadges = (t) => {
       const di = _getDmgIndicator(t);
+      const esc = (x) => foundry.utils.escapeHTML(String(x ?? ""));
+      // ⚠️ NAME THE REASON, NEVER JUST THE VERDICT. A row that rolls two dice
+      // and says nothing sends him hunting for a cause that was written down in
+      // plain words the moment it was decided.
+      const advTags = (t.saveAdvReasons ?? []).map(r =>
+        `<span class="ace-qol-tag ace-qol-tag-buff"><i class="fas fa-arrow-up"></i> ${esc(r)}</span>`);
+      const disTags = (t.saveDisadvReasons ?? []).map(r =>
+        `<span class="ace-qol-tag ace-qol-tag-debuff"><i class="fas fa-arrow-down"></i> ${esc(r)}</span>`);
+      // ⚠️ AND IF A VERDICT ARRIVES WITH NO REASON, SAY THAT TOO. "Advantage
+      // from somewhere nothing recorded" is a bug report he can act on;
+      // two dice and no explanation is not.
+      if (t.saveAdvantage && !advTags.length) {
+        advTags.push('<span class="ace-qol-tag ace-qol-tag-buff"><i class="fas fa-arrow-up"></i> '
+          + 'ADVANTAGE — no reason was recorded</span>');
+      }
+      if (t.saveDisadvantage && !disTags.length) {
+        disTags.push('<span class="ace-qol-tag ace-qol-tag-debuff"><i class="fas fa-arrow-down"></i> '
+          + 'DISADVANTAGE — no reason was recorded</span>');
+      }
       const badges = [
         t.autoFailSave ? '<span class="ace-qol-tag ace-qol-tag-danger"><i class="fas fa-circle-xmark"></i> AUTO-FAIL</span>' : "",
         t.superSaver ? '<span class="ace-qol-tag ace-qol-tag-buff"><i class="fas fa-person-running"></i> EVASION</span>' : "",
+        ...advTags, ...disTags,
         di.tag,
       ].filter(Boolean).join("");
       return badges ? `<div class="ace-qol-save-tgt-actions" style="margin-top:4px;">${badges}</div>` : "";
@@ -2660,6 +2689,10 @@ export class SaveEngine {
             autoFailSave: ts.autoFailSave,
             saveAdvantage: ts.saveAdvantage,
             saveDisadvantage: ts.saveDisadvantage,
+            // It has to survive a reload too, or the card explains itself until
+            // somebody refreshes and then stops.
+            saveAdvReasons: ts.saveAdvReasons ?? [],
+            saveDisadvReasons: ts.saveDisadvReasons ?? [],
             superSaver: ts.superSaver,
             semiSuperSaver: ts.semiSuperSaver,
             saveBonuses: ts.saveBonuses,
@@ -2865,6 +2898,8 @@ export class SaveEngine {
             autoFailSave: tgt.autoFailSave,
             saveAdvantage: tgt.saveAdvantage,
             saveDisadvantage: tgt.saveDisadvantage,
+            saveAdvReasons: tgt.saveAdvReasons ?? [],
+            saveDisadvReasons: tgt.saveDisadvReasons ?? [],
             superSaver: tgt.superSaver,
             semiSuperSaver: tgt.semiSuperSaver,
             saveBonuses: tgt.saveBonuses,
@@ -3354,6 +3389,15 @@ export class SaveEngine {
         autoFailSave: state.autoFailSave,
         saveAdvantage: state.saveAdvantage,
         saveDisadvantage: state.saveDisadvantage,
+        // ⚠️🔴 THE REASON TRAVELS WITH THE VERDICT. Johnny, 2026-09-08:
+        // *"my high-powered 30th-level wizard gets advantage on his save,
+        // although it doesn't say why. That should be put in there."* Every
+        // place that decides advantage already records WHY, in words, and every
+        // copy out of the target state took the boolean and left the reason
+        // behind — so the card rolled two dice and explained nothing. An
+        // unexplained verdict is the same silence in a nicer font.
+        saveAdvReasons: state.saveAdvReasons ?? [],
+        saveDisadvReasons: state.saveDisadvReasons ?? [],
         superSaver: state.superSaver,
         semiSuperSaver: state.semiSuperSaver,
         saveBonuses: state.saveBonuses,
