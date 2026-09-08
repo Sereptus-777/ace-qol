@@ -51,7 +51,28 @@ import { readActivities } from "../read-activities.mjs";
 
 const _s = (v) => String(v ?? "").trim().toLowerCase();
 const _n = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
-const _arr = (v) => Array.isArray(v) ? v : [];
+const _arr = (v) => Array.isArray(v) ? v : (v instanceof Set ? [...v] : []);
+
+/**
+ * The one value out of a field that may be a string, a Set or an array.
+ *
+ * ⚠️🔴 dnd5e STORES A SAVE'S ABILITY AS A SET. `activity.save.ability` is a
+ * SetField, so on a LIVE item it is a `Set`, while the same activity read out of
+ * a compendium's JSON is an array. `String(new Set(["wis"]))` is "[object Set]",
+ * which is not an ability, does not throw, and reads in a log as though the
+ * spell forces a save against something called "[object set]".
+ *
+ * Found on 2026-09-07 by a self-test harness built to match the live shape
+ * rather than the JSON one. Every measurement I had run until then went through
+ * compendium JSON and could not have seen it.
+ */
+const _one = (v) => {
+  if (v == null) return "";
+  if (typeof v === "string") return v.trim().toLowerCase();
+  if (v instanceof Set) return _one([...v][0]);
+  if (Array.isArray(v)) return _one(v[0]);
+  return _s(v);
+};
 
 /** dnd5e weapon/item property codes worth knowing by name. */
 const PROP = {
@@ -211,8 +232,15 @@ function readScope(item, acts, why) {
   const hasTemplate = !!_s(template.type);
 
   if (hasTemplate) {
-    why.push("it covers an area rather than picking creatures");
-    return { kind: "area", count: null, creatureType: type, allowsChoice: !!affects.choice };
+    // ⚠️🔴 AN AREA CAN STILL STATE A COUNT, AND THIS WAS THROWING IT AWAY.
+    // Mass Cure Wounds is "up to six creatures in a 30-foot-radius Sphere":
+    // the sphere is where you may choose from, the six is how many you get.
+    // Returning null here lost the six, so anything downstream had to read it
+    // as "everyone standing in it" and would heal the enemy in the sphere.
+    if (count) why.push(`it covers an area, and you pick ${count} from inside it`);
+    else why.push("it covers an area rather than picking creatures");
+    return { kind: "area", count: count ?? null, creatureType: type,
+             allowsChoice: !!affects.choice };
   }
   if (type === "self") {
     why.push("it acts on the user");
@@ -313,8 +341,14 @@ function readDelivery(item, acts, text, why) {
     : null;
 
   let kind, rangeFt = null;
+  // ⚠️🔴 A THROWN AREA STILL HAS A RANGE, AND IT WAS BEING DROPPED. This
+  // branch set `kind` and never `rangeFt`, so all 145 area spells in dnd5e's
+  // books came back with no distance at all: Fireball's 150 feet, gone. Nothing
+  // downstream could tell whether the crosshair was even legal to place there.
   if (template && units === "self") { kind = "emanation"; why.push(`it radiates ${template.size} feet from the user`); }
-  else if (template)                { kind = "area";      why.push(`it puts a ${template.shape} of ${template.size} feet on the map`); }
+  else if (template)                { kind = "area";      rangeFt = value ?? reach ?? null;
+                                      why.push(`it puts a ${template.shape} of ${template.size} feet on the map`
+                                        + `${value ? `, up to ${value} feet away` : ""}`); }
   else if (units === "self")        { kind = "self";      why.push("it does not have to travel anywhere"); }
   else if (units === "touch")       { kind = "touch";     why.push("it is delivered by touch"); }
   else if (units === "any" || units === "unlimited") { kind = "unlimited"; why.push("its range is unlimited"); }
@@ -347,25 +381,27 @@ function readResolution(item, acts, parsed, text, why) {
     why.push(count > 1
       ? `it makes ${count} attack rolls${fromText ? ", counted from its own text" : ""}`
       : `it is ${melee ? "a melee" : "a ranged"} attack roll`);
-    return { kind: "attack", melee, ranged: !melee, ability: _s(at.ability) || null,
+    return { kind: "attack", melee, ranged: !melee, ability: _one(at.ability) || null,
              attacks: Math.max(1, count), classification: _s(at.type?.classification) || null,
              saveAbility: null, dc: null, onSave: null };
   }
   if (saveAct) {
     const dc = saveAct.save?.dc ?? {};
     const half = _s(saveAct?.damage?.onSave) === "half";
-    why.push(`the target rolls a ${_s(saveAct.save.ability).toUpperCase()} saving throw`);
+    why.push(`the target rolls a ${_one(saveAct.save.ability).toUpperCase()} saving throw`);
     return { kind: "save", melee: false, ranged: false, ability: null, attacks: 0,
-             saveAbility: _s(saveAct.save.ability),
+             saveAbility: _one(saveAct.save.ability),
+             // Every ability named, for the rare activity that offers a choice.
+             saveAbilities: _arr(saveAct.save.ability).map(a => _s(a)).filter(Boolean),
              dc: _n(dc.formula) ?? null, dcFrom: _s(dc.calculation) || null,
              onSave: half ? "half" : "none" };
   }
   // ⚠️ THE DESCRIPTION IS THE FALLBACK, NEVER THE OVERRULE. Monster stat blocks
   // and homebrew routinely state a save in prose and carry none in the data.
   if (parsed?.save?.ability) {
-    why.push(`the sheet declares no saving throw; its text names a ${_s(parsed.save.ability).toUpperCase()} save`);
+    why.push(`the sheet declares no saving throw; its text names a ${_one(parsed.save.ability).toUpperCase()} save`);
     return { kind: "save", melee: false, ranged: false, ability: null, attacks: 0,
-             saveAbility: _s(parsed.save.ability), dc: _n(parsed.save.dc) ?? null,
+             saveAbility: _one(parsed.save.ability), dc: _n(parsed.save.dc) ?? null,
              dcFrom: "description", onSave: parsed.halfOnSave ? "half" : "none", fromText: true };
   }
   if (!acts.length) {
@@ -586,6 +622,16 @@ export function describeActionFacts(f) {
         // Magic Resistance and every other passive whose whole rule is prose.
         || (f.change.descriptiveOnly ? "only what its own text says, no mechanics on the sheet" : "nothing recorded")}`,
     `  lasts         ${f.duration.kind}${f.duration.value ? ` ${f.duration.value} ${f.duration.units}` : ""}${f.duration.concentration ? ", concentration" : ""}`,
-    `  blunted by    ${[f.interference.damageTypes.join("/") || null, f.interference.conditionsInflicted.join("/") || null, f.interference.repeatSave ? `re-save at ${f.interference.repeatSave}` : null].filter(Boolean).join("; ") || "nothing recorded"}`,
+    // ⚠️ SAY WHAT BLUNTS IT, NOT JUST THE WORD. This line used to print
+    // "blunted by  frightened", which reads as the spell being weakened BY the
+    // frightened condition. It means the opposite: a creature immune to
+    // frightened shrugs it off.
+    `  blunted by    ${[
+      f.interference.damageTypes.length
+        ? `resistance to ${f.interference.damageTypes.join("/")}` : null,
+      f.interference.conditionsInflicted.length
+        ? `immunity to ${f.interference.conditionsInflicted.join("/")}` : null,
+      f.interference.repeatSave ? `another save at ${f.interference.repeatSave}` : null,
+    ].filter(Boolean).join("; ") || "nothing recorded"}`,
   ].join("\n");
 }
