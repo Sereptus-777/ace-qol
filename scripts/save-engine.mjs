@@ -5869,6 +5869,23 @@ export class SaveEngine {
             }
           } catch (_) { /* best-effort; missing family flag = old behavior */ }
 
+          // ⚠️🔴 DRY RUN RUNS THE SAME CODE. Johnny, 2026-09-08: a Specter
+          // failed Fear on a natural 1 and was not frightened, and every branch
+          // above this line logs its reason — into a console nobody was reading
+          // at the time. `game.aceQol.whyNoCondition("Fear")` walks THIS
+          // function, with THIS item and THIS target, and writes nothing.
+          //
+          // ⚠️ A SEPARATE READ-ONLY COPY WOULD BE TWO ANSWERS TO ONE QUESTION,
+          // which is the fault this whole engine has been rebuilt to end. One
+          // decider, one flag.
+          if (saveCtx?.dryRun) {
+            console.log(`${MODULE_ID} | whyNoCondition: ${item.name} WOULD apply `
+              + `"${cond.condition}" to ${actor.name}`
+              + `${Object.keys(applyOpts).length ? ` with ${Object.keys(applyOpts).join(", ")}` : ""}.`);
+            appliedForThisTarget.push(cond.condition);
+            continue;
+          }
+
           const out = await ConditionLibrary.applyByName(actor, cond.condition,
             Object.keys(applyOpts).length ? applyOpts : undefined);
           if (out?.ok) {

@@ -16,6 +16,7 @@ export const MODULE_ID = "ace-qol";
 
 import { QolSettings }       from "./settings.mjs";
 import { whyNoAura } from "./aura-diagnose.mjs";
+import { whyNoCondition } from "./why-no-condition.mjs";
 import { whyNoAnimation, animationFor, invalidate } from "./animation/autorec.mjs";
 import { readActionFacts, describeActionFacts } from "./inference/action-facts.mjs";
 import { classifyItem, describeClassification } from "./inference/classify-item.mjs";
@@ -5750,6 +5751,9 @@ Hooks.once("ready", () => {
     whyNoAnimation, animationFor, invalidateAnimationIndex: invalidate,
     //   game.aceQol.whyNoAura()   where in the chain an aura stopped
     whyNoAura,
+    //   game.aceQol.whyNoCondition("Fear")   select the creature, then ask why
+    //   its failed save left nothing on it. Runs the real decision, writes nothing.
+    whyNoCondition,
 
     // ── THE READING + THE BOOKS (2026-09-05) ────────────────────────────
     //   game.aceQol.readings()          the snapshot for the LAST button
