@@ -152,6 +152,74 @@ console.log("\nA CONDITION IS A NAME, NOT AN OBJECT");
   check("a plain string list still reads", plain?.change?.conditions, ["prone"]);
 }
 
+console.log("\nTHE CONDITION IS DATA, NOT PROSE");
+{
+  // ⚠️🔴 WHAT THIS EXISTS TO STOP. Johnny, 2026-09-08: a Specter failed Fear on
+  // a natural 1 and was not frightened. His console: "parsed 0 condition(s)".
+  // The only reader was the DESCRIPTION parser, so an item with a thin or
+  // re-written description applied nothing at all, however correctly it was
+  // built — and dnd5e states it on the item the whole time.
+  const { readAppliedConditions } = await import(
+    "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/read-activities.mjs");
+  const { readActionFacts } = await import(
+    "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/inference/action-facts.mjs");
+
+  // Shaped the way a LIVE item is: statuses are a Set, activities are a Map.
+  const withEffect = (name, effects, actEffects) => {
+    const it = spell(name, { template: CONE30, save: "wis" });
+    it.effects = effects;
+    it.system.activities.get("a1").effects = actEffects;
+    it.system.description = { value: "" };   // nothing for the parser to find
+    return it;
+  };
+
+  const fear = withEffect("Fear",
+    [{ _id: "e1", name: "Fear", statuses: new Set(["frightened"]), disabled: false }],
+    [{ _id: "e1", onSave: false }]);
+  check("the condition is found on the item's effect",
+    readAppliedConditions(fear).map(c => c.condition), ["frightened"]);
+  // ⚠️ `onSave: false` MEANS "not applied on a success", so it applies on a FAIL.
+  check("and it is save-gated because the activity says so",
+    readAppliedConditions(fear)[0]?.requiresSave, true);
+  check("the facts carry it with an empty description",
+    readActionFacts(fear).change.conditions, ["frightened"]);
+
+  // Hypnotic Pattern's one effect carries two statuses.
+  const hypnotic = withEffect("Hypnotic Pattern",
+    [{ _id: "e1", name: "Hypnotized", statuses: new Set(["charmed", "incapacitated"]),
+       disabled: false }],
+    [{ _id: "e1", onSave: false }]);
+  check("both statuses on one effect are read",
+    readAppliedConditions(hypnotic).map(c => c.condition), ["charmed", "incapacitated"]);
+
+  // ⚠️ A TRANSFER EFFECT RIDES ON THE CARRIER, NOT THE VICTIM. Applying a
+  // cloak's own passive bonus to whoever it is used against would be nonsense.
+  const cloak = withEffect("Cloak of Something",
+    [{ _id: "e1", name: "Warm", statuses: new Set(["blessed"]), disabled: false,
+       transfer: true }],
+    [{ _id: "e1", onSave: false }]);
+  check("a transfer effect is not applied to a target", readAppliedConditions(cloak), []);
+
+  // ⚠️ AND A DISABLED ONE IS NOT AN ANSWER EITHER.
+  const off = withEffect("Off",
+    [{ _id: "e1", name: "Fear", statuses: new Set(["frightened"]), disabled: true }],
+    [{ _id: "e1", onSave: false }]);
+  check("a disabled effect is ignored", readAppliedConditions(off), []);
+
+  // ⚠️ `onSave: true` means it lands EVEN ON A SUCCESS, so it is not save-gated.
+  const always = withEffect("Always",
+    [{ _id: "e1", name: "Marked", statuses: new Set(["marked"]), disabled: false }],
+    [{ _id: "e1", onSave: true }]);
+  check("an effect that lands on a success is not save-gated",
+    readAppliedConditions(always)[0]?.requiresSave, false);
+
+  // A compendium copy stores only ids in `effects`; there is nothing to read,
+  // and reading it must not throw or invent anything.
+  const bare = withEffect("Bare", ["e1"], [{ _id: "e1", onSave: false }]);
+  check("an id-only effects array reads as nothing", readAppliedConditions(bare), []);
+  check("and nothing throws on rubbish", readAppliedConditions(null), []);
+}
+
 console.log("");
 console.log(pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;

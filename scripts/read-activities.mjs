@@ -67,3 +67,91 @@ export function readActivities(item) {
 export function firstActivityOfType(item, type) {
   return readActivities(item).find(a => a?.type === type) ?? null;
 }
+
+/**
+ * The conditions this item applies, read off its own Active Effects.
+ *
+ * ⚠️🔴 THE CONDITION WAS BEING READ OUT OF PROSE WHILE IT SAT IN THE DATA.
+ * Johnny, 2026-09-08: a Specter failed Fear on a natural 1 and was not
+ * frightened. His Fear parsed ZERO conditions, because the only reader ACE had
+ * was `DescriptionParser`, which hunts phrases like "must succeed on a Wisdom
+ * saving throw or have the Frightened condition" in the description text. An
+ * item with a thin, homebrewed or re-written description therefore applies
+ * nothing at all, no matter how correctly it is built.
+ *
+ * And dnd5e states it structurally, on every properly built item:
+ *
+ *     Fear             effect "Fear"        statuses ["frightened"]
+ *     Hold Person      effect "Paralyzed"   statuses ["paralyzed"]
+ *     Hypnotic Pattern effect "Hypnotized"  statuses ["charmed","incapacitated"]
+ *
+ * with the activity naming the effect and saying when it lands:
+ *     activity.effects: [{ _id: "…", onSave: false }]
+ * `onSave: false` means it is NOT applied on a successful save, which is to say
+ * it applies on a FAILED one. That is the save gate, stated, rather than
+ * inferred from how near a DC happens to sit to the word "frightened".
+ *
+ * ⚠️ A TRANSFER EFFECT IS NOT ONE OF THESE. `transfer: true` means the effect
+ * rides on whoever CARRIES the item (a cloak's own bonus); applying that to a
+ * target would stamp the item's passive buff onto the victim.
+ *
+ * @param {Item|object} item
+ * @param {string|null} [activityId]  restrict to one activity's effects
+ * @returns {Array<{condition: string, requiresSave: boolean, fromEffect: true,
+ *                  effectName: string|null}>}
+ */
+export function readAppliedConditions(item, activityId = null) {
+  const out = [];
+  const seen = new Set();
+  try {
+    // The item's own effects, in whichever shape this copy is in.
+    const raw = item?.effects;
+    const list = Array.isArray(raw?.contents) ? raw.contents
+      : (typeof raw?.values === "function" ? [...raw.values()]
+        : (Array.isArray(raw) ? raw : []));
+    // A compendium copy stores only the ids here; there is nothing to read.
+    const effects = list.filter(e => e && typeof e === "object");
+    if (!effects.length) return out;
+
+    const byId = new Map();
+    for (const e of effects) {
+      const id = e.id ?? e._id;
+      if (id) byId.set(String(id), e);
+    }
+
+    // Which effects does an activity actually apply, and on what result?
+    const refs = [];
+    for (const a of readActivities(item)) {
+      if (activityId && String(a?.id ?? "") !== String(activityId)) continue;
+      for (const r of (Array.isArray(a?.effects) ? a.effects : [])) {
+        const id = r?._id ?? r?.id;
+        if (id) refs.push({ id: String(id), onSave: r?.onSave === true });
+      }
+    }
+
+    const take = (effect, requiresSave) => {
+      if (!effect || effect.disabled === true || effect.transfer === true) return;
+      const st = effect.statuses;
+      const names = st instanceof Set ? [...st] : (Array.isArray(st) ? st : []);
+      for (const n of names) {
+        const key = String(n ?? "").trim().toLowerCase();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        out.push({ condition: key, requiresSave, fromEffect: true,
+                   effectName: effect.name ?? null });
+      }
+    };
+
+    if (refs.length) {
+      for (const r of refs) take(byId.get(r.id), !r.onSave);
+    } else {
+      // ⚠️ NO REFERENCE IS NOT NO ANSWER. Plenty of homebrew carries the effect
+      // on the item without wiring it to an activity. Those still describe what
+      // the item does; assume the ordinary case, that a save avoids it.
+      for (const e of effects) take(e, true);
+    }
+  } catch (err) {
+    console.warn(`ace-qol | could not read the effects on "${item?.name ?? "an item"}":`, err);
+  }
+  return out;
+}

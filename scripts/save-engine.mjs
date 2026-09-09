@@ -42,6 +42,8 @@ import { getSpellTiming, TIMING } from "./spell-timing.mjs";
 // ⚠️ ONE DECIDER FOR "DOES ANYBODY SAVE WHEN THIS LANDS". The plan asks the
 // same function, so the card and the report can never disagree.
 import { initialSaveOwed, areaLingers } from "./inference/spell-plan.mjs";
+// ⚠️ THE CONDITION IS DATA ON THE ITEM, not a phrase in its description.
+import { readAppliedConditions } from "./read-activities.mjs";
 import { CoverEngine } from "./cover-engine.mjs";
 import { DescriptionParser } from "./description-parser.mjs";
 import { ConditionLibrary } from "./condition-library.mjs";
@@ -5528,11 +5530,49 @@ export class SaveEngine {
     // wins outright; otherwise use the description-parsed conditions. If neither
     // yields anything, there's nothing to apply (a homebrew save spell may
     // simply need its on-fail condition configured).
+    // ⚠️🔴 THE ITEM'S OWN EFFECTS ARE THE FIRST SOURCE, NOT THE LAST.
+    //
+    // Johnny, 2026-09-08: a Specter failed Fear on a natural 1 and was not
+    // frightened. His console said it plainly — "parsed 0 condition(s), 0 marked
+    // requiresSave: []" — because the only reader here was the DESCRIPTION
+    // parser, hunting the phrase "or have the Frightened condition" in prose. A
+    // thin or re-written description therefore applies nothing at all, however
+    // correctly the item is built, and his Fear had one.
+    //
+    // dnd5e states it structurally on every properly built item:
+    //     Fear             effect "Fear"        statuses ["frightened"]
+    //     Hold Person      effect "Paralyzed"   statuses ["paralyzed"]
+    //     Hypnotic Pattern effect "Hypnotized"  statuses ["charmed","incapacitated"]
+    // with the activity naming the effect and `onSave: false` — not applied on a
+    // successful save, so applied on a failed one. That is the save gate, stated.
+    //
+    // ⚠️ IT MERGES, IT DOES NOT REPLACE. A spell whose text names a condition
+    // its effects do not carry keeps it, and vice versa. Only a registry ruling
+    // still wins outright, because that is somebody's deliberate decision.
+    const fromEffects = readAppliedConditions(item, saveCtx?.activityId)
+      .filter(c => c?.requiresSave);
+    if (fromEffects.length) {
+      const known = new Set(failConditions.map(c => String(c?.condition ?? "").toLowerCase()));
+      const added = fromEffects.filter(c => !known.has(String(c.condition).toLowerCase()));
+      if (added.length) {
+        failConditions = [...failConditions, ...added];
+        console.log(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — its own `
+          + `effect${added.length > 1 ? "s" : ""} name `
+          + `${added.map(c => `${c.condition} ("${c.effectName ?? c.condition}")`).join(", ")}, `
+          + `which the description never said.`);
+      }
+    }
+
     if (registryEffectKey) {
       failConditions = [{ condition: registryEffectKey, requiresSave: true, fromRegistry: true }];
       console.log(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — applying registry effect "${registryEffectKey}" to failed-save targets (template-save hand-off).`);
     } else if (!failConditions.length) {
-      console.debug(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — no description-parsed conditions + no registry effect (homebrew may need a save trigger).`);
+      // ⚠️ NAME WHAT WAS SEARCHED. "No conditions" and "I only looked in one
+      // place" must never print the same, which is how this took two sessions.
+      console.warn(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — nothing to `
+        + `apply: its description names no save-gated condition, it carries no Active `
+        + `Effect with a status, and there is no registry entry for it. Give the item `
+        + `an effect that applies the condition and this fixes itself.`);
       return applied;
     }
 

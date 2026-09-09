@@ -47,7 +47,7 @@
 // Foundry and runs offline over a copy of the world for measuring, and it can
 // never join ace-qol.mjs's import cycles.
 
-import { readActivities } from "../read-activities.mjs";
+import { readActivities, readAppliedConditions } from "../read-activities.mjs";
 
 const _s = (v) => String(v ?? "").trim().toLowerCase();
 const _n = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
@@ -470,10 +470,28 @@ function readChange(item, acts, parsed, why) {
   // on that field and could not be told apart.
   //
   // Names here, details beside them for anything that needs the save flag.
-  const conditionDetails = _arr(parsed?.conditions)
-    .map(c => (typeof c === "string" ? { condition: c, requiresSave: false } : c))
-    .filter(c => c?.condition);
+  // ⚠️🔴 AND THE ITEM'S OWN EFFECTS COME FIRST, because they are DATA.
+  // Fear's item carries an Active Effect with `statuses: ["frightened"]` and an
+  // activity that names it with `onSave: false`. Reading only the description
+  // meant a thin or re-written one applied nothing at all, however correctly
+  // the item was built — which is exactly what happened to his Fear on
+  // 2026-09-08: zero conditions parsed, a Specter that failed on a 1, nothing.
+  const fromEffects = readAppliedConditions(item);
+  const conditionDetails = [...fromEffects];
+  const seenCond = new Set(fromEffects.map(c => String(c.condition)));
+  for (const c of _arr(parsed?.conditions)) {
+    const shaped = (typeof c === "string") ? { condition: c, requiresSave: false } : c;
+    const key = String(shaped?.condition ?? "").trim().toLowerCase();
+    if (!key || seenCond.has(key)) continue;
+    seenCond.add(key);
+    conditionDetails.push(shaped);
+  }
   const conditions = conditionDetails.map(c => String(c.condition));
+  if (fromEffects.length) {
+    why.push(`its own effect${fromEffects.length > 1 ? "s" : ""} `
+      + `${[...new Set(fromEffects.map(c => `"${c.effectName ?? c.condition}"`))].join(", ")} `
+      + `appl${fromEffects.length > 1 ? "y" : "ies"} ${fromEffects.map(c => c.condition).join(" and ")}`);
+  }
 
   if (damage.length) why.push(`it deals ${damage.map(d => d.formula + " " + (d.types[0] ?? "")).join(" and ").trim()}`);
   if (heals) why.push(healing ? `it restores ${healing.formula} hit points`
