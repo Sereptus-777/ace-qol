@@ -6163,12 +6163,40 @@ export class SaveEngine {
           <i class="fas fa-hourglass-half"></i> Waiting on ${n} save${n === 1 ? "" : "s"}…
         </div>`;
       } else if (anyoneFailed) {
-        // A target failed but no condition auto-applied. For properly-wired
-        // save-or-condition powers this shouldn't happen \u2014 the condition
-        // applies and renders above. NEVER surface a defeatist "apply manually"
-        // note: the per-target FAIL already conveys the outcome, and genuine
-        // gaps are logged to console for follow-up, not shown to the table.
-        actionsHtml = "";
+        // \u26a0\ufe0f\ud83d\udd34 THIS BRANCH WAS THE SILENCE, AND IT COST TWO SESSIONS.
+        //
+        // Johnny, 2026-09-08: *"I cast Fear on the specter who is not immune to
+        // Fear, and it failed. Does not have the Fear effect on him."* The card
+        // said nothing, on purpose, and the only record was a console line he
+        // had no reason to be watching at the time.
+        //
+        // The original reasoning was sound as far as it went: never show the
+        // table a defeatist "apply it manually" note. But "a creature failed
+        // and nothing happened to it" is not table decoration, it is the exact
+        // failure this whole engine exists to make impossible, and the standing
+        // rule in this codebase is that an early return which gives up without
+        // a word is indistinguishable from a broken feature.
+        //
+        // \u26a0\ufe0f GM ONLY. The players see the FAIL on the row, which is the truth;
+        // the GM sees that ACE could not finish the job, and the one command
+        // that says why.
+        const _who = (results ?? []).filter(r => SaveEngine._failedTheSave(r))
+          .map(r => foundry.utils.escapeHTML(String(r?.name ?? "a target")));
+        actionsHtml = game.user?.isGM && _who.length
+          // ⚠️ NOT `ace-qol-gm-only`: that class is `display:none` until something
+          // stamps `data-ace-gm="true"` on it, and nothing does here. The GM test
+          // above is the gate; adding the class would hide the line from everyone.
+          ? `<div class="ace-qol-save-no-effect" style="padding:8px 12px;
+                 background:linear-gradient(180deg,rgba(212,175,55,0.10),rgba(212,175,55,0.03));
+                 border-top:1px solid rgba(212,175,55,0.30);font-size:12px;color:#e8d9a8;">
+              <i class="fas fa-triangle-exclamation"></i>
+              <strong>${_who.join(", ")}</strong> failed and ACE applied nothing.
+              Select ${_who.length === 1 ? "it" : "one of them"} and run
+              <code style="background:rgba(0,0,0,0.35);padding:1px 5px;border-radius:3px;">
+              game.aceQol.whyNoCondition("${foundry.utils.escapeHTML(item?.name ?? "")}")</code>
+              to see which step declined.
+            </div>`
+          : "";
       } else {
         actionsHtml = `<div class="ace-qol-save-no-effect" style="padding:6px 12px;text-align:center;color:#88c878;font-size:11px;font-style:italic;">
           <i class="fas fa-shield-halved"></i> All targets resisted
