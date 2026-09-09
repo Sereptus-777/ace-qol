@@ -35,9 +35,12 @@ import { resolveItem } from "./inference/snapshot.mjs";
  * @param {object} [opts]
  * @param {object} [opts.victim]    a token to test against; defaults to the
  *                                  first SELECTED token, then the first TARGET
+ * @param {object} [opts.caster]    the actor whose copy of the spell to test
+ * @param {string} [opts.casterId]  that actor's id, if easier to paste
  * @returns {Promise<object|null>}
  */
-export async function whyNoCondition(what, { victim = null } = {}) {
+export async function whyNoCondition(what, { victim = null, caster = null,
+                                             casterId = null } = {}) {
   const engine = globalThis.game?.aceQol?.saveEngine ?? null;
   if (!engine?._applyFailedSaveConditions) {
     console.warn(`${LOG} | the save engine is not up yet.`);
@@ -45,9 +48,42 @@ export async function whyNoCondition(what, { victim = null } = {}) {
   }
 
   // ── Which spell ──
-  const found = resolveItem(what, { lastPress: null });
-  if (!found.item) { console.warn(`${LOG} | ${found.note}`); return null; }
-  const item = found.item;
+  //
+  // ⚠️🔴 IT TESTED THE WRONG COPY AND SAID IT WOULD WORK. Johnny, 2026-09-08:
+  // this tool reported "Fear WOULD apply frightened to Specter", and the very
+  // next live cast of Fear parsed ZERO conditions. Both are true: the caster's
+  // own copy of the spell and the one this found by name were different items.
+  // `resolveItem` searches the SELECTED token first, and the selected token is
+  // the victim, so it walked on to the party and the sidebar and answered about
+  // somebody else's Fear.
+  //
+  // A diagnostic that quietly answers about a different document is worse than
+  // no diagnostic, because it is believed. So: prefer the CASTER's copy, and
+  // print the uuid of whatever was tested, every time.
+  const casterActor = caster ?? globalThis.game?.actors?.get?.(String(casterId ?? "")) ?? null;
+  const wanted = String(typeof what === "string" ? what : (what?.name ?? "")).trim().toLowerCase();
+  let item = (typeof what === "object" && what?.system) ? what : null;
+  if (!item && casterActor && wanted) {
+    item = (casterActor.items ?? []).find(i => String(i?.name ?? "").toLowerCase() === wanted)
+        ?? (casterActor.items ?? []).find(i => String(i?.name ?? "").toLowerCase().startsWith(wanted))
+        ?? null;
+    if (item) console.log(`${LOG} | using ${casterActor.name}'s own copy.`);
+  }
+  if (!item) {
+    const found = resolveItem(what, { lastPress: null });
+    if (!found.item) { console.warn(`${LOG} | ${found.note}`); return null; }
+    item = found.item;
+    if (casterActor) {
+      console.warn(`${LOG} | ${casterActor.name} has no item called "${what}", so this is `
+        + `testing a copy found elsewhere. It may not be the one that was cast.`);
+    }
+  }
+  // ⚠️ ALWAYS NAME THE DOCUMENT. Two copies of one spell answer differently and
+  // there is no way to tell from a name.
+  const _descLen = String(item?.system?.description?.value ?? "").length;
+  console.log(`${LOG} | testing ${item.uuid ?? "(no uuid)"} — "${item.name}" `
+    + `on ${item.actor?.name ?? "no actor"}, description ${_descLen} characters`
+    + `${_descLen ? "" : " (EMPTY: nothing for the parser to read a condition out of)"}.`);
 
   // ── Which creature ──
   // ⚠️ SELECTED FIRST, THEN TARGETED. He selects the thing he is asking about;
@@ -116,5 +152,6 @@ export async function whyNoCondition(what, { victim = null } = {}) {
       + `decision itself, in the line or two directly above this one.`);
   }
 
-  return { item: item.name, target: token.name, saveAbility, saveDC, applied };
+  return { item: item.name, itemUuid: item.uuid ?? null,
+           target: token.name, saveAbility, saveDC, applied };
 }
