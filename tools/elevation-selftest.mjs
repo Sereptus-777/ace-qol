@@ -67,5 +67,71 @@ console.log("\nOPT-OUT");
 check("ignoreElevation restores the old flat behaviour",
   isTokenInTemplate(token(200), mb, null, { ignoreElevation: true }), true);
 
+/* ── HYPNOTIC PATTERN, 2026-09-10 ───────────────────────────────────────── */
+console.log("\nA 30 FOOT CUBE IS 30 FEET TALL");
+// ⚠️🔴 dnd5e builds a cube as a Foundry `rect` whose distance is the DIAGONAL:
+// Math.hypot(size, size) at direction 45 (dnd5e.mjs, AbilityTemplate.fromActivity).
+// Read as a height that made every 30 foot cube 42 feet tall, and the card said
+// "the area reaches from 0 to 42 feet".
+const hypnotic = spell("Hypnotic Pattern", "cube", 30);
+const cube = { ...tmpl(hypnotic, Math.hypot(30, 30), 0), t: "rect", id: "cube30" };
+const cb = verticalBand(cube);
+check("the cube's bottom is its own elevation", cb?.bottom, 0);
+check("and its top is 30 feet, not 42", cb?.top, 30);
+check("a creature standing in it is in it", isTokenInTemplate(token(0), cube), true);
+check("a flyer at 35 feet is above it", isTokenInTemplate(token(35), cube), false);
+
+// ⚠️ THE ACTIVITY FIRST. The origin flag names the activity, and dnd5e 5.x
+// keeps a spell's area there, not on the item.
+ITEMS.set("Activity.hp", { item: { name: "Hypnotic Pattern", system: {} },
+                           target: { template: { type: "cube", size: 30 } } });
+const cubeAct = { ...tmpl("Activity.hp", Math.hypot(30, 30), 0), t: "rect", id: "cubeAct" };
+check("the shape is read off the activity", verticalBand(cubeAct)?.top, 30);
+
+console.log("\nTHE REPORT NAMES THE REASON THAT IS ACTUALLY TRUE");
+{
+  const { ElevationGate } = await import(
+    "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/rules/elevation-gate.mjs");
+  const mk = (name, elevation) => ({ id: name, name, actor: { id: "a-" + name },
+    document: { x: 0, y: 0, width: 1, height: 1, elevation } });
+  const specter = mk("Specter", 0);
+  const bat = mk("Giant Bat", 40);
+  const mole = mk("Burrower", -10);
+  globalThis.canvas.tokens = { placeables: [specter, bat, mole] };
+  const templateDoc = { object: cube };
+  const edition = () => "2024";
+  const why = (list, name) => list.find(o => o.token.name === name)?.why ?? null;
+
+  // ⚠️🔴 THE CARD HE GOT. The Specter was at 0 feet inside a cube reaching
+  // from 0 up, and it was called "below it". He was left out because the save
+  // list came from leftover TARGETS, not from the area, and the report blamed
+  // height for it. It must never call a creature inside the band below it.
+  const fromTargets = ElevationGate.findOutOfReach(templateDoc, [], edition, null,
+    { source: "targets" });
+  check("a creature inside the band is not called below it", why(fromTargets, "Specter"),
+    "not-targeted");
+  check("a creature really above it is still called above", why(fromTargets, "Giant Bat"), "above");
+  check("and one really below it is still called below", why(fromTargets, "Burrower"), "below");
+
+  // ⚠️ AN AREA LIST THAT LEAVES OUT SOMEONE INSIDE IT IS ACE DISAGREEING WITH
+  // ITSELF, and it is reported as exactly that rather than dressed up as height.
+  const realError = console.error; let said = "";
+  console.error = (...a) => { said += a.map(String).join(" "); };
+  const fromArea = ElevationGate.findOutOfReach(templateDoc, [], edition, null, { source: "area" });
+  console.error = realError;
+  check("inside the area and at its height, yet left out, is 'missed'", why(fromArea, "Specter"),
+    "missed");
+  check("and that is said out loud, not blamed on height", /disagreement inside ACE/.test(said), true);
+
+  // Somebody who WAS caught is never reported.
+  const kept = ElevationGate.findOutOfReach(templateDoc, [specter], edition, null, { source: "area" });
+  check("a creature on the save list is never reported", why(kept, "Specter"), null);
+
+  // The caster's own exclusion explains itself.
+  const casterOut = ElevationGate.findOutOfReach(templateDoc, [], edition, specter.actor,
+    { source: "targets" });
+  check("the caster is never reported", why(casterOut, "Specter"), null);
+}
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

@@ -1768,6 +1768,12 @@ export class SaveEngine {
     // ── Primary: use game.user.targets (GM already targeted who they want) ──
     let tokens = [...game.user.targets];
     console.log(`${MODULE_ID} | game.user.targets: ${tokens.length} tokens:`, tokens.map(t => t.name));
+    // ⚠️ REMEMBER WHERE THE LIST CAME FROM. Johnny, 2026-09-10: Hypnotic
+    // Pattern landed squarely on a Specter and posted "out of reach, below it"
+    // with the Specter at 0 feet inside a 0-to-42 foot band. Whatever was still
+    // TARGETED from an earlier action stood in for the area, and the out-of-reach
+    // report, knowing nothing about that, blamed height. The report has to know.
+    const tokensFrom = tokens.length ? "targets" : "area";
 
     // ── Fallback: template geometry if GM had nothing targeted ──
     if (!tokens.length) {
@@ -1820,12 +1826,12 @@ export class SaveEngine {
     try {
       const { ElevationGate } = await import("./rules/elevation-gate.mjs");
       const outOfReach = ElevationGate.findOutOfReach(
-        templateDoc, tokens, CombatState.getActiveEdition, actor);
+        templateDoc, tokens, CombatState.getActiveEdition, actor, { source: tokensFrom });
       if (outOfReach.length) {
         await ElevationGate.postOutOfReachCard(item, actor, outOfReach);
-        console.log(`${MODULE_ID} | ${outOfReach.length} creature(s) were over "${item.name}" `
-          + `but outside it vertically: `
-          + outOfReach.map(o => `${o.token.name} at ${o.feet} feet`).join(", "));
+        console.log(`${MODULE_ID} | ${outOfReach.length} creature(s) under "${item.name}" were `
+          + `left out: ` + outOfReach.map(o => `${o.token.name} at ${o.feet} feet (${o.why})`).join(", ")
+          + `. The save list came from ${tokensFrom === "targets" ? "your targets" : "the area"}.`);
       }
     } catch (err) {
       console.warn(`${MODULE_ID} | out-of-reach report failed (non-blocking):`, err);

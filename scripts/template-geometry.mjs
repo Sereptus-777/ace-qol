@@ -79,7 +79,10 @@ function _originOf(templateDoc) {
     const origin = templateDoc?.flags?.dnd5e?.origin;
     const doc = origin ? fromUuidSync?.(origin) : null;
     const item = doc?.item ?? doc;                       // activity -> item, or the item
-    const shape = item?.system?.target?.template?.type ?? null;
+    // ⚠️ THE ACTIVITY FIRST. dnd5e 5.x keeps a spell's area on its activity,
+    // and the origin flag names the activity; the item's own field is the
+    // fallback for the item types that still carry one.
+    const shape = doc?.target?.template?.type ?? item?.system?.target?.template?.type ?? null;
     if (shape) out = { shape: String(shape).toLowerCase(), name: String(item?.name ?? "").toLowerCase() };
   } catch (_) { out = null; }   // an unreadable origin is "unknown", never "excluded"
   if (id) {
@@ -140,8 +143,18 @@ export function verticalBand(template) {
 
       // A cube or square is as tall as it is wide, sitting on its own elevation.
       case "cube":
-      case "square":
-        return { bottom: base, top: base + size };
+      case "square": {
+        // ⚠️🔴 A CUBE'S `distance` IS ITS DIAGONAL, NOT ITS SIDE. dnd5e builds
+        // a cube as a Foundry `rect` template with distance = Math.hypot(size,
+        // size) and direction 45 (dnd5e.mjs, AbilityTemplate.fromActivity).
+        // Read as a height, that made every 30 foot cube 42 feet tall: Hypnotic
+        // Pattern's card said "the area reaches from 0 to 42 feet" (2026-09-10).
+        // Rounded so a creature standing exactly on the top face is judged by
+        // the rule, not by a floating point remainder.
+        const isRect = String(doc.t ?? "").toLowerCase() === "rect";
+        const side = isRect ? Math.round((size / Math.SQRT2) * 1e6) / 1e6 : size;
+        return { bottom: base, top: base + side };
+      }
 
       // A cone spreads to its length at the far end, so that is its half-height.
       case "cone":
@@ -158,6 +171,13 @@ export function verticalBand(template) {
     return null;
   }
 }
+
+/**
+ * The slice of air a creature occupies, for anything that has to explain a
+ * height decision. ONE reader: the out-of-reach report asks this rather than
+ * working the creature's height out again and disagreeing with the hit-test.
+ */
+export function tokenBand(doc) { return _tokenBand(doc); }
 
 /** The slice of air a creature occupies: its feet, up by its own size. */
 function _tokenBand(doc) {
