@@ -89,6 +89,25 @@ export const DISPATCHABLE_SHAPES = new Set([
   "attack-multi", "attack-single", "aura", "chained", "distribute", "emanation-heal", "multi-buff", "multi-heal", "save-area", "save-single", "self", "template-heal", "template-pool", "template-save", "template-trigger", "touch",
 ]);
 
+/**
+ * Shapes the pipeline claims but does not resolve itself.
+ *
+ * ⚠️🔴 OWNING A SPELL AND FINISHING IT ARE DIFFERENT THINGS. For these, the
+ * dispatcher's resolver is a deliberate no-op: dnd5e places the area or rolls
+ * the attack, and somebody else does the rest.
+ *     template-save      the save engine rolls the saves and the damage
+ *     template-trigger   the concentration widget; the save engine for a follow-up
+ *     template-pool      area-pool.mjs reads who is inside and spends the pool
+ *     attack-single      dnd5e's own attack flow
+ *     aura               the aura engine, where it knows the aura
+ * So for these the activity chosen IS what happens, a follow-up save belongs to
+ * the save engine, and a damage roll made through dnd5e belongs to whoever is
+ * resolving it. See `resolvesItself`, and Prismatic Wall on 2026-09-11.
+ */
+export const HANDS_OFF_SHAPES = new Set([
+  "template-save", "template-trigger", "template-pool", "attack-single", "aura",
+]);
+
 export class SpellPipeline {
 
   // Cache cast level captured between preUseActivity and useActivity hooks
@@ -146,7 +165,15 @@ export class SpellPipeline {
         }
 
         // Defer slot consumption — restore on confirm or refund on cancel
-        if (usageConfig?.consume?.spellSlot !== undefined) {
+        //
+        // ⚠️🔴 ONLY WHEN dnd5e WAS GOING TO TAKE ONE. This tested "is the field
+        // there at all", and dnd5e fills it in before this hook runs: TRUE for a
+        // cast, FALSE for a follow-up that costs nothing. Prismatic Wall's
+        // Blinding Save is marked "uses no spell slot" on the spell itself, came
+        // through here as false, was marked deferred anyway, and the commit
+        // below then took a 7th-level slot from Varek for a save that is free.
+        // Every follow-up of every spell the pipeline owns did the same.
+        if (usageConfig?.consume?.spellSlot === true) {
           usageConfig.consume.spellSlot = false;
           activity._aceSlotDeferred = true;
         }
@@ -247,11 +274,21 @@ export class SpellPipeline {
     //
     // ⚠️ AND IT SAYS SO. A suppressed roll that logs nothing is
     // indistinguishable from a broken one.
+    //
+    // ⚠️🔴 AND "EVERY SHAPE ROLLS ITS OWN" WAS NOT TRUE (2026-09-11). The shapes
+    // the pipeline hands off (template-save, template-trigger, template-pool,
+    // attack-single, aura) are rolled by the save engine, the concentration
+    // widget or dnd5e's attack flow, and all of them roll THROUGH dnd5e's own
+    // damage roll. This cancelled that roll for Fireball, Lightning Bolt, Cone of
+    // Cold, Wall of Fire, Web and every other hands-off spell; the save engine
+    // then fell back to the bare formula, and a Fireball cast at 5th level rolled
+    // 8d6 instead of 10d6. Only a spell the pipeline resolves ITSELF has its own
+    // dice to protect.
     Hooks.on("dnd5e.preRollDamageV2", (config) => {
       try {
         const item = config?.subject?.item;
         if (!item) return;
-        if (SpellPipeline.owns(item)) {
+        if (SpellPipeline.resolvesItself(item)) {
           console.log(`${MODULE_ID} | pipeline owns "${item.name}" — native damage roll suppressed `
             + `(ACE rolls this itself; the loose die was dnd5e rolling one unit on its own)`);
           return false;
@@ -347,6 +384,28 @@ export class SpellPipeline {
       // asks "who owns this cast?" was told ACE did, so nothing else stepped in.
       const entry = SpellPipeline._getEntry(item);
       return !!entry && DISPATCHABLE_SHAPES.has(entry.shape);
+    } catch (_) { return false; }
+  }
+
+  /**
+   * Does the pipeline resolve this spell ITSELF, with its own picker and its
+   * own dice? False for a spell it owns but hands off (see HANDS_OFF_SHAPES).
+   *
+   * ⚠️🔴 THIS IS THE QUESTION FOUR PLACES MEANT TO ASK. Each asked "does the
+   * pipeline own it?" instead, and for a hands-off spell the answer to that is
+   * yes while the pipeline does nothing. Johnny, 2026-09-11: Varek cast
+   * Prismatic Wall and nothing happened at all. The activity chooser skipped the
+   * question and took the Blinding Save, the save engine stood aside for the
+   * pipeline, the pipeline's resolver for that shape is a deliberate no-op, and
+   * it still charged a 7th-level slot on the way out.
+   *
+   * @param {Item5e} item
+   * @returns {boolean}
+   */
+  static resolvesItself(item) {
+    try {
+      const entry = SpellPipeline._getEntry(item);
+      return !!entry && DISPATCHABLE_SHAPES.has(entry.shape) && !HANDS_OFF_SHAPES.has(entry.shape);
     } catch (_) { return false; }
   }
 

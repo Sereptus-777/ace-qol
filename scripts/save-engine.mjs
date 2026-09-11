@@ -1020,7 +1020,15 @@ export class SaveEngine {
       // its SaveResolver opens the (purple) picker and calls postSaveCard itself.
       // The pipeline clears targets pre-cast, so this handler lands here with an
       // empty set and would open a SECOND picker. Defer to the pipeline instead.
-      if (game.aceQol?.SpellPipeline?.ownsSpell?.(item)) {
+      //
+      // ⚠️🔴 ONLY WHEN THE PIPELINE RESOLVES IT ITSELF (2026-09-11). This stood
+      // aside for any spell the pipeline so much as knew, and for the shapes it
+      // hands off (template-save, template-trigger, template-pool, aura,
+      // attack-single) there is no pipeline picker and no pipeline save card.
+      // Prismatic Wall's Blinding Save landed here, stood aside, and nothing
+      // resolved it. Every follow-up save of a hands-off spell was dead the same
+      // way, Prismatic Spray's Indigo and Violet saves included.
+      if (game.aceQol?.SpellPipeline?.resolvesItself?.(item)) {
         console.log(`${MODULE_ID} | [picker-timing] SaveEngine: "${item.name}" owned by SpellPipeline — deferring, no picker here`);
         return;
       }

@@ -6495,16 +6495,38 @@ Hooks.once("ready", () => {
         // dart count are then dnd5e's usage dialog and the pipeline's job, which
         // is exactly where that decision belongs.
         if (choosable.length > 1 && SpellPipeline.owns(item)) {
-          const RANK = { attack: 0, save: 1, damage: 2, heal: 3, summon: 4, enchant: 5, check: 6, utility: 9 };
-          const best = [...choosable].sort((a, b) =>
-            (RANK[a.type] ?? 7) - (RANK[b.type] ?? 7))[0];
-          const btn = buttonFor(best);
-          if (btn) {
-            console.log(`${MODULE_ID} | "${item.name}" is cast by ACE's spell pipeline — `
-              + `not asking which activity. Using the "${best.name || best.type}" one; `
-              + `the pipeline decides what the spell does either way.`);
-            setTimeout(() => btn.click(), 0);
-            return;
+          // ⚠️🔴 A FOLLOW-UP IS NOT A WAY TO CAST THE SPELL. Johnny, 2026-09-11:
+          // Varek cast Prismatic Wall and nothing happened. Its four activities
+          // are Create Wall, Create Globe, Blinding Save and Traversal Save, and
+          // the rank below put "save" ahead of "utility", so it picked the
+          // Blinding Save: the save a creature makes when it wanders near the
+          // wall later, not the wall. dnd5e marks every such follow-up as using
+          // no spell slot, and that is the test.
+          const casts = choosable.filter(a => a?.consumption?.spellSlot !== false);
+          // ⚠️🔴 AND WHEN THE PIPELINE HANDS THE SPELL OFF, THE ACTIVITY IS THE
+          // SPELL. "The pipeline decides what the spell does either way" is true
+          // for Magic Missile, which it resolves itself. For an area it hands to
+          // dnd5e and the save engine, the activity chosen IS what happens: a
+          // wall or a globe, a wall of fire or a ring. Two of those is a real
+          // choice, so the caster makes it.
+          const handsOff = !SpellPipeline.resolvesItself(item);
+          if (handsOff && casts.length > 1) {
+            console.log(`${MODULE_ID} | "${item.name}" can be cast ${casts.length} different ways `
+              + `(${casts.map(a => a.name || a.type).join(", ")}), and which one changes what it `
+              + `does, so the caster picks.`);
+          } else {
+            const RANK = { attack: 0, save: 1, damage: 2, heal: 3, summon: 4, enchant: 5, check: 6, utility: 9 };
+            const pool = casts.length ? casts : choosable;
+            const best = [...pool].sort((a, b) =>
+              (RANK[a.type] ?? 7) - (RANK[b.type] ?? 7))[0];
+            const btn = buttonFor(best);
+            if (btn) {
+              console.log(`${MODULE_ID} | "${item.name}" is cast by ACE's spell pipeline — `
+                + `not asking which activity. Using the "${best.name || best.type}" one; `
+                + `${handsOff ? "it is the only way to cast it" : "the pipeline decides what the spell does either way"}.`);
+              setTimeout(() => btn.click(), 0);
+              return;
+            }
           }
         }
 
