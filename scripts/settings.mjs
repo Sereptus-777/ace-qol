@@ -358,7 +358,7 @@ export class QolSettings {
              + "measured edge to edge with the same function ACE uses for spell range, reach "
              + "and aura radius, so the number on screen and the number in the rules are the "
              + "same number.",
-      scope:   "client",
+      scope: "user",
       config:  true,
       type:    Boolean,
       default: true,
@@ -475,7 +475,7 @@ export class QolSettings {
     s("tooltipDelay", {
       name:    "Tooltip Hover Delay (ms)",
       hint:    "How long you must hover before a tooltip appears (Foundry default is 500ms — too fast for some users). 1500ms = 1.5 seconds. Set to 500 to restore Foundry default. Applies live; no reload required.",
-      scope:   "client",
+      scope: "user",
       config:  false,   // surfaced via the ACE config panel (UI / Cards tab), not native settings
       type:    Number,
       range:   { min: 100, max: 5000, step: 100 },
@@ -984,7 +984,7 @@ export class QolSettings {
     s("debugFlankLogging", {
       name: "Debug — Flanking Resolution Logs",
       hint: "Log detailed flanking-detection diagnostics to console (per-target, per-ally distance/disposition/reach checks). EXTREMELY verbose — typically 15-25 lines per attack roll. Off by default even when general Debug Mode is on. Turn on only when troubleshooting why a token does or doesn't get the flanking bonus.",
-      scope: "client", config: false, type: Boolean, default: false,
+      scope: "user", config: false, type: Boolean, default: false,
     });
 
     // v0.6.1: removed `showConcentrationWidget` — duplicated the existing
@@ -1683,7 +1683,7 @@ export class QolSettings {
     s("debugMode", {
       name:    "Debug Mode",
       hint:    "Log detailed combat resolution info to console.",
-      scope:   "client",
+      scope: "user",
       config:  false,
       type:    Boolean,
       default: false,
@@ -1694,7 +1694,7 @@ export class QolSettings {
     s("situationalNarration", {
       name:    "Situational Narration",
       hint:    "Show the combat engine's reasoning as it reads the scene (e.g. 'sees through invisibility via Truesight → no disadvantage'). OFF for normal play; CONSOLE logs to F12; GM WHISPER posts it quietly to the GM only.",
-      scope:   "client",
+      scope: "user",
       config:  false,   // surfaced via the ACE config panel (Advanced tab), not native settings
       type:    String,
       choices: {
@@ -1729,7 +1729,7 @@ export class QolSettings {
     s("chatOpenOnLoad", {
       name:    "Open the Chat Log on Load",
       hint:    "After every world load, switch the sidebar to Chat and expand it if it was collapsed. Client-scoped — each person chooses for themselves.",
-      scope:   "client",
+      scope: "user",
       config:  true,
       type:    Boolean,
       default: true,
@@ -1747,7 +1747,7 @@ export class QolSettings {
     s("enableEffectsPanel", {
       name:    "Enable Effects Panel",
       hint:    "Show a floating list of the currently selected token's active effects. Left-click an effect to read its description, right-click to disable/delete (with confirmation).",
-      scope:   "client",
+      scope: "user",
       config:  false,
       type:    Boolean,
       default: true,
@@ -1756,7 +1756,7 @@ export class QolSettings {
     s("effectsPanelPosition", {
       name:    "Effects Panel Position",
       hint:    "Where the effects panel anchors on screen.",
-      scope:   "client",
+      scope: "user",
       config:  false,
       type:    String,
       choices: { "top-right": "Top Right", "top-left": "Top Left", "bottom-right": "Bottom Right", "bottom-left": "Bottom Left" },
@@ -1786,7 +1786,7 @@ export class QolSettings {
     s("effectsPanelShowAuras", {
       name:    "Effects Panel — Show Class Auras",
       hint:    "Detect and display class auras (Paladin Aura of Protection, Aura of Courage, etc.) computed from class levels — these are class features, not Active Effects, so they don't appear elsewhere.",
-      scope:   "client",
+      scope: "user",
       config:  false,
       type:    Boolean,
       default: true,
@@ -1968,7 +1968,7 @@ export class QolSettings {
     s("lootHoverIconDelayMs", {
       name:    "Loot Hover-Icon Delay (ms)",
       hint:    "How long to hover over a corpse / container tile before the gold coin-sack icon fades in. Set to 0 to disable the hover icon entirely. Default: 200ms (0.2 seconds — snappy).",
-      scope:   "client",
+      scope: "user",
       config:  false,
       type:    Number,
       default: 200,
@@ -1988,7 +1988,7 @@ export class QolSettings {
     s("lootClickDebug", {
       name:    "Loot Click Debug Logging",
       hint:    "When ON, every left-click logs the lootable-tile detection result to console (world pos, layer, tile found?). Use this to diagnose click-doesn't-open-loot bugs. Default: OFF.",
-      scope:   "client",
+      scope: "user",
       config:  false,
       type:    Boolean,
       default: false,
@@ -2201,3 +2201,55 @@ export class QolSettings {
     }
   }
 }
+
+
+// ─── Settings that follow the person, not the browser ───────────────────────
+//
+// ⚠️🔴 THESE WERE SAVED IN EACH BROWSER SEPARATELY. Johnny, 2026-09-10, after a
+// new browser window opened his game with none of his preferences and an
+// ElevenLabs warning he had already dealt with: "Why aren't these saved and set
+// as soon as I open the game? Or any browser, for that matter. You're putting a
+// band-aid on something that should always be there."
+//
+// Foundry V13 has a USER scope: saved in the world, tagged with the user, and
+// handed to whichever browser that user logs in from. These moved to it.
+//
+// ⚠️ KEYS DID NOT MOVE, AND MUST NOT. Foundry's server sends every browser in
+// the world every Setting row, for every user (Setting.dump(), unfiltered), so
+// a key saved this way would sit in every player's browser. Keys stay in the
+// GM's own machine until the key-keeper exists.
+//
+// ⚠️ THE OLD VALUE IS LIFTED ONCE, AND NEVER OVER A SAVED ONE. The first time a
+// browser that still holds a per-browser value opens the game, it is copied to
+// the account, but only if the account has nothing saved for it yet, and a blank
+// is never treated as a value (the ElevenLabs key was lost twelve times to that).
+// The browser's copy is left where it is: nothing here deletes anything.
+//
+// ⚠️ THE MODULE ID IS WRITTEN OUT, NOT IMPORTED. This runs at the top level of a
+// file the entry file imports, and an imported const read here inside an import
+// cycle throws at load and takes the whole module down (2026-08-28).
+Hooks.once("ready", async () => {
+  const NS = "ace-qol";
+  const KEYS = ["chatOpenOnLoad", "debugFlankLogging", "debugMode", "effectsPanelPosition", "effectsPanelShowAuras", "enableEffectsPanel", "hoverDistance", "lootClickDebug", "lootHoverIconDelayMs", "perspectivePercent", "perspectiveScaling", "situationalNarration", "tooltipDelay"];
+  const moved = [];
+  for (const key of KEYS) {
+    try {
+      const raw = globalThis.localStorage?.getItem?.(`${NS}.${key}`);
+      if (raw === null || raw === undefined) continue;            // this browser never saved one
+      const doc = game.settings.get(NS, key, { document: true });
+      if (doc?._id) continue;                                     // the account already has it: never overwrite
+      let value;
+      try { value = JSON.parse(raw); } catch (_) { value = raw; }
+      if (value === null || value === "") continue;               // a blank is never a value
+      await game.settings.set(NS, key, value);
+      moved.push(key);
+    } catch (err) {
+      console.warn(`${NS} | could not move "${key}" from this browser to your account `
+        + `(it keeps working with its default):`, err);
+    }
+  }
+  if (moved.length) {
+    console.log(`${NS} | moved ${moved.length} setting(s) from this browser to your account, `
+      + `so every browser you open now has them: ${moved.join(", ")}`);
+  }
+});

@@ -136,14 +136,14 @@ export class Perspective {
         hint: "While a flying creature is selected, everything below it is DRAWN smaller, "
             + "the further below it is. Nothing about the rules changes: distance, reach, "
             + "cover and areas all still measure from the real elevations.",
-        scope: "client", config: true, type: Boolean, default: false,
+        scope: "user", config: true, type: Boolean, default: false,
         onChange: () => Perspective.refreshAll(),
       });
       game.settings.register(MODULE_ID, "perspectivePercent", {
         name: "Perspective: how much smaller per 10 feet",
         hint: "Compounding, so it never reaches zero. 2.5 means something 10 feet below is "
             + "drawn at 97.5%, and 100 feet below at about 78%.",
-        scope: "client", config: true, type: Number, default: 2.5,
+        scope: "user", config: true, type: Number, default: 2.5,
         range: { min: 0.5, max: 15, step: 0.5 },
         onChange: () => Perspective.refreshAll(),
       });
