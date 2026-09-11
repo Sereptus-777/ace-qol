@@ -55,11 +55,14 @@
 // would have to happen. Executing the plan is a later phase, deliberately, so
 // this can be measured against his whole world first.
 //
-// ⚠️ IMPORTS ONE FILE, which itself imports one file that imports nothing.
+// ⚠️ IMPORTS TWO FILES, and neither imports anything that imports them back.
 // Everything else is handed IN, so this cannot start an import cycle.
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { readActionFacts } from "./action-facts.mjs";
+// The words, with dnd5e's enrichers spelled out. Shared with the facts reader and
+// the save-outcome reader, so all three read the same sentences.
+import { expandEnrichers as _expand, plainSpellText as _strip } from "./spell-text.mjs";
 
 const _s = (v) => String(v ?? "").trim().toLowerCase();
 const _n = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
@@ -127,13 +130,38 @@ function planWho(facts, place, apply, decide, gaps, why) {
 
   if (place?.template) {
     // ⚠️ A ROLL FORCED ON SOMEBODY MEANS EVERYONE STANDING IN IT. Fireball,
-    // Spirit Guardians, Fear: no choosing, the area decides.
+    // Fear, Cloudkill, Prismatic Spray: no choosing, the area decides.
     const forcedOnOthers = decide?.kind === "save" || decide?.kind === "attack"
       || (apply?.damage?.length ?? 0) > 0;
+
+    // ⚠️🔴 UNLESS THE SPELL'S OWN WORDS HAND THE CHOICE TO THE CASTER. Slow is
+    // "up to six creatures of your choice in a 40-foot Cube", and Sleep and
+    // Weird are "each creature of your choice" in theirs. dnd5e's sheet marks
+    // none of the three as a choice, so reading the sheet alone said "everyone
+    // inside" and Slow caught the caster's own allies standing in the cube. The
+    // words are read in action-facts, where every other fact about the item is.
+    if (forcedOnOthers && s.allowsChoice) {
+      // The number comes from the words ("up to six") or the area's own count.
+      // Never from a second activity's target: Weird's end-of-turn save names
+      // one creature, and capping the whole sphere at one would be a new bug.
+      const n = s.choiceCount ?? (_s(s.kind) === "area" && count0 > 0 ? count0 : null);
+      why.push(n ? `you pick up to ${n} from inside the area`
+                 : "you pick which creatures inside the area it affects");
+      return { kind: "picked inside the area", count: n,
+               creatureType: s.creatureType ?? null, youChoose: true,
+               choiceWords: s.choiceWords ?? null };
+    }
     if (forcedOnOthers) {
-      why.push("everyone inside the area is caught");
+      // ⚠️ A SPELL THAT LETS THE CASTER SPARE SOME STILL CATCHES THE REST.
+      // Spirit Guardians "can designate creatures to be unaffected by it". It is
+      // recorded rather than dropped, so nothing downstream mistakes it for a
+      // plain everyone-inside area and catches the people the caster spared.
+      why.push(s.spares ? "everyone inside the area is caught, except creatures the caster spares"
+                        : "everyone inside the area is caught");
       return { kind: "everyone inside", count: null,
-               creatureType: s.creatureType ?? null, youChoose: false };
+               creatureType: s.creatureType ?? null, youChoose: false,
+               mayExclude: !!s.spares,
+               choiceWords: s.spares ? (s.choiceWords ?? null) : null };
     }
 
     // ⚠️🔴 AN EMANATION THAT ASKS NOTHING OF ANYBODY IS NOT AN AREA. Detect
@@ -249,28 +277,10 @@ function planApply(facts, why) {
 /* ── Does the area catch you when it lands, or only when you walk in? ──── */
 
 // ⚠️🔴 dnd5e's 2024 TEXT IS NOT PROSE UNTIL FOUNDRY ENRICHES IT. Fireball's
-// description on disk begins:
-//     [[lookup @labels.description.affects capitalize]] in a
-//     [[lookup @labels.description.template]] centered on that point makes a
-//     Dexterity saving throw
-// The words "each creature" appear nowhere in it. Any pattern looking for them
-// reads the whole 2024 book as saying nothing, which is a silent blind spot
-// across hundreds of spells rather than an error anybody would notice.
-const _expand = (t) => String(t ?? "")
-  .replace(/\[\[lookup\s+@labels\.description\.affects[^\]]*\]\]/gi, "each creature")
-  .replace(/\[\[lookup\s+@labels\.description\.template[^\]]*\]\]/gi, "the area")
-  .replace(/\[\[lookup[^\]]*\]\]/gi, " ")
-  .replace(/\[\[\/save[^\]]*\]\]/gi, "saving throw")
-  .replace(/\[\[\/damage[^\]]*\]\]/gi, "damage")
-  .replace(/\[\[\/[a-z]+[^\]]*\]\]/gi, " ")
-  // &Reference[frightened]{frightened} and &Reference[prone apply=false]
-  .replace(/(?:&amp;|&)Reference\[(\w+)[^\]]*\](?:\{([^}]*)\})?/gi, (_m, id, label) => label || id);
-
-const _strip = (html) => _expand(html)
-  .replace(/<[^>]+>/g, " ")
-  .replace(/&(?:amp|nbsp|quot|#\d+);/gi, " ")
-  .replace(/\s+/g, " ")
-  .trim();
+// description on disk begins "[[lookup @labels.description.affects capitalize]]
+// in a [[lookup @labels.description.template]]", and the words "each creature"
+// appear nowhere in it. `_expand` and `_strip`, imported above from
+// spell-text.mjs, write the enrichers out as the words dnd5e renders.
 
 /**
  * A sentence that gates its save on walking into the area or starting a turn

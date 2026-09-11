@@ -47,7 +47,7 @@ export class ElevationGate {
    * @param {Function} getEdition CombatState.getActiveEdition, passed in
    * @param {object} caster       the casting actor, never reported
    * @param {object} [opts]
-   * @param {"area"|"targets"} [opts.source]  where `kept` came from
+   * @param {"area"|"targets"|"picked"} [opts.source]  where `kept` came from
    * @returns {Array<{token:object, feet:number, band:object|null,
    *                  why:"above"|"below"|"not-targeted"|"missed"}>}
    */
@@ -80,6 +80,10 @@ export class ElevationGate {
           if (t.bottom >= band.top) why = "above";
           else if (t.top <= band.bottom) why = "below";
         }
+        // ⚠️ A CREATURE THE CASTER CHOSE TO LEAVE OUT IS NOT A SURPRISE. Slow
+        // lets the caster pick six; the rest of the cube is left out on purpose,
+        // and a card listing them would be noise. (2026-09-11)
+        if (!why && source === "picked") continue;
         if (!why) why = source === "targets" ? "not-targeted" : "missed";
 
         if (why === "missed") {

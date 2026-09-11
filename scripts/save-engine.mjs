@@ -41,9 +41,12 @@ import { DamageApplicator } from "./damage-applicator.mjs";
 import { getSpellTiming, TIMING } from "./spell-timing.mjs";
 // ⚠️ ONE DECIDER FOR "DOES ANYBODY SAVE WHEN THIS LANDS". The plan asks the
 // same function, so the card and the report can never disagree.
-import { initialSaveOwed, areaLingers } from "./inference/spell-plan.mjs";
+import { initialSaveOwed, areaLingers, planFor } from "./inference/spell-plan.mjs";
 // ⚠️ THE CONDITION IS DATA ON THE ITEM, not a phrase in its description.
 import { readAppliedConditions } from "./read-activities.mjs";
+// ⚠️ AND SO IS EVERYTHING ELSE A SAVE DOES: which of the spell's own effects go
+// on a failure, which on a success, and whether several of them are a menu.
+import { readSaveOutcome } from "./inference/save-outcome-effects.mjs";
 import { CoverEngine } from "./cover-engine.mjs";
 import { DescriptionParser } from "./description-parser.mjs";
 import { ConditionLibrary } from "./condition-library.mjs";
@@ -456,6 +459,19 @@ export class SaveEngine {
           console.error(`${MODULE_ID} | _onTemplateCreated CRASHED:`, err);
         }
       }, 100);
+    });
+
+    // ── A spell's own effect ends with the condition it came with ──
+    // ⚠️ Hypnotic Pattern's "Hypnotized" is Charmed, Incapacitated AND a Speed of
+    // 0. The conditions go through the condition library; the speed goes on as
+    // the spell's own effect beside them. When the creature is shaken awake and
+    // the Charmed comes off, the speed has to come off with it, or it wakes up
+    // rooted to the floor. (2026-09-11)
+    Hooks.on("deleteActiveEffect", (effect) => {
+      try { SaveEngine._endLinkedSpellEffects(effect); }
+      catch (err) {
+        console.warn(`${MODULE_ID} | could not end the spell effects tied to "${effect?.name}":`, err);
+      }
     });
 
     // ── Persistent button wiring for ALL save card types ──
@@ -1135,10 +1151,15 @@ export class SaveEngine {
    * choice (mirrors the Divine Smite rider popup). Otherwise — GM-cast, an NPC, or
    * the owning player is offline — the GM picks locally. Always returns Actor[].
    */
-  async _pickTargetsForCaster({ spellItem, casterActor, maxTargets, rangeFt, allowSelf }) {
+  async _pickTargetsForCaster({ spellItem, casterActor, maxTargets, rangeFt, allowSelf, only = null }) {
+    // `only`: the token ids the caster may choose from. An area spell that lets
+    // the caster choose ("up to six creatures of your choice in a 40-foot Cube")
+    // offers who is inside the area and nobody else.
+    const onlyIds = Array.isArray(only) ? only.map(t => t?.id ?? t).filter(Boolean) : null;
     const localPick = async () => {
       const { SpellTargetPicker } = await import("./spell-target-picker.mjs");
-      return SpellTargetPicker.pick({ spellItem, casterActor, maxTargets, rangeFt, allowSelf });
+      return SpellTargetPicker.pick({ spellItem, casterActor, maxTargets, rangeFt, allowSelf,
+        ...(onlyIds ? { only: onlyIds } : {}) });
     };
 
     const casterUser = this._casterUser(casterActor);
@@ -1161,6 +1182,9 @@ export class SaveEngine {
         itemUuid: spellItem.uuid,
         casterActorUuid: casterActor.uuid,
         maxTargets, rangeFt, allowSelf,
+        // The token ids the caster may choose from, when an area decides who is
+        // eligible. Ids, not tokens: this crosses the socket.
+        only: onlyIds,
         // [picker-timing] GM-side cost (cast detected → this emit) + which detect
         // path fired, so the caster's log shows the full breakdown from one cast.
         gmProcessMs: this._castDetectMs ? Math.round(performance.now() - this._castDetectMs) : -1,
@@ -1410,6 +1434,178 @@ export class SaveEngine {
    * the card data, NOT the live game.user.targets set. The GM can still
    * re-target and use the card's "+ TARGET SELECTED" button afterwards.
    */
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  What a save did, and why it did nothing (2026-09-11)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Did a save put anything on anybody? A condition, the spell's own effect on
+   * a failure, or an immunity that stopped one. A reason line, a hand-off to the
+   * area's own effect, or a success-only reminder is not the spell taking hold,
+   * so none of them may keep a caster concentrating on nothing.
+   */
+  static _anythingLanded(applied) {
+    return (applied ?? []).some(a => !a?.onSuccess
+      && (((a?.conditions?.length ?? 0) > 0) || ((a?.immune?.length ?? 0) > 0)));
+  }
+
+  /** A card entry, for each creature that FAILED, saying why nothing landed. */
+  static _declinedFor(results, why) {
+    return (results ?? []).filter(r => SaveEngine._failedTheSave(r)).map(r => ({
+      targetName: r?.name ?? "a target",
+      tokenDocId: r?.tokenDocId ?? null,
+      conditions: [],
+      declined: String(why ?? "no reason was recorded."),
+    }));
+  }
+
+  /** Does a successful save against this put anything on the creature? */
+  static _hasSuccessEffects(item, activityId = null) {
+    try {
+      // A registry entry is a deliberate ruling and owns the whole result.
+      if (game.aceQol?.SpellPipeline?._getEntry?.(item)?.effect?.key) return false;
+      return readSaveOutcome(item, { activityId }).success
+        .some(e => e.changes > 0 || e.descriptionOnly);
+    } catch (_) { return false; }
+  }
+
+  /**
+   * One line on the card for the GM alone.
+   *
+   * ⚠️🔴 THE FIRST VERSION WAS NOT GM ONLY AT ALL. It tested `game.user.isGM`
+   * while building the HTML, and the HTML is built on the GM's client and saved
+   * into a public card, so every player saw it as well. `.ace-qol-gm-only` is
+   * display:none until the render hook stamps it for a GM viewer. So no inline
+   * `display` here, or it would beat the class and show to everyone.
+   *
+   * ⚠️ AND NO COMMAND IN IT. It used to say "select it and run [ ]": Foundry
+   * draws a code element as a full-width block in the chat's dark text, which
+   * vanished on this dark card, and a console command is the wrong thing to
+   * hand a GM in the middle of a fight. The reason itself is on the line now.
+   */
+  static _gmReasonLine(text) {
+    return `<div class="ace-qol-gm-only ace-qol-save-gm-reason" style="align-items:flex-start;flex-wrap:wrap;gap:6px;padding:6px 8px;margin-top:4px;background:rgba(212,175,55,0.10);border-left:3px solid rgba(212,175,55,0.55);border-radius:3px;font-size:14px;color:#e8d9a8;line-height:1.35;">
+        <i class="fas fa-triangle-exclamation" style="color:#d4af37;margin-top:3px;"></i>
+        <span style="flex:1 1 0;min-width:0;">${foundry.utils.escapeHTML(String(text ?? ""))}</span>
+      </div>`;
+  }
+
+  /**
+   * Who a placed area catches, from the spell's own words.
+   *
+   * @returns {{kind: "everyone"|"pick"|"legacy", count?: number|null, why: string}}
+   *   "legacy" is the rule from before: your targets, or the area if none.
+   */
+  static _areaWhoRule(item) {
+    try {
+      const who = planFor(item)?.who ?? null;
+      if (who?.kind === "everyone inside" && !who.mayExclude) {
+        return { kind: "everyone", why: "its words catch each creature in the area" };
+      }
+      if (who?.kind === "picked inside the area") {
+        return { kind: "pick", count: who.count ?? null,
+                 why: `its words let the caster choose ("${who.choiceWords ?? "the choice on its sheet"}")` };
+      }
+      if (who?.mayExclude) {
+        return { kind: "legacy",
+                 why: `its words let the caster spare creatures ("${who.choiceWords}"), which ACE does not offer yet` };
+      }
+      return { kind: "legacy", why: who ? `its plan says "${who.kind}"` : "its words do not say who the area catches" };
+    } catch (err) {
+      return { kind: "legacy", why: `its plan could not be read (${err?.message ?? err})` };
+    }
+  }
+
+  /**
+   * Which creature on the map a save result belongs to.
+   *
+   * ⚠️ ONE RESOLVER, shared by the failure pass and the success pass, so the two
+   * can never disagree about who was hit. Every way it can fail comes back as a
+   * sentence for the card instead of a silent `continue`.
+   *
+   * @returns {{actor: object|null, tokenDoc: object|null, why: string|null}}
+   */
+  static _resolveResultActor(r, item) {
+    const scene = game.scenes?.get?.(r?.sceneId) ?? canvas.scene;
+    // Resolve the TOKEN's own actor — critical for UNLINKED tokens, where
+    // applying to the prototype/world actor would never show on the token.
+    let tokenDoc = r?.tokenDocId ? scene?.tokens?.get(r.tokenDocId) : null;
+    if (!tokenDoc && r?.actorId) {
+      // ── Exact-token targeting (2026-07-26) ──
+      // One match → use it; several LINKED → any (they share one sheet); several
+      // UNLINKED → refuse and say so rather than guess at the wrong copy.
+      const pool = scene?.tokens?.contents ?? canvas.tokens?.placeables?.map(p => p.document) ?? [];
+      const matches = pool.filter(t => t.actorId === r.actorId);
+      if (matches.length === 1) tokenDoc = matches[0];
+      else if (matches.length > 1) {
+        const linked = matches.find(t => t.actorLink);
+        if (linked) tokenDoc = linked;
+        else {
+          console.warn(`${MODULE_ID} | ${item?.name}: ${matches.length} unlinked "${r.name}" tokens share one base actor and no exact token reference survived; skipping rather than risk the wrong copy.`);
+          ui.notifications?.warn(`${item?.name}: couldn't tell which "${r.name}" was the target — apply the condition manually.`);
+          return { actor: null, tokenDoc: null,
+                   why: `ACE could not tell which of the ${matches.length} tokens named ${r.name} was the target, so it put nothing on any of them.` };
+        }
+      }
+    }
+    // Base-actor fallback ONLY when that actor is genuinely the creature's one
+    // sheet (linked prototype). Writing onto the shared sidebar actor of
+    // UNLINKED copies would contaminate every future drop of it.
+    let actor = tokenDoc?.actor ?? null;
+    if (!actor && r?.actorId) {
+      const base = game.actors?.get?.(r.actorId);
+      if (base?.prototypeToken?.actorLink) actor = base;
+      else if (base) {
+        console.warn(`${MODULE_ID} | ${item?.name}: the token for "${r.name}" is gone and its base actor is an unlinked prototype; skipping rather than contaminate the sidebar actor.`);
+        return { actor: null, tokenDoc: null,
+                 why: `${r.name}'s token is gone, and ACE will not write onto the sheet every copy of it shares.` };
+      }
+    }
+    if (!actor) {
+      console.warn(`${MODULE_ID} | ${item?.name}: could not resolve actor for ${r?.name} (sceneId=${r?.sceneId} tokenDocId=${r?.tokenDocId} actorId=${r?.actorId})`);
+      return { actor: null, tokenDoc: null, why: `ACE could not find ${r?.name ?? "the target"} on the scene.` };
+    }
+    return { actor, tokenDoc, why: null };
+  }
+
+  /** The condition effects this cast just placed on a creature, by uuid. */
+  static _conditionEffectsFor(actor, keys, item) {
+    try {
+      const want = new Set((keys ?? []).map(k => String(k ?? "").toLowerCase()).filter(Boolean));
+      if (!want.size) return [];
+      const withStatus = (actor?.effects?.contents ?? []).filter(e => !e.disabled
+        && !e.flags?.[MODULE_ID]?.spellEffect
+        && [...(e.statuses ?? [])].some(st => want.has(String(st).toLowerCase())));
+      const spell = String(item?.name ?? "").toLowerCase();
+      const mine = withStatus.filter(e =>
+        String(e.flags?.[MODULE_ID]?.concentrationOrigin?.spellName ?? "").toLowerCase() === spell);
+      return (mine.length ? mine : withStatus).map(e => e.uuid).filter(Boolean);
+    } catch (_) { return []; }
+  }
+
+  /**
+   * When a condition comes off, take the spell's own effect that came with it.
+   * Only once every condition it was tied to is gone, and only on one client.
+   */
+  static _endLinkedSpellEffects(effect) {
+    if (game.users?.activeGM !== game.user) return;
+    const uuid = effect?.uuid;
+    const actor = effect?.parent;
+    if (!uuid || actor?.documentName !== "Actor" || !actor?.effects) return;
+    const live = (actor.effects.contents ?? []).filter(x => x.id !== effect.id);
+    for (const e of live) {
+      const tie = e.flags?.[MODULE_ID]?.spellEffect?.endsWith;
+      if (!Array.isArray(tie) || !tie.includes(uuid)) continue;
+      if (tie.some(u => u !== uuid && live.some(x => x.uuid === u))) continue;
+      console.log(`${MODULE_ID} | "${e.name}" on ${actor.name} ends with "${effect.name}", the condition it came with.`);
+      e.delete().catch(err => {
+        if (!/does not exist/i.test(String(err?.message ?? err))) {
+          console.warn(`${MODULE_ID} | could not end "${e.name}" on ${actor.name}:`, err);
+        }
+      });
+    }
+  }
+
   _releaseUserTargets() {
     try {
       const targets = [...(game.user?.targets ?? [])];
@@ -1524,11 +1720,13 @@ export class SaveEngine {
         appliedConditions = await this._applyFailedSaveConditions(item, [result], { saveAbility, saveDC, activityId, casterActor }) ?? [];
       } catch (err) {
         console.error(`${MODULE_ID} | Fast-path condition application failed:`, err);
+        appliedConditions = SaveEngine._declinedFor([result],
+          "ACE hit an error putting the result on it. The console has the details.");
       }
     }
 
     // Drop wasted concentration if nothing landed
-    if (!hasDamage && appliedConditions.length === 0) {
+    if (!hasDamage && !SaveEngine._anythingLanded(appliedConditions)) {
       try {
         await this._dropCasterConcentrationIfNoEffect(item, casterActor);
       } catch (err) {
@@ -1764,35 +1962,96 @@ export class SaveEngine {
       return;
     }
 
-    // ── Primary: use game.user.targets (GM already targeted who they want) ──
-    let tokens = [...game.user.targets];
-    console.log(`${MODULE_ID} | game.user.targets: ${tokens.length} tokens:`, tokens.map(t => t.name));
-    // ⚠️ REMEMBER WHERE THE LIST CAME FROM. Johnny, 2026-09-10: Hypnotic
-    // Pattern landed squarely on a Specter and posted "out of reach, below it"
-    // with the Specter at 0 feet inside a 0-to-42 foot band. Whatever was still
-    // TARGETED from an earlier action stood in for the area, and the out-of-reach
-    // report, knowing nothing about that, blamed height. The report has to know.
-    const tokensFrom = tokens.length ? "targets" : "area";
+    // ── WHO THE AREA CATCHES: THE SPELL'S OWN WORDS DECIDE ──
+    //
+    // ⚠️🔴 A LEFTOVER TARGET STOOD IN FOR THE WHOLE AREA. Johnny, 2026-09-11:
+    // "Prismatic spray not included. Everybody was included in that thing." He
+    // had Neferon targeted from the Ray of Enfeeblement just before, and this
+    // used whatever was targeted in place of the cone, so the cone rolled for
+    // Neferon alone and the Specter standing in it got a note instead of a save.
+    // Hypnotic Pattern did the same the day before.
+    //
+    // ⚠️ AND NOT ONE BLANKET RULE EITHER. His words that same week: "the area
+    // shouldn't always decide... some things use the portrait picker... Don't
+    // just blanket change it." So the spell's own words decide:
+    //   "each creature in the Cone"                   the area; targets ignored
+    //   "up to six creatures of your choice in it"    the portrait picker,
+    //                                                 offering only who is inside
+    //   anything the words do not settle              your targets, as before
+    const rule = SaveEngine._areaWhoRule(pending.item);
+    const targeted = [...game.user.targets];
+    let tokens = [];
+    // ⚠️ REMEMBER WHERE THE LIST CAME FROM, so the out-of-reach report gives the
+    // true reason for anyone it lists instead of inventing one. (2026-09-10)
+    let tokensFrom = "area";
 
-    // ── Fallback: template geometry if GM had nothing targeted ──
-    if (!tokens.length) {
+    // The area itself, measured once its shape exists.
+    // ⚠️ WAIT FOR THE SHAPE FIRST. It does not exist yet at this point in the
+    // lifecycle — see _awaitTemplateShape. Measuring immediately returns an
+    // empty array that reads exactly like an empty battlefield, which is how a
+    // cone aimed at a target produced "0 tokens in area — skipping save card"
+    // (2026-08-15).
+    const measureArea = async () => {
+      const ready = await SaveEngine._awaitTemplateShape(templateDoc);
+      if (!ready) {
+        console.error(`${MODULE_ID} | template ${templateDoc?.id} never produced a shape — ` +
+          `cannot determine who is in the area. No save card; this is a FAILURE, not an empty area.`);
+        ui.notifications?.warn("ACE QOL: could not read the spell area — nobody was rolled for. See the console.");
+        return null;
+      }
       try {
-        // ⚠️ WAIT FOR THE SHAPE FIRST. It does not exist yet at this point in the
-        // lifecycle — see _awaitTemplateShape. Measuring immediately returns an
-        // empty array that reads exactly like an empty battlefield, which is how
-        // a cone aimed at a target produced "0 tokens in area — skipping save
-        // card" (2026-08-15).
-        const ready = await SaveEngine._awaitTemplateShape(templateDoc);
-        if (!ready) {
-          console.error(`${MODULE_ID} | template ${templateDoc?.id} never produced a shape — ` +
-            `cannot determine who is in the area. No save card; this is a FAILURE, not an empty area.`);
-          ui.notifications?.warn("ACE QOL: could not read the spell area — nobody was rolled for. See the console.");
-          return;
-        }
-        tokens = SaveEngine._getTokensInTemplate(templateDoc);
-        console.log(`${MODULE_ID} | _getTokensInTemplate found ${tokens.length} tokens:`, tokens.map(t => t.name));
+        const inside = SaveEngine._getTokensInTemplate(templateDoc);
+        console.log(`${MODULE_ID} | _getTokensInTemplate found ${inside.length} tokens:`, inside.map(t => t.name));
+        return inside;
       } catch (err) {
         console.error(`${MODULE_ID} | _getTokensInTemplate FAILED:`, err);
+        return [];
+      }
+    };
+
+    if (rule.kind === "everyone") {
+      const inside = await measureArea();
+      if (inside === null) return;
+      tokens = inside;
+      console.log(`${MODULE_ID} | "${pending.item?.name}": the area decides, because ${rule.why}.`
+        + `${targeted.length ? ` ${targeted.length} leftover target(s) ignored: ${targeted.map(t => t.name).join(", ")}.` : ""}`);
+    } else if (rule.kind === "pick") {
+      const inside = await measureArea();
+      if (inside === null) return;
+      tokensFrom = "picked";
+      const offer = QolSettings.get?.("excludeCasterFromTemplates") !== false
+        ? inside.filter(t => t.actor?.id !== pending.actor?.id) : inside;
+      console.log(`${MODULE_ID} | "${pending.item?.name}": the caster chooses from who is inside, because `
+        + `${rule.why}. Offering ${offer.length}: ${offer.map(t => t.name).join(", ") || "nobody"}.`);
+      if (offer.length) {
+        let picked = [];
+        try {
+          picked = await this._pickTargetsForCaster({
+            spellItem: pending.item, casterActor: pending.actor,
+            maxTargets: rule.count ?? offer.length,
+            rangeFt: Infinity, allowSelf: false,
+            only: offer.map(t => t.id),
+          }) ?? [];
+        } catch (err) {
+          console.warn(`${MODULE_ID} | the area picker failed for "${pending.item?.name}":`, err);
+        }
+        // Each chosen creature back to ITS token: two unlinked goblins share an
+        // actor id, so the token's own actor is matched first.
+        tokens = picked.map(a => offer.find(t => t.actor === a) ?? offer.find(t => t.actor?.id === a?.id))
+          .filter(Boolean);
+        if (!tokens.length) {
+          console.log(`${MODULE_ID} | "${pending.item?.name}": nobody was chosen, so nobody saves.`);
+        }
+      }
+    } else {
+      tokens = targeted;
+      tokensFrom = tokens.length ? "targets" : "area";
+      console.log(`${MODULE_ID} | "${pending.item?.name}": ${tokens.length ? "your targets decide" : "the area decides"}, `
+        + `as before, because ${rule.why}.`);
+      if (!tokens.length) {
+        const inside = await measureArea();
+        if (inside === null) return;
+        tokens = inside;
       }
     }
 
@@ -3801,6 +4060,8 @@ export class SaveEngine {
         appliedConditions = await this._applyFailedSaveConditions(item, [...npcResults, ...pcResults], { saveAbility, saveDC, activityId, casterActor }) ?? [];
       } catch (err) {
         console.error(`${MODULE_ID} | Phase-1 condition application failed:`, err);
+        appliedConditions = SaveEngine._declinedFor([...npcResults, ...pcResults],
+          "ACE hit an error putting the result on it. The console has the details.");
       }
     }
 
@@ -3814,7 +4075,7 @@ export class SaveEngine {
     // If PCs are pending, we defer until their saves resolve (handled in
     // _handlePCSaveResult).
     const anyPending = [...npcResults, ...pcResults].some(r => r?.pending);
-    if (!hasDamage && !anyPending && appliedConditions.length === 0) {
+    if (!hasDamage && !anyPending && !SaveEngine._anythingLanded(appliedConditions)) {
       try {
         await this._dropCasterConcentrationIfNoEffect(item, casterActor);
       } catch (err) {
@@ -5172,17 +5433,26 @@ export class SaveEngine {
       // Entangling Rope) never got Restrained / the break-free tag. Apply here,
       // gated like the NPC path (no-damage powers, or any power with break-free
       // enabled) and guarded so repeated card rebuilds don't double-apply.
+      // ⚠️ WHAT THE PLAYER'S SAVE DID GOES ON THE CARD. This result used to be
+      // thrown away, so a PC who failed was affected on the token and never
+      // named on the card. (2026-09-11)
+      let cardApplied = Array.isArray(flags.appliedConditions) ? [...flags.appliedConditions] : [];
       try {
-        if (SaveEngine._failedTheSave(r) && !r._condApplied) {
+        // A successful save can put something on the creature too (the 2024
+        // Ray's "Brief Enfeeblement"), so a pass is looked at as well.
+        const passedWithEffect = r.passed === true
+          && SaveEngine._hasSuccessEffects(item, flags.activityId ?? null);
+        if ((SaveEngine._failedTheSave(r) || passedWithEffect) && !r._condApplied) {
           const breakFreeEnabled = item.getFlag?.(MODULE_ID, "breakFreeConfig")?.enabled === true;
           const hasDmg = Array.isArray(flags.damageTypes) && flags.damageTypes.some(t => t && t !== "none");
           if (!hasDmg || breakFreeEnabled) {
             r._condApplied = true;
             const casterActor = game.actors.get(flags.actorId) ?? null;
-            await this._applyFailedSaveConditions(item, [r], {
+            const got = await this._applyFailedSaveConditions(item, [r], {
               saveAbility: flags.saveAbility, saveDC: flags.saveDC,
               activityId: flags.activityId ?? null, casterActor,
-            });
+            }) ?? [];
+            cardApplied = [...cardApplied.filter(a => a?.tokenDocId !== r.tokenDocId), ...got];
           }
         }
       } catch (err) {
@@ -5207,13 +5477,14 @@ export class SaveEngine {
           hasDamage: flags.hasDamage !== false,
           halfOnSave: flags.halfOnSave === true,
           activityId: flags.activityId,
-          appliedConditions: flags.appliedConditions ?? [],
+          appliedConditions: cardApplied,
         });
       }
 
       await msg.update({
         content: cardHtml,
         [`flags.${MODULE_ID}.allResults`]: allResults,
+        [`flags.${MODULE_ID}.appliedConditions`]: cardApplied,
       });
       console.log(`${MODULE_ID} | Card updated for ${r.name}: ${r.passed ? "PASS" : "FAIL"} (${r.saveTotal})`);
     } catch (err) {
@@ -5427,6 +5698,14 @@ export class SaveEngine {
       return applied;
     }
 
+    // ⚠️🔴 NOTHING ENDS HERE WITHOUT SAYING WHY, ON THE CARD. Johnny, 2026-09-11:
+    // the card said "Neferon failed and ACE applied nothing. Select it and run [ ]"
+    // and the box was blank. Every way out of this method that leaves a creature
+    // that FAILED untouched now records the reason beside it, and the card shows
+    // that reason to the GM.
+    const failedEarly = results.filter(r => SaveEngine._failedTheSave(r));
+    const declineAll = (why) => { applied.push(...SaveEngine._declinedFor(failedEarly, why)); return applied; };
+
     // ── Registry-owned effect spells are AUTHORITATIVE (resolved up front) ──
     // Faerie Fire & friends carry their failed-save effect in the pipeline
     // REGISTRY, not the item description. Resolving it here, before anything
@@ -5453,11 +5732,18 @@ export class SaveEngine {
       const adTiming = getSpellTiming(item);
       if (!registryEffectKey && (adTiming?.family === "areaDenial" || adTiming?.family === "areaDenialAuto")) {
         console.log(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} is area-denial (${adTiming.family}) — effect owned + cleaned up by the concentration widget; skipping save-engine condition application.`);
+        // Not a refusal: the area puts its own effect on them. Recorded so the
+        // card does not report a failure that is being handled elsewhere.
+        for (const r of failedEarly) {
+          applied.push({ targetName: r.name ?? "a target", tokenDocId: r.tokenDocId,
+                         conditions: [], handedOff: `${item.name}'s own area` });
+        }
         return applied;
       }
     } catch (_) { /* classification failed — fall through to the normal path */ }
 
     let parsed;
+    let parseFailed = null;   // kept for the card, in case nothing else lands
     try {
       parsed = DescriptionParser.parse(item);
 
@@ -5506,8 +5792,11 @@ export class SaveEngine {
       // description parse for its on-fail effect — don't let a parser hiccup
       // swallow it. Continue with an empty parse so the registry effect still
       // lands; everything downstream reads `parsed` with optional chaining.
-      if (!registryEffectKey) return applied;
+      // ⚠️ AND NOT ONLY FOR A REGISTRY SPELL. The spell's own effects are data
+      // on the item and need no description at all, so a parser failure must not
+      // throw them away. The reason is kept in case nothing else lands.
       parsed = { conditions: [] };
+      parseFailed = String(err?.message ?? err);
     }
 
     // ── Resolve save ability + DC for repeating-save metadata ──
@@ -5615,6 +5904,8 @@ export class SaveEngine {
           });
         } else {
           console.warn(`${MODULE_ID} | ${item.name}: Polymorph cast but no pending pick for activity ${activityId} — target ${actor.name} unaffected`);
+          applied.push(...SaveEngine._declinedFor([r],
+            `no form was chosen for ${item.name}, so it was not transformed.`));
         }
       }
       // Polymorph handled (success or no-pick) — skip the normal condition
@@ -5660,17 +5951,68 @@ export class SaveEngine {
       }
     }
 
+    // ── The spell's OWN effects, and whether its failure is a menu ──
+    //
+    // ⚠️🔴 ACE PUT CONDITIONS ON PEOPLE AND NEVER THE SPELL'S OWN EFFECT. Johnny,
+    // 2026-09-11: Neferon failed Ray of Enfeeblement and nothing happened to him.
+    // The 2024 Ray's failure is an effect, "Enervated" (disadvantage on Strength
+    // rolls, minus 1d8 damage), with no condition in it, and nothing here ever
+    // put an effect itself on anybody; dnd5e's own apply button is on the usage
+    // card ACE hides. Now the spell's own effect goes on beside any condition.
+    //
+    // ⚠️🔴 AND SEVERAL EFFECTS ON ONE RESULT ARE A MENU. Prismatic Spray's
+    // Indigo and Violet are one-or-the-other by a d8, Divine Word's by hit
+    // points, Blindness/Deafness by the caster's pick. The condition read above
+    // put every one of them on at once: everyone who failed Prismatic Spray was
+    // Restrained AND Blinded, and a failed 2024 Divine Word marked the creature
+    // dead. Only what every alternative shares lands now, and the GM is told.
+    //
+    // A registry entry is somebody's deliberate ruling and still wins outright.
+    let outcome = { fail: [], success: [], alternatives: false, options: [], shared: [] };
+    if (!registryEffectKey) {
+      try {
+        outcome = readSaveOutcome(item, { activityId: saveCtx?.activityId ?? null,
+                                          castLevel: saveCtx?.castLevel ?? null });
+      } catch (err) {
+        console.warn(`${MODULE_ID} | _applyFailedSaveConditions: could not read ${item.name}'s own effects:`, err);
+      }
+    }
+    let alternativesNote = null;
+    if (outcome.alternatives) {
+      const shared = new Set(outcome.shared);
+      const held = failConditions.filter(c => !shared.has(String(c?.condition ?? "").toLowerCase())
+        && c?.source !== "breakFree");
+      failConditions = failConditions.filter(c => shared.has(String(c?.condition ?? "").toLowerCase())
+        || c?.source === "breakFree");
+      alternativesNote = `${item.name} has ${outcome.options.length} possible results for a failed save `
+        + `(${outcome.options.join("; ")}), and which one is the caster's pick or the spell's own roll. `
+        + (failConditions.length
+          ? `ACE put on only what they all share (${failConditions.map(c => c.condition).join(", ")}). `
+          : "ACE put none of them on. ")
+        + "Apply the right one from the spell's effects.";
+      console.log(`${MODULE_ID} | _applyFailedSaveConditions: ${alternativesNote}`
+        + `${held.length ? ` Held back: ${held.map(c => c.condition).join(", ")}.` : ""}`);
+    }
+    // A condition always goes through the condition library below. What goes on
+    // as the spell's own effect is everything else it carries: rules (Enervated,
+    // Hypnotic Pattern's Speed of 0) or words only (a reminder of what it does).
+    const copyFail = outcome.fail.filter(e => e.changes > 0 || e.descriptionOnly);
+    const copySuccess = outcome.success.filter(e => e.changes > 0 || e.descriptionOnly);
+
     if (registryEffectKey) {
       failConditions = [{ condition: registryEffectKey, requiresSave: true, fromRegistry: true }];
       console.log(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — applying registry effect "${registryEffectKey}" to failed-save targets (template-save hand-off).`);
-    } else if (!failConditions.length) {
+    } else if (!failConditions.length && !copyFail.length && !copySuccess.length) {
       // ⚠️ NAME WHAT WAS SEARCHED. "No conditions" and "I only looked in one
       // place" must never print the same, which is how this took two sessions.
       console.warn(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — nothing to `
-        + `apply: its description names no save-gated condition, it carries no Active `
-        + `Effect with a status, and there is no registry entry for it. Give the item `
-        + `an effect that applies the condition and this fixes itself.`);
-      return applied;
+        + `apply: its description names no save-gated condition, it carries no effect `
+        + `of its own for this result, and there is no registry entry for it.`
+        + `${alternativesNote ? ` ${alternativesNote}` : ""}`);
+      return declineAll(alternativesNote
+        ?? (parseFailed
+          ? `ACE could not read ${item.name}'s description (${parseFailed}), and the spell carries no effect of its own to put on.`
+          : `${item.name} gives nothing ACE can put on a creature that fails: its words name no condition, and it carries no effect of its own.`));
     }
 
     // ── Staged petrification (basilisk / medusa Petrifying Gaze) ──
@@ -5708,7 +6050,7 @@ export class SaveEngine {
     const autoApply = QolSettings.get("autoApplyConditions") ?? true;
     if (!autoApply) {
       console.log(`${MODULE_ID} | autoApplyConditions OFF — skipping condition application for ${item.name}`);
-      return applied;
+      return declineAll("automatic conditions are switched off in ACE's settings.");
     }
 
     // A result counts as "failed" ONLY when it has actually RESOLVED and
@@ -5756,53 +6098,20 @@ export class SaveEngine {
       }
     }
 
-    if (!failed.length) {
+    // A successful save can put something on the creature too (the 2024 Ray's
+    // "Brief Enfeeblement"), so a card with no failures may still have work.
+    const passedResults = results.filter(r => r?.passed === true && !r?.pending && !r?.noRoll);
+    if (!failed.length && !(copySuccess.length && passedResults.length)) {
       console.log(`${MODULE_ID} | ${item.name}: no resolved failed saves — no conditions to apply`);
       return applied;
     }
 
     for (const r of failed) {
-      const scene = game.scenes.get(r.sceneId) ?? canvas.scene;
-      // Resolve the TOKEN's own actor — critical for UNLINKED tokens, where
-      // applying to the prototype/world actor would never show on the token.
-      // Fall back to finding any token for this actor if the result is missing
-      // a tokenDocId, before finally dropping to the world actor.
-      let tokenDoc = r.tokenDocId ? scene?.tokens?.get(r.tokenDocId) : null;
-      if (!tokenDoc && r.actorId) {
-        // ── Exact-token targeting (2026-07-26) ──
-        // The old fallback grabbed the FIRST scene token using this base actor.
-        // With two+ UNLINKED copies of the same monster (two ogres dropped from
-        // one sidebar entry) that could petrify/condition the WRONG copy. Now:
-        // one match → use it; several LINKED → any (they share one sheet, the
-        // write lands identically); several UNLINKED → refuse and tell the GM
-        // rather than guess.
-        const pool = scene?.tokens?.contents ?? canvas.tokens?.placeables.map(p => p.document) ?? [];
-        const matches = pool.filter(t => t.actorId === r.actorId);
-        if (matches.length === 1) tokenDoc = matches[0];
-        else if (matches.length > 1) {
-          const linked = matches.find(t => t.actorLink);
-          if (linked) tokenDoc = linked;
-          else {
-            console.warn(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — ${matches.length} unlinked "${r.name}" tokens share one base actor and no exact token reference survived; skipping condition auto-apply for this target rather than risk the wrong copy.`);
-            ui.notifications?.warn(`${item.name}: couldn't tell which "${r.name}" was the target — apply the condition manually.`);
-            continue;
-          }
-        }
-      }
-      // Base-actor fallback ONLY when that actor is genuinely the creature's one
-      // sheet (linked prototype). Writing a condition onto the shared sidebar
-      // actor of UNLINKED copies would contaminate every future drop of it.
-      let actor = tokenDoc?.actor ?? null;
-      if (!actor && r.actorId) {
-        const base = game.actors.get(r.actorId);
-        if (base?.prototypeToken?.actorLink) actor = base;
-        else if (base) {
-          console.warn(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — target token for "${r.name}" is gone and its base actor is unlinked-prototype; skipping rather than contaminate the sidebar actor.`);
-          continue;
-        }
-      }
+      // ⚠️ ONE RESOLVER for "which creature on the map is this result", shared
+      // with the success pass below. Every way it can fail says so on the card.
+      const { actor, tokenDoc, why: noActor } = SaveEngine._resolveResultActor(r, item);
       if (!actor) {
-        console.warn(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — could not resolve actor for failed target ${r.name} (sceneId=${r.sceneId} tokenDocId=${r.tokenDocId} actorId=${r.actorId})`);
+        applied.push(...SaveEngine._declinedFor([r], noActor));
         continue;
       }
 
@@ -5933,6 +6242,7 @@ export class SaveEngine {
 
       const appliedForThisTarget = [];
       const immuneForThisTarget = [];   // so the card can say IMMUNE instead of lying
+      const failedToApply = [];         // what was tried and did not take, for the card
 
       for (const cond of failConditions) {
         const condKey = String(cond.condition ?? "").toLowerCase().trim();
@@ -6063,9 +6373,40 @@ export class SaveEngine {
             }
           } else {
             console.warn(`${MODULE_ID} | ${item.name}: applyByName returned not-ok for "${cond.condition}" on ${actor.name}:`, out);
+            failedToApply.push(cond.condition);
           }
         } catch (err) {
           console.warn(`${MODULE_ID} | applyByName(${cond.condition}) failed for ${actor.name}:`, err);
+          failedToApply.push(cond.condition);
+        }
+      }
+
+      // ── The spell's own effect, beside any condition ──
+      if (copyFail.length) {
+        // The condition effects this cast just placed, so the spell's own effect
+        // ends with them (Hypnotic Pattern's speed ends when its Charmed does).
+        const tiedTo = SaveEngine._conditionEffectsFor(actor, appliedForThisTarget, item);
+        // ⚠️ ONE REPEAT SAVE PER CREATURE. If a condition already carries it, the
+        // spell's own effect ends with that condition; otherwise the first of its
+        // own effects carries the save, as Enervated does ("repeats the save at
+        // the end of each of its turns, ending the spell on a success").
+        let saveCarried = !!repeatingSaveMeta && appliedForThisTarget.length > 0;
+        for (const fx of copyFail) {
+          const res = await this._applySpellOwnEffect(item, actor, fx, {
+            outcome: "fail",
+            caster: saveCtx?.casterActor ?? item.actor ?? null,
+            repeatingSave: (!saveCarried && repeatingSaveMeta) ? repeatingSaveMeta : null,
+            endsWith: tiedTo,
+            durationSeconds,
+            castLevel: saveCtx?.castLevel ?? null,
+            dryRun: !!saveCtx?.dryRun,
+          });
+          if (res.ok) {
+            appliedForThisTarget.push(fx.name);
+            if (repeatingSaveMeta) saveCarried = true;
+          } else {
+            failedToApply.push(`${fx.name} (${res.error})`);
+          }
         }
       }
 
@@ -6074,6 +6415,7 @@ export class SaveEngine {
           targetName: r.name ?? actor.name,
           tokenDocId: r.tokenDocId,
           conditions: appliedForThisTarget,
+          ...(alternativesNote ? { note: alternativesNote } : {}),
         });
       }
       // An immunity that stops a condition is a RESULT, not a silence. The card
@@ -6087,9 +6429,149 @@ export class SaveEngine {
           immune: immuneForThisTarget,
         });
       }
+      // ⚠️ A CREATURE THAT FAILED AND GOT NOTHING GETS A REASON, NOT A BLANK.
+      if (!appliedForThisTarget.length && !immuneForThisTarget.length) {
+        applied.push(...SaveEngine._declinedFor([r], failedToApply.length
+          ? `ACE tried to put ${failedToApply.join(", ")} on it, and it did not take. The console has the error.`
+          : (alternativesNote ?? "nothing ACE could put on it took hold.")));
+      }
+    }
+
+    // ── What a SUCCESSFUL save puts on the creature ──
+    // The 2024 Ray: "On a successful save, the target has Disadvantage on the
+    // next attack roll it makes until the start of your next turn." Not tied to
+    // concentration and carrying no repeat save: it ends by itself.
+    if (copySuccess.length && passedResults.length) {
+      for (const r of passedResults) {
+        const { actor, why: noActor } = SaveEngine._resolveResultActor(r, item);
+        if (!actor) {
+          console.warn(`${MODULE_ID} | ${item.name}: ${r?.name ?? "a target"} saved, but ${noActor}`);
+          continue;
+        }
+        const names = [];
+        for (const fx of copySuccess) {
+          const res = await this._applySpellOwnEffect(item, actor, fx, {
+            outcome: "success",
+            caster: saveCtx?.casterActor ?? item.actor ?? null,
+            linkConcentration: false,
+            castLevel: saveCtx?.castLevel ?? null,
+            dryRun: !!saveCtx?.dryRun,
+          });
+          if (res.ok) names.push(fx.name);
+        }
+        if (names.length) {
+          applied.push({ targetName: r.name ?? actor.name, tokenDocId: r.tokenDocId,
+                         conditions: names, onSuccess: true });
+        }
+      }
     }
 
     return applied;
+  }
+
+  /**
+   * Put one of the spell's own effects on a creature, the way dnd5e's apply
+   * button would: a copy of the item's effect, switched on, tied to the caster's
+   * concentration, carrying the repeat save when it is the one that has it.
+   *
+   * ⚠️ NO CONDITIONS RIDE ALONG. Statuses are stripped from the copy because a
+   * condition always goes through the condition library, with its immunity
+   * check and its own clean-up; putting it on twice would leave one behind.
+   *
+   * ⚠️ REPLACE, NEVER STACK. A second cast of the same spell on the same
+   * creature removes the first copy before the fresh one goes on.
+   *
+   * @returns {Promise<{ok: boolean, name: string, effect?: object, error?: string}>}
+   */
+  async _applySpellOwnEffect(item, actor, fx, { outcome = "fail", caster = null,
+      repeatingSave = null, endsWith = [], durationSeconds = null, castLevel = null,
+      dryRun = false, linkConcentration = true } = {}) {
+    const name = String(fx?.name ?? "an effect");
+    try {
+      const src = fx?.effect;
+      if (!src) return { ok: false, name, error: "the spell's effect could not be found" };
+      const data = typeof src.toObject === "function" ? src.toObject() : JSON.parse(JSON.stringify(src));
+      delete data._id;
+      data.disabled = false;
+      data.transfer = false;
+      data.origin = src.uuid ?? item?.uuid ?? null;
+      data.statuses = [];
+
+      // Its own duration if it has one, else the spell's. Foundry stamps when it
+      // started as the effect lands on the actor.
+      const dur = { ...(data.duration ?? {}) };
+      const own = ["seconds", "rounds", "turns"].some(k => Number(dur[k]) > 0);
+      if (!own && Number(durationSeconds) > 0) dur.seconds = Number(durationSeconds);
+      for (const k of ["startTime", "startRound", "startTurn", "combat"]) delete dur[k];
+      data.duration = dur;
+
+      const props = item?.system?.properties;
+      const isConc = linkConcentration && !!caster && (props?.has?.("concentration")
+        || (Array.isArray(props) && props.includes("concentration")));
+      let concEffect = null;
+      if (isConc) {
+        try { concEffect = game.aceQol?.SpellPipeline?.findCasterConcentrationFor?.(caster, item) ?? null; }
+        catch (_) { concEffect = null; }
+      }
+
+      const flags = { ...(data.flags ?? {}) };
+      flags.dnd5e = { ...(flags.dnd5e ?? {}) };
+      // dnd5e removes a dependent when its parent goes, so this ends it with the
+      // caster's concentration; ACE's own tag below is the sweep that never
+      // depends on the parent being found in time.
+      if (concEffect?.uuid) flags.dnd5e.dependentOn = concEffect.uuid;
+      if (castLevel !== null && Number.isFinite(Number(castLevel))) flags.dnd5e.spellLevel = Number(castLevel);
+      flags[MODULE_ID] = {
+        ...(flags[MODULE_ID] ?? {}),
+        spellEffect: { itemUuid: item?.uuid ?? null, effectId: fx.id, outcome,
+                       endsWith: (endsWith ?? []).filter(Boolean), stampedAt: Date.now() },
+      };
+      if (isConc) {
+        flags[MODULE_ID].concentrationOrigin = {
+          casterId: caster?.id ?? null, spellName: item?.name ?? null, spellItemId: item?.id ?? null,
+          concEffectUuid: concEffect?.uuid ?? null, stampedAt: Date.now(),
+        };
+      }
+      if (repeatingSave?.trigger && repeatingSave?.ability && Number.isFinite(Number(repeatingSave?.dc))) {
+        flags[MODULE_ID].repeatingSave = {
+          ability: String(repeatingSave.ability).toLowerCase(),
+          dc: Number(repeatingSave.dc),
+          trigger: String(repeatingSave.trigger),
+          spellName: item?.name ?? null,
+          castWorldTime: Number(repeatingSave.castWorldTime ?? game.time?.worldTime ?? 0),
+          durationSeconds: Number(repeatingSave.durationSeconds) || null,
+          stampedAt: Date.now(),
+        };
+      }
+      data.flags = flags;
+
+      const rules = Array.isArray(data.changes) ? data.changes.length : 0;
+      if (dryRun) {
+        console.log(`${MODULE_ID} | whyNoCondition: ${item?.name} WOULD put its own effect "${name}" `
+          + `on ${actor?.name} (${outcome}), ${rules ? `${rules} rule(s)` : "words only"}`
+          + `${flags[MODULE_ID].repeatingSave ? ", with the repeat save" : ""}.`);
+        return { ok: true, name, dryRun: true };
+      }
+
+      for (const e of (actor?.effects?.contents ?? [])) {
+        const se = e.flags?.[MODULE_ID]?.spellEffect;
+        if (se?.itemUuid === (item?.uuid ?? null) && se?.effectId === fx.id) {
+          try { await e.delete(); } catch (_) { /* already gone */ }
+        }
+      }
+      const created = await actor.createEmbeddedDocuments("ActiveEffect", [data]);
+      const eff = created?.[0] ?? null;
+      if (!eff) return { ok: false, name, error: "Foundry created nothing" };
+      console.log(`${MODULE_ID} | ${item?.name}: put its own effect "${name}" on ${actor.name} (${outcome}), `
+        + `${rules ? `${rules} rule(s)` : "words only"}`
+        + `${concEffect ? ", ends with the caster's concentration" : ""}`
+        + `${flags[MODULE_ID].repeatingSave ? `, repeat ${flags[MODULE_ID].repeatingSave.ability.toUpperCase()} save at the end of each turn` : ""}`
+        + `${endsWith?.length ? ", ends with its condition" : ""}.`);
+      return { ok: true, name, effect: eff };
+    } catch (err) {
+      console.warn(`${MODULE_ID} | ${item?.name}: could not put "${name}" on ${actor?.name}:`, err);
+      return { ok: false, name, error: String(err?.message ?? err) };
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -6240,59 +6722,50 @@ export class SaveEngine {
       actionsHtml = `<div class="ace-qol-save-no-effect" style="padding:8px 12px;text-align:center;color:#88c878;font-size:13px;font-weight:600;">
           <i class="fas fa-shield-halved"></i> ${anyoneFailed ? "Resolved — no damage to apply" : "Saved — no damage"}
         </div>`;
-    } else if (appliedConditions?.length) {
-      const cap = (c) => c.charAt(0).toUpperCase() + c.slice(1).toLowerCase();
-      const lines = appliedConditions.map(a => {
-        // IMMUNE rows read as a shield in ORANGE, not a skull in red \u2014 the
-        // creature shrugged it off, which is a different story from being hit.
-        //
-        // \u26a0\ufe0f TWO FIXES HERE, 2026-08-06 (ONE_GATE phase 0):
-        //  \u2022 The colour was #6bcbff, a cold blue that reads as informational \u2014
-        //    the same blue used for neutral hints. Immunity is a WARNING: the
-        //    thing you cast did nothing. It now uses #ffaa44, the orange
-        //    already in the ACE palette.
-        //  \u2022 The name was breaking mid-word \u2014 "Specte / r". Cause: the IMMUNE
-        //    label carried white-space:nowrap, so it refused to shrink, and the
-        //    name was the only flexible box left in the row. It got crushed
-        //    until the word itself broke. Fix is BOTH halves: the name gets
-        //    nowrap too, and the row is allowed to wrap, so when they can't sit
-        //    side by side the label drops to its own line instead of eating the
-        //    name. A creature's name is never the thing that gets sacrificed.
-        const nameSpan = (txt) =>
-          `<span style="color:#ffffff;font-weight:700;white-space:nowrap;">${foundry.utils.escapeHTML(txt)}</span>`;
-        if (a.immune?.length) {
-          return `<div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:2px 0;">
-            <i class="fas fa-shield-halved" style="color:#ffaa44;font-size:11px;"></i>
-            ${nameSpan(a.targetName)}
+    } else if ((appliedConditions ?? []).some(a => a?.conditions?.length || a?.immune?.length
+        || a?.declined || a?.note)) {
+      // ⚠️ A NAME KEEPS ITS OWN CAPITALS. This used to lower-case everything
+      // after the first letter, harmless for "paralyzed" and wrong for "Brief
+      // Enfeeblement".
+      const cap = (c) => { const t = String(c ?? ""); return t.charAt(0).toUpperCase() + t.slice(1); };
+      // ⚠️ A CREATURE'S NAME IS NEVER THE THING THAT GETS SACRIFICED (2026-08-06).
+      // The name refuses to wrap and the row is allowed to, so when the two
+      // cannot sit side by side the label drops to its own line instead of
+      // breaking the name mid-word ("Specte / r").
+      const nameSpan = (txt) =>
+        `<span style="color:#ffffff;font-weight:700;white-space:nowrap;">${foundry.utils.escapeHTML(String(txt ?? ""))}</span>`;
+      const row = (icon, colour, who, text) => `<div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:2px 0;">
+            <i class="fas ${icon}" style="color:${colour};font-size:11px;"></i>
+            ${nameSpan(who)}
             <span style="color:#888;">\u2192</span>
-            <span style="color:#ffaa44;font-weight:700;letter-spacing:0.5px;white-space:nowrap;">IMMUNE to ${foundry.utils.escapeHTML(a.immune.map(cap).join(", "))}</span>
+            <span style="color:${colour};font-weight:700;letter-spacing:0.5px;">${foundry.utils.escapeHTML(String(text ?? ""))}</span>
           </div>`;
+      const lines = appliedConditions.map(a => {
+        const out = [];
+        // IMMUNE reads as a shield in ORANGE, not a skull in red: the creature
+        // shrugged it off, which is a different story from being hit.
+        if (a.immune?.length) {
+          out.push(row("fa-shield-halved", "#ffaa44", a.targetName, `IMMUNE to ${a.immune.map(cap).join(", ")}`));
         }
-        const condList = a.conditions.map(cap).join(", ");
-        if (!condList) return "";
-        return `<div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:2px 0;">
-          <i class="fas fa-skull-crossbones" style="color:#ff5555;font-size:11px;"></i>
-          ${nameSpan(a.targetName)}
-          <span style="color:#888;">\u2192</span>
-          <span style="color:#ff5555;font-weight:700;letter-spacing:0.5px;">${foundry.utils.escapeHTML(condList)}</span>
-        </div>`;
+        if (a.conditions?.length) {
+          out.push(a.onSuccess
+            ? row("fa-shield-halved", "#88c878", a.targetName, `saved, and still gets ${a.conditions.map(cap).join(", ")}`)
+            : row("fa-skull-crossbones", "#ff5555", a.targetName, a.conditions.map(cap).join(", ")));
+        }
+        if (a.declined) {
+          out.push(SaveEngine._gmReasonLine(`${a.targetName} failed, and ACE put nothing on it: ${a.declined}`));
+        }
+        if (a.note) out.push(SaveEngine._gmReasonLine(a.note));
+        return out.join("");
       }).join("");
       actionsHtml = `<div class="ace-qol-save-conditions-applied" style="padding:8px 12px;background:linear-gradient(180deg,rgba(255,85,85,0.08),rgba(255,85,85,0.03));border-top:1px solid rgba(255,85,85,0.25);font-size:12px;">
           ${lines}
         </div>`;
     } else {
-      // No conditions applied. Distinguish between:
-      //   (a) Everyone passed their save \u2192 green "resisted" message
-      //   (b) Someone failed but no conditions to apply \u2192 silent (leave blank)
-      // Otherwise we'd show a misleading "all resisted" message when in fact
-      // a target failed but the parser couldn't extract the condition (e.g.,
-      // homebrew description format we don't recognize yet).
-      // ⚠️ A PENDING TARGET IS NEITHER PASSED NOR FAILED (2026-07-28).
-      // This asked only "did anyone fail?" — so a row still sitting on WAITING
-      // FOR PLAYER counted as not-failed and the card printed the green
-      // "All targets resisted" underneath it. The card announced the outcome of
-      // a save nobody had rolled yet. "All targets resisted" is a claim about a
-      // FINISHED set; don't make it until the set is finished.
+      // ⚠️ A PENDING TARGET IS NEITHER PASSED NOR FAILED (2026-07-28). A row
+      // still sitting on WAITING FOR PLAYER once counted as not-failed and the
+      // card printed "All targets resisted" under a save nobody had rolled yet.
+      // That is a claim about a FINISHED set; don't make it until it is one.
       const anyPending   = (results ?? []).some(r => r?.pending);
       const anyoneFailed = (results ?? []).some(r => SaveEngine._failedTheSave(r));
       if (anyPending) {
@@ -6301,40 +6774,15 @@ export class SaveEngine {
           <i class="fas fa-hourglass-half"></i> Waiting on ${n} save${n === 1 ? "" : "s"}…
         </div>`;
       } else if (anyoneFailed) {
-        // \u26a0\ufe0f\ud83d\udd34 THIS BRANCH WAS THE SILENCE, AND IT COST TWO SESSIONS.
-        //
-        // Johnny, 2026-09-08: *"I cast Fear on the specter who is not immune to
-        // Fear, and it failed. Does not have the Fear effect on him."* The card
-        // said nothing, on purpose, and the only record was a console line he
-        // had no reason to be watching at the time.
-        //
-        // The original reasoning was sound as far as it went: never show the
-        // table a defeatist "apply it manually" note. But "a creature failed
-        // and nothing happened to it" is not table decoration, it is the exact
-        // failure this whole engine exists to make impossible, and the standing
-        // rule in this codebase is that an early return which gives up without
-        // a word is indistinguishable from a broken feature.
-        //
-        // \u26a0\ufe0f GM ONLY. The players see the FAIL on the row, which is the truth;
-        // the GM sees that ACE could not finish the job, and the one command
-        // that says why.
-        const _who = (results ?? []).filter(r => SaveEngine._failedTheSave(r))
-          .map(r => foundry.utils.escapeHTML(String(r?.name ?? "a target")));
-        actionsHtml = game.user?.isGM && _who.length
-          // ⚠️ NOT `ace-qol-gm-only`: that class is `display:none` until something
-          // stamps `data-ace-gm="true"` on it, and nothing does here. The GM test
-          // above is the gate; adding the class would hide the line from everyone.
-          ? `<div class="ace-qol-save-no-effect" style="padding:8px 12px;
-                 background:linear-gradient(180deg,rgba(212,175,55,0.10),rgba(212,175,55,0.03));
-                 border-top:1px solid rgba(212,175,55,0.30);font-size:12px;color:#e8d9a8;">
-              <i class="fas fa-triangle-exclamation"></i>
-              <strong>${_who.join(", ")}</strong> failed and ACE applied nothing.
-              Select ${_who.length === 1 ? "it" : "one of them"} and run
-              <code style="background:rgba(0,0,0,0.35);padding:1px 5px;border-radius:3px;">
-              game.aceQol.whyNoCondition("${foundry.utils.escapeHTML(item?.name ?? "")}")</code>
-              to see which step declined.
-            </div>`
-          : "";
+        // Nothing was recorded for a creature that failed. Either something else
+        // owns the result (Web's own area puts Restrained on them), or the step
+        // never ran, and the GM is told which rather than shown a blank.
+        const handedOff = (appliedConditions ?? []).some(a => a?.handedOff);
+        const who = (results ?? []).filter(r => SaveEngine._failedTheSave(r))
+          .map(r => String(r?.name ?? "a target"));
+        actionsHtml = handedOff ? "" : SaveEngine._gmReasonLine(
+          `${who.join(", ")} failed, and nothing recorded what happened to `
+          + `${who.length === 1 ? "it" : "them"}. The console has the details.`);
       } else {
         actionsHtml = `<div class="ace-qol-save-no-effect" style="padding:6px 12px;text-align:center;color:#88c878;font-size:11px;font-style:italic;">
           <i class="fas fa-shield-halved"></i> All targets resisted

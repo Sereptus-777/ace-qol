@@ -48,6 +48,8 @@
 // never join ace-qol.mjs's import cycles.
 
 import { readActivities, readAppliedConditions } from "../read-activities.mjs";
+// The spell's words with dnd5e's enrichers written out. Imports nothing.
+import { plainSpellText } from "./spell-text.mjs";
 
 const _s = (v) => String(v ?? "").trim().toLowerCase();
 const _n = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
@@ -210,7 +212,52 @@ function readCost(item, acts, why) {
 }
 
 // ─── 3. WHO OR WHAT IT LANDS ON ──────────────────────────────────────────────
-function readScope(item, acts, why) {
+// ⚠️🔴 THE SHEET SAYS "NO CHOICE" FOR SPELLS WHOSE WORDS GIVE ONE. dnd5e marks
+// `affects.choice` on four area spells in all of its books. Slow's sheet says no
+// choice while its text says "up to six creatures of your choice in a 40-foot
+// Cube"; Sleep and Weird say "each creature of your choice" in theirs. Read the
+// sheet alone and all three catch everyone standing in them, allies included.
+//
+// ⚠️ THE CHOICE HAS TO BE OF WHO IS IN THE AREA. Calm Emotions also says
+// "creatures of your choice", about who its target stops being hostile toward,
+// and that is not a choice of who the area catches. So every phrase here is tied
+// to the area it chooses from: "... of your choice in a 40-foot Cube", "...
+// you choose in the Emanation", "... within 30 feet of you".
+const NUMBER_WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7,
+  eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12 };
+const _NUM = "(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\\d+)";
+const _IN_AREA = "(?:with)?in\\s+(?:a|an|the|that|it|\\d+\\s*(?:feet|foot|ft))\\b";
+const CHOICE_PICK = [
+  new RegExp(`\\b(?:up\\s+to\\s+${_NUM}\\s+|each\\s+|any\\s+number\\s+of\\s+)?creatures?\\s+`
+    + `(?:of\\s+your\\s+choice|you\\s+choose)(?:\\s+that\\s+you\\s+can\\s+see)?\\s+${_IN_AREA}`, "i"),
+  new RegExp(`\\bchoose\\s+(?:up\\s+to\\s+)?${_NUM}\\s+creatures?\\s+${_IN_AREA}`, "i"),
+];
+// "you can designate creatures to be unaffected by it" (Spirit Guardians),
+// "designate any creatures you choose, and the spell ignores them" (Cordon).
+const CHOICE_SPARE = /\bdesignate\b[^.]{0,80}?\b(?:to\s+be\s+unaffected|unaffected\s+by|the\s+spell\s+ignores)\b/i;
+
+/**
+ * Whether the spell's own words let the caster choose who in its area it affects.
+ *
+ * @param {string} words  plain text, enrichers already written out
+ * @returns {{choice: "pick"|"spare"|null, count: number|null, phrase: string|null}}
+ */
+function readChoiceWords(words) {
+  const text = String(words ?? "");
+  for (const re of CHOICE_PICK) {
+    const m = text.match(re);
+    if (m) {
+      const raw = String(m[1] ?? "").toLowerCase();
+      const count = raw ? (NUMBER_WORDS[raw] ?? _n(raw)) : null;
+      return { choice: "pick", count, phrase: m[0] };
+    }
+  }
+  const s = text.match(CHOICE_SPARE);
+  if (s) return { choice: "spare", count: null, phrase: s[0] };
+  return { choice: null, count: null, phrase: null };
+}
+
+function readScope(item, acts, why, words = "") {
   const sys = item?.system ?? {};
   // ⚠️ OVERRIDE IS A PRIORITY RULE, NOT AN ON/OFF SWITCH, AND READING IT AS
   // ON/OFF LOST REAL DATA. `override:true` means the activity replaces the
@@ -231,16 +278,42 @@ function readScope(item, acts, why) {
   const type = _s(affects.type) || null;
   const hasTemplate = !!_s(template.type);
 
+  // ⚠️🔴 THE CHOICE IS A FACT ABOUT THE SPELL, NOT ABOUT ONE ACTIVITY. Weird and
+  // Prismatic Spray carry a second activity (the end-of-turn save, the indigo
+  // ray) that overrides its target to one creature, and the override rule above
+  // picks that one. Reading the choice only when the chosen block had an area
+  // lost Weird's "each creature of your choice" entirely. An area anywhere on the
+  // item makes its words about who the area catches worth reading.
+  const areaSomewhere = hasTemplate || !!_s(sys.target?.template?.type)
+    || acts.some(a => _s(a?.target?.template?.type));
+  const told = areaSomewhere ? readChoiceWords(words) : { choice: null, count: null, phrase: null };
+  // ⚠️ A SPARE IS NOT A PICK, EVEN WHERE THE SHEET CALLS IT A CHOICE. The
+  // Player's Handbook marks Spirit Guardians as a choice because its caster "can
+  // designate creatures to be unaffected". The area still catches everyone else.
+  const picks = told.choice === "pick" || (!!affects.choice && told.choice !== "spare");
+  const choiceFacts = { spares: told.choice === "spare", choiceWords: told.phrase,
+                        choiceCount: told.count };
+
   if (hasTemplate) {
     // ⚠️🔴 AN AREA CAN STILL STATE A COUNT, AND THIS WAS THROWING IT AWAY.
     // Mass Cure Wounds is "up to six creatures in a 30-foot-radius Sphere":
     // the sphere is where you may choose from, the six is how many you get.
     // Returning null here lost the six, so anything downstream had to read it
     // as "everyone standing in it" and would heal the enemy in the sphere.
-    if (count) why.push(`it covers an area, and you pick ${count} from inside it`);
-    else why.push("it covers an area rather than picking creatures");
-    return { kind: "area", count: count ?? null, creatureType: type,
-             allowsChoice: !!affects.choice };
+    // ⚠️ A BLANK COUNT IS STORED AS "" AND READS AS 0, which is "not stated",
+    // not "none". Treating it as a number lost the 2024 Slow's "up to six".
+    const n = (count && count > 0 ? count : null) ?? told.count ?? null;
+    if (picks) {
+      why.push(n ? `it covers an area, and you pick up to ${n} from inside it`
+                 : "it covers an area, and you pick which creatures in it are affected");
+    } else if (count) {
+      why.push(`it covers an area, and you pick ${count} from inside it`);
+    } else {
+      why.push(told.choice === "spare"
+        ? "it covers an area, and you may spare creatures inside it"
+        : "it covers an area rather than picking creatures");
+    }
+    return { kind: "area", count: n, creatureType: type, allowsChoice: picks, ...choiceFacts };
   }
   if (type === "self") {
     why.push("it acts on the user");
@@ -248,13 +321,13 @@ function readScope(item, acts, why) {
   }
   if (count && count > 1) {
     why.push(`it picks ${count} ${type || "creature"}s`);
-    return { kind: "several", count, creatureType: type, allowsChoice: !!affects.choice };
+    return { kind: "several", count, creatureType: type, allowsChoice: picks, ...choiceFacts };
   }
   if (count === 1 || type) {
     why.push(`it picks one ${type || "creature"}`);
-    return { kind: "one", count: 1, creatureType: type, allowsChoice: !!affects.choice };
+    return { kind: "one", count: 1, creatureType: type, allowsChoice: picks, ...choiceFacts };
   }
-  return { kind: "none", count: null, creatureType: null, allowsChoice: false };
+  return { kind: "none", count: null, creatureType: null, allowsChoice: picks, ...choiceFacts };
 }
 
 // ─── 4. WHETHER IT ARRIVES ───────────────────────────────────────────────────
@@ -589,7 +662,7 @@ export function readActionFacts(item, { parsed = null } = {}) {
 
     const trigger    = readTrigger(item, acts, why);
     const cost       = readCost(item, acts, why);
-    const scope      = readScope(item, acts, why);
+    const scope      = readScope(item, acts, why, plainSpellText(sys.description?.value ?? ""));
     const delivery   = readDelivery(item, acts, text, why);
     const resolution = readResolution(item, acts, parsed, text, why);
     const change     = readChange(item, acts, parsed, why);

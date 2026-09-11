@@ -17,6 +17,7 @@ export const MODULE_ID = "ace-qol";
 import { QolSettings }       from "./settings.mjs";
 import { whyNoAura } from "./aura-diagnose.mjs";
 import { whyNoCondition } from "./why-no-condition.mjs";
+import { refillSpellEffects } from "./refill-spell-effects.mjs";
 import { whyNoAnimation, animationFor, invalidate } from "./animation/autorec.mjs";
 import { readActionFacts, describeActionFacts } from "./inference/action-facts.mjs";
 import { classifyItem, describeClassification } from "./inference/classify-item.mjs";
@@ -5161,7 +5162,9 @@ Hooks.once("ready", () => {
       //    CASTER's screen, not the GM's. (Mirrors the rider popup above; the userId
       //    gate earlier in this handler already scoped the message to this user.)
       if (payload.action === "showSpellPicker") {
-        const { requestId, itemUuid, casterActorUuid, maxTargets, rangeFt, allowSelf } = payload;
+        // `only`: token ids the caster may choose from, when an area spell lets
+        // the caster choose who inside it is affected (2026-09-11).
+        const { requestId, itemUuid, casterActorUuid, maxTargets, rangeFt, allowSelf, only } = payload;
         // [picker-timing] Headline number: how long from the caster PRESSING cast
         // to this picker request arriving back (player→GM→player round-trip). The
         // picker renders ~1 frame after this line, so this ≈ "cast→picker visible".
@@ -5179,7 +5182,8 @@ Hooks.once("ready", () => {
           // 2026-08-07). Relative resolves against THIS module's URL, which
           // already carries the prefix.
           await import("./spell-target-picker.mjs");
-          const picked = await SpellTargetPicker.pick({ spellItem: item, casterActor, maxTargets, rangeFt, allowSelf });
+          const picked = await SpellTargetPicker.pick({ spellItem: item, casterActor, maxTargets, rangeFt, allowSelf,
+            ...(Array.isArray(only) && only.length ? { only } : {}) });
           const tokenIds = (picked ?? [])
             .map(a => a.getActiveTokens?.()?.[0]?.id ?? canvas.tokens?.placeables.find(t => t.actor?.id === a.id)?.id)
             .filter(Boolean);
@@ -5754,6 +5758,10 @@ Hooks.once("ready", () => {
     //   game.aceQol.whyNoCondition("Fear")   select the creature, then ask why
     //   its failed save left nothing on it. Runs the real decision, writes nothing.
     whyNoCondition,
+    //   game.aceQol.refillSpellEffects()                 list spell effects that lost
+    //   game.aceQol.refillSpellEffects({ apply: true })  their rules, then refill them
+    //   game.aceQol.refillSpellEffects({ undo: true })   from the book, or put them back
+    refillSpellEffects,
 
     // ── THE READING + THE BOOKS (2026-09-05) ────────────────────────────
     //   game.aceQol.readings()          the snapshot for the LAST button

@@ -147,10 +147,14 @@ export async function whyNoCondition(what, { victim = null, caster = null,
   } else if (mine?.immune?.length) {
     console.log(`${LOG} | \U0001f6d1 ${token.name} is IMMUNE to ${mine.immune.join("/")}, `
       + `so the whole chain is skipped. That is the answer.`);
+  } else if (mine?.declined) {
+    // The decision now hands back its own reason; say it here as well.
+    console.log(`${LOG} | ❌ nothing would be applied: ${mine.declined}`);
   } else {
     console.log(`${LOG} | ❌ nothing would be applied. The reason was printed by the `
       + `decision itself, in the line or two directly above this one.`);
   }
+  if (mine?.note) console.log(`${LOG} | note: ${mine.note}`);
 
   return { item: item.name, itemUuid: item.uuid ?? null,
            target: token.name, saveAbility, saveDC, applied };
