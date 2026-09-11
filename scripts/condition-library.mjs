@@ -2292,7 +2292,8 @@ export class ConditionLibrary {
       //      bypasses the dependent system. Our deleteActiveEffect hook
       //      sweeps actors and deletes any ace-qol-tagged effects matching
       //      caster+spell. Belt-and-braces.
-      if (options.concentrationOrigin?.casterId || options.repeatingSave?.trigger || options.breakFree?.ability) {
+      if (options.concentrationOrigin?.casterId || options.repeatingSave?.trigger || options.breakFree?.ability
+          || options.duration) {
         try {
           // Find the effect we just created/toggled OR re-enabled. statusId match
           // on Foundry status effects, fallback to name. This now runs for
@@ -2307,6 +2308,15 @@ export class ConditionLibrary {
           if (placed) {
             const updateData = {};
             let caster = null, concEffect = null;
+
+            // ── Its own duration, when the spell's effect states one ──
+            // Prismatic Wall's Blinding Save is "Blinded for 1 minute". Foundry
+            // places the status with no duration of its own, so without this the
+            // blindness lasted until somebody removed it by hand (2026-09-11).
+            for (const k of ["seconds", "rounds", "turns"]) {
+              const v = Number(options.duration?.[k]);
+              if (Number.isFinite(v) && v > 0) updateData[`duration.${k}`] = v;
+            }
 
             // ── Concentration linkage (concentration spells only) ──
             if (options.concentrationOrigin?.casterId && options.concentrationOrigin?.spellName) {

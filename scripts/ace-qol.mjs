@@ -6575,11 +6575,17 @@ Hooks.once("ready", () => {
               const t = (a.consumption?.targets ?? [])[0];
               return `${a.type}|${t?.type ?? ""}|${t?.value ?? ""}|${a.activation?.type ?? ""}`;
             };
+            // ⚠️🔴 DIFFERENT NAMES ARE DIFFERENT ABILITIES, WHATEVER THEY COST.
+            // Johnny, 2026-09-11: Prismatic Wall's Create Wall and Create Globe
+            // are both a utility costing an action, and its Blinding Save and
+            // Traversal Save are both saves costing nothing, so all four were
+            // called duplicates and he was told to check the item sheet. Only
+            // an unnamed pair can be told apart by nothing but its cost.
             const byName = new Map(), bySig = new Map();
             for (const a of choosable) {
               const n = String(a.name ?? "").trim().toLowerCase();
               if (n) byName.set(n, (byName.get(n) ?? 0) + 1);
-              bySig.set(sig(a), (bySig.get(sig(a)) ?? 0) + 1);
+              else bySig.set(sig(a), (bySig.get(sig(a)) ?? 0) + 1);
             }
             const twins = [...byName.entries()].filter(([, n]) => n > 1).map(([k]) => k);
             const clones = [...bySig.entries()].filter(([, n]) => n > 1).map(([k]) => k);
@@ -6587,7 +6593,7 @@ Hooks.once("ready", () => {
               console.warn(`${MODULE_ID} | "${item.name}" has activities that look identical `
                 + `${twins.length ? `by name (${twins.join(", ")})` : `by type and cost (${clones.join(", ")})`}. `
                 + `That is usually a duplicate left by whatever imported the item — check the `
-                + `item sheet. Abilities with different names and different costs are NOT this.`);
+                + `item sheet. Abilities with different names are never this.`);
             }
           } catch (_) { /* diagnostics must never block the cast */ }
           const _costOf = (a) => {

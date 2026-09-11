@@ -43,10 +43,11 @@ import { getSpellTiming, TIMING } from "./spell-timing.mjs";
 // same function, so the card and the report can never disagree.
 import { initialSaveOwed, areaLingers, planFor } from "./inference/spell-plan.mjs";
 // ⚠️ THE CONDITION IS DATA ON THE ITEM, not a phrase in its description.
-import { readAppliedConditions } from "./read-activities.mjs";
+import { readAppliedConditions, readActivities } from "./read-activities.mjs";
 // ⚠️ AND SO IS EVERYTHING ELSE A SAVE DOES: which of the spell's own effects go
 // on a failure, which on a success, and whether several of them are a menu.
-import { readSaveOutcome } from "./inference/save-outcome-effects.mjs";
+import { readSaveOutcome, readSaveOutcomeEffects } from "./inference/save-outcome-effects.mjs";
+import { plainSpellText } from "./inference/spell-text.mjs";
 import { CoverEngine } from "./cover-engine.mjs";
 import { DescriptionParser } from "./description-parser.mjs";
 import { ConditionLibrary } from "./condition-library.mjs";
@@ -1457,6 +1458,50 @@ export class SaveEngine {
       && (((a?.conditions?.length ?? 0) > 0) || ((a?.immune?.length ?? 0) > 0)));
   }
 
+  /**
+   * The effect a HAND-WRITTEN registry entry says a failed save applies.
+   *
+   * ⚠️🔴 A WORKED-OUT GUESS IS NOT A RULING. A registry key wins outright over
+   * the spell's own data because somebody wrote it on purpose (Faerie Fire).
+   * The pipeline also works entries out for spells nobody registered, and those
+   * carry an effect key too: on 2026-09-11 its guess of "blinded" for Prismatic
+   * Wall overrode the Blinding Save's own effect, with the duration and the
+   * absence of a repeat save that came with it. A worked-out key is read from
+   * the same data the save engine reads anyway, so ignoring it loses nothing.
+   * An entry a human corrected by hand is a ruling, and still counts.
+   */
+  static _registryEffectKey(item) {
+    try {
+      const e = game.aceQol?.SpellPipeline?._getEntry?.(item) ?? null;
+      if (!e || (e.inferred && !e.corrected)) return null;
+      return e.effect?.key ?? null;
+    } catch (_) { return null; }
+  }
+
+  /**
+   * When a spell has more than one save, the effects the used save names are
+   * its result; null when the spell-wide reading should stand.
+   *
+   * ⚠️🔴 THE DESCRIPTION IS THE WHOLE SPELL, NOT THIS SAVE. Johnny,
+   * 2026-09-11: Neferon failed Prismatic Wall's Blinding Save and got Blinded
+   * with a Constitution save at the end of each of his turns. The Blinding Save
+   * is "Blinded for 1 minute", nothing more; the repeat save belongs to the
+   * Indigo layer further down the same text, and the parser, reading the text
+   * whole, also found Restrained and Petrified in it. One reader, so the Gate's
+   * immunity check and the conditions that land can never disagree.
+   *
+   * @returns {Array|null} the used save's own effect rows, or null
+   */
+  static _ownSaveResult(item, activityId) {
+    try {
+      if (!activityId) return null;
+      const saves = readActivities(item).filter(a => a?.type === "save");
+      if (saves.length < 2) return null;
+      const own = readSaveOutcomeEffects(item, { activityId });
+      return own.length ? own : null;
+    } catch (_) { return null; }
+  }
+
   /** A card entry, for each creature that FAILED, saying why nothing landed. */
   static _declinedFor(results, why) {
     return (results ?? []).filter(r => SaveEngine._failedTheSave(r)).map(r => ({
@@ -1471,7 +1516,7 @@ export class SaveEngine {
   static _hasSuccessEffects(item, activityId = null) {
     try {
       // A registry entry is a deliberate ruling and owns the whole result.
-      if (game.aceQol?.SpellPipeline?._getEntry?.(item)?.effect?.key) return false;
+      if (SaveEngine._registryEffectKey(item)) return false;
       return readSaveOutcome(item, { activityId }).success
         .some(e => e.changes > 0 || e.descriptionOnly);
     } catch (_) { return false; }
@@ -1692,7 +1737,7 @@ export class SaveEngine {
 
     // Roll the save
     const result = await this._rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, casterActor?.id, {
-      ...SaveEngine._gateContextFor(item, damageTypes),
+      ...SaveEngine._gateContextFor(item, damageTypes, activityId),
       // The exact body that cast, for the cover check. (audit F-019)
       casterTokenDocId: SaveEngine.casterTokenDoc(casterActor, { sceneId: canvas.scene?.id })?.id ?? null,
     });
@@ -2780,7 +2825,7 @@ export class SaveEngine {
       try {
         // THE GATE, before a human is ever asked to pick up a die.
         const _pcVerdict = SaveEngine._verdictForTargetRow(tgt,
-          SaveEngine._gateContextFor(item, damageTypes));
+          SaveEngine._gateContextFor(item, damageTypes, opts.activityId ?? null));
         if (_pcVerdict) {
           console.log(`${MODULE_ID} | GATE: ${tgt.name} (PC) — ${_pcVerdict.reason.toUpperCase()}, no prompt sent.`);
           gmRolledPcResults[tgt.tokenDocId] = SaveEngine._noRollRow(tgt, _pcVerdict, { isPC: true });
@@ -3797,7 +3842,7 @@ export class SaveEngine {
     // What this action can actually inflict — read ONCE per cast, before any
     // die, so the Gate can answer "immune to everything this does".
     const _gateCtx = {
-      ...SaveEngine._gateContextFor(item, damageTypes),
+      ...SaveEngine._gateContextFor(item, damageTypes, flags.activityId ?? null),
       // The exact body that cast, for the cover check. (audit F-019)
       casterTokenDocId: flags.casterTokenDocId ?? null,
     };
@@ -4197,7 +4242,7 @@ export class SaveEngine {
    * the staged-chain metadata and the parsed description, which today are only
    * computed after the fact inside _applyFailedSaveConditions.
    */
-  static _outcomeConditionsFor(item) {
+  static _outcomeConditionsFor(item, activityId = null) {
     // ⚠️🔴 THE SAME ANSWER THE APPLIER WILL GIVE, OR THE GATE CAN LIE.
     // The Gate may now stop a die when a creature is immune to all of an
     // action's damage AND all of its conditions. That is only safe if "all of
@@ -4209,20 +4254,27 @@ export class SaveEngine {
     // a registry ruling wins outright; otherwise the item's own effects and its
     // description, merged.
     try {
-      const key = game.aceQol?.SpellPipeline?._getEntry?.(item)?.effect?.key ?? null;
+      const key = SaveEngine._registryEffectKey(item);
       if (key) return ConditionLibrary.statusesFor(key) ?? [];
     } catch (_) { /* fall through to the item itself */ }
     const out = new Set();
+    // ⚠️ AND THE SAME SAVE (2026-09-11). The applier reads the effects of the
+    // save that was used, and for a spell with several saves it reads only
+    // those; the Gate asking about the whole spell would count Prismatic
+    // Wall's Indigo and Violet layers against a Blinding Save.
+    const own = SaveEngine._ownSaveResult(item, activityId);
     try {
-      for (const c of readAppliedConditions(item)) {
+      for (const c of readAppliedConditions(item, activityId ?? null)) {
         if (c?.requiresSave) out.add(String(c.condition).toLowerCase());
       }
     } catch (_) { /* unreadable effects add nothing */ }
-    try {
-      for (const c of (DescriptionParser.parse(item)?.conditions ?? [])) {
-        if (c?.requiresSave && c?.condition) out.add(String(c.condition).toLowerCase());
-      }
-    } catch (_) { /* unreadable prose adds nothing */ }
+    if (!own) {
+      try {
+        for (const c of (DescriptionParser.parse(item)?.conditions ?? [])) {
+          if (c?.requiresSave && c?.condition) out.add(String(c.condition).toLowerCase());
+        }
+      } catch (_) { /* unreadable prose adds nothing */ }
+    }
     return [...out];
   }
 
@@ -4233,14 +4285,14 @@ export class SaveEngine {
    * that ask about PLAYERS passed nothing at all, so a PC could never be
    * spared a pointless roll even when the NPC beside them was.
    */
-  static _gateContextFor(item, damageTypes) {
+  static _gateContextFor(item, damageTypes, activityId = null) {
     const types = (Array.isArray(damageTypes) ? damageTypes : [])
       .map(t => String(t ?? "").toLowerCase().trim()).filter(t => t && t !== "none");
     const magical = item?.type === "spell"
       || !!item?.system?.properties?.has?.("mgc")
       || (Array.isArray(item?.system?.properties) && item.system.properties.includes("mgc"));
     return {
-      outcomeConditions: SaveEngine._outcomeConditionsFor(item),
+      outcomeConditions: SaveEngine._outcomeConditionsFor(item, activityId),
       dealsDamage: types.length > 0,
       damageTypes: types,
       magical,
@@ -5524,7 +5576,7 @@ export class SaveEngine {
     // What this action can actually inflict — read ONCE per cast, before any
     // die, so the Gate can answer "immune to everything this does".
     const _gateCtx = {
-      ...SaveEngine._gateContextFor(item, damageTypes),
+      ...SaveEngine._gateContextFor(item, damageTypes, flags.activityId ?? null),
       // The exact body that cast, for the cover check. (audit F-019)
       casterTokenDocId: flags.casterTokenDocId ?? null,
     };
@@ -5635,7 +5687,7 @@ export class SaveEngine {
       // genuinely IS wasted, so it must drop. Never exempt them, even if the
       // timing classifier still mislabels them persistent/area.
       let isRegistryEffectSpell = false;
-      try { isRegistryEffectSpell = !!game.aceQol?.SpellPipeline?._getEntry?.(item)?.effect?.key; }
+      try { isRegistryEffectSpell = !!SaveEngine._registryEffectKey(item); }
       catch (_) { /* pipeline not ready — fall through to the area heuristic */ }
       if (!isRegistryEffectSpell && isPersistent && hasAreaTemplate) {
         console.log(`${MODULE_ID} | _dropCasterConcentrationIfNoEffect: skipping for "${item.name}" — persistent AREA spell, concentration not wasted by passed initial saves`);
@@ -5724,7 +5776,7 @@ export class SaveEngine {
     // this key IS the effect applied to every creature that fails its save — no
     // matter how the timing classifier or the parser read the spell.
     let registryEffectKey = null;
-    try { registryEffectKey = game.aceQol?.SpellPipeline?._getEntry?.(item)?.effect?.key ?? null; }
+    try { registryEffectKey = SaveEngine._registryEffectKey(item); }
     catch (_) { /* pipeline not ready — behave exactly as before */ }
 
     // ── Area-denial spells own their own effect lifecycle ──────────────────
@@ -5805,6 +5857,26 @@ export class SaveEngine {
       // throw them away. The reason is kept in case nothing else lands.
       parsed = { conditions: [] };
       parseFailed = String(err?.message ?? err);
+    }
+
+    // ── A spell with several saves: the used save's own effects decide ──
+    // Its conditions come from those effects (read below with the rest), and a
+    // repeat save only if their own words give one. See _ownSaveResult.
+    try {
+      const own = SaveEngine._ownSaveResult(item, saveCtx?.activityId ?? null);
+      if (own) {
+        const dropped = (parsed?.conditions ?? []).map(c => c?.condition).filter(Boolean);
+        const ownText = own.map(r => plainSpellText(r.effect?.description ?? "")).join(" ");
+        const repeat = DescriptionParser._parseRepeatingSave(ownText, ownText.toLowerCase());
+        parsed = { ...(parsed ?? {}), conditions: [], repeatingSave: repeat };
+        console.log(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} has more than one save, `
+          + `and this one names its own effect${own.length > 1 ? "s" : ""} `
+          + `(${own.map(r => r.name).join(", ")}), so those decide what it does`
+          + `${dropped.length ? `; the spell-wide reading (${dropped.join(", ")}) is not this save's` : ""}`
+          + `${repeat?.trigger ? `; its own words give a repeat save (${repeat.trigger})` : "; its own words give no repeat save"}.`);
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | _applyFailedSaveConditions: could not read ${item.name}'s own save:`, err);
     }
 
     // ── Resolve save ability + DC for repeating-save metadata ──
@@ -6303,6 +6375,8 @@ export class SaveEngine {
             applyOpts.repeatingSave = { ...stagedPetrifyMeta, skipFirstEndOfTurn: _taggedOnOwnTurn };  // staged petrification wins
           }
           if (breakFreeMeta)       applyOpts.breakFree           = breakFreeMeta;
+          // The spell's own effect says how long this lasts (Blinded for 1 minute).
+          if (cond.duration)       applyOpts.duration            = cond.duration;
 
           // Area-denial family (Stinking Cloud, etc.): description-parsed
           // conditions like Poisoned need to auto-expire at end of the
@@ -7172,7 +7246,7 @@ export class SaveEngine {
         // that was there from the start. Skipping it here is how "add targets"
         // would quietly become the one door with no lock on it.
         const _addVerdict = SaveEngine._verdictForTargetRow(tgt,
-          SaveEngine._gateContextFor(item, flags.damageTypes));
+          SaveEngine._gateContextFor(item, flags.damageTypes, flags.activityId ?? null));
         if (_addVerdict) {
           console.log(`${MODULE_ID} | GATE: ${tgt.name} (PC, added) — ${_addVerdict.reason.toUpperCase()}, no prompt sent.`);
           continue;
@@ -7588,6 +7662,11 @@ export class SaveEngine {
       if (name && item?.name && name === item.name) name = "";
     } catch (_) { name = ""; }
     if (rawOnly) return name;
+    // ⚠️ A SPELL'S FOLLOW-UP IS STILL THAT SPELL. "Varek casts Blinding Save on
+    // Neferon" named the save and hid the spell it belongs to (2026-09-11). A
+    // magic item's power keeps its own name (Thunderstorm of Misery); a spell
+    // leads with its own.
+    if (name && item?.type === "spell" && item?.name) return `${item.name}: ${name}`;
     return name || item?.name || "Ability";
   }
 

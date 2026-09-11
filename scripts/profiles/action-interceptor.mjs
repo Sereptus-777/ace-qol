@@ -201,6 +201,14 @@ export class ActionInterceptor {
     };
     Hooks.on("createChatMessage", saw("a chat card appeared"));
     Hooks.on("createMeasuredTemplate", saw("a template was placed"));
+    // ⚠️🔴 AN AREA BEING PLACED IS SOMETHING HAPPENING. Johnny, 2026-09-11:
+    // three permanent red errors saying "Prismatic Wall did nothing", while the
+    // wall and the globe were on the map. dnd5e hands him the area to place and
+    // waits; the template is only created when he clicks, which took longer
+    // than the silence window, so the watch called it dead mid-placement. dnd5e
+    // announces the preview before it waits, and that is the witness. Walking
+    // away from the placement is his choice, not a dead button.
+    Hooks.on("dnd5e.createActivityTemplate", saw("an area is being placed"));
     Hooks.on("renderDialogV2", saw("a dialog opened"));
     Hooks.on("renderRollConfigurationDialog", saw("a roll dialog opened"));
     // ⚠️ NOT EVERY WORKING BUTTON POSTS A CARD. A buff that lands as an

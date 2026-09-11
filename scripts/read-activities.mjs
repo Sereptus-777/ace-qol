@@ -69,6 +69,34 @@ export function firstActivityOfType(item, type) {
 }
 
 /**
+ * How long an effect says it lasts, as {seconds|rounds|turns}, or null.
+ *
+ * ⚠️ ITS NUMBERS FIRST, ITS WORDS SECOND. In the hijinx world the imported
+ * copies of hundreds of spell effects lost their duration numbers while keeping
+ * their descriptions; Varek's "Prismatic Blinding" still says "Blinded for 1
+ * minute" in its own text with nothing in the field. The words are the same
+ * data, written down, so they are read when the numbers are gone.
+ */
+export function effectDuration(effect) {
+  try {
+    const d = effect?.duration ?? {};
+    const out = {};
+    for (const k of ["seconds", "rounds", "turns"]) {
+      const v = Number(d?.[k]);
+      if (Number.isFinite(v) && v > 0) out[k] = v;
+    }
+    if (Object.keys(out).length) return out;
+    const text = String(effect?.description ?? "").replace(/<[^>]+>/g, " ");
+    const m = text.match(/\bfor\s+(\d+|an?|one|two|three|ten)\s+(round|minute|hour|day)s?\b/i);
+    if (!m) return null;
+    const WORD = { a: 1, an: 1, one: 1, two: 2, three: 3, ten: 10 };
+    const n = Number(m[1]) || WORD[m[1].toLowerCase()] || 0;
+    const per = { round: 6, minute: 60, hour: 3600, day: 86400 }[m[2].toLowerCase()];
+    return n > 0 && per ? { seconds: n * per } : null;
+  } catch (_) { return null; }
+}
+
+/**
  * The conditions this item applies, read off its own Active Effects.
  *
  * ⚠️🔴 THE CONDITION WAS BEING READ OUT OF PROSE WHILE IT SAT IN THE DATA.
@@ -133,12 +161,17 @@ export function readAppliedConditions(item, activityId = null) {
       if (!effect || effect.disabled === true || effect.transfer === true) return;
       const st = effect.statuses;
       const names = st instanceof Set ? [...st] : (Array.isArray(st) ? st : []);
+      // ⚠️ THE EFFECT'S OWN DURATION TRAVELS WITH ITS CONDITIONS. Prismatic
+      // Wall's Blinding Save is "Blinded for 1 minute", and a condition placed
+      // without it lasted until somebody took it off by hand (2026-09-11).
+      const duration = effectDuration(effect);
       for (const n of names) {
         const key = String(n ?? "").trim().toLowerCase();
         if (!key || seen.has(key)) continue;
         seen.add(key);
         out.push({ condition: key, requiresSave, fromEffect: true,
-                   effectName: effect.name ?? null });
+                   effectName: effect.name ?? null,
+                   ...(duration ? { duration } : {}) });
       }
     };
 

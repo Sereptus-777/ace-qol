@@ -289,5 +289,46 @@ check("Slow: the caster picks", slow.kind, "pick");
 check("Slow: up to six", slow.count, 6);
 check("Spirit Guardians: today's rule is kept", SaveEngine._areaWhoRule(liveSpell("Spirit Guardians")).kind, "legacy");
 
+/* ── 7. Prismatic Wall: a spell with several saves ──────────────────────── */
+console.log("\n7. PRISMATIC WALL: EACH SAVE IS ITS OWN RESULT");
+const { effectDuration } = await import(
+  "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/read-activities.mjs");
+const told = [];
+ConditionLibrary.applyByName = async (actor, cond, opts) => {
+  told.push({ who: actor.name, cond, opts: opts ?? {} });
+  actor._place({ name: cond, statuses: [cond], flags: {} });
+  return { ok: true, applied: cond };
+};
+// The pipeline's worked-out guess for this spell carries "blinded" as its effect,
+// exactly as it did at his table. A guess must not act as a ruling.
+game.aceQol = { SpellPipeline: { _getEntry: (it) => (it?.name === "Prismatic Wall"
+  ? { shape: "template-trigger", inferred: true, effect: { key: "blinded" } } : null) } };
+const wallSpell = liveSpell("Prismatic Wall");
+const saveId = (it, n) => [...it.system.activities.values()].find(a => a.name === n)?.id;
+const troll = creature("Troll");
+await apply(wallSpell, [result(troll, false)], { activityId: saveId(wallSpell, "Blinding Save") });
+check("the Blinding Save puts on Blinded, and only Blinded", told.map(t => t.cond).join(","), "blinded");
+check("for its own one minute", told[0]?.opts?.duration?.seconds, 60);
+check("with no repeat save (that belongs to the Indigo layer)", !!told[0]?.opts?.repeatingSave, false);
+told.length = 0;
+const wallHollow = liveSpell("Prismatic Wall", { hollow: true });
+const ghoul = creature("Ghoul");
+await apply(wallHollow, [result(ghoul, false)], { activityId: saveId(wallHollow, "Blinding Save") });
+check("Varek's copy, which lost the number, still lasts its minute",
+  told[0]?.opts?.duration?.seconds, 60);
+told.length = 0;
+const wight = creature("Wight");
+const a7 = await apply(wallSpell, [result(wight, false)],
+  { activityId: saveId(wallSpell, "Traversal Save"), saveAbility: "dex" });
+check("the Traversal Save puts on no layer by itself", told.length, 0);
+check("and says the layer is the GM's to apply", /possible results/.test(a7[0]?.declined ?? ""), true);
+game.aceQol = undefined;
+check("the card names the spell as well as the save",
+  engine._abilityLabel(wallSpell, saveId(wallSpell, "Blinding Save")), "Prismatic Wall: Blinding Save");
+check("words are read when the number is gone",
+  effectDuration({ duration: {}, description: "<p>Blinded for 1 minute.</p>" })?.seconds, 60);
+check("and nothing is invented when neither says",
+  effectDuration({ duration: {}, description: "<p>Until the start of your next turn.</p>" }), null);
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
