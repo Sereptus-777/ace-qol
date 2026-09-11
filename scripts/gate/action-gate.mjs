@@ -112,10 +112,43 @@ export class ActionGate {
       // the action also deals damage the save still earns half on a success, so
       // it rolls and the card notes the immunity instead of eating the die.
       const outcomes = p.outcomes ?? [];
+      const cap = (c) => c.charAt(0).toUpperCase() + c.slice(1);
       if (!p.dealsDamage && outcomes.length) {
         const immune = outcomes.filter(c => tProfile.immuneToCondition?.(c));
         if (immune.length === outcomes.length) {
-          const names = [...new Set(immune)].map(c => c.charAt(0).toUpperCase() + c.slice(1));
+          const names = [...new Set(immune)].map(cap);
+          return { reason: "immune", environment: env, tone: "immune",
+            label: `IMMUNE to ${names.join(", ")} — no save` };
+        }
+      }
+
+      // ⚠️🔴 AND IMMUNE TO THE DAMAGE, TOO. Johnny, 2026-09-10: a Specter and
+      // Neferon stood in Cloudkill, both immune to poison, and both rolled.
+      // "If they're immune, they don't have to roll. The card should just state
+      // immediately that the two beings caught are both immune." The rule above
+      // stood aside the moment anything dealt damage, because it only knew THAT
+      // an action dealt damage and never WHICH kind.
+      //
+      // A save whose every result is identical is not a save. When the creature
+      // is immune to EVERY damage type this deals, and to every condition it
+      // could leave behind (or it leaves none), passing and failing both come to
+      // nothing, so no die is thrown and the row says why.
+      //
+      // ⚠️ ONLY WHEN THE TYPES ARE KNOWN. `dealsDamage` with no types means we
+      // could not read them, and a Gate that stops a die on a fact it could not
+      // read is the invisible reason something did not happen. Unknown rolls.
+      //
+      // ⚠️ AND ONLY IF THE OUTCOMES ARE THE SAME ONES THAT WOULD BE APPLIED. The
+      // save engine builds `outcomes` from the same three sources the condition
+      // applier reads, so "no conditions" here means none would land on a fail.
+      const dmgTypes = [...new Set((p.damageTypes ?? [])
+        .map(t => String(t ?? "").toLowerCase().trim())
+        .filter(t => t && t !== "none"))];
+      if (p.dealsDamage && dmgTypes.length && typeof tProfile.immuneToDamage === "function") {
+        const immDmg = dmgTypes.filter(t => tProfile.immuneToDamage(t, { magical: p.magical === true }));
+        const immCond = outcomes.filter(c => tProfile.immuneToCondition?.(c));
+        if (immDmg.length === dmgTypes.length && immCond.length === outcomes.length) {
+          const names = [...new Set([...immDmg, ...immCond])].map(cap);
           return { reason: "immune", environment: env, tone: "immune",
             label: `IMMUNE to ${names.join(", ")} — no save` };
         }

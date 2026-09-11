@@ -1488,8 +1488,7 @@ export class SaveEngine {
 
     // Roll the save
     const result = await this._rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, casterActor?.id, {
-      outcomeConditions: SaveEngine._outcomeConditionsFor(item),
-      dealsDamage: Array.isArray(damageTypes) && damageTypes.some(t => t && t !== "none"),
+      ...SaveEngine._gateContextFor(item, damageTypes),
       // The exact body that cast, for the cover check. (audit F-019)
       casterTokenDocId: SaveEngine.casterTokenDoc(casterActor, { sceneId: canvas.scene?.id })?.id ?? null,
     });
@@ -2513,7 +2512,8 @@ export class SaveEngine {
     for (const tgt of pcs) {
       try {
         // THE GATE, before a human is ever asked to pick up a die.
-        const _pcVerdict = SaveEngine._verdictForTargetRow(tgt);
+        const _pcVerdict = SaveEngine._verdictForTargetRow(tgt,
+          SaveEngine._gateContextFor(item, damageTypes));
         if (_pcVerdict) {
           console.log(`${MODULE_ID} | GATE: ${tgt.name} (PC) — ${_pcVerdict.reason.toUpperCase()}, no prompt sent.`);
           gmRolledPcResults[tgt.tokenDocId] = SaveEngine._noRollRow(tgt, _pcVerdict, { isPC: true });
@@ -3530,8 +3530,7 @@ export class SaveEngine {
     // What this action can actually inflict — read ONCE per cast, before any
     // die, so the Gate can answer "immune to everything this does".
     const _gateCtx = {
-      outcomeConditions: SaveEngine._outcomeConditionsFor(item),
-      dealsDamage: Array.isArray(damageTypes) && damageTypes.some(t => t && t !== "none"),
+      ...SaveEngine._gateContextFor(item, damageTypes),
       // The exact body that cast, for the cover check. (audit F-019)
       casterTokenDocId: flags.casterTokenDocId ?? null,
     };
@@ -3704,7 +3703,7 @@ export class SaveEngine {
       // answers true for a player when the `dead` marker is actually set, so
       // this cannot silently stop a downed party member being affected.
       {
-        const _v = SaveEngine._verdictForTargetRow(tgt);
+        const _v = SaveEngine._verdictForTargetRow(tgt, _gateCtx);
         if (_v) {
           console.log(`${MODULE_ID} | GATE: ${tgt.name} (PC) — ${_v.reason.toUpperCase()}, no prompt sent.`);
           return SaveEngine._noRollRow(tgt, _v, { isPC: true });
@@ -3732,6 +3731,10 @@ export class SaveEngine {
           isAutoFail: existing.autoFailSave,
           resultLabel: existing.resultLabel,
           damageMultiplier,
+          saveAdvantage: !!tgt.saveAdvantage,
+          saveDisadvantage: !!tgt.saveDisadvantage,
+          saveAdvReasons: tgt.saveAdvReasons ?? [],
+          saveDisadvReasons: tgt.saveDisadvReasons ?? [],
           roll: null, damageModifiers: tgt.damageModifiers,
           currentHP: tgt.currentHP, maxHP: tgt.maxHP,
           isPC: true, pending: false,
@@ -3875,6 +3878,13 @@ export class SaveEngine {
    */
   static _preRollVerdict(profile, {
     outcomeConditions = [], dealsDamage = false,
+    // ⚠️🔴 FORWARDED, OR THE NEW RULE NEVER RUNS. The Gate learned on
+    // 2026-09-10 to spare a creature immune to every damage type an action
+    // deals. The first wiring built these in `_gateContextFor` and this
+    // signature silently dropped them, so the Gate's own tests passed while the
+    // save engine could never reach the rule: a profile built but never
+    // consulted, which is the fault this whole Gate exists to end.
+    damageTypes = [], magical = false,
     attackerToken = null, targetToken = null,
     rangeFt = null, originIsAttacker = false,
   } = {}) {
@@ -3896,6 +3906,8 @@ export class SaveEngine {
       attackerToken, targetToken, rangeFt, originIsAttacker,
       outcomes: outcomeConditions,
       dealsDamage,
+      damageTypes,
+      magical,
     });
   }
 
@@ -3917,13 +3929,84 @@ export class SaveEngine {
    * computed after the fact inside _applyFailedSaveConditions.
    */
   static _outcomeConditionsFor(item) {
+    // ⚠️🔴 THE SAME ANSWER THE APPLIER WILL GIVE, OR THE GATE CAN LIE.
+    // The Gate may now stop a die when a creature is immune to all of an
+    // action's damage AND all of its conditions. That is only safe if "all of
+    // its conditions" here is exactly what `_applyFailedSaveConditions` would
+    // put on a creature that failed. This used to read the registry alone and
+    // return [] for everything else, which would have let the Gate skip a roll
+    // for a creature immune to the damage but not to a condition the spell's
+    // own effect applies. So it asks the same three sources, in the same order:
+    // a registry ruling wins outright; otherwise the item's own effects and its
+    // description, merged.
     try {
       const key = game.aceQol?.SpellPipeline?._getEntry?.(item)?.effect?.key ?? null;
-      if (!key) return [];
-      return ConditionLibrary.statusesFor(key) ?? [];
-    } catch (_) {
-      return [];
+      if (key) return ConditionLibrary.statusesFor(key) ?? [];
+    } catch (_) { /* fall through to the item itself */ }
+    const out = new Set();
+    try {
+      for (const c of readAppliedConditions(item)) {
+        if (c?.requiresSave) out.add(String(c.condition).toLowerCase());
+      }
+    } catch (_) { /* unreadable effects add nothing */ }
+    try {
+      for (const c of (DescriptionParser.parse(item)?.conditions ?? [])) {
+        if (c?.requiresSave && c?.condition) out.add(String(c.condition).toLowerCase());
+      }
+    } catch (_) { /* unreadable prose adds nothing */ }
+    return [...out];
+  }
+
+  /**
+   * What the Gate needs to know about an action before any die is thrown.
+   *
+   * ⚠️ ONE BUILDER. Six call sites each assembled this by hand, and the three
+   * that ask about PLAYERS passed nothing at all, so a PC could never be
+   * spared a pointless roll even when the NPC beside them was.
+   */
+  static _gateContextFor(item, damageTypes) {
+    const types = (Array.isArray(damageTypes) ? damageTypes : [])
+      .map(t => String(t ?? "").toLowerCase().trim()).filter(t => t && t !== "none");
+    const magical = item?.type === "spell"
+      || !!item?.system?.properties?.has?.("mgc")
+      || (Array.isArray(item?.system?.properties) && item.system.properties.includes("mgc"));
+    return {
+      outcomeConditions: SaveEngine._outcomeConditionsFor(item),
+      dealsDamage: types.length > 0,
+      damageTypes: types,
+      magical,
+    };
+  }
+
+  /**
+   * The reason a save rolled two dice, as tags, for any results row.
+   *
+   * ⚠️🔴 EVERY CARD, NOT JUST ONE. Johnny, 2026-09-10: *"it's rolling two
+   * dice for him because he has an advantage, and it doesn't say that
+   * anywhere... it's got to tell people why."* The live target card learned to
+   * say it on 2026-09-08. The two results cards, the ones left on screen after
+   * the dice land, never did, and the rolled row did not even carry the reason
+   * to them.
+   */
+  static _advTagsHtml(r, { indent = 0 } = {}) {
+    if (!r || r.noRoll || r.pending) return "";
+    const esc = (x) => foundry.utils.escapeHTML(String(x ?? ""));
+    const adv = (r.saveAdvReasons ?? []).map(x =>
+      `<span class="ace-qol-tag ace-qol-tag-buff"><i class="fas fa-arrow-up"></i> ${esc(x)}</span>`);
+    const dis = (r.saveDisadvReasons ?? []).map(x =>
+      `<span class="ace-qol-tag ace-qol-tag-debuff"><i class="fas fa-arrow-down"></i> ${esc(x)}</span>`);
+    if (r.saveAdvantage && !adv.length) {
+      adv.push('<span class="ace-qol-tag ace-qol-tag-buff"><i class="fas fa-arrow-up"></i> '
+        + 'ADVANTAGE — no reason was recorded</span>');
     }
+    if (r.saveDisadvantage && !dis.length) {
+      dis.push('<span class="ace-qol-tag ace-qol-tag-debuff"><i class="fas fa-arrow-down"></i> '
+        + 'DISADVANTAGE — no reason was recorded</span>');
+    }
+    const all = [...adv, ...dis];
+    if (!all.length) return "";
+    return `<div class="ace-qol-save-tgt-actions" style="display:flex;flex-wrap:wrap;gap:4px;`
+      + `margin-top:4px;${indent ? `padding-left:${indent}px;` : ""}">${all.join("")}</div>`;
   }
 
   /**
@@ -3992,6 +4075,10 @@ export class SaveEngine {
     const _verdict = SaveEngine._verdictForTargetRow(tgt, {
       outcomeConditions: options.outcomeConditions ?? [],
       dealsDamage: !!options.dealsDamage,
+      // ⚠️ Passed through by name. This call used to list its fields one by
+      // one, so anything new in the Gate context stopped right here.
+      damageTypes: options.damageTypes ?? [],
+      magical: !!options.magical,
     });
     if (_verdict) {
       console.log(`${MODULE_ID} | GATE: ${tgt.name} — ${_verdict.reason.toUpperCase()}, no save rolled.`);
@@ -4134,6 +4221,11 @@ export class SaveEngine {
       damageMultiplier,
       dieResult,
       roll: rollResult,
+      // Why it rolled the way it did, so every card after this one can say so.
+      saveAdvantage: !!tgt.saveAdvantage,
+      saveDisadvantage: !!tgt.saveDisadvantage,
+      saveAdvReasons: tgt.saveAdvReasons ?? [],
+      saveDisadvReasons: tgt.saveDisadvReasons ?? [],
       damageModifiers: tgt.damageModifiers,
       currentHP: tgt.currentHP,
       maxHP: tgt.maxHP,
@@ -5153,8 +5245,7 @@ export class SaveEngine {
     // What this action can actually inflict — read ONCE per cast, before any
     // die, so the Gate can answer "immune to everything this does".
     const _gateCtx = {
-      outcomeConditions: SaveEngine._outcomeConditionsFor(item),
-      dealsDamage: Array.isArray(damageTypes) && damageTypes.some(t => t && t !== "none"),
+      ...SaveEngine._gateContextFor(item, damageTypes),
       // The exact body that cast, for the cover check. (audit F-019)
       casterTokenDocId: flags.casterTokenDocId ?? null,
     };
@@ -6105,6 +6196,7 @@ export class SaveEngine {
               <span class="ace-qol-save-verdict ${passClass}"
                     style="font-weight:bold;font-size:15px;letter-spacing:0.5px;">${verdictText}</span>
             </div>
+            ${SaveEngine._advTagsHtml(r)}
           </div>
         </div>
       `;
@@ -6328,6 +6420,10 @@ export class SaveEngine {
             resultLabel: r.resultLabel,
             damageMultiplier: r.damageMultiplier,
             dieResult: r.dieResult ?? null,
+            saveAdvantage: !!r.saveAdvantage,
+            saveDisadvantage: !!r.saveDisadvantage,
+            saveAdvReasons: r.saveAdvReasons ?? [],
+            saveDisadvReasons: r.saveDisadvReasons ?? [],
             damageModifiers: r.damageModifiers,
             currentHP: r.currentHP,
             maxHP: r.maxHP,
@@ -6619,7 +6715,8 @@ export class SaveEngine {
         // THE GATE — a target added to a live card gets the same scan as one
         // that was there from the start. Skipping it here is how "add targets"
         // would quietly become the one door with no lock on it.
-        const _addVerdict = SaveEngine._verdictForTargetRow(tgt);
+        const _addVerdict = SaveEngine._verdictForTargetRow(tgt,
+          SaveEngine._gateContextFor(item, flags.damageTypes));
         if (_addVerdict) {
           console.log(`${MODULE_ID} | GATE: ${tgt.name} (PC, added) — ${_addVerdict.reason.toUpperCase()}, no prompt sent.`);
           continue;
@@ -6859,6 +6956,7 @@ export class SaveEngine {
             <span class="ace-qol-save-verdict ${passClass}"
                   style="font-weight:bold;font-size:14px;letter-spacing:0.5px;">${verdictText}</span>
           </div>
+          ${SaveEngine._advTagsHtml(r, { indent: 32 })}
           <div class="ace-qol-save-ovr-line">
             <button class="ace-qol-save-ovr-x" data-action="aceQolRemoveResult" data-token-doc-id="${r.tokenDocId}">\u00d7</button>
             <button class="ace-qol-save-ovr${_a(0.25)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="0.25">\u00bc</button>
@@ -7172,6 +7270,7 @@ export class SaveEngine {
             <span class="ace-qol-save-verdict ${passClass}"
                   style="font-weight:bold;font-size:14px;letter-spacing:0.5px;">${verdictText}</span>
           </div>
+          ${SaveEngine._advTagsHtml(r, { indent: 32 })}
           <div class="ace-qol-save-ovr-line">
             <button class="ace-qol-save-ovr-x" data-action="aceQolRemoveResult" data-token-doc-id="${r.tokenDocId}">\u00d7</button>
             <button class="ace-qol-save-ovr${_a(0.25)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="0.25">\u00bc</button>

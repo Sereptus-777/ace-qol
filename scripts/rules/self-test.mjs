@@ -287,11 +287,12 @@ export class SelfTest {
     // ═════════════════════════════════════════════════════════════════════
     try {
       // Minimal stand-in for a target profile: only the fields the Gate reads.
-      const prof = ({ hp = 10, pc = false, conds = [], immune = [] }) => ({
+      const prof = ({ hp = 10, pc = false, conds = [], immune = [], dmgImmune = [] }) => ({
         isPC: pc,
         hp: { value: hp, max: 10, temp: 0 },
         hasCondition(id) { return conds.includes(String(id).toLowerCase()); },
         immuneToCondition(id) { return immune.includes(String(id).toLowerCase()); },
+        immuneToDamage(t) { return dmgImmune.includes(String(t).toLowerCase()); },
         get isDead() {
           if (this.hasCondition("dead")) return true;
           if (this.isPC) return false;
@@ -319,6 +320,19 @@ export class SelfTest {
       // A damaging spell still needs the save — it is doing work for half damage.
       t("gate", "immune but the spell deals damage → still rolls",
         V(prof({ immune: ["petrified"] }), { outcomeConditions: ["petrified"], dealsDamage: true }) === null);
+      // ⚠️🔴 CLOUDKILL, 2026-09-10. A Specter and Neferon, both immune to
+      // poison, rolled saves that could not change a thing. These go through
+      // _preRollVerdict on purpose: the first wiring dropped the damage types
+      // there, and only a test through the real door would have caught it.
+      t("gate", "immune to every damage type it deals, no condition → no save",
+        V(prof({ dmgImmune: ["poison"] }),
+          { outcomeConditions: [], dealsDamage: true, damageTypes: ["poison"] })?.reason === "immune");
+      t("gate", "immune to the damage but not its condition → still rolls",
+        V(prof({ dmgImmune: ["fire"] }),
+          { outcomeConditions: ["prone"], dealsDamage: true, damageTypes: ["fire"] }) === null);
+      t("gate", "damage of a type nobody could read → still rolls",
+        V(prof({ dmgImmune: ["poison"] }),
+          { outcomeConditions: [], dealsDamage: true, damageTypes: [] }) === null);
       // Never block on a fact we could not read.
       t("gate", "unknown outcomes → rolls (fails open)",
         V(prof({ immune: ["petrified"] }), { outcomeConditions: [] }) === null);

@@ -121,6 +121,51 @@ export function buildTargetProfile(actor, { token = null } = {}) {
       return false;
     },
 
+    /**
+     * Is this creature immune to a damage type?
+     *
+     * ⚠️🔴 THE GATE COULD NOT ASK THIS, SO IMMUNE CREATURES ROLLED FOR NOTHING.
+     * Johnny, 2026-09-10: a Specter and Neferon were caught in Cloudkill, both
+     * immune to poison, and both rolled a saving throw that could not change a
+     * single thing. "If they're immune, they don't have to roll." The Gate knew
+     * whether an action dealt damage, never which KIND, and this profile had no
+     * way to answer it. Same contract as immuneToCondition: the structured list
+     * first, then the free-text box a statblock sometimes uses instead.
+     *
+     * ⚠️ A SPELL IS MAGICAL. dnd5e marks "immune to bludgeoning, piercing and
+     * slashing from nonmagical attacks" with a bypass of `mgc`, and that
+     * immunity does not apply to magic at all. Reading the list without the
+     * bypass would make a stone golem shrug off a magic weapon.
+     *
+     * @param {string} type             a damage type id, e.g. "poison"
+     * @param {object} [opts]
+     * @param {boolean} [opts.magical]  true for spells and magic items
+     */
+    immuneToDamage(type, { magical = false } = {}) {
+      const id = String(type ?? "").toLowerCase().trim();
+      if (!id || id === "none") return false;
+      try {
+        const di = sys.traits?.di ?? {};
+        const listed = creature.di?.has?.(id)
+          || (di.value instanceof Set ? di.value.has(id)
+            : (Array.isArray(di.value) && di.value.includes(id)));
+        if (listed) {
+          const physical = id === "bludgeoning" || id === "piercing" || id === "slashing";
+          const bypasses = di.bypasses instanceof Set ? di.bypasses
+            : new Set(Array.isArray(di.bypasses) ? di.bypasses : []);
+          if (physical && magical && bypasses.has("mgc")) return false;
+          return true;
+        }
+        const custom = String(di.custom ?? "").toLowerCase();
+        if (custom && custom.includes(id)) {
+          // "…from nonmagical attacks" in prose is the same bypass, written out.
+          if (magical && /nonmagical|non-magical/.test(custom)) return false;
+          return true;
+        }
+      } catch (_) { /* fall through: unknown is never "immune" */ }
+      return false;
+    },
+
     /** This creature's total modifier for a saving throw. */
     saveMod(ability) {
       const k = String(ability ?? "").toLowerCase();

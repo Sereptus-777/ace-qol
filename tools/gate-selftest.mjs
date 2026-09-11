@@ -126,6 +126,80 @@ check("what genuinely cannot be settled is still handed over",
   unknowable.needsJudging.map(r => r.effect).join(","), "Lucky");
 check("and is NOT quietly counted as applying", unknowable.applies.length, 0);
 
+/* ── CLOUDKILL, 2026-09-10 ──────────────────────────────────────────────── */
+console.log("\nIMMUNE TO THE DAMAGE IS IMMUNE TO THE SAVE");
+{
+  // ⚠️🔴 Johnny: a Specter and Neferon stood in Cloudkill, both immune to
+  // poison, and both rolled. "If they're immune, they don't have to roll." The
+  // Gate knew THAT an action dealt damage and never WHICH kind.
+  const dmgProfile = ({ dmg = [], cond = [] } = {}) => ({
+    actorId: "x", actorUuid: "Actor.x", isDead: false,
+    immuneToCondition: (c) => cond.includes(c),
+    immuneToDamage: (t) => dmg.includes(t),
+  });
+  const neferon = dmgProfile({ dmg: ["acid", "poison"], cond: ["charmed", "poisoned"] });
+
+  const v = ActionGate.verdictFor({ targetProfile: neferon,
+    dealsDamage: true, damageTypes: ["poison"], outcomes: [] });
+  check("immune to the only damage, no condition: no save", v?.reason, "immune");
+  check("and the row says what it is immune to", /IMMUNE to Poison/.test(v?.label ?? ""), true);
+
+  // ⚠️ THE ONE THAT MUST STILL ROLL. Immune to the damage is not immune to a
+  // condition the spell leaves behind; failing would still cost it something.
+  check("immune to the damage but not the condition: rolls",
+    ActionGate.verdictFor({ targetProfile: dmgProfile({ dmg: ["fire"] }),
+      dealsDamage: true, damageTypes: ["fire"], outcomes: ["prone"] }), null);
+  check("immune to the condition but not the damage: rolls",
+    ActionGate.verdictFor({ targetProfile: dmgProfile({ cond: ["poisoned"] }),
+      dealsDamage: true, damageTypes: ["poison"], outcomes: ["poisoned"] }), null);
+  check("immune to both, and it says both",
+    /Poison, Poisoned/.test(ActionGate.verdictFor({ targetProfile: neferon,
+      dealsDamage: true, damageTypes: ["poison"], outcomes: ["poisoned"] })?.label ?? ""), true);
+
+  // ⚠️ TWO DAMAGE TYPES NEED BOTH. Immune to one half of a split spell is a
+  // creature that still takes the other half.
+  check("immune to one of two damage types: rolls",
+    ActionGate.verdictFor({ targetProfile: dmgProfile({ dmg: ["fire"] }),
+      dealsDamage: true, damageTypes: ["fire", "radiant"], outcomes: [] }), null);
+
+  // ⚠️ UNKNOWN IS NEVER IMMUNE. Damage that could not be typed rolls.
+  check("damage whose type could not be read: rolls",
+    ActionGate.verdictFor({ targetProfile: neferon, dealsDamage: true, damageTypes: [] }), null);
+  check("a profile that cannot answer about damage: rolls",
+    ActionGate.verdictFor({ targetProfile: profile(),
+      dealsDamage: true, damageTypes: ["poison"] }), null);
+}
+
+console.log("\nTHE PROFILE'S OWN ANSWER ABOUT DAMAGE");
+{
+  // The real reader, on actors shaped like dnd5e's: immunities are a Set.
+  const { buildTargetProfile } = await import(
+    "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/profiles/target-profile.mjs");
+  const actor = (di) => ({ id: "a1", uuid: "Actor.a1", name: "Test", type: "npc",
+    system: { traits: { di, dr: { value: new Set() }, dv: { value: new Set() },
+                        ci: { value: new Set(), custom: "" } },
+              attributes: { hp: { value: 10, max: 10 }, ac: { value: 12 } }, abilities: {} },
+    items: [], effects: [], statuses: new Set(), getActiveTokens: () => [] });
+  let p = null, threw = null;
+  try { p = buildTargetProfile(actor({ value: new Set(["poison"]), bypasses: new Set(), custom: "" })); }
+  catch (err) { threw = String(err?.message ?? err); }
+  check("a target profile builds from a dnd5e-shaped actor", threw, null);
+  check("poison immunity read from the Set", p?.immuneToDamage?.("poison"), true);
+  check("and fire is not invented", p?.immuneToDamage?.("fire"), false);
+
+  // ⚠️ A SPELL IS MAGICAL. "Immune to nonmagical bludgeoning" is marked with a
+  // bypass of `mgc`, and it does nothing against magic at all.
+  const golem = buildTargetProfile(actor({ value: new Set(["bludgeoning"]),
+    bypasses: new Set(["mgc"]), custom: "" }));
+  check("nonmagical-only immunity holds against a club", golem.immuneToDamage("bludgeoning"), true);
+  check("and not against magic", golem.immuneToDamage("bludgeoning", { magical: true }), false);
+
+  const prose = buildTargetProfile(actor({ value: new Set(), bypasses: new Set(),
+    custom: "Poison; Psychic" }));
+  check("an immunity written only in the free-text box still counts",
+    prose.immuneToDamage("psychic"), true);
+}
+
 console.log("");
 console.log(pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);
