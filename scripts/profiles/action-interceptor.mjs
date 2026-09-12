@@ -218,6 +218,12 @@ export class ActionInterceptor {
     // reading these, exactly like the "areas that are never drawn" card.
     Hooks.on("createActiveEffect", saw("an effect was applied"));
     Hooks.on("createToken", saw("a creature appeared"));
+    // A pipeline that paces its card on purpose says so. See `expect`: this
+    // moves the deadline, it does not count as something happening.
+    Hooks.on("ace-qol.expectCard", (data) => {
+      try { ActionInterceptor.expect(data?.activity, data?.ms, data?.who); }
+      catch (err) { console.warn(`${LOG} | could not note that a card is on its way:`, err); }
+    });
     // ⚠️🔴 A DIALOG WAITING FOR HIM IS NOT A DEAD BUTTON. Caught live on
     // the first real press: Aura of Vitality opened dnd5e's own cast dialog,
     // sat there waiting for him to choose a slot, and ACE called it dead two
@@ -246,6 +252,26 @@ export class ActionInterceptor {
   static claim(activity, who) {
     const r = ActionInterceptor._byKey.get(ActionInterceptor._keyFor(activity));
     if (r) r.claimedBy = String(who ?? "someone");
+  }
+
+  /**
+   * A pipeline saying "I have it, and my card is on its way".
+   *
+   * ⚠️🔴 A CARD THAT IS PACED IS NOT A DEAD BUTTON. Johnny, 2026-09-12:
+   * "Claws did nothing" in permanent red, over a save card that arrived a
+   * moment later. With one creature targeted and the GM rolling, the save
+   * engine waits for the cast animation (1.5 seconds by default) and then for
+   * the dice (1 more) before its first card, and this watch gave up at 2.5.
+   *
+   * ⚠️ AN EXPECTATION MOVES THE DEADLINE, IT DOES NOT CANCEL IT. If the promised
+   * card never comes, the warning still fires, and it names who promised it.
+   */
+  static expect(activity, ms, who) {
+    const r = ActionInterceptor._byKey.get(ActionInterceptor._keyFor(activity));
+    if (!r || r.sawSomething) return;
+    const until = Date.now() + Math.max(0, Number(ms) || 0);
+    if (until > (r.expectUntil ?? 0)) r.expectUntil = until;
+    r.expectedBy = String(who ?? "a pipeline");
   }
 
   /** The answer for an activity, for any pipeline that wants it. */
@@ -388,9 +414,14 @@ export class ActionInterceptor {
 
   static _watchForSilence(reading) {
     ActionInterceptor._inFlight.add(reading);
-    setTimeout(() => {
+    const check = () => {
+      if (reading.sawSomething) { ActionInterceptor._inFlight.delete(reading); return; }
+      // ⚠️ A PROMISED CARD GETS THE TIME IT ASKED FOR, and then the same
+      // scrutiny as everything else. Still in flight meanwhile, so a card that
+      // lands during the wait is seen.
+      const wait = (reading.expectUntil ?? 0) - Date.now();
+      if (wait > 0) { setTimeout(check, wait); return; }
       ActionInterceptor._inFlight.delete(reading);
-      if (reading.sawSomething) return;
 
       // ⚠️ NAME THE ITEM, THE OWNER AND THE REASON. "Nothing happened" on its
       // own is the same silence in a nicer font.
@@ -401,8 +432,10 @@ export class ActionInterceptor {
       // that was never there.
       const why = reading.claimedBy
         ? `${reading.claimedBy} took it and produced nothing`
-        : `no pipeline reported taking it (only the heal pipeline reports today, `
-          + `so that alone is not the fault)`;
+        : reading.expectedBy
+          ? `${reading.expectedBy} said its card was on the way, and none came`
+          : `no pipeline reported taking it (only the heal pipeline reports today, `
+            + `so that alone is not the fault)`;
       const shapeSays = reading.shape
         ? `ACE read it as "${reading.shape}"`
         : `ACE could not work out what it does`;
@@ -413,7 +446,8 @@ export class ActionInterceptor {
       ui.notifications?.error(
         `${reading.itemName} did nothing. ${why}. See the console for what ACE read it as.`,
         { permanent: true });
-    }, ActionInterceptor.silenceMs);
+    };
+    setTimeout(check, ActionInterceptor.silenceMs);
   }
 
   /* ── Report ────────────────────────────────────────────────────────────── */

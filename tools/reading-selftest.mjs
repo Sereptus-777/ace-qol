@@ -204,6 +204,34 @@ Hooks.call("createChatMessage", {});
 await sleep(120);
 check("and a late card still counts", notified.filter(x => x[0] === "error").length, 0);
 
+console.log("\nA CARD THAT IS ON ITS WAY IS NOT SILENCE");
+// ⚠️🔴 2026-09-12: "Claws did nothing" in permanent red over a save card that
+// arrived a moment later. The save engine waits for the cast animation and the
+// dice before its first card, and now says so.
+notified = [];
+{
+  const a = press("Claws", "weapon", "save");
+  ActionInterceptor.read(a);
+  Hooks.callAll("ace-qol.expectCard", { activity: a, ms: 150, who: "the save engine" });
+  await sleep(100);                         // past the 60 ms window, inside the promise
+  check("a promised card is waited for", notified.filter(x => x[0] === "error").length, 0);
+  Hooks.call("createChatMessage", {});      // and it arrives
+  await sleep(200);
+  check("and when it lands nothing is said", notified.filter(x => x[0] === "error").length, 0);
+}
+notified = [];
+{
+  const a = press("Hold Person", "spell", "save");
+  ActionInterceptor.read(a);
+  Hooks.callAll("ace-qol.expectCard", { activity: a, ms: 100, who: "the save engine" });
+  await sleep(250);
+  check("a promise that is not kept is still reported",
+    notified.filter(x => x[0] === "error").length, 1);
+  check("and it names who promised the card",
+    /the save engine said its card was on the way, and none came/
+      .test(notified.find(x => x[0] === "error")?.[1] ?? ""), true);
+}
+
 /* ── Publishing ─────────────────────────────────────────────────────────── */
 console.log("\nTHE ANSWER IS PUBLISHED FOR THE PIPELINES TO READ");
 entryToReturn = { shape: "template-heal" };

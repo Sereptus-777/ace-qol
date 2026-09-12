@@ -19,6 +19,82 @@ const PHYSICAL_TYPES = new Set(["bludgeoning", "piercing", "slashing"]);
 
 export class PostHitSaves {
 
+  /**
+   * The saves a creature makes BECAUSE this item hit it.
+   *
+   * ⚠️🔴 ONE READER FOR TWO QUESTIONS. The damage card asks these saves after
+   * a hit, and the activity chooser stops offering them as a separate choice
+   * (Johnny, 2026-09-12, asked "Attack or Save?" on Neferon's Claws). If the
+   * two read different things, a save is either asked and still offered, or
+   * offered and never asked. So both ask this.
+   *
+   * The rules brain's entry wins outright (convergence, 2026-07-10); otherwise
+   * the item's own words, minus any save they plainly give to something else.
+   *
+   * @param {Item} item
+   * @param {Actor} [actor]
+   * @param {{parsed?: object, quiet?: boolean}} [opts]
+   * @returns {{saves: object[], sure: object[], entryOnHit: object[]|null, from: string}}
+   *   `saves` are asked after a hit. `sure` are the ones that are certainly the
+   *   hit's own, and only those may come off the chooser's list.
+   */
+  static riderSavesFor(item, actor = item?.actor ?? null, { parsed = null, quiet = false } = {}) {
+    const out = { saves: [], sure: [], entryOnHit: null, from: "words" };
+    if (!item) return out;
+    let all = [];
+    try { all = (parsed ?? DescriptionParser.parse(item)).saves ?? []; }
+    catch (err) {
+      console.warn(`${MODULE_ID} | post-hit: could not read the words of "${item.name}", `
+        + `so no save is asked after its hits:`, err);
+    }
+    out.saves = all.filter(s => s.hitVerdict !== "no");
+    out.sure = all.filter(s => s.hitVerdict === "yes");
+    const other = all.filter(s => s.hitVerdict === "no");
+    if (other.length && !quiet) {
+      // ⚠️ NAMED, so "not asked" never looks like "missed".
+      console.log(`${MODULE_ID} | post-hit: "${item.name}" also names `
+        + other.map(s => `a DC ${s.dc} ${String(s.ability).toUpperCase()} save`).join(" and ")
+        + ` that ${other.length === 1 ? "belongs" : "belong"} to something other than the hit, `
+        + `so ${other.length === 1 ? "it is" : "they are"} not asked after one.`);
+    }
+    // ── THE BRAIN OVERRIDES THE PARSE (convergence, 2026-07-10) ──
+    // When the item has a rules entry declaring post-hit behavior, the ENTRY is
+    // authoritative; the words are the fallback for everything without one.
+    try {
+      const entry = RulesBrain.lookup(item, { actor })?.entry;
+      if (entry?.postHitSave?.dc && entry.postHitSave.ability) {
+        out.saves = [foundry.utils.deepClone(entry.postHitSave)];
+        out.sure = out.saves;
+        out.from = "rules entry";
+        if (!quiet) console.log(`${MODULE_ID} | post-hit: rules entry OVERRIDES parsed save for "${item.name}" (DC ${entry.postHitSave.dc} ${entry.postHitSave.ability})`);
+      }
+      if (Array.isArray(entry?.onHit) && entry.onHit.length) {
+        out.entryOnHit = foundry.utils.deepClone(entry.onHit);
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | post-hit: could not ask the rules brain about "${item.name}", `
+        + `so its own words decide:`, err);
+    }
+    return out;
+  }
+
+  /**
+   * The activities on offer that are this item's hit-saves, for the chooser.
+   *
+   * ⚠️ EMPTY ON ANY DOUBT. A save wrongly taken off the list cannot be pressed
+   * at all; one wrongly left on is only a question he can ignore.
+   */
+  static riderActivityIds(item, activities) {
+    try {
+      const { sure } = PostHitSaves.riderSavesFor(item, item?.actor ?? null, { quiet: true });
+      return DescriptionParser.riderActivityIds(item, activities, sure);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not tell whether "${item?.name}" has a save that `
+        + `follows its hit, so every choice stays on offer:`, err);
+      return new Set();
+    }
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   //  Check for Post-Hit Effects
   // ═══════════════════════════════════════════════════════════════════════════
@@ -35,22 +111,12 @@ export class PostHitSaves {
 
     const parsed = DescriptionParser.parse(item);
 
-    // ── THE BRAIN OVERRIDES THE PARSE (convergence, 2026-07-10) ──
-    // When the item has a rules entry declaring post-hit behavior, the ENTRY
-    // is authoritative — the parser is the general fallback for everything
-    // without one. Both produce the SAME normalized bag, so one resolution
-    // path serves both and the wasp class of wiring gap is structurally dead.
-    let entryOnHit = null;
-    try {
-      const entry = RulesBrain.lookup(item, { actor })?.entry;
-      if (entry?.postHitSave?.dc && entry.postHitSave.ability) {
-        parsed.saves = [foundry.utils.deepClone(entry.postHitSave)];
-        console.log(`${MODULE_ID} | post-hit: rules entry OVERRIDES parsed save for "${item.name}" (DC ${entry.postHitSave.dc} ${entry.postHitSave.ability})`);
-      }
-      if (Array.isArray(entry?.onHit) && entry.onHit.length) {
-        entryOnHit = foundry.utils.deepClone(entry.onHit);
-      }
-    } catch (_) { /* brain unavailable → parser stands */ }
+    // ── ONLY THE SAVES THAT BELONG TO THE HIT ──
+    // One reader, shared with the activity chooser: the save asked here is the
+    // save the chooser stopped offering as a separate choice.
+    const riders = PostHitSaves.riderSavesFor(item, actor, { parsed });
+    parsed.saves = riders.saves;
+    const entryOnHit = riders.entryOnHit;
 
     // ── Entry-declared ON-HIT effects (no save — the Net) ──
     // Applied to every HIT target, immunity-checked, announced compactly.
@@ -212,17 +278,25 @@ export class PostHitSaves {
       // gives them a discovery prompt without revealing immunities verbatim.
       if (skippedNotes.length && game.user.isGM) {
         try {
+          // ⚠️🔴 SAY IT IN WORDS A GM READS MID-TURN. Johnny, 2026-09-12, on a
+          // save that did nothing to his Specter: "I don't know that he's
+          // immune to poison, so as a DM, I'm looking: he rolled and he failed,
+          // but I don't know what's going on." This note is how he knows, so it
+          // is a sentence at a readable size, not an 11-pixel footnote.
           const lines = skippedNotes.map(s =>
-            `<strong>${foundry.utils.escapeHTML(s.name)}</strong> — ${foundry.utils.escapeHTML(s.reason)}`
-          ).join("<br>");
+            `<div style="margin-top:4px;"><strong style="color:#ffffff;">${foundry.utils.escapeHTML(s.name)}</strong> `
+            + `is ${foundry.utils.escapeHTML(s.reason)}, so no save is needed.</div>`
+          ).join("");
           await ChatMessage.create({
-            content: `<div class="ace-qol-save-suppressed" style="background:#1a1a1f;border-left:3px solid #d4af37;padding:6px 10px;border-radius:3px;color:#aaa;font-size:11px;">
-              <div style="color:#d4af37;font-weight:700;margin-bottom:3px;">🛡 ${foundry.utils.escapeHTML(item.name)} — save not required (GM)</div>
-              <div>${lines}</div>
+            content: `<div class="ace-qol-save-suppressed" style="background:#141118;border-left:3px solid #d4af37;padding:8px 12px;border-radius:4px;color:#e8d9a8;font-size:15px;line-height:1.4;">
+              <div style="color:#d4af37;font-weight:700;font-size:16px;"><i class="fas fa-shield-halved"></i> ${foundry.utils.escapeHTML(item.name)}: save skipped (GM only)</div>
+              ${lines}
             </div>`,
             whisper: [game.user.id],
           });
-        } catch (_) { /* note is informational only */ }
+        } catch (err) {
+          console.warn(`${MODULE_ID} | post-hit: could not post the note saying why a save was skipped:`, err);
+        }
       }
 
       if (!filteredTargets.length) {

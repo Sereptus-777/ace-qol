@@ -73,6 +73,7 @@ import { ConditionLibrary }     from "./condition-library.mjs";
 import { ConditionSheetIntegration } from "./condition-sheet-integration.mjs";
 import { SpellTargetPicker }    from "./spell-target-picker.mjs";
 import { DescriptionParser }    from "./description-parser.mjs";
+import { PostHitSaves }         from "./post-hit-saves.mjs";
 import { RepeatingSaveEngine }  from "./repeating-save-engine.mjs";
 import { GazeEngine }           from "./gaze-engine.mjs";
 import { BreakFreeEngine }      from "./break-free-engine.mjs";
@@ -6384,7 +6385,9 @@ Hooks.once("ready", () => {
             // its choice — the retry must not steal what the first pass spared.
             const all2 = [...acts];
             const offered2 = all2.filter(a => !!el2.querySelector(`button[data-activity-id="${a.id}"]`));
-            if (offered2.length <= 1) {
+            // The same rule as the first pass: a save that follows the hit is not a choice.
+            const riders2 = PostHitSaves.riderActivityIds(item, offered2);
+            if (offered2.filter(a => !riders2.has(a.id)).length <= 1) {
               for (const a of all2) {
                 if (a.type !== "attack") continue;
                 const btn2 = el2.querySelector(`button[data-activity-id="${a.id}"]`);
@@ -6466,14 +6469,31 @@ Hooks.once("ready", () => {
           catch (_) { return false; }
         };
         const real = offered.filter(a => !_isMachinery(a));
-        const choosable = real.length ? real : offered;
-
-        if (offered.length > choosable.length) {
-          console.log(`${MODULE_ID} | "${item.name}": hid `
-            + `${offered.length - choosable.length} internal activit`
-            + `${offered.length - choosable.length === 1 ? "y" : "ies"} `
-            + `(${offered.filter(_isMachinery).map(a => a.name || a.type).join(", ")}) `
+        const machinery = offered.filter(_isMachinery);
+        if (machinery.length && real.length) {
+          console.log(`${MODULE_ID} | "${item.name}": hid ${machinery.length} internal activit`
+            + `${machinery.length === 1 ? "y" : "ies"} `
+            + `(${machinery.map(a => a.name || a.type).join(", ")}) `
             + `— the spell fires those itself, they are not choices.`);
+        }
+
+        // ── ⚠️🔴 A SAVE THAT FOLLOWS A HIT IS NOT A CHOICE ─────────────────
+        //
+        // Johnny, 2026-09-12, pressing Neferon's Claws and being asked "Attack
+        // or Save?": "I don't want that shit on our fucking attack cards if we
+        // can't fucking push it and use it." The Save is the poison the target
+        // resists after the claw lands, and ACE already asks for it on the
+        // damage card. Pressed on its own it rolled a save with no damage in
+        // it. dnd5e gives it the activation "action", so only the words say
+        // what it is, and the reader that decides is the damage card's own.
+        const _riders = PostHitSaves.riderActivityIds(item, offered);
+        const doable = real.filter(a => !_riders.has(a.id));
+        const choosable = doable.length ? doable : (real.length ? real : offered);
+        if (_riders.size && doable.length) {
+          console.log(`${MODULE_ID} | "${item.name}": not offering `
+            + `${offered.filter(a => _riders.has(a.id)).map(a => `"${a.name || "Save"}"`).join(", ")} `
+            + `as a choice. It is the saving throw a creature makes when this hits it, and ACE `
+            + `asks for it on the damage card after the hit.`);
         }
 
         // ── ⚠️🔴 A SPELL ACE CASTS ITSELF NEVER ASKS WHICH ROW ────────

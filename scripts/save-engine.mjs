@@ -1112,6 +1112,19 @@ export class SaveEngine {
       console.warn(`${MODULE_ID} | hearing gate failed (non-blocking):`, err);
     }
 
+    // ⚠️🔴 SAY THE CARD IS COMING. From here the first card waits for the cast
+    // animation and, on the fast path below, for the dice as well: 2.5 seconds
+    // on the default settings, which is exactly when the silence watch gave up
+    // and put "Claws did nothing" on his screen in permanent red (2026-09-12).
+    try {
+      const pace = (Number(QolSettings.get?.("saveCardDelayAfterCastMs") ?? 1500) || 0)
+                 + (Number(QolSettings.get?.("npcSaveAnimationDelay") ?? 1000) || 0);
+      Hooks.callAll("ace-qol.expectCard", { activity, ms: pace + 5000,
+        who: "the save engine, which waits for the cast animation and the dice before its card" });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not tell the silence watch that a save card is coming:`, err);
+    }
+
     // ── Fast-path for NPC-only single-target saves ──
     // If the GM is rolling on a single NPC with no PCs in the mix, the
     // live-target-card confirmation step is unnecessary friction — the GM
@@ -2369,9 +2382,11 @@ export class SaveEngine {
     const caster = casterActor?.name ?? "Someone";
     const spell  = this._abilityLabel(item, activityId);
     const tgts   = this._formatTargetNames(targets);
+    // ⚠️ A CLAW IS NOT CAST. "Neferon casts Claws on Specter" (2026-09-12).
+    const isSpell = item?.type === "spell";
     return `<div class="ace-qol-save-cast-line">`
-      + `<i class="fas fa-wand-magic-sparkles"></i> `
-      + `<strong>${caster}</strong> casts <strong>${spell}</strong>`
+      + `<i class="fas ${isSpell ? "fa-wand-magic-sparkles" : "fa-hand-fist"}"></i> `
+      + `<strong>${caster}</strong> ${isSpell ? "casts" : "uses"} <strong>${spell}</strong>`
       + `${tgts ? ` on <strong>${tgts}</strong>` : ""}`
       + `</div>`;
   }

@@ -10,6 +10,9 @@
 // follow consistent templated language patterns.
 // ──────────────────────────────────────────────────────────────────────────────
 
+// Imports nothing itself, so this stays free of the module's import cycles.
+import { inlineRollsAsText } from "./inference/spell-text.mjs";
+
 const MODULE_ID = "ace-qol";
 
 /** All D&D 5e conditions we can detect and apply */
@@ -57,8 +60,11 @@ export class DescriptionParser {
 
     // Keep the raw HTML for Foundry enriched text patterns ([[/save]], [[/damage]], etc.)
     const html = rawHtml.replace(/\s+/g, " ").trim();
-    // Strip HTML tags for plain English patterns
-    const text = rawHtml.replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
+    // Strip HTML tags for plain English patterns.
+    // ⚠️ INLINE ROLLS FIRST. "taking 10 ([[/r 3d6]]) poison damage" has to read
+    // as "taking 10 (3d6) poison damage" or the fail damage is lost, which is
+    // what left Neferon's Claws with a save that could do nothing (2026-09-12).
+    const text = inlineRollsAsText(rawHtml).replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
     const lower = text.toLowerCase();
 
     const result = {
@@ -194,6 +200,8 @@ export class DescriptionParser {
         saves.push({
           dc, ability,
           abilityLabel: abilityRaw.charAt(0).toUpperCase() + abilityRaw.slice(1),
+          matchIndex: match.index,
+          ...DescriptionParser._hitSaveFields(text, match.index),
           failEffect: DescriptionParser._parseFailEffect(afterText),
           // "…taking 10 (3d6) poison damage on a failed save, or HALF AS MUCH
           // damage on a successful one" — the classic venom pattern (Giant
@@ -218,6 +226,8 @@ export class DescriptionParser {
         saves.push({
           dc, ability,
           abilityLabel: match[2],
+          matchIndex: match.index,
+          ...DescriptionParser._hitSaveFields(text, match.index),
           failEffect: DescriptionParser._parseFailEffect(afterText),
           halfOnSuccess: /half\s+as\s+much\s+damage/i.test(afterText),
           perHit: lower.includes("must succeed") || lower.includes("target must"),
@@ -227,6 +237,129 @@ export class DescriptionParser {
     }
 
     return saves;
+  }
+
+  /**
+   * Is the save written at `idx` one the creature HIT makes, because it was hit?
+   *
+   * ⚠️🔴 NOT EVERY SAVE IN AN ATTACK'S WORDS FOLLOWS THE HIT. The Forge Devil's
+   * Master of Metal is a menu: Solid Slug (an attack), Scrap Shrapnel (a cone),
+   * Armor Lock and Blunten Edge (saves against anyone near it). Every save in
+   * the text used to count as the slug's, so a slug that hit asked for a DC 20
+   * Dexterity save "or be restrained" that belongs to nothing it does.
+   *
+   * A hit's own save is written after the hit and made by what was hit:
+   *     Hit: 8 (2d4 + 3) slashing damage. The target must make a DC 14 ...
+   *     Hit: 5 (1d4 + 3) piercing damage, and the target must make a ...
+   *     Hit: ... If the target is a creature, it must succeed on a DC 11 ...
+   * and NOT:
+   *     Hit or miss, the shard explodes ...          (happens either way)
+   *     ... each creature within 5 feet of the target must ...   (a splash)
+   *     Hit: ... damage. Scrap Shrapnel. Creatures within a cone must ...
+   */
+  static _hitSaveVerdict(text, idx) {
+    // ⚠️🔴 THREE ANSWERS, NOT TWO, because the two mistakes cost different
+    // things. The first version answered yes or no, was run over every item in
+    // hijinx before it shipped, and would have stopped asking about thirty real
+    // riders: the Wraith's Life Drain, the Pit Fiend's Bite, every 2024
+    // lycanthrope, all of them written in a way it had not been shown.
+    //   "yes"      written after the hit and made by what was hit. The chooser
+    //              stops offering it, because ACE asks for it after the hit.
+    //   "no"       plainly something else: a breath weapon on the same item, a
+    //              splash, a menu's other option, a worm's own save to spit out
+    //              what it swallowed, a wound's save on a later turn.
+    //   "unclear"  neither. Asked after a hit exactly as before, and still
+    //              offered as a choice. Only plain evidence moves a save off it.
+    const t = String(text ?? "");
+    if (!(idx >= 0)) return "unclear";
+    const before = t.slice(0, idx);
+    // A sentence ends at a stop followed by a capital, so "within 30 ft. of the
+    // wall" stays one sentence.
+    const sentencesOf = (s) => s.split(/(?<=[.!?])\s+(?=[A-Z0-9(["'“&[])/);
+    const lead = sentencesOf(before);
+    const saveSentence = lead.pop() ?? "";
+    const prevSentence = lead[lead.length - 1] ?? "";
+    // Who makes it: the last clause before the save.
+    const clause = (saveSentence.split(/[,;]\s*/).pop() ?? "").replace(/^\s*(?:and|then)\s+/i, "");
+    // 2024 writes the save as its own heading ("Constitution Saving Throw: DC
+    // 12") and names who makes it in the sentence before.
+    const noSubject = !clause.trim()
+      || /^(?:strength|dexterity|constitution|intelligence|wisdom|charisma)\s+saving\s+throw\s*:?$/i.test(clause.trim());
+    const said = noSubject ? `${prevSentence} ${saveSentence}` : saveSentence;
+
+    // ── Plainly something else ──
+    if (/^\s*(?:firstly,?\s+)?(?:each|every|all|any|other|creatures|up to \w+ creatures|the wielder|you)\b/i.test(clause)) return "no";
+    if (/\b(?:and|or)\s+(?:each|every|all|any)\s+(?:other\s+)?creatures?\b|\bcreatures?\s+(?:within|in)\s+(?:a|an|the|that|\d)/i.test(clause)) return "no";
+    if (/\bat the (?:start|end) of (?:each|its|every)\b|\bcan (?:then )?(?:make|repeat)\b|\brepeat(?:s|ing)? the (?:saving throw|save)\b|\bfinishes a (?:long|short) rest\b|\btakes \d+ damage or more\b/i.test(said)) return "no";
+
+    // ── The hit it follows ──
+    let marker = null;
+    for (const m of before.matchAll(/\bhit or miss\b|\bon a hit\b|\bwhen (?:you )?hit\b|\bif the attack hits\b|\bhit\s*:|\bhit\s+(?=\d)|\[\[\/(?:damage|attack) extended\]\]/gi)) marker = m;
+    if (!marker) return "unclear";
+    if (/^hit or miss$/i.test(marker[0])) return "no";
+    const span = before.slice(marker.index + marker[0].length);
+    if (/\b(?:melee|ranged)\s+(?:weapon\s+|spell\s+)?attack(?:\s+roll)?\s*:/i.test(span)) return "unclear";
+    const between = sentencesOf(span);
+    between.pop();                                   // the save's own sentence
+    // A heading on its own ("Scrap Shrapnel.", "Paralysis.") is one option of a menu.
+    const heading = /^[A-Z][\w'’-]*(?:\s+[A-Z][\w'’-]*){0,4}\.$/;
+    if (between.some(s => heading.test(s.trim()))) return "no";
+    if (between.length > 3) return "unclear";
+
+    // ── Made by what was hit ──
+    const hitCreature = /\b(?:the target|it|the creature|that creature|hit creature|creature (?:hit|damaged) by|(?:a|an)\s+(?:tiny|small|medium|large|huge|gargantuan)(?:\s+or\s+(?:smaller|larger))?\s+creature)\b/i;
+    if (!noSubject) return hitCreature.test(clause) ? "yes" : "unclear";
+    return hitCreature.test(prevSentence)
+        && /\bsubjected to the following effect\b|\bthe following saving throw\b/i.test(prevSentence)
+      ? "yes" : "unclear";
+  }
+
+  /** The verdict, as the fields a parsed save carries. */
+  static _hitSaveFields(text, idx) {
+    const hitVerdict = DescriptionParser._hitSaveVerdict(text, idx);
+    return { hitVerdict, followsHit: hitVerdict === "yes" };
+  }
+
+  /** The saves ACE asks after a hit: everything not plainly something else. */
+  static hitSaves(item) {
+    return DescriptionParser.parse(item).saves.filter(s => s.hitVerdict !== "no");
+  }
+
+  /**
+   * Which of these activities are a hit's own save, which ACE rolls after the hit?
+   *
+   * ⚠️🔴 A SAVE THAT FOLLOWS A HIT IS NOT A CHOICE. Johnny, 2026-09-12, pressing
+   * Neferon's Claws and being asked "Attack or Save?": "I don't want that shit
+   * on our fucking attack cards if we can't fucking push it and use it." The
+   * Save is what the creature makes after the claw lands, and ACE already asks
+   * for it on the damage card. dnd5e gives it the activation "action", so
+   * nothing about the activity itself says so; the words do.
+   *
+   * ⚠️ ONLY WHEN ACE WILL ACTUALLY ASK FOR IT. The ask happens on the damage
+   * card, so an attack that deals no damage never reaches it, and a save that
+   * covers an area is its own thing. Spells are the spell pipeline's business.
+   *
+   * @param {Item} item
+   * @param {Iterable<object>} activities  the activities on offer
+   * @param {Array<{ability:string}>} saves  the saves that follow the hit
+   * @returns {Set<string>} activity ids
+   */
+  static riderActivityIds(item, activities, saves) {
+    const out = new Set();
+    if (!item || item.type === "spell" || !saves?.length) return out;
+    const acts = [...(activities ?? [])];
+    const base = item.system?.damage?.base;
+    const dealsDamage = (a) => (a?.damage?.parts?.length ?? 0) > 0
+      || (a?.damage?.includeBase !== false && !!(base?.number || base?.custom?.formula));
+    if (!acts.some(a => a?.type === "attack" && dealsDamage(a))) return out;
+    const abilities = new Set(saves.map(s => s?.ability).filter(Boolean));
+    for (const a of acts) {
+      if (a?.type !== "save" || a.target?.template?.type) continue;
+      const own = a.save?.ability;
+      const list = own instanceof Set ? [...own] : Array.isArray(own) ? own : own ? [own] : [];
+      if (list.some(ab => abilities.has(ab))) out.add(a.id);
+    }
+    return out;
   }
 
   /**
