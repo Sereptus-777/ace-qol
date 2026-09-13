@@ -18,6 +18,106 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 const call = (v, fallback) => (typeof v === "function" ? v() : (v ?? fallback));
+const nameOf = (a) => a?.name || a?.type || "activity";
+
+/**
+ * Can ACE tell when this spell is up? Only from things it can see on the
+ * table: the caster concentrating on it, its area left on the map, what it
+ * summoned, or one of its own lasting effects on somebody.
+ *
+ * ⚠️ AN INSTANT SPELL LEAVES NOTHING BEHIND TO SEE, so its later steps (Finger
+ * of Death's zombie, a held Freezing Sphere) are never hidden: hiding a step
+ * ACE could not bring back would lose it for good.
+ *
+ * @param {object} item
+ * @param {Iterable<object>} activities
+ * @returns {boolean}
+ */
+export function upCanBeSeen(item, activities) {
+  const acts = [...(activities ?? [])];
+  const props = item?.system?.properties;
+  const concentration = typeof props?.has === "function" ? props.has("concentration")
+    : (Array.isArray(props) ? props.includes("concentration") : false);
+  if (concentration) return true;
+  const casts = acts.filter(a => a?.consumption?.spellSlot !== false);
+  if (casts.some(a => a?.type === "summon")) return true;
+  const units = String(item?.system?.duration?.units ?? "");
+  if (!units || units === "inst") return false;
+  if (casts.some(a => a?.target?.template?.type)) return true;
+  const castEffects = new Set(casts.flatMap(a => (a?.effects ?? []).map(r => r?._id ?? r?.id)).filter(Boolean));
+  return [...(item?.effects ?? [])].some(e => e && !e.transfer && castEffects.has(e.id ?? e._id));
+}
+
+/**
+ * Is this spell up right now?
+ *
+ * Every signal is one dnd5e writes itself, read from its code on 2026-09-13:
+ *   concentration  the caster's effect carries origin = the item's uuid
+ *                  (createConcentrationEffectData)
+ *   an area        the template carries flags.dnd5e.item = the item's uuid
+ *                  (the activity's template data)
+ *   an effect      an applied copy carries origin = the item's own effect's
+ *                  uuid when nobody is concentrating (_applyEffectToActor);
+ *                  ACE's save engine stamps the same
+ *   a summons      the creature carries flags.dnd5e.summon.origin = the
+ *                  item's uuid (the summon activity's changes)
+ *
+ * @param {object} item
+ * @param {{casterEffects?: object[], templates?: object[],
+ *          tokens?: Array<{effects?: object[], summonOrigin?: string|null}>}} table
+ * @returns {boolean}
+ */
+export function spellIsUp(item, { casterEffects = [], templates = [], tokens = [] } = {}) {
+  const uuid = item?.uuid;
+  if (!uuid) return false;
+  const mine = (origin) => typeof origin === "string" && (origin === uuid || origin.startsWith(`${uuid}.`));
+  const live = (e) => e && e.disabled !== true;
+  if (casterEffects.some(e => live(e) && (mine(e.origin) || e.flags?.dnd5e?.item?.uuid === uuid))) return true;
+  if (templates.some(t => t?.flags?.dnd5e?.item === uuid || mine(t?.flags?.dnd5e?.origin))) return true;
+  return tokens.some(t => t?.summonOrigin === uuid || (t?.effects ?? []).some(e => live(e) && mine(e.origin)));
+}
+
+// ⚠️ TWO IDENTICAL ABILITIES ARE A DUPLICATE. Two DIFFERENT ones are
+// an item. Johnny's imported Magic Missile carries a genuine
+// duplicate and this is how he finds it.
+//
+// ⚠️🔴 BUT THE TEST USED TO BE "both cost an action and both set
+// spellSlot", AND THAT IS NOT A DUPLICATE TEST. `consumption.spellSlot`
+// is true by default on a magic item's activities even when the item
+// spends CHARGES and no slot is involved at all, so the Stormforger's
+// four genuinely different abilities — Tornado Takedown, Aerial
+// Ascension, Aerial Descent, Thunderstorm of Misery — tripped it every
+// single cast. ACE told him, on screen, to go and delete abilities his
+// item is supposed to have (2026-09-03).
+//
+// A wrong warning is worse than none: it is a confident instruction to
+// damage his own data. The test is now whether two of them are
+// actually indistinguishable — the same name, or the same type with
+// the same cost — which is what a duplicated import looks like.
+function duplicatesAmong(list) {
+  let twins = [], clones = [];
+  try {
+    const sig = (a) => {
+      const t = (a.consumption?.targets ?? [])[0];
+      return `${a.type}|${t?.type ?? ""}|${t?.value ?? ""}|${a.activation?.type ?? ""}`;
+    };
+    // ⚠️🔴 DIFFERENT NAMES ARE DIFFERENT ABILITIES, WHATEVER THEY COST.
+    // Johnny, 2026-09-11: Prismatic Wall's Create Wall and Create Globe
+    // are both a utility costing an action, and its Blinding Save and
+    // Traversal Save are both saves costing nothing, so all four were
+    // called duplicates and he was told to check the item sheet. Only
+    // an unnamed pair can be told apart by nothing but its cost.
+    const byName = new Map(), bySig = new Map();
+    for (const a of list) {
+      const n = String(a.name ?? "").trim().toLowerCase();
+      if (n) byName.set(n, (byName.get(n) ?? 0) + 1);
+      else bySig.set(sig(a), (bySig.get(sig(a)) ?? 0) + 1);
+    }
+    twins = [...byName.entries()].filter(([, n]) => n > 1).map(([k]) => k);
+    clones = [...bySig.entries()].filter(([, n]) => n > 1).map(([k]) => k);
+  } catch (_) { /* diagnostics must never block the cast */ }
+  return { twins, clones };
+}
 
 /**
  * @param {object} args
@@ -33,7 +133,8 @@ const call = (v, fallback) => (typeof v === "function" ? v() : (v ?? fallback));
  *            notes: string[], why: string}}
  */
 export function decideActivityChoice({ item, activities, offeredIds, isMachinery,
-                                       riderIds, owns, resolvesItself }) {
+                                       riderIds, owns, resolvesItself,
+                                       spellIsUp = false, upCanBeSeen = false }) {
   const notes = [];
   const order = [...(offeredIds ?? [])];
   const offeredSet = new Set(order);
@@ -101,12 +202,54 @@ export function decideActivityChoice({ item, activities, offeredIds, isMachinery
     // what it is, and the reader that decides is the damage card's own.
     const riders = call(riderIds, new Set()) ?? new Set();
     const doable = real.filter(a => !riders.has(a.id));
-    const choosable = doable.length ? doable : (real.length ? real : offered);
+    let choosable = doable.length ? doable : (real.length ? real : offered);
     if (riders.size && doable.length) {
       notes.push(`"${item.name}": not offering `
         + `${offered.filter(a => riders.has(a.id)).map(a => `"${a.name || "Save"}"`).join(", ")} `
         + `as a choice. It is the saving throw a creature makes when this hits it, and ACE `
         + `asks for it on the damage card after the hit.`);
+    }
+
+    // ── ⚠️🔴 A LATER STEP IS NOT A WAY TO CAST THE SPELL ─────────────────
+    //
+    // Johnny, 2026-09-11, looking at Prismatic Wall's list (Create Wall,
+    // Create Globe, Blinding Save, Traversal Save): "Can I just cast? Can I
+    // just create a wall or create a globe?" dnd5e marks every step that
+    // comes after a cast as using no spell slot: the saves a creature makes
+    // at the wall, moving a Moonbeam, reheating Heat Metal. 81 spells in his
+    // world carry one.
+    //
+    // So a spell that is not up offers only its ways to cast, and once it IS
+    // up, pressing it offers the later steps first, with casting again still
+    // underneath. That also mends the opposite fault: a spell ACE resolves
+    // itself recast on every press, so Heat Metal could never be reheated
+    // and Hex never moved from here at all.
+    //
+    // ⚠️ NEVER HIDE A STEP ACE CANNOT BRING BACK. See upCanBeSeen: a spell
+    // that leaves nothing on the table to see keeps its later steps on the
+    // list exactly as before.
+    if (item.type === "spell" && Number(item.system?.level) > 0) {
+      const casts = choosable.filter(a => a?.consumption?.spellSlot !== false);
+      const later = choosable.filter(a => a?.consumption?.spellSlot === false);
+      if (casts.length && later.length) {
+        const names = later.map(nameOf).join(", ");
+        if (call(spellIsUp, false)) {
+          const choices = [...later, ...casts];
+          return { kind: "ask", choices, recastIds: new Set(casts.map(a => a.id)),
+            duplicates: duplicatesAmong(choices), notes,
+            why: `"${item.name}" is already up, so its later steps come first (${names}), `
+              + `with casting it again underneath` };
+        }
+        if (call(upCanBeSeen, false)) {
+          notes.push(`"${item.name}": not offering ${names} yet. `
+            + `${later.length === 1 ? "It is" : "They are"} what you do once the spell is up, `
+            + `and ${later.length === 1 ? "it comes" : "they come"} back when you press it while it is.`);
+          choosable = casts;
+        } else {
+          notes.push(`"${item.name}": ${names} stay${later.length === 1 ? "s" : ""} on the list, `
+            + `because ACE cannot tell when this spell is up.`);
+        }
+      }
     }
 
     // ── ⚠️🔴 A SPELL ACE CASTS ITSELF NEVER ASKS WHICH ROW ────────
@@ -171,45 +314,7 @@ export function decideActivityChoice({ item, activities, offeredIds, isMachinery
     }
 
     if (choosable.length > 1) {
-      // ⚠️ TWO IDENTICAL ABILITIES ARE A DUPLICATE. Two DIFFERENT ones are
-      // an item. Johnny's imported Magic Missile carries a genuine
-      // duplicate and this is how he finds it.
-      //
-      // ⚠️🔴 BUT THE TEST USED TO BE "both cost an action and both set
-      // spellSlot", AND THAT IS NOT A DUPLICATE TEST. `consumption.spellSlot`
-      // is true by default on a magic item's activities even when the item
-      // spends CHARGES and no slot is involved at all, so the Stormforger's
-      // four genuinely different abilities — Tornado Takedown, Aerial
-      // Ascension, Aerial Descent, Thunderstorm of Misery — tripped it every
-      // single cast. ACE told him, on screen, to go and delete abilities his
-      // item is supposed to have (2026-09-03).
-      //
-      // A wrong warning is worse than none: it is a confident instruction to
-      // damage his own data. The test is now whether two of them are
-      // actually indistinguishable — the same name, or the same type with
-      // the same cost — which is what a duplicated import looks like.
-      let twins = [], clones = [];
-      try {
-        const sig = (a) => {
-          const t = (a.consumption?.targets ?? [])[0];
-          return `${a.type}|${t?.type ?? ""}|${t?.value ?? ""}|${a.activation?.type ?? ""}`;
-        };
-        // ⚠️🔴 DIFFERENT NAMES ARE DIFFERENT ABILITIES, WHATEVER THEY COST.
-        // Johnny, 2026-09-11: Prismatic Wall's Create Wall and Create Globe
-        // are both a utility costing an action, and its Blinding Save and
-        // Traversal Save are both saves costing nothing, so all four were
-        // called duplicates and he was told to check the item sheet. Only
-        // an unnamed pair can be told apart by nothing but its cost.
-        const byName = new Map(), bySig = new Map();
-        for (const a of choosable) {
-          const n = String(a.name ?? "").trim().toLowerCase();
-          if (n) byName.set(n, (byName.get(n) ?? 0) + 1);
-          else bySig.set(sig(a), (bySig.get(sig(a)) ?? 0) + 1);
-        }
-        twins = [...byName.entries()].filter(([, n]) => n > 1).map(([k]) => k);
-        clones = [...bySig.entries()].filter(([, n]) => n > 1).map(([k]) => k);
-      } catch (_) { /* diagnostics must never block the cast */ }
-      return { kind: "ask", choices: choosable, duplicates: { twins, clones }, notes,
+      return { kind: "ask", choices: choosable, duplicates: duplicatesAmong(choosable), notes,
         why: `ActivityChoiceDialog offers ${choosable.length} real activities `
           + `(${choosable.map(a => a.type).join(", ")}) — showing ACE's picker` };
     }

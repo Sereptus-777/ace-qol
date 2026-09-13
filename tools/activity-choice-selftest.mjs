@@ -8,7 +8,7 @@
 // Run:  node tools/activity-choice-selftest.mjs
 // ──────────────────────────────────────────────────────────────────────────────
 
-const { decideActivityChoice } = await import(
+const { decideActivityChoice, spellIsUp, upCanBeSeen } = await import(
   "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/activity-choice.mjs");
 
 let pass = 0, fail = 0;
@@ -101,6 +101,73 @@ console.log("\nWHAT HAPPENS WHEN NOTHING ABOVE DECIDES");
     offeredIds: [], isMachinery }).kind, "reveal");
   check("any other item with no list shows dnd5e's list", decideActivityChoice({ item: { name: "Rod", type: "equipment" },
     activities: null, offeredIds: [], isMachinery }).kind, "reveal");
+}
+
+console.log("\nA LATER STEP IS NOT A WAY TO CAST THE SPELL");
+{
+  // Johnny, 2026-09-11: "Can I just cast? Can I just create a wall or create a globe?"
+  const free = { activation: { type: "" }, consumption: { spellSlot: false, targets: [] } };
+  const wall = { name: "Prismatic Wall", type: "spell", system: { level: 9 } };
+  const acts = [act("w", "utility", { name: "Create Wall" }), act("g", "utility", { name: "Create Globe" }),
+    act("b", "save", { name: "Blinding Save", ...free }), act("t", "save", { name: "Traversal Save", ...free })];
+  const notUp = decide(wall, acts, { owns: true, resolvesItself: false, upCanBeSeen: true, spellIsUp: false });
+  check("with no wall up, only the two ways to cast it", show(notUp), "ask Create Wall|Create Globe");
+  const up = decide(wall, acts, { owns: true, resolvesItself: false, upCanBeSeen: true, spellIsUp: true });
+  check("with the wall up, its saves first and casting again underneath", show(up),
+    "ask Blinding Save|Traversal Save|Create Wall|Create Globe");
+  check("and only the casts are marked to cast again", [...(up.recastIds ?? [])], ["w", "g"]);
+
+  // ⚠️ THE OPPOSITE FAULT: a spell ACE resolves itself recast on every press.
+  const heat = { name: "Heat Metal", type: "spell", system: { level: 2 } };
+  const hActs = [act("c", "damage", { name: "Cast and Heat" }),
+    act("r", "damage", { name: "Reheat", activation: { type: "bonus" }, consumption: { spellSlot: false, targets: [] } })];
+  check("Heat Metal not up: ACE just casts it",
+    show(decide(heat, hActs, { owns: true, resolvesItself: true, upCanBeSeen: true })), "fire Cast and Heat");
+  check("Heat Metal up: reheating is offered, not a second cast",
+    show(decide(heat, hActs, { owns: true, resolvesItself: true, upCanBeSeen: true, spellIsUp: true })),
+    "ask Reheat|Cast and Heat");
+
+  const fod = { name: "Finger of Death", type: "spell", system: { level: 7 } };
+  const fActs = [act("s", "save", { name: "Negative Energy Save" }), act("z", "summon", { name: "Raise Zombie", ...free })];
+  const f = decide(fod, fActs, { upCanBeSeen: false });
+  check("a step ACE could not bring back stays on the list", show(f), "ask Negative Energy Save|Raise Zombie");
+  check("and it says why", /cannot tell when this spell is up/.test(f.notes.join(" ")), true);
+
+  const cantrip = { name: "Some Cantrip", type: "spell", system: { level: 0 } };
+  check("a cantrip spends no slot, so nothing marks a later step",
+    show(decide(cantrip, [act("a", "attack"), act("x", "save", { name: "Burst", ...free })], { upCanBeSeen: true })),
+    "ask attack|Burst");
+}
+
+console.log("\nIS THE SPELL UP? ONLY WHAT dnd5e WRITES ON THE TABLE");
+{
+  const item = { uuid: "Actor.v.Item.moon" };
+  check("the caster concentrating on it", spellIsUp(item, { casterEffects: [{ origin: "Actor.v.Item.moon" }] }), true);
+  check("its area on the map", spellIsUp(item, { templates: [{ flags: { dnd5e: { item: "Actor.v.Item.moon" } } }] }), true);
+  check("one of its effects on a creature here",
+    spellIsUp(item, { tokens: [{ effects: [{ origin: "Actor.v.Item.moon.ActiveEffect.e1" }] }] }), true);
+  check("a creature it summoned", spellIsUp(item, { tokens: [{ effects: [], summonOrigin: "Actor.v.Item.moon" }] }), true);
+  check("another spell's area is not this one",
+    spellIsUp(item, { templates: [{ flags: { dnd5e: { item: "Actor.v.Item.moonX" } } }] }), false);
+  check("a switched-off effect does not count",
+    spellIsUp(item, { casterEffects: [{ origin: "Actor.v.Item.moon", disabled: true }] }), false);
+  check("an empty table says no", spellIsUp(item, {}), false);
+}
+
+console.log("\nCAN ACE SEE THE SPELL UP AT ALL?");
+{
+  const cast = (extra) => ({ type: "save", consumption: { spellSlot: true }, ...extra });
+  check("a concentration spell, yes",
+    upCanBeSeen({ system: { properties: new Set(["concentration"]), duration: { units: "minute" } } }, []), true);
+  check("a spell that summons, yes", upCanBeSeen({ system: { duration: { units: "inst" } } }, [cast({ type: "summon" })]), true);
+  check("an area that lasts, yes",
+    upCanBeSeen({ system: { duration: { units: "minute" } } }, [cast({ target: { template: { type: "line" } } })]), true);
+  check("an instant area, no",
+    upCanBeSeen({ system: { duration: { units: "inst" } } }, [cast({ target: { template: { type: "sphere" } } })]), false);
+  check("a lasting effect a cast puts on, yes",
+    upCanBeSeen({ system: { duration: { units: "minute" } }, effects: [{ id: "e1" }] }, [cast({ effects: [{ _id: "e1" }] })]), true);
+  check("a summons that is itself the later step, no", upCanBeSeen({ system: { duration: { units: "inst" } } },
+    [cast({}), { type: "summon", consumption: { spellSlot: false } }]), false);
 }
 
 console.log("\nTHE QUESTIONS ARE ONLY ASKED WHEN THEY MATTER");

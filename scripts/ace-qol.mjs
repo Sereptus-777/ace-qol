@@ -74,7 +74,7 @@ import { ConditionSheetIntegration } from "./condition-sheet-integration.mjs";
 import { SpellTargetPicker }    from "./spell-target-picker.mjs";
 import { DescriptionParser }    from "./description-parser.mjs";
 import { PostHitSaves }         from "./post-hit-saves.mjs";
-import { decideActivityChoice } from "./activity-choice.mjs";
+import { decideActivityChoice, spellIsUp, upCanBeSeen } from "./activity-choice.mjs";
 import { RepeatingSaveEngine }  from "./repeating-save-engine.mjs";
 import { GazeEngine }           from "./gaze-engine.mjs";
 import { BreakFreeEngine }      from "./break-free-engine.mjs";
@@ -6429,6 +6429,19 @@ Hooks.once("ready", () => {
     const offeredIds = el?.querySelectorAll
       ? [...el.querySelectorAll("button[data-activity-id]")].map(b => b.dataset?.activityId).filter(Boolean)
       : (acts ?? []).filter(a => buttonFor(a)).map(a => a.id);
+    // What is on the table right now, for "is this spell already up?": the
+    // caster's own effects, the areas on this scene, and every creature here.
+    const _tableNow = () => {
+      const scene = canvas?.scene;
+      return {
+        casterEffects: [...(item?.actor?.effects ?? [])],
+        templates: [...(scene?.templates ?? [])],
+        tokens: [...(scene?.tokens ?? [])].map(t => ({
+          effects: [...(t.actor?.effects ?? [])],
+          summonOrigin: t.actor?.getFlag?.("dnd5e", "summon.origin") ?? null,
+        })),
+      };
+    };
     let decision;
     try {
       decision = decideActivityChoice({
@@ -6440,6 +6453,8 @@ Hooks.once("ready", () => {
         riderIds: () => PostHitSaves.riderActivityIds(item, (acts ?? []).filter(a => offeredIds.includes(a.id))),
         owns: () => SpellPipeline.owns(item),
         resolvesItself: () => SpellPipeline.resolvesItself(item),
+        spellIsUp: () => spellIsUp(item, _tableNow()),
+        upCanBeSeen: () => upCanBeSeen(item, acts ?? []),
       });
     } catch (err) {
       // ⚠️ NEVER SWALLOW THE PRESS. If the decision throws, dnd5e's own dialog
@@ -6494,7 +6509,11 @@ Hooks.once("ready", () => {
       // of its own the button just says "Damage", and an item with two of
       // them offers the caster a choice between "Damage" and "Damage".
       // The dice tell them apart, so the dice go on the row.
-      label: (() => {
+      //
+      // ⚠️ AND WHILE THE SPELL IS UP, A CAST SAYS SO. Its later steps are
+      // listed first, and "Cast again" is what separates a second wall from
+      // a save against the first one.
+      label: (decision.recastIds?.has(a.id) ? "Cast again: " : "") + (() => {
         const base = (buttonFor(a)?.textContent ?? "").trim() || a.name || a.type || "Action";
         if (a.name) return base;               // it has a real name; leave it alone
         try {

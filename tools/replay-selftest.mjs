@@ -177,7 +177,7 @@ class Collection extends Map {
 }
 
 let SpellPipeline, SaveEngine, PostHitSaves, DescriptionParser, readSaveOutcome,
-  readActivities, readAppliedConditions, decideActivityChoice, aceStripEnrichers;
+  readActivities, readAppliedConditions, decideActivityChoice, upCanBeSeen, aceStripEnrichers;
 try {
   ({ SpellPipeline } = await import(`${MODULE}/scripts/spell-pipeline/pipeline.mjs`));
   ({ SaveEngine } = await import(`${MODULE}/scripts/save-engine.mjs`));
@@ -185,7 +185,7 @@ try {
   ({ DescriptionParser } = await import(`${MODULE}/scripts/description-parser.mjs`));
   ({ readSaveOutcome } = await import(`${MODULE}/scripts/inference/save-outcome-effects.mjs`));
   ({ readActivities, readAppliedConditions } = await import(`${MODULE}/scripts/read-activities.mjs`));
-  ({ decideActivityChoice } = await import(`${MODULE}/scripts/activity-choice.mjs`));
+  ({ decideActivityChoice, upCanBeSeen } = await import(`${MODULE}/scripts/activity-choice.mjs`));
   ({ aceStripEnrichers } = await import(`${MODULE}/scripts/description-reader.mjs`));
 } catch (err) {
   console.log("could not load ACE under the stand-in:", err?.stack ?? err);
@@ -241,11 +241,14 @@ const passive = (a) => !!CONFIG.DND5E.activityActivationTypes?.[a?.activation?.t
 const label = (a) => (a ? (a.name || a.type) : "nothing");
 /** The dialog dnd5e would show: every usable activity, in its own sort order. */
 const dialogOrder = (item) => [...readActivities(item)].sort((a, b) => (a.sort ?? 0) - (b.sort ?? 0));
-const choose = (item) => {
+// ⚠️ NOTHING IS UP IN A REPLAY. There is no table, so every spell is read as
+// freshly pressed; `up` asks what the same press would offer while it is up.
+const choose = (item, up = false) => {
   const offered = dialogOrder(item);
   return decideActivityChoice({ item, activities: readActivities(item), offeredIds: offered.map(a => a.id),
     isMachinery: passive, riderIds: () => PostHitSaves.riderActivityIds(item, offered),
-    owns: () => SpellPipeline.owns(item), resolvesItself: () => SpellPipeline.resolvesItself(item) });
+    owns: () => SpellPipeline.owns(item), resolvesItself: () => SpellPipeline.resolvesItself(item),
+    spellIsUp: up, upCanBeSeen: () => upCanBeSeen(item, readActivities(item)) });
 };
 const press = (item) => {
   const acts = readActivities(item);
@@ -295,6 +298,41 @@ if (SHOW !== null) {
     }
   });
   say(shown ? `\n${shown} shown` : `nothing in ${WORLD} matches "${SHOW}"`);
+  process.exit(0);
+}
+
+/* ── --followups: every spell that lists a later step beside its cast ───── */
+// A later step is an activity dnd5e marks as using no spell slot on a spell
+// that also has one that does: Prismatic Wall's saves, Moonbeam's move.
+if (argv.includes("--followups")) {
+  const table = new Map();
+  await quiet(async () => {
+    for (const actor of ACTORS.values()) {
+      for (const item of actor.items) {
+        if (item.type !== "spell" || !(Number(item.system?.level) > 0)) continue;
+        const acts = readActivities(item).filter(a => !passive(a));
+        const casts = acts.filter(a => a?.consumption?.spellSlot !== false);
+        const later = acts.filter(a => a?.consumption?.spellSlot === false);
+        if (!casts.length || !later.length) continue;
+        const key = `${item.name} [${item.system?.source?.rules ?? "?"}]`;
+        const d = item.system?.duration ?? {};
+        const bits = [
+          `lasts ${d.value ?? ""} ${d.units || "?"}`.replace(/\s+/g, " "),
+          item.system?.properties?.has?.("concentration") ? "concentration" : "",
+          acts.some(a => a.target?.template?.type) ? "area" : "",
+          (item.effects?.contents ?? []).filter(e => !e.transfer).length ? "effects" : "",
+          acts.some(a => a.type === "summon") ? "summons" : "",
+          SpellPipeline.owns(item) ? (SpellPipeline.resolvesItself(item) ? "ACE resolves it" : "ACE hands it off") : "ACE does not own it",
+          `casts: ${casts.map(label).join(", ")}`,
+          `later: ${later.map(a => `${label(a)} (${a.type}, ${a.activation?.type || "no activation"})`).join("; ")}`,
+        ].filter(Boolean);
+        if (!table.has(key)) table.set(key, new Set());
+        table.get(key).add(bits.join(" | "));
+      }
+    }
+  });
+  for (const [k, s] of [...table.entries()].sort()) say(`${k}\n  ${[...s].join("\n  ")}`);
+  say(`\n${table.size} spells list a later step beside their cast`);
   process.exit(0);
 }
 
@@ -389,8 +427,31 @@ await quiet(async () => {
   }
   pin("Magic Missile's stray dnd5e damage roll is still refused (09-11)", ["Kasimir Velikov", "Magic Missile", "character"],
     (it) => [refusesDnd5eDamage(it), refusesDnd5eDamage(it) ? "refused" : "dnd5e would roll a stray d4"]);
-  pin("Prismatic Wall offers Create Wall and Create Globe (09-11)", [VAREK, "Prismatic Wall"],
-    (it) => { const p = press(it); return [/Create Wall/.test(p) && /Create Globe/.test(p), p]; });
+  pin("Prismatic Wall with no wall up offers only its two casts (09-13)", [VAREK, "Prismatic Wall"],
+    (it) => { const p = press(it); return [p === "asks: Create Wall | Create Globe", p]; });
+  pin("with the wall up: its two saves first, casting again underneath (09-13)", [VAREK, "Prismatic Wall"],
+    (it) => { const d = choose(it, true);
+      const rows = (d.choices ?? []).map(a => `${d.recastIds?.has(a.id) ? "again: " : ""}${label(a)}`).join(" | ");
+      return [d.kind === "ask" && rows === "Blinding Save | Traversal Save | again: Create Wall | again: Create Globe", rows || d.kind]; });
+  // Later steps on spells nobody named an owner for: the first copy in his
+  // world that carries the step is the one checked.
+  const withStep = (itemName, step) => [...ACTORS.values()].flatMap(a => [...a.items])
+    .find(i => i.name === itemName && readActivities(i).some(x => step.test(x.name ?? ""))) ?? null;
+  const pinStep = (label, itemName, step, test) => {
+    const item = withStep(itemName, step);
+    if (!item) return check(label, null, `(no "${itemName}" with that step in this world)`);
+    try { const [ok, detail] = test(item); check(label, ok, detail); }
+    catch (err) { check(label, false, `threw: ${err?.message ?? err}`); }
+  };
+  const rowsWhileUp = (it) => { const d = choose(it, true); return [d, (d.choices ?? []).map(label)]; };
+  pinStep("Moonbeam while it is up: pressing it offers the move (09-13)", "Moonbeam", /move/i,
+    (it) => { const [d, rows] = rowsWhileUp(it); return [d.kind === "ask" && rows.some(r => /move/i.test(r)), rows.join(" | ") || d.kind]; });
+  pinStep("Heat Metal while it is up: reheating, not a second cast (09-13)", "Heat Metal", /reheat|bonus action damage/i,
+    (it) => { const [d, rows] = rowsWhileUp(it); return [d.kind === "ask" && rows.some(r => /reheat|bonus action damage/i.test(r)), rows.join(" | ") || d.kind]; });
+  pinStep("Finger of Death's zombie stays on the list: nothing to see it by (09-13)", "Finger of Death", /zombie/i,
+    (it) => { const p = press(it); return [/Raise Zombie/.test(p), p]; });
+  pinStep("Freezing Sphere's held globe stays on the list: it is instant (09-13)", "Freezing Sphere", /held globe/i,
+    (it) => { const p = press(it); return [/Throw Held Globe/.test(p), p]; });
   pin("Prismatic Spray: a failure is one colour, not all of them (09-11)", [VAREK, "Prismatic Spray"],
     (it) => { const o = firstSaveOutcome(it);
       return [!!o?.alternatives, o ? `one of several: ${o.alternatives}; lands on everyone: ${o.shared.join(", ") || "nothing"}` : "no save"]; });
