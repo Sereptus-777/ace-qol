@@ -152,6 +152,21 @@ console.log("\nIS THE SPELL UP? ONLY WHAT dnd5e WRITES ON THE TABLE");
   check("a switched-off effect does not count",
     spellIsUp(item, { casterEffects: [{ origin: "Actor.v.Item.moon", disabled: true }] }), false);
   check("an empty table says no", spellIsUp(item, {}), false);
+
+  // ⚠️ AN AREA THAT LASTS IS UP WHILE THE AREA IS (2026-09-13). Neferon still
+  // carried the indigo Restrained with no wall on the map, and ACE offered the
+  // wall's saves first.
+  const wall = { uuid: "Actor.v.Item.pw", system: { properties: new Set(["vocal", "somatic"]),
+    duration: { value: "10", units: "minute" }, activities: [
+      { id: "w", type: "utility", consumption: { spellSlot: true }, target: { template: { type: "wall" } } },
+      { id: "b", type: "save", consumption: { spellSlot: false } }] } };
+  const leftOnNeferon = { tokens: [{ effects: [{ origin: "Actor.v.Item.pw", name: "Restrained (Prismatic Wall, indigo)" }] }] };
+  check("Prismatic Wall: a condition it left on a creature does not make it up", spellIsUp(wall, leftOnNeferon), false);
+  check("its wall on the map does", spellIsUp(wall, { ...leftOnNeferon,
+    templates: [{ flags: { dnd5e: { item: "Actor.v.Item.pw" } } }] }), true);
+  check("a spell with no area still counts what it left on a creature",
+    spellIsUp({ uuid: "Actor.v.Item.hex", system: { duration: { units: "hour" }, activities: [] } },
+      { tokens: [{ effects: [{ origin: "Actor.v.Item.hex.ActiveEffect.e1" }] }] }), true);
 }
 
 console.log("\nCAN ACE SEE THE SPELL UP AT ALL?");

@@ -95,7 +95,35 @@ export function spellIsUp(item, { casterEffects = [], templates = [], tokens = [
   const live = (e) => e && e.disabled !== true;
   if (casterEffects.some(e => live(e) && (mine(e.origin) || e.flags?.dnd5e?.item?.uuid === uuid))) return true;
   if (templates.some(t => t?.flags?.dnd5e?.item === uuid || mine(t?.flags?.dnd5e?.origin))) return true;
+  // ⚠️🔴 A SPELL WHOSE AREA LASTS IS UP WHILE ITS AREA IS (2026-09-13). Its
+  // effects on creatures outlast it: Prismatic Wall's indigo restraint holds
+  // until three saves, its blindness runs a minute. With no wall on the map,
+  // Neferon still carrying the indigo Restrained made ACE offer the Blinding and
+  // Traversal saves first, for a wall that was not there. For these spells only
+  // the area (and anything summoned) says the spell is up.
+  if (lastingArea(item)) return tokens.some(t => t?.summonOrigin === uuid);
   return tokens.some(t => t?.summonOrigin === uuid || (t?.effects ?? []).some(e => live(e) && mine(e.origin)));
+}
+
+/**
+ * Does this spell leave an area that lasts? Not concentration (whose own effect
+ * on the caster says it is up), not instantaneous, and a cast that places a
+ * template: the same "an area that lasts" upCanBeSeen reads. In his world that
+ * is Prismatic Wall, Symbol, Cordon of Arrows and Tasha's Bubbling Cauldron
+ * (the replay's --followups list, 2026-09-13).
+ */
+function lastingArea(item) {
+  const props = item?.system?.properties;
+  const concentration = typeof props?.has === "function" ? props.has("concentration")
+    : (Array.isArray(props) ? props.includes("concentration") : false);
+  if (concentration) return false;
+  const units = String(item?.system?.duration?.units ?? "");
+  if (!units || units === "inst") return false;
+  const all = item?.system?.activities;
+  const list = Array.isArray(all) ? all
+    : (Array.isArray(all?.contents) ? all.contents
+      : (typeof all?.values === "function" ? [...all.values()] : Object.values(all ?? {})));
+  return list.some(a => a?.consumption?.spellSlot !== false && a?.target?.template?.type);
 }
 
 // ⚠️ TWO IDENTICAL ABILITIES ARE A DUPLICATE. Two DIFFERENT ones are

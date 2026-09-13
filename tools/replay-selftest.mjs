@@ -178,7 +178,7 @@ class Collection extends Map {
 
 let SpellPipeline, SaveEngine, PostHitSaves, DescriptionParser, readSaveOutcome,
   readActivities, readAppliedConditions, decideActivityChoice, upCanBeSeen, aceStripEnrichers,
-  readPrismaticWall, PrismaticWallEngine, RepeatingSaveEngine;
+  readPrismaticWall, PrismaticWallEngine, RepeatingSaveEngine, spellIsUp;
 try {
   ({ readPrismaticWall } = await import(`${MODULE}/scripts/rules/prismatic-wall.mjs`));
   ({ PrismaticWallEngine } = await import(`${MODULE}/scripts/prismatic-wall-engine.mjs`));
@@ -189,7 +189,7 @@ try {
   ({ DescriptionParser } = await import(`${MODULE}/scripts/description-parser.mjs`));
   ({ readSaveOutcome } = await import(`${MODULE}/scripts/inference/save-outcome-effects.mjs`));
   ({ readActivities, readAppliedConditions } = await import(`${MODULE}/scripts/read-activities.mjs`));
-  ({ decideActivityChoice, upCanBeSeen } = await import(`${MODULE}/scripts/activity-choice.mjs`));
+  ({ decideActivityChoice, upCanBeSeen, spellIsUp } = await import(`${MODULE}/scripts/activity-choice.mjs`));
   ({ aceStripEnrichers } = await import(`${MODULE}/scripts/description-reader.mjs`));
 } catch (err) {
   console.log("could not load ACE under the stand-in:", err?.stack ?? err);
@@ -448,6 +448,11 @@ await quiet(async () => {
     (it) => { const w = readPrismaticWall(it);
       const dmg = w.layers.filter(l => l.kind === "damage").map(l => `${l.formula} ${l.type}`).join(", ");
       return [dmg === "12d6 fire, 12d6 acid, 12d6 lightning, 12d6 poison, 12d6 cold", dmg]; });
+  pin("Prismatic Wall: a condition it left on a creature does not make it up (09-13)", [VAREK, "Prismatic Wall"],
+    (it) => { const left = { tokens: [{ effects: [{ origin: it.uuid, name: "Restrained (Prismatic Wall, indigo)" }] }] };
+      const noWall = spellIsUp(it, left);
+      const withWall = spellIsUp(it, { ...left, templates: [{ flags: { dnd5e: { item: it.uuid } } }] });
+      return [!noWall && withWall, `no wall, Neferon Restrained: ${noWall ? "up" : "not up"}; wall on the map: ${withWall ? "up" : "not up"}`]; });
   // Later steps on spells nobody named an owner for: the first copy in his
   // world that carries the step is the one checked.
   const withStep = (itemName, step) => [...ACTORS.values()].flatMap(a => [...a.items])
