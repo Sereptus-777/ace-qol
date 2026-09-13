@@ -33,7 +33,8 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { isPrismaticWall, readPrismaticWall } from "./rules/prismatic-wall.mjs";
-import { wallShapeOf, distanceToWallFt, wallCrossings, entersBand, wallPointsWithin } from "./rules/wall-geometry.mjs";
+import { wallShapeOf, distanceToWallFt, wallCrossings, entersBand, wallPointsWithin,
+         wallPassesThrough } from "./rules/wall-geometry.mjs";
 import { safeShowForRoll, awaitDiceSettle } from "./dsn-utils.mjs";
 import { aceDiagonalRule } from "./geometry-utils.mjs";
 
@@ -262,11 +263,73 @@ export class PrismaticWallEngine {
   // ═══════════════════════════════════════════════════════════════════════════
 
   static async _onTemplateCreated(doc, userId) {
-    // SILENT-OK: only the screen of whoever placed it asks, and only for this spell.
+    // SILENT-OK: only the screen of whoever placed it acts, and only for this spell.
     if (userId !== game.user?.id) return;
     const item = this._itemOf(doc);
     if (!item || !isPrismaticWall(item)) return;   // SILENT-OK: not this spell
+    // ⚠️ THE RULE FIRST, THEN THE QUESTION. A wall that ends the instant it is
+    // placed has nobody to spare, so the caster is not asked.
+    const inTheWay = this._creaturesInTheWall(doc);
+    if (inTheWay.length) { await this._endInstantly(doc, item, inTheWay); return; }
     await this.designate(doc);
+  }
+
+  /**
+   * Who stands where the wall was put. By the rules of both editions, nobody may:
+   * a wall placed through a creature's space ends (2024) or fails (2014).
+   * Johnny, 2026-09-13, after his test walls ran through Varek's own square:
+   * "yes, enforce it".
+   */
+  static _creaturesInTheWall(doc) {
+    const scene = doc?.parent;
+    if (!scene) return [];
+    const grid = this._gridOf(scene);
+    const shape = wallShapeOf(doc, grid);
+    if (!shape) return [];
+    const out = [];
+    for (const t of scene.tokens ?? []) {
+      const actor = t?.actor;
+      if (!actor) continue;
+      // ⚠️ A BODY IS NOT A CREATURE: dnd5e treats the dead as objects. A dying
+      // character at 0 hit points is still alive, and still in the way.
+      const hp = Number(actor.system?.attributes?.hp?.value);
+      if (actor.statuses?.has?.("dead") || (actor.type === "npc" && Number.isFinite(hp) && hp <= 0)) continue;
+      if (wallPassesThrough(shape, this._rectOf(t, grid), grid)) out.push(t);
+    }
+    return out;
+  }
+
+  /** The wall was put where a creature stands: it ends, and the table is told why. */
+  static async _endInstantly(doc, item, blockers) {
+    const rules = String(item?.system?.source?.rules ?? "").trim();
+    const caster = item?.actor?.name ?? "The caster";
+    const list = (names) => (names.length <= 1 ? (names[0] ?? "")
+      : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`);
+    // ⚠️ A HIDDEN CREATURE IS STILL IN THE WAY, but naming it to the table would
+    // give it away. The table hears "a creature no one can see"; the GM hears who.
+    const seen = blockers.filter(t => !t.hidden).map(t => t.name);
+    const unseen = blockers.filter(t => t.hidden).map(t => t.name);
+    const who = [...seen, ...(unseen.length
+      ? [unseen.length === 1 ? "a creature no one can see" : `${unseen.length} creatures no one can see`] : [])];
+    const where = who.length === 1 && seen.length === 1 ? `${who[0]}'s space` : `the space${who.length > 1 ? "s" : ""} of ${list(who)}`;
+
+    let removed = true;
+    try { await doc.delete(); }
+    catch (err) {
+      removed = false;
+      console.warn(`${TAG}: ${item?.name ?? "the wall"} ended by the rules but its template could not be taken off the map:`, err);
+    }
+    const said = rules === "2014"
+      ? `fails: it was placed through ${esc(where)}. The action and the spell slot are wasted (2014 rules).`
+      : `ends at once without effect: it was placed through ${esc(where)}, and a wall can't be put where a creature stands (2024 rules).`;
+    await this._say(item, `<b>${esc(caster)}</b>'s ${esc(item?.name ?? "Prismatic Wall")} ${said}`
+      + (removed ? "" : " ACE could not remove its template; delete it by hand."));
+    if (unseen.length) {
+      await this._say(item, `For the GM: the unseen ${unseen.length === 1 ? "creature is" : "creatures are"} `
+        + `${esc(list(unseen))}.`, { gmOnly: true });
+    }
+    console.log(`${TAG}: ${item?.name} was placed through ${blockers.map(t => t.name).join(", ")}; `
+      + `${rules === "2014" ? "it fails" : "it ends"} by the rules.`);
   }
 
   static async _onMove(tokenDoc, movement, operation) {

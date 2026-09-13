@@ -15,7 +15,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 const MOD = "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts";
-const { wallShapeOf, distanceToWallFt, wallCrossings, entersBand } = await import(`${MOD}/rules/wall-geometry.mjs`);
+const { wallShapeOf, distanceToWallFt, wallCrossings, entersBand, wallPassesThrough } = await import(`${MOD}/rules/wall-geometry.mjs`);
 const { readPrismaticWall, isPrismaticWall, PRISMATIC_LAYERS } = await import(`${MOD}/rules/prismatic-wall.mjs`);
 const { recordTallySave, describeTally } = await import(`${MOD}/rules/save-tally.mjs`);
 
@@ -93,6 +93,19 @@ check("stopping five squares away does not", band([at(950, -1150), at(950, -550)
 check("walking along from past its start arrives on the way", band([at(-1500, -450), at(950, -450)]), true);
 check("already near and staying near is not an arrival", band([at(950, -250), at(1250, -250)]), false);
 check("stepping out and back in is", band([at(950, -250), at(950, -850), at(950, -250)]), true);
+
+console.log("\nPLACED THROUGH A CREATURE'S SPACE (enforced 2026-09-13: the spell ends)");
+const MID = wallShapeOf({ t: "ray", x: 0, y: 50, distance: 90, direction: 0, elevation: 0,
+  flags: { dnd5e: { dimensions: { height: 30 } } } }, GRID);
+check("a wall down the middle of a square is in that creature's space", wallPassesThrough(MID, sq(500, 0), GRID), true);
+check("a wall along the line between two squares is in neither",
+  [wallPassesThrough(WALL, sq(500, 0), GRID), wallPassesThrough(WALL, sq(500, -100), GRID)], [false, false]);
+check("a wall that starts inside a creature's square is in its space", wallPassesThrough(MID, sq(-50, 0), GRID), true);
+check("a creature past the wall's end is clear", wallPassesThrough(MID, sq(1900, 0), GRID), false);
+check("a creature flying above a 30-foot wall is clear", wallPassesThrough(MID, sq(500, 0, 35), GRID), false);
+check("a creature wholly inside the globe is clear: that is why you cast one", wallPassesThrough(GLOBE, sq(950, 950), GRID), false);
+check("the globe's surface through a creature's square is not", wallPassesThrough(GLOBE, sq(1250, 950), GRID), true);
+check("a creature wholly outside the globe is clear", wallPassesThrough(GLOBE, sq(1500, 950), GRID), false);
 
 console.log("\nTHE LAYERS, READ FROM THE ITEM");
 const TEXT_2014 = "<p>If another creature that can see the wall moves to within 20 feet of it or starts its turn there, "

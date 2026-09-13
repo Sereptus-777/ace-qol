@@ -269,6 +269,64 @@ export function wallCrossings(shape, path, grid) {
 }
 
 /**
+ * Does the wall pass through a creature's space?
+ *
+ * Both books forbid placing it so. 2024: "If you position the wall in a space
+ * occupied by a creature, the spell ends instantly without effect." 2014: "If
+ * you position the wall so that it passes through a space occupied by a
+ * creature, the spell fails, and your action and the spell slot are wasted."
+ * Johnny, 2026-09-13: "yes, enforce it".
+ *
+ * ⚠️ THROUGH, NOT BESIDE. A wall run along the line between two squares touches
+ * both and stands in neither, so the space is shrunk by a pixel before asking.
+ * ⚠️ A GLOBE AROUND A CREATURE IS NOT THROUGH IT. The globe's wall is its
+ * surface: a creature wholly inside it (the usual reason to cast one) or wholly
+ * outside it is clear. Only a surface cutting through its space counts.
+ * ⚠️ AND HEIGHT COUNTS. A creature flying above a 30-foot wall is not in it.
+ */
+export function wallPassesThrough(shape, rect, grid) {
+  if (!shape || !rect) return false;
+  const TOL = 1;   // px
+  const x0 = rect.x + TOL, y0 = rect.y + TOL, x1 = rect.x + rect.w - TOL, y1 = rect.y + rect.h - TOL;
+  if (x1 <= x0 || y1 <= y0) return false;
+  const bottom = num(rect.bottom), top = num(rect.top, bottom);
+
+  if (shape.kind === "line") {
+    if (shape.top !== null && bottom >= shape.top - EPS) return false;   // above it
+    if (top <= shape.bottom + EPS) return false;                          // below it
+    // Does any stretch of the wall lie inside the (shrunk) space? Liang-Barsky clipping.
+    const { a, b } = shape;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    let t0 = 0, t1 = 1;
+    const clip = (p, q) => {
+      if (Math.abs(p) < EPS) return q >= 0;
+      const r = q / p;
+      if (p < 0) { if (r > t1) return false; if (r > t0) t0 = r; }
+      else { if (r < t0) return false; if (r < t1) t1 = r; }
+      return true;
+    };
+    return clip(-dx, a.x - x0) && clip(dx, x1 - a.x) && clip(-dy, a.y - y0) && clip(dy, y1 - a.y) && t0 <= t1;
+  }
+
+  if (shape.kind === "globe") {
+    // The space as a box in feet around the globe's centre: the surface passes
+    // through it when the box's nearest point is inside the sphere and its
+    // farthest corner is outside.
+    const pxPerFt = pxPerFtOf(grid);
+    const span = (lo, hi) => [lo, hi];
+    const [bx0, bx1] = span((x0 - shape.c.x) / pxPerFt, (x1 - shape.c.x) / pxPerFt);
+    const [by0, by1] = span((y0 - shape.c.y) / pxPerFt, (y1 - shape.c.y) / pxPerFt);
+    const [bz0, bz1] = span(bottom - shape.z, top - shape.z);
+    const nearest = (lo, hi) => (lo > 0 ? lo : (hi < 0 ? hi : 0));
+    const farthest = (lo, hi) => Math.max(Math.abs(lo), Math.abs(hi));
+    const dMin = Math.hypot(nearest(bx0, bx1), nearest(by0, by1), nearest(bz0, bz1));
+    const dMax = Math.hypot(farthest(bx0, bx1), farthest(by0, by1), farthest(bz0, bz1));
+    return dMin < shape.rFt && dMax > shape.rFt;
+  }
+  return false;
+}
+
+/**
  * Did this path bring the creature within `bandFt` of the wall from outside it?
  *
  * ⚠️ WATCHED ALONG THE WAY, NOT ONLY WHERE IT STOPPED. A creature that walks

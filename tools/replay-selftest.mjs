@@ -699,6 +699,42 @@ await quiet(async () => {
   }
 }
 
+// ⚠️ THE RULE HE ASKED FOR, 2026-09-13: "yes, enforce it". A wall placed
+// through a creature's space ends at once, and the caster is not asked who is
+// spared; one run along the line between two squares stands in neither.
+{
+  const wallItem = findOn(VAREK, "Prismatic Wall");
+  const standing = [...ACTORS.values()].find(a => a.type === "npc" && /^goblin$/i.test(a.name))
+    ?? [...ACTORS.values()].find(a => a.type === "npc" && Number(a.system?.attributes?.hp?.value) > 0);
+  if (!wallItem || !standing) {
+    check("a wall placed through a creature's space ends (09-13)", null, "(Varek's wall or a plain creature is missing)");
+  } else {
+    const words = (m) => String(m?.content ?? "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    const scene = { id: "scPW3", grid: { size: 100, distance: 5 }, templates: new Collection(), tokens: new Collection() };
+    scene.tokens.set("tokStand", { id: "tokStand", name: standing.name, actor: standing, actorId: standing.id,
+      actorLink: false, x: 500, y: 0, width: 1, height: 1, elevation: 0, hidden: false, parent: scene, flags: {} });
+    const wallAt = (id, y) => ({ id, t: "ray", x: 0, y, distance: 90, direction: 0, elevation: 0, parent: scene,
+      flags: { dnd5e: { item: wallItem.uuid, dimensions: { height: 30 } } }, deleted: false,
+      async delete() { this.deleted = true; return this; } });
+    const keepDesignate = PrismaticWallEngine.designate;
+    let asked = 0;
+    await quiet(async () => {
+      PrismaticWallEngine.designate = async () => { asked++; return null; };
+      posted.length = 0;
+      const through = wallAt("tplThrough", 50);     // down the middle of the goblin's row
+      await PrismaticWallEngine._onTemplateCreated(through, game.user.id);
+      check("a wall placed through a creature's space ends at once, and nobody is asked who is spared (09-13)",
+        through.deleted && asked === 0 && /ends at once without effect/.test(words(posted.at(-1))),
+        `removed: ${through.deleted}; asked: ${asked}; the card: ${words(posted.at(-1)).slice(0, 150) || "none"}`);
+      const beside = wallAt("tplBeside", 100);      // along the line between two rows
+      await PrismaticWallEngine._onTemplateCreated(beside, game.user.id);
+      check("a wall along the line between two squares stands in neither, and the caster is asked (09-13)",
+        !beside.deleted && asked === 1, `removed: ${beside.deleted}; asked: ${asked}`);
+    });
+    PrismaticWallEngine.designate = keepDesignate;
+  }
+}
+
 /* ── GOLDEN: every item in his world, against the last accepted run ─────── */
 function partLabel(p) {
   const n = Number(p?.number ?? 0), d = Number(p?.denomination ?? 0);
