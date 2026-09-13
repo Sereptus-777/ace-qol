@@ -46,7 +46,7 @@ CSS = ROOT / "styles" / "ace-qol.css"
 # Dialogs, the config window and the effects panel are resizable or sized to
 # what is inside them.
 CARD_FAMILIES = re.compile(
-    r"\.ace-qol-(atk|dmg|save|merge|heal-card|loot|tile-loot|rider|tx|volley|crit|fall)-",
+    r"\.ace-qol-(atk|dmg|save|merge|heal-card|loot|tile-loot|rider|tx|volley|crit|fall|prism)-",
     re.I,
 )
 # Selectors whose rules lay out a ROW of card content.

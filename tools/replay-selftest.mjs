@@ -177,8 +177,12 @@ class Collection extends Map {
 }
 
 let SpellPipeline, SaveEngine, PostHitSaves, DescriptionParser, readSaveOutcome,
-  readActivities, readAppliedConditions, decideActivityChoice, upCanBeSeen, aceStripEnrichers;
+  readActivities, readAppliedConditions, decideActivityChoice, upCanBeSeen, aceStripEnrichers,
+  readPrismaticWall, PrismaticWallEngine, RepeatingSaveEngine;
 try {
+  ({ readPrismaticWall } = await import(`${MODULE}/scripts/rules/prismatic-wall.mjs`));
+  ({ PrismaticWallEngine } = await import(`${MODULE}/scripts/prismatic-wall-engine.mjs`));
+  ({ RepeatingSaveEngine } = await import(`${MODULE}/scripts/repeating-save-engine.mjs`));
   ({ SpellPipeline } = await import(`${MODULE}/scripts/spell-pipeline/pipeline.mjs`));
   ({ SaveEngine } = await import(`${MODULE}/scripts/save-engine.mjs`));
   ({ PostHitSaves } = await import(`${MODULE}/scripts/post-hit-saves.mjs`));
@@ -433,6 +437,17 @@ await quiet(async () => {
     (it) => { const d = choose(it, true);
       const rows = (d.choices ?? []).map(a => `${d.recastIds?.has(a.id) ? "again: " : ""}${label(a)}`).join(" | ");
       return [d.kind === "ask" && rows === "Blinding Save | Traversal Save | again: Create Wall | again: Create Globe", rows || d.kind]; });
+  pin("Prismatic Wall: ACE reads its seven layers from Varek's copy (09-13)", [VAREK, "Prismatic Wall"],
+    (it) => { const w = readPrismaticWall(it);
+      const dmg = w.layers.filter(l => l.kind === "damage").map(l => `${l.formula} ${l.type}`).join(", ");
+      return [w.dc === 22 && w.bandFt === 20 && w.blindSeconds === 60
+        && dmg === "12d6 fire, 12d6 acid, 12d6 lightning, 12d6 poison, 12d6 cold"
+        && w.layers.slice(5).map(l => l.kind).join(",") === "restrained,blinded",
+        `DC ${w.dc}; ${dmg}; then ${w.layers.slice(5).map(l => l.kind).join(", ")}; ${w.bandFt} feet; blind ${w.blindSeconds}s`]; });
+  pin("and from the Lich's copy, whose table is only embedded (09-13)", ["Lich (Legacy)", "Prismatic Wall"],
+    (it) => { const w = readPrismaticWall(it);
+      const dmg = w.layers.filter(l => l.kind === "damage").map(l => `${l.formula} ${l.type}`).join(", ");
+      return [dmg === "12d6 fire, 12d6 acid, 12d6 lightning, 12d6 poison, 12d6 cold", dmg]; });
   // Later steps on spells nobody named an owner for: the first copy in his
   // world that carries the step is the one checked.
   const withStep = (itemName, step) => [...ACTORS.values()].flatMap(a => [...a.items])
@@ -503,8 +518,184 @@ await quiet(async () => {
         check("a failed save rolls the poison and offers to apply it (09-12)",
           rolled === "done" && /poison/.test(result?.content ?? "") && dmg === 3,
           rolled === "timeout" ? "the roll never finished" : `poison on the card: ${/poison/.test(result?.content ?? "")}, damage ${dmg} (every die a 1)`);
+        // ⚠️ APPLY adds up the parts. A card carrying only its total applied
+        // nothing and said APPLIED (found 2026-09-13).
+        const entry = result?.flags?.["ace-qol"]?.damageResults?.[0];
+        const parts = (entry?.components ?? []).reduce((s, c) => s + (Number(c.final) || 0), 0);
+        check("and APPLY on that card has the parts to apply, not only the sum (09-13)",
+          !!entry && parts > 0 && parts === entry.totalFinal,
+          entry ? `${(entry.components ?? []).length} part(s) adding to ${parts}; the card's total ${entry.totalFinal}` : "no damage on the card");
       }
     });
+  }
+}
+
+// ⚠️ PRISMATIC WALL THROUGH ITS OWN DOORS. A creature walking up to Varek's
+// wall, through it and around it, on a stand-in scene; the indigo layer's score
+// over the creature's turns; the violet layer's save when Varek's turn comes
+// round; and the layers' own card. What the engine decides, and what it posts,
+// is what is checked.
+{
+  // The whole card as words. (Cut short, the violet card's last clause fell off
+  // the end and the check read a failure that was not there.)
+  const text = (m) => String(m?.content ?? "").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
+  const wallItem = findOn(VAREK, "Prismatic Wall");
+  const walkerActor = [...ACTORS.values()].find(a => a.type === "npc" && /^goblin$/i.test(a.name))
+    ?? [...ACTORS.values()].find(a => a.type === "npc" && Number(a.system?.attributes?.hp?.value) > 0);
+  if (!wallItem || !walkerActor) {
+    check("Prismatic Wall through its own doors", null, "(Varek's wall or a plain creature is missing)");
+  } else {
+    // Varek's wall: 90 feet running east along y = 0, as dnd5e places a wall.
+    const scene = { id: "scPW", grid: { size: 100, distance: 5 }, templates: new Collection(), tokens: new Collection() };
+    const tdoc = { id: "tplPW", t: "ray", x: 0, y: 0, distance: 90, direction: 0, elevation: 0, parent: scene,
+      _stats: { createdTime: 1 },
+      flags: { dnd5e: { item: wallItem.uuid, dimensions: { height: 30 } },
+        "ace-qol": { prismaticWall: { designated: true, casterTokenId: "tokVarek", exemptTokenIds: ["tokAlly"], exemptActorIds: [] } } } };
+    scene.templates.set(tdoc.id, tdoc);
+    const tokenOf = (id, actor) => ({ id, name: actor.name, actor, actorId: actor.id, actorLink: false,
+      x: 0, y: 0, width: 1, height: 1, elevation: 0, parent: scene, texture: {} });
+    const walker = tokenOf("tokGob", walkerActor);
+    const ally = tokenOf("tokAlly", walkerActor);
+    const varekTok = tokenOf("tokVarek", wallItem.actor);
+    scene.tokens.set(walker.id, walker);
+
+    const calls = [];
+    const keep = { light: PrismaticWallEngine.resolveLight, layers: PrismaticWallEngine.resolveLayers,
+      save: PrismaticWallEngine._rollSave, sight: CONFIG.Canvas.polygonBackends.sight,
+      roll: RepeatingSaveEngine._obtainReSaveRoll };
+    CONFIG.Canvas.polygonBackends.sight = { testCollision: () => false };   // nothing hides the wall
+    let n = 0;
+    const walk = async (tok, pts, extra = {}) => {
+      calls.length = 0;
+      await PrismaticWallEngine._onMove(tok, { id: `mv${++n}`, origin: pts[0], passed: { waypoints: pts.slice(1) }, ...extra }, {});
+      return calls.join(", ") || "nothing";
+    };
+    await quiet(async () => {
+      PrismaticWallEngine.resolveLight = async (_w, t, how) => { calls.push(`light ${t.id} ${how}`); };
+      PrismaticWallEngine.resolveLayers = async (_w, t) => { calls.push(`layers ${t.id}`); };
+      let got = await walk(walker, [{ x: 900, y: -1200 }, { x: 900, y: -500 }]);
+      check("walking up to 20 feet of Varek's wall asks for the light's save (09-13)", got === "light tokGob moves", got);
+      got = await walk(walker, [{ x: 900, y: -1200 }, { x: 900, y: -600 }]);
+      check("stopping 25 feet away asks nothing (09-13)", got === "nothing", got);
+      got = await walk(walker, [{ x: 900, y: -1200 }, { x: 900, y: 300 }]);
+      check("walking through: the light, then the seven layers (09-13)", got === "light tokGob moves, layers tokGob", got);
+      got = await walk(walker, [{ x: 900, y: -1200 }, { x: 2100, y: -1200 }, { x: 2100, y: 300 }]);
+      check("around the far end: the light, and no layers (09-13)", got === "light tokGob moves", got);
+      got = await walk(ally, [{ x: 900, y: -1200 }, { x: 900, y: 300 }]);
+      check("a creature Varek named walks through untouched (09-13)", got === "nothing", got);
+      got = await walk(varekTok, [{ x: 900, y: -1200 }, { x: 900, y: 300 }]);
+      check("and so does Varek himself (09-13)", got === "nothing", got);
+      got = await walk(walker, [{ x: 900, y: -1200 }, { x: 900, y: 300 }], { method: "undo" });
+      check("undoing a move asks nothing (09-13)", got === "nothing", got);
+      walkerActor.statuses.add("blinded");
+      got = await walk(walker, [{ x: 900, y: -1200 }, { x: 900, y: 300 }]);
+      walkerActor.statuses.delete("blinded");
+      check("a blinded creature: no light, but still the layers (09-13)", got === "layers tokGob", got);
+      Object.assign(PrismaticWallEngine, { resolveLight: keep.light, resolveLayers: keep.layers });
+    });
+
+    // The conditions it leaves, through the repeating-save engine.
+    const made = [];
+    walkerActor.createEmbeddedDocuments = async (_t, data) => { made.push(...data); return data; };
+    const setPath = (obj, path, v) => { const ks = path.split("."); let o = obj;
+      for (const k of ks.slice(0, -1)) o = (o[k] ??= {}); o[ks.at(-1)] = v; };
+    const effect = (id, name, status, meta) => {
+      const eff = { id, name, statuses: new Set([status]), origin: null, disabled: false,
+        flags: { "ace-qol": { repeatingSave: meta } },
+        update: async (u) => { for (const [k, v] of Object.entries(u)) setPath(eff, k, v); return eff; },
+        delete: async () => { walkerActor.effects.delete(id); return eff; } };
+      walkerActor.effects.set(id, eff);
+      return eff;
+    };
+    const rolls = [];
+    RepeatingSaveEngine._obtainReSaveRoll = async () => {
+      const total = rolls.shift() ?? 1;
+      return { total, natural: Math.max(1, Math.min(20, total - 2)) };
+    };
+    await quiet(async () => {
+      const indigo = effect("effIndigo", "Restrained (Prismatic Wall, indigo)", "restrained",
+        { ability: "con", dc: 22, trigger: "endOfTurn", spellName: "Prismatic Wall (indigo layer)",
+          tally: { need: 3, successes: 0, failures: 0 }, onFailureApply: "petrified" });
+      const score = () => { const t = walkerActor.effects.get("effIndigo")?.flags?.["ace-qol"]?.repeatingSave?.tally;
+        return t ? `${t.successes} up, ${t.failures} down` : "gone"; };
+      posted.length = 0;
+      rolls.push(5);
+      await RepeatingSaveEngine._rollAndResolve(walkerActor, indigo, "combatTurn");
+      check("indigo: a failed save is counted, not the end (09-13)",
+        score() === "0 up, 1 down" && /1 failure so far/.test(text(posted.at(-1))), `${score()}; the card: ${text(posted.at(-1))}`);
+      rolls.push(25);
+      await RepeatingSaveEngine._rollAndResolve(walkerActor, indigo, "combatTurn");
+      check("indigo: a success is counted as well (09-13)", score() === "1 up, 1 down", score());
+      rolls.push(5, 5);
+      await RepeatingSaveEngine._rollAndResolve(walkerActor, indigo, "combatTurn");
+      await RepeatingSaveEngine._rollAndResolve(walkerActor, indigo, "combatTurn");
+      const stone = made.some(e => [...(e.statuses ?? [])].includes("petrified"));
+      check("indigo: the third failure turns it to stone (09-13)", score() === "gone" && stone,
+        `${score()}; Petrified put on: ${stone}; the card: ${text(posted.at(-1))}`);
+
+      const varek = wallItem.actor;
+      effect("effViolet", "Blinded (Prismatic Wall, violet)", "blinded",
+        { ability: "wis", dc: 22, trigger: "startOfCasterTurn", casterActorId: varek.id, casterTokenId: null,
+          casterName: varek.name, once: true, spellName: "Prismatic Wall (violet layer)",
+          onFailureNote: "it is sent to another plane of existence of the GM's choosing. ACE has not moved the token." });
+      const combat = { started: true, scene,
+        combatants: new Collection([["cWalker", { actor: walkerActor, tokenId: "tokGob" }],
+                                    ["cVarek", { actor: varek, tokenId: "tokVarek" }]]) };
+      posted.length = 0;
+      rolls.push(5);
+      await RepeatingSaveEngine._processCasterTurnStart(combat, { combatantId: "cWalker" });
+      check("violet: nothing at the start of the creature's own turn (09-13)",
+        !!walkerActor.effects.get("effViolet") && !posted.length, walkerActor.effects.get("effViolet") ? "still Blinded, no card" : "ended early");
+      await RepeatingSaveEngine._processCasterTurnStart(combat, { combatantId: "cVarek" });
+      check("violet: at the start of Varek's turn one save, and a failure sends it away (09-13)",
+        !walkerActor.effects.get("effViolet") && /another plane/.test(text(posted.at(-1))), text(posted.at(-1)) || "no card");
+
+      // The layers' own card, with every save failed and every die a 1.
+      posted.length = 0;
+      made.length = 0;
+      PrismaticWallEngine._rollSave = async () => ({ total: 3, natural: 1, passed: false,
+        advReasons: [], disReasons: [], superSaver: false });
+      const wall = PrismaticWallEngine._wallsOn(scene)[0];
+      await PrismaticWallEngine.resolveLayers(wall, walker);
+      const card = posted.find(m => m?.flags?.["ace-qol"]?.type === "prismaticTraversal");
+      const entry = card?.flags?.["ace-qol"]?.damageResults?.[0];
+      const parts = (entry?.components ?? []).map(c => `${c.final} ${c.type}`).join(", ");
+      check("through the wall: one card, five layers of damage APPLY can use (09-13)",
+        !!entry && entry.components.length === 5 && entry.components.every(c => c.final === 12) && entry.totalFinal === 60,
+        parts ? `${parts}; total ${entry.totalFinal}` : "no damage on the card");
+      const put = made.map(e => `${e.name}: ${e.flags?.["ace-qol"]?.repeatingSave?.trigger}`).join("; ");
+      check("and its indigo and violet layers put their conditions on, each with its own save (09-13)",
+        /Restrained \(Prismatic Wall, indigo\): endOfTurn/.test(put) && /Blinded \(Prismatic Wall, violet\): startOfCasterTurn/.test(put),
+        put || "nothing put on");
+
+      // A save the gate never let roll is not a failed save: nothing lands.
+      posted.length = 0;
+      made.length = 0;
+      PrismaticWallEngine._rollSave = async () => ({ total: null, natural: null, passed: false, noRoll: true,
+        why: "a stand-in reason", advReasons: [], disReasons: [], superSaver: false });
+      await PrismaticWallEngine.resolveLayers(wall, walker);
+      const unrolled = posted.find(m => m?.flags?.["ace-qol"]?.type === "prismaticTraversal");
+      check("a save that was never rolled lands nothing: no damage, no conditions (09-13)",
+        !!unrolled && !unrolled.flags["ace-qol"].damageResults && made.length === 0 && /NO ROLL/.test(unrolled.content ?? ""),
+        unrolled ? `damage on the card: ${!!unrolled.flags["ace-qol"].damageResults}; conditions put on: ${made.length}` : "no card");
+
+      // The light, through its real door: a failed save, and a minute of blindness.
+      posted.length = 0;
+      made.length = 0;
+      PrismaticWallEngine._rollSave = async () => ({ total: 4, natural: 2, passed: false,
+        advReasons: [], disReasons: [], superSaver: false });
+      await PrismaticWallEngine.resolveLight(wall, walker, "moves");
+      const light = posted.find(m => m?.flags?.["ace-qol"]?.type === "prismaticLight");
+      const blind = made.find(e => [...(e.statuses ?? [])].includes("blinded"));
+      check("the light: a failed save, Blinded for a minute, and its card says so (09-13)",
+        !!light && blind?.duration?.seconds === 60 && /Blinded for 1 minute/.test(text(light)),
+        light ? `${text(light).slice(0, 140)}; the blindness lasts ${blind?.duration?.seconds ?? "?"}s` : "no card");
+    });
+    Object.assign(PrismaticWallEngine, { _rollSave: keep.save });
+    RepeatingSaveEngine._obtainReSaveRoll = keep.roll;
+    CONFIG.Canvas.polygonBackends.sight = keep.sight;
+    delete walkerActor.createEmbeddedDocuments;
+    for (const id of ["effIndigo", "effViolet"]) walkerActor.effects.delete(id);
   }
 }
 

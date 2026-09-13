@@ -1247,14 +1247,30 @@ export class PostHitSaves {
     `;
 
     // Build damage results for Apply/Undo flags
+    //
+    // ⚠️🔴 THE PARTS, NOT JUST THE SUM (2026-09-13). APPLY DAMAGE on this card
+    // goes through DamageApplicator.applyDamage, which adds up each entry's
+    // `components` and applies that. These entries carried only the total, so
+    // the sum was 0: the button applied nothing, told the GM "Damage applied to
+    // 1 target(s)" and turned to APPLIED. The card's own "HP 30 → 20" line was
+    // the only place the damage ever existed. Found while building Prismatic
+    // Wall's card on the same applicator.
     const damageResults = results
       .filter(r => r._totalDamage > 0)
       .map(r => ({
         targetId: r.actorId,
+        tokenId: r.tokenDocId,
         tokenDocId: r.tokenDocId,
         sceneId: r.sceneId,
+        name: r.name,
+        img: r.img,
         totalFinal: r._totalDamage,
         currentHP: r._currentHP,
+        maxHP: r._maxHP,
+        components: r.effects.filter(fx => fx.type === "damage").map(fx => ({
+          name: item?.name ?? "", type: fx.damageType, raw: fx.raw, final: fx.total,
+          modifier: fx.modifier ?? "normal",
+        })),
       }));
 
     // Wait for save + save-damage dice to settle before posting the
@@ -1268,6 +1284,9 @@ export class PostHitSaves {
       flags: {
         [MODULE_ID]: {
           type: "postHitSaveResult",
+          // The applicator reads the item for "was this magical" (Heavy Armor Master).
+          itemUuid: item?.uuid ?? null,
+          actorId: actor?.id ?? null,
           ...(damageResults.length ? { damageResults } : {}),
         }
       },

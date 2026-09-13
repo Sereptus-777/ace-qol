@@ -31,6 +31,9 @@ import { isTokenInTemplate, anyOverlapCounts } from "./template-geometry.mjs";
 // argument precisely so IT stays a leaf and never joins an import cycle.
 import { CombatState } from "./combat-state.mjs";
 import { RulesBrain } from "./rules/rules-brain.mjs";
+// Prismatic Wall is run by its own engine (a wall is crossed, not stood in);
+// a pure leaf, so it adds nothing to the import cycle.
+import { isPrismaticWall } from "./rules/prismatic-wall.mjs";
 
 const TAG = `${MODULE_ID} | ConcWidget`;
 
@@ -317,6 +320,8 @@ export class ConcentrationWidget {
         if (!resolved) continue;
         const item = resolved.item ?? resolved; // Activity has .item; Item is itself
         if (!item || item.documentName !== "Item") continue;
+        // SILENT-OK: its own engine rolls its saves; see _onPersistentSpellCreated.
+        if (isPrismaticWall(item)) continue;
         const actor = item.actor;
         if (!actor) continue;
 
@@ -394,6 +399,16 @@ export class ConcentrationWidget {
 
     if (!templateDoc?.id) {
       console.warn(`${TAG} | No template for persistent spell "${item?.name}"`);
+      return;
+    }
+
+    // ⚠️ PRISMATIC WALL IS NOT AN AREA YOU STAND IN. Its saves are for coming
+    // within 20 feet of it and for going through it, which the Prismatic Wall
+    // engine rolls. The reload re-attach below used to pick it up by its first
+    // save activity and would have asked a Constitution save of anyone standing
+    // in the one-inch strip the template draws. One door, so both paths stop here.
+    if (isPrismaticWall(item)) {
+      console.log(`${TAG} | ${item?.name}: not tracked as an area here; the Prismatic Wall engine rolls its saves.`);
       return;
     }
 

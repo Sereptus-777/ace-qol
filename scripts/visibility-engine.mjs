@@ -163,6 +163,14 @@ export class VisibilityEngine {
         case "postHitSaveResult":
           VisibilityEngine._filterSaveCard(el);
           break;
+        // Prismatic Wall: a save card, and for the layers a damage card too.
+        case "prismaticTraversal":
+          VisibilityEngine._filterSaveCard(el);
+          VisibilityEngine._filterDamageCard(el);
+          break;
+        case "prismaticLight":
+          VisibilityEngine._filterSaveCard(el);
+          break;
       }
 
       // ── Hide NPC names if configured ──

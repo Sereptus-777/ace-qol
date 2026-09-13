@@ -348,6 +348,13 @@ function _diagonalRule() {
 }
 
 /**
+ * The table's diagonal rule, for code that counts squares itself. Prismatic
+ * Wall's 20-foot band is measured to a line, not to a creature, and it must
+ * count diagonals the way every other ACE distance does.
+ */
+export function aceDiagonalRule() { return _diagonalRule(); }
+
+/**
  * Cost of moving `straights` orthogonal cells and `diagonals` diagonal cells,
  * under the table's rule, in feet.
  */

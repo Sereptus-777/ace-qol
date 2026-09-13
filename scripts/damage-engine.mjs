@@ -317,7 +317,8 @@ export class DamageEngine {
         // Fastest-possible early exit for non-ace messages
         if (!message?.flags?.[MODULE_ID]) return;
         const flags = message.flags[MODULE_ID];
-        if (!flags?.type || !["damageResult", "damageButton", "postHitSave", "postHitSaveResult"].includes(flags.type)) return;
+        if (!flags?.type || !["damageResult", "damageButton", "postHitSave", "postHitSaveResult",
+          "prismaticTraversal"].includes(flags.type)) return;
 
         const el = html?.[0] ?? html;
         if (!el) return;

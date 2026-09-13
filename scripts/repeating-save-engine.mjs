@@ -58,9 +58,9 @@ export class RepeatingSaveEngine {
     // before it, and no re-save ever fired for the right actor (proven from
     // Johnny's live heartbeat log, 2026-07-27: advancing past Kasimir
     // processed "ended=Syrax").
-    Hooks.on("combatTurnChange", async (combat, prior, _current) => {
+    Hooks.on("combatTurnChange", async (combat, prior, current) => {
       try {
-        await this._onTurnChange(combat, prior);
+        await this._onTurnChange(combat, prior, current);
       } catch (err) {
         console.warn(`${MODULE_ID} | RepeatingSaveEngine.combatTurnChange failed:`, err);
       }
@@ -378,7 +378,7 @@ export class RepeatingSaveEngine {
   //  Combat turn handler
   // ═══════════════════════════════════════════════════════════════════════════
 
-  static async _onTurnChange(combat, prior) {
+  static async _onTurnChange(combat, prior, current = null) {
     if (game.users?.activeGM !== game.user) return;  // activeGM: save cards must only fire once
     if (!combat?.started) return;
 
@@ -387,19 +387,60 @@ export class RepeatingSaveEngine {
     const prevCombatant = (prior?.combatantId ? combat.combatants?.get(prior.combatantId) : null)
       ?? (Number.isInteger(prior?.turn) ? combat.turns?.[prior.turn] : null);
     const actor = prevCombatant?.actor;
-    if (!actor) return;
+    if (actor) {
+      // ── Diagnostic heartbeat (2026-07-27) ──
+      // One line per turn change: whose turn ended + how many of their effects
+      // carry a repeating-save tag. tagged=0 on a staged creature = stamp failed;
+      // no line at all = hook resolution failed.
+      try {
+        const taggedCount = (actor.effects?.contents ?? []).filter(e =>
+          String(e.flags?.[MODULE_ID]?.repeatingSave?.trigger ?? "").includes("endOfTurn")).length;
+        console.log(`${MODULE_ID} | RepeatingSave[turn-change] ended=${prevCombatant?.name ?? actor.name} tagged=${taggedCount}`);
+      } catch (_) { /* diagnostics never block */ }
 
-    // ── Diagnostic heartbeat (2026-07-27) ──
-    // One line per turn change: whose turn ended + how many of their effects
-    // carry a repeating-save tag. tagged=0 on a staged creature = stamp failed;
-    // no line at all = hook resolution failed.
-    try {
-      const taggedCount = (actor.effects?.contents ?? []).filter(e =>
-        String(e.flags?.[MODULE_ID]?.repeatingSave?.trigger ?? "").includes("endOfTurn")).length;
-      console.log(`${MODULE_ID} | RepeatingSave[turn-change] ended=${prevCombatant?.name ?? actor.name} tagged=${taggedCount}`);
-    } catch (_) { /* diagnostics never block */ }
+      await this._processActorEndOfTurn(actor, "combatTurn");
+    }
 
-    await this._processActorEndOfTurn(actor, "combatTurn");
+    // ── Then the start of the next turn, for saves that wait on the CASTER ──
+    // Prismatic Wall's violet layer: "makes a Wisdom saving throw at the start
+    // of your next turn". The creature that saves is not the one whose turn it is.
+    await this._processCasterTurnStart(combat, current);
+  }
+
+  /**
+   * Saves that fall due when one particular creature's turn STARTS, rolled by
+   * whoever carries the effect (Prismatic Wall's violet layer).
+   *
+   * ⚠️ MATCHED TO THE CASTER'S TOKEN WHEN IT IS KNOWN. Two unlinked liches share
+   * one actor id, and the one that cast the wall is the one whose turn it must be.
+   */
+  static async _processCasterTurnStart(combat, current) {
+    const combatant = (current?.combatantId ? combat?.combatants?.get?.(current.combatantId) : null)
+      ?? combat?.combatant ?? null;
+    const casterActor = combatant?.actor ?? null;
+    if (!casterActor) return;   // SILENT-OK: nobody's turn to start
+    const casterTokenId = combatant?.tokenId ?? null;
+    const scene = combat?.scene ?? canvas?.scene ?? null;
+    const seen = new Set();
+    for (const t of scene?.tokens?.contents ?? []) {
+      const actor = t.actor;
+      if (!actor || seen.has(actor.uuid)) continue;
+      seen.add(actor.uuid);
+      if ((actor.system?.attributes?.hp?.value ?? 1) <= 0) continue;   // no saves while dead (RAW)
+      for (const eff of actor.effects?.contents ?? []) {
+        const meta = eff.flags?.[MODULE_ID]?.repeatingSave;
+        if (meta?.trigger !== "startOfCasterTurn") continue;
+        const mine = meta.casterTokenId
+          ? meta.casterTokenId === casterTokenId
+          : meta.casterActorId === casterActor.id;
+        if (!mine) continue;
+        try {
+          await this._rollAndResolve(actor, eff, "casterTurn");
+        } catch (err) {
+          console.warn(`${MODULE_ID} | RepeatingSave[casterTurn] failed for ${actor.name} / "${eff.name}":`, err);
+        }
+      }
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -456,7 +497,9 @@ export class RepeatingSaveEngine {
     const tagged = (actor.effects?.contents ?? []).filter(e => {
       const meta = e.flags?.[MODULE_ID]?.repeatingSave;
       if (!meta?.trigger) return false;
-      return String(meta.trigger).includes("endOfTurn");
+      // Out of combat a save that waits for the caster's next turn falls due
+      // once a round's worth of time has passed, like an end-of-turn one.
+      return String(meta.trigger).includes("endOfTurn") || meta.trigger === "startOfCasterTurn";
     });
     if (!tagged.length) return;
 
@@ -467,7 +510,11 @@ export class RepeatingSaveEngine {
 
     for (const eff of tagged) {
       try {
-        await this._oocBatchRollOne(actor, eff, dtRounds);
+        // A save that keeps score, or one that happens once, has its own
+        // outcome; the batch below only knows "first success ends it".
+        const m = eff.flags?.[MODULE_ID]?.repeatingSave;
+        if (m?.tally || m?.once) await this._oocScored(actor, eff, dtRounds);
+        else await this._oocBatchRollOne(actor, eff, dtRounds);
       } catch (err) {
         console.warn(`${MODULE_ID} | RepeatingSave OOC batch failed for ${actor.name} / "${eff.name}":`, err);
       }
@@ -678,7 +725,9 @@ export class RepeatingSaveEngine {
     const stillPresent = actor.effects?.get?.(eff.id);
     if (!stillPresent) return false;
 
-    if (await RepeatingSaveEngine._voidIfImmuneToEscalation(actor, stillPresent, meta, source)) return false;
+    // A score kept to three (Prismatic Wall's indigo) is not a staged chain: its
+    // restraint stands on its own, even on a creature that cannot be petrified.
+    if (!meta.tally && await RepeatingSaveEngine._voidIfImmuneToEscalation(actor, stillPresent, meta, source)) return false;
 
     // RAW staged conditions (petrifying gaze): the creature is tagged at the
     // START of its turn and re-saves "at the end of its NEXT turn". The first
@@ -732,6 +781,13 @@ export class RepeatingSaveEngine {
     // his immune Earth Elemental had been petrified; the token never was.
     // The card now posts after the outcome is known and reports the condition
     // that ACTUALLY landed (null if none did).
+    // ── A save that keeps score, or happens only once, settles its own way ──
+    const conditionLabel = RepeatingSaveEngine._conditionLabelOf(stillPresent);
+    const card = { actor, spell, ability, abilityLabel, dc, total: rollTotal, natural, modifier, passed, source,
+                   conditionLabel, casterName: meta.casterName ?? null };
+    if (meta.tally) return this._resolveTally(actor, stillPresent, meta, card);
+    if (meta.once) return this._resolveOnce(actor, stillPresent, meta, card);
+
     let escalatedTo = null;
 
     if (passed) {
@@ -750,7 +806,7 @@ export class RepeatingSaveEngine {
       await this._postChatCard({
         actor, spell, ability, abilityLabel, dc,
         total: rollTotal, natural, modifier, passed,
-        onFailureApply: null, source,
+        onFailureApply: null, source, conditionLabel,
       });
       return false;
     } else {
@@ -783,7 +839,7 @@ export class RepeatingSaveEngine {
           await this._postChatCard({
             actor, spell, ability, abilityLabel, dc,
             total: rollTotal, natural, modifier, passed,
-            onFailureApply: escalatedTo, source,
+            onFailureApply: escalatedTo, source, conditionLabel,
           });
           return false;
         } catch (err) {
@@ -797,7 +853,7 @@ export class RepeatingSaveEngine {
       await this._postChatCard({
         actor, spell, ability, abilityLabel, dc,
         total: rollTotal, natural, modifier, passed,
-        onFailureApply: null, source,
+        onFailureApply: null, source, conditionLabel,
       });
       return true;
     }
@@ -813,6 +869,7 @@ export class RepeatingSaveEngine {
    */
   static async _postOOCSummaryCard(actor, meta, {
     attempts, passed, passOnAttempt, bestTotal, bestFace, bonus, ended,
+    noteOverride = null, verdict = null,
   }) {
     try {
       const ability = String(meta.ability ?? "").toLowerCase();
@@ -848,7 +905,13 @@ export class RepeatingSaveEngine {
         : `<b>${esc(bestTotal ?? "—")}</b>`;
 
       let rollLine, noteLine;
-      if (ended === "duration") {
+      if (noteOverride) {
+        // A save that keeps score, or happens only once, says its own outcome.
+        const v = verdict ?? { text: passed ? "SUCCESS" : "FAIL", good: !!passed };
+        rollLine = `<div style="${S.roll}">${working} <span style="${S.dim}">vs DC ${esc(dc)}</span>: `
+          + `<span style="${v.good ? S.good : S.bad}">${esc(v.text)}</span></div>`;
+        noteLine = `<div style="${S.note}">${esc(noteOverride)}</div>`;
+      } else if (ended === "duration") {
         rollLine = `<div style="${S.roll}"><span style="${S.good}">DURATION ENDED</span></div>`;
         noteLine = `<div style="${S.note}">The spell ran its course — ${esc(actor.name)} is free of it.</div>`;
       } else if (passed) {
@@ -884,19 +947,197 @@ export class RepeatingSaveEngine {
     }
   }
 
-  static async _postChatCard({ actor, spell, ability, abilityLabel, dc, total, natural, modifier, passed, onFailureApply, source }) {
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  Saves that keep score, and saves that happen once
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * The condition an effect imposes, by name, for the card: "Restrained",
+   * "Paralyzed". The card used to say "still Restrained" for everything, a Hold
+   * Person paralysis included, because it was written for the petrifying gaze.
+   */
+  static _conditionLabelOf(eff) {
+    try {
+      for (const id of eff?.statuses ?? []) {
+        if (id === "incapacitated") continue;   // a rider of the real condition
+        const se = (CONFIG.statusEffects ?? []).find(s => s?.id === id);
+        const name = se?.name ? game.i18n.localize(se.name) : null;
+        return name || (String(id).charAt(0).toUpperCase() + String(id).slice(1));
+      }
+    } catch (_) { /* fall through to the effect's own name */ }
+    return String(eff?.name ?? "the effect").replace(/\s*\(.*\)\s*$/, "") || "the effect";
+  }
+
+  /**
+   * Prismatic Wall's indigo layer: count this save, and settle it on three of a
+   * kind. The score is kept ON the effect, so a reload between turns loses nothing.
+   */
+  static async _resolveTally(actor, eff, meta, card) {
+    const { recordTallySave, describeTally } = await import("./rules/save-tally.mjs");
+    const { tally, outcome } = recordTallySave(meta.tally, card.passed);
+    const who = `<b>${foundry.utils.escapeHTML(actor.name)}</b>`;
+    const cond = `<b>${foundry.utils.escapeHTML(card.conditionLabel)}</b>`;
+    const line = `${card.passed ? "PASSED" : "FAILED"} ${card.abilityLabel} ${card.total} vs DC ${card.dc}`;
+
+    if (outcome === "continues") {
+      try {
+        await eff.update({ [`flags.${MODULE_ID}.repeatingSave.tally`]: tally });
+      } catch (err) {
+        // ⚠️ SAID, NOT SWALLOWED: a score that did not save starts again next turn.
+        console.warn(`${MODULE_ID} | RepeatingSave: ${actor.name}'s score on "${eff.name}" (${describeTally(tally)}) `
+          + `could not be written; the next save counts from the old score:`, err);
+      }
+      console.log(`${MODULE_ID} | RepeatingSave[tally] ${actor.name} ${line}: ${describeTally(tally)} ("${eff.name}")`);
+      await this._postChatCard({ ...card, onFailureApply: null,
+        footerHtml: `${who}: ${describeTally(tally)}. Still ${cond}; three of a kind decides it.` });
+      return true;
+    }
+
+    try { await eff.delete(); }
+    catch (err) {
+      if (!/does not exist/i.test(String(err?.message ?? err))) {
+        console.warn(`${MODULE_ID} | RepeatingSave: could not remove "${eff.name}" from ${actor.name}:`, err);
+      }
+    }
+    if (outcome === "ends") {
+      console.log(`${MODULE_ID} | RepeatingSave[tally] ${actor.name} ${line}: three successes, "${eff.name}" ends`);
+      await this._postChatCard({ ...card, onFailureApply: null,
+        footerHtml: `${who} succeeds a third time: the ${cond} condition ends.` });
+      return false;
+    }
+
+    // Three failures.
+    let applied = null;
+    if (meta.onFailureApply) {
+      try {
+        const { ConditionLibrary } = await import("./condition-library.mjs");
+        applied = await ConditionLibrary.applyEffect(actor, meta.onFailureApply, { source: card.spell, origin: eff.origin ?? null });
+      } catch (err) {
+        console.warn(`${MODULE_ID} | RepeatingSave: "${meta.onFailureApply}" could not be put on ${actor.name}:`, err);
+      }
+    }
+    const worse = String(meta.onFailureApply ?? "").replace(/^./, c => c.toUpperCase());
+    console.log(`${MODULE_ID} | RepeatingSave[tally] ${actor.name} ${line}: three failures, `
+      + `${applied ? worse : "and nothing worse could land"}`);
+    await this._postChatCard({ ...card, onFailureApply: applied ? meta.onFailureApply : null,
+      footerHtml: applied
+        ? `<i class="fas fa-skull"></i> ${who} fails a third time → <b class="ace-qol-rsv2-petr">${foundry.utils.escapeHTML(worse)}</b>`
+        : (meta.onFailureApply
+            ? `${who} fails a third time and cannot be ${foundry.utils.escapeHTML(worse)}, so the ${cond} condition simply ends.`
+            : `${who} fails a third time: the ${cond} condition ends.`) });
+    return false;
+  }
+
+  /** Prismatic Wall's violet layer: one save, and the condition ends either way. */
+  static async _resolveOnce(actor, eff, meta, card) {
+    try { await eff.delete(); }
+    catch (err) {
+      if (!/does not exist/i.test(String(err?.message ?? err))) {
+        console.warn(`${MODULE_ID} | RepeatingSave: could not remove "${eff.name}" from ${actor.name}:`, err);
+      }
+    }
+    const who = `<b>${foundry.utils.escapeHTML(actor.name)}</b>`;
+    const cond = `<b>${foundry.utils.escapeHTML(card.conditionLabel)}</b>`;
+    const footerHtml = card.passed
+      ? `${who} succeeds: the ${cond} condition ends.`
+      : `<i class="fas fa-skull"></i> ${who} fails: the ${cond} condition ends`
+        + (meta.onFailureNote ? `, and ${foundry.utils.escapeHTML(meta.onFailureNote)}` : ".");
+    console.log(`${MODULE_ID} | RepeatingSave[once] ${actor.name} ${card.passed ? "PASSED" : "FAILED"} `
+      + `${card.abilityLabel} ${card.total} vs DC ${card.dc}: "${eff.name}" ends`);
+    await this._postChatCard({ ...card, onFailureApply: null, footerHtml });
+    return false;
+  }
+
+  /**
+   * Out of combat, a save that keeps score or happens once: silent rolls, one
+   * summary card, and the same outcome rules as in combat.
+   */
+  static async _oocScored(actor, eff, dtRounds) {
+    const meta = eff.flags?.[MODULE_ID]?.repeatingSave;
+    if (!meta?.ability || !Number.isFinite(Number(meta?.dc))) return;
+    const stillPresent = actor.effects?.get?.(eff.id);
+    if (!stillPresent) return;
+    const cap = meta.once ? 1 : Math.min(dtRounds, MAX_OOC_SAVES_PER_EVENT);
+    if (cap < 1) return;
+
+    const ability = String(meta.ability).toLowerCase();
+    const dc = Number(meta.dc);
+    const rollData = actor.getRollData?.() ?? {};
+    const bonus = saveBonus(rollData, ability);
+    const formula = `1d20 + ${bonus}`;
+    const { recordTallySave, describeTally } = await import("./rules/save-tally.mjs");
+    const label = this._conditionLabelOf(stillPresent);
+
+    let tally = meta.tally ?? null, outcome = "continues", attempts = 0, last = null;
+    for (let i = 0; i < cap && outcome === "continues"; i++) {
+      let r;
+      try { r = await new Roll(formula, rollData).evaluate(); }
+      catch (err) { console.warn(`${MODULE_ID} | RepeatingSave: silent roll failed for ${actor.name}:`, err); break; }
+      attempts++;
+      last = { total: Number(r.total), face: this._extractNat(r) };
+      if (meta.tally) ({ tally, outcome } = recordTallySave(tally, last.total >= dc));
+      else outcome = last.total >= dc ? "ends" : "escalates";   // once: this save decides it
+    }
+    if (!last) return;
+
+    let note, verdict;
+    if (outcome === "continues") {
+      try { await stillPresent.update({ [`flags.${MODULE_ID}.repeatingSave.tally`]: tally }); }
+      catch (err) { console.warn(`${MODULE_ID} | RepeatingSave: ${actor.name}'s score could not be written:`, err); }
+      note = `${attempts === 1 ? "One save" : `${attempts} saves`} out of combat: ${describeTally(tally)}. Still ${label}.`;
+      verdict = { text: "HELD", good: false };
+    } else {
+      try { await stillPresent.delete(); }
+      catch (err) {
+        if (!/does not exist/i.test(String(err?.message ?? err))) {
+          console.warn(`${MODULE_ID} | RepeatingSave: could not remove "${eff.name}" from ${actor.name}:`, err);
+        }
+      }
+      if (outcome === "ends") {
+        note = meta.tally ? `Three successes out of combat: the ${label} condition ends.` : `The ${label} condition ends.`;
+        verdict = { text: "SUCCESS", good: true };
+      } else if (meta.tally) {
+        let applied = null;
+        if (meta.onFailureApply) {
+          try {
+            const { ConditionLibrary } = await import("./condition-library.mjs");
+            applied = await ConditionLibrary.applyEffect(actor, meta.onFailureApply, { source: meta.spellName ?? null });
+          } catch (err) {
+            console.warn(`${MODULE_ID} | RepeatingSave: "${meta.onFailureApply}" could not be put on ${actor.name}:`, err);
+          }
+        }
+        note = applied
+          ? `Three failures out of combat: ${actor.name} is ${meta.onFailureApply}.`
+          : `Three failures out of combat: the ${label} condition ends.`;
+        verdict = { text: applied ? String(meta.onFailureApply).toUpperCase() : "ENDS", good: false };
+      } else {
+        note = `The ${label} condition ends${meta.onFailureNote ? `, and ${meta.onFailureNote}` : "."}`;
+        verdict = { text: "FAIL", good: false };
+      }
+    }
+    console.log(`${MODULE_ID} | RepeatingSave[OOC-scored] ${actor.name}: ${attempts} ${ability.toUpperCase()} save(s) vs DC ${dc}. ${note}`);
+    await this._postOOCSummaryCard(actor, meta, { attempts, passed: outcome === "ends", bestTotal: last.total,
+      bestFace: last.face, bonus, ended: null, noteOverride: note, verdict });
+  }
+
+  static async _postChatCard({ actor, spell, ability, abilityLabel, dc, total, natural, modifier, passed, onFailureApply, source,
+                               conditionLabel = "the effect", footerHtml = null, casterName = null }) {
     // SAME look as the regular save card (Johnny 2026-07-27: "it still is just a
     // save card — why did you make up a new format?"). Black-gold d20 face from
     // the save engine's own helper, "raw = total" in result colors, PASS/FAIL
     // badge, and the footer line carries the outcome (→ Petrified / breaks free).
     const petrifies   = !passed && onFailureApply === "petrified";
     const resultLabel = passed ? "PASS" : "FAIL";
-    const sourceLabel = String(source ?? "").startsWith("worldTime") ? "out of combat" : "end of turn";
-    const footer = passed
+    const src = String(source ?? "");
+    const sourceLabel = src.startsWith("worldTime") ? "out of combat"
+      : (src === "casterTurn" ? `start of ${casterName ?? "the caster"}'s turn` : "end of turn");
+    // ⚠️ THE CONDITION IT ACTUALLY IMPOSES. This said "still Restrained" for
+    // every effect, a Hold Person paralysis included (fixed 2026-09-13).
+    const footer = footerHtml ?? (passed
       ? `<b>${actor.name}</b> breaks free — the effect ends.`
       : (petrifies
           ? `<i class="fas fa-skull"></i> <b>${actor.name}</b> → <b class="ace-qol-rsv2-petr">Petrified</b>`
-          : `<i class="fas fa-skull"></i> <b>${actor.name}</b> → still <b>Restrained</b> — re-save at the end of their next turn`);
+          : `<i class="fas fa-skull"></i> <b>${actor.name}</b> → still <b>${foundry.utils.escapeHTML(String(conditionLabel))}</b> — re-save at the end of their next turn`));
     try {
       const { aceD20FaceImg } = await import("./save-engine.mjs");
       const numCls = passed ? "ace-qol-rsv2-green" : "ace-qol-rsv2-red";
@@ -909,7 +1150,12 @@ export class RepeatingSaveEngine {
           <div class="ace-qol-rsv2-row">
             ${aceD20FaceImg(Number.isFinite(natural) ? natural : total, { size: 46 })}
             <span class="ace-qol-rsv2-name">${actor.name}</span>
-            <span class="ace-qol-rsv2-math"><span class="${numCls}">${Number.isFinite(natural) ? natural : "—"}</span> = <span class="${numCls}">${Number.isFinite(total) ? total : "—"}</span></span>
+            <span class="ace-qol-rsv2-math"><span class="${numCls}">${Number.isFinite(natural) ? natural : "—"}</span>${
+              // ⚠️ THE BONUS BETWEEN THEM. "3 = 5" read as false arithmetic on
+              // every re-save card (seen in the replay, 2026-09-13).
+              (Number.isFinite(natural) && Number.isFinite(modifier) && modifier !== 0)
+                ? ` <span style="color:#9a9a9a;">${modifier < 0 ? "-" : "+"} ${Math.abs(modifier)}</span>` : ""
+            } = <span class="${numCls}">${Number.isFinite(total) ? total : "—"}</span></span>
             <span class="ace-qol-rsv2-badge ${passed ? "ace-qol-rsv2-pass" : "ace-qol-rsv2-fail"}">${resultLabel}</span>
           </div>
           <div class="ace-qol-rsv2-foot ${passed ? "ace-qol-rsv2-foot-pass" : "ace-qol-rsv2-foot-fail"}">${footer}</div>

@@ -4933,6 +4933,26 @@
 .ace-qol-rsv2-foot-pass b { color: #f5df8f; }
 .ace-qol-rsv2-petr { color: #ff5c5c; text-transform: uppercase; letter-spacing: 0.5px; }
 
+/* ── Prismatic Wall cards (2026-09-13): the repeating-save look, one row per
+   layer. Every row WRAPS: a chat column is narrow, and a layer row carries a
+   swatch, a die, the math, a badge and what the layer did. ── */
+.ace-qol-prism-rows { display: flex; flex-direction: column; gap: 5px; }
+.ace-qol-prism-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
+.ace-qol-prism-swatch { width: 12px; height: 26px; border-radius: 3px; flex: 0 0 auto; box-shadow: 0 0 6px rgba(255,255,255,0.15); }
+.ace-qol-prism-layer { font-size: 16px; font-weight: 700; color: #f0e4c0; min-width: 4.2em; }
+.ace-qol-prism-math { font-size: 16px; font-weight: 800; color: #cfcfcf; white-space: nowrap; }
+.ace-qol-prism-dim { color: #9a9a9a; font-weight: 600; }
+.ace-qol-prism-out { font-size: 16px; color: #e8e8e8; }
+.ace-qol-prism-out b { color: #ff8a8a; }
+.ace-qol-prism-mod { font-size: 14px; color: #ffa726; margin-left: 4px; }
+.ace-qol-prism-tags { display: flex; flex-wrap: wrap; gap: 4px; flex-basis: 100%; }
+.ace-qol-prism-total { font-size: 16px; color: #f0e4c0; border-top: 1px solid rgba(255,255,255,0.12); padding-top: 6px; }
+.ace-qol-prism-total .ace-qol-dmg-grand-total { font-weight: 800; color: #ff8a65; }
+.ace-qol-prism-gm { display: flex; flex-direction: column; gap: 6px; }
+.ace-qol-prism-gm .ace-qol-dmg-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.ace-qol-prism-note { font-size: 16px; color: #e8e8e8; line-height: 1.45; }
+.ace-qol-prism-note b { color: #f5df8f; }
+
 
 /* ───────────────────────────────────────────────────────────────────────
    Polymorph form picker (Phase 2)

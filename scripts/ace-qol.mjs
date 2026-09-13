@@ -43,6 +43,7 @@ import { CombatState }       from "./combat-state.mjs";
 import { DamageEngine }      from "./damage-engine.mjs";
 import { SaveEngine }           from "./save-engine.mjs";
 import { ConcentrationWidget }  from "./concentration-widget.mjs";
+import { PrismaticWallEngine } from "./prismatic-wall-engine.mjs";
 import { RiderEngine }          from "./rider-engine.mjs";
 import { auditItems, runAudit } from "./item-validator.mjs";  // read-only sanity audit — exposed as game.aceQol.auditItems()
 import { AuditApp } from "./audit-app.mjs";  // Audit Tool window + GM settings button (registers its own menu at init)
@@ -3466,6 +3467,15 @@ Hooks.once("ready", () => {
     console.error(`${MODULE_ID} | Repeating Save Engine init failed:`, err);
   }
 
+  // Prismatic Wall — EVERY client: the caster's own screen asks who passes the
+  // wall unharmed; the active GM's screen rolls for whoever comes near it or
+  // goes through it (prismatic-wall-engine.mjs).
+  try {
+    PrismaticWallEngine.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Prismatic Wall engine init failed:`, err);
+  }
+
   // Break-Free Engine — action-to-escape for restrain-type effects (Entangling
   // Rope, Net, Entangle). Prompts the trapped creature at the start of its turn.
   try {
@@ -5703,6 +5713,9 @@ Hooks.once("ready", () => {
     damageEngine,
     saveEngine,
     concentrationWidget,
+    // Prismatic Wall: game.aceQol.prismaticWall.designate(templateId) asks again
+    // who passes a standing wall unharmed.
+    prismaticWall: PrismaticWallEngine,
     TargetState,
     CombatState,
     DamageEngine,
