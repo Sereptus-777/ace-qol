@@ -7,8 +7,10 @@
 //
 // Two halves:
 //
-//   PINNED   things he has seen work at his table, each with the outcome he
-//            saw. A pinned check that fails is a regression, full stop.
+//   PINNED   two lists, kept apart. SEEN AT THE TABLE: things he confirmed
+//            working in his game, with the date he said so. FIXED, NOT YET
+//            SEEN: my fixes he has not tried yet. A pinned check that fails
+//            is a regression, full stop; the label says whose word it rests on.
 //
 //   GOLDEN   every item on every creature in his world, put through ACE's own
 //            deciders (what a press means, who owns the spell, what each save
@@ -37,8 +39,11 @@ import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 
 const argv = process.argv.slice(2);
+const opt = (name) => { const i = argv.indexOf(name); return i >= 0 ? (argv[i + 1] ?? "") : null; };
 const ACCEPT = argv.includes("--accept");
-const WORLD = argv.find(a => !a.startsWith("--")) ?? "hijinx";
+// --show "Neferon / Claws|Fireball": print what ACE decides for matching items, and stop.
+const SHOW = opt("--show");
+const WORLD = argv.find((a, i) => !a.startsWith("--") && argv[i - 1] !== "--show") ?? "hijinx";
 const ROOT = "D:/FoundryVTT";
 const SYSTEM = `${ROOT}/Data/systems/dnd5e`;
 const WORLD_DATA = `${ROOT}/Data/worlds/${WORLD}/data`;
@@ -270,52 +275,138 @@ const check = (label, ok, detail) => {
   say((ok ? "  ok   " : "  FAIL ") + String(label).padEnd(70) + detail);
 };
 
-/* ── PINNED: what he has seen work at his table ─────────────────────────── */
-console.log(`\nPINNED, in ${WORLD}: THINGS HE HAS SEEN WORK`);
-await quiet(async () => {
-  const pin = (label, actorName, itemName, test) => {
-    const item = find(actorName, itemName);
-    if (!item) return check(label, null, `(${actorName} has no "${itemName}" in this world)`);
-    try { const [ok, detail] = test(item); check(label, ok, detail); }
-    catch (err) { check(label, false, `threw: ${err?.message ?? err}`); }
-  };
+/* ── --show: what ACE decides for the items asked about ─────────────────── */
+if (SHOW !== null) {
+  const wants = SHOW.toLowerCase().split("|").map(s => s.trim()).filter(Boolean);
+  let shown = 0;
+  await quiet(async () => {
+    for (const actor of ACTORS.values()) {
+      for (const item of actor.items) {
+        const who = `${actor.name} / ${item.name}`;
+        if (!wants.some(w => who.toLowerCase().includes(w))) continue;
+        shown++;
+        say(`${who}  [${item.type}${item.system?.source?.rules ? `, ${item.system.source.rules}` : ""}]`);
+        try {
+          for (const [k, v] of Object.entries(recordFor(item))) {
+            say(`  ${k}: ${Array.isArray(v) ? v.join("\n      ") : v}`);
+          }
+        } catch (err) { say(`  could not be read: ${err?.message ?? err}`); }
+      }
+    }
+  });
+  say(shown ? `\n${shown} shown` : `nothing in ${WORLD} matches "${SHOW}"`);
+  process.exit(0);
+}
 
-  pin("Neferon's Claws attacks when pressed, with no \"Attack or Save?\"", "Neferon", "Claws",
+/* ── PINNED ─────────────────────────────────────────────────────────────── */
+// ⚠️🔴 TWO LISTS, KEPT APART ON PURPOSE. "Seen at the table" is his word that
+// it worked, with the date he said it. "Fixed, not yet seen" is only my word.
+// The first version of this file put this week's fixes under "things he has
+// seen work", and I repeated that to him; he had seen none of them. A fix is
+// not a confirmation. (His confirmations were gathered on 2026-09-12 from the
+// memory folder, 60 session summaries and his own messages since 30 April.)
+const findOn = (actorName, itemName, type = null) => [...ACTORS.values()]
+  .filter(a => a.name === actorName && (!type || a.type === type))
+  .map(a => a.items.find(i => i.name === itemName)).find(Boolean) ?? null;
+const pin = (label, [actorName, itemName, type = null], test) => {
+  const item = findOn(actorName, itemName, type);
+  if (!item) return check(label, null, `(${actorName} has no "${itemName}" in this world)`);
+  try { const [ok, detail] = test(item); check(label, ok, detail); }
+  catch (err) { check(label, false, `threw: ${err?.message ?? err}`); }
+};
+const shapeOf = (it) => SpellPipeline._getEntry(it)?.shape ?? "no entry";
+const failNames = (it) => readActivities(it).filter(a => a.type === "save")
+  .flatMap(a => readSaveOutcome(it, { activityId: a.id }).fail.map(r => r.name));
+const firstSaveOutcome = (it) => {
+  const sv = readActivities(it).find(a => a.type === "save");
+  return sv ? readSaveOutcome(it, { activityId: sv.id }) : null;
+};
+const castsItself = (it) => [press(it).startsWith("uses ") && SpellPipeline.resolvesItself(it),
+  `${press(it)}; ${shapeOf(it)}`];
+const toSaveEngine = (it) => [SpellPipeline.owns(it) && !SpellPipeline.resolvesItself(it),
+  `${shapeOf(it)}; ${press(it)}`];
+
+// The spell pipeline's own verdict on dnd5e's damage roll: false means it
+// refuses the roll. Refusing a Fireball's roll is what lost its upcast dice.
+let preDamage = [];
+await quiet(async () => {
+  const before = (hooks["dnd5e.preRollDamageV2"] ?? []).length;
+  SpellPipeline.initialize();
+  preDamage = (hooks["dnd5e.preRollDamageV2"] ?? []).slice(before);
+});
+const refusesDnd5eDamage = (item) => preDamage.some(h => {
+  try { return h({ subject: { item } }) === false; } catch (_) { return false; }
+});
+const VAREK = "Varek Thalor (CR 30)";
+
+console.log(`\nPINNED, SEEN AT THE TABLE (his word, and the date he said it)`);
+await quiet(async () => {
+  pin("Magic Missile casts without asking, ACE throws the darts (06-07, 08-25)",
+    ["Kasimir Velikov", "Magic Missile", "character"], castsItself);
+  pin("the Lich's Magic Missile, the same (09-01)", ["Lich (Legacy)", "Magic Missile"], castsItself);
+  pin("the Flameskull's Magic Missile, the same (08-26)", ["Flameskull", "Magic Missile"], castsItself);
+  pin("Eldritch Blast: ACE rolls every beam itself (08-26, 08-27)", ["Lich (Legacy)", "Eldritch Blast"],
+    (it) => [SpellPipeline.ownsAttackRoll(it), shapeOf(it)]);
+  pin("Fireball goes to the save engine (05-05 to 08-27; Kasimir's copy)",
+    ["Kasimir Velikov", "Fireball", "character"], toSaveEngine);
+  pin("Cone of Cold goes to the save engine (05-05; Kasimir's copy)",
+    ["Kasimir Velikov", "Cone of Cold", "character"], toSaveEngine);
+  pin("Ghostly Howl: ACE resolves King's Wisdom save (07-11 to 09-06)", ["King", "Ghostly Howl"],
+    (it) => { const sv = readActivities(it).find(a => a.type === "save");
+      return [shapeOf(it) === "save-area" && SpellPipeline.resolvesItself(it) && !!sv?.save?.ability?.has("wis"),
+        `${shapeOf(it)}; ${[...(sv?.save?.ability ?? [])].join("/")} save`]; });
+  pin("Frostbite: a failed save leaves the target Frostbitten (06-30, 07-11)", ["Chudd Buckland", "Frostbite"],
+    (it) => { const f = failNames(it); return [f.some(n => /frostbit/i.test(n)), f.join(", ") || "nothing on a failure"]; });
+  pin("Moonbeam stays on the map and keeps working (05-05, 08-27; Chudd's copy)", ["Chudd Buckland", "Moonbeam"],
+    (it) => [shapeOf(it) === "template-trigger", shapeOf(it)]);
+  pin("Aura of Vitality: ACE's own aura heal (09-05)", ["Firaxis Greenbeard", "Aura of Vitality (Legacy)"],
+    (it) => [shapeOf(it) === "emanation-heal" && SpellPipeline.resolvesItself(it), shapeOf(it)]);
+  pin("Healing Light: ACE's own heal, no dnd5e dialog (07-11)", ["Syrax Razeson", "Healing Light"],
+    (it) => [SpellPipeline.resolvesItself(it), `${shapeOf(it)}; ${press(it)}`]);
+  pin("the Holy Symbol of Ravenkind offers its three powers (06-10, 06-11)", ["Syrax Razeson", "Holy Symbol of Ravenkind"],
+    (it) => { const p = press(it); return [/Hold Vampires/.test(p) && /Sunlight/.test(p) && /Turn Undead/.test(p), p]; });
+  pin("and a failed Hold Vampires save paralyzes (06-10)", ["Syrax Razeson", "Holy Symbol of Ravenkind"],
+    (it) => { const f = failNames(it); return [f.some(n => /paraly/i.test(n)), f.join(", ") || "nothing on a failure"]; });
+  pin("Jeth's Spiked Chain asks the DC 14 Dexterity save after a hit (03-23)", ["Jeth", "Spiked Chain"],
+    (it) => { const s = PostHitSaves.riderSavesFor(it, it.actor, { quiet: true }).saves;
+      return [s.some(x => x.ability === "dex" && x.dc === 14), s.map(x => `${x.ability} ${x.dc} ${x.hitVerdict ?? ""}`).join(", ") || "none"]; });
+});
+
+console.log(`\nPINNED, FIXED BUT NOT YET SEEN AT THE TABLE`);
+await quiet(async () => {
+  pin("Neferon's Claws attacks when pressed, no Attack or Save question (09-12)", ["Neferon", "Claws"],
     (it) => { const p = press(it); return [p === "uses attack", p]; });
-  pin("Neferon's Claws: its hit asks the Con save that carries 3d6 poison", "Neferon", "Claws",
+  pin("Neferon's Claws: its hit asks the Con save with 3d6 poison in it (09-12)", ["Neferon", "Claws"],
     (it) => { const s = PostHitSaves.riderSavesFor(it, it.actor, { quiet: true }).saves;
       const txt = s.map(x => `${x.ability} ${x.dc} ${x.failEffect.map(e => `${e.formula} ${e.damageType}`).join(",")} half=${x.halfOnSuccess}`).join("; ");
       return [s.length === 1 && s[0].ability === "con" && s[0].failEffect[0]?.damageType === "poison" && s[0].halfOnSuccess, txt]; });
-  pin("Magic Missile casts without asking which row", "Varek Thalor (CR 30)", "Magic Missile",
-    (it) => { const p = press(it); return [p.startsWith("uses "), `${p}; resolves itself: ${SpellPipeline.resolvesItself(it)}`]; });
-  pin("Fireball goes to the save engine, so its upcast dice are dnd5e's own", "Varek Thalor (CR 30)", "Fireball",
-    (it) => [SpellPipeline.owns(it) && !SpellPipeline.resolvesItself(it),
-      `owned: ${SpellPipeline.owns(it)}, resolves itself: ${SpellPipeline.resolvesItself(it)}`]);
-  pin("Prismatic Wall offers Create Wall and Create Globe", "Varek Thalor (CR 30)", "Prismatic Wall",
-    (it) => { const p = press(it); return [/Create Wall/.test(p) && /Create Globe/.test(p), p]; });
-  pin("Prismatic Spray: a failure is one colour, not all of them at once", "Varek Thalor (CR 30)", "Prismatic Spray",
-    (it) => { const sv = readActivities(it).find(a => a.type === "save");
-      const o = sv ? readSaveOutcome(it, { activityId: sv.id }) : null;
-      return [!!o?.alternatives, o ? `alternatives: ${o.alternatives}; lands on everyone: ${o.shared.join(", ") || "nothing"}` : "no save"]; });
-  pin("Divine Word: a failure is one result by hit points, never \"dead\" for all", "Varek Thalor (CR 30)", "Divine Word",
-    (it) => { const sv = readActivities(it).find(a => a.type === "save");
-      const o = sv ? readSaveOutcome(it, { activityId: sv.id }) : null;
-      return [!!o?.alternatives && !o.shared.includes("dead"), o ? `alternatives: ${o.alternatives}; shared: ${o.shared.join(", ") || "nothing"}` : "no save"]; });
-  pin("Ray of Enfeeblement: a failed save puts the spell's own effect on", "Varek Thalor (CR 30)", "Ray of Enfeeblement",
-    (it) => { const fails = readActivities(it).filter(a => a.type === "save")
-        .flatMap(a => readSaveOutcome(it, { activityId: a.id }).fail.map(r => r.name));
-      return [fails.length > 0, fails.join(", ") || "no effect of its own on a failure"]; });
-  pin("The Forge Devil's slug asks none of the menu's other saves", "Forge Devil", "Master of Metal",
+  pin("the Forge Devil's slug asks none of its menu's other saves (09-12)", ["Forge Devil", "Master of Metal"],
     (it) => { const s = PostHitSaves.riderSavesFor(it, it.actor, { quiet: true }).saves;
       return [s.length === 0, s.map(x => `${x.ability} ${x.hitVerdict}`).join(", ") || "none asked"]; });
+  for (const spell of ["Fireball", "Lightning Bolt", "Cone of Cold", "Wall of Fire"]) {
+    pin(`${spell}: dnd5e rolls the damage, so upcast dice count (09-11)`, [VAREK, spell],
+      (it) => [!refusesDnd5eDamage(it), refusesDnd5eDamage(it) ? "the pipeline refuses dnd5e's roll" : "left to dnd5e"]);
+  }
+  pin("Magic Missile's stray dnd5e damage roll is still refused (09-11)", ["Kasimir Velikov", "Magic Missile", "character"],
+    (it) => [refusesDnd5eDamage(it), refusesDnd5eDamage(it) ? "refused" : "dnd5e would roll a stray d4"]);
+  pin("Prismatic Wall offers Create Wall and Create Globe (09-11)", [VAREK, "Prismatic Wall"],
+    (it) => { const p = press(it); return [/Create Wall/.test(p) && /Create Globe/.test(p), p]; });
+  pin("Prismatic Spray: a failure is one colour, not all of them (09-11)", [VAREK, "Prismatic Spray"],
+    (it) => { const o = firstSaveOutcome(it);
+      return [!!o?.alternatives, o ? `one of several: ${o.alternatives}; lands on everyone: ${o.shared.join(", ") || "nothing"}` : "no save"]; });
+  pin("Divine Word: one result by hit points, never dead for all (09-11)", [VAREK, "Divine Word"],
+    (it) => { const o = firstSaveOutcome(it);
+      return [!!o?.alternatives && !o.shared.includes("dead"), o ? `one of several: ${o.alternatives}; shared: ${o.shared.join(", ") || "nothing"}` : "no save"]; });
+  pin("Ray of Enfeeblement: a failed save puts its own effect on (09-11)", [VAREK, "Ray of Enfeeblement"],
+    (it) => { const f = failNames(it); return [f.length > 0, f.join(", ") || "no effect of its own on a failure"]; });
 });
 
 // ⚠️ THROUGH THE DAMAGE CARD'S OWN DOOR, not just its reader: the claw lands
 // on a Specter and on a creature that is not immune, and what gets posted is
 // what is checked.
 {
-  const claws = find("Neferon", "Claws");
-  const specter = firstActor("Specter");
+  const claws = findOn("Neferon", "Claws");
+  const specter = [...ACTORS.values()].find(a => a.name === "Specter") ?? null;
   const plain = [...ACTORS.values()].find(a => a.type === "npc" && /^goblin$/i.test(a.name))
     ?? [...ACTORS.values()].find(a => a.type === "npc"
       && !(a.system?.traits?.di?.value ?? []).includes("poison") && a.system?.abilities?.con);
@@ -329,17 +420,17 @@ await quiet(async () => {
       await PostHitSaves.checkPostHitEffects(claws, claws.actor, hitOn(specter), []);
       const note = posted.find(m => /save skipped/i.test(m?.content ?? ""));
       const card = posted.find(m => m?.flags?.["ace-qol"]?.type === "postHitSave");
-      check("a Specter hit by the claw is not asked a pointless save", !card && !!note,
+      check("a Specter hit by the claw is not asked a pointless save (09-12)", !card && !!note,
         note ? "the GM is told: immune to poison" : (card ? "a save card was posted anyway" : "nothing was posted at all"));
-      check("and the note names the Specter and why", /Specter<\/strong> is immune to poison/.test(note?.content ?? ""),
+      check("and the note names the Specter and why (09-12)", /Specter<\/strong> is immune to poison/.test(note?.content ?? ""),
         (note?.content ?? "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 120));
 
       posted.length = 0;
       await PostHitSaves.checkPostHitEffects(claws, claws.actor, hitOn(plain), []);
       const card2 = posted.find(m => m?.flags?.["ace-qol"]?.type === "postHitSave");
       const fx = card2?.flags?.["ace-qol"]?.save;
-      check(`the same claw on ${plain.name} asks for the save`, !!card2, card2 ? "save card posted" : "no save card");
-      check("and the card carries the poison", fx?.failEffect?.[0]?.formula === "3d6" && fx?.failEffect?.[0]?.damageType === "poison",
+      check(`the same claw on a ${plain.name} asks for the save (09-12)`, !!card2, card2 ? "save card posted" : "no save card");
+      check("and the card carries the poison (09-12)", fx?.failEffect?.[0]?.formula === "3d6" && fx?.failEffect?.[0]?.damageType === "poison",
         JSON.stringify(fx?.failEffect ?? null));
       if (card2) {
         posted.length = 0;
@@ -348,7 +439,7 @@ await quiet(async () => {
           new Promise(r => setTimeout(() => r("timeout"), 8000))]);
         const result = posted.find(m => m?.flags?.["ace-qol"]?.type === "postHitSaveResult");
         const dmg = result?.flags?.["ace-qol"]?.damageResults?.[0]?.totalFinal ?? null;
-        check("a failed save rolls the poison and offers to apply it",
+        check("a failed save rolls the poison and offers to apply it (09-12)",
           rolled === "done" && /poison/.test(result?.content ?? "") && dmg === 3,
           rolled === "timeout" ? "the roll never finished" : `poison on the card: ${/poison/.test(result?.content ?? "")}, damage ${dmg} (every die a 1)`);
       }
