@@ -10,7 +10,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "../../ace-qol.mjs";
-import { safeShowForRoll } from "../../dsn-utils.mjs";
+import { safeShowForRoll, awaitDiceSettle } from "../../dsn-utils.mjs";
 
 export class HealResolver {
 
@@ -71,6 +71,26 @@ export class HealResolver {
 
     const results = [];
 
+    // ⚠️🔴 NOTHING LANDS BEFORE THE DICE (Johnny's rule). This rolled, wrote the
+    // new HP, cleared the statuses, and only THEN showed the dice, with a card
+    // that never waited for them: the healing landed before its dice were even
+    // thrown. Now every roll is made and thrown first, the dice land, and only
+    // then does anything touch a creature.
+    const rollFor = new Map();
+    for (const c of targets) {
+      if (!c.actor) continue;
+      try {
+        // One shared roll where the spell says so; otherwise fresh per target.
+        rollFor.set(c, sharedRoll ?? await new Roll(formula, actor.getRollData()).evaluate());
+      } catch (err) {
+        console.error(`${MODULE_ID} | HealResolver: the roll failed for ${c.name}:`, err);
+      }
+    }
+    for (const thrown of new Set(rollFor.values())) {
+      try { safeShowForRoll(thrown, "healing"); } catch (_) { /* non-fatal */ }
+    }
+    await awaitDiceSettle();
+
     for (const c of targets) {
       const targetActor = c.actor;
       if (!targetActor) continue;
@@ -87,8 +107,8 @@ export class HealResolver {
           }
         }
 
-        // One shared roll where the spell says so; otherwise fresh per target.
-        const roll = sharedRoll ?? await new Roll(formula, actor.getRollData()).evaluate();
+        const roll = rollFor.get(c);
+        if (!roll) continue;                       // its roll failed above, and said so
         const healAmount = Math.max(0, roll.total);
         const beforeHP = targetActor.system?.attributes?.hp?.value ?? 0;
         const maxHP = targetActor.system?.attributes?.hp?.max ?? 0;
@@ -152,11 +172,6 @@ export class HealResolver {
           revived: isRevive && beforeHP <= 0 && newHP > 0,
           clearedStatuses: clearStatuses ?? [],
         });
-
-        try {
-          // Sound: rolling-the-dice + heal pop (optional, depends on dnd5e SFX config)
-          safeShowForRoll(roll, "healing");
-        } catch (_) { /* non-fatal */ }
       } catch (err) {
         console.error(`${MODULE_ID} | HealResolver: roll/apply failed for ${c.name}:`, err);
       }

@@ -1268,6 +1268,10 @@ export class DamageEngine {
       console.error(`${MODULE_ID} | postDamageCard (legacy) CRASHED:`, err);
       return false;
     }
+    // ⚠️ NOTHING LANDS BEFORE THE DICE (Johnny's rule). The damage dice are thrown
+    // above and the post-hit effects put conditions on, so they wait here for
+    // those dice whatever path the damage card took.
+    await awaitDiceSettle();
     await PostHitSaves.checkPostHitEffects(item, actor, flags.hits, damageResults);
     DamageEngine._signalAttackResolved(flags.actorId);
     return true;

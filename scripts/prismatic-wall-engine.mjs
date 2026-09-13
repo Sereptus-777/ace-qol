@@ -598,6 +598,9 @@ export class PrismaticWallEngine {
     }
     const save = await this._rollSave(wall, tokenDoc, "con", facts.dc, `${item.name}: its blinding light`,
       { activityId: facts.blindingActivityId });
+    // ⚠️ NOTHING LANDS BEFORE THE DICE (Johnny's rule). The Blinded used to go on
+    // while the Constitution save was still rolling.
+    try { await awaitDiceSettle(); } catch (_) { /* the save still resolves */ }
     let landed = null;
     if (!save.passed && !save.noRoll) {
       const eff = await ConditionLibrary.applyEffect(actor, "blinded", {
@@ -607,7 +610,6 @@ export class PrismaticWallEngine {
       });
       landed = eff ? { effect: eff } : { failed: true };
     }
-    try { await awaitDiceSettle(); } catch (_) { /* the card still posts */ }
     await this._postLightCard(wall, tokenDoc, save, landed, what);
     return { save, landed };
   }
@@ -647,8 +649,19 @@ export class PrismaticWallEngine {
         } else {
           row.damage = { failedToRoll: true, type: layer.type, formula: layer.formula };
         }
-      } else if (save.noRoll) {
-        // ⚠️ NOT ROLLED IS NOT FAILED: nothing lands (see the save engine's _isRealFailure).
+      }
+      // ⚠️🔴 ONE LAYER AT A TIME, AND NOTHING LANDS BEFORE ITS DICE. Johnny's
+      // rule, and the spell's own words ("one layer at a time through all the
+      // layers"). This threw all seven layers' dice at once and put indigo's
+      // Restrained and violet's Blinded on Neferon ten seconds before the last
+      // die stopped (his world, 2026-09-13: 12:05:10 against a card at 12:05:20).
+      // Now each layer's save and damage dice land before its condition goes on
+      // and before the next layer is rolled, so violet still sees indigo's
+      // Restrained and the table watches about a dozen dice at a time.
+      try { await awaitDiceSettle(); } catch (_) { /* the layer still resolves */ }
+      if (layer.kind === "damage" || save.noRoll) {
+        // A damage layer has no condition, and NOT ROLLED IS NOT FAILED: nothing
+        // lands (see the save engine's _isRealFailure).
       } else if (!save.passed && layer.kind === "restrained") {
         row.landed = await this._putOn(actor, wall, layer, "restrained", { repeatingSave: {
           ability: layer.saveAbility ?? "con", dc: facts.dc, trigger: "endOfTurn",
@@ -667,7 +680,6 @@ export class PrismaticWallEngine {
       }
       rows.push(row);
     }
-    try { await awaitDiceSettle(); } catch (_) { /* the card still posts */ }
     await this._postLayersCard(wall, tokenDoc, rows);
     return rows;
   }

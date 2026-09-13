@@ -25,6 +25,7 @@ import { ConditionVisuals } from "../condition-visuals.mjs";
 import { ATTACK_MULTI_SPELLS, validateAllAttackMultiSpells } from "../spell-pipeline/registry/attack-multi-spells.mjs";
 import { DamageResolver } from "../spell-pipeline/resolvers/damage.mjs";
 import { HearingGate } from "./hearing-gate.mjs";
+import { awaitDiceSettle } from "../dsn-utils.mjs";
 // THE GATE's pure verdict helpers (suite 9). save-engine.mjs imports nothing
 // from rules/, so this direction adds no cycle.
 import { SaveEngine } from "../save-engine.mjs";
@@ -412,6 +413,7 @@ export class SelfTest {
           `<div style="display:flex;justify-content:space-between;"><span>${s}</span><span style="color:${c.fail ? "#e05c5c" : "#7ec97e"};font-weight:700;">${c.pass}/${c.pass + c.fail}</span></div>`).join("");
         const failRows = results.filter(r => !r.pass).map(r =>
           `<div style="color:#e05c5c;font-size:12px;">✗ [${r.suite}] ${foundry.utils.escapeHTML(r.name)}${r.detail ? ` — ${foundry.utils.escapeHTML(r.detail.slice(0, 90))}` : ""}</div>`).join("");
+        await awaitDiceSettle();   // the tests above throw real dice; the scorecard follows them
         await ChatMessage.create({
           whisper: ChatMessage.getWhisperRecipients?.("GM") ?? [],
           content: `

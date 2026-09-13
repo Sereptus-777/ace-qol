@@ -19,6 +19,7 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
 import { CombatState } from "./combat-state.mjs";
 import { safeShowForRoll } from "./damage-engine.mjs";
+import { awaitDiceSettle } from "./dsn-utils.mjs";
 
 const FUMBLE_TABLE = [
   // 1-2: minor — clumsy stumble
@@ -163,6 +164,9 @@ export class FumbleEngine {
 
     // Animate the fumble die via the canonical safe helper
     safeShowForRoll(tableRoll, "fumble-table roll");
+    // ⚠️ NOTHING LANDS BEFORE THE DICE (Johnny's rule): the card named the fumble
+    // while its d12 was still rolling.
+    await awaitDiceSettle();
 
     await ChatMessage.create({
       speaker: ChatMessage.getSpeaker({ actor }),

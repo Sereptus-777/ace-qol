@@ -1768,6 +1768,13 @@ export class SaveEngine {
       casterTokenDocId: SaveEngine.casterTokenDoc(casterActor, { sceneId: canvas.scene?.id })?.id ?? null,
     });
 
+    // ⚠️ NOTHING LANDS BEFORE THE DICE (Johnny's rule). Everything below acts on
+    // this save: the saveComplete signal (spell effects, Banishment, concentration
+    // areas, Sword of Wounding, effects that end on a save), the condition, the
+    // card. The d20 is thrown above and not waited for, so all of it used to land
+    // while the die was still rolling.
+    await awaitDiceSettle();
+
     // Emit saveComplete hook
     try {
       // ⚠️🔴 THE ABILITY, NOT JUST THE ITEM. A listener handed only the item
@@ -3879,6 +3886,13 @@ export class SaveEngine {
       npcResults.push(result);
     }
 
+    // ⚠️ NOTHING LANDS BEFORE THE DICE (Johnny's rule). Every NPC's d20 is in the
+    // air together; the Legendary Resistance and Silvery Barbs prompts, and the
+    // saveComplete signal other features act on, all come after they land. A
+    // prompt offering Legendary Resistance on a failed save tells the table the
+    // save failed before the die does.
+    await awaitDiceSettle();
+
     // ── POST-SAVE REACTIONS (Legendary Resistance) ──
     // Check if any NPC that failed can use Legendary Resistance.
     const reactionEng = game.aceQol?.reactionEngine;
@@ -5611,8 +5625,14 @@ export class SaveEngine {
     for (const tgt of targets) {
       const result = await this._rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, actorId, { isMultiTarget: isMultiLegacy, ..._gateCtx });
       results.push(result);
+    }
 
-      // Emit saveComplete hook for duration tracker (isSave expiry)
+    // ⚠️ NOTHING LANDS BEFORE THE DICE (Johnny's rule): the signal used to go out
+    // per target while that target's d20 was still rolling.
+    await awaitDiceSettle();
+
+    // Emit saveComplete hook for duration tracker (isSave expiry)
+    for (const result of results) {
       try {
         const scene = game.scenes.get(result.sceneId) ?? canvas.scene;
         const tokenDoc = scene?.tokens?.get(result.tokenDocId);
@@ -7075,6 +7095,9 @@ export class SaveEngine {
     }
 
     // ── 5. Update existing message in one call ──
+    // ⚠️ NOTHING LANDS BEFORE THE DICE (Johnny's rule): the card used to redraw
+    // with the damage while the damage dice were still rolling.
+    await awaitDiceSettle();
     await message.update({
       content: cardHtml,
       [`flags.${MODULE_ID}.phase`]: 2,

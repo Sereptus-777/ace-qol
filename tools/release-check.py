@@ -34,6 +34,8 @@ CHECKS = [
     ("every hook ACE listens for is fired", "python tools/hook-check.py"),
     ("no import read before it exists", "python tools/cycle-check.py"),
     ("lint (undefined names, broken code)", 'npx --yes eslint@9 "scripts/**/*.mjs"'),
+    # After lint on purpose: it reads the code with the parser the lint install brings.
+    ("nothing lands before its dice (qol, forge, engine)", "node tools/dice-check.mjs"),
 ]
 
 

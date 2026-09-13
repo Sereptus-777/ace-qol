@@ -386,6 +386,9 @@ export class PostHitSaves {
         const secondaryRoll = new Roll("1d20");
         await secondaryRoll.evaluate();
         safeShowForRoll(secondaryRoll, "sever roll");
+        // ⚠️ NOTHING LANDS BEFORE THE DICE (Johnny's rule): a head came off, and
+        // the HP went to 0, while this d20 was still rolling.
+        await awaitDsnRoll();
         rolled  = secondaryRoll.total;
         severed = rolled >= threshold;
       }
@@ -432,6 +435,7 @@ export class PostHitSaves {
         const altDmg = new Roll("6d8");
         await altDmg.evaluate();
         safeShowForRoll(altDmg, "sever alt-damage");
+        await awaitDsnRoll();   // the 6d8 lands before it comes off the target's HP
         try {
           await targetActor.applyDamage?.(altDmg.total, 1);
         } catch (err) {
@@ -588,13 +592,8 @@ export class PostHitSaves {
         console.log(`${MODULE_ID} | SEVER MISS: ${targetName} on ${itemName} — rolled ${rolled}, needed ${threshold}`);
       }
 
-      // Wait for sever / alt-damage dice to settle before posting the
-      // result card — otherwise the table sees the verdict before the
-      // dice stop tumbling.
-      if (!severRider.skipSecondaryRoll) {
-        await awaitDsnRoll();
-      }
-
+      // The sever and alt-damage dice were waited for where they were thrown,
+      // before anything landed, so the card follows them directly.
       await ChatMessage.create({
         content: cardHtml,
         speaker: ChatMessage.getSpeaker({ actor }),
@@ -807,6 +806,13 @@ export class PostHitSaves {
         passed = saveTotal >= save.dc;
       }
 
+      // ⚠️ NOTHING LANDS BEFORE THE DICE (Johnny's rule). The Legendary
+      // Resistance prompt, the effect table and the condition all come after
+      // this die lands; they used to arrive while it was still rolling. It waits
+      // on an automatic failure too, where the previous target's damage dice may
+      // still be in the air.
+      await awaitDsnRoll();
+
       // ── Legendary Resistance check ──
       // If the target failed AND it's a legendary creature with charges
       // remaining, the reaction engine may flip the result to a pass (and
@@ -863,6 +869,7 @@ export class PostHitSaves {
           const tableRoll = new Roll(effectTable.die === "d6" ? "1d6" : `1${effectTable.die}`);
           await tableRoll.evaluate();
           safeShowForRoll(tableRoll, "post-hit effect-table roll");
+          await awaitDsnRoll();   // the table's effect lands after its die does
 
           const tableResult = tableRoll.total;
           result.tableRoll = tableResult;
@@ -1040,6 +1047,10 @@ export class PostHitSaves {
     const dmgRoll = new Roll(fx.formula);
     await dmgRoll.evaluate();
     safeShowForRoll(dmgRoll, "post-hit save-damage roll");
+    // ⚠️ NOTHING LANDS BEFORE THE DICE (Johnny's rule). A failed save's effects
+    // come as a list, damage and then a condition ("3d6 poison damage and is
+    // poisoned"), and the condition went on while this damage was still rolling.
+    await awaitDsnRoll();
 
     // Half-on-successful-save applies FIRST; resistance/immunity below then
     // modify the halved amount (RAW ordering — resistance after other mods).
@@ -1344,6 +1355,10 @@ export class PostHitSaves {
       const passed = roll.total >= rider.dc;
 
       safeShowForRoll(roll, "repeating-save roll");
+      // ⚠️ NOTHING LANDS BEFORE THE DICE (Johnny's rule): the condition, or the
+      // HP going to 0, used to land while this d20 was still rolling. Only the
+      // card waited.
+      await awaitDsnRoll();
 
       // Apply effect on fail
       let appliedEffect = null;
@@ -1382,8 +1397,6 @@ export class PostHitSaves {
             </div>
           </div>
         `;
-        // Let the HP-threshold save dice settle before posting the verdict.
-        await awaitDsnRoll();
         await ChatMessage.create({
           speaker: ChatMessage.getSpeaker({ actor }),
           content: html,
@@ -1473,6 +1486,9 @@ export class PostHitSaves {
       }
     }
 
+    // ⚠️ NOTHING LANDS BEFORE THE DICE (Johnny's rule): the temp HP or the healing
+    // went on while these dice were still rolling; only the card waited.
+    await awaitDsnRoll();
     if (!rolls.length) return;
 
     const totals = rolls.map(r => r.total);
@@ -1521,8 +1537,6 @@ export class PostHitSaves {
             </div>
           </div>
         `;
-        // Let the on-kill reward dice settle before posting the result.
-        await awaitDsnRoll();
         await ChatMessage.create({
           speaker: ChatMessage.getSpeaker({ actor }),
           content: html,
@@ -1581,8 +1595,6 @@ export class PostHitSaves {
             </div>
           </div>
         `;
-        // Let the on-kill self-heal dice settle before posting the result.
-        await awaitDsnRoll();
         await ChatMessage.create({
           speaker: ChatMessage.getSpeaker({ actor }),
           content: html,

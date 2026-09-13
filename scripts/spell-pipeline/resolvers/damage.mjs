@@ -305,7 +305,12 @@ export class DamageResolver {
     let firstHit = true;
     let unitNo = 0;
 
-    for (const [targetActor, units] of filtered.entries()) {
+    // ⚠️ EVERY TARGET'S SITUATION IS READ BEFORE ANY DIE (the One Gate, and
+    // Johnny's rule that nothing lands before the dice). Read between beams,
+    // anything the read posts (a Hexblade's Curse running out, say) landed while
+    // the previous beam's d20 was still rolling.
+    const situations = new Map();
+    for (const [targetActor] of filtered.entries()) {
       const token = targetActor.getActiveTokens?.()?.[0]
                  ?? canvas.tokens?.placeables.find(t => t.actor?.id === targetActor.id);
       if (!token) continue;
@@ -332,6 +337,13 @@ export class DamageResolver {
       } catch (err) {
         console.warn(`${MODULE_ID} | runAttackMulti: assess failed for ${targetName} (rolling straight):`, err);
       }
+      situations.set(targetActor, { token, ac, targetName, advantage, disadvantage, situNote });
+    }
+
+    for (const [targetActor, units] of filtered.entries()) {
+      const situation = situations.get(targetActor);
+      if (!situation) continue;
+      const { token, ac, targetName, advantage, disadvantage, situNote } = situation;
 
       let unitHits = 0, unitCrits = 0;
       for (let b = 0; b < units; b++) {

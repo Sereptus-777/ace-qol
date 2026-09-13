@@ -18,7 +18,7 @@ import { QolSettings } from "./settings.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
 // dsn-utils is a dependency-free leaf module — safe to import here even
 // though concentration-widget itself is imported by ace-qol.mjs.
-import { safeShowForRoll } from "./dsn-utils.mjs";
+import { safeShowForRoll, awaitDiceSettle } from "./dsn-utils.mjs";
 // Shared template-footprint tracer (canonical home: geometry-utils) + the
 // rules brain for the convergence guard below. Both only read their imports
 // inside function bodies, so the ace-qol.mjs import cycle stays inert —
@@ -1479,6 +1479,13 @@ export class ConcentrationWidget {
       return;
     }
 
+    // ⚠️ NOTHING LANDS BEFORE THE DICE (Johnny's rule). The card carried this
+    // roll, so Dice So Nice held the card back, but the Lingering Nausea
+    // bookkeeping, and whatever the caller lands next, ran while the die was
+    // still rolling. ACE throws the die itself now and waits for it.
+    safeShowForRoll(roll, "exit save");
+    await awaitDiceSettle();
+
     const total = roll.total;
     const passed = total >= dc;
 
@@ -1490,8 +1497,8 @@ export class ConcentrationWidget {
     const modSign = (modifier != null && modifier >= 0) ? "+" : "";
     const modPart = (modifier != null && modifier !== 0) ? ` ${modSign}${modifier}` : "";
 
-    // Post the roll to chat with the ACE dark theme. `rolls:` array makes
-    // Foundry / DSN render the dice info inline below our card.
+    // Post the roll to chat with the ACE dark theme. No `rolls:` here: ACE threw
+    // the dice above, and a card carrying them would be animated a second time.
     try {
       const accent = passed ? "#4ade80" : "#ef4444";
       const verdictText = passed
@@ -1513,7 +1520,6 @@ export class ConcentrationWidget {
       await ChatMessage.create({
         speaker: ChatMessage.getSpeaker({ token: tokenDoc }),
         content: darkContent,
-        rolls: [roll],
       });
     } catch (err) {
       // Non-fatal — log and continue with state update
@@ -1817,6 +1823,9 @@ export class ConcentrationWidget {
       return;
     }
     safeShowForRoll(roll, "concentration-widget auto-damage");
+    // ⚠️ NOTHING LANDS BEFORE THE DICE (Johnny's rule): the HP used to drop while
+    // these dice were still rolling.
+    await awaitDiceSettle();
 
     const rawTotal = roll.total;
 
@@ -1875,7 +1884,8 @@ export class ConcentrationWidget {
       await ChatMessage.create({
         speaker: ChatMessage.getSpeaker({ token: token.document }),
         content,
-        rolls: [roll],
+        // ⚠️ NO `rolls` HERE. ACE threw these dice above, and Dice So Nice
+        // animates any card that carries its rolls, so the same dice tumbled twice.
       });
     } catch (err) {
       console.warn(`${TAG} | auto-damage chat post failed:`, err);
@@ -2060,6 +2070,9 @@ export class ConcentrationWidget {
       // manually here exactly once. Result: dice animate correctly,
       // chat card stays clean.
       safeShowForRoll(roll, "concentration-widget per-target damage");
+      // ⚠️ NOTHING LANDS BEFORE THE DICE (Johnny's rule): the damage came off
+      // and the card posted while these dice were still rolling.
+      await awaitDiceSettle();
 
       const rawTotal = roll.total;
 

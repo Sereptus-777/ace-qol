@@ -14,6 +14,7 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { aceWithinFt } from "./geometry-utils.mjs";
+import { safeShowForRoll, awaitDiceSettle } from "./dsn-utils.mjs";
 
 const TYPE_COLORS = {
   fire: "#ff6b35", cold: "#7ec8ff", lightning: "#ffe066", acid: "#9ae66e",
@@ -50,6 +51,12 @@ export class RetaliationEngine {
         catch (_) { continue; }                        // unparseable formula — skip safely
         const dealt = Math.max(0, Math.round(roll.total));
         if (dealt <= 0) continue;
+
+        // ⚠️ NOTHING LANDS BEFORE THE DICE (Johnny's rule): the damage came off the
+        // attacker before these dice were even thrown (the card carrying them was
+        // posted after). ACE throws them, they land, then the damage.
+        safeShowForRoll(roll, `${ret.source} retaliation`);
+        await awaitDiceSettle();
 
         // applyDamage([{value,type}]) honours the ATTACKER's resistance/immunity.
         await attacker.applyDamage?.([{ value: dealt, type: ret.type }]);
@@ -122,7 +129,6 @@ export class RetaliationEngine {
       await ChatMessage.create({
         content,
         speaker: ChatMessage.getSpeaker({ alias: target.name }),
-        rolls: [roll],
         flags: { [MODULE_ID]: { type: "retaliation" } },
       });
     } catch (_) { /* non-fatal */ }

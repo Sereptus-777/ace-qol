@@ -62,6 +62,7 @@ export class DamageCardRenderer {
             // ROLL that landed, so the reaction engine has to be able to see
             // which it was; without it a save-based spell would offer a
             // reaction the rules do not allow.
+            // dice-ok: the pre-roll runs with DamageConstants.suppressDiceAnimation on, so no dice are in the air.
             const preResult = await reactionEng.checkPreDamageReactions(
               components, hit.targetActor, hit.targetToken, actor, item, hit,
               { skipUncannyDodge: true }
@@ -203,6 +204,7 @@ export class DamageCardRenderer {
       </div>
     `;
 
+    // dice-ok: the damage was pre-rolled with suppressDiceAnimation on; this card is only the ROLL DAMAGE button.
     await ChatMessage.create({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor }),
@@ -317,6 +319,7 @@ export class DamageCardRenderer {
 
     // ── Post the merged card ──
     const attackData = MergeCard.consumeAttackResult();
+    // dice-ok: the damage was pre-rolled with suppressDiceAnimation on; this card is only the ROLL DAMAGE button.
     await MergeCard.postMergedDamageButton(attackData, item, actor, hits, preRolled, critRule, parsedDescription, consumedRiders);
   }
 

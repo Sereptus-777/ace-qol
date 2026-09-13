@@ -695,6 +695,45 @@ await quiet(async () => {
       check("the light: a failed save, Blinded for a minute, and its card says so (09-13)",
         !!light && blind?.duration?.seconds === 60 && /Blinded for 1 minute/.test(text(light)),
         light ? `${text(light).slice(0, 140)}; the blindness lasts ${blind?.duration?.seconds ?? "?"}s` : "no card");
+
+      // ⚠️ ONE LAYER AT A TIME, AND NOTHING LANDS BEFORE ITS DICE (his rule, and
+      // his screenshot of 2026-09-13: indigo's Restrained and violet's Blinded on
+      // Neferon with the whole wall's dice still in the air). Here the dice take a
+      // few milliseconds to land, and every save rolled and every condition put on
+      // notes how many dice were still rolling at that moment. All must say none.
+      const { safeShowForRoll } = await import(`${MODULE}/scripts/dsn-utils.mjs`);
+      const keepDice = game.dice3d, keepMake = walkerActor.createEmbeddedDocuments;
+      const dice = { thrown: 0, landed: 0 };
+      const rolling = () => dice.thrown - dice.landed;
+      const steps = [];
+      game.dice3d = {
+        isEnabled: () => true,
+        showForRoll: () => { dice.thrown++; return new Promise(r => setTimeout(() => { dice.landed++; r(true); }, 15)); },
+      };
+      walkerActor.createEmbeddedDocuments = async (_t, data) => {
+        for (const d of data) steps.push(`${d.name} went on with ${rolling()} dice rolling`);
+        made.push(...data);
+        return data;
+      };
+      PrismaticWallEngine._rollSave = async (_w, _t, _a, _dc, label) => {
+        steps.push(`${label} was rolled with ${rolling()} dice rolling`);
+        safeShowForRoll({ total: 3 }, "the save's own d20");
+        return { total: 3, natural: 1, passed: false, advReasons: [], disReasons: [], superSaver: false };
+      };
+      posted.length = 0;
+      made.length = 0;
+      await PrismaticWallEngine.resolveLayers(wall, walker);
+      const early = steps.filter(s => !/ 0 dice rolling$/.test(s));
+      check("through the wall: one layer at a time, and no condition goes on while its dice roll (09-13)",
+        steps.length === 9 && !early.length && rolling() === 0,
+        early.length ? early.join("; ") : `${steps.length} steps (want 9: seven saves, two conditions)`);
+      steps.length = 0;
+      await PrismaticWallEngine.resolveLight(wall, walker, "moves");
+      const earlyLight = steps.filter(s => !/ 0 dice rolling$/.test(s));
+      check("the light: its Blinded goes on only after the save die lands (09-13)",
+        steps.length === 2 && !earlyLight.length, steps.join("; ") || "nothing happened");
+      game.dice3d = keepDice;
+      walkerActor.createEmbeddedDocuments = keepMake;
     });
     Object.assign(PrismaticWallEngine, { _rollSave: keep.save });
     RepeatingSaveEngine._obtainReSaveRoll = keep.roll;

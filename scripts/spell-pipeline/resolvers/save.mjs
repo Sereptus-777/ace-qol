@@ -24,7 +24,7 @@ import { ConditionLibrary } from "../../condition-library.mjs";
 import { COMMAND_WORDS, commandWordFrom } from "../../condition-library.mjs";
 import { SpellPipeline } from "../pipeline.mjs";
 import { Situation } from "../../situation.mjs";
-import { safeShowForRoll } from "../../dsn-utils.mjs";
+import { safeShowForRoll, awaitDiceSettle } from "../../dsn-utils.mjs";
 
 // ─── Creature snapshot access (2026-07-28) ───────────────────────────────────
 // Facts about a creature come from the ONE reader, never from actor.system.
@@ -141,6 +141,9 @@ export class SaveResolver {
         // card still waits for these dice without being able to hang on them.
         safeShowForRoll(roll, "instant-kill overdamage");
       } catch (_) {}
+      // ⚠️ NOTHING LANDS BEFORE THE DICE (Johnny's rule): the 12d12 came off the
+      // target's HP, and the card posted, while the dice were still rolling.
+      await awaitDiceSettle();
       const dtype = entry.instantKill.overDamageType ?? "psychic";
       if (total > 0 && typeof tActor.applyDamage === "function") {
         try { await tActor.applyDamage([{ value: total, type: dtype }]); } catch (_) {}
@@ -474,6 +477,12 @@ export class SaveResolver {
         const roll = await new Roll(formula).evaluate();
         const total = roll.total;
         const passed = total >= saveDC;
+        // ⚠️ NOTHING LANDS BEFORE THE DICE (Johnny's rule). The card carried this
+        // roll, so Dice So Nice held the card back, but the effect was deleted
+        // straight after while the die was still rolling. ACE throws the die
+        // itself now and waits for it; the card no longer carries the roll.
+        safeShowForRoll(roll, "end-of-turn save");
+        await awaitDiceSettle();
 
         // Post chat card for the end-of-turn save result
         const accent = passed ? "#7ec97e" : "#e57373";
@@ -503,7 +512,6 @@ export class SaveResolver {
           await ChatMessage.create({
             speaker: ChatMessage.getSpeaker({ actor: targetActor }),
             content: html,
-            rolls: [roll],
             type: CONST.CHAT_MESSAGE_STYLES?.OTHER ?? 0,
           });
         } catch (_) { /* non-fatal */ }
