@@ -74,6 +74,7 @@ import { ConditionSheetIntegration } from "./condition-sheet-integration.mjs";
 import { SpellTargetPicker }    from "./spell-target-picker.mjs";
 import { DescriptionParser }    from "./description-parser.mjs";
 import { PostHitSaves }         from "./post-hit-saves.mjs";
+import { decideActivityChoice } from "./activity-choice.mjs";
 import { RepeatingSaveEngine }  from "./repeating-save-engine.mjs";
 import { GazeEngine }           from "./gaze-engine.mjs";
 import { BreakFreeEngine }      from "./break-free-engine.mjs";
@@ -6419,329 +6420,121 @@ Hooks.once("ready", () => {
       (el?.closest?.(".activity-choice") ?? el)?.classList?.add?.("ace-choice-show");
     };
 
-    // ── GENUINE multi-activity items keep their choice (Johnny 2026-07-27) ──
-    // This used to auto-click the Attack activity whenever the item had one,
-    // FULL STOP. On an item that legitimately offers more than one thing —
-    // the Stormforger staff (melee attack AND a spell), a wand that can be
-    // swung or channelled, most artefact weapons — that silently forced the
-    // melee swing every time, and the range check then refused with "out of
-    // reach" while the user was only ever trying to cast. The choice was
-    // stolen before they saw it.
-    //
-    // The suppression's real job is the BG3-HUD case: a bogus dialog raised for
-    // a weapon that has exactly ONE usable activity. So only auto-pick when the
-    // attack IS the only real option; otherwise reveal the dialog and let the
-    // user choose. (Forge-templated items are handled by their own exception
-    // below and keep working the same way.)
-    if (item && el?.querySelector) {
-      const activities = item.system?.activities;
-      if (activities) {
-        const all = [...activities];
-        const attackActs = all.filter(a => a.type === "attack");
-        const buttonFor = (a) => el.querySelector(`button[data-activity-id="${a.id}"]`);
-        // Count what the dialog is ACTUALLY offering — an activity with no
-        // button isn't a choice the user can make.
-        const offered = all.filter(a => !!buttonFor(a));
-
-        // ── ⚠️🔴 MACHINERY IS NOT A CHOICE ─────────────────────────────
-        //
-        // dnd5e renders a button for EVERY activity, including the internal
-        // ones a spell fires at itself. Johnny's Magic Missile has four, and he
-        // was being asked to pick between them every single cast:
-        //
-        //     Damage · Use · Magic Missile Bolt · Magic Missile Bolt: Flat
-        //
-        // The two "Bolt" rows carry activation type "special", which is dnd5e's
-        // OWN marker for something that is not an action a person takes — it is
-        // the machinery the spell uses to throw each dart. Putting them in front
-        // of the caster is like asking which piston he would like to fire.
-        //
-        // ⚠️ ASK THE SYSTEM, DO NOT KEEP A LIST. `activityActivationTypes`
-        // already marks every one of these (special, turnStart, turnEnd,
-        // encounter, shortRest, longRest). A hand-maintained list here would go
-        // stale the first time dnd5e adds a category.
-        //
-        // ⚠️ AND NEVER SWALLOW THE ACTION. If filtering leaves nothing, the
-        // unfiltered list stands — a picker showing too much beats a press that
-        // does nothing.
-        const _isMachinery = (a) => {
+    // ── WHICH ACTIVITY THIS PRESS MEANS: decided in activity-choice.mjs ──
+    // Every rule, and the reason behind it, is written there beside the rule.
+    // This reads the dialog, asks, and carries the answer out, so the same
+    // decision can be replayed over his whole world before a release.
+    const buttonFor = (a) => el?.querySelector?.(`button[data-activity-id="${a?.id ?? a}"]`) ?? null;
+    const acts = (el?.querySelector && item?.system?.activities) ? [...item.system.activities] : null;
+    const offeredIds = el?.querySelectorAll
+      ? [...el.querySelectorAll("button[data-activity-id]")].map(b => b.dataset?.activityId).filter(Boolean)
+      : (acts ?? []).filter(a => buttonFor(a)).map(a => a.id);
+    let decision;
+    try {
+      decision = decideActivityChoice({
+        item, activities: acts, offeredIds,
+        isMachinery: (a) => {
           try { return !!CONFIG.DND5E?.activityActivationTypes?.[a?.activation?.type]?.passive; }
           catch (_) { return false; }
-        };
-        const real = offered.filter(a => !_isMachinery(a));
-        const machinery = offered.filter(_isMachinery);
-        if (machinery.length && real.length) {
-          console.log(`${MODULE_ID} | "${item.name}": hid ${machinery.length} internal activit`
-            + `${machinery.length === 1 ? "y" : "ies"} `
-            + `(${machinery.map(a => a.name || a.type).join(", ")}) `
-            + `— the spell fires those itself, they are not choices.`);
-        }
+        },
+        riderIds: () => PostHitSaves.riderActivityIds(item, (acts ?? []).filter(a => offeredIds.includes(a.id))),
+        owns: () => SpellPipeline.owns(item),
+        resolvesItself: () => SpellPipeline.resolvesItself(item),
+      });
+    } catch (err) {
+      // ⚠️ NEVER SWALLOW THE PRESS. If the decision throws, dnd5e's own dialog
+      // is shown so he can still pick by hand.
+      console.warn(`${MODULE_ID} | could not work out which activity "${item?.name}" means, `
+        + `so dnd5e's own dialog is shown:`, err);
+      _revealChoice();
+      return;
+    }
+    for (const note of decision.notes) console.log(`${MODULE_ID} | ${note}`);
+    console.log(`${MODULE_ID} | ${decision.why}${app?.title ? `: ${app.title}` : ""}`);
 
-        // ── ⚠️🔴 A SAVE THAT FOLLOWS A HIT IS NOT A CHOICE ─────────────────
-        //
-        // Johnny, 2026-09-12, pressing Neferon's Claws and being asked "Attack
-        // or Save?": "I don't want that shit on our fucking attack cards if we
-        // can't fucking push it and use it." The Save is the poison the target
-        // resists after the claw lands, and ACE already asks for it on the
-        // damage card. Pressed on its own it rolled a save with no damage in
-        // it. dnd5e gives it the activation "action", so only the words say
-        // what it is, and the reader that decides is the damage card's own.
-        const _riders = PostHitSaves.riderActivityIds(item, offered);
-        const doable = real.filter(a => !_riders.has(a.id));
-        const choosable = doable.length ? doable : (real.length ? real : offered);
-        if (_riders.size && doable.length) {
-          console.log(`${MODULE_ID} | "${item.name}": not offering `
-            + `${offered.filter(a => _riders.has(a.id)).map(a => `"${a.name || "Save"}"`).join(", ")} `
-            + `as a choice. It is the saving throw a creature makes when this hits it, and ACE `
-            + `asks for it on the damage card after the hit.`);
-        }
+    if (decision.kind === "fire") {
+      const btn = buttonFor(decision.activity ?? decision.activityId);
+      if (btn) { setTimeout(() => btn.click(), 0); return; }
+      console.warn(`${MODULE_ID} | the button for that activity was gone before it could be `
+        + `pressed, so dnd5e's own dialog is shown.`);
+      _revealChoice();
+      return;
+    }
+    if (decision.kind === "reveal") { _revealChoice(); return; }
+    if (decision.kind === "close") { setTimeout(() => app.close(), 0); return; }
 
-        // ── ⚠️🔴 A SPELL ACE CASTS ITSELF NEVER ASKS WHICH ROW ────────
-        //
-        // When the spell pipeline owns a spell it decides what the spell DOES —
-        // Magic Missile throws 3 darts of 1d4+1 force, plus one per upcast, and
-        // the activity the cast happened to start from changes none of that.
-        // Johnny's imported copy has two activities that both cost an action and
-        // both burn a slot, so he was being stopped and asked to choose between
-        // "Damage" and "Use" before the spell could even begin.
-        //
-        // Johnny, 2026-08-25: "How the fuck is that useful to me? It's got to be
-        // just like a normal thing where I consume a spell slot: what level do
-        // you want to cast it at? How many darts?"
-        //
-        // ⚠️ PICK A REAL CAST, NOT JUST THE FIRST ROW. A "utility" activity is
-        // frequently an empty stub that does nothing on its own, so it goes last;
-        // anything that actually resolves comes first. Slot level, upcasting and
-        // dart count are then dnd5e's usage dialog and the pipeline's job, which
-        // is exactly where that decision belongs.
-        if (choosable.length > 1 && SpellPipeline.owns(item)) {
-          // ⚠️🔴 A FOLLOW-UP IS NOT A WAY TO CAST THE SPELL. Johnny, 2026-09-11:
-          // Varek cast Prismatic Wall and nothing happened. Its four activities
-          // are Create Wall, Create Globe, Blinding Save and Traversal Save, and
-          // the rank below put "save" ahead of "utility", so it picked the
-          // Blinding Save: the save a creature makes when it wanders near the
-          // wall later, not the wall. dnd5e marks every such follow-up as using
-          // no spell slot, and that is the test.
-          const casts = choosable.filter(a => a?.consumption?.spellSlot !== false);
-          // ⚠️🔴 AND WHEN THE PIPELINE HANDS THE SPELL OFF, THE ACTIVITY IS THE
-          // SPELL. "The pipeline decides what the spell does either way" is true
-          // for Magic Missile, which it resolves itself. For an area it hands to
-          // dnd5e and the save engine, the activity chosen IS what happens: a
-          // wall or a globe, a wall of fire or a ring. Two of those is a real
-          // choice, so the caster makes it.
-          const handsOff = !SpellPipeline.resolvesItself(item);
-          if (handsOff && casts.length > 1) {
-            console.log(`${MODULE_ID} | "${item.name}" can be cast ${casts.length} different ways `
-              + `(${casts.map(a => a.name || a.type).join(", ")}), and which one changes what it `
-              + `does, so the caster picks.`);
-          } else {
-            const RANK = { attack: 0, save: 1, damage: 2, heal: 3, summon: 4, enchant: 5, check: 6, utility: 9 };
-            const pool = casts.length ? casts : choosable;
-            const best = [...pool].sort((a, b) =>
-              (RANK[a.type] ?? 7) - (RANK[b.type] ?? 7))[0];
-            const btn = buttonFor(best);
-            if (btn) {
-              console.log(`${MODULE_ID} | "${item.name}" is cast by ACE's spell pipeline — `
-                + `not asking which activity. Using the "${best.name || best.type}" one; `
-                + `${handsOff ? "it is the only way to cast it" : "the pipeline decides what the spell does either way"}.`);
-              setTimeout(() => btn.click(), 0);
-              return;
-            }
-          }
-        }
-
-        // ── ONE REAL CHOICE IS NOT A CHOICE ────────────────────────────────
-        // With the machinery gone most items have exactly one thing to do, and
-        // a dialog asking a question with a single answer is a click stolen
-        // from the table. Fire it and say nothing.
-        if (choosable.length === 1 && offered.length > 1) {
-          const only = buttonFor(choosable[0]);
-          if (only) {
-            console.log(`${MODULE_ID} | "${item.name}": one real activity after `
-              + `hiding internals — using it without asking.`);
-            setTimeout(() => only.click(), 0);
-            return;
-          }
-        }
-
-        if (choosable.length > 1) {
-          // ACE OWNS THE PAUSE. dnd5e's chooser stays hidden (our CSS hides all
-          // .activity-choice dialogs); we show OUR branded picker and then click
-          // the chosen row's hidden button, so dnd5e's use-flow runs untouched.
-          // Falls back to revealing dnd5e's own dialog if ours can't open, so a
-          // failure can never swallow the action. (Johnny 2026-07-27.)
-          console.log(`${MODULE_ID} | ActivityChoiceDialog offers ${choosable.length} `
-            + `real activities (${choosable.map(a => a.type).join(", ")}) — showing ACE's picker: ${app.title}`);
-
-          // ⚠️ TWO IDENTICAL ABILITIES ARE A DUPLICATE. Two DIFFERENT ones are
-          // an item. Johnny's imported Magic Missile carries a genuine
-          // duplicate and this is how he finds it.
-          //
-          // ⚠️🔴 BUT THE TEST USED TO BE "both cost an action and both set
-          // spellSlot", AND THAT IS NOT A DUPLICATE TEST. `consumption.spellSlot`
-          // is true by default on a magic item's activities even when the item
-          // spends CHARGES and no slot is involved at all, so the Stormforger's
-          // four genuinely different abilities — Tornado Takedown, Aerial
-          // Ascension, Aerial Descent, Thunderstorm of Misery — tripped it every
-          // single cast. ACE told him, on screen, to go and delete abilities his
-          // item is supposed to have (2026-09-03).
-          //
-          // A wrong warning is worse than none: it is a confident instruction to
-          // damage his own data. The test is now whether two of them are
-          // actually indistinguishable — the same name, or the same type with
-          // the same cost — which is what a duplicated import looks like.
-          try {
-            const sig = (a) => {
-              const t = (a.consumption?.targets ?? [])[0];
-              return `${a.type}|${t?.type ?? ""}|${t?.value ?? ""}|${a.activation?.type ?? ""}`;
-            };
-            // ⚠️🔴 DIFFERENT NAMES ARE DIFFERENT ABILITIES, WHATEVER THEY COST.
-            // Johnny, 2026-09-11: Prismatic Wall's Create Wall and Create Globe
-            // are both a utility costing an action, and its Blinding Save and
-            // Traversal Save are both saves costing nothing, so all four were
-            // called duplicates and he was told to check the item sheet. Only
-            // an unnamed pair can be told apart by nothing but its cost.
-            const byName = new Map(), bySig = new Map();
-            for (const a of choosable) {
-              const n = String(a.name ?? "").trim().toLowerCase();
-              if (n) byName.set(n, (byName.get(n) ?? 0) + 1);
-              else bySig.set(sig(a), (bySig.get(sig(a)) ?? 0) + 1);
-            }
-            const twins = [...byName.entries()].filter(([, n]) => n > 1).map(([k]) => k);
-            const clones = [...bySig.entries()].filter(([, n]) => n > 1).map(([k]) => k);
-            if (twins.length || clones.length) {
-              console.warn(`${MODULE_ID} | "${item.name}" has activities that look identical `
-                + `${twins.length ? `by name (${twins.join(", ")})` : `by type and cost (${clones.join(", ")})`}. `
-                + `That is usually a duplicate left by whatever imported the item — check the `
-                + `item sheet. Abilities with different names are never this.`);
-            }
-          } catch (_) { /* diagnostics must never block the cast */ }
-          const _costOf = (a) => {
-            try {
-              const t = (a.consumption?.targets ?? [])[0];
-              const n = Number(t?.value ?? 0);
-              return Number.isFinite(n) && n > 0 ? `${n}` : "";
-            } catch (_) { return ""; }
-          };
-          const rows = choosable.map(a => ({
-            id: a.id,
-            type: a.type ?? "",
-            cost: _costOf(a),
-            // dnd5e already renders the human label on the button — reuse it so
-            // ours reads identically (activity .name is often blank).
-            //
-            // ⚠️ A BARE TYPE NAME IS NOT A LABEL. When an activity has no name
-            // of its own the button just says "Damage", and an item with two of
-            // them offers the caster a choice between "Damage" and "Damage".
-            // The dice tell them apart, so the dice go on the row.
-            label: (() => {
-              const base = (buttonFor(a)?.textContent ?? "").trim() || a.name || a.type || "Action";
-              if (a.name) return base;               // it has a real name; leave it alone
-              try {
-                const parts = a.damage?.parts ?? [];
-                const bits = parts.map(pt => {
-                  const n = Number(pt?.number ?? 0);
-                  const d = Number(pt?.denomination ?? 0);
-                  const dice = (n && d) ? `${n}d${d}` : (pt?.custom?.formula ?? "");
-                  const type = [...(pt?.types ?? [])][0] ?? "";
-                  return [dice, type].filter(Boolean).join(" ");
-                }).filter(Boolean);
-                return bits.length ? `${base} — ${bits.join(" + ")}` : base;
-              } catch (_) { return base; }
-            })(),
-          }));
-          const uses = (Number.isFinite(Number(item.system?.uses?.max)) && Number(item.system.uses.max) > 0)
-            ? { value: item.system.uses.value, max: item.system.uses.max } : null;
-          import("./attack-prompt.mjs").then(async ({ showActivityChoice }) => {
-            let chosen = null;
-            try {
-              chosen = await showActivityChoice({ itemName: item.name, itemImg: item.img, activities: rows, uses });
-            } catch (err) {
-              console.warn(`${MODULE_ID} | ACE activity picker failed — revealing dnd5e's dialog:`, err);
-              _revealChoice();
-              return;
-            }
-            if (!chosen) { try { app.close(); } catch (_) {} return; }   // cancelled
-            // The consume decision was made HERE, on the one dialog — hand it to
-            // the use-prompt so it doesn't ask a second time.
-            try {
-              const { ActivityUsePrompt } = await import("./activity-use-prompt.mjs");
-              ActivityUsePrompt.presetConsume(item.uuid, chosen.consume);
-            } catch (_) { /* prompt module optional */ }
-            const btn = el.querySelector(`button[data-activity-id="${chosen.id}"]`);
-            if (btn) btn.click();
-            else { console.warn(`${MODULE_ID} | chosen activity button vanished — revealing dnd5e's dialog`); _revealChoice(); }
-          }).catch(err => {
-            console.warn(`${MODULE_ID} | couldn't load the ACE picker — revealing dnd5e's dialog:`, err);
-            _revealChoice();
-          });
-          return;
-        }
-
-        for (const a of attackActs) {
-          const btn = buttonFor(a);
-          if (btn) {
-            console.log(`${MODULE_ID} | Auto-selecting Attack in ActivityChoiceDialog (sole activity): ${app.title}`);
-            setTimeout(() => btn.click(), 0);
-            return;
-          }
-        }
+    // ── "ask": ACE OWNS THE PAUSE ──
+    // dnd5e's chooser stays hidden (our CSS hides all .activity-choice
+    // dialogs); we show OUR branded picker and then click the chosen row's
+    // hidden button, so dnd5e's use-flow runs untouched. Falls back to
+    // revealing dnd5e's own dialog if ours can't open, so a failure can never
+    // swallow the action. (Johnny 2026-07-27.)
+    const { twins = [], clones = [] } = decision.duplicates ?? {};
+    if (twins.length || clones.length) {
+      console.warn(`${MODULE_ID} | "${item.name}" has activities that look identical `
+        + `${twins.length ? `by name (${twins.join(", ")})` : `by type and cost (${clones.join(", ")})`}. `
+        + `That is usually a duplicate left by whatever imported the item — check the `
+        + `item sheet. Abilities with different names are never this.`);
+    }
+    const _costOf = (a) => {
+      try {
+        const t = (a.consumption?.targets ?? [])[0];
+        const n = Number(t?.value ?? 0);
+        return Number.isFinite(n) && n > 0 ? `${n}` : "";
+      } catch (_) { return ""; }
+    };
+    const rows = decision.choices.map(a => ({
+      id: a.id,
+      type: a.type ?? "",
+      cost: _costOf(a),
+      // dnd5e already renders the human label on the button — reuse it so
+      // ours reads identically (activity .name is often blank).
+      //
+      // ⚠️ A BARE TYPE NAME IS NOT A LABEL. When an activity has no name
+      // of its own the button just says "Damage", and an item with two of
+      // them offers the caster a choice between "Damage" and "Damage".
+      // The dice tell them apart, so the dice go on the row.
+      label: (() => {
+        const base = (buttonFor(a)?.textContent ?? "").trim() || a.name || a.type || "Action";
+        if (a.name) return base;               // it has a real name; leave it alone
+        try {
+          const parts = a.damage?.parts ?? [];
+          const bits = parts.map(pt => {
+            const n = Number(pt?.number ?? 0);
+            const d = Number(pt?.denomination ?? 0);
+            const dice = (n && d) ? `${n}d${d}` : (pt?.custom?.formula ?? "");
+            const type = [...(pt?.types ?? [])][0] ?? "";
+            return [dice, type].filter(Boolean).join(" ");
+          }).filter(Boolean);
+          return bits.length ? `${base} — ${bits.join(" + ")}` : base;
+        } catch (_) { return base; }
+      })(),
+    }));
+    const uses = (Number.isFinite(Number(item.system?.uses?.max)) && Number(item.system.uses.max) > 0)
+      ? { value: item.system.uses.value, max: item.system.uses.max } : null;
+    import("./attack-prompt.mjs").then(async ({ showActivityChoice }) => {
+      let chosen = null;
+      try {
+        chosen = await showActivityChoice({ itemName: item.name, itemImg: item.img, activities: rows, uses });
+      } catch (err) {
+        console.warn(`${MODULE_ID} | ACE activity picker failed — revealing dnd5e's dialog:`, err);
+        _revealChoice();
+        return;
       }
-    }
-
-    // ── ACE: Forge-templated items exception (v0.7.10) ─────────────────
-    // Items wired by ACE: Forge's Item Template Library (Holy Symbol of
-    // Ravenkind etc.) have LEGITIMATE multi-activity setups where the
-    // user needs to pick which power to fire (Hold Vampires vs Sunlight
-    // vs Turn Undead Enhanced). The original "no attack → close" logic
-    // was correctly catching Divine Smite rider popups but ALSO catching
-    // these legitimate user-choice dialogs. Leave Forge-templated dialogs
-    // open so the user can actually pick.
-    if (item?.flags?.["ace-artificer"]?.appliedTemplate) {
-      console.log(`${MODULE_ID} | ActivityChoiceDialog for Forge-templated item — leaving open for user choice: ${app.title}`);
+      if (!chosen) { try { app.close(); } catch (_) {} return; }   // cancelled
+      // The consume decision was made HERE, on the one dialog — hand it to
+      // the use-prompt so it doesn't ask a second time.
+      try {
+        const { ActivityUsePrompt } = await import("./activity-use-prompt.mjs");
+        ActivityUsePrompt.presetConsume(item.uuid, chosen.consume);
+      } catch (_) { /* prompt module optional */ }
+      const btn = el.querySelector(`button[data-activity-id="${chosen.id}"]`);
+      if (btn) btn.click();
+      else { console.warn(`${MODULE_ID} | chosen activity button vanished — revealing dnd5e's dialog`); _revealChoice(); }
+    }).catch(err => {
+      console.warn(`${MODULE_ID} | couldn't load the ACE picker — revealing dnd5e's dialog:`, err);
       _revealChoice();
-      return;
-    }
-
-    // ── Spell items handling (v0.7.21+) ────────────────────────────────
-    // The "no attack → close" assumption only holds for WEAPON post-hit
-    // rider dialogs (Divine Smite, Searing Smite, etc., which our rider
-    // engine handles independently). For SPELL items, we want the cast
-    // to proceed without an extra click.
-    //
-    // Strategy: auto-click the FIRST activity button. Most multi-activity
-    // spells have the primary "Cast" as activity #0 and secondary options
-    // are upcast variants or rarely-used "Dismiss"/"End" actions. For
-    // edge cases where a user genuinely wants the second activity, they
-    // can use the character sheet directly (which calls the activity by
-    // ID without going through the dialog).
-    if (item?.type === "spell") {
-      if (el?.querySelector) {
-        const firstBtn = el.querySelector("button[data-activity-id]");
-        if (firstBtn) {
-          const activityId = firstBtn.dataset.activityId;
-          console.log(`${MODULE_ID} | Spell — auto-clicking first activity (${activityId}): ${app.title}`);
-          setTimeout(() => firstBtn.click(), 0);
-          return;
-        }
-      }
-      console.log(`${MODULE_ID} | Spell ActivityChoiceDialog with no buttons — leaving open: ${app.title}`);
-      _revealChoice();
-      return;
-    }
-
-    // No Attack button found. The auto-close rationale — post-hit rider dialogs
-    // (Divine Smite etc.) handled by our rider engine — applies ONLY to WEAPONS.
-    // Any non-weapon multi-activity item (equipment like the Holy Symbol of
-    // Ravenkind: Hold Vampires / Turn Undead / Sunlight; consumables; tools;
-    // feats) has a LEGITIMATE power-choice the user must make. Leave it open.
-    if (item?.type !== "weapon") {
-      console.log(`${MODULE_ID} | Multi-activity ${item?.type ?? "item"} — leaving choice open for the user: ${app.title}`);
-      _revealChoice();
-      return;
-    }
-    console.log(`${MODULE_ID} | Auto-closing post-hit ActivityChoiceDialog: ${app.title}`);
-    setTimeout(() => app.close(), 0);
+    });
   }
   Hooks.on("renderApplication", (app, html) => {
     if (app?.options?.classes?.includes("activity-choice")) {
