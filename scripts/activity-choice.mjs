@@ -21,6 +21,27 @@ const call = (v, fallback) => (typeof v === "function" ? v() : (v ?? fallback));
 const nameOf = (a) => a?.name || a?.type || "activity";
 
 /**
+ * Is this activity a later step of a spell: one that spends no slot, on a spell
+ * that also has a cast that does? Prismatic Wall's Blinding and Traversal
+ * saves, Moonbeam's move, Heat Metal's reheating. The same test the list below
+ * uses to put later steps first while the spell is up.
+ *
+ * ⚠️ WHO A LATER STEP TOUCHES WAS DECIDED BY WHAT THE SPELL LEFT ON THE TABLE,
+ * not by the caster's range now. The save engine asks this before measuring a
+ * hand-pressed save's targets from the caster (2026-09-13).
+ */
+export function isLaterStep(item, activity) {
+  if (item?.type !== "spell" || !(Number(item?.system?.level) > 0)) return false;
+  if (activity?.consumption?.spellSlot !== false) return false;
+  const all = item.system?.activities;
+  const list = Array.isArray(all) ? all
+    : (Array.isArray(all?.contents) ? all.contents
+      : (typeof all?.values === "function" ? [...all.values()] : Object.values(all ?? {})));
+  const idOf = (a) => a?.id ?? a?._id ?? null;
+  return list.some(a => a && a !== activity && idOf(a) !== idOf(activity) && a.consumption?.spellSlot !== false);
+}
+
+/**
  * Can ACE tell when this spell is up? Only from things it can see on the
  * table: the caster concentrating on it, its area left on the map, what it
  * summoned, or one of its own lasting effects on somebody.

@@ -61,8 +61,27 @@ check("around the end is none", wallCrossings(WALL, [at(950, -300), at(2050, -30
 check("over the top of a 30-foot wall is none",
   wallCrossings(WALL, [at(950, -300, { bottom: 35, top: 40 }), at(950, 300, { bottom: 35, top: 40 })], GRID), 0);
 check("a teleport to the far side is none", wallCrossings(WALL, [at(950, -300), at(950, 300, { teleport: true })], GRID), 0);
-check("onto the wall and back off the same side is none",
-  wallCrossings(WALL, [at(950, -300), at(950, 0), at(950, -300)], GRID), 0);
+// ⚠️ CHANGED 2026-09-13: this used to be none. A creature whose middle stands
+// on the wall is inside it, and the layers take anyone who reaches into it.
+check("stepping into the wall and back out is one pass",
+  wallCrossings(WALL, [at(950, -300), at(950, 0), at(950, -300)], GRID), 1);
+check("stepping into the wall and stopping there is one pass", wallCrossings(WALL, [at(950, -300), at(950, 0)], GRID), 1);
+check("standing in the wall and stepping out is none (a wall placed on it ends the spell)",
+  wallCrossings(WALL, [at(950, 0), at(950, 300)], GRID), 0);
+check("walking along inside the wall is still one pass",
+  wallCrossings(WALL, [at(950, -300), at(950, 0), at(1350, 0), at(1350, 300)], GRID), 1);
+
+// His first live test, 2026-09-13: a wall down the middle of a row of squares on
+// a 200-pixel grid, and every move from his console log.
+const G200 = { gridPx: 200, ftPerCell: 5, rule: "equidistant" };
+const ROW = wallShapeOf({ t: "ray", x: 7500, y: 8900, distance: 90, direction: 0, elevation: 0,
+  flags: { dnd5e: { dimensions: { height: 30 } } } }, G200);
+const mv = (y0, y1, x = 8500) => wallCrossings(ROW, [at(x, y0), at(x, y1)], G200);
+check("his log: Neferon steps into the wall's row (it said nothing then)", mv(8700, 8900), 1);
+check("his log: Neferon steps out of it", mv(8900, 9500), 0);
+check("his log: Neferon crosses it in one step", mv(9500, 8500), 1);
+check("his log: the Specter steps out, in, out, in", [mv(8900, 8500, 8900), mv(8500, 8900, 8900),
+  mv(8900, 9300, 8900), mv(9300, 8900, 8900)], [0, 1, 0, 1]);
 check("into the globe is one pass", wallCrossings(GLOBE, [at(1000, 400), at(1000, 1000)], GRID), 1);
 check("straight through the globe is two", wallCrossings(GLOBE, [at(1000, 400), at(1000, 1600)], GRID), 2);
 check("skirting the globe is none", wallCrossings(GLOBE, [at(1500, 400), at(1500, 1600)], GRID), 0);

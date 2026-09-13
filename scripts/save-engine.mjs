@@ -442,7 +442,11 @@ export class SaveEngine {
           tmpl.x = casterToken.center.x;
           tmpl.y = casterToken.center.y;
         }
-        console.log(`${MODULE_ID} | Snapped template origin to ${casterToken.name}`);
+        // ⚠️ SAYS WHAT IT DID. This line read "Snapped template origin to …" and
+        // on 2026-09-13 it had me telling Johnny ACE had moved his Prismatic Wall
+        // onto Varek. It only starts the PREVIEW here; the drop decides where the
+        // area lands, and only a range-self area is held to the caster (above).
+        console.log(`${MODULE_ID} | Template preview starts on ${casterToken.name}; it lands wherever it is dropped`);
       }
     });
 
@@ -1057,11 +1061,17 @@ export class SaveEngine {
         // the picker to the caster's client via socket (mirrors the rider popup) and
         // returns the same Actor[] the local picker would, so the resolution below is
         // unchanged. GM-cast / NPC / offline-player → it picks locally.
+        // ⚠️ A LATER STEP IS NOT MEASURED FROM THE CASTER. Prismatic Wall's saves
+        // are about how near the WALL a creature is; pressed by hand on
+        // 2026-09-13, Blinding Save refused the Specter as "out of spell range",
+        // 60 feet measured from Varek. Who a later step touches was decided by
+        // what the spell left on the table.
+        const { isLaterStep } = await import("./activity-choice.mjs");
         picked = await this._pickTargetsForCaster({
           spellItem:   item,
           casterActor: actor,
           maxTargets:  _maxTargets,
-          rangeFt:     Number(activity?.range?.value) || 30,
+          rangeFt:     isLaterStep(item, activity) ? Infinity : (Number(activity?.range?.value) || 30),
           allowSelf:   false,
         });
       } catch (err) {
@@ -1203,7 +1213,10 @@ export class SaveEngine {
         userId: casterUser.id,
         itemUuid: spellItem.uuid,
         casterActorUuid: casterActor.uuid,
-        maxTargets, rangeFt, allowSelf,
+        maxTargets, allowSelf,
+        // "Any range" crosses as its own word: JSON turns Infinity into null.
+        rangeFt: Number.isFinite(rangeFt) ? rangeFt : null,
+        anyRange: rangeFt === Infinity,
         // The token ids the caster may choose from, when an area decides who is
         // eligible. Ids, not tokens: this crosses the socket.
         only: onlyIds,

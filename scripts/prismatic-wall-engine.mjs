@@ -385,8 +385,10 @@ export class PrismaticWallEngine {
     let chosen = [];
     try {
       const { SpellTargetPicker } = await import("./spell-target-picker.mjs");
+      // ⚠️ ANY RANGE. "Creatures you designate when you cast the spell" has no
+      // range; measured from the caster, the list refused the Specter (2026-09-13).
       chosen = await SpellTargetPicker.pick({ spellItem: item, casterActor: caster, maxTargets: 99,
-        allowSelf: false, verb: "Spare from", icon: "fa-solid fa-shield-halved" }) ?? [];
+        rangeFt: Infinity, allowSelf: false, verb: "Spare from", icon: "fa-solid fa-shield-halved" }) ?? [];
     } catch (err) {
       console.warn(`${TAG}: the list of who passes unharmed could not be shown; only the caster is spared:`, err);
     }

@@ -6,7 +6,8 @@
 //   - Portrait grid of every token on the current scene
 //   - Distance-from-caster in feet (color-coded vs spell range)
 //   - Self always selectable (Bless allows caster to bless themselves)
-//   - Out-of-range tokens dimmed but still selectable (GM houserule)
+//   - Out-of-range tokens dimmed and refused (since v0.7.21); rangeFt: Infinity
+//     means any range (Prismatic Wall's "creatures you designate", 2026-09-13)
 //   - Multi-select with a per-spell target cap
 //   - Already-targeted tokens (game.user.targets) come pre-selected
 //
@@ -35,8 +36,12 @@ export class SpellTargetPicker {
                       verb = "Cast", icon = "fa-solid fa-sparkles", only = null }) {
     if (!spellItem || !casterActor) return [];
 
-    // Resolve range from spell item if not explicitly passed
-    const resolvedRange = Number.isFinite(rangeFt)
+    // Resolve range from spell item if not explicitly passed.
+    // ⚠️ Infinity IS AN ANSWER, NOT A MISSING ONE: "any range". Prismatic Wall's
+    // "creatures you designate" has no range at all, and its later saves are
+    // about distance from the wall, not from the caster. On 2026-09-13 both
+    // refused the Specter as "out of spell range", 60 feet measured from Varek.
+    const resolvedRange = (Number.isFinite(rangeFt) || rangeFt === Infinity)
       ? rangeFt
       : SpellTargetPicker._resolveRangeFt(spellItem);
 
@@ -340,7 +345,7 @@ export class SpellTargetPicker {
         ${headerHtml}
         <div class="ace-qol-spell-pickr-instructions">
           Select up to <strong>${maxTargets}</strong> target${maxTargets === 1 ? "" : "s"}.
-          Click a portrait to toggle. Out-of-range targets are dimmed but still selectable.
+          Click a portrait to toggle.${Number.isFinite(rangeFt) ? " Creatures out of range are dimmed and can't be chosen." : ""}
         </div>
         <div class="ace-qol-spell-pickr-grid" data-max-count="${maxTargets}">
           ${rowsHtml}

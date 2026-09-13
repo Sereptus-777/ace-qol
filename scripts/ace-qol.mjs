@@ -5176,7 +5176,9 @@ Hooks.once("ready", () => {
       if (payload.action === "showSpellPicker") {
         // `only`: token ids the caster may choose from, when an area spell lets
         // the caster choose who inside it is affected (2026-09-11).
-        const { requestId, itemUuid, casterActorUuid, maxTargets, rangeFt, allowSelf, only } = payload;
+        const { requestId, itemUuid, casterActorUuid, maxTargets, allowSelf, only } = payload;
+        // "Any range" crosses the socket as its own word: JSON turns Infinity into null.
+        const rangeFt = payload.anyRange ? Infinity : payload.rangeFt;
         // [picker-timing] Headline number: how long from the caster PRESSING cast
         // to this picker request arriving back (player→GM→player round-trip). The
         // picker renders ~1 frame after this line, so this ≈ "cast→picker visible".

@@ -154,6 +154,14 @@ export function wallPointsWithin(shape, rect, feet, grid, everyFt = 5) {
 
 const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
 
+/** Straight-line distance from a point to a segment, in pixels. */
+function pointToSegment(p, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  const t = len2 > EPS ? Math.min(1, Math.max(0, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2)) : 0;
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
+
 /** Where along p→q the stretch meets segment a→b, as a fraction of p→q, or null. */
 function meetsAt(p, q, a, b) {
   const rx = q.x - p.x, ry = q.y - p.y, sx = b.x - a.x, sy = b.y - a.y;
@@ -168,12 +176,26 @@ function meetsAt(p, q, a, b) {
 const lerp = (a, b, t) => a + (b - a) * t;
 const num = (v, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
 
+/** Half a pixel: a creature's middle this close to the wall is standing in it. */
+const ON_PX = 0.5;
+
 /**
- * How many times a path went through the wall.
+ * How many times a path went into the wall.
  *
- * ⚠️ A STEP ONTO THE WALL AND BACK IS NOT A PASS. Each point takes the side of
- * the line it stands on; a point ON the line keeps the side it came from, so a
- * creature that stops on the wall and steps back out has gone nowhere.
+ * ⚠️🔴 STEPPING INTO THE WALL IS GOING THROUGH IT (2026-09-13). The wall is one
+ * inch thick, so a creature whose middle stands on it is inside it, and RAW the
+ * layers take any creature that "reaches into or passes through the wall". The
+ * first version let a point ON the line keep the side it came from, so a step
+ * into the wall counted for nothing. Johnny's first live test: Neferon stepped
+ * into and out of a wall running down the middle of his row, and only his third
+ * move, the one that crossed it in a single step, set it off.
+ *
+ *   into the wall, from either side    one pass
+ *   out of it again                    nothing more; it went through on the way in
+ *   straight across in one step        one pass
+ *   starting inside it                 nothing: RAW, a wall placed on a creature
+ *                                      ends the spell, so there is no pass to count
+ *
  * ⚠️ OVER THE TOP IS NOT THROUGH. A 30-foot wall does not touch a creature
  * flying at 35 feet; the height is taken where the path meets the wall.
  * ⚠️ A TELEPORT PASSES NOTHING. Misty Step lands on the other side without
@@ -185,47 +207,61 @@ export function wallCrossings(shape, path, grid) {
   let count = 0;
 
   if (shape.kind === "line") {
-    let from = null;          // the last point that stood off the line
-    let jumped = false;       // a teleport happened since `from`
-    for (const q of pts) {
-      if (q.teleport) jumped = true;
-      const s = Math.sign(cross(shape.a, shape.b, q));
-      if (s === 0) continue;
-      if (from && s !== from.s && !jumped) {
-        const t = meetsAt(from.p, q, shape.a, shape.b);
-        if (t !== null) {
-          const bottom = lerp(num(from.p.bottom), num(q.bottom), t);
-          const top = lerp(num(from.p.top, num(from.p.bottom)), num(q.top, num(q.bottom)), t);
-          const over = shape.top !== null && bottom >= shape.top - EPS;
-          const under = top <= shape.bottom + EPS;
-          if (!over && !under) count++;
-        }
+    // Is a creature with this much height at a height where the wall stands?
+    const atWallHeight = (bottom, top) =>
+      !((shape.top !== null && bottom >= shape.top - EPS) || top <= shape.bottom + EPS);
+    const inWall = (p) => pointToSegment(p, shape.a, shape.b) <= ON_PX
+      && atWallHeight(num(p.bottom), num(p.top, num(p.bottom)));
+    // Which side of the wall's line; 0 on the line itself, or on its extension past an end.
+    const sideOf = (p) => Math.sign(cross(shape.a, shape.b, p));
+
+    let inside = inWall(pts[0]);
+    let side = inside ? 0 : sideOf(pts[0]);
+    for (let i = 1; i < pts.length; i++) {
+      const p = pts[i - 1], q = pts[i];
+      const qIn = inWall(q), qSide = sideOf(q);
+      if (q.teleport) { inside = qIn; if (!qIn && qSide) side = qSide; continue; }
+      if (qIn) {
+        if (!inside) count++;                               // stepped into the wall
+        inside = true;
+        continue;
       }
-      from = { p: q, s };
-      jumped = false;
+      if (inside) { inside = false; side = qSide || side; continue; }   // out again: counted going in
+      if (side && qSide && qSide !== side) {                // straight across in one step
+        const t = meetsAt(p, q, shape.a, shape.b);
+        if (t !== null && atWallHeight(lerp(num(p.bottom), num(q.bottom), t),
+            lerp(num(p.top, num(p.bottom)), num(q.top, num(q.bottom)), t))) count++;
+      }
+      if (qSide) side = qSide;
     }
     return count;
   }
 
   if (shape.kind === "globe") {
     const pxPerFt = pxPerFtOf(grid);
-    const inside = (p) => {
+    const tolFt = ON_PX / pxPerFt;
+    const where = (p) => {
       const zc = Math.min(Math.max(shape.z, num(p.bottom)), num(p.top, num(p.bottom)));
-      return Math.hypot(Math.hypot(p.x - shape.c.x, p.y - shape.c.y) / pxPerFt, zc - shape.z) < shape.rFt - EPS;
+      const d = Math.hypot(Math.hypot(p.x - shape.c.x, p.y - shape.c.y) / pxPerFt, zc - shape.z);
+      return d < shape.rFt - tolFt ? "inside" : (d <= shape.rFt + tolFt ? "wall" : "outside");
     };
+    let state = where(pts[0]);
     for (let i = 1; i < pts.length; i++) {
       const p = pts[i - 1], q = pts[i];
-      if (q.teleport) continue;
-      const inP = inside(p), inQ = inside(q);
-      if (inP !== inQ) { count++; continue; }
-      if (inP) continue;
+      const s = where(q);
+      if (q.teleport) { state = s; continue; }
+      if (s === "wall") { if (state !== "wall") count++; state = s; continue; }   // into the wall itself
+      if (state === "wall") { state = s; continue; }                              // out again
+      if (s !== state) { count++; state = s; continue; }                          // in, or out, in one step
+      if (s === "inside") continue;
       // Both outside: a straight step can still cut across the globe, in and out.
       const dx = q.x - p.x, dy = q.y - p.y;
       const len2 = dx * dx + dy * dy;
       const t = len2 > EPS ? Math.min(1, Math.max(0, ((shape.c.x - p.x) * dx + (shape.c.y - p.y) * dy) / len2)) : 0;
-      const mid = { x: p.x + dx * t, y: p.y + dy * t,
-        bottom: lerp(num(p.bottom), num(q.bottom), t), top: lerp(num(p.top, num(p.bottom)), num(q.top, num(q.bottom)), t) };
-      if (inside(mid)) count += 2;
+      const nearest = where({ x: p.x + dx * t, y: p.y + dy * t,
+        bottom: lerp(num(p.bottom), num(q.bottom), t), top: lerp(num(p.top, num(p.bottom)), num(q.top, num(q.bottom)), t) });
+      if (nearest === "inside") count += 2;
+      else if (nearest === "wall") count += 1;                                    // grazed it
     }
     return count;
   }
