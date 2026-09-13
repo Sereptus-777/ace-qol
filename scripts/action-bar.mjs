@@ -87,7 +87,7 @@ import { onCanvasReady } from "./ready-utils.mjs";
 import { WeaponSwap } from "./weapon-swap.mjs";
 import { resolveReach } from "./reach-reader.mjs";
 import { MultiattackEngine } from "./multiattack-engine.mjs";
-import { aceDescriptionTextSync, aceDescriptionHtmlSync, acePrimeDescriptions }
+import { aceDescriptionHtml, aceDescriptionHtmlSync, aceDescriptionFloorHtml, acePrimeDescriptions }
   from "./description-reader.mjs";
 
 const LOG = "ace-qol | ActionBar";
@@ -127,6 +127,14 @@ export class ActionBar {
 
   static _el = null;
   static _actorUuid = null;
+  /** The creature the bar is showing, for a hover that needs one of its items. */
+  static _actorNow = null;
+
+  /** The item a slot stands for, on the creature the bar is showing now. */
+  static _itemForSlot(slot) {
+    try { return ActionBar._actorNow?.items?.get?.(slot?.dataset?.itemId) ?? null; }
+    catch (_) { return null; }
+  }
   static _renderTimer = null;
 
   /* ── Reading the creature ─────────────────────────────────────────────── */
@@ -632,13 +640,14 @@ export class ActionBar {
         if (summary?.text) return head + "<div>" + esc(summary.text) + "</div>";
         if (head) return head;
       }
-      // ⚠️ HTML WHEN THE CACHE IS WARM, SAFE PROSE WHEN IT IS NOT. Enrichment
-      // is async and a tooltip is built synchronously, so this reads the cache
-      // the bar primes on every redraw. Neither path can show enricher syntax.
+      // ⚠️ THE RENDERED TEXT WHEN IT IS READY, AND THE WORDS WITH THEIR SHAPE
+      // WHEN IT IS NOT. The hover now waits for the rendered text (see
+      // _wireHover), so the second branch is the rare one. It keeps the
+      // paragraphs and tables and spells every enricher out; the old fallback
+      // flattened the lot into one run-on line and let "&Reference" through.
       const cached = aceDescriptionHtmlSync(item);
       if (cached) return cached;
-      const plain = aceDescriptionTextSync(item);
-      return plain ? esc(plain) : "";
+      return aceDescriptionFloorHtml(item);
     } catch (_) { return ""; }
   }
 
@@ -785,15 +794,27 @@ export class ActionBar {
     root.addEventListener("pointerover", (ev) => {
       const slot = ev.target?.closest?.(".ace-qol-ab-slot");
       if (!slot) { cancel(); return; }
-      const html = slot.getAttribute("data-ace-tip");
-      if (!html) return;
+      const baked = slot.getAttribute("data-ace-tip");
+      if (!baked) return;
       cancel();
-      ActionBar._tipTimer = setTimeout(() => {
+      // ⚠️🔴 BUILT WHEN IT IS SHOWN, NOT WHEN THE BAR WAS DRAWN. Johnny,
+      // 2026-09-11, hovering Prismatic Wall: "&Reference[BrightLight]", and
+      // its table of layers run into one line. The card was baked into the
+      // slot at draw time, in the same moment the descriptions began to
+      // render, so the first draw after a load carried the unrendered
+      // fallback until something happened to redraw the bar. Now rendering
+      // starts as the pointer arrives, the delay covers it many times over,
+      // and the card is built from what is ready when it shows.
+      const item = ActionBar._itemForSlot(slot);
+      const rendering = item ? aceDescriptionHtml(item).catch(() => null) : null;
+      ActionBar._tipTimer = setTimeout(async () => {
         ActionBar._tipTimer = null;
         try {
+          if (rendering) await rendering;
           // Still under the pointer? A slow hand that moved on must not be
           // shown a card for a slot it has already left.
           if (!slot.matches(":hover")) return;
+          const html = item ? ActionBar._tooltipFor(item) : baked;
           game.tooltip?.activate?.(slot, { html, direction: "UP" });
         } catch (err) {
           console.warn(`${LOG} | could not show the tooltip:`, err);
@@ -1081,9 +1102,11 @@ export class ActionBar {
         el.classList.remove("ace-qol-ab-visible");
         el.replaceChildren();
         ActionBar._actorUuid = null;
+        ActionBar._actorNow = null;
         return;
       }
       ActionBar._actorUuid = actor.uuid;
+      ActionBar._actorNow = actor;
       el.classList.add("ace-qol-ab-visible");
 
       const esc = foundry.utils.escapeHTML;
@@ -1349,13 +1372,15 @@ export class ActionBar {
       // MOUSE OFF THE SLOT AND THE TOOLTIP GOES. Prismatic Spray is nine
       // paragraphs. Foundry's own locked tooltips take pointer events and stay
       // until dismissed, which is the mechanism dnd5e uses for exactly this.
-      slot.addEventListener("auxclick", (ev) => {
+      slot.addEventListener("auxclick", async (ev) => {
         if (ev.button !== 1) return;          // middle only
         ev.preventDefault();
         ev.stopPropagation();
         try {
           const item = actor.items.get(slot.dataset.itemId);
           if (!item) return;
+          // A pinned card is read at length, so it waits for the rendered text.
+          await aceDescriptionHtml(item).catch(() => null);
           const box = slot.getBoundingClientRect();
           game.tooltip?.createLockedTooltip?.(
             { top: `${Math.round(box.top)}px`, left: `${Math.round(box.right + 8)}px` },

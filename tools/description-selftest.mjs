@@ -17,7 +17,7 @@ globalThis.ui = { notifications: { info: () => {}, warn: () => {}, error: () => 
 globalThis.foundry = { applications: { ux: {} }, utils: { escapeHTML: (s) => String(s) } };
 globalThis.canvas = { grid: { size: 100 } };
 
-const { aceStripEnrichers, aceDescriptionText, aceDescriptionTextSync } =
+const { aceStripEnrichers, aceDescriptionText, aceDescriptionTextSync, aceDescriptionFloorHtml } =
   await import("file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/description-reader.mjs");
 
 let pass = 0, fail = 0;
@@ -61,6 +61,52 @@ check("the label survives its reference",
 check("an ampersand reference keeps its label too",
   aceStripEnrichers("You are &Reference[condition=prone]{Prone} until dawn.").trim(),
   "You are Prone until dawn.");
+
+console.log("\nHIS PRISMATIC WALL, AS THE BOOK STORES IT");
+// Johnny, 2026-09-11: "&Reference[BrightLight]" on his hover, and the table of
+// layers run into one line. The book stores the ampersand encoded.
+const wall = "<p>If you position the wall in a space occupied by a creature, the spell ends instantly without effect.</p>"
+  + "<p>The wall sheds &amp;Reference[BrightLight] within 100 feet and &amp;Reference[DimLight] for an additional "
+  + "100 feet. The creature must succeed on a Constitution saving throw or have the &amp;Reference[Blinded apply=false] "
+  + "condition for 1 minute.</p><table><tr><th>Order</th><th>Effects</th></tr><tr><td>1</td><td>Red.</td></tr></table>";
+check("an encoded reference is spelled out, never shown", /Reference/.test(aceStripEnrichers(wall)), false);
+check("as the rule it names", aceStripEnrichers(wall).includes("sheds Bright Light within 100 feet"), true);
+check("a condition reference drops its switches", aceStripEnrichers(wall).includes("have the Blinded condition"), true);
+const wallItem = { uuid: "Item.wall", name: "Prismatic Wall", system: { description: { value: wall } } };
+const flat = aceDescriptionTextSync(wallItem);
+check("paragraphs do not run together when flattened", flat.includes("without effect. The wall"), true);
+check("nor do table cells", /Order\s+Effects\s+1\s+Red/.test(flat), true);
+check("the hover's fallback keeps its paragraphs and its table",
+  /<\/p><p>[\s\S]*<table>/.test(aceDescriptionFloorHtml({ ...wallItem, uuid: "Item.wall2" })), true);
+
+console.log("\nEVERY dnd5e COMMAND AS THE WORDS IT PRINTS");
+check("a save", aceStripEnrichers("must succeed on a [[/save ability=con dc=14]] or").trim(),
+  "must succeed on a DC 14 Constitution saving throw or");
+check("an older save", aceStripEnrichers("a [[/save dex 15]] or").trim(), "a DC 15 Dexterity saving throw or");
+check("a save with its own label", aceStripEnrichers("Constitution Saving Throw: [[/save con 12 format=long]]{ DC 12}.").trim(),
+  "Constitution Saving Throw: DC 12.");
+check("damage", aceStripEnrichers("takes [[/damage 2d6 type=fire average=true]] damage").trim(), "takes 2d6 fire damage");
+check("an inline roll keeps its dice", aceStripEnrichers("taking 10 ([[/r 3d6]]) poison damage").trim(),
+  "taking 10 (3d6) poison damage");
+check("a check", aceStripEnrichers("a [[/skill skill=prc dc=13]] reveals it").trim(), "a DC 13 Perception check reveals it");
+check("the creature's name, when it is known", aceStripEnrichers("[[lookup @name]] attacks.", { name: "Neferon" }).trim(),
+  "Neferon attacks.");
+check("dnd5e's whole attack line leaves nothing half-printed",
+  aceStripEnrichers("[[/attack extended]]. [[/damage extended]]. The target must succeed").trim(), "The target must succeed");
+
+console.log("\nWHAT HIS WORLD ACTUALLY HOLDS: NESTED AND BROKEN ENRICHERS");
+// ⚠️ Magic Missile's own text, on fifteen copies in hijinx: a roll whose label
+// is a lookup. One pass handed the label back with the lookup still inside.
+check("a lookup inside a roll's label is spelled out too",
+  aceStripEnrichers("<p>[[2 + @item.level]]{Level [[lookup @item.level]] darts}</p>", { level: 1 }), "<p>Level 1 darts</p>");
+check("and with no level known, nothing bracketed is left",
+  hasBrackets(aceStripEnrichers("[[2 + @item.level]]{Level [[lookup @item.level]] darts}")), false);
+check("an enricher missing a bracket keeps its label",
+  aceStripEnrichers("The [[Lookup @Name Lowercase]{monster} can't take this action again").trim(),
+  "The monster can't take this action again");
+check("a stray pair of brackets in a sentence is dropped",
+  aceStripEnrichers("The rust monster makes one attack and uses twice]].").trim(),
+  "The rust monster makes one attack and uses twice.");
 
 console.log("\nTHE COLD READ — no cache, no enricher available");
 // This is the path the action bar takes before priming finishes, and the path

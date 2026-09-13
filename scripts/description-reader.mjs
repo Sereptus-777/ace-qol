@@ -31,6 +31,9 @@
 // or throws, the worst thing that can reach the screen is a sentence with the
 // name missing — never the brackets. That is the whole point: there is no path
 // through here, including the failure paths, that shows him `[[lookup @name]]`.
+// Imports nothing itself, so no import cycle can reach this file through it.
+import { inlineRollsAsText } from "./inference/spell-text.mjs";
+
 const MODULE_ID = "ace-qol";
 
 /**
@@ -51,38 +54,159 @@ function _raw(item, { activity = null } = {}) {
   return String(flavour || item?.system?.description?.value || "").trim();
 }
 
+const ABILITY = { str: "Strength", dex: "Dexterity", con: "Constitution",
+  int: "Intelligence", wis: "Wisdom", cha: "Charisma" };
+const SKILL = { acr: "Acrobatics", ani: "Animal Handling", arc: "Arcana", ath: "Athletics",
+  dec: "Deception", his: "History", ins: "Insight", itm: "Intimidation", inv: "Investigation",
+  med: "Medicine", nat: "Nature", prc: "Perception", prf: "Performance", per: "Persuasion",
+  rel: "Religion", slt: "Sleight of Hand", ste: "Stealth", sur: "Survival" };
+// dnd5e's own reference kinds (CONFIG.DND5E.ruleTypes), lower-cased.
+const RULE_KEYS = new Set(["rule", "ability", "areaofeffect", "condition", "creaturetype", "damage",
+  "skill", "spellcomponent", "spellschool", "spelltag", "weaponmastery"]);
+
+/** "BrightLight", "bright-light", "blinded" as "Bright Light", "Bright Light", "Blinded". */
+const _words = (s) => String(s ?? "").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[-_]+/g, " ")
+  .replace(/\s+/g, " ").trim().replace(/\b([a-z])/g, (c) => c.toUpperCase());
+
+/** An enricher's inside, "ability=con dc=14 format=long" or "con 14", as parts. */
+function _configOf(inside) {
+  const keyed = {}, bare = [];
+  for (const tok of String(inside ?? "").trim().split(/\s+/).filter(Boolean)) {
+    const eq = tok.indexOf("=");
+    if (eq > 0) keyed[tok.slice(0, eq).toLowerCase()] = tok.slice(eq + 1);
+    else bare.push(tok);
+  }
+  return { keyed, bare };
+}
+const _ability = (t) => ABILITY[String(t ?? "").toLowerCase().slice(0, 3)] ?? null;
+
+/** What `&Reference[...]` points at, as the name dnd5e prints for it. */
+function _referenceWords(inside) {
+  const { keyed, bare } = _configOf(inside);
+  const named = Object.entries(keyed).find(([k]) => RULE_KEYS.has(k))?.[1];
+  return _words(named ?? bare.join(" "));
+}
+
+/** `[[/save ability=con dc=14]]` as "DC 14 Constitution saving throw". */
+function _saveWords(inside) {
+  const { keyed, bare } = _configOf(inside);
+  const abilities = String(keyed.ability ?? bare.find(t => _ability(t)) ?? "").split(/[,|/]/)
+    .map(_ability).filter(Boolean);
+  const dc = keyed.dc ?? bare.find(t => /^\d+$/.test(t));
+  return [dc ? `DC ${dc}` : "", abilities.join(" or "), "saving throw"].filter(Boolean).join(" ");
+}
+
+/** `[[/damage 2d6 type=fire]]` as "2d6 fire". */
+function _damageWords(inside) {
+  const { keyed, bare } = _configOf(inside);
+  const formula = keyed.formula ?? bare.filter(t => /\d/.test(t) || /^[+\-*/]$/.test(t)).join(" ");
+  const types = String(keyed.type ?? keyed.types ?? bare.filter(t => /^[a-z]+$/i.test(t)).join(","))
+    .split(/[,|/]/).map(t => t.trim().toLowerCase()).filter(Boolean).join(" or ");
+  return [formula, types].filter(Boolean).join(" ");
+}
+
+/** `[[/skill skill=prc dc=13]]` as "DC 13 Perception check". */
+function _checkWords(inside) {
+  const { keyed, bare } = _configOf(inside);
+  const key = String(keyed.skill ?? keyed.ability ?? keyed.tool ?? bare.find(t => !/^\d+$/.test(t)) ?? "")
+    .toLowerCase().split(/[,|/]/)[0];
+  const what = SKILL[key] ?? Object.values(SKILL).find(v => v.toLowerCase() === key) ?? _ability(key) ?? _words(key);
+  const dc = keyed.dc ?? bare.find(t => /^\d+$/.test(t));
+  return [dc ? `DC ${dc}` : "", what, "check"].filter(Boolean).join(" ");
+}
+
+/** Whose words these are, for `[[lookup @name]]`, `@item.name` and `@item.level`. */
+const _context = (item) => ({ name: item?.actor?.name ?? null, itemName: item?.name ?? null,
+  level: item?.system?.level ?? null });
+
 /**
- * Everything a screen must never see, removed.
+ * Every enricher spelled out as the words dnd5e would print, and nothing a
+ * screen must never see.
  *
- * ⚠️ THIS IS THE FLOOR, NOT THE FEATURE. It runs when enrichment could not, and
- * it is deliberately blunt: an enricher whose meaning we cannot resolve is
- * dropped rather than shown. A label inside `@UUID[...]{Sword of Wounding}` is
- * kept, because that label IS the readable answer.
+ * ⚠️ THIS IS THE FLOOR, NOT THE FEATURE. It runs when enrichment could not, so
+ * it is the text a hover shows before the rendered version is ready.
+ *
+ * ⚠️🔴 IT USED TO DROP WHAT IT COULD NOT READ AND MISS WHAT IT DID NOT EXPECT.
+ * Johnny, 2026-09-11, hovering Prismatic Wall: "The wall sheds
+ * &Reference[BrightLight] within 100 feet". The book stores the ampersand
+ * encoded, "&amp;Reference[...]", which the old pattern never matched, and it
+ * surfaced once the text was decoded for the screen. On its first run the
+ * replay counted 2,758 items in hijinx doing the same. And a save or a damage
+ * roll was deleted outright, leaving "must succeed on a  or".
+ *
+ * A label inside `@UUID[...]{Sword of Wounding}` is kept, because that label
+ * IS the readable answer.
+ *
+ * ⚠️ A LABEL CAN HOLD ANOTHER ENRICHER, so this runs until nothing changes.
+ * Magic Missile's own text is `[[2 + @item.level]]{Level [[lookup @item.level]]
+ * darts}`: a roll whose label is a lookup. One pass handed the label back with
+ * the lookup still inside it, on fifteen copies of the spell in hijinx.
+ *
+ * ⚠️ AND WHAT IS LEFT OF A BROKEN ONE IS NEVER SHOWN. His world holds an
+ * enricher missing a bracket ("[[Lookup @Name Lowercase]{monster}") and a
+ * statblock with a stray "]]" in the middle of a sentence.
+ *
+ * @param {string} html
+ * @param {{name?: string|null, itemName?: string|null, level?: number|null}} [who]  for the lookups
  */
-export function aceStripEnrichers(html) {
+export function aceStripEnrichers(html, { name = null, itemName = null, level = null } = {}) {
+  const labelOr = (label, fallback) => String(label ?? "").trim() || fallback;
   let out = String(html ?? "");
+  for (let round = 0; round < 3; round++) {
+    const next = _spellOut(out, { name, itemName, level, labelOr });
+    if (next === out) break;
+    out = next;
+  }
+  // What is left of a broken enricher: a lone bracket, never shown.
+  return out.replace(/\[\[[^[\]]*\](?:\{([^}]*)\})?/g, (_m, label) => labelOr(label, ""))
+    .replace(/\[\[|\]\]/g, "");
+}
+
+/** One pass of aceStripEnrichers: every enricher it recognises, as words. */
+function _spellOut(html, { name, itemName, level, labelOr }) {
+  let out = inlineRollsAsText(html);
+  // dnd5e's embedded attack and damage lines print nothing without the activity.
+  out = out.replace(/\[\[\/(?:attack|damage)\s+extended\s*\]\]\.?/gi, "");
+  out = out.replace(/(?:&amp;|&)Reference\[([^\]]*)\](?:\{([^}]*)\})?/gi,
+    (_m, inside, label) => labelOr(label, _referenceWords(inside)));
+  out = out.replace(/\[\[\/save\s+([^\]]*)\]\](?:\{([^}]*)\})?/gi,
+    (_m, inside, label) => labelOr(label, _saveWords(inside)));
+  out = out.replace(/\[\[\/(?:damage|dmg|heal|healing)\s+([^\]]*)\]\](?:\{([^}]*)\})?/gi,
+    (_m, inside, label) => labelOr(label, _damageWords(inside)));
+  out = out.replace(/\[\[\/(?:check|skill|tool)\s+([^\]]*)\]\](?:\{([^}]*)\})?/gi,
+    (_m, inside, label) => labelOr(label, _checkWords(inside)));
+  out = out.replace(/\[\[lookup\s+@name\s*\]\](?:\{([^}]*)\})?/gi, (_m, label) => labelOr(label, name || "it"));
+  out = out.replace(/\[\[lookup\s+@item\.name\s*\]\](?:\{([^}]*)\})?/gi, (_m, label) => labelOr(label, itemName || "it"));
+  out = out.replace(/\[\[lookup\s+@item\.level\s*\]\](?:\{([^}]*)\})?/gi,
+    (_m, label) => labelOr(label, level !== null && level !== undefined ? String(level) : ""));
+  out = out.replace(/\[\[lookup\s+@labels\.description\.affects[^\]]*\]\]/gi, "each creature");
   // `@UUID[...]{Label}` and friends keep their label.
   out = out.replace(/@[A-Za-z]+\[[^\]]*\]\{([^}]*)\}/g, "$1");
   // A referential enricher with no label has nothing readable left.
   out = out.replace(/@[A-Za-z]+\[[^\]]*\]/g, "");
-  // `[[/damage 2d6]]`, `[[lookup @name]]`, `[[1d6+2]]` — anything bracketed.
-  out = out.replace(/\[\[[^\]]*\]\]/g, "");
-  // A bare `&Reference[...]` style enricher.
-  out = out.replace(/&[A-Za-z]+\[[^\]]*\](\{[^}]*\})?/g, (_m, label) =>
-    label ? label.slice(1, -1) : "");
+  // Anything else bracketed: its label if it has one, otherwise nothing.
+  out = out.replace(/\[\[[^\]]*\]\](?:\{([^}]*)\})?/g, (_m, label) => labelOr(label, ""));
+  // A bare `&Something[...]` enricher of another kind, stored either way.
+  out = out.replace(/(?:&amp;|&)[A-Za-z]+\[[^\]]*\](?:\{([^}]*)\})?/g, (_m, label) => labelOr(label, ""));
   return out;
 }
 
 /** HTML to readable prose: tags out, entities decoded, whitespace collapsed. */
 function _flatten(html, limit) {
+  // ⚠️ A BLOCK IS A GAP. Taking the text out of the markup ran paragraphs and
+  // table cells straight together: "without effect.The wall" and "Prismatic
+  // LayersOrderEffects1Red" on his hover of Prismatic Wall (2026-09-11).
+  const spaced = String(html ?? "")
+    .replace(/<br\s*\/?>/gi, " ")
+    .replace(/<\/(p|div|li|tr|td|th|h[1-6]|table|thead|tbody|ul|ol|blockquote|section|caption|dt|dd)>/gi, "</$1> ");
   let text;
   try {
     const el = document.createElement("div");
-    el.innerHTML = String(html ?? "");
+    el.innerHTML = spaced;
     text = el.textContent ?? "";
   } catch (_) {
     // No DOM (a test harness, a headless call). Blunt but never wrong-looking.
-    text = String(html ?? "").replace(/<[^>]+>/g, " ");
+    text = spaced.replace(/<[^>]+>/g, " ");
   }
   text = text.replace(/\s+/g, " ").trim();
   if (limit && text.length > limit) {
@@ -113,7 +237,7 @@ export async function aceDescriptionHtml(item, { activity = null, actor = null }
     if (!TE?.enrichHTML) {
       console.warn(`${MODULE_ID} | this Foundry has no text enricher, so descriptions `
         + `are shown with their enricher syntax removed rather than resolved.`);
-      return aceStripEnrichers(raw);
+      return aceStripEnrichers(raw, _context(item));
     }
     const rollData = activity?.getRollData?.()
                   ?? item?.getRollData?.()
@@ -131,7 +255,7 @@ export async function aceDescriptionHtml(item, { activity = null, actor = null }
     console.warn(`${MODULE_ID} | could not enrich the description of `
       + `"${item?.name ?? "an item"}", so any enricher text in it has been removed `
       + `rather than resolved:`, err);
-    return aceStripEnrichers(raw);
+    return aceStripEnrichers(raw, _context(item));
   }
 }
 
@@ -156,7 +280,21 @@ export function aceDescriptionTextSync(item, { limit = 0, activity = null } = {}
   if (hit) return _flatten(hit, limit);
   // Not warm yet: warm it for next time, and answer safely now.
   aceDescriptionHtml(item, { activity }).catch(() => {});
-  return _flatten(aceStripEnrichers(raw), limit);
+  return _flatten(aceStripEnrichers(raw, _context(item)), limit);
+}
+
+/**
+ * The description as markup with every enricher spelled out, right now.
+ *
+ * ⚠️ FOR A CARD THAT CANNOT WAIT. It keeps the paragraphs and the tables,
+ * which flattening to prose destroys, and it never shows enricher syntax. It
+ * warms the cache on the way past, so the next look is the rendered text.
+ */
+export function aceDescriptionFloorHtml(item, { activity = null } = {}) {
+  const raw = _raw(item, { activity });
+  if (!raw) return "";
+  aceDescriptionHtml(item, { activity }).catch(() => {});
+  return aceStripEnrichers(raw, _context(item));
 }
 
 /**

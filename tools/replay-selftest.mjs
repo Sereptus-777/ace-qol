@@ -574,7 +574,10 @@ await quiet(async () => {
 const count = Object.keys(now.items).length;
 const codes = Object.values(now.items).filter(r => r.hover === "shows codes").length;
 console.log(`  ${count} items read on ${ACTORS.size} creatures${errors ? `, ${errors} could not be read` : ""}.`);
-console.log(`  (known open: ${codes} items whose hover, before the full text is ready, still shows raw codes)`);
+// ⚠️ PINNED AT ZERO SINCE 2026-09-13. It was 2,758 on the first run, which is
+// how "&Reference[BrightLight]" reached his hover of Prismatic Wall.
+check("no hover shows raw codes, even before its full text is ready", codes === 0,
+  codes ? `${codes} items still do` : `${count} items clean`);
 
 let golden = null;
 if (existsSync(GOLDEN)) {
