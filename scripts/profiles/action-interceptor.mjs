@@ -38,6 +38,7 @@ import { SpellPipeline } from "../spell-pipeline/pipeline.mjs";
 import { RulesIndex } from "../rules/rules-index.mjs";
 import { readMechanics, compareToBook, isCantrip, filterForCantrip } from "../rules/rules-compare.mjs";
 import { resolveItem, printSnapshot } from "../inference/snapshot.mjs";
+import { recipeForActivity, recipeLine } from "../inference/recipe.mjs";
 
 // ⚠️ HARDCODED. This file is reached from the entry file; importing MODULE_ID
 // back would be a cycle, and a const read at top level inside a cycle throws at
@@ -324,6 +325,13 @@ export class ActionInterceptor {
     // the shape and is kept beside it rather than confused with it.
     const curated = _safe(() => RulesBrain.lookup(item, { actor }), null);
 
+    // ⚠️ THE ONE ROAD, PHASE 0 (2026-09-13): THE FULL RECIPE, NOT A SHAPE WORD.
+    // Johnny: "Reader prints a full recipe on every press." Nothing runs from it
+    // yet; it is built, published on the reading and printed, and the table
+    // plays exactly as before.
+    let rec = null, recErr = null;
+    try { rec = recipeForActivity(item, activity, { actor }); } catch (err) { recErr = err; }
+
     const reading = {
       id: activity.id,
       at: Date.now(),
@@ -343,6 +351,8 @@ export class ActionInterceptor {
       owner: _ownerOf(item, aType),
       profile,
       curated,
+      recipe: rec?.recipe ?? null,
+      noRecipe: rec ? (rec.none ?? null) : `no recipe because building it failed: ${recErr?.message ?? recErr}`,
       book: null,
       disagreements: [],
       claimedBy: null,
@@ -359,6 +369,10 @@ export class ActionInterceptor {
     console.log(`${LOG} | #${ActionInterceptor._rollingCount} ${actor.name} used "${item.name}" `
       + `[${item.type}/${aType}] — ${edition} rules, shape=${shape ?? "unknown"} (${source}), `
       + `owner=${reading.owner}`);
+    // ⚠️ A RECIPE THAT COULD NOT BE BUILT SAYS SO. Printing nothing would read
+    // as "this button has no recipe", which is a different answer.
+    console.log(`${LOG} | recipe: ${rec ? recipeLine(rec) : reading.noRecipe}`,
+      rec?.recipe ?? recErr ?? "");
 
     // ── The book check and the silence watch, both off the critical path ──
     ActionInterceptor._checkAgainstBooks(reading).catch(err =>

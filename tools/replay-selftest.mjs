@@ -178,7 +178,8 @@ class Collection extends Map {
 
 let SpellPipeline, SaveEngine, PostHitSaves, DescriptionParser, readSaveOutcome,
   readActivities, readAppliedConditions, decideActivityChoice, upCanBeSeen, aceStripEnrichers,
-  readPrismaticWall, PrismaticWallEngine, RepeatingSaveEngine, spellIsUp;
+  readPrismaticWall, PrismaticWallEngine, RepeatingSaveEngine, spellIsUp,
+  recipesFor, recipeLine;
 try {
   ({ readPrismaticWall } = await import(`${MODULE}/scripts/rules/prismatic-wall.mjs`));
   ({ PrismaticWallEngine } = await import(`${MODULE}/scripts/prismatic-wall-engine.mjs`));
@@ -191,6 +192,7 @@ try {
   ({ readActivities, readAppliedConditions } = await import(`${MODULE}/scripts/read-activities.mjs`));
   ({ decideActivityChoice, upCanBeSeen, spellIsUp } = await import(`${MODULE}/scripts/activity-choice.mjs`));
   ({ aceStripEnrichers } = await import(`${MODULE}/scripts/description-reader.mjs`));
+  ({ recipesFor, recipeLine } = await import(`${MODULE}/scripts/inference/recipe.mjs`));
 } catch (err) {
   console.log("could not load ACE under the stand-in:", err?.stack ?? err);
   process.exit(2);
@@ -212,12 +214,72 @@ for (const [k, v] of actorRows) {
   }
 }
 const asSet = (v) => new Set(Array.isArray(v) ? v : (v instanceof Set ? [...v] : (v ? [v] : [])));
+
+// ⚠️ A STORED ITEM IS NOT A LOADED ONE (09-13). At load dnd5e 5.3.3 gives a
+// weapon that is not a ranged type its reach, 5 feet or 10 with the reach
+// property (WeaponData prepareDerivedData), fills every activity that does not
+// override from its item's activation, duration, range and target (the
+// activity's prepareFinalData, `_setOverride`), and turns a save DC's "initial"
+// into the caster's spellcasting for a spell (SaveActivity prepareData). This
+// copy skipped all three, so the replay read Varek's Counterspell as an action
+// and a longsword as reaching nowhere, while his table reads a reaction and five
+// feet.
+const ITEM_FIELDS = { spell: ["activation", "duration", "range", "target"], weapon: ["range"] };
+const WEAPON_ATTACK = { simpleM: "melee", simpleR: "ranged", martialM: "melee", martialR: "ranged",
+  siege: "ranged" };
+const plain = (v) => !!v && typeof v === "object" && !Array.isArray(v) && !(v instanceof Set);
+const copy = (v) => JSON.parse(JSON.stringify(v));
+/** foundry.utils.mergeObject with its defaults: the source's values win, objects merge. */
+function mergeInto(target, source) {
+  for (const [k, v] of Object.entries(source ?? {})) {
+    if (plain(v) && plain(target[k])) mergeInto(target[k], v);
+    else target[k] = plain(v) ? copy(v) : v;
+  }
+  return target;
+}
+function loadedSystem(raw) {
+  const system = { ...(raw.system ?? {}) };
+  if (raw.type === "weapon" && plain(system.range)) {
+    const range = { ...system.range };
+    const rch = (raw.system?.properties ?? []).includes("rch");
+    if (WEAPON_ATTACK[system.type?.value] === "ranged") range.reach = null;
+    else if (range.reach === null || range.reach === undefined) {
+      const units = range.units || "ft";
+      if (units === "ft") range.reach = rch ? 10 : 5;
+      else if (units === "m") range.reach = rch ? 3 : 1.5;
+    }
+    system.range = range;
+  }
+  return system;
+}
+function loadedActivity(a, type, system) {
+  const out = { ...a };
+  for (const key of ITEM_FIELDS[type] ?? []) {
+    if (!plain(system[key])) continue;
+    const own = plain(a[key]) ? copy(a[key]) : {};
+    if (!own.override) mergeInto(own, system[key]);
+    out[key] = own;
+  }
+  if (plain(out.range)) {
+    const r = out.range = { ...out.range };
+    if ((r.long ?? 0) > (r.value ?? 0)) r.value = r.long;
+    else if (r.reach && !r.value) r.value = r.reach;
+  }
+  const calc = out.save?.dc?.calculation;
+  if (plain(out.save?.dc) && (calc === undefined || calc === "initial")) {
+    out.save = { ...out.save, dc: { ...out.save.dc, calculation: type === "spell" ? "spellcasting" : "" } };
+  }
+  return out;
+}
+
 function liveItem(raw, actor) {
   const uuid = `${actor.uuid}.Item.${raw._id}`;
   const item = { ...raw, id: raw._id, uuid, actor, parent: actor, flags: raw.flags ?? {},
     getFlag: (s, k) => raw.flags?.[s]?.[k], getRollData: () => ({}) };
+  const system = loadedSystem(raw);
   // ⚠️ A LIVE ITEM IS NOT ITS STORED COPY: a save's abilities are a Set live.
-  const acts = new Collection(Object.entries(raw.system?.activities ?? {}).map(([k, a]) => {
+  const acts = new Collection(Object.entries(raw.system?.activities ?? {}).map(([k, stored]) => {
+    const a = loadedActivity(stored, raw.type, system);
     const id = a._id ?? k;
     return [id, { ...a, id, uuid: `${uuid}.Activity.${id}`, item, actor, parent: item,
       save: a.save ? { ...a.save, ability: asSet(a.save.ability) } : a.save }];
@@ -226,7 +288,7 @@ function liveItem(raw, actor) {
     { ...e, id: e._id, uuid: `${uuid}.ActiveEffect.${e._id}`, statuses: new Set(e.statuses ?? []),
       toObject() { return JSON.parse(JSON.stringify({ ...e, statuses: [...(e.statuses ?? [])] })); } }]));
   item.effects = effects;
-  item.system = { ...raw.system, properties: new Set(raw.system?.properties ?? []), activities: acts };
+  item.system = { ...system, properties: new Set(raw.system?.properties ?? []), activities: acts };
   ITEMS.set(uuid, item);
   return item;
 }
@@ -826,6 +888,12 @@ function recordFor(item) {
   }
   const floor = aceStripEnrichers(item.system?.description?.value ?? "");
   if (/\[\[|\]\]|Reference\[|@[A-Za-z]+\[/.test(floor)) r.hover = "shows codes";
+  // ⚠️ THE ONE ROAD, PHASE 0: every activity's full recipe, or why it has none.
+  try {
+    r.recipes = recipesFor(item, { actor: item.actor }).map(recipeLine);
+  } catch (err) {
+    r.recipes = [`no recipe because building it failed: ${err?.message ?? err}`];
+  }
   return r;
 }
 
@@ -849,6 +917,97 @@ console.log(`  ${count} items read on ${ACTORS.size} creatures${errors ? `, ${er
 // how "&Reference[BrightLight]" reached his hover of Prismatic Wall.
 check("no hover shows raw codes, even before its full text is ready", codes === 0,
   codes ? `${codes} items still do` : `${count} items clean`);
+
+// ⚠️ THE ONE ROAD, PHASE 0 (2026-09-13). His words: "Hijinx replay: every item
+// gets that recipe, or a named 'no recipe because…'. Blade Barrier must show
+// recatch." The golden below pins every line; these say what must be true.
+{
+  const recs = Object.values(now.items);
+  const lines = recs.flatMap(r => r.recipes ?? []);
+  const missing = recs.filter(r => !Array.isArray(r.recipes) || !r.recipes.length).map(r => r.who);
+  const broke = lines.filter(l => /building it failed/.test(l));
+  // Every named reason, counted, so each kind can be read rather than assumed.
+  const reasons = new Map();
+  for (const l of lines) {
+    const m = l.match(/: (no recipe because .*?)(?: · not in the recipe|$)/);
+    if (m) {
+      const k = m[1].replace(/"[^"]*"/g, "\"…\"").replace(/at (?:Compendium|Item)\.[^,\s]+/, "at <uuid>");
+      reasons.set(k, (reasons.get(k) ?? 0) + 1);
+    }
+  }
+  // ⚠️ EVERY ITEM, not only the ones with something to press, which the golden keeps.
+  let pressless = 0, all = 0;
+  await quiet(async () => {
+    for (const actor of ACTORS.values()) {
+      for (const item of actor.items) {
+        all++;
+        if (readActivities(item).length) continue;
+        const r = recipesFor(item, { actor });
+        if (r.length === 1 && r[0].none) pressless++;
+        else missing.push(`${actor.name} / ${item.name}`);
+      }
+    }
+  });
+  const nones = [...reasons.values()].reduce((a, b) => a + b, 0);
+  check("every item has a full recipe, or a named reason it has none (Phase 0)",
+    !missing.length && !broke.length,
+    missing.length || broke.length
+      ? `${missing.length} with nothing: ${missing.slice(0, 3).join("; ")}; `
+        + `${broke.length} failed: ${broke.slice(0, 3).join(" | ")}`
+      : `${lines.length - nones} recipes and ${nones} named reasons on ${recs.length} items; `
+        + `${pressless} more of his ${all} items have nothing to press, and each says so`);
+  for (const [why, n] of [...reasons].sort((a, b) => b[1] - a[1])) console.log(`      ${n} x ${why}`);
+
+  const full = lines.filter(l => !/: no recipe because /.test(l));
+  const FIELDS = ["key", "trigger", "where", "who", "decided", "on hit", "on crit", "on miss", "on fail",
+    "on success", "then", "scaling", "lasts", "recatch", "interrupts", "mechanic", "animation",
+    "resources", "confidence"];
+  const short = full.filter(l => FIELDS.some(f => !l.includes(`· ${f} `)));
+  check("every recipe carries every field, not a shape word (Phase 0)", !short.length,
+    short.length ? `${short.length} lines miss a field, e.g. ${short[0]}` : `${full.length} full recipes`);
+
+  const varek = ACTORS.get("2Z79PRegaAESfrGH");
+  const itemOf = (actor, re) => (actor ? [...actor.items].find(i => re.test(String(i.name))) : null);
+  const thorian = firstActor("Thorian Vex");
+  let bb = [], dis = [], sg = [];
+  await quiet(async () => {
+    const bbItem = itemOf(varek, /^blade barrier/i), disItem = itemOf(varek, /^disintegrate/i);
+    const sgItem = itemOf(thorian, /^spirit guardians/i);
+    bb = bbItem ? recipesFor(bbItem, { actor: varek }) : [];
+    dis = disItem ? recipesFor(disItem, { actor: varek }) : [];
+    sg = sgItem ? recipesFor(sgItem, { actor: thorian }) : [];
+  });
+  // ⚠️ HIS COPY IS THE 2024 SPELL, AND ITS OWN WORDS DECIDE (09-13): "Any creature
+  // in the wall's space makes a Dexterity saving throw", and "a creature also
+  // makes that save if it enters the wall's space or ends it turn there". The
+  // 2014 spell's "starts its turn there" is not in it. The first version of this
+  // check asked for the 2014 triggers and was wrong, not the reader.
+  const bbR = bb.map(x => x.recipe).filter(Boolean);
+  check("Blade Barrier shows recatch: entering the wall, and ending a turn in it (2024, Phase 0)",
+    bb.length === 2 && bbR.length === 2 && bbR.every(r => r.recatch.includes("enter-area")
+      && r.recatch.includes("end-of-turn") && !r.recatch.includes("start-of-turn")),
+    bb.map(recipeLine).join(" || ") || "Varek's Blade Barrier is not in this world");
+  check("Blade Barrier: all in the wall save as it appears; 6d10 force, half on a success (2024, Phase 0)",
+    bbR.length === 2 && bbR.every(r => r.who?.kind === "all-in-area"
+      && r.onFail.some(o => o.kind === "damage" && o.formula === "6d10" && o.types.includes("force")
+        && o.onSuccess === "half")),
+    bb.map(x => `${x.label}: who ${x.recipe?.who?.kind}; fail ${JSON.stringify(x.recipe?.onFail)}`)
+      .join(" || ") || "not found");
+  // And a 2014 spell reads the 2014 way, from its own words: nobody saves as it
+  // appears, only whoever enters it or starts a turn in it.
+  const sgR = sg.map(x => x.recipe).filter(Boolean);
+  check("Spirit Guardians (2014): whoever enters or starts a turn in it, nobody as it appears (Phase 0)",
+    sgR.length === 1 && sgR[0].who?.kind === "enters-later"
+      && sgR[0].recatch.join(",") === "enter-area,start-of-turn",
+    sg.map(recipeLine).join(" || ") || "Thorian Vex's Spirit Guardians is not in this world");
+  const disR = dis[0]?.recipe;
+  check("Disintegrate: a DEX save, 10d6 + 40 force on a failure, nothing on a success (Phase 0)",
+    dis.length === 1 && disR?.decidedBy?.kind === "save" && disR.decidedBy.ability === "dex"
+      && disR.onFail.some(o => o.kind === "damage" && o.formula === "10d6 + 40" && o.types.includes("force")
+        && o.onSuccess === "none")
+      && !disR.onSuccess.length && disR.mechanic === "disintegrate",
+    dis.map(recipeLine).join(" || ") || "Varek's Disintegrate is not in this world");
+}
 
 let golden = null;
 if (existsSync(GOLDEN)) {
