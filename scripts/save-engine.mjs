@@ -63,7 +63,7 @@ import { waitUntil } from "./wait-for.mjs";
 // The One Road, Phase 1: a save's damage is read from its recipe, shared out by
 // one rule, and lands through the hit-point door.
 import { damageShare, shareOf } from "./road/what-lands.mjs";
-import { HpDoor } from "./road/doors.mjs";
+import { HpDoor, ConditionDoor } from "./road/doors.mjs";
 import { recipeForActivity } from "./inference/recipe.mjs";
 
 // Real black d20 die art (per-face). These are the dice the GM already sees;
@@ -6592,8 +6592,9 @@ export class SaveEngine {
             continue;
           }
 
-          const out = await ConditionLibrary.applyByName(actor, cond.condition,
-            Object.keys(applyOpts).length ? applyOpts : undefined);
+          // Through the condition door (The One Road, section 11): the library's
+          // immunity check, no stacking, and its stamps, once the dice are down.
+          const out = await ConditionDoor.apply(actor, cond.condition, applyOpts);
           if (out?.ok) {
             const detail = out.level !== undefined ? ` (level ${out.level})` : "";
             const tagBits = [];
@@ -6651,7 +6652,7 @@ export class SaveEngine {
         // the end of each of its turns, ending the spell on a success").
         let saveCarried = !!repeatingSaveMeta && appliedForThisTarget.length > 0;
         for (const fx of copyFail) {
-          const res = await this._applySpellOwnEffect(item, actor, fx, {
+          const res = await ConditionDoor.applyItemEffect(item, actor, fx, {
             outcome: "fail",
             caster: saveCtx?.casterActor ?? item.actor ?? null,
             repeatingSave: (!saveCarried && repeatingSaveMeta) ? repeatingSaveMeta : null,
@@ -6709,7 +6710,7 @@ export class SaveEngine {
         }
         const names = [];
         for (const fx of copySuccess) {
-          const res = await this._applySpellOwnEffect(item, actor, fx, {
+          const res = await ConditionDoor.applyItemEffect(item, actor, fx, {
             outcome: "success",
             caster: saveCtx?.casterActor ?? item.actor ?? null,
             linkConcentration: false,
@@ -6728,110 +6729,9 @@ export class SaveEngine {
     return applied;
   }
 
-  /**
-   * Put one of the spell's own effects on a creature, the way dnd5e's apply
-   * button would: a copy of the item's effect, switched on, tied to the caster's
-   * concentration, carrying the repeat save when it is the one that has it.
-   *
-   * ⚠️ NO CONDITIONS RIDE ALONG. Statuses are stripped from the copy because a
-   * condition always goes through the condition library, with its immunity
-   * check and its own clean-up; putting it on twice would leave one behind.
-   *
-   * ⚠️ REPLACE, NEVER STACK. A second cast of the same spell on the same
-   * creature removes the first copy before the fresh one goes on.
-   *
-   * @returns {Promise<{ok: boolean, name: string, effect?: object, error?: string}>}
-   */
-  async _applySpellOwnEffect(item, actor, fx, { outcome = "fail", caster = null,
-      repeatingSave = null, endsWith = [], durationSeconds = null, castLevel = null,
-      dryRun = false, linkConcentration = true } = {}) {
-    const name = String(fx?.name ?? "an effect");
-    try {
-      const src = fx?.effect;
-      if (!src) return { ok: false, name, error: "the spell's effect could not be found" };
-      const data = typeof src.toObject === "function" ? src.toObject() : JSON.parse(JSON.stringify(src));
-      delete data._id;
-      data.disabled = false;
-      data.transfer = false;
-      data.origin = src.uuid ?? item?.uuid ?? null;
-      data.statuses = [];
-
-      // Its own duration if it has one, else the spell's. Foundry stamps when it
-      // started as the effect lands on the actor.
-      const dur = { ...(data.duration ?? {}) };
-      const own = ["seconds", "rounds", "turns"].some(k => Number(dur[k]) > 0);
-      if (!own && Number(durationSeconds) > 0) dur.seconds = Number(durationSeconds);
-      for (const k of ["startTime", "startRound", "startTurn", "combat"]) delete dur[k];
-      data.duration = dur;
-
-      const props = item?.system?.properties;
-      const isConc = linkConcentration && !!caster && (props?.has?.("concentration")
-        || (Array.isArray(props) && props.includes("concentration")));
-      let concEffect = null;
-      if (isConc) {
-        try { concEffect = game.aceQol?.SpellPipeline?.findCasterConcentrationFor?.(caster, item) ?? null; }
-        catch (_) { concEffect = null; }
-      }
-
-      const flags = { ...(data.flags ?? {}) };
-      flags.dnd5e = { ...(flags.dnd5e ?? {}) };
-      // dnd5e removes a dependent when its parent goes, so this ends it with the
-      // caster's concentration; ACE's own tag below is the sweep that never
-      // depends on the parent being found in time.
-      if (concEffect?.uuid) flags.dnd5e.dependentOn = concEffect.uuid;
-      if (castLevel !== null && Number.isFinite(Number(castLevel))) flags.dnd5e.spellLevel = Number(castLevel);
-      flags[MODULE_ID] = {
-        ...(flags[MODULE_ID] ?? {}),
-        spellEffect: { itemUuid: item?.uuid ?? null, effectId: fx.id, outcome,
-                       endsWith: (endsWith ?? []).filter(Boolean), stampedAt: Date.now() },
-      };
-      if (isConc) {
-        flags[MODULE_ID].concentrationOrigin = {
-          casterId: caster?.id ?? null, spellName: item?.name ?? null, spellItemId: item?.id ?? null,
-          concEffectUuid: concEffect?.uuid ?? null, stampedAt: Date.now(),
-        };
-      }
-      if (repeatingSave?.trigger && repeatingSave?.ability && Number.isFinite(Number(repeatingSave?.dc))) {
-        flags[MODULE_ID].repeatingSave = {
-          ability: String(repeatingSave.ability).toLowerCase(),
-          dc: Number(repeatingSave.dc),
-          trigger: String(repeatingSave.trigger),
-          spellName: item?.name ?? null,
-          castWorldTime: Number(repeatingSave.castWorldTime ?? game.time?.worldTime ?? 0),
-          durationSeconds: Number(repeatingSave.durationSeconds) || null,
-          stampedAt: Date.now(),
-        };
-      }
-      data.flags = flags;
-
-      const rules = Array.isArray(data.changes) ? data.changes.length : 0;
-      if (dryRun) {
-        console.log(`${MODULE_ID} | whyNoCondition: ${item?.name} WOULD put its own effect "${name}" `
-          + `on ${actor?.name} (${outcome}), ${rules ? `${rules} rule(s)` : "words only"}`
-          + `${flags[MODULE_ID].repeatingSave ? ", with the repeat save" : ""}.`);
-        return { ok: true, name, dryRun: true };
-      }
-
-      for (const e of (actor?.effects?.contents ?? [])) {
-        const se = e.flags?.[MODULE_ID]?.spellEffect;
-        if (se?.itemUuid === (item?.uuid ?? null) && se?.effectId === fx.id) {
-          try { await e.delete(); } catch (_) { /* already gone */ }
-        }
-      }
-      const created = await actor.createEmbeddedDocuments("ActiveEffect", [data]);
-      const eff = created?.[0] ?? null;
-      if (!eff) return { ok: false, name, error: "Foundry created nothing" };
-      console.log(`${MODULE_ID} | ${item?.name}: put its own effect "${name}" on ${actor.name} (${outcome}), `
-        + `${rules ? `${rules} rule(s)` : "words only"}`
-        + `${concEffect ? ", ends with the caster's concentration" : ""}`
-        + `${flags[MODULE_ID].repeatingSave ? `, repeat ${flags[MODULE_ID].repeatingSave.ability.toUpperCase()} save at the end of each turn` : ""}`
-        + `${endsWith?.length ? ", ends with its condition" : ""}.`);
-      return { ok: true, name, effect: eff };
-    } catch (err) {
-      console.warn(`${MODULE_ID} | ${item?.name}: could not put "${name}" on ${actor?.name}:`, err);
-      return { ok: false, name, error: String(err?.message ?? err) };
-    }
-  }
+  // (The spell's own effect goes on through ConditionDoor.applyItemEffect in
+  // road/doors.mjs. This file's copy of it was deleted on 2026-09-14 once
+  // nothing called it: one place puts an item's effect on a creature.)
 
   // ═══════════════════════════════════════════════════════════════════════════
   //  Phase 1 — Saves-Only Card (no damage yet, ROLL DAMAGE button)
