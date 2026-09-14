@@ -26,7 +26,7 @@ import { LearnedStore } from "./learned-store.mjs";
 import { classifyItem, KNOWN_SHAPES, describeClassification } from "./classify-item.mjs";
 import { DescriptionParser } from "../description-parser.mjs";
 import { getSpellTiming } from "../spell-timing.mjs";
-import { recipesFor, loadBookFor, bookReview } from "./recipe.mjs";
+import { recipesFor, loadBookFor, bookReview, fullDamageSaves } from "./recipe.mjs";
 import { CardDoor } from "../road/doors.mjs";
 
 /** Read one item the way the pipeline would, without changing anything. */
@@ -96,11 +96,14 @@ export async function postReviewCard(actor = null) {
   if (!game.user?.isGM) return;
   const rows = reviewActor(actor);
   const book = await bookDisagreements(actor);
+  // Every creature in the world when none is named: the list is read from data, and short.
+  const full = await fullDamageSaves(actor ? [actor] : (game.actors?.contents ?? []));
   const esc = (t) => foundry.utils.escapeHTML(String(t ?? ""));
 
-  if (!rows.length && !book.length) {
+  if (!rows.length && !book.length && !full.length) {
     ui.notifications?.info(`ACE has not had to work anything out for `
-      + `${actor?.name ?? "your players"}: every item is either curated or passive, and no sheet disagrees with its book.`);
+      + `${actor?.name ?? "your players"}: every item is either curated or passive, no sheet disagrees with its book, `
+      + `and no save stores full damage on a made save.`);
     return;
   }
 
@@ -154,6 +157,34 @@ export async function postReviewCard(actor = null) {
         </p>
         ${bookBody}${bookMore}` : "";
 
+  // Saves whose sheet stores "full" damage on a made save. A recipe holds half
+  // or none (Johnny, 2026-09-14: no third value; keep the names on the review list).
+  const fullBody = full.slice(0, 40).map(f => `
+      <div style="border-left:3px solid #c78d3d;padding:6px 10px;margin-bottom:8px;background:rgba(199,141,61,0.07);">
+        <div style="font-size:16px;color:#f0e4c0;">
+          <strong>${esc(f.name)}</strong>
+          <span style="color:#9aa4ad;font-size:14px;"> ${esc(f.actor ?? "no creature")}${f.activity ? `, ${esc(f.activity)}` : ""}</span>
+        </div>
+        <div style="font-size:14px;color:#c0b288;line-height:1.5;margin-top:3px;">
+          ${f.takes === "no damage" ? `Takes none on a made save: ${esc(f.from)} puts no damage on this save.`
+            : f.takes ? `Takes ${esc(f.takes)} on a made save, as ${esc(f.from)} reads it.`
+            : "ACE could not read what it takes on a made save; the console says why."}
+        </div>
+      </div>`).join("");
+  const fullMore = full.length > 40
+    ? `<p style="font-size:14px;color:#9aa4ad;margin:6px 0 0 0;">
+         ${full.length - 40} more not shown. The full list is in the console.</p>` : "";
+  const fullSection = full.length ? `
+        <div style="font-family:'Cinzel Decorative','Cinzel',serif;color:#d4af37;font-size:18px;
+                    font-weight:700;letter-spacing:0.8px;border-bottom:1px solid #4a3a28;
+                    padding-bottom:6px;margin:14px 0 10px 0;">
+          Saves whose sheet says full damage on a made save
+        </div>
+        <p style="font-size:14px;color:#c0b288;margin:0 0 10px 0;line-height:1.5;">
+          A recipe holds only half or none, so these are listed: each says what ACE takes on a made save.
+        </p>
+        ${fullBody}${fullMore}` : "";
+
   await CardDoor.post({
     whisper: game.users.filter(u => u.isGM).map(u => u.id),
     flags: { [MODULE_ID]: { type: "inferenceReview" } },
@@ -171,7 +202,7 @@ export async function postReviewCard(actor = null) {
           and the reasons are underneath each one. Anything wrong can be corrected once
           and it will stay corrected.
         </p>
-        ${body}${more}` : ""}${bookSection}
+        ${body}${more}` : ""}${bookSection}${fullSection}
       </div>`,
   }).catch(err => console.warn(`${MODULE_ID} | review card failed to post:`, err));
 
@@ -186,6 +217,13 @@ export async function postReviewCard(actor = null) {
     for (const b of book) {
       console.log(`${MODULE_ID} |   ${b.name} (${b.actor ?? "no creature"}, ${b.edition}, ${b.pack}): `
         + (b.differences ?? []).map(d => `${d.field}: the book says ${d.book}; the sheet says ${d.sheet}`).join(" | "));
+    }
+  }
+  if (full.length) {
+    console.log(`${MODULE_ID} | ${full.length} damaging save(s) whose sheet stores full damage on a made save:`);
+    for (const f of full) {
+      console.log(`${MODULE_ID} |   ${f.name} (${f.actor ?? "no creature"}, ${f.activity}): `
+        + `takes ${f.takes ?? "an unread share"} on a made save, as ${f.from} reads it`);
     }
   }
 }

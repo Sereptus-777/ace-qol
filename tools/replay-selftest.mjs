@@ -207,7 +207,7 @@ let SpellPipeline, SaveEngine, PostHitSaves, DescriptionParser, readSaveOutcome,
   readActivities, readAppliedConditions, decideActivityChoice, upCanBeSeen, aceStripEnrichers,
   readPrismaticWall, PrismaticWallEngine, RepeatingSaveEngine, spellIsUp,
   recipesFor, recipeLine, formulaValue, whatLands, HpDoor, SignalDoor, untilDiceLand, CombatState,
-  RulesIndex, bookReview;
+  RulesIndex, bookReview, fullDamageSaves;
 try {
   ({ readPrismaticWall } = await import(`${MODULE}/scripts/rules/prismatic-wall.mjs`));
   ({ PrismaticWallEngine } = await import(`${MODULE}/scripts/prismatic-wall-engine.mjs`));
@@ -220,7 +220,7 @@ try {
   ({ readActivities, readAppliedConditions } = await import(`${MODULE}/scripts/read-activities.mjs`));
   ({ decideActivityChoice, upCanBeSeen, spellIsUp } = await import(`${MODULE}/scripts/activity-choice.mjs`));
   ({ aceStripEnrichers } = await import(`${MODULE}/scripts/description-reader.mjs`));
-  ({ recipesFor, recipeLine, bookReview } = await import(`${MODULE}/scripts/inference/recipe.mjs`));
+  ({ recipesFor, recipeLine, bookReview, fullDamageSaves } = await import(`${MODULE}/scripts/inference/recipe.mjs`));
   ({ RulesIndex } = await import(`${MODULE}/scripts/rules/rules-index.mjs`));
   ({ formulaValue } = await import(`${MODULE}/scripts/inference/formula-value.mjs`));
   ({ whatLands } = await import(`${MODULE}/scripts/road/what-lands.mjs`));
@@ -1483,6 +1483,57 @@ check("no hover shows raw codes, even before its full text is ready", codes === 
     check("a creature's feature is never read from a same-named book template: every Wolf's Bite is its own (Phase 1)",
       bites.length ? fromBook.length === 0 : null,
       bites.length ? `${bites.length} Wolf Bites, ${fromBook.length} read from a book` : "no Wolf in this world");
+  }
+
+  // ── A save whose sheet says "full" stays none-on-success, and is named ──
+  // Johnny, 2026-09-14: "Leave the 12 'full' saves as none-on-success. Do not add
+  // a third onSuccess value. Keep the names on the review list."
+  {
+    const stored = [];   // read straight from the stored items, not through ACE
+    for (const a of ACTORS.values()) {
+      for (const it of a.items) {
+        for (const raw of Object.values(it._source?.system?.activities ?? {})) {
+          if (raw?.type === "save" && raw?.damage?.onSave === "full" && (raw?.damage?.parts ?? []).length) {
+            stored.push(`${a.name} / ${it.name}`);
+          }
+        }
+      }
+    }
+    let listed = [];
+    await quiet(async () => { listed = await fullDamageSaves([...ACTORS.values()]); });
+    const sorted = (xs) => JSON.stringify([...xs].sort());
+    // "no damage": the book's save carries none at all (2024 Wrathful Smite puts it on the hit).
+    const notNone = listed.filter(f => f.takes !== "none" && f.takes !== "no damage");
+    check("every damaging save whose sheet says full is on the review list, and takes none on a made save (Phase 1)",
+      stored.length ? (sorted(stored) === sorted(listed.map(f => `${f.actor} / ${f.name}`)) && !notNone.length) : null,
+      stored.length ? `${listed.length} listed of ${stored.length} stored`
+        + (notNone.length ? `; not none: ${notNone.map(f => `${f.actor} / ${f.name} takes ${f.takes} (${f.from})`).join("; ")}`
+          : "; each takes none") : "no save in this world says full");
+  }
+
+  // ── A creature's own feature is never matched to a book by its name ──
+  // Johnny, 2026-09-14: "Creature features stay on the creature's own sheet. No
+  // MM-template matching by feature name." The recipe, the spell pipeline's own
+  // reading and the book check all ask the books reader the same question.
+  {
+    const bite = RulesIndex.lookup("Bite", { edition: "2024" });
+    const templates = (RulesIndex._status?.packs ?? []).filter(p => p.skipped).map(p => p.id);
+    const read = [];
+    await quiet(async () => {
+      for (const a of ACTORS.values()) {
+        if (a.type === "character") continue;
+        for (const it of a.items) {
+          if (it.type === "spell") continue;
+          try { if (SpellPipeline._getEntry(it)?.usedBook) read.push(`${a.name} / ${it.name}`); }
+          catch (_) { /* an entry that cannot be read uses no book */ }
+        }
+      }
+    });
+    check("no creature-feature template pack answers a name: the Monster Manual's Bite is never found (Phase 1)",
+      templates.includes("dnd-monster-manual.features") && !(bite.hits ?? []).some(h => templates.includes(h.pack)),
+      `Bite: ${bite.status}; template packs left out: ${templates.join(", ") || "none"}`);
+    check("no creature's own feature is read from a book by its name, in the spell pipeline either (Phase 1)",
+      read.length === 0, read.length ? `${read.length}, e.g. ${read.slice(0, 3).join("; ")}` : "none");
   }
 
   // ── Evasion is a Dexterity rule ──

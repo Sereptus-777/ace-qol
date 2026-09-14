@@ -672,6 +672,9 @@ export class SpellPipeline {
       // which is a real answer and is said out loud in the evidence.
       const book = (() => {
         try {
+          // A creature's own feature is never matched to a book by its name
+          // (Johnny, 2026-09-14): the Monster Manual's features are templates.
+          if (!RulesIndex.namesItsBook(item)) return null;
           const edition = RulesBrain.resolveEdition(item);
           const found = RulesIndex.findSync(item.name, { edition, type: item.type });
           return found.doc ?? null;

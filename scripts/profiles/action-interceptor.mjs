@@ -386,6 +386,12 @@ export class ActionInterceptor {
 
   static async _checkAgainstBooks(reading) {
     const { item, edition } = reading;
+    // A creature's own feature is never compared with a book entry that only
+    // shares its name (Johnny, 2026-09-14): that is a template, not its rules.
+    if (!RulesIndex.namesItsBook(item)) {
+      reading.book = { status: "none", note: RulesIndex.SHEET_ONLY, name: null, pack: null };
+      return;
+    }
     const found = await RulesIndex.find(item.name, { edition, type: item.type });
     reading.book = { status: found.status, note: found.note,
                      name: found.hits?.[0]?.name ?? null,

@@ -928,6 +928,44 @@ export function bookReview() {
 }
 
 /**
+ * Damaging saves whose sheet stores "full" damage on a made save, each with
+ * what ACE takes on one. A recipe holds only half or none (section 5). Johnny,
+ * 2026-09-14: "Leave the 12 'full' saves as none-on-success. Do not add a third
+ * onSuccess value. Keep the names on the review list."
+ *
+ * @returns {Promise<Array<{actor, actorId, name, activity, takes, from}>>}
+ *   `takes` is "none" or "half" as the recipe reads it (the book's, for a named
+ *   spell); "no damage" when the recipe's save carries none at all (the 2024
+ *   book puts Wrathful Smite's damage on the hit, not on its save); null when the
+ *   recipe could not be read
+ */
+export async function fullDamageSaves(actors) {
+  const out = [];
+  for (const actor of actors ?? []) {
+    for (const item of (actor?.items ?? [])) {
+      const full = readActivities(item).filter(a => _s(a?.type) === "save"
+        && _s(a?.damage?.onSave) === "full" && (a?.damage?.parts?.length ?? 0) > 0);
+      if (!full.length) continue;
+      await loadBookFor(item, { actor });
+      for (const activity of full) {
+        let takes = null, from = "its sheet";
+        try {
+          const rec = recipeForActivity(item, activity, { actor });
+          const damage = rec.recipe?.onFail?.find(o => o.kind === "damage");
+          takes = damage ? (damage.onSuccess ?? null) : (rec.recipe ? "no damage" : null);
+          if (rec.book) from = `the book (${rec.book.pack})`;
+        } catch (err) {
+          console.warn(`${MODULE_ID} | the review list could not read the recipe of ${item?.name} on ${actor?.name}:`, err);
+        }
+        out.push({ actor: actor?.name ?? null, actorId: actor?.id ?? null, name: item?.name ?? null,
+                   activity: String(activity?.name || activity?.type || ""), takes, from });
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * Bring a named official item's book entry into memory, so the recipe read for
  * a cast a moment later is the book's. Boot warms only the party and the scene.
  */

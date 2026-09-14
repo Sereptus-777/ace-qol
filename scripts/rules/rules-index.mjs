@@ -124,6 +124,19 @@ export class RulesIndex {
         const pkg = String(pack.metadata?.packageName ?? "");
         const bookModule = pack.metadata?.packageType === "module" && /^dnd-/.test(pkg)
           && game.modules?.get?.(pkg)?.protected === true;
+        // ⚠️ A CREATURE'S FEATURE IS NOT IN A BOOK BY ITS NAME. Johnny, 2026-09-14:
+        // "Creature features stay on the creature's own sheet. No MM-template
+        // matching by feature name." dnd5e's monster-feature packs and the Monster
+        // Manual's and Dungeon Master's Guide's feature packs hold templates: the
+        // Monster Manual's Bite is 1d4 piercing with no attack type, and by name it
+        // became every Wolf's and Gnoll Fang's Bite. These packs are never read.
+        const packName = String(pack.metadata?.name ?? String(pack.collection ?? "").split(".").pop());
+        if (/(^|\.)monsterfeatures(24)?$/.test(String(pack.collection ?? ""))
+            || (bookModule && packName === "features")) {
+          packs.push({ id: pack.collection, label: pack.metadata?.label, count: 0, editions: "-",
+                       official: false, skipped: "creature feature templates, never matched by a name" });
+          continue;
+        }
         const index = await pack.getIndex(isSystem ? undefined
           : { fields: ["flags.ddbimporter.id", "system.source.book", "system.source.rules"] });
 
@@ -230,6 +243,24 @@ export class RulesIndex {
     const stripped = String(key).replace(/\s*[+-]\d+\s*$/, "").trim();
     return stripped && stripped !== key ? stripped : null;
   }
+
+  /**
+   * Whether an item's name may be looked up in the books at all.
+   *
+   * ⚠️ A CREATURE'S FEATURE STAYS ON ITS OWN SHEET (Johnny, 2026-09-14). A spell's
+   * name in one edition is one spell, on anyone. A player character's feature or
+   * gear is the book's. A monster's Bite, Claw or Greatclub is its own: by name
+   * the Stone Giant's greatclub became the Player's Handbook one. Every reader
+   * that looks a book entry up by an item's name asks this first.
+   */
+  static namesItsBook(item, actor = null) {
+    if (item?.type === "spell") return true;
+    const holder = actor ?? item?.actor ?? null;
+    return !holder || holder.type === "character";
+  }
+
+  /** What a lookup that was never made says, so it never reads as "not in the books". */
+  static SHEET_ONLY = "a creature's own feature is read from its sheet: its name does not say which creature's it is";
 
   /* ── Lookup ────────────────────────────────────────────────────────────── */
 
@@ -360,6 +391,7 @@ export class RulesIndex {
         if (!item?.name) return;
         if (item.type !== "spell" && item.type !== "feat" && item.type !== "weapon"
             && item.type !== "equipment" && item.type !== "consumable") return;
+        if (!RulesIndex.namesItsBook(item)) return;   // a creature's own feature is never looked up
         const edition = String(item.system?.source?.rules ?? "") === "2024" ? "2024" : "2014";
         const res = RulesIndex.lookup(item.name, { edition, type: item.type });
         if (res.status !== "found") return;

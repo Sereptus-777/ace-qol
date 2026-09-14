@@ -61,6 +61,8 @@ game.packs = [
   pack("dnd5e.spells24", "Spells",       "system", ["Cure Wounds", "Sleep"]),
   pack("dnd5e.items",    "Items (SRD)",  "system", ["Rapier"], "weapon"),
   pack("world.myspells", "My Imports",   "world",  ["Frostbite"]),
+  // ⚠️ A creature-feature template pack is never read by a name (2026-09-14).
+  pack("dnd5e.monsterfeatures24", "Monster Features", "system", ["Bite"], "feat"),
   // ⚠️ A PACK THAT WILL NOT OPEN MUST NOT LOOK LIKE AN EMPTY ONE.
   { documentName: "Item", collection: "broken.pack", metadata: { packageType: "module" },
     getIndex: async () => { throw new Error("corrupt"); } },
@@ -97,6 +99,18 @@ check("a magic weapon falls back to its base",
   RulesIndex.lookup("Rapier +3", { edition: "2014" }).hits[0].name, "Rapier");
 check("and the lookup reports which key it used",
   RulesIndex.lookup("Rapier +3", { edition: "2014" }).key, "rapier");
+
+console.log("\nA CREATURE'S FEATURE STAYS ON ITS OWN SHEET");
+// Johnny, 2026-09-14: "Creature features stay on the creature's own sheet. No
+// MM-template matching by feature name." The Monster Manual's Bite is a 1d4
+// template, and by name it became every Wolf's.
+check("a creature-feature template pack is left out of the index",
+  !!status.packs.find(p => p.id === "dnd5e.monsterfeatures24")?.skipped, true);
+check("so a feature's name never finds a template", RulesIndex.lookup("Bite", { edition: "2024" }).status, "none");
+check("a spell's name finds its book on anyone", RulesIndex.namesItsBook({ type: "spell", actor: { type: "npc" } }), true);
+check("a player character's feature may look for its book", RulesIndex.namesItsBook({ type: "feat", actor: { type: "character" } }), true);
+check("a monster's feature never does", RulesIndex.namesItsBook({ type: "feat", actor: { type: "npc" } }), false);
+check("nor a monster's weapon", RulesIndex.namesItsBook({ type: "weapon", actor: { type: "npc" } }), false);
 
 console.log("\n'NOT BUILT' AND 'NOT FOUND' MUST NEVER READ THE SAME");
 // One means his homebrew is fine; the other means every comparison in the game

@@ -214,6 +214,7 @@ export function snapshot(item, { actor = null, press = null, why = true } = {}) 
 
   // ── The books ──
   const book = press?.book ?? _safe(() => {
+    if (!RulesIndex.namesItsBook(item)) return { status: "none", note: RulesIndex.SHEET_ONLY, name: null };
     const res = RulesIndex.lookup(item?.name, { edition: edition ?? "2014", type: item?.type });
     return { status: res.status, note: res.note, name: res.hits?.[0]?.name ?? null };
   }, null);
