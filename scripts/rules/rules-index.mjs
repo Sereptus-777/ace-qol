@@ -111,13 +111,27 @@ export class RulesIndex {
         if (pack.documentName !== "Item") continue;
         if (NEVER_INDEX.has(pack.collection)) continue;
 
-        const index = await pack.getIndex();
         const isSystem = pack.metadata?.packageType === "system";
+        // ⚠️ WHICH PACKS ARE THE BOOKS (Johnny, 2026-09-14: "official pack item
+        // (PHB/DMG/MM/Xanathar/Mordenkainen 2024, etc.)... no homebrew"). Ranked:
+        //   1  the Wizards books Foundry sells: a protected module named "dnd-"
+        //      (dnd-players-handbook, dnd-monster-manual, dnd-dungeon-masters-guide)
+        //   2  dnd5e's own packs (the SRD)
+        //   3  a D&D Beyond import of a named book (Xanathar's, Tasha's, Elemental
+        //      Evil...), item by item: the import flag and its book on the item
+        // Chris's Premades, the MIDI showcase and every other automation or
+        // homebrew pack is indexed, but is not a book.
+        const pkg = String(pack.metadata?.packageName ?? "");
+        const bookModule = pack.metadata?.packageType === "module" && /^dnd-/.test(pkg)
+          && game.modules?.get?.(pkg)?.protected === true;
+        const index = await pack.getIndex(isSystem ? undefined
+          : { fields: ["flags.ddbimporter.id", "system.source.book", "system.source.rules"] });
 
-        // ⚠️ A WORLD OR MODULE PACK GOES IN BOTH EDITIONS ON PURPOSE. His
-        // DDB-imported content is not shipped by the system and carries its own
-        // edition ON EACH ITEM, so filing the whole pack under one edition
-        // would hide half his library from half his items.
+        // ⚠️ A WORLD OR MODULE PACK GOES IN BOTH EDITIONS ON PURPOSE, unless the
+        // entry names its own rules. His DDB-imported content is not shipped by
+        // the system and carries its own edition ON EACH ITEM, so filing the
+        // whole pack under one edition would hide half his library from half his
+        // items.
         const editions = isSystem
           ? [IS_2024_PACK(pack.collection) ? "2024" : "2014"]
           : ["2014", "2024"];
@@ -126,22 +140,29 @@ export class RulesIndex {
         for (const entry of index) {
           const key = RulesIndex.bookName(entry.name);
           if (!key) continue;
+          const bookNamed = String(entry.system?.source?.book ?? "").trim();
+          const imported = !isSystem && !bookModule && !!entry.flags?.ddbimporter
+            && !!bookNamed && !/homebrew/i.test(bookNamed);
+          const tier = bookModule ? 1 : isSystem ? 2 : imported ? 3 : null;
           const hit = {
             name: entry.name,
             type: entry.type,
             uuid: entry.uuid ?? `Compendium.${pack.collection}.${entry._id}`,
             pack: pack.collection,
             packLabel: pack.metadata?.label ?? pack.collection,
-            official: isSystem,
+            official: tier !== null,
+            tier,
           };
-          for (const ed of editions) {
+          const own = String(entry.system?.source?.rules ?? "");
+          const eds = (!isSystem && (own === "2014" || own === "2024")) ? [own] : editions;
+          for (const ed of eds) {
             const list = byEdition[ed].get(key);
             if (list) list.push(hit); else byEdition[ed].set(key, [hit]);
           }
           added++;
         }
         packs.push({ id: pack.collection, label: pack.metadata?.label, count: added,
-                     editions: editions.join("+"), official: isSystem });
+                     editions: editions.join("+"), official: isSystem || bookModule });
       } catch (err) {
         // ⚠️ A PACK THAT WILL NOT OPEN MUST NOT LOOK LIKE A PACK WITH NOTHING
         // IN IT. "Absent" and "broken" must never print the same message.
@@ -262,12 +283,16 @@ export class RulesIndex {
     let narrowed = type ? hits.filter(h => h.type === type) : hits;
     if (!narrowed.length) narrowed = hits;
 
-    // ⚠️ OFFICIAL BEATS A COPY OF ITSELF. His world almost certainly holds
-    // imported duplicates of SRD spells. Two hits that are the same spell from
-    // two places is not a real ambiguity, so prefer the system's own and only
-    // call it ambiguous when the shipped books genuinely disagree.
+    // ⚠️ OFFICIAL BEATS A COPY OF ITSELF, AND THE BEST BOOK BEATS THE REST. His
+    // world holds imported duplicates of the books' spells. The same spell in the
+    // Wizards book, the SRD and a D&D Beyond import is not an ambiguity: the
+    // highest-ranked book answers, and only two entries of the SAME rank that
+    // disagree are called ambiguous.
     const official = narrowed.filter(h => h.official);
-    if (official.length) narrowed = official;
+    if (official.length) {
+      const best = Math.min(...official.map(h => h.tier ?? 9));
+      narrowed = official.filter(h => (h.tier ?? 9) === best);
+    }
 
     if (narrowed.length > 1) {
       return { status: "ambiguous", hits: narrowed, key: usedKey, edition: ed,

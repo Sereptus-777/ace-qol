@@ -56,6 +56,7 @@ import { isPrismaticWall } from "../rules/prismatic-wall.mjs";
 import { RulesBrain } from "../rules/rules-brain.mjs";
 import { PostHitSaves } from "../post-hit-saves.mjs";
 import { growthPerLevel } from "./formula-value.mjs";
+import { RulesIndex } from "../rules/rules-index.mjs";
 
 const MODULE_ID = "ace-qol";
 
@@ -210,8 +211,15 @@ function effectOutcomes(e, ends = null) {
   const st = e?.statuses;
   const statuses = (st instanceof Set ? [...st] : (Array.isArray(st) ? st : [])).map(_s).filter(Boolean);
   const duration = secondsOf(effectDuration(e));
-  return statuses.length ? statuses.map(k => conditionOut(k, { duration, ends }))
-                         : [effectOut(String(e?.name ?? "an effect"), { duration, ends })];
+  if (!statuses.length) return [effectOut(String(e?.name ?? "an effect"), { duration, ends })];
+  const out = statuses.map(k => conditionOut(k, { duration, ends }));
+  // ⚠️ AN EFFECT WITH RULES OF ITS OWN LANDS AS WELL. Hypnotic Pattern's
+  // "Hypnotized" is Charmed and Incapacitated AND a Speed of 0: the conditions go
+  // on through the condition door, and the effect itself carries the speed.
+  if (Array.isArray(e?.changes) && e.changes.length) {
+    out.push(effectOut(String(e?.name ?? "an effect"), { duration, ends }));
+  }
+  return out;
 }
 
 /**
@@ -234,6 +242,27 @@ function repeatSaveWords(parsed) {
   const t = String(parsed?.repeatingSave?.trigger ?? "").trim();
   if (!t) return null;
   return t.split("|").map(x => REPEAT_WORDS[_s(x)] ?? `a save (${x})`).join(", or ");
+}
+
+/** A repeated save, read from one save's own effects rather than the whole item's words. */
+function ownRepeatWords(rows) {
+  const text = (rows ?? []).map(r => plainSpellText(r?.effect?.description ?? "")).join(" ").trim();
+  if (!text) return null;
+  return repeatSaveWords({ repeatingSave: DescriptionParser._parseRepeatingSave(text, text.toLowerCase()) });
+}
+
+/**
+ * The repeat-save engine's own word for how a recipe's condition ends, read back
+ * from the recipe's words ("a save at the end of each of its turns" is endOfTurn).
+ * @returns {string|null}  "endOfTurn", "onDamage", both joined by "|", or null
+ */
+export function repeatTriggerOf(ends) {
+  const t = String(ends ?? "").trim();
+  if (!t) return null;
+  const KEY = { endofturn: "endOfTurn", ondamage: "onDamage" };
+  const back = new Map(Object.entries(REPEAT_WORDS).map(([k, w]) => [w, KEY[k] ?? k]));
+  return t.split(", or ").map(w => back.get(w.trim()) ?? (w.trim().match(/^a save \((.+)\)$/)?.[1] ?? null))
+    .filter(Boolean).join("|") || null;
 }
 
 /* ── The columns ───────────────────────────────────────────────────────── */
@@ -437,28 +466,24 @@ function decidedOf(plan, activity) {
 
 /** What a save's result puts on the creature, from the save's own effects first. */
 function saveOutcomes(item, activity, plan, facts, parsed) {
-  // ⚠️ HALF ON A SUCCESS IS THE ITEM'S DATA OR ITS WORDS (Phase 1, 09-14). The
-  // save engine read both and this read only the data, so the two could disagree
-  // on what a made save takes. This is the only reading now; a half that only the
-  // words give marks the recipe as read from them.
-  //
-  // ⚠️ SEVERAL SAVES ON ONE ITEM: THE WORDS CANNOT SAY WHICH ONE THEY MEAN.
-  // Weird's "half as much damage only" is its first save's; its end-of-turn save
-  // ends the spell on a success and deals nothing. The Shade Tyrant's evading
-  // save takes no damage and its bracing one takes half. So the words decide only
-  // for the item's one save that deals damage; with more than one, each save's
-  // own data decides (the used save's own effects decide, 09-11).
-  const byData = plan.decide?.onSave === "half";
-  const damagingSaves = readActivities(item)
-    .filter(a => _s(a?.type) === "save" && (a?.damage?.parts?.length ?? 0) > 0).length;
-  const byWords = !byData && !!parsed?.halfOnSave && damagingSaves === 1;
-  const onSave = (byData || byWords) ? "half" : "none";
+  // ⚠️ HALF OR NONE ON A SUCCESS IS THIS ACTIVITY'S OWN SETTING (Johnny,
+  // 2026-09-14: "Half/none is per ACTIVITY"). Every save activity stores it. The
+  // item's words describe every save on the item at once, so they never decide it
+  // for one of them: that leak put Weird's half on its end-of-turn save.
+  const onSave = plan.decide?.onSave === "half" ? "half" : "none";
   const onFail = damageRolled(facts, activity).map(d => damageOut(d, onSave));
   const onSuccess = [];
-  const ends = repeatSaveWords(parsed);
-  let fromText = byWords && onFail.length > 0;
+  let fromText = false;
 
   const o = readSaveOutcome(item, { activityId: activity?.id ?? activity?._id ?? null });
+  // ⚠️ HOW ITS CONDITION ENDS IS THIS SAVE'S TOO. dnd5e has no field for a
+  // repeated save, so it comes from words, by the rule the save engine landed
+  // conditions by since 09-11: when the item has several saves and the used one
+  // names effects of its own, only those effects' words give a repeat save,
+  // because the item's words cover every save at once (Prismatic Wall's Blinding
+  // Save does not get the Indigo layer's repeat save); otherwise the item's words.
+  const severalSaves = readActivities(item).filter(a => _s(a?.type) === "save").length > 1;
+  const ends = (severalSaves && o.rows.length) ? ownRepeatWords(o.rows) : repeatSaveWords(parsed);
   for (const r of o.fail) onFail.push(...effectOutcomes(r.effect, ends));
   if (o.alternatives) {
     // ⚠️ SEVERAL EFFECTS ON A FAILURE ARE A MENU (09-11): what they share lands,
@@ -685,7 +710,7 @@ function castName(activity) {
  *   `left` names what is true of the button but was not read from the item, so
  *   it is not on the recipe.
  */
-export function recipeForActivity(item, activity, { actor = null, shared = null } = {}) {
+function buildRecipe(item, activity, { actor = null, shared = null, fromBook = false } = {}) {
   const holder = actor ?? item?.actor ?? null;
   const s = shared ?? sharedReads(item, holder);
   const label = String(activity?.name ?? "").trim() || _s(activity?.type) || "activity";
@@ -783,7 +808,7 @@ export function recipeForActivity(item, activity, { actor = null, shared = null 
   if (decidedBy?.kind === "save" || then.length) interrupts.push("after-save-roll");
   if (everything.some(o => o.kind === "damage")) interrupts.push("after-damage-roll", "after-damage-taken");
 
-  const evidence = ["item"];
+  const evidence = [fromBook ? "book" : "item"];
   if (fromText) evidence.push("description");
   if (byHand) evidence.push("human");
   // Section 13: a part only the words suggested makes the whole recipe low.
@@ -817,6 +842,134 @@ export function recipeForActivity(item, activity, { actor = null, shared = null 
       evidence,
     },
   };
+}
+
+/* ── The book is the recipe; the sheet is the instance ─────────────────── */
+//
+// Johnny, 2026-09-14: "Recipe source order for a named official spell/feature
+// (no homebrew): edition + name from the clicked item; official pack item;
+// clicked item only for this cast: caster, slot, template, targets; description
+// text only to fill silence, confidence: low. Pack is the recipe. Sheet is the
+// instance. Do NOT update the actor item when they differ. Log: edition, name,
+// actor, what the pack says, what the sheet says. Put it on the review list."
+//
+// ⚠️ ONLY AN OFFICIAL BOOK, AND ONLY ONE. The books reader says which entry is
+// the book's (rules/rules-index.mjs: the Wizards books, then dnd5e's own packs,
+// then his D&D Beyond imports of a named book). Homebrew, an automation copy, a
+// name the books do not settle, or a book entry not in memory: the item itself.
+//
+// ⚠️ NOTHING IS WRITTEN. The sheet keeps what it says. A difference is said
+// once per item a session and kept for the review list.
+
+const BOOK_REVIEW = new Map();
+
+/**
+ * The kinds of item whose name and edition say which book entry they are.
+ *
+ * ⚠️ ONLY A SPELL (proven on the hijinx replay, 2026-09-14). A spell's name in
+ * one edition is one spell. A creature's feature is not: the Monster Manual's
+ * feature pack holds templates (its Bite is 1d4 piercing with no attack type,
+ * its Constrict 1d6 + @mod), and a name lookup gave the Wolf and the Gnoll Fang
+ * that template in place of their own Bite, and the Stone Giant the Player's
+ * Handbook greatclub. A creature's own entry is on its stat block in the book's
+ * actor pack, which the books reader does not index, so a feature, a weapon and
+ * every other item is read from its own sheet.
+ */
+const NAMED_BY_BOOK = new Set(["spell"]);
+
+/** The book's entry for a named item, from memory: warmed at boot, loaded at the cast. */
+function officialBook(item, edition) {
+  if (!NAMED_BY_BOOK.has(item?.type)) return null;
+  // A book entry is the book: it never looks itself up.
+  if (String(item?.uuid ?? "").startsWith("Compendium.")) return null;
+  let found;
+  try { found = RulesIndex.findSync(item?.name, { edition, type: item?.type ?? null }); }
+  catch (_) { return null; }
+  const hit = found?.hits?.[0];
+  return (found?.status === "found" && found.doc && hit?.official) ? { doc: found.doc, hit } : null;
+}
+
+/**
+ * The activity in the book that is the one pressed on the sheet: the same id,
+ * the same kind and name, or the only one of its kind on both.
+ *
+ * ⚠️ ONE BOOK ACTIVITY STANDS FOR ONE SHEET ACTIVITY. Varek's Web has two saves,
+ * "Caught" and "Break Free", and the book's has one. Matched as "the only save",
+ * both became the book's cast save and the escape read as the cast (replay,
+ * 2026-09-14). Several of a kind on the sheet, with no id or name to tell them
+ * apart, is no match.
+ */
+function bookActivityFor(book, activity, item) {
+  const acts = readActivities(book);
+  const id = String(activity?.id ?? activity?._id ?? "");
+  const type = _s(activity?.type), name = _s(activity?.name);
+  const sameType = acts.filter(a => _s(a?.type) === type);
+  const onSheet = readActivities(item).filter(a => _s(a?.type) === type).length;
+  return acts.find(a => id && String(a?.id ?? a?._id ?? "") === id)
+    ?? (name ? sameType.find(a => _s(a?.name) === name) : null)
+    ?? ((sameType.length === 1 && onSheet === 1) ? sameType[0] : null);
+}
+
+function noteForReview(item, activity, actor, edition, pack, differences) {
+  const key = `${item?.uuid ?? item?.name}|${activity?.id ?? activity?._id ?? ""}`;
+  const had = BOOK_REVIEW.has(key);
+  const entry = { edition, name: item?.name ?? null, actor: actor?.name ?? null, actorId: actor?.id ?? null,
+                  activity: String(activity?.name || activity?.type || ""), pack, differences };
+  BOOK_REVIEW.set(key, entry);
+  if (had) return;
+  console.warn(`${MODULE_ID} | the book is the recipe for "${entry.name}"${entry.actor ? ` (${entry.actor})` : ""}, `
+    + `${edition}, from ${pack}. The sheet says otherwise and was not changed: `
+    + differences.map(d => `${d.field}: the book says ${d.book}; the sheet says ${d.sheet}`).join(" | "));
+}
+
+/** Every item whose sheet and book disagree, as the review list shows them. */
+export function bookReview() {
+  return [...BOOK_REVIEW.values()];
+}
+
+/**
+ * Bring a named official item's book entry into memory, so the recipe read for
+ * a cast a moment later is the book's. Boot warms only the party and the scene.
+ */
+export async function loadBookFor(item, { actor = null } = {}) {
+  if (!item?.name || !NAMED_BY_BOOK.has(item?.type) || String(item?.uuid ?? "").startsWith("Compendium.")) return null;
+  try {
+    const edition = RulesBrain.resolveEdition(item, actor ?? item?.actor ?? null);
+    const found = await RulesIndex.find(item.name, { edition, type: item.type ?? null });
+    return found?.hits?.[0]?.official ? (found.doc ?? null) : null;
+  } catch (err) {
+    console.warn(`${MODULE_ID} | could not bring the book's entry for "${item?.name}" into memory; `
+      + `its own data is read:`, err);
+    return null;
+  }
+}
+
+/**
+ * One activity's recipe: the book's for a named official item, the item's own
+ * otherwise. The record's label is the sheet's; `book` names where it came from.
+ */
+export function recipeForActivity(item, activity, { actor = null, shared = null } = {}) {
+  const sheet = buildRecipe(item, activity, { actor, shared });
+  const holder = actor ?? item?.actor ?? null;
+  const edition = sheet.recipe?.edition ?? RulesBrain.resolveEdition(item, holder);
+  const book = officialBook(item, edition);
+  if (!book) return sheet;
+  const pack = String(book.hit.packLabel ?? book.hit.pack ?? "the book");
+  const bookAct = bookActivityFor(book.doc, activity, item);
+  if (!bookAct) {
+    noteForReview(item, activity, holder, edition, pack, [{ field: "activity",
+      book: `nothing like "${sheet.label}"`, sheet: `"${sheet.label}" (${activity?.type ?? "?"})` }]);
+    return { ...sheet, left: [...sheet.left, `the book (${pack}) has no activity like this one, so it is read from the item`] };
+  }
+  const fromBook = buildRecipe(book.doc, bookAct, { actor: holder, fromBook: true });
+  if (!fromBook.recipe) {
+    // Neither has a recipe: nothing to add. Only the sheet's: it is used, and says why.
+    if (!sheet.recipe) return sheet;
+    return { ...sheet, left: [...sheet.left, `the book's entry (${pack}) gave no recipe: ${fromBook.none}`] };
+  }
+  const differences = recipeDiff(fromBook.recipe, sheet.recipe);
+  if (differences.length) noteForReview(item, activity, holder, edition, pack, differences);
+  return { ...fromBook, label: sheet.label, book: { pack, uuid: book.doc?.uuid ?? book.hit.uuid ?? null } };
 }
 
 /**
@@ -882,6 +1035,25 @@ function lastsText(l) {
   if (!l) return "-";
   if (l.kind === "until-dispelled") return "until dispelled";
   return `${l.kind}${l.seconds ? ` ${l.seconds}s` : ""}`;
+}
+
+/** The fields a table would notice, in the recipe's own words. */
+const COMPARED = [
+  ["decided by", r => decidedText(r.decidedBy)],
+  ["where", r => whereText(r.where)],
+  ["who", r => whoText(r.who)],
+  ["on hit", r => list(r.onHit)], ["on crit", r => list(r.onCrit)], ["on miss", r => list(r.onMiss)],
+  ["on fail", r => list(r.onFail)], ["on success", r => list(r.onSuccess)],
+  ["lasts", r => lastsText(r.lasts)],
+  ["recatch", r => (r.recatch?.length ? r.recatch.join(", ") : "-")],
+  ["mechanic", r => r.mechanic ?? "-"],
+];
+
+/** What the book and the sheet say differently, field by field. */
+export function recipeDiff(book, sheet) {
+  if (!book || !sheet) return [];
+  return COMPARED.map(([field, text]) => ({ field, book: text(book), sheet: text(sheet) }))
+    .filter(d => d.book !== d.sheet);
 }
 
 /** Every field of a recipe, in the frozen order, "-" where it is empty. */

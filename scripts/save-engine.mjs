@@ -62,9 +62,10 @@ import { gateOff, cannotDo, rejectedReply } from "./why-not.mjs";
 import { waitUntil } from "./wait-for.mjs";
 // The One Road, Phase 1: a save's damage is read from its recipe, shared out by
 // one rule, and lands through the hit-point door.
-import { damageShare, shareOf } from "./road/what-lands.mjs";
-import { HpDoor, ConditionDoor } from "./road/doors.mjs";
-import { recipeForActivity } from "./inference/recipe.mjs";
+import { whatLands, shareOf } from "./road/what-lands.mjs";
+import { HpDoor, ConditionDoor, CardDoor, SignalDoor } from "./road/doors.mjs";
+import { recipeForActivity, repeatTriggerOf, loadBookFor } from "./inference/recipe.mjs";
+import { RulesIndex } from "./rules/rules-index.mjs";
 
 // Real black d20 die art (per-face). These are the dice the GM already sees;
 // we use them everywhere a save result or prompt appears instead of the flat
@@ -912,9 +913,11 @@ export class SaveEngine {
     }
     const isSpell = item.type === "spell";
 
-    // What its damage is, and whether a made save takes half: read from the
-    // recipe of the ACTIVITY being used, never the whole item.
-    const { damageTypes, halfOnSave } = SaveEngine.saveDamageRule(item, activity);
+    // Its recipe (the book's, for a named official item), with the book's entry
+    // brought into memory first: what its damage is, whether a made save takes
+    // half, and what a failure puts on a creature. Read for the ACTIVITY used.
+    await loadBookFor(item, { actor });
+    const { damageTypes, halfOnSave, recipe } = SaveEngine.saveDamageRule(item, activity);
 
     // Get spell timing classification
     const timing = getSpellTiming(item);
@@ -993,6 +996,7 @@ export class SaveEngine {
         timing,
         activityId: activity.id,
         spellLevel,
+        recipe,
       };
       console.log(`${MODULE_ID} | Save spell "${item.name}" has template type "${templateType}" — waiting for template placement`);
       return;
@@ -1142,7 +1146,7 @@ export class SaveEngine {
       console.log(`${MODULE_ID} | Single NPC target detected — skipping live-target-card, rolling immediately`);
       await this._fastResolveSingleNpcSave(item, actor, tokens[0], {
         saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing,
-        activity, spellLevel,
+        activity, spellLevel, recipe,
       });
       // TARGET-STICK (Johnny 2026-07-24): a SINGLE-creature action KEEPS its
       // target, full stop — pre-targeted OR picker-chosen. He wants to keep
@@ -1158,6 +1162,7 @@ export class SaveEngine {
       saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing,
       activityId: activity.id,
       spellLevel,
+      recipe,
     });
     // TARGET-STICK (Johnny 2026-07-24): ONLY a multi-creature action releases.
     // A single creature — pre-targeted OR picker-chosen — KEEPS its target so
@@ -1419,12 +1424,12 @@ export class SaveEngine {
    * fake-prompt construction, then runs the normal GM-side roll.
    */
   async _gmRollPcSaveOffline(item, actor, tgt, opts) {
-    const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell, castId } = opts;
+    const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell, castId, recipe = null } = opts;
     const fakeMsg = { flags: { [MODULE_ID]: {
       type: "pcSavePrompt",
       itemUuid: item?.uuid ?? null,
       itemId:   item?.id ?? null,
-      saveAbility, saveDC, halfOnSave, damageTypes, isSpell,
+      saveAbility, saveDC, halfOnSave, damageTypes, isSpell, recipe,
       tokenDocId: tgt.tokenDocId, actorId: tgt.actorId, sceneId: tgt.sceneId,
       // The real caster + the exact body, so cover works on the GM-rolls-for-an-
       // absent-player path too. (audit F-019)
@@ -1499,29 +1504,6 @@ export class SaveEngine {
     } catch (_) { return null; }
   }
 
-  /**
-   * When a spell has more than one save, the effects the used save names are
-   * its result; null when the spell-wide reading should stand.
-   *
-   * ⚠️🔴 THE DESCRIPTION IS THE WHOLE SPELL, NOT THIS SAVE. Johnny,
-   * 2026-09-11: Neferon failed Prismatic Wall's Blinding Save and got Blinded
-   * with a Constitution save at the end of each of his turns. The Blinding Save
-   * is "Blinded for 1 minute", nothing more; the repeat save belongs to the
-   * Indigo layer further down the same text, and the parser, reading the text
-   * whole, also found Restrained and Petrified in it. One reader, so the Gate's
-   * immunity check and the conditions that land can never disagree.
-   *
-   * @returns {Array|null} the used save's own effect rows, or null
-   */
-  static _ownSaveResult(item, activityId) {
-    try {
-      if (!activityId) return null;
-      const saves = readActivities(item).filter(a => a?.type === "save");
-      if (saves.length < 2) return null;
-      const own = readSaveOutcomeEffects(item, { activityId });
-      return own.length ? own : null;
-    } catch (_) { return null; }
-  }
 
   /** A card entry, for each creature that FAILED, saying why nothing landed. */
   static _declinedFor(results, why) {
@@ -1533,15 +1515,6 @@ export class SaveEngine {
     }));
   }
 
-  /** Does a successful save against this put anything on the creature? */
-  static _hasSuccessEffects(item, activityId = null) {
-    try {
-      // A registry entry is a deliberate ruling and owns the whole result.
-      if (SaveEngine._registryEffectKey(item)) return false;
-      return readSaveOutcome(item, { activityId }).success
-        .some(e => e.changes > 0 || e.descriptionOnly);
-    } catch (_) { return false; }
-  }
 
   /**
    * One line on the card for the GM alone.
@@ -1642,6 +1615,33 @@ export class SaveEngine {
     return { actor, tokenDoc, why: null };
   }
 
+  /**
+   * The spell's own effects a recipe names, found on the recipe's own source:
+   * the book's entry for an official item, or the item itself. `here` holds the
+   * ones that apply at this slot level; `all` holds every one the source has.
+   */
+  static _effectRowsFor(recipe, item, castLevel = null) {
+    const here = new Map(), all = new Map();
+    if (!recipe) return { here, all };
+    try {
+      const srcUuid = recipe.source?.item ?? null;
+      const resolve = foundry?.utils?.fromUuidSync ?? (typeof fromUuidSync === "function" ? fromUuidSync : null);
+      const source = (!srcUuid || srcUuid === item?.uuid) ? item
+        : (RulesIndex._docs.get(srcUuid) ?? resolve?.(srcUuid) ?? null);
+      if (!source) {
+        console.warn(`${MODULE_ID} | the recipe of "${item?.name}" came from ${srcUuid}, which is not in `
+          + `memory, so the effects it names cannot be put on.`);
+        return { here, all };
+      }
+      const activityId = recipe.source?.activity ?? null;
+      for (const row of readSaveOutcomeEffects(source, { activityId })) if (!all.has(row.name)) all.set(row.name, row);
+      for (const row of readSaveOutcomeEffects(source, { activityId, castLevel })) if (!here.has(row.name)) here.set(row.name, row);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not find the effects "${item?.name}"'s recipe names:`, err);
+    }
+    return { here, all };
+  }
+
   /** The condition effects this cast just placed on a creature, by uuid. */
   static _conditionEffectsFor(actor, keys, item) {
     try {
@@ -1722,7 +1722,8 @@ export class SaveEngine {
       } catch (_) { /* setting unavailable — proceed without delay */ }
     }
 
-    const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activity, spellLevel = null } = opts;
+    const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activity, spellLevel = null,
+            recipe = null } = opts;
     const activityId = activity?.id ?? null;
 
     // Build the target context the way _postLiveTargetCard does so
@@ -1759,7 +1760,7 @@ export class SaveEngine {
     };
 
     // Roll the save
-    const result = await this._rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, casterActor?.id, {
+    const result = await this._rollSingleSave(tgt, saveAbility, saveDC, recipe, casterActor?.id, {
       ...SaveEngine._gateContextFor(item, damageTypes, activityId),
       // The exact body that cast, for the cover check. (audit F-019)
       casterTokenDocId: SaveEngine.casterTokenDoc(casterActor, { sceneId: canvas.scene?.id })?.id ?? null,
@@ -1781,31 +1782,26 @@ export class SaveEngine {
       // the quarterstaff's base damage while they were being hit by 8d6 of
       // lightning (Johnny's log, 2026-09-03). The item is a staff. The activity
       // is the storm.
-      Hooks.callAll(`${MODULE_ID}.saveComplete`, {
+      await SignalDoor.send("saveComplete", {
         actor: tActor, tokenDocId: result.tokenDocId, saveAbility, passed: result.passed,
         itemUuid: item?.uuid ?? null, activityId,
       });
-    } catch (_) { /* non-fatal */ }
+    } catch (err) { console.warn(`${MODULE_ID} | the save-complete signal failed (non-fatal):`, err); }
 
     // Compute hasDamage same way the regular path does
     const hasDamage = Array.isArray(damageTypes) && damageTypes.length > 0
                    && damageTypes.some(t => t && t !== "none");
 
-    // Apply condition if appropriate. Normally a damaging power defers its
-    // conditions until after the damage card — but a "can break free" power
-    // (Entangling Rope) needs its Restrained to land on the fail right away so
-    // the break-free prompt has something to attach to, even though it also
-    // deals damage.
-    const breakFreeEnabled = item.getFlag?.(MODULE_ID, "breakFreeConfig")?.enabled === true;
+    // Every outcome on the result lands: damage does not veto the condition
+    // (Johnny, 2026-09-14). This ran only for saves that deal no damage.
     let appliedConditions = [];
-    if (!hasDamage || breakFreeEnabled) {
-      try {
-        appliedConditions = await this._applyFailedSaveConditions(item, [result], { saveAbility, saveDC, activityId, casterActor }) ?? [];
-      } catch (err) {
-        console.error(`${MODULE_ID} | Fast-path condition application failed:`, err);
-        appliedConditions = SaveEngine._declinedFor([result],
-          "ACE hit an error putting the result on it. The console has the details.");
-      }
+    try {
+      appliedConditions = await this._applyFailedSaveConditions(item, [result],
+        { saveAbility, saveDC, activityId, casterActor, recipe }) ?? [];
+    } catch (err) {
+      console.error(`${MODULE_ID} | Fast-path condition application failed:`, err);
+      appliedConditions = SaveEngine._declinedFor([result],
+        "ACE hit an error putting the result on it. The console has the details.");
     }
 
     // Drop wasted concentration if nothing landed
@@ -1819,7 +1815,7 @@ export class SaveEngine {
 
     // Post the result card (Phase 1 — same builder as the normal flow)
     await this._postSaveResultsPhase1(item, casterActor, [result], {
-      saveAbility, saveDC, halfOnSave, damageTypes, isSpell, activityId, spellLevel,
+      saveAbility, saveDC, halfOnSave, damageTypes, isSpell, activityId, spellLevel, recipe,
       timingType: timing?.type ?? null,
       templateDocId: null,
       templateSceneId: null,
@@ -2138,7 +2134,14 @@ export class SaveEngine {
     // Store template reference
     pending.templateDoc = templateDoc;
 
-    const { item, actor, saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activityId, spellLevel } = pending;
+    // Its recipe, with the book's entry in memory first: a player's area spell is
+    // rebuilt here from its template, on the GM's client.
+    if (pending.item && pending.activity) {
+      await loadBookFor(pending.item, { actor: pending.actor });
+      Object.assign(pending, SaveEngine.saveDamageRule(pending.item, pending.activity));
+    }
+    const { item, actor, saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activityId, spellLevel,
+            recipe } = pending;
 
     // ── Exclude the caster from the auto-targeted list ──
     // Foundry / dnd5e auto-targets every token an AOE template touches when
@@ -2204,7 +2207,7 @@ export class SaveEngine {
       // ⚠️ THE SLOT GOES WITH IT. It was dropped here, so every area spell's
       // damage rolled at the spell's own level.
       await this._postLiveTargetCard(item, actor, tokens, {
-        saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activityId, templateDoc, spellLevel,
+        saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activityId, templateDoc, spellLevel, recipe,
       });
       console.log(`${MODULE_ID} | Instant save card posted successfully`);
 
@@ -2306,7 +2309,7 @@ export class SaveEngine {
 
       if ((triggerOnEnter || textSaysNow) && tokens.length && !isAreaDenial) {
         await this._postLiveTargetCard(item, actor, tokens, {
-          saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activityId, spellLevel,
+          saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activityId, spellLevel, recipe,
           // ⚠️ AN AREA THAT DOES NOT LAST OWNS ITS TEMPLATE, exactly like an
           // instant one, so the card can take it away when it is done. Without
           // this the auto-delete has nothing to delete and the cone stays.
@@ -2349,29 +2352,121 @@ export class SaveEngine {
    * @returns {{halfOnSave: boolean, damageTypes: string[], recipe: object|null}}
    */
   static saveDamageRule(item, activity) {
-    let rec = null, err = null;
-    try { rec = activity ? recipeForActivity(item, activity, { actor: item?.actor ?? null }) : null; }
-    catch (e) { err = e; }
-    const recipe = rec?.recipe ?? null;
-    if (recipe?.decidedBy?.kind === "save") {
-      const dmg = (recipe.onFail ?? []).filter(o => o?.kind === "damage");
-      return {
-        halfOnSave: dmg.some(o => o.onSuccess === "half"),
-        damageTypes: [...new Set(dmg.flatMap(o => o.types ?? []))].filter(t => t && t !== "none"),
-        recipe,
-      };
-    }
-    // ⚠️ SAY WHY, THEN READ THE ACTIVITY ITSELF. A save with no save recipe is a
-    // gap in the reader to fix, never a reason to roll it with its damage missing.
-    const why = err ? `building it failed: ${err?.message ?? err}`
-      : !activity ? "no activity was named"
-      : (rec?.none ?? `its recipe is decided by ${recipe?.decidedBy?.kind ?? "nothing"}, not a save`);
-    console.warn(`${MODULE_ID} | "${item?.name}": no save recipe (${why}); its damage is read from the activity's own data.`);
+    const { recipe, why } = SaveEngine.saveRecipe(item, activity);
+    if (recipe) return { ...SaveEngine._damageRuleOf(recipe), recipe };
+    // ⚠️ SAY WHY. With no save recipe nothing lands from it, and what a row takes
+    // is whatLands' plain answer: all of it on a failure, nothing on a success.
+    console.warn(`${MODULE_ID} | "${item?.name}": no save recipe (${why}); nothing is put on anyone `
+      + `from it, and its damage (if any) is the activity's own dice.`);
     return {
-      halfOnSave: activity?.damage?.onSave === "half",
+      halfOnSave: false,
       damageTypes: CombatState._getItemDamageTypes(item, activity).filter(t => t && t !== "none"),
       recipe: null,
     };
+  }
+
+  /** The activity with this id on the item, or null. */
+  static _activityOf(item, activityId) {
+    if (!item || !activityId) return null;
+    try {
+      return item.system?.activities?.get?.(activityId)
+        ?? [...(item.system?.activities ?? [])].find(a => a?.id === activityId) ?? null;
+    } catch (_) { return null; }
+  }
+
+  /**
+   * The recipe of the save being made (The One Road): the book's for a named
+   * official item, the item's own otherwise.
+   * @returns {{recipe: object|null, why: string|null}}  null, and why, when the
+   *   activity is not decided by a save
+   */
+  static saveRecipe(item, activity) {
+    if (!activity) return { recipe: null, why: "no activity was named" };
+    try {
+      const rec = recipeForActivity(item, activity, { actor: item?.actor ?? null });
+      if (rec?.recipe?.decidedBy?.kind === "save") return { recipe: rec.recipe, why: null };
+      return { recipe: null, why: rec?.none
+        ?? `its recipe is decided by ${rec?.recipe?.decidedBy?.kind ?? "nothing"}, not a save` };
+    } catch (err) {
+      return { recipe: null, why: `building it failed: ${err?.message ?? err}` };
+    }
+  }
+
+  /** The same, with the book's entry brought into memory first: for a cast. */
+  static async castRecipe(item, activity) {
+    await loadBookFor(item, { actor: item?.actor ?? null });
+    return SaveEngine.saveRecipe(item, activity);
+  }
+
+  /** A save recipe's damage: the types it rolls, and whether a made save takes half. */
+  static _damageRuleOf(recipe) {
+    const dmg = (recipe?.onFail ?? []).filter(o => o?.kind === "damage");
+    return {
+      halfOnSave: dmg.some(o => o.onSuccess === "half"),
+      damageTypes: [...new Set(dmg.flatMap(o => o.types ?? []))].filter(t => t && t !== "none"),
+    };
+  }
+
+  /**
+   * The recipe a save card carries. A card written before cards carried one is
+   * read again from its item; a card that says it has none (a weapon mastery's
+   * Topple, the Sword of Wounding) has none.
+   */
+  static _recipeOfCard(flags, item) {
+    if (flags && Object.prototype.hasOwnProperty.call(flags, "recipe")) return flags.recipe ?? null;
+    return SaveEngine.saveRecipe(item, SaveEngine._activityOf(item, flags?.activityId ?? null)).recipe;
+  }
+
+  /** Mechanics a recipe can name that ACE has not built (The One Road, section 14). */
+  static UNBUILT_MECHANICS = Object.freeze({
+    "time-stop": "stopping time for everyone else",
+    "prismatic-spray": "which ray strikes each creature (the d8) and what each ray does",
+    "slot-contest": "the contest of spell levels",
+    "delayed": "the delayed trigger",
+    "destination": "where it sends the creature",
+    "wish": "the wish itself",
+    "disintegrate": "turning a creature it drops to 0 hit points into dust",
+  });
+
+  /**
+   * ⚠️ SAY WHAT IS NOT BUILT (Johnny, 2026-09-14: "tag mechanic, do what is
+   * certain, say on screen what is not built"). The save and what its recipe puts
+   * on a creature are done, and its damage is on the card; the mechanic ACE has
+   * not built is the GM's to finish, and a card only the GM sees says so.
+   */
+  async _sayWhatIsNotBuilt(item, casterActor, recipe) {
+    const what = SaveEngine.UNBUILT_MECHANICS[recipe?.mechanic ?? ""];
+    // SILENT-OK: the recipe names no mechanic ACE has left unbuilt
+    if (!what) return;
+    const esc = (t) => foundry.utils.escapeHTML(String(t ?? ""));
+    try {
+      await CardDoor.post({
+        whisper: game.users.filter(u => u.isGM).map(u => u.id),
+        speaker: ChatMessage.getSpeaker({ actor: casterActor }),
+        flags: { [MODULE_ID]: { type: "notBuilt", mechanic: recipe.mechanic, itemUuid: item?.uuid ?? null } },
+        content: `<div style="background:#14110c;border:1px solid #c78d3d;border-radius:6px;padding:10px 12px;`
+          + `color:#f0e4c0;font-size:14px;line-height:1.5;">`
+          + `<strong>${esc(item?.name)}</strong>: ACE ran the save and put on what its recipe says, and any `
+          + `damage is on the save card. <span style="color:#e8b86a;">Not built: ${esc(what)}.</span> `
+          + `That part is yours to finish.</div>`,
+      });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not say what is not built for "${item?.name}":`, err);
+    }
+  }
+
+  /** The recipe of the cast a player's save belongs to, read on the GM from its cast card. */
+  static _recipeForCast(castId) {
+    try {
+      const f = castId ? game.messages.get(castId)?.flags?.[MODULE_ID] : null;
+      if (!f) return null;
+      const resolve = foundry?.utils?.fromUuidSync ?? (typeof fromUuidSync === "function" ? fromUuidSync : null);
+      const item = f.itemUuid && resolve ? resolve(f.itemUuid) : null;
+      return SaveEngine._recipeOfCard(f, item);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not read the recipe of cast ${castId}:`, err);
+      return null;
+    }
   }
 
   /**
@@ -2437,18 +2532,20 @@ export class SaveEngine {
   }
 
   /**
-   * What one row of a save card takes from the rolled damage: its share, decided
-   * at its save by the one rule, then its resistances, immunities and
-   * vulnerabilities as the Gate read them. The card draws its rows from this and
-   * APPLY ALL lands it, so the two cannot drift apart.
+   * What one row of a save card takes from the rolled damage: what whatLands
+   * says the recipe lets through for that creature's save, then its
+   * resistances, immunities and vulnerabilities as the Gate read them. The card
+   * draws its rows from this and APPLY ALL lands it, so the two cannot drift apart.
    *
    * @returns {{finals: Array<{type: string, raw: number, final: number, modifier: string}>, total: number}}
    */
-  static _damageForRow(r, damageComponents) {
-    const share = Number(r?.damageMultiplier) || 0;
-    const finals = HpDoor.preview(null, (damageComponents ?? []).map(c => ({
-      type: c.type, amount: shareOf(c.total, share),
-    })), { mods: r?.damageModifiers ?? {} });
+  static _damageForRow(r, damageComponents, recipe = null) {
+    const rolled = (damageComponents ?? []).map(c => ({ total: Number(c.total) || 0, type: c.type }));
+    // A creature the Gate never let roll takes none; one still waiting takes none yet.
+    const parts = (r?.noRoll || r?.pending)
+      ? rolled.map(x => ({ type: x.type, amount: 0 }))
+      : whatLands(recipe, { passed: r?.passed === true, rolled, evasion: !!r?.superSaver }).damage;
+    const finals = HpDoor.preview(null, parts, { mods: r?.damageModifiers ?? {} });
     return { finals, total: finals.reduce((sum, f) => sum + (Number(f.final) || 0), 0) };
   }
 
@@ -2667,7 +2764,16 @@ export class SaveEngine {
       } catch (_) { /* setting unavailable — proceed without delay */ }
     }
 
-    const { saveAbility, saveDC, halfOnSave: rawHalfOnSave, damageTypes, isSpell, timing, activityId, spellLevel } = opts;
+    const { saveAbility, saveDC, isSpell, timing, activityId, spellLevel } = opts;
+    // ⚠️ THE RECIPE TRAVELS WITH THE CARD (The One Road). Every row, every
+    // player's own roll and the damage step ask whatLands of it, so its damage and
+    // half rule come from it here too. A caller that names no activity (a weapon
+    // mastery's Topple, the Sword of Wounding) has none and says what it deals.
+    const recipe = opts.recipe !== undefined ? opts.recipe
+      : (activityId ? (await SaveEngine.castRecipe(item, SaveEngine._activityOf(item, activityId))).recipe : null);
+    const rule = recipe ? SaveEngine._damageRuleOf(recipe) : null;
+    const rawHalfOnSave = rule ? rule.halfOnSave : opts.halfOnSave;
+    const damageTypes = rule ? rule.damageTypes : opts.damageTypes;
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
 
     // ── Gate the HALF ON SAVE badge on actual damage presence ──
@@ -2941,7 +3047,7 @@ export class SaveEngine {
     const _autoRollOn   = QolSettings.get?.("autoRollNpcSaves") !== false;
     const _iDriveTheCard = _autoRollOn && _iAmActiveGM;
 
-    const targetListMsg = await ChatMessage.create({
+    const targetListMsg = await CardDoor.post({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor }),
       // PUBLIC (Johnny 2026-07-11): the whole table sees who cast what on whom.
@@ -2972,6 +3078,8 @@ export class SaveEngine {
           isSpell,
           activityId,
           spellLevel: Number.isFinite(spellLevel) ? spellLevel : null,
+          // What lands, for every step after this one (The One Road).
+          recipe: recipe ?? null,
           // ⚠️ THIS FLAG HAS EXACTLY ONE READER: the guard inside
           // `_deleteInstantTemplate`. Its only job is "may this template be
           // cleaned up once the card is done", so a spell whose AREA resolves
@@ -3007,7 +3115,7 @@ export class SaveEngine {
     // Now: each target is isolated, and a failed auto-roll FALLS BACK to a prompt
     // — which arms the nudge, so the GM always gets a "ROLL FOR THEM" card. There
     // is no path from here that leaves the table with nothing to click.
-    const _promptOpts = { saveAbility, saveDC, halfOnSave, damageTypes, isSpell, castId };
+    const _promptOpts = { saveAbility, saveDC, halfOnSave, damageTypes, isSpell, castId, recipe: recipe ?? null };
 
     // ── RESOLVE FIRST, RENDER ONCE (2026-07-28 rebuild) ──
     // The results card used to be fired independently by this card's RENDER
@@ -3188,7 +3296,7 @@ export class SaveEngine {
       </div>
     `;
 
-    await ChatMessage.create({
+    await CardDoor.post({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor }),
       whisper: [game.user.id],
@@ -3411,6 +3519,7 @@ export class SaveEngine {
             halfOnSave: flags.halfOnSave,
             damageTypes: flags.damageTypes,
             isSpell: flags.isSpell,
+            recipe: flags.recipe ?? null,
             tokenDocId: tgt.tokenDocId,
             actorId: tgt.actorId,
             sceneId: tgt.sceneId,
@@ -3960,7 +4069,7 @@ export class SaveEngine {
    * @returns {number} rows merged
    */
 
-  static _mergePendingPcResults(results, castId, halfOnSave = false) {
+  static _mergePendingPcResults(results, castId, recipe = null) {
     if (!castId || !Array.isArray(results)) return 0;
     // SILENT-OK: nothing is pending; a no-op, and the line already says so
     if (!results.some(r => r?.pending)) return 0;   // nothing to heal
@@ -3982,13 +4091,14 @@ export class SaveEngine {
 
       const passed = f.passed;
       const superSaver = f.superSaver;
-      const damageMultiplier = damageShare({ half: halfOnSave, passed, evasion: superSaver }).share;
+      const v = whatLands(recipe, { passed, rolled: [], evasion: !!superSaver, autoFail: !!f.autoFailSave });
+      const damageMultiplier = v.share;
 
       r.pending    = false;
       r.saveTotal  = f.saveTotal;
       r.dieResult  = f.dieResult ?? null;
       r.passed     = passed;
-      r.resultLabel = f.resultLabel;
+      r.resultLabel = v.label;
       r.isAutoFail = f.autoFailSave;
       r.superSaver = superSaver;
       r.damageMultiplier = damageMultiplier;
@@ -4026,6 +4136,8 @@ export class SaveEngine {
 
     const item = await fromUuid(itemUuid) ?? game.items.get(itemId);
     const casterActor = game.actors.get(actorId);
+    // What lands, for every row on this card (The One Road): its recipe.
+    const recipe = SaveEngine._recipeOfCard(flags, item);
 
     // ── Separate NPC and PC targets ──
     // Split stays on isPC: an offline PC has ALREADY been auto-rolled by
@@ -4050,7 +4162,7 @@ export class SaveEngine {
       casterTokenDocId: flags.casterTokenDocId ?? null,
     };
     for (const tgt of npcTargets) {
-      const result = await this._rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, actorId, { isMultiTarget: isMulti, ..._gateCtx });
+      const result = await this._rollSingleSave(tgt, saveAbility, saveDC, recipe, actorId, { isMultiTarget: isMulti, ..._gateCtx });
       npcResults.push(result);
     }
 
@@ -4113,8 +4225,8 @@ export class SaveEngine {
             npcResults[i].passed = true;
             npcResults[i].legendaryResistance = true;
             npcResults[i].resultLabel = "LEGENDARY RESISTANCE";
-            // What the made save now lets through, by the one rule.
-            npcResults[i].damageMultiplier = damageShare({ half: halfOnSave, passed: true,
+            // What the made save now lets through: whatLands, on the recipe.
+            npcResults[i].damageMultiplier = whatLands(recipe, { passed: true, rolled: [],
               evasion: npcResults[i].superSaver }).share;
           }
         }
@@ -4150,7 +4262,7 @@ export class SaveEngine {
               npcResults[i].saveTotal = sbResult.newTotal;
               npcResults[i].silveryBarbsRerolled = true;
               npcResults[i].resultLabel = "SILVERY BARBS → FAILED";
-              npcResults[i].damageMultiplier = damageShare({ half: halfOnSave, passed: false,
+              npcResults[i].damageMultiplier = whatLands(recipe, { passed: false, rolled: [],
                 evasion: npcResults[i].superSaver }).share;
             }
           }
@@ -4167,7 +4279,7 @@ export class SaveEngine {
         const tokenDoc = scene?.tokens?.get(r.tokenDocId);
         const actor = tokenDoc?.actor ?? game.actors.get(r.actorId);
         if (actor) {
-          Hooks.callAll(`${MODULE_ID}.saveComplete`, { actor, tokenDocId: r.tokenDocId,
+          await SignalDoor.send("saveComplete", { actor, tokenDocId: r.tokenDocId,
             saveAbility, passed: r.passed, itemUuid: item?.uuid ?? null,
             activityId: flags?.activityId ?? null });
         }
@@ -4238,14 +4350,14 @@ export class SaveEngine {
         // PC already rolled — build resolved result
         const passed = existing.passed;
         const superSaver = !!existing.superSaver;
-        const damageMultiplier = damageShare({ half: halfOnSave, passed, evasion: superSaver }).share;
+        const v = whatLands(recipe, { passed, rolled: [], evasion: superSaver, autoFail: !!existing.autoFailSave });
         return {
           name: tgt.name, img: tgt.img,
           tokenDocId: tgt.tokenDocId, actorId: tgt.actorId, sceneId: tgt.sceneId,
           saveTotal: existing.saveTotal, passed,
           isAutoFail: existing.autoFailSave,
-          resultLabel: existing.resultLabel,
-          damageMultiplier, superSaver,
+          resultLabel: v.label,
+          damageMultiplier: v.share, superSaver,
           saveAdvantage: !!tgt.saveAdvantage,
           saveDisadvantage: !!tgt.saveDisadvantage,
           saveAdvReasons: tgt.saveAdvReasons ?? [],
@@ -4291,7 +4403,7 @@ export class SaveEngine {
     // exists by now even though the scan missed it. Do this BEFORE conditions
     // are applied — a PC who actually failed must still get the condition.
     {
-      const _healed = SaveEngine._mergePendingPcResults(pcResults, thisCastId, halfOnSave);
+      const _healed = SaveEngine._mergePendingPcResults(pcResults, thisCastId, recipe);
       if (_healed) console.log(`${MODULE_ID} | Save card: folded in ${_healed} PC result(s) that landed while the dice were rolling.`);
     }
 
@@ -4303,22 +4415,20 @@ export class SaveEngine {
     const hasDamage = Array.isArray(damageTypes) && damageTypes.length > 0
                    && damageTypes.some(t => t && t !== "none");
 
-    // ── Apply on-fail conditions immediately for save-only-condition spells ──
-    // (Damage spells defer condition application until after the damage card
-    // posts, so the GM can review damage before conditions apply. Pure-condition
-    // spells skip that gate — there's nothing to review.) A "can break free"
-    // power is the exception: its Restrained must land on the fail right away so
-    // the break-free prompt has something to attach to, even with damage.
-    const breakFreeEnabled = item.getFlag?.(MODULE_ID, "breakFreeConfig")?.enabled === true;
+    // ── Every outcome on the result lands, now that the saves are in ──
+    // ⚠️🔴 DAMAGE DOES NOT VETO THE CONDITION (Johnny, 2026-09-14: "Fail can be
+    // [{damage}, {condition}]. Damage does not veto the condition"). This ran only
+    // for a save that deals no damage (or a break-free power), and nothing after
+    // the damage card ever ran it, so 641 of his damaging saves never put their
+    // condition on anybody: Water Jet's Prone, Synaptic Rend's Incapacitated.
     let appliedConditions = [];
-    if (!hasDamage || breakFreeEnabled) {
-      try {
-        appliedConditions = await this._applyFailedSaveConditions(item, [...npcResults, ...pcResults], { saveAbility, saveDC, activityId, casterActor }) ?? [];
-      } catch (err) {
-        console.error(`${MODULE_ID} | Phase-1 condition application failed:`, err);
-        appliedConditions = SaveEngine._declinedFor([...npcResults, ...pcResults],
-          "ACE hit an error putting the result on it. The console has the details.");
-      }
+    try {
+      appliedConditions = await this._applyFailedSaveConditions(item, [...npcResults, ...pcResults],
+        { saveAbility, saveDC, activityId, casterActor, recipe }) ?? [];
+    } catch (err) {
+      console.error(`${MODULE_ID} | Phase-1 condition application failed:`, err);
+      appliedConditions = SaveEngine._declinedFor([...npcResults, ...pcResults],
+        "ACE hit an error putting the result on it. The console has the details.");
     }
 
     // ── Drop wasted concentration ──
@@ -4346,6 +4456,7 @@ export class SaveEngine {
       // The slot it was cast with, so the damage roll scales by it. It stopped
       // here, and every card's damage rolled at the spell's own level.
       spellLevel,
+      recipe,
       timingType, templateDocId, templateSceneId,
       hasDamage,
       appliedConditions,
@@ -4456,31 +4567,19 @@ export class SaveEngine {
     // put on a creature that failed. This used to read the registry alone and
     // return [] for everything else, which would have let the Gate skip a roll
     // for a creature immune to the damage but not to a condition the spell's
-    // own effect applies. So it asks the same three sources, in the same order:
-    // a registry ruling wins outright; otherwise the item's own effects and its
-    // description, merged.
+    // own effect applies. So it asks what the applier asks, in the same order: a
+    // registry ruling wins outright; otherwise the save's recipe, through
+    // whatLands (The One Road, 2026-09-14), plus the Restrained a GM's "can
+    // break free" setting puts on. No recipe, no conditions: [] leaves the
+    // immunity gate inert, and the save is rolled.
     try {
       const key = SaveEngine._registryEffectKey(item);
       if (key) return ConditionLibrary.statusesFor(key) ?? [];
-    } catch (_) { /* fall through to the item itself */ }
-    const out = new Set();
-    // ⚠️ AND THE SAME SAVE (2026-09-11). The applier reads the effects of the
-    // save that was used, and for a spell with several saves it reads only
-    // those; the Gate asking about the whole spell would count Prismatic
-    // Wall's Indigo and Violet layers against a Blinding Save.
-    const own = SaveEngine._ownSaveResult(item, activityId);
-    try {
-      for (const c of readAppliedConditions(item, activityId ?? null)) {
-        if (c?.requiresSave) out.add(String(c.condition).toLowerCase());
-      }
-    } catch (_) { /* unreadable effects add nothing */ }
-    if (!own) {
-      try {
-        for (const c of (DescriptionParser.parse(item)?.conditions ?? [])) {
-          if (c?.requiresSave && c?.condition) out.add(String(c.condition).toLowerCase());
-        }
-      } catch (_) { /* unreadable prose adds nothing */ }
-    }
+    } catch (_) { /* fall through to the recipe */ }
+    const { recipe } = SaveEngine.saveRecipe(item, SaveEngine._activityOf(item, activityId));
+    const out = new Set(whatLands(recipe, { passed: false }).conditions
+      .map(c => String(c?.key ?? "").toLowerCase()).filter(Boolean));
+    if (out.size && item?.getFlag?.(MODULE_ID, "breakFreeConfig")?.enabled === true) out.add("restrained");
     return [...out];
   }
 
@@ -4590,7 +4689,7 @@ export class SaveEngine {
     return !!r && r.pending !== true && !r.noRoll && r.passed === false;
   }
 
-  async _rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, casterActorId = null, options = {}) {
+  async _rollSingleSave(tgt, saveAbility, saveDC, recipe, casterActorId = null, options = {}) {
     const scene = game.scenes.get(tgt.sceneId) ?? canvas.scene;
     const tokenDoc = scene?.tokens?.get(tgt.tokenDocId);
     const targetActor = tokenDoc?.actor ?? game.actors.get(tgt.actorId);
@@ -4706,10 +4805,12 @@ export class SaveEngine {
       rollResult = roll;
     }
 
-    // What this save lets through, and its words: the one rule every save path
-    // uses (road/what-lands.mjs).
-    const { share: damageMultiplier, label: resultLabel } = damageShare({
-      half: halfOnSave, passed, evasion: tgt.superSaver, autoFail: isAutoFail });
+    // What this save lets through, and its words: whatLands, on the save's recipe
+    // (The One Road). A caller with no recipe (Prismatic Wall's layers) gets the
+    // plain answer and decides its own damage.
+    const _v = whatLands(recipe || null, { passed, rolled: [], evasion: !!tgt.superSaver, autoFail: !!isAutoFail });
+    const damageMultiplier = _v.share;
+    const resultLabel = _v.label;
 
     // Extract the d20 face value so it survives flag serialization
     const _d20Term = rollResult?.dice?.[0];
@@ -4976,7 +5077,7 @@ export class SaveEngine {
   // ═══════════════════════════════════════════════════════════════════════════
 
   async _sendPcSavePrompt(item, casterActor, tgt, opts) {
-    const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell, castId } = opts;
+    const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell, castId, recipe = null } = opts;
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
 
     // Player-facing prompt — mirrors the DM-side row: pure BLACK background,
@@ -5035,7 +5136,7 @@ export class SaveEngine {
     // Let NPC save dice settle before posting the result card.
     await awaitDsnRoll();
 
-    await ChatMessage.create({
+    await CardDoor.post({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ alias: tgt.name }),
       whisper: whisperIds,
@@ -5061,6 +5162,8 @@ export class SaveEngine {
           halfOnSave,
           damageTypes,
           isSpell,
+          // The player's own client decides its row with this (whatLands).
+          recipe,
           targetName: tgt.name,
           targetImg: tgt.img,
           autoFailSave: tgt.autoFailSave,
@@ -5111,7 +5214,7 @@ export class SaveEngine {
     const flags = message.flags?.[MODULE_ID];
     if (!flags) return;
 
-    const { saveAbility, saveDC, halfOnSave, tokenDocId, sceneId, actorId,
+    const { saveAbility, saveDC, tokenDocId, sceneId, actorId,
             autoFailSave, saveAdvantage, saveDisadvantage, superSaver,
             saveBonuses, targetName, targetImg, castId } = flags;
 
@@ -5214,9 +5317,13 @@ export class SaveEngine {
     // Same principle as the rest of this file's 07-28 rebuild: the roller RETURNS
     // its result and stamps its claim into the message; nobody downstream
     // re-derives a fact they don't have the inputs for.
-    // ...and its words, by the one rule every save path uses (road/what-lands.mjs).
-    const { share: _pcMultiplier, label: resultLabel } = damageShare({
-      half: halfOnSave === true, passed, evasion: superSaver, autoFail: autoFailSave });
+    // ...and its words: whatLands, on the recipe the prompt carries (The One
+    // Road). The GM decides the row's share again from the cast card when the
+    // result arrives, because a prompt from before prompts carried one has none.
+    const _pcVerdict = whatLands(flags.recipe ?? null,
+      { passed, rolled: [], evasion: !!superSaver, autoFail: !!autoFailSave });
+    const _pcMultiplier = _pcVerdict.share;
+    const resultLabel = _pcVerdict.label;
 
     const passClass = passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
     const rollDisplay = autoFailSave ? "AUTO" : saveTotal;
@@ -5259,7 +5366,7 @@ export class SaveEngine {
     // Let PC save dice settle before posting the result card.
     await awaitDsnRoll();
 
-    await ChatMessage.create({
+    await CardDoor.post({
       content: resultHtml,
       speaker: ChatMessage.getSpeaker({ alias: targetName }),
       flags: {
@@ -5279,8 +5386,8 @@ export class SaveEngine {
           itemUuid: flags.itemUuid ?? null,
           activityId: flags.activityId ?? null,   // WHICH ability, not just which item
           rolledByGm: game.user.isGM,        // so a PC's client can show "GM" + grey its button
-          // THE CLAIM, STAMPED AT BIRTH. The GM reads these instead of guessing.
-          halfOnSave: halfOnSave === true,
+          // What this client's whatLands said; the GM decides the row from the cast card.
+          halfOnSave: _pcVerdict.half,
           damageMultiplier: _pcMultiplier,
         }
       }
@@ -5289,11 +5396,11 @@ export class SaveEngine {
     // ── Emit saveComplete hook for PC save (duration tracker isSave expiry) ──
     try {
       if (targetActor) {
-        Hooks.callAll(`${MODULE_ID}.saveComplete`, { actor: targetActor, tokenDocId,
+        await SignalDoor.send("saveComplete", { actor: targetActor, tokenDocId,
           saveAbility, passed, itemUuid: flags.itemUuid ?? null,
           activityId: flags.activityId ?? null });
       }
-    } catch (_) { /* non-fatal */ }
+    } catch (err) { console.warn(`${MODULE_ID} | the save-complete signal failed (non-fatal):`, err); }
 
     // ── Update the main save results card's pending row for this PC ──
     // The same share, decided once above.
@@ -5334,7 +5441,7 @@ export class SaveEngine {
 
   _onPcSaveResultPosted(resultFlags) {
     console.log(`${MODULE_ID} | _onPcSaveResultPosted fired for tokenDocId:`, resultFlags.tokenDocId, "passed:", resultFlags.passed);
-    const { tokenDocId, saveTotal, dieResult, passed, resultLabel, autoFailSave, superSaver } = resultFlags;
+    const { tokenDocId, saveTotal, dieResult, passed, autoFailSave, superSaver } = resultFlags;
 
     // The player rolled — stand the GM nudge down before it ever fires, and
     // retire the card if it already did.
@@ -5353,23 +5460,15 @@ export class SaveEngine {
     // normal case (card posts "waiting for player", player rolls). Straight
     // through Phase 2 and APPLY ALL into their hit points.
     //
-    // The roller already worked this out with `halfOnSave` in scope and stamped
-    // it into the message. Read that. The fallbacks below exist only for a
-    // result message written before this fix, and each one still reads the real
-    // flag rather than assuming a value.
-    let damageMultiplier = Number(resultFlags.damageMultiplier);
-    if (!Number.isFinite(damageMultiplier)) {
-      let half = resultFlags.halfOnSave;
-      if (typeof half !== "boolean") {
-        // Older message: ask the cast card this result belongs to.
-        half = SaveEngine._halfOnSaveForCast(resultFlags.castId);
-      }
-      damageMultiplier = damageShare({ half, passed, evasion: superSaver }).share;
-      console.debug(`${MODULE_ID} | pcSaveResult had no stamped multiplier — derived ${damageMultiplier} (halfOnSave=${half}).`);
-    }
+    // ⚠️ DECIDED HERE, ON THE GM, BY whatLands ON THE CAST'S OWN RECIPE (The One
+    // Road, 2026-09-14). A player's client cannot always read an NPC's item, so
+    // the share it stamped on its card is not the one used for the damage.
+    const _gmVerdict = whatLands(SaveEngine._recipeForCast(resultFlags.castId),
+      { passed, rolled: [], evasion: !!superSaver, autoFail: !!autoFailSave });
+    const damageMultiplier = _gmVerdict.share;
 
-    const pcResult = { saveTotal, dieResult: dieResult ?? null, passed, resultLabel, autoFailSave, damageMultiplier,
-      superSaver: !!superSaver };
+    const pcResult = { saveTotal, dieResult: dieResult ?? null, passed, resultLabel: _gmVerdict.label,
+      autoFailSave, damageMultiplier, superSaver: !!superSaver };
 
     // ── Re-fire saveComplete on the GM so area-denial effects land ──
     // FIRST, before the cosmetic card updates — a throw in those must never
@@ -5386,11 +5485,11 @@ export class SaveEngine {
         const scene = game.scenes.get(resultFlags.sceneId) ?? canvas.scene;
         const actor = scene?.tokens?.get(tokenDocId)?.actor ?? game.actors.get(resultFlags.actorId);
         if (actor) {
-          Hooks.callAll(`${MODULE_ID}.saveComplete`, {
+          SignalDoor.send("saveComplete", {
             actor, tokenDocId, saveAbility: resultFlags.saveAbility,
             passed, itemUuid: resultFlags.itemUuid ?? null,
             activityId: resultFlags.activityId ?? null,
-          });
+          }).catch(err => console.warn(`${MODULE_ID} | GM saveComplete re-emit failed:`, err));
         }
       }
     } catch (err) {
@@ -5414,30 +5513,6 @@ export class SaveEngine {
         }
       }
     }
-  }
-
-  /**
-   * Does the power behind this cast deal half damage on a SUCCESSFUL save?
-   *
-   * Only used to rescue a `pcSaveResult` message written before the multiplier
-   * was stamped at the roll. Keyed by cast, so it reads THIS cast's card and
-   * never the newest one in the log. Returns false when it genuinely cannot
-   * tell — a power that grants nothing on a success is the safe reading, and
-   * assuming "half" is the exact bug this replaces.
-   */
-  static _halfOnSaveForCast(castId) {
-    if (!castId) return false;
-    try {
-      const direct = game.messages.get(castId)?.flags?.[MODULE_ID];
-      if (typeof direct?.halfOnSave === "boolean") return direct.halfOnSave;
-      for (const m of game.messages.contents) {
-        const f = m.flags?.[MODULE_ID];
-        if (f?.castId === castId && typeof f.halfOnSave === "boolean") return f.halfOnSave;
-      }
-    } catch (err) {
-      console.warn(`${MODULE_ID} | couldn't read halfOnSave for cast ${castId}:`, err);
-    }
-    return false;
   }
 
   /**
@@ -5668,23 +5743,23 @@ export class SaveEngine {
       // thrown away, so a PC who failed was affected on the token and never
       // named on the card. (2026-09-11)
       let cardApplied = Array.isArray(flags.appliedConditions) ? [...flags.appliedConditions] : [];
+      const recipe = SaveEngine._recipeOfCard(flags, item);
       try {
         // A successful save can put something on the creature too (the 2024
-        // Ray's "Brief Enfeeblement"), so a pass is looked at as well.
-        const passedWithEffect = r.passed === true
-          && SaveEngine._hasSuccessEffects(item, flags.activityId ?? null);
+        // Ray's "Brief Enfeeblement"), so a pass is looked at as well: whatLands
+        // says whether the recipe puts anything on a made save.
+        const onPass = whatLands(recipe, { passed: true });
+        const passedWithEffect = r.passed === true && (onPass.conditions.length + onPass.effects.length) > 0;
+        // ⚠️ DAMAGE DOES NOT VETO THE CONDITION (2026-09-14): this was gated on the
+        // power dealing no damage, like the other two paths.
         if ((SaveEngine._failedTheSave(r) || passedWithEffect) && !r._condApplied) {
-          const breakFreeEnabled = item.getFlag?.(MODULE_ID, "breakFreeConfig")?.enabled === true;
-          const hasDmg = Array.isArray(flags.damageTypes) && flags.damageTypes.some(t => t && t !== "none");
-          if (!hasDmg || breakFreeEnabled) {
-            r._condApplied = true;
-            const casterActor = game.actors.get(flags.actorId) ?? null;
-            const got = await this._applyFailedSaveConditions(item, [r], {
-              saveAbility: flags.saveAbility, saveDC: flags.saveDC,
-              activityId: flags.activityId ?? null, casterActor,
-            }) ?? [];
-            cardApplied = [...cardApplied.filter(a => a?.tokenDocId !== r.tokenDocId), ...got];
-          }
+          r._condApplied = true;
+          const casterActor = game.actors.get(flags.actorId) ?? null;
+          const got = await this._applyFailedSaveConditions(item, [r], {
+            saveAbility: flags.saveAbility, saveDC: flags.saveDC,
+            activityId: flags.activityId ?? null, casterActor, recipe,
+          }) ?? [];
+          cardApplied = [...cardApplied.filter(a => a?.tokenDocId !== r.tokenDocId), ...got];
         }
       } catch (err) {
         console.warn(`${MODULE_ID} | PC fail condition application failed:`, err);
@@ -5700,7 +5775,7 @@ export class SaveEngine {
         cardHtml = this._buildPhase2CardHtml(item, casterActor, allResults, damageComponents, {
           saveAbility: flags.saveAbility, saveDC: flags.saveDC,
           halfOnSave: flags.halfOnSave, damageTypes: flags.damageTypes,
-          activityId: flags.activityId ?? null,
+          activityId: flags.activityId ?? null, recipe,
         });
       } else {
         cardHtml = this._buildPhase1CardHtml(item, allResults, {
@@ -5737,6 +5812,7 @@ export class SaveEngine {
 
     const item = await fromUuid(itemUuid) ?? game.items.get(itemId);
     const casterActor = game.actors.get(actorId);
+    const recipe = SaveEngine._recipeOfCard(flags, item);
 
     const results = [];
     // Multi-target pacing for the legacy ROLL ALL SAVES button — same logic
@@ -5752,7 +5828,7 @@ export class SaveEngine {
       casterTokenDocId: flags.casterTokenDocId ?? null,
     };
     for (const tgt of targets) {
-      const result = await this._rollSingleSave(tgt, saveAbility, saveDC, halfOnSave, actorId, { isMultiTarget: isMultiLegacy, ..._gateCtx });
+      const result = await this._rollSingleSave(tgt, saveAbility, saveDC, recipe, actorId, { isMultiTarget: isMultiLegacy, ..._gateCtx });
       results.push(result);
     }
 
@@ -5767,7 +5843,8 @@ export class SaveEngine {
         const tokenDoc = scene?.tokens?.get(result.tokenDocId);
         const actor = tokenDoc?.actor ?? game.actors.get(result.actorId);
         if (actor) {
-          Hooks.callAll(`${MODULE_ID}.saveComplete`, { actor, tokenDocId: result.tokenDocId, saveAbility, passed: result.passed, itemUuid: item?.uuid ?? null });
+          await SignalDoor.send("saveComplete", { actor, tokenDocId: result.tokenDocId, saveAbility,
+            passed: result.passed, itemUuid: item?.uuid ?? null, activityId: flags.activityId ?? null });
         }
       } catch (_) { /* non-fatal */ }
     }
@@ -5779,7 +5856,8 @@ export class SaveEngine {
     // shipped, save-engine was hard-wired to damage flow only and these
     // spells silently did nothing when the save failed. Mirrors the
     // post-hit-saves.mjs pattern that handles weapon-rider conditions.
-    await this._applyFailedSaveConditions(item, results, { saveAbility, saveDC, activityId: flags.activityId ?? null, casterActor });
+    await this._applyFailedSaveConditions(item, results, { saveAbility, saveDC, activityId: flags.activityId ?? null,
+      casterActor, recipe });
 
     // Roll damage once and apply per target with multipliers
     const damageComponents = await this._rollSpellDamage(item, casterActor, {
@@ -5788,7 +5866,7 @@ export class SaveEngine {
     });
     await this._postSaveResults(item, casterActor, results, {
       saveAbility, saveDC, halfOnSave, damageTypes, isSpell,
-      activityId: flags.activityId ?? null,
+      activityId: flags.activityId ?? null, recipe,
     }, damageComponents);
   }
 
@@ -5979,82 +6057,23 @@ export class SaveEngine {
       }
     } catch (_) { /* classification failed — fall through to the normal path */ }
 
-    let parsed;
-    let parseFailed = null;   // kept for the card, in case nothing else lands
-    try {
-      parsed = DescriptionParser.parse(item);
-
-      // ── Activity-aware condition override (multi-power items) ──────────────
-      // Conditions are parsed at the ITEM level, so a magic item with several
-      // save powers (e.g. Holy Symbol of Ravenkind: Hold Vampires → paralyzed,
-      // Turn Undead → frightened) would otherwise stamp the SAME blanket
-      // condition on every power. If the firing activity's chatFlavor names its
-      // own condition, parse THAT and override — but only the conditions,
-      // keeping the item-level save/duration/repeating-save data intact.
-      // Opt-in: single-power spells carry no activity-level condition text, so
-      // this branch never fires for them and their behaviour is unchanged.
-      // Isolated try: a failure in the override must NOT discard the
-      // item-level parse we already have — just fall through to it.
-      try {
-        const actId = saveCtx?.activityId;
-        if (actId) {
-          const act = item.system?.activities?.get?.(actId)
-            ?? [...(item.system?.activities ?? [])].find(a => a?.id === actId);
-          const flavor = String(act?.description?.chatFlavor ?? "").trim();
-          if (flavor) {
-            const actParsed = DescriptionParser.parse({
-              name: item.name, type: item.type,
-              system: { description: { value: flavor }, activities: new Map() },
-            });
-            if (actParsed?.conditions?.length) {
-              // These come from a SAVE activity's flavor — they ARE the
-              // save-failure effect, so force them save-gated even if the
-              // parser's nearby-DC heuristic read the flavor conservatively.
-              // (Without this, the override could downgrade a working
-              // paralyzed(save) to paralyzed(no-save) → nothing applies → the
-              // dreaded "apply manually" footer.)
-              const conds = actParsed.conditions.map(c => ({ ...c, requiresSave: true }));
-              parsed = { ...parsed, conditions: conds };
-              console.log(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — using activity-level conditions from "${act?.name ?? actId}":`,
-                conds.map(c => `${c.condition}(save)`));
-            }
-          }
-        }
-      } catch (ovErr) {
-        console.debug(`${MODULE_ID} | activity-level condition override skipped:`, ovErr?.message ?? ovErr);
-      }
-    } catch (err) {
-      console.warn(`${MODULE_ID} | _applyFailedSaveConditions: parse failed for ${item.name}:`, err);
-      // A registry-owned effect spell (Faerie Fire) doesn't depend on the
-      // description parse for its on-fail effect — don't let a parser hiccup
-      // swallow it. Continue with an empty parse so the registry effect still
-      // lands; everything downstream reads `parsed` with optional chaining.
-      // ⚠️ AND NOT ONLY FOR A REGISTRY SPELL. The spell's own effects are data
-      // on the item and need no description at all, so a parser failure must not
-      // throw them away. The reason is kept in case nothing else lands.
-      parsed = { conditions: [] };
-      parseFailed = String(err?.message ?? err);
+    // ── WHAT LANDS IS THE RECIPE'S, DECIDED BY whatLands (The One Road) ──
+    // Johnny, 2026-09-14: "save-engine must not compute half/none or 'skip
+    // conditions because there is damage' on its own. Those answers come from the
+    // recipe + whatLands." This used to read the description, the item's effects,
+    // an activity's flavour text and the menu rule for itself: a second reader of
+    // the same spell, and the one that disagreed with it (Weird's half on its
+    // end-of-turn save came from reading the whole item as one save).
+    let recipe = saveCtx?.recipe;
+    let recipeWhy = null;
+    if (recipe === undefined) {
+      ({ recipe, why: recipeWhy } = SaveEngine.saveRecipe(item,
+        SaveEngine._activityOf(item, saveCtx?.activityId ?? null)));
+    } else if (!recipe) {
+      recipeWhy = "this save came with no recipe of its own (the feature that asked for it decides its own result)";
     }
-
-    // ── A spell with several saves: the used save's own effects decide ──
-    // Its conditions come from those effects (read below with the rest), and a
-    // repeat save only if their own words give one. See _ownSaveResult.
-    try {
-      const own = SaveEngine._ownSaveResult(item, saveCtx?.activityId ?? null);
-      if (own) {
-        const dropped = (parsed?.conditions ?? []).map(c => c?.condition).filter(Boolean);
-        const ownText = own.map(r => plainSpellText(r.effect?.description ?? "")).join(" ");
-        const repeat = DescriptionParser._parseRepeatingSave(ownText, ownText.toLowerCase());
-        parsed = { ...(parsed ?? {}), conditions: [], repeatingSave: repeat };
-        console.log(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} has more than one save, `
-          + `and this one names its own effect${own.length > 1 ? "s" : ""} `
-          + `(${own.map(r => r.name).join(", ")}), so those decide what it does`
-          + `${dropped.length ? `; the spell-wide reading (${dropped.join(", ")}) is not this save's` : ""}`
-          + `${repeat?.trigger ? `; its own words give a repeat save (${repeat.trigger})` : "; its own words give no repeat save"}.`);
-      }
-    } catch (err) {
-      console.warn(`${MODULE_ID} | _applyFailedSaveConditions: could not read ${item.name}'s own save:`, err);
-    }
+    const onFailV = whatLands(recipe, { passed: false });
+    const onPassV = whatLands(recipe, { passed: true });
 
     // ── Resolve save ability + DC for repeating-save metadata ──
     let resolvedSaveAbility = saveCtx?.saveAbility ?? null;
@@ -6093,11 +6112,15 @@ export class SaveEngine {
       }
     } catch (_) { /* fallthrough */ }
 
-    const repeatingSaveMeta = (parsed?.repeatingSave?.trigger && resolvedSaveAbility && resolvedSaveDC)
+    // The repeat save: how the recipe says its condition ends, in the
+    // repeat-save engine's own words.
+    const repeatTrigger = repeatTriggerOf([...onFailV.conditions, ...onFailV.effects]
+      .map(c => c?.ends).find(Boolean));
+    const repeatingSaveMeta = (repeatTrigger && resolvedSaveAbility && resolvedSaveDC)
       ? {
           ability:         resolvedSaveAbility,
           dc:              resolvedSaveDC,
-          trigger:         parsed.repeatingSave.trigger,
+          trigger:         repeatTrigger,
           castWorldTime:   game.time?.worldTime ?? 0,
           durationSeconds: durationSeconds, // null = no duration cap
         }
@@ -6115,9 +6138,10 @@ export class SaveEngine {
         }
       : null;
 
-    // Diagnostic dump — surfaces why conditions might not be applying
-    const allConds = parsed?.conditions ?? [];
-    let failConditions = allConds.filter(c => c?.requiresSave);  // `let`: may be injected from the registry below
+    // What a failure puts on: the recipe's conditions, each with its own duration.
+    // `let`: break-free and a registry ruling may change it below.
+    let failConditions = onFailV.conditions.map(c => ({ condition: c.key, requiresSave: true,
+      ...(Number(c.duration) > 0 ? { duration: { seconds: Number(c.duration) } } : {}) }));
 
     // Break-free is self-contained: if the GM enabled "can break free" but the
     // feature never declared a save-triggered Restrained of its own, inject one
@@ -6128,8 +6152,11 @@ export class SaveEngine {
       failConditions.push({ condition: "restrained", requiresSave: true, source: "breakFree" });
       console.log(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — break-free enabled, injecting Restrained on fail.`);
     }
-    console.log(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — parsed ${allConds.length} condition(s), ${failConditions.length} marked requiresSave:`,
-      allConds.map(c => `${c.condition}${c.requiresSave ? "(save)" : "(no-save)"}`));
+    console.log(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name}: its recipe puts on `
+      + `${failConditions.map(c => c.condition).join(", ") || "no condition"} on a failure`
+      + `${onFailV.effects.length ? `, and its own effect${onFailV.effects.length > 1 ? "s" : ""} `
+        + onFailV.effects.map(e => `"${e.key}"`).join(", ") : ""}`
+      + `${recipe ? "" : ` (no save recipe: ${recipeWhy ?? "none was given"})`}.`);
 
     // ── Polymorph spell branch — MUST run BEFORE the no-conditions early return ──
     // Polymorph-class spells don't apply a tagged condition like "paralyzed" —
@@ -6170,106 +6197,62 @@ export class SaveEngine {
       return applied;
     }
 
-    // ── Decide WHICH conditions to apply on a failed save ──
-    // Registry-owned effect (Faerie Fire, resolved at the top of this method)
-    // wins outright; otherwise use the description-parsed conditions. If neither
-    // yields anything, there's nothing to apply (a homebrew save spell may
-    // simply need its on-fail condition configured).
-    // ⚠️🔴 THE ITEM'S OWN EFFECTS ARE THE FIRST SOURCE, NOT THE LAST.
-    //
-    // Johnny, 2026-09-08: a Specter failed Fear on a natural 1 and was not
-    // frightened. His console said it plainly — "parsed 0 condition(s), 0 marked
-    // requiresSave: []" — because the only reader here was the DESCRIPTION
-    // parser, hunting the phrase "or have the Frightened condition" in prose. A
-    // thin or re-written description therefore applies nothing at all, however
-    // correctly the item is built, and his Fear had one.
-    //
-    // dnd5e states it structurally on every properly built item:
-    //     Fear             effect "Fear"        statuses ["frightened"]
-    //     Hold Person      effect "Paralyzed"   statuses ["paralyzed"]
-    //     Hypnotic Pattern effect "Hypnotized"  statuses ["charmed","incapacitated"]
-    // with the activity naming the effect and `onSave: false` — not applied on a
-    // successful save, so applied on a failed one. That is the save gate, stated.
-    //
-    // ⚠️ IT MERGES, IT DOES NOT REPLACE. A spell whose text names a condition
-    // its effects do not carry keeps it, and vice versa. Only a registry ruling
-    // still wins outright, because that is somebody's deliberate decision.
-    const fromEffects = readAppliedConditions(item, saveCtx?.activityId)
-      .filter(c => c?.requiresSave);
-    if (fromEffects.length) {
-      const known = new Set(failConditions.map(c => String(c?.condition ?? "").toLowerCase()));
-      const added = fromEffects.filter(c => !known.has(String(c.condition).toLowerCase()));
-      if (added.length) {
-        failConditions = [...failConditions, ...added];
-        console.log(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — its own `
-          + `effect${added.length > 1 ? "s" : ""} name `
-          + `${added.map(c => `${c.condition} ("${c.effectName ?? c.condition}")`).join(", ")}, `
-          + `which the description never said.`);
-      }
-    }
-
-    // ── The spell's OWN effects, and whether its failure is a menu ──
-    //
-    // ⚠️🔴 ACE PUT CONDITIONS ON PEOPLE AND NEVER THE SPELL'S OWN EFFECT. Johnny,
-    // 2026-09-11: Neferon failed Ray of Enfeeblement and nothing happened to him.
-    // The 2024 Ray's failure is an effect, "Enervated" (disadvantage on Strength
-    // rolls, minus 1d8 damage), with no condition in it, and nothing here ever
-    // put an effect itself on anybody; dnd5e's own apply button is on the usage
-    // card ACE hides. Now the spell's own effect goes on beside any condition.
-    //
-    // ⚠️🔴 AND SEVERAL EFFECTS ON ONE RESULT ARE A MENU. Prismatic Spray's
-    // Indigo and Violet are one-or-the-other by a d8, Divine Word's by hit
-    // points, Blindness/Deafness by the caster's pick. The condition read above
-    // put every one of them on at once: everyone who failed Prismatic Spray was
-    // Restrained AND Blinded, and a failed 2024 Divine Word marked the creature
-    // dead. Only what every alternative shares lands now, and the GM is told.
-    //
-    // A registry entry is somebody's deliberate ruling and still wins outright.
-    let outcome = { fail: [], success: [], alternatives: false, options: [], shared: [] };
-    if (!registryEffectKey) {
-      try {
-        outcome = readSaveOutcome(item, { activityId: saveCtx?.activityId ?? null,
-                                          castLevel: saveCtx?.castLevel ?? null });
-      } catch (err) {
-        console.warn(`${MODULE_ID} | _applyFailedSaveConditions: could not read ${item.name}'s own effects:`, err);
-      }
-    }
+    // ── A menu: what every choice shares lands, and the choice is the GM's ──
+    // (Prismatic Spray, Divine Word, Contagion; 09-11.) The recipe lists what the
+    // choices share as conditions and names the choice itself as a note.
     let alternativesNote = null;
-    if (outcome.alternatives) {
-      const shared = new Set(outcome.shared);
-      const held = failConditions.filter(c => !shared.has(String(c?.condition ?? "").toLowerCase())
-        && c?.source !== "breakFree");
-      failConditions = failConditions.filter(c => shared.has(String(c?.condition ?? "").toLowerCase())
-        || c?.source === "breakFree");
-      alternativesNote = `${item.name} has ${outcome.options.length} possible results for a failed save `
-        + `(${outcome.options.join("; ")}), and which one is the caster's pick or the spell's own roll. `
+    const menu = onFailV.notes.find(n => /^one of: /.test(String(n)));
+    if (menu) {
+      const options = String(menu).slice("one of: ".length).split(", ").filter(Boolean);
+      alternativesNote = `${item.name} has ${options.length} possible results for a failed save `
+        + `(${options.join("; ")}), and which one is the caster's pick or the spell's own roll. `
         + (failConditions.length
           ? `ACE put on only what they all share (${failConditions.map(c => c.condition).join(", ")}). `
           : "ACE put none of them on. ")
         + "Apply the right one from the spell's effects.";
-      console.log(`${MODULE_ID} | _applyFailedSaveConditions: ${alternativesNote}`
-        + `${held.length ? ` Held back: ${held.map(c => c.condition).join(", ")}.` : ""}`);
+      console.log(`${MODULE_ID} | _applyFailedSaveConditions: ${alternativesNote}`);
     }
-    // A condition always goes through the condition library below. What goes on
-    // as the spell's own effect is everything else it carries: rules (Enervated,
-    // Hypnotic Pattern's Speed of 0) or words only (a reminder of what it does).
-    const copyFail = outcome.fail.filter(e => e.changes > 0 || e.descriptionOnly);
-    const copySuccess = outcome.success.filter(e => e.changes > 0 || e.descriptionOnly);
 
+    // ── The spell's own effects the recipe names, found on its source ──
+    // A condition always goes through the condition door. What goes on as the
+    // spell's own effect is what the recipe names as an effect: rules (Enervated,
+    // Hypnotic Pattern's Speed of 0) or words only, as a reminder of what it does.
+    // The source is the book's entry for an official item, or the item itself.
+    const found = registryEffectKey ? { here: new Map(), all: new Map() }
+      : SaveEngine._effectRowsFor(recipe, item, saveCtx?.castLevel ?? null);
+    const missingEffects = [];
+    const pick = (named) => named.map(e => {
+      const key = String(e?.key ?? "");
+      const row = found.here.get(key);
+      // Named, but for another slot level: not this cast's, and not missing.
+      if (!row && !found.all.has(key)) missingEffects.push(key || "an effect");
+      return row;
+    }).filter(Boolean);
+    const copyFail = registryEffectKey ? [] : pick(onFailV.effects);
+    const copySuccess = registryEffectKey ? [] : pick(onPassV.effects);
+    // A condition the data puts on a made save as well ("applies on a success").
+    const successConditions = registryEffectKey ? []
+      : onPassV.conditions.map(c => ({ condition: c.key,
+          ...(Number(c.duration) > 0 ? { duration: { seconds: Number(c.duration) } } : {}) }));
+    if (missingEffects.length) {
+      console.warn(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name}'s recipe names `
+        + `${missingEffects.map(n => `"${n}"`).join(", ")}, and that effect could not be found on its source.`);
+    }
+
+    // ── A human's ruling wins outright: a registry entry somebody wrote or corrected ──
     if (registryEffectKey) {
       failConditions = [{ condition: registryEffectKey, requiresSave: true, fromRegistry: true }];
       console.log(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — applying registry effect "${registryEffectKey}" to failed-save targets (template-save hand-off).`);
-    } else if (!failConditions.length && !copyFail.length && !copySuccess.length) {
+    } else if (!recipe) {
+      return declineAll(`ACE has no save recipe for ${item.name} (${recipeWhy ?? "none was given"}), so it put nothing on it.`);
+    } else if (!failConditions.length && !copyFail.length && !copySuccess.length && !successConditions.length) {
       // ⚠️ NAME WHAT WAS SEARCHED. "No conditions" and "I only looked in one
       // place" must never print the same, which is how this took two sessions.
-      console.warn(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — nothing to `
-        + `apply: its description names no save-gated condition, it carries no effect `
-        + `of its own for this result, and there is no registry entry for it.`
+      console.warn(`${MODULE_ID} | _applyFailedSaveConditions: ${item.name} — nothing to apply: its recipe `
+        + `names no condition and no effect of its own for this result, and there is no registry entry for it.`
         + `${alternativesNote ? ` ${alternativesNote}` : ""}`);
       return declineAll(alternativesNote
-        ?? (parseFailed
-          ? `ACE could not read ${item.name}'s description (${parseFailed}), and the spell carries no effect of its own to put on.`
-          : `${item.name} gives nothing ACE can put on a creature that fails: its words name no condition, and it carries no effect of its own.`));
+        ?? `${item.name} gives nothing ACE can put on a creature that fails: its recipe names no condition, and no effect of its own.`);
     }
 
     // ── Staged petrification (basilisk / medusa Petrifying Gaze) ──
@@ -6344,7 +6327,7 @@ export class SaveEngine {
           for (const e of staged) { try { await e.delete(); } catch (_) { /* already gone */ } }
           console.log(`${MODULE_ID} | ${item.name}: ${tActor.name} PASSED while turning to stone — staged restraint ends, tag cleaned.`);
           try {
-            await ChatMessage.create({
+            await CardDoor.post({
               speaker: ChatMessage.getSpeaker({ actor: tActor }),
               content: `<b>${tActor.name}</b> resists <b>${item.name}</b> — the petrification is halted and the restraint ends.`,
             });
@@ -6358,7 +6341,8 @@ export class SaveEngine {
     // A successful save can put something on the creature too (the 2024 Ray's
     // "Brief Enfeeblement"), so a card with no failures may still have work.
     const passedResults = results.filter(r => r?.passed === true && !r?.pending && !r?.noRoll);
-    if (!failed.length && !(copySuccess.length && passedResults.length)) {
+    const successLands = copySuccess.length > 0 || successConditions.length > 0;
+    if (!failed.length && !(successLands && passedResults.length)) {
       console.log(`${MODULE_ID} | ${item.name}: no resolved failed saves — no conditions to apply`);
       return applied;
     }
@@ -6701,7 +6685,7 @@ export class SaveEngine {
     // The 2024 Ray: "On a successful save, the target has Disadvantage on the
     // next attack roll it makes until the start of your next turn." Not tied to
     // concentration and carrying no repeat save: it ends by itself.
-    if (copySuccess.length && passedResults.length) {
+    if (successLands && passedResults.length) {
       for (const r of passedResults) {
         const { actor, why: noActor } = SaveEngine._resolveResultActor(r, item);
         if (!actor) {
@@ -6709,6 +6693,16 @@ export class SaveEngine {
           continue;
         }
         const names = [];
+        // A condition the recipe puts on a made save as well, through the door.
+        for (const cond of successConditions) {
+          if (saveCtx?.dryRun) { names.push(cond.condition); continue; }
+          try {
+            const out = await ConditionDoor.apply(actor, cond.condition, cond.duration ? { duration: cond.duration } : {});
+            if (out?.ok) names.push(cond.condition);
+          } catch (err) {
+            console.warn(`${MODULE_ID} | ${item.name}: could not put ${cond.condition} on ${actor.name} after its made save:`, err);
+          }
+        }
         for (const fx of copySuccess) {
           const res = await ConditionDoor.applyItemEffect(item, actor, fx, {
             outcome: "success",
@@ -6974,7 +6968,7 @@ export class SaveEngine {
   async _postSaveResultsPhase1(item, casterActor, results, opts) {
     const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell,
             timingType, templateDocId, templateSceneId, hasDamage = true,
-            appliedConditions = [], activityId = null, spellLevel = null } = opts;
+            appliedConditions = [], activityId = null, spellLevel = null, recipe = null } = opts;
 
     const cardHtml = this._buildPhase1CardHtml(item, results, opts);
 
@@ -6982,7 +6976,7 @@ export class SaveEngine {
     // produced it has visibly stopped. (feedback_chat_cards_use_the_room)
     await awaitDiceSettle();
 
-    await ChatMessage.create({
+    await CardDoor.post({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor: casterActor }),
       // PUBLIC (Johnny 2026-07-11): the save results are visible to the whole
@@ -7007,6 +7001,8 @@ export class SaveEngine {
           activityId,
           // The slot it was cast with: Phase 2 rolls the damage by it.
           spellLevel: Number.isFinite(spellLevel) ? spellLevel : null,
+          // What lands: the damage step and a late player's row ask whatLands of it.
+          recipe: recipe ?? null,
           actorId: casterActor?.id,
           // Owning player(s) of the caster — they see the ROLL DAMAGE button and
           // roll their OWN spell damage (Johnny 2026-07-11: "PCs always roll
@@ -7055,6 +7051,9 @@ export class SaveEngine {
         }
       }
     });
+
+    // A mechanic the recipe names that ACE has not built is said, not skipped.
+    await this._sayWhatIsNotBuilt(item, casterActor, recipe);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -7084,6 +7083,8 @@ export class SaveEngine {
       ui.notifications.error("ACE QOL | Could not find spell item for damage roll.");
       return;
     }
+    // What each row takes of the damage: whatLands, on the card's recipe.
+    const recipe = SaveEngine._recipeOfCard(flags, item);
 
     // ── 1. Roll damage dice (with cantrip + upcast scaling) ──
     const damageComponents = await this._rollSpellDamage(item, casterActor, {
@@ -7097,7 +7098,7 @@ export class SaveEngine {
     // ── 3. Build Phase 2 card HTML with full damage data ──
     const cardHtml = this._buildPhase2CardHtml(item, casterActor, allResults, damageComponents, {
       saveAbility, saveDC, halfOnSave, damageTypes,
-      activityId: flags.activityId ?? null,
+      activityId: flags.activityId ?? null, recipe,
     });
 
     // ── 4. Compute damageResults for flag storage ──
@@ -7108,7 +7109,7 @@ export class SaveEngine {
     const damageResults = [];
     for (const r of allResults) {
       if (r.pending) continue;
-      const { finals, total } = SaveEngine._damageForRow(r, damageComponents);
+      const { finals, total } = SaveEngine._damageForRow(r, damageComponents, recipe);
       damageResults.push({
         targetId: r.actorId,
         tokenDocId: r.tokenDocId,
@@ -7416,7 +7417,7 @@ export class SaveEngine {
   // ═══════════════════════════════════════════════════════════════════════════
 
   _buildPhase2CardHtml(item, casterActor, results, damageComponents, opts) {
-    const { saveAbility, saveDC, halfOnSave, damageTypes, activityId = null } = opts;
+    const { saveAbility, saveDC, halfOnSave, damageTypes, activityId = null, recipe = null } = opts;
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
     const baseDamageTotal = damageComponents.reduce((sum, c) => sum + c.total, 0);
 
@@ -7492,7 +7493,7 @@ export class SaveEngine {
       }
 
       // ── Calculate per-target damage ── (the same reading APPLY ALL lands)
-      const { finals, total: targetDamage } = SaveEngine._damageForRow(r, damageComponents);
+      const { finals, total: targetDamage } = SaveEngine._damageForRow(r, damageComponents, recipe);
       const dmgReasons = finals.flatMap(f => f.modifier === "immune" ? [`IMMUNE to ${f.type}`]
         : f.modifier === "resistant" ? [`RESIST ${f.type}`]
         : f.modifier === "vulnerable" ? [`VULN ${f.type}`] : []);
@@ -7733,7 +7734,7 @@ export class SaveEngine {
   }
 
   async _postSaveResults(item, casterActor, results, opts, damageComponents) {
-    const { saveAbility, saveDC, halfOnSave, damageTypes, spellLevel, activityId } = opts;
+    const { saveAbility, saveDC, halfOnSave, damageTypes, spellLevel, activityId, recipe = null } = opts;
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
 
     // If damageComponents not provided, roll them (with cantrip + upcast scaling)
@@ -7765,7 +7766,7 @@ export class SaveEngine {
       const rollDisplay = r.isAutoFail ? "AUTO" : r.saveTotal;
 
       // ── Per-target damage: the same reading the damage card and APPLY ALL use ──
-      const { finals, total: targetDamage } = SaveEngine._damageForRow(r, damageComponents);
+      const { finals, total: targetDamage } = SaveEngine._damageForRow(r, damageComponents, recipe);
       const dmgReasons = [];
       const dmgParts = finals.map(f => {
         // This type's badge and reason, in the words this card has always used.
@@ -7913,7 +7914,7 @@ export class SaveEngine {
     // produced it has visibly stopped. (feedback_chat_cards_use_the_room)
     await awaitDiceSettle();
 
-    await ChatMessage.create({
+    await CardDoor.post({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor: casterActor }),
       // PUBLIC (Johnny 2026-07-11): the table sees the damage + HP change. The

@@ -77,6 +77,20 @@ check("Evasion, failed, against an effect with no half clause: all of it (RAW; t
 check("Evasion, made, against an effect with no half clause: none, and not called Evasion",
   row({ half: false, passed: true, evasion: true }) === "0 PASS (NO DMG)", row({ half: false, passed: true, evasion: true }));
 check("a share rounds down: half of 29 is 14", shareOf(29, 0.5) === 14, String(shareOf(29, 0.5)));
+
+// ── A save card row asks whatLands and nothing else ──
+const rowOf = (r, o) => { const v = whatLands(r, o); return `${v.share} ${v.label}`; };
+check("whatLands gives a made Fireball's row: half, PASS (HALF)",
+  rowOf(fireball, { passed: true }) === "0.5 PASS (HALF)", rowOf(fireball, { passed: true }));
+check("whatLands gives a failed Disintegrate's row with Evasion: all of it, FAIL",
+  rowOf(disintegrate, { passed: false, evasion: true }) === "1 FAIL", rowOf(disintegrate, { passed: false, evasion: true }));
+check("whatLands gives a made Hold Person's row: none, PASS (NO DMG)",
+  rowOf(holdPerson, { passed: true }) === "0 PASS (NO DMG)", rowOf(holdPerson, { passed: true }));
+check("whatLands names an automatic failure",
+  rowOf(holdPerson, { passed: false, autoFail: true }) === "1 AUTO-FAIL", rowOf(holdPerson, { passed: false, autoFail: true }));
+check("a save with no recipe still gets a plain row and lands nothing",
+  rowOf(null, { passed: true }) === "0 PASS (NO DMG)" && whatLands(null, { passed: false }).conditions.length === 0,
+  rowOf(null, { passed: true }));
 check("the GM's quarter and double from the card: 7 is 1 and 14", shareOf(7, 0.25) === 1 && shareOf(7, 2) === 14,
   `${shareOf(7, 0.25)} and ${shareOf(7, 2)}`);
 

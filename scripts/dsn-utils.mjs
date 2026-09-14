@@ -47,14 +47,6 @@ const MODULE_ID = "ace-qol";
  */
 const _inFlight = new Set();
 
-/**
- * Whether any dice ACE threw are still tumbling. The four doors ask this so a
- * landing never goes on while dice are in the air (road/doors.mjs, 2026-09-14).
- */
-export function diceInFlight() {
-  return _inFlight.size > 0;
-}
-
 export function safeShowForRoll(roll, label = "dice animation") {
   if (!roll) return;
 

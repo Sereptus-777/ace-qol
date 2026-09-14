@@ -64,22 +64,28 @@ export function shareOf(total, share) {
  *   the damage that was rolled for the whole spell, one entry per damage type,
  *   after its dice have landed
  * @param {boolean} [result.evasion]  the creature has Evasion and this is a Dexterity save
+ * @param {boolean} [result.autoFail]  the save failed automatically; changes only the row's words
  * @returns {{damage: Array<{amount: number, type: string|null, why: string}>,
- *            conditions: object[], effects: object[], notes: string[], why: string}}
+ *            conditions: object[], effects: object[], notes: string[], why: string,
+ *            share: number, half: boolean, evades: boolean, label: string}}
  *   conditions and effects are the recipe's own `condition` objects: key,
- *   duration in seconds, and how it ends.
+ *   duration in seconds, and how it ends. `share` is how much of the rolled
+ *   damage this save lets through (1, 0.5 or 0) and `label` is what the card row
+ *   says, so a save card asks this and nothing else.
  */
-export function whatLands(recipe, { passed, rolled = [], evasion = false } = {}) {
-  const out = { damage: [], conditions: [], effects: [], notes: [], why: "" };
-  if (recipe?.decidedBy?.kind !== "save") {
+export function whatLands(recipe, { passed, rolled = [], evasion = false, autoFail = false } = {}) {
+  const isSave = recipe?.decidedBy?.kind === "save";
+  const onFail = isSave ? (recipe.onFail ?? []) : [];
+  const onSuccess = isSave ? (recipe.onSuccess ?? []) : [];
+  // One activity has one rule for its damage on a made save.
+  const half = onFail.find(o => o.kind === "damage")?.onSuccess === "half";
+  const s = damageShare({ half, passed, evasion, autoFail });
+  const out = { damage: [], conditions: [], effects: [], notes: [], why: "",
+                share: s.share, half, evades: s.evades, label: s.label };
+  if (!isSave) {
     out.why = "it is not decided by a save";
     return out;
   }
-  const onFail = recipe.onFail ?? [];
-  const onSuccess = recipe.onSuccess ?? [];
-  // One activity has one rule for its damage on a made save.
-  const half = onFail.find(o => o.kind === "damage")?.onSuccess === "half";
-  const s = damageShare({ half, passed, evasion });
   const why = !passed ? (s.evades ? "failed; Evasion halves it" : "failed")
     : s.evades ? "made it; Evasion takes none"
     : half ? "made it; half, rounded down" : "made it; none on a success";

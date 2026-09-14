@@ -26,6 +26,8 @@ import { LearnedStore } from "./learned-store.mjs";
 import { classifyItem, KNOWN_SHAPES, describeClassification } from "./classify-item.mjs";
 import { DescriptionParser } from "../description-parser.mjs";
 import { getSpellTiming } from "../spell-timing.mjs";
+import { recipesFor, loadBookFor, bookReview } from "./recipe.mjs";
+import { CardDoor } from "../road/doors.mjs";
 
 /** Read one item the way the pipeline would, without changing anything. */
 export function explain(item) {
@@ -41,8 +43,7 @@ export function explain(item) {
  * player character when no actor is given.
  */
 export function reviewActor(actor = null) {
-  const actors = actor ? [actor]
-    : (game.actors ?? []).filter(a => a?.type === "character" && a.hasPlayerOwner);
+  const actors = inScope(actor);
   const rows = [];
   for (const a of actors) {
     for (const item of (a.items ?? [])) {
@@ -59,15 +60,47 @@ export function reviewActor(actor = null) {
   return rows;
 }
 
+/** The creatures a review covers: the one asked about, or every player character. */
+function inScope(actor) {
+  return actor ? [actor] : (game.actors ?? []).filter(a => a?.type === "character" && a.hasPlayerOwner);
+}
+
+/**
+ * Every sheet whose book says otherwise. Johnny, 2026-09-14: "Pack is the
+ * recipe. Sheet is the instance. Do NOT update the actor item when they differ.
+ * Log: edition, name, actor, what the pack says, what the sheet says. Put it on
+ * the review list."
+ *
+ * Reading an item's recipes notes a difference (inference/recipe.mjs), and the
+ * book is brought into memory first, so the list does not depend on what
+ * happened to be cast this session. Nothing is written.
+ */
+async function bookDisagreements(actor) {
+  for (const a of inScope(actor)) {
+    for (const item of (a.items ?? [])) {
+      try {
+        await loadBookFor(item, { actor: a });
+        recipesFor(item, { actor: a });
+      } catch (err) {
+        console.warn(`${MODULE_ID} | the review list could not read the recipe of ${item?.name} on ${a?.name}:`, err);
+      }
+    }
+  }
+  // One creature: its own. Every player character: theirs, and every other
+  // creature whose cast this session found its sheet and its book apart.
+  return bookReview().filter(b => !actor || b.actorId === actor.id);
+}
+
 /** A chat card listing what ACE worked out, with the evidence for each. */
 export async function postReviewCard(actor = null) {
   if (!game.user?.isGM) return;
   const rows = reviewActor(actor);
+  const book = await bookDisagreements(actor);
   const esc = (t) => foundry.utils.escapeHTML(String(t ?? ""));
 
-  if (!rows.length) {
+  if (!rows.length && !book.length) {
     ui.notifications?.info(`ACE has not had to work anything out for `
-      + `${actor?.name ?? "your players"} — every item is either curated or passive.`);
+      + `${actor?.name ?? "your players"}: every item is either curated or passive, and no sheet disagrees with its book.`);
     return;
   }
 
@@ -93,7 +126,35 @@ export async function postReviewCard(actor = null) {
     ? `<p style="font-size:12px;color:#9aa4ad;margin:6px 0 0 0;">
          ${rows.length - 40} more not shown. The full list is in the console.</p>` : "";
 
-  await ChatMessage.create({
+  // Where the sheet and the book say different things: the book's version is
+  // what ACE resolves, and the sheet was left exactly as it is.
+  const bookBody = book.slice(0, 40).map(b => `
+      <div style="border-left:3px solid #7fa7d1;padding:6px 10px;margin-bottom:8px;background:rgba(127,167,209,0.07);">
+        <div style="font-size:16px;color:#f0e4c0;">
+          <strong>${esc(b.name)}</strong>
+          <span style="color:#9aa4ad;font-size:14px;"> ${esc(b.actor ?? "no creature")}, ${esc(b.edition)}${b.activity ? `, ${esc(b.activity)}` : ""}</span>
+        </div>
+        <div style="font-size:14px;color:#9aa4ad;margin-top:2px;">The book: ${esc(b.pack)}</div>${(b.differences ?? []).map(d => `
+        <div style="font-size:14px;color:#c0b288;line-height:1.5;margin-top:3px;">
+          <strong style="color:#e8d9a8;">${esc(d.field)}</strong>: the book says ${esc(d.book)}; the sheet says ${esc(d.sheet)}.
+        </div>`).join("")}
+      </div>`).join("");
+  const bookMore = book.length > 40
+    ? `<p style="font-size:14px;color:#9aa4ad;margin:6px 0 0 0;">
+         ${book.length - 40} more not shown. The full list is in the console.</p>` : "";
+  const bookSection = book.length ? `
+        <div style="font-family:'Cinzel Decorative','Cinzel',serif;color:#d4af37;font-size:18px;
+                    font-weight:700;letter-spacing:0.8px;border-bottom:1px solid #4a3a28;
+                    padding-bottom:6px;margin:14px 0 10px 0;">
+          Where the sheet and the book disagree
+        </div>
+        <p style="font-size:14px;color:#c0b288;margin:0 0 10px 0;line-height:1.5;">
+          Each is a named official spell or feature. ACE resolves it from the book, takes only this
+          cast from the sheet (the caster, the slot, the area, the targets), and has not changed the sheet.
+        </p>
+        ${bookBody}${bookMore}` : "";
+
+  await CardDoor.post({
     whisper: game.users.filter(u => u.isGM).map(u => u.id),
     flags: { [MODULE_ID]: { type: "inferenceReview" } },
     content: `
@@ -104,20 +165,29 @@ export async function postReviewCard(actor = null) {
                     font-weight:700;letter-spacing:0.8px;border-bottom:1px solid #4a3a28;
                     padding-bottom:6px;margin-bottom:10px;">
           What ACE worked out
-        </div>
+        </div>${rows.length ? `
         <p style="font-size:13px;color:#c0b288;margin:0 0 10px 0;line-height:1.5;">
           Nobody wrote these by hand. ACE read each item and worked out how it resolves,
           and the reasons are underneath each one. Anything wrong can be corrected once
           and it will stay corrected.
         </p>
-        ${body}${more}
+        ${body}${more}` : ""}${bookSection}
       </div>`,
   }).catch(err => console.warn(`${MODULE_ID} | review card failed to post:`, err));
 
   // The console gets the whole list, always, because a card is capped and the
   // thing he most needs is the one that did not fit.
-  console.log(`${MODULE_ID} | ACE worked out ${rows.length} item(s):`);
-  for (const r of rows) console.log(`${MODULE_ID} |   ${r.line}`);
+  if (rows.length) {
+    console.log(`${MODULE_ID} | ACE worked out ${rows.length} item(s):`);
+    for (const r of rows) console.log(`${MODULE_ID} |   ${r.line}`);
+  }
+  if (book.length) {
+    console.log(`${MODULE_ID} | ${book.length} sheet(s) disagree with their book; the book is resolved and the sheet is unchanged:`);
+    for (const b of book) {
+      console.log(`${MODULE_ID} |   ${b.name} (${b.actor ?? "no creature"}, ${b.edition}, ${b.pack}): `
+        + (b.differences ?? []).map(d => `${d.field}: the book says ${d.book}; the sheet says ${d.sheet}`).join(" | "));
+    }
+  }
 }
 
 /**

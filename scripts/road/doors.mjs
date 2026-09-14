@@ -19,7 +19,7 @@
 // const read at top level inside an import cycle throws at load (2026-08-28).
 // ──────────────────────────────────────────────────────────────────────────────
 
-import { awaitDiceSettle, diceInFlight } from "../dsn-utils.mjs";
+import { awaitDiceSettle } from "../dsn-utils.mjs";
 import { DamageApplicator } from "../damage-applicator.mjs";
 import { DamageCalculator } from "../damage-calculator.mjs";
 import { ConditionLibrary } from "../condition-library.mjs";
@@ -39,10 +39,11 @@ export const SIGNALS = Object.freeze([
  *   came in on, when dice decided this landing; false when none were thrown
  */
 export async function untilDiceLand(dice) {
-  // ⚠️ NOTE 4: NOTHING THROWN, NOTHING WAITED FOR. And a door never lands while
-  // ACE's own dice are still in the air, whatever its caller told it.
-  if (!dice && !diceInFlight()) return;
-  const messageId = (dice && typeof dice === "object") ? (dice.messageId ?? null) : null;
+  // ⚠️ NOTE 4: NOTHING THROWN, NOTHING WAITED FOR. A caller whose landing was
+  // decided by dice says so; anything else lands at once and never sits on a
+  // hook for dice nobody threw (the twenty-second card of 4 September).
+  if (!dice) return;
+  const messageId = typeof dice === "object" ? (dice.messageId ?? null) : null;
   await awaitDiceSettle(undefined, { messageId });
 }
 

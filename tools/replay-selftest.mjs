@@ -73,7 +73,6 @@ async function rows(path, name) {
 }
 const actorRows = await rows(join(WORLD_DATA, "actors"), "actors");
 const settingRows = await rows(join(WORLD_DATA, "settings"), "settings");
-rmSync(scratch, { recursive: true, force: true });
 
 // ⚠️ HIS SETTINGS, NOT DEFAULTS. A shape he corrected by hand lives in a world
 // setting, and the replay has to see the same corrections his table does.
@@ -84,6 +83,34 @@ for (const [k, v] of settingRows) {
   try { val = JSON.parse(v.value); } catch (_) { /* a plain string */ }
   SETTINGS.set(v.key, val);
 }
+
+// ⚠️ THE BOOKS, AS HIS TABLE LOADS THEM (The One Road, 2026-09-14). A named
+// official spell or feature takes its recipe from its book, and his sheet is
+// only this cast's instance. The books reader indexes every Item pack Foundry
+// hands it at boot: the system's, every active module's and his world's. The
+// same packs are read here, from a copy, so the replay reads what the cast reads.
+const readJson = (path) => { try { return JSON.parse(readFileSync(path, "utf8")); } catch (_) { return null; } };
+const packSources = [];
+for (const p of readJson(`${SYSTEM}/system.json`)?.packs ?? []) {
+  if (p.type === "Item") packSources.push({ packageType: "system", packageName: "dnd5e", dir: SYSTEM, pack: p });
+}
+for (const [id, on] of Object.entries(SETTINGS.get("core.moduleConfiguration") ?? {})) {
+  const dir = `${ROOT}/Data/modules/${id}`;
+  const m = on ? readJson(`${dir}/module.json`) : null;
+  for (const p of m?.packs ?? []) {
+    if (p.type === "Item") packSources.push({ packageType: "module", packageName: id, dir, pack: p, protected: m.protected === true });
+  }
+}
+for (const p of readJson(`${ROOT}/Data/worlds/${WORLD}/world.json`)?.packs ?? []) {
+  if (p.type === "Item") packSources.push({ packageType: "world", packageName: WORLD, dir: `${ROOT}/Data/worlds/${WORLD}`, pack: p });
+}
+const BOOK_PACKS = [];
+for (const s of packSources) {
+  const collection = `${s.packageType === "world" ? "world" : s.packageName}.${s.pack.name}`;
+  BOOK_PACKS.push({ ...s, collection, label: s.pack.label ?? collection,
+    rows: await rows(join(s.dir, s.pack.path ?? `packs/${s.pack.name}`), `pack-${collection}`) });
+}
+rmSync(scratch, { recursive: true, force: true });
 
 /** dnd5e's own list of activation types, read from the installed system. */
 function activationTypes() {
@@ -179,7 +206,8 @@ class Collection extends Map {
 let SpellPipeline, SaveEngine, PostHitSaves, DescriptionParser, readSaveOutcome,
   readActivities, readAppliedConditions, decideActivityChoice, upCanBeSeen, aceStripEnrichers,
   readPrismaticWall, PrismaticWallEngine, RepeatingSaveEngine, spellIsUp,
-  recipesFor, recipeLine, formulaValue, whatLands, HpDoor, SignalDoor, untilDiceLand, CombatState;
+  recipesFor, recipeLine, formulaValue, whatLands, HpDoor, SignalDoor, untilDiceLand, CombatState,
+  RulesIndex, bookReview;
 try {
   ({ readPrismaticWall } = await import(`${MODULE}/scripts/rules/prismatic-wall.mjs`));
   ({ PrismaticWallEngine } = await import(`${MODULE}/scripts/prismatic-wall-engine.mjs`));
@@ -192,7 +220,8 @@ try {
   ({ readActivities, readAppliedConditions } = await import(`${MODULE}/scripts/read-activities.mjs`));
   ({ decideActivityChoice, upCanBeSeen, spellIsUp } = await import(`${MODULE}/scripts/activity-choice.mjs`));
   ({ aceStripEnrichers } = await import(`${MODULE}/scripts/description-reader.mjs`));
-  ({ recipesFor, recipeLine } = await import(`${MODULE}/scripts/inference/recipe.mjs`));
+  ({ recipesFor, recipeLine, bookReview } = await import(`${MODULE}/scripts/inference/recipe.mjs`));
+  ({ RulesIndex } = await import(`${MODULE}/scripts/rules/rules-index.mjs`));
   ({ formulaValue } = await import(`${MODULE}/scripts/inference/formula-value.mjs`));
   ({ whatLands } = await import(`${MODULE}/scripts/road/what-lands.mjs`));
   ({ HpDoor, SignalDoor, untilDiceLand } = await import(`${MODULE}/scripts/road/doors.mjs`));
@@ -308,11 +337,23 @@ function movementUnits() {
   const src = readFileSync(`${SYSTEM}/dnd5e.mjs`, "utf8");
   const at = src.indexOf("DND5E.movementUnits = {");
   if (at < 0) throw new Error("dnd5e's movement units are not where they were in dnd5e.mjs");
-  const units = new Set([...src.slice(at, src.indexOf("\n};", at)).matchAll(/^ {2}(\w+):/gm)].map(m => m[1]));
+  const block = src.slice(at, src.indexOf("\n};", at));
+  const units = new Set([...block.matchAll(/^ {2}(\w+):/gm)].map(m => m[1]));
   if (!units.has("ft")) throw new Error(`dnd5e's movement units read as ${[...units].join(", ") || "nothing"}, without feet`);
-  return units;
+  // Each unit's factor to feet, as dnd5e writes it ("5_280", "10 / 3").
+  const num = (s) => Number(String(s).replace(/_/g, ""));
+  const factors = {};
+  for (const m of block.matchAll(/^ {2}(\w+): \{[^}]*?conversion: ([\d_.]+)(?: \/ ([\d_.]+))?/gm)) {
+    factors[m[1]] = { conversion: m[3] ? num(m[2]) / num(m[3]) : num(m[2]) };
+  }
+  if (factors.ft?.conversion !== 1 || factors.mi?.conversion !== 5280) {
+    throw new Error(`dnd5e's unit factors read as ${JSON.stringify(factors)}, not feet 1 and miles 5280`);
+  }
+  return { units, factors };
 }
-const MOVEMENT_UNITS = movementUnits();
+const { units: MOVEMENT_UNITS, factors: MOVEMENT_FACTORS } = movementUnits();
+// dnd5e's own unit factors, as its CONFIG carries them at the table.
+CONFIG.DND5E.movementUnits = MOVEMENT_FACTORS;
 /**
  * RangeField.prepareData: a range in movement units is worked out from its
  * formula at load (Hammer's Aquatic Charge is "@attributes.movement.swim");
@@ -378,12 +419,14 @@ function loadedActivity(a, type, system, rollData) {
   return out;
 }
 
-function liveItem(raw, actor) {
-  const uuid = `${actor.uuid}.Item.${raw._id}`;
+// A book entry is held by no creature: its roll data has none of a creature's numbers.
+const BOOK_HOLDER = { id: "(book)", system: {} };
+/** An item as Foundry hands it over: loaded the way dnd5e loads it, its effects beside it. */
+function loadItem(raw, { uuid, actor = null, effectRows = [], extra = {} }) {
   // `_source` is the stored copy, as on a live document.
   const item = { ...raw, _source: raw, id: raw._id, uuid, actor, parent: actor, flags: raw.flags ?? {},
-    getFlag: (s, k) => raw.flags?.[s]?.[k], getRollData: () => ({}) };
-  const rollData = rollDataFor(actor, raw);
+    getFlag: (s, k) => raw.flags?.[s]?.[k], getRollData: () => ({}), ...extra };
+  const rollData = rollDataFor(actor ?? BOOK_HOLDER, raw);
   const system = loadedSystem(raw, rollData);
   // ⚠️ A LIVE ITEM IS NOT ITS STORED COPY: a save's abilities are a Set live.
   const acts = new Collection(Object.entries(raw.system?.activities ?? {}).map(([k, stored]) => {
@@ -392,12 +435,17 @@ function liveItem(raw, actor) {
     return [id, { ...a, _source: stored, id, uuid: `${uuid}.Activity.${id}`, item, actor, parent: item,
       save: a.save ? { ...a.save, ability: asSet(a.save.ability) } : a.save }];
   }));
-  const effects = new Collection((effectsByItem.get(`${actor.id}.${raw._id}`) ?? []).map(e => [e._id,
+  const effects = new Collection(effectRows.map(e => [e._id,
     { ...e, id: e._id, uuid: `${uuid}.ActiveEffect.${e._id}`, statuses: new Set(e.statuses ?? []),
       toObject() { return JSON.parse(JSON.stringify({ ...e, statuses: [...(e.statuses ?? [])] })); } }]));
   item.effects = effects;
   item.system = { ...system, properties: new Set(raw.system?.properties ?? []), activities: acts };
-  ITEMS.set(uuid, item);
+  return item;
+}
+function liveItem(raw, actor) {
+  const item = loadItem(raw, { uuid: `${actor.uuid}.Item.${raw._id}`, actor,
+    effectRows: effectsByItem.get(`${actor.id}.${raw._id}`) ?? [] });
+  ITEMS.set(item.uuid, item);
   return item;
 }
 for (const raw of rawActors) {
@@ -451,6 +499,62 @@ const check = (label, ok, detail) => {
   ok ? pass++ : fail++;
   say((ok ? "  ok   " : "  FAIL ") + String(label).padEnd(70) + detail);
 };
+
+/* ── The books reader, on the same packs ────────────────────────────────── */
+// The index is built from stand-ins for his packs, the way it is at his table's
+// boot. A book entry is loaded the way dnd5e loads a compendium item, held by no
+// creature, and every entry counts as in memory: a replayed press is read the
+// way the cast reads it, after the book was brought in for that cast.
+const BOOK_RAW = new Map();                  // uuid -> { raw, effects, pack }
+const packStandIns = BOOK_PACKS.map(bp => {
+  const effects = new Map();
+  for (const [k, v] of bp.rows) {
+    if (!k.startsWith("!items.effects!")) continue;
+    const itemId = k.slice("!items.effects!".length).split(".")[0];
+    if (!effects.has(itemId)) effects.set(itemId, []);
+    effects.get(itemId).push(v);
+  }
+  const index = [];
+  for (const [k, v] of bp.rows) {
+    if (!k.startsWith("!items!")) continue;
+    const uuid = `Compendium.${bp.collection}.Item.${v._id}`;
+    BOOK_RAW.set(uuid, { raw: v, effects: effects.get(v._id) ?? [], pack: bp.collection });
+    index.push({ _id: v._id, name: v.name, type: v.type, uuid, flags: v.flags ?? {},
+      system: { source: v.system?.source ?? {} } });
+  }
+  return { documentName: "Item", collection: bp.collection, getIndex: async () => index,
+    metadata: { packageType: bp.packageType, packageName: bp.packageName, label: bp.label, name: bp.pack.name } };
+});
+class BookDocs extends Map {
+  has(uuid) { return super.has(uuid) || BOOK_RAW.has(uuid); }
+  get(uuid) {
+    if (!super.has(uuid) && BOOK_RAW.has(uuid)) {
+      const { raw, effects, pack } = BOOK_RAW.get(uuid);
+      super.set(uuid, loadItem(raw, { uuid, effectRows: effects, extra: { pack } }));
+    }
+    return super.get(uuid);
+  }
+}
+{
+  const keep = { packs: game.packs, modules: game.modules };
+  const modules = new Map(BOOK_PACKS.filter(b => b.packageType === "module")
+    .map(b => [b.packageName, { id: b.packageName, active: true, protected: !!b.protected }]));
+  // Only while the index is built: nothing else in the replay has seen a pack or a module.
+  game.packs = packStandIns;
+  game.modules = { get: (id) => modules.get(id) ?? null };
+  let status = null;
+  try { await quiet(async () => { status = await RulesIndex.build(); }); }
+  finally { Object.assign(game, keep); }
+  RulesIndex._docs = new BookDocs();
+  const byUuid = (u) => ITEMS.get(u) ?? (BOOK_RAW.has(u) ? RulesIndex._docs.get(u) : null);
+  globalThis.fromUuid = async (u) => byUuid(u);
+  globalThis.fromUuidSync = (u) => byUuid(u);
+  const books = (status?.packs ?? []).filter(p => p.official).map(p => p.id);
+  say(`\nTHE BOOKS: ${status?.packs?.length ?? 0} item packs indexed, ${status?.counts?.["2014"] ?? 0} names under 2014 `
+    + `and ${status?.counts?.["2024"] ?? 0} under 2024. Books: ${books.join(", ") || "none"}; `
+    + `his D&D Beyond imports of a named book count item by item`
+    + `${status?.failed?.length ? `. ${status.failed.length} would not open: ${status.failed.map(f => f.id).join(", ")}` : ""}.`);
+}
 
 /* ── --show: what ACE decides for the items asked about ─────────────────── */
 if (SHOW !== null) {
@@ -1193,7 +1297,7 @@ check("no hover shows raw codes, even before its full text is ready", codes === 
     wall?.who?.kind === "all-in-area" && failed?.damage[0]?.amount === 33 && made?.damage[0]?.amount === 16,
     `who ${wall?.who?.kind}; failed: ${amounts(failed)}; made: ${amounts(made)}`);
 
-  // ── Half on a success: the item's data, or the words of its one damaging save ──
+  // ── Half on a success: each activity's own data, never another save's words ──
   const itemOf = (actorRe, itemRe, keep = () => true) => {
     for (const a of ACTORS.values()) {
       if (!actorRe.test(String(a.name))) continue;
@@ -1210,22 +1314,16 @@ check("no hover shows raw codes, even before its full text is ready", codes === 
     }
     return out;
   };
-  let weird = {}, shade = {}, eye = {};
-  let eyeItem = null;
+  let weird = {}, shade = {};
   await quiet(async () => {
     weird = onSuccessOf(itemOf(/^varek thalor/i, /^weird$/i));
     shade = onSuccessOf(itemOf(/^shade tyrant/i, /^black charge$/i));
-    eyeItem = itemOf(/fomorian/i, /^evil eye$/i,
-      it => readActivities(it).find(x => x.type === "save")?._source?.damage?.onSave === "none");
-    eye = onSuccessOf(eyeItem);
   });
   const said = (o) => Object.entries(o).map(([k, v]) => `${k}: ${v}`).join("; ") || "not in this world";
   check("a sentence about one save does not decide another: Weird's end-of-turn save takes nothing on a success (Phase 1)",
     weird.save === "half" && weird["End of Turn Save"] === "none", said(weird));
   check("the Shade Tyrant's evading save takes nothing on a success, its bracing save half, each by its own data (Phase 1)",
     shade.Evade === "none" && shade.Brace === "half", said(shade));
-  check("an item's one damaging save takes half when its words say so though its data says none: the Fomorian's Evil Eye (Phase 1)",
-    eyeItem ? eye.save === "half" : null, eyeItem ? said(eye) : "no Fomorian stores none on its Evil Eye");
 
   // ── The save engine reads the same recipe (one reading, 2026-09-14) ──
   const saveAct = (re) => {
@@ -1280,13 +1378,112 @@ check("no hover shows raw codes, even before its full text is ready", codes === 
       + `ACE's own roll refused: ${refuses({ aceQol: { ownRoll: true } })}`);
 
   // ── One reading of what a card row takes, for the card and APPLY ALL ──
-  const fr = SaveEngine._damageForRow({ damageMultiplier: 0.5, damageModifiers: { fire: { modifier: "resistant", reason: "Resists fire" } } },
-    [{ total: 29, type: "fire" }]);
-  check("a card row: a made Fireball on a creature that resists fire takes 7 of 29 (half, then half, each rounded down) (Phase 1)",
-    fr.total === 7 && fr.finals[0]?.modifier === "resistant", `${fr.total} (${fr.finals.map(f => `${f.final} ${f.type}, ${f.modifier}`).join("; ")})`);
+  // The row carries its save's result; what that lets through is whatLands', on the recipe.
+  const resists = { fire: { modifier: "resistant", reason: "Resists fire" } };
+  const fr = SaveEngine._damageForRow({ passed: true, damageModifiers: resists }, [{ total: 29, type: "fire" }], fire);
+  const frFailed = SaveEngine._damageForRow({ passed: false, damageModifiers: resists }, [{ total: 29, type: "fire" }], fire);
+  const drMade = SaveEngine._damageForRow({ passed: true }, [{ total: 75, type: "force" }], dis);
+  check("a card row: a made Fireball on a creature that resists fire takes 7 of 29, a failed one 14 (each halving rounds down) (Phase 1)",
+    fr.total === 7 && fr.finals[0]?.modifier === "resistant" && frFailed.total === 14,
+    `made ${fr.total} (${fr.finals.map(f => `${f.final} ${f.type}, ${f.modifier}`).join("; ")}); failed ${frFailed.total}`);
+  check("a card row: a made Disintegrate takes none of its 75, as its recipe says (Phase 1)",
+    drMade.total === 0, `${drMade.total}`);
   const ov = SaveEngine._overriddenFinals({ baseDamageTotal: 15, damageComponentTotals: [{ total: 7, type: "fire" }, { total: 8, type: "cold" }] }, 0.5);
   check("the GM's half on a 7 fire + 8 cold row lands 7, the card's number, and keeps both types (Phase 1)",
     ov.reduce((s, f) => s + f.final, 0) === 7 && ov.map(f => f.type).join() === "fire,cold", ov.map(f => `${f.final} ${f.type}`).join(", "));
+
+  // ── The live save path decides through whatLands, on the save's recipe ──
+  // Johnny, 2026-09-14: "Live saves call whatLands(recipe, { passed, rolled,
+  // evasion }), then HpDoor / ConditionDoor / SignalDoor", and "save-engine must
+  // not compute half/none or 'skip conditions because there is damage' on its
+  // own." A save rolled the way the card rolls it, and what a failure puts on (a
+  // dry run of the same code, which writes nothing), on a linked copy of a Goblin.
+  {
+    const engine = Object.create(SaveEngine.prototype);        // its hooks are never registered
+    const goblin = [...ACTORS.values()].find(a => a.type === "npc" && /^goblin$/i.test(a.name)
+      && Number(a.system?.attributes?.hp?.value) > 0) ?? null;
+    const burstIt = itemOf(/^varek thalor/i, /^sunburst$/i);
+    const holdIt = saveAct(/^hold person/i).it;
+    if (!goblin || !dis || !fire || !hold || !holdIt) {
+      check("the live save path through whatLands (Phase 1)", null,
+        "(a Goblin, or Varek's Disintegrate, Fireball or Hold Person, is missing)");
+    } else {
+      const target = { ...goblin, id: "replay-save-target", uuid: "Actor.replay-save-target",
+        prototypeToken: { ...(goblin.prototypeToken ?? {}), actorLink: true }, statuses: new Set(), effects: new Collection() };
+      ACTORS.set(target.id, target);
+      const tgt = (extra = {}) => ({ name: target.name, img: "", actorId: target.id, tokenDocId: null, sceneId: null, ...extra });
+      const got = {};
+      try {
+        await quiet(async () => {
+          const high = [{ value: 60 }];
+          got.disMade = await engine._rollSingleSave(tgt({ saveBonuses: high }), "dex", 23, dis, null, { isMultiTarget: true });
+          got.fireMade = await engine._rollSingleSave(tgt({ saveBonuses: high }), "dex", 23, fire, null, { isMultiTarget: true });
+          got.fireFailed = await engine._rollSingleSave(tgt(), "dex", 23, fire, null, { isMultiTarget: true });
+          got.autoFail = await engine._rollSingleSave(tgt({ autoFailSave: true }), "dex", 23, fire, null, {});
+          const failedRow = { ...tgt(), passed: false };
+          const burst = burstIt ? SaveEngine.saveRecipe(burstIt, readActivities(burstIt).find(x => x.type === "save")).recipe : null;
+          got.burst = burstIt ? await engine._applyFailedSaveConditions(burstIt, [failedRow],
+            { recipe: burst, saveAbility: "con", saveDC: 23, dryRun: true }) : null;
+          got.hold = await engine._applyFailedSaveConditions(holdIt, [failedRow],
+            { recipe: hold, saveAbility: "wis", saveDC: 23, dryRun: true });
+        });
+      } finally {
+        ACTORS.delete(target.id);
+      }
+      const rowSaid = (r) => (r ? `${r.resultLabel}, takes ${r.damageMultiplier}` : "no row");
+      check("a save rolled for the card takes its label and share from whatLands: Disintegrate made, none; Fireball made, half; failed or auto-failed, all (Phase 1)",
+        got.disMade?.passed === true && got.disMade.resultLabel === "PASS (NO DMG)" && got.disMade.damageMultiplier === 0
+          && got.fireMade?.passed === true && got.fireMade.resultLabel === "PASS (HALF)" && got.fireMade.damageMultiplier === 0.5
+          && got.fireFailed?.passed === false && got.fireFailed.resultLabel === "FAIL" && got.fireFailed.damageMultiplier === 1
+          && got.autoFail?.resultLabel === "AUTO-FAIL" && got.autoFail.damageMultiplier === 1,
+        `Disintegrate made: ${rowSaid(got.disMade)}; Fireball made: ${rowSaid(got.fireMade)}; failed: ${rowSaid(got.fireFailed)}; auto-failed: ${rowSaid(got.autoFail)}`);
+      const landed = (a) => (a ? (a.flatMap(x => x.conditions ?? []).join(", ")
+        || a.map(x => x.declined ?? x.handedOff ?? "").filter(Boolean).join("; ") || "nothing") : "not in this world");
+      check("a failed Sunburst gets its Blinded as well as its radiant damage: damage no longer keeps a condition off (Phase 1)",
+        got.burst ? got.burst.some(x => (x.conditions ?? []).includes("blinded")) : null, landed(got.burst));
+      check("a failed Hold Person gets Paralyzed from its recipe (Phase 1)",
+        !!got.hold?.some(x => (x.conditions ?? []).includes("paralyzed")), landed(got.hold));
+    }
+  }
+
+  // ── The book is the recipe for a named official spell; the sheet is this cast ──
+  // Johnny, 2026-09-14: "Pack is the recipe. Sheet is the instance. Do NOT update
+  // the actor item when they differ. Log: edition, name, actor, what the pack
+  // says, what the sheet says. Put it on the review list."
+  {
+    const banish = itemOf(/^varek thalor/i, /^banishment$/i, it => String(it.system?.source?.rules) === "2024");
+    const sheetRange = (it) => readActivities(it).find(a => a.type === "save")?.range?.value ?? null;
+    let rec = null, note = null, before = null, after = null;
+    if (banish) {
+      before = JSON.stringify(banish._source);
+      await quiet(async () => {
+        rec = recipesFor(banish, { actor: banish.actor }).find(x => x.recipe?.decidedBy?.kind === "save") ?? null;
+      });
+      after = JSON.stringify(banish._source);
+      note = bookReview().find(b => b.name === banish.name && b.actorId === banish.actor?.id) ?? null;
+    }
+    const where = note?.differences?.find(d => d.field === "where");
+    check("a named official spell takes its recipe from the book and keeps its sheet: Varek's 2024 Banishment reads the book's 30 feet, his sheet still says 60 (Phase 1)",
+      banish ? (!!rec?.recipe?.evidence?.includes("book") && rec.recipe.where?.rangeFt === 30
+        && sheetRange(banish) === 60 && before === after) : null,
+      banish ? `recipe from ${rec?.book?.pack ?? "the sheet"}: ${rec?.recipe?.where?.rangeFt ?? "?"} feet; `
+        + `the sheet: ${sheetRange(banish)} feet; the sheet untouched: ${before === after}` : "Varek has no 2024 Banishment");
+    check("and the difference is on the review list: edition, name, creature, what the book says and what the sheet says (Phase 1)",
+      banish ? (note?.edition === "2024" && note.actor === banish.actor?.name && !!note.pack
+        && where?.book === "ranged 30ft" && where?.sheet === "ranged 60ft") : null,
+      note ? `${note.edition}, ${note.name}, ${note.actor}, ${note.pack}: `
+        + note.differences.map(d => `${d.field}: the book says ${d.book}; the sheet says ${d.sheet}`).join("; ") : "no review entry");
+    // A name does not say which creature's feature it is: the Monster Manual's
+    // feature pack holds a template Bite of 1d4 piercing.
+    const bites = [...ACTORS.values()].filter(a => a.name === "Wolf").flatMap(a => [...a.items].filter(i => i.name === "Bite"));
+    let fromBook = [];
+    await quiet(async () => {
+      fromBook = bites.filter(b => recipesFor(b, { actor: b.actor }).some(x => x.recipe?.evidence?.includes("book")));
+    });
+    check("a creature's feature is never read from a same-named book template: every Wolf's Bite is its own (Phase 1)",
+      bites.length ? fromBook.length === 0 : null,
+      bites.length ? `${bites.length} Wolf Bites, ${fromBook.length} read from a book` : "no Wolf in this world");
+  }
 
   // ── Evasion is a Dexterity rule ──
   const evader = [...ACTORS.values()].find(a => [...(a.items ?? [])].some(i => /^evasion\b/i.test(String(i.name))));

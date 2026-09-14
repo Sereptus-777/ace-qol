@@ -365,9 +365,15 @@ function readDelivery(item, acts, text, why) {
   const range = act?.range ?? sys.range ?? {};
 
   const units = _s(range.units);
-  const reach = _n(range.reach ?? sys.range?.reach);
-  const value = _n(range.value);
-  const long = _n(range.long);
+  // ⚠️ A RANGE IN MILES IS NOT A RANGE IN FEET. dnd5e keeps a range in its own
+  // units (Clairvoyance's 1 mile is 1, in "mi"), and this reader speaks feet: read
+  // as written, the book's Clairvoyance reached one foot (replay, 2026-09-14).
+  // dnd5e's own factor for the unit, so metres and kilometres come out as it says.
+  const perUnit = Number(globalThis.CONFIG?.DND5E?.movementUnits?.[units]?.conversion) || 1;
+  const feet = (v) => (v === null ? null : Math.round(v * perUnit * 1000) / 1000);
+  const reach = feet(_n(range.reach ?? sys.range?.reach));
+  const value = feet(_n(range.value));
+  const long = feet(_n(range.long));
 
   // ⚠️🔴 THE OVERRIDE TRAP AGAIN, AND THE TWO FIELDS ARE NOT SYMMETRICAL.
   //
