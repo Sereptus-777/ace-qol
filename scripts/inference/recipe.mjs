@@ -34,6 +34,10 @@
 //     outcome has no other place for a name.
 //   - A value carries its qualifiers the way section 6's worked recipes do:
 //     "up-to-N" with its N, "ranged" with its feet, a save with its DC.
+//   - A place read from a creature's own words ("reach 10 ft.") is used only
+//     when its data names no distance, and marks the recipe as read from them.
+//   - A column that stays unknown carries its reason beside the recipe, never
+//     on it: "could not read it" must not print like "nothing there".
 //   - Situational modifiers are never here. They belong to the run (note 1).
 //
 // ⚠️ MODULE_ID IS HARDCODED. This file is reached from the entry file, and a
@@ -51,6 +55,7 @@ import { spellKey } from "../rules/spell-name.mjs";
 import { isPrismaticWall } from "../rules/prismatic-wall.mjs";
 import { RulesBrain } from "../rules/rules-brain.mjs";
 import { PostHitSaves } from "../post-hit-saves.mjs";
+import { growthPerLevel } from "./formula-value.mjs";
 
 const MODULE_ID = "ace-qol";
 
@@ -262,6 +267,61 @@ const STARTS = /\bstarts? (?:its|their|your) turn\b/i;
 const ENDS_THERE = /\bends? (?:its|their|it) turn (?:there|in|within|inside)\b/i;
 const MOVES_THROUGH = /\bfor (?:every|each) (?:\d+|five) (?:feet|foot)\b/i;
 
+// The save a sentence names, as dnd5e's three letters, and a sentence that
+// points back at the one named before it ("makes that save").
+const ABILITY_WORDS = { strength: "str", dexterity: "dex", constitution: "con",
+  intelligence: "int", wisdom: "wis", charisma: "cha",
+  str: "str", dex: "dex", con: "con", int: "int", wis: "wis", cha: "cha" };
+const NAMED_SAVE = /\b(strength|dexterity|constitution|intelligence|wisdom|charisma|str|dex|con|int|wis|cha)\s+(?:saving\s+throw|save)\b/i;
+const SAME_SAVE = /\b(?:that|this|the\s+same)\s+(?:saving\s+throw|save)\b/i;
+const DAMAGE_TYPE = /\b(acid|bludgeoning|cold|fire|force|lightning|necrotic|piercing|poison|psychic|radiant|slashing|thunder)\s+damage\b/i;
+
+// Where a creature's own words put it, read only when its data names no
+// distance (09-14): the Gnoll Fang's Bone Flail stores "feet" and nothing else,
+// and its text says "reach 10 ft.".
+const REACH_WORDS = /\breach\s+(\d+)\s*(?:ft\b|feet\b|foot\b)/i;
+const RANGE_WORDS = /\brange\s+(\d+)(?:\s*\/\s*\d+)?\s*(?:ft\b|feet\b)/i;
+const AREA_WORDS = /\b(\d+)-(?:foot|ft\.?)(?:-radius)?\s+(cone|cube|sphere|cylinder|emanation)\b/i;
+const LINE_WORDS = /\b(\d+)-foot-long\b[^.]{0,40}?\bline\b|\bline\s+that\s+is\s+(\d+)\s+feet\s+long\b/i;
+// A group around the creature: "Each creature of the abishai's choice that is
+// within 120 feet", "Each of Bael's allies within 60 feet of him".
+const EACH_WITHIN = /\b(?:each|every|any|all)\b[^.]{0,60}?\b(?:creatures?|allies|enemies|targets?)\b[^.]{0,80}?\bwithin\s+(\d+)\s*(?:ft\b|feet\b)/i;
+// One creature: "one Medium or smaller creature the snake can see within 5 feet".
+const ONE_WITHIN = /\b(?:one|a|an|the)\s+(?:[\w'’-]+\s+){0,4}?(?:creature|target)\b[^.]{0,80}?\bwithin\s+(\d+)\s*(?:ft\b|feet\b)/i;
+// A number of them: "Up to three allies within 120 feet of this duergar".
+const UPTO_WITHIN = /\bup\s+to\s+(one|two|three|four|five|six|\d+)\s+(?:[\w'’-]+\s+){0,3}?(?:creatures?|allies|enemies|targets?)\b[^.]{0,80}?\bwithin\s+(\d+)\s*(?:ft\b|feet\b)/i;
+const WORD_COUNT = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6 };
+
+/**
+ * The place and who a creature's own words give, for a button whose data
+ * names neither. A stat block names its main target first, so the earliest
+ * distance in the words wins; an attack takes its reach or its range.
+ */
+function wordsPlace(text, plan) {
+  const t = String(text ?? "");
+  const found = (re, make) => { const m = re.exec(t); return m ? { at: m.index, ...make(m) } : null; };
+  const one = { kind: "one" }, everyone = { kind: "all-in-area" };
+  const reach = found(REACH_WORDS, m => ({ where: { kind: "ranged", rangeFt: Number(m[1]), melee: true }, who: one }));
+  const range = found(RANGE_WORDS, m => ({ where: { kind: "ranged", rangeFt: Number(m[1]) }, who: one }));
+  if (plan.decide?.kind === "attack") {
+    const pick = plan.decide.melee ? (reach ?? range) : (range ?? reach);
+    return pick ? { where: pick.where, who: pick.who } : null;
+  }
+  const options = [
+    reach, range,
+    found(AREA_WORDS, m => (m[2].toLowerCase() === "emanation"
+      ? { where: { kind: "emanation", shape: "radius", size: Number(m[1]), units: "ft" }, who: everyone }
+      : { where: { kind: "area", shape: m[2].toLowerCase(), size: Number(m[1]), units: "ft", rangeFt: null }, who: everyone })),
+    found(LINE_WORDS, m => ({ where: { kind: "area", shape: "line", size: Number(m[1] ?? m[2]), units: "ft", rangeFt: null },
+                              who: everyone })),
+    found(EACH_WITHIN, m => ({ where: { kind: "emanation", shape: "radius", size: Number(m[1]), units: "ft" }, who: everyone })),
+    found(UPTO_WITHIN, m => ({ where: { kind: "emanation", shape: "radius", size: Number(m[2]), units: "ft" },
+                               who: { kind: "up-to-N", n: WORD_COUNT[m[1].toLowerCase()] ?? Number(m[1]) } })),
+    found(ONE_WITHIN, m => ({ where: { kind: "ranged", rangeFt: Number(m[1]) }, who: one })),
+  ].filter(Boolean).sort((a, b) => a.at - b.at);
+  return options.length ? { where: options[0].where, who: options[0].who } : null;
+}
+
 /**
  * The triggers that catch someone again, and where they were read from.
  *
@@ -281,15 +341,47 @@ function recatchOf(plan, timing, text, left) {
     return { triggers: [], fromText: false };
   }
 
+  const mine = plan.decide?.kind === "save" ? plan.decide.ability : null;
+  const hurts = (plan.apply?.damage?.length ?? 0) > 0;
+  const myTypes = new Set((plan.apply?.damage ?? []).flatMap(d => _arr(d.types).map(_s)));
   const out = new Set();
+  let lastNamed = null, walkIn = false;
   for (const sentence of String(text ?? "").split(/(?<=[.!?])\s+/)) {
+    const m = NAMED_SAVE.exec(sentence);
+    const named = m ? ABILITY_WORDS[m[1].toLowerCase()] : null;
+    if (named) lastNamed = named;
     if (!SAVE_OR_HURT.test(sentence)) continue;
-    if (ENTERS.test(sentence)) out.add("enter-area");
-    if (STARTS.test(sentence)) out.add("start-of-turn");
-    if (ENDS_THERE.test(sentence)) out.add("end-of-turn");
-    if (MOVES_THROUGH.test(sentence)) out.add("move-through");
+    const found = [];
+    if (ENTERS.test(sentence)) found.push("enter-area");
+    if (STARTS.test(sentence)) found.push("start-of-turn");
+    if (ENDS_THERE.test(sentence)) found.push("end-of-turn");
+    if (MOVES_THROUGH.test(sentence)) found.push("move-through");
+    if (!found.length) continue;
+    walkIn = true;
+    // ⚠️ A WALK-IN SENTENCE BELONGS TO THE BUTTON THAT ROLLS ITS SAVE (09-14).
+    // Web's "enters the webs ... Dexterity saving throw" is its Caught button's.
+    // Its Break Free button rolls Strength to escape, and giving it the walk-in
+    // rule made the escape read as a trap for anyone walking in.
+    const whose = named ?? (SAME_SAVE.test(sentence) ? lastNamed : null);
+    if (whose) {
+      if (whose !== mine) continue;
+    } else if (/\bsav(?:e|ing\s+throw)\b/i.test(sentence)) {
+      // A save it does not name belongs to a button that rolls a save.
+      if (!mine) continue;
+    } else {
+      // Damage alone belongs to a button that rolls that damage. Web's "2d4 Fire
+      // damage to any creature that starts its turn in the fire" is the webs
+      // burning, and neither Caught nor Break Free rolls any; Hunger of Hadar's
+      // cold at the start of a turn is not its end-of-turn acid save.
+      const said = DAMAGE_TYPE.exec(sentence);
+      if (!hurts || (said && myTypes.size && !myTypes.has(said[1].toLowerCase()))) continue;
+    }
+    for (const t of found) out.add(t);
   }
   if (out.size) return { triggers: inOrder(out), fromText: true };
+  // Its words give the walk-in rule to another of its buttons (Web's Caught), so
+  // this one (Break Free) has none, whatever ACE's timing table says.
+  if (walkIn) return { triggers: [], fromText: true };
 
   const said = _s(timing?.timing);
   const fromTiming = new Set();
@@ -487,15 +579,31 @@ function scalingOf(item, activity) {
     if (String(sc.formula ?? "").trim()) steps.push(`+${String(sc.formula).trim()}${per}`);
     else if (p?.denomination) steps.push(`+${_n(sc.number) ?? 1}d${p.denomination}${per}`);
   }
-  // ⚠️ MORE TARGETS PER SLOT LIVE IN THE COUNT'S OWN FORMULA ("1 + @scaling"),
-  // which a live item has already turned into a number. The stored one says it.
-  const count = activity?._source?.target?.affects?.count ?? activity?.target?.affects?.count;
-  if (typeof count === "string" && /@scaling/.test(count)) {
-    const m = count.match(/^\s*\d+\s*\+\s*(\d*)\s*\*?\s*@scaling\s*$/);
-    steps.push(m ? `+${m[1] || 1} target${(m[1] || "1") === "1" ? "" : "s"}` : `targets ${count.trim()}`);
+  // ⚠️ MORE TARGETS, OR A BIGGER AREA, PER SLOT LIVE IN THE STORED FORMULA
+  // (Hold Person's "@item.level - 1", Fog Cloud's "20 * @item.level"), which a
+  // loaded item has already worked out for its own level.
+  if (isSpell) {
+    const stored = storedTarget(item, activity);
+    const more = growthPerLevel(stored?.affects?.count, level);
+    if (more > 0) steps.push(`+${more} target${more === 1 ? "" : "s"}`);
+    const wider = growthPerLevel(stored?.template?.size, level);
+    if (wider > 0) steps.push(`+${wider}${stored?.template?.units || "ft"} area`);
   }
   if (!steps.length) return null;
   return { by: isSpell ? "slot level" : "level", step: steps.join(" and ") };
+}
+
+/**
+ * The target as stored, before dnd5e worked its formulas out: the activity's
+ * own when it overrides, otherwise the item's laid over it, as dnd5e merges them.
+ */
+function storedTarget(item, activity) {
+  const own = activity?._source?.target ?? null;
+  if (own?.override) return own;
+  const fromItem = item?._source?.system?.target ?? null;
+  if (!fromItem) return own;
+  return { affects: { ...(own?.affects ?? {}), ...(fromItem.affects ?? {}) },
+           template: { ...(own?.template ?? {}), ...(fromItem.template ?? {}) } };
 }
 
 function lastsOf(plan) {
@@ -574,6 +682,11 @@ export function recipeForActivity(item, activity, { actor = null, shared = null 
   if (type === "forward") return none("it triggers another of this item's activities, and that one's recipe is used");
   if (type === "cast") return none(`it casts ${castName(activity)}, and that spell's own recipe is used`);
   if (type === "order") return none("it is an order to a bastion facility, not an action at the table");
+  // A Multiattack aims at nobody itself: it names the creature's other attacks.
+  if (type === "utility" && (spellKey(item?.name) === "multiattack"
+      || _s(item?.system?.identifier) === "multiattack")) {
+    return none("it is a Multiattack: it names this creature's other attacks, and each has its own recipe");
+  }
 
   const one = onlyActivity(item, activity);
   const facts = readActionFacts(one, { parsed: s.parsed });
@@ -587,12 +700,48 @@ export function recipeForActivity(item, activity, { actor = null, shared = null 
   const key = `${s.edition} · ${spellKey(item?.name) || "unnamed"} · `
     + fingerprint(factsPrint(item, activity, facts));
   const recatch = recatchOf(plan, s.timing, s.text, left);
-  const where = whereOf(plan, facts);
-  const who = whoOf(plan, recatch.triggers);
+  let where = whereOf(plan, facts);
+  let fromWords = null;
+  if (!where) {
+    // A range dnd5e states that is not a distance is still a place.
+    const said = _s(facts.delivery?.kind);
+    if (said === "unlimited") where = { kind: "ranged", rangeFt: null, unlimited: true };
+    else if (said === "special") where = { kind: "ranged", rangeFt: null, special: true };
+    // A reach of 0 is a distance: a swarm's bite lands in its own space. The
+    // facts reader reads 0 as "no reach", and the swarm then read as unplaced.
+    else if (facts.delivery?.reachFt === 0) where = { kind: "ranged", rangeFt: 0, melee: true };
+    // ⚠️ NOT FOR A CHECK. An escape check is the grabbed creature's own roll, and
+    // the reach in its words is the attack that grabbed it: the Lonely
+    // Sorrowsworn's Escape Check read as reaching 60 feet (09-14).
+    else if (!facts.delivery?.template && type !== "check") {
+      fromWords = wordsPlace(s.text, plan);
+      where = fromWords?.where ?? null;
+    }
+  }
+  const who = whoOf(plan, recatch.triggers) ?? (where ? fromWords?.who ?? null : null);
   const decidedBy = decidedOf(plan, activity);
 
+  // ⚠️ AN UNKNOWN SAYS WHY (09-14). 905 recipes said "where unknown" with no
+  // reason, which is "could not read it" printed the same as "nothing there".
+  const gap = (re) => (plan.gaps ?? []).find(g => re.test(g)) ?? null;
+  const unknown = {};
+  if (!where) {
+    const said = _s(facts.delivery?.kind);
+    // A stored 0 is a distance of 0, not no distance (two spell scrolls, the
+    // Remorhaz's Swallow): say which, and say what the words were read for.
+    const zero = [activity?.range?.value, item?.system?.range?.value]
+      .some(v => v !== null && v !== undefined && String(v).trim() === "0");
+    unknown.where = (!said || said === "unstated" || said === "none")
+      ? `${zero ? "its data gives its range as 0 feet" : "its data names no distance"}, `
+        + (type === "check" ? "and a check does not take the distances its item's words give the rest of it"
+                            : "and ACE found no reach, range or area in its words")
+      : (gap(/area names|far it reaches|reach is|where it lands/) ?? "nothing on it says where it lands");
+  }
+  if (!who) unknown.who = gap(/who it lands on/) ?? "nothing on it says who it lands on";
+  if (!decidedBy) unknown.decided = gap(/names no ability|how it is decided/) ?? "nothing on it says how it is decided";
+
   let onHit = [], onCrit = [], onMiss = [], onFail = [], onSuccess = [], then = [];
-  let fromText = !!plan.decide?.fromText || recatch.fromText, byHand = false;
+  let fromText = !!plan.decide?.fromText || recatch.fromText || !!fromWords?.where, byHand = false;
   try {
     if (decidedBy?.kind === "attack") {
       const a = attackOutcomes(item, activity, plan, facts, s, holder, key, source, left);
@@ -629,6 +778,7 @@ export function recipeForActivity(item, activity, { actor = null, shared = null 
   return {
     label,
     left,
+    unknown,
     recipe: {
       key,
       edition: s.edition,
@@ -692,7 +842,12 @@ function whereText(w) {
   if (w.kind === "area") return `area ${w.shape ?? "?"} ${w.size ?? "?"}${w.units ?? "ft"}`
     + `${w.rangeFt ? ` within ${w.rangeFt}ft` : ""}`;
   if (w.kind === "emanation") return `emanation ${w.shape ?? "?"} ${w.size ?? "?"}${w.units ?? "ft"}`;
-  if (w.kind === "ranged") return `${w.melee ? "melee reach" : "ranged"} ${w.rangeFt ?? "?"}ft`;
+  if (w.kind === "ranged") {
+    if (w.unlimited) return "ranged, unlimited";
+    if (w.special) return "ranged, special (its words say how far)";
+    if (w.melee && w.rangeFt === 0) return "melee, in its own space";
+    return `${w.melee ? "melee reach" : "ranged"} ${w.rangeFt ?? "?"}ft`;
+  }
   return w.kind;
 }
 function whoText(w) {
@@ -732,9 +887,9 @@ export function recipeLine(rec) {
   return [
     `${rec.label} · key ${r.key}`,
     `trigger ${r.trigger ?? "-"}`,
-    `where ${whereText(r.where)}`,
-    `who ${whoText(r.who)}`,
-    `decided ${decidedText(r.decidedBy)}`,
+    `where ${r.where ? whereText(r.where) : `unknown (${rec.unknown?.where ?? "no reason recorded"})`}`,
+    `who ${r.who ? whoText(r.who) : `unknown (${rec.unknown?.who ?? "no reason recorded"})`}`,
+    `decided ${r.decidedBy ? decidedText(r.decidedBy) : `unknown (${rec.unknown?.decided ?? "no reason recorded"})`}`,
     `on hit ${list(r.onHit)}`,
     `on crit ${list(r.onCrit)}`,
     `on miss ${list(r.onMiss)}`,

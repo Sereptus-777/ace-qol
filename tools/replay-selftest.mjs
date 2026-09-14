@@ -179,7 +179,7 @@ class Collection extends Map {
 let SpellPipeline, SaveEngine, PostHitSaves, DescriptionParser, readSaveOutcome,
   readActivities, readAppliedConditions, decideActivityChoice, upCanBeSeen, aceStripEnrichers,
   readPrismaticWall, PrismaticWallEngine, RepeatingSaveEngine, spellIsUp,
-  recipesFor, recipeLine;
+  recipesFor, recipeLine, formulaValue;
 try {
   ({ readPrismaticWall } = await import(`${MODULE}/scripts/rules/prismatic-wall.mjs`));
   ({ PrismaticWallEngine } = await import(`${MODULE}/scripts/prismatic-wall-engine.mjs`));
@@ -193,6 +193,7 @@ try {
   ({ decideActivityChoice, upCanBeSeen, spellIsUp } = await import(`${MODULE}/scripts/activity-choice.mjs`));
   ({ aceStripEnrichers } = await import(`${MODULE}/scripts/description-reader.mjs`));
   ({ recipesFor, recipeLine } = await import(`${MODULE}/scripts/inference/recipe.mjs`));
+  ({ formulaValue } = await import(`${MODULE}/scripts/inference/formula-value.mjs`));
 } catch (err) {
   console.log("could not load ACE under the stand-in:", err?.stack ?? err);
   process.exit(2);
@@ -223,7 +224,9 @@ const asSet = (v) => new Set(Array.isArray(v) ? v : (v instanceof Set ? [...v] :
 // into the caster's spellcasting for a spell (SaveActivity prepareData). This
 // copy skipped all three, so the replay read Varek's Counterspell as an action
 // and a longsword as reaching nowhere, while his table reads a reaction and five
-// feet.
+// feet. It also works target counts and area sizes out from their formulas
+// (TargetField.prepareData, 09-14): Fog Cloud's "20 * @item.level" is a 20-foot
+// sphere at the table, and was no size at all here.
 const ITEM_FIELDS = { spell: ["activation", "duration", "range", "target"], weapon: ["range"] };
 const WEAPON_ATTACK = { simpleM: "melee", simpleR: "ranged", martialM: "melee", martialR: "ranged",
   siege: "ranged" };
@@ -237,13 +240,103 @@ function mergeInto(target, source) {
   }
   return target;
 }
-function loadedSystem(raw) {
+// The roll data dnd5e fills those formulas from, as far as his items use it:
+// the spell's level, ability modifiers, the spellcasting modifier and class
+// scale values (Krusk's "@scale.paladin.aura"). A reference left out counts as
+// 0, which is what dnd5e does with one it cannot find.
+const SCALES = new Map();
+function scaleValues(actorId) {
+  if (SCALES.has(actorId)) return SCALES.get(actorId);
+  const out = {};
+  const items = itemsByActor.get(actorId) ?? [];
+  const advancementOf = (it) => (Array.isArray(it.system?.advancement) ? it.system.advancement
+    : Object.values(it.system?.advancement ?? {}));
+  const levelsOf = (id) => Number(items.find(i => i.type === "class"
+    && i.system?.identifier === id)?.system?.levels) || 0;
+  for (const it of items) {
+    if (it.type !== "class" && it.type !== "subclass") continue;
+    const id = it.system?.identifier;
+    if (!id) continue;
+    const level = it.type === "class" ? (Number(it.system?.levels) || 0) : levelsOf(it.system?.classIdentifier);
+    for (const adv of advancementOf(it)) {
+      if (adv?.type !== "ScaleValue" || !adv.configuration?.identifier) continue;
+      // ScaleValueAdvancement#valueForLevel: the entry for the highest level at or below his.
+      const scale = adv.configuration.scale ?? {};
+      const at = Object.keys(scale).reverse().find(l => Number(l) <= level);
+      const value = at === undefined ? null : scale[at]?.value;
+      if (value !== null && value !== undefined) (out[id] ??= {})[adv.configuration.identifier] = value;
+    }
+  }
+  SCALES.set(actorId, out);
+  return out;
+}
+function rollDataFor(actor, raw) {
+  const abilities = {};
+  for (const [k, a] of Object.entries(actor.system?.abilities ?? {})) {
+    const v = Number(a?.value);
+    abilities[k] = { value: v, mod: Number.isFinite(v) ? Math.floor((v - 10) / 2) : 0 };
+  }
+  return { abilities, scale: scaleValues(actor.id), item: { level: Number(raw.system?.level) || 0 },
+           attributes: { spell: { mod: abilities[actor.system?.attributes?.spellcasting]?.mod ?? 0 },
+                         movement: { ...(actor.system?.attributes?.movement ?? {}) } } };
+}
+/** TargetField.prepareData: a count or size written as a formula is worked out at load. */
+function preparedTarget(target, rollData) {
+  if (!plain(target)) return target;
+  const t = { ...target, affects: { ...(target.affects ?? {}) }, template: { ...(target.template ?? {}) } };
+  const atLoad = (v) => {
+    if (!v) return v;                        // dnd5e leaves a blank alone
+    const { value } = formulaValue(v, rollData);
+    return value === null ? v : value;       // one it cannot work out stays as written
+  };
+  const type = t.affects.type;
+  t.affects.count = (type && type !== "self") ? atLoad(t.affects.count) : null;
+  if (t.template.type) {
+    t.template.count ||= "1";
+    for (const k of ["count", "size", "width", "height"]) t.template[k] = atLoad(t.template[k]);
+  } else {
+    t.template.count = t.template.size = t.template.width = t.template.height = null;
+  }
+  return t;
+}
+
+/** dnd5e's own movement units, read from the installed system: a range in one of these has a number. */
+function movementUnits() {
+  const src = readFileSync(`${SYSTEM}/dnd5e.mjs`, "utf8");
+  const at = src.indexOf("DND5E.movementUnits = {");
+  if (at < 0) throw new Error("dnd5e's movement units are not where they were in dnd5e.mjs");
+  const units = new Set([...src.slice(at, src.indexOf("\n};", at)).matchAll(/^ {2}(\w+):/gm)].map(m => m[1]));
+  if (!units.has("ft")) throw new Error(`dnd5e's movement units read as ${[...units].join(", ") || "nothing"}, without feet`);
+  return units;
+}
+const MOVEMENT_UNITS = movementUnits();
+/**
+ * RangeField.prepareData: a range in movement units is worked out from its
+ * formula at load (Hammer's Aquatic Charge is "@attributes.movement.swim");
+ * any other range, self or touch or special, keeps no number.
+ */
+function preparedRange(range, rollData) {
+  if (!plain(range)) return range;
+  const r = { ...range };
+  if (MOVEMENT_UNITS.has(r.units)) {
+    if (r.value) {
+      const { value } = formulaValue(r.value, rollData);
+      if (value !== null) r.value = value;
+    }
+  } else r.value = null;
+  return r;
+}
+
+function loadedSystem(raw, rollData) {
   const system = { ...(raw.system ?? {}) };
+  if (raw.type === "spell" && plain(system.target)) system.target = preparedTarget(system.target, rollData);
+  if (raw.type === "spell" && plain(system.range)) system.range = preparedRange(system.range, rollData);
   if (raw.type === "weapon" && plain(system.range)) {
     const range = { ...system.range };
     const rch = (raw.system?.properties ?? []).includes("rch");
     if (WEAPON_ATTACK[system.type?.value] === "ranged") range.reach = null;
-    else if (range.reach === null || range.reach === undefined) {
+    // A blank is empty once loaded: dnd5e's number field reads "" as null.
+    else if (range.reach === null || range.reach === undefined || range.reach === "") {
       const units = range.units || "ft";
       if (units === "ft") range.reach = rch ? 10 : 5;
       else if (units === "m") range.reach = rch ? 3 : 1.5;
@@ -252,7 +345,7 @@ function loadedSystem(raw) {
   }
   return system;
 }
-function loadedActivity(a, type, system) {
+function loadedActivity(a, type, system, rollData) {
   const out = { ...a };
   for (const key of ITEM_FIELDS[type] ?? []) {
     if (!plain(system[key])) continue;
@@ -260,10 +353,12 @@ function loadedActivity(a, type, system) {
     if (!own.override) mergeInto(own, system[key]);
     out[key] = own;
   }
+  if (plain(out.target)) out.target = preparedTarget(out.target, rollData);
   if (plain(out.range)) {
     const r = out.range = { ...out.range };
     if ((r.long ?? 0) > (r.value ?? 0)) r.value = r.long;
     else if (r.reach && !r.value) r.value = r.reach;
+    out.range = preparedRange(r, rollData);
   }
   const calc = out.save?.dc?.calculation;
   if (plain(out.save?.dc) && (calc === undefined || calc === "initial")) {
@@ -274,14 +369,16 @@ function loadedActivity(a, type, system) {
 
 function liveItem(raw, actor) {
   const uuid = `${actor.uuid}.Item.${raw._id}`;
-  const item = { ...raw, id: raw._id, uuid, actor, parent: actor, flags: raw.flags ?? {},
+  // `_source` is the stored copy, as on a live document.
+  const item = { ...raw, _source: raw, id: raw._id, uuid, actor, parent: actor, flags: raw.flags ?? {},
     getFlag: (s, k) => raw.flags?.[s]?.[k], getRollData: () => ({}) };
-  const system = loadedSystem(raw);
+  const rollData = rollDataFor(actor, raw);
+  const system = loadedSystem(raw, rollData);
   // ⚠️ A LIVE ITEM IS NOT ITS STORED COPY: a save's abilities are a Set live.
   const acts = new Collection(Object.entries(raw.system?.activities ?? {}).map(([k, stored]) => {
-    const a = loadedActivity(stored, raw.type, system);
+    const a = loadedActivity(stored, raw.type, system, rollData);
     const id = a._id ?? k;
-    return [id, { ...a, id, uuid: `${uuid}.Activity.${id}`, item, actor, parent: item,
+    return [id, { ...a, _source: stored, id, uuid: `${uuid}.Activity.${id}`, item, actor, parent: item,
       save: a.save ? { ...a.save, ability: asSet(a.save.ability) } : a.save }];
   }));
   const effects = new Collection((effectsByItem.get(`${actor.id}.${raw._id}`) ?? []).map(e => [e._id,
@@ -1007,6 +1104,44 @@ check("no hover shows raw codes, even before its full text is ready", codes === 
         && o.onSuccess === "none")
       && !disR.onSuccess.length && disR.mechanic === "disintegrate",
     dis.map(recipeLine).join(" || ") || "Varek's Disintegrate is not in this world");
+
+  // 09-14, after Johnny asked what "where unknown" meant: every unknown names its
+  // reason, a place stated only in a creature's words is read, an escape does not
+  // carry the walk-in rule, and formula sizes are worked out as dnd5e does.
+  const silent = lines.filter(l => /no reason recorded/.test(l));
+  check("every unknown says why (Phase 0)", !silent.length,
+    silent.length ? `${silent.length} say nothing, e.g. ${silent[0]}` : "each names its reason");
+  let web = [], fog = [], flail = [], multi = [], sending = [], hold = [];
+  const gnoll = firstActor("Gnoll Fang of Yeenoghu"), giant = firstActor("Stone Giant");
+  await quiet(async () => {
+    const of = (actor, re) => { const it = itemOf(actor, re); return it ? recipesFor(it, { actor }) : []; };
+    web = of(varek, /^web$/i);
+    fog = of(varek, /^fog cloud$/i);
+    sending = of(varek, /^sending$/i);
+    hold = of(varek, /^hold person$/i);
+    flail = of(gnoll, /^bone flail$/i);
+    multi = of(giant, /^multiattack$/i);
+  });
+  const byLabel = (recs, name) => recs.find(x => x.label === name)?.recipe;
+  check("Web: Caught catches whoever walks in; Break Free, the escape, does not (Phase 0)",
+    !!byLabel(web, "Caught")?.recatch.includes("enter-area") && byLabel(web, "Break Free")?.recatch.length === 0,
+    web.map(recipeLine).join(" || ") || "Varek's Web is not in this world");
+  const fogR = fog[0]?.recipe;
+  check("Fog Cloud: a 20-foot sphere worked out as dnd5e does, 20 ft more per slot (Phase 0)",
+    fogR?.where?.shape === "sphere" && fogR.where.size === 20 && /\+20ft area/.test(fogR.scaling?.step ?? ""),
+    fog.map(recipeLine).join(" || ") || "Varek's Fog Cloud is not in this world");
+  const flailR = flail[0]?.recipe;
+  check("The Gnoll Fang's Bone Flail reaches 10 feet, read from its words (Phase 0)",
+    !!flailR?.where?.melee && flailR.where.rangeFt === 10 && flailR.evidence.includes("description"),
+    flail.map(recipeLine).join(" || ") || "the Gnoll Fang's Bone Flail is not in this world");
+  check("A Multiattack is named, not unknown (Phase 0)",
+    multi.length > 0 && multi.every(x => /Multiattack/.test(x.none ?? "")),
+    multi.map(recipeLine).join(" || ") || "the Stone Giant's Multiattack is not in this world");
+  check("Sending reaches without limit (Phase 0)", sending[0]?.recipe?.where?.unlimited === true,
+    sending.map(recipeLine).join(" || ") || "Varek's Sending is not in this world");
+  check("Hold Person gains a target for each slot above its own (Phase 0)",
+    /\+1 target\b/.test(hold[0]?.recipe?.scaling?.step ?? ""),
+    hold.map(recipeLine).join(" || ") || "Varek's Hold Person is not in this world");
 }
 
 let golden = null;
