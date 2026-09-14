@@ -1744,6 +1744,45 @@ console.log(`\nPHASE 2: ONE GATE, AND DO IT ANYWAY`);
     } else check("6. an ordinary revive on a creature killed for good is refused (Phase 2)", null,
       victim ? "no revive spell the gate otherwise allows" : "no humanoid creature to revive");
 
+    // ── A heal pressed with nobody targeted still reaches the heal picker ──
+    // Before the gate, the heal pipeline took a heal over before the target
+    // check ever ran. The gate's first cut refused such a heal ("select a
+    // target first"); with the heal pipeline off, dnd5e's own flow runs and the
+    // check stands, as it did before.
+    {
+      const heals = [];
+      for (const a of ACTORS.values()) {
+        for (const it of a.items) {
+          if (it.type !== "spell") continue;
+          for (const act of actsOf(it)) if (act.type === "heal" && !act.target?.template?.type) heals.push({ a, it, act });
+        }
+      }
+      const refusedHeals = async () => {
+        const out = [];
+        for (const h of heals) {
+          const said = await judged(h.act);
+          if (said.some(s => s.rule.id === "targets" && s.verdict.refuse)) out.push(`${h.a.name} / ${h.it.name}`);
+        }
+        return out;
+      };
+      const keepHeal = SETTINGS.get("ace-qol.enableHealPipeline");
+      let whenOn = [], whenOff = [];
+      try {
+        SETTINGS.set("ace-qol.enableHealPipeline", true);
+        whenOn = await refusedHeals();
+        SETTINGS.set("ace-qol.enableHealPipeline", false);
+        whenOff = await refusedHeals();
+      } finally {
+        if (keepHeal === undefined) SETTINGS.delete("ace-qol.enableHealPipeline");
+        else SETTINGS.set("ace-qol.enableHealPipeline", keepHeal);
+      }
+      check("a heal pressed with nobody targeted still reaches the heal picker; the gate refuses it only with the heal pipeline off, as before (Phase 2)",
+        heals.length ? (whenOn.length === 0 && whenOff.length > 0) : null,
+        heals.length ? `${heals.length} heal casts; refused with the heal pipeline on: ${whenOn.length}`
+          + (whenOn.length ? ` (${whenOn.slice(0, 3).join("; ")})` : "")
+          + `; with it off: ${whenOff.length}, e.g. ${whenOff.slice(0, 2).join("; ")}` : "no heal spell in this world");
+    }
+
     // ── The refusal notice says why, in plain words ──
     check("the refusal notice says why in plain words, and where it went (Phase 2)",
       toasts.some(t => /was not used\./.test(t) && /Do it anyway is on the card/.test(t)),

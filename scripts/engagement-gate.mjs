@@ -27,6 +27,7 @@ import { MODULE_ID, SPELL_AUTO_APPLY } from "./ace-qol.mjs";
 import { spellKey } from "./rules/spell-name.mjs";
 import { DescriptionParser } from "./description-parser.mjs";
 import { SpellAutoDamage } from "./spell-auto-damage.mjs";
+import { HealPipeline } from "./heal-pipeline.mjs";
 
 export class EngagementGate {
 
@@ -76,6 +77,20 @@ export class EngagementGate {
     try {
       if (game.aceQol?.SpellPipeline?.ownsSpell?.(item)) return null;
     } catch (_) { /* non-fatal — fall through to normal gate */ }
+
+    // ── Bypass: heals, which pick their own targets (2026-09-14) ──
+    // With the heal pipeline on, a heal is taken over after the press and its
+    // own picker asks who (dnd5e places a template heal; the spell pipeline runs
+    // one it owns). Before the one gate, the heal pipeline took a heal over
+    // before this check ever ran, so a heal pressed with nobody targeted always
+    // reached that picker. The gate's first cut refused it here instead. With
+    // the heal pipeline off, dnd5e's own heal flow runs and this check stands.
+    try {
+      if (game.settings.get(MODULE_ID, "enableHealPipeline") !== false
+          && HealPipeline._activityHeals(activity)) return null;
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not tell whether ${item.name} heals; judging its targets as usual:`, err);
+    }
 
     // ── Bypass: damage spells with their own picker (v0.7.17) ──
     // Magic Missile and other auto-hit damage spells that own targeting via
