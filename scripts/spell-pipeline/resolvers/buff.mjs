@@ -267,10 +267,12 @@ export class BuffResolver {
     const saveEngine = game.aceQol?.saveEngine;
     if (saveEngine?.postSaveCard) {
       try {
+        // Read, never declared: a save that also deals damage must bring it.
+        const { halfOnSave, damageTypes } = saveEngine.saveDamageRule(item, ctx.activity ?? null);
         await saveEngine.postSaveCard(item, actor, tokens, {
           saveAbility, saveDC,
-          halfOnSave: false,        // condition-only: a success fully negates, no damage
-          damageTypes: [],
+          halfOnSave,
+          damageTypes,
           isSpell: item.type === "spell",
           timing: { isInstant: true, isPersistent: false },
           activityId: ctx.activity?.id,

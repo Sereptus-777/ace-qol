@@ -970,9 +970,7 @@ export class CombatState {
     }
 
     // ── Evasion / Shield Master ─────────────────────────────────────────
-    const superSaver = FlagsEngine.hasEvasion(targetActor)
-                    || ExtendedEffects.hasSuperSaver(targetActor, saveAbility)
-                    || (saveAbility === "dex" && CombatState._hasFeature(targetActor, "Evasion"));
+    const superSaver = CombatState.evasionFor(targetActor, saveAbility);
     const semiSuperSaver = FlagsEngine._checkFlag(targetActor, `semiSuperSaver.${saveAbility}`)
                         || ExtendedEffects.hasSemiSuperSaver(targetActor, saveAbility)
                         || (saveAbility === "dex" && CombatState._hasFeature(targetActor, "Shield Master"));
@@ -2210,6 +2208,21 @@ export class CombatState {
    * @param {Item5e} item          The item.
    * @param {Activity} [activity]  The activity actually being used.
    */
+  /**
+   * Whether a creature takes none of a half-damage effect on a made save, and
+   * half on a failed one, for a save of this ability: Evasion, or anything that
+   * grants the same for another ability.
+   *
+   * ⚠️ EVASION IS A DEXTERITY RULE (2026-09-14). Its flag names Dexterity and was
+   * read without asking which save this was, so a rogue had Evasion against a
+   * Wisdom save.
+   */
+  static evasionFor(actor, saveAbility) {
+    if (!actor || !saveAbility) return false;
+    return (saveAbility === "dex" && (FlagsEngine.hasEvasion(actor) || CombatState._hasFeature(actor, "Evasion")))
+        || ExtendedEffects.hasSuperSaver(actor, saveAbility);
+  }
+
   static _getItemDamageTypes(item, activity = null) {
     if (activity) {
       const types = new Set();

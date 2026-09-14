@@ -226,8 +226,8 @@ export class TargetState {
     }
 
     // ── Evasion / Shield Master ──
-    const superSaver = FlagsEngine.hasEvasion(actor)
-                    || ExtendedEffects.hasSuperSaver(actor, saveAbility);
+    // The one reading, which asks which save this is (Evasion is Dexterity's).
+    const superSaver = CombatState.evasionFor(actor, saveAbility);
     const semiSuperSaver = ExtendedEffects.hasSemiSuperSaver(actor, saveAbility)
                         || FlagsEngine._checkFlag(actor, `semiSuperSaver.${saveAbility}`);
 

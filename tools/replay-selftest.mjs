@@ -179,7 +179,7 @@ class Collection extends Map {
 let SpellPipeline, SaveEngine, PostHitSaves, DescriptionParser, readSaveOutcome,
   readActivities, readAppliedConditions, decideActivityChoice, upCanBeSeen, aceStripEnrichers,
   readPrismaticWall, PrismaticWallEngine, RepeatingSaveEngine, spellIsUp,
-  recipesFor, recipeLine, formulaValue;
+  recipesFor, recipeLine, formulaValue, whatLands, HpDoor, SignalDoor, untilDiceLand, CombatState;
 try {
   ({ readPrismaticWall } = await import(`${MODULE}/scripts/rules/prismatic-wall.mjs`));
   ({ PrismaticWallEngine } = await import(`${MODULE}/scripts/prismatic-wall-engine.mjs`));
@@ -194,6 +194,9 @@ try {
   ({ aceStripEnrichers } = await import(`${MODULE}/scripts/description-reader.mjs`));
   ({ recipesFor, recipeLine } = await import(`${MODULE}/scripts/inference/recipe.mjs`));
   ({ formulaValue } = await import(`${MODULE}/scripts/inference/formula-value.mjs`));
+  ({ whatLands } = await import(`${MODULE}/scripts/road/what-lands.mjs`));
+  ({ HpDoor, SignalDoor, untilDiceLand } = await import(`${MODULE}/scripts/road/doors.mjs`));
+  ({ CombatState } = await import(`${MODULE}/scripts/combat-state.mjs`));
 } catch (err) {
   console.log("could not load ACE under the stand-in:", err?.stack ?? err);
   process.exit(2);
@@ -363,6 +366,14 @@ function loadedActivity(a, type, system, rollData) {
   const calc = out.save?.dc?.calculation;
   if (plain(out.save?.dc) && (calc === undefined || calc === "initial")) {
     out.save = { ...out.save, dc: { ...out.save.dc, calculation: type === "spell" ? "spellcasting" : "" } };
+  }
+  // ⚠️ dnd5e FILLS A SAVE'S MISSING "ON A SAVE" WITH "half": its schema's initial
+  // value (dnd5e.mjs, SaveActivityData: onSave required, initial "half"). Twelve
+  // of his save activities store none, and the live item says half for them.
+  if (a.type === "save") {
+    const d = plain(out.damage) ? { ...out.damage } : { parts: [] };
+    if (d.onSave === undefined || d.onSave === null || d.onSave === "") d.onSave = "half";
+    out.damage = d;
   }
   return out;
 }
@@ -1142,6 +1153,180 @@ check("no hover shows raw codes, even before its full text is ready", codes === 
   check("Hold Person gains a target for each slot above its own (Phase 0)",
     /\+1 target\b/.test(hold[0]?.recipe?.scaling?.step ?? ""),
     hold.map(recipeLine).join(" || ") || "Varek's Hold Person is not in this world");
+}
+
+// ⚠️ THE ONE ROAD, PHASE 1 (2026-09-14): what a save lands is decided from its
+// recipe, by one decider (road/what-lands.mjs). Section 16: "Done when the
+// replay pins Disintegrate, Fireball, Hold Person and Blade Barrier's cast save."
+{
+  const varek = ACTORS.get("2Z79PRegaAESfrGH");
+  const saveRecipe = (re) => {
+    const it = varek ? [...varek.items].find(i => re.test(String(i.name))) : null;
+    return it ? recipesFor(it, { actor: varek }).find(x => x.recipe?.decidedBy?.kind === "save")?.recipe ?? null : null;
+  };
+  let dis = null, fire = null, hold = null, wall = null;
+  await quiet(async () => {
+    dis = saveRecipe(/^disintegrate/i);
+    fire = saveRecipe(/^fireball/i);
+    hold = saveRecipe(/^hold person/i);
+    wall = saveRecipe(/^blade barrier/i);
+  });
+  const lands = (r, passed, total, type) => (r ? whatLands(r, { passed, rolled: total ? [{ total, type }] : [] }) : null);
+  const amounts = (o) => (o ? o.damage.map(d => `${d.amount} ${d.type}`).join(", ") || "no damage" : "no recipe");
+  let failed = lands(dis, false, 75, "force"), made = lands(dis, true, 75, "force");
+  check("Disintegrate: a failed save lands its 10d6 + 40 force, a made one nothing (Phase 1)",
+    failed?.damage[0]?.amount === 75 && failed.damage[0].type === "force" && !!made && made.damage.every(d => d.amount === 0),
+    `failed: ${amounts(failed)}; made: ${amounts(made)}`);
+  failed = lands(fire, false, 29, "fire");
+  made = lands(fire, true, 29, "fire");
+  check("Fireball: a failed save lands all of it, a made one half, rounded down (Phase 1)",
+    failed?.damage[0]?.amount === 29 && made?.damage[0]?.amount === 14, `failed: ${amounts(failed)}; made: ${amounts(made)}`);
+  failed = lands(hold, false);
+  made = lands(hold, true);
+  check("Hold Person: a failed save lands Paralyzed, ending on its end-of-turn save; a made one nothing (Phase 1)",
+    !!failed?.conditions.some(c => c.key === "paralyzed" && /end of each of its turns/.test(c.ends ?? ""))
+      && !!made && !made.conditions.length,
+    `failed: ${JSON.stringify(failed?.conditions ?? null)}; made: ${JSON.stringify(made?.conditions ?? null)}`);
+  failed = lands(wall, false, 33, "force");
+  made = lands(wall, true, 33, "force");
+  check("Blade Barrier's cast save: all in the wall, failed 33 force, made 16 (Phase 1)",
+    wall?.who?.kind === "all-in-area" && failed?.damage[0]?.amount === 33 && made?.damage[0]?.amount === 16,
+    `who ${wall?.who?.kind}; failed: ${amounts(failed)}; made: ${amounts(made)}`);
+
+  // ── Half on a success: the item's data, or the words of its one damaging save ──
+  const itemOf = (actorRe, itemRe, keep = () => true) => {
+    for (const a of ACTORS.values()) {
+      if (!actorRe.test(String(a.name))) continue;
+      for (const it of a.items) if (itemRe.test(String(it.name)) && keep(it)) return it;
+    }
+    return null;
+  };
+  const onSuccessOf = (it) => {
+    const out = {};
+    if (!it) return out;
+    for (const rec of recipesFor(it, { actor: it.actor })) {
+      const d = rec.recipe?.onFail?.find(o => o.kind === "damage");
+      if (d) out[rec.label] = d.onSuccess ?? "none";
+    }
+    return out;
+  };
+  let weird = {}, shade = {}, eye = {};
+  let eyeItem = null;
+  await quiet(async () => {
+    weird = onSuccessOf(itemOf(/^varek thalor/i, /^weird$/i));
+    shade = onSuccessOf(itemOf(/^shade tyrant/i, /^black charge$/i));
+    eyeItem = itemOf(/fomorian/i, /^evil eye$/i,
+      it => readActivities(it).find(x => x.type === "save")?._source?.damage?.onSave === "none");
+    eye = onSuccessOf(eyeItem);
+  });
+  const said = (o) => Object.entries(o).map(([k, v]) => `${k}: ${v}`).join("; ") || "not in this world";
+  check("a sentence about one save does not decide another: Weird's end-of-turn save takes nothing on a success (Phase 1)",
+    weird.save === "half" && weird["End of Turn Save"] === "none", said(weird));
+  check("the Shade Tyrant's evading save takes nothing on a success, its bracing save half, each by its own data (Phase 1)",
+    shade.Evade === "none" && shade.Brace === "half", said(shade));
+  check("an item's one damaging save takes half when its words say so though its data says none: the Fomorian's Evil Eye (Phase 1)",
+    eyeItem ? eye.save === "half" : null, eyeItem ? said(eye) : "no Fomorian stores none on its Evil Eye");
+
+  // ── The save engine reads the same recipe (one reading, 2026-09-14) ──
+  const saveAct = (re) => {
+    const it = varek ? [...varek.items].find(i => re.test(String(i.name))) : null;
+    return { it, a: it ? readActivities(it).find(x => x.type === "save") ?? null : null };
+  };
+  const rules = {};
+  await quiet(async () => {
+    for (const [k, re] of Object.entries({ dis: /^disintegrate/i, fire: /^fireball/i, hold: /^hold person/i, wall: /^blade barrier/i })) {
+      const { it, a } = saveAct(re);
+      rules[k] = it && a ? SaveEngine.saveDamageRule(it, a) : null;
+    }
+  });
+  const ruleLine = (x) => (x ? `${x.damageTypes.join("/") || "no damage"}${x.halfOnSave ? ", half on a save" : ", nothing on a save"}`
+    + `${x.recipe ? "" : " (NOT read from its recipe)"}` : "not in this world");
+  check("the save engine reads Disintegrate's damage from its recipe: force, nothing on a save (Phase 1)",
+    !!rules.dis?.recipe && rules.dis.damageTypes.join() === "force" && rules.dis.halfOnSave === false, ruleLine(rules.dis));
+  check("the save engine reads Fireball's damage from its recipe: fire, half on a save (Phase 1)",
+    !!rules.fire?.recipe && rules.fire.damageTypes.join() === "fire" && rules.fire.halfOnSave === true, ruleLine(rules.fire));
+  check("the save engine reads Hold Person from its recipe: no damage (Phase 1)",
+    !!rules.hold?.recipe && rules.hold.damageTypes.length === 0, ruleLine(rules.hold));
+  check("the save engine reads Blade Barrier's cast save from its recipe: force, half on a save (Phase 1)",
+    !!rules.wall?.recipe && rules.wall.damageTypes.join() === "force" && rules.wall.halfOnSave === true, ruleLine(rules.wall));
+
+  // ── The slot a spell was cast with reaches its damage roll ──
+  const fireIt = saveAct(/^fireball/i).it;
+  const cantrip = varek ? [...varek.items].find(i => i.type === "spell" && Number(i.system?.level) === 0) : null;
+  const lv = fireIt ? {
+    raised: SaveEngine._castLevelFrom({ item: { type: "spell", system: fireIt.system, flags: { dnd5e: { scaling: 2 } } } }),
+    stamped: SaveEngine._castLevelFrom({ item: fireIt }, { message: { system: { spellLevel: 6 } } }),
+    own: SaveEngine._castLevelFrom({ item: fireIt }),
+    template: SaveEngine._castLevelFromTemplate({ flags: { "ace-qol": { castLevel: 5 }, dnd5e: { spellLevel: 3 } } }, fireIt),
+    dnd5eOnly: SaveEngine._castLevelFromTemplate({ flags: { dnd5e: { spellLevel: 3 } } }, fireIt),
+    at5: SaveEngine._damageRollConfig(fireIt, 5), at3: SaveEngine._damageRollConfig(fireIt, 3),
+  } : null;
+  check("the slot a spell was cast with reaches its damage roll: Fireball from a 5th-level slot scales by 2 (Phase 1)",
+    !!lv && lv.raised === 5 && lv.stamped === 6 && lv.own === 3 && lv.template === 5 && lv.dnd5eOnly === 3
+      && lv.at5.scaling === 2 && lv.at5.aceQol?.ownRoll === true && lv.at3.scaling === undefined,
+    lv ? `dnd5e's raised copy: ${lv.raised}; its message says 6: ${lv.stamped}; nothing said: ${lv.own}; `
+      + `a template ACE stamped 5: ${lv.template}; dnd5e's note only: ${lv.dnd5eOnly}; scaling at 5th: ${lv.at5.scaling}, at 3rd: ${lv.at3.scaling}`
+      : "Varek's Fireball is not in this world");
+  check("a cantrip's damage is left to dnd5e's own scaling by the caster's level (Phase 1)",
+    cantrip ? SaveEngine._damageRollConfig(cantrip, 5).scaling === undefined : null,
+    cantrip ? `${cantrip.name}: no slot scaling sent` : "Varek has no cantrip");
+
+  // ── The spell pipeline refuses dnd5e's loose die, never ACE's own roll ──
+  const disIt = saveAct(/^disintegrate/i).it;
+  const refuses = (cfg) => (disIt ? SpellPipeline._refusesNativeDamage({ subject: { item: disIt }, ...cfg }) : null);
+  check("the spell pipeline never refuses ACE's own damage roll for a spell it resolves itself (Disintegrate) (Phase 1)",
+    !!disIt && SpellPipeline.resolvesItself(disIt) === true && refuses({}) === true && refuses({ aceQol: { ownRoll: true } }) === false,
+    `it resolves Disintegrate itself: ${disIt ? SpellPipeline.resolvesItself(disIt) : "?"}; dnd5e's own roll refused: ${refuses({})}; `
+      + `ACE's own roll refused: ${refuses({ aceQol: { ownRoll: true } })}`);
+
+  // ── One reading of what a card row takes, for the card and APPLY ALL ──
+  const fr = SaveEngine._damageForRow({ damageMultiplier: 0.5, damageModifiers: { fire: { modifier: "resistant", reason: "Resists fire" } } },
+    [{ total: 29, type: "fire" }]);
+  check("a card row: a made Fireball on a creature that resists fire takes 7 of 29 (half, then half, each rounded down) (Phase 1)",
+    fr.total === 7 && fr.finals[0]?.modifier === "resistant", `${fr.total} (${fr.finals.map(f => `${f.final} ${f.type}, ${f.modifier}`).join("; ")})`);
+  const ov = SaveEngine._overriddenFinals({ baseDamageTotal: 15, damageComponentTotals: [{ total: 7, type: "fire" }, { total: 8, type: "cold" }] }, 0.5);
+  check("the GM's half on a 7 fire + 8 cold row lands 7, the card's number, and keeps both types (Phase 1)",
+    ov.reduce((s, f) => s + f.final, 0) === 7 && ov.map(f => f.type).join() === "fire,cold", ov.map(f => `${f.final} ${f.type}`).join(", "));
+
+  // ── Evasion is a Dexterity rule ──
+  const evader = [...ACTORS.values()].find(a => [...(a.items ?? [])].some(i => /^evasion\b/i.test(String(i.name))));
+  check("Evasion counts for a Dexterity save and not for a Wisdom one (Phase 1)",
+    evader ? (CombatState.evasionFor(evader, "dex") === true && CombatState.evasionFor(evader, "wis") === false) : null,
+    evader ? `${evader.name}: Dexterity ${CombatState.evasionFor(evader, "dex")}, Wisdom ${CombatState.evasionFor(evader, "wis")}`
+      : "nobody in this world has Evasion");
+
+  // ── The doors (section 11) ──
+  const sent = [];
+  const keepCallAll = Hooks.callAll;
+  Hooks.callAll = (name, payload) => { sent.push({ name, payload }); };
+  try {
+    const t0 = Date.now();
+    await untilDiceLand(false);
+    const waited = Date.now() - t0;
+    let refused = null;
+    await quiet(async () => { refused = await SignalDoor.send("madeUpSignal", {}); });
+    const hp = { value: 30, max: 30, temp: 0 };
+    const creature = { id: "replay-door-test", name: "a test creature", system: { attributes: { hp } },
+      update: async (u) => {
+        if ("system.attributes.hp.value" in u) hp.value = u["system.attributes.hp.value"];
+        if ("system.attributes.hp.temp" in u) hp.temp = u["system.attributes.hp.temp"];
+        return creature;
+      } };
+    let landed = null;
+    await quiet(async () => {
+      landed = await HpDoor.damage(creature, [{ type: "fire", final: 14 }], { tokenDocId: "t1", item: fireIt, source: varek, label: "replay" });
+    });
+    const sig = sent.find(s => s.name === "ace-qol.damageApplied")?.payload ?? null;
+    check("a door with no dice to wait for lands at once (frozen note 4) (Phase 1)", waited < 50, `${waited} ms`);
+    check("the signal door refuses a signal The One Road does not name (frozen note 5) (Phase 1)",
+      refused === false && !sent.some(s => s.name === "ace-qol.madeUpSignal"), `it answered ${refused}`);
+    check("save damage through the hit-point door moves the hit points and says so, naming who dealt it (Phase 1)",
+      landed?.applied === true && hp.value === 16 && sig?.hpDelta === 14 && sig?.sourceActor === varek && sig?.types?.join() === "fire",
+      `applied: ${landed?.applied}; hit points 30 to ${hp.value}; signal: `
+        + (sig ? `${sig.hpDelta} moved, dealt by ${sig.sourceActor?.name ?? "nobody"}, ${sig.types?.join("/")}` : "none sent"));
+  } finally {
+    Hooks.callAll = keepCallAll;
+  }
 }
 
 let golden = null;

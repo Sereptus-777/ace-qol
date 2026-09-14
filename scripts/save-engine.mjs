@@ -60,6 +60,11 @@ import { DamageCalculator } from "./damage-calculator.mjs";
 import { gateOff, cannotDo, rejectedReply } from "./why-not.mjs";
 // Wait for the condition, not for the clock. See wait-for.mjs.
 import { waitUntil } from "./wait-for.mjs";
+// The One Road, Phase 1: a save's damage is read from its recipe, shared out by
+// one rule, and lands through the hit-point door.
+import { damageShare, shareOf } from "./road/what-lands.mjs";
+import { HpDoor } from "./road/doors.mjs";
+import { recipeForActivity } from "./inference/recipe.mjs";
 
 // Real black d20 die art (per-face). These are the dice the GM already sees;
 // we use them everywhere a save result or prompt appears instead of the flat
@@ -144,6 +149,11 @@ export class SaveEngine {
      *  "spellPickerChoice" socket reply comes back. */
     this._pickerRequests = new Map();
 
+    /** @type {Map<string, {level: number, at: number}>} activity uuid → the slot
+     *  it was just cast with, noted on the casting client so the template that
+     *  cast places can carry it to the GM (see _stampCastLevel). */
+    this._castLevels = new Map();
+
     this._registerHooks();
   }
 
@@ -158,7 +168,9 @@ export class SaveEngine {
       console.log(`${MODULE_ID} | postCreateUsageMessage fired:`, activity?.item?.name, "save:", activity?.save?.ability);
       this._castDetectMs  = performance.now();   // [picker-timing] fast path
       this._castDetectVia = "standard";
-      this._onUseActivity(activity);
+      // On the casting client, before the template this cast places is made.
+      this._noteCastLevel(activity, message);
+      this._onUseActivity(activity, { message });
     });
     // Fallback for older dnd5e versions that might use useActivity
     // ⚠️ DEAD, AND DELIBERATELY LEFT. `dnd5e.useActivity` is not a hook any
@@ -183,7 +195,7 @@ export class SaveEngine {
     // dnd5e.postUseActivity fires for every activity use regardless of cards,
     // dialogs or suppression. Dedupe is shared with the other paths, so when
     // the standard hook already handled this cast this is a no-op.
-    Hooks.on("dnd5e.postUseActivity", (activity) => {
+    Hooks.on("dnd5e.postUseActivity", (activity, usageConfig, results) => {
       try {
         // SILENT-OK: not the active GM; this hook fires on every client and only one may act
         if (game.users?.activeGM !== game.user) return;
@@ -193,7 +205,7 @@ export class SaveEngine {
         const prev = this._processedActivityIds.get(key);
         if (prev != null && (Date.now() - prev) < 5000) return;   // already handled this cast
         console.log(`${MODULE_ID} | save detected via postUseActivity (card-independent):`, activity?.item?.name);
-        this._onUseActivity(activity);
+        this._onUseActivity(activity, { message: results?.message ?? null });
       } catch (err) {
         console.warn(`${MODULE_ID} | postUseActivity save detection threw:`, err);
       }
@@ -333,7 +345,7 @@ export class SaveEngine {
         // Defer one tick so the chat message finishes posting first
         setTimeout(() => {
           try {
-            this._onUseActivity(activity);
+            this._onUseActivity(activity, { message });
           } catch (err) {
             console.warn(`${MODULE_ID} | createChatMessage fallback _onUseActivity threw:`, err);
           }
@@ -367,6 +379,7 @@ export class SaveEngine {
       try {
         const originUuid = data?.flags?.dnd5e?.origin ?? doc?.flags?.dnd5e?.origin;
         if (!originUuid) return;                       // hand-drawn GM template — free
+        this._stampCastLevel(doc, originUuid);
         const resolve = foundry?.utils?.fromUuidSync
           ?? (typeof fromUuidSync === "function" ? fromUuidSync : null);
         const activity = resolve?.(originUuid);
@@ -691,7 +704,7 @@ export class SaveEngine {
   //  Detect Save-Based Spells/Abilities
   // ═══════════════════════════════════════════════════════════════════════════
 
-  async _onUseActivity(activity, usageConfig, dialogConfig, messageConfig) {
+  async _onUseActivity(activity, { message = null } = {}) {
     // SILENT-OK: not the active GM; this hook fires on every client and only one may act
     if (game.users?.activeGM !== game.user) return;
 
@@ -875,28 +888,10 @@ export class SaveEngine {
       if (ts < cutoff) this._processedActivityIds.delete(k);
     }
 
-    // ── Capture spell upcast level (RAW upcast scaling) ──
-    // dnd5e 5.x stamps the chat message with `flags.dnd5e.use.spellLevel`
-    // (the slot level the spell was actually cast at — can be > base level).
-    // We thread this through to _rollSpellDamage so dnd5e's rollDamage
-    // applies the proper "+ X dice per slot above base" scaling.
-    //
-    // Falls back to base spell level when no upcast info is available.
-    // For cantrips (level 0), this stays 0 and character-level cantrip
-    // scaling kicks in instead.
-    let spellLevel = null;
-    try {
-      const useFlag = messageConfig?.data?.flags?.dnd5e?.use
-                   ?? messageConfig?.flags?.dnd5e?.use
-                   ?? usageConfig?.spell;
-      if (useFlag) {
-        spellLevel = Number(useFlag.spellLevel ?? useFlag.level ?? null);
-      }
-      // Fallback: use base item level
-      if (!Number.isFinite(spellLevel) && item.system?.level !== undefined) {
-        spellLevel = Number(item.system.level);
-      }
-    } catch (_) { /* non-fatal */ }
+    // ── The slot it was cast with (RAW upcast scaling) ──
+    // Threaded through to the damage roll, which dnd5e scales by it. A cantrip
+    // stays at 0 and dnd5e scales it by the caster's level instead.
+    const spellLevel = SaveEngine._castLevelFrom(activity, { message });
 
     // dnd5e 5.2.5: save.ability is a Set, not a string
     const saveAbility = (save.ability instanceof Set || save.ability instanceof Array)
@@ -917,9 +912,9 @@ export class SaveEngine {
     }
     const isSpell = item.type === "spell";
 
-    // Get damage info — from the ACTIVITY being used, never the whole item.
-    const damageTypes = CombatState._getItemDamageTypes(item, activity);
-    const halfOnSave = this._detectHalfDamage(item, activity);
+    // What its damage is, and whether a made save takes half: read from the
+    // recipe of the ACTIVITY being used, never the whole item.
+    const { damageTypes, halfOnSave } = SaveEngine.saveDamageRule(item, activity);
 
     // Get spell timing classification
     const timing = getSpellTiming(item);
@@ -1147,7 +1142,7 @@ export class SaveEngine {
       console.log(`${MODULE_ID} | Single NPC target detected — skipping live-target-card, rolling immediately`);
       await this._fastResolveSingleNpcSave(item, actor, tokens[0], {
         saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing,
-        activity,
+        activity, spellLevel,
       });
       // TARGET-STICK (Johnny 2026-07-24): a SINGLE-creature action KEEPS its
       // target, full stop — pre-targeted OR picker-chosen. He wants to keep
@@ -1727,7 +1722,7 @@ export class SaveEngine {
       } catch (_) { /* setting unavailable — proceed without delay */ }
     }
 
-    const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activity } = opts;
+    const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activity, spellLevel = null } = opts;
     const activityId = activity?.id ?? null;
 
     // Build the target context the way _postLiveTargetCard does so
@@ -1754,7 +1749,9 @@ export class SaveEngine {
       // allowed to roll, and could pass a save it cannot pass. The profile
       // knows its conditions; ask it.
       autoFailSave: SaveEngine._targetProfileFor(tActor, { tokenDocId: token?.document?.id, sceneId: token?.scene?.id })?.autoFailsSave(saveAbility) ?? false,
-      superSaver: false,
+      // Evasion by the one reading, which asks which save this is. It was
+      // hard-wired off here, so a lone NPC never had it.
+      superSaver: CombatState.evasionFor(tActor, saveAbility),
       damageModifiers: tActor ? DamageCalculator.getTargetDamageModifiers(tActor, item) : {},
       // Snapshot for the card row — profile, same as every other target fact.
       currentHP: SaveEngine._targetProfileFor(tActor, { tokenDocId: token?.document?.id, sceneId: token?.scene?.id })?.hp.value ?? 0,
@@ -1822,7 +1819,7 @@ export class SaveEngine {
 
     // Post the result card (Phase 1 — same builder as the normal flow)
     await this._postSaveResultsPhase1(item, casterActor, [result], {
-      saveAbility, saveDC, halfOnSave, damageTypes, isSpell, activityId,
+      saveAbility, saveDC, halfOnSave, damageTypes, isSpell, activityId, spellLevel,
       timingType: timing?.type ?? null,
       templateDocId: null,
       templateSceneId: null,
@@ -1959,18 +1956,15 @@ export class SaveEngine {
         saveDC = Number(sysDC) > 0 ? Number(sysDC) : 10;
       }
 
-      let spellLevel = null;
-      try {
-        if (item.type === "spell" && Number.isFinite(Number(item.system?.level))) {
-          spellLevel = Number(item.system.level);
-        }
-      } catch (_) { /* non-fatal */ }
+      // The slot it was cast with, read back from the template: the casting
+      // client wrote it there. And its damage, from its recipe.
+      const spellLevel = SaveEngine._castLevelFromTemplate(templateDoc, item);
+      const { halfOnSave, damageTypes } = SaveEngine.saveDamageRule(item, activity);
 
       return {
         activity, item, actor,
         saveAbility, saveDC,
-        halfOnSave: this._detectHalfDamage(item, activity),
-        damageTypes: CombatState._getItemDamageTypes(item, activity),
+        halfOnSave, damageTypes,
         isSpell: item.type === "spell",
         timing: getSpellTiming(item),
         activityId: activity.id,
@@ -2144,7 +2138,7 @@ export class SaveEngine {
     // Store template reference
     pending.templateDoc = templateDoc;
 
-    const { item, actor, saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activityId } = pending;
+    const { item, actor, saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activityId, spellLevel } = pending;
 
     // ── Exclude the caster from the auto-targeted list ──
     // Foundry / dnd5e auto-targets every token an AOE template touches when
@@ -2207,8 +2201,10 @@ export class SaveEngine {
         return;
       }
       console.log(`${MODULE_ID} | Posting instant save card for ${item.name} → ${tokens.length} targets`);
+      // ⚠️ THE SLOT GOES WITH IT. It was dropped here, so every area spell's
+      // damage rolled at the spell's own level.
       await this._postLiveTargetCard(item, actor, tokens, {
-        saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activityId, templateDoc,
+        saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activityId, templateDoc, spellLevel,
       });
       console.log(`${MODULE_ID} | Instant save card posted successfully`);
 
@@ -2310,7 +2306,7 @@ export class SaveEngine {
 
       if ((triggerOnEnter || textSaysNow) && tokens.length && !isAreaDenial) {
         await this._postLiveTargetCard(item, actor, tokens, {
-          saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activityId,
+          saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activityId, spellLevel,
           // ⚠️ AN AREA THAT DOES NOT LAST OWNS ITS TEMPLATE, exactly like an
           // instant one, so the card can take it away when it is done. Without
           // this the auto-delete has nothing to delete and the cone stays.
@@ -2333,21 +2329,190 @@ export class SaveEngine {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  //  Detect "Half Damage on Save"
+  //  A save's damage: read from its recipe, shared out by one rule
+  //  (The One Road, Phase 1, 2026-09-14)
   // ═══════════════════════════════════════════════════════════════════════════
 
-  _detectHalfDamage(item, activity) {
-    // Check activity data first
-    if (activity.damage?.onSave === "half") return true;
-
-    // Check item description for common phrases
-    const desc = (item.system?.description?.value ?? "").toLowerCase();
-    if (desc.includes("half as much damage") || desc.includes("half damage")
-     || desc.includes("takes half") || desc.includes("save for half")) {
-      return true;
+  /**
+   * The damage a save activity rolls, and whether a made save takes half of it,
+   * read from the activity's recipe. Every place a save starts asks this, so the
+   * half rule and the damage types have one source.
+   *
+   * ⚠️🔴 THE PIPELINE'S SAVE STEPS USED TO DECLARE "NO DAMAGE" FOR ALL OF THEM.
+   * Varek's Disintegrate went through with none, so its card never offered ROLL
+   * DAMAGE while the spell's own card showed 10d6 + 40 force (2026-09-13). And
+   * this file read "half" from different words than the recipe did, so the two
+   * could disagree about one spell.
+   *
+   * @param {Item} item
+   * @param {Activity|null} activity  the save activity being used
+   * @returns {{halfOnSave: boolean, damageTypes: string[], recipe: object|null}}
+   */
+  static saveDamageRule(item, activity) {
+    let rec = null, err = null;
+    try { rec = activity ? recipeForActivity(item, activity, { actor: item?.actor ?? null }) : null; }
+    catch (e) { err = e; }
+    const recipe = rec?.recipe ?? null;
+    if (recipe?.decidedBy?.kind === "save") {
+      const dmg = (recipe.onFail ?? []).filter(o => o?.kind === "damage");
+      return {
+        halfOnSave: dmg.some(o => o.onSuccess === "half"),
+        damageTypes: [...new Set(dmg.flatMap(o => o.types ?? []))].filter(t => t && t !== "none"),
+        recipe,
+      };
     }
+    // ⚠️ SAY WHY, THEN READ THE ACTIVITY ITSELF. A save with no save recipe is a
+    // gap in the reader to fix, never a reason to roll it with its damage missing.
+    const why = err ? `building it failed: ${err?.message ?? err}`
+      : !activity ? "no activity was named"
+      : (rec?.none ?? `its recipe is decided by ${recipe?.decidedBy?.kind ?? "nothing"}, not a save`);
+    console.warn(`${MODULE_ID} | "${item?.name}": no save recipe (${why}); its damage is read from the activity's own data.`);
+    return {
+      halfOnSave: activity?.damage?.onSave === "half",
+      damageTypes: CombatState._getItemDamageTypes(item, activity).filter(t => t && t !== "none"),
+      recipe: null,
+    };
+  }
 
-    return false;
+  /**
+   * The slot a spell was cast with.
+   *
+   * ⚠️🔴 THIS WAS READ FROM ARGUMENTS NO HOOK PASSED, and from a flag dnd5e no
+   * longer writes, so every save spell's damage rolled at the spell's own level.
+   * dnd5e writes the slot's level on the cast's message data (made even when no
+   * card is shown), and the copy of the item it casts carries how far the spell
+   * was raised; either answers.
+   *
+   * @param {Activity} activity  the activity dnd5e handed the hook: the copy it casts
+   * @param {object} [o]
+   * @param {ChatMessage|object|null} [o.message]  the cast's message, or its data
+   * @returns {number|null}  null for anything that is not a spell
+   */
+  static _castLevelFrom(activity, { message = null } = {}) {
+    const item = activity?.item ?? null;
+    if (item?.type !== "spell") return null;
+    const base = Number(item.system?.level);
+    if (!Number.isFinite(base)) return null;
+    const sys = message?.system ?? null;
+    const stamped = sys?.spellLevel == null ? NaN : Number(sys.spellLevel);
+    if (Number.isFinite(stamped) && stamped >= base) return stamped;
+    const raisedBy = Number(sys?.scaling ?? item.flags?.dnd5e?.scaling ?? 0);
+    return (Number.isFinite(raisedBy) && raisedBy > 0) ? base + raisedBy : base;
+  }
+
+  /**
+   * The slot a spell was cast with, read back from the template it placed: the
+   * casting client wrote it there (see _stampCastLevel). dnd5e's own note on a
+   * template is the spell's level, which is the slot only for a scroll.
+   */
+  static _castLevelFromTemplate(templateDoc, item) {
+    if (item?.type !== "spell") return null;
+    const base = Number(item.system?.level);
+    if (!Number.isFinite(base)) return null;
+    for (const v of [templateDoc?.flags?.[MODULE_ID]?.castLevel, templateDoc?.flags?.dnd5e?.spellLevel]) {
+      const n = v == null ? NaN : Number(v);
+      if (Number.isFinite(n) && n >= base) return n;
+    }
+    return base;
+  }
+
+  /**
+   * What ACE's own damage roll for a save carries into dnd5e: the slot's
+   * scaling, and a mark that it is ACE's own roll.
+   *
+   * ⚠️ dnd5e SCALES A DAMAGE PART BY `scaling`, never by a slot level. The
+   * `spell.level` this used to send is read by nothing in its damage roll.
+   * ⚠️ A CANTRIP GETS NO SCALING FROM HERE. dnd5e scales it by the caster's
+   * level, and a 0 sent from here would switch that off.
+   * ⚠️ THE MARK IS WHY THE SPELL PIPELINE LETS IT THROUGH. Its damage hook
+   * refuses dnd5e's own roll for the spells it resolves itself, and it refused
+   * this one too (see SpellPipeline._refusesNativeDamage).
+   */
+  static _damageRollConfig(item, spellLevel) {
+    const config = { aceQol: { ownRoll: true } };
+    const base = Number(item?.system?.level);
+    const cast = spellLevel == null ? NaN : Number(spellLevel);
+    if (item?.type === "spell" && base > 0 && Number.isFinite(cast) && cast > base) config.scaling = cast - base;
+    return config;
+  }
+
+  /**
+   * What one row of a save card takes from the rolled damage: its share, decided
+   * at its save by the one rule, then its resistances, immunities and
+   * vulnerabilities as the Gate read them. The card draws its rows from this and
+   * APPLY ALL lands it, so the two cannot drift apart.
+   *
+   * @returns {{finals: Array<{type: string, raw: number, final: number, modifier: string}>, total: number}}
+   */
+  static _damageForRow(r, damageComponents) {
+    const share = Number(r?.damageMultiplier) || 0;
+    const finals = HpDoor.preview(null, (damageComponents ?? []).map(c => ({
+      type: c.type, amount: shareOf(c.total, share),
+    })), { mods: r?.damageModifiers ?? {} });
+    return { finals, total: finals.reduce((sum, f) => sum + (Number(f.final) || 0), 0) };
+  }
+
+  /** What a row's stored split says lands. A card from before the split carries only its total. */
+  static _storedFinals(flags, r) {
+    const parts = Array.isArray(r?.byType) ? r.byType : [];
+    if (parts.length) {
+      return parts.map(p => ({ type: String(p.type ?? "none").toLowerCase(), final: Math.max(0, Number(p.value) || 0) }));
+    }
+    const total = Math.max(0, Number(r?.totalFinal) || 0);
+    return total > 0 ? [{ type: String(flags?.damageTypes?.[0] ?? "none").toLowerCase(), final: total }] : [];
+  }
+
+  /**
+   * The GM's override on a card row: a multiplier on the rolled total, ahead of
+   * resistances, split by type so a listener that cares about types still can.
+   * The split gives any rounding back to the first type, so the whole comes to
+   * what the card shows.
+   */
+  static _overriddenFinals(flags, mult) {
+    const comps = (flags?.damageComponentTotals ?? []).map(c => ({
+      type: String(c.type ?? "none").toLowerCase(), total: Math.max(0, Number(c.total) || 0) }));
+    const want = shareOf(flags?.baseDamageTotal ?? comps.reduce((sum, c) => sum + c.total, 0), mult);
+    if (!comps.length) return [{ type: String(flags?.damageTypes?.[0] ?? "none").toLowerCase(), final: want }];
+    const finals = comps.map(c => ({ type: c.type, final: shareOf(c.total, mult) }));
+    finals[0].final += want - finals.reduce((sum, f) => sum + f.final, 0);
+    return finals;
+  }
+
+  /** Note the slot a cast was made with, for the template it is about to place. */
+  _noteCastLevel(activity, message) {
+    try {
+      const level = SaveEngine._castLevelFrom(activity, { message });
+      // SILENT-OK: not a spell, so there is no slot to carry
+      if (!activity?.uuid || level == null) return;
+      const now = Date.now();
+      for (const [k, v] of this._castLevels) if (now - v.at > 120000) this._castLevels.delete(k);
+      this._castLevels.set(activity.uuid, { level, at: now });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not note the slot "${activity?.item?.name}" was cast with `
+        + `(an area it places will roll at the spell's own level):`, err);
+    }
+  }
+
+  /**
+   * Write the slot a spell was cast with onto the template it places.
+   *
+   * ⚠️🔴 A PLAYER'S AREA SAVE IS BUILT FROM ITS TEMPLATE ALONE. The GM's client
+   * never sees a player's cast, only the template it places, and dnd5e writes
+   * nothing on that but the spell's own level. So an area spell a player cast
+   * from a higher slot rolled its damage at the spell's level: Fireball from a
+   * 5th-level slot, 8d6. This runs on the casting client, which noted the slot
+   * a moment before; every client reads it back from the template.
+   */
+  _stampCastLevel(doc, originUuid) {
+    try {
+      const noted = this._castLevels.get(originUuid);
+      // SILENT-OK: this client did not cast it, or it is not a spell
+      if (!noted || (Date.now() - noted.at) > 120000) return;
+      doc.updateSource({ [`flags.${MODULE_ID}.castLevel`]: noted.level });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not write the slot level onto the template for ${originUuid} `
+        + `(its area save will roll at the spell's own level):`, err);
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -2366,6 +2531,11 @@ export class SaveEngine {
    */
   async postSaveCard(item, actor, tokens, opts) {
     return this._postLiveTargetCard(item, actor, tokens, opts);
+  }
+
+  /** The spell pipeline's way in to the one reading of a save's damage (the static above). */
+  saveDamageRule(item, activity) {
+    return SaveEngine.saveDamageRule(item, activity);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -3812,9 +3982,7 @@ export class SaveEngine {
 
       const passed = f.passed;
       const superSaver = f.superSaver;
-      let damageMultiplier;
-      if (passed) damageMultiplier = superSaver ? 0 : (halfOnSave ? 0.5 : 0);
-      else        damageMultiplier = superSaver ? 0.5 : 1;
+      const damageMultiplier = damageShare({ half: halfOnSave, passed, evasion: superSaver }).share;
 
       r.pending    = false;
       r.saveTotal  = f.saveTotal;
@@ -3854,7 +4022,7 @@ export class SaveEngine {
     if (!flags) return;
 
     const { saveAbility, saveDC, halfOnSave, targets, itemId, itemUuid, actorId, damageTypes, isSpell,
-            timingType, templateDocId, templateSceneId, activityId } = flags;
+            timingType, templateDocId, templateSceneId, activityId, spellLevel } = flags;
 
     const item = await fromUuid(itemUuid) ?? game.items.get(itemId);
     const casterActor = game.actors.get(actorId);
@@ -3945,9 +4113,9 @@ export class SaveEngine {
             npcResults[i].passed = true;
             npcResults[i].legendaryResistance = true;
             npcResults[i].resultLabel = "LEGENDARY RESISTANCE";
-            // Recalculate damage multiplier
-            if (halfOnSave) npcResults[i].damageMultiplier = 0.5;
-            else npcResults[i].damageMultiplier = 0;
+            // What the made save now lets through, by the one rule.
+            npcResults[i].damageMultiplier = damageShare({ half: halfOnSave, passed: true,
+              evasion: npcResults[i].superSaver }).share;
           }
         }
       } catch (err) {
@@ -3982,7 +4150,8 @@ export class SaveEngine {
               npcResults[i].saveTotal = sbResult.newTotal;
               npcResults[i].silveryBarbsRerolled = true;
               npcResults[i].resultLabel = "SILVERY BARBS → FAILED";
-              npcResults[i].damageMultiplier = 1;
+              npcResults[i].damageMultiplier = damageShare({ half: halfOnSave, passed: false,
+                evasion: npcResults[i].superSaver }).share;
             }
           }
         }
@@ -4068,23 +4237,15 @@ export class SaveEngine {
       if (existing) {
         // PC already rolled — build resolved result
         const passed = existing.passed;
-        const superSaver = existing.superSaver;
-        let damageMultiplier;
-        if (passed) {
-          if (superSaver) damageMultiplier = 0;
-          else if (halfOnSave) damageMultiplier = 0.5;
-          else damageMultiplier = 0;
-        } else {
-          if (superSaver) damageMultiplier = 0.5;
-          else damageMultiplier = 1;
-        }
+        const superSaver = !!existing.superSaver;
+        const damageMultiplier = damageShare({ half: halfOnSave, passed, evasion: superSaver }).share;
         return {
           name: tgt.name, img: tgt.img,
           tokenDocId: tgt.tokenDocId, actorId: tgt.actorId, sceneId: tgt.sceneId,
           saveTotal: existing.saveTotal, passed,
           isAutoFail: existing.autoFailSave,
           resultLabel: existing.resultLabel,
-          damageMultiplier,
+          damageMultiplier, superSaver,
           saveAdvantage: !!tgt.saveAdvantage,
           saveDisadvantage: !!tgt.saveDisadvantage,
           saveAdvReasons: tgt.saveAdvReasons ?? [],
@@ -4182,6 +4343,9 @@ export class SaveEngine {
     const allResults = [...npcResults, ...pcResults];
     await this._postSaveResultsPhase1(item, casterActor, allResults, {
       saveAbility, saveDC, halfOnSave, damageTypes, isSpell,
+      // The slot it was cast with, so the damage roll scales by it. It stopped
+      // here, and every card's damage rolled at the spell's own level.
+      spellLevel,
       timingType, templateDocId, templateSceneId,
       hasDamage,
       appliedConditions,
@@ -4542,30 +4706,10 @@ export class SaveEngine {
       rollResult = roll;
     }
 
-    // Determine damage multiplier
-    let damageMultiplier = 1;
-    let resultLabel = "FAIL";
-    if (passed) {
-      resultLabel = "PASS";
-      if (tgt.superSaver) {
-        damageMultiplier = 0; // Evasion: pass = 0 damage
-        resultLabel = "PASS (EVASION)";
-      } else if (halfOnSave) {
-        damageMultiplier = 0.5;
-        resultLabel = "PASS (HALF)";
-      } else {
-        damageMultiplier = 0;
-        resultLabel = "PASS (NO DMG)";
-      }
-    } else {
-      if (tgt.superSaver) {
-        damageMultiplier = 0.5; // Evasion: fail = half damage
-        resultLabel = "FAIL (EVASION: HALF)";
-      } else {
-        damageMultiplier = 1;
-        resultLabel = isAutoFail ? "AUTO-FAIL" : "FAIL";
-      }
-    }
+    // What this save lets through, and its words: the one rule every save path
+    // uses (road/what-lands.mjs).
+    const { share: damageMultiplier, label: resultLabel } = damageShare({
+      half: halfOnSave, passed, evasion: tgt.superSaver, autoFail: isAutoFail });
 
     // Extract the d20 face value so it survives flag serialization
     const _d20Term = rollResult?.dice?.[0];
@@ -4582,6 +4726,9 @@ export class SaveEngine {
       isAutoFail,
       resultLabel,
       damageMultiplier,
+      // Carried so a later change to this save (Legendary Resistance, Silvery
+      // Barbs) is decided by the same rule.
+      superSaver: !!tgt.superSaver,
       dieResult,
       roll: rollResult,
       // Why it rolled the way it did, so every card after this one can say so.
@@ -4650,13 +4797,9 @@ export class SaveEngine {
         let nativeRolledOk = false;
         try {
           if (typeof activity.rollDamage === "function") {
-            const rollConfig = {};
-            // Thread spell upcast level if caller supplied it (Burning Hands
-            // at L3 = 5d6 instead of 3d6, etc.). Falls through to base level
-            // when undefined — cantrip scaling still works regardless.
-            if (Number.isFinite(opts.spellLevel)) {
-              rollConfig.spell = { level: Number(opts.spellLevel) };
-            }
+            // The slot's scaling (Burning Hands from a 3rd-level slot is 5d6),
+            // and the mark that this is ACE's own roll. See _damageRollConfig.
+            const rollConfig = SaveEngine._damageRollConfig(item, opts.spellLevel);
             const damageRolls = await activity.rollDamage(
               rollConfig,
               { configure: false },          // skip the modify-roll dialog
@@ -4678,6 +4821,11 @@ export class SaveEngine {
                 rollsToShow.push(roll);
               }
               nativeRolledOk = true;
+            } else {
+              // ⚠️ SAY SO. An empty answer means a pre-roll hook refused the roll,
+              // and the bare formula below has no cantrip or slot scaling.
+              console.warn(`${MODULE_ID} | "${item.name}": dnd5e rolled no damage for it (a pre-roll hook `
+                + `refused the roll), so ACE rolls its bare formula, without cantrip or slot scaling.`);
             }
           }
         } catch (err) {
@@ -5066,21 +5214,9 @@ export class SaveEngine {
     // Same principle as the rest of this file's 07-28 rebuild: the roller RETURNS
     // its result and stamps its claim into the message; nobody downstream
     // re-derives a fact they don't have the inputs for.
-    const _pcMultiplier = passed
-      ? (superSaver ? 0 : (halfOnSave ? 0.5 : 0))
-      : (superSaver ? 0.5 : 1);
-
-    // Determine result label
-    let resultLabel;
-    if (passed) {
-      if (superSaver) resultLabel = "PASS (EVASION)";
-      else if (halfOnSave) resultLabel = "PASS (HALF)";
-      else resultLabel = "PASS (NO DMG)";
-    } else {
-      if (superSaver) resultLabel = "FAIL (EVASION: HALF)";
-      else if (autoFailSave) resultLabel = "AUTO-FAIL";
-      else resultLabel = "FAIL";
-    }
+    // ...and its words, by the one rule every save path uses (road/what-lands.mjs).
+    const { share: _pcMultiplier, label: resultLabel } = damageShare({
+      half: halfOnSave === true, passed, evasion: superSaver, autoFail: autoFailSave });
 
     const passClass = passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
     const rollDisplay = autoFailSave ? "AUTO" : saveTotal;
@@ -5160,16 +5296,8 @@ export class SaveEngine {
     } catch (_) { /* non-fatal */ }
 
     // ── Update the main save results card's pending row for this PC ──
-    // Determine damage multiplier same as NPC saves
-    let damageMultiplier;
-    if (passed) {
-      if (superSaver) damageMultiplier = 0;        // Evasion pass = 0 damage
-      else if (halfOnSave) damageMultiplier = 0.5;  // Half on save
-      else damageMultiplier = 0;                     // No damage on save
-    } else {
-      if (superSaver) damageMultiplier = 0.5;        // Evasion fail = half
-      else damageMultiplier = 1;                     // Full damage
-    }
+    // The same share, decided once above.
+    const damageMultiplier = _pcMultiplier;
 
     // Main card update happens via renderChatMessage hook on GM client
     // (players don't have permission to edit GM-whispered messages)
@@ -5236,13 +5364,12 @@ export class SaveEngine {
         // Older message: ask the cast card this result belongs to.
         half = SaveEngine._halfOnSaveForCast(resultFlags.castId);
       }
-      damageMultiplier = passed
-        ? (superSaver ? 0 : (half ? 0.5 : 0))
-        : (superSaver ? 0.5 : 1);
+      damageMultiplier = damageShare({ half, passed, evasion: superSaver }).share;
       console.debug(`${MODULE_ID} | pcSaveResult had no stamped multiplier — derived ${damageMultiplier} (halfOnSave=${half}).`);
     }
 
-    const pcResult = { saveTotal, dieResult: dieResult ?? null, passed, resultLabel, autoFailSave, damageMultiplier };
+    const pcResult = { saveTotal, dieResult: dieResult ?? null, passed, resultLabel, autoFailSave, damageMultiplier,
+      superSaver: !!superSaver };
 
     // ── Re-fire saveComplete on the GM so area-denial effects land ──
     // FIRST, before the cosmetic card updates — a throw in those must never
@@ -5484,6 +5611,7 @@ export class SaveEngine {
         isAutoFail: pcResult.autoFailSave,
         resultLabel: pcResult.resultLabel,
         damageMultiplier: pcResult.damageMultiplier,
+        superSaver: !!pcResult.superSaver,
         damageModifiers: {},
         // ⚠️ `r` IS IN ITS TEMPORAL DEAD ZONE HERE (2026-07-28). `const r` is
         // declared BELOW this block, so reading it here throws "Cannot access
@@ -5508,6 +5636,7 @@ export class SaveEngine {
     r.resultLabel = pcResult.resultLabel;
     r.isAutoFail = pcResult.autoFailSave;
     r.damageMultiplier = pcResult.damageMultiplier;
+    r.superSaver = !!pcResult.superSaver;
 
     // Refresh live HP from the actor (PC may have taken damage since card was built)
     try {
@@ -6830,7 +6959,10 @@ export class SaveEngine {
     // single target saved against Entangling Rope, which deals no damage on a
     // save — there's nothing to roll or apply, so show a clean "no damage"
     // result instead of a ROLL DAMAGE / APPLY ALL card.
-    const anyWillTakeDamage = hasDamage && results.some(r => !r.pending && !r.noRoll && (!r.passed || halfOnSave));
+    // Each row's own share, decided at its save by the one rule. A card written
+    // before rows carried one falls back to the pass and the half rule.
+    const anyWillTakeDamage = hasDamage && results.some(r => !r.pending && !r.noRoll
+      && (typeof r.damageMultiplier === "number" ? r.damageMultiplier > 0 : (!r.passed || halfOnSave)));
     let actionsHtml;
     if (hasDamage && anyPending) {
       actionsHtml = `<div class="ace-qol-dmg-actions ace-qol-roll-dmg-gate">
@@ -6942,7 +7074,7 @@ export class SaveEngine {
   async _postSaveResultsPhase1(item, casterActor, results, opts) {
     const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell,
             timingType, templateDocId, templateSceneId, hasDamage = true,
-            appliedConditions = [], activityId = null } = opts;
+            appliedConditions = [], activityId = null, spellLevel = null } = opts;
 
     const cardHtml = this._buildPhase1CardHtml(item, results, opts);
 
@@ -6973,6 +7105,8 @@ export class SaveEngine {
           // roller falls back to "first activity with damage" and a four-power
           // staff rolls the wrong ability's damage. (2026-07-28)
           activityId,
+          // The slot it was cast with: Phase 2 rolls the damage by it.
+          spellLevel: Number.isFinite(spellLevel) ? spellLevel : null,
           actorId: casterActor?.id,
           // Owning player(s) of the caster — they see the ROLL DAMAGE button and
           // roll their OWN spell damage (Johnny 2026-07-11: "PCs always roll
@@ -6997,6 +7131,7 @@ export class SaveEngine {
             isAutoFail: r.isAutoFail,
             resultLabel: r.resultLabel,
             damageMultiplier: r.damageMultiplier,
+            superSaver: !!r.superSaver,
             dieResult: r.dieResult ?? null,
             saveAdvantage: !!r.saveAdvantage,
             saveDisadvantage: !!r.saveDisadvantage,
@@ -7066,30 +7201,20 @@ export class SaveEngine {
     });
 
     // ── 4. Compute damageResults for flag storage ──
+    // The same reading the card's rows are drawn from (_damageForRow), so what
+    // the card shows and what APPLY ALL lands cannot drift apart. The per-TYPE
+    // split rides along so the apply step can describe the damage to anything
+    // listening (Heavy Armor Master and friends); it always sums to totalFinal.
     const damageResults = [];
     for (const r of allResults) {
       if (r.pending) continue;
-      let targetDamage = 0;
-      // Keep the per-TYPE split, not just the total. It costs nothing here and
-      // it lets the apply step describe the damage properly to anything
-      // listening (Heavy Armor Master and friends) instead of handing over one
-      // anonymous lump. The parts always sum to totalFinal by construction.
-      const byType = [];
-      for (const c of damageComponents) {
-        let dmg = Math.floor(c.total * r.damageMultiplier);
-        const mod = r.damageModifiers?.[c.type];
-        if (mod?.modifier === "immune") dmg = 0;
-        else if (mod?.modifier === "resistant") dmg = Math.floor(dmg / 2);
-        else if (mod?.modifier === "vulnerable") dmg = dmg * 2;
-        targetDamage += dmg;
-        if (dmg > 0) byType.push({ type: c.type, value: dmg });
-      }
+      const { finals, total } = SaveEngine._damageForRow(r, damageComponents);
       damageResults.push({
         targetId: r.actorId,
         tokenDocId: r.tokenDocId,
         sceneId: r.sceneId,
-        totalFinal: targetDamage,
-        byType,
+        totalFinal: total,
+        byType: finals.filter(f => f.final > 0).map(f => ({ type: f.type, value: f.final })),
         currentHP: r.currentHP,
       });
     }
@@ -7466,25 +7591,11 @@ export class SaveEngine {
         }
       }
 
-      // ── Calculate per-target damage ──
-      let targetDamage = 0;
-      const dmgReasons = [];
-      const dmgParts = damageComponents.map(c => {
-        let dmg = Math.floor(c.total * r.damageMultiplier);
-        const mod = r.damageModifiers?.[c.type];
-        if (mod?.modifier === "immune") {
-          dmg = 0;
-          dmgReasons.push(`IMMUNE to ${c.type}`);
-        } else if (mod?.modifier === "resistant") {
-          dmg = Math.floor(dmg / 2);
-          dmgReasons.push(`RESIST ${c.type}`);
-        } else if (mod?.modifier === "vulnerable") {
-          dmg = dmg * 2;
-          dmgReasons.push(`VULN ${c.type}`);
-        }
-        targetDamage += dmg;
-        return dmg;
-      });
+      // ── Calculate per-target damage ── (the same reading APPLY ALL lands)
+      const { finals, total: targetDamage } = SaveEngine._damageForRow(r, damageComponents);
+      const dmgReasons = finals.flatMap(f => f.modifier === "immune" ? [`IMMUNE to ${f.type}`]
+        : f.modifier === "resistant" ? [`RESIST ${f.type}`]
+        : f.modifier === "vulnerable" ? [`VULN ${f.type}`] : []);
 
       const newHP = Math.max(0, r.currentHP - targetDamage);
       const isDead = newHP <= 0;
@@ -7753,29 +7864,25 @@ export class SaveEngine {
       const passClass = r.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
       const rollDisplay = r.isAutoFail ? "AUTO" : r.saveTotal;
 
-      // ── Calculate per-target damage with multiplier and resistance checks ──
-      let targetDamage = 0;
+      // ── Per-target damage: the same reading the damage card and APPLY ALL use ──
+      const { finals, total: targetDamage } = SaveEngine._damageForRow(r, damageComponents);
       const dmgReasons = [];
-      const dmgParts = damageComponents.map(c => {
-        let dmg = Math.floor(c.total * r.damageMultiplier);
-        const mod = r.damageModifiers?.[c.type];
+      const dmgParts = finals.map(f => {
+        // This type's badge and reason, in the words this card has always used.
+        const c = { type: f.type }, mod = { modifier: f.modifier }, dmg = f.final;
         let modBadge = "";
 
         if (mod?.modifier === "immune") {
-          dmg = 0;
           modBadge = '<span class="ace-qol-dmg-mod ace-qol-dmg-immune">IMMUNE</span>';
           dmgReasons.push(`\ud83d\udee1\ufe0f IMMUNE to ${c.type} \u2014 0 damage`);
         } else if (mod?.modifier === "resistant") {
-          dmg = Math.floor(dmg / 2);
           modBadge = '<span class="ace-qol-dmg-mod ace-qol-dmg-resist">\u00bd</span>';
           dmgReasons.push(`\ud83d\udee1\ufe0f RESIST ${c.type} \u2014 halved`);
         } else if (mod?.modifier === "vulnerable") {
-          dmg = dmg * 2;
           modBadge = '<span class="ace-qol-dmg-mod ace-qol-dmg-vuln">\u00d72</span>';
           dmgReasons.push(`\u2620\ufe0f VULN ${c.type} \u2014 doubled`);
         }
 
-        targetDamage += dmg;
         const color = DamageConstants.DAMAGE_COLORS[c.type] ?? "#ccc";
         return `<span style="color:${color}">${dmg} ${c.type}</span>${modBadge}`;
       }).join(" ");
@@ -7981,7 +8088,9 @@ export class SaveEngine {
     const flags = message.flags?.[MODULE_ID];
     if (!flags?.damageResults?.length) return;
 
-    const baseDmg = flags.baseDamageTotal ?? 0;
+    // Who dealt it, carried on the damage-applied signal to everything listening.
+    const sourceItem = flags.itemUuid ? await fromUuid(flags.itemUuid).catch(() => null) : null;
+    const sourceActor = game.actors.get(flags.actorId) ?? null;
     // What the hit points ACTUALLY moved by, per target. UNDO gives back exactly
     // this and nothing else — see _undoAllSaveDamage. (audit F-016, 2026-08-07)
     const hpDelta = { ...(flags.hpDelta ?? {}) };
@@ -8002,39 +8111,23 @@ export class SaveEngine {
         continue;
       }
 
+      // What lands, by type. The GM's override is a multiplier on the rolled
+      // total, ahead of resistances, exactly as the card shows it.
       const overridden = (typeof cachedValue === "number");
-      const damageToApply = overridden
-        ? Math.floor(baseDmg * cachedValue)
-        : (r.totalFinal ?? 0);
+      const finals = overridden
+        ? SaveEngine._overriddenFinals(flags, cachedValue)
+        : SaveEngine._storedFinals(flags, r);
 
-      // Describe the damage BY TYPE so a listener that cares about types can act
-      // on it. The parts must sum to what is actually being applied — a mismatch
-      // would let applyHPDamage's reduction check rewrite the number. When the
-      // GM has overridden the multiplier the stored split no longer matches, so
-      // fall back to one entry carrying the whole overridden amount.
-      const _parts = (!overridden && Array.isArray(r.byType) && r.byType.length)
-        ? r.byType.map(p => ({
-            value: Math.max(0, Number(p.value) || 0),
-            type: String(p.type ?? "none").toLowerCase(),
-            properties: new Set(),
-          }))
-        : null;
-
-      const _hpBefore = Number(actor?.system?.attributes?.hp?.value ?? 0);
-
-      // Single source of truth — handles polymorph excess capture + clamp
-      // Pass the spell's damage type(s) so applyHPDamage's FX chokepoint (which
-      // fires ace-qol.hpApplied) can theme the impact — this is what drives the
-      // auto-animation encrust on the save-for-half path.
-      await DamageApplicator.applyHPDamage(actor, damageToApply, {
-        label: "save-apply-all",
-        types: flags.damageTypes ?? [],
-        ...(_parts ? { damages: _parts } : {}),
+      // ⚠️🔴 THROUGH THE HIT-POINT DOOR (The One Road, Phase 1, 2026-09-14).
+      // Save damage never sent the damage-applied signal, so a troll's
+      // regeneration, a sleeper waking, an effect that ends when its creature is
+      // hurt, and the PC stats never heard a Fireball land. The door writes the
+      // hit points through the one writer (temporary hit points first, a
+      // listener's reduction honoured, polymorph carry-over), then says so.
+      const landed = await HpDoor.damage(actor, finals, {
+        tokenDocId: r.tokenDocId, item: sourceItem, source: sourceActor, label: "save-apply-all",
       });
-
-      const _hpAfter = Number(actor?.system?.attributes?.hp?.value ?? 0);
-      const _moved = Math.max(0, _hpBefore - _hpAfter);
-      hpDelta[r.tokenDocId] = (Number(hpDelta[r.tokenDocId]) || 0) + _moved;
+      hpDelta[r.tokenDocId] = (Number(hpDelta[r.tokenDocId]) || 0) + (Number(landed?.hpDelta) || 0);
 
       // Clear cache entry after applying
       SaveEngine.overrideCache.delete(cacheKey);

@@ -957,6 +957,8 @@ export class DescriptionParser {
     if (lower.includes("half damage")) return true;
     if (lower.includes("takes half")) return true;
     if (lower.includes("success: half")) return true;
+    // The save engine's own reading had this one; it is the only reading now.
+    if (lower.includes("save for half")) return true;
     // "on a successful save" — only treat as half-damage if "damage" appears
     // within ~120 chars (same sentence/clause).
     const idx = lower.indexOf("on a successful save");

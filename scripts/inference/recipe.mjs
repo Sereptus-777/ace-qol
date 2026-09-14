@@ -437,11 +437,26 @@ function decidedOf(plan, activity) {
 
 /** What a save's result puts on the creature, from the save's own effects first. */
 function saveOutcomes(item, activity, plan, facts, parsed) {
-  const onSave = plan.decide?.onSave === "half" ? "half" : "none";
+  // ⚠️ HALF ON A SUCCESS IS THE ITEM'S DATA OR ITS WORDS (Phase 1, 09-14). The
+  // save engine read both and this read only the data, so the two could disagree
+  // on what a made save takes. This is the only reading now; a half that only the
+  // words give marks the recipe as read from them.
+  //
+  // ⚠️ SEVERAL SAVES ON ONE ITEM: THE WORDS CANNOT SAY WHICH ONE THEY MEAN.
+  // Weird's "half as much damage only" is its first save's; its end-of-turn save
+  // ends the spell on a success and deals nothing. The Shade Tyrant's evading
+  // save takes no damage and its bracing one takes half. So the words decide only
+  // for the item's one save that deals damage; with more than one, each save's
+  // own data decides (the used save's own effects decide, 09-11).
+  const byData = plan.decide?.onSave === "half";
+  const damagingSaves = readActivities(item)
+    .filter(a => _s(a?.type) === "save" && (a?.damage?.parts?.length ?? 0) > 0).length;
+  const byWords = !byData && !!parsed?.halfOnSave && damagingSaves === 1;
+  const onSave = (byData || byWords) ? "half" : "none";
   const onFail = damageRolled(facts, activity).map(d => damageOut(d, onSave));
   const onSuccess = [];
   const ends = repeatSaveWords(parsed);
-  let fromText = false;
+  let fromText = byWords && onFail.length > 0;
 
   const o = readSaveOutcome(item, { activityId: activity?.id ?? activity?._id ?? null });
   for (const r of o.fail) onFail.push(...effectOutcomes(r.effect, ends));

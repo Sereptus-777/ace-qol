@@ -69,11 +69,15 @@ export class SaveResolver {
     const saveEngine = game.aceQol?.saveEngine;
     if (saveEngine?.postSaveCard) {
       try {
+        // ⚠️🔴 ITS DAMAGE COMES FROM ITS RECIPE, NEVER FROM HERE. This said "no
+        // damage" for every single-target save, and Disintegrate went through
+        // with none while its own card showed 10d6 + 40 force (2026-09-13).
+        const { halfOnSave, damageTypes } = saveEngine.saveDamageRule(item, ctx.activity ?? null);
         await saveEngine.postSaveCard(item, actor, [target.token], {
           saveAbility,
           saveDC,
-          halfOnSave: false,                // single-target effect spells don't have half-damage
-          damageTypes: [],                  // no damage for these (Disintegrate is the exception — see entry override)
+          halfOnSave,
+          damageTypes,
           isSpell: true,
           timing: { isInstant: true, isPersistent: false },
           activityId: ctx.activity?.id,
@@ -243,15 +247,6 @@ export class SaveResolver {
       return;
     }
 
-    // Auto-detect damage from the activity (lazy import — no static cycle).
-    let damageTypes = [];
-    try {
-      const { CombatState } = await import("../../combat-state.mjs");
-      // The USED activity only — an item-wide sweep merges every other ability's
-      // damage into this one (see CombatState._getItemDamageTypes).
-      damageTypes = CombatState._getItemDamageTypes?.(item, ctx.activity ?? null) ?? [];
-    } catch (_) { /* condition-only ability */ }
-
     const saveAbility = entry.save?.ability ?? "wis";
     // An explicit DC on the entry (e.g. King's fixed DC 13) wins over the
     // computed one, so the statblock number always holds.
@@ -262,9 +257,12 @@ export class SaveResolver {
     const saveEngine = game.aceQol?.saveEngine;
     if (saveEngine?.postSaveCard) {
       try {
+        // Its damage and whether a made save takes half: the recipe's reading of
+        // the USED activity, never a hand-typed "halfOnPass" (that is not the item).
+        const { halfOnSave, damageTypes } = saveEngine.saveDamageRule(item, ctx.activity ?? null);
         await saveEngine.postSaveCard(item, actor, targets, {
           saveAbility, saveDC,
-          halfOnSave: entry.save?.halfOnPass === true,
+          halfOnSave,
           damageTypes,
           isSpell: item.type === "spell",
           timing: { isInstant: true, isPersistent: false },

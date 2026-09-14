@@ -284,12 +284,16 @@ export class SpellPipeline {
     // then fell back to the bare formula, and a Fireball cast at 5th level rolled
     // 8d6 instead of 10d6. Only a spell the pipeline resolves ITSELF has its own
     // dice to protect.
+    //
+    // ⚠️🔴 AND NEVER ACE'S OWN ROLL (2026-09-14). The save engine rolls a save's
+    // damage through dnd5e's damage roll too, for the spells this pipeline sends
+    // to it (Disintegrate). This refused that roll as the loose die, and the save
+    // engine fell back to the bare formula without its slot scaling. ACE marks
+    // its own roll, and only an unmarked one is refused (_refusesNativeDamage).
     Hooks.on("dnd5e.preRollDamageV2", (config) => {
       try {
-        const item = config?.subject?.item;
-        if (!item) return;
-        if (SpellPipeline.resolvesItself(item)) {
-          console.log(`${MODULE_ID} | pipeline owns "${item.name}" — native damage roll suppressed `
+        if (SpellPipeline._refusesNativeDamage(config)) {
+          console.log(`${MODULE_ID} | pipeline owns "${config.subject.item.name}" — native damage roll suppressed `
             + `(ACE rolls this itself; the loose die was dnd5e rolling one unit on its own)`);
           return false;
         }
@@ -407,6 +411,19 @@ export class SpellPipeline {
       const entry = SpellPipeline._getEntry(item);
       return !!entry && DISPATCHABLE_SHAPES.has(entry.shape) && !HANDS_OFF_SHAPES.has(entry.shape);
     } catch (_) { return false; }
+  }
+
+  /**
+   * Is this dnd5e damage roll the loose die the pipeline refuses: dnd5e's own
+   * roll for a spell the pipeline resolves itself? ACE's own rolls carry
+   * `aceQol.ownRoll` and are never refused (the save engine's damage roll for
+   * Disintegrate was, 2026-09-14).
+   */
+  static _refusesNativeDamage(config) {
+    const item = config?.subject?.item;
+    if (!item) return false;
+    if (config?.aceQol?.ownRoll === true) return false;
+    return SpellPipeline.resolvesItself(item);
   }
 
   /**

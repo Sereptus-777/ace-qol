@@ -36,6 +36,7 @@ import { isPrismaticWall, readPrismaticWall } from "./rules/prismatic-wall.mjs";
 import { wallShapeOf, distanceToWallFt, wallCrossings, entersBand, wallPointsWithin,
          wallPassesThrough } from "./rules/wall-geometry.mjs";
 import { safeShowForRoll, awaitDiceSettle } from "./dsn-utils.mjs";
+import { damageShare, shareOf } from "./road/what-lands.mjs";
 import { aceDiagonalRule } from "./geometry-utils.mjs";
 
 // ⚠️ A LITERAL, NOT THE ENTRY FILE'S EXPORT. The entry file imports this one,
@@ -638,10 +639,11 @@ export class PrismaticWallEngine {
         catch (err) { console.warn(`${TAG}: the ${layer.key} layer's ${layer.formula} could not be rolled:`, err); }
         if (roll) {
           safeShowForRoll(roll, `Prismatic Wall ${layer.key} layer`);
-          // Half on a save; Evasion makes that none, and a failure half. A save
-          // the save engine's gate never let roll lands nothing at all.
-          const mult = save.noRoll ? 0 : (save.passed ? (save.superSaver ? 0 : 0.5) : (save.superSaver ? 0.5 : 1));
-          const raw = Math.floor((Number(roll.total) || 0) * mult);
+          // Half on a save, by the one rule every save uses; Evasion makes that
+          // none, and a failure half. A save the save engine's gate never let
+          // roll lands nothing at all.
+          const mult = save.noRoll ? 0 : damageShare({ half: true, passed: save.passed, evasion: save.superSaver }).share;
+          const raw = shareOf(roll.total, mult);
           const [applied] = DamageCalculator.applyDamageModifiers(
             [{ name: `${layer.label} layer`, type: layer.type, total: raw }], mods);
           row.damage = { rolled: Number(roll.total) || 0, formula: layer.formula, mult, raw,
