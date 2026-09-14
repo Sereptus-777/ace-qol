@@ -76,6 +76,69 @@ const TYPE_REMNANTS = {
 
 // ──────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Clear the killed-for-good (Vorpal) lock on the actor's token. If HP is
+ * already positive, fire the revive flow immediately. Otherwise notify the GM
+ * that the lock is cleared and they can heal normally.
+ *
+ * Moved here from inside ace-qol.mjs's ready handler (2026-09-14) so the one
+ * gate's "killed for good" rule can call it when the GM overrules a revive; the
+ * chat button, the actor sheet header and the token HUD call the same function.
+ *
+ * @param {string} actorId
+ * @param {string} [tokenId]  — optional, helps locate the right token
+ * @param {string} [sceneId]  — optional, helps locate the right token
+ */
+export async function revokeVorpalLock(actorId, tokenId, sceneId) {
+  if (!game.user.isGM) {
+    ui.notifications.warn("Only the GM can revoke a Vorpal lock.");
+    return;
+  }
+  const actor = game.actors.get(actorId);
+  if (!actor) {
+    ui.notifications.error(`Actor ${actorId} not found.`);
+    return;
+  }
+  // Find the token — same resolution as the revive hook
+  let tokenDoc = null;
+  if (sceneId && tokenId) {
+    const scene = game.scenes.get(sceneId);
+    tokenDoc = scene?.tokens?.get(tokenId);
+  }
+  if (!tokenDoc) tokenDoc = actor.token ?? null;
+  if (!tokenDoc) {
+    for (const scene of game.scenes) {
+      const found = scene.tokens?.find(t => t.actor?.id === actor.id || t.actorId === actor.id);
+      if (found) { tokenDoc = found; break; }
+    }
+  }
+  if (!tokenDoc) {
+    ui.notifications.error(`No token found for ${actor.name}.`);
+    return;
+  }
+  const flags = tokenDoc.flags?.[MODULE_ID];
+  if (!flags?.permanentlyDead) {
+    ui.notifications.info(`${actor.name} is not under a permanent-death lock.`);
+    return;
+  }
+  try {
+    await tokenDoc.update({
+      [`flags.${MODULE_ID}.permanentlyDead`]: false,
+    });
+    ui.notifications.info(`Vorpal lock revoked for ${actor.name}. Healing will now revive normally.`);
+    // If the actor is somehow already at positive HP (rare but possible
+    // if GM bumped HP first then revoked the lock), nudge the revive
+    // hook with a no-op update so the visual reverts.
+    const curHp = actor.system?.attributes?.hp?.value ?? 0;
+    if (curHp > 0) {
+      await actor.update({ "system.attributes.hp.value": curHp });
+    }
+  } catch (err) {
+    console.error(`${MODULE_ID} | Revoke Vorpal lock failed:`, err);
+    ui.notifications.error("Failed to revoke Vorpal lock — see console.");
+  }
+}
+
 export class DeathPipeline {
 
   constructor() {

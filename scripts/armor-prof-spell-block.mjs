@@ -8,7 +8,10 @@
 // pipeline:
 //
 //   1. Attack-roll disadvantage  → combat-state.assess (v0.7.6)
-//   2. Spell-cast block          → this file's _onPreUseActivity (v0.7.7)
+//   2. Spell-cast block          → the one gate's armor rule, which reads
+//                                  findUnproficientArmor below
+//                                  (gate/press-rules.mjs, 2026-09-14; the
+//                                  hook that lived here is deleted)
 //   3. STR/DEX ability check     → this file's _onPreAbilityCheck (v0.7.13)
 //      / save disadvantage         + _onPreSavingThrow
 //
@@ -17,7 +20,7 @@
 // every dragon with armored hide). Skip.
 //
 // Toggles:
-//   - armorProfSpellBlock  (default ON, RAW-strict)
+//   - armorProfSpellBlock  (default ON, RAW-strict), read by the gate's rule
 //   - armorProfCheckSaveDisadvantage  (NEW v0.7.13, default ON)
 // ───────────────────────────────────────────────────────────────────────────
 
@@ -36,9 +39,9 @@ const STR_DEX_ABILITIES = new Set(["str", "dex"]);
 /**
  * Find equipped body armor whose proficiency the actor lacks.
  * Returns the offending Item document, OR null if the actor is fully
- * armor-proficient (or wearing nothing armor-typed). PC-gated by caller.
+ * armor-proficient (or wearing nothing armor-typed). Characters only.
  */
-function _findUnproficientArmor(actor) {
+export function findUnproficientArmor(actor) {
   if (!actor || actor.type !== "character") return null;
   let equippedArmor = null;
   try {
@@ -59,29 +62,6 @@ function _findUnproficientArmor(actor) {
 export class ArmorProfSpellBlock {
 
   static init() {
-    // ── Spell-cast block (existing, v0.7.7) ───────────────────────────
-    Hooks.on("dnd5e.preUseActivity", (activity /*, usageConfig, dialogConfig, messageConfig */) => {
-      try {
-        if (QolSettings.get?.("armorProfSpellBlock") === false) return;
-
-        const item = activity?.item;
-        if (!item || item.type !== "spell") return;
-        const actor = activity?.actor ?? item?.actor;
-        if (!actor) return;
-        const equippedArmor = _findUnproficientArmor(actor);
-        if (!equippedArmor) return;
-
-        ui.notifications?.error(
-          `${actor.name} cannot cast spells while wearing ${equippedArmor.name} ` +
-          `— no ${equippedArmor.system.armor.type}-armor proficiency (RAW PHB p.144).`
-        );
-        console.log(`${MODULE_ID} | ArmorProfSpellBlock: blocked ${actor.name} from casting "${item.name}" — wearing ${equippedArmor.name} (no ${equippedArmor.system.armor.type} proficiency)`);
-        return false;
-      } catch (err) {
-        console.warn(`${MODULE_ID} | ArmorProfSpellBlock check threw — fail-open (cast permitted):`, err);
-      }
-    });
-
     // ── STR/DEX ability check disadvantage (NEW v0.7.13) ──────────────
     // Hooks both the V2 (dnd5e 5.x) and legacy hook paths to cover all
     // supported dnd5e versions. The V2 path is the one that fires in
@@ -116,7 +96,7 @@ export class ArmorProfSpellBlock {
     try {
       if (QolSettings.get?.("armorProfCheckSaveDisadvantage") === false) return;
       if (!STR_DEX_ABILITIES.has(String(ability ?? "").toLowerCase())) return;
-      const equippedArmor = _findUnproficientArmor(actor);
+      const equippedArmor = findUnproficientArmor(actor);
       if (!equippedArmor) return;
 
       // dnd5e v3.x V2 hook: roll options carry advantageMode (1=adv, -1=disadv).

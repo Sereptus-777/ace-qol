@@ -96,14 +96,11 @@ export class HolySymbol {
       catch (err) { console.warn(`${MODULE_ID} | HolySymbol._onUse threw:`, err); }
     });
 
-    // Pre-target the eligible creature type for the AREA save powers BEFORE the
-    // save engine reads targets: Hold Vampires → vampires only, Turn Undead →
-    // undead only ("each X within 30 feet"). Returning false cancels the use when
-    // nothing eligible is in range, so a charge isn't wasted.
-    Hooks.on("dnd5e.preUseActivity", (activity) => {
-      try { return HolySymbol._onPreUse(activity); }
-      catch (err) { console.warn(`${MODULE_ID} | HolySymbol._onPreUse threw:`, err); }
-    });
+    // The AREA save powers are judged by the one gate (gate/press-rules.mjs,
+    // 2026-09-14): with nothing eligible in reach it refuses, so a charge is not
+    // wasted, and the GM can overrule; otherwise the targets become exactly the
+    // eligible creatures (_eligibleFor, then _targetEligible) before the save
+    // engine reads them. The hook that did this here is deleted.
 
     // One-time data wiring (Turn Undead → save, per-power chatFlavor, charges).
     // init() is invoked from ace-qol's own `ready` hook, so `ready` has already
@@ -223,32 +220,41 @@ export class HolySymbol {
     return aceDistanceFt(a, b);
   }
 
-  // Replace the user's targets with exactly the creatures the power can affect,
-  // gathered from within range. RAW: these are area effects, not pick-a-target.
-  static _onPreUse(activity) {
+  /**
+   * Who a Hold Vampires or Turn Undead press can reach, read for the one gate.
+   * Null for any other power. RAW these are area effects ("each vampire within
+   * 30 feet"), not pick-a-target, so the gate refuses when nothing eligible is
+   * in reach, and otherwise hands this to _targetEligible.
+   *
+   * ⚠️ WHAT ACE CANNOT TELL NEVER BLOCKS (The One Road, section 9). With no
+   * token for the bearer there is no reach to measure: the press goes ahead
+   * with a note, and the targets as they were.
+   */
+  static _eligibleFor(activity) {
     const item = activity?.item;
-    if (!HolySymbol._isHolySymbol(item)) return;
+    if (!HolySymbol._isHolySymbol(item)) return null;
     const power = String(activity?.name ?? "");
 
     let pred = null, label = "";
     if (/hold\s*vampires/i.test(power)) { pred = HolySymbol._isVampire; label = "vampire"; }
     else if (/turn\s*undead/i.test(power)) { pred = HolySymbol._isUndead; label = "undead creature"; }
-    else return;   // Sunlight + anything else: no auto-targeting
+    else return null;   // Sunlight + anything else: no auto-targeting
 
-    const casterToken = HolySymbol._casterToken(item);
-    if (!casterToken) return;
     const rangeFt = Number(activity?.range?.value) || SUN_RADIUS;
-
+    const casterToken = HolySymbol._casterToken(item);
+    if (!casterToken) {
+      return { power, label, rangeFt, eligible: [], casterToken: null,
+        cannotTell: `${item.actor?.name ?? "The bearer"} has no token on this scene, so ACE cannot tell who is `
+          + `within ${rangeFt} feet; the targets are left as they are.` };
+    }
     const eligible = (canvas.tokens?.placeables ?? []).filter(t =>
       t !== casterToken && t.actor && pred(t.actor)
       && HolySymbol._tokenDistFt(casterToken, t) <= rangeFt + 0.1);
+    return { power, label, rangeFt, eligible, casterToken };
+  }
 
-    if (!eligible.length) {
-      ui.notifications?.warn(`No ${label} within ${rangeFt} feet — ${power} affects no one.`);
-      return false;   // cancel: don't burn a charge on an empty area
-    }
-
-    // Swap the live targets for exactly the eligible creatures.
+  // Replace the user's targets with exactly the creatures the power can affect.
+  static _targetEligible({ power, label, rangeFt, eligible }) {
     for (const t of [...(game.user.targets ?? [])]) {
       t.setTarget?.(false, { user: game.user, releaseOthers: false, groupSelection: false });
     }

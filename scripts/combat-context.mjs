@@ -341,34 +341,13 @@ export class CombatContext {
   }
 
   // ════════════════════════════════════════════════════════════════════════
-  //  Wiring — both pipelines funnel through canAct() here.
+  //  Wiring. A spell or feature press is judged by canAct() through the one
+  //  gate's "cannot act" rule (scripts/gate/press-rules.mjs, 2026-09-14),
+  //  which replaced the hook that lived here. A weapon attack is judged by the
+  //  same canAct() inside the attack pipeline.
   // ════════════════════════════════════════════════════════════════════════
 
   static init() {
-    // SPELLS + FEATURES — gate any non-weapon activity use. Weapon attacks are
-    // gated inside the attack pipeline (same canAct() brain) so they don't
-    // double-fire here. RAW: an incapacitated creature can't cast or use an
-    // action-cost feature. Returning false cancels the use.
-    Hooks.on("dnd5e.preUseActivity", (activity, usageConfig) => {
-      try {
-        const item = activity?.item;
-        if (!item || item.type === "weapon") return;     // weapons handled in attack-pipeline
-        const actor = activity?.actor ?? item.actor;
-        const gate = CombatContext.canAct(actor, {
-          isSpell: item.type === "spell",
-          item,
-          activationType: activity?.activation?.type ?? "action",
-          verb: item.type === "spell" ? "cast" : "use that",
-        });
-        if (!gate.ok) {
-          ui.notifications?.warn(`ACE QOL: ${gate.reason}`);
-          return false;
-        }
-      } catch (err) {
-        console.warn(`${MODULE_ID} | CombatContext preUseActivity gate threw (non-fatal):`, err);
-      }
-    });
-
     console.debug(`${MODULE_ID} | CombatContext online — shared combat engine (edition: ${CombatContext.edition()})`);
   }
 }

@@ -7,9 +7,11 @@
 //
 // SHIPPING:
 //   1. Track spells cast per actor per turn (transient, cleared on turn end)
-//   2. Pre-flight check via dnd5e.preUseActivity:
+//   2. The check, asked by the one gate's "spells in one turn" rule
+//      (gate/press-rules.mjs, 2026-09-14), which refuses by name and which
+//      the GM can overrule:
 //      - If casting a LEVELED bonus-action spell, and ANY other spell was cast
-//        this turn → BLOCK with "Bonus action spell rule" toast
+//        this turn → BLOCK
 //      - If casting ANY leveled spell after a bonus-action spell was cast this
 //        turn → BLOCK
 //      - Cantrips with 1-action casting time are always allowed (the RAW
@@ -30,8 +32,6 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
-import { QolSettings } from "./settings.mjs";
-import { hasTurns } from "./action-economy.mjs";
 
 const FLAG_NS  = "ace-qol";
 const FLAG_KEY = "bonusSpellTurn";
@@ -39,53 +39,13 @@ const FLAG_KEY = "bonusSpellTurn";
 export class BonusSpellRule {
 
   static init() {
-    Hooks.on("dnd5e.preUseActivity", (activity, usageConfig /*, dialogConfig, messageConfig */) => {
-      try {
-        if (!QolSettings.get?.("bonusActionSpellRule")) return;
-        const item = activity?.item;
-        if (!item || item.type !== "spell") return;
-        const actor = activity?.actor ?? item?.actor;
-        if (!actor) return;
-
-        // ⚠️🔴 NO TURNS, NO ACTION ECONOMY. The whole rule is "you cannot
-        // cast another levelled spell on the same TURN". Outside combat there
-        // are no turns, so there is nothing to be on the same one as.
-        //
-        // Johnny, 2026-08-24, testing spells on Varek Thalor: "it says he's
-        // already taking a turn casting the spell. Outside of combat, that
-        // cannot happen... you can cast as many spells as you have ready."
-        //
-        // The old code only skipped RECORDING the cast out of combat and still
-        // ran the check, so a stale flag from a previous fight kept refusing
-        // spells with no fight anywhere in sight.
-        if (!hasTurns(actor)) return;
-
-        const allowed = BonusSpellRule._evaluate(actor, activity, item);
-        if (allowed.ok) {
-          // Permitted — but only record the cast if we're actually in an
-          // active combat. Out-of-combat casts shouldn't leave state on
-          // the actor (that flag would persist past the next combat start
-          // and falsely block the actor's first bonus-action spell of the
-          // new combat — exactly the v0.7.15-reported bug).
-          if (game.combat?.started) {
-            BonusSpellRule._recordCast(actor, activity, item);
-          }
-          return;
-        }
-
-        // Not allowed — surface to the GM and (if strict) block the cast.
-        const strict = QolSettings.get?.("bonusActionSpellStrict") !== false;
-        if (strict) {
-          ui.notifications?.error(`Bonus Action Spell Rule: ${allowed.reason}`);
-          return false; // sync-cancels the activity
-        } else {
-          ui.notifications?.warn(`(Allowed by table style) Bonus Action Spell Rule: ${allowed.reason}`);
-          BonusSpellRule._recordCast(actor, activity, item);
-        }
-      } catch (err) {
-        console.warn(`${MODULE_ID} | BonusSpellRule check threw — fail-open:`, err);
-      }
-    });
+    // ⚠️ THE PRESS IS JUDGED BY THE ONE GATE NOW (2026-09-14). Its "spells in
+    // one turn" rule (gate/press-rules.mjs) asks _evaluate below, only when the
+    // caster has turns (Johnny, 2026-08-24, on Varek outside combat: "you can
+    // cast as many spells as you have ready"), and records the cast with
+    // _recordCast once the spell is USED. Recorded at the press, as the hook
+    // that lived here did, a press that was asked about and pressed again
+    // counted itself and then refused itself as a second spell.
 
     // Reset per-turn state as turns change.
     //

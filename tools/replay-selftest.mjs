@@ -207,7 +207,7 @@ let SpellPipeline, SaveEngine, PostHitSaves, DescriptionParser, readSaveOutcome,
   readActivities, readAppliedConditions, decideActivityChoice, upCanBeSeen, aceStripEnrichers,
   readPrismaticWall, PrismaticWallEngine, RepeatingSaveEngine, spellIsUp,
   recipesFor, recipeLine, formulaValue, whatLands, HpDoor, SignalDoor, untilDiceLand, CombatState,
-  RulesIndex, bookReview, fullDamageSaves;
+  RulesIndex, bookReview, fullDamageSaves, PressGate;
 try {
   ({ readPrismaticWall } = await import(`${MODULE}/scripts/rules/prismatic-wall.mjs`));
   ({ PrismaticWallEngine } = await import(`${MODULE}/scripts/prismatic-wall-engine.mjs`));
@@ -226,6 +226,7 @@ try {
   ({ whatLands } = await import(`${MODULE}/scripts/road/what-lands.mjs`));
   ({ HpDoor, SignalDoor, untilDiceLand } = await import(`${MODULE}/scripts/road/doors.mjs`));
   ({ CombatState } = await import(`${MODULE}/scripts/combat-state.mjs`));
+  ({ PressGate } = await import(`${MODULE}/scripts/gate/press-gate.mjs`));
 } catch (err) {
   console.log("could not load ACE under the stand-in:", err?.stack ?? err);
   process.exit(2);
@@ -1574,6 +1575,301 @@ check("no hover shows raw codes, even before its full text is ready", codes === 
         + (sig ? `${sig.hpDelta} moved, dealt by ${sig.sourceActor?.name ?? "nobody"}, ${sig.types?.join("/")}` : "none sent"));
   } finally {
     Hooks.callAll = keepCallAll;
+  }
+}
+
+/* ── PHASE 2: THE ONE GATE, AND DO IT ANYWAY ─────────────────────────────── */
+// Johnny, 2026-09-14: "Next phase is only the gate + Do it anyway. Same rule: one
+// done-check, then stop." The done-check, as stated to him: the replay pins the
+// one gate refusing, each by its rule's name: a paralyzed caster; a spell cast
+// in armor the caster can't wear; a second levelled spell in one turn; Hold
+// Vampires with no vampire in reach; Hold Person on a non-humanoid; an ordinary
+// revive on a creature killed for good. Also: the old separate press hooks are
+// gone, and Do it anyway lets that same press through once, logged, with the
+// overrule on its card.
+console.log(`\nPHASE 2: ONE GATE, AND DO IT ANYWAY`);
+{
+  const MOD = "ace-qol";
+  const tick = () => new Promise(r => setTimeout(r, 0));
+  const actsOf = (it) => [...(it?.system?.activities ?? [])];
+  const firstOfType = (it, type) => actsOf(it).find(a => a.type === type) ?? null;
+  const tokenOf = (actor, flags = {}) => {
+    const document = { id: `tok-${actor.id}`, actorId: actor.id, actor, parent: { id: "replay-scene" },
+      flags, x: 0, y: 0, width: 1, height: 1, elevation: 0 };
+    return { id: document.id, name: actor.name, actor, document, x: 0, y: 0, w: 100, h: 100, setTarget() {} };
+  };
+  const toasts = [];
+  const keepWarn = ui.notifications.warn;
+  ui.notifications.warn = (m) => { toasts.push(String(m)); };
+  // What the rules say about a press, with these targets, and nothing done.
+  const judged = async (activity, targets = []) => {
+    const user = game.user;
+    user.targets = new Set(targets);
+    let said = [];
+    try { await quiet(async () => { said = PressGate.judge(PressGate.contextFor(activity, {}), null); }); }
+    finally { delete user.targets; }
+    return said;
+  };
+  // One press through the gate, as dnd5e hands it over, with these targets.
+  const pressGate = async (activity, targets = []) => {
+    const before = posted.length;
+    const messageConfig = {};
+    const user = game.user;
+    let answer, said = [];
+    user.targets = new Set(targets);
+    try {
+      await quiet(async () => {
+        said = PressGate.judge(PressGate.contextFor(activity, {}), PressGate._passFor(activity.uuid));
+        answer = PressGate.onPress(activity, {}, {}, messageConfig);
+        await tick(); await tick();
+      });
+    } finally { delete user.targets; }
+    const card = posted.slice(before).find(p => p.flags?.[MOD]?.type === "gateRefusal") ?? null;
+    const rules = card?.flags?.[MOD]?.gate?.rules ?? [];
+    return { answer, said, card, messageConfig, ids: rules.map(r => r.id), rules };
+  };
+  const refusedOnlyBy = (r, id) => r.answer === false && r.ids.length === 1 && r.ids[0] === id
+    && !!r.rules[0]?.name && !!r.rules[0]?.why;
+  const told = (r) => (r.card ? r.rules.map(x => `${x.name}: ${x.why}`).join(" | ")
+    : `not refused (${r.said.map(s => s.rule.id).join(", ") || "no rule spoke"})`);
+
+  const varek = firstActor(VAREK);
+  const holdPerson = varek ? [...varek.items].find(i => i.type === "spell" && /^hold person\b/i.test(i.name)) : null;
+  const holdSave = firstOfType(holdPerson, "save");
+  const wolf = firstActor("Wolf");
+
+  try {
+    // ── 1. A paralyzed caster ──
+    if (holdSave) {
+      varek.statuses.add("paralyzed");
+      let r;
+      try { r = await pressGate(holdSave); } finally { varek.statuses.delete("paralyzed"); }
+      check("1. a paralyzed caster is refused by the one gate, by its rule's name (Phase 2)",
+        refusedOnlyBy(r, "cannot-act"), `${varek.name}, ${holdPerson.name}: ${told(r)}`);
+    } else check("1. a paralyzed caster is refused by the one gate (Phase 2)", null, "Varek has no Hold Person");
+
+    // ── 2. A spell cast in armor the caster cannot wear ──
+    // A character with no heavy armor proficiency, in plate, casting a levelled
+    // spell the gate otherwise lets through.
+    const armorProfs = (a) => {
+      const v = a.system?.traits?.armorProf?.value;
+      return new Set(Array.isArray(v) ? v : (v instanceof Set ? [...v] : []));
+    };
+    const wearers = [...ACTORS.values()].filter(a => a.type === "character" && !armorProfs(a).has("hvy"))
+      .sort((x, y) => (y.name === "Kasimir Velikov") - (x.name === "Kasimir Velikov"));
+    let wearer = null, wearerSpell = null, wearerAct = null;
+    for (const a of wearers) {
+      for (const sp of [...a.items].filter(i => i.type === "spell" && Number(i.system?.level) > 0)) {
+        const act = actsOf(sp)[0];
+        if (act && !(await judged(act)).length) { wearer = a; wearerSpell = sp; wearerAct = act; break; }
+      }
+      if (wearerAct) break;
+    }
+    if (wearerAct) {
+      const plate = { id: "replay-plate", name: "Plate Armor", type: "equipment",
+        system: { equipped: true, armor: { type: "heavy" } } };
+      wearer.items.set(plate.id, plate);
+      let r;
+      try { r = await pressGate(wearerAct); } finally { wearer.items.delete(plate.id); }
+      check("2. a spell cast in armor the caster cannot wear is refused, by its rule's name (Phase 2)",
+        refusedOnlyBy(r, "armor"), `${wearer.name} in plate, no heavy armor proficiency, ${wearerSpell.name}: ${told(r)}`);
+    } else check("2. a spell cast in armor the caster cannot wear is refused (Phase 2)", null,
+      "no character without heavy armor proficiency has a levelled spell the gate otherwise allows");
+
+    // ── 3. A second levelled spell in one turn ──
+    if (holdSave) {
+      const keep = { combats: game.combats, combat: game.combat, getFlag: varek.getFlag,
+        rule: SETTINGS.get("ace-qol.bonusActionSpellRule"), strict: SETTINGS.get("ace-qol.bonusActionSpellStrict") };
+      game.combats = { contents: [{ started: true, combatants: { contents: [{ actorId: varek.id, actor: varek }] } }] };
+      game.combat = { started: true, round: 1, turn: 0 };
+      // Misty Step, a levelled bonus-action spell, already cast this turn.
+      varek.getFlag = (s, k) => ((s === "ace-qol" && k === "bonusSpellTurn")
+        ? { castCount: 1, hadBonusActionLeveled: true, hadActionSpell: false, lastSpellName: "Misty Step", lastCastType: "bonus" }
+        : keep.getFlag(s, k));
+      // The rule as it ships: on, and strict. His own world's values are shown beside the verdict.
+      SETTINGS.set("ace-qol.bonusActionSpellRule", true);
+      SETTINGS.set("ace-qol.bonusActionSpellStrict", true);
+      let r;
+      try { r = await pressGate(holdSave); }
+      finally {
+        game.combats = keep.combats; game.combat = keep.combat; varek.getFlag = keep.getFlag;
+        for (const [k, v] of [["ace-qol.bonusActionSpellRule", keep.rule], ["ace-qol.bonusActionSpellStrict", keep.strict]]) {
+          if (v === undefined) SETTINGS.delete(k); else SETTINGS.set(k, v);
+        }
+      }
+      check("3. a second levelled spell in one turn is refused, by its rule's name (Phase 2)",
+        refusedOnlyBy(r, "bonus-action-spell"), `${varek.name}, ${holdPerson.name} after Misty Step: ${told(r)}`
+          + ` (his world: the rule ${keep.rule ?? "unset, so on"}, strict ${keep.strict ?? "unset, so on"})`);
+    }
+
+    // ── 4. Hold Vampires with no vampire in reach ──
+    const syrax = firstActor("Syrax Razeson");
+    const symbol = syrax ? [...syrax.items].find(i => /holy symbol of ravenkind/i.test(i.name)) : null;
+    const holdVampires = actsOf(symbol).find(a => /hold\s*vampires/i.test(a.name ?? "")) ?? null;
+    if (holdVampires && wolf) {
+      canvas.tokens.placeables.push(tokenOf(syrax), tokenOf(wolf));
+      let r;
+      try { r = await pressGate(holdVampires); } finally { canvas.tokens.placeables.length = 0; }
+      check("4. Hold Vampires with no vampire in reach is refused, by its rule's name (Phase 2)",
+        refusedOnlyBy(r, "holy-symbol"), `${syrax.name}, with only a Wolf on the map: ${told(r)}`);
+    } else check("4. Hold Vampires with no vampire in reach is refused (Phase 2)", null, "no Holy Symbol's Hold Vampires, or no Wolf");
+
+    // ── 5. Hold Person on a non-humanoid ──
+    if (holdSave && wolf) {
+      const r = await pressGate(holdSave, [tokenOf(wolf)]);
+      check("5. Hold Person on a non-humanoid is refused, by its rule's name (Phase 2)",
+        refusedOnlyBy(r, "creature-type"), `${varek.name} at a Wolf: ${told(r)}`);
+    }
+
+    // ── 6. An ordinary revive on a creature killed for good ──
+    // A revive the gate lets through on a creature that is only dead, then the
+    // same press on one killed for good.
+    const ORDINARY = /^(revivify|raise dead|resurrection|reincarnate)\b/i;
+    const victim = [...ACTORS.values()].find(a => a.type === "npc" && String(a.system?.details?.type?.value ?? "") === "humanoid");
+    const revivers = [...ACTORS.values()]
+      .map(a => ({ a, it: [...a.items].find(i => i.type === "spell" && ORDINARY.test(i.name)) }))
+      .filter(x => x.it).sort((x, y) => (y.a.name === VAREK) - (x.a.name === VAREK));
+    let reviver = null, reviveAct = null;
+    if (victim) {
+      for (const x of revivers) {
+        const act = actsOf(x.it)[0];
+        if (act && !(await judged(act, [tokenOf(victim, { [MOD]: { isDead: true } })])).length) { reviver = x; reviveAct = act; break; }
+      }
+    }
+    if (reviveAct) {
+      const dead = tokenOf(victim, { [MOD]: { isDead: true, permanentlyDead: true, deathReason: "beheaded by a vorpal sword" } });
+      const r = await pressGate(reviveAct, [dead]);
+      check("6. an ordinary revive on a creature killed for good is refused, by its rule's name (Phase 2)",
+        refusedOnlyBy(r, "killed-for-good"), `${reviver.a.name}'s ${reviver.it.name} on ${victim.name}: ${told(r)}`);
+    } else check("6. an ordinary revive on a creature killed for good is refused (Phase 2)", null,
+      victim ? "no revive spell the gate otherwise allows" : "no humanoid creature to revive");
+
+    // ── The refusal notice says why, in plain words ──
+    check("the refusal notice says why in plain words, and where it went (Phase 2)",
+      toasts.some(t => /was not used\./.test(t) && /Do it anyway is on the card/.test(t)),
+      toasts.length ? toasts[toasts.length - 1] : "no notice was shown");
+
+    // ── The old separate press hooks are gone ──
+    {
+      const read = (f) => readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/${f}`, "utf8");
+      const HOOK = /Hooks\.on\(\s*["']dnd5e\.preUseActivity["']/;
+      const homes = ["combat-context.mjs", "armor-prof-spell-block.mjs", "bonus-spell-rule.mjs", "holy-symbol.mjs", "engagement-gate.mjs"];
+      const still = homes.filter(f => HOOK.test(read(f)));
+      const entry = read("ace-qol.mjs");
+      if (/STRICT_RAW_REVIVES|WEAKER_REVIVES/.test(entry)) still.push("the revive hook in ace-qol.mjs");
+      if (/EngagementGate\.registerHooks/.test(entry)) still.push("the engagement hook in ace-qol.mjs");
+      check("the old separate press hooks are gone: can't act, armor, bonus action, Holy Symbol, engagement, revive (Phase 2)",
+        !still.length, still.length ? `still hooked: ${still.join(", ")}` : "none of the six registers a press hook any more");
+      const reading = entry.indexOf("ActionInterceptor.register()");
+      const gateAt = entry.indexOf("PressGate.register()");
+      const between = reading >= 0 && gateAt > reading ? entry.slice(reading, gateAt).replace(/\/\/.*$/gm, "") : null;
+      check("the one gate registers straight after the reading, before any other handler may cancel a press (Phase 2)",
+        between !== null && !/Hooks\.on\(|preUseActivity/.test(between),
+        between === null ? "the gate is not registered after the reading" : "at init, right behind the reading");
+    }
+
+    // ── Do it anyway ──
+    if (holdSave && wolf) {
+      const PLAYER = { id: "replay-player", isGM: false, name: "a player" };
+      const keep = { users: game.users, messages: game.messages, use: holdSave.use, log: console.log, user: game.user };
+      const cards = new Map();
+      game.users = Object.assign([GM, PLAYER], { activeGM: GM, get: (id) => [GM, PLAYER].find(u => u.id === id) ?? null });
+      game.messages = { get: (id) => cards.get(id) ?? null };
+      const asCard = (data, id) => {
+        const card = { id, ...data, flags: JSON.parse(JSON.stringify(data.flags ?? {})),
+          update: async (u) => {
+            if (u.content !== undefined) card.content = u.content;
+            for (const [scope, v] of Object.entries(u.flags ?? {})) {
+              card.flags[scope] = { ...(card.flags[scope] ?? {}), ...JSON.parse(JSON.stringify(v)) };
+            }
+            return card;
+          } };
+        cards.set(id, card);
+        return card;
+      };
+      const wolfTok = tokenOf(wolf);
+      const presses = [];
+      // dnd5e's use(), as far as the gate sees it: the press, and when it goes ahead, its use.
+      holdSave.use = async () => {
+        const messageConfig = {};
+        const user = game.user;
+        user.targets = new Set([wolfTok]);
+        let answer;
+        try { answer = PressGate.onPress(holdSave, {}, {}, messageConfig); } finally { delete user.targets; }
+        presses.push({ answer, messageConfig, by: user.id });
+        if (answer !== false) await PressGate.onUsed(holdSave, {});
+        return answer;
+      };
+      const statusOf = (card) => ({ flags: { [MOD]: { gate: { status: card.flags[MOD].gate.status } } } });
+      const logs = [];
+      // The gate's log and its warnings, held for the verdict rather than printed.
+      const keepWarnLog = console.warn;
+      const capture = async (fn) => {
+        console.log = console.warn = (...a) => { logs.push(a.map(String).join(" ")); };
+        try { return await fn(); } finally { console.log = keep.log; console.warn = keepWarnLog; }
+      };
+      try {
+        // The GM's own press.
+        const first = await pressGate(holdSave, [wolfTok]);
+        const card = first.card ? asCard(first.card, "replay-gate-card") : null;
+        let overruled = false, afterPlayer = -1;
+        if (card) {
+          await capture(async () => {
+            overruled = await PressGate.doItAnyway(card);
+            await PressGate._onCardUpdated(card, statusOf(card), {}, PLAYER.id);
+            afterPlayer = presses.length;
+            await PressGate._onCardUpdated(card, statusOf(card), {}, GM.id);
+          });
+        }
+        const through = presses[0] ?? null;
+        const stamp = through?.messageConfig?.data?.flags?.[MOD]?.gateOverruled ?? null;
+        const flavor = String(through?.messageConfig?.data?.flavor ?? "");
+        const gate = card?.flags?.[MOD]?.gate ?? {};
+        check("Do it anyway is on the card for the GM only, and only a GM's overrule presses again: a player's mark does nothing (Phase 2)",
+          first.answer === false && !!card && /class="ace-qol-gm-only"/.test(first.card.content)
+            && /data-action="aceQolGateAnyway"/.test(first.card.content) && overruled === true && afterPlayer === 0,
+          `refused: ${first.answer === false}; the button GM-only: ${/ace-qol-gm-only/.test(first.card?.content ?? "")}; `
+            + `overruled: ${overruled}; presses after a player's mark: ${afterPlayer}`);
+        check("Do it anyway lets that same press through, with the overrule on its card, logged (Phase 2)",
+          presses.length === 1 && through.answer !== false && stamp?.byName === "GM"
+            && /ACE was overruled by GM/.test(flavor) && /Creature type/.test(flavor)
+            && gate.status === "used" && gate.overruledByName === "GM" && /Overruled by GM, and used/.test(card.content)
+            && logs.some(l => /OVERRULED by GM/.test(l)) && logs.some(l => /was used, as GM ruled/.test(l)),
+          `pressed again: ${presses.length}, ${through ? (through.answer === false ? "refused" : "went through") : "never"}; `
+            + `usage message: ${flavor.replace(/<[^>]+>/g, "") || "no note"}; refusal card: ${gate.status}, by ${gate.overruledByName ?? "nobody"}; `
+            + `logged: ${logs.filter(l => /OVERRULED|was used, as/.test(l)).length} lines`);
+        const again = await pressGate(holdSave, [wolfTok]);
+        check("once: the same press, pressed after it was used, is refused again (Phase 2)",
+          refusedOnlyBy(again, "creature-type") && !PressGate._passes.has(holdSave.uuid), told(again));
+
+        // A player's press goes to the GM to approve, and comes back to the player's side.
+        game.user = PLAYER;
+        const theirs = await pressGate(holdSave, [wolfTok]);
+        const noticed = toasts[toasts.length - 1] ?? "";
+        const card2 = theirs.card ? asCard(theirs.card, "replay-gate-card-2") : null;
+        const before = presses.length;
+        if (card2) {
+          await capture(async () => {
+            game.user = GM;
+            await PressGate.doItAnyway(card2);
+            game.user = PLAYER;
+            await PressGate._onCardUpdated(card2, statusOf(card2), {}, GM.id);
+          });
+        }
+        const back = presses[before] ?? null;
+        check("a player's refused press goes to the GM to approve, and the GM's overrule presses it on the player's side (Phase 2)",
+          theirs.answer === false && JSON.stringify(theirs.card?.whisper) === JSON.stringify([GM.id])
+            && theirs.card?.flags?.[MOD]?.gate?.byGM === false && /gone to the GM to approve/.test(noticed)
+            && back?.by === PLAYER.id && back.answer !== false,
+          `whispered to: ${JSON.stringify(theirs.card?.whisper)}; notice: ${noticed}; `
+            + `pressed again by: ${back?.by ?? "nobody"}, ${back ? (back.answer === false ? "refused" : "went through") : ""}`);
+      } finally {
+        game.users = keep.users; game.messages = keep.messages; holdSave.use = keep.use;
+        console.log = keep.log; game.user = keep.user;
+      }
+    }
+  } finally {
+    ui.notifications.warn = keepWarn;
   }
 }
 

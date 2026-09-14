@@ -37,7 +37,6 @@ import { ExtendedEffects }   from "./extended-effects.mjs";
 import { AttackPipeline }    from "./attack-pipeline.mjs";
 import { HealPipeline }      from "./heal-pipeline.mjs";
 import { SpellAutoDamage }   from "./spell-auto-damage.mjs";
-import { EngagementGate }    from "./engagement-gate.mjs";
 import { TargetState }       from "./target-state.mjs";
 import { CombatState }       from "./combat-state.mjs";
 import { DamageEngine }      from "./damage-engine.mjs";
@@ -109,7 +108,7 @@ import { DurationTracker }      from "./duration-tracker.mjs";
 import { SpeedRolls }           from "./speed-rolls.mjs";
 import { MergeCard }            from "./merge-card.mjs";
 import { LootEngine }           from "./loot-engine.mjs";
-import { DeathPipeline }        from "./death-pipeline.mjs";
+import { DeathPipeline, revokeVorpalLock } from "./death-pipeline.mjs";
 import * as Diagnostics         from "./diagnostics.mjs";
 import { showCenterToast, showAdvantagePrompt, promptAttackChoice, pendingAttackChoices }
   from "./attack-prompt.mjs";
@@ -149,6 +148,8 @@ import { OnHitRiders } from "./on-hit-riders.mjs";
 import { BootReport } from "./boot-report.mjs";
 import { SunkenFloors } from "./sunken-floors.mjs";
 import { aceDistanceFt, aceWithinFt, aceRegisterPositionTracking } from "./geometry-utils.mjs";
+// THE GATE (The One Road, Phase 2): the one place a press is refused.
+import { PressGate } from "./gate/press-gate.mjs";
 
 /**
  * Authorise an inbound PLAYER-PROXY socket payload.
@@ -274,7 +275,7 @@ function _aceQolEnabled() {
 // tracking, and Hold Person/Monster are wired through the save engine's
 // failed-save-condition path.
 //
-// Exported so the EngagementGate can recognize spells that handle their own
+// Exported so the engagement checks can recognize spells that handle their own
 // target selection via the SpellTargetPicker (skip the "no target" block).
 export const SPELL_AUTO_APPLY = {
   // ── 1st level ─────────────────────────────────────────────────────────────
@@ -513,6 +514,15 @@ Hooks.once("init", () => {
   try { ActionInterceptor.register(); }
   catch (err) { console.error(`${MODULE_ID} | THE READING failed to start — every pipeline `
     + `falls back to guessing on its own:`, err); }
+
+  // ── THE GATE (The One Road, Phase 2, 2026-09-14): straight after the reading ──
+  // The One Road runs reading, then gate. Registered here, right behind the
+  // reading, it judges every press before any handler registered at ready can
+  // take the press over or cancel it. It replaced six separate cancelling
+  // hooks: can't act, armor, bonus action, Holy Symbol, engagement, revive.
+  try { PressGate.register(); }
+  catch (err) { console.error(`${MODULE_ID} | THE GATE failed to start: no press is judged, `
+    + `and every press goes ahead:`, err); }
 
   // ── Usage cards (2026-07-27) ──
   // dnd5e's item-usage card is never CREATED (not hidden — never created), and
@@ -1965,18 +1975,8 @@ Hooks.once("ready", () => {
     console.error(`${MODULE_ID} | Spell auto-damage pipeline init failed:`, err);
   }
 
-  // Engagement Gate — ALL users, ALWAYS first
-  // The pre-flight validator for every spell cast. Phase 1 covers:
-  //   • Creature-type restrictions (Hold Person on a Wolf → BLOCKED)
-  //   • Concentration confirm (Haste while concentrating on Bless → DIALOG)
-  // Returns false from preUseActivity to cancel invalid casts BEFORE any
-  // slot is consumed. Subsequent phases will add range, cover, size, and
-  // route weapon attacks through the same gate.
-  try {
-    EngagementGate.registerHooks();
-  } catch (err) {
-    console.error(`${MODULE_ID} | Engagement gate init failed:`, err);
-  }
+  // The engagement checks (targets, creature type, concentration) are rules of
+  // the one gate now, registered at init straight after the reading (2026-09-14).
 
   // Damage engine — ALL users
   // Players need the renderChatMessage hooks for: hiding GM controls, wiring
@@ -3522,18 +3522,19 @@ Hooks.once("ready", () => {
   }
 
   // Bonus Action Spell Rule — RAW PHB 202: a bonus-action leveled spell
-  // limits the rest of the turn to a single 1-action cantrip. Pre-flight
-  // check via dnd5e.preUseActivity; tracks per-actor cast state per turn.
+  // limits the rest of the turn to a single 1-action cantrip. The press is
+  // judged by the one gate's "spells in one turn" rule; this keeps the
+  // per-turn state clean as turns change.
   try {
     BonusSpellRule.init();
   } catch (err) {
     console.error(`${MODULE_ID} | Bonus Spell Rule init failed:`, err);
   }
 
-  // Non-Proficient Armor Spell Block — RAW PHB p.144: a PC wearing armor
-  // they lack proficiency with cannot cast spells. Pre-flight check via
-  // dnd5e.preUseActivity that cancels the activity before dialog or
-  // usage message fires. Pairs with the attack-roll disadvantage check
+  // Non-Proficient Armor — RAW PHB p.144: a PC wearing armor they lack
+  // proficiency with cannot cast spells (the one gate's armor rule refuses
+  // the press) and has disadvantage on Strength and Dexterity checks and
+  // saves (registered here). Pairs with the attack-roll disadvantage check
   // in combat-state.assess (v0.7.6).
   try {
     ArmorProfSpellBlock.init();
@@ -4756,63 +4757,9 @@ Hooks.once("ready", () => {
     //  positive) or prompt the GM to bump HP. The handler is idempotent.
     // ══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * Clear the permanent-death flag on the actor's token. If HP is already
-     * positive, fire the revive flow immediately. Otherwise notify the GM
-     * that the lock is cleared and they can heal normally.
-     * @param {string} actorId
-     * @param {string} [tokenId]  — optional, helps locate the right token
-     * @param {string} [sceneId]  — optional, helps locate the right token
-     */
-    async function _revokeVorpalLock(actorId, tokenId, sceneId) {
-      if (!game.user.isGM) {
-        ui.notifications.warn("Only the GM can revoke a Vorpal lock.");
-        return;
-      }
-      const actor = game.actors.get(actorId);
-      if (!actor) {
-        ui.notifications.error(`Actor ${actorId} not found.`);
-        return;
-      }
-      // Find the token — same resolution as the revive hook
-      let tokenDoc = null;
-      if (sceneId && tokenId) {
-        const scene = game.scenes.get(sceneId);
-        tokenDoc = scene?.tokens?.get(tokenId);
-      }
-      if (!tokenDoc) tokenDoc = actor.token ?? null;
-      if (!tokenDoc) {
-        for (const scene of game.scenes) {
-          const found = scene.tokens?.find(t => t.actor?.id === actor.id || t.actorId === actor.id);
-          if (found) { tokenDoc = found; break; }
-        }
-      }
-      if (!tokenDoc) {
-        ui.notifications.error(`No token found for ${actor.name}.`);
-        return;
-      }
-      const flags = tokenDoc.flags?.[MODULE_ID];
-      if (!flags?.permanentlyDead) {
-        ui.notifications.info(`${actor.name} is not under a permanent-death lock.`);
-        return;
-      }
-      try {
-        await tokenDoc.update({
-          [`flags.${MODULE_ID}.permanentlyDead`]: false,
-        });
-        ui.notifications.info(`Vorpal lock revoked for ${actor.name}. Healing will now revive normally.`);
-        // If the actor is somehow already at positive HP (rare but possible
-        // if GM bumped HP first then revoked the lock), nudge the revive
-        // hook with a no-op update so the visual reverts.
-        const curHp = actor.system?.attributes?.hp?.value ?? 0;
-        if (curHp > 0) {
-          await actor.update({ "system.attributes.hp.value": curHp });
-        }
-      } catch (err) {
-        console.error(`${MODULE_ID} | Revoke Vorpal lock failed:`, err);
-        ui.notifications.error("Failed to revoke Vorpal lock — see console.");
-      }
-    }
+    // The clear itself lives in death-pipeline.mjs (2026-09-14), where the one
+    // gate's "killed for good" rule also calls it when the GM overrules a revive.
+    const _revokeVorpalLock = revokeVorpalLock;
 
     // Wire chat-card button + hide for non-GM
     // Both render hooks + a sweep of cards drawn before this registered.
@@ -4896,96 +4843,11 @@ Hooks.once("ready", () => {
 
     console.debug(`${MODULE_ID} | Vorpal override hooks registered (chat card + actor sheet + token HUD)`);
 
-    // ══════════════════════════════════════════════════════════════════════════
-    //  STRICT-RAW RESURRECTION DETECTION
-    //  Vorpal RAW says a beheaded creature dies AND can't be revived by
-    //  ordinary means — only True Resurrection or Wish actually restore a
-    //  body that's lost a head. We detect spell casts of revival magic and:
-    //    - True Resurrection or Wish → auto-clear permanentlyDead, allowing
-    //      the next HP-restored update to revive normally
-    //    - Revivify / Raise Dead / Resurrection / Reincarnate → post a chat
-    //      card explaining "this spell can't normally restore a body missing
-    //      a head; GM, click to override if you want to allow it"
-    //  Detection is by spell NAME (case-insensitive substring), which is the
-    //  most robust approach across the SRD, homebrew variants, and dnd5e 5.x
-    //  activity restructuring.
-    // ══════════════════════════════════════════════════════════════════════════
-    const STRICT_RAW_REVIVES = [/true\s*resurrection/i, /\bwish\b/i];
-    const WEAKER_REVIVES = [
-      /revivify/i,
-      /raise\s*dead/i,
-      /^resurrection\b/i,         // "Resurrection" but not "True Resurrection"
-      /reincarnate/i,
-    ];
-
-    Hooks.on("dnd5e.preUseActivity", (activity /*, usageConfig, dialogConfig, messageConfig*/) => {
-      try {
-        if (!game.user.isGM) return;
-        const spellName = String(activity?.item?.name ?? "");
-        if (!spellName) return;
-        const isStrict  = STRICT_RAW_REVIVES.some(rx => rx.test(spellName));
-        const isWeaker  = !isStrict && WEAKER_REVIVES.some(rx => rx.test(spellName));
-        if (!isStrict && !isWeaker) return;
-
-        // Get the targets the caster has selected on canvas. For PC casters
-        // that's the player's targets; for GM-cast spells it's the GM's.
-        const targets = [...(game.user.targets ?? [])];
-        if (!targets.length) return;
-
-        // For each targeted token, check if it has the permanent-death flag
-        for (const tgt of targets) {
-          const tokenDoc = tgt.document;
-          if (!tokenDoc?.flags?.[MODULE_ID]?.permanentlyDead) continue;
-
-          if (isStrict) {
-            // True Resurrection or Wish — auto-clear the flag silently
-            tokenDoc.update({
-              [`flags.${MODULE_ID}.permanentlyDead`]: false,
-            }).then(() => {
-              ChatMessage.create({
-                content: `<div style="background:#0a1a0a;border:2px solid #4c4;border-radius:6px;padding:8px 12px;">
-                  <strong style="color:#aaffaa;"><i class="fas fa-staff-aesculapius"></i> Permanent-Death Lock Cleared</strong>
-                  <div style="color:#c8e8c8;font-size:12px;margin-top:4px;">
-                    <strong>${foundry.utils.escapeHTML(spellName)}</strong> bypasses the Vorpal lock per RAW.
-                    <strong>${foundry.utils.escapeHTML(tokenDoc.actor?.name ?? tokenDoc.name)}</strong> can be revived
-                    by healing now.
-                  </div>
-                </div>`,
-                whisper: [game.user.id],
-                flags: { [MODULE_ID]: { type: "permanentDeathStrictClear" } },
-              });
-            }).catch(err => console.warn(`${MODULE_ID} | Strict-RAW clear failed:`, err));
-          } else {
-            // Weaker revival spell — post override card asking GM to decide
-            ChatMessage.create({
-              content: `<div style="background:#2a0a0a;border:2px solid #c44;border-radius:6px;padding:8px 12px;">
-                <strong style="color:#ffaaaa;"><i class="fas fa-skull-crossbones"></i> Revive Spell Insufficient (per RAW)</strong>
-                <div style="color:#e8c8c8;font-size:12px;margin-top:4px;line-height:1.45;">
-                  <strong>${foundry.utils.escapeHTML(spellName)}</strong> normally restores a corpse to life, but
-                  <strong>${foundry.utils.escapeHTML(tokenDoc.actor?.name ?? tokenDoc.name)}</strong> is missing
-                  body parts (Vorpal RAW). True Resurrection or Wish are required to restore them. The spell still
-                  fires — but to RESTORE this victim, click the button below.
-                </div>
-                <div style="margin-top:8px;">
-                  <button type="button" class="ace-qol-btn-vorpal-override" data-action="aceQolRevokeVorpal"
-                          data-actor-id="${foundry.utils.escapeHTML(tokenDoc.actor?.id ?? "")}"
-                          data-token-id="${foundry.utils.escapeHTML(tokenDoc.id ?? "")}"
-                          data-scene-id="${foundry.utils.escapeHTML(tokenDoc.parent?.id ?? "")}"
-                          style="background:linear-gradient(180deg,#2a1a0a,#1a0a05);border:1px solid #d4af37;border-radius:4px;color:#ffd87a;padding:6px 12px;font-size:12px;font-weight:700;cursor:pointer;width:100%;">
-                    <i class="fas fa-unlock-keyhole"></i> GM Override: Allow ${foundry.utils.escapeHTML(spellName)} to revive
-                  </button>
-                </div>
-              </div>`,
-              whisper: [game.user.id],
-              flags: { [MODULE_ID]: { type: "permanentDeathSpellWarning" } },
-            }).catch(err => console.warn(`${MODULE_ID} | Permanent-death spell-warning post failed:`, err));
-          }
-        }
-      } catch (err) {
-        console.warn(`${MODULE_ID} | Strict-RAW resurrection detection threw:`, err);
-      }
-    });
-    console.debug(`${MODULE_ID} | Strict-RAW resurrection detection registered`);
+    // Revive magic on a creature killed for good is judged by the one gate's
+    // "killed for good" rule (gate/press-rules.mjs, 2026-09-14). An ordinary
+    // revive (Revivify, Raise Dead, Resurrection, Reincarnate) is refused, and
+    // a GM who overrules it lifts the lock; True Resurrection or Wish lifts it
+    // by the rules. The hook that did this here is deleted.
   }
 
   // ── Socket bridge: player attacks → GM processing ──
