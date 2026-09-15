@@ -2274,6 +2274,97 @@ console.log(`\nPHASE 3: ATTACKS ON THE ROAD`);
           + `"${f9?.damageResults?.[0]?.result}"; APPLY took ${plainTook} (the hit's ${onHitTotal}); `
           + `with a crit row added to that plain hit, it took ${tamperedTook}`);
   }
+
+  // ── 10. A save after a hit that fails into damage AND a condition lands both ──
+  // Johnny, 2026-09-14: "whatLands(recipe, fail) returns damage AND conditions.
+  // Live apply must run both doors ... Damage does not skip conditions. Ever."
+  // The Green Abishai's Fiendish Claw: "or take 3d10 poison damage and become
+  // poisoned for 1 minute", its dice written as dnd5e's enricher, which the reader
+  // used to lose. On the save engine: the condition door when the save resolves,
+  // the hit-point door at APPLY ALL, both from whatLands on the card's recipe. On
+  // the old after-hit card: the same answer, from whatLands as well.
+  {
+    const abishai = [...ACTORS.values()].find(a => a.name === "Green Abishai") ?? null;
+    const claw10 = abishai ? abishai.items.find(i => i.name === "Fiendish Claw") : null;
+    if (!claw10) {
+      check("10. a save after a hit fails into damage and a condition (Phase 3)", null, "no Green Abishai's Fiendish Claw in this world");
+    } else {
+      const { ConditionDoor } = await import(`${MODULE}/scripts/road/doors.mjs`);
+      let road10 = null;
+      await quiet(async () => { road10 = await DamageCalculator._attackRoad(claw10, abishai, null); });
+      const then10 = road10?.recipe?.then?.[0] ?? null;
+      const failDmg = (then10?.onFail ?? []).find(o => o.kind === "damage") ?? null;
+      const failCond = (then10?.onFail ?? []).find(o => o.kind === "condition" && o.condition?.key === "poisoned") ?? null;
+      // A creature on a stand-in scene, found the way the save engine finds one.
+      const hp10 = { value: 40, max: 40, temp: 0 };
+      const victim10 = { id: "replay-then-target", name: "a test creature", type: "npc", documentName: "Actor",
+        system: { attributes: { hp: hp10 }, abilities: { con: { save: { value: 0 }, mod: 0 } },
+          traits: { ci: { value: [] }, di: { value: [] }, dr: { value: [] }, dv: { value: [] } } },
+        statuses: new Set(), effects: new Collection(), getFlag: () => undefined, prototypeToken: { actorLink: true },
+        update: async (u) => {
+          if ("system.attributes.hp.value" in u) hp10.value = u["system.attributes.hp.value"];
+          if ("system.attributes.hp.temp" in u) hp10.temp = u["system.attributes.hp.temp"];
+          return victim10;
+        } };
+      const tokenDoc10 = { id: "tok-then", actor: victim10, actorId: victim10.id, actorLink: true, parent: { id: "replay-scene" } };
+      const keep10 = { scenes: game.scenes.get, cond: ConditionDoor.apply, hp: HpDoor.damage };
+      const condCalls = [], hpCalls = [];
+      game.scenes.get = (id) => (id === "replay-scene"
+        ? { id, tokens: { get: (t) => (t === tokenDoc10.id ? tokenDoc10 : null), contents: [tokenDoc10] } } : null);
+      ConditionDoor.apply = async (actor, key) => { condCalls.push({ actor: actor?.name, key }); return { ok: true, applied: key }; };
+      HpDoor.damage = async (actor, finals) => {
+        hpCalls.push({ actor: actor?.name, finals });
+        return { applied: true, total: (finals ?? []).reduce((s, f) => s + (Number(f.final) || 0), 0), hpDelta: 0 };
+      };
+      ACTORS.set(victim10.id, victim10);
+      const row10 = { name: victim10.name, tokenDocId: tokenDoc10.id, sceneId: "replay-scene", actorId: victim10.id,
+        passed: false, saveTotal: 1 };
+      let err10 = null, engineConds = [], engineHp = [], oldConds = [], oldCard = null;
+      try {
+        await quiet(async () => {
+          const engine = Object.create(SaveEngine.prototype);
+          // The save engine: the condition door when the save resolves...
+          await engine._applyFailedSaveConditions(claw10, [row10], { recipe: then10, saveAbility: "con",
+            saveDC: then10?.decidedBy?.dc ?? 16, activityId: null, casterActor: abishai });
+          engineConds = condCalls.splice(0);
+          // ...and the hit-point door at APPLY ALL, from the same recipe.
+          const dice10 = await engine._rollSpellDamage(claw10, abishai, { recipe: then10, activityId: null });
+          const { finals, total } = SaveEngine._damageForRow(row10, dice10, then10);
+          const card10 = { id: "replay-then-card", update: async () => card10, flags: { [MOD]: {
+            itemUuid: claw10.uuid, actorId: abishai.id,
+            damageResults: [{ targetId: victim10.id, tokenDocId: tokenDoc10.id, sceneId: "replay-scene", totalFinal: total,
+              byType: finals.filter(f => f.final > 0).map(f => ({ type: f.type, value: f.final })) }] } } };
+          await engine._applyAllSaveDamage(card10);
+          engineHp = hpCalls.splice(0);
+          // The old after-hit card, which asks whatLands too now.
+          const before10 = posted.length;
+          await PostHitSaves.rollPostHitSaves({ flags: { [MOD]: {
+            save: PostHitSaves.riderSavesFor(claw10, abishai, { quiet: true }).saves?.[0] ?? null,
+            recipe: then10, conditions: [], effectTable: null,
+            targets: [{ tokenDocId: tokenDoc10.id, actorId: victim10.id, sceneId: "replay-scene", name: victim10.name, img: "" }],
+            itemUuid: claw10.uuid, itemId: claw10.id, actorId: abishai.id } } });
+          oldConds = condCalls.splice(0);
+          oldCard = posted.slice(before10).find(p => p?.flags?.[MOD]?.type === "postHitSaveResult") ?? null;
+        });
+      } catch (err) { err10 = err; }
+      finally {
+        game.scenes.get = keep10.scenes; ConditionDoor.apply = keep10.cond; HpDoor.damage = keep10.hp;
+        ACTORS.delete(victim10.id);
+      }
+      const engineHpTypes = engineHp.flatMap(c => (c.finals ?? []).filter(f => Number(f.final) > 0).map(f => f.type));
+      const oldDmg = oldCard?.flags?.[MOD]?.damageResults?.[0]?.components ?? [];
+      const said10 = then10 ? `${then10.decidedBy.ability} DC ${then10.decidedBy.dc}, on a failure `
+        + (then10.onFail ?? []).map(o => (o.kind === "damage" ? `${o.formula} ${(o.types ?? []).join("/")}` : o.condition?.key)).join(", ") : "none";
+      check("10. a save after a hit that fails into damage and a condition lands both, on the save engine and the old card (Phase 3)",
+        !err10 && failDmg?.formula === "3d10" && (failDmg?.types ?? []).includes("poison") && !!failCond
+          && engineConds.some(c => c.key === "poisoned") && engineHpTypes.includes("poison")
+          && oldConds.some(c => c.key === "poisoned") && oldDmg.some(c => c.type === "poison" && Number(c.final) > 0),
+        err10 ? `threw: ${err10?.message ?? err10}`
+          : `Green Abishai's Fiendish Claw, then: ${said10}; save engine: condition door ${engineConds.map(c => c.key).join(", ") || "never"}, `
+            + `hit-point door ${engineHpTypes.join(", ") || "never"}; old card: condition door ${oldConds.map(c => c.key).join(", ") || "never"}, `
+            + `damage on its card ${oldDmg.map(c => `${c.final} ${c.type}`).join(", ") || "none"}`);
+    }
+  }
 }
 
 let golden = null;

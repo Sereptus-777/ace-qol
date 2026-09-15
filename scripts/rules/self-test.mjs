@@ -21,6 +21,7 @@ import { SpaceDrafter } from "./space-drafter.mjs";
 import { SPELL_RULES, validateAllSpellRules } from "./rules-data-spells.mjs";
 import { WEAPON_RULES, validateAllWeaponRules } from "./rules-data-weapons.mjs";
 import { PostHitSaves } from "../post-hit-saves.mjs";
+import { followUpRecipe } from "../inference/recipe.mjs";
 import { ConditionVisuals } from "../condition-visuals.mjs";
 import { ATTACK_MULTI_SPELLS, validateAllAttackMultiSpells } from "../spell-pipeline/registry/attack-multi-spells.mjs";
 import { DamageResolver } from "../spell-pipeline/resolvers/damage.mjs";
@@ -182,20 +183,26 @@ export class SelfTest {
       t("save-contract", "fail-effect survives the message round-trip",
         wireBag.failEffect?.[0]?.formula === "2d8" && wireBag.halfOnSuccess === true, JSON.stringify(wireBag));
 
-      // Half-on-success math: deterministic formula, stub target, real code path.
-      const stubActor = { system: { traits: {} } };
-      const stubItem = { system: { properties: new Set() } };
-      const resFull = { effects: [] };
-      await PostHitSaves._rollAndApplySaveDamage({ formula: "10", damageType: "poison" }, stubActor, stubItem, resFull);
-      const resHalf = { effects: [] };
-      await PostHitSaves._rollAndApplySaveDamage({ formula: "10", damageType: "poison" }, stubActor, stubItem, resHalf, { half: true });
+      // Half-on-success math through the one decider: the save's recipe, whatLands,
+      // and the hit-point door's resistances. Deterministic formula, stub target.
+      const stubActor = { system: { traits: {} }, getFlag: () => undefined };
+      const stubItem = { name: "Contract Sting", system: { properties: new Set() } };
+      const tenSave = { dc: 13, ability: "con", halfOnSuccess: true,
+        failEffect: [{ type: "damage", formula: "10", damageType: "poison" }] };
+      const land = async (actor, passed) => {
+        const res = { effects: [] };
+        await PostHitSaves._landSaveResult({ item: stubItem, casterActor: null, save: tenSave,
+          recipe: followUpRecipe(stubItem, tenSave), targetActor: actor, name: "a stub", passed, isAutoFail: false, result: res });
+        return res;
+      };
+      const resFull = await land(stubActor, false);
+      const resHalf = await land(stubActor, true);
       t("save-contract", "fail applies full damage", resFull.effects[0]?.total === 10, `total=${resFull.effects[0]?.total}`);
       t("save-contract", "pass applies HALF damage", resHalf.effects[0]?.total === 5, `total=${resHalf.effects[0]?.total}`);
 
       // Resistance halves after the save-half (RAW ordering): 10 → 5 → 2.
-      const resistActor = { system: { traits: { dr: { value: ["poison"] } } } };
-      const resBoth = { effects: [] };
-      await PostHitSaves._rollAndApplySaveDamage({ formula: "10", damageType: "poison" }, resistActor, stubItem, resBoth, { half: true });
+      const resistActor = { system: { traits: { dr: { value: ["poison"] } } }, getFlag: () => undefined };
+      const resBoth = await land(resistActor, true);
       t("save-contract", "half then resistance stacks (10→5→2)", resBoth.effects[0]?.total === 2, `total=${resBoth.effects[0]?.total}`);
 
       // Entry override: the brain's postHitSave beats the parser.

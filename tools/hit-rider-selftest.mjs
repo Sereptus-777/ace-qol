@@ -65,6 +65,24 @@ const CLAWS = "<div class=\"rd__b  rd__b--3\"><p><i>Melee Weapon Attack:</i> [[/
   check("and it is the hit's own save", s[0]?.hitVerdict, "yes");
 }
 
+/* ── A failed save's damage, however it is written ─────────────────────── */
+// Johnny, 2026-09-14: "Damage does not skip conditions. Ever." Nor does the
+// reader: a failure that names both gives both, however the damage is written.
+console.log("\nA FAILED SAVE'S DAMAGE, HOWEVER THE BOOK WRITES IT");
+{
+  // The Green Abishai's Fiendish Claw (2024): dnd5e's damage enricher beside a condition.
+  const s = saves("<p>[[/attack extended]], reach 5 ft., one target. Hit: [[/damage 2d8 + @abilities.dex.mod type=force average=true]] damage. If the target is a creature, it must succeed on a [[/save con 16 format=long]] or take [[/damage 3d10 type=poison average=true]] damage and become &Reference[poisoned]{poisoned} for 1 minute. The &Reference[poisoned]{poisoned} target can repeat the saving throw at the end of each of its turns, ending the effect on itself on a success.</p>");
+  check("an enriched failure gives the condition and the damage", s[0]?.failEffect,
+    [{ type: "condition", condition: "poisoned" }, { type: "damage", formula: "3d10", damageType: "poison" }]);
+  check("and it is the hit's own save", s[0]?.hitVerdict, "yes");
+}
+// ⚠️ DAMAGE ON A LATER TURN IS NOT THE FAILURE'S: it landed at once.
+check("damage at the start of each of its turns is not the failure's",
+  saves("<p>Hit: [[/damage 2d4 + @abilities.str.mod type=slashing average=true]] damage. If the target is a creature, it must succeed on a [[/save con 16 format=long]] or take [[/damage 2d4 type=slashing average=true]] damage at the start of each of its turns due to a fiendish wound.</p>")[0]?.failEffect, []);
+check("nor when it is written out: the poisoned lands, the damage waits",
+  saves("<p>Hit: 22 (4d6 + 8) piercing damage. The target must succeed on a DC 21 Constitution saving throw or become poisoned. While poisoned in this way, the target can't regain hit points, and it takes 21 (6d6) poison damage at the start of each of its turns.</p>")[0]?.failEffect,
+  [{ type: "condition", condition: "poisoned" }]);
+
 /* ── Whose save is it ───────────────────────────────────────────────────── */
 console.log("\nTHE HIT'S OWN SAVE, HOWEVER THE BOOK WRITES IT");
 check("an enriched save in the hit's own sentence",
@@ -95,6 +113,8 @@ check("a save on the target's later turns",
   verdicts("<p>Hit: 4 (1d4 + 2) piercing damage plus 2 (1d4) acid damage. At the end of each of its turns, the target must make a DC 10 Constitution saving throw, taking 2 (1d4) acid damage on a failure.</p>"), ["no"]);
 check("one option of a menu",
   verdicts("<p>Hit: 20 (2d12 + 7) bludgeoning damage. Yeenoghu chooses one. Force. The target takes 13 (2d12) force damage. Paralysis. The target must succeed on a DC 17 Constitution saving throw or be paralyzed.</p>"), ["no"]);
+check("the first option of a menu, after the colon that opens it",
+  verdicts("<p>Hit: [[/damage 2d10 + @abilities.dex.mod type=force average=true]] damage. The target also suffers one of the following effects of the orthon's choice; the orthon can't use the same effect two rounds in a row: Acid. The target must make a [[/save con 17 format=long]], taking [[/damage 5d6 type=acid average=true]] damage on a failed save, or half as much damage on a successful one. Blindness. The target must succeed on a [[/save dex 17 format=long]] or be blinded until the end of its next turn.</p>"), ["no", "no"]);
 check("a cone written on the same item",
   verdicts("<p>Hit: 24 (4d8+6) bludgeoning damage. Scrap Shrapnel. Creatures within a 20-foot cone must succeed on a DC 20 Dexterity saving throw, suffering 18 (4d8) piercing damage on a failed save.</p>"), ["no"]);
 

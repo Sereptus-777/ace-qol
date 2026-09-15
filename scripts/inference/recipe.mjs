@@ -544,6 +544,18 @@ function thenRecipe(r, i, parentKey, edition, source, byHand) {
   };
 }
 
+/**
+ * The recipe of a save asked after a hit, for a caller that holds the save's
+ * words but no attack recipe paired with them: the old after-hit card, and a card
+ * posted before recipes travelled with it. The same builder as an attack
+ * recipe's `then`, so the same shape, and nothing added to it.
+ */
+export function followUpRecipe(item, save, index = 0, { actor = null } = {}) {
+  const edition = RulesBrain.resolveEdition(item, actor ?? item?.actor ?? null);
+  return thenRecipe(save, index, `${edition} · ${spellKey(item?.name) || "unnamed"} · its words`, edition,
+    { item: item?.uuid ?? null, activity: null }, false);
+}
+
 /* ── Where an attack's own words put its damage ────────────────────────── */
 //
 // Johnny, 2026-09-14: "The live hit must use recipe onHit / onCrit for what dice

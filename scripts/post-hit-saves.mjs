@@ -14,10 +14,16 @@ import { awaitDsnRoll } from "./attack-prompt.mjs";
 // The rules brain — entries override the description parser for post-hit
 // behavior (convergence 2026-07-10). Function-time reads only; cycle inert.
 import { RulesBrain } from "./rules/rules-brain.mjs";
-// The One Road: every card here goes through the card door (Phase 3, 2026-09-14).
-import { CardDoor } from "./road/doors.mjs";
-
-const PHYSICAL_TYPES = new Set(["bludgeoning", "piercing", "slashing"]);
+// The One Road: every card here goes through the card door (Phase 3, 2026-09-14),
+// every condition a save's result puts on goes through the condition door, and
+// its damage is worked out on the creature the way the hit-point door reads it.
+import { CardDoor, ConditionDoor, HpDoor } from "./road/doors.mjs";
+// What a save's result lets through, from its recipe: the one decider.
+import { whatLands } from "./road/what-lands.mjs";
+// A save after a hit with no attack recipe beside it gets one from the same builder.
+// Function-time reads only: recipe.mjs reaches this file back through its `then`.
+import { followUpRecipe } from "./inference/recipe.mjs";
+import { CombatState } from "./combat-state.mjs";
 
 export class PostHitSaves {
 
@@ -335,7 +341,9 @@ export class PostHitSaves {
         save,
         effectTable: parsed.effectTable,
         bonusDamage: parsed.bonusDamage,
-        conditions: parsed.conditions,
+        // What its result lands is this save's recipe's, even on this card: the
+        // attack recipe's `then` when it has one, else the same builder's reading.
+        recipe: then ?? followUpRecipe(item, save, saveIndex, { actor }),
       });
     }
 
@@ -723,7 +731,7 @@ export class PostHitSaves {
    * Post a save card that appears AFTER the damage card for post-hit saves.
    */
   static async postSaveCard(item, actor, targetData, opts) {
-    const { save, effectTable, bonusDamage, conditions } = opts;
+    const { save, effectTable, bonusDamage, recipe } = opts;
     const abilityLabel = CONFIG.DND5E?.abilities?.[save.ability]?.label ?? save.ability.toUpperCase();
 
     const targetRows = targetData.map(t => {
@@ -782,7 +790,11 @@ export class PostHitSaves {
           },
           effectTable: effectTable,
           bonusDamage: bonusDamage,
-          conditions: conditions.filter(c => c.requiresSave),
+          // What the save's result lands: its recipe, decided by whatLands when
+          // it is rolled. The parser's list of the item's conditions rode here
+          // too and went on beside the save's own words: a second decider. A
+          // card posted before recipes travelled rebuilds one from `save`.
+          recipe: recipe ?? null,
           targets: targetData.map(t => ({
             tokenDocId: t.tokenDocId,
             actorId: t.actorId,
@@ -810,18 +822,32 @@ export class PostHitSaves {
     const flags = message.flags?.[MODULE_ID];
     if (!flags) return;
 
-    const { save, effectTable, bonusDamage, conditions, targets, itemId, itemUuid, actorId } = flags;
+    const { save, effectTable, targets, itemId, itemUuid, actorId } = flags;
     const item = await fromUuid(itemUuid) ?? game.items.get(itemId);
     const casterActor = game.actors.get(actorId);
 
+    // ── WHAT ITS RESULT LANDS IS ITS RECIPE'S (The One Road, 2026-09-14) ──
+    // The recipe the card carries: the attack recipe's `then`, or the same
+    // builder's reading of this save. A card posted before recipes travelled
+    // with it gets one from that builder here, from the save it carries.
+    let recipe = flags.recipe ?? null;
+    if (!recipe && save) {
+      try { recipe = followUpRecipe(item, save, 0, { actor: casterActor }); }
+      catch (err) {
+        console.warn(`${MODULE_ID} | post-hit: could not build the recipe of "${item?.name}"'s save after its hit, `
+          + `so its result lands nothing:`, err);
+      }
+    }
+
     // FIELD DIAGNOSTIC (2026-07-10): state the consequence inventory up
-    // front — a failed save with an empty bag announces itself instead of
+    // front, so a failed save that lands nothing announces itself instead of
     // resolving into silence (the Giant Wasp lesson, twice over).
     console.log(
-      `${MODULE_ID} | rollPostHitSaves: DC ${save?.dc} ${save?.ability} | `
-      + `failEffect=${(save?.failEffect ?? []).length} entr${(save?.failEffect ?? []).length === 1 ? "y" : "ies"} `
-      + `(${(save?.failEffect ?? []).map(f => f.type === "damage" ? `${f.formula} ${f.damageType}` : f.condition).join(", ") || "NONE — a fail will do nothing"}) | `
-      + `halfOnSuccess=${!!save?.halfOnSuccess} | table=${!!effectTable} | conditions=${(conditions ?? []).length}`
+      `${MODULE_ID} | rollPostHitSaves: DC ${save?.dc} ${save?.ability} | its recipe lands on a failure: `
+      + ((recipe?.onFail ?? []).map(o => (o.kind === "damage"
+          ? `${o.formula} ${(o.types ?? []).join("/")}${o.onSuccess === "half" ? " (half on a success)" : ""}`
+          : o.condition?.key)).join(", ") || "NOTHING: a failure will do nothing")
+      + ` | table=${!!effectTable}`
     );
 
     const results = [];
@@ -961,92 +987,28 @@ export class PostHitSaves {
             result.tableEntry = matchedEntry.name;
             result.tableDesc = matchedEntry.description;
 
-            const autoApply = QolSettings.get("autoApplyConditions") ?? true;
-            console.log(`${MODULE_ID} | POST-HIT TABLE: applying ${matchedEntry.effects?.length ?? 0} effects from "${matchedEntry.name}" (autoApply=${autoApply})`);
-            const condImmunities = new Set((targetActor.system?.traits?.ci?.value ?? []).map(s => s.toLowerCase()));
-            for (const fx of matchedEntry.effects) {
+            // A table is a mechanic its recipe cannot carry yet, so the entry
+            // says what lands; it lands through the same doors as every save.
+            console.log(`${MODULE_ID} | POST-HIT TABLE: applying ${matchedEntry.effects?.length ?? 0} effects from "${matchedEntry.name}"`);
+            for (const fx of (matchedEntry.effects ?? [])) {
               console.log(`${MODULE_ID} | POST-HIT TABLE: effect:`, fx);
-              if (fx.type === "condition") {
-                const condKey = (fx.condition ?? "").toLowerCase();
-                if (condImmunities.has(condKey)) {
-                  result.effects.push({ type: "condition", condition: fx.condition, blocked: true, reason: `Immune to ${fx.condition}` });
-                  console.log(`${MODULE_ID} | POST-HIT TABLE: ${tgt.name} IMMUNE to "${fx.condition}" — skipped`);
-                } else {
-                  result.effects.push({ type: "condition", condition: fx.condition });
-                  if (autoApply && tokenDoc?.actor) {
-                    // Use ConditionLibrary.applyByName so exhaustion correctly
-                    // INCREMENTS the actor's level counter rather than toggling
-                    // the status off/on (toggle would always set level=1).
-                    const r = await ConditionLibrary.applyByName(tokenDoc.actor, fx.condition);
-                    if (r.ok) {
-                      console.log(`${MODULE_ID} | POST-HIT TABLE: applied "${fx.condition}"${r.level !== undefined ? ` (level ${r.level})` : ""} to ${tgt.name}`);
-                    }
-                  }
-                }
-              } else if (fx.type === "damage") {
-                await PostHitSaves._rollAndApplySaveDamage(fx, targetActor, item, result);
+              if (fx.type === "condition" && fx.condition) {
+                await PostHitSaves._landConditions([{ key: fx.condition }], targetActor, result, tgt.name);
+              } else if (fx.type === "damage" && fx.formula) {
+                const rolled = await PostHitSaves._rollSaveDamage([{ formula: fx.formula, types: [fx.damageType] }], casterActor);
+                PostHitSaves._landSaveDamage(rolled.map(r => ({ amount: r.total, type: r.type })), rolled, targetActor, item, result);
               }
             }
           }
         } else {
-          // No table — apply fail conditions directly (e.g., Giant Slayer)
-          const autoApply = QolSettings.get("autoApplyConditions") ?? true;
-          const condImmunities = new Set((targetActor.system?.traits?.ci?.value ?? []).map(s => s.toLowerCase()));
-          const appliedConds = new Set();
-          for (const cond of (conditions ?? [])) {
-            const condKey = (cond.condition ?? "").toLowerCase();
-            appliedConds.add(condKey);
-            if (condImmunities.has(condKey)) {
-              result.effects.push({ type: "condition", condition: cond.condition, blocked: true, reason: `Immune to ${cond.condition}` });
-              console.log(`${MODULE_ID} | ${tgt.name} is IMMUNE to ${cond.condition} — skipped`);
-            } else {
-              result.effects.push({ type: "condition", condition: cond.condition });
-              if (autoApply && tokenDoc?.actor) {
-                // Routes through ConditionLibrary so exhaustion correctly
-                // INCREMENTS rather than toggles. Other conditions fall
-                // through to a normal toggleStatusEffect call.
-                const r = await ConditionLibrary.applyByName(tokenDoc.actor, cond.condition);
-                if (r.ok && r.level !== undefined) {
-                  console.log(`${MODULE_ID} | Exhaustion increment for ${tgt.name} (level ${r.level})`);
-                }
-              }
-            }
-          }
-
-          // ── The parsed FAIL EFFECT — the save's own teeth (2026-07-10) ──
-          // "…taking 10 (3d6) poison damage on a failed save" — the parser
-          // always extracted this; the resolution never consumed it (the
-          // Giant Wasp Sting bug: FAIL with zero consequence). Damage rolls
-          // through the defensive-profile path and lands on the results card
-          // with the standard APPLY DAMAGE button; conditions apply unless
-          // the conditions list above already covered them.
-          for (const fx of (save.failEffect ?? [])) {
-            if (fx.type === "damage" && fx.formula) {
-              await PostHitSaves._rollAndApplySaveDamage(fx, targetActor, item, result);
-            } else if (fx.type === "condition" && fx.condition) {
-              const condKey = fx.condition.toLowerCase();
-              if (appliedConds.has(condKey)) continue;        // already handled above
-              appliedConds.add(condKey);
-              if (condImmunities.has(condKey)) {
-                result.effects.push({ type: "condition", condition: fx.condition, blocked: true, reason: `Immune to ${fx.condition}` });
-              } else {
-                result.effects.push({ type: "condition", condition: fx.condition });
-                if (autoApply && tokenDoc?.actor) {
-                  await ConditionLibrary.applyByName(tokenDoc.actor, fx.condition);
-                }
-              }
-            }
-          }
+          await PostHitSaves._landSaveResult({ item, casterActor, save, recipe, targetActor,
+            name: tgt.name, passed, isAutoFail, result });
         }
-      } else if (!isAutoFail && save.halfOnSuccess) {
-        // ── PASSED, but the rule says "half as much damage on a success" ──
-        // (Giant Wasp Sting, Fireball-style venoms). Roll the fail damage at
-        // HALF (halving first, then resistance/immunity per RAW ordering).
-        for (const fx of (save.failEffect ?? [])) {
-          if (fx.type === "damage" && fx.formula) {
-            await PostHitSaves._rollAndApplySaveDamage(fx, targetActor, item, result, { half: true });
-          }
-        }
+      } else {
+        // A made save lands what its recipe says a success lets through (half a
+        // venom's damage, or nothing), decided the same way as a failure.
+        await PostHitSaves._landSaveResult({ item, casterActor, save, recipe, targetActor,
+          name: tgt.name, passed, isAutoFail, result });
       }
 
       results.push(result);
@@ -1109,90 +1071,127 @@ export class PostHitSaves {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  //  Save-Gated Damage (with full defensive profile check)
+  //  What a save after a hit lands: whatLands on its recipe, through the doors
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
-   * Roll save-gated damage and check target's defensive profile.
-   * Pushes the result into result.effects.
+   * What one creature's save after a hit puts on it, when this card asks the save
+   * instead of the save engine (no save engine on the API, a creature with no
+   * token on the scene, a card posted before recipes travelled with it).
+   *
+   * ⚠️🔴 DAMAGE DOES NOT SKIP CONDITIONS. EVER. (Johnny, 2026-09-14.) This card
+   * decided what lands for itself: the parser's list of the item's conditions,
+   * then the save's own words, with half on a success worked out here too. Now
+   * the save's recipe decides it through whatLands, as on the save engine: the
+   * damage the result lets through goes on the results card for its APPLY, and
+   * every condition on that result goes on now, through the condition door, both
+   * once the dice that decided them have landed.
    */
-  static async _rollAndApplySaveDamage(fx, targetActor, item, result, { half = false } = {}) {
-    const dmgRoll = new Roll(fx.formula);
-    await dmgRoll.evaluate();
-    safeShowForRoll(dmgRoll, "post-hit save-damage roll");
-    // ⚠️ NOTHING LANDS BEFORE THE DICE (Johnny's rule). A failed save's effects
-    // come as a list, damage and then a condition ("3d6 poison damage and is
-    // poisoned"), and the condition went on while this damage was still rolling.
-    await awaitDsnRoll();
-
-    // Half-on-successful-save applies FIRST; resistance/immunity below then
-    // modify the halved amount (RAW ordering — resistance after other mods).
-    const rawTotal = half ? Math.floor(dmgRoll.total / 2) : dmgRoll.total;
-    let finalTotal = rawTotal;
-    let dmgModifier = "normal";
-    let dmgModReason = null;
-    const tgtTraits = targetActor.system?.traits ?? {};
-    const resistSet = new Set((tgtTraits.dr?.value ?? []).map(s => s.toLowerCase()));
-    const immuneSet = new Set((tgtTraits.di?.value ?? []).map(s => s.toLowerCase()));
-    const vulnSet = new Set((tgtTraits.dv?.value ?? []).map(s => s.toLowerCase()));
-    const drBypasses = new Set(tgtTraits.dr?.bypasses ?? []);
-    const diBypasses = new Set(tgtTraits.di?.bypasses ?? []);
-    const dmgType = (fx.damageType ?? "").toLowerCase();
-
-    // Determine weapon properties for bypass checks
-    const riderItemProps = new Set(item?.system?.properties ?? []);
-    const riderIsMagical = riderItemProps.has("mgc") || !!item?.system?.magicAvailable;
-    const riderIsSilvered = riderItemProps.has("sil");
-    const riderIsAdamantine = riderItemProps.has("ada");
-
-    if (immuneSet.has(dmgType)) {
-      if (PHYSICAL_TYPES.has(dmgType) && diBypasses.size > 0) {
-        const bypassed = (diBypasses.has("mgc") && riderIsMagical)
-                      || (diBypasses.has("sil") && riderIsSilvered)
-                      || (diBypasses.has("ada") && riderIsAdamantine);
-        if (!bypassed) {
-          finalTotal = 0;
-          dmgModifier = "immune";
-          dmgModReason = `Immune to ${dmgType}`;
-        }
-      } else {
-        finalTotal = 0;
-        dmgModifier = "immune";
-        dmgModReason = `Immune to ${dmgType}`;
-      }
-    } else if (resistSet.has(dmgType)) {
-      if (PHYSICAL_TYPES.has(dmgType) && drBypasses.size > 0) {
-        const bypassed = (drBypasses.has("mgc") && riderIsMagical)
-                      || (drBypasses.has("sil") && riderIsSilvered)
-                      || (drBypasses.has("ada") && riderIsAdamantine);
-        if (!bypassed) {
-          finalTotal = Math.floor(rawTotal / 2);
-          dmgModifier = "resistant";
-          dmgModReason = `Resists ${dmgType} (half damage)`;
-        }
-      } else {
-        finalTotal = Math.floor(rawTotal / 2);
-        dmgModifier = "resistant";
-        dmgModReason = `Resists ${dmgType} (half damage)`;
-      }
-    } else if (vulnSet.has(dmgType)) {
-      finalTotal = rawTotal * 2;
-      dmgModifier = "vulnerable";
-      dmgModReason = `VULNERABLE to ${dmgType} (double damage)`;
+  static async _landSaveResult({ item, casterActor, save, recipe, targetActor, name, passed, isAutoFail, result }) {
+    if (!recipe) {
+      console.warn(`${MODULE_ID} | post-hit: "${item?.name}"'s save after its hit has no recipe, so nothing lands on ${name}.`);
+      return;
     }
+    const how = { passed, autoFail: isAutoFail, evasion: CombatState.evasionFor(targetActor, save?.ability) };
+    // Its dice are thrown only when the result lets some of them through.
+    const rolled = whatLands(recipe, how).share > 0
+      ? await PostHitSaves._rollSaveDamage((recipe.onFail ?? []).filter(o => o?.kind === "damage"), casterActor)
+      : [];
+    const v = whatLands(recipe, { ...how, rolled });
+    PostHitSaves._landSaveDamage(v.damage, rolled, targetActor, item, result, { halved: v.share > 0 && v.share < 1 });
+    await PostHitSaves._landConditions(v.conditions, targetActor, result, name);
+    // Anything else on the result is the GM's to put on: said, never dropped.
+    const rest = [...v.effects.map(e => e?.key), ...v.notes].filter(Boolean);
+    if (rest.length) {
+      console.log(`${MODULE_ID} | post-hit: ${name}'s ${passed ? "made" : "failed"} save against "${item?.name}" also says `
+        + `${rest.map(x => `"${x}"`).join(", ")}, which this card cannot put on, so the GM does.`);
+    }
+    console.log(`${MODULE_ID} | post-hit: ${name}, ${v.label}: `
+      + `${v.damage.map(d => `${d.amount} ${d.type ?? "untyped"}`).join(" + ") || "no damage"}, `
+      + `${v.conditions.map(c => c.key).join(", ") || "no condition"} (${v.why}).`);
+  }
 
-    result.effects.push({
-      type: "damage",
-      formula: fx.formula,
-      damageType: fx.damageType,
-      raw: rawTotal,
-      total: finalTotal,
-      roll: dmgRoll,
-      modifier: dmgModifier,
-      reason: dmgModReason,
-      halvedOnSave: half,
+  /**
+   * The damage a save's recipe deals, rolled once for this creature, and waited
+   * for: nothing is decided from dice that are still in the air.
+   *
+   * @param {object[]} parts  the recipe's damage outcomes, each {formula, types}
+   * @param {Actor|null} [casterActor]  whose numbers a formula's @ references read
+   * @returns {Promise<Array<{total: number, type: string|null, formula: string, roll: Roll}>>}
+   */
+  static async _rollSaveDamage(parts, casterActor = null) {
+    const rollData = casterActor?.getRollData?.() ?? {};
+    const rolled = [];
+    for (const o of (parts ?? [])) {
+      // The caster's numbers, read the way the save engine reads a follow-up's formula.
+      const formula = String(o?.formula ?? "").trim().replace(/@([a-zA-Z0-9_.]+)/g, (m, path) => {
+        const val = path.split(".").reduce((x, k) => x?.[k], rollData);
+        return val !== undefined ? String(val) : "0";
+      });
+      if (!formula) continue;
+      const roll = new Roll(formula);
+      await roll.evaluate();
+      safeShowForRoll(roll, "post-hit save-damage roll");
+      rolled.push({ total: roll.total, type: o.types?.[0] ?? null, formula, roll });
+    }
+    // ⚠️ NOTHING LANDS BEFORE THE DICE (Johnny's rule). A failed save's result is
+    // damage and a condition ("3d6 poison damage and is poisoned"), and the
+    // condition went on while this damage was still rolling.
+    if (rolled.length) await awaitDsnRoll();
+    return rolled;
+  }
+
+  /**
+   * The damage a save's result lets through, put on the results card for its
+   * APPLY, which lands it through the hit-point door: whatLands' share of each
+   * rolled part, then this creature's resistances, immunities and vulnerabilities
+   * read the way that door reads them, after the halving (the rules' order).
+   */
+  static _landSaveDamage(damage, rolled, targetActor, item, result, { halved = false } = {}) {
+    HpDoor.preview(targetActor, damage, { item }).forEach((f, i) => {
+      result.effects.push({
+        type: "damage", formula: rolled[i]?.formula ?? "", damageType: f.type, raw: f.raw, total: f.final,
+        roll: rolled[i]?.roll ?? null, modifier: f.modifier, reason: f.reason, halvedOnSave: halved,
+      });
+      console.log(`${MODULE_ID} | POST-HIT save damage: ${rolled[i]?.formula} ${f.type} = ${rolled[i]?.total}`
+        + `${halved ? ` → ${f.raw} (half on the save)` : ""}${f.modifier !== "normal" ? ` → ${f.final} (${f.modifier})` : ""}`);
     });
-    console.log(`${MODULE_ID} | POST-HIT save damage: ${fx.formula} ${fx.damageType} = ${dmgRoll.total}${half ? ` → ${rawTotal} (half on save)` : ""}${dmgModifier !== "normal" ? ` → ${finalTotal} (${dmgModifier})` : ""}`);
+  }
+
+  /**
+   * Every condition a save's result puts on, through the condition door: the
+   * condition library's immunity check, no stacking, exhaustion by level, and the
+   * recipe's own duration. One that did not go on is on the card, with why.
+   */
+  static async _landConditions(conditions, targetActor, result, name) {
+    if (!conditions?.length) return;
+    const autoApply = QolSettings.get("autoApplyConditions") ?? true;
+    for (const c of conditions) {
+      const key = String(c?.key ?? "").toLowerCase().trim();
+      if (!key) continue;
+      if (!autoApply) {
+        result.effects.push({ type: "condition", condition: key, blocked: true,
+          reason: "automatic conditions are switched off in ACE's settings" });
+        console.log(`${MODULE_ID} | post-hit: automatic conditions are off, so ${key} was not put on ${name}.`);
+        continue;
+      }
+      let out = null;
+      try {
+        out = await ConditionDoor.apply(targetActor, key, Number(c.duration) > 0 ? { duration: { seconds: Number(c.duration) } } : {});
+      } catch (err) {
+        console.warn(`${MODULE_ID} | post-hit: putting ${key} on ${name} failed:`, err);
+      }
+      if (out?.ok) {
+        result.effects.push({ type: "condition", condition: key });
+        console.log(`${MODULE_ID} | post-hit: ${key}${out.level !== undefined ? ` (level ${out.level})` : ""} put on ${name}.`);
+      } else if (out?.immune) {
+        result.effects.push({ type: "condition", condition: key, blocked: true, reason: `immune to ${key}` });
+        console.log(`${MODULE_ID} | post-hit: ${name} is immune to ${key}, so it was not put on.`);
+      } else {
+        result.effects.push({ type: "condition", condition: key, blocked: true, reason: "it did not take; the console has why" });
+        if (out) console.warn(`${MODULE_ID} | post-hit: ${key} did not go on ${name}:`, out);
+      }
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1221,7 +1220,11 @@ export class PostHitSaves {
 
       for (const fx of r.effects) {
         if (fx.type === "condition") {
-          effectsHtml += `<span class="ace-qol-tag ace-qol-tag-debuff"><i class="fas fa-circle-xmark"></i> ${fx.condition.toUpperCase()} applied</span> `;
+          // ⚠️ SAY WHAT DID NOT GO ON. A condition refused by an immunity used to
+          // read "applied" here like one that went on.
+          effectsHtml += fx.blocked
+            ? `<span class="ace-qol-tag"><i class="fas fa-shield-halved"></i> ${fx.condition.toUpperCase()} not put on: ${foundry.utils.escapeHTML(String(fx.reason ?? ""))}</span> `
+            : `<span class="ace-qol-tag ace-qol-tag-debuff"><i class="fas fa-circle-xmark"></i> ${fx.condition.toUpperCase()} applied</span> `;
         } else if (fx.type === "damage") {
           const color = DamageConstants.DAMAGE_COLORS[fx.damageType] ?? "#ccc";
           const modBadge = fx.modifier === "immune" ? '<span class="ace-qol-dmg-mod ace-qol-dmg-immune">IMMUNE</span>'

@@ -301,9 +301,13 @@ export class DescriptionParser {
     if (/\b(?:melee|ranged)\s+(?:weapon\s+|spell\s+)?attack(?:\s+roll)?\s*:/i.test(span)) return "unclear";
     const between = sentencesOf(span);
     between.pop();                                   // the save's own sentence
-    // A heading on its own ("Scrap Shrapnel.", "Paralysis.") is one option of a menu.
+    // A heading on its own ("Scrap Shrapnel.", "Paralysis.") is one option of a
+    // menu, and so is the first one, written after the colon that opens the list:
+    // the Orthon's crossbow, "one of the following effects of the orthon's
+    // choice; ... two rounds in a row: Acid. The target must make a DC 17 ...".
+    // Read as the hit's own, the Acid option's save was asked after every hit.
     const heading = /^[A-Z][\w'’-]*(?:\s+[A-Z][\w'’-]*){0,4}\.$/;
-    if (between.some(s => heading.test(s.trim()))) return "no";
+    if (between.some(s => heading.test(s.trim()) || heading.test(s.split(/:\s+/).pop().trim()))) return "no";
     if (between.length > 3) return "unclear";
 
     // ── Made by what was hit ──
@@ -407,6 +411,19 @@ export class DescriptionParser {
   static _parseFailEffect(afterText) {
     const effects = [];
 
+    // ⚠️🔴 DAMAGE ON A LATER TURN IS NOT THE FAILED SAVE'S (2026-09-14). "or take
+    // [[/damage 2d4 type=slashing]] damage at the start of each of its turns due
+    // to a fiendish wound" (the Nycaloth's claws), "it takes 21 (6d6) poison
+    // damage at the start of each of its turns" (the Pit Fiend's bite): the
+    // failure puts on the wound or the poison, and the damage comes turn by turn,
+    // which a save's result does not carry. Read as the failure's own, it landed
+    // at once. The damage's own sentence says which it is.
+    const onALaterTurn = (start, end) => {
+      const from = Math.max(afterText.lastIndexOf(".", start), afterText.lastIndexOf(";", start)) + 1;
+      const stop = afterText.slice(end).search(/[.;]/);
+      return /\bat the (?:start|end|beginning) of\b/.test(afterText.slice(from, stop < 0 ? afterText.length : end + stop));
+    };
+
     // "or be [condition]" / "or have the [condition] condition"
     for (const cond of CONDITIONS) {
       if (afterText.includes(cond)) {
@@ -425,8 +442,32 @@ export class DescriptionParser {
     const dmgMatch = afterText.match(dmgPattern);
     if (dmgMatch) {
       const dmgType = dmgMatch[2].toLowerCase();
-      if (DAMAGE_TYPES.includes(dmgType)) {
+      if (DAMAGE_TYPES.includes(dmgType) && !onALaterTurn(dmgMatch.index, dmgMatch.index + dmgMatch[0].length)) {
         effects.push({ type: "damage", formula: dmgMatch[1], damageType: dmgType });
+      }
+    }
+
+    // ⚠️🔴 THE SAME DAMAGE WRITTEN AS dnd5e'S ENRICHER (2026-09-14). "or take
+    // [[/damage 3d10 type=poison average=true]] damage and become poisoned" is how
+    // the stat blocks dnd5e ships write it, and only the printed form above was
+    // read: the save after the Green Abishai's claw put on its Poisoned and never
+    // its 3d10 poison, and the Arcanaloth (Legacy)'s claws, the Geryons' stingers
+    // and the Orthon's dagger dealt nothing on a failed save. One rule for both.
+    if (!effects.some(e => e.type === "damage")) {
+      const enriched = afterText.match(/tak(?:es?|ing)\s+\[\[\/(?:damage|dmg)\s+([^\]]*?)\]\](?:\{[^}]*\})?\s*(?:(\w+)\s+)?damage/i);
+      if (enriched) {
+        const words = enriched[1].trim().split(/\s+/).filter(Boolean);
+        const keyed = {};
+        for (const w of words) {
+          const eq = w.indexOf("=");
+          if (eq > 0) keyed[w.slice(0, eq).toLowerCase()] = w.slice(eq + 1);
+        }
+        const formula = String(keyed.formula ?? words.filter(w => !w.includes("=")).join(" ")).trim();
+        const dmgType = String(keyed.type ?? keyed.types ?? enriched[2] ?? "").split(/[,|/]/)[0].toLowerCase();
+        if (/\d+d\d+/.test(formula) && DAMAGE_TYPES.includes(dmgType)
+            && !onALaterTurn(enriched.index, enriched.index + enriched[0].length)) {
+          effects.push({ type: "damage", formula, damageType: dmgType });
+        }
       }
     }
 
