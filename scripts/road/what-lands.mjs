@@ -73,7 +73,8 @@ export function shareOf(total, share) {
  *   damage this save lets through (1, 0.5 or 0) and `label` is what the card row
  *   says, so a save card asks this and nothing else.
  */
-export function whatLands(recipe, { passed, rolled = [], evasion = false, autoFail = false } = {}) {
+export function whatLands(recipe, { passed, result = null, rolled = [], evasion = false, autoFail = false } = {}) {
+  if (recipe?.decidedBy?.kind === "attack") return attackLands(recipe, { result, rolled });
   const isSave = recipe?.decidedBy?.kind === "save";
   const onFail = isSave ? (recipe.onFail ?? []) : [];
   const onSuccess = isSave ? (recipe.onSuccess ?? []) : [];
@@ -100,5 +101,53 @@ export function whatLands(recipe, { passed, rolled = [], evasion = false, autoFa
     else if (o?.kind === "note") out.notes.push(String(o.condition?.key ?? ""));
   }
   out.why = passed ? "the save was made" : "the save was failed";
+  return out;
+}
+
+/**
+ * What one attack's result puts on the creature it was made against (The One
+ * Road, Phase 3, 2026-09-14). A hit lands onHit; a critical hit lands onHit and
+ * onCrit; a miss lands onMiss. The same one decider as a save's result.
+ *
+ * The attack's own dice are the sheet's, rolled the way dnd5e builds them, and
+ * arrive as `rolled`; this says whether they land, and what else does. `extras`
+ * are the damage a critical hit adds beyond them (the item's own crit dice),
+ * rolled once, never doubled, and never on a plain hit. `then` are the saves the
+ * hit hands on: each is a new run on the same road, and whatLands decides it as
+ * a save.
+ *
+ * @param {object} recipe  a recipe decided by an attack roll
+ * @param {object} o
+ * @param {"hit"|"critical"|"miss"} o.result  the attack, after the reaction window
+ * @param {Array<{total: number, type: string|null}>} [o.rolled]  what was rolled for it
+ */
+function attackLands(recipe, { result, rolled = [] }) {
+  const res = result === "critical" || result === "crit" ? "critical"
+    : result === "hit" ? "hit" : result === "miss" ? "miss" : null;
+  const out = { damage: [], conditions: [], effects: [], notes: [], why: "", share: 0, half: false, evades: false,
+    label: res ? res.toUpperCase() : "NO RESULT", result: res, dealsDamage: false, extras: [], then: [] };
+  if (!res) {
+    out.why = "an attack lands by its result: a hit, a critical hit or a miss";
+    return out;
+  }
+  const lists = res === "miss" ? [recipe.onMiss] : res === "critical" ? [recipe.onHit, recipe.onCrit] : [recipe.onHit];
+  const outcomes = lists.flatMap(l => (Array.isArray(l) ? l : [])).filter(Boolean);
+  out.dealsDamage = outcomes.some(o => o.kind === "damage");
+  out.share = (res !== "miss" || out.dealsDamage) ? 1 : 0;
+  out.why = res === "miss" ? (out.dealsDamage ? "it missed, and a miss still deals damage" : "it missed")
+    : res === "critical" ? "a critical hit" : "a hit";
+  for (const r of rolled) out.damage.push({ amount: shareOf(r?.total, out.share), type: r?.type ?? null, why: out.why });
+  for (const o of outcomes) {
+    if (o.kind === "condition") out.conditions.push({ ...(o.condition ?? {}) });
+    else if (o.kind === "effect") out.effects.push({ ...(o.condition ?? {}) });
+    else if (o.kind === "note") out.notes.push(String(o.condition?.key ?? ""));
+  }
+  // ⚠️ A CRIT'S OWN DICE ARE ADDED ONCE, AFTER THE DOUBLING, the way dnd5e adds an
+  // attack's critical bonus; a plain hit never gets them.
+  if (res === "critical") {
+    out.extras = (recipe.onCrit ?? []).filter(o => o?.kind === "damage" && String(o.formula ?? "").trim())
+      .map(o => ({ formula: String(o.formula).trim(), types: [...(o.types ?? [])] }));
+  }
+  if (res !== "miss") out.then = [...(recipe.then ?? [])];
   return out;
 }

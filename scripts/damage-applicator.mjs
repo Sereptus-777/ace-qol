@@ -8,6 +8,9 @@ import { DamageCalculator } from "./damage-calculator.mjs";
 import { DamageCardRenderer } from "./damage-card-renderer.mjs";
 import { DamageConstants } from "./damage-engine.mjs";
 import { TransformationEngine } from "./transformation-engine.mjs";
+// The One Road: hit points land through the hit-point door and cards through
+// the card door (Phase 3, 2026-09-14). Read at function time only.
+import { HpDoor, CardDoor } from "./road/doors.mjs";
 
 /**
  * Per-actor write queue for hit-point changes.
@@ -265,12 +268,14 @@ export class DamageApplicator {
         </div>
       `;
       try {
-        await ChatMessage.create({
+        await CardDoor.post({
           speaker: ChatMessage.getSpeaker({ actor }),
           content: html,
           flavor: `${actor.name} concentration check vs DC ${dc}`,
         });
-      } catch (_) { /* non-fatal */ }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | the concentration check card for ${actor.name} could not be posted:`, err);
+      }
     } else {
       // NPC path — auto-roll, show result, on fail delete the effect.
       //
@@ -329,12 +334,16 @@ export class DamageApplicator {
         </div>
       `;
       try {
-        await ChatMessage.create({
+        // The card carries its own roll, and Dice So Nice throws it as the card
+        // is drawn; nothing lands from the card itself.
+        await CardDoor.post({
           speaker: ChatMessage.getSpeaker({ actor }),
           content: html,
           rolls: [roll],
         });
-      } catch (_) { /* non-fatal */ }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | the concentration result card for ${actor.name} could not be posted:`, err);
+      }
 
       if (!passed) {
         // ⚠️🔴 THE EFFECT IS NOT DELETED HERE ANY MORE — ONE WRITER ONLY.
@@ -535,6 +544,8 @@ export class DamageApplicator {
     let _srcItem = null;
     try { if (flags.itemUuid) _srcItem = fromUuidSync?.(flags.itemUuid) ?? null; }
     catch (_) { _srcItem = null; }
+    // Who dealt it, for the signal the door sends (ace-engine credits the damage).
+    const _srcActor = flags.actorId ? (game.actors?.get?.(flags.actorId) ?? null) : null;
 
     let applied = 0;
     for (const entry of data) {
@@ -589,38 +600,28 @@ export class DamageApplicator {
       // and meant any future change to the polymorph rules needed two
       // edits. Grok audit catch.
       // The components that are ACTUALLY being applied on this pass (already-
-      // applied ones are excluded above), described by type so Heavy Armor
-      // Master and anything else type-aware can act on them.
-      const _pending = components.filter((_, i) => !appliedComps.includes(i));
-      const _hpBefore = Number(actor?.system?.attributes?.hp?.value ?? 0);
-      await DamageApplicator.applyHPDamage(actor, damageToApply, {
-        label: `APPLY ALL ${entry.name}`,
-        types: [...typesApplied],
-        damages: DamageApplicator.describeDamages(_pending, override, _srcItem),
+      // applied ones are excluded above), each at this row's override.
+      //
+      // ⚠️ THROUGH THE HIT-POINT DOOR (The One Road, Phase 3, 2026-09-14). The
+      // door owns the write (applyHPDamage: temporary hit points first, a
+      // listener may cancel, the polymorph carry-over), describes the damage by
+      // type with the item's magic for Heavy Armor Master, and sends the one
+      // damage-applied signal, with the real hit-point movement in it and who
+      // dealt it. APPLY ALL used to write and signal on its own, so a hit landed
+      // by a different road than a save.
+      const _pending = components.filter((_, i) => !appliedComps.includes(i))
+        .map(c => ({ ...c, final: Math.floor((Number(c.final) || 0) * override) }));
+      const _landed = await HpDoor.damage(actor, _pending, {
+        tokenDocId: entry.tokenDocId, item: _srcItem, source: _srcActor, label: `APPLY ALL ${entry.name}`,
       });
       // What the hit points ACTUALLY moved by — after temp-HP absorption and
       // after any listener reduction. This is what UNDO must give back; the
       // nominal damage figure would over-heal. (audit fix 2026-08-07)
-      const _hpAfter = Number(actor?.system?.attributes?.hp?.value ?? 0);
-      const _realDelta = Math.max(0, _hpBefore - _hpAfter);
-
-      // Signal the damage types this creature just took, so the OverTime engine
-      // can honor RAW regeneration shut-offs (a troll that took fire/acid, or a
-      // vampire that took radiant, doesn't regenerate at the start of its next turn).
-      try {
-        // ⚠️ CARRY WHAT ACTUALLY HAPPENED, not just that something was applied.
-        // `hpDelta` is the real hit-point movement after immunity, resistance
-        // and temp HP. A listener that only knows "damage was applied" cannot
-        // tell a solid hit from one that bounced clean off, and those two need
-        // completely different things to happen next.
-        Hooks.callAll(`${MODULE_ID}.damageApplied`, {
-          actor, tokenDocId: entry.tokenDocId, types: [...typesApplied],
-          hpDelta: _realDelta,
-          nominal: damageToApply,
-          absorbed: damageToApply > 0 && _realDelta === 0,
-          dead: Number(actor?.system?.attributes?.hp?.value ?? 1) <= 0,
-        });
-      } catch (_) { /* non-fatal */ }
+      const _realDelta = Number(_landed?.hpDelta) || 0;
+      if (_landed?.applied !== true) {
+        console.warn(`${MODULE_ID} | APPLY ALL: ${damageToApply} damage to ${entry.name} did not land: `
+          + `${_landed?.total ? "a listener refused it, or this is not the GM's screen" : "nothing above 0 to apply"}.`);
+      }
 
       // Track what APPLY ALL applied: mark all remaining comps as applied in flags
       const allIndices = components.map((_, i) => i);
@@ -1143,24 +1144,23 @@ export class DamageApplicator {
         // Grok audit follow-on.
         // ONE typed entry — Heavy Armor Master needs to know this is (say)
         // 7 slashing from a non-magical weapon, not just "7 damage".
-        const _comp = entry.components?.[idx] ?? null;
-        const _hpBefore = Number(actor?.system?.attributes?.hp?.value ?? 0);
-        const { currentHP, newHP } = await DamageApplicator.applyHPDamage(actor, amount, {
+        // ⚠️ THROUGH THE HIT-POINT DOOR, like APPLY ALL (Phase 3, 2026-09-14): the
+        // door writes it, carries the item's magic (this path passed no item, so
+        // a +1 sword's slashing read as nonmagical here), and sends the one
+        // damage-applied signal with the real movement in it, which the OverTime
+        // engine reads for regeneration.
+        const _srcFlags = message.flags?.[MODULE_ID] ?? {};
+        let _srcItem = null;
+        try { if (_srcFlags.itemUuid) _srcItem = fromUuidSync?.(_srcFlags.itemUuid) ?? null; }
+        catch (_) { _srcItem = null; }
+        const currentHP = Number(actor?.system?.attributes?.hp?.value ?? 0);
+        const _landed = await HpDoor.damage(actor, [{ type: String(dmgType).toLowerCase(), final: amount }], {
+          tokenDocId, item: _srcItem,
+          source: _srcFlags.actorId ? (game.actors?.get?.(_srcFlags.actorId) ?? null) : null,
           label: `per-type ${dmgType}`,
-          types: [String(dmgType).toLowerCase()],
-          damages: _comp
-            ? DamageApplicator.describeDamages([{ ...(_comp), final: amount }], 1, null)
-            : [{ value: amount, type: String(dmgType).toLowerCase(), properties: new Set() }],
         });
-        const _realDelta = Math.max(0, _hpBefore - Number(actor?.system?.attributes?.hp?.value ?? 0));
-
-        // Feed the OverTime regeneration shut-off tracker (RAW: a creature that
-        // took its weakness this round doesn't regenerate at its next turn).
-        try {
-          if (amount > 0 && dmgType) {
-            Hooks.callAll(`${MODULE_ID}.damageApplied`, { actor, tokenDocId, types: [String(dmgType).toLowerCase()] });
-          }
-        } catch (_) { /* non-fatal */ }
+        const _realDelta = Number(_landed?.hpDelta) || 0;
+        const newHP = Number(actor?.system?.attributes?.hp?.value ?? 0);
 
         const prevApplied = message.flags?.[MODULE_ID]?.perTypeApplied?.[tokenDocId] ?? 0;
         const overrideLabel = (typeof override === "number" && override !== 1) ? ` (×${override})` : "";

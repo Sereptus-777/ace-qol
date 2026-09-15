@@ -506,6 +506,14 @@ function readChange(item, acts, parsed, why) {
   }
   for (const a of acts) {
     for (const p of _arr(a?.damage?.parts)) {
+      // ⚠️🔴 A LIVE WEAPON'S BASE DAMAGE IS ALREADY IN ITS ATTACK'S PARTS
+      // (2026-09-14). dnd5e 5.3.3 puts the item's base damage at the front of the
+      // attack's damage parts when the item loads, marked `base`
+      // (AttackActivityData#prepareFinalData). The base is read from the item just
+      // above, so the loaded copy is skipped, or a longsword reads its 1d8 twice at
+      // the table. The replay read stored items, where that part is not there, so
+      // it could not see this; it now loads an attack the way dnd5e does.
+      if (p?.base) continue;
       damage.push({ formula: p.custom?.enabled ? String(p.custom.formula)
                       : `${p.number ?? ""}d${p.denomination ?? ""}${p.bonus ? ` + ${p.bonus}` : ""}`,
                     types: _arr(p.types),

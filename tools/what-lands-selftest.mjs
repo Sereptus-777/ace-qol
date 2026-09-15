@@ -61,8 +61,43 @@ const both = { decidedBy: save("con"), onFail: [{ kind: "effect", condition: { k
   onSuccess: [{ kind: "effect", condition: { key: "Unable to Move" } }] };
 check("an effect the item puts on either result lands on a made save too",
   whatLands(both, { passed: true }).effects[0]?.key === "Unable to Move");
-check("a recipe not decided by a save lands nothing",
-  whatLands({ decidedBy: { kind: "attack" } }, { passed: false }).why === "it is not decided by a save");
+check("a recipe decided by nothing lands nothing",
+  whatLands({ decidedBy: { kind: "automatic" } }, { passed: false }).why === "it is not decided by a save");
+check("an attack asked without its result lands nothing, and says what it needs",
+  (() => { const v = whatLands({ decidedBy: { kind: "attack" }, onHit: [dmg("1d8", "slashing")] }, { passed: false });
+    return !v.damage.length && !v.conditions.length && /hit, a critical hit or a miss/.test(v.why); })());
+
+// ── An attack's result (The One Road, Phase 3, 2026-09-14) ──
+const atk = (onHit, onCrit = [], onMiss = [], then = []) =>
+  ({ decidedBy: { kind: "attack", melee: true, attacks: 1 }, onHit, onCrit, onMiss, then, onFail: [], onSuccess: [] });
+const dmgOn = (formula, type) => ({ kind: "damage", formula, types: [type] });
+const frostBrand = atk([dmgOn("1d8", "slashing"), dmgOn("1d6", "cold")]);
+o = whatLands(frostBrand, { result: "hit", rolled: [{ total: 5, type: "slashing" }, { total: 3, type: "cold" }] });
+check("a hit lands the attack's own dice, its extra dice with them: 5 slashing, 3 cold",
+  o.damage.map(d => `${d.amount} ${d.type}`).join(", ") === "5 slashing, 3 cold" && o.label === "HIT", show(o));
+o = whatLands(frostBrand, { result: "miss", rolled: [{ total: 5, type: "slashing" }] });
+check("a miss lands nothing", o.damage.every(d => d.amount === 0) && o.label === "MISS" && !o.then.length, show(o));
+const vicious = atk([dmgOn("2d6", "slashing")], [dmgOn("2d6", "slashing")]);
+check("a plain hit adds no crit dice", !whatLands(vicious, { result: "hit" }).extras.length);
+o = whatLands(vicious, { result: "critical" });
+check("a critical hit adds the item's crit dice, once: 2d6 slashing",
+  o.extras.length === 1 && o.extras[0].formula === "2d6" && o.extras[0].types[0] === "slashing" && o.label === "CRITICAL",
+  JSON.stringify(o.extras));
+const wolf = atk([dmgOn("1d6", "piercing"), { kind: "condition", condition: { key: "prone", duration: 60, ends: null } }]);
+check("a hit's own condition is part of what lands on a hit, and not on a miss",
+  whatLands(wolf, { result: "hit" }).conditions[0]?.key === "prone" && !whatLands(wolf, { result: "miss" }).conditions.length);
+const clawSave = { key: "2014 · claws · d281bf8c · then 1", decidedBy: save("con"), onSuccess: [],
+  onFail: [dmg("3d6", "poison", "half")] };
+const claw = atk([dmgOn("2d4", "slashing")], [], [], [clawSave]);
+check("a hit hands on the save after it, and a miss does not",
+  whatLands(claw, { result: "hit" }).then[0] === clawSave && whatLands(claw, { result: "critical" }).then.length === 1
+    && !whatLands(claw, { result: "miss" }).then.length);
+check("that save is decided as a save: failed, all 3 poison; made, half of 3 is 1",
+  whatLands(clawSave, { passed: false, rolled: [{ total: 3, type: "poison" }] }).damage[0]?.amount === 3
+    && whatLands(clawSave, { passed: true, rolled: [{ total: 3, type: "poison" }] }).damage[0]?.amount === 1);
+const graze = atk([dmgOn("1d12", "slashing")], [], [dmgOn("@mod", "slashing")]);
+o = whatLands(graze, { result: "miss", rolled: [{ total: 3, type: "slashing" }] });
+check("a miss that still deals damage (Graze) lands it", o.damage[0]?.amount === 3 && o.dealsDamage, show(o));
 
 // ── The one rule every save path uses for a card row (2026-09-14) ──
 const row = (o) => { const s = damageShare(o); return `${s.share} ${s.label}`; };

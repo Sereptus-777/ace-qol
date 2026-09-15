@@ -241,7 +241,11 @@ export class HpDoor {
     const total = landed.reduce((sum, f) => sum + Number(f.final), 0);
     if (!actor || total <= 0) return { applied: false, total: 0, hpDelta: 0 };
     const types = [...new Set(landed.map(f => f.type).filter(Boolean))];
-    const damages = landed.map(f => ({ value: Number(f.final), type: f.type ?? "none", properties: new Set() }));
+    // ⚠️ WHAT DEALT IT TRAVELS WITH IT. Heavy Armor Master takes 3 off only
+    // nonmagical bludgeoning, piercing and slashing, and reads "magical" from the
+    // damage's properties. This is the one description APPLY ALL has always
+    // used, so a +1 sword's hit through this door still gets past it.
+    const damages = DamageApplicator.describeDamages(landed, 1, item);
     const hp = () => Number(actor?.system?.attributes?.hp?.value ?? 0);
     const before = hp();
     const result = await DamageApplicator.applyHPDamage(actor, total, { label, types, damages });

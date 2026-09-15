@@ -11,6 +11,10 @@ import { CombatState } from "./combat-state.mjs";
 import { NullificationWalker } from "./target-state-registry/walker.mjs";
 import { getChosenDamageType } from "./multi-type-damage-chooser.mjs";
 import { AttackAbilityResolver } from "./attack-ability-resolver.mjs";
+// The One Road, Phase 3: what lands on a hit is the attack's recipe. Read at
+// function time only; recipe.mjs reaches this file back through post-hit-saves.
+import { recipeForActivity, loadBookFor } from "./inference/recipe.mjs";
+import { whatLands } from "./road/what-lands.mjs";
 
 const PHYSICAL_TYPES = new Set(["bludgeoning", "piercing", "slashing"]);
 
@@ -54,6 +58,34 @@ export class DamageCalculator {
       }
       return [match];
     } catch (_) { return list; }
+  }
+
+  /**
+   * The recipe of the attack that hit (The One Road, Phase 3): the book's for a
+   * named official spell, brought into memory first, and the item's own
+   * otherwise. Null for anything not decided by an attack roll.
+   *
+   * @returns {Promise<{recipe: object, book: object|null, activity: object}|null>}
+   */
+  static async _attackRoad(item, actor, activityId = null) {
+    try {
+      const acts = item?.system?.activities;
+      const list = !acts ? []
+        : (typeof acts.forEach === "function") ? [...(acts.values?.() ?? acts)]
+        : (typeof acts === "object" ? Object.values(acts) : []);
+      const used = activityId ? list.find(a => a?.id === activityId || a?._id === activityId) : null;
+      const activity = used ?? list.find(a => a?.type === "attack") ?? null;
+      if (activity?.type !== "attack") return null;
+      const holder = actor ?? item?.actor ?? null;
+      await loadBookFor(item, { actor: holder });
+      const built = recipeForActivity(item, activity, { actor: holder });
+      if (built?.recipe?.decidedBy?.kind !== "attack") return null;
+      return { recipe: built.recipe, book: built.book ?? null, activity };
+    } catch (err) {
+      console.warn(`${MODULE_ID} | "${item?.name}": its attack recipe could not be read, so its hit lands as `
+        + `the sheet's dice say:`, err);
+      return null;
+    }
   }
 
   static _parseHitDamage(item, rollData, actor) {
@@ -530,6 +562,44 @@ export class DamageCalculator {
       }
     }
 
+    // ── WHAT LANDS ON A HIT IS THE RECIPE'S (The One Road, Phase 3, 2026-09-14) ──
+    // The dice above are the sheet's own, built the way dnd5e builds them: the
+    // run's numbers. What lands on this result is the recipe's, and whatLands
+    // answers for a hit or a critical hit as it answers for a save. A named
+    // official spell's recipe is its book's and the sheet is only this cast: when
+    // the book's hit deals no damage, the sheet's dice for it do not land.
+    //
+    // ⚠️🔴 AN ITEM'S CRIT DICE WERE NEVER READ FROM THE ITEM. dnd5e puts an
+    // attack's critical bonus on its first damage roll and adds it only on a crit,
+    // after the doubling. This file joins the damage parts and rolls them itself,
+    // so that field was never read; a crit extra reached the card only when the
+    // words' reader below recognised it in the description, as it did on all
+    // seven items in hijinx that carry one (the Vicious weapons, Jeth's Bladed
+    // Whip, the Mace of Smiting). The recipe carries the item's own as onCrit: it
+    // is rolled here, once, only on a crit, and the words stand down.
+    let recipeCritDice = false;
+    const road = await DamageCalculator._attackRoad(item, actor, activityId);
+    if (road) {
+      const verdict = whatLands(road.recipe, { result: isCrit ? "critical" : "hit" });
+      recipeCritDice = (road.recipe.onCrit ?? []).some(o => o?.kind === "damage");
+      if (road.book && !verdict.dealsDamage) {
+        const own = components.filter(c => c.name === item.name);
+        for (const c of own) components.splice(components.indexOf(c), 1);
+        if (own.length) {
+          console.log(`${MODULE_ID} | "${item.name}": its recipe is the book's (${road.book.pack ?? "a book"}), and `
+            + `the book's hit deals no damage, so the sheet's ${own.map(c => `${c.formula} ${c.type}`).join(" + ")} does not land.`);
+        }
+      }
+      const firstType = components.find(c => c.name === item.name)?.type ?? "untyped";
+      for (const x of verdict.extras) {
+        const label = `${item.name} (critical)`;
+        const type = x.types?.[0] ?? firstType;
+        const result = await DamageCalculator.rollWithCrit(x.formula, rollData, false, critRule, label, item);
+        components.push({ name: label, ...result, type });
+        console.log(`${MODULE_ID} | ${label}: +${result.total} ${type} (${x.formula}), the item's own crit dice, from its recipe`);
+      }
+    }
+
     // ── Pact of the Blade damage-type preference (player's sticky choice) ──
     // The dnd5e rollDamage prototype patch covers NATIVE rolls only; this
     // pipeline builds its own components, so the preference must land here
@@ -787,6 +857,9 @@ export class DamageCalculator {
             // crit, skip — otherwise we'd add 2d6 to every hit on the trigger
             // creature, which is the production-blocking Vicious-line bug.
             if (bd.triggersOnCrit && !isCrit) continue;
+            // The item's own crit dice are on its recipe and were rolled above;
+            // words describing the same dice stand down (Phase 3).
+            if (bd.triggersOnCrit && recipeCritDice) continue;
 
             const dmgType = bd.damageType ?? components[0]?.type ?? "untyped";
             const result = await DamageCalculator.rollWithCrit(bd.formula, rollData, isCrit, critRule, `vs ${triggerType}`);
@@ -871,6 +944,10 @@ export class DamageCalculator {
 
         // Crit gate: if the bonus is explicitly marked as crit-only, require a crit.
         if (bd.triggersOnCrit && !isCrit) continue;
+        // ⚠️ ONE SOURCE FOR A CRIT'S DICE (Phase 3). When the item's data carries
+        // them, its recipe rolled them above; the words saying the same thing
+        // stand down, or a crit with the Mace of Smiting landed its 7 twice.
+        if (bd.triggersOnCrit && recipeCritDice) continue;
 
         // Creature gate: if the bonus is creature-type-gated (Holy Avenger
         // "+2d10 radiant vs fiend/undead"), the target's creature type must

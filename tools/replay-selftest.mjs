@@ -165,7 +165,9 @@ globalThis.foundry = {
 };
 globalThis.document = { querySelectorAll: () => [], querySelector: () => null,
   createElement: () => ({ style: {}, classList: { add() {} }, setAttribute() {}, appendChild() {} }) };
-globalThis.canvas = { grid: { size: 100, distance: 5 }, scene: null, tokens: { placeables: [], controlled: [] } };
+globalThis.canvas = { grid: { size: 100, distance: 5 }, scene: null, tokens: { placeables: [], controlled: [],
+  // TokenLayer#get: the placeable with this document id, as Foundry's canvas finds it.
+  get(id) { return this.placeables.find(t => t.id === id || t.document?.id === id) ?? null; } } };
 globalThis.CONST = { ACTIVE_EFFECT_MODES: { ADD: 2, CUSTOM: 0, OVERRIDE: 5 }, GRID_SNAPPING_MODES: {} };
 globalThis.ChatMessage = { create: async (data) => { posted.push(data);
   return { id: `msg${posted.length}`, ...data, flags: data?.flags ?? {} }; }, getSpeaker: () => ({}) };
@@ -179,7 +181,8 @@ globalThis.Roll = class Roll {
     const terms = [];
     const expr = this.formula.replace(/(\d*)d(\d+)(k[hl]\d*)?/gi, (_m, n, faces, keep) => {
       const count = Number(n || 1);
-      terms.push({ faces: Number(faces), number: count,
+      // A die term's own total, as Foundry's DiceTerm has one: a crit rule adds them up.
+      terms.push({ faces: Number(faces), number: count, total: keep ? 1 : count,
         results: Array.from({ length: count }, () => ({ result: 1, active: true })) });
       return String(keep ? 1 : count);
     });
@@ -207,7 +210,8 @@ let SpellPipeline, SaveEngine, PostHitSaves, DescriptionParser, readSaveOutcome,
   readActivities, readAppliedConditions, decideActivityChoice, upCanBeSeen, aceStripEnrichers,
   readPrismaticWall, PrismaticWallEngine, RepeatingSaveEngine, spellIsUp,
   recipesFor, recipeLine, formulaValue, whatLands, HpDoor, SignalDoor, untilDiceLand, CombatState,
-  RulesIndex, bookReview, fullDamageSaves, PressGate;
+  RulesIndex, bookReview, fullDamageSaves, PressGate, DamageCalculator, DamageApplicator, DamageCardRenderer,
+  CardDoor, recipeForActivity, loadBookFor, isFollowUp;
 try {
   ({ readPrismaticWall } = await import(`${MODULE}/scripts/rules/prismatic-wall.mjs`));
   ({ PrismaticWallEngine } = await import(`${MODULE}/scripts/prismatic-wall-engine.mjs`));
@@ -220,11 +224,15 @@ try {
   ({ readActivities, readAppliedConditions } = await import(`${MODULE}/scripts/read-activities.mjs`));
   ({ decideActivityChoice, upCanBeSeen, spellIsUp } = await import(`${MODULE}/scripts/activity-choice.mjs`));
   ({ aceStripEnrichers } = await import(`${MODULE}/scripts/description-reader.mjs`));
-  ({ recipesFor, recipeLine, bookReview, fullDamageSaves } = await import(`${MODULE}/scripts/inference/recipe.mjs`));
+  ({ recipesFor, recipeLine, bookReview, fullDamageSaves, recipeForActivity, loadBookFor, isFollowUp }
+    = await import(`${MODULE}/scripts/inference/recipe.mjs`));
   ({ RulesIndex } = await import(`${MODULE}/scripts/rules/rules-index.mjs`));
   ({ formulaValue } = await import(`${MODULE}/scripts/inference/formula-value.mjs`));
   ({ whatLands } = await import(`${MODULE}/scripts/road/what-lands.mjs`));
-  ({ HpDoor, SignalDoor, untilDiceLand } = await import(`${MODULE}/scripts/road/doors.mjs`));
+  ({ HpDoor, SignalDoor, untilDiceLand, CardDoor } = await import(`${MODULE}/scripts/road/doors.mjs`));
+  ({ DamageCalculator } = await import(`${MODULE}/scripts/damage-calculator.mjs`));
+  ({ DamageApplicator } = await import(`${MODULE}/scripts/damage-applicator.mjs`));
+  ({ DamageCardRenderer } = await import(`${MODULE}/scripts/damage-card-renderer.mjs`));
   ({ CombatState } = await import(`${MODULE}/scripts/combat-state.mjs`));
   ({ PressGate } = await import(`${MODULE}/scripts/gate/press-gate.mjs`));
 } catch (err) {
@@ -390,6 +398,11 @@ function loadedSystem(raw, rollData) {
   }
   return system;
 }
+/** dnd5e's offersBaseDamage: a weapon always, a consumable only as ammunition. */
+const offersBaseDamage = (type, system) => type === "weapon" || (type === "consumable" && system?.type?.value === "ammo");
+/** DamageData#formula is empty only with no custom formula, no dice and no bonus. */
+const baseFormulaOf = (base) => !!base && !!((base.custom?.enabled && String(base.custom.formula ?? "").trim())
+  || (Number(base.number) && Number(base.denomination)) || String(base.bonus ?? "").trim());
 function loadedActivity(a, type, system, rollData) {
   const out = { ...a };
   for (const key of ITEM_FIELDS[type] ?? []) {
@@ -404,6 +417,19 @@ function loadedActivity(a, type, system, rollData) {
     if ((r.long ?? 0) > (r.value ?? 0)) r.value = r.long;
     else if (r.reach && !r.value) r.value = r.reach;
     out.range = preparedRange(r, rollData);
+  }
+  // ⚠️ dnd5e LOADS AN ATTACK WITH ITS WEAPON'S BASE DAMAGE IN FRONT (09-14):
+  // AttackActivityData#prepareFinalData puts the item's base damage at the head of
+  // the attack's damage parts, marked `base`, when the activity includes it and the
+  // item offers one (a weapon always; ammunition as ammunition). The live recipe
+  // read it twice; the stored copy here never had it, so the replay could not see.
+  if (a.type === "attack" && out.damage?.includeBase !== false && offersBaseDamage(type, system)) {
+    const base = system.damage?.base;
+    if (baseFormulaOf(base)) {
+      const d = plain(out.damage) ? { ...out.damage } : { parts: [] };
+      d.parts = [{ ...copy(base), base: true, locked: true }, ...(Array.isArray(d.parts) ? d.parts : [])];
+      out.damage = d;
+    }
   }
   const calc = out.save?.dc?.calculation;
   if (plain(out.save?.dc) && (calc === undefined || calc === "initial")) {
@@ -759,7 +785,9 @@ await quiet(async () => {
 
 // ⚠️ THROUGH THE DAMAGE CARD'S OWN DOOR, not just its reader: the claw lands
 // on a Specter and on a creature that is not immune, and what gets posted is
-// what is checked.
+// what is checked. (Phase 3: at the table this save runs on the save engine,
+// pinned under PHASE 3 below. With no save engine on the API, as here, the
+// post-hit card still asks it: the fallback this block pins.)
 {
   const claws = findOn("Neferon", "Claws");
   const specter = [...ACTORS.values()].find(a => a.name === "Specter") ?? null;
@@ -1909,6 +1937,256 @@ console.log(`\nPHASE 2: ONE GATE, AND DO IT ANYWAY`);
     }
   } finally {
     ui.notifications.warn = keepWarn;
+  }
+}
+
+/* ── PHASE 3: ATTACKS ON THE ROAD ───────────────────────────────────────── */
+// Johnny, 2026-09-14: "PHASE 3 — ATTACKS ONLY. Then stop." Done when the replay
+// pins, on his world: 1. a mundane weapon attack (sheet recipe), hit damage
+// through HpDoor; 2. a weapon with extra damage on the item, the extra dice on the
+// recipe, not a side engine; 3. a spell attack whose recipe is the book's, the
+// sheet the instance, the actor item not written; 4. a crit, onCrit extras only on
+// a crit; 5. a hit-then-save rider as recipe.then, a new run on the same road that
+// whatLands owns; 6. cards in files touched go through CardDoor; 7. dice wait in
+// the door if thrown, land at once if not.
+console.log(`\nPHASE 3: ATTACKS ON THE ROAD`);
+{
+  const MOD = "ace-qol";
+  const RULE = "maxPlusRoll";
+  const actsOf = (it) => [...(it?.system?.activities ?? [])];
+  const attackOf = (it) => actsOf(it).find(a => a.type === "attack") ?? null;
+  const hitOn = (extra = {}) => ({ hitResult: "hit", attacker: { bonuses: [] }, damageModifiers: {}, ...extra });
+  const rolledFor = async (it, isCrit = false) => {
+    let comps = [];
+    await quiet(async () => {
+      comps = await DamageCalculator.rollDamageComponents(it, it.actor, hitOn(), isCrit, RULE, attackOf(it)?.id ?? null);
+    });
+    return comps;
+  };
+  const recipeOf = async (it) => {
+    let built = null;
+    await quiet(async () => {
+      await loadBookFor(it, { actor: it.actor });
+      built = recipeForActivity(it, attackOf(it), { actor: it.actor });
+    });
+    return built;
+  };
+  const dmgTypes = (outs) => (outs ?? []).filter(o => o.kind === "damage").map(o => (o.types ?? []).join("/") || "untyped");
+  const dmgSaid = (outs) => (outs ?? []).filter(o => o.kind === "damage")
+    .map(o => `${o.formula} ${(o.types ?? []).join("/") || "untyped"}`).join(", ") || "-";
+  const said = (comps) => comps.map(c => `${c.name}: ${c.formula} ${c.type} = ${c.total}`).join("; ") || "nothing";
+
+  // ── 1. A mundane weapon attack from its own sheet; its hit through the hit-point door ──
+  const berserker = firstActor("Berserker");
+  const axe = berserker ? [...berserker.items].find(i => i.type === "weapon" && /^greataxe$/i.test(i.name)) : null;
+  if (axe && attackOf(axe)) {
+    const built = await recipeOf(axe);
+    const comps = await rolledFor(axe);
+    const own = comps.filter(c => c.name === axe.name);
+    // APPLY on its damage card, as the GM presses it, on a stand-in creature.
+    const hp = { value: 30, max: 30, temp: 0 };
+    const victim = { id: "replay-hit-target", name: "a test creature", type: "npc", system: { attributes: { hp }, traits: {} },
+      statuses: new Set(), effects: new Collection(), getFlag: () => undefined,
+      update: async (u) => {
+        if ("system.attributes.hp.value" in u) hp.value = u["system.attributes.hp.value"];
+        if ("system.attributes.hp.temp" in u) hp.temp = u["system.attributes.hp.temp"];
+        return victim;
+      } };
+    const total = own.reduce((s, c) => s + c.total, 0);
+    const card = { id: "replay-damage-card", update: async () => card, flags: { [MOD]: {
+      type: "damageResult", itemUuid: axe.uuid, actorId: berserker.id,
+      damageResults: [{ targetId: victim.id, tokenId: "tok-victim", tokenDocId: "tok-victim", name: victim.name, totalFinal: total,
+        components: own.map(c => ({ name: c.name, type: c.type, raw: c.total, final: c.total, modifier: "normal" })) }] } } };
+    const doorCalls = [], sent = [];
+    const keepDoor = HpDoor.damage, keepCallAll = Hooks.callAll;
+    let applyErr = null;
+    HpDoor.damage = async (...a) => { doorCalls.push(a); return keepDoor.apply(HpDoor, a); };
+    Hooks.callAll = (name, payload) => { sent.push({ name, payload }); };
+    ACTORS.set(victim.id, victim);
+    try { await quiet(async () => { await DamageApplicator.applyDamage(card); }); }
+    catch (err) { applyErr = err; }
+    finally { HpDoor.damage = keepDoor; Hooks.callAll = keepCallAll; ACTORS.delete(victim.id); }
+    const sig = sent.find(s => s.name === `${MOD}.damageApplied`)?.payload ?? null;
+    check("1. a mundane weapon attack lands its sheet recipe's damage, and APPLY puts it on through the hit-point door (Phase 3)",
+      !applyErr && built?.recipe?.evidence?.includes("item") && !built?.book && own.length > 0
+        && JSON.stringify(own.map(c => c.type)) === JSON.stringify(dmgTypes(built.recipe.onHit))
+        && doorCalls.length === 1 && hp.value === 30 - total && sig?.sourceItem === axe && sig?.sourceActor === berserker,
+      applyErr ? `APPLY threw: ${applyErr?.message ?? applyErr}`
+        : `${berserker.name}'s ${axe.name}: recipe on hit ${dmgSaid(built?.recipe?.onHit)} (from ${built?.book ? "the book" : "the sheet"}); `
+          + `the hit: ${said(comps)}; through the door ${doorCalls.length}x, hit points 30 to ${hp.value}; `
+          + `signal: ${sig ? `${sig.hpDelta} moved, dealt by ${sig.sourceActor?.name ?? "nobody"} with ${sig.sourceItem?.name ?? "nothing"}` : "none"}`);
+  } else check("1. a mundane weapon attack (Phase 3)", null, "no Berserker's Greataxe in this world");
+
+  // ── 2. A weapon's extra damage: on its recipe, from the item's own dice ──
+  const firaxis = firstActor("Firaxis Greenbeard");
+  const brand = firaxis ? [...firaxis.items].find(i => i.type === "weapon" && /^frost brand/i.test(i.name)) : null;
+  if (brand && attackOf(brand)) {
+    const built = await recipeOf(brand);
+    const comps = await rolledFor(brand);
+    const own = comps.filter(c => c.name === brand.name);
+    const others = comps.filter(c => c.name !== brand.name);
+    const onHit = dmgTypes(built?.recipe?.onHit);
+    check("2. a weapon's extra damage is on its recipe and lands from the item's own dice, no side engine: the Frost Brand's cold (Phase 3)",
+      onHit.length >= 2 && onHit.includes("cold") && JSON.stringify(own.map(c => c.type)) === JSON.stringify(onHit) && !others.length,
+      `${firaxis.name}'s ${brand.name}: recipe on hit ${dmgSaid(built?.recipe?.onHit)}; the hit: ${said(comps)}`);
+  } else check("2. a weapon with extra damage on the item (Phase 3)", null, "no Frost Brand in this world");
+
+  // ── 3. A spell attack: the book is the recipe, the sheet this cast, the item unwritten ──
+  const boltCaster = firstActor(VAREK);
+  const bolt = boltCaster ? [...boltCaster.items].find(i => i.type === "spell" && /^fire bolt$/i.test(i.name)
+    && String(i.system?.source?.rules) === "2024") : null;
+  if (bolt && attackOf(bolt)) {
+    const before = JSON.stringify(bolt._source);
+    const built = await recipeOf(bolt);
+    const comps = await rolledFor(bolt);
+    const after = JSON.stringify(bolt._source);
+    const own = comps.filter(c => c.name === bolt.name);
+    check("3. a spell attack takes its recipe from the book and its dice from the sheet, and the item is not written: Fire Bolt (Phase 3)",
+      !!built?.book && built.recipe.evidence.includes("book") && dmgTypes(built.recipe.onHit).join() === "fire"
+        && own.length === 1 && own[0].type === "fire" && before === after,
+      `${boltCaster.name}'s ${bolt.name}: recipe from ${built?.book?.pack ?? "the sheet"}, on hit ${dmgSaid(built?.recipe?.onHit)}; `
+        + `the hit: ${said(comps)}; the item untouched: ${before === after}`);
+  } else check("3. a spell attack (Phase 3)", null, "Varek has no 2024 Fire Bolt");
+
+  // ── 4. A crit: the item's crit dice from its recipe, only on a crit ──
+  const king = firstActor("King");
+  const vicious = king ? [...king.items].find(i => i.type === "weapon" && /^vicious greatsword$/i.test(i.name)) : null;
+  if (vicious && attackOf(vicious)) {
+    const built = await recipeOf(vicious);
+    const onHitComps = await rolledFor(vicious, false);
+    const onCritComps = await rolledFor(vicious, true);
+    const critRows = (cs) => cs.filter(c => / \(critical\)$/.test(c.name));
+    const wordRows = (cs) => cs.filter(c => / \(crit bonus\)$/.test(c.name));
+    const extra = critRows(onCritComps)[0];
+    // Every item of his with crit dice: what its data says, and what ACE's words
+    // reader read as a crit bonus. Before Phase 3 the words' reading was what
+    // landed; now the data does, and the words stand down.
+    const critInfo = [...ACTORS.values()].flatMap(a => [...a.items]
+      .filter(i => actsOf(i).some(x => x.type === "attack" && String(x.damage?.critical?.bonus ?? "").trim()))
+      .map(i => {
+        const data = actsOf(i).filter(x => x.type === "attack")
+          .map(x => String(x.damage?.critical?.bonus ?? "").trim()).filter(Boolean);
+        let words = [];
+        try {
+          words = (DescriptionParser.parse(i).bonusDamage ?? []).filter(b => b.triggersOnCrit)
+            .map(b => `${b.formula}${b.requiresCreatureTypes?.length ? ` against ${b.requiresCreatureTypes.join("/")}` : ""}`);
+        } catch (_) { words = ["(could not be read)"]; }
+        return `${a.name}'s ${i.name}: data ${data.join(" / ")}, words ${words.join(" / ") || "none"}`;
+      }));
+    check("4. a crit adds the item's crit dice from its recipe, once; a plain hit does not: King's Vicious Greatsword (Phase 3)",
+      dmgTypes(built?.recipe?.onCrit).length === 1 && !critRows(onHitComps).length && critRows(onCritComps).length === 1
+        && extra?.formula === "2d6" && extra?.total === 2 && extra?.type === "slashing" && !wordRows(onCritComps).length,
+      `recipe on crit ${dmgSaid(built?.recipe?.onCrit)}; a hit: ${said(onHitComps)}; a crit: ${said(onCritComps)}; `
+        + `every item with crit dice: ${critInfo.join("; ")}`);
+  } else check("4. a crit (Phase 3)", null, "no King's Vicious Greatsword in this world");
+
+  // ── 5. The claw's poison save: the recipe's `then`, a new run on the save engine ──
+  const neferon = firstActor("Neferon");
+  const claws = neferon ? [...neferon.items].find(i => i.name === "Claws") : null;
+  const goblin = [...ACTORS.values()].find(a => a.type === "npc" && /^goblin$/i.test(a.name)) ?? null;
+  if (claws && goblin) {
+    let road = null;
+    await quiet(async () => { road = await DamageCalculator._attackRoad(claws, neferon, null); });
+    const then = road?.recipe?.then?.[0] ?? null;
+    const calls = [];
+    const keep = { aceQol: game.aceQol, scenes: game.scenes.get, delay: SETTINGS.get("ace-qol.npcDamageAnimationDelay") };
+    const tokenDoc = { id: "tok-goblin", actor: goblin, parent: { id: "replay-scene" } };
+    tokenDoc.object = { id: tokenDoc.id, document: tokenDoc, actor: goblin, scene: { id: "replay-scene" }, name: goblin.name };
+    game.aceQol = { ...(keep.aceQol ?? {}), saveEngine: { postSaveCard: async (...a) => { calls.push(a); } } };
+    game.scenes.get = (id) => (id === "replay-scene" ? { id, tokens: { get: (t) => (t === tokenDoc.id ? tokenDoc : null) } } : null);
+    SETTINGS.set("ace-qol.npcDamageAnimationDelay", 0);
+    const before = posted.length;
+    let dice = [], runErr = null;
+    try {
+      await quiet(async () => {
+        await PostHitSaves.checkPostHitEffects(claws, neferon, [{ hitResult: "hit", actorId: goblin.id, tokenDocId: tokenDoc.id,
+          sceneId: "replay-scene", name: goblin.name, img: "", targetActor: { id: goblin.id } }], []);
+        const engine = Object.create(SaveEngine.prototype);
+        dice = await engine._rollSpellDamage(claws, neferon, { recipe: then, activityId: null });
+      });
+    } catch (err) { runErr = err; }
+    finally {
+      game.aceQol = keep.aceQol; game.scenes.get = keep.scenes;
+      if (keep.delay === undefined) SETTINGS.delete("ace-qol.npcDamageAnimationDelay");
+      else SETTINGS.set("ace-qol.npcDamageAnimationDelay", keep.delay);
+    }
+    const ownCard = posted.slice(before).find(p => p?.flags?.[MOD]?.type === "postHitSave");
+    const opts = calls[0]?.[3] ?? {};
+    const rolledNow = dice.map(d => ({ total: d.total, type: d.type }));
+    const failed = then ? whatLands(then, { passed: false, rolled: rolledNow }) : null;
+    const made = then ? whatLands(then, { passed: true, rolled: rolledNow }) : null;
+    check("5. a claw's poison save is the recipe's `then`, a new run on the save engine that whatLands decides: Neferon's Claws (Phase 3)",
+      !runErr && isFollowUp(then) && then.decidedBy?.ability === "con" && then.decidedBy?.dc === 14
+        && calls.length === 1 && JSON.stringify(opts.recipe) === JSON.stringify(then)
+        && opts.saveAbility === "con" && opts.saveDC === 14 && opts.activityId === null && !ownCard
+        && dice.length === 1 && dice[0].type === "poison" && dice[0].total === 3
+        && failed?.damage?.[0]?.amount === 3 && made?.damage?.[0]?.amount === 1,
+      runErr ? `threw: ${runErr?.message ?? runErr}`
+        : `then: ${then ? `${then.decidedBy.ability} DC ${then.decidedBy.dc}, on a failure ${dmgSaid(then.onFail)}` : "none"}; `
+          + `handed to the save engine ${calls.length}x${ownCard ? ", and its own card posted as well" : ""}; `
+          + `its dice: ${dice.map(d => `${d.formula} ${d.type} = ${d.total}`).join(", ") || "none"}; `
+          + `a failure takes ${failed?.damage?.[0]?.amount ?? "?"}, a success ${made?.damage?.[0]?.amount ?? "?"}`);
+  } else check("5. a hit-then-save rider (Phase 3)", null, "no Neferon's Claws or Goblin in this world");
+
+  // ── 6. Every card in the files Phase 3 touched goes through the card door ──
+  {
+    const code = (f) => readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/${f}`, "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    const touched = ["damage-card-renderer.mjs", "damage-applicator.mjs", "post-hit-saves.mjs", "damage-calculator.mjs",
+      "save-engine.mjs", "road/what-lands.mjs", "inference/recipe.mjs", "inference/action-facts.mjs"];
+    const raw = touched.map(f => [f, (code(f).match(/ChatMessage\.create\(/g) ?? []).length]).filter(([, n]) => n);
+    const door = (code("road/doors.mjs").match(/ChatMessage\.create\(/g) ?? []).length;
+    check("6. every card in the files Phase 3 touched goes through the card door; no new raw card (Phase 3)",
+      !raw.length && door === 1,
+      raw.length ? `raw cards left: ${raw.map(([f, n]) => `${f} ${n}`).join(", ")}`
+        : `none left in ${touched.length} files; the card door is the one place a card is created (${door})`);
+  }
+
+  // ── 7. The dice: waited for in the door when thrown; landing at once when not ──
+  if (axe) {
+    const { safeShowForRoll } = await import(`${MODULE}/scripts/dsn-utils.mjs`);
+    const spied = [];
+    const keepPost = CardDoor.post;
+    let cardErr = null;
+    CardDoor.post = async (data, o = {}) => {
+      spied.push({ type: data?.flags?.[MOD]?.type ?? null, dice: o?.dice ?? false });
+      return keepPost.call(CardDoor, data, o);
+    };
+    try {
+      await quiet(async () => {
+        await DamageCardRenderer.postDamageButton(axe, berserker, [hitOn({ name: "a test creature" })], [], attackOf(axe)?.id ?? null);
+        await DamageCardRenderer.postDamageCard(axe, berserker, [{
+          target: { name: "a test creature", img: "", currentHP: 30, maxHP: 30 },
+          targetToken: { id: "tok-victim", document: { id: "tok-victim" } }, targetActor: { id: "replay-hit-target" },
+          isCrit: false, totalRaw: 1, totalFinal: 1,
+          components: [{ name: axe.name, type: "slashing", raw: 1, final: 1, total: 1, modifier: "normal", formula: "1d12" }] }], RULE);
+      });
+    } catch (err) { cardErr = err; }
+    finally { CardDoor.post = keepPost; }
+    const button = spied.find(s => s.type === "damageButton"), result = spied.find(s => s.type === "damageResult");
+    // And the door itself, with dice that take a moment to land.
+    const keepDice = game.dice3d, keepCreate = ChatMessage.create;
+    const thrown = { n: 0, landed: 0 };
+    game.dice3d = { isEnabled: () => true,
+      showForRoll: () => { thrown.n++; return new Promise(r => setTimeout(() => { thrown.landed++; r(true); }, 15)); } };
+    let rollingAtCreate = null, waited = null, atOnce = null;
+    ChatMessage.create = async (data) => { rollingAtCreate = thrown.n - thrown.landed; return keepCreate(data); };
+    try {
+      await quiet(async () => {
+        safeShowForRoll({ total: 3 }, "the damage dice");
+        await CardDoor.post({ content: "a damage card" }, { dice: true });
+        waited = rollingAtCreate;
+        safeShowForRoll({ total: 3 }, "someone else's dice");
+        await CardDoor.post({ content: "a ROLL DAMAGE button" });
+        atOnce = rollingAtCreate;
+      });
+      await new Promise(r => setTimeout(r, 40));
+    } finally { game.dice3d = keepDice; ChatMessage.create = keepCreate; }
+    check("7. the damage card waits in the card door for its thrown dice; the ROLL DAMAGE card, with none thrown, lands at once (Phase 3)",
+      !cardErr && button?.dice === false && result?.dice === true && waited === 0 && atOnce === 1,
+      cardErr ? `a card threw: ${cardErr?.message ?? cardErr}`
+        : `ROLL DAMAGE card: dice ${button?.dice}; damage card: dice ${result?.dice}; `
+          + `dice still rolling when the damage card was created: ${waited}; when the button was: ${atOnce}`);
   }
 }
 

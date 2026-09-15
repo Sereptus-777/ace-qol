@@ -514,6 +514,15 @@ function severNote(sever) {
                                  : `on a natural 20, roll another d20: on a 20, ${what}`;
 }
 
+/**
+ * Whether a recipe is a save that runs after its parent's hit, as thenRecipe
+ * below builds it. It has no activity of its own, so its dice are its own: a
+ * claw's poison save rolls its 3d6 poison, never the claw.
+ */
+export function isFollowUp(recipe) {
+  return / · then \d+$/.test(String(recipe?.key ?? ""));
+}
+
 /** A save asked after a hit, as the recipe that runs after its parent's hit. */
 function thenRecipe(r, i, parentKey, edition, source, byHand) {
   const half = r?.halfOnSuccess ? "half" : "none";
@@ -549,6 +558,19 @@ function attackOutcomes(item, activity, plan, facts, s, actor, key, source, left
     if (onHit.some(o => o.condition?.key === k)) continue;
     onHit.push(conditionOut(k));
     fromText = true;
+  }
+
+  // ⚠️🔴 AN ITEM'S CRIT DICE ARE WHAT A CRIT ADDS (2026-09-14). dnd5e keeps an
+  // attack's "critical bonus" beside its damage, puts it on the first damage roll
+  // and adds it only on a critical hit, after the doubling (AttackActivity
+  // getDamageConfig; DamageRoll). It is typed like that first roll. Ten attacks in
+  // hijinx carry one (King's Vicious Greatsword 2d6, Jeth's Bladed Whip 2d4, the
+  // Mace of Smiting 7, or 14 against a construct) and none was read here: a crit
+  // extra reached a card only when ACE's words reader recognised it.
+  const critBonus = String(activity?.damage?.critical?.bonus ?? "").trim();
+  if (critBonus) {
+    const first = onHit.find(o => o.kind === "damage");
+    onCrit.push(damageOut({ formula: critBonus, types: first?.types ?? [] }));
   }
 
   const sever = s.parsed?.severRider;

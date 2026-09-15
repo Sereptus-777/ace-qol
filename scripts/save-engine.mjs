@@ -64,7 +64,7 @@ import { waitUntil } from "./wait-for.mjs";
 // one rule, and lands through the hit-point door.
 import { whatLands, shareOf } from "./road/what-lands.mjs";
 import { HpDoor, ConditionDoor, CardDoor, SignalDoor } from "./road/doors.mjs";
-import { recipeForActivity, repeatTriggerOf, loadBookFor } from "./inference/recipe.mjs";
+import { recipeForActivity, repeatTriggerOf, loadBookFor, isFollowUp } from "./inference/recipe.mjs";
 import { RulesIndex } from "./rules/rules-index.mjs";
 
 // Real black d20 die art (per-face). These are the dice the GM already sees;
@@ -4856,7 +4856,29 @@ export class SaveEngine {
 
     const sys = item?.system ?? {};
     const activities = sys.activities;
-    if (activities) {
+
+    // ⚠️🔴 A SAVE AFTER A HIT HAS NO ACTIVITY OF ITS OWN (The One Road, Phase 3,
+    // 2026-09-14). Its recipe is its parent attack's `then`, read from the words
+    // ("3d6 poison on a failed save"), and the item's first damaging activity is
+    // the attack itself: rolling that for Neferon's poison save would put the
+    // claw's 2d4 slashing where 3d6 poison belongs. A follow-up rolls its own dice.
+    const followUp = !(opts.activityId ?? opts.activity?.id) && isFollowUp(opts.recipe);
+    if (followUp) {
+      for (const o of (opts.recipe.onFail ?? []).filter(x => x?.kind === "damage" && String(x.formula ?? "").trim())) {
+        const resolved = String(o.formula).replace(/@([a-zA-Z0-9_.]+)/g, (m, path) => {
+          const val = path.split(".").reduce((x, k) => x?.[k], rollData);
+          return val !== undefined ? String(val) : "0";
+        });
+        const roll = new Roll(resolved);
+        await roll.evaluate();
+        damageComponents.push({ name: item.name, formula: resolved, total: roll.total, type: o.types?.[0] ?? "untyped", roll });
+        rollsToShow.push(roll);
+      }
+      console.log(`${MODULE_ID} | "${item?.name}": the save after its hit rolls its own recipe's dice: `
+        + (damageComponents.map(c => `${c.formula} ${c.type}`).join(" + ") || "none"));
+    }
+
+    if (activities && !followUp) {
       let actList = (typeof activities.forEach === "function")
         ? [...(activities.values?.() ?? activities)]
         : (typeof activities === "object" ? Object.values(activities) : []);
@@ -5863,6 +5885,7 @@ export class SaveEngine {
     const damageComponents = await this._rollSpellDamage(item, casterActor, {
       spellLevel: flags.spellLevel ?? null,
       activityId: flags.activityId ?? null,   // roll THIS ability's dice, not the item's first damaging one
+      recipe,                                 // a save after a hit rolls its own recipe's dice
     });
     await this._postSaveResults(item, casterActor, results, {
       saveAbility, saveDC, halfOnSave, damageTypes, isSpell,
@@ -7090,6 +7113,7 @@ export class SaveEngine {
     const damageComponents = await this._rollSpellDamage(item, casterActor, {
       spellLevel: Number.isFinite(spellLevel) ? spellLevel : null,
       activityId: flags.activityId ?? null,   // roll THIS ability's dice, not the item's first damaging one
+      recipe,                                 // a save after a hit rolls its own recipe's dice
     });
     const baseDamageTotal = damageComponents.reduce((sum, c) => sum + c.total, 0);
 
@@ -7742,6 +7766,7 @@ export class SaveEngine {
       damageComponents = await this._rollSpellDamage(item, casterActor, {
         spellLevel: Number.isFinite(spellLevel) ? spellLevel : null,
         activityId: activityId ?? null,   // roll THIS ability's dice, not the item's first damaging one
+        recipe,                           // a save after a hit rolls its own recipe's dice
       });
     }
 

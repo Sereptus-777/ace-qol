@@ -14,6 +14,8 @@ import { awaitDsnRoll } from "./attack-prompt.mjs";
 // The rules brain — entries override the description parser for post-hit
 // behavior (convergence 2026-07-10). Function-time reads only; cycle inert.
 import { RulesBrain } from "./rules/rules-brain.mjs";
+// The One Road: every card here goes through the card door (Phase 3, 2026-09-14).
+import { CardDoor } from "./road/doors.mjs";
 
 const PHYSICAL_TYPES = new Set(["bludgeoning", "piercing", "slashing"]);
 
@@ -142,6 +144,19 @@ export class PostHitSaves {
     const hitTargets = hits.filter(h => h.hitResult === "hit" || h.hitResult === "critical");
     if (!hitTargets.length) return;
 
+    // ── THE SAVES AFTER THE HIT ARE THE ATTACK RECIPE'S `then` (Phase 3) ──
+    // The same reader built both lists in the same order (riderSavesFor), so a
+    // save pairs with its follow-up by place. A book's words could name other
+    // saves than the sheet's; none of his spell attacks has one, and such a save
+    // keeps its own card, said here, until one does.
+    const road = parsed.saves.length ? await DamageCalculator._attackRoad(item, actor, null) : null;
+    const thens = road?.recipe?.then ?? [];
+    const paired = !!road && !road.book && thens.length === parsed.saves.length;
+    if (road && !paired && parsed.saves.length) {
+      console.log(`${MODULE_ID} | post-hit: "${item.name}" names ${parsed.saves.length} save(s) after its hit and its `
+        + `recipe${road.book ? " (the book's)" : ""} names ${thens.length}, so they keep their own card.`);
+    }
+
     // ── HP-threshold rider (Mace of Disruption / Smiting) ──
     // Fires AFTER damage is applied. For each hit target whose post-damage HP
     // is at-or-below the rider's threshold, prompt a save. On fail, apply
@@ -175,7 +190,7 @@ export class PostHitSaves {
     // Iterate every parsed save so each posts its own card. The creature-type
     // / damage-immunity / condition-immunity gates inside the loop filter
     // targets per-save, so a save that doesn't apply to anyone simply skips.
-    for (const save of parsed.saves) {
+    for (const [saveIndex, save] of parsed.saves.entries()) {
       const targetData = hitTargets.map(h => {
         const scene = game.scenes.get(h.sceneId) ?? canvas.scene;
         const tokenDoc = scene?.tokens?.get(h.targetToken?.document?.id ?? h.tokenDocId);
@@ -287,7 +302,7 @@ export class PostHitSaves {
             `<div style="margin-top:4px;"><strong style="color:#ffffff;">${foundry.utils.escapeHTML(s.name)}</strong> `
             + `is ${foundry.utils.escapeHTML(s.reason)}, so no save is needed.</div>`
           ).join("");
-          await ChatMessage.create({
+          await CardDoor.post({
             content: `<div class="ace-qol-save-suppressed" style="background:#141118;border-left:3px solid #d4af37;padding:8px 12px;border-radius:4px;color:#e8d9a8;font-size:15px;line-height:1.4;">
               <div style="color:#d4af37;font-weight:700;font-size:16px;"><i class="fas fa-shield-halved"></i> ${foundry.utils.escapeHTML(item.name)}: save skipped (GM only)</div>
               ${lines}
@@ -304,6 +319,18 @@ export class PostHitSaves {
         continue; // try the next save in parsed.saves (multi-save weapons)
       }
 
+      // ⚠️ THE SAVE AFTER A HIT IS A NEW RUN ON THE SAME ROAD (The One Road,
+      // Phase 3, 2026-09-14): the attack recipe's `then`, run by the save engine,
+      // decided by whatLands and landed through the doors. This file used to roll
+      // its own d20s, halve its own damage and put on its own conditions. A save
+      // that rolls on a table has no recipe shape yet (it is a mechanic), so it
+      // keeps its own card, and says so.
+      const then = paired ? (thens[saveIndex] ?? null) : null;
+      if (then && !parsed.effectTable && await PostHitSaves._runThen(item, actor, filteredTargets, save, then)) continue;
+      if (then && parsed.effectTable) {
+        console.log(`${MODULE_ID} | post-hit: "${item.name}"'s save after its hit rolls on a table, which its recipe `
+          + `cannot carry yet, so it keeps its own card.`);
+      }
       await PostHitSaves.postSaveCard(item, actor, filteredTargets, {
         save,
         effectTable: parsed.effectTable,
@@ -594,7 +621,7 @@ export class PostHitSaves {
 
       // The sever and alt-damage dice were waited for where they were thrown,
       // before anything landed, so the card follows them directly.
-      await ChatMessage.create({
+      await CardDoor.post({
         content: cardHtml,
         speaker: ChatMessage.getSpeaker({ actor }),
         flags: {
@@ -643,6 +670,52 @@ export class PostHitSaves {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  //  The save after a hit, as a new run on the same road (Phase 3)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Run a save after a hit on the save engine: its card, its rolls, its reaction
+   * window (Legendary Resistance, Silvery Barbs) and its doors, deciding what
+   * lands through whatLands on the attack recipe's `then`. True when the save
+   * engine took it; false, and said why, when it cannot, so the caller's own card
+   * still asks the save.
+   */
+  static async _runThen(item, actor, targets, save, then) {
+    const engine = game.aceQol?.saveEngine;
+    if (typeof engine?.postSaveCard !== "function") {
+      console.warn(`${MODULE_ID} | post-hit: the save engine is not on the API, so "${item.name}"'s save `
+        + `after its hit keeps its own card.`);
+      return false;
+    }
+    // ⚠️ ALL OR NONE. The save engine's card is built from tokens on this scene;
+    // one missing would drop that creature's save, so every creature keeps the
+    // old card instead.
+    const missing = targets.filter(t => !t.token);
+    if (missing.length) {
+      console.warn(`${MODULE_ID} | post-hit: ${missing.map(t => t.name).join(", ")} `
+        + `${missing.length === 1 ? "has" : "have"} no token on this scene, so the save after "${item.name}"'s hit `
+        + `keeps its own card.`);
+      return false;
+    }
+    const ability = then.decidedBy?.ability ?? save.ability;
+    const dc = then.decidedBy?.dc ?? save.dc;
+    try {
+      await engine.postSaveCard(item, actor, targets.map(t => t.token), {
+        saveAbility: ability, saveDC: dc, isSpell: item?.type === "spell",
+        activityId: null, recipe: then, skipDelay: true,
+      });
+      console.log(`${MODULE_ID} | post-hit: "${item.name}"'s save after its hit runs on the save engine: `
+        + `DC ${dc} ${String(ability).toUpperCase()}, ${targets.length} creature(s).`);
+    } catch (err) {
+      // ⚠️ NEVER TWO CARDS FOR ONE SAVE: the engine may have posted before it
+      // threw, so the old card is not tried as well. Said loudly instead.
+      console.error(`${MODULE_ID} | post-hit: the save after "${item.name}"'s hit failed on the save engine:`, err);
+      ui.notifications?.error(`${item.name}: the save after its hit could not be run. See the console.`);
+    }
+    return true;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   //  Post Save Card (the "Roll Saves" prompt)
   // ═══════════════════════════════════════════════════════════════════════════
 
@@ -687,7 +760,7 @@ export class PostHitSaves {
       </div>
     `;
 
-    await ChatMessage.create({
+    await CardDoor.post({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor }),
       whisper: [game.user.id],
@@ -1023,7 +1096,7 @@ export class PostHitSaves {
     }
 
     if (lines.length) {
-      await ChatMessage.create({
+      await CardDoor.post({
         content: `
           <div class="ace-qol-posthit-results" style="border-left:3px solid #c9a76b;padding:6px 10px;background:#141118;color:#e8dcc3;font-size:14px;border-radius:4px;">
             <div style="font-weight:700;color:#c9a76b;"><img src="${item.img}" style="width:18px;height:18px;vertical-align:-4px;border:none;"/> ${foundry.utils.escapeHTML(item.name)}</div>
@@ -1031,7 +1104,7 @@ export class PostHitSaves {
           </div>`,
         speaker: ChatMessage.getSpeaker({ actor }),
         flags: { [MODULE_ID]: { type: "entryOnHitResult" } },
-      }).catch(() => {});
+      }).catch(err => console.warn(`${MODULE_ID} | the card naming what "${item.name}"'s hit put on could not be posted:`, err));
     }
   }
 
@@ -1284,12 +1357,9 @@ export class PostHitSaves {
         })),
       }));
 
-    // Wait for save + save-damage dice to settle before posting the
-    // result card so the table doesn't see the outcome before the dice
-    // finish tumbling.
-    await awaitDsnRoll();
-
-    await ChatMessage.create({
+    // The save and save-damage dice are waited for inside the card door, so the
+    // table never sees the outcome before they finish tumbling.
+    await CardDoor.post({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor }),
       flags: {
@@ -1301,7 +1371,7 @@ export class PostHitSaves {
           ...(damageResults.length ? { damageResults } : {}),
         }
       },
-    });
+    }, { dice: true });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1397,7 +1467,7 @@ export class PostHitSaves {
             </div>
           </div>
         `;
-        await ChatMessage.create({
+        await CardDoor.post({
           speaker: ChatMessage.getSpeaker({ actor }),
           content: html,
           flags: { [MODULE_ID]: { type: "hpThresholdRider", actorId: targetActor.id, passed } },
@@ -1537,7 +1607,7 @@ export class PostHitSaves {
             </div>
           </div>
         `;
-        await ChatMessage.create({
+        await CardDoor.post({
           speaker: ChatMessage.getSpeaker({ actor }),
           content: html,
           flags: { [MODULE_ID]: {
@@ -1595,7 +1665,7 @@ export class PostHitSaves {
             </div>
           </div>
         `;
-        await ChatMessage.create({
+        await CardDoor.post({
           speaker: ChatMessage.getSpeaker({ actor }),
           content: html,
           flags: { [MODULE_ID]: {

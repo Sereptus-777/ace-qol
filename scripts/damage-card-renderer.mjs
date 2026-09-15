@@ -10,7 +10,9 @@ import { DamageCalculator } from "./damage-calculator.mjs";
 import { DamageConstants, safeShowForRoll } from "./damage-engine.mjs";
 import { awaitDiceSettle } from "./dsn-utils.mjs";
 import { MergeCard } from "./merge-card.mjs";
-import { awaitDsnRoll } from "./attack-prompt.mjs";
+// The One Road: every card here goes through the card door, which waits for the
+// dice that decided it inside itself (Phase 3, 2026-09-14).
+import { CardDoor } from "./road/doors.mjs";
 import { WeaponMasteries } from "./weapon-masteries.mjs";
 
 export class DamageCardRenderer {
@@ -205,7 +207,8 @@ export class DamageCardRenderer {
     `;
 
     // dice-ok: the damage was pre-rolled with suppressDiceAnimation on; this card is only the ROLL DAMAGE button.
-    await ChatMessage.create({
+    // No dice were thrown for it, so the card door lands it at once (frozen note 4).
+    await CardDoor.post({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor }),
       flags: {
@@ -501,11 +504,11 @@ export class DamageCardRenderer {
       name: c.name, type: c.type, raw: c.raw, formula: c.formula,
     }));
 
-    // Wait for DSN damage dice to settle before posting the result card —
-    // otherwise the chat card spoils the totals while dice are still rolling.
-    await awaitDsnRoll();
-
-    await ChatMessage.create({
+    // ⚠️ THE CARD DOOR WAITS FOR THE DAMAGE DICE (The One Road, Phase 3). The
+    // result card must not spoil the totals while its dice still roll. The wait
+    // that stood here happens inside the door now, the one place every landing
+    // waits (section 11).
+    await CardDoor.post({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor }),
       flags: {
@@ -540,7 +543,7 @@ export class DamageCardRenderer {
           })),
         }
       }
-    });
+    }, { dice: true });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
