@@ -12,6 +12,9 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+// The One Road, Phase 4: Apply lands through the hit-point door, and the card is
+// redrawn through the card door.
+import { HpDoor, CardDoor } from "./road/doors.mjs";
 
 export class HealCardRenderer {
 
@@ -278,7 +281,7 @@ export class HealCardRenderer {
     // Mark applied in the message flags (so reloads / re-renders preserve state)
     targets[idx] = { ...t, applied: true };
     try {
-      await message.update({ [`flags.${MODULE_ID}.targets`]: targets });
+      await CardDoor.update(message, { [`flags.${MODULE_ID}.targets`]: targets });
     } catch (err) {
       console.warn(`${MODULE_ID} | Failed to mark heal as applied (non-blocking):`, err);
     }
@@ -362,23 +365,14 @@ export class HealCardRenderer {
    * @returns {{ before: number, newValue: number, capped: boolean }}
    */
   static async _applyHealToActor(actor, amount, isTempHP) {
-    const hp  = actor.system?.attributes?.hp ?? {};
-    const cur = hp.value ?? 0;
-    const max = hp.max   ?? 0;
-    const tmp = hp.temp  ?? 0;
-
-    if (isTempHP) {
-      // RAW: temp HP from the same source doesn't stack — take the higher
-      const newTemp = Math.max(tmp, amount);
-      await actor.update({ "system.attributes.hp.temp": newTemp });
-      return { before: tmp, newValue: newTemp, capped: false };
-    }
-
-    // Regular heal — add and cap at max
-    const projected = cur + amount;
-    const capped    = projected > max;
-    const newHp     = Math.min(projected, max);
-    await actor.update({ "system.attributes.hp.value": newHp });
-    return { before: cur, newValue: newHp, capped };
+    // Through the hit-point door (The One Road, Phase 4): up to the maximum,
+    // temporary hit points never stack, and a creature brought up from 0 stops
+    // dying (its death saves clear and its Unconscious comes off), which a bare
+    // hit-point write here never did.
+    const max = Number(actor.system?.attributes?.hp?.max ?? 0);
+    const cur = Number(actor.system?.attributes?.hp?.value ?? 0);
+    const res = await HpDoor.heal(actor, amount, { temp: !!isTempHP });
+    if (!res.applied && res.why) console.warn(`${MODULE_ID} | Heal apply on ${actor.name}: ${res.why}.`);
+    return { before: res.before, newValue: res.after, capped: !isTempHP && cur + Number(amount || 0) > max };
   }
 }

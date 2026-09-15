@@ -262,6 +262,65 @@ export class HpDoor {
     });
     return { applied: true, total, hpDelta, result };
   }
+
+  /**
+   * Hit points back, through the one door (The One Road, Phase 4, 2026-09-15).
+   * Up to the creature's maximum. Temporary hit points take the higher of the two
+   * and never stack (RAW, both editions). A creature brought up from 0 stops dying:
+   * its death saves clear and the Unconscious that 0 hit points put on it comes
+   * off. A revive takes Dead off first, or dnd5e holds its hit points at 0. A
+   * stabilise moves no hit points: the death saves clear and the creature stays
+   * unconscious at 0 (Spare the Dying: stable, and still unconscious).
+   *
+   * ⚠️ NO SIGNAL. The One Road names none for healing (frozen note 5).
+   *
+   * @param {Actor} actor
+   * @param {number} amount  the healing, already rolled and worked out
+   * @returns {Promise<{applied: boolean, healed: number, before: number, after: number, temp?: boolean, why?: string}>}
+   */
+  static async heal(actor, amount, { temp = false, revive = false, stabilize = false, dice = false } = {}) {
+    await untilDiceLand(dice);
+    if (!actor) return { applied: false, healed: 0, before: 0, after: 0, why: "there is no creature to heal" };
+    const hp = actor.system?.attributes?.hp ?? {};
+    // ⚠️ SAID, NOT THROWN. Only a GM or the creature's own player can write its
+    // hit points, and a permission error in the console is a heal that silently
+    // never happened.
+    if (!(game.user?.isGM || actor.isOwner)) {
+      const now = Number((temp ? hp.temp : hp.value) ?? 0);
+      return { applied: false, healed: 0, before: now, after: now, why: "only the GM can change this creature's hit points" };
+    }
+    const n = Math.max(0, Math.floor(Number(amount) || 0));
+    if (temp) {
+      const before = Math.max(0, Number(hp.temp ?? 0));
+      const after = Math.max(before, n);
+      if (after !== before) await actor.update({ "system.attributes.hp.temp": after });
+      return { applied: after !== before, healed: after - before, before, after, temp: true };
+    }
+    if (revive) await takeOffAll(actor, "dead");
+    const before = Number(hp.value ?? 0);
+    const max = Number(hp.max ?? 0);
+    const after = stabilize ? before : Math.min(max, before + n);
+    const update = {};
+    if (after !== before) update["system.attributes.hp.value"] = after;
+    if (before <= 0 && (after > 0 || stabilize)) {
+      update["system.attributes.death.success"] = 0;
+      update["system.attributes.death.failure"] = 0;
+    }
+    if (Object.keys(update).length) await actor.update(update);
+    if (before <= 0 && after > 0) await takeOffAll(actor, "unconscious");
+    return { applied: true, healed: after - before, before, after };
+  }
+}
+
+/** Every effect on a creature that carries this status, taken off. */
+async function takeOffAll(actor, key) {
+  const effects = actor?.effects?.contents ?? [...(actor?.effects ?? [])];
+  const found = effects.filter(e => e?.statuses?.has?.(key) || String(e?.name ?? "").toLowerCase() === key);
+  for (const e of found) {
+    try { await e.delete(); }
+    catch (err) { console.debug(`${MODULE_ID} | ${key} on ${actor?.name} was already gone:`, err?.message ?? err); }
+  }
+  return found.length;
 }
 
 /* ── 4. A signal ──────────────────────────────────────────────────────── */

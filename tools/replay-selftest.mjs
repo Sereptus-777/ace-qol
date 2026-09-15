@@ -2367,6 +2367,379 @@ console.log(`\nPHASE 3: ATTACKS ON THE ROAD`);
   }
 }
 
+/* ── PHASE 4: HEALS, SELF, UTILITY, CONTESTS ─────────────────────────────── */
+// Johnny, 2026-09-15: "PHASE 4 — heals, self, utility, contests. Then stop." Done
+// when the replay pins, on the live path: 1. Cure Wounds pressed with nobody
+// targeted opens the picker, a creature at 0 hit points and unconscious is a valid
+// target, and the dead are not needed for a heal; 2. a self buff applies through
+// ConditionDoor with no extra targeting; 3. Grapple and Shove: 2014 a contest, 2024
+// a Strength or Dexterity save, the edition from the item; 4. Raise Dead's picker
+// includes the dead, killed for good included, the gate still refuses Killed for
+// good, and Do it anyway still works; 5. cards touched go through CardDoor. Each
+// runs ACE's own code (the gate's press, the spell pipeline's dispatch, the
+// pickers, the resolvers, the contest, the save roll, the heal pipeline's hooks)
+// on a stand-in scene; only the dialogs are stood in.
+console.log(`\nPHASE 4: HEALS, SELF, UTILITY, CONTESTS`);
+{
+  const MOD = "ace-qol";
+  const tick = () => new Promise(r => setTimeout(r, 0));
+  const actsOf = (it) => [...(it?.system?.activities ?? [])];
+  const { SpellTargetPicker } = await import(`${MODULE}/scripts/spell-target-picker.mjs`);
+  const { HealTargetPicker } = await import(`${MODULE}/scripts/heal-target-picker.mjs`);
+  const { HealPipeline } = await import(`${MODULE}/scripts/heal-pipeline.mjs`);
+  const { CheckGate } = await import(`${MODULE}/scripts/check-gate.mjs`);
+  const { ConditionDoor } = await import(`${MODULE}/scripts/road/doors.mjs`);
+  const { rulesActionSave } = await import(`${MODULE}/scripts/inference/recipe.mjs`);
+
+  // ── A stand-in scene: tokens the pickers, the gate and the doors find ──
+  const SCENE = "replay-p4-scene";
+  const docs = new Map();
+  const setPath = (obj, key, v) => {
+    const path = key.split(".");
+    let o = obj;
+    for (const p of path.slice(0, -1)) o = (o[p] ??= {});
+    o[path[path.length - 1]] = v;
+  };
+  const place = (actor, id, flags = {}) => {
+    const doc = { id, actorId: actor.id, actor, parent: { id: SCENE }, flags, name: actor.name, hidden: false,
+      x: 0, y: 0, width: 1, height: 1, elevation: 0, disposition: actor.type === "character" ? 1 : -1, texture: { src: "" },
+      update: async (u) => { for (const [k, v] of Object.entries(u)) setPath(doc, k, v); return doc; } };
+    const tok = { id, name: actor.name, actor, document: doc, x: 0, y: 0, w: 100, h: 100, center: { x: 50, y: 50 },
+      setTarget(on, o = {}) {
+        if (!on) { game.user.targets.delete(tok); return; }
+        if (o.releaseOthers) game.user.targets.clear();
+        game.user.targets.add(tok);
+      } };
+    doc.object = tok;
+    docs.set(id, doc);
+    canvas.tokens.placeables.push(tok);
+    return tok;
+  };
+  const creature = (id, name, { type = "npc", hp = 30, max = 30, statuses = [], abilities = {}, skills = {}, death = null } = {}) => {
+    const effects = new Collection();
+    const a = { id, name, type, img: "", documentName: "Actor", uuid: `Actor.${id}`, statuses: new Set(statuses), effects,
+      system: { attributes: { hp: { value: hp, max, temp: 0 }, death: death ?? { success: 0, failure: 0 }, prof: 2 },
+        abilities: { str: { mod: 0, value: 10, save: { value: 0 } }, dex: { mod: 0, value: 10, save: { value: 0 } },
+          con: { mod: 0, value: 10, save: { value: 0 } }, ...abilities },
+        skills, details: { type: { value: "humanoid" } },
+        traits: { ci: { value: [] }, di: { value: [] }, dr: { value: [] }, dv: { value: [] } } },
+      items: new Collection(), isOwner: true, hasPlayerOwner: type === "character", prototypeToken: { actorLink: true },
+      getFlag: () => undefined, getRollData: () => ({}),
+      update: async (u) => { for (const [k, v] of Object.entries(u)) setPath(a, k, v); return a; } };
+    for (const s of statuses) {
+      const eff = { id: `eff-${id}-${s}`, name: s, statuses: new Set([s]), disabled: false,
+        delete: async () => { effects.delete(eff.id); a.statuses.delete(s); return eff; } };
+      effects.set(eff.id, eff);
+    }
+    ACTORS.set(id, a);
+    return a;
+  };
+
+  const varek = firstActor(VAREK);
+  const spell = (rx, ed) => (varek ? [...varek.items].find(i => i.type === "spell" && rx.test(i.name)
+    && (!ed || i.system?.source?.rules === ed)) ?? null : null);
+  const keep = { scenes: game.scenes.get, placed: [...canvas.tokens.placeables], show: SpellTargetPicker._showDialog,
+    targets: game.user.targets, users: game.users, messages: game.messages, heal: SETTINGS.get("ace-qol.enableHealPipeline") };
+  // The picker's dialog, stood in: it records what it was given and picks as told.
+  const shown = [];
+  let choose = () => [];
+  SpellTargetPicker._showDialog = async (o) => { shown.push(o); return choose(o); };
+  game.scenes.get = (id) => (id === SCENE
+    ? { id, tokens: { get: (t) => docs.get(t) ?? null, contents: [...docs.values()], find: (fn) => [...docs.values()].find(fn) } }
+    : keep.scenes(id));
+  game.user.targets = new Set();
+  canvas.tokens.placeables.length = 0;
+  const made = [];
+  try {
+    const varekTok = varek ? place(varek, "tok-varek") : null;
+    const dying = creature("replay-p4-dying", "a dying ally", { type: "character", hp: 0, statuses: ["unconscious"],
+      death: { success: 1, failure: 1 } });
+    const ally = creature("replay-p4-ally", "a standing ally", { type: "character", hp: 20 });
+    const corpse = creature("replay-p4-corpse", "a dead bandit", { hp: 0, max: 11 });
+    const lost = creature("replay-p4-lost", "a beheaded bandit", { hp: 0, max: 11 });
+    made.push(dying, ally, corpse, lost);
+    place(dying, "tok-dying");
+    place(ally, "tok-ally");
+    place(corpse, "tok-corpse", { [MOD]: { isDead: true } });
+    const lostTok = place(lost, "tok-lost", { [MOD]: { isDead: true, permanentlyDead: true, deathReason: "beheaded by a vorpal sword" } });
+    const rowFor = (seen, a) => seen?.candidates?.find(c => c.actor === a) ?? null;
+    const said = (c) => (!c ? "not offered" : c.valid ? `can be picked${c.badge ? ` (${c.badge})` : ""}` : `cannot (${c.why})`);
+
+    // ── 1. Cure Wounds, pressed with nobody targeted ──
+    const cure = spell(/^cure wounds$/i, "2024");
+    const cureAct = actsOf(cure).find(a => a.type === "heal") ?? null;
+    if (!varekTok || !cureAct) {
+      check("1. Cure Wounds pressed with nobody targeted opens the picker (Phase 4)", null, "Varek has no 2024 Cure Wounds");
+    } else {
+      let gateSaid = [];
+      await quiet(async () => { gateSaid = PressGate.judge(PressGate.contextFor(cureAct, {}), null); });
+      const heals = [];
+      const keepHeal = HpDoor.heal;
+      HpDoor.heal = async (actor, amount, o) => { heals.push({ actor, amount }); return keepHeal.call(HpDoor, actor, amount, o); };
+      choose = (o) => { const c = o.candidates.find(x => x.actor === dying && x.valid); return c ? [c.actor] : []; };
+      const before = posted.length, at = shown.length;
+      let err1 = null;
+      try { await quiet(async () => { await SpellPipeline._dispatch(cureAct, { system: { spellLevel: 1 } }); }); }
+      catch (e) { err1 = e; }
+      finally { HpDoor.heal = keepHeal; }
+      const seen = shown[at] ?? null;
+      const card = posted.slice(before).find(p => /CURE WOUNDS/.test(String(p?.content ?? ""))) ?? null;
+      const hp = dying.system.attributes;
+      check("1. Cure Wounds pressed with nobody targeted opens the picker; a dying ally at 0 hit points can be picked, the dead cannot; the heal lands through the hit-point door (Phase 4)",
+        !err1 && !gateSaid.some(s => s.verdict.refuse || s.verdict.ask) && !!seen && seen.preSelected.size === 0
+          && rowFor(seen, dying)?.valid === true && rowFor(seen, corpse)?.valid === false
+          && heals.length === 1 && heals[0].actor === dying && hp.hp.value > 0 && hp.death.success === 0 && hp.death.failure === 0
+          && !dying.statuses.has("unconscious") && !!card,
+        err1 ? `threw: ${err1?.message ?? err1}`
+          : `${varek.name}'s Cure Wounds: the gate ${gateSaid.length ? gateSaid.map(s => s.rule.id).join(", ") : "said nothing"}; `
+            + `picker ${seen ? "opened" : "never opened"} with ${seen?.preSelected?.size ?? 0} picked beforehand; `
+            + `the dying ally ${said(rowFor(seen, dying))}; the dead bandit ${said(rowFor(seen, corpse))}; `
+            + `hit-point door ${heals.length}x, hit points 0 to ${hp.hp.value}, death saves ${hp.death.success}/${hp.death.failure}, `
+            + `unconscious ${dying.statuses.has("unconscious") ? "still on" : "off"}; card ${card ? "posted" : "missing"}`);
+    }
+
+    // ── 2. A self buff, through the condition door, with no targeting ──
+    const shield = spell(/^shield$/i, "2024");
+    const armor = spell(/^mage armor$/i, "2024");
+    const shieldAct = actsOf(shield)[0] ?? null, armorAct = actsOf(armor)[0] ?? null;
+    if (!varekTok || !shieldAct || !armorAct) {
+      check("2. a self buff goes on through the condition door (Phase 4)", null, "Varek has no 2024 Shield or Mage Armor");
+    } else {
+      const doorCalls = [];
+      const keepDoor = { apply: ConditionDoor.apply, own: ConditionDoor.applyItemEffect };
+      ConditionDoor.apply = async (actor, key) => { doorCalls.push({ how: "ACE's effect", actor, key }); return { ok: true, applied: key }; };
+      ConditionDoor.applyItemEffect = async (item, actor, fx) => { doorCalls.push({ how: "its own effect", actor, key: fx?.name }); return { ok: true, name: fx?.name }; };
+      const before = posted.length, at = shown.length;
+      let err2 = null;
+      try {
+        await quiet(async () => {
+          await SpellPipeline._dispatch(shieldAct, { system: { spellLevel: 1 } });
+          await SpellPipeline._dispatch(armorAct, { system: { spellLevel: 1 } });
+        });
+      } catch (e) { err2 = e; }
+      finally { ConditionDoor.apply = keepDoor.apply; ConditionDoor.applyItemEffect = keepDoor.own; }
+      const cards = posted.slice(before).filter(p => /SHIELD|MAGE ARMOR/.test(String(p?.content ?? "")));
+      check("2. a self buff goes on its caster through the condition door with no targeting: Shield, and the 2024 Mage Armor's own effect from its book (Phase 4)",
+        !err2 && shown.length === at && doorCalls.length === 2 && doorCalls.every(c => c.actor === varek) && cards.length === 2
+          && doorCalls.some(c => c.key === "Mage Armor" && c.how === "its own effect"),
+        err2 ? `threw: ${err2?.message ?? err2}`
+          : `${doorCalls.map(c => `${c.key} through the condition door (${c.how}) on ${c.actor?.name ?? "nobody"}`).join("; ") || "the door was never used"}; `
+            + `pickers opened: ${shown.length - at}; cards: ${cards.length}`);
+    }
+
+    // ── 3. Grapple and shove, by the item's edition ──
+    const holder = (name, rx) => [...ACTORS.values()].filter(a => a.name === name).map(a => [...a.items].find(i => rx.test(i.name))).find(Boolean) ?? null;
+    const grapple14 = holder("Ireena Kolyana", /^grapple$/i);
+    const g14Act = actsOf(grapple14)[0] ?? null;
+    const strike24 = holder("Virric Vaesoldandros", /^unarmed strike/i);
+    const g24Act = actsOf(strike24).find(a => a.type === "save" && /^grapple$/i.test(a.name ?? "")) ?? null;
+    const strikeK = holder("Kasimir Velikov", /^unarmed strike/i);
+    const gKAct = actsOf(strikeK).find(a => a.type === "utility" && /^grapple$/i.test(a.name ?? "")) ?? null;
+    if (!g14Act || !g24Act || !gKAct) {
+      check("3. grapple and shove by edition (Phase 4)", null, "Ireena's Grapple, Virric's or Kasimir's Unarmed Strike is missing");
+    } else {
+      let r14 = null, r24 = null, rK = null;
+      await quiet(async () => {
+        r14 = recipeForActivity(grapple14, g14Act, { actor: grapple14.actor })?.recipe ?? null;
+        r24 = recipeForActivity(strike24, g24Act, { actor: strike24.actor })?.recipe ?? null;
+        rK = recipeForActivity(strikeK, gKAct, { actor: strikeK.actor })?.recipe ?? null;
+      });
+      // The 2014 contest, live, against a clumsy goblin and a nimble one.
+      const clumsy = creature("replay-p4-clumsy", "a clumsy goblin", { skills: { ath: { total: -3 }, acr: { total: -2 } } });
+      const nimble = creature("replay-p4-nimble", "a nimble goblin", { skills: { ath: { total: 0 }, acr: { total: 9 } } });
+      const quick = creature("replay-p4-quick", "a quick bandit", {
+        abilities: { str: { mod: -1, value: 8, save: { value: -1 } }, dex: { mod: 4, value: 18, save: { value: 4 } } } });
+      made.push(clumsy, nimble, quick);
+      const clumsyTok = place(clumsy, "tok-clumsy"), nimbleTok = place(nimble, "tok-nimble");
+      place(quick, "tok-quick");
+      const condCalls = [];
+      const keepApply = ConditionDoor.apply;
+      ConditionDoor.apply = async (actor, key) => { condCalls.push({ actor, key }); return { ok: true, applied: key }; };
+      let lostC = null, heldC = null, saved = null, err3 = null;
+      try {
+        await quiet(async () => {
+          game.user.targets = new Set([clumsyTok]);
+          lostC = await CheckGate.runContest(g14Act, r14);
+          game.user.targets = new Set([nimbleTok]);
+          heldC = await CheckGate.runContest(g14Act, r14);
+          game.user.targets = new Set();
+          // The 2024 save, live: each creature uses its better save.
+          const engine = Object.create(SaveEngine.prototype);
+          saved = await engine._rollSingleSave({ name: quick.name, tokenDocId: "tok-quick", sceneId: SCENE, actorId: quick.id,
+            autoFailSave: false }, "str/dex", 13, r24, strike24.actor?.id ?? null, {});
+        });
+      } catch (e) { err3 = e; }
+      finally { ConditionDoor.apply = keepApply; game.user.targets = new Set(); }
+      const ruleSave = rulesActionSave(strikeK, gKAct, strikeK.actor);
+      const onFail = (r) => (r?.onFail ?? []).map(o => o.condition?.key).filter(Boolean).join(", ") || "-";
+      check("3. grapple and shove by the item's edition: Ireena's 2014 Grapple is a contest, each creature using its better check; the 2024 Grapple a Strength or Dexterity save, each creature using its better save (Phase 4)",
+        !err3 && grapple14.system?.source?.rules === "2014" && r14?.decidedBy?.kind === "contest"
+          && /ath vs ath\/acr/.test(r14.decidedBy.check ?? "") && onFail(r14) === "grappled"
+          && strike24.system?.source?.rules === "2024" && r24?.decidedBy?.kind === "save" && r24.decidedBy.ability === "str/dex"
+          && rK?.decidedBy?.kind === "save" && rK.decidedBy.ability === "str/dex" && onFail(rK) === "grappled" && !!ruleSave
+          && lostC?.stood === false && lostC.target?.key === "acr" && condCalls.some(c => c.actor === clumsy && c.key === "grappled")
+          && heldC?.stood === true && heldC.target?.key === "acr" && !condCalls.some(c => c.actor === nimble)
+          && saved?.ability === "dex" && saved?.saveTotal === 5,
+        err3 ? `threw: ${err3?.message ?? err3}`
+          : `Ireena's Grapple (${grapple14.system?.source?.rules}): ${r14?.decidedBy?.kind} (${r14?.decidedBy?.check ?? "-"}), on a loss ${onFail(r14)}; `
+            + `the clumsy goblin used ${lostC?.target?.key} ${lostC?.target?.total} against ${lostC?.grappler?.total} and ${lostC?.stood ? "held" : "lost"}, `
+            + `put on: ${condCalls.filter(c => c.actor === clumsy).map(c => c.key).join(", ") || "nothing"}; `
+            + `the nimble one used ${heldC?.target?.key} ${heldC?.target?.total} and ${heldC?.stood ? "held" : "lost"}. `
+            + `Virric's Grapple (${strike24.system?.source?.rules}): save ${r24?.decidedBy?.ability}; Kasimir's bare Grapple: save ${rK?.decidedBy?.ability} `
+            + `DC ${ruleSave?.dc?.value ?? "none"}, on a failure ${onFail(rK)}; the quick bandit saved with ${saved?.ability ?? "?"}, ${saved?.saveTotal ?? "?"} against 13`);
+    }
+
+    // ── 4. Raise Dead: the dead offered, Killed for good refused, Do it anyway ──
+    const raise = spell(/^raise dead$/i, "2024");
+    const raiseAct = actsOf(raise)[0] ?? null;
+    if (!varekTok || !raiseAct) {
+      check("4. Raise Dead's picker includes the dead (Phase 4)", null, "Varek has no 2024 Raise Dead");
+    } else {
+      const cards = new Map();
+      game.users = Object.assign([GM], { activeGM: GM, get: (id) => (id === GM.id ? GM : null) });
+      game.messages = { get: (id) => cards.get(id) ?? null };
+      const presses = [];
+      const keepUse = raiseAct.use;
+      // dnd5e's use(), as far as the gate sees it: the press, and its use when it goes ahead.
+      raiseAct.use = async () => {
+        const messageConfig = {};
+        let answer;
+        await quiet(async () => { answer = PressGate.onPress(raiseAct, {}, {}, messageConfig); });
+        presses.push({ answer, aimedAt: [...game.user.targets].map(t => t.name) });
+        if (answer !== false) await quiet(async () => { await PressGate.onUsed(raiseAct, {}); });
+        return answer;
+      };
+      choose = (o) => { const c = o.candidates.find(x => x.actor === lost && x.valid); return c ? [c.actor] : []; };
+      const before = posted.length, at = shown.length;
+      let first, overruled = false, err4 = null;
+      try {
+        await quiet(async () => { first = PressGate.onPress(raiseAct, {}, {}, {}); });
+        for (let i = 0; i < 50 && !presses.length; i++) await tick();
+        for (let i = 0; i < 10; i++) await tick();
+        const refusal = posted.slice(before).find(p => p?.flags?.[MOD]?.type === "gateRefusal") ?? null;
+        if (refusal) {
+          const card = { id: "replay-p4-refusal", ...refusal, flags: JSON.parse(JSON.stringify(refusal.flags ?? {})),
+            update: async (u) => {
+              if (u.content !== undefined) card.content = u.content;
+              for (const [scope, v] of Object.entries(u.flags ?? {})) card.flags[scope] = { ...(card.flags[scope] ?? {}), ...JSON.parse(JSON.stringify(v)) };
+              return card;
+            } };
+          cards.set(card.id, card);
+          await quiet(async () => {
+            overruled = await PressGate.doItAnyway(card);
+            await PressGate._onCardUpdated(card, { flags: { [MOD]: { gate: { status: card.flags[MOD].gate.status } } } }, {}, GM.id);
+          });
+        }
+      } catch (e) { err4 = e; }
+      finally { raiseAct.use = keepUse; }
+      const offered = shown[at] ?? null;
+      const refusal = posted.slice(before).find(p => p?.flags?.[MOD]?.type === "gateRefusal") ?? null;
+      const refusedBy = (refusal?.flags?.[MOD]?.gate?.rules ?? []).map(r => r.name).join(", ");
+      // The spell pipeline takes the corpse the gate judged, and asks nobody again.
+      const at2 = shown.length;
+      let piped = null;
+      game.user.targets = new Set([lostTok]);
+      await quiet(async () => {
+        piped = await SpellPipeline._pickTargets({ entry: SpellPipeline._getEntry(raise), item: raise, actor: varek, castLevel: 5 }, "single-adjacent");
+      });
+      // And it lands: back with 1 hit point (both editions), through the hit-point door.
+      const revived = [];
+      const keepHeal4 = HpDoor.heal;
+      HpDoor.heal = async (actor, amount, o) => { revived.push({ actor, amount, o }); return keepHeal4.call(HpDoor, actor, amount, o); };
+      game.user.targets = new Set([lostTok]);
+      try { await quiet(async () => { await SpellPipeline._dispatch(raiseAct, { system: { spellLevel: 5 } }); }); }
+      finally { HpDoor.heal = keepHeal4; }
+      game.user.targets = new Set();
+      // A damage spell's picker still offers no corpse.
+      const harm = SpellTargetPicker._buildCandidates(varekTok, varek, 60, false, "harm");
+      const harmRow = (a) => harm.find(c => c.actor === a) ?? null;
+      check("4. Raise Dead pressed with nobody targeted offers the dead, killed for good included; the gate still refuses Killed for good, and Do it anyway presses it through once (Phase 4)",
+        !err4 && first === false && !!offered && rowFor(offered, corpse)?.valid === true && rowFor(offered, lost)?.valid === true
+          && rowFor(offered, ally)?.valid === false && presses[0]?.answer === false && refusedBy === "Killed for good"
+          && overruled === true && presses.length === 2 && presses[1].answer !== false
+          && lostTok.document.flags[MOD].permanentlyDead === false
+          && piped?.targets?.[0]?.actor === lost && shown.length === at2
+          && revived.length === 1 && revived[0].actor === lost && revived[0].o?.revive === true && lost.system.attributes.hp.value === 1
+          && harmRow(corpse)?.valid === false && harmRow(lost)?.valid === false,
+        err4 ? `threw: ${err4?.message ?? err4}`
+          : `${varek.name}'s Raise Dead: the picker ${offered ? "opened" : "never opened"}; the dead bandit ${said(rowFor(offered, corpse))}; `
+            + `the beheaded one ${said(rowFor(offered, lost))}; the standing ally ${said(rowFor(offered, ally))}; `
+            + `pressed again at ${presses[0]?.aimedAt?.join(", ") || "nobody"}: ${presses[0] ? (presses[0].answer === false ? `refused (${refusedBy || "no card"})` : "went through") : "never"}; `
+            + `Do it anyway: ${overruled ? "overruled" : "not"}, pressed ${presses.length - 1}x after, the lock ${lostTok.document.flags[MOD].permanentlyDead ? "still on" : "off"}; `
+            + `the pipeline took ${piped?.targets?.[0]?.name ?? "nobody"} and opened ${shown.length - at2} more picker(s); `
+            + `Raise Dead brought it back with ${lost.system.attributes.hp.value} hit point(s) through the hit-point door (${revived.length}x); `
+            + `a damage spell offers the dead bandit: ${harmRow(corpse)?.valid ? "yes" : "no"}, the beheaded one: ${harmRow(lost)?.valid ? "yes" : "no"}`);
+    }
+
+    // ── 5. Cards through the card door; the heal pipeline steers, never cancels ──
+    {
+      const read = (f) => readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/${f}`, "utf8").replace(/\/\/.*$/gm, "");
+      const files = ["heal-pipeline.mjs", "heal-card-renderer.mjs", "spell-pipeline/resolvers/heal.mjs",
+        "spell-pipeline/resolvers/self.mjs", "check-gate.mjs"];
+      const raw = files.filter(f => /ChatMessage\.create\s*\(/.test(read(f)));
+      // A heal the heal pipeline owns (not the spell pipeline's), aimed at a creature, not a pool.
+      let owned = null;
+      for (const a of ACTORS.values()) {
+        for (const it of a.items ?? []) {
+          if (it.type === "spell" || SpellPipeline.owns?.(it)) continue;
+          const act = actsOf(it).find(x => x.type === "heal" && !x.target?.template?.type
+            && String(x.target?.affects?.type ?? "creature") !== "self" && !x.consumption?.scaling?.allowed);
+          if (act) { owned = { a, it, act }; break; }
+        }
+        if (owned) break;
+      }
+      let steered = null, ownPick = null, err5 = null;
+      if (owned) {
+        const pre0 = (hooks["dnd5e.preUseActivity"] ?? []).length, post0 = (hooks["dnd5e.postUseActivity"] ?? []).length;
+        const keepPick = HealTargetPicker.pick;
+        SETTINGS.set("ace-qol.enableHealPipeline", true);
+        try {
+          await quiet(async () => {
+            const hp5 = new HealPipeline();
+            const pre = (hooks["dnd5e.preUseActivity"] ?? []).slice(pre0).pop();
+            const post = (hooks["dnd5e.postUseActivity"] ?? []).slice(post0).pop();
+            const usageConfig = { consume: { resources: true, spellSlot: false } }, dialogConfig = { configure: true }, messageConfig = {};
+            const answer = pre?.(owned.act, usageConfig, dialogConfig, messageConfig);
+            steered = { answer, usageConfig, dialogConfig, messageConfig, held: hp5._held.has(owned.act.uuid) };
+            // Its own picker, with the same rule: the dying may be healed, the dead may not.
+            HealTargetPicker.pick = async (activity, classification) => {
+              const rows = HealTargetPicker._buildCandidates(activity.actor, varekTok, { ...classification, rangeFt: Infinity });
+              ownPick = { dying: rows.find(r => r.token?.actor === dying) ?? null, corpse: rows.find(r => r.token?.actor === corpse) ?? null };
+              return [];
+            };
+            post?.(owned.act, usageConfig);
+            for (let i = 0; i < 50 && !ownPick; i++) await tick();
+          });
+        } catch (e) { err5 = e; }
+        finally {
+          HealTargetPicker.pick = keepPick;
+          if (keep.heal === undefined) SETTINGS.delete("ace-qol.enableHealPipeline"); else SETTINGS.set("ace-qol.enableHealPipeline", keep.heal);
+        }
+      }
+      check("5. every card these touched goes through the card door, and the heal pipeline steers dnd5e's use instead of cancelling it (Phase 4)",
+        !raw.length && !!owned && !err5 && steered?.answer !== false && steered?.usageConfig?.subsequentActions === false
+          && steered?.usageConfig?.consume?.resources === false && steered?.messageConfig?.create === false && steered?.held === true
+          && ownPick?.dying?.valid === true && ownPick?.corpse?.valid === false,
+        err5 ? `threw: ${err5?.message ?? err5}`
+          : `raw ChatMessage.create left: ${raw.join(", ") || "none"}; `
+            + (owned ? `${owned.a.name}'s ${owned.it.name}: the press ${steered?.answer === false ? "was CANCELLED" : "went on"}, `
+              + `dnd5e's own roll after ${steered?.usageConfig?.subsequentActions === false ? "off" : "on"}, its resources ${steered?.usageConfig?.consume?.resources === false ? "held" : "spent at once"}, `
+              + `its usage card ${steered?.messageConfig?.create === false ? "not made" : "made"}; its picker: the dying ally ${ownPick?.dying?.valid ? "can be healed" : `cannot (${ownPick?.dying?.reason ?? "absent"})`}, `
+              + `the dead bandit ${ownPick?.corpse?.valid ? "can be healed" : `cannot (${ownPick?.corpse?.reason ?? "absent"})`}`
+              : "no heal the heal pipeline owns in this world"));
+    }
+  } finally {
+    SpellTargetPicker._showDialog = keep.show;
+    game.scenes.get = keep.scenes;
+    canvas.tokens.placeables.length = 0;
+    canvas.tokens.placeables.push(...keep.placed);
+    if (keep.targets === undefined) delete game.user.targets; else game.user.targets = keep.targets;
+    game.users = keep.users;
+    game.messages = keep.messages;
+    for (const a of made) ACTORS.delete(a.id);
+  }
+}
+
 let golden = null;
 if (existsSync(GOLDEN)) {
   try { golden = JSON.parse(readFileSync(GOLDEN, "utf8")); }

@@ -208,13 +208,16 @@ export const HEAL_SPELLS = {
     shape: "touch",
     range: 5,
     heal: {
-      // RAW: target returns with ALL hit points restored. Computing full HP here.
-      // Caller can pass castLvl higher for upcast — no upcast effect on HP for this spell.
-      formula: () => "999",  // Heal everything; resolver caps at maxHP
+      // ⚠️🔴 ONE HIT POINT, NOT ALL OF THEM (2026-09-15). This said "RAW: target
+      // returns with ALL hit points restored" and healed 999. Both editions say
+      // otherwise: 2014 "The creature returns to life with 1 hit point", and his
+      // 2024 copy "The creature returns to life with 1 Hit Point." His 2024
+      // "Revive" activity rolls no healing of its own, so this is the number used.
+      formula: () => "1",
       revivesDead: true,
     },
     picker: { allowSelf: false, preHighlightSelf: false, requiresAdjacent: true, excludeDead: false },
-    flavorOnConfirm: "Return a creature dead up to 10 days to life with all HP restored. They have -4 penalty to attacks/saves/checks for 4 long rests.",
+    flavorOnConfirm: "Return a creature dead up to 10 days to life with 1 hit point. They have -4 penalty to attacks/saves/checks for 4 long rests.",
   },
 
   // Same spell under another name; the same one-roll rule applies.

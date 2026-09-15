@@ -168,8 +168,11 @@ export function buildTargetProfile(actor, { token = null } = {}) {
 
     /** This creature's total modifier for a saving throw. */
     saveMod(ability) {
-      const k = String(ability ?? "").toLowerCase();
-      return Number(this.saves?.[k] ?? 0) || 0;
+      // Several offered ("str/dex", a 2024 grapple or shove): the creature uses its
+      // better one, so every card row shows the save it will actually make.
+      const offered = String(ability ?? "").toLowerCase().split("/").map(s => s.trim()).filter(Boolean);
+      if (offered.length > 1) return Math.max(...offered.map(k => Number(this.saves?.[k] ?? 0) || 0));
+      return Number(this.saves?.[offered[0] ?? ""] ?? 0) || 0;
     },
 
     /**
@@ -178,8 +181,10 @@ export function buildTargetProfile(actor, { token = null } = {}) {
      * this right instead of each one remembering (or not).
      */
     autoFailsSave(ability) {
-      const k = String(ability ?? "").toLowerCase();
-      if (k !== "str" && k !== "dex") return false;
+      // Several offered ("str/dex", a 2024 grapple or shove): the creature may use
+      // any of them, so it fails automatically only when every one would.
+      const offered = String(ability ?? "").toLowerCase().split("/").map(s => s.trim()).filter(Boolean);
+      if (!offered.length || offered.some(k => k !== "str" && k !== "dex")) return false;
       const c = creature.conditions ?? [];
       const has = (s) => (c.includes?.(s) ?? false) || (c.has?.(s) ?? false);
       return has("petrified") || has("paralyzed") || has("stunned") || has("unconscious");

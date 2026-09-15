@@ -37,14 +37,15 @@ import { EngagementGate } from "../engagement-gate.mjs";
 import { HolySymbol } from "../holy-symbol.mjs";
 import { revokeVorpalLock } from "../death-pipeline.mjs";
 import { CardDoor } from "../road/doors.mjs";
+import { STRICT_REVIVES, ORDINARY_REVIVES, revivesTheDead } from "../road/picker-rule.mjs";
 
 const MODULE_ID = "ace-qol";
 const LOG = "ace-qol | gate";
 
 // Vorpal RAW: a creature that lost its head comes back only through True
-// Resurrection or Wish. Matched by name, as the old revive hook matched them.
-const STRICT_REVIVES = [/true\s*resurrection/i, /\bwish\b/i];
-const ORDINARY_REVIVES = [/revivify/i, /raise\s*dead/i, /^resurrection\b/i, /reincarnate/i];
+// Resurrection or Wish. The revive names live with the picker rule
+// (road/picker-rule.mjs), so this lock and the picker that offers the dead read
+// the same list.
 
 /**
  * A world setting read the way Foundry answers it. Each rule's switch is
@@ -58,12 +59,18 @@ function isOn(key) {
 function esc(s) { return foundry.utils.escapeHTML(String(s ?? "")); }
 function gmIds() { return (game.users?.filter?.(u => u.isGM) ?? []).map(u => u.id); }
 
-/** The target picker for an attack spell pressed with nobody targeted. True when someone was picked. */
-async function pickTargets({ activity, item, actor }) {
+/**
+ * The target picker for a press with nobody targeted: an attack spell, or a revive,
+ * which is offered the dead (killed for good included). True when someone was picked.
+ */
+async function pickTargets({ activity, item, actor }, { kind = "harm" } = {}) {
   const { SpellTargetPicker } = await import("../spell-target-picker.mjs");
-  const rangeFt = Number(activity?.range?.value ?? item.system?.range?.value ?? 0) || null;
-  const maxTargets = Number(activity?.target?.affects?.count) || 1;
-  const picked = await SpellTargetPicker.pick({ spellItem: item, casterActor: actor, maxTargets, rangeFt, allowSelf: false });
+  // ⚠️ A REVIVE TOUCHES. Revivify, Raise Dead, Resurrection, Reincarnate and True
+  // Resurrection are touch spells in both editions, whatever range a sheet stores:
+  // his 2024 Raise Dead stores "self", which offered nobody but the caster.
+  const rangeFt = kind === "revive" ? 5 : (Number(activity?.range?.value ?? item.system?.range?.value ?? 0) || null);
+  const maxTargets = kind === "revive" ? 1 : (Number(activity?.target?.affects?.count) || 1);
+  const picked = await SpellTargetPicker.pick({ spellItem: item, casterActor: actor, maxTargets, rangeFt, allowSelf: false, kind });
   if (!picked?.length) {
     console.log(`${LOG} | ${item.name}: nobody was picked, so it was not cast.`);
     return false;
@@ -228,6 +235,12 @@ export function pressRules() {
       test(ctx) {
         const { item, activity, actor, targets } = ctx;
         if (item?.type !== "spell" || !actor) return null;
+        // ⚠️ A REVIVE PRESSED WITH NOBODY TARGETED PICKS FIRST (Phase 4, 2026-09-15).
+        // The picker offers the dead, killed for good included, and picking presses
+        // it again, so this gate sees who it is aimed at and Killed for good can
+        // answer, with Do it anyway. The spell pipeline's own picker came after the
+        // press, where the lock was never asked.
+        if (revivesTheDead(item) && !targets.length) return { ask: () => pickTargets(ctx, { kind: "revive" }) };
         const block = EngagementGate._checkTargetRequirement(item, activity, targets, actor);
         if (!block?.blocked) return null;
         // An attack spell with nobody targeted opens the picker instead of

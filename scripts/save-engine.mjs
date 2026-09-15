@@ -64,7 +64,7 @@ import { waitUntil } from "./wait-for.mjs";
 // one rule, and lands through the hit-point door.
 import { whatLands, shareOf } from "./road/what-lands.mjs";
 import { HpDoor, ConditionDoor, CardDoor, SignalDoor } from "./road/doors.mjs";
-import { recipeForActivity, repeatTriggerOf, loadBookFor, isFollowUp } from "./inference/recipe.mjs";
+import { recipeForActivity, repeatTriggerOf, loadBookFor, isFollowUp, rulesActionSave } from "./inference/recipe.mjs";
 import { RulesIndex } from "./rules/rules-index.mjs";
 
 // Real black d20 die art (per-face). These are the dice the GM already sees;
@@ -200,7 +200,8 @@ export class SaveEngine {
       try {
         // SILENT-OK: not the active GM; this hook fires on every client and only one may act
         if (game.users?.activeGM !== game.user) return;
-        if (activity?.type !== "save" && !activity?.save?.ability) return;
+        if (activity?.type !== "save" && !activity?.save?.ability
+            && !rulesActionSave(activity?.item, activity, activity?.actor)) return;
         const key = activity?.uuid;
         if (!key) return;
         const prev = this._processedActivityIds.get(key);
@@ -786,7 +787,11 @@ export class SaveEngine {
     // tracking by the concentration widget. Stash a pending entry so
     // `_onTemplateCreated` can fire `ace-qol.persistentSpellCreated`
     // for them with no-save metadata.
-    const save = activity.save;
+    // ⚠️ A 2024 GRAPPLE OR SHOVE WITH NO SAVE ON ITS SHEET IS STILL ONE (Phase 4,
+    // 2026-09-15). His Unarmed Strikes carry Grapple and Shove as bare utilities
+    // (Kasimir, Chudd, Jeth, Izek); by the 2024 rules each is a Strength or
+    // Dexterity save, the target's choice. Its recipe says so, and this runs it.
+    const save = activity.save?.ability ? activity.save : (rulesActionSave(item, activity, actor) ?? activity.save);
     if (!save?.ability) {
       try {
         const templateType = activity?.target?.template?.type
@@ -894,10 +899,9 @@ export class SaveEngine {
     // stays at 0 and dnd5e scales it by the caster's level instead.
     const spellLevel = SaveEngine._castLevelFrom(activity, { message });
 
-    // dnd5e 5.2.5: save.ability is a Set, not a string
-    const saveAbility = (save.ability instanceof Set || save.ability instanceof Array)
-      ? [...save.ability][0]
-      : (typeof save.ability === "string" ? save.ability : String(save.ability));
+    // dnd5e 5.2.5: save.ability is a Set, not a string. Several mean the target
+    // chooses; they travel as "str/dex" and each creature uses its better save.
+    const saveAbility = SaveEngine.saveAbilityOf(save);
     if (!saveAbility) return;
     let saveDC = save.dc?.value ?? save.dc ?? 0;
     // Fallback: some items (esp. bg3-hud / imported spells) leave the save DC
@@ -1620,7 +1624,7 @@ export class SaveEngine {
    * the book's entry for an official item, or the item itself. `here` holds the
    * ones that apply at this slot level; `all` holds every one the source has.
    */
-  static _effectRowsFor(recipe, item, castLevel = null) {
+  static _effectRowsFor(recipe, item, castLevel = null, { types = ["save"] } = {}) {
     const here = new Map(), all = new Map();
     if (!recipe) return { here, all };
     try {
@@ -1634,8 +1638,8 @@ export class SaveEngine {
         return { here, all };
       }
       const activityId = recipe.source?.activity ?? null;
-      for (const row of readSaveOutcomeEffects(source, { activityId })) if (!all.has(row.name)) all.set(row.name, row);
-      for (const row of readSaveOutcomeEffects(source, { activityId, castLevel })) if (!here.has(row.name)) here.set(row.name, row);
+      for (const row of readSaveOutcomeEffects(source, { activityId, types })) if (!all.has(row.name)) all.set(row.name, row);
+      for (const row of readSaveOutcomeEffects(source, { activityId, castLevel, types })) if (!here.has(row.name)) here.set(row.name, row);
     } catch (err) {
       console.warn(`${MODULE_ID} | could not find the effects "${item?.name}"'s recipe names:`, err);
     }
@@ -1938,9 +1942,7 @@ export class SaveEngine {
       if (!actor) return why(`"${item.name}" is not on an actor (a compendium or sidebar item cannot cast)`);
 
       const save = activity.save ?? {};
-      const saveAbility = (save.ability instanceof Set || save.ability instanceof Array)
-        ? [...save.ability][0]
-        : (typeof save.ability === "string" ? save.ability : String(save.ability ?? ""));
+      const saveAbility = SaveEngine.saveAbilityOf(save);
       if (!saveAbility) {
         return why(`"${item.name}" has a save activity with NO ability set on it - `
           + `open the item, find the save activity, and choose Dexterity/Constitution/etc.`);
@@ -2523,6 +2525,35 @@ export class SaveEngine {
    * refuses dnd5e's own roll for the spells it resolves itself, and it refused
    * this one too (see SpellPipeline._refusesNativeDamage).
    */
+  /**
+   * The ability a save activity names, as one string. ⚠️ SEVERAL MEAN THE TARGET
+   * CHOOSES (Phase 4, 2026-09-15): a 2024 grapple is "a Strength or Dexterity
+   * saving throw (it chooses which)". This took the first, so every creature
+   * rolled Strength. They travel as "str/dex", and abilityFor picks per creature.
+   */
+  static saveAbilityOf(save) {
+    const raw = save?.ability;
+    const list = (raw instanceof Set || Array.isArray(raw)) ? [...raw] : [raw];
+    const abs = list.map(a => String(a ?? "").trim().toLowerCase()).filter(Boolean);
+    return abs.length > 1 ? abs.join("/") : (abs[0] ?? "");
+  }
+
+  /**
+   * The ability this creature saves with: the one offered, or, when several are
+   * offered, the one it chooses, which is its better save.
+   */
+  static abilityFor(actor, row, saveAbility) {
+    const offered = String(saveAbility ?? "").split("/").map(s => s.trim()).filter(Boolean);
+    if (offered.length < 2) return offered[0] ?? saveAbility;
+    const profile = SaveEngine._targetProfileFor(actor, row);
+    let best = offered[0], bestMod = -Infinity;
+    for (const ab of offered) {
+      const m = Number(profile?.saveMod?.(ab) ?? 0) || 0;
+      if (m > bestMod) { best = ab; bestMod = m; }
+    }
+    return best;
+  }
+
   static _damageRollConfig(item, spellLevel) {
     const config = { aceQol: { ownRoll: true } };
     const base = Number(item?.system?.level);
@@ -4711,6 +4742,9 @@ export class SaveEngine {
       return SaveEngine._noRollRow(tgt, _verdict, { isPC: false });
     }
 
+    // ⚠️ SEVERAL ABILITIES: THE CREATURE CHOOSES, AND IT CHOOSES ITS BETTER SAVE
+    // (a 2024 grapple or shove, "str/dex"). One offered: that one.
+    const ability = SaveEngine.abilityFor(targetActor, tgt, saveAbility);
     let saveTotal = 0;
     let passed = false;
     let rollResult = null;
@@ -4730,11 +4764,11 @@ export class SaveEngine {
       // dnd5e 5.2.5: abilities.dex.save may be a number OR an object with .value
       // Save modifier via the target profile — ONE reader for a fact that
       // was being decoded seven different ways in this file alone.
-      const saveMod = SaveEngine._targetProfileFor(targetActor, tgt)?.saveMod(saveAbility) ?? 0;
+      const saveMod = SaveEngine._targetProfileFor(targetActor, tgt)?.saveMod(ability) ?? 0;
       const allBonusParts = (tgt.saveBonuses ?? []).map(b => b.value);
 
       // ── Cover DEX save bonus (half cover +2, three-quarters +5) ──
-      if (saveAbility === "dex" && tokenDoc && casterActorId) {
+      if (ability === "dex" && tokenDoc && casterActorId) {
         try {
           if (QolSettings.get("enableCoverCalculation")) {
             // Cover is measured from a POSITION, so it needs the exact body that
@@ -4825,6 +4859,8 @@ export class SaveEngine {
       saveTotal,
       passed,
       isAutoFail,
+      // The ability it saved with: the one offered, or its better of several.
+      ability,
       resultLabel,
       damageMultiplier,
       // Carried so a later change to this save (Legendary Resistance, Silvery
@@ -5251,7 +5287,9 @@ export class SaveEngine {
       return;
     }
 
-    const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
+    // Several abilities: the creature chooses its better save (a 2024 grapple or shove).
+    const ability = SaveEngine.abilityFor(targetActor, { tokenDocId, sceneId, actorId }, saveAbility);
+    const abilityLabel = CONFIG.DND5E?.abilities?.[ability]?.label ?? String(ability ?? "").toUpperCase();
     let saveTotal = 0;
     let passed = false;
     let rollResult = null;
@@ -5277,11 +5315,11 @@ export class SaveEngine {
       // undefined identifier is valid syntax and only explodes at runtime.
       // Copy-pasting a line out of _rollSingleSave(tgt, …) is how it got here.
       const _row = { tokenDocId, sceneId, actorId };
-      const saveMod = SaveEngine._targetProfileFor(targetActor, _row)?.saveMod(saveAbility) ?? 0;
+      const saveMod = SaveEngine._targetProfileFor(targetActor, _row)?.saveMod(ability) ?? 0;
       const allBonusParts = (saveBonuses ?? []).map(b => b.value);
 
       // ── Cover DEX save bonus (half cover +2, three-quarters +5) ──
-      if (saveAbility === "dex" && tokenDoc) {
+      if (ability === "dex" && tokenDoc) {
         try {
           if (QolSettings.get("enableCoverCalculation")) {
             // The exact caster token the cast card stamped — see the matching

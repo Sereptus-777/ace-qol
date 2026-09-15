@@ -57,7 +57,129 @@ export class CheckGate {
     CheckGate._registerHitDice();
     CheckGate._registerRecharge();
     CheckGate._registerConcentrationOutcome();
+    CheckGate._registerContests();
     console.debug(`${LOG} | online — every check and save a person clicks gets ACE's pause and ACE's card`);
+  }
+
+  /* ── A contest a press asks for (The One Road, Phase 4, 2026-09-15) ───── */
+  //
+  // Johnny: "Grapple / Shove: 2014 = contest." The 2014 rule: a Strength
+  // (Athletics) check contested by the target's Strength (Athletics) or Dexterity
+  // (Acrobatics) check, the target choosing which. The recipe says so
+  // (inference/recipe.mjs, rulesActionOf), and this is its executor. Only a
+  // contest between two creatures ("ath vs ath/acr"): an escape check is one
+  // creature's own roll against a DC, and dnd5e rolls that itself.
+
+  static _registerContests() {
+    Hooks.on("dnd5e.postUseActivity", (activity) => {
+      CheckGate._contestFor(activity).catch(err => {
+        console.error(`${LOG} | the contest for ${activity?.item?.name ?? "a press"} failed:`, err);
+        ui.notifications?.error(`${activity?.item?.name ?? "That"}: ACE could not run the contest. Nothing was put on anyone; see the console.`);
+      });
+    });
+  }
+
+  /** The contest this press asks for, run; null when it asks for none. */
+  static async _contestFor(activity) {
+    const item = activity?.item;
+    if (!item) return null;
+    const { rulesActionOf, recipeForActivity } = await import("./inference/recipe.mjs");
+    if (!rulesActionOf(item, activity)) return null;
+    const recipe = recipeForActivity(item, activity, { actor: activity.actor ?? item.actor ?? null })?.recipe ?? null;
+    if (recipe?.decidedBy?.kind !== "contest" || !/\svs\s/i.test(String(recipe.decidedBy.check ?? ""))) return null;
+    return CheckGate.runContest(activity, recipe);
+  }
+
+  /**
+   * One creature's check against another's, and what the loser takes, through the
+   * condition door and the card door. The target uses its better check (it
+   * chooses); a tie leaves things as they were, so the one who started it must win
+   * outright (2014 RAW).
+   *
+   * @returns {Promise<object|null>}  what was rolled and what landed; null when nobody was picked
+   */
+  static async runContest(activity, recipe) {
+    const item = activity?.item;
+    const actor = activity?.actor ?? item?.actor ?? null;
+    if (!item || !actor) return null;
+    const aimed = [...(game.user?.targets ?? [])];
+    let token = aimed.length === 1 ? aimed[0] : null;
+    if (!token) {
+      // Nobody, or more than one: the creatures in reach, as a weapon attack asks.
+      const { SpellTargetPicker } = await import("./spell-target-picker.mjs");
+      token = await SpellTargetPicker.pickAttackTarget({ weaponItem: item, attackerActor: actor, reachFt: 5 });
+    }
+    const them = token?.actor ?? null;
+    if (!them) {
+      console.log(`${LOG} | ${item.name}: nobody was picked, so no contest was rolled.`);
+      return null;
+    }
+
+    const [mine, theirs = ""] = String(recipe.decidedBy.check).split(/\s+vs\s+/i);
+    const side = (who, key) => {
+      const read = CheckGate.read(who, "skill", key);
+      const ability = CONFIG.DND5E?.skills?.[key]?.ability ?? (key === "acr" ? "dex" : "str");
+      const mod = Number.isFinite(read.modifier) ? read.modifier
+        : (Number(who.system?.abilities?.[ability]?.mod ?? 0) || 0);
+      return { key, mod, mode: read.mode, label: CONFIG.DND5E?.skills?.[key]?.label ?? read.label ?? key };
+    };
+    const a = side(actor, String(mine || "ath").split("/")[0]);
+    // The target chooses which of its checks to use, and it uses its better one.
+    const offered = theirs.split("/").map(s => s.trim()).filter(Boolean);
+    const b = (offered.length ? offered : ["ath", "acr"]).map(k => side(them, k)).sort((x, y) => y.mod - x.mod)[0];
+    const die = (s) => `${s.mode > 0 ? "2d20kh" : s.mode < 0 ? "2d20kl" : "1d20"} + ${s.mod}`;
+    const ra = await new Roll(die(a)).evaluate();
+    const rb = await new Roll(die(b)).evaluate();
+
+    const { safeShowForRoll } = await import("./dsn-utils.mjs");
+    const { untilDiceLand, ConditionDoor, CardDoor } = await import("./road/doors.mjs");
+    const { whatLands } = await import("./road/what-lands.mjs");
+    safeShowForRoll(ra, `${actor.name} ${a.label}`);
+    safeShowForRoll(rb, `${them.name} ${b.label}`);
+    // ⚠️ NOTHING LANDS BEFORE THE DICE (Johnny's rule).
+    await untilDiceLand(true);
+
+    const stood = !(ra.total > rb.total);
+    const v = whatLands(recipe, { passed: stood });
+    const put = [], notPut = [];
+    const canWrite = !!(game.user?.isGM || them.isOwner);
+    for (const c of v.conditions) {
+      const key = String(c?.key ?? "").toLowerCase().trim();
+      if (!key) continue;
+      if (!canWrite) { notPut.push(`${key}: the GM puts it on`); continue; }
+      let out = null;
+      try { out = await ConditionDoor.apply(them, key, Number(c.duration) > 0 ? { duration: { seconds: Number(c.duration) } } : {}); }
+      catch (err) { console.warn(`${LOG} | ${item.name}: putting ${key} on ${them.name} failed:`, err); }
+      if (out?.ok) put.push(key);
+      else notPut.push(out?.immune ? `${key}: immune` : `${key}: it did not take, the console has why`);
+    }
+    // A choice the rules give the one who won ("one of: Prone, pushed 5 feet"), or
+    // a push, is said on the card for the table to do: ACE does not pick for them.
+    const byHand = stood ? [] : v.notes.map(n => {
+      const menu = String(n).match(/^one of:\s*(.+)$/i);
+      return menu ? `${actor.name} chooses one: ${menu[1]}. Do it by hand.` : `${them.name} is ${n}: move it by hand.`;
+    });
+
+    const esc = (s) => foundry.utils.escapeHTML(String(s ?? ""));
+    const row = (text, extra = "") => `<div style="font-size:16px;line-height:1.4;${extra}">${text}</div>`;
+    const html = `<div class="ace-qol-contest-card" style="background:#15121b;border:1px solid #6b4fa8;border-left:3px solid #d4af37;border-radius:6px;padding:10px 12px;color:#ece6f7;">
+      <div style="font-size:18px;font-weight:700;line-height:1.3;">${esc(item.name)}: a contest</div>
+      ${row(`${esc(actor.name)}'s ${esc(a.label)}: <strong style="font-size:20px;">${ra.total}</strong>`, "margin-top:4px;")}
+      ${row(`${esc(them.name)}'s ${esc(b.label)}: <strong style="font-size:20px;">${rb.total}</strong>`)}
+      ${row(stood ? `${esc(them.name)} holds its ground.` : `${esc(them.name)} loses.`, `margin-top:6px;color:${stood ? "#cfc4ea" : "#ffd87a"};`)}
+      ${put.length ? row(`Put on: <strong>${esc(put.join(", "))}</strong>.`) : ""}
+      ${notPut.length ? row(`Not put on: ${esc(notPut.join("; "))}.`, "color:#e8c46a;") : ""}
+      ${byHand.map(t => row(esc(t), "color:#cfc4ea;")).join("")}
+    </div>`;
+    await CardDoor.post({
+      speaker: ChatMessage.getSpeaker({ actor }),
+      content: html,
+      flags: { [MODULE_ID]: { type: "contestResult", itemUuid: item.uuid ?? null, actorId: actor.id ?? null,
+        targetActorId: them.id ?? null, rolled: [ra.total, rb.total], held: stood, put } },
+    });
+    console.log(`${LOG} | ${item.name}: ${actor.name}'s ${a.label} ${ra.total} against ${them.name}'s ${b.label} ${rb.total}; `
+      + `${stood ? `${them.name} held` : `${them.name} lost`}${put.length ? `, ${put.join(", ")} put on` : ""}.`);
+    return { stood, grappler: { ...a, total: ra.total }, target: { ...b, total: rb.total }, put, notPut, byHand, targetActor: them };
   }
 
   /**
@@ -207,7 +329,9 @@ export class CheckGate {
       }
       const esc = foundry.utils.escapeHTML;
       const dice = roll ? await CheckGate._diceHtml(roll) : "";
-      await ChatMessage.create({
+      // Through the card door (The One Road); its dice were waited for above.
+      const { CardDoor } = await import("./road/doors.mjs");
+      await CardDoor.post({
         speaker: ChatMessage.getSpeaker({ actor }),
         rollMode: CONST.DICE_ROLL_MODES.PUBLIC,
         // ⚠️ NO `rolls` ARRAY. The dice were thrown above; handing them to the

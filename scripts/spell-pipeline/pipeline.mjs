@@ -47,6 +47,9 @@ import { classifyItem } from "../inference/classify-item.mjs";
 import { LearnedStore } from "../inference/learned-store.mjs";
 import { DescriptionParser } from "../description-parser.mjs";
 import { getSpellTiming } from "../spell-timing.mjs";
+// Who a picker may offer (The One Road, Phase 4): the dying for a heal, the dead for a revive.
+import { revivesTheDead, lifeStateOf, pickable } from "../road/picker-rule.mjs";
+import { aceDistanceFt } from "../geometry-utils.mjs";
 
 // ─── Creature snapshot access (2026-07-28) ───────────────────────────────────
 // Facts about a creature come from the ONE reader, never from actor.system —
@@ -192,7 +195,10 @@ export class SpellPipeline {
         // don't open a picker and don't want their targets nuked here.
         const pickerShapes = new Set(["distribute", "attack-multi", "multi-buff", "multi-heal", "save-single", "touch", "chained"]);
         if (pickerShapes.has(entry.shape)) {
-          SpellPipeline._clearUserTargets();
+          // ⚠️ A REVIVE KEEPS ITS TARGET (Phase 4). The gate judged it for this very
+          // press (Killed for good), after its own picker offered the dead; wiping it
+          // here asked him to pick the same corpse twice.
+          if (!(revivesTheDead(activity?.item) && (game.user?.targets?.size ?? 0) > 0)) SpellPipeline._clearUserTargets();
           // OUR picker owns targeting for these shapes — suppress dnd5e's native
           // template placement so the player doesn't get a redundant "place the
           // template" prompt (and a leftover template they can't use) ALONGSIDE our
@@ -1090,20 +1096,40 @@ export class SpellPipeline {
     // one (true touch spells like Cure Wounds, Greater Restoration).
     const rangeFt   = pickerType === "single-adjacent" ? (entry.range ?? 5) : (entry.range ?? undefined);
     const allowSelf = entry.picker?.allowSelf === true;
+    // Who it may offer (the picker rule, road/picker-rule.mjs): a revive the dead,
+    // a heal the living and the dying, anything else the living.
+    const kind = revivesTheDead(item) ? "revive" : (entry.heal ? "heal" : "harm");
 
     let actors = [];
-    try {
-      const { SpellTargetPicker } = await import("../spell-target-picker.mjs");
-      actors = await SpellTargetPicker.pick({
-        spellItem:   item,
-        casterActor: actor,
-        maxTargets:  N,
-        rangeFt,
-        allowSelf,
-      });
-    } catch (err) {
-      console.error(`${MODULE_ID} | SpellPipeline._pickTargets: purple picker failed:`, err);
-      return null;
+    // ⚠️ A REVIVE'S TARGET WAS ALREADY PICKED AND JUDGED. Pressed with nobody
+    // targeted, the gate's own picker offered the dead and the gate then judged the
+    // pick (Killed for good, Do it anyway); pressed at a corpse, the gate judged
+    // that. The one creature in touch that the rule allows is used as it stands.
+    if (kind === "revive" && isSingle) {
+      const held = [...(game.user?.targets ?? [])];
+      const tok = held.length === 1 ? held[0] : null;
+      const casterTok = actor.getActiveTokens?.()?.[0] ?? null;
+      const near = !!tok && (!casterTok || aceDistanceFt(casterTok, tok) <= (rangeFt ?? 5) + 0.01);
+      if (tok?.actor && near && pickable("revive", lifeStateOf(tok.actor, tok.document)).ok) {
+        console.log(`${MODULE_ID} | ${item.name}: brought to ${tok.name}, who was picked and judged at the press.`);
+        actors = [tok.actor];
+      }
+    }
+    if (!actors.length) {
+      try {
+        const { SpellTargetPicker } = await import("../spell-target-picker.mjs");
+        actors = await SpellTargetPicker.pick({
+          spellItem:   item,
+          casterActor: actor,
+          maxTargets:  N,
+          rangeFt,
+          allowSelf,
+          kind,
+        });
+      } catch (err) {
+        console.error(`${MODULE_ID} | SpellPipeline._pickTargets: purple picker failed:`, err);
+        return null;
+      }
     }
 
     if (!actors || actors.length === 0) return null;   // cancelled / none picked

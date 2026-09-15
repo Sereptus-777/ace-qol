@@ -183,7 +183,8 @@ export class TargetState {
       }
 
       // Condition-based save modifiers
-      if (["str", "dex"].includes(saveAbility)) {
+      // Several offered ("str/dex"): an automatic failure only when every one it could use fails.
+      if (String(saveAbility).split("/").every(k => ["str", "dex"].includes(k))) {
         if (conditions.has("paralyzed") || conditions.has("stunned") || conditions.has("unconscious") || conditions.has("petrified")) {
           autoFailSave = true;
         }

@@ -458,8 +458,14 @@ function decidedOf(plan, activity) {
   if (!d || d.kind === "passive") return null;
   // ⚠️ A DC FROM SPELLCASTING HAS A BLANK FORMULA, WHICH THE FACTS READER TURNS
   // INTO 0. dnd5e uses the formula only when nothing calculates the DC.
-  if (d.kind === "save") return { kind: "save", ability: d.ability || null,
-                                  dc: d.dcFrom ? d.dcFrom : (d.dc || null) };
+  // ⚠️ SEVERAL ABILITIES MEAN THE TARGET CHOOSES (Phase 4, 2026-09-15): a 2024
+  // grapple is "a Strength or Dexterity saving throw (it chooses which)". The one
+  // value read out of the Set was its first, so the recipe said Strength alone.
+  if (d.kind === "save") {
+    const offered = _arr(activity?.save?.ability).map(_s).filter(Boolean);
+    return { kind: "save", ability: offered.length > 1 ? offered.join("/") : (d.ability || offered[0] || null),
+             dc: d.dcFrom ? d.dcFrom : (d.dc || null) };
+  }
   if (d.kind === "attack") return { kind: "attack", melee: !!d.melee, attacks: d.attacks ?? 1 };
   return { kind: "automatic" };
 }
@@ -923,6 +929,84 @@ function resourcesOf(item, activity, facts) {
   };
 }
 
+/* ── Grapple and shove: the rules decide, by edition ──────────────────── */
+//
+// Johnny, 2026-09-15 (Phase 4): "Grapple / Shove: 2014 = contest. 2024 = Str or
+// Dex save. Edition from the item/actor, not guessed."
+//
+// ⚠️ THE RULES ACTION, NOT EVERYTHING THAT GRAPPLES. A creature's own attack that
+// grapples on a hit (the Apparatus of the Crab's Grapple Attack), a feature with a
+// save of its own (Quick Grapple, Telekinetic Shove) and an escape check read
+// from their own data. This is only the action every creature has: the 2014
+// Grapple and Shove (Ireena, Ismark and Father Donavich carry them as feats with
+// nothing on them), and the 2024 Unarmed Strike's Grapple and Shove options.
+
+const RULES_ACTIONS = [
+  [/^grapple$/i, "grapple"], [/^shove\s*\(\s*prone\s*\)$/i, "shove-prone"],
+  [/^shove\s*\(\s*push\s*\)$/i, "shove-push"], [/^shove$/i, "shove"],
+  [/^grapple\s*\/\s*shove$/i, "grapple-or-shove"],
+];
+
+/** What a failed grapple or shove puts on the creature, by the action. */
+const RULES_OUTCOMES = {
+  "grapple": () => [conditionOut("grappled")],
+  "shove-prone": () => [conditionOut("prone")],
+  "shove-push": () => [noteOut("pushed 5 feet straight away")],
+  "shove": () => [noteOut("one of: Prone, pushed 5 feet straight away")],
+  "grapple-or-shove": () => [noteOut("one of: Grappled, Prone")],
+};
+
+/**
+ * Which rules action this activity is: "grapple", "shove", "shove-prone",
+ * "shove-push" or "grapple-or-shove"; null for anything else.
+ */
+export function rulesActionOf(item, activity) {
+  const type = _s(activity?.type);
+  if (!item || !activity || type === "attack" || type === "check") return null;
+  const own = String(activity.name ?? "").trim();
+  const itemName = String(item.name ?? "").trim();
+  const match = (name) => RULES_ACTIONS.find(([rx]) => rx.test(name))?.[1] ?? null;
+  // An Unarmed Strike's option, by the option's own name.
+  const unarmed = _s(item.type) === "weapon"
+    && (/^unarmed strike\b/i.test(itemName) || _s(item.system?.identifier) === "unarmed-strike");
+  if (unarmed && own) return match(own);
+  // A feat that is the action itself, with nothing else named on it.
+  if (_s(item.type) === "feat" && match(itemName) && (!own || own.toLowerCase() === itemName.toLowerCase())) {
+    return match(itemName);
+  }
+  return null;
+}
+
+/**
+ * The rules' answer for a grapple or shove, by the item's edition. 2014: a
+ * contest, the grappler's Athletics against the target's Athletics or
+ * Acrobatics, the target's choice. 2024: a Strength or Dexterity save, the
+ * target's choice, at 8 + the grappler's Strength modifier and proficiency bonus.
+ * Null when the item's own data already makes it a save and the edition agrees
+ * (Virric's and Firaxis's 2024 Unarmed Strikes): the data stands.
+ */
+function rulesActionRecipe(action, edition, dataDecided) {
+  const onFail = RULES_OUTCOMES[action]?.() ?? [];
+  if (edition === "2014") return { decidedBy: { kind: "contest", check: "ath vs ath/acr", dc: null }, onFail };
+  if (dataDecided?.kind === "save") return null;
+  return { decidedBy: { kind: "save", ability: "str/dex", dc: "str" }, onFail };
+}
+
+/**
+ * The save a 2024 grapple or shove makes when its sheet carries none (his
+ * Unarmed Strikes with Grapple and Shove as bare utilities), in the shape of a
+ * dnd5e save: Strength or Dexterity, at 8 + the grappler's Strength modifier and
+ * proficiency bonus. Null for anything else.
+ */
+export function rulesActionSave(item, activity, actor = null) {
+  if (!rulesActionOf(item, activity) || _arr(activity?.save?.ability).length) return null;
+  const who = actor ?? item?.actor ?? null;
+  if (RulesBrain.resolveEdition(item, who) !== "2024") return null;
+  const str = Number(who?.system?.abilities?.str?.mod ?? 0) || 0;
+  const prof = Number(who?.system?.attributes?.prof ?? 0) || 0;
+  return { ability: new Set(["str", "dex"]), dc: { value: 8 + str + prof, calculation: "str" } };
+}
+
 function castName(activity) {
   const uuid = String(activity?.spell?.uuid ?? "").trim();
   if (!uuid) return "a spell it does not name";
@@ -995,7 +1079,11 @@ function buildRecipe(item, activity, { actor = null, shared = null, fromBook = f
     }
   }
   const who = whoOf(plan, recatch.triggers) ?? (where ? fromWords?.who ?? null : null);
-  const decidedBy = decidedOf(plan, activity);
+  let decidedBy = decidedOf(plan, activity);
+  // Grapple and shove: the rules decide, by edition (Phase 4). See rulesActionOf.
+  const action = rulesActionOf(item, activity);
+  const byRule = action ? rulesActionRecipe(action, s.edition, decidedBy) : null;
+  if (byRule) decidedBy = byRule.decidedBy;
 
   // ⚠️ AN UNKNOWN SAYS WHY (09-14). 905 recipes said "where unknown" with no
   // reason, which is "could not read it" printed the same as "nothing there".
@@ -1019,7 +1107,9 @@ function buildRecipe(item, activity, { actor = null, shared = null, fromBook = f
   let onHit = [], onCrit = [], onMiss = [], onFail = [], onSuccess = [], then = [];
   let fromText = !!plan.decide?.fromText || recatch.fromText || !!fromWords?.where, byHand = false;
   try {
-    if (decidedBy?.kind === "attack") {
+    if (byRule) {
+      onFail = byRule.onFail;
+    } else if (decidedBy?.kind === "attack") {
       const a = attackOutcomes(item, activity, plan, facts, s, holder, key, source, left);
       ({ onHit, onCrit, onMiss, then } = a);
       fromText = fromText || a.fromText;
@@ -1047,6 +1137,7 @@ function buildRecipe(item, activity, { actor = null, shared = null, fromBook = f
   const evidence = [fromBook ? "book" : "item"];
   if (fromText) evidence.push("description");
   if (byHand) evidence.push("human");
+  if (byRule) evidence.push("rules");
   // Section 13: a part only the words suggested makes the whole recipe low.
   const confidence = where && who && decidedBy && !(plan.gaps ?? []).length && !fromText
     ? "high" : "low";
@@ -1060,7 +1151,10 @@ function buildRecipe(item, activity, { actor = null, shared = null, fromBook = f
       edition: s.edition,
       source,
       trigger: facts.trigger?.kind === "reaction" ? "reaction" : "press",
-      where, who, decidedBy,
+      // A grapple or shove reaches one creature within 5 feet, whatever its sheet stores.
+      where: byRule ? { kind: "ranged", rangeFt: 5, melee: true } : where,
+      who: byRule ? { kind: "one" } : who,
+      decidedBy,
       onHit, onCrit, onMiss, onFail, onSuccess, then,
       scaling: scalingOf(item, activity),
       lasts: lastsOf(plan),

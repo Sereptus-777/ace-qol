@@ -819,8 +819,8 @@ export class CombatState {
     const saveDisadvReasons = [];
 
     if (saveAbility) {
-      // Auto-fail STR/DEX saves
-      if (["str", "dex"].includes(saveAbility)) {
+      // Auto-fail STR/DEX saves (several offered, "str/dex": only when every one would)
+      if (String(saveAbility).split("/").every(k => ["str", "dex"].includes(k))) {
         if (tgtConditions.has("paralyzed") || tgtConditions.has("stunned")
          || tgtConditions.has("unconscious") || tgtConditions.has("petrified")) {
           autoFailSave = true;

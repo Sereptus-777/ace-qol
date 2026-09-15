@@ -129,5 +129,15 @@ check("a save with no recipe still gets a plain row and lands nothing",
 check("the GM's quarter and double from the card: 7 is 1 and 14", shareOf(7, 0.25) === 1 && shareOf(7, 2) === 14,
   `${shareOf(7, 0.25)} and ${shareOf(7, 2)}`);
 
+// ── A contest lands the way a save does (Phase 4, 2026-09-15) ──
+// A 2014 grapple: the grappler's Athletics against the target's Athletics or
+// Acrobatics. The target losing takes onFail; holding (or a tie) takes onSuccess.
+const grapple2014 = { decidedBy: { kind: "contest", check: "ath vs ath/acr", dc: null }, onSuccess: [],
+  onFail: [{ kind: "condition", condition: { key: "grappled", duration: null, ends: null } }] };
+o = whatLands(grapple2014, { passed: false });
+check("a 2014 grapple, lost: Grappled, and no damage", o.conditions.map(c => c.key).join() === "grappled" && o.damage.length === 0, show(o));
+o = whatLands(grapple2014, { passed: true });
+check("a 2014 grapple, held or tied: nothing", o.conditions.length === 0 && o.damage.length === 0, show(o));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exitCode = fail ? 1 : 0;

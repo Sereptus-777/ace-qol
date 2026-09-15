@@ -97,11 +97,13 @@ export function outcomeClauses(html) {
  * @param {string|null} [opts.activityId]  only this activity's effects
  * @param {number|null} [opts.castLevel]   the slot it was cast with, for
  *                                         effects dnd5e only applies at some levels
+ * @param {string[]|null} [opts.types]     which activity types to read: a save's by
+ *                                         default; null for any (a self buff's utility)
  * @returns {Array<{id: string, name: string, effect: object,
  *                  on: "fail"|"success"|"both", why: string,
  *                  statuses: string[], changes: number, descriptionOnly: boolean}>}
  */
-export function readSaveOutcomeEffects(item, { activityId = null, castLevel = null } = {}) {
+export function readSaveOutcomeEffects(item, { activityId = null, castLevel = null, types = ["save"] } = {}) {
   const out = [];
   try {
     // The item's own effects, in whichever shape this copy is in.
@@ -117,7 +119,11 @@ export function readSaveOutcomeEffects(item, { activityId = null, castLevel = nu
     }
     if (!byId.size) return out;
 
-    const acts = readActivities(item).filter(a => a?.type === "save"
+    // ⚠️ A SAVE'S EFFECTS BY DEFAULT; `types: null` READS ANY ACTIVITY'S (Phase 4,
+    // 2026-09-15). The 2024 Mage Armor names its own "Mage Armor" effect on a
+    // utility, and read only as a save this found nothing, so ACE's library copy
+    // went on in the book's place.
+    const acts = readActivities(item).filter(a => (!types || types.includes(a?.type))
       && (!activityId || String(a?.id ?? a?._id ?? "") === String(activityId)));
     if (!acts.length) return out;
 

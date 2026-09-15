@@ -75,7 +75,12 @@ export function shareOf(total, share) {
  */
 export function whatLands(recipe, { passed, result = null, rolled = [], evasion = false, autoFail = false } = {}) {
   if (recipe?.decidedBy?.kind === "attack") return attackLands(recipe, { result, rolled });
-  const isSave = recipe?.decidedBy?.kind === "save";
+  // A contest lands the way a save does (Phase 4, 2026-09-15): the creature that
+  // loses it takes onFail, the one that holds takes onSuccess, and `passed` is
+  // that creature holding (a 2014 grapple or shove: its Athletics or Acrobatics
+  // against the grappler's Athletics).
+  const contest = recipe?.decidedBy?.kind === "contest";
+  const isSave = recipe?.decidedBy?.kind === "save" || contest;
   const onFail = isSave ? (recipe.onFail ?? []) : [];
   const onSuccess = isSave ? (recipe.onSuccess ?? []) : [];
   // One activity has one rule for its damage on a made save.
@@ -100,7 +105,8 @@ export function whatLands(recipe, { passed, result = null, rolled = [], evasion 
     else if (o?.kind === "effect") out.effects.push({ ...(o.condition ?? {}) });
     else if (o?.kind === "note") out.notes.push(String(o.condition?.key ?? ""));
   }
-  out.why = passed ? "the save was made" : "the save was failed";
+  out.why = contest ? (passed ? "it held: it won or tied the contest" : "it lost the contest")
+    : passed ? "the save was made" : "the save was failed";
   return out;
 }
 

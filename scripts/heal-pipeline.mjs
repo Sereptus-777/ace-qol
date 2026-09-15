@@ -50,6 +50,7 @@ import { HealCardRenderer } from "./heal-card-renderer.mjs";
 // same second.
 import { SpellPipeline } from "./spell-pipeline/pipeline.mjs";
 import { ActionInterceptor } from "./profiles/action-interceptor.mjs";
+import { CardDoor } from "./road/doors.mjs";
 
 export class HealPipeline {
 
@@ -60,6 +61,9 @@ export class HealPipeline {
     /** Debounce — protects against duplicate dnd5e hook fires for the same activity */
     this._lastHandledActivityId = null;
     this._lastHandledAt = 0;
+
+    /** Activity uuid → what dnd5e would have spent at the press, held until somebody is picked (Phase 4). */
+    this._held = new Map();
 
     this._registerHooks();
   }
@@ -238,22 +242,36 @@ export class HealPipeline {
         return;                                     // no false: dnd5e places it
       }
 
-      console.log(`${MODULE_ID} | HealPipeline: INTERCEPTED ${activity.item?.name} → canceling vanilla flow, running pipeline`);
+      // ⚠️🔴 STEERED, NEVER CANCELLED TO TAKE IT (The One Road, Phase 4,
+      // 2026-09-15; the frozen note on this hook: "read + gate + steer config;
+      // never cancel to claim"). This returned false and ran a copy of the cast
+      // of its own, so every handler after it on the press was cut off and dnd5e
+      // never knew the heal was used. Now dnd5e's use goes ahead as it always
+      // does, steered: no usage card (the heal card is the record), no healing
+      // roll of dnd5e's own after it, and what it would spend held until
+      // somebody is picked. The heal runs once the use is done, below.
+      HealPipeline._steer(activity, usageConfig, dialogConfig, messageConfig, this._held);
       ActionInterceptor.claim?.(activity, "heal-pipeline");
+      console.log(`${MODULE_ID} | HealPipeline: ${item.name} is a heal; dnd5e's use goes ahead, steered, and the heal runs when it is done.`);
+      return undefined;
+    });
 
-      // Run our pipeline asynchronously
-      this._onHealActivityIntercept(activity, usageConfig)
+    // The heal, once dnd5e's use of it is done: the slot it was cast with is known.
+    Hooks.on("dnd5e.postUseActivity", (activity, usageConfig) => {
+      const held = activity?.uuid ? this._held.get(activity.uuid) : null;
+      if (!held) return;
+      this._held.delete(activity.uuid);
+      if (Date.now() - held.at > 120000) {
+        console.warn(`${MODULE_ID} | HealPipeline: ${activity.item?.name}'s use came back after two minutes; it was not healed. Press it again.`);
+        return;
+      }
+      this._onHealActivityIntercept(activity, usageConfig, held)
         .catch(err => {
-          // ⚠️ THE CAST IS ALREADY CANCELLED BY THE TIME THIS RUNS. A throw
-          // here means nothing rolled and nothing will, so it cannot be a
-          // console line: that is indistinguishable from a broken feature.
-          console.error(`${MODULE_ID} | HealPipeline intercept threw for "${item.name}":`, err);
-          ui.notifications?.error(`${item.name}: ACE cancelled the cast and then failed. `
-            + `Nothing was healed — see the console.`);
+          // ⚠️ SAID ON SCREEN. Nothing rolled and nothing will, and in the console
+          // alone that is indistinguishable from a broken feature.
+          console.error(`${MODULE_ID} | HealPipeline threw for "${activity.item?.name}":`, err);
+          ui.notifications?.error(`${activity.item?.name}: ACE could not finish the heal. Nothing was healed; see the console.`);
         });
-
-      // Cancel the vanilla flow entirely — no dialog, no auto-roll, no chat
-      return false;
     });
 
     // Template-shape heals — wait for template placement, then collect tokens inside
@@ -296,7 +314,29 @@ export class HealPipeline {
   //  Activity Intercept — entry point
   // ═══════════════════════════════════════════════════════════════════════════
 
-  async _onHealActivityIntercept(activity, usageConfig) {
+  /**
+   * Steer dnd5e's own use of a heal instead of cancelling it (the frozen note on
+   * preUseActivity). What dnd5e would have spent is turned off and held, and spent
+   * once somebody is picked, so a heal that picks nobody costs nothing, as before.
+   */
+  static _steer(activity, usageConfig, dialogConfig, messageConfig, held) {
+    if (usageConfig) {
+      usageConfig.subsequentActions = false;            // no healing roll of dnd5e's own after the use
+      const c = (usageConfig.consume ??= {});
+      const was = { resources: c.resources !== false, spellSlot: c.spellSlot === true };
+      c.resources = false;
+      c.spellSlot = false;
+      if (activity?.uuid) held?.set(activity.uuid, { ...was, at: Date.now() });
+    }
+    if (messageConfig) messageConfig.create = false;    // the heal card is the record
+    // Only a levelled spell has something to choose in dnd5e's dialog, its slot.
+    // Everything else asks what it needs itself: who, and how many dice.
+    const item = activity?.item;
+    const levelled = item?.type === "spell" && Number(item.system?.level) > 0;
+    if (dialogConfig && !levelled) dialogConfig.configure = false;
+  }
+
+  async _onHealActivityIntercept(activity, usageConfig, held = null) {
     // Debounce — preUseActivity can fire twice on rapid double-click
     const now = Date.now();
     if (this._lastHandledActivityId === activity.id && (now - this._lastHandledAt) < 500) return;
@@ -382,7 +422,7 @@ export class HealPipeline {
         await item.update({ "system.uses.spent": newSpent });
         console.log(`${MODULE_ID} | HealPipeline: ${item.name} spent ${poolScale.dice} die(s) from pool (uses ${curSpent} → ${newSpent}/${maxUses})`);
       } else {
-        const ok = await this._consumeResources(activity, usageConfig);
+        const ok = await this._consumeResources(activity, usageConfig, held);
         if (ok === false) {
           // Resource check failed mid-consume (raced with another cast or got
           // out-of-sync). Abort the heal — user already saw the warning toast.
@@ -498,10 +538,20 @@ export class HealPipeline {
    * If we can't consume because the actor has no slots/charges left, return
    * false so the caller can abort the heal (no point firing if nothing to spend).
    */
-  async _consumeResources(activity, usageConfig) {
+  async _consumeResources(activity, usageConfig, held = null) {
     const item  = activity.item;
     const actor = activity.actor;
     if (!item || !actor) return true;
+
+    // What the steer held at the press is spent now. Whatever the caster turned
+    // back on in dnd5e's own dialog, dnd5e has already spent, so it is not spent twice.
+    const spendSlot = held ? (held.spellSlot && usageConfig?.consume?.spellSlot !== true) : true;
+    const spendResources = held ? (held.resources && usageConfig?.consume?.resources === false) : true;
+    if (held) {
+      usageConfig = { ...(usageConfig ?? {}),
+        consume: { ...(usageConfig?.consume ?? {}), spellSlot: spendSlot, resources: spendResources } };
+      if (!spendSlot && !spendResources) return true;
+    }
 
     // Snapshot pre-consume state for spells
     const isSpell = item.type === "spell";
@@ -534,7 +584,7 @@ export class HealPipeline {
     // If activity.consume() didn't decrement the slot (because usageConfig
     // didn't have slot info — common when we cancel the vanilla flow), do it
     // ourselves at the spell's base level.
-    if (isSpell && slotKey && beforeSlots !== null && afterSlots === beforeSlots) {
+    if (spendSlot && isSpell && slotKey && beforeSlots !== null && afterSlots === beforeSlots) {
       if (beforeSlots > 0) {
         await actor.update({ [`system.spells.${slotKey}.value`]: beforeSlots - 1 });
         console.log(`${MODULE_ID} | HealPipeline: manually decremented ${slotKey} (${beforeSlots} → ${beforeSlots - 1})`);
@@ -977,7 +1027,9 @@ export class HealPipeline {
       item, actor, roll, targetData, classification,
     });
 
-    await ChatMessage.create({
+    // Through the card door. Its dice show as the card lands, and nothing touches
+    // a creature until the GM presses Apply.
+    await CardDoor.post({
       user:      game.user.id,
       speaker:   ChatMessage.getSpeaker({ actor }),
       content:   html,

@@ -18,6 +18,8 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { aceDistanceFt } from "./geometry-utils.mjs";
+// Who a heal may be offered: the living and the dying, never the dead (Phase 4).
+import { lifeStateOf, pickable } from "./road/picker-rule.mjs";
 
 const SELF_KEY = "__SELF__";
 
@@ -180,6 +182,12 @@ export class HealTargetPicker {
       const blocked = HealTargetPicker._sightBlocked(casterActor, token);
       if (blocked === true) return { valid: false, reason: "no line of sight - a wall is in the way" };
     }
+
+    // ⚠️ THE DEAD ARE NOT HEALED (The One Road, Phase 4: the picker rule in
+    // road/picker-rule.mjs). A creature dying at 0 hit points is; one that is dead
+    // needs Revivify or Raise Dead, and their picker offers the dead.
+    const life = pickable("heal", lifeStateOf(token.actor, token.document));
+    if (!life.ok) return { valid: false, reason: life.why };
 
     if (affects === "self" && !isSelf) return { valid: false, reason: "self-only heal" };
 

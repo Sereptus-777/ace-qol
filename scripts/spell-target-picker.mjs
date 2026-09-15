@@ -17,6 +17,8 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { aceDistanceFt } from "./geometry-utils.mjs";
+// Who may be offered: the living, the dying and the dead (The One Road, Phase 4).
+import { lifeStateOf, pickable, lifeBadge } from "./road/picker-rule.mjs";
 
 export class SpellTargetPicker {
 
@@ -30,10 +32,12 @@ export class SpellTargetPicker {
    * @param {number} opts.maxTargets   — max selectable (e.g., 3 for Bless)
    * @param {number} [opts.rangeFt]    — range in feet (defaults to spell.system.range)
    * @param {boolean}[opts.allowSelf]  — caster can be a target (default true)
+   * @param {"heal"|"revive"|"harm"} [opts.kind] — who it may offer (road/picker-rule.mjs):
+   *   a heal the living and the dying, a revive the dead, anything else the living
    * @returns {Promise<Actor[]>}
    */
   static async pick({ spellItem, casterActor, maxTargets, rangeFt, allowSelf = true,
-                      verb = "Cast", icon = "fa-solid fa-sparkles", only = null }) {
+                      verb = "Cast", icon = "fa-solid fa-sparkles", only = null, kind = "harm" }) {
     if (!spellItem || !casterActor) return [];
 
     // Resolve range from spell item if not explicitly passed.
@@ -69,12 +73,12 @@ export class SpellTargetPicker {
     let candidates;
     if (only) {
       const allowed = new Set([...only].map(t => t?.id ?? t).filter(Boolean));
-      candidates = SpellTargetPicker._buildCandidates(casterToken, casterActor, Infinity, allowSelf)
+      candidates = SpellTargetPicker._buildCandidates(casterToken, casterActor, Infinity, allowSelf, kind)
         .filter(c => allowed.has(c?.token?.id ?? c?.tokenId ?? c?.id));
       console.log(`ace-qol | [picker] restricted to ${candidates.length} of ${allowed.size} `
         + `creature(s) inside the area for ${spellItem.name}`);
     } else {
-      candidates = SpellTargetPicker._buildCandidates(casterToken, casterActor, resolvedRange, allowSelf);
+      candidates = SpellTargetPicker._buildCandidates(casterToken, casterActor, resolvedRange, allowSelf, kind);
     }
     console.log(`ace-qol | [picker-timing] _buildCandidates → ${candidates.length} candidates in ${Math.round(performance.now() - _tb0)}ms`);
     if (!candidates.length) {
@@ -83,9 +87,11 @@ export class SpellTargetPicker {
     }
 
     // Pre-select tokens already in game.user.targets (caster convenience)
+    // ⚠️ ONLY ONE IT MAY OFFER. A targeted corpse came up selected on a heal's
+    // picker, and a selected row confirms whatever its colour says.
     const preSelected = new Set();
     for (const t of game.user.targets ?? []) {
-      if (candidates.find(c => c.tokenId === t.id)) preSelected.add(t.id);
+      if (candidates.find(c => c.tokenId === t.id && c.valid !== false)) preSelected.add(t.id);
     }
     // If nothing is explicitly pre-targeted and self-targeting is allowed,
     // pre-select self — BUT only for MULTI-target buffs (Bless, Aid, Slow).
@@ -98,7 +104,7 @@ export class SpellTargetPicker {
     // caster only ever gets the effect if the GM clicks their own portrait.
     // (v0.7.90 — Greater Invisibility "caster gets it too" report.)
     if (preSelected.size === 0 && allowSelf && (Number(maxTargets) || 1) > 1) {
-      const selfRow = candidates.find(c => c.isSelf);
+      const selfRow = candidates.find(c => c.isSelf && c.valid !== false);
       if (selfRow) preSelected.add(selfRow.tokenId);
     }
 
@@ -197,7 +203,7 @@ export class SpellTargetPicker {
    * Walk every token on canvas. Compute distance from caster, validity.
    * Returns sorted by distance ascending (caster first, then nearest).
    */
-  static _buildCandidates(casterToken, casterActor, rangeFt, allowSelf) {
+  static _buildCandidates(casterToken, casterActor, rangeFt, allowSelf, kind = "harm") {
     const tokens = canvas.tokens?.placeables ?? [];
     const out = [];
 
@@ -221,8 +227,14 @@ export class SpellTargetPicker {
       if (!isSelf && inRange && SpellTargetPicker._losBlocked(casterToken, tok)) continue;
       const disposition = tok.document?.disposition ?? 0;
       const isPlayerOwned = !!tok.actor.hasPlayerOwner;
-      const hp = tok.actor.system?.attributes?.hp ?? {};
-      const isDead = (hp.value ?? 1) <= 0 || tok.actor.statuses?.has?.("dead");
+      // ⚠️ WHO MAY BE OFFERED IS THE PICKER RULE'S (road/picker-rule.mjs): a heal
+      // takes the dying, a revive the dead, anything else the living. Anything at
+      // 0 hit points read as dead here, so a dying ally could not be healed and a
+      // corpse could not be raised. `isDead` keeps its old meaning, "not standing",
+      // for the weapon picker.
+      const life = lifeStateOf(tok.actor, tok.document);
+      const rule = pickable(kind, life);
+      const isDead = !pickable("harm", life).ok;
 
       out.push({
         tokenId: tok.id,
@@ -242,6 +254,9 @@ export class SpellTargetPicker {
         disposition,
         isPlayerOwned,
         isDead,
+        valid: inRange && rule.ok,
+        why: !inRange ? "out of spell range" : rule.why,
+        badge: lifeBadge(life),
       });
     }
 
@@ -415,10 +430,13 @@ export class SpellTargetPicker {
     const distLabel = c.isSelf ? "self"
       : `${Math.round(c.distFt)} feet${c.bearing ? ` ${c.bearing}` : ""}`;
     const distClass = c.isSelf ? "self" : (c.inRange ? "in-range" : "out-of-range");
-    const validClass = c.inRange && !c.isDead ? "valid" : "invalid";
+    const valid = c.valid ?? (c.inRange && !c.isDead);
+    const validClass = valid ? "valid" : "invalid";
     const selectedClass = preSelected ? "selected" : "";
     const ownerClass = c.isPlayerOwned ? "pc" : "npc";
-    const deadBadge = c.isDead ? `<div class="ace-qol-spell-pickr-tok-dead">DEAD</div>` : "";
+    const badge = c.badge ?? (c.isDead ? "DEAD" : "");
+    const deadBadge = badge ? `<div class="ace-qol-spell-pickr-tok-dead">${badge}</div>` : "";
+    const why = valid ? "" : (c.why || (c.inRange ? "invalid" : "out of spell range"));
     const dispLabel = c.disposition === 1 ? "FRIENDLY"
                     : c.disposition === -1 ? "HOSTILE"
                     : c.disposition === 0 ? "NEUTRAL"
@@ -430,6 +448,7 @@ export class SpellTargetPicker {
     return `
       <div class="ace-qol-spell-pickr-tok ${validClass} ${selectedClass} ${ownerClass}"
            data-token-id="${c.tokenId}"
+           data-why="${foundry.utils.escapeHTML(why)}"
            data-actor-id="${c.actor.id}"
            title="${foundry.utils.escapeHTML(c.name)} — ${distLabel}">
         <div class="ace-qol-spell-pickr-tok-img-wrap">
@@ -542,11 +561,8 @@ export class SpellTargetPicker {
           // understands why nothing happened.
           if (!grid.dataset.rejectToastShown) {
             grid.dataset.rejectToastShown = "1";
-            const reason = el.querySelector(".ace-qol-spell-pickr-tok-dist.out-of-range")
-              ? "out of spell range"
-              : el.querySelector(".ace-qol-spell-pickr-tok-dead")
-                ? "dead"
-                : "invalid";
+            const reason = el.dataset.why
+              || (el.querySelector(".ace-qol-spell-pickr-tok-dist.out-of-range") ? "out of spell range" : "invalid");
             ui.notifications?.warn(`Cannot target ${el.title?.split(" — ")[0] ?? "this token"} — ${reason}.`);
           }
           return;
