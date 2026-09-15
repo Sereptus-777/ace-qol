@@ -13,7 +13,7 @@ import { getChosenDamageType } from "./multi-type-damage-chooser.mjs";
 import { AttackAbilityResolver } from "./attack-ability-resolver.mjs";
 // The One Road, Phase 3: what lands on a hit is the attack's recipe. Read at
 // function time only; recipe.mjs reaches this file back through post-hit-saves.
-import { recipeForActivity, loadBookFor } from "./inference/recipe.mjs";
+import { recipeForActivity, loadBookFor, diceOf } from "./inference/recipe.mjs";
 import { whatLands } from "./road/what-lands.mjs";
 
 const PHYSICAL_TYPES = new Set(["bludgeoning", "piercing", "slashing"]);
@@ -88,6 +88,55 @@ export class DamageCalculator {
     }
   }
 
+  /**
+   * The hit's own damage, as its recipe's onHit names it (The One Road, Phase 3).
+   *
+   * Each damage the recipe names is matched to the sheet's roll of the same part,
+   * by its damage type and its dice, and that roll is kept: dnd5e built it with
+   * the ability modifier, the magic bonus, the scaling and the attacker's bonuses.
+   * A damage the recipe names that the sheet does not roll is rolled from the
+   * recipe (a book's spell whose sheet copy has no part for it, an attack whose
+   * only damage is in its words). A roll of the sheet's that the recipe does not
+   * name does not land: its words give it to something else, or the book's hit
+   * deals none, and the console says which.
+   *
+   * @param {{recipe: object, book: object|null}} road  from _attackRoad
+   * @param {object[]} components  the sheet's rolls so far; changed in place
+   * @param {object} o
+   * @param {string|null} [o.chosen]  the one damage type the player picked for a part
+   */
+  static async _landRecipeHit(road, components, { item, rollData, isCrit, critRule, chosen = null }) {
+    const lc = (t) => String(t ?? "").toLowerCase();
+    const own = components.filter(c => c.name === item?.name);
+    const wants = (road?.recipe?.onHit ?? []).filter(o => o?.kind === "damage" && String(o.formula ?? "").trim())
+      // A part with several types, and the player picked one (Blood Halberd): the others are not this hit's.
+      .filter(o => !chosen || !(o.types?.length) || o.types.map(lc).includes(chosen));
+    const claimed = new Set();
+    const typesFit = (c, o) => {
+      const have = (c._src?.types ?? [c.type]).map(lc);
+      const want = (o.types ?? []).map(lc);
+      return !want.length || want.some(t => have.includes(t));
+    };
+    // The same dice first; then the same type, for a part the sheet scales (a cantrip at 11th level).
+    const pick = (o, loose) => own.find(c => !claimed.has(c) && typesFit(c, o)
+      && (loose || (c._src?.dice ?? "") === diceOf(o.formula)));
+    const whose = road?.book ? ` (the book's, ${road.book.pack ?? "a book"})` : "";
+    for (const o of wants) {
+      const c = pick(o, false) ?? pick(o, true);
+      if (c) { claimed.add(c); c.recipePart = "onHit"; continue; }
+      const type = (chosen && (o.types ?? []).map(lc).includes(chosen)) ? chosen : (o.types?.[0] ?? "untyped");
+      const result = await DamageCalculator.rollWithCrit(o.formula, rollData, isCrit, critRule, `Base ${type}`, item);
+      components.push({ name: item.name, ...result, type, recipePart: "onHit" });
+      console.log(`${MODULE_ID} | "${item?.name}": ${o.formula} ${type}, from its recipe${whose}: the sheet rolls no part like it.`);
+    }
+    const dropped = own.filter(c => !claimed.has(c));
+    for (const c of dropped) components.splice(components.indexOf(c), 1);
+    if (dropped.length) {
+      console.log(`${MODULE_ID} | "${item?.name}": the sheet's ${dropped.map(c => `${c.formula} ${c.type}`).join(" + ")} `
+        + `does not land on a hit: its recipe${whose} does not deal it there.`);
+    }
+  }
+
   static _parseHitDamage(item, rollData, actor) {
     try {
       const raw = item?.system?.description?.value ?? "";
@@ -118,8 +167,12 @@ export class DamageCalculator {
    *
    * Passing null keeps the old behaviour, which is correct for single-activity
    * items and for legacy data with no activities at all.
+   *
+   * @param {object} [opts]
+   * @param {object|null} [opts.road]  the attack's recipe as `_attackRoad` read it,
+   *   when the caller already has it (one card, several targets); read here if not
    */
-  static async rollDamageComponents(item, actor, targetState, isCrit, critRule, activityId = null) {
+  static async rollDamageComponents(item, actor, targetState, isCrit, critRule, activityId = null, { road: givenRoad } = {}) {
     const components = [];
     const sys = item.system ?? {};
 
@@ -235,7 +288,17 @@ export class DamageCalculator {
       }
     }
 
+    // ── THE ATTACK'S RECIPE, READ BEFORE ANY DIE (The One Road, Phase 3) ──
+    // What this hit deals is its recipe's onHit, and on a critical hit its onCrit
+    // as well (see _landRecipeHit below). Null for anything not decided by an
+    // attack roll, which keeps the sheet's dice and the words' guesses as before.
+    const road = givenRoad !== undefined ? givenRoad : await DamageCalculator._attackRoad(item, actor, activityId);
+
     // ── Parse item description for conditional damage (save-gated) ──
+    // ⚠️ ONLY WHERE NO RECIPE SPEAKS, for the sheet's own parts. This guessed that
+    // a second damage part whose type the words also named beside a save belonged
+    // to that save, and so left the Neogi's "plus 4d6 poison damage" off every
+    // bite. The recipe reads where the words put each part (inference/recipe.mjs).
     const parsed = DescriptionParser.parse(item);
     const conditionalDamageTypes = new Set();
     if (parsed.saves.length > 0) {
@@ -310,8 +373,9 @@ export class DamageCalculator {
             const formula = parts.join(" + ");
             const type = rollCfg.options?.type ?? rollCfg.options?.types?.[0] ?? "untyped";
 
-            // Skip conditional damage parts (gated behind a save from description)
-            if (conditionalDamageTypes.has(type) && i > 0) continue;
+            // Skip conditional damage parts (gated behind a save from description).
+            // Only with no recipe: where one speaks, it names the parts that land.
+            if (!road && conditionalDamageTypes.has(type) && i > 0) continue;
 
             // Skip parts that don't match the chosen damage type (Blood Halberd
             // "fire or cold" → only the chosen one rolls).
@@ -362,7 +426,9 @@ export class DamageCalculator {
             }
             try { console.log(`${MODULE_ID} | [dmg-diag] "${item?.name}" act.type=${activity?.type} act.ability=${JSON.stringify(activity?.ability)} offhand=${CombatState.isOffhandSwing(item?.uuid)} formula="${formula}" data.mod=${data?.mod}`); } catch (_) {}
             const result = await DamageCalculator.rollWithCrit(formula, data, isCrit, critRule, `Base ${type}`, item);
-            components.push({ name: item.name, ...result, type });
+            // Which of the item's parts this is, by its types and its dice, so its recipe can name it.
+            components.push({ name: item.name, ...result, type,
+              _src: { types: [...(rollCfg.options?.types ?? [type])], dice: diceOf(parts[0]) } });
           }
 
           // Tag first component with modifier metadata for card labels
@@ -446,7 +512,8 @@ export class DamageCalculator {
           for (let i = 0; i < activity.damage.parts.length; i++) {
             const part = activity.damage.parts[i];
             const partTypes = part.types ? [...part.types] : [];
-            if (partTypes.some(t => conditionalDamageTypes.has(t)) && i > 0) continue;
+            // Only with no recipe: where one speaks, it names the parts that land.
+            if (!road && partTypes.some(t => conditionalDamageTypes.has(t)) && i > 0) continue;
 
             let formula = part.custom?.enabled
               ? part.custom.formula
@@ -498,7 +565,8 @@ export class DamageCalculator {
             // with chosen=cold rolls as cold (not as fire).
             const appliedType = shouldFilterByChosen ? chosenDamageType : type;
             const result = await DamageCalculator.rollWithCrit(formula, rollData, isCrit, critRule, `Base ${appliedType}`, item);
-            const comp = { name: item.name, ...result, type: appliedType };
+            // Which of the item's parts this is, by its types and its dice, so its recipe can name it.
+            const comp = { name: item.name, ...result, type: appliedType, _src: { types, dice: diceOf(formula) } };
 
             // Tag first component with modifier metadata
             if (i === 0) {
@@ -539,7 +607,8 @@ export class DamageCalculator {
       if (!components.length && sys.damage?.parts?.length) {
         for (const [formula, type] of sys.damage.parts) {
           const result = await DamageCalculator.rollWithCrit(formula, rollData, isCrit, critRule, `Base ${type}`);
-          components.push({ name: item.name, ...result, type: type || "untyped" });
+          components.push({ name: item.name, ...result, type: type || "untyped",
+            _src: { types: [type || "untyped"], dice: diceOf(formula) } });
         }
       }
     }
@@ -553,7 +622,9 @@ export class DamageCalculator {
     // the "Hit: N (XdY + K/PB) <type> damage" line so the attack still gets its
     // damage + button. Same class as the Produce Flame gap. Only fires when
     // NOTHING else produced a base component, so it never double-counts.
-    if (!components.some(c => c.name === item.name)) {
+    // ⚠️ ONLY WITH NO RECIPE. An attack's recipe reads the same "Hit:" line when its
+    // data has no damage (inference/recipe.mjs), and names what lands from it.
+    if (!road && !components.some(c => c.name === item.name)) {
       const hd = DamageCalculator._parseHitDamage(item, rollData, actor);
       if (hd) {
         const result = await DamageCalculator.rollWithCrit(hd.formula, rollData, isCrit, critRule, `Base ${hd.type}`, item);
@@ -563,11 +634,13 @@ export class DamageCalculator {
     }
 
     // ── WHAT LANDS ON A HIT IS THE RECIPE'S (The One Road, Phase 3, 2026-09-14) ──
-    // The dice above are the sheet's own, built the way dnd5e builds them: the
-    // run's numbers. What lands on this result is the recipe's, and whatLands
-    // answers for a hit or a critical hit as it answers for a save. A named
-    // official spell's recipe is its book's and the sheet is only this cast: when
-    // the book's hit deals no damage, the sheet's dice for it do not land.
+    // Johnny: "The live hit must use recipe onHit / onCrit for what dice and
+    // extras land." The rolls above are the sheet's own, built the way dnd5e builds
+    // them (the ability modifier, the magic bonus, the scaling, the attacker's
+    // bonuses): the run's numbers. Only the ones the recipe's onHit names are kept,
+    // a damage it names that the sheet does not roll is rolled from the recipe, and
+    // a roll it does not name does not land (_landRecipeHit). A named official
+    // spell's recipe is its book's and the sheet is only this cast.
     //
     // ⚠️🔴 AN ITEM'S CRIT DICE WERE NEVER READ FROM THE ITEM. dnd5e puts an
     // attack's critical bonus on its first damage roll and adds it only on a crit,
@@ -578,26 +651,21 @@ export class DamageCalculator {
     // Whip, the Mace of Smiting). The recipe carries the item's own as onCrit: it
     // is rolled here, once, only on a crit, and the words stand down.
     let recipeCritDice = false;
-    const road = await DamageCalculator._attackRoad(item, actor, activityId);
     if (road) {
       const verdict = whatLands(road.recipe, { result: isCrit ? "critical" : "hit" });
       recipeCritDice = (road.recipe.onCrit ?? []).some(o => o?.kind === "damage");
-      if (road.book && !verdict.dealsDamage) {
-        const own = components.filter(c => c.name === item.name);
-        for (const c of own) components.splice(components.indexOf(c), 1);
-        if (own.length) {
-          console.log(`${MODULE_ID} | "${item.name}": its recipe is the book's (${road.book.pack ?? "a book"}), and `
-            + `the book's hit deals no damage, so the sheet's ${own.map(c => `${c.formula} ${c.type}`).join(" + ")} does not land.`);
-        }
-      }
+      await DamageCalculator._landRecipeHit(road, components, { item, rollData, isCrit, critRule,
+        chosen: shouldFilterByChosen ? chosenDamageType : null });
       const firstType = components.find(c => c.name === item.name)?.type ?? "untyped";
       for (const x of verdict.extras) {
         const label = `${item.name} (critical)`;
         const type = x.types?.[0] ?? firstType;
         const result = await DamageCalculator.rollWithCrit(x.formula, rollData, false, critRule, label, item);
-        components.push({ name: label, ...result, type });
+        components.push({ name: label, ...result, type, recipePart: "onCrit" });
         console.log(`${MODULE_ID} | ${label}: +${result.total} ${type} (${x.formula}), the item's own crit dice, from its recipe`);
       }
+      // What the recipe says this hit does not deal, and why; the damage card shows the GM.
+      for (const n of verdict.notes) console.log(`${MODULE_ID} | "${item.name}": ${n}`);
     }
 
     // ── Pact of the Blade damage-type preference (player's sticky choice) ──

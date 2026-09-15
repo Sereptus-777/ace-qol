@@ -150,6 +150,8 @@ import { SunkenFloors } from "./sunken-floors.mjs";
 import { aceDistanceFt, aceWithinFt, aceRegisterPositionTracking } from "./geometry-utils.mjs";
 // THE GATE (The One Road, Phase 2): the one place a press is refused.
 import { PressGate } from "./gate/press-gate.mjs";
+// The One Road: a card goes through the card door, which waits for any dice that decided it.
+import { CardDoor } from "./road/doors.mjs";
 
 /**
  * Authorise an inbound PLAYER-PROXY socket payload.
@@ -857,11 +859,11 @@ Hooks.once("ready", () => {
         </p>
       </div>
     `;
-    ChatMessage.create({
+    CardDoor.post({
       content: html,
       whisper: game.users.filter(u => u.isGM).map(u => u.id),
       flags: { [MODULE_ID]: { type: "conflictWarning" } },
-    });
+    }).catch(err => console.warn(`${MODULE_ID} | the module-conflict card could not be posted:`, err));
     console.warn(`${MODULE_ID} | Detected ${active.length} potentially-conflicting module(s): ${active.map(m => m.id).join(", ")}`);
   } catch (err) {
     console.warn(`${MODULE_ID} | Module-conflict detection threw (non-fatal):`, err);
@@ -4492,7 +4494,7 @@ Hooks.once("ready", () => {
           console.log(`${MODULE_ID} | Revive denied — ${actor.name} is permanently dead (${flags.deathReason ?? "unknown"}). Use the override card or actor sheet to allow revive.`);
           // Post a one-time notification so the GM sees what happened.
           try {
-            await ChatMessage.create({
+            await CardDoor.post({
               content: `<div style="background:#1a0a0a;border:2px solid #c44;border-radius:6px;padding:8px 12px;">
                 <strong style="color:#ffaaaa;"><i class="fas fa-skull-crossbones"></i> Revive Blocked — Permanent Death</strong>
                 <div style="color:#e8c8c8;font-size:12px;margin-top:4px;">
@@ -4505,7 +4507,9 @@ Hooks.once("ready", () => {
               whisper: [game.user.id],
               flags: { [MODULE_ID]: { type: "reviveDenied", actorId: actor.id } },
             });
-          } catch (_) {}
+          } catch (err) {
+            console.warn(`${MODULE_ID} | the revive-blocked card could not be posted:`, err);
+          }
           return;
         }
 
@@ -4610,7 +4614,7 @@ Hooks.once("ready", () => {
 
         // Post a brief chat note so the table sees the revive.
         try {
-          await ChatMessage.create({
+          await CardDoor.post({
             content: `<div style="background:#0a1a0a;border:2px solid #4c4;border-radius:6px;padding:8px 12px;">
               <strong style="color:#aaffaa;"><i class="fas fa-heart-pulse"></i> Revived</strong>
               <div style="color:#c8e8c8;font-size:12px;margin-top:4px;">
@@ -4620,7 +4624,9 @@ Hooks.once("ready", () => {
             </div>`,
             speaker: { alias: "ACE QOL", actor: actor.id },
           });
-        } catch (_) {}
+        } catch (err) {
+          console.warn(`${MODULE_ID} | the revived card could not be posted:`, err);
+        }
       } catch (err) {
         console.error(`${MODULE_ID} | Revive hook threw:`, err);
       }
@@ -4886,7 +4892,12 @@ Hooks.once("ready", () => {
         }));
 
         // Resolve which ability the attack uses (INT for Artificer, CHA for Warlock, etc.)
-        const atkActivity = item.system?.activities ? [...item.system.activities].find(a => a.type === "attack") : null;
+        // ⚠️ THE ATTACK THAT WAS PRESSED, NOT THE FIRST ONE ON THE ITEM (The One Road,
+        // Phase 3). Its id goes to the GM with the roll, because the damage is the
+        // recipe of the attack that was pressed: without it, a player's second attack
+        // on an item (a charge, a two-handed grip) landed the first attack's damage.
+        const atkActivity = (subject?.type === "attack" ? subject : null)
+          ?? (item.system?.activities ? [...item.system.activities].find(a => a.type === "attack") : null);
         const attackAbility = atkActivity?.ability || item.system?.attack?.ability || "";
 
         // Send to GM via socket
@@ -4900,6 +4911,7 @@ Hooks.once("ready", () => {
           itemActionType: item.system?.actionType ?? "mwak",
           itemType: item.type,
           attackAbility,
+          activityId: atkActivity?.id ?? null,
           actorId: actor.id,
           actorUuid: actor.uuid,
           targets: targetData,
@@ -5365,7 +5377,8 @@ Hooks.once("ready", () => {
                   const outcomeTxt = hitDuplicate
                     ? `<strong style="color:#d4af37;">duplicate destroyed</strong> — ${remainingTxt}`
                     : `<strong style="color:#8eebff;">attack misses</strong> — duplicate not struck, ${dupes} duplicate${dupes === 1 ? "" : "s"} remaining`;
-                  ChatMessage.create({
+                  // No dice were shown for the redirect roll, so the card door lands it at once.
+                  CardDoor.post({
                     content: `<div style="background:linear-gradient(180deg,#1a1416 0%,#241a30 100%);border:2px solid #8eebff;border-radius:6px;padding:8px 10px;color:#cfcfd0;font-size:12px;">
                       <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
                         <i class="fas fa-clone" style="color:#8eebff;font-size:16px;"></i>
@@ -5375,7 +5388,7 @@ Hooks.once("ready", () => {
                       Duplicate AC <strong>${duplicateAC}</strong> vs attack <strong>${attackTotal}</strong> → ${outcomeTxt}.
                     </div>`,
                     speaker: ChatMessage.getSpeaker({ actor: targetActor }),
-                  }).catch(() => {});
+                  }).catch(err => console.warn(`${MODULE_ID} | the Mirror Image card could not be posted:`, err));
                 } catch (_) { /* non-fatal */ }
               }
             }
@@ -5480,7 +5493,17 @@ Hooks.once("ready", () => {
           // initiatorUserId = the player who rolled the attack on their
           // client (forwarded in the bridge payload). The damage engine
           // routes rider popups (Divine Smite etc.) to this user. v0.7.22.
-          Hooks.callAll(`${MODULE_ID}.attackComplete`, { item, actor, results, hits, misses, initiatorUserId: payload.userId });
+          // The attack the player pressed (its id came with the roll), so the damage
+          // is that attack's recipe and not the first attack on the item.
+          let pressed = null;
+          try { pressed = payload.activityId ? (item.system?.activities?.get?.(payload.activityId) ?? null) : null; }
+          catch (_) { pressed = null; }
+          if (payload.activityId && !pressed) {
+            console.warn(`${MODULE_ID} | Socket: ${item.name} has no activity "${payload.activityId}" on the GM's copy, `
+              + `so its damage is read from its first attack.`);
+          }
+          Hooks.callAll(`${MODULE_ID}.attackComplete`, { item, actor, results, hits, misses,
+            ...(pressed ? { subject: pressed } : {}), initiatorUserId: payload.userId });
 
           // Tell the player to close any system ActivityChoiceDialogs (Divine Smite popup)
           game.socket.emit(SOCKET_NAME, { action: "closeSystemDialogs", userId: payload.userId });

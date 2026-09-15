@@ -19,6 +19,8 @@
 import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
 import { DamageConstants } from "./damage-engine.mjs";
+// The One Road: every card here goes through the card door (Phase 3).
+import { CardDoor } from "./road/doors.mjs";
 
 export class MergeCard {
 
@@ -556,7 +558,8 @@ export class MergeCard {
       name: c.name, type: c.type, raw: c.raw, formula: c.formula,
     })) ?? [];
 
-    await ChatMessage.create({
+    // The damage card lands once its dice have: the card door waits for them.
+    await CardDoor.post({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor }),
       flags: {
@@ -592,7 +595,7 @@ export class MergeCard {
           },
         }
       }
-    });
+    }, { dice: true });
   }
 
   /**
@@ -607,13 +610,15 @@ export class MergeCard {
    * @param {string} critRule - Active crit rule
    * @param {object|null} parsedDescription - Pre-parsed item description
    */
-  static async postMergedDamageButton(attackData, item, actor, hits, preRolled, critRule, parsedDescription, consumedRiders = []) {
+  static async postMergedDamageButton(attackData, item, actor, hits, preRolled, critRule, parsedDescription, consumedRiders = [],
+      { recipe = null, recipeFrom = null, activityId = null } = {}) {
     const anyCrit = hits.some(h => h.hitResult === "critical");
     const targetNames = hits.map(h => h.name ?? h.target?.name ?? "target").join(", ");
 
     const cardHtml = MergeCard.buildMergeDamageButton(attackData, item, actor, anyCrit, targetNames);
 
-    await ChatMessage.create({
+    // dice-ok: the damage was pre-rolled with suppressDiceAnimation on; this card is only the ROLL DAMAGE button.
+    await CardDoor.post({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor }),
       flags: {
@@ -632,6 +637,10 @@ export class MergeCard {
           preRolled,
           parsedDescription,
           consumedRiders: consumedRiders?.length ? consumedRiders : undefined,
+          // WHICH attack, and its recipe: the damage card and APPLY ask it (Phase 3).
+          activityId: activityId ?? null,
+          recipe: recipe ?? null,
+          recipeFrom: recipeFrom ?? null,
         }
       }
     });

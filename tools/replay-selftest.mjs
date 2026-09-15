@@ -2133,7 +2133,9 @@ console.log(`\nPHASE 3: ATTACKS ON THE ROAD`);
     const code = (f) => readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/${f}`, "utf8")
       .replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
     const touched = ["damage-card-renderer.mjs", "damage-applicator.mjs", "post-hit-saves.mjs", "damage-calculator.mjs",
-      "save-engine.mjs", "road/what-lands.mjs", "inference/recipe.mjs", "inference/action-facts.mjs"];
+      "save-engine.mjs", "road/what-lands.mjs", "inference/recipe.mjs", "inference/action-facts.mjs",
+      // Phase 3, the live hit on its recipe (0.34.20):
+      "merge-card.mjs", "damage-engine.mjs", "ace-qol.mjs"];
     const raw = touched.map(f => [f, (code(f).match(/ChatMessage\.create\(/g) ?? []).length]).filter(([, n]) => n);
     const door = (code("road/doors.mjs").match(/ChatMessage\.create\(/g) ?? []).length;
     check("6. every card in the files Phase 3 touched goes through the card door; no new raw card (Phase 3)",
@@ -2187,6 +2189,90 @@ console.log(`\nPHASE 3: ATTACKS ON THE ROAD`);
       cardErr ? `a card threw: ${cardErr?.message ?? cardErr}`
         : `ROLL DAMAGE card: dice ${button?.dice}; damage card: dice ${result?.dice}; `
           + `dice still rolling when the damage card was created: ${waited}; when the button was: ${atOnce}`);
+  }
+
+  // ── 8. The live hit lands its recipe's onHit: what its words give the hit, and nothing else ──
+  // Johnny, 2026-09-14: "The live hit must use recipe onHit / onCrit for what dice
+  // and extras land." The Neogi's words: "Hit: 1d6 + 3 piercing damage plus 4d6
+  // poison damage"; the damage roll's old guess left the poison off every bite.
+  // The Aurochs's: an extra 2d8 only after it moved 20 feet straight at the target.
+  {
+    const itemOf = (actorName, itemName) => [...ACTORS.values()].filter(a => a.name === actorName)
+      .map(a => a.items.find(i => i.name === itemName)).find(Boolean) ?? null;
+    const neogiBite = itemOf("Neogi", "Bite"), aurochsGore = itemOf("Aurochs", "Gore");
+    if (neogiBite && aurochsGore) {
+      const nBuilt = await recipeOf(neogiBite), nComps = await rolledFor(neogiBite);
+      const aBuilt = await recipeOf(aurochsGore), aComps = await rolledFor(aurochsGore);
+      const nOwn = nComps.filter(c => c.name === neogiBite.name), aOwn = aComps.filter(c => c.name === aurochsGore.name);
+      const aNote = (aBuilt?.recipe?.onHit ?? []).find(o => o.kind === "note" && /2d8 piercing/.test(o.condition?.key ?? ""));
+      check("8. the live hit lands its recipe's onHit: the Neogi's poison its words put on the hit, not the Aurochs's charge (Phase 3)",
+        JSON.stringify(nOwn.map(c => c.type).sort()) === JSON.stringify(["piercing", "poison"])
+          && nOwn.every(c => c.recipePart === "onHit")
+          && aOwn.length === 1 && aOwn[0].type === "piercing" && aOwn[0].recipePart === "onHit" && !!aNote,
+        `Neogi's Bite: recipe on hit ${dmgSaid(nBuilt?.recipe?.onHit)}; the hit: ${said(nComps)}. `
+          + `Aurochs's Gore: recipe on hit ${dmgSaid(aBuilt?.recipe?.onHit)}; the hit: ${said(aComps)}; `
+          + `the GM is told: ${aNote ? String(aNote.condition.key).slice(0, 90) : "nothing"}`);
+    } else check("8. the live hit lands its recipe's onHit (Phase 3)", null, "no Neogi's Bite or Aurochs's Gore in this world");
+  }
+
+  // ── 9. APPLY asks the attack's recipe, not only the card ──
+  // Johnny: "APPLY must not take 'whatever the card listed' as the only truth."
+  // The Berserker's Greataxe through ROLL DAMAGE and the damage card the way the
+  // table posts them, then APPLY; then the same card with a crit row put on a
+  // plain hit, which the recipe does not land.
+  if (axe) {
+    const hp9 = { value: 30, max: 30, temp: 0 };
+    const victim9 = { id: "replay-apply-target", name: "a test creature", type: "npc", documentName: "Actor",
+      system: { attributes: { hp: hp9 }, traits: {} }, statuses: new Set(), effects: new Collection(), getFlag: () => undefined,
+      update: async (u) => {
+        if ("system.attributes.hp.value" in u) hp9.value = u["system.attributes.hp.value"];
+        if ("system.attributes.hp.temp" in u) hp9.temp = u["system.attributes.hp.temp"];
+        return victim9;
+      } };
+    const hit9 = hitOn({ name: victim9.name, target: { name: victim9.name, img: "", currentHP: 30, maxHP: 30 },
+      targetActor: victim9, targetToken: { id: "tok-apply", document: { id: "tok-apply" } } });
+    const spied9 = [];
+    const keepPost9 = CardDoor.post;
+    let err9 = null;
+    CardDoor.post = async (data, o = {}) => { spied9.push(data); return keepPost9.call(CardDoor, data, o); };
+    ACTORS.set(victim9.id, victim9);
+    try {
+      await quiet(async () => {
+        await DamageCardRenderer.postDamageButton(axe, berserker, [hit9], [], attackOf(axe)?.id ?? null);
+        const btn = spied9.find(d => d?.flags?.[MOD]?.type === "damageButton");
+        if (!btn) throw new Error("no ROLL DAMAGE card was posted");
+        await DamageCardRenderer.postPreRolledDamageCard({ id: "replay-roll-button", flags: btn.flags, speaker: {} },
+          btn.flags[MOD], { skipDice: true });
+      });
+    } catch (err) { err9 = err; }
+    finally { CardDoor.post = keepPost9; }
+    const f9 = spied9.find(d => d?.flags?.[MOD]?.type === "damageResult")?.flags?.[MOD] ?? null;
+    const applyOn = async (flags) => {
+      hp9.value = 30; hp9.temp = 0;
+      const card = { id: "replay-damage-card-9", flags: { [MOD]: flags }, update: async () => card };
+      await quiet(async () => { await DamageApplicator.applyDamage(card); });
+      return 30 - hp9.value;
+    };
+    let onHitTotal = null, plainTook = null, tamperedTook = null;
+    if (!err9 && f9) {
+      try {
+        onHitTotal = (f9.damageResults?.[0]?.components ?? []).filter(c => c.recipePart === "onHit")
+          .reduce((s, c) => s + (Number(c.final) || 0), 0);
+        plainTook = await applyOn(JSON.parse(JSON.stringify(f9)));
+        const tampered = JSON.parse(JSON.stringify(f9));
+        tampered.damageResults[0].components.push({ name: `${axe.name} (critical)`, type: "slashing", raw: 5, final: 5,
+          modifier: "normal", recipePart: "onCrit" });
+        tamperedTook = await applyOn(tampered);
+      } catch (err) { err9 = err; }
+    }
+    ACTORS.delete(victim9.id);
+    check("9. APPLY asks the attack's recipe, not only the card: a crit row on a plain hit is refused (Phase 3)",
+      !err9 && f9?.recipe?.decidedBy?.kind === "attack" && f9.damageResults?.[0]?.result === "hit"
+        && onHitTotal > 0 && plainTook === onHitTotal && tamperedTook === onHitTotal,
+      err9 ? `threw: ${err9?.message ?? err9}`
+        : `the damage card carries ${f9?.recipe ? "the Greataxe's recipe" : "no recipe"} and the result `
+          + `"${f9?.damageResults?.[0]?.result}"; APPLY took ${plainTook} (the hit's ${onHitTotal}); `
+          + `with a crit row added to that plain hit, it took ${tamperedTook}`);
   }
 }
 

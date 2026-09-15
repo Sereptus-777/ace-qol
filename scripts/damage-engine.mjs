@@ -19,6 +19,8 @@ import { RiderEngine } from "./rider-engine.mjs";
 import { MergeCard } from "./merge-card.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
 import { DamageCardRenderer } from "./damage-card-renderer.mjs";
+// The One Road: every card here goes through the card door (Phase 3).
+import { CardDoor } from "./road/doors.mjs";
 import { DamageApplicator } from "./damage-applicator.mjs";
 import { AttackPipeline } from "./attack-pipeline.mjs";  // v0.4.22: shared multi-target detection
 import { PostHitSaves } from "./post-hit-saves.mjs";
@@ -1240,6 +1242,8 @@ export class DamageEngine {
     try { rollData = item.getRollData?.() ?? actor.getRollData?.() ?? {}; }
     catch (e) { rollData = actor.getRollData?.() ?? {}; }
 
+    // The attack's recipe, read once: what each hit lands, and what APPLY asks.
+    const legacyRoad = await DamageCalculator._attackRoad(item, actor, flags?.activityId ?? null);
     const damageResults = [];
     for (const hit of flags.hits) {
       const isCrit = hit.hitResult === "critical";
@@ -1247,7 +1251,8 @@ export class DamageEngine {
       // the card's flags when it was posted. Without this the roll falls back to
       // "first damaging activity" and a multi-activity item rolls a sibling's
       // dice — different from what the attack itself rolled.
-      const components = await DamageCalculator.rollDamageComponents(item, actor, hit, isCrit, critRule, flags?.activityId ?? null);
+      const components = await DamageCalculator.rollDamageComponents(item, actor, hit, isCrit, critRule,
+        flags?.activityId ?? null, { road: legacyRoad });
       const applied = DamageCalculator.applyDamageModifiers(components, hit.damageModifiers ?? {});
       const totalRaw = applied.reduce((sum, c) => sum + c.raw, 0);
       const totalFinal = applied.reduce((sum, c) => sum + c.final, 0);
@@ -1259,11 +1264,13 @@ export class DamageEngine {
         targetToken: { id: hit.tokenId, document: { id: hit.tokenDocId } },
         targetActor: targetActor ?? { id: hit.actorId },
         isCrit, components: applied, totalRaw, totalFinal,
+        hitResult: hit.hitResult,
       });
     }
 
     try {
-      await DamageCardRenderer.postDamageCard(item, actor, damageResults, critRule, null, null, flags?.activityId ?? null);
+      await DamageCardRenderer.postDamageCard(item, actor, damageResults, critRule, null, null, flags?.activityId ?? null,
+        { recipe: legacyRoad?.recipe ?? null, recipeFrom: legacyRoad ? (legacyRoad.book?.pack ?? "its sheet") : null });
     } catch (err) {
       console.error(`${MODULE_ID} | postDamageCard (legacy) CRASHED:`, err);
       return false;
@@ -1439,14 +1446,17 @@ export class DamageEngine {
       // beats the dice (safeShowForRoll broadcasts; awaitDiceSettle is a fixed,
       // hang-immune delay that no-ops when DSN is off).
       safeShowForRoll(roll, "cleave attack");
-      await awaitDiceSettle();
+      // Through the card door, which waits for the d20 just thrown before the card shows.
       try {
-        await ChatMessage.create({
+        await CardDoor.post({
           speaker: ChatMessage.getSpeaker({ actor: attActor }),
           content: _cardHtml,
           flags:   { [MODULE_ID]: { type: "cleaveAttack" } },
-        });
-      } catch (_) { /* non-fatal — the roll result still gates the damage below */ }
+        }, { dice: true });
+      } catch (err) {
+        // Non-fatal: the roll result still gates the damage below. Said, not swallowed.
+        console.warn(`${MODULE_ID} | the cleave attack's card could not be posted:`, err);
+      }
       if (!hit) {
         cleaveBtn.disabled = true;
         cleaveBtn.innerHTML = '<i class="fas fa-xmark"></i> CLEAVE MISSED';

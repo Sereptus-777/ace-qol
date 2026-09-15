@@ -13,6 +13,8 @@ import { MergeCard } from "./merge-card.mjs";
 // The One Road: every card here goes through the card door, which waits for the
 // dice that decided it inside itself (Phase 3, 2026-09-14).
 import { CardDoor } from "./road/doors.mjs";
+// What an attack's recipe lands on a result, for the GM's line on the damage card.
+import { whatLands } from "./road/what-lands.mjs";
 import { WeaponMasteries } from "./weapon-masteries.mjs";
 
 export class DamageCardRenderer {
@@ -30,13 +32,18 @@ export class DamageCardRenderer {
     const anyCrit = hits.some(h => h.hitResult === "critical");
     const targetNames = hits.map(h => h.name ?? h.target?.name ?? "target").join(", ");
 
+    // ── The attack's recipe: what every target's hit lands (The One Road, Phase 3) ──
+    // Read once for the card. It travels on the card's flags to the damage card,
+    // where APPLY asks it what each target's result lets land.
+    const road = await DamageCalculator._attackRoad(item, actor, activityId);
+
     // ── Pre-roll damage while item still exists ──
     DamageConstants.suppressDiceAnimation = true;
     const preRolled = [];
     try {
       for (const hit of hits) {
         const isCrit = hit.hitResult === "critical";
-        let components = await DamageCalculator.rollDamageComponents(item, actor, hit, isCrit, critRule, activityId);
+        let components = await DamageCalculator.rollDamageComponents(item, actor, hit, isCrit, critRule, activityId, { road });
 
         // ── ⚠️🔴 UNCANNY DODGE DOES NOT BELONG HERE ANY MORE ────────
         //
@@ -100,6 +107,9 @@ export class DamageCardRenderer {
           isCrit: c.isCrit ?? false,
           normalTotal: c.normalTotal,
           _modMeta: c._modMeta ?? null,
+          // Which part of the recipe this row is ("onHit", "onCrit"), or none for
+          // what the run added (a smite, Hex). APPLY asks the recipe about it.
+          recipePart: c.recipePart ?? null,
           terms: DamageConstants.serializeRollTerms(c.roll),
         }));
 
@@ -232,6 +242,9 @@ export class DamageCardRenderer {
           preRolled,
           parsedDescription,
           consumedRiders: consumedRiders.length ? consumedRiders : undefined,
+          // The attack's recipe travels to the damage card, where APPLY asks it.
+          recipe: road?.recipe ?? null,
+          recipeFrom: road ? (road.book?.pack ?? "its sheet") : null,
         }
       }
     });
@@ -248,6 +261,8 @@ export class DamageCardRenderer {
    */
   static async postMergeDamageButton(item, actor, hits, consumedRiders = [], activityId = null) {
     const critRule = QolSettings.get("critRule") ?? "maxPlusRoll";
+    // The attack's recipe, read once for the card, as postDamageButton does.
+    const road = await DamageCalculator._attackRoad(item, actor, activityId);
 
     // ── Pre-roll damage (same as postDamageButton) ──
     DamageConstants.suppressDiceAnimation = true;
@@ -255,7 +270,7 @@ export class DamageCardRenderer {
     try {
       for (const hit of hits) {
         const isCrit = hit.hitResult === "critical";
-        const components = await DamageCalculator.rollDamageComponents(item, actor, hit, isCrit, critRule, activityId);
+        const components = await DamageCalculator.rollDamageComponents(item, actor, hit, isCrit, critRule, activityId, { road });
         const applied = DamageCalculator.applyDamageModifiers(components, hit.damageModifiers ?? {});
         const totalRaw = applied.reduce((sum, c) => sum + c.raw, 0);
         const totalFinal = applied.reduce((sum, c) => sum + c.final, 0);
@@ -264,7 +279,7 @@ export class DamageCardRenderer {
           name: c.name, formula: c.formula, total: c.total ?? c.raw,
           raw: c.raw, final: c.final, modifier: c.modifier, reason: c.reason,
           type: c.type, isCrit: c.isCrit ?? false, normalTotal: c.normalTotal,
-          _modMeta: c._modMeta ?? null,
+          _modMeta: c._modMeta ?? null, recipePart: c.recipePart ?? null,
           terms: DamageConstants.serializeRollTerms(c.roll),
         }));
 
@@ -323,7 +338,8 @@ export class DamageCardRenderer {
     // ── Post the merged card ──
     const attackData = MergeCard.consumeAttackResult();
     // dice-ok: the damage was pre-rolled with suppressDiceAnimation on; this card is only the ROLL DAMAGE button.
-    await MergeCard.postMergedDamageButton(attackData, item, actor, hits, preRolled, critRule, parsedDescription, consumedRiders);
+    await MergeCard.postMergedDamageButton(attackData, item, actor, hits, preRolled, critRule, parsedDescription, consumedRiders,
+      { recipe: road?.recipe ?? null, recipeFrom: road ? (road.book?.pack ?? "its sheet") : null, activityId });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -430,8 +446,22 @@ export class DamageCardRenderer {
         + `</div>`;    }).join("");
   }
 
-  static async postDamageCard(item, actor, damageResults, critRule, consumedRiders = null, refundLink = null, activityId = null) {
+  static async postDamageCard(item, actor, damageResults, critRule, consumedRiders = null, refundLink = null, activityId = null,
+      { recipe = null, recipeFrom = null } = {}) {
     if (!damageResults.length) return;
+
+    // ── What the attack's recipe says the hit does NOT deal, for the GM ──
+    // A damage part its words give to something else (a charge, a choice, a later
+    // turn) is not rolled on a hit (inference/recipe.mjs), and the GM sees why here.
+    let recipeNotes = [];
+    try {
+      if (recipe?.decidedBy?.kind === "attack") {
+        const anyCritHit = damageResults.some(dr => dr.isCrit || dr.hitResult === "critical");
+        recipeNotes = whatLands(recipe, { result: anyCritHit ? "critical" : "hit" }).notes.filter(Boolean);
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | the damage card could not read its recipe's notes:`, err);
+    }
 
     // ── Shared formula display (from first target's raw roll — same roll for all) ──
     const firstResult = damageResults[0];
@@ -487,6 +517,10 @@ export class DamageCardRenderer {
           ${targetRows}
         </div>
         <div class="ace-qol-dmg-gm-controls">
+          ${recipeNotes.length ? `<div class="ace-qol-dmg-recipe-notes" style="margin:0 0 6px;padding:6px 8px;border-left:3px solid #d4af37;background:rgba(20,17,24,0.85);color:#e8d9a8;font-size:14px;line-height:1.4;">
+            <div style="color:#d4af37;font-weight:700;">Not rolled on this hit (GM only)</div>
+            ${recipeNotes.map(n => `<div style="margin-top:3px;">${foundry.utils.escapeHTML(String(n))}</div>`).join("")}
+          </div>` : ""}
           <div class="ace-qol-dmg-actions">
             <button class="ace-qol-btn ace-qol-btn-apply" data-action="aceQolApplyDamage">
               <i class="fas fa-heart-crack"></i> APPLY ALL
@@ -499,9 +533,9 @@ export class DamageCardRenderer {
       </div>
     `;
 
-    // Store raw components for ADD TARGET re-calculation
+    // Store raw components for ADD TARGET re-calculation, each with its part of the recipe
     const rawComponents = firstResult.components.map(c => ({
-      name: c.name, type: c.type, raw: c.raw, formula: c.formula,
+      name: c.name, type: c.type, raw: c.raw, formula: c.formula, recipePart: c.recipePart ?? null,
     }));
 
     // ⚠️ THE CARD DOOR WAITS FOR THE DAMAGE DICE (The One Road, Phase 3). The
@@ -522,6 +556,9 @@ export class DamageCardRenderer {
           actorId: actor.id,
           rawComponents,
           totalRaw,
+          // The attack's recipe, which APPLY asks what each target's result lets land.
+          recipe: recipe ?? null,
+          recipeFrom: recipeFrom ?? null,
           consumedRiders: consumedRiders?.length ? consumedRiders : undefined,
           // Cross-card refund linking: damage card knows about the button card
           // so refunds done on either side stay in sync, and refunds already
@@ -539,7 +576,11 @@ export class DamageCardRenderer {
             maxHP: dr.target.maxHP,
             name: dr.target.name,
             img: dr.target.img,
-            components: dr.components.map(c => ({ name: c.name, type: c.type, raw: c.raw, final: c.final, modifier: c.modifier })),
+            // The attack's result on this target, and each row's part of the recipe:
+            // APPLY asks the recipe what that result lets land (Phase 3).
+            result: dr.hitResult ?? (dr.isCrit ? "critical" : "hit"),
+            components: dr.components.map(c => ({ name: c.name, type: c.type, raw: c.raw, final: c.final, modifier: c.modifier,
+              recipePart: c.recipePart ?? null })),
           })),
         }
       }
@@ -807,7 +848,8 @@ export class DamageCardRenderer {
       alreadyRefunded: message.flags?.[MODULE_ID]?.refundedRiders ?? [],
     };
     try {
-      await DamageCardRenderer.postDamageCard(fakeItem, actor, damageResults, critRule, flags.consumedRiders, refundLink, flags?.activityId ?? null);
+      await DamageCardRenderer.postDamageCard(fakeItem, actor, damageResults, critRule, flags.consumedRiders, refundLink,
+        flags?.activityId ?? null, { recipe: flags.recipe ?? null, recipeFrom: flags.recipeFrom ?? null });
     } catch (err) {
       console.error(`${MODULE_ID} | postPreRolledDamageCard CRASHED:`, err);
       return false;

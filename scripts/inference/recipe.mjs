@@ -48,7 +48,7 @@ import { readActivities, effectDuration } from "../read-activities.mjs";
 import { readActionFacts } from "./action-facts.mjs";
 import { planFor } from "./spell-plan.mjs";
 import { readSaveOutcome } from "./save-outcome-effects.mjs";
-import { plainSpellText } from "./spell-text.mjs";
+import { plainSpellText, inlineRollsAsText } from "./spell-text.mjs";
 import { getSpellTiming } from "../spell-timing.mjs";
 import { DescriptionParser } from "../description-parser.mjs";
 import { spellKey } from "../rules/spell-name.mjs";
@@ -544,11 +544,211 @@ function thenRecipe(r, i, parentKey, edition, source, byHand) {
   };
 }
 
+/* ── Where an attack's own words put its damage ────────────────────────── */
+//
+// Johnny, 2026-09-14: "The live hit must use recipe onHit / onCrit for what dice
+// and extras land." So the recipe has to say which of an attack's damage parts
+// its hit deals. The item says what it deals; its own words say when.
+//
+// ⚠️🔴 A STAT BLOCK'S SECOND DAMAGE PART IS OFTEN NOT PART OF THE HIT. An
+// importer writes the numbers in an attack's words as more damage parts: the
+// Aurochs's charge (an extra 2d8 only after moving 20 feet straight at the
+// target), the shadar-kai Spiked Chain's Decay (4d10 necrotic, one of three
+// choices on a failed save), the Pit Fiend's poison (6d6 at the start of each of
+// the target's turns while it stays poisoned). dnd5e rolls every part on every
+// hit. ACE's damage roll guessed instead: a second part whose type the words also
+// named beside a save was left off. That is right for the Aurochs and wrong for
+// the Neogi ("Hit: 1d6 + 3 piercing damage plus 4d6 poison damage, and the target
+// must succeed..."), whose poison never landed, nor the psychic of a Star Spawn
+// Seer's Comet Staff, nor the first necrotic of Vecna's Afterthought.
+//
+// So the words are read for where they put each part. A part the hit's own
+// sentence names, after "Hit:" or around "on a hit", with nothing between the hit
+// and it that makes it wait for something else (if, when, while, must, a failed
+// save), is dealt on the hit. A part whose dice the words put anywhere else is
+// not: the save after the hit carries it when that save names the same dice, and
+// otherwise the GM is told, on the card, what the words say it waits for. A part
+// the words never mention keeps the item's word, and words that never say "Hit:"
+// or "on a hit" (a Frost Brand's "when you hit with an attack using this magic
+// sword") place nothing: every part the item declares is dealt.
+
+/** The damage types dnd5e names, so a word before "damage" is known to be one. */
+const DAMAGE_TYPES = new Set(["acid", "bludgeoning", "cold", "fire", "force", "lightning", "necrotic",
+  "piercing", "poison", "psychic", "radiant", "slashing", "thunder"]);
+
+/** The dice in a formula: "2d8 + @mod + 3" is "2d8". A part is matched to its roll, and to its words, on these. */
+export const diceOf = (formula) => (String(formula ?? "").match(/\d*d\d+/gi) ?? [])
+  .map(x => x.toLowerCase().replace(/^d/, "1d")).sort().join("+");
+
+/** What makes damage in a hit's sentence wait for something besides the hit. */
+const WAITS_FOR = /;|\b(?:if|when|whenever|while|unless|must|until|instead|fail(?:s|ed|ure)?|succe(?:ed|eds|ssful))\b/i;
+
+/**
+ * The damage an attack's words state, in order, each with whether they deal it on
+ * the hit, and each sentence as words for a note.
+ *
+ * @returns {{said: Array<{formula: string, dice: string, type: string, onHit: boolean,
+ *   sentence: number}>, sentences: string[], hits: boolean}}  `hits` is false when
+ *   the words never say "Hit:" or "on a hit"
+ */
+function hitWords(html) {
+  const tokens = [];
+  const text = inlineRollsAsText(html)
+    .replace(/<[^>]+>/g, " ").replace(/&(?:amp|nbsp|quot|#\d+);/gi, " ")
+    // A versatile weapon's two-handed damage is the same hit, not something it waits for.
+    .replace(/\b(?:if|when|while) (?:used|wielded|held) with two hands\b/gi, "with two hands")
+    // dnd5e's damage enricher, held as one token so its dice and its type read together.
+    .replace(/\[\[\/(?:damage|dmg)\s+([^\]]*)\]\](?:\{[^}]*\})?/gi, (_m, inside) => {
+      const words = String(inside).trim().split(/\s+/).filter(Boolean);
+      const keyed = {};
+      for (const w of words) {
+        const eq = w.indexOf("=");
+        if (eq > 0) keyed[w.slice(0, eq).toLowerCase()] = w.slice(eq + 1);
+      }
+      const formula = String(keyed.formula ?? words.filter(w => !w.includes("=")).join(" ")).trim();
+      tokens.push({ formula, type: _s(String(keyed.type ?? keyed.types ?? "").split(/[,|/]/)[0]) });
+      return ` ⟦${tokens.length - 1}⟧ `;
+    })
+    .replace(/\s+/g, " ");
+
+  // Where each sentence starts. A full stop ends one only before a capital, a
+  // bracket or the end, so "reach 5 ft., one target" stays one sentence.
+  const starts = [0];
+  for (const m of text.matchAll(/[.!?](?=\s+[A-Z(⟦]|\s*$)/g)) starts.push(m.index + 1);
+  const sentenceAt = (i) => {
+    let k = 0;
+    while (k + 1 < starts.length && starts[k + 1] <= i) k++;
+    return k;
+  };
+  const colonHits = [...text.matchAll(/\bhit\s*:/gi)].map(m => ({ at: m.index, end: m.index + m[0].length }));
+  const aHits = [...text.matchAll(/\bon a hit\b/gi)].map(m => m.index);
+
+  // ⚠️ AN ALTERNATIVE IS NOT WHAT THE HIT WAITS FOR. "Hit: 1d12 + 2 piercing
+  // damage, or 2d12 + 2 piercing damage while under the effect of Enlarge, plus
+  // 1d6 fire damage" (the Duergar Xarrorn): the "while" belongs to the "or", and
+  // the fire is the hit's. Read with it, what follows an alternative left the hit
+  // (Zariel's longsword's fire, the Mimic's acid, a venomous snake swarm's poison).
+  const ALTERNATIVE = /\bor\s+(?:⟦\d+⟧|\(?\s*\d[^,;–—]*?)\s*damage\b[^,;–—]*/gi;
+  const said = [];
+  const add = (at, formula, type) => {
+    const s = sentenceAt(at);
+    const colon = colonHits.filter(h => h.end <= at && sentenceAt(h.at) === s).pop();
+    const from = colon ? colon.end : (aHits.some(a => sentenceAt(a) === s) ? starts[s] : null);
+    const between = from === null ? "" : text.slice(from, at).replace(ALTERNATIVE, " ");
+    const onHit = from !== null && !WAITS_FOR.test(between);
+    // It is such an alternative itself: only the attack's own first damage may be it.
+    const alternative = /\bor\s+$/i.test(text.slice(Math.max(0, at - 8), at));
+    said.push({ at, formula, dice: diceOf(formula), type: DAMAGE_TYPES.has(type) ? type : "", onHit, alternative, sentence: s });
+  };
+  for (const m of text.matchAll(/⟦(\d+)⟧/g)) {
+    const t = tokens[Number(m[1])];
+    if (t?.formula) add(m.index, t.formula, t.type);
+  }
+  // "18 (3d6 + 8) Piercing damage", "(1d4) acid damage", "2d6 damage of the weapon's type".
+  const covered = [];
+  const dicePattern = /(?:\b\d+\s*)?\(\s*(\d+d\d+(?:\s*[+-]\s*\d+)?)\s*\)\s*(?:([a-z]+)\s+)?damage|\b(\d+d\d+(?:\s*[+-]\s*\d+)?)\s+(?:([a-z]+)\s+)?damage/gi;
+  for (const m of text.matchAll(dicePattern)) {
+    covered.push([m.index, m.index + m[0].length]);
+    add(m.index, m[1] ?? m[3], _s(m[2] ?? m[4]));
+  }
+  // "1 Bludgeoning damage": a flat amount with its type.
+  for (const m of text.matchAll(/\b(\d+)\s+([a-z]+)\s+damage/gi)) {
+    if (covered.some(([a, b]) => m.index >= a && m.index < b) || !DAMAGE_TYPES.has(_s(m[2]))) continue;
+    add(m.index, m[1], _s(m[2]));
+  }
+  said.sort((a, b) => a.at - b.at);
+
+  const sentence = (i) => text.slice(starts[i], starts[i + 1] ?? text.length)
+    .replace(/⟦(\d+)⟧/g, (_m, n) => {
+      const t = tokens[Number(n)];
+      const f = String(t?.formula ?? "").replace(/\s*\+\s*@abilities\.(\w+)\.mod/gi, (_x, a) => ` + ${a.toUpperCase()}`)
+        .replace(/@[\w.]+/g, "").replace(/\s+/g, " ").trim();
+      return `${f}${t?.type ? ` ${t.type}` : ""}`;
+    }).replace(/\s+/g, " ").trim();
+  return { said, sentences: starts.map((_, i) => sentence(i)), hits: colonHits.length > 0 || aHits.length > 0 };
+}
+
+/**
+ * Which of an attack's damage parts its hit deals, read against its own words.
+ *
+ * @param {object[]} parts  the damage it rolls, its first part first (damageRolled)
+ * @param {object[]} then   the saves after the hit, already read
+ * @returns {{outcomes: object[], fromText: boolean}}
+ */
+function hitDamage(item, parts, then) {
+  let words;
+  try { words = hitWords(item?.system?.description?.value ?? ""); }
+  catch (_) { words = { said: [], sentences: [], hits: false }; }
+  const inHit = words.said.filter(w => w.onHit);
+  const typesOf = (p) => _arr(p?.types).map(_s);
+
+  // No damage in its data: its words fill the silence (section 13), and say so.
+  if (!parts.length) {
+    const found = inHit.filter(w => w.dice && w.sentence === inHit[0].sentence);
+    return {
+      outcomes: found.map(w => damageOut({ formula: w.formula.replace(/\bPB\b|@?prof(?:iciency)?(?:\.value)?\b/gi, "@prof"),
+        types: w.type ? [w.type] : [] })),
+      fromText: found.length > 0,
+    };
+  }
+  // One part, or words that never state the hit's damage: every part is dealt.
+  if (parts.length < 2 || !words.hits || !inHit.length) return { outcomes: parts.map(p => damageOut(p)), fromText: false };
+
+  const claimed = new Set();
+  const first = inHit.find(w => w.dice && w.dice === diceOf(parts[0].formula)
+    && (!w.type || typesOf(parts[0]).includes(w.type))) ?? null;
+  if (first) claimed.add(first);
+  // A creature with several options on one item: the rest are read in its first part's sentence.
+  const pool = first ? inHit.filter(w => w.sentence === first.sentence) : inHit;
+  const outcomes = [damageOut(parts[0])];
+  let fromText = false;
+  for (const p of parts.slice(1)) {
+    const dice = diceOf(p.formula), types = typesOf(p);
+    const typeFits = (w) => !w.type || types.includes(w.type);
+    const inTheHit = pool.find(w => !claimed.has(w) && !w.alternative && w.dice && w.dice === dice && typeFits(w));
+    if (inTheHit) { claimed.add(inTheHit); outcomes.push(damageOut(p)); continue; }
+    // Its dice somewhere else in the words, or as what the hit deals instead in some case.
+    const elsewhere = dice
+      ? words.said.find(w => !claimed.has(w) && (!pool.includes(w) || w.alternative) && w.dice === dice && typeFits(w)) : null;
+    if (!elsewhere) {
+      // The words put it in the hit with other dice, or never mention it: the item's word stands.
+      const near = pool.find(w => !claimed.has(w) && !w.alternative && w.type && types.includes(w.type));
+      if (near) claimed.add(near);
+      outcomes.push(damageOut(p));
+      continue;
+    }
+    claimed.add(elsewhere);
+    fromText = true;
+    // The save after the hit names the same dice: it is that save's.
+    if (then.some(t => (t.onFail ?? []).some(o => o.kind === "damage" && diceOf(o.formula) === dice
+      && _arr(o.types).map(_s).some(x => types.includes(x))))) continue;
+    const said = words.sentences[elsewhere.sentence] ?? "";
+    const quote = said.length > 110 ? `${said.slice(0, 107).replace(/\s+\S*$/, "")}...` : said;
+    outcomes.push(noteOut(`${p.formula} ${types.join("/")} is not part of the hit; its words: "${quote}"`));
+  }
+  return { outcomes, fromText };
+}
+
 /** What an attack does on a hit, a critical and a miss, and the saves after a hit. */
 function attackOutcomes(item, activity, plan, facts, s, actor, key, source, left) {
-  const onHit = damageRolled(facts, activity).map(d => damageOut(d));
   const onCrit = [], onMiss = [];
   let fromText = false, byHand = false, then = [];
+
+  // ⚠️ ONE READER FOR THE SAVE AFTER A HIT (09-12): the damage card and the
+  // activity chooser both ask this, so the recipe does too. Read first, because
+  // the hit's damage parts are read against it.
+  const riders = PostHitSaves.riderSavesFor(item, actor, { parsed: s.parsed, quiet: true });
+  if (riders.from === "rules entry" && !item?.flags?.[MODULE_ID]?.rulesEntry) {
+    left.push("a save after a hit that only ACE's own rules library names");
+  } else {
+    byHand = riders.from === "rules entry";
+    then = riders.saves.map((r, i) => thenRecipe(r, i, key, s.edition, source, byHand));
+    if (then.length && !byHand) fromText = true;
+  }
+
+  const placed = hitDamage(item, damageRolled(facts, activity), then);
+  const onHit = placed.outcomes;
+  if (placed.fromText) fromText = true;
 
   for (const e of referencedEffects(item, activity)) onHit.push(...effectOutcomes(e));
   for (const c of plan.apply?.conditionDetails ?? []) {
@@ -571,6 +771,19 @@ function attackOutcomes(item, activity, plan, facts, s, actor, key, source, left
   if (critBonus) {
     const first = onHit.find(o => o.kind === "damage");
     onCrit.push(damageOut({ formula: critBonus, types: first?.types ?? [] }));
+  } else if (!s.parsed?.creatureTrigger) {
+    // Its words' own crit dice fill the silence when its data has none (section
+    // 13): Firaxis's Longsword of Sharpness names its extra 4d6 slashing only in
+    // its words. One dealt only to a kind of creature is not the recipe's, which
+    // has no field for whom it is dealt to: ACE's words reader rolls that one.
+    const first = onHit.find(o => o.kind === "damage");
+    for (const b of s.parsed?.bonusDamage ?? []) {
+      if (!b?.triggersOnCrit || b.requiresCreatureTypes?.length || !String(b.formula ?? "").trim()) continue;
+      const type = _s(b.damageType);
+      onCrit.push(damageOut({ formula: String(b.formula).trim(),
+        types: type && type !== "weapon" ? [type] : (first?.types ?? []) }));
+      fromText = true;
+    }
   }
 
   const sever = s.parsed?.severRider;
@@ -582,17 +795,6 @@ function attackOutcomes(item, activity, plan, facts, s, actor, key, source, left
   if (_s(item?.system?.mastery) === "graze") {
     onMiss.push({ kind: "damage", formula: "@mod",
                   types: _arr(item?.system?.damage?.base?.types).map(_s).filter(Boolean).sort() });
-  }
-
-  // ⚠️ ONE READER FOR THE SAVE AFTER A HIT (09-12): the damage card and the
-  // activity chooser both ask this, so the recipe does too.
-  const riders = PostHitSaves.riderSavesFor(item, actor, { parsed: s.parsed, quiet: true });
-  if (riders.from === "rules entry" && !item?.flags?.[MODULE_ID]?.rulesEntry) {
-    left.push("a save after a hit that only ACE's own rules library names");
-  } else {
-    byHand = riders.from === "rules entry";
-    then = riders.saves.map((r, i) => thenRecipe(r, i, key, s.edition, source, byHand));
-    if (then.length && !byHand) fromText = true;
   }
   return { onHit, onCrit, onMiss, then, fromText, byHand };
 }

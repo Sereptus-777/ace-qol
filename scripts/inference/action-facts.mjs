@@ -492,6 +492,35 @@ function readResolution(item, acts, parsed, text, why) {
 }
 
 // ─── 6. WHAT ACTUALLY CHANGES ────────────────────────────────────────────────
+/**
+ * dnd5e's own formula for one damage part (DamageData#formula): its custom
+ * formula when that is switched on, otherwise its dice with its bonus after them.
+ *
+ * ⚠️🔴 THE BONUS IS PART OF THE DAMAGE, AND IT CAN HOLD THE DICE (2026-09-14).
+ * This read `number` and `denomination` and dropped `bonus`. A Quasit's claws
+ * store no dice count and "1d4 + @mod + 6" as the bonus, and every unarmed strike
+ * stores "1 + @mod": their recipes said the hit dealt nothing, while the sheet
+ * rolled it. A flat part with no dice read as "d0 + 1" (a rat's bite), and a +1
+ * weapon's +1 was lost (Ezmerelda's Rapier +1 read 1d8 where the sheet rolls 1d8 + 5).
+ */
+const damageFormula = (d) => {
+  if (!d) return "";
+  if (d.custom?.enabled) return String(d.custom.formula ?? "").trim();
+  const n = _n(d.number) ?? 0, den = _n(d.denomination) ?? 0;
+  let formula = (n && den) ? `${n}d${den}` : "";
+  const bonus = String(d.bonus ?? "").trim();
+  if (bonus) formula = formula ? `${formula} + ${bonus}` : bonus;
+  return formula;
+};
+
+/**
+ * dnd5e's offersBaseDamage: a weapon always, a consumable only as ammunition.
+ * ⚠️ A torch or a flask of holy water stores base damage that dnd5e never rolls;
+ * read as the item's, the torch dealt its 1 fire twice.
+ */
+const offersBaseDamage = (item) => _s(item?.type) === "weapon"
+  || (_s(item?.type) === "consumable" && _s(item?.system?.type?.value) === "ammo");
+
 function readChange(item, acts, parsed, why) {
   const sys = item?.system ?? {};
   const damage = [];
@@ -499,11 +528,8 @@ function readChange(item, acts, parsed, why) {
   // A weapon's damage lives on the ITEM as `damage.base`, and its activity says
   // `includeBase: true` rather than repeating it. Read both or a rapier deals none.
   const base = sys.damage?.base;
-  if (base && (_n(base.number) || String(base.custom?.formula ?? "").trim())) {
-    damage.push({ formula: base.custom?.enabled ? String(base.custom.formula)
-                    : `${base.number}d${base.denomination}`,
-                  types: _arr(base.types), base: true });
-  }
+  const baseFormula = offersBaseDamage(item) ? damageFormula(base) : "";
+  if (baseFormula) damage.push({ formula: baseFormula, types: _arr(base.types), base: true });
   for (const a of acts) {
     for (const p of _arr(a?.damage?.parts)) {
       // ⚠️🔴 A LIVE WEAPON'S BASE DAMAGE IS ALREADY IN ITS ATTACK'S PARTS
@@ -514,10 +540,10 @@ function readChange(item, acts, parsed, why) {
       // the table. The replay read stored items, where that part is not there, so
       // it could not see this; it now loads an attack the way dnd5e does.
       if (p?.base) continue;
-      damage.push({ formula: p.custom?.enabled ? String(p.custom.formula)
-                      : `${p.number ?? ""}d${p.denomination ?? ""}${p.bonus ? ` + ${p.bonus}` : ""}`,
-                    types: _arr(p.types),
-                    scales: !!p.scaling?.mode });
+      const formula = damageFormula(p);
+      // dnd5e rolls nothing for a part with no formula.
+      if (!formula) continue;
+      damage.push({ formula, types: _arr(p.types), scales: !!p.scaling?.mode });
     }
   }
 

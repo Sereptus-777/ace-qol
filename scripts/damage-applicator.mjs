@@ -11,6 +11,8 @@ import { TransformationEngine } from "./transformation-engine.mjs";
 // The One Road: hit points land through the hit-point door and cards through
 // the card door (Phase 3, 2026-09-14). Read at function time only.
 import { HpDoor, CardDoor } from "./road/doors.mjs";
+// What an attack's recipe lets land on each target's result, asked at APPLY.
+import { whatLands } from "./road/what-lands.mjs";
 
 /**
  * Per-actor write queue for hit-point changes.
@@ -516,6 +518,38 @@ export class DamageApplicator {
     return game.actors.get(entry.targetId);
   }
 
+  /**
+   * Which rows of an attack's damage card its recipe lets land on one target's
+   * result (The One Road, Phase 3, 2026-09-14). Johnny: "APPLY must not take
+   * 'whatever the card listed' as the only truth."
+   *
+   * A row the recipe dealt on the hit lands on a hit or a critical hit; the item's
+   * crit dice land only on a critical hit. What the run added and the recipe never
+   * named (a smite, Hex, Sneak Attack) lands as the run added it. A card with no
+   * attack recipe on it (a save's, an automatic spell's, one posted before this)
+   * lands its rows as listed.
+   *
+   * @returns {{recipe: object|null, verdict: object|null, refusal: (c: object) => string|null}}
+   *   `refusal` is null for a row that lands, and why not for one that does not
+   */
+  static _recipeGate(flags, entry) {
+    const recipe = flags?.recipe ?? null;
+    if (recipe?.decidedBy?.kind !== "attack") return { recipe: null, verdict: null, refusal: () => null };
+    const verdict = whatLands(recipe, { result: entry?.result ?? "hit" });
+    const struck = verdict.result === "hit" || verdict.result === "critical";
+    const hitDeals = struck && (recipe.onHit ?? []).some(o => o?.kind === "damage");
+    const critDeals = verdict.result === "critical" && verdict.extras.length > 0;
+    const on = String(verdict.label ?? "no result").toLowerCase();
+    return {
+      recipe, verdict,
+      refusal: (c) => {
+        if (c?.recipePart === "onHit" && !hitDeals) return `its recipe deals no damage on a ${on}`;
+        if (c?.recipePart === "onCrit" && !critDeals) return `its recipe adds the item's crit dice only on a critical hit, and this was a ${on}`;
+        return null;
+      },
+    };
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   //  Apply Damage to All Targets
   // ═══════════════════════════════════════════════════════════════════════════
@@ -546,6 +580,11 @@ export class DamageApplicator {
     catch (_) { _srcItem = null; }
     // Who dealt it, for the signal the door sends (ace-engine credits the damage).
     const _srcActor = flags.actorId ? (game.actors?.get?.(flags.actorId) ?? null) : null;
+    // A damage card from before its recipe travelled with it: said, not guessed at.
+    if (flags.type === "damageResult" && flags.recipe === undefined) {
+      console.log(`${MODULE_ID} | APPLY ALL: this damage card carries no attack recipe (it was posted before `
+        + `ace-qol 0.34.20), so its rows land as listed.`);
+    }
 
     let applied = 0;
     for (const entry of data) {
@@ -572,11 +611,24 @@ export class DamageApplicator {
       const components = entry.components ?? [];
       const typesApplied = new Set();
 
+      // ⚠️ THE RECIPE, NOT ONLY THE CARD (The One Road, Phase 3, 2026-09-14). A row
+      // the attack's recipe does not land on this target's result does not go on,
+      // whatever the card lists; what the run added (a smite, Hex) goes on as listed.
+      const gate = DamageApplicator._recipeGate(flags, entry);
+      const refused = new Set();
+      components.forEach((c, i) => {
+        const why = gate.refusal(c);
+        if (!why || appliedComps.includes(i)) return;
+        refused.add(i);
+        console.warn(`${MODULE_ID} | APPLY ALL: ${entry.name} does not take ${c.final} ${c.type} (${c.name}): ${why}.`);
+      });
+
       for (let i = 0; i < components.length; i++) {
         if (appliedComps.includes(i)) {
           console.log(`${MODULE_ID} | APPLY ALL: skipping comp ${i} (${components[i].type}) — already applied individually`);
           continue;
         }
+        if (refused.has(i)) continue;
         const compDmg = Math.floor(components[i].final * override);
         damageToApply += compDmg;
         if (compDmg > 0 && components[i].type) typesApplied.add(String(components[i].type).toLowerCase());
@@ -609,7 +661,7 @@ export class DamageApplicator {
       // damage-applied signal, with the real hit-point movement in it and who
       // dealt it. APPLY ALL used to write and signal on its own, so a hit landed
       // by a different road than a save.
-      const _pending = components.filter((_, i) => !appliedComps.includes(i))
+      const _pending = components.filter((_, i) => !appliedComps.includes(i) && !refused.has(i))
         .map(c => ({ ...c, final: Math.floor((Number(c.final) || 0) * override) }));
       const _landed = await HpDoor.damage(actor, _pending, {
         tokenDocId: entry.tokenDocId, item: _srcItem, source: _srcActor, label: `APPLY ALL ${entry.name}`,
@@ -623,12 +675,13 @@ export class DamageApplicator {
           + `${_landed?.total ? "a listener refused it, or this is not the GM's screen" : "nothing above 0 to apply"}.`);
       }
 
-      // Track what APPLY ALL applied: mark all remaining comps as applied in flags
-      const allIndices = components.map((_, i) => i);
+      // Track what APPLY ALL applied: mark all remaining comps as applied in flags.
+      // A row the recipe refused stays unapplied, and says why if pressed alone.
+      const allIndices = components.map((_, i) => i).filter(i => !refused.has(i));
       const prevPerType = flags?.perTypeApplied?.[entry.tokenDocId] ?? 0;
       const perCompUpdate = {};
       for (let i = 0; i < components.length; i++) {
-        if (appliedComps.includes(i)) continue;
+        if (appliedComps.includes(i) || refused.has(i)) continue;
         const compDmg = Math.floor(components[i].final * override);
         perCompUpdate[`flags.${MODULE_ID}.perCompApplied.${entry.tokenDocId}.${i}`] = compDmg;
       }
@@ -841,7 +894,7 @@ export class DamageApplicator {
         const srcVal = c.final ?? c.raw ?? 0;
         const proportion = totalSrc > 0 ? srcVal / totalSrc : 0;
         const cleaveRaw = Math.max(0, Math.round(overkillAmount * proportion));
-        return { name: c.name, type: c.type, raw: cleaveRaw, total: cleaveRaw };
+        return { name: c.name, type: c.type, raw: cleaveRaw, total: cleaveRaw, recipePart: c.recipePart ?? null };
       });
       let sum = components.reduce((s, c) => s + c.raw, 0);
       if (sum !== overkillAmount && components.length) {
@@ -850,7 +903,7 @@ export class DamageApplicator {
       }
     } else {
       const rawComponents = flags.rawComponents ?? [];
-      components = rawComponents.map(c => ({ name: c.name, type: c.type, raw: c.raw, total: c.raw }));
+      components = rawComponents.map(c => ({ name: c.name, type: c.type, raw: c.raw, total: c.raw, recipePart: c.recipePart ?? null }));
     }
 
     // Apply new target's defenses
@@ -895,7 +948,11 @@ export class DamageApplicator {
       maxHP,
       name: token.name,
       img,
-      components: applied.map(c => ({ name: c.name, type: c.type, raw: c.raw, final: c.final, modifier: c.modifier })),
+      components: applied.map(c => ({ name: c.name, type: c.type, raw: c.raw, final: c.final, modifier: c.modifier,
+        recipePart: c.recipePart ?? null })),
+      // The same attack's result, which APPLY asks the recipe about: a cleave is a
+      // hit on its second creature; an added target takes the card's own result.
+      result: isCleave ? "hit" : (flags.damageResults?.[0]?.result ?? "hit"),
       isCleave: isCleave,
     });
 
@@ -1132,6 +1189,14 @@ export class DamageApplicator {
         // ════════════════════════════════════════════════════════════════
         //  TOGGLE ON — apply this type's damage
         // ════════════════════════════════════════════════════════════════
+        // ⚠️ THE RECIPE HAS ITS SAY HERE TOO (Phase 3): a row the attack's recipe
+        // does not land on this target's result is not applied on its own either.
+        const _refusal = DamageApplicator._recipeGate(message.flags?.[MODULE_ID], entry).refusal(entry.components?.[idx]);
+        if (_refusal) {
+          console.warn(`${MODULE_ID} | Per-type apply refused: ${entry.name}, comp ${idx} (${dmgType}): ${_refusal}.`);
+          ui.notifications.warn(`ACE QOL: ${entry.name} does not take this ${dmgType} damage: ${_refusal}.`);
+          return;
+        }
         const cacheKey = `${message.id}|${tokenDocId}`;
         const override = DamageApplicator.overrideCache.get(cacheKey);
         const amount = (typeof override === "number")
