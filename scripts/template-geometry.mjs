@@ -26,8 +26,90 @@
 // A geometry helper caught in an evaluation cycle would answer `undefined`,
 // which reads exactly like "nobody is in the area".
 
-/** Sample points across a square: thirds, avoiding the edges. */
-const SAMPLES = [1 / 6, 3 / 6, 5 / 6];
+/** A hair's width, so a square that only just touches an edge still counts. */
+const TOUCH = 1e-6;
+
+/** Does the segment a→b cross the rectangle, or lie inside it? */
+function _segmentHitsRect(ax, ay, bx, by, rx, ry, rw, rh) {
+  const x0 = rx, y0 = ry, x1 = rx + rw, y1 = ry + rh;
+  // Liang-Barsky: the segment clipped to the rectangle, in one pass.
+  let t0 = 0, t1 = 1;
+  const dx = bx - ax, dy = by - ay;
+  const p = [-dx, dx, -dy, dy];
+  const q = [ax - x0, x1 - ax, ay - y0, y1 - ay];
+  for (let i = 0; i < 4; i++) {
+    if (p[i] === 0) { if (q[i] < -TOUCH) return false; continue; }
+    const r = q[i] / p[i];
+    if (p[i] < 0) { if (r > t1) return false; if (r > t0) t0 = r; }
+    else { if (r < t0) return false; if (r < t1) t1 = r; }
+  }
+  return true;
+}
+
+/**
+ * Does any part of this square touch the area?
+ *
+ * ⚠️🔴 ANY PART, AND AN EDGE COUNTS. Johnny, 2026-09-16, with a Large Draft
+ * Horse whose space the Spirit Guardians circle plainly cut: "A creature is in
+ * the template if ANY part of its occupied space intersects the area. Edge
+ * touching counts. Do not require the token's center to sit inside the circle."
+ * That replaces the half-coverage reading of 2026-08-27 and the centre-point one
+ * before it, for every template ACE tests.
+ *
+ * ⚠️ POINTS ARE NOT ENOUGH, WHICH IS WHY THIS IS GEOMETRY. Nine sample points
+ * inside a square all miss a circle that clips one corner of it, and that corner
+ * is exactly the horse's case. So: a point of the square inside the shape, the
+ * nearest point of the square to a circle's centre, a polygon vertex inside the
+ * square, or a polygon edge crossing it. Cones, lines and walls all reach ACE as
+ * polygons, and circles as circles.
+ *
+ * All coordinates are the shape's own, which sit relative to the template's
+ * origin: the caller translates.
+ */
+function _squareTouchesShape(shape, rx, ry, size) {
+  const x1 = rx + size, y1 = ry + size;
+  // 1. A corner, an edge midpoint or the centre inside the shape.
+  const pts = [[rx, ry], [x1, ry], [rx, y1], [x1, y1], [rx + size / 2, ry + size / 2],
+               [rx + size / 2, ry], [rx + size / 2, y1], [rx, ry + size / 2], [x1, ry + size / 2]];
+  for (const [px, py] of pts) {
+    if (shape.contains(px, py)) return true;
+  }
+  // 2. A circle: the nearest point of the square to its centre.
+  const pointList = Array.isArray(shape?.points) ? shape.points : null;
+  if (!pointList && Number.isFinite(shape?.radius) && Number.isFinite(shape?.x) && Number.isFinite(shape?.y)) {
+    const nx = Math.min(Math.max(shape.x, rx), x1);
+    const ny = Math.min(Math.max(shape.y, ry), y1);
+    const dx = shape.x - nx, dy = shape.y - ny;
+    return (dx * dx + dy * dy) <= (shape.radius * shape.radius) + TOUCH;
+  }
+  // 3. A polygon: a vertex inside the square, or an edge crossing it.
+  if (pointList && pointList.length >= 6) {
+    for (let i = 0; i + 1 < pointList.length; i += 2) {
+      const px = pointList[i], py = pointList[i + 1];
+      if (px >= rx - TOUCH && px <= x1 + TOUCH && py >= ry - TOUCH && py <= y1 + TOUCH) return true;
+    }
+    for (let i = 0; i + 1 < pointList.length; i += 2) {
+      const ax = pointList[i], ay = pointList[i + 1];
+      const bx = pointList[(i + 2) % pointList.length], by = pointList[(i + 3) % pointList.length];
+      if (_segmentHitsRect(ax, ay, bx, by, rx, ry, size, size)) return true;
+    }
+    return false;
+  }
+  // 4. Anything else with a bounding box (a rectangle, an ellipse): overlap it.
+  if (Number.isFinite(shape?.x) && Number.isFinite(shape?.y)
+    && Number.isFinite(shape?.width) && Number.isFinite(shape?.height)) {
+    return !(x1 < shape.x - TOUCH || rx > shape.x + shape.width + TOUCH
+      || y1 < shape.y - TOUCH || ry > shape.y + shape.height + TOUCH);
+  }
+  return false;
+}
+
+/** Is every corner and the centre of this square inside the shape? */
+function _squareWhollyInside(shape, rx, ry, size) {
+  const x1 = rx + size, y1 = ry + size;
+  return [[rx, ry], [x1, ry], [rx, y1], [x1, y1], [rx + size / 2, ry + size / 2]]
+    .every(([px, py]) => shape.contains(px, py));
+}
 
 // ─── How tall is that area? ────────────────────────────────────────
 //
@@ -221,39 +303,21 @@ export function isTokenInTemplate(token, template, at = null, opts = {}) {
     const originX = at?.x ?? doc.x;
     const originY = at?.y ?? doc.y;
 
-    const inShape = (wx, wy) => shape.contains(wx - template.x, wy - template.y);
-
     let squaresIn = 0;
     const squares = w * h;
 
     for (let gx = 0; gx < w; gx++) {
       for (let gy = 0; gy < h; gy++) {
-        const sqX = originX + gx * grid;
-        const sqY = originY + gy * grid;
+        // The square, in the shape's own coordinates.
+        const sqX = originX + gx * grid - template.x;
+        const sqY = originY + gy * grid - template.y;
 
-        // Fast path: dead centre, which is what most hits are.
-        let inside = inShape(sqX + grid / 2, sqY + grid / 2);
-
-        if (!inside) {
-          let covered = 0;
-          for (const fx of SAMPLES) {
-            for (const fy of SAMPLES) {
-              if (inShape(sqX + fx * grid, sqY + fy * grid)) {
-                covered++;
-                // ⚠️ 2024: one point inside is the whole test. A creature is
-                // affected if ANY part of its space is in the area.
-                if (opts.anyOverlapCounts) { inside = true; break; }
-              }
-            }
-            if (inside) break;
-          }
-          // ⚠️ 2014 (DMG, Areas of Effect on a Grid): the area has to cover
-          // about half the square. Five of nine lattice points is a direct,
-          // cheap approximation and it is DETERMINISTIC - the same board
-          // always gives the same answer, so a save that fires once fires
-          // every time.
-          if (!inside && covered >= 5) inside = true;
-        }
+        // ⚠️ "WHOLLY WITHIN" IS A DIFFERENT QUESTION AND KEEPS ITS OWN ANSWER.
+        // Web and Stinking Cloud say a creature has to be wholly inside, so
+        // every square it stands on must be fully covered, not merely touched.
+        const inside = opts.whollyInside
+          ? _squareWhollyInside(shape, sqX, sqY, grid)
+          : _squareTouchesShape(shape, sqX, sqY, grid);
 
         if (inside) {
           if (!opts.whollyInside) return true;
@@ -285,7 +349,12 @@ export function isTokenInTemplate(token, template, at = null, opts = {}) {
  *
  * @param {Function} getActiveEdition  passed in so this file imports nothing
  */
-export function anyOverlapCounts(getActiveEdition) {
-  try { return getActiveEdition?.(null) === "2024"; }
-  catch (_) { return false; }   // unknown edition -> the older, stricter rule
+export function anyOverlapCounts(_getActiveEdition) {
+  // ⚠️🔴 HIS RULING, 2026-09-16, REPLACED THE EDITION SPLIT: "A creature is in
+  // the template if ANY part of its occupied space intersects the area... Same
+  // rule for every template ACE tests." It used to answer "only at a 2024 table",
+  // and his 2014 Spirit Guardians then left out a Large horse the circle plainly
+  // cut. The argument for the old split is in this file's history; the table's
+  // ruling is one rule for every area, so the answer is yes for everybody.
+  return true;
 }
