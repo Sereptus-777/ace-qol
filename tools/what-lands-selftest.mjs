@@ -61,8 +61,18 @@ const both = { decidedBy: save("con"), onFail: [{ kind: "effect", condition: { k
   onSuccess: [{ kind: "effect", condition: { key: "Unable to Move" } }] };
 check("an effect the item puts on either result lands on a made save too",
   whatLands(both, { passed: true }).effects[0]?.key === "Unable to Move");
-check("a recipe decided by nothing lands nothing",
-  whatLands({ decidedBy: { kind: "automatic" } }, { passed: false }).why === "it is not decided by a save");
+check("a recipe nothing is rolled against lands everything it names, whatever passed says (Phase 5)",
+  (() => {
+    // Spike Growth's shape: no save, no attack, damage to whoever is there.
+    const auto = { decidedBy: { kind: "automatic" }, recatch: ["enter-area", "move-through"],
+      onFail: [], onSuccess: [dmg("2d4", "piercing"), { kind: "condition", condition: { key: "prone" } }] };
+    const failed = whatLands(auto, { passed: false, rolled: [{ total: 4, type: "piercing" }] });
+    const made = whatLands(auto, { passed: true, rolled: [{ total: 4, type: "piercing" }] });
+    return failed.damage[0]?.amount === 4 && made.damage[0]?.amount === 4
+      && failed.conditions[0]?.key === "prone" && failed.label === "AUTOMATIC" && failed.share === 1;
+  })());
+check("a recipe decided by nothing at all lands nothing",
+  whatLands({ decidedBy: null }, { passed: false }).why === "it is not decided by a save");
 check("an attack asked without its result lands nothing, and says what it needs",
   (() => { const v = whatLands({ decidedBy: { kind: "attack" }, onHit: [dmg("1d8", "slashing")] }, { passed: false });
     return !v.damage.length && !v.conditions.length && /hit, a critical hit or a miss/.test(v.why); })());

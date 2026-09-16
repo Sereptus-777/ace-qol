@@ -1727,9 +1727,17 @@ export class SaveEngine {
       } catch (_) { /* setting unavailable — proceed without delay */ }
     }
 
-    const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing, activity, spellLevel = null,
+    const { saveAbility, saveDC, isSpell, timing, activity, spellLevel = null,
             recipe = null } = opts;
-    const activityId = activity?.id ?? null;
+    // ⚠️ THE RECIPE RULES ITS OWN DAMAGE HERE TOO. The live card has read half
+    // and the types off the recipe since Phase 1, and this path read them off
+    // whatever its caller passed, so a re-catch could halve on one path and not
+    // the other (The One Road, Phase 5).
+    const rule = recipe ? SaveEngine._damageRuleOf(recipe) : null;
+    const halfOnSave = rule ? rule.halfOnSave : opts.halfOnSave;
+    const damageTypes = rule ? rule.damageTypes : opts.damageTypes;
+    // An activity, or just its id: a trigger carries the id the press used.
+    const activityId = activity?.id ?? opts.activityId ?? null;
 
     // Build the target context the way _postLiveTargetCard does so
     // _rollSingleSave gets a normalized input.
@@ -1985,6 +1993,15 @@ export class SaveEngine {
     if (this._pendingMovementDamageSpell && !this._pendingSaveSpell) {
       const pending = this._pendingMovementDamageSpell;
       this._pendingMovementDamageSpell = null;
+      // ⚠️ ITS RECIPE GOES WITH IT (The One Road, Phase 5). What Spike Growth
+      // deals to somebody walking through it is the recipe's, not a formula this
+      // file read off the sheet and the widget read again off a field dnd5e 5.x
+      // does not fill.
+      const { recipe: areaRecipe, why: noRecipe } = await SaveEngine.areaRecipe(pending.item, pending.activity);
+      if (!areaRecipe) {
+        console.warn(`${MODULE_ID} | "${pending.item?.name}": its area has no recipe (${noRecipe}), `
+          + `so what it does to anyone moving through it rests on its own words alone.`);
+      }
       Hooks.callAll("ace-qol.persistentSpellCreated", {
         item: pending.item,
         actor: pending.actor,
@@ -1995,6 +2012,9 @@ export class SaveEngine {
         halfOnSave: false,
         damageTypes: pending.damageTypes,
         damageFormula: pending.damageFormula,
+        recipe: areaRecipe,
+        activityId: pending.activityId ?? null,
+        castLevel: SaveEngine._castLevelFromTemplate(templateDoc, pending.item),
         tokens: [],
       });
       console.log(`${MODULE_ID} | Movement-damage "${pending.item.name}" — emitted ace-qol.persistentSpellCreated (no-save variant, formula: ${pending.damageFormula})`);
@@ -2258,6 +2278,10 @@ export class SaveEngine {
         Hooks.callAll("ace-qol.persistentSpellCreated", {
           item, actor, templateDoc, timing, saveAbility, saveDC,
           halfOnSave, damageTypes, tokens,
+          // ⚠️ THE CAST'S OWN RECIPE, FROZEN, TRAVELS WITH THE AREA (Phase 5).
+          // Everyone who walks into it later is caught by this same recipe, so
+          // its save, its damage and its effects cannot drift from the cast's.
+          recipe, activityId, castLevel: spellLevel,
         });
 
         console.log(`${MODULE_ID} | Persistent spell "${item.name}" — emitted ace-qol.persistentSpellCreated (${tokens.length} tokens initially in area)`);
@@ -2399,6 +2423,28 @@ export class SaveEngine {
   static async castRecipe(item, activity) {
     await loadBookFor(item, { actor: item?.actor ?? null });
     return SaveEngine.saveRecipe(item, activity);
+  }
+
+  /**
+   * The recipe of a lasting area, whatever decides it (The One Road, Phase 5).
+   *
+   * ⚠️ NOT `castRecipe`, WHICH ONLY ANSWERS FOR A SAVE. Spike Growth and Cloud
+   * of Daggers are decided by nothing at all: no save, no attack, just damage to
+   * whoever is there. Their re-catch needs the same frozen recipe every press
+   * uses, so it is read here, book first, and travels with the area's tracker.
+   *
+   * @returns {Promise<{recipe: object|null, why: string|null}>}
+   */
+  static async areaRecipe(item, activity) {
+    if (!item || !activity) return { recipe: null, why: "no activity was named" };
+    try {
+      await loadBookFor(item, { actor: item?.actor ?? null });
+      const rec = recipeForActivity(item, activity, { actor: item?.actor ?? null });
+      if (rec?.recipe) return { recipe: rec.recipe, why: null };
+      return { recipe: null, why: rec?.none ?? "it has no recipe" };
+    } catch (err) {
+      return { recipe: null, why: `building it failed: ${err?.message ?? err}` };
+    }
   }
 
   /** A save recipe's damage: the types it rolls, and whether a made save takes half. */
@@ -6185,6 +6231,11 @@ export class SaveEngine {
           trigger:         repeatTrigger,
           castWorldTime:   game.time?.worldTime ?? 0,
           durationSeconds: durationSeconds, // null = no duration cap
+          // ⚠️ THE RECIPE RIDES ALONG (The One Road, Phase 5). The repeat save is
+          // the same spell asking again, so whether a made save ends the condition
+          // is whatLands' answer on this recipe, not the repeat engine's own rule
+          // that a passed save always ends whatever it was rolled against.
+          recipe:          recipe ?? null,
         }
       : null;
 

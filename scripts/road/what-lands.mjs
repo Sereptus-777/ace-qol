@@ -75,6 +75,11 @@ export function shareOf(total, share) {
  */
 export function whatLands(recipe, { passed, result = null, rolled = [], evasion = false, autoFail = false } = {}) {
   if (recipe?.decidedBy?.kind === "attack") return attackLands(recipe, { result, rolled });
+  // Nothing was rolled against it, so everything it names lands (The One Road,
+  // Phase 5, 2026-09-15): Spike Growth's spikes, Cloud of Daggers' blades, a
+  // vampire's weakness in running water. `passed` has no meaning here and is
+  // ignored, because there was no save to make.
+  if (recipe?.decidedBy?.kind === "automatic") return automaticLands(recipe, { rolled });
   // A contest lands the way a save does (Phase 4, 2026-09-15): the creature that
   // loses it takes onFail, the one that holds takes onSuccess, and `passed` is
   // that creature holding (a 2014 grapple or shove: its Athletics or Acrobatics
@@ -107,6 +112,30 @@ export function whatLands(recipe, { passed, result = null, rolled = [], evasion 
   }
   out.why = contest ? (passed ? "it held: it won or tied the contest" : "it lost the contest")
     : passed ? "the save was made" : "the save was failed";
+  return out;
+}
+
+/**
+ * The outcomes an automatic recipe lands. One list, never both: the recipe
+ * builder puts an automatic activity's outcomes on its success side, and an
+ * older one that put them on the failure side is read there instead. Adding the
+ * two together would deal Spike Growth's spikes twice.
+ */
+export function automaticOutcomes(recipe) {
+  const win = (recipe?.onSuccess ?? []).filter(Boolean);
+  return win.length ? win : (recipe?.onFail ?? []).filter(Boolean);
+}
+
+/** What a recipe nothing rolls against puts on a creature: all of it. */
+function automaticLands(recipe, { rolled = [] }) {
+  const out = { damage: [], conditions: [], effects: [], notes: [], why: "nothing is rolled against it",
+                share: 1, half: false, evades: false, label: "AUTOMATIC" };
+  for (const r of rolled) out.damage.push({ amount: shareOf(r?.total, 1), type: r?.type ?? null, why: out.why });
+  for (const o of automaticOutcomes(recipe)) {
+    if (o?.kind === "condition") out.conditions.push({ ...(o.condition ?? {}) });
+    else if (o?.kind === "effect") out.effects.push({ ...(o.condition ?? {}) });
+    else if (o?.kind === "note") out.notes.push(String(o.condition?.key ?? ""));
+  }
   return out;
 }
 

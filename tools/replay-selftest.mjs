@@ -187,7 +187,10 @@ globalThis.Roll = class Roll {
       return String(keep ? 1 : count);
     });
     let total = 0, sign = 1;
-    for (const tok of expr.replace(/\s+/g, "").split(/([+-])/)) {
+    // ⚠️ BRACKETS ARE A SUM, NOT A NUMBER. "(2d4) + (2d4)" is how the rules ask
+    // for a die per five feet, and Foundry rolls each bracket on its own; the
+    // stand-in read "(2)" as NaN and totalled nothing (Phase 5, 2026-09-15).
+    for (const tok of expr.replace(/[()\s]/g, "").split(/([+-])/)) {
       if (tok === "+") sign = 1; else if (tok === "-") sign = -1;
       else if (tok) total += sign * (Number(tok) || 0);
     }
@@ -2364,6 +2367,261 @@ console.log(`\nPHASE 3: ATTACKS ON THE ROAD`);
             + `hit-point door ${engineHpTypes.join(", ") || "never"}; old card: condition door ${oldConds.map(c => c.key).join(", ") || "never"}, `
             + `damage on its card ${oldDmg.map(c => `${c.final} ${c.type}`).join(", ") || "none"}`);
     }
+  }
+}
+
+/* ── PHASE 5: AREA AND TURN TRIGGERS ──────────────────────── */
+// Johnny, 2026-09-15: "PHASE 5 — area / turn triggers only. Then STOP." Done when
+// the replay pins: 1. an emanation catches on entering and on the turn its own
+// words name, running the SAME recipe as the cast; 2. Blade Barrier's walk-in and
+// end of turn the same; 3. a creature moving through Spike Growth takes the
+// recatch, per five feet, through the doors; 4. Hold Person's end-of-turn repeat
+// asks the recipe, not the repeater's own rule; 5. the cards these touch go
+// through the card door.
+//
+// ⚠️ WHAT IS REAL HERE AND WHAT IS STOOD IN. The area tracker, the road's run(),
+// whatLands, the doors and the repeat engine's decision are ACE's own code on his
+// own items. The save engine is stood in for the two save pins, so what is pinned
+// there is exactly what Phase 5 changed: which recipe, which ability and which DC
+// the trigger hands over, plus what that recipe makes a failed save take, read
+// from the save engine's real damage rule. Spike Growth's pin is end to end: its
+// recipe, its dice, the hit-point door and the card door.
+console.log(`\nPHASE 5: AREA AND TURN TRIGGERS`);
+{
+  const MOD = "ace-qol";
+  const { ConcentrationWidget } = await import(`${MODULE}/scripts/concentration-widget.mjs`);
+  const { run: runTrigger, catchesOn, repeatOutcome, FEET_PER_TICK } = await import(`${MODULE}/scripts/road/run.mjs`);
+  const { ConditionDoor } = await import(`${MODULE}/scripts/road/doors.mjs`);
+  const { getSpellTiming } = await import(`${MODULE}/scripts/spell-timing.mjs`);
+
+  const varek = firstActor(VAREK);
+  const spellOf = (rx, ed = null) => (varek ? [...varek.items].find(i => i.type === "spell" && rx.test(i.name)
+    && (!ed || i.system?.source?.rules === ed)) ?? null : null);
+  const actsOf = (it) => [...(it?.system?.activities ?? [])];
+  const recipeOf = async (item, activity) => {
+    if (!item || !activity) return null;
+    await loadBookFor(item, { actor: item.actor ?? null });
+    return recipeForActivity(item, activity, { actor: item.actor ?? null })?.recipe ?? null;
+  };
+
+  // A stand-in scene: a token the tracker can catch, and a template to stand in.
+  const SCENE5 = "replay-p5-scene";
+  const docs5 = new Map();
+  const setPath5 = (obj, key, v) => {
+    const path = key.split(".");
+    let o = obj;
+    for (const k of path.slice(0, -1)) o = (o[k] ??= {});
+    o[path[path.length - 1]] = v;
+  };
+  const creature5 = (id, name, { type = "npc", hp = 40, max = 40 } = {}) => {
+    const a = { id, name, type, img: "", documentName: "Actor", uuid: `Actor.${id}`, statuses: new Set(),
+      effects: new Collection(), items: new Collection(), isOwner: true, hasPlayerOwner: type === "character",
+      prototypeToken: { actorLink: true }, getFlag: () => undefined, getRollData: () => ({}),
+      system: { attributes: { hp: { value: hp, max, temp: 0 }, death: { success: 0, failure: 0 }, prof: 2 },
+        abilities: { str: { mod: 0, save: { value: 0 } }, dex: { mod: 0, save: { value: 0 } },
+          con: { mod: 0, save: { value: 0 } }, wis: { mod: 0, save: { value: 0 } } },
+        skills: {}, details: { type: { value: "humanoid" } },
+        traits: { ci: { value: [] }, di: { value: [] }, dr: { value: [] }, dv: { value: [] } } },
+      applyDamage: async (n) => { applied5.push(n); return a; },
+      update: async (u) => { for (const [k, v] of Object.entries(u)) setPath5(a, k, v); return a; } };
+    ACTORS.set(id, a);
+    return a;
+  };
+  const place5 = (actor, id) => {
+    const doc = { id, actorId: actor.id, actor, parent: { id: SCENE5 }, flags: {}, name: actor.name,
+      hidden: false, x: 0, y: 0, width: 1, height: 1, elevation: 0, disposition: -1, texture: { src: "" },
+      update: async (u) => { for (const [k, v] of Object.entries(u)) setPath5(doc, k, v); return doc; } };
+    const tok = { id, name: actor.name, actor, document: doc, x: 0, y: 0, w: 100, h: 100, center: { x: 50, y: 50 },
+      scene: { id: SCENE5 }, setTarget() {} };
+    doc.object = tok;
+    docs5.set(id, doc);
+    canvas.tokens.placeables.push(tok);
+    return tok;
+  };
+
+  const applied5 = [];
+  const keep5 = { placed: [...canvas.tokens.placeables], scenes: game.scenes.get, posted: posted.length,
+    damage: HpDoor.damage, apply: ConditionDoor.apply, post: CardDoor.post, scene: canvas.scene };
+  const doorCalls = { damage: [], condition: [], card: [] };
+  HpDoor.damage = async (actor, finals, o = {}) => { doorCalls.damage.push({ actor, finals, o }); return { applied: true, total: (finals ?? []).reduce((t, f) => t + (Number(f.final) || 0), 0), hpDelta: 0 }; };
+  ConditionDoor.apply = async (actor, key, opts, o) => { doorCalls.condition.push({ actor, key, opts }); return { ok: true, applied: key }; };
+  CardDoor.post = async (data, o = {}) => { doorCalls.card.push({ data, o }); return { id: `p5-card-${doorCalls.card.length}`, ...data }; };
+  canvas.tokens.placeables.length = 0;
+  const made5 = [];
+  try {
+    const bandit = creature5("replay-p5-bandit", "a bandit in the way");
+    made5.push(bandit);
+    const banditTok = place5(bandit, "tok-p5-bandit");
+    game.scenes.get = (id) => (id === SCENE5
+      ? { id, templates: { get: () => null }, tokens: { get: (t) => docs5.get(t) ?? null, contents: [...docs5.values()] } }
+      : keep5.scenes(id));
+
+    // The save engine, stood in: it records exactly what the trigger hands it.
+    const handed = [];
+    const engine5 = {
+      postSaveCard: async (item, actor, tokens, opts) => { handed.push({ how: "card", item, tokens, opts }); },
+      _fastResolveSingleNpcSave: async (item, actor, token, opts) => { handed.push({ how: "rolled", item, token, opts }); },
+    };
+    const widget = new ConcentrationWidget(engine5);
+    const trackerFor = async (item, activity, { saveAbility = null, saveDC = null, castLevel = null } = {}) => {
+      const recipe = await recipeOf(item, activity);
+      const templateDoc = { id: `tpl-${item.id}-${activity?.id ?? "x"}`, parent: { id: SCENE5 }, t: "circle",
+        x: 0, y: 0, distance: 15, flags: {}, object: null };
+      await quiet(async () => {
+        widget._onPersistentSpellCreated({
+          item, actor: varek, templateDoc, timing: getSpellTiming(item),
+          saveAbility, saveDC, halfOnSave: true, damageTypes: [], tokens: [],
+          recipe, activityId: activity?.id ?? null, castLevel,
+        });
+      });
+      return { tracker: widget._activeSpells.get(templateDoc.id) ?? null, recipe };
+    };
+
+    // ── 1. An emanation: the same recipe as the cast, on its own triggers ──
+    const guardians = spellOf(/^spirit guardians$/i, "2024") ?? spellOf(/^spirit guardians$/i);
+    const guardAct = actsOf(guardians).find(a => a.type === "save") ?? actsOf(guardians)[0] ?? null;
+    if (!varek || !guardAct) {
+      check("1. an emanation catches again on its own recipe (Phase 5)", null, "Varek has no Spirit Guardians");
+    } else {
+      const { tracker, recipe } = await trackerFor(guardians, guardAct, { saveAbility: "wis", saveDC: 21, castLevel: 5 });
+      const at = handed.length;
+      let err1 = null;
+      try {
+        await quiet(async () => { await widget._onTokenEnteredTemplate(tracker, banditTok, { phase: "entry" }); });
+      } catch (e) { err1 = e; }
+      const seen = handed[at] ?? null;
+      const said = recipe?.recatch ?? [];
+      // Its own words name the turn it catches on; the other one is refused.
+      const asks = (t) => catchesOn(recipe, t).ok;
+      const wrongTurn = said.includes("end-of-turn") ? "start-of-turn" : "end-of-turn";
+      check("1. an emanation catches everyone who walks in with the cast's own recipe, on the turn its own words name (Phase 5)",
+        !err1 && !!seen && seen.opts?.recipe === recipe && seen.opts?.saveAbility === recipe?.decidedBy?.ability
+          && seen.opts?.saveDC === 21 && seen.opts?.activityId === guardAct.id && seen.opts?.spellLevel === 5
+          && seen.how === "rolled" && asks("enter-area") && !asks(wrongTurn),
+        err1 ? `threw: ${err1?.message ?? err1}`
+          : `${guardians.name} (${guardians.system?.source?.rules ?? "?"}): the bandit walked in and `
+            + `${seen ? `it ${seen.how === "rolled" ? "rolled its own save" : "was asked to roll"} `
+              + `${seen.opts?.saveAbility ?? "?"} DC ${seen.opts?.saveDC ?? "?"} on ${seen.opts?.recipe === recipe ? "the cast's own recipe" : "a different recipe"}, `
+              + `slot ${seen.opts?.spellLevel ?? "none"}` : "nothing was asked"}; `
+            + `its words catch on ${said.join(", ") || "nothing of their own"}, and ${wrongTurn} is ${asks(wrongTurn) ? "also asked" : "refused"}`);
+    }
+
+    // ── 2. Blade Barrier: the walk-in and the end of turn, same recipe ──
+    const blade = spellOf(/^blade barrier$/i);
+    const bladeAct = actsOf(blade).find(a => a.type === "save") ?? null;
+    if (!varek || !bladeAct) {
+      check("2. Blade Barrier's walk-in runs the cast's recipe (Phase 5)", null, "Varek has no Blade Barrier");
+    } else {
+      const { tracker, recipe } = await trackerFor(blade, bladeAct, { saveAbility: "dex", saveDC: 21, castLevel: 6 });
+      const at = handed.length;
+      let err2 = null;
+      try {
+        await quiet(async () => {
+          await widget._onTokenEnteredTemplate(tracker, banditTok, { phase: "entry" });
+          await widget._onTokenEnteredTemplate(tracker, banditTok, { phase: "endOfTurn" });
+          await widget._onTokenEnteredTemplate(tracker, banditTok, { phase: "startOfTurn" });
+        });
+      } catch (e) { err2 = e; }
+      const runs = handed.slice(at);
+      // ⚠️🔴 AND WHAT THAT RECIPE MAKES IT TAKE. A re-catch card used to carry no
+      // recipe at all, and a card with no recipe asks whatLands about nothing: the
+      // creature that failed took ZERO of the 6d10 its own card was showing.
+      const failed = { passed: false };
+      const rolled = [{ total: 6, type: "force" }];
+      const withRecipe = SaveEngine._damageForRow(failed, rolled, recipe).total;
+      const withNone = SaveEngine._damageForRow(failed, rolled, null).total;
+      const made = SaveEngine._damageForRow({ passed: true }, rolled, recipe).total;
+      check("2. Blade Barrier catches a creature that walks in and one that ends its turn there, on the cast's recipe, and that recipe is what its damage comes from (Phase 5)",
+        !err2 && runs.length === 2 && runs.every(r => r.opts?.recipe === recipe && r.opts?.saveAbility === "dex" && r.opts?.saveDC === 21)
+          && withRecipe === 6 && withNone === 0 && made === 3,
+        err2 ? `threw: ${err2?.message ?? err2}`
+          : `${blade.name}: its words catch on ${(recipe?.recatch ?? []).join(", ") || "nothing"}; `
+            + `walked in, ended its turn there and started its turn there gave ${runs.length} run(s) `
+            + `(${runs.map(r => `${r.opts?.saveAbility} DC ${r.opts?.saveDC}`).join("; ") || "none"}); `
+            + `6 rolled force on a failed save: ${withRecipe} with its recipe, ${withNone} with none, ${made} on a made save`);
+    }
+
+    // ── 3. Spike Growth: per five feet, through the doors ──
+    const spike = spellOf(/^spike growth$/i);
+    const spikeAct = actsOf(spike)[0] ?? null;
+    if (!varek || !spikeAct) {
+      check("3. Spike Growth takes its recatch per five feet (Phase 5)", null, "Varek has no Spike Growth");
+    } else {
+      const { tracker, recipe } = await trackerFor(spike, spikeAct, { castLevel: 2 });
+      const atD = doorCalls.damage.length, atC = doorCalls.card.length, atA = applied5.length;
+      let err3 = null;
+      try { await quiet(async () => { await widget._applyMovementDamage(tracker, banditTok, 10); }); }
+      catch (e) { err3 = e; }
+      const hit = doorCalls.damage[atD] ?? null;
+      const card = doorCalls.card[atC] ?? null;
+      const total = (hit?.finals ?? []).reduce((t, f) => t + (Number(f.final) || 0), 0);
+      // Every die rolls 1, so 2d4 twice is 4, and it is piercing, from the recipe.
+      check("3. a creature moving through Spike Growth takes its recipe's damage once for every five feet, through the hit-point door, on a card the card door posted (Phase 5)",
+        !err3 && !!hit && total === 4 && (hit.finals ?? []).every(f => f.type === "piercing")
+          && hit.o?.dice === true && !!card && card.data?.flags?.[MOD]?.type === "areaTrigger"
+          && card.o?.dice === true && applied5.length === atA,
+        err3 ? `threw: ${err3?.message ?? err3}`
+          : `${spike.name}: its words catch on ${(recipe?.recatch ?? []).join(", ") || "nothing"}; `
+            + `10 feet inside it = ${Math.floor(10 / FEET_PER_TICK)} lots of its own ${(recipe?.onSuccess ?? []).find(o => o.kind === "damage")?.formula ?? "?"}; `
+            + `the hit-point door took ${total} ${(hit?.finals ?? []).map(f => f.type).join("/") || "nothing"} `
+            + `(waited for its dice: ${hit?.o?.dice === true ? "yes" : "no"}); card door: ${card ? "posted" : "nothing"}; `
+            + `the old straight-to-the-actor path ran ${applied5.length - atA} time(s)`);
+    }
+
+    // ── 4. A repeat save asks the recipe, not the repeater ──
+    const hold = spellOf(/^hold person$/i);
+    const holdAct = actsOf(hold).find(a => a.type === "save") ?? null;
+    const guard2 = spellOf(/^spirit guardians$/i, "2024");
+    const guard2Act = actsOf(guard2).find(a => a.type === "save") ?? null;
+    if (!holdAct) {
+      check("4. Hold Person's repeat save asks the recipe (Phase 5)", null, "Varek has no Hold Person");
+    } else {
+      const holdRecipe = await recipeOf(hold, holdAct);
+      const guardRecipe = guard2Act ? await recipeOf(guard2, guard2Act) : null;
+      const paralysed = { id: "eff-p5", name: "Paralyzed", statuses: new Set(["paralyzed"]) };
+      const meta = { ability: "wis", dc: 21, trigger: "endOfTurn", recipe: holdRecipe };
+      const onMade = RepeatingSaveEngine._endsOnThisSave(paralysed, meta, true);
+      const onFailed = RepeatingSaveEngine._endsOnThisSave(paralysed, meta, false);
+      // An effect on BOTH results stays on a made save: the 2024 Spirit Guardians
+      // halves a creature's speed whether it saves or not.
+      const halfSpeed = { id: "eff-p5b", name: "Half Speed", statuses: new Set() };
+      const stays = guardRecipe
+        ? RepeatingSaveEngine._endsOnThisSave(halfSpeed, { ability: "wis", dc: 21, recipe: guardRecipe }, true)
+        : null;
+      // With no recipe the engine keeps its own answer, as every effect stamped
+      // before today has.
+      const old = RepeatingSaveEngine._endsOnThisSave(paralysed, { ability: "wis", dc: 21 }, true);
+      const stamped = /repeatingSaveMeta = \(repeatTrigger[\s\S]{0,1200}?recipe:\s*recipe \?\? null/
+        .test(readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/save-engine.mjs`, "utf8"));
+      check("4. a repeat save asks the recipe what its result means: Hold Person's paralysis ends on a made save, an effect the recipe keeps on both results does not, and an effect stamped before today keeps the old answer (Phase 5)",
+        onMade.decided === true && onMade.ends === true && onFailed.decided === true && onFailed.ends === false
+          && (!guardRecipe || (stays?.decided === true && stays?.ends === false))
+          && old.decided === false && old.ends === true && stamped,
+        `${hold.name}: a made save ${onMade.ends ? "ends" : "keeps"} the paralysis (${onMade.why}), a failed one `
+          + `${onFailed.ends ? "ends" : "keeps"} it (${onFailed.why}); `
+          + `${guardRecipe ? `the 2024 Spirit Guardians' Half Speed on a made save: ${stays?.ends ? "ends" : "stays"} (${stays?.why})` : "no 2024 Spirit Guardians to read"}; `
+          + `an effect with no recipe: ${old.ends ? "ends on a made save, as before" : "changed"}; `
+          + `the condition's stamp carries its recipe: ${stamped ? "yes" : "no"}`);
+    }
+
+    // ── 5. The road's own card is the card door's, and nothing else's ──
+    {
+      const src = readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/road/run.mjs`, "utf8").replace(/\/\/.*$/gm, "");
+      const raw = /ChatMessage\.create\s*\(/.test(src);
+      const doors = /CardDoor\.post\(/.test(src) && /HpDoor\.damage\(/.test(src) && /ConditionDoor\.apply\(/.test(src);
+      check("5. every card a trigger posts goes through the card door, and every landing through its own door (Phase 5)",
+        !raw && doors && doorCalls.card.length > 0,
+        `run.mjs: raw chat cards ${raw ? "left" : "none"}; it lands through the card, hit-point and condition doors: ${doors ? "yes" : "no"}; `
+          + `cards posted through the card door in these pins: ${doorCalls.card.length}`);
+    }
+  } finally {
+    HpDoor.damage = keep5.damage;
+    ConditionDoor.apply = keep5.apply;
+    CardDoor.post = keep5.post;
+    game.scenes.get = keep5.scenes;
+    canvas.tokens.placeables.length = 0;
+    canvas.tokens.placeables.push(...keep5.placed);
+    for (const a of made5) ACTORS.delete(a.id);
   }
 }
 

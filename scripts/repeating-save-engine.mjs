@@ -22,6 +22,9 @@ import { replyIsFromTheUserWeAsked } from "./socket-authority.mjs";
 import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { safeShowForRoll, awaitDiceSettle } from "./dsn-utils.mjs";
 import { saveBonus, naturalD20 } from "./rolldata-utils.mjs";
+// ⚠️ THE ONE DECIDER, PHASE 5. This engine says WHEN the save happens; what the
+// result does to the condition is the recipe's, through whatLands.
+import { repeatOutcome } from "./road/run.mjs";
 
 const MIN_RT_FOR_OOC_SAVE = 6;     // 1 round = 6s
 const MAX_OOC_SAVES_PER_EVENT = 10; // cap for big time jumps
@@ -566,6 +569,8 @@ export class RepeatingSaveEngine {
     let attempts = 0;
     let bestTotal = -Infinity;
     let passOnAttempt = null;
+    // The same question the in-combat path asks: does a made save end this one?
+    const endsOnAMadeSave = RepeatingSaveEngine._endsOnThisSave(stillPresent, meta, true).ends;
 
     const ability = String(meta.ability).toLowerCase();
     const dc      = Number(meta.dc);
@@ -603,7 +608,11 @@ export class RepeatingSaveEngine {
     }
 
     // ── Apply outcome ──
-    if (passed) {
+    // ⚠️ THE RECIPE SAYS WHETHER A MADE SAVE ENDS IT (Phase 5), the same answer
+    // the in-combat path takes, so time passing out of combat and a turn ending
+    // in combat can never disagree about one condition.
+    const ended = passed && endsOnAMadeSave;
+    if (ended) {
       try {
         await stillPresent.delete();
       } catch (err) {
@@ -614,17 +623,17 @@ export class RepeatingSaveEngine {
       }
     }
 
-    console.log(`${MODULE_ID} | RepeatingSave[OOC-batch] ${actor.name}: ${attempts} silent ${ability.toUpperCase()} save(s) vs DC ${dc}, best=${bestTotal}, ${passed ? `PASSED on attempt ${passOnAttempt} — "${eff.name}" removed` : `all FAILED — effect persists`}`);
+    console.log(`${MODULE_ID} | RepeatingSave[OOC-batch] ${actor.name}: ${attempts} silent ${ability.toUpperCase()} save(s) vs DC ${dc}, best=${bestTotal}, ${ended ? `PASSED on attempt ${passOnAttempt} — "${eff.name}" removed` : passed ? `PASSED on attempt ${passOnAttempt}, and its recipe keeps "${eff.name}" on` : `all FAILED — effect persists`}`);
 
     // ── ONE summary card per event ──
     await this._postOOCSummaryCard(actor, meta, {
       attempts,
-      passed,
+      passed: ended,
       passOnAttempt,
       bestTotal: bestTotal === -Infinity ? null : bestTotal,
       bestFace,
       bonus,
-      ended: passed ? "save" : null,
+      ended: ended ? "save" : null,
     });
   }
 
@@ -717,6 +726,43 @@ export class RepeatingSaveEngine {
     }
   }
 
+  /**
+   * Every name this effect could be called by, for asking the recipe about it:
+   * the conditions it carries and its own name.
+   */
+  static _keysOf(eff) {
+    const out = [];
+    const st = eff?.statuses;
+    for (const s of (st instanceof Set ? [...st] : (Array.isArray(st) ? st : []))) {
+      if (s) out.push(String(s).toLowerCase());
+    }
+    const name = String(eff?.name ?? "").trim().toLowerCase();
+    if (name) out.push(name);
+    return out;
+  }
+
+  /**
+   * Does this save end the condition? (The One Road, Phase 5.)
+   *
+   * ⚠️ THE RECIPE ANSWERS WHEN IT NAMES THE CONDITION. A passed save ending
+   * whatever it was rolled against is right for Hold Person and is this engine's
+   * own rule, not a reading of the spell; where the recipe names the condition on
+   * one result and not the other, the recipe decides, so the repeat and the cast
+   * can never give a creature two different answers about the same paralysis.
+   *
+   * @returns {{ends: boolean, why: string, decided: boolean}}
+   */
+  static _endsOnThisSave(eff, meta, passed) {
+    const recipe = meta?.recipe ?? null;
+    if (recipe) {
+      for (const key of RepeatingSaveEngine._keysOf(eff)) {
+        const out = repeatOutcome(recipe, { key, passed });
+        if (out.decided) return { ends: out.ends, why: out.why, decided: true };
+      }
+    }
+    return { ends: !!passed, why: passed ? "the save was made" : "the save was failed", decided: false };
+  }
+
   static async _rollAndResolve(actor, eff, source) {
     const meta = eff.flags?.[MODULE_ID]?.repeatingSave;
     if (!meta?.ability || !Number.isFinite(meta?.dc)) return true;
@@ -790,7 +836,15 @@ export class RepeatingSaveEngine {
 
     let escalatedTo = null;
 
-    if (passed) {
+    // What this save means for the condition: the recipe's answer where it has
+    // one, this engine's where it has not, and the log says which.
+    const verdict = RepeatingSaveEngine._endsOnThisSave(stillPresent, meta, passed);
+    if (verdict.decided && verdict.ends !== passed) {
+      console.log(`${MODULE_ID} | RepeatingSave[${source}] ${actor.name}: `
+        + `"${eff.name}" ${verdict.ends ? "ends" : "stays"} because ${verdict.why}.`);
+    }
+
+    if (verdict.ends) {
       // Effect ends — delete. Existing cleanup chain handles dependents.
       try {
         await stillPresent.delete();

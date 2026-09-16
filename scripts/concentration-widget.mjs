@@ -34,6 +34,11 @@ import { RulesBrain } from "./rules/rules-brain.mjs";
 // Prismatic Wall is run by its own engine (a wall is crossed, not stood in);
 // a pure leaf, so it adds nothing to the import cycle.
 import { isPrismaticWall } from "./rules/prismatic-wall.mjs";
+// ⚠️ THE ROAD DECIDES WHAT A TRIGGER LANDS (The One Road, Phase 5). This file
+// says WHO walked in and WHEN; run() asks the cast's own recipe for the rest.
+import { run as runTrigger, catchesOn } from "./road/run.mjs";
+// For a tracker rebuilt after a reload: the same recipe the press froze.
+import { recipeForActivity, loadBookFor } from "./inference/recipe.mjs";
 
 const TAG = `${MODULE_ID} | ConcWidget`;
 
@@ -373,6 +378,22 @@ export class ConcentrationWidget {
         // resolved — those shouldn't re-attach).
         if (!saveAbility && !formula) continue;
 
+        // ⚠️ AND ITS RECIPE, REBUILT THE WAY THE PRESS BUILDS IT (Phase 5). A
+        // reload must not turn a tracked area into one that decides for itself:
+        // book first, the same activity the template came from.
+        const castActivity = (resolved?.item ? resolved : null) ?? saveActivity ?? activities[0] ?? null;
+        let recipe = null;
+        try {
+          await loadBookFor(item, { actor });
+          recipe = recipeForActivity(item, castActivity, { actor })?.recipe ?? null;
+        } catch (err) {
+          console.warn(`${TAG} | could not rebuild the recipe for ${item?.name} after the reload:`, err);
+        }
+        if (!recipe) {
+          console.warn(`${TAG} | ${item?.name}: re-attached with no recipe, so what it does to anyone `
+            + `it catches again rests on this tracker's own reading of the sheet.`);
+        }
+
         // Emit through the same hook the live-cast path uses. The
         // _onPersistentSpellCreated handler does the rest (register
         // tracker, play Sequencer animation, render widget).
@@ -381,6 +402,9 @@ export class ConcentrationWidget {
           saveAbility, saveDC, halfOnSave,
           damageTypes: damageType ? [damageType] : [],
           damageFormula: formula,
+          recipe,
+          activityId: castActivity?.id ?? castActivity?._id ?? null,
+          castLevel: null,
           tokens: [],
         });
         reattached++;
@@ -395,7 +419,8 @@ export class ConcentrationWidget {
 
   _onPersistentSpellCreated(data) {
     const { item, actor, templateDoc, timing, saveAbility, saveDC,
-            halfOnSave, damageTypes, damageFormula, tokens } = data;
+            halfOnSave, damageTypes, damageFormula, tokens,
+            recipe = null, activityId = null, castLevel = null } = data;
 
     if (!templateDoc?.id) {
       console.warn(`${TAG} | No template for persistent spell "${item?.name}"`);
@@ -423,6 +448,14 @@ export class ConcentrationWidget {
       halfOnSave,
       damageTypes,
       damageFormula,                  // v0.6.5: needed for Spike Growth-style movement damage
+      // ⚠️🔴 THE CAST'S OWN RECIPE, FROZEN (The One Road, Phase 5). Everything
+      // below used to be the tracker's own reading of the spell, handed to a save
+      // card with no recipe: a creature that walked into Blade Barrier and failed
+      // took nothing at all, because a card with no recipe asks whatLands about
+      // nothing. The re-catch is the SAME spell, so it is the same recipe.
+      recipe,
+      activityId,
+      castLevel,
       tokens: tokens ?? [],
       createdAt: Date.now(),
 
@@ -479,6 +512,13 @@ export class ConcentrationWidget {
       }
     }
 
+    if (!tracker.recipe) {
+      // ⚠️ SILENCE IS A BUG. Without a recipe the area still catches people the
+      // old way, and the log says so, so "it caught nobody" and "ACE never read
+      // it" can never look the same in the console.
+      console.warn(`${TAG} | ${item?.name}: no recipe came with it, so what it does to `
+        + `anyone it catches again rests on this tracker's own reading of the sheet.`);
+    }
     this._activeSpells.set(templateDoc.id, tracker);
     const variant = saveAbility
       ? "save"
@@ -1170,7 +1210,6 @@ export class ConcentrationWidget {
     }
 
     for (const [templateId, tracker] of this._activeSpells) {
-      const timing = tracker.timing.timing;
       // Check current state via the canvas template — `tracker.tokens` can
       // go stale if tokens moved without a template-move event. Using the
       // live placeable's hit-test guarantees we only fire if the
@@ -1181,8 +1220,10 @@ export class ConcentrationWidget {
       const trackerFamily = tracker.timing?.family;
       const isAreaDenial = trackerFamily === "areaDenial" || trackerFamily === "areaDenialAuto";
 
+      const phases = this._turnPhasesFor(tracker);
+
       // Start-of-turn check
-      if (timing.includes("startOfTurn") || timing.includes("enter+startOfTurn")) {
+      if (phases.start) {
         if (currentToken) {
           const placeable = canvas.tokens.get(currentToken.id);
           if (placeable) {
@@ -1215,7 +1256,7 @@ export class ConcentrationWidget {
       }
 
       // End-of-turn check
-      if (timing.includes("endOfTurn") || timing.includes("enter+endOfTurn")) {
+      if (phases.end) {
         if (prevToken) {
           const placeable = canvas.tokens.get(prevToken.id);
           if (placeable) {
@@ -1231,6 +1272,77 @@ export class ConcentrationWidget {
         }
       }
     }
+  }
+
+  /**
+   * Which turn this area catches on: the start, the end, or neither.
+   *
+   * ⚠️🔴 THE ITEM'S OWN WORDS, AND THE EDITION IS IN THEM (Phase 5). ACE's
+   * timing table answers per spell NAME, and the two editions of one spell do not
+   * agree: the 2014 Spirit Guardians catches a creature at the START of its turn,
+   * the 2024 one when it ENDS its turn there, and Blade Barrier reads like the
+   * 2024 copy. Asking the table meant playing the 2014 rule at a 2024 table. The
+   * recipe read those sentences at the press, so it is asked first; where it says
+   * nothing at all, the table still answers, exactly as it did before.
+   */
+  _turnPhasesFor(tracker) {
+    const list = Array.isArray(tracker?.recipe?.recatch) ? tracker.recipe.recatch : [];
+    if (list.length) {
+      return { start: list.includes("start-of-turn"), end: list.includes("end-of-turn"),
+               from: `${tracker.item?.name ?? "its"} own words` };
+    }
+    const t = String(tracker?.timing?.timing ?? "");
+    return { start: t.includes("startOfTurn"), end: t.includes("endOfTurn"), from: "the area's own timing" };
+  }
+
+  /**
+   * The road's name for what just happened. The widget has always called these
+   * "entry", "startOfTurn" and "endOfTurn"; the recipe names them the way the
+   * item's own words do.
+   */
+  static TRIGGER_FOR_PHASE = Object.freeze({
+    entry:       "enter-area",
+    startOfTurn: "start-of-turn",
+    endOfTurn:   "end-of-turn",
+    move:        "move-through",
+  });
+
+  /**
+   * Hand one creature to the road, with the cast's own recipe (Phase 5).
+   *
+   * ⚠️ THIS FILE DECIDES NOTHING ABOUT WHAT LANDS. It knows who is standing in
+   * the area and when, which is all a trigger is. run() asks the recipe whether
+   * this trigger catches anyone, rolls what it says, and lands it through the
+   * doors, exactly as the press does.
+   *
+   * @returns {Promise<boolean>} true when the road has answered, whether it ran
+   *   the trigger or refused it in the spell's own words; false only when there
+   *   was no recipe to ask, which leaves the caller's old reading to handle it.
+   */
+  async _runOnTheRoad(tracker, token, phase, extra = {}) {
+    if (!tracker?.recipe || !token) return false;
+    const trigger = ConcentrationWidget.TRIGGER_FOR_PHASE[phase] ?? phase;
+    const out = await runTrigger(tracker.recipe, trigger, {
+      item: tracker.item,
+      actor: tracker.actor,
+      token,
+      saveEngine: this._saveEngine,
+      activityId: tracker.activityId ?? null,
+      castLevel: tracker.castLevel ?? null,
+      saveDC: tracker.saveDC ?? null,
+      templateId: tracker.templateId ?? null,
+      // ⚠️ ITS OWN TIMING STILL COUNTS WHEN THE WORDS SAY NOTHING. Web's walk-in
+      // sentence belongs to its Caught button and Stinking Cloud's rests on ACE's
+      // timing table, so a recipe with no re-catch of its own does not silence an
+      // area his table has been playing for months.
+      fromTiming: true,
+      skipDelay: extra.skipDelay !== false,
+      ...extra,
+    });
+    // ⚠️ A REFUSAL IS THE ROAD ANSWERING. Falling through to the old path after
+    // the recipe said "not on this trigger" would ask for the save anyway, and
+    // the whole phase would be decoration.
+    return out?.ran === true || out?.refused === true;
   }
 
   /**
@@ -1264,6 +1376,11 @@ export class ConcentrationWidget {
         isSpell: true,
         isPersistent: true,
         templateId: tracker.templateId,
+        // ⚠️ EVEN HERE (Phase 5). This is the card the GM's INFLICT DAMAGE button
+        // and the old fallback post; a card with no recipe applies nothing at all,
+        // so the tracker's recipe travels on every one of them.
+        ...(tracker.recipe ? { recipe: tracker.recipe, activityId: tracker.activityId ?? null,
+                               spellLevel: tracker.castLevel ?? null } : {}),
         skipDelay: opts.skipDelay === true,
       });
     } else {
@@ -1781,6 +1898,11 @@ export class ConcentrationWidget {
     // which tracker + phase to apply the consequence for.
     this._registerPendingSave(tracker, token.document, phase);
 
+    // ⚠️ THE ROAD FIRST (Phase 5). It rolls the cast's own recipe, for a player's
+    // creature and the GM's alike, and lands both doors. Only a tracker with no
+    // recipe at all falls through to the old reading below.
+    if (await this._runOnTheRoad(tracker, token, phase, { skipDelay: true })) return;
+
     if (isPC) {
       // PC: live target card with that PC's ROLL SAVE button enabled.
       // SaveEngine already routes whisper / collapse so non-owners see a
@@ -1807,6 +1929,10 @@ export class ConcentrationWidget {
     if (!actor) return;
     const hp = actor.system?.attributes?.hp?.value;
     if (typeof hp !== "number" || hp <= 0) return; // dead-actor guard
+
+    // ⚠️ THE SAME ROAD AS EVERY OTHER TRIGGER (Phase 5). A spell nothing rolls
+    // against still has a recipe, and that recipe says what it deals.
+    if (await this._runOnTheRoad(tracker, token, phase)) return;
 
     const formula = tracker.item?.system?.damage?.parts?.[0]?.[0]
                   ?? tracker.damageFormula
@@ -2023,6 +2149,8 @@ export class ConcentrationWidget {
           isSpell:     true,
           timing:      tracker.timing,
           activity:    null,
+          ...(tracker.recipe ? { recipe: tracker.recipe, activityId: tracker.activityId ?? null,
+                                 spellLevel: tracker.castLevel ?? null } : {}),
           skipDelay:   opts.skipDelay === true,
         });
         return;
@@ -2040,6 +2168,14 @@ export class ConcentrationWidget {
    * is `2d4` per 5 feet; ft / 5 = number of "tickets" of damage to roll).
    */
   async _applyMovementDamage(tracker, token, ftMoved) {
+    // ⚠️🔴 THE RECIPE'S DAMAGE, NOT THIS FILE'S (The One Road, Phase 5). What
+    // follows read `item.system.damage.parts`, which dnd5e 5.x does not fill, then
+    // `tracker.damageFormula`, then a hardcoded 2d4 piercing, and put the result
+    // on the actor itself, past the hit-point door, on a card the card door never
+    // saw. run() rolls what Spike Growth's own recipe says, once for every five
+    // feet, and lands it through the doors.
+    if (await this._runOnTheRoad(tracker, token, "move", { feet: ftMoved })) return;
+
     const ftPerTick = canvas.scene?.grid?.distance ?? 5;
     const ticks = Math.floor(ftMoved / ftPerTick);
     if (ticks < 1) return;
