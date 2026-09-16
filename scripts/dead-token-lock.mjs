@@ -28,6 +28,10 @@
 const MODULE_ID = "ace-qol";
 
 import { isDead as isDeadFact } from "./is-down.mjs";
+// The mark that says ACE aimed this one on purpose (road/aim.mjs). Every ACE
+// picker and engine aims through that helper, so this question is left for a
+// stray click on the canvas, which is the only thing it was ever for.
+import { DELIBERATE } from "./road/aim.mjs";
 
 export class DeadTokenLock {
 
@@ -119,7 +123,7 @@ export class DeadTokenLock {
       // with the flag would work, but going straight to what Foundry shipped
       // means a future edit to the branch above cannot accidentally re-ask.
       DeadTokenLock._setTarget?.call(token, true,
-        { ...context, aceDeadTargetConfirmed: true });
+        { ...context, [DELIBERATE]: true });
     } catch (err) {
       console.error(`${MODULE_ID} | could not ask about targeting a dead creature, `
         + `so nothing was targeted:`, err);
@@ -192,7 +196,7 @@ export class DeadTokenLock {
               // reason to target a body. Asking them is friction in front of
               // the one thing that has to be quick.
               if (game.user?.isGM
-               && !context?.aceDeadTargetConfirmed && DeadTokenLock.isDead(this)) {
+               && !context?.[DELIBERATE] && DeadTokenLock.isDead(this)) {
                 DeadTokenLock._askBeforeTargeting(this, context);
                 return;
               }

@@ -254,11 +254,23 @@ console.log("\nAND THE LOOT BADGE DOES NOT EAT THE CLICK");
     /_openLootDialog/.test(loot), true);
 }
 
-console.log("\nA PLAYER AIMS AT A BODY WITHOUT BEING ASKED");
+console.log("\nA PLAYER AIMS AT A BODY WITHOUT BEING ASKED, AND SO DOES ACE");
 {
   const lock = src("dead-token-lock.mjs");
   check("the confirm is gated to the GM",
-    /game\.user\?\.isGM[\s\S]*?&& !context\?\.aceDeadTargetConfirmed/.test(lock), true);
+    /game\.user\?\.isGM[\s\S]*?&& !context\?\.\[DELIBERATE\]/.test(lock), true);
+  // \u26a0\ufe0f\ud83d\udd34 AND IT STANDS ASIDE FOR ACE'S OWN AIM. 2026-09-15: the question
+  // met Raise Dead's own picker, bailed out of the targeting call to ask whether
+  // he meant that corpse, and the reticle he had just chosen never landed, so the
+  // cast went on with nobody targeted. The mark lives in road/aim.mjs, and every
+  // reticle ACE places goes through that helper, so no ACE pick is ever asked.
+  check("and the mark it stands aside for is the shared one",
+    /import \{ DELIBERATE \} from "\.\/road\/aim\.mjs"/.test(lock), true);
+  for (const f of ["gate/press-rules.mjs", "attack-pipeline.mjs", "multiattack-engine.mjs",
+                   "oa-prompt.mjs", "save-engine.mjs", "spell-auto-damage.mjs"]) {
+    check(`${f} aims through road/aim.mjs, never Token#setTarget itself`,
+      /setTarget\(\s*true/.test(src(f)), false);
+  }
 }
 
 console.log("");

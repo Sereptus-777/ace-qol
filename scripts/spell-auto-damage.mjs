@@ -32,6 +32,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { aimAt } from "./road/aim.mjs";   // ACE aims on purpose: no "did you mean that corpse?" (road/aim.mjs)
 import { spellKey } from "./rules/spell-name.mjs";
 import { QolSettings } from "./settings.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
@@ -793,7 +794,7 @@ export class SpellAutoDamage {
             }
             // 2) target the new set (additive — AA reads game.user.targets)
             for (const t of targetTokens) {
-              t.setTarget(true, { user: game.user, releaseOthers: false, groupSelection: false });
+              aimAt(t, { releaseOthers: false, groupSelection: false });
             }
             aa.playAnimation(casterToken, item);
             console.log(`${MODULE_ID} | Magic Missile: triggered AA animation (${targetTokens.length} targets)`);

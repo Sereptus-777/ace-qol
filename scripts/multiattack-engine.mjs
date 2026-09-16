@@ -25,6 +25,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { aimAt } from "./road/aim.mjs";   // ACE aims on purpose: no "did you mean that corpse?" (road/aim.mjs)
 import { aceStripEnrichers } from "./description-reader.mjs";
 import { CombatState } from "./combat-state.mjs";
 
@@ -828,8 +829,7 @@ export class MultiattackEngine {
       const hp = Number(tok?.actor?.system?.attributes?.hp?.value ?? 0);
       if (tok && !tok.destroyed && hp > 0) {
         try {
-          tok.setTarget(true, { user: game.user, releaseOthers: false, groupSelection: false });
-          asserted = true;
+          if (aimAt(tok, { releaseOthers: false, groupSelection: false })) asserted = true;
         } catch (_) { /* token gone mid-chain — try the next */ }
       }
     }

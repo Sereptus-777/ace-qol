@@ -38,6 +38,7 @@ import { HolySymbol } from "../holy-symbol.mjs";
 import { revokeVorpalLock } from "../death-pipeline.mjs";
 import { CardDoor } from "../road/doors.mjs";
 import { STRICT_REVIVES, ORDINARY_REVIVES, revivesTheDead } from "../road/picker-rule.mjs";
+import { aimAt } from "../road/aim.mjs";
 
 const MODULE_ID = "ace-qol";
 const LOG = "ace-qol | gate";
@@ -75,18 +76,29 @@ async function pickTargets({ activity, item, actor }, { kind = "harm" } = {}) {
     console.log(`${LOG} | ${item.name}: nobody was picked, so it was not cast.`);
     return false;
   }
-  // V13: no bulk target operations; set each picked token by itself.
-  let first = true;
+  // V13: no bulk target operations; aim at each picked token by itself.
+  //
+  // ⚠️🔴 ACE AIMS ON PURPOSE (road/aim.mjs), so the dead-token question stays out
+  // of the way. It asks a GM whose cursor lands on a corpse whether he meant it,
+  // by bailing out of the targeting call and asking afterwards — right for a
+  // mouse, and ruinous here: he had just CHOSEN that body in this picker, the
+  // reticle never landed, and Raise Dead pressed on with nobody targeted.
+  //
+  // ⚠️ AND IT COUNTS WHAT LANDED. Reporting "somebody is targeted" because
+  // setTarget had been CALLED is the other half of that bug.
+  let aimed = 0;
+  let bodiless = 0;
   for (const a of picked) {
     const tok = a?.getActiveTokens?.()?.[0]
       ?? canvas.tokens?.placeables.find(t => t.actor?.id === a?.id)
       ?? null;
-    if (!tok) continue;
-    tok.setTarget(true, { user: game.user, releaseOthers: first });
-    first = false;
+    if (!tok) { bodiless++; continue; }
+    if (aimAt(tok, { releaseOthers: aimed === 0 })) aimed++;
   }
-  if (first) {
-    ui.notifications?.warn(`${item.name}: the creature picked has no token on this scene, so it was not cast.`);
+  if (!aimed) {
+    ui.notifications?.warn(bodiless
+      ? `${item.name}: the creature picked has no token on this scene, so it was not cast.`
+      : `${item.name}: the creature picked would not take a target, so it was not cast.`);
     return false;
   }
   return true;

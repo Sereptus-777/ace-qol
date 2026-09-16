@@ -19,6 +19,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { aimAt } from "./road/aim.mjs";   // ACE aims on purpose: no "did you mean that corpse?" (road/aim.mjs)
 import { replyIsFromTheUserWeAsked } from "./socket-authority.mjs";
 import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { QolSettings } from "./settings.mjs";
@@ -1086,7 +1087,7 @@ export class SaveEngine {
         .filter(Boolean);
       if (!tokens.length) return;
       // Reflect the choice in game.user.targets so the card + downstream see it.
-      for (const t of tokens) t.setTarget(true, { user: game.user, releaseOthers: false });
+      for (const t of tokens) aimAt(t, { releaseOthers: false });
     }
 
     // ── Cast committed WITH a target now locked in (post-picker). Fire the
@@ -3600,7 +3601,7 @@ export class SaveEngine {
         }
         // Additive: target each new token, keep existing user targets
         for (const tok of newTokens) {
-          tok.setTarget(true, { user: game.user, releaseOthers: false });
+          aimAt(tok, { releaseOthers: false });
         }
         await this._addTargetsToCard(message, newTokens);
       });

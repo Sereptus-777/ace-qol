@@ -2400,16 +2400,25 @@ console.log(`\nPHASE 4: HEALS, SELF, UTILITY, CONTESTS`);
     for (const p of path.slice(0, -1)) o = (o[p] ??= {});
     o[path[path.length - 1]] = v;
   };
+  // ⚠️ A TOKEN CLASS, BECAUSE THE DEAD-TOKEN LOCK PATCHES ONE. It wraps setTarget
+  // on CONFIG.Token.objectClass, and that patch is what stood in front of Raise
+  // Dead's picker on 2026-09-15: it bails out of the targeting call to ask the GM
+  // whether he meant that corpse, so the reticle he had just chosen never landed.
+  // A stand-in token carrying its own setTarget would never meet the patch, and
+  // the pin would pass on a road he cannot drive.
+  class ReplayToken {
+    setTarget(on, o = {}) {
+      if (!on) { game.user.targets.delete(this); return; }
+      if (o.releaseOthers) game.user.targets.clear();
+      game.user.targets.add(this);
+    }
+  }
   const place = (actor, id, flags = {}) => {
     const doc = { id, actorId: actor.id, actor, parent: { id: SCENE }, flags, name: actor.name, hidden: false,
       x: 0, y: 0, width: 1, height: 1, elevation: 0, disposition: actor.type === "character" ? 1 : -1, texture: { src: "" },
       update: async (u) => { for (const [k, v] of Object.entries(u)) setPath(doc, k, v); return doc; } };
-    const tok = { id, name: actor.name, actor, document: doc, x: 0, y: 0, w: 100, h: 100, center: { x: 50, y: 50 },
-      setTarget(on, o = {}) {
-        if (!on) { game.user.targets.delete(tok); return; }
-        if (o.releaseOthers) game.user.targets.clear();
-        game.user.targets.add(tok);
-      } };
+    const tok = Object.assign(new ReplayToken(), { id, name: actor.name, actor, document: doc,
+      x: 0, y: 0, w: 100, h: 100, center: { x: 50, y: 50 } });
     doc.object = tok;
     docs.set(id, doc);
     canvas.tokens.placeables.push(tok);
@@ -2439,7 +2448,14 @@ console.log(`\nPHASE 4: HEALS, SELF, UTILITY, CONTESTS`);
   const spell = (rx, ed) => (varek ? [...varek.items].find(i => i.type === "spell" && rx.test(i.name)
     && (!ed || i.system?.source?.rules === ed)) ?? null : null);
   const keep = { scenes: game.scenes.get, placed: [...canvas.tokens.placeables], show: SpellTargetPicker._showDialog,
-    targets: game.user.targets, users: game.users, messages: game.messages, heal: SETTINGS.get("ace-qol.enableHealPipeline") };
+    targets: game.user.targets, users: game.users, messages: game.messages, heal: SETTINGS.get("ace-qol.enableHealPipeline"),
+    tokenClass: CONFIG.Token, confirm: foundry.applications.api.DialogV2.confirm };
+  // The corpse question, live on the path, and every time it is asked, recorded.
+  const asked = [];
+  CONFIG.Token = { objectClass: ReplayToken };
+  foundry.applications.api.DialogV2.confirm = async (o) => { asked.push(String(o?.window?.title ?? "a question")); return false; };
+  const { DeadTokenLock } = await import(`${MODULE}/scripts/dead-token-lock.mjs`);
+  await quiet(async () => { DeadTokenLock.register(); });
   // The picker's dialog, stood in: it records what it was given and picks as told.
   const shown = [];
   let choose = () => [];
@@ -2637,6 +2653,7 @@ console.log(`\nPHASE 4: HEALS, SELF, UTILITY, CONTESTS`);
       const refusedBy = (refusal?.flags?.[MOD]?.gate?.rules ?? []).map(r => r.name).join(", ");
       // The spell pipeline takes the corpse the gate judged, and asks nobody again.
       const at2 = shown.length;
+      const askedDuringPick = asked.length;
       let piped = null;
       game.user.targets = new Set([lostTok]);
       await quiet(async () => {
@@ -2655,7 +2672,9 @@ console.log(`\nPHASE 4: HEALS, SELF, UTILITY, CONTESTS`);
       const harmRow = (a) => harm.find(c => c.actor === a) ?? null;
       check("4. Raise Dead pressed with nobody targeted offers the dead, killed for good included; the gate still refuses Killed for good, and Do it anyway presses it through once (Phase 4)",
         !err4 && first === false && !!offered && rowFor(offered, corpse)?.valid === true && rowFor(offered, lost)?.valid === true
-          && rowFor(offered, ally)?.valid === false && presses[0]?.answer === false && refusedBy === "Killed for good"
+          && !rowFor(offered, ally) && !rowFor(offered, dying)
+          && askedDuringPick === 0 && presses[0]?.aimedAt?.length === 1
+          && presses[0]?.answer === false && refusedBy === "Killed for good"
           && overruled === true && presses.length === 2 && presses[1].answer !== false
           && lostTok.document.flags[MOD].permanentlyDead === false
           && piped?.targets?.[0]?.actor === lost && shown.length === at2
@@ -2664,11 +2683,54 @@ console.log(`\nPHASE 4: HEALS, SELF, UTILITY, CONTESTS`);
         err4 ? `threw: ${err4?.message ?? err4}`
           : `${varek.name}'s Raise Dead: the picker ${offered ? "opened" : "never opened"}; the dead bandit ${said(rowFor(offered, corpse))}; `
             + `the beheaded one ${said(rowFor(offered, lost))}; the standing ally ${said(rowFor(offered, ally))}; `
+            + `the dying ally ${said(rowFor(offered, dying))}; it asked "are you sure" ${askedDuringPick}x while picking; `
             + `pressed again at ${presses[0]?.aimedAt?.join(", ") || "nobody"}: ${presses[0] ? (presses[0].answer === false ? `refused (${refusedBy || "no card"})` : "went through") : "never"}; `
             + `Do it anyway: ${overruled ? "overruled" : "not"}, pressed ${presses.length - 1}x after, the lock ${lostTok.document.flags[MOD].permanentlyDead ? "still on" : "off"}; `
             + `the pipeline took ${piped?.targets?.[0]?.name ?? "nobody"} and opened ${shown.length - at2} more picker(s); `
             + `Raise Dead brought it back with ${lost.system.attributes.hp.value} hit point(s) through the hit-point door (${revived.length}x); `
             + `a damage spell offers the dead bandit: ${harmRow(corpse)?.valid ? "yes" : "no"}, the beheaded one: ${harmRow(lost)?.valid ? "yes" : "no"}`);
+    }
+
+    // ── 6. The list is the dead, and ACE's own pick is never questioned ──
+    // Johnny, 2026-09-15, with the modal standing over the picker: *"'Specter is
+    // dead. Are you sure you want to target it?' It cancels the cast and refunds
+    // the slot... It's a whole different ball game if I'm picking."* And: *"only
+    // the dead should be in the list for targets."*
+    if (varekTok) {
+      const raise6 = spell(/^raise dead$/i, "2024") ?? spell(/^raise dead$/i);
+      const heal6 = spell(/^cure wounds$/i, "2024") ?? spell(/^cure wounds$/i);
+      const at6 = shown.length;
+      let reviveList = null, healList = null, err6 = null;
+      choose = () => [];
+      try {
+        await quiet(async () => {
+          if (raise6) await SpellTargetPicker.pick({ spellItem: raise6, casterActor: varek, maxTargets: 1, rangeFt: 5, allowSelf: false, kind: "revive" });
+          reviveList = shown[at6] ?? null;
+          if (heal6) await SpellTargetPicker.pick({ spellItem: heal6, casterActor: varek, maxTargets: 1, rangeFt: 60, allowSelf: false, kind: "heal" });
+          healList = shown[at6 + 1] ?? null;
+        });
+      } catch (e) { err6 = e; }
+      const names = (seen) => (seen?.candidates ?? []).map(c => c.name).join(", ") || "nobody";
+      const on = (seen, a) => !!(seen?.candidates ?? []).find(c => c.actor === a);
+      const rowOf = (seen, a) => (seen?.candidates ?? []).find(c => c.actor === a) ?? null;
+      // A stray click on the canvas is still asked about: the lock is for the mouse.
+      const askedBefore = asked.length;
+      game.user.targets = new Set();
+      await quiet(async () => { lostTok.setTarget(true, {}); });
+      const strayAsked = asked.length - askedBefore;
+      const strayLanded = game.user.targets.has(lostTok);
+      game.user.targets = new Set();
+      check("6. Raise Dead lists the dead and nobody else, a heal still takes the dying, and ACE's own pick is never asked to confirm a corpse, though a stray click on one still is (09-15)",
+        !err6 && !!reviveList && on(reviveList, corpse) && on(reviveList, lost)
+          && !on(reviveList, ally) && !on(reviveList, dying) && !on(reviveList, varek)
+          && !!healList && on(healList, dying) && on(healList, ally)
+          && rowOf(healList, dying)?.valid === true && rowOf(healList, corpse)?.valid === false
+          && strayAsked === 1 && strayLanded === false,
+        err6 ? `threw: ${err6?.message ?? err6}`
+          : `Raise Dead's list: ${names(reviveList)}; the heal's list: ${names(healList)} `
+            + `(the dying ally ${rowOf(healList, dying)?.valid ? "can be healed" : "cannot"}, `
+            + `the dead bandit ${rowOf(healList, corpse)?.valid ? "can be healed" : "cannot"}); `
+            + `a stray click on the beheaded bandit asked ${strayAsked}x and targeted ${strayLanded ? "it anyway" : "nothing until answered"}`);
     }
 
     // ── 5. Cards through the card door; the heal pipeline steers, never cancels ──
@@ -2736,6 +2798,8 @@ console.log(`\nPHASE 4: HEALS, SELF, UTILITY, CONTESTS`);
     if (keep.targets === undefined) delete game.user.targets; else game.user.targets = keep.targets;
     game.users = keep.users;
     game.messages = keep.messages;
+    if (keep.tokenClass === undefined) delete CONFIG.Token; else CONFIG.Token = keep.tokenClass;
+    foundry.applications.api.DialogV2.confirm = keep.confirm;
     for (const a of made) ACTORS.delete(a.id);
   }
 }

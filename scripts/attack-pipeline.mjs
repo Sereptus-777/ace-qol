@@ -9,6 +9,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { aimAt } from "./road/aim.mjs";   // ACE aims on purpose: no "did you mean that corpse?" (road/aim.mjs)
 import { TargetState } from "./target-state.mjs";
 import { CombatState } from "./combat-state.mjs";
 import { QolSettings } from "./settings.mjs";
@@ -784,7 +785,7 @@ export class AttackPipeline {
         return;   // cancelled — the attack stays cancelled
       }
 
-      token.setTarget(true, { user: game.user, releaseOthers: true });
+      aimAt(token, { releaseOthers: true });
 
       const refire = {};
       for (const k of ["ammunition", "attackMode", "mastery"]) {

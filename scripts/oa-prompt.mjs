@@ -25,6 +25,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { aimAt } from "./road/aim.mjs";   // ACE aims on purpose: no "did you mean that corpse?" (road/aim.mjs)
 import { replyOwnerIsAuthorised } from "./socket-authority.mjs";
 import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { QolSettings } from "./settings.mjs";
@@ -449,7 +450,7 @@ export class OAPrompt {
     // multi-target lockout and block the swing).
     OA_IN_FLIGHT.add(reactorActor.id);
     try {
-      moverToken.setTarget(true, { user: game.user, releaseOthers: true, groupSelection: false });
+      aimAt(moverToken, { releaseOthers: true, groupSelection: false });
 
       // Fast-forward use — shiftKey skips the activity-choice dialog; our
       // pipeline handles hit/miss/damage against the mover.

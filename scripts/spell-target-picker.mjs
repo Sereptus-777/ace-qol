@@ -81,6 +81,24 @@ export class SpellTargetPicker {
       candidates = SpellTargetPicker._buildCandidates(casterToken, casterActor, resolvedRange, allowSelf, kind);
     }
     console.log(`ace-qol | [picker-timing] _buildCandidates → ${candidates.length} candidates in ${Math.round(performance.now() - _tb0)}ms`);
+    // ⚠️ A REVIVE LISTS THE DEAD AND NOBODY ELSE. Johnny, 2026-09-15: *"only the
+    // dead should be in the list for targets"*, and *"a dying PC at 0 is for Heal,
+    // not Raise Dead."* Every other picker still SHOWS who it cannot take, dimmed
+    // and with the reason on the row, because "why can I not hit him" is worth
+    // answering. On Raise Dead that answer is noise: the whole scene greyed out
+    // hides the two bodies that are the entire point of the spell.
+    // A body out of reach stays on the list, dimmed as out of range, so he can see
+    // who is there to walk to. Only the living are dropped.
+    if (kind === "revive") {
+      const onScene = candidates.length;
+      candidates = candidates.filter(c => c.lifeOk);
+      console.log(`ace-qol | [picker] ${spellItem.name}: ${candidates.length} dead `
+        + `of ${onScene} creature(s) in reach of the list`);
+      if (!candidates.length) {
+        ui.notifications?.warn(`${spellItem.name}: there is nobody dead here to bring back.`);
+        return [];
+      }
+    }
     if (!candidates.length) {
       ui.notifications?.warn(`${spellItem.name}: no valid targets on this scene.`);
       return [];
@@ -254,6 +272,9 @@ export class SpellTargetPicker {
         disposition,
         isPlayerOwned,
         isDead,
+        // Whether the LIFE rule allows this one, kept apart from the range so a
+        // revive can drop who it may not take and still show a body too far away.
+        lifeOk: rule.ok,
         valid: inRange && rule.ok,
         why: !inRange ? "out of spell range" : rule.why,
         badge: lifeBadge(life),
