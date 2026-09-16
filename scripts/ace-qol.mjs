@@ -2949,6 +2949,13 @@ Hooks.once("ready", () => {
       }
     });
 
+    // ── Is this concentration holding a PLACE rather than a creature? ──
+    //
+    // ⚠️🔴 AN EMPTY AURA IS STILL THE SPELL. Johnny, 2026-09-16: "An emanation on
+    // the caster does not end when nobody is inside it. Duration is concentration,
+    // up to 10 minutes." The reader is its own leaf so the replay can put it
+    // through its paces: rules/concentration-place.mjs.
+
     // ── Fifth path: orphaned-parent drop ──
     // When a concentration-LINKED dependent (paralyzed, charmed, etc.) is
     // deleted by any means OTHER than the parent concentration ending — e.g.
@@ -2995,6 +3002,21 @@ Hooks.once("ready", () => {
         } catch (_) { /* fall through */ }
 
         if (remaining.length > 0) return; // Other targets still hooked
+
+        // ⚠️ AN AREA IS NOT ITS TARGETS (2026-09-16). Taking the halved speed off
+        // somebody who walked OUT of Spirit Guardians left no dependents, and this
+        // sweep read that as "the spell did nothing" and ended a spell the caster
+        // was still holding, with the aura still on the map.
+        const { concentrationHoldsAPlace } = await import("./rules/concentration-place.mjs");
+        const place = await concentrationHoldsAPlace(parent, {
+            casterActor: actor,
+            tracked: concentrationWidget?.getActiveSpells?.() ?? [],
+        });
+        if (place) {
+            console.log(`${MODULE_ID} | [orphan-parent] "${parent.name}" has no targets left, `
+                + `and it is not held up by them: ${place}. Concentration stands.`);
+            return;
+        }
 
         // Last linked target gone — drop the caster's concentration
         console.log(`${MODULE_ID} | [orphan-parent] last linked dependent of "${parent.name}" removed — dropping caster's concentration`);

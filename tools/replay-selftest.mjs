@@ -2660,25 +2660,65 @@ console.log(`\nSPIRIT GUARDIANS 2024, THE PICKERS AND THE CARD`);
           + `${tracker2?.exemptTokenIds?.has(varekTok.id) ? "still exempt from his own spirits" : "caught by his own spirits"}`);
     }
 
+    // ── 7. An empty aura is still the spell ──
+    {
+      const { concentrationHoldsAPlace } = await import(`${MODULE}/scripts/rules/concentration-place.mjs`);
+      const hold = varek ? [...varek.items].find(i => i.type === "spell" && /^hold person$/i.test(i.name)) ?? null : null;
+      const conc = (item) => ({ name: `Concentrating: ${item?.name}`, flags: { dnd5e: { item: { uuid: item?.uuid } } } });
+      const tpl = (item) => [{ flags: { dnd5e: { item: item?.uuid } } }];
+      let onMap = null, tracked = null, byRecipe = null, held = null, err7 = null;
+      try {
+        await quiet(async () => {
+          if (guardians) {
+            onMap = await concentrationHoldsAPlace(conc(guardians), { casterActor: varek, templates: tpl(guardians) });
+            tracked = await concentrationHoldsAPlace(conc(guardians), { casterActor: varek, templates: [],
+              tracked: [{ actor: varek, item: guardians }] });
+            byRecipe = await concentrationHoldsAPlace(conc(guardians), { casterActor: varek, templates: [], tracked: [] });
+          }
+          // Hold Person holds a creature, not a place: when its target shakes it
+          // off, the caster must still be let go of it.
+          if (hold) held = await concentrationHoldsAPlace(conc(hold), { casterActor: varek, templates: [], tracked: [] });
+        });
+      } catch (e) { err7 = e; }
+      check("7. an emanation with nobody in it is still the spell: its area on the map, ACE running it, or its own recipe each hold the concentration up, and a spell that holds a creature still lets go when the last one shakes it off (09-16)",
+        !err7 && !!guardians && !!onMap && !!tracked && !!byRecipe && held === null,
+        err7 ? `threw: ${err7?.message ?? err7}`
+          : `${guardians?.name ?? "Spirit Guardians"}: with its area on the map — ${onMap ?? "it ends"}; `
+            + `with ACE running it — ${tracked ?? "it ends"}; with neither — ${byRecipe ?? "it ends"}; `
+            + `${hold ? `${hold.name}: ${held ?? "it ends when its last target is free, as it must"}` : "no Hold Person to read"}`);
+    }
+
     // ── 5. Whose spirits are these ──
     {
-      const evilOne = firstActor(VAREK);
-      const goodOne = [...ACTORS.values()].find(a => /^akra$/i.test(a.name ?? "")
-        && /good/i.test(a.system?.details?.alignment ?? "")) ?? null;
+      // ⚠️ THE RULE, NOT HIS SHEET. Varek read Neutral Evil in the morning and
+      // Neutral Good by lunchtime (his world, his call), so pinning the mapping to
+      // whoever happens to be evil today pins the table instead of the code. Two
+      // stand-in casters carry the two alignments; his own sheets are reported
+      // beside them so the line still says what his table will see.
+      const evilOne = { name: "an evil caster", system: { details: { alignment: "Neutral Evil" } } };
+      const goodOne = { name: "a good caster", system: { details: { alignment: "Lawful Good" } } };
+      const blank = { name: "a caster with no alignment on its sheet", system: { details: {} } };
       const evil = guardianFlavour(evilOne);
-      const good = goodOne ? guardianFlavour(goodOne) : null;
+      const good = guardianFlavour(goodOne);
+      const none = guardianFlavour(blank);
       const narrowed = guardians ? narrowDamageTypes(guardians, evilOne, ["necrotic", "radiant"]) : [];
+      const narrowedGood = guardians ? narrowDamageTypes(guardians, goodOne, ["necrotic", "radiant"]) : [];
       const untouched = narrowDamageTypes({ name: "Fireball" }, evilOne, ["fire"]);
+      const varekNow = guardianFlavour(firstActor(VAREK));
       check("5. the spirits wear their caster's alignment: an evil caster deals necrotic behind the dark red ring, anyone else radiant behind the blue-gold one, and no other spell's damage is touched (09-16)",
         !!guardians && isSpiritGuardians(guardians)
           && evil.side === "evil" && evil.damageType === "necrotic" && evil.file === "jb2a.spirit_guardians.dark_red.ring"
-          && (!good || (good.side === "holy" && good.damageType === "radiant" && good.file === "jb2a.spirit_guardians.blueyellow.ring"))
+          && good.side === "holy" && good.damageType === "radiant" && good.file === "jb2a.spirit_guardians.blueyellow.ring"
+          && none.damageType === "radiant"
           && narrowed.length === 1 && narrowed[0] === "necrotic"
+          && narrowedGood.length === 1 && narrowedGood[0] === "radiant"
           && untouched.length === 1 && untouched[0] === "fire",
-        `${evilOne?.name} is ${evil.alignment}: ${evil.damageType}, ${evil.colour}; `
-          + `${good ? `${goodOne.name} is ${good.alignment}: ${good.damageType}, ${good.colour}` : "no good caster with this spell to read"}; `
-          + `its two types narrow to ${narrowed.join("/") || "nothing"}; a Fireball still deals ${untouched.join("/")}`);
+        `evil: ${evil.damageType}, ${evil.colour}; good: ${good.damageType}, ${good.colour}; `
+          + `a blank sheet: ${none.damageType}; its two types narrow to ${narrowed.join("/") || "nothing"} for an evil caster `
+          + `and ${narrowedGood.join("/") || "nothing"} for a good one; a Fireball still deals ${untouched.join("/")}; `
+          + `his own sheet today: ${firstActor(VAREK)?.name} is ${varekNow.alignment || "unset"} (${varekNow.damageType}, ${varekNow.colour})`);
     }
+
   } finally {
     SpellTargetPicker._showDialog = keep6.show;
     game.scenes.get = keep6.scenes;
