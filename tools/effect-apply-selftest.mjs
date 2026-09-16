@@ -287,7 +287,10 @@ check("Prismatic Spray: the area decides", SaveEngine._areaWhoRule(liveSpell("Pr
 const slow = SaveEngine._areaWhoRule(liveSpell("Slow"));
 check("Slow: the caster picks", slow.kind, "pick");
 check("Slow: up to six", slow.count, 6);
-check("Spirit Guardians: today's rule is kept", SaveEngine._areaWhoRule(liveSpell("Spirit Guardians")).kind, "legacy");
+// His words, 2026-09-16: "Picker D: who is safe." An area whose words let the
+// caster spare creatures asks who, once, at the cast; it used to say "ACE does
+// not offer that yet" and catch everybody.
+check("Spirit Guardians: the caster names who is safe", SaveEngine._areaWhoRule(liveSpell("Spirit Guardians")).kind, "exclude");
 
 /* ── 7. Prismatic Wall: a spell with several saves ──────────────────────── */
 console.log("\n7. PRISMATIC WALL: EACH SAVE IS ITS OWN RESULT");

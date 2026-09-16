@@ -37,6 +37,8 @@ import { isPrismaticWall } from "./rules/prismatic-wall.mjs";
 // ⚠️ THE ROAD DECIDES WHAT A TRIGGER LANDS (The One Road, Phase 5). This file
 // says WHO walked in and WHEN; run() asks the cast's own recipe for the rest.
 import { run as runTrigger, catchesOn } from "./road/run.mjs";
+// Whose spirits they are: the caster's alignment picks the damage and the colour.
+import { isSpiritGuardians, guardianFlavour } from "./rules/spirit-guardians.mjs";
 // For a tracker rebuilt after a reload: the same recipe the press froze.
 import { recipeForActivity, loadBookFor } from "./inference/recipe.mjs";
 
@@ -482,6 +484,20 @@ export class ConcentrationWidget {
       entrySavesThisTurn:   new Set(),  // tokenDocIds who already saved on entry this turn (cap = 1)
     };
 
+    // ⚠️ WHO IS SAFE TRAVELS ON THE AREA ITSELF (his, 2026-09-16). The cast asked
+    // and wrote the answer onto the template, so a walk-in three turns later, a
+    // turn that ends inside it, and a tracker rebuilt after a reload all spare the
+    // same creatures. Nobody named means nobody is safe.
+    try {
+      const spared = templateDoc?.flags?.[MODULE_ID]?.excluded;
+      if (Array.isArray(spared) && spared.length) {
+        for (const id of spared) tracker.exemptTokenIds.add(id);
+        console.log(`${TAG} | ${item?.name}: ${spared.length} creature(s) the caster marked safe are exempt.`);
+      }
+    } catch (err) {
+      console.warn(`${TAG} | could not read who is safe from ${item?.name}'s area:`, err);
+    }
+
     // Resolve the caster's own token so the emanation has something to follow
     // and somebody to exempt. Identity match on the ACTOR, which is correct for
     // an unlinked token too: its `actor` IS its own delta actor.
@@ -537,6 +553,17 @@ export class ConcentrationWidget {
     // deleteMeasuredTemplate hook in ace-qol.mjs.
     try { this._playPersistentSpellAnimation(item, templateDoc); }
     catch (err) { console.warn(`${TAG} | persistent-spell animation failed:`, err); }
+
+    // ⚠️ SPIRIT GUARDIANS IS ACE'S TO DRAW, BECAUSE ITS COLOUR IS A RULE. His
+    // Automated Animations entry plays one fixed colour for every caster, and the
+    // spell says the spirits are angelic or fiendish depending on who called them.
+    // ACE plays the one the caster's alignment asks for and switches AA's copy off
+    // for that cast (see the concentration-effect hook in ace-qol.mjs), so there
+    // is exactly one aura, which is his standing rule.
+    if (isSpiritGuardians(item)) {
+      this._playGuardianAura(tracker)
+        .catch(err => console.warn(`${TAG} | the guardian aura failed for ${item?.name}:`, err));
+    }
 
     // Difficult terrain — Web, Spike Growth, etc. fill their area with
     // difficult terrain (2x movement cost). We model that with a Foundry V13
@@ -794,6 +821,71 @@ export class ConcentrationWidget {
     "web":               { db: "jb2a.web.01",                            opacity: 0.85, belowTokens: true  },
   };
 
+  /**
+   * The guardians themselves: the JB2A ring his library ships, in the colour his
+   * caster's alignment calls for, attached to the caster and lasting as long as
+   * the spell.
+   *
+   * ⚠️ BORROWED, NOT INVENTED. The file, the size and the fades are the ones
+   * Chris's premades uses for this spell, on the library he owns.
+   *
+   * ⚠️ IT NEVER STOPS A SPELL. No Sequencer, no library entry, no token: it says
+   * so and the spell carries on without a picture.
+   */
+  async _playGuardianAura(tracker) {
+    const flavour = guardianFlavour(tracker?.actor);
+    const name = `ace-qol-guardians-${tracker?.templateId}`;
+    if (!game.modules?.get?.("sequencer")?.active) {
+      console.log(`${TAG} | ${tracker?.item?.name}: ${flavour.why}, but Sequencer is not installed, `
+        + `so the aura is not drawn.`);
+      return false;
+    }
+    const token = (tracker?.casterTokenId ? canvas.tokens?.get?.(tracker.casterTokenId) : null)
+      ?? (canvas.tokens?.placeables ?? []).find(t => t.actor?.id === tracker?.actor?.id)
+      ?? null;
+    if (!token) {
+      console.warn(`${TAG} | ${tracker?.item?.name}: ${tracker?.actor?.name} has no token on this scene, `
+        + `so the aura has nothing to follow.`);
+      return false;
+    }
+    let file = flavour.file;
+    try {
+      if (Sequencer?.Database?.entryExists && !Sequencer.Database.entryExists(file)) {
+        console.warn(`${TAG} | ${file} is not in this JB2A install, so the aura falls back to `
+          + `the blue-gold ring.`);
+        file = "jb2a.spirit_guardians.blueyellow.ring";
+        if (Sequencer.Database.entryExists && !Sequencer.Database.entryExists(file)) return false;
+      }
+    } catch (_) { /* a database that will not answer is not a reason to stop */ }
+    const SequenceCtor = (typeof Sequence !== "undefined") ? Sequence : globalThis.Sequence ?? null;
+    if (!SequenceCtor) {
+      console.warn(`${TAG} | Sequencer is active but its Sequence constructor is missing, so the `
+        + `guardian aura is not drawn.`);
+      return false;
+    }
+    await new SequenceCtor()
+      .effect()
+      .file(file)
+      .size((token.document?.width ?? 1) + 6, { gridUnits: true })
+      .attachTo(token)
+      .persist()
+      .name(name)
+      .fadeIn(300)
+      .fadeOut(300)
+      .play();
+    console.log(`${TAG} | ${tracker?.item?.name}: ${flavour.why}, so its aura is the ${flavour.colour} one.`);
+    return true;
+  }
+
+  /** The aura goes when the spell does. */
+  static endGuardianAura(templateId) {
+    try {
+      Sequencer?.EffectManager?.endEffects?.({ name: `ace-qol-guardians-${templateId}` });
+    } catch (err) {
+      console.warn(`${TAG} | could not end the guardian aura for ${templateId}:`, err);
+    }
+  }
+
   _playPersistentSpellAnimation(item, templateDoc) {
     // Gate: only play ace-qol's own animations if the user has explicitly
     // opted in. By default Automated Animations owns the visual layer
@@ -955,6 +1047,8 @@ export class ConcentrationWidget {
   async _onTemplateDeleted(templateId) {
     if (!this._activeSpells.has(templateId)) return;
     const tracker = this._activeSpells.get(templateId);
+    // Its own aura, if ACE drew one, ends with it.
+    if (isSpiritGuardians(tracker?.item)) ConcentrationWidget.endGuardianAura(templateId);
     console.log(`${TAG} | Template deleted for ${tracker.item?.name} — removing widget + dropping concentration`);
 
     // Area-denial spells: queue Lingering Nausea for anyone who failed a
@@ -1855,8 +1949,34 @@ export class ConcentrationWidget {
    * so the save card lands immediately on entry — the cast animation
    * has already played, so the 1500ms cast-pacing doesn't apply.
    */
+  /**
+   * The turn this is happening on, as one string. Out of combat there are no
+   * turns, so there is nothing to cap and this says so with null.
+   */
+  static _turnKey() {
+    const c = game.combat;
+    return c?.started ? `${c.round ?? 0}:${c.turn ?? 0}` : null;
+  }
+
   async _onTokenEnteredTemplate(tracker, token, opts = {}) {
     const phase = opts.phase ?? "entry";
+
+    // ⚠️ ONCE A TURN, AND THE AREA REMEMBERS WHO (his, 2026-09-16: "Once per
+    // turn", said twice). Both editions write it into the spell: a creature is
+    // caught "the first time on a turn" it enters, and walking in and then ending
+    // its turn there is one turn, so it is one save. Out of combat there is no
+    // turn to count, so nothing is capped.
+    const turnKey = ConcentrationWidget._turnKey();
+    const tokenDocId = token?.document?.id ?? token?.id ?? null;
+    if (turnKey && tokenDocId) {
+      if (!tracker.caughtOnTurn) tracker.caughtOnTurn = new Map();
+      if (tracker.caughtOnTurn.get(tokenDocId) === turnKey) {
+        console.log(`${TAG} | ${token?.name} was already caught by ${tracker.item?.name} this turn `
+          + `(${phase}), so it is not asked again.`);
+        return;
+      }
+      tracker.caughtOnTurn.set(tokenDocId, turnKey);
+    }
 
     // ⚠️ ONE GATE FOR ALL FOUR CALLERS. Entry, start of turn, end of turn
     // and template-move all arrive here, so the exemption is checked once

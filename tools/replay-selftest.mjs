@@ -169,8 +169,30 @@ globalThis.canvas = { grid: { size: 100, distance: 5 }, scene: null, tokens: { p
   // TokenLayer#get: the placeable with this document id, as Foundry's canvas finds it.
   get(id) { return this.placeables.find(t => t.id === id || t.document?.id === id) ?? null; } } };
 globalThis.CONST = { ACTIVE_EFFECT_MODES: { ADD: 2, CUSTOM: 0, OVERRIDE: 5 }, GRID_SNAPPING_MODES: {} };
-globalThis.ChatMessage = { create: async (data) => { posted.push(data);
-  return { id: `msg${posted.length}`, ...data, flags: data?.flags ?? {} }; }, getSpeaker: () => ({}) };
+// ⚠️ A CARD FOUNDRY MADE CAN BE WRITTEN ON. ACE stamps a save card with flags
+// after posting it (whose roll is still owed, which cast it belongs to), and a
+// stand-in card with no setFlag threw where a table never would.
+globalThis.ChatMessage = { create: async (data) => {
+  const msg = { id: `msg${posted.length + 1}`, ...data, flags: data?.flags ?? {} };
+  msg.setFlag = async (scope, key, value) => {
+    const path = String(key).split(".");
+    let o = (msg.flags[scope] ??= {});
+    for (const k of path.slice(0, -1)) o = (o[k] ??= {});
+    o[path[path.length - 1]] = value;
+    return msg;
+  };
+  msg.getFlag = (scope, key) => String(key).split(".").reduce((o, k) => o?.[k], msg.flags?.[scope]);
+  msg.update = async (u = {}) => {
+    if (u.content !== undefined) msg.content = u.content;
+    for (const [scope, v] of Object.entries(u.flags ?? {})) msg.flags[scope] = { ...(msg.flags[scope] ?? {}), ...v };
+    return msg;
+  };
+  // ⚠️ THE RECORD KEEPS WHAT WAS POSTED, not the card object: pins read these as
+  // the data ACE handed Foundry. The flags object is shared, so a later setFlag
+  // shows up here exactly as it does on a real card.
+  posted.push(data);
+  return msg;
+}, getSpeaker: () => ({}) };
 globalThis.fromUuid = async (u) => ITEMS.get(u) ?? null;
 globalThis.fromUuidSync = (u) => ITEMS.get(u) ?? null;
 // ⚠️ EVERY DIE ROLLS A 1. The least a roll can do, and the same on every run,
@@ -2370,6 +2392,233 @@ console.log(`\nPHASE 3: ATTACKS ON THE ROAD`);
   }
 }
 
+/* ── SPIRIT GUARDIANS 2024, THE PICKERS AND THE CARD ────────────────────── */
+// Johnny, 2026-09-16, with the picker open on a corpse and gold spirits around a
+// Neutral Evil caster: one set of picker rules for every spell (the living for a
+// damage, heal or "who is safe" list, the dead for a life restore, and refused
+// means HIDDEN, not dimmed); no dead creature on a save or damage card at all;
+// and Spirit Guardians 2024 run properly: ask who is safe, catch every living
+// creature that is not spared, once a turn, in the damage and the colour its
+// caster's alignment calls for.
+console.log(`\nSPIRIT GUARDIANS 2024, THE PICKERS AND THE CARD`);
+{
+  const MOD = "ace-qol";
+  const { lifeStateOf, pickable } = await import(`${MODULE}/scripts/road/picker-rule.mjs`);
+  const { SpellTargetPicker } = await import(`${MODULE}/scripts/spell-target-picker.mjs`);
+  const { guardianFlavour, narrowDamageTypes, isSpiritGuardians } =
+    await import(`${MODULE}/scripts/rules/spirit-guardians.mjs`);
+  const { ConcentrationWidget } = await import(`${MODULE}/scripts/concentration-widget.mjs`);
+  const { getSpellTiming } = await import(`${MODULE}/scripts/spell-timing.mjs`);
+
+  const SCENE6 = "replay-sg-scene";
+  const docs6 = new Map();
+  const setPath6 = (obj, key, v) => {
+    const path = key.split(".");
+    let o = obj;
+    for (const k of path.slice(0, -1)) o = (o[k] ??= {});
+    o[path[path.length - 1]] = v;
+  };
+  const creature6 = (id, name, { type = "npc", hp = 30, statuses = [], death = null } = {}) => {
+    const a = { id, name, type, img: "", documentName: "Actor", uuid: `Actor.${id}`,
+      statuses: new Set(statuses), effects: new Collection(), items: new Collection(),
+      isOwner: true, hasPlayerOwner: type === "character", prototypeToken: { actorLink: true },
+      getFlag: () => undefined, getRollData: () => ({}),
+      system: { attributes: { hp: { value: hp, max: 30, temp: 0 }, death: death ?? { success: 0, failure: 0 }, prof: 2 },
+        abilities: { str: { mod: 0, save: { value: 0 } }, dex: { mod: 0, save: { value: 0 } },
+          con: { mod: 0, save: { value: 0 } }, wis: { mod: 0, save: { value: 0 } } },
+        skills: {}, details: { type: { value: "humanoid" }, alignment: "Neutral" },
+        traits: { ci: { value: [] }, di: { value: [] }, dr: { value: [] }, dv: { value: [] } } },
+      update: async (u) => { for (const [k, v] of Object.entries(u)) setPath6(a, k, v); return a; } };
+    ACTORS.set(id, a);
+    return a;
+  };
+  const place6 = (actor, id, { flags = {}, x = 0 } = {}) => {
+    const doc = { id, actorId: actor.id, actor, parent: { id: SCENE6 }, flags, name: actor.name,
+      hidden: false, x, y: 0, width: 1, height: 1, elevation: 0, disposition: -1, texture: { src: "" },
+      update: async (u) => { for (const [k, v] of Object.entries(u)) setPath6(doc, k, v); return doc; } };
+    const tok = { id, name: actor.name, actor, document: doc, x, y: 0, w: 100, h: 100,
+      center: { x: x + 50, y: 50 }, scene: { id: SCENE6 }, visible: true, setTarget() {} };
+    doc.object = tok;
+    docs6.set(id, doc);
+    canvas.tokens.placeables.push(tok);
+    return tok;
+  };
+
+  const keep6 = { placed: [...canvas.tokens.placeables], scenes: game.scenes.get,
+    show: SpellTargetPicker._showDialog, scene: canvas.scene, messages: game.messages };
+  // A table always has a chat log; the save card reads it to find a player's own
+  // roll, and an absent one made the card's roll throw where a table never would.
+  game.messages = { contents: [], get: () => null };
+  const shown6 = [];
+  let choose6 = () => [];
+  SpellTargetPicker._showDialog = async (o) => { shown6.push(o); return choose6(o); };
+  canvas.tokens.placeables.length = 0;
+  const made6 = [];
+  try {
+    const varek = firstActor(VAREK);
+    const alive = creature6("replay-sg-alive", "a standing bandit");
+    const dying = creature6("replay-sg-dying", "a dying knight", { type: "character", hp: 0, statuses: ["unconscious"] });
+    const dead = creature6("replay-sg-dead", "a dead bandit", { hp: 0 });
+    const lost = creature6("replay-sg-lost", "a beheaded bandit", { hp: 0 });
+    const far = creature6("replay-sg-far", "a bandit down the hall");
+    made6.push(alive, dying, dead, lost, far);
+    const varekTok = varek ? place6(varek, "tok-sg-varek") : null;
+    const aliveTok = place6(alive, "tok-sg-alive");
+    const dyingTok = place6(dying, "tok-sg-dying");
+    const deadTok = place6(dead, "tok-sg-dead", { flags: { [MOD]: { isDead: true } } });
+    const lostTok = place6(lost, "tok-sg-lost", { flags: { [MOD]: { isDead: true, permanentlyDead: true } } });
+    const farTok = place6(far, "tok-sg-far", { x: 4000 });
+    const scene6 = { id: SCENE6, templates: { get: () => null },
+      tokens: { get: (t) => docs6.get(t) ?? null, contents: [...docs6.values()] } };
+    game.scenes.get = (id) => (id === SCENE6 ? scene6 : keep6.scenes(id));
+    // ⚠️ A TABLE ALWAYS HAS A SCENE. The save card walks it to find each target's
+    // own token, and a null scene made the card's own roll throw where a table
+    // never would.
+    canvas.scene = scene6;
+
+    // ── 1. One set of rules, four lists ──
+    const life = (tok) => lifeStateOf(tok.actor, tok.document);
+    const may = (kind, tok) => pickable(kind, life(tok)).ok;
+    const four = (tok) => ["harm", "heal", "exclude", "revive"].filter(k => may(k, tok)).join(", ") || "none";
+    check("1. one set of picker rules: a damage, heal or who-is-safe list takes the living and the dying at 0 hit points and never the dead; a life-restore list takes the dead alone, killed for good included (09-16)",
+      may("harm", aliveTok) && may("heal", aliveTok) && may("exclude", aliveTok) && !may("revive", aliveTok)
+        && may("harm", dyingTok) && may("heal", dyingTok) && may("exclude", dyingTok) && !may("revive", dyingTok)
+        && !may("harm", deadTok) && !may("heal", deadTok) && !may("exclude", deadTok) && may("revive", deadTok)
+        && !may("harm", lostTok) && !may("heal", lostTok) && !may("exclude", lostTok) && may("revive", lostTok),
+      `standing: ${four(aliveTok)}; dying at 0: ${four(dyingTok)}; dead: ${four(deadTok)}; killed for good: ${four(lostTok)}`);
+
+    // ── 2. The list hides by life and dims by range ──
+    if (!varekTok) {
+      check("2. the picker hides the dead and dims the distant (09-16)", null, "Varek has no token to measure from");
+    } else {
+      const rows = (kind) => SpellTargetPicker._buildCandidates(varekTok, varek, 30, false, kind)
+        .filter(c => c.lifeOk);
+      const harm = rows("harm"), revive = rows("revive"), safe = rows("exclude");
+      const on = (list, a) => list.find(c => c.actor === a) ?? null;
+      check("2. the same list every time: the dead are not on a damage or who-is-safe list, the living are not on a life-restore list, and somebody too far away is still on it, dimmed (09-16)",
+        !!on(harm, alive) && !!on(harm, dying) && !on(harm, dead) && !on(harm, lost)
+          && !!on(revive, dead) && !!on(revive, lost) && !on(revive, alive) && !on(revive, dying)
+          && !!on(safe, alive) && !!on(safe, dying) && !on(safe, dead)
+          && !!on(harm, far) && on(harm, far).valid === false && /out of spell range/.test(on(harm, far).why ?? ""),
+        `a damage list: ${harm.map(c => c.name).join(", ") || "nobody"}; a life-restore list: ${revive.map(c => c.name).join(", ") || "nobody"}; `
+          + `a who-is-safe list: ${safe.map(c => c.name).join(", ") || "nobody"}; `
+          + `the one down the hall: ${on(harm, far) ? `on the list, ${on(harm, far).valid ? "pickable" : on(harm, far).why}` : "not on the list"}`);
+    }
+
+    // ── 3. No dead creature on a save card ──
+    const guardians = varek ? [...varek.items].find(i => i.type === "spell" && /^spirit guardians$/i.test(i.name)
+      && i.system?.source?.rules === "2024") ?? null : null;
+    const guardAct = guardians ? [...(guardians.system?.activities ?? [])].find(a => a.type === "save") ?? null : null;
+    let engine6 = null;
+    try { engine6 = new SaveEngine({}); } catch (err) { engine6 = null; }
+    if (!engine6 || !guardians || !guardAct) {
+      check("3. the dead get no row on a save card (09-16)", null,
+        engine6 ? "Varek has no 2024 Spirit Guardians" : "the save engine would not start in the stand-in");
+    } else {
+      const before = posted.length;
+      let err3 = null;
+      try {
+        await quiet(async () => {
+          await engine6._postLiveTargetCard(guardians, varek, [aliveTok, deadTok, lostTok, dyingTok], {
+            saveAbility: "wis", saveDC: 21, isSpell: true, activityId: guardAct.id, skipDelay: true,
+          });
+        });
+      } catch (e) { err3 = e; }
+      const card = posted.slice(before).find(m => m?.flags?.[MOD]?.type === "saveTargets" || /save/i.test(String(m?.flags?.[MOD]?.type ?? "")));
+      const named = (m) => String(m?.content ?? "").replace(/<[^>]+>/g, " ");
+      const text = named(card);
+      const onlyDead = posted.slice(before).length;
+      // A card for nobody but the dead is not posted at all.
+      const before2 = posted.length;
+      try { await quiet(async () => {
+        await engine6._postLiveTargetCard(guardians, varek, [deadTok], {
+          saveAbility: "wis", saveDC: 21, isSpell: true, activityId: guardAct.id, skipDelay: true });
+      }); } catch (e) { err3 = err3 ?? e; }
+      const posted2 = posted.slice(before2).length;
+      check("3. a save card carries the living and the dying and no dead creature at all, and a card asked only about the dead is never posted (09-16)",
+        !err3 && !!card && /standing bandit/.test(text) && /dying knight/.test(text)
+          && !/dead bandit/.test(text) && !/beheaded bandit/.test(text) && posted2 === 0,
+        err3 ? `threw: ${err3?.message ?? err3}`
+          : `${onlyDead} card(s) posted for four creatures; it names: `
+            + `${["standing bandit", "dying knight", "dead bandit", "beheaded bandit"].filter(n => new RegExp(n).test(text)).join(", ") || "nobody"}; `
+            + `asked only about a corpse it posted ${posted2}`);
+    }
+
+    // ── 4. Spirit Guardians: who is safe, and the spared are spared ──
+    if (!guardians || !guardAct || !varekTok) {
+      check("4. Spirit Guardians asks who is safe and spares them (09-16)", null, "Varek has no 2024 Spirit Guardians");
+    } else {
+      const who = SaveEngine._areaWhoRule(guardians);
+      // The tracker the cast builds, with the answer written on its area.
+      const handed6 = [];
+      const engine = {
+        postSaveCard: async (item, actor, tokens, opts) => { handed6.push({ how: "card", tokens, opts }); },
+        _fastResolveSingleNpcSave: async (item, actor, token, opts) => { handed6.push({ how: "rolled", token, opts }); },
+      };
+      const widget = new ConcentrationWidget(engine);
+      const templateDoc = { id: "tpl-sg-1", parent: { id: SCENE6 }, t: "circle", x: 0, y: 0, distance: 15,
+        flags: { [MOD]: { excluded: [aliveTok.id] } }, object: null };
+      let recipe = null;
+      await quiet(async () => {
+        await loadBookFor(guardians, { actor: varek });
+        recipe = recipeForActivity(guardians, guardAct, { actor: varek })?.recipe ?? null;
+        widget._onPersistentSpellCreated({
+          item: guardians, actor: varek, templateDoc, timing: getSpellTiming(guardians),
+          saveAbility: "wis", saveDC: 21, halfOnSave: true, damageTypes: [], tokens: [],
+          recipe, activityId: guardAct.id, castLevel: 5,
+        });
+      });
+      const tracker = widget._activeSpells.get(templateDoc.id) ?? null;
+      const at = handed6.length;
+      // ⚠️ ONCE A TURN NEEDS A TURN. The cap is keyed on whose turn it is, and out
+      // of combat there is none, so the rule is pinned where it lives: in a round.
+      const keepCombat = game.combat;
+      game.combat = { started: true, round: 3, turn: 1 };
+      await quiet(async () => {
+        await widget._onTokenEnteredTemplate(tracker, aliveTok, { phase: "entry" });   // marked safe
+        await widget._onTokenEnteredTemplate(tracker, dyingTok, { phase: "entry" });   // 0 HP, still caught
+        await widget._onTokenEnteredTemplate(tracker, dyingTok, { phase: "endOfTurn" }); // same turn: once only
+      });
+      game.combat = keepCombat;
+      const runs = handed6.slice(at);
+      check("4. the creatures the caster marked safe are spared for good, a creature at 0 hit points is still caught, and one turn is one save (09-16)",
+        who.kind === "exclude" && !!tracker && tracker.exemptTokenIds.has(aliveTok.id)
+          && runs.length === 1 && (runs[0].token === dyingTok || runs[0].tokens?.[0] === dyingTok),
+        `its area rule: ${who.kind} (${who.why}); the tracker spares ${[...(tracker?.exemptTokenIds ?? [])].length} creature(s); `
+          + `the one marked safe walked in, the dying one walked in and then ended its turn there: `
+          + `${runs.length} save(s) asked${runs.length ? ` (${runs.map(r => r.token?.name ?? r.tokens?.map(t => t.name).join("/")).join(", ")})` : ""}`);
+    }
+
+    // ── 5. Whose spirits are these ──
+    {
+      const evilOne = firstActor(VAREK);
+      const goodOne = [...ACTORS.values()].find(a => /^akra$/i.test(a.name ?? "")
+        && /good/i.test(a.system?.details?.alignment ?? "")) ?? null;
+      const evil = guardianFlavour(evilOne);
+      const good = goodOne ? guardianFlavour(goodOne) : null;
+      const narrowed = guardians ? narrowDamageTypes(guardians, evilOne, ["necrotic", "radiant"]) : [];
+      const untouched = narrowDamageTypes({ name: "Fireball" }, evilOne, ["fire"]);
+      check("5. the spirits wear their caster's alignment: an evil caster deals necrotic behind the dark red ring, anyone else radiant behind the blue-gold one, and no other spell's damage is touched (09-16)",
+        !!guardians && isSpiritGuardians(guardians)
+          && evil.side === "evil" && evil.damageType === "necrotic" && evil.file === "jb2a.spirit_guardians.dark_red.ring"
+          && (!good || (good.side === "holy" && good.damageType === "radiant" && good.file === "jb2a.spirit_guardians.blueyellow.ring"))
+          && narrowed.length === 1 && narrowed[0] === "necrotic"
+          && untouched.length === 1 && untouched[0] === "fire",
+        `${evilOne?.name} is ${evil.alignment}: ${evil.damageType}, ${evil.colour}; `
+          + `${good ? `${goodOne.name} is ${good.alignment}: ${good.damageType}, ${good.colour}` : "no good caster with this spell to read"}; `
+          + `its two types narrow to ${narrowed.join("/") || "nothing"}; a Fireball still deals ${untouched.join("/")}`);
+    }
+  } finally {
+    SpellTargetPicker._showDialog = keep6.show;
+    game.scenes.get = keep6.scenes;
+    canvas.scene = keep6.scene;
+    game.messages = keep6.messages;
+    canvas.tokens.placeables.length = 0;
+    canvas.tokens.placeables.push(...keep6.placed);
+    for (const a of made6) ACTORS.delete(a.id);
+  }
+}
+
 /* ── PHASE 5: AREA AND TURN TRIGGERS ──────────────────────── */
 // Johnny, 2026-09-15: "PHASE 5 — area / turn triggers only. Then STOP." Done when
 // the replay pins: 1. an emanation catches on entering and on the turn its own
@@ -2761,13 +3010,14 @@ console.log(`\nPHASE 4: HEALS, SELF, UTILITY, CONTESTS`);
       const hp = dying.system.attributes;
       check("1. Cure Wounds pressed with nobody targeted opens the picker; a dying ally at 0 hit points can be picked, the dead cannot; the heal lands through the hit-point door (Phase 4)",
         !err1 && !gateSaid.some(s => s.verdict.refuse || s.verdict.ask) && !!seen && seen.preSelected.size === 0
-          && rowFor(seen, dying)?.valid === true && rowFor(seen, corpse)?.valid === false
+          && rowFor(seen, dying)?.valid === true && !rowFor(seen, corpse)
           && heals.length === 1 && heals[0].actor === dying && hp.hp.value > 0 && hp.death.success === 0 && hp.death.failure === 0
           && !dying.statuses.has("unconscious") && !!card,
         err1 ? `threw: ${err1?.message ?? err1}`
           : `${varek.name}'s Cure Wounds: the gate ${gateSaid.length ? gateSaid.map(s => s.rule.id).join(", ") : "said nothing"}; `
             + `picker ${seen ? "opened" : "never opened"} with ${seen?.preSelected?.size ?? 0} picked beforehand; `
-            + `the dying ally ${said(rowFor(seen, dying))}; the dead bandit ${said(rowFor(seen, corpse))}; `
+            + `the dying ally ${said(rowFor(seen, dying))}; the dead bandit ${said(rowFor(seen, corpse))} `
+            + `(09-16: a corpse is off a heal list, not dimmed on it); `
             + `hit-point door ${heals.length}x, hit points 0 to ${hp.hp.value}, death saves ${hp.death.success}/${hp.death.failure}, `
             + `unconscious ${dying.statuses.has("unconscious") ? "still on" : "off"}; card ${card ? "posted" : "missing"}`);
     }
@@ -2982,12 +3232,12 @@ console.log(`\nPHASE 4: HEALS, SELF, UTILITY, CONTESTS`);
         !err6 && !!reviveList && on(reviveList, corpse) && on(reviveList, lost)
           && !on(reviveList, ally) && !on(reviveList, dying) && !on(reviveList, varek)
           && !!healList && on(healList, dying) && on(healList, ally)
-          && rowOf(healList, dying)?.valid === true && rowOf(healList, corpse)?.valid === false
+          && rowOf(healList, dying)?.valid === true && !on(healList, corpse)
           && strayAsked === 1 && strayLanded === false,
         err6 ? `threw: ${err6?.message ?? err6}`
           : `Raise Dead's list: ${names(reviveList)}; the heal's list: ${names(healList)} `
             + `(the dying ally ${rowOf(healList, dying)?.valid ? "can be healed" : "cannot"}, `
-            + `the dead bandit ${rowOf(healList, corpse)?.valid ? "can be healed" : "cannot"}); `
+            + `the dead bandit ${on(healList, corpse) ? "is on the list" : "is not on the list at all"}); `
             + `a stray click on the beheaded bandit asked ${strayAsked}x and targeted ${strayLanded ? "it anyway" : "nothing until answered"}`);
     }
 
@@ -3039,7 +3289,7 @@ console.log(`\nPHASE 4: HEALS, SELF, UTILITY, CONTESTS`);
       check("5. every card these touched goes through the card door, and the heal pipeline steers dnd5e's use instead of cancelling it (Phase 4)",
         !raw.length && !!owned && !err5 && steered?.answer !== false && steered?.usageConfig?.subsequentActions === false
           && steered?.usageConfig?.consume?.resources === false && steered?.messageConfig?.create === false && steered?.held === true
-          && ownPick?.dying?.valid === true && ownPick?.corpse?.valid === false,
+          && ownPick?.dying?.valid === true && !ownPick?.corpse,
         err5 ? `threw: ${err5?.message ?? err5}`
           : `raw ChatMessage.create left: ${raw.join(", ") || "none"}; `
             + (owned ? `${owned.a.name}'s ${owned.it.name}: the press ${steered?.answer === false ? "was CANCELLED" : "went on"}, `

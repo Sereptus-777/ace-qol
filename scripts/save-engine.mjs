@@ -66,6 +66,10 @@ import { waitUntil } from "./wait-for.mjs";
 import { whatLands, shareOf } from "./road/what-lands.mjs";
 import { HpDoor, ConditionDoor, CardDoor, SignalDoor } from "./road/doors.mjs";
 import { recipeForActivity, repeatTriggerOf, loadBookFor, isFollowUp, rulesActionSave } from "./inference/recipe.mjs";
+// Who may be on a card at all: the one life rule every picker asks (Phase 4-5).
+import { lifeStateOf, pickable } from "./road/picker-rule.mjs";
+// Whose spirits they are: the caster's alignment picks necrotic or radiant.
+import { isSpiritGuardians, guardianFlavour, narrowDamageTypes } from "./rules/spirit-guardians.mjs";
 import { RulesIndex } from "./rules/rules-index.mjs";
 
 // Real black d20 die art (per-face). These are the dice the GM already sees;
@@ -1188,14 +1192,15 @@ export class SaveEngine {
    * choice (mirrors the Divine Smite rider popup). Otherwise — GM-cast, an NPC, or
    * the owning player is offline — the GM picks locally. Always returns Actor[].
    */
-  async _pickTargetsForCaster({ spellItem, casterActor, maxTargets, rangeFt, allowSelf, only = null }) {
+  async _pickTargetsForCaster({ spellItem, casterActor, maxTargets, rangeFt, allowSelf, only = null,
+                                kind = "harm" }) {
     // `only`: the token ids the caster may choose from. An area spell that lets
     // the caster choose ("up to six creatures of your choice in a 40-foot Cube")
     // offers who is inside the area and nobody else.
     const onlyIds = Array.isArray(only) ? only.map(t => t?.id ?? t).filter(Boolean) : null;
     const localPick = async () => {
       const { SpellTargetPicker } = await import("./spell-target-picker.mjs");
-      return SpellTargetPicker.pick({ spellItem, casterActor, maxTargets, rangeFt, allowSelf,
+      return SpellTargetPicker.pick({ spellItem, casterActor, maxTargets, rangeFt, allowSelf, kind,
         ...(onlyIds ? { only: onlyIds } : {}) });
     };
 
@@ -1218,7 +1223,7 @@ export class SaveEngine {
         userId: casterUser.id,
         itemUuid: spellItem.uuid,
         casterActorUuid: casterActor.uuid,
-        maxTargets, allowSelf,
+        maxTargets, allowSelf, kind,
         // "Any range" crosses as its own word: JSON turns Infinity into null.
         rangeFt: Number.isFinite(rangeFt) ? rangeFt : null,
         anyRange: rangeFt === Infinity,
@@ -1559,8 +1564,11 @@ export class SaveEngine {
                  why: `its words let the caster choose ("${who.choiceWords ?? "the choice on its sheet"}")` };
       }
       if (who?.mayExclude) {
-        return { kind: "legacy",
-                 why: `its words let the caster spare creatures ("${who.choiceWords}"), which ACE does not offer yet` };
+        // ⚠️ THE CASTER NAMES WHO IS SAFE (his, 2026-09-16). The area still catches
+        // everyone else, every turn, for as long as it lasts. Spirit Guardians is
+        // the one every table meets, and it used to say "ACE does not offer yet".
+        return { kind: "exclude", choiceWords: who.choiceWords ?? null,
+                 why: `its words let the caster spare creatures ("${who.choiceWords}")` };
       }
       return { kind: "legacy", why: who ? `its plan says "${who.kind}"` : "its words do not say who the area catches" };
     } catch (err) {
@@ -1712,6 +1720,12 @@ export class SaveEngine {
    * saves — those go through the normal flow.
    */
   async _fastResolveSingleNpcSave(item, casterActor, token, opts) {
+    // The same rule as the card door above: the dead do not save (2026-09-16).
+    if (!pickable("harm", lifeStateOf(token?.actor, token?.document)).ok) {
+      console.log(`${MODULE_ID} | "${item?.name}": ${token?.name ?? "that creature"} is dead, `
+        + `so it was not asked to save and gets no row.`);
+      return;
+    }
     // v0.4.22.4: Match the pacing of `_postLiveTargetCard`. Without this
     // the fast-path NPC save card lands instantly, ahead of the spell
     // animation. Configurable via `saveCardDelayAfterCastMs`.
@@ -1735,7 +1749,7 @@ export class SaveEngine {
     // the other (The One Road, Phase 5).
     const rule = recipe ? SaveEngine._damageRuleOf(recipe) : null;
     const halfOnSave = rule ? rule.halfOnSave : opts.halfOnSave;
-    const damageTypes = rule ? rule.damageTypes : opts.damageTypes;
+    const damageTypes = narrowDamageTypes(item, casterActor, rule ? rule.damageTypes : opts.damageTypes);
     // An activity, or just its id: a trigger carries the id the press used.
     const activityId = activity?.id ?? opts.activityId ?? null;
 
@@ -2142,6 +2156,41 @@ export class SaveEngine {
           console.log(`${MODULE_ID} | "${pending.item?.name}": nobody was chosen, so nobody saves.`);
         }
       }
+    } else if (rule.kind === "exclude") {
+      // ⚠️🔴 WHO IS SAFE IS ASKED ONCE, AT THE CAST, AND REMEMBERED BY THE AREA.
+      // His words, 2026-09-16: "Picker D: who is safe... Nobody picked = nobody is
+      // safe." The list is the living the caster can see, because the spell says
+      // "any number of creatures you can see" and they do not have to be standing
+      // in it yet; the answer is written on the template, so every later turn, every
+      // walk-in and every reload reads the same list.
+      const inside = await measureArea();
+      if (inside === null) return;
+      let safe = [];
+      try {
+        safe = await this._pickTargetsForCaster({
+          spellItem: pending.item, casterActor: pending.actor,
+          maxTargets: (canvas.tokens?.placeables?.length ?? 1),
+          rangeFt: Infinity, allowSelf: false, kind: "exclude",
+        }) ?? [];
+      } catch (err) {
+        console.warn(`${MODULE_ID} | the "who is safe" picker failed for "${pending.item?.name}":`, err);
+      }
+      const safeIds = new Set();
+      for (const a of safe) {
+        for (const t of (canvas.tokens?.placeables ?? [])) {
+          if (t.actor === a || (a?.id && t.actor?.id === a.id)) safeIds.add(t.id);
+        }
+      }
+      try {
+        await templateDoc.update({ [`flags.${MODULE_ID}.excluded`]: [...safeIds] });
+      } catch (err) {
+        console.warn(`${MODULE_ID} | could not write who is safe onto "${pending.item?.name}"'s area:`, err);
+      }
+      tokens = inside.filter(t => !safeIds.has(t.id));
+      tokensFrom = "area";
+      console.log(`${MODULE_ID} | "${pending.item?.name}": ${rule.why}. `
+        + `Safe: ${[...safeIds].map(id => canvas.tokens?.get?.(id)?.name).filter(Boolean).join(", ") || "nobody"}. `
+        + `Caught now: ${tokens.map(t => t.name).join(", ") || "nobody"}.`);
     } else {
       tokens = targeted;
       tokensFrom = tokens.length ? "targets" : "area";
@@ -2824,6 +2873,26 @@ export class SaveEngine {
       return;
     }
 
+    // ⚠️🔴 A CORPSE IS NOT ON THE CARD. His words, 2026-09-16: "Dead creatures do
+    // not appear on the save or damage card. No row. No portrait. No 'DEAD — no
+    // save'." A dead creature never saves and never takes damage, so a row for one
+    // is a row that can only ever say nothing. The living include a creature at 0
+    // hit points: it is lying in the fire and it burns.
+    // This is the one door every save card comes through, so the rule is here.
+    {
+      const before = tokens?.length ?? 0;
+      const living = (tokens ?? []).filter(t => pickable("harm", lifeStateOf(t?.actor, t?.document)).ok);
+      if (living.length !== before) {
+        console.log(`${MODULE_ID} | "${item?.name}": ${before - living.length} dead creature(s) left off `
+          + `the save card; the dead do not save.`);
+      }
+      if (!living.length) {
+        console.log(`${MODULE_ID} | "${item?.name}": nobody living to ask, so no save card was posted.`);
+        return;
+      }
+      tokens = living;
+    }
+
     // v0.4.22.4: Pace the save card behind the spell/feat animation.
     // Without this delay the save card can land 1-2 seconds before the
     // visual effect, eating the dramatic beat. Configurable via
@@ -2851,7 +2920,10 @@ export class SaveEngine {
       : (activityId ? (await SaveEngine.castRecipe(item, SaveEngine._activityOf(item, activityId))).recipe : null);
     const rule = recipe ? SaveEngine._damageRuleOf(recipe) : null;
     const rawHalfOnSave = rule ? rule.halfOnSave : opts.halfOnSave;
-    const damageTypes = rule ? rule.damageTypes : opts.damageTypes;
+    // ⚠️ ONE OF THESE TYPES, NOT BOTH. Spirit Guardians offers radiant and
+    // necrotic on one damage part, which is dnd5e's way of writing a choice the
+    // caster's alignment makes; the Gate reads these to work out resistances.
+    const damageTypes = narrowDamageTypes(item, actor, rule ? rule.damageTypes : opts.damageTypes);
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
 
     // ── Gate the HALF ON SAVE badge on actual damage presence ──
@@ -5064,6 +5136,18 @@ export class SaveEngine {
 
         break; // Only first activity with damage
       }
+    }
+
+    // ── Whose spirits are these? (his, 2026-09-16) ──
+    // The dice are the spell's; the type is the caster's alignment. Done here so
+    // the card, the hit-point door and every resistance downstream see one type.
+    if (isSpiritGuardians(item) && damageComponents.length) {
+      const flavour = guardianFlavour(casterActor);
+      for (const c of damageComponents) {
+        if (String(c.type ?? "").toLowerCase() === flavour.damageType) continue;
+        c.type = flavour.damageType;
+      }
+      console.log(`${MODULE_ID} | ${flavour.why}.`);
     }
 
     // ── Radiant Soul (Celestial Warlock 6+) — direct spell damage path ──

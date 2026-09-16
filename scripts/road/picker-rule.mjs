@@ -57,27 +57,44 @@ export function lifeStateOf(actor, tokenDoc = null) {
 
 /**
  * May a picker of this kind offer this creature?
- *   heal    the living and the dying, never the dead: healing does not bring a
- *           creature back
- *   revive  the dead, killed for good included (the gate answers for that lock);
- *           never the living or the dying
- *   harm    the living only, as every other picker always had it: no corpses and
- *           nobody at 0 hit points
  *
- * @param {"heal"|"revive"|"harm"} kind
+ * ONE SET OF RULES, EVERY SPELL (his, 2026-09-16):
+ *   harm     a damage, save or attack spell, and a Spirit Guardians tick: the
+ *            living, a creature at 0 hit points included, never the dead
+ *   heal     Cure Wounds, Heal, a potion, Spare the Dying: the same list
+ *   exclude  "who is safe": the living the caster may mark as unaffected
+ *   revive   Raise Dead and its kin: the dead, killed for good included, and
+ *            never the living, not even one dying at 0
+ *
+ * ⚠️🔴 REFUSED MEANS HIDDEN, NOT DIMMED. His words: "Show... Hide: dead and
+ * killed-for-good", and for a revive "Hide: living, including 0 HP dying". A row
+ * that cannot be picked is not on the list at all. Range is the other question
+ * and keeps its old answer: too far is dimmed, with the distance on the row, so
+ * he can see who is there to walk to.
+ *
+ * ⚠️ A CREATURE AT 0 HIT POINTS IS NOT A CORPSE. Only a mark says dead (the Dead
+ * status, ACE's own death flag, killed for good, three failed death saves), so a
+ * dying ally is on the heal list AND takes the damage of an area it is lying in.
+ * An unmarked creature at 0 that is not a player character is the one thing ACE
+ * cannot tell apart, so it is offered to both a revive and a heal rather than
+ * refused by a guess.
+ *
+ * @param {"heal"|"revive"|"harm"|"exclude"} kind
  * @param {ReturnType<typeof lifeStateOf>} life
  * @returns {{ok: boolean, why: string}}  why is what the picker's row says stops it
  */
 export function pickable(kind, life) {
   const st = life?.state ?? "alive";
-  if (kind === "heal") {
-    return st === "dead" ? { ok: false, why: "dead: healing does not bring it back" } : { ok: true, why: "" };
-  }
   if (kind === "revive") {
     if (st === "dead" || life?.unmarkedAtZero) return { ok: true, why: "" };
-    return { ok: false, why: st === "dying" ? "dying, not dead: there is nothing to bring back" : "alive: there is nothing to bring back" };
+    return { ok: false, why: st === "dying"
+      ? "dying, not dead: a heal is what it needs"
+      : "alive: there is nothing to bring back" };
   }
-  return st === "alive" ? { ok: true, why: "" } : { ok: false, why: st === "dead" ? "dead" : "at 0 hit points" };
+  if (st === "dead") {
+    return { ok: false, why: life?.killedForGood ? "killed for good" : "dead" };
+  }
+  return { ok: true, why: "" };
 }
 
 /** The word on a picker row for a creature that is not simply alive. */

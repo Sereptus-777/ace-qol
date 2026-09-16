@@ -942,6 +942,34 @@ Hooks.once("ready", () => {
 //     the PICKED target, so a self-landing native effect IS the bleed.
 // Self-casting still works: pick yourself in ACE's picker and ACE applies its
 // own version to you. This only kills dnd5e's automatic self-application.
+// ─── Spirit Guardians wears its caster's alignment, and only one aura plays ──
+//
+// ⚠️ ONE SYSTEM OWNS EACH CAST (ACE's standing rule, and his: two animations for
+// one spell is worse than none). His Automated Animations plays this spell off
+// the concentration effect's NAME, in one fixed colour for every caster, and the
+// spell itself says the spirits are angelic or fiendish depending on who called
+// them. ACE draws the right one (concentration-widget's guardian aura), so AA's
+// copy is switched off for this one effect, in AA's own words, before it is
+// created and therefore before AA ever sees it.
+//
+// ⚠️ ONLY WHEN ACE CAN ACTUALLY DRAW IT. With no Sequencer there is nothing to
+// take over with, so AA keeps the spell and nothing is touched.
+Hooks.on("preCreateActiveEffect", (effect, data, _options, _userId) => {
+  try {
+    const name = String(data?.name ?? effect?.name ?? "");
+    if (!/spirit\s*guardians/i.test(name)) return;
+    if (!game.modules?.get?.("sequencer")?.active) return;
+    if (data?.flags?.autoanimations || effect?.flags?.autoanimations) return;
+    effect.updateSource({ "flags.autoanimations": {
+      isEnabled: false, isCustomized: false, fromAmmo: false, version: 5,
+    } });
+    console.log(`${MODULE_ID} | "${name}": ACE draws this aura in its caster's own colour, `
+      + `so Automated Animations is switched off for this effect.`);
+  } catch (err) {
+    console.warn(`${MODULE_ID} | could not take over the Spirit Guardians aura (non-fatal):`, err);
+  }
+});
+
 Hooks.on("preCreateActiveEffect", (effect, data, _options, _userId) => {
   try {
     const flags = data?.flags ?? effect?.flags ?? {};
@@ -5051,6 +5079,8 @@ Hooks.once("ready", () => {
         // `only`: token ids the caster may choose from, when an area spell lets
         // the caster choose who inside it is affected (2026-09-11).
         const { requestId, itemUuid, casterActorUuid, maxTargets, allowSelf, only } = payload;
+        // Which list this is: the living, the dead, or the ones the caster spares.
+        const kind = payload.kind ?? "harm";
         // "Any range" crosses the socket as its own word: JSON turns Infinity into null.
         const rangeFt = payload.anyRange ? Infinity : payload.rangeFt;
         // [picker-timing] Headline number: how long from the caster PRESSING cast
@@ -5070,7 +5100,7 @@ Hooks.once("ready", () => {
           // 2026-08-07). Relative resolves against THIS module's URL, which
           // already carries the prefix.
           await import("./spell-target-picker.mjs");
-          const picked = await SpellTargetPicker.pick({ spellItem: item, casterActor, maxTargets, rangeFt, allowSelf,
+          const picked = await SpellTargetPicker.pick({ spellItem: item, casterActor, maxTargets, rangeFt, allowSelf, kind,
             ...(Array.isArray(only) && only.length ? { only } : {}) });
           const tokenIds = (picked ?? [])
             .map(a => a.getActiveTokens?.()?.[0]?.id ?? canvas.tokens?.placeables.find(t => t.actor?.id === a.id)?.id)

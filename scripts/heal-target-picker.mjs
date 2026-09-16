@@ -76,6 +76,13 @@ export class HealTargetPicker {
     for (const tok of tokens) {
       if (!tok.actor) continue;
 
+      // ⚠️🔴 THE DEAD ARE NOT ON A HEAL LIST AT ALL (his, 2026-09-16: "Hide: dead
+      // and killed-for-good"). They used to sit there dimmed with a reason, which
+      // is the right answer to "why can I not heal him" and the wrong list to put
+      // a corpse on: a heal picker is opened in a hurry, with somebody bleeding.
+      // Revivify and Raise Dead have their own list, and that one shows only them.
+      if (!pickable("heal", lifeStateOf(tok.actor, tok.document)).ok) continue;
+
       const isSelf = casterToken && tok.id === casterToken.id;
 
       // Distance in feet (0 for self) — nearest-edge, size-aware, 3D (canonical).

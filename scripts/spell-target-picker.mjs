@@ -81,27 +81,26 @@ export class SpellTargetPicker {
       candidates = SpellTargetPicker._buildCandidates(casterToken, casterActor, resolvedRange, allowSelf, kind);
     }
     console.log(`ace-qol | [picker-timing] _buildCandidates → ${candidates.length} candidates in ${Math.round(performance.now() - _tb0)}ms`);
-    // ⚠️ A REVIVE LISTS THE DEAD AND NOBODY ELSE. Johnny, 2026-09-15: *"only the
-    // dead should be in the list for targets"*, and *"a dying PC at 0 is for Heal,
-    // not Raise Dead."* Every other picker still SHOWS who it cannot take, dimmed
-    // and with the reason on the row, because "why can I not hit him" is worth
-    // answering. On Raise Dead that answer is noise: the whole scene greyed out
-    // hides the two bodies that are the entire point of the spell.
-    // A body out of reach stays on the list, dimmed as out of range, so he can see
-    // who is there to walk to. Only the living are dropped.
-    if (kind === "revive") {
+    // ⚠️🔴 THE LIFE RULE HIDES, THE RANGE DIMS. His words, 2026-09-16: a damage,
+    // heal or "who is safe" list shows the living, a creature at 0 hit points
+    // included, and hides the dead and the killed for good; a life-restore list
+    // shows the dead alone. A row the rule refuses is not on the list at all. A
+    // creature too far away stays on it, dimmed, with the distance on the row,
+    // because "walk six feet and you can" is worth saying.
+    {
       const onScene = candidates.length;
       candidates = candidates.filter(c => c.lifeOk);
-      console.log(`ace-qol | [picker] ${spellItem.name}: ${candidates.length} dead `
-        + `of ${onScene} creature(s) in reach of the list`);
+      const hidden = onScene - candidates.length;
+      if (hidden) {
+        console.log(`ace-qol | [picker] ${spellItem.name} (${kind}): ${hidden} of ${onScene} creature(s) `
+          + `are not on the list (${kind === "revive" ? "alive" : "dead"}).`);
+      }
       if (!candidates.length) {
-        ui.notifications?.warn(`${spellItem.name}: there is nobody dead here to bring back.`);
+        ui.notifications?.warn(kind === "revive"
+          ? `${spellItem.name}: there is nobody dead here to bring back.`
+          : `${spellItem.name}: nobody living to choose on this scene.`);
         return [];
       }
-    }
-    if (!candidates.length) {
-      ui.notifications?.warn(`${spellItem.name}: no valid targets on this scene.`);
-      return [];
     }
 
     // Pre-select tokens already in game.user.targets (caster convenience)
@@ -127,14 +126,21 @@ export class SpellTargetPicker {
     }
 
     console.log(`ace-qol | [picker-timing] candidates ready — opening dialog (gap from here to the picker appearing = render time)`);
+    // ⚠️ "ANY NUMBER OF CREATURES YOU CAN SEE" IS ANY NUMBER. The 2024 Spirit
+    // Guardians lets the caster name who the spirits spare, with no cap, so the
+    // exclude list takes as many as it shows.
+    const cap = kind === "exclude"
+      ? Math.max(1, candidates.length)
+      : Math.max(1, Number(maxTargets) || 1);
     return await SpellTargetPicker._showDialog({
       spellItem,
       candidates,
       preSelected,
-      maxTargets: Math.max(1, Number(maxTargets) || 1),
+      maxTargets: cap,
       rangeFt: resolvedRange,
       verb,
       icon,
+      wording: kind === "exclude" ? SpellTargetPicker.SAFE_WORDING : null,
     });
   }
 
@@ -352,8 +358,22 @@ export class SpellTargetPicker {
   //  Dialog Render
   // ═══════════════════════════════════════════════════════════════════════════
 
+  /**
+   * What the "who is safe" list calls itself. A picker that says "pick targets"
+   * over a list of friends is asking the opposite question to the one it means.
+   */
+  static SAFE_WORDING = Object.freeze({
+    title: (name) => `${name} — Who is safe?`,
+    tag: "any number",
+    instructions: "Click a portrait to mark that creature <strong>unaffected</strong>. "
+      + "Anyone you do not mark is caught by it, every turn, for as long as it lasts. "
+      + "Nobody marked means nobody is safe.",
+    confirm: "Confirm",
+    count: "marked safe",
+  });
+
   static async _showDialog({ spellItem, candidates, preSelected, maxTargets, rangeFt,
-                             verb = "Cast", icon = "fa-solid fa-sparkles" }) {
+                             verb = "Cast", icon = "fa-solid fa-sparkles", wording = null }) {
     const rangeLabel = !Number.isFinite(rangeFt) ? "any range"
                      : rangeFt === 0 ? "self only"
                      : rangeFt === 5 ? "5 feet (touch)"
@@ -366,7 +386,9 @@ export class SpellTargetPicker {
           <div class="ace-qol-spell-pickr-name">${foundry.utils.escapeHTML(spellItem.name)}</div>
           <div class="ace-qol-spell-pickr-meta">
             <span class="ace-qol-spell-pickr-tag">${rangeLabel}</span>
-            <span class="ace-qol-spell-pickr-tag">up to ${maxTargets} target${maxTargets === 1 ? "" : "s"}</span>
+            <span class="ace-qol-spell-pickr-tag">${wording
+              ? wording.tag
+              : `up to ${maxTargets} target${maxTargets === 1 ? "" : "s"}`}</span>
           </div>
         </div>
       </div>
@@ -380,15 +402,15 @@ export class SpellTargetPicker {
       <div class="ace-qol-spell-pickr">
         ${headerHtml}
         <div class="ace-qol-spell-pickr-instructions">
-          Select up to <strong>${maxTargets}</strong> target${maxTargets === 1 ? "" : "s"}.
-          Click a portrait to toggle.${Number.isFinite(rangeFt) ? " Creatures out of range are dimmed and can't be chosen." : ""}
+          ${wording ? wording.instructions : `Select up to <strong>${maxTargets}</strong> target${maxTargets === 1 ? "" : "s"}.
+          Click a portrait to toggle.${Number.isFinite(rangeFt) ? " Creatures out of range are dimmed and can't be chosen." : ""}`}
         </div>
         <div class="ace-qol-spell-pickr-grid" data-max-count="${maxTargets}">
           ${rowsHtml}
         </div>
         <div class="ace-qol-spell-pickr-footer">
           <span class="ace-qol-spell-pickr-count" data-selected="${preSelected.size}">
-            <strong class="ace-qol-spell-pickr-count-num">${preSelected.size}</strong> / ${maxTargets} selected
+            <strong class="ace-qol-spell-pickr-count-num">${preSelected.size}</strong> / ${maxTargets} ${wording ? wording.count : "selected"}
           </span>
         </div>
       </div>
@@ -396,14 +418,14 @@ export class SpellTargetPicker {
 
     return await new Promise((resolve) => {
       const dlg = new foundry.applications.api.DialogV2({
-        window: { title: `${verb} ${spellItem.name} — Pick Targets` },
+        window: { title: wording ? wording.title(spellItem.name) : `${verb} ${spellItem.name} — Pick Targets` },
         content,
         rejectClose: false,
         position: { width: 600 },
         buttons: [
           {
             action: "confirm",
-            label: `${verb} ${spellItem.name}`,
+            label: wording ? wording.confirm : `${verb} ${spellItem.name}`,
             icon,
             default: true,
             callback: (_event, _button, dialog) => {
