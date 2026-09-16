@@ -75,6 +75,8 @@ import { SpellTargetPicker }    from "./spell-target-picker.mjs";
 import { DescriptionParser }    from "./description-parser.mjs";
 import { PostHitSaves }         from "./post-hit-saves.mjs";
 import { decideActivityChoice, spellIsUp, upCanBeSeen } from "./activity-choice.mjs";
+// The one spell whose sheets carry the same cast twice (2026-09-16).
+import { guardianCastActivity } from "./rules/spirit-guardians.mjs";
 import { RepeatingSaveEngine }  from "./repeating-save-engine.mjs";
 import { GazeEngine }           from "./gaze-engine.mjs";
 import { BreakFreeEngine }      from "./break-free-engine.mjs";
@@ -6407,6 +6409,9 @@ Hooks.once("ready", () => {
         resolvesItself: () => SpellPipeline.resolvesItself(item),
         spellIsUp: () => spellIsUp(item, _tableNow()),
         upCanBeSeen: () => upCanBeSeen(item, acts ?? []),
+        // A spell whose own rule says what a fresh press means (Spirit Guardians'
+        // duplicated cast, 2026-09-16).
+        oneCast: () => guardianCastActivity(item, acts ?? []),
       });
     } catch (err) {
       // ⚠️ NEVER SWALLOW THE PRESS. If the decision throws, dnd5e's own dialog
@@ -6452,7 +6457,15 @@ Hooks.once("ready", () => {
     };
     const rows = decision.choices.map(a => ({
       id: a.id,
-      type: a.type ?? "",
+      // ⚠️ "UTILITY" IS NOT WHAT IT IS (2026-09-16). dnd5e files a spell's own
+      // cast under "utility" whenever it neither attacks nor asks a save, so the
+      // row's tag read UTILITY for the thing that casts the spell. The tag now
+      // says the part it plays: a cast, or a later step of one already up. The
+      // icon still follows the real type.
+      type: (item.type === "spell" && String(a.type ?? "") === "utility")
+        ? (a?.consumption?.spellSlot === false ? "later step" : "cast")
+        : (a.type ?? ""),
+      iconType: a.type ?? "",
       cost: _costOf(a),
       // dnd5e already renders the human label on the button — reuse it so
       // ours reads identically (activity .name is often blank).

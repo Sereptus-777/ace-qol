@@ -183,7 +183,8 @@ function duplicatesAmong(list) {
  */
 export function decideActivityChoice({ item, activities, offeredIds, isMachinery,
                                        riderIds, owns, resolvesItself,
-                                       spellIsUp = false, upCanBeSeen = false }) {
+                                       spellIsUp = false, upCanBeSeen = false,
+                                       oneCast = null }) {
   const notes = [];
   const order = [...(offeredIds ?? [])];
   const offeredSet = new Set(order);
@@ -299,6 +300,21 @@ export function decideActivityChoice({ item, activities, offeredIds, isMachinery
             + `because ACE cannot tell when this spell is up.`);
         }
       }
+    }
+
+    // ── ⚠️🔴 A SPELL WHOSE OWN RULE SAYS WHAT A PRESS MEANS ───────────
+    //
+    // Some sheets carry the same cast twice, one named and one not, and dnd5e
+    // prints the nameless one as its bare type: "Cast UTILITY" beside "Use
+    // UTILITY" is not a question anybody can answer. A named rule for that spell
+    // says which activity a fresh press means (rules/spirit-guardians.mjs), and
+    // it only speaks while the spell is NOT up: once it is, its later steps come
+    // first, which is the branch above.
+    const told = call(oneCast, null);
+    if (told && !call(spellIsUp, false) && choosable.some(a => a.id === told.id)) {
+      return { kind: "fire", activity: told, activityId: told.id, notes,
+        why: `"${item.name}": its own rule says a press with the spell not up means `
+          + `"${told.name || told.type}", so it is not asking.` };
     }
 
     // ── ⚠️🔴 A SPELL ACE CASTS ITSELF NEVER ASKS WHICH ROW ────────

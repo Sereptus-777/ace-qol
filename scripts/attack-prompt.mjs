@@ -223,7 +223,7 @@ export async function showActivityChoice({ itemName, itemImg = null, activities 
   // you pick one, instead of finding out in a second dialog afterwards.
   const rows = activities.map(a => `
     <button type="button" class="ace-qol-act-row" data-act-id="${a.id}">
-      <i class="${ICON[a.type] ?? "fa-solid fa-circle-dot"}"></i>
+      <i class="${ICON[a.iconType ?? a.type] ?? "fa-solid fa-circle-dot"}"></i>
       <span class="ace-qol-act-name">${foundry.utils.escapeHTML(a.label)}</span>
       ${a.cost ? `<span class="ace-qol-act-cost">${a.cost}</span>` : ""}
       <span class="ace-qol-act-type">${foundry.utils.escapeHTML(a.type ?? "")}</span>

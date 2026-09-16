@@ -234,13 +234,14 @@ class Collection extends Map {
 let SpellPipeline, SaveEngine, PostHitSaves, DescriptionParser, readSaveOutcome,
   readActivities, readAppliedConditions, decideActivityChoice, upCanBeSeen, aceStripEnrichers,
   readPrismaticWall, PrismaticWallEngine, RepeatingSaveEngine, spellIsUp,
-  recipesFor, recipeLine, formulaValue, whatLands, HpDoor, SignalDoor, untilDiceLand, CombatState,
+  recipesFor, recipeLine, formulaValue, whatLands, HpDoor, SignalDoor, untilDiceLand, CombatState, guardianCastActivity,
   RulesIndex, bookReview, fullDamageSaves, PressGate, DamageCalculator, DamageApplicator, DamageCardRenderer,
   CardDoor, recipeForActivity, loadBookFor, isFollowUp;
 try {
   ({ readPrismaticWall } = await import(`${MODULE}/scripts/rules/prismatic-wall.mjs`));
   ({ PrismaticWallEngine } = await import(`${MODULE}/scripts/prismatic-wall-engine.mjs`));
   ({ RepeatingSaveEngine } = await import(`${MODULE}/scripts/repeating-save-engine.mjs`));
+  ({ guardianCastActivity } = await import(`${MODULE}/scripts/rules/spirit-guardians.mjs`));
   ({ SpellPipeline } = await import(`${MODULE}/scripts/spell-pipeline/pipeline.mjs`));
   ({ SaveEngine } = await import(`${MODULE}/scripts/save-engine.mjs`));
   ({ PostHitSaves } = await import(`${MODULE}/scripts/post-hit-saves.mjs`));
@@ -522,7 +523,9 @@ const choose = (item, up = false) => {
   return decideActivityChoice({ item, activities: readActivities(item), offeredIds: offered.map(a => a.id),
     isMachinery: passive, riderIds: () => PostHitSaves.riderActivityIds(item, offered),
     owns: () => SpellPipeline.owns(item), resolvesItself: () => SpellPipeline.resolvesItself(item),
-    spellIsUp: up, upCanBeSeen: () => upCanBeSeen(item, readActivities(item)) });
+    spellIsUp: up, upCanBeSeen: () => upCanBeSeen(item, readActivities(item)),
+    // A spell whose own rule says what a fresh press means (2026-09-16).
+    oneCast: () => guardianCastActivity(item, readActivities(item)) });
 };
 const press = (item) => {
   const acts = readActivities(item);
@@ -2780,6 +2783,23 @@ console.log(`\nSPIRIT GUARDIANS 2024, THE PICKERS AND THE CARD`);
             + `(dropping ${evilPick.dropped.map(c => c.type).join("/") || "nothing"}), a good one ${goodPick.kept.map(c => c.type).join("/")}; `
             + `a radiant-only sheet cast by an evil caster deals ${onlyRadiant.kept.map(c => c.type).join("/")}`);
       }
+    }
+
+    // ── 9. A fresh press never asks between one cast and its nameless twin ──
+    {
+      const all = [...ACTORS.values()].flatMap(a => [...(a.items ?? [])].map(i => ({ a, i })));
+      const dup = all.find(x => isSpiritGuardians(x.i) && guardianCastActivity(x.i, readActivities(x.i))) ?? null;
+      const twoWays = all.find(x => /^wall of fire$/i.test(x.i?.name ?? "")
+        && readActivities(x.i).filter(v => v?.consumption?.spellSlot !== false
+          && String(v?.name ?? "").trim()).length > 1) ?? null;
+      const pressed = dup ? press(dup.i) : null;
+      const stillAsks = twoWays ? press(twoWays.i) : null;
+      check("9. a press with the aura not up runs the cast instead of asking between it and its nameless twin, and a spell with two ways to cast that both carry names still asks (09-16)",
+        !!dup && /^uses /.test(pressed ?? "") && !/utility/i.test(pressed ?? "")
+          && (!twoWays || /^asks:/.test(stillAsks ?? "")),
+        dup ? `${dup.a.name}'s ${dup.i.name}: ${pressed}; `
+            + `${twoWays ? `${twoWays.a.name}'s ${twoWays.i.name}: ${stillAsks}` : "no two-named-cast spell to compare"}`
+          : "no Spirit Guardians in this world carries the same cast twice");
     }
 
     // ── 5. Whose spirits are these ──
