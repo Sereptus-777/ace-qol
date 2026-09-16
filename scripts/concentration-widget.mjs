@@ -1103,11 +1103,27 @@ export class ConcentrationWidget {
       console.log(`${TAG} | template-move: ${entered.length} token(s) entered ${tracker.item.name}`);
       const timingStr = tracker.timing?.timing ?? "";
       const triggerOnEnter = timingStr.includes("enter");
+      // ⚠️🔴 IN 2014, THE AURA MOVING ONTO YOU IS NOT YOU ENTERING IT. His words,
+      // 2026-09-16: "Do NOT save just because the caster walked the aura onto them
+      // (2014)." The 2014 spell catches "a creature that enters the area for the
+      // first time on a turn or starts its turn there", and a creature standing
+      // still did neither; the 2024 rewrite added "when the emanation enters a
+      // creature's space" precisely because the old wording did not cover it. So
+      // the cleric walking his spirits over somebody is a 2024 trigger and not a
+      // 2014 one, and the creature is still caught at the start of its own turn.
+      //
+      // ⚠️ ONLY AN EMANATION THAT TRAVELS WITH ITS CASTER. A placed area the GM
+      // drags (a 2014 Moonbeam moved with an action) keeps today's behaviour.
+      const walkedOnto = tracker.followsCaster && String(tracker.recipe?.edition ?? "") === "2014";
       for (const tok of entered) {
         tracker.tokensInside.add(tok.id);
-        if (triggerOnEnter) {
-          await this._onTokenEnteredTemplate(tracker, tok);
+        if (!triggerOnEnter) continue;
+        if (walkedOnto) {
+          console.log(`${TAG} | ${tok.name} did not move: ${tracker.item?.name} (2014) was walked onto them, `
+            + `which its words do not catch. They save at the start of their own turn if they are still in it.`);
+          continue;
         }
+        await this._onTokenEnteredTemplate(tracker, tok);
       }
     }
     if (exited.length > 0) {

@@ -2405,10 +2405,11 @@ console.log(`\nSPIRIT GUARDIANS 2024, THE PICKERS AND THE CARD`);
   const MOD = "ace-qol";
   const { lifeStateOf, pickable } = await import(`${MODULE}/scripts/road/picker-rule.mjs`);
   const { SpellTargetPicker } = await import(`${MODULE}/scripts/spell-target-picker.mjs`);
-  const { guardianFlavour, narrowDamageTypes, isSpiritGuardians } =
+  const { guardianFlavour, narrowDamageTypes, isSpiritGuardians, guardianDamage } =
     await import(`${MODULE}/scripts/rules/spirit-guardians.mjs`);
   const { ConcentrationWidget } = await import(`${MODULE}/scripts/concentration-widget.mjs`);
   const { getSpellTiming } = await import(`${MODULE}/scripts/spell-timing.mjs`);
+  const { catchesOn } = await import(`${MODULE}/scripts/road/run.mjs`);
 
   const SCENE6 = "replay-sg-scene";
   const docs6 = new Map();
@@ -2686,6 +2687,99 @@ console.log(`\nSPIRIT GUARDIANS 2024, THE PICKERS AND THE CARD`);
           : `${guardians?.name ?? "Spirit Guardians"}: with its area on the map — ${onMap ?? "it ends"}; `
             + `with ACE running it — ${tracked ?? "it ends"}; with neither — ${byRecipe ?? "it ends"}; `
             + `${hold ? `${hold.name}: ${held ?? "it ends when its last target is free, as it must"}` : "no Hold Person to read"}`);
+    }
+
+    // ── 8. The 2014 copy: its own triggers ──
+    // Johnny, 2026-09-16: "2014 Spirit Guardians only... Save when a creature
+    // enters (first time that turn) or STARTS its turn in the aura. Do NOT save
+    // just because the caster walked the aura onto them (2014). Do NOT use
+    // end-of-turn. Empty aura does NOT end concentration."
+    {
+      const owner14 = [...ACTORS.values()].find(a => [...(a.items ?? [])].some(i =>
+        i.type === "spell" && /^spirit guardians$/i.test(i.name) && i.system?.source?.rules === "2014")) ?? null;
+      const sg14 = owner14 ? [...owner14.items].find(i => i.type === "spell"
+        && /^spirit guardians$/i.test(i.name) && i.system?.source?.rules === "2014") : null;
+      const act14 = sg14 ? [...(sg14.system?.activities ?? [])].find(a => a.type === "save") ?? null : null;
+      if (!sg14 || !act14) {
+        check("8. the 2014 Spirit Guardians catches on entering and at the start of a turn (09-16)", null,
+          "no 2014 Spirit Guardians in this world");
+      } else {
+        let recipe14 = null;
+        await quiet(async () => {
+          await loadBookFor(sg14, { actor: owner14 });
+          recipe14 = recipeForActivity(sg14, act14, { actor: owner14 })?.recipe ?? null;
+        });
+        const said = recipe14?.recatch ?? [];
+        const asks = (t) => catchesOn(recipe14, t).ok;
+        const who14 = SaveEngine._areaWhoRule(sg14);
+
+        // A tracker for it, and a creature the aura is walked onto.
+        const handed14 = [];
+        const engine14 = {
+          postSaveCard: async (item, actor, tokens, opts) => { handed14.push({ how: "card", tokens, opts }); },
+          _fastResolveSingleNpcSave: async (item, actor, token, opts) => { handed14.push({ how: "rolled", token, opts }); },
+        };
+        const widget14 = new ConcentrationWidget(engine14);
+        const tplDoc14 = { id: "tpl-sg-2014", parent: { id: SCENE6 }, t: "circle", x: 0, y: 0, distance: 15,
+          flags: {}, object: null, delete: async () => {} };
+        await quiet(async () => {
+          widget14._onPersistentSpellCreated({
+            item: sg14, actor: owner14, templateDoc: tplDoc14, timing: getSpellTiming(sg14),
+            saveAbility: "wis", saveDC: 15, halfOnSave: true, damageTypes: [], tokens: [],
+            recipe: recipe14, activityId: act14.id, castLevel: 3,
+          });
+        });
+        const tracker14 = widget14._activeSpells.get(tplDoc14.id) ?? null;
+        if (tracker14) tracker14.followsCaster = true;   // an emanation centred on its caster
+        const at14 = handed14.length;
+        const keepCombat14 = game.combat;
+        game.combat = { started: true, round: 2, turn: 0 };
+        await quiet(async () => {
+          // The caster walks his spirits onto a creature standing still.
+          tracker14.tokens = [];
+          tracker14.tokensInside = new Set();
+          const keepGet = SaveEngine._getTokensInTemplate;
+          SaveEngine._getTokensInTemplate = () => [aliveTok];
+          try { await widget14._onTemplateMove(tplDoc14); }
+          finally { SaveEngine._getTokensInTemplate = keepGet; }
+        });
+        const onWalkOver = handed14.length - at14;
+        // ...and the same creature at the start of its own turn.
+        await quiet(async () => { await widget14._onTokenEnteredTemplate(tracker14, aliveTok, { phase: "startOfTurn" }); });
+        game.combat = keepCombat14;
+        const onItsTurn = handed14.length - at14 - onWalkOver;
+
+        // Its concentration stands with nobody in it.
+        let stands14 = null;
+        await quiet(async () => {
+          const { concentrationHoldsAPlace } = await import(`${MODULE}/scripts/rules/concentration-place.mjs`);
+          stands14 = await concentrationHoldsAPlace(
+            { name: `Concentrating: ${sg14.name}`, flags: { dnd5e: { item: { uuid: sg14.uuid } } } },
+            { casterActor: owner14, templates: [], tracked: [{ actor: owner14, item: sg14 }] });
+        });
+
+        check("8. the 2014 Spirit Guardians catches a creature that walks in and one that starts its turn in it, never at the end of a turn, and never for being walked onto; it asks who is safe first, and an empty aura still holds its concentration (09-16)",
+          asks("enter-area") && asks("start-of-turn") && !asks("end-of-turn")
+            && who14.kind === "exclude" && onWalkOver === 0 && onItsTurn === 1 && !!stands14,
+          `${owner14.name}'s 2014 copy: its words catch on ${said.join(", ") || "nothing"}; `
+            + `end of turn is ${asks("end-of-turn") ? "asked" : "refused"}; who is safe: ${who14.kind}; `
+            + `walked onto a standing creature: ${onWalkOver} save(s); that creature's own turn start: ${onItsTurn} save(s); `
+            + `empty aura: ${stands14 ?? "concentration would end"}`);
+
+        // Its damage is its caster's alignment, and a sheet that carries both
+        // halves rolls one of them.
+        const both = [{ type: "radiant", total: 3, roll: {} }, { type: "necrotic", total: 3, roll: {} }];
+        const evilPick = guardianDamage(both.map(c => ({ ...c })), { name: "an evil caster", system: { details: { alignment: "Neutral Evil" } } });
+        const goodPick = guardianDamage(both.map(c => ({ ...c })), { name: "a good caster", system: { details: { alignment: "Lawful Good" } } });
+        const onlyRadiant = guardianDamage([{ type: "radiant", total: 3, roll: {} }], { name: "an evil caster", system: { details: { alignment: "Neutral Evil" } } });
+        check("8b. a 2014 sheet that stores both halves of the spell's choice rolls one of them, and a sheet that stores only radiant still turns fiendish for an evil caster (09-16)",
+          evilPick.kept.length === 1 && evilPick.kept[0].type === "necrotic" && evilPick.dropped.length === 1
+            && goodPick.kept.length === 1 && goodPick.kept[0].type === "radiant"
+            && onlyRadiant.kept.length === 1 && onlyRadiant.kept[0].type === "necrotic",
+          `both halves on the sheet: an evil caster deals ${evilPick.kept.map(c => c.type).join("/")} `
+            + `(dropping ${evilPick.dropped.map(c => c.type).join("/") || "nothing"}), a good one ${goodPick.kept.map(c => c.type).join("/")}; `
+            + `a radiant-only sheet cast by an evil caster deals ${onlyRadiant.kept.map(c => c.type).join("/")}`);
+      }
     }
 
     // ── 5. Whose spirits are these ──

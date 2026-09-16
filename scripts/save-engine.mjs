@@ -69,7 +69,7 @@ import { recipeForActivity, repeatTriggerOf, loadBookFor, isFollowUp, rulesActio
 // Who may be on a card at all: the one life rule every picker asks (Phase 4-5).
 import { lifeStateOf, pickable } from "./road/picker-rule.mjs";
 // Whose spirits they are: the caster's alignment picks necrotic or radiant.
-import { isSpiritGuardians, guardianFlavour, narrowDamageTypes } from "./rules/spirit-guardians.mjs";
+import { isSpiritGuardians, guardianFlavour, guardianDamage, narrowDamageTypes } from "./rules/spirit-guardians.mjs";
 import { RulesIndex } from "./rules/rules-index.mjs";
 
 // Real black d20 die art (per-face). These are the dice the GM already sees;
@@ -5142,12 +5142,20 @@ export class SaveEngine {
     // The dice are the spell's; the type is the caster's alignment. Done here so
     // the card, the hit-point door and every resistance downstream see one type.
     if (isSpiritGuardians(item) && damageComponents.length) {
-      const flavour = guardianFlavour(casterActor);
-      for (const c of damageComponents) {
-        if (String(c.type ?? "").toLowerCase() === flavour.damageType) continue;
-        c.type = flavour.damageType;
+      const { kept, dropped, flavour } = guardianDamage(damageComponents, casterActor);
+      if (dropped.length) {
+        // ⚠️ THE OTHER ALIGNMENT'S DICE NEVER HAPPENED, so they are not shown
+        // either: a 2014 sheet that stores both halves of the spell's own choice
+        // was rolling 6d8 and animating six dice for a 3d8 spell.
+        for (const c of dropped) {
+          const at = rollsToShow.indexOf(c.roll);
+          if (at >= 0) rollsToShow.splice(at, 1);
+        }
+        damageComponents.length = 0;
+        damageComponents.push(...kept);
       }
-      console.log(`${MODULE_ID} | ${flavour.why}.`);
+      console.log(`${MODULE_ID} | ${flavour.why}`
+        + `${dropped.length ? `; its ${dropped.map(c => c.type).join("/")} half is not this caster's` : ""}.`);
     }
 
     // ── Radiant Soul (Celestial Warlock 6+) — direct spell damage path ──

@@ -75,6 +75,37 @@ export function guardianFlavour(actor) {
 }
 
 /**
+ * Which of a cast's rolled damage parts belong to THIS caster's spirits.
+ *
+ * ⚠️🔴 A 2014 SHEET CAN CARRY BOTH, AND ROLLING BOTH IS DOUBLE DAMAGE. Asha's
+ * 2014 copy stores "3d8 radiant (Good or Neutral Alignment)" AND "3d8 necrotic
+ * (Evil Alignment)" as two damage parts, which is the sheet writing the spell's
+ * own either/or. dnd5e rolls every part it is given, so her Spirit Guardians was
+ * dealing 6d8 to everyone. The caster's alignment picks one; the other never
+ * happened, so its dice are never shown either.
+ *
+ * ⚠️ AND WHERE THE SHEET OFFERS ONLY ONE, IT IS THE ALIGNMENT'S. Thorian's copy
+ * stores radiant alone; cast by an evil caster the spirits are fiendish and the
+ * damage is necrotic, which is what both books print.
+ *
+ * @param {Array<{type: string}>} components  what was rolled
+ * @param {Actor} casterActor
+ * @returns {{kept: object[], dropped: object[], flavour: object}}
+ */
+export function guardianDamage(components, casterActor) {
+  const flavour = guardianFlavour(casterActor);
+  const rows = (components ?? []).filter(Boolean);
+  const typeOf = (c) => String(c?.type ?? "").toLowerCase();
+  const kinds = new Set(rows.map(typeOf));
+  if (rows.length > 1 && kinds.size > 1) {
+    const kept = rows.filter(c => typeOf(c) === flavour.damageType);
+    if (kept.length) return { kept, dropped: rows.filter(c => !kept.includes(c)), flavour };
+  }
+  for (const c of rows) c.type = flavour.damageType;
+  return { kept: rows, dropped: [], flavour };
+}
+
+/**
  * The damage types a cast really deals, where the item offers a choice this rule
  * makes. Anything else is handed straight back.
  *
