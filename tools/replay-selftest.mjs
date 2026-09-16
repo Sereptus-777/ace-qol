@@ -2589,6 +2589,77 @@ console.log(`\nSPIRIT GUARDIANS 2024, THE PICKERS AND THE CARD`);
           + `${runs.length} save(s) asked${runs.length ? ` (${runs.map(r => r.token?.name ?? r.tokens?.map(t => t.name).join("/")).join(", ")})` : ""}`);
     }
 
+    // ── 6. Dropping concentration takes the light off the map ──
+    if (!guardians || !guardAct || !varekTok) {
+      check("6. dropping concentration ends the aura and what it put on (09-16)", null, "Varek has no 2024 Spirit Guardians");
+    } else {
+      const ended = [];
+      const keepSeq = globalThis.Sequencer;
+      globalThis.Sequencer = { EffectManager: { endEffects: (o) => { ended.push(o); } } };
+      const engine = { postSaveCard: async () => {}, _fastResolveSingleNpcSave: async () => {} };
+      const widget = new ConcentrationWidget(engine);
+      // The creature standing in it, carrying what the spell put on: the effect
+      // is tagged with this spell's concentration origin, as the door tags it.
+      const halfSpeed = { id: "eff-half-speed", name: "Half Speed", statuses: new Set(),
+        flags: { [MOD]: { concentrationOrigin: { casterId: varek.id, spellName: guardians.name, spellItemId: guardians.id } } } };
+      alive.effects.set(halfSpeed.id, halfSpeed);
+      const deleted = [];
+      alive.deleteEmbeddedDocuments = async (type, ids) => {
+        for (const id of ids) { deleted.push(id); alive.effects.delete(id); }
+        return [];
+      };
+      const templateDoc = { id: "tpl-sg-end", parent: { id: SCENE6 }, t: "circle", x: 0, y: 0, distance: 15,
+        flags: {}, object: null, delete: async () => {} };
+      let recipe = null;
+      await quiet(async () => {
+        await loadBookFor(guardians, { actor: varek });
+        recipe = recipeForActivity(guardians, guardAct, { actor: varek })?.recipe ?? null;
+        widget._onPersistentSpellCreated({
+          item: guardians, actor: varek, templateDoc, timing: getSpellTiming(guardians),
+          saveAbility: "wis", saveDC: 21, halfOnSave: true, damageTypes: [], tokens: [],
+          recipe, activityId: guardAct.id, castLevel: 5,
+        });
+      });
+      const tracker = widget._activeSpells.get(templateDoc.id) ?? null;
+      // Concentration breaks: the effect that carried it is deleted.
+      const conc = { name: `Concentrating: ${guardians.name}`, uuid: "Actor.varek.ActiveEffect.conc1",
+        statuses: new Set(["concentration"]), parent: varek };
+      await quiet(async () => {
+        widget._onEffectRemoved(conc);
+        for (let i = 0; i < 20; i++) await new Promise(r => setTimeout(r, 0));
+      });
+      globalThis.Sequencer = keepSeq;
+      const byName = ended.find(o => o?.name === `ace-qol-guardians-${templateDoc.id}`) ?? null;
+      const byOrigin = ended.find(o => o?.origin === conc.uuid) ?? null;
+      check("6. dropping concentration takes the aura off the map the same moment the effect goes, by ACE's own name and by whatever another module hung on that effect, and what the emanation put on comes off with it (09-16)",
+        !!tracker && !!byName && !!byOrigin && deleted.includes(halfSpeed.id)
+          && !widget._activeSpells.has(templateDoc.id),
+        `ended: ${ended.map(o => o?.name ?? o?.origin ?? "?").join(", ") || "nothing"}; `
+          + `the spell's own effect on the bandit: ${deleted.includes(halfSpeed.id) ? "removed" : "left on"}; `
+          + `the tracker is ${widget._activeSpells.has(templateDoc.id) ? "still there" : "gone"}`);
+
+      // And the caster is never caught by his own emanation, whatever the
+      // placed-area setting says.
+      const keepSetting = SETTINGS.get("ace-qol.excludeCasterFromTemplates");
+      SETTINGS.set("ace-qol.excludeCasterFromTemplates", false);
+      const templateDoc2 = { id: "tpl-sg-caster", parent: { id: SCENE6 }, t: "circle", x: 0, y: 0, distance: 15,
+        flags: {}, object: null, delete: async () => {} };
+      await quiet(async () => {
+        widget._onPersistentSpellCreated({
+          item: guardians, actor: varek, templateDoc: templateDoc2, timing: getSpellTiming(guardians),
+          saveAbility: "wis", saveDC: 21, halfOnSave: true, damageTypes: [], tokens: [],
+          recipe, activityId: guardAct.id, castLevel: 5,
+        });
+      });
+      const tracker2 = widget._activeSpells.get(templateDoc2.id) ?? null;
+      if (keepSetting === undefined) SETTINGS.delete("ace-qol.excludeCasterFromTemplates");
+      else SETTINGS.set("ace-qol.excludeCasterFromTemplates", keepSetting);
+      check("6b. the caster of a self-centred emanation is exempt from it even with the placed-area setting turned off (09-16)",
+        !!tracker2 && tracker2.exemptTokenIds.has(varekTok.id),
+        `with "exclude the caster from templates" off, ${varek.name} is `
+          + `${tracker2?.exemptTokenIds?.has(varekTok.id) ? "still exempt from his own spirits" : "caught by his own spirits"}`);
+    }
+
     // ── 5. Whose spirits are these ──
     {
       const evilOne = firstActor(VAREK);

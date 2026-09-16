@@ -511,9 +511,13 @@ export class ConcentrationWidget {
         // ongoing saves must answer to the same switch or one cast would exclude
         // him and the next turn would not. Decided here, at registration, for the
         // same reason the cast-time filter decides at cast time.
-        if (QolSettings.get?.("excludeCasterFromTemplates") !== false) {
-          tracker.exemptTokenIds.add(own[0].id);
-        }
+        // ⚠️🔴 AND IT IS NOT THE PLACED-AREA SETTING'S CALL (2026-09-16). That
+        // toggle is about standing in your own Fireball, which is a real choice.
+        // An emanation centred on you is YOURS: its spirits do not turn on the
+        // cleric who called them, and its halved speed is not his to carry. The
+        // setting used to decide this, so a table that turned it off had the
+        // caster saving against his own Spirit Guardians every turn.
+        tracker.exemptTokenIds.add(own[0].id);
       } else if (own.length > 1) {
         // ⚠️ Several tokens share this actor. Following the wrong copy would
         // drag the spell across the map, so follow none of them and SAY SO -
@@ -877,13 +881,89 @@ export class ConcentrationWidget {
     return true;
   }
 
-  /** The aura goes when the spell does. */
-  static endGuardianAura(templateId) {
+  /**
+   * Take this area's light off the map, at the moment it ends.
+   *
+   * ⚠️🔴 THE TRACKER IS GONE BY THEN ON THE CONCENTRATION PATH. Dropping
+   * concentration deletes the tracker first and the template second, so the
+   * template's own handler bails ("no tracker") and anything it was going to
+   * clean up never happens. The file WARNS about this trap for Web's restraint,
+   * and the guardian aura fell into it the same day it was written: the spirits
+   * kept circling a caster who was no longer concentrating (his, 2026-09-16:
+   * "the aura ANIMATION stays on the map").
+   *
+   * So every ending calls this, and it is safe to call twice.
+   *
+   * ⚠️ BY NAME AND BY ORIGIN, NEVER BY TOKEN. Ending every persistent effect on
+   * a token would take somebody else's spell down with it. ACE's own aura has a
+   * name; anything another module hung on this concentration effect (Automated
+   * Animations tags its own with the effect's uuid) goes by that origin.
+   */
+  static endAreaVisuals(templateId, { effect = null, why = "it ended" } = {}) {
+    const mgr = globalThis.Sequencer?.EffectManager;
+    if (!mgr?.endEffects) return false;
+    let ended = false;
     try {
-      Sequencer?.EffectManager?.endEffects?.({ name: `ace-qol-guardians-${templateId}` });
+      if (templateId) { mgr.endEffects({ name: `ace-qol-guardians-${templateId}` }); ended = true; }
     } catch (err) {
       console.warn(`${TAG} | could not end the guardian aura for ${templateId}:`, err);
     }
+    try {
+      if (effect?.uuid) { mgr.endEffects({ origin: effect.uuid }); ended = true; }
+    } catch (err) {
+      console.warn(`${TAG} | could not end the effects hung on ${effect?.name ?? "an effect"}:`, err);
+    }
+    if (ended) console.log(`${TAG} | the light for ${templateId ?? effect?.name ?? "that area"} is off the map (${why}).`);
+    return ended;
+  }
+
+  /** Kept for callers that only know the template. */
+  static endGuardianAura(templateId) {
+    return ConcentrationWidget.endAreaVisuals(templateId, { why: "its area is gone" });
+  }
+
+  /**
+   * What a self-centred emanation put on a creature comes off when the creature
+   * leaves it, and when the spell ends.
+   *
+   * ⚠️ AN EMANATION IS A PLACE YOU ARE STANDING IN. Its halved speed belongs to
+   * whoever is inside it now, not to whoever was inside it once (his, 2026-09-16:
+   * "Speed halved belongs on creatures still in the emanation, and comes off them
+   * when the spell ends or they leave"). dnd5e ends a concentration-linked effect
+   * when concentration drops, which covers the spell ending; nothing covered
+   * walking out of it.
+   *
+   * ⚠️ ONLY WHAT THIS SPELL PUT ON, and only for an emanation that travels with
+   * its caster. A placed area (Cloudkill, Web) keeps today's rule: what its save
+   * inflicted stays until its own words end it.
+   *
+   * @param {Actor} actor    whose effects to look at; null means every token on the scene
+   */
+  async _clearEmanationEffects(tracker, actor = null, { why = "it ended" } = {}) {
+    if (!tracker?.followsCaster) return 0;
+    if (game.users?.activeGM !== game.user) return 0;
+    const spellName = tracker.item?.name ?? "";
+    const spellItemId = tracker.item?.id ?? null;
+    const mine = (e) => {
+      const co = e?.flags?.["ace-qol"]?.concentrationOrigin;
+      if (!co) return false;
+      if (spellItemId && co.spellItemId === spellItemId) return true;
+      return !!spellName && co.spellName === spellName;
+    };
+    const actors = actor ? [actor] : [...new Set((canvas.tokens?.placeables ?? []).map(t => t.actor).filter(Boolean))];
+    let cleared = 0;
+    for (const a of actors) {
+      try {
+        const ids = (a.effects?.contents ?? []).filter(mine).map(e => e.id);
+        if (!ids.length) continue;
+        await a.deleteEmbeddedDocuments("ActiveEffect", ids);
+        cleared += ids.length;
+        console.log(`${TAG} | ${a.name}: ${ids.length} effect(s) ${spellName || "that area"} had put on ${why}.`);
+      } catch (err) {
+        console.warn(`${TAG} | could not take ${spellName}'s effects off ${a?.name}:`, err);
+      }
+    }
+    return cleared;
   }
 
   _playPersistentSpellAnimation(item, templateDoc) {
@@ -1047,8 +1127,10 @@ export class ConcentrationWidget {
   async _onTemplateDeleted(templateId) {
     if (!this._activeSpells.has(templateId)) return;
     const tracker = this._activeSpells.get(templateId);
-    // Its own aura, if ACE drew one, ends with it.
-    if (isSpiritGuardians(tracker?.item)) ConcentrationWidget.endGuardianAura(templateId);
+    // Its own light, whatever drew it, ends with it.
+    ConcentrationWidget.endAreaVisuals(templateId, { why: "its area was removed" });
+    this._clearEmanationEffects(tracker, null, { why: "when the spell ended" })
+      .catch(err => console.warn(`${TAG} | clearing what ${tracker?.item?.name} put on failed:`, err));
     console.log(`${TAG} | Template deleted for ${tracker.item?.name} — removing widget + dropping concentration`);
 
     // Area-denial spells: queue Lingering Nausea for anyone who failed a
@@ -1572,6 +1654,10 @@ export class ConcentrationWidget {
           }
         } else if (!isInside && wasInside) {
           tracker.tokensInside.delete(tokenDoc.id);
+          // An emanation is a place you are standing in: step out of it and what
+          // it was doing to you stops (2026-09-16).
+          this._clearEmanationEffects(tracker, token.actor, { why: `when ${token.name} left it` })
+            .catch(err => console.warn(`${TAG} | clearing ${tracker.item?.name} on exit failed:`, err));
           if (isAreaDenial && tracker.timing?.failEffect === "restrained") {
             // RAW: leaving the webs/sphere ENDS the restraint immediately — no
             // save. (The exit-save-with-advantage below is for lingering gas
@@ -2590,6 +2676,15 @@ export class ConcentrationWidget {
           this._clearAreaDenialRestraint(tracker)
             .catch(err => console.warn(`${TAG} | clear restraint on concentration-loss failed:`, err));
         }
+
+        // ⚠️🔴 THE SAME MOMENT THE EFFECT DELETES, NOT WHENEVER THE TEMPLATE GOES.
+        // His words, 2026-09-16: "end the sequencer effect. Same moment the effect
+        // deletes. Do not wait for combat to end." The template delete below fires
+        // the template handler, which bails because the tracker is already gone,
+        // which is exactly how the spirits outlived the spell.
+        ConcentrationWidget.endAreaVisuals(templateId, { effect, why: "concentration ended" });
+        this._clearEmanationEffects(tracker, null, { why: "when the spell ended" })
+          .catch(err => console.warn(`${TAG} | clearing what ${tracker.item?.name} put on failed:`, err));
 
         this._activeSpells.delete(templateId);
 
