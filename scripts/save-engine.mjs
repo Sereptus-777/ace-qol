@@ -2125,6 +2125,42 @@ export class SaveEngine {
   }
 
   async _onTemplateCreated(templateDoc) {
+    // ⚠️🔴 A DEAD CAST IS TURNED AWAY AT THE DOOR, BEFORE ANYTHING IS REBUILT
+    // FROM IT (2026-09-17). His log: "_pendingFromTemplate ... cast happened on
+    // another client." It had not: the pending was cleared by the counter a
+    // moment earlier, and this read that absence as a cast from somewhere else
+    // and rebuilt a save from the template's own origin flag. The rebuild exists
+    // for a real case - two GMs, the cast on one client and the template
+    // processed on the other - but a counterspelled cast is not that case, and
+    // reconstructing one is how a dead Fireball got its saves back.
+    //
+    // ⚠️ FIRST, BEFORE THE PENDINGS ARE EVEN TOUCHED, so nothing is consumed on
+    // the way to finding out. The origin is all this needs.
+    try {
+      const origin = templateDoc?.flags?.dnd5e?.origin ?? null;
+      if (origin) {
+        const { ReactionEngine } = await import("./reaction-engine.mjs");
+        if (ReactionEngine.castIsDead({ origin })) {
+          console.log(`${MODULE_ID} | that area belongs to a counterspelled cast - no save is `
+            + `rebuilt from it, and it comes off the map.`);
+          try {
+            const live = canvas?.scene?.templates?.get?.(templateDoc.id) ?? templateDoc;
+            if (live) await live.delete();
+          } catch (err) {
+            const msg = String(err?.message ?? err ?? "");
+            if (!/does not exist/i.test(msg)) {
+              console.warn(`${MODULE_ID} | that counterspelled area could not be removed; `
+                + `delete it by hand:`, err);
+            }
+          }
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not check whether that area's cast was counterspelled; `
+        + `treating it as a live cast:`, err);
+    }
+
     console.log(`${MODULE_ID} | _onTemplateCreated fired, pending save:`, !!this._pendingSaveSpell, "pending movement-damage:", !!this._pendingMovementDamageSpell);
 
     // v0.6.5: Movement-damage spell waiting for template (Spike Growth,

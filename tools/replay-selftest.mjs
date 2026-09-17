@@ -2884,13 +2884,26 @@ console.log(`\nPHASE 6b: COUNTERSPELL`);
         byOrigin?.abort === true,
         `by origin alone: ${byOrigin?.abort ? "dead" : `alive (${byOrigin?.reason})`}`);
 
-      // The whole point of the wider match: even when the uuid on the template
-      // is not the uuid the counter recorded, who cast what still answers.
-      const stranger = await ReactionEngine.awaitCastDecision(
-        "Scene.abc.Token.def.Actor.ghi.Item.jkl.Activity.mno", { item: fireball, actor: caster });
-      check("and when the uuids do not agree at all, WHO CAST WHAT still answers (2026-09-17)",
-        stranger?.abort === true,
-        `a completely different uuid, same caster and same spell: ${stranger?.abort ? "dead" : `alive (${stranger?.reason})`}`);
+      // ⚠️ HIS NEXT FIREBALL. There is no identifier that separates it from the
+      // one that was countered - same item, same activity, same uuid - so the
+      // thing that saves it is the cast STARTING, which clears the old record.
+      // This pin does what a real cast does: it raises its barrier first.
+      const second = cast(caster, fireball);
+      second.uuid = activity.uuid;                    // a re-cast really is the same uuid
+      ReactionEngine._createCastBarrier(second);
+      const nextCast = await ReactionEngine.awaitCastDecision(second.uuid,
+        { item: fireball, actor: caster });
+      check("and the same wizard's NEXT Fireball is alive, because starting a cast clears the last one's record (2026-09-17)",
+        nextCast?.abort === false,
+        `a second cast of the same spell by the same caster: ${nextCast?.abort ? "wrongly dead" : "alive, as it must be"}`);
+      ReactionEngine._markCastCounterspelled(activity);   // put the record back for what follows
+
+      // A door with NO origin to offer - the flourish, a save being armed -
+      // still answers from who cast what.
+      const noOrigin = await ReactionEngine.awaitCastDecision(null, { item: fireball, actor: caster });
+      check("a door with no uuid to offer still answers from who cast what (2026-09-17)",
+        noOrigin?.abort === true,
+        `asked with only the caster and the spell: ${noOrigin?.abort ? "dead" : "alive"}`);
 
       canvas.tokens.placeables.length = 0;
       for (const a of [caster, kasimir]) ACTORS.delete(a.id);
@@ -3078,6 +3091,80 @@ console.log(`\nPHASE 6b: COUNTERSPELL`);
         otherKilled === 0,
         `somebody else's explosion: ${otherKilled ? "wrongly cut" : "left playing, as it should be"}`);
 
+      canvas.tokens.placeables.length = 0;
+      ACTORS.delete(caster.id);
+    }
+
+    // ── "Yes means the mouse is not a Fireball" ──
+    // Johnny, 2026-09-17: "dnd5e starts the Fireball preview WHILE the
+    // Counterspell prompt is open. After Yes the mouse can still drop a
+    // template. save-engine._onTemplateCreated then runs _pendingFromTemplate
+    // and logs 'cast happened on another client' because pending was already
+    // cleared by the kill. That rebuild is forbidden on a dead cast."
+    {
+      const caster = makeCaster("p6b-c13", "Neferon", { at: [0, 0] });
+      const fireball = other("Fireball");
+      fireball.uuid = "Actor.p6b-c13.Item.it-Fireball";
+      fireball.actor = caster;
+      const activity = cast(caster, fireball);
+      activity.uuid = "Actor.p6b-c13.Item.it-Fireball.Activity.kkk";
+
+      // dnd5e's preview, as it sits on the cursor: its own object, its own
+      // cancel handler. ACE only ever calls that handler - it never creates one.
+      let cancelled = 0;
+      const preview = { _onCancelPlacement: async () => { cancelled += 1; } };
+      const notOurs = { refresh: () => {} };            // something else on the layer
+      const keepCanvasTemplates = canvas.templates;
+      canvas.templates = { preview: { children: [preview, notOurs] } };
+
+      const taken = await quiet(() => ReactionEngine.cancelTemplatePreview("a pin"));
+      check("YES MEANS THE MOUSE IS NOT A FIREBALL: ACE cancels dnd5e's live preview through its own handler, and leaves anything else on the layer alone (2026-09-17)",
+        taken === 1 && cancelled === 1,
+        `previews cancelled: ${cancelled}; other things on the layer touched: ${taken - cancelled}`);
+
+      // And nothing throws when there is no preview, or no canvas at all.
+      canvas.templates = { preview: { children: [] } };
+      const none = await quiet(() => ReactionEngine.cancelTemplatePreview("a pin"));
+      check("and it is a quiet no-op when the cursor is empty (2026-09-17)",
+        none === 0, `cancelled ${none}`);
+
+      // The door: a template that belongs to a dead cast is turned away BEFORE
+      // anything is rebuilt from it.
+      canvas.templates = keepCanvasTemplates;
+      const templates = new Map();
+      const keepScene = canvas.scene;
+      canvas.scene = { templates: { get: (id) => templates.get(id) ?? null, contents: [],
+        [Symbol.iterator]: function* () { yield* templates.values(); } } };
+      const tpl = makeTemplate1(templates, "tpl-dead-origin", activity, fireball);
+      ReactionEngine._markCastCounterspelled(activity);
+
+      const saves = Object.create(SaveEngine.prototype);
+      saves._pendingSaveSpell = null;          // exactly as the kill left it
+      let rebuilt = 0;
+      saves._pendingFromTemplate = () => { rebuilt += 1; return null; };
+      const atCard = posted.length;
+      await quiet(() => saves._onTemplateCreated(tpl));
+      check("a dropped area from a dead cast is turned away at the door: no rebuild, no save card, and it comes off the map (2026-09-17)",
+        rebuilt === 0 && posted.length === atCard && tpl.deleted === true,
+        `rebuilds attempted: ${rebuilt}; cards: ${posted.length - atCard}; the area ${tpl.deleted ? "was removed" : "is still there"}`);
+
+      // A live cast still rebuilds from the template, which is what that path
+      // is FOR: two GMs, the cast on one client and the area on the other.
+      const live = cast(caster, fireball);
+      live.uuid = "Actor.p6b-c13.Item.it-Fireball.Activity.lll";
+      // A real cast raises its barrier on the way in, and that is what clears
+      // the previous cast's death record.
+      ReactionEngine._createCastBarrier(live);
+      const tpl2 = makeTemplate1(templates, "tpl-live-origin", live, fireball);
+      tpl2.flags.dnd5e.origin = live.uuid;
+      rebuilt = 0;
+      saves._pendingSaveSpell = null;
+      await quiet(() => saves._onTemplateCreated(tpl2));
+      check("and a LIVE cast still rebuilds from its area, which is what that path is for (2026-09-17)",
+        rebuilt === 1 && tpl2.deleted !== true,
+        `rebuilds attempted: ${rebuilt}; the area ${tpl2.deleted ? "was wrongly removed" : "is still on the map"}`);
+
+      canvas.scene = keepScene;
       canvas.tokens.placeables.length = 0;
       ACTORS.delete(caster.id);
     }

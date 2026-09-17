@@ -190,6 +190,44 @@ export class ReactionEngine {
   }
 
   /**
+   * Take the spell off the mouse.
+   *
+   * ⚠️🔴 AFTER A YES, THE CURSOR WAS STILL CARRYING A FIREBALL. Johnny,
+   * 2026-09-17: "dnd5e starts the Fireball preview WHILE the Counterspell prompt
+   * is open. After Yes the mouse can still drop a template." It can, because
+   * `Activity#use` goes straight from the usage message to `#placeTemplate`
+   * without awaiting anything, and `drawPreview` then sits on a promise waiting
+   * for a click that may come long after the spell is dead.
+   *
+   * ⚠️ THIS CANCELS, IT DOES NOT PLACE. ACE has no business creating a
+   * template - it tried that in 0.34.40 and broke Fireball outright. Cancelling
+   * a preview is the same thing a right-click does, through the system's own
+   * handler, on the system's own object. Nothing is created, nothing is aimed,
+   * and if dnd5e ever renames that handler this quietly does nothing rather than
+   * throwing in the middle of a counter.
+   */
+  static async cancelTemplatePreview(why = "the cast was counterspelled") {
+    try {
+      const previews = [...(globalThis.canvas?.templates?.preview?.children ?? [])];
+      let cancelled = 0;
+      for (const preview of previews) {
+        if (typeof preview?._onCancelPlacement !== "function") continue;
+        try {
+          await preview._onCancelPlacement(new Event("contextmenu"));
+          cancelled += 1;
+        } catch (_) { /* the reject is the cancel; there is nothing to catch */ }
+      }
+      if (cancelled) {
+        console.log(`${MODULE_ID} | took the area off the cursor (${cancelled}) - ${why}.`);
+      }
+      return cancelled;
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not take the area off the cursor; right-click to drop it:`, err);
+      return 0;
+    }
+  }
+
+  /**
    * PUBLIC. Is this cast dead - counterspelled, and therefore finished?
    *
    * ⚠️ FOUR WAYS TO RECOGNISE IT, because one was not enough. An activity
@@ -214,6 +252,19 @@ export class ReactionEngine {
     const actorId = actor?.id ?? null;
     const itemId = item?.id ?? null;
 
+    // ⚠️🔴 A UUID CANNOT TELL TWO CASTS OF ONE SPELL APART, AND I BUILT A
+    // RULE ON THE BELIEF THAT IT COULD (2026-09-17, caught by the replay inside
+    // a minute). When the same wizard casts Fireball again, it is the same item
+    // and the same activity, so the SAME activity uuid: there is no identifier
+    // anywhere that separates this cast from the last one. The only thing that
+    // does is a new cast starting, which is why `_createCastBarrier` clears the
+    // record for that creature and that item - see the note there. That is the
+    // protection for his next Fireball, and it is the only one available.
+    //
+    // So all four routes stand, and a door may ask with whatever it has: a
+    // template carries the activity's uuid, an animation is tagged with the
+    // item's, and the flourish and the save being armed have neither and offer
+    // who cast what instead.
     return ReactionEngine._counterspelledCasts.some(c => {
       if (c.activityUuid && origin && origin === c.activityUuid) return true;
       if (c.itemUuid && typeof origin === "string" && origin.startsWith(c.itemUuid)) return true;
@@ -1946,6 +1997,9 @@ export class ReactionEngine {
         ReactionEngine._resolveCastBarrier(activity, {
           abort: true, reason: "counterspelled", counterspeller: reactor.actor.name,
         });
+        // ⚠️ AND TAKE IT OFF THE MOUSE. dnd5e may already be waiting for a click
+        // to drop this spell's area; after a Yes there is nothing to aim.
+        ReactionEngine.cancelTemplatePreview(`${item?.name ?? "that spell"} was counterspelled`);
 
         // ── Mechanical line + randomized flavor line (v0.7.17b) ──
         const flavorOptions = [
