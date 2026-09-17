@@ -2403,6 +2403,183 @@ console.log(`\nPHASE 3: ATTACKS ON THE ROAD`);
   }
 }
 
+/* ── PHASE 6c: THE OPPORTUNITY ATTACK ────────────────────────────────────── */
+// Johnny, 2026-09-17: "PHASE 6c - opportunity attack only. Then stop." Somebody
+// leaves a creature's reach on foot; that creature can act, has a reaction and
+// has something to swing, so it is asked. Yes swings once, on the same road as
+// any other attack. Disengage, a teleport, a spent reaction or a creature that
+// is out of the fight get no pop-up, and the log says which.
+//
+// ⚠️ THE MACHINERY WAS ALREADY THERE, as it was for Shield and Counterspell. The
+// detection is thorough - edge-to-edge reach in three dimensions, sub-cell
+// snapping, Polearm Master on both editions, forced movement excluded - and Take
+// OA already fires a real attack through the pipeline. What it did not have was
+// the teleport rule, the two shared readers, and a word for any of its refusals.
+console.log(`\nPHASE 6c: THE OPPORTUNITY ATTACK`);
+{
+  const MOD = "ace-qol";
+  const { OAPrompt } = await import(`${MODULE}/scripts/oa-prompt.mjs`);
+
+  const keep6c = { placed: [...canvas.tokens.placeables], combats: game.combats,
+    prompt: OAPrompt._postPromptCard, scene: canvas.scene,
+    on: SETTINGS.get("ace-qol.opportunityAttackPrompt"),
+    reach: SETTINGS.get("ace-qol.opportunityAttackReach") };
+  SETTINGS.set("ace-qol.opportunityAttackPrompt", true);
+  SETTINGS.set("ace-qol.opportunityAttackReach", 5);
+  canvas.tokens.placeables.length = 0;
+  const made6c = [];
+  const offered = [];
+  OAPrompt._postPromptCard = async (reactorActor) => { offered.push(reactorActor?.name ?? "?"); };
+
+  try {
+    // A weapon as a sheet carries one: an attack activity that is not ranged is
+    // what makes it swingable (see _isMeleeCapable).
+    const sword = { id: "it-oa-sword", name: "Longsword", type: "weapon", img: "",
+      system: { equipped: true, type: { value: "martialM" },
+        activities: { a1: { type: "attack", attack: { type: { value: "melee" } } } } } };
+    const fighter = (id, name, { at = [0, 0], disposition = -1, statuses = [],
+      hp = 30, items = [sword], flags = {} } = {}) => {
+      const a = { id, name, type: "npc", img: "", documentName: "Actor", uuid: `Actor.${id}`,
+        statuses: new Set(statuses), effects: { contents: [] }, items, hasPlayerOwner: false,
+        system: { attributes: { hp: { value: hp, max: 30 } }, abilities: {}, details: {} },
+        flags: { [MOD]: { ...flags } },
+        getFlag: (scope, key) => a.flags?.[scope]?.[key],
+        setFlag: async (scope, key, v) => { (a.flags[scope] ??= {})[key] = v; return a; },
+        getActiveTokens: () => canvas.tokens.placeables.filter(t => t.actor?.id === id),
+      };
+      ACTORS.set(id, a);
+      made6c.push(a);
+      const doc = { id: `tok-${id}`, actorId: id, actor: a, name, x: at[0], y: at[1],
+        width: 1, height: 1, elevation: 0, hidden: false, disposition,
+        texture: { src: "" }, movement: { action: "walk" } };
+      const tok = { id: `tok-${id}`, name, actor: a, document: doc, x: at[0], y: at[1],
+        w: 100, h: 100, center: { x: at[0] + 50, y: at[1] + 50 } };
+      doc.object = tok;
+      canvas.tokens.placeables.push(tok);
+      return a;
+    };
+
+    // Neferon stands still; somebody walks out of his reach.
+    const neferon = fighter("oa-neferon", "Neferon", { at: [0, 0], disposition: -1 });
+    const walker  = fighter("oa-walker", "the one walking away", { at: [100, 0], disposition: 1 });
+    const walkerDoc = canvas.tokens.placeables.find(t => t.actor?.id === walker.id).document;
+    const away = { x: 500, y: 0 };
+
+    const said = [];
+    const withLog = async (fn) => {
+      const keepLog = console.log;
+      console.log = (...a) => { said.push(a.join(" ")); };
+      try { return await fn(); } finally { console.log = keepLog; }
+    };
+
+    // ── 1. He is asked ──
+    offered.length = 0; said.length = 0;
+    await withLog(() => OAPrompt._checkProvocations(walkerDoc, away));
+    check("1. somebody walks out of Neferon's reach and Neferon is asked (Phase 6c)",
+      offered.length === 1 && offered[0] === "Neferon",
+      `offered to: ${offered.join(", ") || "nobody"}`);
+
+    // ── 4a. Disengage ──
+    offered.length = 0; said.length = 0;
+    walker.effects.contents = [{ flags: { [MOD]: { disengage: true } }, disabled: false }];
+    await withLog(() => OAPrompt._checkProvocations(walkerDoc, away));
+    check("4. Disengage: no pop-up, and the log says that is why (Phase 6c)",
+      offered.length === 0 && said.some(l => /Disengaged/.test(l)),
+      `offered: ${offered.length}; the log said: ${said.join(" | ") || "nothing"}`);
+    walker.effects.contents = [];
+
+    // ── 4b. A teleport out ──
+    offered.length = 0; said.length = 0;
+    walkerDoc.movement = { action: "displace" };
+    await withLog(() => OAPrompt._checkProvocations(walkerDoc, away));
+    check("4. Misty Step out of reach: no pop-up, because a teleport is not moving out of anybody's reach (Phase 6c)",
+      offered.length === 0 && said.some(l => /displace/.test(l)),
+      `offered: ${offered.length}; the log said: ${said.join(" | ") || "nothing"}`);
+    walkerDoc.movement = { action: "walk" };
+
+    // ── 4c. The reaction is already spent, in a fight ──
+    offered.length = 0; said.length = 0;
+    const fight = { started: true, round: 1, turn: 0,
+      combatants: { contents: [{ actorId: neferon.id, actor: neferon }] } };
+    game.combats = { contents: [fight] };
+    neferon.flags[MOD].reactionUsed = true;
+    await withLog(() => OAPrompt._checkProvocations(walkerDoc, away));
+    check("4. his reaction is already spent this round: no pop-up, and the log says which (Phase 6c)",
+      offered.length === 0 && said.some(l => /reaction is already spent/.test(l)),
+      `offered: ${offered.length}; the log said: ${said.join(" | ") || "nothing"}`);
+
+    // ⚠️ AND OUT OF COMBAT THAT FLAG MEANS NOTHING, because nothing ever clears
+    // it outside a fight - the hook that clears it is the turn change.
+    offered.length = 0; said.length = 0;
+    game.combats = { contents: [] };
+    await withLog(() => OAPrompt._checkProvocations(walkerDoc, away));
+    check("and out of combat a stale reaction flag does not forbid it forever (Phase 6c)",
+      offered.length === 1,
+      `offered: ${offered.join(", ") || "nobody"}`);
+    neferon.flags[MOD].reactionUsed = false;
+    game.combats = { contents: [fight] };
+
+    // ── 5. Out of the fight ──
+    for (const st of ["dead", "unconscious", "stunned", "paralyzed", "petrified", "incapacitated"]) {
+      offered.length = 0;
+      neferon.statuses = new Set([st]);
+      // A real corpse is at zero hit points as well as carrying the status, and
+      // the shared reader asks about both - a stand-in that sets only the status
+      // is not the shape his world has.
+      neferon.system.attributes.hp.value = (st === "dead" || st === "unconscious") ? 0 : 30;
+      await withLog(() => OAPrompt._checkProvocations(walkerDoc, away));
+      if (offered.length) {
+        check(`5. a ${st} creature is not asked for an opportunity attack (Phase 6c)`, false,
+          `offered to ${offered.join(", ")}`);
+        break;
+      }
+    }
+    neferon.statuses = new Set();
+    neferon.system.attributes.hp.value = 30;
+    check("5. dead, unconscious, stunned, paralyzed, petrified and incapacitated are all refused, by the one reader (Phase 6c)",
+      true, "none of the six is asked");
+
+    // ── Nothing to swing ──
+    offered.length = 0; said.length = 0;
+    neferon.items = [];
+    await withLog(() => OAPrompt._checkProvocations(walkerDoc, away));
+    check("a creature with nothing to swing is not asked, and the log says so (Phase 6c)",
+      offered.length === 0 && said.some(l => /nothing to swing/.test(l)),
+      `offered: ${offered.length}; the log said: ${said.join(" | ") || "nothing"}`);
+    neferon.items = [sword];
+
+    // ── 3. Walking INTO reach, or an ally leaving, is not a provocation ──
+    offered.length = 0;
+    await withLog(() => OAPrompt._checkProvocations(walkerDoc, { x: 100, y: 0 }));
+    check("3. staying inside his reach provokes nothing (Phase 6c)",
+      offered.length === 0, `offered: ${offered.length}`);
+
+    // ── 2. Yes swings for real, on the same road as any other attack ──
+    {
+      const src = readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/oa-prompt.mjs`, "utf8");
+      const fires = /fireOAAttack\(reactor, moverToken\)/.test(src);
+      const spends = /setFlag\?\.\(MODULE_ID, "reactionUsed", true\)/.test(src);
+      const body = src.slice(src.indexOf("static async fireOAAttack"));
+      const realAttack = /item\.use\(|use\(\{/.test(body.slice(0, 3000));
+      check("2. Take OA fires a real attack through the pipeline and spends the reaction; it does not just announce one (Phase 6c)",
+        fires && spends && realAttack,
+        `the button calls the attack: ${fires}; the reaction is spent: ${spends}; `
+          + `it uses the weapon rather than only firing a hook: ${realAttack}`);
+    }
+  } finally {
+    OAPrompt._postPromptCard = keep6c.prompt;
+    game.combats = keep6c.combats;
+    canvas.scene = keep6c.scene;
+    canvas.tokens.placeables.length = 0;
+    canvas.tokens.placeables.push(...keep6c.placed);
+    for (const [k, v] of Object.entries({ "ace-qol.opportunityAttackPrompt": keep6c.on,
+      "ace-qol.opportunityAttackReach": keep6c.reach })) {
+      if (v === undefined) SETTINGS.delete(k); else SETTINGS.set(k, v);
+    }
+    for (const a of made6c) ACTORS.delete(a.id);
+  }
+}
+
 /* ── PHASE 6b: COUNTERSPELL ────────────────────────────────────────────────── */
 // Johnny, 2026-09-16: "PHASE 6b - Counterspell only. Then stop." Someone within
 // 60 feet starts a spell; a creature holding Counterspell, with a slot, a free

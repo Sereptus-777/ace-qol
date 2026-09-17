@@ -32,6 +32,11 @@ import { QolSettings } from "./settings.mjs";
 import { CombatState } from "./combat-state.mjs";
 import { OA_IN_FLIGHT } from "./oa-transient.mjs";
 import { aceEdgeGapFt, aceSnapSubCellRect } from "./geometry-utils.mjs";
+// ⚠️ THE ONE READER for "out of the fight", the same one Shield and Counterspell
+// ask. A hand-written status list drifts; this one does not.
+import { isOutOfTheFight } from "./is-down.mjs";
+// ⚠️ A REACTION BUDGET IS A PER-ROUND BUDGET, AND ROUNDS ONLY EXIST IN A FIGHT.
+import { hasTurns } from "./action-economy.mjs";
 
 // Hardcoded literal — TDZ-safe (see stealth-engine.mjs comment)
 const FLAG_NS = "ace-qol";
@@ -68,6 +73,23 @@ export class OAPrompt {
     console.debug(`${MODULE_ID} | OAPrompt online`);
   }
 
+  /**
+   * Say why somebody was passed over.
+   *
+   * ⚠️🔴 EVERY REFUSAL IN THIS SCAN WAS SILENT, and his list for Phase 6c
+   * says so in as many words: "Disengage, teleport/misty step out, or already
+   * spent reaction: no pop-up. Log why." Same shape as the Shield and
+   * Counterspell bugs from the same night - a silent early return is
+   * indistinguishable from a broken feature.
+   *
+   * ⚠️ BUT A CREATURE ON THE FAR SIDE OF THE MAP IS NOT "PASSED OVER". Only
+   * the ones that were close enough to matter are named, or a crowded scene
+   * buries the line that counts.
+   */
+  static _say(why) {
+    console.log(`${MODULE_ID} | opportunity attack: ${why}.`);
+  }
+
   static async _checkProvocations(moverDoc, changes) {
     const moverActor = moverDoc?.actor;
     if (!moverActor) return;
@@ -79,11 +101,12 @@ export class OAPrompt {
     // willingly. Same for incapacitated / paralyzed / stunned (can't take
     // actions, but the body still being shoved doesn't provoke an OA in
     // any reasonable interpretation).
-    const skipStatuses = ["dead", "unconscious", "petrified", "incapacitated",
-                          "paralyzed", "stunned"];
-    const moverStatuses = moverActor.statuses ?? new Set();
-    for (const s of skipStatuses) {
-      if (moverStatuses.has?.(s)) return;
+    // ⚠️ ONE READER, NOT A LIST WRITTEN OUT AGAIN. It covers dead, unconscious,
+    // incapacitated, paralyzed, stunned and petrified, and it is the same reader
+    // the Shield and Counterspell prompts ask, so the three cannot drift apart.
+    if (isOutOfTheFight(moverActor)) {
+      OAPrompt._say(`${moverDoc?.name ?? moverActor.name} is out of the fight, so being moved provokes nothing`);
+      return;
     }
     // 0-HP guard: dnd5e doesn't always set "dead" status when HP = 0
     // (especially for NPCs whose death-pipeline removed the token but
@@ -95,7 +118,24 @@ export class OAPrompt {
     const hasDisengage = (moverActor.effects?.contents ?? []).some(e =>
       e?.flags?.[FLAG_NS]?.disengage === true && !e.disabled
     );
-    if (hasDisengage) return;
+    if (hasDisengage) {
+      OAPrompt._say(`${moverDoc?.name ?? moverActor.name} Disengaged, so nobody is offered an opportunity attack`);
+      return;
+    }
+
+    // ⚠️🔴 A TELEPORT IS NOT LEAVING YOUR REACH ON FOOT (Phase 6c, 2026-09-17).
+    // RAW an opportunity attack triggers when a creature MOVES out of your
+    // reach; Misty Step, Dimension Door, Thunder Step and a Scroll of Teleport
+    // do not move it out, they put it somewhere else. Foundry V13 tags the
+    // movement with an action and records a teleport as "displace" - the same
+    // authoritative signal the falling pipeline already reads, which is why this
+    // needs no list of spell names and covers a GM dragging with the teleport
+    // tool as well.
+    const moveAction = moverDoc?.movement?.action ?? null;
+    if (["displace", "teleport", "blink"].includes(String(moveAction))) {
+      OAPrompt._say(`${moverDoc?.name ?? moverActor.name} left by ${moveAction}, which is not moving out of anybody's reach`);
+      return;
+    }
 
     // Compute pre/post positions
     const fromX = (moverDoc.x ?? 0);
@@ -138,27 +178,43 @@ export class OAPrompt {
       // corpse offered the DEAD ghost an opportunity attack. dnd5e doesn't
       // always stamp the "dead" status when HP hits 0 (especially NPCs),
       // so the HP check is the belt-and-suspenders.
-      if (t.actor.statuses?.has?.("dead") || t.actor.statuses?.has?.("incapacitated")
-       || t.actor.statuses?.has?.("unconscious") || t.actor.statuses?.has?.("paralyzed")
-       || t.actor.statuses?.has?.("petrified") || t.actor.statuses?.has?.("stunned")
-       || t.actor.statuses?.has?.("blinded")) continue;
+      // ⚠️ BLINDED IS ITS OWN REASON HERE, and it belongs. RAW you may only
+      // take the attack against a creature you can SEE, so it is not part of
+      // "out of the fight" - the shared reader - but it is a refusal all the
+      // same. Everything else comes from that one reader.
+      const near = (why) => OAPrompt._say(`${td.name ?? t.actor.name} is not offered one: ${why}`);
+      if (isOutOfTheFight(t.actor)) { near("it is out of the fight, so it takes no reactions"); continue; }
+      if (t.actor.statuses?.has?.("blinded")) { near("it cannot see the mover"); continue; }
       const reactorHP = Number(t.actor.system?.attributes?.hp?.value ?? 0);
-      if (reactorHP <= 0) continue;
+      if (reactorHP <= 0) { near("it is at zero hit points"); continue; }
 
-      // Reactor's reach already used? (reaction-engine flag)
-      if (t.actor.getFlag?.(FLAG_NS, "reactionUsed") === true) continue;
+      // ⚠️ A REACTION IS SPENT PER ROUND, AND ROUNDS ONLY EXIST IN A FIGHT. Out
+      // of combat nothing clears the flag - the hook that clears it is the turn
+      // change - so one reaction taken outside a fight would forbid every
+      // opportunity attack until somebody rolled initiative. Same guard as the
+      // Shield and Counterspell prompts.
+      if (hasTurns(t.actor) && t.actor.getFlag?.(FLAG_NS, "reactionUsed") === true) {
+        near("its reaction is already spent this round");
+        continue;
+      }
 
       // Charmed by the mover? RAW: a charmed creature can't attack its
       // charmer. Best-effort — only suppresses when the charm effect's
       // origin positively ties to the mover; an unsourced charm doesn't
       // suppress (the GM can still decline). v0.7.22.
-      if (OAPrompt._isCharmedByMover(t.actor, moverActor)) continue;
+      if (OAPrompt._isCharmedByMover(t.actor, moverActor)) {
+        near("it is charmed by the creature leaving, and a charmed creature cannot attack its charmer");
+        continue;
+      }
 
       // Nothing to swing = no opportunity attack. With the unarmed-strike
       // fallback (Tier 3) almost every creature qualifies; this only skips a
       // creature that has no weapon, no natural attack, AND no unarmed-strike
       // item at all (e.g. a bare token with no attack items). v0.7.23.
-      if (OAPrompt._getOAWeapons(t.actor).tier === "none") continue;
+      if (OAPrompt._getOAWeapons(t.actor).tier === "none") {
+        near("it has nothing to swing: no weapon, no natural attack, not even an unarmed strike");
+        continue;
+      }
 
       const reactorW = (td.width  ?? 1) * gridSize;
       const reactorH = (td.height ?? 1) * gridSize;
