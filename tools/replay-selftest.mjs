@@ -3369,44 +3369,57 @@ console.log(`\nPHASE 6b: COUNTERSPELL`);
       const walkedBefore = ask({ x: 500, y: 0, movement: { action: "walk" } });
       const untaggedBefore = ask({ x: 500, y: 0 });
 
-      ReactionEngine._markCastCounterspelled(activity);
+      // ⚠️🔴 THE SHAPE HIS TABLE ACTUALLY PRODUCED. ddb-importer's Misty Step
+      // macro is what automates that spell in his world, and it moves the token
+      // with `targetToken.update({ x, y }, { animate: false })` - a plain
+      // document write with NO movement and NO action, which is why a rule that
+      // read the teleport tag never fired.
+      const arm = () => ReactionEngine._teleportLock.set(patrina.id,
+        { until: Date.now() + 60000, spell: "Misty Step" });
 
-      // \u26a0\ufe0f\U0001f534 THE SHAPE HIS TABLE ACTUALLY PRODUCED. ddb-importer's Misty
-      // Step macro is what automates that spell in his world, and it moves the
-      // token with `targetToken.update({ x, y }, { animate: false })` - a plain
-      // document write with NO movement and NO action, which is exactly why the
-      // first version of this rule, which read the teleport tag, never fired.
+      arm();
       const untagged = await quiet(() => Promise.resolve(ask({ x: 500, y: 0 })));
-      const tagged = ask({ x: 500, y: 0, movement: { action: "displace" } });
-      const walked = ask({ x: 500, y: 0, movement: { action: "walk" } });
-      const flew = ask({ x: 500, y: 0, movement: { action: "fly" } });
+      // ⚠️🔴 AND THEN SHE WALKS. His words: "After the counter, she cannot
+      // WALK on her turn... Dragging her one square must work." The hold is ONE
+      // MOVE - the one the dead spell still had in it - and it is spent by that
+      // refusal whether or not anything else clears it. Everything after is hers,
+      // tagged or not, which is the half the previous version got wrong.
+      const walksAfter = ask({ x: 600, y: 0, movement: { action: "walk" } });
+      const draggedAfter = ask({ x: 700, y: 0 });
+
+      arm();
+      const walkWhileArmed = ask({ x: 500, y: 0, movement: { action: "walk" } });
+      const flewWhileArmed = ask({ x: 500, y: 0, movement: { action: "fly" } });
       const forced = move.map(fn => fn(tokenDoc, { x: 500, y: 0 }, { aceForcedMovement: true }))
         .filter(v => v === false).length;
       const turned = ask({ rotation: 90 });
+      ReactionEngine._teleportLock.clear();
 
-      check("A COUNTERED SPELL DOES NOT MOVE THE TOKEN: the untagged write a spell macro makes is refused, and walking, flying, a shove and turning on the spot are not (2026-09-17)",
+      check("A COUNTERED SPELL GETS ONE MOVE AND NO MORE: the untagged write the macro makes is refused, and then she walks, is dragged, flies, is shoved and turns freely (2026-09-17)",
         walkedBefore === 0 && untaggedBefore === 0
-          && untagged === 1 && tagged === 1 && walked === 0 && flew === 0
-          && forced === 0 && turned === 0,
-        `before the counter: walk ${walkedBefore ? "blocked" : "allowed"}, an untagged write ${untaggedBefore ? "blocked" : "allowed"}; `
-          + `after it: untagged ${untagged ? "refused" : "ALLOWED (wrong)"}, teleport ${tagged ? "refused" : "ALLOWED (wrong)"}, `
-          + `walk ${walked ? "blocked (wrong)" : "allowed"}, fly ${flew ? "blocked (wrong)" : "allowed"}, `
-          + `a shove ${forced ? "blocked (wrong)" : "allowed"}, turn ${turned ? "blocked (wrong)" : "allowed"}`);
+          && untagged === 1 && walksAfter === 0 && draggedAfter === 0
+          && walkWhileArmed === 0 && flewWhileArmed === 0 && forced === 0 && turned === 0,
+        `before: walk ${walkedBefore ? "blocked" : "allowed"}, untagged ${untaggedBefore ? "blocked" : "allowed"}; `
+          + `the spell's move: ${untagged ? "refused" : "ALLOWED (wrong)"}; `
+          + `then walking ${walksAfter ? "BLOCKED (wrong)" : "allowed"}, dragging ${draggedAfter ? "BLOCKED (wrong)" : "allowed"}; `
+          + `while still armed: walk ${walkWhileArmed ? "blocked (wrong)" : "allowed"}, fly ${flewWhileArmed ? "blocked (wrong)" : "allowed"}, `
+          + `shove ${forced ? "blocked (wrong)" : "allowed"}, turn ${turned ? "blocked (wrong)" : "allowed"}`);
 
-      // \u26a0\ufe0f THE CLICK CAN COME LATE. The person aims, thinks, and clicks half a
-      // minute later; the macro moves the token then. So an untagged write is
-      // judged on the record, not on the instant - and walking is never touched
-      // either way, which is what keeps that safe.
-      for (const c of ReactionEngine._counterspelledCasts) {
-        if (c.actorId === patrina.id) c.at = Date.now() - 60000;
-      }
-      const lateClick = await quiet(() => Promise.resolve(ask({ x: 900, y: 0 })));
-      const lateWalk = ask({ x: 900, y: 0, movement: { action: "walk" } });
-      check("and a click a minute later still does not move her, while she can walk away whenever she likes (2026-09-17)",
-        lateClick === 1 && lateWalk === 0,
-        `a late click: ${lateClick ? "refused" : "moved her (wrong)"}; walking a minute later: ${lateWalk ? "blocked (wrong)" : "allowed"}`);
+      // ⚠️ AND THE AIMING GOING AWAY FREES HER TOO, so a right-click that drops
+      // the crosshair does not leave her owing a move she never makes.
+      arm();
+      const keepPreview = canvas.templates;
+      canvas.templates = { preview: { children: [{ _onCancelPlacement: async () => {} }] } };
+      await quiet(() => ReactionEngine.cancelTemplatePreview("a pin"));
+      canvas.templates = keepPreview;
+      const freedByCancel = ask({ x: 800, y: 0 });
+      check("and dropping the crosshair frees her at once, without her having to spend the hold on a step of her own (2026-09-17)",
+        freedByCancel === 0 && ReactionEngine._teleportLock.size === 0,
+        `after the crosshair was cancelled: an untagged move is ${freedByCancel ? "still blocked (wrong)" : "allowed"}`);
 
-      // Nothing is summoned for a dead cast either.
+      // Nothing is summoned for a dead cast either. (The kill record is what
+      // answers there, not the one-shot movement hold.)
+      ReactionEngine._markCastCounterspelled(activity);
       const summon = hooks["dnd5e.preSummon"] ?? [];
       const refusedSummon = await quiet(() => Promise.resolve(summon.map(fn => fn(activity)).filter(v => v === false).length));
       const liveOne = cast(patrina, other("Summon Fey"));

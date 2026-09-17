@@ -106,6 +106,23 @@ export class ReactionEngine {
    * and templates (flags.dnd5e.origin).
    */
   static _counterspelledCasts = [];   // [{ itemUuid, activityUuid, actorId, itemId, casterName, casterTokenUuid, expiresAt }]
+  /**
+   * The one move a countered spell still had in it: actorId -> { until, spell }.
+   *
+   * ⚠️🔴 ONE MOVE, NOT TEN MINUTES. Johnny, 2026-09-17: "After the counter,
+   * she cannot WALK on her turn. The untagged-write block is still on. That lock
+   * is only for the countered teleport finishing." He is right, and the previous
+   * version was worse than the bug it fixed: it read the kill record, which
+   * lives ten minutes so a card or a template can still be recognised, and used
+   * it to refuse writes for that whole time. A creature that has just been
+   * counterspelled is not under arrest.
+   *
+   * So the lock is armed by the counter, spent by the first refused write, and
+   * dropped when the aiming gear goes away or the backstop expires - whichever
+   * comes first. After that every write is hers again.
+   */
+  static _teleportLock = new Map();
+
   /** One Counterspell check per cast: key -> when it was checked. */
   static _castsChecked = new Map();
   static _recentSummonFx = [];        // [{ id, srcUuid, expiresAt }] — summon Sequencer effects seen at creation, for post-counter cleanup
@@ -258,6 +275,11 @@ export class ReactionEngine {
       }
       if (cancelled) {
         console.log(`${MODULE_ID} | took the area off the cursor (${cancelled}) - ${why}.`);
+        // ⚠️ NOTHING LEFT TO AIM MEANS NOTHING LEFT TO REFUSE. If the crosshair
+        // is gone the spell cannot finish, so the hold on the caster's movement
+        // has no job left and is dropped rather than waiting to be spent on a
+        // step she takes herself.
+        ReactionEngine._teleportLock.clear();
       }
       return cancelled;
     } catch (err) {
@@ -916,12 +938,19 @@ export class ReactionEngine {
         const action = String(changes?.movement?.action ?? tokenDoc?.movement?.action ?? "");
         if (WALKED.includes(action)) return true;
 
-        const dead = ReactionEngine.castJustDied(tokenDoc?.actor, 600000);
-        if (!dead) return true;
+        // ⚠️🔴 ONE MOVE, AND THEN SHE IS FREE. This used to ask the kill
+        // record, which lives ten minutes, and so kept her standing still for
+        // the rest of the fight. The lock the counter armed is spent here,
+        // whether or not anything else ever clears it.
+        const actorId = tokenDoc?.actor?.id ?? null;
+        const lock = actorId ? ReactionEngine._teleportLock.get(actorId) : null;
+        if (!lock) return true;
+        if (Date.now() > lock.until) { ReactionEngine._teleportLock.delete(actorId); return true; }
+        ReactionEngine._teleportLock.delete(actorId);
         console.log(`${MODULE_ID} | ${tokenDoc?.name ?? "that creature"} stays where it is: `
-          + `the spell that would have moved it (${dead.casterName ? `${dead.casterName}'s` : "its"} `
-          + `cast) was counterspelled, and this move carries no action, so it is that spell finishing.`);
-        ui.notifications?.info(`${tokenDoc?.name ?? "The caster"} does not move - the spell was counterspelled.`);
+          + `${lock.spell} was counterspelled and this move carries no action, so it is that spell `
+          + `finishing. The hold is spent - the next move is hers.`);
+        ui.notifications?.info(`${tokenDoc?.name ?? "The caster"} does not move - ${lock.spell} was counterspelled.`);
         return false;
       } catch (err) {
         console.warn(`${MODULE_ID} | could not check that move against a counterspelled cast, `
@@ -939,6 +968,64 @@ export class ReactionEngine {
           + `so nothing is summoned for it.`);
         return false;
       } catch (_) { return true; }
+    });
+
+    // ⚠️🔴 AND THE RED CIRCLE THAT ARRIVES AFTER THE ANSWER (2026-09-17). The
+    // counter's sweep looks at what is on the map at the moment it lands, and
+    // the aiming gear for a spell can be drawn a moment LATER - the macro runs
+    // as the activity finishes, and the answer can beat it there. A template
+    // that names a caster whose cast has just died is that cast's aiming gear,
+    // whoever drew it and whatever namespace they flagged it with.
+    Hooks.on("createMeasuredTemplate", (tdoc) => {
+      try {
+        if (!ReactionEngine._teleportLock.size) return;
+        const flags = tdoc?.flags ?? {};
+        let ownerId = null;
+        for (const [actorId] of ReactionEngine._teleportLock) {
+          for (const ns of Object.values(flags)) {
+            if (!ns || typeof ns !== "object") continue;
+            for (const v of Object.values(ns)) if (v === actorId) { ownerId = actorId; break; }
+            if (ownerId) break;
+          }
+          if (ownerId) break;
+        }
+        if (!ownerId) return;
+        const lock = ReactionEngine._teleportLock.get(ownerId);
+        setTimeout(async () => {
+          try {
+            if (game.users?.activeGM !== game.user) return;
+            const live = canvas?.scene?.templates?.get?.(tdoc.id);
+            if (live) await live.delete();
+            console.log(`${MODULE_ID} | took away the aiming circle for ${lock?.spell ?? "a counterspelled spell"}, `
+              + `which was drawn after the answer.`);
+          } catch (err) {
+            const msg = String(err?.message ?? err ?? "");
+            if (!/does not exist/i.test(msg)) {
+              console.warn(`${MODULE_ID} | could not remove that aiming circle:`, err);
+            }
+          }
+        }, 50);
+      } catch (_) { /* non-fatal */ }
+    });
+
+    // Aiming gear gone, hold gone: she walks.
+    Hooks.on("deleteMeasuredTemplate", (tdoc) => {
+      try {
+        if (!ReactionEngine._teleportLock.size) return;
+        const flags = tdoc?.flags ?? {};
+        for (const [actorId] of [...ReactionEngine._teleportLock]) {
+          for (const ns of Object.values(flags)) {
+            if (!ns || typeof ns !== "object") continue;
+            for (const v of Object.values(ns)) {
+              if (v !== actorId) continue;
+              ReactionEngine._teleportLock.delete(actorId);
+              console.log(`${MODULE_ID} | the aiming for that counterspelled spell is gone, `
+                + `so nothing is holding that creature in place any more.`);
+              return;
+            }
+          }
+        }
+      } catch (_) { /* non-fatal */ }
     });
 
     // flags.dnd5e.origin populates ~async on V13, so re-check on a short delay.
@@ -2125,6 +2212,11 @@ export class ReactionEngine {
         });
         // ⚠️ AND TAKE IT OFF THE MOUSE. dnd5e may already be waiting for a click
         // to drop this spell's area; after a Yes there is nothing to aim.
+        // Arm the one move this spell still had in it (see _teleportLock).
+        if (casterActor?.id) {
+          ReactionEngine._teleportLock.set(casterActor.id,
+            { until: Date.now() + 60000, spell: item?.name ?? "that spell" });
+        }
         ReactionEngine.cancelTemplatePreview(`${item?.name ?? "that spell"} was counterspelled`);
         // ⚠️ AND AGAIN, TWICE, BECAUSE THE AIMING MAY NOT HAVE STARTED YET. What
         // automates a spell at his table can draw its own preview a moment AFTER
