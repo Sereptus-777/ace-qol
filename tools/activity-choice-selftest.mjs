@@ -61,8 +61,14 @@ console.log("\nA SAVE THAT FOLLOWS A HIT IS NOT A CHOICE");
   check("Neferon's Claws just attacks", show(d), "fire attack");
   check("and says why the Save is not offered", /not offering "Save"/.test(d.notes.join(" ")), true);
   // ⚠️ NEVER SWALLOW THE ACTION: if the rider were all there was, it stays.
+  //
+  // ⚠️🔴 AND "IT STAYS" IS NOT THE SAME AS "IT IS ASKED ABOUT" (2026-09-17).
+  // This expected the dialog, and the dialog it expected was two buttons both
+  // reading "Save" - Johnny's Thunder Step complaint exactly. The action is not
+  // swallowed: it is PRESSED. That is the point of the rule, and it is a better
+  // answer than a question nobody can answer.
   const onlySave = decide(claws, [act("sv", "save"), act("sv2", "save")], { riderIds: new Set(["sv", "sv2"]) });
-  check("a list made only of riders is not emptied", onlySave.kind, "ask");
+  check("a list made only of riders is not emptied - it is pressed", show(onlySave), "fire save");
 }
 
 console.log("\nGENUINE CHOICES STAY CHOICES");
@@ -74,8 +80,14 @@ console.log("\nGENUINE CHOICES STAY CHOICES");
   check("the Stormforger's four abilities are offered", show(d),
     "ask Tornado Takedown|Aerial Ascension|Aerial Descent|Thunderstorm of Misery");
   check("and are not called duplicates", d.duplicates, { twins: [], clones: [] });
+  // ⚠️🔴 THIS PIN USED TO EXPECT THE DIALOG. Two unnamed rows of the same
+  // type were flagged as clones and then SHOWN anyway, which is Johnny's Thunder
+  // Step: "opens 'Save' and 'Save'. That is not a real choice. Do not ask."
+  // (2026-09-17.) They are not offered any more; the row that says what the
+  // spell does is pressed. Updated after reading the rule, not to make a red
+  // line go away.
   const dup = decide({ name: "Imported Missile", type: "spell" }, [act("x", "damage"), act("y", "damage")]);
-  check("two unnamed rows with the same cost are flagged", dup.duplicates.clones.length, 1);
+  check("two unnamed rows of the same type are not a question at all", show(dup), "fire damage");
 }
 
 console.log("\nONE THING TO DO IS NOT A QUESTION");

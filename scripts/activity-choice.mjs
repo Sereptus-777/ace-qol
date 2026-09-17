@@ -5,8 +5,9 @@
 // hook in ace-qol.mjs only carries the answer out: it presses a button, opens
 // ACE's picker, shows dnd5e's own dialog, or closes it.
 //
-// ⚠️🔴 A DECISION, NOT A DIALOG, SO IT CAN BE REPLAYED. This file imports
-// nothing and touches no page, so tools/replay-selftest.mjs puts every item in
+// ⚠️🔴 A DECISION, NOT A DIALOG, SO IT CAN BE REPLAYED. This file touches no
+// page and imports only leaves that import nothing themselves, so
+// tools/replay-selftest.mjs puts every item in
 // his world through it before a release. The chooser broke three times in a
 // fortnight (Magic Missile asking which row, Prismatic Wall taking the Blinding
 // Save, Neferon's Claws asking "Attack or Save?"), and each time his table was
@@ -16,6 +17,10 @@
 //
 // (Moved here out of ace-qol.mjs on 2026-09-12, rule for rule.)
 // ──────────────────────────────────────────────────────────────────────────────
+
+// ⚠️ THE ONE RULE for "is this a real choice", measured against his whole world
+// before it was wired. See rules/one-real-choice.mjs, which imports nothing.
+import { oneRealChoice, pickTheRealOne } from "./rules/one-real-choice.mjs";
 
 const call = (v, fallback) => (typeof v === "function" ? v() : (v ?? fallback));
 const nameOf = (a) => a?.name || a?.type || "activity";
@@ -315,6 +320,37 @@ export function decideActivityChoice({ item, activities, offeredIds, isMachinery
       return { kind: "fire", activity: told, activityId: told.id, notes,
         why: `"${item.name}": its own rule says a press with the spell not up means `
           + `"${told.name || told.type}", so it is not asking.` };
+    }
+
+    // ── ⚠️🔴 TWO IDENTICAL BUTTONS ARE NOT A CHOICE ──────────────
+    //
+    // Johnny, 2026-09-17: "Thunder Step opens 'Save' and 'Save'. That is not a
+    // real choice. Do not ask." Two activities of the same type with nothing
+    // written on either, so dnd5e labels both with the type and the caster is
+    // stopped to pick between two buttons that read the same.
+    //
+    // ⚠️ THE RULE IS IN ITS OWN FILE AND IT WAS MEASURED BEFORE IT WAS WIRED.
+    // tools/one-real-choice-selftest.mjs runs it over every item in his world
+    // and every book on the shelf. The first draft moved 448 presses -
+    // Executioner Greatsword, Scimitar, Weird, Haste, every item with one named
+    // row beside a blank one - and the measurement is what caught it. Narrowed
+    // to rows that are genuinely indistinguishable it moves 286, every one an
+    // exact duplicate, and Wall of Fire, Command, Prismatic Wall and Plane Shift
+    // all still ask.
+    //
+    // ⚠️ AND IT PICKS THE ROW THAT DOES THE SPELL. His Thunder Step's two blank
+    // saves are not copies: one is a 10-foot radius on self, the other inherits
+    // the item's ninety feet and asks for a single target.
+    if (choosable.length > 1 && !call(spellIsUp, false)) {
+      const verdict = oneRealChoice(choosable);
+      if (verdict.one) {
+        const real = pickTheRealOne(choosable);
+        if (real) {
+          return { kind: "fire", activity: real, activityId: real.id, notes,
+            why: `"${item.name}": ${verdict.why}, so it is not asking - it runs `
+              + `"${real.name || real.type}", the row that says what the spell does.` };
+        }
+      }
     }
 
     // ── ⚠️🔴 A SPELL ACE CASTS ITSELF NEVER ASKS WHICH ROW ────────
