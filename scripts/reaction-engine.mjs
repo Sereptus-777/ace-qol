@@ -216,6 +216,9 @@ export class ReactionEngine {
    * @param {number} [withinMs]
    */
   static castJustDied(actor, withinMs = 6000) {
+    // ⚠️ THE CALLER SETS THE WINDOW. An untagged move is the spell finishing
+    // however long the person took to click, so that caller asks for the
+    // record's whole life; anything judged on the instant asks for seconds.
     try {
       const id = actor?.id ?? null;
       if (!id) return null;
@@ -345,10 +348,31 @@ export class ReactionEngine {
         ReactionEngine._sdebug(`[COUNTER-CLEANUP] deleted ${tokenIds.length} summoned token(s)`);
       }
 
-      // 2) Zone template(s).
+      // 2) Zone template(s), and anything else aiming this cast.
+      //
+      // ⚠️🔴 A TEMPLATE THAT IS NOT dnd5e'S STILL BELONGS TO SOMEBODY
+      // (2026-09-17). His red targeting line came from ddb-importer's own macro,
+      // which draws a range circle flagged `spellEffects.<name> = actorId` - no
+      // `flags.dnd5e.origin` anywhere on it, so a sweep that only reads dnd5e's
+      // flag left it on the map with nothing to clear it but the click we are
+      // trying to prevent.
+      //
+      // ⚠️ MATCHED BY THE CASTER'S OWN ID, NOT BY A MODULE OR A SPELL NAME. A
+      // template that names this creature, placed for a cast of theirs that has
+      // just been counterspelled, is that cast's aiming gear whoever drew it.
+      // Nothing here knows or cares which module or which spell.
+      const casterId = (activity?.item?.actor ?? activity?.actor)?.id ?? null;
+      const namesTheCaster = (flags) => {
+        if (!casterId || !flags || typeof flags !== "object") return false;
+        for (const ns of Object.values(flags)) {
+          if (!ns || typeof ns !== "object") continue;
+          for (const v of Object.values(ns)) if (v === casterId) return true;
+        }
+        return false;
+      };
       const tplIds = [];
       for (const tpl of (canvas?.scene?.templates ?? [])) {
-        if (matches(tpl?.flags?.dnd5e?.origin)) tplIds.push(tpl.id);
+        if (matches(tpl?.flags?.dnd5e?.origin) || namesTheCaster(tpl?.flags)) tplIds.push(tpl.id);
       }
       if (tplIds.length) {
         await canvas.scene.deleteEmbeddedDocuments("MeasuredTemplate", tplIds);
@@ -862,12 +886,41 @@ export class ReactionEngine {
     Hooks.on("preUpdateToken", (tokenDoc, changes, opts) => {
       try {
         if (changes?.x === undefined && changes?.y === undefined) return true;
+
+        // ⚠️🔴 THE TAG WAS NOT THERE. 0.34.45 refused only a move Foundry had
+        // tagged as a teleport, and his table proved that wrong the same day:
+        // Jebidiah's counterspelled Misty Step moved him anyway, with no
+        // "displace" anywhere in the log. The reason is in ddb-importer's own
+        // macro, which is what automates that spell in his world: it draws a
+        // red-bordered range circle, hangs `Hooks.once("createMeasuredTemplate")`
+        // on the next template placed, and then calls
+        //
+        //     targetToken.update({ x, y }, { animate: false })
+        //
+        // A plain document update. No movement, no action, no tag of any kind -
+        // so a rule that reads the tag can never see it.
+        //
+        // ⚠️ SO THE RULE READS WHAT A WALK HAS, NOT WHAT A TELEPORT HAS. Foundry
+        // V13 tags every move a PERSON makes - dragging, the ruler, the arrow
+        // keys - with a movement action. Code that writes coordinates straight
+        // onto the document carries none. A creature whose own cast was just
+        // counterspelled does not get moved by code finishing that spell, and
+        // walking away on its own two feet is untouched, because walking is
+        // tagged and this only refuses what is not.
+        //
+        // ⚠️ AND ACE'S OWN FORCED MOVEMENT IS EXEMPT. A shove or a push from the
+        // weapon masteries carries `aceForcedMovement`; that is somebody else
+        // moving the creature, not its dead spell finishing.
+        if (opts?.aceForcedMovement === true) return true;
+        const WALKED = ["walk", "fly", "swim", "burrow", "climb", "crawl", "jump"];
         const action = String(changes?.movement?.action ?? tokenDoc?.movement?.action ?? "");
-        if (!["displace", "teleport", "blink"].includes(action)) return true;
-        const dead = ReactionEngine.castJustDied(tokenDoc?.actor);
+        if (WALKED.includes(action)) return true;
+
+        const dead = ReactionEngine.castJustDied(tokenDoc?.actor, 600000);
         if (!dead) return true;
         console.log(`${MODULE_ID} | ${tokenDoc?.name ?? "that creature"} stays where it is: `
-          + `the spell that would have moved it was counterspelled.`);
+          + `the spell that would have moved it (${dead.casterName ? `${dead.casterName}'s` : "its"} `
+          + `cast) was counterspelled, and this move carries no action, so it is that spell finishing.`);
         ui.notifications?.info(`${tokenDoc?.name ?? "The caster"} does not move - the spell was counterspelled.`);
         return false;
       } catch (err) {
@@ -2073,6 +2126,18 @@ export class ReactionEngine {
         // ⚠️ AND TAKE IT OFF THE MOUSE. dnd5e may already be waiting for a click
         // to drop this spell's area; after a Yes there is nothing to aim.
         ReactionEngine.cancelTemplatePreview(`${item?.name ?? "that spell"} was counterspelled`);
+        // ⚠️ AND AGAIN, TWICE, BECAUSE THE AIMING MAY NOT HAVE STARTED YET. What
+        // automates a spell at his table can draw its own preview a moment AFTER
+        // the counter resolves - the macro runs as the activity finishes, and
+        // the answer can land first. One cancel at the instant of the verdict
+        // catches a crosshair already up; these catch one that arrives straight
+        // after. Cheap, and a no-op when the cursor is empty.
+        for (const ms of [250, 1200]) {
+          setTimeout(() => {
+            ReactionEngine.cancelTemplatePreview(`${item?.name ?? "that spell"} was counterspelled`)
+              .catch(() => {});
+          }, ms);
+        }
 
         // ── Mechanical line + randomized flavor line (v0.7.17b) ──
         const flavorOptions = [

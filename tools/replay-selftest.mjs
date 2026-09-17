@@ -3365,35 +3365,46 @@ console.log(`\nPHASE 6b: COUNTERSPELL`);
       const move = hooks["preUpdateToken"] ?? [];
       const ask = (changes) => move.map(fn => fn(tokenDoc, changes, {})).filter(v => v === false).length;
 
-      // Before the counter: every kind of move is allowed.
+      // Before the counter: every kind of move is allowed, tagged or not.
       const walkedBefore = ask({ x: 500, y: 0, movement: { action: "walk" } });
-      const blinkedBefore = ask({ x: 500, y: 0, movement: { action: "displace" } });
+      const untaggedBefore = ask({ x: 500, y: 0 });
 
       ReactionEngine._markCastCounterspelled(activity);
 
-      // After it: the teleport is refused, and nothing else is.
-      const blinked = await quiet(() => Promise.resolve(ask({ x: 500, y: 0, movement: { action: "displace" } })));
+      // \u26a0\ufe0f\U0001f534 THE SHAPE HIS TABLE ACTUALLY PRODUCED. ddb-importer's Misty
+      // Step macro is what automates that spell in his world, and it moves the
+      // token with `targetToken.update({ x, y }, { animate: false })` - a plain
+      // document write with NO movement and NO action, which is exactly why the
+      // first version of this rule, which read the teleport tag, never fired.
+      const untagged = await quiet(() => Promise.resolve(ask({ x: 500, y: 0 })));
+      const tagged = ask({ x: 500, y: 0, movement: { action: "displace" } });
       const walked = ask({ x: 500, y: 0, movement: { action: "walk" } });
-      const shoved = ask({ x: 500, y: 0, movement: { action: "push" } });
+      const flew = ask({ x: 500, y: 0, movement: { action: "fly" } });
+      const forced = move.map(fn => fn(tokenDoc, { x: 500, y: 0 }, { aceForcedMovement: true }))
+        .filter(v => v === false).length;
       const turned = ask({ rotation: 90 });
 
-      check("A COUNTERED SPELL DOES NOT MOVE THE TOKEN: Patrina's teleport is refused, and walking, being shoved and turning on the spot are not (2026-09-17)",
-        blinkedBefore === 0 && walkedBefore === 0
-          && blinked === 1 && walked === 0 && shoved === 0 && turned === 0,
-        `before the counter: walk ${walkedBefore ? "blocked" : "allowed"}, teleport ${blinkedBefore ? "blocked" : "allowed"}; `
-          + `after it: teleport ${blinked ? "refused" : "ALLOWED (wrong)"}, walk ${walked ? "blocked (wrong)" : "allowed"}, `
-          + `shove ${shoved ? "blocked (wrong)" : "allowed"}, turn ${turned ? "blocked (wrong)" : "allowed"}`);
+      check("A COUNTERED SPELL DOES NOT MOVE THE TOKEN: the untagged write a spell macro makes is refused, and walking, flying, a shove and turning on the spot are not (2026-09-17)",
+        walkedBefore === 0 && untaggedBefore === 0
+          && untagged === 1 && tagged === 1 && walked === 0 && flew === 0
+          && forced === 0 && turned === 0,
+        `before the counter: walk ${walkedBefore ? "blocked" : "allowed"}, an untagged write ${untaggedBefore ? "blocked" : "allowed"}; `
+          + `after it: untagged ${untagged ? "refused" : "ALLOWED (wrong)"}, teleport ${tagged ? "refused" : "ALLOWED (wrong)"}, `
+          + `walk ${walked ? "blocked (wrong)" : "allowed"}, fly ${flew ? "blocked (wrong)" : "allowed"}, `
+          + `a shove ${forced ? "blocked (wrong)" : "allowed"}, turn ${turned ? "blocked (wrong)" : "allowed"}`);
 
-      // ⚠️ AND IT IS A WINDOW, NOT A SENTENCE. A creature countered a while ago
-      // may still teleport: the record lives ten minutes so a card or a template
-      // can be recognised, but a move is only the spell finishing for seconds.
+      // \u26a0\ufe0f THE CLICK CAN COME LATE. The person aims, thinks, and clicks half a
+      // minute later; the macro moves the token then. So an untagged write is
+      // judged on the record, not on the instant - and walking is never touched
+      // either way, which is what keeps that safe.
       for (const c of ReactionEngine._counterspelledCasts) {
         if (c.actorId === patrina.id) c.at = Date.now() - 60000;
       }
-      const later = ask({ x: 900, y: 0, movement: { action: "displace" } });
-      check("and a minute later she can teleport again: the move window is seconds, not the record's ten minutes (2026-09-17)",
-        later === 0,
-        `a teleport a minute after the counter: ${later ? "still blocked (wrong)" : "allowed"}`);
+      const lateClick = await quiet(() => Promise.resolve(ask({ x: 900, y: 0 })));
+      const lateWalk = ask({ x: 900, y: 0, movement: { action: "walk" } });
+      check("and a click a minute later still does not move her, while she can walk away whenever she likes (2026-09-17)",
+        lateClick === 1 && lateWalk === 0,
+        `a late click: ${lateClick ? "refused" : "moved her (wrong)"}; walking a minute later: ${lateWalk ? "blocked (wrong)" : "allowed"}`);
 
       // Nothing is summoned for a dead cast either.
       const summon = hooks["dnd5e.preSummon"] ?? [];
