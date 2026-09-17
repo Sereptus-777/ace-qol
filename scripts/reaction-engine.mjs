@@ -112,30 +112,73 @@ export class ReactionEngine {
     try {
       const itemUuid = activity?.item?.uuid ?? null;
       const activityUuid = activity?.uuid ?? null;
-      if (!itemUuid && !activityUuid) return;
+      // ⚠️🔴 THE ACTOR AND THE ITEM, NOT ONLY THE UUIDS (2026-09-17).
+      // dnd5e CLONES the item at the top of `Activity#use` and runs the whole
+      // cast on the clone, so the uuid a barrier was keyed on and the uuid
+      // stamped on a template do not always survive the journey. Who cast what
+      // always does. This is the match that cannot drift.
+      const casterActor = activity?.item?.actor ?? activity?.actor ?? null;
+      const actorId = casterActor?.id ?? null;
+      const itemId = activity?.item?.id ?? null;
+      if (!itemUuid && !activityUuid && !(actorId && itemId)) return;
       // Caster's token uuid — some summon animations (Automated Animations) play
       // ON THE CASTER with origin=null, so we clean those up by source token.
-      const casterActor = activity?.item?.actor ?? activity?.actor ?? null;
       let casterTokenUuid = null;
       try { casterTokenUuid = casterActor?.getActiveTokens?.()?.[0]?.document?.uuid ?? null; } catch (_) {}
       ReactionEngine._counterspelledCasts.push({
-        itemUuid, activityUuid, casterTokenUuid,
+        itemUuid, activityUuid, actorId, itemId, casterTokenUuid,
         casterName: activity?.item?.actor?.name ?? "?",
-        expiresAt: Date.now() + 30000,   // 30s window covers a slow summon dialog
+        // ⚠️🔴 THIRTY SECONDS WAS NOT A WINDOW, IT WAS AN AMNESTY. Johnny,
+        // 2026-09-17: "After I waited and advanced the turn, the Dex saves
+        // finally posted." A countered spell does not come back to life because
+        // half a minute passed. Ten minutes outlives any placement, any dialog
+        // left open, and a turn or two of a real table.
+        expiresAt: Date.now() + 600000,
       });
+      console.log(`${MODULE_ID} | "${activity?.item?.name ?? "that cast"}" is dead. `
+        + `Nothing further resolves for it: no template, no save, no damage, no card.`);
     } catch (_) { /* non-fatal */ }
+  }
+
+  /**
+   * PUBLIC. Is this cast dead - counterspelled, and therefore finished?
+   *
+   * ⚠️ FOUR WAYS TO RECOGNISE IT, because one was not enough. An activity
+   * uuid, an item uuid that a template's origin begins with, or the plain fact
+   * of WHO cast WHAT. The last one is the one that cannot drift: dnd5e clones
+   * the item for the duration of a cast, so uuids can differ between the moment
+   * a barrier is raised and the moment a template carries an origin, while the
+   * actor and the item id never do.
+   *
+   * @param {{origin?: string, item?: Item, actor?: Actor, activity?: object}} what
+   */
+  static castIsDead(what = {}) {
+    const now = Date.now();
+    ReactionEngine._counterspelledCasts = ReactionEngine._counterspelledCasts.filter(c => c.expiresAt > now);
+    if (!ReactionEngine._counterspelledCasts.length) return false;
+
+    const activity = what.activity ?? null;
+    const item = what.item ?? activity?.item ?? null;
+    const actor = what.actor ?? item?.actor ?? activity?.actor ?? null;
+    const origin = what.origin ?? activity?.uuid ?? null;
+    const itemUuid = item?.uuid ?? null;
+    const actorId = actor?.id ?? null;
+    const itemId = item?.id ?? null;
+
+    return ReactionEngine._counterspelledCasts.some(c => {
+      if (c.activityUuid && origin && origin === c.activityUuid) return true;
+      if (c.itemUuid && typeof origin === "string" && origin.startsWith(c.itemUuid)) return true;
+      if (c.itemUuid && itemUuid && itemUuid === c.itemUuid) return true;
+      if (c.actorId && c.itemId && actorId && itemId && c.actorId === actorId && c.itemId === itemId) return true;
+      return false;
+    });
   }
 
   /** True if `origin` (a token/template dnd5e origin string) traces to a
    *  recently counterspelled cast. Prunes expired entries as it scans. */
   static _isCounterspelledOrigin(origin) {
     if (!origin) return false;
-    const now = Date.now();
-    ReactionEngine._counterspelledCasts = ReactionEngine._counterspelledCasts.filter(c => c.expiresAt > now);
-    return ReactionEngine._counterspelledCasts.some(c =>
-      (c.activityUuid && origin === c.activityUuid) ||
-      (c.itemUuid && typeof origin === "string" && origin.startsWith(c.itemUuid))
-    );
+    return ReactionEngine.castIsDead({ origin });
   }
 
   /**
@@ -277,6 +320,26 @@ export class ReactionEngine {
    */
   static _createCastBarrier(activity) {
     if (!activity) return;
+    // ⚠️🔴 A FRESH CAST CLEARS THE OLD DEATH RECORD. Recognising a dead cast
+    // by WHO cast WHAT is what makes it survive dnd5e cloning the item mid-cast,
+    // and it is also what would kill the NEXT Fireball the same wizard throws.
+    // A cast beginning is the one unambiguous signal that the previous one is
+    // finished with, so the record for that creature and that item goes here and
+    // nowhere else. (Caught by the replay's own "a Fireball nobody counters"
+    // pin the moment the wider match went in, 2026-09-17.)
+    try {
+      const actorId = (activity?.item?.actor ?? activity?.actor)?.id ?? null;
+      const itemId = activity?.item?.id ?? null;
+      if (actorId && itemId) {
+        const before = ReactionEngine._counterspelledCasts.length;
+        ReactionEngine._counterspelledCasts = ReactionEngine._counterspelledCasts
+          .filter(c => !(c.actorId === actorId && c.itemId === itemId));
+        if (before !== ReactionEngine._counterspelledCasts.length) {
+          ReactionEngine._sdebug(`[BARRIER] a new cast of ${activity?.item?.name ?? "that item"} `
+            + `clears the counterspelled record of the last one`);
+        }
+      }
+    } catch (_) { /* non-fatal */ }
     const key = ReactionEngine._activityKey(activity);
     if (ReactionEngine._castBarriers.has(key)) return;
     let resolveFn;
@@ -370,15 +433,15 @@ export class ReactionEngine {
    * @param {object|string} activityOrUuid  an activity, or an activity uuid
    * @returns {Promise<{abort: boolean, reason: string}>}
    */
-  static async awaitCastDecision(activityOrUuid) {
+  static async awaitCastDecision(activityOrUuid, what = {}) {
     const isText = typeof activityOrUuid === "string";
     const uuid = isText ? activityOrUuid : (activityOrUuid?.uuid ?? null);
-    if (!activityOrUuid) return { abort: false, reason: "nothing to wait for" };
+    if (!activityOrUuid && !what.item) return { abort: false, reason: "nothing to wait for" };
 
-    // Already on the kill-list: the counter landed before we were asked.
-    if (uuid && ReactionEngine._isCounterspelledOrigin(uuid)) {
-      return { abort: true, reason: "counterspelled" };
-    }
+    // Already dead: the counter landed before this door was reached. No wait.
+    const who = { origin: uuid, item: what.item ?? null, actor: what.actor ?? null,
+      activity: isText ? null : activityOrUuid };
+    if (ReactionEngine.castIsDead(who)) return { abort: true, reason: "counterspelled" };
 
     const key = isText ? activityOrUuid : ReactionEngine._activityKey(activityOrUuid);
     const barrier = key ? ReactionEngine._castBarriers.get(key) : null;
@@ -399,9 +462,7 @@ export class ReactionEngine {
     // the same moment the barrier resolves, and on a player's cast the GM's
     // client records it with no barrier of its own to resolve. One of the two
     // always knows.
-    if (uuid && ReactionEngine._isCounterspelledOrigin(uuid)) {
-      return { abort: true, reason: "counterspelled" };
-    }
+    if (ReactionEngine.castIsDead(who)) return { abort: true, reason: "counterspelled" };
     return { abort: false, reason: barrier ? "not countered" : "no barrier was raised for this cast" };
   }
 
@@ -603,6 +664,23 @@ export class ReactionEngine {
           ReactionEngine._sdebug(`[COUNTER-CLEANUP] deleted late-placed summon token ${tokenDoc.id} (counterspelled cast)`);
         } catch (err) { console.warn(`${MODULE_ID} | createToken cleanup failed (non-fatal):`, err); }
       }, 150);
+    });
+
+    // ⚠️🔴 NO CROSSHAIR FOR A SPELL THAT IS ALREADY DEAD (2026-09-17).
+    // Johnny: "The template STILL appeared and I placed it." It did, and dnd5e
+    // is not at fault: `Activity#use` creates the usage message, fires the hook
+    // ACE answers on, and then goes straight to `_finalizeUsage` and places the
+    // template WITHOUT waiting for anything - our counterspell prompt is still
+    // open at that moment. dnd5e offers exactly one way to stop it, and this is
+    // it: `preCreateActivityTemplate` takes a false and the template is never
+    // built. (Proven in the 5.3.3 source, AbilityTemplate.fromActivity.)
+    Hooks.on("dnd5e.preCreateActivityTemplate", (activity) => {
+      try {
+        if (!ReactionEngine.castIsDead({ activity })) return true;
+        console.log(`${MODULE_ID} | "${activity?.item?.name ?? "that cast"}" was counterspelled, `
+          + `so there is no area to place.`);
+        return false;
+      } catch (_) { return true; }
     });
 
     // flags.dnd5e.origin populates ~async on V13, so re-check on a short delay.
@@ -1802,6 +1880,21 @@ export class ReactionEngine {
         } catch (err) {
           console.warn(`${MODULE_ID} | Counterspell animation failed (non-fatal):`, err);
         }
+
+        // ⚠️🔴 KILL IT NOW, DO NOT WAIT TO BE ASKED (2026-09-17). Johnny:
+        // "You held the spell. You did not kill it." Every door that might yet
+        // resolve this cast is told, at the moment the answer is yes, rather
+        // than each one discovering it later - or not, if it had stopped
+        // listening. The save engine drops a save it is holding for this cast
+        // and deletes its area; dnd5e's own template placement is vetoed before
+        // the crosshair appears.
+        Hooks.callAll(`${MODULE_ID}.castCounterspelled`, {
+          activity, item, casterActor,
+          activityUuid: activity?.uuid ?? null,
+          itemUuid: item?.uuid ?? null,
+          actorId: casterActor?.id ?? null,
+          itemId: item?.id ?? null,
+        });
 
         // Emit hook for other systems to react
         Hooks.callAll(`${MODULE_ID}.spellCountered`, {

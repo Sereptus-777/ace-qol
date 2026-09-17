@@ -2498,6 +2498,15 @@ console.log(`\nPHASE 6b: COUNTERSPELL`);
       a.rollSavingThrow = async () => [{ total: casterSaveTotal }];
       return a;
     };
+  // A template as dnd5e places one: `flags.dnd5e.origin` is the ACTIVITY's uuid
+  // and `flags.dnd5e.item` the item's (AbilityTemplate.fromActivity, 5.3.3).
+  const makeTemplate1 = (store, id, activity, item) => {
+    const doc = { id, x: 100, y: 100, distance: 20, t: "circle",
+      flags: { dnd5e: { origin: activity.uuid, item: item.uuid, spellLevel: 3 } },
+      delete: async () => { store.delete(id); doc.deleted = true; return doc; } };
+    store.set(id, doc);
+    return doc;
+  };
     const cast = (caster, item, level = 3) => ({
       item, actor: caster, uuid: `Activity.${item.id}`,
       consumption: { spellSlot: true }, usage: { spellLevel: level },
@@ -2747,6 +2756,89 @@ console.log(`\nPHASE 6b: COUNTERSPELL`);
       game.user.targets = keepTargets;
       canvas.tokens.placeables.length = 0;
       for (const a of [caster, kasimir, victim]) ACTORS.delete(a.id);
+    }
+
+    // ── HIS SECOND REPORT: held is not killed ──
+    // Johnny, 2026-09-17: "Kasimir countered Neferon's Fireball. Card said
+    // success. The template STILL appeared and I placed it. No save card then.
+    // After I waited and advanced the turn, the Dex saves finally posted. You
+    // held the spell. You did not kill it."
+    //
+    // Two causes, both proven from dnd5e 5.3.3's own source. `Activity#use`
+    // creates the usage message, fires the hook ACE answers on, and goes
+    // STRAIGHT to `_finalizeUsage`, which places the template without waiting
+    // for anybody - so the crosshair appears while the Counterspell prompt is
+    // still open. And a save armed and waiting for an area is a save that goes
+    // off whenever that area turns up, however much later that is.
+    {
+      const caster = makeCaster("p6b-c8", "Neferon", { at: [0, 0] });
+      const kasimir = mage("p6b-k8", "Kasimir Velikov", { items: [csItem("2024")], at: [200, 0], dc: 17 });
+      const fireball = other("Fireball");
+      fireball.uuid = "Actor.p6b-c8.Item.it-Fireball";
+      fireball.actor = caster;
+      const activity = cast(caster, fireball);
+      activity.uuid = "Actor.p6b-c8.Item.it-Fireball.Activity.ccc";
+
+      const templates = new Map();
+      const keepScene = canvas.scene;
+      const keepTargets = game.user.targets;
+      game.user.targets = new Set();
+      canvas.scene = {
+        templates: { get: (id) => templates.get(id) ?? null, contents: [],
+          [Symbol.iterator]: function* () { yield* templates.values(); } },
+        deleteEmbeddedDocuments: async (_type, ids) => { for (const id of ids) templates.delete(id); return ids; },
+      };
+
+      // The save engine has armed a save and is waiting for the area, exactly as
+      // it is the instant before the crosshair appears.
+      const saves = Object.create(SaveEngine.prototype);
+      saves._pendingSaveSpell = { activity, item: fireball, actor: caster, saveAbility: "dex",
+        saveDC: 15, halfOnSave: true, damageTypes: ["fire"], isSpell: true, timing: null,
+        activityId: "ccc", spellLevel: 3, recipe: null };
+      ReactionEngine._createCastBarrier(activity);
+      answer = true;
+      casterSaveTotal = 9;                     // fails DC 17 -> countered
+      const atCard = posted.length;
+      await quiet(() => engine._onSpellCast(activity, null));
+
+      // The save engine's own listener does exactly this, with `this`.
+      await quiet(() => SaveEngine.dropCounterspelledCast({
+        activity, item: fireball, casterActor: caster,
+        activityUuid: activity.uuid, itemUuid: fireball.uuid,
+        actorId: caster.id, itemId: fireball.id,
+      }, saves));
+
+      check("HELD IS NOT KILLED: the instant the counter succeeds, the save waiting for Fireball's area is thrown away rather than held (2026-09-17)",
+        saves._pendingSaveSpell === null,
+        `what the save engine is still holding: ${saves._pendingSaveSpell ? `a ${saves._pendingSaveSpell.saveAbility?.toUpperCase()} save for ${saves._pendingSaveSpell.item?.name}` : "nothing"}`);
+
+      // dnd5e asks before it builds a template; a dead cast gets no crosshair.
+      const veto = (hooks["dnd5e.preCreateActivityTemplate"] ?? []).map(fn => fn(activity, {}));
+      check("and dnd5e is told not to place an area for it at all, so there is no crosshair to drag (2026-09-17)",
+        veto.length > 0 && veto.every(v => v === false),
+        veto.length ? `the template hook answered ${veto.join(", ")}` : "nothing is listening for the template hook");
+
+      // A minute later - a turn advanced, a template finally dragged out - it is
+      // still dead. Thirty seconds was an amnesty, not a window.
+      const late = makeTemplate1(templates, "tpl-late", activity, fireball);
+      saves._pendingSaveSpell = { activity, item: fireball, actor: caster, saveAbility: "dex",
+        saveDC: 15, halfOnSave: true, damageTypes: ["fire"], isSpell: true, timing: null,
+        activityId: "ccc", spellLevel: 3, recipe: null };
+      ReactionEngine._castBarriers.clear();     // as the 30s safety net leaves it
+      const atCard2 = posted.length;
+      await quiet(() => saves._onTemplateCreated(late));
+      check("and it is still dead long after, with the barrier gone: no save card, and the area is removed (2026-09-17)",
+        posted.length === atCard2 && late.deleted === true,
+        `save cards after the barrier expired: ${posted.length - atCard2}; the area ${late.deleted ? "was removed" : "is still on the map"}`);
+
+      check("the counter's own card is the only thing posted by the whole business (2026-09-17)",
+        posted.length === atCard,
+        `${posted.length - atCard} card(s) went to chat outside the reaction's own door`);
+
+      game.user.targets = keepTargets;
+      canvas.scene = keepScene;
+      canvas.tokens.placeables.length = 0;
+      for (const a of [caster, kasimir]) ACTORS.delete(a.id);
     }
 
     // ── A cantrip cannot be countered, and neither can a sword ──

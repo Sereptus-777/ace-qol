@@ -486,6 +486,21 @@ export class SaveEngine {
       }, 100);
     });
 
+    // ── A countered cast is dropped on the spot, not asked about later ──
+    //
+    // ⚠️🔴 HOLDING IS NOT KILLING. Johnny, 2026-09-17: "You held the spell.
+    // You did not kill it... The instant the answer is Yes, the fireball is
+    // dead. Not paused." Waiting at the template door was only half of it: a
+    // save armed and waiting for an area is a save that will still go off
+    // whenever that area turns up, a turn later if that is when it turns up.
+    // The moment a counter succeeds, whatever this engine is holding for that
+    // cast is thrown away and its area comes off the map.
+    Hooks.on(`${MODULE_ID}.castCounterspelled`, (info) => {
+      SaveEngine.dropCounterspelledCast(info, this)
+        .catch(err => console.warn(`${MODULE_ID} | could not clear what was `
+          + `waiting for a counterspelled cast:`, err));
+    });
+
     // ── A spell's own effect ends with the condition it came with ──
     // ⚠️ Hypnotic Pattern's "Hypnotized" is Charmed, Incapacitated AND a Speed of
     // 0. The conditions go through the condition library; the speed goes on as
@@ -2014,11 +2029,15 @@ export class SaveEngine {
    */
   static async _castCalledOff(templateDoc, pending) {
     const origin = templateDoc?.flags?.dnd5e?.origin ?? pending?.activity?.uuid ?? null;
-    if (!origin) return false;
+    if (!origin && !pending?.item) return false;
     let decision = { abort: false, reason: "the reaction engine could not be reached" };
     try {
       const { ReactionEngine } = await import("./reaction-engine.mjs");
-      decision = await ReactionEngine.awaitCastDecision(origin);
+      // ⚠️ THE ITEM AND THE CASTER TRAVEL WITH THE QUESTION. A uuid alone was
+      // not enough: dnd5e clones the item for the duration of a cast, so the
+      // uuid on a template and the uuid a barrier was keyed on can differ.
+      decision = await ReactionEngine.awaitCastDecision(origin ?? pending?.activity ?? null,
+        { item: pending?.item ?? null, actor: pending?.actor ?? null });
     } catch (err) {
       console.warn(`${MODULE_ID} | could not ask whether "${pending?.item?.name ?? "that cast"}" `
         + `was counterspelled, so it is treated as going ahead:`, err);
@@ -2046,6 +2065,46 @@ export class SaveEngine {
       }
     }
     return true;
+  }
+
+  /**
+   * Throw away anything this engine is holding for a cast that has just been
+   * counterspelled, and take its area off the map.
+   *
+   * A named method rather than a closure so the replay can drive the very thing
+   * the hook drives, instead of a copy of it that agrees with me.
+   */
+  static async dropCounterspelledCast(info, engine) {
+    const belongs = (pending) => {
+      if (!pending) return false;
+      const a = pending.activity ?? null;
+      if (info?.activityUuid && a?.uuid && a.uuid === info.activityUuid) return true;
+      if (info?.itemUuid && pending.item?.uuid === info.itemUuid) return true;
+      if (info?.actorId && info?.itemId
+        && pending.actor?.id === info.actorId && pending.item?.id === info.itemId) return true;
+      return false;
+    };
+    for (const slot of ["_pendingSaveSpell", "_pendingMovementDamageSpell"]) {
+      if (belongs(engine?.[slot])) {
+        console.log(`${MODULE_ID} | "${engine[slot]?.item?.name}" was counterspelled - `
+          + `the save waiting for its area is thrown away, not held.`);
+        engine[slot] = null;
+      }
+    }
+    // And any area already on the map for that cast, whoever placed it.
+    const ids = [];
+    for (const tpl of (canvas?.scene?.templates ?? [])) {
+      const origin = tpl?.flags?.dnd5e?.origin ?? null;
+      const itemUuid = tpl?.flags?.dnd5e?.item ?? null;
+      if ((info?.activityUuid && origin === info.activityUuid)
+        || (info?.itemUuid && (itemUuid === info.itemUuid
+          || (typeof origin === "string" && origin.startsWith(info.itemUuid))))) ids.push(tpl.id);
+    }
+    if (ids.length && game.users?.activeGM === game.user) {
+      await canvas.scene.deleteEmbeddedDocuments("MeasuredTemplate", ids);
+      console.log(`${MODULE_ID} | took ${ids.length} counterspelled area(s) off the map.`);
+    }
+    return ids.length;
   }
 
   async _onTemplateCreated(templateDoc) {
