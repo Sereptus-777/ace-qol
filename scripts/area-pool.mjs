@@ -30,7 +30,7 @@
 // picker, no invented save, and the cone is on the map where it belongs.
 const MODULE_ID = "ace-qol";
 
-import { isTokenInTemplate, anyOverlapCounts } from "./template-geometry.mjs";
+import { isTokenInTemplate } from "./template-geometry.mjs";
 
 /** Templates already handled, so a re-render never applies a pool twice. */
 const _done = new Set();
@@ -71,9 +71,9 @@ function _tokensInside(templateDoc) {
         + `so who is inside it cannot be read. No pool applied.`);
       return null;
     }
-    const overlap = anyOverlapCounts(game.aceQol?.CombatState?.getActiveEdition);
+
     return (canvas?.tokens?.placeables ?? [])
-      .filter(t => t.actor && isTokenInTemplate(t, obj, null, { anyOverlapCounts: overlap }));
+      .filter(t => t.actor && isTokenInTemplate(t, obj));
   } catch (err) {
     console.warn(`${MODULE_ID} | could not read who is inside template `
       + `${templateDoc?.id}:`, err);

@@ -30,7 +30,7 @@ import { CombatState } from "./combat-state.mjs";
 import { ActionGate } from "./gate/action-gate.mjs";
 // THE one answer to "is this creature in that area", shared with the
 // concentration tracker so cast-time and entry can never disagree.
-import { isTokenInTemplate, anyOverlapCounts } from "./template-geometry.mjs";
+import { isTokenInTemplate } from "./template-geometry.mjs";
 import { DamageConstants, safeShowForRoll } from "./damage-engine.mjs";
 import { awaitDiceSettle } from "./dsn-utils.mjs";
 // The target-side snapshot. The save pipeline asks THIS what a creature is
@@ -702,9 +702,9 @@ export class SaveEngine {
       return [];
     }
 
-    const overlap = anyOverlapCounts(CombatState.getActiveEdition);
+
     return canvas.tokens.placeables.filter(
-      token => isTokenInTemplate(token, templateObject, null, { anyOverlapCounts: overlap }));
+      token => isTokenInTemplate(token, templateObject));
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

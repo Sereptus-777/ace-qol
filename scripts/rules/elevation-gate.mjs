@@ -36,7 +36,7 @@
 // start of turn, and a card for each of those would bury the chat log. The one
 // moment that needs explaining is the moment he expected a save card and did
 // not get one.
-import { isTokenInTemplate, verticalBand, anyOverlapCounts, tokenBand } from "../template-geometry.mjs";
+import { isTokenInTemplate, verticalBand, tokenBand } from "../template-geometry.mjs";
 
 export class ElevationGate {
   /**
@@ -58,7 +58,6 @@ export class ElevationGate {
       // May be null: height unknown for this shape, so height excludes nobody.
       const band = verticalBand(obj);
 
-      const overlap = anyOverlapCounts(getEdition);
       const keptIds = new Set((kept ?? []).map(t => t?.id));
       const out = [];
       for (const token of (canvas?.tokens?.placeables ?? [])) {
@@ -66,7 +65,7 @@ export class ElevationGate {
         if (caster && token.actor?.id === caster.id) continue;   // its own exclusion explains itself
         // Would the floor alone have caught it?
         const flat = isTokenInTemplate(token, obj, null,
-          { anyOverlapCounts: overlap, ignoreElevation: true });
+          { ignoreElevation: true });
         if (!flat) continue;               // it was simply not in the area at all
 
         const feet = Number(token.document?.elevation ?? 0) || 0;

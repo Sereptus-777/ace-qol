@@ -51,6 +51,8 @@ import { HealCardRenderer } from "./heal-card-renderer.mjs";
 import { SpellPipeline } from "./spell-pipeline/pipeline.mjs";
 import { ActionInterceptor } from "./profiles/action-interceptor.mjs";
 import { CardDoor } from "./road/doors.mjs";
+// The one answer to "is this creature in that area" (template-geometry.mjs).
+import { isTokenInTemplate } from "./template-geometry.mjs";
 
 export class HealPipeline {
 
@@ -764,27 +766,16 @@ export class HealPipeline {
   }
 
   /**
-   * Hit-test a token against a measured template. Uses Foundry's built-in
-   * containsPoint when available, falls back to grid math otherwise.
+   * Is this creature in that area?
+   *
+   * ⚠️🔴 DELEGATES, LIKE EVERYTHING ELSE (frozen 2026-09-16). This tested ONE
+   * point, the centre of the token, so a healing area that clipped half of a
+   * Large ally healed nobody. One function answers this question for every
+   * template in the suite: template-geometry.mjs.
    */
   _isTokenInsideTemplate(token, templateDoc) {
-    try {
-      const tx = token.center?.x ?? token.x;
-      const ty = token.center?.y ?? token.y;
-      const tmplObj = templateDoc.object ?? templateDoc;
-      if (typeof tmplObj.shape?.contains === "function") {
-        return tmplObj.shape.contains(tx - templateDoc.x, ty - templateDoc.y);
-      }
-      // Fallback: bounding-circle distance check
-      const dx = tx - templateDoc.x;
-      const dy = ty - templateDoc.y;
-      const dist = Math.hypot(dx, dy);
-      const grid = canvas.grid?.size ?? 100;
-      const distFt = (dist / grid) * (canvas.scene?.grid?.distance ?? 5);
-      return distFt <= (templateDoc.distance ?? 0);
-    } catch (_) {
-      return false;
-    }
+    const tmplObj = templateDoc?.object ?? templateDoc;
+    return isTokenInTemplate(token, tmplObj);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

@@ -276,7 +276,6 @@ function _tokenBand(doc) {
  * @param {object} template   the template PLACEABLE (needs .shape, .x, .y)
  * @param {object} [at]       {x, y} to test instead of the token's current spot
  * @param {object} [opts]
- * @param {boolean} [opts.anyOverlapCounts]  2024 rule: touching is enough
  * @param {boolean} [opts.whollyInside]      the spell says "wholly within"
  * @returns {boolean}
  */
@@ -339,22 +338,10 @@ export function isTokenInTemplate(token, template, at = null, opts = {}) {
 }
 
 /**
- * Which edition's inclusion rule does this table use?
- *
- * ⚠️ THE TWO EDITIONS GENUINELY DISAGREE, and neither reading is a bug -
- * using the wrong one for the table is. 2014's grid guidance is a COVERAGE
- * rule; 2024 says a creature is affected if any part of its space is in the
- * area. Johnny's world is 2014, and reading his own board he confirmed the
- * coverage rule matches what he expects: half in saves, a corner clip does not.
- *
- * @param {Function} getActiveEdition  passed in so this file imports nothing
+ * ⚠️🔴 FROZEN, 2026-09-16. There is no edition gate on who an area catches, and
+ * no option to ask for one. His words: "EVERY ACE template uses real geometry
+ * overlap: token occupied space vs the shape. Edge touching = in... No point
+ * sampling. No 5 of 9 points. No edition gate." The reader that used to answer
+ * "only at a 2024 table" lived here and is gone; `isTokenInTemplate` is the one
+ * function, and `whollyInside` is the only thing that changes its answer.
  */
-export function anyOverlapCounts(_getActiveEdition) {
-  // ⚠️🔴 HIS RULING, 2026-09-16, REPLACED THE EDITION SPLIT: "A creature is in
-  // the template if ANY part of its occupied space intersects the area... Same
-  // rule for every template ACE tests." It used to answer "only at a 2024 table",
-  // and his 2014 Spirit Guardians then left out a Large horse the circle plainly
-  // cut. The argument for the old split is in this file's history; the table's
-  // ruling is one rule for every area, so the answer is yes for everybody.
-  return true;
-}

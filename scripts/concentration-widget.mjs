@@ -26,7 +26,7 @@ import { safeShowForRoll, awaitDiceSettle } from "./dsn-utils.mjs";
 import { buildRegionShapeFromTemplate } from "./geometry-utils.mjs";
 // THE one answer to "is this creature in that area". Shared with the save
 // engine so entry detection and cast-time targeting can never disagree.
-import { isTokenInTemplate, anyOverlapCounts } from "./template-geometry.mjs";
+import { isTokenInTemplate } from "./template-geometry.mjs";
 // Only for getActiveEdition. template-geometry.mjs takes the resolver as an
 // argument precisely so IT stays a leaf and never joins an import cycle.
 import { CombatState } from "./combat-state.mjs";
@@ -1701,21 +1701,6 @@ export class ConcentrationWidget {
   }
 
   /**
-   * Whether a token's CENTER point is currently inside a measured-template
-   * polygon. Uses Foundry's official `containsPoint` first (matches the
-   * core auto-targeting logic across all template types), falling back
-   * to PIXI shape geometry only if needed.
-   *
-   * v0.6.3: Switched to containsPoint as primary. Previous code used
-   * `template.shape.contains()` which had edge-case misses on tokens at
-   * the template boundary — auto-targeting could see them as "inside"
-   * but our hit-test would say "outside," so the entry trigger
-   * fired sporadically.
-   *
-   * `positions` is the pre/post move coord pair — we use the post-move
-   * (new) center for "currently inside" determination.
-   */
-  /**
    * ⚠️🔴 DELEGATES. This used to test ONE point - the centre of the
    * whole token - while the save engine used the half-coverage rule. So a
    * creature standing half inside a Moonbeam was caught when it was CAST and
@@ -1725,29 +1710,17 @@ export class ConcentrationWidget {
    * template-geometry.mjs is now the only place that answers this.
    */
   _tokenInsideTemplate(token, template, positions) {
-    return isTokenInTemplate(token, template,
-      { x: positions?.newX, y: positions?.newY },
-      { anyOverlapCounts: anyOverlapCounts(CombatState.getActiveEdition) });
+    return isTokenInTemplate(token, template, { x: positions?.newX, y: positions?.newY });
   }
 
   /**
-   * RAW "wholly within" hit-test: a token is wholly inside the template
-   * only if all four corners of its bounding box are inside the template
-   * polygon. For 1x1 tokens this is effectively the same as center-point;
-   * for Large/Huge tokens it correctly requires the whole token to be
-   * inside (so partial overlap doesn't trigger area-denial saves).
-   *
-   * @param {Token} token
-   * @param {MeasuredTemplate} template
-   * @param {{newX, newY}} positions
-   * @returns {boolean}
+   * Same one rule, with the spell's own "wholly within" clause applied: Web and
+   * Stinking Cloud say a creature has to be wholly inside, so every square it
+   * stands on must be fully covered rather than merely touched (frozen 09-16).
    */
-  /** Same one rule, with the spell's own "wholly within" clause applied. */
   _tokenWhollyInsideTemplate(token, template, positions) {
     return isTokenInTemplate(token, template,
-      { x: positions?.newX, y: positions?.newY },
-      { anyOverlapCounts: anyOverlapCounts(CombatState.getActiveEdition),
-        whollyInside: true });
+      { x: positions?.newX, y: positions?.newY }, { whollyInside: true });
   }
 
   /**
@@ -2027,13 +2000,14 @@ export class ConcentrationWidget {
       const t = i / sampleCount;
       const x = start.x + dx * t;
       const y = start.y + dy * t;
-      let inside = false;
-      if (typeof template.shape?.contains === "function") {
-        inside = template.shape.contains(x - template.x, y - template.y);
-      } else if (typeof template.containsPoint === "function") {
-        inside = template.containsPoint({ x, y });
-      }
-      if (inside) insideSamples += 1;
+      // ⚠️ THE SPACE, NOT THE CORNER (frozen 09-16). This asked whether one
+      // point of the path was inside the shape, and the point it used was the
+      // token's top-left origin, so a Large creature dragged along the edge of
+      // Spike Growth could measure nought feet inside while its body ploughed
+      // through the spikes. Each step of the path asks the one function about the
+      // creature's whole space at that spot. Sampling the LINE is a measurement
+      // of distance; it is not the inclusion test, which is geometry.
+      if (isTokenInTemplate(token, template, { x, y })) insideSamples += 1;
     }
     if (insideSamples === 0) return 0;
     const fracInside = insideSamples / (sampleCount + 1);
