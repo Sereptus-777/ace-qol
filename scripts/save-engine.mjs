@@ -2024,7 +2024,14 @@ export class SaveEngine {
         + `was counterspelled, so it is treated as going ahead:`, err);
       return false;
     }
-    if (!decision?.abort) return false;
+    if (!decision?.abort) {
+      // ⚠️ BOTH ANSWERS OUT LOUD. If this line is missing from the log, this
+      // guard did not run at all, and the fault is upstream of it rather than
+      // in what it decided. (2026-09-17)
+      console.log(`${MODULE_ID} | "${pending?.item?.name ?? "that cast"}" goes ahead `
+        + `(${decision.reason}); its area is read and its card posted as normal.`);
+      return false;
+    }
 
     console.log(`${MODULE_ID} | "${pending?.item?.name ?? "that cast"}" was ${decision.reason} - `
       + `no save card, no damage, and its area comes off the map.`);

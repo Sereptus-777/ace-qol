@@ -383,6 +383,14 @@ export class ReactionEngine {
     const key = isText ? activityOrUuid : ReactionEngine._activityKey(activityOrUuid);
     const barrier = key ? ReactionEngine._castBarriers.get(key) : null;
     if (barrier) {
+      // ⚠️ SAY THAT YOU ARE WAITING. A door that holds for four seconds while
+      // somebody decides looks identical to a door that has hung, and a door
+      // that never waited at all looks identical to one that waited and was
+      // told to go ahead. Both were guesses at this table; neither has to be.
+      if (!barrier.resolved) {
+        console.log(`${MODULE_ID} | holding: something is still deciding whether this cast happens `
+          + `(a Counterspell prompt is open). Nothing resolves until it answers.`);
+      }
       const result = await barrier.promise;
       if (result?.abort) return result;
     }
