@@ -2970,51 +2970,59 @@ console.log(`\nPHASE 6b: COUNTERSPELL`);
       const kasimir = mage("p6b-k11", "Kasimir Velikov", { items: [csItem("2024")], at: [200, 0], dc: 17 });
       const fireball = other("Fireball");
       fireball.uuid = "Actor.p6b-c11.Item.it-Fireball";
-      const activity = cast(caster, fireball);
-      activity.uuid = "Actor.p6b-c11.Item.it-Fireball.Activity.fff";
       const veto = hooks["dnd5e.preCreateActivityTemplate"] ?? [];
 
-      // Nobody can counter: the barrier is already settled when dnd5e asks, so
-      // an ordinary cast is not touched at all and dnd5e places its own area.
-      ReactionEngine._createCastBarrier(activity);
-      ReactionEngine._resolveCastBarrier(activity, { abort: false, reason: "no_reactors_available" });
-      const ordinary = veto.map(fn => fn(activity, {}));
-      check("an ordinary cast nobody can counter still gets its crosshair from dnd5e, untouched (2026-09-17)",
+      // ⚠️🔴 ACE DOES NOT PLACE TEMPLATES, AND MUST NEVER TRY AGAIN. 0.34.40
+      // refused the crosshair while the Counterspell prompt was open and drew
+      // the area itself afterwards. It broke Fireball outright at his table
+      // inside the hour - "AbilityTemplate.fromActivity is not a function or its
+      // return value is not iterable" - because placement is dnd5e's job and
+      // ACE reached around it. Build ON, never BESIDE. These pins hold the line:
+      // the ONLY thing the template hook may ever refuse is a cast that is
+      // already dead.
+
+      // Nobody can counter: the crosshair appears, untouched.
+      const quiet1 = cast(caster, fireball);
+      quiet1.uuid = "Actor.p6b-c11.Item.it-Fireball.Activity.fff";
+      ReactionEngine._createCastBarrier(quiet1);
+      ReactionEngine._resolveCastBarrier(quiet1, { abort: false, reason: "no_reactors_available" });
+      const ordinary = veto.map(fn => fn(quiet1, {}));
+      check("nobody can counter: dnd5e places the area exactly as it always has (2026-09-17)",
         ordinary.length > 0 && ordinary.every(v => v !== false),
         `the template hook answered ${ordinary.join(", ") || "(nothing listening)"}`);
 
-      // The prompt is open: no crosshair, and the area is remembered.
-      const pending = cast(caster, fireball);
-      pending.uuid = "Actor.p6b-c11.Item.it-Fireball.Activity.ggg";
-      ReactionEngine._createCastBarrier(pending);
-      const held = await quiet(() => Promise.resolve(veto.map(fn => fn(pending, {}))));
-      check("while the Counterspell prompt is open there is NO crosshair, and the area is remembered (2026-09-17)",
-        held.some(v => v === false) && ReactionEngine._templateOwed.has(pending.uuid),
-        `the template hook answered ${held.join(", ")}; the area is ${ReactionEngine._templateOwed.has(pending.uuid) ? "held" : "forgotten"}`);
+      // The prompt is OPEN and undecided: still dnd5e's crosshair. ACE waits at
+      // the doors that matter instead, and deletes the area if the answer is yes.
+      const open = cast(caster, fireball);
+      open.uuid = "Actor.p6b-c11.Item.it-Fireball.Activity.ggg";
+      ReactionEngine._createCastBarrier(open);
+      const whileOpen = veto.map(fn => fn(open, {}));
+      check("the prompt is still open: the crosshair is dnd5e's and ACE does not touch it (2026-09-17)",
+        whileOpen.length > 0 && whileOpen.every(v => v !== false),
+        `the template hook answered ${whileOpen.join(", ")}`);
 
-      // Answer yes: the held area is dropped and never placed.
-      await quiet(() => Promise.resolve(ReactionEngine._resolveCastBarrier(pending,
-        { abort: true, reason: "counterspelled", counterspeller: "Kasimir Velikov" })));
-      check("and a Yes throws the held area away instead of placing it (2026-09-17)",
-        !ReactionEngine._templateOwed.has(pending.uuid),
-        `still held: ${ReactionEngine._templateOwed.has(pending.uuid)}`);
+      // Declined: nothing about the cast changes.
+      ReactionEngine._resolveCastBarrier(open, { abort: false, reason: "no_counter" });
+      const declined = veto.map(fn => fn(open, {}));
+      check("a Counterspell declined: the area places, and the saves and damage follow (2026-09-17)",
+        declined.every(v => v !== false),
+        `the template hook answered ${declined.join(", ")}`);
 
-      // A cast that survives gets its area back, through dnd5e's own placer.
-      const lived = cast(caster, fireball);
-      lived.uuid = "Actor.p6b-c11.Item.it-Fireball.Activity.hhh";
-      ReactionEngine._createCastBarrier(lived);
-      await quiet(() => Promise.resolve(veto.map(fn => fn(lived, {}))));
-      let drew = 0;
-      globalThis.dnd5e = { canvas: { AbilityTemplate: {
-        fromActivity: () => [{ drawPreview: async () => { drew += 1; return {}; } }],
-      } } };
-      await quiet(() => Promise.resolve(ReactionEngine._resolveCastBarrier(lived,
-        { abort: false, reason: "no_counter" })));
-      await new Promise(r => setTimeout(r, 10));
-      delete globalThis.dnd5e;
-      check("a cast that survives the Counterspell gets its area drawn, through dnd5e's own placer (2026-09-17)",
-        drew === 1 && !ReactionEngine._templateOwed.has(lived.uuid),
-        `areas drawn after the answer: ${drew}`);
+      // Countered: the ONE case ACE refuses, and the only one it ever may.
+      const dead = cast(caster, fireball);
+      dead.uuid = "Actor.p6b-c11.Item.it-Fireball.Activity.hhh";
+      ReactionEngine._markCastCounterspelled(dead);
+      const refused = await quiet(() => Promise.resolve(veto.map(fn => fn(dead, {}))));
+      check("a Counterspell answered YES: that one area is refused, and nothing else is (2026-09-17)",
+        refused.some(v => v === false),
+        `the template hook answered ${refused.join(", ")}`);
+
+      // And the source itself: no call into dnd5e's placer anywhere in ACE.
+      const src = readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/reaction-engine.mjs`, "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+      check("and ACE calls nothing of dnd5e's own template placer, anywhere (2026-09-17)",
+        !/fromActivity|drawPreview|AbilityTemplate/.test(src),
+        `mentions left in the code: ${(src.match(/fromActivity|drawPreview|AbilityTemplate/g) ?? []).join(", ") || "none"}`);
 
       canvas.tokens.placeables.length = 0;
       for (const a of [caster, kasimir]) ACTORS.delete(a.id);

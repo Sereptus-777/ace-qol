@@ -108,8 +108,6 @@ export class ReactionEngine {
   static _counterspelledCasts = [];   // [{ itemUuid, activityUuid, actorId, itemId, casterName, casterTokenUuid, expiresAt }]
   /** One Counterspell check per cast: key -> when it was checked. */
   static _castsChecked = new Map();
-  /** Casts whose area we refused while the prompt was open: key -> activity. */
-  static _templateOwed = new Map();
   static _recentSummonFx = [];        // [{ id, srcUuid, expiresAt }] — summon Sequencer effects seen at creation, for post-counter cleanup
 
   static _markCastCounterspelled(activity) {
@@ -439,46 +437,6 @@ export class ReactionEngine {
     b.resolved = true;
     b.resolvedWith = result;
     ReactionEngine._sdebug(`[BARRIER] RESOLVE for ${activity?.item?.name ?? '?'} with ${JSON.stringify(result)}`);
-    ReactionEngine._placeHeldTemplate(key, result);
-  }
-
-  /**
-   * Place the area we refused while the Counterspell prompt was open.
-   *
-   * ⚠️ ONLY WHAT WE REFUSED, AND ONLY IF THE SPELL LIVED. A cast that nobody
-   * could counter never reaches this: its barrier resolves before dnd5e asks
-   * about the template, so the hook lets it through and dnd5e places it itself.
-   */
-  static _placeHeldTemplate(key, result) {
-    const activity = key ? ReactionEngine._templateOwed.get(key) : null;
-    if (!activity) return;
-    ReactionEngine._templateOwed.delete(key);
-    if (result?.abort) {
-      console.log(`${MODULE_ID} | "${activity?.item?.name ?? "that cast"}" was ${result.reason ?? "stopped"}, `
-        + `so the area it was holding is never placed.`);
-      return;
-    }
-    // Only the client that cast it may draw the preview; everybody else would
-    // get a crosshair for somebody else's spell.
-    (async () => {
-      try {
-        const Template = globalThis.dnd5e?.canvas?.AbilityTemplate
-          ?? globalThis.game?.dnd5e?.canvas?.AbilityTemplate ?? null;
-        if (!Template?.fromActivity) {
-          console.warn(`${MODULE_ID} | "${activity?.item?.name}" survived the Counterspell, but ACE `
-            + `cannot reach dnd5e's own template placer to draw its area. Place it by hand.`);
-          return;
-        }
-        console.log(`${MODULE_ID} | "${activity?.item?.name}" survived the Counterspell - `
-          + `here is its area.`);
-        for (const template of (Template.fromActivity(activity) ?? [])) {
-          await template.drawPreview();
-        }
-      } catch (err) {
-        console.warn(`${MODULE_ID} | could not draw the area for "${activity?.item?.name}" after the `
-          + `Counterspell was answered; place it by hand:`, err);
-      }
-    })();
   }
 
   /**
@@ -784,29 +742,24 @@ export class ReactionEngine {
             + `so there is no area to place.`);
           return false;
         }
-        // ⚠️🔴 AND NO CROSSHAIR WHILE THE ANSWER IS STILL COMING (2026-09-17).
-        // Johnny: "CAST flourish and template preview run BEFORE the
-        // Counterspell answer." They do: dnd5e places the area in
-        // `_finalizeUsage`, immediately after the usage message, and it does not
-        // await the hook we answer on. Vetoing only a cast that is ALREADY dead
-        // is therefore always too late - at that instant the prompt is still on
-        // somebody's screen.
+        // ⚠️🔴 AND ACE DOES NOT PLACE TEMPLATES. It tried, for one version, and
+        // it broke Fireball outright: 0.34.40 refused the crosshair while the
+        // Counterspell prompt was open and drew the area itself afterwards
+        // through the system's own placer. His table, within the hour:
+        // "AbilityTemplate.fromActivity is not a function or its return value is
+        // not iterable. Fireball template will not place."
         //
-        // This hook is synchronous, so it cannot wait. It refuses instead, and
-        // ACE places the area itself the moment the answer comes back "not
-        // countered" - through dnd5e's own AbilityTemplate, the same call
-        // `#placeTemplate` makes, so the area carries the same flags and behaves
-        // exactly as it always has. When nobody at the table can counter, the
-        // barrier resolves before this hook is ever reached and NOTHING about an
-        // ordinary cast changes.
-        const key = ReactionEngine._activityKey(activity);
-        const barrier = key ? ReactionEngine._castBarriers.get(key) : null;
-        if (barrier && !barrier.resolved) {
-          ReactionEngine._templateOwed.set(key, activity);
-          console.log(`${MODULE_ID} | "${activity?.item?.name ?? "that cast"}": holding its area `
-            + `until the Counterspell is answered. Nothing is placed, and nothing is drawn, until then.`);
-          return false;
-        }
+        // The lesson is older than the bug and it is written down: build ON,
+        // never BESIDE. Placing an area is dnd5e's job, it has always done it
+        // correctly, and taking it over to win a few hundred milliseconds cost
+        // him the spell entirely. The crosshair may appear while the prompt is
+        // open - dnd5e places the area right after the usage message and does
+        // not await the hook ACE answers on, so there is no honest way to stop
+        // that without taking placement away from it. What ACE can do, and does,
+        // is make sure that area never becomes anything: it is deleted the
+        // moment the counter lands, no save card is posted for it, and nothing
+        // is played. A crosshair that leads nowhere is a great deal better than
+        // a Fireball that cannot be cast.
         return true;
       } catch (_) { return true; }
     });
