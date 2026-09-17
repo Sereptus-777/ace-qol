@@ -1997,6 +1997,50 @@ export class SaveEngine {
     }
   }
 
+  /**
+   * Was the cast that placed this area called off before it landed?
+   *
+   * ⚠️🔴 THE SAVE ENGINE WAS THE ONE ENGINE THAT NEVER ASKED (2026-09-17). The
+   * pipeline asks, spell-auto-damage asks, the buff path asks. Fireball is a
+   * shape the pipeline owns and deliberately hands to this file, so nothing on
+   * its whole road ever asked - and a countered Fireball still placed its
+   * template, posted its Dexterity save card and offered ROLL DAMAGE. Table-
+   * proven on both editions the same evening Counterspell started working.
+   *
+   * ⚠️ AND IT WAITS. The counterspell prompt is a dialog on somebody's screen;
+   * it is answered seconds after the template lands. Posting the card first and
+   * cleaning up afterwards is not a fix, it is a race that the card wins. When
+   * nobody can counter, the barrier resolves at once and this costs nothing.
+   */
+  static async _castCalledOff(templateDoc, pending) {
+    const origin = templateDoc?.flags?.dnd5e?.origin ?? pending?.activity?.uuid ?? null;
+    if (!origin) return false;
+    let decision = { abort: false, reason: "the reaction engine could not be reached" };
+    try {
+      const { ReactionEngine } = await import("./reaction-engine.mjs");
+      decision = await ReactionEngine.awaitCastDecision(origin);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not ask whether "${pending?.item?.name ?? "that cast"}" `
+        + `was counterspelled, so it is treated as going ahead:`, err);
+      return false;
+    }
+    if (!decision?.abort) return false;
+
+    console.log(`${MODULE_ID} | "${pending?.item?.name ?? "that cast"}" was ${decision.reason} - `
+      + `no save card, no damage, and its area comes off the map.`);
+    try {
+      const live = canvas?.scene?.templates?.get?.(templateDoc.id) ?? templateDoc;
+      if (live) await live.delete();
+    } catch (err) {
+      const msg = String(err?.message ?? err ?? "");
+      if (!/does not exist/i.test(msg)) {
+        console.warn(`${MODULE_ID} | the counterspelled area could not be removed from the map; `
+          + `delete it by hand:`, err);
+      }
+    }
+    return true;
+  }
+
   async _onTemplateCreated(templateDoc) {
     console.log(`${MODULE_ID} | _onTemplateCreated fired, pending save:`, !!this._pendingSaveSpell, "pending movement-damage:", !!this._pendingMovementDamageSpell);
 
@@ -2007,6 +2051,9 @@ export class SaveEngine {
     if (this._pendingMovementDamageSpell && !this._pendingSaveSpell) {
       const pending = this._pendingMovementDamageSpell;
       this._pendingMovementDamageSpell = null;
+      // A countered Spike Growth leaves no spikes. (The pending is taken first,
+      // so a wait here can never let the next cast steal this one's slot.)
+      if (await SaveEngine._castCalledOff(templateDoc, pending)) return;
       // ⚠️ ITS RECIPE GOES WITH IT (The One Road, Phase 5). What Spike Growth
       // deals to somebody walking through it is the recipe's, not a formula this
       // file read off the sheet and the widget read again off a field dnd5e 5.x
@@ -2074,6 +2121,11 @@ export class SaveEngine {
       }
       return;
     }
+
+    // ⚠️ BEFORE THE AREA IS MEASURED, BEFORE A SINGLE SAVE IS ROLLED. A cast
+    // that was counterspelled produces nothing at all: no card, no damage, and
+    // its area comes off the map.
+    if (await SaveEngine._castCalledOff(templateDoc, pending)) return;
 
     // ── WHO THE AREA CATCHES: THE SPELL'S OWN WORDS DECIDE ──
     //

@@ -5205,6 +5205,14 @@ Hooks.once("ready", () => {
           if (!replyOwnerIsAuthorised(payload, _castActor, "playerSpellCast")) return;
           const message  = payload.messageId ? game.messages.get(payload.messageId) : null;
           if (activity && reactionEngine) {
+            // ⚠️ THE BARRIER IS RAISED ON THE CLIENT THAT CASTS, AND A PLAYER'S
+            // CLIENT IS NOT THIS ONE (2026-09-17). `preUseActivity` is GM-gated
+            // and fires locally, so a player's cast reached the GM with no
+            // barrier here to hold anything back - and the GM's client is where
+            // the save engine runs. One is raised now, and _onSpellCast below
+            // resolves it either way, so every door on this client can wait for
+            // the verdict exactly as it does for a GM's own cast.
+            ReactionEngine._createCastBarrier(activity);
             await reactionEngine._onSpellCast(activity, message);
             // ── v0.7.275 — Relay the counter VERDICT to the caster's client so
             //   its summon-placement gate knows whether to place. The message flag

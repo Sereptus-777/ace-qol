@@ -346,6 +346,57 @@ export class ReactionEngine {
     return result;
   }
 
+  /**
+   * PUBLIC. Has this cast been called off, and if the answer is not in yet,
+   * wait for it.
+   *
+   * ⚠️🔴 WHY THIS EXISTS. Johnny, 2026-09-17, table-proven on both editions:
+   * "Patrina 2014: card says auto-success, Fireball dissolves. Template + Dex
+   * save card + ROLL DAMAGE still happened." The counter landed, said so, and
+   * the spell went off anyway - because Fireball is a shape the pipeline owns
+   * but deliberately does not resolve ("the save engine rolls the saves and the
+   * damage"), and the save engine was the one engine in the suite that never
+   * asked the barrier. It read the template, waited 100ms for the shape and
+   * posted the card, while the counterspell prompt was still open on somebody's
+   * screen.
+   *
+   * ⚠️ IT TAKES A UUID, WHICH IS THE WHOLE POINT. The engines that already
+   * asked had the activity object in hand. A template does not: it carries
+   * `flags.dnd5e.origin`, which dnd5e sets to the activity's uuid (and
+   * `flags.dnd5e.item` to the item's). That string is the barrier's own key, so
+   * the door that has only a template can ask the same question as the door
+   * that has the whole cast.
+   *
+   * @param {object|string} activityOrUuid  an activity, or an activity uuid
+   * @returns {Promise<{abort: boolean, reason: string}>}
+   */
+  static async awaitCastDecision(activityOrUuid) {
+    const isText = typeof activityOrUuid === "string";
+    const uuid = isText ? activityOrUuid : (activityOrUuid?.uuid ?? null);
+    if (!activityOrUuid) return { abort: false, reason: "nothing to wait for" };
+
+    // Already on the kill-list: the counter landed before we were asked.
+    if (uuid && ReactionEngine._isCounterspelledOrigin(uuid)) {
+      return { abort: true, reason: "counterspelled" };
+    }
+
+    const key = isText ? activityOrUuid : ReactionEngine._activityKey(activityOrUuid);
+    const barrier = key ? ReactionEngine._castBarriers.get(key) : null;
+    if (barrier) {
+      const result = await barrier.promise;
+      if (result?.abort) return result;
+    }
+
+    // ⚠️ ASK AGAIN AFTER THE WAIT. The counter is recorded on the kill-list at
+    // the same moment the barrier resolves, and on a player's cast the GM's
+    // client records it with no barrier of its own to resolve. One of the two
+    // always knows.
+    if (uuid && ReactionEngine._isCounterspelledOrigin(uuid)) {
+      return { abort: true, reason: "counterspelled" };
+    }
+    return { abort: false, reason: barrier ? "not countered" : "no barrier was raised for this cast" };
+  }
+
   // ── v0.7.280 — Relay the counter to the CASTER's client for FX cleanup ──
   //  The summon-PLACEMENT gate (0.7.274) was reverted — delaying placeSummons to
   //  wait for the counter broke dnd5e's summon↔concentration link. But the

@@ -2465,6 +2465,7 @@ console.log(`\nPHASE 6b: COUNTERSPELL`);
         flags: { [MOD]: { ...flags } },
         getFlag: (scope, key) => a.flags?.[scope]?.[key],
         setFlag: async (scope, key, v) => { (a.flags[scope] ??= {})[key] = v; return a; },
+        unsetFlag: async (scope, key) => { delete a.flags?.[scope]?.[key]; return a; },
         testUserPermission: () => false,
         update: async (u) => { for (const [k, v] of Object.entries(u)) {
           const path = k.split("."); let o = a;
@@ -2657,6 +2658,95 @@ console.log(`\nPHASE 6b: COUNTERSPELL`);
             + `reaction ${kasimir.flags[MOD]?.reactionUsed ? "spent" : "still free"}; cards ${cards6b.length - atCard}`);
       canvas.tokens.placeables.length = 0;
       for (const a of [caster, kasimir]) ACTORS.delete(a.id);
+    }
+
+    // ── THE TABLE BUG: a countered spell must not go off ──
+    // Johnny, 2026-09-17, on both editions: "card says auto-success, Fireball
+    // dissolves. Template + Dex save card + ROLL DAMAGE still happened."
+    // Fireball is a shape the pipeline OWNS but deliberately does not resolve -
+    // the save engine rolls its saves and its damage - and the save engine was
+    // the one engine in the suite that never asked the barrier. This drives the
+    // real `_onTemplateCreated` with a real barrier.
+    {
+      const caster = makeCaster("p6b-c7", "Neferon", { at: [0, 0] });
+      const kasimir = mage("p6b-k7", "Kasimir Velikov", { items: [csItem("2024")], at: [200, 0], dc: 17 });
+      const victim = mage("p6b-victim", "somebody standing in it", { items: [], at: [100, 100], disposition: 1 });
+      const fireball = other("Fireball");
+      const activity = cast(caster, fireball);
+      activity.uuid = "Actor.p6b-c7.Item.it-Fireball.Activity.aaa";
+
+      // The area dnd5e places: its `flags.dnd5e.origin` is the activity's uuid
+      // and `flags.dnd5e.item` the item's, which is what lets a door holding
+      // only a template ask the same question as a door holding the cast.
+      const templates = new Map();
+      const makeTemplate = (id) => {
+        const doc = { id, x: 100, y: 100, distance: 20, t: "circle",
+          flags: { dnd5e: { origin: activity.uuid, item: fireball.uuid ?? "Actor.p6b-c7.Item.it-Fireball", spellLevel: 3 } },
+          delete: async () => { templates.delete(id); doc.deleted = true; return doc; } };
+        templates.set(id, doc);
+        return doc;
+      };
+      const keepScene = canvas.scene;
+      const keepTargets = game.user.targets;
+      game.user.targets = new Set();
+      canvas.scene = { templates: { get: (id) => templates.get(id) ?? null,
+        contents: [], [Symbol.iterator]: function* () { yield* templates.values(); } } };
+
+      // A barrier, exactly as preUseActivity raises one.
+      ReactionEngine._createCastBarrier(activity);
+
+      // ⚠️ AN INSTANCE, NOT THE CLASS: `_onTemplateCreated` is an instance
+      // method and the constructor registers hooks, which a self-test must not
+      // do. `Object.create` gives the real prototype with none of the wiring.
+      const saves = Object.create(SaveEngine.prototype);
+      const pending = { activity, item: fireball, actor: caster, saveAbility: "dex", saveDC: 15,
+        halfOnSave: true, damageTypes: ["fire"], isSpell: true, timing: null,
+        activityId: activity.id ?? "aaa", spellLevel: 3, recipe: null };
+
+      // The template lands, and the save engine picks it up 100ms later - while
+      // the counterspell prompt is still open. It must WAIT, not post and tidy up
+      // afterwards: a card that is already on the table has already been read.
+      const tpl = makeTemplate("tpl-countered");
+      saves._pendingSaveSpell = pending;
+      const atCard = posted.length;
+      let finished = false;
+      const running = quiet(() => saves._onTemplateCreated(tpl).then(() => { finished = true; }));
+      await new Promise(r => setTimeout(r, 30));
+      const waitedFirst = !finished && posted.length === atCard && !tpl.deleted;
+
+      // Now the counter lands.
+      answer = true;
+      casterSaveTotal = 9;                   // fails DC 17 -> countered
+      await quiet(() => engine._onSpellCast(activity, null));
+      await running;
+
+      check("THE TABLE BUG: a countered Fireball posts NO save card and its area comes off the map, and the save engine WAITED for the verdict instead of posting first (2026-09-17)",
+        waitedFirst && finished && posted.length === atCard && tpl.deleted === true && !templates.has("tpl-countered"),
+        `while the prompt was open: ${waitedFirst ? "nothing posted, nothing placed" : "it went ahead anyway"}; `
+          + `after the counter: ${posted.length - atCard} save card(s), the area ${tpl.deleted ? "was removed" : "is still on the map"}`);
+
+      // And the other way round: a cast nobody counters still resolves.
+      kasimir.flags[MOD].reactionUsed = false;
+      kasimir.system.spells.spell3.value = 2;
+      const activity2 = cast(caster, fireball);
+      activity2.uuid = "Actor.p6b-c7.Item.it-Fireball.Activity.bbb";
+      ReactionEngine._createCastBarrier(activity2);
+      const tpl2 = makeTemplate("tpl-allowed");
+      tpl2.flags.dnd5e.origin = activity2.uuid;
+      saves._pendingSaveSpell = { ...pending, activity: activity2 };
+      answer = false;                        // Kasimir lets it go
+      const running2 = quiet(() => saves._onTemplateCreated(tpl2));
+      await quiet(() => engine._onSpellCast(activity2, null));
+      await running2;
+      check("and a Fireball nobody counters still gets its area read and is not deleted (2026-09-17)",
+        tpl2.deleted !== true && templates.has("tpl-allowed"),
+        `the area ${tpl2.deleted ? "was wrongly removed" : "is still on the map, as it should be"}`);
+
+      saves._pendingSaveSpell = null;
+      canvas.scene = keepScene;
+      game.user.targets = keepTargets;
+      canvas.tokens.placeables.length = 0;
+      for (const a of [caster, kasimir, victim]) ACTORS.delete(a.id);
     }
 
     // ── A cantrip cannot be countered, and neither can a sword ──

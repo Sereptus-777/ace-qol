@@ -48,7 +48,25 @@ export class SpaceEffects {
       if (game.users?.activeGM !== game.user) return;
       // Small delay lets dnd5e finish stamping flags.dnd5e.* and lets the
       // placeable compute its shape (same proven pattern as save-engine).
-      setTimeout(() => {
+      setTimeout(async () => {
+        // ⚠️ SAME DOOR, SAME QUESTION (2026-09-17). A counterspell is answered
+        // seconds after the area lands, so writing the space immediately writes
+        // it for a spell that never happened. A hand-drawn template has no
+        // origin and is not delayed by a single tick.
+        try {
+          const origin = templateDoc?.flags?.dnd5e?.origin ?? null;
+          if (origin) {
+            const { ReactionEngine } = await import("../reaction-engine.mjs");
+            const decision = await ReactionEngine.awaitCastDecision(origin);
+            if (decision?.abort) {
+              console.log(`${TAG} that area was ${decision.reason}, so no space is written for it.`);
+              return;
+            }
+          }
+        } catch (err) {
+          console.warn(`${TAG} could not ask whether that area's cast was counterspelled, `
+            + `so it is treated as going ahead:`, err);
+        }
         SpaceEffects._onTemplateCreated(templateDoc)
           .catch(err => console.warn(`${TAG} region create failed (non-fatal):`, err));
       }, 150);

@@ -121,12 +121,39 @@ async function _onTemplateCreated(templateDoc) {
  * would wait on an event already in progress and this would silently never
  * register.
  */
+/**
+ * Nothing is spent until the cast is known to have happened.
+ *
+ * ⚠️ SAME DOOR, SAME QUESTION (2026-09-17). A counterspell is answered on
+ * somebody's screen seconds after the area lands, so a door that reads the
+ * template and acts immediately acts on a spell that never happened. The save
+ * engine had exactly this bug with Fireball; this is the same door on a
+ * different engine.
+ */
+async function _afterTheVerdict(doc) {
+  try {
+    const origin = doc?.flags?.dnd5e?.origin ?? null;
+    if (origin) {
+      const { ReactionEngine } = await import("./reaction-engine.mjs");
+      const decision = await ReactionEngine.awaitCastDecision(origin);
+      if (decision?.abort) {
+        console.log(`${MODULE_ID} | that area was ${decision.reason}, so its pool is not spent.`);
+        return;
+      }
+    }
+  } catch (err) {
+    console.warn(`${MODULE_ID} | could not ask whether that area's cast was counterspelled, `
+      + `so it is treated as going ahead:`, err);
+  }
+  return _onTemplateCreated(doc);
+}
+
 export function registerAreaPool() {
   const run = () => {
     Hooks.on("createMeasuredTemplate", (doc) => {
       // A tick of delay so the placeable exists and carries its shape; the
       // geometry read above refuses to guess without one.
-      setTimeout(() => _onTemplateCreated(doc).catch(err =>
+      setTimeout(() => _afterTheVerdict(doc).catch(err =>
         console.error(`${MODULE_ID} | area pool threw:`, err)), 50);
     });
     Hooks.on("deleteMeasuredTemplate", (doc) => _done.delete(doc.id));
