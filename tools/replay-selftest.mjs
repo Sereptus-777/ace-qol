@@ -2841,6 +2841,103 @@ console.log(`\nPHASE 6b: COUNTERSPELL`);
       for (const a of [caster, kasimir]) ACTORS.delete(a.id);
     }
 
+    // ── HIS CONSOLE: the barrier said "go ahead" AFTER the counter landed ──
+    // Johnny, 2026-09-17, from the log of a Fireball that was counterspelled and
+    // resolved anyway:
+    //
+    //   save-engine: "Fireball goes ahead (not countered); its area is read and
+    //   its card posted as normal."
+    //
+    // "not countered" is only printed when a barrier was FOUND and had settled
+    // with abort:false. A barrier can be settled by any of half a dozen early
+    // exits - no reactors, not a spell, no token, or a SECOND firing of dnd5e's
+    // usage-message hook finding the counterspeller's reaction already spent -
+    // and a counter landing afterwards cannot re-settle a promise. So the
+    // kill-list, not the barrier, has to be the authority.
+    {
+      const caster = makeCaster("p6b-c9", "Neferon", { at: [0, 0] });
+      const kasimir = mage("p6b-k9", "Kasimir Velikov", { items: [csItem("2024")], at: [200, 0], dc: 17 });
+      const fireball = other("Fireball");
+      fireball.uuid = "Actor.p6b-c9.Item.it-Fireball";
+      fireball.actor = caster;
+      const activity = cast(caster, fireball);
+      activity.uuid = "Actor.p6b-c9.Item.it-Fireball.Activity.ddd";
+
+      // The barrier settles "go ahead" first, exactly as a second firing of the
+      // hook would settle it while the first is still waiting for an answer.
+      ReactionEngine._createCastBarrier(activity);
+      ReactionEngine._resolveCastBarrier(activity, { abort: false, reason: "no_reactors_available" });
+
+      // Then the counter lands and is recorded.
+      ReactionEngine._markCastCounterspelled(activity);
+
+      const verdict = await ReactionEngine.awaitCastDecision(activity.uuid,
+        { item: fireball, actor: caster });
+      check("HIS CONSOLE: a barrier already settled as \"go ahead\" does not outrank a counter that lands afterwards (2026-09-17)",
+        verdict?.abort === true,
+        `the barrier said go ahead, then Kasimir countered → the door decides: ${verdict?.abort ? "dead" : `alive (${verdict?.reason})`}`);
+
+      // And the same question asked with only the template's origin, which is
+      // what the save engine actually holds.
+      const byOrigin = await ReactionEngine.awaitCastDecision(activity.uuid);
+      check("and the same answer when all the door has is the template's origin (2026-09-17)",
+        byOrigin?.abort === true,
+        `by origin alone: ${byOrigin?.abort ? "dead" : `alive (${byOrigin?.reason})`}`);
+
+      // The whole point of the wider match: even when the uuid on the template
+      // is not the uuid the counter recorded, who cast what still answers.
+      const stranger = await ReactionEngine.awaitCastDecision(
+        "Scene.abc.Token.def.Actor.ghi.Item.jkl.Activity.mno", { item: fireball, actor: caster });
+      check("and when the uuids do not agree at all, WHO CAST WHAT still answers (2026-09-17)",
+        stranger?.abort === true,
+        `a completely different uuid, same caster and same spell: ${stranger?.abort ? "dead" : `alive (${stranger?.reason})`}`);
+
+      canvas.tokens.placeables.length = 0;
+      for (const a of [caster, kasimir]) ACTORS.delete(a.id);
+    }
+
+    // ── One Counterspell check per cast ──
+    // dnd5e can fire its usage-message hook more than once for a single use;
+    // the spell pipeline has guarded against that for months and this handler
+    // had nothing. Two prompts for one cast is a bug on its own, and the second
+    // firing settling the barrier is what produced the line above.
+    {
+      const caster = makeCaster("p6b-c10", "a caster", { at: [0, 0] });
+      const kasimir = mage("p6b-k10", "Kasimir Velikov", { items: [csItem("2024")], at: [200, 0] });
+      const fireball = other("Fireball");
+      fireball.uuid = "Actor.p6b-c10.Item.it-Fireball";
+      const activity = cast(caster, fireball);
+      activity.uuid = "Actor.p6b-c10.Item.it-Fireball.Activity.eee";
+      // Every listener on the hook, not the first one registered: the spell
+      // pipeline listens on the same hook and gets there first.
+      const listeners = hooks["dnd5e.postCreateUsageMessage"] ?? [];
+      const handler = listeners.length
+        ? (async (a, m) => { for (const fn of listeners) await fn(a, m); })
+        : null;
+      answer = false;                        // let it through, so both firings would ask
+      // Count how many times the hook lets a cast through to the check itself,
+      // rather than how many prompts come out the far end: the prompt depends on
+      // half a dozen things this pin is not about, and the guard is right here.
+      const keepCheck = ReactionEngine.prototype._onSpellCast;
+      let entered = 0;
+      ReactionEngine.prototype._onSpellCast = async function (act) {
+        entered += 1;
+        ReactionEngine._resolveCastBarrier(act, { abort: false, reason: "stood in" });
+      };
+      try {
+        if (handler) {
+          await quiet(() => handler(activity, null));
+          await quiet(() => handler(activity, null));
+        }
+      } finally { ReactionEngine.prototype._onSpellCast = keepCheck; }
+      check("dnd5e firing its usage hook twice for one cast runs the Counterspell check ONCE (2026-09-17)",
+        !!handler && entered === 1,
+        handler ? `the check ran ${entered} time(s) across two firings of the same use`
+          : "the usage hook has no listener in this run");
+      canvas.tokens.placeables.length = 0;
+      for (const a of [caster, kasimir]) ACTORS.delete(a.id);
+    }
+
     // ── A cantrip cannot be countered, and neither can a sword ──
     {
       const caster = makeCaster("p6b-c6", "a caster", { at: [0, 0] });

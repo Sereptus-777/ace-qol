@@ -1247,10 +1247,23 @@ export class SpellPipeline {
         clearTimeout(timer);
         resolve(val);
       };
+      // ⚠️🔴 THE ACTIVITY UUID ALONE DID NOT RECOGNISE ITS OWN TEMPLATE.
+      // From his console, 2026-09-17, for a Fireball whose area he had just
+      // placed: "no template placed for Fireball within 30000ms - treating as
+      // CANCELLED, slot kept." dnd5e stamps TWO flags on a template it builds
+      // from an activity - `origin` (the activity's uuid) and `item` (the
+      // item's) - and it runs the whole cast on a CLONE of the item, so the
+      // uuid this waiter was handed and the one stamped on the template do not
+      // always agree. The item is the same either way, and an origin that
+      // begins with the item's uuid belongs to the item's own activity.
+      const wantedItem = activity?.item?.uuid ?? null;
       const onCreate = (doc) => {
         try {
-          const origin = doc?.flags?.dnd5e?.origin ?? doc?.getFlag?.("dnd5e", "origin");
-          if (origin && String(origin) === String(wanted)) finish(true);
+          const origin = doc?.flags?.dnd5e?.origin ?? doc?.getFlag?.("dnd5e", "origin") ?? null;
+          const itemUuid = doc?.flags?.dnd5e?.item ?? doc?.getFlag?.("dnd5e", "item") ?? null;
+          if (origin && String(origin) === String(wanted)) return finish(true);
+          if (wantedItem && itemUuid && String(itemUuid) === String(wantedItem)) return finish(true);
+          if (wantedItem && origin && String(origin).startsWith(String(wantedItem))) return finish(true);
         } catch (_) { /* keep waiting */ }
       };
       const timer = setTimeout(() => finish(false), timeoutMs);  // no template = abandoned

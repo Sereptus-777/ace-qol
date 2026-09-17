@@ -105,7 +105,9 @@ export class ReactionEngine {
    * casting item's uuid, carried on summoned tokens (flags.dnd5e.summon.origin)
    * and templates (flags.dnd5e.origin).
    */
-  static _counterspelledCasts = [];   // [{ itemUuid, activityUuid, casterName, casterTokenUuid, expiresAt }]
+  static _counterspelledCasts = [];   // [{ itemUuid, activityUuid, actorId, itemId, casterName, casterTokenUuid, expiresAt }]
+  /** One Counterspell check per cast: key -> when it was checked. */
+  static _castsChecked = new Map();
   static _recentSummonFx = [];        // [{ id, srcUuid, expiresAt }] — summon Sequencer effects seen at creation, for post-counter cleanup
 
   static _markCastCounterspelled(activity) {
@@ -445,6 +447,11 @@ export class ReactionEngine {
 
     const key = isText ? activityOrUuid : ReactionEngine._activityKey(activityOrUuid);
     const barrier = key ? ReactionEngine._castBarriers.get(key) : null;
+    // ⚠️🔴 A BARRIER THAT ALREADY SAID "GO AHEAD" IS NOT THE LAST WORD. It
+    // can be settled by any of half a dozen early exits - no reactors, not a
+    // spell, no token - and a counter landing afterwards cannot re-settle a
+    // promise. The kill-list can still be written, and IT is the authority.
+    // This is why the check below the wait exists as well as the one above it.
     if (barrier) {
       // ⚠️ SAY THAT YOU ARE WAITING. A door that holds for four seconds while
       // somebody decides looks identical to a door that has hung, and a door
@@ -797,6 +804,33 @@ export class ReactionEngine {
           });
         } catch (e) { console.warn(`${MODULE_ID} | playerSpellCast emit failed (non-fatal):`, e); }
         return;
+      }
+
+      // ⚠️🔴 ONE CHECK PER CAST. dnd5e can fire this hook more than once for
+      // a single use - the spell pipeline has carried its own guard against
+      // exactly that for months - and this handler had none. The second firing
+      // finds the counterspeller's reaction already spent, exits with "no
+      // reactors available", and RESOLVES THE CAST BARRIER WITH abort:false
+      // while the first firing is still waiting for the human to answer. The
+      // counter then lands, posts its card, and cannot re-resolve a promise
+      // that has already settled. Straight from his console, 2026-09-17:
+      // "Fireball goes ahead (not countered); its area is read and its card
+      // posted as normal" - printed AFTER the card that said the Fireball
+      // fizzled. (The kill-list is the authority now either way, but a second
+      // Counterspell prompt for one cast is its own bug.)
+      const castKey = ReactionEngine._activityKey(activity);
+      if (castKey) {
+        const seen = ReactionEngine._castsChecked.get(castKey);
+        if (seen && (Date.now() - seen) < 60000) {
+          this._debug(`[REACTION-V2-HOOK] ${activity?.item?.name ?? "that cast"} was already `
+            + `checked for Counterspell - this is a second firing of the same use, ignored`);
+          return;
+        }
+        ReactionEngine._castsChecked.set(castKey, Date.now());
+        if (ReactionEngine._castsChecked.size > 200) {
+          const cutoff = Date.now() - 60000;
+          for (const [k, t] of ReactionEngine._castsChecked) if (t < cutoff) ReactionEngine._castsChecked.delete(k);
+        }
       }
 
       this._debug(`[REACTION-V2-HOOK] passed gates, calling _onSpellCast for ${activity?.item?.name ?? '?'}`);
@@ -1808,6 +1842,26 @@ export class ReactionEngine {
       }
 
       if (countered) {
+        // ⚠️🔴 RECORD THE DEATH BEFORE ANYTHING ELSE, INCLUDING THE CARD.
+        // Everything below this line awaits something - a chat card, a template
+        // sweep, a concentration teardown, an animation - and while it does,
+        // dnd5e is already placing the area and the save engine is already
+        // reading it. Every one of those doors asks the kill-list. It has to be
+        // written at the INSTANT the answer is yes, not at the end of the
+        // tidying up. (2026-09-17: the save card posted while this branch was
+        // still running.)
+        ReactionEngine._markCastCounterspelled(activity);
+        Hooks.callAll(`${MODULE_ID}.castCounterspelled`, {
+          activity, item, casterActor,
+          activityUuid: activity?.uuid ?? null,
+          itemUuid: item?.uuid ?? null,
+          actorId: casterActor?.id ?? null,
+          itemId: item?.id ?? null,
+        });
+        ReactionEngine._resolveCastBarrier(activity, {
+          abort: true, reason: "counterspelled", counterspeller: reactor.actor.name,
+        });
+
         // ── Mechanical line + randomized flavor line (v0.7.17b) ──
         const flavorOptions = [
           `${casterActor.name}'s ${item.name} unravels in their hands.`,
@@ -1842,7 +1896,6 @@ export class ReactionEngine {
         //    summoned creatures + this cast's own zone template. Mark the cast
         //    so stragglers (anything that lands after this) get deleted too, and
         //    sweep anything dnd5e already placed.
-        ReactionEngine._markCastCounterspelled(activity);
         await ReactionEngine._sweepCounterspelledResolution(activity);
 
         // ⚠️ 2024 ONLY: "If that spell was cast with a spell slot, the slot
@@ -1881,21 +1934,6 @@ export class ReactionEngine {
           console.warn(`${MODULE_ID} | Counterspell animation failed (non-fatal):`, err);
         }
 
-        // ⚠️🔴 KILL IT NOW, DO NOT WAIT TO BE ASKED (2026-09-17). Johnny:
-        // "You held the spell. You did not kill it." Every door that might yet
-        // resolve this cast is told, at the moment the answer is yes, rather
-        // than each one discovering it later - or not, if it had stopped
-        // listening. The save engine drops a save it is holding for this cast
-        // and deletes its area; dnd5e's own template placement is vetoed before
-        // the crosshair appears.
-        Hooks.callAll(`${MODULE_ID}.castCounterspelled`, {
-          activity, item, casterActor,
-          activityUuid: activity?.uuid ?? null,
-          itemUuid: item?.uuid ?? null,
-          actorId: casterActor?.id ?? null,
-          itemId: item?.id ?? null,
-        });
-
         // Emit hook for other systems to react
         Hooks.callAll(`${MODULE_ID}.spellCountered`, {
           caster: casterActor,
@@ -1905,15 +1943,8 @@ export class ReactionEngine {
           checkResult,
         });
 
-        // ── Resolve the barrier with abort:true so downstream engines
-        //    (SpellAutoDamage, etc.) bail cleanly. ──
-        ReactionEngine._resolveCastBarrier(activity, {
-          abort: true,
-          reason: "counterspelled",
-          counterspeller: reactor.actor.name,
-        });
-
         // Spell is dead — nobody further down the cascade is prompted.
+        // (The barrier was resolved at the top of this branch, before the card.)
         return;
       }
 
