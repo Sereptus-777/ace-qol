@@ -38,6 +38,10 @@ import { hasReadySpell } from "./rules/spell-ready.mjs";
 // ⚠️ THE ONE READER FOR "is this creature out of the fight": dead, unconscious,
 // incapacitated, paralyzed, stunned or petrified. None of them take reactions.
 import { isOutOfTheFight } from "./is-down.mjs";
+// ⚠️ THE ONE EDITION READER. The ITEM's own ruleset wins over the world's
+// setting, and it has to: his world holds both editions of Counterspell side by
+// side, and Varek carries one of each.
+import { RulesBrain } from "./rules/rules-brain.mjs";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Constants
@@ -1573,14 +1577,51 @@ export class ReactionEngine {
       //
       // Running 2014 rules at a 2024 table silently hands the advantage to
       // whoever has the bigger slot, which is exactly backwards.
-      const edition = CombatState.getActiveEdition(reactor.actor);
+      //
+      // ⚠️🔴 AND THE EDITION IS THE ITEM'S, NOT THE WORLD'S (Phase 6b,
+      // 2026-09-16). This asked the world which edition it was on. His world
+      // holds BOTH Counterspells at once and has done for months: Kasimir's is
+      // 2024, the Archmage (CR 20)'s is 2014, Patrina's is 2014, Morthos's is
+      // 2024, and Varek Thalor carries ONE OF EACH. Whichever way a world-level
+      // read answered, about half his counterspells would have rolled the wrong
+      // dice against the wrong DC - and the two editions are not a tweak apart,
+      // they are rolled by different creatures. The suite's one edition reader
+      // takes `system.source.rules` off the item and only falls back to the
+      // world when the item says nothing.
+      const csItem = reactor.item ?? null;
+      const edition = RulesBrain.resolveEdition(csItem, reactor.actor);
+      this._debug(`Counterspell edition: ${edition} `
+        + `(from ${csItem?.system?.source?.rules ? `${reactor.actor.name}'s own copy` : "the world, the item does not say"})`);
       let saveRoll = null;
 
       if (edition === "2024") {
-        // The caster resists. DC is the COUNTERSPELLER's spell save DC.
-        const counterDC = reactor.actor.system?.attributes?.spelldc
-                       ?? reactor.actor.system?.attributes?.spell?.dc
-                       ?? 13;
+        // The caster resists. DC is the COUNTERSPELLER's spell save DC, which
+        // is what the 2024 item itself asks for: its save activity carries
+        // `dc.calculation: "spellcasting"`.
+        //
+        // ⚠️ `attributes.spelldc` IS NOT A FIELD IN dnd5e 5.x. The string does
+        // not appear anywhere in the system; the DC is `attributes.spell.dc`,
+        // written by prepareSpellcastingAbility. The old order read the dead
+        // name first and only landed on the right one by luck of the fallback
+        // chain, and the `?? 13` at the end INVENTED a DC in silence when
+        // neither could be read. The right field first, and a number nobody
+        // could work out says so out loud.
+        let counterDC = Number(reactor.actor.system?.attributes?.spell?.dc ?? NaN);
+        if (!Number.isFinite(counterDC)) {
+          const ability = this._getSpellcastingAbility(reactor.actor);
+          const mod = Number(reactor.actor.system?.abilities?.[ability]?.mod ?? NaN);
+          const prof = Number(reactor.actor.system?.attributes?.prof ?? NaN);
+          if (Number.isFinite(mod) && Number.isFinite(prof)) {
+            counterDC = 8 + mod + prof;
+            console.warn(`${MODULE_ID} | Counterspell (2024): ${reactor.actor.name} has no spell save DC on `
+              + `its sheet, so it was worked out from ${ability.toUpperCase()} and proficiency: DC ${counterDC}.`);
+          } else {
+            counterDC = 13;
+            console.error(`${MODULE_ID} | Counterspell (2024): ${reactor.actor.name}'s spell save DC could not `
+              + `be read OR worked out. DC 13 is a guess - check the sheet and resolve this one by hand.`);
+            ui.notifications?.warn(`ACE: ${reactor.actor.name} has no spell save DC. Counterspell used DC 13.`);
+          }
+        }
         try {
           if (typeof casterActor.rollSavingThrow !== "function") {
             throw new Error("Actor#rollSavingThrow missing on this dnd5e build");
@@ -1639,7 +1680,11 @@ export class ReactionEngine {
           `${casterActor.name}'s ${item.name} dissolves mid-cast, the weave torn apart.`,
         ];
         const flavorText = flavorOptions[Math.floor(Math.random() * flavorOptions.length)];
-        const mechanical = `${reactor.actor.name} counterspells ${casterActor.name}'s ${item.name}!${resultLabel ? ` (${resultLabel})` : ""}`;
+        const slotLine = edition === "2024" && activity?.consumption?.spellSlot !== false
+          && activity?._aceSlotDeferred !== true && spellLevel > 0
+          ? ` ${casterActor.name} keeps the slot.` : "";
+        const mechanical = `${reactor.actor.name} counterspells ${casterActor.name}'s ${item.name}!`
+          + `${resultLabel ? ` (${resultLabel})` : ""}${slotLine}`;
         const flavorBlock = `<div style="margin-top:10px;padding-top:8px;border-top:1px dashed #6b5230;font-size:15px;font-style:italic;color:#e1bee7;font-weight:600;">— ${flavorText}</div>`;
         await this._postReactionChat(reactor.actor, "Counterspell",
           `${mechanical}${flavorBlock}`,
@@ -1662,6 +1707,14 @@ export class ReactionEngine {
         //    sweep anything dnd5e already placed.
         ReactionEngine._markCastCounterspelled(activity);
         await ReactionEngine._sweepCounterspelledResolution(activity);
+
+        // ⚠️ 2024 ONLY: "If that spell was cast with a spell slot, the slot
+        // isn't expended." That sentence is in the 2024 Counterspell in his own
+        // books, right after the Constitution save, and it is not in the 2014
+        // one - there, a countered spell is simply gone and so is the slot.
+        if (edition === "2024") {
+          await this._returnCounteredCasterSlot(casterActor, activity, spellLevel);
+        }
 
         // ── v0.7.265 — End the caster's concentration on the countered spell.
         //    RAW: a countered spell fails entirely, so no concentration should
@@ -1804,7 +1857,7 @@ export class ReactionEngine {
   _findCounterspellReactors(casterToken, casterActor) {
     const reactors = [];
     if (!canvas.tokens?.placeables) {
-      return this._cannotCheck("Shield", "the canvas has no tokens yet") ?? reactors;
+      return this._cannotCheck("Counterspell", "the canvas has no tokens yet") ?? reactors;
     }
 
     const casterDisposition = casterToken.document?.disposition ?? 1;
@@ -1814,30 +1867,65 @@ export class ReactionEngine {
     let counterAnyCaster = false;
     try { counterAnyCaster = QolSettings.get("counterspellAnyCaster") === true; } catch (_) { counterAnyCaster = false; }
 
+    // ⚠️🔴 EVERY REFUSAL HERE WAS SILENT (Phase 6b, 2026-09-16). Nine
+    // `continue` statements and not one of them said a word, so "nobody was
+    // offered Counterspell" and "nine people were offered it and every one was
+    // turned down for a different reason" printed exactly the same thing:
+    // nothing. Same shape as the Shield bug an hour earlier, and his rule: a
+    // silent early return is indistinguishable from a broken feature.
+    //
+    // ⚠️ BUT A GOBLIN IS NOT "SKIPPED". Somebody who has never heard of
+    // Counterspell is not a counterspeller who was passed over, and one line per
+    // token on a crowded map buries the ones that matter. So the spell is looked
+    // for FIRST: a creature that does not hold it leaves quietly, and everyone
+    // who does hold it is accounted for out loud.
+    const skipped = [];
     for (const token of canvas.tokens.placeables) {
       if (!token.actor) continue;
       if (token.actor.id === casterActor.id) continue;
 
+      // Does it hold Counterspell at all? The one reader: an exact name key,
+      // dnd5e 5.x's method and prepared number, every copy on the sheet.
+      const held = this._readySpell(token.actor, "Counterspell");
+      if (!held.ok && !held.item) continue;              // not a counterspeller
+
+      const say = (why) => { skipped.push(`${token.name ?? token.actor.name} (${why})`); };
+      if (!held.ok) { say(held.why); continue; }
+
       // Same disposition = ally, skip (enemies counter enemies) — unless the
       // RAW opt-in read above is on (counter ANY caster you can see).
-      if (token.document?.disposition === casterDisposition && !counterAnyCaster) continue;
+      if (token.document?.disposition === casterDisposition && !counterAnyCaster) {
+        say("it is on the caster's own side, and countering an ally is opt-in");
+        continue;
+      }
 
-      // Must be alive
-      if ((token.actor.system?.attributes?.hp?.value ?? 1) <= 0) continue;
+      // ⚠️ "ALIVE" WAS NOT THE QUESTION. This asked whether hit points were
+      // above zero, which lets a Paralyzed, Stunned or Petrified creature be
+      // asked for a reaction it cannot take: every one of those carries
+      // Incapacitated, and Incapacitated takes reactions away. Same reader the
+      // Shield prompt uses, so the two cannot drift apart.
+      if (isOutOfTheFight(token.actor)) {
+        say("it is out of the fight, so it takes no reactions");
+        continue;
+      }
 
-      // Must have reaction available
-      if (this._hasUsedReaction(token.actor)) continue;
-
-      // Must have Counterspell prepared/known
-      if (!this._hasSpellPrepared(token.actor, "Counterspell")) continue;
+      // ⚠️ A REACTION BUDGET IS A PER-ROUND BUDGET, AND ROUNDS ONLY EXIST IN
+      // A FIGHT. Out of combat nothing clears the flag — the hook that clears it
+      // is the turn change — so one counterspell outside a fight would forbid
+      // every counterspell until somebody rolled initiative. Same guard as
+      // `_canUseShield`, same reason.
+      if (hasTurns(token.actor) && this._hasUsedReaction(token.actor)) {
+        say("its reaction is already spent this round");
+        continue;
+      }
 
       // Must have a 3rd+ level spell slot
       const slots = this._getAvailableSlots(token.actor, 3);
-      if (!slots.length) continue;
+      if (!slots.length) { say("it has no 3rd-level or higher slot left"); continue; }
 
       // Must be within 60 feet (Counterspell's range)
       const distance = CombatState._getDistance(token, casterToken);
-      if (distance > 60) continue;
+      if (distance > 60) { say(`it is ${Math.round(distance)} feet away, and the spell reaches 60`); continue; }
 
       // Must have LINE OF SIGHT to the caster — RAW, you have to SEE the
       // creature casting. The 60 feet check alone let a reactor counterspell
@@ -1850,12 +1938,20 @@ export class ReactionEngine {
         const losBlocked = CONFIG.Canvas?.polygonBackends?.sight?.testCollision?.(
           token.center, casterToken.center, { type: "sight", mode: "any" }
         );
-        if (losBlocked) continue;
+        if (losBlocked) { say("it cannot see the caster"); continue; }
       } catch (_) { /* LoS test unavailable — don't false-block */ }
 
-      reactors.push({ actor: token.actor, token, slots, distance });
+      // ⚠️ THE ITEM TRAVELS WITH THE REACTOR. Which edition's Counterspell this
+      // is depends on the copy in ITS hands, never on the world setting: his
+      // world holds both, and Varek carries one of each.
+      reactors.push({ actor: token.actor, token, slots, distance, item: held.item ?? null });
     }
 
+    if (skipped.length) {
+      const one = skipped.length === 1;
+      console.log(`${MODULE_ID} | Counterspell: not offered to ${skipped.length} `
+        + `${one ? "creature that holds" : "creatures that hold"} it — ${skipped.join("; ")}.`);
+    }
     return reactors;
   }
 
@@ -3242,6 +3338,62 @@ export class ReactionEngine {
     if (slot?.value > 0) {
       await actor.update({ [`system.spells.${slotKey}.value`]: slot.value - 1 });
       this._debug(`Consumed level ${level} spell slot from ${actor.name} (${slot.value - 1} remaining)`);
+    }
+  }
+
+  /**
+   * Give back the slot a countered 2024 spell was cast with.
+   *
+   * ⚠️ ONLY WHAT WAS ACTUALLY SPENT. ACE defers the slot on the spells it
+   * owns and commits it once the targets are settled, so on those casts nothing
+   * has been taken yet and there is nothing to give back - handing one over
+   * would be a free slot, which is worse than the bug it fixes. Two guards: the
+   * deferral marker, and the activity's own word on whether it spends a slot at
+   * all. It also refuses to push a creature above its own maximum.
+   *
+   * ⚠️ AND IT SAYS SO. A slot appearing on a sheet without a word is the kind
+   * of thing a table notices three sessions later and cannot explain.
+   */
+  async _returnCounteredCasterSlot(casterActor, activity, spellLevel) {
+    try {
+      const level = Number(spellLevel ?? 0);
+      if (!casterActor || !(level > 0)) return false;
+      if (activity?._aceSlotDeferred === true) {
+        this._debug(`Counterspell 2024: ${casterActor.name}'s slot was never spent (ACE had it deferred) - nothing to give back.`);
+        return false;
+      }
+      if (activity?.consumption?.spellSlot === false) {
+        this._debug(`Counterspell 2024: ${activity?.item?.name ?? "that cast"} spends no slot, so there is none to give back.`);
+        return false;
+      }
+
+      const spells = casterActor.system?.spells ?? {};
+      const pact = spells.pact;
+      const regular = spells[`spell${level}`];
+      // A warlock who spent a pact slot gets a pact slot back. Only when the
+      // level matches and there is no ordinary slot of that level on the sheet,
+      // so a multiclass with both is never handed the wrong one.
+      const usePact = pact && Number(pact.level ?? 0) === level && !(Number(regular?.max ?? 0) > 0);
+      const bucket = usePact ? pact : regular;
+      const path = usePact ? "system.spells.pact.value" : `system.spells.spell${level}.value`;
+      if (!bucket || !(Number(bucket.max ?? 0) > 0)) {
+        this._debug(`Counterspell 2024: ${casterActor.name} has no level ${level} slots on the sheet - nothing to give back.`);
+        return false;
+      }
+      const now = Number(bucket.value ?? 0);
+      if (now >= Number(bucket.max)) {
+        this._debug(`Counterspell 2024: ${casterActor.name} is already at ${now} of ${bucket.max} level ${level} slots - not going above the maximum.`);
+        return false;
+      }
+      await casterActor.update({ [path]: now + 1 });
+      console.log(`${MODULE_ID} | Counterspell (2024): ${casterActor.name} keeps the `
+        + `${usePact ? "pact" : `level ${level}`} slot - the book says a countered spell does not expend it `
+        + `(${now} to ${now + 1} of ${bucket.max}).`);
+      return true;
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Counterspell (2024): could not give `
+        + `${casterActor?.name ?? "the caster"} their slot back; spend or restore it by hand:`, err);
+      return false;
     }
   }
 

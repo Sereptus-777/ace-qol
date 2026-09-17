@@ -2403,6 +2403,298 @@ console.log(`\nPHASE 3: ATTACKS ON THE ROAD`);
   }
 }
 
+/* ── PHASE 6b: COUNTERSPELL ────────────────────────────────────────────────── */
+// Johnny, 2026-09-16: "PHASE 6b - Counterspell only. Then stop." Someone within
+// 60 feet starts a spell; a creature holding Counterspell, with a slot, a free
+// reaction and able to act, is asked. Yes spends both and interrupts the spell -
+// 2014 automatically when the slot covers the spell's level, otherwise an
+// ability check; 2024 by the caster's Constitution save. No lets it through.
+// Nobody else is asked, and whoever holds Counterspell but was passed over is
+// named in the log with the reason.
+//
+// ⚠️ THE EDITION IS THE ITEM'S. His world holds BOTH Counterspells at once:
+// Kasimir's is 2024, the Archmage (CR 20)'s is 2014, Patrina's is 2014,
+// Morthos's is 2024, and Varek Thalor carries one of each. A world-level read
+// would roll the wrong dice for about half of them.
+//
+// ⚠️ THIS DRIVES THE REAL `_onSpellCast`. Only the prompt and the caster's
+// saving throw are stood in, because one is a dialog on somebody's screen and
+// the other is dnd5e's own roller.
+console.log(`\nPHASE 6b: COUNTERSPELL`);
+{
+  const MOD = "ace-qol";
+  const { ReactionEngine } = await import(`${MODULE}/scripts/reaction-engine.mjs`);
+  const { CardDoor: Door6b } = await import(`${MODULE}/scripts/road/doors.mjs`);
+
+  const keep6b = { placed: [...canvas.tokens.placeables], combat: game.combat, combats: game.combats,
+    post: Door6b.post,
+    reactions: SETTINGS.get("ace-qol.enableReactions"), cs: SETTINGS.get("ace-qol.autoCounterspell"),
+    edition: SETTINGS.get("ace-qol.gameRulesEdition"),
+    anyCaster: SETTINGS.get("ace-qol.counterspellAnyCaster") };
+  SETTINGS.set("ace-qol.enableReactions", true);
+  SETTINGS.set("ace-qol.autoCounterspell", true);
+  // ⚠️ HIS WORLD HAS THE ALLY OPT-IN ON (`counterspellAnyCaster = true`), so
+  // the default is set here deliberately rather than inherited: the first pin is
+  // about the shipped default, and the one after it is about his table.
+  SETTINGS.set("ace-qol.counterspellAnyCaster", false);
+  const cards6b = [];
+  Door6b.post = async (data) => { cards6b.push(data); return { id: "cs-card", ...data }; };
+  canvas.tokens.placeables.length = 0;
+  const made6b = [];
+  try {
+    // dnd5e 5.x on the sheet: a method name and a NUMBER (0/1/2). The edition is
+    // the item's own `system.source.rules`, exactly as his copies carry it.
+    let csn = 0;
+    const csItem = (rules, { prepared = 1 } = {}) => ({
+      id: `cs-${rules}-${++csn}`, name: "Counterspell", type: "spell", img: "",
+      system: { level: 3, method: "spell", prepared, source: { rules }, activities: [] },
+    });
+    const other = (name) => ({ id: `it-${name}`, name, type: "spell", img: "",
+      system: { level: 3, method: "spell", prepared: 1, activities: [] } });
+
+    const mage = (id, name, { items = [], slots = { 3: 2 }, statuses = [], hp = 40, dc = 17,
+      ability = "int", disposition = -1, at = [0, 0], flags = {} } = {}) => {
+      const spells = {};
+      for (const [lvl, n] of Object.entries(slots)) spells[`spell${lvl}`] = { value: n, max: 3 };
+      const a = { id, name, type: "npc", img: "", documentName: "Actor", uuid: `Actor.${id}`,
+        statuses: new Set(statuses), effects: [], items, hasPlayerOwner: false,
+        system: { attributes: { hp: { value: hp, max: 40 }, death: { success: 0, failure: 0 },
+            prof: 6, spellcasting: ability, spell: { dc } },
+          abilities: { int: { mod: 5 }, cha: { mod: 5 }, wis: { mod: 3 }, con: { mod: 3 } },
+          spells, details: {} },
+        flags: { [MOD]: { ...flags } },
+        getFlag: (scope, key) => a.flags?.[scope]?.[key],
+        setFlag: async (scope, key, v) => { (a.flags[scope] ??= {})[key] = v; return a; },
+        testUserPermission: () => false,
+        update: async (u) => { for (const [k, v] of Object.entries(u)) {
+          const path = k.split("."); let o = a;
+          for (const s2 of path.slice(0, -1)) o = (o[s2] ??= {});
+          o[path[path.length - 1]] = v; } return a; },
+        getActiveTokens: () => canvas.tokens.placeables.filter(t => t.actor?.id === id),
+      };
+      ACTORS.set(id, a);
+      made6b.push(a);
+      const doc = { id: `tok-${id}`, actorId: id, actor: a, name, x: at[0], y: at[1],
+        width: 1, height: 1, elevation: 0, hidden: false, disposition, texture: { src: "" } };
+      const tok = { id: `tok-${id}`, name, actor: a, document: doc, x: at[0], y: at[1], w: 100, h: 100,
+        center: { x: at[0] + 50, y: at[1] + 50 } };
+      doc.object = tok;
+      canvas.tokens.placeables.push(tok);
+      return a;
+    };
+
+    const engine = new ReactionEngine();
+    const asked = [];
+    let answer = true;
+    engine._promptReaction = async (o) => {
+      asked.push(o.reactorActor?.name ?? "?");
+      return { accepted: answer, choiceData: { slotLevel: o.availableSlots?.[0]?.level ?? 3, consumeSlot: true } };
+    };
+    // dnd5e's own roller, stood in: the caster's Constitution save.
+    let casterSaveTotal = 5;
+    const makeCaster = (id, name, opts = {}) => {
+      const a = mage(id, name, { disposition: 1, ...opts });
+      a.rollSavingThrow = async () => [{ total: casterSaveTotal }];
+      return a;
+    };
+    const cast = (caster, item, level = 3) => ({
+      item, actor: caster, uuid: `Activity.${item.id}`,
+      consumption: { spellSlot: true }, usage: { spellLevel: level },
+    });
+
+    // ── 1 + 4 + 5. Who is offered it, and who is named for not being ──
+    {
+      const caster = makeCaster("p6b-caster", "the caster", { at: [0, 0] });
+      const ready    = mage("p6b-ready", "Kasimir Velikov", { items: [csItem("2024")], at: [200, 0] });
+      const unprep   = mage("p6b-unprep", "Exethanter", { items: [csItem("2024", { prepared: 0 })], at: [300, 0] });
+      const noSlot   = mage("p6b-noslot", "a mage out of slots", { items: [csItem("2014")], slots: { 3: 0 }, at: [300, 100] });
+      const stunned  = mage("p6b-stunned", "a stunned mage", { items: [csItem("2014")], statuses: ["stunned"], at: [300, 200] });
+      const corpse   = mage("p6b-dead", "a dead mage", { items: [csItem("2014")], statuses: ["dead"], hp: 0, at: [300, 300] });
+      const faraway  = mage("p6b-far", "a mage across the hall", { items: [csItem("2014")], at: [2000, 0] });
+      const ally     = mage("p6b-ally", "the caster's own wizard", { items: [csItem("2014")], disposition: 1, at: [200, 200] });
+      const fireOnly = mage("p6b-fire", "a mage with Fireball only", { items: [other("Fireball")], at: [200, 300] });
+      const goblin   = mage("p6b-goblin", "a goblin", { items: [], at: [100, 0] });
+
+      const said = [];
+      const keepLog = console.log;
+      console.log = (...a) => { said.push(a.join(" ")); };
+      let found = [];
+      try {
+        found = engine._findCounterspellReactors(
+          canvas.tokens.placeables.find(t => t.actor?.id === caster.id), caster);
+      } finally { console.log = keepLog; }
+      const names = found.map(r => r.actor.name);
+      const line = said.find(l => /not offered to/.test(l)) ?? "";
+
+      check("1+4+5. only the mage who can actually cast it is offered Counterspell, and everyone who holds it but was passed over is named with the reason (Phase 6b)",
+        names.length === 1 && names[0] === "Kasimir Velikov"
+          && /Exethanter \(.*not prepared\)/.test(line)
+          && /out of slots \(.*no 3rd-level or higher slot/.test(line)
+          && /stunned mage \(.*out of the fight/.test(line)
+          && /dead mage \(.*out of the fight/.test(line)
+          && /across the hall \(.*feet away/.test(line)
+          && /own wizard \(.*own side/.test(line),
+        `offered to: ${names.join(", ") || "nobody"}; passed over: ${line.replace(/^.*not offered to /, "") || "(nothing said)"}`);
+
+      // A goblin with no Counterspell is not "skipped" - it was never a
+      // counterspeller, and one line per token buries the ones that matter.
+      check("and a creature that has never heard of Counterspell is not in that list at all (Phase 6b)",
+        !/goblin|Fireball only/.test(line), `the log line: ${line || "(nothing said)"}`);
+
+      // ⚠️ AND HIS TABLE RUNS THE OPT-IN ON. With `counterspellAnyCaster`
+      // true - which is what hijinx has stored - the caster's own wizard IS
+      // offered the shot, because RAW you may counter any cast you can see.
+      SETTINGS.set("ace-qol.counterspellAnyCaster", true);
+      const withOptIn = engine._findCounterspellReactors(
+        canvas.tokens.placeables.find(t => t.actor?.id === caster.id), caster).map(r => r.actor.name);
+      SETTINGS.set("ace-qol.counterspellAnyCaster", false);
+      check("with his own 'counter any caster' setting on, the ally is offered it too (Phase 6b)",
+        withOptIn.length === 2 && withOptIn.includes("the caster's own wizard"),
+        `offered to: ${withOptIn.join(", ") || "nobody"}`);
+
+      canvas.tokens.placeables.length = 0;
+      for (const a of [caster, ready, unprep, noSlot, stunned, corpse, faraway, ally, fireOnly, goblin]) ACTORS.delete(a.id);
+    }
+
+    // ── 2. Yes, on a 2024 copy: the CASTER makes the save ──
+    {
+      const caster = makeCaster("p6b-c2", "Neferon", { at: [0, 0] });
+      const kasimir = mage("p6b-k2", "Kasimir Velikov", { items: [csItem("2024")], at: [200, 0], dc: 17 });
+      answer = true;
+      casterSaveTotal = 9;                    // fails DC 17 -> countered
+      const atCard = cards6b.length, atAsk = asked.length;
+      let err = null;
+      try { await quiet(() => engine._onSpellCast(cast(caster, other("Fireball")), null)); } catch (e) { err = e; }
+      const text = String(cards6b[atCard]?.content ?? "").replace(/<[^>]*>/g, " ");
+      check("2. a 2024 Counterspell makes the CASTER roll Constitution against the counterspeller's spell save DC; a failure stops the spell, spends the slot and the reaction, and the card goes through the card door (Phase 6b)",
+        !err && asked.length - atAsk === 1
+          && kasimir.system.spells.spell3.value === 1
+          && kasimir.flags[MOD]?.reactionUsed === true
+          && cards6b.length > atCard && /counterspells/i.test(text) && /CON save 9 vs DC 17/.test(text),
+        err ? `threw: ${err?.message ?? err}`
+          : `asked ${asked.length - atAsk}; Kasimir's slots ${kasimir.system.spells.spell3.value} of 3; `
+            + `reaction ${kasimir.flags[MOD]?.reactionUsed ? "spent" : "still free"}; card: ${text.slice(0, 130) || "none"}`);
+
+      // The 2024 book, in his own pack: "If that spell was cast with a spell
+      // slot, the slot isn't expended."
+      check("and the 2024 book's own clause: the countered caster KEEPS the slot, and the card says so (Phase 6b)",
+        caster.system.spells.spell3.value === 3 && /keeps the slot/.test(text),
+        `Neferon's level 3 slots: ${caster.system.spells.spell3.value} of 3 (2 were left when he cast); `
+          + `the card ${/keeps the slot/.test(text) ? "says so" : "does not mention it"}`);
+
+      canvas.tokens.placeables.length = 0;
+      for (const a of [caster, kasimir]) ACTORS.delete(a.id);
+    }
+
+    // ── 3. The edition is the ITEM's, with the world set the other way ──
+    {
+      SETTINGS.set("ace-qol.gameRulesEdition", "2014");
+      const caster = makeCaster("p6b-c3", "a caster", { at: [0, 0] });
+      // A 2024 copy in a 2014 world: still the caster's Constitution save, and
+      // NOT the slot-versus-level auto-success a 2014 copy would have given.
+      const modern = mage("p6b-modern", "Morthos", { items: [csItem("2024")], at: [200, 0], dc: 17, ability: "cha" });
+      answer = true;
+      casterSaveTotal = 25;                   // beats DC 17 -> resisted
+      const atCard = cards6b.length;
+      let err = null;
+      try { await quiet(() => engine._onSpellCast(cast(caster, other("Haste")), null)); } catch (e) { err = e; }
+      const text = String(cards6b[atCard]?.content ?? "").replace(/<[^>]*>/g, " ");
+      check("3. the edition comes off the ITEM, not the world: a 2024 copy at a 2014 table still asks the caster for a Constitution save instead of auto-succeeding on slot level (Phase 6b)",
+        !err && /CON save 25 vs DC 17/.test(text) && /fails/i.test(text) && !/auto-success/.test(text),
+        err ? `threw: ${err?.message ?? err}` : `world 2014, item 2024 -> ${text.slice(0, 140) || "(no card)"}`);
+      SETTINGS.delete("ace-qol.gameRulesEdition");
+      canvas.tokens.placeables.length = 0;
+      for (const a of [caster, modern]) ACTORS.delete(a.id);
+    }
+
+    // ── 2014: auto when the slot covers it, a check when it does not ──
+    {
+      const caster = makeCaster("p6b-c4", "a caster", { at: [0, 0], slots: { 3: 2, 7: 1 } });
+      const patrina = mage("p6b-patrina", "Patrina Velikovna", { items: [csItem("2014")], at: [200, 0] });
+      answer = true;
+      const atCard = cards6b.length;
+      let err = null;
+      try { await quiet(() => engine._onSpellCast(cast(caster, other("Fireball"), 3), null)); } catch (e) { err = e; }
+      const auto = String(cards6b[atCard]?.content ?? "").replace(/<[^>]*>/g, " ");
+      check("2014, a level 3 slot against a level 3 spell: it simply fails, with no roll at all (Phase 6b)",
+        !err && /auto-success/.test(auto) && /counterspells/i.test(auto),
+        err ? `threw: ${err?.message ?? err}` : auto.slice(0, 140) || "(no card)");
+
+      // And the 2014 caster does NOT keep the slot: that clause is 2024's alone.
+      check("and a countered 2014 caster loses the slot, because that clause is 2024's alone (Phase 6b)",
+        caster.system.spells.spell3.value === 2,
+        `his level 3 slots: ${caster.system.spells.spell3.value} of 3, untouched by ACE`);
+
+      // A 7th-level spell against a 3rd-level slot: the ability check.
+      patrina.flags[MOD].reactionUsed = false;
+      patrina.system.spells.spell3.value = 2;
+      const atCard2 = cards6b.length;
+      try { await quiet(() => engine._onSpellCast(cast(caster, other("Finger of Death"), 7), null)); } catch (e) { err = e; }
+      const checked = String(cards6b[atCard2]?.content ?? "").replace(/<[^>]*>/g, " ");
+      check("2014, a level 3 slot against a level 7 spell: an ability check against DC 17 (Phase 6b)",
+        !err && /check -?\d+ vs DC 17/.test(checked),
+        err ? `threw: ${err?.message ?? err}` : checked.slice(0, 140) || "(no card)");
+
+      canvas.tokens.placeables.length = 0;
+      for (const a of [caster, patrina]) ACTORS.delete(a.id);
+    }
+
+    // ── 3b. No: the spell goes through and nothing is spent ──
+    {
+      const caster = makeCaster("p6b-c5", "a caster", { at: [0, 0] });
+      const kasimir = mage("p6b-k5", "Kasimir Velikov", { items: [csItem("2024")], at: [200, 0] });
+      answer = false;
+      const atCard = cards6b.length, atAsk = asked.length;
+      let err = null;
+      try { await quiet(() => engine._onSpellCast(cast(caster, other("Fireball")), null)); } catch (e) { err = e; }
+      check("3. a no lets the spell through: asked once, no slot, no reaction, no card (Phase 6b)",
+        !err && asked.length - atAsk === 1
+          && kasimir.system.spells.spell3.value === 2
+          && !kasimir.flags[MOD]?.reactionUsed
+          && cards6b.length === atCard,
+        err ? `threw: ${err?.message ?? err}`
+          : `asked ${asked.length - atAsk}x; slots ${kasimir.system.spells.spell3.value} of 3; `
+            + `reaction ${kasimir.flags[MOD]?.reactionUsed ? "spent" : "still free"}; cards ${cards6b.length - atCard}`);
+      canvas.tokens.placeables.length = 0;
+      for (const a of [caster, kasimir]) ACTORS.delete(a.id);
+    }
+
+    // ── A cantrip cannot be countered, and neither can a sword ──
+    {
+      const caster = makeCaster("p6b-c6", "a caster", { at: [0, 0] });
+      const kasimir = mage("p6b-k6", "Kasimir Velikov", { items: [csItem("2024")], at: [200, 0] });
+      answer = true;
+      const atAsk = asked.length;
+      const cantrip = { id: "it-firebolt", name: "Fire Bolt", type: "spell", img: "", system: { level: 0 } };
+      const sword = { id: "it-sw6", name: "Longsword", type: "weapon", img: "", system: {} };
+      let err = null;
+      try {
+        await quiet(async () => {
+          await engine._onSpellCast(cast(caster, cantrip, 0), null);
+          await engine._onSpellCast(cast(caster, sword, 0), null);
+        });
+      } catch (e) { err = e; }
+      check("nobody is asked about a cantrip or a sword swing (Phase 6b)",
+        !err && asked.length - atAsk === 0,
+        err ? `threw: ${err?.message ?? err}` : `asked ${asked.length - atAsk}x`);
+      canvas.tokens.placeables.length = 0;
+      for (const a of [caster, kasimir]) ACTORS.delete(a.id);
+    }
+  } finally {
+    Door6b.post = keep6b.post;
+    game.combat = keep6b.combat;
+    game.combats = keep6b.combats;
+    canvas.tokens.placeables.length = 0;
+    canvas.tokens.placeables.push(...keep6b.placed);
+    for (const [k, v] of Object.entries({ "ace-qol.enableReactions": keep6b.reactions,
+      "ace-qol.autoCounterspell": keep6b.cs, "ace-qol.gameRulesEdition": keep6b.edition,
+      "ace-qol.counterspellAnyCaster": keep6b.anyCaster })) {
+      if (v === undefined) SETTINGS.delete(k); else SETTINGS.set(k, v);
+    }
+    for (const a of made6b) ACTORS.delete(a.id);
+  }
+}
+
 /* ── PHASE 6a: THE SHIELD REACTION ───────────────────────────────────────── */
 // Johnny, 2026-09-16: "PHASE 6a - Shield reaction only. Then stop." Magic Missile
 // at a creature with Shield prepared, a slot and a free reaction asks; yes eats
