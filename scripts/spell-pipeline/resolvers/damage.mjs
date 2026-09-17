@@ -121,7 +121,15 @@ export class DamageResolver {
     // Now ONLY prompts targets that aren't already passively immune above.
     try {
       const reactionEng = game.aceQol?.reactionEngine;
-      if (reactionEng?.checkMagicMissileShield) {
+      if (!reactionEng?.checkMagicMissileShield) {
+        // ⚠️ AN ABSENT ENGINE USED TO SKIP THIS WITHOUT A WORD, which is
+        // indistinguishable from an engine that was asked and said no — the
+        // exact confusion behind "the reaction check never ran" (2026-09-16).
+        console.warn(`${MODULE_ID} | ${item.name}: nobody was offered a reaction — `
+          + `the reaction engine is not on the API, so Shield cannot be asked for.`);
+      } else {
+        console.log(`${MODULE_ID} | ${item.name}: targets are settled, `
+          + `asking ${filteredDistribution.size} of them about Shield before the damage card.`);
         filteredDistribution = await reactionEng.checkMagicMissileShield(filteredDistribution, actor, item);
         if (!filteredDistribution || filteredDistribution.size === 0) {
           if (nullifiedNotes.length) await DamageResolver._postNullificationCard(item, actor, nullifiedNotes);

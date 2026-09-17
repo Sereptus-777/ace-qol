@@ -31,6 +31,10 @@ import { CombatState } from "./combat-state.mjs";
 import { hasTurns } from "./action-economy.mjs";
 // ⚠️ THE ONE SPELL-NAME KEY. "Fire Shield" contains "shield" (2026-09-16).
 import { spellKey } from "./rules/spell-name.mjs";
+// ⚠️ THE ONE READER for "does this creature hold that spell, ready to cast".
+// The copy that used to live in this file asked for a dnd5e 3.x mode name and
+// so refused every slot caster in the world. See rules/spell-ready.mjs.
+import { hasReadySpell } from "./rules/spell-ready.mjs";
 // ⚠️ THE ONE READER FOR "is this creature out of the fight": dead, unconscious,
 // incapacitated, paralyzed, stunned or petrified. None of them take reactions.
 import { isOutOfTheFight } from "./is-down.mjs";
@@ -1012,8 +1016,14 @@ export class ReactionEngine {
       if (!targetActor) { modified.push(result); continue; }
 
       // ── Can this target use Shield? ──
+      // Same silence, same fix: say who was passed over and why. (2026-09-16)
       const shieldCheck = this._canUseShield(targetActor);
-      if (!shieldCheck.canUse) { modified.push(result); continue; }
+      if (!shieldCheck.canUse) {
+        console.log(`${MODULE_ID} | Shield: ${targetActor.name} is not asked about the hit — `
+          + `${shieldCheck.reason ?? "no reason given"}.`);
+        modified.push(result);
+        continue;
+      }
 
       // ── Send prompt to the target's owner ──
       // v0.7.71 — pass attacker name + portrait so the reactor sees WHO is
@@ -1128,11 +1138,20 @@ export class ReactionEngine {
       }
 
       // ── Can this target use Shield? (reaction unspent + prepared + slot) ──
+      // ⚠️🔴 A SILENT DECLINE LOOKS EXACTLY LIKE A DEAD FEATURE. Johnny's
+      // report, 2026-09-16: "No Shield pop-up... The reaction check never ran."
+      // It ran. It refused, for a reason it never said out loud, on every
+      // target, every time. Now it says who and why, so the next wrong reader
+      // is one line in the log instead of a session.
       const shieldCheck = this._canUseShield(targetActor);
       if (!shieldCheck.canUse) {
+        console.log(`${MODULE_ID} | Shield vs Magic Missile: ${targetActor.name} is not asked — `
+          + `${shieldCheck.reason ?? "no reason given"}.`);
         modified.set(targetActor, darts);
         continue;
       }
+      console.log(`${MODULE_ID} | Shield vs Magic Missile: asking ${targetActor.name} `
+        + `(${darts} dart${darts !== 1 ? "s" : ""} incoming, ${shieldCheck.slots.length} slot level(s) to spend).`);
 
       const targetToken = targetActor.getActiveTokens?.()?.[0]
                        ?? canvas.tokens?.placeables.find(t => t.actor?.id === targetActor.id)
@@ -1251,13 +1270,17 @@ export class ReactionEngine {
       return { canUse: false, slots: [], reason: "Reaction already used this round" };
     }
 
-    // Has Shield spell prepared/known?
-    const hasShield = this._hasSpellPrepared(actor, "Shield");
-    if (!hasShield) return { canUse: false, slots: [], reason: "Shield not prepared" };
+    // Has Shield prepared, known or always ready?
+    // ⚠️ THE READER'S OWN WORDS, NOT "not prepared". "Beiro has Shield, but it
+    // is on the sheet but not prepared" and "Beiro does not have Shield" are
+    // two different facts, and printing one sentence for both is how this cost
+    // a table session.
+    const held = this._readySpell(actor, "Shield");
+    if (!held.ok) return { canUse: false, slots: [], reason: held.why };
 
     // Has a spell slot of 1st level or higher?
     const slots = this._getAvailableSlots(actor, 1);
-    if (!slots.length) return { canUse: false, slots: [], reason: "No 1st-level+ slot available" };
+    if (!slots.length) return { canUse: false, slots: [], reason: "it has no 1st-level or higher slot left" };
 
     return { canUse: true, slots };
   }
@@ -3146,45 +3169,30 @@ export class ReactionEngine {
    * Check if an actor has a spell prepared (or known, for spontaneous casters).
    */
   _hasSpellPrepared(actor, spellName) {
-    if (!actor?.items) return false;
-    // ⚠️🔴 "CONTAINS" IS NOT A NAME MATCH (2026-09-16). This asked whether the
-    // item's name CONTAINED the spell's, so Fire Shield, Shield of Faith and
-    // Shield Master all counted as Shield: a creature with any of them was
-    // offered a reaction it cannot cast, and the slot would have gone on
-    // nothing. `spellKey` is the suite's one name reader and strips the
-    // suffixes his importer adds ("Shield (Legacy)", "Shield [2024]").
-    const want = spellKey(spellName);
+    return this._readySpell(actor, spellName).ok;
+  }
 
-    for (const item of actor.items) {
-      if (item.type !== "spell") continue;
-      if (spellKey(item.name) !== want) continue;
-
-      // ⚠️ Read `method`/`prepared` first — dnd5e 5.1 split `preparation` into
-      // those two, and touching the old name at all logs a stack-trace-building
-      // compatibility warning. This used to read `system.preparation` directly
-      // with no fallback, so it fired for every spell on every reaction check.
-      // Removed outright in dnd5e 6.0, at which point the old read returns
-      // undefined and every spell here would count as "always available".
-      const sys  = item.system ?? {};
-      const mode = sys.method ?? sys.preparation?.mode;
-      const isPrepared = sys.prepared ?? sys.preparation?.prepared;
-      if (!mode) return true; // no preparation data = always available (e.g. innate)
-
-      // "always" and "atwill" are always available
-      if (mode === "always" || mode === "atwill" || mode === "innate") return true;
-
-      // "prepared" mode must be currently prepared
-      if (mode === "prepared" && isPrepared) return true;
-
-      // Pact magic spells are always prepared
-      if (mode === "pact") return true;
-
-      // Spontaneous casters (sorcerer, bard, warlock) don't need preparation
-      // They just have the spell in their list
-      if (!mode) return true;
-    }
-
-    return false;
+  /**
+   * The same question, with the answer's REASON kept.
+   *
+   * ⚠️🔴 THIS IS WHERE SHIELD DIED (2026-09-16). Both halves of the old reader
+   * were wrong, and each one alone was enough to break it:
+   *
+   *   • It matched the name with `includes`, so Fire Shield, Shield of Faith
+   *     and Shield Master all counted as Shield.
+   *   • It asked whether the preparation mode was the string "prepared", which
+   *     is a dnd5e 3.x value. Every spell in his world reads `method: "spell"`,
+   *     so the reader fell out of the bottom and said no to every slot caster
+   *     alive — for Shield, Counterspell, Absorb Elements and Silvery Barbs
+   *     alike, on every path, attack and Magic Missile both.
+   *
+   * Both rules now live in `rules/spell-ready.mjs`, which is the only place in
+   * the suite allowed to write them down.
+   *
+   * @returns {{ok: boolean, item: Item|null, why: string}}
+   */
+  _readySpell(actor, spellName) {
+    return hasReadySpell(actor, spellName);
   }
 
   /**

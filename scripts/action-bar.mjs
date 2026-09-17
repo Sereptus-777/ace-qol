@@ -86,6 +86,8 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { onCanvasReady } from "./ready-utils.mjs";
 import { WeaponSwap } from "./weapon-swap.mjs";
 import { resolveReach } from "./reach-reader.mjs";
+// ⚠️ THE ONE READER for "is this spell ready to cast". See rules/spell-ready.mjs.
+import { spellReady } from "./rules/spell-ready.mjs";
 import { MultiattackEngine } from "./multiattack-engine.mjs";
 import { aceDescriptionHtml, aceDescriptionHtmlSync, aceDescriptionFloorHtml, acePrimeDescriptions }
   from "./description-reader.mjs";
@@ -240,15 +242,17 @@ export class ActionBar {
     // writes per redraw, which is exactly the "super glitchy, everything's all
     // fucked up when I move the map" Johnny reported (2026-08-14). A
     // deprecation notice is cheap once and ruinous in a render loop.
+    // ⚠️🔴 AND THE RULE ITSELF WAS WRONG HERE TOO (2026-09-16). This asked
+    // whether `prepared` was the boolean `false`; dnd5e 5.x writes a NUMBER
+    // (0 unprepared, 1 prepared, 2 always), so the test never fired once and
+    // every unprepared spell a creature owns has been sitting on the bar. The
+    // same wrong reading, written out a second time, is why the rule now lives
+    // in exactly one file - rules/spell-ready.mjs - and this asks it.
     if (item.type === "spell") {
-      const sys = item.system ?? {};
-      const method = sys.method ?? sys.preparation?.mode;         // 5.1+ first
-      const prepared = sys.prepared ?? sys.preparation?.prepared;
-      const alwaysReady = ["always", "atwill", "innate", "pact", "ritual"].includes(method);
-      if (!alwaysReady && prepared === false) {
-        return `${item.name} is not prepared. Prepare it on the sheet and it appears here on its own.`;
-      }
-      return null;
+      const verdict = spellReady(item);
+      if (verdict.ready) return null;
+      return `${item.name} is not ready to cast: ${verdict.why}. `
+           + `Prepare it on the sheet and it appears here on its own.`;
     }
 
     // ⚠️ GEAR IS NOT AN ACTION JUST BECAUSE LIGHTING IT TAKES ONE. Jeth's bar

@@ -3009,9 +3009,18 @@ Hooks.once("ready", () => {
         // somebody who walked OUT of Spirit Guardians left no dependents, and this
         // sweep read that as "the spell did nothing" and ended a spell the caster
         // was still holding, with the aura still on the map.
+        // ⚠️🔴 `actor` WAS NEVER IN SCOPE HERE (found by the lint pass,
+        // 2026-09-16). An effect's parent IS its actor, and this hook only ever
+        // had the effect. The ReferenceError landed in the catch below, which
+        // logged "orphan-parent handler failed" and swallowed it - so the reader
+        // this line exists to consult has never once been asked, and the sweep
+        // simply stopped instead. It ended up LOOKING right, because a throw
+        // before the drop is also a spell that does not end, and that is the
+        // worst kind of green there is. `node --check` cannot see this; eslint
+        // can, which is why it runs before anything ships.
         const { concentrationHoldsAPlace } = await import("./rules/concentration-place.mjs");
         const place = await concentrationHoldsAPlace(parent, {
-            casterActor: actor,
+            casterActor: parent.parent ?? null,
             tracked: concentrationWidget?.getActiveSpells?.() ?? [],
         });
         if (place) {

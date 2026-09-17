@@ -1640,7 +1640,7 @@ export class ConcentrationWidget {
                             && !!tracker.damageTypes?.length
                             && family !== "areaDenialAuto";
       if (isMovementDamage) {
-        const ft = this._distanceMovedInsideTemplate(template, positions);
+        const ft = this._distanceMovedInsideTemplate(token, template, positions);
         if (ft > 0) {
           await this._applyMovementDamage(tracker, token, ft);
         }
@@ -1974,14 +1974,16 @@ export class ConcentrationWidget {
    * Foundry's grid distance scale (typically 5 feet per cell). Returns 0 if
    * no portion of the movement passed through the template.
    */
-  _distanceMovedInsideTemplate(template, positions) {
-    if (!template || !positions) return 0;
-    const tokenDoc = canvas.tokens.placeables.find(t => true)?.document; // unused
-    // Use token-center start/end for the move ray
-    // (caller-supplied positions are token-origin; we approximate with origin
-    // since we don't know token size at this point in the helper. The result
-    // is stable across the full token because we're measuring a line, not
-    // a swept area.)
+  _distanceMovedInsideTemplate(token, template, positions) {
+    if (!token || !template || !positions) return 0;
+    // ⚠️🔴 THE CREATURE WAS NEVER PASSED IN (found by the lint pass, 2026-09-16).
+    // When this stopped sampling the LINE and started asking the one geometry
+    // function about the creature's whole space, it needed the creature - and
+    // the helper only ever had a template and a pair of coordinates. It also
+    // carried a dead line that took whichever token happened to be first on the
+    // canvas and labelled it unused. `token` is the caller's own, the one that
+    // moved. Without this, every step through Spike Growth threw a
+    // ReferenceError, which its caller had no catch for.
     const start = { x: positions.oldX, y: positions.oldY };
     const end   = { x: positions.newX, y: positions.newY };
 

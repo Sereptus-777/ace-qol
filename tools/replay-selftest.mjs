@@ -2431,13 +2431,21 @@ console.log(`\nPHASE 6a: THE SHIELD REACTION`);
   canvas.tokens.placeables.length = 0;
   const made6a = [];
   try {
-    const spell = (name, { prepared = true } = {}) => ({
+    // ⚠️🔴 THE STAND-IN WAS WRONG AND THAT IS WHY THESE PINS WERE GREEN WHILE
+    // HIS TABLE WAS BROKEN (2026-09-16). It wrote `method: "prepared"`, which
+    // is a dnd5e 3.x preparation MODE and a value dnd5e 5.3.3 cannot produce —
+    // the same wrong value the reader was testing for, so the pin agreed with
+    // the bug. Every spell in hijinx reads `method: "spell"` with `prepared` as
+    // a NUMBER: 0 unprepared, 1 prepared, 2 always. Kasimir's Shield is
+    // spell/1, Morthos's is spell/2, Riswynn's is spell/0. A stand-in has to
+    // carry the shape his world carries or it pins nothing at all.
+    const spell = (name, { prepared = 1, method = "spell" } = {}) => ({
       id: `it-${name}`, name, type: "spell", img: "",
-      system: { level: 1, method: prepared ? "prepared" : "prepared", prepared, activities: [] },
+      system: { level: 1, method, prepared, activities: [] },
     });
-    const who = (id, name, { shield = true, fireShield = false, slots = 3, statuses = [], hp = 20, flags = {} } = {}) => {
+    const who = (id, name, { shield = true, shieldPrepared = 1, fireShield = false, slots = 3, statuses = [], hp = 20, flags = {} } = {}) => {
       const items = [];
-      if (shield) items.push(spell("Shield"));
+      if (shield) items.push(spell("Shield", { prepared: shieldPrepared }));
       if (fireShield) items.push(spell("Fire Shield"));
       const a = { id, name, type: "character", img: "", documentName: "Actor", uuid: `Actor.${id}`,
         statuses: new Set(statuses), effects: [], items, hasPlayerOwner: true,
@@ -2463,6 +2471,13 @@ console.log(`\nPHASE 6a: THE SHIELD REACTION`);
     const downed  = who("p6a-downed", "an unconscious wizard", { statuses: ["unconscious"], hp: 0 });
     const dead    = who("p6a-dead", "a dead wizard", { statuses: ["dead"], hp: 0 });
     const reacted = who("p6a-reacted", "a wizard who already reacted", { flags: { reactionUsed: true } });
+    // Kasimir the Wizard 9 keeps Shield prepared; Morthos the Sorcerer 17 has it
+    // always prepared and a second, unprepared copy beside it; Riswynn the
+    // Rogue 17 carries it and has never prepared anything.
+    const kasimir = who("p6a-kasimir", "Kasimir Velikov", { shieldPrepared: 1 });
+    const morthos = who("p6a-morthos", "Morthos", { shieldPrepared: 0 });
+    morthos.items.push(spell("Shield", { prepared: 2 }));
+    const riswynn = who("p6a-riswynn", "Riswynn", { shieldPrepared: 0 });
 
     const engine = new ReactionEngine();
     const asked = [];
@@ -2491,6 +2506,20 @@ console.log(`\nPHASE 6a: THE SHIELD REACTION`);
       `with Shield and a slot: ${can(ready).canUse ? "asked" : `not asked (${can(ready).reason})`}; `
         + `Fire Shield only: ${can(wrong).reason}; no slots: ${can(spent).reason}; `
         + `unconscious: ${can(downed).reason}; dead: ${can(dead).reason}; already reacted: ${reactedNow.reason}`);
+
+    // ── HIS TABLE'S BUG: a sheet dnd5e 5.x actually wrote ──
+    // Johnny, 2026-09-16: "Magic Missile at Beric, who has Shield prepared, a
+    // slot, and a reaction. No Shield pop-up." The reader asked whether the
+    // casting METHOD was the word "prepared", which dnd5e has not written since
+    // 3.x, so every slot caster in his world was refused in silence — Shield,
+    // Counterspell, Absorb Elements and Silvery Barbs alike.
+    check("a wizard's prepared Shield and a sorcerer's always-prepared one are both asked; an unprepared one is not, and it says which (2026-09-16)",
+      can(kasimir).canUse === true && can(morthos).canUse === true
+        && can(riswynn).canUse === false && /has Shield, but/.test(can(riswynn).reason ?? "")
+        && /does not have Shield/.test(can(wrong).reason ?? ""),
+      `Kasimir (method "spell", prepared 1): ${can(kasimir).canUse ? "asked" : `refused — ${can(kasimir).reason}`}; `
+        + `Morthos (an unprepared copy AND an always-prepared one): ${can(morthos).canUse ? "asked" : `refused — ${can(morthos).reason}`}; `
+        + `Riswynn: ${can(riswynn).reason}; the Fire Shield wizard: ${can(wrong).reason}`);
 
     // ── 1. Magic Missile ──
     {
@@ -2572,6 +2601,68 @@ console.log(`\nPHASE 6a: THE SHIELD REACTION`);
         !raw && doors6a.card.length > 0,
         `raw chat cards in the reaction card poster: ${raw ? "left" : "none"}; `
           + `cards through the door in these pins: ${doors6a.card.length}`);
+    }
+
+    // ── 6. THE PIPELINE'S OWN PATH, END TO END ──
+    // Johnny, 2026-09-16: "The distribute / pipeline path MUST call the same
+    // Shield interrupt the attack path uses, AFTER targets are known and BEFORE
+    // the damage card / APPLY." This drives the real resolver - the one that
+    // owns Magic Missile at his table - with only the damage card and the
+    // prompt stood in, and pins the ORDER, not just the call.
+    {
+      const { DamageResolver } = await import(`${MODULE}/scripts/spell-pipeline/resolvers/damage.mjs`);
+      const { DamageCardRenderer } = await import(`${MODULE}/scripts/damage-card-renderer.mjs`);
+      const keepCard = DamageCardRenderer.postDamageButton;
+      const keepApi = game.aceQol?.reactionEngine;
+      const order = [];
+      const cards = [];
+      DamageCardRenderer.postDamageButton = async (item, actor, hits) => {
+        order.push("damage card");
+        cards.push(hits.map(h => `${h.target?.name}:${h.magicMissileOverride?.darts}`));
+        return null;
+      };
+      game.aceQol = game.aceQol ?? {};
+      game.aceQol.reactionEngine = engine;
+      const asking = engine.checkMagicMissileShield.bind(engine);
+      engine.checkMagicMissileShield = async (...a) => { order.push("asked about Shield"); return asking(...a); };
+
+      const beric = who("p6a-beric", "Beric", { shieldPrepared: 1 });
+      const mate  = who("p6a-mate", "his shieldless friend", { shield: false, slots: 0 });
+      const caster = who("p6a-mm-caster", "the missile caster", { shield: false, slots: 0 });
+      const tokenFor = (a) => ({ id: `tok-${a.id}`, name: a.name, actor: a, x: 0, y: 0,
+        center: { x: 50, y: 50 },
+        document: { id: `tok-${a.id}`, actorId: a.id, actor: a, name: a.name, x: 0, y: 0,
+          width: 1, height: 1, elevation: 0, hidden: false, texture: { src: "" } } });
+      canvas.tokens.placeables.push(tokenFor(beric), tokenFor(mate), tokenFor(caster));
+
+      const mm = { id: "it-mm-pipe", name: "Magic Missile", type: "spell", img: "",
+        system: { level: 1, properties: new Set() } };
+      const ctx = { entry: { shape: "distribute", unit: { formula: "1d4 + 1", type: "force" } },
+        item: mm, actor: caster, castLevel: 1, activity: null };
+
+      answer = true;
+      const atAsk = asked.length;
+      let err6 = null;
+      try {
+        await quiet(async () => {
+          await DamageResolver.runDistribute(ctx, { distribution: new Map([[beric, 2], [mate, 1]]) });
+        });
+      } catch (e) { err6 = e; }
+
+      const onCard = cards[0] ?? [];
+      check("6. the pipeline's Magic Missile asks Beric about Shield once its targets are settled and BEFORE the damage card, and a yes takes his darts off it (2026-09-16)",
+        !err6 && asked.length - atAsk === 1
+          && order.join(" then ") === "asked about Shield then damage card"
+          && onCard.length === 1 && /friend/.test(onCard[0] ?? "")
+          && beric.system.spells.spell1.value === 2 && beric.flags[MOD]?.reactionUsed === true,
+        err6 ? `threw: ${err6?.message ?? err6}`
+          : `asked ${asked.length - atAsk} of the two; order: ${order.join(" then ") || "(nothing happened)"}; `
+            + `on the damage card: ${onCard.join(", ") || "nobody"}; `
+            + `Beric's slots ${beric.system.spells.spell1.value} of 3, reaction ${beric.flags[MOD]?.reactionUsed ? "spent" : "still free"}`);
+
+      engine.checkMagicMissileShield = asking;
+      DamageCardRenderer.postDamageButton = keepCard;
+      if (keepApi === undefined) delete game.aceQol.reactionEngine; else game.aceQol.reactionEngine = keepApi;
     }
   } finally {
     ConditionDoor.apply = keep6a.apply;
