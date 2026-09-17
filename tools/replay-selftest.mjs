@@ -3346,6 +3346,70 @@ console.log(`\nPHASE 6b: COUNTERSPELL`);
       ACTORS.delete(caster.id);
     }
 
+    // ── Every finisher asks the kill-list ──
+    // Johnny, 2026-09-17: "castIsDead → that activity does not place, does not
+    // move the token, does not leave a red line, does not post a card." A
+    // countered Misty Step still moved Patrina. ACE has no destination executor
+    // - nothing in the suite moves a token for a spell - so the move comes from
+    // whatever his table automates it with, and the only honest way to stop it
+    // without naming a spell is to refuse the MOVE when it belongs to a cast
+    // that just died.
+    {
+      const patrina = makeCaster("p6b-c14", "Patrina Velikovna", { at: [0, 0] });
+      const mistyStep = other("Misty Step");
+      mistyStep.uuid = "Actor.p6b-c14.Item.it-Misty Step";
+      const activity = cast(patrina, mistyStep);
+      activity.uuid = "Actor.p6b-c14.Item.it-Misty Step.Activity.mmm";
+
+      const tokenDoc = canvas.tokens.placeables.find(t => t.actor?.id === patrina.id).document;
+      const move = hooks["preUpdateToken"] ?? [];
+      const ask = (changes) => move.map(fn => fn(tokenDoc, changes, {})).filter(v => v === false).length;
+
+      // Before the counter: every kind of move is allowed.
+      const walkedBefore = ask({ x: 500, y: 0, movement: { action: "walk" } });
+      const blinkedBefore = ask({ x: 500, y: 0, movement: { action: "displace" } });
+
+      ReactionEngine._markCastCounterspelled(activity);
+
+      // After it: the teleport is refused, and nothing else is.
+      const blinked = await quiet(() => Promise.resolve(ask({ x: 500, y: 0, movement: { action: "displace" } })));
+      const walked = ask({ x: 500, y: 0, movement: { action: "walk" } });
+      const shoved = ask({ x: 500, y: 0, movement: { action: "push" } });
+      const turned = ask({ rotation: 90 });
+
+      check("A COUNTERED SPELL DOES NOT MOVE THE TOKEN: Patrina's teleport is refused, and walking, being shoved and turning on the spot are not (2026-09-17)",
+        blinkedBefore === 0 && walkedBefore === 0
+          && blinked === 1 && walked === 0 && shoved === 0 && turned === 0,
+        `before the counter: walk ${walkedBefore ? "blocked" : "allowed"}, teleport ${blinkedBefore ? "blocked" : "allowed"}; `
+          + `after it: teleport ${blinked ? "refused" : "ALLOWED (wrong)"}, walk ${walked ? "blocked (wrong)" : "allowed"}, `
+          + `shove ${shoved ? "blocked (wrong)" : "allowed"}, turn ${turned ? "blocked (wrong)" : "allowed"}`);
+
+      // ⚠️ AND IT IS A WINDOW, NOT A SENTENCE. A creature countered a while ago
+      // may still teleport: the record lives ten minutes so a card or a template
+      // can be recognised, but a move is only the spell finishing for seconds.
+      for (const c of ReactionEngine._counterspelledCasts) {
+        if (c.actorId === patrina.id) c.at = Date.now() - 60000;
+      }
+      const later = ask({ x: 900, y: 0, movement: { action: "displace" } });
+      check("and a minute later she can teleport again: the move window is seconds, not the record's ten minutes (2026-09-17)",
+        later === 0,
+        `a teleport a minute after the counter: ${later ? "still blocked (wrong)" : "allowed"}`);
+
+      // Nothing is summoned for a dead cast either.
+      const summon = hooks["dnd5e.preSummon"] ?? [];
+      const refusedSummon = await quiet(() => Promise.resolve(summon.map(fn => fn(activity)).filter(v => v === false).length));
+      const liveOne = cast(patrina, other("Summon Fey"));
+      liveOne.uuid = "Actor.p6b-c14.Item.it-Summon Fey.Activity.nnn";
+      ReactionEngine._createCastBarrier(liveOne);
+      const allowedSummon = summon.map(fn => fn(liveOne)).filter(v => v === false).length;
+      check("nothing is summoned for a counterspelled cast, and a live one still summons (2026-09-17)",
+        refusedSummon >= 1 && allowedSummon === 0,
+        `the dead cast's summon: ${refusedSummon ? "refused" : "went ahead (wrong)"}; a live cast's: ${allowedSummon ? "wrongly refused" : "allowed"}`);
+
+      canvas.tokens.placeables.length = 0;
+      ACTORS.delete(patrina.id);
+    }
+
     // ── A cantrip cannot be countered, and neither can a sword ──
     {
       const caster = makeCaster("p6b-c6", "a caster", { at: [0, 0] });

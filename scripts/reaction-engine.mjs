@@ -129,6 +129,12 @@ export class ReactionEngine {
       try { casterTokenUuid = casterActor?.getActiveTokens?.()?.[0]?.document?.uuid ?? null; } catch (_) {}
       ReactionEngine._counterspelledCasts.push({
         itemUuid, activityUuid, actorId, itemId, casterTokenUuid,
+        // ⚠️ WHEN, NOT ONLY WHETHER. The ten-minute life is right for a card, a
+        // template or a clip - all of which belong to this cast and nothing
+        // else. It is far too long for a MOVE: a creature that legitimately
+        // teleports nine minutes later would be frozen in place. The move guard
+        // reads this instead.
+        at: Date.now(),
         casterName: activity?.item?.actor?.name ?? "?",
         // ⚠️🔴 THIRTY SECONDS WAS NOT A WINDOW, IT WAS AN AMNESTY. Johnny,
         // 2026-09-17: "After I waited and advanced the turn, the Dex saves
@@ -187,6 +193,36 @@ export class ReactionEngine {
         + `the counter still stands:`, err);
       return false;
     }
+  }
+
+  /**
+   * Was this creature's cast called off moments ago, in the window where the
+   * spell's own finishing touches are still arriving?
+   *
+   * ⚠️🔴 A COUNTERED MISTY STEP STILL MOVED PATRINA (Johnny, 2026-09-17).
+   * The card was right, the save was gone, and the token still went. ACE has no
+   * destination executor - nothing in this suite moves a token for a spell - so
+   * the move comes from whatever his table has automating it, and the only
+   * honest way to stop that without naming a spell is to refuse the MOVE ITSELF
+   * when it belongs to a cast that just died.
+   *
+   * ⚠️ WHICH IS WHY IT IS A NARROW WINDOW AND A TELEPORT ONLY. "This creature
+   * was countered at some point in the last ten minutes" must never stop it
+   * walking. A teleport-tagged move by the caster, within seconds of its own
+   * spell being countered, is the spell finishing - and nothing else looks like
+   * that.
+   *
+   * @param {Actor} actor
+   * @param {number} [withinMs]
+   */
+  static castJustDied(actor, withinMs = 6000) {
+    try {
+      const id = actor?.id ?? null;
+      if (!id) return null;
+      const now = Date.now();
+      return ReactionEngine._counterspelledCasts.find(c =>
+        c.actorId === id && c.expiresAt > now && (now - (c.at ?? 0)) <= withinMs) ?? null;
+    } catch (_) { return null; }
   }
 
   /**
@@ -812,6 +848,43 @@ export class ReactionEngine {
         // is played. A crosshair that leads nowhere is a great deal better than
         // a Fireball that cannot be cast.
         return true;
+      } catch (_) { return true; }
+    });
+
+    // ⚠️🔴 A COUNTERED SPELL DOES NOT MOVE THE TOKEN (2026-09-17). His rule:
+    // "castIsDead → that activity does not place, does not move the token, does
+    // not leave a red line, does not post a card." This is the move finisher.
+    // It refuses ONLY a teleport-tagged move, ONLY by the creature whose own
+    // cast was just counterspelled, and ONLY within seconds of it - so walking
+    // away, being shoved, and a legitimate Misty Step a minute later are all
+    // untouched. No spell is named anywhere in it: Foundry tags the movement and
+    // the kill-list says whose cast died.
+    Hooks.on("preUpdateToken", (tokenDoc, changes, opts) => {
+      try {
+        if (changes?.x === undefined && changes?.y === undefined) return true;
+        const action = String(changes?.movement?.action ?? tokenDoc?.movement?.action ?? "");
+        if (!["displace", "teleport", "blink"].includes(action)) return true;
+        const dead = ReactionEngine.castJustDied(tokenDoc?.actor);
+        if (!dead) return true;
+        console.log(`${MODULE_ID} | ${tokenDoc?.name ?? "that creature"} stays where it is: `
+          + `the spell that would have moved it was counterspelled.`);
+        ui.notifications?.info(`${tokenDoc?.name ?? "The caster"} does not move - the spell was counterspelled.`);
+        return false;
+      } catch (err) {
+        console.warn(`${MODULE_ID} | could not check that move against a counterspelled cast, `
+          + `so it is allowed:`, err);
+        return true;
+      }
+    });
+
+    // ⚠️ THE SUMMON FINISHER. Deleting a creature after it has appeared is a
+    // poor second to never placing it, and dnd5e asks first.
+    Hooks.on("dnd5e.preSummon", (activity) => {
+      try {
+        if (!ReactionEngine.castIsDead({ activity })) return true;
+        console.log(`${MODULE_ID} | "${activity?.item?.name ?? "that cast"}" was counterspelled, `
+          + `so nothing is summoned for it.`);
+        return false;
       } catch (_) { return true; }
     });
 
