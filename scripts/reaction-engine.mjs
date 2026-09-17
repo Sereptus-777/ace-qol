@@ -108,6 +108,8 @@ export class ReactionEngine {
   static _counterspelledCasts = [];   // [{ itemUuid, activityUuid, actorId, itemId, casterName, casterTokenUuid, expiresAt }]
   /** One Counterspell check per cast: key -> when it was checked. */
   static _castsChecked = new Map();
+  /** Casts whose area we refused while the prompt was open: key -> activity. */
+  static _templateOwed = new Map();
   static _recentSummonFx = [];        // [{ id, srcUuid, expiresAt }] — summon Sequencer effects seen at creation, for post-counter cleanup
 
   static _markCastCounterspelled(activity) {
@@ -140,6 +142,53 @@ export class ReactionEngine {
       console.log(`${MODULE_ID} | "${activity?.item?.name ?? "that cast"}" is dead. `
         + `Nothing further resolves for it: no template, no save, no damage, no card.`);
     } catch (_) { /* non-fatal */ }
+  }
+
+  /**
+   * Write the counterspelled flag on the cast's own chat card.
+   *
+   * ⚠️🔴 "message" IS WHATEVER THE CALLER HAD, NOT A ChatMessage (2026-09-17).
+   * `message.setFlag is not a function` at his table. This argument arrives from
+   * three places and only one of them is guaranteed to be a document: dnd5e's
+   * own hook hands one over, the legacy path passes null, and the player-cast
+   * socket path looks one up by id and can come back with nothing. On some
+   * builds the hook hands over the message DATA rather than the document. A
+   * thrown TypeError here lands in the middle of the countered branch, which is
+   * the worst possible place for one.
+   *
+   * So: resolve it to a real document if we can, use setFlag if it exists, fall
+   * back to a plain update, and if neither is there say so and carry on. The
+   * flag is a convenience for other engines; the kill-list is the authority, and
+   * nothing downstream depends on this line succeeding.
+   */
+  static async _flagMessageCounterspelled(message, data) {
+    try {
+      let doc = message ?? null;
+      // A bare id, or something with one that is not a document.
+      if (doc && typeof doc.setFlag !== "function" && typeof doc.update !== "function") {
+        const id = typeof doc === "string" ? doc : (doc.id ?? doc._id ?? null);
+        doc = id ? (globalThis.game?.messages?.get?.(id) ?? null) : null;
+      }
+      if (!doc) {
+        ReactionEngine._sdebug("[COUNTER] no chat card to flag for this cast (the kill-list still has it)");
+        return false;
+      }
+      if (typeof doc.setFlag === "function") {
+        await doc.setFlag(MODULE_ID, "counterspelled", data);
+        return true;
+      }
+      if (typeof doc.update === "function") {
+        await doc.update({ [`flags.${MODULE_ID}.counterspelled`]: data });
+        return true;
+      }
+      console.warn(`${MODULE_ID} | the cast's chat card could not be flagged as counterspelled `
+        + `(it is a ${typeof doc}, not a document). The counter still stands - the kill-list is what decides.`);
+      return false;
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not flag the cast's chat card as counterspelled; `
+        + `the counter still stands:`, err);
+      return false;
+    }
   }
 
   /**
@@ -255,7 +304,14 @@ export class ReactionEngine {
       const toEnd = [];
       for (const fx of (EM.getEffects() ?? [])) {
         const d = fx?.data ?? {};
-        const originHit = d.origin && casts.some(c => d.origin === c.itemUuid || d.origin === c.activityUuid);
+        // ⚠️ ANY CLIP THAT BELONGS TO A DEAD CAST, not only one whose file name
+        // looks like a summon. Johnny, 2026-09-17: "Dead cast = no flourish."
+        // Automated Animations tags what it plays with the item's uuid, and an
+        // activity's uuid begins with its item's, so a prefix is the honest
+        // match - the same one the kill-list itself uses.
+        const originHit = !!d.origin && casts.some(c =>
+          (c.activityUuid && d.origin === c.activityUuid)
+          || (c.itemUuid && String(d.origin).startsWith(c.itemUuid)));
         const srcUuid = (typeof d.source === "string" ? d.source : d.source?.uuid) ?? null;
         const summonHit = srcUuid && casterUuids.has(srcUuid) && SUMMON_FX.test(`${d.file ?? ""} ${d.name ?? ""}`);
         if ((originHit || summonHit) && fx.id) toEnd.push(fx.id);
@@ -383,6 +439,46 @@ export class ReactionEngine {
     b.resolved = true;
     b.resolvedWith = result;
     ReactionEngine._sdebug(`[BARRIER] RESOLVE for ${activity?.item?.name ?? '?'} with ${JSON.stringify(result)}`);
+    ReactionEngine._placeHeldTemplate(key, result);
+  }
+
+  /**
+   * Place the area we refused while the Counterspell prompt was open.
+   *
+   * ⚠️ ONLY WHAT WE REFUSED, AND ONLY IF THE SPELL LIVED. A cast that nobody
+   * could counter never reaches this: its barrier resolves before dnd5e asks
+   * about the template, so the hook lets it through and dnd5e places it itself.
+   */
+  static _placeHeldTemplate(key, result) {
+    const activity = key ? ReactionEngine._templateOwed.get(key) : null;
+    if (!activity) return;
+    ReactionEngine._templateOwed.delete(key);
+    if (result?.abort) {
+      console.log(`${MODULE_ID} | "${activity?.item?.name ?? "that cast"}" was ${result.reason ?? "stopped"}, `
+        + `so the area it was holding is never placed.`);
+      return;
+    }
+    // Only the client that cast it may draw the preview; everybody else would
+    // get a crosshair for somebody else's spell.
+    (async () => {
+      try {
+        const Template = globalThis.dnd5e?.canvas?.AbilityTemplate
+          ?? globalThis.game?.dnd5e?.canvas?.AbilityTemplate ?? null;
+        if (!Template?.fromActivity) {
+          console.warn(`${MODULE_ID} | "${activity?.item?.name}" survived the Counterspell, but ACE `
+            + `cannot reach dnd5e's own template placer to draw its area. Place it by hand.`);
+          return;
+        }
+        console.log(`${MODULE_ID} | "${activity?.item?.name}" survived the Counterspell - `
+          + `here is its area.`);
+        for (const template of (Template.fromActivity(activity) ?? [])) {
+          await template.drawPreview();
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | could not draw the area for "${activity?.item?.name}" after the `
+          + `Counterspell was answered; place it by hand:`, err);
+      }
+    })();
   }
 
   /**
@@ -683,10 +779,35 @@ export class ReactionEngine {
     // built. (Proven in the 5.3.3 source, AbilityTemplate.fromActivity.)
     Hooks.on("dnd5e.preCreateActivityTemplate", (activity) => {
       try {
-        if (!ReactionEngine.castIsDead({ activity })) return true;
-        console.log(`${MODULE_ID} | "${activity?.item?.name ?? "that cast"}" was counterspelled, `
-          + `so there is no area to place.`);
-        return false;
+        if (ReactionEngine.castIsDead({ activity })) {
+          console.log(`${MODULE_ID} | "${activity?.item?.name ?? "that cast"}" was counterspelled, `
+            + `so there is no area to place.`);
+          return false;
+        }
+        // ⚠️🔴 AND NO CROSSHAIR WHILE THE ANSWER IS STILL COMING (2026-09-17).
+        // Johnny: "CAST flourish and template preview run BEFORE the
+        // Counterspell answer." They do: dnd5e places the area in
+        // `_finalizeUsage`, immediately after the usage message, and it does not
+        // await the hook we answer on. Vetoing only a cast that is ALREADY dead
+        // is therefore always too late - at that instant the prompt is still on
+        // somebody's screen.
+        //
+        // This hook is synchronous, so it cannot wait. It refuses instead, and
+        // ACE places the area itself the moment the answer comes back "not
+        // countered" - through dnd5e's own AbilityTemplate, the same call
+        // `#placeTemplate` makes, so the area carries the same flags and behaves
+        // exactly as it always has. When nobody at the table can counter, the
+        // barrier resolves before this hook is ever reached and NOTHING about an
+        // ordinary cast changes.
+        const key = ReactionEngine._activityKey(activity);
+        const barrier = key ? ReactionEngine._castBarriers.get(key) : null;
+        if (barrier && !barrier.resolved) {
+          ReactionEngine._templateOwed.set(key, activity);
+          console.log(`${MODULE_ID} | "${activity?.item?.name ?? "that cast"}": holding its area `
+            + `until the Counterspell is answered. Nothing is placed, and nothing is drawn, until then.`);
+          return false;
+        }
+        return true;
       } catch (_) { return true; }
     });
 
@@ -717,6 +838,17 @@ export class ReactionEngine {
       try {
         const d = fx?.data ?? {};
         const src = (typeof d.source === "string" ? d.source : d.source?.uuid) ?? null;
+        // ⚠️ A CLIP FOR A CAST THAT IS ALREADY DEAD IS CUT AT BIRTH, whatever it
+        // is. This used to look only for summon-shaped file names, so a cast
+        // flourish that arrived a moment after the counter played out in full.
+        // The origin says whose it is; nothing else has to be recognised.
+        const origin = d.origin ?? null;
+        if (origin && ReactionEngine._isCounterspelledOrigin(origin)) {
+          console.log(`${MODULE_ID} | [COUNTER-CLEANUP] cutting a clip for a counterspelled cast `
+            + `at the moment it starts: ${d.file ?? d.name ?? "?"}`);
+          ReactionEngine._killSummonEffect({ effect: fx, id: fx.id ?? d._id ?? null });
+          return;
+        }
         const SUMMON_FX = /conjuration|summon|magic.?sign|portal|autoanimations\.static/i;
         if (!src || !SUMMON_FX.test(`${d.file ?? ""} ${d.name ?? ""}`)) return;   // NB: don't require fx.id — it isn't set yet at hook time
         const now = Date.now();
@@ -1881,16 +2013,13 @@ export class ReactionEngine {
           `${mechanical}${flavorBlock}`,
           "#ab47bc");
 
-        // Cancel the spell — set a flag that other engines can check
-        // The spell's effects should be suppressed. We flag the message.
-        if (message) {
-          await message.setFlag(MODULE_ID, "counterspelled", {
-            by: reactor.actor.name,
-            byActorId: reactor.actor.id,
-            spellName: item.name,
-            spellLevel,
-          });
-        }
+        // Cancel the spell — set a flag that other engines can check.
+        await ReactionEngine._flagMessageCounterspelled(message, {
+          by: reactor.actor.name,
+          byActorId: reactor.actor.id,
+          spellName: item.name,
+          spellLevel,
+        });
 
         // ── v0.7.265 — Kill the native resolution the barrier can't stop:
         //    summoned creatures + this cast's own zone template. Mark the cast

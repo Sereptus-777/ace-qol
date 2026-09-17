@@ -2938,6 +2938,88 @@ console.log(`\nPHASE 6b: COUNTERSPELL`);
       for (const a of [caster, kasimir]) ACTORS.delete(a.id);
     }
 
+    // ── The crash, and the crosshair that beat the answer ──
+    // Johnny, 2026-09-17: "reaction-engine.mjs:1887 TypeError message.setFlag
+    // is not a function. Do not assume ChatMessage." And: "CAST flourish and
+    // template preview run BEFORE the Counterspell answer."
+    {
+      const data = { by: "Kasimir", byActorId: "x", spellName: "Fireball", spellLevel: 3 };
+
+      // Four shapes this argument actually arrives in.
+      const real = { id: "m1", flags: {}, setFlag: async function (s2, k, v) { (this.flags[s2] ??= {})[k] = v; return this; } };
+      const older = { id: "m2", flags: {}, update: async function (u) { for (const [k, v] of Object.entries(u)) this.flags.counterspelled = v; return this; } };
+      const plain = { id: "m3", content: "just data, no methods" };
+      let err = null, results = [];
+      try {
+        results = [
+          await ReactionEngine._flagMessageCounterspelled(real, data),
+          await ReactionEngine._flagMessageCounterspelled(older, data),
+          await quiet(() => ReactionEngine._flagMessageCounterspelled(plain, data)),
+          await ReactionEngine._flagMessageCounterspelled(null, data),
+        ];
+      } catch (e) { err = e; }
+      check("the counterspelled flag never assumes what a chat card is: a document, an older one with only update, a plain object and nothing at all (2026-09-17)",
+        !err && results[0] === true && results[1] === true && results[2] === false && results[3] === false
+          && real.flags[MOD]?.counterspelled?.spellName === "Fireball",
+        err ? `threw: ${err?.message ?? err}`
+          : `setFlag: ${results[0]}; update only: ${results[1]}; a plain object: ${results[2]} (and it said why); nothing: ${results[3]}`);
+    }
+
+    {
+      const caster = makeCaster("p6b-c11", "Neferon", { at: [0, 0] });
+      const kasimir = mage("p6b-k11", "Kasimir Velikov", { items: [csItem("2024")], at: [200, 0], dc: 17 });
+      const fireball = other("Fireball");
+      fireball.uuid = "Actor.p6b-c11.Item.it-Fireball";
+      const activity = cast(caster, fireball);
+      activity.uuid = "Actor.p6b-c11.Item.it-Fireball.Activity.fff";
+      const veto = hooks["dnd5e.preCreateActivityTemplate"] ?? [];
+
+      // Nobody can counter: the barrier is already settled when dnd5e asks, so
+      // an ordinary cast is not touched at all and dnd5e places its own area.
+      ReactionEngine._createCastBarrier(activity);
+      ReactionEngine._resolveCastBarrier(activity, { abort: false, reason: "no_reactors_available" });
+      const ordinary = veto.map(fn => fn(activity, {}));
+      check("an ordinary cast nobody can counter still gets its crosshair from dnd5e, untouched (2026-09-17)",
+        ordinary.length > 0 && ordinary.every(v => v !== false),
+        `the template hook answered ${ordinary.join(", ") || "(nothing listening)"}`);
+
+      // The prompt is open: no crosshair, and the area is remembered.
+      const pending = cast(caster, fireball);
+      pending.uuid = "Actor.p6b-c11.Item.it-Fireball.Activity.ggg";
+      ReactionEngine._createCastBarrier(pending);
+      const held = await quiet(() => Promise.resolve(veto.map(fn => fn(pending, {}))));
+      check("while the Counterspell prompt is open there is NO crosshair, and the area is remembered (2026-09-17)",
+        held.some(v => v === false) && ReactionEngine._templateOwed.has(pending.uuid),
+        `the template hook answered ${held.join(", ")}; the area is ${ReactionEngine._templateOwed.has(pending.uuid) ? "held" : "forgotten"}`);
+
+      // Answer yes: the held area is dropped and never placed.
+      await quiet(() => Promise.resolve(ReactionEngine._resolveCastBarrier(pending,
+        { abort: true, reason: "counterspelled", counterspeller: "Kasimir Velikov" })));
+      check("and a Yes throws the held area away instead of placing it (2026-09-17)",
+        !ReactionEngine._templateOwed.has(pending.uuid),
+        `still held: ${ReactionEngine._templateOwed.has(pending.uuid)}`);
+
+      // A cast that survives gets its area back, through dnd5e's own placer.
+      const lived = cast(caster, fireball);
+      lived.uuid = "Actor.p6b-c11.Item.it-Fireball.Activity.hhh";
+      ReactionEngine._createCastBarrier(lived);
+      await quiet(() => Promise.resolve(veto.map(fn => fn(lived, {}))));
+      let drew = 0;
+      globalThis.dnd5e = { canvas: { AbilityTemplate: {
+        fromActivity: () => [{ drawPreview: async () => { drew += 1; return {}; } }],
+      } } };
+      await quiet(() => Promise.resolve(ReactionEngine._resolveCastBarrier(lived,
+        { abort: false, reason: "no_counter" })));
+      await new Promise(r => setTimeout(r, 10));
+      delete globalThis.dnd5e;
+      check("a cast that survives the Counterspell gets its area drawn, through dnd5e's own placer (2026-09-17)",
+        drew === 1 && !ReactionEngine._templateOwed.has(lived.uuid),
+        `areas drawn after the answer: ${drew}`);
+
+      canvas.tokens.placeables.length = 0;
+      for (const a of [caster, kasimir]) ACTORS.delete(a.id);
+    }
+
     // ── A cantrip cannot be countered, and neither can a sword ──
     {
       const caster = makeCaster("p6b-c6", "a caster", { at: [0, 0] });
