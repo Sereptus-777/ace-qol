@@ -3028,6 +3028,60 @@ console.log(`\nPHASE 6b: COUNTERSPELL`);
       for (const a of [caster, kasimir]) ACTORS.delete(a.id);
     }
 
+    // ── "Yes = no boom" ──
+    // Johnny's log, 2026-09-17: "CAST hook FLOURISH on Neferon immediately, then
+    // Fireball is dead, then postUseActivity waits for a template AGAIN, then
+    // Sequencer still has something to play." Three separate leaks out of one
+    // dead cast: ACE's own flourish fired at the cast-click, the save engine
+    // armed a SECOND save when dnd5e fired its usage hook again, and a clip that
+    // started after the counter played out in full.
+    {
+      const caster = makeCaster("p6b-c12", "Neferon", { at: [0, 0] });
+      const fireball = other("Fireball");
+      fireball.uuid = "Actor.p6b-c12.Item.it-Fireball";
+      fireball.actor = caster;
+      const activity = cast(caster, fireball);
+      activity.uuid = "Actor.p6b-c12.Item.it-Fireball.Activity.iii";
+
+      const { AceFX } = await import(`${MODULE}/scripts/ace-fx.mjs`);
+
+      // Alive: it plays.
+      ReactionEngine._createCastBarrier(activity);
+      ReactionEngine._resolveCastBarrier(activity, { abort: false, reason: "no_reactors_available" });
+      const alivePlays = !(await quiet(() => AceFX._castWasStopped(activity, fireball, caster)));
+
+      // Dead: it does not.
+      const deadCast = cast(caster, fireball);
+      deadCast.uuid = "Actor.p6b-c12.Item.it-Fireball.Activity.jjj";
+      ReactionEngine._markCastCounterspelled(deadCast);
+      const deadSilent = await quiet(() => AceFX._castWasStopped(deadCast, fireball, caster));
+      check("YES = NO BOOM: ACE's own flourish asks first, plays for a cast that lived and nothing at all for one that did not (2026-09-17)",
+        alivePlays === true && deadSilent === true,
+        `a cast nobody countered: ${alivePlays ? "plays" : "silent (wrong)"}; a countered one: ${deadSilent ? "silent" : "still plays (wrong)"}`);
+
+      // A clip that starts AFTER the counter is cut at birth, whatever it is.
+      const born = hooks["createSequencerEffect"] ?? [];
+      let killed = 0;
+      const fx = { id: "fx-late", endEffect: () => { killed += 1; },
+        data: { origin: fireball.uuid, file: "jb2a.fireball.explosion.orange", source: "Scene.s.Token.t" } };
+      await quiet(() => Promise.resolve(born.map(fn => fn(fx))));
+      check("and a clip that starts after the counter is cut at birth, whatever its file is called (2026-09-17)",
+        killed >= 1,
+        `a fireball explosion tagged with the dead cast's item: ${killed ? "cut" : "left playing"}`);
+
+      // One that belongs to a different cast is left alone.
+      let otherKilled = 0;
+      const innocent = { id: "fx-other", endEffect: () => { otherKilled += 1; },
+        data: { origin: "Actor.zzz.Item.qqq", file: "jb2a.fireball.explosion.orange", source: "Scene.s.Token.u" } };
+      await quiet(() => Promise.resolve(born.map(fn => fn(innocent))));
+      check("a clip belonging to somebody else's spell is left alone (2026-09-17)",
+        otherKilled === 0,
+        `somebody else's explosion: ${otherKilled ? "wrongly cut" : "left playing, as it should be"}`);
+
+      canvas.tokens.placeables.length = 0;
+      ACTORS.delete(caster.id);
+    }
+
     // ── A cantrip cannot be countered, and neither can a sword ──
     {
       const caster = makeCaster("p6b-c6", "a caster", { at: [0, 0] });

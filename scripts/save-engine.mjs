@@ -1007,6 +1007,23 @@ export class SaveEngine {
     }
 
     if (templateType && templatePlaceable) {
+      // ⚠️🔴 A DEAD CAST NEVER ARMS ANYTHING (2026-09-17). His log: "Fireball is
+      // dead, then postUseActivity waits for a template AGAIN." dnd5e can fire
+      // its usage hook twice for one use, and the second firing arrived after
+      // the counter had already landed - so this armed a fresh Dexterity save
+      // and sat waiting for an area that must never be placed. A save waiting
+      // for an area is a save that goes off whenever one turns up.
+      try {
+        const { ReactionEngine } = await import("./reaction-engine.mjs");
+        if (ReactionEngine.castIsDead({ activity, item, actor })) {
+          console.log(`${MODULE_ID} | "${item.name}" was counterspelled - no save is armed for it, `
+            + `and nothing waits for an area.`);
+          return;
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | could not check whether "${item?.name}" was counterspelled `
+          + `before arming its save; arming it:`, err);
+      }
       // Spell has a template — stash data, wait for createMeasuredTemplate hook
       this._pendingSaveSpell = {
         activity,

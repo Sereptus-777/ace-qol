@@ -212,7 +212,7 @@ export class AceFX {
 
     // ── CAST → flourish on the caster. postCreateUsageMessage fires on the
     //    caster's own client; we play it locally and relay to everyone else. ──
-    Hooks.on("dnd5e.postCreateUsageMessage", (activity) => {
+    Hooks.on("dnd5e.postCreateUsageMessage", async (activity) => {
       try {
         if (!AceFX._enabled()) return;
         const item = activity?.item;
@@ -226,8 +226,19 @@ export class AceFX {
                   ?? item.system?.target?.template?.type ?? "";
         if (_hasSave && !_tpl) return;
         const tk = activity?.actor?.getActiveTokens?.()?.[0];
-        console.log(`${MODULE_ID} | [ace-fx] CAST hook (immediate): "${item?.name}" caster-token=${tk?.name ?? "none"}`);
         if (!tk) return;
+        // ⚠️🔴 THE FLOURISH USED TO FIRE AT THE CAST-CLICK, WHICH IS BEFORE
+        // ANYBODY HAS ANSWERED. Johnny's log, 2026-09-17: "CAST hook FLOURISH on
+        // Neferon immediately, then Fireball is dead." This hook is the same one
+        // the Counterspell check answers on, so at this instant nothing knows
+        // yet. Unlike the template - which belongs to dnd5e and which ACE must
+        // never place - the flourish is entirely ours, so holding it is not
+        // reaching around anybody.
+        //
+        // ⚠️ AND IT COSTS AN ORDINARY CAST NOTHING. With nobody able to counter,
+        // the barrier is already settled and this returns in the same tick.
+        if (await AceFX._castWasStopped(activity, item)) return;
+        console.log(`${MODULE_ID} | [ace-fx] CAST hook: "${item?.name}" caster-token=${tk.name}`);
         AceFX.flourishBroadcast(tk, _themeColor(item));
       } catch (err) { console.warn(`${MODULE_ID} | AceFX cast-flourish threw:`, err); }
     });
@@ -235,12 +246,14 @@ export class AceFX {
     // ── CAST COMMITTED (after the target picker resolves) → flourish on the
     //    caster. The save-engine emits this once a target is locked in, so the
     //    flourish lands when the spell actually goes off, not at the cast-click. ──
-    Hooks.on("ace-qol.spellCommitted", (data) => {
+    Hooks.on("ace-qol.spellCommitted", async (data) => {
       try {
         if (!AceFX._enabled()) return;
         const tk = data?.casterActor?.getActiveTokens?.()?.[0];
-        console.log(`${MODULE_ID} | [ace-fx] COMMIT hook (post-pick): "${data?.item?.name}" caster-token=${tk?.name ?? "none"}`);
         if (!tk) return;
+        // Same question, same answer: a cast that was stopped plays nothing.
+        if (await AceFX._castWasStopped(data?.activity ?? null, data?.item ?? null, data?.casterActor ?? null)) return;
+        console.log(`${MODULE_ID} | [ace-fx] COMMIT hook (post-pick): "${data?.item?.name}" caster-token=${tk.name}`);
         AceFX.flourishBroadcast(tk, _themeColor(data?.item));
       } catch (err) { console.warn(`${MODULE_ID} | AceFX commit-flourish threw:`, err); }
     });
@@ -277,12 +290,41 @@ export class AceFX {
           }
         } catch (_) {}
         if (!soundSrc) soundSrc = _psfxFallbackSound(dt);
+        // The impact, on the same rule as the flourish: a cast that was stopped
+        // lands nothing, so it flashes nothing either.
+        if (await AceFX._castWasStopped(null, item, data?.casterActor ?? null)) return;
         console.log(`${MODULE_ID} | [ace-fx] save-fail: "${item?.name}" (${dt}) — firing ENCRUST + SOUND together NOW (src=${soundSrc ?? "none"})`);
         AceFX.encrustBroadcast(tk, DAMAGE_THEME[dt] ?? DEFAULT_COLOR, soundSrc);
       } catch (err) { console.warn(`${MODULE_ID} | AceFX save-fail encrust threw:`, err); }
     });
 
     console.log(`${MODULE_ID} | [ace-fx] AceFX auto-animation ONLINE (cast flourish + silhouette encrust)`);
+  }
+
+  /**
+   * Was this cast stopped before it could happen?
+   *
+   * ⚠️🔴 "Dead cast = zero ACE-fx. No flourish, no impact, no streak."
+   * (Johnny, 2026-09-17.) Asks the one reader, waiting only while a Counterspell
+   * prompt is genuinely open - which is never the case when nobody at the table
+   * can counter, so an ordinary cast is not delayed by a single frame.
+   *
+   * Fails OPEN: if the reaction engine cannot be reached, the spell plays. A
+   * missing animation is a bug; a missing animation with no explanation is two.
+   */
+  static async _castWasStopped(activity, item = null, actor = null) {
+    try {
+      const { ReactionEngine } = await import("./reaction-engine.mjs");
+      const decision = await ReactionEngine.awaitCastDecision(activity ?? item?.uuid ?? null,
+        { item: item ?? activity?.item ?? null, actor: actor ?? activity?.actor ?? item?.actor ?? null });
+      if (!decision?.abort) return false;
+      console.log(`${MODULE_ID} | [ace-fx] "${item?.name ?? activity?.item?.name ?? "that cast"}" was `
+        + `${decision.reason} - nothing is played for it.`);
+      return true;
+    } catch (err) {
+      console.warn(`${MODULE_ID} | [ace-fx] could not ask whether that cast survived, so it plays:`, err);
+      return false;
+    }
   }
 
   static _enabled() {
