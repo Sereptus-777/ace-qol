@@ -3434,6 +3434,71 @@ console.log(`\nPHASE 6b: COUNTERSPELL`);
       ACTORS.delete(patrina.id);
     }
 
+    // ── The blast goes off where she WAS ──
+    // Johnny, 2026-09-17: "The Constitution save card appears BEFORE I pick the
+    // destination... THEN creatures within 10 feet of the OLD square get the Con
+    // save. She appears on the new square. No save there."
+    //
+    // ⚠️ AND THE OBVIOUS READING OF HIS DATA IS WRONG. "Range self, radius area,
+    // item reaches feet" matches FIVE spells in his world and four of them mean
+    // the opposite: Ice Knife, Vitriolic Sphere, Pyrotechnics and Spiritual
+    // Weapon all burst at the TARGET and only say "self" because an importer
+    // left it there. What separates them is where the area LANDS, which is a
+    // question you can only ask of the placed template.
+    {
+      const caster = makeCaster("p6b-c15", "Jebidiah", { at: [0, 0] });
+      const casterTok = canvas.tokens.placeables.find(t => t.actor?.id === caster.id);
+
+      const thunderStep = { id: "it-ts", name: "Thunder Step", type: "spell", img: "",
+        system: { level: 3, range: { units: "ft", value: "90" }, properties: new Set() } };
+      const onSelf = { item: thunderStep, actor: caster,
+        activity: { range: { units: "self" }, target: { template: { type: "radius", size: "10" } } } };
+
+      const iceKnife = { id: "it-ik", name: "Ice Knife", type: "spell", img: "",
+        system: { level: 1, range: { units: "ft", value: "60" }, properties: new Set() } };
+      const atTarget = { item: iceKnife, actor: caster,
+        activity: { range: { units: "self" }, target: { template: { type: "radius", size: "5" } } } };
+
+      const spiritGuardians = { id: "it-sg", name: "Spirit Guardians", type: "spell", img: "",
+        system: { level: 3, range: { units: "self" }, properties: new Set() } };
+      const stays = { item: spiritGuardians, actor: caster,
+        activity: { range: { units: "self" }, target: { template: { type: "radius", size: "15" } } } };
+
+      // The area reads whoever is standing in it; that is what decides.
+      const keepIn = SaveEngine._getTokensInTemplate;
+      const tpl = { id: "tpl-ts" };
+      SaveEngine._getTokensInTemplate = () => insideNow;
+      let insideNow = [casterTok];
+
+      const ts = SaveEngine._areaIsWhereTheyWere(tpl, onSelf);
+      const sg = SaveEngine._areaIsWhereTheyWere(tpl, stays);
+      insideNow = [];                       // Ice Knife's burst is at the target
+      const ik = SaveEngine._areaIsWhereTheyWere(tpl, atTarget);
+
+      check("THE BLAST GOES OFF WHERE SHE WAS: Thunder Step's area sits on its caster and its spell reaches elsewhere, so its card waits; Ice Knife bursts at the target and Spirit Guardians never leaves, so neither does (2026-09-17)",
+        ts === casterTok && ik === null && sg === null,
+        `Thunder Step: ${ts ? "held for her to go" : "not held (wrong)"}; `
+          + `Ice Knife: ${ik ? "WRONGLY held" : "rolled at once"}; `
+          + `Spirit Guardians: ${sg ? "WRONGLY held" : "rolled at once"}`);
+
+      // And the hold ends the moment she is out of her own blast.
+      insideNow = [casterTok];
+      let left = null;
+      const running = quiet(() => SaveEngine._awaitTheyLeave(casterTok, tpl, "Thunder Step")
+        .then(v => { left = v; }));
+      await new Promise(r => setTimeout(r, 200));
+      const heldWhileIn = left === null;
+      insideNow = [];                       // she lands on the new square
+      await running;
+      check("and the hold ends the moment she is out of her own blast, not before (2026-09-17)",
+        heldWhileIn === true && left === true,
+        `while she was still standing in it: ${heldWhileIn ? "held" : "posted anyway (wrong)"}; once she left: ${left ? "released" : "still holding (wrong)"}`);
+
+      SaveEngine._getTokensInTemplate = keepIn;
+      canvas.tokens.placeables.length = 0;
+      ACTORS.delete(caster.id);
+    }
+
     // ── A cantrip cannot be countered, and neither can a sword ──
     {
       const caster = makeCaster("p6b-c6", "a caster", { at: [0, 0] });

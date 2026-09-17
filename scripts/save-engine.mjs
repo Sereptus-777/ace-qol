@@ -2124,6 +2124,82 @@ export class SaveEngine {
     return ids.length;
   }
 
+  /**
+   * Is this an area that sits on the caster while the spell takes them
+   * somewhere else - so the creatures it catches are the ones they LEFT?
+   *
+   * ⚠️🔴 THE ORDER, NOT THE LOGIC. Johnny, 2026-09-17: "The Constitution
+   * save card appears BEFORE I pick the destination... 4. THEN creatures within
+   * 10 feet of the OLD square get the Con save / damage card. 5. She appears on
+   * the new square. No save there." His Thunder Step is a `save` activity that
+   * overrides its range to SELF with a ten-foot radius, on an item whose own
+   * range is ninety feet - the area is where she was, the ninety feet is where
+   * she goes.
+   *
+   * ⚠️ AND THE OBVIOUS READING OF THAT IS WRONG, which is why this asks one
+   * more question. "Range self, radius area, item reaches feet" matches five
+   * spells in his world and FOUR of them mean the opposite: Ice Knife, Vitriolic
+   * Sphere, Pyrotechnics and Spiritual Weapon all burst at the TARGET and only
+   * say "self" because an importer left it there. What separates them is where
+   * the area actually lands: Thunder Step's sits ON the caster, theirs does not.
+   * So the question is asked of the placed template, at the moment it lands,
+   * rather than of the sheet.
+   */
+  static _areaIsWhereTheyWere(templateDoc, pending) {
+    try {
+      const activity = pending?.activity ?? null;
+      const item = pending?.item ?? null;
+      const reachesElsewhere = String(item?.system?.range?.units ?? "") === "ft"
+        && Number(item?.system?.range?.value ?? 0) > 0;
+      if (!reachesElsewhere) return null;              // Spirit Guardians, Thunderwave: they stay
+      const selfArea = String(activity?.range?.units ?? "") === "self";
+      if (!selfArea) return null;
+
+      const casterTok = pending?.actor?.getActiveTokens?.()?.[0] ?? null;
+      if (!casterTok) return null;
+      const inside = SaveEngine._getTokensInTemplate(templateDoc) ?? [];
+      if (!inside.some(t => t?.id === casterTok.id)) return null;   // it landed somewhere else
+      return casterTok;
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not tell whether that area sits on its caster:`, err);
+      return null;
+    }
+  }
+
+  /**
+   * Hold the card until they have gone.
+   *
+   * ⚠️ NOTHING IN HIS WORLD AUTOMATES THAT TELEPORT - chris-premades is
+   * installed but switched off, and ddb-importer has no Thunder Step macro - so
+   * there is no "destination committed" to hang this on. What there IS, always,
+   * is the moment the caster is no longer standing in their own blast. That is
+   * what this waits for, and it is the same moment either way: a macro moving
+   * them or his own hand.
+   *
+   * ⚠️ AND IT NEVER SWALLOWS THE CARD. If they never move, the wait ends and
+   * the card is posted anyway, with the reason in the log. A save that does not
+   * happen is worse than one that happens late.
+   */
+  static async _awaitTheyLeave(casterTok, templateDoc, spellName) {
+    const started = Date.now();
+    const LIMIT = 15000;
+    console.log(`${MODULE_ID} | "${spellName}" goes off where its caster was standing - `
+      + `holding its card until ${casterTok.name} has gone.`);
+    while (Date.now() - started < LIMIT) {
+      await new Promise(r => setTimeout(r, 120));
+      try {
+        const inside = SaveEngine._getTokensInTemplate(templateDoc) ?? [];
+        if (!inside.some(t => t?.id === casterTok.id)) {
+          console.log(`${MODULE_ID} | ${casterTok.name} has left; rolling for whoever she left behind.`);
+          return true;
+        }
+      } catch (_) { /* keep waiting */ }
+    }
+    console.log(`${MODULE_ID} | ${casterTok.name} never left that square, so "${spellName}" is rolled `
+      + `where it stands. Nothing is dropped.`);
+    return false;
+  }
+
   async _onTemplateCreated(templateDoc) {
     // ⚠️🔴 A DEAD CAST IS TURNED AWAY AT THE DOOR, BEFORE ANYTHING IS REBUILT
     // FROM IT (2026-09-17). His log: "_pendingFromTemplate ... cast happened on
@@ -2262,6 +2338,17 @@ export class SaveEngine {
     //   "up to six creatures of your choice in it"    the portrait picker,
     //                                                 offering only who is inside
     //   anything the words do not settle              your targets, as before
+    // ⚠️ BEFORE ANYTHING IS MEASURED: if this area sits on its caster and the
+    // spell takes them elsewhere, the creatures it catches are the ones they
+    // left. Wait for them to go, then read the area. (2026-09-17)
+    try {
+      const leaving = SaveEngine._areaIsWhereTheyWere(templateDoc, pending);
+      if (leaving) await SaveEngine._awaitTheyLeave(leaving, templateDoc, pending.item?.name ?? "that spell");
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not hold "${pending.item?.name}" for its caster to move, `
+        + `so it is rolled now:`, err);
+    }
+
     const rule = SaveEngine._areaWhoRule(pending.item);
     const targeted = [...game.user.targets];
     let tokens = [];
