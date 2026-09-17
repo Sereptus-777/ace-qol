@@ -133,9 +133,17 @@ const GM = { id: "gm", isGM: true, name: "GM" };
 const ACTORS = new Map();
 const ITEMS = new Map();
 const posted = [];
+// ⚠️ FOUNDRY'S COLLECTIONS ARE ITERABLE, AND THE STAND-IN'S WERE NOT. A boot
+// sweep that walks `game.actors` or `game.scenes` (the reaction engine clears a
+// stale "reaction used" flag on every creature at startup) threw
+// "object is not iterable" from an unhandled promise, which killed the whole
+// replay several checks later, nowhere near the cause (2026-09-16).
 globalThis.game = { ready: true, packs: [], user: GM, users: Object.assign([GM], { activeGM: GM }),
-  actors: { get: (id) => ACTORS.get(id) ?? null, contents: [], find: (fn) => [...ACTORS.values()].find(fn) },
-  items: { get: () => null }, scenes: { get: () => null }, combat: null, time: { worldTime: 1000 },
+  actors: { get: (id) => ACTORS.get(id) ?? null, contents: [], find: (fn) => [...ACTORS.values()].find(fn),
+    [Symbol.iterator]: function* () { yield* ACTORS.values(); } },
+  items: { get: () => null },
+  scenes: { get: () => null, contents: [], [Symbol.iterator]: function* () {} },
+  combat: null, time: { worldTime: 1000 },
   settings: { get: (m, k) => SETTINGS.get(`${m}.${k}`), set: async () => {}, register: () => {} },
   i18n: { localize: (k) => k, format: (k) => k }, modules: { get: () => null } };
 const hooks = {};
@@ -2392,6 +2400,189 @@ console.log(`\nPHASE 3: ATTACKS ON THE ROAD`);
             + `hit-point door ${engineHpTypes.join(", ") || "never"}; old card: condition door ${oldConds.map(c => c.key).join(", ") || "never"}, `
             + `damage on its card ${oldDmg.map(c => `${c.final} ${c.type}`).join(", ") || "none"}`);
     }
+  }
+}
+
+/* ── PHASE 6a: THE SHIELD REACTION ───────────────────────────────────────── */
+// Johnny, 2026-09-16: "PHASE 6a - Shield reaction only. Then stop." Magic Missile
+// at a creature with Shield prepared, a slot and a free reaction asks; yes eats
+// the missiles. An attack roll that hits the same creature asks; yes adds 5 to
+// its AC and cancels the hit when that makes it a miss. No Shield, no slot, a
+// spent reaction, dead or unconscious: no pop-up at all. Cards through CardDoor.
+//
+// ⚠️ THIS DRIVES THE REAL ENGINE. Only the prompt itself is stood in, because it
+// is a dialog on somebody's screen; everything it decides, spends and lands is
+// ACE's own code.
+console.log(`\nPHASE 6a: THE SHIELD REACTION`);
+{
+  const MOD = "ace-qol";
+  const { ReactionEngine } = await import(`${MODULE}/scripts/reaction-engine.mjs`);
+  const { ConditionDoor, CardDoor: Door } = await import(`${MODULE}/scripts/road/doors.mjs`);
+
+  const keep6a = { placed: [...canvas.tokens.placeables], combat: game.combat,
+    apply: ConditionDoor.apply, applyFx: ConditionDoor.applyItemEffect, post: Door.post,
+    reactions: SETTINGS.get("ace-qol.enableReactions"), shield: SETTINGS.get("ace-qol.autoShield") };
+  SETTINGS.set("ace-qol.enableReactions", true);
+  SETTINGS.set("ace-qol.autoShield", true);
+  const doors6a = { condition: [], card: [] };
+  ConditionDoor.apply = async (actor, key) => { doors6a.condition.push({ actor, key }); return { ok: true, applied: key }; };
+  ConditionDoor.applyItemEffect = async (item, actor, fx) => { doors6a.condition.push({ actor, key: fx?.name ?? "its own effect" }); return { ok: true, name: fx?.name }; };
+  Door.post = async (data) => { doors6a.card.push(data); return { id: "shield-card", ...data }; };
+  canvas.tokens.placeables.length = 0;
+  const made6a = [];
+  try {
+    const spell = (name, { prepared = true } = {}) => ({
+      id: `it-${name}`, name, type: "spell", img: "",
+      system: { level: 1, method: prepared ? "prepared" : "prepared", prepared, activities: [] },
+    });
+    const who = (id, name, { shield = true, fireShield = false, slots = 3, statuses = [], hp = 20, flags = {} } = {}) => {
+      const items = [];
+      if (shield) items.push(spell("Shield"));
+      if (fireShield) items.push(spell("Fire Shield"));
+      const a = { id, name, type: "character", img: "", documentName: "Actor", uuid: `Actor.${id}`,
+        statuses: new Set(statuses), effects: [], items, hasPlayerOwner: true,
+        system: { attributes: { hp: { value: hp, max: 20 }, death: { success: 0, failure: 0 } },
+          spells: { spell1: { value: slots, max: 3 } }, details: {} },
+        flags: { [MOD]: { ...flags } },
+        getFlag: (scope, key) => a.flags?.[scope]?.[key],
+        setFlag: async (scope, key, v) => { (a.flags[scope] ??= {})[key] = v; return a; },
+        update: async (u) => { for (const [k, v] of Object.entries(u)) {
+          const path = k.split("."); let o = a;
+          for (const s2 of path.slice(0, -1)) o = (o[s2] ??= {});
+          o[path[path.length - 1]] = v; } return a; },
+        getActiveTokens: () => [],
+      };
+      ACTORS.set(id, a);
+      made6a.push(a);
+      return a;
+    };
+
+    const ready   = who("p6a-ready", "Beric, with Shield");
+    const wrong   = who("p6a-wrong", "a wizard with Fire Shield", { shield: false, fireShield: true });
+    const spent   = who("p6a-spent", "a wizard with no slots left", { slots: 0 });
+    const downed  = who("p6a-downed", "an unconscious wizard", { statuses: ["unconscious"], hp: 0 });
+    const dead    = who("p6a-dead", "a dead wizard", { statuses: ["dead"], hp: 0 });
+    const reacted = who("p6a-reacted", "a wizard who already reacted", { flags: { reactionUsed: true } });
+
+    const engine = new ReactionEngine();
+    const asked = [];
+    let answer = true;
+    engine._promptReaction = async (o) => {
+      asked.push(o);
+      return { accepted: answer, choiceData: { slotLevel: 1 } };
+    };
+
+    // ── 3 + 4. Who is even asked ──
+    const can = (a) => engine._canUseShield(a);
+    // ⚠️ A REACTION BUDGET ONLY EXISTS IN A FIGHT, so the one pin about a spent
+    // reaction needs a fight the creature is actually in (action-economy's
+    // hasTurns reads game.combats, not game.combat).
+    const keepCombats = game.combats;
+    const fight = { started: true, round: 1, turn: 0,
+      combatants: { contents: [{ actorId: reacted.id, actor: reacted }] } };
+    game.combats = { contents: [fight] };
+    game.combat = fight;
+    const reactedNow = can(reacted);
+    game.combat = keep6a.combat;
+    game.combats = keepCombats;
+    check("3+4. only a creature that could actually cast it is asked: Shield prepared, a slot, a free reaction, and on its feet (Phase 6a)",
+      can(ready).canUse === true && can(wrong).canUse === false && can(spent).canUse === false
+        && can(downed).canUse === false && can(dead).canUse === false && reactedNow.canUse === false,
+      `with Shield and a slot: ${can(ready).canUse ? "asked" : `not asked (${can(ready).reason})`}; `
+        + `Fire Shield only: ${can(wrong).reason}; no slots: ${can(spent).reason}; `
+        + `unconscious: ${can(downed).reason}; dead: ${can(dead).reason}; already reacted: ${reactedNow.reason}`);
+
+    // ── 1. Magic Missile ──
+    {
+      const caster = who("p6a-caster", "the missile caster", { shield: false, slots: 0 });
+      const mm = { id: "it-mm", name: "Magic Missile", type: "spell", img: "", system: { level: 1 } };
+      const atCard = doors6a.card.length, atCond = doors6a.condition.length, atAsk = asked.length;
+      answer = true;
+      let out = null, err1 = null;
+      try {
+        await quiet(async () => {
+          out = await engine.checkMagicMissileShield(new Map([[ready, 3], [wrong, 2]]), caster, mm);
+        });
+      } catch (e) { err1 = e; }
+      const slotsLeft = ready.system.spells.spell1.value;
+      const card = doors6a.card[atCard] ?? null;
+      check("1. Magic Missile asks the creature that can Shield, and yes eats every dart: the slot and the reaction are spent, the effect goes on through the condition door, and the card says so (Phase 6a)",
+        !err1 && asked.length - atAsk === 1 && !out?.has(ready) && out?.get(wrong) === 2
+          && slotsLeft === 2 && ready.flags[MOD]?.reactionUsed === true
+          && doors6a.condition.length - atCond === 1
+          && !!card && /nullified/i.test(String(card.content ?? "")),
+        err1 ? `threw: ${err1?.message ?? err1}`
+          : `asked ${asked.length - atAsk} of the two targets; Beric's darts: ${out?.get(ready) ?? "none, they were eaten"}; `
+            + `the wizard with Fire Shield still takes ${out?.get(wrong) ?? 0}; slots ${slotsLeft} of 3; `
+            + `reaction ${ready.flags[MOD]?.reactionUsed ? "spent" : "still free"}; `
+            + `the condition door put on ${doors6a.condition.length - atCond}; card door: ${card ? "posted" : "nothing"}`);
+    }
+
+    // ── 2. An attack roll ──
+    {
+      const ready2 = who("p6a-ready2", "Beric, second round", {});
+      const ready3 = who("p6a-ready3", "Beric, against a big hit", {});
+      const attacker = who("p6a-attacker", "a bandit", { shield: false, slots: 0 });
+      const sword = { id: "it-sword", name: "Longsword", type: "weapon", img: "" };
+      const result = (target, total, ac) => ({ hitResult: "hit", attackTotal: total,
+        target: { actor: target, token: null, ac, name: target.name } });
+      answer = true;
+      let out2 = null, out3 = null, err2 = null;
+      try {
+        await quiet(async () => {
+          out2 = await engine.checkPostHitReactions([result(ready2, 17, 15)], sword, attacker);
+          out3 = await engine.checkPostHitReactions([result(ready3, 25, 15)], sword, attacker);
+        });
+      } catch (e) { err2 = e; }
+      check("2. an attack that hits asks too: +5 turns a 17 against AC 15 into a miss, and a 25 still hits but the AC on the card goes up (Phase 6a)",
+        !err2 && out2?.[0]?.hitResult === "miss" && out2?.[0]?.shieldBlocked === true
+          && out3?.[0]?.hitResult === "hit" && out3?.[0]?.target?.ac === 20,
+        err2 ? `threw: ${err2?.message ?? err2}`
+          : `17 vs AC 15 with Shield: ${out2?.[0]?.hitResult} (${out2?.[0]?.shieldBlocked ? "blocked" : "not blocked"}); `
+            + `25 vs AC 15 with Shield: ${out3?.[0]?.hitResult}, AC now ${out3?.[0]?.target?.ac}`);
+    }
+
+    // ── Saying no changes nothing ──
+    {
+      const stubborn = who("p6a-no", "a wizard who says no");
+      const attacker = who("p6a-attacker2", "another bandit", { shield: false, slots: 0 });
+      const sword = { id: "it-sword2", name: "Mace", type: "weapon", img: "" };
+      answer = false;
+      let out4 = null, err4 = null;
+      const atAsk = asked.length;
+      try {
+        await quiet(async () => {
+          out4 = await engine.checkPostHitReactions([{ hitResult: "hit", attackTotal: 17,
+            target: { actor: stubborn, token: null, ac: 15, name: stubborn.name } }], sword, attacker);
+        });
+      } catch (e) { err4 = e; }
+      check("and a no leaves the hit alone: no slot, no reaction, no effect (Phase 6a)",
+        !err4 && asked.length - atAsk === 1 && out4?.[0]?.hitResult === "hit"
+          && stubborn.system.spells.spell1.value === 3 && !stubborn.flags[MOD]?.reactionUsed,
+        err4 ? `threw: ${err4?.message ?? err4}`
+          : `asked ${asked.length - atAsk}x; the hit is still a ${out4?.[0]?.hitResult}; `
+            + `slots ${stubborn.system.spells.spell1.value} of 3; reaction ${stubborn.flags[MOD]?.reactionUsed ? "spent" : "still free"}`);
+    }
+
+    // ── 5. No raw card in the reaction engine's Shield path ──
+    {
+      const src = readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/reaction-engine.mjs`, "utf8").replace(/\/\/.*$/gm, "");
+      const raw = /ChatMessage\.create\s*\(/.test(src.slice(src.indexOf("_postReactionChat")));
+      check("5. the reaction's own card goes through the card door (Phase 6a)",
+        !raw && doors6a.card.length > 0,
+        `raw chat cards in the reaction card poster: ${raw ? "left" : "none"}; `
+          + `cards through the door in these pins: ${doors6a.card.length}`);
+    }
+  } finally {
+    ConditionDoor.apply = keep6a.apply;
+    ConditionDoor.applyItemEffect = keep6a.applyFx;
+    Door.post = keep6a.post;
+    game.combat = keep6a.combat;
+    canvas.tokens.placeables.length = 0;
+    canvas.tokens.placeables.push(...keep6a.placed);
+    if (keep6a.reactions === undefined) SETTINGS.delete("ace-qol.enableReactions"); else SETTINGS.set("ace-qol.enableReactions", keep6a.reactions);
+    if (keep6a.shield === undefined) SETTINGS.delete("ace-qol.autoShield"); else SETTINGS.set("ace-qol.autoShield", keep6a.shield);
+    for (const a of made6a) ACTORS.delete(a.id);
   }
 }
 

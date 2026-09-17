@@ -29,6 +29,11 @@ import { gateOff as _gateOff, cannotDo as _cannotDo } from "./why-not.mjs";
 import { waitUntil } from "./wait-for.mjs";
 import { CombatState } from "./combat-state.mjs";
 import { hasTurns } from "./action-economy.mjs";
+// ⚠️ THE ONE SPELL-NAME KEY. "Fire Shield" contains "shield" (2026-09-16).
+import { spellKey } from "./rules/spell-name.mjs";
+// ⚠️ THE ONE READER FOR "is this creature out of the fight": dead, unconscious,
+// incapacitated, paralyzed, stunned or petrified. None of them take reactions.
+import { isOutOfTheFight } from "./is-down.mjs";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Constants
@@ -1053,7 +1058,7 @@ export class ReactionEngine {
         await this._markReactionUsed(targetActor, "shield");
 
         // ── Apply Shield active effect (+5 AC until start of caster's next turn) ──
-        await this._applyShieldEffect(targetActor);
+        await this._applyShieldEffect(targetActor, { castLevel: slotLevel });
 
         // ── Re-evaluate hit ──
         const newAC = result.target.ac + 5;
@@ -1169,7 +1174,7 @@ export class ReactionEngine {
         const slotLevel = promptResult.choiceData?.slotLevel ?? 1;
         await this._consumeSpellSlot(targetActor, slotLevel);
         await this._markReactionUsed(targetActor, "shield");
-        await this._applyShieldEffect(targetActor);
+        await this._applyShieldEffect(targetActor, { castLevel: slotLevel });
 
         // ── Visual flash on the absorbing token ──
         // JB2A free burst with PIXI pulse fallback. Same helper the passive
@@ -1216,6 +1221,16 @@ export class ReactionEngine {
    * @returns {{ canUse: boolean, slots: object[], reason?: string }}
    */
   _canUseShield(actor) {
+    // ⚠️🔴 A CORPSE IS NOT ASKED, AND NEITHER IS SOMEBODY UNCONSCIOUS. His list,
+    // 2026-09-16: "Dead / unconscious: no pop-up." RAW it is broader than those
+    // two and ACE already has the reader: Incapacitated takes away actions AND
+    // reactions, and Paralyzed, Stunned, Petrified and Unconscious all carry
+    // Incapacitated with them. A prompt that cannot legally be accepted is a
+    // prompt that stops the table to be told no.
+    if (isOutOfTheFight(actor)) {
+      return { canUse: false, slots: [], reason: "it is out of the fight, so it takes no reactions" };
+    }
+
     // Shield already active? (v0.7.18) — they're already protected, no point
     // in prompting them to cast it again (and would waste a reaction + slot).
     // Match by effect name; defense-in-depth for both "Shield" and "Shield Spell".
@@ -1251,7 +1266,51 @@ export class ReactionEngine {
    * Apply the Shield spell active effect to an actor.
    * +5 AC until start of the caster's next turn.
    */
-  async _applyShieldEffect(actor) {
+  async _applyShieldEffect(actor, { castLevel = 1 } = {}) {
+    // ⚠️🔴 THROUGH THE ONE DOOR, ON THE ROAD THE CAST TAKES (Phase 6a). This
+    // built its own ActiveEffect and wrote it straight onto the actor, so the
+    // spell's own effect was ignored, nothing waited for anything, and ACE's own
+    // library entry for Shield - the one a deliberate cast uses - was bypassed.
+    // The self resolver already reads a buff the right way round: the item's own
+    // effect first, ACE's by key second. Same order here, same door.
+    try {
+      const { ConditionDoor } = await import("./road/doors.mjs");
+      const item = (actor?.items ?? []).find(i => i.type === "spell" && spellKey(i.name) === "shield") ?? null;
+      if (item) {
+        let rows = [];
+        try {
+          const { SelfResolver } = await import("./spell-pipeline/resolvers/self.mjs");
+          const activity = [...(item.system?.activities ?? [])][0] ?? null;
+          rows = await SelfResolver._ownEffects(item, activity, actor, castLevel) ?? [];
+        } catch (err) {
+          console.warn(`${MODULE_ID} | could not read ${actor?.name}'s own Shield effect, so ACE's is used:`, err);
+        }
+        if (rows.length) {
+          for (const fx of rows) {
+            await ConditionDoor.applyItemEffect(item, actor, fx,
+              { outcome: "success", caster: actor, castLevel });
+          }
+          this._debug(`Shield: ${actor.name} took its own effect through the condition door`);
+          return true;
+        }
+      }
+      const out = await ConditionDoor.apply(actor, "shield",
+        { castLevel, spellItem: item ?? null, spellLevel: castLevel });
+      if (out?.ok) {
+        this._debug(`Shield: ACE's own effect went on ${actor.name} through the condition door`);
+        return true;
+      }
+      console.warn(`${MODULE_ID} | Shield did not go on ${actor?.name} through the condition door `
+        + `(${out?.immune ? "immune" : "refused"}); falling back to a plain +5.`);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | the condition door could not put Shield on ${actor?.name}, `
+        + `so a plain +5 is used instead:`, err);
+    }
+    return this._applyShieldEffectDirect(actor);
+  }
+
+  /** The old hand-rolled +5, kept as the last resort when the door refuses. */
+  async _applyShieldEffectDirect(actor) {
     // Determine duration: until start of this actor's next turn
     // In combat, that's approximately 1 round from now
     const combat = game.combat;
@@ -3064,7 +3123,9 @@ export class ReactionEngine {
       </div>
     `;
 
-    await ChatMessage.create({
+    // ⚠️ THE CARD DOOR, like every other card ACE posts (The One Road, §11).
+    const { CardDoor } = await import("./road/doors.mjs");
+    await CardDoor.post({
       content: html,
       speaker: ChatMessage.getSpeaker({ actor }),
       flags: {
@@ -3086,11 +3147,17 @@ export class ReactionEngine {
    */
   _hasSpellPrepared(actor, spellName) {
     if (!actor?.items) return false;
-    const lcName = spellName.toLowerCase();
+    // ⚠️🔴 "CONTAINS" IS NOT A NAME MATCH (2026-09-16). This asked whether the
+    // item's name CONTAINED the spell's, so Fire Shield, Shield of Faith and
+    // Shield Master all counted as Shield: a creature with any of them was
+    // offered a reaction it cannot cast, and the slot would have gone on
+    // nothing. `spellKey` is the suite's one name reader and strips the
+    // suffixes his importer adds ("Shield (Legacy)", "Shield [2024]").
+    const want = spellKey(spellName);
 
     for (const item of actor.items) {
       if (item.type !== "spell") continue;
-      if (!item.name?.toLowerCase().includes(lcName)) continue;
+      if (spellKey(item.name) !== want) continue;
 
       // ⚠️ Read `method`/`prepared` first — dnd5e 5.1 split `preparation` into
       // those two, and touching the old name at all logs a stack-trace-building
