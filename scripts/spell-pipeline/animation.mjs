@@ -21,6 +21,23 @@ export class AnimationHelper {
    */
   static async play(ctx, result) {
     try {
+      // ⚠️🔴 A SPELL THAT WAS COUNTERSPELLED MAKES NO NOISE AND NO LIGHT.
+      // Johnny, 2026-09-17: "A countered Fireball plays ZERO animations from
+      // ACE-fx or Forge. No template, no streak, no boom." The area is vetoed
+      // before it is built and the save is thrown away, but the animation is a
+      // third road out of the same cast and had nobody watching it.
+      try {
+        const { ReactionEngine } = await import("../reaction-engine.mjs");
+        if (ReactionEngine.castIsDead({ activity: ctx?.activity ?? null,
+          item: ctx?.item ?? null, actor: ctx?.actor ?? null })) {
+          console.log(`${MODULE_ID} | "${ctx?.item?.name ?? "that cast"}" was counterspelled - `
+            + `nothing is played for it.`);
+          return;
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | could not ask whether "${ctx?.item?.name}" was counterspelled `
+          + `before animating it, so it plays:`, err);
+      }
       const casterToken = ctx.actor.getActiveTokens?.()?.[0]
         ?? canvas.tokens?.placeables.find(t => t.actor?.id === ctx.actor.id);
       if (!casterToken) return;
