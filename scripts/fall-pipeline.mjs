@@ -417,7 +417,12 @@ export class FallPipeline {
         availableSlots: slots,
         // The box draws a Font Awesome icon by name; an image path drew nothing.
         icon: "fa-feather",
-        accentColor: "#9ad0ff",
+        // Gold, his pick (2026-09-18: "yellowish ... or golden, your choice"),
+        // and on the yes button black letters with a gold edge, his words: "use
+        // black lettering with gold around the edges of the lettering".
+        accentColor: "#ffcc33",
+        yesInk: "#000000",
+        yesEdge: "#ffd95a",
       });
     } catch (err) {
       console.warn(`${LOG} | could not ask ${token.name} about Feather Fall, so it counts as a no:`, err);

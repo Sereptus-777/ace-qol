@@ -3153,6 +3153,11 @@ console.log(`\nFEATHER FALL, THROUGH THE ONE REACTION DOOR`);
       `the box went to: ${box1?.where ?? "nowhere"}; details as rows: ${Array.isArray(box1?.opts?.details)}; `
         + `icon: ${box1?.opts?.icon ?? "none"}`);
 
+    // His colours for it (2026-09-18): gold, with black letters edged in gold.
+    check("Feather Fall: its box is gold, and its yes button has black letters with a gold edge (2026-09-18)",
+      box1?.opts?.accentColor === "#ffcc33" && box1?.opts?.yesInk === "#000000" && /^#ff/i.test(String(box1?.opts?.yesEdge ?? "")),
+      `accent ${box1?.opts?.accentColor ?? "none"}; letters ${box1?.opts?.yesInk ?? "default white"}, edged ${box1?.opts?.yesEdge ?? "default"}`);
+
     // ── 2. A yes catches, and pays the reaction and the slot ──
     fresh(jeb);
     answerFF = { accepted: true, choiceData: { slotLevel: 1, consumeSlot: true } };
@@ -4700,7 +4705,7 @@ console.log(`\nPHASE 6a: THE SHIELD REACTION`);
       check("8. the no is always a red pill with yellow words outlined in black; the yes is a solid face in the reaction's own colour; a long label wraps instead of running off (2026-09-18)",
         /background: #c62828/.test(no) && /border-radius: 999px/.test(no) && /color: #ffd84d/.test(no)
           && /text-shadow: -1px -1px 0 #000/.test(no)
-          && /background: var\(--ace-yes/.test(yes) && /color: #ffffff/.test(yes)
+          && /background: var\(--ace-yes/.test(yes) && /color: var\(--ace-yes-ink, #ffffff\)/.test(yes)
           && /white-space: normal/.test(both) && !/white-space: nowrap/.test(both),
         `no: ${/#c62828/.test(no) && /999px/.test(no) ? "red pill" : "NOT a red pill"}; `
           + `yes: ${/--ace-yes/.test(yes) ? "the reaction's colour" : "NOT its colour"}; `

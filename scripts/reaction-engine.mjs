@@ -3752,6 +3752,9 @@ export class ReactionEngine {
         reactorActorName, reactorActorImg, reactorIsNpc, extraData,
         // v0.7.71 — attacker portrait + name (Shield UX polish)
         attackerName, attackerImg,
+        // A box's own letters on its yes button, and their edge. Unset: white
+        // letters edged in a deeper shade of the face.
+        yesInk, yesEdge,
       } = data;
 
       const accent = accentColor ?? "#d4af37";
@@ -3874,7 +3877,7 @@ export class ReactionEngine {
             ${consumeSlotHtml}
           </div>
           <div class="ace-qol-reaction-buttons">
-            <button class="ace-qol-reaction-accept" style="--ace-yes:${yesFace}; --ace-yes-deep:${yesDeep}">
+            <button class="ace-qol-reaction-accept" style="--ace-yes:${yesFace}; --ace-yes-deep:${yesDeep}; --ace-yes-ink:${yesInk ?? "#ffffff"}; --ace-yes-edge:${yesEdge ?? yesDeep}">
               <i class="fas ${icon ?? "fa-check"}"></i><span>${acceptLabel ?? "Use Reaction"}</span>
             </button>
             <button class="ace-qol-reaction-decline">
@@ -4692,7 +4695,9 @@ export function injectReactionCSS() {
    deepened so white words read on it, the words outlined in a deeper shade
    still. The no: a red pill, yellow words outlined in black, the X kept.
    The outline is four hard text shadows, which every browser draws the same;
-   a text stroke thins the letters where it is not supported. */
+   a text stroke thins the letters where it is not supported.
+   A box may choose its own letters and edge: Feather Fall's are black with a
+   gold edge on its gold face (his pick, 2026-09-18). */
 .ace-qol-reaction-accept {
   padding: 10px 18px;
   font-size: 1.1rem;        /* ≈17.6px */
@@ -4701,10 +4706,10 @@ export function injectReactionCSS() {
   background: var(--ace-yes, #3a6ea5);
   border: 1px solid var(--ace-yes-deep, #16304d);
   border-radius: 8px;
-  color: #ffffff;
+  color: var(--ace-yes-ink, #ffffff);
   text-shadow:
-    -1px -1px 0 var(--ace-yes-deep, #16304d), 1px -1px 0 var(--ace-yes-deep, #16304d),
-    -1px 1px 0 var(--ace-yes-deep, #16304d), 1px 1px 0 var(--ace-yes-deep, #16304d);
+    -1px -1px 0 var(--ace-yes-edge, #16304d), 1px -1px 0 var(--ace-yes-edge, #16304d),
+    -1px 1px 0 var(--ace-yes-edge, #16304d), 1px 1px 0 var(--ace-yes-edge, #16304d);
   cursor: pointer;
   transition: filter 0.15s ease;
 }
