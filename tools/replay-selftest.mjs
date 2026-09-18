@@ -547,11 +547,25 @@ const press = (item) => {
 // ⚠️ ACE TALKS WHILE IT READS, thousands of lines over a whole world. Held
 // back while the deciders run, counted, and the first few shown at the end.
 const chatter = { log: 0, warn: 0, samples: [] };
+// ⚠️🔴 TWO QUIETS AT ONCE KEPT THE CONSOLE SHUT FOR GOOD (2026-09-18). Each one
+// saved the console as it found it and put that back when it finished. The
+// countered-Fireball pin runs one while another is still going, so the second
+// saved the FIRST one's muffler, finished last, and put the muffler back:
+// every console.log after it, the golden record's list of changed items and
+// the closing summary included, went into a counter. The release check said
+// "read every change above" over a list that never printed. The first one in
+// now keeps what it found, the last one out puts that back, and one that
+// leaves while another still runs leaves the silence to it.
+let quietDepth = 0, quietOuter = null;
 const quiet = async (fn) => {
   const keep = { log: console.log, debug: console.debug, info: console.info, warn: console.warn };
+  if (quietDepth++ === 0) quietOuter = keep;
   console.log = console.debug = console.info = () => { chatter.log++; };
   console.warn = (...a) => { chatter.warn++; if (chatter.samples.length < 5) chatter.samples.push(a.map(String).join(" ").slice(0, 240)); };
-  try { return await fn(); } finally { Object.assign(console, keep); }
+  try { return await fn(); } finally {
+    if (--quietDepth === 0) Object.assign(console, quietOuter);
+    else if (keep !== quietOuter) Object.assign(console, keep);
+  }
 };
 
 // The verdicts are printed on the real console even while ACE's chatter is held.
@@ -3307,6 +3321,210 @@ console.log(`\nTHE ROLL PILL, AND WHO HEARS THE DING`);
   }
 }
 
+/* ── TELEPORT: THE MONSTER'S HOP, AND THE 7TH-LEVEL SPELL ─────────────────── */
+// Johnny, 2026-09-18: "TWO different Teleports. Read the item on the token."
+// A) the arcanaloth's feature: a hop to an unoccupied square it can see, 60
+// feet as an action in 2014, 30 as a bonus action in 2024; no party, no d100,
+// no Counterspell. B) the 7th-level spell: who comes, how well the place is
+// known, where; the book's d100 for that edition; a mishap is 3d10 force and a
+// reroll. "Do not treat Neferon's feature as the 7th-level spell."
+console.log(`\nTELEPORT: THE MONSTER'S HOP, AND THE 7TH-LEVEL SPELL`);
+await quiet(async () => {
+  const { readTeleport } = await import(`${MODULE}/scripts/rules/teleport-words.mjs`);
+  const { Teleport, TELEPORT_TABLES } = await import(`${MODULE}/scripts/teleport.mjs`);
+  const { RulesBrain: RBtp } = await import(`${MODULE}/scripts/rules/rules-brain.mjs`);
+
+  // ── His items, read as they are ──
+  pin("Neferon's Teleport is his own hop: 60 feet, read from its words, and the pipeline takes it as the hop (2026-09-18)",
+    ["Neferon", "Teleport"], (it) => {
+      const r = readTeleport(it);
+      return [r?.kind === "hop" && r.feet === 60 && shapeOf(it) === "teleport-hop",
+        `${r ? `${r.kind}, ${r.feet} feet` : "not read as a teleport"}; the pipeline: ${shapeOf(it)}`];
+    });
+  pin("the 2024 arcanaloth's Teleport is 30 feet, its own item's number (2026-09-18)",
+    ["Arcanaloth", "Teleport"], (it) => {
+      const r = readTeleport(it);
+      return [r?.kind === "hop" && r.feet === 30, r ? `${r.kind}, ${r.feet} feet` : "not read as a teleport"];
+    });
+  {
+    const vareks = [...ACTORS.values()].filter(a => a.name === VAREK)
+      .flatMap(a => a.items.filter(i => i.name === "Teleport" && i.type === "spell"));
+    const editions = vareks.map(i => RBtp.resolveEdition(i, i.actor)).sort();
+    check("Varek's two Teleports, 2014 and 2024, are the 7th-level spell, each by its own edition (2026-09-18)",
+      vareks.length === 2 && vareks.every(i => shapeOf(i) === "teleport-spell") && editions.join(",") === "2014,2024",
+      `${vareks.length} copies: ${vareks.map(i => shapeOf(i)).join(", ")}; editions ${editions.join(", ")}`);
+  }
+  {
+    // Not one feature in his world may be taken for the spell, whatever it is called.
+    const features = [...ACTORS.values()].flatMap(a => a.items.filter(i => i.type === "feat"));
+    const wrong = features.filter(i => shapeOf(i) === "teleport-spell").map(i => `${i.actor?.name}/${i.name}`);
+    check("no feature anywhere in the world is taken for the 7th-level spell (2026-09-18)",
+      features.length > 0 && wrong.length === 0,
+      wrong.length ? `taken for the spell: ${wrong.slice(0, 5).join("; ")}` : `${features.length} features, none of them the spell`);
+  }
+  {
+    // A teleport that also does something else is left exactly as it was.
+    const leftAlone = [["Lich", "Deathly Teleport"], ["Vecna the Archlich", "Vile Teleport"], ["Nycaloth", "Shadowy Teleport"]]
+      .map(([a, n]) => findOn(a, n)).filter(Boolean);
+    const taken = leftAlone.filter(i => readTeleport(i) !== null).map(i => i.name);
+    check("a feature that teleports and also does something more (damage, invisibility) is not taken over for the hop alone (2026-09-18)",
+      leftAlone.length >= 2 && taken.length === 0,
+      `${leftAlone.length} checked; taken over: ${taken.join(", ") || "none"}`);
+  }
+
+  // ── The books' tables ──
+  {
+    const o = (ed, fam, n) => Teleport.outcome(ed, fam, n);
+    const got = [o("2014", "very", 5), o("2014", "very", 6), o("2014", "very", 24), o("2014", "very", 25),
+      o("2014", "once", 43), o("2014", "description", 74), o("2014", "false", 51), o("2014", "false", 100),
+      o("2014", "circle", 1), o("2024", "once", 53), o("2024", "once", 73), o("2024", "casual", 54)].join(",");
+    const want = "mishap,similar,off,on,mishap,on,similar,similar,on,similar,off,on";
+    check("the d100 reads each edition's table, row by row, at every boundary (2026-09-18)",
+      got === want && TELEPORT_TABLES["2014"].length === 7 && TELEPORT_TABLES["2024"].length === 6,
+      `got ${got}`);
+  }
+
+  // ── The hop on a stand-in map ──
+  const keepTp = { scene: canvas.scene, placed: [...canvas.tokens.placeables], sight: CONFIG.Canvas.polygonBackends.sight,
+    move: CONFIG.Canvas.polygonBackends.move, post: null };
+  const { CardDoor: DoorTp } = await import(`${MODULE}/scripts/road/doors.mjs`);
+  keepTp.post = DoorTp.post;
+  const cardsTp = [];
+  DoorTp.post = async (data) => { cardsTp.push(data); return { id: `tp-card-${cardsTp.length}`, ...data }; };
+  const moves = [];
+  const scene = { id: "s-tp", tokens: [] };
+  const body = (id, name, x, y) => {
+    const actor = { id, name, type: "npc", img: "", uuid: `Actor.${id}`, system: { attributes: { hp: { value: 30, max: 30 } } },
+      statuses: new Set(), flags: {}, getActiveTokens: () => [tok] };
+    const doc = { id: `tok-${id}`, name, x, y, width: 1, height: 1, elevation: 0, parent: scene, actor, texture: { src: "" }, flags: {},
+      move: async (w, o) => { moves.push({ name, to: { x: w.x, y: w.y }, action: w.action }); doc.x = w.x; doc.y = w.y; return true; } };
+    const tok = { id: doc.id, name, actor, document: doc, x, y, w: 100, h: 100,
+      get center() { return { x: doc.x + 50, y: doc.y + 50 }; } };
+    scene.tokens.push(doc);
+    canvas.tokens.placeables.push(tok);
+    return tok;
+  };
+  try {
+    canvas.scene = scene;
+    canvas.tokens.placeables.length = 0;
+    const neferon = body("tp-nef", "Neferon", 1000, 1000);
+    body("tp-foe", "a paladin in the way", 1100, 1000);
+    CONFIG.Canvas.polygonBackends.sight = { testCollision: (_a, b) => b.x > 1500 && b.y < 1000 };  // a wall to the northeast
+    CONFIG.Canvas.polygonBackends.move = { testCollision: () => false };   // the landing's own wall check: no walls
+    // A 100-pixel, 5-foot grid: twelve squares is 60 feet.
+    const squares = Teleport.squaresFor(neferon, 60);
+    const has = (x, y) => squares.some(s => s.x === x && s.y === y);
+    check("the hop lights every square it could reach: within 60 feet, not occupied, and in its sight (2026-09-18)",
+      has(2200, 1000) && !has(2300, 1000) && !has(1100, 1000) && !has(1600, 900) && has(1000, 2200) && has(1600, 1000),
+      `60 ft east: ${has(2200, 1000)}; 65 ft east: ${has(2300, 1000)}; the paladin's square: ${has(1100, 1000)}; `
+        + `behind the wall: ${has(1600, 900)}; beside the wall: ${has(1600, 1000)}; 60 ft south: ${has(1000, 2200)}`);
+
+    // Click → there, as a teleport.
+    const keepPick = Teleport.pickSquare;
+    Teleport.pickSquare = async () => ({ x: 1300, y: 1000 });
+    moves.length = 0;
+    const neferonHop = findOn("Neferon", "Teleport");
+    await quiet(() => Teleport.runHop({ actor: neferon.actor, item: neferonHop, activity: null,
+      entry: { teleport: { kind: "hop", feet: 60 } } }));
+    Teleport.pickSquare = keepPick;
+    check("a click on a lit square puts Neferon there as a teleport, with no party picker, no d100 and no card of its own (2026-09-18)",
+      moves.length === 1 && moves[0].action === "displace" && moves[0].to.x === 1300 && cardsTp.length === 0,
+      `moves: ${moves.map(m => `${m.name} to ${m.to.x},${m.to.y} by ${m.action}`).join("; ") || "none"}; cards: ${cardsTp.length}`);
+
+    // Cancelled: a Glasstaff's daily use or a marilith's recharge comes back.
+    Teleport.pickSquare = async () => null;
+    moves.length = 0;
+    let refunded = null, cleared = null;
+    const spentCard = { system: { deltas: { item: { glass: [{ keyPath: "system.uses.spent", delta: 1 }] } } },
+      update: async (u) => { cleared = u; } };
+    await quiet(() => Teleport.runHop({ actor: neferon.actor, item: neferonHop, message: spentCard,
+      activity: { refund: async (d) => { refunded = d; } }, entry: { teleport: { kind: "hop", feet: 60 } } }));
+    let refundedIdle = false;
+    await quiet(() => Teleport.runHop({ actor: neferon.actor, item: neferonHop, message: { system: {} },
+      activity: { refund: async () => { refundedIdle = true; } }, entry: { teleport: { kind: "hop", feet: 60 } } }));
+    Teleport.pickSquare = keepPick;
+    check("cancelling the hop gives back what pressing it spent, through dnd5e's own refund, so its card cannot give it back twice; a press that spent nothing is left alone (2026-09-18)",
+      refunded === spentCard.system.deltas && cleared?.["system.deltas"] === null && !refundedIdle && moves.length === 0,
+      `given back: ${refunded ? "yes" : "no"}; the card's record cleared: ${cleared ? "yes" : "no"}; `
+        + `nothing spent, refund called anyway: ${refundedIdle}; moves: ${moves.length}`);
+
+    // ── The 7th-level spell ──
+    const varekTok = body("tp-var", "Varek Thalor (CR 30)", 2000, 2000);
+    const friend = body("tp-fr", "a willing friend", 2100, 2000);
+    const varekSpell = [...ACTORS.values()].filter(a => a.name === VAREK)
+      .flatMap(a => a.items.filter(i => i.name === "Teleport" && i.type === "spell"))
+      .find(i => RBtp.resolveEdition(i, i.actor) === "2024");
+    const keep = { plan: Teleport.askPlan, point: Teleport.pickPoint, roll: Teleport._roll };
+    const rolls = [];
+    const script = (...totals) => { rolls.length = 0; rolls.push(...totals); };
+    Teleport._roll = async (formula) => ({ formula, total: rolls.shift() ?? 1 });
+    Teleport.askPlan = async () => ({ who: [friend], familiarity: "very", where: "map", place: "" });
+    Teleport.pickPoint = async () => ({ x: 3050, y: 3050 });
+    let committed = 0;
+    const cast = (item) => Teleport.runSpell({ actor: varekTok.actor, item, activity: null, onCommit: async () => { committed++; } });
+
+    // On target: both appear around the spot.
+    script(80);
+    moves.length = 0; cardsTp.length = 0;
+    await quiet(() => cast(varekSpell));
+    check("the spell: the caster and the friend he chose appear around the spot, on target, and the slot is spent once (2026-09-18)",
+      moves.length === 2 && moves.every(m => m.action === "displace") && committed === 1
+        && /appear exactly where they meant to/.test(String(cardsTp.at(-1)?.content ?? "")),
+      `moves: ${moves.map(m => `${m.name} to ${m.to.x},${m.to.y}`).join("; ")}; slot spent ${committed}x`);
+
+    // A mishap: 3d10 force to each, on the damage card, then the table again.
+    script(3, 17, 90);
+    moves.length = 0; cardsTp.length = 0; committed = 0;
+    await quiet(() => cast(varekSpell));
+    const dmgCard = cardsTp.find(c => c?.flags?.["ace-qol"]?.type === "damageResult");
+    check("a mishap deals its 3d10 force to each of them on the suite's damage card, and the d100 is rolled again (2026-09-18)",
+      !!dmgCard && dmgCard.flags["ace-qol"].damageResults.length === 2
+        && dmgCard.flags["ace-qol"].damageResults.every(r => r.components[0].type === "force" && r.totalFinal === 17)
+        && moves.length === 2,
+      `damage card: ${dmgCard ? `${dmgCard.flags["ace-qol"].damageResults.length} rows of ${dmgCard.flags["ace-qol"].damageResults[0]?.totalFinal} force` : "none"}; then moves: ${moves.length}`);
+
+    // Off target, 2024: 2d12 miles in a d8 direction, and the GM places them.
+    script(20, 3, 14);
+    moves.length = 0; cardsTp.length = 0;
+    await quiet(() => cast(varekSpell));
+    check("off target by the 2024 book: 14 miles south, on the card for the GM, and nobody is moved on this map (2026-09-18)",
+      moves.length === 0 && /14 miles south/.test(String(cardsTp.at(-1)?.content ?? "")),
+      `moves: ${moves.length}; the card: ${String(cardsTp.at(-1)?.content ?? "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 140)}`);
+
+    // Off target, 2014: 1d10 x 1d10 percent of the way, a d8 from north; the GM places them.
+    const varekSpell14 = [...ACTORS.values()].filter(a => a.name === VAREK)
+      .flatMap(a => a.items.filter(i => i.name === "Teleport" && i.type === "spell"))
+      .find(i => RBtp.resolveEdition(i, i.actor) === "2014");
+    script(20, 3, 5, 3);
+    moves.length = 0; cardsTp.length = 0;
+    Object.assign(varekTok.document, { x: 2000, y: 2000 });   // back where he started: the checks above moved him
+    await quiet(() => cast(varekSpell14));
+    check("off target by the 2014 book: 5 x 3 = 15% of the 71 feet, a d8 of 3 is east, and the GM places them (2026-09-18)",
+      moves.length === 0 && /about 11 feet east of the spot picked \(15% of the 71 feet/.test(String(cardsTp.at(-1)?.content ?? "")),
+      `moves: ${moves.length}; the card: ${String(cardsTp.at(-1)?.content ?? "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 170)}`);
+
+    // Cancelled: nothing happens and the slot is kept.
+    Teleport.askPlan = async () => null;
+    moves.length = 0; cardsTp.length = 0; committed = 0;
+    const went = await quiet(() => cast(varekSpell));
+    check("cancelling the plan casts nothing: no move, no card, and the slot is not spent (2026-09-18)",
+      went === false && moves.length === 0 && cardsTp.length === 0 && committed === 0,
+      `cast: ${went}; moves ${moves.length}; cards ${cardsTp.length}; slot spent ${committed}x`);
+    Object.assign(Teleport, { askPlan: keep.plan, pickPoint: keep.point, _roll: keep.roll });
+  } catch (err) {
+    check("teleport: the pins ran", false, `threw: ${err?.message ?? err}`);
+  } finally {
+    DoorTp.post = keepTp.post;
+    CONFIG.Canvas.polygonBackends.sight = keepTp.sight;
+    if (keepTp.sight === undefined) delete CONFIG.Canvas.polygonBackends.sight;
+    CONFIG.Canvas.polygonBackends.move = keepTp.move;
+    if (keepTp.move === undefined) delete CONFIG.Canvas.polygonBackends.move;
+    canvas.scene = keepTp.scene;
+    canvas.tokens.placeables.length = 0;
+    canvas.tokens.placeables.push(...keepTp.placed);
+  }
+});
+
 /* ── PHASE 6b: COUNTERSPELL ────────────────────────────────────────────────── */
 // Johnny, 2026-09-16: "PHASE 6b - Counterspell only. Then stop." Someone within
 // 60 feet starts a spell; a creature holding Counterspell, with a slot, a free
@@ -3795,6 +4013,13 @@ console.log(`\nPHASE 6b: COUNTERSPELL`);
       const second = cast(caster, fireball);
       second.uuid = activity.uuid;                    // a re-cast really is the same uuid
       ReactionEngine._createCastBarrier(second);
+      // ⚠️ ITS OWN CHECK ANSWERS IT, as at the table: nobody counters it. This
+      // used to wait on a hold nobody answered, and passed only when the
+      // 30-second safety let it go - thirty of the replay's forty-eight seconds,
+      // and a pass that proved the timeout instead of the record. The old
+      // record is still what is tested: had starting this cast not cleared it,
+      // the answer below is "dead" before the hold is even looked at.
+      ReactionEngine._resolveCastBarrier(second, { abort: false, reason: "no_counter" });
       const nextCast = await ReactionEngine.awaitCastDecision(second.uuid,
         { item: fireball, actor: caster });
       check("and the same wizard's NEXT Fireball is alive, because starting a cast clears the last one's record (2026-09-17)",
@@ -4211,6 +4436,7 @@ console.log(`\nPHASE 6b: COUNTERSPELL`);
       check("and a LIVE cast still rebuilds from its area, which is what that path is for (2026-09-17)",
         rebuilt === 1 && tpl2.deleted !== true,
         `rebuilds attempted: ${rebuilt}; the area ${tpl2.deleted ? "was wrongly removed" : "is still on the map"}`);
+      ReactionEngine._resolveCastBarrier(live, { abort: false, reason: "no_counter" });   // answered, as its check would
 
       canvas.scene = keepScene;
       canvas.tokens.placeables.length = 0;

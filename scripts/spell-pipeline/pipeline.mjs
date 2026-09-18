@@ -50,6 +50,8 @@ import { getSpellTiming } from "../spell-timing.mjs";
 // Who a picker may offer (The One Road, Phase 4): the dying for a heal, the dead for a revive.
 import { revivesTheDead, lifeStateOf, pickable } from "../road/picker-rule.mjs";
 import { aceDistanceFt } from "../geometry-utils.mjs";
+// Which Teleport an item is, read from the item itself (2026-09-18).
+import { readTeleport } from "../rules/teleport-words.mjs";
 
 // ─── Creature snapshot access (2026-07-28) ───────────────────────────────────
 // Facts about a creature come from the ONE reader, never from actor.system —
@@ -90,6 +92,8 @@ function _aceCreature(actor, token = null) {
  */
 export const DISPATCHABLE_SHAPES = new Set([
   "attack-multi", "attack-single", "aura", "chained", "distribute", "emanation-heal", "multi-buff", "multi-heal", "save-area", "save-single", "self", "template-heal", "template-pool", "template-save", "template-trigger", "touch",
+  // A monster's teleport hop, and the 7th-level Teleport spell (teleport.mjs).
+  "teleport-hop", "teleport-spell",
 ]);
 
 /**
@@ -464,6 +468,20 @@ export class SpellPipeline {
     const type = item.type;
     // The doorway: the pipeline now accepts FEATURES (feats), not just spells.
     if (type !== "spell" && type !== "feat") return null;
+
+    // ⚠️🔴 TELEPORT IS READ FROM THE ITEM, BEFORE ANY NAME (his table,
+    // 2026-09-18): "TWO different Teleports. Read the item on the token ...
+    // Do not treat Neferon's feature as the 7th-level spell." A feature may
+    // borrow a spell's registry entry by name when it imposes no save, which
+    // is exactly how an arcanaloth's hop would have become the 7th-level spell
+    // the moment one existed. rules/teleport-words.mjs answers from the item:
+    // a feature whose own words are a pure hop, or the level-7 spell named
+    // Teleport. Anything else named Teleport goes on as before.
+    const teleport = readTeleport(item);
+    if (teleport) {
+      return { shape: teleport.kind === "hop" ? "teleport-hop" : "teleport-spell", teleport,
+        source: "the item's own words" };
+    }
     // ⚠️🔴 THE SUFFIX WAS BEATING THE WHOLE REGISTRY. This was
     // `item.name.trim().toLowerCase()` and nothing else. His 2014 content is
     // named "Aura of Vitality (Legacy)", "Sleep (Legacy)", and so on, straight
@@ -988,6 +1006,26 @@ export class SpellPipeline {
         case "chained":
           await SpellPipeline._runPickerAndResolve(ctx, "single"); // primary; secondaries auto
           break;
+
+        case "teleport-hop": {
+          // A creature's own hop: it picks a square and is there. Not a spell,
+          // so no hold was ever made for it and Counterspell has nothing to
+          // counter (the wait above passed straight through).
+          const { Teleport } = await import("../teleport.mjs");
+          await Teleport.runHop(ctx);
+          break;
+        }
+
+        case "teleport-spell": {
+          // The 7th-level spell. A successful Counterspell never reaches here:
+          // the wait above returned first. The slot is spent the moment the
+          // plan is made and given back if it never was.
+          const { Teleport } = await import("../teleport.mjs");
+          const cast = await Teleport.runSpell({ ...ctx,
+            onCommit: () => SpellPipeline._commitSlotIfDeferred(activity, castLevel) });
+          if (!cast) await SpellPipeline._refundSlotIfDeferred(activity);
+          break;
+        }
 
         case "attack-single":
           // Fall through to dnd5e attack flow — no pipeline action needed
