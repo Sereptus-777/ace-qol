@@ -2403,6 +2403,179 @@ console.log(`\nPHASE 3: ATTACKS ON THE ROAD`);
   }
 }
 
+/* ── PHASE 6d: ABSORB ELEMENTS ─────────────────────────────────────────────── */
+// Johnny, 2026-09-17: "PHASE 6d - Absorb Elements only. Then stop." Fire, cold,
+// lightning, acid or thunder hits Jebidiah; she holds Absorb Elements, a slot
+// and a free reaction; a box asks. Yes spends the slot and the reaction, halves
+// the damage she just took, and her next melee hit adds 1d6 of that type. No
+// takes it in full. If she cannot use the spell, no box, and the console says why.
+//
+// ⚠️ THE +1d6 HAD NEVER BEEN DEALT. The reaction wrote a flag promising it and
+// nothing in the suite ever read it. These pins drive the real reaction and the
+// real damage roll that now reads it.
+console.log(`\nPHASE 6d: ABSORB ELEMENTS`);
+{
+  const MOD = "ace-qol";
+  const { ReactionEngine } = await import(`${MODULE}/scripts/reaction-engine.mjs`);
+  const { DamageCalculator } = await import(`${MODULE}/scripts/damage-calculator.mjs`);
+  const { CardDoor: Door6d } = await import(`${MODULE}/scripts/road/doors.mjs`);
+
+  const keep6d = { post: Door6d.post, combat: game.combat, combats: game.combats,
+    reactions: SETTINGS.get("ace-qol.enableReactions"), ae: SETTINGS.get("ace-qol.autoAbsorbElements") };
+  SETTINGS.set("ace-qol.enableReactions", true);
+  SETTINGS.set("ace-qol.autoAbsorbElements", true);
+  Door6d.post = async (data) => ({ id: "ae-card", ...data });
+  const made6d = [];
+
+  try {
+    const absorb = (prepared = 1) => ({ id: `it-ae-${prepared}`, name: "Absorb Elements", type: "spell", img: "",
+      system: { level: 1, method: "spell", prepared, activities: [] } });
+    const jeb = (id, { items = [absorb()], slots = 2, statuses = [], flags = {} } = {}) => {
+      const a = { id, name: "Jebidiah", type: "character", img: "", documentName: "Actor", uuid: `Actor.${id}`,
+        statuses: new Set(statuses), effects: [], items, hasPlayerOwner: true,
+        system: { attributes: { hp: { value: 40, max: 40 } }, spells: { spell1: { value: slots, max: 3 } } },
+        flags: { [MOD]: { ...flags } },
+        getFlag: (scope, key) => a.flags?.[scope]?.[key],
+        setFlag: async (scope, key, v) => { (a.flags[scope] ??= {})[key] = v; return a; },
+        unsetFlag: async (scope, key) => { delete a.flags?.[scope]?.[key]; return a; },
+        createEmbeddedDocuments: async () => [],
+        update: async (u) => { for (const [k, v] of Object.entries(u)) {
+          const path = k.split("."); let o = a;
+          for (const s2 of path.slice(0, -1)) o = (o[s2] ??= {});
+          o[path[path.length - 1]] = v; } return a; },
+        getActiveTokens: () => [],
+        getRollData: () => ({}),
+      };
+      ACTORS.set(id, a);
+      made6d.push(a);
+      return a;
+    };
+    const fire = () => [{ type: "fire", total: 28 }];
+
+    const engine = new ReactionEngine();
+    let answer = true;
+    const asked = [];
+    engine._promptReaction = async (o) => { asked.push(o.reactorActor?.name); return { accepted: answer, choiceData: { slotLevel: 1 } }; };
+    engine._checkUncannyDodge = async () => ({ used: false });
+
+    // ── 2 + 3. Fireball, the box, and Yes halves the fire ──
+    {
+      const her = jeb("ae-yes");
+      answer = true;
+      const atAsk = asked.length;
+      const out = await quiet(() => engine.checkPreDamageReactions(fire(), her, null, null, null, true));
+      const fireLeft = out?.modifiedComponents?.find(c => c.type === "fire")?.total;
+      check("2+3. Fireball hits Jebidiah: the box asks, and Yes spends her slot and reaction and halves the fire she just took (Phase 6d)",
+        asked.length - atAsk === 1 && fireLeft === 14
+          && her.system.spells.spell1.value === 1 && her.flags[MOD]?.reactionUsed === true
+          && her.flags[MOD]?.absorbElementsBonus?.type === "fire",
+        `asked: ${asked.length - atAsk}; fire 28 -> ${fireLeft}; slots ${her.system.spells.spell1.value} of 3; `
+          + `reaction ${her.flags[MOD]?.reactionUsed ? "spent" : "free"}; stored: ${her.flags[MOD]?.absorbElementsBonus?.formula ?? "nothing"} ${her.flags[MOD]?.absorbElementsBonus?.type ?? ""}`);
+    }
+
+    // ── 4. No: full damage, nothing stored ──
+    {
+      const her = jeb("ae-no");
+      answer = false;
+      const out = await quiet(() => engine.checkPreDamageReactions(fire(), her, null, null, null, true));
+      const fireLeft = out?.modifiedComponents?.find(c => c.type === "fire")?.total;
+      check("4. No: she takes the full 28 fire, keeps her slot and reaction, and nothing is stored for later (Phase 6d)",
+        fireLeft === 28 && her.system.spells.spell1.value === 2
+          && !her.flags[MOD]?.reactionUsed && !her.flags[MOD]?.absorbElementsBonus,
+        `fire ${fireLeft}; slots ${her.system.spells.spell1.value}; reaction ${her.flags[MOD]?.reactionUsed ? "spent" : "free"}; `
+          + `stored: ${her.flags[MOD]?.absorbElementsBonus ? "something (wrong)" : "nothing"}`);
+    }
+
+    // ── 5. No box, and the console says why ──
+    {
+      const said = [];
+      const keepLog = console.log;
+      console.log = (...a) => { said.push(a.join(" ")); };
+      const atAsk = asked.length;
+      try {
+        answer = true;
+        await engine.checkPreDamageReactions(fire(), jeb("ae-noslot", { slots: 0 }), null, null, null, true);
+        await engine.checkPreDamageReactions(fire(), jeb("ae-unprep", { items: [absorb(0)] }), null, null, null, true);
+        await engine.checkPreDamageReactions(fire(), jeb("ae-stunned", { statuses: ["stunned"] }), null, null, null, true);
+        await engine.checkPreDamageReactions(fire(), jeb("ae-none", { items: [] }), null, null, null, true);
+        await engine.checkPreDamageReactions([{ type: "slashing", total: 10 }], jeb("ae-sword"), null, null, null, true);
+      } finally { console.log = keepLog; }
+      const lines = said.filter(l => /Absorb Elements:/.test(l));
+      check("5. no slot, not prepared, stunned: no box, and each one says why in the console (Phase 6d)",
+        asked.length === atAsk
+          && lines.some(l => /no 1st-level or higher slot/.test(l))
+          && lines.some(l => /not prepared/.test(l))
+          && lines.some(l => /out of the fight/.test(l)),
+        `boxes shown: ${asked.length - atAsk}; the console: ${lines.map(l => l.replace(/^.*Absorb Elements: /, "")).join(" | ")}`);
+      check("and somebody who never had the spell, or a sword cut, is not even mentioned (Phase 6d)",
+        lines.length === 3, `${lines.length} line(s) for five hits`);
+    }
+
+    // ── 3b. Her next melee HIT adds the stored 1d6 fire, on her turn ──
+    {
+      const her = jeb("ae-hit");
+      her.flags[MOD].absorbElementsBonus = { type: "fire", formula: "1d6", slotLevel: 1, round: 3 };
+      const dagger = { id: "it-dagger", name: "Dagger", type: "weapon", img: "", actor: her,
+        system: { activities: { a1: { id: "a1", type: "attack", attack: { type: { value: "melee" } } } } } };
+      const fight = { started: true, round: 4, turn: 0, combatant: { actor: her } };
+      game.combat = fight;
+      let comps = [];
+      const keepRoll = DamageCalculator.rollWithCrit;
+      DamageCalculator.rollWithCrit = async (formula) => ({ formula, total: 4, normalTotal: 4, critTotal: 0, roll: null });
+      const keepRoad = DamageCalculator._attackRoad;
+      DamageCalculator._attackRoad = async () => null;
+      try {
+        comps = await quiet(() => DamageCalculator.rollDamageComponents(dagger, her, {}, false, "double", "a1"));
+      } catch (_) { comps = []; }
+      DamageCalculator.rollWithCrit = keepRoll;
+      DamageCalculator._attackRoad = keepRoad;
+      const extra = (comps ?? []).find(c => c.name === "Absorb Elements");
+      check("3. her next melee hit, on her own turn, adds the stored 1d6 fire to that hit, and the spell ends (Phase 6d)",
+        !!extra && extra.type === "fire" && extra.formula === "1d6" && !her.flags[MOD]?.absorbElementsBonus,
+        `on the hit: ${extra ? `+${extra.total} ${extra.type} (${extra.formula})` : "nothing added (wrong)"}; `
+          + `still stored afterwards: ${her.flags[MOD]?.absorbElementsBonus ? "yes (wrong)" : "no"}`);
+      game.combat = keep6d.combat;
+    }
+
+    // ── And not on somebody else's turn, and not a round late ──
+    {
+      const her = jeb("ae-late");
+      her.flags[MOD].absorbElementsBonus = { type: "fire", formula: "1d6", slotLevel: 1, round: 3 };
+      const dagger = { id: "it-dagger2", name: "Dagger", type: "weapon", img: "", actor: her,
+        system: { activities: { a1: { id: "a1", type: "attack", attack: { type: { value: "melee" } } } } } };
+      const keepRoll = DamageCalculator.rollWithCrit;
+      DamageCalculator.rollWithCrit = async (formula) => ({ formula, total: 4, normalTotal: 4, critTotal: 0, roll: null });
+      const keepRoad = DamageCalculator._attackRoad;
+      DamageCalculator._attackRoad = async () => null;
+      const other = { id: "ae-other", name: "somebody else" };
+      game.combat = { started: true, round: 3, turn: 1, combatant: { actor: other } };
+      let a = [];
+      try { a = await quiet(() => DamageCalculator.rollDamageComponents(dagger, her, {}, false, "double", "a1")); } catch (_) {}
+      const onOthers = !(a ?? []).some(c => c.name === "Absorb Elements") && !!her.flags[MOD]?.absorbElementsBonus;
+      game.combat = { started: true, round: 6, turn: 0, combatant: { actor: her } };
+      let b = [];
+      try { b = await quiet(() => DamageCalculator.rollDamageComponents(dagger, her, {}, false, "double", "a1")); } catch (_) {}
+      const tooLate = !(b ?? []).some(c => c.name === "Absorb Elements") && !her.flags[MOD]?.absorbElementsBonus;
+      DamageCalculator.rollWithCrit = keepRoll;
+      DamageCalculator._attackRoad = keepRoad;
+      game.combat = keep6d.combat;
+      check("and it is not spent on somebody else's turn, and it runs out once her next turn has gone by (Phase 6d)",
+        onOthers && tooLate,
+        `a hit during somebody else's turn: ${onOthers ? "nothing added, still stored" : "WRONG"}; `
+          + `three rounds later: ${tooLate ? "ran out unused" : "still added (wrong)"}`);
+    }
+  } finally {
+    Door6d.post = keep6d.post;
+    game.combat = keep6d.combat;
+    game.combats = keep6d.combats;
+    for (const [k, v] of Object.entries({ "ace-qol.enableReactions": keep6d.reactions,
+      "ace-qol.autoAbsorbElements": keep6d.ae })) {
+      if (v === undefined) SETTINGS.delete(k); else SETTINGS.set(k, v);
+    }
+    for (const a of made6d) ACTORS.delete(a.id);
+  }
+}
+
 /* ── PHASE 6c: THE OPPORTUNITY ATTACK ────────────────────────────────────── */
 // Johnny, 2026-09-17: "PHASE 6c - opportunity attack only. Then stop." Somebody
 // leaves a creature's reach on foot; that creature can act, has a reaction and

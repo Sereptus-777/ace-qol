@@ -2874,12 +2874,33 @@ export class ReactionEngine {
     const elementalComponents = damageComponents.filter(c => ABSORB_ELEMENT_TYPES.has(c.type));
     if (!elementalComponents.length) return { modifiedComponents: damageComponents, absorbed: false };
 
-    // Can the target use Absorb Elements?
-    if (this._hasUsedReaction(targetActor)) return { modifiedComponents: damageComponents, absorbed: false };
-    if (!this._hasSpellPrepared(targetActor, "Absorb Elements")) return { modifiedComponents: damageComponents, absorbed: false };
+    // ⚠️🔴 EVERY "NO" HERE WAS SILENT (Phase 6d, 2026-09-17). His list: "If she
+    // cannot use the spell, no box. Write why in the console." Five refusals and
+    // not one said a word - the same shape as Shield, Counterspell and the
+    // opportunity attack from the same week, and for the same reason it matters:
+    // a silent refusal and a broken feature print the same thing.
+    //
+    // ⚠️ A CREATURE THAT NEVER HELD THE SPELL IS NOT "PASSED OVER". Only one
+    // that holds it is named, or a Fireball through a crowd prints a line for
+    // every goblin in it.
+    const unchanged = { modifiedComponents: damageComponents, absorbed: false };
+    const held = this._readySpell(targetActor, "Absorb Elements");
+    if (!held.ok && !held.item) return unchanged;                 // never had it
+    const say = (why) => {
+      console.log(`${MODULE_ID} | Absorb Elements: ${targetActor.name} is not asked - ${why}.`);
+      return unchanged;
+    };
+    if (!held.ok) return say(held.why);
+    // The same reader Shield, Counterspell and the opportunity attack ask.
+    if (isOutOfTheFight(targetActor)) return say("it is out of the fight, so it takes no reactions");
+    // A reaction budget only exists inside a fight; out of combat the flag that
+    // records it is never cleared.
+    if (hasTurns(targetActor) && this._hasUsedReaction(targetActor)) {
+      return say("its reaction is already spent this round");
+    }
 
     const slots = this._getAvailableSlots(targetActor, 1);
-    if (!slots.length) return { modifiedComponents: damageComponents, absorbed: false };
+    if (!slots.length) return say("it has no 1st-level or higher slot left");
 
     // Determine the dominant elemental damage type
     const dominantType = elementalComponents.reduce((a, b) => a.total >= b.total ? a : b).type;
@@ -2927,11 +2948,23 @@ export class ReactionEngine {
       // Apply bonus damage flag for next melee attack
       // Bonus dice scale with slot level: 1d6 base + 1d6 per level above 1st
       const bonusDice = slotLevel;
+      // ⚠️🔴 THIS FLAG WAS WRITTEN AND NEVER READ (found 2026-09-17). Nothing
+      // anywhere in the suite looked at it, so the "+1d6 on your next melee
+      // attack" the card promised has never once been dealt. It is read now by
+      // the damage roll itself - DamageCalculator.rollDamageComponents - which
+      // is the one place a hit's damage is thrown, so the die lands with the
+      // hit and a critical doubles it, as RAW says extra damage dice do.
+      //
+      // RAW (his own sheet): "the first time you hit with a melee attack ON
+      // YOUR NEXT TURN, the target takes an extra 1d6 damage of the triggering
+      // type, and the spell ends." So it records the round it was cast in, and
+      // the reader refuses it once that next turn is over.
       await targetActor.setFlag(MODULE_ID, "absorbElementsBonus", {
         type: dominantType,
         formula: `${bonusDice}d6`,
         slotLevel,
         timestamp: Date.now(),
+        round: game.combat?.round ?? null,
       });
 
       // Apply a visible effect so the player knows it's active

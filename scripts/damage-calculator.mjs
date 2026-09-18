@@ -1143,7 +1143,61 @@ export class DamageCalculator {
       console.warn(`${MODULE_ID} | Savage Attacks (non-fatal):`, err);
     }
 
+    // ── ABSORB ELEMENTS: the energy she caught goes on her next melee hit ──
+    //
+    // ⚠️🔴 IT HAD NEVER BEEN DEALT (Phase 6d, 2026-09-17). The reaction wrote
+    // a flag promising "+1d6 on the next melee attack" and nothing in the suite
+    // ever read it. This is the one place a hit's damage is rolled, so the die
+    // is thrown WITH the hit: rolled through rollWithCrit, which doubles it on
+    // a critical exactly as RAW doubles any extra damage dice.
+    //
+    // RAW, from his own sheet: "the first time you hit with a melee attack on
+    // your next turn ... and the spell ends." So: a melee attack, on her own
+    // turn, and no later than the round after the one it was cast in. Spent the
+    // moment it is used.
+    try {
+      const stored = actor?.getFlag?.(MODULE_ID, "absorbElementsBonus") ?? null;
+      if (stored?.formula && stored?.type && DamageCalculator._isMeleeAttack(item, activityId)) {
+        const combat = game.combat ?? null;
+        const onHerTurn = !combat?.started
+          || combat?.combatant?.actor?.id === actor?.id;
+        const stillCurrent = !combat?.started || stored.round == null
+          || Number(combat.round) <= Number(stored.round) + 1;
+        if (!stillCurrent) {
+          await actor.unsetFlag?.(MODULE_ID, "absorbElementsBonus");
+          console.log(`${MODULE_ID} | Absorb Elements: ${actor.name}'s stored ${stored.type} ran out `
+            + `unused - her next turn came and went without a melee hit.`);
+        } else if (onHerTurn) {
+          const extra = await DamageCalculator.rollWithCrit(stored.formula, rollData, isCrit, critRule,
+            "Absorb Elements", item);
+          components.push({ name: "Absorb Elements", ...extra, type: stored.type,
+            isFeatureRider: true, featureLabel: "ABSORB ELEMENTS" });
+          await actor.unsetFlag?.(MODULE_ID, "absorbElementsBonus");
+          console.log(`${MODULE_ID} | Absorb Elements: +${extra?.total ?? "?"} ${stored.type} `
+            + `(${stored.formula}) on ${actor.name}'s melee hit - the spell ends.`);
+        }
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not add Absorb Elements' stored damage to that hit:`, err);
+    }
+
     return components;
+  }
+
+  /**
+   * Is this a MELEE attack? Read off the activity that was used, not the item,
+   * because an item can carry both (a dagger is thrown and stabbed).
+   */
+  static _isMeleeAttack(item, activityId = null) {
+    try {
+      const acts = item?.system?.activities;
+      const list = acts ? (typeof acts.values === "function" ? [...acts.values()] : Object.values(acts)) : [];
+      const used = (activityId ? list.find(a => a?.id === activityId || a?._id === activityId) : null)
+        ?? list.find(a => a?.type === "attack") ?? null;
+      if (!used || used.type !== "attack") return false;
+      const kind = String(used?.attack?.type?.value ?? used?.actionType ?? "").toLowerCase();
+      return kind === "melee" || kind === "mwak" || kind === "msak";
+    } catch (_) { return false; }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
