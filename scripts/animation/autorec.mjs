@@ -46,6 +46,8 @@ const _norm = (s) => String(s ?? "").toLowerCase()
 
 /** name -> {record, category}, built once per session. */
 let _index = null;
+/** Automated Animations' "teleportation" presets, by name, read once per session. */
+let _teleports = null;
 
 /**
  * Read every curated record out of Automated Animations' own settings.
@@ -90,7 +92,81 @@ export function buildIndex({ force = false } = {}) {
 }
 
 /** Forget the index, so an edit in AA's own menus is picked up. */
-export function invalidate() { _index = null; }
+export function invalidate() { _index = null; _teleports = null; }
+
+/* ── A teleport's look ─────────────────────────────────────────────────── */
+
+function _teleportPresets() {
+  if (_teleports) return _teleports;
+  const out = new Map();
+  try {
+    const raw = game.settings.get(AA_MODULE, "aaAutorec-preset");
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    const rows = Array.isArray(parsed) ? parsed : Object.values(parsed ?? {});
+    for (const rec of rows) {
+      if (rec?.presetType !== "teleportation") continue;
+      const key = _norm(rec.label);
+      if (key && !out.has(key)) out.set(key, rec);
+    }
+  } catch (err) {
+    // ⚠️ "COULD NOT READ IT" IS NOT "THERE ARE NONE".
+    console.warn(`ace-qol | could not read Automated Animations' preset list, so a teleport `
+      + `moves without its look:`, err);
+  }
+  _teleports = out;
+  return out;
+}
+
+/** One phase of a preset (its start or its end) as a playable clip, or null. */
+function _clip(part) {
+  if (!part || part.enable === false) return null;
+  // A custom file counts only when the preset says to use it, as AA does.
+  const path = pathFor({ ...part, customPath: part.enableCustom ? part.customPath : "" });
+  return path ? { path, options: { ...(part.options ?? {}) } } : null;
+}
+
+/**
+ * The look of a teleport: the clip where the creature leaves, the clip where it
+ * arrives and the sound, borrowed from Automated Animations' own teleportation
+ * preset.
+ *
+ * ⚠️ WHY ACE PLAYS THIS AT ALL (Johnny, 2026-09-18): AA's teleportation preset
+ * does not just animate, it MOVES the token. It rings the creature, waits for a
+ * click anywhere on the map and walks it there through Sequencer. On an ACE
+ * teleport that click came after ACE had already landed Neferon, so a later
+ * click moved him a second time. ACE now stops AA's run for its own teleports
+ * (teleport.mjs) and plays the same picture itself, at the moment of arrival:
+ * "Keep the look he already likes."
+ *
+ * Its own preset by the item's name when there is one ("Teleport", or the name
+ * with a parenthetical taken off, as "Teleport (Recharge 5-6)"), otherwise the
+ * one called Teleport, so every hop has his look.
+ *
+ * @param {Item|object} item
+ * @returns {{label: string, start: object|null, end: object|null,
+ *            sound: {file: string, volume: number, delay: number}|null}|null}
+ */
+export function teleportLookFor(item) {
+  try {
+    const presets = _teleportPresets();
+    const own = _norm(item?.name);
+    const bare = _norm(String(item?.name ?? "").replace(/\([^)]*\)/g, " "));
+    const rec = presets.get(own) ?? presets.get(bare) ?? presets.get("teleport") ?? null;
+    if (!rec) return null;
+    const d = rec.data ?? {};
+    const start = _clip(d.start);
+    const end = _clip(d.end);
+    if (!start && !end) return null;
+    const s = d.sound;
+    const sound = s?.enable && s.file
+      ? { file: s.file, volume: Number(s.volume ?? 0.75) || 0.75, delay: Number(s.delay ?? 0) || 0 }
+      : null;
+    return { label: rec.label, start, end, sound };
+  } catch (err) {
+    console.warn(`ace-qol | could not work out the teleport look for "${item?.name}":`, err);
+    return null;
+  }
+}
 
 /**
  * The Sequencer database key for one record's primary video, or null.

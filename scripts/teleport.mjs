@@ -35,6 +35,8 @@ import { aceDistanceFt } from "./geometry-utils.mjs";
 import { isDead } from "./is-down.mjs";
 import { DamageCardRenderer } from "./damage-card-renderer.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
+import { teleportLookFor } from "./animation/autorec.mjs";
+import { replyOwnerIsAuthorised } from "./socket-authority.mjs";
 
 // ⚠️ HARDCODED. Reached through the spell pipeline from the entry file.
 const MODULE_ID = "ace-qol";
@@ -193,8 +195,17 @@ export class Teleport {
    * A click on the map, with a live drawing under the cursor. Resolves to what
    * `choose(point)` returns for the clicked point (null ignores the click), or
    * null when right-click or Escape cancels.
+   *
+   * ⚠️ ONE AIMING AT A TIME, AND NOTHING OF IT OUTLIVES THE CLICK (his table,
+   * 2026-09-18: "After he lands, destroy the aiming session. No ghost, no line,
+   * no click listener. One move per press."). The click that picks a square
+   * ends the session before anything moves: its three listeners come off, its
+   * squares, ghost and line are taken off the canvas, and a second aiming
+   * started while one is open cancels the first, so one click can never pick
+   * twice. A scene change cancels it too.
    */
   static _aim({ draw, choose, hint }) {
+    Teleport._session?.cancel("a new aiming began");
     return new Promise((resolve) => {
       const layer = Teleport._layer();
       const onBoard = (ev) => {
@@ -202,15 +213,26 @@ export class Teleport {
         return !!board && (ev.target === board || board.contains(ev.target));
       };
       let done = false;
-      const finish = (value) => {
+      let tearDown = null;
+      const finish = (value, why) => {
         if (done) return;
         done = true;
         document.removeEventListener("pointermove", onMove, true);
         document.removeEventListener("pointerdown", onDown, true);
         document.removeEventListener("keydown", onKey, true);
-        try { layer.destroy({ children: true }); } catch (_) { /* already gone */ }
+        if (tearDown != null) Hooks.off("canvasTearDown", tearDown);
+        try {
+          layer.parent?.removeChild(layer);
+          layer.destroy({ children: true });
+        } catch (err) {
+          console.warn(`${LOG} | the aiming drawing could not be taken off the canvas; `
+            + `a reload of the scene clears it:`, err);
+        }
+        if (Teleport._session === session) Teleport._session = null;
+        console.log(`${LOG} | aiming over (${why}): its squares, line and click are gone.`);
         resolve(value);
       };
+      const session = { cancel: (why) => finish(null, why) };
       const onMove = (ev) => {
         if (!onBoard(ev)) return;
         try { draw(layer, PartyTransfer._clientToCanvas(ev.clientX, ev.clientY)); }
@@ -218,26 +240,37 @@ export class Teleport {
       };
       const onDown = (ev) => {
         if (!onBoard(ev)) return;
-        if (ev.button === 2) { ev.preventDefault(); ev.stopPropagation(); finish(null); return; }
+        if (ev.button === 2) {
+          ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation();
+          finish(null, "cancelled");
+          return;
+        }
         if (ev.button !== 0) return;
+        // This click is the aiming's: nothing else on the page acts on it.
         ev.preventDefault();
         ev.stopPropagation();
+        ev.stopImmediatePropagation();
         const picked = choose(PartyTransfer._clientToCanvas(ev.clientX, ev.clientY));
-        if (picked) finish(picked);
+        if (picked) finish(picked, "picked");
       };
       const onKey = (ev) => {
         if (ev.key !== "Escape") return;
         ev.preventDefault();
         ev.stopPropagation();
-        finish(null);
+        finish(null, "cancelled");
       };
+      Teleport._session = session;
       document.addEventListener("pointermove", onMove, true);
       document.addEventListener("pointerdown", onDown, true);
       document.addEventListener("keydown", onKey, true);
+      tearDown = Hooks.once("canvasTearDown", () => finish(null, "the scene changed"));
       try { draw(layer, null); } catch (err) { console.warn(`${LOG} | could not draw the squares:`, err); }
       ui.notifications?.info(hint);
     });
   }
+
+  /** The aiming open right now, if any: `{cancel(why)}`. */
+  static _session = null;
 
   /** The hop's picker: the lit squares, and the one under the cursor. */
   static pickSquare(token, feet) {
@@ -374,6 +407,126 @@ export class Teleport {
       ?? null;
   }
 
+  /* ── Automated Animations stands down ──────────────────────────────────── */
+
+  /**
+   * ⚠️🔴 AUTOMATED ANIMATIONS' TELEPORT MOVES THE TOKEN TOO (his table,
+   * 2026-09-18: the first click landed Neferon, and "a later click on the map
+   * plays a leave-poof from the old square and moves him toward the cursor").
+   * AA's "Teleport" preset is a teleportation preset: pressing the item rings
+   * the creature and arms a click listener on the canvas, and that click walks
+   * it there through Sequencer (the deprecated teleport flag in his console was
+   * Sequencer's animation.js making that move). ACE's own picker swallowed the
+   * first click, so AA's listener waited, armed, for the next one.
+   *
+   * AA offers a way out for exactly this: every one of its runs calls
+   * "AutomatedAnimations-WorkflowStart" first and gives up when a listener sets
+   * `stopWorkflow`. For a press ACE teleports itself, the hop and the spell, it
+   * is set: no ring, no click, no second move. ACE plays the same look itself
+   * when they arrive (`_arrive`).
+   */
+  static register() {
+    Hooks.on("AutomatedAnimations-WorkflowStart", Teleport._standDownAA);
+    console.debug(`${LOG} | online: Automated Animations stands down for the teleports ACE moves itself`);
+  }
+
+  static _standDownAA(data) {
+    try {
+      const item = data?.item ?? null;
+      if (!readTeleport(item)) return;
+      data.stopWorkflow = true;
+      console.log(`${LOG} | Automated Animations stands down for ${item.actor?.name ?? "that creature"}'s `
+        + `${item.name}: ACE moves the token and plays the look itself, so AA arms no click and moves nobody.`);
+    } catch (err) {
+      console.warn(`${LOG} | could not stand Automated Animations down for a teleport, so it may `
+        + `move the token a second time:`, err);
+    }
+  }
+
+  /* ── The look, at the moment of arrival ────────────────────────────────── */
+
+  /** The teleport's look from his Automated Animations presets, saying why when there is none. */
+  static _look(item) {
+    const look = teleportLookFor(item);
+    if (!look) {
+      console.log(`${LOG} | no teleport look for "${item?.name}": Automated Animations has no `
+        + `teleportation preset for it and none called Teleport, or its clips are not in this JB2A `
+        + `install, so it moves without one.`);
+      return null;
+    }
+    if (typeof Sequence !== "function") {
+      console.log(`${LOG} | Sequencer is not running, so "${item?.name}" moves without its look.`);
+      return null;
+    }
+    return look;
+  }
+
+  /** One clip of the look on one point, sized and layered the way AA plays it. */
+  static _poof(effect, clip, point, doc, delay) {
+    const o = clip.options ?? {};
+    const { w, h } = Teleport._size(doc);
+    effect.file(clip.path).atLocation(point)
+      .size(Math.max(w, h) * 1.5 * (Number(o.size) || 1), { gridUnits: true });
+    if (delay > 0) effect.delay(delay);
+    if (Number(o.fadeIn) > 0) effect.fadeIn(Number(o.fadeIn));
+    if (Number(o.fadeOut) > 0) effect.fadeOut(Number(o.fadeOut));
+    const opacity = Number(o.opacity ?? 1);
+    if (Number.isFinite(opacity) && opacity > 0 && opacity !== 1) effect.opacity(opacity);
+    const rate = Number(o.playbackRate ?? 1);
+    if (Number.isFinite(rate) && rate > 0 && rate !== 1) effect.playbackRate(rate);
+    const elevation = Number(o.elevation ?? 0) || 0;
+    // AA's own rule: an elevation that is not absolute sits one below the number.
+    effect.elevation(o.isAbsolute ? elevation : elevation - 1, { absolute: !!o.isAbsolute });
+    return effect;
+  }
+
+  /**
+   * Move each traveller, with the look: the leaving clip where each one stands
+   * and the sound, then, at the preset's own arrival beat, the arriving clip
+   * where each one lands AND the move itself, together. Johnny: "ACE plays the
+   * hop animation at the moment he arrives. Keep the look he already likes."
+   *
+   * @param {{doc: TokenDocument, to: {x: number, y: number}}[]} moves
+   * @param {Item} item   whose look it is
+   * @param {{look?: boolean}} [opts]  false moves them without it
+   * @returns {Promise<boolean>} whether every one of them moved
+   */
+  static async _arrive(moves, item, { look: withLook = true } = {}) {
+    const look = withLook ? Teleport._look(item) : null;
+    const plan = moves.map(({ doc, to }) => ({ doc, to,
+      from: Teleport._centre(Number(doc.x) || 0, Number(doc.y) || 0, doc),
+      at: Teleport._centre(to.x, to.y, doc) }));
+    const play = (seq, what) => Promise.resolve(seq.play())
+      .catch(err => console.warn(`${LOG} | the ${what} clip of the teleport look failed; the move is unaffected:`, err));
+
+    let beat = 0;
+    if (look) {
+      try {
+        const out = new Sequence();
+        if (look.sound) out.sound().file(look.sound.file).volume(look.sound.volume).delay(look.sound.delay);
+        if (look.start) {
+          for (const p of plan) Teleport._poof(out.effect(), look.start, p.from, p.doc, Number(look.start.options?.delay) || 0);
+        }
+        play(out, "leaving");
+        beat = look.end ? Math.max(0, Number(look.end.options?.delay) || 0) : 0;
+      } catch (err) {
+        console.warn(`${LOG} | the leaving clip of the teleport look could not be built; they still go:`, err);
+      }
+    }
+    if (beat > 0) await new Promise(resolve => setTimeout(resolve, beat));
+    if (look?.end) {
+      try {
+        const arrive = new Sequence();
+        for (const p of plan) Teleport._poof(arrive.effect(), look.end, p.at, p.doc, 0);
+        play(arrive, "arriving");
+      } catch (err) {
+        console.warn(`${LOG} | the arriving clip of the teleport look could not be built; they still arrive:`, err);
+      }
+    }
+    const moved = await Promise.all(plan.map(p => Teleport.displace(p.doc, p.to)));
+    return moved.every(Boolean);
+  }
+
   /* ── A) The hop ────────────────────────────────────────────────────────── */
 
   static async runHop(ctx) {
@@ -390,8 +543,9 @@ export class Teleport {
       await Teleport._giveBack(ctx, `${doc.name} stays where it is (no square was picked)`);
       return false;
     }
+    // The aiming is over before anything moves: one click, one move, one look.
     const feet = Math.round(Teleport._moveFeet(doc, { x: doc.x, y: doc.y }, to));
-    const moved = await Teleport.displace(doc, to);
+    const moved = await Teleport._arrive([{ doc, to }], ctx.item);
     if (moved) console.log(`${LOG} | ${doc.name} teleports ${feet} feet (${ctx.item?.name}, up to ${tp.feet}).`);
     return moved;
   }
@@ -488,15 +642,23 @@ export class Teleport {
     return result && typeof result === "object" ? result : null;
   }
 
-  /** Throw one roll and wait for its dice to land. */
-  static async _roll(formula, label) {
+  /**
+   * Throw one roll and wait for its dice to land.
+   *
+   * ⚠️ THE DESTINATION DICE ARE THE GM'S (his table, 2026-09-18: "Those
+   * destination dice are GM-only."). The d100 and the dice that say where an
+   * off-target group ends up tumble on the GMs' screens only. A mishap's 3d10
+   * is damage, and rolls where everybody sees damage roll.
+   */
+  static async _roll(formula, label, { gmOnly = false } = {}) {
     const roll = await new Roll(formula).evaluate();
-    safeShowForRoll(roll, label);
+    const users = gmOnly ? (game.users?.filter?.(u => u.isGM)?.map(u => u.id) ?? []) : null;
+    safeShowForRoll(roll, label, { users: users?.length ? users : null });
     await awaitDiceSettle();
     return roll;
   }
 
-  /** A mishap's force damage, on the suite's own damage card. */
+  /** A mishap's force damage, on the suite's own damage card, once its dice have landed. */
   static async _mishapCard(docs, roll, casterActor) {
     const components = [];
     const rows = [];
@@ -539,12 +701,13 @@ export class Teleport {
           </div>
         </div>`,
       flags: { [MODULE_ID]: { type: "damageResult", damageResults: results, totalRaw: roll.total } },
-    });
+    }, { dice: true });
   }
 
   /**
-   * The 7th-level spell, start to finish. Returns false when nobody went
-   * (cancelled), so the pipeline can give the slot back.
+   * The 7th-level spell: the caster's choices on the caster's screen, then the
+   * table on the GM's. Returns false when nobody went (cancelled), so the
+   * pipeline can give the slot back.
    */
   static async runSpell(ctx) {
     const edition = RulesBrain.resolveEdition(ctx.item, ctx.actor) === "2024" ? "2024" : "2014";
@@ -573,46 +736,122 @@ export class Teleport {
     // table decides.
     if (typeof ctx.onCommit === "function") await ctx.onCommit();
 
-    const row = TELEPORT_TABLES[edition].find(r => r.key === plan.familiarity) ?? TELEPORT_TABLES[edition][2];
-    const lines = [];
+    const table = { edition, familiarity: plan.familiarity, where: plan.where, place: plan.place, point,
+      sceneId: caster.parent?.id ?? null, casterId: caster.id, travellers: docs.map(d => d.id),
+      actorUuid: ctx.actor?.uuid ?? null, itemUuid: ctx.item?.uuid ?? null };
+
+    // ⚠️ THE TABLE IS ROLLED ON A GM'S SCREEN. The destination dice are the
+    // GM's, and so is the card that says what they meant. A player who casts it
+    // chose who and where on their own screen; the dice go to the GM.
+    if (game.user?.isGM) {
+      await Teleport.runTable({ ...table, docs, actor: ctx.actor, item: ctx.item });
+      return true;
+    }
+    const gm = game.users?.activeGM ?? null;
+    if (!gm) {
+      console.warn(`${LOG} | no GM is connected to roll the Teleport table, so it is rolled here, `
+        + `where ${game.user?.name ?? "this player"} can see it.`);
+      await Teleport.runTable({ ...table, docs, actor: ctx.actor, item: ctx.item, gmOnly: false });
+      return true;
+    }
+    game.socket.emit(`module.${MODULE_ID}`, { action: "teleportTable", table, userId: game.user.id });
+    console.log(`${LOG} | ${caster.name}'s Teleport goes to ${gm.name} to roll: the destination dice are the GM's.`);
+    return true;
+  }
+
+  /**
+   * A player's Teleport, arriving at the GM: checked, then rolled here.
+   *
+   * ⚠️ A SOCKET CARRIES NO TRUSTED SENDER. The player must own the caster, the
+   * item must be that creature's 7th-level Teleport, the travellers must stand
+   * on the caster's scene, and when the GM is looking at that scene, within 10
+   * feet of the caster where it can see them, eight at most.
+   */
+  static async fromSocket(payload) {
+    const t = payload?.table ?? {};
+    const refuse = (why) => console.warn(`${LOG} | a Teleport table from a player was REFUSED: ${why}.`);
+    try {
+      const actor = t.actorUuid ? await fromUuid(t.actorUuid) : null;
+      if (!replyOwnerIsAuthorised(payload, actor, "Teleport table")) return;
+      const item = t.itemUuid ? await fromUuid(t.itemUuid) : null;
+      if (!item || item.actor !== actor) return refuse(`the item is not ${actor?.name ?? "that creature"}'s`);
+      if (readTeleport(item)?.kind !== "spell") return refuse(`"${item.name}" is not the 7th-level Teleport`);
+      const scene = game.scenes?.get?.(t.sceneId) ?? null;
+      const casterDoc = scene?.tokens?.get?.(t.casterId) ?? null;
+      if (!casterDoc || casterDoc.actor !== actor) return refuse(`${actor.name} has no token there`);
+      const onScreen = canvas.scene?.id === scene.id && !!casterDoc.object;
+      const near = onScreen ? new Set(Teleport.companions(casterDoc.object).map(k => k.id)) : null;
+      const extras = (t.travellers ?? []).filter(id => id !== casterDoc.id);
+      const kept = extras.filter(id => scene.tokens.get(id) && (!near || near.has(id))).slice(0, 8);
+      if (kept.length !== extras.length) {
+        console.warn(`${LOG} | ${extras.length - kept.length} of the creatures ${actor.name} named cannot come `
+          + `(not within 10 feet where ${actor.name} can see them, or more than eight).`);
+      }
+      if (!onScreen) {
+        console.warn(`${LOG} | ${actor.name}'s scene is not on this GM's screen, so who came along could not be `
+          + `checked for distance and sight, and the look will not play.`);
+      }
+      const docs = [casterDoc, ...kept.map(id => scene.tokens.get(id))];
+      const edition = RulesBrain.resolveEdition(item, actor) === "2024" ? "2024" : "2014";
+      const point = t.where === "map" && Number.isFinite(t.point?.x) && Number.isFinite(t.point?.y)
+        ? { x: t.point.x, y: t.point.y } : null;
+      await Teleport.runTable({ edition, familiarity: t.familiarity, where: point ? "map" : "elsewhere",
+        place: String(t.place ?? "").slice(0, 200), point, docs, actor, item, look: onScreen });
+    } catch (err) {
+      console.warn(`${LOG} | a Teleport table from a player could not be rolled:`, err);
+    }
+  }
+
+  /**
+   * The book's table, rolled: d100 until it is not a mishap (each mishap 3d10
+   * force to each, on the damage card, after its dice), then where they end up,
+   * then the card. Nothing lands before the dice that decided it.
+   */
+  static async runTable({ edition, familiarity, where: whereKind, place, point, docs, actor, item,
+    gmOnly = true, look = true }) {
+    const rows = TELEPORT_TABLES[edition === "2024" ? "2024" : "2014"];
+    const row = rows.find(r => r.key === familiarity) ?? rows[2];
+    const caster = docs[0];
+    const rolls = [];
     let result = "mishap";
     for (let tries = 0; result === "mishap" && tries < 20; tries++) {
-      const d100 = await Teleport._roll("1d100", "Teleport");
+      const d100 = await Teleport._roll("1d100", "Teleport", { gmOnly });
       result = Teleport.outcome(edition, row.key, d100.total);
-      lines.push(`d100 ${d100.total}: ${{ mishap: "Mishap", similar: "Similar Area", off: "Off Target", on: "On Target" }[result]}`);
+      const entry = { total: d100.total, result };
+      rolls.push(entry);
       if (result === "mishap") {
         const force = await Teleport._roll("3d10", "Teleport mishap");
-        lines.push(`3d10 force to each: ${force.total}, and the table is rolled again`);
-        await Teleport._mishapCard(docs, force, ctx.actor);
+        entry.force = force.total;
+        await Teleport._mishapCard(docs, force, actor);
       }
     }
-    if (result === "mishap") lines.push("Twenty mishaps in a row; the GM decides where they end up.");
 
     const names = docs.map(d => d.name);
-    const where = plan.where === "map" ? "the spot picked on this map" : (plan.place || "the place named");
+    const where = whereKind === "map" ? "the spot picked on this map" : (place || "the place named");
+    const notes = [];
     let arrival = "";
     let landed = false;
     if (result === "mishap") {
-      arrival = "The magic never settles. The GM decides where they end up.";
+      arrival = "Twenty mishaps in a row: the magic never settles. The GM decides where they end up.";
     } else if (result === "on" && point) {
-      landed = await Teleport._land(docs, point, caster.id);
+      landed = await Teleport._land(docs, point, caster.id, item, { look });
       arrival = landed ? "They appear exactly where they meant to." : "They arrive on target, but not every token could be moved; see the console.";
     } else if (result === "on") {
       arrival = `They appear at ${esc(where)}. ACE cannot pick that scene: the GM moves them there.`;
     } else if (result === "similar") {
       arrival = "They appear somewhere that looks like where they meant to go, but is not. The GM places them.";
     } else if (result === "off") {
-      const dir = (await Teleport._roll("1d8", "Teleport direction")).total;
-      const heading = COMPASS[edition][dir - 1];
+      const dir = (await Teleport._roll("1d8", "Teleport direction", { gmOnly })).total;
+      const heading = COMPASS[edition === "2024" ? "2024" : "2014"][dir - 1];
       if (edition === "2024") {
-        const miles = (await Teleport._roll("2d12", "Teleport distance")).total;
+        const miles = (await Teleport._roll("2d12", "Teleport distance", { gmOnly })).total;
         arrival = `They appear ${miles} miles ${heading} of ${esc(where)}. The GM places them.`;
-        lines.push(`Off Target: 2d12 = ${miles} miles, d8 = ${dir} (${heading})`);
+        notes.push(`2d12 = ${miles} miles; d8 = ${dir}, ${heading}.`);
       } else {
-        const a = (await Teleport._roll("1d10", "Teleport distance")).total;
-        const b = (await Teleport._roll("1d10", "Teleport distance")).total;
+        const a = (await Teleport._roll("1d10", "Teleport distance", { gmOnly })).total;
+        const b = (await Teleport._roll("1d10", "Teleport distance", { gmOnly })).total;
         const pct = a * b;
-        lines.push(`Off Target: ${a} x ${b} = ${pct}% of the distance, d8 = ${dir} (${heading})`);
+        notes.push(`${a} x ${b} = ${pct}% of the distance; d8 = ${dir}, ${heading}.`);
         // Johnny: "Off-target / similar area: GM places them." ACE works out
         // how far off, in feet, and leaves the placing to the GM.
         if (point) {
@@ -627,29 +866,56 @@ export class Teleport {
       }
     }
 
+    await Teleport._resultCard({ edition, row, where, names, rolls, arrival, notes, result, landed, actor, gmOnly });
+    console.log(`${LOG} | ${caster.name} casts Teleport (${edition}, ${row.label}): `
+      + `${rolls.map(r => `d100 ${r.total} ${r.result}`).join(", ")}${landed ? ", moved on the map" : ""}.`);
+    return { result, landed };
+  }
+
+  /**
+   * The card: each d100, big, with what it meant, then where they end up.
+   * For the GMs only when the dice were, and posted only once every die that
+   * decided it has landed.
+   */
+  static async _resultCard({ edition, row, where, names, rolls, arrival, notes, result, landed, actor, gmOnly }) {
+    const MEANT = { mishap: "Mishap", similar: "Similar Area", off: "Off Target", on: "On Target" };
+    const INK = { mishap: "#ff8a80", similar: "#ffd54f", off: "#ffb74d", on: "#9be29b" };
+    const rollRows = rolls.map(r => `
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;margin-top:8px;">
+            <span style="display:inline-flex;align-items:baseline;gap:6px;padding:2px 12px;border-radius:999px;background:#2a2140;border:1px solid #8a5cf6;">
+              <span style="font-size:14px;color:#b9b0cf;">d100</span>
+              <span style="font-size:20px;font-weight:700;color:#ffffff;">${r.total}</span>
+            </span>
+            <span style="flex:1 1 160px;font-size:16px;font-weight:700;color:${INK[r.result]};">${MEANT[r.result]}</span>
+            ${r.result === "mishap" ? `<span style="flex:1 1 100%;font-size:14px;color:#d8cfee;">3d10 force to each of them: ${r.force}. The table is rolled again.</span>` : ""}
+          </div>`).join("");
+    const gms = game.users?.filter?.(u => u.isGM)?.map(u => u.id) ?? [];
     await CardDoor.post({
-      speaker: ChatMessage.getSpeaker({ actor: ctx.actor }),
+      speaker: ChatMessage.getSpeaker({ actor }),
+      whisper: gmOnly ? gms : [],
       content: `
         <div class="ace-qol-teleport-card" style="background:#15121c;border:1px solid #5b4a8a;border-left:4px solid #8a5cf6;border-radius:6px;padding:10px 14px;color:#ece6ff;line-height:1.45;">
           <div style="font-size:18px;font-weight:700;color:#cbb6ff;">Teleport</div>
           <div style="font-size:16px;margin-top:4px;">${names.map(esc).join(", ")} vanish${names.length === 1 ? "es" : ""}.</div>
-          <div style="font-size:16px;margin-top:6px;">${arrival}</div>
-          <div style="font-size:14px;color:#b9b0cf;margin-top:8px;">${esc(row.label)} (${edition} table), bound for ${esc(where)}.</div>
-          ${lines.map(l => `<div style="font-size:14px;color:#b9b0cf;">${esc(l)}</div>`).join("")}
+          ${rollRows}
+          <div style="font-size:16px;margin-top:10px;">${arrival}</div>
+          ${notes.map(n => `<div style="font-size:14px;color:#d8cfee;margin-top:2px;">${esc(n)}</div>`).join("")}
+          <div style="font-size:14px;color:#b9b0cf;margin-top:8px;">${esc(row.label)} on the ${edition} table, bound for ${esc(where)}.</div>
         </div>`,
-      flags: { [MODULE_ID]: { type: "teleportResult", edition, familiarity: row.key, result, landed } },
-    });
-    console.log(`${LOG} | ${caster.name} casts Teleport (${edition}, ${row.label}): ${result}${landed ? ", moved on the map" : ""}.`);
-    return true;
+      flags: { [MODULE_ID]: { type: "teleportResult", edition, familiarity: row.key, result, landed,
+        rolls: rolls.map(r => ({ d100: r.total, meant: r.result, force: r.force ?? null })) } },
+    }, { dice: true });
   }
 
-  /** Move everyone who went to where they land around `point`. */
-  static async _land(docs, point, casterId) {
+  /** Move everyone who went to where they land around `point`, with the look. */
+  static async _land(docs, point, casterId, item = null, { look = true } = {}) {
+    const moves = [];
     let all = true;
     for (const { doc, to } of Teleport._landing(docs, point, casterId)) {
       if (!to) { all = false; console.warn(`${LOG} | no free square near the arrival point for ${doc.name}.`); continue; }
-      if (!(await Teleport.displace(doc, to))) all = false;
+      moves.push({ doc, to });
     }
+    if (moves.length && !(await Teleport._arrive(moves, item, { look }))) all = false;
     return all;
   }
 }

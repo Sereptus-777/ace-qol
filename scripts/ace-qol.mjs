@@ -592,6 +592,13 @@ Hooks.once("init", () => {
     .then(({ VisualOwnership }) => VisualOwnership.register())
     .catch(err => console.error(`${MODULE_ID} | Visual ownership init failed:`, err));
 
+  // ── Teleport: Automated Animations stands down for ACE's own (2026-09-18) ──
+  // AA's teleport preset arms its own map click and moves the token itself,
+  // which moved Neferon a second time after ACE had landed him.
+  import("./teleport.mjs")
+    .then(({ Teleport }) => Teleport.register())
+    .catch(err => console.error(`${MODULE_ID} | Teleport init failed:`, err));
+
   // Initialize Extended Active Effects engine (must be early — before effects process)
   try {
     extendedEffects = new ExtendedEffects();
@@ -5200,6 +5207,19 @@ Hooks.once("ready", () => {
       if (payload.action === TheClock.SOCKET_ACTION) {
         try { await TheClock.onSocket(payload); }
         catch (err) { console.error(`${MODULE_ID} | TheClock socket failed:`, err); }
+        return;
+      }
+
+      // A player cast Teleport: they chose who and where, and the table is
+      // rolled here, because the destination dice are the GM's (2026-09-18).
+      // Teleport.fromSocket checks the sender owns the caster before anything.
+      if (payload.action === "teleportTable") {
+        try {
+          const { Teleport } = await import("./teleport.mjs");
+          await Teleport.fromSocket(payload);
+        } catch (err) {
+          console.warn(`${MODULE_ID} | a player's Teleport table could not be rolled here:`, err);
+        }
         return;
       }
 

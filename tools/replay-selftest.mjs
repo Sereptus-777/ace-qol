@@ -3372,6 +3372,31 @@ await quiet(async () => {
       `${leftAlone.length} checked; taken over: ${taken.join(", ") || "none"}`);
   }
 
+  {
+    // Johnny, 2026-09-18: a later click moved Neferon again. AA's own teleport
+    // preset had armed a click of its own; ACE now stands it down for the
+    // teleports ACE moves itself, and for nothing else.
+    const hop = findOn("Neferon", "Teleport");
+    const spell = [...ACTORS.values()].filter(a => a.name === VAREK)
+      .flatMap(a => a.items.filter(i => i.name === "Teleport" && i.type === "spell"))[0] ?? null;
+    const others = [findOn("Blink Dog", "Teleport"), findOn("Kasimir Velikov", "Magic Missile", "character")].filter(Boolean);
+    const asked = (item) => { const d = { item }; Teleport._standDownAA(d); return d.stopWorkflow === true; };
+    check("Automated Animations stands down for the teleports ACE moves itself, Neferon's hop and Varek's spell, and for nothing else (2026-09-18)",
+      !!hop && !!spell && asked(hop) && asked(spell) && others.length >= 2 && others.every(i => !asked(i)),
+      `Neferon's hop: ${hop ? asked(hop) : "missing"}; Varek's spell: ${spell ? asked(spell) : "missing"}; `
+        + `left to AA: ${others.map(i => `${i.actor?.name}'s ${i.name} ${asked(i) ? "STOPPED" : "plays"}`).join("; ")}`);
+    const AA_SRC = "D:/FoundryVTT/Data/modules/autoanimations/dist/autoanimations.js";
+    if (!existsSync(AA_SRC)) {
+      check("Automated Animations still offers the stand-down ACE uses", null, "(Automated Animations is not installed here)");
+    } else {
+      const src = readFileSync(AA_SRC, "utf8");
+      const at = src.indexOf(`Hooks.callAll("AutomatedAnimations-WorkflowStart", clonedData, animationData);`);
+      const honoured = at >= 0 && /^\s*if \(clonedData\.stopWorkflow\) \{/.test(src.slice(at).split("\n")[1] ?? "");
+      check("Automated Animations still offers the stand-down ACE uses: it calls AutomatedAnimations-WorkflowStart and gives up on stopWorkflow (a hook nobody fires waits forever)",
+        honoured, at < 0 ? "the hook call is gone from AA's code" : (honoured ? "called, and stopWorkflow is read on the next line" : "called, but stopWorkflow is no longer read right after it"));
+    }
+  }
+
   // ── The books' tables ──
   {
     const o = (ed, fam, n) => Teleport.outcome(ed, fam, n);
@@ -3390,7 +3415,8 @@ await quiet(async () => {
   const { CardDoor: DoorTp } = await import(`${MODULE}/scripts/road/doors.mjs`);
   keepTp.post = DoorTp.post;
   const cardsTp = [];
-  DoorTp.post = async (data) => { cardsTp.push(data); return { id: `tp-card-${cardsTp.length}`, ...data }; };
+  const cardOptsTp = [];
+  DoorTp.post = async (data, opts = {}) => { cardsTp.push(data); cardOptsTp.push(opts); return { id: `tp-card-${cardsTp.length}`, ...data }; };
   const moves = [];
   const scene = { id: "s-tp", tokens: [] };
   const body = (id, name, x, y) => {
@@ -3447,6 +3473,125 @@ await quiet(async () => {
       refunded === spentCard.system.deltas && cleared?.["system.deltas"] === null && !refundedIdle && moves.length === 0,
       `given back: ${refunded ? "yes" : "no"}; the card's record cleared: ${cleared ? "yes" : "no"}; `
         + `nothing spent, refund called anyway: ${refundedIdle}; moves: ${moves.length}`);
+
+    // One click, one move, and nothing of the aiming left behind (his table,
+    // 2026-09-18: "No ghost, no line, no click listener. One move per press.").
+    {
+      const listeners = new Map();
+      const keepDoc = { add: document.addEventListener, remove: document.removeEventListener, byId: document.getElementById };
+      const keepPIXI = globalThis.PIXI;
+      const keepCanvas = { controls: canvas.controls, fromClient: canvas.canvasCoordinatesFromClient };
+      const board = { id: "board", contains: () => false };
+      class Node { constructor() { this.children = []; this.parent = null; this.destroyed = false; }
+        addChild(c) { c.parent = this; this.children.push(c); return c; }
+        removeChild(c) { this.children = this.children.filter(x => x !== c); c.parent = null; return c; }
+        removeChildren() { const out = this.children; this.children = []; return out; }
+        destroy() { this.destroyed = true; } }
+      class Gfx extends Node { lineStyle() { return this; } beginFill() { return this; } endFill() { return this; }
+        drawRect() { return this; } drawRoundedRect() { return this; } moveTo() { return this; } lineTo() { return this; } }
+      document.addEventListener = (type, fn) => { if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(fn); };
+      document.removeEventListener = (type, fn) => { listeners.get(type)?.delete(fn); };
+      document.getElementById = (id) => (id === "board" ? board : null);
+      globalThis.PIXI = { Container: Node, Graphics: Gfx };
+      canvas.controls = new Node();
+      canvas.canvasCoordinatesFromClient = ({ x, y }) => ({ x, y });
+      const click = (x, y) => {
+        const ev = { target: board, button: 0, clientX: x, clientY: y,
+          preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} };
+        for (const fn of [...(listeners.get("pointerdown") ?? [])]) fn(ev);
+      };
+      const open = () => [...listeners.values()].reduce((n, set) => n + set.size, 0);
+      try {
+        Object.assign(neferon.document, { x: 1000, y: 1000 });
+        moves.length = 0;
+        const press = () => Teleport.runHop({ actor: neferon.actor, item: neferonHop, activity: null,
+          message: { system: {} }, entry: { teleport: { kind: "hop", feet: 60 } } });
+        // Pressed twice before aiming: the first aiming is called off.
+        const first = quiet(press);
+        const second = quiet(press);
+        await new Promise(r => setTimeout(r, 0));
+        const drawnWhileAiming = canvas.controls.children.length;
+        click(1350, 1050);                         // a lit square, 15 feet east
+        const [a, b] = await Promise.all([first, second]);
+        const after = { listeners: open(), drawn: canvas.controls.children.length, session: Teleport._session };
+        click(1650, 1050);                         // a later click on the map
+        await new Promise(r => setTimeout(r, 20));
+        check("one hop is one click and one move: the aiming's click, squares and line are gone the moment he lands, a second press calls the first off, and a later click on the map does nothing (2026-09-18)",
+          drawnWhileAiming === 1 && a === false && b === true && moves.length === 1 && moves[0].to.x === 1300
+            && after.listeners === 0 && after.drawn === 0 && after.session === null,
+          `drawn while aiming: ${drawnWhileAiming}; first press: ${a}, second: ${b}; moves: `
+            + `${moves.map(m => `${m.to.x},${m.to.y}`).join("; ") || "none"}; after the pick: ${after.listeners} listener(s), `
+            + `${after.drawn} drawing(s), the aiming ${after.session ? "still open" : "closed"}`);
+      } finally {
+        for (const [k, v] of Object.entries(keepDoc)) {
+          const name = { add: "addEventListener", remove: "removeEventListener", byId: "getElementById" }[k];
+          if (v === undefined) delete document[name]; else document[name] = v;
+        }
+        if (keepPIXI === undefined) delete globalThis.PIXI; else globalThis.PIXI = keepPIXI;
+        canvas.controls = keepCanvas.controls;
+        canvas.canvasCoordinatesFromClient = keepCanvas.fromClient;
+      }
+    }
+
+    // The look he likes, played by ACE at the moment he arrives: his own AA
+    // "Teleport" preset's clips and sound, and the move at the preset's beat.
+    {
+      const { invalidate } = await import(`${MODULE}/scripts/animation/autorec.mjs`);
+      // His setting as the table reads it: sometimes still a JSON string, sometimes already a list.
+      const presets = (() => {
+        try { const raw = SETTINGS.get("autoanimations.aaAutorec-preset"); return (typeof raw === "string" ? JSON.parse(raw) : raw) ?? []; }
+        catch (_) { return []; }
+      })();
+      const preset = (Array.isArray(presets) ? presets : Object.values(presets)).find(r => r?.label === "Teleport" && r?.presetType === "teleportation");
+      if (!preset) {
+        check("ACE plays his Teleport look itself", null, "(this world has no Automated Animations preset called Teleport)");
+      } else {
+        const keepSeq = globalThis.Sequence, keepSqr = globalThis.Sequencer;
+        const played = [];
+        const t0 = Date.now();
+        const chain = (part, seq) => new Proxy({}, { get: (_o, k) => (k === "play" ? () => seq.play()
+          : (k === "sound" || k === "effect") ? (...args) => seq[k](...args)
+            : (...args) => { part[k] = args; return chain(part, seq); }) });
+        globalThis.Sequencer = { Database: { entryExists: (key) => /^autoanimations\.static\.spell\.mistystep\.0[12]\./.test(key) } };
+        globalThis.Sequence = class {
+          constructor() { this.parts = []; }
+          sound() { const part = { kind: "sound" }; this.parts.push(part); return chain(part, this); }
+          effect() { const part = { kind: "effect" }; this.parts.push(part); return chain(part, this); }
+          async play() { played.push({ at: Date.now() - t0, parts: this.parts }); return true; }
+        };
+        invalidate();
+        Object.assign(neferon.document, { x: 1000, y: 1000 });
+        moves.length = 0;
+        const keepPick3 = Teleport.pickSquare, keepMove3 = neferon.document.move;
+        let movedAt = null;
+        Teleport.pickSquare = async () => ({ x: 1300, y: 1000 });
+        neferon.document.move = async (w, o) => { movedAt = Date.now() - t0; return keepMove3(w, o); };
+        try {
+          await quiet(() => Teleport.runHop({ actor: neferon.actor, item: neferonHop, activity: null,
+            message: { system: {} }, entry: { teleport: { kind: "hop", feet: 60 } } }));
+        } finally {
+          Teleport.pickSquare = keepPick3;
+          neferon.document.move = keepMove3;
+          if (keepSeq === undefined) delete globalThis.Sequence; else globalThis.Sequence = keepSeq;
+          if (keepSqr === undefined) delete globalThis.Sequencer; else globalThis.Sequencer = keepSqr;
+          invalidate();
+        }
+        const [leave, arrive] = played;
+        const leaveFx = leave?.parts.find(q => q.kind === "effect");
+        const sound = leave?.parts.find(q => q.kind === "sound");
+        const arriveFx = arrive?.parts.find(q => q.kind === "effect");
+        const colour = preset.data?.start?.color ?? "";
+        const beat = Number(preset.data?.end?.options?.delay) || 0;
+        check("ACE plays his Teleport look itself: the Misty Step out where he stood with its sound, then, at the preset's own beat, the Misty Step in where he lands and the move together (2026-09-18)",
+          played.length === 2 && leaveFx?.file?.[0] === `autoanimations.static.spell.mistystep.01.${colour}`
+            && leaveFx?.atLocation?.[0]?.x === 1050 && arriveFx?.file?.[0] === `autoanimations.static.spell.mistystep.02.${colour}`
+            && arriveFx?.atLocation?.[0]?.x === 1350 && sound?.file?.[0] === preset.data?.sound?.file
+            && movedAt !== null && arrive.at >= beat - 50 && Math.abs(movedAt - arrive.at) < 100 && moves.length === 1,
+          `clips: ${played.length}; out: ${leaveFx?.file?.[0] ?? "none"} at ${leaveFx?.atLocation?.[0]?.x ?? "?"}; `
+            + `in: ${arriveFx?.file?.[0] ?? "none"} at ${arriveFx?.atLocation?.[0]?.x ?? "?"} after ${arrive?.at ?? "?"} ms `
+            + `(the preset's beat ${beat}); moved at ${movedAt ?? "never"} ms; sound: ${sound?.file?.[0] ?? "none"}`);
+      }
+    }
 
     // ── The 7th-level spell ──
     const varekTok = body("tp-var", "Varek Thalor (CR 30)", 2000, 2000);
@@ -3511,6 +3656,98 @@ await quiet(async () => {
       went === false && moves.length === 0 && cardsTp.length === 0 && committed === 0,
       `cast: ${went}; moves ${moves.length}; cards ${cardsTp.length}; slot spent ${committed}x`);
     Object.assign(Teleport, { askPlan: keep.plan, pickPoint: keep.point, _roll: keep.roll });
+
+    // The destination dice are the GM's, and nothing is posted before its dice
+    // stop (his table, 2026-09-18). A mishap, then On Target.
+    {
+      const keepDice = game.dice3d, keepRoll = globalThis.Roll, keepPost4 = DoorTp.post;
+      const events = [];
+      game.dice3d = { isEnabled: () => true,
+        showForRoll: (roll, _user, _sync, users) => {
+          events.push(`show ${roll.formula} ${users ? "to the GMs" : "to everybody"}`);
+          return new Promise(r => setTimeout(() => { events.push(`${roll.formula} lands`); r(true); }, 15));
+        } };
+      const queue = [3, 17, 90];
+      globalThis.Roll = class { constructor(f) { this.formula = String(f); this.terms = []; }
+        async evaluate() { this.total = queue.shift() ?? 1; return this; } };
+      DoorTp.post = async (data, opts = {}) => {
+        events.push(`card ${data?.flags?.["ace-qol"]?.type}${opts.dice ? " (waits for dice)" : ""}`);
+        cardsTp.push(data);
+        return { id: `tp-card-${cardsTp.length}`, ...data };
+      };
+      Object.assign(varekTok.document, { x: 2000, y: 2000 });
+      Object.assign(friend.document, { x: 2100, y: 2000 });
+      cardsTp.length = 0; moves.length = 0;
+      try {
+        await quiet(() => Teleport.runTable({ edition: "2024", familiarity: "very", where: "map", place: "",
+          point: { x: 3050, y: 3050 }, docs: [varekTok.document, friend.document], actor: varekTok.actor, item: varekSpell }));
+      } finally {
+        game.dice3d = keepDice;
+        globalThis.Roll = keepRoll;
+        DoorTp.post = keepPost4;
+      }
+      const order = events.join(" > ");
+      const want = "show 1d100 to the GMs > 1d100 lands > show 3d10 to everybody > 3d10 lands > card damageResult (waits for dice)"
+        + " > show 1d100 to the GMs > 1d100 lands > card teleportResult (waits for dice)";
+      check("Teleport waits for its dice: the d100 tumbles on the GMs' screens only, a mishap's 3d10 where everybody sees damage roll, its damage card after those land, and the Teleport card after the last die (2026-09-18)",
+        order === want, order);
+      const card = cardsTp.at(-1);
+      const text = String(card?.content ?? "");
+      const gms = game.users.filter(u => u.isGM).map(u => u.id);
+      check("the Teleport card is the GMs' and shows each d100, big, with what it meant: 3 Mishap (17 force to each), then 90 On Target (2026-09-18)",
+        JSON.stringify(card?.whisper) === JSON.stringify(gms) && /d100<\/span>\s*<span[^>]*font-size:20px[^>]*>3<\/span>/.test(text)
+          && /Mishap/.test(text) && /force to each of them: 17/.test(text)
+          && /d100<\/span>\s*<span[^>]*font-size:20px[^>]*>90<\/span>/.test(text) && /On Target/.test(text)
+          && JSON.stringify(card?.flags?.["ace-qol"]?.rolls) === JSON.stringify([{ d100: 3, meant: "mishap", force: 17 }, { d100: 90, meant: "on", force: null }]),
+        `whispered to: ${JSON.stringify(card?.whisper)}; the card: ${text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 220)}`);
+    }
+
+    // A player who casts it chooses on their own screen; the table goes to the GM's.
+    {
+      const PLAYER = { id: "tp-player", isGM: false, name: "a player" };
+      const keepP = { user: game.user, users: game.users, socket: game.socket, fromUuid: globalThis.fromUuid,
+        scenes: game.scenes, table: Teleport.runTable, plan: Teleport.askPlan, point: Teleport.pickPoint };
+      const emitted = [];
+      const tables = [];
+      const spell = { id: "tp-spell", uuid: "Actor.tp-var.Item.tp-spell", name: "Teleport", type: "spell",
+        system: { level: 7, source: { rules: "2024" } }, actor: varekTok.actor };
+      const tablesBefore = () => tables.length;
+      try {
+        game.users = Object.assign([GM, PLAYER], { activeGM: GM, get: (id) => [GM, PLAYER].find(u => u.id === id) ?? null });
+        game.socket = { emit: (name, data) => emitted.push({ name, data }) };
+        varekTok.actor.testUserPermission = (u, level) => u?.id === PLAYER.id && level === "OWNER";
+        Teleport.askPlan = async () => ({ who: [friend], familiarity: "very", where: "map", place: "" });
+        Teleport.pickPoint = async () => ({ x: 3050, y: 3050 });
+        Teleport.runTable = async (t) => { tables.push(t); return { result: "on", landed: true }; };
+        let spent = 0;
+        game.user = PLAYER;
+        await quiet(() => Teleport.runSpell({ actor: varekTok.actor, item: spell, activity: null, onCommit: async () => { spent++; } }));
+        const onPlayer = tablesBefore();
+        const sent = emitted.find(e => e.data?.action === "teleportTable") ?? null;
+        game.user = GM;
+        const byUuid = new Map([[varekTok.actor.uuid, varekTok.actor], [spell.uuid, spell]]);
+        globalThis.fromUuid = async (u) => byUuid.get(u) ?? keepP.fromUuid(u);
+        scene.tokens.get = (id) => scene.tokens.find(d => d.id === id) ?? null;
+        game.scenes = { get: (id) => (id === scene.id ? scene : null) };
+        await quiet(() => Teleport.fromSocket(sent?.data));
+        const ranForOwner = tables.length;
+        await quiet(() => Teleport.fromSocket({ ...(sent?.data ?? {}), userId: "not-a-user" }));
+        const t = tables[0];
+        check("a player who casts Teleport chooses on their own screen and nothing is rolled there; the GM's screen rolls the owner's table, and a table from anybody else is refused (2026-09-18)",
+          onPlayer === 0 && !!sent && sent.name === "module.ace-qol" && spent === 1 && ranForOwner === 1 && tables.length === 1
+            && t?.docs?.map(d => d.name).join(",") === "Varek Thalor (CR 30),a willing friend" && t?.edition === "2024"
+            && t?.familiarity === "very" && t?.point?.x === 3050,
+          `rolled on the player's screen: ${onPlayer}; sent to the GM: ${sent ? sent.name : "no"}; slot spent ${spent}x; `
+            + `tables rolled by the GM: ${ranForOwner} for the owner, ${tables.length - ranForOwner} for a stranger; `
+            + `who went: ${t?.docs?.map(d => d.name).join(", ") ?? "-"}`);
+      } finally {
+        game.user = keepP.user; game.users = keepP.users; game.socket = keepP.socket; globalThis.fromUuid = keepP.fromUuid;
+        game.scenes = keepP.scenes;
+        Object.assign(Teleport, { runTable: keepP.table, askPlan: keepP.plan, pickPoint: keepP.point });
+        delete varekTok.actor.testUserPermission;
+        delete scene.tokens.get;
+      }
+    }
   } catch (err) {
     check("teleport: the pins ran", false, `threw: ${err?.message ?? err}`);
   } finally {
@@ -3522,6 +3759,73 @@ await quiet(async () => {
     canvas.scene = keepTp.scene;
     canvas.tokens.placeables.length = 0;
     canvas.tokens.placeables.push(...keepTp.placed);
+  }
+});
+
+/* ── FORGE PLAYS TRAPS AND SECRET DOORS ──────────────────────────────────── */
+// Johnny, 2026-09-18: "If ACE QOL owns the press (spell, feature hop, 7th-level
+// Teleport, anything in the pipeline), Forge plays nothing ... Forge only plays
+// traps and secret doors." Forge's own runtime, driven by a press with a Forge
+// FX of its own.
+console.log(`\nFORGE PLAYS TRAPS AND SECRET DOORS, NOT PRESSES`);
+await quiet(async () => {
+  const lengths = Object.fromEntries(Object.entries(hooks).map(([k, v]) => [k, v.length]));
+  const keepF = { window: globalThis.window, hadWindow: Object.prototype.hasOwnProperty.call(globalThis, "window"),
+    addEv: globalThis.addEventListener, remEv: globalThis.removeEventListener,
+    data: foundry.data, abstract: foundry.abstract, documents: foundry.documents,
+    modules: game.modules.get, seq: globalThis.Sequence };
+  let runtime = null, why = "";
+  try {
+    globalThis.window = globalThis;
+    globalThis.addEventListener ??= () => {};
+    globalThis.removeEventListener ??= () => {};
+    foundry.data ??= { regionBehaviors: { RegionBehaviorType: class {} }, fields: new Proxy({}, { get: () => class {} }) };
+    foundry.abstract ??= { DataModel: class {}, TypeDataModel: class {} };
+    foundry.documents ??= new Proxy({}, { get: () => class {} });
+    runtime = await import("file:///D:/FoundryVTT/Data/modules/ace-artificer/scripts/forge-fx-runtime.mjs");
+  } catch (err) { why = err?.message ?? String(err); }
+  try {
+    if (!runtime) {
+      check("Forge plays nothing on a press while ACE QOL runs", false, `Forge's FX runtime could not be loaded here: ${why}`);
+    } else {
+      let built = 0;
+      const chainable = () => { const px = new Proxy(function () {}, { get: (_t, k) => (k === "then" ? undefined
+        : k === "play" ? async () => true : () => px) }); return px; };
+      globalThis.Sequence = function Sequence() { built++; return chainable(); };
+      const before = (hooks["dnd5e.postCreateUsageMessage"] ?? []).length;
+      runtime.activateFxRuntime();
+      const onUse = (hooks["dnd5e.postCreateUsageMessage"] ?? [])[before];
+      const owner = { id: "forge-a", name: "a Forge tester", type: "npc", getActiveTokens: () => [], items: [] };
+      const shimmer = { id: "forge-i", uuid: "Actor.forge-a.Item.forge-i", name: "A Shimmer", type: "feat",
+        documentName: "Item", actor: owner, parent: owner,
+        flags: { "ace-artificer": { fx: { v: 2, sounds: [{ src: "sounds/notify.wav", volume: 0.5 }], trigger: { on: "use" } } } },
+        getFlag(scope, key) { return this.flags?.[scope]?.[key]; },
+        system: { activities: { contents: [{ type: "utility", target: { affects: { type: "self" } }, range: { units: "self" } }] } } };
+      const aceOn = (id) => (id === "ace-qol" ? { active: true } : null);
+      game.modules.get = aceOn;
+      await onUse?.(shimmer, {});
+      const withAce = built;
+      game.modules.get = () => null;
+      await onUse?.(shimmer, {});
+      const withoutAce = built - withAce;
+      game.modules.get = aceOn;
+      await runtime._testPlayFx(runtime.readItemFx(shimmer), shimmer);
+      const testPlay = built - withAce - withoutAce;
+      check("Forge plays nothing on a press while ACE QOL runs, not even an item with a Forge FX of its own; without ACE QOL the same press plays, and the editor's Test Play still does (2026-09-18)",
+        typeof onUse === "function" && withAce === 0 && withoutAce >= 1 && testPlay >= 1,
+        `played with ACE QOL running: ${withAce}; without it: ${withoutAce}; the editor's Test Play: ${testPlay}`);
+    }
+  } finally {
+    for (const [k, n] of Object.entries(lengths)) hooks[k].length = n;
+    for (const k of Object.keys(hooks)) if (!(k in lengths)) delete hooks[k];
+    if (keepF.hadWindow) globalThis.window = keepF.window; else delete globalThis.window;
+    if (keepF.addEv === undefined) delete globalThis.addEventListener; else globalThis.addEventListener = keepF.addEv;
+    if (keepF.remEv === undefined) delete globalThis.removeEventListener; else globalThis.removeEventListener = keepF.remEv;
+    if (keepF.data === undefined) delete foundry.data; else foundry.data = keepF.data;
+    if (keepF.abstract === undefined) delete foundry.abstract; else foundry.abstract = keepF.abstract;
+    if (keepF.documents === undefined) delete foundry.documents; else foundry.documents = keepF.documents;
+    game.modules.get = keepF.modules;
+    if (keepF.seq === undefined) delete globalThis.Sequence; else globalThis.Sequence = keepF.seq;
   }
 });
 

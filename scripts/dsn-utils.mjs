@@ -47,8 +47,11 @@ const MODULE_ID = "ace-qol";
  */
 const _inFlight = new Set();
 
-export function safeShowForRoll(roll, label = "dice animation") {
+export function safeShowForRoll(roll, label = "dice animation", { users = null } = {}) {
   if (!roll) return;
+  // `users`: the ids of the only people whose screens show these dice (the
+  // GMs, for a Teleport's destination dice, 2026-09-18). The roller's own
+  // screen shows them either way, and its animation is still the one waited on.
 
   // ⚠️🔴 THE SAME DICE MUST NEVER TUMBLE TWICE. Johnny, live on
   // 2026-09-05: "when Firaxis did that heal, it rolled 4d6, so there's a
@@ -76,7 +79,7 @@ export function safeShowForRoll(roll, label = "dice animation") {
   } catch (_) { /* a frozen roll simply loses the guard, never the animation */ }
 
   try {
-    const p = game.dice3d?.showForRoll?.(roll, game.user, true);
+    const p = game.dice3d?.showForRoll?.(roll, game.user, true, users?.length ? users : null);
     if (p && typeof p.then === "function") {
       // Track it so a card post can wait for THESE dice specifically rather
       // than guessing at a duration.
