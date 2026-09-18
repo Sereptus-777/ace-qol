@@ -165,6 +165,63 @@ console.log("\nDRAWING TWICE DOES NOT STACK");
   check("still exactly two children", t.children.length, 2);
 }
 
+console.log("\nA DROP FROM 30 TO 0 TAKES THE TRIANGLE WITH IT (his table, 2026-09-18)");
+{
+  // "Token elevation is 0 after the fall. Right-click confirms 0. The badge
+  // still says 30 ft." An elevation change is a movement in V13, and in his
+  // world the document has been seen holding the old value after the update
+  // announced the new one. The marker redrew from the document in that window.
+  //
+  // The hooks as Foundry would call them: every updateToken listener in the
+  // order it registered (the marker's, then the suite's position note), and
+  // refreshToken when Foundry redraws the height.
+  const hooks = {};
+  const keepOn = Hooks.on;
+  Hooks.on = (name, fn) => { (hooks[name] ??= []).push(fn); return (hooks[name].length); };
+  const { aceRegisterPositionTracking } = await import(
+    "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/geometry-utils.mjs");
+  FlightControl.register();
+  aceRegisterPositionTracking();
+  Hooks.on = keepOn;
+  const fire = (name, ...args) => { for (const fn of hooks[name] ?? []) fn(...args); };
+  const label = (t) => t.children.find(c => c instanceof PIXI.Text)?.text ?? "none";
+
+  const t = tok("Varek", { elevation: 30 });
+  Object.assign(t.document, { id: "tok-varek", x: 1000, y: 1000 });
+  canvas.tokens.placeables.push(t);
+  FlightControl.draw(t);
+  check("on the balcony region the triangle says 30", label(t), "▲ 30 ft");
+
+  // The fall: the update says 0, the document has not caught up yet.
+  fire("updateToken", t.document, { elevation: 0 }, {}, "gm");
+  check("the update says 0, the document still says 30: the triangle goes", [label(t), t.children.length], ["none", 0]);
+
+  // Foundry redraws the height while the document still lags: it must not come back.
+  fire("refreshToken", t, { refreshElevation: true });
+  check("Foundry's own height refresh does not bring the 30 back", label(t), "none");
+
+  // The document catches up; the refresh still agrees.
+  t.document.elevation = 0;
+  fire("refreshToken", t, { refreshElevation: true });
+  check("and once the document agrees, still nothing", label(t), "none");
+
+  // Back up on to a 30-foot region.
+  fire("updateToken", t.document, { elevation: 30 }, {}, "gm");
+  check("stepping back up on to the region shows 30 at once", label(t), "▲ 30 ft");
+
+  // Foundry redraws the whole token while the document still lags a new drop.
+  fire("updateToken", t.document, { elevation: 0 }, {}, "gm");
+  fire("drawToken", t);
+  check("a full redraw of the token in that window also shows the drop, not the old 30", label(t), "none");
+  t.document.elevation = 0;
+
+  // Other refreshes (a move across the floor, a new picture) leave it alone.
+  const before = t.children[1];
+  fire("refreshToken", t, { refreshPosition: true });
+  check("a refresh that is not about height does not redraw the marker", t.children[1] === before, true);
+  canvas.tokens.placeables.length = 0;
+}
+
 console.log("");
 console.log(pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;

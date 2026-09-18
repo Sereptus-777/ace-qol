@@ -30,6 +30,10 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { onCanvasReady } from "./ready-utils.mjs";
+// Where a token IS: the height its last update reported while the document is
+// still catching up, otherwise the document. The same reader every distance in
+// the suite uses (only reads the entry's id inside a function, so no cycle bites).
+import { aceMeasuredPosition } from "./geometry-utils.mjs";
 
 // ⚠️🔴 DECLARED HERE, NEVER IMPORTED FROM THE ENTRY FILE. `ace-qol.mjs`
 // imports this module, so importing `MODULE_ID` back out of it is a cycle, and
@@ -174,12 +178,33 @@ export class FlightControl {
    * multiplied by scale is how every previous overlay in this suite ended up
    * the wrong size on a scaled token.
    */
-  static draw(token) {
+  /**
+   * The height the marker must show.
+   *
+   * ⚠️🔴 NOT THE DOCUMENT AT THE MOMENT OF THE UPDATE (his table, 2026-09-18:
+   * "Token elevation is 0 after the fall. Right-click confirms 0. The badge
+   * still says 30 ft."). An elevation change is a MOVEMENT in V13 (elevation is
+   * one of TokenDocument.MOVEMENT_FIELDS), and in his world the document has
+   * been seen still holding the old value hundreds of milliseconds after the
+   * update announced the new one (lesson of 2026-09-02). The marker redrew from
+   * the document inside that window, drew 30 again, and nothing ever asked it
+   * to look a second time. The update's own number wins; after that, the
+   * suite's position reader (the update's note while the document lags).
+   */
+  static _heightOf(token, reported) {
+    const said = Number(reported);
+    if (reported !== undefined && reported !== null && Number.isFinite(said)) return said;
+    try { return Number(aceMeasuredPosition(token).elevation) || 0; }
+    catch (_) { return Number(token?.document?.elevation ?? 0) || 0; }
+  }
+
+  static draw(token, { elevation } = {}) {
     try {
       if (!token?.document || token.destroyed) return;
       FlightControl._clear(token);
 
-      const ft = Number(token.document.elevation ?? 0) || 0;
+      const ft = FlightControl._heightOf(token, elevation);
+      token._aceFlightFt = ft;                  // what the marker says, for the refresh check
       if (ft <= 0) return;                      // on the ground: nothing to draw
 
       const w = token.mesh?.width  || token.w || canvas.grid.size;
@@ -234,7 +259,19 @@ export class FlightControl {
       if (changes?.elevation === undefined && changes?.texture === undefined
           && changes?.width === undefined && changes?.height === undefined) return;
       const token = doc?.object;
-      if (token) FlightControl.draw(token);
+      // The update says where it went; that number, not the document's.
+      if (token) FlightControl.draw(token, { elevation: changes?.elevation });
+    });
+    // ⚠️ AND LOOK AGAIN WHENEVER FOUNDRY REDRAWS THE HEIGHT. Its own elevation
+    // refresh fires when the token's height changes on screen by any route, so
+    // a marker that disagrees with where the token now is redraws itself.
+    Hooks.on("refreshToken", (token, flags) => {
+      try {
+        if (!flags?.refreshElevation || !token?.document || token.destroyed) return;
+        if (FlightControl._heightOf(token) !== (token._aceFlightFt ?? 0)) FlightControl.draw(token);
+      } catch (err) {
+        console.warn(`${LOG} | could not recheck the flight marker on ${token?.name}:`, err);
+      }
     });
     Hooks.on("deleteToken", (doc) => { if (doc?.object) FlightControl._clear(doc.object); });
     Hooks.on("drawToken", (token) => FlightControl.draw(token));

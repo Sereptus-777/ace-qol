@@ -31,6 +31,9 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { onCanvasReady } from "./ready-utils.mjs";
+// The height an update reported while the document still lags it (2026-09-18:
+// the flight marker kept a fall's old 30 feet by reading the document).
+import { aceMeasuredPosition } from "./geometry-utils.mjs";
 
 const MODULE_ID = "ace-qol";
 const LOG = `${MODULE_ID} | perspective`;
@@ -70,7 +73,7 @@ export class Perspective {
     if (!controlled.length) return 0;
     let best = 0;
     for (const t of controlled) {
-      const ft = Number(t?.document?.elevation ?? 0);
+      const ft = Number(aceMeasuredPosition(t).elevation ?? 0);
       if (Number.isFinite(ft) && ft > best) best = ft;
     }
     return best;
@@ -99,7 +102,7 @@ export class Perspective {
       }
 
       const viewer = Perspective.viewerElevation();
-      const mine = Number(token.document?.elevation ?? 0) || 0;
+      const mine = Number(aceMeasuredPosition(token).elevation ?? 0) || 0;
       const scale = Perspective.scaleFor(viewer - mine);
 
       if (scale === 1) { Perspective._reset(token); return; }
