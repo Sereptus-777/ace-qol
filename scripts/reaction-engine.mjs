@@ -96,6 +96,9 @@ export class ReactionEngine {
    */
   static _castBarriers = new Map();
 
+  /** Reaction boxes opened on this client, for their ids (see _announceBox). */
+  static _boxCounter = 0;
+
   /**
    * v0.7.265 — Counterspell NATIVE-resolution cleanup.
    * The cast barrier stops ACE's OWN downstream engines when a spell is
@@ -3498,6 +3501,54 @@ export class ReactionEngine {
    * @returns {Promise<{ accepted: boolean, choiceData: object }>}
    */
   async _promptReaction(opts) {
+    // ⚠️🔴 A REACTION BOX IS SOMETHING HAPPENING, AND THE SILENCE WATCH MUST
+    // KNOW (his table, 2026-09-18): "Toast: 'Magic Missile did nothing. no
+    // pipeline reported taking it.' The missile DID resolve. Counterspell was
+    // refused. Shield was used. Nothing failed." The spell pipeline waits for
+    // the Counterspell answer before it opens its picker, the box is an old
+    // style Dialog the watch never listened for, and a box on a player's
+    // screen cannot be seen from the presser's client at all. So a Counterspell
+    // box left open for more than 2.5 seconds was a red banner every time.
+    //
+    // This is the one door every reaction box goes through, local or remote,
+    // so it announces the box to the watch here, and to every other client.
+    const box = ReactionEngine._announceBox(opts);
+    try {
+      return await this._routePrompt(opts);
+    } finally {
+      ReactionEngine._announceBox(null, box);
+    }
+  }
+
+  /**
+   * Tell the silence watch, on this client and every other, that a reaction
+   * box has opened or closed. Only the watch reads it: while a box is open no
+   * button is called dead, and a box opening means the press it belongs to did
+   * something.
+   *
+   * @param {object|null} opts   the prompt's options, when it opens
+   * @param {string|null} closingId  the id it opened with, to close it
+   * @returns {string} the box's id
+   */
+  static _announceBox(opts, closingId = null) {
+    const id = closingId
+      ?? `${game.user?.id ?? "?"}-${++ReactionEngine._boxCounter}-${Date.now()}`;
+    const data = closingId
+      ? { id, open: false }
+      : { id, open: true, what: `${opts?.title ?? opts?.type ?? "a reaction"} for `
+          + `${opts?.reactorActor?.name ?? opts?.reactorActorName ?? "a creature"}` };
+    // The watch lives on this client too. Imported when needed, never at load:
+    // the reading reaches the spell pipeline, which reaches back here.
+    import("./profiles/action-interceptor.mjs")
+      .then(({ ActionInterceptor }) => ActionInterceptor.reactionBox(data))
+      .catch(err => console.warn(`${MODULE_ID} | could not tell the silence watch about a reaction box:`, err));
+    try { game.socket?.emit?.(SOCKET_NAME, { action: "reactionBox", ...data }); }
+    catch (err) { console.warn(`${MODULE_ID} | could not tell the other clients about a reaction box:`, err); }
+    return id;
+  }
+
+  /** Where a reaction prompt goes: its owner's screen, or this one. */
+  async _routePrompt(opts) {
     const { reactorActor, reactorToken, forceGM } = opts;
     // v0.7.21: reaction-prompt timeout REMOVED — reactions wait
     // indefinitely for an explicit user click. (See _promptLocal +

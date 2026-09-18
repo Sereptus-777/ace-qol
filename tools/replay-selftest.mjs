@@ -4266,6 +4266,110 @@ console.log(`\nPHASE 6a: THE SHIELD REACTION`);
       DamageCardRenderer.postDamageButton = keepCard;
       if (keepApi === undefined) delete game.aceQol.reactionEngine; else game.aceQol.reactionEngine = keepApi;
     }
+
+    // ── 7. THE RED BANNER OVER A MAGIC MISSILE THAT RESOLVED ──
+    // Johnny, 2026-09-18: "Toast: 'Magic Missile did nothing. no pipeline
+    // reported taking it.' The missile DID resolve. Counterspell was refused.
+    // Shield was used. Nothing failed. That toast must not fire while a
+    // reaction box is open, and must not fire after the pipeline later takes
+    // the spell. Keep the toast only when the press truly produced no pipeline
+    // and no reaction."
+    //
+    // This drives the real press: the reading, the real pipeline dispatch
+    // waiting on a Counterspell answer, and the box opened through the real
+    // prompt door and held open well past the watch's window. Only the box's
+    // routing and the picker are stood in.
+    {
+      const { ActionInterceptor } = await import(`${MODULE}/scripts/profiles/action-interceptor.mjs`);
+      const { SpellPipeline } = await import(`${MODULE}/scripts/spell-pipeline/pipeline.mjs`);
+      const { ReactionEngine: RE7 } = await import(`${MODULE}/scripts/reaction-engine.mjs`);
+      const wait7 = (ms) => new Promise(r => setTimeout(r, ms));
+      const keep7 = { silence: ActionInterceptor.silenceMs, notes: ui.notifications, socket: game.socket,
+        run: SpellPipeline._runPickerAndResolve, error: console.error };
+      const banners = [];
+      const emitted = [];
+      const deadLines = [];
+      ActionInterceptor.silenceMs = 80;
+      ui.notifications = { info: () => {}, warn: () => {}, error: (m) => { banners.push(String(m)); } };
+      game.socket = { emit: (_name, data) => { emitted.push(data); }, on: () => {} };
+      console.error = (...a) => { deadLines.push(a.map(String).join(" ")); };
+      const ran = [];
+      SpellPipeline._runPickerAndResolve = async () => { ran.push("the picker"); };
+      let releaseBox = null;
+      engine._routePrompt = () => new Promise(r => { releaseBox = r; });
+
+      let err7 = null;
+      const seen = {};
+      try {
+        await quiet(async () => {
+          const caster7 = who("p7-caster", "Neferon", { shield: false, slots: 3 });
+          const kasimir7 = who("p7-kasimir", "Kasimir Velikov", { shield: false, slots: 3 });
+          const mm7 = { id: "it-mm7", name: "Magic Missile", type: "spell", img: "",
+            uuid: "Actor.p7-caster.Item.it-mm7", actor: caster7,
+            system: { level: 1, properties: new Set(), source: { rules: "2014" }, activities: [] }, flags: {} };
+          const act7 = { id: "act-mm7", type: "damage", uuid: "Actor.p7-caster.Item.it-mm7.Activity.act-mm7",
+            item: mm7, actor: caster7 };
+
+          // The press: read, then the pipeline takes it and waits on the answer.
+          ActionInterceptor.read(act7);
+          RE7._createCastBarrier(act7);
+          const dispatched = SpellPipeline._dispatch(act7, {});
+
+          // Somebody who can Counterspell is asked, through the one door, and
+          // takes their time: three times the watch's window.
+          const answered = RE7.prototype._promptReaction.call(engine,
+            { reactorActor: kasimir7, title: "Counterspell", type: "counterspell" });
+          await wait7(240);
+          seen.duringBanners = banners.length;
+          seen.claimedBy = ActionInterceptor.readingFor(act7)?.claimedBy ?? null;
+          seen.boxesOpen = ActionInterceptor._openBoxes?.size ?? 0;
+          seen.relayedOpen = emitted.some(d => d?.action === "reactionBox" && d.open === true);
+
+          // "Counterspell was refused": the answer is no, and the spell goes on.
+          releaseBox({ accepted: false, choiceData: {} });
+          await answered;
+          RE7._resolveCastBarrier(act7, { abort: false, reason: "not countered" });
+          await dispatched;
+          await wait7(240);
+          seen.afterBanners = banners.length;
+          seen.pickerRan = ran.length;
+          seen.boxesAfter = ActionInterceptor._openBoxes?.size ?? 0;
+          seen.relayedClosed = emitted.some(d => d?.action === "reactionBox" && d.open === false);
+
+          // And a press that truly produced no pipeline and no reaction is
+          // still reported: the rule narrows the banner, it does not remove it.
+          const dead = { id: "act-dead7", type: "utility", uuid: "Actor.p7-caster.Item.it-dead7.Activity.act-dead7",
+            item: { id: "it-dead7", name: "A button that does nothing", type: "feat", uuid: "Actor.p7-caster.Item.it-dead7",
+              actor: caster7, system: { source: { rules: "2014" }, activities: [] }, flags: {} },
+            actor: caster7 };
+          ActionInterceptor.read(dead);
+          await wait7(240);
+          seen.deadBanners = banners.length - seen.afterBanners;
+        });
+      } catch (e) { err7 = e; }
+
+      check("7. a Magic Missile held up by a Counterspell box raises no red banner: the box counts as something happening, the pipeline says it took the spell, and the box is announced to every client (2026-09-18)",
+        !err7 && seen.duringBanners === 0 && seen.claimedBy === "spell-pipeline"
+          && seen.boxesOpen === 1 && seen.relayedOpen,
+        err7 ? `threw: ${err7?.message ?? err7}`
+          : `banners while the box was open: ${seen.duringBanners}; the press was taken by: ${seen.claimedBy ?? "nobody"}; `
+            + `boxes the watch knew were open: ${seen.boxesOpen}; announced to other clients: ${seen.relayedOpen}`);
+      check("7. after Counterspell is refused the spell goes on, still with no banner, and the box is closed everywhere (2026-09-18)",
+        !err7 && seen.afterBanners === 0 && seen.pickerRan === 1 && seen.boxesAfter === 0 && seen.relayedClosed,
+        err7 ? `threw: ${err7?.message ?? err7}`
+          : `banners: ${seen.afterBanners}; the pipeline went on to its picker: ${seen.pickerRan === 1}; `
+            + `boxes still open: ${seen.boxesAfter}; closed on other clients: ${seen.relayedClosed}`);
+      check("7. a press that truly produced no pipeline and no reaction still gets the banner (2026-09-18)",
+        !err7 && seen.deadBanners === 1 && deadLines.some(l => /DEAD BUTTON: "A button that does nothing"/.test(l)),
+        err7 ? `threw: ${err7?.message ?? err7}` : `banners for the dead press: ${seen.deadBanners}`);
+
+      ActionInterceptor.silenceMs = keep7.silence;
+      ui.notifications = keep7.notes;
+      if (keep7.socket === undefined) delete game.socket; else game.socket = keep7.socket;
+      SpellPipeline._runPickerAndResolve = keep7.run;
+      delete engine._routePrompt;   // back to the engine's own, off its prototype
+      console.error = keep7.error;
+    }
   } finally {
     ConditionDoor.apply = keep6a.apply;
     ConditionDoor.applyItemEffect = keep6a.applyFx;

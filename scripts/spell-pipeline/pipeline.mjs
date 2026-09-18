@@ -845,6 +845,18 @@ export class SpellPipeline {
 
     const ctx = { entry, item, actor, activity, castLevel, spellMod, message };
 
+    // ⚠️🔴 SAY THAT THIS PRESS IS TAKEN, BEFORE WAITING ON ANYBODY (his table,
+    // 2026-09-18): "Magic Missile did nothing. no pipeline reported taking it"
+    // - over a Magic Missile that resolved. The wait just below can last as
+    // long as somebody takes to answer a Counterspell box, and the silence
+    // watch, told nothing, called the button dead at 2.5 seconds. From here on
+    // this pipeline answers for the spell, and every way out of it says why.
+    // Imported when needed, never at load: the reading imports this file.
+    import("../profiles/action-interceptor.mjs")
+      .then(({ ActionInterceptor }) => ActionInterceptor.claim(activity, "spell-pipeline"))
+      .catch(err => console.warn(`${MODULE_ID} | SpellPipeline: could not tell the silence watch it has `
+        + `${item.name}, so a slow answer could be called dead:`, err));
+
     // ── v0.7.21: Counterspell barrier check at the PIPELINE level ──
     // The reaction-engine creates a barrier promise at preUseActivity and
     // resolves it after counterspell prompts complete. If the counterspell

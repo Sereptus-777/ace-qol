@@ -125,10 +125,9 @@ check("nothing happened, so he is told", notified.filter(x => x[0] === "error").
 check("and the message names the item",
   /Mass Cure Wounds/.test(notified.find(x => x[0] === "error")?.[1] ?? ""), true);
 // ⚠️ IT USED TO SAY "nothing in ACE claimed it", which reads as the cause.
-// It is not: the heal pipeline is the only thing in the suite that claims at
-// all, so that was true of nearly every button in the game.
-check("and says no pipeline reported taking it, without calling that the fault",
-  /no pipeline reported taking it .*not the fault/
+// It is not one thing: it names all three things it did not see (2026-09-18).
+check("and says what it did not see: no pipeline, no reaction, nothing on screen",
+  /no pipeline reported taking it, no reaction was asked, and nothing appeared/
     .test(notified.find(x => x[0] === "error")?.[1] ?? ""), true);
 
 console.log("\nBUT A BUTTON THAT WORKED SAYS NOTHING");
@@ -179,20 +178,102 @@ Hooks.call("renderSummonUsageDialog", {});
 await sleep(120);
 check("and so does a summon's dialog", notified.filter(x => x[0] === "error").length, 0);
 
-console.log("\nCLAIMING IS NOT DOING");
-// ⚠️🔴 THIS IS EXACTLY THE HEAL PIPELINE'S TEMPLATE BRANCH. It took the button
-// and produced nothing. A claim must NOT silence the warning, or the one bug
-// this was built to catch would be the one bug it cannot see.
+// Capture what the watch prints, for the pins that are about the console.
+const consoleSaid = async (fn) => {
+  const said = [];
+  const keep = { warn: console.warn, error: console.error };
+  console.warn = (...a) => said.push(a.map(String).join(" "));
+  console.error = (...a) => said.push(a.map(String).join(" "));
+  try { await fn(); } finally { console.warn = keep.warn; console.error = keep.error; }
+  return said;
+};
+
+console.log("\nA PRESS A PIPELINE TOOK IS NOT A DEAD BUTTON");
+// ⚠️🔴 HIS RULE, 2026-09-18: "Keep the toast only when the press truly
+// produced no pipeline and no reaction." This block used to pin the opposite
+// ("claiming is not doing": a claim still raised the red banner), and a
+// pipeline waiting on a Counterspell answer is exactly a claim with nothing on
+// screen yet. The console still names who took it, so it is not silent.
 notified = [];
-const act = press("Aura of Vitality");
-ActionInterceptor.read(act);
-ActionInterceptor.claim(act, "heal-pipeline (placing a template)");
+{
+  const act = press("Aura of Vitality");
+  const said = await consoleSaid(async () => {
+    ActionInterceptor.read(act);
+    ActionInterceptor.claim(act, "heal-pipeline (placing a template)");
+    await sleep(120);
+  });
+  check("a press a pipeline took raises no red banner",
+    notified.filter(x => x[0] === "error").length, 0);
+  check("but the console names who took it and that nothing has appeared",
+    said.some(l => /heal-pipeline \(placing a template\) took it, and nothing has appeared/.test(l)), true);
+}
+
+console.log("\nA REACTION BOX IS SOMETHING HAPPENING");
+// ⚠️🔴 HIS TABLE, 2026-09-18: "Magic Missile did nothing. no pipeline
+// reported taking it." The missile resolved; the watch fired while the
+// Counterspell box was still open, because that box is an old-style Dialog
+// this watch never heard and could be on another player's screen entirely.
+notified = [];
+ActionInterceptor.read(press("Magic Missile", "spell", "damage"));
+ActionInterceptor.reactionBox({ id: "box-cs", open: true, what: "Counterspell for Kasimir Velikov" });
+await sleep(120);                            // well past the window, box still open
+check("a reaction box opening counts as something happening",
+  notified.filter(x => x[0] === "error").length, 0);
+ActionInterceptor.reactionBox({ id: "box-cs", open: false });
 await sleep(120);
-check("a claim alone does not count as something happening",
+check("and after it is answered, still nothing is said about that press",
+  notified.filter(x => x[0] === "error").length, 0);
+
+console.log("\nNOTHING IS JUDGED WHILE A BOX IS OPEN");
+// A press that began while somebody else's box was open is held, not judged,
+// and gets a fresh window once the box closes. If it then truly did nothing,
+// it is still reported: the rule narrows the banner, it does not remove it.
+notified = [];
+ActionInterceptor.reactionBox({ id: "box-shield", open: true, what: "Shield for Beric" });
+ActionInterceptor.read(press("A button that is truly dead"));
+await sleep(150);                            // past the window, box still open
+check("while a box is open, no press is called dead",
+  notified.filter(x => x[0] === "error").length, 0);
+ActionInterceptor.reactionBox({ id: "box-shield", open: false });
+await sleep(20);
+check("and closing the box does not judge it on the spot",
+  notified.filter(x => x[0] === "error").length, 0);
+await sleep(ActionInterceptor.boxPollMs + 200);
+check("but a press that truly did nothing is still reported once the box has closed",
   notified.filter(x => x[0] === "error").length, 1);
-check("and the warning names who took it and dropped it",
-  /heal-pipeline \(placing a template\) took it and produced nothing/
-    .test(notified.find(x => x[0] === "error")?.[1] ?? ""), true);
+
+console.log("\nA BOX RAISED ON ANOTHER CLIENT ARRIVES OVER THE SOCKET");
+// The Counterspell box is raised by the GM's client, and the press may be a
+// player's. The reaction engine emits it; the watch listens on the socket.
+{
+  const socketHandlers = [];
+  game.socket = { on: (name, fn) => socketHandlers.push([name, fn]), emit: () => {} };
+  ActionInterceptor._witnessesWired = false;
+  ActionInterceptor._wireWitnesses();
+  const mine = socketHandlers.find(([name]) => name === "module.ace-qol");
+  notified = [];
+  ActionInterceptor.read(press("Magic Missile", "spell", "damage"));
+  mine?.[1]?.({ action: "reactionBox", id: "gm-box-1", open: true, what: "Counterspell for Kasimir Velikov" });
+  await sleep(120);
+  check("the watch listens for boxes from other clients",
+    !!mine, true);
+  check("and a box announced by the GM's client counts for a player's press",
+    notified.filter(x => x[0] === "error").length, 0);
+  mine?.[1]?.({ action: "reactionBox", id: "gm-box-1", open: false });
+  delete game.socket;
+}
+
+console.log("\nA BOX NOBODY CLOSES STOPS HOLDING");
+// A client that disconnects with a box open never says it closed. One
+// abandoned box must not hush every dead button until reload.
+{
+  const keepMax = ActionInterceptor.boxHoldMaxMs;
+  ActionInterceptor.boxHoldMaxMs = 50;
+  ActionInterceptor.reactionBox({ id: "box-abandoned", open: true, what: "Shield for someone who left" });
+  await sleep(80);
+  check("an abandoned box stops counting as open", ActionInterceptor._boxesOpen(), 0);
+  ActionInterceptor.boxHoldMaxMs = keepMax;
+}
 
 console.log("\nTHE WINDOW IS REAL, NOT INSTANT");
 notified = [];
@@ -222,14 +303,17 @@ notified = [];
 notified = [];
 {
   const a = press("Hold Person", "spell", "save");
-  ActionInterceptor.read(a);
-  Hooks.callAll("ace-qol.expectCard", { activity: a, ms: 100, who: "the save engine" });
-  await sleep(250);
-  check("a promise that is not kept is still reported",
-    notified.filter(x => x[0] === "error").length, 1);
-  check("and it names who promised the card",
-    /the save engine said its card was on the way, and none came/
-      .test(notified.find(x => x[0] === "error")?.[1] ?? ""), true);
+  // ⚠️ IN THE CONSOLE, NOT THE BANNER (his rule, 2026-09-18): the save engine
+  // promising a card is a pipeline that took the press.
+  const said = await consoleSaid(async () => {
+    ActionInterceptor.read(a);
+    Hooks.callAll("ace-qol.expectCard", { activity: a, ms: 100, who: "the save engine" });
+    await sleep(250);
+  });
+  check("a promise that is not kept raises no red banner",
+    notified.filter(x => x[0] === "error").length, 0);
+  check("but the console names who promised the card",
+    said.some(l => /the save engine said its card was on the way, and nothing has appeared/.test(l)), true);
 }
 
 /* ── Publishing ─────────────────────────────────────────────────────────── */

@@ -26,8 +26,10 @@
 //      an edit and never a different die.
 //   4. Publishes the answer so the pipelines can read it instead of each
 //      working it out again and getting a different result.
-//   5. Watches. If nobody claims the button and nothing appears on screen, it
-//      SAYS SO, naming the item. Silence stops being possible.
+//   5. Watches. If no pipeline takes the button, no reaction box opens, and
+//      nothing appears on screen, it SAYS SO, naming the item. Silence stops
+//      being possible. (His rule, 2026-09-18: the red banner is only for a
+//      press that "truly produced no pipeline and no reaction".)
 //
 // It still never cancels and never steers.
 // ──────────────────────────────────────────────────────────────────────────────
@@ -141,6 +143,23 @@ export class ActionInterceptor {
   /** Presses still waiting to see something happen. */
   static _inFlight = new Set();
 
+  /**
+   * Reaction boxes open right now, on this client or any other: id → { what, at }.
+   * Filled by `reactionBox`, which the reaction engine's one prompt door calls.
+   */
+  static _openBoxes = new Map();
+
+  /**
+   * A box older than this no longer holds anything. Reaction boxes wait for a
+   * click with no time limit, and a client that disconnects with one open never
+   * says it closed; without this, one abandoned box would hush every dead
+   * button on every screen until reload.
+   */
+  static boxHoldMaxMs = 10 * 60 * 1000;
+
+  /** How often a held verdict looks again to see if the boxes have closed. */
+  static boxPollMs = 500;
+
   static _witnessesWired = false;
 
   /**
@@ -237,6 +256,59 @@ export class ActionInterceptor {
                        "OrderUsageDialog", "TransformUsageDialog", "Dialog5e"]) {
       Hooks.on(`render${cls}`, saw("a cast dialog opened and is waiting for you"));
     }
+    // ⚠️🔴 A REACTION BOX ON ANOTHER SCREEN IS STILL A REACTION BOX (2026-09-18).
+    // The reaction engine raises the Counterspell box on the GM's client, and
+    // it may be shown on a player's, while the press being watched belongs to
+    // whoever pressed. So the engine announces every box on the socket as well,
+    // and this is where those announcements arrive.
+    try {
+      game.socket?.on?.(`module.${MODULE_ID}`, (payload) => {
+        if (payload?.action !== "reactionBox") return;
+        try { ActionInterceptor.reactionBox(payload); }
+        catch (err) { console.warn(`${LOG} | could not note a reaction box from another client:`, err); }
+      });
+    } catch (err) {
+      console.warn(`${LOG} | cannot hear reaction boxes raised on other clients, so a press waiting `
+        + `on one could be called dead:`, err);
+    }
+  }
+
+  /**
+   * A reaction box opened or closed, here or on another client.
+   *
+   * ⚠️🔴 THE BANNER FIRED OVER A REACTION NOBODY HAD ANSWERED YET. Johnny,
+   * 2026-09-18: "Toast: 'Magic Missile did nothing. no pipeline reported
+   * taking it.' The missile DID resolve. Counterspell was refused. Shield was
+   * used. Nothing failed." The spell pipeline waits for the Counterspell
+   * answer before it opens its picker, and the box it waits on is an old-style
+   * Dialog this watch never listened for (renderDialogV2 does not fire for
+   * one), so every Counterspell box left open past 2.5 seconds ended in red.
+   *
+   * His rule, in his words: "That toast must not fire while a reaction box is
+   * open ... Keep the toast only when the press truly produced no pipeline and
+   * no reaction." So a box opening counts as something happening for every
+   * press still being watched, and while any box is open no press is judged.
+   *
+   * @param {{id: string, open: boolean, what?: string}} data
+   */
+  static reactionBox(data) {
+    const id = String(data?.id ?? "");
+    if (!id) return;
+    if (!data?.open) { ActionInterceptor._openBoxes.delete(id); return; }
+    const what = String(data?.what ?? "a reaction");
+    ActionInterceptor._openBoxes.set(id, { what, at: Date.now() });
+    for (const r of ActionInterceptor._inFlight) {
+      if (!r.sawSomething) r.sawSomething = `a reaction box opened (${what})`;
+    }
+  }
+
+  /** How many reaction boxes are open now, forgetting any left open too long. */
+  static _boxesOpen() {
+    const now = Date.now();
+    for (const [id, b] of ActionInterceptor._openBoxes) {
+      if (now - b.at > ActionInterceptor.boxHoldMaxMs) ActionInterceptor._openBoxes.delete(id);
+    }
+    return ActionInterceptor._openBoxes.size;
   }
 
   /* ── The reading ───────────────────────────────────────────────────────── */
@@ -244,11 +316,14 @@ export class ActionInterceptor {
   /**
    * A pipeline saying "this one is mine".
    *
-   * ⚠️ CLAIMING IS NOT DOING. A claim only stops the silence warning if
-   * something also appears; a pipeline that claims a button and then produces
-   * nothing is exactly the heal pipeline's template branch, and that must still
-   * be reported. So a claim is recorded and NAMED in the warning rather than
-   * suppressing it.
+   * ⚠️ A PRESS A PIPELINE TOOK IS NOT A DEAD BUTTON (his rule, 2026-09-18:
+   * "Keep the toast only when the press truly produced no pipeline and no
+   * reaction"). This used to say "claiming is not doing" and still raised the
+   * red banner over a claimed press that had shown nothing yet, which is what a
+   * pipeline waiting on a Counterspell answer looks like. A claimed press that
+   * shows nothing is now named in the console instead, with who took it, and
+   * the pipeline answers for its own outcome: its refusals say why (the silent
+   * early returns were swept out on 2026-08-26).
    */
   static claim(activity, who) {
     const r = ActionInterceptor._byKey.get(ActionInterceptor._keyFor(activity));
@@ -265,7 +340,9 @@ export class ActionInterceptor {
    * the dice (1 more) before its first card, and this watch gave up at 2.5.
    *
    * ⚠️ AN EXPECTATION MOVES THE DEADLINE, IT DOES NOT CANCEL IT. If the promised
-   * card never comes, the warning still fires, and it names who promised it.
+   * card never comes, the console says so and names who promised it. It is no
+   * longer the red banner: the promiser is a pipeline that took the press, and
+   * the banner is only for a press nothing took (his rule, 2026-09-18).
    */
   static expect(activity, ms, who) {
     const r = ActionInterceptor._byKey.get(ActionInterceptor._keyFor(activity));
@@ -436,6 +513,21 @@ export class ActionInterceptor {
     ActionInterceptor._inFlight.add(reading);
     const check = () => {
       if (reading.sawSomething) { ActionInterceptor._inFlight.delete(reading); return; }
+      // ⚠️🔴 NOT WHILE A REACTION BOX IS OPEN (his table, 2026-09-18). A box
+      // that opened while this press was watched has already counted as
+      // something happening (see reactionBox); this holds a press that began
+      // while somebody else's box was open. Whatever the box was holding up
+      // gets a fresh window once it closes, before anything is judged.
+      if (ActionInterceptor._boxesOpen() > 0) {
+        reading.heldByBox = true;
+        setTimeout(check, ActionInterceptor.boxPollMs);
+        return;
+      }
+      if (reading.heldByBox) {
+        reading.heldByBox = false;
+        setTimeout(check, ActionInterceptor.silenceMs);
+        return;
+      }
       // ⚠️ A PROMISED CARD GETS THE TIME IT ASKED FOR, and then the same
       // scrutiny as everything else. Still in flight meanwhile, so a card that
       // lands during the wait is seen.
@@ -443,28 +535,38 @@ export class ActionInterceptor {
       if (wait > 0) { setTimeout(check, wait); return; }
       ActionInterceptor._inFlight.delete(reading);
 
-      // ⚠️ NAME THE ITEM, THE OWNER AND THE REASON. "Nothing happened" on its
-      // own is the same silence in a nicer font.
-      // ⚠️ A BLANK CLAIM IS NOT THE FAULT, AND MUST NOT READ AS ONE. Every
-      // module was grepped on 2026-09-07: the heal pipeline is the only thing
-      // in this suite that ever claims a press. So "nothing claimed it" was
-      // true of almost every button in the game and sent him hunting a cause
-      // that was never there.
-      const why = reading.claimedBy
-        ? `${reading.claimedBy} took it and produced nothing`
-        : reading.expectedBy
-          ? `${reading.expectedBy} said its card was on the way, and none came`
-          : `no pipeline reported taking it (only the heal pipeline reports today, `
-            + `so that alone is not the fault)`;
       const shapeSays = reading.shape
         ? `ACE read it as "${reading.shape}"`
         : `ACE could not work out what it does`;
 
+      // ⚠️🔴 A PIPELINE TOOK IT, SO THIS IS NOT A DEAD BUTTON (his rule,
+      // 2026-09-18: "Keep the toast only when the press truly produced no
+      // pipeline and no reaction"). Nothing on screen yet is still worth a
+      // line, so the console names who took it; the banner does not fire.
+      if (reading.claimedBy || reading.expectedBy) {
+        const who = reading.claimedBy
+          ? `${reading.claimedBy} took it`
+          : `${reading.expectedBy} said its card was on the way`;
+        console.warn(`${LOG} | "${reading.itemName}" (${reading.actorName}): ${who}, and nothing has `
+          + `appeared on screen after ${((Date.now() - reading.at) / 1000).toFixed(1)} seconds. No banner, `
+          + `because a pipeline has it; if nothing ever appears, that pipeline is where to look. `
+          + `${shapeSays}; ${reading.edition} rules.`);
+        return;
+      }
+
+      // ⚠️ NAME THE ITEM, THE OWNER AND THE REASON. "Nothing happened" on its
+      // own is the same silence in a nicer font.
+      // ⚠️ "NO PIPELINE REPORTED TAKING IT" IS STILL NOT PROOF ON ITS OWN. The
+      // heal and spell pipelines report taking a press and the save engine
+      // promises its cards; the attack pipeline and dnd5e's own handling show
+      // themselves only by what they put on screen. So the banner names all
+      // three things it did not see rather than blaming one of them.
+      const why = "no pipeline reported taking it, no reaction was asked, and nothing appeared on screen";
       console.error(`${LOG} | DEAD BUTTON: "${reading.itemName}" (${reading.actorName}) — `
         + `${why}. ${shapeSays}; expected owner ${reading.owner}; `
         + `${reading.edition} rules.`);
       ui.notifications?.error(
-        `${reading.itemName} did nothing. ${why}. See the console for what ACE read it as.`,
+        `${reading.itemName} did nothing: ${why}. See the console for what ACE read it as.`,
         { permanent: true });
     };
     setTimeout(check, ActionInterceptor.silenceMs);

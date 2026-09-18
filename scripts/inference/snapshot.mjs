@@ -234,15 +234,20 @@ export function snapshot(item, { actor = null, press = null, why = true } = {}) 
     const when = _safe(() => new Date(press.at).toLocaleTimeString(), "");
     lines.push("");
     lines.push(`  WHEN YOU PRESSED IT${when ? `, ${when}` : ""}`);
-    // ⚠️ A DASH HERE IS NOT EVIDENCE OF ANYTHING. Every module was grepped on
-    // 2026-09-07: the heal pipeline is the only thing in the suite that ever
-    // claims a press. For every other button a blank claim is the normal state,
-    // so saying "nothing claimed it" without that caveat reads as a fault and
-    // sends him hunting one that is not there.
+    // ⚠️ A DASH HERE IS NOT EVIDENCE OF ANYTHING. The heal and spell
+    // pipelines report taking a press (the spell pipeline since 2026-09-18);
+    // the attack pipeline and dnd5e's own handling show themselves only by
+    // what they put on screen. Saying "nothing claimed it" without that caveat
+    // reads as a fault and sends him hunting one that is not there.
     lines.push(`    claimed by    ${press.claimedBy
-      ?? "nobody (only the heal pipeline reports a claim today, so this is "
-         + "expected for everything else)"}`);
-    lines.push(`    appeared      ${press.sawSomething || "NOTHING, which is a dead button"}`);
+      ?? "nobody (only the heal and spell pipelines report taking a press, so this "
+         + "alone is not a fault)"}`);
+    // ⚠️ A PRESS A PIPELINE TOOK IS NOT A DEAD BUTTON, even with nothing on
+    // screen yet (his rule, 2026-09-18). The watch says the same.
+    const taken = press.claimedBy ?? press.expectedBy ?? null;
+    lines.push(`    appeared      ${press.sawSomething
+      || (taken ? `nothing yet, but ${taken} has it, so it is not a dead button`
+                : "NOTHING, which is a dead button")}`);
   } else {
     lines.push("");
     lines.push("  This has not been pressed this session. Everything above was read "
