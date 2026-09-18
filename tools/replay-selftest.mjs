@@ -3855,6 +3855,150 @@ console.log(`\nPHASE 6b: COUNTERSPELL`);
       for (const a of [caster, kasimir]) ACTORS.delete(a.id);
     }
 
+    // ── A HOLD WITH NO BOX (his table, 2026-09-18) ──
+    // "11:08:42 first Magic Missile. Log: holding, Counterspell prompt open. NO
+    // Rendering Dialog. No box on screen. 11:08:51 second press. Same. 11:09:04
+    // third press. THEN Rendering Dialog." The check above remembered the
+    // SPELL for a minute, not the cast, so a cast within a minute of the last
+    // was never checked; and the hold was keyed the same way, so a cast within
+    // thirty seconds inherited the last one's. Both are cast-by-cast now.
+    {
+      const caster = makeCaster("p6b-c11", "Neferon", { at: [0, 0] });
+      const mmItem = other("Magic Missile");
+      mmItem.uuid = "Actor.p6b-c11.Item.it-mm11";
+      // dnd5e hands every cast its own copy of the activity, all sharing one uuid.
+      const castOf = () => { const a = cast(caster, mmItem, 1); a.uuid = "Actor.p6b-c11.Item.it-mm11.Activity.mm"; return a; };
+      const listeners = hooks["dnd5e.postCreateUsageMessage"] ?? [];
+      const handler = listeners.length ? (async (a, m) => { for (const fn of listeners) await fn(a, m); }) : null;
+      const keepCheck = ReactionEngine.prototype._onSpellCast;
+      let entered = 0;
+      ReactionEngine.prototype._onSpellCast = async function (act) {
+        entered += 1;
+        ReactionEngine._resolveCastBarrier(act, { abort: false, reason: "stood in" });
+      };
+      const pendingAfter = async (p, ms) => Promise.race([p.then(() => "settled"), new Promise(r => setTimeout(() => r("pending"), ms))]);
+      // The holds made here would otherwise keep their 30-second safety timers
+      // running long after the last check, and the replay with them.
+      const keepSafety11 = ReactionEngine.barrierSafetyMs;
+      ReactionEngine.barrierSafetyMs = 400;
+      let second = "?", err11 = null;
+      try {
+        if (!handler) throw new Error("the usage hook has no listener in this run");
+        const first = castOf();
+        ReactionEngine._createCastBarrier(first);            // what preUseActivity does
+        await quiet(() => handler(first, null));
+        const next = castOf();
+        ReactionEngine._createCastBarrier(next);
+        // Before its own check runs, the new cast must be holding for ITS answer,
+        // not handed the last cast's answer ready-made.
+        second = await pendingAfter(ReactionEngine.awaitCastBarrier(next), 30);
+        await quiet(() => handler(next, null));
+      } catch (e) { err11 = e; }
+      finally { ReactionEngine.prototype._onSpellCast = keepCheck; }
+      check("two casts of the same Magic Missile, one after the other, are EACH checked for Counterspell: the second is not taken for a repeat of the first (2026-09-18)",
+        !err11 && entered === 2,
+        err11 ? `threw: ${err11?.message ?? err11}` : `the check ran ${entered} time(s) for two separate casts`);
+      check("and the second cast holds for its own answer instead of inheriting the first cast's (2026-09-18)",
+        !err11 && second === "pending",
+        err11 ? `threw: ${err11?.message ?? err11}` : `the second cast's hold before its check: ${second}`);
+
+      // A throw inside the check releases the hold, and says why.
+      const said11 = [];
+      const keepWarn = console.warn;
+      let thrown = null;
+      const boom = castOf();
+      ReactionEngine._createCastBarrier(boom);
+      const keepInner = engine._counterspellCheck;
+      engine._counterspellCheck = async () => { throw new Error("stood-in failure"); };
+      console.warn = (...a) => { said11.push(a.map(String).join(" ")); };
+      try { await engine._onSpellCast(boom, null); } catch (e) { thrown = e; }
+      finally { console.warn = keepWarn; engine._counterspellCheck = keepInner; }
+      const afterBoom = await pendingAfter(ReactionEngine.awaitCastBarrier(boom), 30);
+      check("if the Counterspell check itself fails, the hold is released at once and the console says why: no ghost lock (2026-09-18)",
+        !thrown && afterBoom === "settled" && said11.some(l => /Counterspell check for Magic Missile failed/.test(l)),
+        `hold after the failure: ${afterBoom}; the console: ${said11.join(" | ").slice(0, 160) || "nothing"}`);
+
+      // A hold nothing releases lets go by itself, and never another cast's.
+      const keepSafety = ReactionEngine.barrierSafetyMs;
+      ReactionEngine.barrierSafetyMs = 200;
+      const old = castOf();
+      ReactionEngine._createCastBarrier(old);
+      ReactionEngine._resolveCastBarrier(old, { abort: false, reason: "answered" });
+      await new Promise(r => setTimeout(r, 100));
+      const fresh = castOf();
+      ReactionEngine._createCastBarrier(fresh);
+      const freshHold = ReactionEngine._castBarriers.get(ReactionEngine._activityKey(fresh));
+      await new Promise(r => setTimeout(r, 150));          // the old cast's timer has now fired
+      const survived = ReactionEngine._castBarriers.get(ReactionEngine._activityKey(fresh)) === freshHold && !freshHold?.resolved;
+      const saidT = [];
+      console.warn = (...a) => { saidT.push(a.map(String).join(" ")); };
+      await new Promise(r => setTimeout(r, 130));          // and now the new cast's own
+      console.warn = keepWarn;
+      ReactionEngine.barrierSafetyMs = keepSafety;
+      check("an old cast's timer never releases or removes a newer cast's hold, and a hold nothing released lets go by itself and says so (2026-09-18)",
+        survived && freshHold?.resolved === true && saidT.some(l => /hold on Magic Missile was never released/.test(l)),
+        `the new hold survived the old timer: ${survived}; released by its own: ${freshHold?.resolved === true}; `
+          + `the console: ${saidT.join(" | ").slice(0, 120) || "nothing"}`);
+      canvas.tokens.placeables.length = 0;
+      for (const a of [caster]) ACTORS.delete(a.id);
+      ReactionEngine.barrierSafetyMs = keepSafety11;
+    }
+
+    // ── A BOX MUST BE SEEN TO OPEN (his rule, 2026-09-18) ──
+    // "If the box fails to open, clear holding and run the missile. Log why."
+    {
+      const keepAck = ReactionEngine.remoteAckMs;
+      const keepSock = game.socket;
+      const keepUsers = game.users;
+      const keepShow = ReactionEngine.showReactionDialog;
+      const TOM = { id: "p6b-tom", isGM: false, name: "Kasimir's player", active: true };
+      game.users = Object.assign([GM, TOM], { activeGM: GM, get: (id) => [GM, TOM].find(u => u.id === id) ?? null });
+      const sent = [];
+      game.socket = { emit: (_n, d) => { sent.push(d); }, on: () => {} };
+      ReactionEngine.remoteAckMs = 50;
+      const kas = mage("p6b-kas12", "Kasimir Velikov", { items: [csItem("2024")], at: [200, 0] });
+      kas.testUserPermission = (u) => u?.id === TOM.id;
+      const said12 = [];
+      const keepWarn = console.warn;
+      console.warn = (...a) => { said12.push(a.map(String).join(" ")); };
+      let silent = null, answered = null, local = null, err12 = null;
+      try {
+        // Sent to a player's screen, and their client never says it opened.
+        silent = await engine._promptRemote({ title: "Counterspell", reactorActor: kas }, TOM.id);
+        // Sent again, and this time their client says it is up: it waits for the click.
+        const asking = engine._promptRemote({ title: "Counterspell", reactorActor: kas }, TOM.id);
+        const req = sent.filter(d => d?.action === "showReactionPrompt").at(-1)?.requestId;
+        await engine.handleSocketMessage({ action: "reactionPromptShown", requestId: req, senderUserId: TOM.id });
+        const stillWaiting = await Promise.race([asking.then(() => "settled"), new Promise(r => setTimeout(() => r("waiting"), 90))]);
+        await engine.handleSocketMessage({ action: "reactionResponse", requestId: req, accepted: true,
+          choiceData: { slotLevel: 3 }, senderUserId: TOM.id, reactorActorId: kas.id });
+        answered = { stillWaiting, result: await asking };
+        // On this screen, a box that is never drawn counts as a no too.
+        ReactionEngine.showReactionDialog = () => new Promise(() => {});
+        local = await engine._promptLocal({ title: "Counterspell", reactorActor: kas });
+      } catch (e) { err12 = e; }
+      finally {
+        console.warn = keepWarn;
+        ReactionEngine.showReactionDialog = keepShow;
+        ReactionEngine.remoteAckMs = keepAck;
+        game.socket = keepSock;
+        game.users = keepUsers;
+        ACTORS.delete(kas.id);
+        canvas.tokens.placeables.length = 0;
+      }
+      check("a box sent to a player's screen that never opens there counts as a no, and the console names whose screen it never reached (2026-09-18)",
+        !err12 && silent?.accepted === false && said12.some(l => /never appeared on Kasimir's player's screen/.test(l)),
+        err12 ? `threw: ${err12?.message ?? err12}`
+          : `answer: ${silent?.accepted === false ? "no" : JSON.stringify(silent)}; the console: ${said12.filter(l => /never appeared/.test(l)).join(" | ").slice(0, 140) || "nothing"}`);
+      check("a box the player's client says is up waits for the click, however long it takes (2026-09-18)",
+        !err12 && answered?.stillWaiting === "waiting" && answered?.result?.accepted === true,
+        err12 ? `threw: ${err12?.message ?? err12}`
+          : `after it said it was up: ${answered?.stillWaiting}; the answer: ${answered?.result?.accepted ? "yes" : "no"}`);
+      check("and a box on this screen that is never drawn counts as a no that says so (2026-09-18)",
+        !err12 && local?.accepted === false && said12.some(l => /never appeared on this screen/.test(l)),
+        err12 ? `threw: ${err12?.message ?? err12}` : `answer: ${local?.accepted === false ? "no" : JSON.stringify(local)}`);
+    }
+
     // ── The crash, and the crosshair that beat the answer ──
     // Johnny, 2026-09-17: "reaction-engine.mjs:1887 TypeError message.setFlag
     // is not a function. Do not assume ChatMessage." And: "CAST flourish and
@@ -5914,4 +6058,9 @@ if (chatter.warn) {
 
 console.log("");
 console.log(pass + " passed, " + fail + " failed" + (skip ? `, ${skip} skipped` : ""));
-process.exitCode = fail ? 1 : 0;
+// ⚠️ EXIT WHEN THE CHECKS ARE DONE, NOT WHEN THE LAST TIMER IS. Every cast a
+// pin makes now gets its own Counterspell hold (2026-09-18), each with a
+// 30-second safety timer, and Node waits for all of them before it leaves:
+// the replay sat idle for half a minute after its last line. Everything is
+// written synchronously above, so nothing is cut short.
+process.exit(fail ? 1 : 0);

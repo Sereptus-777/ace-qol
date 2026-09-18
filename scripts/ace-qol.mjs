@@ -5008,7 +5008,8 @@ Hooks.once("ready", () => {
       }
 
       // ReactionEngine prompts — routed to specific player
-      if (payload?.action === "showReactionPrompt" || payload?.action === "reactionResponse") {
+      if (payload?.action === "showReactionPrompt" || payload?.action === "reactionResponse"
+          || payload?.action === "reactionPromptShown") {
         if (await reactionEngine?.handleSocketMessage(payload)) return;
       }
 
@@ -5222,7 +5223,10 @@ Hooks.once("ready", () => {
             // resolves it either way, so every door on this client can wait for
             // the verdict exactly as it does for a GM's own cast.
             ReactionEngine._createCastBarrier(activity);
-            await reactionEngine._onSpellCast(activity, message);
+            // Once per cast (2026-09-18): a second press of the same spell while
+            // the first is still being asked about shares that answer rather
+            // than opening a second box. See ReactionEngine._claimCheck.
+            if (ReactionEngine._claimCheck(activity)) await reactionEngine._onSpellCast(activity, message);
             // ── v0.7.275 — Relay the counter VERDICT to the caster's client so
             //   its summon-placement gate knows whether to place. The message flag
             //   needs the synced usage card (can race), so we ALSO consult the
@@ -5252,7 +5256,7 @@ Hooks.once("ready", () => {
       }
 
       // ReactionEngine responses from players
-      if (payload.action === "reactionResponse") {
+      if (payload.action === "reactionResponse" || payload.action === "reactionPromptShown") {
         if (await reactionEngine?.handleSocketMessage(payload)) return;
       }
 

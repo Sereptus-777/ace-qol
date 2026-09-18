@@ -101,6 +101,15 @@ export class ReactionEngine {
   /** Reaction boxes opened on this client, for their ids (see _announceBox). */
   static _boxCounter = 0;
 
+  /** A cast's hold lets go by itself after this long if nothing released it. */
+  static barrierSafetyMs = 30000;
+
+  /**
+   * How long a box sent to somebody else's screen has to say it opened. With
+   * no word in that time it counts as a box that failed to open (2026-09-18).
+   */
+  static remoteAckMs = 5000;
+
   /**
    * v0.7.265 — Counterspell NATIVE-resolution cleanup.
    * The cast barrier stops ACE's OWN downstream engines when a spell is
@@ -539,21 +548,90 @@ export class ReactionEngine {
       }
     } catch (_) { /* non-fatal */ }
     const key = ReactionEngine._activityKey(activity);
-    if (ReactionEngine._castBarriers.has(key)) return;
+    const name = activity?.item?.name ?? "that spell";
+
+    // ⚠️🔴 A NEW CAST GETS A NEW HOLD (his table, 2026-09-18): "11:08:42 first
+    // Magic Missile. Log: holding, Counterspell prompt open. NO Rendering
+    // Dialog. No box on screen. 11:08:51 second press. Same. 11:09:04 third
+    // press. THEN Rendering Dialog." The key is the activity's uuid, which is
+    // the SAME for every cast of that spell by that creature, and this used to
+    // return early whenever a hold for the key existed. For thirty seconds after
+    // a cast, the next cast inherited the last one's hold, already settled, so
+    // it was never checked for Counterspell at all. After that the hold was new
+    // but the check skipped it as "a second firing of the same use" (see
+    // _claimCheck), so nothing ever let go of it: a hold with no box.
+    //
+    // A settled hold belongs to a cast that is over, so a new cast replaces it.
+    // An unsettled one means that cast is still waiting on somebody's answer,
+    // and a second press of the same spell waits for that same answer rather
+    // than opening a second box or skipping the question.
+    const old = ReactionEngine._castBarriers.get(key) ?? null;
+    if (old && !old.resolved) {
+      if (Date.now() - old.createdAt > 1000) {
+        console.log(`${MODULE_ID} | ${name} was cast again while the last cast is still `
+          + `${old.asking ? `waiting on ${old.asking}'s Counterspell answer` : "being checked for Counterspell"}; `
+          + `this cast waits for the same answer.`);
+      }
+      return;
+    }
     let resolveFn;
     const promise = new Promise(r => { resolveFn = r; });
-    const entry = { promise, resolve: resolveFn, resolved: false, resolvedWith: null, createdAt: Date.now() };
+    const entry = { promise, resolve: resolveFn, resolved: false, resolvedWith: null, createdAt: Date.now(),
+      // Has the Counterspell check started for this cast (see _claimCheck), and
+      // who is being asked right now (see _onSpellCast)?
+      checked: false, asking: null };
     ReactionEngine._castBarriers.set(key, entry);
-    ReactionEngine._sdebug(`[BARRIER] CREATE for ${activity?.item?.name ?? '?'} on ${activity?.item?.actor?.name ?? '?'} — key=${typeof key === "string" ? key : "[obj]"} map size now ${ReactionEngine._castBarriers.size}`);
-    // Safety-net timeout — auto-resolve with { abort: false } after 30s
+    ReactionEngine._sdebug(`[BARRIER] CREATE for ${name} on ${activity?.item?.actor?.name ?? '?'} — key=${typeof key === "string" ? key : "[obj]"} map size now ${ReactionEngine._castBarriers.size}`);
+    // Safety net: a hold nothing ever released lets go by itself, and SAYS so.
+    // ⚠️ BOUND TO THIS HOLD, NOT TO THE KEY. It used to look the key up when it
+    // fired, so the timer of an old cast could settle, or delete, the hold of a
+    // newer cast of the same spell.
     setTimeout(() => {
-      const b = ReactionEngine._castBarriers.get(key);
-      if (b && !b.resolved) {
-        b.resolve({ abort: false, reason: "timeout" });
-        b.resolved = true;
+      if (!entry.resolved) {
+        console.warn(`${MODULE_ID} | the Counterspell hold on ${name} was never released, so it lets go `
+          + `now, after ${Math.round(ReactionEngine.barrierSafetyMs / 1000)} seconds, and the spell goes ahead.`);
+        entry.resolve({ abort: false, reason: "timeout" });
+        entry.resolved = true;
+        entry.resolvedWith = { abort: false, reason: "timeout" };
       }
-      ReactionEngine._castBarriers.delete(key);
-    }, 30000);
+      if (ReactionEngine._castBarriers.get(key) === entry) ReactionEngine._castBarriers.delete(key);
+    }, ReactionEngine.barrierSafetyMs);
+  }
+
+  /**
+   * Should this caller run the Counterspell check for this cast? True once
+   * per cast.
+   *
+   * ⚠️🔴 THE CAST, NOT THE SPELL. This used to remember the activity's uuid
+   * for a full minute, and that uuid is the same for every cast of the spell,
+   * so any cast within a minute of the last one was taken for "a second firing
+   * of the same use" and never checked (his table, 2026-09-18). The spell
+   * pipeline hit the same trap in July: a uuid belongs to every cast forever.
+   * The hold is made once per cast, so it carries the mark instead. A second
+   * firing of the same use finds its own hold already checked; the next cast
+   * has a new hold. Only a cast with no hold at all falls back to the uuid, for
+   * a moment short enough that no real cast could follow inside it.
+   *
+   * @param {object} activity
+   * @returns {boolean}
+   */
+  static _claimCheck(activity) {
+    const key = ReactionEngine._activityKey(activity);
+    if (!key) return true;
+    const entry = ReactionEngine._castBarriers.get(key);
+    if (entry) {
+      if (entry.checked) return false;
+      entry.checked = true;
+      return true;
+    }
+    const seen = ReactionEngine._castsChecked.get(key);
+    if (seen && (Date.now() - seen) < 1500) return false;
+    ReactionEngine._castsChecked.set(key, Date.now());
+    if (ReactionEngine._castsChecked.size > 200) {
+      const cutoff = Date.now() - 60000;
+      for (const [k, t] of ReactionEngine._castsChecked) if (t < cutoff) ReactionEngine._castsChecked.delete(k);
+    }
+    return true;
   }
 
   /**
@@ -654,8 +732,12 @@ export class ReactionEngine {
       // that never waited at all looks identical to one that waited and was
       // told to go ahead. Both were guesses at this table; neither has to be.
       if (!barrier.resolved) {
-        console.log(`${MODULE_ID} | holding: something is still deciding whether this cast happens `
-          + `(a Counterspell prompt is open). Nothing resolves until it answers.`);
+        // ⚠️ SAY WHAT IT IS ACTUALLY WAITING ON. This said "a Counterspell
+        // prompt is open" whether one was or not, and on 2026-09-18 none was:
+        // the line he read was the only sign of a hold with no box behind it.
+        console.log(`${MODULE_ID} | holding: ${barrier.asking
+          ? `${barrier.asking} is being asked whether to Counterspell this cast`
+          : "the Counterspell check for this cast has not finished yet"}. Nothing resolves until it does.`);
       }
       const result = await barrier.promise;
       if (result?.abort) return result;
@@ -1176,19 +1258,13 @@ export class ReactionEngine {
       // posted as normal" - printed AFTER the card that said the Fireball
       // fizzled. (The kill-list is the authority now either way, but a second
       // Counterspell prompt for one cast is its own bug.)
-      const castKey = ReactionEngine._activityKey(activity);
-      if (castKey) {
-        const seen = ReactionEngine._castsChecked.get(castKey);
-        if (seen && (Date.now() - seen) < 60000) {
-          this._debug(`[REACTION-V2-HOOK] ${activity?.item?.name ?? "that cast"} was already `
-            + `checked for Counterspell - this is a second firing of the same use, ignored`);
-          return;
-        }
-        ReactionEngine._castsChecked.set(castKey, Date.now());
-        if (ReactionEngine._castsChecked.size > 200) {
-          const cutoff = Date.now() - 60000;
-          for (const [k, t] of ReactionEngine._castsChecked) if (t < cutoff) ReactionEngine._castsChecked.delete(k);
-        }
+      // ⚠️ ONCE PER CAST, not once per minute per spell (2026-09-18): see
+      // _claimCheck. The minute-long window swallowed real casts and left
+      // their holds with nothing to release them.
+      if (!ReactionEngine._claimCheck(activity)) {
+        this._debug(`[REACTION-V2-HOOK] ${activity?.item?.name ?? "that cast"} is already being `
+          + `checked for Counterspell - this firing shares that answer`);
+        return;
       }
 
       this._debug(`[REACTION-V2-HOOK] passed gates, calling _onSpellCast for ${activity?.item?.name ?? '?'}`);
@@ -1338,6 +1414,18 @@ export class ReactionEngine {
       return true;
     }
 
+    // ── The other screen says the box is up (2026-09-18) ──
+    // Without this the asker cannot tell a box that is waiting on a click from
+    // one that never opened (see _promptRemote).
+    if (payload.action === "reactionPromptShown") {
+      const waiting = this._pendingRequests.get(payload.requestId);
+      // SILENT-OK: an answer to somebody else's box; every client hears every socket message
+      if (!waiting) return false;
+      if (waiting.targetUserId && payload.senderUserId && waiting.targetUserId !== payload.senderUserId) return true;
+      waiting.shown = true;
+      return true;
+    }
+
     // ── GM sends a reaction prompt to a player ──
     if (payload.action === "showReactionPrompt") {
       // Only the targeted player should handle this
@@ -1347,7 +1435,12 @@ export class ReactionEngine {
       // back, and the client that asked waited on the answer forever.
       let result;
       try {
-        result = await ReactionEngine.showReactionDialog(payload.promptData);
+        result = await ReactionEngine.showReactionDialog({
+          ...payload.promptData,
+          // The moment the box is drawn here, tell whoever asked.
+          onShown: () => game.socket.emit(SOCKET_NAME, {
+            action: "reactionPromptShown", requestId: payload.requestId, senderUserId: game.user.id }),
+        });
       } catch (err) {
         console.warn(`${MODULE_ID} | the ${payload.promptData?.title ?? "reaction"} box for `
           + `${payload.promptData?.reactorActorName ?? "a creature"} could not open here, so it answers no:`, err);
@@ -1932,7 +2025,38 @@ export class ReactionEngine {
    * Internal handler for spell cast detection.
    * Checks for Counterspell reactors within 60 feet.
    */
+  /**
+   * The Counterspell check for one cast, with a guarantee: when it is over,
+   * the cast's hold is released, whatever happened inside.
+   *
+   * ⚠️🔴 NO GHOST HOLDS (his rule, 2026-09-18): "If you set holding, a box must
+   * be on someone's screen ... If the box fails to open, clear holding and run
+   * the missile. Log why the box failed. Do not leave a ghost Counterspell
+   * lock." Every way out of the check below releases the hold on purpose; a
+   * throw anywhere inside it would have skipped all of them and left the spell
+   * waiting on nothing for thirty seconds. This catches that, lets the spell
+   * go ahead, and says why.
+   */
   async _onSpellCast(activity, message) {
+    const hold = ReactionEngine._castBarriers.get(ReactionEngine._activityKey(activity)) ?? null;
+    const name = activity?.item?.name ?? "that spell";
+    try {
+      await this._counterspellCheck(activity, message);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | the Counterspell check for ${name} failed, so nobody is asked and `
+        + `the spell goes ahead:`, err);
+    } finally {
+      if (hold && !hold.resolved) {
+        console.warn(`${MODULE_ID} | ${name}'s Counterspell hold was still on when its check ended; `
+          + `released, and the spell goes ahead.`);
+        hold.resolve({ abort: false, reason: "check_ended" });
+        hold.resolved = true;
+        hold.resolvedWith = { abort: false, reason: "check_ended" };
+      }
+    }
+  }
+
+  async _counterspellCheck(activity, message) {
     // EVERY exit point must resolve the cast barrier so downstream engines
     // (SpellAutoDamage, etc.) don't hang awaiting it.
     if (!activity?.item) {
@@ -2070,12 +2194,21 @@ export class ReactionEngine {
       // no longer holding a reaction.
       if (this._hasUsedReaction(reactor.actor)) continue;
 
-      const result = await this._promptReaction({
-        ...promptOpts,
-        reactorActor: reactor.actor,
-        reactorToken: reactor.token,
-        availableSlots: reactor.slots,
-      });
+      // The hold says who it is waiting on, so "holding" is never a claim that
+      // a box is open when none is.
+      const hold = ReactionEngine._castBarriers.get(ReactionEngine._activityKey(activity)) ?? null;
+      if (hold) hold.asking = reactor.actor?.name ?? "a creature";
+      let result;
+      try {
+        result = await this._promptReaction({
+          ...promptOpts,
+          reactorActor: reactor.actor,
+          reactorToken: reactor.token,
+          availableSlots: reactor.slots,
+        });
+      } finally {
+        if (hold) hold.asking = null;
+      }
 
       // Declined → pass the shot down the line to the next eligible reactor.
       if (!result.accepted) {
@@ -3609,7 +3742,14 @@ export class ReactionEngine {
     const reactorIsNpc = !opts.reactorActor?.hasPlayerOwner
                       && opts.reactorActor?.type !== "character";
 
-    return ReactionEngine.showReactionDialog({
+    // ⚠️🔴 A BOX MUST BE SEEN TO OPEN (his rule, 2026-09-18): "If you set
+    // holding, a box must be on someone's screen that same second. If the box
+    // fails to open, clear holding and run the missile. Log why the box
+    // failed." The box reports the moment it is drawn; if that has not happened
+    // within remoteAckMs, it counts as a no and the console says why.
+    let shown = false, settled = false, watchdog = null;
+    const name = opts.reactorActor?.name ?? "a creature";
+    const answer = ReactionEngine.showReactionDialog({
       ...opts,
       reactorActorName: opts.reactorActor?.name ?? opts.reactorActorName ?? "Reaction",
       reactorActorImg: opts.reactorActor?.img
@@ -3620,15 +3760,25 @@ export class ReactionEngine {
       attackerName: opts.attackerName ?? null,
       attackerImg:  opts.attackerImg  ?? null,
       reactorIsNpc,
+      onShown: () => { shown = true; },
     }).catch(err => {
       // ⚠️ A BOX THAT CANNOT OPEN IS A "NO" THAT SAYS SO. This was a silent
       // decline. Feather Fall's box threw on every offer (in git since
       // 2026-08-14) and here that would have left no trace but the fall
       // itself (found 2026-09-18).
       console.warn(`${MODULE_ID} | the ${opts.title ?? "reaction"} box for `
-        + `${opts.reactorActor?.name ?? "a creature"} could not open, so it counts as a no:`, err);
+        + `${name} could not open, so it counts as a no:`, err);
       return { accepted: false, choiceData: {} };
+    }).finally(() => { settled = true; if (watchdog) clearTimeout(watchdog); });
+    const neverShown = new Promise(res => {
+      watchdog = setTimeout(() => {
+        if (shown || settled) return;
+        console.warn(`${MODULE_ID} | the ${opts.title ?? "reaction"} box for ${name} never appeared on this `
+          + `screen within ${Math.round(ReactionEngine.remoteAckMs / 1000)} seconds, so it counts as a no.`);
+        res({ accepted: false, choiceData: {} });
+      }, ReactionEngine.remoteAckMs);
     });
+    return Promise.race([answer, neverShown]);
   }
 
   /**
@@ -3644,7 +3794,26 @@ export class ReactionEngine {
   async _promptRemote(opts, targetUserId) {
     return new Promise((resolve) => {
       const requestId = `reaction-${++this._requestCounter}-${Date.now()}`;
-      this._pendingRequests.set(requestId, { resolve, reactorActorId: opts.reactorActor?.id, targetUserId });
+      this._pendingRequests.set(requestId, { resolve, reactorActorId: opts.reactorActor?.id, targetUserId,
+        shown: false });
+
+      // ⚠️🔴 THE OTHER SCREEN MUST SAY THE BOX OPENED (his rule, 2026-09-18).
+      // This waited for the answer with no limit and no way to know the box was
+      // ever drawn, so a player's client that never showed it held the spell
+      // with nothing on anybody's screen. The player's client now says the
+      // moment the box is up (reactionPromptShown); with no word inside
+      // remoteAckMs the box counts as one that failed to open: a no, and the
+      // console names whose screen it never reached.
+      setTimeout(() => {
+        const waiting = this._pendingRequests.get(requestId);
+        if (!waiting || waiting.shown) return;
+        this._pendingRequests.delete(requestId);
+        const who = game.users?.get?.(targetUserId)?.name ?? "that player";
+        console.warn(`${MODULE_ID} | the ${opts.title ?? "reaction"} box for ${opts.reactorActor?.name ?? "a creature"} `
+          + `never appeared on ${who}'s screen (no word from their client in `
+          + `${Math.round(ReactionEngine.remoteAckMs / 1000)} seconds), so it counts as a no.`);
+        resolve({ accepted: false, choiceData: {} });
+      }, ReactionEngine.remoteAckMs);
 
       const reactorIsNpc = !opts.reactorActor?.hasPlayerOwner
                         && opts.reactorActor?.type !== "character";
@@ -3898,6 +4067,9 @@ export class ReactionEngine {
           // over on the client screen." This draws on the screen of whoever
           // decides, local or remote, so it dings there and nowhere else.
           popupDing(`the ${title ?? "reaction"} box`);
+          // And it says it is up, so whoever asked knows a box is on a screen.
+          try { data.onShown?.(); }
+          catch (err) { console.warn(`${MODULE_ID} | could not report that the ${title ?? "reaction"} box opened:`, err); }
 
           // ── Accept button ──
           el.querySelector(".ace-qol-reaction-accept")?.addEventListener("click", () => {
