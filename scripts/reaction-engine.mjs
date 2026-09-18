@@ -1341,7 +1341,16 @@ export class ReactionEngine {
       // Only the targeted player should handle this
       // SILENT-OK: this socket payload is addressed to a different user
       if (payload.targetUserId !== game.user.id) return true;
-      const result = await ReactionEngine.showReactionDialog(payload.promptData);
+      // ⚠️ A BOX THAT CANNOT OPEN STILL ANSWERS. A throw here sent nothing
+      // back, and the client that asked waited on the answer forever.
+      let result;
+      try {
+        result = await ReactionEngine.showReactionDialog(payload.promptData);
+      } catch (err) {
+        console.warn(`${MODULE_ID} | the ${payload.promptData?.title ?? "reaction"} box for `
+          + `${payload.promptData?.reactorActorName ?? "a creature"} could not open here, so it answers no:`, err);
+        result = { accepted: false, choiceData: {} };
+      }
       // Send response back to GM. v0.4.22.12: include senderUserId
       // and reactorActorId so the GM-side handler can validate
       // ownership (defense in depth — a stolen requestId alone no
@@ -2763,7 +2772,9 @@ export class ReactionEngine {
    * not entitled to. This asks about the creatures instead: the target's own
    * senses, the attacker's own concealment, and a wall between them.
    */
-  _canTargetSeeAttacker(targetToken, attacker) {
+  _canTargetSeeAttacker(targetToken, attacker, { seen = "the attacker", forWhat = "Uncanny Dodge" } = {}) {
+    // ⚠️ ONE READER FOR "can this creature see that one". Feather Fall (2024:
+    // "a creature you can see") asks it too, so the words name what is seen.
     try {
       const targetActor = targetToken?.actor;
       if (targetActor?.statuses?.has?.("blinded")) return { can: false, why: "they are blinded" };
@@ -2772,8 +2783,8 @@ export class ReactionEngine {
       if (!attackerToken) return { can: true, why: "" };   // no token to hide behind
 
       const aActor = attackerToken.actor ?? attacker;
-      if (aActor?.statuses?.has?.("invisible")) return { can: false, why: "the attacker is invisible" };
-      if (attackerToken.document?.hidden) return { can: false, why: "the attacker is hidden from view" };
+      if (aActor?.statuses?.has?.("invisible")) return { can: false, why: `${seen} is invisible` };
+      if (attackerToken.document?.hidden) return { can: false, why: `${seen} is hidden from view` };
 
       // ⚠️ THE V13 COLLISION CALL, NAMED. `canvas.walls.checkCollision` does
       // NOT exist in V13 and `Ray` is not a global — both were tried and both
@@ -2789,7 +2800,7 @@ export class ReactionEngine {
     } catch (err) {
       // Cannot tell → allow. Losing the feature is worse than a rare wrong offer,
       // and the GM is watching the prompt either way.
-      console.warn(`${MODULE_ID} | could not test line of sight for Uncanny Dodge — allowing:`, err);
+      console.warn(`${MODULE_ID} | could not test line of sight for ${forWhat} — allowing:`, err);
       return { can: true, why: "" };
     }
   }
@@ -3600,7 +3611,15 @@ export class ReactionEngine {
       attackerName: opts.attackerName ?? null,
       attackerImg:  opts.attackerImg  ?? null,
       reactorIsNpc,
-    }).catch(() => ({ accepted: false, choiceData: {} }));
+    }).catch(err => {
+      // ⚠️ A BOX THAT CANNOT OPEN IS A "NO" THAT SAYS SO. This was a silent
+      // decline. Feather Fall's box threw on every offer (in git since
+      // 2026-08-14) and here that would have left no trace but the fall
+      // itself (found 2026-09-18).
+      console.warn(`${MODULE_ID} | the ${opts.title ?? "reaction"} box for `
+        + `${opts.reactorActor?.name ?? "a creature"} could not open, so it counts as a no:`, err);
+      return { accepted: false, choiceData: {} };
+    });
   }
 
   /**

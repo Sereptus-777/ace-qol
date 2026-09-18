@@ -3050,6 +3050,187 @@ console.log(`\nPHASE 6c: THE OPPORTUNITY ATTACK`);
   }
 }
 
+/* ── FEATHER FALL, THROUGH THE ONE REACTION DOOR ────────────────────────── */
+// Found 2026-09-18 while fixing the red banner, and every fault is pinned here:
+//  - the box had never opened: its details were a sentence, the box maps a
+//    list of rows, and the throw was caught as "treated as a decline";
+//  - its answer was read with `!!`, and the box answers with an object on a
+//    yes and a no alike, so "Let them fall" would have caught them;
+//  - it bypassed the one reaction door, so the box would open on the GM's
+//    screen and never on the caster's player's;
+//  - nothing spent the reaction or the slot;
+//  - an exact name match never found a 2014 "Feather Fall (Legacy)";
+//  - the one falling could not catch itself, which both editions allow;
+//  - the 2024 spell's "a creature you can see" was never asked.
+// This drives the real offer and the real door; only the two ends of the door
+// (this screen, or a player's over the socket) and the card are stood in.
+console.log(`\nFEATHER FALL, THROUGH THE ONE REACTION DOOR`);
+{
+  const MOD = "ace-qol";
+  const { FallPipeline } = await import(`${MODULE}/scripts/fall-pipeline.mjs`);
+  const { ReactionEngine: REff } = await import(`${MODULE}/scripts/reaction-engine.mjs`);
+  const { CardDoor: DoorFF } = await import(`${MODULE}/scripts/road/doors.mjs`);
+
+  const keepFF = { placed: [...canvas.tokens.placeables], users: game.users, api: game.aceQol?.reactionEngine,
+    post: DoorFF.post, gmActive: GM.active, log: console.log, warn: console.warn };
+  const cards = [];
+  DoorFF.post = async (data) => { cards.push(data); return { id: `ff-card-${cards.length}`, ...data }; };
+  const PLAYER = { id: "ff-player", isGM: false, name: "Jebidiah's player", active: true };
+  game.users = Object.assign([GM, PLAYER],
+    { activeGM: GM, get: (id) => [GM, PLAYER].find(u => u.id === id) ?? null });
+  GM.active = true;
+  canvas.tokens.placeables.length = 0;
+  const madeFF = [];
+
+  const engineFF = new REff();
+  game.aceQol = game.aceQol ?? {};
+  game.aceQol.reactionEngine = engineFF;
+  // The door's two ends: where the box opens, and what the person answers.
+  const boxes = [];
+  let answerFF = { accepted: false, choiceData: {} };
+  engineFF._promptRemote = async (opts, userId) => { boxes.push({ where: userId, opts }); return answerFF; };
+  engineFF._promptLocal = async (opts) => { boxes.push({ where: "this screen", opts }); return answerFF; };
+
+  const said = [];
+  const listen = async (fn) => {
+    console.log = (...a) => { said.push(a.map(String).join(" ")); };
+    console.warn = (...a) => { said.push(a.map(String).join(" ")); };
+    try { return await fn(); } finally { console.log = keepFF.log; console.warn = keepFF.warn; }
+  };
+
+  try {
+    // Feather Fall as dnd5e 5.x keeps it on a sheet: a method and a NUMBER.
+    const ff = (rules, { legacy = false } = {}) => ({ id: `ff-${rules}${legacy ? "-legacy" : ""}`,
+      name: legacy ? "Feather Fall (Legacy)" : "Feather Fall", type: "spell", img: "",
+      system: { level: 1, method: "spell", prepared: 1, source: { rules }, activities: [] } });
+    const body = (id, name, { at = [0, 0], items = [], slots = 2, statuses = [], owner = null } = {}) => {
+      const a = { id, name, type: "character", img: "", documentName: "Actor", uuid: `Actor.${id}`,
+        statuses: new Set(statuses), effects: [], items, hasPlayerOwner: !!owner,
+        ownership: owner ? { default: 0, [owner]: 3 } : { default: 0 },
+        system: { attributes: { hp: { value: 20, max: 20 }, death: { success: 0, failure: 0 } },
+          spells: { spell1: { value: slots, max: 3 } }, details: {} },
+        flags: { [MOD]: {} },
+        getFlag: (scope, key) => a.flags?.[scope]?.[key],
+        setFlag: async (scope, key, v) => { (a.flags[scope] ??= {})[key] = v; return a; },
+        update: async (u) => { for (const [k, v] of Object.entries(u)) {
+          const path = k.split("."); let o = a;
+          for (const s2 of path.slice(0, -1)) o = (o[s2] ??= {});
+          o[path[path.length - 1]] = v; } return a; },
+        getActiveTokens: () => canvas.tokens.placeables.filter(t => t.actor?.id === id),
+      };
+      ACTORS.set(id, a);
+      madeFF.push(a);
+      const doc = { id: `tok-${id}`, actorId: id, actor: a, name, x: at[0], y: at[1], width: 1, height: 1,
+        elevation: 0, hidden: false, disposition: 1, texture: { src: "" } };
+      const tok = { id: `tok-${id}`, name, actor: a, document: doc, x: at[0], y: at[1], w: 100, h: 100,
+        center: { x: at[0] + 50, y: at[1] + 50 } };
+      doc.object = tok;
+      canvas.tokens.placeables.push(tok);
+      return a;
+    };
+    const docOf = (a) => canvas.tokens.placeables.find(t => t.actor?.id === a.id).document;
+    const fresh = (a, slots = 2) => { a.flags[MOD] = {}; a.system.spells.spell1.value = slots; };
+    const offer = async (who, ft = 30) => {
+      boxes.length = 0; cards.length = 0; said.length = 0;
+      return listen(() => FallPipeline._offerFeatherFall(docOf(who), ft));
+    };
+
+    const ireena = body("ff-ireena", "Ireena", { at: [0, 0] });
+    const jeb = body("ff-jeb", "Jebidiah", { at: [100, 0], items: [ff("2014")], owner: PLAYER.id });
+
+    // ── 1. "Let them fall" lets them fall, and costs nothing ──
+    answerFF = { accepted: false, choiceData: {} };
+    const declined = await offer(ireena);
+    const box1 = boxes[0] ?? null;
+    check("Feather Fall: \"Let them fall\" lets them fall, spends no slot and no reaction, and posts no card (2026-09-18)",
+      declined === false && boxes.length === 1 && jeb.system.spells.spell1.value === 2
+        && jeb.flags[MOD].reactionUsed !== true && cards.length === 0,
+      `caught: ${declined}; boxes: ${boxes.length}; Jebidiah's slots ${jeb.system.spells.spell1.value} of 3, `
+        + `reaction ${jeb.flags[MOD].reactionUsed ? "spent" : "free"}; cards: ${cards.length}`);
+    check("Feather Fall: the box goes to Jebidiah's connected player, not the GM, and carries its details as rows the box can draw (2026-09-18)",
+      box1?.where === PLAYER.id && Array.isArray(box1?.opts?.details) && box1.opts.details.every(d => d?.label && d?.value)
+        && box1?.opts?.reactorActor === jeb && /^fa-/.test(String(box1?.opts?.icon ?? "")),
+      `the box went to: ${box1?.where ?? "nowhere"}; details as rows: ${Array.isArray(box1?.opts?.details)}; `
+        + `icon: ${box1?.opts?.icon ?? "none"}`);
+
+    // ── 2. A yes catches, and pays the reaction and the slot ──
+    fresh(jeb);
+    answerFF = { accepted: true, choiceData: { slotLevel: 1, consumeSlot: true } };
+    const caught = await offer(ireena);
+    check("Feather Fall: a yes catches Ireena and pays for it: one 1st-level slot and the reaction, with the card through the card door (2026-09-18)",
+      caught === true && jeb.system.spells.spell1.value === 1 && jeb.flags[MOD].reactionUsed === true
+        && cards.length === 1 && /Jebidiah<\/strong> catches/.test(String(cards[0]?.content ?? "")),
+      `caught: ${caught}; Jebidiah's slots ${jeb.system.spells.spell1.value} of 3, `
+        + `reaction ${jeb.flags[MOD].reactionUsed ? "spent" : "free"}; cards: ${cards.length}`);
+
+    // ── 3. Her player offline: the GM is asked, on this screen ──
+    fresh(jeb);
+    PLAYER.active = false;
+    answerFF = { accepted: false, choiceData: {} };
+    await offer(ireena);
+    check("Feather Fall: with Jebidiah's player offline, the GM gets the box (2026-09-18)",
+      boxes[0]?.where === "this screen", `the box went to: ${boxes[0]?.where ?? "nowhere"}`);
+    PLAYER.active = true;
+
+    // ── 4. A 2014 "(Legacy)" copy, cast by the one falling ──
+    canvas.tokens.placeables.length = 0;
+    const kasimir = body("ff-kasimir", "Kasimir Velikov", { at: [0, 0], items: [ff("2014", { legacy: true })] });
+    answerFF = { accepted: true, choiceData: { slotLevel: 1, consumeSlot: true } };
+    const selfCaught = await offer(kasimir);
+    check("Feather Fall: a 2014 \"Feather Fall (Legacy)\" is found, and the one falling may catch itself, as both editions allow (2026-09-18)",
+      selfCaught === true && boxes[0]?.opts?.reactorActor === kasimir
+        && /catches themselves/.test(String(cards[0]?.content ?? "")),
+      `caught: ${selfCaught}; asked: ${boxes[0]?.opts?.reactorActor?.name ?? "nobody"}; `
+        + `card: ${cards.length ? "posted" : "none"}`);
+
+    // ── 5. Held but refused: named, with the reason ──
+    canvas.tokens.placeables.length = 0;
+    const ireena2 = body("ff-ireena2", "Ireena", { at: [0, 0] });
+    body("ff-dry", "a wizard with no slots left", { at: [100, 0], items: [ff("2014")], slots: 0 });
+    answerFF = { accepted: true, choiceData: { slotLevel: 1, consumeSlot: true } };
+    await offer(ireena2);
+    check("Feather Fall: a caster who holds it but has no slot is not asked, and the console says why (2026-09-18)",
+      boxes.length === 0
+        && said.some(l => /Feather Fall: a wizard with no slots left is not asked - it has no 1st-level or higher slot left/.test(l)),
+      `boxes: ${boxes.length}; the console: ${said.filter(l => /Feather Fall/.test(l)).join(" | ") || "nothing"}`);
+
+    // ── 6. "That you can see" is the 2024 spell's clause, not the 2014 one ──
+    canvas.tokens.placeables.length = 0;
+    const ireena3 = body("ff-ireena3", "Ireena", { at: [0, 0] });
+    body("ff-blind24", "a blinded 2024 caster", { at: [100, 0], items: [ff("2024")], statuses: ["blinded"] });
+    body("ff-blind14", "a blinded 2014 caster", { at: [200, 0], items: [ff("2014")], statuses: ["blinded"] });
+    answerFF = { accepted: false, choiceData: {} };
+    await offer(ireena3);
+    const askedNames = boxes.map(b => b.opts?.reactorActor?.name);
+    check("Feather Fall: a blinded caster of the 2024 spell cannot see the fall and is not asked; the 2014 spell has no such clause (2026-09-18)",
+      !askedNames.includes("a blinded 2024 caster") && askedNames.includes("a blinded 2014 caster")
+        && said.some(l => /a blinded 2024 caster is not asked - the 2024 spell needs it to see the one falling, and they are blinded/.test(l)),
+      `asked: ${askedNames.join(", ") || "nobody"}; the console: ${said.filter(l => /not asked/.test(l)).join(" | ") || "nothing"}`);
+
+    // ── 7. A box that cannot open says so, and counts as a no ──
+    canvas.tokens.placeables.length = 0;
+    const ireena4 = body("ff-ireena4", "Ireena", { at: [0, 0] });
+    const npcCaster = body("ff-npc", "an NPC mage", { at: [100, 0], items: [ff("2014")] });
+    delete engineFF._promptLocal;             // the real one, which opens a Dialog this harness does not have
+    const brokenBox = await offer(ireena4);
+    check("Feather Fall: a box that cannot open is a no that says so, not a silent one (2026-09-18)",
+      brokenBox === false && npcCaster.system.spells.spell1.value === 2
+        && said.some(l => /the Feather Fall box for an NPC mage could not open, so it counts as a no/.test(l)),
+      `caught: ${brokenBox}; the console: ${said.filter(l => /could not open/.test(l)).join(" | ") || "nothing"}`);
+  } catch (err) {
+    check("Feather Fall: the pins ran", false, `threw: ${err?.message ?? err}`);
+  } finally {
+    DoorFF.post = keepFF.post;
+    game.users = keepFF.users;
+    if (keepFF.gmActive === undefined) delete GM.active; else GM.active = keepFF.gmActive;
+    if (keepFF.api === undefined) delete game.aceQol.reactionEngine; else game.aceQol.reactionEngine = keepFF.api;
+    canvas.tokens.placeables.length = 0;
+    canvas.tokens.placeables.push(...keepFF.placed);
+    console.log = keepFF.log; console.warn = keepFF.warn;
+    for (const a of madeFF) ACTORS.delete(a.id);
+  }
+}
+
 /* ── PHASE 6b: COUNTERSPELL ────────────────────────────────────────────────── */
 // Johnny, 2026-09-16: "PHASE 6b - Counterspell only. Then stop." Someone within
 // 60 feet starts a spell; a creature holding Counterspell, with a slot, a free

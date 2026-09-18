@@ -5,7 +5,8 @@
 //   2. Anything that catches them for free (flying, a Ring of Feather Falling)
 //      stops here — no prompt, no fuss.
 //   3. THE GM IS ASKED, ONCE. "Did he fall, or climb down?" Default: fall.
-//   4. Everyone within 60 feet who could cast Feather Fall gets the window.
+//   4. Everyone within 60 feet who could cast Feather Fall gets the window,
+//      the one falling included, through the one reaction door.
 //   5. Damage, and prone.
 //
 // ⚠️ WHY THE GM IS ASKED. The staircase off Johnny's balcony and the balcony
@@ -26,6 +27,13 @@ import { buildTargetProfile } from "./profiles/target-profile.mjs";
 import { CombatContext } from "./combat-context.mjs";
 import { DamageCardRenderer } from "./damage-card-renderer.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
+// The same readers Shield, Counterspell and Absorb Elements ask, so a Feather
+// Fall caster is judged exactly as every other reaction caster is.
+import { isOutOfTheFight } from "./is-down.mjs";
+import { hasTurns } from "./action-economy.mjs";
+import { hasReadySpell } from "./rules/spell-ready.mjs";
+import { RulesBrain } from "./rules/rules-brain.mjs";
+import { CardDoor } from "./road/doors.mjs";
 
 const LOG = "ace-qol | Falling";
 
@@ -279,52 +287,93 @@ export class FallPipeline {
 
   /**
    * Offer Feather Fall to anyone in range who could actually cast it.
+   *
+   * ⚠️🔴 THIS BOX HAD NEVER OPENED (found 2026-09-18; the line was in git
+   * from 2026-08-14). It handed the reaction box its details as a sentence,
+   * the box maps its details as a list of rows, and the throw was caught here
+   * as "could not prompt - treated as a decline". Every Feather Fall offer
+   * ended there and the creature fell. Had
+   * it opened, the answer would have been read with `!!` - and the box answers
+   * with an object on a yes, a no and a close alike, so "Let them fall" would
+   * have caught them anyway. And it bypassed the one reaction door, so the box
+   * would have opened on the GM's screen, never the caster's player's.
+   *
+   * RAW, both editions: "a reaction, which you take when you or a creature
+   * within 60 feet of you falls". The 2024 spell adds "that you can see".
+   *
    * @returns {Promise<boolean>} did somebody catch them
    */
   static async _offerFeatherFall(tokenDoc, distance) {
     try {
+      // ⚠️ THROUGH THE ONE REACTION DOOR, OR NOT AT ALL. It routes the box to
+      // the caster's connected player (else the GM), by the same rule as
+      // Counterspell and the opportunity attack, and tells the silence watch on
+      // every client that somebody is deciding.
+      const engine = game.aceQol?.reactionEngine ?? null;
+      if (typeof engine?._promptReaction !== "function") {
+        console.warn(`${LOG} | the reaction engine is not loaded, so nobody can be offered Feather Fall `
+          + `for ${tokenDoc.name}; the fall lands as it is.`);
+        return false;
+      }
       const falling = tokenDoc.object;
+      const fallingActor = tokenDoc.actor ?? null;
       const candidates = [];
       for (const t of canvas.tokens?.placeables ?? []) {
-        if (!t?.actor || t.id === tokenDoc.id) continue;
-        if (aceDistanceFt(t, falling) > FEATHER_FALL_RANGE_FT) continue;
-        const spell = (t.actor.items ?? []).find(i =>
-          i.type === "spell" && /^feather\s*fall$/i.test(String(i.name ?? "")));
-        if (!spell) continue;
+        if (!t?.actor) continue;
+        // ⚠️ "YOU OR A CREATURE": the one falling may catch itself. This loop
+        // used to skip it.
+        const self = t.id === tokenDoc.id;
+        if (!self && aceDistanceFt(t, falling) > FEATHER_FALL_RANGE_FT) continue;
 
-        // ⚠️ A REACTOR MUST BE ABLE TO ACT. An unconscious, paralyzed, stunned
-        // or petrified wizard cannot cast Feather Fall — and prompting their
-        // player to do it is worse than not offering at all. `canAct` is the
-        // established reader (it gates the action economy and lets free/passive
-        // uses through). The ONE GATE write-up names "0 canAct" as the proof
-        // that the save engine was not reading its targets; this is the same
-        // omission on the reaction side.
-        const able = CombatContext.canAct(t.actor, { activationType: "reaction", isSpell: true, item: spell });
-        if (able?.ok === false) {
-          console.log(`${LOG} | ${t.name} has Feather Fall but cannot act (${able.reason ?? "incapacitated"}) — not offered.`);
+        // ⚠️ THE ONE READER for "holds it, ready to cast". This was an exact
+        // name match, so his 2014 "Feather Fall (Legacy)" never matched, and it
+        // never asked whether the spell was prepared at all.
+        const held = hasReadySpell(t.actor, "Feather Fall");
+        if (!held.ok && !held.item) continue;       // never had it: not named
+        // Everyone who holds it and is passed over is named, with the reason.
+        const say = (why) => console.log(`${LOG} | Feather Fall: ${t.name} is not asked - ${why}.`);
+        if (!held.ok) { say(held.why); continue; }
+        if (isOutOfTheFight(t.actor)) { say("it is out of the fight, so it takes no reactions"); continue; }
+        // ⚠️ A REACTOR MUST BE ABLE TO ACT, and to cast: an antimagic field or
+        // a silence stops a spell with a spoken word. `canAct` is the
+        // established reader for both.
+        const able = CombatContext.canAct(t.actor, { activationType: "reaction", isSpell: true, item: held.item });
+        if (able?.ok === false) { say(able.reason ?? "it cannot act"); continue; }
+        // A reaction budget only exists inside a fight; out of combat the flag
+        // that records it is never cleared. Same guard as the other reactions.
+        if (hasTurns(t.actor) && engine._hasUsedReaction(t.actor)) {
+          say("its reaction is already spent this round");
           continue;
         }
-
-        // A dead creature catches nobody.
-        const theirs = buildTargetProfile(t.actor, { token: t });
-        if (theirs?.hasCondition?.("dead") || Number(t.actor.system?.attributes?.hp?.value) <= 0) continue;
-
-        candidates.push({ token: t, spell });
+        const slots = engine._getAvailableSlots(t.actor, 1);
+        if (!slots.length) { say("it has no 1st-level or higher slot left"); continue; }
+        // ⚠️ "THAT YOU CAN SEE" IS THE 2024 SPELL'S CLAUSE, NOT THE 2014 ONE, and
+        // the edition is the ITEM's own (his world holds both).
+        if (!self && RulesBrain.resolveEdition(held.item, t.actor) === "2024") {
+          const sight = engine._canTargetSeeAttacker(t, fallingActor,
+            { seen: "the one falling", forWhat: "Feather Fall" });
+          if (sight?.can === false) {
+            say(`the 2024 spell needs it to see the one falling, and ${sight.why}`);
+            continue;
+          }
+        }
+        candidates.push({ token: t, spell: held.item, slots, self });
       }
       if (!candidates.length) return false;
 
-      console.log(`${LOG} | ${candidates.length} creature(s) could catch ${tokenDoc.name}.`);
+      console.log(`${LOG} | ${candidates.length} creature(s) could catch ${tokenDoc.name}: `
+        + `${candidates.map(c => c.token.name).join(", ")}.`);
 
       // Ask them in turn; the first yes ends it — Feather Fall from two casters
       // is two slots for one outcome.
-      for (const { token, spell } of candidates) {
-        const said = await FallPipeline._askReactor(token, tokenDoc, distance, spell);
-        if (said) {
-          await ChatMessage.create({
-            content: `<div style="padding:6px 2px;font-size:14px;line-height:1.5">
-              <strong>${foundry.utils.escapeHTML(token.name)}</strong> catches
-              <strong>${foundry.utils.escapeHTML(tokenDoc.name)}</strong> with
-              <em>Feather Fall</em> — they drift the ${distance} feet and land on their feet.</div>`,
+      for (const c of candidates) {
+        if (await FallPipeline._askReactor(engine, c, tokenDoc, distance)) {
+          const esc = foundry.utils.escapeHTML;
+          await CardDoor.post({
+            content: `<div style="padding:6px 2px;font-size:16px;line-height:1.5">
+              <strong>${esc(c.token.name)}</strong> ${c.self ? "catches themselves" : `catches
+              <strong>${esc(tokenDoc.name)}</strong>`} with
+              <em>Feather Fall</em>: they drift the ${distance} feet and land on their feet.</div>`,
             speaker: { alias: "Feather Fall" },
           });
           return true;
@@ -336,28 +385,61 @@ export class FallPipeline {
     return false;
   }
 
-  /** One reactor's prompt, routed to whoever owns them. */
-  static async _askReactor(reactorToken, fallingDoc, distance, spell) {
-    const { ReactionEngine } = await import("./reaction-engine.mjs");
-    const data = {
-      type: "featherFall",
-      title: "Feather Fall?",
-      description: `${fallingDoc.name} is falling ${distance} feet.`,
-      details: "Your reaction. They drift gently down and take no damage.",
-      acceptLabel: "Cast Feather Fall",
-      declineLabel: "Let them fall",
-      icon: spell?.img ?? "icons/magic/air/wind-swirl-gray.webp",
-      accentColor: "#9ad0ff",
-      reactorActorName: reactorToken.actor?.name,
-      reactorActorImg: reactorToken.actor?.img,
-      reactorIsNpc: reactorToken.actor?.type !== "character",
-    };
+  /**
+   * Ask one caster, through the one reaction door, and pay for a yes.
+   *
+   * @returns {Promise<boolean>} true only for a yes, with its cost paid
+   */
+  static async _askReactor(engine, { token, slots, self }, fallingDoc, distance) {
+    const actor = token.actor;
+    const esc = foundry.utils.escapeHTML;
+    const fallingName = fallingDoc.name ?? "Someone";
+    let answer;
     try {
-      return !!(await ReactionEngine.showReactionDialog(data));
+      answer = await engine._promptReaction({
+        reactorActor: actor,
+        reactorToken: token,
+        type: "featherFall",
+        title: "Feather Fall",
+        description: self
+          ? `<strong>${esc(actor.name)}</strong> is falling ${distance} feet.`
+          : `<strong>${esc(fallingName)}</strong> is falling ${distance} feet, within 60 feet of `
+            + `<strong>${esc(actor.name)}</strong>.`,
+        // ⚠️ ROWS, NOT A SENTENCE: the box maps these, and a string threw.
+        details: [
+          { label: "Falling", value: `${esc(fallingName)}, ${distance} feet` },
+          { label: "If you cast it", value: "they sink 60 feet a round and land on their feet, unhurt" },
+          { label: "It costs", value: "your reaction and a 1st-level or higher slot" },
+        ],
+        acceptLabel: "Cast Feather Fall",
+        declineLabel: "Let them fall",
+        spellSlotLevel: 1,
+        availableSlots: slots,
+        // The box draws a Font Awesome icon by name; an image path drew nothing.
+        icon: "fa-feather",
+        accentColor: "#9ad0ff",
+      });
     } catch (err) {
-      console.warn(`${LOG} | could not prompt ${reactorToken.name} — treated as a decline.`, err);
+      console.warn(`${LOG} | could not ask ${token.name} about Feather Fall, so it counts as a no:`, err);
       return false;
     }
+
+    // ⚠️🔴 THE ANSWER IS AN OBJECT, on a yes, a no and a close alike. It was read
+    // with `!!`, which made every answer a yes.
+    if (answer?.accepted !== true) {
+      console.log(`${LOG} | ${token.name} ${self ? "does not cast Feather Fall" : `lets ${fallingName} fall`}.`);
+      return false;
+    }
+
+    // ⚠️ AND A YES COSTS WHAT THE SPELL COSTS: the reaction and the slot, paid
+    // the way Counterspell pays (the box's own slot picker, and the GM's
+    // "consume the slot" box, which an NPC starts with unticked).
+    const slotLevel = Number(answer.choiceData?.slotLevel) || slots[0]?.level || 1;
+    if (answer.choiceData?.consumeSlot !== false) await engine._consumeSpellSlot(actor, slotLevel);
+    await engine._markReactionUsed(actor, "featherFall", fallingDoc.actor ?? null);
+    console.log(`${LOG} | ${token.name} casts Feather Fall on ${fallingName} `
+      + `(level ${slotLevel} slot${answer.choiceData?.consumeSlot === false ? ", not spent, by the GM's choice" : ""}).`);
+    return true;
   }
 
   /**
