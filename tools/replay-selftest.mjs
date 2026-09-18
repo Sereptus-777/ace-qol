@@ -2511,6 +2511,66 @@ console.log(`\nPHASE 6d: ABSORB ELEMENTS`);
         lines.length === 3, `${lines.length} line(s) for five hits`);
     }
 
+    // ── HIS TABLE: a Fireball's SAVE CARD never asked ──
+    // Johnny, 2026-09-17: "Aryel has Absorb Elements on her sheet. Neferon
+    // Fireball. She failed the Dex save. Fire went on her. No Absorb Elements
+    // box. Console has zero Absorb lines." Zero lines is the tell - not a
+    // refusal, a check that never ran. The attack card asks before every hit;
+    // the save card went straight to the hit-point door. This drives the real
+    // APPLY ALL with the real reaction engine and pins what reaches the door.
+    {
+      const { SaveEngine: SE } = await import(`${MODULE}/scripts/save-engine.mjs`);
+      const { HpDoor } = await import(`${MODULE}/scripts/road/doors.mjs`);
+      const aryel = jeb("ae-aryel");
+      aryel.name = "Aryel";
+      const tokenDoc = { id: "tok-aryel", actor: aryel, object: { id: "tok-aryel", name: "Aryel", actor: aryel } };
+      const keepScenes = game.scenes;
+      game.scenes = { get: () => ({ tokens: { get: (id) => (id === "tok-aryel" ? tokenDoc : null) } }),
+        contents: [], [Symbol.iterator]: function* () {} };
+      const keepApi = game.aceQol?.reactionEngine;
+      game.aceQol = game.aceQol ?? {};
+      game.aceQol.reactionEngine = engine;
+
+      const reached = [];
+      const keepDoor = HpDoor.damage;
+      HpDoor.damage = async (actor, finals) => { reached.push({ who: actor.name, finals }); return { hpDelta: 0 }; };
+
+      const card = (id) => ({ id, flags: { [MOD]: {
+          damageResults: [{ tokenDocId: "tok-aryel", targetId: aryel.id, sceneId: "s",
+            byType: [{ type: "fire", value: 28 }], totalFinal: 28 }],
+          damageTypes: ["fire"], itemUuid: null, actorId: null } },
+        update: async () => ({}) });
+      const saves = Object.create(SE.prototype);
+
+      answer = true;
+      const atAsk = asked.length;
+      await quiet(() => saves._applyAllSaveDamage(card("m-yes")));
+      const landedYes = reached.at(-1)?.finals?.find(f => f.type === "fire")?.final;
+      check("HIS TABLE: a Fireball's save card now asks Absorb Elements BEFORE the hit points move, and Yes halves what lands (2026-09-17)",
+        asked.length - atAsk === 1 && landedYes === 14
+          && aryel.system.spells.spell1.value === 1 && aryel.flags[MOD]?.reactionUsed === true,
+        `asked: ${asked.length - atAsk}; fire reaching the hit-point door: ${landedYes ?? "nothing"} of 28; `
+          + `slots ${aryel.system.spells.spell1.value}; reaction ${aryel.flags[MOD]?.reactionUsed ? "spent" : "free"}`);
+
+      // Spent now: the next Fireball lands in full and the console says why.
+      const said = [];
+      const keepLog = console.log;
+      const fight = { started: true, round: 1, turn: 0, combatants: { contents: [{ actorId: aryel.id, actor: aryel }] } };
+      game.combats = { contents: [fight] };
+      console.log = (...a) => { said.push(a.join(" ")); };
+      try { await saves._applyAllSaveDamage(card("m-spent")); }
+      finally { console.log = keepLog; }
+      game.combats = keep6d.combats;
+      const landedSpent = reached.at(-1)?.finals?.find(f => f.type === "fire")?.final;
+      check("and with her reaction spent the next one lands in full, and the console says why (2026-09-17)",
+        landedSpent === 28 && said.some(l => /Absorb Elements: Aryel is not asked - its reaction is already spent/.test(l)),
+        `fire reaching the door: ${landedSpent}; the console: ${said.filter(l => /Absorb/.test(l)).join(" | ") || "nothing (wrong)"}`);
+
+      HpDoor.damage = keepDoor;
+      game.scenes = keepScenes;
+      if (keepApi === undefined) delete game.aceQol.reactionEngine; else game.aceQol.reactionEngine = keepApi;
+    }
+
     // ── 3b. Her next melee HIT adds the stored 1d6 fire, on her turn ──
     {
       const her = jeb("ae-hit");

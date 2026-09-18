@@ -2384,8 +2384,18 @@ export class SaveEngine {
       const inside = await measureArea();
       if (inside === null) return;
       tokens = inside;
+      // ⚠️ "IGNORED" MEANT LEFT OUT, AND SHE WAS NOT (2026-09-17). His log:
+      // "1 leftover target(s) ignored: Aryel" - while she was the only creature
+      // in the Fireball and was rolled for. This listed EVERY token still
+      // targeted from before the cast, including the ones the area caught
+      // anyway. Her target was ignored as the thing that decided who is hit; she
+      // was not. Only a target the area does NOT reach has actually been left
+      // out, so only those are named.
+      const insideIds = new Set(inside.map(t => t.id));
+      const leftOut = targeted.filter(t => !insideIds.has(t.id));
       console.log(`${MODULE_ID} | "${pending.item?.name}": the area decides, because ${rule.why}.`
-        + `${targeted.length ? ` ${targeted.length} leftover target(s) ignored: ${targeted.map(t => t.name).join(", ")}.` : ""}`);
+        + `${leftOut.length ? ` ${leftOut.length} targeted token(s) outside the area are not in it: `
+          + `${leftOut.map(t => t.name).join(", ")}.` : ""}`);
     } else if (rule.kind === "pick") {
       const inside = await measureArea();
       if (inside === null) return;
@@ -8490,7 +8500,48 @@ export class SaveEngine {
       // hurt, and the PC stats never heard a Fireball land. The door writes the
       // hit points through the one writer (temporary hit points first, a
       // listener's reduction honoured, polymorph carry-over), then says so.
-      const landed = await HpDoor.damage(actor, finals, {
+      // ⚠️🔴 THE SAVE CARD NEVER ASKED ANYBODY FOR A REACTION (Phase 6d, his
+      // table, 2026-09-17). "Aryel has Absorb Elements on her sheet. Neferon
+      // Fireball. She failed the Dex save. Fire went on her. No Absorb Elements
+      // box. Console has zero Absorb lines." Zero lines is the tell: not a
+      // refusal, which says why, but a check that never ran. The attack card
+      // has asked `checkPreDamageReactions` before every hit since August; this
+      // path went straight from the card to the hit-point door and asked
+      // nothing, so a Fireball could never be Absorbed however ready she was.
+      //
+      // ⚠️ THE SAME READER, NOT A SECOND COPY. What it decides about her -
+      // prepared, slot, reaction, able to act - and every refusal it logs are
+      // the ones the attack card already gets.
+      //
+      // ⚠️ AND NOT UNCANNY DODGE. That answers "an attacker you can see hits
+      // you with an attack"; a failed saving throw against a Fireball is not an
+      // attack, so it is skipped here by name of the engine's own option.
+      let toLand = finals;
+      try {
+        const reactionEng = game.aceQol?.reactionEngine ?? null;
+        if (!reactionEng?.checkPreDamageReactions) {
+          console.warn(`${MODULE_ID} | ${actor.name} could not be offered a reaction to that damage: `
+            + `the reaction engine is not on the API.`);
+        } else if (finals.length) {
+          const tok = tokenDoc?.object ?? actor.getActiveTokens?.()?.[0] ?? null;
+          const comps = finals.map(f => ({ type: f.type, total: f.final }));
+          const res = await reactionEng.checkPreDamageReactions(
+            comps, actor, tok, sourceActor, sourceItem, null, { skipUncannyDodge: true });
+          if (res?.absorbed) {
+            toLand = (res.modifiedComponents ?? comps)
+              .map(c => ({ type: c.type, final: Math.max(0, Number(c.total) || 0) }));
+            const was = finals.reduce((n, f) => n + f.final, 0);
+            const now = toLand.reduce((n, f) => n + f.final, 0);
+            console.log(`${MODULE_ID} | ${actor.name} absorbed the ${res.absorbedType ?? "elemental"} damage: `
+              + `${was} becomes ${now}.`);
+          }
+        }
+      } catch (err) {
+        // ⚠️ NEVER LOSE THE DAMAGE OVER A REACTION. The dice are on the card.
+        console.warn(`${MODULE_ID} | the reaction check for ${actor.name} failed, so the full damage lands:`, err);
+      }
+
+      const landed = await HpDoor.damage(actor, toLand, {
         tokenDocId: r.tokenDocId, item: sourceItem, source: sourceActor, label: "save-apply-all",
       });
       hpDelta[r.tokenDocId] = (Number(hpDelta[r.tokenDocId]) || 0) + (Number(landed?.hpDelta) || 0);
