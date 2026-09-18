@@ -3829,6 +3829,289 @@ await quiet(async () => {
   }
 });
 
+/* ── A CANCELLED CAST GIVES BACK WHAT THE PRESS SPENT ────────────────────── */
+// 2026-09-18. dnd5e takes what a press costs before any of ACE runs (a daily
+// use, a recharge, a legendary action) and writes it on the usage message, even
+// when ACE has stopped the card; its own refund puts it back. The spell pipeline
+// kept the slot it had held on every way out of a cast and left the rest spent:
+// Vistana Spy's Curse, a Gray Slaad's Fly and Akra's free Command stayed spent
+// after the picker closed, under a toast that said "slot not consumed".
+//
+// These drive the real pipeline dispatch with his own items, pressed by a copy
+// of their own creature that can take a write. Only the picker's dialog, the
+// save resolver's dice, the condition door and dnd5e's refund are stood in, and
+// dnd5e's word on a placement is handed to the listener the dispatch started.
+console.log(`\nA CANCELLED CAST GIVES BACK WHAT THE PRESS SPENT`);
+await quiet(async () => {
+  const lengths = Object.fromEntries(Object.entries(hooks).map(([k, v]) => [k, v.length]));
+  const { SpellTargetPicker: PickerGB } = await import(`${MODULE}/scripts/spell-target-picker.mjs`);
+  const { SaveResolver: SaveGB } = await import(`${MODULE}/scripts/spell-pipeline/resolvers/save.mjs`);
+  const { ConditionDoor: CondGB } = await import(`${MODULE}/scripts/road/doors.mjs`);
+  const { ReactionEngine: ReactGB } = await import(`${MODULE}/scripts/reaction-engine.mjs`);
+  const { describeSpent } = await import(`${MODULE}/scripts/road/give-back.mjs`);
+  const SCENE_GB = "replay-gb-scene";
+  const docsGB = new Map();
+  const keepGB = { show: PickerGB._showDialog, save: SaveGB.runSingle, notes: ui.notifications,
+    placed: [...canvas.tokens.placeables], scene: canvas.scene, scenes: game.scenes.get, targets: game.user.targets,
+    tokenClass: CONFIG.Token, apply: CondGB.apply, own: CondGB.applyItemEffect, wait: SpellPipeline.areaWaitMs };
+  const toasts = [];
+  const say3 = (m) => { toasts.push(String(m)); };
+  ui.notifications = { info: say3, warn: say3, error: say3 };
+  class GBToken { setTarget(on) { if (!on) game.user.targets.delete(this); else game.user.targets.add(this); } }
+  CONFIG.Token = { objectClass: GBToken };
+  game.user.targets = new Set();
+  game.scenes.get = (id) => (id === SCENE_GB
+    ? { id, tokens: { get: (t) => docsGB.get(t) ?? null, contents: [...docsGB.values()], find: (fn) => [...docsGB.values()].find(fn) } }
+    : keepGB.scenes(id));
+  // A wait nobody answers gives up in a moment here, so a broken pin fails instead of hanging.
+  SpellPipeline.areaWaitMs = 400;
+  CondGB.apply = async (_a, key) => ({ ok: true, applied: key });
+  CondGB.applyItemEffect = async (_i, _a, fx) => ({ ok: true, name: fx?.name });
+
+  const setPathGB = (obj, key, v) => {
+    const p = key.split("."); let o = obj;
+    for (const s of p.slice(0, -1)) o = (o[s] ??= {});
+    o[p[p.length - 1]] = v;
+  };
+  // One of his creatures, able to take what a cast writes: the replay's copies are records, not documents.
+  const standIn = (actor) => {
+    const a = { ...actor, system: JSON.parse(JSON.stringify(actor.system ?? {})), writes: [] };
+    a.update = async (u) => { a.writes.push(u); for (const [k, v] of Object.entries(u)) setPathGB(a, k, v); return a; };
+    return a;
+  };
+  const placeGB = (actor, id, x) => {
+    const doc = { id, actorId: actor.id, actor, parent: { id: SCENE_GB }, flags: {}, name: actor.name, hidden: false,
+      x, y: 0, width: 1, height: 1, elevation: 0, disposition: -1, texture: { src: "" }, update: async () => doc };
+    const tok = Object.assign(new GBToken(), { id, name: actor.name, actor, document: doc,
+      x, y: 0, w: 100, h: 100, center: { x: x + 50, y: 50 } });
+    doc.object = tok;
+    docsGB.set(id, doc);
+    canvas.tokens.placeables.push(tok);
+    actor.getActiveTokens = () => [tok];
+    return tok;
+  };
+  const victim = { id: "replay-gb-victim", name: "somebody within reach", type: "npc", img: "", uuid: "Actor.replay-gb-victim",
+    statuses: new Set(), effects: new Collection(), items: new Collection(), flags: {},
+    system: { attributes: { hp: { value: 30, max: 30 } }, details: { type: { value: "humanoid" } } },
+    getFlag: () => undefined, getRollData: () => ({}) };
+  ACTORS.set(victim.id, victim);
+  // A press of one of his items by its own creature, as dnd5e hands it to the pipeline.
+  const pressOf = (item, { slot = false } = {}) => {
+    const caster = standIn(item.actor);
+    const it = { ...item, actor: caster, parent: caster };
+    const act = { ...[...item.system.activities][0], item: it, actor: caster, parent: it, refunds: [] };
+    act.refund = async (d) => { act.refunds.push(d); };
+    if (slot) act._aceSlotDeferred = true;   // the slot the pipeline's pre-cast hook holds back
+    canvas.tokens.placeables.length = 0;
+    docsGB.clear();
+    placeGB(caster, "tok-gb-caster", 0);
+    placeGB(victim, "tok-gb-victim", 100);
+    return { caster, it, act };
+  };
+  // What dnd5e's consume() writes for one use of the item itself.
+  const oneUse = (it) => ({ item: { [it.id]: [{ keyPath: "system.uses.spent", delta: 1 }] } });
+  // The pipeline's own listeners for one cast, caught as its dispatch starts them.
+  const dispatchGB = (act, payload) => {
+    const caught = {};
+    const keepOn = Hooks.on;
+    Hooks.on = (n, f) => { (caught[n] ??= []).push(f); return keepOn(n, f); };
+    let running;
+    try { running = SpellPipeline._dispatch(act, payload); } finally { Hooks.on = keepOn; }
+    return { running, fire: (name, ...args) => { for (const f of caught[name] ?? []) f(...args); } };
+  };
+  const findGB = (actorName, itemName, test = () => true) => [...ACTORS.values()].filter(a => a.name === actorName)
+    .flatMap(a => a.items.filter(i => i.name === itemName)).find(test) ?? null;
+  const said = () => toasts.join(" | ") || "(nothing said)";
+
+  try {
+    // ── The picker closed ──
+    const curse = findGB("Vistana Spy", "Curse");
+    if (!curse) check("a closed picker gives back a daily use", null, "(Vistana Spy has no Curse in this world)");
+    else {
+      const { it, act } = pressOf(curse);
+      PickerGB._showDialog = async () => [];
+      const deltas = oneUse(it);
+      const payload = { system: { deltas } };
+      toasts.length = 0;
+      await SpellPipeline._dispatch(act, payload);
+      check("Vistana Spy's Curse (once a long rest), its picker closed: dnd5e's own refund puts the use back, exactly as dnd5e wrote it, and the record is cleared so nothing can give it back twice (2026-09-18)",
+        act.refunds.length === 1 && act.refunds[0] === deltas && payload.system.deltas === null
+          && /Curse: cancelled\. Given back: a use of Curse\./.test(said()),
+        `refunds: ${act.refunds.length}; the record: ${payload.system.deltas === null ? "cleared" : "still there"}; said: ${said()}`);
+    }
+
+    const fly = findGB("Gray Slaad", "Fly", i => i.system?.method === "innate");
+    if (!fly) check("a closed picker gives back an innate casting", null, "(no Gray Slaad with an innate Fly in this world)");
+    else {
+      // With dnd5e's own card showing (his setting off): its record is cleared the way its Refund clears it.
+      const { it, act } = pressOf(fly);
+      PickerGB._showDialog = async () => [];
+      let cleared = null;
+      const card = { id: "gb-card", system: { deltas: oneUse(it) }, update: async (u) => { cleared = u; } };
+      toasts.length = 0;
+      await SpellPipeline._dispatch(act, card);
+      check("a Gray Slaad's innate Fly (twice a day), its picker closed with dnd5e's card showing: the use comes back and the card's record is cleared, as its own Refund would (2026-09-18)",
+        act.refunds.length === 1 && cleared?.["system.deltas"] === null && /Given back: a use of Fly\./.test(said()),
+        `refunds: ${act.refunds.length}; the card: ${cleared ? "cleared" : "left as it was"}; said: ${said()}`);
+    }
+
+    const insects = findGB("Ancient Black Dragon", "Cloud of Insects");
+    if (!insects) check("a closed picker gives back a legendary action", null, "(no Ancient Black Dragon with Cloud of Insects)");
+    else {
+      const { act } = pressOf(insects);
+      PickerGB._showDialog = async () => [];
+      const deltas = { actor: [{ keyPath: "system.resources.legact.spent", delta: 1 }] };
+      toasts.length = 0;
+      await SpellPipeline._dispatch(act, { system: { deltas } });
+      check("an Ancient Black Dragon's Cloud of Insects (a legendary action), its picker closed: the legendary action comes back (2026-09-18)",
+        act.refunds.length === 1 && act.refunds[0] === deltas && /Given back: a legendary action\./.test(said()),
+        `refunds: ${act.refunds.length}; said: ${said()}`);
+    }
+
+    const hold = findGB(VAREK, "Hold Person", i => i.system?.source?.rules === "2024");
+    if (!hold) check("a closed picker on a slot spell", null, "(Varek has no 2024 Hold Person)");
+    else {
+      const { caster, act } = pressOf(hold, { slot: true });
+      PickerGB._showDialog = async () => [];
+      toasts.length = 0;
+      await SpellPipeline._dispatch(act, { system: { spellLevel: 2 } });
+      check("Varek's Hold Person, its picker closed: the slot held back is never taken, and a press that spent nothing else calls no refund (2026-09-18)",
+        act.refunds.length === 0 && act._aceSlotDeferred === false && caster.writes.length === 0
+          && /Hold Person: cancelled\. No slot was spent\./.test(said()),
+        `refunds: ${act.refunds.length}; the hold: ${act._aceSlotDeferred ? "still on" : "let go"}; writes to Varek: ${caster.writes.length}; said: ${said()}`);
+    }
+
+    // ── The cast went ahead: nothing comes back ──
+    if (curse) {
+      const { it, act } = pressOf(curse);
+      PickerGB._showDialog = async (o) => { const c = o.candidates.find(x => x.actor === victim && x.valid); return c ? [c.actor] : []; };
+      let resolved = 0;
+      SaveGB.runSingle = async () => { resolved++; };
+      const deltas = oneUse(it);
+      await SpellPipeline._dispatch(act, { system: { deltas } });
+      const went = { refunds: act.refunds.length, resolved };
+      const again = pressOf(curse);
+      SaveGB.runSingle = async () => { throw new Error("a resolver failing after the pick"); };
+      // The failure is reported, not swallowed; held here so the check prints and the stack does not.
+      const reported = [];
+      const keepError = console.error;
+      console.error = (...a) => { reported.push(a.map(String).join(" ")); };
+      try { await SpellPipeline._dispatch(again.act, { system: { deltas: oneUse(again.it) } }); }
+      finally { console.error = keepError; SaveGB.runSingle = keepGB.save; }
+      check("the Curse picked a target and went ahead: nothing is given back, and a failure after the pick gives nothing back either, because the cast had happened, and the failure is said (2026-09-18)",
+        went.resolved === 1 && went.refunds === 0 && again.act.refunds.length === 0
+          && reported.some(l => /dispatch failed for Curse/.test(l)),
+        `resolved: ${went.resolved}; refunds after a pick: ${went.refunds}; after a failure past the pick: ${again.act.refunds.length}; `
+          + `the failure ${reported.length ? "was reported" : "was never reported"}`);
+    }
+
+    // ── The area ──
+    const breath = findGB("Adult White Dragon", "Cold Breath");
+    if (!breath) check("a cancelled area gives back a recharge", null, "(no Adult White Dragon with Cold Breath)");
+    else {
+      const { caster, it, act } = pressOf(breath);
+      const deltas = oneUse(it);
+      const d = dispatchGB(act, { system: { deltas } });
+      d.fire("dnd5e.postUseActivity", act, { create: { measuredTemplate: true } }, { templates: [] });
+      await d.running;
+      const cancelled = act.refunds.length;
+      const words = describeSpent(deltas, caster);
+      const placedPress = pressOf(breath);
+      const p = dispatchGB(placedPress.act, { system: { deltas: oneUse(placedPress.it) } });
+      p.fire("createMeasuredTemplate", { id: "gb-cone", flags: { dnd5e: { origin: placedPress.act.uuid, item: placedPress.it.uuid } } });
+      await p.running;
+      check("an Adult White Dragon's Cold Breath (recharge 5-6): dnd5e says the cone was never placed, and the recharge comes back at once; a cone that lands keeps it spent (2026-09-18)",
+        cancelled === 1 && act.refunds[0] === deltas && words === "Cold Breath's recharge" && placedPress.act.refunds.length === 0,
+        `given back when cancelled: ${cancelled} (${words}); when placed: ${placedPress.act.refunds.length}`);
+    }
+
+    const stink = findGB(VAREK, "Stinking Cloud");
+    if (!stink) check("an area placed during the Counterspell wait", null, "(Varek has no Stinking Cloud)");
+    else {
+      // dnd5e places the area straight after the usage hook, while the Counterspell hold can still be open.
+      const { caster, act } = pressOf(stink, { slot: true });
+      setPathGB(caster, "system.spells.spell3", { value: 2, max: 3 });
+      ReactGB._createCastBarrier(act);
+      const d = dispatchGB(act, { system: { spellLevel: 3 } });
+      d.fire("createMeasuredTemplate", { id: "gb-cloud", flags: { dnd5e: { origin: act.uuid, item: act.item.uuid } } });
+      await new Promise(r => setTimeout(r, 30));
+      ReactGB._resolveCastBarrier(act, { abort: false, reason: "not countered" });
+      await d.running;
+      check("Varek's Stinking Cloud, its area placed while the Counterspell hold was still open: the pipeline still sees it, and the level 3 slot is spent (2026-09-18)",
+        caster.system.spells.spell3.value === 1 && act.refunds.length === 0,
+        `his level 3 slots: ${caster.system.spells.spell3.value} of 3 (2 before the cast); refunds: ${act.refunds.length}`);
+    }
+
+    const slaadBall = findGB("Gray Slaad", "Fireball", i => i.system?.method === "innate");
+    if (!slaadBall) check("an area dnd5e was told not to place", null, "(no Gray Slaad with an innate Fireball)");
+    else {
+      const unticked = pressOf(slaadBall);
+      const u = dispatchGB(unticked.act, { system: { deltas: oneUse(unticked.it) } });
+      u.fire("dnd5e.postUseActivity", unticked.act, { create: { measuredTemplate: false } }, { templates: [] });
+      await u.running;
+      const silent = pressOf(slaadBall);
+      const s = dispatchGB(silent.act, { system: { deltas: oneUse(silent.it) } });
+      await s.running;
+      check("a Gray Slaad's innate Fireball: with dnd5e told not to place the area, the cast goes on and keeps its use; with no word at all by the backstop, it is treated as cancelled and the use comes back (2026-09-18)",
+        unticked.act.refunds.length === 0 && silent.act.refunds.length === 1,
+        `not asked to place: ${unticked.act.refunds.length} given back; no word at all: ${silent.act.refunds.length} given back`);
+    }
+
+    const detect = findGB(VAREK, "Detect Magic");
+    if (!detect) check("a self spell cast with a slot", null, "(Varek has no Detect Magic)");
+    else {
+      const { caster, act } = pressOf(detect, { slot: true });
+      setPathGB(caster, "system.spells.spell1", { value: 3, max: 4 });
+      const started = Date.now();
+      await SpellPipeline._dispatch(act, { system: { spellLevel: 1 } });
+      const took = Date.now() - started;
+      check("Varek's Detect Magic cast with a slot: its area is ACE's to draw, so nothing waits on one, and the level 1 slot is spent (it used to be kept after thirty seconds of waiting for an area nobody places) (2026-09-18)",
+        caster.system.spells.spell1.value === 2 && act.refunds.length === 0,
+        `his level 1 slots: ${caster.system.spells.spell1.value} of 4 (3 before); the cast took ${took} ms`);
+    }
+
+    // ── A route nobody wrote ──
+    const gaseous = [...ACTORS.values()].flatMap(a => a.items.filter(i => i.name === "Gaseous Form"))
+      .find(i => shapeOf(i) === "touch" && Number(i.system?.uses?.max) > 0) ?? null;
+    if (!gaseous) check("a route nobody wrote is refused before the picker", null, "(no touch-shaped Gaseous Form with daily uses)");
+    else {
+      const { it, act } = pressOf(gaseous);
+      let opened = 0;
+      PickerGB._showDialog = async () => { opened++; return []; };
+      toasts.length = 0;
+      // The refusal is an error line by design; held here and checked, so it is read, not printed.
+      const lines = [];
+      const keepError = console.error;
+      console.error = (...a) => { lines.push(a.map(String).join(" ")); };
+      try { await SpellPipeline._dispatch(act, { system: { deltas: oneUse(it) } }); }
+      finally { console.error = keepError; }
+      const line = lines.find(l => /Gaseous Form" routed to/.test(l)) ?? "";
+      check(`${gaseous.actor?.name}'s Gaseous Form (a touch spell that heals nobody, which ACE has no resolver for): refused before any picker opens, its daily use given back, and the refusal says nothing was spent (2026-09-18)`,
+        opened === 0 && act.refunds.length === 1 && /nothing was spent/.test(said()) && !/refunded/i.test(said())
+          && /nothing was spent/.test(line),
+        `pickers opened: ${opened}; refunds: ${act.refunds.length}; said: ${said()}; the console: ${line || "(nothing)"}`);
+    }
+  } catch (err) {
+    check("a cancelled cast gives back what the press spent: the pins ran", false, `threw: ${err?.stack ?? err}`);
+  } finally {
+    PickerGB._showDialog = keepGB.show;
+    SaveGB.runSingle = keepGB.save;
+    CondGB.apply = keepGB.apply;
+    CondGB.applyItemEffect = keepGB.own;
+    SpellPipeline.areaWaitMs = keepGB.wait;
+    ui.notifications = keepGB.notes;
+    CONFIG.Token = keepGB.tokenClass;
+    game.scenes.get = keepGB.scenes;
+    game.user.targets = keepGB.targets;
+    canvas.scene = keepGB.scene;
+    canvas.tokens.placeables.length = 0;
+    canvas.tokens.placeables.push(...keepGB.placed);
+    ACTORS.delete(victim.id);
+    for (const [k, n] of Object.entries(lengths)) hooks[k].length = n;
+    for (const k of Object.keys(hooks)) if (!(k in lengths)) delete hooks[k];
+  }
+});
+
 /* ── PHASE 6b: COUNTERSPELL ────────────────────────────────────────────────── */
 // Johnny, 2026-09-16: "PHASE 6b - Counterspell only. Then stop." Someone within
 // 60 feet starts a spell; a creature holding Counterspell, with a slot, a free
@@ -4920,6 +5203,54 @@ console.log(`\nPHASE 6b: COUNTERSPELL`);
         err ? `threw: ${err?.message ?? err}` : `asked ${asked.length - atAsk}x`);
       canvas.tokens.placeables.length = 0;
       for (const a of [caster, kasimir]) ACTORS.delete(a.id);
+    }
+
+    // ── WHAT THE COUNTERED CASTER LOSES, THROUGH THE SPELL PIPELINE (2026-09-18) ──
+    // His books: 2014 "its spell fails and has no effect", with no word sparing
+    // the slot; 2024 "If that spell was cast with a spell slot, the slot isn't
+    // expended", and nothing else is spared. The Counterspell's own book decides,
+    // not the countered spell's. The pipeline kept the slot it held for both, and
+    // let go of that hold before the 2024 rule looked, so the rule handed the
+    // caster a slot never spent. This drives the real dispatch waiting on a real
+    // hold, answered by the real check, with a daily use on the press as well.
+    {
+      const run = async (csEdition, spellEdition) => {
+        const caster = makeCaster(`p6b-gb${csEdition}`, "Neferon", { at: [0, 0] });
+        const counter = mage(`p6b-gbk${csEdition}`, csEdition === "2014" ? "Patrina Velikovna" : "Kasimir Velikov",
+          { items: [csItem(csEdition)], at: [200, 0], dc: 17 });
+        answer = true;
+        casterSaveTotal = 5;                  // the 2024 save fails
+        const spell = { ...other("Fireball"), uuid: `Actor.${caster.id}.Item.it-Fireball`, actor: caster };
+        spell.system = { ...spell.system, source: { rules: spellEdition } };
+        const act = { ...cast(caster, spell), uuid: `${spell.uuid}.Activity.gb${csEdition}`, _aceSlotDeferred: true };
+        const refunds = [];
+        act.refund = async (d) => { refunds.push(d); };
+        const deltas = { item: { [spell.id]: [{ keyPath: "system.uses.spent", delta: 1 }] } };
+        ReactionEngine._createCastBarrier(act);
+        let err = null;
+        try {
+          await quiet(async () => {
+            const dispatched = SpellPipeline._dispatch(act, { system: { spellLevel: 3, deltas } });
+            await engine._onSpellCast(act, { system: { spellLevel: 3 } });
+            await dispatched;
+          });
+        } catch (e) { err = e; }
+        const verdict = ReactionEngine._castBarriers.get(ReactionEngine._activityKey(act))?.resolvedWith ?? null;
+        const out = { err, verdict, slots: caster.system.spells.spell3.value, refunds: refunds.length };
+        canvas.tokens.placeables.length = 0;
+        for (const a of [caster, counter]) ACTORS.delete(a.id);
+        return out;
+      };
+      const old = await run("2014", "2024");
+      check("a 2014 Counterspell stops a 2024 Fireball the pipeline owns: the verdict names the 2014 book, the level 3 slot the pipeline held is spent, and the daily use stays spent (2026-09-18)",
+        !old.err && old.verdict?.abort === true && old.verdict?.edition === "2014" && old.slots === 1 && old.refunds === 0,
+        old.err ? `threw: ${old.err?.message ?? old.err}`
+          : `verdict: ${JSON.stringify(old.verdict)}; Neferon's level 3 slots: ${old.slots} of 3 (2 before); given back: ${old.refunds}`);
+      const now = await run("2024", "2014");
+      check("a 2024 Counterspell stops a 2014 Fireball the pipeline owns: the verdict names the 2024 book, the slot is not expended and no slot is handed over either (still 2 of 3), and the daily use stays spent (2026-09-18)",
+        !now.err && now.verdict?.abort === true && now.verdict?.edition === "2024" && now.slots === 2 && now.refunds === 0,
+        now.err ? `threw: ${now.err?.message ?? now.err}`
+          : `verdict: ${JSON.stringify(now.verdict)}; Neferon's level 3 slots: ${now.slots} of 3 (2 before); given back: ${now.refunds}`);
     }
   } finally {
     Door6b.post = keep6b.post;

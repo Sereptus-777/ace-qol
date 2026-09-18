@@ -52,6 +52,9 @@ import { revivesTheDead, lifeStateOf, pickable } from "../road/picker-rule.mjs";
 import { aceDistanceFt } from "../geometry-utils.mjs";
 // Which Teleport an item is, read from the item itself (2026-09-18).
 import { readTeleport } from "../rules/teleport-words.mjs";
+// What a press spent, given back through dnd5e's own refund when the cast is
+// abandoned (2026-09-18). Imports nothing, so it cannot close a cycle.
+import { giveBack, spentCount } from "../road/give-back.mjs";
 
 // ─── Creature snapshot access (2026-07-28) ───────────────────────────────────
 // Facts about a creature come from the ONE reader, never from actor.system —
@@ -863,6 +866,14 @@ export class SpellPipeline {
 
     const ctx = { entry, item, actor, activity, castLevel, spellMod, message };
 
+    // ⚠️🔴 WATCH THE AREA FROM THE MOMENT THE CAST IS TAKEN, before anything
+    // below waits. dnd5e places a spell's area straight after this hook returns,
+    // and the Counterspell wait below can outlast the placement: the old waiter
+    // only began listening after it, so an area placed in the meantime was never
+    // seen and the cast was taken for cancelled. Mass Cure Wounds' own resolver
+    // waits for its area first, so its slot was never spent at all.
+    ctx.area = SpellPipeline._watchArea(activity);
+
     // ⚠️🔴 SAY THAT THIS PRESS IS TAKEN, BEFORE WAITING ON ANYBODY (his table,
     // 2026-09-18): "Magic Missile did nothing. no pipeline reported taking it"
     // - over a Magic Missile that resolved. The wait just below can last as
@@ -878,8 +889,8 @@ export class SpellPipeline {
     // ── v0.7.21: Counterspell barrier check at the PIPELINE level ──
     // The reaction-engine creates a barrier promise at preUseActivity and
     // resolves it after counterspell prompts complete. If the counterspell
-    // succeeded, the spell must NOT proceed — no resolver runs, no effect
-    // applies, slot is refunded.
+    // succeeded, the spell must NOT proceed — no resolver runs and no effect
+    // applies; what the caster loses is the Counterspell's book (_counteredCast).
     // Magic Missile (spell-auto-damage) had this check; the pipeline did not,
     // so Bless / Haste / Hold Person / etc. would fire even after a successful
     // counterspell. This gates ALL shapes uniformly.
@@ -887,8 +898,10 @@ export class SpellPipeline {
       const { ReactionEngine } = await import("../reaction-engine.mjs");
       const reactionResult = await ReactionEngine.awaitCastBarrier(activity);
       if (reactionResult?.abort) {
-        console.log(`${MODULE_ID} | SpellPipeline: ${item.name} aborted by ${reactionResult.reason ?? "reaction"} — slot refunded + concentration torn down`);
-        await SpellPipeline._refundSlotIfDeferred(activity);
+        console.log(`${MODULE_ID} | SpellPipeline: ${item.name} aborted by ${reactionResult.reason ?? "reaction"}; `
+          + `nothing of it resolves, and its concentration is torn down.`);
+        await SpellPipeline._counteredCast(ctx, reactionResult);
+        ctx.area.stop();
         // ── v0.7.21 — Tear down orphan concentration ──
         // dnd5e's activity-use flow auto-starts concentration BEFORE our
         // barrier knows the cast got counterspelled. End that concentration
@@ -915,13 +928,14 @@ export class SpellPipeline {
       switch (entry.shape) {
         case "self":
           await SelfResolver.run(ctx);
-          // ⚠️ SWEEP THE CLASS, NOT THE INSTANCE. Every branch that could ever
-          // involve a template now goes through the same helper, which asks the
-          // activity whether it declares one and commits immediately when it
-          // does not. That way a spell added to the registry later cannot
-          // quietly land in a branch that burns the slot on cancel — which is
-          // how "aura" ended up as the one shape left behind.
-          await SpellPipeline._commitSlotOnTemplatePlaced(activity, castLevel);
+          // ⚠️🔴 IT HAS ALREADY HAPPENED, SO IT IS SPENT. This waited on a
+          // template like the area shapes, and a self spell's area is never
+          // placed: ACE turns the prompt off and draws nothing a waiter can see,
+          // so after thirty seconds Detect Magic was taken for cancelled and its
+          // slot kept. The effect went on before the wait even began, and there
+          // is no cancelling it afterwards, so neither the slot nor anything the
+          // press spent can come back.
+          await SpellPipeline._commitSlotIfDeferred(activity, castLevel);
           break;
 
         case "distribute":
@@ -946,9 +960,11 @@ export class SpellPipeline {
 
         case "save-area":
           // Emanation save — no picker; everyone in range saves. (Frightful
-          // Presence, aura-of-fear, gaze pulses.)
+          // Presence, aura-of-fear, gaze pulses.) Measured from the caster, not
+          // from any area, and the saves are rolled before this line: like a
+          // self spell, it has happened, and nothing it spent comes back.
           await SaveResolver.runArea(ctx);
-          await SpellPipeline._commitSlotOnTemplatePlaced(activity, castLevel);
+          await SpellPipeline._commitSlotIfDeferred(activity, castLevel);
           break;
 
         case "touch":
@@ -958,7 +974,7 @@ export class SpellPipeline {
         case "template-save":
           await TemplateResolver.runSave(ctx);
           // Slot rides on the template actually landing — see the helper.
-          await SpellPipeline._commitSlotOnTemplatePlaced(activity, castLevel);
+          await SpellPipeline._commitSlotOnTemplatePlaced(ctx);
           break;
 
         case "template-pool":
@@ -968,7 +984,7 @@ export class SpellPipeline {
           // hit-point pool. ACE showing a picker instead of the cone is what
           // broke the animation, the geometry and the GM's ability to see the
           // spell at all.
-          await SpellPipeline._commitSlotOnTemplatePlaced(activity, castLevel);
+          await SpellPipeline._commitSlotOnTemplatePlaced(ctx);
           break;
 
         case "emanation-heal":
@@ -979,13 +995,13 @@ export class SpellPipeline {
         case "template-heal":
           // Place the area, choose from who is inside it, heal them.
           await TemplateResolver.runHeal(ctx);
-          await SpellPipeline._commitSlotOnTemplatePlaced(activity, castLevel);
+          await SpellPipeline._commitSlotOnTemplatePlaced(ctx);
           break;
 
         case "template-trigger":
           await TemplateResolver.runTrigger(ctx);
           // Slot rides on the template actually landing — see the helper.
-          await SpellPipeline._commitSlotOnTemplatePlaced(activity, castLevel);
+          await SpellPipeline._commitSlotOnTemplatePlaced(ctx);
           break;
 
         case "aura":
@@ -1000,7 +1016,7 @@ export class SpellPipeline {
           // Safe for the non-template auras too: the helper checks whether the
           // activity actually declares a template and commits immediately when
           // it does not, so Aura of Vitality and Holy Weapon are unaffected.
-          await SpellPipeline._commitSlotOnTemplatePlaced(activity, castLevel);
+          await SpellPipeline._commitSlotOnTemplatePlaced(ctx);
           break;
 
         case "chained":
@@ -1019,7 +1035,9 @@ export class SpellPipeline {
         case "teleport-spell": {
           // The 7th-level spell. A successful Counterspell never reaches here:
           // the wait above returned first. The slot is spent the moment the
-          // plan is made and given back if it never was.
+          // plan is made; if it never was, the hold is let go here, and Teleport
+          // has already given back what the press spent, through the same
+          // helper every other way out uses (road/give-back.mjs).
           const { Teleport } = await import("../teleport.mjs");
           const cast = await Teleport.runSpell({ ...ctx,
             onCommit: () => SpellPipeline._commitSlotIfDeferred(activity, castLevel) });
@@ -1029,63 +1047,77 @@ export class SpellPipeline {
 
         case "attack-single":
           // Fall through to dnd5e attack flow — no pipeline action needed
-          await SpellPipeline._commitSlotOnTemplatePlaced(activity, castLevel);
+          await SpellPipeline._commitSlotOnTemplatePlaced(ctx);
           break;
 
         default:
-          console.warn(`${MODULE_ID} | SpellPipeline: unknown shape "${entry.shape}" for ${item.name} — refunding slot`);
-          await SpellPipeline._refundSlotIfDeferred(activity);
+          console.warn(`${MODULE_ID} | SpellPipeline: unknown shape "${entry.shape}" for ${item.name}; nothing resolves it.`);
+          await SpellPipeline._abandonCast(ctx, `no part of ACE resolves the "${entry.shape}" shape`);
       }
     } catch (err) {
       console.error(`${MODULE_ID} | SpellPipeline dispatch failed for ${item.name}:`, err);
-      await SpellPipeline._refundSlotIfDeferred(activity);
+      // What the press cost follows the slot, as it always has on a failure:
+      // not yet committed, both come back; committed, the cast happened, and
+      // _abandonCast says so and gives nothing back.
+      await SpellPipeline._abandonCast(ctx, "ACE failed partway through it (the error is above)");
     } finally {
+      ctx.area.stop();
       SpellPipeline._castLevelCache.delete(SpellPipeline._cacheKey(activity));
     }
   }
 
+  /**
+   * Which resolver finishes a picker shape, decided before anything opens.
+   *
+   * ⚠️🔴 A ROUTE NOBODY WROTE IS REFUSED BEFORE THE PICKER, NOT AFTER THE SLOT.
+   * A touch spell that is not a heal and a chained spell both go to resolvers
+   * that were never written (DamageResolver.runSingle / runChained). This used
+   * to be found out after the picker, by which time the slot had been spent: the
+   * refusal said "Slot refunded" over a slot it had just taken. In his world 38
+   * different spells and features take that road, Remove Curse, Plane Shift,
+   * Gaseous Form and Resurrection among them.
+   *
+   * @returns {{run: Function}|{missing: string}}
+   */
+  static _pickerRoute(entry) {
+    switch (entry?.shape) {
+      case "distribute":   return { run: (ctx, result) => DamageResolver.runDistribute(ctx, result) };
+      case "attack-multi": return { run: (ctx, result) => DamageResolver.runAttackMulti(ctx, result) };
+      case "multi-buff":   return { run: (ctx, result) => BuffResolver.runMulti(ctx, result) };
+      case "multi-heal":   return { run: (ctx, result) => HealResolver.runMulti(ctx, result) };
+      case "save-single":  return { run: (ctx, result) => SaveResolver.runSingle(ctx, result) };
+      case "touch":        return entry.heal ? { run: (ctx, result) => HealResolver.runSingle(ctx, result) }
+                                             : { missing: "single-target damage" };
+      case "chained":      return { missing: "chained damage" };
+      default:             return { missing: `the "${entry?.shape}" shape` };
+    }
+  }
+
   static async _runPickerAndResolve(ctx, pickerType) {
+    const route = SpellPipeline._pickerRoute(ctx.entry);
+    if (route.missing) {
+      await DamageResolver._notImplemented(ctx, route.missing);
+      return;
+    }
+
     const result = await SpellPipeline._pickTargets(ctx, pickerType);
 
     if (!result) {
-      // Cancelled — refund slot, end concentration (if dnd5e started it
-      // during the activity flow), no card, return clean.
-      await SpellPipeline._refundSlotIfDeferred(ctx.activity);
+      // Cancelled: the slot it held is never taken, what the press spent is
+      // given back, concentration dnd5e began during the use is ended, no card.
+      const back = await SpellPipeline._abandonCast(ctx, "the picker was closed with nobody chosen");
       await SpellPipeline._endConcentrationForCancelledSpell(ctx.actor, ctx.item);
-      ui.notifications?.info(`${ctx.item.name}: cancelled — slot not consumed.`);
-      console.debug(`${MODULE_ID} | SpellPipeline: ${ctx.item.name} picker cancelled, slot refunded, concentration cleared`);
+      const note = SpellPipeline._cancelNote(ctx.item.name, back);
+      if (note.warn) ui.notifications?.warn(note.text);
+      else ui.notifications?.info(note.text);
+      console.debug(`${MODULE_ID} | SpellPipeline: ${ctx.item.name} picker cancelled; ${note.text}`);
       return;
     }
 
     // Commit slot now that we have confirmed targets
     await SpellPipeline._commitSlotIfDeferred(ctx.activity, ctx.castLevel);
 
-    // Route to resolver by shape
-    switch (ctx.entry.shape) {
-      case "distribute":
-        await DamageResolver.runDistribute(ctx, result);
-        break;
-      case "attack-multi":
-        await DamageResolver.runAttackMulti(ctx, result);
-        break;
-      case "multi-buff":
-        await BuffResolver.runMulti(ctx, result);
-        break;
-      case "multi-heal":
-        await HealResolver.runMulti(ctx, result);
-        break;
-      case "save-single":
-        await SaveResolver.runSingle(ctx, result);
-        break;
-      case "touch":
-        // Heal or damage based on entry shape
-        if (ctx.entry.heal) await HealResolver.runSingle(ctx, result);
-        else await DamageResolver.runSingle(ctx, result);
-        break;
-      case "chained":
-        await DamageResolver.runChained(ctx, result);
-        break;
-    }
+    await route.run(ctx, result);
 
     // Trigger AA on the resolved targets (after damage card so trajectory lands right)
     await AnimationHelper.play(ctx, result);
@@ -1249,7 +1281,17 @@ export class SpellPipeline {
 
 
   /**
-   * Commit the slot only if a template actually reaches the canvas.
+   * How long a cast waits for its area when dnd5e's own word on the placement
+   * never comes (another module stopped `dnd5e.postUseActivity` before ACE's
+   * listener). Ten minutes, the span the Counterspell kill-list keeps: it
+   * outlives any placement at a real table. dnd5e's word ends the wait at once.
+   */
+  static areaWaitMs = 600000;
+
+  /**
+   * Commit the slot only if the cast's area actually reaches the canvas; when it
+   * never does, the cast is abandoned: the slot is kept and what the press spent
+   * is given back.
    *
    * ⚠️ THE WHOLE POINT OF PUTTING FIREBALL IN THE PIPELINE WAS "cancel = no
    * slot lost" — and it never worked. The template resolvers are deliberate
@@ -1260,76 +1302,237 @@ export class SpellPipeline {
    * specifically TO GET this behaviour and were the only shapes that did not.
    * (Grok audit 2026-08-18.)
    *
-   * A template arriving is the only honest proof the cast happened, so we wait
-   * for `createMeasuredTemplate` carrying this activity's origin.
+   * ⚠️🔴 dnd5e SAYS HOW THE PLACEMENT ENDED, AND THIS NOW LISTENS (2026-09-18).
+   * This used to say there is no "user cancelled" hook and make thirty seconds
+   * of silence the cancel signal, so a placement that took longer than that was
+   * taken for a cancel and its slot handed back. There is a word: dnd5e fires
+   * `postUseActivity` once its placement is over, with the areas it placed
+   * (none when the preview was right-clicked away) and whether it was asked to
+   * place one at all. _watchArea hears it for this cast.
    *
-   * ⚠️ THE TIMEOUT *IS* THE CANCEL SIGNAL. There is no "user cancelled" hook —
-   * dnd5e simply never creates the template. My first version treated the
-   * timeout as "could not tell" and committed anyway, which meant cancel still
-   * burned the slot, just 30 seconds later. That is the same bug wearing a
-   * hat.
+   * ⚠️🔴 AND NOT ONLY WHEN A SLOT WAS HELD. This returned at once for anything
+   * that held no slot, so a dragon whose Cold Breath area was right-clicked away
+   * kept its recharge spent. What the press spent follows the slot's verdict:
    *
-   * So: if this activity DECLARES a template and none arrives, the cast was
-   * abandoned and the slot is kept. If it declares no template, there is
-   * nothing to wait for and we commit immediately — that is the only case
-   * where waiting would wrongly hand back a slot.
+   *   placed      this cast's area landed                            commit
+   *   not asked   dnd5e was told not to place one (ACE draws a       commit: the cast
+   *               caster's emanation itself, or the caster unticked   goes on without
+   *               it in the dialog)                                   a placed area
+   *   cancelled   dnd5e was asked to place one and placed none       abandon
+   *   no answer   neither within areaWaitMs                          abandon, and say so
    */
-  static async _commitSlotOnTemplatePlaced(activity, castLevel, { timeoutMs = 30000 } = {}) {
-    if (!activity?._aceSlotDeferred) return;
-    const wanted = activity.uuid;
-    if (!wanted) { await SpellPipeline._commitSlotIfDeferred(activity, castLevel); return; }
-
-    // Does this activity actually place a template? If not, there is nothing
-    // to wait for and holding the slot open would be wrong.
-    const declaresTemplate = !!(activity.target?.template?.type
-                             ?? activity.item?.system?.target?.template?.type);
-    if (!declaresTemplate) {
+  static async _commitSlotOnTemplatePlaced(ctx, { maxWaitMs = SpellPipeline.areaWaitMs } = {}) {
+    const activity = ctx?.activity ?? null;
+    const castLevel = ctx?.castLevel;
+    // Nothing held back and nothing the press spent: the area decides nothing.
+    if (!activity?._aceSlotDeferred && !spentCount(ctx?.message?.system?.deltas)) {
       await SpellPipeline._commitSlotIfDeferred(activity, castLevel);
       return;
     }
 
-    const placed = await new Promise((resolve) => {
-      let done = false;
-      const finish = (val) => {
-        if (done) return;
-        done = true;
-        Hooks.off("createMeasuredTemplate", onCreate);
-        clearTimeout(timer);
-        resolve(val);
-      };
-      // ⚠️🔴 THE ACTIVITY UUID ALONE DID NOT RECOGNISE ITS OWN TEMPLATE.
-      // From his console, 2026-09-17, for a Fireball whose area he had just
-      // placed: "no template placed for Fireball within 30000ms - treating as
-      // CANCELLED, slot kept." dnd5e stamps TWO flags on a template it builds
-      // from an activity - `origin` (the activity's uuid) and `item` (the
-      // item's) - and it runs the whole cast on a CLONE of the item, so the
-      // uuid this waiter was handed and the one stamped on the template do not
-      // always agree. The item is the same either way, and an origin that
-      // begins with the item's uuid belongs to the item's own activity.
-      const wantedItem = activity?.item?.uuid ?? null;
-      const onCreate = (doc) => {
-        try {
-          const origin = doc?.flags?.dnd5e?.origin ?? doc?.getFlag?.("dnd5e", "origin") ?? null;
-          const itemUuid = doc?.flags?.dnd5e?.item ?? doc?.getFlag?.("dnd5e", "item") ?? null;
-          if (origin && String(origin) === String(wanted)) return finish(true);
-          if (wantedItem && itemUuid && String(itemUuid) === String(wantedItem)) return finish(true);
-          if (wantedItem && origin && String(origin).startsWith(String(wantedItem))) return finish(true);
-        } catch (_) { /* keep waiting */ }
-      };
-      const timer = setTimeout(() => finish(false), timeoutMs);  // no template = abandoned
-      Hooks.on("createMeasuredTemplate", onCreate);
-    });
-
-    if (!placed) {
-      console.log(`${MODULE_ID} | SpellPipeline: no template placed for "${activity?.item?.name}" ` +
-        `within ${timeoutMs}ms — treating as CANCELLED, slot kept.`);
-      await SpellPipeline._refundSlotIfDeferred(activity);
+    // Does this activity actually place a template? If not, there is nothing
+    // to wait for and holding the cast open would be wrong.
+    const declaresTemplate = !!(activity.target?.template?.type
+                             ?? activity.item?.system?.target?.template?.type);
+    if (!activity.uuid || !declaresTemplate) {
+      await SpellPipeline._commitSlotIfDeferred(activity, castLevel);
       return;
     }
-    await SpellPipeline._commitSlotIfDeferred(activity, castLevel);
+
+    // The dispatch starts the watch when it takes the cast; a caller with no
+    // dispatch behind it gets one from here.
+    const own = !ctx.area;
+    const watch = ctx.area ?? SpellPipeline._watchArea(activity);
+    let verdict;
+    try { verdict = await watch.verdict(maxWaitMs); }
+    finally { if (own) watch.stop(); }
+
+    const name = activity.item?.name ?? "that cast";
+    if (verdict === "placed" || verdict === "not asked") {
+      if (verdict === "not asked") {
+        console.debug(`${MODULE_ID} | SpellPipeline: dnd5e was not asked to place "${name}"'s area, `
+          + `so the cast goes on without one.`);
+      }
+      await SpellPipeline._commitSlotIfDeferred(activity, castLevel);
+      return;
+    }
+    const why = verdict === "cancelled"
+      ? "its area was never placed (the placement was cancelled)"
+      : `neither its area nor dnd5e's word on the placement came within ${Math.round(maxWaitMs / 1000)} seconds`;
+    console.log(`${MODULE_ID} | SpellPipeline: "${name}": ${why}, so the cast did not happen.`);
+    await SpellPipeline._abandonCast(ctx, why);
+  }
+
+  /**
+   * How this cast's area turned out, watched from the moment the pipeline takes
+   * the cast, for _commitSlotOnTemplatePlaced to read.
+   *
+   * ⚠️ PER CAST, NEVER PER SPELL. dnd5e's word is matched by the activity OBJECT
+   * it is using for this one press (a clone made per use), a template by the
+   * flags dnd5e stamps on it. Two listeners, taken off by stop(), which the
+   * dispatch calls on every way out; a backstop takes them off if it never does.
+   *
+   * @returns {{placed: boolean, report: ?{asked: boolean, placed: boolean},
+   *   stop: Function, verdict: (ms: number) => Promise<"placed"|"not asked"|"cancelled"|"no answer">}}
+   */
+  static _watchArea(activity) {
+    const wanted = activity?.uuid ? String(activity.uuid) : null;
+    const wantedItem = activity?.item?.uuid ? String(activity.item.uuid) : null;
+    const watch = { placed: false, report: null, done: false };
+    let wake = null;
+    const nudge = () => { const w = wake; wake = null; w?.(); };
+
+    // ⚠️🔴 THE ACTIVITY UUID ALONE DID NOT RECOGNISE ITS OWN TEMPLATE.
+    // From his console, 2026-09-17, for a Fireball whose area he had just
+    // placed: "no template placed for Fireball within 30000ms - treating as
+    // CANCELLED, slot kept." dnd5e stamps TWO flags on a template it builds
+    // from an activity - `origin` (the activity's uuid) and `item` (the
+    // item's) - and it runs the whole cast on a CLONE of the item, so the
+    // uuid this waiter was handed and the one stamped on the template do not
+    // always agree. The item is the same either way, and an origin that
+    // begins with the item's uuid belongs to the item's own activity.
+    const onCreate = (doc) => {
+      if (watch.done) return;
+      try {
+        const origin = doc?.flags?.dnd5e?.origin ?? doc?.getFlag?.("dnd5e", "origin") ?? null;
+        const itemUuid = doc?.flags?.dnd5e?.item ?? doc?.getFlag?.("dnd5e", "item") ?? null;
+        const mine = (wanted && origin && String(origin) === wanted)
+          || (wantedItem && itemUuid && String(itemUuid) === wantedItem)
+          || (wantedItem && origin && String(origin).startsWith(wantedItem));
+        if (mine) { watch.placed = true; nudge(); }
+      } catch (_) { /* not this cast's area; keep watching */ }
+    };
+    // dnd5e's word once its placement is over: was it asked to place an area,
+    // and what did it place (nothing, when the preview was cancelled)?
+    const onUsed = (used, usageConfig, results) => {
+      if (watch.done || used !== activity) return;
+      watch.report = { asked: !!usageConfig?.create?.measuredTemplate,
+        placed: (results?.templates?.length ?? 0) > 0 };
+      nudge();
+    };
+    Hooks.on("createMeasuredTemplate", onCreate);
+    Hooks.on("dnd5e.postUseActivity", onUsed);
+    const backstop = setTimeout(() => watch.stop(), SpellPipeline.areaWaitMs + 60000);
+
+    watch.stop = () => {
+      if (watch.done) return;
+      watch.done = true;
+      clearTimeout(backstop);
+      Hooks.off("createMeasuredTemplate", onCreate);
+      Hooks.off("dnd5e.postUseActivity", onUsed);
+      nudge();
+    };
+    const read = () => {
+      if (watch.placed || watch.report?.placed) return "placed";
+      if (watch.report) return watch.report.asked ? "cancelled" : "not asked";
+      return null;
+    };
+    watch.verdict = async (ms) => {
+      if (!read() && !watch.done) {
+        await new Promise((resolve) => {
+          const timer = setTimeout(() => { wake = null; resolve(); }, ms);
+          wake = () => { clearTimeout(timer); resolve(); };
+        });
+      }
+      return read() ?? "no answer";
+    };
+    return watch;
+  }
+
+  /**
+   * The cast did not happen: the slot it held back is never taken, and what the
+   * press itself spent is given back through dnd5e's own refund.
+   *
+   * ⚠️🔴 ONE WAY OUT FOR EVERY ABANDONED CAST (2026-09-18). A closed picker, an
+   * area never placed, a spell ACE cannot resolve, a shape nothing handles, a
+   * failure part way: each kept the slot and left the rest spent. dnd5e takes a
+   * daily use, a recharge or a legendary action on the press, before any of
+   * this runs, and ACE had stopped the card whose Refund button gives it back.
+   *
+   * ⚠️ NEVER AFTER THE CAST WAS COMMITTED. Once the slot is spent the spell has
+   * happened, whatever failed after it, and nothing comes back.
+   *
+   * ⚠️ NOT FOR A COUNTERED SPELL. The Counterspell's book decides that one, and
+   * neither edition gives the press back (_counteredCast).
+   *
+   * @returns {Promise<{heldSlot: boolean, spent: number, given: boolean, what: string,
+   *   failed?: boolean, committed?: boolean}>}
+   */
+  static async _abandonCast(ctx, why) {
+    const activity = ctx?.activity ?? null;
+    const name = ctx?.item?.name ?? "that cast";
+    if (activity?._aceCastCommitted === true) {
+      console.warn(`${MODULE_ID} | SpellPipeline: "${name}": ${why}, but it had already been cast, `
+        + `so nothing it spent comes back.`);
+      return { heldSlot: false, spent: 0, given: false, what: "", committed: true };
+    }
+    const heldSlot = activity?._aceSlotDeferred === true;
+    await SpellPipeline._refundSlotIfDeferred(activity);
+    const back = await giveBack(ctx, why);
+    return { heldSlot, ...back };
+  }
+
+  /** The toast for a cast abandoned at its picker: what did it cost, in the end? */
+  static _cancelNote(name, back) {
+    const slot = back?.heldSlot ? " No slot was spent." : "";
+    if (back?.failed) {
+      const what = String(back.what || "what it spent");
+      return { warn: true, text: `${name}: cancelled.${slot} ${what[0].toUpperCase()}${what.slice(1)} `
+        + `could not be given back: put it back on the sheet.` };
+    }
+    if (back?.given) return { warn: false, text: `${name}: cancelled.${slot} Given back: ${back.what}.` };
+    return { warn: false, text: `${name}: cancelled.${slot || " Nothing was spent."}` };
+  }
+
+  /**
+   * A successful Counterspell: what the countered caster loses is written in the
+   * Counterspell that stopped it, so its edition decides (the reaction engine
+   * reads it off that item and sends it with the verdict).
+   *
+   *   2014: "its spell fails and has no effect." Nothing is spared: the slot it
+   *         held is spent, and so is everything the press took.
+   *   2024: "the action, Bonus Action, or Reaction used to cast it is wasted. If
+   *         that spell was cast with a spell slot, the slot isn't expended." Only
+   *         the slot is spared. A daily use, a recharge or a legendary action is
+   *         not a spell slot, so nothing the press spent comes back.
+   *
+   * ⚠️🔴 THE 2024 HOLD IS LEFT ON THE CAST, NOT LET GO. The reaction engine
+   * gives a countered 2024 caster back a slot that was really spent, and asks
+   * this marker whether the pipeline held it instead. This used to clear the
+   * marker the moment the verdict came, before that rule ran, so every 2024
+   * counter on a spell the pipeline owns handed its caster a slot they never
+   * spent. Left in place, it answers truthfully: held, never taken.
+   *
+   * Before 2026-09-18 both editions kept the slot, which the 2014 book does not.
+   */
+  static async _counteredCast(ctx, result) {
+    const { activity, item, actor, castLevel } = ctx;
+    const who = actor?.name ?? "the caster";
+    const what = item?.name ?? "that spell";
+    const held = activity?._aceSlotDeferred === true;
+    const edition = result?.edition === "2014" || result?.edition === "2024" ? result.edition : null;
+    if (activity) activity._aceCastCommitted = true;   // countered, not abandoned: nothing comes back
+    if (edition === "2014") {
+      await SpellPipeline._commitSlotIfDeferred(activity, castLevel);
+      console.log(`${MODULE_ID} | SpellPipeline: ${who}'s ${what} was stopped by a 2014 Counterspell, `
+        + `whose book spares nothing: ${held ? `the level ${castLevel} slot it held is spent, and ` : ""}`
+        + `nothing pressing it spent comes back.`);
+      return;
+    }
+    if (edition === "2024") {
+      console.log(`${MODULE_ID} | SpellPipeline: ${who}'s ${what} was stopped by a 2024 Counterspell: `
+        + `${held ? `the level ${castLevel} slot it held is not expended, ` : ""}the action it took is wasted, `
+        + `and nothing else pressing it spent comes back (a daily use or a legendary action is not a spell slot).`);
+      return;
+    }
+    console.warn(`${MODULE_ID} | SpellPipeline: ${who}'s ${what} was counterspelled, but the verdict did not `
+      + `say which edition's Counterspell stopped it, so ACE cannot tell whether the slot is spent (2014) or `
+      + `kept (2024). ${held ? "The slot it held is not taken; " : ""}nothing pressing it spent comes back.`);
   }
 
   static async _commitSlotIfDeferred(activity, castLevel) {
+    // From here the cast has happened: nothing it spent comes back (_abandonCast).
+    if (activity) activity._aceCastCommitted = true;
     if (!activity?._aceSlotDeferred) return;
     activity._aceSlotDeferred = false; // clear marker first
 

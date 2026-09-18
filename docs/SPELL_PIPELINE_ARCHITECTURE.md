@@ -746,7 +746,7 @@ For each spell migrated into the registry:
 
 1. **Cast with no targets selected** → picker opens, candidates listed, range-color correct
 2. **Cast with pre-targets** → picker pre-fills from `game.user.targets`
-3. **Cast and cancel** → no slot lost, no chat card, picker dismisses cleanly
+3. **Cast and cancel** → no slot lost, no chat card, picker dismisses cleanly, and anything else the press spent (a daily use, a recharge, a legendary action) is given back through dnd5e's own refund (`road/give-back.mjs`, 2026-09-18)
 4. **Cast and confirm** → slot consumed, animation fires, damage/effect applied
 5. **Cast with out-of-range target highlighted in user targets** → picker shows dimmed but greys confirm
 6. **Cast with concentration active** → replace prompt fires before picker
@@ -823,6 +823,7 @@ A test checklist will live alongside the registry: `docs/SPELL_TESTING_CHECKLIST
 - **Resolver** — the per-shape effect applier (damage card, heal card, effect application)
 - **Edition** — `legacy` (2014) or `modern` (2024) per `dnd5e.rulesVersion`
 - **Deferred slot** — slot consumption postponed until picker confirms, refunded on cancel
+- **Give back** — dnd5e takes everything else a press costs before the pipeline runs and writes it on the usage message (`system.deltas`), even when ACE stops the card. Every way a cast is abandoned (picker closed, area never placed, a route ACE has no resolver for, a failure before the cast is committed) gives it back through `road/give-back.mjs`, which calls dnd5e's own `activity.refund`. Never after the cast is committed, and never for a countered spell: the Counterspell's own book decides that (2014 spends the held slot; 2024 keeps it; neither gives back the rest).
 - **Strict-RAW LOS** — line of sight enforced per RAW; caster must see target to select it
 - **Q-targets** — informal shorthand for `game.user.targets` (pre-targeted tokens before cast)
 

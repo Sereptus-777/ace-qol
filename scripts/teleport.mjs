@@ -37,6 +37,9 @@ import { DamageCardRenderer } from "./damage-card-renderer.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
 import { teleportLookFor } from "./animation/autorec.mjs";
 import { replyOwnerIsAuthorised } from "./socket-authority.mjs";
+// What pressing it spent, given back when nothing happens: the one helper every
+// abandoned cast uses, the spell pipeline's included.
+import { giveBack } from "./road/give-back.mjs";
 
 // ⚠️ HARDCODED. Reached through the spell pipeline from the entry file.
 const MODULE_ID = "ace-qol";
@@ -366,39 +369,6 @@ export class Teleport {
     }
   }
 
-  /**
-   * Nothing happened, so give back what pressing it spent: a daily use, a
-   * recharge, a legendary action, an innate casting. dnd5e wrote down exactly
-   * what it took on the usage message, and its own refund puts that back, the
-   * same as the Refund on its card. A slot the spell pipeline held back was
-   * never taken, so it is not in there to give back twice.
-   */
-  static async _giveBack(ctx, why) {
-    const who = ctx.actor?.name ?? "That creature";
-    const what = ctx.item?.name ?? "it";
-    const deltas = ctx.message?.system?.deltas;
-    const spent = (deltas?.actor?.length ?? 0)
-      + Object.values(deltas?.item ?? {}).reduce((n, c) => n + (c?.length ?? 0), 0)
-      + (deltas?.created?.length ?? 0) + (deltas?.deleted?.length ?? 0);
-    if (!spent) {
-      console.log(`${LOG} | ${who}: ${why}; pressing ${what} spent nothing that needs giving back.`);
-      return;
-    }
-    if (typeof ctx.activity?.refund !== "function") {
-      console.warn(`${LOG} | ${who}: ${why}, but what ${what} spent cannot be given back from here; `
-        + `use Refund on its card.`);
-      return;
-    }
-    try {
-      await ctx.activity.refund(deltas);
-      // As dnd5e's own Refund does, so the card cannot give it back a second time.
-      if (typeof ctx.message?.update === "function") await ctx.message.update({ "system.deltas": null });
-      console.log(`${LOG} | ${who}: ${why}, so what pressing ${what} spent is given back.`);
-    } catch (err) {
-      console.warn(`${LOG} | ${who}: ${why}, and giving back what ${what} spent failed; use Refund on its card:`, err);
-    }
-  }
-
   /** The token a creature is acting from, on the scene being looked at. */
   static tokenOf(actor) {
     return canvas.tokens?.controlled?.find(t => t.actor === actor)
@@ -534,13 +504,13 @@ export class Teleport {
     const token = Teleport.tokenOf(ctx.actor);
     if (!token) {
       ui.notifications?.warn(`${ctx.actor?.name ?? "That creature"} has no token on this scene to teleport.`);
-      await Teleport._giveBack(ctx, "it has no token on this scene, so nothing moves");
+      await giveBack(ctx, "it has no token on this scene, so nothing moves");
       return false;
     }
     const doc = token.document;
     const to = await Teleport.pickSquare(token, tp.feet);
     if (!to) {
-      await Teleport._giveBack(ctx, `${doc.name} stays where it is (no square was picked)`);
+      await giveBack(ctx, `${doc.name} stays where it is (no square was picked)`);
       return false;
     }
     // The aiming is over before anything moves: one click, one move, one look.
@@ -714,13 +684,13 @@ export class Teleport {
     const casterToken = Teleport.tokenOf(ctx.actor);
     if (!casterToken) {
       ui.notifications?.warn(`${ctx.actor?.name ?? "The caster"} has no token on this scene to teleport from.`);
-      await Teleport._giveBack(ctx, "no token on this scene, so the spell does nothing and its slot is kept");
+      await giveBack(ctx, "no token on this scene, so the spell does nothing and its slot is kept");
       return false;
     }
     const caster = casterToken.document;
     const plan = await Teleport.askPlan({ caster, nearby: Teleport.companions(casterToken), edition });
     if (!plan) {
-      await Teleport._giveBack(ctx, `${caster.name} does not cast it (the plan was cancelled), and the slot is kept`);
+      await giveBack(ctx, `${caster.name} does not cast it (the plan was cancelled), and the slot is kept`);
       return false;
     }
     const docs = [caster, ...plan.who.map(t => t.document)];
@@ -728,7 +698,7 @@ export class Teleport {
     if (plan.where === "map") {
       point = await Teleport.pickPoint(docs, caster);
       if (!point) {
-        await Teleport._giveBack(ctx, `${caster.name} does not cast it (no spot was picked), and the slot is kept`);
+        await giveBack(ctx, `${caster.name} does not cast it (no spot was picked), and the slot is kept`);
         return false;
       }
     }

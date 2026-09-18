@@ -139,7 +139,7 @@ const uCreate = { consume: { spellSlot: true } };   // what dnd5e hands over for
 for (const h of preUse) h(create, uCreate);
 check("the real cast still holds its slot until the wall lands", create._aceSlotDeferred, true);
 check("and tells dnd5e not to take it yet", uCreate.consume.spellSlot, false);
-await SpellPipeline._commitSlotOnTemplatePlaced(blind, 7);
+await SpellPipeline._commitSlotOnTemplatePlaced({ activity: blind, castLevel: 7 });
 check("nothing is charged for the Blinding Save", actor.system.spells.spell7.value, 1);
 
 /* ── 3. The damage roll ─────────────────────────────────────────────────── */

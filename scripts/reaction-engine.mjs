@@ -2367,6 +2367,10 @@ export class ReactionEngine {
         });
         ReactionEngine._resolveCastBarrier(activity, {
           abort: true, reason: "counterspelled", counterspeller: reactor.actor.name,
+          // Which book's Counterspell stopped it: that book says what the
+          // countered caster loses, and the spell pipeline reads it here
+          // (2014 spends the slot it held; 2024 does not).
+          edition,
         });
         // ⚠️ AND TAKE IT OFF THE MOUSE. dnd5e may already be waiting for a click
         // to drop this spell's area; after a Yes there is nothing to aim.
