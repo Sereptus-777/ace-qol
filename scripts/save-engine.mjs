@@ -2940,8 +2940,61 @@ export class SaveEngine {
     const parts = (r?.noRoll || r?.pending)
       ? rolled.map(x => ({ type: x.type, amount: 0 }))
       : whatLands(recipe, { passed: r?.passed === true, rolled, evasion: !!r?.superSaver }).damage;
-    const finals = HpDoor.preview(null, parts, { mods: r?.damageModifiers ?? {} });
+    let finals = HpDoor.preview(null, parts, { mods: r?.damageModifiers ?? {} });
+    // ⚠️ A ROW THAT ABSORBED ITS ELEMENTAL DAMAGE takes half of that type
+    // (Absorb Elements: resistance to the triggering type). Read HERE because
+    // this is the one reading both the card's number and APPLY ALL come from,
+    // so the halved fire shows on the card and is what lands - never one
+    // without the other.
+    if (r?.absorbed?.types?.length) {
+      const halve = new Set(r.absorbed.types.map(t => String(t).toLowerCase()));
+      finals = finals.map(f => halve.has(String(f.type ?? "").toLowerCase())
+        ? { ...f, final: Math.floor((Number(f.final) || 0) / 2), absorbed: true } : f);
+    }
     return { finals, total: finals.reduce((sum, f) => sum + (Number(f.final) || 0), 0) };
+  }
+
+  /**
+   * Ask each creature on a save card about the damage it is about to take,
+   * now that the number is known.
+   *
+   * ⚠️ ONE PASS FOR EVERY SAVE CARD THAT ROLLS ITS OWN DAMAGE - the ROLL
+   * DAMAGE button (Phase 2) and the NPC card that rolls every save and the
+   * damage together (_postSaveResults). Both used to go from dice to card
+   * without asking anybody anything.
+   *
+   * Marks each row `reactionsAsked` so APPLY ALL does not ask twice, and
+   * `absorbed` with the types that were halved, which `_damageForRow` reads so
+   * the card and the hit points agree. Each creature is asked in its own try:
+   * one failure - including another module throwing on this click, as
+   * item-tags did - costs that creature its prompt and never the card.
+   */
+  async _askReactionsForRows(results, damageComponents, recipe, casterActor, item, where) {
+    try {
+      for (const r of (results ?? [])) {
+        if (r?.pending || r?.noRoll) continue;
+        const scene = game.scenes.get(r.sceneId) ?? canvas.scene;
+        const tokenDoc = scene?.tokens?.get?.(r.tokenDocId) ?? null;
+        const actor = tokenDoc?.actor ?? game.actors.get(r.actorId) ?? null;
+        if (!actor) continue;
+        try {
+          const { finals } = SaveEngine._damageForRow(r, damageComponents, recipe);
+          if (!finals.some(f => (Number(f.final) || 0) > 0)) continue;
+          const asked = await DamageApplicator._askDamageReactions(actor, finals, {
+            token: tokenDoc?.object ?? null, source: casterActor, item, where,
+          });
+          r.reactionsAsked = true;
+          const halved = finals.filter((f, i) => (Number(asked?.[i]?.final) || 0) < (Number(f.final) || 0))
+            .map(f => String(f.type ?? "").toLowerCase());
+          if (halved.length) r.absorbed = { types: [...new Set(halved)] };
+        } catch (err) {
+          console.warn(`${MODULE_ID} | could not ask ${actor.name}'s reactions about that damage, `
+            + `so it lands in full:`, err);
+        }
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | the reaction pass (${where}) failed; the card posts with full damage:`, err);
+    }
   }
 
   /** What a row's stored split says lands. A card from before the split carries only its total. */
@@ -7569,6 +7622,29 @@ export class SaveEngine {
 
     // Damage info is shown in the results card header — no separate roll message needed
 
+    // ── 2. REACTIONS, NOW THE NUMBER IS KNOWN ──
+    //
+    // ⚠️🔴 THIS IS THE BUTTON HE PRESSES, AND IT NEVER ASKED (his table,
+    // 2026-09-17, the third time): "The path is SaveEngine._completeSaveResults
+    // Phase2 -> _rollSpellDamage -> SaveActivity.rollDamage. That is not APPLY
+    // ALL on a damage card. You still have not hooked the button I actually
+    // press." He is right. 0.34.51 and 0.34.52 taught the APPLY buttons to ask,
+    // and neither is where a Fireball's fire becomes a number on his screen.
+    // This is: the dice are thrown here, the row's damage is worked out here,
+    // and it is the moment RAW puts the decision - "when you take" the damage,
+    // with everybody looking at how much.
+    //
+    // ⚠️ NOTHING IS ASKED WHILE THE DICE ARE STILL ROLLING (his rule). The
+    // settle that used to sit just before the card write moves up here.
+    //
+    // ⚠️ ISOLATED, SO ANOTHER MODULE'S ERROR CANNOT ABORT IT. item-tags threw
+    // "document.getFlag is not a function" on this same click. Each creature is
+    // asked in its own try, and a failure costs that one creature its prompt,
+    // never the card.
+    await awaitDiceSettle();
+    await this._askReactionsForRows(allResults, damageComponents, recipe, casterActor, item,
+      "save card, damage rolled");
+
     // ── 3. Build Phase 2 card HTML with full damage data ──
     const cardHtml = this._buildPhase2CardHtml(item, casterActor, allResults, damageComponents, {
       saveAbility, saveDC, halfOnSave, damageTypes,
@@ -7591,16 +7667,20 @@ export class SaveEngine {
         totalFinal: total,
         byType: finals.filter(f => f.final > 0).map(f => ({ type: f.type, value: f.final })),
         currentHP: r.currentHP,
+        // Asked when the damage was rolled; APPLY ALL does not ask twice.
+        reactionsAsked: r.reactionsAsked === true,
       });
     }
 
     // ── 5. Update existing message in one call ──
     // ⚠️ NOTHING LANDS BEFORE THE DICE (Johnny's rule): the card used to redraw
-    // with the damage while the damage dice were still rolling.
-    await awaitDiceSettle();
+    // with the damage while the damage dice were still rolling. (The settle now
+    // runs before the reaction pass above, which is earlier still.)
     await message.update({
       content: cardHtml,
       [`flags.${MODULE_ID}.phase`]: 2,
+      // The rows carry who was asked and who absorbed; keep them on the card.
+      [`flags.${MODULE_ID}.allResults`]: allResults,
       [`flags.${MODULE_ID}.baseDamageTotal`]: baseDamageTotal,
       [`flags.${MODULE_ID}.damageComponentTotals`]: damageComponents.map(c => ({ total: c.total, type: c.type, formula: c.formula })),
       [`flags.${MODULE_ID}.damageResults`]: damageResults,
@@ -8222,6 +8302,13 @@ export class SaveEngine {
 
     const baseDamageTotal = damageComponents.reduce((sum, c) => sum + c.total, 0);
 
+    // ⚠️ THE SAME QUESTION, ON THE CARD THAT ROLLS EVERY SAVE AND THE DAMAGE
+    // TOGETHER. The dice first (his rule), then each creature is asked, then the
+    // rows are drawn - so a halved Fireball shows as halved.
+    await awaitDiceSettle();
+    await this._askReactionsForRows(results, damageComponents, recipe, casterActor, item,
+      "save card, all saves rolled");
+
     // ── Build result rows ──
     const targetRows = results.map(r => {
       // ── PC still pending ──
@@ -8412,6 +8499,8 @@ export class SaveEngine {
             sceneId: r.sceneId,
             totalFinal: r.totalDamage,
             currentHP: r.currentHP,
+            // Asked when the damage was rolled; APPLY ALL does not ask twice.
+            reactionsAsked: r.reactionsAsked === true,
           })),
           // Store base damage for override recalculation
           baseDamageTotal,
@@ -8520,9 +8609,11 @@ export class SaveEngine {
       // (DamageApplicator._askDamageReactions): the damage card's APPLY ALL, its
       // per-type Apply, the road's triggers and this card. Four doors had four
       // chances to forget; now there is one place that asks.
-      const toLand = await DamageApplicator._askDamageReactions(actor, finals, {
-        token: tokenDoc?.object ?? null, source: sourceActor, item: sourceItem, where: "save card APPLY ALL",
-      });
+      const toLand = r.reactionsAsked
+        ? finals                                  // asked when the damage was rolled
+        : await DamageApplicator._askDamageReactions(actor, finals, {
+          token: tokenDoc?.object ?? null, source: sourceActor, item: sourceItem, where: "save card APPLY ALL",
+        });
 
       const landed = await HpDoor.damage(actor, toLand, {
         tokenDocId: r.tokenDocId, item: sourceItem, source: sourceActor, label: "save-apply-all",

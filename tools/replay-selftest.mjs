@@ -2654,6 +2654,61 @@ console.log(`\nPHASE 6d: ABSORB ELEMENTS`);
       if (keepApi2 === undefined) delete game.aceQol.reactionEngine; else game.aceQol.reactionEngine = keepApi2;
     }
 
+    // ── THE BUTTON HE ACTUALLY PRESSES ──
+    // Johnny, 2026-09-17, the third time: "The path is
+    // SaveEngine._completeSaveResultsPhase2 -> _rollSpellDamage ->
+    // SaveActivity.rollDamage. That is not APPLY ALL on a damage card. You still
+    // have not hooked the button I actually press." My two pins before this one
+    // drove APPLY buttons. This one drives the ROLL DAMAGE handler itself, so it
+    // cannot pass on a door he never uses.
+    {
+      const { SaveEngine: SE2 } = await import(`${MODULE}/scripts/save-engine.mjs`);
+      const aryel2 = jeb("ae-phase2");
+      aryel2.name = "Aryel";
+      const tokenDoc2 = { id: "tok-p2", actor: aryel2, object: { id: "tok-p2", name: "Aryel", actor: aryel2 } };
+      const keepScenes2 = game.scenes;
+      game.scenes = { get: () => ({ tokens: { get: (id) => (id === "tok-p2" ? tokenDoc2 : null) } }),
+        contents: [], [Symbol.iterator]: function* () {} };
+      const keepApi3 = game.aceQol?.reactionEngine;
+      game.aceQol = game.aceQol ?? {};
+      game.aceQol.reactionEngine = engine;
+
+      const saves2 = Object.create(SE2.prototype);
+      saves2._rollSpellDamage = async () => [{ total: 28, type: "fire", formula: "8d6" }];
+      saves2._buildPhase2CardHtml = () => "<div>phase 2</div>";
+      saves2._deleteInstantTemplate = async () => {};
+      const fireball = { id: "it-fb-p2", name: "Fireball", type: "spell", uuid: "Item.fb-p2", system: { level: 3 } };
+      const keepFromUuid = globalThis.fromUuid;
+      globalThis.fromUuid = async () => fireball;
+
+      let written = null;
+      const msg = { id: "m-phase2",
+        flags: { [MOD]: { phase: 1, hasDamage: true, itemUuid: fireball.uuid, itemId: fireball.id, actorId: null,
+          saveAbility: "dex", saveDC: 15, halfOnSave: true, damageTypes: ["fire"], isSpell: true, spellLevel: 3,
+          // A Fireball's recipe, as the card carries one: a Dex save, the fire on
+          // a failure, half on a success. Without it the row reads as 0 damage
+          // and there is nothing to be asked about.
+          recipe: { decidedBy: { kind: "save", ability: "dex" },
+            onFail: [{ kind: "damage", formula: "8d6", type: "fire", onSuccess: "half" }], onSuccess: [] },
+          allResults: [{ actorId: aryel2.id, tokenDocId: "tok-p2", sceneId: "s", passed: false,
+            currentHP: 40, damageModifiers: {} }] } },
+        update: async (u) => { written = u; return msg; } };
+
+      answer = true;
+      const atAsk = asked.length;
+      let err = null;
+      try { await quiet(() => saves2._completeSaveResultsPhase2(msg)); } catch (e) { err = e; }
+      const row = written?.[`flags.${MOD}.damageResults`]?.[0] ?? null;
+      check("THE BUTTON HE PRESSES: rolling a Fireball's damage on the save card asks Aryel for Absorb Elements before anything lands, and the halved fire is what the card now carries (2026-09-17)",
+        !err && asked.length - atAsk === 1 && row?.totalFinal === 14 && row?.reactionsAsked === true,
+        err ? `threw: ${err?.message ?? err}`
+          : `asked: ${asked.length - atAsk}; the row the card stored: ${row ? `${row.totalFinal} (asked ${row.reactionsAsked})` : "none"}`);
+
+      globalThis.fromUuid = keepFromUuid;
+      game.scenes = keepScenes2;
+      if (keepApi3 === undefined) delete game.aceQol.reactionEngine; else game.aceQol.reactionEngine = keepApi3;
+    }
+
     // ── 3b. Her next melee HIT adds the stored 1d6 fire, on her turn ──
     {
       const her = jeb("ae-hit");
