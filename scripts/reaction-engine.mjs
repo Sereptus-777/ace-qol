@@ -42,6 +42,10 @@ import { isOutOfTheFight } from "./is-down.mjs";
 // setting, and it has to: his world holds both editions of Counterspell side by
 // side, and Varek carries one of each.
 import { RulesBrain } from "./rules/rules-brain.mjs";
+// ⚠️ THE ONE ANSWER TO "who decides this creature's reaction": its connected
+// player, else the GM. The opportunity attack asks the same file, so the two
+// cannot route differently again (2026-09-18).
+import { whoAnswers } from "./who-answers.mjs";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Constants
@@ -4022,25 +4026,16 @@ export class ReactionEngine {
   }
 
   /**
-   * Get the owning player's user ID for an actor.
-   * Returns the GM's user ID for unowned NPCs.
+   * Get the user ID of whoever decides this creature's reaction: its connected
+   * player, else a connected GM, else this client.
+   *
+   * ⚠️ THE RULE LIVES IN who-answers.mjs NOW. It was written out here, and the
+   * opportunity attack wrote a different one of its own (every GM plus every
+   * owner), which is how an OA card reached the GM's chat as well as the
+   * player's (his table, 2026-09-18). Both ask the one file now.
    */
   _getOwnerUserId(actor) {
-    if (!actor) return game.user.id;
-
-    // Check for player ownership (not just "observer")
-    const ownership = actor.ownership ?? {};
-    for (const [userId, level] of Object.entries(ownership)) {
-      if (userId === "default") continue;
-      if (level >= CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER) {
-        const user = game.users.get(userId);
-        // SILENT-OK: a getter returning the owner it found, not an early exit
-        if (user && user.active && !user.isGM) return userId;
-      }
-    }
-
-    // No active player owner — falls to GM
-    return game.users.find(u => u.isGM && u.active)?.id ?? game.user.id;
+    return whoAnswers(actor).user?.id ?? game.user.id;
   }
 
   /**

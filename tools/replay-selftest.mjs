@@ -2937,6 +2937,105 @@ console.log(`\nPHASE 6c: THE OPPORTUNITY ATTACK`);
         `the button calls the attack: ${fires}; the reaction is spent: ${spends}; `
           + `it uses the weapon rather than only firing a hook: ${realAttack}`);
     }
+
+    // ── WHO SEES THE CARD: one person, and only them ──
+    // Johnny, 2026-09-18: "Opportunity attack posts in GM chat AND the player's
+    // chat when the owner is connected. Owner connected: box / card only on
+    // that player's client. Nothing in GM chat. Owner offline or no owner: GM
+    // gets it. Same rule you already use for Counterspell."
+    //
+    // ⚠️ FOUNDRY DECIDES WHO SEES A WHISPER, SO THE PIN ASKS FOUNDRY'S RULE, as
+    // V13 writes it (client/documents/chat-message.mjs, `get visible`): a
+    // whispered card that is not a roll is drawn for its AUTHOR and its
+    // recipients, nobody else. A card whose author is not set was written by
+    // the client that posted it, which is the GM's.
+    {
+      const seenBy = (card, user) => {
+        const whisper = card?.whisper ?? [];
+        if (!whisper.length) return true;
+        return (card.author ?? GM.id) === user.id || whisper.includes(user.id);
+      };
+      const TOMMY = { id: "oa-tommy", isGM: false, name: "Tommy", active: true };
+      const keepWho = { users: game.users, messages: game.messages, create: ChatMessage.create, gmActive: GM.active };
+      game.users = Object.assign([GM, TOMMY],
+        { activeGM: GM, get: (id) => [GM, TOMMY].find(u => u.id === id) ?? null });
+      GM.active = true;
+      const post = keep6c.prompt;
+      let made = null;
+      ChatMessage.create = async (d) => (made = await keepWho.create(d));
+      try {
+        const jeb = fighter("oa-jeb", "Jebidiah", { at: [200, 0], disposition: 1 });
+        jeb.ownership = { default: 0, [TOMMY.id]: 3 };
+        jeb.hasPlayerOwner = true;
+        const jebDoc = canvas.tokens.placeables.find(t => t.actor?.id === jeb.id).document;
+        const nefDoc = canvas.tokens.placeables.find(t => t.actor?.id === neferon.id).document;
+
+        // Tommy is connected: the card is his alone.
+        said.length = 0;
+        await withLog(() => post(jeb, neferon, jebDoc, nefDoc));
+        const mine = made;
+        check("a connected player's opportunity attack is on that player's screen only, and not in the GM's chat (2026-09-18)",
+          !!mine && seenBy(mine, TOMMY) && !seenBy(mine, GM),
+          `Tommy sees it: ${seenBy(mine, TOMMY)}; the GM sees it: ${seenBy(mine, GM)} `
+            + `(written as ${mine?.author ?? "the GM"}, whispered to ${(mine?.whisper ?? []).join(", ") || "everybody"})`);
+        check("and the log says who was asked and why (2026-09-18)",
+          said.some(l => /Tommy owns it and is connected/.test(l)),
+          `the log: ${said.filter(l => /opportunity attack/.test(l)).join(" | ") || "nothing"}`);
+
+        // The GM's client holds the card it does not draw, and flips it when
+        // Tommy's answer comes back over the socket.
+        game.messages = { get: (id) => (mine?.id === id ? mine : null) };
+        await withLog(() => OAPrompt.resolveOAPrompt(mine?.id, "passed"));
+        check("when Tommy answers, the GM's client still flips his card, without ever drawing it (2026-09-18)",
+          /Passed/.test(String(mine?.content ?? "")),
+          /Passed/.test(String(mine?.content ?? "")) ? "his card now reads Passed" : "his card was never flipped");
+
+        // Tommy is offline: the GM gets it, and Tommy does not come back to it.
+        TOMMY.active = false;
+        made = null;
+        await withLog(() => post(jeb, neferon, jebDoc, nefDoc));
+        check("her owner offline: the GM gets it, and the offline owner does not come back to a stale card (2026-09-18)",
+          !!made && seenBy(made, GM) && !seenBy(made, TOMMY),
+          `the GM sees it: ${seenBy(made, GM)}; Tommy sees it: ${seenBy(made, TOMMY)}`);
+
+        // Nobody owns it: the GM gets it.
+        made = null;
+        await withLog(() => post(neferon, jeb, nefDoc, jebDoc));
+        check("no player owns it: the GM gets it (2026-09-18)",
+          !!made && seenBy(made, GM) && !seenBy(made, TOMMY),
+          `the GM sees it: ${seenBy(made, GM)}; Tommy sees it: ${seenBy(made, TOMMY)}`);
+
+        // The same answer Counterspell gets, because it is the same file.
+        const { ReactionEngine: RE6c } = await import(`${MODULE}/scripts/reaction-engine.mjs`);
+        const eng6c = new RE6c();
+        const answers = [];
+        for (const [online, who, want] of [[true, jeb, TOMMY.id], [false, jeb, GM.id], [true, neferon, GM.id]]) {
+          TOMMY.active = online;
+          answers.push(eng6c._getOwnerUserId(who) === want);
+        }
+        const src = readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/oa-prompt.mjs`, "utf8");
+        check("the same rule as Counterspell: both ask one file and route the same three cases the same way (2026-09-18)",
+          answers.every(Boolean) && /from "\.\/who-answers\.mjs"/.test(src),
+          `Counterspell's routing: ${answers.map(a => (a ? "same" : "DIFFERENT")).join(", ")}; `
+            + `the OA asks the shared file: ${/from "\.\/who-answers\.mjs"/.test(src)}`);
+
+        // One GM posts it. The hook fires on every client, and two GMs each
+        // posting a card put the same question in front of the player twice.
+        const at = src.indexOf('Hooks.on("updateToken"');
+        const hookHead = at >= 0 ? src.slice(at, at + 700) : "";
+        const oneGM = /game\.users\?\.activeGM !== game\.user\) return;/.test(hookHead)
+          && !/if \(!game\.user\.isGM\) return;/.test(hookHead);
+        check("only one GM posts the card, so a player is never asked the same thing twice (2026-09-18)",
+          oneGM,
+          !hookHead ? "the updateToken hook was not found"
+            : oneGM ? "the detector runs on the active GM only" : "the detector runs on EVERY GM, so two GMs post two cards");
+      } finally {
+        game.users = keepWho.users;
+        game.messages = keepWho.messages;
+        ChatMessage.create = keepWho.create;
+        if (keepWho.gmActive === undefined) delete GM.active; else GM.active = keepWho.gmActive;
+      }
+    }
   } finally {
     OAPrompt._postPromptCard = keep6c.prompt;
     game.combats = keep6c.combats;

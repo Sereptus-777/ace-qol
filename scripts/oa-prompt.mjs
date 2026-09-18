@@ -13,7 +13,10 @@
 //   - Skip if reactor is incapacitated/can't see.
 //
 // Result:
-//   - GM sees a chat-card prompt: "[Reactor] can make an OA against [Mover]?"
+//   - ONE person gets a chat-card prompt: "[Reactor] can make an OA against
+//     [Mover]?" If a connected player owns the reactor, only that player sees
+//     it. Otherwise (an NPC, or the owner is offline) the GM does. Same rule
+//     as Counterspell, from who-answers.mjs.
 //   - Click "Take OA" → marks reaction used, fires the configured ace-qol
 //     opportunityAttack hook (other systems / macros consume it).
 //   - Click "Pass" → no action.
@@ -37,6 +40,9 @@ import { aceEdgeGapFt, aceSnapSubCellRect } from "./geometry-utils.mjs";
 import { isOutOfTheFight } from "./is-down.mjs";
 // ⚠️ A REACTION BUDGET IS A PER-ROUND BUDGET, AND ROUNDS ONLY EXIST IN A FIGHT.
 import { hasTurns } from "./action-economy.mjs";
+// ⚠️ THE ONE ANSWER TO "who decides this creature's reaction", the same one
+// Counterspell asks: its connected player, else the GM.
+import { whoAnswers } from "./who-answers.mjs";
 
 // Hardcoded literal — TDZ-safe (see stealth-engine.mjs comment)
 const FLAG_NS = "ace-qol";
@@ -52,7 +58,10 @@ export class OAPrompt {
   static init() {
     Hooks.on("updateToken", async (tokenDoc, changes, opts /*, userId */) => {
       try {
-        if (!game.user.isGM) return;
+        // ⚠️ ONE GM, NOT EVERY GM. This hook fires on every client, and with
+        // two GMs connected each of them posted its own card, so the player
+        // got the same question twice. Exactly one writer, as everywhere else.
+        if (game.users?.activeGM !== game.user) return;
         if (!QolSettings.get?.("opportunityAttackPrompt")) return;
         const movedX = changes.x !== undefined;
         const movedY = changes.y !== undefined;
@@ -538,24 +547,37 @@ export class OAPrompt {
     const reasonText = opts.reasonText ?? null;
     const html = OAPrompt._renderCardHtml(reactorName, moverName, reactorId, moverId, "pending", reasonText);
 
-    // Whisper recipients: GM(s) + the reactor's player owner (if any).
-    // For GM-controlled NPCs, only the GM sees the prompt. PCs reactors
-    // include their owner so the player can decide. This prevents the
-    // table's other players from seeing irrelevant OA prompts.
-    const recipients = new Set();
-    for (const u of game.users) if (u.isGM) recipients.add(u.id);
-    if (reactorActor.hasPlayerOwner) {
-      for (const [uid, level] of Object.entries(reactorActor.ownership ?? {})) {
-        if (uid === "default") continue;
-        if (level >= 3) recipients.add(uid); // 3 = OWNER
-      }
-    }
-    await ChatMessage.create({
+    // ⚠️🔴 ONE PERSON DECIDES, AND ONLY THEY SEE THE CARD (his table,
+    // 2026-09-18): "Opportunity attack posts in GM chat AND the player's chat
+    // when the owner is connected. Owner connected: box / card only on that
+    // player's client. Nothing in GM chat. Owner offline or no owner: GM gets
+    // it. Same rule you already use for Counterspell."
+    //
+    // This used to whisper every GM plus every owner, connected or not. It now
+    // asks the same file Counterspell asks.
+    //
+    // ⚠️ AND A WHISPER LIST ALONE COULD NEVER HAVE KEPT IT OFF THE GM'S
+    // SCREEN. Foundry draws a whispered card for its recipients AND ITS AUTHOR
+    // (ChatMessage#visible, V13), and this runs on the GM's client, so a card
+    // written here is the GM's card whatever the list says. The player's card
+    // is therefore written as the player's own (a GM may set the author) and
+    // whispered to them alone. The server still hands it to every client, so
+    // the GM's client holds it without drawing it, and can flip it when the
+    // player's Take OA or Pass comes back over the socket.
+    const { user: answerer, isPlayer, why } = whoAnswers(reactorActor);
+    const card = {
       content: html,
       speaker: ChatMessage.getSpeaker({ actor: reactorActor }),
-      whisper: [...recipients],
       flags: { [MODULE_ID]: { type: "oaPrompt", reactorId, moverId, reactorTokenId, moverTokenId, reactorName, moverName, status: "pending", reasonText } },
-    });
+    };
+    if (isPlayer && answerer?.id) {
+      card.author = answerer.id;
+      card.whisper = [answerer.id];
+    } else {
+      card.whisper = game.users.filter(u => u.isGM).map(u => u.id);
+    }
+    OAPrompt._say(`${reactorName} may take one against ${moverName}; ${why}`);
+    await ChatMessage.create(card);
   }
 
   /**
