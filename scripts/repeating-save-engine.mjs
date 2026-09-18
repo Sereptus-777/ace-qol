@@ -25,6 +25,8 @@ import { saveBonus, naturalD20 } from "./rolldata-utils.mjs";
 // ⚠️ THE ONE DECIDER, PHASE 5. This engine says WHEN the save happens; what the
 // result does to the condition is the recipe's, through whatLands.
 import { repeatOutcome } from "./road/run.mjs";
+// The ding a box makes on the screen of whoever has to answer it (2026-09-18).
+import { popupDing } from "./popup-ding.mjs";
 
 const MIN_RT_FOR_OOC_SAVE = 6;     // 1 round = 6s
 const MAX_OOC_SAVES_PER_EVENT = 10; // cap for big time jumps
@@ -337,6 +339,8 @@ export class RepeatingSaveEngine {
       const resolved = await fromUuid(actorUuid);
       const actor = resolved?.actor ?? resolved;
       if (!actor) return null;
+      // The GM is asking this player for a save at the end of a turn: ding.
+      popupDing("the repeat save");
       // ACE OWNS THE PAUSE (Johnny 2026-07-27). This used to pass
       // `{ configure: true }`, which opened dnd5e's own "Constitution Saving
       // Throw" dialog on the player's screen — exactly what must never happen.

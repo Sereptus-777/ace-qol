@@ -4141,23 +4141,37 @@ export class SaveEngine {
       return; // No need to wire anything
     }
 
-    const rollBtn = el.querySelector?.("[data-action='aceQolRollPcSave']");
-    if (!rollBtn || rollBtn.dataset.wired) return;
-    rollBtn.dataset.wired = "1";
+    // ⚠️ THE DIE AND THE PILL BOTH ROLL, AND ONLY ONCE (2026-09-18). This
+    // wired the first match alone, which was the die, so the pill added under
+    // it would have been a button that does nothing. Every roll button on the
+    // card is wired now, and the first click takes them all out of play.
+    const rollBtns = [...(el.querySelectorAll?.("[data-action='aceQolRollPcSave']") ?? [])];
+    const pill = rollBtns.find(b => b.classList?.contains?.("ace-qol-roll-pill")) ?? null;
+    let rolling = false;
 
-    rollBtn.addEventListener("click", async () => {
-      rollBtn.disabled = true;
-      rollBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Rolling...';
+    for (const rollBtn of rollBtns) {
+      if (rollBtn.dataset.wired) continue;
+      rollBtn.dataset.wired = "1";
 
-      const restoreScroll = this._preserveChatScroll();
-      await this._rollPcSave(message);
-      restoreScroll();
+      rollBtn.addEventListener("click", async () => {
+        if (rolling) return;
+        rolling = true;
+        for (const b of rollBtns) b.disabled = true;
+        // The die keeps its face; the pill (or an older card's die) says what
+        // is happening.
+        const says = pill ?? rollBtn;
+        says.innerHTML = '<i class="fas fa-spinner fa-spin"></i> <span>Rolling…</span>';
 
-      // Collapse on this client immediately (DOM only — no flag write needed)
-      rollBtn.innerHTML = '<i class="fas fa-check"></i> ROLLED \u2713';
-      const chatMsg = el.closest?.(".chat-message") ?? el;
-      chatMsg.classList.add("ace-qol-save-collapsed");
-    });
+        const restoreScroll = this._preserveChatScroll();
+        await this._rollPcSave(message);
+        restoreScroll();
+
+        // Collapse on this client immediately (DOM only — no flag write needed)
+        says.innerHTML = '<i class="fas fa-check"></i> <span>Rolled</span>';
+        const chatMsg = el.closest?.(".chat-message") ?? el;
+        chatMsg.classList.add("ace-qol-save-collapsed");
+      });
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -5600,9 +5614,16 @@ export class SaveEngine {
 
     // Player-facing prompt — mirrors the DM-side row: pure BLACK background,
     // the creature's token icon with the glowing black d20 directly beneath it,
-    // name + instruction to the right (no cropped pill button). Inline-styled
-    // so it renders identically on the player's client. Keeps the data-action
-    // + button classes intact so the existing click wiring still fires.
+    // name + instruction to the right. Inline-styled so it renders identically
+    // on the player's client. Keeps the data-action + button classes intact so
+    // the existing click wiring still fires.
+    //
+    // ⚠️ AND A BUTTON THAT SAYS ROLL (his ask, 2026-09-18): "usually you push a
+    // button to roll the dice, and just rolling the dice is a little strange."
+    // His players missed the bare die, and so did he, on his own player client.
+    // A wide pill under it names the roll, and both the pill and the die roll.
+    // An earlier pill here was cropped and taken out; this one is the card's
+    // full width and its words wrap inside it, so they never run off it.
     const pcImg = tgt.img || tgt.tokenImg || item.img || "icons/svg/mystery-man.svg";
     const cardHtml = `
       <div class="ace-qol-pc-save-card" style="background:#0c0c10;border:1px solid #d4af37;border-radius:9px;overflow:hidden;font-family:'Signika',sans-serif;">
@@ -5620,8 +5641,15 @@ export class SaveEngine {
           </div>
           <div style="flex:1;min-width:0;">
             <div style="color:#fff;font-weight:700;font-size:18px;line-height:1.2;">${tgt.name}</div>
-            <div style="color:#cdbf8f;font-size:15px;margin-top:5px;line-height:1.3;">Tap the die to roll your <b style="color:#d4af37;">${abilityLabel} save</b>.</div>
+            <div style="color:#cdbf8f;font-size:15px;margin-top:5px;line-height:1.3;">Tap the die, or the button below.</div>
           </div>
+        </div>
+        <div style="padding:0 15px 15px;background:#0c0c10;">
+          <button class="ace-qol-btn ace-qol-btn-roll ace-qol-roll-pill" data-action="aceQolRollPcSave"
+                  style="width:100%;display:flex;align-items:center;justify-content:center;gap:10px;padding:12px 18px;background:#d4af37;color:#1a1408;border:1px solid #8a6d1c;border-radius:999px;cursor:pointer;font-family:'Signika',sans-serif;font-size:18px;font-weight:700;line-height:1.25;white-space:normal;overflow-wrap:break-word;text-align:center;">
+            <i class="fas fa-dice-d20" style="font-size:20px;flex-shrink:0;"></i>
+            <span>Roll ${abilityLabel} save</span>
+          </button>
         </div>
       </div>
     `;

@@ -5,6 +5,8 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { CombatState } from "./combat-state.mjs";
+// The ding a box makes on the screen of whoever has to answer it (2026-09-18).
+import { popupDing } from "./popup-ding.mjs";
 
 export class RiderEngine {
 
@@ -267,6 +269,8 @@ export class RiderEngine {
   static showRiderPopup(riders, context) {
     return new Promise((resolve) => {
       if (!riders.length) { resolve([]); return; }
+      // It arrives after the hit, often from the GM's client: ding.
+      popupDing("the Smite and rider box");
 
       const { targetName, targetCreatureType, isCrit } = context;
 

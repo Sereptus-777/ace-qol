@@ -46,6 +46,8 @@ import { RulesBrain } from "./rules/rules-brain.mjs";
 // player, else the GM. The opportunity attack asks the same file, so the two
 // cannot route differently again (2026-09-18).
 import { whoAnswers } from "./who-answers.mjs";
+// The ding a box makes on the screen of whoever has to answer it.
+import { popupDing } from "./popup-ding.mjs";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Constants
@@ -1584,18 +1586,20 @@ export class ReactionEngine {
         attackerImg,
         type: "shield",
         title: "Shield Spell",
-        description: `<strong>${attacker.name}</strong> hits <strong>${targetActor.name}</strong> with <strong>${attackItem.name}</strong>.`,
+        heading: "Shield",
+        description: `${foundry.utils.escapeHTML(attacker?.name ?? "An attacker")} hits you with `
+          + `<span class="ace-qol-reaction-spell">${foundry.utils.escapeHTML(attackItem?.name ?? "an attack")}</span>`,
         details: [
           { label: "Attack Roll", value: result.attackTotal },
           { label: "Current AC", value: result.target.ac },
           { label: "AC with Shield", value: result.target.ac + 5 },
           { label: "Result", value: result.attackTotal >= (result.target.ac + 5) ? "STILL HITS" : "WOULD MISS", color: result.attackTotal >= (result.target.ac + 5) ? "#ef5350" : "#66bb6a" },
         ],
-        acceptLabel: "Cast Shield (+5 AC)",
-        declineLabel: "No Reaction",
+        acceptLabel: "Cast Shield",
+        declineLabel: "No reaction",
         spellSlotLevel: 1,
         availableSlots: shieldCheck.slots,
-        icon: "fa-shield-halved",
+        icon: "fa-shield-quartered",
         accentColor: "#42a5f5",
       });
 
@@ -1713,18 +1717,23 @@ export class ReactionEngine {
         attackerName: caster?.name ?? "A caster",
         attackerImg: casterImg,
         type: "shield",
+        // The window's title bar keeps the full name; the box's own heading
+        // is the reaction alone.
         title: "Shield — Magic Missile Defense",
-        description: `<strong>${caster.name}</strong> casts <strong>Magic Missile</strong> at <strong>${targetActor.name}</strong>.`,
-        details: [
-          { label: "Darts incoming",   value: String(darts) },
-          { label: "Per-dart damage",  value: "1d4 + 1 force" },
-          { label: "Effect of Shield", value: "ALL DARTS NULLIFIED — no damage", color: "#66bb6a" },
-        ],
-        acceptLabel:    "Cast Shield (negate all darts)",
-        declineLabel:   "Take the damage",
+        heading: "Shield",
+        // ⚠️ THE MOMENT, NOT THE MECHANICS (his design, 2026-09-18): "we don't
+        // need darts incoming, per-dart damage, and effect of shield. That comes
+        // after in the chat card anyways." The dart count, the dice and the
+        // "all darts nullified" row are gone from the box; the card after the
+        // choice says what happened.
+        description: `${foundry.utils.escapeHTML(caster?.name ?? "A caster")} casts `
+          + `<span class="ace-qol-reaction-spell">Magic Missile</span> at you`,
+        acceptLabel:    "Cast Shield",
+        declineLabel:   "Take damage",
         spellSlotLevel: 1,
         availableSlots: shieldCheck.slots,
-        icon:           "fa-shield-halved",
+        // A filled heraldic shield, not the outlined half (his ask).
+        icon:           "fa-shield-quartered",
         accentColor:    "#42a5f5",
       });
 
@@ -2045,7 +2054,7 @@ export class ReactionEngine {
       description: `<strong>${casterActor.name}</strong> is casting <strong>${item.name}</strong> (Level ${spellLevel} spell)${targetNames ? ` on <strong>${targetNames}</strong>` : ""}.`,
       details: detailRows,
       acceptLabel: "Cast Counterspell",
-      declineLabel: "Let It Go",
+      declineLabel: "Let it go",
       spellSlotLevel: 3,
       icon: "fa-hand-sparkles",
       accentColor: "#ab47bc",
@@ -2967,8 +2976,8 @@ export class ReactionEngine {
         { label: "Resistance Granted", value: `${dominantType} (this hit only)` },
         { label: "Bonus Damage", value: `+1d6 ${dominantType} on next melee attack` },
       ],
-      acceptLabel: `Absorb Elements (${dominantType})`,
-      declineLabel: "No Reaction",
+      acceptLabel: "Absorb Elements",
+      declineLabel: "No reaction",
       spellSlotLevel: 1,
       availableSlots: slots,
       icon: "fa-fire-flame-curved",
@@ -3738,7 +3747,7 @@ export class ReactionEngine {
   static showReactionDialog(data) {
     return new Promise((resolve) => {
       const {
-        type, title, description, details, acceptLabel, declineLabel,
+        type, title, heading, description, details, acceptLabel, declineLabel,
         spellSlotLevel, availableSlots, icon, iconExtra, accentColor,
         reactorActorName, reactorActorImg, reactorIsNpc, extraData,
         // v0.7.71 — attacker portrait + name (Shield UX polish)
@@ -3746,24 +3755,37 @@ export class ReactionEngine {
       } = data;
 
       const accent = accentColor ?? "#d4af37";
+      // The yes button wears the reaction's own colour, deepened enough that
+      // white words stay readable on it, and outlined in a deeper shade still.
+      const yesFace = ReactionEngine._shade(accent, 0.72);
+      const yesDeep = ReactionEngine._shade(accent, 0.3);
+      const esc = (x) => foundry.utils.escapeHTML(String(x ?? ""));
       let resolved = false;
 
-      // ── Build attacker row (v0.7.71 — Shield UX polish) ──
-      // Shows WHO is attacking the reactor, with a portrait, so the player
-      // can make an informed reaction call without scanning chat. Renders
-      // only when attacker data is provided (Shield + MM-Shield set it).
-      const attackerRowHtml = attackerName ? `
-        <div class="ace-qol-reaction-attacker" style="border-color:${accent}">
-          ${attackerImg ? `<img src="${attackerImg}" class="ace-qol-reaction-attacker-portrait" alt="${attackerName}" />` : ""}
-          <div class="ace-qol-reaction-attacker-text">
-            <div class="ace-qol-reaction-attacker-label">Attacker</div>
-            <div class="ace-qol-reaction-attacker-name">${attackerName}</div>
+      // ── THE SCENE (his design, 2026-09-18) ──
+      // "We've always got to think of the player and immersion, not just the
+      // mechanical, official technical side of it." A box that has somebody on
+      // the other side (the attacker, the caster) opens on the moment itself:
+      // their portrait, the red arrow, yours, and one plain line saying what is
+      // happening. The numbers belong on the chat card after the choice. It
+      // replaces the old attacker row and the description underneath it.
+      const scenePortrait = (img, name, side) => img
+        ? `<img src="${img}" class="ace-qol-reaction-scene-portrait ${side}" alt="${esc(name)}" />`
+        : `<span class="ace-qol-reaction-scene-portrait ${side} ace-qol-reaction-scene-initial">${esc(String(name ?? "?").charAt(0))}</span>`;
+      const sceneHtml = attackerName ? `
+        <div class="ace-qol-reaction-scene" style="border-color:${accent}; --ace-accent:${accent}">
+          <div class="ace-qol-reaction-scene-row">
+            <div class="ace-qol-reaction-scene-side">
+              ${scenePortrait(attackerImg, attackerName, "is-them")}
+              <span class="ace-qol-reaction-scene-name">${esc(attackerName)}</span>
+            </div>
+            <i class="fas fa-arrow-right ace-qol-reaction-scene-arrow"></i>
+            <div class="ace-qol-reaction-scene-side">
+              ${scenePortrait(reactorActorImg, reactorActorName, "is-you")}
+              <span class="ace-qol-reaction-scene-name">${esc(reactorActorName ?? "You")} <span class="ace-qol-reaction-scene-you">(you)</span></span>
+            </div>
           </div>
-          <i class="fas fa-arrow-right ace-qol-reaction-attacker-arrow"></i>
-          <div class="ace-qol-reaction-attacker-vs">
-            <div class="ace-qol-reaction-attacker-label">You</div>
-            <div class="ace-qol-reaction-attacker-name">${reactorActorName ?? "Reactor"}</div>
-          </div>
+          <div class="ace-qol-reaction-scene-line">${description ?? ""}</div>
         </div>` : "";
 
       // ── Build details rows ──
@@ -3798,51 +3820,65 @@ export class ReactionEngine {
       // spell-slot-consuming reaction like Counterspell — Shield etc.
       // don't need this control).
       const consumeSlotDefault = reactorIsNpc ? "" : "checked";
-      // v0.7.21: GM-only interaction. PCs see the checkbox state (transparent
-      // about whether the slot gets consumed) but can't toggle it — RAW says
-      // counterspell consumes a slot, and players shouldn't be able to opt
-      // out. GM is the only one with authority to grant slot-free reactions
-      // (typically for NPCs, but also occasional narrative grace).
-      const consumeSlotDisabled = game.user.isGM ? "" : "disabled";
-      const consumeSlotClass = game.user.isGM ? "" : "ace-qol-reaction-consume-slot-locked";
-      const lockedHint = game.user.isGM ? "" : " <em style='opacity:0.55;font-size:0.8em;'>(GM-only)</em>";
-      const consumeSlotHtml = spellSlotLevel && availableSlots?.length ? `
-        <div class="ace-qol-reaction-consume-slot ${consumeSlotClass}">
+      // ⚠️ THE GM'S BOX ONLY (his rule, 2026-09-18): "There is no 'Consume
+      // Spell Slot' on the client side ever." It used to be drawn on a
+      // player's box too, greyed out and marked GM-only, which is a control
+      // the player can see and never use. A player's box has no such line: RAW
+      // spends the slot, and the accept handler reads a missing box as "spend".
+      // The GM, deciding for an NPC or for a player who is not connected, still
+      // gets it, with an NPC starting unticked.
+      const consumeSlotHtml = game.user.isGM && spellSlotLevel && availableSlots?.length ? `
+        <div class="ace-qol-reaction-consume-slot">
           <label>
-            <input type="checkbox" class="ace-qol-reaction-consume-slot-checkbox" ${consumeSlotDefault} ${consumeSlotDisabled} />
-            <span>Consume Spell Slot${reactorIsNpc ? " <em style='opacity:0.7;font-size:0.85em;'>(NPC default: off)</em>" : ""}${lockedHint}</span>
+            <input type="checkbox" class="ace-qol-reaction-consume-slot-checkbox" ${consumeSlotDefault} />
+            <span>Consume spell slot${reactorIsNpc ? " <em style='opacity:0.7;font-size:0.85em;'>(NPC default: off)</em>" : ""}</span>
           </label>
         </div>` : "";
+
+      // ── The header ──
+      // With a scene below it, the header is only the reaction's name and its
+      // emblem: the scene already shows whose reaction this is, and showing the
+      // same portrait and name twice was noise. A box with nobody on the other
+      // side (Legendary Resistance, Cutting Words) keeps the reactor's portrait
+      // and name here, because nothing else on it says who is deciding.
+      const iconsHtml = `<i class="fas ${icon ?? "fa-bolt"}"></i>${iconExtra ? ` <i class="fas ${iconExtra}"></i>` : ""}`;
+      const headerHtml = sceneHtml ? `
+          <div class="ace-qol-reaction-header ace-qol-reaction-heading-only">
+            <span class="ace-qol-reaction-heading" style="color:${accent}">${iconsHtml} ${heading ?? title}</span>
+          </div>` : `
+          <div class="ace-qol-reaction-header" style="border-color:${accent}">
+            ${reactorActorImg ? `<img src="${reactorActorImg}" class="ace-qol-reaction-portrait" />` : ""}
+            <div class="ace-qol-reaction-header-text">
+              <span class="ace-qol-reaction-actor-name">${reactorActorName ?? "Unknown"}</span>
+              <span class="ace-qol-reaction-type-label" style="color:${accent}">${iconsHtml} ${heading ?? title}</span>
+            </div>
+          </div>`;
 
       // ── Full dialog HTML ──
       // v0.7.21: countdown timer REMOVED. The user wants the reaction
       // decision to be binary (Accept / Decline) with no time pressure.
       // Upstream cast-barrier 30s safety net still prevents the spell
-      // pipeline from hanging if the player walks away.
+      // pipeline from hanging if the player walks away. (Asked for again on
+      // 2026-09-18 and left off for now, his call.)
+      //
+      // ⚠️ THE NO IS ALWAYS THE RED PILL (his rule, 2026-09-18): "The red has
+      // to be red, though, on the negative." The yes keeps each reaction's own
+      // colour: Shield blue, Counterspell purple, Absorb Elements the element.
       const html = `
         <div class="ace-qol-reaction-prompt" data-reaction-type="${type}">
-          <div class="ace-qol-reaction-header" style="border-color:${accent}">
-            ${reactorActorImg ? `<img src="${reactorActorImg}" class="ace-qol-reaction-portrait" />` : ""}
-            <div class="ace-qol-reaction-header-text">
-              <span class="ace-qol-reaction-actor-name">${reactorActorName ?? "Unknown"}</span>
-              <span class="ace-qol-reaction-type-label" style="color:${accent}">
-                <i class="fas ${icon ?? "fa-bolt"}"></i>${iconExtra ? ` <i class="fas ${iconExtra}"></i>` : ""} ${title}
-              </span>
-            </div>
-          </div>
+          ${headerHtml}
           <div class="ace-qol-reaction-body">
-            ${attackerRowHtml}
-            <div class="ace-qol-reaction-description">${description}</div>
-            <div class="ace-qol-reaction-details">${detailRows}</div>
+            ${sceneHtml || `<div class="ace-qol-reaction-description">${description}</div>`}
+            ${detailRows ? `<div class="ace-qol-reaction-details">${detailRows}</div>` : ""}
             ${slotPickerHtml}
             ${consumeSlotHtml}
           </div>
           <div class="ace-qol-reaction-buttons">
-            <button class="ace-qol-reaction-accept" style="border-color:${accent}; color:${accent}">
-              <i class="fas ${icon ?? "fa-check"}"></i> ${acceptLabel ?? "Use Reaction"}
+            <button class="ace-qol-reaction-accept" style="--ace-yes:${yesFace}; --ace-yes-deep:${yesDeep}">
+              <i class="fas ${icon ?? "fa-check"}"></i><span>${acceptLabel ?? "Use Reaction"}</span>
             </button>
             <button class="ace-qol-reaction-decline">
-              <i class="fas fa-xmark"></i> ${declineLabel ?? "Decline"}
+              <i class="fas fa-xmark"></i><span>${declineLabel ?? "Decline"}</span>
             </button>
           </div>
         </div>
@@ -3854,6 +3890,11 @@ export class ReactionEngine {
         buttons: {},
         render: (jq) => {
           const el = jq[0] ?? jq;
+
+          // ⚠️ THE DING (his ask, 2026-09-18): "even I miss pop-ups that come
+          // over on the client screen." This draws on the screen of whoever
+          // decides, local or remote, so it dings there and nowhere else.
+          popupDing(`the ${title ?? "reaction"} box`);
 
           // ── Accept button ──
           el.querySelector(".ace-qol-reaction-accept")?.addEventListener("click", () => {
@@ -3898,10 +3939,10 @@ export class ReactionEngine {
 
       dialog.render(true);
 
-      // Play a notification sound so the player notices
-      try {
-        AudioHelper.play({ src: "sounds/notify.wav", volume: 0.4, autoplay: true }, false);
-      } catch (err) { console.debug("ace-qol | ReactionEngine notification sound playback:", err); }
+      // The ding is played by the render callback above, through the one
+      // helper every pop-up uses. This used to play its own quieter ping here
+      // as well, through Foundry's old global name, so the box would have
+      // sounded twice (2026-09-18).
     });
   }
 
@@ -4209,6 +4250,24 @@ export class ReactionEngine {
   /**
    * Get the accent color for an element type (for Absorb Elements display).
    */
+  /**
+   * A colour made darker, for a button face or the outline on its words.
+   * Takes "#rgb" or "#rrggbb"; anything else comes back as a dark neutral,
+   * so a colour nobody expected can never paint white words on white.
+   *
+   * @param {string} hex
+   * @param {number} factor  0 (black) to 1 (unchanged)
+   * @returns {string}
+   */
+  static _shade(hex, factor = 0.72) {
+    const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(hex ?? "").trim());
+    if (!m) return "#2b2b30";
+    const full = m[1].length === 3 ? m[1].split("").map(c => c + c).join("") : m[1];
+    const k = Math.max(0, Math.min(1, Number(factor) || 0));
+    const part = (i) => Math.round(parseInt(full.slice(i, i + 2), 16) * k).toString(16).padStart(2, "0");
+    return `#${part(0)}${part(2)}${part(4)}`;
+  }
+
   _getElementColor(type) {
     const colors = {
       acid:      "#c6ff00",
@@ -4366,6 +4425,24 @@ export function injectReactionCSS() {
   font-weight: 700;
   letter-spacing: 0.5px;
 }
+/* With a scene below it the header is the reaction's name and emblem alone
+   (2026-09-18): the scene already shows whose reaction it is. */
+.ace-qol-reaction-header.ace-qol-reaction-heading-only {
+  padding: 14px 16px 4px;
+  border-bottom: none;
+  background: none;
+}
+.ace-qol-reaction-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 1.3rem;        /* ≈21px — heading */
+  font-weight: 800;
+  letter-spacing: 0.5px;
+}
+.ace-qol-reaction-heading i {
+  font-size: 1.5rem;
+}
 
 /* ── Body ── */
 .ace-qol-reaction-body {
@@ -4378,60 +4455,79 @@ export function injectReactionCSS() {
   line-height: 1.5;
 }
 
-/* ── Attacker row (v0.7.71 — Shield UX polish) ──
-   Side-by-side attacker | arrow | reactor portraits with name labels.
-   Helps the reactor see WHO is attacking so they can decide whether the
-   slot is worth burning. Renders only when the prompt passes attacker data
-   (Shield post-hit + Magic Missile defense; legendary resistance etc. don't). */
-.ace-qol-reaction-attacker {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
+/* ── The scene (his design, 2026-09-18) ──
+   Who is on the other side, the red arrow, and you, with one plain line under
+   the portraits saying what is happening. It replaced the v0.7.71 attacker
+   row and the description beneath it: a moment, not a form. The numbers go on
+   the chat card after the choice. */
+.ace-qol-reaction-scene {
+  padding: 16px 12px 14px;
   margin-bottom: 10px;
   background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.08);
-  border-left: 3px solid;        /* color set inline from accent */
-  border-radius: 4px;
+  border: 1px solid;            /* colour set inline from the accent */
+  border-radius: 10px;
 }
-.ace-qol-reaction-attacker-portrait {
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  border: 2px solid rgba(239,83,80,0.45);
-  object-fit: cover;
-  flex-shrink: 0;
+.ace-qol-reaction-scene-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
-.ace-qol-reaction-attacker-text,
-.ace-qol-reaction-attacker-vs {
+.ace-qol-reaction-scene-side {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  flex: 1;
-  min-width: 0;     /* let names truncate inside flex */
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 0;
+  min-width: 0;
 }
-.ace-qol-reaction-attacker-vs {
-  text-align: right;
+.ace-qol-reaction-scene-portrait {
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid rgba(239,83,80,0.55);
+  background: #1c1c22;
 }
-.ace-qol-reaction-attacker-label {
-  font-size: 0.85rem;       /* 13.6px — hint */
-  color: #999;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  font-weight: 600;
+.ace-qol-reaction-scene-portrait.is-you {
+  border-color: var(--ace-accent, #d4af37);
 }
-.ace-qol-reaction-attacker-name {
-  font-size: 1.1rem;        /* ≈17.6px — heading-adjacent */
-  color: #f0e4c0;
+.ace-qol-reaction-scene-initial {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2rem;
   font-weight: 800;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  color: #f0e4c0;
 }
-.ace-qol-reaction-attacker-arrow {
-  font-size: 1.2rem;
-  color: rgba(239,83,80,0.7);
+.ace-qol-reaction-scene-name {
+  font-size: 1.1rem;        /* ≈17.6px */
+  font-weight: 800;
+  color: #f0e4c0;
+  text-align: center;
+  line-height: 1.25;
+  overflow-wrap: break-word;
+  max-width: 100%;
+}
+.ace-qol-reaction-scene-you {
+  font-weight: 600;
+  color: #8fa3bd;
+}
+.ace-qol-reaction-scene-arrow {
+  font-size: 2rem;
+  color: #e5484d;
   flex-shrink: 0;
+}
+.ace-qol-reaction-scene-line {
+  margin-top: 12px;
+  text-align: center;
+  font-size: 1.15rem;       /* ≈18px */
+  color: #ebe6d8;
+  line-height: 1.4;
+}
+.ace-qol-reaction-scene-line .ace-qol-reaction-spell {
+  color: #9fd0ff;
+  font-weight: 700;
 }
 
 .ace-qol-reaction-details {
@@ -4514,21 +4610,6 @@ export function injectReactionCSS() {
   cursor: pointer;
   accent-color: #ab47bc;
 }
-/* v0.7.21: Locked state for non-GM clients — they see the checkbox but
-   can't toggle. Visually muted so the player understands it's read-only. */
-.ace-qol-reaction-consume-slot.ace-qol-reaction-consume-slot-locked {
-  opacity: 0.6;
-  background: rgba(255,255,255,0.015);
-}
-.ace-qol-reaction-consume-slot.ace-qol-reaction-consume-slot-locked label {
-  cursor: not-allowed;
-  color: #888;
-}
-.ace-qol-reaction-consume-slot.ace-qol-reaction-consume-slot-locked input[type="checkbox"] {
-  cursor: not-allowed;
-  pointer-events: none;
-}
-
 /* ── Timer (legacy — preserved for any non-counterspell reactions
    that might still want a visible time pressure indicator in future.
    The counterspell flow no longer renders these elements as of v0.7.21.) ── */
@@ -4596,46 +4677,57 @@ export function injectReactionCSS() {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  /* ⚠️ THE LABEL STAYS ON ONE LINE. It is a short phrase with a number in
-     it; breaking it mid-phrase is what produced the four-line button. */
-  white-space: nowrap;
+  /* ⚠️ THE WORDS STAY ON THE BUTTON (2026-09-18). This was nowrap, and a
+     label longer than its button ran off the edge of it: "Cast Shield
+     (negate all darts)" did, on his screen. With both buttons on an equal
+     basis a long label wraps between words onto a second line and the row
+     grows, which is free; a word is never split. */
+  white-space: normal;
+  overflow-wrap: normal;
+  text-align: center;
   line-height: 1.2;
 }
+/* ⚠️ THE YES WEARS THE REACTION'S OWN COLOUR, THE NO IS ALWAYS THE RED PILL
+   (his rules, 2026-09-18). The yes: a solid face in the reaction's accent,
+   deepened so white words read on it, the words outlined in a deeper shade
+   still. The no: a red pill, yellow words outlined in black, the X kept.
+   The outline is four hard text shadows, which every browser draws the same;
+   a text stroke thins the letters where it is not supported. */
 .ace-qol-reaction-accept {
   padding: 10px 18px;
-  font-size: 1rem;          /* 16px — body min */
+  font-size: 1.1rem;        /* ≈17.6px */
   font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  background: linear-gradient(180deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.02) 100%);
-  border: 1px solid rgba(212,175,55,0.4);
-  border-radius: 4px;
+  letter-spacing: 0.3px;
+  background: var(--ace-yes, #3a6ea5);
+  border: 1px solid var(--ace-yes-deep, #16304d);
+  border-radius: 8px;
+  color: #ffffff;
+  text-shadow:
+    -1px -1px 0 var(--ace-yes-deep, #16304d), 1px -1px 0 var(--ace-yes-deep, #16304d),
+    -1px 1px 0 var(--ace-yes-deep, #16304d), 1px 1px 0 var(--ace-yes-deep, #16304d);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: filter 0.15s ease;
 }
 .ace-qol-reaction-accept:hover {
-  background: linear-gradient(180deg, rgba(212,175,55,0.15) 0%, rgba(212,175,55,0.05) 100%);
-  box-shadow: 0 0 12px rgba(212,175,55,0.25);
+  filter: brightness(1.15);
 }
 .ace-qol-reaction-decline {
   /* Width, height and wrapping all come from the shared rule above, so the two
      buttons cannot drift apart again the next time one of them is edited. */
   padding: 10px 18px;
-  font-size: 1rem;          /* 16px — body min */
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  background: linear-gradient(180deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.01) 100%);
-  border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 4px;
-  color: #a8a098;
+  font-size: 1.1rem;        /* ≈17.6px */
+  font-weight: 800;
+  letter-spacing: 0.3px;
+  background: #c62828;
+  border: 1px solid #6d1010;
+  border-radius: 999px;
+  color: #ffd84d;
+  text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: filter 0.15s ease;
 }
 .ace-qol-reaction-decline:hover {
-  background: linear-gradient(180deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.03) 100%);
-  border-color: rgba(239,83,80,0.4);
-  color: #ef5350;
+  filter: brightness(1.15);
 }
 
 /* ── Chat Notification Card ── */

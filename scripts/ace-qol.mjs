@@ -58,6 +58,8 @@ import { SpaceEffects } from "./rules/space-effects.mjs";
 import { SelfTest } from "./rules/self-test.mjs";
 import { openRulesCoverage, registerCoverageButton } from "./rules/coverage-report.mjs";
 import { ActionInterceptor } from "./profiles/action-interceptor.mjs";
+// The ding for a prompt card reaching the one who answers it (2026-09-18).
+import { registerPromptCardDing } from "./popup-ding.mjs";
 import { RulesIndex } from "./rules/rules-index.mjs";
 import { onCanvasReady } from "./ready-utils.mjs";
 import { emanatesFromCaster, drawCasterEmanation, suppressesTemplate } from "./caster-emanation.mjs";
@@ -518,6 +520,13 @@ Hooks.once("init", () => {
   try { ActionInterceptor.register(); }
   catch (err) { console.error(`${MODULE_ID} | THE READING failed to start — every pipeline `
     + `falls back to guessing on its own:`, err); }
+
+  // ── THE DING FOR A PROMPT CARD (his ask, 2026-09-18) ──
+  // A save to roll, an opportunity attack, a chance to break free: when one of
+  // those cards reaches the person who has to answer it, their screen dings.
+  try { registerPromptCardDing(); }
+  catch (err) { console.error(`${MODULE_ID} | the prompt-card ding failed to register, so those `
+    + `cards arrive in silence:`, err); }
 
   // ── THE GATE (The One Road, Phase 2, 2026-09-14): straight after the reading ──
   // The One Road runs reading, then gate. Registered here, right behind the

@@ -13,6 +13,8 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { replyIsFromTheUserWeAsked } from "./socket-authority.mjs";
+// The ding a box makes on the screen of whoever has to answer it (2026-09-18).
+import { popupDing } from "./popup-ding.mjs";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 const MIDI_ID = "midi-qol";
@@ -712,6 +714,8 @@ export class FlagsEngine {
    */
   static async showOptionalPrompt(actor, optionals, rollContext = {}) {
     if (!optionals.length) return [];
+    // An offer (Lucky, Bardic Inspiration, Bless) waiting on a choice: ding.
+    popupDing("the bonus offer");
 
     // v0.7.21: countdown timer REMOVED. Optional-bonus decisions (Lucky
     // reroll, Bardic Inspiration, Bless, etc.) fire right after a roll the

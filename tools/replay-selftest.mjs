@@ -3231,6 +3231,77 @@ console.log(`\nFEATHER FALL, THROUGH THE ONE REACTION DOOR`);
   }
 }
 
+/* ── THE ROLL PILL, AND WHO HEARS THE DING ──────────────────────────────── */
+// Johnny, 2026-09-18: "when a player has to roll a dexterity check or something
+// like that, all they get is a D20 in their chat pop-up ... I want a button
+// underneath it that says Roll ... A pill every time. I want them to be able to
+// roll either one of them." And a ding for every pop-up, because "even I miss
+// pop-ups that come over on the client screen."
+console.log(`\nTHE ROLL PILL, AND WHO HEARS THE DING`);
+{
+  const { SaveEngine: SEp } = await import(`${MODULE}/scripts/save-engine.mjs`);
+  const { CardDoor: DoorP } = await import(`${MODULE}/scripts/road/doors.mjs`);
+  const { answersCard } = await import(`${MODULE}/scripts/popup-ding.mjs`);
+  const keepP = { post: DoorP.post, users: game.users };
+  const PLAYERp = { id: "pill-player", isGM: false, name: "Aryel's player", active: true };
+  game.users = Object.assign([GM, PLAYERp], { activeGM: GM, get: (id) => [GM, PLAYERp].find(u => u.id === id) ?? null });
+  const postedP = [];
+  DoorP.post = async (data) => { postedP.push(data); return { id: "pill-card", ...data }; };
+  try {
+    // The card as the save engine posts it for a player's save.
+    const savesP = Object.create(SEp.prototype);
+    const fireball = { id: "it-fb-pill", name: "Fireball", type: "spell", uuid: "Item.fb-pill", img: "" };
+    await quiet(() => savesP._sendPcSavePrompt(fireball, null,
+      { name: "Aryel", img: "", ownerIds: [PLAYERp.id], sceneId: "s", tokenDocId: "tok-aryel", actorId: "a-aryel" },
+      { saveAbility: "dex", saveDC: 15, halfOnSave: true, damageTypes: ["fire"], isSpell: true, castId: "c-pill" }));
+    const card = String(postedP.at(-1)?.content ?? "");
+    const pillHtml = (/<button[^>]*ace-qol-roll-pill[^>]*>[\s\S]*?<\/button>/.exec(card) ?? [""])[0];
+    check("the player's save card keeps its d20 and gains a wide pill that says \"Roll Dexterity save\" (2026-09-18)",
+      /aceQolRollPcSave/.test(card) && /class="ace-qol-d20"/.test(card)
+        && /data-action="aceQolRollPcSave"/.test(pillHtml) && /Roll Dexterity save/.test(pillHtml)
+        && /width:100%/.test(pillHtml) && /border-radius:999px/.test(pillHtml),
+      `d20: ${/class="ace-qol-d20"/.test(card)}; pill: ${pillHtml ? "present" : "MISSING"}; `
+        + `its words: ${(/<span>([^<]*)<\/span>/.exec(pillHtml) ?? [])[1] ?? "none"}`);
+    check("and the pill's words wrap inside it, never off it (2026-09-18)",
+      /white-space:normal/.test(pillHtml) && !/nowrap/.test(pillHtml),
+      /white-space:normal/.test(pillHtml) ? "they wrap" : "they cannot wrap");
+
+    // Both roll, and only once between them.
+    let rolled = 0;
+    savesP._rollPcSave = async () => { rolled++; };
+    savesP._preserveChatScroll = () => () => {};
+    const button = (isPill) => ({ dataset: {}, disabled: false, innerHTML: "", clicks: [],
+      classList: { contains: (c) => isPill && c === "ace-qol-roll-pill" },
+      addEventListener(ev, fn) { if (ev === "click") this.clicks.push(fn); } });
+    const die = button(false), pillBtn = button(true);
+    const cardEl = { querySelectorAll: () => [die, pillBtn], closest: () => ({ classList: { add() {} } }) };
+    savesP._wirePcSaveButton(cardEl, { id: "pill-card" }, { rolled: false });
+    const wired = die.clicks.length === 1 && pillBtn.clicks.length === 1;
+    await pillBtn.clicks[0]?.();
+    await die.clicks[0]?.();
+    check("clicking the pill or the d20 rolls the save, and a second click on the other one does not roll it again (2026-09-18)",
+      wired && rolled === 1 && die.disabled && /Rolled/.test(pillBtn.innerHTML),
+      `both wired: ${wired}; rolls: ${rolled}; the pill now reads: ${pillBtn.innerHTML.replace(/<[^>]+>/g, "").trim() || "(nothing)"}`);
+
+    // Who hears the ding: the one who answers the card.
+    const cardFor = (type, whisper) => ({ flags: { "ace-qol": { type } }, whisper });
+    const hears = (msg, user) => answersCard(msg, user);
+    check("the ding sounds for whoever answers the card: the player on their save card, not the GM who posted it (2026-09-18)",
+      hears(cardFor("pcSavePrompt", [PLAYERp.id]), PLAYERp) && !hears(cardFor("pcSavePrompt", [PLAYERp.id]), GM),
+      `player: ${hears(cardFor("pcSavePrompt", [PLAYERp.id]), PLAYERp)}; GM: ${hears(cardFor("pcSavePrompt", [PLAYERp.id]), GM)}`);
+    check("an escape card shown to the player and the GM dings for the player only; an NPC's opportunity attack dings for the GM (2026-09-18)",
+      hears(cardFor("breakFreePrompt", [PLAYERp.id, GM.id]), PLAYERp) && !hears(cardFor("breakFreePrompt", [PLAYERp.id, GM.id]), GM)
+        && hears(cardFor("oaPrompt", [GM.id]), GM) && !hears(cardFor("someOtherCard", [GM.id]), GM),
+      `escape card: player ${hears(cardFor("breakFreePrompt", [PLAYERp.id, GM.id]), PLAYERp)}, GM ${hears(cardFor("breakFreePrompt", [PLAYERp.id, GM.id]), GM)}; `
+        + `NPC's OA card: GM ${hears(cardFor("oaPrompt", [GM.id]), GM)}; an ordinary card: ${hears(cardFor("someOtherCard", [GM.id]), GM)}`);
+  } catch (err) {
+    check("the roll pill and the ding: the pins ran", false, `threw: ${err?.message ?? err}`);
+  } finally {
+    DoorP.post = keepP.post;
+    game.users = keepP.users;
+  }
+}
+
 /* ── PHASE 6b: COUNTERSPELL ────────────────────────────────────────────────── */
 // Johnny, 2026-09-16: "PHASE 6b - Counterspell only. Then stop." Someone within
 // 60 feet starts a spell; a creature holding Counterspell, with a slot, a free
@@ -4550,6 +4621,90 @@ console.log(`\nPHASE 6a: THE SHIELD REACTION`);
       SpellPipeline._runPickerAndResolve = keep7.run;
       delete engine._routePrompt;   // back to the engine's own, off its prototype
       console.error = keep7.error;
+    }
+
+    // ── 8. THE BOX HE SEES ──
+    // Johnny, 2026-09-18, over a screenshot of the Shield box: the darts, the
+    // per-dart damage and "effect of Shield" go ("That comes after in the chat
+    // card anyways"); the attacker and the defender become one scene with one
+    // plain line; "Cast Shield" in the reaction's colour, "Take damage" as a red
+    // pill; a filled shield emblem; "There is no 'Consume Spell Slot' on the
+    // client side ever"; and a ding when it pops up. This renders the REAL
+    // Magic Missile prompt (the options the engine built in pin 1) through the
+    // REAL box, as a player and as the GM. Only Foundry's window is stood in.
+    {
+      const mmOpts = asked.find(o => /Magic Missile/.test(String(o?.title ?? ""))) ?? null;
+      const keep8 = { Dialog: globalThis.Dialog, audio: foundry.audio, user: game.user, window: globalThis.window };
+      // The box centres itself on the browser window, which this harness has
+      // none of; without one it throws before the window is ever built.
+      globalThis.window = { innerHeight: 900, innerWidth: 1400 };
+      const windows = [];
+      const plays = [];
+      globalThis.Dialog = class {
+        constructor(cfg, opts) { this.cfg = cfg; this.opts = opts; windows.push(this); }
+        render() { this.cfg.render?.([{ querySelector: () => null }]); return this; }
+        close() {}
+      };
+      foundry.audio = { AudioHelper: { play: (d) => { plays.push(d); } } };
+      const show = (asUser) => {
+        game.user = asUser;
+        const before = windows.length;
+        // Nobody clicks, so its answer never comes; a throw inside must not
+        // become an unhandled rejection that ends the whole replay.
+        ReactionEngine.showReactionDialog({ ...mmOpts, reactorActorName: "Beric", reactorActorImg: null,
+          reactorIsNpc: false }).catch(e => { err8 = err8 ?? e; });
+        return windows[before]?.cfg?.content ?? "";
+      };
+      let asPlayer = "", asGM = "", err8 = null;
+      try {
+        if (!mmOpts) throw new Error("pin 1 never built a Magic Missile prompt to render");
+        asPlayer = show({ id: "p8", isGM: false, name: "Beric's player" });
+        asGM = show(GM);
+      } catch (e) { err8 = e; }
+      game.user = keep8.user;
+      if (keep8.window === undefined) delete globalThis.window; else globalThis.window = keep8.window;
+      if (keep8.Dialog === undefined) delete globalThis.Dialog; else globalThis.Dialog = keep8.Dialog;
+      if (keep8.audio === undefined) delete foundry.audio; else foundry.audio = keep8.audio;
+
+      const gone = ["Darts incoming", "Per-dart", "Effect of Shield", "negate all darts", "ALL DARTS NULLIFIED"]
+        .filter(w => asPlayer.includes(w));
+      check("8. the Shield box is one scene: both portraits, the red arrow, one plain line, and none of the darts, dice or effect rows (2026-09-18)",
+        !err8 && /ace-qol-reaction-scene"/.test(asPlayer) && /is-them/.test(asPlayer) && /is-you/.test(asPlayer)
+          && /fa-arrow-right ace-qol-reaction-scene-arrow/.test(asPlayer)
+          && /casts <span class="ace-qol-reaction-spell">Magic Missile<\/span> at you/.test(asPlayer)
+          && gone.length === 0,
+        err8 ? `threw: ${err8?.message ?? err8}`
+          : `scene: ${/ace-qol-reaction-scene"/.test(asPlayer)}; mechanics still on it: ${gone.join(", ") || "none"}`);
+      check("8. its heading is the filled shield emblem and the word Shield; its buttons say \"Cast Shield\" and \"Take damage\" (2026-09-18)",
+        !err8 && /ace-qol-reaction-heading"[^>]*><i class="fas fa-shield-quartered"><\/i> Shield</.test(asPlayer)
+          && /<span>Cast Shield<\/span>/.test(asPlayer) && /<span>Take damage<\/span>/.test(asPlayer),
+        err8 ? `threw: ${err8?.message ?? err8}`
+          : `emblem: ${/fa-shield-quartered/.test(asPlayer)}; yes: ${(/<span>([^<]*)<\/span>\s*<\/button>/.exec(asPlayer) ?? [])[1] ?? "?"}`);
+      check("8. \"Consume spell slot\" is never on a player's box, and is on the GM's (2026-09-18)",
+        !err8 && !/consume-slot-checkbox/.test(asPlayer) && /consume-slot-checkbox/.test(asGM)
+          && /ace-qol-reaction-slot-select/.test(asPlayer),
+        err8 ? `threw: ${err8?.message ?? err8}`
+          : `player's box: ${/consume-slot-checkbox/.test(asPlayer) ? "HAS IT (wrong)" : "none"}; `
+            + `GM's box: ${/consume-slot-checkbox/.test(asGM) ? "has it" : "missing (wrong)"}; `
+            + `the player still picks a slot: ${/ace-qol-reaction-slot-select/.test(asPlayer)}`);
+      check("8. the box dings when it opens, on the screen it opens on (2026-09-18)",
+        !err8 && plays.length >= 1 && plays[0]?.channel === "interface",
+        err8 ? `threw: ${err8?.message ?? err8}` : `dings: ${plays.length}; channel: ${plays[0]?.channel ?? "none"}`);
+
+      // The look lives in the stylesheet: the no is a red pill with yellow
+      // words, the yes wears the reaction's colour, and no label runs off.
+      const src8 = readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/reaction-engine.mjs`, "utf8");
+      const rule = (sel) => { const at = src8.indexOf(`${sel} {`); return at < 0 ? "" : src8.slice(at, src8.indexOf("}", at)); };
+      const no = rule(".ace-qol-reaction-decline"), yes = rule(".ace-qol-reaction-accept"),
+        both = rule(".ace-qol-reaction-buttons > button");
+      check("8. the no is always a red pill with yellow words outlined in black; the yes is a solid face in the reaction's own colour; a long label wraps instead of running off (2026-09-18)",
+        /background: #c62828/.test(no) && /border-radius: 999px/.test(no) && /color: #ffd84d/.test(no)
+          && /text-shadow: -1px -1px 0 #000/.test(no)
+          && /background: var\(--ace-yes/.test(yes) && /color: #ffffff/.test(yes)
+          && /white-space: normal/.test(both) && !/white-space: nowrap/.test(both),
+        `no: ${/#c62828/.test(no) && /999px/.test(no) ? "red pill" : "NOT a red pill"}; `
+          + `yes: ${/--ace-yes/.test(yes) ? "the reaction's colour" : "NOT its colour"}; `
+          + `labels: ${/white-space: normal/.test(both) ? "wrap" : "cannot wrap"}`);
     }
   } finally {
     ConditionDoor.apply = keep6a.apply;
