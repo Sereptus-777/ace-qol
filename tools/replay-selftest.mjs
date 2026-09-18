@@ -3829,6 +3829,65 @@ await quiet(async () => {
   }
 });
 
+/* ── THE VISION STAMP ────────────────────────────────────────────────────── */
+// Johnny, 2026-09-18: "Neferon's token is Basic Vision. The book is Truesight
+// 120 ft." Over every creature in his world: the stamp only ever raises what a
+// token carries toward its sheet's senses, never lowers it; Neferon and the
+// arcanaloths come out in the Truesight mode at 120 feet.
+console.log(`\nTHE VISION STAMP`);
+await quiet(async () => {
+  const { VisionAudit } = await import(`${MODULE}/scripts/vision-audit.mjs`);
+  const keepModes = CONFIG.Canvas.visionModes;
+  CONFIG.Canvas.visionModes = { basic: {}, darkvision: {}, truesight: {} };
+  try {
+    let stamped = 0, lowered = [], creatures = 0;
+    const why = new Map();
+    for (const actor of ACTORS.values()) {
+      if (actor.type !== "npc" && actor.type !== "character") continue;
+      creatures++;
+      // As the pass does: a creature with nothing on its sheet has nothing to copy.
+      const ranges = VisionAudit.sheetSenses(actor);
+      if (!VisionAudit._hasAny(ranges)) continue;
+      const proto = actor.prototypeToken ?? {};
+      const stamp = VisionAudit.stampFor({ sight: proto.sight, detectionModes: proto.detectionModes }, ranges);
+      if (!stamp) continue;
+      stamped++;
+      for (const c of stamp.changes) {
+        const kind = c.replace(/\d+/g, "N");
+        why.set(kind, (why.get(kind) ?? 0) + 1);
+      }
+      const was = proto.sight ?? {};
+      const before = new Map((proto.detectionModes ?? []).map(m => [m?.id, Number(m?.range) || 0]));
+      const shorter = (Number(stamp.sight.range) || 0) < (Number(was.range) || 0)
+        || [...before].some(([id, ft]) => (Number(stamp.detectionModes.find(m => m?.id === id)?.range) || 0) < ft)
+        || stamp.detectionModes.length < before.size
+        || (was.visionMode && was.visionMode !== "basic" && stamp.sight.visionMode !== was.visionMode);
+      if (shorter) lowered.push(actor.name);
+    }
+    check("the vision stamp over his whole world only ever raises a token toward its sheet, never lowers or replaces what is there (2026-09-18)",
+      creatures > 2000 && stamped > 0 && lowered.length === 0,
+      `${stamped} of ${creatures} creatures' tokens would be stamped: `
+        + `${[...why].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${n}x ${k}`).join("; ")}`
+        + (lowered.length ? `; LOWERED: ${lowered.slice(0, 5).join(", ")}` : ""));
+    const after = (name) => {
+      const actor = [...ACTORS.values()].find(a => a.name === name);
+      if (!actor) return null;
+      const proto = actor.prototypeToken ?? {};
+      const stamp = VisionAudit.stampFor({ sight: proto.sight, detectionModes: proto.detectionModes }, VisionAudit.sheetSenses(actor));
+      const sight = stamp?.sight ?? proto.sight ?? {};
+      const modes = stamp?.detectionModes ?? proto.detectionModes ?? [];
+      return `${sight.enabled ? "on" : "off"}, ${sight.range} ft, ${sight.visionMode}, truesight ${modes.find(m => m?.id === "seeAll")?.range ?? "none"}`;
+    };
+    const nef = after("Neferon"), arc = after("Arcanaloth"), legacy = after("Arcanaloth (Legacy)");
+    check("Neferon and the arcanaloths, 2014 and 2024, come out with Truesight 120 in the Truesight mode, not Basic Vision (2026-09-18)",
+      [nef, arc, legacy].every(v => v === "on, 120 ft, truesight, truesight 120"),
+      `Neferon: ${nef}; Arcanaloth: ${arc}; Arcanaloth (Legacy): ${legacy}`);
+  } finally {
+    CONFIG.Canvas.visionModes = keepModes;
+    if (keepModes === undefined) delete CONFIG.Canvas.visionModes;
+  }
+});
+
 /* ── A CANCELLED CAST GIVES BACK WHAT THE PRESS SPENT ────────────────────── */
 // 2026-09-18. dnd5e takes what a press costs before any of ACE runs (a daily
 // use, a recharge, a legendary action) and writes it on the usage message, even

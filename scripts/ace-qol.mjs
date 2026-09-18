@@ -497,6 +497,11 @@ Hooks.once("init", () => {
     console.error(`${MODULE_ID} | Settings registration failed:`, err);
   }
 
+  // The Truesight vision mode has to exist before the map draws any vision,
+  // and the one-pass marker before ready reads it (2026-09-18).
+  try { VisionAudit.registerAtInit(); }
+  catch (err) { console.error(`${MODULE_ID} | vision init failed:`, err); }
+
   // Gate the rest of init behind the master enabled switch — settings MUST
   // stay registered (so the user can re-enable) but no runtime systems load.
   if (!_aceQolEnabled()) {

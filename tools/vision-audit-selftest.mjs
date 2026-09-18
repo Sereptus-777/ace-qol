@@ -210,6 +210,183 @@ console.log("\nBOTH SHAPES OF THE SENSES FIELD");
     VisionAudit._sense({ system: { attributes: {} } }, "darkvision"), 0);
 }
 
+// ── THE VISION STAMP (his table, 2026-09-18) ─────────────────────────────────
+// "Neferon's token is Basic Vision. The book is Truesight 120 ft." The Monster
+// Manual's own arcanaloth ships with sight off, range 0, Basic Vision and no
+// senses, under a sheet that says truesight 120; a drop gave exactly that.
+class StubVisionMode {
+  static LIGHTING_LEVELS = { DIM: 1, BRIGHT: 2 };
+  static LIGHTING_VISIBILITY = { REQUIRED: 2 };
+  constructor(cfg) { Object.assign(this, cfg); }
+}
+foundry.canvas = { perception: { VisionMode: StubVisionMode } };
+CONFIG.Canvas.visionModes = { basic: {}, darkvision: {} };
+const settingsStore = new Map();
+game.settings = { get: (_m, k) => settingsStore.get(k), set: async (_m, k, v) => { settingsStore.set(k, v); return v; },
+  register: (_m, k, o) => { if (!settingsStore.has(k)) settingsStore.set(k, o?.default); } };
+const hooks = {};
+globalThis.Hooks.on = (name, fn) => { (hooks[name] ??= []).push(fn); };
+const GM = { id: "gm", isGM: true, name: "GM" };
+game.user = GM;
+game.users = Object.assign([GM], { activeGM: GM });
+
+// The MM's arcanaloth as it comes out of the pack, and a token drawn from it.
+const mmArcanaloth = () => mk("Arcanaloth", { truesight: 120 },
+  { sight: { enabled: false, range: 0, angle: 360, visionMode: "basic" }, detectionModes: [] });
+const tokenOf = (actor, id) => {
+  const src = { sight: JSON.parse(JSON.stringify(actor.prototypeToken.sight)),
+    detectionModes: JSON.parse(JSON.stringify(actor.prototypeToken.detectionModes)), flags: {} };
+  return { id, name: actor.name, actor, actorId: actor.id, _source: src, sight: src.sight, detectionModes: src.detectionModes,
+    flags: src.flags, updates: [],
+    async update(data) {
+      this.updates.push(data);
+      if (data.sight) this.sight = this._source.sight = data.sight;
+      if (data.detectionModes) this.detectionModes = this._source.detectionModes = data.detectionModes;
+    } };
+};
+
+console.log("\nTHE TRUESIGHT VISION MODE");
+{
+  VisionAudit.registerAtInit();
+  const mode = CONFIG.Canvas.visionModes.truesight;
+  check("a Truesight vision mode is registered at init", !!mode && mode.id === "truesight", true);
+  check("named with dnd5e's own word for it", mode?.label, "DND5E.SenseTruesight");
+  check("in colour, unlike darkvision", mode?.vision?.defaults?.saturation, 0);
+  check("seeing the dark as darkvision does", mode?.lighting?.levels?.[StubVisionMode.LIGHTING_LEVELS.DIM],
+    StubVisionMode.LIGHTING_LEVELS.BRIGHT);
+  check("and the pass marker is registered", settingsStore.has("visionPass"), true);
+}
+
+console.log("\nA DROPPED ARCANALOTH HAS TRUESIGHT 120, NOT BASIC VISION");
+{
+  const arc = mmArcanaloth();
+  arc.id = "arc1";
+  game.actors = Object.assign([arc], { get: (id) => (id === "arc1" ? arc : null) });
+  const tok = tokenOf(arc, "t1");
+  await VisionAudit.stampToken(tok);
+  check("sight is on", tok.sight.enabled, true);
+  check("it sees 120 feet", tok.sight.range, 120);
+  check("in the Truesight vision mode", tok.sight.visionMode, "truesight");
+  check("and truesight is on it at 120 feet", tok.detectionModes, [{ id: "seeAll", enabled: true, range: 120 }]);
+  check("one update, with what it was riding along",
+    tok.updates.length === 1 && tok.updates[0]["flags.ace-qol.visionBefore"]?.sight?.enabled === false, true);
+  check("the sidebar actor's token is stamped too, so the next drop is right",
+    [arc.prototypeToken.sight.enabled, arc.prototypeToken.sight.range, arc.prototypeToken.sight.visionMode,
+      arc.prototypeToken.detectionModes.map(m => `${m.id} ${m.range}`).join()], [true, 120, "truesight", "seeAll 120"]);
+  const again = tokenOf(arc, "t2");
+  await VisionAudit.stampToken(again);
+  check("and the next drop needs nothing at all", again.updates.length, 0);
+}
+
+console.log("\nNEFERON: THE RANGE AND TRUESIGHT WERE THERE, THE MODE SAID BASIC");
+{
+  const nef = mk("Neferon", { truesight: 120 },
+    { sight: { enabled: true, range: 120, visionMode: "basic" }, detectionModes: [{ id: "seeAll", range: 120, enabled: true }] });
+  const stamp = VisionAudit.stampFor({ sight: nef.prototypeToken.sight, detectionModes: nef.prototypeToken.detectionModes },
+    VisionAudit.sheetSenses(nef));
+  check("only the vision mode changes", stamp?.changes, ["Truesight vision mode"]);
+}
+
+console.log("\nFILL, NEVER LOWER");
+{
+  const far = { sight: { enabled: true, range: 300, visionMode: "basic" }, detectionModes: [] };
+  const s1 = VisionAudit.stampFor(far, { darkvision: 60 });
+  check("a longer range is kept", s1?.sight?.range, 300);
+  const chosen = { sight: { enabled: true, range: 60, visionMode: "monochromatic" }, detectionModes: [] };
+  check("a vision mode somebody chose is kept", VisionAudit.stampFor(chosen, { darkvision: 60 }), null);
+  const both = VisionAudit.stampFor({ sight: { enabled: true, range: 0, visionMode: "basic" }, detectionModes: [] },
+    { darkvision: 120, truesight: 120 });
+  check("darkvision and truesight alike stays Darkvision (his importers' way)", both?.sight?.visionMode, "darkvision");
+  const longer = VisionAudit.stampFor({ sight: { enabled: true, range: 0, visionMode: "basic" }, detectionModes: [] },
+    { darkvision: 60, truesight: 120 });
+  check("truesight reaching farther than darkvision is Truesight, to its range",
+    [longer?.sight?.visionMode, longer?.sight?.range], ["truesight", 120]);
+  const shortSense = VisionAudit.stampFor({ sight: { enabled: true, range: 0, visionMode: "basic" },
+    detectionModes: [{ id: "blindsight", range: 10, enabled: false }] }, { blindsight: 30 });
+  check("a sense set too short or switched off is raised and switched on",
+    shortSense?.detectionModes, [{ id: "blindsight", range: 30, enabled: true }]);
+  check("a creature with no senses is left alone",
+    VisionAudit.stampFor({ sight: { enabled: true, range: 0, visionMode: "basic" }, detectionModes: [] }, {}), null);
+  const keep = CONFIG.Canvas.visionModes.truesight;
+  delete CONFIG.Canvas.visionModes.truesight;
+  check("without the Truesight mode, truesight still gets its range on Basic",
+    VisionAudit.expectedFrom({ truesight: 120 }).visionMode, "basic");
+  CONFIG.Canvas.visionModes.truesight = keep;
+}
+
+console.log("\nNO SENSES ON THE SHEET: THE BOOK'S COPY, BY EDITION");
+{
+  const index = [
+    { name: "Wolf", system: { source: { rules: "2024", book: "MM 2024" }, attributes: { senses: { ranges: { darkvision: 60 } } } } },
+    { name: "Wolf", system: { source: { rules: "2014", book: "MM" }, attributes: { senses: { ranges: {} } } } },
+    { name: "Steam Mephit", system: { source: { rules: "2014", book: "MM" }, attributes: { senses: { ranges: { darkvision: 60 } } } } },
+  ];
+  const packUpdates = [];
+  game.packs = [{ documentName: "Actor", collection: "world.ddb-monsters", locked: false, metadata: { label: "DDB Monsters" },
+    getIndex: async () => index, updates: packUpdates }];
+  VisionAudit._books = null;
+  const wolf24 = mk("Wolf", {}, { sight: { enabled: true, range: 0, visionMode: "basic" } });
+  wolf24.system.source = { rules: "2024" };
+  const got = await VisionAudit.sensesFor(wolf24);
+  check("a 2024 wolf with no senses takes the 2024 book's darkvision 60", got?.ranges?.darkvision, 60);
+  check("and says where it came from", /2024 book's copy in DDB Monsters/.test(got?.from ?? ""), true);
+  const wolf14 = mk("Wolf (Legacy)", {}, { sight: { enabled: true, range: 0, visionMode: "basic" } });
+  check("a (Legacy) wolf reads the 2014 book, where a wolf has none", await VisionAudit.sensesFor(wolf14), null);
+  const mephit = mk("Steam Mephit (Legacy)", {});
+  check("a (Legacy) steam mephit takes the 2014 book's darkvision",
+    (await VisionAudit.sensesFor(mephit))?.ranges?.darkvision, 60);
+  const sheetWins = mk("Wolf", { darkvision: 30 });
+  sheetWins.system.source = { rules: "2024" };
+  check("a sheet with its own senses wins over the book", (await VisionAudit.sensesFor(sheetWins))?.ranges?.darkvision, 30);
+}
+
+console.log("\nONE PASS OVER HIS WORLD ACTORS, ONCE; THE LOCKED BOOKS ARE ONLY COUNTED");
+{
+  const a = mk("Erinyes", { truesight: 120 }, { sight: { enabled: true, range: 0, visionMode: "basic" },
+    detectionModes: [{ id: "seeAll", range: 120, enabled: true }] });
+  const b = mk("Guard", {}, { sight: { enabled: true, range: 0, visionMode: "basic" } });
+  game.actors = [a, b];
+  const locked = { documentName: "Actor", collection: "dnd-monster-manual.actors", locked: true,
+    metadata: { label: "Monster Manual" }, indexCalls: 0,
+    async getIndex() { this.indexCalls++; return [{ name: "Arcanaloth", system: { source: { rules: "2024" }, attributes: { senses: { ranges: { truesight: 120 } } } },
+      prototypeToken: { sight: { enabled: false, range: 0, visionMode: "basic" }, detectionModes: [] } }]; } };
+  game.packs = [locked];
+  VisionAudit._books = null;
+  settingsStore.set("visionPass", 0);
+  const said = [];
+  const keepLog = console.log;
+  console.log = (...args) => said.push(args.join(" "));
+  let first, second;
+  try { first = await VisionAudit.pass(); second = await VisionAudit.pass(); }
+  finally { console.log = keepLog; }
+  check("the first pass stamps the creature short of its sheet, and nobody else", [first?.changed, a.updates.length, b.updates.length], [1, 1, 0]);
+  check("it gave the Erinyes its 120 feet in the Truesight mode", [a.prototypeToken.sight.range, a.prototypeToken.sight.visionMode], [120, "truesight"]);
+  check("the second load does not run it again", second, null);
+  check("the locked Monster Manual is counted in the console, never written",
+    said.some(l => /Monster Manual \(dnd-monster-manual\.actors\) is locked and is not rewritten: 1 of 1/.test(l)), true);
+}
+
+console.log("\nONE GM STAMPS A DROP");
+{
+  const arc = mmArcanaloth();
+  arc.id = "arc2";
+  game.actors = Object.assign([arc], { get: () => arc });
+  settingsStore.set("visionPass", 1);
+  VisionAudit.register();
+  const onCreate = (hooks.createToken ?? []).at(-1);
+  const other = { id: "gm2", isGM: true, name: "Second GM" };
+  game.user = other;
+  const t1 = tokenOf(arc, "t3");
+  onCreate(t1);
+  await new Promise(r => setTimeout(r, 10));
+  game.user = GM;
+  const t2 = tokenOf(arc, "t4");
+  onCreate(t2);
+  await new Promise(r => setTimeout(r, 10));
+  check("a GM who is not the active one leaves it alone", t1.updates.length, 0);
+  check("the active GM stamps it", t2.sight.visionMode, "truesight");
+}
+
 console.log("");
 console.log(pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;
