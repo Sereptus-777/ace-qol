@@ -8516,30 +8516,13 @@ export class SaveEngine {
       // ⚠️ AND NOT UNCANNY DODGE. That answers "an attacker you can see hits
       // you with an attack"; a failed saving throw against a Fireball is not an
       // attack, so it is skipped here by name of the engine's own option.
-      let toLand = finals;
-      try {
-        const reactionEng = game.aceQol?.reactionEngine ?? null;
-        if (!reactionEng?.checkPreDamageReactions) {
-          console.warn(`${MODULE_ID} | ${actor.name} could not be offered a reaction to that damage: `
-            + `the reaction engine is not on the API.`);
-        } else if (finals.length) {
-          const tok = tokenDoc?.object ?? actor.getActiveTokens?.()?.[0] ?? null;
-          const comps = finals.map(f => ({ type: f.type, total: f.final }));
-          const res = await reactionEng.checkPreDamageReactions(
-            comps, actor, tok, sourceActor, sourceItem, null, { skipUncannyDodge: true });
-          if (res?.absorbed) {
-            toLand = (res.modifiedComponents ?? comps)
-              .map(c => ({ type: c.type, final: Math.max(0, Number(c.total) || 0) }));
-            const was = finals.reduce((n, f) => n + f.final, 0);
-            const now = toLand.reduce((n, f) => n + f.final, 0);
-            console.log(`${MODULE_ID} | ${actor.name} absorbed the ${res.absorbedType ?? "elemental"} damage: `
-              + `${was} becomes ${now}.`);
-          }
-        }
-      } catch (err) {
-        // ⚠️ NEVER LOSE THE DAMAGE OVER A REACTION. The dice are on the card.
-        console.warn(`${MODULE_ID} | the reaction check for ${actor.name} failed, so the full damage lands:`, err);
-      }
+      // ⚠️ ONE HELPER, THE SAME ONE EVERY DAMAGE DOOR NOW USES
+      // (DamageApplicator._askDamageReactions): the damage card's APPLY ALL, its
+      // per-type Apply, the road's triggers and this card. Four doors had four
+      // chances to forget; now there is one place that asks.
+      const toLand = await DamageApplicator._askDamageReactions(actor, finals, {
+        token: tokenDoc?.object ?? null, source: sourceActor, item: sourceItem, where: "save card APPLY ALL",
+      });
 
       const landed = await HpDoor.damage(actor, toLand, {
         tokenDocId: r.tokenDocId, item: sourceItem, source: sourceActor, label: "save-apply-all",

@@ -2870,9 +2870,38 @@ export class ReactionEngine {
       return { modifiedComponents: damageComponents, absorbed: false };
     }
 
-    // Check if any damage component is an elemental type
-    const elementalComponents = damageComponents.filter(c => ABSORB_ELEMENT_TYPES.has(c.type));
-    if (!elementalComponents.length) return { modifiedComponents: damageComponents, absorbed: false };
+    // ⚠️🔴 WHETHER SHE HOLDS IT IS ASKED FIRST NOW (2026-09-17, his table,
+    // twice). "Console has zero Absorb lines" - and the reason it could be zero
+    // for a creature holding the spell is that the elemental-damage test came
+    // BEFORE the spell test and returned without a word. A card whose damage
+    // did not read as fire - a type label spelled differently, "none" from an
+    // importer, a total with no type at all - left Aryel unasked and the
+    // console blank. For anybody who holds the spell, that is a refusal like
+    // any other and it is said out loud.
+    const heldFirst = this._readySpell(targetActor, "Absorb Elements");
+    const typeOf = (c) => String(c?.type ?? "").trim().toLowerCase();
+    const elementalComponents = damageComponents.filter(c => ABSORB_ELEMENT_TYPES.has(typeOf(c)));
+    if (!elementalComponents.length) {
+      // ⚠️ ONLY WHERE A MISLABELLED FIREBALL COULD HIDE. A sword cut on a
+      // wizard is honest slashing and Absorb Elements was never going to answer
+      // it; printing a line for every melee hit on every caster would bury the
+      // one that matters. What deserves a line is damage whose type is MISSING
+      // or not one dnd5e knows - "none", blank, a word an importer made up -
+      // because that is exactly how real fire can arrive looking like nothing.
+      // An empty table is no table: only consult it when it has entries, so a
+      // missing registry can never make every type look suspicious.
+      const table = globalThis.CONFIG?.DND5E?.damageTypes ?? null;
+      const known = table && Object.keys(table).length ? table : null;
+      const recognised = (t) => !!t && t !== "none" && (!known || (t in known));
+      const suspicious = damageComponents.filter(c => !recognised(typeOf(c)));
+      if (heldFirst.item && suspicious.length) {
+        const kinds = [...new Set(damageComponents.map(c => typeOf(c) || "no type"))].join(", ");
+        console.log(`${MODULE_ID} | Absorb Elements: ${targetActor.name} is not asked - this damage is `
+          + `${kinds || "empty"}, and the spell only answers acid, cold, fire, lightning or thunder. `
+          + `If this was elemental, the card lost its damage type.`);
+      }
+      return { modifiedComponents: damageComponents, absorbed: false };
+    }
 
     // ⚠️🔴 EVERY "NO" HERE WAS SILENT (Phase 6d, 2026-09-17). His list: "If she
     // cannot use the spell, no box. Write why in the console." Five refusals and
@@ -2939,7 +2968,7 @@ export class ReactionEngine {
 
       // Apply resistance to the elemental damage components (halve them)
       const modifiedComponents = damageComponents.map(c => {
-        if (ABSORB_ELEMENT_TYPES.has(c.type)) {
+        if (ABSORB_ELEMENT_TYPES.has(String(c?.type ?? "").trim().toLowerCase())) {
           return { ...c, total: Math.floor(c.total / 2), absorbElementsResisted: true };
         }
         return c;

@@ -661,8 +661,20 @@ export class DamageApplicator {
       // damage-applied signal, with the real hit-point movement in it and who
       // dealt it. APPLY ALL used to write and signal on its own, so a hit landed
       // by a different road than a save.
-      const _pending = components.filter((_, i) => !appliedComps.includes(i) && !refused.has(i))
+      let _pending = components.filter((_, i) => !appliedComps.includes(i) && !refused.has(i))
         .map(c => ({ ...c, final: Math.floor((Number(c.final) || 0) * override) }));
+      // ⚠️🔴 THIS WRITER NEVER ASKED FOR A REACTION (2026-09-17). His table,
+      // twice: a Fireball on Aryel, APPLY pressed, no Absorb Elements box, no
+      // line in the console. The save card's own APPLY was taught to ask in
+      // 0.34.51 and the table said it still did not, because damage reaches a
+      // creature by more than one door and this is another of them. A card the
+      // renderer built has already asked (it says so), so it is not asked
+      // twice; anything else is asked here, before the hit points move.
+      if (!entry?.reactionsAsked) {
+        _pending = await DamageApplicator._askDamageReactions(actor, _pending, {
+          token: (canvas.scene?.tokens?.get?.(entry?.tokenDocId)?.object ?? null), source: _srcActor, item: _srcItem, where: "APPLY ALL",
+        });
+      }
       const _landed = await HpDoor.damage(actor, _pending, {
         tokenDocId: entry.tokenDocId, item: _srcItem, source: _srcActor, label: `APPLY ALL ${entry.name}`,
       });
@@ -822,6 +834,42 @@ export class DamageApplicator {
     });
 
     if (undoneCount) ui.notifications.info(`ACE QOL: Damage undone for ${undoneCount} target(s). Card reset — you can re-apply.`);
+  }
+
+  /**
+   * Ask the creature's reactions about damage that is about to land.
+   *
+   * ⚠️ ONE HELPER FOR EVERY DOOR ON THIS CARD, so the two writers here - and
+   * any added later - ask the same reader the attack card and the save card
+   * ask, with the same refusals in the log. Uncanny Dodge is skipped: it
+   * answers an ATTACK you can see, and this path cannot tell that it was one.
+   *
+   * Takes and returns `[{ type, final }]`, the hit-point door's own shape.
+   * Never loses damage: if anything throws, what came in goes out.
+   */
+  static async _askDamageReactions(actor, finals, { token = null, source = null, item = null, where = "" } = {}) {
+    try {
+      const reactionEng = game.aceQol?.reactionEngine ?? null;
+      if (!reactionEng?.checkPreDamageReactions) {
+        console.warn(`${MODULE_ID} | ${actor?.name ?? "that creature"} could not be offered a reaction `
+          + `(${where}): the reaction engine is not on the API.`);
+        return finals;
+      }
+      if (!finals?.length) return finals;
+      const comps = finals.map(f => ({ type: f.type, total: Number(f.final) || 0 }));
+      const res = await reactionEng.checkPreDamageReactions(comps, actor,
+        token ?? actor?.getActiveTokens?.()?.[0] ?? null, source, item, null, { skipUncannyDodge: true });
+      if (!res?.absorbed) return finals;
+      const back = (res.modifiedComponents ?? comps).map(c => ({ type: c.type, final: Math.max(0, Number(c.total) || 0) }));
+      console.log(`${MODULE_ID} | ${actor.name} absorbed that damage (${where}): `
+        + `${comps.reduce((n, c) => n + c.total, 0)} becomes ${back.reduce((n, c) => n + c.final, 0)}.`);
+      // Keep whatever else the door reads off each part (magic, recipe part).
+      return finals.map((f, i) => ({ ...f, final: back[i]?.final ?? f.final }));
+    } catch (err) {
+      console.warn(`${MODULE_ID} | the reaction check for ${actor?.name} (${where}) failed, `
+        + `so the full damage lands:`, err);
+      return finals;
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1219,7 +1267,17 @@ export class DamageApplicator {
         try { if (_srcFlags.itemUuid) _srcItem = fromUuidSync?.(_srcFlags.itemUuid) ?? null; }
         catch (_) { _srcItem = null; }
         const currentHP = Number(actor?.system?.attributes?.hp?.value ?? 0);
-        const _landed = await HpDoor.damage(actor, [{ type: String(dmgType).toLowerCase(), final: amount }], {
+        // Same door, same question: a single type applied by hand.
+        let _one = [{ type: String(dmgType).toLowerCase(), final: amount }];
+        const _row = (_srcFlags.damageResults ?? []).find(r => r?.tokenDocId === tokenDocId) ?? null;
+        if (!_row?.reactionsAsked) {
+          _one = await DamageApplicator._askDamageReactions(actor, _one, {
+            token: canvas.scene?.tokens?.get?.(tokenDocId)?.object ?? null,
+            source: _srcFlags.actorId ? (game.actors?.get?.(_srcFlags.actorId) ?? null) : null,
+            item: _srcItem, where: `per-type ${dmgType}`,
+          });
+        }
+        const _landed = await HpDoor.damage(actor, _one, {
           tokenDocId, item: _srcItem,
           source: _srcFlags.actorId ? (game.actors?.get?.(_srcFlags.actorId) ?? null) : null,
           label: `per-type ${dmgType}`,

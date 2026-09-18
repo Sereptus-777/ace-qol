@@ -2571,6 +2571,89 @@ console.log(`\nPHASE 6d: ABSORB ELEMENTS`);
       if (keepApi === undefined) delete game.aceQol.reactionEngine; else game.aceQol.reactionEngine = keepApi;
     }
 
+    // ── EVERY DOOR ASKS: his table, the second time ──
+    // Johnny, 2026-09-17: "Absorb Elements does not appear at all... 0.34.51
+    // claimed APPLY ALL asks the reaction reader. At this table it does not."
+    // Damage reaches a creature by more than one door. Four of them write hit
+    // points - the save card, the damage card's APPLY ALL, its per-type Apply,
+    // and the road's triggers - and before tonight only the attack card's BUILD
+    // asked anybody anything. They now share one helper, and it is pinned here
+    // through the damage card's own writers, not the one I pinned last time.
+    {
+      const { DamageApplicator } = await import(`${MODULE}/scripts/damage-applicator.mjs`);
+      const { HpDoor: Door2 } = await import(`${MODULE}/scripts/road/doors.mjs`);
+      const keepApi2 = game.aceQol?.reactionEngine;
+      game.aceQol = game.aceQol ?? {};
+      game.aceQol.reactionEngine = engine;
+
+      // The shared helper, as every door calls it.
+      const her = jeb("ae-door");
+      her.name = "Aryel";
+      answer = true;
+      const atAsk = asked.length;
+      const out = await quiet(() => DamageApplicator._askDamageReactions(her, [{ type: "fire", final: 28 }],
+        { where: "a pin" }));
+      check("THE SHARED HELPER EVERY DAMAGE DOOR NOW CALLS asks Absorb Elements and hands back the halved fire (2026-09-17)",
+        asked.length - atAsk === 1 && out?.[0]?.final === 14,
+        `asked ${asked.length - atAsk}; 28 fire -> ${out?.[0]?.final}`);
+
+      // A card whose damage type is spelled "Fire" - capital F, as some
+      // importers write it - is still fire. The old test compared the raw
+      // label and went quiet.
+      const her2 = jeb("ae-door2");
+      her2.name = "Aryel";
+      const atAsk2 = asked.length;
+      const out2 = await quiet(() => DamageApplicator._askDamageReactions(her2, [{ type: "Fire", final: 20 }],
+        { where: "a pin" }));
+      check("and a damage type written \"Fire\" with a capital is still fire, so she is still asked (2026-09-17)",
+        asked.length - atAsk2 === 1 && out2?.[0]?.final === 10,
+        `asked ${asked.length - atAsk2}; 20 Fire -> ${out2?.[0]?.final}`);
+
+      // She holds the spell but the card's damage has no elemental type: that
+      // is a refusal, and it is SAID, not a blank console.
+      const her3 = jeb("ae-door3");
+      her3.name = "Aryel";
+      const said = [];
+      const keepLog = console.log;
+      console.log = (...a) => { said.push(a.join(" ")); };
+      try { await DamageApplicator._askDamageReactions(her3, [{ type: "none", final: 20 }], { where: "a pin" }); }
+      finally { console.log = keepLog; }
+      check("a card whose damage carries no elemental type is a refusal she hears about, not a blank console (2026-09-17)",
+        said.some(l => /Absorb Elements: Aryel is not asked - this damage is none/.test(l)),
+        `the console: ${said.filter(l => /Absorb/.test(l)).join(" | ") || "nothing (wrong)"}`);
+
+      // The damage card's APPLY ALL, driven for real: an entry the card did NOT
+      // already ask about is asked; one it did ask about is not asked again.
+      const reached2 = [];
+      const keepDoor2 = Door2.damage;
+      Door2.damage = async (actor, finals) => { reached2.push(finals.reduce((n, f) => n + (Number(f.final) || 0), 0)); return { hpDelta: 0 }; };
+      const keepResolve = DamageApplicator.resolveTargetActor;
+      const her4 = jeb("ae-door4"); her4.name = "Aryel";
+      DamageApplicator.resolveTargetActor = () => her4;
+      const cardOf = (asked2) => ({ id: `m-dmg-${asked2}`, flags: { [MOD]: {
+          damageResults: [{ tokenDocId: "tok-a4", targetId: her4.id, name: "Aryel",
+            components: [{ name: "Fireball", type: "fire", raw: 28, final: 28 }],
+            totalFinal: 28, reactionsAsked: asked2 }] } },
+        update: async () => ({}), setFlag: async () => ({}) });
+      const atAsk4 = asked.length;
+      await quiet(() => DamageApplicator.applyDamage(cardOf(false)));
+      const askedUnmarked = asked.length - atAsk4;
+      const landedUnmarked = reached2.at(-1);
+      her4.flags[MOD].reactionUsed = false;
+      her4.system.spells.spell1.value = 2;
+      const atAsk5 = asked.length;
+      await quiet(() => DamageApplicator.applyDamage(cardOf(true)));
+      const askedMarked = asked.length - atAsk5;
+      DamageApplicator.resolveTargetActor = keepResolve;
+      Door2.damage = keepDoor2;
+      check("the damage card's APPLY ALL asks when the card has not, and never asks twice when it already did (2026-09-17)",
+        askedUnmarked === 1 && landedUnmarked === 14 && askedMarked === 0,
+        `not yet asked: box ${askedUnmarked ? "shown" : "NOT shown (wrong)"}, ${landedUnmarked} reached the door; `
+          + `already asked at build: ${askedMarked ? "asked AGAIN (wrong)" : "not asked again"}`);
+
+      if (keepApi2 === undefined) delete game.aceQol.reactionEngine; else game.aceQol.reactionEngine = keepApi2;
+    }
+
     // ── 3b. Her next melee HIT adds the stored 1d6 fire, on her turn ──
     {
       const her = jeb("ae-hit");

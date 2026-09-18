@@ -132,6 +132,11 @@ export class DamageCardRenderer {
           totalRaw,
           totalFinal,
           components: serializedComponents,
+          // ⚠️ THE REACTIONS WERE ASKED WHEN THIS CARD WAS BUILT (the block
+          // above). APPLY reads this so an attack is never asked twice. Only
+          // THIS builder marks it: the merged card below does not ask at build
+          // time, so its targets are asked when APPLY is pressed.
+          reactionsAsked: true,
           damageModifiers: hit.damageModifiers,
         });
       }
@@ -579,6 +584,10 @@ export class DamageCardRenderer {
             // The attack's result on this target, and each row's part of the recipe:
             // APPLY asks the recipe what that result lets land (Phase 3).
             result: dr.hitResult ?? (dr.isCrit ? "critical" : "hit"),
+            // ⚠️ THE MARKER HAS TO REACH APPLY OR APPLY ASKS TWICE. This list is
+            // written out field by field, so a flag set on the pre-rolled entry
+            // was dropped here and never reached the button that reads it.
+            reactionsAsked: dr.reactionsAsked === true,
             components: dr.components.map(c => ({ name: c.name, type: c.type, raw: c.raw, final: c.final, modifier: c.modifier,
               recipePart: c.recipePart ?? null })),
           })),
@@ -734,6 +743,8 @@ export class DamageCardRenderer {
         // time, silently. Firaxis critted Jeth for 18 on 2026-08-26 and Jeth
         // was never asked. The field was three lines away the whole time.
         hitResult: pr.hitResult,
+        // Carried through so APPLY knows the reactions were already asked.
+        reactionsAsked: pr.reactionsAsked === true,
         // Same reason: the secondary-roll riders distinguish a true natural 20
         // from a crit inside an expanded range, and they read it from here.
         naturalRoll: pr.naturalRoll ?? null,

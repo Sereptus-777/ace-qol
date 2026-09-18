@@ -248,8 +248,29 @@ export async function run(recipe, trigger, ctx = {}) {
     // nonmagical bludgeoning, piercing and slashing covers a spell's spikes: they
     // are not attacks at all. This is the reading the movement damage has always
     // used, kept.
-    const finals = HpDoor.preview(token.actor, verdict.damage.map(d => ({ amount: d.amount, type: d.type })),
+    let finals = HpDoor.preview(token.actor, verdict.damage.map(d => ({ amount: d.amount, type: d.type })),
       { item, treatAsNonMagical: true });
+    // ⚠️ THE SAME QUESTION EVERY OTHER DOOR ASKS (2026-09-17). A creature
+    // walking through Wall of Fire takes fire damage, and Absorb Elements answers
+    // fire from any source. This door landed it without asking, like the save
+    // card and the damage card did until tonight. Loaded lazily: the reaction
+    // helper lives beside the damage card, and the road must not import it at
+    // the top of the file.
+    // ⚠️ NOTHING IS ASKED WHILE THE DICE ARE STILL ROLLING (his rule). The
+    // settle above only runs when something was rolled; a reaction prompt is an
+    // answer somebody gives to a number, so it waits for that number here, on
+    // its own, whatever came before. A settle with no dice in the air returns
+    // at once.
+    await awaitDiceSettle();
+    try {
+      const { DamageApplicator } = await import("../damage-applicator.mjs");
+      finals = await DamageApplicator._askDamageReactions(token.actor, finals, {
+        token, source: actor, item, where: `${what} (${triggerWords(trigger)})`,
+      });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not ask ${token.actor?.name}'s reactions about that damage, `
+        + `so it lands in full:`, err);
+    }
     const landed = await HpDoor.damage(token.actor, finals, {
       dice: rolled.length > 0, item, source: actor, tokenDocId: token.document?.id ?? null,
       label: `${what} (${triggerWords(trigger)})`,
