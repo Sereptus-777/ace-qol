@@ -6126,49 +6126,245 @@ console.log(`\nPHASE 6a: THE SHIELD REACTION`);
     }
 
     // ── 2. An attack roll ──
+    // ⚠️🔴 THE SHAPE BOTH PATHS BUILD (2026-09-19). These pins used to hand the
+    // engine `target: { actor, token, ac, name }`, a shape neither path makes.
+    // attack-pipeline.mjs and the socket path in ace-qol.mjs spread a
+    // CombatState.assess record, which keeps the creature and its token BESIDE
+    // the `target` block, never in it. The engine read the block, the pin put
+    // the creature there, and both agreed while Shield after a hit never once
+    // opened at his table. Now the record comes from the real CombatState.assess
+    // and is spread exactly the way attack-pipeline.mjs spreads it, so a pin
+    // cannot build a shape the pipeline does not.
+    const { judgeAttack } = await import(`${MODULE}/scripts/rules/attack-hit.mjs`);
+    const tokenOf = (a) => ({ id: `tok-${a.id}`, name: a.name, actor: a, x: 0, y: 0, w: 100, h: 100,
+      document: { id: `tok-${a.id}`, uuid: `Scene.replay.Token.tok-${a.id}`, name: a.name, texture: { src: "" },
+        x: 0, y: 0, width: 1, height: 1, elevation: 0, disposition: -1 } });
+    const longsword = { id: "it-sword", name: "Longsword", type: "weapon", img: "",
+      system: { properties: new Set(), damage: { base: { types: new Set(["slashing"]) } }, activities: [] } };
+    // One swing's result for one target, as attack-pipeline.mjs builds it.
+    const swingAt = (attacker, target, total, ac, { cover = 0, d20 = 12, item = longsword } = {}) => {
+      target.system.attributes.ac = { value: ac };
+      const cs = CombatState.assess(attacker, tokenOf(target), item);
+      const effectiveAC = cs.target.ac + cover;
+      const coverResult = cover ? { cover, acBonus: cover, isFullCover: false, label: "Half Cover" } : null;
+      return {
+        ...cs,
+        name: cs.target.name,
+        img: cs.target.img,
+        ac: cs.target.ac,
+        effectiveAC,
+        coverResult,
+        environment: null,
+        hitResult: judgeAttack({ d20, total, ac: effectiveAC, autoCrit: !!cs.autoCrit }),
+        attackTotal: total,
+        originalAttackTotal: total,
+        d20Result: d20,
+        isCritRoll: d20 === 20,
+        isFumbleRoll: d20 === 1,
+        mirrorImageRedirect: null,
+      };
+    };
     {
       const ready2 = who("p6a-ready2", "Beric, second round", {});
       const ready3 = who("p6a-ready3", "Beric, against a big hit", {});
+      const covered = who("p6a-covered", "Beric, behind a low wall", {});
       const attacker = who("p6a-attacker", "a bandit", { shield: false, slots: 0 });
-      const sword = { id: "it-sword", name: "Longsword", type: "weapon", img: "" };
-      const result = (target, total, ac) => ({ hitResult: "hit", attackTotal: total,
-        target: { actor: target, token: null, ac, name: target.name } });
       answer = true;
-      let out2 = null, out3 = null, err2 = null;
+      let out2 = null, out3 = null, out5 = null, err2 = null, shape = null;
+      const atAsk = asked.length;
       try {
         await quiet(async () => {
-          out2 = await engine.checkPostHitReactions([result(ready2, 17, 15)], sword, attacker);
-          out3 = await engine.checkPostHitReactions([result(ready3, 25, 15)], sword, attacker);
+          const r2 = swingAt(attacker, ready2, 17, 15);
+          shape = { creatureBeside: r2.targetActor === ready2 && r2.targetToken?.actor === ready2,
+            blockHasCreature: "actor" in (r2.target ?? {}) || "token" in (r2.target ?? {}) };
+          out2 = await engine.checkPostHitReactions([r2], longsword, attacker);
+          out3 = await engine.checkPostHitReactions([swingAt(attacker, ready3, 25, 15)], longsword, attacker);
+          out5 = await engine.checkPostHitReactions([swingAt(attacker, covered, 21, 15, { cover: 2 })], longsword, attacker);
         });
       } catch (e) { err2 = e; }
-      check("2. an attack that hits asks too: +5 turns a 17 against AC 15 into a miss, and a 25 still hits but the AC on the card goes up (Phase 6a)",
-        !err2 && out2?.[0]?.hitResult === "miss" && out2?.[0]?.shieldBlocked === true
-          && out3?.[0]?.hitResult === "hit" && out3?.[0]?.target?.ac === 20,
+      const [box2, box3, box5] = asked.slice(atAsk);
+      check("2. an attack that hits asks too, from the result both paths really build: +5 turns a 17 against AC 15 into a miss, a 25 still hits, and the card's AC goes up (2026-09-19)",
+        !err2 && shape?.creatureBeside && !shape?.blockHasCreature && asked.length - atAsk === 3
+          && out2?.[0]?.hitResult === "miss" && out2?.[0]?.shieldBlocked === true
+          && out2?.[0]?.ac === 20 && out2?.[0]?.effectiveAC === 20
+          && out3?.[0]?.hitResult === "hit" && out3?.[0]?.target?.ac === 20 && out3?.[0]?.effectiveAC === 20,
         err2 ? `threw: ${err2?.message ?? err2}`
-          : `17 vs AC 15 with Shield: ${out2?.[0]?.hitResult} (${out2?.[0]?.shieldBlocked ? "blocked" : "not blocked"}); `
-            + `25 vs AC 15 with Shield: ${out3?.[0]?.hitResult}, AC now ${out3?.[0]?.target?.ac}`);
+          : `the result keeps the creature ${shape?.creatureBeside ? "beside" : "NOT beside"} the target block, `
+            + `the block ${shape?.blockHasCreature ? "HAS" : "has no"} creature in it; asked ${asked.length - atAsk} of 3; `
+            + `17 vs AC 15 with Shield: ${out2?.[0]?.hitResult} (${out2?.[0]?.shieldBlocked ? "blocked" : "not blocked"}, AC on the card ${out2?.[0]?.effectiveAC}); `
+            + `25 vs AC 15 with Shield: ${out3?.[0]?.hitResult}, AC now ${out3?.[0]?.effectiveAC}`);
+      check("Shield goes on top of cover: a 21 against AC 15 behind half cover is 17 and a hit, and Shield makes it 22 and a miss (2026-09-19)",
+        !err2 && out5?.[0]?.hitResult === "miss" && out5?.[0]?.effectiveAC === 22 && out5?.[0]?.ac === 20,
+        err2 ? `threw: ${err2?.message ?? err2}`
+          : `21 vs AC 15 + half cover, with Shield: ${out5?.[0]?.hitResult}, AC on the card ${out5?.[0]?.effectiveAC} `
+            + `(the creature's ${out5?.[0]?.ac} and the cover's +2)`);
+      check("the box is the moment: no number rows, one line that says in words whether Shield saves you (his design, 2026-09-18)",
+        !!box2 && !box2.details?.length && !box3?.details?.length
+          && /Shield would turn it into a miss/.test(box2.description ?? "")
+          && /Even with Shield, it still hits/.test(box3?.description ?? "")
+          && /Shield would turn it into a miss/.test(box5?.description ?? ""),
+        `rows in the box: ${box2?.details?.length ?? 0}; its line: "${String(box2?.description ?? "").replace(/<[^>]+>/g, "")}"; `
+          + `against the 25: "${String(box3?.description ?? "").replace(/<[^>]+>/g, "")}"`);
     }
 
     // ── Saying no changes nothing ──
     {
       const stubborn = who("p6a-no", "a wizard who says no");
       const attacker = who("p6a-attacker2", "another bandit", { shield: false, slots: 0 });
-      const sword = { id: "it-sword2", name: "Mace", type: "weapon", img: "" };
+      const mace = { id: "it-sword2", name: "Mace", type: "weapon", img: "",
+        system: { properties: new Set(), damage: { base: { types: new Set(["bludgeoning"]) } }, activities: [] } };
       answer = false;
       let out4 = null, err4 = null;
       const atAsk = asked.length;
       try {
         await quiet(async () => {
-          out4 = await engine.checkPostHitReactions([{ hitResult: "hit", attackTotal: 17,
-            target: { actor: stubborn, token: null, ac: 15, name: stubborn.name } }], sword, attacker);
+          out4 = await engine.checkPostHitReactions([swingAt(attacker, stubborn, 17, 15, { item: mace })], mace, attacker);
         });
       } catch (e) { err4 = e; }
       check("and a no leaves the hit alone: no slot, no reaction, no effect (Phase 6a)",
-        !err4 && asked.length - atAsk === 1 && out4?.[0]?.hitResult === "hit"
+        !err4 && asked.length - atAsk === 1 && out4?.[0]?.hitResult === "hit" && out4?.[0]?.effectiveAC === 15
           && stubborn.system.spells.spell1.value === 3 && !stubborn.flags[MOD]?.reactionUsed,
         err4 ? `threw: ${err4?.message ?? err4}`
-          : `asked ${asked.length - atAsk}x; the hit is still a ${out4?.[0]?.hitResult}; `
+          : `asked ${asked.length - atAsk}x; the hit is still a ${out4?.[0]?.hitResult} against AC ${out4?.[0]?.effectiveAC}; `
             + `slots ${stubborn.system.spells.spell1.value} of 3; reaction ${stubborn.flags[MOD]?.reactionUsed ? "spent" : "still free"}`);
+    }
+
+    // ── A hit that names nobody says so ──
+    // The early return that hid the bug passed the result through without a
+    // word. "Could not read the creature" must never look like "nobody could
+    // Shield".
+    {
+      const ghost = who("p6a-ghost", "Beric, lost from the result", {});
+      const attacker = who("p6a-attacker3", "a third bandit", { shield: false, slots: 0 });
+      const blind = await quiet(async () => ({ ...swingAt(attacker, ghost, 17, 15), targetActor: null, targetToken: null }));
+      const heard = [];
+      const keepLog = console.log, keepWarn = console.warn;
+      let out6 = null, err6 = null;
+      const atAsk = asked.length;
+      console.log = console.warn = (...a) => { heard.push(a.map(String).join(" ")); };
+      try { out6 = await engine.checkPostHitReactions([blind], longsword, attacker); }
+      catch (e) { err6 = e; }
+      finally { console.log = keepLog; console.warn = keepWarn; }
+      check("a hit whose result carries no creature asks nobody and says why, instead of passing in silence (2026-09-19)",
+        !err6 && asked.length === atAsk && out6?.[0]?.hitResult === "hit"
+          && heard.some(l => /carries no creature, so nobody\s+could be asked about Shield/.test(l)),
+        err6 ? `threw: ${err6?.message ?? err6}` : `asked ${asked.length - atAsk}; the console: ${heard.find(l => /Shield/.test(l)) ?? "(nothing)"}`);
+    }
+
+    // ── The box waits for the attack's d20 ──
+    // "Nothing shows an answer until the dice that decided it have landed."
+    // The attack's d20 is dnd5e's, not ACE's, so only a wait on the armed watch
+    // (the one Lucky's box peeks at) can see it; the dice check reads ACE's own
+    // throws and cannot.
+    {
+      const { aceArmDiceWatch } = await import(`${MODULE}/scripts/dsn-utils.mjs`);
+      const patient = who("p6a-patient", "Beric, while the die still rolls", {});
+      const attacker = who("p6a-attacker4", "a fourth bandit", { shield: false, slots: 0 });
+      const keepDice = game.dice3d;
+      game.dice3d = { isEnabled: () => true };
+      answer = false;
+      const atAsk = asked.length;
+      let askedWhileRolling = -1, askedAfter = -1, err7 = null;
+      try {
+        await quiet(async () => {
+          const watch = aceArmDiceWatch();
+          const running = engine.checkPostHitReactions([swingAt(attacker, patient, 17, 15)], longsword, attacker, { dice: "armed" });
+          await new Promise(r => setTimeout(r, 60));
+          askedWhileRolling = asked.length - atAsk;
+          for (const f of [...(hooks.diceSoNiceRollComplete ?? [])]) { try { f(); } catch (_) { /* another watch's */ } }
+          await watch?.promise;
+          await running;
+          askedAfter = asked.length - atAsk;
+        });
+      } catch (e) { err7 = e; }
+      finally { game.dice3d = keepDice; }
+      check("the Shield box waits for the attack's d20 to land before it asks (his rule; 2026-09-19)",
+        !err7 && askedWhileRolling === 0 && askedAfter === 1,
+        err7 ? `threw: ${err7?.message ?? err7}`
+          : `asked while the die was still rolling: ${askedWhileRolling}; once it landed: ${askedAfter}`);
+    }
+
+    // ── Lucky first, then Shield, on both paths, both waiting for the dice ──
+    // His order: a luck point can change whether there is a hit to Shield
+    // against, so Lucky is asked first. The GM's own roll and a player's roll
+    // (the socket path) are the same attack and keep the same order.
+    {
+      const read = (f) => readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/${f}`, "utf8").replace(/\/\/.*$/gm, "");
+      const pipe = read("attack-pipeline.mjs"), sock = read("ace-qol.mjs");
+      const order = (src, lucky) => {
+        const l = src.indexOf(lucky), s = src.indexOf("checkPostHitReactions(results, item, actor, { dice: \"armed\" })", l);
+        return l >= 0 && s > l;
+      };
+      const pipeOk = order(pipe, "_luckAfterAttackRoll({ actor, item, results");
+      const sockOk = order(sock, "luckAfterAttackRoll({ actor, item, results");
+      check("Lucky is asked before Shield, and Shield is handed the armed dice, on the GM's roll and on a player's (2026-09-19)",
+        pipeOk && sockOk,
+        `the GM's own roll: ${pipeOk ? "Lucky, then Shield with the dice" : "NOT in that order, or Shield has no dice"}; `
+          + `a player's roll: ${sockOk ? "Lucky, then Shield with the dice" : "NOT in that order, or Shield has no dice"}`);
+    }
+
+    // ── The same wrong read, where else it sat ──
+    // Graze read the target block as the token: its card said the damage landed
+    // and none ever did. The "until attacked" timer read an `actor` a result
+    // never carries. Both are driven here with the result the pipeline builds.
+    {
+      const { WeaponMasteries } = await import(`${MODULE}/scripts/weapon-masteries.mjs`);
+      const { DurationTracker } = await import(`${MODULE}/scripts/duration-tracker.mjs`);
+      const fighter = who("p6a-fighter", "a fighter with a Greatsword", { shield: false, slots: 0 });
+      fighter.system.abilities = { str: { mod: 3 }, dex: { mod: 1 } };
+      const grazed = who("p6a-grazed", "a grazed orc", { shield: false, slots: 0 });
+      const tough = who("p6a-tough", "an orc that shrugs off slashing", { shield: false, slots: 0 });
+      tough.system.traits = { dr: { value: new Set(["slashing"]) }, di: { value: new Set() }, dv: { value: new Set() } };
+      const greatsword = { id: "it-gs", name: "Greatsword", type: "weapon", img: "",
+        system: { mastery: "graze", properties: new Set(["hvy", "two"]),
+          damage: { base: { types: new Set(["slashing"]) } }, activities: [] } };
+      const doorCalls = [];
+      const keepDamage = HpDoor.damage;
+      HpDoor.damage = async (actor, finals, opts = {}) => {
+        doorCalls.push({ actor, finals, opts });
+        const total = (finals ?? []).reduce((s, f) => s + Math.max(0, Number(f?.final) || 0), 0);
+        return total > 0 ? { applied: true, total, hpDelta: total } : { applied: false, total: 0, hpDelta: 0 };
+      };
+      const atPost = posted.length;
+      let errG = null;
+      try {
+        await quiet(async () => {
+          await WeaponMasteries._fireGrazeForMiss(greatsword, fighter, swingAt(fighter, grazed, 9, 15, { item: greatsword }));
+          await WeaponMasteries._fireGrazeForMiss(greatsword, fighter, swingAt(fighter, tough, 9, 15, { item: greatsword }));
+        });
+      } catch (e) { errG = e; }
+      finally { HpDoor.damage = keepDamage; }
+      const cards = posted.slice(atPost).map(p => String(p?.content ?? ""));
+      const plainCard = (c) => c.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+      check("Graze deals its damage to the creature it missed, through the hit-point door once the attack's dice are down, and the card says what landed (2026-09-19)",
+        !errG && doorCalls.length === 2 && doorCalls[0].actor === grazed && doorCalls[0].finals?.[0]?.final === 3
+          && doorCalls[0].finals?.[0]?.type === "slashing" && doorCalls[0].opts?.dice === true
+          && doorCalls[1].actor === tough && doorCalls[1].finals?.[0]?.final === 1
+          && /takes 3 slashing/.test(plainCard(cards[0] ?? "")) && /takes 1 slashing/.test(plainCard(cards[1] ?? "")),
+        errG ? `threw: ${errG?.message ?? errG}`
+          : `the door was handed: ${doorCalls.map(c => `${c.actor?.name ?? "nobody"} ${c.finals?.map(f => `${f.final} ${f.type}`).join(" + ")}`).join("; ") || "nothing"}; `
+            + `cards: ${cards.map(c => plainCard(c).slice(0, 110)).join(" | ") || "none"}`);
+
+      const tracker = new DurationTracker();
+      const marked = who("p6a-marked", "a creature whose effect lasts until it is attacked", { shield: false, slots: 0 });
+      const lasting = { id: "fx-until-attacked", name: "Until Attacked", disabled: false,
+        flags: { [MOD]: { specialDuration: "isAttacked" } } };
+      marked.effects = [lasting];
+      const ended = [];
+      tracker._expireEffect = async (actor, effect, reason) => { ended.push({ actor, effect, reason }); };
+      const keepTracker = SETTINGS.get(`${MOD}.enableDurationTracker`);
+      SETTINGS.set(`${MOD}.enableDurationTracker`, true);
+      let errD = null;
+      try {
+        await quiet(async () => {
+          await tracker._onAttackComplete({ results: [swingAt(fighter, marked, 9, 15, { item: greatsword })] });
+        });
+      } catch (e) { errD = e; }
+      finally { SETTINGS.set(`${MOD}.enableDurationTracker`, keepTracker); }
+      check("an effect that lasts until its creature is attacked ends when it is attacked, even by a miss (2026-09-19)",
+        !errD && ended.length === 1 && ended[0].actor === marked && ended[0].effect === lasting,
+        errD ? `threw: ${errD?.message ?? errD}`
+          : `ended: ${ended.map(e => `${e.effect?.name} on ${e.actor?.name}`).join(", ") || "nothing"}`);
     }
 
     // ── 5. No raw card in the reaction engine's Shield path ──

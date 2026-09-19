@@ -5624,7 +5624,9 @@ Hooks.once("ready", () => {
         // ── POST-HIT REACTIONS (Shield, etc.) — socket attack path ──
         if (reactionEngine) {
           try {
-            const modifiedResults = await reactionEngine.checkPostHitReactions(results, item, actor);
+            // After Lucky, as on the GM's own roll. The player's dice were thrown
+            // on their screen, so the Shield box waits for them, as Lucky's does.
+            const modifiedResults = await reactionEngine.checkPostHitReactions(results, item, actor, { dice: "armed" });
 
             // ⚠️🔴 THE SECOND COPY OF THE BUG THAT ATE EVERY CHAT CARD.
             //

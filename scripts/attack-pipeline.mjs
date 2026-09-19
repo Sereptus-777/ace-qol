@@ -1353,7 +1353,10 @@ export class AttackPipeline {
     const reactionEng = game.aceQol?.reactionEngine;
     if (reactionEng) {
       try {
-        const modifiedResults = await reactionEng.checkPostHitReactions(results, item, actor);
+        // After Lucky, never before it: a luck point can change whether there is
+        // a hit to Shield against. The attack's d20 may still be rolling when no
+        // luck was asked, so the Shield box waits for it, as Lucky's does.
+        const modifiedResults = await reactionEng.checkPostHitReactions(results, item, actor, { dice: "armed" });
 
         // ── ⚠️🔴 THIS DELETED EVERY ATTACK CARD IN THE GAME ─────────────
         //

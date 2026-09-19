@@ -1150,38 +1150,95 @@ export class WeaponMasteries {
     );
   }
 
-  /** Graze — on miss, the target still takes ability-mod damage. */
+  /**
+   * Graze (2024 PHB): "If your attack roll with this weapon misses a creature,
+   * you can deal damage to that creature equal to the ability modifier you used
+   * to make the attack roll. This damage is the same type dealt by the weapon."
+   */
   static async _fireGrazeForMiss(item, actor, missResult) {
-    const targetToken = missResult?.target ?? missResult?.token ?? null;
-    if (!targetToken) return;
-    const strMod = actor.system?.abilities?.str?.mod ?? 0;
-    const dexMod = actor.system?.abilities?.dex?.mod ?? 0;
-    const sys = item.system ?? {};
-    const useDex = sys.properties?.has?.("fin") || sys.actionType === "rwak";
-    const abilityMod = useDex ? Math.max(strMod, dexMod) : strMod;
-    if (abilityMod <= 0) return;
+    // ⚠️🔴 THE TOKEN SITS BESIDE THE TARGET BLOCK, NOT IN IT (2026-09-19).
+    // This read `missResult.target` as the token. That block is the target's
+    // name, picture and AC; CombatState.assess keeps the token and the creature
+    // beside it, as `targetToken` and `targetActor`. So the card named the
+    // right creature and said it took the damage, while `.actor` on the block
+    // found nobody and not one point ever landed. The hit masteries were fixed
+    // for the same mistake (see _fireMasteryForHit); this one was left.
+    const targetToken = missResult?.targetToken ?? missResult?.token ?? null;
+    const tgtActor = missResult?.targetActor ?? targetToken?.actor ?? null;
+    const tName = targetToken?.name ?? missResult?.name ?? tgtActor?.name
+      ?? game.i18n?.localize?.("ACE_QOL.common.target") ?? "The target";
+    if (!tgtActor) {
+      console.warn(`${TAG} | Graze: the miss on ${tName} carries no creature, so no damage could be dealt.`);
+      return;
+    }
 
-    // Damage type from the weapon's primary damage part
-    const damageType = item.system?.damage?.parts?.[0]?.[1]
+    // The ability modifier the attack roll used. A character rule that swaps
+    // it (Pact of the Blade, Hex Warrior) answers from the resolver the attack
+    // itself asked; otherwise the better of Strength and Dexterity for a
+    // finesse weapon, Strength for the rest.
+    let abilityMod = null;
+    try {
+      const override = AttackAbilityResolver.getOverride?.(actor, item);
+      if (override && Number.isFinite(Number(override.mod))) abilityMod = Number(override.mod);
+    } catch (err) {
+      console.warn(`${TAG} | Graze: the attack ability resolver failed; the weapon's own ability is used:`, err);
+    }
+    if (abilityMod === null) {
+      const strMod = actor.system?.abilities?.str?.mod ?? 0;
+      const dexMod = actor.system?.abilities?.dex?.mod ?? 0;
+      const sys = item.system ?? {};
+      const useDex = sys.properties?.has?.("fin") || sys.actionType === "rwak";
+      abilityMod = useDex ? Math.max(strMod, dexMod) : strMod;
+    }
+    if (abilityMod <= 0) {
+      console.log(`${TAG} | Graze: ${actor.name}'s miss on ${tName} deals nothing, because the ability `
+        + `modifier the attack used is ${abilityMod >= 0 ? "+" : ""}${abilityMod}.`);
+      return;
+    }
+
+    // The weapon's own damage type, where dnd5e 5.x keeps it (the recipe reads
+    // the same field for Graze); the old parts list only for an item that
+    // still has one.
+    const damageType = [...(item.system?.damage?.base?.types ?? [])][0]
+                    ?? item.system?.damage?.parts?.[0]?.[1]
                     ?? item.system?.damage?.parts?.[0]?.types?.[0]
                     ?? "slashing";
 
-    const tName = targetToken?.name ?? game.i18n?.localize?.("ACE_QOL.common.target") ?? "The target";
-    this._postMasteryCard("graze", item, actor, targetToken,
-      this._l10nFire("graze", { target: tName, damage: abilityMod, type: damageType },
-        `${tName} takes <strong>${abilityMod} ${damageType}</strong> damage on the miss (ability modifier).`)
-    );
-
-    // Apply the damage using the existing damage applicator
+    // ⚠️ THROUGH THE HIT-POINT DOOR, and the card after it. dnd5e's own
+    // applyDamage sent no damage-applied signal, so a grazed sleeper would
+    // not have woken and a troll's regeneration would not have heard it. The
+    // door counts the creature's resistances, waits for the attack's d20 that
+    // decided the miss, and says what really landed, which is what the card
+    // then reports.
+    let landed = null;
+    let finals = [];
     try {
-      const tgtActor = targetToken?.actor;
-      if (tgtActor) {
-        const damageRoll = await new Roll(`${abilityMod}`).evaluate();
-        await tgtActor.applyDamage([{ value: abilityMod, type: damageType }]);
-      }
+      const { HpDoor } = await import("./road/doors.mjs");
+      finals = HpDoor.preview(tgtActor, [{ amount: abilityMod, type: damageType }], { item });
+      landed = await HpDoor.damage(tgtActor, finals, { dice: true, item, source: actor,
+        tokenDocId: targetToken?.document?.id ?? null, label: "Graze" });
     } catch (err) {
-      console.warn(`${TAG} | Graze damage application failed (chat card only):`, err);
+      // No outcome to report, so no card claiming one.
+      console.warn(`${TAG} | Graze: ${actor.name}'s ${abilityMod} ${damageType} on ${tName} could not be applied, `
+        + `so no card was posted:`, err);
+      return;
     }
+    const dealt = landed?.applied ? Number(landed.total) || 0 : 0;
+    const why = finals.find(f => f?.modifier && f.modifier !== "normal")?.reason ?? null;
+    if (!landed?.applied) {
+      // "Took nothing" and "could not be written" must not read the same.
+      if (Number(landed?.total) > 0) {
+        console.warn(`${TAG} | Graze: ${actor.name}'s ${landed.total} ${damageType} on ${tName} was refused `
+          + `by the hit-point door, so the card says none landed.`);
+      } else {
+        console.log(`${TAG} | Graze: ${tName} takes no damage from ${actor.name}'s miss${why ? ` (${why})` : ""}.`);
+      }
+    }
+
+    const body = this._l10nFire("graze", { target: tName, damage: dealt, type: damageType },
+      `${tName} takes <strong>${dealt} ${damageType}</strong> damage on the miss (ability modifier).`);
+    this._postMasteryCard("graze", item, actor, targetToken,
+      why ? `${body} <em>(${foundry.utils.escapeHTML(String(why))})</em>` : body);
   }
 
   // ──────────────────────────────────────────────────────────────────────────

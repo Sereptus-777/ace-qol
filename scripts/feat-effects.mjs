@@ -128,14 +128,21 @@ export class FeatEffects {
     // ── Crusher / Slasher / Piercer — once-per-turn riders by damage type ──
     for (const hit of hits) {
       const isCrit = hit?.hitResult === "critical";
+      // ⚠️ THE TOKEN, NOT THE TARGET BLOCK (2026-09-19). An attack result keeps
+      // the creature's token beside its `target` block (`targetToken`, from
+      // CombatState.assess); the block holds only the name, picture and AC.
+      // Handed the block, Crusher's push button carried no creature to push
+      // and neither crit rider could mark anybody. The riders read a token:
+      // its name, its document for the push, its actor for the mark.
+      const target = hit?.targetToken ?? hit?.target?.token ?? null;
       if (damageType === "bludgeoning" && this._hasFeat(actor, "Crusher")) {
-        await this._fireCrusher(item, actor, hit?.target, isCrit);
+        await this._fireCrusher(item, actor, target, isCrit);
       }
       if (damageType === "slashing" && this._hasFeat(actor, "Slasher")) {
-        await this._fireSlasher(item, actor, hit?.target, isCrit);
+        await this._fireSlasher(item, actor, target, isCrit);
       }
       if (damageType === "piercing" && this._hasFeat(actor, "Piercer")) {
-        await this._firePiercer(item, actor, hit?.target, isCrit);
+        await this._firePiercer(item, actor, target, isCrit);
       }
     }
   }

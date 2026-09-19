@@ -48,6 +48,11 @@ import { RulesBrain } from "./rules/rules-brain.mjs";
 import { whoAnswers } from "./who-answers.mjs";
 // The ding a box makes on the screen of whoever has to answer it.
 import { popupDing } from "./popup-ding.mjs";
+// ⚠️ THE ONE RULE for "does this attack roll hit?". Shield after a hit asks it
+// again with five more AC, the way Lucky asks it with a different d20.
+import { judgeAttack, isAHit } from "./rules/attack-hit.mjs";
+// A box asked between the attack roll and its card waits for the attack's d20.
+import { awaitArmedDicePeek } from "./dsn-utils.mjs";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Constants
@@ -1615,15 +1620,26 @@ export class ReactionEngine {
 
   /**
    * Check all hit targets for Shield spell availability.
-   * Called from AttackPipeline after hit determination.
+   * Called from AttackPipeline and from the socket path a player's attack takes,
+   * after hit determination and after Lucky (luck.mjs afterAttackRoll).
    *
-   * @param {object[]} results - Attack results array from AttackPipeline
-   *   Each: { hitResult, attackTotal, target: { actor, token, ac, name }, ... }
+   * @param {object[]} results - Attack results as both paths build them: a
+   *   CombatState.assess record spread out, plus the roll's outcome. The
+   *   creature and its token are `targetActor` and `targetToken` at the top;
+   *   the `target` block holds only the name, picture, AC and the like. Each:
+   *   { targetActor, targetToken, target: { name, img, ac, ... }, hitResult,
+   *     attackTotal, d20Result, ac, effectiveAC (cover included), coverResult,
+   *     mirrorImageRedirect, autoCrit, ... }
    * @param {Item} attackItem - The weapon/spell used to attack
    * @param {Actor} attacker - The attacking actor
-   * @returns {object[]} Modified results array (hitResult may change to "miss" if Shield turns a hit into a miss)
+   * @param {object} [opts]
+   * @param {"armed"|"none"} [opts.dice] - "armed" when the attack's d20 may
+   *   still be rolling: the first Shield box waits for it to land
+   * @returns {object[]} A new array of the same results. A cast Shield raises
+   *   the AC on its result, and turns `hitResult` to "miss" when that makes the
+   *   attack miss.
    */
-  async checkPostHitReactions(results, attackItem, attacker) {
+  async checkPostHitReactions(results, attackItem, attacker, { dice = "none" } = {}) {
     // ── ⚠️🔴 RETURN A COPY, NEVER THE CALLER'S OWN ARRAY ────────────────
     //
     // These two early returns used to hand back `results` — the very array the
@@ -1650,17 +1666,46 @@ export class ReactionEngine {
     }
 
     const modified = [];
+    // The attack's d20 may still be rolling. The first box waits for it; after
+    // that it has landed (Lucky's "peek", so the card's own wait stays armed).
+    let waited = dice !== "armed";
 
     for (const result of results) {
+      // ── ⚠️🔴 THE CREATURE SITS BESIDE THE TARGET BLOCK, NOT IN IT ─────────
+      //
+      // This read `result.target?.actor`. Both paths build a result by
+      // spreading a CombatState.assess record, which carries the creature and
+      // its token as `targetActor` and `targetToken`; its `target` block holds
+      // only the name, picture, AC and conditions. So the read found nothing on
+      // every hit, the result went through without a word, and Shield after a
+      // hit was never offered to anybody, on a GM's roll or a player's (proven
+      // 2026-09-18, fixed 2026-09-19). The replay's pin built its results with
+      // the creature inside `target`, a shape neither path makes, so it agreed
+      // with the bug. Graze, Crusher and Slasher, and the timer that ends an
+      // effect when its creature is attacked had the same read.
+      const targetActor = result.targetActor ?? result.target?.actor ?? null;
+      const targetToken = result.targetToken ?? result.target?.token ?? null;
+      const who = targetActor?.name ?? result.name ?? result.target?.name ?? "a target";
+
       // Only check hits (not crits — Shield doesn't block nat 20)
       if (result.hitResult !== "hit") {
+        if (result.hitResult === "critical" && targetActor && this._canUseShield(targetActor).canUse) {
+          console.log(`${MODULE_ID} | Shield: ${who} could cast Shield but is not asked, because ACE `
+            + `does not offer Shield against a critical hit.`);
+        }
         modified.push(result);
         continue;
       }
 
-      const targetActor = result.target?.actor;
-      const targetToken = result.target?.token;
-      if (!targetActor) { modified.push(result); continue; }
+      // ⚠️ AND A HIT THAT NAMES NOBODY SAYS SO. This is the early return that
+      // hid the bug above: "could not read the creature" and "nobody could
+      // Shield" looked the same.
+      if (!targetActor) {
+        console.warn(`${MODULE_ID} | Shield: the hit on ${who} carries no creature, so nobody `
+          + `could be asked about Shield. Whatever built this attack result left it out.`);
+        modified.push(result);
+        continue;
+      }
 
       // ── Can this target use Shield? ──
       // Same silence, same fix: say who was passed over and why. (2026-09-16)
@@ -1670,6 +1715,33 @@ export class ReactionEngine {
           + `${shieldCheck.reason ?? "no reason given"}.`);
         modified.push(result);
         continue;
+      }
+
+      // ── ⚠️ THE AC THE HIT WAS JUDGED AGAINST, NOT THE SHEET'S ──
+      // The hit was judged against `effectiveAC`: the AC with cover on it. RAW,
+      // both editions, Shield is "+5 bonus to AC, including against the
+      // triggering attack", so it goes on top of that, and the verdict comes
+      // from the same rule that judged the hit. Half cover and Shield against a
+      // 21 on AC 15 is 22 and a miss; the sheet's 15 + 5 said 20 and a hit.
+      const acBefore = Number(result.effectiveAC ?? result.ac ?? result.target?.ac);
+      if (!Number.isFinite(acBefore)) {
+        console.warn(`${MODULE_ID} | Shield: ${targetActor.name} is not asked, because the hit `
+          + `carries no AC to add Shield's +5 to.`);
+        modified.push(result);
+        continue;
+      }
+      const acWith = acBefore + 5;
+      const withShield = judgeAttack({ d20: result.d20Result, total: result.attackTotal, ac: acWith,
+        fullCover: !!result.coverResult?.isFullCover, mirrorImage: !!result.mirrorImageRedirect,
+        autoCrit: !!result.autoCrit });
+
+      // ── The attack's d20 lands before anybody is asked ──
+      // "Nothing shows an answer until the dice that decided it have landed."
+      // The box says "you are hit", which the d20 decided.
+      if (!waited) {
+        waited = true;
+        try { await awaitArmedDicePeek(); }
+        catch (err) { console.warn(`${MODULE_ID} | Shield: could not wait for the attack's dice before asking (asking anyway):`, err); }
       }
 
       // ── Send prompt to the target's owner ──
@@ -1684,6 +1756,7 @@ export class ReactionEngine {
         ?? attacker?.img
         ?? attacker?.prototypeToken?.texture?.src
         ?? null;
+      const attackName = foundry.utils.escapeHTML(attackItem?.name ?? "an attack");
       const promptResult = await this._promptReaction({
         reactorActor: targetActor,
         reactorToken: targetToken,
@@ -1692,14 +1765,15 @@ export class ReactionEngine {
         type: "shield",
         title: "Shield Spell",
         heading: "Shield",
+        // ⚠️ THE MOMENT, NOT THE MECHANICS (his design, 2026-09-18). The Magic
+        // Missile box below lost its dice and effect rows that day; this box
+        // still carried four number rows (roll, AC, AC with Shield, result)
+        // because it had never once opened. The one thing the player needs to
+        // DECIDE is whether Shield saves them, so the line says that in words,
+        // and the numbers go on the card after the choice.
         description: `${foundry.utils.escapeHTML(attacker?.name ?? "An attacker")} hits you with `
-          + `<span class="ace-qol-reaction-spell">${foundry.utils.escapeHTML(attackItem?.name ?? "an attack")}</span>`,
-        details: [
-          { label: "Attack Roll", value: result.attackTotal },
-          { label: "Current AC", value: result.target.ac },
-          { label: "AC with Shield", value: result.target.ac + 5 },
-          { label: "Result", value: result.attackTotal >= (result.target.ac + 5) ? "STILL HITS" : "WOULD MISS", color: result.attackTotal >= (result.target.ac + 5) ? "#ef5350" : "#66bb6a" },
-        ],
+          + `<span class="ace-qol-reaction-spell">${attackName}</span>. `
+          + (isAHit(withShield) ? "Even with Shield, it still hits." : "Shield would turn it into a miss."),
         acceptLabel: "Cast Shield",
         declineLabel: "No reaction",
         spellSlotLevel: 1,
@@ -1719,21 +1793,29 @@ export class ReactionEngine {
         // ── Apply Shield active effect (+5 AC until start of caster's next turn) ──
         await this._applyShieldEffect(targetActor, { castLevel: slotLevel });
 
-        // ── Re-evaluate hit ──
-        const newAC = result.target.ac + 5;
-        if (result.attackTotal < newAC) {
-          // Shield turned the hit into a miss!
-          this._debug(`Shield BLOCKED: ${targetActor.name} (${result.attackTotal} vs AC ${newAC})`);
-          result.hitResult = "miss";
-          result.shieldBlocked = true;
+        // ── The attack now faces the AC with Shield on it ──
+        // The card shows the creature's AC and the cover on top of it; both
+        // move up by five, so the cover bonus it shows stays the cover's.
+        const baseBefore = Number(result.ac ?? result.target?.ac ?? acBefore);
+        result.ac = baseBefore + 5;
+        result.effectiveAC = acWith;
+        if (result.target && Number.isFinite(Number(result.target.ac))) result.target.ac = Number(result.target.ac) + 5;
+        result.hitResult = withShield;
+        const attackerName = foundry.utils.escapeHTML(attacker?.name ?? "the attacker");
 
-          // Post chat notification
-          await this._postReactionChat(targetActor, "Shield", `${targetActor.name} casts Shield! AC becomes ${newAC} — attack misses!`, "#42a5f5");
+        if (!isAHit(withShield)) {
+          // Shield turned the hit into a miss!
+          this._debug(`Shield BLOCKED: ${targetActor.name} (${result.attackTotal} vs AC ${acWith})`);
+          result.shieldBlocked = true;
+          await this._postReactionChat(targetActor, "Shield",
+            `${foundry.utils.escapeHTML(targetActor.name)} casts <strong>Shield</strong>: AC ${acBefore} becomes ${acWith}, `
+            + `and ${attackerName}'s ${attackName} (${result.attackTotal}) misses.`, "#42a5f5");
         } else {
           // Shield didn't prevent the hit but still grants +5 AC for the round
-          this._debug(`Shield CAST but still hit: ${targetActor.name} (${result.attackTotal} vs AC ${newAC})`);
-          result.target.ac = newAC; // Update AC for display
-          await this._postReactionChat(targetActor, "Shield", `${targetActor.name} casts Shield! AC becomes ${newAC} — but the attack still hits (${result.attackTotal}).`, "#ef5350");
+          this._debug(`Shield CAST but still hit: ${targetActor.name} (${result.attackTotal} vs AC ${acWith})`);
+          await this._postReactionChat(targetActor, "Shield",
+            `${foundry.utils.escapeHTML(targetActor.name)} casts <strong>Shield</strong>: AC ${acBefore} becomes ${acWith}, `
+            + `but ${attackerName}'s ${attackName} (${result.attackTotal}) still hits.`, "#ef5350");
         }
       }
 

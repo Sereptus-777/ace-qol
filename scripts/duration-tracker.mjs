@@ -656,8 +656,16 @@ export class DurationTracker {
     if (!results?.length) return;
 
     for (const result of results) {
-      const targetActor = result.actor;
-      if (!targetActor) continue;
+      // ⚠️ THE CREATURE ATTACKED IS `targetActor` (2026-09-19). An attack result
+      // is a CombatState.assess record spread out: it has `targetActor` and
+      // `attackerActor` and no `actor` at all, so this read nobody on every
+      // attack and no "until attacked" effect ever ended.
+      const targetActor = result.targetActor ?? result.target?.actor ?? null;
+      if (!targetActor) {
+        console.warn(`${MODULE_ID} | Duration Tracker: an attack on ${result.name ?? result.target?.name ?? "a target"} `
+          + `carries no creature, so its "until attacked" effects could not be checked.`);
+        continue;
+      }
 
       for (const effect of targetActor.effects) {
         if (effect.disabled) continue;

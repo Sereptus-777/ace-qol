@@ -136,6 +136,19 @@ export class SwordOfWounding {
     if (!/(sword|blade|axe|spear|mace).*wound|wound.*(sword|blade|axe|spear|mace)|wounding/i.test(item.name ?? "")) return;
 
     for (const hit of hits) {
+      // ⚠️🔴 THIS READ FINDS NOBODY, AND IT IS LEFT THAT WAY ON PURPOSE (2026-09-19).
+      // An attack result keeps the creature beside its `target` block
+      // (`targetActor`), not in it, so no wound has ever landed. Shield, Graze,
+      // Crusher, Slasher and the "until attacked" timer had the same read and
+      // were fixed. This one was not, because reading it right switches on a
+      // wound counter that is wrong against both books: the 2024 Sword of
+      // Wounding is a different item (2d6 necrotic and a save, no wounds); the
+      // 2014 one wounds once per turn, not on every hit; the start-of-turn tick
+      // looks for the wound on the world actor, so an unlinked monster never
+      // bleeds; the tick skips ACE's hit-point door, and a heal through that
+      // door never reaches the healing block; and the healing block stops every
+      // other heal while wounded, where the book blocks only the hit points the
+      // sword took, until a rest. Rebuild it whole.
       const target = hit?.target;
       const tgtActor = target?.actor;
       if (!tgtActor) continue;
