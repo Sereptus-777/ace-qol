@@ -285,11 +285,35 @@ export class CheckGate {
    * hides the whole reason the pause existed. Full width because a struck number
    * squeezed into a narrow column is how a 10 once read as a 1 over a 0.
    */
-  static async _diceHtml(roll) {
+  static async _diceHtml(roll, { results = true } = {}) {
     const { DamageConstants } = await import("./damage-engine.mjs");
     const out = [];
+    const face = (src, alt, icon) => `<img class="ace-qol-die-img" src="${src}" alt="${alt}"`
+      + ` onerror="this.style.display='none';this.nextElementSibling.style.display='inline'">`
+      + `<i class="fas ${icon} ace-qol-die-fallback" style="display:none"></i>`;
     for (const term of (roll?.terms ?? [])) {
       if (!term.faces) continue;
+      // ⚠️ A d100 HAS NO FACE OF ITS OWN (2026-09-18, the Teleport card). The
+      // art is the percentile pair, as the dice on the table are: a d100 showing
+      // 00 to 90 and a d10 whose "10" face reads 0. So 57 is the 50 and the 7,
+      // 60 is the 60 and the 0, and 100 is the 00 and the 0. Asking for a
+      // "100-57" face found no file and showed a generic icon.
+      if (Number(term.faces) === 100) {
+        for (const r of (term.results ?? [])) {
+          const dropped = r.active === false || r.discarded === true;
+          const n = Number(r.result);
+          const tens = String(Math.floor((n % 100) / 10) * 10).padStart(2, "0");
+          const ones = (n % 10) === 0 ? 10 : (n % 10);
+          out.push(
+            `<span class="ace-qol-die" style="${dropped ? "opacity:0.45;" : ""}">`
+            + face(DamageConstants.getDiceImagePath(100, tens), `d100 ${tens}`, "fa-dice-d10")
+            + face(DamageConstants.getDiceImagePath(10, ones), `d10 ${ones % 10}`, "fa-dice-d10")
+            + (results ? `<span class="ace-qol-die-result" style="font-size:18px;font-weight:700;`
+              + `${dropped ? "text-decoration:line-through;" : ""}">${r.result}</span>` : "")
+            + `</span>`);
+        }
+        continue;
+      }
       for (const r of (term.results ?? [])) {
         const dropped = r.active === false || r.discarded === true;
         const img = DamageConstants.getDiceImagePath(term.faces, r.result);
@@ -299,8 +323,8 @@ export class CheckGate {
           + `<img class="ace-qol-die-img" src="${img}" alt="d${term.faces}"`
           + ` onerror="this.style.display='none';this.nextElementSibling.style.display='inline'">`
           + `<i class="fas ${icon} ace-qol-die-fallback" style="display:none"></i>`
-          + `<span class="ace-qol-die-result" style="font-size:18px;font-weight:700;`
-          + `${dropped ? "text-decoration:line-through;" : ""}">${r.result}</span>`
+          + (results ? `<span class="ace-qol-die-result" style="font-size:18px;font-weight:700;`
+            + `${dropped ? "text-decoration:line-through;" : ""}">${r.result}</span>` : "")
           + `</span>`);
       }
     }

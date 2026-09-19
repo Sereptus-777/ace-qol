@@ -3669,7 +3669,12 @@ await quiet(async () => {
         } };
       const queue = [3, 17, 90];
       globalThis.Roll = class { constructor(f) { this.formula = String(f); this.terms = []; }
-        async evaluate() { this.total = queue.shift() ?? 1; return this; } };
+        async evaluate() {
+          this.total = queue.shift() ?? 1;
+          const m = /(\d*)d(\d+)/.exec(this.formula);
+          if (m) this.terms = [{ faces: Number(m[2]), number: Number(m[1] || 1), results: [{ result: this.total, active: true }] }];
+          return this;
+        } };
       DoorTp.post = async (data, opts = {}) => {
         events.push(`card ${data?.flags?.["ace-qol"]?.type}${opts.dice ? " (waits for dice)" : ""}`);
         cardsTp.push(data);
@@ -3694,12 +3699,23 @@ await quiet(async () => {
       const card = cardsTp.at(-1);
       const text = String(card?.content ?? "");
       const gms = game.users.filter(u => u.isGM).map(u => u.id);
-      check("the Teleport card is the GMs' and shows each d100, big, with what it meant: 3 Mishap (17 force to each), then 90 On Target (2026-09-18)",
-        JSON.stringify(card?.whisper) === JSON.stringify(gms) && /d100<\/span>\s*<span[^>]*font-size:20px[^>]*>3<\/span>/.test(text)
+      const pair = (tens, ones) => new RegExp(`d100/100-${tens}_nobg\\.png[\\s\\S]*?d10/10-${ones}_nobg\\.png[\\s\\S]*?font-size:20px[^>]*>`);
+      check("the Teleport card is the GMs' and shows each d100, big, beside its two dice, with what it meant: 3 Mishap (17 force to each), then 90 On Target (2026-09-18)",
+        JSON.stringify(card?.whisper) === JSON.stringify(gms) && pair("00", "3").test(text) && />3<\/span>/.test(text)
           && /Mishap/.test(text) && /force to each of them: 17/.test(text)
-          && /d100<\/span>\s*<span[^>]*font-size:20px[^>]*>90<\/span>/.test(text) && /On Target/.test(text)
+          && pair("90", "10").test(text) && />90<\/span>/.test(text) && /On Target/.test(text)
           && JSON.stringify(card?.flags?.["ace-qol"]?.rolls) === JSON.stringify([{ d100: 3, meant: "mishap", force: 17 }, { d100: 90, meant: "on", force: null }]),
         `whispered to: ${JSON.stringify(card?.whisper)}; the card: ${text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 220)}`);
+    }
+
+    // The shared die helper draws a d100 as the pair on the table: 57 is the 50
+    // and the 7, 60 is the 60 and the 0, 100 is the 00 and the 0 (2026-09-18).
+    {
+      const { CheckGate } = await import(`${MODULE}/scripts/check-gate.mjs`);
+      const html = await CheckGate._diceHtml({ terms: [{ faces: 100, results: [{ result: 57 }, { result: 60 }, { result: 100 }] }] }, { results: false });
+      const faces = [...html.matchAll(/Dice%20Images\/Red\/(d\d+)\/(\d+-\d+)_nobg\.png/g)].map(m => m[2]).join(" ");
+      check("a d100 is drawn as its two dice: 57 as 50 and 7, 60 as 60 and 0, 100 as 00 and 0, with no number when the card prints its own (2026-09-18)",
+        faces === "100-50 10-7 100-60 10-10 100-00 10-10" && !/ace-qol-die-result/.test(html), faces || "no faces");
     }
 
     // A player who casts it chooses on their own screen; the table goes to the GM's.

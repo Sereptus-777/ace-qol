@@ -787,7 +787,7 @@ export class Teleport {
     for (let tries = 0; result === "mishap" && tries < 20; tries++) {
       const d100 = await Teleport._roll("1d100", "Teleport", { gmOnly });
       result = Teleport.outcome(edition, row.key, d100.total);
-      const entry = { total: d100.total, result };
+      const entry = { total: d100.total, result, roll: d100 };
       rolls.push(entry);
       if (result === "mishap") {
         const force = await Teleport._roll("3d10", "Teleport mishap");
@@ -850,10 +850,22 @@ export class Teleport {
   static async _resultCard({ edition, row, where, names, rolls, arrival, notes, result, landed, actor, gmOnly }) {
     const MEANT = { mishap: "Mishap", similar: "Similar Area", off: "Off Target", on: "On Target" };
     const INK = { mishap: "#ff8a80", similar: "#ffd54f", off: "#ffb74d", on: "#9be29b" };
-    const rollRows = rolls.map(r => `
+    // The dice themselves beside each number, drawn the way every ACE roll card
+    // draws them (his table, 2026-09-18: "Put the actual die-face PNGs next to
+    // that number, same as other ACE roll cards").
+    let faces = () => "";
+    try {
+      const { CheckGate } = await import("./check-gate.mjs");
+      const drawn = await Promise.all(rolls.map(r => (r.roll ? CheckGate._diceHtml(r.roll, { results: false }) : "")));
+      faces = (i) => drawn[i] ?? "";
+    } catch (err) {
+      console.warn(`${LOG} | could not draw the d100's dice on the card; the numbers are still there:`, err);
+    }
+    const rollRows = rolls.map((r, i) => `
           <div style="display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;margin-top:8px;">
-            <span style="display:inline-flex;align-items:baseline;gap:6px;padding:2px 12px;border-radius:999px;background:#2a2140;border:1px solid #8a5cf6;">
+            <span style="display:inline-flex;align-items:center;gap:6px;padding:2px 12px;border-radius:999px;background:#2a2140;border:1px solid #8a5cf6;">
               <span style="font-size:14px;color:#b9b0cf;">d100</span>
+              ${faces(i)}
               <span style="font-size:20px;font-weight:700;color:#ffffff;">${r.total}</span>
             </span>
             <span style="flex:1 1 160px;font-size:16px;font-weight:700;color:${INK[r.result]};">${MEANT[r.result]}</span>
