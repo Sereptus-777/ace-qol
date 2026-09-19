@@ -3298,7 +3298,8 @@ Hooks.once("ready", () => {
 
           const { CheckGate } = await import("./check-gate.mjs");
           const roll = await CheckGate.run(actor, "concentration", "con", { dc });
-          const total = Number(roll?.total);
+          // What the card shows: a luck point spent on it changes the kept d20.
+          const total = CheckGate.totalOf(roll);
 
           if (!Number.isFinite(total)) {
             // ⚠️ CANCELLED AND FAILED MUST NOT LOOK THE SAME. He can close

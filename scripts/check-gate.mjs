@@ -53,6 +53,17 @@ export class CheckGate {
         return undefined;
       }
     });
+    // ⚠️🔴 THE DOOR IS PUBLISHED BY THE SAME CALL THAT SHUTS dnd5e's. From the
+    // moment the hook above listens, a dnd5e save or check that asks for a card
+    // is cancelled and rolled here instead, and dnd5e hands its caller NOTHING.
+    // Forge's polymorph trap awaited that nothing, read no total, and skipped
+    // every creature it caught while this gate posted a card nobody acted on
+    // (2026-09-19). A sibling module that needs the answer back asks here: `run`
+    // resolves after its card, so its dice have landed, and `totalOf` is the
+    // total that card shows. Read with optional chaining; without ACE QOL the
+    // sibling rolls through dnd5e as before.
+    game.aceQol = game.aceQol ?? {};
+    game.aceQol.checks = { run: CheckGate.run.bind(CheckGate), totalOf: CheckGate.totalOf.bind(CheckGate) };
     CheckGate._wrapInitiative();
     CheckGate._registerHitDice();
     CheckGate._registerRecharge();
@@ -990,7 +1001,9 @@ export class CheckGate {
    *   Already decided, so no pause: the roll box asked with one click (his rule,
    *   2026-09-19: "one click rolls"). "suggested" is what the creature itself
    *   brings (War Caster, an effect), read the same way the pause reads it.
-   * @returns {Promise<Roll|null>} the roll, or null when nothing rolled
+   * @returns {Promise<Roll|null>} the roll once its card is posted (its dice have
+   *   landed), or null when nothing rolled. A luck point can change its total:
+   *   read it with `CheckGate.totalOf(roll)`, never `roll.total`.
    */
   static async run(actor, kind, key, { dc = null, choice: decided = null } = {}) {
     // ⚠️🔴 EACH GOES BACK THROUGH ITS OWN METHOD, NEVER A PLAIN SAVE.
@@ -1106,7 +1119,18 @@ export class CheckGate {
             what: `${read.label} (DC ${dc})`, d20s, kept, total,
             judge: (t) => ({ fails: t < dc, words: `${t} against DC ${dc}, ${t >= dc ? "a success" : "a failure"}` }),
             dice: "ours" });
-          if (got.spent) luck = got;
+          if (got.spent) {
+            luck = got;
+            // Carried on the roll the way a concentration or death save's luck
+            // already is, so whoever awaited this roll reads what the card says.
+            try {
+              Object.defineProperty(roll, "_aceLuck", { value: { total: got.total, d20: got.d20, note: got.note },
+                enumerable: false, configurable: true, writable: true });
+            } catch (err) {
+              console.warn(`${LOG} | ${actor.name}'s luck could not be written onto the roll; `
+                + `its card still shows it, a caller reading the total may not:`, err);
+            }
+          }
         }
       }
     } catch (err) {
@@ -1115,6 +1139,26 @@ export class CheckGate {
     if (!luck && roll._aceLuck) luck = { ...roll._aceLuck, spent: true };
     await CheckGate.postCard(actor, read, choice, roll, dc, luck);
     return roll;
+  }
+
+  /**
+   * The total a roll through this door stands at: the one its card shows.
+   *
+   * ⚠️🔴 A LUCK POINT CHANGES THE ANSWER, NOT THE ROLL. A 2014 Lucky holder who
+   * spends one keeps a different d20 and the card prints the new total, but the
+   * Roll still carries the dice it was rolled with. Reading `roll.total` after
+   * that decides against a number nobody at the table was shown: the old
+   * concentration button would have said BROKEN under a card that said SUCCESS
+   * while the creature kept concentrating.
+   *
+   * @param {Roll|null} roll   what `run` returned
+   * @returns {number|null}    null when nothing rolled
+   */
+  static totalOf(roll) {
+    const lucky = Number(roll?._aceLuck?.total);
+    if (roll?._aceLuck && Number.isFinite(lucky)) return lucky;
+    const plain = Number(roll?.total);
+    return roll && Number.isFinite(plain) ? plain : null;
   }
 
   /* ── The card ────────────────────────────────────────────────────────── */
