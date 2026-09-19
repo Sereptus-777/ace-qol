@@ -170,15 +170,6 @@ export class FlightControl {
   }
 
   /**
-   * A shadow behind the token that falls further as it climbs, and the height
-   * in feet above it.
-   *
-   * ⚠️ SIZE AND OFFSET COME FROM THE MESH, not from the grid. A Huge dragon and
-   * a rat both need a shadow that belongs to them, and reading `getSize()`
-   * multiplied by scale is how every previous overlay in this suite ended up
-   * the wrong size on a scaled token.
-   */
-  /**
    * The height the marker must show.
    *
    * ⚠️🔴 NOT THE DOCUMENT AT THE MOMENT OF THE UPDATE (his table, 2026-09-18:
@@ -192,12 +183,29 @@ export class FlightControl {
    * suite's position reader (the update's note while the document lags).
    */
   static _heightOf(token, reported) {
+    // To the hundredth, as Foundry itself rounds it, so a stray 0.001 is the floor.
+    const round = (v) => Math.round((Number(v) || 0) * 100) / 100;
     const said = Number(reported);
-    if (reported !== undefined && reported !== null && Number.isFinite(said)) return said;
-    try { return Number(aceMeasuredPosition(token).elevation) || 0; }
-    catch (_) { return Number(token?.document?.elevation ?? 0) || 0; }
+    if (reported !== undefined && reported !== null && Number.isFinite(said)) return round(said);
+    try { return round(aceMeasuredPosition(token).elevation); }
+    catch (_) { return round(token?.document?.elevation); }
   }
 
+  /**
+   * The height badge above the token, and under a creature in the air a shadow
+   * that falls further as it climbs.
+   *
+   * ⚠️ ONE BADGE (his table, 2026-09-18: "Foundry/dnd5e already prints '30 ft'
+   * on the token. ACE also prints a triangle. They stack."). Foundry's own
+   * height text is hidden (see `_hideSystemHeight`), and this is the only one:
+   * above 0 a green triangle pointing up and "+30 ft", below 0 a red triangle
+   * pointing down and the depth, exactly 0 nothing at all.
+   *
+   * ⚠️ SIZE AND OFFSET COME FROM THE MESH, not from the grid. A Huge dragon and
+   * a rat both need a shadow that belongs to them, and reading `getSize()`
+   * multiplied by scale is how every previous overlay in this suite ended up
+   * the wrong size on a scaled token.
+   */
   static draw(token, { elevation } = {}) {
     try {
       if (!token?.document || token.destroyed) return;
@@ -205,10 +213,15 @@ export class FlightControl {
 
       const ft = FlightControl._heightOf(token, elevation);
       token._aceFlightFt = ft;                  // what the marker says, for the refresh check
-      if (ft <= 0) return;                      // on the ground: nothing to draw
+      if (ft === 0) return;                     // exactly on the floor: no badge
+      // Foundry keeps its own height text from a player looking at a secret
+      // token; the badge is the same information and keeps the same secret.
+      if (token.document.isSecret) return;
 
       const w = token.mesh?.width  || token.w || canvas.grid.size;
       const h = token.mesh?.height || token.h || canvas.grid.size;
+      FlightControl._badge(token, ft, w);
+      if (ft < 0) return;                       // below the floor: the badge, no shadow
 
       // How far the shadow falls, how small it gets, and how faint.
       //
@@ -231,19 +244,44 @@ export class FlightControl {
       try { token.addChildAt(g, 0); } catch (_) { token.addChild(g); }
       token[MARK] = g;
 
-      const style = new PIXI.TextStyle({
-        fontFamily: "Signika, sans-serif", fontSize: Math.max(14, canvas.grid.size * 0.22),
-        fill: "#ffd970", stroke: "#000000", strokeThickness: 4, fontWeight: "600",
-      });
-      const t = new PIXI.Text(`▲ ${ft} ft`, style);
-      t.eventMode = "none";
-      t.anchor.set(0.5, 1);
-      t.position.set(w / 2, -4);
-      token.addChild(t);
-      token[LABEL] = t;
     } catch (err) {
       console.warn(`${LOG} | could not draw the flight marker on ${token?.name}:`, err);
     }
+  }
+
+  /** The badge's words: "▲ +30 ft" above the floor, "▼ −30 ft" below it. */
+  static badgeText(ft) {
+    const n = Math.abs(Number(ft) || 0);
+    const shown = Number.isInteger(n) ? String(n) : n.toFixed(1);
+    const units = canvas?.grid?.units || "ft";
+    return ft > 0 ? `▲ +${shown} ${units}` : `▼ −${shown} ${units}`;
+  }
+
+  /** Green for up, red for down. */
+  static badgeColour(ft) { return ft > 0 ? "#5fe36f" : "#ff5c55"; }
+
+  static _badge(token, ft, w) {
+    const style = new PIXI.TextStyle({
+      fontFamily: "Signika, sans-serif", fontSize: Math.max(14, canvas.grid.size * 0.22),
+      fill: FlightControl.badgeColour(ft), stroke: "#000000", strokeThickness: 4, fontWeight: "700",
+    });
+    const t = new PIXI.Text(FlightControl.badgeText(ft), style);
+    t.eventMode = "none";
+    t.anchor.set(0.5, 1);
+    t.position.set(w / 2, -4);
+    token.addChild(t);
+    token[LABEL] = t;
+  }
+
+  /**
+   * Foundry's own height text on the token ("+30 ft", its tooltip) is hidden,
+   * so the badge above is the only one. Foundry shows it again on every state
+   * refresh (hover, select), and the refresh hook runs after that, so it is
+   * hidden again before the frame is drawn.
+   */
+  static _hideSystemHeight(token) {
+    try { if (token?.tooltip && token.tooltip.visible !== false) token.tooltip.visible = false; }
+    catch (err) { console.warn(`${LOG} | could not hide Foundry's own height text on ${token?.name}:`, err); }
   }
 
   static refreshAll() {
@@ -267,14 +305,16 @@ export class FlightControl {
     // a marker that disagrees with where the token now is redraws itself.
     Hooks.on("refreshToken", (token, flags) => {
       try {
-        if (!flags?.refreshElevation || !token?.document || token.destroyed) return;
+        if (!token?.document || token.destroyed) return;
+        FlightControl._hideSystemHeight(token);
+        if (!flags?.refreshElevation) return;
         if (FlightControl._heightOf(token) !== (token._aceFlightFt ?? 0)) FlightControl.draw(token);
       } catch (err) {
         console.warn(`${LOG} | could not recheck the flight marker on ${token?.name}:`, err);
       }
     });
     Hooks.on("deleteToken", (doc) => { if (doc?.object) FlightControl._clear(doc.object); });
-    Hooks.on("drawToken", (token) => FlightControl.draw(token));
+    Hooks.on("drawToken", (token) => { FlightControl._hideSystemHeight(token); FlightControl.draw(token); });
     onCanvasReady(() => FlightControl.refreshAll(), "the flight markers");
 
     // ── The button on the token HUD ──

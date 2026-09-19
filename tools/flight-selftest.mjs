@@ -101,10 +101,12 @@ console.log("\nON THE GROUND THERE IS NOTHING TO SEE");
   FlightControl.draw(t);
   check("nothing is drawn at zero feet", t.children.length, 0);
   // ⚠️🔴 AND A NEGATIVE ELEVATION IS NOT FLYING EITHER. A creature in a pit
-  // must not sprout a shadow above its head.
+  // must not sprout a shadow above its head; since 2026-09-18 it gets its own
+  // red badge, pointing down, and nothing else.
   const pit = tok("Digger", { fly: 50, elevation: -10 });
   FlightControl.draw(pit);
-  check("nor below ground level", pit.children.length, 0);
+  check("below ground level: no shadow, only the red badge",
+    [pit.children.length, pit.children[0]?.text, pit.children[0]?.style?.fill], [1, "▼ −10 ft", "#ff5c55"]);
 }
 
 console.log("\nIN THE AIR: A SHADOW BEHIND, A HEIGHT ABOVE");
@@ -114,7 +116,7 @@ console.log("\nIN THE AIR: A SHADOW BEHIND, A HEIGHT ABOVE");
   check("two things are drawn", t.children.length, 2);
   // ⚠️ INDEX 0 IS THE POINT. Behind the creature's art, never over it.
   check("the shadow is behind the art", t.children[0] instanceof PIXI.Graphics, true);
-  check("and the height is written above", t.children[1].text, "▲ 20 ft");
+  check("and the height is written above, green, pointing up", [t.children[1].text, t.children[1].style.fill], ["▲ +20 ft", "#5fe36f"]);
   check("the label sits over the token's head", t.children[1].y < 0, true);
 }
 
@@ -190,7 +192,7 @@ console.log("\nA DROP FROM 30 TO 0 TAKES THE TRIANGLE WITH IT (his table, 2026-0
   Object.assign(t.document, { id: "tok-varek", x: 1000, y: 1000 });
   canvas.tokens.placeables.push(t);
   FlightControl.draw(t);
-  check("on the balcony region the triangle says 30", label(t), "▲ 30 ft");
+  check("on the balcony region the triangle says 30", label(t), "▲ +30 ft");
 
   // The fall: the update says 0, the document has not caught up yet.
   fire("updateToken", t.document, { elevation: 0 }, {}, "gm");
@@ -207,7 +209,7 @@ console.log("\nA DROP FROM 30 TO 0 TAKES THE TRIANGLE WITH IT (his table, 2026-0
 
   // Back up on to a 30-foot region.
   fire("updateToken", t.document, { elevation: 30 }, {}, "gm");
-  check("stepping back up on to the region shows 30 at once", label(t), "▲ 30 ft");
+  check("stepping back up on to the region shows 30 at once", label(t), "▲ +30 ft");
 
   // Foundry redraws the whole token while the document still lags a new drop.
   fire("updateToken", t.document, { elevation: 0 }, {}, "gm");
@@ -220,6 +222,49 @@ console.log("\nA DROP FROM 30 TO 0 TAKES THE TRIANGLE WITH IT (his table, 2026-0
   fire("refreshToken", t, { refreshPosition: true });
   check("a refresh that is not about height does not redraw the marker", t.children[1] === before, true);
   canvas.tokens.placeables.length = 0;
+}
+
+console.log("\nONE BADGE: FOUNDRY'S OWN HEIGHT TEXT IS HIDDEN (his table, 2026-09-18)");
+{
+  // "Foundry/dnd5e already prints '30 ft' on the token. ACE also prints a
+  // triangle. They stack." Foundry's text is the token's tooltip; it is shown
+  // again on every state refresh, and the refresh hook hides it after.
+  const hooks = {};
+  const keepOn = Hooks.on;
+  Hooks.on = (name, fn) => { (hooks[name] ??= []).push(fn); return hooks[name].length; };
+  FlightControl.register();
+  Hooks.on = keepOn;
+  const fire = (name, ...args) => { for (const fn of hooks[name] ?? []) fn(...args); };
+  const texts = (t) => t.children.filter(c => c instanceof PIXI.Text).map(c => c.text);
+
+  const t = tok("Firaxis", { fly: 50, elevation: 30 });
+  Object.assign(t.document, { id: "tok-firaxis", x: 500, y: 500 });
+  t.tooltip = { text: "+30 ft", visible: true };          // what Foundry draws
+  fire("drawToken", t);
+  check("a token at +30 shows one green up triangle and nothing else",
+    [texts(t), t.children.find(c => c instanceof PIXI.Text)?.style?.fill, t.tooltip.visible], [["▲ +30 ft"], "#5fe36f", false]);
+  t.tooltip.visible = true;                                // Foundry's hover refresh shows it again
+  fire("refreshToken", t, { refreshState: true });
+  check("Foundry showing its text again on hover is hidden again", t.tooltip.visible, false);
+
+  const low = tok("Digger", { elevation: -30 });
+  Object.assign(low.document, { id: "tok-digger", x: 700, y: 700 });
+  fire("drawToken", low);
+  check("below the floor: one red down triangle with the depth", texts(low), ["▼ −30 ft"]);
+
+  const floor = tok("Guard", { elevation: 0 });
+  floor.tooltip = { text: "", visible: true };
+  fire("drawToken", floor);
+  check("exactly on the floor: no badge at all", [floor.children.length, floor.tooltip.visible], [0, false]);
+
+  const hair = tok("Hover", { elevation: 0.001 });
+  fire("drawToken", hair);
+  check("a height that rounds to 0 is the floor", hair.children.length, 0);
+
+  const secret = tok("Hidden one", { elevation: 30 });
+  secret.document.isSecret = true;
+  fire("drawToken", secret);
+  check("a secret token keeps its height secret, as Foundry's own text does", secret.children.length, 0);
 }
 
 console.log("");
