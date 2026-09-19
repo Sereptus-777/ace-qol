@@ -190,7 +190,7 @@ export class GazeEngine {
       const dc = this._resolveDC(item, gaze);
 
       // ── Stage-one save ──
-      const rollTotal = await this._rollSave(victimActor, gaze.ability, dc);
+      const rollTotal = await this._rollSave(victimActor, gaze.ability, dc, gaze.id);
       if (rollTotal === null) return false;   // couldn't roll — do nothing rather than guess
 
       const passed = rollTotal >= dc;
@@ -263,13 +263,23 @@ export class GazeEngine {
   }
 
   /** Roll a save GM-side. Returns the total, or null if it couldn't be rolled. */
-  static async _rollSave(actor, ability, dc) {
+  static async _rollSave(actor, ability, dc, what = "a gaze") {
     try {
       // configure:false — ACE owns the pause; dnd5e's save dialog never shows.
       const rolls = await actor.rollSavingThrow({ ability, target: dc }, { configure: false }, { create: false });
       const roll  = Array.isArray(rolls) ? rolls[0] : rolls;
-      const total = Number(roll?.total ?? roll?._total ?? NaN);
-      return Number.isFinite(total) ? total : null;
+      let total = Number(roll?.total ?? roll?._total ?? NaN);
+      if (!Number.isFinite(total)) return null;
+      // LUCKY (2014): a save about to fail, before the gaze lands (luck.mjs).
+      try {
+        const { againstDC } = await import("./luck.mjs");
+        const lk = await againstDC({ actor, kind: "save", what: `${String(ability).toUpperCase()} save against ${what} (DC ${dc})`,
+          roll, total, dc, dice: "show" });
+        if (lk.spent) total = lk.total;
+      } catch (err) {
+        console.warn(`${MODULE_ID} | GazeEngine: Lucky could not be offered on ${actor?.name}'s save; it stands as rolled:`, err);
+      }
+      return total;
     } catch (err) {
       console.warn(`${MODULE_ID} | GazeEngine: rollSavingThrow failed for ${actor.name}:`, err);
       return null;

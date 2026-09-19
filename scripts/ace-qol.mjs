@@ -143,6 +143,11 @@ import { MovementClock }     from "./movement-clock.mjs";
 import { ClockWiring }       from "./clock-wiring.mjs";
 import { FallPipeline }      from "./fall-pipeline.mjs";
 import { ProneArt }          from "./prone-art.mjs";
+// Lucky (2014 and 2024) and the halfling's Lucky. Imports only leaf files.
+import { registerLuck, afterAttackRoll as luckAfterAttackRoll,
+         needsBeforeRoll as luckNeedsBeforeRoll, beforeAttackRoll as luckBeforeAttackRoll } from "./luck.mjs";
+// ⚠️ THE ONE RULE for "does this attack hit" (shared with the GM path and Lucky).
+import { judgeAttack } from "./rules/attack-hit.mjs";
 import { ConditionGhostSweeper } from "./condition-ghost-sweeper.mjs";
 import { PlatformContract, checkContract } from "./platform-contract.mjs";
 import { UnknownScout } from "./unknown-scout.mjs";
@@ -2229,6 +2234,8 @@ Hooks.once("ready", () => {
   try { SunkenFloors.register(); } catch (err) { console.error(`${MODULE_ID} | SunkenFloors init failed:`, err); }
 
   try { ProneArt.register(); } catch (err) { console.error(`${MODULE_ID} | ProneArt init failed:`, err); }
+  // Every client: the halfling's reroll is added where a roll is built.
+  try { registerLuck(); } catch (err) { console.error(`${MODULE_ID} | Luck init failed:`, err); }
   try { ClockWiring.register(); } catch (err) { console.error(`${MODULE_ID} | ClockWiring init failed:`, err); }
   try { MovementClock.register(); } catch (err) { console.error(`${MODULE_ID} | MovementClock init failed:`, err); }
   try { TheClock.register(); } catch (err) { console.error(`${MODULE_ID} | TheClock init failed:`, err); }
@@ -5518,13 +5525,9 @@ Hooks.once("ready", () => {
           //
           // RAW: auto-crit conditions upgrade a HIT to a critical. They never
           // turn a miss into one. Only a natural 20 hits regardless of AC.
-          let hitResult;
-          if (isFumbleRoll) hitResult = "fumble";
-          else if (coverResult?.isFullCover) hitResult = "miss";
-          else if (mirrorImageRedirect) hitResult = "miss"; // Mirror Image absorbed
-          else if (isCritRoll) hitResult = "critical";      // natural 20 always hits + crits
-          else if (attackTotal >= effectiveAC) hitResult = cs.autoCrit ? "critical" : "hit";
-          else hitResult = "miss";
+          // The one rule (rules/attack-hit.mjs), the same function the GM path asks.
+          const hitResult = judgeAttack({ d20: d20Result, total: attackTotal, ac: effectiveAC,
+            fullCover: !!coverResult?.isFullCover, mirrorImage: !!mirrorImageRedirect, autoCrit: !!cs.autoCrit });
 
           results.push({
             ...cs,
@@ -5540,6 +5543,17 @@ Hooks.once("ready", () => {
             isFumbleRoll,
             mirrorImageRedirect,
           });
+        }
+
+        // ── LUCKY (2014): after the dice land, before anything is applied ──
+        // A player's roll is the same attack as the GM's, so it gets the same
+        // luck (luck.mjs). Their dice were thrown on their screen; this waits
+        // for them here before anybody is asked.
+        try {
+          const d20s = (roll.results ?? []).map(Number).filter(Number.isFinite);
+          await luckAfterAttackRoll({ actor, item, results, d20s, dice: "armed" });
+        } catch (err) {
+          console.warn(`${MODULE_ID} | Socket: Lucky failed on "${item?.name}"; the attack resolves as rolled:`, err);
         }
 
         // ── POST-HIT REACTIONS (Shield, etc.) — socket attack path ──
@@ -5579,12 +5593,13 @@ Hooks.once("ready", () => {
 
         console.log(`${MODULE_ID} | Socket: ${item.name} (${attackTotal}) → ${hits.length} hits, ${misses.length} misses`);
 
-        // Build a fake roll object for the attack card display
+        // Build a fake roll object for the attack card display. It reads the
+        // first result, which is where a luck die left the roll.
         const fakeRoll = {
-          total: attackTotal,
+          total: results[0]?.attackTotal ?? attackTotal,
           formula: roll.formula,
           terms: [],
-          dice: [{ total: d20Result, results: (roll.results ?? []).map(r => ({ result: r })) }],
+          dice: [{ total: results[0]?.d20Result ?? d20Result, results: (roll.results ?? []).map(r => ({ result: r })) }],
         };
 
         // Post the attack card and trigger the damage pipeline — use the AttackPipeline instance
@@ -6346,6 +6361,19 @@ Hooks.once("ready", () => {
           const choice = await promptAttackChoice(this.actor, target, this);
           if (!choice) return null; // Esc cancels the attack
           pendingAttackChoices.set(this.actor.id, choice);
+        }
+
+        // ── Lucky (2024): a target spends a point to give this attack
+        // Disadvantage, before the attacker's roll is locked (his rule,
+        // 2026-09-18). Asked here, after the attacker's own prompt, and read by
+        // the pre-roll hook when the dice are built. See luck.mjs.
+        try {
+          const luckTargets = [...(game.user.targets ?? [])];
+          if (luckNeedsBeforeRoll(this.actor, luckTargets)) {
+            await luckBeforeAttackRoll({ attacker: this.actor, item: this, targets: luckTargets });
+          }
+        } catch (err) {
+          console.warn(`${MODULE_ID} | the Lucky question before ${this.name} failed; the attack rolls without it:`, err);
         }
 
         // Replace the event so dnd5e fast-forwards (skips ActivityChoiceDialog).

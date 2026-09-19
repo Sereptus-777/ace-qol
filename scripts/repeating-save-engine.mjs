@@ -353,6 +353,8 @@ export class RepeatingSaveEngine {
         sourceName: spell ?? "",
         suggested: "normal",
         isPC: !!actor.hasPlayerOwner,
+        // The 2024 Lucky button, on their own roll's prompt (luck.mjs).
+        luckActor: actor,
         // Registered so the GM's "ROLL FOR THEM" can close this prompt remotely.
         registerAs: requestId ? (dlg) => RepeatingSaveEngine._openPlayerPrompts.set(requestId, dlg) : null,
       });
@@ -805,10 +807,8 @@ export class RepeatingSaveEngine {
       console.warn(`${MODULE_ID} | RepeatingSave: no roll obtained for ${actor.name} re-save vs ${spell}`);
       return true; // effect persists if we couldn't roll
     }
-    const rollTotal = rollInfo.total;
-    const natural   = Number.isFinite(rollInfo.natural) ? rollInfo.natural : null;
-    const modifier  = (natural != null) ? rollTotal - natural : null;
-    const passed = rollTotal >= dc;
+    let rollTotal = rollInfo.total;
+    let natural   = Number.isFinite(rollInfo.natural) ? rollInfo.natural : null;
     const abilityLabel = (CONFIG.DND5E?.abilities?.[ability]?.label) ?? ability.toUpperCase();
 
     // DSN: a GM-side roll (NPC / offline owner) fires the dice here; a player's
@@ -823,6 +823,27 @@ export class RepeatingSaveEngine {
       await awaitDiceSettle();
     }
 
+    // ── LUCKY (2014): a repeat save about to fail, after its dice, before the
+    // condition is kept or ended (luck.mjs). Only a creature with the feat.
+    let luckNote = null;
+    try {
+      const { luckyFeatItem, ownRoll } = await import("./luck.mjs");
+      if (luckyFeatItem(actor) && natural != null) {
+        const faces = rollInfo.roll
+          ? (rollInfo.roll.dice?.[0]?.results ?? []).filter(x => !x?.rerolled).map(x => Number(x.result))
+          : [natural];
+        const got = await ownRoll({ actor, kind: "save", what: `${abilityLabel} save against ${spell} (DC ${dc})`,
+          d20s: faces, kept: natural, total: rollTotal,
+          judge: (t) => ({ fails: t < dc, words: `${t} against DC ${dc}, ${t >= dc ? "saved" : "failed"}` }),
+          dice: "none" });
+        if (got.spent) { rollTotal = got.total; natural = got.d20; luckNote = got.note; }
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | RepeatingSave: Lucky could not be offered on ${actor.name}'s save; it stands as rolled:`, err);
+    }
+    const modifier  = (natural != null) ? rollTotal - natural : null;
+    const passed = rollTotal >= dc;
+
     // ⚠️ RESOLVE FIRST, ANNOUNCE SECOND (2026-07-28).
     // The card used to be posted HERE, before either branch ran, and decided
     // whether to say "petrified" from meta.onFailureApply — the condition we
@@ -834,7 +855,7 @@ export class RepeatingSaveEngine {
     // ── A save that keeps score, or happens only once, settles its own way ──
     const conditionLabel = RepeatingSaveEngine._conditionLabelOf(stillPresent);
     const card = { actor, spell, ability, abilityLabel, dc, total: rollTotal, natural, modifier, passed, source,
-                   conditionLabel, casterName: meta.casterName ?? null };
+                   conditionLabel, casterName: meta.casterName ?? null, luck: luckNote };
     if (meta.tally) return this._resolveTally(actor, stillPresent, meta, card);
     if (meta.once) return this._resolveOnce(actor, stillPresent, meta, card);
 
@@ -863,7 +884,7 @@ export class RepeatingSaveEngine {
       }
       await this._postChatCard({
         actor, spell, ability, abilityLabel, dc,
-        total: rollTotal, natural, modifier, passed,
+        total: rollTotal, natural, modifier, passed, luck: luckNote,
         onFailureApply: null, source, conditionLabel,
       });
       return false;
@@ -896,7 +917,7 @@ export class RepeatingSaveEngine {
           }
           await this._postChatCard({
             actor, spell, ability, abilityLabel, dc,
-            total: rollTotal, natural, modifier, passed,
+            total: rollTotal, natural, modifier, passed, luck: luckNote,
             onFailureApply: escalatedTo, source, conditionLabel,
           });
           return false;
@@ -910,7 +931,7 @@ export class RepeatingSaveEngine {
       // Either way nothing new landed — the card must not claim it did.
       await this._postChatCard({
         actor, spell, ability, abilityLabel, dc,
-        total: rollTotal, natural, modifier, passed,
+        total: rollTotal, natural, modifier, passed, luck: luckNote,
         onFailureApply: null, source, conditionLabel,
       });
       return true;
@@ -1179,7 +1200,7 @@ export class RepeatingSaveEngine {
   }
 
   static async _postChatCard({ actor, spell, ability, abilityLabel, dc, total, natural, modifier, passed, onFailureApply, source,
-                               conditionLabel = "the effect", footerHtml = null, casterName = null }) {
+                               conditionLabel = "the effect", footerHtml = null, casterName = null, luck = null }) {
     // SAME look as the regular save card (Johnny 2026-07-27: "it still is just a
     // save card — why did you make up a new format?"). Black-gold d20 face from
     // the save engine's own helper, "raw = total" in result colors, PASS/FAIL
@@ -1216,6 +1237,7 @@ export class RepeatingSaveEngine {
             } = <span class="${numCls}">${Number.isFinite(total) ? total : "—"}</span></span>
             <span class="ace-qol-rsv2-badge ${passed ? "ace-qol-rsv2-pass" : "ace-qol-rsv2-fail"}">${resultLabel}</span>
           </div>
+          ${luck ? `<div class="ace-qol-rsv2-foot" style="color:#7fd08a;"><i class="fas fa-clover"></i> ${foundry.utils.escapeHTML(String(luck))}</div>` : ""}
           <div class="ace-qol-rsv2-foot ${passed ? "ace-qol-rsv2-foot-pass" : "ace-qol-rsv2-foot-fail"}">${footer}</div>
         </div>
       `;

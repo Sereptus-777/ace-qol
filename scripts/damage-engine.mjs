@@ -36,6 +36,10 @@ import { ConditionLibrary } from "./condition-library.mjs";
 // dependency through ace-qol.mjs. We re-export it here so existing
 // imports of `safeShowForRoll` from damage-engine.mjs keep working.
 import { safeShowForRoll, awaitDiceSettle } from "./dsn-utils.mjs";
+// Lucky (both editions) and the halfling's Lucky, for the Cleave's own attack roll.
+import { withHalflingLuck, needsBeforeRoll as luckNeedsBeforeRoll, beforeAttackRoll as luckBeforeAttackRoll,
+         takeBeforeRoll as luckTakeBeforeRoll, afterAttackRoll as luckAfterAttackRoll, luckyFeatItem } from "./luck.mjs";
+import { judgeAttack } from "./rules/attack-hit.mjs";
 import { Situation } from "./situation.mjs";
 // Shared "why didn't that happen" reporters. why-not.mjs is a leaf that
 // imports nothing, so it cannot join the static import cycles ace-qol.mjs
@@ -1405,12 +1409,41 @@ export class DamageEngine {
       const prof       = Number(_aceCreature(attActor)?.prof ?? 2) || 0;
       const magicBonus = Number(item?.system?.magicalBonus ?? 0) || 0;
       const toHit      = abilityMod + prof + magicBonus;
-      const roll       = await new Roll("1d20 + @toHit", { toHit }).evaluate();
-      const d20        = roll.dice?.[0]?.results?.find(r => r.active)?.result
+      // LUCKY (2024): the chosen creature's question before the roll is locked.
+      let cleaveDie = "1d20";
+      try {
+        const cleaveTargets = [chosen.token ?? chosen];   // the picked creature's token
+        if (luckNeedsBeforeRoll(attActor, cleaveTargets)) {
+          await luckBeforeAttackRoll({ attacker: attActor, item, targets: cleaveTargets });
+        }
+        if (luckTakeBeforeRoll(attActor)?.by?.length) cleaveDie = "2d20kl";
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Cleave: the Lucky question failed; it rolls without it:`, err);
+      }
+      // A halfling rerolls a natural 1 (luck.mjs), as dnd5e's own attacks do.
+      const roll       = await new Roll(withHalflingLuck(`${cleaveDie} + @toHit`, attActor), { toHit }).evaluate();
+      let d20          = roll.dice?.[0]?.results?.find(r => r.active)?.result
                       ?? roll.dice?.[0]?.results?.[0]?.result ?? null;
+      let cleaveTotal  = roll.total;
+      let luckNote     = null;
+      // LUCKY (2014): after the die lands, before the Cleave counts (luck.mjs).
+      if (luckyFeatItem(attActor) || luckyFeatItem(chosen.actor)) {
+        try {
+          safeShowForRoll(roll, "cleave attack");
+          const r = { name: chosen.name, targetActor: chosen.actor, targetToken: chosen.token ?? chosen,
+            d20Result: d20, attackTotal: cleaveTotal, effectiveAC: targetAC, ac: targetAC,
+            coverResult: null, mirrorImageRedirect: null, autoCrit: false,
+            hitResult: judgeAttack({ d20, total: cleaveTotal, ac: targetAC }) };
+          const faces = (roll.dice?.[0]?.results ?? []).filter(x => !x?.rerolled).map(x => Number(x.result));
+          await luckAfterAttackRoll({ actor: attActor, item, results: [r], d20s: faces, dice: "ours" });
+          d20 = r.d20Result; cleaveTotal = r.attackTotal; luckNote = r.luck ?? null;
+        } catch (err) {
+          console.warn(`${MODULE_ID} | Cleave: Lucky failed; it stands as rolled:`, err);
+        }
+      }
       const nat20 = d20 === 20;
       const nat1  = d20 === 1;
-      const hit   = nat20 || (!nat1 && roll.total >= targetAC);
+      const hit   = nat20 || (!nat1 && cleaveTotal >= targetAC);
       // ── Branded ACE cleave-attack card (NOT a vanilla roll card) ──
       // Matches the attack/damage cards: black d20 face + to-hit chips + AC +
       // HIT/MISS/CRIT badge. DSN animates the d20 (fire-and-forget, broadcast).
@@ -1438,9 +1471,11 @@ export class DamageEngine {
         + `<span style="display:none;flex-direction:column;align-items:center;justify-content:center;width:46px;height:46px;background:radial-gradient(circle at 50% 35%,#2a2a30,#0c0c0e);border:1.5px solid #4a4a52;border-radius:9px;"><span style="font-size:20px;font-weight:800;color:#f0e4c0;">${d20 ?? "?"}</span><span style="font-size:8px;color:#7a7a82;">d20</span></span></span>`
         + `<div style="flex:1;min-width:0;line-height:1.55;"><div style="font-size:12px;color:#c8c6c0;">${_chips.join(" ")}</div>`
         + `<div style="font-size:11px;color:#8a8a92;">vs AC <strong style="color:#cfcabf;">${targetAC}</strong></div></div>`
-        + `<div style="text-align:right;flex:0 0 auto;"><div style="font-size:23px;font-weight:800;color:#fff;line-height:1;">${roll.total}</div>`
+        + `<div style="text-align:right;flex:0 0 auto;"><div style="font-size:23px;font-weight:800;color:#fff;line-height:1;">${cleaveTotal}</div>`
         + `<span style="display:inline-block;margin-top:5px;padding:2px 9px;border-radius:4px;font-size:11px;font-weight:800;letter-spacing:.5px;${_badgeStyle}">${_badgeLabel}</span></div>`
-        + `</div></div>`;
+        + `</div>`
+        + (luckNote ? `<div style="margin-top:6px;font-size:14px;line-height:1.35;color:#7fd08a;"><i class="fas fa-clover"></i> ${_esc(String(luckNote))}</div>` : "")
+        + `</div>`;
       // Fire the d20, then WAIT for it to settle before revealing the card —
       // same path the attack / damage / save result cards use so the card never
       // beats the dice (safeShowForRoll broadcasts; awaitDiceSettle is a fixed,

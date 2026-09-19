@@ -228,6 +228,27 @@ function _takeArmed() {
   return _armed.shift() ?? null;
 }
 
+/**
+ * Wait for the oldest armed watch's dice to land WITHOUT taking the watch.
+ *
+ * ⚠️ FOR A BOX THAT COMES BEFORE THE CARD (Lucky, 2026-09-18). "No card before
+ * Dice So Nice finishes": a box asked between the attack roll and its card must
+ * wait for the attack's d20 too. Taking the watch here would leave the card
+ * with nothing to wait on; peeking leaves it in place, already resolved, so the
+ * card's own wait is then instant. With no armed watch (a player's roll, whose
+ * watch was armed on the player's screen) it waits for the dice by their
+ * completion event instead.
+ */
+export async function awaitArmedDicePeek(maxMs = 15000) {
+  try {
+    if (!game?.dice3d?.isEnabled?.()) return;
+  } catch (_) { return; }
+  const watch = _armed[0] ?? null;
+  if (!watch) { await awaitDiceSettle(3000); return; }
+  await Promise.race([watch.promise, new Promise(r => setTimeout(r, maxMs))]);
+  await new Promise(r => setTimeout(r, 50));
+}
+
 export async function awaitDiceSettle(maxMs = 3000, { messageId = null, graceMs = 50, useArmed = false } = {}) {
   try {
     if (!game?.dice3d?.isEnabled?.()) return;

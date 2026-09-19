@@ -536,11 +536,21 @@ export class OverTimeEngine {
         { create: false },
       );
       const roll = Array.isArray(rolls) ? rolls[0] : rolls;
-      const total = Number(roll?.total ?? NaN);
+      let total = Number(roll?.total ?? NaN);
       if (Number.isFinite(total)) {
+        // LUCKY (2014): a save about to fail, before it is used (luck.mjs).
+        let natural = naturalD20(roll);
+        try {
+          const { againstDC } = await import("./luck.mjs");
+          const lk = await againstDC({ actor, kind: "save", what: `${ability.toUpperCase()} save (DC ${dc})`,
+            roll, total, dc, dice: "show" });
+          if (lk.spent) { total = lk.total; natural = lk.d20; }
+        } catch (err) {
+          console.warn(`${MODULE_ID} | OverTime: Lucky could not be offered on ${actor?.name}'s save; it stands as rolled:`, err);
+        }
         const passed = total >= dc;
         this._debug(`Save: ${actor.name} ${ability.toUpperCase()} DC ${dc} → ${total} (${passed ? "PASS" : "FAIL"})`);
-        return { total, natural: naturalD20(roll), passed, ability, dc };
+        return { total, natural, passed, ability, dc };
       }
       console.warn(`${MODULE_ID} | OverTime: rollSavingThrow gave no usable total for ${actor?.name} — rolling manually.`);
     } catch (err) {
@@ -552,8 +562,16 @@ export class OverTimeEngine {
     // an object; interpolating it raw produced "1d20 + [object Object]".
     try {
       const bonus = saveBonus(actor?.getRollData?.() ?? {}, ability);
-      const roll = await new Roll(`1d20 + ${bonus}`).evaluate();
-      const total = Number(roll.total);
+      const { withHalflingLuck, againstDC } = await import("./luck.mjs");
+      const roll = await new Roll(withHalflingLuck(`1d20 + ${bonus}`, actor)).evaluate();
+      let total = Number(roll.total);
+      try {
+        const lk = await againstDC({ actor, kind: "save", what: `${ability.toUpperCase()} save (DC ${dc})`,
+          roll, total, dc, dice: "show" });
+        if (lk.spent) total = lk.total;
+      } catch (err) {
+        console.warn(`${MODULE_ID} | OverTime: Lucky could not be offered on ${actor?.name}'s save; it stands as rolled:`, err);
+      }
       const passed = total >= dc;
       this._debug(`Save (manual): ${actor.name} ${ability.toUpperCase()} DC ${dc} → ${total} (${passed ? "PASS" : "FAIL"})`);
       return { total, natural: naturalD20(roll), passed, ability, dc };

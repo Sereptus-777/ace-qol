@@ -10,6 +10,10 @@ import { TargetState } from "../../target-state.mjs";
 import { CombatState } from "../../combat-state.mjs";
 import { Situation } from "../../situation.mjs";   // ⚠️ WAS NEVER IMPORTED — see below
 import { safeShowForRoll, awaitDiceSettle } from "../../dsn-utils.mjs";
+// Lucky (both editions) and the halfling's Lucky, per beam: each is an attack roll.
+import { withHalflingLuck, needsBeforeRoll as luckNeedsBeforeRoll, beforeAttackRoll as luckBeforeAttackRoll,
+         takeBeforeRoll as luckTakeBeforeRoll, afterAttackRoll as luckAfterAttackRoll, luckyFeatItem } from "../../luck.mjs";
+import { judgeAttack, isAHit } from "../../rules/attack-hit.mjs";
 import { AnimationHelper } from "../animation.mjs";
 import { buildAttackerProfile } from "../../profiles/attacker-profile.mjs";
 
@@ -327,12 +331,13 @@ export class DamageResolver {
 
       // Situational brain — the SAME assess the weapon pipeline uses, so
       // darkness / devil's sight / prone / invisibility all shape the volley.
-      let advantage = false, disadvantage = false;
+      let advantage = false, disadvantage = false, anyAdvantage = false;
       let situNote = "";
       try {
         const state = CombatState.assess(actor, token, item, { isSpell: true });
         const advS = state?.advantageSources ?? [];
         const disS = state?.disadvantageSources ?? [];
+        anyAdvantage = advS.length > 0;
         if (advS.length && !disS.length) {
           advantage = true;
           situNote = `ADV — ${advS.map(s => s.reason).join("; ")}`;
@@ -345,29 +350,62 @@ export class DamageResolver {
       } catch (err) {
         console.warn(`${MODULE_ID} | runAttackMulti: assess failed for ${targetName} (rolling straight):`, err);
       }
-      situations.set(targetActor, { token, ac, targetName, advantage, disadvantage, situNote });
+      situations.set(targetActor, { token, ac, targetName, advantage, disadvantage, anyAdvantage, situNote });
     }
 
     for (const [targetActor, units] of filtered.entries()) {
       const situation = situations.get(targetActor);
       if (!situation) continue;
-      const { token, ac, targetName, advantage, disadvantage, situNote } = situation;
+      const { token, ac, targetName, advantage, disadvantage, anyAdvantage, situNote } = situation;
 
       let unitHits = 0, unitCrits = 0;
       for (let b = 0; b < units; b++) {
         unitNo++;
-        const roll = await DamageResolver._rollUnitAttack(activity, item, actor, { advantage, disadvantage });
+        // ── LUCKY (2024): the target's question before THIS beam is rolled.
+        // Each beam is its own attack roll, so each is its own question.
+        let beamAdv = advantage, beamDis = disadvantage;
+        try {
+          if (luckNeedsBeforeRoll(actor, [token])) await luckBeforeAttackRoll({ attacker: actor, item, targets: [token] });
+          const lk = luckTakeBeforeRoll(actor);
+          if (lk?.by?.length) {
+            // Advantage and Disadvantage cancel however many of each (RAW).
+            if (anyAdvantage) { beamAdv = false; beamDis = false; }
+            else beamDis = true;
+          }
+        } catch (err) {
+          console.warn(`${MODULE_ID} | runAttackMulti: the Lucky question before ${noun} ${unitNo} failed; it rolls without it:`, err);
+        }
+        const roll = await DamageResolver._rollUnitAttack(activity, item, actor, { advantage: beamAdv, disadvantage: beamDis });
         if (!roll) { volleyRows.push({ target: targetName, n: unitNo, error: true, ac }); continue; }
 
         const d20die = roll.dice?.find(d => d.faces === 20);
-        const kept = d20die?.results?.find(r => r.active !== false)?.result
+        let kept = d20die?.results?.find(r => r.active !== false)?.result
                   ?? d20die?.total ?? null;
-        const isCrit = kept === 20;
-        const isFumble = kept === 1;
-        const hit = !isFumble && (isCrit || roll.total >= ac);
+        let total = roll.total;
+        let isCrit = kept === 20;
+        let isFumble = kept === 1;
+        let hit = !isFumble && (isCrit || roll.total >= ac);
+        let luckNote = null;
+
+        // ── LUCKY (2014): after this beam's die lands, before it counts ──
+        // The caster's luck on a miss, the target's on a hit (luck.mjs).
+        if (luckyFeatItem(actor) || luckyFeatItem(targetActor)) {
+          try {
+            safeShowForRoll(roll, "volley attack");
+            const r = { name: targetName, targetActor, targetToken: token, d20Result: kept, attackTotal: total,
+              effectiveAC: ac, ac, coverResult: null, mirrorImageRedirect: null, autoCrit: false,
+              hitResult: judgeAttack({ d20: kept, total, ac }) };
+            const faces = (d20die?.results ?? []).filter(x => !x?.rerolled).map(x => Number(x.result));
+            await luckAfterAttackRoll({ actor, item, results: [r], d20s: faces, dice: "ours" });
+            kept = r.d20Result; total = r.attackTotal; luckNote = r.luck ?? null;
+            hit = isAHit(r.hitResult); isCrit = r.hitResult === "critical"; isFumble = r.hitResult === "fumble";
+          } catch (err) {
+            console.warn(`${MODULE_ID} | runAttackMulti: Lucky failed on ${noun} ${unitNo}; it stands as rolled:`, err);
+          }
+        }
         if (hit) { unitHits++; if (isCrit) unitCrits++; }
 
-        volleyRows.push({ target: targetName, n: unitNo, d20: kept, total: roll.total, ac, hit, crit: isCrit, fumble: isFumble, situNote });
+        volleyRows.push({ target: targetName, n: unitNo, d20: kept, total, ac, hit, crit: isCrit, fumble: isFumble, situNote, luck: luckNote });
         // 3D dice — fire-and-forget; awaiting external modules is how we hang.
         // Through safeShowForRoll so the animation is REGISTERED: a raw call
         // here left awaitDiceSettle with nothing to wait on, and the volley
@@ -486,7 +524,8 @@ export class DamageResolver {
         bonus = mod + prof;
       }
       const die = advantage ? "2d20kh" : disadvantage ? "2d20kl" : "1d20";
-      const roll = new Roll(`${die} + ${bonus}`);
+      // A halfling rerolls a natural 1 (luck.mjs), as dnd5e's own attacks do.
+      const roll = new Roll(withHalflingLuck(`${die} + ${bonus}`, actor));
       await roll.evaluate();
       return roll;
     } catch (err) {
@@ -533,7 +572,8 @@ export class DamageResolver {
           <span style="font-weight:700;color:#fff;">= ${r.total}</span>
           <span style="color:#6b5230;">vs ${r.ac}</span>
           ${verdict}
-        </div>`;
+        </div>
+        ${r.luck ? `<div style="margin:0 0 2px 28px;font-size:14px;line-height:1.35;color:#7fd08a;"><i class="fas fa-clover"></i> ${foundry.utils.escapeHTML(String(r.luck))}</div>` : ""}`;
     }).join("");
 
     const html = `

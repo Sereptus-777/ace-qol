@@ -1446,6 +1446,18 @@ export class ReactionEngine {
           + `${payload.promptData?.reactorActorName ?? "a creature"} could not open here, so it answers no:`, err);
         result = { accepted: false, choiceData: {} };
       }
+      // ⚠️ THE SCREEN THAT SAYS YES SPENDS THE LUCK POINT (2026-09-18). A
+      // player's screen asking about an NPC's Lucky cannot write that NPC's
+      // feat; the GM who just said yes can, and a player saying yes owns theirs.
+      if (result?.accepted && payload.promptData?.luckItemUuid) {
+        try {
+          const { spendLuckByUuid } = await import("./luck.mjs");
+          const luckSpent = await spendLuckByUuid(payload.promptData.luckItemUuid);
+          result = { ...result, choiceData: { ...(result.choiceData ?? {}), luckSpent } };
+        } catch (err) {
+          console.warn(`${MODULE_ID} | could not spend the luck point on this screen; the asking screen will try:`, err);
+        }
+      }
       // Send response back to GM. v0.4.22.12: include senderUserId
       // and reactorActorId so the GM-side handler can validate
       // ownership (defense in depth — a stolen requestId alone no
@@ -2320,6 +2332,16 @@ export class ReactionEngine {
           countered = false;
         } else {
           checkResult = saveRoll.total;
+          // LUCKY (2014): the countered caster's save, about to fail (luck.mjs).
+          try {
+            const { againstDC } = await import("./luck.mjs");
+            const lk = await againstDC({ actor: casterActor, kind: "save",
+              what: `Constitution save against ${reactor.actor.name}'s Counterspell (DC ${counterDC})`,
+              roll: saveRoll, total: checkResult, dc: counterDC, dice: "show" });
+            if (lk.spent) checkResult = lk.total;
+          } catch (err) {
+            console.warn(`${MODULE_ID} | Counterspell (2024): Lucky could not be offered on ${casterActor.name}'s save; it stands as rolled:`, err);
+          }
           countered = checkResult < counterDC;   // FAILED save = countered
           resultLabel = `${casterActor.name} CON save ${checkResult} vs DC ${counterDC}`;
           this._debug(`Counterspell 2024: ${resultLabel} → ${countered ? "COUNTERED" : "resisted"}`);
@@ -2339,9 +2361,19 @@ export class ReactionEngine {
         // Check for Abjuration Wizard feature (adds proficiency to counterspell checks)
         const hasImprovedAbjuration = this._hasFeature(reactor.actor, "Improved Abjuration");
 
-        // Roll the check
-        const roll = await new Roll(`1d20 + ${abilityMod}${hasImprovedAbjuration ? ` + ${profBonus}` : ""}`).evaluate();
+        // Roll the check. A halfling rerolls a natural 1 (luck.mjs).
+        const { withHalflingLuck, againstDC } = await import("./luck.mjs");
+        const roll = await new Roll(withHalflingLuck(`1d20 + ${abilityMod}${hasImprovedAbjuration ? ` + ${profBonus}` : ""}`, reactor.actor)).evaluate();
         checkResult = roll.total;
+        // LUCKY (2014): the counterspeller's own check, about to fail.
+        try {
+          const lk = await againstDC({ actor: reactor.actor, kind: "check",
+            what: `spellcasting check to counter a level ${spellLevel} spell (DC ${dc})`,
+            roll, total: checkResult, dc, dice: "show" });
+          if (lk.spent) checkResult = lk.total;
+        } catch (err) {
+          console.warn(`${MODULE_ID} | Counterspell (2014): Lucky could not be offered on ${reactor.actor.name}'s check; it stands as rolled:`, err);
+        }
         countered = checkResult >= dc;
 
         resultLabel = `check ${checkResult} vs DC ${dc}`;
@@ -3928,6 +3960,11 @@ export class ReactionEngine {
         // A box's own letters on its yes button, and their edge. Unset: white
         // letters edged in a deeper shade of the face.
         yesInk, yesEdge,
+        // A box that asks WHICH, not whether (Lucky's "which d20?", 2026-09-18):
+        // one button per choice, [{ id, label, sub }], all in the box's colour.
+        // The answer is { accepted: true, choiceData: { choice: id } }; closing
+        // the box answers no.
+        choices,
       } = data;
 
       const accent = accentColor ?? "#d4af37";
@@ -4050,12 +4087,16 @@ export class ReactionEngine {
             ${consumeSlotHtml}
           </div>
           <div class="ace-qol-reaction-buttons">
+            ${Array.isArray(choices) && choices.length ? choices.map(c => `
+            <button class="ace-qol-reaction-accept ace-qol-reaction-choice" data-choice="${esc(c.id)}" style="--ace-yes:${yesFace}; --ace-yes-deep:${yesDeep}; --ace-yes-ink:${yesInk ?? "#ffffff"}; --ace-yes-edge:${yesEdge ?? yesDeep}">
+              <i class="fas ${icon ?? "fa-check"}"></i><span>${esc(c.label)}${c.sub ? `<br><small style="font-size:14px;font-weight:500;opacity:0.9;">${esc(c.sub)}</small>` : ""}</span>
+            </button>`).join("") : `
             <button class="ace-qol-reaction-accept" style="--ace-yes:${yesFace}; --ace-yes-deep:${yesDeep}; --ace-yes-ink:${yesInk ?? "#ffffff"}; --ace-yes-edge:${yesEdge ?? yesDeep}">
               <i class="fas ${icon ?? "fa-check"}"></i><span>${acceptLabel ?? "Use Reaction"}</span>
             </button>
             <button class="ace-qol-reaction-decline">
               <i class="fas fa-xmark"></i><span>${declineLabel ?? "Decline"}</span>
-            </button>
+            </button>`}
           </div>
         </div>
       `;
@@ -4075,8 +4116,16 @@ export class ReactionEngine {
           try { data.onShown?.(); }
           catch (err) { console.warn(`${MODULE_ID} | could not report that the ${title ?? "reaction"} box opened:`, err); }
 
+          // ── A box that asks which: every choice is its own answer ──
+          el.querySelectorAll(".ace-qol-reaction-choice").forEach(btn => btn.addEventListener("click", () => {
+            if (resolved) return;
+            resolved = true;
+            resolve({ accepted: true, choiceData: { choice: btn.dataset.choice } });
+            dialog.close();
+          }));
+
           // ── Accept button ──
-          el.querySelector(".ace-qol-reaction-accept")?.addEventListener("click", () => {
+          el.querySelector(".ace-qol-reaction-accept:not(.ace-qol-reaction-choice)")?.addEventListener("click", () => {
             if (resolved) return;
             resolved = true;
 

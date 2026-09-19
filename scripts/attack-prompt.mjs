@@ -102,6 +102,45 @@ export function showCenterToast(message, durationMs = 2500) {
 export const pendingAttackChoices = new Map();
 
 /**
+ * ⚠️ THE 2024 LUCKY BUTTON LIVES ON THE ROLLER'S OWN PROMPT (Johnny,
+ * 2026-09-18): "Do NOT pop a box on every attack they make. Put a Lucky button
+ * on THEIR roll card. Pressing it before the roll spends 1 point and gives
+ * Advantage." These three prompts are the pause before a roll, so the button
+ * is a fourth choice on them. `luck.mjs` decides whether this screen gets it
+ * (the 2024 feat, a point left, and this is the screen that decides for the
+ * creature) and says why in the console when it does not.
+ */
+async function _luckyButton(luckActor, hasDisadvantage) {
+  if (!luckActor) return null;
+  try {
+    const { buttonFor } = await import("./luck.mjs");
+    const luck = buttonFor(luckActor);
+    if (!luck) return null;
+    return {
+      action: "lucky",
+      label: `Lucky: ${hasDisadvantage ? "cancels Disadvantage" : "Advantage"} (${luck.left} left)`,
+      icon: "fa-solid fa-clover",
+    };
+  } catch (err) {
+    console.warn(`${MODULE_ID} | could not read ${luckActor?.name}'s Lucky feat for the prompt:`, err);
+    return null;
+  }
+}
+
+/** The Lucky button was pressed: spend the point, return the roll's mode. */
+async function _pressedLucky(luckActor, hasDisadvantage, fallback) {
+  try {
+    const { pressButton } = await import("./luck.mjs");
+    const mode = await pressButton(luckActor, { hasDisadvantage });
+    return mode ?? fallback;
+  } catch (err) {
+    console.warn(`${MODULE_ID} | the Lucky button could not spend ${luckActor?.name}'s point; `
+      + `rolling at "${fallback}":`, err);
+    return fallback;
+  }
+}
+
+/**
  * ACE's OWN consumption prompt — replaces dnd5e's "Consume Item Use?" dialog.
  * (Johnny 2026-07-27. ACE owns every pause — see feedback_gm_attack_dialog_stays.)
  *
@@ -301,7 +340,8 @@ export async function showActivityChoice({ itemName, itemImg = null, activities 
  * @param {object[]} [opts.reasons]   [{reason}] why
  * @param {boolean} [opts.isPC]
  */
-export async function showSavePrompt({ creature, abilityLabel, dc, sourceName, suggested = "normal", reasons = [], isPC = false, registerAs = null }) {
+export async function showSavePrompt({ creature, abilityLabel, dc, sourceName, suggested = "normal", reasons = [], isPC = false, registerAs = null,
+                                       luckActor = null, hasDisadvantage = suggested === "disadvantage" }) {
   const reasonText = reasons.length
     ? reasons.map(r => r.reason ?? r).filter(Boolean).join(" • ")
     : "No situational modifiers detected";
@@ -325,6 +365,8 @@ export async function showSavePrompt({ creature, abilityLabel, dc, sourceName, s
     { action: "normal",       label: "Normal",       icon: "fa-solid fa-equals",     default: suggested === "normal" },
     { action: "disadvantage", label: "Disadvantage", icon: "fa-solid fa-arrow-down", default: suggested === "disadvantage" },
   ];
+  const lucky = await _luckyButton(luckActor, hasDisadvantage);
+  if (lucky) buttons.push(lucky);
   try {
     const result = await foundry.applications.api.DialogV2.wait({
       window: { title: "Saving Throw" },
@@ -341,6 +383,7 @@ export async function showSavePrompt({ creature, abilityLabel, dc, sourceName, s
         try { registerAs?.(dialog); } catch (_) { /* optional */ }
       },
     });
+    if (result === "lucky") return _pressedLucky(luckActor, hasDisadvantage, suggested);
     return result ?? null;
   } catch (err) {
     console.error(`${MODULE_ID} | showSavePrompt FAILED — falling back to "${suggested}"`, err?.message ?? err);
@@ -369,7 +412,8 @@ export async function showSavePrompt({ creature, abilityLabel, dc, sourceName, s
  * Returns "advantage" | "normal" | "disadvantage", or null if cancelled.
  */
 export async function showCheckPrompt({ creature, checkLabel, suggested = "normal",
-                                        reasons = [], isPC = false, modifier = null }) {
+                                        reasons = [], isPC = false, modifier = null,
+                                        luckActor = null, hasDisadvantage = suggested === "disadvantage" }) {
   const reasonText = reasons.length
     ? reasons.map(r => r.reason ?? r).filter(Boolean).join(" • ")
     : "Nothing on this creature changes this check";
@@ -395,6 +439,8 @@ export async function showCheckPrompt({ creature, checkLabel, suggested = "norma
     { action: "normal",       label: "Normal",       icon: "fa-solid fa-equals",     default: suggested === "normal" },
     { action: "disadvantage", label: "Disadvantage", icon: "fa-solid fa-arrow-down", default: suggested === "disadvantage" },
   ];
+  const lucky = await _luckyButton(luckActor, hasDisadvantage);
+  if (lucky) buttons.push(lucky);
   try {
     const result = await foundry.applications.api.DialogV2.wait({
       window: { title: "Check" },
@@ -407,6 +453,7 @@ export async function showCheckPrompt({ creature, checkLabel, suggested = "norma
         root.querySelector?.(`button[data-action="${suggested}"]`)?.classList.add("ace-qol-suggested-btn");
       },
     });
+    if (result === "lucky") return _pressedLucky(luckActor, hasDisadvantage, suggested);
     return result ?? null;
   } catch (err) {
     console.error(`${MODULE_ID} | showCheckPrompt FAILED — falling back to "${suggested}"`, err?.message ?? err);
@@ -425,6 +472,7 @@ export async function showCheckPrompt({ creature, checkLabel, suggested = "norma
 export async function promptAttackChoice(actor, targetToken, item) {
   let suggested = "normal";
   let reasons   = [];
+  let hasDisadvantage = false;   // for the Lucky button: its Advantage cancels any
   try {
     const { CombatState } = await import("./combat-state.mjs");
     const { pickHiddenReasonLine } = await import("./hidden-reason-notice.mjs");
@@ -433,6 +481,7 @@ export async function promptAttackChoice(actor, targetToken, item) {
     // SHOW THE WORK, always (2026-07-10): a "normal" produced by advantage and
     // disadvantage CANCELING is a rules outcome the table deserves to see.
     const advS = cs?.advantageSources ?? [], disS = cs?.disadvantageSources ?? [];
+    hasDisadvantage = disS.length > 0 || suggested === "disadvantage";
     const allNotes = cs?.situationalNotes ?? [];
     // gmOnly notes: the GM always sees them; players get a mystery line and the
     // GM gets the socket heads-up. (HARD RULE — no setting.)
@@ -475,6 +524,8 @@ export async function promptAttackChoice(actor, targetToken, item) {
     reasons,
     attackerIsPC: !!actor?.hasPlayerOwner,
     targetIsPC:   !!targetToken?.actor?.hasPlayerOwner,
+    luckActor:    actor,
+    hasDisadvantage,
   });
 }
 
@@ -491,7 +542,8 @@ export async function promptAttackChoice(actor, targetToken, item) {
  * @param {boolean}  opts.targetIsPC      - true if target is player-owned
  * @returns {Promise<"advantage"|"normal"|"disadvantage"|null>}
  */
-export async function showAdvantagePrompt({ attacker, target, suggested, reasons = [], attackerIsPC = false, targetIsPC = false }) {
+export async function showAdvantagePrompt({ attacker, target, suggested, reasons = [], attackerIsPC = false, targetIsPC = false,
+                                           luckActor = null, hasDisadvantage = suggested === "disadvantage" }) {
   const reasonText = reasons.length
     ? reasons.map(r => r.reason ?? r).filter(Boolean).join(" • ")
     : "No situational modifiers detected";
@@ -537,6 +589,8 @@ export async function showAdvantagePrompt({ attacker, target, suggested, reasons
       default: suggested === "disadvantage",
     },
   ];
+  const lucky = await _luckyButton(luckActor, hasDisadvantage);
+  if (lucky) buttons.push(lucky);
 
   try {
     const result = await foundry.applications.api.DialogV2.wait({
@@ -554,6 +608,7 @@ export async function showAdvantagePrompt({ attacker, target, suggested, reasons
         if (btn) btn.classList.add("ace-qol-suggested-btn");
       },
     });
+    if (result === "lucky") return _pressedLucky(luckActor, hasDisadvantage, suggested);
     return result ?? null;
   } catch (err) {
     // ── v0.4.22: improved error visibility ──

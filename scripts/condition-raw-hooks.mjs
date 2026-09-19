@@ -430,6 +430,7 @@ export class ConditionRawHooks {
       // popped and dnd5e printed its own card beside ours.
       let total = 0;
       let formula = "";
+      let saveRoll = null;
       try {
         const roll = await actor.rollSavingThrow(
           { ability: saveAbility, target: saveDC },
@@ -440,6 +441,7 @@ export class ConditionRawHooks {
         const r = Array.isArray(roll) ? roll[0] : roll;
         total = Number(r?.total ?? 0);
         formula = r?.formula ?? "";
+        saveRoll = r ?? null;
       } catch (err) {
         console.warn(`${MODULE_ID} | Dominate re-save: system roller failed for ${actor?.name} — rolling manually.`, err);
       }
@@ -451,9 +453,21 @@ export class ConditionRawHooks {
         // This also beats rebuilding mod + proficiency by hand, which missed
         // every bonus a feat or item contributes.
         const bonus = saveBonus(actor?.getRollData?.() ?? {}, saveAbility);
-        const roll = await new Roll(`1d20 + ${bonus}`).evaluate();
+        const { withHalflingLuck } = await import("./luck.mjs");
+        const roll = await new Roll(withHalflingLuck(`1d20 + ${bonus}`, actor)).evaluate();
         total = roll.total;
         formula = roll.formula;
+        saveRoll = roll;
+      }
+
+      // LUCKY (2014): a save about to fail, before the hold is kept (luck.mjs).
+      try {
+        const { againstDC } = await import("./luck.mjs");
+        const lk = await againstDC({ actor, kind: "save", what: `Wisdom save against Dominate (DC ${saveDC})`,
+          roll: saveRoll, total, dc: saveDC, dice: "show" });
+        if (lk.spent) total = lk.total;
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Dominate re-save: Lucky could not be offered on ${actor?.name}'s save; it stands as rolled:`, err);
       }
 
       const passed = total >= saveDC;

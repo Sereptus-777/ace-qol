@@ -28,6 +28,8 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { aimAt } from "./road/aim.mjs";   // ACE aims on purpose: no "did you mean that corpse?" (road/aim.mjs)
 import { aceStripEnrichers } from "./description-reader.mjs";
 import { CombatState } from "./combat-state.mjs";
+// Lucky (2024): a target's question before each swing is rolled. See luck.mjs.
+import { needsBeforeRoll as luckNeedsBeforeRoll, beforeAttackRoll as luckBeforeAttackRoll } from "./luck.mjs";
 
 const NUM_WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8 };
 const ACCENT = "#ffd54f";
@@ -1101,6 +1103,17 @@ export class MultiattackEngine {
       }
       if (!fireVia) {
         throw new Error(`"${item.name}" has no usable attack activity and no use() — item data problem`);
+      }
+      // ⚠️ LUCKY (2024) IS ASKED BEFORE EACH SWING IS ROLLED. A chain swing
+      // rolls straight from here, so the pre-roll hook would otherwise have to
+      // stop it and fire it again, and the chain waits on this very roll.
+      try {
+        const luckTargets = [...(game.user.targets ?? [])];
+        if (luckNeedsBeforeRoll(actor, luckTargets)) {
+          await luckBeforeAttackRoll({ attacker: actor, item, targets: luckTargets });
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | [chain] the Lucky question before ${item.name} failed; it rolls without it:`, err);
       }
       console.log(`${MODULE_ID} | [chain] firing ${item.name} via ${fireVia[0]}`);
       const result = await fireVia[1]();

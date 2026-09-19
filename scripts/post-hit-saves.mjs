@@ -20,6 +20,8 @@ import { RulesBrain } from "./rules/rules-brain.mjs";
 import { CardDoor, ConditionDoor, HpDoor } from "./road/doors.mjs";
 // What a save's result lets through, from its recipe: the one decider.
 import { whatLands } from "./road/what-lands.mjs";
+// Lucky (2014) and the halfling's Lucky. See luck.mjs.
+import { withHalflingLuck, againstDC as luckAgainstDC } from "./luck.mjs";
 // A save after a hit with no attack recipe beside it gets one from the same builder.
 // Function-time reads only: recipe.mjs reaches this file back through its `then`.
 import { followUpRecipe } from "./inference/recipe.mjs";
@@ -892,9 +894,10 @@ export class PostHitSaves {
 
         const saveRaw = targetActor.system?.abilities?.[save.ability]?.save;
         const saveMod = typeof saveRaw === "number" ? saveRaw : (saveRaw?.value ?? saveRaw?.mod ?? 0);
-        const formula = rollMode === "advantage" ? `2d20kh + ${saveMod}`
+        // A halfling rerolls a natural 1 (luck.mjs), as dnd5e's own saves do.
+        const formula = withHalflingLuck(rollMode === "advantage" ? `2d20kh + ${saveMod}`
                       : rollMode === "disadvantage" ? `2d20kl + ${saveMod}`
-                      : `1d20 + ${saveMod}`;
+                      : `1d20 + ${saveMod}`, targetActor);
 
         saveRoll = new Roll(formula);
         await saveRoll.evaluate();
@@ -911,6 +914,20 @@ export class PostHitSaves {
       // on an automatic failure too, where the previous target's damage dice may
       // still be in the air.
       await awaitDsnRoll();
+
+      // ── LUCKY (2014): a save about to fail, after its dice and before
+      // Legendary Resistance or anything it decides (luck.mjs).
+      let luckNote = null;
+      if (!isAutoFail && saveRoll) {
+        try {
+          const lk = await luckAgainstDC({ actor: targetActor, kind: "save",
+            what: `${String(save.ability ?? "").toUpperCase()} save against ${item?.name ?? "the hit"} (DC ${save.dc})`,
+            roll: saveRoll, total: saveTotal, dc: save.dc, dice: "none" });
+          if (lk.spent) { saveTotal = lk.total; passed = saveTotal >= save.dc; luckNote = lk.note; }
+        } catch (err) {
+          console.warn(`${MODULE_ID} | PostHitSave: Lucky could not be offered on ${tgt.name}'s save; it stands as rolled:`, err);
+        }
+      }
 
       // ── Legendary Resistance check ──
       // If the target failed AND it's a legendary creature with charges
@@ -958,6 +975,7 @@ export class PostHitSaves {
         passed,
         isAutoFail,
         saveRoll,
+        luck: luckNote,
         legendaryResistance: usedLegendaryResistance,
         effects: [],
       };
@@ -1423,15 +1441,26 @@ export class PostHitSaves {
       const saveBonus = Number(targetActor.system?.abilities?.[abilityKey]?.save?.value
                             ?? targetActor.system?.abilities?.[abilityKey]?.save
                             ?? 0);
-      const roll = new Roll(`1d20 + ${saveBonus}`);
+      const roll = new Roll(withHalflingLuck(`1d20 + ${saveBonus}`, targetActor));
       await roll.evaluate();
-      const passed = roll.total >= rider.dc;
+      let riderTotal = roll.total;
+      let passed = riderTotal >= rider.dc;
 
       safeShowForRoll(roll, "repeating-save roll");
       // ⚠️ NOTHING LANDS BEFORE THE DICE (Johnny's rule): the condition, or the
       // HP going to 0, used to land while this d20 was still rolling. Only the
       // card waited.
       await awaitDsnRoll();
+
+      // LUCKY (2014): a save about to fail, before the effect lands (luck.mjs).
+      try {
+        const lk = await luckAgainstDC({ actor: targetActor, kind: "save",
+          what: `${String(abilityKey ?? "").toUpperCase()} save against ${item?.name ?? "the hit"} (DC ${rider.dc})`,
+          roll, total: riderTotal, dc: rider.dc, dice: "none" });
+        if (lk.spent) { riderTotal = lk.total; passed = riderTotal >= rider.dc; }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | Lucky could not be offered on ${targetActor?.name}'s save; it stands as rolled:`, err);
+      }
 
       // Apply effect on fail
       let appliedEffect = null;
@@ -1465,7 +1494,7 @@ export class PostHitSaves {
             </div>
             <div class="ace-qol-pst-body">
               <div class="ace-qol-pst-line">HP ${hpNow} ≤ ${rider.threshold} → DC ${rider.dc} ${abilityLabel} save</div>
-              <div class="ace-qol-pst-line">Roll: <strong>${roll.total}</strong> ${passed ? "✅" : "❌"}</div>
+              <div class="ace-qol-pst-line">Roll: <strong>${riderTotal}</strong> ${passed ? "✅" : "❌"}</div>
               <div class="ace-qol-pst-line ace-qol-pst-result">${resultLabel}</div>
             </div>
           </div>

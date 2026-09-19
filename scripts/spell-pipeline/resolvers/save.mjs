@@ -471,16 +471,27 @@ export class SaveResolver {
         // with the other three. The snapshot's `save` is what dnd5e itself
         // computes and what the character sheet displays.
         const totalSaveMod = Number(_aceCreature(targetActor)?.abilities?.[saveAbility]?.save ?? 0) || 0;
-        const formula = `1d20 ${totalSaveMod >= 0 ? "+" : "-"} ${Math.abs(totalSaveMod)}`;
+        // A halfling rerolls a natural 1 (luck.mjs), as dnd5e's own saves do.
+        const { withHalflingLuck, againstDC } = await import("../../luck.mjs");
+        const formula = withHalflingLuck(`1d20 ${totalSaveMod >= 0 ? "+" : "-"} ${Math.abs(totalSaveMod)}`, targetActor);
         const roll = await new Roll(formula).evaluate();
-        const total = roll.total;
-        const passed = total >= saveDC;
+        let total = roll.total;
         // ⚠️ NOTHING LANDS BEFORE THE DICE (Johnny's rule). The card carried this
         // roll, so Dice So Nice held the card back, but the effect was deleted
         // straight after while the die was still rolling. ACE throws the die
         // itself now and waits for it; the card no longer carries the roll.
         safeShowForRoll(roll, "end-of-turn save");
         await awaitDiceSettle();
+        // LUCKY (2014): a save about to fail, before the effect stays or goes.
+        try {
+          const lk = await againstDC({ actor: targetActor, kind: "save",
+            what: `${String(saveAbility).toUpperCase()} save to end ${effectKey} (DC ${saveDC})`,
+            roll, total, dc: saveDC, dice: "none" });
+          if (lk.spent) total = lk.total;
+        } catch (err) {
+          console.warn(`${MODULE_ID} | SaveResolver: Lucky could not be offered on ${targetActor?.name}'s save; it stands as rolled:`, err);
+        }
+        const passed = total >= saveDC;
 
         // Post chat card for the end-of-turn save result
         const accent = passed ? "#7ec97e" : "#e57373";

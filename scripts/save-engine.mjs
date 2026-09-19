@@ -71,6 +71,11 @@ import { lifeStateOf, pickable } from "./road/picker-rule.mjs";
 // Whose spirits they are: the caster's alignment picks necrotic or radiant.
 import { isSpiritGuardians, guardianFlavour, guardianDamage, narrowDamageTypes } from "./rules/spirit-guardians.mjs";
 import { RulesIndex } from "./rules/rules-index.mjs";
+// Lucky (2014 and 2024) and the halfling's Lucky. See luck.mjs.
+import { withHalflingLuck, halflingRerolled, luckyFeatItem, luckyFeat, ownRoll as luckOwnRoll,
+         pressButton as luckPressButton, markCardAdvantage, cardHasAdvantage, takeCardAdvantage,
+         LUCK_GREEN } from "./luck.mjs";
+import { naturalD20 } from "./rolldata-utils.mjs";
 
 // Real black d20 die art (per-face). These are the dice the GM already sees;
 // we use them everywhere a save result or prompt appears instead of the flat
@@ -1483,6 +1488,20 @@ export class SaveEngine {
       saveBonuses: tgt.saveBonuses, damageModifiers: tgt.damageModifiers,
       currentHP: tgt.currentHP, maxHP: tgt.maxHP, castId,
     }}};
+    // 2024 Lucky is a button on the player's own card, pressed before the roll.
+    // A roll made for them does not wait for it; say so, unless it was pressed.
+    try {
+      const lScene = game.scenes.get(tgt.sceneId) ?? canvas.scene;
+      const lActor = lScene?.tokens?.get(tgt.tokenDocId)?.actor ?? game.actors.get(tgt.actorId);
+      const feat = luckyFeat(lActor);
+      if (feat?.edition === "2024" && !feat.missingUses && feat.left > 0
+          && !cardHasAdvantage(lActor, `${castId}:${tgt.tokenDocId ?? tgt.actorId}`)) {
+        console.log(`${MODULE_ID} | Luck | ${tgt.name}: no Lucky button on this save, the GM rolled it for them `
+          + `and the Lucky button on their card was not pressed.`);
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not read ${tgt.name}'s Lucky feat for the roll made for them:`, err);
+    }
     return await this._rollPcSave(fakeMsg);
   }
 
@@ -4149,6 +4168,32 @@ export class SaveEngine {
     const pill = rollBtns.find(b => b.classList?.contains?.("ace-qol-roll-pill")) ?? null;
     let rolling = false;
 
+    // ── 2024 Lucky: spent before the roll, it gives this save Advantage ──
+    // The mark is kept on the feat item under this cast and token, so a reload
+    // or the GM rolling for them still honours the point already spent.
+    const luckyBtn = el.querySelector?.("[data-action='aceQolLuckyPcSave']") ?? null;
+    if (luckyBtn && !luckyBtn.dataset.wired) {
+      luckyBtn.dataset.wired = "1";
+      const lScene = game.scenes.get(flags.sceneId) ?? canvas.scene;
+      const lActor = lScene?.tokens?.get(flags.tokenDocId)?.actor ?? game.actors.get(flags.actorId);
+      const key = `${flags.castId ?? message.id}:${flags.tokenDocId ?? flags.actorId}`;
+      const spentLook = () => {
+        luckyBtn.disabled = true;
+        luckyBtn.innerHTML = `<i class="fas fa-clover"></i> <span>Luck spent: this save rolls with `
+          + `${flags.saveDisadvantage ? "Disadvantage cancelled" : "Advantage"}</span>`;
+      };
+      if (cardHasAdvantage(lActor, key)) spentLook();
+      else if (!lActor?.isOwner) { luckyBtn.disabled = true; }
+      luckyBtn.addEventListener("click", async () => {
+        if (luckyBtn.disabled || rolling) return;
+        luckyBtn.disabled = true;
+        const mode = await luckPressButton(lActor, { hasDisadvantage: !!flags.saveDisadvantage });
+        if (!mode) { luckyBtn.disabled = false; return; }
+        await markCardAdvantage(lActor, key);
+        spentLook();
+      });
+    }
+
     for (const rollBtn of rollBtns) {
       if (rollBtn.dataset.wired) continue;
       rollBtn.dataset.wired = "1";
@@ -5114,7 +5159,11 @@ export class SaveEngine {
       dis.push('<span class="ace-qol-tag ace-qol-tag-debuff"><i class="fas fa-arrow-down"></i> '
         + 'DISADVANTAGE — no reason was recorded</span>');
     }
-    const all = [...adv, ...dis];
+    // What a luck point did to this save (Lucky, 2026-09-18), in its own green.
+    const luck = r.luck
+      ? [`<span class="ace-qol-tag" style="color:#7fd08a;border-color:#3fa34d;"><i class="fas fa-clover"></i> ${esc(r.luck)}</span>`]
+      : [];
+    const all = [...adv, ...dis, ...luck];
     if (!all.length) return "";
     return `<div class="ace-qol-save-tgt-actions" style="display:flex;flex-wrap:wrap;gap:4px;`
       + `margin-top:4px;${indent ? `padding-left:${indent}px;` : ""}">${all.join("")}</div>`;
@@ -5203,6 +5252,7 @@ export class SaveEngine {
     let passed = false;
     let rollResult = null;
     let isAutoFail = tgt.autoFailSave;
+    let luck = null;   // a luck point spent on this save: { d20, note }
 
     if (isAutoFail) {
       saveTotal = 0;
@@ -5252,12 +5302,14 @@ export class SaveEngine {
           return true;
         })
         .join(" + ");
-      const formula = rollMode === "advantage" ? `2d20kh + ${saveMod}${bonuses ? ` + ${bonuses}` : ""}`
+      // A halfling rerolls a natural 1 (luck.mjs), as dnd5e's own saves do.
+      const formula = withHalflingLuck(rollMode === "advantage" ? `2d20kh + ${saveMod}${bonuses ? ` + ${bonuses}` : ""}`
                     : rollMode === "disadvantage" ? `2d20kl + ${saveMod}${bonuses ? ` + ${bonuses}` : ""}`
-                    : `1d20 + ${saveMod}${bonuses ? ` + ${bonuses}` : ""}`;
+                    : `1d20 + ${saveMod}${bonuses ? ` + ${bonuses}` : ""}`, targetActor);
 
       const roll = new Roll(formula);
       await roll.evaluate();
+      if (halflingRerolled(roll)) console.log(`${MODULE_ID} | Luck | ${tgt.name}'s save came up 1 and was rerolled (halfling luck).`);
 
       // ── Visible Dice So Nice animation ──
       // Players want to SEE NPC saves roll across the screen, not just have
@@ -5291,6 +5343,26 @@ export class SaveEngine {
       saveTotal = roll.total;
       passed = saveTotal >= saveDC;
       rollResult = roll;
+
+      // ── LUCKY (2014): a save about to fail, after its dice, before anything
+      // is decided from it (luck.mjs). Only a creature with the feat is asked.
+      if (luckyFeatItem(targetActor)) {
+        try {
+          const got = await luckOwnRoll({ actor: targetActor, kind: "save",
+            what: `${CONFIG.DND5E?.abilities?.[ability]?.label ?? ability} save (DC ${saveDC})`,
+            d20s: (roll.dice?.[0]?.results ?? []).filter(x => !x?.rerolled).map(x => Number(x.result)),
+            kept: naturalD20(roll), total: saveTotal,
+            judge: (t) => ({ fails: t < saveDC, words: `${t} against DC ${saveDC}, ${t >= saveDC ? "saved" : "failed"}` }),
+            dice: "ours" });
+          if (got.spent) {
+            saveTotal = got.total;
+            passed = saveTotal >= saveDC;
+            luck = { d20: got.d20, note: got.note };
+          }
+        } catch (err) {
+          console.warn(`${MODULE_ID} | Lucky could not be offered on ${tgt.name}'s save; it stands as rolled:`, err);
+        }
+      }
     }
 
     // What this save lets through, and its words: whatLands, on the save's recipe
@@ -5300,9 +5372,10 @@ export class SaveEngine {
     const damageMultiplier = _v.share;
     const resultLabel = _v.label;
 
-    // Extract the d20 face value so it survives flag serialization
+    // Extract the d20 face value so it survives flag serialization. A luck die
+    // kept in its place is the face now.
     const _d20Term = rollResult?.dice?.[0];
-    const dieResult = _d20Term?.total ?? null;
+    const dieResult = luck?.d20 ?? _d20Term?.total ?? null;
 
     return {
       name: tgt.name,
@@ -5322,6 +5395,8 @@ export class SaveEngine {
       superSaver: !!tgt.superSaver,
       dieResult,
       roll: rollResult,
+      // What a luck point did to this save, in words, for the card.
+      luck: luck?.note ?? null,
       // Why it rolled the way it did, so every card after this one can say so.
       saveAdvantage: !!tgt.saveAdvantage,
       saveDisadvantage: !!tgt.saveDisadvantage,
@@ -5625,6 +5700,34 @@ export class SaveEngine {
     // An earlier pill here was cropped and taken out; this one is the card's
     // full width and its words wrap inside it, so they never run off it.
     const pcImg = tgt.img || tgt.tokenImg || item.img || "icons/svg/mystery-man.svg";
+
+    // ⚠️ THE 2024 LUCKY BUTTON IS ON THEIR OWN ROLL CARD (Johnny, 2026-09-18):
+    // "Put a Lucky button on THEIR roll card. Pressing it before the roll spends
+    // 1 point and gives Advantage." This card is theirs: it goes to the owner,
+    // and the GM's copy is folded away. Wired in _wirePcSaveButton.
+    let luckyHtml = "";
+    try {
+      const lScene = game.scenes.get(tgt.sceneId) ?? canvas.scene;
+      const lActor = lScene?.tokens?.get(tgt.tokenDocId)?.actor ?? game.actors.get(tgt.actorId);
+      const feat = luckyFeat(lActor);
+      if (feat?.edition === "2024" && !feat.missingUses && feat.left > 0 && !tgt.autoFailSave) {
+        luckyHtml = `
+          <button class="ace-qol-btn ace-qol-lucky-pill" data-action="aceQolLuckyPcSave"
+                  style="width:100%;display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:10px;padding:10px 18px;background:${LUCK_GREEN};color:#0b1a0e;border:1px solid #2a6e33;border-radius:999px;cursor:pointer;font-family:'Signika',sans-serif;font-size:17px;font-weight:700;line-height:1.25;white-space:normal;overflow-wrap:break-word;text-align:center;">
+            <i class="fas fa-clover" style="font-size:18px;flex-shrink:0;"></i>
+            <span>Lucky: ${tgt.saveDisadvantage ? "cancel Disadvantage" : "Advantage"} (${feat.left} left)</span>
+          </button>`;
+      } else if (feat) {
+        console.log(`${MODULE_ID} | Luck | ${tgt.name}: no Lucky button on this save card, `
+          + (feat.edition !== "2024" ? "the 2014 feat is a box after the roll, when it fails"
+            : feat.missingUses ? "the feat has no uses set on the item"
+            : tgt.autoFailSave ? "the save fails automatically, so no die can help"
+            : "no luck points left") + ".");
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not read ${tgt.name}'s Lucky feat for the save card:`, err);
+    }
+
     const cardHtml = `
       <div class="ace-qol-pc-save-card" style="background:#0c0c10;border:1px solid #d4af37;border-radius:9px;overflow:hidden;font-family:'Signika',sans-serif;">
         <div style="padding:11px 15px;border-bottom:1px solid rgba(212,175,55,0.3);background:#0c0c10;">
@@ -5645,6 +5748,7 @@ export class SaveEngine {
           </div>
         </div>
         <div style="padding:0 15px 15px;background:#0c0c10;">
+          ${luckyHtml}
           <button class="ace-qol-btn ace-qol-btn-roll ace-qol-roll-pill" data-action="aceQolRollPcSave"
                   style="width:100%;display:flex;align-items:center;justify-content:center;gap:10px;padding:12px 18px;background:#d4af37;color:#1a1408;border:1px solid #8a6d1c;border-radius:999px;cursor:pointer;font-family:'Signika',sans-serif;font-size:18px;font-weight:700;line-height:1.25;white-space:normal;overflow-wrap:break-word;text-align:center;">
             <i class="fas fa-dice-d20" style="font-size:20px;flex-shrink:0;"></i>
@@ -5782,14 +5886,21 @@ export class SaveEngine {
     let passed = false;
     let rollResult = null;
 
+    let luck = null;   // a luck point spent on this save: { d20, note }
     if (autoFailSave) {
       saveTotal = 0;
       passed = false;
     } else {
+      // 2024 Lucky pressed on the card before this roll: one more source of
+      // Advantage, and Advantage and Disadvantage cancel (RAW).
+      const luckKey = `${castId ?? message.id}:${tokenDocId ?? actorId}`;
+      const luckAdv = await takeCardAdvantage(targetActor, luckKey);
+      const anyAdv = !!saveAdvantage || luckAdv;
       let rollMode = "normal";
-      if (saveAdvantage && saveDisadvantage) rollMode = "normal";
-      else if (saveAdvantage) rollMode = "advantage";
+      if (anyAdv && saveDisadvantage) rollMode = "normal";
+      else if (anyAdv) rollMode = "advantage";
       else if (saveDisadvantage) rollMode = "disadvantage";
+      if (luckAdv) console.log(`${MODULE_ID} | Luck | ${targetName}'s save rolls at ${rollMode}: the luck point spent on the card.`);
 
       // Save modifier via the target profile — ONE reader for a fact that
       // was being decoded seven different ways in this file alone.
@@ -5836,23 +5947,46 @@ export class SaveEngine {
           return true;
         })
         .join(" + ");
-      const formula = rollMode === "advantage" ? `2d20kh + ${saveMod}${bonuses ? ` + ${bonuses}` : ""}`
+      // A halfling rerolls a natural 1 (luck.mjs), as dnd5e's own saves do.
+      const formula = withHalflingLuck(rollMode === "advantage" ? `2d20kh + ${saveMod}${bonuses ? ` + ${bonuses}` : ""}`
                     : rollMode === "disadvantage" ? `2d20kl + ${saveMod}${bonuses ? ` + ${bonuses}` : ""}`
-                    : `1d20 + ${saveMod}${bonuses ? ` + ${bonuses}` : ""}`;
+                    : `1d20 + ${saveMod}${bonuses ? ` + ${bonuses}` : ""}`, targetActor);
 
       const roll = new Roll(formula);
       await roll.evaluate();
       saveTotal = roll.total;
       passed = saveTotal >= saveDC;
       rollResult = roll;
+      if (halflingRerolled(roll)) console.log(`${MODULE_ID} | Luck | ${targetName}'s save came up 1 and was rerolled (halfling luck).`);
 
       // Trigger Dice So Nice 3D animation — public so all players see it
       safeShowForRoll(roll, "GM-prompt save roll");
+
+      // ── LUCKY (2014): a save about to fail, after its dice have stopped and
+      // before the result card or anything it decides (luck.mjs).
+      if (luckyFeatItem(targetActor)) {
+        try {
+          const got = await luckOwnRoll({ actor: targetActor, kind: "save",
+            what: `${abilityLabel} save (DC ${saveDC})`,
+            d20s: (roll.dice?.[0]?.results ?? []).filter(x => !x?.rerolled).map(x => Number(x.result)),
+            kept: naturalD20(roll), total: saveTotal,
+            judge: (t) => ({ fails: t < saveDC, words: `${t} against DC ${saveDC}, ${t >= saveDC ? "saved" : "failed"}` }),
+            dice: "ours" });
+          if (got.spent) {
+            saveTotal = got.total;
+            passed = saveTotal >= saveDC;
+            luck = { d20: got.d20, note: got.note };
+          }
+        } catch (err) {
+          console.warn(`${MODULE_ID} | Lucky could not be offered on ${targetName}'s save; it stands as rolled:`, err);
+        }
+      }
     }
 
-    // Extract d20 face for display on the results card
+    // Extract d20 face for display on the results card. A luck die kept in
+    // its place is the face now.
     const _pcD20 = rollResult?.dice?.[0];
-    const dieResult = _pcD20?.total ?? null;
+    const dieResult = luck?.d20 ?? _pcD20?.total ?? null;
 
     // ── HOW MUCH DAMAGE THIS SAVE EARNED — DECIDED HERE, ONCE (2026-08-07) ──
     // Computed at the roll, where `halfOnSave` is actually in scope, and stamped
@@ -5906,6 +6040,7 @@ export class SaveEngine {
                    <span style="color:${passColor};font-size:20px;font-weight:700;">${saveTotal}</span>`}
               <span style="margin-left:4px;padding:2px 9px;border-radius:5px;background:${passed ? 'rgba(0,230,118,0.15)' : 'rgba(255,23,68,0.15)'};color:${passColor};font-weight:700;font-size:15px;">${resultLabel}</span>
             </div>
+            ${luck?.note ? `<div style="margin-top:6px;color:#7fd08a;font-size:15px;line-height:1.3;"><i class="fas fa-clover"></i> ${foundry.utils.escapeHTML(String(luck.note))}</div>` : ""}
           </div>
         </div>
       </div>

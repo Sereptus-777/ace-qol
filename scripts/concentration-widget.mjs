@@ -1772,13 +1772,23 @@ export class ConcentrationWidget {
     safeShowForRoll(roll, "exit save");
     await awaitDiceSettle();
 
-    const total = roll.total;
+    let total = roll.total;
+    // LUCKY (2014): an exit save about to fail, before the nausea is queued (luck.mjs).
+    let luckD20 = null;
+    try {
+      const { againstDC } = await import("./luck.mjs");
+      const lk = await againstDC({ actor, kind: "save", what: `${String(ability).toUpperCase()} save leaving ${spellName} (DC ${dc})`,
+        roll, total, dc, dice: "none" });
+      if (lk.spent) { total = lk.total; luckD20 = lk.d20; }
+    } catch (err) {
+      console.warn(`${TAG} | Lucky could not be offered on ${token.name}'s exit save; it stands as rolled:`, err);
+    }
     const passed = total >= dc;
 
     // Extract d20 result + modifier so the chat card shows the breakdown
     // (e.g. "20 +7 = 27") instead of just the total.
     const d20Term = roll.dice?.[0] ?? roll.terms?.[0];
-    const d20Result = d20Term?.total ?? null;
+    const d20Result = luckD20 ?? d20Term?.total ?? null;
     const modifier = (typeof total === "number" && d20Result != null) ? total - d20Result : null;
     const modSign = (modifier != null && modifier >= 0) ? "+" : "";
     const modPart = (modifier != null && modifier !== 0) ? ` ${modSign}${modifier}` : "";

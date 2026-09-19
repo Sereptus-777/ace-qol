@@ -19,6 +19,12 @@ import { CoverEngine } from "./cover-engine.mjs";
 import { RiderEngine } from "./rider-engine.mjs";
 import { pendingAttackChoices, awaitDsnRoll, showCenterToast, promptAttackChoice } from "./attack-prompt.mjs";
 import { aceArmDiceWatch } from "./dsn-utils.mjs";
+// ⚠️ THE ONE RULE for "does this attack hit" (shared with the socket path and Lucky).
+import { judgeAttack } from "./rules/attack-hit.mjs";
+// Lucky (both editions) and the halfling's Lucky. See luck.mjs.
+import { afterAttackRoll as _luckAfterAttackRoll, needsBeforeRoll as _luckNeedsBeforeRoll,
+  beforeAttackRoll as _luckBeforeAttackRoll, takeBeforeRoll as _luckTakeBeforeRoll,
+  withLuckDisadvantage as _luckWithDisadvantage } from "./luck.mjs";
 import { WeaponMasteries } from "./weapon-masteries.mjs";
 import { CombatContext } from "./combat-context.mjs";
 import { OA_IN_FLIGHT } from "./oa-transient.mjs";
@@ -659,12 +665,47 @@ export class AttackPipeline {
     // proceeds now, and dnd5e's box stays suppressed either way.
     // (Suppression is handled once, in dialog-suppression.mjs.)
 
+    // ── LUCKY (2024): a target's luck is asked BEFORE this roll is locked ──
+    // The press, the prompt's re-fire and the multiattack chain all ask first;
+    // a roll that reaches here unasked (a path none of them covers) is stopped,
+    // asked, and fired again. Johnny, 2026-09-18: "When an attack is rolled
+    // against them, one box: spend 1 point to give that attack Disadvantage?
+    // That is before the attacker's roll is locked."
+    if (_luckNeedsBeforeRoll(actor, [...targets])) {
+      this._luckThenRefire(config, actor, item, subject, [...targets]);
+      return false;
+    }
+
     // ── Inject advantage/disadvantage into the roll dialog + config ──
     // Set the dialog's default button so the correct mode is pre-selected
     // AND set it on the roll config for fast-forward rolls (no dialog)
     dialog.options = dialog.options ?? {};
 
     const rollConfig = config.rolls?.[0];
+
+    // ── Lucky's Disadvantage (2024), taken once for this roll ──
+    // It joins the roll's own mode, and Advantage and Disadvantage cancel
+    // however many of each there are (RAW). Both flags set means dnd5e rolls
+    // straight, which is the same thing said the rules' way.
+    const luck = _luckTakeBeforeRoll(actor);
+    if (luck?.by?.length) {
+      const own = pendingAttackChoices.get(actor.id);
+      if (own) pendingAttackChoices.delete(actor.id);
+      const hadAdvantage = own ? own === "advantage"
+        : (combatState.finalRollMode === "advantage" || (combatState.advantageSources?.length ?? 0) > 0);
+      const mode = _luckWithDisadvantage(own ?? combatState.finalRollMode ?? "normal", hadAdvantage);
+      dialog.options.defaultButton = mode;
+      if (mode === "normal") {
+        if (rollConfig?.options) { rollConfig.options.advantage = true; rollConfig.options.disadvantage = true; }
+        config.advantage = true; config.disadvantage = true;
+      } else {
+        if (rollConfig?.options) rollConfig.options.disadvantage = true;
+        config.disadvantage = true;
+      }
+      console.log(`${MODULE_ID} | Luck | ${luck.by.join(" and ")}'s luck gives ${actor.name}'s ${item.name} `
+        + `Disadvantage; ${mode === "normal" ? "its Advantage cancels it, so it rolls straight" : "it rolls with Disadvantage"}.`);
+      return;
+    }
 
     // ── User prompt choice (from attack-prompt.mjs) overrides auto-detection ──
     const userChoice = pendingAttackChoices.get(actor.id);
@@ -805,6 +846,25 @@ export class AttackPipeline {
     }
   }
 
+  /**
+   * A roll that reached the dice without the 2024 Lucky question: ask it, then
+   * fire the same attack again. The re-entry finds the answer and rolls.
+   */
+  async _luckThenRefire(config, actor, item, subject, targets) {
+    try {
+      await _luckBeforeAttackRoll({ attacker: actor, item, targets });
+      const refire = {};
+      for (const k of ["ammunition", "attackMode", "mastery"]) {
+        if (config?.[k] !== undefined) refire[k] = config[k];
+      }
+      refire.event = { shiftKey: true, target: document.body };   // fast-forward
+      await subject.rollAttack(refire, { configure: false }, {});
+    } catch (err) {
+      console.warn(`${MODULE_ID} | the Lucky question before "${item?.name}" failed, so the attack was not re-fired:`, err);
+      _announceAttackCancelled(item, actor, `the Lucky question or its re-fire threw: ${err?.message ?? err}`);
+    }
+  }
+
   async _promptThenRefire(config, message, actor, targetToken, item, subject) {
     try {
       const choice = await promptAttackChoice(actor, targetToken, item);
@@ -815,6 +875,10 @@ export class AttackPipeline {
         return;
       }
       pendingAttackChoices.set(actor.id, choice);
+      // Lucky (2024): the targets' question, before the roll is locked.
+      if (_luckNeedsBeforeRoll(actor, [...(game.user.targets ?? [])])) {
+        await _luckBeforeAttackRoll({ attacker: actor, item, targets: [...(game.user.targets ?? [])] });
+      }
       // Carry over the parts of the original roll that were already decided
       // (ammo, attack mode, weapon mastery) so the re-fire is the same attack.
       const refire = {};
@@ -1238,27 +1302,14 @@ export class AttackPipeline {
       }
 
       // ── Determine hit/miss ──
-      let hitResult;
-      if (isFumbleRoll) {
-        hitResult = "fumble";
-      } else if (coverResult?.isFullCover) {
-        hitResult = "miss"; // Full cover = can't be hit
-      } else if (mirrorImageRedirect) {
-        // Mirror Image redirected the attack to a duplicate — the real target
-        // takes no damage regardless of whether the duplicate was hit.
-        hitResult = "miss";
-      } else if (isCritRoll) {
-        hitResult = "critical";           // natural 20 always hits + crits
-      } else if (adjustedAttackTotal >= effectiveAC) {
-        // RAW: auto-crit conditions (melee vs paralyzed/unconscious, Assassinate
-        // vs surprised, auto-crit flags) upgrade a HIT to a critical — they do
-        // NOT make a miss into one. `cs.autoCrit` was tested BEFORE the AC
-        // comparison, so a swing that missed an AC-18 target while it was Held
-        // was reported as a CRIT and rolled doubled damage. (Audit, 2026-07-27.)
-        hitResult = cs.autoCrit ? "critical" : "hit";
-      } else {
-        hitResult = "miss";
-      }
+      // ⚠️ THE ONE RULE (rules/attack-hit.mjs). RAW: auto-crit conditions
+      // (melee vs paralyzed/unconscious, Assassinate vs surprised, auto-crit
+      // flags) upgrade a HIT to a critical and never make a miss into one;
+      // `cs.autoCrit` tested BEFORE the AC comparison reported a swing that
+      // missed an AC-18 Held target as a CRIT (audit, 2026-07-27). The socket
+      // path and Lucky ask the same function, so the three cannot drift.
+      const hitResult = judgeAttack({ d20: d20Result, total: adjustedAttackTotal, ac: effectiveAC,
+        fullCover: !!coverResult?.isFullCover, mirrorImage: !!mirrorImageRedirect, autoCrit: !!cs.autoCrit });
 
       results.push({
         ...cs,           // full combat state (attacker + target + modifiers)
@@ -1283,6 +1334,18 @@ export class AttackPipeline {
     // Clear pre-roll cache
     this._lastCombatStates = null;
     this._lastCombatState = null;
+
+    // ── LUCKY (2014): after the dice land, before anything is applied ──
+    // Johnny, 2026-09-18: the attacker is asked only when the swing is about
+    // to miss, each target only when it is about to hit, and two luck points
+    // on one roll cancel. It changes the results in place and names itself on
+    // the card. See luck.mjs.
+    try {
+      const d20s = (roll.dice?.[0]?.results ?? []).filter(x => !x?.rerolled).map(x => Number(x.result));
+      await _luckAfterAttackRoll({ actor, item, results, d20s, dice: "armed" });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | Lucky failed on "${item?.name}"; the attack resolves as rolled:`, err);
+    }
 
     // ── POST-HIT REACTIONS (Shield, etc.) ──
     // Check before posting results so that Shield can change hits to misses.
@@ -1722,6 +1785,10 @@ export class AttackPipeline {
                          : `Hit Mirror Image duplicate (AC ${mi.duplicateAC}) — duplicate dodged`);
         mirrorCaption = `<div class="ace-qol-atk-mirror-caption">→ ${outcome}</div>`;
       }
+      // Lucky (2026-09-18): what a luck point did to this roll, in words.
+      const luckCaption = r.luck
+        ? `<div class="ace-qol-atk-mirror-caption" style="color:#7fd08a;"><i class="fas fa-clover"></i> ${foundry.utils.escapeHTML(String(r.luck))}</div>`
+        : "";
 
       return `
         <div class="ace-qol-atk-row">
@@ -1732,6 +1799,7 @@ export class AttackPipeline {
             <span class="ace-qol-atk-result ${hitClass}">${hitLabel}</span>
           </div>
           ${mirrorCaption}
+          ${luckCaption}
           ${coverTag || tagHtml ? `<div class="ace-qol-atk-tags">${coverTag}${tagHtml}</div>` : ""}
         </div>
       `;

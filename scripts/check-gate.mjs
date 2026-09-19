@@ -127,9 +127,11 @@ export class CheckGate {
     // The target chooses which of its checks to use, and it uses its better one.
     const offered = theirs.split("/").map(s => s.trim()).filter(Boolean);
     const b = (offered.length ? offered : ["ath", "acr"]).map(k => side(them, k)).sort((x, y) => y.mod - x.mod)[0];
-    const die = (s) => `${s.mode > 0 ? "2d20kh" : s.mode < 0 ? "2d20kl" : "1d20"} + ${s.mod}`;
-    const ra = await new Roll(die(a)).evaluate();
-    const rb = await new Roll(die(b)).evaluate();
+    // A halfling rerolls a 1 on either side (luck.mjs), as dnd5e's own rolls do.
+    const { withHalflingLuck, ownRoll } = await import("./luck.mjs");
+    const die = (s, who) => withHalflingLuck(`${s.mode > 0 ? "2d20kh" : s.mode < 0 ? "2d20kl" : "1d20"} + ${s.mod}`, who);
+    const ra = await new Roll(die(a, actor)).evaluate();
+    const rb = await new Roll(die(b, them)).evaluate();
 
     const { safeShowForRoll } = await import("./dsn-utils.mjs");
     const { untilDiceLand, ConditionDoor, CardDoor } = await import("./road/doors.mjs");
@@ -139,7 +141,31 @@ export class CheckGate {
     // ⚠️ NOTHING LANDS BEFORE THE DICE (Johnny's rule).
     await untilDiceLand(true);
 
-    const stood = !(ra.total > rb.total);
+    // ── LUCKY (2014): whichever side is losing may spend a point ──
+    // Each side is its own check, so two spends here are two rolls and never
+    // cancel. The one who started it must win outright; a tie holds.
+    let totA = Number(ra.total), totB = Number(rb.total);
+    const luckNotes = [];
+    try {
+      const { naturalD20 } = await import("./rolldata-utils.mjs");
+      const facesOf = (r) => (r.dice?.[0]?.results ?? []).filter(x => !x?.rerolled).map(x => Number(x.result));
+      if (!(totA > totB)) {
+        const got = await ownRoll({ actor, kind: "check", what: `${a.label} against ${them.name}'s ${b.label} (${totB})`,
+          d20s: facesOf(ra), kept: naturalD20(ra), total: totA,
+          judge: (t) => ({ fails: !(t > totB), words: `${t} against ${totB}, ${t > totB ? "wins" : "does not win"}` }), dice: "none" });
+        if (got.spent) { totA = got.total; luckNotes.push(`${actor.name}: ${got.note}`); }
+      }
+      if (totA > totB) {
+        const got = await ownRoll({ actor: them, kind: "check", what: `${b.label} against ${actor.name}'s ${a.label} (${totA})`,
+          d20s: facesOf(rb), kept: naturalD20(rb), total: totB,
+          judge: (t) => ({ fails: totA > t, words: `${t} against ${totA}, ${totA > t ? "loses" : "holds"}` }), dice: "none" });
+        if (got.spent) { totB = got.total; luckNotes.push(`${them.name}: ${got.note}`); }
+      }
+    } catch (err) {
+      console.warn(`${LOG} | ${item.name}: Lucky could not be offered on the contest; it stands as rolled:`, err);
+    }
+
+    const stood = !(totA > totB);
     const v = whatLands(recipe, { passed: stood });
     const put = [], notPut = [];
     const canWrite = !!(game.user?.isGM || them.isOwner);
@@ -164,8 +190,9 @@ export class CheckGate {
     const row = (text, extra = "") => `<div style="font-size:16px;line-height:1.4;${extra}">${text}</div>`;
     const html = `<div class="ace-qol-contest-card" style="background:#15121b;border:1px solid #6b4fa8;border-left:3px solid #d4af37;border-radius:6px;padding:10px 12px;color:#ece6f7;">
       <div style="font-size:18px;font-weight:700;line-height:1.3;">${esc(item.name)}: a contest</div>
-      ${row(`${esc(actor.name)}'s ${esc(a.label)}: <strong style="font-size:20px;">${ra.total}</strong>`, "margin-top:4px;")}
-      ${row(`${esc(them.name)}'s ${esc(b.label)}: <strong style="font-size:20px;">${rb.total}</strong>`)}
+      ${row(`${esc(actor.name)}'s ${esc(a.label)}: <strong style="font-size:20px;">${totA}</strong>`, "margin-top:4px;")}
+      ${row(`${esc(them.name)}'s ${esc(b.label)}: <strong style="font-size:20px;">${totB}</strong>`)}
+      ${luckNotes.map(t => row(`<i class="fas fa-clover"></i> ${esc(t)}`, "color:#7fd08a;")).join("")}
       ${row(stood ? `${esc(them.name)} holds its ground.` : `${esc(them.name)} loses.`, `margin-top:6px;color:${stood ? "#cfc4ea" : "#ffd87a"};`)}
       ${put.length ? row(`Put on: <strong>${esc(put.join(", "))}</strong>.`) : ""}
       ${notPut.length ? row(`Not put on: ${esc(notPut.join("; "))}.`, "color:#e8c46a;") : ""}
@@ -175,11 +202,11 @@ export class CheckGate {
       speaker: ChatMessage.getSpeaker({ actor }),
       content: html,
       flags: { [MODULE_ID]: { type: "contestResult", itemUuid: item.uuid ?? null, actorId: actor.id ?? null,
-        targetActorId: them.id ?? null, rolled: [ra.total, rb.total], held: stood, put } },
+        targetActorId: them.id ?? null, rolled: [totA, totB], held: stood, put } },
     });
-    console.log(`${LOG} | ${item.name}: ${actor.name}'s ${a.label} ${ra.total} against ${them.name}'s ${b.label} ${rb.total}; `
+    console.log(`${LOG} | ${item.name}: ${actor.name}'s ${a.label} ${totA} against ${them.name}'s ${b.label} ${totB}; `
       + `${stood ? `${them.name} held` : `${them.name} lost`}${put.length ? `, ${put.join(", ")} put on` : ""}.`);
-    return { stood, grappler: { ...a, total: ra.total }, target: { ...b, total: rb.total }, put, notPut, byHand, targetActor: them };
+    return { stood, grappler: { ...a, total: totA }, target: { ...b, total: totB }, put, notPut, byHand, targetActor: them };
   }
 
   /**
@@ -344,7 +371,7 @@ export class CheckGate {
    * ⚠️ PUBLIC. The table needs to see the roll, and Foundry's core roll mode is
    * a sticky global that must not get a vote in it.
    */
-  static async _postCard({ actor, roll, title, subtitle = "", extra = "", flag = "checkCard", label = "" }) {
+  static async _postCard({ actor, roll, title, subtitle = "", extra = "", flag = "checkCard", label = "", total = null }) {
     try {
       if (roll) {
         const { safeShowForRoll, awaitDiceSettle } = await import("./dsn-utils.mjs");
@@ -373,7 +400,7 @@ export class CheckGate {
               ? `<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:8px;">`
                 + dice
                 + `<span style="font-size:30px;font-weight:700;margin-left:auto;">`
-                + `${esc(String(roll?.total ?? "?"))}</span></div>`
+                + `${esc(String(total ?? roll?.total ?? "?"))}</span></div>`
               : "")
           + extra
           + `</div>`,
@@ -456,6 +483,7 @@ export class CheckGate {
             reasons: read.reasons,
             modifier: read.modifier,
             isPC: this.hasPlayerOwner === true,
+            luckActor: this, hasDisadvantage: read.mode < 0,
           });
           if (!choice) return;                       // cancelled — nobody rolls
 
@@ -516,17 +544,25 @@ export class CheckGate {
    */
   static _registerConcentrationOutcome() {
     Hooks.on("dnd5e.rollConcentrationV2", (rolls, data) => {
-      CheckGate._endConcentrationIfFailed(rolls, data?.subject).catch(err => {
+      const outcome = CheckGate._endConcentrationIfFailed(rolls, data?.subject).catch(err => {
         console.error(`${LOG} | concentration outcome failed:`, err);
         ui.notifications?.error(`ACE could not finish ${data?.subject?.name ?? "that"}'s `
           + `concentration check. Concentration was left as it was — see the console.`);
       });
+      // ⚠️ THE CARD WAITS FOR THIS (Lucky, 2026-09-18). dnd5e does not wait for
+      // a hook, so ACE's check card was posted while a Lucky box could still be
+      // open over a failed concentration save. The outcome rides on the roll,
+      // and CheckGate.run waits for it before posting.
+      try {
+        const r = Array.isArray(rolls) ? rolls[0] : rolls;
+        if (r) Object.defineProperty(r, "_aceOutcome", { value: outcome, enumerable: false, configurable: true, writable: true });
+      } catch (_) { /* a frozen roll: the card simply does not wait */ }
     });
   }
 
   static async _endConcentrationIfFailed(rolls, actor) {
     const roll = Array.isArray(rolls) ? rolls[0] : rolls;
-    const total = Number(roll?.total);
+    let total = Number(roll?.total);
     if (!actor || !Number.isFinite(total)) return;
 
     const dc = Number(roll?.options?.target);
@@ -536,6 +572,21 @@ export class CheckGate {
       ui.notifications?.warn(`${actor.name} rolled ${total} for concentration but ACE could not `
         + `read the DC, so concentration was left in place. See the console.`);
       return;
+    }
+
+    // LUCKY (2014): a concentration save about to fail, before anything ends
+    // (luck.mjs). What it leaves rides on the roll for the card to show.
+    try {
+      const { againstDC } = await import("./luck.mjs");
+      const lk = await againstDC({ actor, kind: "save", what: `concentration save (DC ${dc})`,
+        roll, total, dc, dice: "show" });
+      if (lk.spent) {
+        total = lk.total;
+        try { Object.defineProperty(roll, "_aceLuck", { value: { total: lk.total, d20: lk.d20, note: lk.note },
+          enumerable: false, configurable: true, writable: true }); } catch (_) { /* the card just won't say */ }
+      }
+    } catch (err) {
+      console.warn(`${LOG} | Lucky could not be offered on ${actor.name}'s concentration save; it stands as rolled:`, err);
     }
 
     if (total >= dc) {
@@ -963,6 +1014,7 @@ export class CheckGate {
       reasons: read.reasons,
       modifier: read.modifier,
       isPC: actor.hasPlayerOwner === true,
+      luckActor: actor, hasDisadvantage: read.mode < 0,
     });
     if (!choice) return;                                  // cancelled — nothing rolls
 
@@ -1012,7 +1064,44 @@ export class CheckGate {
       ui.notifications?.warn(`${actor.name}'s ${read.label} did not roll — see the console.`);
       return;
     }
-    await CheckGate.postCard(actor, read, choice, roll, dc);
+
+    // A concentration save's own outcome (and any luck spent on it) is decided
+    // in a hook dnd5e does not wait for; the card waits for it here.
+    if (roll._aceOutcome) {
+      try { await roll._aceOutcome; } catch (_) { /* reported where it happened */ }
+    }
+
+    // ── LUCKY (2014): a check or save about to fail, before its card ──
+    // His rule (2026-09-18): asked only when the roll is about to fail, after
+    // its dice have stopped. The card throws this roll's dice, so for a holder
+    // they are thrown here first and waited for; the card will not throw them
+    // twice. A death save and a concentration save are applied by dnd5e inside
+    // the roll itself, so they are not asked here (see luck.mjs).
+    let luck = null;
+    try {
+      const { luckyFeatItem, ownRoll } = await import("./luck.mjs");
+      if (luckyFeatItem(actor) && ["skill", "tool", "ability", "save"].includes(kind)) {
+        if (!Number.isFinite(dc)) {
+          console.log(`${MODULE_ID} | Luck | ${actor.name}: no Lucky box, ${read.label} has no DC, so there is nothing to fail.`);
+        } else {
+          const { safeShowForRoll } = await import("./dsn-utils.mjs");
+          const { naturalD20 } = await import("./rolldata-utils.mjs");
+          const total = Number(roll.total);
+          const kept = naturalD20(roll);
+          if (total < dc) safeShowForRoll(roll, `${actor.name} ${read.label}`);
+          const d20s = (roll.dice?.[0]?.results ?? []).filter(x => !x?.rerolled).map(x => Number(x.result));
+          const got = await ownRoll({ actor, kind: kind === "save" ? "save" : "check",
+            what: `${read.label} (DC ${dc})`, d20s, kept, total,
+            judge: (t) => ({ fails: t < dc, words: `${t} against DC ${dc}, ${t >= dc ? "a success" : "a failure"}` }),
+            dice: "ours" });
+          if (got.spent) luck = got;
+        }
+      }
+    } catch (err) {
+      console.warn(`${LOG} | Lucky could not be offered on ${actor.name}'s ${read.label}; it stands as rolled:`, err);
+    }
+    if (!luck && roll._aceLuck) luck = { ...roll._aceLuck, spent: true };
+    await CheckGate.postCard(actor, read, choice, roll, dc, luck);
   }
 
   /* ── The card ────────────────────────────────────────────────────────── */
@@ -1033,8 +1122,10 @@ export class CheckGate {
    * ⚠️ PUBLIC. The table needs to see a check; that is the entire point of it.
    * Foundry's core roll mode is a sticky global and must not get a vote.
    */
-  static async postCard(actor, read, choice, roll, dc = null) {
+  static async postCard(actor, read, choice, roll, dc = null, luck = null) {
     const esc = foundry.utils.escapeHTML;
+    // A luck point spent on this roll (2014 Lucky) changes the d20 it keeps.
+    const total = Number.isFinite(Number(luck?.total)) ? Number(luck.total) : Number(roll?.total);
 
     const badge = choice === "advantage"
       ? `<span style="color:#7ee081;font-weight:700;font-size:14px;letter-spacing:0.5px;">ADVANTAGE</span>`
@@ -1048,8 +1139,8 @@ export class CheckGate {
     // Only a save has something to pass or fail against. A check has no DC until
     // somebody sets one, and inventing a verdict for it would be a lie.
     let verdict = "";
-    if (Number.isFinite(dc) && Number.isFinite(Number(roll?.total))) {
-      const made = Number(roll.total) >= Number(dc);
+    if (Number.isFinite(dc) && Number.isFinite(total)) {
+      const made = total >= Number(dc);
       verdict = `<div style="margin-top:6px;"><span style="font-size:16px;font-weight:700;`
         + `color:${made ? "#7ee081" : "#e08b7e"};">`
         + `${made ? "SUCCESS" : "FAILURE"} vs DC ${esc(String(dc))}</span></div>`;
@@ -1074,11 +1165,15 @@ export class CheckGate {
         + `${esc(read.reasons.map(r => r.reason).join(" • "))}</div>`
       : "";
 
+    const luckLine = luck?.note
+      ? `<div style="font-size:16px;margin-top:6px;color:#7fd08a;"><i class="fas fa-clover"></i> ${esc(String(luck.note))}</div>`
+      : "";
     await CheckGate._postCard({
       actor, roll, flag: "checkCard", label: read.label,
       title: read.label,
       subtitle: `<span>${esc(read.label)} ${mod}</span>${badge}`,
-      extra: verdict + tally + why,
+      extra: luckLine + verdict + tally + why,
+      total: Number.isFinite(total) ? total : null,
     });
   }
 }

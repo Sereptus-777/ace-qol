@@ -27,6 +27,8 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { awaitDsnRoll } from "./attack-prompt.mjs";
 import { abilityMod } from "./rolldata-utils.mjs";
+// Lucky (2014) and the halfling's Lucky. See luck.mjs.
+import { withHalflingLuck, againstDC as luckAgainstDC } from "./luck.mjs";
 
 // Real black-d20 die art (per-face) with a gold glow — the same dice the save
 // cards use, so a break-free Strength check shows the player exactly what they
@@ -260,6 +262,7 @@ export class BreakFreeEngine {
     // to see what they rolled — the die used to just vanish).
     let total = 0;
     let dieFace = null;
+    let bfRoll = null;
     const _grabFace = (roll) => roll?.dice?.[0]?.total
       ?? roll?.terms?.find?.(t => t?.faces === 20)?.results?.[0]?.result
       ?? null;
@@ -276,15 +279,17 @@ export class BreakFreeEngine {
       } else if (typeof actor.rollAbilityTest === "function") {
         roll = await actor.rollAbilityTest(ability, { chatMessage: false, fastForward: true });
       } else {
-        roll = await (new Roll(`1d20 + ${abilityMod(actor.getRollData?.() ?? {}, ability)}`)).evaluate();
+        roll = await (new Roll(withHalflingLuck(`1d20 + ${abilityMod(actor.getRollData?.() ?? {}, ability)}`, actor))).evaluate();
       }
       total = roll?.total ?? 0;
       dieFace = _grabFace(roll);
+      bfRoll = roll;
     } catch (_) {
       try {
-        const roll = await (new Roll(`1d20 + ${abilityMod(actor.getRollData?.() ?? {}, ability)}`)).evaluate();
+        const roll = await (new Roll(withHalflingLuck(`1d20 + ${abilityMod(actor.getRollData?.() ?? {}, ability)}`, actor))).evaluate();
         total = roll.total;
         dieFace = _grabFace(roll);
+        bfRoll = roll;
       } catch (__) { total = 0; }
     }
 
@@ -292,6 +297,16 @@ export class BreakFreeEngine {
     // the 3D dice finish settling before the result card reveals pass/fail.
     if (promptMsg) { try { await promptMsg.setFlag(MODULE_ID, "breakFreeResolved", true); } catch (err) { console.warn(`ace-qol | a setFlag did not save:`, err); } }
     try { await awaitDsnRoll(); } catch (_) {}
+
+    // LUCKY (2014): an escape check about to fail, before the hold stays (luck.mjs).
+    try {
+      const lk = await luckAgainstDC({ actor, kind: "check",
+        what: `${String(ability).toUpperCase()} check to break free (DC ${dc})`,
+        roll: bfRoll, total, d20: dieFace, dc, dice: "show" });
+      if (lk.spent) { total = lk.total; dieFace = lk.d20; }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | BreakFree: Lucky could not be offered on ${actor?.name}'s check; it stands as rolled:`, err);
+    }
 
     const passed = total >= dc;
     const modPart = (dieFace != null) ? (() => { const m = total - dieFace; const s = m >= 0 ? "+" : ""; return m === 0 ? "" : ` ${s}${m}`; })() : "";
