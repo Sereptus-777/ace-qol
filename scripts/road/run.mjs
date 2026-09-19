@@ -40,8 +40,13 @@ import { safeShowForRoll, awaitDiceSettle } from "../dsn-utils.mjs";
 const MODULE_ID = "ace-qol";
 const LOG = "ace-qol | road";
 
-/** The four ways a lasting area or a lasting condition catches somebody again. */
-export const TRIGGERS = Object.freeze(["enter-area", "start-of-turn", "end-of-turn", "move-through"]);
+/**
+ * The ways a lasting area or a lasting condition catches somebody again, and,
+ * since 2026-09-19, the two ways a creature's own words catch the ones around
+ * it with nobody pressing anything: "dies" (a death burst) and "aura" (a body
+ * that burns on its turn). Johnny: "No button."
+ */
+export const TRIGGERS = Object.freeze(["enter-area", "start-of-turn", "end-of-turn", "move-through", "dies", "aura"]);
 
 /** What the card says happened, in plain words. */
 const WORDS = Object.freeze({
@@ -49,6 +54,8 @@ const WORDS = Object.freeze({
   "start-of-turn": "started its turn in it",
   "end-of-turn":   "ended its turn in it",
   "move-through":  "moved through it",
+  "dies":          "was caught when it died",
+  "aura":          "was beside it on its turn",
 });
 
 /** RAW: a move-through area deals its damage for every five feet moved in it. */
@@ -75,6 +82,10 @@ export function catchesOn(recipe, trigger, { whenSilent = false } = {}) {
   const list = Array.isArray(recipe.recatch) ? recipe.recatch : [];
   if (!TRIGGERS.includes(trigger)) return { ok: false, why: `"${trigger}" is not one of the road's triggers` };
   if (list.includes(trigger)) return { ok: true, why: "" };
+  // A death burst and a burning body are fired by the creature's own words,
+  // read by the engine that fires them (rules/creature-words.mjs): the recipe
+  // says what lands, never whether its creature died or took a turn.
+  if (trigger === "dies" || trigger === "aura") return { ok: true, why: "" };
   // ⚠️ A RECIPE THAT NAMES NONE DOES NOT SILENCE THE AREA. `recatch` is read from
   // the item's own sentences, and plenty of areas his table plays every week say
   // it somewhere this reader does not claim: Web's walk-in sentence belongs to its
@@ -122,6 +133,9 @@ export async function run(recipe, trigger, ctx = {}) {
           saveDC = null, feet = 0, templateId = null, skipDelay = true, fromTiming = false } = ctx;
   const who = token?.name ?? token?.actor?.name ?? "a creature";
   const what = item?.name ?? "an area";
+  // What happened, for the card and the console: the trigger's own words, or the
+  // caller's when it knows better ("was beside the salamander as its turn ended").
+  const happened = ctx.happened ?? triggerWords(trigger);
 
   const may = catchesOn(recipe, trigger, { whenSilent: fromTiming });
   if (may.ok && may.why) console.log(`${LOG} | ${what}: ${may.why}.`);
@@ -134,7 +148,7 @@ export async function run(recipe, trigger, ctx = {}) {
     // fall back to its old reading and ask for the save anyway, or the 2024 Blade
     // Barrier would still catch a creature at the start of its turn, which is the
     // 2014 rule for a different spell.
-    console.log(`${LOG} | ${what}: ${who} ${triggerWords(trigger)}, and nothing was run: ${may.why}.`);
+    console.log(`${LOG} | ${what}: ${who} ${happened}, and nothing was run: ${may.why}.`);
     return { ran: false, refused: true, why: may.why };
   }
   if (!may.ok) return { ran: false, refused: false, why: may.why };
@@ -156,7 +170,7 @@ export async function run(recipe, trigger, ctx = {}) {
     const rollNow = ctx.rollNow ?? !token.actor?.hasPlayerOwner;
     const fast = saveEngine?._fastResolveSingleNpcSave?.bind(saveEngine);
     if (typeof post !== "function") {
-      console.warn(`${LOG} | ${what}: ${who} ${triggerWords(trigger)}, but the save engine is not here, `
+      console.warn(`${LOG} | ${what}: ${who} ${happened}, but the save engine is not here, `
         + `so no save was asked.`);
       return { ran: false, why: "the save engine is not on the road here" };
     }
@@ -167,11 +181,11 @@ export async function run(recipe, trigger, ctx = {}) {
     const dcFromRecipe = Number(recipe.decidedBy?.dc);
     const dc = Number.isFinite(dcFromRecipe) && dcFromRecipe > 0 ? dcFromRecipe : Number(saveDC);
     if (!ability || !Number.isFinite(dc) || dc <= 0) {
-      console.warn(`${LOG} | ${what}: ${who} ${triggerWords(trigger)}, but its save has `
+      console.warn(`${LOG} | ${what}: ${who} ${happened}, but its save has `
         + `${ability ? "no DC" : "no ability"}, so nothing was asked.`);
       return { ran: false, why: ability ? "its save has no DC" : "its save has no ability" };
     }
-    console.log(`${LOG} | ${what}: ${who} ${triggerWords(trigger)} — its own recipe's `
+    console.log(`${LOG} | ${what}: ${who} ${happened} — its own recipe's `
       + `${ability.toUpperCase()} DC ${dc} save, ${trigger}.`);
     if (rollNow && typeof fast === "function") {
       await fast(item, actor, token, {
@@ -210,7 +224,7 @@ export async function run(recipe, trigger, ctx = {}) {
     const rows = automaticDamage(recipe);
     const lands = whatLands(recipe, { passed: false });
     if (!rows.length && !lands.conditions.length && !lands.effects.length) {
-      console.log(`${LOG} | ${what}: ${who} ${triggerWords(trigger)}, and its recipe puts nothing on anyone.`);
+      console.log(`${LOG} | ${what}: ${who} ${happened}, and its recipe puts nothing on anyone.`);
       return { ran: false, why: "its recipe lands nothing" };
     }
 
@@ -265,7 +279,7 @@ export async function run(recipe, trigger, ctx = {}) {
     try {
       const { DamageApplicator } = await import("../damage-applicator.mjs");
       finals = await DamageApplicator._askDamageReactions(token.actor, finals, {
-        token, source: actor, item, where: `${what} (${triggerWords(trigger)})`,
+        token, source: actor, item, where: `${what} (${happened})`,
       });
     } catch (err) {
       console.warn(`${MODULE_ID} | could not ask ${token.actor?.name}'s reactions about that damage, `
@@ -273,7 +287,7 @@ export async function run(recipe, trigger, ctx = {}) {
     }
     const landed = await HpDoor.damage(token.actor, finals, {
       dice: rolled.length > 0, item, source: actor, tokenDocId: token.document?.id ?? null,
-      label: `${what} (${triggerWords(trigger)})`,
+      label: `${what} (${happened})`,
     });
 
     for (const c of [...verdict.conditions, ...verdict.effects]) {
@@ -282,11 +296,11 @@ export async function run(recipe, trigger, ctx = {}) {
         c.duration ? { duration: c.duration } : {}, { dice: rolled.length > 0 });
     }
 
-    await _postAutomaticCard({ item, actor, token, trigger, ticks, rolled, finals, landed, verdict, dice: rolled.length > 0 });
+    await _postAutomaticCard({ item, actor, token, trigger, happened, ticks, rolled, finals, landed, verdict, dice: rolled.length > 0 });
     return { ran: true, why: `its own damage, ${trigger}`, kind, total: landed?.total ?? 0 };
   }
 
-  console.log(`${LOG} | ${what}: ${who} ${triggerWords(trigger)}, and a recipe decided by `
+  console.log(`${LOG} | ${what}: ${who} ${happened}, and a recipe decided by `
     + `${kind} has nothing to run on a trigger.`);
   return { ran: false, why: `it is decided by ${kind}` };
 }
@@ -325,7 +339,7 @@ export function repeatOutcome(recipe, { key, passed } = {}) {
 }
 
 /** The card for damage nothing rolled against: what it moved through, and what it cost. */
-async function _postAutomaticCard({ item, actor, token, trigger, ticks, rolled, finals, landed, verdict, dice }) {
+async function _postAutomaticCard({ item, actor, token, trigger, happened = null, ticks, rolled, finals, landed, verdict, dice }) {
   try {
     const esc = (s) => foundry.utils.escapeHTML(String(s ?? ""));
     const total = finals.reduce((sum, f) => sum + (Number(f.final) || 0), 0);
@@ -350,7 +364,7 @@ async function _postAutomaticCard({ item, actor, token, trigger, ticks, rolled, 
             ${esc(item?.name)}
           </div>
           <div style="font-size:16px;line-height:1.5;margin-bottom:6px;">
-            ${esc(token?.name ?? token?.actor?.name)} ${esc(triggerWords(trigger))}${
+            ${esc(token?.name ?? token?.actor?.name)} ${esc(happened ?? triggerWords(trigger))}${
               trigger === "move-through" ? ` (${ticks} &times; ${esc(FEET_PER_TICK)} feet)` : ""}.
           </div>
           ${rows || `<div style="font-size:16px;">No damage.</div>`}

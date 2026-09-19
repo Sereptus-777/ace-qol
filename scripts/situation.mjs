@@ -291,6 +291,23 @@ export class Situation {
     return false;
   }
 
+  /**
+   * The name of the creature this viewer is looking away from, when `sToken` is
+   * one (the gaze engine's mark), else null.
+   */
+  static _avertsFrom(viewer, sToken) {
+    try {
+      const id = sToken?.document?.id ?? sToken?.id ?? null;
+      if (!id) return null;
+      for (const e of viewer?.effects ?? []) {
+        if (e?.disabled) continue;
+        const ids = e?.flags?.[MODULE_ID]?.avertEyesFrom;
+        if (Array.isArray(ids) && ids.includes(id)) return sToken?.name ?? sToken?.document?.name ?? "it";
+      }
+    } catch (_) { /* no mark read is no mark */ }
+    return null;
+  }
+
   // ════════════════════════════════════════════════════════════════════════
   //  canSee — the "can these two actually see each other?" sub-engine
   // ════════════════════════════════════════════════════════════════════════
@@ -311,6 +328,13 @@ export class Situation {
 
       const vToken = opts.viewerToken  ?? viewer.getActiveTokens?.()?.[0] ?? null;
       const sToken = opts.subjectToken ?? subject.getActiveTokens?.()?.[0] ?? null;
+
+      // ⚠️ LOOKING AWAY (a gaze, 2026-09-19). A creature that averted its eyes
+      // from a basilisk or a medusa cannot see it until the start of its next
+      // turn (gaze-engine.mjs puts the mark on and takes it off). Every reader
+      // of sight asks here, so an attack between the two knows it too.
+      const avertedFrom = Situation._avertsFrom(viewer, sToken);
+      if (avertedFrom) return { canSee: false, why: `it is averting its eyes from ${avertedFrom}` };
       let dist = opts.distanceFt;
       if (dist == null && vToken && sToken) {
         try { dist = aceDistanceFt(vToken, sToken); } catch (_) { dist = null; }

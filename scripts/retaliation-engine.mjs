@@ -10,6 +10,13 @@
 // a melee hit. Structured activity damage is preferred; we fall back to parsing
 // the stat-block text. The attacker's own resistances/immunities are honoured
 // (a fire-immune attacker takes 0 from Heated Body). (2026-06-24)
+//
+// ⚠️ THROUGH THE DOORS (2026-09-19, his rule for this family: "That trigger runs
+// with no button"). The damage went straight onto the attacker with
+// applyDamage and the card was a plain chat message: no reactions asked (an
+// Absorb Elements against the salamander's fire), no damage-applied signal, no
+// UNDO. It lands through the hit-point door now, and the card through the card
+// door once the dice are down, the same as every other damage in ACE.
 // ───────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
@@ -58,9 +65,23 @@ export class RetaliationEngine {
         safeShowForRoll(roll, `${ret.source} retaliation`);
         await awaitDiceSettle();
 
-        // applyDamage([{value,type}]) honours the ATTACKER's resistance/immunity.
-        await attacker.applyDamage?.([{ value: dealt, type: ret.type }]);
-        await RetaliationEngine._postCard(attacker, target, ret, roll);
+        // The attacker's resistances and immunities, then its reactions, then the door.
+        const { HpDoor } = await import("./road/doors.mjs");
+        let finals = HpDoor.preview(attacker, [{ amount: dealt, type: ret.type }], { item: feat });
+        try {
+          const { DamageApplicator } = await import("./damage-applicator.mjs");
+          finals = await DamageApplicator._askDamageReactions(attacker, finals, {
+            token: attackerToken ?? null, source: target, item: feat,
+            where: `${ret.source} (${target.name})`,
+          });
+        } catch (err) {
+          console.warn(`${MODULE_ID} | could not ask ${attacker.name}'s reactions about ${ret.source}, so it lands in full:`, err);
+        }
+        const landed = await HpDoor.damage(attacker, finals, {
+          dice: true, item: feat, source: target, label: ret.source,
+          tokenDocId: attackerToken?.document?.id ?? attackerToken?.id ?? null,
+        });
+        await RetaliationEngine._postCard(attacker, target, ret, roll, finals, landed);
       }
     } catch (err) {
       console.warn(`${MODULE_ID} | RetaliationEngine.checkOnHit failed (non-fatal):`, err);
@@ -111,26 +132,38 @@ export class RetaliationEngine {
     return { formula, type: String(type ?? "fire").toLowerCase(), range: rm ? Number(rm[1]) : 5, source: feat.name };
   }
 
-  static async _postCard(attacker, target, ret, roll) {
+  static async _postCard(attacker, target, ret, roll, finals = null, landed = null) {
     try {
       const color = TYPE_COLORS[ret.type] ?? "#d4af37";
+      // What it came to on the attacker, after its resistances (the door's own sums).
+      const took = Array.isArray(finals) ? finals.reduce((n, f) => n + (Number(f?.final) || 0), 0) : roll.total;
+      const note = Array.isArray(finals)
+        ? finals.map(f => f?.modifier === "immune" ? "immune" : f?.modifier === "resistant" ? "resisted"
+          : f?.modifier === "vulnerable" ? "vulnerable" : "").filter(Boolean).join(", ")
+        : "";
       const content = `
         <div style="border:1px solid ${color}55;border-left:3px solid ${color};border-radius:7px;
                     background:linear-gradient(160deg,#1a1410,#0d0a07);padding:9px 12px;color:#e9ddc1;">
           <div style="font-weight:700;color:${color};font-size:14px;letter-spacing:.3px;">
             <i class="fas fa-fire-flame-curved"></i> ${foundry.utils.escapeHTML(ret.source)}
           </div>
-          <div style="font-size:13px;margin-top:3px;">
+          <div style="font-size:16px;line-height:1.4;margin-top:3px;">
             <b>${foundry.utils.escapeHTML(attacker.name)}</b> takes
-            <b style="color:${color};">${roll.total} ${ret.type}</b> damage from
-            <b>${foundry.utils.escapeHTML(target.name)}</b> (${ret.formula}).
+            <b style="color:${color};">${took} ${ret.type}</b> damage from
+            <b>${foundry.utils.escapeHTML(target.name)}</b> (${ret.formula} = ${roll.total}${note ? `, ${note}` : ""}).
           </div>
+          ${landed && landed.applied === false && took > 0
+            ? `<div style="font-size:14px;color:#c0b288;margin-top:3px;">Nothing was taken off: only the GM's screen can change its hit points.</div>`
+            : ""}
         </div>`;
-      await ChatMessage.create({
+      const { CardDoor } = await import("./road/doors.mjs");
+      await CardDoor.post({
         content,
         speaker: ChatMessage.getSpeaker({ alias: target.name }),
         flags: { [MODULE_ID]: { type: "retaliation" } },
-      });
-    } catch (_) { /* non-fatal */ }
+      }, { dice: true });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | the ${ret?.source ?? "retaliation"} card could not be posted (the damage already landed):`, err);
+    }
   }
 }

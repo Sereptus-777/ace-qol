@@ -76,6 +76,9 @@ import { withHalflingLuck, halflingRerolled, luckyFeatItem, luckyFeat, ownRoll a
          pressButton as luckPressButton, markCardAdvantage, cardHasAdvantage, takeCardAdvantage,
          LUCK_GREEN } from "./luck.mjs";
 import { naturalD20 } from "./rolldata-utils.mjs";
+// What a gaze's own words add to its save: a second failure that petrifies, and
+// "fails by 5 or more" (the 2014 medusa). See rules/creature-words.mjs.
+import { readEscalation, readFailBy } from "./rules/creature-words.mjs";
 
 // Real black d20 die art (per-face). These are the dice the GM already sees;
 // we use them everywhere a save result or prompt appears instead of the flat
@@ -1899,6 +1902,8 @@ export class SaveEngine {
       templateSceneId: null,
       hasDamage,
       appliedConditions,
+      autoResolve: opts?.autoResolve === true,
+      trigger: opts?.trigger ?? null,
     });
   }
 
@@ -3580,6 +3585,10 @@ export class SaveEngine {
             : (timing?.timing ?? TIMING.INSTANT),
           targets: targetData,
           persistentInitial: opts.persistentInitial ?? false,
+          // A TRIGGER'S CARD RESOLVES ITSELF (2026-09-19): a death burst, a
+          // burning body, a gaze. His words: "No button." See _autoResolveIfReady.
+          autoResolve: opts.autoResolve === true,
+          trigger: opts.trigger ?? null,
           templateDocId:   opts.templateDoc?.id ?? null,
           templateSceneId: opts.templateDoc?.parent?.id ?? null,
         }
@@ -4998,6 +5007,8 @@ export class SaveEngine {
       // Which cast this card belongs to, so an incoming PC result can find THIS
       // card instead of whichever save card happens to be newest in the log.
       castId: thisCastId,
+      autoResolve: flags.autoResolve === true,
+      trigger: flags.trigger ?? null,
     });
 
     // ── ONE CLEAN CARD (Johnny 2026-07-11) ──
@@ -6476,6 +6487,8 @@ export class SaveEngine {
         [`flags.${MODULE_ID}.appliedConditions`]: cardApplied,
       });
       console.log(`${MODULE_ID} | Card updated for ${r.name}: ${r.passed ? "PASS" : "FAIL"} (${r.saveTotal})`);
+      // The last save on a trigger's card finishes it (no button).
+      await this._autoResolveIfReady(msg);
     } catch (err) {
       console.error(`${MODULE_ID} | Card update failed:`, err);
       // Last-ditch: at least persist the flag
@@ -6956,8 +6969,18 @@ export class SaveEngine {
     let stagedPetrifyMeta = null;
     {
       const hasRestrained = failConditions.some(c => /restrain/i.test(String(c.condition ?? "")));
-      const hasPetrified  = failConditions.some(c => /petrif/i.test(String(c.condition ?? "")));
+      // ⚠️ THE SECOND STAGE CAN BE IN THE WORDS ONLY (2026-09-19). The 2014
+      // medusa's recipe reads "on fail restrained": its words say the restrained
+      // creature repeats the save "becoming petrified on a failure", and the
+      // reader took only the first stage. So the gaze restrained and never
+      // turned anyone to stone, pressed or at the start of a turn.
+      const wordsEscalate = readEscalation(item) === "petrified";
+      const hasPetrified  = failConditions.some(c => /petrif/i.test(String(c.condition ?? ""))) || wordsEscalate;
       if (hasRestrained && hasPetrified && resolvedSaveDC) {
+        if (wordsEscalate && !failConditions.some(c => /petrif/i.test(String(c.condition ?? "")))) {
+          console.log(`${MODULE_ID} | ${item.name}: its words say a second failure petrifies; its recipe named only `
+            + `restrained, so the second stage comes from the words.`);
+        }
         failConditions = [{ condition: "restrained", requiresSave: true, staged: "petrify" }];
         stagedPetrifyMeta = {
           ability:            String(resolvedSaveAbility || "con").toLowerCase(),
@@ -7036,12 +7059,47 @@ export class SaveEngine {
       return applied;
     }
 
+    // ⚠️ FAILED BY FIVE OR MORE (the 2014 medusa, 2026-09-19): "If the saving
+    // throw fails by 5 or more, the creature is instantly petrified." Read from
+    // the item's own words, and only where they say it.
+    const failByRule = readFailBy(item);
+
     for (const r of failed) {
       // ⚠️ ONE RESOLVER for "which creature on the map is this result", shared
       // with the success pass below. Every way it can fail says so on the card.
       const { actor, tokenDoc, why: noActor } = SaveEngine._resolveResultActor(r, item);
       if (!actor) {
         applied.push(...SaveEngine._declinedFor([r], noActor));
+        continue;
+      }
+
+      const _total = Number(r.saveTotal);
+      const _byEnough = failByRule && Number.isFinite(_total) && Number.isFinite(Number(resolvedSaveDC))
+        && _total <= Number(resolvedSaveDC) - failByRule.n;
+      if (_byEnough && !failByRule.condition && !saveCtx?.dryRun) {
+        // "reduced to 0 hit points": the words' own outcome, not a condition. Said.
+        console.log(`${MODULE_ID} | ${item.name}: ${actor.name} failed by ${failByRule.n} or more (${_total} against `
+          + `DC ${resolvedSaveDC}); its words say it ${failByRule.other}. ACE does not land that; the GM does.`);
+      }
+      if (_byEnough && failByRule.condition) {
+        const key = failByRule.condition;
+        if (ConditionDoor.immune(actor, key)) {
+          console.log(`${MODULE_ID} | ${item.name}: ${actor.name} failed by ${failByRule.n} or more but is immune to ${key}.`);
+          applied.push({ targetName: r.name ?? actor.name, tokenDocId: r.tokenDocId, conditions: [], immune: [key] });
+          continue;
+        }
+        if (saveCtx?.dryRun) {
+          console.log(`${MODULE_ID} | whyNoCondition: ${item.name} WOULD make ${actor.name} ${key} at once `
+            + `(failed by ${failByRule.n} or more).`);
+          applied.push({ targetName: r.name ?? actor.name, tokenDocId: r.tokenDocId, conditions: [key] });
+          continue;
+        }
+        const out = await ConditionDoor.apply(actor, key, { source: item.name });
+        console.log(`${MODULE_ID} | ${item.name}: ${actor.name} failed by ${failByRule.n} or more (${_total} against `
+          + `DC ${resolvedSaveDC}), so its words make it ${key} at once${out?.ok ? "" : ", and it did not take"}.`);
+        if (out?.ok) applied.push({ targetName: r.name ?? actor.name, tokenDocId: r.tokenDocId, conditions: [key] });
+        else applied.push(...SaveEngine._declinedFor([r], `ACE tried to make it ${key} (failed by ${failByRule.n} `
+          + `or more), and it did not take. The console has the error.`));
         continue;
       }
 
@@ -7665,7 +7723,7 @@ export class SaveEngine {
     // produced it has visibly stopped. (feedback_chat_cards_use_the_room)
     await awaitDiceSettle();
 
-    await CardDoor.post({
+    const posted = await CardDoor.post({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor: casterActor }),
       // PUBLIC (Johnny 2026-07-11): the save results are visible to the whole
@@ -7704,6 +7762,9 @@ export class SaveEngine {
           damageTypes,
           isSpell,
           hasDamage, // false for save-only-condition spells; suppresses Phase 2
+          // A trigger's card rolls and lands its own damage (_autoResolveIfReady).
+          autoResolve: opts.autoResolve === true,
+          trigger: opts.trigger ?? null,
           appliedConditions, // [{ targetName, conditions:[...] }] for footer rendering
           allResults: results.map(r => ({
             name: r.name,
@@ -7743,6 +7804,58 @@ export class SaveEngine {
 
     // A mechanic the recipe names that ACE has not built is said, not skipped.
     await this._sayWhatIsNotBuilt(item, casterActor, recipe);
+    await this._autoResolveIfReady(posted);
+  }
+
+  /**
+   * ⚠️ A TRIGGER'S CARD RESOLVES ITSELF (Johnny, 2026-09-19): "When the creature
+   * hits 0 hit points, if its words say it explodes ... No button." The same
+   * for a burning body and a gaze. Nobody pressed anything to start these, so
+   * nobody is left to press ROLL DAMAGE or APPLY ALL either.
+   *
+   * Once no save on the card is still waiting (a player rolls their own on
+   * their own card, by his rule), the active GM's screen does exactly what the
+   * two buttons do, in the same order: the damage is rolled and worked out per
+   * row (phase two, which also asks each creature's reactions), then it lands
+   * through the hit-point door. The buttons stay on the card, already spent,
+   * with UNDO live.
+   *
+   * @param {ChatMessage} message  the phase-one card
+   */
+  async _autoResolveIfReady(message) {
+    try {
+      if (!message || game.users?.activeGM !== game.user) return;
+      const flags = message.flags?.[MODULE_ID];
+      if (!flags?.autoResolve || flags.phase !== 1) return;
+      const rows = flags.allResults ?? [];
+      if (rows.some(r => r.pending)) return;   // a player has not rolled yet; their save brings us back
+      this._autoResolving ??= new Set();
+      if (this._autoResolving.has(message.id)) return;
+      this._autoResolving.add(message.id);
+      const what = message.flags?.[MODULE_ID]?.itemId ?? "a trigger";
+      if (flags.hasDamage === false) {
+        console.log(`${MODULE_ID} | ${what}: nothing to roll after the saves, so the card is done.`);
+        return;
+      }
+      // The same test the card uses before it offers ROLL DAMAGE at all.
+      const takes = rows.some(r => !r.pending && !r.noRoll
+        && (typeof r.damageMultiplier === "number" ? r.damageMultiplier > 0 : (!r.passed || flags.halfOnSave)));
+      if (!takes) {
+        console.log(`${MODULE_ID} | ${what}: every creature on the card takes nothing, so no damage was rolled.`);
+        return;
+      }
+      console.log(`${MODULE_ID} | ${what}: every save is in; rolling the damage and landing it (${flags.trigger ?? "a trigger"}, no button).`);
+      await this._completeSaveResultsPhase2(message);
+      const now = game.messages?.get?.(message.id) ?? message;
+      if (now.flags?.[MODULE_ID]?.applied) return;
+      await this._applyAllSaveDamage(now);
+      await now.setFlag(MODULE_ID, "applied", true);
+    } catch (err) {
+      console.error(`${MODULE_ID} | a trigger's save card could not finish on its own; ROLL DAMAGE and APPLY ALL `
+        + `are still on it:`, err);
+      ui.notifications?.warn("ACE: a death burst, fire aura or gaze could not land its damage on its own. "
+        + "Its card still has ROLL DAMAGE and APPLY ALL.");
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

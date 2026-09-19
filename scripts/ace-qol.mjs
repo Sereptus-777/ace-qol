@@ -81,6 +81,7 @@ import { decideActivityChoice, spellIsUp, upCanBeSeen } from "./activity-choice.
 import { guardianCastActivity } from "./rules/spirit-guardians.mjs";
 import { RepeatingSaveEngine }  from "./repeating-save-engine.mjs";
 import { GazeEngine }           from "./gaze-engine.mjs";
+import { CreatureTriggers }     from "./creature-triggers.mjs";
 import { BreakFreeEngine }      from "./break-free-engine.mjs";
 import { RestrainedMovement }   from "./restrained-movement.mjs";
 import { TransformationEngine } from "./transformation-engine.mjs";
@@ -3546,16 +3547,28 @@ Hooks.once("ready", () => {
   // end-of-turn re-saves for Hold Person, Banishment, Tasha's, etc.
   try {
     RepeatingSaveEngine.init();
-    // PASSIVE gaze engine DISABLED (2026-07-24). It auto-fired the petrifying
-    // gaze on EVERY creature that started its turn near the basilisk, which
-    // collided with the ACTIVE "cast Petrifying Gaze" item Johnny actually uses
-    // — an untargeted second Ogre got gazed just for standing nearby. The
-    // active-item path (save-engine staged petrification) is the single source
-    // of truth now. Re-enable + gate behind a GM setting if we ever want the
-    // RAW auto-gaze back.
-    // GazeEngine.init();
   } catch (err) {
     console.error(`${MODULE_ID} | Repeating Save Engine init failed:`, err);
+  }
+
+  // ── A creature's own words fire them, with no button (2026-09-19) ──
+  // Johnny: "PETRIFYING GAZE. This used to work. It does not now. Restore it."
+  // The start-of-turn gaze was switched off on 2026-07-24 for gazing every
+  // creature near the basilisk, an untargeted Ogre on its own side included.
+  // It is back, rebuilt: only the items whose words say so, only creatures
+  // hostile to the gazer, the owner asked about averting, the save on the one
+  // save card with the gaze's own recipe (gaze-engine.mjs). Death bursts and
+  // the bodies that burn on a turn fire from their words the same way
+  // (creature-triggers.mjs). Separate trys: one failing leaves the other up.
+  try {
+    GazeEngine.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Gaze engine init failed:`, err);
+  }
+  try {
+    CreatureTriggers.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Death bursts and burning bodies init failed:`, err);
   }
 
   // Prismatic Wall — EVERY client: the caster's own screen asks who passes the

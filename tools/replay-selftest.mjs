@@ -3904,6 +3904,227 @@ await quiet(async () => {
   }
 });
 
+/* ── DEATH BURSTS, BURNING BODIES AND THE START-OF-TURN GAZE ─────────────── */
+// 2026-09-19, his three families, none of them pressed: "When the creature hits
+// 0 hit points, if its words say it explodes ... No button", "His Fire
+// Salamander did nothing. Fix that", and "PETRIFYING GAZE. This used to work.
+// It does not now. Restore it." Pinned with his own Magmin, salamanders,
+// basilisk and medusa. The save engine and the road's landing are stood in:
+// what is pinned is who is caught, by what, and that it asks for nothing.
+console.log(`\nDEATH BURSTS, BURNING BODIES AND THE GAZE`);
+await quiet(async () => {
+  const { CreatureTriggers } = await import(`${MODULE}/scripts/creature-triggers.mjs`);
+  const { GazeEngine } = await import(`${MODULE}/scripts/gaze-engine.mjs`);
+  const { RetaliationEngine } = await import(`${MODULE}/scripts/retaliation-engine.mjs`);
+  const W = await import(`${MODULE}/scripts/rules/creature-words.mjs`);
+  const itemOn = (actor, name) => actor?.items?.find?.(i => i.name === name) ?? null;
+  const findActor = (name, test) => [...ACTORS.values()].find(a => a.name === name && test(a)) ?? null;
+  const keepApi = { ...(game.aceQol ?? {}) };
+  game.aceQol ??= {};
+  const pc = (name, extra = {}) => ({ id: `replay-${name}`, name, type: "character", img: "",
+    system: { attributes: { hp: { value: 30, max: 30 }, death: { failure: 0 } } },
+    statuses: new Set(), effects: new Collection(), items: new Collection(), ...extra });
+  const sceneOf = (id) => ({ id, tokens: { contents: [] } });
+  const tok = (scene, id, name, col, row, actor, disposition = 1) => {
+    const t = { id, name, x: col * 100, y: row * 100, width: 1, height: 1, elevation: 0, disposition,
+      actor, parent: scene, object: null, flags: {}, texture: { src: "" }, getFlag: () => undefined };
+    scene.tokens.contents.push(t);
+    return t;
+  };
+  try {
+    // ── 1. The Magmin's Death Burst ──
+    const magmin = findActor("Magmin", a => !!itemOn(a, "Death Burst"));
+    if (!magmin) {
+      check("the Magmin's Death Burst goes off when it drops to 0 (2026-09-19)", null, "(no Magmin with a Death Burst in this world)");
+    } else {
+      const seen = [];
+      game.aceQol.saveEngine = { postSaveCard: async (item, actor, tokens, opts) => {
+        seen.push({ item: item?.name, who: tokens.map(t => t.name), opts });
+      } };
+      const s = sceneOf("replay-burst");
+      const magDoc = tok(s, "t-magmin", "Magmin", 5, 5, magmin, -1);
+      tok(s, "t-chudd", "Chudd", 6, 5, pc("Chudd"));                 // beside it: 5 feet
+      tok(s, "t-kas", "Kasimir", 7, 7, pc("Kasimir"));               // one empty square between, diagonally: 10 feet
+      tok(s, "t-firaxis", "Firaxis", 9, 5, pc("Firaxis"));           // 20 feet: out
+      tok(s, "t-corpse", "Dead Goblin", 5, 6, pc("Dead Goblin", { statuses: new Set(["dead"]) }), -1);
+      await CreatureTriggers.onDeath({ actor: magmin, tokenDoc: magDoc });
+      const one = seen[0];
+      const fail = (one?.opts?.recipe?.onFail ?? []).map(o => `${o.formula ?? o.condition?.key ?? "?"} ${(o.types ?? []).join("/")}${o.onSuccess ? ` (${o.onSuccess})` : ""}`.trim());
+      check("his Magmin's Death Burst goes off when it drops to 0: one DEX DC 11 save for the living within 10 feet (Chudd, Kasimir), the corpse and Firaxis at 20 feet left off, resolving itself with no button (2026-09-19)",
+        seen.length === 1 && one.who.join(", ") === "Chudd, Kasimir" && one.opts.saveAbility === "dex"
+          && one.opts.saveDC === 11 && one.opts.autoResolve === true && one.opts.trigger === "dies"
+          && fail.some(f => /2d6 fire \(half\)/.test(f)),
+        seen.length ? `${one.item}: ${one.who.join(", ")}; ${String(one.opts.saveAbility).toUpperCase()} DC ${one.opts.saveDC}; on a fail ${fail.join(", ")}; resolves itself: ${one.opts.autoResolve}` : "no save card was posted");
+    }
+
+    // Which bursts his world has, by their words (and the ones the GM keeps).
+    {
+      const bursts = [], gm = [], none = [];
+      for (const a of ACTORS.values()) for (const it of a.items ?? []) {
+        if (it.type === "spell") continue;
+        const b = W.readDeathBurst(it);
+        if (!b) continue;
+        (b.gmOnly ? gm : b.nothingToRoll ? none : bursts).push(`${a.name} / ${it.name}`);
+      }
+      check("every death burst in his world is found by its words, not its name: mephits, magmin, balor, gas spore, gauth, rot zombies, the phoenix; the Boar Cart and Living Fire are handed to the GM, the marid's and the old smoke mephit's put nothing on anyone (2026-09-19)",
+        bursts.some(x => /^Magmin \//.test(x)) && bursts.some(x => /Mephit \//.test(x)) && bursts.some(x => /^Balor \//.test(x))
+          && gm.some(x => /Boar Cart/.test(x)) && gm.some(x => /Living Fire/.test(x))
+          && none.some(x => /Marid/.test(x)) && !bursts.some(x => /Hellfire Orb|Zuggtmoy/.test(x)),
+        `${bursts.length} run by ACE, ${gm.length} handed to the GM (${gm.join("; ")}), ${none.length} with nothing to roll`);
+    }
+
+    // ── 2. The salamanders ──
+    const sal24 = findActor("Salamander", a => /7 \(2d6\) Fire/i.test(W.itemWords(itemOn(a, "Fire Aura") ?? {})));
+    if (!sal24) {
+      check("his 2024 Salamander's Fire Aura burns whoever stands beside it at the end of its turn (2026-09-19)", null, "(no 2024 Salamander with that Fire Aura in this world)");
+    } else {
+      const landed = [];
+      const keepLand = CreatureTriggers._land;
+      CreatureTriggers._land = async (rec, item, actor, caught, trigger, happened) => {
+        landed.push({ item: item.name, who: caught.map(t => t.name),
+          dice: (rec.recipe.onSuccess ?? []).map(o => `${o.formula} ${(o.types ?? []).join("/")}`).join(", "), trigger, happened });
+      };
+      try {
+        const s = sceneOf("replay-aura");
+        const salDoc = tok(s, "t-sal", "Salamander", 5, 5, sal24, -1);
+        const chuddDoc = tok(s, "t-chudd2", "Chudd", 6, 6, pc("Chudd"));       // corner to corner: 5 feet
+        tok(s, "t-ogre", "Ogre", 4, 5, pc("Ogre", { type: "npc" }), -1);        // beside it, and on its side
+        tok(s, "t-fir2", "Firaxis", 7, 5, pc("Firaxis"));                        // 10 feet: out of 5
+        const combat = { started: true, scene: s, combatants: { get: (id) => ({ "c-sal": { token: salDoc }, "c-chudd": { token: chuddDoc } })[id] ?? null } };
+        await CreatureTriggers.onTurnChange(combat, { combatantId: "c-sal" }, { combatantId: "c-chudd" });
+      } finally {
+        CreatureTriggers._land = keepLand;
+      }
+      const one = landed[0];
+      check("standing next to his 2024 Salamander burns at the end of its turn: 2d6 fire from its own words on Chudd, the Ogre on its side spared by its choice, Firaxis at 10 feet out of reach, no button (2026-09-19)",
+        landed.length === 1 && one.who.join() === "Chudd" && one.dice === "2d6 fire" && one.trigger === "aura",
+        landed.length ? `${one.item}: ${one.who.join(", ")} ${one.happened}; ${one.dice}` : "nothing landed");
+    }
+    const sal14 = findActor("Salamander", a => !!itemOn(a, "Heated Body"));
+    const heated = sal14 ? RetaliationEngine._parse(itemOn(sal14, "Heated Body")) : null;
+    check("his 2014 Salamander's Heated Body is read from its words: hit it in melee from within 5 feet and take 2d6 fire (2026-09-19)",
+      sal14 ? (heated?.formula === "2d6" && heated?.type === "fire" && heated?.range === 5) : null,
+      sal14 ? (heated ? `${heated.formula} ${heated.type} within ${heated.range} feet` : "not read") : "(no 2014 Salamander in this world)");
+    {
+      const auras = [];
+      for (const a of ACTORS.values()) for (const it of a.items ?? []) {
+        const t = W.readTurnAura(it);
+        if (t) auras.push(`${a.name} / ${it.name} (${t.when})`);
+      }
+      check("the bodies that burn on a turn are found by their words: the salamanders', fire elementals', balors' and azer's Fire Aura, the remorhaz's Heat Aura (2026-09-19)",
+        ["Salamander /", "Fire Elemental /", "Balor /", "Azer Sentinel /", "Remorhaz /"].every(k => auras.some(x => x.startsWith(k))),
+        `${auras.length} in his world`);
+    }
+
+    // ── 3. The basilisk's gaze ──
+    const basilisk = findActor("Basilisk", a => W.readTurnGaze(itemOn(a, "Petrifying Gaze") ?? {}) !== null);
+    if (!basilisk) {
+      check("his 2014 Basilisk's Petrifying Gaze fires at the start of a creature's turn (2026-09-19)", null, "(no 2014 Basilisk in this world)");
+    } else {
+      const saves = [], asked = [];
+      let avert = false;
+      game.aceQol.saveEngine = { postSaveCard: async (item, actor, tokens, opts) => {
+        saves.push({ item: item?.name, who: tokens.map(t => t.name), opts });
+      } };
+      game.aceQol.reactionEngine = { _promptReaction: async (o) => { asked.push(o); return { accepted: avert }; } };
+      const s = sceneOf("replay-gaze");
+      const basDoc = tok(s, "t-bas", "Basilisk", 5, 5, basilisk, -1);
+      const marks = [];
+      const chudd = pc("Chudd", { createEmbeddedDocuments: async (_t, rows) => { marks.push(...rows); return rows; } });
+      const chuddDoc = tok(s, "t-chudd3", "Chudd", 8, 5, chudd);                                   // 15 feet
+      const ogreDoc = tok(s, "t-ogre2", "Ogre", 6, 5, pc("Ogre", { type: "npc" }), -1);           // its own side
+      const kasDoc = tok(s, "t-kas3", "Kasimir", 5, 8, pc("Kasimir", { statuses: new Set(["blinded"]) }));   // blinded
+      const farDoc = tok(s, "t-far3", "Firaxis", 12, 5, pc("Firaxis"));                           // 35 feet
+      const combat = { started: true, scene: s, combatants: { get: (id) => ({ c1: { token: chuddDoc }, c2: { token: ogreDoc }, c3: { token: kasDoc }, c4: { token: farDoc } })[id] ?? null } };
+      await GazeEngine._onTurnStart(combat, { combatantId: "c1" });
+      const first = { saves: saves.length, asked: asked.length, save: saves[0] };
+      await GazeEngine._onTurnStart(combat, { combatantId: "c2" });
+      await GazeEngine._onTurnStart(combat, { combatantId: "c3" });
+      await GazeEngine._onTurnStart(combat, { combatantId: "c4" });
+      const after = saves.length;
+      avert = true;
+      await GazeEngine._onTurnStart(combat, { combatantId: "c1" });
+      check("his Basilisk's gaze fires as Chudd's turn starts 15 feet away: the avert box to his owner, then a CON DC 12 save on its own card, resolving itself; its own Ogre, a blinded Kasimir and Firaxis at 35 feet are never asked (2026-09-19)",
+        first.saves === 1 && first.asked === 1 && first.save.who.join() === "Chudd" && first.save.opts.saveAbility === "con"
+          && first.save.opts.saveDC === 12 && first.save.opts.autoResolve === true && first.save.opts.trigger === "start-of-turn"
+          && after === 1,
+        `Chudd: ${first.asked} box, ${first.saves} save (${String(first.save?.opts?.saveAbility ?? "?").toUpperCase()} DC ${first.save?.opts?.saveDC ?? "?"}); saves after the Ogre, Kasimir and Firaxis: ${after}`);
+      check("and when Chudd averts his eyes there is no save, and he carries the mark that he cannot see the Basilisk until his next turn (2026-09-19)",
+        saves.length === 1 && marks.length === 1 && Array.isArray(marks[0]?.flags?.["ace-qol"]?.avertEyesFrom)
+          && marks[0].flags["ace-qol"].avertEyesFrom.includes("t-bas"),
+        `saves: ${saves.length}; mark: ${marks.length ? JSON.stringify(marks[0].flags["ace-qol"]) : "none"}`);
+    }
+
+    // ── The 2014 medusa's two new stages, in the save engine's own words ──
+    const medusa = findActor("Medusa", a => !!W.readTurnGaze(itemOn(a, "Petrifying Gaze") ?? {})?.failBy);
+    const goblin = [...ACTORS.values()].find(a => a.type === "npc" && /^goblin$/i.test(a.name)) ?? null;
+    if (!medusa || !goblin) {
+      check("his 2014 Medusa's gaze: a fail by 5 or more is stone at once, a lesser fail stages toward it (2026-09-19)", null, "(no 2014 Medusa or no Goblin in this world)");
+    } else {
+      const gazeIt = itemOn(medusa, "Petrifying Gaze");
+      const engine = Object.create(SaveEngine.prototype);
+      const target = { ...goblin, id: "replay-gaze-target", uuid: "Actor.replay-gaze-target",
+        prototypeToken: { ...(goblin.prototypeToken ?? {}), actorLink: true }, statuses: new Set(), effects: new Collection() };
+      ACTORS.set(target.id, target);
+      const row = (total) => ({ name: target.name, img: "", actorId: target.id, tokenDocId: null, sceneId: null, passed: false, saveTotal: total });
+      const lines = [];
+      let byFive = null, byTwo = null;
+      try {
+        const recipe = SaveEngine.saveRecipe(gazeIt, readActivities(gazeIt).find(x => x.type === "save")).recipe;
+        const keepLog = console.log;
+        console.log = (...a) => lines.push(a.map(String).join(" "));
+        try {
+          byFive = await engine._applyFailedSaveConditions(gazeIt, [row(8)], { recipe, saveAbility: "con", saveDC: 14, dryRun: true });
+          byTwo = await engine._applyFailedSaveConditions(gazeIt, [row(12)], { recipe, saveAbility: "con", saveDC: 14, dryRun: true });
+        } finally { console.log = keepLog; }
+      } finally {
+        ACTORS.delete(target.id);
+      }
+      const conds = (a) => (a ?? []).flatMap(x => x.conditions ?? []).join(", ") || "nothing";
+      const staged = lines.some(l => /WOULD apply "restrained"[^\n]*repeatingSave/.test(l));
+      check("his 2014 Medusa's gaze in the save engine: failing DC 14 by 6 is Petrified at once, failing by 2 is Restrained with the repeat save that petrifies, from its words (its recipe named only restrained) (2026-09-19)",
+        conds(byFive) === "petrified" && conds(byTwo) === "restrained" && staged,
+        `by 6: ${conds(byFive)}; by 2: ${conds(byTwo)}${staged ? " (staged toward petrified)" : " (NOT staged)"}`);
+    }
+
+    // ── A trigger's save card finishes itself (no button) ──
+    {
+      const engine = Object.create(SaveEngine.prototype);
+      const calls = [];
+      engine._completeSaveResultsPhase2 = async (m) => { calls.push("damage"); m.flags["ace-qol"].phase = 2; };
+      engine._applyAllSaveDamage = async () => { calls.push("apply"); };
+      let n = 0;
+      const card = (rows, extra = {}) => {
+        const m = { id: `replay-auto-${++n}`, flags: { "ace-qol": { autoResolve: true, phase: 1, hasDamage: true,
+          halfOnSave: true, allResults: rows, trigger: "dies", ...extra } } };
+        m.setFlag = async (sc, k, v) => { m.flags[sc][k] = v; return m; };
+        return m;
+      };
+      await engine._autoResolveIfReady(card([{ pending: true }, { pending: false, passed: false, damageMultiplier: 1 }]));
+      const waited = calls.length;
+      const ready = card([{ pending: false, passed: false, damageMultiplier: 1 }]);
+      await engine._autoResolveIfReady(ready);
+      await engine._autoResolveIfReady(ready);   // a second render never lands it twice
+      await engine._autoResolveIfReady(card([{ pending: false, passed: true, damageMultiplier: 0 }]));
+      await engine._autoResolveIfReady(card([{ pending: false, passed: false, damageMultiplier: 1 }], { autoResolve: false }));
+      check("a trigger's save card finishes itself once the last save is in: the damage rolled, then landed, once; it waits for a player still rolling, lands nothing when nobody takes any, and a pressed card keeps its buttons (2026-09-19)",
+        waited === 0 && calls.join(",") === "damage,apply" && ready.flags["ace-qol"].applied === true,
+        `while a player rolls: ${waited} steps; then: ${calls.join(", ") || "none"}; applied: ${ready.flags["ace-qol"].applied === true}`);
+    }
+    {
+      const { catchesOn, TRIGGERS } = await import(`${MODULE}/scripts/road/run.mjs`);
+      const silent = { recatch: [] };
+      check("the road takes a creature's death and its turn as triggers, fired by its own words; an area's re-catch still needs its words (2026-09-19)",
+        TRIGGERS.includes("dies") && TRIGGERS.includes("aura") && catchesOn(silent, "dies").ok
+          && catchesOn(silent, "aura").ok && !catchesOn(silent, "start-of-turn").ok,
+        `triggers: ${TRIGGERS.join(", ")}`);
+    }
+  } finally {
+    for (const k of Object.keys(game.aceQol)) if (!(k in keepApi)) delete game.aceQol[k];
+    Object.assign(game.aceQol, keepApi);
+  }
+});
+
 /* ── A CANCELLED CAST GIVES BACK WHAT THE PRESS SPENT ────────────────────── */
 // 2026-09-18. dnd5e takes what a press costs before any of ACE runs (a daily
 // use, a recharge, a legendary action) and writes it on the usage message, even
