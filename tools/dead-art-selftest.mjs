@@ -154,6 +154,50 @@ console.log("\nTHE REPORT RANKS WHAT TO DRAW NEXT");
   check("and so is the beholder", covered.some(c => c.name === "Beholder"), true);
 }
 
+console.log("\nTHE MORE SPECIFIC PICTURE WINS, ON HIS REAL FOLDER (2026-09-18)");
+{
+  // ⚠️🔴 His table: "Neferon: dead-arcanaloth-fiend exists. It used
+  // dead-fiend. Draft Horse: dead-horse exists. It used a generic beast." The
+  // ladder stopped at the first rung that answered. Every file sharing a word
+  // with the creature is compared now (scripts/art-match.mjs), through the
+  // corpse code itself and on every file in his Dead folder.
+  const { readdirSync, statSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const DISK = "D:/FoundryVTT/Data/modules/ace-qol/Assets/Dead";
+  const dp = new DeathPipeline();
+  for (const name of readdirSync(DISK)) {
+    const d = join(DISK, name);
+    if (statSync(d).isDirectory()) {
+      for (const f of readdirSync(d)) dp._indexFile(`modules/ace-qol/Assets/Dead/${name}/${encodeURIComponent(f)}`);
+    } else dp._indexFile(`modules/ace-qol/Assets/Dead/${encodeURIComponent(name)}`);
+  }
+  dp._cacheReady = true;
+  const real = (name, type, subtype, flags = {}) => ({
+    name, type: "npc", hasPlayerOwner: false, flags,
+    system: { details: { type: { value: type, subtype } }, traits: {} },
+    getFlag: (ns, k) => flags?.[ns]?.[k],
+  });
+  const dead = (a) => decodeURIComponent(file(dp._resolveDeadArt(a, { quiet: true })));
+  // His Neferon, as the world stores him: Plutonium imported him as an arcanaloth.
+  const neferon = real("Neferon", "fiend", "yugoloth", { plutonium: { page: "bestiary.html", source: "", hash: "arcanaloth_mm" } });
+  check("Neferon's corpse is dead-arcanaloth-fiend, not dead-fiend", dead(neferon), "dead-arcanaloth-fiend.png");
+  check("the Draft Horse's corpse is dead-horse, not dead-beast",
+    /^dead-horse(-2)?\.png$/.test(dead(real("Draft Horse", "beast", ""))), true);
+  check("an Imp's is still dead-fiend", /^dead-fiend(-11)?\.png$/.test(dead(real("Imp", "fiend", "devil"))), true);
+  check("a Bat's is dead-beast, not the displacer beast", dead(real("Bat", "beast", "")), "dead-beast.png");
+  check("a Giant Frog's is dead-beast, not a dead giant", dead(real("Giant Frog", "beast", "")), "dead-beast.png");
+  check("a Wolf's is dead-wolf-grey, not the Animal Lord", dead(real("Wolf", "beast", "")), "dead-wolf-grey.png");
+  check("a Celestial with no picture still gets its video, dead-Celestial.webm (a corpse can be a video)",
+    dead(real("Deva", "celestial", "angel")), "dead-Celestial.webm");
+
+  // A remnant is reached by its own rule, never by a shared word.
+  const rem = build(["dead-ash zombie.png", "dead-remnant-ash-pile.png", "dead-undead.png"]);
+  check("an Ash Zombie is not an ash pile", file(rem._resolveDeadArt(npc("Ash Zombie", { type: "undead" }), { quiet: true })),
+    "dead-ash zombie.png");
+  check("but a Wraith, which leaves no body, still gets the ash pile",
+    file(rem._resolveDeadArt(npc("Wraith", { type: "undead" }), { quiet: true })), "dead-remnant-ash-pile.png");
+}
+
 console.log("");
 console.log(pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;

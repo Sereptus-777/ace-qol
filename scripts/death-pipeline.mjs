@@ -1,16 +1,19 @@
 // ─── ACE: QOL — Death Pipeline ──────────────────────────────────────────────
 import { aceDescriptionHtml } from "./description-reader.mjs";
+import { TILE_FILES, newArtIndex, addArt, creatureWords, describeWords, bestArt } from "./art-match.mjs";
 // Handles NPC death visuals: converts dead NPC tokens to tile art.
 // When an NPC drops to 0 HP, this engine finds matching dead-creature art,
 // places a tile at the token's position, and removes the original token.
 //
-// 3-tier art matching:
-//   1. Exact creature name  (dead-goblin-boss.png)
-//   2. Creature subtype/type (dead-mongrelfolk.png, dead-humanoid.png)
-//   3. Incorporeal/elemental remnants (dead-remnant-ash-pile.png)
-//   Fallback: dead-generic.png — if nothing matches, skip conversion entirely.
+// Art matching (art-match.mjs, the same rule as prone art):
+//   0. A corpse picked by hand for this creature.
+//   1. The most specific picture for its name or what it was made from
+//      (dead-arcanaloth-fiend for Neferon, dead-horse for a Draft Horse).
+//   2. Incorporeal/elemental remnants (dead-remnant-ash-pile.png).
+//   3. The most specific picture for its type, then its subtype.
+//   4. A misspelt type file, then dead-generic.png. Nothing: skip conversion.
 //
-// Self-contained — no imports from other ace-qol files to avoid circular deps.
+// Imports only leaf files (nothing that imports ace-qol.mjs back).
 // ──────────────────────────────────────────────────────────────────────────────
 
 const MODULE_ID = "ace-qol";
@@ -153,6 +156,8 @@ export class DeathPipeline {
     /** @type {Set<string>}  every key that is a real filename, so a fragment
      *  can never register over one. */
     this._exactKeys = new Set();
+    /** Every file by its words, for the one matching rule (art-match.mjs). */
+    this._artIndex = newArtIndex();
     /** @type {boolean} Whether the cache has been built at least once */
     this._cacheReady = false;
     /** @type {boolean} One free rescan per build, spent on the first miss. */
@@ -242,6 +247,7 @@ export class DeathPipeline {
     this._fragmentCache.clear();
     this._exactKeys.clear();
     this._artVariants.clear();
+    this._artIndex = newArtIndex();
     this._cacheReady = false;
 
     const FP = _acePicker();
@@ -288,6 +294,12 @@ export class DeathPipeline {
   _indexFile(filePath) {
     const fileName = filePath.split("/").pop();
     if (!fileName) return;
+    // A remnant (an ash pile, a puddle) and the generic corpse are reached by
+    // their own rules below, never by sharing a word with a creature's name:
+    // an Ash Zombie is not an ash pile.
+    let plain = fileName;
+    try { plain = decodeURIComponent(fileName); } catch (_) { /* a stray % is still a name */ }
+    if (!/^dead[-_ ]+(remnant|generic)\b/i.test(plain)) addArt(this._artIndex, filePath, { media: TILE_FILES });
 
     const stem = decodeURIComponent(fileName)
       .replace(/\.(png|webp|jpg|jpeg|gif|svg|webm|mp4|m4v|ogv)$/i, "")
@@ -408,7 +420,7 @@ export class DeathPipeline {
       if (actor?.type !== "npc" || actor.hasPlayerOwner) continue;
       const hand = (() => { try { return actor.getFlag(MODULE_ID, "deadArt"); } catch { return null; } })();
       if (hand) { covered.push({ name: actor.name, art: hand, how: "picked by hand" }); continue; }
-      const found = this._resolveDeadArt(actor);
+      const found = this._resolveDeadArt(actor, { quiet: true });
       const keys = DeathPipeline.deadArtKeysFor(actor);
       if (found) {
         // ⚠️ "Covered by the generic type art" is not covered. That is exactly
@@ -1065,7 +1077,7 @@ export class DeathPipeline {
     return this._artCache.get(key) ?? null;
   }
 
-  _resolveDeadArt(actor) {
+  _resolveDeadArt(actor, { quiet = false } = {}) {
     // ── Step 0: he picked one by hand ────────────────────────────────
     //
     // ⚠️🔴 THE ONLY WAY OUT OF A WRONG MATCH. Johnny, 2026-09-06: token art,
@@ -1096,35 +1108,37 @@ export class DeathPipeline {
     const creatureType    = (actor.system?.details?.type?.value ?? "").toLowerCase();
     const creatureSubtype = (actor.system?.details?.type?.subtype ?? "").toLowerCase();
 
-    // ── Tier 1: Exact creature name ──
-    const exactKey = `dead-${normalizedName}`;
-    if (this._hasArt(exactKey)) {
-      return this._pickArt(exactKey);
-    }
+    // ── Tier 1: the most specific picture, counting every word ──
+    //
+    // ⚠️🔴 THE MORE SPECIFIC FILENAME WINS, ALWAYS (Johnny, 2026-09-18). This
+    // was a ladder of single keys, "dead-" plus the whole name, then the
+    // subtype, then the type, and it stopped at the first one that answered.
+    // A Draft Horse asked for "dead-draft-horse", missed, and got dead-beast
+    // with dead-horse.png in the folder: no rung ever asked for one word of a
+    // name. Neferon is an arcanaloth whose sheet says only Neferon, so the type
+    // rung handed him dead-fiend. Now every file sharing a word with the
+    // creature is compared, in his order (name, then what it was made from,
+    // then type, then subtype); see art-match.mjs.
+    //
+    // A picture that answers to its name or what it was made from is taken
+    // here. One that only shares its type or subtype waits for the remnants
+    // below: a wraith leaves ash, not a body.
+    const creature = creatureWords(actor);
+    const best = bestArt(this._artIndex, creature);
+    const chosen = () => {
+      if (!quiet) console.log(`${LOG_PREFIX}   art for ${actor.name}: ${best.path.split("/").pop()} `
+        + `(by its ${best.level}; ${describeWords(creature)})`);
+      return best.path;
+    };
+    if (best && (best.counts[0] || best.counts[1])) return chosen();
 
-    // ── Tier 2a: Creature subtype (check before generic type) ──
-    if (creatureSubtype) {
-      const subtypeKey = `dead-${creatureSubtype.replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "")}`;
-      if (this._hasArt(subtypeKey)) {
-        return this._pickArt(subtypeKey);
-      }
-    }
-
-    // ── Tier 2b: Base creature name (strip numbers, parentheses, suffixes) ──
-    // "Goblin (3)" → "goblin", "Fire Elemental 2" → "fire-elemental-2" → "fire-elemental"
+    // "Goblin (3)" → "goblin", for the incorporeal list below.
     const baseName = rawName
       .replace(/\s*\(.*?\)\s*/g, "")   // remove parenthetical like " (3)"
       .replace(/\s*\d+\s*$/g, "")      // remove trailing numbers
       .trim()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/(^-|-$)/g, "");
-
-    if (baseName && baseName !== normalizedName) {
-      const baseKey = `dead-${baseName}`;
-      if (this._hasArt(baseKey)) {
-        return this._pickArt(baseKey);
-      }
-    }
 
     // ── Tier 3a: Incorporeal detection ──
     const isIncorporeal = INCORPOREAL.has(normalizedName)
@@ -1167,13 +1181,15 @@ export class DeathPipeline {
       }
     }
 
-    // ── Tier 4: Generic creature type (humanoid, beast, undead, etc.) ──
+    // ── Tier 4: the most specific picture for its type, then its subtype ──
+    // The same comparison as tier 1, so a fiend with no picture of its own
+    // gets dead-fiend (a plain fiend) and never a picture of some other
+    // fiend: "do not stop at the first type hit" is answered by comparing.
+    if (best) return chosen();
+
     if (creatureType) {
       const cleanType = creatureType.replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
       const typeKey = `dead-${cleanType}`;
-      if (this._hasArt(typeKey)) {
-        return this._pickArt(typeKey);
-      }
 
       // ── Tier 4b: Typo-tolerant lookup for common misspellings ──
       // Users frequently save files with spelling variants (abberation vs aberration,

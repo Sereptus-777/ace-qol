@@ -963,11 +963,11 @@ export class ConditionVisuals {
       // looks like it's standing and ready to fight." Prone art still swaps, so
       // anyone with a file in Assets/Prone lies down properly.
       //
-      // ⚠️ A CREATURE WITH NO PRONE ART NOW SHOWS NOTHING AT ALL. Seven files
-      // exist and they are all party members, so every monster that goes prone
-      // is invisible to the eye and lives only in the effects panel. Said out
-      // loud rather than left to be discovered mid-combat. Adding a file named
-      // for the creature is what brings its visual back.
+      // ⚠️ A CREATURE WITH NO PRONE ART SHOWS NOTHING AT ALL. Since 0.34.67
+      // every picture in his prone folders counts (Assets/Dead included) and
+      // art-match.mjs picks the most specific one, so a monster lies down as
+      // its own corpse art or its type's; one with no picture at all says so
+      // in the console (prone-art.mjs) rather than showing nothing silently.
     }
 
     let ring = 0;

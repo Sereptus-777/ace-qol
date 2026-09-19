@@ -10,9 +10,9 @@
 //
 // ═══ THIS IS THE DEAD-ART SYSTEM, WEARING A DIFFERENT HAT ════════════════════
 //
-// Same folder shape, same filenames, and — critically — THE SAME NORMALISER.
-// `DeathPipeline.normaliseKey` is imported rather than reimplemented, because
-// writing a second one is precisely how the corpse art broke: the resolver
+// Same folder shape, same filenames, and — critically — THE SAME MATCHER.
+// `art-match.mjs` chooses the picture for this file and for the corpse art,
+// because two matchers is precisely how the corpse art broke: the resolver
 // hyphenated the creature's name while the cache kept the raw filename, so
 // `dead-stone golem.png` could never meet `dead-stone-golem`, and SIXTEEN of
 // Johnny's eighty-two corpses were unreachable — every file with a space in it.
@@ -24,8 +24,10 @@
 //   Assets/Dead/Fiend/dead-fiend.png           ← counts too (2026-09-18): every
 //                                                image in his prone folders does
 //
-// The order is his: the creature's name, then its type, then its race or
-// subtype. Art made for lying down beats a corpse picture of the same name.
+// His rule (2026-09-18): the more specific picture wins, always, counting every
+// word of the creature's name, then its type, then its subtype. See
+// art-match.mjs. Art made for lying down beats a corpse picture that fits the
+// creature exactly as well.
 //
 // ⚠️ NO ANIMATION. He asked for the image and nothing else. A creature that has
 // just been knocked down does not need a flourish; the art IS the feedback.
@@ -36,7 +38,7 @@
 // Guessing it back from the actor's prototype would quietly undo all of those.
 // ──────────────────────────────────────────────────────────────────────────────
 
-import { DeathPipeline } from "./death-pipeline.mjs";
+import { IMAGE_FILES, indexArt, creatureWords, describeWords, bestArt } from "./art-match.mjs";
 
 // ⚠️ DECLARED LOCALLY, NOT IMPORTED — AND THIS IS NOT A STYLE CHOICE.
 // `ace-qol.mjs` imports THIS file, so the two form a cycle. Every import is
@@ -173,8 +175,7 @@ export class ProneArt {
 
       const from = taIndex ? "ACE Token Art's prone folders" : PRONE_ART_PATH;
       console.log(`${LOG} | indexed ${index.files} image(s) from ${from}: ${index.byKind.prone} named prone-, `
-        + `${index.byKind.dead} named dead-, ${index.byKind.plain} with no prefix → ${index.exact.size} name(s), `
-        + `${index.fragments.size} word(s).`);
+        + `${index.byKind.dead} named dead-, ${index.byKind.plain} with no prefix, ${index.byWord.size} word(s).`);
       if (!seen.length) {
         console.log(`${LOG} | nothing in ${from} yet — drop images named "Prone-Goblin.png" in there.`);
       }
@@ -195,8 +196,7 @@ export class ProneArt {
   /* ─── The files ───────────────────────────────────────────────────────── */
 
   /**
-   * What a file in the prone folders is, read from how it is named: art made
-   * for lying down (`prone-`), a corpse (`dead-`), or neither.
+   * Index image paths. Pure, so the self-test runs it on his real folders.
    *
    * ⚠️🔴 EVERY FILE IN THE FOLDER COUNTS, NOT ONLY `prone-` ONES (Johnny,
    * 2026-09-18). His prone folders are Assets/Prone AND Assets/Dead, and this
@@ -205,157 +205,20 @@ export class ProneArt {
    * was prone, and showed nothing: no picture matched, and the prone icon is
    * hidden for everybody by his 2026-09-02 rule.
    */
-  static _kindOf(stem) {
-    if (/^prone[-_ ]*/i.test(stem)) return "prone";
-    if (/^dead[-_ ]+/i.test(stem)) return "dead";
-    return "plain";
-  }
-
-  /**
-   * Index image paths into names and words. Pure, so the self-test runs it on
-   * his real folder listing.
-   *
-   * A file answers to its whole name (`dead-arcanaloth-fiend` → "arcanaloth-
-   * fiend", and "fiend" for `dead-fiend-11`, a numbered variant) and, like the
-   * corpse index, to each word in it and each pair of words ("arcanaloth",
-   * "fiend"). A whole name always outranks a word borrowed from a longer one:
-   * a fiend gets `dead-fiend.png`, never the arcanaloth's picture.
-   *
-   * @returns {{ exact: Map<string, object[]>, fragments: Map<string, object[]>,
-   *             files: number, byKind: {prone: number, dead: number, plain: number} }}
-   */
   static indexFiles(paths) {
-    const RANK = { prone: 3, plain: 2, dead: 1 };
-    const exact = new Map(), fragments = new Map();
-    const byKind = { prone: 0, dead: 0, plain: 0 };
-    let files = 0;
-    const add = (map, key, entry) => {
-      if (!key) return;
-      if (!map.has(key)) map.set(key, []);
-      const list = map.get(key);
-      if (!list.some(e => e.path === entry.path)) list.push(entry);
-    };
-    for (const path of (paths ?? [])) {
-      if (!/\.(png|webp|jpe?g|gif|avif)$/i.test(String(path))) continue;   // no .psd, no video
-      const raw = String(path).split("/").pop().replace(/\.[^.]+$/, "");
-      let stem = raw;
-      try { stem = decodeURIComponent(raw); } catch (_) { /* a stray % in a filename is still a filename */ }
-      const kind = ProneArt._kindOf(stem);
-      const norm = DeathPipeline.normaliseKey(stem.replace(/^prone[-_ ]*/i, "").replace(/^dead[-_ ]+/i, ""));
-      if (!norm) continue;
-      const bare = DeathPipeline.stripVariant(norm);
-      const words = bare.split("-").filter(w => w.length > 2 && !/^\d+$/.test(w));
-      const entry = { path, kind, rank: RANK[kind], size: words.length };
-      files++;
-      byKind[kind]++;
-      add(exact, norm, entry);
-      add(exact, bare, entry);
-      for (let i = 0; i < words.length; i++) {
-        add(fragments, words[i], entry);
-        if (i + 1 < words.length) add(fragments, `${words[i]}-${words[i + 1]}`, entry);
-      }
-    }
-    return { exact, fragments, files, byKind };
+    return indexArt(paths, { media: IMAGE_FILES });
   }
 
   /* ─── Matching ────────────────────────────────────────────────────────── */
 
   /**
-   * What to ask the index for, in order.
-   *
-   * ⚠️ HIS ORDER (2026-09-18): the creature's name, then its type ("fiend"),
-   * then its race or subtype ("yugoloth"). Neferon has no picture of his own,
-   * so he reaches the type and gets `dead-fiend.png`.
-   *
-   * ⚠️ THE FIRST-NAME STEP IS ONLY FOR ART MADE FOR IT. Johnny names prone
-   * pictures by first name — `prone-firaxis.png` while the actor is "Firaxis
-   * Greenbeard" — so a name also walks back word by word. A corpse picture is
-   * named for a KIND of creature instead, and the first word of a longer name
-   * is not its kind: walked back, a Giant Frog would have been a dead giant.
-   * So the walk-back never reaches a `dead-` file.
-   *
-   * @returns {{key: string, words: boolean, minRank: number}[]}
-   */
-  static triesFor(actor) {
-    const tries = [];
-    const seen = new Set();
-    const ask = (key, { words = true, minRank = 1 } = {}) => {
-      if (!key) return;
-      const id = `${key}|${words}|${minRank}`;
-      if (seen.has(id)) return;
-      seen.add(id);
-      tries.push({ key, words, minRank });
-    };
-    const whole = (v) => DeathPipeline.normaliseKey(v);
-    // "Arcanaloth (Legacy)" is an arcanaloth, and "Goblin 3" is a goblin.
-    const base = (v) => DeathPipeline.normaliseKey(
-      String(v ?? "").replace(/\s*\(.*?\)\s*/g, " ").replace(/\s*\d+\s*$/g, "").trim());
-
-    // ── 1. The creature's name ──
-    // A flavour name ("Grish the Unwashed") must not lose the creature: the
-    // identity rule keeps the real creature on the actor, so read it too.
-    const names = [actor?.name, actor?.prototypeToken?.name, actor?.getFlag?.(MODULE_ID, "creatureBase")]
-      .filter(v => typeof v === "string" && v.trim());
-    for (const n of names) { ask(whole(n)); ask(base(n)); }
-    for (const n of names) {
-      const parts = base(n).split("-").filter(Boolean);
-      for (let k = parts.length - 1; k >= 1; k--) ask(parts.slice(0, k).join("-"), { words: false, minRank: 2 });
-    }
-
-    // ── 2. The type ──
-    const rawType = actor?.system?.details?.type;
-    const typeValue = typeof rawType === "string" ? rawType
-      : (rawType?.value === "custom" ? rawType?.custom : rawType?.value);
-    ask(whole(typeValue));
-
-    // ── 3. Race, then subtype ──
-    // ⚠️ dnd5e 5.x keeps the race as the species ITEM once prepared (a
-    // local-document field), and as its raw id when that item is missing. The
-    // old code turned the item into text and asked for "object-object".
-    const race = actor?.system?.details?.race;
-    const raceName = typeof race === "string" ? (/^[A-Za-z0-9]{16}$/.test(race) ? "" : race) : race?.name;
-    ask(whole(raceName));
-    const subtype = typeof rawType === "string" ? "" : rawType?.subtype;
-    for (const part of String(subtype ?? "").split(/,|\/|\band\b/i)) ask(whole(part));
-
-    return tries;
-  }
-
-  /**
-   * The picture for this creature from an index, or null. Pure.
-   *
-   * For each question in order: a file of that exact name first, then one
-   * that has it as a word. Art made for lying down beats a corpse of the same
-   * name. Several numbered variants of one name are picked from at random so
-   * nine goblins are not identical; among borrowed words, the file most about
-   * that word wins (`dead-wolf-grey` over `dead-Animal Lord (Wolf)` for a wolf).
-   *
-   * @returns {{path: string, key: string, how: "name"|"word"} | null}
-   */
-  static pickFrom(index, tries, rand = Math.random) {
-    const best = (list, minRank) => {
-      const ok = (list ?? []).filter(e => e.rank >= minRank);
-      if (!ok.length) return [];
-      const top = Math.max(...ok.map(e => e.rank));
-      return ok.filter(e => e.rank === top);
-    };
-    for (const t of tries) {
-      const named = best(index?.exact?.get?.(t.key), t.minRank);
-      if (named.length) {
-        const e = named[Math.min(named.length - 1, Math.floor(rand() * named.length))];
-        return { path: e.path, key: t.key, how: "name" };
-      }
-      if (!t.words) continue;
-      const worded = best(index?.fragments?.get?.(t.key), t.minRank)
-        .sort((a, b) => (a.size - b.size) || String(a.path).localeCompare(String(b.path)));
-      if (worded.length) return { path: worded[0].path, key: t.key, how: "word" };
-    }
-    return null;
-  }
-
-  /**
    * The best prone image for this creature, or null.
-   * Its own name first, then its type, then its race or subtype.
+   *
+   * ⚠️🔴 THE MORE SPECIFIC PICTURE WINS, ALWAYS (Johnny, 2026-09-18). This was
+   * a ladder that stopped at the first rung that answered, so Neferon, whose
+   * name has no picture, got `dead-fiend` from his type while
+   * `dead-arcanaloth-fiend` sat in the folder. Every file sharing a word with
+   * him is now compared: see art-match.mjs.
    */
   static async artFor(actor) {
     // ⚠️🔴 THE PICK IS READ BEFORE THE INDEX, AND THE ORDER IS THE POINT.
@@ -372,12 +235,12 @@ export class ProneArt {
 
     const index = await this.buildCache();
     if (!index?.files) return null;
-    return ProneArt.pickFrom(index, ProneArt.triesFor(actor))?.path ?? null;
+    return bestArt(index, creatureWords(actor))?.path ?? null;
   }
 
-  /** The questions asked for this creature, as one line for the console. */
+  /** The words asked for this creature, as one line for the console. */
   static _asked(actor) {
-    return [...new Set(ProneArt.triesFor(actor).map(t => t.key))].join(", ") || "(nothing to ask)";
+    return describeWords(creatureWords(actor));
   }
 
   /* ─── The swap ────────────────────────────────────────────────────────── */
