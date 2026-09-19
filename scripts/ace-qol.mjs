@@ -595,6 +595,18 @@ Hooks.once("init", () => {
     .then(({ CheckGate }) => CheckGate.register())
     .catch(err => console.error(`${MODULE_ID} | Check gate init failed:`, err));
 
+  // ── Concentration: one check for each hit, asked in the roll box (2026-09-19) ──
+  // Johnny: "One check per damage event. Button dies after the roll. Same d20
+  // widget as the save popout." Its own import, so a fault here leaves the
+  // check gate above standing.
+  import("./concentration-prompt.mjs")
+    .then(({ ConcentrationPrompt }) => {
+      ConcentrationPrompt.init();
+      game.aceQol = game.aceQol ?? {};
+      game.aceQol.ConcentrationPrompt = ConcentrationPrompt;
+    })
+    .catch(err => console.error(`${MODULE_ID} | Concentration prompt init failed:`, err));
+
   // ── Who draws what (2026-09-03) ──
   // Registered here, beside the storm, because arbitrating between ACE's own
   // pictures and Forge's derived ones is what it is for. Forge asks through
@@ -3195,15 +3207,42 @@ Hooks.once("ready", () => {
   // dnd5e's vanilla concentration prompt so the player only sees ours.
   try {
     // 1. Click handler — fires when the user (or GM) clicks the roll button
+    //
+    // ⚠️🔴 A SECOND CLICK ROLLED A SECOND SAVE (Johnny, 2026-09-19: "a second
+    // concentration click does not roll"). Proven from the code: this called
+    // `actor.rollConcentration`, and ACE's check gate takes that roll over (it
+    // cancels dnd5e's and runs its own, unawaited), so dnd5e handed back
+    // nothing, the total read as "cancelled", and the button switched itself
+    // back on the moment it was pressed. Nothing on the card remembered the
+    // roll either, so every other screen's button stayed live as well.
+    //
+    // New hits ask through concentration-prompt.mjs, whose prompt carries its
+    // own state. This handler is only for cards already in a chat log, and it
+    // now rolls ACE's check directly (awaited, so it knows whether a die was
+    // thrown) and marks the card spent before the dice.
+    const _concSpentHere = new Set();
+    const _concSpent = (message) => message?.flags?.[MODULE_ID]?.concRolled === true
+      || _concSpentHere.has(message?.id);
     const _wireConcButton = (message, html) => {
       const el = html instanceof HTMLElement ? html : (html?.[0] ?? html);
       if (!el) return;
       const btn = el.querySelector?.("[data-action='aceQolRollConcSave']");
       if (!btn || btn.dataset.aceWired === "1") return;
       btn.dataset.aceWired = "1";
+      if (_concSpent(message)) {
+        btn.disabled = true;
+        btn.textContent = "ROLLED";
+        return;
+      }
       btn.addEventListener("click", async (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
+        if (_concSpent(game.messages?.get?.(message?.id) ?? message)) {
+          btn.disabled = true;
+          btn.textContent = "ROLLED";
+          ui.notifications?.info("That concentration check has already been rolled.");
+          return;
+        }
         try {
           const actorUuid = btn.dataset.actorUuid;
           const effectId = btn.dataset.effectId;
@@ -3249,15 +3288,27 @@ Hooks.once("ready", () => {
           // concentration and a live caster lost it twice.
           btn.disabled = true;
           btn.textContent = "ROLLING…";
+          // Spent before the dice, here and (where this screen may write the
+          // card) on every screen.
+          _concSpentHere.add(message.id);
+          if (message.isOwner) {
+            try { await message.setFlag(MODULE_ID, "concRolled", true); }
+            catch (err) { console.warn(`${MODULE_ID} | could not mark the concentration card rolled:`, err); }
+          }
 
-          const rolls = await actor.rollConcentration({ target: dc });
-          const roll = Array.isArray(rolls) ? rolls[0] : rolls;
+          const { CheckGate } = await import("./check-gate.mjs");
+          const roll = await CheckGate.run(actor, "concentration", "con", { dc });
           const total = Number(roll?.total);
 
           if (!Number.isFinite(total)) {
             // ⚠️ CANCELLED AND FAILED MUST NOT LOOK THE SAME. He can close
             // ACE's prompt deliberately; that is not a broken button, and the
             // save still has to be rollable afterwards.
+            _concSpentHere.delete(message.id);
+            if (message.isOwner) {
+              try { await message.unsetFlag(MODULE_ID, "concRolled"); }
+              catch (err) { console.warn(`${MODULE_ID} | could not reopen the concentration card:`, err); }
+            }
             btn.disabled = false;
             btn.textContent = "ROLL CONCENTRATION SAVE";
             return;

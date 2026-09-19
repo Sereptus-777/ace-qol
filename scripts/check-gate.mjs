@@ -983,7 +983,16 @@ export class CheckGate {
    * configuration in `_finalizeRolls`. This does the same at the same moment,
    * through the documented `dnd5e.postRollConfiguration` hook.
    */
-  static async run(actor, kind, key, { dc = null } = {}) {
+  /**
+   * @param {object} [o]
+   * @param {number} [o.dc]
+   * @param {"advantage"|"normal"|"disadvantage"|"suggested"|null} [o.choice]
+   *   Already decided, so no pause: the roll box asked with one click (his rule,
+   *   2026-09-19: "one click rolls"). "suggested" is what the creature itself
+   *   brings (War Caster, an effect), read the same way the pause reads it.
+   * @returns {Promise<Roll|null>} the roll, or null when nothing rolled
+   */
+  static async run(actor, kind, key, { dc = null, choice: decided = null } = {}) {
     // ⚠️🔴 EACH GOES BACK THROUGH ITS OWN METHOD, NEVER A PLAIN SAVE.
     // `rollDeathSave` is what increments the successes and failures, revives on
     // a natural twenty, doubles a failure on a natural one and posts the
@@ -1000,23 +1009,26 @@ export class CheckGate {
     if (typeof actor[fn] !== "function") {
       console.error(`${LOG} | Actor#${fn} is missing on this dnd5e build — nothing rolled.`);
       ui.notifications?.error(`ACE cannot roll that on this system version — see the console.`);
-      return;
+      return null;
     }
 
     const read = CheckGate.read(actor, kind, key);
     const suggested = read.mode > 0 ? "advantage" : read.mode < 0 ? "disadvantage" : "normal";
 
-    const { showCheckPrompt } = await import("./attack-prompt.mjs");
-    const choice = await showCheckPrompt({
-      creature: actor.name,
-      checkLabel: Number.isFinite(dc) ? `${read.label} vs DC ${dc}` : read.label,
-      suggested,
-      reasons: read.reasons,
-      modifier: read.modifier,
-      isPC: actor.hasPlayerOwner === true,
-      luckActor: actor, hasDisadvantage: read.mode < 0,
-    });
-    if (!choice) return;                                  // cancelled — nothing rolls
+    let choice = decided === "suggested" ? suggested : decided;
+    if (!["advantage", "normal", "disadvantage"].includes(choice)) {
+      const { showCheckPrompt } = await import("./attack-prompt.mjs");
+      choice = await showCheckPrompt({
+        creature: actor.name,
+        checkLabel: Number.isFinite(dc) ? `${read.label} vs DC ${dc}` : read.label,
+        suggested,
+        reasons: read.reasons,
+        modifier: read.modifier,
+        isPC: actor.hasPlayerOwner === true,
+        luckActor: actor, hasDisadvantage: read.mode < 0,
+      });
+    }
+    if (!choice) return null;                             // cancelled — nothing rolls
 
     const MODE = { advantage: 1, normal: 0, disadvantage: -1 }[choice] ?? 0;
 
@@ -1062,7 +1074,7 @@ export class CheckGate {
     // ⚠️ "CANCELLED" AND "BROKEN" MUST NOT LOOK THE SAME.
     if (!roll) {
       ui.notifications?.warn(`${actor.name}'s ${read.label} did not roll — see the console.`);
-      return;
+      return null;
     }
 
     // A concentration save's own outcome (and any luck spent on it) is decided
@@ -1102,6 +1114,7 @@ export class CheckGate {
     }
     if (!luck && roll._aceLuck) luck = { ...roll._aceLuck, spent: true };
     await CheckGate.postCard(actor, read, choice, roll, dc, luck);
+    return roll;
   }
 
   /* ── The card ────────────────────────────────────────────────────────── */

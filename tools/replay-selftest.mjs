@@ -4196,6 +4196,353 @@ await quiet(async () => {
   }
 });
 
+/* ── SAVE CARD UX: THE BOX, THE RESULTS CARD, ONE CONCENTRATION CHECK ───── */
+// Johnny, 2026-09-19: "Chat keeps the results. The player who must roll gets a
+// popout. NPCs do not sit on a waiting list." And the stop: "a Magmin burst or
+// a Fireball gives the player a blinking popout with sound, the chat shows
+// results only, and a second concentration click does not roll." Run on the
+// live save path with his own Magmin and Fireball: the cards ACE posts, how
+// each screen draws them, the box the player's screen opens, their one click,
+// and a concentrating character hit and then pressed three times. The box's own
+// behaviour (the blink, the focus, one click, the missing-sound notice) is
+// pinned in tools/roll-popout-selftest.mjs.
+console.log(`\nSAVE CARD UX: THE BOX, THE RESULTS CARD, ONE CONCENTRATION CHECK`);
+{
+  const MOD = "ace-qol";
+  const { RollPopout } = await import(`${MODULE}/scripts/roll-popout.mjs`);
+  const { ConcentrationPrompt } = await import(`${MODULE}/scripts/concentration-prompt.mjs`);
+  const { CheckGate } = await import(`${MODULE}/scripts/check-gate.mjs`);
+  const { PcSaveNudge } = await import(`${MODULE}/scripts/pc-save-nudge.mjs`);
+  const SCENE7 = "replay-ux-scene";
+  const PLAYER = { id: "tommy", name: "Tommy", isGM: false, active: true, character: null };
+  const AWAY = { id: "jex", name: "Jexxi", isGM: false, active: false, character: null };
+  const docs7 = new Map(), made7 = [], chat7 = new Map(), plays7 = [];
+  const setPath7 = (obj, key, v) => {
+    const path = key.split(".");
+    let o = obj;
+    for (const k of path.slice(0, -1)) o = (o[k] ??= {});
+    o[path[path.length - 1]] = v;
+  };
+  const keep7 = { users: game.users, user: game.user, messages: game.messages, scenesGet: game.scenes.get,
+    scene: canvas.scene, placed: [...canvas.tokens.placeables], create: ChatMessage.create, run: CheckGate.run,
+    audio: foundry.audio, fetch: globalThis.fetch, owner: CONST.DOCUMENT_OWNERSHIP_LEVELS,
+    html: globalThis.HTMLElement, dnd5e: globalThis.dnd5e, gmActive: GM.active, fromUuidSync: globalThis.fromUuidSync };
+
+  // A Foundry actor enough for the save card, the Gate and the concentration door.
+  const creature7 = (id, name, { type = "npc", owner = null, di = [], conc = null } = {}) => {
+    const a = { id, name, type, img: `${id}.webp`, documentName: "Actor", uuid: `Actor.${id}`,
+      statuses: new Set(), effects: new Collection(), items: new Collection(),
+      ownership: owner ? { [owner]: 3 } : {}, isOwner: true, hasPlayerOwner: !!owner,
+      prototypeToken: { actorLink: true }, getFlag: () => undefined, getRollData: () => ({}),
+      testUserPermission: (u) => !!u && !u.isGM && (a.ownership?.[u.id] ?? 0) >= 3,
+      system: { attributes: { hp: { value: 30, max: 30, temp: 0 }, death: { success: 0, failure: 0 }, prof: 2 },
+        abilities: { str: { mod: 0, save: { value: 0 } }, dex: { mod: 0, save: { value: 0 } },
+          con: { mod: 0, save: { value: 0 } }, wis: { mod: 0, save: { value: 0 } } },
+        skills: {}, details: { type: { value: "humanoid" }, alignment: "Neutral" },
+        traits: { ci: { value: new Set() }, di: { value: new Set(di) }, dr: { value: new Set() }, dv: { value: new Set() } } },
+      update: async (u) => { for (const [k, v] of Object.entries(u)) setPath7(a, k, v); return a; } };
+    if (conc) a.effects.set(conc.id, conc);
+    ACTORS.set(id, a);
+    made7.push(a);
+    return a;
+  };
+  const place7 = (actor, id, x) => {
+    const doc = { id, actorId: actor.id, actor, parent: { id: SCENE7 }, flags: {}, name: actor.name,
+      hidden: false, x, y: 0, width: 1, height: 1, elevation: 0, disposition: actor.hasPlayerOwner ? 1 : -1,
+      texture: { src: `${actor.id}-token.webp` }, getFlag: () => undefined,
+      update: async (u) => { for (const [k, v] of Object.entries(u)) setPath7(doc, k, v); return doc; } };
+    const tok = { id, name: actor.name, actor, document: doc, x, y: 0, w: 100, h: 100,
+      center: { x: x + 50, y: 50 }, scene: { id: SCENE7 }, visible: true, setTarget() {} };
+    doc.object = tok;
+    docs7.set(id, doc);
+    canvas.tokens.placeables.push(tok);
+    return tok;
+  };
+  // A chat card as a screen draws it: the list item Foundry hands the render hook.
+  globalThis.HTMLElement = keep7.html ?? class {};
+  class Li extends globalThis.HTMLElement {
+    constructor() { super(); this.cls = new Set(); this.style = {}; }
+    get classList() { const c = this.cls; return { add: (x) => c.add(x), remove: (x) => c.delete(x), contains: (x) => c.has(x) }; }
+    closest() { return this; }
+    querySelectorAll() { return []; }
+    querySelector() { return null; }
+    setAttribute() {}
+  }
+  const drawOn = (user, message, handlers) => {
+    game.user = user;
+    const li = new Li();
+    const keepLog = console.log;
+    console.log = () => {};   // ACE's own lines while a screen draws the card
+    try { for (const h of handlers) h(message, li); } finally { console.log = keepLog; }
+    return li;
+  };
+  const folded = (li) => li.classList.contains("ace-qol-save-collapsed");
+
+  try {
+    GM.active = true;
+    const users7 = Object.assign([GM, PLAYER, AWAY], { activeGM: GM });
+    users7.get = (id) => users7.find(u => u.id === id);
+    game.users = users7;
+    game.user = GM;
+    CONST.DOCUMENT_OWNERSHIP_LEVELS = { NONE: 0, LIMITED: 1, OBSERVER: 2, OWNER: 3 };
+    foundry.audio = { AudioHelper: { play: (o) => { plays7.push({ user: game.user?.id, ...o }); return Promise.resolve({}); } } };
+    globalThis.fetch = async () => ({ ok: true, status: 200 });
+    // An actor by its id, as Foundry resolves "Actor.<id>".
+    globalThis.fromUuidSync = (u) => (String(u).startsWith("Actor.") ? ACTORS.get(String(u).slice(6)) ?? null : keep7.fromUuidSync(u));
+    game.messages = { get: (id) => chat7.get(id) ?? null, get contents() { return [...chat7.values()]; } };
+    ChatMessage.create = async (data, opts) => {
+      const msg = await keep7.create(data, opts);
+      // Foundry reads a dotted key as a path: "flags.ace-qol.status" is a flag.
+      const plain = msg.update;
+      msg.update = async (u = {}) => {
+        const rest = {};
+        for (const [k, v] of Object.entries(u)) { if (k.includes(".")) setPath7(msg, k, v); else rest[k] = v; }
+        return plain(rest);
+      };
+      msg.whisper = data?.whisper ?? [];
+      msg.author = data?.author ?? null;
+      chat7.set(msg.id, msg);
+      return msg;
+    };
+    const scene7 = { id: SCENE7, templates: { get: () => null },
+      tokens: { get: (t) => docs7.get(t) ?? null, get contents() { return [...docs7.values()]; } } };
+    game.scenes.get = (id) => (id === SCENE7 ? scene7 : keep7.scenesGet(id));
+    canvas.scene = scene7;
+    canvas.tokens.placeables.length = 0;
+
+    // Tommy's character, a bandit, and a creature fire cannot touch.
+    const chudd = creature7("replay-ux-chudd", "Chudd", { type: "character", owner: "tommy" });
+    const bandit = creature7("replay-ux-bandit", "a bandit");
+    const imp = creature7("replay-ux-azer", "an azer", { di: ["fire"] });
+    const chuddTok = place7(chudd, "tok-ux-chudd", 100);
+    const banditTok = place7(bandit, "tok-ux-bandit", 200);
+    const impTok = place7(imp, "tok-ux-azer", 300);
+
+    let engine7 = null;
+    const beforeHooks = { render: (hooks.renderChatMessage ?? []).length, create: (hooks.createChatMessage ?? []).length };
+    try { await quiet(async () => { engine7 = new SaveEngine({}); }); } catch (err) { engine7 = null; }
+    const renderHooks = (hooks.renderChatMessage ?? []).slice(beforeHooks.render);
+    const createHooks = (hooks.createChatMessage ?? []).slice(beforeHooks.create);
+
+    const mm = ACTORS.get("mmMagmin00000000") ?? null;
+    const burst = mm ? [...(mm.items ?? [])].find(i => i.name === "Death Burst") ?? null : null;
+    const burstAct = burst ? [...(burst.system?.activities ?? [])].find(a => a.type === "save") ?? null : null;
+    if (!engine7 || !burst || !burstAct) {
+      check("his Magmin's burst asks Chudd's player in a box (2026-09-19)", null,
+        engine7 ? "no 2024 Magmin with a Death Burst save in this world" : "the save engine would not start in the stand-in");
+    } else {
+      // ── 1. The Magmin bursts: the live save card, driven by the GM's screen ──
+      const magTok = place7(mm, "tok-ux-magmin", 0);
+      let err1 = null;
+      const before1 = posted.length;
+      try {
+        await quiet(async () => {
+          await engine7._postLiveTargetCard(burst, mm, [chuddTok, banditTok, impTok], {
+            saveAbility: "dex", saveDC: 11, isSpell: false, activityId: burstAct.id, skipDelay: true,
+            autoResolve: true, trigger: "dies" });
+        });
+      } catch (e) { err1 = e; }
+      const cards = [...chat7.values()];
+      const of = (type) => cards.filter(m => m?.flags?.[MOD]?.type === type);
+      const list = of("saveTargetList").at(-1) ?? null;
+      const prompt = of("pcSavePrompt").at(-1) ?? null;
+      const results = of("saveResults").at(-1) ?? null;
+      const text = (m) => String(m?.content ?? "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+
+      // The chat: results only. Drawn as it was born, before the results card
+      // retired it, because that is when the waiting list used to show.
+      const born = list ? { ...list, flags: { [MOD]: { ...list.flags[MOD], superseded: false, rolled: false } } } : null;
+      const listOnGm = born ? drawOn(GM, born, renderHooks) : null;
+      const listOnPlayer = born ? drawOn(PLAYER, born, renderHooks) : null;
+      check("NPCs do not sit on a waiting list: the Magmin's save card with the waiting rows is never drawn, on the GM's screen or the player's, because the NPCs roll themselves (2026-09-19)",
+        !err1 && !!list && list.flags[MOD].carrier === true && folded(listOnGm) && folded(listOnPlayer),
+        err1 ? `threw: ${err1?.message ?? err1}` : list ? `carrier ${list.flags[MOD].carrier}; GM ${folded(listOnGm) ? "folded" : "DRAWN"}, player ${folded(listOnPlayer) ? "folded" : "DRAWN"}` : "no save card posted");
+      const rt = text(results);
+      check("the chat shows one results card after the dice: the bandit's rolled save with its verdict, Chudd waiting for his player, and the azer as one line, immune to fire, no save and no row (2026-09-19)",
+        !!results && /a bandit/.test(rt) && /FAIL/.test(rt) && /Chudd/.test(rt) && /WAITING FOR PLAYER/.test(rt)
+          && /Immune to fire, no save:\s*an azer/.test(rt)
+          && !/ace-qol-save-result-noroll[^>]*tok-ux-azer/.test(String(results.content ?? ""))
+          && (String(results.content ?? "").match(/ace-qol-save-immune-line/g) ?? []).length === 1,
+        results ? rt.slice(0, 260) : "no results card");
+
+      // The box: on Tommy's screen, not on the GM's.
+      const boxKey = prompt?.id ?? null;
+      const onGm = prompt ? drawOn(GM, prompt, renderHooks) : null;
+      const gmBox = boxKey ? RollPopout.isOpen(boxKey) : false;
+      const dingsBefore = plays7.length;
+      const onPlayer = prompt ? drawOn(PLAYER, prompt, renderHooks) : null;
+      const box = boxKey ? RollPopout._open.get(boxKey) : null;
+      check("the player who must roll gets the box: Chudd's save opens on Tommy's screen and not the GM's, whispered to Tommy alone, its chat card folded on both (2026-09-19)",
+        !!prompt && JSON.stringify(prompt.whisper) === JSON.stringify(["tommy"]) && !gmBox && !!box
+          && folded(onGm) && folded(onPlayer),
+        prompt ? `whisper ${JSON.stringify(prompt.whisper)}; GM's screen ${gmBox ? "OPENED a box" : "no box"}; Tommy's ${box ? "box open" : "NO BOX"}` : "no save prompt posted");
+      check("the box is the moment, in plain words: \"Magmin dies, and its Death Burst catches you.\", the Magmin's portrait and Chudd's, and one pill, \"Roll Dexterity save\", with a ding on Tommy's screen (2026-09-19)",
+        !!box && box.spec.line === "Magmin dies, and its Death Burst catches you." && box.spec.sourceName === "Magmin"
+          && box.spec.rollerName === "Chudd" && box.spec.pillLabel === "Roll Dexterity save"
+          && plays7.slice(dingsBefore).some(p => p.user === "tommy"),
+        box ? `"${box.spec.line}" / ${box.spec.sourceName} → ${box.spec.rollerName} / "${box.spec.pillLabel}"; dings on Tommy's screen: ${plays7.slice(dingsBefore).filter(p => p.user === "tommy").length}` : "no box");
+
+      // One click: the save rolls, the box closes, the chat gains its result.
+      if (box) {
+        game.user = PLAYER;
+        let err2 = null;
+        const before2 = posted.length;
+        try {
+          await quiet(async () => {
+            const rolling = box._roll();
+            // The result reaches every screen; Tommy's is the one watching his box.
+            for (let i = 0; i < 50 && !posted.slice(before2).some(m => m?.flags?.[MOD]?.type === "pcSaveResult"); i++) {
+              await new Promise(r => setTimeout(r, 20));
+            }
+            const res = [...chat7.values()].find(m => m?.flags?.[MOD]?.type === "pcSaveResult" && m.flags[MOD].castId === list?.id);
+            if (res) for (const h of createHooks) h(res);
+            await rolling;
+            await new Promise(r => setTimeout(r, 300));   // the player's own card update runs on a short timer
+          });
+        } catch (e) { err2 = e; }
+        const result = posted.slice(before2).find(m => m?.flags?.[MOD]?.type === "pcSaveResult") ?? null;
+        const again = drawOn(PLAYER, prompt, renderHooks);
+        check("one click rolls Chudd's save: his result goes to the chat, the box closes, and his prompt stays folded with no second box (2026-09-19)",
+          !err2 && !!result && result.flags[MOD].tokenDocId === "tok-ux-chudd" && !RollPopout.isOpen(boxKey)
+            && folded(again) && !RollPopout.isOpen(boxKey),
+          err2 ? `threw: ${err2?.message ?? err2}` : result ? `rolled ${result.flags[MOD].saveTotal} (${result.flags[MOD].resultLabel}); box ${RollPopout.isOpen(boxKey) ? "STILL OPEN" : "closed"}` : "no result posted");
+      }
+      canvas.tokens.placeables.splice(canvas.tokens.placeables.indexOf(magTok), 1);
+    }
+
+    // ── 2. A Fireball at Chudd: the same box, the spell's own words ──
+    game.user = GM;
+    const caster = [...ACTORS.values()].find(a => [...(a.items ?? [])].some(i => i.type === "spell" && i.name === "Fireball"
+      && [...(i.system?.activities ?? [])].some(x => x.type === "save"))) ?? null;
+    const fireball = caster ? [...caster.items].find(i => i.type === "spell" && i.name === "Fireball") : null;
+    const fbAct = fireball ? [...fireball.system.activities].find(x => x.type === "save") : null;
+    if (!engine7 || !fireball) {
+      check("a Fireball at Chudd asks his player in a box (2026-09-19)", null, "nobody in this world has a Fireball with a save");
+    } else {
+      let err3 = null;
+      const before3 = chat7.size;
+      try {
+        await quiet(async () => {
+          await engine7._postLiveTargetCard(fireball, caster, [chuddTok, banditTok], {
+            saveAbility: "dex", saveDC: 17, isSpell: true, activityId: fbAct.id, skipDelay: true });
+        });
+      } catch (e) { err3 = e; }
+      const prompt = [...chat7.values()].slice(before3).filter(m => m?.flags?.[MOD]?.type === "pcSavePrompt").at(-1) ?? null;
+      if (prompt) drawOn(PLAYER, prompt, renderHooks);
+      const box = prompt ? RollPopout._open.get(prompt.id) : null;
+      check(`a Fireball from ${caster.name} at Chudd opens the same box on Tommy's screen: "${caster.name} casts Fireball at you.", "Roll Dexterity save" (2026-09-19)`,
+        !err3 && !!box && box.spec.line === `${caster.name} casts Fireball at you.` && box.spec.pillLabel === "Roll Dexterity save",
+        err3 ? `threw: ${err3?.message ?? err3}` : box ? `"${box.spec.line}" / "${box.spec.pillLabel}"` : "no box");
+      if (box) await box.close({ acpResolved: true });
+    }
+
+    // ── 3. Concentration: one check for each hit, and a second press rolls nothing ──
+    const runs = [];
+    CheckGate.run = async (actor, kind, key, o = {}) => { runs.push({ who: actor?.name, kind, key, ...o }); return { total: 14 }; };
+    const effect = { id: "conc-ux-1", name: "Concentrating", disabled: false, statuses: new Set(["concentration"]),
+      getFlag: (s, k) => (s === "dnd5e" && k === "item" ? { name: "Hold Person" } : undefined) };
+    const kas = creature7("replay-ux-kas", "Kasimir", { type: "character", owner: "tommy", conc: effect });
+    // dnd5e's own concentration DC, read from the installed system, not re-typed here.
+    const dcSrc = readFileSync(`${SYSTEM}/dnd5e.mjs`, "utf8").match(/getConcentrationDC\(damage\) \{([\s\S]*?)\n {2}\}/)?.[1] ?? null;
+    Math.clamp ??= (n, lo, hi) => Math.min(Math.max(n, lo), hi);
+    if (dcSrc) kas.getConcentrationDC = new Function("damage", dcSrc);
+    const ask = async (damage) => {
+      const n = chat7.size;
+      await quiet(() => DamageApplicator._triggerAceConcentrationCheck(kas, damage));
+      return [...chat7.values()].slice(n).filter(m => m?.flags?.[MOD]?.type === "concentrationPrompt");
+    };
+    globalThis.dnd5e = { settings: { rulesVersion: "modern" } };
+    const initBefore = { render: (hooks.renderChatMessage ?? []).length };
+    ConcentrationPrompt._wired = false;
+    await quiet(() => ConcentrationPrompt.init());
+    const concRender = (hooks.renderChatMessage ?? []).slice(initBefore.render);
+    game.user = GM;
+    const hit1 = await ask(70);
+    const p1 = hit1[0] ?? null;
+    check("a hit on a concentrating character is one check, asked of its player: one prompt, written as Tommy's own card and whispered to him alone, nothing rolled yet, and a 2024 world's DC is dnd5e's own (70 damage: DC 30, the 2024 cap) (2026-09-19)",
+      !!dcSrc && hit1.length === 1 && p1.author === "tommy" && JSON.stringify(p1.whisper) === JSON.stringify(["tommy"])
+        && p1.flags[MOD].status === "pending" && p1.flags[MOD].dc === 30 && runs.length === 0,
+      p1 ? `${hit1.length} prompt(s); author ${p1.author}; whisper ${JSON.stringify(p1.whisper)}; DC ${p1.flags[MOD].dc}; rolled ${runs.length}` : `${hit1.length} prompts${dcSrc ? "" : "; dnd5e's getConcentrationDC not found in its source"}`);
+    globalThis.dnd5e = { settings: { rulesVersion: "legacy" } };
+    const hitLegacy = await ask(70);
+    check("the same hit in a 2014 world is DC 35 (no cap), dnd5e's rule for that edition (2026-09-19)",
+      hitLegacy.length === 1 && hitLegacy[0].flags[MOD].dc === 35, hitLegacy[0] ? `DC ${hitLegacy[0].flags[MOD].dc}` : "no prompt");
+    globalThis.dnd5e = { settings: { rulesVersion: "modern" } };
+
+    if (p1) {
+      const onGm = drawOn(GM, p1, concRender);
+      const gmBox = RollPopout.isOpen(p1.id);
+      const onTommy = drawOn(PLAYER, p1, concRender);
+      const box = RollPopout._open.get(p1.id) ?? null;
+      check("its box opens on Tommy's screen with the same d20 and pill as a save, \"Roll Concentration\", and not on the GM's; the chat card stays folded (2026-09-19)",
+        !gmBox && !!box && box.spec.pillLabel === "Roll Concentration" && folded(onGm) && folded(onTommy),
+        box ? `"${box.spec.line}" / "${box.spec.pillLabel}"` : "no box");
+      // Press it, then press again, then the GM presses too.
+      game.user = PLAYER;
+      await quiet(async () => {
+        if (box) await box._roll();
+        await ConcentrationPrompt.roll(game.messages.get(p1.id), { choice: "suggested" });
+      });
+      game.user = GM;
+      await quiet(() => ConcentrationPrompt.roll(game.messages.get(p1.id), { choice: "suggested" }));
+      const afterRoll = drawOn(PLAYER, p1, concRender);
+      check("a second concentration click does not roll: pressed in the box, then again, then by the GM, it rolls exactly once, through ACE's check at DC 30, and the card is marked rolled for every screen (2026-09-19)",
+        runs.filter(r => r.who === "Kasimir").length === 1 && runs[0].kind === "concentration" && runs[0].dc === 30
+          && p1.flags[MOD].status === "rolled" && !RollPopout.isOpen(p1.id) && folded(afterRoll),
+        `${runs.filter(r => r.who === "Kasimir").length} roll(s); status ${p1.flags[MOD].status}; box ${RollPopout.isOpen(p1.id) ? "STILL OPEN" : "closed"}`);
+    }
+    // Every hit is its own check: a second hit asks again, and that one rolls too.
+    const hit2 = await ask(12);
+    if (hit2[0]) {
+      game.user = PLAYER;
+      await quiet(() => ConcentrationPrompt.roll(game.messages.get(hit2[0].id), { choice: "suggested" }));
+      game.user = GM;
+    }
+    check("a second hit is a second check (RAW: each time you take damage): DC 10 for 12 damage, rolled once (2026-09-19)",
+      hit2.length === 1 && hit2[0].flags[MOD].dc === 10 && runs.filter(r => r.who === "Kasimir").length === 2,
+      hit2[0] ? `DC ${hit2[0].flags[MOD].dc}; ${runs.filter(r => r.who === "Kasimir").length} roll(s) in all` : "no prompt");
+    // Nobody to wait on: a character whose player is away rolls at once, no prompt.
+    const effect2 = { ...effect, id: "conc-ux-2" };
+    const firaxis = creature7("replay-ux-firaxis", "Firaxis", { type: "character", owner: "jex", conc: effect2 });
+    if (dcSrc) firaxis.getConcentrationDC = new Function("damage", dcSrc);
+    const n4 = chat7.size;
+    await quiet(() => DamageApplicator._triggerAceConcentrationCheck(firaxis, 20));
+    const prompts4 = [...chat7.values()].slice(n4).filter(m => m?.flags?.[MOD]?.type === "concentrationPrompt");
+    check("a character whose player is not connected is not waited on: its check rolls at once through ACE's check and no prompt is posted (2026-09-19)",
+      prompts4.length === 0 && runs.filter(r => r.who === "Firaxis").length === 1,
+      `${prompts4.length} prompt(s); ${runs.filter(r => r.who === "Firaxis").length} roll(s)`);
+    // The handler for concentration cards already in a chat log: it no longer
+    // rolls dnd5e's (which ACE's gate cancels, so it read "cancelled" and came
+    // straight back on) and it remembers a roll on the card itself.
+    const qolSrc = readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/ace-qol.mjs`, "utf8");
+    const wire = qolSrc.slice(qolSrc.indexOf("const _wireConcButton"), qolSrc.indexOf("registerChatCardHandler(_wireConcButton"));
+    check("older concentration cards already in a chat log roll through ACE's check, awaited, and remember a roll on the card (source read: that handler lives inside ACE's startup) (2026-09-19)",
+      wire.length > 0 && !/actor\.rollConcentration\(/.test(wire) && /CheckGate\.run\(actor, "concentration"/.test(wire)
+        && /_concSpent\(/.test(wire) && /setFlag\(MODULE_ID, "concRolled", true\)/.test(wire),
+      wire.length ? "read from ace-qol.mjs" : "the handler was not found in ace-qol.mjs");
+  } finally {
+    PcSaveNudge.disarmAll();
+    for (const k of [...RollPopout._open.keys()]) RollPopout._open.delete(k);
+    CheckGate.run = keep7.run;
+    ChatMessage.create = keep7.create;
+    game.users = keep7.users;
+    game.user = keep7.user;
+    game.messages = keep7.messages;
+    game.scenes.get = keep7.scenesGet;
+    canvas.scene = keep7.scene;
+    canvas.tokens.placeables.length = 0;
+    canvas.tokens.placeables.push(...keep7.placed);
+    foundry.audio = keep7.audio;
+    globalThis.fetch = keep7.fetch;
+    if (keep7.owner === undefined) delete CONST.DOCUMENT_OWNERSHIP_LEVELS; else CONST.DOCUMENT_OWNERSHIP_LEVELS = keep7.owner;
+    if (keep7.html === undefined) delete globalThis.HTMLElement;
+    if (keep7.dnd5e === undefined) delete globalThis.dnd5e; else globalThis.dnd5e = keep7.dnd5e;
+    if (keep7.gmActive === undefined) delete GM.active; else GM.active = keep7.gmActive;
+    globalThis.fromUuidSync = keep7.fromUuidSync;
+    for (const a of made7) ACTORS.delete(a.id);
+  }
+}
+
 /* ── A CANCELLED CAST GIVES BACK WHAT THE PRESS SPENT ────────────────────── */
 // 2026-09-18. dnd5e takes what a press costs before any of ACE runs (a daily
 // use, a recharge, a legendary action) and writes it on the usage message, even

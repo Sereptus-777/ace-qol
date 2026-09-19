@@ -207,11 +207,12 @@ export class DamageApplicator {
 
   /**
    * v0.7.21 — ACE-owned concentration save on damage.
-   * Detects concentrating status, computes DC = max(10, floor(damage/2)),
-   * routes through save-engine for the visual card, and on fail deletes the
-   * Concentrating effect (cascading dependent cleanup via dnd5e).
+   * Detects concentrating status and asks dnd5e for the DC (its own rule for
+   * the world's edition). A creature somebody plays is asked once for this hit
+   * in the roll box (concentration-prompt.mjs); any other rolls at once. A
+   * failure is ended by the check gate's one outcome listener.
    *
-   * Skips silently if actor isn't concentrating.
+   * Skips silently if actor isn't concentrating (there is nothing to check).
    */
   static async _triggerAceConcentrationCheck(actor, damage) {
     if (!actor?.effects) return;
@@ -219,7 +220,13 @@ export class DamageApplicator {
       e.statuses?.has?.("concentration") || e.statuses?.has?.("concentrating"));
     if (!concEffect) return;
 
-    const dc = Math.max(10, Math.floor(damage / 2));
+    // ⚠️ dnd5e's OWN RULE, BOTH EDITIONS (2026-09-19). This was
+    // `max(10, floor(damage / 2))`, which is the 2014 rule only: the 2024 rules
+    // cap the DC at 30, and dnd5e's getConcentrationDC does exactly that for a
+    // "modern" world. Asking dnd5e keeps the two from drifting apart again.
+    const dc = typeof actor.getConcentrationDC === "function"
+      ? actor.getConcentrationDC(damage)
+      : Math.max(10, Math.floor(damage / 2));
     const conMod = actor.system?.abilities?.con?.mod ?? 0;
     const conSaveBonus = Number(actor.system?.abilities?.con?.bonuses?.save ?? 0);
     const profBonus = actor.system?.attributes?.prof ?? 0;
@@ -232,51 +239,21 @@ export class DamageApplicator {
 
     const isPc = actor.type === "character" || actor.hasPlayerOwner;
     const concName = concEffect.name || "Concentrating";
-    const accent = "#ab47bc";
 
     if (isPc) {
-      // PC path — post a card with a roll button. The GM clicks it (or the
-      // PC owner does) to roll. On fail, the effect deletes.
-      const html = `
-        <div style="background:linear-gradient(180deg,#1a1410 0%,#0f0a08 100%);
-                    border:2px solid ${accent};
-                    border-radius:6px;
-                    padding:12px 14px;
-                    color:#f0e4c0;
-                    font-family:'Signika','Helvetica Neue',sans-serif;">
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;row-gap:4px;
-                      font-size:14px;font-weight:700;color:${accent};
-                      text-transform:uppercase;letter-spacing:0.6px;
-                      border-bottom:1px solid #4a3a28;
-                      padding-bottom:6px;margin-bottom:8px;">
-            <i class="fas fa-brain" style="font-size:16px;color:${accent};flex-shrink:0;"></i>
-            <span style="flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">CONCENTRATION CHECK — ${actor.name.toUpperCase()}</span>
-            <span style="font-size:13px;color:#e8d49a;flex-shrink:0;">DC ${dc}</span>
-          </div>
-          <div style="font-size:13px;color:#c0b288;margin-bottom:8px;">
-            <strong>${actor.name}</strong> took <strong>${damage}</strong> damage while concentrating on <em>${concName}</em>.
-          </div>
-          <button class="ace-qol-conc-roll-btn"
-                  data-action="aceQolRollConcSave"
-                  data-actor-uuid="${actor.uuid}"
-                  data-effect-id="${concEffect.id}"
-                  data-dc="${dc}"
-                  data-formula="${formula}"
-                  style="width:100%;padding:8px;font-size:14px;font-weight:700;
-                         background:${accent};color:#fff;border:none;border-radius:4px;
-                         cursor:pointer;letter-spacing:0.5px;">
-            ROLL CONCENTRATION SAVE (CON ${conMod >= 0 ? "+" : ""}${conMod}${isProficient ? " + prof" : ""})
-          </button>
-        </div>
-      `;
+      // ⚠️ ONE CHECK FOR THIS HIT, ASKED IN THE ROLL BOX (Johnny, 2026-09-19:
+      // "One check per damage event. Button dies after the roll. Same d20
+      // widget as the save popout."). This posted a public card whose button
+      // remembered nothing, so a second click rolled a second save for the same
+      // hit. The prompt now carries its own state and is asked of the one who
+      // answers for the creature (concentration-prompt.mjs).
       try {
-        await CardDoor.post({
-          speaker: ChatMessage.getSpeaker({ actor }),
-          content: html,
-          flavor: `${actor.name} concentration check vs DC ${dc}`,
-        });
+        const { ConcentrationPrompt } = await import("./concentration-prompt.mjs");
+        await ConcentrationPrompt.ask(actor, { damage, dc, effect: concEffect });
       } catch (err) {
-        console.warn(`${MODULE_ID} | the concentration check card for ${actor.name} could not be posted:`, err);
+        console.error(`${MODULE_ID} | ${actor.name}'s concentration check (DC ${dc}, ${concName}) could not be asked:`, err);
+        ui.notifications?.error(`ACE could not ask ${actor.name}'s concentration check (DC ${dc}). `
+          + `Roll it from the sheet; the console has why.`);
       }
     } else {
       // NPC path — auto-roll, show result, on fail delete the effect.

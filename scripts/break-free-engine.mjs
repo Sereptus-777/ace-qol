@@ -30,27 +30,10 @@ import { abilityMod } from "./rolldata-utils.mjs";
 // Lucky (2014) and the halfling's Lucky. See luck.mjs.
 import { withHalflingLuck, againstDC as luckAgainstDC } from "./luck.mjs";
 
-// Real black-d20 die art (per-face) with a gold glow — the same dice the save
-// cards use, so a break-free Strength check shows the player exactly what they
-// rolled instead of a flat fist icon. Falls back to a Font Awesome d20 if the
-// image asset is missing.
-const ACE_DICE_DIR = "modules/ace-qol/Assets/Dice%20Dice/BD20";
-function aceD20FaceImg(face, { size = 34, glow = true } = {}) {
-  const n = Number(face);
-  const valid = Number.isInteger(n) && n >= 1 && n <= 20;
-  const src = `${ACE_DICE_DIR}/BD20-${valid ? n : 20}_nobg.png`;
-  const icon = Math.round(size * 0.74);
-  const glowSpan = glow
-    ? `<span style="position:absolute;width:${size}px;height:${size}px;border-radius:50%;background:radial-gradient(circle,rgba(212,175,55,0.60) 0%,rgba(212,175,55,0.22) 48%,transparent 72%);"></span>`
-    : "";
-  const shadow = glow ? "filter:drop-shadow(0 0 3px rgba(212,175,55,0.75));" : "";
-  return `<span style="position:relative;display:inline-flex;align-items:center;justify-content:center;width:${size}px;height:${size}px;flex-shrink:0;vertical-align:middle;">`
-    + glowSpan
-    + `<img src="${src}" alt="d20${valid ? " " + n : ""}" style="position:relative;width:${size}px;height:${size}px;object-fit:contain;${shadow}" `
-    + `onerror="this.style.display='none';this.nextElementSibling.style.display='inline-block';" />`
-    + `<i class="fas fa-dice-d20" style="display:none;position:relative;color:#d4af37;font-size:${icon}px;"></i>`
-    + `</span>`;
-}
+// The one d20 widget (dice-face.mjs): the same dice the save cards and the roll
+// popout use. Its size here is 34, as it always was.
+import { aceD20FaceImg as _aceD20Face } from "./dice-face.mjs";
+const aceD20FaceImg = (face, { size = 34, glow = true } = {}) => _aceD20Face(face, { size, glow });
 
 export class BreakFreeEngine {
 

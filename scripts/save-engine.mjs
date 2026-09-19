@@ -80,32 +80,14 @@ import { naturalD20 } from "./rolldata-utils.mjs";
 // "fails by 5 or more" (the 2014 medusa). See rules/creature-words.mjs.
 import { readEscalation, readFailBy } from "./rules/creature-words.mjs";
 
-// Real black d20 die art (per-face). These are the dice the GM already sees;
-// we use them everywhere a save result or prompt appears instead of the flat
-// Font Awesome icon. The art is black, and our cards are dark, so each die gets
-// a gold radial glow + drop-shadow beneath it for contrast.
-const ACE_DICE_DIR = "modules/ace-qol/Assets/Dice%20Dice/BD20";
-/**
- * @param {number} face         The raw d20 result (1–20). Out-of-range → generic 20 face.
- * @param {{size?:number}} opts  Pixel size of the die (default 30).
- * @returns {string}            HTML for a glowing black d20 showing that face.
- */
-export function aceD20FaceImg(face, { size = 30, glow = true } = {}) {
-  const n = Number(face);
-  const valid = Number.isInteger(n) && n >= 1 && n <= 20;
-  const src = `${ACE_DICE_DIR}/BD20-${valid ? n : 20}_nobg.png`;
-  const icon = Math.round(size * 0.74);
-  const glowSpan = glow
-    ? `<span style="position:absolute;width:${size}px;height:${size}px;border-radius:50%;background:radial-gradient(circle,rgba(212,175,55,0.60) 0%,rgba(212,175,55,0.22) 48%,transparent 72%);"></span>`
-    : "";
-  const shadow = glow ? "filter:drop-shadow(0 0 3px rgba(212,175,55,0.75));" : "";
-  return `<span class="ace-qol-d20" style="position:relative;display:inline-flex;align-items:center;justify-content:center;width:${size}px;height:${size}px;flex-shrink:0;vertical-align:middle;">`
-    + glowSpan
-    + `<img src="${src}" alt="d20${valid ? " " + n : ""}" style="position:relative;width:${size}px;height:${size}px;object-fit:contain;${shadow}" `
-    + `onerror="this.style.display='none';this.nextElementSibling.style.display='inline-block';" />`
-    + `<i class="fas fa-dice-d20" style="display:none;position:relative;color:#d4af37;font-size:${icon}px;"></i>`
-    + `</span>`;
-}
+// The d20 widget: one die face everywhere a person rolls (dice-face.mjs). Still
+// exported from here, because the prismatic wall and the repeat saves ask here.
+import { aceD20FaceImg } from "./dice-face.mjs";
+export { aceD20FaceImg };
+// The player who must roll gets a box on their own screen (his rule,
+// 2026-09-19); who that is, is the one rule every prompt asks.
+import { RollPopout } from "./roll-popout.mjs";
+import { whoAnswers } from "./who-answers.mjs";
 
 /**
  * Inline d20 result breakdown for a live save-card row: glowing black die face
@@ -578,36 +560,43 @@ export class SaveEngine {
           const chatMsg = el.closest?.(".chat-message") ?? el;
           chatMsg?.classList?.add?.("ace-qol-save-collapsed");
         } else {
+          // A carrier is never drawn, but stays wired: its render is still the
+          // fallback that rolls for the NPCs if the cast's own flow let go.
+          if (flags.carrier === true) {
+            const chatMsg = el.closest?.(".chat-message") ?? el;
+            chatMsg?.classList?.add?.("ace-qol-save-collapsed");
+          }
           this._wireTargetListButtons(el, message, flags);
         }
       }
 
       // ── PC Save Prompt card (whispered to player) ──
+      //
+      // ⚠️ THE BOX IS THE PROMPT; THE CHAT KEEPS THE RESULTS (Johnny,
+      // 2026-09-19): "The player who must roll gets a popout ... popout on that
+      // owner's client, sound on open, the roll button blinks, that client
+      // focuses the popout, one click rolls, popout closes after the roll."
+      // So this card only carries the roll now. It is folded away on every
+      // screen, and the one who answers for the creature gets the box (the one
+      // rule, who-answers.mjs: its connected player, or the GM when there is
+      // none, which is also the GM who plays a character of his own). It comes
+      // back into the chat, wired, only on that screen and only when the box
+      // could not open or was closed without a roll, so a save is never lost.
+      //
+      // (The old gate here asked "is this the GM's own character" to decide who
+      // got the button: Johnny runs the table and plays Jeth, 2026-08-24. The
+      // one rule answers that now, for the box and for the card alike.)
       if (flags.type === "pcSavePrompt") {
-        // ⚠️🔴 A GM WHO ALSO PLAYS A CHARACTER STILL NEEDS THE BUTTON.
-        //
-        // This hid the prompt from EVERY GM, on the reasoning that a GM sees all
-        // whispers and would otherwise drown in other people's cards. True for
-        // other people's characters. Not true for their own.
-        //
-        // Johnny runs the table AND plays Jeth. So his own save prompt was
-        // collapsed on the only screen he has, the die was never wired, and the
-        // card sat there saying "WAITING FOR PLAYER" while the player it was
-        // waiting for was him, looking at a card with nothing to press
-        // (2026-08-24): "it doesn't give me a button to push to save on the
-        // client side!"
-        //
-        // The test is not "is this person a GM". It is "is this MY character" —
-        // exactly the distinction that nearly killed NPC memory and Legendary
-        // Resistance when a fail-closed check asked the wrong question
-        // (2026-08-19). Own the actor, get the button. Somebody else's, stay
-        // collapsed and use ROLL FOR THEM on the main card as before.
-        const mine = SaveEngine._promptIsMine(flags);
-        if (game.user.isGM && !mine) {
-          const chatMsg = el.closest?.(".chat-message") ?? el;
-          chatMsg.classList.add("ace-qol-save-collapsed");
-          return;
+        const chatMsg = el.closest?.(".chat-message") ?? el;
+        chatMsg?.classList?.add?.("ace-qol-save-collapsed");
+        if (!SaveEngine._promptInChat.has(message.id)) {
+          if (this._openSavePopout(message)) return;
+          // Not this screen's to answer: stays folded.
+          if (!SaveEngine._promptInChat.has(message.id)) return;
         }
+        // Answered since (by them, or by the GM for them): stays folded.
+        if (!SaveEngine._promptStillWaits(flags)) return;
+        chatMsg?.classList?.remove?.("ace-qol-save-collapsed");
         this._wirePcSaveButton(el, message, flags);
       }
 
@@ -638,10 +627,40 @@ export class SaveEngine {
     // player, and an undecorated card shows all of them. See chat-render-utils.
     registerChatCardHandler(_onRenderChatMessage, "save cards");
 
+    // ── A save prompt opens its box the moment it arrives, whether or not the
+    // chat log draws it (a closed sidebar, a popped-out log). Once per prompt.
+    Hooks.on("createChatMessage", (message) => {
+      if (message.flags?.[MODULE_ID]?.type !== "pcSavePrompt") return;
+      try { this._openSavePopout(message); }
+      catch (err) { console.warn(`${MODULE_ID} | the save box could not open for a new prompt:`, err); }
+    });
+
+    // ── The box closes wherever the save was answered from: the player, the
+    // GM's ROLL FOR THEM, or a card that no longer wants it.
+    Hooks.on("updateChatMessage", (message) => {
+      const f = message.flags?.[MODULE_ID];
+      if (f?.type !== "saveResults" && f?.type !== "saveTargetList") return;
+      const castId = f.type === "saveTargetList" ? message.id : f.castId;
+      if (!castId) return;
+      RollPopout.closeWhere(m => m.kind === "save" && m.castId === castId && !SaveEngine._promptStillWaits(m),
+        "the save card no longer waits on it");
+    });
+    Hooks.on("deleteChatMessage", (message) => {
+      const f = message.flags?.[MODULE_ID];
+      if (f?.type === "pcSavePrompt") {
+        RollPopout.closeWhere((m, key) => key === message.id, "its prompt was deleted");
+      } else if (f?.type === "saveTargetList") {
+        RollPopout.closeWhere(m => m.kind === "save" && m.castId === message.id, "its cast was deleted");
+      }
+    });
+
     // ── createChatMessage — reliable hook for PC save results (fires on ALL clients) ──
     Hooks.on("createChatMessage", (message) => {
       const flags = message.flags?.[MODULE_ID];
       if (flags?.type !== "pcSaveResult" || !flags.castId) return;
+      RollPopout.closeWhere(m => m.kind === "save" && m.castId === flags.castId
+        && (m.tokenDocId ?? null) === (flags.tokenDocId ?? null),
+        flags.rolledByGm ? "the GM rolled it" : "it was rolled");
       if (game.user.isGM) {
         console.log(`${MODULE_ID} | createChatMessage caught pcSaveResult for`, flags.tokenDocId, "castId:", flags.castId);
         // Small delay to let the DOM render first
@@ -1920,36 +1939,6 @@ export class SaveEngine {
    * this with it. Returns null for anything that is not a save activity, and
    * for hand-drawn templates, which carry no origin flag.
    */
-  /**
-   * Is this save prompt for a character the current user actually owns?
-   *
-   * ⚠️ RESOLVED FROM THE ACTOR, NOT FROM THE WHISPER LIST. A GM is whispered
-   * every prompt, so "was I whispered this" answers yes for everybody's card and
-   * would un-collapse the lot. Ownership of the creature being asked to save is
-   * the only question that separates "my character" from "someone else's".
-   */
-  static _promptIsMine(flags) {
-    try {
-      const actor = game.actors?.get?.(flags?.actorId)
-        ?? (flags?.tokenDocId && flags?.sceneId
-              ? game.scenes?.get?.(flags.sceneId)?.tokens?.get?.(flags.tokenDocId)?.actor
-              : null);
-      if (!actor) return false;
-      // OWNER, not OBSERVER: seeing a sheet is not playing the character. A GM
-      // owns every actor implicitly, so ask about the explicit per-user level.
-      const level = actor.ownership?.[game.user.id]
-        ?? actor.ownership?.default
-        ?? CONST.DOCUMENT_OWNERSHIP_LEVELS.NONE;
-      return level === CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER;
-    } catch (err) {
-      // A GM who cannot be identified as the owner keeps the OLD behaviour:
-      // collapsed, and ROLL FOR THEM still works. Never fail into a state where
-      // every whisper in the log unfolds.
-      console.warn(`${MODULE_ID} | could not tell whether this save prompt is the user's own:`, err);
-      return false;
-    }
-  }
-
   /**
    * Does this action resolve by a hit-point pool rather than a saving throw?
    *
@@ -3541,6 +3530,14 @@ export class SaveEngine {
     const _iAmActiveGM  = game.users?.activeGM === game.user;
     const _autoRollOn   = QolSettings.get?.("autoRollNpcSaves") !== false;
     const _iDriveTheCard = _autoRollOn && _iAmActiveGM;
+    // ⚠️ NPCs DO NOT SIT ON A WAITING LIST (Johnny, 2026-09-19): "One results
+    // card after the dice ... No stack of NPC portraits waiting to roll." When
+    // the NPCs roll themselves, nobody presses anything on this card, so it
+    // carries the cast and is never drawn; the results card is what the table
+    // sees. It shows again only if rolling for the NPCs fails, so the GM gets
+    // its ROLL NPC SAVES button back. With nobody connected who could roll for
+    // them, it shows as it always did.
+    const _carrier = _autoRollOn && !!game.users?.activeGM;
 
     const targetListMsg = await CardDoor.post({
       content: cardHtml,
@@ -3559,6 +3556,7 @@ export class SaveEngine {
           // being removed here. The render hook stands down when it sees this,
           // and takes over only if driving fails and clears it.
           gmDrivesResults: _iDriveTheCard,
+          carrier: _carrier,
           itemId: item.id,
           itemUuid: item.uuid,
           actorId: actor.id,
@@ -3614,7 +3612,8 @@ export class SaveEngine {
     // Now: each target is isolated, and a failed auto-roll FALLS BACK to a prompt
     // — which arms the nudge, so the GM always gets a "ROLL FOR THEM" card. There
     // is no path from here that leaves the table with nothing to click.
-    const _promptOpts = { saveAbility, saveDC, halfOnSave, damageTypes, isSpell, castId, recipe: recipe ?? null };
+    const _promptOpts = { saveAbility, saveDC, halfOnSave, damageTypes, isSpell, castId, recipe: recipe ?? null,
+      trigger: opts.trigger ?? null };
 
     // ── RESOLVE FIRST, RENDER ONCE (2026-07-28 rebuild) ──
     // The results card used to be fired independently by this card's RENDER
@@ -3680,7 +3679,11 @@ export class SaveEngine {
         // release both the in-memory claim and the stamped one, so the fallback
         // fires on the next render.
         this._autoRolledSaves.delete(targetListMsg.id);
-        try { await targetListMsg.setFlag(MODULE_ID, "gmDrivesResults", false); } catch (_) { /* best effort */ }
+        // ...and draw the card again, so its ROLL NPC SAVES is there if that fails too.
+        try {
+          await targetListMsg.update({ [`flags.${MODULE_ID}.gmDrivesResults`]: false,
+            [`flags.${MODULE_ID}.carrier`]: false });
+        } catch (_) { /* best effort */ }
       }
     }
 
@@ -4120,6 +4123,11 @@ export class SaveEngine {
               await message.setFlag(MODULE_ID, "rolled", true);
             } catch (err) {
               console.warn(`${MODULE_ID} | auto-roll NPC saves failed:`, err);
+              // The card was a carrier; it shows now, with its button live.
+              rollNpcBtn.disabled = false;
+              rollNpcBtn.innerHTML = '<i class="fas fa-dice-d20"></i> ROLL NPC SAVES';
+              try { await message.setFlag(MODULE_ID, "carrier", false); } catch (_) { /* best effort */ }
+              ui.notifications?.warn("ACE: the NPC saves could not roll by themselves. Their card is in the chat with ROLL NPC SAVES.");
             }
           })();
         }
@@ -4159,6 +4167,165 @@ export class SaveEngine {
         setTimeout(restore, 1000);
       };
     } catch (_) { return () => {}; }
+  }
+
+  /**
+   * Save prompts this screen gave back to the chat: the box was closed without
+   * a roll, or could not open. Their card shows, wired, from then on.
+   */
+  static _promptInChat = new Set();
+
+  /**
+   * Does this save prompt still wait on its roll?
+   *
+   * ⚠️ READ FROM THE CAST, NEVER FROM A TIMER. A box that opens for a save
+   * already answered, or for a creature the GM took off the card, asks a player
+   * to roll for nothing; one that does not reopen after a reload loses a save
+   * the card is still waiting on. The answer: no result posted for this cast
+   * and creature, and the cast's own card still waits on it (its row is
+   * pending, or its results are not up yet).
+   *
+   * @param {{castId?: string, tokenDocId?: string}} f  the prompt's flags
+   */
+  static _promptStillWaits(f) {
+    try {
+      const castId = f?.castId ?? null;
+      const tokenDocId = f?.tokenDocId ?? null;
+      if (!castId) return false;
+      const all = game.messages?.contents ?? [];
+      let results = null;
+      for (let i = all.length - 1; i >= 0; i--) {
+        const m = all[i];
+        if (m?.id === castId) break;              // nothing before the cast belongs to it
+        const mf = m?.flags?.[MODULE_ID];
+        if (!mf) continue;
+        if (mf.type === "pcSaveResult" && mf.castId === castId && (mf.tokenDocId ?? null) === tokenDocId) return false;
+        if (!results && mf.type === "saveResults" && mf.castId === castId) results = mf;
+      }
+      const cast = game.messages?.get?.(castId);
+      if (!cast) return false;                     // the cast is gone
+      if (results) return !!(results.allResults ?? []).find(r => r?.tokenDocId === tokenDocId)?.pending;
+      return cast.flags?.[MODULE_ID]?.superseded !== true;
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not tell whether a save prompt still waits; its card stays in the chat:`, err);
+      return false;
+    }
+  }
+
+  /**
+   * One plain line for the box: what is happening, in the table's words. How
+   * it came decides the words: a spell cast now "casts", an area or a body
+   * that catches somebody later "catches" (nobody cast anything on that turn).
+   */
+  static _savePopoutLine(f) {
+    const caster = f.casterName || "Something";
+    const what = f.itemName || "it";
+    if (f.trigger === "dies") return `${caster} dies, and its ${what} catches you.`;
+    if (f.trigger) return `${caster}'s ${what} catches you.`;
+    if (f.isSpell) return `${caster} casts ${what} at you.`;
+    return `${caster} uses ${what} on you.`;
+  }
+
+  /**
+   * Open the roll box for a save prompt, on the screen of the one who answers
+   * for that creature, once per prompt. Returns whether a box is open for it.
+   *
+   * By his pop-up rule the box is a moment: who, what, at whom, and the roll.
+   * The DC, the modifiers and the verdict go on the chat card after the dice.
+   */
+  _openSavePopout(message) {
+    try {
+      const f = message?.flags?.[MODULE_ID];
+      if (f?.type !== "pcSavePrompt") return false;
+      const key = message.id;
+      if (RollPopout.isOpen(key)) return true;
+      if (SaveEngine._promptInChat.has(key)) return false;
+      const scene = game.scenes.get(f.sceneId) ?? canvas.scene;
+      const tokenDoc = scene?.tokens?.get(f.tokenDocId) ?? null;
+      const actor = tokenDoc?.actor ?? game.actors.get(f.actorId) ?? null;
+      if (!actor) return false;
+      const who = whoAnswers(actor);
+      if (!who.user || who.user.id !== game.user.id) return false;
+      if (!SaveEngine._promptStillWaits(f)) return false;
+
+      const abilityLabel = CONFIG.DND5E?.abilities?.[f.saveAbility]?.label
+        ?? String(f.saveAbility ?? "").toUpperCase();
+
+      // 2024 Lucky: the same button the card carried, spent before the roll.
+      let lucky = null;
+      try {
+        const feat = luckyFeat(actor);
+        const luckKey = `${f.castId ?? message.id}:${f.tokenDocId ?? f.actorId}`;
+        if (feat?.edition === "2024" && !feat.missingUses && !f.autoFailSave) {
+          const spent = cardHasAdvantage(actor, luckKey);
+          if (spent || feat.left > 0) {
+            lucky = {
+              label: `Lucky: ${f.saveDisadvantage ? "cancel Disadvantage" : "Advantage"} (${feat.left} left)`,
+              spent,
+              spentLabel: `Luck spent: this save rolls with ${f.saveDisadvantage ? "Disadvantage cancelled" : "Advantage"}`,
+              onPress: async () => {
+                const mode = await luckPressButton(actor, { hasDisadvantage: !!f.saveDisadvantage });
+                if (!mode) return false;
+                await markCardAdvantage(actor, luckKey);
+                return true;
+              },
+            };
+          }
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | could not read ${actor.name}'s Lucky feat for the save box:`, err);
+      }
+
+      return RollPopout.open({
+        key,
+        kind: "save",
+        title: f.itemName ?? `${abilityLabel} save`,
+        line: SaveEngine._savePopoutLine(f),
+        sourceName: f.casterName ?? null,
+        sourceImg: f.casterImg ?? null,
+        rollerName: tokenDoc?.name ?? f.targetName ?? actor.name,
+        rollerImg: tokenDoc?.texture?.src ?? f.targetImg ?? actor.img,
+        pillLabel: `Roll ${abilityLabel} save`,
+        match: { kind: "save", castId: f.castId ?? null, tokenDocId: f.tokenDocId ?? null },
+        lucky,
+        onRoll: async () => {
+          const restoreScroll = this._preserveChatScroll();
+          try {
+            const res = await this._rollPcSave(message);
+            if (!res) throw new Error(`${actor.name}'s save did not roll`);
+          } finally {
+            restoreScroll();
+          }
+        },
+        onDismiss: async () => this._giveSavePromptToChat(message),
+      });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | the save box could not open; the save stays in the chat:`, err);
+      this._giveSavePromptToChat(message);
+      return false;
+    }
+  }
+
+  /**
+   * The box was closed without a roll, or could not open: the save goes back
+   * into the chat as the card it always was, wired, so it is never lost.
+   */
+  _giveSavePromptToChat(message) {
+    try {
+      if (!message?.id) return;
+      const f = message.flags?.[MODULE_ID] ?? {};
+      if (!SaveEngine._promptStillWaits(f)) return;   // answered already: nothing to give back
+      SaveEngine._promptInChat.add(message.id);
+      for (const li of document.querySelectorAll(`.chat-message[data-message-id="${message.id}"]`)) {
+        li.classList.remove("ace-qol-save-collapsed");
+        this._wirePcSaveButton(li, message, f);
+      }
+      ui.notifications?.info(`ACE: ${f.targetName ? `${f.targetName}'s` : "your"} save is waiting in the chat.`);
+      console.log(`${MODULE_ID} | ${f.targetName ?? "a creature"}'s save box closed without a roll; `
+        + `its card is back in the chat.`);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not put a save back in the chat:`, err);
+    }
   }
 
   _wirePcSaveButton(el, message, flags) {
@@ -5199,6 +5366,40 @@ export class SaveEngine {
     }
   }
 
+  /** A row the Gate spared because nothing this action does can touch it. */
+  static _isImmuneRow(r) {
+    return !!r?.noRoll && r.noRollTone === "immune";
+  }
+
+  /**
+   * ⚠️ IMMUNE IS ONE LINE, NO SAVE (Johnny, 2026-09-19: "immune as one line, no
+   * save"). A creature the Gate spared never rolled and takes nothing, so a
+   * full row with a portrait for each one is a stack of nothing on the results
+   * card. One line names them all; each name says why on hover.
+   *
+   * The Gate spares a creature only when it is immune to EVERYTHING the action
+   * does, so the rows of one card share one reason and the line says it once.
+   * If they ever differ, each name carries its own.
+   */
+  static _immuneLine(results) {
+    const rows = (results ?? []).filter(r => SaveEngine._isImmuneRow(r));
+    if (!rows.length) return "";
+    const esc = (x) => foundry.utils.escapeHTML(String(x ?? ""));
+    // The Gate's "IMMUNE to Fire — no save" → "fire", for the middle of a sentence.
+    const whatOf = (r) => String(r.noRollLabel ?? "").replace(/^\s*IMMUNE to\s+/i, "")
+      .replace(/\s*[\u2014-]+\s*no save\s*$/i, "").trim().toLowerCase();
+    const whats = [...new Set(rows.map(whatOf))];
+    const one = whats.length === 1 && whats[0];
+    const names = rows.map(r => `<span title="${esc(r.noRollLabel ?? "")}" style="color:#ffffff;font-weight:700;">`
+      + `${esc(r.name)}${one ? "" : ` (${esc(whatOf(r) || "immune")})`}</span>`).join(", ");
+    return `<div class="ace-qol-save-immune-line" data-immune-count="${rows.length}"
+                 style="display:flex;align-items:baseline;flex-wrap:wrap;gap:6px;padding:9px 12px;border-bottom:1px solid rgba(212,175,55,0.15);font-size:16px;line-height:1.35;">
+        <i class="fas fa-shield-halved" style="color:#ffaa44;font-size:14px;"></i>
+        <span style="color:#ffaa44;font-weight:700;">${one ? `Immune to ${esc(one)}, no save:` : "Immune, no save:"}</span>
+        <span>${names}</span>
+      </div>`;
+  }
+
   /**
    * Build the standard no-roll result row from a verdict. One shape, so the
    * NPC path, the PC path and the late-added-targets path can't drift.
@@ -5695,7 +5896,7 @@ export class SaveEngine {
   // ═══════════════════════════════════════════════════════════════════════════
 
   async _sendPcSavePrompt(item, casterActor, tgt, opts) {
-    const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell, castId, recipe = null } = opts;
+    const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell, castId, recipe = null, trigger = null } = opts;
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
 
     // Player-facing prompt — mirrors the DM-side row: pure BLACK background,
@@ -5797,6 +5998,9 @@ export class SaveEngine {
     // Let NPC save dice settle before posting the result card.
     await awaitDsnRoll();
 
+    // Who and what the box shows: the one it comes from, with their own art.
+    const _casterTok = SaveEngine.casterTokenDoc(casterActor, { sceneId: tgt.sceneId });
+
     await CardDoor.post({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ alias: tgt.name }),
@@ -5817,7 +6021,12 @@ export class SaveEngine {
           // bonus has never once applied to a player character. Write the real
           // caster, plus the exact token, because cover is about a position.
           casterActorId:    casterActor?.id ?? null,
-          casterTokenDocId: SaveEngine.casterTokenDoc(casterActor, { sceneId: tgt.sceneId })?.id ?? null,
+          casterTokenDocId: _casterTok?.id ?? null,
+          // For the box: what it is, who it comes from, and how it came.
+          itemName:   item?.name ?? null,
+          casterName: _casterTok?.name ?? casterActor?.name ?? null,
+          casterImg:  _casterTok?.texture?.src ?? casterActor?.img ?? null,
+          trigger,
           saveAbility,
           saveDC,
           halfOnSave,
@@ -7487,6 +7696,8 @@ export class SaveEngine {
     const _p1Title = this._abilityLabel(item, activityId);
 
     const targetRows = results.map(r => {
+      // Immune, no save: one line under the rows (_immuneLine), never a row each.
+      if (SaveEngine._isImmuneRow(r)) return "";
       const removeBtn = `<button class="ace-qol-save-phase1-remove" data-action="aceQolRemovePhase1" data-token-doc-id="${r.tokenDocId}" title="Remove this target before damage rolls"><i class="fas fa-xmark"></i></button>`;
       if (r.pending) {
         return `
@@ -7705,6 +7916,7 @@ export class SaveEngine {
         </div>
         <div class="ace-qol-save-results">
           ${targetRows}
+          ${SaveEngine._immuneLine(results)}
         </div>
         ${this._modFootnote(results)}
         ${actionsHtml}
@@ -8262,6 +8474,8 @@ export class SaveEngine {
 
     // ── Build result rows ──
     const targetRows = sorted.map(r => {
+      // Immune, no save: one line under the rows (_immuneLine), never a row each.
+      if (SaveEngine._isImmuneRow(r)) return "";
       // PC still pending
       if (r.pending) {
         return `
@@ -8413,6 +8627,7 @@ export class SaveEngine {
         <div class="ace-qol-save-dmg-summary">Damage: ${dmgSummary}</div>
         <div class="ace-qol-save-results">
           ${targetRows}
+          ${SaveEngine._immuneLine(results)}
         </div>
         <div class="ace-qol-dmg-actions ace-qol-gm-only">
           <button class="ace-qol-btn ace-qol-btn-apply" data-action="aceQolApplyDamage">

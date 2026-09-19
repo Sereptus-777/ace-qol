@@ -51,6 +51,17 @@ export function whoAnswers(actor) {
     offline.push(user.name);
   }
 
+  // ⚠️ A PLAYER'S OWN CHARACTER IS THEIRS EVEN WITHOUT A NAMED GRANT
+  // (2026-09-19). The save engine waits for "their assigned character, or an
+  // explicit per-user grant" (SaveEngine._pcOwnerActive); this asked about the
+  // grant alone. So a character owned through the default level and assigned to
+  // its player got its save prompt sent to that player, and its roll box would
+  // have opened on the GM's screen. Two answers to one question, again.
+  const own = game.users?.find?.(u => u?.active && !u.isGM && u.character?.id === actor.id) ?? null;
+  if (own) {
+    return { user: own, isPlayer: true, why: `it is ${own.name}'s character and ${own.name} is connected, so ${own.name} alone is asked` };
+  }
+
   const gm = game.users?.find?.(u => u.isGM && u.active) ?? null;
   const why = offline.length
     ? `its owner (${offline.join(", ")}) is not connected, so the GM decides`

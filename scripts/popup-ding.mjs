@@ -24,7 +24,7 @@
 const MODULE_ID = "ace-qol";
 
 /** Chat cards that ask their recipient to do something. */
-export const PROMPT_CARD_TYPES = Object.freeze(["pcSavePrompt", "oaPrompt", "breakFreePrompt"]);
+export const PROMPT_CARD_TYPES = Object.freeze(["pcSavePrompt", "oaPrompt", "breakFreePrompt", "concentrationPrompt"]);
 
 /** Several boxes arriving together are one ding, not a drum roll. */
 const BURST_MS = 1500;
@@ -47,12 +47,42 @@ export function popupDing(why = "a box") {
     }
     lastDing = now;
     const src = globalThis.CONFIG?.sounds?.notification ?? "sounds/notify.wav";
+    checkDingFile(src);
     // false: this client only. Every other client decides for itself.
-    helper.play({ src, volume: 0.6, loop: false, channel: "interface" }, false);
+    const p = helper.play({ src, volume: 0.6, loop: false, channel: "interface" }, false);
+    if (p && typeof p.then === "function") {
+      p.then(sound => {
+        if (sound?.failed) console.warn(`${MODULE_ID} | the ding for ${why} did not play: "${src}" could not be loaded.`);
+      }).catch(err => console.warn(`${MODULE_ID} | the ding for ${why} did not play ("${src}"):`, err));
+    }
     return true;
   } catch (err) {
     console.warn(`${MODULE_ID} | the ding for ${why} could not play:`, err);
     return false;
+  }
+}
+
+/**
+ * ⚠️ IF THE FILE IS MISSING, SAY SO (his rule, 2026-09-19). The ding is
+ * Foundry's own notification sound until he picks one; a sound file that is not
+ * there plays nothing and says nothing, which reads exactly like a box that
+ * never asked. Checked once per sound, the first time it would play: the
+ * console says it, and the GM gets one notice.
+ */
+const _checked = new Set();
+function checkDingFile(src) {
+  if (_checked.has(src)) return;
+  _checked.add(src);
+  try {
+    const url = globalThis.foundry?.utils?.getRoute ? globalThis.foundry.utils.getRoute(src) : src;
+    globalThis.fetch?.(url, { method: "HEAD" }).then(res => {
+      if (res?.ok) return;
+      const msg = `ACE: the pop-up sound "${src}" is missing (${res?.status ?? "no answer"}), so pop-ups make no sound.`;
+      console.warn(`${MODULE_ID} | ${msg}`);
+      if (globalThis.game?.user?.isGM) globalThis.ui?.notifications?.warn?.(msg);
+    }).catch(err => console.warn(`${MODULE_ID} | could not check the pop-up sound "${src}":`, err));
+  } catch (err) {
+    console.warn(`${MODULE_ID} | could not check the pop-up sound "${src}":`, err);
   }
 }
 
