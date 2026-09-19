@@ -3961,9 +3961,10 @@ export class ReactionEngine {
         // letters edged in a deeper shade of the face.
         yesInk, yesEdge,
         // A box that asks WHICH, not whether (Lucky's "which d20?", 2026-09-18):
-        // one button per choice, [{ id, label, sub }], all in the box's colour.
-        // The answer is { accepted: true, choiceData: { choice: id } }; closing
-        // the box answers no.
+        // one button per choice, [{ id, label, sub, tone }]. The answer is
+        // { accepted: true, choiceData: { choice: id } }; closing the box
+        // answers no. `tone` is "better", "worse" or "even" for whoever is
+        // choosing, and paints the button (below).
         choices,
       } = data;
 
@@ -4087,10 +4088,14 @@ export class ReactionEngine {
             ${consumeSlotHtml}
           </div>
           <div class="ace-qol-reaction-buttons">
-            ${Array.isArray(choices) && choices.length ? choices.map(c => `
-            <button class="ace-qol-reaction-accept ace-qol-reaction-choice" data-choice="${esc(c.id)}" style="--ace-yes:${yesFace}; --ace-yes-deep:${yesDeep}; --ace-yes-ink:${yesInk ?? "#ffffff"}; --ace-yes-edge:${yesEdge ?? yesDeep}">
+            ${Array.isArray(choices) && choices.length ? choices.map(c => {
+              const t = ReactionEngine.CHOICE_TONES[c.tone]
+                ?? { face: yesFace, deep: yesDeep, ink: yesInk ?? "#ffffff", edge: yesEdge ?? yesDeep };
+              return `
+            <button class="ace-qol-reaction-accept ace-qol-reaction-choice" data-choice="${esc(c.id)}" data-tone="${esc(c.tone ?? "")}" style="--ace-yes:${t.face}; --ace-yes-deep:${t.deep}; --ace-yes-ink:${t.ink}; --ace-yes-edge:${t.edge}">
               <i class="fas ${icon ?? "fa-check"}"></i><span>${esc(c.label)}${c.sub ? `<br><small style="font-size:14px;font-weight:500;opacity:0.9;">${esc(c.sub)}</small>` : ""}</span>
-            </button>`).join("") : `
+            </button>`;
+            }).join("") : `
             <button class="ace-qol-reaction-accept" style="--ace-yes:${yesFace}; --ace-yes-deep:${yesDeep}; --ace-yes-ink:${yesInk ?? "#ffffff"}; --ace-yes-edge:${yesEdge ?? yesDeep}">
               <i class="fas ${icon ?? "fa-check"}"></i><span>${acceptLabel ?? "Use Reaction"}</span>
             </button>
@@ -4487,6 +4492,21 @@ export class ReactionEngine {
    * @param {number} factor  0 (black) to 1 (unchanged)
    * @returns {string}
    */
+  /**
+   * ⚠️ A CHOICE SAYS WHICH WAY IT GOES (his rule, 2026-09-18): "The worse
+   * outcome for the defender is red. The better outcome for the defender is
+   * green." Example: "Their 17 → 27, hits you" red, "Your 15 → 25, misses"
+   * green. The asker ranks the choices for whoever is choosing (luck.mjs); the
+   * box only paints them. Green is Lucky's own yes face, red the no pill's red,
+   * both with white letters edged in their deeper shade. "even" is a choice in
+   * between, in slate, so a third option never reads as a good or a bad one.
+   */
+  static CHOICE_TONES = Object.freeze({
+    better: { face: "#2d7537", deep: "#133117", ink: "#ffffff", edge: "#133117" },
+    worse:  { face: "#c62828", deep: "#6d1010", ink: "#ffffff", edge: "#6d1010" },
+    even:   { face: "#4a5260", deep: "#1f242c", ink: "#ffffff", edge: "#1f242c" },
+  });
+
   static _shade(hex, factor = 0.72) {
     const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(hex ?? "").trim());
     if (!m) return "#2b2b30";

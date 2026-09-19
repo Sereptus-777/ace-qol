@@ -175,6 +175,9 @@ console.log("\n2014 LUCKY ON THEIR OWN ROLL: only when it is about to fail");
     boxes[0].reactorActor === firaxis && boxes[0].luckItemUuid === firaxis.items[0].uuid);
   check("the second box asks which d20, with each face and what it makes",
     boxes[1].choices?.map(c => c.label).join(" / ") === "Keep 7 / Keep 15", boxes[1].choices?.map(c => c.label).join(" / "));
+  check("the failing 7 is painted red, the 15 that saves him green",
+    boxes[1].choices?.map(c => `${c.label}:${c.tone}`).join(" ") === "Keep 7:worse Keep 15:better",
+    boxes[1].choices?.map(c => `${c.label}:${c.tone}`).join(" "));
   check("one luck die rolled, one point spent (1 of 3 left)", rollsMade === 1 && L.luckyFeat(firaxis).left === 1);
 
   boxes.length = 0;
@@ -239,6 +242,24 @@ console.log("\n2014 LUCKY ON ATTACKS: the attacker on a miss, the target on a hi
     boxes[0]?.reactorActor === firax && boxes[1]?.choices?.length === 2 && res[0].hitResult === "miss" && res[0].attackTotal === 8,
     `${res[0].hitResult} ${res[0].attackTotal}`);
   check("that box shows the attacker on the other side", boxes[0]?.attackerName === "Goblin");
+  check("the choice paints the goblin's hit red and his own miss green (his rule)",
+    boxes[1]?.choices?.map(c => `${c.label} ${c.sub}:${c.tone}`).join(" | ") === "Their 16 21, hits you:worse | Your 3 8, misses:better",
+    boxes[1]?.choices?.map(c => `${c.label} ${c.sub}:${c.tone}`).join(" | "));
+
+  // Both dice hit: the lower total is still the better one for him.
+  const firaxTie = fresh(); boxes.length = 0; rollQueue.push(18); answers = [true, "theirs"];
+  res = [attackResult(firaxTie, 16, 21, 15)];
+  await quietly(() => L.afterAttackRoll({ actor: goblin, item, results: res }));
+  check("when both dice hit, the lower total is green and the higher red",
+    boxes[1]?.choices?.map(c => `${c.label}:${c.tone}`).join(" ") === "Their 16:better Your 18:worse",
+    boxes[1]?.choices?.map(c => `${c.label}:${c.tone}`).join(" "));
+
+  // The same number on both dice: no box at all (his rule: keep the skip).
+  const firaxSame = fresh(); boxes.length = 0; rollQueue.push(16); answers = [true];
+  res = [attackResult(firaxSame, 16, 21, 15)];
+  await quietly(() => L.afterAttackRoll({ actor: goblin, item, results: res }));
+  check("the same number on his luck die: no choice box, the hit stands",
+    boxes.length === 1 && res[0].hitResult === "hit", `${boxes.length} boxes`);
 
   const firax2 = fresh(); boxes.length = 0;
   res = [attackResult(firax2, 4, 9, 15)];

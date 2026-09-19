@@ -220,6 +220,20 @@ async function askSpend(opts) {
   return { yes: !!res?.accepted, spentAlready: !!res?.choiceData?.luckSpent };
 }
 
+/**
+ * Paint the choices for whoever is choosing (his rule, 2026-09-18): the best
+ * for them "better" (green), the worst "worse" (red), anything between "even".
+ * `score` is higher when it is better for them, and is dropped here.
+ */
+export function toneChoices(choices) {
+  const scores = choices.map(c => Number(c.score));
+  const hi = Math.max(...scores), lo = Math.min(...scores);
+  return choices.map(({ score, ...c }) => ({
+    ...c,
+    tone: hi === lo ? "even" : Number(score) === hi ? "better" : Number(score) === lo ? "worse" : "even",
+  }));
+}
+
 /** "Which d20?" Returns the chosen id, or null when the box was closed. */
 async function askChoice(opts) {
   const eng = door();
@@ -313,11 +327,12 @@ export async function ownRoll(o) {
   const faces = [...new Set([kept, ...(o.d20s ?? []), fresh].map(Number).filter(Number.isFinite))];
   let face = kept;
   if (faces.length > 1) {
-    const choices = faces.map(f => {
+    // Better for the roller: a success over a failure, then the higher total.
+    const choices = toneChoices(faces.map(f => {
       const t = total - kept + f;
       const j = judge(t, f);
-      return { id: String(f), label: `Keep ${f}`, sub: `${t}, ${j.words}` };
-    });
+      return { id: String(f), label: `Keep ${f}`, sub: `${t}, ${j.words}`, score: (j.fails ? 0 : 1) * 10000 + t };
+    }));
     const picked = await askChoice({
       reactorActor: actor, reactorToken: actor.getActiveTokens?.()[0] ?? null,
       description: `Your luck die shows ${fresh}. Which d20 does your ${what} use?`,
@@ -429,6 +444,7 @@ export async function incomingHit(o) {
     return { t, hit };
   };
   const a = judgeWith(theirs), b = judgeWith(fresh);
+  const forYou = (h, t) => (h === "critical" ? 0 : isAHit(h) ? 1 : 2) * 10000 - t;
   const label = (h) => h === "critical" ? "a critical hit" : h === "hit" ? "hits you" : h === "fumble" ? "a fumble, misses" : "misses";
   let picked = "theirs";
   if (fresh !== theirs) {
@@ -436,10 +452,12 @@ export async function incomingHit(o) {
       reactorActor: target, reactorToken: result.targetToken ?? null,
       attackerName: nameOf(attacker), attackerImg: attacker?.img ?? null,
       description: `Your luck die shows ${fresh}. Which die does ${nameOf(attacker)}'s attack use?`,
-      choices: [
-        { id: "theirs", label: `Their ${theirs}`, sub: `${a.t}, ${label(a.hit)}` },
-        { id: "mine", label: `Your ${fresh}`, sub: `${b.t}, ${label(b.hit)}` },
-      ],
+      // Better for the defender: a miss over a hit over a critical, then the
+      // lower total. Their 17 → 27, hits you: red. Your 15 → 25, misses: green.
+      choices: toneChoices([
+        { id: "theirs", label: `Their ${theirs}`, sub: `${a.t}, ${label(a.hit)}`, score: forYou(a.hit, a.t) },
+        { id: "mine", label: `Your ${fresh}`, sub: `${b.t}, ${label(b.hit)}`, score: forYou(b.hit, b.t) },
+      ]),
     });
     if (picked == null) say(`${nameOf(target)} closed the choice without picking, so the attack keeps its own die.`);
   } else {
