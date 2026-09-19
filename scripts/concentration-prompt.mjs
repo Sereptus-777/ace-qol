@@ -32,6 +32,7 @@
 
 import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { RollPopout } from "./roll-popout.mjs";
+import { popupDing } from "./popup-ding.mjs";
 import { whoAnswers } from "./who-answers.mjs";
 import { aceD20FaceImg } from "./dice-face.mjs";
 import { CheckGate } from "./check-gate.mjs";
@@ -303,7 +304,7 @@ export class ConcentrationPrompt {
         console.warn(`${LOG} | could not read ${actor.name}'s Lucky feat for the box:`, err);
       }
 
-      return RollPopout.open({
+      const opened = RollPopout.open({
         key,
         kind: "concentration",
         title: "Concentration",
@@ -324,9 +325,16 @@ export class ConcentrationPrompt {
         },
         onDismiss: async () => ConcentrationPrompt._giveToChat(message),
       });
+      if (!opened) {
+        // No box: the card in the chat is the prompt, and it asks out loud.
+        ConcentrationPrompt._giveToChat(message);
+        popupDing(`${actor.name}'s concentration check (in the chat)`);
+      }
+      return opened;
     } catch (err) {
       console.warn(`${LOG} | the concentration box could not open; the check stays in the chat:`, err);
       ConcentrationPrompt._giveToChat(message);
+      popupDing("a concentration check (in the chat)");
       return false;
     }
   }

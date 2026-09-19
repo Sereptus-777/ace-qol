@@ -60,6 +60,7 @@ import { openRulesCoverage, registerCoverageButton } from "./rules/coverage-repo
 import { ActionInterceptor } from "./profiles/action-interceptor.mjs";
 // The ding for a prompt card reaching the one who answers it (2026-09-18).
 import { registerPromptCardDing } from "./popup-ding.mjs";
+import { registerCardsWaitForDice } from "./dice-hold.mjs";
 import { RulesIndex } from "./rules/rules-index.mjs";
 import { onCanvasReady } from "./ready-utils.mjs";
 import { emanatesFromCaster, drawCasterEmanation, suppressesTemplate } from "./caster-emanation.mjs";
@@ -538,6 +539,14 @@ Hooks.once("init", () => {
   try { registerPromptCardDing(); }
   catch (err) { console.error(`${MODULE_ID} | the prompt-card ding failed to register, so those `
     + `cards arrive in silence:`, err); }
+
+  // ── CHAT AFTER DICE (his rule, 2026-09-19) ──
+  // "On the rolling client's screen, no public card ... until
+  // diceSoNiceRollComplete on that client." A new ACE card that reaches a
+  // screen while that screen's own dice are rolling waits for them (dice-hold.mjs).
+  try { registerCardsWaitForDice(); }
+  catch (err) { console.error(`${MODULE_ID} | cards could not be told to wait for this screen's dice, `
+    + `so a card can show before them:`, err); }
 
   // ── THE GATE (The One Road, Phase 2, 2026-09-14): straight after the reading ──
   // The One Road runs reading, then gate. Registered here, right behind the

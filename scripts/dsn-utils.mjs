@@ -47,6 +47,26 @@ const MODULE_ID = "ace-qol";
  */
 const _inFlight = new Set();
 
+/**
+ * Is THIS screen still showing dice it threw itself?
+ *
+ * "The rolling client" in his rule (2026-09-19): the screen that threw the dice
+ * is the one whose chat must not show a card before they land (dice-hold.mjs).
+ */
+export function diceInFlight() {
+  return _inFlight.size > 0;
+}
+
+/**
+ * Does this screen show dice at all? False when Dice So Nice is missing or off
+ * for this user. His rule: "If Dice So Nice is off, post when the total
+ * exists", so a pacing pause that only exists to let dice be seen is skipped.
+ */
+export function diceOnScreen() {
+  try { return !!game?.dice3d?.isEnabled?.(); }
+  catch (_) { return false; }
+}
+
 export function safeShowForRoll(roll, label = "dice animation", { users = null } = {}) {
   if (!roll) return;
   // `users`: the ids of the only people whose screens show these dice (the
@@ -296,15 +316,36 @@ export async function awaitDiceSettle(maxMs = 3000, { messageId = null, graceMs 
     };
 
     // 1. Wait on the animations we started ourselves.
+    //
+    // ⚠️🔴 WHEN THIS SCREEN THREW DICE, ONLY THOSE DICE END THE WAIT (Johnny,
+    // 2026-09-19: "On the rolling client's screen, no public card ... until
+    // diceSoNiceRollComplete on that client"). The completion hook below fires
+    // for ANY chat message whose dice finish, and it used to end this wait too:
+    // somebody else's attack landing a beat early let a card post while this
+    // screen's own die was still in the air. Dice So Nice resolves the promise
+    // these came with at the same moment it fires that hook for a message, so
+    // the promise IS "complete on this client" for dice that have no message.
     const live = [..._inFlight];
+    let ownLanded = false, messageLanded = false;
     if (live.length) {
-      Promise.allSettled(live).then(finish);
+      Promise.allSettled(live).then(() => {
+        ownLanded = true;
+        if (!messageId || messageLanded) finish();
+      });
     }
 
-    // 2. Also honour the completion hook (message-driven rolls).
+    // 2. The completion hook: dice thrown through a chat message (not ours).
     try {
       hookId = Hooks.on("diceSoNiceRollComplete", (completedId) => {
         if (messageId && completedId && completedId !== messageId) return;
+        if (live.length) {
+          // Our own dice decide. A message named by the caller is waited for as
+          // well; any other message's dice are not ours and change nothing.
+          if (!messageId) return;
+          messageLanded = true;
+          if (ownLanded) finish();
+          return;
+        }
         finish();
       });
     } catch (_) { /* listener failed → the cap below still resolves */ }

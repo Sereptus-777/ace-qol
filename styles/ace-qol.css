@@ -1785,6 +1785,10 @@
   transition: all 0.3s ease;
 }
 
+/* A card that reached this screen while its own dice were still rolling: out of
+   sight until they land (dice-hold.mjs, his rule of 2026-09-19). */
+.ace-qol-held-for-dice { display: none !important; }
+
 /* The floating concentration widget was removed on 2026-08-27 and its styles
    went with it. Every trigger it offered already fires by itself, so its
    INFLICT DAMAGE button only re-rolled an area for no reason, and the card

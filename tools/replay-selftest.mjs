@@ -3980,7 +3980,7 @@ await quiet(async () => {
         const one = seen[0];
         const words = W.itemWords(burst);
         const fail = (one?.opts?.recipe?.onFail ?? []).map(o => `${o.formula ?? o.condition?.key ?? "?"} ${(o.types ?? []).join("/")}${o.onSuccess ? ` (${o.onSuccess})` : ""}`.trim());
-        check("the Magmin on his map (2024 Monster Manual) bursts: its \"when it dies\" read out of the lookup, one DEX save card with the DC its activity works out, Chudd beside it on the card, the dead kobold not, half fire damage landing by itself (2026-09-19)",
+        check("the Magmin on his map (2024 Monster Manual) bursts: its \"when it dies\" read out of the lookup, one DEX save card with the DC its activity works out, Chudd beside it on the card, the dead kobold not, half fire damage rolled by itself and waiting for APPLY (2026-09-19)",
           /explodes when it dies/i.test(words) && !/\[\[/.test(words) && seen.length === 1
             && one.who.join() === "Chudd" && one.opts.saveAbility === "dex" && Number.isFinite(one.opts.saveDC)
             && one.opts.saveDC > 0 && one.opts.autoResolve === true && fail.some(f => /2d6 fire \(half\)/.test(f)),
@@ -4178,9 +4178,9 @@ await quiet(async () => {
       await engine._autoResolveIfReady(ready);   // a second render never lands it twice
       await engine._autoResolveIfReady(card([{ pending: false, passed: true, damageMultiplier: 0 }]));
       await engine._autoResolveIfReady(card([{ pending: false, passed: false, damageMultiplier: 1 }], { autoResolve: false }));
-      check("a trigger's save card finishes itself once the last save is in: the damage rolled, then landed, once; it waits for a player still rolling, lands nothing when nobody takes any, and a pressed card keeps its buttons (2026-09-19)",
-        waited === 0 && calls.join(",") === "damage,apply" && ready.flags["ace-qol"].applied === true,
-        `while a player rolls: ${waited} steps; then: ${calls.join(", ") || "none"}; applied: ${ready.flags["ace-qol"].applied === true}`);
+      check("a trigger's save card rolls its own damage once the last save is in, once, and NEVER applies it: the card waits with APPLY ALL and UNDO for the GM, like a Fireball's (his correction, 2026-09-19: \"Do not auto-apply burst damage\"); it waits for a player still rolling and rolls nothing when nobody takes any",
+        waited === 0 && calls.join(",") === "damage" && ready.flags["ace-qol"].applied !== true,
+        `while a player rolls: ${waited} steps; then: ${calls.join(", ") || "none"}; applied by itself: ${ready.flags["ace-qol"].applied === true}`);
     }
     {
       const { catchesOn, TRIGGERS } = await import(`${MODULE}/scripts/road/run.mjs`);
@@ -4318,6 +4318,13 @@ console.log(`\nSAVE CARD UX: THE BOX, THE RESULTS CARD, ONE CONCENTRATION CHECK`
     const banditTok = place7(bandit, "tok-ux-bandit", 200);
     const impTok = place7(imp, "tok-ux-azer", 300);
 
+    // The prompt-card ding, as ACE's startup registers it, kept apart from the engine's hooks.
+    const { registerPromptCardDing, popupDing } = await import(`${MODULE}/scripts/popup-ding.mjs`);
+    const cardDingAt = (hooks.createChatMessage ?? []).length;
+    registerPromptCardDing();
+    const cardDingHooks = (hooks.createChatMessage ?? []).slice(cardDingAt);
+    const held = (li) => li.classList.contains("ace-qol-held-for-dice");
+
     let engine7 = null;
     const beforeHooks = { render: (hooks.renderChatMessage ?? []).length, create: (hooks.createChatMessage ?? []).length };
     try { await quiet(async () => { engine7 = new SaveEngine({}); }); } catch (err) { engine7 = null; }
@@ -4370,17 +4377,30 @@ console.log(`\nSAVE CARD UX: THE BOX, THE RESULTS CARD, ONE CONCENTRATION CHECK`
       const onGm = prompt ? drawOn(GM, prompt, renderHooks) : null;
       const gmBox = boxKey ? RollPopout.isOpen(boxKey) : false;
       const dingsBefore = plays7.length;
+      // The prompt reaches Tommy's screen (Foundry's createChatMessage), then his
+      // screen draws its box; ApplicationV2 calls _onRender once it is on screen.
+      let cardDings = 0;
+      await quiet(async () => {
+        game.user = PLAYER;
+        if (prompt) for (const h of cardDingHooks) h(prompt);
+        cardDings = plays7.length - dingsBefore;
+        await new Promise(r => setTimeout(r, 10));
+      });
       const onPlayer = prompt ? drawOn(PLAYER, prompt, renderHooks) : null;
       const box = boxKey ? RollPopout._open.get(boxKey) : null;
+      await quiet(async () => { box?._onRender?.({}, {}); await new Promise(r => setTimeout(r, 10)); });
       check("the player who must roll gets the box: Chudd's save opens on Tommy's screen and not the GM's, whispered to Tommy alone, its chat card folded on both (2026-09-19)",
         !!prompt && JSON.stringify(prompt.whisper) === JSON.stringify(["tommy"]) && !gmBox && !!box
           && folded(onGm) && folded(onPlayer),
         prompt ? `whisper ${JSON.stringify(prompt.whisper)}; GM's screen ${gmBox ? "OPENED a box" : "no box"}; Tommy's ${box ? "box open" : "NO BOX"}` : "no save prompt posted");
-      check("the box is the moment, in plain words: \"Magmin dies, and its Death Burst catches you.\", the Magmin's portrait and Chudd's, and one pill, \"Roll Dexterity save\", with a ding on Tommy's screen (2026-09-19)",
+      check("the box is the moment, in plain words: \"Magmin dies, and its Death Burst catches you.\", the Magmin's portrait and Chudd's, and one pill, \"Roll Dexterity save\" (2026-09-19)",
         !!box && box.spec.line === "Magmin dies, and its Death Burst catches you." && box.spec.sourceName === "Magmin"
-          && box.spec.rollerName === "Chudd" && box.spec.pillLabel === "Roll Dexterity save"
-          && plays7.slice(dingsBefore).some(p => p.user === "tommy"),
-        box ? `"${box.spec.line}" / ${box.spec.sourceName} → ${box.spec.rollerName} / "${box.spec.pillLabel}"; dings on Tommy's screen: ${plays7.slice(dingsBefore).filter(p => p.user === "tommy").length}` : "no box");
+          && box.spec.rollerName === "Chudd" && box.spec.pillLabel === "Roll Dexterity save",
+        box ? `"${box.spec.line}" / ${box.spec.sourceName} → ${box.spec.rollerName} / "${box.spec.pillLabel}"` : "no box");
+      const boxDings = plays7.slice(dingsBefore).filter(p => p.user === "tommy");
+      check("the box dings as Tommy's screen draws it, once, with the prompt ding, and the hidden prompt card no longer dings first and takes the box's ding away (his table, 2026-09-19: \"Popout opened with no sound\")",
+        !!box && cardDings === 0 && boxDings.length === 1 && boxDings[0].src === "sounds/notify.wav" && boxDings[0].channel === "interface",
+        `the prompt card rang ${cardDings} time(s); the box rang ${boxDings.length} time(s)${boxDings[0] ? ` (${boxDings[0].src}, ${boxDings[0].channel})` : ""}`);
 
       // One click: the save rolls, the box closes, the chat gains its result.
       if (box) {
@@ -4406,6 +4426,27 @@ console.log(`\nSAVE CARD UX: THE BOX, THE RESULTS CARD, ONE CONCENTRATION CHECK`
           !err2 && !!result && result.flags[MOD].tokenDocId === "tok-ux-chudd" && !RollPopout.isOpen(boxKey)
             && folded(again) && !RollPopout.isOpen(boxKey),
           err2 ? `threw: ${err2?.message ?? err2}` : result ? `rolled ${result.flags[MOD].saveTotal} (${result.flags[MOD].resultLabel}); box ${RollPopout.isOpen(boxKey) ? "STILL OPEN" : "closed"}` : "no result posted");
+
+        // The GM's screen gets his result: the card folds it in and, the last save
+        // being in, rolls the burst's damage by itself. And stops there.
+        game.user = GM;
+        const hp0 = { chudd: chudd.system.attributes.hp.value, bandit: bandit.system.attributes.hp.value };
+        let err3 = null;
+        try {
+          await quiet(async () => {
+            const res = [...chat7.values()].find(m => m?.flags?.[MOD]?.type === "pcSaveResult" && m.flags[MOD].castId === list?.id);
+            if (res) for (const h of createHooks) h(res);
+            for (let i = 0; i < 150 && results?.flags?.[MOD]?.phase !== 2; i++) await new Promise(r => setTimeout(r, 20));
+            await new Promise(r => setTimeout(r, 100));
+          });
+        } catch (e) { err3 = e; }
+        const rf = results?.flags?.[MOD] ?? {};
+        check("the Magmin's burst waits for APPLY: once Chudd's save is in, its damage is rolled onto the results card by itself, and nobody's hit points move until the GM presses APPLY ALL (his correction, 2026-09-19: \"Do not auto-apply burst damage\")",
+          !err3 && rf.phase === 2 && rf.applied !== true && (rf.damageResults ?? []).length > 0
+            && chudd.system.attributes.hp.value === hp0.chudd && bandit.system.attributes.hp.value === hp0.bandit,
+          err3 ? `threw: ${err3?.message ?? err3}`
+            : `card phase ${rf.phase}; applied by itself: ${rf.applied === true}; damage rows ${(rf.damageResults ?? []).length}; `
+              + `Chudd ${hp0.chudd} → ${chudd.system.attributes.hp.value}, the bandit ${hp0.bandit} → ${bandit.system.attributes.hp.value}`);
       }
       canvas.tokens.placeables.splice(canvas.tokens.placeables.indexOf(magTok), 1);
     }
@@ -4511,6 +4552,89 @@ console.log(`\nSAVE CARD UX: THE BOX, THE RESULTS CARD, ONE CONCENTRATION CHECK`
     check("a character whose player is not connected is not waited on: its check rolls at once through ACE's check and no prompt is posted (2026-09-19)",
       prompts4.length === 0 && runs.filter(r => r.who === "Firaxis").length === 1,
       `${prompts4.length} prompt(s); ${runs.filter(r => r.who === "Firaxis").length} roll(s)`);
+    // ── 4. Chat after dice: a card waits for the dice on the screen that threw them ──
+    {
+      const dsn = await import(`${MODULE}/scripts/dsn-utils.mjs`);
+      const { holdForDice } = await import(`${MODULE}/scripts/dice-hold.mjs`);
+      const keepDice = game.dice3d;
+      const keepLog = console.log;
+      let land = null;
+      try {
+        game.dice3d = { isEnabled: () => true, showForRoll: () => new Promise(res => { land = res; }) };
+        console.log = () => {};
+        dsn.safeShowForRoll({ total: 17, formula: "1d20 + 5" }, "Aryel's save");     // her die in the air
+        const card = { id: "replay-hold-card", flags: { [MOD]: { type: "saveResults" } }, whisper: [] };
+        const li = new Li();
+        const hold = holdForDice(card, li);                                          // the GM's results card arrives
+        const calm = new Li(), whispered = new Li();
+        const whisperHold = holdForDice({ id: "replay-hold-w", flags: { [MOD]: { type: "saveResults" } }, whisper: ["gm"] }, whispered);
+        console.log = keepLog;
+        const whileRolling = held(li);
+        for (const h of hooks.diceSoNiceRollComplete ?? []) h("somebody-elses-attack");   // another message's dice land
+        await new Promise(res => setTimeout(res, 150));
+        const afterOther = held(li);
+        land?.(true);                                                                   // her die lands
+        await hold;
+        await new Promise(res => setTimeout(res, 20));
+        const afterOwn = held(li);
+        const calmHold = holdForDice({ id: "replay-hold-calm", flags: { [MOD]: { type: "saveResults" } }, whisper: [] }, calm);
+        const redraw = new Li();
+        const redrawHold = holdForDice(card, redraw);
+        check("chat after dice: on the screen that threw the dice, the GM's results card waits out of sight while her save die is in the air, somebody else's dice landing does not release it, and it shows the moment hers lands; a card with nothing of that screen's rolling, a whispered card and a redraw are never held (his rule, 2026-09-19)",
+          !!hold && whileRolling && afterOther && !afterOwn && calmHold === null && !held(calm)
+            && whisperHold === null && !held(whispered) && redrawHold === null,
+          `while her die rolls: ${whileRolling ? "held" : "SHOWN"}; another message's dice landing: ${afterOther ? "still held" : "RELEASED"}; `
+            + `her die lands: ${afterOwn ? "STILL HELD" : "shown"}; nothing rolling: ${calmHold ? "HELD" : "shown"}; whispered: ${whisperHold ? "HELD" : "shown"}`);
+
+        // Dice So Nice off: nothing is held and nothing waits on dice nobody sees.
+        game.dice3d = undefined;
+        const offLi = new Li();
+        const offHold = holdForDice({ id: "replay-hold-off", flags: { [MOD]: { type: "saveResults" } }, whisper: [] }, offLi);
+        let took = null, errOff = null;
+        const fbCaster = [...ACTORS.values()].find(a => [...(a.items ?? [])].some(i => i.type === "spell" && i.name === "Fireball"
+          && [...(i.system?.activities ?? [])].some(x => x.type === "save"))) ?? null;
+        const fb = fbCaster ? [...fbCaster.items].find(i => i.type === "spell" && i.name === "Fireball") : null;
+        const fbA = fb ? [...fb.system.activities].find(x => x.type === "save") : null;
+        if (engine7 && fb && fbA) {
+          try {
+            await quiet(async () => {
+              const { recipe } = await SaveEngine.castRecipe(fb, fbA);
+              const t0 = Date.now();
+              await engine7._rollSpellDamage(fb, fbCaster, { activityId: fbA.id, recipe });
+              took = Date.now() - t0;
+            });
+          } catch (e) { errOff = e; }
+        }
+        check("with Dice So Nice off, a card posts when the total exists: the Fireball's damage is not paced for dice nobody sees (it slept 1.5 s before), and no card is held (his rule, 2026-09-19)",
+          !dsn.diceOnScreen() && offHold === null && !held(offLi) && !errOff && took !== null && took < 1000,
+          errOff ? `threw: ${errOff?.message ?? errOff}` : `damage rolled in ${took ?? "?"} ms; card ${offHold ? "HELD" : "shown"}`);
+      } finally {
+        console.log = keepLog;
+        game.dice3d = keepDice;
+      }
+    }
+
+    // ── 5. A ding asked for before the screen's first click still sounds ──
+    {
+      const keepAudio = game.audio, keepPlayer = globalThis.Audio;
+      const browserPlays = [];
+      try {
+        game.audio = { locked: true };
+        globalThis.Audio = class { constructor(src) { this.src = src; this.volume = 1; }
+          play() { browserPlays.push({ src: this.src, volume: this.volume }); return Promise.resolve(); } };
+        await new Promise(res => setTimeout(res, 1600));   // past the one-ding window
+        const before = plays7.length;
+        await quiet(async () => { popupDing("a box on a screen nobody has clicked yet"); await new Promise(res => setTimeout(res, 20)); });
+        check("a ding asked for before that screen's first click or key still sounds: Foundry drops a sound made before its first gesture, so it goes to the browser's own player at the interface volume (2026-09-19)",
+          browserPlays.length === 1 && browserPlays[0].src === "sounds/notify.wav" && browserPlays[0].volume > 0
+            && plays7.length === before,
+          `browser played ${browserPlays.length} (${browserPlays[0]?.src ?? "-"} at ${browserPlays[0]?.volume ?? "-"}); Foundry's player ${plays7.length - before}`);
+      } finally {
+        game.audio = keepAudio;
+        if (keepPlayer === undefined) delete globalThis.Audio; else globalThis.Audio = keepPlayer;
+      }
+    }
+
     // The handler for concentration cards already in a chat log: it no longer
     // rolls dnd5e's (which ACE's gate cancels, so it read "cancelled" and came
     // straight back on) and it remembers a roll on the card itself.

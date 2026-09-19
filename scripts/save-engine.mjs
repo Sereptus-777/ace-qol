@@ -32,7 +32,7 @@ import { ActionGate } from "./gate/action-gate.mjs";
 // concentration tracker so cast-time and entry can never disagree.
 import { isTokenInTemplate } from "./template-geometry.mjs";
 import { DamageConstants, safeShowForRoll } from "./damage-engine.mjs";
-import { awaitDiceSettle } from "./dsn-utils.mjs";
+import { awaitDiceSettle, diceOnScreen } from "./dsn-utils.mjs";
 // The target-side snapshot. The save pipeline asks THIS what a creature is
 // immune to, what its saves are, what conditions it carries — instead of
 // reaching into the actor and guessing at data shapes. (2026-07-28)
@@ -87,6 +87,7 @@ export { aceD20FaceImg };
 // The player who must roll gets a box on their own screen (his rule,
 // 2026-09-19); who that is, is the one rule every prompt asks.
 import { RollPopout } from "./roll-popout.mjs";
+import { popupDing } from "./popup-ding.mjs";
 import { whoAnswers } from "./who-answers.mjs";
 
 /**
@@ -4276,7 +4277,7 @@ export class SaveEngine {
         console.warn(`${MODULE_ID} | could not read ${actor.name}'s Lucky feat for the save box:`, err);
       }
 
-      return RollPopout.open({
+      const opened = RollPopout.open({
         key,
         kind: "save",
         title: f.itemName ?? `${abilityLabel} save`,
@@ -4299,9 +4300,16 @@ export class SaveEngine {
         },
         onDismiss: async () => this._giveSavePromptToChat(message),
       });
+      if (!opened) {
+        // No box: the card in the chat is the prompt, and it asks out loud.
+        this._giveSavePromptToChat(message);
+        popupDing(`${actor.name}'s ${abilityLabel} save (in the chat)`);
+      }
+      return opened;
     } catch (err) {
       console.warn(`${MODULE_ID} | the save box could not open; the save stays in the chat:`, err);
       this._giveSavePromptToChat(message);
+      popupDing("a save (in the chat)");
       return false;
     }
   }
@@ -5545,7 +5553,9 @@ export class SaveEngine {
           ? (QolSettings.get("npcSaveAnimationDelayMulti") ?? 250)
           : (QolSettings.get("npcSaveAnimationDelay") ?? 1000);
         delay = Math.max(0, Math.min(5000, Number(delay) || 0));
-        if (delay > 0) {
+        // Pacing is for dice people can see. His rule (2026-09-19): "If Dice
+        // So Nice is off, post when the total exists."
+        if (delay > 0 && diceOnScreen()) {
           await new Promise(resolve => setTimeout(resolve, delay));
         }
       } catch (err) {
@@ -5880,7 +5890,10 @@ export class SaveEngine {
         }
         let delay = QolSettings.get("npcDamageAnimationDelay") ?? 1500;
         delay = Math.max(0, Math.min(8000, Number(delay) || 0));
-        if (delay > 0) {
+        // Only while dice are on screen: with Dice So Nice off the card posts
+        // when the total exists (his rule, 2026-09-19). Every caller then waits
+        // for the real dice (awaitDiceSettle); this is only the GM's beat.
+        if (delay > 0 && diceOnScreen()) {
           await new Promise(resolve => setTimeout(resolve, delay));
         }
       }
@@ -8020,17 +8033,21 @@ export class SaveEngine {
   }
 
   /**
-   * ⚠️ A TRIGGER'S CARD RESOLVES ITSELF (Johnny, 2026-09-19): "When the creature
-   * hits 0 hit points, if its words say it explodes ... No button." The same
-   * for a burning body and a gaze. Nobody pressed anything to start these, so
-   * nobody is left to press ROLL DAMAGE or APPLY ALL either.
+   * ⚠️ A TRIGGER'S CARD ROLLS ITS OWN DAMAGE (Johnny, 2026-09-19): "When the
+   * creature hits 0 hit points, if its words say it explodes ... No button."
+   * The same for a burning body's save and a gaze. Nobody pressed anything to
+   * start these, so nobody is left to press ROLL DAMAGE.
    *
-   * Once no save on the card is still waiting (a player rolls their own on
-   * their own card, by his rule), the active GM's screen does exactly what the
-   * two buttons do, in the same order: the damage is rolled and worked out per
-   * row (phase two, which also asks each creature's reactions), then it lands
-   * through the hit-point door. The buttons stay on the card, already spent,
-   * with UNDO live.
+   * ⚠️ AND IT NEVER APPLIES IT (his correction the same afternoon): "Do not
+   * auto-apply burst damage. Same as Fireball: results card, APPLY, UNDO. He
+   * presses APPLY." This used to press APPLY ALL as well, and the burst's fire
+   * landed on Aryel seconds after her save, with her concentration check on its
+   * heels, before he had looked at the card.
+   *
+   * Once no save on the card is still waiting (a player rolls their own), the
+   * active GM's screen rolls the damage and works it out per row, exactly as
+   * ROLL DAMAGE does (phase two, which also asks each creature's reactions).
+   * Then the card waits, APPLY ALL and UNDO ALL on it, for the GM.
    *
    * @param {ChatMessage} message  the phase-one card
    */
@@ -8056,17 +8073,14 @@ export class SaveEngine {
         console.log(`${MODULE_ID} | ${what}: every creature on the card takes nothing, so no damage was rolled.`);
         return;
       }
-      console.log(`${MODULE_ID} | ${what}: every save is in; rolling the damage and landing it (${flags.trigger ?? "a trigger"}, no button).`);
+      console.log(`${MODULE_ID} | ${what}: every save is in; rolling the damage (${flags.trigger ?? "a trigger"}, `
+        + `no button). It waits on the card for the GM's APPLY ALL.`);
       await this._completeSaveResultsPhase2(message);
-      const now = game.messages?.get?.(message.id) ?? message;
-      if (now.flags?.[MODULE_ID]?.applied) return;
-      await this._applyAllSaveDamage(now);
-      await now.setFlag(MODULE_ID, "applied", true);
     } catch (err) {
-      console.error(`${MODULE_ID} | a trigger's save card could not finish on its own; ROLL DAMAGE and APPLY ALL `
-        + `are still on it:`, err);
-      ui.notifications?.warn("ACE: a death burst, fire aura or gaze could not land its damage on its own. "
-        + "Its card still has ROLL DAMAGE and APPLY ALL.");
+      console.error(`${MODULE_ID} | a trigger's save card could not roll its damage on its own; ROLL DAMAGE `
+        + `is still on it:`, err);
+      ui.notifications?.warn("ACE: a death burst, fire aura or gaze could not roll its damage on its own. "
+        + "Its card still has ROLL DAMAGE.");
     }
   }
 

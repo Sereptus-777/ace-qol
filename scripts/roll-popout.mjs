@@ -164,6 +164,13 @@ class RollPopoutApp extends AppV2 {
     try { this.bringToFront?.(); } catch (_) { /* a window that cannot come forward is still open */ }
     try { this.element?.querySelector?.(".acp-pill")?.focus?.({ preventScroll: true }); } catch (_) { /* focus is a courtesy */ }
     try { globalThis.window?.focus?.(); } catch (_) { /* the browser may refuse; the ding still sounds */ }
+    // ⚠️ SOUND ON OPEN (his rule): the box dings itself, once, as it is drawn,
+    // the way the reaction boxes do. It used to ding before it was drawn and
+    // was dropped behind its hidden card's ding (popup-ding.mjs, BOX_PROMPT_TYPES).
+    if (!this._dinged) {
+      this._dinged = true;
+      popupDing(`${this.spec.rollerName}'s ${this.spec.pillLabel}`);
+    }
   }
 
   async _lucky(btn) {
@@ -252,12 +259,13 @@ export class RollPopout {
       RollPopout._open.set(spec.key, app);
       const rendered = app.render?.({ force: true });
       if (rendered?.catch) rendered.catch(err => {
-        console.warn(`${LOG} | ${spec.rollerName}'s roll box could not be drawn:`, err);
+        console.warn(`${LOG} | ${spec.rollerName}'s roll box could not be drawn; the roll goes to the chat:`, err);
         RollPopout._open.delete(spec.key);
+        // It still asks out loud: the card in the chat is what they answer now.
+        popupDing(`${spec.rollerName}'s ${spec.pillLabel} (in the chat)`);
         spec.onDismiss?.();
       });
-      // ⚠️ SOUND ON OPEN (his rule), the same ding as every ACE prompt.
-      popupDing(`${spec.rollerName}'s ${spec.pillLabel}`);
+      // The ding sounds as the box is drawn (_onRender), the same ding as every ACE prompt.
       console.log(`${LOG} | ${spec.rollerName}: "${spec.pillLabel}" is waiting on this screen (${spec.title}).`);
       return true;
     } catch (err) {

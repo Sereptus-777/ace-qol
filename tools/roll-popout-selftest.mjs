@@ -16,9 +16,12 @@
 // Run:  node tools/roll-popout-selftest.mjs
 
 let pass = 0, fail = 0;
+// ACE's own console lines are not the test's output; the verdicts are.
+const say = console.log.bind(console);
+console.log = (...a) => { if (String(a[0] ?? "").startsWith("ace-qol |")) return; say(...a); };
 const check = (label, ok, detail = "") => {
   ok ? pass++ : fail++;
-  console.log((ok ? "  ok   " : "  FAIL ") + label + (detail ? `   (${detail})` : ""));
+  say((ok ? "  ok   " : "  FAIL ") + label + (detail ? `   (${detail})` : ""));
 };
 const tick = (ms = 0) => new Promise(r => setTimeout(r, ms));
 
