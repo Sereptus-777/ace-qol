@@ -21,10 +21,16 @@
 // in step; they drift until somebody notices a creature being damaged on the
 // way in and not on the way back.
 //
-// ⚠️ AND IT IMPORTS NOTHING. ace-qol.mjs is the hub of 130+ static cycles, and
-// this is called from the middle of the save path and the movement path both.
-// A geometry helper caught in an evaluation cycle would answer `undefined`,
-// which reads exactly like "nobody is in the area".
+// ⚠️ AND IT IMPORTS ONLY A LEAF. ace-qol.mjs is the hub of 130+ static cycles,
+// and this is called from the middle of the save path and the movement path
+// both. A geometry helper caught in an evaluation cycle would answer
+// `undefined`, which reads exactly like "nobody is in the area". Its one import,
+// geometry-utils.mjs, imports nothing itself (made a leaf 2026-09-18 so the
+// template and every distance could share one answer to "which squares is this
+// creature standing in").
+
+// A creature's space: the one rule, shared with every distance (a leaf import).
+import { aceTokenSpace } from "./geometry-utils.mjs";
 
 /** A hair's width, so a square that only just touches an edge still counts. */
 const TOUCH = 1e-6;
@@ -296,11 +302,16 @@ export function isTokenInTemplate(token, template, at = null, opts = {}) {
       }
     }
 
+    // ⭐ THE SQUARES IT STANDS IN, by the one space rule (geometry-utils,
+    // aceTokenSpace), the same space reach, range and the opportunity attack
+    // measure from. A picture a hair off the grid is still in its square
+    // (2026-09-18: a kobold 41 pixels off its square read 10 feet away).
     const grid = canvas?.grid?.size ?? 100;
-    const w = Number(doc.width) > 0 ? Number(doc.width) : 1;
-    const h = Number(doc.height) > 0 ? Number(doc.height) : 1;
-    const originX = at?.x ?? doc.x;
-    const originY = at?.y ?? doc.y;
+    const space = aceTokenSpace(token, at ? { x: at.x, y: at.y } : null);
+    const w = Math.max(1, Math.round(space.w / grid));
+    const h = Math.max(1, Math.round(space.h / grid));
+    const originX = space.x;
+    const originY = space.y;
 
     let squaresIn = 0;
     const squares = w * h;

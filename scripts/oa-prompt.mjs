@@ -34,7 +34,7 @@ import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { QolSettings } from "./settings.mjs";
 import { CombatState } from "./combat-state.mjs";
 import { OA_IN_FLIGHT } from "./oa-transient.mjs";
-import { aceEdgeGapFt, aceSnapSubCellRect } from "./geometry-utils.mjs";
+import { aceTokenSpace, aceSpaceDistanceFt } from "./geometry-utils.mjs";
 // ⚠️ THE ONE READER for "out of the fight", the same one Shield and Counterspell
 // ask. A hand-written status list drifts; this one does not.
 import { isOutOfTheFight } from "./is-down.mjs";
@@ -152,26 +152,31 @@ export class OAPrompt {
     const toX   = (changes.x ?? fromX);
     const toY   = (changes.y ?? fromY);
 
-    const gridSize  = canvas.scene?.grid?.size ?? 100;
-    const ftPerGrid = canvas.scene?.grid?.distance ?? 5;
-    // Mover footprint (px) + cube height + before/after elevation (for 3D reach).
-    const moverW = (moverDoc.width  ?? 1) * gridSize;
-    const moverH = (moverDoc.height ?? 1) * gridSize;
-    const moverHgtFt    = Math.max(moverDoc.width ?? 1, moverDoc.height ?? 1) * ftPerGrid;
+    // Before and after elevation, for 3D reach.
     const moverElevFrom = Number(moverDoc.elevation ?? 0) || 0;
     const moverElevTo   = Number(changes.elevation ?? moverElevFrom) || 0;
+    // ⭐ THE MOVER'S SPACE BEFORE AND AFTER, from the one space rule
+    // (geometry-utils, aceTokenSpace): the squares it stands in, whatever its
+    // size and however far its picture sits off the grid.
+    const moverFrom = aceTokenSpace(moverDoc, { x: fromX, y: fromY, elevation: moverElevFrom });
+    const moverTo   = aceTokenSpace(moverDoc, { x: toX, y: toY, elevation: moverElevTo });
 
     const moverDisp = moverDoc.disposition ?? 0;
     const placeables = canvas.tokens?.placeables ?? [];
     const reachFt = Number(QolSettings.get?.("opportunityAttackReach") ?? 5);
-    // Reach is measured EDGE-TO-EDGE (size-aware) — the way D&D actually works,
-    // and the way our range check already does. NOT center-to-center, which
-    // mis-reads reach for any non-Medium token: Tiny/Small tokens read as "out
-    // of reach" even when adjacent (the bug), and diagonals + Large tokens broke
-    // too. A creature is "in reach" when the footprint gap is under its reach;
-    // the 0.5-ft margin makes the exact one-square boundary read as "out" so a
-    // step away cleanly triggers the leave-reach check. v0.7.26.
-    const reachThresholdFt = reachFt - 0.5;
+    // Reach is measured EDGE-TO-EDGE (size-aware) — the way D&D actually works.
+    // NOT center-to-center, which mis-reads reach for any non-Medium token:
+    // Tiny/Small tokens read as "out of reach" even when adjacent, and
+    // diagonals + Large tokens broke too. v0.7.26.
+    //
+    // ⚠️🔴 AND BY THE SAME DISTANCE AS THE ATTACK ITSELF (2026-09-18). This
+    // compared its own empty-space gap against "reach minus half a foot", from
+    // footprints it built itself, so the swing it offered and the range check
+    // that swing then met were two answers to one question. Johnny: "One
+    // function. Every caller: attack range, OA, engagement, 'out of reach'
+    // refusals." In reach is now what it is everywhere: within reach feet by
+    // aceSpaceDistanceFt, touching spaces 5 feet, the table's diagonal rule.
+    const within = (ft, reach) => ft <= reach + 0.1;
 
     for (const t of placeables) {
       if (!t.actor) continue;
@@ -225,29 +230,16 @@ export class OAPrompt {
         continue;
       }
 
-      const reactorW = (td.width  ?? 1) * gridSize;
-      const reactorH = (td.height ?? 1) * gridSize;
-      // Snap sub-cell (Tiny) footprints out to their whole 5-ft square so an
-      // adjacent Tiny reactor/mover measures 5 feet, not 10 (see aceSnapSubCellRect).
-      const reactorRect = aceSnapSubCellRect({
-        x: td.x, y: td.y, w: reactorW, h: reactorH,
-        elev:  Number(td.elevation ?? 0) || 0,
-        hgtFt: Math.max(td.width ?? 1, td.height ?? 1) * ftPerGrid,
-      });
-      // Edge-to-edge gap (ft) from the mover's BEFORE and AFTER positions to the
-      // reactor's footprint — nearest-edge, size-aware, and 3D (a flyer passing
-      // overhead is out of reach). Shared canonical math (geometry-utils), so a
-      // Tiny / Small reactor adjacent to the mover reads gap≈0 (in reach) instead
-      // of being lost the way center-to-center did.
-      const gapBeforeFt = aceEdgeGapFt(
-        aceSnapSubCellRect({ x: fromX, y: fromY, w: moverW, h: moverH, elev: moverElevFrom, hgtFt: moverHgtFt }),
-        reactorRect);
-      const gapAfterFt = aceEdgeGapFt(
-        aceSnapSubCellRect({ x: toX, y: toY, w: moverW, h: moverH, elev: moverElevTo, hgtFt: moverHgtFt }),
-        reactorRect);
+      // Distance (ft) from the mover's BEFORE and AFTER spaces to the reactor's:
+      // nearest edge, size-aware, and 3D (a flyer passing overhead is out of
+      // reach). The one distance (geometry-utils), so a creature standing corner
+      // to corner is 5 feet here exactly as it is to the attack.
+      const reactorSpace = aceTokenSpace(td);
+      const beforeFt = aceSpaceDistanceFt(moverFrom, reactorSpace);
+      const afterFt = aceSpaceDistanceFt(moverTo, reactorSpace);
 
       // Was within reach AND now isn't = standard leave-reach OA (PHB 195).
-      if (gapBeforeFt <= reachThresholdFt && gapAfterFt > reachThresholdFt) {
+      if (within(beforeFt, reachFt) && !within(afterFt, reachFt)) {
         await OAPrompt._postPromptCard(t.actor, moverActor, td, moverDoc);
       }
 
@@ -260,8 +252,7 @@ export class OAPrompt {
       // reach before and INSIDE it after.
       const polearmData = OAPrompt._getPolearmReachData(t.actor);
       if (polearmData) {
-        const polearmThresholdFt = polearmData.reachFt - 0.5;
-        if (gapBeforeFt > polearmThresholdFt && gapAfterFt <= polearmThresholdFt) {
+        if (!within(beforeFt, polearmData.reachFt) && within(afterFt, polearmData.reachFt)) {
           // Use the TOKEN name (which has disambiguators like "Assassin 1",
           // "Assassin 2") rather than the actor name (which would just say
           // "Assassin" for every duplicate). Falls back to actor name if

@@ -31,8 +31,10 @@ globalThis.foundry = {
 };
 globalThis.ChatMessage = { create: async () => {}, getSpeaker: () => ({}) };
 
-const { aceDistanceFt, aceTokenGapFt, aceNoteTokenPosition, aceForgetTokenPosition } =
+const { aceDistanceFt, aceTokenGapFt, aceNoteTokenPosition, aceForgetTokenPosition,
+        aceTokenSpace, aceSpaceDistanceFt } =
   await import("file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/geometry-utils.mjs");
+const { isTokenInTemplate } = await import("file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/template-geometry.mjs");
 
 let pass = 0, fail = 0;
 const check = (label, got, want) => {
@@ -127,12 +129,73 @@ check("alternating: one diagonal is still 5 feet",
   aceDistanceFt(still(0, 0), still(100, 100)), 5);
 
 setRule(3);   // RECTILINEAR — a diagonal costs two squares
-check("rectilinear: one diagonal step costs two squares",
-  aceDistanceFt(still(0, 0), still(100, 100)), 10);
+// ⚠️ BUT TOUCHING IS 5 FEET UNDER EVERY RULE (Johnny, 2026-09-18): "If any edge
+// or corner of their spaces touch, that is 5 feet on a square grid." This pin
+// used to want 10, which put a creature corner to corner out of a 5-foot reach.
+check("rectilinear: corner to corner is still 5 feet (touching)",
+  aceDistanceFt(still(0, 0), still(100, 100)), 5);
+check("rectilinear: one empty diagonal square between costs two squares a step",
+  aceDistanceFt(still(0, 0), still(200, 200)), 20);
 
 setRule(undefined);   // nothing set
 check("an unreadable setting falls back to the PHB default",
   aceDistanceFt(still(0, 0), still(200, 200)), 10);
+
+console.log("");
+console.log("HIS SKELETON AND KOBOLD (2026-09-18): A PICTURE OFF ITS SQUARE IS STILL IN IT");
+// ⚠️ Read from his world, scene "AMBER TEMPLE: LOWER", grid 200 pixels:
+//   Skeleton Sword & Shield (1)  x=7400 y=9400   on its square (col 37, row 47)
+//   Kobold Warrior (1)           x=7599 y=9159   1 px left of col 38, 41 px above row 46
+// Johnny: "Skeleton in the square that touches the kobold's square at the
+// corner. ACE says 10 feet. It is 5 feet. He can melee."
+setRule(0);
+globalThis.canvas.grid.size = 200;
+const skeleton = still(7400, 9400);
+const kobold = still(7599, 9159);
+check("the skeleton and the kobold, corner to corner, are 5 feet apart",
+  aceDistanceFt(skeleton, kobold), 5);
+check("the same both ways round",
+  aceDistanceFt(kobold, skeleton), 5);
+check("the kobold stands in column 38, row 46 (Foundry's own squares)",
+  JSON.stringify((({ x, y }) => [x / 200, y / 200])(aceTokenSpace(kobold))), JSON.stringify([38, 46]));
+check("a 5-foot melee reach includes it", aceDistanceFt(skeleton, kobold) <= 5, true);
+check("and there is no gap between their spaces",
+  aceTokenGapFt(skeleton, kobold), 0);
+
+// A picture half a square off picks the square Foundry does: the one holding
+// the point half a square in from its top-left corner.
+check("99 pixels off (just under half) is still the same square",
+  aceDistanceFt(still(7400, 9400), still(7699, 9200)), 5);
+check("101 pixels off (just over half) is the next square: 10 feet",
+  aceDistanceFt(still(7400, 9400), still(7701, 9200)), 10);
+check("a Large (2x2) picture off the grid still fills four whole squares",
+  aceDistanceFt(still(7400, 9400), still(7630, 9020, 2, 2)), 5);
+check("a Tiny (half square) creature still fills its whole square",
+  aceDistanceFt(still(7400, 9400), still(7650, 9250, 0.5, 0.5)), 5);
+check("two squares off the grid in both directions are still 5 feet when they touch",
+  aceDistanceFt(still(7430, 9381), still(7610, 9190)), 5);
+
+console.log("");
+console.log("THE OPPORTUNITY ATTACK AND THE TEMPLATE ASK THE SAME SPACE");
+// The opportunity attack measures a move by the mover's space before and after.
+const koboldDoc = kobold.document;
+const before = aceTokenSpace(koboldDoc, { x: 7599, y: 9159, elevation: 0 });
+const after = aceTokenSpace(koboldDoc, { x: 7999, y: 8959, elevation: 0 });
+const skel = aceTokenSpace(skeleton);
+check("the kobold starts in the skeleton's reach (5 feet)", aceSpaceDistanceFt(before, skel), 5);
+check("and stepping two squares off takes it out (15 feet)", aceSpaceDistanceFt(after, skel), 15);
+check("a mover that never left a corner square is still in reach",
+  aceSpaceDistanceFt(aceTokenSpace(koboldDoc, { x: 7610, y: 9170 }), skel), 5);
+
+// A 5-foot square template touching the skeleton's square from the right catches
+// the kobold's SQUARE by its corner, not the picture 41 pixels above it.
+const square = { x: 7600, y: 9400, shape: {
+  x: 0, y: 0, width: 200, height: 200,
+  contains: (px, py) => px >= 0 && px <= 200 && py >= 0 && py <= 200,
+} };
+check("a template edge on the kobold's square catches it, off-grid picture and all",
+  isTokenInTemplate(kobold, square, null, { ignoreElevation: true }), true);
+globalThis.canvas.grid.size = 100;
 
 console.log("");
 console.log("THE UPDATE OUTRANKS THE DOCUMENT");

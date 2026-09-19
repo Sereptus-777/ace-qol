@@ -22,7 +22,7 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
-import { aceEdgeGapFt } from "./geometry-utils.mjs";
+import { aceEdgeGapFt, aceTokenSpace } from "./geometry-utils.mjs";
 import { lootFraming, readCreatureType } from "./loot-framing.mjs";
 import { canHarvest } from "./sustenance.mjs";
 import { aceDescriptionTextSync, acePrimeDescriptions, aceDescriptionHtml } from "./description-reader.mjs";
@@ -1518,21 +1518,22 @@ export class LootableTile {
       })();
       if (playerToken) {
         try {
-          const gridSize = canvas.grid?.size ?? 100;
           // Edge-to-edge gap (nearest-edge, 5e diagonal rule) via the canonical
           // helper, so loot range agrees with reach/spell measurement. The loot
           // target may be a Tile (pixel width/height) or a Token (grid-unit
           // width/height); both resolve to a pixel footprint here. 2D — looting
           // is a ground reach, so elevation is ignored.
+          // ⚠️ A CREATURE'S SPACE IS THE SQUARES IT STANDS IN (aceTokenSpace),
+          // for the looter and for a body lying on the floor, so a picture a
+          // hair off the grid is not a whole square further away. A tile is
+          // not a creature and keeps its own edges.
           const isToken = tileDoc.documentName === "Token";
-          const targetW = (Number(tileDoc.width)  > 0 ? Number(tileDoc.width)  : 1) * (isToken ? gridSize : 1);
-          const targetH = (Number(tileDoc.height) > 0 ? Number(tileDoc.height) : 1) * (isToken ? gridSize : 1);
-          const tileRect = { x: tileDoc.x ?? 0, y: tileDoc.y ?? 0, w: targetW, h: targetH };
-          const pdoc = playerToken.document;
-          const playerRect = {
-            x: pdoc.x ?? 0, y: pdoc.y ?? 0,
-            w: (pdoc.width ?? 1) * gridSize, h: (pdoc.height ?? 1) * gridSize,
+          const tileRect = isToken ? aceTokenSpace(tileDoc) : {
+            x: tileDoc.x ?? 0, y: tileDoc.y ?? 0,
+            w: Number(tileDoc.width) > 0 ? Number(tileDoc.width) : 1,
+            h: Number(tileDoc.height) > 0 ? Number(tileDoc.height) : 1,
           };
+          const playerRect = aceTokenSpace(playerToken.document);
           const distFt = aceEdgeGapFt(playerRect, tileRect, { threeD: false });
           if (distFt > maxFt) {
             ui.notifications?.warn(`Too far to loot — ${Math.round(distFt)} feet away (max ${maxFt} feet). Move closer.`);

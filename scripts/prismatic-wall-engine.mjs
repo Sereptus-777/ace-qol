@@ -37,7 +37,7 @@ import { wallShapeOf, distanceToWallFt, wallCrossings, entersBand, wallPointsWit
          wallPassesThrough } from "./rules/wall-geometry.mjs";
 import { safeShowForRoll, awaitDiceSettle } from "./dsn-utils.mjs";
 import { damageShare, shareOf } from "./road/what-lands.mjs";
-import { aceDiagonalRule } from "./geometry-utils.mjs";
+import { aceDiagonalRule, aceTokenSpace } from "./geometry-utils.mjs";
 
 // ⚠️ A LITERAL, NOT THE ENTRY FILE'S EXPORT. The entry file imports this one,
 // and a binding read from it here would be the import cycle that took the whole
@@ -190,19 +190,13 @@ export class PrismaticWallEngine {
   }
 
   /**
-   * A creature's space, in the shape the geometry reads. A Tiny creature fills
-   * its whole square, the same snap geometry-utils makes for every distance.
+   * A creature's space, in the shape the geometry reads: the one space rule
+   * (geometry-utils, aceTokenSpace), so the wall and every distance agree on
+   * which squares a creature stands in, off-grid pictures included.
    */
   static _rectOf(tokenDoc, grid, at = null) {
-    const gs = grid.gridPx;
-    const wU = Number(at?.width ?? tokenDoc.width) || 1;
-    const hU = Number(at?.height ?? tokenDoc.height) || 1;
-    let x = Number(at?.x ?? tokenDoc.x) || 0, y = Number(at?.y ?? tokenDoc.y) || 0;
-    let w = wU * gs, h = hU * gs;
-    if (w < gs) { x = Math.floor((x + w / 2) / gs) * gs; w = gs; }
-    if (h < gs) { y = Math.floor((y + h / 2) / gs) * gs; h = gs; }
-    const bottom = Number(at?.elevation ?? tokenDoc.elevation) || 0;
-    return { x, y, w, h, bottom, top: bottom + Math.max(wU, hU, 1) * grid.ftPerCell };
+    const s = aceTokenSpace(tokenDoc, at, { gs: grid.gridPx, gd: grid.ftPerCell });
+    return { x: s.x, y: s.y, w: s.w, h: s.h, bottom: s.elev, top: s.elev + s.hgtFt };
   }
 
   /** The path Foundry says the token took: where it started, then every waypoint it passed. */

@@ -25,11 +25,19 @@
 //             "within 30 feet" / spell range / aura radius use.
 //   distance = gap + one cell.
 //
+// ⭐ A CREATURE'S SPACE IS THE SQUARES IT STANDS IN (2026-09-18). Everything
+// here measures between SPACES, and one function says what a creature's space
+// is: `aceTokenSpace`. See it for the kobold that was 41 pixels off its square.
+//
 // Every reach / range / radius / adjacency check in ACE QOL routes through one
 // of these. Do not hand-roll center-to-center math.
+//
+// ⚠️ A LEAF: THIS FILE IMPORTS NOTHING. It used to import MODULE_ID from the
+// entry file, which put the whole module graph behind every file that wants to
+// know how far apart two creatures are, the template hit-test included.
 // ──────────────────────────────────────────────────────────────────────────────
 
-import { MODULE_ID } from "./ace-qol.mjs";
+const MODULE_ID = "ace-qol";
 
 /**
  * Should this measurement count vertical distance? Defaults to RAW 3D (on).
@@ -116,6 +124,33 @@ export function aceNoteTokenPosition(id, pos) {
  */
 export function aceMeasuredPosition(t) {
   const d = t?.document ?? t ?? {};
+  // ⚠️🔴 THE DOCUMENT IS THE TRUTH. THE PLACEABLE IS AN ANIMATION IN PROGRESS.
+  //
+  // This read `t.x` first and only fell back to the document, and in Foundry
+  // V13 `PlaceableObject#x` is literally `return this._bounds.x` — the display
+  // bounds, which the movement animation drives frame by frame. `document.x` is
+  // set immediately and is where the token actually IS.
+  //
+  // Every rules decision that measured distance therefore ran against the
+  // position the token was LEAVING. The aura engine recomputes 80ms after a
+  // move; a token crossing one 332px square animates for far longer than that,
+  // so it read the old square every time.
+  //
+  // Johnny, 2026-09-01, describing it exactly: "If I move another token in, it
+  // doesn't draw it right away until I move another token... It's not checking
+  // every move." It was checking every move. It was measuring the previous one.
+  //
+  // ⚠️ THIS IS NOT ONLY AURAS. Everything downstream of aceDistanceFt reads this:
+  // spell range, weapon reach, cover, aura radius. All of them were one move
+  // stale whenever a decision landed during an animation.
+  //
+  // The same lesson, in a different file: the concentration widget was fixed on
+  // 2026-06-xx to read the NEW position from the update payload rather than a
+  // value that had reverted under it. Same class of bug, same conclusion.
+  // ⚠️ THE UPDATE OUTRANKS THE DOCUMENT. See `_authoritative` above: on
+  // 2026-09-02 the document was still reporting the square Virric had left,
+  // 400ms after the update announced the one he had reached.
+
   const known = _authoritative(d);
   return {
     x: known ? known.x : (Number(d.x ?? t?.x ?? 0) || 0),
@@ -223,72 +258,92 @@ export function aceRegisterPositionTracking() {
     + "position an update reported, not from a document that may lag it.");
 }
 
-function _rectOf(t, gs, gd) {
-  const d = t?.document ?? t ?? {};
-  const wU = Number(d.width  ?? 1) || 1;
-  const hU = Number(d.height ?? 1) || 1;
-  // Snap sub-cell (Tiny) footprints out to their whole 5-ft square — see
-  // aceSnapSubCellRect for the full why. No-op for Medium / Large / +.
-  // ⚠️🔴 THE DOCUMENT IS THE TRUTH. THE PLACEABLE IS AN ANIMATION IN PROGRESS.
-  //
-  // This read `t.x` first and only fell back to the document, and in Foundry
-  // V13 `PlaceableObject#x` is literally `return this._bounds.x` — the display
-  // bounds, which the movement animation drives frame by frame. `document.x` is
-  // set immediately and is where the token actually IS.
-  //
-  // Every rules decision that measured distance therefore ran against the
-  // position the token was LEAVING. The aura engine recomputes 80ms after a
-  // move; a token crossing one 332px square animates for far longer than that,
-  // so it read the old square every time.
-  //
-  // Johnny, 2026-09-01, describing it exactly: "If I move another token in, it
-  // doesn't draw it right away until I move another token... It's not checking
-  // every move." It was checking every move. It was measuring the previous one.
-  //
-  // ⚠️ THIS IS NOT ONLY AURAS. Everything downstream of aceDistanceFt reads this:
-  // spell range, weapon reach, cover, aura radius. All of them were one move
-  // stale whenever a decision landed during an animation.
-  //
-  // The same lesson, in a different file: the concentration widget was fixed on
-  // 2026-06-xx to read the NEW position from the update payload rather than a
-  // value that had reverted under it. Same class of bug, same conclusion.
-  // ⚠️ THE UPDATE OUTRANKS THE DOCUMENT. See `_authoritative` above: on
-  // 2026-09-02 the document was still reporting the square Virric had left,
-  // 400ms after the update announced the one he had reached.
-  const known = _authoritative(d);
-  return aceSnapSubCellRect({
-    x: known ? known.x : (Number(d.x ?? t?.x ?? 0) || 0),
-    y: known ? known.y : (Number(d.y ?? t?.y ?? 0) || 0),
-    w: wU * gs,
-    h: hU * gs,
-    elev:  Number((known?.elevation ?? d.elevation) ?? 0) || 0,
-    hgtFt: Math.max(wU, hU) * gd,
-  });
+/**
+ * What kind of grid the scene has: "square", "hex" or "gridless". A stand-in
+ * canvas with no type is a square grid, which is what every self-test builds.
+ */
+function _gridKind() {
+  const g = canvas?.grid;
+  if (!g) return "square";
+  if (g.isGridless === true || g.type === 0) return "gridless";
+  if (g.isHexagonal === true || (Number.isFinite(g.type) && g.type >= 2)) return "hex";
+  return "square";
 }
 
 /**
- * Snap a sub-cell (Tiny) token footprint OUT to the whole grid cell that holds
- * its centre. RAW, a Tiny creature occupies its full 5-ft square for reach and
- * distance — but its token is < 1 cell and Foundry centres it inside the square,
- * leaving a fractional-cell gap to a neighbour. aceEdgeGapFt's ceil() then rounds
- * that part-cell sliver UP to a whole 5-ft cell, so an ADJACENT tiny creature
- * wrongly reads as 10 feet instead of 5 feet. Snapping each sub-cell dimension to its
- * enclosing cell makes the edge math see the square the creature truly occupies.
+ * ⭐ A CREATURE'S SPACE: THE SQUARES IT STANDS IN, NOT THE PIXELS OF ITS PICTURE.
  *
- * Idempotent and safe on any rect: a side already >= 1 cell is left untouched, so
- * Medium / Large / Huge / Gargantuan — and the opportunity-attack path's
- * hypothetical-position rects — all pass through unchanged. Callers that build
- * their own TOKEN rects (not tiles) should wrap them in this.
+ * ⚠️🔴 A KOBOLD ONE FOOT OFF ITS SQUARE WAS TEN FEET AWAY (Johnny, 2026-09-18):
+ * "Skeleton in the square that touches the kobold's square at the corner. ACE
+ * says 10 feet. It is 5 feet. He can melee." His scene, read from the world:
  *
- * @param {{x:number,y:number,w:number,h:number,elev?:number,hgtFt?:number}} rect
+ *   Skeleton Sword & Shield (1)  x=7400 y=9400   exactly on its square
+ *   Kobold Warrior (1)           x=7599 y=9159   one pixel left of its square
+ *                                                and 41 short of it, grid 200
+ *
+ * The footprint was the token's own pixels, so there was a 41-pixel sliver
+ * between the two, and a gap is counted in whole squares rounded UP: a sliver
+ * became a whole empty square, and adjacent became 10 feet. Only a token
+ * smaller than one square was ever snapped to the grid; a full-size token a
+ * hair off the grid kept its hair.
+ *
+ * ⚠️ THE SQUARES ARE FOUNDRY'S OWN, not a guess of ours. V13 says a token
+ * occupies "those [spaces] that are covered by the Token's shape in the snapped
+ * position" (TokenDocument#getOccupiedGridSpaceOffsets): the size is rounded to
+ * the nearest half square, the first square is the one holding the point half a
+ * square in from the top-left corner (a quarter, for a half-square size), and
+ * the space runs whole squares from there. That puts the kobold in column 38,
+ * row 46 and the skeleton in column 37, row 47: corner to corner, 5 feet.
+ *
+ * ⚠️ ON A SQUARE GRID ONLY. A gridless or hex scene has no squares to snap to,
+ * so it keeps the old footprint, with a creature smaller than one cell still
+ * filling a whole cell.
+ *
+ * @param {{x:number,y:number,w:number,h:number,elev?:number,hgtFt?:number}} rect  a footprint, in pixels
+ * @param {number} [gs]  pixels per square
  * @returns {{x:number,y:number,w:number,h:number,elev?:number,hgtFt?:number}}
  */
-export function aceSnapSubCellRect(rect) {
-  const gs = _gridSize();
+export function aceSpaceRect(rect, gs = _gridSize()) {
   let { x, y, w, h } = rect;
+  if (_gridKind() === "square") {
+    const wU = Math.max(0.5, Math.round((w / gs) * 2) / 2);
+    const hU = Math.max(0.5, Math.round((h / gs) * 2) / 2);
+    const col = Math.floor((Math.round(x) + gs * (Number.isInteger(wU) ? 0.5 : 0.25)) / gs);
+    const row = Math.floor((Math.round(y) + gs * (Number.isInteger(hU) ? 0.5 : 0.25)) / gs);
+    return { ...rect, x: col * gs, y: row * gs, w: Math.ceil(wU) * gs, h: Math.ceil(hU) * gs };
+  }
   if (w < gs) { x = Math.floor((x + w / 2) / gs) * gs; w = gs; }
   if (h < gs) { y = Math.floor((y + h / 2) / gs) * gs; h = gs; }
   return { ...rect, x, y, w, h };
+}
+
+/**
+ * ⭐ THE ONE ANSWER TO "WHERE IS THIS CREATURE": its space, as the rules see it.
+ * Reach, range, the opportunity attack, templates, auras and walls all ask here.
+ *
+ * `at` tests a position the token is not at yet (a move in flight, a waypoint):
+ * any of x, y, elevation, width and height, the rest from the token.
+ *
+ * The cube is at least one square tall: a creature that fills a square fills
+ * the cube above it too, as the template bands already said.
+ *
+ * @param {Token|TokenDocument} t
+ * @param {{x?:number,y?:number,elevation?:number,width?:number,height?:number}|null} [at]
+ * @param {{gs?:number, gd?:number}} [grid]  pixels and feet per square, when not the canvas's
+ * @returns {{x:number,y:number,w:number,h:number,elev:number,hgtFt:number}}
+ */
+export function aceTokenSpace(t, at = null, { gs = _gridSize(), gd = _ftPerCell() } = {}) {
+  const d = t?.document ?? t ?? {};
+  const num = (v) => (v === undefined || v === null || v === "" ? NaN : Number(v));
+  const wU = Number(at?.width ?? d.width ?? 1) || 1;
+  const hU = Number(at?.height ?? d.height ?? 1) || 1;
+  // ⚠️ THE DOCUMENT IS THE TRUTH, AND AN UPDATE IT HAS NOT CAUGHT UP WITH
+  // OUTRANKS IT: `aceMeasuredPosition` says why, never the placeable.
+  const here = aceMeasuredPosition(t);
+  const x = Number.isFinite(num(at?.x)) ? num(at.x) : here.x;
+  const y = Number.isFinite(num(at?.y)) ? num(at.y) : here.y;
+  const elev = Number.isFinite(num(at?.elevation)) ? num(at.elevation) : here.elevation;
+  return aceSpaceRect({ x, y, w: wU * gs, h: hU * gs, elev, hgtFt: Math.max(wU, hU, 1) * gd }, gs);
 }
 
 /**
@@ -403,6 +458,44 @@ function _gapSteps(rectA, rectB, opts) {
   return { straights, diagonals };
 }
 
+/**
+ * ⭐ THE ONE DISTANCE BETWEEN TWO SPACES, in feet.
+ *
+ * Nearest edge to nearest edge, counted in grid steps under the table's
+ * diagonal rule, plus the step into the other creature's own space.
+ *
+ * ⚠️ TWO SPACES THAT TOUCH ARE 5 FEET APART, edge or corner, under every rule.
+ * Johnny, 2026-09-18: "If any edge or corner of their spaces touch, that is 5
+ * feet on a square grid. 5-10-5 only if the world setting is that variant.
+ * Default 5e: every adjacent square, including diagonals, is 5 feet." The
+ * 5-10-5 rule's first diagonal is 5 anyway; the rectilinear option (a diagonal
+ * costs two squares) is no D&D rule, and read literally it put a creature
+ * standing corner to corner out of a 5-foot reach.
+ *
+ * @param {{x:number,y:number,w:number,h:number,elev?:number,hgtFt?:number}} spaceA  from aceTokenSpace
+ * @param {{x:number,y:number,w:number,h:number,elev?:number,hgtFt?:number}} spaceB
+ * @param {{threeD?: boolean}} [opts]
+ */
+export function aceSpaceDistanceFt(spaceA, spaceB, opts = {}) {
+  const gd = _ftPerCell();
+  const { straights, diagonals } = _gapSteps(spaceA, spaceB, opts);
+  if (straights === 0 && diagonals === 0) return gd;   // touching: one step, 5 feet
+
+  // ⚠️🔴 THE TARGET'S OWN SQUARE IS A STEP, AND IT FOLLOWS THE SAME RULE.
+  // This used to be `gap + oneCell` - a flat five feet bolted on outside the
+  // diagonal logic. Under the alternating rule that is wrong: two diagonal
+  // steps cost 5 then 10, so a creature one diagonal square away is 15 feet,
+  // and adding a flat 5 to a 5-foot gap produced 10.
+  //
+  // The extra step travels in the same direction as the rest of the journey:
+  // diagonally if any part of it was diagonal, straight otherwise.
+  const goesDiagonally = diagonals > 0;
+  return _cellsToFeet(
+    straights + (goesDiagonally ? 0 : 1),
+    diagonals + (goesDiagonally ? 1 : 0),
+    gd);
+}
+
 export function aceEdgeGapFt(rectA, rectB, opts = {}) {
   const { straights, diagonals } = _gapSteps(rectA, rectB, opts);
   return _cellsToFeet(straights, diagonals, _ftPerCell());
@@ -415,9 +508,7 @@ export function aceEdgeGapFt(rectA, rectB, opts = {}) {
 export function aceTokenGapFt(a, b, opts = {}) {
   try {
     if (!a || !b) return Infinity;
-    const gs = _gridSize();
-    const gd = _ftPerCell();
-    return aceEdgeGapFt(_rectOf(a, gs, gd), _rectOf(b, gs, gd), opts);
+    return aceEdgeGapFt(aceTokenSpace(a), aceTokenSpace(b), opts);
   } catch (err) {
     console.warn("ace-qol | aceTokenGapFt failed — centre-to-centre fallback:", err);
     try {
@@ -461,25 +552,7 @@ export function aceTokenGapFt(a, b, opts = {}) {
 export function aceDistanceFt(a, b, opts = {}) {
   try {
     if (!a || !b) return Infinity;
-    const gs = _gridSize();
-    const gd = _ftPerCell();
-    const { straights, diagonals } = _gapSteps(_rectOf(a, gs, gd), _rectOf(b, gs, gd), opts);
-
-    // ⚠️🔴 THE TARGET'S OWN SQUARE IS A STEP, AND IT FOLLOWS THE SAME RULE.
-    // This used to be `gap + oneCell` - a flat five feet bolted on outside the
-    // diagonal logic. Under the alternating rule that is wrong: two diagonal
-    // steps cost 5 then 10, so a creature one diagonal square away is 15 feet,
-    // and adding a flat 5 to a 5-foot gap produced 10.
-    //
-    // The extra step travels in the same direction as the rest of the journey:
-    // diagonally if any part of it was diagonal, straight otherwise. Two
-    // touching creatures have no gap at all and are one step apart, which is
-    // 5 feet under every rule that matters.
-    const goesDiagonally = diagonals > 0 || (straights === 0 && diagonals === 0);
-    return _cellsToFeet(
-      straights + (goesDiagonally ? 0 : 1),
-      diagonals + (goesDiagonally ? 1 : 0),
-      gd);
+    return aceSpaceDistanceFt(aceTokenSpace(a), aceTokenSpace(b), opts);
   } catch (err) {
     console.warn("ace-qol | aceDistanceFt failed:", err);
     return Infinity;
