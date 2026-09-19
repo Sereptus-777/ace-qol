@@ -5736,6 +5736,11 @@ Hooks.once("ready", () => {
     attackPipeline,
     damageEngine,
     saveEngine,
+    // Death bursts, burning bodies and the start-of-turn gaze (2026-09-19). ACE
+    // Engine's monster automation asks for these to know QOL runs them, and
+    // stands its own copies down.
+    CreatureTriggers,
+    GazeEngine,
     concentrationWidget,
     // Prismatic Wall: game.aceQol.prismaticWall.designate(templateId) asks again
     // who passes a standing wall unharmed.

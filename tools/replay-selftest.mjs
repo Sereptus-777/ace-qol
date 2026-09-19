@@ -3957,6 +3957,77 @@ await quiet(async () => {
         seen.length ? `${one.item}: ${one.who.join(", ")}; ${String(one.opts.saveAbility).toUpperCase()} DC ${one.opts.saveDC}; on a fail ${fail.join(", ")}; resolves itself: ${one.opts.autoResolve}` : "no save card was posted");
     }
 
+    // ── The Magmin on his map: the 2024 Monster Manual copy, words in lookups ──
+    // His table, 2026-09-19: "He dropped a Magmin to 0. Chat posted the item's raw
+    // description with unresolved [[lookup]] tags. No Dex save. No fire damage."
+    // Its "when it dies" is a lookup of the activity's condition, and ACE Engine
+    // fired its own name-matched burst and pasted the sheet text.
+    {
+      const mm = ACTORS.get("mmMagmin00000000") ?? null;
+      const burst = itemOn(mm, "Death Burst");
+      if (!mm || !burst) {
+        check("the Magmin on his map (2024 Monster Manual) bursts from its words, lookups answered (2026-09-19)", null, "(no mmMagmin00000000 in this world)");
+      } else {
+        const seen = [];
+        game.aceQol.saveEngine = { postSaveCard: async (item, actor, tokens, opts) => {
+          seen.push({ item: item?.name, who: tokens.map(t => t.name), opts });
+        } };
+        const s = sceneOf("replay-burst-mm");
+        const magDoc = tok(s, "t-mm-magmin", "Magmin", 40, 49, mm, -1);
+        tok(s, "t-mm-chudd", "Chudd", 41, 50, pc("Chudd"));             // corner to corner: 5 feet
+        tok(s, "t-mm-corpse", "Dead Kobold", 39, 49, pc("Dead Kobold", { statuses: new Set(["dead"]) }), -1);
+        await CreatureTriggers.onDeath({ actor: mm, tokenDoc: magDoc });
+        const one = seen[0];
+        const words = W.itemWords(burst);
+        const fail = (one?.opts?.recipe?.onFail ?? []).map(o => `${o.formula ?? o.condition?.key ?? "?"} ${(o.types ?? []).join("/")}${o.onSuccess ? ` (${o.onSuccess})` : ""}`.trim());
+        check("the Magmin on his map (2024 Monster Manual) bursts: its \"when it dies\" read out of the lookup, one DEX save card with the DC its activity works out, Chudd beside it on the card, the dead kobold not, half fire damage landing by itself (2026-09-19)",
+          /explodes when it dies/i.test(words) && !/\[\[/.test(words) && seen.length === 1
+            && one.who.join() === "Chudd" && one.opts.saveAbility === "dex" && Number.isFinite(one.opts.saveDC)
+            && one.opts.saveDC > 0 && one.opts.autoResolve === true && fail.some(f => /2d6 fire \(half\)/.test(f)),
+          seen.length ? `"${words.slice(0, 60)}…"; ${one.who.join(", ")}; ${String(one.opts.saveAbility).toUpperCase()} DC ${one.opts.saveDC}; on a fail ${fail.join(", ")}`
+            : `nothing posted; its words read "${words.slice(0, 90)}"`);
+      }
+    }
+
+    // ── ACE Engine's own death listener stands down for the bursts QOL runs ──
+    // The card in his screenshot was Engine's (monster automation, which his
+    // world has switched on): "ACE: Monsters", the stat block's raw text.
+    {
+      const mm = ACTORS.get("mmMagmin00000000") ?? null;
+      if (!mm) {
+        check("ACE Engine leaves the Magmin's burst to QOL (2026-09-19)", null, "(no mmMagmin00000000 in this world)");
+      } else {
+        const keepModules = game.modules;
+        const before = (hooks["updateActor"] ?? []).length;
+        let withQol = 0, alone = [];
+        try {
+          game.modules = { get: (id) => (id === "ace-qol" ? { active: true } : keepModules?.get?.(id) ?? null) };
+          game.aceQol.CreatureTriggers = CreatureTriggers;
+          const { initMonsterAutomation } = await import("file:///D:/FoundryVTT/Data/modules/ace-engine/scripts/combat/monster-automation.mjs");
+          initMonsterAutomation();
+          const engineHooks = (hooks["updateActor"] ?? []).slice(before);
+          const zero = { system: { attributes: { hp: { value: 0 } } } };
+          let n = posted.length;
+          for (const h of engineHooks) h(mm, zero);
+          await new Promise(r => setTimeout(r, 150));
+          withQol = posted.length - n;
+          // A table running Engine without QOL: its own card, in words, never raw tags.
+          delete game.aceQol.CreatureTriggers;
+          game.modules = { get: () => null };
+          n = posted.length;
+          for (const h of engineHooks) h(mm, zero);
+          await new Promise(r => setTimeout(r, 300));
+          alone = posted.slice(n).map(m => String(m.content ?? ""));
+        } finally {
+          game.modules = keepModules;
+          game.aceQol.CreatureTriggers = CreatureTriggers;
+        }
+        check("ACE Engine's own death listener posts nothing for the Magmin's burst while QOL runs it, and without QOL its card is the burst's numbers, never the sheet's raw [[lookup]] tags (2026-09-19)",
+          withQol === 0 && alone.length === 1 && !/\[\[/.test(alone[0]) && /2d6/.test(alone[0]),
+          `with QOL: ${withQol} Engine card(s); without: ${alone.length} card(s)${alone[0] ? `, "${alone[0].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 90)}"` : ""}`);
+      }
+    }
+
     // Which bursts his world has, by their words (and the ones the GM keeps).
     {
       const bursts = [], gm = [], none = [];

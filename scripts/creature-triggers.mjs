@@ -34,6 +34,8 @@
 import { aceDistanceFt } from "./geometry-utils.mjs";
 import { readDeathBurst, readTurnAura, wordsRecipe, itemWords } from "./rules/creature-words.mjs";
 import { lifeStateOf, pickable } from "./road/picker-rule.mjs";
+// What a save's DC comes to, the way dnd5e works it out (one resolver).
+import { saveDCOf } from "./rules/save-dc.mjs";
 
 const MODULE_ID = "ace-qol";
 const LOG = "ace-qol | creature";
@@ -65,13 +67,32 @@ export class CreatureTriggers {
 
   /* ═══ 1. DEATH BURSTS ═══════════════════════════════════════════════════ */
 
+  /**
+   * Does ACE QOL run this item's death effect? ACE Engine's monster automation
+   * asks before it fires its own, and stands down for exactly these (one burst,
+   * never two, and never the stat block pasted into chat).
+   */
+  static claims(item) {
+    try { return !!readDeathBurst(item); } catch (_) { return false; }
+  }
+
   /** A creature died: every item whose words burst it goes off. */
   static async onDeath({ actor, tokenDoc } = {}) {
     if (!actor || game.users?.activeGM !== game.user) return;
     const doc = tokenDoc ?? actor.token ?? actor.getActiveTokens?.()[0]?.document ?? null;
     for (const item of actor.items ?? []) {
       const words = readDeathBurst(item);
-      if (!words) continue;
+      if (!words) {
+        // ⚠️ SILENCE IS A BUG. The words decide, never the name; but an item
+        // NAMED like a burst that the words did not fire is said out loud, so a
+        // reader that misses one is seen the first time (the 2024 Magmin's
+        // "when it dies" hid in a lookup, 2026-09-19).
+        if (/\bdeath (?:burst|throes)\b/i.test(String(item?.name ?? ""))) {
+          say(`${doc?.name ?? actor.name}'s ${item.name}: named like a death burst, and its words say nothing ACE `
+            + `reads as bursting when it dies ("${short(itemWords(item))}"), so nothing was run.`);
+        }
+        continue;
+      }
       await CreatureTriggers._burst(actor, doc, item, words);
     }
   }
@@ -233,7 +254,7 @@ export class CreatureTriggers {
         console.warn(`${LOG} | ${item.name}: the save engine is not on the API, so no save was asked.`);
         return;
       }
-      const dc = CreatureTriggers._saveDC(recipe, item);
+      const dc = saveDCOf(recipe, item);
       if (!Number.isFinite(dc) || dc <= 0) {
         say(`${item.name}: its save has no DC ACE can read, so nothing was asked.`);
         await CreatureTriggers._gmNote(`<b>${esc(item.name)}</b> went off, and its save has no DC ACE can read. Run it by hand.`);
@@ -329,16 +350,6 @@ export class CreatureTriggers {
     return null;
   }
 
-  /** The save's DC as a number: the recipe's, else the live activity's worked-out one. */
-  static _saveDC(recipe, item) {
-    const n = Number(recipe?.decidedBy?.dc);
-    if (Number.isFinite(n) && n > 0) return n;
-    const id = recipe?.source?.activity ?? null;
-    const acts = CreatureTriggers._activities(item);
-    const act = (id ? acts.find(a => (a?.id ?? a?._id) === id) : null) ?? acts.find(a => a?.save);
-    const v = Number(act?.save?.dc?.value ?? act?.save?.dc?.formula);
-    return Number.isFinite(v) && v > 0 ? v : NaN;
-  }
 
   /* ═══ Who is where ═════════════════════════════════════════════════════ */
 

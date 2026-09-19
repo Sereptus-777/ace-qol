@@ -39,6 +39,8 @@ import { aceDistanceFt } from "./geometry-utils.mjs";
 import { Situation } from "./situation.mjs";
 import { readTurnGaze } from "./rules/creature-words.mjs";
 import { lifeStateOf, pickable } from "./road/picker-rule.mjs";
+// What a save's DC comes to, the way dnd5e works it out (one resolver).
+import { saveDCOf } from "./rules/save-dc.mjs";
 
 const MODULE_ID = "ace-qol";
 const LOG = "ace-qol | gaze";
@@ -66,7 +68,8 @@ export class GazeEngine {
     Hooks.on("deleteCombat", (combat) => {
       if (game.users?.activeGM !== game.user) return;
       for (const c of combat?.combatants ?? []) {
-        GazeEngine._clearAverted(c.actor).catch(() => {});
+        GazeEngine._clearAverted(c.actor).catch(err =>
+          console.warn(`${LOG} | could not take ${c.actor?.name ?? "a creature"}'s look-away mark off as the fight ended:`, err));
       }
     });
     console.debug(`${LOG} | online: start-of-turn gazes fire from their own words.`);
@@ -171,7 +174,7 @@ export class GazeEngine {
       say(`${tag}: its words force a save, and its item carries no save ACE can read, so none was asked.`);
       return;
     }
-    const dc = GazeEngine._saveDC(rec.recipe, item);
+    const dc = saveDCOf(rec.recipe, item);
     const ability = String(rec.recipe.decidedBy?.ability ?? "").toLowerCase();
     if (!ability || !Number.isFinite(dc)) {
       say(`${tag}: its save has ${ability ? "no DC" : "no ability"} ACE can read, so none was asked.`);
@@ -298,17 +301,6 @@ export class GazeEngine {
       || tokenDoc?.getFlag?.(MODULE_ID, "surprised") === true;
   }
 
-  /** The save's DC as a number: the recipe's, else the live activity's worked-out one. */
-  static _saveDC(recipe, item) {
-    const n = Number(recipe?.decidedBy?.dc);
-    if (Number.isFinite(n) && n > 0) return n;
-    const acts = item?.system?.activities;
-    const list = acts ? [...(acts.values?.() ?? Object.values(acts))] : [];
-    const id = recipe?.source?.activity ?? null;
-    const act = (id ? list.find(a => (a?.id ?? a?._id) === id) : null) ?? list.find(a => a?.save);
-    const v = Number(act?.save?.dc?.value ?? act?.save?.dc?.formula);
-    return Number.isFinite(v) && v > 0 ? v : NaN;
-  }
 }
 
 function esc(s) {

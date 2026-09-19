@@ -48,9 +48,23 @@ const SAVES = /\bsaving throw\b|\bDC \d+\b|\bmust succeed on\b/i;
  *   "[[/damage 3d6 type=fire]]"                    → "3d6 fire"
  *   "[[/damage average]]"                          → "(damage)"
  *   "[[/save con 14 format=long]]{ DC 14}"         → " DC 14"
+ *
+ * ⚠️🔴 A LOOKUP IS PART OF THE SENTENCE (2026-09-19). The 2024 Monster Manual's
+ * Magmin says "The monster explodes [[lookup @activation.condition
+ * activity=1SfqWSp7RSyHgG4b]]", and that lookup is "when it dies": the one
+ * thing that makes it a death burst lived inside a tag this reader threw away.
+ * So the Magmin on his map dropped to 0 and nothing burst. Given the item, a
+ * lookup reads the way dnd5e renders it: the activity's own field, the
+ * creature's name, the case it asks for; the tag's {label} only when nothing
+ * answers.
+ *
+ * @param {string} html
+ * @param {{item?: Item}} [ctx]  the item the words belong to, to answer its lookups
  */
-export function plainWords(html) {
+export function plainWords(html, { item = null } = {}) {
   let s = String(html ?? "");
+  s = s.replace(/\[\[lookup\s+@([\w.]+)([^\]]*)\]\](?:\{([^}]*)\})?/gi,
+    (_m, path, opts, label) => lookupText(item, path, opts, label));
   s = s.replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">")
     .replace(/&#39;|&apos;/gi, "'").replace(/&quot;/gi, "\"");
@@ -73,9 +87,42 @@ export function plainWords(html) {
   return s.replace(/\s+/g, " ").trim();
 }
 
-/** The words of an item. */
+/** The words of an item, its lookups answered from the item itself. */
 export function itemWords(item) {
-  return plainWords(item?.system?.description?.value ?? "");
+  return plainWords(item?.system?.description?.value ?? "", { item });
+}
+
+/** One activity of an item by id, from a live collection or stored data. */
+function activityOf(item, id) {
+  const acts = item?.system?.activities;
+  if (!acts) return null;
+  if (id) return acts.get?.(id) ?? acts[id] ?? null;
+  const list = [...(acts.values?.() ?? Object.values(acts))];
+  return list[0] ?? null;
+}
+
+const pathGet = (o, path) => String(path).split(".").reduce((x, k) => (x == null ? undefined : x[k]), o);
+
+/**
+ * What a "[[lookup @path ...]]" says for this item, the way dnd5e renders it:
+ * with `activity=`, that activity's field; "@name" the creature's name, "@item.x"
+ * the item's; a bare activity field ("@save.dc.value") from its first activity.
+ * Case options apply. Nothing found: the tag's {label}, or nothing.
+ */
+function lookupText(item, path, opts = "", label = "") {
+  const o = String(opts ?? "");
+  const act = activityOf(item, o.match(/\bactivity=([\w-]+)/i)?.[1] ?? null);
+  let v;
+  if (/\bactivity=/i.test(o)) v = pathGet(act, path);
+  else if (path === "name") v = item?.actor?.name ?? item?.parent?.name ?? null;
+  else if (path.startsWith("item.")) v = pathGet(item, path.slice(5));
+  else if (/^(?:activation|save|target|range|duration|damage|uses)\b/.test(path)) v = pathGet(activityOf(item, null), path);
+  if (v === undefined || v === null || v === "" || typeof v === "object") return String(label ?? "");
+  let text = String(v);
+  if (/\blowercase\b/i.test(o)) text = text.toLowerCase();
+  else if (/\buppercase\b/i.test(o)) text = text.toUpperCase();
+  else if (/\bcapitalize\b/i.test(o)) text = text.charAt(0).toUpperCase() + text.slice(1);
+  return text;
 }
 
 /**
