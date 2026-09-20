@@ -78,7 +78,7 @@ import { withHalflingLuck, halflingRerolled, luckyFeatItem, luckyFeat, ownRoll a
 import { naturalD20 } from "./rolldata-utils.mjs";
 // What a gaze's own words add to its save: a second failure that petrifies, and
 // "fails by 5 or more" (the 2014 medusa). See rules/creature-words.mjs.
-import { readEscalation, readFailBy } from "./rules/creature-words.mjs";
+import { readEscalation, readFailBy, readFrightfulPresence } from "./rules/creature-words.mjs";
 // The one DC reader: a save's DC is a prepared number, a calculation, or a
 // formula on the sheet, and only this knows all three (rules/save-dc.mjs).
 import { saveDCOf } from "./rules/save-dc.mjs";
@@ -842,6 +842,30 @@ export class SaveEngine {
     // 2026-09-15). His Unarmed Strikes carry Grapple and Shove as bare utilities
     // (Kasimir, Chudd, Jeth, Izek); by the 2024 rules each is a Strength or
     // Dexterity save, the target's choice. Its recipe says so, and this runs it.
+    // ── A FRIGHTENING PRESENCE GOES THROUGH ITS OWN DOOR ─────────────────
+    // His rule, 2026-09-20: "The button still exists for a later reveal. Same
+    // rules." A press must ask the same four questions the automatic one does
+    // (already frightened, already immune, out of range, cannot see it) and
+    // open the same picker, so the press hands over rather than arming the
+    // ordinary area save, which would roll the whole room again.
+    try {
+      const presence = readFrightfulPresence(item);
+      if (presence) {
+        const { PresenceEngine } = await import("./presence-engine.mjs");
+        const tokenDoc = SaveEngine.casterTokenDoc(actor, { sceneId: canvas.scene?.id, quiet: true });
+        if (tokenDoc) {
+          console.log(`${MODULE_ID} | "${item.name}" is a frightening presence, so the press asks `
+            + `who can see ${tokenDoc.name} rather than arming an area save.`);
+          await PresenceEngine.run(tokenDoc, item, presence, { pressed: true, why: "he pressed it" });
+          return;
+        }
+        console.warn(`${MODULE_ID} | "${item.name}" is a frightening presence, and ${actor?.name} has no `
+          + `token on this scene, so there is nothing to measure from. It runs as an ordinary save.`);
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | the presence door threw, so "${item?.name}" runs as an ordinary save:`, err);
+    }
+
     const save = activity.save?.ability ? activity.save : (rulesActionSave(item, activity, actor) ?? activity.save);
     if (!save?.ability) {
       try {
@@ -1902,7 +1926,7 @@ export class SaveEngine {
     let appliedConditions = [];
     try {
       appliedConditions = await this._applyFailedSaveConditions(item, [result],
-        { saveAbility, saveDC, activityId, casterActor, recipe }) ?? [];
+        { saveAbility, saveDC, activityId, casterActor, recipe, presence: opts?.presence ?? null }) ?? [];
     } catch (err) {
       console.error(`${MODULE_ID} | Fast-path condition application failed:`, err);
       appliedConditions = SaveEngine._declinedFor([result],
@@ -1944,6 +1968,36 @@ export class SaveEngine {
    * this with it. Returns null for anything that is not a save activity, and
    * for hand-drawn templates, which carry no origin flag.
    */
+  /**
+   * AN AREA LETS ITS TARGETS GO WHEN IT IS DONE; AN ATTACK KEEPS ITS ONE.
+   *
+   * His rule, 2026-09-20: "Single-target attack (Claw, Bite, Tail) keeps the
+   * target. Area (Breath, Wing, Presence) clears targets when it finishes."
+   *
+   * A breath weapon targets everyone in its cone, and those targets stay
+   * selected afterwards, so the next Claw swings at the whole room unless he
+   * remembers to clear them by hand. A single-target attack is the opposite:
+   * he picked that creature and he is probably hitting it again.
+   *
+   * ⚠️ ONLY WHAT THIS CAST TOOK. A creature he targeted himself and that the
+   * area never touched is his selection, not ours.
+   */
+  static _releaseAreaTargets(item, recipe, results) {
+    try {
+      const kind = String(recipe?.where?.kind ?? "");
+      if (kind !== "area" && kind !== "emanation") return;
+      const mine = new Set((results ?? []).map(r => r?.tokenDocId).filter(Boolean));
+      const held = [...(game.user?.targets ?? [])];
+      const letGo = held.filter(t => mine.has(t?.document?.id ?? t?.id));
+      if (!letGo.length) return;
+      for (const t of letGo) t.setTarget?.(false, { releaseOthers: false, groupSelection: true });
+      console.log(`${MODULE_ID} | "${item?.name}" is an ${kind} and it is done, so it lets go of `
+        + `${letGo.map(t => t.name).join(", ")}. A single-target attack keeps its target.`);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not let go of the area's targets:`, err);
+    }
+  }
+
   /**
    * THE DC of a save about to be asked: the one reader, then the caster's own
    * spell DC, and if neither can answer, 10 and a word about it.
@@ -2364,6 +2418,18 @@ export class SaveEngine {
     // that was counterspelled produces nothing at all: no card, no damage, and
     // its area comes off the map.
     if (await SaveEngine._castCalledOff(templateDoc, pending)) return;
+
+    // ── THE BREATH SHOWS THE BREATH (his rule, 2026-09-20) ───────────────
+    // A creature's cone or line plays its own curated clip, down the template
+    // he just placed. Not awaited: the card and the saves do not wait on a
+    // picture, and the template's cleanup does the waiting instead.
+    try {
+      const { BreathAnimator } = await import("./breath-animator.mjs");
+      BreathAnimator.play(templateDoc, pending.item, pending.actor,
+        { damageTypes: pending.damageTypes ?? [] });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | the breath's look could not be started:`, err);
+    }
 
     // ── WHO THE AREA CATCHES: THE SPELL'S OWN WORDS DECIDE ──
     //
@@ -3603,6 +3669,9 @@ export class SaveEngine {
           spellLevel: Number.isFinite(spellLevel) ? spellLevel : null,
           // What lands, for every step after this one (The One Road).
           recipe: recipe ?? null,
+          // A frightening presence: who it came from, who it already spared,
+          // and that a player's creature waits for APPLY (his rule 2026-09-20).
+          presence: opts.presence ?? null,
           // ⚠️ THIS FLAG HAS EXACTLY ONE READER: the guard inside
           // `_deleteInstantTemplate`. Its only job is "may this template be
           // cleaned up once the card is done", so a spell whose AREA resolves
@@ -4542,6 +4611,27 @@ export class SaveEngine {
     // sweep (Gemini P1-3).
     // SILENT-OK: GM-only handler; every client sees this hook
     if (!game.user.isGM) return;
+    // ── APPLY: what a player's creature failed, landed on his press ──
+    // ⚠️ THE SAME DOOR, NOT A SECOND ONE. The button re-runs the one applier
+    // with the hold lifted for these rows only, so a player's frightened
+    // creature is stamped exactly as an NPC's was, repeat save and all.
+    const applyHeldBtn = el.querySelector?.("[data-action='aceQolApplyHeld']");
+    if (applyHeldBtn && !applyHeldBtn.dataset.wired) {
+      applyHeldBtn.dataset.wired = "1";
+      applyHeldBtn.addEventListener("click", async (ev) => {
+        ev.preventDefault();
+        applyHeldBtn.disabled = true;
+        applyHeldBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> APPLYING…';
+        try { await this._applyHeldConditions(message); }
+        catch (err) {
+          console.error(`${MODULE_ID} | APPLY (held conditions) failed:`, err);
+          ui.notifications?.error("ACE: that could not be applied — see the console.");
+          applyHeldBtn.disabled = false;
+          applyHeldBtn.innerHTML = '<i class="fas fa-check"></i> APPLY';
+        }
+      });
+    }
+
     const phase1RemoveBtns = el.querySelectorAll?.("[data-action='aceQolRemovePhase1']");
     if (phase1RemoveBtns?.length) {
       for (const btn of phase1RemoveBtns) {
@@ -4572,6 +4662,7 @@ export class SaveEngine {
                 activityId:  message.flags?.[MODULE_ID]?.activityId,
                 appliedConditions: message.flags?.[MODULE_ID]?.appliedConditions ?? [],
                 autoResolve: message.flags?.[MODULE_ID]?.autoResolve === true,
+                presence:    message.flags?.[MODULE_ID]?.presence ?? null,
               });
               await message.update({ content: cardHtml }, { render: false });
             }
@@ -5174,11 +5265,24 @@ export class SaveEngine {
     let appliedConditions = [];
     try {
       appliedConditions = await this._applyFailedSaveConditions(item, [...npcResults, ...pcResults],
-        { saveAbility, saveDC, activityId, casterActor, recipe }) ?? [];
+        { saveAbility, saveDC, activityId, casterActor, recipe, presence: flags.presence ?? null }) ?? [];
     } catch (err) {
       console.error(`${MODULE_ID} | Phase-1 condition application failed:`, err);
       appliedConditions = SaveEngine._declinedFor([...npcResults, ...pcResults],
         "ACE hit an error putting the result on it. The console has the details.");
+    }
+
+    // ⚠️ A SAVE MADE IS A DAY'S PEACE. RAW for every presence in his world:
+    // "If a creature's saving throw is successful ... the creature is immune to
+    // this dragon's Frightful Presence for the next 24 hours." The fear ending
+    // later is written by the presence engine's own watch on the effect.
+    if (flags.presence?.immuneHours) {
+      try {
+        const { PresenceEngine } = await import("./presence-engine.mjs");
+        await PresenceEngine.afterSaves(flags.presence, [...npcResults, ...pcResults]);
+      } catch (err) {
+        console.warn(`${MODULE_ID} | could not write the immunity after ${item?.name}:`, err);
+      }
     }
 
     // ── Drop wasted concentration ──
@@ -5191,6 +5295,11 @@ export class SaveEngine {
     // If PCs are pending, we defer until their saves resolve (handled in
     // _handlePCSaveResult).
     const anyPending = [...npcResults, ...pcResults].some(r => r?.pending);
+
+    // An area is finished with the creatures it caught (his rule, 2026-09-20);
+    // a single-target attack keeps the one he picked.
+    if (!anyPending) SaveEngine._releaseAreaTargets(item, recipe, [...npcResults, ...pcResults]);
+
     if (!hasDamage && !anyPending && !SaveEngine._anythingLanded(appliedConditions)) {
       try {
         await this._dropCasterConcentrationIfNoEffect(item, casterActor);
@@ -5220,6 +5329,7 @@ export class SaveEngine {
       castId: thisCastId,
       autoResolve: flags.autoResolve === true,
       trigger: flags.trigger ?? null,
+      presence: flags.presence ?? null,
     });
 
     // ── ONE CLEAN CARD (Johnny 2026-07-11) ──
@@ -6754,6 +6864,7 @@ export class SaveEngine {
           activityId: flags.activityId,
           appliedConditions: cardApplied,
           autoResolve: flags.autoResolve === true,
+          presence: flags.presence ?? null,
         });
       }
 
@@ -6834,7 +6945,7 @@ export class SaveEngine {
     // spells silently did nothing when the save failed. Mirrors the
     // post-hit-saves.mjs pattern that handles weapon-rider conditions.
     await this._applyFailedSaveConditions(item, results, { saveAbility, saveDC, activityId: flags.activityId ?? null,
-      casterActor, recipe });
+      casterActor, recipe, presence: flags.presence ?? null });
 
     // Roll damage once and apply per target with multipliers
     const damageComponents = await this._rollSpellDamage(item, casterActor, {
@@ -7354,6 +7465,20 @@ export class SaveEngine {
         continue;
       }
 
+      // ⚠️ A PLAYER'S CREATURE WAITS FOR HIS PRESS (his rule, 2026-09-20:
+      // "NPCs take Frightened when the save is in. PCs do not. The card waits
+      // on APPLY for player creatures."). The row keeps what it is waiting for
+      // so the button can land exactly that, and the card says so out loud
+      // rather than looking like a failed save that did nothing.
+      if (saveCtx?.presence?.holdPCs && r.isPC && !saveCtx?.dryRun) {
+        const waiting = failConditions.map(c => c.condition).filter(Boolean);
+        applied.push({ targetName: r.name ?? actor.name, tokenDocId: r.tokenDocId,
+          conditions: [], held: waiting, note: null });
+        console.log(`${MODULE_ID} | ${item.name}: ${actor.name} failed and is a player's creature, `
+          + `so ${waiting.join(", ") || "what it leaves"} waits for APPLY.`);
+        continue;
+      }
+
       const _total = Number(r.saveTotal);
       const _byEnough = failByRule && Number.isFinite(_total) && Number.isFinite(Number(resolvedSaveDC))
         && _total <= Number(resolvedSaveDC) - failByRule.n;
@@ -7541,6 +7666,16 @@ export class SaveEngine {
           // Build options bundle for applyByName — concentration linkage AND
           // repeating-save metadata (when applicable).
           const applyOpts = {};
+          if (saveCtx?.presence?.sourceTokenId) {
+            applyOpts.extraFlags = { presence: {
+              sourceTokenId: saveCtx.presence.sourceTokenId,
+              sourceActorId: saveCtx.presence.sourceActorId ?? null,
+              sourceName:    saveCtx.presence.sourceName ?? null,
+              itemName:      saveCtx.presence.itemName ?? item.name,
+              itemUuid:      saveCtx.presence.itemUuid ?? item.uuid ?? null,
+              immuneHours:   saveCtx.presence.immuneHours ?? null,
+            } };
+          }
           if (concentrationOrigin) applyOpts.concentrationOrigin = concentrationOrigin;
           if (repeatingSaveMeta)   applyOpts.repeatingSave       = repeatingSaveMeta;
           if (stagedPetrifyMeta) {
@@ -7764,7 +7899,14 @@ export class SaveEngine {
   // ─────────────────────────────────────────────────────────────────────────
   _buildPhase1CardHtml(item, results, opts) {
     const { saveAbility, saveDC, hasDamage = true, halfOnSave = false, appliedConditions = [], activityId = null,
-            autoResolve = false } = opts;
+            autoResolve = false, presence = null } = opts;
+    // ⚠️ PLAYERS AT THE BOTTOM, SO APPLY IS OBVIOUS (his rule, 2026-09-20). Only
+    // where something of theirs is waiting to be pressed: re-ordering every save
+    // card in the game is not what he asked for, and a Fireball's rows are in
+    // the order he targeted them.
+    if (presence?.holdPCs) {
+      results = [...results].sort((a, b) => (a?.isPC === true ? 1 : 0) - (b?.isPC === true ? 1 : 0));
+    }
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
     const _p1Title = this._abilityLabel(item, activityId);
 
@@ -7878,6 +8020,8 @@ export class SaveEngine {
     // so hold the damage step until no target is still pending. The card
     // rebuilds as each save posts, so ROLL DAMAGE unlocks the moment the last
     // save lands — driven by the actual rolls, not a timer.
+    // What a player's creature failed and has not taken yet.
+    const heldRows = (appliedConditions ?? []).filter(a => (a?.held?.length ?? 0) > 0);
     const anyPending = results.some(r => r.pending);
     // Will ANY resolved target actually take damage? A failer always does; a
     // passer only when the power deals half-on-save. If nobody will — e.g. the
@@ -7920,6 +8064,24 @@ export class SaveEngine {
       const anyoneFailed = results.some(r => SaveEngine._failedTheSave(r));
       actionsHtml = `<div class="ace-qol-save-no-effect" style="padding:8px 12px;text-align:center;color:#88c878;font-size:13px;font-weight:600;">
           <i class="fas fa-shield-halved"></i> ${anyoneFailed ? "Resolved — no damage to apply" : "Saved — no damage"}
+        </div>`;
+    } else if (heldRows.length) {
+      // ⚠️ HIS PRESS, AND IT SAYS WHOSE AND WHAT. A button that reads APPLY
+      // with nothing beside it is a button he has to click to find out what it
+      // does; this one names every creature waiting and what it is taking.
+      const cap = (c) => { const t = String(c ?? ""); return t.charAt(0).toUpperCase() + t.slice(1); };
+      const who = heldRows.map(a => `<b>${foundry.utils.escapeHTML(String(a.targetName ?? "a creature"))}</b>`
+        + ` \u2192 ${foundry.utils.escapeHTML(a.held.map(cap).join(", "))}`).join(" \u00b7 ");
+      const other = (appliedConditions ?? []).filter(a => a?.conditions?.length)
+        .map(a => `${foundry.utils.escapeHTML(String(a.targetName ?? ""))}: `
+          + `${foundry.utils.escapeHTML(a.conditions.map(cap).join(", "))}`).join(", ");
+      actionsHtml = `<div class="ace-qol-save-held" style="padding:9px 12px;border-top:1px solid rgba(212,175,55,0.25);
+             display:flex;flex-direction:column;gap:7px;font-size:15px;line-height:1.4;">
+          ${other ? `<div style="color:#ff8888;"><i class="fas fa-skull-crossbones"></i> ${other}</div>` : ""}
+          <div style="color:#f0e4c0;"><i class="fas fa-hourglass-half" style="color:#ffaa44;"></i> ${who}</div>
+          <button class="ace-qol-btn ace-qol-btn-roll" data-action="aceQolApplyHeld">
+            <i class="fas fa-check"></i> APPLY
+          </button>
         </div>`;
     } else if ((appliedConditions ?? []).some(a => a?.conditions?.length || a?.immune?.length
         || a?.declined || a?.note)) {
@@ -8009,6 +8171,49 @@ export class SaveEngine {
     `;
   }
 
+  /**
+   * The APPLY his rule asks for: everything a player's creature failed and has
+   * been holding lands now, and the card stops asking.
+   *
+   * ⚠️ IT REPORTS WHAT HAPPENED, NOT WHAT IT MEANT TO DO. If the condition door
+   * refuses one (immunity, a disabled condition), the card says so where the
+   * waiting line was.
+   */
+  async _applyHeldConditions(message) {
+    const flags = message?.flags?.[MODULE_ID];
+    if (!flags) return;
+    const held = (flags.appliedConditions ?? []).filter(a => (a?.held?.length ?? 0) > 0);
+    if (!held.length) return;
+    const item = await fromUuid(flags.itemUuid) ?? game.items.get(flags.itemId);
+    const casterActor = game.actors.get(flags.actorId);
+    if (!item) {
+      ui.notifications?.warn("ACE: the ability that card belongs to is gone, so nothing was applied.");
+      return;
+    }
+    const ids = new Set(held.map(a => a.tokenDocId));
+    const rows = (flags.allResults ?? []).filter(r => ids.has(r.tokenDocId));
+    const recipe = SaveEngine._recipeOfCard(flags, item);
+    const landed = await this._applyFailedSaveConditions(item, rows, {
+      saveAbility: flags.saveAbility, saveDC: flags.saveDC, activityId: flags.activityId ?? null,
+      casterActor, recipe,
+      // The hold is lifted for exactly these rows: he has pressed it.
+      presence: flags.presence ? { ...flags.presence, holdPCs: false } : null,
+    }) ?? [];
+    // The waiting rows are replaced by what actually landed on them.
+    const rest = (flags.appliedConditions ?? []).filter(a => !(a?.held?.length > 0));
+    const now = [...rest, ...landed];
+    await message.update({ [`flags.${MODULE_ID}.appliedConditions`]: now }, { render: false });
+    const cardHtml = this._buildPhase1CardHtml(item, flags.allResults ?? [], {
+      saveAbility: flags.saveAbility, saveDC: flags.saveDC,
+      hasDamage: flags.hasDamage !== false, halfOnSave: flags.halfOnSave === true,
+      activityId: flags.activityId, appliedConditions: now,
+      autoResolve: flags.autoResolve === true, presence: flags.presence ?? null,
+    });
+    await message.update({ content: cardHtml });
+    console.log(`${MODULE_ID} | APPLY: ${landed.map(a => `${a.targetName}: `
+      + `${(a.conditions ?? []).join(", ") || a.declined || "nothing"}`).join("; ") || "nothing was waiting"}`);
+  }
+
   async _postSaveResultsPhase1(item, casterActor, results, opts) {
     const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell,
             timingType, templateDocId, templateSceneId, hasDamage = true,
@@ -8063,6 +8268,9 @@ export class SaveEngine {
           autoResolve: opts.autoResolve === true,
           trigger: opts.trigger ?? null,
           appliedConditions, // [{ targetName, conditions:[...] }] for footer rendering
+          // A frightening presence: its source, who it spared, and that a
+          // player's creature is waiting on APPLY (his rule, 2026-09-20).
+          presence: opts.presence ?? null,
           allResults: results.map(r => ({
             name: r.name,
             img: r.img,
@@ -8530,6 +8738,22 @@ export class SaveEngine {
       const scene = game.scenes.get(sceneId);
       const tmpl  = scene?.templates?.get(tmplId);
       if (!tmpl) return;
+
+      // ⚠️ AND NOT WHILE ITS OWN CLIP IS STILL RUNNING (2026-09-20, his
+      // dragon's breath). This deletes ~1.5s after the card lands and ends
+      // every Sequencer effect attached to the template on the way, which cut
+      // a three-second breath in half and swallowed a sound that record delays
+      // by three seconds. If ACE started the clip, the template outlives it.
+      try {
+        const { BreathAnimator } = await import("./breath-animator.mjs");
+        const playing = BreathAnimator.waitFor(tmplId);
+        if (playing) {
+          console.log(`${MODULE_ID} | holding template ${tmplId} until its breath has finished playing.`);
+          await Promise.race([playing, new Promise(r => setTimeout(r, 8000))]);
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | could not wait for the breath's clip; deleting the template now:`, err);
+      }
 
       // ── Release anything bound to this template FIRST (2026-07-28) ──
       // Sequencer effects can be attached to a MeasuredTemplate — ours or

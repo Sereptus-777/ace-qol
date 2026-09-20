@@ -60,6 +60,31 @@ export class ActivityUsePrompt {
           return;
         }
 
+        // ⚠️🔴 A MONSTER'S OWN ACTION IS NEVER ASKED ABOUT (his rule,
+        // 2026-09-20: "WING / TAIL / BREATH DIALOG. No dnd5e 'Consume item
+        // use' window. ACE spends the legendary actions or the recharge use.")
+        //
+        // A player's wand has a question in it: they may want to keep the
+        // charge. A dragon's breath weapon does not. The GM pressed it, and
+        // what it costs, it costs — a legendary action, a recharge, a daily
+        // use. Both windows are suppressed here: ACE's own prompt never opens,
+        // and dnd5e's is switched off on the way past, so dnd5e spends it
+        // silently as it always would.
+        //
+        // ⚠️ SUPPRESSING ACE'S PROMPT IS NOT ENOUGH ON ITS OWN. Returning
+        // without touching `dialogConfig` hands the press straight to dnd5e's
+        // own "Consume Item Use?" dialog, which is the window he is looking at.
+        if (ActivityUsePrompt.isCreaturesOwnAction(activity)) {
+          const owner = activity?.actor ?? activity?.item?.actor ?? null;
+          if (dialogConfig) dialogConfig.configure = false;
+          const cost = ActivityUsePrompt._describeCost(activity);
+          if (cost) {
+            console.log(`${MODULE_ID} | ${owner.name}'s "${activity.item?.name}" costs `
+              + `${cost.cost} ${cost.label} and is a creature's own action, so nothing asks: it is spent.`);
+          }
+          return;
+        }
+
         const spend = ActivityUsePrompt._describeCost(activity);
         if (!spend) return;   // nothing consumed → no prompt, no interruption
 
@@ -71,6 +96,17 @@ export class ActivityUsePrompt {
     });
 
     console.debug(`${MODULE_ID} | Activity Use Prompt online — ACE owns the consumption dialog`);
+  }
+
+  /**
+   * A creature's own action, as opposed to a player character's item.
+   *
+   * His rule, 2026-09-20: a monster's Wing, Tail or Breath is never asked
+   * about. The GM pressed it; what it costs, it costs.
+   */
+  static isCreaturesOwnAction(activity) {
+    const owner = activity?.actor ?? activity?.item?.actor ?? null;
+    return !!owner && owner.type !== "character";
   }
 
   /** What does this activity cost? null when it consumes nothing. */

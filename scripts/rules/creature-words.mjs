@@ -381,6 +381,106 @@ export function readEscalation(item) {
   return cond && cond !== "the" ? cond : null;
 }
 
+/* ═══ 4. A frightening presence ═══════════════════════════════════════════ */
+
+// The sentence that makes it one: everyone within so many feet of the creature
+// saves or is frightened. Both editions write it, and neither is read by name.
+//
+//   2014: "Each creature of the dragon's choice that is within 120 feet of the
+//          dragon and aware of it must succeed on a DC 21 Wisdom saving throw
+//          or become frightened for 1 minute."
+//   2014: "Each non-undead creature within 60 ft. of the ghost that can see it
+//          must succeed on a DC 13 Wisdom saving throw or be frightened..."
+//   2024: "Wisdom Saving Throw: DC 21, each creature in a 120-foot Emanation
+//          originating from the dragon. Failure: ... Frightened ..."
+const FEET_NEAR = /\bwithin (\d+)\s*(?:ft\.?|feet)\b|\b(\d+)[- ]foot emanation\b|\b(\d+)[- ]foot radius\b/i;
+const FRIGHTENS = /\bfrightened\b/i;
+// Who it leaves out: "Each non-undead creature", "each creature that isn't a construct".
+const NOT_A = /\beach\s+non-([a-z]+)\s+creature\b|\beach creature that (?:isn't|is not) an?\s+([a-z]+)\b/i;
+// Whose choice it is: "of the dragon's choice", "of its choice".
+const ITS_CHOICE = /\bof (?:the [\w' -]+?'s|its|his|her|their) choice\b/i;
+// What it needs of the victim: seeing it, or merely knowing it is there.
+const MUST_SEE = /\bthat can see it\b|\bcan see the [\w' -]+\b|\baware of it\b|\bcan see and hear\b/i;
+// How long the fear lasts, and how long the creature is safe afterwards.
+const FOR_MINUTES = /\bfor (\d+) minutes?\b/i;
+const UNTIL_NEXT_TURN = /\buntil the end of (?:its|their) next turn\b/i;
+const IMMUNE_HOURS = /\bimmune to [^.]*?\bfor (?:the next )?(\d+) hours?\b/i;
+const REPEATS = /\brepeats? the sav(?:ing throw|e)\b|\bcan repeat the sav/i;
+// ⚠️ SOMETHING THE CREATURE DOES IS NOT SOMETHING IT IS. A Cloaker moans, a
+// Sphinx roars, a Shadow Mastiff howls, a bard plays Pipes of Haunting: all of
+// them frighten a room full of creatures with a saving throw, and every one is
+// an act, taken when its owner chooses. A presence is the creature itself, and
+// it is the only one of them that may fire without a press.
+const AN_ACT = /\b(?:hears?|hearing|moans?|roars?|howls?|shouts?|screams?|shrieks?|wails?|bellows?|emits?|exhales?|utters?|speaks?|plays?|blasts?|presents?)\b/i;
+// ⚠️ "YOU" IS A PLAYER'S OWN FEATURE. Monster words are third person; a feature
+// written at its owner ("you present your holy symbol") is Akra's Channel
+// Divinity, and nothing of hers may go off on its own.
+const SECOND_PERSON = /\byou\b|\byour\b/i;
+
+/**
+ * Does this item's words frighten everyone near the creature?
+ *
+ * ⚠️ NEVER BY NAME. "Frightful Presence" is what most of them are called and
+ * three of his are not (Horrifying Visage, Frightening Presence, and a bite
+ * that frightens the bystanders). The words decide, the same way the death
+ * burst and the gaze do.
+ *
+ * ⚠️ AND NEVER A SPELL. Fear, Cause Fear and Eyebite frighten from a spell
+ * list; they are cast, they have their own rules, and they do not hand out a
+ * 24-hour immunity to themselves.
+ *
+ * @returns {null|{radiusFt: number, needsSight: boolean, choice: boolean,
+ *   excludes: string|null, durationSeconds: number|null, repeats: boolean,
+ *   immuneHours: number|null, sentence: string}}
+ */
+export function readFrightfulPresence(item) {
+  if (!item || item.type === "spell") return null;
+  const words = itemWords(item);
+  if (!words || !FRIGHTENS.test(words)) return null;
+  const sents = sentencesOf(words);
+  // The sentence that says both "near me" and "saves", in either order.
+  const i = sents.findIndex(s => FEET_NEAR.test(s) && SAVES.test(s)
+    && (FRIGHTENS.test(s) || FRIGHTENS.test(sents[sents.indexOf(s) + 1] ?? "")));
+  if (i < 0) return null;
+  const sentence = sents[i];
+  const m = sentence.match(FEET_NEAR);
+  const radiusFt = Number(m?.[1] ?? m?.[2] ?? m?.[3] ?? 0);
+  if (!(radiusFt > 0)) return null;
+  // ⚠️ A REACH IS NOT A PRESENCE. The Feyr's Frightful Bite frightens everyone
+  // within 10 feet of ITSELF when it hits, which is a rider on an attack and
+  // belongs to the attack's own card, not to a presence that fires on sight.
+  if (/\bhit:/i.test(sentence) || /\bmelee (?:weapon )?attack\b/i.test(sentence)) return null;
+
+  const not = words.match(NOT_A);
+  const mins = words.match(FOR_MINUTES);
+  const hours = words.match(IMMUNE_HOURS);
+  const needsSight = MUST_SEE.test(sentence) || MUST_SEE.test(words);
+  return {
+    radiusFt,
+    /**
+     * ⚠️ DOES IT FIRE BY ITSELF? Only a presence does, and 131 items in his
+     * world write an area fear save. Being frightening by merely being there
+     * is: seeing it (or being aware of it) is what does it, no act of the
+     * creature's is named, its words are about IT rather than about "you", and
+     * it hands out the immunity that says a creature only faces it once.
+     *
+     * Everything else is still read — the picker and the card are the same —
+     * but it waits for a press, because its owner chooses when to do it.
+     */
+    byPresence: needsSight && !!hours && !AN_ACT.test(words) && !SECOND_PERSON.test(words),
+    needsSight,
+    choice: ITS_CHOICE.test(sentence),
+    excludes: (not?.[1] ?? not?.[2] ?? null)?.toLowerCase() ?? null,
+    durationSeconds: mins ? Number(mins[1]) * 60 : (UNTIL_NEXT_TURN.test(words) ? null : 60),
+    repeats: REPEATS.test(words),
+    // ⚠️ THE HOURS COME FROM THE WORDS. Every copy of this in his world says 24,
+    // and a copy that says something else gets what it says, not what the
+    // common one says. No immunity sentence at all means no immunity.
+    immuneHours: hours ? Number(hours[1]) : null,
+    sentence,
+  };
+}
+
 /* ═══ A recipe from the words, when the item has nothing to press ════════ */
 
 /**

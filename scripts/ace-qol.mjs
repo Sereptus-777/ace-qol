@@ -82,6 +82,8 @@ import { decideActivityChoice, spellIsUp, upCanBeSeen } from "./activity-choice.
 import { guardianCastActivity } from "./rules/spirit-guardians.mjs";
 import { RepeatingSaveEngine }  from "./repeating-save-engine.mjs";
 import { GazeEngine }           from "./gaze-engine.mjs";
+import { PresenceEngine }       from "./presence-engine.mjs";
+import { BreathAnimator }       from "./breath-animator.mjs";
 import { CreatureTriggers }     from "./creature-triggers.mjs";
 import { BreakFreeEngine }      from "./break-free-engine.mjs";
 import { RestrainedMovement }   from "./restrained-movement.mjs";
@@ -3626,6 +3628,21 @@ Hooks.once("ready", () => {
   } catch (err) {
     console.error(`${MODULE_ID} | Gaze engine init failed:`, err);
   }
+  // A frightening presence fires once when its creature shows up or takes its
+  // first turn, asks who can see it, and never asks a creature twice
+  // (presence-engine.mjs).
+  try {
+    PresenceEngine.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Presence engine init failed:`, err);
+  }
+  // A creature's breath weapon plays his own curated clip down its cone, with
+  // Automated Animations stood down for that one item (breath-animator.mjs).
+  try {
+    BreathAnimator.register();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Breath animator init failed:`, err);
+  }
   try {
     CreatureTriggers.init();
   } catch (err) {
@@ -5804,6 +5821,8 @@ Hooks.once("ready", () => {
     // stands its own copies down.
     CreatureTriggers,
     GazeEngine,
+    PresenceEngine,
+    BreathAnimator,
     concentrationWidget,
     // Prismatic Wall: game.aceQol.prismaticWall.designate(templateId) asks again
     // who passes a standing wall unharmed.

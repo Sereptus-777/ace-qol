@@ -5158,6 +5158,403 @@ console.log(`\nRECHARGE ATTACKS: BREATH, WING, TAIL`);
   }
 }
 
+/* ── A FRIGHTENING PRESENCE: ONE SAVE, ONE CREATURE, ONCE ────────────────── */
+// His list of 2026-09-20: "Against that dragon a creature rolls once. Already
+// frightened by it: no roll. Already immune to it: no roll. Outside 120 feet:
+// no roll. No line of sight (wall, closed door): no roll. A second press does
+// not roll the room again." Pinned on Volcathar the Flameborn's own Frightful
+// Presence (WIS DC 16, 120 feet, aware of it, frightened for a minute, immune
+// for 24 hours) on AMBER TEMPLE: LOWER.
+console.log(`\nA FRIGHTENING PRESENCE: ONE SAVE, ONE CREATURE, ONCE`);
+{
+  const MOD = "ace-qol";
+  const SCENE9 = "replay-presence-scene";
+  const PLAYER9 = { id: "tommy", name: "Tommy", isGM: false, active: true, character: null };
+  const docs9 = new Map(), made9 = [], chat9 = new Map();
+  const { PresenceEngine } = await import(`${MODULE}/scripts/presence-engine.mjs`);
+  const { readFrightfulPresence } = await import(`${MODULE}/scripts/rules/creature-words.mjs`);
+  const { Situation: Sit9 } = await import(`${MODULE}/scripts/situation.mjs`);
+  const setPath9 = (obj, key, v) => {
+    const path = key.split(".");
+    let o = obj;
+    for (const k of path.slice(0, -1)) o = (o[k] ??= {});
+    o[path[path.length - 1]] = v;
+  };
+  const keep9 = { users: game.users, user: game.user, messages: game.messages, scenesGet: game.scenes.get,
+    scene: canvas.scene, placed: [...canvas.tokens.placeables], create: ChatMessage.create,
+    canSee: Sit9.canSee, gmActive: GM.active, owner: CONST.DOCUMENT_OWNERSHIP_LEVELS,
+    time: game.time, combat: game.combat, fromUuidSync: globalThis.fromUuidSync };
+
+  const creature9 = (id, name, { type = "npc", owner = null, dead = false, effects = [] } = {}) => {
+    const a = { id, name, type, img: `${id}.webp`, documentName: "Actor", uuid: `Actor.${id}`,
+      statuses: new Set(dead ? ["dead"] : []), items: new Collection(),
+      // ⚠️ AN ARRAY THAT ALSO ANSWERS `.contents`. ACE asks both ways (the
+      // presence reads `.contents`, the save engine calls `.some`), and a real
+      // Collection's `contents` is a getter that cannot be assigned.
+      effects: (() => { const e = [...effects];
+        Object.defineProperty(e, "contents", { get: () => e, configurable: true }); return e; })(),
+      ownership: owner ? { [owner]: 3 } : {}, isOwner: true, hasPlayerOwner: !!owner,
+      prototypeToken: { actorLink: true }, getFlag: () => undefined, getRollData: () => ({}),
+      testUserPermission: (u) => !!u && !u.isGM && (a.ownership?.[u.id] ?? 0) >= 3,
+      system: { attributes: { hp: { value: dead ? 0 : 40, max: 40, temp: 0 }, death: { success: 0, failure: 0 }, prof: 3 },
+        abilities: { str: { mod: 0, save: { value: 0 } }, dex: { mod: 0, save: { value: 0 } },
+          con: { mod: 0, save: { value: 0 } }, wis: { mod: 0, save: { value: 0 } } },
+        skills: {}, details: { type: { value: "humanoid" }, alignment: "Neutral" },
+        traits: { ci: { value: new Set() }, di: { value: new Set() }, dr: { value: new Set() }, dv: { value: new Set() } } },
+      createEmbeddedDocuments: async (_t, rows) => {
+        const made = rows.map(r => ({ ...r, id: `eff-${Math.random().toString(36).slice(2, 8)}`,
+          parent: a, delete: async () => { const i = a.effects.indexOf(made[0]); if (i >= 0) a.effects.splice(i, 1); } }));
+        a.effects.push(...made);
+        return made;
+      },
+      update: async (u) => { for (const [k, v] of Object.entries(u)) setPath9(a, k, v); return a; } };
+    ACTORS.set(id, a);
+    made9.push(a);
+    return a;
+  };
+  const place9 = (actor, id, x) => {
+    // ⚠️ THE PARENT IS THE SCENE ITSELF, not a stub with its id: the presence
+    // engine reads every token off `tokenDoc.parent`, which is how Foundry
+    // hands a token its scene.
+    const doc = { id, actorId: actor.id, actor, parent: canvas.scene, flags: {}, name: actor.name,
+      hidden: false, x, y: 0, width: 1, height: 1, elevation: 0, disposition: actor.hasPlayerOwner ? 1 : -1,
+      texture: { src: `${actor.id}-token.webp` }, getFlag: () => undefined,
+      update: async (u) => { for (const [k, v] of Object.entries(u)) setPath9(doc, k, v); return doc; } };
+    const tok = { id, name: actor.name, actor, document: doc, x, y: 0, w: 100, h: 100,
+      center: { x: x + 50, y: 50 }, scene: { id: SCENE9 }, visible: true, setTarget() {} };
+    doc.object = tok;
+    docs9.set(id, doc);
+    canvas.tokens.placeables.push(tok);
+    return tok;
+  };
+  const markFright = (sourceTokenId, itemName) => ({ disabled: false, name: "Frightened",
+    flags: { [MOD]: { presence: { sourceTokenId, itemName, immuneHours: 24 } } } });
+  const markImmune = (sourceActorId, itemName, until) => ({ disabled: false, name: "Immune",
+    delete: async () => {}, flags: { [MOD]: { presenceImmunity: { sourceActorId, itemName, until } } } });
+
+  try {
+    GM.active = true;
+    const users9 = Object.assign([GM, PLAYER9], { activeGM: GM });
+    users9.get = (id) => users9.find(u => u.id === id);
+    game.users = users9;
+    game.user = GM;
+    game.time = { worldTime: 1000 };
+    CONST.DOCUMENT_OWNERSHIP_LEVELS = { NONE: 0, LIMITED: 1, OBSERVER: 2, OWNER: 3 };
+    game.messages = { get: (id) => chat9.get(id) ?? null, get contents() { return [...chat9.values()]; } };
+    ChatMessage.create = async (data, opts) => {
+      const msg = await keep9.create(data, opts);
+      const plain = msg.update;
+      msg.update = async (u = {}) => {
+        const rest = {};
+        for (const [k, v] of Object.entries(u)) { if (k.includes(".")) setPath9(msg, k, v); else rest[k] = v; }
+        return plain(rest);
+      };
+      msg.whisper = data?.whisper ?? [];
+      msg.author = data?.author ?? null;
+      chat9.set(msg.id, msg);
+      return msg;
+    };
+    const scene9 = { id: SCENE9, grid: { size: 100, distance: 5 }, templates: { get: () => null },
+      tokens: { get: (t) => docs9.get(t) ?? null, get contents() { return [...docs9.values()]; } } };
+    game.scenes.get = (id) => (id === SCENE9 ? scene9 : keep9.scenesGet(id));
+    canvas.scene = scene9;
+    canvas.tokens.placeables.length = 0;
+
+    const dragon = firstActor("Volcathar the Flameborn CR17");
+    const fp = dragon?.items?.find(i => i.name === "Frightful Presence") ?? null;
+    const presence = fp ? readFrightfulPresence(fp) : null;
+
+    if (!fp || !presence) {
+      check("Volcathar's Frightful Presence (2026-09-20)", null, "no Frightful Presence on his dragon in this world");
+    } else {
+      check("his dragon's Frightful Presence is read from its own words and fires without a press: everyone within 120 feet who is aware of it, frightened for a minute, a save at the end of each of its turns, and 24 hours' peace afterwards (2026-09-20)",
+        presence.byPresence === true && presence.radiusFt === 120 && presence.needsSight === true
+          && presence.choice === true && presence.durationSeconds === 60 && presence.repeats === true
+          && presence.immuneHours === 24,
+        `${presence.radiusFt} ft, sight ${presence.needsSight}, its pick ${presence.choice}, `
+          + `${presence.durationSeconds}s, repeats ${presence.repeats}, immune ${presence.immuneHours}h, `
+          + `fires by itself ${presence.byPresence}`);
+
+      // WHAT LANDS: frightened, and nothing the item happens to carry beside it.
+      const built = await quiet(() => PresenceEngine._recipeFor(fp, dragon, presence));
+      const fails = (built?.recipe?.onFail ?? []).map(o => o.condition?.key ?? o.formula ?? o.kind);
+      check("a failed save against it leaves FRIGHTENED and nothing else: one result, the condition its words name, with the repeat save on it (2026-09-20)",
+        !!built && built.ability === "wis" && Number(built.dc) === 16
+          && fails.length === 1 && fails[0] === "frightened"
+          && (built.recipe.onSuccess ?? []).length === 0
+          && built.recipe.onFail[0].condition.duration === 60,
+        built ? `${String(built.ability).toUpperCase()} DC ${built.dc}; on a fail ${fails.join(", ")}; `
+          + `on a success ${(built.recipe.onSuccess ?? []).length} things` : "no recipe");
+
+      // WHO IS ASKED: his four answers, plus the dead, on one scene.
+      const knight = creature9("replay-fp-knight", "a knight");
+      const farKnight = creature9("replay-fp-far", "a knight down the hall");
+      const corpse = creature9("replay-fp-corpse", "a burnt cultist", { dead: true });
+      const chudd = creature9("replay-fp-chudd", "Chudd", { type: "character", owner: "tommy" });
+      const dragonTok = place9(dragon, "tok-fp-dragon", 0);
+      const alreadyAfraid = creature9("replay-fp-afraid", "a shaking veteran",
+        { effects: [markFright("tok-fp-dragon", "Frightful Presence")] });
+      const alreadyImmune = creature9("replay-fp-immune", "a steady monk",
+        { effects: [markImmune(dragon.id, "Frightful Presence", 90000)] });
+      const behindDoor = creature9("replay-fp-door", "a guard behind a closed door");
+      place9(knight, "tok-fp-knight", 200);
+      place9(farKnight, "tok-fp-far", 3000);       // 150 feet down the hall
+      place9(corpse, "tok-fp-corpse", 300);
+      place9(chudd, "tok-fp-chudd", 400);
+      place9(alreadyAfraid, "tok-fp-afraid", 500);
+      place9(alreadyImmune, "tok-fp-immune", 600);
+      place9(behindDoor, "tok-fp-door", 700);
+      Sit9.canSee = (viewer, subject, o = {}) => ({
+        canSee: viewer !== behindDoor, why: viewer === behindDoor ? "a closed door" : "in the open" });
+
+      const rows = PresenceEngine._read(dragonTok.document, fp, presence);
+      const by = (a) => rows.find(r => r.doc.actor === a) ?? null;
+      const asked = rows.filter(r => !r.skip).map(r => r.name);
+      check("it asks the knight and Chudd, and says why it asks nobody else: the far knight is out of 120 feet, the guard cannot see it through a closed door, the veteran is already frightened by it, the monk is already immune to it, and the dead cultist is not on the list at all (2026-09-20)",
+        asked.length === 2 && asked.includes("a knight") && asked.includes("Chudd")
+          && /out of range/.test(by(farKnight)?.skip?.reason ?? "")
+          && /cannot see it/.test(by(behindDoor)?.skip?.reason ?? "")
+          && by(alreadyAfraid)?.skip?.reason === "already frightened by it"
+          && by(alreadyImmune)?.skip?.reason === "immune to it already"
+          && by(corpse)?.skip?.reason === "dead" && by(corpse)?.skip?.hide === true
+          && by(dragon)?.skip?.reason === "itself",
+        `asked: ${asked.join(", ") || "nobody"}; `
+          + rows.filter(r => r.skip).map(r => `${r.name}: ${r.skip.reason}`).join("; "));
+
+      // A SECOND PRESS ROLLS NOBODY: the two states above are what make it true.
+      const afterKnight = markFright("tok-fp-dragon", "Frightful Presence");
+      const setEffects = (a, rows) => { a.effects.length = 0; a.effects.push(...rows); };
+      setEffects(knight, [afterKnight]);
+      setEffects(chudd, [markImmune(dragon.id, "Frightful Presence", 90000)]);
+      const again = PresenceEngine._read(dragonTok.document, fp, presence).filter(r => !r.skip);
+      check("and a second press rolls nobody: the knight it frightened and Chudd who made the save are both done with it, so the room is not asked again (2026-09-20)",
+        again.length === 0,
+        again.length ? `still asked: ${again.map(r => r.name).join(", ")}` : "nobody is asked a second time");
+
+      // An immunity whose day has passed is not an answer.
+      game.time.worldTime = 200000;
+      const stale = PresenceEngine._read(dragonTok.document, fp, presence).filter(r => r.doc.actor === chudd);
+      check("but a day later that immunity is spent: with the world clock past its 24 hours, Chudd is asked again (2026-09-20)",
+        stale.length === 1 && !stale[0].skip,
+        stale.length ? `Chudd: ${stale[0].skip?.reason ?? "asked again"}` : "Chudd is not on the scene");
+      game.time.worldTime = 1000;
+
+      // WHAT LANDS, AND WHO WAITS: his rule for the card itself.
+      setEffects(knight, []);
+      setEffects(chudd, []);
+      let engine9 = null;
+      try { await quiet(async () => { engine9 = new SaveEngine({}); }); } catch (_) { engine9 = null; }
+      if (!engine9) {
+        check("the presence card (2026-09-20)", null, "the save engine could not be built in this harness");
+      } else {
+        // ⚠️ THE ROWS ARRIVE RESOLVED, which is what the card hands the applier
+        // once the dice are in: an NPC that failed and a player's creature that
+        // failed. A player rolls on their own screen, so the harness cannot
+        // press for them; what is pinned here is what happens to the two rows.
+        const row9 = (name, tokenDocId, actorId, isPC) => ({ name, tokenDocId, actorId, sceneId: SCENE9,
+          img: `${actorId}.webp`, saveTotal: 7, passed: false, isAutoFail: false, resultLabel: "FAIL",
+          damageMultiplier: 1, isPC, pending: false });
+        const rows9 = [row9("a knight", "tok-fp-knight", knight.id, false),
+                       row9("Chudd", "tok-fp-chudd", chudd.id, true)];
+        const presFlag = { sourceTokenId: "tok-fp-dragon", sourceActorId: dragon.id,
+          sourceName: dragon.name, itemName: fp.name, itemUuid: fp.uuid ?? null,
+          immuneHours: 24, holdPCs: true, spared: [] };
+        let errC9 = null, applied9 = [];
+        try {
+          await quiet(async () => {
+            applied9 = await engine9._applyFailedSaveConditions(fp, rows9,
+              { saveAbility: "wis", saveDC: 16, activityId: built.activityId,
+                casterActor: dragon, recipe: built.recipe, presence: presFlag }) ?? [];
+          });
+        } catch (e) { errC9 = e; }
+        const held9 = applied9.filter(a => (a?.held?.length ?? 0) > 0);
+        const landed9 = applied9.filter(a => (a?.conditions?.length ?? 0) > 0);
+        const html9 = engine9._buildPhase1CardHtml(fp, rows9, { saveAbility: "wis", saveDC: 16,
+          hasDamage: false, halfOnSave: false, activityId: built.activityId,
+          appliedConditions: applied9, autoResolve: true, presence: presFlag });
+        const order9 = [...String(html9).matchAll(/data-token-doc-id="(tok-fp-[a-z]+)"/g)].map(m => m[1]);
+        check("the knight takes Frightened the moment its save is in and Chudd does not: his waits behind an APPLY button that names him, and his row is the last one on the card (2026-09-20)",
+          !errC9 && held9.length === 1 && held9[0].targetName === "Chudd" && held9[0].held.includes("frightened")
+            && landed9.some(a => a.targetName === "a knight" && a.conditions.includes("frightened"))
+            && /aceQolApplyHeld/.test(html9) && /Chudd/.test(html9)
+            && order9.lastIndexOf("tok-fp-chudd") > order9.lastIndexOf("tok-fp-knight"),
+          errC9 ? `threw: ${errC9?.message ?? errC9}`
+            : `landed: ${landed9.map(a => `${a.targetName}: ${a.conditions.join(", ")}`).join("; ") || "nothing"}; `
+              + `waiting: ${held9.map(a => `${a.targetName} -> ${a.held.join(", ")}`).join("; ") || "nobody"}; `
+              + `rows: ${order9.join(", ")}`);
+
+        // ONCE, AND THE MARK LIVES ON THE FIGHT.
+        const flags9 = {};
+        const combat9 = { started: true, combatants: [],
+          getFlag: (m, k) => flags9[`${m}.${k}`], setFlag: async (m, k, v) => { flags9[`${m}.${k}`] = v; } };
+        const keepCombat = game.combat;
+        const ran = [];
+        const keepRun = PresenceEngine.run;
+        PresenceEngine.run = async (doc, item) => { ran.push(item.name); };
+        try {
+          game.combat = combat9;
+          await quiet(async () => {
+            await PresenceEngine._fireFor(docs9.get("tok-fp-dragon"), "the fight started");
+            await PresenceEngine._fireFor(docs9.get("tok-fp-dragon"), "its first turn began");
+            await PresenceEngine._fireFor(docs9.get("tok-fp-dragon"), "it appeared on the map");
+          });
+        } finally {
+          PresenceEngine.run = keepRun;
+          game.combat = keepCombat;
+        }
+        check("it happens once a fight, however it was reached: the fight starting, its first turn and its token appearing all ask the same question, and only the first one runs it (2026-09-20)",
+          ran.length === 1 && ran[0] === "Frightful Presence"
+            && Object.keys(flags9).length === 1,
+          `it ran ${ran.length} time(s)${ran.length ? ` (${ran.join(", ")})` : ""}; the fight remembers `
+            + `${Object.values(flags9).map(v => Object.keys(v).length).join("/")} creature(s)`);
+
+        // And the press lands exactly what was waiting, through the same door.
+        const msg9 = { id: "msg-fp-1", flags: { [MOD]: { itemUuid: fp.uuid ?? null, itemId: fp.id,
+          actorId: dragon.id, saveAbility: "wis", saveDC: 16, activityId: built.activityId,
+          recipe: built.recipe, hasDamage: false, halfOnSave: false, autoResolve: true,
+          presence: presFlag, appliedConditions: applied9, allResults: rows9 } },
+          content: html9,
+          update: async (u = {}) => { for (const [k, v] of Object.entries(u)) {
+            if (k.includes(".")) setPath9(msg9, k, v); else msg9[k] = v; } return msg9; } };
+        let errA9 = null;
+        try { await quiet(() => engine9._applyHeldConditions(msg9)); }
+        catch (e) { errA9 = e; }
+        const after9 = msg9.flags[MOD].appliedConditions ?? [];
+        const stillHeld = after9.filter(a => (a?.held?.length ?? 0) > 0);
+        check("and his APPLY lands Chudd's: nothing is left waiting, the button is gone, and the card says what he took (2026-09-20)",
+          !errA9 && stillHeld.length === 0 && !/aceQolApplyHeld/.test(String(msg9.content ?? ""))
+            && after9.some(a => a.targetName === "Chudd" && (a.conditions ?? []).includes("frightened")),
+          errA9 ? `threw: ${errA9?.message ?? errA9}`
+            : `still waiting: ${stillHeld.length}; the card now says: `
+              + `${after9.map(a => `${a.targetName}: ${(a.conditions ?? []).join(", ") || a.declined || "nothing"}`).join("; ") || "nothing"}`);
+      }
+    }
+  } finally {
+    ChatMessage.create = keep9.create;
+    game.users = keep9.users;
+    game.user = keep9.user;
+    game.messages = keep9.messages;
+    game.scenes.get = keep9.scenesGet;
+    canvas.scene = keep9.scene;
+    canvas.tokens.placeables.length = 0;
+    canvas.tokens.placeables.push(...keep9.placed);
+    Sit9.canSee = keep9.canSee;
+    if (keep9.time === undefined) delete game.time; else game.time = keep9.time;
+    if (keep9.gmActive === undefined) delete GM.active; else GM.active = keep9.gmActive;
+    if (keep9.owner === undefined) delete CONST.DOCUMENT_OWNERSHIP_LEVELS; else CONST.DOCUMENT_OWNERSHIP_LEVELS = keep9.owner;
+    for (const a of made9) ACTORS.delete(a.id);
+  }
+}
+
+/* ── THE PRESS, THE LOOK AND THE TARGETS ─────────────────────────────────── */
+// His list of 2026-09-20, items 4 to 6: no consume window on a creature's own
+// action, a breath weapon that shows the breath, and an area that lets go of
+// the creatures it caught while a single-target attack keeps its one.
+console.log(`\nTHE PRESS, THE LOOK AND THE TARGETS`);
+{
+  const { ActivityUsePrompt } = await import(`${MODULE}/scripts/activity-use-prompt.mjs`);
+  const { BreathAnimator, isCreatureArea } = await import(`${MODULE}/scripts/breath-animator.mjs`);
+  const dragon = firstActor("Volcathar the Flameborn CR17");
+  const breath = dragon?.items?.find(i => i.name === "Fire Breath") ?? null;
+  const claw = dragon?.items?.find(i => i.name === "Claw") ?? null;
+  const varek = firstActor("Varek Thalor (CR 30)");
+  const fireball = varek?.items?.find(i => i.name === "Fireball") ?? null;
+
+  if (!dragon || !breath || !claw) {
+    check("his dragon's press, look and targets (2026-09-20)", null, "no Volcathar with a Fire Breath and a Claw");
+  } else {
+    /* ── 4. NO CONSUME WINDOW ON A CREATURE'S OWN ACTION ─────────────────── */
+    const act4 = [...breath.system.activities][0];
+    const src4 = readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/activity-use-prompt.mjs`, "utf8");
+    // dnd5e's own dialog is what he is looking at, so the branch must switch it off.
+    const branch = src4.slice(src4.indexOf("isCreaturesOwnAction(activity)) {"),
+      src4.indexOf("const spend = ActivityUsePrompt._describeCost(activity);"));
+    check("pressing his dragon's breath asks nothing: it is a creature's own action, so ACE's consume prompt never opens AND dnd5e's own window is switched off on the way past, and the recharge is simply spent (2026-09-20)",
+      ActivityUsePrompt.isCreaturesOwnAction(act4) === true
+        && /dialogConfig\).*configure = false/s.test(branch)
+        && /return;/.test(branch)
+        && !/showConsumePrompt/.test(branch),
+      `a creature's own action: ${ActivityUsePrompt.isCreaturesOwnAction(act4)}; `
+        + `the branch shuts dnd5e's dialog: ${/configure = false/.test(branch)}`);
+
+    // ⚠️ VAREK IS AN NPC, VILLAIN OR NOT. The line is a player's CHARACTER, which
+    // is what dnd5e's own actor type says, not who is scary.
+    const playersWand = { actor: { type: "character", name: "a player's character" } };
+    check("and a player character's own limited-use item still asks, because keeping the charge is a real question (2026-09-20)",
+      ActivityUsePrompt.isCreaturesOwnAction(playersWand) === false
+        && ActivityUsePrompt.isCreaturesOwnAction({ actor: { type: "npc" } }) === true,
+      `a character is asked: ${!ActivityUsePrompt.isCreaturesOwnAction(playersWand)}; `
+        + `an NPC is not: ${ActivityUsePrompt.isCreaturesOwnAction({ actor: { type: "npc" } })}`);
+
+    /* ── 5. THE BREATH SHOWS THE BREATH ──────────────────────────────────── */
+    check("ACE knows a creature's cone or line from everything else: his dragon's Fire Breath is one, its Claw is not, and a player's spell never is (2026-09-20)",
+      !!isCreatureArea(breath) && String(isCreatureArea(breath).shape) === "cone"
+        && !isCreatureArea(claw)
+        && (!fireball || !isCreatureArea(fireball)),
+      `the breath: ${JSON.stringify(isCreatureArea(breath))}; the claw: ${JSON.stringify(isCreatureArea(claw))}; `
+        + `a spell: ${JSON.stringify(fireball ? isCreatureArea(fireball) : null)}`);
+
+    // Played down the template he placed, from his own curated record.
+    const played = [];
+    const keepSeq = globalThis.Sequence;
+    const keepSequencer = globalThis.Sequencer;
+    globalThis.Sequencer = { Database: { entryExists: (p) => /jb2a/.test(String(p)) } };
+    globalThis.Sequence = class {
+      sound() { const s = { file: (f) => { played.push(`sound ${f}`); return s; },
+        volume: () => s, delay: () => s }; return s; }
+      effect() { const e = { file: (f) => { played.push(`file ${f}`); return e; },
+        atLocation: (l) => { played.push(`from ${Math.round(l.x)},${Math.round(l.y)}`); return e; },
+        stretchTo: (l) => { played.push(`to ${Math.round(l.x)},${Math.round(l.y)}`); return e; },
+        opacity: () => e }; return e; }
+      play() { played.push("play"); return Promise.resolve(true); }
+    };
+    const tmpl5 = { id: "tpl-breath", x: 1000, y: 1000, direction: 0, distance: 60,
+      parent: { grid: { size: 100, distance: 5 } } };
+    let ok5 = false, stoodDown = null;
+    try {
+      ok5 = await quiet(() => BreathAnimator.play(tmpl5, breath, dragon, { damageTypes: ["fire"] }));
+      // The stand-down door is registered at startup in the live module; the
+      // replay never runs that, so it is registered here before it is knocked on.
+      BreathAnimator.register();
+      const data = { item: breath };
+      for (const fn of hooks["AutomatedAnimations-WorkflowStart"] ?? []) fn(data);
+      stoodDown = data.stopWorkflow === true;
+    } finally {
+      if (keepSeq === undefined) delete globalThis.Sequence; else globalThis.Sequence = keepSeq;
+      if (keepSequencer === undefined) delete globalThis.Sequencer; else globalThis.Sequencer = keepSequencer;
+    }
+    check("his dragon's breath plays a fire cone down the template he placed, 60 feet of it, and Automated Animations stands down for that one item so there is never two (2026-09-20)",
+      ok5 === true && played.includes("play")
+        && played.some(p => /^file /.test(p))
+        && played.some(p => p === "from 1000,1000") && played.some(p => p === "to 2200,1000")
+        && stoodDown === true,
+      `${played.join(" > ") || "nothing played"}; AA stood down: ${stoodDown}`);
+
+    check("and the template outlives its clip: the cleanup asks what is still playing over it before it deletes anything (2026-09-20)",
+      /BreathAnimator.waitFor\(tmplId\)/.test(readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/save-engine.mjs`, "utf8")),
+      "the instant-template cleanup waits for the breath");
+
+    /* ── 6. AN AREA LETS GO; AN ATTACK KEEPS ITS TARGET ──────────────────── */
+    const keepTargets = game.user.targets;
+    const dropped = [];
+    const tok6 = (id, name) => ({ id, name, document: { id }, setTarget: () => dropped.push(name) });
+    const a = tok6("t6-a", "a knight"), b = tok6("t6-b", "an azer"), c = tok6("t6-c", "a bystander");
+    try {
+      game.user.targets = new Set([a, b, c]);
+      const rows6 = [{ tokenDocId: "t6-a" }, { tokenDocId: "t6-b" }];
+      quiet(() => SaveEngine._releaseAreaTargets(breath, { where: { kind: "area" } }, rows6));
+      quiet(() => SaveEngine._releaseAreaTargets(claw, { where: { kind: "ranged", melee: true } },
+        [{ tokenDocId: "t6-c" }]));
+    } finally {
+      game.user.targets = keepTargets;
+    }
+    check("when the breath is done it lets go of the two it caught, and the bystander he targeted himself stays targeted; a melee attack lets go of nobody (2026-09-20)",
+      dropped.length === 2 && dropped.includes("a knight") && dropped.includes("an azer")
+        && !dropped.includes("a bystander"),
+      `let go of: ${dropped.join(", ") || "nobody"}`);
+  }
+}
+
 /* ── A CANCELLED CAST GIVES BACK WHAT THE PRESS SPENT ────────────────────── */
 // 2026-09-18. dnd5e takes what a press costs before any of ACE runs (a daily
 // use, a recharge, a legendary action) and writes it on the usage message, even

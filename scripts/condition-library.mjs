@@ -2293,7 +2293,7 @@ export class ConditionLibrary {
       //      sweeps actors and deletes any ace-qol-tagged effects matching
       //      caster+spell. Belt-and-braces.
       if (options.concentrationOrigin?.casterId || options.repeatingSave?.trigger || options.breakFree?.ability
-          || options.duration) {
+          || options.duration || options.extraFlags) {
         try {
           // Find the effect we just created/toggled OR re-enabled. statusId match
           // on Foundry status effects, fallback to name. This now runs for
@@ -2391,6 +2391,18 @@ export class ConditionLibrary {
                 appliedTurn:  game.combat?.turn ?? null,
                 stampedAt:    Date.now(),
               };
+            }
+
+            // ⚠️ THE CALLER'S OWN MARK. An engine that needs to recognise the
+            // effect it caused later (the presence engine, so a creature is not
+            // frightened twice by the same dragon, and so the 24-hour immunity
+            // is written when the fear ends) stamps it here rather than
+            // hunting for "the effect that just appeared" afterwards, which is
+            // a race every time two land in the same tick.
+            if (options.extraFlags && typeof options.extraFlags === "object") {
+              for (const [k, v] of Object.entries(options.extraFlags)) {
+                updateData[`flags.${MODULE_ID}.${k}`] = v;
+              }
             }
 
             if (Object.keys(updateData).length) await placed.update(updateData);
