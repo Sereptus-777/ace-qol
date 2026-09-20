@@ -1490,7 +1490,38 @@ export class ReactionEngine {
    */
   _hasUsedReaction(actor) {
     if (!actor) return true;
+    // ⚠️🔴 A BOX ON SCREEN IS A REACTION BEING SPENT (his table, 2026-09-19).
+    // Aryel was asked about Absorb Elements twice, a second and a half apart,
+    // because the first box was still open and unanswered: the spent flag is
+    // only written when she says yes. Two boxes, two absorbs, one reaction.
+    // While a box is open for a creature, its reaction is already claimed.
+    if (ReactionEngine.isDeciding(actor)) return true;
     return !!actor.getFlag(MODULE_ID, FLAG_REACTION_USED);
+  }
+
+  /** Creatures with a reaction box open right now: uuid → how many. */
+  static _deciding = new Map();
+
+  /** Is a reaction box open for this creature right now? */
+  static isDeciding(actor) {
+    try {
+      const key = actor?.uuid ?? null;
+      return !!key && (ReactionEngine._deciding.get(key) ?? 0) > 0;
+    } catch (_) { return false; }
+  }
+
+  static _claimDeciding(actor) {
+    const key = actor?.uuid ?? null;
+    if (!key) return null;
+    ReactionEngine._deciding.set(key, (ReactionEngine._deciding.get(key) ?? 0) + 1);
+    return key;
+  }
+
+  static _releaseDeciding(key) {
+    if (!key) return;
+    const left = (ReactionEngine._deciding.get(key) ?? 0) - 1;
+    if (left > 0) ReactionEngine._deciding.set(key, left);
+    else ReactionEngine._deciding.delete(key);
   }
 
   /**
@@ -1532,6 +1563,35 @@ export class ReactionEngine {
     if (actor.getFlag(MODULE_ID, FLAG_REACTION_USED)) {
       await actor.unsetFlag(MODULE_ID, FLAG_REACTION_USED);
       this._debug(`Reaction RESET: ${actor.name} (start of turn)`);
+    }
+
+    // ⚠️🔴 AND WHAT THE REACTION LEFT ON IT COMES OFF (his rule, 2026-09-19:
+    // "When her turn starts, that effect comes off once"). RAW: Absorb
+    // Elements' resistance and Shield's armour last "until the start of your
+    // next turn". Nothing ever took them off: the effects were stamped
+    // `autoRemove` and nothing anywhere read that flag, so Aryel's sheet kept
+    // every absorb she had ever made.
+    await ReactionEngine._clearReactionEffects(actor);
+  }
+
+  /**
+   * Take off the effects a reaction left on a creature, at the start of its
+   * turn. They are the ones ACE stamped as its own and marked to come off.
+   *
+   * @returns {Promise<number>} how many came off
+   */
+  static async _clearReactionEffects(actor) {
+    try {
+      const mine = (actor?.effects ?? []).filter(e => e?.flags?.[MODULE_ID]?.type === "reactionEffect"
+        && e?.flags?.[MODULE_ID]?.autoRemove === true);
+      if (!mine.length) return 0;
+      await actor.deleteEmbeddedDocuments("ActiveEffect", mine.map(e => e.id));
+      console.log(`${MODULE_ID} | ${actor.name}'s turn starts: ${mine.map(e => e.name).join(", ")} `
+        + `came off (what a reaction leaves lasts until the start of its next turn).`);
+      return mine.length;
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not take ${actor?.name}'s reaction effects off at the start of its turn:`, err);
+      return 0;
     }
   }
 
@@ -3202,6 +3262,10 @@ export class ReactionEngine {
     if (isOutOfTheFight(targetActor)) return say("it is out of the fight, so it takes no reactions");
     // A reaction budget only exists inside a fight; out of combat the flag that
     // records it is never cleared.
+    // A box already open for it is a reaction being decided, fight or no fight.
+    if (ReactionEngine.isDeciding(targetActor)) {
+      return say("it already has a reaction box open, and that is the same reaction");
+    }
     if (hasTurns(targetActor) && this._hasUsedReaction(targetActor)) {
       return say("its reaction is already spent this round");
     }
@@ -3289,12 +3353,36 @@ export class ReactionEngine {
 
   /**
    * Apply a temporary Absorb Elements active effect.
+   *
+   * ⚠️🔴 ONE TYPE, ONE EFFECT (his table, 2026-09-19: four "Absorb Elements
+   * (fire)" stacked on Aryel, each with a round left). This created a new
+   * effect every time, so every absorb of the same element added another line
+   * to her sheet, and nothing ever took them off. A second absorb of the same
+   * element refreshes the one she has; a different element gets its own.
    */
   async _applyAbsorbElementsEffect(actor, damageType) {
     const combat = game.combat;
     const duration = combat
       ? { rounds: 1, startRound: combat.round, startTurn: combat.turn }
       : { seconds: 6 };
+    const type = String(damageType ?? "").toLowerCase();
+    const already = (actor.effects ?? []).filter(e => e?.flags?.[MODULE_ID]?.reaction === "absorbElements"
+      && String(e.flags[MODULE_ID].damageType ?? "").toLowerCase() === type);
+    if (already.length) {
+      const [keep, ...spares] = already;
+      try {
+        await keep.update({ duration, disabled: false });
+        if (spares.length) {
+          await actor.deleteEmbeddedDocuments("ActiveEffect", spares.map(e => e.id));
+        }
+        console.log(`${MODULE_ID} | Absorb Elements: ${actor.name} already had ${type} resistance from it, `
+          + `so that one was refreshed${spares.length ? ` and ${spares.length} older copy(s) taken off` : ""}. `
+          + `One element, one effect.`);
+        return;
+      } catch (err) {
+        console.warn(`${MODULE_ID} | could not refresh ${actor.name}'s ${type} absorb; a fresh one is put on:`, err);
+      }
+    }
 
     const effectData = {
       name: `Absorb Elements (${damageType})`,
@@ -3784,9 +3872,13 @@ export class ReactionEngine {
     // This is the one door every reaction box goes through, local or remote,
     // so it announces the box to the watch here, and to every other client.
     const box = ReactionEngine._announceBox(opts);
+    // While this box is open, that creature's reaction is claimed: nothing else
+    // may offer it a second one (see _hasUsedReaction).
+    const claim = ReactionEngine._claimDeciding(opts?.reactorActor ?? null);
     try {
       return await this._routePrompt(opts);
     } finally {
+      ReactionEngine._releaseDeciding(claim);
       ReactionEngine._announceBox(null, box);
     }
   }

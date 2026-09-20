@@ -864,7 +864,9 @@ export class CheckGate {
 
   /** ACE's answer for this roll: the mode, its modifier, and what argued for it. */
   static read(actor, kind, key) {
-    const out = { kind, mode: 0, reasons: [], modifier: null, label: key };
+    // `key` travels with the answer: the card names what made the number, and
+    // for a save that is the ability it was rolled on.
+    const out = { kind, key, mode: 0, reasons: [], modifier: null, label: key };
     try {
       if (kind === "skill" || kind === "tool") {
         const own = kind === "skill" ? actor.system?.skills?.[key] : actor.system?.tools?.[key];
@@ -1164,6 +1166,82 @@ export class CheckGate {
   /* ── The card ────────────────────────────────────────────────────────── */
 
   /**
+   * What made this number, named, and always adding up to it.
+   *
+   * ⚠️🔴 THE CARD SAID "+0" AND EXPLAINED NOTHING (his table, 2026-09-19).
+   * Aryel rolled 6 for concentration and the card showed 11: "it should say
+   * why, what is contributing to the number." Two faults, one line. A
+   * concentration check and a death save deliberately carry no single modifier
+   * (two fields decide them), and `Number(null)` is 0, so the card printed
+   * "Concentration +0" beside a roll that had +5 in it. And nothing anywhere
+   * said where the 5 came from: her Constitution, every ability being 20.
+   *
+   * So the parts are read off the creature, named, and checked against the
+   * roll's own arithmetic. Whatever is left over after the named parts is shown
+   * as its own part rather than folded in quietly, because a number that does
+   * not add up is how a wrong modifier hides.
+   *
+   * @returns {{kept:number, parts:{label:string,value:number}[], total:number}|null}
+   */
+  static _breakdown(actor, read, kept, total) {
+    try {
+      if (!Number.isFinite(Number(kept)) || !Number.isFinite(Number(total))) return null;
+      const sys = actor?.system ?? {};
+      const parts = [];
+      const add = (label, value) => {
+        const n = Number(value);
+        if (Number.isFinite(n) && n !== 0) parts.push({ label, value: n });
+      };
+      const abLabel = (a) => CONFIG.DND5E?.abilities?.[a]?.label ?? String(a ?? "").toUpperCase();
+      const saveParts = (ability) => {
+        const ab = sys.abilities?.[ability] ?? {};
+        const mod = Number(ab.mod);
+        add(abLabel(ability), mod);
+        const whole = Number(ab.save?.value ?? ab.save);
+        if (Number.isFinite(whole) && Number.isFinite(mod)) {
+          add(ab.proficient ? "proficiency" : "a bonus on its saves", whole - mod);
+        }
+      };
+
+      if (read.kind === "save") {
+        saveParts(read.key);
+      } else if (read.kind === "concentration") {
+        // The ability dnd5e rolls concentration on: the creature's own, else Constitution.
+        const named = sys.attributes?.concentration?.ability;
+        saveParts((named && sys.abilities?.[named]) ? named
+          : (CONFIG.DND5E?.defaultAbilities?.concentration || "con"));
+        add("a bonus on its concentration", Number(sys.attributes?.concentration?.bonuses?.save));
+      } else if (read.kind === "ability") {
+        const ab = sys.abilities?.[read.key] ?? {};
+        add(abLabel(read.key), ab.mod);
+        add("a bonus on its checks", Number(ab.checkBonus));
+      } else if (Number.isFinite(Number(read.modifier))) {
+        // A skill, a tool or initiative: dnd5e already totals it, under its own name.
+        add(String(read.label ?? "the check").replace(/\s+check$/i, ""), read.modifier);
+      }
+
+      const named = parts.reduce((sum, p) => sum + p.value, 0);
+      const rest = Number(total) - Number(kept) - named;
+      if (rest !== 0) add(parts.length ? "the rest of the roll" : "its modifier", rest);
+      return { kept: Number(kept), parts, total: Number(total) };
+    } catch (err) {
+      console.warn(`${LOG} | could not read what made ${actor?.name}'s number; the card shows the total alone:`, err);
+      return null;
+    }
+  }
+
+  /** "6 on the die, +5 Constitution = 11", in the card's words. */
+  static _breakdownHtml(b) {
+    if (!b || !b.parts.length) return "";
+    const esc = foundry.utils.escapeHTML;
+    const sign = (n) => `${n >= 0 ? "+" : "\u2212"}${Math.abs(n)}`;
+    const bits = b.parts.map(p => `${sign(p.value)} ${esc(p.label)}`).join(", ");
+    return `<div style="font-size:16px;margin-top:4px;line-height:1.35;">`
+      + `<span style="font-weight:700;">${esc(String(b.kept))}</span> on the die, ${bits} `
+      + `= <span style="font-weight:700;">${esc(String(b.total))}</span></div>`;
+  }
+
+  /**
    * ACE's card for a check or a save.
    *
    * ⚠️ EVERY DIE IS SHOWN, INCLUDING THE ONE THAT LOST. On advantage or
@@ -1190,8 +1268,21 @@ export class CheckGate {
       ? `<span style="color:#e08b7e;font-weight:700;font-size:14px;letter-spacing:0.5px;">DISADVANTAGE</span>`
       : "";
 
-    const mod = Number.isFinite(Number(read.modifier))
+    // ⚠️ `Number(null)` IS 0. A check that carries no single modifier (a
+    // concentration check, a death save) printed "+0" beside a roll with +5 in
+    // it. Only a number that is really there is shown, and what made the total
+    // is spelled out below either way.
+    const hasMod = read.modifier !== null && read.modifier !== undefined && Number.isFinite(Number(read.modifier));
+    const mod = hasMod
       ? `<span style="opacity:0.8;">${Number(read.modifier) >= 0 ? "+" : ""}${Number(read.modifier)}</span>` : "";
+    let keptD20 = null;
+    try {
+      const { naturalD20 } = await import("./rolldata-utils.mjs");
+      keptD20 = Number.isFinite(Number(luck?.d20)) ? Number(luck.d20) : naturalD20(roll);
+    } catch (err) {
+      console.warn(`${LOG} | could not read the die ${actor?.name} kept:`, err);
+    }
+    const madeOf = CheckGate._breakdownHtml(CheckGate._breakdown(actor, read, keptD20, total));
 
     // Only a save has something to pass or fail against. A check has no DC until
     // somebody sets one, and inventing a verdict for it would be a lie.
@@ -1229,7 +1320,7 @@ export class CheckGate {
       actor, roll, flag: "checkCard", label: read.label,
       title: read.label,
       subtitle: `<span>${esc(read.label)} ${mod}</span>${badge}`,
-      extra: luckLine + verdict + tally + why,
+      extra: madeOf + luckLine + verdict + tally + why,
       total: Number.isFinite(total) ? total : null,
     });
   }

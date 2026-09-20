@@ -166,7 +166,7 @@ check("advantage is read as advantage",
       { key: "system.skills.prc.roll.mode", value: "1" }] }],
     system: { skills: { prc: { roll: { mode: 1 }, ability: "wis" } }, abilities: { wis: {} } } },
     "skill", "prc"),
-  { kind: "skill", mode: 1, reasons: [{ reason: "Guidance-ish: advantage" }], modifier: null, label: "Perception check" });
+  { kind: "skill", key: "prc", mode: 1, reasons: [{ reason: "Guidance-ish: advantage" }], modifier: null, label: "Perception check" });
 
 console.log("\nWHAT THE GATE TAKES, AND WHAT IT LEAVES ALONE");
 const shape = (hookNames, extra = {}) => CheckGate._shapeOf({ hookNames, ...extra });
@@ -273,7 +273,7 @@ const dying = { name: "Jeth",
     changes: [{ key: "system.attributes.death.roll.mode", value: "-1" }] }] };
 check("a death save reads its own mode and names its source",
   CheckGate.read(dying, "death", "death"),
-  { kind: "death", mode: -1, reasons: [{ reason: "Broken ribs: disadvantage" }],
+  { kind: "death", key: "death", mode: -1, reasons: [{ reason: "Broken ribs: disadvantage" }],
     modifier: null, label: "Death saving throw" });
 // ⚠️ AN EFFECT ON CONSTITUTION SAVES MUST NOT LEAK INTO EITHER. dnd5e models
 // them as separate attributes, and they are separate rules at the table.
@@ -285,7 +285,7 @@ check("a CON save effect does not reach a death save",
 
 check("a save reads its own mode and names its source",
   CheckGate.read(brave, "save", "dex"),
-  { kind: "save", mode: 1, reasons: [{ reason: "Aura of Protection: advantage" }], modifier: 7,
+  { kind: "save", key: "dex", mode: 1, reasons: [{ reason: "Aura of Protection: advantage" }], modifier: 7,
     label: "Dexterity saving throw" });
 
 console.log("\nA FIXED INITIATIVE SCORE IS NOT ASKED ABOUT");
@@ -483,6 +483,43 @@ console.log("\nEACH KIND GOES BACK THROUGH ITS OWN dnd5e METHOD");
   check("a skill check is given no DC", (await ran("skill", "prc", 15))?.cfg?.target, undefined);
 
   foundry.applications.api.DialogV2.wait = realWait;
+}
+
+/* ── WHAT MADE THE NUMBER (his table, 2026-09-19) ─────────────────────────── */
+// "She rolled a 6, but she has a +5 for Wisdom. Is that the reason, or +5 for
+// Intelligence? ... it should say why, what is contributing to the number."
+// Aryel's abilities are all 20, so the card must name WHICH +5 it was: the
+// concentration check is rolled on Constitution.
+console.log("");
+{
+  CONFIG.DND5E.abilities.con = { label: "Constitution" };
+  CONFIG.DND5E.defaultAbilities = { concentration: "con" };
+  const aryel = {
+    name: "Aryel",
+    system: {
+      abilities: {
+        con: { mod: 5, proficient: 0, save: { value: 5, roll: { mode: 0 } }, check: { roll: { mode: 0 } } },
+        wis: { mod: 5, proficient: 0, save: { value: 5, roll: { mode: 0 } }, check: { roll: { mode: 0 } } },
+        dex: { mod: 5, proficient: 1, save: { value: 9, roll: { mode: 0 } }, check: { roll: { mode: 0 } } },
+      },
+      attributes: { concentration: { ability: "", roll: { mode: 0 }, bonuses: { save: "" } } },
+    },
+  };
+  const line = (kind, key, kept, total) => {
+    const read = CheckGate.read(aryel, kind, key);
+    return CheckGate._breakdownHtml(CheckGate._breakdown(aryel, read, kept, total))
+      .replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+  };
+  check("her concentration check says what made it, and names Constitution",
+    line("concentration", "con", 6, 11), "6 on the die, +5 Constitution = 11");
+  check("a save she is proficient in names the proficiency as well",
+    line("save", "dex", 4, 13), "4 on the die, +5 Dexterity, +4 proficiency = 13");
+  check("anything the named parts do not explain is shown, never folded in",
+    line("save", "con", 6, 14), "6 on the die, +5 Constitution, +3 the rest of the roll = 14");
+  check("a bare d20 with nothing added says nothing rather than \"+0\"",
+    line("death", "death", 12, 12), "");
+  // ⚠️ THE "+0" ITSELF: a check that carries no single modifier must not print one.
+  check("a concentration check carries no single modifier to print", CheckGate.read(aryel, "concentration", "con").modifier, null);
 }
 
 console.log("");

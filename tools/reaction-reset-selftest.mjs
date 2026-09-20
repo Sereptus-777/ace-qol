@@ -167,6 +167,77 @@ console.log("\nA CREATURE WE CANNOT WRITE TO DOES NOT STOP THE SWEEP");
   check("the actor after the refusal is still cleared", after.getFlag(NS, FLAG), undefined);
 }
 
+/* ── ONE TYPE, ONE EFFECT, AND IT COMES OFF AT HER TURN ──────────────────── */
+// His table, 2026-09-19: four "Absorb Elements (fire)" stacked on Aryel, each
+// with a round left. "One type, one effect. A second absorb of fire refreshes
+// that effect ... If her reaction is already spent this round, do not offer
+// Absorb Elements again. When her turn starts, that effect comes off once."
+console.log("\nABSORB ELEMENTS: ONE FIRE EFFECT, NOT FOUR");
+{
+  // A creature whose effects behave like Foundry's: a collection with create and delete.
+  const makeWithEffects = (name) => {
+    const effects = [];
+    let n = 0;
+    const a = {
+      name, uuid: `Actor.${name}`, flags: {},
+      effects,
+      getFlag: (ns, k) => a.flags?.[ns]?.[k],
+      setFlag: async (ns, k, v) => { (a.flags[ns] ??= {})[k] = v; },
+      unsetFlag: async (ns, k) => { delete a.flags?.[ns]?.[k]; },
+      createEmbeddedDocuments: async (type, rows) => {
+        for (const r of rows) {
+          const e = { ...r, id: `e${++n}`, update: async (u) => Object.assign(e, u) };
+          effects.push(e);
+        }
+        return rows;
+      },
+      deleteEmbeddedDocuments: async (type, ids) => {
+        for (const id of ids) {
+          const i = effects.findIndex(e => e.id === id);
+          if (i >= 0) effects.splice(i, 1);
+        }
+        return ids;
+      },
+    };
+    return a;
+  };
+  const fireNames = (a) => a.effects.filter(e => e.flags?.[NS]?.reaction === "absorbElements").map(e => e.name);
+
+  game.combat = { round: 3, turn: 1 };
+  const aryel = makeWithEffects("Aryel");
+  await engine._applyAbsorbElementsEffect(aryel, "fire");
+  await engine._applyAbsorbElementsEffect(aryel, "fire");
+  await engine._applyAbsorbElementsEffect(aryel, "fire");
+  check("three absorbs of fire leave one effect", fireNames(aryel), ["Absorb Elements (fire)"]);
+  game.combat = { round: 5, turn: 0 };
+  await engine._applyAbsorbElementsEffect(aryel, "fire");
+  check("the fourth refreshes that one to this round", aryel.effects[0].duration?.startRound, 5);
+  await engine._applyAbsorbElementsEffect(aryel, "cold");
+  check("a different element gets its own effect",
+    fireNames(aryel), ["Absorb Elements (fire)", "Absorb Elements (cold)"]);
+
+  // Four already on her sheet (what he was looking at) all come off at her turn.
+  const stacked = makeWithEffects("Aryel (already stacked)");
+  for (let i = 0; i < 4; i++) {
+    stacked.effects.push({ id: `old${i}`, name: "Absorb Elements (fire)",
+      flags: { [NS]: { type: "reactionEffect", reaction: "absorbElements", damageType: "fire", autoRemove: true } } });
+  }
+  stacked.effects.push({ id: "conc", name: "Concentrating: Globe of Invulnerability", flags: {} });
+  const came = await ReactionEngine._clearReactionEffects(stacked);
+  check("at the start of her turn every one of them comes off", came, 4);
+  check("and nothing else on her does", stacked.effects.map(e => e.name),
+    ["Concentrating: Globe of Invulnerability"]);
+
+  // A box already open for her IS her reaction: she is not asked twice.
+  const busy = makeWithEffects("Aryel (deciding)");
+  check("with no box open her reaction is free", engine._hasUsedReaction(busy), false);
+  const claim = ReactionEngine._claimDeciding(busy);
+  check("while her box is open her reaction is already claimed", engine._hasUsedReaction(busy), true);
+  ReactionEngine._releaseDeciding(claim);
+  check("and free again once she has answered it", engine._hasUsedReaction(busy), false);
+  game.combat = null;
+}
+
 console.log("");
 console.log(pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;
