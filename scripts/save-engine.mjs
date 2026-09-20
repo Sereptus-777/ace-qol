@@ -1883,10 +1883,16 @@ export class SaveEngine {
       // the quarterstaff's base damage while they were being hit by 8d6 of
       // lightning (Johnny's log, 2026-09-03). The item is a staff. The activity
       // is the storm.
-      await SignalDoor.send("saveComplete", {
-        actor: tActor, tokenDocId: result.tokenDocId, saveAbility, passed: result.passed,
-        itemUuid: item?.uuid ?? null, activityId,
-      });
+      // A creature the Gate spared never rolled, so nothing hears that it failed.
+      if (!SaveEngine._aSaveWasRolled(result)) {
+        console.log(`${MODULE_ID} | ${result.name}: no save was rolled (${result.noRoll ?? "still waiting"}), `
+          + `so nothing is told that one failed. No effects, no animation.`);
+      } else {
+        await SignalDoor.send("saveComplete", {
+          actor: tActor, tokenDocId: result.tokenDocId, saveAbility, passed: result.passed,
+          itemUuid: item?.uuid ?? null, activityId,
+        });
+      }
     } catch (err) { console.warn(`${MODULE_ID} | the save-complete signal failed (non-fatal):`, err); }
 
     // Compute hasDamage same way the regular path does
@@ -4542,6 +4548,7 @@ export class SaveEngine {
                 halfOnSave:  message.flags?.[MODULE_ID]?.halfOnSave === true,
                 activityId:  message.flags?.[MODULE_ID]?.activityId,
                 appliedConditions: message.flags?.[MODULE_ID]?.appliedConditions ?? [],
+                autoResolve: message.flags?.[MODULE_ID]?.autoResolve === true,
               });
               await message.update({ content: cardHtml }, { render: false });
             }
@@ -4989,6 +4996,12 @@ export class SaveEngine {
     // ── Emit saveComplete hooks for NPC saves (for duration tracker isSave expiry) ──
     for (const r of npcResults) {
       try {
+        // Nothing was rolled for it, so nothing is announced about it.
+        if (!SaveEngine._aSaveWasRolled(r)) {
+          console.log(`${MODULE_ID} | ${r.name}: no save was rolled (${r.noRoll ?? "still waiting"}), `
+            + `so nothing is told that one failed. No effects, no animation.`);
+          continue;
+        }
         const scene = game.scenes.get(r.sceneId) ?? canvas.scene;
         const tokenDoc = scene?.tokens?.get(r.tokenDocId);
         const actor = tokenDoc?.actor ?? game.actors.get(r.actorId);
@@ -5425,6 +5438,23 @@ export class SaveEngine {
       isPC, pending: false,
       noRoll: verdict.reason, noRollLabel: verdict.label, noRollTone: verdict.tone,
     };
+  }
+
+  /**
+   * Was a saving throw actually ROLLED for this row?
+   *
+   * ⚠️🔴 THE SIGNAL SAID "FAILED" FOR A CREATURE THAT NEVER ROLLED (his table,
+   * 2026-09-19): the Salamander is immune to the Magmin's fire, so the Gate
+   * spared it and its row carries `passed: false` (the shape every no-roll row
+   * has had since 2026-08-06). The save-complete signal was sent for it anyway,
+   * and everything that listens for a failed save acted: the fire encrust and
+   * its impact sound played on a creature the burst could not touch, and an
+   * area's restraint would have gone on it too.
+   *
+   * A save was rolled only when the Gate let a die be thrown and the roll is in.
+   */
+  static _aSaveWasRolled(r) {
+    return !!r && !r.pending && !r.noRoll;
   }
 
   /**
@@ -6700,6 +6730,7 @@ export class SaveEngine {
           halfOnSave: flags.halfOnSave === true,
           activityId: flags.activityId,
           appliedConditions: cardApplied,
+          autoResolve: flags.autoResolve === true,
         });
       }
 
@@ -6757,6 +6788,11 @@ export class SaveEngine {
     // Emit saveComplete hook for duration tracker (isSave expiry)
     for (const result of results) {
       try {
+        if (!SaveEngine._aSaveWasRolled(result)) {
+          console.log(`${MODULE_ID} | ${result.name}: no save was rolled (${result.noRoll ?? "still waiting"}), `
+            + `so nothing is told that one failed. No effects, no animation.`);
+          continue;
+        }
         const scene = game.scenes.get(result.sceneId) ?? canvas.scene;
         const tokenDoc = scene?.tokens?.get(result.tokenDocId);
         const actor = tokenDoc?.actor ?? game.actors.get(result.actorId);
@@ -7704,7 +7740,8 @@ export class SaveEngine {
   //  Build Phase 1 card HTML — extracted so late PC updates can rebuild
   // ─────────────────────────────────────────────────────────────────────────
   _buildPhase1CardHtml(item, results, opts) {
-    const { saveAbility, saveDC, hasDamage = true, halfOnSave = false, appliedConditions = [], activityId = null } = opts;
+    const { saveAbility, saveDC, hasDamage = true, halfOnSave = false, appliedConditions = [], activityId = null,
+            autoResolve = false } = opts;
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
     const _p1Title = this._abilityLabel(item, activityId);
 
@@ -7834,6 +7871,18 @@ export class SaveEngine {
           <button class="ace-qol-btn ace-qol-btn-roll-dmg" disabled
                   title="Waiting for every target to roll their save first.">
             <i class="fas fa-hourglass-half"></i> WAITING FOR SAVES…
+          </button>
+        </div>`;
+    } else if (anyWillTakeDamage && autoResolve) {
+      // ⚠️ NOBODY PRESSES THIS ONE. A death burst, a burning body or a gaze
+      // rolls its own damage the moment the last save is in, so a live button
+      // beside it is a second roll waiting to happen — which is exactly what
+      // it was on 2026-09-19. The card says what it is doing instead, and
+      // APPLY ALL appears with the damage.
+      actionsHtml = `<div class="ace-qol-dmg-actions ace-qol-roll-dmg-gate">
+          <button class="ace-qol-btn ace-qol-btn-roll-dmg" disabled
+                  title="This one rolls its own damage; APPLY ALL comes with it.">
+            <i class="fas fa-dice-d20"></i> ROLLING DAMAGE…
           </button>
         </div>`;
     } else if (anyWillTakeDamage) {
@@ -8091,6 +8140,31 @@ export class SaveEngine {
   async _completeSaveResultsPhase2(message) {
     const flags = message.flags?.[MODULE_ID];
     if (!flags || flags.phase !== 1) return;
+
+    // ⚠️🔴 ONE DAMAGE ROLL PER CARD (his table, 2026-09-19, the Magmin at
+    // 23:47): the burst rolled its own fire when Aryel's save landed, and the
+    // card still carried a live ROLL DAMAGE while that roll was asking her
+    // about Absorb Elements. He pressed it. Two rolls (8, then 10), two Absorb
+    // boxes, two lots of damage. The card's phase only says "2" at the END of
+    // this method, so the check above cannot see a roll that is in flight.
+    // This can.
+    this._rollingDamage ??= new Set();
+    if (this._rollingDamage.has(message.id)) {
+      console.log(`${MODULE_ID} | the damage for this card is already being rolled; `
+        + `this second ask was refused (one card, one damage roll).`);
+      ui.notifications?.info("ACE: that card's damage is already being rolled.");
+      return;
+    }
+    this._rollingDamage.add(message.id);
+    try {
+      return await this._rollPhase2Damage(message, flags);
+    } finally {
+      this._rollingDamage.delete(message.id);
+    }
+  }
+
+  /** The damage step itself. Only _completeSaveResultsPhase2 calls it, once per card. */
+  async _rollPhase2Damage(message, flags) {
 
     // Save-only-condition spells (no damage parts) never produce a Phase 2.
     // Defensive — the button shouldn't render, but if a stale card from

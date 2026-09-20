@@ -164,13 +164,21 @@ class RollPopoutApp extends AppV2 {
     try { this.bringToFront?.(); } catch (_) { /* a window that cannot come forward is still open */ }
     try { this.element?.querySelector?.(".acp-pill")?.focus?.({ preventScroll: true }); } catch (_) { /* focus is a courtesy */ }
     try { globalThis.window?.focus?.(); } catch (_) { /* the browser may refuse; the ding still sounds */ }
-    // ⚠️ SOUND ON OPEN (his rule): the box dings itself, once, as it is drawn,
-    // the way the reaction boxes do. It used to ding before it was drawn and
-    // was dropped behind its hidden card's ding (popup-ding.mjs, BOX_PROMPT_TYPES).
-    if (!this._dinged) {
-      this._dinged = true;
-      popupDing(`${this.spec.rollerName}'s ${this.spec.pillLabel}`);
-    }
+    // Drawn: if the ding did not already sound when the box opened, it sounds now.
+    this._ding();
+  }
+
+  /**
+   * ⚠️ SOUND ON OPEN, ONCE (his rule, and his table on 2026-09-19: "No ding on
+   * the Death Burst popout ... This box did not log a ding at all"). It is
+   * asked for the moment the box opens AND again when Foundry says it is drawn,
+   * with this guard making it one ding; a render that never reports back can no
+   * longer leave the box silent. The same call the reaction boxes use.
+   */
+  _ding() {
+    if (this._dinged) return false;
+    this._dinged = true;
+    return popupDing(`${this.spec.rollerName}'s ${this.spec.pillLabel}`);
   }
 
   async _lucky(btn) {
@@ -265,8 +273,10 @@ export class RollPopout {
         popupDing(`${spec.rollerName}'s ${spec.pillLabel} (in the chat)`);
         spec.onDismiss?.();
       });
-      // The ding sounds as the box is drawn (_onRender), the same ding as every ACE prompt.
-      console.log(`${LOG} | ${spec.rollerName}: "${spec.pillLabel}" is waiting on this screen (${spec.title}).`);
+      // The same ding every ACE prompt uses, as the box opens.
+      const dinged = app._ding();
+      console.log(`${LOG} | ${spec.rollerName}: "${spec.pillLabel}" is waiting on this screen `
+        + `(${spec.title}); ding ${dinged ? "asked for" : "not played, see the line above"}.`);
       return true;
     } catch (err) {
       console.warn(`${LOG} | could not open ${spec?.rollerName ?? "a"} roll box:`, err);

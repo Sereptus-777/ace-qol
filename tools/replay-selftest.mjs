@@ -4342,6 +4342,15 @@ console.log(`\nSAVE CARD UX: THE BOX, THE RESULTS CARD, ONE CONCENTRATION CHECK`
       const magTok = place7(mm, "tok-ux-magmin", 0);
       let err1 = null;
       const before1 = posted.length;
+      // Everything a failed save sets off listens on this one signal (the fire
+      // encrust and its impact sound among them), so what it is sent for IS the
+      // test for who gets a fail animation.
+      const signals = [];
+      const keepSend = SignalDoor.send;
+      SignalDoor.send = async (name, payload) => {
+        if (name === "saveComplete") signals.push({ who: payload?.actor?.name, passed: payload?.passed });
+        return keepSend.call(SignalDoor, name, payload);
+      };
       try {
         await quiet(async () => {
           await engine7._postLiveTargetCard(burst, mm, [chuddTok, banditTok, impTok], {
@@ -4355,6 +4364,11 @@ console.log(`\nSAVE CARD UX: THE BOX, THE RESULTS CARD, ONE CONCENTRATION CHECK`
       const prompt = of("pcSavePrompt").at(-1) ?? null;
       const results = of("saveResults").at(-1) ?? null;
       const text = (m) => String(m?.content ?? "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+
+      SignalDoor.send = keepSend;
+      check("a creature that never rolled is never announced as having failed: the azer, immune to the burst's fire, gets no save-complete signal, so no fail animation and no impact sound play on it; the bandit that did roll gets one (his table, 2026-09-19)",
+        signals.some(s => s.who === "a bandit") && !signals.some(s => s.who === "an azer"),
+        `signalled: ${signals.map(s => `${s.who} ${s.passed ? "passed" : "failed"}`).join(", ") || "nobody"}`);
 
       // The chat: results only. Drawn as it was born, before the results card
       // retired it, because that is when the waiting list used to show.
@@ -4398,7 +4412,7 @@ console.log(`\nSAVE CARD UX: THE BOX, THE RESULTS CARD, ONE CONCENTRATION CHECK`
           && box.spec.rollerName === "Chudd" && box.spec.pillLabel === "Roll Dexterity save",
         box ? `"${box.spec.line}" / ${box.spec.sourceName} → ${box.spec.rollerName} / "${box.spec.pillLabel}"` : "no box");
       const boxDings = plays7.slice(dingsBefore).filter(p => p.user === "tommy");
-      check("the box dings as Tommy's screen draws it, once, with the prompt ding, and the hidden prompt card no longer dings first and takes the box's ding away (his table, 2026-09-19: \"Popout opened with no sound\")",
+      check("the box dings the moment it opens, once, with the prompt ding, whether or not Foundry reports it drawn, and the hidden prompt card no longer dings first and takes the box's ding away (his table, 2026-09-19: \"No ding on the Death Burst popout\")",
         !!box && cardDings === 0 && boxDings.length === 1 && boxDings[0].src === "sounds/notify.wav" && boxDings[0].channel === "interface",
         `the prompt card rang ${cardDings} time(s); the box rang ${boxDings.length} time(s)${boxDings[0] ? ` (${boxDings[0].src}, ${boxDings[0].channel})` : ""}`);
 
@@ -4552,6 +4566,37 @@ console.log(`\nSAVE CARD UX: THE BOX, THE RESULTS CARD, ONE CONCENTRATION CHECK`
     check("a character whose player is not connected is not waited on: its check rolls at once through ACE's check and no prompt is posted (2026-09-19)",
       prompts4.length === 0 && runs.filter(r => r.who === "Firaxis").length === 1,
       `${prompts4.length} prompt(s); ${runs.filter(r => r.who === "Firaxis").length} roll(s)`);
+    // ── 3b. One damage roll per card ──
+    {
+      const engine = Object.create(SaveEngine.prototype);
+      const rolls = [];
+      let release = null;
+      engine._rollPhase2Damage = async (m) => {
+        rolls.push(m.id);
+        await new Promise(res => { release = res; });        // still rolling: asking her about Absorb
+        m.flags[MOD].phase = 2;
+      };
+      const card = { id: "replay-one-roll", flags: { [MOD]: { phase: 1, hasDamage: true, autoResolve: true } } };
+      const first = engine._completeSaveResultsPhase2(card);   // the burst rolls its own
+      await new Promise(res => setTimeout(res, 20));
+      await quiet(() => engine._completeSaveResultsPhase2(card));   // he presses the button while it rolls
+      release?.();
+      await first;
+      await quiet(() => engine._completeSaveResultsPhase2(card));   // and again once it is done
+      check("one Magmin death is one damage roll: a second ask while the first is still rolling is refused, and so is one after the card has its damage (his table, 2026-09-19: two rolls, 8 then 10, and two Absorb Elements boxes)",
+        rolls.length === 1, `${rolls.length} damage roll(s) from three asks`);
+
+      // And the card a burst posts never offers the button that caused it.
+      const rows = [{ name: "Chudd", tokenDocId: "t1", passed: false, damageMultiplier: 1, currentHP: 30, maxHP: 30, saveTotal: 6, dieResult: 1 }];
+      const opts = { saveAbility: "dex", saveDC: 11, hasDamage: true, halfOnSave: true, activityId: null };
+      const burstCard = engine7 ? engine7._buildPhase1CardHtml({ name: "Death Burst", img: "" }, rows, { ...opts, autoResolve: true }) : "";
+      const pressedCard = engine7 ? engine7._buildPhase1CardHtml({ name: "Fireball", img: "" }, rows, { ...opts, autoResolve: false }) : "";
+      check("a card that rolls its own damage shows no ROLL DAMAGE to press, only that it is rolling; a cast somebody pressed still has its button (2026-09-19)",
+        !/data-action="aceQolRollDamage"/.test(burstCard) && /ROLLING DAMAGE/.test(burstCard)
+          && /data-action="aceQolRollDamage"/.test(pressedCard),
+        `burst card: ${/ROLLING DAMAGE/.test(burstCard) ? "rolling, no button" : "HAS A BUTTON"}; pressed card: ${/data-action="aceQolRollDamage"/.test(pressedCard) ? "ROLL DAMAGE" : "NO BUTTON"}`);
+    }
+
     // ── 4. Chat after dice: a card waits for the dice on the screen that threw them ──
     {
       const dsn = await import(`${MODULE}/scripts/dsn-utils.mjs`);
