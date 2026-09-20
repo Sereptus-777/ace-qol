@@ -322,6 +322,30 @@ export class Situation {
    * @param {Actor} subject
    * @param {object} opts  { viewerToken, subjectToken, distanceFt }
    */
+  /**
+   * Is there a sight-blocking wall between these two tokens?
+   *
+   * Foundry's own sight backend, the same one the heal picker and the cover
+   * engine ask, so a door ACE thinks is shut is the door the canvas thinks is
+   * shut.
+   *
+   * @returns {boolean|null} true blocked, false clear, null could not be tested
+   */
+  static _wallBetween(vToken, sToken) {
+    try {
+      const from = vToken?.center ?? vToken?.object?.center ?? null;
+      const to = sToken?.center ?? sToken?.object?.center ?? null;
+      if (!from || !to) return null;
+      const backend = globalThis.CONFIG?.Canvas?.polygonBackends?.sight;
+      if (typeof backend?.testCollision !== "function") return null;
+      return !!backend.testCollision(from, to, { type: "sight", mode: "any" });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | the sight line could not be tested for walls `
+        + `(${err?.message ?? err}) — treating it as clear.`);
+      return null;
+    }
+  }
+
   static canSee(viewer, subject, opts = {}) {
     try {
       if (!viewer || !subject) return { canSee: true, why: "unknown — assume visible" };
@@ -371,6 +395,30 @@ export class Situation {
           return { canSee: true, why: `tremorsense (through ${obscured.kindLabel})` };
         }
         return { canSee: false, why: obscured.why };
+      }
+
+      // ── ⚠️🔴 AND A WALL. THE ONE SIGHT READER HAD NEVER TESTED ONE ──────
+      // (2026-09-20, his table: Volcathar's Frightful Presence asked 36
+      // creatures in a six-creature fight, through the walls and closed doors
+      // of AMBER TEMPLE: LOWER.)
+      //
+      // This function answers "can A see B" for the gaze, the presence, the
+      // attack pipeline and the profiles, and it knew about blindness,
+      // darkness, invisibility and averted eyes — and nothing at all about the
+      // stone between them. Two other places in ACE test walls with Foundry's
+      // own sight backend (the heal picker, the cover engine); the reader
+      // everything else asks did not, so "in plain sight" was returned for a
+      // creature two rooms away.
+      //
+      // ⚠️ A SENSE THAT DOES NOT NEED EYES IS NOT STOPPED BY A WALL EITHER, so
+      // blindsight and tremorsense are asked first, exactly as they are above.
+      // ⚠️ AND A TEST THAT CANNOT RUN NEVER BLOCKS: no backend, no tokens or a
+      // throw all mean "not tested", which stays visible and says so.
+      const wall = Situation._wallBetween(vToken, sToken);
+      if (wall === true) {
+        if (blindsightOK) return { canSee: true, why: "blindsight (through the wall)" };
+        if (tremorsenseOK && !Situation._isAirborne(sToken)) return { canSee: true, why: "tremorsense (through the wall)" };
+        return { canSee: false, why: "a wall or a closed door is in the way" };
       }
 
       // INVISIBLE subject — needs a sense that pierces invisibility.

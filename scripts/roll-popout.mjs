@@ -159,6 +159,15 @@ class RollPopoutApp extends AppV2 {
 
   _onRender(context, options) {
     super._onRender?.(context, options);
+    // A second box for the same person steps clear of the first (see open()).
+    try {
+      if (this.spec.offset && !this._stepped) {
+        this._stepped = true;
+        const p = this.position ?? {};
+        this.setPosition?.({ left: Number(p.left ?? 0) + this.spec.offset.x,
+          top: Number(p.top ?? 0) + this.spec.offset.y });
+      }
+    } catch (_) { /* a box that cannot move is still a box */ }
     // ⚠️ THIS CLIENT FOCUSES THE POPOUT (his rule): in front of every other
     // window, the roll button holding the keyboard so Enter or Space rolls.
     try { this.bringToFront?.(); } catch (_) { /* a window that cannot come forward is still open */ }
@@ -263,6 +272,20 @@ export class RollPopout {
       if (!spec?.key || typeof spec.onRoll !== "function") return false;
       if (RollPopout._open.has(spec.key)) return true;
       injectCss();
+      // ⚠️🔴 TWO BOXES ARE TWO BOXES, AND ONE MUST NOT HIDE THE OTHER (his
+      // table, 2026-09-20: "Gaze and Presence are two different boxes. Aryel's
+      // Petrifying Gaze must not eat the Presence roll or steal the popout.").
+      // Every box opens at the same default position, so a second one lands
+      // exactly on top of the first: one roll is answered, the other is never
+      // seen, and it looks as though the second save was swallowed. Each extra
+      // box steps down and across so both are on screen and each says, in its
+      // own title, which ability it is for.
+      const step = RollPopout._open.size;
+      if (step > 0) {
+        spec.offset = { x: step * 38, y: step * 34 };
+        console.log(`${LOG} | ${spec.rollerName} already has ${step} box(es) open; `
+          + `"${spec.title}" opens beside them, not on top of them.`);
+      }
       const app = new RollPopoutApp(spec);
       RollPopout._open.set(spec.key, app);
       const rendered = app.render?.({ force: true });

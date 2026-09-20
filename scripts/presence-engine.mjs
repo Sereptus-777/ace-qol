@@ -104,10 +104,21 @@ export class PresenceEngine {
       catch (err) { console.warn(`${LOG} | could not read "${item?.name}":`, err); continue; }
       if (!presence?.byPresence) continue;
 
-      const key = `${tokenDoc.id}:${item.id}`;
+      // ⚠️🔴 THE CLAIM IS TAKEN BEFORE ANYTHING IS AWAITED (his table,
+      // 2026-09-20: one Nothic frightened three times, a Specter four).
+      // `combatStart` and `combatTurnChange` both fire when a fight begins, and
+      // `createToken` can land in the same tick. Each one read the combat's
+      // flag, found nothing, and went off to await writing it — so two or three
+      // presences ran, each posting its own card and each frightening the room
+      // again. A flag written after an await cannot stop the caller that is
+      // already past the read. The same lesson as the save engine's dedupe.
+      const key = `${combat.id}:${tokenDoc.id}:${item.id}`;
+      PresenceEngine._claimed ??= new Set();
+      if (PresenceEngine._claimed.has(key)) continue;
       const fired = combat.getFlag(MODULE_ID, "presenceFired") ?? {};
-      if (fired[key]) continue;
-      try { await combat.setFlag(MODULE_ID, "presenceFired", { ...fired, [key]: true }); }
+      if (fired[`${tokenDoc.id}:${item.id}`]) continue;
+      PresenceEngine._claimed.add(key);
+      try { await combat.setFlag(MODULE_ID, "presenceFired", { ...fired, [`${tokenDoc.id}:${item.id}`]: true }); }
       catch (err) { console.warn(`${LOG} | could not mark ${item.name} as fired; it may ask twice:`, err); }
 
       say(`${tokenDoc.name}'s ${item.name}: ${why}, so it happens once, now.`);
@@ -125,7 +136,23 @@ export class PresenceEngine {
     const target = targetDoc?.actor;
     const source = sourceDoc?.actor;
     if (!target) return { reason: "no creature", label: "NO CREATURE", tone: "immune", hide: true };
-    if (targetDoc.id === sourceDoc.id) return { reason: "itself", label: "ITSELF", tone: "immune", hide: true };
+    // ⚠️ A CREATURE DOES NOT FRIGHTEN ITSELF, AND ONE TOKEN ID IS NOT ENOUGH
+    // (his table, 2026-09-20). A press measures from whichever body ACE found
+    // for the caster, and an unlinked token, a second copy on the map or a
+    // token replaced mid-fight all give that a different id from the row being
+    // judged. Its actor answers where its token id cannot.
+    if (targetDoc.id === sourceDoc.id
+        || (target.id && sourceDoc.actor?.id && target.id === sourceDoc.actor.id)
+        || (targetDoc.actorId && sourceDoc.actorId && targetDoc.actorId === sourceDoc.actorId)) {
+      return { reason: "itself", label: "ITSELF", tone: "immune", hide: true };
+    }
+    // ⚠️ A TOKEN NOBODY CAN SEE IS NOT IN THE ROOM. A prepared dungeon map
+    // carries dozens of hidden creatures waiting for later scenes, and every
+    // one of them was being asked to save against a dragon it has not met.
+    if (targetDoc.hidden === true) {
+      return { reason: "not on the map yet (hidden)", hide: true, tone: "blocked",
+        label: "HIDDEN — not in play" };
+    }
     if (!pickable("harm", lifeStateOf(target, targetDoc)).ok) {
       return { reason: "dead", label: "DEAD", tone: "dead", hide: true };   // never on the card at all
     }
@@ -317,7 +344,7 @@ export class PresenceEngine {
         <span class="ace-fp-ft">${r.ft == null ? "" : `${r.ft} ft`}</span>
       </label>`;
     const sparedLine = spared.length
-      ? `<div class="ace-fp-spared"><i class="fas fa-shield-halved"></i> No save: `
+      ? `<div class="ace-fp-spared"><i class="fas fa-shield-halved"></i> Not asked, and not ticked: `
         + spared.map(r => `<b>${esc(r.name)}</b> (${esc(r.skip.reason)})`).join(", ") + `</div>`
       : "";
 
@@ -325,11 +352,15 @@ export class PresenceEngine {
       <style>
         .ace-fp { color: #f0e4c0; font-family: 'Signika', sans-serif; }
         .ace-fp .ace-fp-head { font-size: 16px; line-height: 1.4; margin-bottom: 8px; }
-        .ace-fp .ace-fp-list { display: flex; flex-direction: column; gap: 2px; max-height: 320px; overflow-y: auto;
-          border: 1px solid rgba(212,175,55,0.25); border-radius: 4px; padding: 4px; background: #121016; }
-        .ace-fp .ace-fp-row { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 3px; font-size: 16px; }
+        /* ⚠️ 80 PIXELS AND IT SCROLLS (his rule, 2026-09-20). A dragon can
+           reach a lot of creatures, and a wall of 34-pixel thumbnails is not
+           a list he can read at a glance mid-fight. */
+        .ace-fp .ace-fp-list { display: flex; flex-direction: column; gap: 3px; max-height: 60vh; overflow-y: auto;
+          border: 1px solid rgba(212,175,55,0.25); border-radius: 4px; padding: 5px; background: #121016; }
+        .ace-fp .ace-fp-row { display: flex; align-items: center; gap: 12px; padding: 5px 8px; border-radius: 4px; font-size: 17px; }
         .ace-fp .ace-fp-row:hover { background: rgba(212,175,55,0.10); }
-        .ace-fp .ace-fp-row img { width: 34px; height: 34px; border-radius: 5px; object-fit: cover; border: 1px solid #555; }
+        .ace-fp .ace-fp-row img { width: 80px; height: 80px; border-radius: 6px; object-fit: cover; border: 1px solid #555; background: #0c0c10; }
+        .ace-fp .ace-fp-row input[type="checkbox"] { width: 20px; height: 20px; flex-shrink: 0; }
         .ace-fp .ace-fp-name { flex: 1; font-weight: 600; overflow-wrap: anywhere; }
         .ace-fp .ace-fp-ft { color: #c9a76b; font-size: 14px; white-space: nowrap; }
         .ace-fp .ace-fp-spared { margin-top: 8px; font-size: 14px; color: #ffaa44; line-height: 1.4; }
@@ -337,8 +368,8 @@ export class PresenceEngine {
       </style>
       <div class="ace-fp">
         <div class="ace-fp-head"><b>${esc(sourceDoc.name)}</b>'s <b>${esc(item.name)}</b>:
-          everyone within ${presence.radiusFt} feet${presence.needsSight ? " who can see it" : ""}.
-          Untick anyone it spares.</div>
+          ${asked.length} creature${asked.length === 1 ? "" : "s"} within ${presence.radiusFt} feet`
+        + `${presence.needsSight ? " who can see it" : ""}. Untick anyone it spares.</div>
         <div class="ace-fp-all"><a data-ace-fp="all">Tick all</a> · <a data-ace-fp="none">Untick all</a></div>
         <div class="ace-fp-list">${asked.map(line).join("")}</div>
         ${sparedLine}
@@ -348,7 +379,7 @@ export class PresenceEngine {
       const chosen = await DialogV2.wait({
         window: { title: `${item.name}`, icon: "fa-solid fa-face-scream" },
         classes: ["ace-qol-dark-dialog"],
-        position: { width: 420 },
+        position: { width: 460 },
         content,
         buttons: [
           { action: "go", label: "Frighten them", icon: "fa-solid fa-face-scream", default: true,

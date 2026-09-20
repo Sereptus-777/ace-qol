@@ -4286,6 +4286,19 @@ export class SaveEngine {
    *
    * @param {{castId?: string, tokenDocId?: string}} f  the prompt's flags
    */
+  /** Has this creature already posted a result for this cast? */
+  static _alreadyAnswered(f) {
+    try {
+      const castId = f?.castId ?? null;
+      const tokenDocId = f?.tokenDocId ?? null;
+      if (!castId || !tokenDocId) return false;
+      return game.messages?.contents?.some(m => {
+        const g = m.flags?.[MODULE_ID];
+        return g?.type === "pcSaveResult" && g.castId === castId && g.tokenDocId === tokenDocId;
+      }) ?? false;
+    } catch (_) { return false; }
+  }
+
   static _promptStillWaits(f) {
     try {
       const castId = f?.castId ?? null;
@@ -4339,6 +4352,14 @@ export class SaveEngine {
       const key = message.id;
       if (RollPopout.isOpen(key)) return true;
       if (SaveEngine._promptInChat.has(key)) return false;
+      // ⚠️ NEVER A SECOND BOX FOR A ROLL THAT ALREADY LANDED (his rule,
+      // 2026-09-20). Her result exists in the log as its own message; if this
+      // cast already has one for this creature, the answer is in and the box
+      // would be asking her to roll the same save twice.
+      if (SaveEngine._alreadyAnswered(f)) {
+        console.log(`${MODULE_ID} | no box for ${f.tokenDocId}: this cast already has their roll.`);
+        return false;
+      }
       const scene = game.scenes.get(f.sceneId) ?? canvas.scene;
       const tokenDoc = scene?.tokens?.get(f.tokenDocId) ?? null;
       const actor = tokenDoc?.actor ?? game.actors.get(f.actorId) ?? null;
@@ -6837,6 +6858,11 @@ export class SaveEngine {
           const got = await this._applyFailedSaveConditions(item, [r], {
             saveAbility: flags.saveAbility, saveDC: flags.saveDC,
             activityId: flags.activityId ?? null, casterActor, recipe,
+            // ⚠️ THE PLAYER'S OWN PATH HAD NEVER HEARD OF IT (his table,
+            // 2026-09-20). This is where a player's failed save lands, and
+            // without the presence it landed at once instead of waiting for
+            // APPLY, carried no mark, and could stack a second time.
+            presence: flags.presence ?? null,
           }) ?? [];
           cardApplied = [...cardApplied.filter(a => a?.tokenDocId !== r.tokenDocId), ...got];
         }
@@ -7322,10 +7348,15 @@ export class SaveEngine {
       if (!row && !found.all.has(key)) missingEffects.push(key || "an effect");
       return row;
     }).filter(Boolean);
-    const copyFail = registryEffectKey ? [] : pick(onFailV.effects);
-    const copySuccess = registryEffectKey ? [] : pick(onPassV.effects);
+    // ⚠️ A PRESENCE LEAVES FRIGHTENED AND NOTHING ELSE (his rule, 2026-09-20:
+    // "Fail = Frightened only. Not Compelled. Not Command."). Its recipe is
+    // rebuilt to the one condition its words name, and nothing the item happens
+    // to carry beside it rides along on top.
+    const presenceOnly = !!saveCtx?.presence?.sourceTokenId;
+    const copyFail = (registryEffectKey || presenceOnly) ? [] : pick(onFailV.effects);
+    const copySuccess = (registryEffectKey || presenceOnly) ? [] : pick(onPassV.effects);
     // A condition the data puts on a made save as well ("applies on a success").
-    const successConditions = registryEffectKey ? []
+    const successConditions = (registryEffectKey || presenceOnly) ? []
       : onPassV.conditions.map(c => ({ condition: c.key,
           ...(Number(c.duration) > 0 ? { duration: { seconds: Number(c.duration) } } : {}) }));
     if (missingEffects.length) {
@@ -7463,6 +7494,29 @@ export class SaveEngine {
       if (!actor) {
         applied.push(...SaveEngine._declinedFor([r], noActor));
         continue;
+      }
+
+      // ⚠️🔴 AND IT NEVER LANDS TWICE (his table, 2026-09-20: a Nothic
+      // frightened three times, a Specter four). Two presences ran at once and
+      // each asked the room; the rule his list states is that a creature
+      // already frightened by that dragon does not roll and does not take it
+      // again, so the last door says so as well as the first. Cheap, and it
+      // closes every way a second card can reach the same creature.
+      if (saveCtx?.presence?.sourceTokenId && !saveCtx?.dryRun) {
+        const already = (actor.effects?.contents ?? []).some(e => {
+          if (e.disabled) return false;
+          const p = e.flags?.[MODULE_ID]?.presence;
+          return !!p && p.sourceTokenId === saveCtx.presence.sourceTokenId
+            && String(p.itemName ?? "").toLowerCase() === String(saveCtx.presence.itemName ?? item.name).toLowerCase();
+        });
+        if (already) {
+          applied.push({ targetName: r.name ?? actor.name, tokenDocId: r.tokenDocId, conditions: [],
+            note: `${actor.name} is already frightened by ${saveCtx.presence.sourceName ?? "it"}, `
+              + `so nothing was put on it again.` });
+          console.log(`${MODULE_ID} | ${item.name}: ${actor.name} is already frightened by `
+            + `${saveCtx.presence.sourceName ?? "it"} — not applied a second time.`);
+          continue;
+        }
       }
 
       // ⚠️ A PLAYER'S CREATURE WAITS FOR HIS PRESS (his rule, 2026-09-20:
@@ -8218,6 +8272,26 @@ export class SaveEngine {
     const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell,
             timingType, templateDocId, templateSceneId, hasDamage = true,
             appliedConditions = [], activityId = null, spellLevel = null, recipe = null } = opts;
+
+    // ⚠️🔴 A ROLL THAT LANDED BEFORE THIS CARD EXISTED (his table, 2026-09-20:
+    // "Aryel's fail landed before the card existed. The card still says she has
+    // not rolled. No second box.").
+    //
+    // Her box opens the moment her prompt is written, which is BEFORE this card
+    // is built. A player who clicks straight away posts their result into a
+    // world with no card to write it on: the handler looks for one, finds none,
+    // and says so — and nothing ever looked again. The NPC roller heals what it
+    // can see at its own moment; this is the last moment before the card is
+    // drawn, so it asks once more.
+    try {
+      const healed = SaveEngine._mergePendingPcResults(results, opts.castId ?? null, recipe);
+      if (healed) {
+        console.log(`${MODULE_ID} | ${item?.name}: folded in ${healed} player result(s) that landed `
+          + `before this card existed — their rows show the roll, not "waiting".`);
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not fold in an early player result:`, err);
+    }
 
     const cardHtml = this._buildPhase1CardHtml(item, results, opts);
 

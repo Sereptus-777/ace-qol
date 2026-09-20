@@ -5183,6 +5183,7 @@ console.log(`\nA FRIGHTENING PRESENCE: ONE SAVE, ONE CREATURE, ONCE`);
   const keep9 = { users: game.users, user: game.user, messages: game.messages, scenesGet: game.scenes.get,
     scene: canvas.scene, placed: [...canvas.tokens.placeables], create: ChatMessage.create,
     canSee: Sit9.canSee, gmActive: GM.active, owner: CONST.DOCUMENT_OWNERSHIP_LEVELS,
+    backends: CONFIG.Canvas?.polygonBackends,
     time: game.time, combat: game.combat, fromUuidSync: globalThis.fromUuidSync };
 
   const creature9 = (id, name, { type = "npc", owner = null, dead = false, effects = [] } = {}) => {
@@ -5297,6 +5298,8 @@ console.log(`\nA FRIGHTENING PRESENCE: ONE SAVE, ONE CREATURE, ONCE`);
       const alreadyImmune = creature9("replay-fp-immune", "a steady monk",
         { effects: [markImmune(dragon.id, "Frightful Presence", 90000)] });
       const behindDoor = creature9("replay-fp-door", "a guard behind a closed door");
+      const notHere = creature9("replay-fp-hidden", "a kobold waiting for act three");
+      const twinOfDragon = dragon;   // his own second body, if he had one on the map
       place9(knight, "tok-fp-knight", 200);
       place9(farKnight, "tok-fp-far", 3000);       // 150 feet down the hall
       place9(corpse, "tok-fp-corpse", 300);
@@ -5304,20 +5307,37 @@ console.log(`\nA FRIGHTENING PRESENCE: ONE SAVE, ONE CREATURE, ONCE`);
       place9(alreadyAfraid, "tok-fp-afraid", 500);
       place9(alreadyImmune, "tok-fp-immune", 600);
       place9(behindDoor, "tok-fp-door", 700);
-      Sit9.canSee = (viewer, subject, o = {}) => ({
-        canSee: viewer !== behindDoor, why: viewer === behindDoor ? "a closed door" : "in the open" });
+      const hiddenTok = place9(notHere, "tok-fp-hidden", 800);
+      hiddenTok.document.hidden = true;
+      // A second token of the dragon itself, which is how a press measuring
+      // from one body was asking the other to save (his table, 2026-09-20).
+      const secondBody = place9(twinOfDragon, "tok-fp-dragon-2", 900);
+      secondBody.document.actorId = dragon.id;
+      // ⚠️ THE REAL SIGHT READER, WITH A REAL WALL. Standing `canSee` down
+      // would pin the harness instead of ACE: the fault his table found was
+      // that the one sight reader had never tested a wall at all, so the test
+      // has to go through it. Foundry's own sight backend is what it asks.
+      const keepBackend = CONFIG.Canvas?.polygonBackends;
+      CONFIG.Canvas = { ...(CONFIG.Canvas ?? {}), polygonBackends: { sight: {
+        testCollision: (from, to) => {
+          const doorTok = docs9.get("tok-fp-door")?.object;
+          const at = (p) => doorTok && Math.abs(p.x - doorTok.center.x) < 1 && Math.abs(p.y - doorTok.center.y) < 1;
+          return at(from) || at(to);      // a closed door between the guard and everything
+        } } } };
 
       const rows = PresenceEngine._read(dragonTok.document, fp, presence);
       const by = (a) => rows.find(r => r.doc.actor === a) ?? null;
       const asked = rows.filter(r => !r.skip).map(r => r.name);
-      check("it asks the knight and Chudd, and says why it asks nobody else: the far knight is out of 120 feet, the guard cannot see it through a closed door, the veteran is already frightened by it, the monk is already immune to it, and the dead cultist is not on the list at all (2026-09-20)",
+      const dragonRows = rows.filter(r => r.doc.actor === dragon);
+      check("it asks the knight and Chudd and nobody else, and says why each of the others is out: out of its 120 feet, a closed door in the way, hidden and not in play yet, already frightened by it, already immune to it, dead, and the dragon itself — both of its bodies (2026-09-20)",
         asked.length === 2 && asked.includes("a knight") && asked.includes("Chudd")
           && /out of range/.test(by(farKnight)?.skip?.reason ?? "")
           && /cannot see it/.test(by(behindDoor)?.skip?.reason ?? "")
+          && /hidden/.test(by(notHere)?.skip?.reason ?? "")
           && by(alreadyAfraid)?.skip?.reason === "already frightened by it"
           && by(alreadyImmune)?.skip?.reason === "immune to it already"
           && by(corpse)?.skip?.reason === "dead" && by(corpse)?.skip?.hide === true
-          && by(dragon)?.skip?.reason === "itself",
+          && dragonRows.length === 2 && dragonRows.every(r => r.skip?.reason === "itself"),
         `asked: ${asked.join(", ") || "nobody"}; `
           + rows.filter(r => r.skip).map(r => `${r.name}: ${r.skip.reason}`).join("; "));
 
@@ -5383,26 +5403,89 @@ console.log(`\nA FRIGHTENING PRESENCE: ONE SAVE, ONE CREATURE, ONCE`);
               + `waiting: ${held9.map(a => `${a.targetName} -> ${a.held.join(", ")}`).join("; ") || "nobody"}; `
               + `rows: ${order9.join(", ")}`);
 
+        // NOTHING LANDS TWICE, AND NOTHING BUT FRIGHTENED.
+        // The knight now carries the mark the first card left on it; a second
+        // card reaching the same creature must put nothing on it again.
+        setEffects(knight, [markFright("tok-fp-dragon", "Frightful Presence")]);
+        let twice = [];
+        try {
+          await quiet(async () => {
+            twice = await engine9._applyFailedSaveConditions(fp, [rows9[0]],
+              { saveAbility: "wis", saveDC: 16, activityId: built.activityId,
+                casterActor: dragon, recipe: built.recipe, presence: presFlag }) ?? [];
+          });
+        } catch (e) { twice = [{ declined: String(e?.message ?? e) }]; }
+        check("a creature already frightened by that dragon takes nothing a second time, and the card says why rather than going quiet (2026-09-20)",
+          twice.length === 1 && (twice[0].conditions?.length ?? 0) === 0
+            && /already frightened/i.test(String(twice[0].note ?? "")),
+          twice.map(a => `${a.targetName ?? "?"}: ${(a.conditions ?? []).join(", ") || a.note || a.declined || "nothing"}`).join("; "));
+        setEffects(knight, []);
+
+        // NEVER COMPELLED: what the item carries beside the words does not ride along.
+        const src9 = readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/save-engine.mjs`, "utf8");
+        check("and only the condition its words name can land: for a presence the item's own effects are never copied, so a copy carrying Compelled or Command adds nothing (2026-09-20)",
+          /const presenceOnly = !!saveCtx\?\.presence\?\.sourceTokenId;/.test(src9)
+            && /const copyFail = \(registryEffectKey \|\| presenceOnly\) \? \[\]/.test(src9)
+            && /const copySuccess = \(registryEffectKey \|\| presenceOnly\) \? \[\]/.test(src9)
+            && /const successConditions = \(registryEffectKey \|\| presenceOnly\)/.test(src9),
+          "the item's own effects and its on-success conditions are both skipped for a presence");
+
+        // A ROLL THAT LANDED BEFORE THE CARD EXISTED.
+        const castId9 = "cast-fp-early";
+        const early = await ChatMessage.create({ content: "", flags: { [MOD]: {
+          type: "pcSaveResult", castId: castId9, tokenDocId: "tok-fp-chudd",
+          saveTotal: 9, dieResult: 4, passed: false, autoFailSave: false } } });
+        const pending9 = [{ name: "Chudd", tokenDocId: "tok-fp-chudd", actorId: chudd.id, sceneId: SCENE9,
+          isPC: true, pending: true, saveTotal: null, passed: false }];
+        let card9 = null;
+        try {
+          await quiet(async () => {
+            card9 = await engine9._postSaveResultsPhase1(fp, dragon, pending9, {
+              saveAbility: "wis", saveDC: 16, hasDamage: false, halfOnSave: false,
+              activityId: built.activityId, recipe: built.recipe, appliedConditions: [],
+              castId: castId9, presence: presFlag });
+          });
+        } catch (_) { /* the card itself is not what is pinned */ }
+        check("a player's roll that landed before the card existed is written onto their row when it is built: Chudd's 9 and his failure, not \"waiting for player\" (2026-09-20)",
+          pending9[0].pending === false && Number(pending9[0].saveTotal) === 9
+            && pending9[0].passed === false,
+          `Chudd's row: ${pending9[0].pending ? "still waiting (wrong)" : `${pending9[0].saveTotal}, `
+            + `${pending9[0].passed ? "passed" : "failed"}`}`);
+
+        // AND NO SECOND BOX FOR IT.
+        check("and no box opens for a roll that already landed: the prompt for that same cast and creature knows the answer is in (2026-09-20)",
+          SaveEngine._alreadyAnswered({ castId: castId9, tokenDocId: "tok-fp-chudd" }) === true
+            && SaveEngine._alreadyAnswered({ castId: castId9, tokenDocId: "tok-fp-knight" }) === false,
+          `Chudd: answered ${SaveEngine._alreadyAnswered({ castId: castId9, tokenDocId: "tok-fp-chudd" })}; `
+            + `the knight: answered ${SaveEngine._alreadyAnswered({ castId: castId9, tokenDocId: "tok-fp-knight" })}`);
+        try { await early.delete?.(); } catch (_) { /* the harness may not delete */ }
+
         // ONCE, AND THE MARK LIVES ON THE FIGHT.
         const flags9 = {};
         const combat9 = { started: true, combatants: [],
           getFlag: (m, k) => flags9[`${m}.${k}`], setFlag: async (m, k, v) => { flags9[`${m}.${k}`] = v; } };
         const keepCombat = game.combat;
+        PresenceEngine._claimed?.clear?.();
         const ran = [];
         const keepRun = PresenceEngine.run;
         PresenceEngine.run = async (doc, item) => { ran.push(item.name); };
         try {
           game.combat = combat9;
+          // ⚠️ ALL THREE AT ONCE, which is what his table hit: combatStart and
+          // combatTurnChange both fire as a fight begins, and each read the
+          // combat's flag before any of them had written it.
           await quiet(async () => {
-            await PresenceEngine._fireFor(docs9.get("tok-fp-dragon"), "the fight started");
-            await PresenceEngine._fireFor(docs9.get("tok-fp-dragon"), "its first turn began");
-            await PresenceEngine._fireFor(docs9.get("tok-fp-dragon"), "it appeared on the map");
+            await Promise.all([
+              PresenceEngine._fireFor(docs9.get("tok-fp-dragon"), "the fight started"),
+              PresenceEngine._fireFor(docs9.get("tok-fp-dragon"), "its first turn began"),
+              PresenceEngine._fireFor(docs9.get("tok-fp-dragon"), "it appeared on the map"),
+            ]);
           });
         } finally {
           PresenceEngine.run = keepRun;
           game.combat = keepCombat;
         }
-        check("it happens once a fight, however it was reached: the fight starting, its first turn and its token appearing all ask the same question, and only the first one runs it (2026-09-20)",
+        check("it happens once a fight even when all three doors open in the same instant: the fight starting, its first turn and its token appearing race each other, and exactly one presence runs (2026-09-20)",
           ran.length === 1 && ran[0] === "Frightful Presence"
             && Object.keys(flags9).length === 1,
           `it ran ${ran.length} time(s)${ran.length ? ` (${ran.join(", ")})` : ""}; the fight remembers `
@@ -5439,6 +5522,8 @@ console.log(`\nA FRIGHTENING PRESENCE: ONE SAVE, ONE CREATURE, ONCE`);
     canvas.tokens.placeables.length = 0;
     canvas.tokens.placeables.push(...keep9.placed);
     Sit9.canSee = keep9.canSee;
+    if (keep9.backends === undefined) delete CONFIG.Canvas.polygonBackends;
+    else CONFIG.Canvas.polygonBackends = keep9.backends;
     if (keep9.time === undefined) delete game.time; else game.time = keep9.time;
     if (keep9.gmActive === undefined) delete GM.active; else GM.active = keep9.gmActive;
     if (keep9.owner === undefined) delete CONST.DOCUMENT_OWNERSHIP_LEVELS; else CONST.DOCUMENT_OWNERSHIP_LEVELS = keep9.owner;
