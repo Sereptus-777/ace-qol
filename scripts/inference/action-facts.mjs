@@ -371,9 +371,44 @@ function readDelivery(item, acts, text, why) {
   // dnd5e's own factor for the unit, so metres and kilometres come out as it says.
   const perUnit = Number(globalThis.CONFIG?.DND5E?.movementUnits?.[units]?.conversion) || 1;
   const feet = (v) => (v === null ? null : Math.round(v * perUnit * 1000) / 1000);
-  const reach = feet(_n(range.reach ?? sys.range?.reach));
+  const reach0 = feet(_n(range.reach ?? sys.range?.reach));
   const value = feet(_n(range.value));
   const long = feet(_n(range.long));
+
+  // ⚠️🔴 A DEFAULT dnd5e FILLED IN IS NOT A NUMBER THE ITEM DECLARED
+  //    (2026-09-20, his dragon's tail).
+  //
+  // Volcathar's Tail says "Melee Weapon Attack: +14 to hit, 15 ft., one
+  // target." and its sheet stores that 15 in the range slot. dnd5e never moves
+  // it: the migration that moves a melee weapon's range into its reach slot
+  // asks `weaponTypeMap[type]` first, and that map has no entry for "natural",
+  // so every monster's bite, claw, tail and tentacle is skipped. Then data
+  // preparation sees an empty reach slot and writes its own default of 5 feet
+  // (10 with the reach property) beside the declared 15.
+  //
+  // So a reach slot holding 5 means either "this weapon reaches five feet" or
+  // "nobody filled this in", and reading it as the answer gave the dragon a
+  // tail that reaches five feet while its own words say fifteen.
+  //
+  // ACE's one reach reader (reach-reader.mjs) has honoured the larger declared
+  // number since the Spiked Chain, which is why the attack gate, the card tag
+  // and the hover all say 15 — and this reader said 5, so the frozen recipe
+  // the whole road runs on carried the wrong distance while every other place
+  // carried the right one. Two answers to one question is the fault, not the 5.
+  //
+  // ⚠️ ONLY WHEN THE ATTACK ITSELF SAYS MELEE. A creature's ranged natural
+  // weapon (a spit, a quill) has the same shape — a declared range beside a
+  // default reach — and calling that a thirty-foot melee reach would be a new
+  // bug in place of this one. dnd5e stores the answer on the attack.
+  // ⚠️ AND ONLY WITH NO LONG RANGE. A number with a long range beside it is a
+  // throw, not a reach.
+  const meleeAttack = acts.some(a => _s(a?.attack?.type?.value) === "melee");
+  const declaredReach = meleeAttack && !long && value !== null && (value > (reach0 ?? 0));
+  const reach = declaredReach ? value : reach0;
+  if (declaredReach) {
+    why.push(`its attack is melee and it declares ${value} feet, which is its reach`
+      + `${reach0 ? ` (dnd5e's own default of ${reach0} sits beside it, unset)` : ""}`);
+  }
 
   // ⚠️🔴 THE OVERRIDE TRAP AGAIN, AND THE TWO FIELDS ARE NOT SYMMETRICAL.
   //

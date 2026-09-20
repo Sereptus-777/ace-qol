@@ -34,7 +34,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { pathToFileURL } from "node:url";
-import { existsSync, cpSync, mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, cpSync, mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 
@@ -4709,6 +4709,452 @@ console.log(`\nSAVE CARD UX: THE BOX, THE RESULTS CARD, ONE CONCENTRATION CHECK`
     if (keep7.gmActive === undefined) delete GM.active; else GM.active = keep7.gmActive;
     globalThis.fromUuidSync = keep7.fromUuidSync;
     for (const a of made7) ACTORS.delete(a.id);
+  }
+}
+
+/* ── RECHARGE ATTACKS: BREATH, WING, TAIL ────────────────────────────────── */
+// The night run of 2026-09-20, his list: "Recharge attacks. Same save engine,
+// same card door, same Dice So Nice wait, same APPLY, same dead/immune rules,
+// same edge-to-edge template test already frozen."
+//
+// Pinned on his own dragon: Volcathar the Flameborn (CR 17) on AMBER TEMPLE:
+// LOWER, whose sheet carries Fire Breath (recharge 5-6), Wing Attack and Tail
+// as a legendary action, and Tail as an ordinary attack. The geometry of who
+// is inside a cone is frozen and pinned elsewhere (the template and distance
+// self-tests), so what is pinned here is the press, the card and what lands.
+console.log(`\nRECHARGE ATTACKS: BREATH, WING, TAIL`);
+{
+  const MOD = "ace-qol";
+  const SCENE8 = "replay-breath-scene";
+  const PLAYER8 = { id: "tommy", name: "Tommy", isGM: false, active: true, character: null };
+  const docs8 = new Map(), made8 = [], chat8 = new Map(), plays8 = [];
+  const { RollPopout } = await import(`${MODULE}/scripts/roll-popout.mjs`);
+  const setPath8 = (obj, key, v) => {
+    const path = key.split(".");
+    let o = obj;
+    for (const k of path.slice(0, -1)) o = (o[k] ??= {});
+    o[path[path.length - 1]] = v;
+  };
+  const keep8 = { users: game.users, user: game.user, messages: game.messages, scenesGet: game.scenes.get,
+    scene: canvas.scene, placed: [...canvas.tokens.placeables], create: ChatMessage.create,
+    audio: foundry.audio, fetch: globalThis.fetch, owner: CONST.DOCUMENT_OWNERSHIP_LEVELS,
+    html: globalThis.HTMLElement, gmActive: GM.active, fromUuidSync: globalThis.fromUuidSync,
+    areas: CONFIG.DND5E.areaTargetTypes, targets: GM.targets };
+  // Two things every real client has and the stand-in did not: the shapes dnd5e
+  // can place (the press asks whether it can place this item's cone before it
+  // waits for one) and the user's target set.
+  const AREAS = { cone: { template: "cone" }, line: { template: "ray" }, radius: { template: "circle" },
+    sphere: { template: "circle" }, cylinder: { template: "circle" }, cube: { template: "rect" },
+    square: { template: "rect" }, wall: { template: "ray" } };
+
+  const creature8 = (id, name, { type = "npc", owner = null, di = [], dead = false } = {}) => {
+    const a = { id, name, type, img: `${id}.webp`, documentName: "Actor", uuid: `Actor.${id}`,
+      statuses: new Set(dead ? ["dead"] : []), effects: new Collection(), items: new Collection(),
+      ownership: owner ? { [owner]: 3 } : {}, isOwner: true, hasPlayerOwner: !!owner,
+      prototypeToken: { actorLink: true }, getFlag: () => undefined, getRollData: () => ({}),
+      testUserPermission: (u) => !!u && !u.isGM && (a.ownership?.[u.id] ?? 0) >= 3,
+      system: { attributes: { hp: { value: dead ? 0 : 40, max: 40, temp: 0 }, death: { success: 0, failure: 0 }, prof: 3 },
+        abilities: { str: { mod: 0, save: { value: 0 } }, dex: { mod: 0, save: { value: 0 } },
+          con: { mod: 0, save: { value: 0 } }, wis: { mod: 0, save: { value: 0 } } },
+        skills: {}, details: { type: { value: "humanoid" }, alignment: "Neutral" },
+        traits: { ci: { value: new Set() }, di: { value: new Set(di) }, dr: { value: new Set() }, dv: { value: new Set() } } },
+      update: async (u) => { for (const [k, v] of Object.entries(u)) setPath8(a, k, v); return a; } };
+    ACTORS.set(id, a);
+    made8.push(a);
+    return a;
+  };
+  const place8 = (actor, id, x) => {
+    const doc = { id, actorId: actor.id, actor, parent: { id: SCENE8 }, flags: {}, name: actor.name,
+      hidden: false, x, y: 0, width: 1, height: 1, elevation: 0, disposition: actor.hasPlayerOwner ? 1 : -1,
+      texture: { src: `${actor.id}-token.webp` }, getFlag: () => undefined,
+      update: async (u) => { for (const [k, v] of Object.entries(u)) setPath8(doc, k, v); return doc; } };
+    const tok = { id, name: actor.name, actor, document: doc, x, y: 0, w: 100, h: 100,
+      center: { x: x + 50, y: 50 }, scene: { id: SCENE8 }, visible: true, setTarget() {} };
+    doc.object = tok;
+    docs8.set(id, doc);
+    canvas.tokens.placeables.push(tok);
+    return tok;
+  };
+  globalThis.HTMLElement = keep8.html ?? class {};
+  class Li8 extends globalThis.HTMLElement {
+    constructor() { super(); this.cls = new Set(); this.style = {}; }
+    get classList() { const c = this.cls; return { add: (x) => c.add(x), remove: (x) => c.delete(x), contains: (x) => c.has(x) }; }
+    closest() { return this; }
+    querySelectorAll() { return []; }
+    querySelector() { return null; }
+    setAttribute() {}
+  }
+  const drawOn8 = (user, message, handlers) => {
+    game.user = user;
+    const li = new Li8();
+    const keepLog = console.log;
+    console.log = () => {};
+    try { for (const h of handlers) h(message, li); } finally { console.log = keepLog; }
+    return li;
+  };
+  const folded8 = (li) => li.classList.contains("ace-qol-save-collapsed");
+  const textOf = (m) => String(m?.content ?? "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+
+  try {
+    GM.active = true;
+    GM.targets = new Set();
+    CONFIG.DND5E.areaTargetTypes = AREAS;
+    const users8 = Object.assign([GM, PLAYER8], { activeGM: GM });
+    users8.get = (id) => users8.find(u => u.id === id);
+    game.users = users8;
+    game.user = GM;
+    CONST.DOCUMENT_OWNERSHIP_LEVELS = { NONE: 0, LIMITED: 1, OBSERVER: 2, OWNER: 3 };
+    foundry.audio = { AudioHelper: { play: (o) => { plays8.push({ user: game.user?.id, ...o }); return Promise.resolve({}); } } };
+    globalThis.fetch = async () => ({ ok: true, status: 200 });
+    globalThis.fromUuidSync = (u) => (String(u).startsWith("Actor.") ? ACTORS.get(String(u).slice(6)) ?? null : keep8.fromUuidSync(u));
+    game.messages = { get: (id) => chat8.get(id) ?? null, get contents() { return [...chat8.values()]; } };
+    ChatMessage.create = async (data, opts) => {
+      const msg = await keep8.create(data, opts);
+      const plain = msg.update;
+      msg.update = async (u = {}) => {
+        const rest = {};
+        for (const [k, v] of Object.entries(u)) { if (k.includes(".")) setPath8(msg, k, v); else rest[k] = v; }
+        return plain(rest);
+      };
+      msg.whisper = data?.whisper ?? [];
+      msg.author = data?.author ?? null;
+      chat8.set(msg.id, msg);
+      return msg;
+    };
+    const scene8 = { id: SCENE8, templates: { get: () => null },
+      tokens: { get: (t) => docs8.get(t) ?? null, get contents() { return [...docs8.values()]; } } };
+    game.scenes.get = (id) => (id === SCENE8 ? scene8 : keep8.scenesGet(id));
+    canvas.scene = scene8;
+    canvas.tokens.placeables.length = 0;
+
+    const dragon = firstActor("Volcathar the Flameborn CR17");
+    const breath = dragon?.items?.find(i => i.name === "Fire Breath") ?? null;
+    const wing = dragon?.items?.find(i => i.name === "Wing Attack") ?? null;
+    const tail = dragon?.items?.find(i => i.name === "Tail") ?? null;
+    const tailLeg = dragon?.items?.find(i => i.name === "Tail Attack") ?? null;
+
+    let engine8 = null;
+    const at = { render: (hooks.renderChatMessage ?? []).length, create: (hooks.createChatMessage ?? []).length };
+    try { await quiet(async () => { engine8 = new SaveEngine({}); }); } catch (_) { engine8 = null; }
+    const renderHooks8 = (hooks.renderChatMessage ?? []).slice(at.render);
+
+    /* ── 1. THE BREATH WEAPON ───────────────────────────────────────────── */
+    if (!engine8 || !breath) {
+      check("his dragon's Fire Breath (2026-09-20)", null, "no Volcathar the Flameborn with a Fire Breath in this world");
+    } else {
+      const act = [...breath.system.activities][0];
+      // The press: it takes the cone from the item and waits for it to be placed.
+      let errP = null;
+      try { await quiet(() => engine8._onUseActivity(act, { message: null })); } catch (e) { errP = e; }
+      const pend = engine8._pendingSaveSpell;
+      const onFail = (pend?.recipe?.onFail ?? []).map(o => `${o.formula ?? o.condition?.key ?? "?"} ${(o.types ?? []).join("/")}${o.onSuccess ? ` (${o.onSuccess})` : ""}`.trim());
+      check("his dragon's Fire Breath goes to the save engine and waits for its own 60-foot cone: DEX DC 21 and 18d6 fire from the item, half on a save, and the recharge the sheet stores (2026-09-20)",
+        !errP && !!pend && pend.item?.name === "Fire Breath" && pend.saveAbility === "dex" && Number(pend.saveDC) === 21
+          && onFail.some(f => /^18d6 fire \(half\)/.test(f))
+          && String(act.target?.template?.type) === "cone" && String(act.target?.template?.size) === "60"
+          && (breath.system?.uses?.recovery ?? []).some(r => r.period === "recharge" && String(r.formula) === "5"),
+        errP ? `threw: ${errP?.message ?? errP}`
+          : pend ? `${String(pend.saveAbility).toUpperCase()} DC ${pend.saveDC}; on a fail ${onFail.join(", ")}; `
+            + `${act.target?.template?.type} ${act.target?.template?.size} ft; recharge ${(breath.system?.uses?.recovery ?? []).map(r => r.formula).join("/")}`
+            : "nothing was armed");
+      engine8._pendingSaveSpell = null;
+
+      // The card: the same one every area save posts.
+      const knight = creature8("replay-br-knight", "a knight");
+      const azer = creature8("replay-br-azer", "an azer", { di: ["fire"] });
+      const corpse = creature8("replay-br-corpse", "a burnt cultist", { dead: true });
+      const chudd = creature8("replay-br-chudd", "Chudd", { type: "character", owner: "tommy" });
+      const toks = [place8(knight, "tok-br-knight", 100), place8(azer, "tok-br-azer", 200),
+        place8(corpse, "tok-br-corpse", 300), place8(chudd, "tok-br-chudd", 400)];
+      place8(dragon, "tok-br-dragon", 0);
+      let errC = null;
+      const before = chat8.size;
+      try {
+        await quiet(async () => {
+          await engine8._postLiveTargetCard(breath, dragon, toks, {
+            saveAbility: "dex", saveDC: 21, isSpell: false, activityId: act.id, skipDelay: true });
+        });
+      } catch (e) { errC = e; }
+      const made = [...chat8.values()].slice(before);
+      const of = (t) => made.filter(m => m?.flags?.[MOD]?.type === t);
+      const results = of("saveResults").at(-1) ?? null;
+      const prompt = of("pcSavePrompt").at(-1) ?? null;
+      const rt = textOf(results);
+      check("the breath posts the one save card ACE posts for any area: the knight's rolled save, the azer immune to fire as one line with no row, the dead cultist not on it at all, and Chudd waiting for his player (2026-09-20)",
+        !errC && !!results && /a knight/.test(rt) && /Immune to fire, no save:\s*an azer/.test(rt)
+          && !/burnt cultist/.test(rt) && /Chudd/.test(rt) && /WAITING FOR PLAYER/.test(rt),
+        errC ? `threw: ${errC?.message ?? errC}` : rt.slice(0, 220));
+      await new Promise(r => setTimeout(r, 1600));   // past the one-ding-for-a-burst window
+      const dings = plays8.length;
+      const onPlayer = prompt ? drawOn8(PLAYER8, prompt, renderHooks8) : null;
+      const box = prompt ? RollPopout._open.get(prompt.id) : null;
+      await quiet(async () => { box?._onRender?.({}, {}); await new Promise(r => setTimeout(r, 10)); });
+      check("Chudd's player gets the box for it, with the dragon's own words: a ding, the breath's name and \"Roll Dexterity save\", its chat card folded away (2026-09-20)",
+        !!box && box.spec.pillLabel === "Roll Dexterity save" && box.spec.sourceName === "Volcathar the Flameborn CR17"
+          && box.spec.title === "Fire Breath" && folded8(onPlayer)
+          && plays8.slice(dings).some(p => p.user === "tommy"),
+        box ? `"${box.spec.line}" / "${box.spec.pillLabel}"; dings ${plays8.slice(dings).filter(p => p.user === "tommy").length}` : "no box");
+      check("and nothing of its damage happens by itself: the card holds at WAITING FOR SAVES while Chudd has not rolled, it is not a card that resolves itself, and no hit points have moved (2026-09-20)",
+        !!results && results.flags[MOD].autoResolve !== true && results.flags[MOD].applied !== true
+          && /WAITING FOR SAVES/.test(String(results.content ?? ""))
+          && knight.system.attributes.hp.value === 40 && chudd.system.attributes.hp.value === 40,
+        results ? `resolves itself: ${results.flags[MOD].autoResolve === true}; applied: ${results.flags[MOD].applied === true}; `
+          + `the knight ${knight.system.attributes.hp.value}/40, Chudd ${chudd.system.attributes.hp.value}/40` : "no card");
+      if (box) await box.close({ acpResolved: true });
+    }
+
+    /* ── 2. THE WING ATTACK ─────────────────────────────────────────────── */
+    // Same engine, same card, same box. What is its own: the area is an
+    // emanation that needs no crosshair, the DC is worked out from the
+    // dragon's Strength rather than written down, and prone lands because its
+    // words say "knocked prone" and for no other reason.
+    if (!engine8 || !wing) {
+      check("his dragon's Wing Attack (2026-09-20)", null, "no Volcathar the Flameborn with a Wing Attack in this world");
+    } else {
+      const actW = [...wing.system.activities][0];
+      let errW = null;
+      // ⚠️ THE PRESS IS THE GM'S. Drawing the breath's card on Tommy's screen
+      // above left `game.user` as Tommy, and the press's first line is "only
+      // the active GM acts" — so the wing armed nothing and said nothing,
+      // which is this harness lying about ACE, not ACE failing.
+      game.user = GM;
+      try { await quiet(() => engine8._onUseActivity(actW, { message: null })); } catch (e) { errW = e; }
+      const pendW = engine8._pendingSaveSpell;
+      const failW = (pendW?.recipe?.onFail ?? []).map(o => `${o.formula ?? o.condition?.key ?? "?"} ${(o.types ?? []).join("/")}${o.onSuccess ? ` (${o.onSuccess})` : ""}`.trim());
+      // 8 + the dragon's proficiency + its Strength, which is what its own
+      // words print as DC 22. A DC nobody can read is 10 and a loud warning,
+      // so the number itself is the pin.
+      check("his dragon's Wing Attack goes to the same save engine with the DC its own Strength gives it: DEX DC 22, 2d6 + its Strength bludgeoning, half on a save (2026-09-20)",
+        !errW && !!pendW && pendW.item?.name === "Wing Attack" && pendW.saveAbility === "dex"
+          && Number(pendW.saveDC) === 22
+          && failW.some(f => /^2d6 \+ @mod bludgeoning \(half\)/.test(f)),
+        errW ? `threw: ${errW?.message ?? errW}`
+          : pendW ? `${String(pendW.saveAbility).toUpperCase()} DC ${pendW.saveDC}; on a fail ${failW.join(", ")}` : "nothing was armed");
+      check("it beats its wings where it stands: a 10-foot emanation from the dragon, everybody in it, and no crosshair to place (2026-09-20)",
+        !!pendW && String(actW.range?.units) === "self" && Number(wing.system?.range?.value) === 10
+          && (recipesFor(wing, { actor: dragon })[0]?.recipe?.where?.kind) === "emanation"
+          && Number(recipesFor(wing, { actor: dragon })[0]?.recipe?.where?.size) === 10,
+        pendW ? `${recipesFor(wing, { actor: dragon })[0]?.recipe?.where?.kind} `
+          + `${recipesFor(wing, { actor: dragon })[0]?.recipe?.where?.size} ft, range units ${actW.range?.units}` : "nothing was armed");
+      check("prone is on it because its words say \"knocked prone\", and the same dragon's Tail, whose words do not, carries no rider at all (2026-09-20)",
+        failW.some(f => f === "prone")
+          && /knocked prone/i.test(String(wing.system?.description?.value ?? ""))
+          && !(recipesFor(tail, { actor: dragon })[0]?.recipe?.onHit ?? []).some(o => o.condition)
+          && !/prone/i.test(String(tail?.system?.description?.value ?? "")),
+        `the wing: ${failW.join(", ")}; the tail: `
+          + `${(recipesFor(tail, { actor: dragon })[0]?.recipe?.onHit ?? []).map(o => o.formula ?? o.condition?.key).join(", ") || "nothing"}`);
+      engine8._pendingSaveSpell = null;
+
+      const squire = creature8("replay-wg-squire", "a squire");
+      const boneW = creature8("replay-wg-bones", "a trampled skeleton", { dead: true });
+      const chuddW = creature8("replay-wg-chudd", "Chudd", { type: "character", owner: "tommy" });
+      const toksW = [place8(squire, "tok-wg-squire", 100), place8(boneW, "tok-wg-bones", 200),
+        place8(chuddW, "tok-wg-chudd", 300)];
+      let errCW = null;
+      const beforeW = chat8.size;
+      try {
+        await quiet(async () => {
+          await engine8._postLiveTargetCard(wing, dragon, toksW, {
+            saveAbility: "dex", saveDC: 22, isSpell: false, activityId: actW.id, skipDelay: true });
+        });
+      } catch (e) { errCW = e; }
+      const madeW = [...chat8.values()].slice(beforeW);
+      const resultsW = madeW.filter(m => m?.flags?.[MOD]?.type === "saveResults").at(-1) ?? null;
+      const promptW = madeW.filter(m => m?.flags?.[MOD]?.type === "pcSavePrompt").at(-1) ?? null;
+      const rtW = textOf(resultsW);
+      await new Promise(r => setTimeout(r, 1600));   // past the one-ding-for-a-burst window
+      const dingsW = plays8.length;
+      const onPlayerW = promptW ? drawOn8(PLAYER8, promptW, renderHooks8) : null;
+      const boxW = promptW ? RollPopout._open.get(promptW.id) : null;
+      await quiet(async () => { boxW?._onRender?.({}, {}); await new Promise(r => setTimeout(r, 10)); });
+      check("the wing posts the one save card too, with the trampled skeleton off it, Chudd's player holding a box that dings, and not a hit point moved until APPLY (2026-09-20)",
+        !errCW && !!resultsW && /a squire/.test(rtW) && !/trampled skeleton/.test(rtW) && /Chudd/.test(rtW)
+          && /WAITING FOR (?:PLAYER|SAVES)/.test(rtW) && !!boxW && boxW.spec.pillLabel === "Roll Dexterity save"
+          && boxW.spec.title === "Wing Attack" && folded8(onPlayerW)
+          && plays8.slice(dingsW).some(p => p.user === "tommy")
+          && resultsW.flags[MOD].applied !== true
+          && squire.system.attributes.hp.value === 40 && chuddW.system.attributes.hp.value === 40,
+        errCW ? `threw: ${errCW?.message ?? errCW}`
+          : `${rtW.slice(0, 160)} | box ${boxW ? `"${boxW.spec.pillLabel}"` : "none"}; `
+            + `the squire ${squire.system.attributes.hp.value}/40, Chudd ${chuddW.system.attributes.hp.value}/40`);
+      if (boxW) await boxW.close({ acpResolved: true });
+    }
+
+    /* ── 3. THE TAIL ────────────────────────────────────────────────────── */
+    // His words: "Attack or save, whichever that creature's sheet actually is.
+    // Do not guess a third shape." Volcathar's Tail is an attack, so it stays
+    // an attack: no save is armed and no save card is posted.
+    //
+    // ⚠️🔴 AND IT REACHES FIFTEEN FEET, WHICH ACE HAD READ AS FIVE. dnd5e never
+    // moves a natural weapon's range into its reach slot (its migration asks
+    // `weaponTypeMap` first, and that map has no "natural"), then fills the
+    // empty reach slot with a default 5. The one reach reader has honoured the
+    // larger declared number since the Spiked Chain; the recipe's own reader
+    // took the default, so the frozen recipe the road runs on said the
+    // dragon's tail reached five feet while every other place said fifteen.
+    // 22 natural melee weapons in his world carry a reach that way.
+    if (!tail) {
+      check("his dragon's Tail (2026-09-20)", null, "no Volcathar the Flameborn with a Tail in this world");
+    } else {
+      const { resolveReach } = await import(`${MODULE}/scripts/reach-reader.mjs`);
+      const recT = recipesFor(tail, { actor: dragon })[0]?.recipe ?? null;
+      const actT = [...tail.system.activities][0];
+      let errT = null, pendT = null;
+      if (engine8) {
+        game.user = GM;
+        try { await quiet(() => engine8._onUseActivity(actT, { message: null })); } catch (e) { errT = e; }
+        pendT = engine8._pendingSaveSpell;
+        engine8._pendingSaveSpell = null;
+      }
+      check("his dragon's Tail stays the attack its sheet says it is: a melee attack roll for 2d8 bludgeoning, no save armed, no third shape invented (2026-09-20)",
+        !!recT && recT.decidedBy?.kind === "attack" && recT.decidedBy?.melee === true
+          && (recT.onHit ?? []).some(o => /2d8/.test(String(o.formula)) && (o.types ?? []).includes("bludgeoning"))
+          && !pendT && !errT,
+        recT ? `${recT.decidedBy?.kind}${recT.decidedBy?.melee ? " melee" : ""}; on a hit `
+          + `${(recT.onHit ?? []).map(o => `${o.formula} ${(o.types ?? []).join("/")}`).join(", ")}; `
+          + `${pendT ? "a save was armed (wrong)" : "no save armed"}` : "no recipe");
+      check("and it reaches the 15 feet its own sheet declares, in the recipe as well as at the gate: dnd5e's 5-foot default for an empty reach slot is not an answer the item gave (2026-09-20)",
+        Number(recT?.where?.rangeFt) === 15 && recT?.where?.melee === true
+          && resolveReach(tail, actT, { repair: false }).reachFt === 15
+          && Number(tail.system?.range?.reach) === 5,
+        `the recipe says ${recT?.where?.rangeFt} ft, the reach reader says `
+          + `${resolveReach(tail, actT, { repair: false }).reachFt} ft, dnd5e's own slot holds `
+          + `${tail.system?.range?.reach} with ${tail.system?.range?.value} declared beside it`);
+    }
+
+    /* ── 4. THE RECHARGE BUTTON ─────────────────────────────────────────── */
+    // His words: "After a use, the button is spent. At the start of that
+    // creature's turn the recharge die rolls. On a hit the button comes back.
+    // Show the die. Do not recharge mid-round."
+    //
+    // The die is dnd5e's: with the world's auto-recharge on (his is "yes") it
+    // rolls at the start of that creature's turn and puts the use back itself.
+    // ACE never rolls one, which is what keeps it out of the middle of a round;
+    // it takes dnd5e's own card off and posts one that shows the die and the
+    // number it had to beat.
+    if (!breath) {
+      check("his dragon's recharge (2026-09-20)", null, "no Fire Breath in this world");
+    } else {
+      const { CheckGate } = await import(`${MODULE}/scripts/check-gate.mjs`);
+      const { ActionBar } = await import(`${MODULE}/scripts/action-bar.mjs`);
+      const asUses = (spent) => ({ system: { uses: { max: 1, value: spent ? 0 : 1, spent: spent ? 1 : 0,
+        recovery: breath.system?.uses?.recovery ?? [] } }, name: breath.name });
+      const ready = ActionBar._usesOf(asUses(false));
+      const gone = ActionBar._usesOf(asUses(true));
+      check("his dragon's breath is a one-use button that recharges on a 5: ready it counts 1/1, spent it stops counting and shows the number that brings it back (2026-09-20)",
+        !!ready && !!gone && ready.spent === false && ready.left === 1 && ready.max === 1
+          && gone.spent === true && gone.needs === 5 && ready.needs === 5
+          && ActionBar._rechargeWords(5) === "recharges on a 5 or better at the start of its turn"
+          && ActionBar._rechargeWords(6) === "recharges on a 6 at the start of its turn"
+          && ActionBar._usesOf(tail) === null,
+        `ready ${ready?.left}/${ready?.max}, spent ${gone?.spent} needing ${gone?.needs}+; `
+          + `the Tail, which has no uses at all: ${ActionBar._usesOf(tail) === null ? "no badge" : "a badge (wrong)"}`);
+
+      // The card for that die, driven exactly as dnd5e's hook hands it over.
+      const cards = [];
+      const keepPost = CardDoor.post;
+      // Every real client has these; the card asks for PUBLIC by name.
+      const keepModes = CONST.DICE_ROLL_MODES;
+      CONST.DICE_ROLL_MODES = keepModes ?? { PUBLIC: "publicroll", PRIVATE: "gmroll", BLIND: "blindroll", SELF: "selfroll" };
+      const keepShow = globalThis.game?.dice3d;
+      CardDoor.post = async (data) => { cards.push(data); return { id: `rech-${cards.length}` }; };
+      let thrown = 0, landed = 0;
+      globalThis.game.dice3d = { isEnabled: () => true,
+        showForRoll: () => { thrown++; return new Promise(r => setTimeout(() => { landed++; r(true); }, 15)); } };
+      const rollOf = (total, made) => ({ total, isSuccess: made, options: { target: 5 },
+        terms: [{ faces: 6, results: [{ result: total }] }], dice: [{ faces: 6, results: [{ result: total }] }] });
+      try {
+        game.user = GM;
+        await quiet(async () => {
+          await CheckGate._postRechargeCard([rollOf(2, false)], { subject: { name: "Fire Breath", actor: dragon } });
+          await CheckGate._postRechargeCard([rollOf(5, true)], { subject: { name: "Fire Breath", actor: dragon } });
+        });
+      } finally {
+        CardDoor.post = keepPost;
+        if (keepModes === undefined) delete CONST.DICE_ROLL_MODES; else CONST.DICE_ROLL_MODES = keepModes;
+        if (keepShow === undefined) delete globalThis.game.dice3d; else globalThis.game.dice3d = keepShow;
+      }
+      const said = cards.map(c => String(c?.content ?? "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
+      check("the recharge die gets a card of its own, spoken by the dragon, showing the d6, what it needed and whether it came back, after the dice have landed (2026-09-20)",
+        cards.length === 2 && /Volcathar/.test(said[0]) && /NOT YET/.test(said[0]) && /needs 5 or better/.test(said[0])
+          && / 2 /.test(` ${said[0]} `) && /RECHARGED/.test(said[1]) && !/NOT YET/.test(said[1])
+          && thrown === 2 && landed === 2,
+        `${cards.length} cards; dice thrown ${thrown}, landed ${landed}; "${said[0]?.slice(0, 120)}"`);
+
+      // And ACE never starts one. The recharge belongs to the start of a turn.
+      const scripts = `${ROOT}/Data/modules/ace-qol/scripts`;
+      const gateSrc = readFileSync(`${scripts}/check-gate.mjs`, "utf8");
+      const aceSrc = readdirSync(scripts).filter(f => f.endsWith(".mjs"))
+        .map(f => readFileSync(`${scripts}/${f}`, "utf8")).join("\n");
+      check("and ACE never rolls a recharge itself: it listens for dnd5e's, which only happens at the start of that creature's turn, so nothing recharges in the middle of a round (2026-09-20)",
+        /preRollRechargeV2/.test(gateSrc) && /rollRechargeV2/.test(gateSrc)
+          && !/\.rollRecharge\s*\(/.test(aceSrc) && !/rollRecharge\s*\(\s*\{/.test(aceSrc),
+        `${(aceSrc.match(/rollRecharge/g) ?? []).length} mentions of dnd5e's roller across ACE, all of them hooks`);
+    }
+
+    /* ── 5. THE LEGENDARY COPIES ────────────────────────────────────────── */
+    // His words: "If the same creature has Breath, Wing, or Tail as a legendary
+    // action, that press uses this same engine and spends the legendary action.
+    // It does not invent a second path."
+    //
+    // On Volcathar both are legendary already: the Wing Attack costs two of his
+    // three, the Tail Attack one. The wing pinned above IS the legendary press,
+    // so what is left to pin is that being legendary changes nothing about how
+    // it is decided, and that the spending belongs to dnd5e.
+    if (!wing || !tailLeg || !tail) {
+      check("his dragon's legendary Wing and Tail (2026-09-20)", null, "no Wing Attack and Tail Attack in this world");
+    } else {
+      const recW = recipesFor(wing, { actor: dragon })[0]?.recipe ?? null;
+      const recTL = recipesFor(tailLeg, { actor: dragon })[0]?.recipe ?? null;
+      const recT = recipesFor(tail, { actor: dragon })[0]?.recipe ?? null;
+      const recB = breath ? (recipesFor(breath, { actor: dragon })[0]?.recipe ?? null) : null;
+      const costOf = (it) => [...it.system.activities][0]?.activation ?? {};
+      check("the legendary Wing Attack costs two of his three legendary actions and the legendary Tail Attack one, read off the item, and ACE asks for no other resource (2026-09-20)",
+        String(costOf(wing).type) === "legendary" && Number(costOf(wing).value) === 2
+          && String(costOf(tailLeg).type) === "legendary" && Number(costOf(tailLeg).value) === 1
+          && recW?.resources?.activation === "legendary" && recTL?.resources?.activation === "legendary"
+          && !recW?.resources?.slot && !recTL?.resources?.slot
+          && Number(dragon.system?.resources?.legact?.max) === 3,
+        `the wing ${costOf(wing).value}, the tail ${costOf(tailLeg).value}, of ${dragon.system?.resources?.legact?.max}; `
+          + `the recipes say ${recW?.resources?.activation} / ${recTL?.resources?.activation}`);
+      check("and being legendary changes nothing about how it runs: the legendary Tail decides exactly as the ordinary Tail does (a melee attack, 2d8, 15 feet) and the legendary Wing decides exactly as the breath does (a save, its damage, half on a success) (2026-09-20)",
+        recTL?.decidedBy?.kind === recT?.decidedBy?.kind && recTL?.decidedBy?.melee === recT?.decidedBy?.melee
+          && Number(recTL?.where?.rangeFt) === Number(recT?.where?.rangeFt)
+          && (recTL?.onHit ?? []).map(o => `${o.formula} ${(o.types ?? []).join("/")}`).join()
+             === (recT?.onHit ?? []).map(o => `${o.formula} ${(o.types ?? []).join("/")}`).join()
+          && recW?.decidedBy?.kind === "save" && recB?.decidedBy?.kind === "save"
+          && (recW?.onFail ?? []).some(o => o.kind === "damage" && o.onSuccess === "half")
+          && (recB?.onFail ?? []).some(o => o.kind === "damage" && o.onSuccess === "half"),
+        `the tails: ${recT?.decidedBy?.kind} ${recT?.where?.rangeFt}ft vs ${recTL?.decidedBy?.kind} ${recTL?.where?.rangeFt}ft; `
+          + `the wing: ${recW?.decidedBy?.kind} ${recW?.decidedBy?.ability ?? ""}; the breath: ${recB?.decidedBy?.kind}`);
+      // ⚠️ THE SPEND IS dnd5e'S. ACE touching the count would be the second path.
+      const scripts5 = `${ROOT}/Data/modules/ace-qol/scripts`;
+      const every5 = readdirSync(scripts5, { recursive: true })
+        .map(f => String(f).split("\\").join("/")).filter(f => f.endsWith(".mjs"));
+      const writers = every5.filter(f => /legact/.test(readFileSync(`${scripts5}/${f}`, "utf8")));
+      check("the legendary action is spent by dnd5e on the press and ACE never writes that count anywhere except to give one back when a cast is thrown away (2026-09-20)",
+        writers.length === 1 && writers[0] === "road/give-back.mjs",
+        `files that mention it: ${writers.join(", ") || "none"}`);
+    }
+  } finally {
+    for (const k of [...RollPopout._open.keys()]) RollPopout._open.delete(k);
+    ChatMessage.create = keep8.create;
+    game.users = keep8.users;
+    game.user = keep8.user;
+    game.messages = keep8.messages;
+    game.scenes.get = keep8.scenesGet;
+    canvas.scene = keep8.scene;
+    canvas.tokens.placeables.length = 0;
+    canvas.tokens.placeables.push(...keep8.placed);
+    foundry.audio = keep8.audio;
+    globalThis.fetch = keep8.fetch;
+    globalThis.fromUuidSync = keep8.fromUuidSync;
+    if (keep8.owner === undefined) delete CONST.DOCUMENT_OWNERSHIP_LEVELS; else CONST.DOCUMENT_OWNERSHIP_LEVELS = keep8.owner;
+    if (keep8.html === undefined) delete globalThis.HTMLElement;
+    if (keep8.gmActive === undefined) delete GM.active; else GM.active = keep8.gmActive;
+    if (keep8.targets === undefined) delete GM.targets; else GM.targets = keep8.targets;
+    CONFIG.DND5E.areaTargetTypes = keep8.areas;
+    for (const a of made8) ACTORS.delete(a.id);
   }
 }
 

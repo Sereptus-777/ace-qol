@@ -79,6 +79,9 @@ import { naturalD20 } from "./rolldata-utils.mjs";
 // What a gaze's own words add to its save: a second failure that petrifies, and
 // "fails by 5 or more" (the 2014 medusa). See rules/creature-words.mjs.
 import { readEscalation, readFailBy } from "./rules/creature-words.mjs";
+// The one DC reader: a save's DC is a prepared number, a calculation, or a
+// formula on the sheet, and only this knows all three (rules/save-dc.mjs).
+import { saveDCOf } from "./rules/save-dc.mjs";
 
 // The d20 widget: one die face everywhere a person rolls (dice-face.mjs). Still
 // exported from here, because the prismatic wall and the repeat saves ask here.
@@ -951,18 +954,13 @@ export class SaveEngine {
     // chooses; they travel as "str/dex" and each creature uses its better save.
     const saveAbility = SaveEngine.saveAbilityOf(save);
     if (!saveAbility) return;
-    let saveDC = save.dc?.value ?? save.dc ?? 0;
-    // Fallback: some items (esp. bg3-hud / imported spells) leave the save DC
-    // unresolved at 0. Use the caster's spell save DC so the save isn't a free
-    // auto-pass (DC 0 = everyone succeeds, which silently breaks Web etc.).
-    if (!(Number(saveDC) > 0)) {
-      // The CASTER's spell save DC. Attacker-side, so it doesn't belong to the
-      // target profile — but it IS a fact about a creature, so it comes from
-      // the same single reader both profiles are built on. (2026-07-28)
-      const sysDC = Situation.readCreature(actor)?.spellDC || null;
-      saveDC = Number(sysDC) > 0 ? Number(sysDC) : 10;
-      console.debug(`${MODULE_ID} | Save DC for "${item.name}" was 0/unset — using caster spell DC ${saveDC}`);
-    }
+    // ⚠️🔴 A DC LIVES IN THREE PLACES, AND THIS READ ONE (2026-09-20, his
+    // dragon). Volcathar's Fire Breath carries its DC as a flat formula ("21")
+    // with no calculation, which dnd5e turns into `dc.value` when it prepares
+    // the activity. Reading `dc.value` alone and falling back to 10 armed a DC
+    // 10 breath weapon from a sheet that plainly says 21 — the same fault the
+    // Magmin's burst taught on 2026-09-19, which is why there is one reader.
+    let saveDC = SaveEngine._readSaveDC(item, activity, actor);
     const isSpell = item.type === "spell";
 
     // Its recipe (the book's, for a named official item), with the book's entry
@@ -1947,6 +1945,35 @@ export class SaveEngine {
    * for hand-drawn templates, which carry no origin flag.
    */
   /**
+   * THE DC of a save about to be asked: the one reader, then the caster's own
+   * spell DC, and if neither can answer, 10 and a word about it.
+   *
+   * ⚠️ NEVER SILENTLY 10. A save card that says DC 10 when the sheet says 21 is
+   * a wrong answer that looks right, and every creature in the cone passes on a
+   * roll it should have failed.
+   */
+  static _readSaveDC(item, activity, actor) {
+    let dc = NaN;
+    try { dc = saveDCOf(null, item, activity); }
+    catch (err) { console.warn(`${MODULE_ID} | could not read "${item?.name}"'s save DC:`, err); }
+    if (Number.isFinite(dc) && dc > 0) return dc;
+    // The CASTER's spell save DC, from the one creature reader (2026-07-28).
+    const sysDC = Number(Situation.readCreature(actor)?.spellDC) || 0;
+    if (sysDC > 0) {
+      console.log(`${MODULE_ID} | "${item?.name}" has no DC of its own, so its save uses `
+        + `${actor?.name}'s spell save DC (${sysDC}).`);
+      return sysDC;
+    }
+    console.warn(`${MODULE_ID} | "${item?.name}" has no save DC ACE can read, and ${actor?.name} `
+      + `has no spell save DC either, so it is being asked at DC 10. Open the ability and set its DC.`);
+    if (game.user?.isGM) {
+      ui.notifications?.warn(`ACE: "${item?.name}" has no save DC on it — asking at DC 10. `
+        + `Set the DC on its save activity.`);
+    }
+    return 10;
+  }
+
+  /**
    * Does this action resolve by a hit-point pool rather than a saving throw?
    *
    * ⚠️🔴 ONE READER, BECAUSE TWO PLACES ARM A SAVE AND I ONLY GUARDED ONE.
@@ -2023,11 +2050,7 @@ export class SaveEngine {
           + `open the item, find the save activity, and choose Dexterity/Constitution/etc.`);
       }
 
-      let saveDC = save.dc?.value ?? save.dc ?? 0;
-      if (!(Number(saveDC) > 0)) {
-        const sysDC = Situation.readCreature(actor)?.spellDC || null;
-        saveDC = Number(sysDC) > 0 ? Number(sysDC) : 10;
-      }
+      const saveDC = SaveEngine._readSaveDC(item, activity, actor);
 
       // The slot it was cast with, read back from the template: the casting
       // client wrote it there. And its damage, from its recipe.

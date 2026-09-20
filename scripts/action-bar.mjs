@@ -584,9 +584,12 @@ export class ActionBar {
         bits.push(dur.value ? dur.value + " " + dur.units : String(dur.units));
       }
 
-      const uses = sys.uses ?? {};
-      if (Number.isFinite(uses.max) && uses.max > 0) {
-        bits.push((uses.value ?? 0) + "/" + uses.max + " uses");
+      const u = ActionBar._usesOf(item);
+      if (u) {
+        const back = ActionBar._rechargeWords(u.needs);
+        bits.push(u.spent
+          ? (back ? "Spent \u2014 " + back : "Spent \u2014 " + u.max + " use" + (u.max === 1 ? "" : "s") + " a day, all gone")
+          : u.left + "/" + u.max + " uses" + (back ? " \u00b7 " + back : ""));
       }
       if (bits.length) rows.push('<div class="ace-qol-ab-tip-meta">' + esc(bits.join("  \u00b7  ")) + '</div>');
 
@@ -1206,13 +1209,18 @@ export class ActionBar {
           // ⚠️ EMPTY SLOTS ARE STILL DROP TARGETS, so the index has to be here.
           return `<div class="ace-qol-ab-slot ace-qol-ab-empty" data-index="${i}"></div>`;
         }
-        const uses = item.system?.uses ?? {};
-        const showUses = Number.isFinite(uses.max) && uses.max > 0;
-        const spent = showUses ? `<span class="ace-qol-ab-uses">${uses.value ?? 0}/${uses.max}</span>` : "";
+        // ⚠️ SPENT READS AS SPENT. Grey art, and for a recharge the badge
+        // stops counting uses and names the number that brings it back, which
+        // is the only thing worth knowing about it until it does.
+        const u = ActionBar._usesOf(item);
+        const spent = !u ? ""
+          : u.spent && u.needs ? `<span class="ace-qol-ab-uses ace-qol-ab-rech">${u.needs}+</span>`
+          : `<span class="ace-qol-ab-uses">${u.left}/${u.max}</span>`;
+        const outOf = u?.spent ? " ace-qol-ab-spent" : "";
         const lvl = item.type === "spell" && item.system?.level > 0
           ? `<span class="ace-qol-ab-lvl">${item.system.level}</span>` : "";
         const readOnly = ActionBar._isReadOnlySlot(actor, item) ? " ace-qol-ab-read" : "";
-        return `<div class="ace-qol-ab-slot${readOnly}" draggable="true"
+        return `<div class="ace-qol-ab-slot${readOnly}${outOf}" draggable="true"
                      data-item-id="${item.id}" data-index="${i}" data-type="${esc(item.type)}"
                      data-ace-tip="${esc(ActionBar._tooltipFor(item))}">
                   <img src="${esc(item.img)}" alt="" draggable="false">
@@ -1311,6 +1319,42 @@ export class ActionBar {
     }
   }
 
+  /**
+   * WHAT A SLOT HAS LEFT, and for a recharge, what brings it back.
+   *
+   * ⚠️ A SPENT BUTTON THAT LOOKS LIKE A READY ONE IS A LIE THE BAR TELLS ONCE
+   * PER ROUND (2026-09-20, his dragons). A breath weapon spends its one use on
+   * the press and the bar redrew with "0/1" in 10px white — the same badge a
+   * ready ability wears, in the same colours, on the same bright art. The GM
+   * presses it, dnd5e refuses with "Not enough uses available to spend", and
+   * nothing anywhere says the word recharge or which number brings it back.
+   *
+   * The recharge itself is dnd5e's: it rolls the die at the START OF THAT
+   * CREATURE'S TURN when the world's auto-recharge setting is on (it is), and
+   * ACE posts the card for that roll with the number it needed. ACE never rolls
+   * one itself, which is what keeps it out of the middle of a round.
+   *
+   * @returns {{spent: boolean, left: number, max: number, needs: number|null}|null}
+   */
+  static _usesOf(item) {
+    const uses = item?.system?.uses ?? {};
+    const max = Number(uses.max);
+    if (!Number.isFinite(max) || max <= 0) return null;
+    const left = Number(uses.value ?? 0) || 0;
+    // The recovery row dnd5e writes for a recharge; its formula is the number
+    // the d6 has to beat ("5" means 5 or 6).
+    const row = (uses.recovery ?? []).find(r => String(r?.period) === "recharge") ?? null;
+    const needs = row ? (Number(row.formula) || null) : null;
+    return { spent: left <= 0, left, max, needs };
+  }
+
+  /** "recharges on a 5 or 6", in words, for the hover and the refusal. */
+  static _rechargeWords(needs) {
+    if (!needs) return null;
+    return needs >= 6 ? "recharges on a 6 at the start of its turn"
+      : `recharges on a ${needs} or better at the start of its turn`;
+  }
+
   static _wire(el, actor, combatant) {
     // ── Tabs and spell levels ───────────────────────────────────────────
     // ⚠️ REDRAW, DO NOT HIDE. Showing every tab's slots and toggling display
@@ -1364,6 +1408,17 @@ export class ActionBar {
           ui.notifications?.error(`${item.name} could not be readied — see the console.`);
           return;
         }
+        // ⚠️ THE REFUSAL NAMES THE THING. dnd5e's own is "Not enough uses
+        // available to spend", which never says recharge and never says which
+        // number. This one does, and it is the same sentence the hover carries.
+        const left = ActionBar._usesOf(item);
+        if (left?.spent) {
+          const back = ActionBar._rechargeWords(left.needs);
+          ui.notifications?.warn(`${item.name} is spent`
+            + (back ? ` and ${back}.` : ` until ${actor.name} rests.`));
+          return;
+        }
+
         try { await item.use(); }
         catch (err) {
           console.error(`${LOG} | using "${item.name}" failed:`, err);

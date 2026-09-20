@@ -56,10 +56,12 @@ function modOf(actor, key) {
  * @param {Item} item           the item the save is on
  * @returns {number} the DC, or NaN when nothing says
  */
-export function saveDCOf(recipe, item) {
+export function saveDCOf(recipe, item, activity = null) {
   const n = Number(recipe?.decidedBy?.dc);
   if (Number.isFinite(n) && n > 0) return n;
-  const act = activityOf(item, recipe?.source?.activity ?? null);
+  // The caller's own activity when it has one: a press knows exactly which
+  // ability went off, and an item with several saves must not be guessed at.
+  const act = activity ?? activityOf(item, recipe?.source?.activity ?? null);
   const dc = act?.save?.dc ?? {};
   const prepared = Number(dc.value);
   if (Number.isFinite(prepared) && prepared > 0) return prepared;
