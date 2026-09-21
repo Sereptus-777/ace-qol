@@ -5460,6 +5460,65 @@ console.log(`\nA FRIGHTENING PRESENCE: ONE SAVE, ONE CREATURE, ONCE`);
             + `the knight: answered ${SaveEngine._alreadyAnswered({ castId: castId9, tokenDocId: "tok-fp-knight" })}`);
         try { await early.delete?.(); } catch (_) { /* the harness may not delete */ }
 
+        // THE BUTTON OPENS THE PICKER AND DOES NOTHING ELSE (his table,
+        // 2026-09-20 evening: he pressed it, the picker opened, he did not
+        // press Frighten them, and nine creatures rolled and took Frightened).
+        {
+          const keepPick = PresenceEngine._pick;
+          const keepCard = engine9._postLiveTargetCard;
+          const cardsFrom = [];
+          let pickerOpened = 0;
+          // The picker that never answers: exactly what a person standing at
+          // the dialog looks like to everything else in the suite.
+          PresenceEngine._pick = async () => { pickerOpened++; return new Promise(() => {}); };
+          engine9._postLiveTargetCard = async (it, ac, toks, o) => { cardsFrom.push({ item: it?.name, n: toks?.length ?? 0, presence: !!o?.presence }); };
+          const act9 = [...fp.system.activities][0];
+          // The dragon's body, the way `casterTokenDoc` asks for it.
+          const keepActive = dragon.getActiveTokens;
+          dragon.getActiveTokens = () => [docs9.get("tok-fp-dragon")];
+          let rolled9 = null;
+          try {
+            game.user = GM;
+            GM.targets = new Set([docs9.get("tok-fp-knight").object, docs9.get("tok-fp-chudd").object]);
+            await quiet(async () => {
+              // The press, and then every other hook that funnels into the same
+              // method while the picker is still open.
+              const first = engine9._onUseActivity(act9, { message: null });
+              await new Promise(r => setTimeout(r, 40));
+              await engine9._onUseActivity(act9, { message: null });
+              await engine9._onUseActivity(act9, { message: null });
+              await new Promise(r => setTimeout(r, 40));
+              rolled9 = cardsFrom.length;
+              void first;   // it is still at the picker, and stays there
+            });
+          } finally {
+            PresenceEngine._pick = keepPick;
+            engine9._postLiveTargetCard = keepCard;
+            if (keepActive === undefined) delete dragon.getActiveTokens; else dragon.getActiveTokens = keepActive;
+            GM.targets = new Set();
+          }
+          check("pressing it opens the picker and does nothing else: one picker for one press however many hooks arrive behind it, and not one save card while it stands open, targets or no targets (2026-09-20)",
+            pickerOpened === 1 && rolled9 === 0,
+            `pickers opened: ${pickerOpened}; save cards posted while it was open: ${rolled9}`);
+        }
+
+        // AND NO OTHER ROUTE CAN REACH A CARD FOR IT.
+        {
+          const before = chat9.size;
+          let threw = null;
+          try {
+            await quiet(async () => {
+              await engine9._postLiveTargetCard(fp, dragon,
+                [docs9.get("tok-fp-knight").object, docs9.get("tok-fp-chudd").object],
+                { saveAbility: "wis", saveDC: 16, isSpell: false, recipe: built.recipe,
+                  activityId: built.activityId, skipDelay: true });   // no presence: not its own door
+            });
+          } catch (e) { threw = e; }
+          check("a presence card asked for by anything other than its own picker is refused, and says so: nothing rolls, nobody is frightened (2026-09-20)",
+            !threw && chat9.size === before,
+            threw ? `threw: ${threw?.message ?? threw}` : `cards posted: ${chat9.size - before}`);
+        }
+
         // HIS SEVEN, FROM THE FIGHT THAT BROKE IT (2026-09-20).
 
         // 1. THE PICKER'S OWN SIZES, ON THE ELEMENTS. A <style> block inside a

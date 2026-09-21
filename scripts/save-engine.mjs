@@ -766,6 +766,64 @@ export class SaveEngine {
     if (!item || !actor) return;
 
     // ══════════════════════════════════════════════════════════════════════
+    //  ⚠️🔴 A FRIGHTENING PRESENCE LEAVES HERE, AT THE TOP, BEFORE ANYTHING
+    //  ELSE IN THIS METHOD RUNS (his table, 2026-09-20: he pressed the button,
+    //  the picker opened, he did NOT press Frighten them, and nine creatures
+    //  rolled anyway and took Frightened).
+    //
+    //  His rule: "The item button opens the picker and does nothing else. No
+    //  save-engine run, no leftover targets, no PC auto-roll, until Frighten
+    //  them."
+    //
+    //  ⚠️ AND THE PRESS IS CLAIMED FIRST, FOR AS LONG AS THE PICKER IS OPEN.
+    //  This method is reached by four hooks. The claim below is what stops the
+    //  other three, and it used to be taken AFTER this door — so while a human
+    //  stood at the picker, a second hook walked in behind them, found no
+    //  pending presence of its own and ran the ordinary area save on whatever
+    //  was still targeted. The claim is taken here, before the door, and it is
+    //  refreshed while the picker is open.
+    // ══════════════════════════════════════════════════════════════════════
+    {
+      let presence = null;
+      try { presence = readFrightfulPresence(item); }
+      catch (err) { console.warn(`${MODULE_ID} | could not read "${item?.name}" as a presence:`, err); }
+      if (presence) {
+        const uuid = activity?.uuid ?? null;
+        if (uuid) {
+          const prev = this._processedActivityIds.get(uuid);
+          if (prev != null && (Date.now() - prev) < 60000) {
+            console.debug(`${MODULE_ID} | "${item.name}" is already at its picker — this press is the same one.`);
+            return;
+          }
+          this._processedActivityIds.set(uuid, Date.now());
+        }
+        const tokenDoc = SaveEngine.casterTokenDoc(actor, { sceneId: canvas.scene?.id, quiet: true });
+        if (!tokenDoc) {
+          console.warn(`${MODULE_ID} | "${item.name}" is a frightening presence and ${actor?.name} has no token `
+            + `on this scene, so there is nothing to measure from. NOTHING was rolled; place its token and press again.`);
+          ui.notifications?.warn(`ACE: ${actor?.name} has no token on this scene, so ${item.name} asked nobody.`);
+          return;
+        }
+        console.log(`${MODULE_ID} | "${item.name}" is a frightening presence: this press opens its picker and `
+          + `does nothing else until "Frighten them".`);
+        try {
+          const { PresenceEngine } = await import("./presence-engine.mjs");
+          // ⚠️ THE PICKER HOLDS THE PRESS. Every hook that arrives while it is
+          // open finds the claim above and turns back.
+          const hold = uuid ? setInterval(() => this._processedActivityIds.set(uuid, Date.now()), 5000) : null;
+          try { await PresenceEngine.run(tokenDoc, item, presence, { pressed: true, why: "he pressed it" }); }
+          finally { if (hold) clearInterval(hold); }
+        } catch (err) {
+          // ⚠️ AND A FAILURE HERE IS NOT A REASON TO ROLL THE ROOM. It says so
+          // and stops; the ordinary area save is not what this item is.
+          console.error(`${MODULE_ID} | "${item.name}"'s presence failed, and nothing was rolled:`, err);
+          ui.notifications?.error(`ACE: ${item.name} could not ask for its saves — see the console. Nothing was rolled.`);
+        }
+        return;
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
     //  ⚠️ THE DEDUPE GATE — AT THE TOP, WHERE EVERY PATH ARRIVES
     //
     //  FOUR hooks funnel into this method: postCreateUsageMessage,
@@ -842,30 +900,6 @@ export class SaveEngine {
     // 2026-09-15). His Unarmed Strikes carry Grapple and Shove as bare utilities
     // (Kasimir, Chudd, Jeth, Izek); by the 2024 rules each is a Strength or
     // Dexterity save, the target's choice. Its recipe says so, and this runs it.
-    // ── A FRIGHTENING PRESENCE GOES THROUGH ITS OWN DOOR ─────────────────
-    // His rule, 2026-09-20: "The button still exists for a later reveal. Same
-    // rules." A press must ask the same four questions the automatic one does
-    // (already frightened, already immune, out of range, cannot see it) and
-    // open the same picker, so the press hands over rather than arming the
-    // ordinary area save, which would roll the whole room again.
-    try {
-      const presence = readFrightfulPresence(item);
-      if (presence) {
-        const { PresenceEngine } = await import("./presence-engine.mjs");
-        const tokenDoc = SaveEngine.casterTokenDoc(actor, { sceneId: canvas.scene?.id, quiet: true });
-        if (tokenDoc) {
-          console.log(`${MODULE_ID} | "${item.name}" is a frightening presence, so the press asks `
-            + `who can see ${tokenDoc.name} rather than arming an area save.`);
-          await PresenceEngine.run(tokenDoc, item, presence, { pressed: true, why: "he pressed it" });
-          return;
-        }
-        console.warn(`${MODULE_ID} | "${item.name}" is a frightening presence, and ${actor?.name} has no `
-          + `token on this scene, so there is nothing to measure from. It runs as an ordinary save.`);
-      }
-    } catch (err) {
-      console.warn(`${MODULE_ID} | the presence door threw, so "${item?.name}" runs as an ordinary save:`, err);
-    }
-
     const save = activity.save?.ability ? activity.save : (rulesActionSave(item, activity, actor) ?? activity.save);
     if (!save?.ability) {
       try {
@@ -3301,6 +3335,24 @@ export class SaveEngine {
         + `it resolves by a hit-point pool and has no saving throw. Something `
         + `upstream still thinks it does — worth finding.`);
       return;
+    }
+
+    // ⚠️🔴 AND A FRIGHTENING PRESENCE ONLY EVER ARRIVES THROUGH ITS OWN DOOR
+    // (his table, 2026-09-20). Whatever else in this suite thought it should
+    // roll a presence on nine targeted creatures while the picker was still
+    // open, it cannot reach a card from here: a presence card is built by the
+    // presence engine, which stamps who it came from. Anything else says so in
+    // the console and stops, rather than rolling the room a second time.
+    if (!opts?.presence) {
+      let isPresence = null;
+      try { isPresence = readFrightfulPresence(item); }
+      catch (_) { isPresence = null; }
+      if (isPresence) {
+        console.warn(`${MODULE_ID} | refused to post a save card for "${item?.name}": it is a frightening `
+          + `presence, and a presence is only ever asked through its own picker. Nothing was rolled. `
+          + `(Something else tried: press the ability itself.)`);
+        return;
+      }
     }
 
     // ⚠️🔴 A CORPSE IS NOT ON THE CARD. His words, 2026-09-16: "Dead creatures do

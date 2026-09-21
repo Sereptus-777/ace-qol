@@ -281,6 +281,11 @@ export class PresenceEngine {
       return;
     }
 
+    // ⚠️ ONE RUN, ONE NAME (his rule, 2026-09-20: "Same cast id on the picker
+    // and the card"). Everything this run posts carries it, so a result that
+    // arrives early can be matched to the row it belongs to, and the console
+    // reads as one story instead of several that look alike.
+    const runId = `fp-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}`;
     const rows = PresenceEngine._read(sourceDoc, item, presence);
     const asked = rows.filter(r => !r.skip);
     const ticked = asked.filter(r => !r.ally);
@@ -288,7 +293,7 @@ export class PresenceEngine {
     const spared = rows.filter(r => r.skip && !r.skip.hide);
     const offList = rows.filter(r => r.skip?.hide && r.skip.reason !== "itself" && r.skip.reason !== "no creature");
 
-    say(`${sourceDoc.name}'s ${item.name}${why ? ` (${why})` : ""}: ${ticked.length} ticked of `
+    say(`[${runId}] ${sourceDoc.name}'s ${item.name}${why ? ` (${why})` : ""}: ${ticked.length} ticked of `
       + `${asked.length} on the list (${asked.length - ticked.length} on its own side), `
       + `${spared.length} already done with it, ${offList.length} off the list `
       + `(${[...new Set(offList.map(r => r.skip.reason))].join("; ") || "none"}).`);
@@ -331,6 +336,8 @@ export class PresenceEngine {
       return;
     }
 
+    say(`[${runId}] ${picked.length} creature(s) were ticked, so ${picked.length === 1 ? "it rolls" : "they roll"}: `
+      + `${picked.map(r => r.name).join(", ") || "nobody"}.`);
     await eng.postSaveCard(item, source, picked.map(r => r.doc.object ?? r.doc), {
       saveAbility: read.ability,
       saveDC: read.dc,
@@ -342,6 +349,7 @@ export class PresenceEngine {
       trigger: pressed ? "press" : "presence",
       // Everything this file knows that the card cannot work out for itself.
       presence: {
+        runId,
         sourceTokenId: sourceDoc.id,
         sourceActorId: source.id,
         sourceName: sourceDoc.name,
