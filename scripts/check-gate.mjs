@@ -382,7 +382,8 @@ export class CheckGate {
    * ⚠️ PUBLIC. The table needs to see the roll, and Foundry's core roll mode is
    * a sticky global that must not get a vote in it.
    */
-  static async _postCard({ actor, roll, title, subtitle = "", extra = "", flag = "checkCard", label = "", total = null }) {
+  static async _postCard({ actor, roll, title, subtitle = "", extra = "", flag = "checkCard", label = "",
+    total = null, gmOnly = false }) {
     try {
       if (roll) {
         const { safeShowForRoll, awaitDiceSettle } = await import("./dsn-utils.mjs");
@@ -393,9 +394,14 @@ export class CheckGate {
       const dice = roll ? await CheckGate._diceHtml(roll) : "";
       // Through the card door (The One Road); its dice were waited for above.
       const { CardDoor } = await import("./road/doors.mjs");
+      // A card only the GM is meant to read is whispered to the GMs, and it is
+      // written BY a GM, because Foundry draws a whisper for its author as well
+      // as its recipients (2026-09-18).
+      const gmIds = gmOnly ? (game.users?.filter?.(u => u.isGM).map(u => u.id) ?? []) : [];
       await CardDoor.post({
         speaker: ChatMessage.getSpeaker({ actor }),
-        rollMode: CONST.DICE_ROLL_MODES.PUBLIC,
+        rollMode: gmOnly ? CONST.DICE_ROLL_MODES.PRIVATE : CONST.DICE_ROLL_MODES.PUBLIC,
+        ...(gmOnly ? { whisper: gmIds } : {}),
         // ⚠️ NO `rolls` ARRAY. The dice were thrown above; handing them to the
         // message as well makes Dice So Nice animate the same roll a second
         // time, over a card already showing the answer.
@@ -702,6 +708,20 @@ export class CheckGate {
   static _registerRecharge() {
     Hooks.on("dnd5e.preRollRechargeV2", (config, dialog, message) => {
       try {
+        // ⚠️🔴 A RECHARGE IS THE GM'S DIE (his rule, 2026-09-21: "Recharge is
+        // GM-only. One roll. One line on the GM. The player does not roll it
+        // and does not see a second card.").
+        //
+        // His table: he re-rolled Volcathar's Fire Breath to get the use back
+        // and the roll ran on a PLAYER's client and posted in their chat. Every
+        // client hears this hook, and a player who can see the creature can
+        // roll it; the die that decides whether a dragon breathes again is not
+        // theirs to throw, and two clients rolling is two different answers.
+        if (!game.user?.isGM) {
+          console.log(`${LOG} | a recharge was asked for on this screen, and this screen is not the GM's. `
+            + `It is the GM's die: nothing is rolled here and no card is posted.`);
+          return false;                             // cancels it on this client
+        }
         if (message?.create === false) return;      // an engine rolling for itself
         message.create = false;                     // ACE posts instead
       } catch (err) {
@@ -711,6 +731,10 @@ export class CheckGate {
 
     Hooks.on("dnd5e.rollRechargeV2", (rolls, data) => {
       try {
+        // ⚠️ AND THE CARD IS POSTED ONCE, BY THE ACTIVE GM. With two GMs
+        // connected this hook fires on both, and a second card is the same
+        // lie as a second roll.
+        if (game.users?.activeGM !== game.user) return;
         CheckGate._postRechargeCard(rolls, data)
           .catch(err => {
             // Same shape as the hit die above: dnd5e's card is already off.
@@ -751,6 +775,10 @@ export class CheckGate {
       title: "Recharge",
       subtitle: `<span>${esc(subject.name ?? "Recharge")} — recharge</span>`,
       extra: verdict,
+      // ⚠️ ONE LINE, ON THE GM (his rule, 2026-09-21). Whether a dragon's
+      // breath is back is his to know and to spring; the table finds out when
+      // it breathes.
+      gmOnly: true,
     });
   }
 

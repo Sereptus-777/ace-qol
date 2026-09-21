@@ -1796,6 +1796,23 @@ export class ReactionEngine {
         fullCover: !!result.coverResult?.isFullCover, mirrorImage: !!result.mirrorImageRedirect,
         autoCrit: !!result.autoCrit });
 
+      // ── ⚠️🔴 A BOX THAT CANNOT CHANGE THE ANSWER IS NOT A CHOICE ──────────
+      // His table, 2026-09-21: Volcathar's Bite, and Aryel was offered Shield
+      // over a line reading "Even with Shield, it still hits." That is not a
+      // decision, it is an interruption with a slot attached: the only thing
+      // she could do was decline. Shield is asked when the attack hits NOW and
+      // the same attack misses at AC + 5, and at no other time.
+      //
+      // ⚠️ MAGIC MISSILE IS NOT THIS. It never rolls to hit, so there is no
+      // "still hits" to work out; its own block below always asks.
+      if (isAHit(withShield)) {
+        console.log(`${MODULE_ID} | Shield: ${targetActor.name} is not asked. `
+          + `${attackItem?.name ?? "That attack"} totals ${result.attackTotal} against AC ${acBefore}, `
+          + `and still hits at ${acWith} with Shield up, so the spell cannot stop it.`);
+        modified.push(result);
+        continue;
+      }
+
       // ── The attack's d20 lands before anybody is asked ──
       // "Nothing shows an answer until the dice that decided it have landed."
       // The box says "you are hit", which the d20 decided.
@@ -1832,9 +1849,9 @@ export class ReactionEngine {
         // because it had never once opened. The one thing the player needs to
         // DECIDE is whether Shield saves them, so the line says that in words,
         // and the numbers go on the card after the choice.
+        // It only opens when Shield changes the answer, so the line says so.
         description: `${foundry.utils.escapeHTML(attacker?.name ?? "An attacker")} hits you with `
-          + `<span class="ace-qol-reaction-spell">${attackName}</span>. `
-          + (isAHit(withShield) ? "Even with Shield, it still hits." : "Shield would turn it into a miss."),
+          + `<span class="ace-qol-reaction-spell">${attackName}</span>. Shield would turn it into a miss.`,
         acceptLabel: "Cast Shield",
         declineLabel: "No reaction",
         spellSlotLevel: 1,

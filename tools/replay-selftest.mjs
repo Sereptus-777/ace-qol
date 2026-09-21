@@ -5179,6 +5179,41 @@ console.log(`\nRECHARGE ATTACKS: BREATH, WING, TAIL`);
   }
 }
 
+/* ── A REACTION THAT CANNOT CHANGE THE ANSWER, AND WHOSE DIE A RECHARGE IS ── */
+// His table, 2026-09-21: Aryel was offered Shield against Volcathar's Bite over
+// a line reading "Even with Shield, it still hits", and a recharge he re-rolled
+// ran on a player's client and posted in their chat.
+console.log(`\nSHIELD ONLY WHEN IT SAVES THEM, AND THE RECHARGE IS THE GM'S`);
+{
+  const src = readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/reaction-engine.mjs`, "utf8");
+  const gate = src.slice(src.indexOf("const acWith = acBefore + 5;"), src.indexOf("acceptLabel: \"Cast Shield\""));
+  check("Shield is offered only when it changes the answer: the attack hits now and misses at AC + 5, and a hit that still lands at AC + 5 asks nobody and spends nothing (2026-09-21)",
+    /if \(isAHit\(withShield\)\)/.test(gate)
+      && /modified\.push\(result\);\s*\n\s*continue;/.test(gate)
+      // the line it used to show is gone from the box itself (the comment that
+      // records why it went is not the box)
+      && !/description: `\$\{foundry\.utils\.escapeHTML[^`]*Even with Shield/.test(src)
+      && /Shield would turn it into a miss/.test(src),
+    "the box opens for a miss at AC + 5 and for nothing else; the \"still hits\" line is gone");
+
+  // Magic Missile has no attack roll, so it is never judged this way.
+  const missile = src.slice(src.indexOf("Check each Magic Missile target for Shield availability"));
+  const missilePrompt = missile.slice(0, missile.indexOf("acceptLabel") + 40);
+  check("and Magic Missile still always asks, because it never rolls to hit and there is no \"still hits\" to work out (2026-09-21)",
+    missilePrompt.length > 100 && /_promptReaction/.test(missilePrompt)
+      && !/isAHit\(|withShield/.test(missilePrompt),
+    "the missile's own offer never consults an AC, before or after this change");
+
+  const gateSrc = readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/check-gate.mjs`, "utf8");
+  const rech = gateSrc.slice(gateSrc.indexOf("_registerRecharge()"), gateSrc.indexOf("static async _postRechargeCard"));
+  check("a recharge is the GM's die: a player's client rolls nothing and posts nothing, only the active GM's client cards it, and the card is whispered to the GMs (2026-09-21)",
+    /if \(!game\.user\?\.isGM\)/.test(rech) && /return false;/.test(rech)
+      && /if \(game\.users\?\.activeGM !== game\.user\) return;/.test(rech)
+      && /gmOnly: true/.test(gateSrc)
+      && /rollMode: gmOnly \? CONST\.DICE_ROLL_MODES\.PRIVATE/.test(gateSrc),
+    "the roll is cancelled off the GM's screen, the card is posted once, and it is whispered");
+}
+
 /* ── A FRIGHTENING PRESENCE: ONE SAVE, ONE CREATURE, ONCE ────────────────── */
 // His list of 2026-09-20: "Against that dragon a creature rolls once. Already
 // frightened by it: no roll. Already immune to it: no roll. Outside 120 feet:
@@ -7574,28 +7609,34 @@ console.log(`\nPHASE 6a: THE SHIELD REACTION`);
         });
       } catch (e) { err2 = e; }
       const [box2, box3, box5] = asked.slice(atAsk);
-      check("2. an attack that hits asks too, from the result both paths really build: +5 turns a 17 against AC 15 into a miss, a 25 still hits, and the card's AC goes up (2026-09-19)",
-        !err2 && shape?.creatureBeside && !shape?.blockHasCreature && asked.length - atAsk === 3
+      // ⚠️ RE-PINNED 2026-09-21, HIS TABLE. This used to require that a 25 asks
+      // as well, over a box reading "Even with Shield, it still hits" — which
+      // is what Aryel was handed against Volcathar's Bite. A box whose only
+      // answer is "no" is an interruption with a slot attached, so the rule is
+      // now: it asks when +5 changes the answer, and at no other time.
+      check("2. an attack that hits asks ONLY when Shield saves them: +5 turns a 17 against AC 15 into a miss and the box opens, a 25 still hits at 20 so nobody is asked, and the card's AC goes up either way (2026-09-19, re-pinned 2026-09-21)",
+        !err2 && shape?.creatureBeside && !shape?.blockHasCreature && asked.length - atAsk === 2
           && out2?.[0]?.hitResult === "miss" && out2?.[0]?.shieldBlocked === true
           && out2?.[0]?.ac === 20 && out2?.[0]?.effectiveAC === 20
-          && out3?.[0]?.hitResult === "hit" && out3?.[0]?.target?.ac === 20 && out3?.[0]?.effectiveAC === 20,
+          && out3?.[0]?.hitResult === "hit" && out3?.[0]?.shieldBlocked !== true,
         err2 ? `threw: ${err2?.message ?? err2}`
           : `the result keeps the creature ${shape?.creatureBeside ? "beside" : "NOT beside"} the target block, `
-            + `the block ${shape?.blockHasCreature ? "HAS" : "has no"} creature in it; asked ${asked.length - atAsk} of 3; `
+            + `the block ${shape?.blockHasCreature ? "HAS" : "has no"} creature in it; boxes opened ${asked.length - atAsk} (the 17 and the covered 21, not the 25); `
             + `17 vs AC 15 with Shield: ${out2?.[0]?.hitResult} (${out2?.[0]?.shieldBlocked ? "blocked" : "not blocked"}, AC on the card ${out2?.[0]?.effectiveAC}); `
-            + `25 vs AC 15 with Shield: ${out3?.[0]?.hitResult}, AC now ${out3?.[0]?.effectiveAC}`);
+            + `25 vs AC 15: ${out3?.[0]?.hitResult}, nobody asked`);
       check("Shield goes on top of cover: a 21 against AC 15 behind half cover is 17 and a hit, and Shield makes it 22 and a miss (2026-09-19)",
         !err2 && out5?.[0]?.hitResult === "miss" && out5?.[0]?.effectiveAC === 22 && out5?.[0]?.ac === 20,
         err2 ? `threw: ${err2?.message ?? err2}`
           : `21 vs AC 15 + half cover, with Shield: ${out5?.[0]?.hitResult}, AC on the card ${out5?.[0]?.effectiveAC} `
             + `(the creature's ${out5?.[0]?.ac} and the cover's +2)`);
-      check("the box is the moment: no number rows, one line that says in words whether Shield saves you (his design, 2026-09-18)",
-        !!box2 && !box2.details?.length && !box3?.details?.length
+      // box3 is the covered 21 now: the 25 never opened one (re-pinned 2026-09-21).
+      check("the box is the moment: no number rows, and the one line it carries says Shield saves you, because it never opens when it would not (his design, 2026-09-18)",
+        !!box2 && !box2.details?.length
           && /Shield would turn it into a miss/.test(box2.description ?? "")
-          && /Even with Shield, it still hits/.test(box3?.description ?? "")
-          && /Shield would turn it into a miss/.test(box5?.description ?? ""),
+          && (!box3 || /Shield would turn it into a miss/.test(box3.description ?? ""))
+          && asked.slice(atAsk).every(b => !/still hits/i.test(b.description ?? "")),
         `rows in the box: ${box2?.details?.length ?? 0}; its line: "${String(box2?.description ?? "").replace(/<[^>]+>/g, "")}"; `
-          + `against the 25: "${String(box3?.description ?? "").replace(/<[^>]+>/g, "")}"`);
+          + `every box opened says Shield saves them: ${asked.slice(atAsk).every(b => !/still hits/i.test(b.description ?? ""))}`);
     }
 
     // ── Saying no changes nothing ──
