@@ -5541,6 +5541,34 @@ export class SaveEngine {
     }
   }
 
+  /**
+   * The card's footer, one entry per creature.
+   *
+   * ⚠️ MERGED, NOT TRIMMED. Two entries for one creature can each carry
+   * something the other does not (what landed, what it was immune to, what is
+   * waiting for APPLY, why nothing happened), so they are folded together and
+   * each list is deduped. Dropping all but the last would hide the first.
+   */
+  static _oneLinePerCreature(rows) {
+    const out = new Map();
+    for (const a of rows ?? []) {
+      if (!a) continue;
+      const key = a.tokenDocId ?? a.targetName ?? Math.random();
+      const prev = out.get(key);
+      if (!prev) { out.set(key, { ...a }); continue; }
+      const join = (x, y) => [...new Set([...(x ?? []), ...(y ?? [])])];
+      prev.conditions = join(prev.conditions, a.conditions);
+      prev.immune = join(prev.immune, a.immune);
+      prev.held = join(prev.held, a.held);
+      // A creature that HAS taken it does not also read as waiting for it.
+      if (prev.conditions.length) prev.held = prev.held.filter(h => !prev.conditions.includes(h));
+      prev.declined = prev.declined ?? a.declined ?? null;
+      prev.note = prev.note ?? a.note ?? null;
+      prev.onSuccess = prev.onSuccess ?? a.onSuccess ?? null;
+    }
+    return [...out.values()];
+  }
+
   /** A row the Gate spared because nothing this action does can touch it. */
   static _isImmuneRow(r) {
     return !!r?.noRoll && r.noRollTone === "immune";
@@ -7952,8 +7980,13 @@ export class SaveEngine {
   //  Build Phase 1 card HTML — extracted so late PC updates can rebuild
   // ─────────────────────────────────────────────────────────────────────────
   _buildPhase1CardHtml(item, results, opts) {
-    const { saveAbility, saveDC, hasDamage = true, halfOnSave = false, appliedConditions = [], activityId = null,
-            autoResolve = false, presence = null } = opts;
+    const { saveAbility, saveDC, hasDamage = true, halfOnSave = false, appliedConditions: _appliedRaw = [],
+            activityId = null, autoResolve = false, presence = null } = opts;
+    // ⚠️ ONE LINE PER CREATURE (his table, 2026-09-20: "Footer still lists each
+    // of them four times, mixed frightened and immune"). Whatever reached this
+    // card — a re-application, a player's own late result, a second engine —
+    // the reader sees one creature once, with everything that landed on it.
+    const appliedConditions = SaveEngine._oneLinePerCreature(_appliedRaw);
     // ⚠️ PLAYERS AT THE BOTTOM, SO APPLY IS OBVIOUS (his rule, 2026-09-20). Only
     // where something of theirs is waiting to be pressed: re-ordering every save
     // card in the game is not what he asked for, and a Fireball's rows are in

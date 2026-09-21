@@ -28,6 +28,8 @@ import { Situation } from "./situation.mjs";
 import { readFrightfulPresence } from "./rules/creature-words.mjs";
 import { lifeStateOf, pickable } from "./road/picker-rule.mjs";
 import { saveDCOf } from "./rules/save-dc.mjs";
+// Where a pop-up opens, so three boxes never land on the same spot.
+import { stepAside } from "./popup-place.mjs";
 
 const MODULE_ID = "ace-qol";
 const LOG = "ace-qol | presence";
@@ -67,10 +69,18 @@ export class PresenceEngine {
     });
 
     // A creature stops being frightened: RAW, that is when it becomes immune.
-    Hooks.on("deleteActiveEffect", (effect) => {
+    Hooks.on("deleteActiveEffect", (effect, options = {}) => {
       if (game.users?.activeGM !== game.user) return;
       const mark = effect?.flags?.[MODULE_ID]?.presence;
       if (!mark?.sourceTokenId) return;
+      // ⚠️ A CONDITION BEING REPLACED HAS NOT ENDED (his table, 2026-09-20).
+      // The condition door deletes the old Frightened before placing a fresh
+      // one, and this watch was reading every one of those as "the fear ended"
+      // and writing the 24-hour immunity on a creature that is still afraid.
+      if (options?.aceReplacing) {
+        console.debug(`${LOG} | ${effect.parent?.name}'s fear was replaced, not ended — no immunity written.`);
+        return;
+      }
       PresenceEngine._immunise(effect.parent, mark, "the fear ended").catch(err =>
         console.warn(`${LOG} | could not write the 24-hour immunity as the fear ended:`, err));
     });
@@ -112,18 +122,51 @@ export class PresenceEngine {
       // presences ran, each posting its own card and each frightening the room
       // again. A flag written after an await cannot stop the caller that is
       // already past the read. The same lesson as the save engine's dedupe.
-      const key = `${combat.id}:${tokenDoc.id}:${item.id}`;
-      PresenceEngine._claimed ??= new Set();
-      if (PresenceEngine._claimed.has(key)) continue;
-      const fired = combat.getFlag(MODULE_ID, "presenceFired") ?? {};
-      if (fired[`${tokenDoc.id}:${item.id}`]) continue;
-      PresenceEngine._claimed.add(key);
-      try { await combat.setFlag(MODULE_ID, "presenceFired", { ...fired, [`${tokenDoc.id}:${item.id}`]: true }); }
-      catch (err) { console.warn(`${LOG} | could not mark ${item.name} as fired; it may ask twice:`, err); }
+      // ⚠️🔴 ONCE PER FIGHT FOR THAT DRAGON — THE KEY IS THE CREATURE, NOT ITS
+      // TOKEN (his table, 2026-09-20: "He advanced the turn. Presence opened
+      // again and the log printed 'its first turn began, so it happens once,
+      // now'. The once-per-fight flag is a lie."). He had two bodies of the
+      // dragon on the map, each its own combatant; keyed by token, the second
+      // one's turn was a fresh claim and it asked the room all over again.
+      // Its ACTOR is the dragon, however many tokens of it are standing there.
+      const who = tokenDoc.actor?.id ?? tokenDoc.actorId ?? tokenDoc.id;
+      const key = `${who}:${item.id}`;
+      if (!PresenceEngine._claimedIn(combat, key)) continue;
 
       say(`${tokenDoc.name}'s ${item.name}: ${why}, so it happens once, now.`);
-      await PresenceEngine.run(tokenDoc, item, presence, { why });
+      await PresenceEngine.run(tokenDoc, item, presence, { why, claim: { combat, key } });
     }
+  }
+
+  /**
+   * Claim this creature's presence for this fight, in THIS tick.
+   *
+   * ⚠️ MEMORY FIRST, THE DOCUMENT AFTER. `combatStart`, `combatTurnChange` and
+   * `createToken` can all fire before any of them has finished writing a flag,
+   * so a claim that only lived on the combat let two or three presences run —
+   * each posting its own card, each frightening the room, and each sending its
+   * own box to the same player (whose answer then belonged to a card nobody was
+   * looking at). The Set answers in the same tick; the flag survives a reload.
+   *
+   * @returns {boolean} true if this caller owns the run
+   */
+  static _claimedIn(combat, key) {
+    PresenceEngine._claimed ??= new Set();
+    const full = `${combat?.id ?? "no-combat"}:${key}`;
+    if (PresenceEngine._claimed.has(full)) return false;
+    const fired = combat?.getFlag?.(MODULE_ID, "presenceFired") ?? {};
+    if (fired[key]) return false;
+    PresenceEngine._claimed.add(full);
+    combat?.setFlag?.(MODULE_ID, "presenceFired", { ...fired, [key]: true })
+      ?.catch?.(err => console.warn(`${LOG} | the fight could not remember that ${key} has happened:`, err));
+    return true;
+  }
+
+  /** Has this creature's presence already happened in this fight? */
+  static _alreadyHappened(combat, key) {
+    const full = `${combat?.id ?? "no-combat"}:${key}`;
+    return (PresenceEngine._claimed?.has(full) ?? false)
+      || !!(combat?.getFlag?.(MODULE_ID, "presenceFired") ?? {})[key];
   }
 
   /* ═══ Who is asked ═════════════════════════════════════════════════════ */
@@ -186,6 +229,24 @@ export class PresenceEngine {
     return null;
   }
 
+  /**
+   * Is this creature on the source's own side?
+   *
+   * ⚠️ ITS WORDS SAY WHOSE CHOICE IT IS. "Each creature of the dragon's choice
+   * that is within 120 feet" — a dragon does not frighten its own cultists, and
+   * on a dungeon level his 120 feet reached 27 creatures, most of them the
+   * dragon's own (his table, 2026-09-20: "First firing asked far more than the
+   * five other combatants"). They stay ON the list, with their reason, and he
+   * ticks any he wants; they are simply not ticked for him.
+   */
+  static _sameSide(targetDoc, sourceDoc) {
+    const side = (d) => {
+      const n = Number(d?.disposition ?? 0);
+      return n < 0 ? -1 : n > 0 ? 1 : 0;
+    };
+    return side(targetDoc) === side(sourceDoc);
+  }
+
   /** Everyone on the scene, with the reason each one is or is not asked. */
   static _read(sourceDoc, item, presence) {
     const scene = sourceDoc.parent ?? canvas?.scene ?? null;
@@ -195,7 +256,10 @@ export class PresenceEngine {
       const skip = PresenceEngine._skip(t, sourceDoc, item, presence);
       let ft = null;
       try { ft = Math.round(aceDistanceFt(sourceDoc, t)); } catch (_) { ft = null; }
-      rows.push({ doc: t, name: t.name, img: t.texture?.src ?? t.actor?.img ?? null, ft, skip });
+      // Its own side is asked only if he ticks them, and only where the words
+      // make it the creature's choice who is caught.
+      const ally = !skip && presence.choice && PresenceEngine._sameSide(t, sourceDoc);
+      rows.push({ doc: t, name: t.name, img: t.texture?.src ?? t.actor?.img ?? null, ft, skip, ally });
     }
     return rows;
   }
@@ -208,7 +272,7 @@ export class PresenceEngine {
    * @param {object} presence  what its words say (rules/creature-words.mjs)
    * @param {object} [o]  `{ why, pressed }`
    */
-  static async run(sourceDoc, item, presence, { why = "", pressed = false } = {}) {
+  static async run(sourceDoc, item, presence, { why = "", pressed = false, claim = null } = {}) {
     const source = sourceDoc?.actor;
     if (!source) return;
     if (SOURCE_OUT.some(s => source.statuses?.has?.(s))) {
@@ -219,11 +283,13 @@ export class PresenceEngine {
 
     const rows = PresenceEngine._read(sourceDoc, item, presence);
     const asked = rows.filter(r => !r.skip);
+    const ticked = asked.filter(r => !r.ally);
     // On the card but not rolling: the two his rule names, so he can see them.
     const spared = rows.filter(r => r.skip && !r.skip.hide);
     const offList = rows.filter(r => r.skip?.hide && r.skip.reason !== "itself" && r.skip.reason !== "no creature");
 
-    say(`${sourceDoc.name}'s ${item.name}${why ? ` (${why})` : ""}: ${asked.length} to ask, `
+    say(`${sourceDoc.name}'s ${item.name}${why ? ` (${why})` : ""}: ${ticked.length} ticked of `
+      + `${asked.length} on the list (${asked.length - ticked.length} on its own side), `
       + `${spared.length} already done with it, ${offList.length} off the list `
       + `(${[...new Set(offList.map(r => r.skip.reason))].join("; ") || "none"}).`);
 
@@ -235,6 +301,13 @@ export class PresenceEngine {
 
     // ── The picker, first, every time ──
     const picked = await PresenceEngine._pick(sourceDoc, item, presence, asked, spared);
+    // ⚠️ AND THE CLAIM IS ASKED AGAIN ON THE WAY OUT. The picker is a human
+    // holding the door open; anything that fires while it is open must not slip
+    // a second card past it.
+    if (claim && !PresenceEngine._alreadyHappened(claim.combat, claim.key)) {
+      say(`${sourceDoc.name}'s ${item.name}: the fight no longer says this has happened, so it stands down.`);
+      return;
+    }
     if (picked === null) {
       say(`${sourceDoc.name}'s ${item.name}: the picker was closed, so nothing was asked.`);
       return;
@@ -330,56 +403,80 @@ export class PresenceEngine {
    *
    * @returns {Promise<Array|null>} the ticked rows, or null if it was closed.
    */
-  static async _pick(sourceDoc, item, presence, asked, spared) {
+  static async _pick(sourceDoc, item, presence, rows, spared) {
     const DialogV2 = globalThis.foundry?.applications?.api?.DialogV2;
     if (!DialogV2) {
-      console.warn(`${LOG} | no dialog on this client, so everyone in range is asked.`);
-      return asked;
+      console.warn(`${LOG} | no dialog on this client, so everyone the door allows is asked.`);
+      return rows.filter(r => !r.ally);
     }
+
+    // ⚠️🔴 EVERY SIZE IS WRITTEN ON THE ELEMENT (his table, 2026-09-20:
+    // "Picker portraits are full token art, screen-tall, not 80 pixels.
+    // Nameless checkboxes. Names run into the distance number.").
+    //
+    // The first version put its rules in a <style> block inside the dialog's
+    // content, and not one of them reached the rows: the portraits came out at
+    // the natural size of his token art, the layout was gone with them, and a
+    // list he cannot read is a list he cannot use. A style block that may or
+    // may not survive its host is not a size. These are inline, so the row is
+    // 80 pixels whatever the dialog does to it.
+    const ROW = "display:flex;align-items:center;gap:12px;padding:5px 8px;border-radius:4px;"
+      + "font-size:17px;color:#f0e4c0;cursor:pointer;";
+    const IMG = "width:80px;height:80px;min-width:80px;max-width:80px;border-radius:6px;"
+      + "object-fit:cover;border:1px solid #555;background:#0c0c10;display:block;flex:0 0 80px;";
+    const BOX = "width:20px;height:20px;min-width:20px;flex:0 0 20px;margin:0;";
+    const NAME = "flex:1 1 auto;font-weight:600;overflow-wrap:anywhere;min-width:0;";
+    const FT = "flex:0 0 auto;color:#c9a76b;font-size:15px;white-space:nowrap;padding-left:10px;";
+    // ⚠️ AND THE LIST SCROLLS INSIDE THE DIALOG, so 30 creatures cannot make
+    // the window taller than his screen.
+    const LIST = "display:flex;flex-direction:column;gap:3px;max-height:420px;overflow-y:auto;"
+      + "border:1px solid rgba(212,175,55,0.25);border-radius:4px;padding:5px;background:#121016;";
+
     const line = (r) => `
-      <label class="ace-fp-row">
-        <input type="checkbox" name="who" value="${esc(r.doc.id)}" checked />
-        <img src="${esc(r.img ?? "icons/svg/mystery-man.svg")}" alt="" />
-        <span class="ace-fp-name">${esc(r.name)}</span>
-        <span class="ace-fp-ft">${r.ft == null ? "" : `${r.ft} ft`}</span>
+      <label style="${ROW}">
+        <input type="checkbox" name="who" value="${esc(r.doc.id)}" style="${BOX}" ${r.ally ? "" : "checked"} />
+        <img src="${esc(r.img ?? "icons/svg/mystery-man.svg")}" alt="" style="${IMG}" />
+        <span style="${NAME}">${esc(r.name)}${r.ally
+          ? ` <span style="color:#8a8a92;font-weight:400;font-size:14px;">(its own side)</span>` : ""}</span>
+        <span style="${FT}">${r.ft == null ? "" : `${r.ft} ft`}</span>
       </label>`;
-    const sparedLine = spared.length
-      ? `<div class="ace-fp-spared"><i class="fas fa-shield-halved"></i> Not asked, and not ticked: `
-        + spared.map(r => `<b>${esc(r.name)}</b> (${esc(r.skip.reason)})`).join(", ") + `</div>`
+
+    // ⚠️ ONE NAME, ONE REASON (his rule). The same creature can be reached by
+    // two rows when two of its bodies are on the map; the line under the list
+    // names each creature once.
+    const seen = new Set();
+    const sparedOnce = [];
+    for (const r of spared) {
+      const k = `${r.name}|${r.skip.reason}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      sparedOnce.push(r);
+    }
+    const sparedLine = sparedOnce.length
+      ? `<div style="margin-top:8px;font-size:15px;color:#ffaa44;line-height:1.4;">`
+        + `<i class="fas fa-shield-halved"></i> Already done with it, not asked: `
+        + sparedOnce.map(r => `<b>${esc(r.name)}</b> (${esc(r.skip.reason)})`).join(", ") + `</div>`
       : "";
 
+    const ticked = rows.filter(r => !r.ally).length;
     const content = `
-      <style>
-        .ace-fp { color: #f0e4c0; font-family: 'Signika', sans-serif; }
-        .ace-fp .ace-fp-head { font-size: 16px; line-height: 1.4; margin-bottom: 8px; }
-        /* ⚠️ 80 PIXELS AND IT SCROLLS (his rule, 2026-09-20). A dragon can
-           reach a lot of creatures, and a wall of 34-pixel thumbnails is not
-           a list he can read at a glance mid-fight. */
-        .ace-fp .ace-fp-list { display: flex; flex-direction: column; gap: 3px; max-height: 60vh; overflow-y: auto;
-          border: 1px solid rgba(212,175,55,0.25); border-radius: 4px; padding: 5px; background: #121016; }
-        .ace-fp .ace-fp-row { display: flex; align-items: center; gap: 12px; padding: 5px 8px; border-radius: 4px; font-size: 17px; }
-        .ace-fp .ace-fp-row:hover { background: rgba(212,175,55,0.10); }
-        .ace-fp .ace-fp-row img { width: 80px; height: 80px; border-radius: 6px; object-fit: cover; border: 1px solid #555; background: #0c0c10; }
-        .ace-fp .ace-fp-row input[type="checkbox"] { width: 20px; height: 20px; flex-shrink: 0; }
-        .ace-fp .ace-fp-name { flex: 1; font-weight: 600; overflow-wrap: anywhere; }
-        .ace-fp .ace-fp-ft { color: #c9a76b; font-size: 14px; white-space: nowrap; }
-        .ace-fp .ace-fp-spared { margin-top: 8px; font-size: 14px; color: #ffaa44; line-height: 1.4; }
-        .ace-fp .ace-fp-all { margin: 6px 0 2px; font-size: 14px; color: #c9a76b; cursor: pointer; }
-      </style>
-      <div class="ace-fp">
-        <div class="ace-fp-head"><b>${esc(sourceDoc.name)}</b>'s <b>${esc(item.name)}</b>:
-          ${asked.length} creature${asked.length === 1 ? "" : "s"} within ${presence.radiusFt} feet`
-        + `${presence.needsSight ? " who can see it" : ""}. Untick anyone it spares.</div>
-        <div class="ace-fp-all"><a data-ace-fp="all">Tick all</a> · <a data-ace-fp="none">Untick all</a></div>
-        <div class="ace-fp-list">${asked.map(line).join("")}</div>
+      <div class="ace-fp" style="color:#f0e4c0;font-family:'Signika',sans-serif;">
+        <div style="font-size:16px;line-height:1.4;margin-bottom:8px;">
+          <b>${esc(sourceDoc.name)}</b>'s <b>${esc(item.name)}</b>:
+          <b class="ace-fp-count">${ticked}</b> of ${rows.length} ticked, within ${presence.radiusFt} feet${
+            presence.needsSight ? " and able to see it" : ""}. Tick and untick as you like.</div>
+        <div style="margin:6px 0 4px;font-size:15px;color:#c9a76b;">
+          <a data-ace-fp="all" style="cursor:pointer;">Tick all</a> &middot;
+          <a data-ace-fp="none" style="cursor:pointer;">Untick all</a></div>
+        <div style="${LIST}">${rows.map(line).join("")}</div>
         ${sparedLine}
       </div>`;
 
     try {
       const chosen = await DialogV2.wait({
-        window: { title: `${item.name}`, icon: "fa-solid fa-face-scream" },
+        window: { title: `${sourceDoc.name}: ${item.name}`, icon: "fa-solid fa-face-scream" },
         classes: ["ace-qol-dark-dialog"],
-        position: { width: 460 },
+        position: { width: 480, ...stepAside() },
         content,
         buttons: [
           { action: "go", label: "Frighten them", icon: "fa-solid fa-face-scream", default: true,
@@ -388,18 +485,22 @@ export class PresenceEngine {
         ],
         render: (ev, html) => {
           const root = html?.element ?? html;
+          const count = root?.querySelector?.(".ace-fp-count");
+          const boxes = [...(root?.querySelectorAll?.("input[name='who']") ?? [])];
+          const retell = () => { if (count) count.textContent = String(boxes.filter(b => b.checked).length); };
+          for (const b of boxes) b.addEventListener("change", retell);
           root?.querySelector?.("[data-ace-fp='all']")?.addEventListener("click", () => {
-            for (const c of root.querySelectorAll("input[name='who']")) c.checked = true;
+            for (const c of boxes) c.checked = true; retell();
           });
           root?.querySelector?.("[data-ace-fp='none']")?.addEventListener("click", () => {
-            for (const c of root.querySelectorAll("input[name='who']")) c.checked = false;
+            for (const c of boxes) c.checked = false; retell();
           });
         },
         rejectClose: false,
       });
       if (chosen == null) return null;
       const ids = new Set(Array.isArray(chosen) ? chosen : []);
-      return asked.filter(r => ids.has(r.doc.id));
+      return rows.filter(r => ids.has(r.doc.id));
     } catch (err) {
       console.warn(`${LOG} | the picker failed, so nobody was asked:`, err);
       return null;

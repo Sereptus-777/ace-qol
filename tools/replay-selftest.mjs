@@ -5460,6 +5460,92 @@ console.log(`\nA FRIGHTENING PRESENCE: ONE SAVE, ONE CREATURE, ONCE`);
             + `the knight: answered ${SaveEngine._alreadyAnswered({ castId: castId9, tokenDocId: "tok-fp-knight" })}`);
         try { await early.delete?.(); } catch (_) { /* the harness may not delete */ }
 
+        // HIS SEVEN, FROM THE FIGHT THAT BROKE IT (2026-09-20).
+
+        // 1. THE PICKER'S OWN SIZES, ON THE ELEMENTS. A <style> block inside a
+        // dialog's content never reached his rows: full token art, screen-tall.
+        const pickSrc = readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/presence-engine.mjs`, "utf8");
+        const _pickAt = pickSrc.indexOf("static async _pick(");
+        const _pickEnd = pickSrc.indexOf("/* ═══ Being done with it", _pickAt);
+        const pickFn = pickSrc.slice(_pickAt, _pickEnd > _pickAt ? _pickEnd : pickSrc.length);
+        check("the picker writes every size onto the row itself: an 80-pixel portrait, a checkbox, a name that takes the slack and a distance that does not run into it, in a list that scrolls inside the dialog (2026-09-20)",
+          /width:80px;height:80px/.test(pickFn) && /flex:0 0 80px/.test(pickFn)
+            && /max-height:420px;overflow-y:auto/.test(pickFn)
+            && /style="\$\{IMG\}"/.test(pickFn) && /style="\$\{ROW\}"/.test(pickFn)
+            // ⚠️ the markup, not the comment above it that says why there is none
+            && !/content = `[^`]*<style>/.test(pickFn),
+          "the row, the portrait, the checkbox, the name and the list are all sized inline; no style block");
+
+        // 2 + 3. ITS OWN SIDE IS LISTED, NOT TICKED.
+        const cultist = creature9("replay-fp-cultist", "a cultist of the dragon");
+        const cultTok = place9(cultist, "tok-fp-cultist", 250);
+        cultTok.document.disposition = -1;          // the dragon's own side
+        docs9.get("tok-fp-knight").disposition = 1;
+        const rows2 = PresenceEngine._read(dragonTok.document, fp, presence);
+        const cult = rows2.find(r => r.doc.actor === cultist) ?? null;
+        const knightRow = rows2.find(r => r.doc.actor === knight) ?? null;
+        check("a creature on the dragon's own side is on the list and not ticked, because its words make it the dragon's choice; the party is ticked (2026-09-20)",
+          !!cult && !cult.skip && cult.ally === true
+            && !!knightRow && !knightRow.skip && knightRow.ally !== true,
+          `the cultist: ${cult ? (cult.skip ? cult.skip.reason : (cult.ally ? "listed, not ticked" : "ticked")) : "missing"}; `
+            + `the knight: ${knightRow ? (knightRow.ally ? "listed, not ticked" : "ticked") : "missing"}`);
+
+        // 4. A REPLACED CONDITION HAS NOT ENDED.
+        const engSrc = readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/condition-library.mjs`, "utf8");
+        const fearMark = { name: "Frightened", parent: chudd,
+          flags: { [MOD]: { presence: { sourceTokenId: "tok-fp-dragon", sourceActorId: dragon.id,
+            sourceName: dragon.name, itemName: "Frightful Presence", immuneHours: 24 } } } };
+        const before4 = chudd.effects.length;
+        // The watch is registered at startup in the live module; the replay never
+        // runs that, so it is registered here before the door is knocked on.
+        PresenceEngine.init();
+        const fire9 = (eff, opts) => { for (const fn of hooks.deleteActiveEffect ?? []) {
+          try { fn(eff, opts); } catch (_) { /* another listener's business */ } } };
+        fire9(fearMark, { aceReplacing: "frightened" });
+        await new Promise(r => setTimeout(r, 30));
+        const afterReplace = chudd.effects.length;
+        fire9(fearMark, {});
+        await new Promise(r => setTimeout(r, 50));
+        const afterEnd = chudd.effects.length;
+        check("a Frightened that was REPLACED does not make anybody immune, and one that actually ended does: the condition door says which it is on the way out (2026-09-20)",
+          /await existing\.delete\(\{ aceReplacing: key \}\)/.test(engSrc)
+            && afterReplace === before4 && afterEnd === before4 + 1,
+          `on a replacement: ${afterReplace - before4} immunity written; on an ending: ${afterEnd - afterReplace}`);
+
+        // And one line per creature on the card, however many times it was told.
+        const messy = [
+          { targetName: "a Nothic", tokenDocId: "tok-n", conditions: ["frightened"] },
+          { targetName: "a Nothic", tokenDocId: "tok-n", conditions: ["frightened"] },
+          { targetName: "a Nothic", tokenDocId: "tok-n", immune: ["frightened"] },
+          { targetName: "a Specter", tokenDocId: "tok-s", held: ["frightened"] },
+        ];
+        const tidy = SaveEngine._oneLinePerCreature(messy);
+        check("and the card's footer names each creature once, with everything that landed on it, however many times it was told (2026-09-20)",
+          tidy.length === 2
+            && tidy[0].conditions.length === 1 && tidy[0].immune.length === 1
+            && tidy[1].held.length === 1,
+          tidy.map(a => `${a.targetName}: ${(a.conditions ?? []).join("/") || "-"}`
+            + `${a.immune?.length ? ` immune ${a.immune.join("/")}` : ""}`
+            + `${a.held?.length ? ` waiting ${a.held.join("/")}` : ""}`).join("; "));
+
+        // 7. THREE BOXES, THREE PLACES.
+        const { stepAside, openPopupCount } = await import(`${MODULE}/scripts/popup-place.mjs`);
+        const keepWindows = globalThis.ui?.windows;
+        globalThis.ui = globalThis.ui ?? {};
+        ui.windows = {};
+        const alone = stepAside({ left: 400, top: 300 });
+        ui.windows = { 1: { options: { classes: ["ace-qol-reaction-dialog"] } } };
+        const second = stepAside({ left: 400, top: 300 });
+        ui.windows = { 1: { options: { classes: ["ace-qol-reaction-dialog"] } },
+                       2: { options: { classes: ["ace-qol-dark-dialog"] } } };
+        const third = stepAside({ left: 400, top: 300 });
+        ui.windows = keepWindows ?? {};
+        check("the avert box, the Presence picker and a repeat-fear box open in three different places: each one steps down and across from whatever ACE already has on screen (2026-09-20)",
+          alone.left === 400 && alone.top === 300
+            && second.left > alone.left && second.top > alone.top
+            && third.left > second.left && third.top > second.top,
+          `alone ${alone.left},${alone.top} → beside one ${second.left},${second.top} → beside two ${third.left},${third.top}`);
+
         // ONCE, AND THE MARK LIVES ON THE FIGHT.
         const flags9 = {};
         const combat9 = { started: true, combatants: [],
@@ -5480,12 +5566,16 @@ console.log(`\nA FRIGHTENING PRESENCE: ONE SAVE, ONE CREATURE, ONCE`);
               PresenceEngine._fireFor(docs9.get("tok-fp-dragon"), "its first turn began"),
               PresenceEngine._fireFor(docs9.get("tok-fp-dragon"), "it appeared on the map"),
             ]);
+            // ⚠️ AND HIS SECOND BODY'S TURN, LATER (his table: "He advanced the
+            // turn. Presence opened again"). The same dragon, another token,
+            // another turn: still once.
+            await PresenceEngine._fireFor(docs9.get("tok-fp-dragon-2"), "its first turn began");
           });
         } finally {
           PresenceEngine.run = keepRun;
           game.combat = keepCombat;
         }
-        check("it happens once a fight even when all three doors open in the same instant: the fight starting, its first turn and its token appearing race each other, and exactly one presence runs (2026-09-20)",
+        check("it happens once a fight for that DRAGON: the three doors race each other in one instant and a second body of his takes its turn later, and exactly one presence runs (2026-09-20)",
           ran.length === 1 && ran[0] === "Frightful Presence"
             && Object.keys(flags9).length === 1,
           `it ran ${ran.length} time(s)${ran.length ? ` (${ran.join(", ")})` : ""}; the fight remembers `

@@ -2191,7 +2191,15 @@ export class ConditionLibrary {
       try {
         const existing = ConditionLibrary._findEffect(actor, key);
         if (existing) {
-          await existing.delete();
+          // ⚠️🔴 A REPLACEMENT IS NOT AN ENDING, AND SOMETHING WAS WATCHING
+          // (his table, 2026-09-20). Conditions do not stack, so the old one is
+          // deleted and a fresh one goes on — and every listener on
+          // `deleteActiveEffect` sees that as the condition ENDING. The
+          // presence engine's watch turned each of those into "the fear ended,
+          // so it is immune for 24 hours", which is how one creature ended up
+          // frightened AND immune, four lines deep on the card. The flag rides
+          // on the delete so a watcher can tell the two apart.
+          await existing.delete({ aceReplacing: key });
           ConditionLibrary._debug?.(`applyByName: replaced existing "${key}" on ${actor.name} (dedupe)`);
         }
       } catch (_) { /* dedupe is best-effort — never block the application */ }

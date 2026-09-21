@@ -21,6 +21,7 @@
 // NOTE: MODULE_ID hardcoded to avoid circular import (ace-qol.mjs imports us)
 const MODULE_ID = "ace-qol";
 import { QolSettings } from "./settings.mjs";
+import { stepAside as stepAsidePopup } from "./popup-place.mjs";
 // The shared "why didn't that happen" reporters. ONE implementation for the
 // whole roll path - these methods used to hold a second copy, which is the
 // "built beside instead of on" mistake this codebase has paid for before.
@@ -4338,10 +4339,14 @@ export class ReactionEngine {
         classes: ["ace-qol-reaction-dialog"],
         width: 540,                     // v0.7.71: wider to fit 16px+ body text + attacker row
         height: "auto",
-        // Center on screen — matches the advantage prompt placement so player
-        // attention always lands at the same spot for time-critical decisions.
-        top: Math.max(40, Math.floor(window.innerHeight / 2 - 280)),
-        left: Math.max(20, Math.floor(window.innerWidth / 2 - 270)),
+        // Centre on screen — the same place every time-critical decision lands
+        // — UNLESS another ACE box is already there, in which case this one
+        // steps down and across so neither hides the other (his table,
+        // 2026-09-20: the avert box and the Presence picker on the same spot).
+        ...stepAsidePopup({
+          top: Math.max(40, Math.floor(window.innerHeight / 2 - 280)),
+          left: Math.max(20, Math.floor(window.innerWidth / 2 - 270)),
+        }),
       });
 
       dialog.render(true);
