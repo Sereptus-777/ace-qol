@@ -60,33 +60,26 @@ export class ActivityUsePrompt {
           return;
         }
 
-        // ⚠️🔴 A MONSTER'S OWN ACTION IS NEVER ASKED ABOUT (his rule,
-        // 2026-09-20: "WING / TAIL / BREATH DIALOG. No dnd5e 'Consume item
-        // use' window. ACE spends the legendary actions or the recharge use.")
+        // ⚠️🔴 THE GM IS ASKED; A PLAYER IS NOT (his rule, 2026-09-21: "GM
+        // presses anything that spends a slot, a limited use, a recharge, or
+        // legendary actions: ask first. Yes spends it and the action runs. No
+        // cancels. Nothing is spent. A player press never sees that box.").
         //
-        // A player's wand has a question in it: they may want to keep the
-        // charge. A dragon's breath weapon does not. The GM pressed it, and
-        // what it costs, it costs — a legendary action, a recharge, a daily
-        // use. Both windows are suppressed here: ACE's own prompt never opens,
-        // and dnd5e's is switched off on the way past, so dnd5e spends it
-        // silently as it always would.
+        // ⚠️ AND I TOOK THIS BOX AWAY WITHOUT BEING ASKED (0.34.81). His words:
+        // "He never asked to kill it. Put it back." What he wanted gone was
+        // dnd5e's own "Consume Item Use?" window, not the one ACE owns. The
+        // test is WHO IS PRESSING, not who owns the creature.
         //
-        // ⚠️ SUPPRESSING ACE'S PROMPT IS NOT ENOUGH ON ITS OWN. Returning
-        // without touching `dialogConfig` hands the press straight to dnd5e's
-        // own "Consume Item Use?" dialog, which is the window he is looking at.
-        if (ActivityUsePrompt.isCreaturesOwnAction(activity)) {
-          const owner = activity?.actor ?? activity?.item?.actor ?? null;
+        // A player's press: no ACE box, and dnd5e's is switched off on the way
+        // past, so their slot or use is spent and nothing interrupts them.
+        if (!game.user.isGM) {
           if (dialogConfig) dialogConfig.configure = false;
-          const cost = ActivityUsePrompt._describeCost(activity);
-          if (cost) {
-            console.log(`${MODULE_ID} | ${owner.name}'s "${activity.item?.name}" costs `
-              + `${cost.cost} ${cost.label} and is a creature's own action, so nothing asks: it is spent.`);
-          }
           return;
         }
 
         const spend = ActivityUsePrompt._describeCost(activity);
-        if (!spend) return;   // nothing consumed → no prompt, no interruption
+        // Nothing is spent (a Claw, a Bite, a cantrip): no box, no interruption.
+        if (!spend) return;
 
         ActivityUsePrompt._promptThenRefire(activity, usageConfig, messageConfig, spend);
         return false;         // cancel this use; the re-fire carries the choice
@@ -109,11 +102,18 @@ export class ActivityUsePrompt {
     return !!owner && owner.type !== "character";
   }
 
-  /** What does this activity cost? null when it consumes nothing. */
+  /**
+   * What does this activity cost? null when it consumes nothing.
+   *
+   * ⚠️ A LEGENDARY ACTION IS A COST, AND IT IS NOT IN `consumption.targets`
+   * (his table, 2026-09-21: the Wing Attack spent two of Volcathar's three
+   * with no box at all). dnd5e takes it from the ACTIVATION, so a feature that
+   * consumes nothing else looked free and was never asked about.
+   */
   static _describeCost(activity) {
     try {
       const targets = activity?.consumption?.targets ?? [];
-      if (!targets.length) return null;
+      if (!targets.length) return ActivityUsePrompt._legendaryCost(activity);
       const t = targets[0];
       const cost = Number(t?.value ?? 0);
       if (!Number.isFinite(cost) || cost === 0) return null;
@@ -135,12 +135,44 @@ export class ActivityUsePrompt {
         case "spellSlots":
           label = "spell slots";
           break;
-        case "attribute":
-          label = String(t.target ?? "uses");
+        case "attribute": {
+          // ⚠️ A FIELD PATH IS NOT A WORD HE CAN READ. Volcathar's Wing Attack
+          // consumes `resources.legact.value`, and the box offered to spend
+          // "2 resources.legact.value" (his table, 2026-09-21). dnd5e's own
+          // label for the resource is what belongs there.
+          const path = String(t.target ?? "");
+          const read = (o, p) => p.split(".").reduce((x, k) => (x == null ? x : x[k]), o);
+          const actor = activity?.actor ?? item?.actor ?? null;
+          if (/^resources\.legact\./.test(path)) {
+            label = cost === 1 ? "legendary action" : "legendary actions";
+            const res = actor?.system?.resources?.legact ?? {};
+            max = Number(res.max);
+            available = Number.isFinite(max) ? Math.max(0, max - (Number(res.spent ?? 0) || 0)) : NaN;
+          } else if (/^resources\.legres\./.test(path)) {
+            label = cost === 1 ? "legendary resistance" : "legendary resistances";
+            const res = actor?.system?.resources?.legres ?? {};
+            max = Number(res.max);
+            available = Number.isFinite(max) ? Math.max(0, max - (Number(res.spent ?? 0) || 0)) : NaN;
+          } else {
+            const val = Number(read(actor?.system ?? {}, path));
+            label = path.split(".").slice(-2, -1)[0] || "uses";
+            if (Number.isFinite(val)) available = val;
+          }
           break;
+        }
         default:
           label = "uses";
       }
+      // ⚠️ AND SAY WHAT BRINGS IT BACK. "1 of 1 charges" and "its one use,
+      // back on a 5 or 6" are different decisions.
+      try {
+        const rec = (item?.system?.uses?.recovery ?? []).find(r => String(r?.period) === "recharge");
+        if (rec && (t.type === "itemUses" || t.type === "activityUses")) {
+          const needs = Number(rec.formula) || null;
+          label = needs ? `use, back on a ${needs} or better` : "use, back on its recharge";
+        }
+      } catch (_) { /* the plain label stands */ }
+
       return {
         cost,
         available: Number.isFinite(available) ? available : null,
@@ -149,6 +181,23 @@ export class ActivityUsePrompt {
         // however many had been spent. (Johnny 2026-07-29.)
         max: Number.isFinite(max) && max > 0 ? max : null,
         label,
+      };
+    } catch (_) { return null; }
+  }
+
+  /** A legendary action's cost, read off the activation the way dnd5e spends it. */
+  static _legendaryCost(activity) {
+    try {
+      if (String(activity?.activation?.type ?? "") !== "legendary") return null;
+      const cost = Number(activity.activation.value ?? 1) || 1;
+      const res = activity?.actor?.system?.resources?.legact ?? null;
+      const max = Number(res?.max);
+      const spent = Number(res?.spent ?? 0) || 0;
+      return {
+        cost,
+        available: Number.isFinite(max) ? Math.max(0, max - spent) : null,
+        max: Number.isFinite(max) && max > 0 ? max : null,
+        label: cost === 1 ? "legendary action" : "legendary actions",
       };
     } catch (_) { return null; }
   }

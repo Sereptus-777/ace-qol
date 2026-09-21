@@ -4764,7 +4764,7 @@ console.log(`\nRECHARGE ATTACKS: BREATH, WING, TAIL`);
     return a;
   };
   const place8 = (actor, id, x) => {
-    const doc = { id, actorId: actor.id, actor, parent: { id: SCENE8 }, flags: {}, name: actor.name,
+    const doc = { id, actorId: actor.id, actor, parent: canvas.scene ?? { id: SCENE8 }, flags: {}, name: actor.name,
       hidden: false, x, y: 0, width: 1, height: 1, elevation: 0, disposition: actor.hasPlayerOwner ? 1 : -1,
       texture: { src: `${actor.id}-token.webp` }, getFlag: () => undefined,
       update: async (u) => { for (const [k, v] of Object.entries(u)) setPath8(doc, k, v); return doc; } };
@@ -4918,8 +4918,23 @@ console.log(`\nRECHARGE ATTACKS: BREATH, WING, TAIL`);
       // the active GM acts" — so the wing armed nothing and said nothing,
       // which is this harness lying about ACE, not ACE failing.
       game.user = GM;
+      // ⚠️ AND IT NO LONGER WAITS FOR A TEMPLATE (0.34.85, his table): a save
+      // that radiates from the creature measures its own feet and posts its
+      // card at once, so the press is read from the CARD it asks for rather
+      // than from a pending that never comes.
+      const keepPostW = engine8._postLiveTargetCard;
+      const wingCards = [];
+      engine8._postLiveTargetCard = async (it, ac, toks, o) => { wingCards.push({ item: it, toks, o }); };
+      const keepActiveW = dragon.getActiveTokens;
+      dragon.getActiveTokens = () => [docs8.get("tok-br-dragon")];
       try { await quiet(() => engine8._onUseActivity(actW, { message: null })); } catch (e) { errW = e; }
-      const pendW = engine8._pendingSaveSpell;
+      finally {
+        engine8._postLiveTargetCard = keepPostW;
+        if (keepActiveW === undefined) delete dragon.getActiveTokens; else dragon.getActiveTokens = keepActiveW;
+      }
+      const askedW = wingCards.at(-1) ?? null;
+      const pendW = askedW ? { item: askedW.item, saveAbility: askedW.o?.saveAbility,
+        saveDC: askedW.o?.saveDC, recipe: askedW.o?.recipe } : null;
       const failW = (pendW?.recipe?.onFail ?? []).map(o => `${o.formula ?? o.condition?.key ?? "?"} ${(o.types ?? []).join("/")}${o.onSuccess ? ` (${o.onSuccess})` : ""}`.trim());
       // 8 + the dragon's proficiency + its Strength, which is what its own
       // words print as DC 22. A DC nobody can read is 10 and a loud warning,
@@ -4930,12 +4945,14 @@ console.log(`\nRECHARGE ATTACKS: BREATH, WING, TAIL`);
           && failW.some(f => /^2d6 \+ @mod bludgeoning \(half\)/.test(f)),
         errW ? `threw: ${errW?.message ?? errW}`
           : pendW ? `${String(pendW.saveAbility).toUpperCase()} DC ${pendW.saveDC}; on a fail ${failW.join(", ")}` : "nothing was armed");
-      check("it beats its wings where it stands: a 10-foot emanation from the dragon, everybody in it, and no crosshair to place (2026-09-20)",
+      check("it beats its wings where it stands: a 10-foot emanation from the dragon, everybody in it, no crosshair to place and nothing waiting for one (2026-09-20, re-pinned 2026-09-21)",
         !!pendW && String(actW.range?.units) === "self" && Number(wing.system?.range?.value) === 10
           && (recipesFor(wing, { actor: dragon })[0]?.recipe?.where?.kind) === "emanation"
-          && Number(recipesFor(wing, { actor: dragon })[0]?.recipe?.where?.size) === 10,
+          && Number(recipesFor(wing, { actor: dragon })[0]?.recipe?.where?.size) === 10
+          && engine8._pendingSaveSpell == null,
         pendW ? `${recipesFor(wing, { actor: dragon })[0]?.recipe?.where?.kind} `
-          + `${recipesFor(wing, { actor: dragon })[0]?.recipe?.where?.size} ft, range units ${actW.range?.units}` : "nothing was armed");
+          + `${recipesFor(wing, { actor: dragon })[0]?.recipe?.where?.size} ft, range units ${actW.range?.units}; `
+          + `waiting for a template: ${engine8._pendingSaveSpell != null}` : "no card was asked for");
       check("prone is on it because its words say \"knocked prone\", and the same dragon's Tail, whose words do not, carries no rider at all (2026-09-20)",
         failW.some(f => f === "prone")
           && /knocked prone/i.test(String(wing.system?.description?.value ?? ""))
@@ -5131,7 +5148,11 @@ console.log(`\nRECHARGE ATTACKS: BREATH, WING, TAIL`);
       const scripts5 = `${ROOT}/Data/modules/ace-qol/scripts`;
       const every5 = readdirSync(scripts5, { recursive: true })
         .map(f => String(f).split("\\").join("/")).filter(f => f.endsWith(".mjs"));
-      const writers = every5.filter(f => /legact/.test(readFileSync(`${scripts5}/${f}`, "utf8")));
+      // ⚠️ A READER IS NOT A WRITER. The GM's spend box reads how many legendary
+      // actions are left so it can say "2 of 3"; what this pin is about is who
+      // WRITES that count, which is the update path in the refund alone.
+      const writers = every5.filter(f => /"system\.resources\.legact|legact\.spent"\]?\s*[:=]/
+        .test(readFileSync(`${scripts5}/${f}`, "utf8")));
       check("the legendary action is spent by dnd5e on the press and ACE never writes that count anywhere except to give one back when a cast is thrown away (2026-09-20)",
         writers.length === 1 && writers[0] === "road/give-back.mjs",
         `files that mention it: ${writers.join(", ") || "none"}`);
@@ -5697,28 +5718,152 @@ console.log(`\nTHE PRESS, THE LOOK AND THE TARGETS`);
   if (!dragon || !breath || !claw) {
     check("his dragon's press, look and targets (2026-09-20)", null, "no Volcathar with a Fire Breath and a Claw");
   } else {
-    /* ── 4. NO CONSUME WINDOW ON A CREATURE'S OWN ACTION ─────────────────── */
+    /* ── 4. THE GM IS ASKED BEFORE ANYTHING IS SPENT ────────────────────── */
+    // His rule, 2026-09-21: "GM presses anything that spends a slot, a limited
+    // use, a recharge, or legendary actions: ask first... A player press never
+    // sees that box... Do not put the box on an unlimited attack."
     const act4 = [...breath.system.activities][0];
-    const src4 = readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/activity-use-prompt.mjs`, "utf8");
-    // dnd5e's own dialog is what he is looking at, so the branch must switch it off.
-    const branch = src4.slice(src4.indexOf("isCreaturesOwnAction(activity)) {"),
-      src4.indexOf("const spend = ActivityUsePrompt._describeCost(activity);"));
-    check("pressing his dragon's breath asks nothing: it is a creature's own action, so ACE's consume prompt never opens AND dnd5e's own window is switched off on the way past, and the recharge is simply spent (2026-09-20)",
-      ActivityUsePrompt.isCreaturesOwnAction(act4) === true
-        && /dialogConfig\).*configure = false/s.test(branch)
-        && /return;/.test(branch)
-        && !/showConsumePrompt/.test(branch),
-      `a creature's own action: ${ActivityUsePrompt.isCreaturesOwnAction(act4)}; `
-        + `the branch shuts dnd5e's dialog: ${/configure = false/.test(branch)}`);
+    const wing4 = dragon.items.find(i => i.name === "Wing Attack") ?? null;
+    const wingAct = wing4 ? [...wing4.system.activities][0] : null;
+    const clawAct = [...claw.system.activities][0];
+    const costOf = (a) => ActivityUsePrompt._describeCost(a);
+    check("the breath's cost is read as the use it spends and what brings it back, and the Wing's as the two legendary actions dnd5e takes from its activation, which is not in the consumption list at all (2026-09-20/21)",
+      !!costOf(act4) && Number(costOf(act4).cost) === 1 && /back on a 5/.test(String(costOf(act4).label))
+        && !!wingAct && !!costOf(wingAct) && Number(costOf(wingAct).cost) === 2
+        && /legendary actions/.test(String(costOf(wingAct).label)),
+      `the breath: ${JSON.stringify(costOf(act4))}; the wing: ${JSON.stringify(costOf(wingAct))}`);
 
-    // ⚠️ VAREK IS AN NPC, VILLAIN OR NOT. The line is a player's CHARACTER, which
-    // is what dnd5e's own actor type says, not who is scary.
-    const playersWand = { actor: { type: "character", name: "a player's character" } };
-    check("and a player character's own limited-use item still asks, because keeping the charge is a real question (2026-09-20)",
-      ActivityUsePrompt.isCreaturesOwnAction(playersWand) === false
-        && ActivityUsePrompt.isCreaturesOwnAction({ actor: { type: "npc" } }) === true,
-      `a character is asked: ${!ActivityUsePrompt.isCreaturesOwnAction(playersWand)}; `
-        + `an NPC is not: ${ActivityUsePrompt.isCreaturesOwnAction({ actor: { type: "npc" } })}`);
+    check("and a Claw costs nothing, so nothing asks about it (2026-09-21)",
+      costOf(clawAct) === null,
+      `the claw: ${JSON.stringify(costOf(clawAct))}`);
+
+    // The press itself: the GM is asked, a player is not.
+    {
+      const keepUser = game.user;
+      const lengths4 = (hooks["dnd5e.preUseActivity"] ?? []).length;
+      ActivityUsePrompt.init();
+      const fired = (hooks["dnd5e.preUseActivity"] ?? []).slice(lengths4);
+      const run = (activity, asGM) => {
+        game.user = asGM ? GM : { id: "tommy", name: "Tommy", isGM: false };
+        const dialog = { configure: true };
+        let out;
+        for (const fn of fired) out = fn(activity, {}, dialog, {});
+        return { cancelled: out === false, dialog };
+      };
+      let gmPress = null, playerPress = null, gmClaw = null;
+      try {
+        await quiet(async () => {
+          gmPress = run(wingAct ?? act4, true);
+          playerPress = run(wingAct ?? act4, false);
+          gmClaw = run(clawAct, true);
+        });
+      } finally { game.user = keepUser; }
+      check("so the GM's press of the Wing is cancelled and handed to ACE's own box (No spends nothing), a player's press of the same thing opens no box at all and dnd5e's window is switched off for them, and the GM's Claw is not interrupted (2026-09-21)",
+        gmPress?.cancelled === true
+          && playerPress?.cancelled === false && playerPress?.dialog?.configure === false
+          && gmClaw?.cancelled === false,
+        `GM on the wing: ${gmPress?.cancelled ? "asked" : "not asked"}; player: `
+          + `${playerPress?.cancelled ? "asked (wrong)" : "not asked"}, dnd5e's dialog `
+          + `${playerPress?.dialog?.configure === false ? "off" : "on (wrong)"}; GM on the claw: `
+          + `${gmClaw?.cancelled ? "asked (wrong)" : "not asked"}`);
+    }
+
+    /* ── 4b. A SAVE THAT RADIATES FROM THE CREATURE WAITS FOR NOTHING ────── */
+    if (!wing4) {
+      check("his dragon's Wing Attack (2026-09-21)", null, "no Wing Attack on Volcathar in this world");
+    } else {
+      const SCENE4 = "replay-wing-scene";
+      const docs4 = new Map(), made4 = [];
+      const keep4 = { scene: canvas.scene, scenes: game.scenes.get, placed: [...canvas.tokens.placeables],
+        create: ChatMessage.create, active: dragon.getActiveTokens, user: game.user, gm: GM.active };
+      const mk = (id, name, { dead = false, hidden = false, x = 0 } = {}) => {
+        const a = { id, name, type: "npc", img: `${id}.webp`, documentName: "Actor", uuid: `Actor.${id}`,
+          statuses: new Set(dead ? ["dead"] : []), items: new Collection(), effects: [],
+          ownership: {}, isOwner: true, hasPlayerOwner: false, prototypeToken: { actorLink: true },
+          getFlag: () => undefined, getRollData: () => ({}), testUserPermission: () => false,
+          system: { attributes: { hp: { value: dead ? 0 : 30, max: 30, temp: 0 }, death: { success: 0, failure: 0 }, prof: 2 },
+            abilities: { dex: { mod: 0, save: { value: 0 } } }, skills: {},
+            details: { type: { value: "humanoid" } },
+            traits: { ci: { value: new Set() }, di: { value: new Set() }, dr: { value: new Set() }, dv: { value: new Set() } } },
+          update: async () => a };
+        ACTORS.set(id, a); made4.push(a);
+        const doc = { id: `tok-${id}`, actorId: id, actor: a, parent: canvas.scene, name, hidden,
+          x, y: 0, width: 1, height: 1, elevation: 0, disposition: -1, flags: {},
+          texture: { src: `${id}.webp` }, getFlag: () => undefined, update: async () => doc };
+        const tok = { id: doc.id, name, actor: a, document: doc, x, y: 0, w: 100, h: 100,
+          center: { x: x + 50, y: 50 }, scene: { id: SCENE4 }, visible: true, setTarget() {} };
+        doc.object = tok;
+        docs4.set(doc.id, doc);
+        canvas.tokens.placeables.push(tok);
+        return doc;
+      };
+      const cards4 = [];
+      try {
+        GM.active = true;
+        game.user = GM;
+        const scene4 = { id: SCENE4, grid: { size: 100, distance: 5 }, templates: { get: () => null },
+          tokens: { get: (t) => docs4.get(t) ?? null, get contents() { return [...docs4.values()]; } } };
+        game.scenes.get = (id) => (id === SCENE4 ? scene4 : keep4.scenes(id));
+        canvas.scene = scene4;
+        canvas.tokens.placeables.length = 0;
+        const dragonDoc = mk("wing-dragon", "Volcathar", { x: 0 });
+        dragonDoc.actorId = dragon.id;
+        dragonDoc.actor = dragon;
+        dragon.getActiveTokens = () => [dragonDoc];
+        const near = mk("wing-near", "a squire in reach", { x: 200 });        // 5 ft away, edge to edge
+        const far = mk("wing-far", "a squire down the hall", { x: 800 });     // 30 ft away
+        const corpse = mk("wing-corpse", "a dead cultist", { dead: true, x: 200 });
+        const unseen = mk("wing-hidden", "a hidden kobold", { hidden: true, x: 200 });
+        void near; void far; void corpse; void unseen;
+        const engine4 = new SaveEngine({});
+        engine4._postLiveTargetCard = async (it, ac, toks, o) => {
+          cards4.push({ item: it?.name, who: toks.map(t => t.name).sort(), holdPCs: o?.holdPCs !== false });
+        };
+        await quiet(() => engine4._onUseActivity(wingAct, { message: null }));
+        // A player's creature waits for APPLY on ANY save card, not just a
+        // presence (his rule, 2026-09-21, for the Wing's Prone).
+        const wingRec = recipesFor(wing4, { actor: dragon })[0]?.recipe ?? null;
+        const pcRow = { name: "Aryel", tokenDocId: "tok-aryel", actorId: "wing-near", sceneId: SCENE4,
+          isPC: true, pending: false, saveTotal: 8, passed: false, resultLabel: "FAIL", damageMultiplier: 1 };
+        const npcRow = { ...pcRow, name: "a squire in reach", tokenDocId: "tok-wing-near", isPC: false };
+        let held4 = [];
+        try {
+          await quiet(async () => {
+            held4 = await engine4._applyFailedSaveConditions(wing4, [pcRow, npcRow],
+              { saveAbility: "dex", saveDC: 22, activityId: wingAct?.id ?? null,
+                casterActor: dragon, recipe: wingRec }) ?? [];
+          });
+        } catch (e) { held4 = [{ declined: String(e?.message ?? e) }]; }
+        const aryel4 = held4.find(a => a.targetName === "Aryel") ?? null;
+        check("and its Prone waits for APPLY on a player's creature while an NPC takes it when its save is in, on a card that has nothing to do with a presence (2026-09-21)",
+          !!aryel4 && (aryel4.conditions?.length ?? 0) === 0 && (aryel4.held ?? []).includes("prone"),
+          held4.map(a => `${a.targetName}: ${(a.conditions ?? []).join(", ") || "-"}`
+            + `${a.held?.length ? ` waiting ${a.held.join(", ")}` : ""}`).join("; ") || "nothing");
+
+        // And a player's own client never lands it.
+        const seSrc = readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/save-engine.mjs`, "utf8");
+        check("a player's own client draws their result and puts nothing on anybody: only the active GM's client lands what a failed save leaves (2026-09-21)",
+          /const _mayLand = game\.user === game\.users\?\.activeGM;/.test(seSrc)
+            && /if \(_mayLand && \(SaveEngine\._failedTheSave\(r\) \|\| passedWithEffect\) && !r\._condApplied\)/.test(seSrc),
+          "the PC-result handler lands conditions on the GM's client alone");
+
+        check("the Wing Attack does not wait for a template it will never get: it measures its 10 feet from the dragon's own edges and asks the squire beside it, not the one 30 feet away, not the corpse, not a hidden token, and never the dragon (2026-09-21)",
+          cards4.length === 1 && cards4[0].who.length === 1 && cards4[0].who[0] === "a squire in reach"
+            && engine4._pendingSaveSpell == null,
+          cards4.length ? `asked: ${cards4[0].who.join(", ")}; still waiting for a template: `
+            + `${engine4._pendingSaveSpell != null}` : "no card was posted at all");
+      } finally {
+        canvas.scene = keep4.scene;
+        game.scenes.get = keep4.scenes;
+        canvas.tokens.placeables.length = 0;
+        canvas.tokens.placeables.push(...keep4.placed);
+        ChatMessage.create = keep4.create;
+        if (keep4.active === undefined) delete dragon.getActiveTokens; else dragon.getActiveTokens = keep4.active;
+        game.user = keep4.user;
+        if (keep4.gm === undefined) delete GM.active; else GM.active = keep4.gm;
+        for (const a of made4) ACTORS.delete(a.id);
+      }
+    }
 
     /* ── 5. THE BREATH SHOWS THE BREATH ──────────────────────────────────── */
     check("ACE knows a creature's cone or line from everything else: his dragon's Fire Breath is one, its Claw is not, and a player's spell never is (2026-09-20)",

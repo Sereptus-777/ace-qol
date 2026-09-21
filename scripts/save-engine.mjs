@@ -68,6 +68,8 @@ import { HpDoor, ConditionDoor, CardDoor, SignalDoor } from "./road/doors.mjs";
 import { recipeForActivity, repeatTriggerOf, loadBookFor, isFollowUp, rulesActionSave } from "./inference/recipe.mjs";
 // Who may be on a card at all: the one life rule every picker asks (Phase 4-5).
 import { lifeStateOf, pickable } from "./road/picker-rule.mjs";
+// Edge to edge, under his one space rule (a picture off its square is still in it).
+import { aceDistanceFt } from "./geometry-utils.mjs";
 // Whose spirits they are: the caster's alignment picks necrotic or radiant.
 import { isSpiritGuardians, guardianFlavour, guardianDamage, narrowDamageTypes } from "./rules/spirit-guardians.mjs";
 import { RulesIndex } from "./rules/rules-index.mjs";
@@ -1088,6 +1090,71 @@ export class SaveEngine {
     } catch (err) {
       console.warn(`${MODULE_ID} | could not check whether "${item?.name}" is a `
         + `pool spell (continuing as a normal save):`, err);
+    }
+
+    // ── ⚠️🔴 A SAVE THAT RADIATES FROM THE CREATURE WAITS FOR NOTHING ─────
+    //
+    // His table, 2026-09-21, Volcathar's Wing Attack: "ACE plays a ghostly wave
+    // and draws no template (shapeless). save-engine waits for template type
+    // radius. DEAD BUTTON two seconds later." Two legendary actions gone and
+    // nothing happened.
+    //
+    // The sheet says range SELF with a 10-foot radius. There is no crosshair to
+    // place and dnd5e places nothing, so waiting for a measured template is
+    // waiting for something that is never coming. The creature IS the origin:
+    // ACE measures ten feet from its own edges and asks whoever is standing
+    // there, on this scene, alive, and never the creature itself.
+    //
+    // ⚠️ ONLY FOR SELF. An area thrown at a point (a Fireball, a breath cone)
+    // still waits for the crosshair, because where it lands is a decision
+    // somebody makes.
+    const selfRadius = (() => {
+      try {
+        const units = String(activity?.range?.units ?? item.system?.range?.units ?? "").toLowerCase();
+        if (units !== "self") return 0;
+        const shape = String(templateType || "").toLowerCase();
+        if (shape && !["radius", "sphere", "cylinder", "emanation"].includes(shape)) return 0;
+        const ft = Number(activity?.target?.template?.size ?? item.system?.target?.template?.size
+          ?? item.system?.range?.value ?? 0);
+        return Number.isFinite(ft) && ft > 0 ? ft : 0;
+      } catch (_) { return 0; }
+    })();
+
+    if (selfRadius > 0) {
+      const here = SaveEngine.casterTokenDoc(actor, { sceneId: canvas.scene?.id, quiet: true });
+      if (!here) {
+        console.warn(`${MODULE_ID} | "${item.name}" radiates ${selfRadius} feet from ${actor?.name}, who has no `
+          + `token on this scene. NOTHING was rolled; place its token and press again.`);
+        ui.notifications?.warn(`ACE: ${actor?.name} has no token here, so ${item.name} asked nobody.`);
+        return;
+      }
+      // The scene that actually holds the tokens: a token document's parent IS
+      // its scene in play, and anything else (an unsynced copy) falls back to
+      // the canvas rather than quietly finding nobody.
+      const scene = here.parent?.tokens ? here.parent : canvas.scene;
+      const caught = [];
+      for (const t of scene?.tokens?.contents ?? []) {
+        if (!t?.actor || t.id === here.id) continue;
+        if (t.actorId && here.actorId && t.actorId === here.actorId) continue;   // never itself
+        if (t.hidden === true) continue;
+        if (!pickable("harm", lifeStateOf(t.actor, t)).ok) continue;             // the dead do not save
+        let ft = Infinity;
+        try { ft = aceDistanceFt(here, t); } catch (_) { ft = Infinity; }
+        if (ft <= selfRadius + 0.1) caught.push(t.object ?? t);
+      }
+      console.log(`${MODULE_ID} | "${item.name}" radiates ${selfRadius} feet from ${here.name}: `
+        + `${caught.length} creature(s) inside — ${caught.map(t => t.name).join(", ") || "nobody"}. `
+        + `No template is placed and none is waited for.`);
+      if (!caught.length) {
+        ui.notifications?.info(`${item.name}: nobody is within ${selfRadius} feet of ${here.name}.`);
+        return;
+      }
+      await this._postLiveTargetCard(item, actor, caught, {
+        saveAbility, saveDC, halfOnSave, damageTypes, isSpell, timing,
+        activityId: activity.id, spellLevel, recipe,
+        areaResolvesOnce: true,
+      });
+      return;
     }
 
     if (templateType && templatePlaceable) {
@@ -3724,6 +3791,9 @@ export class SaveEngine {
           // A frightening presence: who it came from, who it already spared,
           // and that a player's creature waits for APPLY (his rule 2026-09-20).
           presence: opts.presence ?? null,
+          // A player's creature waits for APPLY on any save card unless the
+          // caller says otherwise (his rule 2026-09-21).
+          holdPCs: opts.holdPCs !== false,
           // ⚠️ THIS FLAG HAS EXACTLY ONE READER: the guard inside
           // `_deleteInstantTemplate`. Its only job is "may this template be
           // cleaned up once the card is done", so a spell whose AREA resolves
@@ -5338,7 +5408,8 @@ export class SaveEngine {
     let appliedConditions = [];
     try {
       appliedConditions = await this._applyFailedSaveConditions(item, [...npcResults, ...pcResults],
-        { saveAbility, saveDC, activityId, casterActor, recipe, presence: flags.presence ?? null }) ?? [];
+        { saveAbility, saveDC, activityId, casterActor, recipe, presence: flags.presence ?? null,
+          holdPCs: flags.holdPCs !== false }) ?? [];
     } catch (err) {
       console.error(`${MODULE_ID} | Phase-1 condition application failed:`, err);
       appliedConditions = SaveEngine._declinedFor([...npcResults, ...pcResults],
@@ -5403,6 +5474,7 @@ export class SaveEngine {
       autoResolve: flags.autoResolve === true,
       trigger: flags.trigger ?? null,
       presence: flags.presence ?? null,
+      holdPCs: flags.holdPCs !== false,
     });
 
     // ── ONE CLEAN CARD (Johnny 2026-07-11) ──
@@ -6932,12 +7004,27 @@ export class SaveEngine {
         const passedWithEffect = r.passed === true && (onPass.conditions.length + onPass.effects.length) > 0;
         // ⚠️ DAMAGE DOES NOT VETO THE CONDITION (2026-09-14): this was gated on the
         // power dealing no damage, like the other two paths.
-        if ((SaveEngine._failedTheSave(r) || passedWithEffect) && !r._condApplied) {
+        // ⚠️🔴 THE GM'S CLIENT LANDS IT, AND ONLY THE GM'S (his table,
+        // 2026-09-21: Aryel was Frightened while her card still said APPLY).
+        // This handler runs on EVERY client when a player's result posts, and
+        // it had no gate at all: her own client reached it, she owns her
+        // character, and the condition went straight on. The GM's copy held it
+        // for APPLY exactly as it should, so the card and the token disagreed.
+        //
+        // Every door in the road writes from the active GM. This one now does
+        // too; the rest of this method is cosmetic and still runs anywhere.
+        const _mayLand = game.user === game.users?.activeGM;
+        if (!_mayLand && (SaveEngine._failedTheSave(r) || passedWithEffect)) {
+          console.debug(`${MODULE_ID} | ${r.name ?? "a creature"}'s result is drawn here, but only the `
+            + `GM's client puts anything on a creature.`);
+        }
+        if (_mayLand && (SaveEngine._failedTheSave(r) || passedWithEffect) && !r._condApplied) {
           r._condApplied = true;
           const casterActor = game.actors.get(flags.actorId) ?? null;
           const got = await this._applyFailedSaveConditions(item, [r], {
             saveAbility: flags.saveAbility, saveDC: flags.saveDC,
             activityId: flags.activityId ?? null, casterActor, recipe,
+            holdPCs: flags.holdPCs !== false,
             // ⚠️ THE PLAYER'S OWN PATH HAD NEVER HEARD OF IT (his table,
             // 2026-09-20). This is where a player's failed save lands, and
             // without the presence it landed at once instead of waiting for
@@ -7604,7 +7691,14 @@ export class SaveEngine {
       // on APPLY for player creatures."). The row keeps what it is waiting for
       // so the button can land exactly that, and the card says so out loud
       // rather than looking like a failed save that did nothing.
-      if (saveCtx?.presence?.holdPCs && r.isPC && !saveCtx?.dryRun) {
+      // ⚠️ A PLAYER'S CREATURE WAITS FOR HIS PRESS, WHATEVER PUT IT THERE
+      // (his rule again on 2026-09-21, for the Wing's Prone: "PCs wait on
+      // APPLY for Prone. NPCs take it when the save is in."). It was written
+      // for the presence and he has now asked for it twice, on two different
+      // abilities, so it is the rule for a save card rather than a feature of
+      // one ability. A caller that must land at once says `holdPCs: false`.
+      const _holdPCs = saveCtx?.holdPCs ?? saveCtx?.presence?.holdPCs ?? true;
+      if (_holdPCs && r.isPC && !saveCtx?.dryRun) {
         const waiting = failConditions.map(c => c.condition).filter(Boolean);
         applied.push({ targetName: r.name ?? actor.name, tokenDocId: r.tokenDocId,
           conditions: [], held: waiting, note: null });
@@ -8043,7 +8137,7 @@ export class SaveEngine {
     // where something of theirs is waiting to be pressed: re-ordering every save
     // card in the game is not what he asked for, and a Fireball's rows are in
     // the order he targeted them.
-    if (presence?.holdPCs) {
+    if (presence?.holdPCs || opts.holdPCs !== false) {
       results = [...results].sort((a, b) => (a?.isPC === true ? 1 : 0) - (b?.isPC === true ? 1 : 0));
     }
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
@@ -8336,6 +8430,7 @@ export class SaveEngine {
       saveAbility: flags.saveAbility, saveDC: flags.saveDC, activityId: flags.activityId ?? null,
       casterActor, recipe,
       // The hold is lifted for exactly these rows: he has pressed it.
+      holdPCs: false,
       presence: flags.presence ? { ...flags.presence, holdPCs: false } : null,
     }) ?? [];
     // The waiting rows are replaced by what actually landed on them.
@@ -8347,6 +8442,7 @@ export class SaveEngine {
       hasDamage: flags.hasDamage !== false, halfOnSave: flags.halfOnSave === true,
       activityId: flags.activityId, appliedConditions: now,
       autoResolve: flags.autoResolve === true, presence: flags.presence ?? null,
+      holdPCs: flags.holdPCs !== false,
     });
     await message.update({ content: cardHtml });
     console.log(`${MODULE_ID} | APPLY: ${landed.map(a => `${a.targetName}: `
@@ -8430,6 +8526,7 @@ export class SaveEngine {
           // A frightening presence: its source, who it spared, and that a
           // player's creature is waiting on APPLY (his rule, 2026-09-20).
           presence: opts.presence ?? null,
+          holdPCs: opts.holdPCs !== false,
           allResults: results.map(r => ({
             name: r.name,
             img: r.img,
