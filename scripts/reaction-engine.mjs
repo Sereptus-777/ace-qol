@@ -3235,6 +3235,46 @@ export class ReactionEngine {
     // console blank. For anybody who holds the spell, that is a refusal like
     // any other and it is said out loud.
     const heldFirst = this._readySpell(targetActor, "Absorb Elements");
+    // ⚠️ ONE LOT OF DAMAGE IS ONE QUESTION (his rule: "Ask after the damage
+    // roll exists, on that card, once."). The damage CARD asks, and the
+    // hit-point DOOR asks again when APPLY lands the same numbers; if they said
+    // no the first time, the same question came back a moment later.
+    //
+    // ⚠️ AND TWO IDENTICAL HITS ARE STILL TWO QUESTIONS. Keying on the numbers
+    // alone made a Multiattack's second identical fire bite "the same damage",
+    // which is a different bug in the same place. What is refused is the DOOR
+    // repeating what the CARD has just asked, and nothing else.
+    {
+      const stage = String(opts?.stage ?? "");
+      if (stage === "card" || stage === "door") {
+        const key = `${targetActor?.id ?? "?"}|`
+          + (damageComponents ?? []).map(c => `${String(c?.type ?? "")}:${Number(c?.total) || 0}`).sort().join(",");
+        ReactionEngine._askedAbout ??= new Map();
+        const now = Date.now();
+        for (const [k, t] of ReactionEngine._askedAbout) if (now - t > 20000) ReactionEngine._askedAbout.delete(k);
+        if (stage === "door" && ReactionEngine._askedAbout.has(key)) {
+          const when = ReactionEngine._askedAbout.get(key);
+          console.log(`${MODULE_ID} | Absorb Elements: ${targetActor?.name} was asked about this damage on its `
+            + `card ${Math.round((now - when) / 1000)}s ago, so applying it does not ask again.`);
+          return { modifiedComponents: damageComponents, absorbed: false };
+        }
+        if (stage === "card") ReactionEngine._askedAbout.set(key, now);
+      }
+    }
+
+    // ⚠️🔴 A HIT THAT NEVER LANDED DEALS NOTHING TO ABSORB (his rule,
+    // 2026-09-21: "If Shield turns the hit into a miss, do not offer it at
+    // all."). The damage path can still be walked for a hit Shield turned away
+    // — the components were rolled before the reaction — and asking a player to
+    // spend their second reaction on damage they are not taking is the same
+    // empty box Shield itself was opening yesterday.
+    if (hit && (hit.hitResult === "miss" || hit.shieldBlocked === true)) {
+      console.log(`${MODULE_ID} | Absorb Elements: ${targetActor?.name} is not asked. `
+        + `That attack ${hit.shieldBlocked ? "was turned into a miss by Shield" : "missed"}, `
+        + `so there is no damage to absorb.`);
+      return { modifiedComponents: damageComponents, absorbed: false };
+    }
+
     const typeOf = (c) => String(c?.type ?? "").trim().toLowerCase();
     const elementalComponents = damageComponents.filter(c => ABSORB_ELEMENT_TYPES.has(typeOf(c)));
     if (!elementalComponents.length) {

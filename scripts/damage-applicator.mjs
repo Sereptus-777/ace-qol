@@ -835,7 +835,8 @@ export class DamageApplicator {
       if (!finals?.length) return finals;
       const comps = finals.map(f => ({ type: f.type, total: Number(f.final) || 0 }));
       const res = await reactionEng.checkPreDamageReactions(comps, actor,
-        token ?? actor?.getActiveTokens?.()?.[0] ?? null, source, item, null, { skipUncannyDodge: true });
+        token ?? actor?.getActiveTokens?.()?.[0] ?? null, source, item, null,
+        { skipUncannyDodge: true, stage: "door" });
       if (!res?.absorbed) return finals;
       const back = (res.modifiedComponents ?? comps).map(c => ({ type: c.type, final: Math.max(0, Number(c.total) || 0) }));
       console.log(`${MODULE_ID} | ${actor.name} absorbed that damage (${where}): `

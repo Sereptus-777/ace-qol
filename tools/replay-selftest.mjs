@@ -5179,6 +5179,51 @@ console.log(`\nRECHARGE ATTACKS: BREATH, WING, TAIL`);
   }
 }
 
+/* ── ABSORB ELEMENTS ASKS WHEN THE DAMAGE IS ROLLED, NOT ON THE HIT ─────── */
+// His table, 2026-09-21: "Aryel just got both: a prompt on the Bite hit, then
+// another after ROLL DAMAGE. First one is wrong." Shield answers the hit;
+// Absorb Elements answers taking the damage.
+console.log(`\nABSORB ELEMENTS ASKS WHEN THE DAMAGE IS ROLLED`);
+{
+  const MOD = "ace-qol";
+  const cardSrc = readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/damage-card-renderer.mjs`, "utf8");
+  const onTheHit = cardSrc.slice(cardSrc.indexOf("static async postDamageButton("),
+    cardSrc.indexOf("static async postPreRolledDamageCard("));
+  const afterTheRoll = cardSrc.slice(cardSrc.indexOf("static async postPreRolledDamageCard("));
+  check("the card built when the attack hits no longer asks anybody to absorb anything, and the card built when the damage is rolled still does (2026-09-21)",
+    !/checkPreDamageReactions\(/.test(onTheHit) && /checkPreDamageReactions\(/.test(afterTheRoll),
+    `on the hit: ${/checkPreDamageReactions\(/.test(onTheHit) ? "still asks (wrong)" : "asks nobody"}; `
+      + `after the roll: ${/checkPreDamageReactions\(/.test(afterTheRoll) ? "asks" : "asks nobody (wrong)"}`);
+
+  const { ReactionEngine } = await import(`${MODULE}/scripts/reaction-engine.mjs`);
+  const eng = new ReactionEngine({});
+  const her = { id: "aryel-abs", name: "Aryel", items: new Collection(), effects: { contents: [] },
+    statuses: new Set(), getFlag: () => undefined, system: {} };
+  const fire = [{ type: "fire", total: 12 }];
+  let blocked = null, missed = null, plain = null;
+  await quiet(async () => {
+    blocked = await eng.checkPreDamageReactions(fire, her, null, null, null,
+      { hitResult: "miss", shieldBlocked: true }, { skipUncannyDodge: true });
+    missed = await eng.checkPreDamageReactions(fire, her, null, null, null,
+      { hitResult: "miss" }, { skipUncannyDodge: true });
+    plain = await eng.checkPreDamageReactions([{ type: "slashing", total: 9 }], her, null, null, null,
+      { hitResult: "hit" }, { skipUncannyDodge: true });
+  });
+  check("a hit Shield turned into a miss asks zero times, a plain miss asks zero times, and damage with none of its five types asks zero times (2026-09-21)",
+    blocked?.absorbed === false && missed?.absorbed === false && plain?.absorbed === false,
+    `Shield blocked it: ${blocked?.absorbed === false ? "not asked" : "asked (wrong)"}; `
+      + `a miss: ${missed?.absorbed === false ? "not asked" : "asked (wrong)"}; `
+      + `slashing: ${plain?.absorbed === false ? "not asked" : "asked (wrong)"}`);
+
+  const engSrc = readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/reaction-engine.mjs`, "utf8");
+  const cardStage = /stage: "card"/.test(cardSrc);
+  const doorStage = /stage: "door"/.test(readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/damage-applicator.mjs`, "utf8"));
+  check("and one lot of damage is one question: APPLY does not ask again what the damage card just asked, while two identical hits are still two questions (2026-09-21)",
+    /_askedAbout/.test(engSrc) && /asked about this damage on its/.test(engSrc)
+      && cardStage && doorStage,
+    `the card says which stage it is: ${cardStage}; the hit-point door says which it is: ${doorStage}`);
+}
+
 /* ── WHAT AN EFFECT LEAVES BEHIND GOES WITH IT ──────────────────────────── */
 // His dump of Aryel, 2026-09-21: statuses empty, a Shield effect still on the
 // actor and only disabled, an Absorb Elements still enabled, a persistent

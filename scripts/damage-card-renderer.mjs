@@ -60,35 +60,24 @@ export class DamageCardRenderer {
         // everyone sees the number, THEN the rogue decides. The Uncanny Dodge
         // call moved to `postPreRolledDamageCard`, after the dice are on screen.
         //
-        // ⚠️ ABSORB ELEMENTS STAYS. It answers elemental damage from any
-        // source, including saves that never produce an attack card, and it has
-        // worked from here for months. Moving both would be one change too many
-        // in a hot path at the end of a long night.
-        try {
-          const reactionEng = game.aceQol?.reactionEngine;
-          if (reactionEng && hit.targetActor && hit.targetToken) {
-            // ⚠️ PASS THE HIT. Uncanny Dodge only triggers on an ATTACK
-            // ROLL that landed, so the reaction engine has to be able to see
-            // which it was; without it a save-based spell would offer a
-            // reaction the rules do not allow.
-            // dice-ok: the pre-roll runs with DamageConstants.suppressDiceAnimation on, so no dice are in the air.
-            const preResult = await reactionEng.checkPreDamageReactions(
-              components, hit.targetActor, hit.targetToken, actor, item, hit,
-              { skipUncannyDodge: true }
-            );
-            // ⚠️ TAKE THE COMPONENTS WHENEVER SOMETHING CHANGED THEM, not
-            // only when `absorbed` is set. Uncanny Dodge halves damage without
-            // absorbing anything, and testing the old flag alone would have
-            // thrown its result away and left the rogue on full damage — the
-            // same "declared but never consulted" shape this feature already
-            // died of once.
-            if (preResult.absorbed || preResult.uncannyDodged) {
-              components = preResult.modifiedComponents;
-            }
-          }
-        } catch (err) {
-          console.warn(`ace-qol | Absorb Elements check failed (non-blocking):`, err);
-        }
+        // ⚠️🔴 AND NEITHER DOES ABSORB ELEMENTS (his rule, 2026-09-21).
+        //
+        // His table: "Aryel just got both: a prompt on the Bite hit, then
+        // another after ROLL DAMAGE. First one is wrong."
+        //
+        // Absorb Elements is "when you take acid, cold, fire, lightning or
+        // thunder damage". Taking it is what triggers it, so the question comes
+        // after the damage roll exists, on that card, once — the same reasoning
+        // that moved Uncanny Dodge out of here in August, for the same reason:
+        // this runs while the ATTACK card is being built, over dice nobody has
+        // seen thrown.
+        //
+        // ⚠️ SHIELD IS NOT THIS, AND IT STAYS WHERE IT IS (his rule): it is
+        // "when you are hit by an attack", it answers the hit itself, and it
+        // can turn the hit into a miss — after which there is no damage card
+        // and Absorb Elements is never asked at all.
+        //
+        // The offer now lives in `postPreRolledDamageCard` alone.
 
         const applied = DamageCalculator.applyDamageModifiers(components, hit.damageModifiers ?? {});
         const totalRaw = applied.reduce((sum, c) => sum + c.raw, 0);
@@ -824,8 +813,10 @@ export class DamageCardRenderer {
           }
 
           const before = dr.components.reduce((sum, c) => sum + (c.total ?? c.raw ?? 0), 0);
+          // This is the card the damage was rolled onto: the one place Absorb
+          // Elements is offered for it (his rule, 2026-09-21).
           const res = await reactionEng.checkPreDamageReactions(
-            dr.components, tActor, tToken, actor, fakeItem, dr);
+            dr.components, tActor, tToken, actor, fakeItem, dr, { stage: "card" });
 
           if (!res) {
             console.warn(`${MODULE_ID} | the reaction check returned nothing for `
