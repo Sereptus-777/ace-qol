@@ -5179,6 +5179,88 @@ console.log(`\nRECHARGE ATTACKS: BREATH, WING, TAIL`);
   }
 }
 
+/* ── WHAT AN EFFECT LEAVES BEHIND GOES WITH IT ──────────────────────────── */
+// His dump of Aryel, 2026-09-21: statuses empty, a Shield effect still on the
+// actor and only disabled, an Absorb Elements still enabled, a persistent
+// Sequencer bubble whose origin is that absorb, and both ACE flags still set.
+console.log(`\nWHAT AN EFFECT LEAVES BEHIND GOES WITH IT`);
+{
+  const MOD = "ace-qol";
+  const { EffectSweeper } = await import(`${MODULE}/scripts/effect-sweeper.mjs`);
+  const keep = { seq: globalThis.Sequencer, user: game.user, users: game.users };
+  const clips = [];
+  const ended = [];
+  try {
+    const GM2 = { id: "gm", name: "GM", isGM: true, active: true };
+    const users = Object.assign([GM2], { activeGM: GM2, get: () => GM2 });
+    game.users = users;
+    game.user = GM2;
+    globalThis.Sequencer = { EffectManager: {
+      getEffects: ({ origin = null, object = null } = {}) =>
+        clips.filter(c => (origin ? c.origin === origin || String(c.origin).includes(String(origin)) : true)
+          && (object ? c.object === object : true)),
+      endEffects: ({ origin = null, object = null } = {}) => {
+        for (let i = clips.length - 1; i >= 0; i--) {
+          const c = clips[i];
+          if (origin && !(c.origin === origin || String(c.origin).includes(String(origin)))) continue;
+          if (object && c.object !== object) continue;
+          ended.push(c.name);
+          clips.splice(i, 1);
+        }
+      },
+    } };
+
+    const flags = { [MOD]: { absorbElementsBonus: { type: "fire", formula: "3d6" }, reactionUsed: true } };
+    const aryel = {
+      name: "Aryel", uuid: "Actor.aryel", id: "aryel",
+      getActiveTokens: () => [],
+      getFlag: (ns, k) => flags[ns]?.[k],
+      unsetFlag: async (ns, k) => { delete flags[ns]?.[k]; },
+      effects: { contents: [] },
+    };
+    const absorb = { id: "eff-absorb", name: "Absorb Elements (fire)", uuid: "Actor.aryel.ActiveEffect.eff-absorb",
+      disabled: false, parent: aryel, flags: { [MOD]: { type: "reactionEffect", autoRemove: true } },
+      delete: async () => { aryel.effects.contents = aryel.effects.contents.filter(e => e.id !== "eff-absorb"); } };
+    const shield = { id: "eff-shield", name: "Shield", uuid: "Actor.aryel.ActiveEffect.eff-shield",
+      disabled: true, parent: aryel, flags: { [MOD]: { type: "reactionEffect", autoRemove: true } },
+      deleted: false,
+      delete: async function () { this.deleted = true; aryel.effects.contents = aryel.effects.contents.filter(e => e.id !== "eff-shield"); } };
+    aryel.effects.contents = [absorb, shield];
+    clips.push({ name: "the bubble", origin: absorb.uuid, object: null },
+      { name: "somebody else's aura", origin: "Actor.someone.ActiveEffect.other", object: null });
+
+    await quiet(() => EffectSweeper.sweep(absorb, { why: "it was removed" }));
+    check("removing the Absorb Elements ends the clip whose origin is that effect, and only that one, in the same tick (2026-09-21)",
+      ended.includes("the bubble") && clips.length === 1 && clips[0].name === "somebody else's aura",
+      `ended: ${ended.join(", ") || "nothing"}; still playing: ${clips.map(c => c.name).join(", ") || "nothing"}`);
+
+    check("and the flags it was holding go with it: the absorbed bonus and the spent-reaction mark are both off her (2026-09-21)",
+      flags[MOD].absorbElementsBonus === undefined && flags[MOD].reactionUsed === undefined,
+      `absorbElementsBonus: ${JSON.stringify(flags[MOD].absorbElementsBonus)}; `
+        + `reactionUsed: ${JSON.stringify(flags[MOD].reactionUsed)}`);
+
+    await quiet(() => EffectSweeper.sweep(shield, { why: "it was switched off", disable: true }));
+    check("a Shield switched off is removed rather than left disabled on the sheet, where it would block that condition forever (2026-09-21)",
+      shield.deleted === true,
+      `the Shield record: ${shield.deleted ? "removed" : "still on her, disabled"}`);
+
+    // A replacement keeps what the fresh copy is about to need.
+    const flags2 = { [MOD]: { absorbElementsBonus: { type: "cold", formula: "3d6" } } };
+    const again = { id: "eff-a2", name: "Absorb Elements (cold)", uuid: "Actor.aryel.ActiveEffect.eff-a2",
+      parent: { ...aryel, getFlag: (ns, k) => flags2[ns]?.[k],
+        unsetFlag: async (ns, k) => { delete flags2[ns]?.[k]; }, effects: { contents: [] } },
+      flags: { [MOD]: { type: "reactionEffect" } }, delete: async () => {} };
+    await quiet(() => EffectSweeper.sweep(again, { why: "it was replaced", replacing: true }));
+    check("but a condition being REPLACED keeps its creature's bonus: the door deletes the old copy a tick before it places the new one (2026-09-21)",
+      flags2[MOD].absorbElementsBonus?.type === "cold",
+      `after a replacement: ${JSON.stringify(flags2[MOD].absorbElementsBonus)}`);
+  } finally {
+    if (keep.seq === undefined) delete globalThis.Sequencer; else globalThis.Sequencer = keep.seq;
+    game.user = keep.user;
+    game.users = keep.users;
+  }
+}
+
 /* ── A REACTION THAT CANNOT CHANGE THE ANSWER, AND WHOSE DIE A RECHARGE IS ── */
 // His table, 2026-09-21: Aryel was offered Shield against Volcathar's Bite over
 // a line reading "Even with Shield, it still hits", and a recharge he re-rolled

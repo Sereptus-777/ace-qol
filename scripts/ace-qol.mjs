@@ -84,6 +84,7 @@ import { RepeatingSaveEngine }  from "./repeating-save-engine.mjs";
 import { GazeEngine }           from "./gaze-engine.mjs";
 import { PresenceEngine }       from "./presence-engine.mjs";
 import { BreathAnimator }       from "./breath-animator.mjs";
+import { EffectSweeper }        from "./effect-sweeper.mjs";
 import { CreatureTriggers }     from "./creature-triggers.mjs";
 import { BreakFreeEngine }      from "./break-free-engine.mjs";
 import { RestrainedMovement }   from "./restrained-movement.mjs";
@@ -3643,6 +3644,13 @@ Hooks.once("ready", () => {
   } catch (err) {
     console.error(`${MODULE_ID} | Breath animator init failed:`, err);
   }
+  // An effect that ends takes its clip, its record and its flag with it, whoever
+  // ended it and on whatever token (effect-sweeper.mjs).
+  try {
+    EffectSweeper.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Effect sweeper init failed:`, err);
+  }
   try {
     CreatureTriggers.init();
   } catch (err) {
@@ -5823,6 +5831,7 @@ Hooks.once("ready", () => {
     GazeEngine,
     PresenceEngine,
     BreathAnimator,
+    EffectSweeper,
     concentrationWidget,
     // Prismatic Wall: game.aceQol.prismaticWall.designate(templateId) asks again
     // who passes a standing wall unharmed.
