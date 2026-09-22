@@ -5179,6 +5179,43 @@ console.log(`\nRECHARGE ATTACKS: BREATH, WING, TAIL`);
   }
 }
 
+/* ── ONE HUD BUTTON PUTS A TOKEN IN A FACTION ──────────────────────────── */
+// His rule, 2026-09-22: "Use the existing showFactionAssignDialog and
+// assignToFaction. Do not write a second faction system... GM only, NPC or
+// character... Do not turn token-drop assign back on. Do not invent factions."
+console.log(`\nONE HUD BUTTON PUTS A TOKEN IN A FACTION`);
+{
+  const ENGINE = `${ROOT}/Data/modules/ace-engine/scripts`;
+  const hud = readFileSync(`${ENGINE}/npc/hud-faction.mjs`, "utf8");
+  const reg = readFileSync(`${ENGINE}/npc/faction-registry.mjs`, "utf8");
+  const act = readFileSync(`${ENGINE}/npc/activate.mjs`, "utf8");
+
+  check("the button borrows the faction system rather than growing a second one: it calls the picker and the assigner that already exist, and writes no faction flag, roster or file of its own (2026-09-22)",
+    /import \{[^}]*showFactionAssignDialog[^}]*assignToFaction[^}]*\} from "\.\/faction-registry\.mjs"/s.test(hud)
+      && /await showFactionAssignDialog\(tokenDoc, matching, creatureBase\)/.test(hud)
+      && /await assignToFaction\(tokenDoc, choice\.factionId, choice\.role\)/.test(hud)
+      && !/setFlag\(/.test(hud) && !/_serializedSave|_load\(\)/.test(hud),
+    "it opens the registry's picker, hands the answer to the registry's assigner, and writes nothing itself");
+
+  check("it is the GM's button, on an NPC or a character, and it stamps only the token whose HUD it is on (2026-09-22)",
+    /if \(!game\.user\?\.isGM\) return;/.test(hud)
+      && /actor\.type !== "npc" && actor\.type !== "character"/.test(hud)
+      && /const doc = token\?\.document \?\? null;/.test(hud)
+      && !/controlled/.test(hud.slice(hud.indexOf("renderTokenHUD"))),
+    "GM only, npc or character, and the HUD's own token rather than the selection");
+
+  check("and it invents nothing: \"a new faction\" is reported and nothing is stamped, \"none\" takes nothing away, and a closed picker changes nothing (2026-09-22)",
+    /choice\.isNew/.test(hud) && /does not invent one/.test(hud)
+      && /"none" was chosen, so nothing was stamped/.test(hud)
+      && /the picker was closed, so nothing was changed/.test(hud),
+    "every answer that is not an existing faction leaves the token alone");
+
+  check("token-drop assign is still off: the drop path's own silent-versus-manual gate is untouched, and the button is registered beside the other HUD control instead (2026-09-22)",
+    /const isManualDrop = !adoptOnly && !!tokenDoc\._aceManualDrop;/.test(reg)
+      && /FactionHudButton \}\) => FactionHudButton\.register\(\)/.test(act),
+    "the drop gate reads as it did, and the new button is its own registration");
+}
+
 /* ── A PLAYER'S OWNER DOES NOT SKIP THE CORPSE ─────────────────────────── */
 // His table, 2026-09-21: "Aryel died. Humanoid. Token stayed a skull. No
 // humanoid corpse." Her sheet is an NPC that a player owns, which is exactly
