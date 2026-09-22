@@ -5187,15 +5187,24 @@ console.log(`\nONE HUD BUTTON PUTS A TOKEN IN A FACTION`);
 {
   const ENGINE = `${ROOT}/Data/modules/ace-engine/scripts`;
   const hud = readFileSync(`${ENGINE}/npc/hud-faction.mjs`, "utf8");
+  const codeOnly = (t) => t.split(String.fromCharCode(10))
+    .filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join(" ");
   const reg = readFileSync(`${ENGINE}/npc/faction-registry.mjs`, "utf8");
   const act = readFileSync(`${ENGINE}/npc/activate.mjs`, "utf8");
 
-  check("the button borrows the faction system rather than growing a second one: it calls the picker and the assigner that already exist, and writes no faction flag, roster or file of its own (2026-09-22)",
-    /import \{[^}]*showFactionAssignDialog[^}]*assignToFaction[^}]*\} from "\.\/faction-registry\.mjs"/s.test(hud)
-      && /await showFactionAssignDialog\(tokenDoc, matching, creatureBase\)/.test(hud)
-      && /await assignToFaction\(tokenDoc, choice\.factionId, choice\.role\)/.test(hud)
-      && !/setFlag\(/.test(hud) && !/_serializedSave|_load\(\)/.test(hud),
-    "it opens the registry's picker, hands the answer to the registry's assigner, and writes nothing itself");
+  // ⚠️ RE-PINNED 2026-09-22, his correction: the flag opens the popup a manual
+  // token drop used to open, not the legacy fallback picker.
+  check("the flag opens the drop's own popup: it marks the token as a manual drop and hands it to the one processor, and it does not pick, match, rank or assign anything itself (2026-09-22)",
+    /import \{ processTokenFaction, getFaction \} from "\.\/faction-registry\.mjs"/.test(hud)
+      && /tokenDoc\._aceManualDrop = true;/.test(hud)
+      && /await processTokenFaction\(tokenDoc\)/.test(hud)
+      && !/showFactionAssignDialog\(|assignToFaction\(|findMatchingFactions\(|resolveCreatureBase\(/.test(hud),
+    "it sets the manual-drop mark, calls processTokenFaction, and calls no picker or assigner of its own");
+
+  check("and the mark belongs to that press, not to the token forever: it is put back the way it was found, so no later automatic pass reads the creature as a fresh drop (2026-09-22)",
+    /const held = tokenDoc\._aceManualDrop;/.test(hud)
+      && /if \(held === undefined\) delete tokenDoc\._aceManualDrop;/.test(hud),
+    "the mark is restored in a finally");
 
   check("it is the GM's button, on an NPC or a character, and it stamps only the token whose HUD it is on (2026-09-22)",
     /if \(!game\.user\?\.isGM\) return;/.test(hud)
@@ -5204,11 +5213,12 @@ console.log(`\nONE HUD BUTTON PUTS A TOKEN IN A FACTION`);
       && !/controlled/.test(hud.slice(hud.indexOf("renderTokenHUD"))),
     "GM only, npc or character, and the HUD's own token rather than the selection");
 
-  check("and it invents nothing: \"a new faction\" is reported and nothing is stamped, \"none\" takes nothing away, and a closed picker changes nothing (2026-09-22)",
-    /choice\.isNew/.test(hud) && /does not invent one/.test(hud)
-      && /"none" was chosen, so nothing was stamped/.test(hud)
-      && /the picker was closed, so nothing was changed/.test(hud),
-    "every answer that is not an existing faction leaves the token alone");
+  check("and it invents nothing and decides nothing: which factions are offered, whether a new one is made and what rank a creature holds all stay with the drop path, and this file only reports what came back (2026-09-22)",
+    // the CODE, not the comments that say why none of it is here
+    !/isNew|\brank\b|role =|_load\(\)|_serializedSave/.test(codeOnly(hud))
+      && /the popup ended with no faction/.test(hud)
+      && /result\?\.faction \?\? null/.test(hud),
+    "no faction, no rank and no roster decision lives in the button");
 
   check("token-drop assign is still off: the drop path's own silent-versus-manual gate is untouched, and the button is registered beside the other HUD control instead (2026-09-22)",
     /const isManualDrop = !adoptOnly && !!tokenDoc\._aceManualDrop;/.test(reg)
