@@ -417,7 +417,7 @@ export class DeathPipeline {
     const covered = [];
     const gaps = new Map();     // suggested key → { creatures:Set, why }
     for (const actor of (game.actors ?? [])) {
-      if (actor?.type !== "npc" || actor.hasPlayerOwner) continue;
+      if (actor?.type !== "npc") continue;
       const hand = (() => { try { return actor.getFlag(MODULE_ID, "deadArt"); } catch { return null; } })();
       if (hand) { covered.push({ name: actor.name, art: hand, how: "picked by hand" }); continue; }
       const found = this._resolveDeadArt(actor, { quiet: true });
@@ -643,14 +643,33 @@ export class DeathPipeline {
         console.log(`${LOG_PREFIX}   ✗ No actor — skipping`);
         return;
       }
-      if (!allowPC && (actor.type !== "npc" || actor.hasPlayerOwner)) {
-        console.log(`${LOG_PREFIX}   ✗ Not an NPC or is player-owned — skipping`);
+      // ⚠️🔴 THE SAME RULE AS THE HOOK (his rule, 2026-09-21). Ownership is
+      // not the question; whether the creature is dead is. A character at 0
+      // hit points is dying, and only the death marker makes it a corpse.
+      if (actor.type !== "npc" && actor.type !== "character") {
+        console.log(`${LOG_PREFIX}   ✗ ${name} is neither an NPC nor a character — skipping`);
+        return;
+      }
+      if (!allowPC && actor.type === "character" && !actor.statuses?.has?.("dead")) {
+        console.log(`${LOG_PREFIX}   ✗ ${name} is a character at 0 hit points: dying, not dead — skipping`);
         return;
       }
 
       // ── Guard: must have a valid scene and token ──
       if (!tokenDoc) { console.warn(`${LOG_PREFIX}   ✗ No tokenDoc — skipping`); return; }
       if (!canvas.scene) { console.warn(`${LOG_PREFIX}   ✗ No canvas.scene — skipping`); return; }
+
+      // ⚠️ THE STAMP FIRST, THEN THE ART (his rule, 2026-09-21: "If the stamp
+      // is wrong, fix the stamp then pick the art."). Aryel is an unlinked
+      // token off Jebidiah's sheet, and her stamp said Jebidiah, so everything
+      // that reads it — corpse art, prone art, the identity layer — was asking
+      // about the wrong creature.
+      try {
+        const { SpeciesTag } = await import("./species-tag.mjs");
+        await SpeciesTag.stamp(tokenDoc, { refresh: true });
+      } catch (err) {
+        console.warn(`${LOG_PREFIX}   could not refresh the species stamp before picking art:`, err);
+      }
 
       // ── Resolve dead art (with hard fallback chain) ──
       // 1. Best: creature-specific match (Dead-Goblin.png, dead-fey.png)

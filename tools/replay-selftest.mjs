@@ -5179,6 +5179,75 @@ console.log(`\nRECHARGE ATTACKS: BREATH, WING, TAIL`);
   }
 }
 
+/* ── A PLAYER'S OWNER DOES NOT SKIP THE CORPSE ─────────────────────────── */
+// His table, 2026-09-21: "Aryel died. Humanoid. Token stayed a skull. No
+// humanoid corpse." Her sheet is an NPC that a player owns, which is exactly
+// what both death gates turned back.
+console.log(`\nA PLAYER'S OWNER DOES NOT SKIP THE CORPSE`);
+{
+  const MOD = "ace-qol";
+  const { DeathPipeline } = await import(`${MODULE}/scripts/death-pipeline.mjs`);
+  const { SpeciesTag } = await import(`${MODULE}/scripts/species-tag.mjs`);
+
+  // 1. Neither gate reads ownership any more, and a character at 0 is dying.
+  const hookSrc = readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/ace-qol.mjs`, "utf8");
+  const pipeSrc = readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/death-pipeline.mjs`, "utf8");
+  const hook = hookSrc.slice(hookSrc.indexOf("Only fire when a creature actually dies"),
+    hookSrc.indexOf("Guard: skip if max HP is 0"));
+  const guard = pipeSrc.slice(pipeSrc.indexOf("THE SAME RULE AS THE HOOK"),
+    pipeSrc.indexOf("Guard: must have a valid scene and token"));
+  // ⚠️ THE CODE, NOT THE COMMENT THAT RECORDS WHAT IT USED TO SAY.
+  const code = (t) => t.split(String.fromCharCode(10)).filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join(" ");
+  check("neither death gate asks who owns the creature any more, and both still refuse a character at 0 hit points, who is dying rather than dead (2026-09-21)",
+    !/hasPlayerOwner/.test(code(hook)) && !/hasPlayerOwner/.test(code(guard))
+      && /statuses\?\.has\?\.\("dead"\)/.test(hook) && /statuses\?\.has\?\.\("dead"\)/.test(guard),
+    `the hook reads ownership: ${/hasPlayerOwner/.test(code(hook))}; the pipeline does: ${/hasPlayerOwner/.test(code(guard))}`);
+
+  // 2. The ladder, on her own shape: named, then type, then generic.
+  const aryel = { name: "Aryel", type: "npc",
+    system: { details: { type: { value: "humanoid", subtype: "" } } } };
+  const keys = DeathPipeline.deadArtKeysFor(aryel);
+  check("and the art ladder for a humanoid named Aryel asks for her own corpse first and a dead humanoid second, which is the file that ships with ACE (2026-09-21)",
+    keys[0] === "dead-aryel" && keys.includes("dead-humanoid")
+      && existsSync(`${ROOT}/Data/modules/ace-qol/Assets/Dead/Dead-Humanoid.png`),
+    `${keys.join(" → ")}; Dead-Humanoid.png on disk: `
+      + `${existsSync(`${ROOT}/Data/modules/ace-qol/Assets/Dead/Dead-Humanoid.png`)}`);
+
+  // 3. The stamp: a token with its own name is somebody, and a wrong one is corrected.
+  const keepActors = game.actors?.get;
+  const base = { id: "jeb", name: "Jebidiah" };
+  const writes = [];
+  try {
+    game.actors.get = (id) => (id === "jeb" ? base : keepActors?.(id));
+    const tokenDoc = {
+      name: "Aryel", actorId: "jeb",
+      actor: { type: "npc", name: "Aryel", system: { details: { type: { value: "humanoid", subtype: "" } } }, _stats: {} },
+      flags: { "ace-suite": { species: { name: "Jebidiah", type: "humanoid", subtype: "" } } },
+      update: async (d) => { writes.push(d["flags.ace-suite.species"]); return tokenDoc; },
+    };
+    await quiet(() => SpeciesTag.stamp(tokenDoc, { refresh: true }));
+    const copy = {
+      name: "Goblin (2)", actorId: "gob",
+      actor: { type: "npc", name: "Goblin (2)", system: { details: { type: { value: "humanoid", subtype: "goblinoid" } } }, _stats: {} },
+      flags: {}, update: async (d) => { writes.push(d["flags.ace-suite.species"]); return copy; },
+    };
+    game.actors.get = (id) => (id === "gob" ? { id: "gob", name: "Goblin" } : (id === "jeb" ? base : keepActors?.(id)));
+    await quiet(() => SpeciesTag.stamp(copy));
+    check("a token given its own name is stamped as itself and its type, corrected in place when the old stamp named the sheet it came from; a numbered copy is still stamped as what it is a copy of (2026-09-21)",
+      writes[0]?.name === "Aryel" && writes[0]?.type === "humanoid"
+        && writes[1]?.name === "Goblin" && writes[1]?.subtype === "goblinoid",
+      `Aryel's stamp: ${JSON.stringify(writes[0])}; the numbered goblin's: ${JSON.stringify(writes[1])}`);
+  } finally {
+    if (keepActors) game.actors.get = keepActors;
+  }
+
+  // 4. And the pipeline fixes the stamp before it picks the art (his order).
+  const order = pipeSrc.indexOf("SpeciesTag.stamp(tokenDoc, { refresh: true })") < pipeSrc.indexOf("let deadArtPath = this._resolveDeadArt(actor)")
+    && pipeSrc.includes("SpeciesTag.stamp(tokenDoc, { refresh: true })");
+  check("and the stamp is fixed BEFORE the art is picked, in that order, so the corpse is chosen for the creature that died (2026-09-21)",
+    order, "the stamp is refreshed, then the art resolved");
+}
+
 /* ── ABSORB ELEMENTS ASKS WHEN THE DAMAGE IS ROLLED, NOT ON THE HIT ─────── */
 // His table, 2026-09-21: "Aryel just got both: a prompt on the Bite hit, then
 // another after ROLL DAMAGE. First one is wrong." Shield answers the hit;

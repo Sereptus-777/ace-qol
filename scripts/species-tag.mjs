@@ -40,7 +40,17 @@ function _buildStamp(tokenDoc) {
   const base = game.actors.get(tokenDoc.actorId);
   // The BASE (sidebar) actor's name is the truest species label available —
   // per-token renames and numbering never touch it. Fall back sanely.
-  const name = _canonicalName(base?.name) || _canonicalName(actor.name) || _canonicalName(tokenDoc.name);
+  //
+  // ⚠️🔴 UNLESS THE TOKEN IS SOMEBODY (his table, 2026-09-21). Aryel is an
+  // unlinked token off Jebidiah's sheet, and this stamped her as "Jebidiah":
+  // a name that is not hers, not her species, and not anything a reader of
+  // this stamp wants. Numbering ("Goblin (1)") still resolves to the base,
+  // because those tokens ARE copies of it; a token given a different name of
+  // its own is a creature in its own right and keeps it.
+  const baseName = _canonicalName(base?.name);
+  const ownName = _canonicalName(tokenDoc.name) || _canonicalName(actor.name);
+  const renamed = !!ownName && !!baseName && ownName.toLowerCase() !== baseName.toLowerCase();
+  const name = renamed ? ownName : (baseName || ownName);
   if (!name) return null;
   return {
     name,
@@ -99,12 +109,31 @@ export class SpeciesTag {
 
   /** Stamp one token (idempotent — an existing stamp is never overwritten,
    *  so the drop-time truth survives everything that happens later). */
-  static async stamp(tokenDoc) {
-    if (tokenDoc?.actor?.type !== "npc") return;
-    if (tokenDoc.flags?.["ace-suite"]?.species?.name) return;
+  /**
+   * @param {TokenDocument} tokenDoc
+   * @param {object} [o]
+   * @param {boolean} [o.refresh]  work the stamp out again and correct it if it
+   *   has changed. A stamp written under an older rule (or before the token was
+   *   given its own name) is wrong for good otherwise, because the normal path
+   *   turns back the moment it finds one (his table, 2026-09-21: Aryel stamped
+   *   "Jebidiah", the sheet she was dropped from).
+   */
+  static async stamp(tokenDoc, { refresh = false } = {}) {
+    // ⚠️ A CHARACTER IS STAMPED TOO. Whose sheet it is says nothing about what
+    // the creature is, and the corpse and prone readers ask this about anybody.
+    const kind = tokenDoc?.actor?.type;
+    if (kind !== "npc" && kind !== "character") return;
+    const held = tokenDoc.flags?.["ace-suite"]?.species ?? null;
+    if (held?.name && !refresh) return;
     const stamp = _buildStamp(tokenDoc);
     if (!stamp) return;
+    if (held?.name === stamp.name && held?.type === stamp.type && held?.subtype === stamp.subtype) return;
     await tokenDoc.update({ "flags.ace-suite.species": stamp });
+    if (held?.name && held.name !== stamp.name) {
+      console.log(`${MODULE_ID} | species stamp corrected on ${tokenDoc.name}: `
+        + `"${held.name}" was the sheet it came from; it is "${stamp.name}"`
+        + `${stamp.type ? ` (${stamp.type})` : ""}.`);
+    }
   }
 
   /**

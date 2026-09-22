@@ -4488,10 +4488,26 @@ Hooks.once("ready", () => {
     Hooks.on("updateActor", async (actor, changes, options, userId) => {
       if (game.users?.activeGM !== game.user) return;  // activeGM: npcDeath hook + death pipeline must only fire once
 
-      // ── Only fire for NPC HP reaching 0 ──
+      // ── Only fire when a creature actually dies ──
+      //
+      // ⚠️🔴 A PLAYER'S OWNER DOES NOT SKIP THE CORPSE (his rule, 2026-09-21:
+      // Aryel died, humanoid, and her token stayed a skull). This line read
+      // `hasPlayerOwner || type !== "npc"` and turned back: her sheet is an NPC
+      // that a player owns, so the whole death pipeline — corpse art, loot,
+      // the npcDeath signal — had never once run for any creature a player
+      // controls. Whose sheet it is says nothing about whether it leaves a body.
+      //
+      // ⚠️ AND 0 HP IS NOT DEATH FOR A CHARACTER. A player character at 0 is
+      // dying, not dead, so a character only becomes a corpse when it is
+      // actually marked dead. An NPC at 0 is dead, as it always was.
       const hpUpdate = foundry.utils.getProperty(changes, "system.attributes.hp.value");
       if (hpUpdate === undefined || hpUpdate > 0) return;
-      if (actor.hasPlayerOwner || actor.type !== "npc") return;
+      if (actor.type !== "npc" && actor.type !== "character") return;
+      if (actor.type === "character" && !actor.statuses?.has?.("dead")) {
+        console.debug(`${MODULE_ID} | ${actor.name} is at 0 hit points and is a character: dying, not dead. `
+          + `No corpse until the death marker is on.`);
+        return;
+      }
 
       // ── Guard: skip if max HP is 0 (invalid actor) ──
       const maxHP = actor.system?.attributes?.hp?.max ?? 0;
