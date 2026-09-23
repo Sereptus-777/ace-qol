@@ -5358,8 +5358,9 @@ console.log(`\nA DROP OPENS THE PICKER HE ACTUALLY USES`);
 
   check("the pill sits under the window's own header rather than above it, and it only closes (2026-09-23)",
     /panel\.appendChild\(header\);\s*\n\s*if \(keepBar\) panel\.appendChild\(keepBar\);/.test(pick)
-      && /keep\.addEventListener\("click", \(\) => \{[\s\S]{0,200}?TokenArtPicker\.close\(\);/.test(pick),
-    "header, then the pill, then the art; the pill closes and writes nothing");
+      && /keep\.addEventListener\("click", \(\) => \{[\s\S]{0,200}?TokenArtPicker\.close\(\);/.test(pick)
+      && /flex: "0 0 auto",   \/\/ never squeezed by the art grid below it/.test(pick),
+    "header, then the pill, then the art; it cannot be squeezed, and it closes without writing");
 
   // ⚠️ ESCAPE AND THE BACKDROP ARE THE SAME ANSWER, and they are that answer
   // because closing this window has never written anything: art is written when
