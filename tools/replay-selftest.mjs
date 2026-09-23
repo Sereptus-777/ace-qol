@@ -5324,6 +5324,59 @@ console.log(`\nONE HUD BUTTON PUTS A TOKEN IN A FACTION`);
     "the drop gate reads as it did, and the new button is its own registration");
 }
 
+/* ── A DROP OPENS THE PICKER HE ACTUALLY USES ──────────────────────────── */
+// His call, 2026-09-23: "After faction and bio finish on a token drop, do not
+// open the old engine chooser. Open TokenArtPicker.open on that token. Same
+// window as the HUD art button. Same search, same size, same paging. Add one
+// control the HUD does not have: a large pill at the top that says Keep
+// Original Art... Escape and backdrop click do the same as Keep Original Art."
+console.log(`\nA DROP OPENS THE PICKER HE ACTUALLY USES`);
+{
+  const ART = `${ROOT}/Data/modules/ace-token-art/scripts`;
+  const eng = readFileSync(`${ART}/token-art-engine.mjs`, "utf8");
+  const pick = readFileSync(`${ART}/token-art-picker.mjs`, "utf8");
+  const onDrop = eng.slice(eng.indexOf("async function _onTokenCreated"),
+    eng.indexOf("// Throttle \"no art\" toasts"));
+
+  check("a token drop opens the picker, not the old chooser, and it asks for the pill the HUD does not have (2026-09-23)",
+    /TokenArtPicker\.open\(tokenDoc, \{[\s\S]{0,120}?keepOriginal: true,/.test(onDrop)
+      && !/_showChooser\(tokenDoc/.test(onDrop),
+    "the drop calls the picker with keepOriginal and no longer calls _showChooser");
+
+  // ⚠️ THE OLD CHOOSER IS NOT DELETED. The sidebar's prototype-art repair still
+  // uses it, and he said do not rewrite what he did not ask about.
+  check("and the old chooser is still there for the one caller that still wants it: the sidebar's prototype art repair (2026-09-23)",
+    /function _showChooser\(tokenDoc, matches/.test(eng)
+      && /_showChooser\(actor\.prototypeToken, matches/.test(eng),
+    "_showChooser survives, used by the prototype path only");
+
+  check("the HUD button opens the same window with no pill, so nothing about it changed (2026-09-23)",
+    /TokenArtPicker\.open\(hud\.object\?\.document \?\? hud\.object\);/.test(pick)
+      && /if \(opts\.keepOriginal\) \{/.test(pick)
+      && /static open\(tokenLike, opts = \{\}\)/.test(pick),
+    "the pill is behind an option the HUD never passes");
+
+  check("the pill sits under the window's own header rather than above it, and it only closes (2026-09-23)",
+    /panel\.appendChild\(header\);\s*\n\s*if \(keepBar\) panel\.appendChild\(keepBar\);/.test(pick)
+      && /keep\.addEventListener\("click", \(\) => \{[\s\S]{0,200}?TokenArtPicker\.close\(\);/.test(pick),
+    "header, then the pill, then the art; the pill closes and writes nothing");
+
+  // ⚠️ ESCAPE AND THE BACKDROP ARE THE SAME ANSWER, and they are that answer
+  // because closing this window has never written anything: art is written when
+  // a picture is clicked. The pin is that close() stays that way.
+  check("Escape and a click outside leave the dropped art alone, because closing the picker writes nothing at all (2026-09-23)",
+    /if \(ev\.key === "Escape"\) \{ ev\.preventDefault\(\); TokenArtPicker\.close\(\); \}/.test(pick)
+      && /backdrop\.addEventListener\("mousedown", \(ev\) => \{ if \(ev\.target === backdrop\) TokenArtPicker\.close\(\); \}\);/.test(pick)
+      && !/update\(|_apply/.test(pick.slice(pick.indexOf("static close()"), pick.indexOf("static _onKey"))),
+    "both close, and close touches no document");
+
+  check("and what he picks on a drop is still remembered, so the next creature of that name ranks it first (2026-09-23)",
+    /onApplied: \(entry\) => \{/.test(onDrop)
+      && /_setRecentChoice\(actor\.name, entry\?\.path\)/.test(onDrop)
+      && /try \{ opts\.onApplied\?\.\(entry\); \}/.test(pick),
+    "the picker reports what it applied and the drop records it");
+}
+
 /* ── PICK THE NAME, STAMP IT, THEN WRITE THE BIOGRAPHY ─────────────────── */
 // His bug, 2026-09-22: "Drop picker already picks the flavor name. Biography is
 // written before that name is in hand, so it uses the sheet name. Order: 1. Pick
