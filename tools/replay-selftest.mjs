@@ -5180,9 +5180,14 @@ console.log(`\nRECHARGE ATTACKS: BREATH, WING, TAIL`);
 }
 
 /* ── ONE HUD BUTTON PUTS A TOKEN IN A FACTION ──────────────────────────── */
-// His rule, 2026-09-22: "Use the existing showFactionAssignDialog and
-// assignToFaction. Do not write a second faction system... GM only, NPC or
-// character... Do not turn token-drop assign back on. Do not invent factions."
+// His rule, 2026-09-22, after two wrong swings at it: the gold flag opens the
+// SAME popup a manual token drop opens, and it opens it EVERY time. "I don't
+// see anything because it says it already has a fucking faction, and that's
+// what it's supposed to do on token drop. Is this a token drop? No, this is not
+// a token drop. This is a button I'm fucking pushing." Inside it he wants
+// choices, each one his: "I want to be able to change the flavor name if I
+// want, so I need a box for that... I just want a checkmark on whether it's
+// going to rewrite the bio or not. I might want to keep the bio."
 console.log(`\nONE HUD BUTTON PUTS A TOKEN IN A FACTION`);
 {
   const ENGINE = `${ROOT}/Data/modules/ace-engine/scripts`;
@@ -5192,19 +5197,100 @@ console.log(`\nONE HUD BUTTON PUTS A TOKEN IN A FACTION`);
   const reg = readFileSync(`${ENGINE}/npc/faction-registry.mjs`, "utf8");
   const act = readFileSync(`${ENGINE}/npc/activate.mjs`, "utf8");
 
+  const bio = readFileSync(`${ENGINE}/npc/bio-generator.mjs`, "utf8");
+  // The identity dialog and the processor, cut out of the registry so a pin
+  // about the popup cannot pass on a line somewhere else in a 6,000-line file.
+  const dlg = reg.slice(reg.indexOf("export async function showNpcIdentityDialog"),
+    reg.indexOf("export async function processTokenFaction"));
+  const proc = reg.slice(reg.indexOf("export async function processTokenFaction"));
+
   // ⚠️ RE-PINNED 2026-09-22, his correction: the flag opens the popup a manual
   // token drop used to open, not the legacy fallback picker.
-  check("the flag opens the drop's own popup: it marks the token as a manual drop and hands it to the one processor, and it does not pick, match, rank or assign anything itself (2026-09-22)",
+  check("the flag opens the drop's own popup: it marks the token as a GM press and hands it to the one processor, and it does not pick, match, rank or assign anything itself (2026-09-22)",
     /import \{ processTokenFaction, getFaction \} from "\.\/faction-registry\.mjs"/.test(hud)
-      && /tokenDoc\._aceManualDrop = true;/.test(hud)
+      && /tokenDoc\._aceGmPress = true;/.test(hud)
       && /await processTokenFaction\(tokenDoc\)/.test(hud)
       && !/showFactionAssignDialog\(|assignToFaction\(|findMatchingFactions\(|resolveCreatureBase\(/.test(hud),
-    "it sets the manual-drop mark, calls processTokenFaction, and calls no picker or assigner of its own");
+    "it sets the press mark, calls processTokenFaction, and calls no picker or assigner of its own");
 
-  check("and the mark belongs to that press, not to the token forever: it is put back the way it was found, so no later automatic pass reads the creature as a fresh drop (2026-09-22)",
-    /const held = tokenDoc\._aceManualDrop;/.test(hud)
-      && /if \(held === undefined\) delete tokenDoc\._aceManualDrop;/.test(hud),
-    "the mark is restored in a finally");
+  check("and the mark belongs to that press, not to the token forever: it is put back the way it was found, so no later pass reads the creature as a fresh press (2026-09-22)",
+    /const held = tokenDoc\._aceGmPress;/.test(hud)
+      && /if \(held === undefined\) delete tokenDoc\._aceGmPress;/.test(hud)
+      && /delete tokenDoc\._aceRewriteBio;/.test(hud),
+    "the mark and the tick are cleared in a finally");
+
+  // ⚠️ A PRESS IS NOT A DROP. Every guard below is the drop asking "does this
+  // new creature need setting up"; his finger is asking "let me change this
+  // one", and the popup stayed shut because the first question answered the
+  // second. THE PIN: each of those doors is open to a press and to nothing else.
+  check("a press is not a token drop: the global factions switch and the already-has-a-faction turn-back both stand aside for the button, and the drop still obeys both (2026-09-22)",
+    /const isGmPress = !!tokenDoc\._aceGmPress;/.test(proc)
+      && /if \(!isGmPress && !game\.settings\.get\(MODULE_ID, "enableFactions"\)\)/.test(proc)
+      && /if \(existingFactionId && !isGmPress\)/.test(proc)
+      && /if \(isManualDrop \|\| isGmPress\)/.test(proc),
+    "the setting gate, the assigned gate and the manual branch all read the press");
+
+  check("and the switch in Configure Settings is read, never written: his words were \"I'm not dealing with the setting, I'm dealing with the pop-up\" (2026-09-22)",
+    !/settings\.set\([^)]*enableFactions/.test(reg),
+    "nothing in the registry writes enableFactions");
+
+  check("the full identity dialog opens every time he presses it, with no triage screen in front of it, and it opens on the faction the creature is already in (2026-09-22)",
+    /if \(isGmPress\) \{[\s\S]*?setup = \{ choice: "customize", tier: defaultTier \};/.test(proc)
+      && /const _heldFactionId = actor\.getFlag\(MODULE_ID, "factionId"\) \?\? null;/.test(dlg)
+      && /const defaultFactionValue = _heldIsListed \? _heldFactionId/.test(dlg),
+    "the press forces the customize branch and preselects what it already is");
+
+  // ⚠️ A REFUSAL HE CANNOT SEE IS NOTHING HAPPENING. His words the same night:
+  // "It does no good to say something in the console, okay? I'm not running the
+  // fucking game with a console open."
+  check("a beast still refuses to join a faction, and now it says so on screen instead of only in a console he does not have open (2026-09-22)",
+    /if \(SKIP_TYPES\.has\(creatureType\)/.test(proc)
+      && /if \(isGmPress\) \{\s*\n\s*ui\.notifications\?\.info\(`\$\{actor\.name\} is a \$\{creatureType\} and does not join factions\.`\);/.test(proc),
+    "the non-sentient skip is kept and a press is told why nothing opened");
+
+  // ⚠️ CHOICES, NOT A FORM THAT DECIDES FOR HIM. Each answer is independent and
+  // the destructive one is off until he asks for it.
+  check("the popup carries his two choices: a box to type the name himself, and a tick for a new biography that is OFF unless he asks for one (2026-09-22)",
+    /<input type="text" name="flavorName"/.test(dlg)
+      && /<input type="checkbox" name="rewriteBio"/.test(dlg)
+      && !/<input[^>]*name="rewriteBio"[^>]*checked/.test(dlg)
+      && /resolve\(\{ factionId[\s\S]{0,200}?flavorName, rewriteBio \}\)/.test(dlg),
+    "a name box, an unticked bio box, and both come back with the rest");
+
+  check("and an untouched name box is never read as a rename: only a name different from the one on the plate counts (2026-09-22)",
+    /const flavorName = \(typedName && typedName !== String\(tokenDoc\.name \?\? ""\)\.trim\(\)\)/.test(dlg),
+    "the typed name must differ from the current name");
+
+  // ⚠️ THE FLAVOUR-NAME RULE, UNCHANGED SINCE 2026-07-10: the sheet, the
+  // prototype and the token keep the creature's name. The name he types goes
+  // through the SAME one writer the AI's name goes through, so there is one
+  // place that can be wrong instead of two.
+  const writer = bio.slice(bio.indexOf("export async function applyFlavorName"),
+    bio.indexOf("export function isRealBiography"));
+  check("a name he types is written the one way: the flag and the nameplate, through the single writer, and never onto the sheet or the prototype token (2026-09-22)",
+    /export async function applyFlavorName\(actor, tokenDocument, name\)/.test(bio)
+      && /await actor\.setFlag\(MODULE_ID, "flavorName", flavour\);/.test(writer)
+      && !/prototypeToken/.test(writer)
+      && !/actor\.update\(/.test(writer)
+      && /tokenDocument\.update\(\{ displayName: 50 \}\)/.test(writer)
+      && /const \{ applyFlavorName \} = await import\("\.\/bio-generator\.mjs"\);/.test(proc)
+      && /await applyFlavorName\(actor, tokenDoc, result\.flavorName\);/.test(proc),
+    "one writer, flag and nameplate only, and the dialog's name goes through it");
+
+  // ⚠️ FOUND WHILE WIRING IT, NOT AT HIS TABLE: the two lines that hand the
+  // renamer its permission back from the dialog's rename tick run AFTER the
+  // typed name is written, so his name was written and then written over.
+  check("and the AI's renamer cannot write over a name he typed: the rename tick only speaks when he left the name box alone, at BOTH places that read it (2026-09-22)",
+    /const _gmNamed = !!result\?\.flavorName;/.test(proc)
+      && !/if \(result\.rename !== undefined\) tokenDoc\._aceSkipRename/.test(proc)
+      && (proc.match(/result\.rename !== undefined && !_gmNamed/g) ?? []).length === 2,
+    "both rename lines read the typed name first");
+
+  check("the biography is rewritten only when he ticked it, and then it is forced so one it already has is replaced (2026-09-22)",
+    /tokenDoc\._aceRewriteBio = !!result\?\.rewriteBio;/.test(proc)
+      && /if \(tokenDoc\._aceRewriteBio\) \{/.test(hud)
+      && /await queueBioGeneration\(tokenDoc, \{ force: true \}\);/.test(hud),
+    "the tick is carried to the press, and nothing is rewritten without it");
 
   check("it is the GM's button, on an NPC or a character, and it stamps only the token whose HUD it is on (2026-09-22)",
     /if \(!game\.user\?\.isGM\) return;/.test(hud)
