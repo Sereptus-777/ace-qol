@@ -5292,6 +5292,18 @@ console.log(`\nONE HUD BUTTON PUTS A TOKEN IN A FACTION`);
       && /await queueBioGeneration\(tokenDoc, \{ force: true \}\);/.test(hud),
     "the tick is carried to the press, and nothing is rewritten without it");
 
+  // ⚠️ HIS TABLE, the same night: "HUD flag opens the identity dialog twice...
+  // One second later processTokenFaction runs again with the press flag still
+  // on and opens the same dialog. No second HUD click." The mark outlived the
+  // dialog, and the biography's own pipeline asks this engine its questions.
+  check("one click opens one dialog: the press mark is spent by the call that reads it, and the button lets go of it before it asks for a biography (2026-09-22)",
+    /if \(isGmPress\) delete tokenDoc\._aceGmPress;/.test(proc)
+      && proc.indexOf("if (isGmPress) delete tokenDoc._aceGmPress;")
+         < proc.indexOf('if (!isGmPress && !game.settings.get(MODULE_ID, "enableFactions"))')
+      && /const result = await processTokenFaction\(tokenDoc\);[\s\S]{0,300}?delete tokenDoc\._aceGmPress;/.test(hud)
+      && hud.indexOf("delete tokenDoc._aceGmPress;") < hud.indexOf("queueBioGeneration(tokenDoc, { force: true })"),
+    "the mark is consumed at the door, and again the moment the dialog returns");
+
   check("it is the GM's button, on an NPC or a character, and it stamps only the token whose HUD it is on (2026-09-22)",
     /if \(!game\.user\?\.isGM\) return;/.test(hud)
       && /actor\.type !== "npc" && actor\.type !== "character"/.test(hud)
