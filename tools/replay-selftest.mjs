@@ -5312,6 +5312,57 @@ console.log(`\nONE HUD BUTTON PUTS A TOKEN IN A FACTION`);
     "the drop gate reads as it did, and the new button is its own registration");
 }
 
+/* ── PICK THE NAME, STAMP IT, THEN WRITE THE BIOGRAPHY ─────────────────── */
+// His bug, 2026-09-22: "Drop picker already picks the flavor name. Biography is
+// written before that name is in hand, so it uses the sheet name. Order: 1. Pick
+// flavorName. 2. Stamp it on the nameplate and the flavorName flag only. 3.
+// Write the bio with that name. Do not write it onto actor.name. Do not write it
+// onto the prototype token. Sheet stays Mind Flayer."
+//
+// What was actually wrong, read out of the file: the prompt had ONE name source,
+// the statblock label, and five branches to choose a sentence from. Exactly one
+// of those five knew a name had been chosen; the other four, including every
+// linked creature, said "this NPC is named Mind Flayer, use this name". And the
+// stamp ran at the END, after the biography, so every early return between the
+// two threw away a name that had already been picked.
+console.log(`\nPICK THE NAME, STAMP IT, THEN WRITE THE BIOGRAPHY`);
+{
+  const ENGINE = `${ROOT}/Data/modules/ace-engine/scripts`;
+  const bio = readFileSync(`${ENGINE}/npc/bio-generator.mjs`, "utf8");
+  const at = (needle) => bio.indexOf(needle);
+
+  check("there is ONE reader for what a creature is called, and it answers in his order: the name it already carries, then the one just chosen for it, then the statblock label (2026-09-22)",
+    /export function nameForBio\(actor, tokenDocument = null\)/.test(bio)
+      && /const held = String\(actor\?\.getFlag\?\.\(MODULE_ID, "flavorName"\) \?\? ""\)\.trim\(\);\s*\n\s*if \(held\) return held;/.test(bio)
+      && /const chosen = String\(tokenDocument\?\._aceChosenName \?\? ""\)\.trim\(\);\s*\n\s*if \(chosen\) return chosen;/.test(bio)
+      && /return actor\?\.name \|\| "Unknown Creature";/.test(bio),
+    "one reader, flag first, then the chosen name, then the label");
+
+  // ⚠️ AFTER ALL FIVE BRANCHES, not inside one of them. That is the whole point:
+  // no branch can be the one that forgets.
+  check("and the biography prompt reads it after every branch has had its say, so a linked creature and a beast are told the name too (2026-09-22)",
+    /const calledName = nameForBio\(actor, tokenDocument\);/.test(bio)
+      && /if \(calledName && calledName !== name\) \{[\s\S]{0,400}?nameInstruction = /.test(bio)
+      && at("const calledName = nameForBio") > at("// Linked NPC — keep the name, still generate personality")
+      && at("const calledName = nameForBio") < at("const systemPrompt = `You are a D&D 5e backstory generator"),
+    "the override sits after the last branch and before the prompt is built");
+
+  check("the name is stamped on the nameplate BEFORE the biography is asked for, so a refused or empty answer cannot cost him a name that was already picked (2026-09-22)",
+    at("await applyFlavorName(actor, tokenDocument, result.name);") > 0
+      && at("await applyFlavorName(actor, tokenDocument, result.name);")
+         < at('provider, apiKey, images, { context: "bio-generator" }'),
+    "the stamp runs before the AI call, not after the bio is saved");
+
+  check("a name it already carries is kept, never generated over: the picker and the identity box settle it first (2026-09-22)",
+    /const wantsName = !heldFlavour/.test(bio)
+      && /tokenDocument\._aceChosenName = heldFlavour;/.test(bio),
+    "an existing flavour name switches the namer off and is handed to the prompt");
+
+  check("and stamping the same name twice is free, so the early stamp does not double every drop's flag writes (2026-09-22)",
+    /if \(String\(actor\.getFlag\(MODULE_ID, "flavorName"\) \?\? ""\) === flavour\) return true;/.test(bio),
+    "the writer turns back when the name is already there");
+}
+
 /* ── A PLAYER'S OWNER DOES NOT SKIP THE CORPSE ─────────────────────────── */
 // His table, 2026-09-21: "Aryel died. Humanoid. Token stayed a skull. No
 // humanoid corpse." Her sheet is an NPC that a player owns, which is exactly
