@@ -5196,6 +5196,8 @@ console.log(`\nONE HUD BUTTON PUTS A TOKEN IN A FACTION`);
     .filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join(" ");
   const reg = readFileSync(`${ENGINE}/npc/faction-registry.mjs`, "utf8");
   const act = readFileSync(`${ENGINE}/npc/activate.mjs`, "utf8");
+  const quill = readFileSync(`${ENGINE}/npc/hud-give-a-life.mjs`, "utf8");
+  const editor2 = readFileSync(`${ENGINE}/npc/bio-editor.mjs`, "utf8");
 
   const bio = readFileSync(`${ENGINE}/npc/bio-generator.mjs`, "utf8");
   // The identity dialog and the processor, cut out of the registry so a pin
@@ -5287,12 +5289,22 @@ console.log(`\nONE HUD BUTTON PUTS A TOKEN IN A FACTION`);
       && !/queueBioGeneration/.test(hud),
     "the mark is consumed at the door, and again the moment the dialog returns");
 
-  check("it is the GM's button, on an NPC or a character, and it stamps only the token whose HUD it is on (2026-09-22)",
+  check("it is the GM's popup, on an NPC or a character, and it works on the token whose HUD it is on rather than the selection (2026-09-22)",
     /if \(!game\.user\?\.isGM\) return;/.test(hud)
-      && /actor\.type !== "npc" && actor\.type !== "character"/.test(hud)
+      && /actor\.type !== "npc" && actor\.type !== "character"/.test(quill)
       && /const doc = token\?\.document \?\? null;/.test(hud)
-      && !/controlled/.test(hud.slice(hud.indexOf("renderTokenHUD"))),
+      && !/controlled/.test(quill.slice(quill.indexOf("renderTokenHUD"))),
     "GM only, npc or character, and the HUD's own token rather than the selection");
+
+  // ⚠️ ONE BUTTON ON THE TOKEN HUD (his call, 2026-09-23): "You got a flag, and
+  // you got a book, and you got a quill. I want them all under the quill."
+  check("the token HUD draws exactly ONE ACE button, the quill, and it opens the setup popup rather than writing anything (2026-09-23)",
+    /const \{ assignFactionFromHud \} = await import\("\.\/hud-faction\.mjs"\);/.test(quill)
+      && /await assignFactionFromHud\(token\.document\);/.test(quill)
+      && !/giveThisOneALife\(token\.document/.test(quill)
+      && /static register\(\) \{\s*\n\s*console\.log\(`\$\{TAG\} \| the faction flag is not drawn/.test(hud)
+      && /static register\(\) \{\s*\n\s*console\.log\(`\$\{TAG\} \| the book is not drawn/.test(editor2),
+    "the quill opens the popup; the flag and the book no longer draw themselves");
 
   check("and it invents nothing and decides nothing: which factions are offered, whether a new one is made and what rank a creature holds all stay with the drop path, and this file only reports what came back (2026-09-22)",
     // the CODE, not the comments that say why none of it is here
@@ -5301,10 +5313,17 @@ console.log(`\nONE HUD BUTTON PUTS A TOKEN IN A FACTION`);
       && /result\?\.faction \?\? null/.test(hud),
     "no faction, no rank and no roster decision lives in the button");
 
-  check("token-drop assign is still off: the drop path's own silent-versus-manual gate is untouched, and the button is registered beside the other HUD control instead (2026-09-22)",
+  check("token-drop assign is still off: the drop path reads its own mark, and the press is a separate question that BOTH branches now ask (2026-09-22, extended 2026-09-23)",
     /const isManualDrop = !adoptOnly && !!tokenDoc\._aceManualDrop;/.test(reg)
-      && /FactionHudButton \}\) => FactionHudButton\.register\(\)/.test(act),
-    "the drop gate reads as it did, and the new button is its own registration");
+      // ⚠️🔴 THE ONE THAT BIT HIM. The silent branch asked only about a drop,
+      // so a press fell into it, quietly adopted the best-scoring faction and
+      // returned before any popup existed: "it just told me that it was in the
+      // Thousand Fists. Didn't do anything at all."
+      && /if \(!isManualDrop && !isGmPress\) \{/.test(reg)
+      && /if \(isManualDrop \|\| isGmPress\) \{/.test(reg)
+      // the CODE, not the comment that explains which two branches read it
+      && (codeOnly(reg).match(/isManualDrop/g) ?? []).length === 3,
+    "both branches read the press, and there are no other readers of the drop mark");
 }
 
 /* ── THE NPC SETUP DIALOG SAYS WHAT IT DOES ────────────────────────────── */
