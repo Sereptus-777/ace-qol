@@ -34,6 +34,10 @@ CHECKS = [
     ("every hook ACE listens for is fired", "python tools/hook-check.py"),
     ("no import read before it exists", "python tools/cycle-check.py"),
     ("lint (undefined names, broken code)", 'npx --yes eslint@9 "scripts/**/*.mjs"'),
+    # This one lints the OTHER modules. The line above reads this folder only,
+    # which is how a night of Engine work passed a green release check having
+    # never been linted (2026-09-23).
+    ("lint the other modules (engine, forge, token art, envoy)", "python tools/lint-siblings.py"),
     # After lint on purpose: it reads the code with the parser the lint install brings.
     ("nothing lands before its dice (qol, forge, engine)", "node tools/dice-check.mjs"),
 ]

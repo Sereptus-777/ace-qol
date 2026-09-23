@@ -5215,9 +5215,8 @@ console.log(`\nONE HUD BUTTON PUTS A TOKEN IN A FACTION`);
 
   check("and the mark belongs to that press, not to the token forever: it is put back the way it was found, so no later pass reads the creature as a fresh press (2026-09-22)",
     /const held = tokenDoc\._aceGmPress;/.test(hud)
-      && /if \(held === undefined\) delete tokenDoc\._aceGmPress;/.test(hud)
-      && /delete tokenDoc\._aceRewriteBio;/.test(hud),
-    "the mark and the tick are cleared in a finally");
+      && /if \(held === undefined\) delete tokenDoc\._aceGmPress;/.test(hud),
+    "the mark is put back in a finally");
 
   // ⚠️ A PRESS IS NOT A DROP. Every guard below is the drop asking "does this
   // new creature need setting up"; his finger is asking "let me change this
@@ -5248,19 +5247,6 @@ console.log(`\nONE HUD BUTTON PUTS A TOKEN IN A FACTION`);
       && /if \(isGmPress\) \{\s*\n\s*ui\.notifications\?\.info\(`\$\{actor\.name\} is a \$\{creatureType\} and does not join factions\.`\);/.test(proc),
     "the non-sentient skip is kept and a press is told why nothing opened");
 
-  // ⚠️ CHOICES, NOT A FORM THAT DECIDES FOR HIM. Each answer is independent and
-  // the destructive one is off until he asks for it.
-  check("the popup carries his two choices: a box to type the name himself, and a tick for a new biography that is OFF unless he asks for one (2026-09-22)",
-    /<input type="text" name="flavorName"/.test(dlg)
-      && /<input type="checkbox" name="rewriteBio"/.test(dlg)
-      && !/<input[^>]*name="rewriteBio"[^>]*checked/.test(dlg)
-      && /resolve\(\{ factionId[\s\S]{0,200}?flavorName, rewriteBio \}\)/.test(dlg),
-    "a name box, an unticked bio box, and both come back with the rest");
-
-  check("and an untouched name box is never read as a rename: only a name different from the one on the plate counts (2026-09-22)",
-    /const flavorName = \(typedName && typedName !== String\(tokenDoc\.name \?\? ""\)\.trim\(\)\)/.test(dlg),
-    "the typed name must differ from the current name");
-
   // ⚠️ THE FLAVOUR-NAME RULE, UNCHANGED SINCE 2026-07-10: the sheet, the
   // prototype and the token keep the creature's name. The name he types goes
   // through the SAME one writer the AI's name goes through, so there is one
@@ -5286,11 +5272,6 @@ console.log(`\nONE HUD BUTTON PUTS A TOKEN IN A FACTION`);
       && (proc.match(/result\.rename !== undefined && !_gmNamed/g) ?? []).length === 2,
     "both rename lines read the typed name first");
 
-  check("the biography is rewritten only when he ticked it, and then it is forced so one it already has is replaced (2026-09-22)",
-    /tokenDoc\._aceRewriteBio = !!result\?\.rewriteBio;/.test(proc)
-      && /if \(tokenDoc\._aceRewriteBio\) \{/.test(hud)
-      && /await queueBioGeneration\(tokenDoc, \{ force: true \}\);/.test(hud),
-    "the tick is carried to the press, and nothing is rewritten without it");
 
   // ⚠️ HIS TABLE, the same night: "HUD flag opens the identity dialog twice...
   // One second later processTokenFaction runs again with the press flag still
@@ -5301,7 +5282,9 @@ console.log(`\nONE HUD BUTTON PUTS A TOKEN IN A FACTION`);
       && proc.indexOf("if (isGmPress) delete tokenDoc._aceGmPress;")
          < proc.indexOf('if (!isGmPress && !game.settings.get(MODULE_ID, "enableFactions"))')
       && /const result = await processTokenFaction\(tokenDoc\);[\s\S]{0,300}?delete tokenDoc\._aceGmPress;/.test(hud)
-      && hud.indexOf("delete tokenDoc._aceGmPress;") < hud.indexOf("queueBioGeneration(tokenDoc, { force: true })"),
+      // ⚠️ And the button runs nothing else afterwards that could re-enter the
+      // engine: the biography moved to its own window on 2026-09-23.
+      && !/queueBioGeneration/.test(hud),
     "the mark is consumed at the door, and again the moment the dialog returns");
 
   check("it is the GM's button, on an NPC or a character, and it stamps only the token whose HUD it is on (2026-09-22)",
@@ -5322,6 +5305,128 @@ console.log(`\nONE HUD BUTTON PUTS A TOKEN IN A FACTION`);
     /const isManualDrop = !adoptOnly && !!tokenDoc\._aceManualDrop;/.test(reg)
       && /FactionHudButton \}\) => FactionHudButton\.register\(\)/.test(act),
     "the drop gate reads as it did, and the new button is its own registration");
+}
+
+/* ── THE NPC SETUP DIALOG SAYS WHAT IT DOES ────────────────────────────── */
+// 2026-09-23, four rounds of his design notes. The short version of what was
+// wrong: a tick called "Rename NPC" that renamed nothing unless a biography
+// happened to be written, a name box prefilled with the creature's own name so
+// it read as the answer, a heading that said DISPLAY NAME above a line showing
+// the SHEET name, and a faction list whose sort order was thrown away by the
+// display. "People are not going to fucking understand this shit."
+console.log(`\nTHE NPC SETUP DIALOG SAYS WHAT IT DOES`);
+{
+  const ENGINE = `${ROOT}/Data/modules/ace-engine/scripts`;
+  const reg = readFileSync(`${ENGINE}/npc/faction-registry.mjs`, "utf8");
+  const bio = readFileSync(`${ENGINE}/npc/bio-generator.mjs`, "utf8");
+  const editor = readFileSync(`${ENGINE}/npc/bio-editor.mjs`, "utf8");
+  const dlg = reg.slice(reg.indexOf("export async function showNpcIdentityDialog"),
+    reg.indexOf("export async function processTokenFaction"));
+  const proc = reg.slice(reg.indexOf("export async function processTokenFaction"));
+
+  // ── The display name block ───────────────────────────────────────────
+  check("the display name block leads with what it does, and all three choices are the same thing: leave it, let ACE pick, type it (2026-09-23)",
+    /DISPLAY NAME ONLY/.test(dlg)
+      && /Nothing here renames the sheet/.test(dlg)
+      && /name="nameChoice" value="leave" checked/.test(dlg)
+      && /name="nameChoice" value="ace"/.test(dlg)
+      && /name="nameChoice" value="manual"/.test(dlg)
+      && !/name="rename"/.test(dlg),
+    "one block, three radios, and the old Rename tick is gone");
+
+  check("and the name it shows is read off THIS creature, with the sheet named last as a reassurance rather than first as an answer (2026-09-23)",
+    /The display name stays &ldquo;\$\{foundry\.utils\.escapeHTML\(String\(tokenDoc\.name \?\? actor\.name \?\? ""\)\)\}/.test(dlg)
+      && /The sheet stays &ldquo;\$\{foundry\.utils\.escapeHTML\(String\(actor\.name \?\? ""\)\)\}/.test(dlg)
+      && /<input type="text" name="flavorName" value=""/.test(dlg),
+    "live names, empty box, sheet line at the bottom");
+
+  check("typing in the box picks the row it belongs to, so a typed name cannot be thrown away for want of a tick (2026-09-23)",
+    /_nameBox\.addEventListener\("input", _pickManual\);/.test(dlg)
+      && /_nameBox\.addEventListener\("focus", _pickManual\);/.test(dlg)
+      && /nameChoice === "manual"/.test(dlg),
+    "focus or typing selects manual, and only manual returns the name");
+
+  // ── One namer, and it acts when he asks ──────────────────────────────
+  check("there is ONE namer, and \"let ACE pick\" runs it there and then instead of leaving a note for a biography that may never be written (2026-09-23)",
+    /export async function pickAndStampName\(actor, tokenDocument, \{ force = false \} = \{\}\)/.test(bio)
+      && /await pickAndStampName\(actor, tokenDocument\);/.test(bio)
+      && /const \{ pickAndStampName \} = await import\("\.\/bio-generator\.mjs"\);/.test(proc)
+      && /await pickAndStampName\(actor, tokenDoc, \{ force: true \}\)/.test(proc),
+    "the bio path and the dialog call the same function");
+
+  check("and asking out loud stands the automatic gates down, but not the one about what the creature is (2026-09-23)",
+    /if \(force\) heldFlavour = "";/.test(bio)
+      && /const wantsName = force\s*\n\s*\? !noNameType/.test(bio)
+      && /if \(force && noNameType\) \{/.test(bio),
+    "force ignores the held name, the generic test and the skip mark, and still refuses an ooze");
+
+  check("a rename reaches the biography that was already written, and only when it had a name to replace (2026-09-23)",
+    /async function _renameInBiography\(actor, oldName, newName\)/.test(bio)
+      && /if \(previous\) await _renameInBiography\(actor, previous, flavour\);/.test(bio)
+      && /\(\?<!\[\\\\w'\]\)\$\{esc\}\(\?!\[\\\\w\]\)/.test(bio),
+    "the one writer fixes the text, with a boundary that keeps possessives and drops longer words");
+
+  check("the dialog is TOLD it is a press instead of looking for a mark that was spent at the door (2026-09-23)",
+    /\{ gmPress = false \} = \{\}\) \{/.test(dlg)
+      && /display:\$\{gmPress \? "block" : "none"\}/.test(dlg)
+      && /recommendations, \{ gmPress: isGmPress \}\)/.test(proc),
+    "the press-only controls read an argument, not a transient flag");
+
+  check("gender comes up Male, with Auto still offered (2026-09-23)",
+    /name="genderOverride" value="male" checked/.test(dlg)
+      && /name="genderOverride" value="auto" style/.test(dlg),
+    "male is preselected and auto is still a choice");
+
+  // ── The faction list ─────────────────────────────────────────────────
+  check("the faction list is ONE list in score order with a tag saying where each came from, and the recommendations are starred in place instead of appended to the end (2026-09-23)",
+    /function _renderFactionOptions\(rows, \{ query = "", selected = "", limit = 20 \} = \{\}\)/.test(reg)
+      && /<optgroup label="Best match first">/.test(reg)
+      && /const star = r\.rec \? "\\u2b50 " : "";/.test(reg)
+      && !/<optgroup label="Scene: \$\{sceneName\}">/.test(reg)
+      && !/<optgroup label="World Digest">/.test(reg),
+    "one group, sorted, starred; the per-source groups that destroyed the order are gone");
+
+  check("and the search reaches every faction, not just the twenty on screen, and offers to create one by the name he typed when nothing matches (2026-09-23)",
+    /input type="text" name="factionSearch"/.test(dlg)
+      && /const shown = \(!terms\.length && limit && matched\.length > limit\)/.test(reg)
+      && /if \(q\) html \+= `<option value="__named__:\$\{esc\(q\)\}">/.test(reg)
+      && /if \(\[\.\.\.sel\.options\]\.some\(o => o\.value === keep\)\) sel\.value = keep;/.test(dlg),
+    "no cap while searching, a create-by-name row, and the filter never un-chooses");
+
+  check("a faction he names by hand goes through the existing register-or-join engine rather than a second one (2026-09-23)",
+    /if \(result\?\.namedFaction\) \{/.test(proc)
+      && /const made = await registerNamedFaction\(\{/.test(proc)
+      && /made\.adopted/.test(proc),
+    "registerNamedFaction does the joining, and the dialog says which happened");
+
+  // ── How many of them there are ───────────────────────────────────────
+  check("how many are in a faction: six bands the AI must choose from, the bible's own figure beating the estimate, and his typed number beating both (2026-09-23)",
+    /const STRENGTH_BANDS = \[/.test(reg)
+      && /STRENGTH_BANDS\.find\(b => lower\.includes\(b\.key\)\)\?\.key \?\? "";/.test(reg)
+      && /if \(held\?\.manual\) return \{ text: held\.manual, source: "yours" \};/.test(reg)
+      && /if \(words\) return \{ text: words, source: "the world bible" \};/.test(reg),
+    "a validated band, and a clear order of precedence");
+
+  check("and the roster is not passed off as the strength: the two numbers are shown as the two different questions they are (2026-09-23)",
+    /In ACE's roster:/.test(reg)
+      && /<strong>Strength:<\/strong> about \$\{meta\.strength\.text\}/.test(reg)
+      && /if \(r\.strength\) bits\.push\(`~\$\{r\.strength\} strong`\);/.test(reg),
+    "roster and world strength are separate lines and separate row tags");
+
+  check("the estimate is asked once, for the faction he is looking at, and remembered (2026-09-23)",
+    /estimateFactionStrength\(meta\)\.then\(res => \{/.test(dlg)
+      && /await _rememberStrength\(f\.name, \{ band: band\.key \}\);/.test(reg)
+      && /const known = factionStrength\(f\);\s*\n\s*if \(known\) return known;/.test(reg),
+    "one call on selection, stored, and never asked twice");
+
+  // ── The biography window ─────────────────────────────────────────────
+  check("the biography is a window, not a tick: it writes through the one queue, and Escape does not throw away an edit he has made (2026-09-23)",
+    /export class BiographyEditor/.test(editor)
+      && /const \{ writeBiography \} = await import\("\.\.\/bio-writer\.mjs"\);/.test(editor)
+      && /if \(!BiographyEditor\._dirty\) \{ BiographyEditor\.close\(\); return; \}/.test(editor)
+      && /button\[name="editBio"\]/.test(dlg)
+      && !/name="rewriteBio"/.test(reg),
+    "one window, one writer, an edit that survives a stray Escape, and the old tick gone");
 }
 
 /* ── A DROP OPENS THE PICKER HE ACTUALLY USES ──────────────────────────── */
@@ -5419,14 +5524,15 @@ console.log(`\nPICK THE NAME, STAMP IT, THEN WRITE THE BIOGRAPHY`);
          < at('provider, apiKey, images, { context: "bio-generator" }'),
     "the stamp runs before the AI call, not after the bio is saved");
 
-  check("a name it already carries is kept, never generated over: the picker and the identity box settle it first (2026-09-22)",
-    /const wantsName = !heldFlavour/.test(bio)
+  check("a name it already carries is kept, never generated over: the picker and the identity box settle it first (2026-09-22, moved into the one namer 2026-09-23)",
+    /\(!heldFlavour && !noNameType && _isGenericName\(nameOf, cType\) && !tokenDocument\._aceSkipRename\)/.test(bio)
       && /tokenDocument\._aceChosenName = heldFlavour;/.test(bio),
     "an existing flavour name switches the namer off and is handed to the prompt");
 
   check("and stamping the same name twice is free, so the early stamp does not double every drop's flag writes (2026-09-22)",
-    /if \(String\(actor\.getFlag\(MODULE_ID, "flavorName"\) \?\? ""\) === flavour\) return true;/.test(bio),
-    "the writer turns back when the name is already there");
+    /previous = String\(actor\.getFlag\(MODULE_ID, "flavorName"\) \?\? ""\)\.trim\(\);/.test(bio)
+      && /if \(previous === flavour\) return true;/.test(bio),
+    "the writer reads what it is replacing, and turns back when it is the same name");
 }
 
 /* ── A PLAYER'S OWNER DOES NOT SKIP THE CORPSE ─────────────────────────── */
