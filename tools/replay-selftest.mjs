@@ -5439,6 +5439,45 @@ console.log(`\nTHE NPC SETUP DIALOG SAYS WHAT IT DOES`);
     "one call on selection, stored, and never asked twice");
 
   // ── The biography window ─────────────────────────────────────────────
+  // ── What a rename has to do to the history it leaves behind ─────────
+  check("the faction it is in NOW is always the first row, outside the scoring and outside the cap, in the list and after an origin filter (2026-09-23)",
+    /allRows\.unshift\(_factionRow\(heldFaction, \{[\s\S]{0,200}?score: Number\.MAX_SAFE_INTEGER,/.test(dlg)
+      && /_rows\.unshift\(_factionRow\(heldNow, \{[\s\S]{0,200}?score: Number\.MAX_SAFE_INTEGER,/.test(dlg)
+      && /if \(f\.id === _heldFactionId\) continue;/.test(dlg),
+    "pinned first both times, and never listed twice");
+
+  check("both renaming rows say they open the biography, and the buttons are called Save and Cancel (2026-09-23)",
+    (dlg.match(/\(Opens biography\)/g) ?? []).length === 2
+      && /label: "Save",/.test(dlg)
+      && /label: "Cancel",/.test(dlg)
+      && !/label: "Create NPC",/.test(dlg),
+    "the labels say what they do");
+
+  // ⚠️ NO SILENT FALLBACK. "Manually type" with nothing typed used to be read
+  // as "leave it", which is the exact shape of a dialog that ignored him.
+  check("an empty name box stops the save, says so on screen, and clears itself the moment he types (2026-09-23)",
+    /_saveBtn\.addEventListener\("click", \(ev\) => \{/.test(dlg)
+      && /if \(!_manualRadio\.checked\) return;/.test(dlg)
+      && /ev\.stopImmediatePropagation\(\);/.test(dlg)
+      && /Type the display name, or pick one of the other two choices\./.test(dlg),
+    "the save is blocked, in the capture phase, with a visible reason");
+
+  check("a rename opens the biography window with what it was called and what it is called now (2026-09-23)",
+    /const _nameBefore = String\(tokenDoc\.name \?\? actor\.name \?\? ""\)\.trim\(\);/.test(proc)
+      && /BiographyEditor\.open\(tokenDoc, \{\s*\n\s*renamedFrom: _nameBefore, renamedTo: after,/.test(proc)
+      && /_openBiographyOnRename\(result\.flavorName\);/.test(proc)
+      && /_openBiographyOnRename\(named\.name\);/.test(proc)
+      && /if \(!isGmPress \|\| !after \|\| after === _nameBefore\) return;/.test(proc),
+    "both renaming rows open it, and only when the name actually changed");
+
+  check("and the window counts the places out loud and swaps them in the window, not on the sheet, so nothing is written until he presses Save (2026-09-23)",
+    /function _countName\(html, name\)/.test(editor)
+      && /Replace "\$\{foundry\.utils\.escapeHTML\(from\)\}" with "\$\{foundry\.utils\.escapeHTML\(to\)\}" \(\$\{hits\} place/.test(editor)
+      && /body\.innerHTML = _swapName\(body\.innerHTML, from, to\);/.test(editor)
+      && /BiographyEditor\._dirty = true;/.test(editor)
+      && /\(\?<!\[\\\\w'\]\)\$\{esc\}\(\?!\[\\\\w\]\)/.test(editor),
+    "a real count, an in-window swap, and the same boundary rule as the silent one");
+
   check("the biography is a window, not a tick: it writes through the one queue, and Escape does not throw away an edit he has made (2026-09-23)",
     /export class BiographyEditor/.test(editor)
       && /const \{ writeBiography \} = await import\("\.\.\/bio-writer\.mjs"\);/.test(editor)
