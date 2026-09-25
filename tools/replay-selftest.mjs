@@ -5340,6 +5340,7 @@ console.log(`\nTHE NPC SETUP DIALOG SAYS WHAT IT DOES`);
   const bio = readFileSync(`${ENGINE}/npc/bio-generator.mjs`, "utf8");
   const editor = readFileSync(`${ENGINE}/npc/bio-editor.mjs`, "utf8");
   const ident = readFileSync(`${ENGINE}/npc/npc-identity.mjs`, "utf8");
+  const eng = readFileSync(`${ENGINE}/ace-engine.mjs`, "utf8");
   const dlg = reg.slice(reg.indexOf("export async function showNpcIdentityDialog"),
     reg.indexOf("export async function processTokenFaction"));
   const proc = reg.slice(reg.indexOf("export async function processTokenFaction"));
@@ -5468,8 +5469,39 @@ console.log(`\nTHE NPC SETUP DIALOG SAYS WHAT IT DOES`);
   check("and the window says where the list came from, and says so loudly when the world digest is missing (2026-09-24)",
     reg.includes("const _poolCounts = {")
       && reg.includes("from your world, ${_poolCounts.scene} on this scene, ${_poolCounts.ace} already in ACE")
-      && reg.includes("Your world digest is not loaded, so only what ACE already knows is listed."),
+      && reg.includes("Nothing from your world reached this list"),
     "the counts are on screen, not only in a console he does not run");
+
+  // ⚠️🔴 ONE TRY BLOCK HELD THREE FETCHES (2026-09-24). Scene intelligence, the
+  // world digest and the world bible were read in that order inside a single
+  // try, so a scene with no intelligence record threw and skipped the other
+  // two: his entire world vanished from the dialog under a warning that called
+  // itself non-fatal, and the screen said "1 to choose from".
+  check("the three world sources are read separately, so one failing cannot empty the other two (2026-09-24)",
+    (reg.match(/EngineBridge\.getSceneIntelligence\(sceneName\);/g) ?? []).length === 1
+      && reg.includes("worldDigestFactions = EngineBridge.getWorldGraphFactions() ?? [];")
+      && reg.includes("bibleFactions = EngineBridge.getWorldBibleFactions() ?? [];")
+      && (reg.match(/\} catch \(err\) \{\s*\n\s*_poolProblem = /g) ?? []).length === 2
+      && !reg.includes("Scene intelligence / world digest lookup failed"),
+    "three fetches, three catches, and the scene's own failure is not the world's");
+
+  check("and when the world list is empty the dialog says whose fault it is, on screen (2026-09-24)",
+    reg.includes("let _poolProblem = \"\";")
+      && reg.includes("Nothing from your world reached this list${_poolProblem ? `: ${_poolProblem}` : \"\"}")
+      && eng.includes("function _sayOnce(key, reason)")
+      && eng.includes('_sayOnce("bible", "the world bible engine did not start")')
+      && eng.includes('_sayOnce("worldGraph", "the digest engine is not running')
+      && eng.includes("ui.notifications?.warn(`ACE: ${reason}.`)"),
+    "each empty source names itself once, to the console and to the screen");
+
+  check("a world bible that loaded but was never indexed is indexed rather than reported empty (2026-09-24)",
+    eng.includes("try { worldBible._buildIndexes(); }")
+      && eng.includes("the world bible was loaded but not indexed; rebuilt it"),
+    "it repairs the one case it can repair, and says so");
+
+  check("and the Ask the AI button does not squash the search box: Foundry stretches every dialog button (2026-09-24)",
+    reg.includes('style="flex:0 0 auto; width:auto; padding:8px 12px; background:#1d1710;'),
+    "the button keeps its own width");
 
   check("Ask the AI picks only from the list it was given, and says so out loud when it invents one (2026-09-24)",
     reg.includes("export async function shortlistFactions(actor, candidates = [])")
