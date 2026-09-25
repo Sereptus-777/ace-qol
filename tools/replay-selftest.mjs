@@ -5412,6 +5412,26 @@ console.log(`\nTHE NPC SETUP DIALOG SAYS WHAT IT DOES`);
       && /if \(\[\.\.\.sel\.options\]\.some\(o => o\.value === keep\)\) sel\.value = keep;/.test(dlg),
     "no cap while searching, a create-by-name row, and the filter never un-chooses");
 
+  // ⚠️🔴 SCORING ORDERS THE LIST. IT DOES NOT HIDE HIS WORLD FROM HIM.
+  // 2026-09-24: his gold dragon was offered no church at all, because a dragon
+  // scored 10 against "religious" and the cut is 15 — and the search could only
+  // ever reach what had already survived scoring, so typing the name found
+  // nothing either. In his own bible sits "metallic dragons", described as "a
+  // dragon faction aligned with good, dedicated to protecting innocent
+  // creatures and maintaining justice". It was unreachable.
+  check("a poor fit is left off the offered list but is still findable by typing its name, marked as an unusual one (2026-09-24)",
+    reg.includes("scoredCanonical.push({ ...f, _idx: idx, _score: score, _source: \"canonical\", _excluded: score < 0 });")
+      && reg.includes("scoredWorld.push({ ...f, _widx: idx, _score: score, _source: \"world\", _excluded: score < 0 });")
+      && reg.includes("const topCombined = combined.filter(f => !f._excluded).slice(0, MAX_VISIBLE);")
+      && reg.includes("const offerable = rows.filter(r => !r.excluded);")
+      && reg.includes("if (r.excluded) bits.push(`not a usual fit`);"),
+    "nothing is dropped on the floor; the unasked list is still the ones that fit");
+
+  check("and a dragon may belong to a religion, in BOTH copies of the affinity table (2026-09-24)",
+    (reg.match(/dragon:\s+\{ military: 20, criminal: 20, religious: 50,/g) ?? []).length === 2
+      && !/dragon:\s+\{ military: 20, criminal: 20, religious: 10,/.test(reg),
+    "religious is above the cut for dragons, and the two tables agree");
+
   check("a faction he names by hand goes through the existing register-or-join engine rather than a second one (2026-09-23)",
     /if \(result\?\.namedFaction\) \{/.test(proc)
       && /const made = await registerNamedFaction\(\{/.test(proc)
