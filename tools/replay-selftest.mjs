@@ -5721,9 +5721,14 @@ console.log(`\nA TRAP IS HIS TO TELL`);
       && watch.includes("!(f.spottedBy ?? {})[userId] && !f.revealedToAll"),
     "one flag opens it to the whole table, floor traps and doors alike");
 
-  check("players never learn the DC, before the roll or after it (2026-09-25)",
+  // ⚠️ Re-pinned the same day. The per-target row used to print "vs DC 22"
+  // beside the verdict, marked GM-only. The row was rebuilt in ace-qol's shape
+  // and QOL never puts the DC in a row at all, so now there is exactly ONE
+  // place the number is written: the header. One place cannot disagree with
+  // itself, and there is no second site for it to leak from.
+  check("the DC is written in one place only, and stripped for everyone but the GM (2026-09-25)",
     behav.includes('<span class="forge-gm-only">DC ${trap.saveDC} </span>${abilityLabel} Save')
-      && behav.includes('<span class="forge-save-vs forge-gm-only">vs DC')
+      && !/vs DC/.test(behav)
       && behav.includes('for (const el of root.querySelectorAll(".forge-gm-only"))'),
     "the number is drawn for the GM and stripped for everyone else");
 

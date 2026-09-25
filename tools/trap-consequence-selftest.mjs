@@ -78,9 +78,14 @@ console.log("\nTRAP CONSEQUENCES: WHAT LANDS, AND WHAT HE IS NEVER SHOWN");
         /if\s*\(target\.saveRoll\.success\)\s*\{\s*target\.consequences\s*=\s*"saved";\s*continue;/.test(pipe),
         "a pass has to leave the loop before the condition and the fall");
 
-    check("the centre is remembered at fire time",
-        /trapCenter:/.test(pipe),
+    check("the hole's own rectangle is remembered at fire time",
+        /trapArea: TrapPipeline\._trapArea\(template\)/.test(pipe)
+          && /static _trapArea\(template\)/.test(pipe),
         "a one-shot trap deletes its template long before anyone rolls");
+
+    check("and the PICTURE is the hole, not the trigger area",
+        /if \(tile\) return \{ x: tile\.x, y: tile\.y, w: tile\.width, h: tile\.height \};/.test(pipe),
+        "he resizes the tile and the template follows it");
 
     // Silence is a bug: every refusal to apply a status says so on screen.
     const setStatus = pipe.slice(pipe.indexOf("static async _setStatus"),
@@ -144,10 +149,18 @@ console.log("\nTRAP CONSEQUENCES: WHAT LANDS, AND WHAT HE IS NEVER SHOWN");
         }
     }
 
-    // The NPC block, which prints "7 vs 15", is GM-only as a whole.
+    // ⚠️ Re-pinned 2026-09-25. Enemies used to live in one block marked
+    // GM-only. The card was rebuilt in ace-qol's shape, one list for everyone,
+    // so the mark moved onto the enemy's own row. Who may see what did not
+    // change, and this is the line that proves it did not.
     const beh = read("trap-behavior.mjs");
-    check("the NPC save block is GM-only as a whole",
-        /forge-npc-block forge-gm-only/.test(beh));
+    check("an enemy's row is GM-only, the way its old block was",
+        /isNpc \? " forge-gm-only" : ""/.test(beh)
+          && /const isNpc\s*=\s*!target\.ownerUserId;/.test(beh));
+
+    check("and no row prints a DC any more: the header is the only place it exists",
+        !/vs DC/.test(beh),
+        "one place cannot disagree with itself");
 }
 
 /* ─── 5. What landed is on the card ────────────────────────────────────── */
@@ -169,6 +182,100 @@ console.log("\nTRAP CONSEQUENCES: WHAT LANDS, AND WHAT HE IS NEVER SHOWN");
     check("trap damage dice are red, not the damage type's folder",
         /DAMAGE_DIE_COLOR_FOLDER\s*=\s*"Red"/.test(beh)
         && /Dice%20Images\/\$\{DAMAGE_DIE_COLOR_FOLDER\}/.test(beh));
+}
+
+/* ─── 6. Down the shaft ─────────────────────────────────────────────────── */
+// 2026-09-25: "If it's in the centre of a 10 or 20 foot hole, I want it to
+// ignore grid snapping and be right in the centre... You could put it as tiny
+// because I want it to look like it's down at the bottom of the shaft."
+{
+    const pit  = read("pit-fall.mjs");
+    const pipe = read("trap-pipeline.mjs");
+    const entry = read("ace-artificer.mjs");
+    const panel = read("panel.mjs");
+
+    check("the fall ignores grid snapping and centres on the hole",
+        /rect\.x \+ rect\.w \/ 2/.test(pit) && /rect\.y \+ rect\.h \/ 2/.test(pit)
+          && !/Math\.round\([^)]*\/ grid[^)]*\) \* grid/.test(pit),
+        "a token in a hole is not standing on a square");
+
+    check("it shrinks by a share of its OWN size, not to a fixed one",
+        /scaleX \* IN_PIT_SCALE/.test(pit) && /scaleY \* IN_PIT_SCALE/.test(pit),
+        "a token already at 1.2 must come back to 1.2");
+
+    check("it drops by the trap's own depth",
+        /elevation: elev - Math\.abs\(depthFt\)/.test(pit)
+          && /pitDepthFt/.test(pipe) && /pitDepthFt/.test(panel));
+
+    check("what it was is written on the token before any of that",
+        /inPit`\]: \{ rect, scaleX, scaleY, elevation: elev, from, trapName \}/.test(pit),
+        "the way back has to survive a refresh, a reload and a different GM");
+
+    check("and the climb out is watched for, because Foundry never announces one",
+        /Hooks\.on\("updateToken"/.test(pit)
+          && /PitFall\.lift\(tokenDoc, "it climbed out"\)/.test(pit)
+          && /_isOverHole/.test(pit),
+        "otherwise it stays small and underground forever");
+
+    check("the watcher does not fire on the fall's own move",
+        /options\?\.\[MODULE_ID\]\?\.pitMove/.test(pit)
+          && /\[MODULE_ID\]: \{ pitMove: true \}/.test(pit));
+
+    check("only the GM moves anyone",
+        /if \(!game\.user\.isGM\) return;\s*\/\/ one writer/.test(pit));
+
+    check("undo takes him out of the hole and back to his square",
+        /PitFall\.lift\(tokenDoc, "the trap was undone", true\)/.test(pipe));
+
+    check("and the whole thing is actually wired to the module",
+        /import \{ PitFall \} from "\.\/pit-fall\.mjs";/.test(entry)
+          && /PitFall\.register\(\);/.test(entry),
+        "a layer nothing calls is the same bug wearing a hat");
+
+    check("the depth box only appears for a trap that is a hole",
+        /builder-pit-depth/.test(panel)
+          && /fallsInBox\?\.addEventListener\("change"/.test(panel),
+        "a control written in code fires nothing");
+}
+
+/* ─── 7. The card is ace-qol's card ─────────────────────────────────────── */
+{
+    const beh = read("trap-behavior.mjs");
+    const css = readFileSync("D:/FoundryVTT/Data/modules/ace-artificer/styles/ace-artificer.css", "utf8");
+
+    check("one list, not a player list and an enemy block",
+        /const targetRows = targets/.test(beh) && !/_renderNpcBlock/.test(beh),
+        "his words: this isn't even close to what my quality of life save card looks like");
+
+    check("the die that decided the save is under the portrait",
+        /_d20FaceHtml/.test(beh) && /forge-target-left/.test(beh)
+          && /\.forge-d20-img \{[\s\S]{0,120}?width: 54px;/.test(css));
+
+    check("the arithmetic is spelled out, not a 'X vs Y' pill",
+        /forge-save-roll/.test(beh) && /forge-save-total/.test(beh)
+          && !/forge-npc-save-pill/.test(beh));
+
+    check("the trap's description is not on the card",
+        !/forge-trap-desc/.test(beh),
+        "he wrote the trap; the card is for what just happened");
+
+    check("APPLY ALL fits on one line",
+        beh.includes("APPLY ALL — <strong>${totalPending}</strong>")
+          && !/i>\s*APPLY DAMAGE TO ALL/.test(beh),
+        "the old wording could not fit and wrapped into a mess");
+
+    // "All that writing should be bigger, twice the size." These are the five
+    // sizes that were 11 to 14px on the card he photographed.
+    for (const [cls, min] of [["forge-target-name", 20], ["forge-save-roll", 25],
+                              ["forge-save-verdict", 19], ["forge-target-dmg-num", 28],
+                              ["forge-hp-text", 18]]) {
+        // The start of a RULE, not the same class inside a longer selector.
+        const at = css.indexOf(`
+.${cls} {`);
+        const m = at < 0 ? null : /font-size: (\d+)px/.exec(css.slice(at, at + 400));
+        check(`.${cls} is at least ${min}px`, !!m && Number(m[1]) >= min,
+            m ? `got ${m[1]}px` : "no font-size found");
+    }
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
