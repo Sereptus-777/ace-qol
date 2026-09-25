@@ -34,7 +34,11 @@ import re
 import sys
 
 ROOT = r"D:\FoundryVTT\Data\modules"
-MODULES = ["ace-qol", "ace-engine", "ace-artificer", "ace-token-art"]
+# ⚠️ ENVOY WAS NOT ON THIS LIST (added 2026-09-25). Its code lives in `src/`, and
+# every "all four modules" sweep before 2026-08-16 silently audited three. This
+# was still one of them. A module that is not installed here is said out loud at
+# the end rather than passed over in silence.
+MODULES = ["ace-qol", "ace-engine", "ace-artificer", "ace-envoy", "ace-token-art"]
 SKIP = {"node_modules", ".git", "packs", "assets", "sounds", "icons", "lang",
         "fonts", "images", "templates", "tools"}
 
@@ -65,9 +69,11 @@ def strip_noise(src):
 
 
 rows = []
+absent = []
 for mod in MODULES:
     base = os.path.join(ROOT, mod)
     if not os.path.isdir(base):
+        absent.append(mod)
         continue
     for dp, dn, fns in os.walk(base):
         dn[:] = [d for d in dn if d not in SKIP]
@@ -97,6 +103,8 @@ for mod in MODULES:
 print("")
 print("IMPORTED AND NEVER USED")
 print("=" * 78)
+for mod in absent:
+    print("  not installed here: %s — nothing of it was read." % mod)
 by_mod = {}
 for r in rows:
     by_mod.setdefault(r[0], []).append(r)

@@ -38,7 +38,17 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 MODULES = HERE.parent.parent
-ACE = ["ace-qol", "ace-engine", "ace-artificer", "ace-token-art"]
+# ⚠️ ENVOY WAS NOT ON THIS LIST (added 2026-09-25), and its code lives in `src/`,
+# not `scripts/`. Every "all four modules" sweep before 2026-08-16 silently
+# audited three; this was still one of them. Each module names the folders it
+# might keep code in, and one that is not installed here is said out loud.
+ACE = [
+    ("ace-qol",       ["scripts"]),
+    ("ace-engine",    ["scripts"]),
+    ("ace-artificer", ["scripts"]),
+    ("ace-envoy",     ["src", "scripts"]),
+    ("ace-token-art", ["scripts"]),
+]
 
 IMPORT = re.compile(r'^\s*import\s+(?:([\w*\s{},]+?)\s+from\s+)?["\']([^"\']+)["\']',
                     re.MULTILINE)
@@ -135,11 +145,13 @@ def parse(path: Path):
 def main() -> int:
     graph: dict[Path, dict[Path, list[str]]] = {}
     tops: dict[Path, list[tuple[int, str]]] = {}
-    for mod in ACE:
-        root = MODULES / mod / "scripts"
-        if not root.exists():
+    absent: list[str] = []
+    for mod, subs in ACE:
+        roots = [MODULES / mod / s for s in subs if (MODULES / mod / s).exists()]
+        if not roots:
+            absent.append(mod)
             continue
-        for path in root.rglob("*.mjs"):
+        for path in [p for r in roots for p in r.rglob("*.mjs")]:
             if "node_modules" in str(path):
                 continue
             try:
@@ -166,7 +178,9 @@ def main() -> int:
     print("=" * 74)
     print("IMPORTED CONSTANTS EVALUATED AT TOP LEVEL, INSIDE AN IMPORT CYCLE")
     print("=" * 74)
-    print(f"Walked {len(graph)} file(s) across {len(ACE)} modules.")
+    print(f"Walked {len(graph)} file(s) across {len(ACE) - len(absent)} of {len(ACE)} modules.")
+    for mod in absent:
+        print(f"  not installed here: {mod} — nothing of it was read.")
     print()
 
     if not findings:

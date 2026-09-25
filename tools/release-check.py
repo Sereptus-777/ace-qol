@@ -33,6 +33,10 @@ CHECKS = [
     ("every card row can wrap", "python tools/card-wrap-check.py"),
     ("every hook ACE listens for is fired", "python tools/hook-check.py"),
     ("no import read before it exists", "python tools/cycle-check.py"),
+    # Two Forge traps destructured a name its target file does not export, so
+    # neither had ever played its animation (2026-09-25). Nothing else sees that
+    # shape: the module is real, so the load succeeds, and the name is undefined.
+    ("every imported name is one the other file exports", "node tools/missing-export-check.mjs"),
     ("lint (undefined names, broken code)", 'npx --yes eslint@9 "scripts/**/*.mjs"'),
     # This one lints the OTHER modules. The line above reads this folder only,
     # which is how a night of Engine work passed a green release check having
