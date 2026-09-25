@@ -6085,6 +6085,38 @@ Hooks.once("ready", () => {
   // Our ace-qol messages have MODULE_ID flags — they are NEVER touched.
   // This is flag-based detection only — no DOM selectors that could match our cards.
   // Foreign cards — same reasoning as the status-card handler above.
+  // ── ⚠️🔴 A PLAYER NEVER SEES A MONSTER'S INITIATIVE (his rule, 2026-09-25):
+  // "All my players are seeing the fucking initiative rolls of every fricking
+  // monster that rolls."
+  //
+  // Foundry posts one chat message per combatant rolled, flagged as an
+  // initiative roll, and they go to everybody. The roller itself is not touched
+  // here — he told me in September not to touch the roller, and this does not:
+  // it hides the CARD, on each player's own screen, for creatures they do not
+  // own. Their own initiative still shows.
+  registerForeignChatCardHandler((message, html) => {
+    const isInit = message.flags?.core?.initiativeRoll === true
+      || message.getFlag?.("core", "initiativeRoll") === true;
+    if (!isInit) return;
+    if (game.user.isGM) return;
+
+    const el = html instanceof HTMLElement ? html : html?.[0] ?? html;
+    if (!el?.style) return;
+
+    // Whose roll is it? The speaker's actor, resolved through the token first
+    // because an unlinked monster's actor id is the token's synthetic one.
+    let actor = null;
+    try {
+      const sp = message.speaker ?? {};
+      actor = (sp.token && game.scenes?.get(sp.scene)?.tokens?.get(sp.token)?.actor)
+        ?? (sp.actor ? game.actors?.get(sp.actor) : null);
+    } catch (_) { actor = null; }
+
+    // Mine stays. Anything I do not own disappears.
+    if (actor?.testUserPermission?.(game.user, "OWNER")) return;
+    el.style.display = "none";
+  }, "monster initiative rolls");
+
   registerForeignChatCardHandler((message, html) => {
     // ONLY suppress messages with D&D 5e system flags — nothing else
     if (!message.flags?.dnd5e) return;

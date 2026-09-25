@@ -5661,6 +5661,110 @@ console.log(`\nTHE NPC SETUP DIALOG SAYS WHAT IT DOES`);
     "one window, one writer, an edit that survives a stray Escape, and the old tick gone");
 }
 
+/* ── WHOSE BUTTON IS THIS ──────────────────────────────────────────────── */
+// 2026-09-25: "I just wanted to roll damage. It is coming up on the player side
+// as well. That's not up to the fucking player to roll damage on a trap."
+//
+// The damage block was marked GM-only and hidden by the render hook, which is
+// tidiness, not a rule: a card that rendered before the hook attached kept its
+// GM controls live on a player's screen, which is the 2026-08-07 lesson being
+// paid for a second time.
+console.log(`\nWHOSE BUTTON IS THIS`);
+{
+  const FORGE = `${ROOT}/Data/modules/ace-artificer/scripts`;
+  const behav = readFileSync(`${FORGE}/trap-behavior.mjs`, "utf8");
+
+  check("a player pressing a GM's button on a trap card does nothing and is told so (2026-09-25)",
+    behav.includes('const PLAYER_ACTIONS = new Set(["forge-trap-roll-save"]);')
+      && behav.includes("if (!game.user.isGM && !PLAYER_ACTIONS.has(action)) {")
+      && behav.includes('ui.notifications?.info("The GM rolls that one.");'),
+    "the save is the player's; the damage, the resistance and the apply are not");
+
+  check("and the rule is enforced at the click, not only in the stylesheet (2026-09-25)",
+    behav.indexOf("const PLAYER_ACTIONS") < behav.indexOf('case "forge-trap-roll-damage"')
+      && behav.includes('<div class="forge-dmg-block forge-gm-only">'),
+    "hidden for tidiness, refused for real");
+
+  check("every trap card already in the log is swept, not just the ones drawn later (2026-09-25)",
+    behav.includes("const decorate = (message, html) => {")
+      && behav.includes("Hooks.on(hookName, decorate);")
+      && behav.includes("const sweepExisting = () => {")
+      && behav.includes('Hooks.once("ready", sweepExisting);')
+      && behav.includes('if (root.dataset?.forgeTrapWired === "1") return;'),
+    "a card posted during load, or sitting there when a player refreshes, is decorated too");
+}
+
+/* ── A TRAP IS HIS TO TELL ─────────────────────────────────────────────── */
+// 2026-09-25: "I don't want it showing up in chat either that Jeth has spotted
+// a trap. He can decide to tell people." And: "I don't want them seeing what
+// they have to beat. I want them rolling without knowing what the DC is."
+console.log(`\nA TRAP IS HIS TO TELL`);
+{
+  const FORGE = `${ROOT}/Data/modules/ace-artificer`;
+  const watch = readFileSync(`${FORGE}/scripts/perception-watcher.mjs`, "utf8");
+  const behav = readFileSync(`${FORGE}/scripts/trap-behavior.mjs`, "utf8");
+  const pipe  = readFileSync(`${FORGE}/scripts/trap-pipeline.mjs`, "utf8");
+  const css   = readFileSync(`${FORGE}/styles/ace-artificer.css`, "utf8");
+  const qol   = readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/ace-qol.mjs`, "utf8");
+
+  check("spotting a trap tells the finder and the GM, and nobody else, with no timer on it (2026-09-25)",
+    watch.includes("whisper: Array.from(new Set([userId, ...game.users.filter(u => u.isGM).map(u => u.id)])),")
+      && watch.includes("TELL THE PARTY")
+      && watch.includes("Until you press that, nobody else can see it and nothing is in chat.")
+      && !watch.includes("setTimeout(() => PerceptionWatcher.tellParty"),
+    "private by default, and it waits as long as he likes");
+
+  check("and pressing it lights the trap up for everyone and posts one card to the table (2026-09-25)",
+    watch.includes("static async tellParty(trapId, userId)")
+      && watch.includes('await doc.setFlag(MODULE_ID, "revealedToAll", true);')
+      && watch.includes("!spotted[userId] && !flags.revealedToAll")
+      && watch.includes("!(f.spottedBy ?? {})[userId] && !f.revealedToAll"),
+    "one flag opens it to the whole table, floor traps and doors alike");
+
+  check("players never learn the DC, before the roll or after it (2026-09-25)",
+    behav.includes('<span class="forge-gm-only">DC ${trap.saveDC} </span>${abilityLabel} Save')
+      && behav.includes('<span class="forge-save-vs forge-gm-only">vs DC')
+      && behav.includes('for (const el of root.querySelectorAll(".forge-gm-only"))'),
+    "the number is drawn for the GM and stripped for everyone else");
+
+  // ⚠️ THE CARD HE PHOTOGRAPHED WAS OURS. We posted a plain roll message so
+  // Dice So Nice would animate the dice, and it duplicated the trap card.
+  check("no plain roll card is posted for a trap save: the dice are asked for directly (2026-09-25)",
+    pipe.includes("await dsn.showForRoll(roll, game.user, true);")
+      && !pipe.includes("const card = await roll.toMessage({")
+      && !pipe.includes("forgeWatchMessageDice"),
+    "the dice still roll, and nothing plain reaches the chat");
+
+  check("and a player never sees a monster's initiative, without the roller being touched (2026-09-25)",
+    qol.includes("message.flags?.core?.initiativeRoll === true")
+      && qol.includes('if (actor?.testUserPermission?.(game.user, "OWNER")) return;')
+      && qol.includes('"monster initiative rolls"'),
+    "his own initiative still shows; everything else is hidden on his screen");
+
+  check("the roll box fills the card, grows, and wraps inside itself (2026-09-25)",
+    css.includes("/* ⚠️ EDGE TO EDGE (his screenshot, 2026-09-25)")
+      && /\.forge-save-breakdown \{\s*\n\s*display: flex;\s*\n\s*width: 100%;/.test(css)
+      && css.includes("overflow: hidden;")
+      && /\.forge-save-result-row \{[\s\S]{0,200}?width: 100%;/.test(css),
+    "no more floating in the middle");
+
+  // ⚠️ Re-pinned the same day. "Bigger and still purple" was the first ask; the
+  // screenshot after it was the real one: "the investigation button is all
+  // screwed up... just put 'Investigate' on there... big and purple and
+  // pulsing." The note used to share the row with margin-left:auto and take the
+  // width, so the one word he reads was crushed.
+  check("the Investigate pill puts the word on its own row, big and purple and pulsing (2026-09-25)",
+    css.includes(".forge-disarm-precursor-label")
+      && /\.forge-disarm-precursor-btn \{[\s\S]{0,400}?animation: forge-investigate-pulse/.test(css)
+      && css.includes("@keyframes forge-investigate-pulse")
+      && /\.forge-disarm-precursor-label \{[\s\S]{0,300}?white-space: nowrap;/.test(css)
+      && !/\.forge-disarm-precursor-note \{[\s\S]{0,120}?margin-left: auto;/.test(css),
+    "one line for the word, the note underneath, and the fill is what pulses");
+
+  check("and the padlock is a target he can hit on a five-foot trap (2026-09-25)",
+    watch.includes("const size = 64;"));
+}
+
 /* ── A TRAPPED DOOR ────────────────────────────────────────────────────── */
 // 2026-09-25. The trap library has had a DOOR placement for months, described
 // in the panel as "Door (fires on open)", and nothing anywhere listened for a
@@ -5746,13 +5850,15 @@ console.log(`\nA TRAP HE FOUND STAYS ON HIS SCREEN`);
 {
   const FORGE = `${ROOT}/Data/modules/ace-artificer/scripts`;
   const watcher = readFileSync(`${FORGE}/perception-watcher.mjs`, "utf8");
+  const disarmSrc = readFileSync(`${FORGE}/disarm-pipeline.mjs`, "utf8");
 
   check("the lock is drawn whether or not he can reach it, dimmed and inert when he cannot (2026-09-25)",
     watcher.includes("static _createLockIcon(tpl, anchor = null, { reachable = true } = {})")
       && watcher.includes("container.interactive = reachable;")
       && watcher.includes("container.alpha       = reachable ? 1 : 0.5;")
-      && watcher.includes("if (!reachable) return container;"),
-    "one icon, two states, and the far one cannot be clicked");
+      // the far one does not disarm; it explains. See the pin below.
+      && watcher.includes("if (!reachable) {"),
+    "one icon, two states, and the far one cannot disarm");
 
   check("and it says why it cannot be used, on the canvas, in feet (2026-09-25)",
     watcher.includes("`within ${proximityFt} ft to disarm`")
@@ -5760,8 +5866,12 @@ console.log(`\nA TRAP HE FOUND STAYS ON HIS SCREEN`);
     "the reason is on screen rather than in a setting he has to remember");
 
   check("both draw paths pass reachability, and walking into range redraws it gold (2026-09-25)",
-    watcher.includes("const reachable = isGM || PerceptionWatcher._isAnchorInDisarmRange(anchor);")
-      && watcher.includes("const reachable = PerceptionWatcher._isAnchorInDisarmRange(anchor);")
+    // ⚠️ Re-pinned 2026-09-25: reach is measured to the trap's SHAPE now, so
+    // both call sites hand the template over. A door has no shape and keeps
+    // the anchor-only form.
+    watcher.includes("const reachable = isGM || PerceptionWatcher._isAnchorInDisarmRange(anchor, tpl);")
+      && watcher.includes("const reachable = PerceptionWatcher._isAnchorInDisarmRange(anchor, tpl);")
+      && watcher.includes("static _isAnchorInDisarmRange(anchor, tpl = null)")
       && watcher.includes("if (entry && entry.reachable === reachable) {")
       && watcher.includes("locks.push({ pixi, anchorKey: key, reachable });"),
     "the first draw and every refresh agree, and a change of state redraws");
@@ -5769,6 +5879,19 @@ console.log(`\nA TRAP HE FOUND STAYS ON HIS SCREEN`);
   // ⚠️ THE ONE CASE THAT STILL REMOVES IT. Out of attempts is not "stand
   // closer": there is nothing left to try, and a lock that cannot ever be used
   // would be a lie.
+  // ⚠️🔴 AND A DEAD BUTTON IS STILL A DEAD BUTTON WHEN I BUILD IT (2026-09-25).
+  // I made the out-of-reach lock inert an hour before his player clicked it and
+  // got nothing at all. Every refusal in this path now reaches the person who
+  // pressed it, not the GM's corner of the screen.
+  check("the far lock answers when pressed, and every refusal on the GM side is whispered to whoever asked (2026-09-25)",
+    watcher.includes('container.cursor      = "help";')
+      && watcher.includes("You need to be within ${ft} ft of it to try anything.")
+      && watcher.includes("tokenId:    mine?.id ?? null,")
+      && disarmSrc.includes("static _refuse(userId, text)")
+      && disarmSrc.includes("whisper: Array.from(new Set([userId, ...game.users.filter(u => u.isGM).map(u => u.id)])),")
+      && (disarmSrc.match(/DisarmPipeline\._refuse\(userId,/g) ?? []).length >= 5,
+    "nothing in the disarm path can refuse in silence");
+
   check("a player who has used up every disarm attempt still loses the lock entirely (2026-09-25)",
     watcher.includes("if (lockedOut) continue;")
       && watcher.includes("PerceptionWatcher._isUserLockedOutFor(flags)"),
