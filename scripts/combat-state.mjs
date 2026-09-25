@@ -346,44 +346,39 @@ export class CombatState {
       }
     } catch (_) { /* non-fatal */ }
 
-    // ── Crusher crit — Advantage on attacks vs the cursed target (edition-aware) ──
-    // Flag lives on the TARGET. byUuid is the Crusher's actor uuid.
-    // 2014 Tasha's: advantage applies to attacks by OTHER creatures — the
-    //   Crusher's own follow-up swings do NOT get advantage on the cursed target.
-    // 2024 PHB: advantage applies to ALL attackers including the Crusher.
+    // ── Crusher crit — Advantage on attacks against the marked target ──
+    // The flag lives on the TARGET; byUuid is the Crusher's actor uuid.
+    //
+    // ⚠️🔴 THERE IS NO CARVE-OUT IN EITHER EDITION (checked word for word against
+    // TCE p79 and XPHB p203, 2026-09-25). 2014: "attack rolls against that
+    // creature are made with advantage until the start of your next turn." 2024:
+    // "attack rolls against that creature have Advantage until the start of your
+    // next turn." Neither says "by creatures other than you". This used to skip
+    // the Crusher's own attacks in a 2014 world, which took the advantage away
+    // from the person who earned it on every follow-up swing of the Attack action.
     try {
       const crusherDebuff = targetActor?.getFlag?.(MODULE_ID, "crusherCritDebuff");
       if (crusherDebuff && typeof crusherDebuff === "object") {
-        const crusherEdition = CombatState.getActiveEdition(attackerActor);
-        const attackerIsCrusher = attackerActor?.uuid && crusherDebuff.byUuid && attackerActor.uuid === crusherDebuff.byUuid;
-        // 2014 carve-out: skip advantage for the Crusher's own attacks.
-        const skipAdv = crusherEdition === "2014" && attackerIsCrusher;
-        if (!skipAdv) {
-          advantageSources.push({ source: "target", reason: `CRUSHER CRIT (${crusherEdition}) → attack advantage vs this target` });
-        }
+        advantageSources.push({ source: "target", reason: "CRUSHER CRIT → attack advantage vs this target" });
       }
-    } catch (_) { /* non-fatal */ }
+    } catch (err) { console.warn(`${MODULE_ID} | could not read the Crusher crit mark:`, err); }
 
-    // ── Slasher crit — Disadvantage on attacks (edition-aware carve-out) ──
-    // Flag lives on the ATTACKER (the original target of the slasher's crit).
-    // exceptUuid is the slasher's actor uuid.
-    // 2014 Tasha's: BLANKET disadvantage on attack rolls — no carve-out;
-    //   the target is at disadvantage attacking the slasher as well.
-    // 2024 PHB: carve-out applies — disadvantage on attacks vs anyone EXCEPT
-    //   the slasher.
+    // ── Slasher crit — Disadvantage on the wounded creature's attack rolls ──
+    // The flag lives on the ATTACKER here, because the attacker IS the creature
+    // the Slasher wounded.
+    //
+    // ⚠️🔴 NO CARVE-OUT IN EITHER EDITION (TCE p81, XPHB p207, checked 2026-09-25).
+    // 2014: "the target has disadvantage on all attack rolls." 2024: "it has
+    // Disadvantage on attack rolls until the start of your next turn." Neither
+    // says "except against you". This used to let the wounded creature swing at
+    // the Slasher with a clean roll in a 2024 world — at the one person who had
+    // just grievously wounded it.
     try {
       const slasherDebuff = attackerActor?.getFlag?.(MODULE_ID, "slasherCritDebuff");
       if (slasherDebuff && typeof slasherDebuff === "object") {
-        const slasherEdition = CombatState.getActiveEdition(attackerActor);
-        const exceptUuid = slasherDebuff.exceptUuid;
-        const isTargetingSlasher = exceptUuid && targetActor?.uuid && exceptUuid === targetActor.uuid;
-        // 2014 = always push disadvantage. 2024 = skip when targeting the slasher.
-        if (slasherEdition === "2014" || !isTargetingSlasher) {
-          const carveOutText = slasherEdition === "2014" ? "" : " (vs anyone except the slasher)";
-          disadvantageSources.push({ source: "attacker", reason: `SLASHER CRIT (${slasherEdition}) → disadvantage on attack rolls${carveOutText}` });
-        }
+        disadvantageSources.push({ source: "attacker", reason: "SLASHER CRIT → disadvantage on all attack rolls" });
       }
-    } catch (_) { /* non-fatal */ }
+    } catch (err) { console.warn(`${MODULE_ID} | could not read the Slasher crit mark:`, err); }
 
     // ── Sap mastery — target Sapped → its attack has disadvantage ──
     try {

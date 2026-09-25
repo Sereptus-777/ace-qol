@@ -9546,6 +9546,359 @@ console.log(`\nSPIRIT GUARDIANS 2024, THE PICKERS AND THE CARD`);
   }
 }
 
+/* ── CRUSHER, SLASHER, PIERCER ────────────────────────────────────────────── */
+// Johnny's table, proven 2026-09-19: not one of the three had ever fired. They
+// gated on `item.system.damage.parts[0][1]`, and a dnd5e 5.x weapon has no such
+// field — WeaponData's schema is `damage: { base, versatile }` and its own
+// migration lifts the old `parts[0]` into `base`. Of the 3,185 weapons in hijinx
+// NOT ONE carries `parts`, so the damage type was always "" and all three riders
+// were skipped in silence for as long as they have existed.
+//
+// Fixing the read switched the crit riders on, and they were wrong against the
+// real text. Checked word for word against Plutonium's feats.json (TCE and XPHB):
+//   Crusher, BOTH editions: "attack rolls against that creature are made with
+//     advantage" / "have Advantage". No "by creatures other than you" anywhere.
+//   Slasher, BOTH editions: "the target has disadvantage on all attack rolls" /
+//     "it has Disadvantage on attack rolls". No "except against you" anywhere.
+// Both carve-outs were invented by ACE, one per edition, each taking the benefit
+// away from the person who had earned it. Both editions are replayed here and
+// must give the SAME answer, which is the whole point.
+//
+// ⚠️ WHAT IS REAL HERE. The damage-type reader, CombatState.assess, the three
+// riders, the size gate, the occupancy test and the flag resets are ACE's own
+// code. The tokens and the fight are stood in, and every die rolls a 1.
+console.log(`\nCRUSHER, SLASHER, PIERCER: THE RIDERS THAT NEVER FIRED`);
+{
+  const MOD = "ace-qol";
+  const { FeatEffects } = await import(`${MODULE}/scripts/feat-effects.mjs`);
+  const { DamageCalculator } = await import(`${MODULE}/scripts/damage-calculator.mjs`);
+  const { weaponDamageTypes } = await import(`${MODULE}/scripts/read-activities.mjs`);
+
+  const keepF = { placed: [...canvas.tokens.placeables], combat: game.combat,
+    combats: game.combats, scene: canvas.scene, dims: canvas.dimensions,
+    uuid: globalThis.fromUuid, edition: SETTINGS.get("ace-qol.gameRulesEdition") };
+  canvas.tokens.placeables.length = 0;
+  const madeF = [];
+  try {
+    /* ── The weapons, in the two shapes dnd5e 5.3.3 actually keeps ───────── */
+    // A LIVE weapon: `damage.base.types` is a Set, and the attack activity already
+    // holds the base part at the front, marked `base` (prepareFinalData).
+    const liveWeapon = (name, denom, type) => {
+      const base = { number: 1, denomination: denom, bonus: "", types: new Set([type]),
+                     custom: { enabled: false, formula: "" } };
+      const act = { id: `act-${name}`, type: "attack",
+                    damage: { includeBase: true,
+                              parts: [{ ...base, base: true, types: new Set([type]) }] } };
+      return { id: `it-${name}`, name, type: "weapon", img: "", uuid: `Item.it-${name}`,
+        system: { properties: new Set(), actionType: "mwak",
+                  damage: { base, versatile: { types: new Set() } },
+                  activities: new Map([[act.id, act]]) }, _act: act };
+    };
+    // A STORED weapon, as the world database keeps it: `types` is an ARRAY and the
+    // attack carries no parts at all, because nothing has prepared it. 2,373 of
+    // his 3,185 weapons are in exactly this state on disk.
+    const storedWeapon = (name, denom, type) => {
+      const act = { id: `act-${name}`, type: "attack", damage: { includeBase: true, parts: [] } };
+      return { id: `it-${name}`, name, type: "weapon", img: "", uuid: `Item.it-${name}`,
+        system: { properties: new Set(), actionType: "mwak",
+                  damage: { base: { number: 1, denomination: denom, bonus: "", types: [type] },
+                            versatile: { types: [] } },
+                  activities: { [act.id]: act } }, _act: act };
+    };
+    const maul       = liveWeapon("maul", 6, "bludgeoning");
+    const scimitar   = liveWeapon("scimitar", 6, "slashing");
+    const rapier     = liveWeapon("rapier", 8, "piercing");
+    const greataxe   = liveWeapon("greataxe", 12, "slashing");
+    const storedMaul = storedWeapon("stored-maul", 6, "bludgeoning");
+    // The dead shape, exactly as every reader used to expect it. Nothing in his
+    // world looks like this; it is here so a pin fails if anyone goes back to it.
+    const deadShape = { id: "it-dead", name: "a weapon as ACE used to read one",
+      type: "weapon", img: "",
+      system: { properties: new Set(), damage: { parts: [["1d8", "bludgeoning"]] }, activities: {} } };
+
+    /* ── 1. The read that killed all three ──────────────────────────────── */
+    check("1. a weapon's damage type is read where dnd5e 5.x keeps it: live (a Set) and stored (an array) answer the same, and the field the riders used to read carries nothing on either",
+      weaponDamageTypes(maul, maul._act)[0] === "bludgeoning"
+        && weaponDamageTypes(maul)[0] === "bludgeoning"
+        && weaponDamageTypes(storedMaul, storedMaul._act)[0] === "bludgeoning"
+        && weaponDamageTypes(storedMaul)[0] === "bludgeoning"
+        && weaponDamageTypes(rapier)[0] === "piercing"
+        && weaponDamageTypes(maul).length === 1
+        && maul.system.damage.parts === undefined
+        && storedMaul.system.damage.parts === undefined
+        && deadShape.system.damage.parts[0][1] === "bludgeoning",
+      `live maul, with its activity: ${JSON.stringify(weaponDamageTypes(maul, maul._act))}; `
+        + `live maul, item alone: ${JSON.stringify(weaponDamageTypes(maul))}; stored maul: `
+        + `${JSON.stringify(weaponDamageTypes(storedMaul, storedMaul._act))}; rapier: `
+        + `${JSON.stringify(weaponDamageTypes(rapier))}; damage.parts on a 5.x weapon: `
+        + `${String(maul.system.damage.parts)}`);
+
+    /* ── The creatures, their tokens, and the fight ──────────────────────── */
+    const feat = (name) => ({ id: `ft-${name}`, name, type: "feat", system: {} });
+    const who = (id, name, { feats = [], size = "med", hp = 30 } = {}) => {
+      const a = { id, name, type: "character", img: "", documentName: "Actor", uuid: `Actor.${id}`,
+        statuses: new Set(), effects: [], items: feats.map(feat), hasPlayerOwner: true,
+        system: { attributes: { hp: { value: hp, max: hp }, ac: { value: 15 },
+                                death: { success: 0, failure: 0 } },
+                  traits: { size }, details: {} },
+        flags: { [MOD]: {} },
+        getFlag: (scope, key) => String(key).split(".").reduce((o, k) => o?.[k], a.flags?.[scope]),
+        setFlag: async (scope, key, v) => {
+          const path = String(key).split("."); let o = (a.flags[scope] ??= {});
+          for (const k of path.slice(0, -1)) o = (o[k] ??= {});
+          o[path[path.length - 1]] = v; return a; },
+        unsetFlag: async (scope, key) => {
+          const path = String(key).split("."); let o = a.flags?.[scope];
+          for (const k of path.slice(0, -1)) o = o?.[k];
+          if (o) delete o[path[path.length - 1]]; return a; },
+        update: async () => a, getActiveTokens: () => [TOKENS.get(id)].filter(Boolean),
+      };
+      ACTORS.set(id, a); madeF.push(a); return a;
+    };
+    // A token whose document really moves, so the push is tested against squares
+    // rather than against nothing.
+    const TOKENS = new Map();
+    const tokenAt = (actor, col, row, { w = 1, h = 1 } = {}) => {
+      const doc = { id: `tok-${actor.id}`, uuid: `Scene.replay.Token.tok-${actor.id}`,
+        name: actor.name, texture: { src: "" }, x: col * 100, y: row * 100,
+        width: w, height: h, elevation: 0, disposition: -1, actor,
+        documentName: "Token", parent: null, _moved: false,
+        update: async (u = {}, opts = {}) => {
+          Object.assign(doc, u); doc._moved = true; doc._opts = opts; return doc; } };
+      const tok = { id: doc.id, name: actor.name, actor, x: doc.x, y: doc.y,
+        w: w * 100, h: h * 100, document: doc };
+      TOKENS.set(actor.id, tok);
+      return tok;
+    };
+
+    const crusher = who("feat-crusher", "Grukk the Crusher", { feats: ["Crusher"] });
+    const slasher = who("feat-slasher", "Aryel the Slasher", { feats: ["Slasher"] });
+    const piercer = who("feat-piercer", "Riswynn the Piercer", { feats: ["Piercer"] });
+    const victim  = who("feat-victim", "a bandit");
+    const ogre    = who("feat-ogre", "an ogre", { size: "lg" });
+    const dragon  = who("feat-dragon", "a gargantuan dragon", { size: "grg" });
+    const blocker = who("feat-blocker", "an ally standing behind him");
+
+    const cTok = tokenAt(crusher, 0, 0);
+    const vTok = tokenAt(victim, 1, 0);
+    const oTok = tokenAt(ogre, 1, 2, { w: 2, h: 2 });
+    const dTok = tokenAt(dragon, 1, 5, { w: 4, h: 4 });
+    const bTok = tokenAt(blocker, 2, 0);
+    const sTok = tokenAt(slasher, 0, 3);
+    const pTok = tokenAt(piercer, 0, 4);
+
+    const scene = { tokens: [cTok.document, vTok.document] };
+    canvas.scene = scene;
+    for (const t of TOKENS.values()) t.document.parent = scene;
+    canvas.dimensions = { sceneRect: { x: 0, y: 0, width: 2000, height: 2000 } };
+    canvas.tokens.placeables.push(cTok, vTok);
+    const allDocs = [...TOKENS.values()].map(t => t.document);
+    globalThis.fromUuid = async (u) => ITEMS.get(u)
+      ?? allDocs.find(d => d.uuid === u)
+      ?? ACTORS.get(String(u).split(".")[1])
+      ?? null;
+
+    const hit = (targetToken, crit) => ({ hitResult: crit ? "critical" : "hit", targetToken });
+    const fire = async (item, actor, hits, activity) => {
+      const at = posted.length;
+      await quiet(() => FeatEffects._onAttackComplete({ item, actor, hits, misses: [], subject: activity }));
+      return posted.slice(at);
+    };
+    const cardFor = (cards, featId) => cards.find(c => c.flags?.[MOD]?.feat === featId) ?? null;
+    const bodyOf = (cards, featId) => String(cardFor(cards, featId)?.content ?? "");
+    const wipe = () => { for (const a of [crusher, slasher, piercer, victim]) a.flags[MOD] = {}; };
+
+    /* ── 2. Each rider fires on its own damage type, and only on it ──────── */
+    {
+      wipe();
+      const b = await fire(maul, crusher, [hit(vTok, false)], maul._act);
+      const s2 = await fire(scimitar, slasher, [hit(vTok, false)], scimitar._act);
+      const p = await fire(rapier, piercer, [hit(vTok, false)], rapier._act);
+      wipe();
+      // The wrong weapon in the same hand must produce nothing at all.
+      const wrong1 = await fire(scimitar, crusher, [hit(vTok, false)], scimitar._act);
+      const wrong2 = await fire(maul, slasher, [hit(vTok, false)], maul._act);
+      const wrong3 = await fire(maul, piercer, [hit(vTok, false)], maul._act);
+      check("2. bludgeoning wakes Crusher, slashing wakes Slasher, piercing wakes Piercer — and the wrong damage type wakes none of them",
+        !!cardFor(b, "crusher") && !!cardFor(s2, "slasher") && !!cardFor(p, "piercer")
+          && wrong1.length === 0 && wrong2.length === 0 && wrong3.length === 0,
+        `maul → ${b.length} card(s); scimitar → ${s2.length}; rapier → ${p.length}; `
+          + `Crusher holding a scimitar: ${wrong1.length}; Slasher holding a maul: ${wrong2.length}; `
+          + `Piercer holding a maul: ${wrong3.length}`);
+    }
+
+    /* ── 3. A stored weapon answers the same as a live one ───────────────── */
+    {
+      wipe();
+      const cards = await fire(storedMaul, crusher, [hit(vTok, false)], storedMaul._act);
+      check("3. a weapon read straight out of the world database, whose attack carries no damage parts at all, still wakes Crusher",
+        !!cardFor(cards, "crusher"),
+        `${cards.length} card(s): ${cards.map(c => c.flags?.[MOD]?.feat).join(", ") || "none"}`);
+    }
+
+    /* ── 4. The crit riders, against the real text of BOTH editions ─────── */
+    {
+      const fight = { id: "fight-feats", started: true, round: 1, turn: 0,
+        combatants: { contents: [
+            { id: "cb-crusher", actorId: crusher.id, actor: crusher },
+            { id: "cb-slasher", actorId: slasher.id, actor: slasher },
+            { id: "cb-victim", actorId: victim.id, actor: victim }],
+          get(id) { return this.contents.find(c => c.id === id) ?? null; } },
+        current: { combatantId: "cb-victim" } };
+      game.combat = fight;
+      game.combats = { contents: [fight] };
+
+      for (const ed of ["2014", "2024"]) {
+        SETTINGS.set("ace-qol.gameRulesEdition", ed);
+        wipe();
+
+        const cCards = await fire(maul, crusher, [hit(vTok, true)], maul._act);
+        const critBody = bodyOf(cCards, "crusher-crit");
+        const mark = victim.flags[MOD]?.crusherCritDebuff ?? null;
+        // The gate's own verdict for the Crusher's OWN follow-up swing — the case
+        // the 2014 carve-out got wrong — and for anybody else's.
+        const own = await quiet(() => CombatState.assess(crusher, vTok, maul));
+        const other = await quiet(() => CombatState.assess(slasher, vTok, maul));
+        const sawOwn = own.advantageSources.some(a => /CRUSHER CRIT/.test(a.reason));
+        const sawOther = other.advantageSources.some(a => /CRUSHER CRIT/.test(a.reason));
+        check(`4. Crusher's crit (${ed}): advantage against that creature for EVERYONE, the Crusher's own next swing included — neither edition carves anyone out, and the card says so`,
+          !!mark && mark.byUuid === crusher.uuid && mark.untilTurnOf === "cb-crusher"
+            && sawOwn && sawOther
+            && !/other than/i.test(critBody) && /included/i.test(critBody),
+          `mark: ${mark ? `by ${mark.byUuid}, until ${mark.untilTurnOf}` : "NONE"}; `
+            + `the Crusher's own swing: ${sawOwn ? "advantage" : "FLAT"}; somebody else's: `
+            + `${sawOther ? "advantage" : "FLAT"}; the card names an exception: `
+            + `${/other than/i.test(critBody) ? "YES" : "no"}`);
+
+        wipe();
+        const sCards = await fire(scimitar, slasher, [hit(vTok, true)], scimitar._act);
+        const sBody = bodyOf(sCards, "slasher-crit");
+        const sMark = victim.flags[MOD]?.slasherCritDebuff ?? null;
+        // The wounded creature swinging back at the Slasher: the 2024 carve-out
+        // used to hand it a clean roll here.
+        const atSlasher = await quiet(() => CombatState.assess(victim, sTok, scimitar));
+        const atAnyone = await quiet(() => CombatState.assess(victim, pTok, scimitar));
+        const disAtSlasher = atSlasher.disadvantageSources.some(d => /SLASHER CRIT/.test(d.reason));
+        const disAtAnyone = atAnyone.disadvantageSources.some(d => /SLASHER CRIT/.test(d.reason));
+        check(`4. Slasher's crit (${ed}): the wounded creature has disadvantage on ALL its attack rolls, the Slasher included — neither edition carves anyone out`,
+          !!sMark && sMark.byUuid === slasher.uuid && disAtSlasher && disAtAnyone
+            && !/except/i.test(sBody) && /all/i.test(sBody),
+          `mark: ${sMark ? "set" : "NONE"}; swinging at the Slasher: `
+            + `${disAtSlasher ? "disadvantage" : "FLAT"}; at anyone else: `
+            + `${disAtAnyone ? "disadvantage" : "FLAT"}; the card names an exception: `
+            + `${/except/i.test(sBody) ? "YES" : "no"}`);
+      }
+
+      /* ── 5. "until the start of your next turn" is the HOLDER's turn ───── */
+      const stamp = (untilTurnOf) => {
+        victim.flags[MOD] = { crusherCritDebuff: { byUuid: crusher.uuid, combatId: fight.id,
+          untilTurnOf, setOnRound: 1, throughRound: 3 } };
+      };
+      fight.round = 2;
+      stamp("cb-crusher");
+      await quiet(() => FeatEffects.expireCritDebuffsIfDue("cb-victim"));
+      const survivedOthers = !!victim.flags[MOD]?.crusherCritDebuff;
+      await quiet(() => FeatEffects.expireCritDebuffsIfDue("cb-crusher"));
+      const goneOnHisTurn = !victim.flags[MOD]?.crusherCritDebuff;
+      // The backstop: a holder who leaves the fight must not mark the target forever.
+      stamp("cb-vanished");
+      await quiet(() => FeatEffects.expireCritDebuffsIfDue("cb-victim"));
+      const goneWhenHolderLeft = !victim.flags[MOD]?.crusherCritDebuff;
+      check("5. the crit mark ends at the start of the Crusher's OWN next turn, not at the top of the next round, and it does not outlive a holder who has left the fight",
+        survivedOthers && goneOnHisTurn && goneWhenHolderLeft,
+        `round 2 opens with somebody else: ${survivedOthers ? "still marked" : "CLEARED TOO EARLY"}; `
+          + `the Crusher's turn opens: ${goneOnHisTurn ? "cleared" : "STILL MARKED"}; `
+          + `holder gone from the tracker: ${goneWhenHolderLeft ? "cleared" : "STUCK FOREVER"}`);
+    }
+
+    /* ── 6. Crusher's push: the size cap ────────────────────────────────── */
+    {
+      const offeredVs = async (tok) => {
+        wipe();
+        return bodyOf(await fire(maul, crusher, [hit(tok, false)], maul._act), "crusher");
+      };
+      const vMed = await offeredVs(vTok);
+      const vLg = await offeredVs(oTok);
+      const vGrg = await offeredVs(dTok);
+      const hasButton = (html) => /ace-qol-crusher-push-btn/.test(html);
+      check("6. the push is offered against a creature no more than one size larger, and refused WITH A REASON against anything bigger (RAW, both editions)",
+        hasButton(vMed) && hasButton(vLg) && !hasButton(vGrg)
+          && /more than one size larger/i.test(vGrg),
+        `vs Medium: ${hasButton(vMed) ? "offered" : "MISSING"}; vs Large: `
+          + `${hasButton(vLg) ? "offered" : "MISSING"}; vs Gargantuan: `
+          + `${hasButton(vGrg) ? "STILL OFFERED" : "refused"}, and it says why: `
+          + `${/more than one size larger/i.test(vGrg) ? "yes" : "NO"}`);
+    }
+
+    /* ── 7. The push itself: an unoccupied space, and forced movement ───── */
+    {
+      const reset = () => { vTok.document.x = 100; vTok.document.y = 0;
+                            vTok.document._moved = false; vTok.document._opts = null; };
+      reset();
+      const moved = await quiet(() => FeatEffects._pushTarget5ft(cTok.document.uuid, vTok.document.uuid));
+      const landedAt = vTok.document.x;
+      const forced = vTok.document._opts?.aceForcedMovement === true;
+      // Put an ally in the square behind him and try the same push again.
+      scene.tokens.push(bTok.document);
+      reset();
+      const blocked = await quiet(() => FeatEffects._pushTarget5ft(cTok.document.uuid, vTok.document.uuid));
+      const stayedPut = vTok.document.x === 100 && vTok.document._moved === false;
+      scene.tokens.pop();
+      check("7. the push moves the target one square straight away and marks it forced movement (no opportunity attack), and REFUSES when that space is taken — RAW says \"to an unoccupied space\"",
+        moved === true && landedAt === 200 && forced
+          && blocked === false && stayedPut,
+        `into an empty square: ${moved ? `moved to x=${landedAt}` : "REFUSED"}, forced movement: `
+          + `${forced ? "yes" : "NO"}; with an ally standing there: `
+          + `${blocked === false ? "refused" : "PUSHED ANYWAY"}, and the target `
+          + `${stayedPut ? "did not move" : "MOVED"}`);
+    }
+
+    /* ── 8. "Once per turn" means ANY turn ───────────────────────────────── */
+    {
+      wipe();
+      const first = await fire(maul, crusher, [hit(vTok, false)], maul._act);
+      const again = await fire(maul, crusher, [hit(vTok, false)], maul._act);
+      // A new turn — anybody's — gives the allowance back. The turn hook now does
+      // this for every combatant rather than only the one who has just acted.
+      await quiet(() => FeatEffects.clearOncePerTurnFlags(crusher));
+      const nextTurn = await fire(maul, crusher, [hit(vTok, false)], maul._act);
+      check("8. the push is once per turn, and ANY creature's turn gives it back — an opportunity attack on a goblin's turn happens in a new turn (RAW \"once per turn\")",
+        !!cardFor(first, "crusher") && !cardFor(again, "crusher") && !!cardFor(nextTurn, "crusher"),
+        `first swing: ${cardFor(first, "crusher") ? "offered" : "MISSING"}; second swing, same `
+          + `turn: ${cardFor(again, "crusher") ? "OFFERED AGAIN" : "held back"}; once a turn has `
+          + `passed: ${cardFor(nextTurn, "crusher") ? "offered" : "STILL SPENT"}`);
+    }
+
+    /* ── 9. "One additional damage die" is the WEAPON's die ──────────────── */
+    {
+      const d8 = DamageCalculator._weaponDie(rapier, rapier._act.id);
+      const d12 = DamageCalculator._weaponDie(greataxe, greataxe._act.id);
+      const d6 = DamageCalculator._weaponDie(storedMaul, storedMaul._act.id);
+      const nothing = DamageCalculator._weaponDie(
+        { name: "a ring with nothing to swing", type: "equipment", system: { activities: {} } });
+      check("9. \"one additional damage die\" is the weapon's own die and its own type — rapier 1d8 piercing, greataxe 1d12 slashing, a stored maul 1d6 bludgeoning — and something with no die says so instead of falling back to 1d6 slashing",
+        d8?.die === "1d8" && d8.type === "piercing"
+          && d12?.die === "1d12" && d12.type === "slashing"
+          && d6?.die === "1d6" && d6.type === "bludgeoning"
+          && nothing === null,
+        `rapier: ${d8?.die} ${d8?.type}; greataxe: ${d12?.die} ${d12?.type}; stored maul: `
+          + `${d6?.die} ${d6?.type}; nothing to swing: ${JSON.stringify(nothing)}`);
+    }
+
+  } finally {
+    canvas.tokens.placeables.length = 0;
+    canvas.tokens.placeables.push(...keepF.placed);
+    game.combat = keepF.combat;
+    game.combats = keepF.combats;
+    canvas.scene = keepF.scene;
+    canvas.dimensions = keepF.dims;
+    globalThis.fromUuid = keepF.uuid;
+    if (keepF.edition === undefined) SETTINGS.delete("ace-qol.gameRulesEdition");
+    else SETTINGS.set("ace-qol.gameRulesEdition", keepF.edition);
+    for (const a of madeF) ACTORS.delete(a.id);
+  }
+}
+
 /* ── PHASE 5: AREA AND TURN TRIGGERS ──────────────────────── */
 // Johnny, 2026-09-15: "PHASE 5 — area / turn triggers only. Then STOP." Done when
 // the replay pins: 1. an emanation catches on entering and on the turn its own

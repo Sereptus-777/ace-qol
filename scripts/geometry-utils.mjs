@@ -618,3 +618,113 @@ export function buildRegionShapeFromTemplate(templateDoc) {
   if (radius > 0) return { type: "circle", x, y, radius };
   return null;
 }
+
+/* ── WHOSE SQUARE IS IT: the one occupancy answer ──────────────────────────── */
+// A creature cannot be pushed, dropped, swapped or teleported into a square
+// somebody is already standing in, and until 2026-09-25 three places worked that
+// out for themselves: the party transfer's landing spiral, the teleport picker,
+// and nothing at all for Crusher's push, whose RAW says "to an unoccupied space"
+// and which would shove a target straight into an ally. The answer lives here
+// now, in the file that imports nothing, and the others ask it.
+//
+// ⚠️ A FOOTPRINT IS NOT A POINT. A Huge creature covers nine squares but claims
+// one if you read only its top-left, so the next arrival lands INSIDE him.
+
+/** The top-left of the grid square containing this point. */
+export function aceSnapToGrid(x, y) {
+  try {
+    const p = canvas.grid?.getTopLeftPoint?.({ x, y });
+    if (p && Number.isFinite(p.x)) return { x: p.x, y: p.y };
+  } catch (_) { /* gridless, or an older grid API */ }
+  const g = _gridSize();
+  return { x: Math.floor(x / g) * g, y: Math.floor(y / g) * g };
+}
+
+/** Add every square a token of this size standing at (x,y) covers to `taken`. */
+export function aceMarkFootprint(taken, x, y, w = 1, h = 1) {
+  const g = _gridSize();
+  const cols = Math.max(1, Math.ceil(Number(w) || 1));
+  const rows = Math.max(1, Math.ceil(Number(h) || 1));
+  for (let i = 0; i < cols; i++) {
+    for (let j = 0; j < rows; j++) taken.add(`${Math.round(x + i * g)},${Math.round(y + j * g)}`);
+  }
+}
+
+/** Is every square this footprint needs free of the ones already claimed? */
+export function aceFootprintFree(taken, x, y, w = 1, h = 1) {
+  const g = _gridSize();
+  const cols = Math.max(1, Math.ceil(Number(w) || 1));
+  const rows = Math.max(1, Math.ceil(Number(h) || 1));
+  for (let i = 0; i < cols; i++) {
+    for (let j = 0; j < rows; j++) {
+      if (taken.has(`${Math.round(x + i * g)},${Math.round(y + j * g)}`)) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Every square spoken for on this scene, as a mutable claim set.
+ * `exceptIds` leaves out the ones that are moving — a creature never blocks
+ * itself out of the square it is being pushed from.
+ */
+export function aceTakenSquares(scene, exceptIds = []) {
+  const skip = new Set(exceptIds);
+  const taken = new Set();
+  for (const t of (scene?.tokens ?? [])) {
+    if (skip.has(t.id)) continue;
+    const s = aceSnapToGrid(Number(t.x) || 0, Number(t.y) || 0);
+    aceMarkFootprint(taken, s.x, s.y, t.width, t.height);
+  }
+  return taken;
+}
+
+/** Is this footprint inside the scene's own rectangle? A scene with no rect says yes. */
+export function aceFootprintInScene(x, y, w = 1, h = 1) {
+  const r = canvas.dimensions?.sceneRect;
+  if (!r) return true;
+  const g = _gridSize();
+  return x >= r.x && y >= r.y
+      && x + Math.max(1, Number(w) || 1) * g <= r.x + r.width
+      && y + Math.max(1, Number(h) || 1) * g <= r.y + r.height;
+}
+
+/**
+ * Can this token stand at (x,y)? One question, asked of the scene it is on:
+ * inside the scene, and nobody else's footprint in the way.
+ */
+export function aceSpaceFreeFor(tokenDoc, x, y, { exceptIds = null } = {}) {
+  const doc = tokenDoc?.document ?? tokenDoc;
+  if (!doc) return false;
+  const w = Math.max(1, Number(doc.width) || 1);
+  const h = Math.max(1, Number(doc.height) || 1);
+  if (!aceFootprintInScene(x, y, w, h)) return false;
+  const skip = exceptIds ?? (doc.id ? [doc.id] : []);
+  return aceFootprintFree(aceTakenSquares(doc.parent ?? canvas.scene, skip), x, y, w, h);
+}
+
+/* ── HOW BIG, IN STEPS ────────────────────────────────────────────────────── */
+// Plenty of rules are written in size STEPS rather than feet: "no more than one
+// size larger than you" (Crusher, Push mastery, Grapple), "at least one size
+// larger" (Trample). The ladder is dnd5e's own key order, and two other places
+// in the suite still keep their own copy of it (weapon-masteries, the condition
+// evaluator) — they should ask this instead.
+
+const _SIZE_LADDER = ["tiny", "sm", "med", "lg", "huge", "grg"];
+
+/** Where a dnd5e size key sits on the ladder, or -1 for one we do not know. */
+export function aceSizeRank(size) {
+  return _SIZE_LADDER.indexOf(String(size ?? "").trim().toLowerCase());
+}
+
+/**
+ * How many size steps `bigger` is above `smaller`, or null when either size is
+ * unknown.
+ *
+ * ⚠️ NULL IS NOT ZERO. A homebrew size nobody recognises must not read as "the
+ * same size", or a rule capped by size silently applies to everything.
+ */
+export function aceSizeSteps(bigger, smaller) {
+  const b = aceSizeRank(bigger), s = aceSizeRank(smaller);
+  return (b < 0 || s < 0) ? null : b - s;
+}

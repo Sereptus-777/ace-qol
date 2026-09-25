@@ -31,7 +31,8 @@ import { PartyTransfer } from "./party-transfer.mjs";
 import { CardDoor } from "./road/doors.mjs";
 import { safeShowForRoll, awaitDiceSettle } from "./dsn-utils.mjs";
 import { RulesBrain } from "./rules/rules-brain.mjs";
-import { aceDistanceFt } from "./geometry-utils.mjs";
+import { aceDistanceFt, aceTakenSquares, aceFootprintInScene }
+  from "./geometry-utils.mjs";
 import { isDead } from "./is-down.mjs";
 import { DamageCardRenderer } from "./damage-card-renderer.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
@@ -137,23 +138,12 @@ export class Teleport {
 
   /** Is this footprint inside the scene's own rectangle? */
   static _inScene(x, y, doc) {
-    const r = canvas.dimensions?.sceneRect;
-    if (!r) return true;
-    const g = Teleport._g(), { w, h } = Teleport._size(doc);
-    return x >= r.x && y >= r.y && x + w * g <= r.x + r.width && y + h * g <= r.y + r.height;
+    const { w, h } = Teleport._size(doc);
+    return aceFootprintInScene(x, y, w, h);
   }
 
   /** Every square taken on this scene, but not by the ones who are moving. */
-  static _taken(scene, movingIds = []) {
-    const skip = new Set(movingIds);
-    const taken = new Set();
-    for (const t of (scene?.tokens ?? [])) {
-      if (skip.has(t.id)) continue;
-      const s = PartyTransfer._snap(Number(t.x) || 0, Number(t.y) || 0);
-      PartyTransfer._markFootprint(taken, s.x, s.y, t.width, t.height);
-    }
-    return taken;
-  }
+  static _taken(scene, movingIds = []) { return aceTakenSquares(scene, movingIds); }
 
   /**
    * Every square this token could teleport to: unoccupied, on the scene, within

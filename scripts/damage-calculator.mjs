@@ -15,6 +15,8 @@ import { AttackAbilityResolver } from "./attack-ability-resolver.mjs";
 // function time only; recipe.mjs reaches this file back through post-hit-saves.
 import { recipeForActivity, loadBookFor, diceOf } from "./inference/recipe.mjs";
 import { whatLands } from "./road/what-lands.mjs";
+// The one reader for a weapon's own damage dice and types.
+import { weaponDamageTypes, firstDamage, readActivities } from "./read-activities.mjs";
 
 const PHYSICAL_TYPES = new Set(["bludgeoning", "piercing", "slashing"]);
 
@@ -1077,12 +1079,17 @@ export class DamageCalculator {
       const piercerPending = !!actor?.getFlag?.(MODULE_ID, "piercerCrit.pendingExtraDie");
       if (piercerPending && isCrit) {
         await actor.unsetFlag(MODULE_ID, "piercerCrit.pendingExtraDie");
-        const partsArr = item?.system?.damage?.parts ?? [];
-        const firstFormula = Array.isArray(partsArr[0]) ? partsArr[0][0] : partsArr[0]?.formula;
-        const dieMatch = String(firstFormula ?? "").match(/(\d*d\d+)/i);
-        if (dieMatch) {
-          const wpnDie = `1${dieMatch[1].replace(/^\d+/, "")}`;
-          const wpnType = (Array.isArray(partsArr[0]) ? partsArr[0][1] : partsArr[0]?.types?.[0]) ?? "piercing";
+        // ⚠️🔴 THIS READ A FIELD DND5E 5.x DOES NOT HAVE (2026-09-25). It looked in
+        // `item.system.damage.parts`, which no weapon carries any more, so the match
+        // always failed and the whole block did nothing — after feat-effects had
+        // already consumed the flag and posted a card promising the extra die.
+        // A weapon's dice live in `damage.base`; weaponDie reads them there.
+        const wpn = DamageCalculator._weaponDie(item, activityId);
+        if (wpn?.die) {
+          const wpnDie = wpn.die;
+          // RAW, both editions: the extra die adds to the PIERCING damage, and this
+          // rider only fires on a piercing crit in the first place.
+          const wpnType = wpn.types.includes("piercing") ? "piercing" : (wpn.type ?? "piercing");
           const piercerRoll = new Roll(wpnDie);
           await piercerRoll.evaluate();
           components.push({
@@ -1098,6 +1105,11 @@ export class DamageCalculator {
             roll:        piercerRoll,
           });
           console.log(`${MODULE_ID} | Piercer crit bonus: +${piercerRoll.total} ${wpnType} (${wpnDie})`);
+        } else {
+          // Never silent: the card already told him a die was coming.
+          console.warn(`${MODULE_ID} | Piercer crit: "${item?.name}" declares no damage die `
+            + `(nothing on its base damage and nothing on the activity used), so there is `
+            + `no weapon die to roll again.`);
         }
       }
     } catch (err) {
@@ -1117,26 +1129,40 @@ export class DamageCalculator {
         const raceLower = String(race).toLowerCase();
         const isOrcKin = raceLower.includes("orc"); // catches Half-Orc, Orc, Half Orc
         if (isOrcKin) {
-          const partsArr = itemSys.damage?.parts ?? [];
-          const firstFormula = Array.isArray(partsArr[0]) ? partsArr[0][0] : partsArr[0]?.formula;
-          const dieMatch = String(firstFormula ?? "").match(/(\d*d\d+)/i);
-          const wpnDie = dieMatch ? `1${dieMatch[1].replace(/^\d+/, "")}` : "1d6";
-          const wpnType = (Array.isArray(partsArr[0]) ? partsArr[0][1] : partsArr[0]?.types?.[0]) ?? "slashing";
-          const savageRoll = new Roll(wpnDie);
-          await savageRoll.evaluate();
-          components.push({
-            name: "Savage Attacks",
-            type: wpnType,
-            formula: wpnDie,
-            normalTotal: savageRoll.total,
-            critTotal:   savageRoll.total,
-            final:       savageRoll.total,
-            raw:         savageRoll.total,
-            modifier:    0,
-            isCrit:      true,
-            roll:        savageRoll,
-          });
-          console.log(`${MODULE_ID} | Savage Attacks crit bonus: +${savageRoll.total} ${wpnType} (${wpnDie})`);
+          // ⚠️🔴 THE SAME DEAD FIELD, AND HERE IT WAS WORSE (2026-09-25). This read
+          // `damage.parts` too, but its fallbacks always fired instead of failing
+          // quietly: EVERY orc melee crit added a flat 1d6 SLASHING, whatever the
+          // weapon. A greataxe owed 1d12 and got 1d6; a maul's bludgeoning was
+          // typed slashing and walked straight past slashing resistance.
+          const wpn = DamageCalculator._weaponDie(item, activityId);
+          if (wpn?.die) {
+            const wpnDie = wpn.die;
+            // ⚠️ NO GUESSED TYPE. This used to default to "slashing", so a maul's
+            // extra die was slashing and sailed past slashing resistance. The extra
+            // die is the WEAPON's die and carries the weapon's own type; a weapon
+            // that declares none (all 92 in his world are magic wrappers with
+            // nothing to swing) gets an untyped die rather than an invented one.
+            const wpnType = wpn.type ?? "untyped";
+            const savageRoll = new Roll(wpnDie);
+            await savageRoll.evaluate();
+            components.push({
+              name: "Savage Attacks",
+              type: wpnType,
+              formula: wpnDie,
+              normalTotal: savageRoll.total,
+              critTotal:   savageRoll.total,
+              final:       savageRoll.total,
+              raw:         savageRoll.total,
+              modifier:    0,
+              isCrit:      true,
+              roll:        savageRoll,
+            });
+            console.log(`${MODULE_ID} | Savage Attacks crit bonus: +${savageRoll.total} ${wpnType} (${wpnDie})`);
+          } else {
+            console.warn(`${MODULE_ID} | Savage Attacks: "${item?.name}" declares no damage die `
+              + `(nothing on its base damage and nothing on the activity used), so there is `
+              + `none to roll again.`);
+          }
         }
       }
     } catch (err) {
@@ -1182,6 +1208,50 @@ export class DamageCalculator {
     }
 
     return components;
+  }
+
+  /**
+   * ONE of the weapon's damage dice, and the type it deals — what every rider
+   * that says "roll one additional damage die" needs: Piercer's crit, Savage
+   * Attacks, Brutal Critical.
+   *
+   * ⚠️🔴 NOT FROM `damage.parts` (2026-09-25). dnd5e 5.x keeps a weapon's dice in
+   * `system.damage.base` as `{ number, denomination }`; `parts` is not in the
+   * weapon schema at all and not one of the 3,185 weapons in hijinx has it. Both
+   * callers read it anyway: Piercer's die silently never rolled, and Savage
+   * Attacks fell through to a hardcoded 1d6 slashing on every single orc crit.
+   *
+   * ⚠️ ONE DIE, NOT THE WEAPON'S WHOLE FORMULA. A greatsword is 2d6 and the extra
+   * die is 1d6 — `number` is deliberately not used.
+   *
+   * @returns {{die: string, type: string|null, types: string[]}|null}
+   */
+  static _weaponDie(item, activityId = null) {
+    try {
+      const base = item?.system?.damage?.base ?? null;
+      const types = weaponDamageTypes(item, DamageCalculator._usedActivity(item, activityId));
+      const denom = Number(base?.denomination) || 0;
+      if (denom > 0) return { die: `1d${denom}`, type: types[0] ?? null, types };
+
+      // A custom formula, or a part the activity carries itself: read the dice out
+      // of whatever formula there actually is rather than inventing one.
+      const custom = base?.custom?.enabled ? String(base.custom.formula ?? "") : "";
+      const fromActivity = custom ? "" : (firstDamage(item, DamageCalculator._usedActivity(item, activityId))?.formula ?? "");
+      const m = String(custom || fromActivity).match(/\d*d(\d+)/i);
+      if (!m) return null;
+      return { die: `1d${m[1]}`, type: types[0] ?? null, types };
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not read a damage die off "${item?.name ?? "an item"}":`, err);
+      return null;
+    }
+  }
+
+  /** The activity that was pressed, or the item's first attack. */
+  static _usedActivity(item, activityId = null) {
+    const list = readActivities(item);
+    return (activityId ? list.find(a => a?.id === activityId || a?._id === activityId) : null)
+      ?? list.find(a => a?.type === "attack")
+      ?? null;
   }
 
   /**

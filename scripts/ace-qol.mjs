@@ -3739,7 +3739,7 @@ Hooks.once("ready", () => {
   // unset their feature-rider flags. Belt-and-suspenders cleanup also runs
   // on deleteCombat in case state survives a combat ending.
   try {
-    Hooks.on("combatTurnChange", (combat, prior /*, current */) => {
+    Hooks.on("combatTurnChange", (combat, prior, current) => {
       if (game.users?.activeGM !== game.user) return;  // activeGM: flag clears + Hexblade/CritDebuff expiry must only run once
       try {
         // Resolve the prior combatant (the one whose turn just ended).
@@ -3765,12 +3765,29 @@ Hooks.once("ready", () => {
             CombatState.clearEldritchSmiteFlag(priorActor).catch(() => {});
             CombatState.clearSneakAttackFlag(priorActor).catch(() => {});
             CombatState.clearCleaveFlag(priorActor).catch(() => {});
-            FeatEffects.clearOncePerTurnFlags(priorActor).catch(() => {});
           }
+        }
+        // ⚠️🔴 "ONCE PER TURN" MEANS ANY TURN, NOT ONLY YOUR OWN (2026-09-25).
+        // Crusher, Slasher and Piercer each say "once per turn", and 5e counts
+        // every creature's turn: a Crusher who makes an opportunity attack on a
+        // goblin's turn is in a new turn and owed the push again. These flags were
+        // only cleared for the combatant whose turn had just ENDED, so a feat used
+        // on the holder's own turn stayed spent through everyone else's — every
+        // reaction and opportunity attack between then and the holder's next turn
+        // got nothing. Each turn boundary starts a new turn for EVERYBODY, so every
+        // combatant's once-per-turn allowance resets here.
+        for (const c of (combat?.combatants?.contents ?? [])) {
+          if (c?.actor) FeatEffects.clearOncePerTurnFlags(c.actor).catch(() => {});
         }
         // Hexblade's Curse — RAW 1-minute (10-round) duration.
         CombatState.expireHexbladeCursesIfDue().catch(() => {});
-        FeatEffects.expireCritDebuffsIfDue().catch(() => {});
+        // The crit marks end at the start of the feat holder's OWN next turn, so the
+        // combatant whose turn is beginning is what decides it.
+        const startingCombatantId = combat?.current?.combatantId
+                                 ?? current?.combatantId
+                                 ?? combat?.combatant?.id
+                                 ?? null;
+        FeatEffects.expireCritDebuffsIfDue(startingCombatantId).catch(() => {});
       } catch (_) { /* non-fatal */ }
     });
     // Also clear all once-per-turn flags on combat START — protects against

@@ -31,6 +31,10 @@
 import { MODULE_ID } from "./ace-qol.mjs";
 import { onCanvasReady } from "./ready-utils.mjs";
 import { Situation } from "./situation.mjs";
+// ⚠️ ONE OCCUPANCY ANSWER (2026-09-25). These four used to be worked out here;
+// the teleport picker had its own copy and Crusher's push had none at all.
+import { aceSnapToGrid, aceMarkFootprint, aceFootprintFree, aceTakenSquares }
+  from "./geometry-utils.mjs";
 
 const HAND_KEY            = "partyHand";
 const TRANSIT_FOLDER_NAME = "ACE — In Transit";
@@ -1332,14 +1336,7 @@ export class PartyTransfer {
   //  Landing
   // ═══════════════════════════════════════════════════════════════════════════
 
-  static _snap(x, y) {
-    try {
-      const p = canvas.grid?.getTopLeftPoint?.({ x, y });
-      if (p && Number.isFinite(p.x)) return { x: p.x, y: p.y };
-    } catch (_) { /* gridless or older API */ }
-    const g = Number(canvas.grid?.size) || 100;
-    return { x: Math.floor(x / g) * g, y: Math.floor(y / g) * g };
-  }
+  static _snap(x, y) { return aceSnapToGrid(x, y); }
 
   /** Grid offsets spiralling out from the drop point, so nobody stacks. */
   static _spiralOffsets(limit) {
@@ -1364,39 +1361,13 @@ export class PartyTransfer {
    * covers nine squares but would claim one, so the next arrival lands INSIDE
    * him. That is how a small token ends up underneath a large one.
    */
-  static _markFootprint(taken, x, y, w = 1, h = 1) {
-    const g = Number(canvas.grid?.size) || 100;
-    const cols = Math.max(1, Math.ceil(Number(w) || 1));
-    const rows = Math.max(1, Math.ceil(Number(h) || 1));
-    for (let i = 0; i < cols; i++) {
-      for (let j = 0; j < rows; j++) {
-        taken.add(`${Math.round(x + i * g)},${Math.round(y + j * g)}`);
-      }
-    }
-  }
+  static _markFootprint(taken, x, y, w = 1, h = 1) { aceMarkFootprint(taken, x, y, w, h); }
 
   /** Is every square this footprint needs currently free? */
-  static _footprintFree(taken, x, y, w = 1, h = 1) {
-    const g = Number(canvas.grid?.size) || 100;
-    const cols = Math.max(1, Math.ceil(Number(w) || 1));
-    const rows = Math.max(1, Math.ceil(Number(h) || 1));
-    for (let i = 0; i < cols; i++) {
-      for (let j = 0; j < rows; j++) {
-        if (taken.has(`${Math.round(x + i * g)},${Math.round(y + j * g)}`)) return false;
-      }
-    }
-    return true;
-  }
+  static _footprintFree(taken, x, y, w = 1, h = 1) { return aceFootprintFree(taken, x, y, w, h); }
 
   /** The squares already spoken for on this scene, as a mutable claim set. */
-  static _occupiedSquares(scene) {
-    const taken = new Set();
-    for (const t of (scene?.tokens ?? [])) {
-      const s = this._snap(Number(t.x) || 0, Number(t.y) || 0);
-      this._markFootprint(taken, s.x, s.y, t.width, t.height);
-    }
-    return taken;
-  }
+  static _occupiedSquares(scene) { return aceTakenSquares(scene); }
 
   /**
    * Can you actually walk from `from` to `to` without crossing a wall?
