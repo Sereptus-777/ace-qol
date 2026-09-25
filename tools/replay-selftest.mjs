@@ -5503,6 +5503,27 @@ console.log(`\nTHE NPC SETUP DIALOG SAYS WHAT IT DOES`);
     reg.includes('style="flex:0 0 auto; width:auto; padding:8px 12px; background:#1d1710;'),
     "the button keeps its own width");
 
+  // ⚠️ THE SEARCH HIS SETTINGS PANEL ALREADY HAS (2026-09-24): "Our search bars
+  // are freaking well known for being very good. I don't see why this one
+  // should be any different." Typing filtered a CLOSED dropdown, so the answer
+  // was there and invisible.
+  check("typing drops matching factions down as rows under the box, one click takes one, and nothing matching offers to create it (2026-09-24)",
+    reg.includes('<div class="ace-faction-suggest"')
+      && reg.includes("const _matchesFor = (q) => {")
+      && reg.includes("const _paintSuggestions = (q) => {")
+      && reg.includes("const _takeSuggestion = (value) => {")
+      && reg.includes('Create a faction called "${esc(q.trim())}"')
+      && reg.includes('row.addEventListener("click", () => _takeSuggestion(row.dataset.value));'),
+    "rows under the box, clickable, and a dead end is never the answer");
+
+  check("and the keyboard works: down and up move through them, Enter takes one, Escape clears (2026-09-24)",
+    reg.includes('_searchBox.addEventListener("keydown", (ev) => {')
+      && reg.includes('if (ev.key === "ArrowDown" || ev.key === "ArrowUp")')
+      && reg.includes('} else if (ev.key === "Enter") {')
+      && reg.includes('} else if (ev.key === "Escape") {')
+      && reg.includes('rows[_cursor].scrollIntoView({ block: "nearest" });'),
+    "a search bar that needs the mouse is half a search bar");
+
   check("Ask the AI picks only from the list it was given, and says so out loud when it invents one (2026-09-24)",
     reg.includes("export async function shortlistFactions(actor, candidates = [])")
       && reg.includes("if (!hit) {")
