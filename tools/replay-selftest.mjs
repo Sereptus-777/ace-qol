@@ -5521,6 +5521,37 @@ console.log(`\nTHE NPC SETUP DIALOG SAYS WHAT IT DOES`);
       && bio.includes("which is not one of the ten"),
     "both labels are caught after a full stop, and an unknown tone says so");
 
+  // ⚠️🔴 dnd5e KEEPS TWO BIOGRAPHY BOXES, and ACE read one. 2026-09-24: "I have
+  // something on there in the biography of Aryel, and when the biography popped
+  // up it said nothing in there yet."
+  check("both biography boxes are read, and an edit is saved back to the box it came from (2026-09-24)",
+    editor.includes("function _readBiography(actor)")
+      && editor.includes('const shared = String(bio.public ?? "");')
+      && editor.includes('field: "system.details.biography.public", where: "the public biography"')
+      && editor.includes('if (_held.field === "system.details.biography.public")')
+      && !editor.includes('String(actor.system?.details?.biography?.value ?? "")')
+      && bio.includes('const rawBio = String(_bio.value || "").trim() || String(_bio.public || "");'),
+    "the window and the writer both read value then public, and nothing is moved between them");
+
+  // ⚠️ HIS RULE, 2026-09-24: "It always has to look at what's already on there
+  // and then create." The AI's own previous work used to be stripped before the
+  // prompt, so a rewrite started from nothing.
+  check("the AI is handed what is already written and carries it forward, rather than replacing it (2026-09-24)",
+    editor.includes("const _carry = body.innerHTML.replace(")
+      && editor.includes("queueBioGeneration(tokenDoc, { force: true, buildOn: _carry })")
+      && bio.includes("async function _generateBio(tokenDocument, { buildOn = \"\" } = {})")
+      && bio.includes("let _base = buildOn ? String(buildOn) : rawBio;")
+      && bio.includes("if (!buildOn) _base = _base.replace(")
+      && bio.includes("const canonIsSpecies = !buildOn && _isGenericName(name, creatureType);")
+      && bio.includes("You are adding to it, not replacing it."),
+    "what is on screen is fed in as this creature's own history, not as a species entry");
+
+  check("and the button says which of the two it is about to do, wired to the one thing that runs after every change (2026-09-24)",
+    editor.includes("const _syncAiLabel = () => {")
+      && editor.includes("Build on this with the AI")
+      && (editor.match(/_syncAiLabel\(\);/g) ?? []).length >= 2,
+    "the label is not a function nobody calls");
+
   check("the biography is a window, not a tick: it writes through the one queue, and Escape does not throw away an edit he has made (2026-09-23)",
     /export class BiographyEditor/.test(editor)
       && /const \{ writeBiography \} = await import\("\.\.\/bio-writer\.mjs"\);/.test(editor)
