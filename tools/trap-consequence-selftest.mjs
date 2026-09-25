@@ -259,6 +259,25 @@ console.log("\nTRAP CONSEQUENCES: WHAT LANDS, AND WHAT HE IS NEVER SHOWN");
           && /PitFall\.promptClimb\(tokenDoc, pit\)/.test(pit)
           && /return false;\s*\/\/ the walls are in the way/.test(pit));
 
+    // ⚠️ 2026-09-25, his table: he deleted a pit with three people in it and
+    // all three kept the 55% scale and the negative elevation forever, because
+    // the only ways back were leaving the hole, climbing out or an undo.
+    check("deleting a trap brings everyone in it back up",
+        /Hooks\.on\("deleteMeasuredTemplate", \(tplDoc\)/.test(pit)
+          && /Hooks\.on\("deleteTile", \(tileDoc\)/.test(pit)
+          && /static async liftEveryoneIn/.test(pit));
+
+    check("and a token in a hole that no longer exists is repaired at load, out loud",
+        /static async repairOrphans/.test(pit)
+          && /Hooks\.once\("ready", \(\) => PitFall\.repairOrphans\(\)\)/.test(pit)
+          && /ui\.notifications\?\.info/.test(pit),
+        "a silent repair is indistinguishable from a broken one");
+
+    check("the Forge API cannot wipe what registered before it",
+        /game\.aceForge = Object\.assign\(game\.aceForge \?\? \{\}, \{/.test(entrySrc)
+          && /liftEveryoneOut/.test(entrySrc),
+        "the 2026-08 API-wipe lesson, caught again in the other module");
+
     check("and the GM can still lift anyone out by hand",
         /if \(game\.user\.isGM\) return true;/.test(pit)
           && /PitFall\.lift\(tokenDoc, "it was taken out"\)/.test(pit));
