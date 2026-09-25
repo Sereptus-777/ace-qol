@@ -5661,6 +5661,80 @@ console.log(`\nTHE NPC SETUP DIALOG SAYS WHAT IT DOES`);
     "one window, one writer, an edit that survives a stray Escape, and the old tick gone");
 }
 
+/* ── A TRAPPED DOOR ────────────────────────────────────────────────────── */
+// 2026-09-25. The trap library has had a DOOR placement for months, described
+// in the panel as "Door (fires on open)", and nothing anywhere listened for a
+// door opening: the label promised a feature that did not exist. His rules for
+// the real one: either side trips it, the opener's CONTROLLED token takes it, a
+// failed pick trips it too, once fired it is spent, and one button traps every
+// door on the scene.
+console.log(`\nA TRAPPED DOOR`);
+{
+  const FORGE = `${ROOT}/Data/modules/ace-artificer/scripts`;
+  const door = readFileSync(`${FORGE}/door-trap.mjs`, "utf8");
+  const disarm = readFileSync(`${FORGE}/disarm-pipeline.mjs`, "utf8");
+  const engine = readFileSync(`${FORGE}/trap-engine.mjs`, "utf8");
+  const watcher = readFileSync(`${FORGE}/perception-watcher.mjs`, "utf8");
+  const main = readFileSync(`${FORGE}/ace-artificer.mjs`, "utf8");
+
+  // ⚠️ ONE ENGINE. A door carries the same flags a trap template carries, so
+  // the watcher, the padlock, the disarm pipeline and the firing engine all
+  // work on it without knowing which they have.
+  check("a trapped door carries the same flag shape a trap template does, and one lookup resolves either (2026-09-25)",
+    door.includes("isTrap: true,")
+      && door.includes("isDoorTrap: true,")
+      && door.includes("spottedBy: {},")
+      && disarm.includes('if (raw.startsWith("wall:")) return canvas.scene?.walls?.get(raw.slice(5)) ?? null;')
+      && !disarm.includes("canvas.scene?.templates?.get(flags.templateId)"),
+    "no second trap engine was built for doors");
+
+  check("the open is cancelled, the trap fires while the door is still shut, and then it opens (2026-09-25)",
+    door.includes('Hooks.on("preUpdateWall"')
+      && door.includes("return false;   // the door does NOT open yet")
+      && door.includes('action:  "doorTrapTrip"')
+      && door.includes('if (reason === "opened") await DoorTrap._openDoor(wall);'),
+    "a trap that fires after the door swings is a cutscene, not a trap");
+
+  check("the GM is the one who rolls it, and the token named must belong to whoever asked (2026-09-25)",
+    door.includes("if (!game.user.isGM) return;")
+      && main.includes('case "doorTrapTrip": {')
+      && main.includes('Socket doorTrapTrip rejected'),
+    "authorised, not trusted");
+
+  check("his four rules: either side, the controlled token, spent after firing, and the GM staging a scene sets nothing off (2026-09-25)",
+    door.includes("if (game.user.isGM) return true;")
+      && door.includes("const token = canvas.tokens?.controlled?.[0] ?? null;")
+      && door.includes('await wall.setFlag(MODULE_ID, "fired", Date.now());')
+      && door.includes('await wall.setFlag(MODULE_ID, "armed", false);')
+      && !door.includes("wall.direction"),
+    "no side test, no proximity guessing, and it is spent once it goes off");
+
+  check("a failed pick with thieves' tools sets a door trap off, and a failed look does not (2026-09-25)",
+    disarm.includes('methodDef.id === "thieves-tools"')
+      && disarm.includes("DoorTrap.pickFailed(wallId"),
+    "tools only: investigating is looking, not touching");
+
+  // ⚠️🔴 THE SILENT NO-OP THIS WOULD HAVE SHIPPED WITH. applySuccessfulDisarm
+  // read only templates, so disarming a door would have written nothing and
+  // still reported success.
+  check("disarming a door actually disarms it, and does not write template-only fields onto a wall (2026-09-25)",
+    engine.includes('const isDoor = String(templateId ?? "").startsWith("wall:");')
+      && engine.includes("...(isDoor ? {} : {")
+      && engine.includes("which is not on this scene any more."),
+    "the success path writes to the document the trap is actually on");
+
+  check("a player finds a door trap the same way he finds a floor trap, and the padlock hangs on the door (2026-09-25)",
+    watcher.includes("for (const wall of scene.walls ?? []) {")
+      && watcher.includes("const mid = { x: (c[0] + c[2]) / 2, y: (c[1] + c[3]) / 2 };")
+      && watcher.includes("const key = `wall:${wall.id}`;"),
+    "one perception pass over both, anchored at the middle of the door");
+
+  check("and one button traps every door on the scene, after saying how many it found (2026-09-25)",
+    door.includes("static async trapAllDoors({ trapId, perceptionDC, disarmDC, replace = false, includeSecret = true } = {})")
+      && door.includes("if (DoorTrap.trapOn(wall) && !replace) { skipped++; continue; }"),
+    "the Amber Temple job, with the ones already trapped left alone");
+}
+
 /* ── A TRAP HE FOUND STAYS ON HIS SCREEN ───────────────────────────────── */
 // His table, 2026-09-25: Jeth found a pressure plate, the GM could see the
 // padlock, and the player could not. Measured on his own scene: spotted by him,
