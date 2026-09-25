@@ -31,7 +31,21 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CSS = ROOT / "styles" / "ace-qol.css"
+
+# ⚠️🔴 EVERY MODULE THAT POSTS A CHAT CARD (2026-09-25). This read ace-qol.css
+# and nothing else, so the rule it exists to enforce was never checked in ACE
+# Forge — the module where it kept breaking. His words that day, on a trap card
+# whose "18 +6 = 24" came out as 1 over 8 and 2 over 4: "I can't believe how
+# many times I've had to tell you to change that exact same thing in the last
+# year of working on this shit."
+#
+# He is right, and a check that only looks at one of the three stylesheets is
+# how the same bug came back. Fixing the instance was never going to hold.
+STYLESHEETS = [
+    ROOT / "styles" / "ace-qol.css",
+    ROOT.parent / "ace-artificer" / "styles" / "ace-artificer.css",
+    ROOT.parent / "ace-engine"    / "styles" / "ace-engine.css",
+]
 
 # CHAT CARDS ONLY, and this narrowing is the whole point of the tool.
 #
@@ -46,7 +60,12 @@ CSS = ROOT / "styles" / "ace-qol.css"
 # Dialogs, the config window and the effects panel are resizable or sized to
 # what is inside them.
 CARD_FAMILIES = re.compile(
-    r"\.ace-qol-(atk|dmg|save|merge|heal-card|loot|tile-loot|rider|tx|volley|crit|fall|prism)-",
+    r"\.ace-qol-(atk|dmg|save|merge|heal-card|loot|tile-loot|rider|tx|volley|crit|fall|prism)-"
+    # Forge's chat cards: the trap card, the disarm card, the spot card, the
+    # party warning, the pit, and the save and damage rows inside them.
+    r"|\.forge-(trap|target|save|dmg|disarm|spot|warn|npc|apply|hp|pit|consequence)-"
+    # The narrator's own cards.
+    r"|\.ace-engine-(card|line|row|result)",
     re.I,
 )
 # Selectors whose rules lay out a ROW of card content.
@@ -72,12 +91,9 @@ def rules(text):
         yield line, sel, body, before
 
 
-def main():
-    if not CSS.exists():
-        print(f"Stylesheet not found: {CSS}")
-        return 1
-
-    text = CSS.read_text(encoding="utf-8", errors="replace")
+def scan(css_path):
+    """Returns (checked, exempt, offenders) for one stylesheet."""
+    text = css_path.read_text(encoding="utf-8", errors="replace")
     offenders = []
     exempt = 0
     checked = 0
@@ -103,20 +119,33 @@ def main():
             continue
         offenders.append((line, sel.replace("\n", " ").strip()))
 
+    return checked, exempt, offenders
+
+
+def main():
     print("=" * 74)
     print("CARD ROWS THAT CANNOT WRAP")
     print("=" * 74)
-    print(f"Checked {checked} flex row rule(s) in {CSS.name}. "
-          f"{exempt} say why they must not wrap.")
+
+    all_offenders = []
+    for css in STYLESHEETS:
+        if not css.exists():
+            print(f"  (not installed, skipped: {css.name})")
+            continue
+        checked, exempt, offenders = scan(css)
+        print(f"Checked {checked} flex row rule(s) in {css.name}. "
+              f"{exempt} say why they must not wrap.")
+        all_offenders += [(css.name, line, sel) for line, sel in offenders]
     print()
 
-    if not offenders:
+    if not all_offenders:
         print("Every card row can wrap. Height is free.")
         return 0
 
-    for line, sel in offenders:
-        print(f"  {CSS.name}:{line}  {sel}")
+    for name, line, sel in all_offenders:
+        print(f"  {name}:{line}  {sel}")
     print()
+    offenders = all_offenders
     print(f"{len(offenders)} row(s) will clip their contents instead of wrapping.")
     print("Add `flex-wrap: wrap;` with a row-gap, or say `no-wrap-ok: <reason>`")
     print("in the rule if it genuinely must stay on one line.")

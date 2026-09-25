@@ -62,6 +62,7 @@ console.log("\nTRAP CONSEQUENCES: WHAT LANDS, AND WHAT HE IS NEVER SHOWN");
 /* ─── 2. The condition lands when the SAVE is decided ───────────────────── */
 {
     const pipe = read("trap-pipeline.mjs");
+    const entrySrc = read("ace-artificer.mjs");
 
     check("the save path settles what the save left",
         /_advanceStateIfAllRolled[\s\S]{0,400}_landSaveConsequences/.test(pipe),
@@ -74,9 +75,21 @@ console.log("\nTRAP CONSEQUENCES: WHAT LANDS, AND WHAT HE IS NEVER SHOWN");
     check("a failed save moves the victim into the trap",
         /_dropIntoTrap/.test(pipe) && /if\s*\(fallsIn\)/.test(pipe));
 
-    check("a successful save moves nobody",
-        /if\s*\(target\.saveRoll\.success\)\s*\{\s*target\.consequences\s*=\s*"saved";\s*continue;/.test(pipe),
-        "a pass has to leave the loop before the condition and the fall");
+    // ⚠️ Re-pinned 2026-09-25: "he should be popped back out from whatever
+    // direction he was coming from and be just outside the pit area."
+    check("a pass takes neither the condition nor the fall",
+        /if \(target\.saveRoll\.success\) \{[\s\S]{0,300}?target\.consequences = "saved";\s*continue;/.test(pipe),
+        "a pass has to leave the loop before both of them");
+
+    check("and is stepped back clear of a hole it did not fall into",
+        /_stepBackOut\(state, target\)/.test(pipe)
+          && /static async _stepBackOut/.test(pipe)
+          && /target\.cameFrom/.test(pipe),
+        "he is standing on the rim, not in the open pit");
+
+    check("the square he came from is remembered before the move is lost",
+        /_lastTokenPos/.test(entrySrc) && /cameFrom: pending\.cameFrom/.test(entrySrc),
+        "the trap hook fires after the move, so the old position is already gone");
 
     check("the hole's own rectangle is remembered at fire time",
         /trapArea: TrapPipeline\._trapArea\(template\)/.test(pipe)
@@ -102,6 +115,8 @@ console.log("\nTRAP CONSEQUENCES: WHAT LANDS, AND WHAT HE IS NEVER SHOWN");
 /* ─── 3. The spent one-shot leaves its picture ──────────────────────────── */
 {
     const eng = read("trap-engine.mjs");
+    const pipe = read("trap-pipeline.mjs");
+    const watchSrc = read("perception-watcher.mjs");
     const spent = eng.slice(eng.indexOf("async applyOneShotSpent"),
                             eng.indexOf("async applyReusableFired"));
 
@@ -109,13 +124,28 @@ console.log("\nTRAP CONSEQUENCES: WHAT LANDS, AND WHAT HE IS NEVER SHOWN");
         !/deleteEmbeddedDocuments\("Tile"/.test(spent),
         "this is what made his pit trap disappear");
 
-    check("it reveals the picture instead",
-        /hidden:\s*false/.test(spent) && /updateEmbeddedDocuments\("Tile"/.test(spent));
+    // ⚠️ Re-pinned 2026-09-25. The reveal is one function now, because firing
+    // has to reveal the art too: a trap that fired and stayed showed its
+    // picture to nobody at all.
+    check("it reveals the picture through the one reveal function",
+        /await this\.revealTrapArt\(trapId, \{\s*strip: true/.test(spent)
+          && /async revealTrapArt\(trapId/.test(eng)
+          && /hidden: false/.test(eng));
 
     check("and strips the flags that would draw chrome on it",
         ["isTrap", "trapId", "linkedTemplateId", "armed", "spottedBy"]
-            .every(f => spent.includes(`-=${f}`)),
+            .every(f => eng.includes(`-=${f}`)),
         "a leftover trapId would let the delete cascade take it later");
+
+    check("firing marks the trap sprung and puts its picture up",
+        /async markSprung\(template\)/.test(eng)
+          && /setFlag\(MODULE_ID, "sprung", true\)/.test(eng)
+          && /engine\?\.markSprung\?\.\(template\)/.test(pipe),
+        "his words: if the fucking trap went off, the trap went off");
+
+    check("and a sprung trap gets no lock and no glow, ever again",
+        (watchSrc.match(/sprung/g) ?? []).length >= 3,
+        "the spotting scan, the doors and the templates all have to know");
 
     check("the template itself still goes",
         /template\.delete\(\)/.test(spent));
@@ -154,9 +184,17 @@ console.log("\nTRAP CONSEQUENCES: WHAT LANDS, AND WHAT HE IS NEVER SHOWN");
     // so the mark moved onto the enemy's own row. Who may see what did not
     // change, and this is the line that proves it did not.
     const beh = read("trap-behavior.mjs");
-    check("an enemy's row is GM-only, the way its old block was",
-        /isNpc \? " forge-gm-only" : ""/.test(beh)
-          && /const isNpc\s*=\s*!target\.ownerUserId;/.test(beh));
+    // ⚠️ Re-pinned 2026-09-25. "Is there a non-GM owner" was the wrong
+    // question and hid his own people's rows from them. The question is whether
+    // the person looking owns this creature.
+    check("a row is drawn for whoever owns that creature",
+        /data-owners="\$\{\(target\.ownerUserIds \?\? \[\]\)\.join\(" "\)\}"/.test(beh)
+          && /owners\.includes\(game\.user\.id\)/.test(beh)
+          && /_ownerUserIds\(actor\)/.test(read("trap-pipeline.mjs")));
+
+    check("and the dice everyone should see are not GM-only",
+        /<div class="forge-dmg-block">\s*\n\s*<div class="forge-dmg-roll-section">/.test(beh),
+        "there were no dice at all on a player's screen");
 
     check("and no row prints a DC any more: the header is the only place it exists",
         !/vs DC/.test(beh),
@@ -189,15 +227,17 @@ console.log("\nTRAP CONSEQUENCES: WHAT LANDS, AND WHAT HE IS NEVER SHOWN");
 // ignore grid snapping and be right in the centre... You could put it as tiny
 // because I want it to look like it's down at the bottom of the shaft."
 {
-    const pit  = read("pit-fall.mjs");
-    const pipe = read("trap-pipeline.mjs");
+    const pit   = read("pit-fall.mjs");
+    const pipe  = read("trap-pipeline.mjs");
     const entry = read("ace-artificer.mjs");
+    const entrySrc = entry;
     const panel = read("panel.mjs");
 
-    check("the fall ignores grid snapping and centres on the hole",
-        /rect\.x \+ rect\.w \/ 2/.test(pit) && /rect\.y \+ rect\.h \/ 2/.test(pit)
-          && !/Math\.round\([^)]*\/ grid[^)]*\) \* grid/.test(pit),
-        "a token in a hole is not standing on a square");
+    check("the fall ignores grid snapping and lands near the middle",
+        /static _landingSpot\(tokenDoc, rect, grid\)/.test(pit)
+          && /rect\.x \+ rect\.w \/ 2/.test(pit)
+          && /const wander = \(rect\.w > grid \* 1\.5/.test(pit),
+        "near the centre, not on it, and never snapped to a square");
 
     check("it shrinks by a share of its OWN size, not to a fixed one",
         /scaleX \* IN_PIT_SCALE/.test(pit) && /scaleY \* IN_PIT_SCALE/.test(pit),
@@ -208,14 +248,42 @@ console.log("\nTRAP CONSEQUENCES: WHAT LANDS, AND WHAT HE IS NEVER SHOWN");
           && /pitDepthFt/.test(pipe) && /pitDepthFt/.test(panel));
 
     check("what it was is written on the token before any of that",
-        /inPit`\]: \{ rect, scaleX, scaleY, elevation: elev, from, trapName \}/.test(pit),
+        /inPit`\]: \{ rect, scaleX, scaleY, elevation: elev, from, trapName, depthFt \}/.test(pit),
         "the way back has to survive a refresh, a reload and a different GM");
 
-    check("and the climb out is watched for, because Foundry never announces one",
-        /Hooks\.on\("updateToken"/.test(pit)
-          && /PitFall\.lift\(tokenDoc, "it climbed out"\)/.test(pit)
-          && /_isOverHole/.test(pit),
-        "otherwise it stays small and underground forever");
+    // ⚠️ Re-pinned 2026-09-25: "I want them locked inside of there so they
+    // can't get out." Walking out is refused on the mover's own client, which
+    // is the only place a move can be stopped.
+    check("walking out of a hole is refused, not watched",
+        /Hooks\.on\("preUpdateToken"/.test(pit)
+          && /PitFall\.promptClimb\(tokenDoc, pit\)/.test(pit)
+          && /return false;\s*\/\/ the walls are in the way/.test(pit));
+
+    check("and the GM can still lift anyone out by hand",
+        /if \(game\.user\.isGM\) return true;/.test(pit)
+          && /PitFall\.lift\(tokenDoc, "it was taken out"\)/.test(pit));
+
+    check("the way out is the book's way out: a climb speed, gear, or magic",
+        /movement\?\.climb/.test(pit)
+          && /spider\\s\*climb/i.test(pit)
+          && /rope\|chain/.test(pit),
+        "DMG, Spiked Pit: a Climb Speed, climbing gear, or magic such as Spider Climb");
+
+    check("a friend at the top with a rope counts",
+        /other\.getFlag\?\.\(MODULE_ID, "inPit"\)/.test(pit)
+          && /_distanceToRect\(ox, oy, pit\.rect\)/.test(pit));
+
+    check("bare hands are an Athletics check, and failing it is another fall",
+        /CLIMB_DC = 15/.test(pit)
+          && /checks\.run\(actor, "skill", "ath"/.test(pit)
+          && /Math\.max\(1, Math\.floor\(depth \/ 10\)\)/.test(pit),
+        "1d6 per 10 feet, and prone again");
+
+    check("and the climb is resolved GM-side, never on the player's own client",
+        /static async resolveClimb/.test(pit)
+          && /if \(!game\.user\.isGM\) return;/.test(pit)
+          && /case "pitClimb"/.test(entrySrc)
+          && /testUserPermission\(requestor, "OWNER"\)/.test(entrySrc));
 
     check("the watcher does not fire on the fall's own move",
         /options\?\.\[MODULE_ID\]\?\.pitMove/.test(pit)

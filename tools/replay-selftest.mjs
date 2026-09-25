@@ -5746,12 +5746,16 @@ console.log(`\nA TRAP IS HIS TO TELL`);
       && qol.includes('"monster initiative rolls"'),
     "his own initiative still shows; everything else is hidden on his screen");
 
+  // ⚠️ Re-pinned 2026-09-25. Still edge to edge, and it wraps inside itself
+  // now as well. The trap card's rows were rebuilt in ace-qol's shape, so the
+  // disarm card is what still uses this box; `forge-save-result-row` went with
+  // the old trap row and is not rendered anywhere any more.
   check("the roll box fills the card, grows, and wraps inside itself (2026-09-25)",
     css.includes("/* ⚠️ EDGE TO EDGE (his screenshot, 2026-09-25)")
-      && /\.forge-save-breakdown \{\s*\n\s*display: flex;\s*\n\s*width: 100%;/.test(css)
-      && css.includes("overflow: hidden;")
-      && /\.forge-save-result-row \{[\s\S]{0,200}?width: 100%;/.test(css),
-    "no more floating in the middle");
+      && /\.forge-save-breakdown \{[\s\S]{0,200}?width: 100%;/.test(css)
+      && /\.forge-save-breakdown \{[\s\S]{0,200}?flex-wrap: wrap;/.test(css)
+      && css.includes("overflow: hidden;"),
+    "no more floating in the middle, and nothing chopped to fit");
 
   // ⚠️ Re-pinned the same day. "Bigger and still purple" was the first ask; the
   // screenshot after it was the real one: "the investigation button is all

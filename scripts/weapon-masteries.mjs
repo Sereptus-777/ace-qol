@@ -34,7 +34,7 @@
 // to be `undefined` when this file evaluates, which breaks module loading
 // and prevents the entire Weapon Mastery system from registering.
 
-import { aceWithinFt } from "./geometry-utils.mjs";
+import { aceWithinFt, aceSizeSteps } from "./geometry-utils.mjs";
 import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { CombatState } from "./combat-state.mjs";
 import { AttackAbilityResolver } from "./attack-ability-resolver.mjs";
@@ -896,13 +896,16 @@ export class WeaponMasteries {
     //  with this weapon, you can push the creature up to 10 feet straight
     //  away from you."
     if (targetActor) {
-      const SIZE_ORDER = ["tiny", "sm", "med", "lg", "huge", "grg"];
+      // ⚠️ ONE SIZE LADDER (2026-09-25). This kept its own copy of dnd5e's size
+      // order, and so did the condition evaluator, so three places answered "how
+      // many sizes apart" and any one of them could drift. aceSizeSteps is the
+      // ladder now, and it returns null rather than 0 for a size nobody
+      // recognises — which preserves this check's own rule that an unknown size
+      // is allowed through rather than falsely rejected on homebrew.
       const aSize = String(actor.system?.traits?.size ?? "med").toLowerCase();
       const tSize = String(targetActor.system?.traits?.size ?? "med").toLowerCase();
-      const aIdx = SIZE_ORDER.indexOf(aSize);
-      const tIdx = SIZE_ORDER.indexOf(tSize);
-      // Unknown sizes default to allow (avoid false rejections on homebrew)
-      if (aIdx >= 0 && tIdx >= 0 && tIdx > aIdx + 1) return false;
+      const steps = aceSizeSteps(tSize, aSize);
+      if (steps !== null && steps > 1) return false;
     }
     return true;
   }

@@ -28,6 +28,10 @@
 // and the fact that settled it, so a wrong answer is a one-line fix rather than
 // an evening of grep.
 
+// The one size ladder for the suite. geometry-utils imports nothing, so this
+// cannot start an import cycle.
+import { aceSizeRank } from "../geometry-utils.mjs";
+
 const MODULE_ID = "ace-qol";
 
 const _s = (v) => String(v ?? "").toLowerCase().trim();
@@ -118,11 +122,20 @@ const RULES = [
     id: "target-size",
     re: new RegExp(`\\b(?:against|versus|vs\\.?)\\s+(?:a\\s+|an\\s+)?(${_alt(ALL_SIZE_WORDS)})(?:\\s+or\\s+(larger|smaller))?\\b`, "i"),
     test: (m, ctx) => {
-      const order = ["tiny", "sm", "med", "lg", "huge", "grg"];
       const want = Object.entries(SIZES).find(([, w]) => w.includes(_s(m[1])))?.[0];
       const got = _s(ctx.target?.size);
       if (!want || !got) return { verdict: "unknown", why: "the target's size is not recorded" };
-      const wi = order.indexOf(want), gi = order.indexOf(got);
+      // ⚠️ ONE SIZE LADDER, AND -1 IS NOT A RANK (2026-09-25). This kept its own
+      // copy of dnd5e's size order, as did weapon-masteries; both ask
+      // geometry-utils now. It also compared raw indexOf results, so a size that
+      // is recorded but unrecognised scored -1 and quietly came out "smaller than
+      // everything" — a homebrew size would have answered a rule it should have
+      // declined. An unknown rank now says so.
+      const wi = aceSizeRank(want), gi = aceSizeRank(got);
+      if (wi < 0 || gi < 0) {
+        return { verdict: "unknown",
+                 why: `${wi < 0 ? `"${want}"` : `"${got}"`} is not a size ACE knows` };
+      }
       if (m[2] === "larger")  return { verdict: gi >= wi, why: `the target is ${got}` };
       if (m[2] === "smaller") return { verdict: gi <= wi, why: `the target is ${got}` };
       return { verdict: gi === wi, why: `the target is ${got}` };
