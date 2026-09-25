@@ -5661,6 +5661,46 @@ console.log(`\nTHE NPC SETUP DIALOG SAYS WHAT IT DOES`);
     "one window, one writer, an edit that survives a stray Escape, and the old tick gone");
 }
 
+/* ── A TRAP HE FOUND STAYS ON HIS SCREEN ───────────────────────────────── */
+// His table, 2026-09-25: Jeth found a pressure plate, the GM could see the
+// padlock, and the player could not. Measured on his own scene: spotted by him,
+// overlays on for players, and his token 12.9 feet away with the disarm
+// distance at 5. The lock was only ever drawn inside that distance, so a trap
+// he had found vanished the moment he was not standing on it — which from the
+// player's chair is indistinguishable from the trap system being broken.
+console.log(`\nA TRAP HE FOUND STAYS ON HIS SCREEN`);
+{
+  const FORGE = `${ROOT}/Data/modules/ace-artificer/scripts`;
+  const watcher = readFileSync(`${FORGE}/perception-watcher.mjs`, "utf8");
+
+  check("the lock is drawn whether or not he can reach it, dimmed and inert when he cannot (2026-09-25)",
+    watcher.includes("static _createLockIcon(tpl, anchor = null, { reachable = true } = {})")
+      && watcher.includes("container.interactive = reachable;")
+      && watcher.includes("container.alpha       = reachable ? 1 : 0.5;")
+      && watcher.includes("if (!reachable) return container;"),
+    "one icon, two states, and the far one cannot be clicked");
+
+  check("and it says why it cannot be used, on the canvas, in feet (2026-09-25)",
+    watcher.includes("`within ${proximityFt} ft to disarm`")
+      && watcher.includes('game.settings.get(MODULE_ID, "disarmProximityFt")'),
+    "the reason is on screen rather than in a setting he has to remember");
+
+  check("both draw paths pass reachability, and walking into range redraws it gold (2026-09-25)",
+    watcher.includes("const reachable = isGM || PerceptionWatcher._isAnchorInDisarmRange(anchor);")
+      && watcher.includes("const reachable = PerceptionWatcher._isAnchorInDisarmRange(anchor);")
+      && watcher.includes("if (entry && entry.reachable === reachable) {")
+      && watcher.includes("locks.push({ pixi, anchorKey: key, reachable });"),
+    "the first draw and every refresh agree, and a change of state redraws");
+
+  // ⚠️ THE ONE CASE THAT STILL REMOVES IT. Out of attempts is not "stand
+  // closer": there is nothing left to try, and a lock that cannot ever be used
+  // would be a lie.
+  check("a player who has used up every disarm attempt still loses the lock entirely (2026-09-25)",
+    watcher.includes("if (lockedOut) continue;")
+      && watcher.includes("PerceptionWatcher._isUserLockedOutFor(flags)"),
+    "lockout removes it; distance only dims it");
+}
+
 /* ── A DROP OPENS THE PICKER HE ACTUALLY USES ──────────────────────────── */
 // His call, 2026-09-23: "After faction and bio finish on a token drop, do not
 // open the old engine chooser. Open TokenArtPicker.open on that token. Same
