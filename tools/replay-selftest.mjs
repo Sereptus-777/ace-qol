@@ -5472,11 +5472,34 @@ console.log(`\nTHE NPC SETUP DIALOG SAYS WHAT IT DOES`);
 
   check("and the window counts the places out loud and swaps them in the window, not on the sheet, so nothing is written until he presses Save (2026-09-23)",
     /function _countName\(html, name\)/.test(editor)
-      && /Replace "\$\{foundry\.utils\.escapeHTML\(from\)\}" with "\$\{foundry\.utils\.escapeHTML\(to\)\}" \(\$\{hits\} place/.test(editor)
-      && /body\.innerHTML = _swapName\(body\.innerHTML, from, to\);/.test(editor)
+      && /Replace "\$\{foundry\.utils\.escapeHTML\(worst\)\}" with "\$\{foundry\.utils\.escapeHTML\(to\)\}" \(\$\{hits\} place/.test(editor)
+      && /for \(const c of candidates\) next = _swapName\(next, c\.name, to\);/.test(editor)
       && /BiographyEditor\._dirty = true;/.test(editor)
       && /\(\?<!\[\\\\w'\]\)\$\{esc\}\(\?!\[\\\\w\]\)/.test(editor),
     "a real count, an in-window swap, and the same boundary rule as the silent one");
+
+  // ⚠️🔴 THE ONE THAT WASTED HIS EVENING (2026-09-24). The bar looked for the
+  // TOKEN LABEL, "Carrion Ogre (1)", and his biography says "Carrion Ogre", so
+  // it reported nothing to swap on the one job he wanted done. The behaviour is
+  // proven against his own text in name-swap-selftest.mjs; this pins the shape.
+  check("the swap looks for every spelling the biography might use, not just the token label with its duplicate counter (2026-09-24)",
+    editor.includes("function _nameCandidates(previous, actor)")
+      && editor.includes("strip(previous)")
+      && editor.includes("actor?.name, strip(actor?.name)")
+      && editor.includes("out.sort((a, b) => b.length - a.length)")
+      && editor.includes("const candidates = _nameCandidates(from, actor)")
+      && editor.includes("const hits = candidates.reduce((sum, c) => sum + c.n, 0);"),
+    "the counter is stripped, the sheet name is included, and the longest spelling goes first");
+
+  // ⚠️ A LABEL LEFT IN THE PROSE. His screenshot: "...tribal hierarchy.TONE:
+  // Grim". The extractor insisted on a newline before it, and the model had
+  // glued it to the last sentence.
+  check("a TONE or PERSONALITY line glued to the last sentence is still taken out of the biography (2026-09-24)",
+    bio.includes("PERSONALITY:") && bio.includes("TONE:")
+      // one lookbehind in each extractor: the label may follow a full stop
+      && (bio.match(/\(\?<=\[\.!\?/g) ?? []).length === 2
+      && bio.includes("which is not one of the ten"),
+    "both labels are caught after a full stop, and an unknown tone says so");
 
   check("the biography is a window, not a tick: it writes through the one queue, and Escape does not throw away an edit he has made (2026-09-23)",
     /export class BiographyEditor/.test(editor)
