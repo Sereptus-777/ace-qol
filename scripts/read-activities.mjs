@@ -188,3 +188,142 @@ export function readAppliedConditions(item, activityId = null) {
   }
   return out;
 }
+
+/* ────────────────────────────────────────────────────────────────────────────
+ *  WHAT DAMAGE TYPE DOES THIS WEAPON DEAL
+ *
+ * ⚠️🔴 A WEAPON HAS NO `damage.parts`. NOT ONE, ANYWHERE (proved 2026-09-25).
+ * dnd5e 5.3.3's weapon schema is `damage: { base, versatile }` and nothing else
+ * (dnd5e.mjs, WeaponData#defineSchema); its own migration lifts the old
+ * `parts[0]` into `base` and throws the list away. Of the 3,185 weapons in
+ * hijinx, 3,185 carry `base` and NONE carries `parts`. So every read of a
+ * weapon's `system.damage.parts` returned undefined and took its fallback
+ * without a word: a scimitar's Sneak Attack was piercing, a greataxe's Brutal
+ * Strike was bludgeoning, and a Battle Master's Maneuvering Attack was untyped,
+ * which walks straight past resistance.
+ *
+ * ⚠️ AND THE USED ACTIVITY IS STILL THE BETTER ANSWER WHEN THERE IS ONE. On a
+ * LIVE item dnd5e puts the weapon's base damage at the FRONT of the attack's
+ * own parts, marked `base` (AttackActivityData#prepareFinalData), so an attack
+ * in hand already knows. A stored or compendium copy has not been through that,
+ * and its parts are empty — which is exactly why the item must be read too.
+ *
+ * ⚠️ `types` IS A SET ON A LIVE ITEM AND AN ARRAY IN COMPENDIUM JSON, so
+ * `types[0]` is undefined live. That is how the Pact of the Blade chooser came
+ * to offer "Normal (normal)" for every weapon in the game.
+ *
+ * ⚠️ VERSATILE DOES NOT CARRY ITS OWN TYPE. All 105 versatile weapons in his
+ * world leave `versatile.types` empty and inherit the base's, the way dnd5e
+ * rolls them — so base is read first and versatile only answers for a weapon
+ * that genuinely declares something different.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** A Set live, an array in JSON, a bare string from a stub, nothing at all. */
+const _types = (v) => (v instanceof Set ? [...v]
+  : Array.isArray(v) ? v
+    : (v ? [v] : []))
+  .map(t => String(t ?? "").trim().toLowerCase())
+  .filter(Boolean);
+
+/**
+ * Every damage type a weapon's swing can deal, best source first.
+ *
+ * @param {Item|object} item        the weapon
+ * @param {object|null} [activity]  the activity actually used, when known
+ * @returns {string[]}  lower-case type names; empty when the weapon declares none
+ */
+export function weaponDamageTypes(item, activity = null) {
+  const out = [];
+  const add = (list) => { for (const t of list) if (!out.includes(t)) out.push(t); };
+  try {
+    // The activity actually used wins: live, its parts already hold the base.
+    for (const p of (Array.isArray(activity?.damage?.parts) ? activity.damage.parts : [])) {
+      add(_types(p?.types));
+      // A pre-5.x part is the pair [formula, type].
+      if (Array.isArray(p) && p[1]) add(_types(p[1]));
+    }
+    if (out.length) return out;
+
+    const d = item?.system?.damage ?? null;
+    add(_types(d?.base?.types));
+    if (!out.length) add(_types(d?.versatile?.types));
+  } catch (err) {
+    console.warn(`ace-qol | could not read the damage type of "${item?.name ?? "an item"}":`, err);
+  }
+  return out;
+}
+
+/**
+ * The single damage type to stamp on a rider that deals "the weapon's type" —
+ * Sneak Attack, Brutal Strike, a Battle Master maneuver, Rage, Graze.
+ *
+ * ⚠️ A WEAPON CAN DECLARE TWO. Seven in his world do (a Javelin of Lightning is
+ * lightning AND piercing, an aberration's Claw is bludgeoning AND slashing).
+ * dnd5e asks the roller which one at damage time, and that pick is not made yet
+ * when a rider is offered, so the first declared type is used and the caller's
+ * own default is never reached for a weapon that declares anything at all.
+ *
+ * @param {Item|object} item
+ * @param {object|null} [activity]
+ * @param {string|null} [fallback]  what to say for a weapon that declares no type
+ * @returns {string|null}
+ */
+export function weaponDamageType(item, activity = null, fallback = null) {
+  return weaponDamageTypes(item, activity)[0] ?? fallback;
+}
+
+/**
+ * The dice an activity actually rolls, part by part.
+ *
+ * ⚠️🔴 A SPELL HAS NO `system.damage` AT ALL. Not an empty one — the field does
+ * not exist in dnd5e 5.3.3's spell schema (dnd5e.mjs, SpellData#defineSchema
+ * has ability, activation, duration, level, materials, method, prepared,
+ * properties, range, school, sourceItem, target, and nothing else). All 4,929
+ * spells in hijinx confirm it. A spell's damage lives on its activities and
+ * only there, so `spell.system.damage.parts` has always been undefined, and
+ * every caller that read it took a hardcoded fallback in silence.
+ *
+ * @param {object|null} activity
+ * @returns {Array<{formula: string, types: string[], type: string|null}>}
+ */
+export function damageDice(activity) {
+  const out = [];
+  const parts = Array.isArray(activity?.damage?.parts) ? activity.damage.parts : [];
+  for (const p of parts) {
+    // A pre-5.x part is the pair [formula, type].
+    if (Array.isArray(p)) {
+      const f = String(p[0] ?? "").trim();
+      if (f) out.push({ formula: f, types: _types(p[1]), type: _types(p[1])[0] ?? null });
+      continue;
+    }
+    const custom = p?.custom?.enabled ? String(p.custom.formula ?? "").trim() : "";
+    let formula = custom;
+    if (!formula && p?.number && p?.denomination) formula = `${p.number}d${p.denomination}`;
+    const bonus = String(p?.bonus ?? "").trim();
+    if (!custom && bonus) formula = formula ? `${formula} + ${bonus}` : bonus;
+    if (!formula) continue;           // dnd5e rolls nothing for a part with no formula
+    const types = _types(p?.types);
+    out.push({ formula, types, type: types[0] ?? null });
+  }
+  return out;
+}
+
+/**
+ * The first damage any of an item's activities rolls — for a caller holding only
+ * the item, with no idea which activity is in play.
+ *
+ * @param {Item|object} item
+ * @param {object|null} [activity]  the one in play, when known; it wins outright
+ * @returns {{formula: string, types: string[], type: string|null}|null}
+ */
+export function firstDamage(item, activity = null) {
+  if (activity) {
+    const own = damageDice(activity);
+    if (own.length) return own[0];
+  }
+  for (const a of readActivities(item)) {
+    const d = damageDice(a);
+    if (d.length) return d[0];
+  }
+  return null;
+}

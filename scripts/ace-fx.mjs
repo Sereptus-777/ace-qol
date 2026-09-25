@@ -20,6 +20,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { MODULE_ID } from "./ace-qol.mjs";
+import { weaponDamageTypes } from "./read-activities.mjs";
 
 // Socket channel computed LAZILY at call time. MODULE_ID is a circular import
 // (ace-qol.mjs imports this module), so reading it at the top level lands in the
@@ -102,10 +103,11 @@ function _itemDamageType(item, activityId = null) {
         }
       }
     }
-    const legacy = item?.system?.damage?.parts ?? [];
-    for (const p of legacy) {
-      const t = Array.isArray(p) ? p[1] : (p?.types && [...p.types][0]);
-      if (t && DAMAGE_THEME[t]) return t;
+    // ⚠️ AND THE ITEM'S OWN FIELD IS `damage.base`, NOT `damage.parts`. This
+    // last resort read a field no dnd5e 5.x item has, so the encrust on a
+    // weapon with no themed activity was never coloured by its own damage.
+    for (const t of weaponDamageTypes(item)) {
+      if (DAMAGE_THEME[t]) return t;
     }
   } catch (_) { /* non-fatal */ }
   return null;

@@ -41,6 +41,8 @@ import { run as runTrigger, catchesOn } from "./road/run.mjs";
 import { isSpiritGuardians, guardianFlavour } from "./rules/spirit-guardians.mjs";
 // For a tracker rebuilt after a reload: the same recipe the press froze.
 import { recipeForActivity, loadBookFor } from "./inference/recipe.mjs";
+// A spell keeps its damage on its activities, never on the item (2026-09-25).
+import { firstDamage, readActivities } from "./read-activities.mjs";
 
 const TAG = `${MODULE_ID} | ConcWidget`;
 
@@ -335,20 +337,14 @@ export class ConcentrationWidget {
         // Determine timing + damage info — same path save-engine uses
         // when first detecting movement-damage spells.
         const timing = getSpellTiming(item);
-        const damageParts = item.system?.damage?.parts ?? [];
-        let formula = null, damageType = null;
-        if (Array.isArray(damageParts) && damageParts.length > 0) {
-          const p = damageParts[0];
-          if (Array.isArray(p)) {
-            formula    = p[0] ?? null;
-            damageType = p[1] ?? null;
-          } else if (p && typeof p === "object") {
-            if (p.number != null && p.denomination != null) {
-              formula = `${p.number}d${p.denomination}` + (p.bonus ? `+${p.bonus}` : "");
-            }
-            damageType = p.types?.[0] ?? null;
-          }
-        }
+        // ⚠️🔴 A SPELL HAS NO `system.damage`. This read it, so every reattached
+        // area arrived with no formula and no type and leaned on the
+        // description parse below — which knows only two sentence shapes.
+        // A spell's damage is on its activities, and the activity that placed
+        // this template is the one dnd5e names in the template's origin.
+        const placed = resolved?.item ? resolved : null;
+        const dmg = firstDamage(item, placed);
+        let formula = dmg?.formula ?? null, damageType = dmg?.type ?? null;
         // Description fallback (for spells that store damage in text only)
         if (!formula) {
           const descRaw = item.system?.description?.value ?? "";
@@ -2142,10 +2138,13 @@ export class ConcentrationWidget {
     // against still has a recipe, and that recipe says what it deals.
     if (await this._runOnTheRoad(tracker, token, phase)) return;
 
-    const formula = tracker.item?.system?.damage?.parts?.[0]?.[0]
-                  ?? tracker.damageFormula
-                  ?? "4d4";
-    const damageType = (tracker.damageTypes?.[0] ?? "slashing").toLowerCase();
+    // ⚠️🔴 THE SPELL'S OWN DICE, NOT A FIELD IT HAS NEVER HAD. A spell keeps no
+    // `system.damage`, so this first read was dead and a spell whose tracker
+    // carried no formula fell to a hardcoded 4d4 slashing (2026-09-25).
+    const own = firstDamage(tracker.item,
+      readActivities(tracker.item).find(a => String(a?.id ?? "") === String(tracker.activityId ?? "")));
+    const formula = own?.formula ?? tracker.damageFormula ?? "4d4";
+    const damageType = String(own?.type ?? tracker.damageTypes?.[0] ?? "slashing").toLowerCase();
     const spellName = tracker.item?.name ?? "Spell";
 
     let roll;
@@ -2388,10 +2387,10 @@ export class ConcentrationWidget {
     const ticks = Math.floor(ftMoved / ftPerTick);
     if (ticks < 1) return;
 
-    const formulaPerTick = tracker.item?.system?.damage?.parts?.[0]?.[0]
-                        ?? tracker.damageFormula
-                        ?? "2d4";
-    const damageType     = (tracker.damageTypes?.[0] ?? "piercing").toLowerCase();
+    const own = firstDamage(tracker.item,
+      readActivities(tracker.item).find(a => String(a?.id ?? "") === String(tracker.activityId ?? "")));
+    const formulaPerTick = own?.formula ?? tracker.damageFormula ?? "2d4";
+    const damageType     = String(own?.type ?? tracker.damageTypes?.[0] ?? "piercing").toLowerCase();
 
     // Build a multi-tick formula that ACTUALLY rolls the dice per tick
     // (RAW Spike Growth: 2d4 *for every 5 feet*). Previous version used

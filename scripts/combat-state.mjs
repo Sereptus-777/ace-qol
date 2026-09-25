@@ -22,6 +22,9 @@ import { hasTurns } from "./action-economy.mjs";
 // imports nothing, so it cannot join the static import cycles ace-qol.mjs
 // sits at the centre of.
 import { gateOff, cannotDo } from "./why-not.mjs";
+// The one reader for a weapon's own damage type. read-activities.mjs imports
+// nothing either, so it is safe from anywhere in the attack path.
+import { weaponDamageType, weaponDamageTypes } from "./read-activities.mjs";
 
 // ─── Creature snapshot access (2026-07-28) ───────────────────────────────────
 // combat-state sits BELOW the profile layer — attacker-profile imports this
@@ -2160,9 +2163,13 @@ export class CombatState {
     if (hasAdvantage || allyNearby) {
       const rogueClass = attacker.items?.find(i => i.type === "class" && i.name?.toLowerCase() === "rogue");
       const dice = Math.ceil((rogueClass?.system?.levels ?? 1) / 2);
+      // ⚠️🔴 RAW: SNEAK ATTACK IS THE WEAPON'S OWN TYPE. This read
+      // `system.damage.parts`, a field no dnd5e 5.x weapon has, so every
+      // scimitar, rapier and shortbow in the game dealt its extra dice as
+      // PIERCING. weaponDamageType reads where 5.x keeps it.
       return {
         eligible: true, name: "Sneak Attack", formula: `${dice}d6`,
-        type: item?.system?.damage?.parts?.[0]?.[1] ?? "piercing",
+        type: weaponDamageType(item, null, "piercing"),
         reason: hasAdvantage ? "Sneak Attack (have advantage)" : "Sneak Attack (ally within 5 feet)",
       };
     }
@@ -2247,9 +2254,12 @@ export class CombatState {
         }
       }
     }
-    if (sys.damage?.parts) {
-      for (const part of sys.damage.parts) { if (part[1]) types.add(part[1]); }
-    }
+    // The weapon's own damage, where dnd5e 5.x keeps it. This read
+    // `sys.damage.parts` — a field a 5.x weapon does not have — so a weapon
+    // whose activities carry no parts of their own (a stored copy, or an
+    // attack that has not been through prepareFinalData) reported no type at
+    // all, and every resistance line drawn from this list was blank.
+    for (const t of weaponDamageTypes(item)) types.add(t);
     return [...types];
   }
 

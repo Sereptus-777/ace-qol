@@ -39,6 +39,7 @@ import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { CombatState } from "./combat-state.mjs";
 import { AttackAbilityResolver } from "./attack-ability-resolver.mjs";
 import { editionFor } from "./rules-edition.mjs";
+import { weaponDamageType } from "./read-activities.mjs";
 
 const MODULE_ID = "ace-qol";
 const TAG       = `${MODULE_ID} | Mastery`;
@@ -1196,13 +1197,10 @@ export class WeaponMasteries {
       return;
     }
 
-    // The weapon's own damage type, where dnd5e 5.x keeps it (the recipe reads
-    // the same field for Graze); the old parts list only for an item that
-    // still has one.
-    const damageType = [...(item.system?.damage?.base?.types ?? [])][0]
-                    ?? item.system?.damage?.parts?.[0]?.[1]
-                    ?? item.system?.damage?.parts?.[0]?.types?.[0]
-                    ?? "slashing";
+    // The weapon's own damage type, through the one reader every other rider
+    // now uses (2026-09-25). This site was already right; it goes through the
+    // shared reader so the next weapon shape only has to be taught once.
+    const damageType = weaponDamageType(item, null, "slashing");
 
     // ⚠️ THROUGH THE HIT-POINT DOOR, and the card after it. dnd5e's own
     // applyDamage sent no damage-applied signal, so a grazed sleeper would

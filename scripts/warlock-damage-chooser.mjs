@@ -30,6 +30,10 @@
 // See lesson_one_throw_kills_every_registration_below.md.
 const MODULE_ID = "ace-qol";
 
+// Safe to import statically for the same reason: read-activities.mjs imports
+// nothing at all, so it cannot be half-built when this file evaluates.
+import { weaponDamageType, firstActivityOfType } from "./read-activities.mjs";
+
 const FLAG_NS         = MODULE_ID;
 const PACT_BLADE_KEY  = "warlock.pactBladeType";
 const LIFEDRINKER_KEY = "warlock.lifedrinkerType";
@@ -97,9 +101,10 @@ export async function promptPactTypePerAttack(actor, item) {
     _pactPromptOpen.add(actor.id);
 
     const current = getPactBladeType(actor);
-    const natural = item?.system?.damage?.base?.types?.[0]
-      ?? [...(item?.system?.activities ?? [])]?.[0]?.damage?.parts?.[0]?.types?.[0]
-      ?? "normal";
+    // ⚠️🔴 `types` IS A SET, SO `[0]` WAS ALWAYS UNDEFINED. Both reads below
+    // indexed one, on the item and on the activity, so this box offered
+    // "Normal (normal)" for every weapon a warlock has ever held (2026-09-25).
+    const natural = weaponDamageType(item, firstActivityOfType(item, "attack"), "normal");
     const opts = [
       { val: "weapon",   label: `Normal (${natural})` },
       { val: "necrotic", label: "Necrotic" },

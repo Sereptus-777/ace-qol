@@ -7,6 +7,8 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { CombatState } from "./combat-state.mjs";
 // The ding a box makes on the screen of whoever has to answer it (2026-09-18).
 import { popupDing } from "./popup-ding.mjs";
+// The one reader for a weapon's own damage type (2026-09-25).
+import { weaponDamageType } from "./read-activities.mjs";
 
 export class RiderEngine {
 
@@ -89,9 +91,12 @@ export class RiderEngine {
       if (isRaging) {
         const barbLevel = RiderEngine._getClassLevel?.(actor, "barbarian") ?? 0;
         const numDice = barbLevel >= 17 ? 3 : barbLevel >= 13 ? 2 : 1;
-        const weaponType = item?.system?.damage?.parts?.[0]?.[1]
-                        ?? item?.system?.damage?.parts?.[0]?.types?.[0]
-                        ?? "bludgeoning";
+        // ⚠️🔴 "THE WEAPON'S TYPE" MEANS THE WEAPON'S TYPE. Both reads here
+        // were dead: a 5.x weapon has no `damage.parts` at all, and `types` is
+        // a Set on a live item so `[0]` is undefined even when it does. Every
+        // Brutal Strike in the game therefore dealt BLUDGEONING — on a
+        // greataxe, a greatsword, a maul, a pike, all of them.
+        const weaponType = weaponDamageType(item, null, "bludgeoning");
         riders.push({
           id: "brutal-strike",
           name: "Brutal Strike",
@@ -176,7 +181,11 @@ export class RiderEngine {
             id: `maneuver-${m.id}`,
             name: m.name,
             formula: supDice.die, // e.g., "1d8", "1d10", "1d12"
-            type: item?.system?.damage?.parts?.[0]?.[1] ?? "untyped",
+            // ⚠️🔴 UNTYPED SKIPS RESISTANCE. This read a field no 5.x weapon
+            // has, so every maneuver's superiority die landed as untyped
+            // damage — past resistance, past immunity, past vulnerability.
+            // RAW the die is the weapon's own type.
+            type: weaponDamageType(item, null, "untyped"),
             resource: { type: "superiority-die", current: supDice.current, max: supDice.max },
             description: m.description,
             icon: "fa-chess-knight",

@@ -1965,59 +1965,17 @@ export class AttackPipeline {
   //  Helpers
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /**
-   * Extract all damage types from an item (weapon or spell).
-   * Reads from activities (dnd5e v4+) and legacy damage.parts.
-   */
-  _getItemDamageTypes(item) {
-    const types = new Set();
-    const sys = item.system ?? {};
-
-    // Activities (dnd5e v4+)
-    const activities = sys.activities;
-    if (activities) {
-      const actList = (typeof activities.forEach === "function")
-        ? [...(activities.values?.() ?? activities)]
-        : (typeof activities === "object" ? Object.values(activities) : []);
-
-      for (const activity of actList) {
-        if (!activity?.damage?.parts) continue;
-        for (const part of activity.damage.parts) {
-          if (part.types) {
-            for (const t of part.types) types.add(t);
-          }
-        }
-      }
-    }
-
-    // Legacy damage.parts
-    if (sys.damage?.parts) {
-      for (const part of sys.damage.parts) {
-        if (part[1]) types.add(part[1]);
-      }
-    }
-
-    // Weapon profile riders (from ACE Artificer)
-    try {
-      const profile = item.getFlag("ace-artificer", "profile");
-      if (profile?.riders) {
-        for (const rider of profile.riders) {
-          if (rider.damageType) types.add(rider.damageType);
-        }
-      }
-    } catch (err) { console.debug("ace-qol | AttackPipeline artificer rider read:", err); }
-
-    // Bonus damage from active effects (e.g., Frost Brand's 2d6[cold])
-    const bonusDmg = item.system?.bonuses?.mwak?.damage ?? "";
-    const bracketMatch = bonusDmg.match(/\[(\w+)\]/g);
-    if (bracketMatch) {
-      for (const m of bracketMatch) {
-        types.add(m.replace(/[\[\]]/g, ""));
-      }
-    }
-
-    return [...types];
-  }
+  // ⚠️🔴 A SECOND DAMAGE-TYPE READER LIVED HERE, AND NOTHING CALLED IT
+  // (removed 2026-09-25). `_getItemDamageTypes` was a near-copy of
+  // CombatState's, blind to the field dnd5e 5.x actually uses
+  // (`system.damage.base`), with no caller anywhere in the suite. A duplicate
+  // reader nobody runs is worse than none: it is what the next sweep fixes
+  // instead of the live one. The one reader is
+  // CombatState._getItemDamageTypes, which asks read-activities.mjs.
+  //
+  // Its two extras were not read either, and are recorded here so they are not
+  // lost: ACE Forge's weapon-profile riders (`flags.ace-artificer.profile`
+  // riders' damageType) and bracketed types in `system.bonuses.mwak.damage`.
 
   /**
    * Get the last attack results (for Phase 4 damage pipeline to consume).
