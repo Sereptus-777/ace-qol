@@ -5339,6 +5339,7 @@ console.log(`\nTHE NPC SETUP DIALOG SAYS WHAT IT DOES`);
   const reg = readFileSync(`${ENGINE}/npc/faction-registry.mjs`, "utf8");
   const bio = readFileSync(`${ENGINE}/npc/bio-generator.mjs`, "utf8");
   const editor = readFileSync(`${ENGINE}/npc/bio-editor.mjs`, "utf8");
+  const ident = readFileSync(`${ENGINE}/npc/npc-identity.mjs`, "utf8");
   const dlg = reg.slice(reg.indexOf("export async function showNpcIdentityDialog"),
     reg.indexOf("export async function processTokenFaction"));
   const proc = reg.slice(reg.indexOf("export async function processTokenFaction"));
@@ -5397,20 +5398,20 @@ console.log(`\nTHE NPC SETUP DIALOG SAYS WHAT IT DOES`);
     "male is preselected and auto is still a choice");
 
   // ── The faction list ─────────────────────────────────────────────────
-  check("the faction list is ONE list in score order with a tag saying where each came from, and the recommendations are starred in place instead of appended to the end (2026-09-23)",
+  check("the faction list is ordered by score, not carved up by where each came from, and the recommendations sit where they scored (2026-09-23, two sections 2026-09-24)",
     /function _renderFactionOptions\(rows, \{ query = "", selected = "", limit = 20 \} = \{\}\)/.test(reg)
-      && /<optgroup label="Best match first">/.test(reg)
+      && reg.includes('<optgroup label="Fits this creature">')
       && /const star = r\.rec \? "\\u2b50 " : "";/.test(reg)
       && !/<optgroup label="Scene: \$\{sceneName\}">/.test(reg)
       && !/<optgroup label="World Digest">/.test(reg),
-    "one group, sorted, starred; the per-source groups that destroyed the order are gone");
+    "one ranking, two sections by usefulness rather than by source");
 
-  check("and the search reaches every faction, not just the twenty on screen, and offers to create one by the name he typed when nothing matches (2026-09-23)",
+  check("and the search reaches every faction he owns, and offers to create one by the name he typed when nothing matches (2026-09-23)",
     /input type="text" name="factionSearch"/.test(dlg)
-      && /const shown = \(!terms\.length && limit && matched\.length > limit\)/.test(reg)
+      && reg.includes("const shown = matched;")
       && /if \(q\) html \+= `<option value="__named__:\$\{esc\(q\)\}">/.test(reg)
       && /if \(\[\.\.\.sel\.options\]\.some\(o => o\.value === keep\)\) sel\.value = keep;/.test(dlg),
-    "no cap while searching, a create-by-name row, and the filter never un-chooses");
+    "nothing is capped away, a create-by-name row, and the filter never un-chooses");
 
   // ⚠️🔴 SCORING ORDERS THE LIST. IT DOES NOT HIDE HIS WORLD FROM HIM.
   // 2026-09-24: his gold dragon was offered no church at all, because a dragon
@@ -5431,6 +5432,52 @@ console.log(`\nTHE NPC SETUP DIALOG SAYS WHAT IT DOES`);
     (reg.match(/dragon:\s+\{ military: 20, criminal: 20, religious: 50,/g) ?? []).length === 2
       && !/dragon:\s+\{ military: 20, criminal: 20, religious: 10,/.test(reg),
     "religious is above the cut for dragons, and the two tables agree");
+
+  // ⚠️🔴 A SUBTYPE IS NOT A SPECIES. dnd5e files a gold dragon as subtype
+  // "metallic", and ACE told the namer, the scorer and the GM that Aryel was a
+  // "metallic": "it only says metallic. It doesn't have dragon."
+  check("a creature's species is read from its own name when the subtype is a family word rather than a kind (2026-09-24)",
+    ident.includes("const VAGUE_SUBTYPES = new Set([")
+      && ident.includes('"metallic", "chromatic", "gem"')
+      && ident.includes("function speciesFromName(rawName, typeWord)")
+      && ident.includes("if (!candidate || !candidate.split(/\\s+/).includes(type)) return \"\";")
+      && ident.includes("if (subtype && !VAGUE_SUBTYPES.has(subtype.toLowerCase())) return subtype.toLowerCase();"),
+    "a gold dragon reads as a gold dragon, and a name that is not a species is still refused");
+
+  // ⚠️ THE FACTION'S OWN WORDS SAY WHO BELONGS TO IT. The category table never
+  // read the sentence in his bible that says "a dragon faction aligned with
+  // good". Pinned in full by faction-rank-selftest.mjs.
+  check("factions are ranked by what they say about themselves, and every row carries the reason (2026-09-24)",
+    reg.includes("function kinshipScore(f, words, alignment)")
+      && reg.includes("function creatureWords(actor, creatureBase = \"\", species = \"\")")
+      && reg.includes("function _factionAlignment(f)")
+      && reg.includes("const DRAGON_HUES = [")
+      && reg.includes("if (hue && /\\bdragons\\b/.test(text))")
+      && reg.includes("reasons: [...kin.reasons, where],"),
+    "kinship, alignment agreement, the colour rule, and reasons on the rows");
+
+  check("the list is two sections, what fits and everything else, with nothing capped away (2026-09-24)",
+    reg.includes('<optgroup label="Fits this creature">')
+      && reg.includes('<optgroup label="Everything else in your world (${rest.length})">')
+      && reg.includes("const shown = matched;")
+      && !reg.includes("matched.slice(0, limit)"),
+    "eight with reasons, the rest alphabetical, and the cap is gone");
+
+  // ⚠️ "Showing 1 of 1" is the same sentence whether the ranking hid his world
+  // or the world never loaded. Those are opposite problems.
+  check("and the window says where the list came from, and says so loudly when the world digest is missing (2026-09-24)",
+    reg.includes("const _poolCounts = {")
+      && reg.includes("from your world, ${_poolCounts.scene} on this scene, ${_poolCounts.ace} already in ACE")
+      && reg.includes("Your world digest is not loaded, so only what ACE already knows is listed."),
+    "the counts are on screen, not only in a console he does not run");
+
+  check("Ask the AI picks only from the list it was given, and says so out loud when it invents one (2026-09-24)",
+    reg.includes("export async function shortlistFactions(actor, candidates = [])")
+      && reg.includes("if (!hit) {")
+      && reg.includes("which is not one of the ${list.length} it was given. Ignored.")
+      && reg.includes('button[name="askAi"]')
+      && reg.includes("r.score = (r.score ?? 0) + 1000;"),
+    "a button, a bounded answer, and a refusal that is visible");
 
   check("a faction he names by hand goes through the existing register-or-join engine rather than a second one (2026-09-23)",
     /if \(result\?\.namedFaction\) \{/.test(proc)
