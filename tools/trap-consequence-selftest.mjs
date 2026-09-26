@@ -243,9 +243,27 @@ console.log("\nTRAP CONSEQUENCES: WHAT LANDS, AND WHAT HE IS NEVER SHOWN");
         /scaleX \* IN_PIT_SCALE/.test(pit) && /scaleY \* IN_PIT_SCALE/.test(pit),
         "a token already at 1.2 must come back to 1.2");
 
-    check("it drops by the trap's own depth",
-        /elevation: elev - Math\.abs\(depthFt\)/.test(pit)
-          && /pitDepthFt/.test(pipe) && /pitDepthFt/.test(panel));
+    // ⚠️ 2026-09-25: a real negative elevation removed the token from his map
+    // under Levels. The depth is drawn, not written.
+    check("the depth is a badge, not a real elevation",
+        !/elevation: elev - Math\.abs\(depthFt\)/.test(pit)
+          && /_refreshBadge/.test(pit)
+          && /Hooks\.on\("refreshToken"/.test(pit)
+          && /\(-\$\{Math\.abs\(pit\.depthFt \?\? 10\)\} ft\)/.test(pit),
+        "writing it took the token off the map");
+
+    check("a one-off burst is never looped as a standing area",
+        /impact\|explosion\|ground_crack\|cast_generic/.test(read("trap-engine.mjs")),
+        "an impact looped over his pit through two reloads");
+
+    check("and leftovers are swept at load, out loud",
+        /export async function sweepStalePersistentVisuals/.test(read("trap-engine.mjs"))
+          && /sweepStalePersistentVisuals\?\.\(\)/.test(read("ace-artificer.mjs")));
+
+    check("it remembers the depth the climb needs",
+        /depthFt = 10/.test(pit)
+          && /depthFt:  state\.trap\?\.pitDepthFt \?\? 10/.test(pipe)
+          && /pitDepthFt/.test(panel));
 
     check("what it was is written on the token before any of that",
         /inPit`\]: \{ rect, scaleX, scaleY, elevation: elev, from, trapName, depthFt \}/.test(pit),
