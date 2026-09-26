@@ -25,6 +25,7 @@
 
 import { readActivities } from "../read-activities.mjs";
 import { plainSpellText } from "./spell-text.mjs";
+import { readEscalation } from "../rules/creature-words.mjs";
 
 // A sentence that opens with the outcome of THE SAVE. Only at the start of a
 // sentence ("ending the spell on a success" sits inside the Ray's failure
@@ -201,8 +202,15 @@ export function readSaveOutcomeEffects(item, { activityId = null, castLevel = nu
  * ⚠️ WHAT EVERY ALTERNATIVE SHARES STILL HAPPENS. Contagion poisons whichever
  * ability the caster picks, so Poisoned lands and only the choice waits.
  *
+ * ⚠️ UNLESS THE WORDS STAGE THEM. Two effects that the item's own sentence
+ * orders — "First Failure ... Second Failure", "begins to turn to stone and is
+ * restrained ... on a failure, petrified" — are one thing happening in two
+ * steps, not a choice between two. Those come back as `staged`, with only the
+ * first stage in `fail`.
+ *
  * @returns {{rows: object[], fail: object[], success: object[],
- *            alternatives: boolean, options: string[], shared: string[]}}
+ *            alternatives: boolean, options: string[], shared: string[],
+ *            staged: boolean, escalatesTo: string|null}}
  *   `fail` and `success` are the effects to put on for each result; `shared`
  *   is the statuses every alternative carries.
  */
@@ -210,7 +218,34 @@ export function readSaveOutcome(item, opts = {}) {
   const rows = readSaveOutcomeEffects(item, opts);
   const failOnly = rows.filter(r => r.on === "fail");
   const both = rows.filter(r => r.on === "both");
-  const alternatives = failOnly.length >= 2;
+
+  // ⚠️🔴 STAGES ARE NOT A MENU (2026-09-26, his Gorgon). Petrifying Breath
+  // carries TWO effects for a failure — Restrained and Petrified — so the menu
+  // rule above declared them alternatives, found nothing they share, and put
+  // NOTHING on. The card told him so and asked him to pick one by hand.
+  //
+  // But its own words say they are not a choice, in both editions:
+  //   2024: "First Failure: ... Restrained ... and repeats the save at the end
+  //          of its next turn ... Second Failure: ... Petrified instead."
+  //   2014: "a target begins to turn to stone and is restrained. The restrained
+  //          target must repeat the saving throw ... On a failure, the target is
+  //          petrified."
+  // One happens, THEN the other, and only if the second save fails too.
+  //
+  // readEscalation already reads that sentence and answers "petrified" for
+  // every copy of the item in his world. So when the words name an escalation
+  // and one of the two effects IS it, this is a sequence: stage one lands now,
+  // and the escalation is the repeating save's job — machinery ACE already has
+  // (stagedPetrifyMeta → repeatingSave.onFailureApply), built for the gaze and
+  // never reached from here because the menu got there first.
+  const escalatesTo = String(readEscalation(item) ?? "").toLowerCase();
+  const isTerminal = (r) => escalatesTo
+    && (r.statuses ?? []).some(s => String(s).toLowerCase() === escalatesTo);
+  const terminalRows = escalatesTo ? failOnly.filter(isTerminal) : [];
+  const firstRows    = escalatesTo ? failOnly.filter(r => !isTerminal(r)) : [];
+  const staged = !!(escalatesTo && terminalRows.length && firstRows.length);
+
+  const alternatives = failOnly.length >= 2 && !staged;
   let shared = [];
   if (alternatives) {
     const sets = failOnly.map(r => new Set(r.statuses));
@@ -218,10 +253,15 @@ export function readSaveOutcome(item, opts = {}) {
   }
   return {
     rows,
-    fail: alternatives ? both : [...failOnly, ...both],
+    fail: staged ? [...firstRows, ...both]
+        : alternatives ? both
+        : [...failOnly, ...both],
     success: [...rows.filter(r => r.on === "success"), ...both],
     alternatives,
     options: alternatives ? failOnly.map(r => r.name) : [],
     shared,
+    // What the second failure turns it into, for the reader and the card.
+    staged,
+    escalatesTo: staged ? escalatesTo : null,
   };
 }

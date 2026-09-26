@@ -176,6 +176,53 @@ check("Ray 2024: Brief Enfeeblement on a success", rayO?.success.map(r => r.name
 const fts = outcome("Flesh to Stone", "2024");
 check("Flesh to Stone 2024: an either-result effect is not an alternative", fts?.alternatives, false);
 
+// ── Stages are not a menu ────────────────────────────────────────────────
+// 2026-09-26, his Gorgon. Petrifying Breath carries two effects for a failure,
+// Restrained and Petrified, so the menu rule declared them alternatives, found
+// nothing they share, and put NOTHING on — the card asked him to pick one by
+// hand. Its own words order them in both editions:
+//   2024 "First Failure: ... Restrained ... Second Failure: ... Petrified"
+//   2014 "begins to turn to stone and is restrained ... On a failure, petrified"
+// One happens, THEN the other, and only if the second save fails too.
+// The stub is the shape the reader actually reads: a save activity whose
+// `effects` reference the item's own effects by id, exactly as his Gorgon's
+// item stores them. Built by hand because neither book ships a Gorgon.
+const staged = (value) => readSaveOutcome({
+  name: "Petrifying Breath",
+  system: {
+    description: { value },
+    activities: {
+      a1: {
+        _id: "a1", type: "save",
+        save: { ability: ["con"], dc: { formula: "15" } },
+        effects: [{ _id: "eRestrained", onSave: false }, { _id: "ePetrified", onSave: false }],
+      },
+    },
+  },
+  effects: [
+    { _id: "eRestrained", name: "Restrained", statuses: ["restrained"], changes: [], description: "" },
+    { _id: "ePetrified",  name: "Petrified",  statuses: ["petrified"],  changes: [], description: "" },
+  ],
+});
+const words2024 = "Constitution Saving Throw: DC 15, each creature in a 30-foot Cone. "
+  + "First Failure: The target has the Restrained condition and repeats the save at the end of "
+  + "its next turn if it is still Restrained, ending the effect on itself on a success. "
+  + "Second Failure: The target has the Petrified condition instead of the Restrained condition.";
+const words2014 = "On a failed save, a target begins to turn to stone and is restrained. The "
+  + "restrained target must repeat the saving throw at the end of its next turn. On a success, "
+  + "the effect ends on the target. On a failure, the target is petrified.";
+
+for (const [label, words] of [["2024", words2024], ["2014", words2014]]) {
+  const o = staged(words);
+  check(`Petrifying Breath ${label}: its two results are stages, not a menu`, o?.alternatives, false);
+  check(`Petrifying Breath ${label}: it says what the second failure turns it into`, o?.escalatesTo, "petrified");
+  check(`Petrifying Breath ${label}: only the first stage lands now`,
+    o?.fail.map(r => r.name).join(","), "Restrained");
+}
+
+// And the rule it must not break: a genuine menu is still a menu.
+check("Divine Word is still a menu, not a staged chain", dw?.staged, false);
+
 /* ── 2. Who an area catches ─────────────────────────────────────────────── */
 console.log("\n2. WHO AN AREA SPELL CATCHES");
 const picked = [], spared = [];
