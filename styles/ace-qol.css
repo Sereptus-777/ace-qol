@@ -1187,6 +1187,9 @@
   text-shadow: 0 1px 2px rgba(0,0,0,0.6);
 }
 .ace-qol-btn-roll-dmg-push-text {
+  /* no-wrap-ok: this is the label half of a two-part button whose other half
+     is a fixed icon; flex:1 gives it every pixel the button has, and the
+     button itself is in a wrapping row. */
   flex: 1;
   text-align: center;
   font-size: 0.85rem;
@@ -5403,6 +5406,9 @@
 .ace-qol-save-pending,
 .ace-qol-save-pass,
 .ace-qol-save-fail {
+  /* no-wrap-ok: the chat-card text law above. A status label never wraps
+     mid-word; when it will not fit beside its row it takes its own full-width
+     line instead, which the flex-basis rules below give it. */
   white-space: nowrap;
 }
 

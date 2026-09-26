@@ -408,10 +408,19 @@ console.log("\nTRAP CONSEQUENCES: WHAT LANDS, AND WHAT HE IS NEVER SHOWN");
         !/forge-trap-desc/.test(beh),
         "he wrote the trap; the card is for what just happened");
 
-    check("APPLY ALL fits on one line",
-        beh.includes("APPLY ALL — <strong>${totalPending}</strong>")
-          && !/i>\s*APPLY DAMAGE TO ALL/.test(beh),
-        "the old wording could not fit and wrapped into a mess");
+    // ⚠️ 2026-09-26, third time of asking: "I need APPLY ALL, just like in the
+    // damage one for a melee weapon, and UNDO ALL right beside it."
+    check("APPLY ALL and UNDO ALL sit side by side, with no number on either",
+        /APPLY ALL[\s\S]{0,20}?<\/button>/.test(beh)
+          && /UNDO ALL[\s\S]{0,20}?<\/button>/.test(beh)
+          && !/APPLY ALL — /.test(beh)
+          && !/APPLY DAMAGE TO ALL/.test(beh)
+          && /\.forge-apply-block \{[\s\S]{0,200}?flex-wrap: wrap;/.test(css),
+        "the total welded into the label is what made the last one too long");
+
+    check("and the ask on a player's card wraps instead of running off it",
+        /\.forge-roll-save-big \{[\s\S]{0,300}?white-space: normal;/.test(css),
+        "ROLL DEXTERITY SAVE came out as ROLL DEXTERITY SA");
 
     // "All that writing should be bigger, twice the size." These are the five
     // sizes that were 11 to 14px on the card he photographed.

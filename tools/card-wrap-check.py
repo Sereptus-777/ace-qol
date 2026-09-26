@@ -127,6 +127,8 @@ def scan(css_path):
 # height, or one that hides what overflows, cannot keep that promise: the label
 # is simply cut off, which is what happened to "DISARM ALL (2)".
 BUTTONISH = re.compile(r"(btn|button|pill)", re.I)
+# A piece of text INSIDE a button. Its own name usually says so.
+LABELISH = re.compile(r"-(label|words|big|sub|text|title|name|count)\b", re.I)
 FIXED_HEIGHT = re.compile(r"(?<!min-)(?<!max-)(?<!line-)\bheight\s*:\s*(?!auto)(?!100%)(?!inherit)[^;]+;", re.I)
 CLIPS = re.compile(
     r"overflow\s*:\s*hidden|text-overflow\s*:\s*ellipsis|white-space\s*:\s*nowrap",
@@ -151,10 +153,26 @@ def scan_pills(css_path):
         # A rule that hides its target is not a pill with a label in it.
         if re.search(r"display\s*:\s*none", body, re.I):
             continue
-        if not (FIXED_HEIGHT.search(body) and CLIPS.search(body)):
+
+        # ⚠️🔴 THE CHECK TESTED THE WRONG PROPERTY (2026-09-26). It looked for
+        # a fixed height, and the very next button I wrote broke the rule a
+        # different way: no height at all, but a `white-space: nowrap` label
+        # at 21px beside a 46px die, on a card about 300px wide. "ROLL
+        # DEXTERITY SAVE" came out as "ROLL DEXTERITY SA". A label that cannot
+        # wrap is cut exactly as surely as one in a box that cannot grow.
+        #
+        # nowrap is legitimate when the element is guaranteed room — ace-qol's
+        # action row gives each button a flex-basis and lets the ROW wrap, so
+        # "APPLY ALL" never breaks mid-word and never overflows either. That
+        # rule says so with `no-wrap-ok:`, which is what the opt-out is for.
+        if FIXED_HEIGHT.search(body) and CLIPS.search(body):
+            out.append((line, sel.replace("\n", " ").strip(),
+                        "a fixed height and it hides what will not fit"))
             continue
-        out.append((line, sel.replace("\n", " ").strip(),
-                    "a fixed height and it hides what will not fit"))
+
+        if LABELISH.search(sel) and re.search(r"white-space\s*:\s*nowrap", body, re.I):
+            out.append((line, sel.replace("\n", " ").strip(),
+                        "a label inside a button that cannot wrap"))
     return out
 
 
