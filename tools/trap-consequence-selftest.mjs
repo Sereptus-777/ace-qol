@@ -92,9 +92,20 @@ console.log("\nTRAP CONSEQUENCES: WHAT LANDS, AND WHAT HE IS NEVER SHOWN");
         "the trap hook fires after the move, so the old position is already gone");
 
     check("the hole's own rectangle is remembered at fire time",
-        /trapArea: TrapPipeline\._trapArea\(template\)/.test(pipe)
+        /const trapArea = TrapPipeline\._trapArea\(template\);/.test(pipe)
           && /static _trapArea\(template\)/.test(pipe),
         "a one-shot trap deletes its template long before anyone rolls");
+
+    // ⚠️ 2026-09-25: Patrina was at the bottom of the pit when Virric stepped
+    // on it, and the trap asked her to save against a hole she was already in.
+    check("a trap does not catch a creature that is already in it",
+        /PitFall\._rectsOverlap\(inPit\.rect, trapArea\)/.test(pipe)
+          && /alreadyIn\.push\(tokenDoc\.name\)/.test(pipe),
+        "the Monk's Active Tiles model, narrowed to the case his table proved");
+
+    check("and the card says who it could not catch again",
+        /state\.alreadyIn/.test(read("trap-behavior.mjs")),
+        "a creature quietly missing from the list looks like a bug");
 
     check("and the PICTURE is the hole, not the trigger area",
         /if \(tile\) return \{ x: tile\.x, y: tile\.y, w: tile\.width, h: tile\.height \};/.test(pipe),
@@ -120,9 +131,13 @@ console.log("\nTRAP CONSEQUENCES: WHAT LANDS, AND WHAT HE IS NEVER SHOWN");
     const spent = eng.slice(eng.indexOf("async applyOneShotSpent"),
                             eng.indexOf("async applyReusableFired"));
 
-    check("the spend no longer deletes the trap's tiles",
-        !/deleteEmbeddedDocuments\("Tile"/.test(spent),
-        "this is what made his pit trap disappear");
+    // ⚠️ Re-pinned 2026-09-25. A hole stays a hole; a ward burns out and leaves
+    // nothing, and its icon lying on the map afterwards is litter.
+    check("a trap that leaves its mark keeps its picture, and one that does not takes it with it",
+        /if \(trapLeavesItsMark\(flags\.trapData \?\? \{\}\)\) \{/.test(spent)
+          && /deleteEmbeddedDocuments\("Tile", tiles\)/.test(spent)
+          && /export function trapLeavesItsMark/.test(read("trap-library.mjs")),
+        "the pit disappearing and the ward's icon staying were the same missing question");
 
     // ⚠️ Re-pinned 2026-09-25. The reveal is one function now, because firing
     // has to reveal the art too: a trap that fired and stayed showed its
