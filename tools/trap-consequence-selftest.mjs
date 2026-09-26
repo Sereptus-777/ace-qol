@@ -331,7 +331,16 @@ console.log("\nTRAP CONSEQUENCES: WHAT LANDS, AND WHAT HE IS NEVER SHOWN");
           && /Math\.max\(1, Math\.floor\(depth \/ 10\)\)/.test(pit),
         "1d6 per 10 feet, and prone again");
 
-    check("and the climb is resolved GM-side, never on the player's own client",
+    // 2026-09-25, his table: he pressed "try the walls" on the client and the
+    // roll box opened on the GM's screen, because CheckGate opens its box on
+    // the client that calls it and the whole climb was being run GM-side.
+    check("the climber rolls his own check, on his own screen",
+        /static async rollTheWalls\(actor\)/.test(pit)
+          && /total = await PitFall\.rollTheWalls\(actor\)/.test(pit)
+          && /total,                    \/\/ already rolled, on the climber's own screen/.test(pit),
+        "a roll belongs to whoever owns the creature");
+
+    check("and the GM is sent only what it left",
         /static async resolveClimb/.test(pit)
           && /if \(!game\.user\.isGM\) return;/.test(pit)
           && /case "pitClimb"/.test(entrySrc)
