@@ -122,6 +122,42 @@ def scan(css_path):
     return checked, exempt, offenders
 
 
+# ⚠️🔴 HIS RULE, 2026-09-25: "All text has to fit inside the fucking pill
+# button, okay? Forever, for every fucking pill button." A button with a fixed
+# height, or one that hides what overflows, cannot keep that promise: the label
+# is simply cut off, which is what happened to "DISARM ALL (2)".
+BUTTONISH = re.compile(r"(btn|button|pill)", re.I)
+FIXED_HEIGHT = re.compile(r"(?<!min-)(?<!max-)(?<!line-)\bheight\s*:\s*(?!auto)(?!100%)(?!inherit)[^;]+;", re.I)
+CLIPS = re.compile(
+    r"overflow\s*:\s*hidden|text-overflow\s*:\s*ellipsis|white-space\s*:\s*nowrap",
+    re.I,
+)
+
+
+def scan_pills(css_path):
+    """Button rules that cannot grow around their own label."""
+    text = css_path.read_text(encoding="utf-8", errors="replace")
+    out = []
+    for line, sel, body, before in rules(text):
+        if not BUTTONISH.search(sel):
+            continue
+        if OPT_OUT.search(body) or OPT_OUT.search(before):
+            continue
+        # ⚠️ NARROW ON PURPOSE. A fixed height on an icon-only button is
+        # correct, and flagging every one of them names two dozen rules nobody
+        # will read — the same mistake cycle-check made on its first run. What
+        # actually CUTS a label is a fixed height TOGETHER WITH something that
+        # stops the text wrapping or hides the overflow.
+        # A rule that hides its target is not a pill with a label in it.
+        if re.search(r"display\s*:\s*none", body, re.I):
+            continue
+        if not (FIXED_HEIGHT.search(body) and CLIPS.search(body)):
+            continue
+        out.append((line, sel.replace("\n", " ").strip(),
+                    "a fixed height and it hides what will not fit"))
+    return out
+
+
 def main():
     print("=" * 74)
     print("CARD ROWS THAT CANNOT WRAP")
@@ -138,9 +174,26 @@ def main():
         all_offenders += [(css.name, line, sel) for line, sel in offenders]
     print()
 
-    if not all_offenders:
-        print("Every card row can wrap. Height is free.")
+    pills = []
+    for css in STYLESHEETS:
+        if css.exists():
+            pills += [(css.name, *p) for p in scan_pills(css)]
+
+    if pills:
+        print("PILLS THAT CANNOT FIT THEIR OWN LABEL")
+        for name, line, sel, why in pills:
+            print(f"  {name}:{line}  {sel}  ({why})")
+        print()
+        print("Every pill grows around its text. Drop the fixed height, or say")
+        print("`no-wrap-ok: <reason>` in the rule.")
+        print()
+
+    if not all_offenders and not pills:
+        print("Every card row can wrap, and every pill fits its own label. Height is free.")
         return 0
+
+    if not all_offenders:
+        return 1
 
     for name, line, sel in all_offenders:
         print(f"  {name}:{line}  {sel}")
