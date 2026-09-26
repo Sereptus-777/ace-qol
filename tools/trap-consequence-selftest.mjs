@@ -300,11 +300,18 @@ console.log("\nTRAP CONSEQUENCES: WHAT LANDS, AND WHAT HE IS NEVER SHOWN");
           && /Hooks\.on\("deleteTile", \(tileDoc\)/.test(pit)
           && /static async liftEveryoneIn/.test(pit));
 
+    // ⚠️ Re-pinned 2026-09-26. This used to pin the repair to Hooks.once("ready"),
+    // which is exactly the bug: PitFall.register() runs from inside the module's
+    // own ready handler, so that listener was registered for an event already
+    // gone and the repair had never run once. canvasReady fires after the canvas
+    // is drawn AND again on every scene change, which is what a per-scene repair
+    // actually wants.
     check("and a token in a hole that no longer exists is repaired at load, out loud",
         /static async repairOrphans/.test(pit)
-          && /Hooks\.once\("ready", \(\) => PitFall\.repairOrphans\(\)\)/.test(pit)
+          && /Hooks\.on\("canvasReady", \(\) => PitFall\.repairOrphans\(\)\)/.test(pit)
+          && !/Hooks\.once\("ready", \(\) => PitFall\.repairOrphans\(\)\)/.test(pit)
           && /ui\.notifications\?\.info/.test(pit),
-        "a silent repair is indistinguishable from a broken one");
+        "a silent repair is indistinguishable from a broken one, and one that never runs is worse");
 
     check("the Forge API cannot wipe what registered before it",
         /game\.aceForge = Object\.assign\(game\.aceForge \?\? \{\}, \{/.test(entrySrc)

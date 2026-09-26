@@ -33,6 +33,7 @@ CHECKS = [
     ("every card row can wrap", "python tools/card-wrap-check.py"),
     ("every hook ACE listens for is fired", "python tools/hook-check.py"),
     ("no import read before it exists", "python tools/cycle-check.py"),
+    ("no ready hook registered from inside ready", "python tools/ready-inside-ready-check.py"),
     # Two Forge traps destructured a name its target file does not export, so
     # neither had ever played its animation (2026-09-25). Nothing else sees that
     # shape: the module is real, so the load succeeds, and the name is undefined.

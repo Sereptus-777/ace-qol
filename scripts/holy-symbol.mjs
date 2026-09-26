@@ -106,6 +106,11 @@ export class HolySymbol {
     // init() is invoked from ace-qol's own `ready` hook, so `ready` has already
     // fired — call directly rather than via Hooks.once("ready"), which would
     // never run at this point. (Guarded: re-run if somehow called pre-ready.)
+    //
+    // ready-ok: guarded on `game?.actors?.size` rather than `game.ready`,
+    // because what this needs is the actor collection, not the event. The
+    // direct call is taken whenever the world is up, so the hook below is only
+    // ever reached before ready.
     try {
       if (game?.actors?.size != null) HolySymbol._ensureWired();
       else Hooks.once("ready", () => HolySymbol._ensureWired());
