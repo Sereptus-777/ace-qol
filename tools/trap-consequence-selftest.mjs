@@ -334,9 +334,29 @@ console.log("\nTRAP CONSEQUENCES: WHAT LANDS, AND WHAT HE IS NEVER SHOWN");
         /const targetRows = targets/.test(beh) && !/_renderNpcBlock/.test(beh),
         "his words: this isn't even close to what my quality of life save card looks like");
 
-    check("the die that decided the save is under the portrait",
-        /_d20FaceHtml/.test(beh) && /forge-target-left/.test(beh)
+    // ⚠️ Re-pinned 2026-09-25 to the order he asked for: the picture with the
+    // name beside it, then the die with the arithmetic beside IT.
+    check("the picture has the name beside it, and the die sits with the numbers",
+        /_d20FaceHtml/.test(beh)
+          && /<div class="forge-target-head">/.test(beh)
+          && /<span class="forge-target-name">/.test(beh)
+          && /<div class="forge-save-line">[\s\S]{0,40}?\$\{dieColumn\}/.test(beh)
           && /\.forge-d20-img \{[\s\S]{0,120}?width: 54px;/.test(css));
+
+    check("what a failure left is a note, not a row of buttons",
+        /\.forge-consequence \{[\s\S]{0,240}?border: none;/.test(css)
+          && /\.forge-target-consequences \{[\s\S]{0,240}?font-size: 15px;/.test(css),
+        "he read the old chips as controls and asked what they were for");
+
+    check("the party's own rows are public, whoever owns the sheet",
+        /data-party="\$\{target\.isCharacter \? "1" : "0"\}"/.test(beh)
+          && /if \(row\.dataset\.party === "1"\) continue;/.test(beh)
+          && /isCharacter:\s*tokenDoc\.actor\?\.type === "character"/.test(read("trap-pipeline.mjs")),
+        "he owns the whole party, so ownership hid his own people from themselves");
+
+    check("a hole lands prone even when the trap was saved with restrained",
+        /if \(fallsIn && wanted === "restrained"\)/.test(read("trap-pipeline.mjs")),
+        "every copy of the old Spike Pit still carries restrained");
 
     check("the arithmetic is spelled out, not a 'X vs Y' pill",
         /forge-save-roll/.test(beh) && /forge-save-total/.test(beh)
