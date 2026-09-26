@@ -311,6 +311,24 @@ console.log("\nTRAP CONSEQUENCES: WHAT LANDS, AND WHAT HE IS NEVER SHOWN");
           && /liftEveryoneOut/.test(entrySrc),
         "the 2026-08 API-wipe lesson, caught again in the other module");
 
+    // 2026-09-26. Patrina was dragged clear of the pit and stayed shrunk with
+    // the depth badge over her head: the watcher measured her centre from
+    // tokenDoc.x, which still held the square she had LEFT.
+    check("the move watcher reads the move, not the document",
+        /const nx = changes\.x \?\? tokenDoc\.x;/.test(pit)
+          && /const ny = changes\.y \?\? tokenDoc\.y;/.test(pit),
+        "the document can lag its own update, and it is written down in this repo");
+
+    check("being in a pit is an effect he can take off, and taking it off is the way out",
+        /static async _addEffect/.test(pit)
+          && /pitEffect: true/.test(pit)
+          && /Hooks\.on\("deleteActiveEffect"/.test(pit)
+          && /its effect was removed/.test(pit),
+        "he asked for a handle he can reach, so the handle has to do the thing");
+
+    check("and a token standing outside its own hole is repaired at load",
+        /it is standing outside the hole/.test(pit));
+
     check("and the GM can still lift anyone out by hand",
         /if \(game\.user\.isGM\) return true;/.test(pit)
           && /PitFall\.lift\(tokenDoc, "it was taken out"\)/.test(pit));
