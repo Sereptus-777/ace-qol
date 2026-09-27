@@ -556,6 +556,49 @@ const damageFormula = (d) => {
 const offersBaseDamage = (item) => _s(item?.type) === "weapon"
   || (_s(item?.type) === "consumable" && _s(item?.system?.type?.value) === "ammo");
 
+/**
+ * ⚠️🔴 A WEAPON'S BASE DAMAGE CARRIES THE ABILITY MODIFIER, AND NOTHING SAID SO
+ * (2026-09-26, his table: Jeth's Bladed Whip crit for 7 and 4 with no +5 in it).
+ *
+ * The modifier is not in the stored data anywhere. dnd5e adds it at roll time,
+ * to the BASE part of a WEAPON only, in AttackActivity#_processDamagePart:
+ *
+ *     const includeMod = (!offhand || (roll.data.mod < 0)) && !isDeterministic
+ *       && !((classification === "spell") && (type.value === "natural"));
+ *     if ( includeMod && !roll.parts.some(p => p.includes("@mod")) ) roll.parts.push("@mod");
+ *     // then "@magicalBonus" when the item has one and its magic is available
+ *
+ * So a recipe built from the stored fields alone says "1d4 slashing" where the
+ * sheet rolls "1d4 + @mod". That was survivable while the sheet's own roll was
+ * what landed; once The One Road made the recipe's onHit the thing that lands,
+ * the modifier had nowhere left to come from. 2,331 of the 3,130 weapons in
+ * hijinx keep their dice in `damage.base` with an empty parts array, so every
+ * one of them whose words do not spell the bonus out was swinging at +0.
+ *
+ * ⚠️ This is dnd5e's rule copied, not a rule invented:
+ *   • weapons only, base part only;
+ *   • never when the part has no dice (a rat's flat 1 takes no modifier);
+ *   • never on a natural weapon used as a spell attack;
+ *   • never twice, when a custom formula already writes @mod itself.
+ * Off-hand is the one condition left out on purpose: a recipe describes the
+ * weapon, not one swing of it, and the damage calculator already strips @mod
+ * for an off-hand swing at the moment it rolls.
+ */
+const withWeaponMod = (item, acts, formula) => {
+  if (_s(item?.type) !== "weapon") return formula;
+  if (/@mod\b/.test(formula)) return formula;
+  const attack = _arr(acts).find(a => _s(a?.type) === "attack" && a?.damage?.includeBase !== false);
+  if (!attack) return formula;
+  if (!/\dd\d/.test(formula)) return formula;          // dnd5e: a deterministic part takes none
+  if (_s(attack?.attack?.type?.classification) === "spell"
+    && _s(item?.system?.type?.value) === "natural") return formula;
+
+  let out = `${formula} + @mod`;
+  const magic = _n(item?.system?.magicalBonus) ?? 0;
+  if (magic) out += " + @magicalBonus";
+  return out;
+};
+
 function readChange(item, acts, parsed, why) {
   const sys = item?.system ?? {};
   const damage = [];
@@ -564,7 +607,9 @@ function readChange(item, acts, parsed, why) {
   // `includeBase: true` rather than repeating it. Read both or a rapier deals none.
   const base = sys.damage?.base;
   const baseFormula = offersBaseDamage(item) ? damageFormula(base) : "";
-  if (baseFormula) damage.push({ formula: baseFormula, types: _arr(base.types), base: true });
+  if (baseFormula) {
+    damage.push({ formula: withWeaponMod(item, acts, baseFormula), types: _arr(base.types), base: true });
+  }
   for (const a of acts) {
     for (const p of _arr(a?.damage?.parts)) {
       // ⚠️🔴 A LIVE WEAPON'S BASE DAMAGE IS ALREADY IN ITS ATTACK'S PARTS

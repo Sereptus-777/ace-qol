@@ -67,8 +67,38 @@ const rf = readActionFacts(rapier);
 check("a rapier reaches 5 feet, not 'self'", rf.delivery.kind, "reach");
 check("a rapier reaches 5 feet", rf.delivery.rangeFt, 5);
 check("a rapier lands on one creature, not nobody", rf.scope.kind, "one");
-check("a rapier's damage comes off the item", rf.change.damage[0]?.formula, "1d8");
+// Re-pinned 2026-09-26: a rapier's base damage comes off the item AND carries
+// the ability modifier, because that is what dnd5e rolls. The modifier is in no
+// stored field; AttackActivity#_processDamagePart pushes "@mod" onto a weapon's
+// base part at roll time, and a recipe built without it had Jeth swinging a
+// magic whip at +0.
+check("a rapier's damage comes off the item, modifier and all",
+  rf.change.damage[0]?.formula, "1d8 + @mod");
 check("a rapier is an attack", classifyItem(rapier).shape, "attack-single");
+
+// ⚠️ And the rule is dnd5e's, not a blanket "+ @mod on everything". These are
+// the three cases dnd5e itself leaves out, so they stay out here.
+const flatBite = { type: "weapon", name: "Flat Bite",
+  system: { damage: { base: { number: 0, denomination: 0, bonus: "1", types: ["piercing"] } },
+            activities: { a: { _id: "a", type: "attack", damage: { includeBase: true, parts: [] },
+                               attack: { type: { value: "melee", classification: "weapon" } } } } } };
+check("a dice-less hit takes no modifier, the way dnd5e leaves one out",
+  readActionFacts(flatBite).change.damage[0]?.formula, "1");
+
+const naturalSpell = { type: "weapon", name: "Spell Claw",
+  system: { type: { value: "natural" },
+            damage: { base: { number: 1, denomination: 6, bonus: "", types: ["slashing"] } },
+            activities: { a: { _id: "a", type: "attack", damage: { includeBase: true, parts: [] },
+                               attack: { type: { value: "melee", classification: "spell" } } } } } };
+check("a natural weapon swung as a spell attack takes none either",
+  readActionFacts(naturalSpell).change.damage[0]?.formula, "1d6");
+
+const alreadyHasIt = { type: "weapon", name: "Unarmed Strike",
+  system: { damage: { base: { number: 0, denomination: 0, bonus: "1 + @mod", types: ["bludgeoning"] } },
+            activities: { a: { _id: "a", type: "attack", damage: { includeBase: true, parts: [] },
+                               attack: { type: { value: "melee", classification: "weapon" } } } } } };
+check("and a formula that already writes it does not get it twice",
+  readActionFacts(alreadyHasIt).change.damage[0]?.formula, "1 + @mod");
 
 console.log("\nA FEAT HAS NO ITEM-LEVEL RANGE, SO THE ACTIVITY IS ALL THERE IS");
 const sw = readActionFacts(secondWind);
