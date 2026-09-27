@@ -38,6 +38,53 @@ export class MultiattackEngine {
   static _seenRolls = new WeakSet();   // dual-hook dedupe (rollAttackV2 + rollAttack share a Roll)
   static _inFlight  = new Set();       // actorIds whose chain is FIRING an attack — suppresses re-trigger
   static _chained   = new Set();       // actorIds who already opened a chain this turn
+
+  // ── THE ACTION WEAPON ─────────────────────────────────────────────────────
+  // ⚠️🔴 A SHEET PRESS IS MAIN-HAND (2026-09-27, his rule, after two live
+  // swings of Jeth's Bladed Whip came out at +0).
+  //
+  // dnd5e remembers the last attack mode on the item and silently reuses it:
+  //
+  //     dnd5e.mjs:28461   attackMode: this.item.getFlag("dnd5e", `last.${this.id}.attackMode`)
+  //
+  // Jeth's whip carries `attackMode: "offhand"` from some swing months ago, so
+  // every press since has been rolled off-hand by dnd5e, the ability modifier
+  // has been stripped from its damage, and nothing on screen said so. The flag
+  // is written BEFORE the roll hooks fire (dnd5e.mjs:28560), so at the hook
+  // there is no way to tell a mode he chose from one he inherited.
+  //
+  // So ACE stops asking dnd5e and uses the turn's own facts. His rules:
+  //   • a sheet press of a weapon is MAIN-HAND;
+  //   • off-hand is a DIFFERENT one-handed weapon, or not at all.
+  // The first weapon a creature attacks with in a turn is its action weapon.
+  // That weapon is never an off-hand swing, whatever the item remembers.
+  //
+  // Keyed by actor id. Cleared with `_chained` on every turn and round, and
+  // given a life of its own for a press outside a fight, where no turn ever
+  // changes to clear it.
+  static _actionWeapon = new Map();    // actorId → {uuid, itemId, at}
+  static ACTION_WEAPON_LIFE = 30000;
+
+  /** The weapon this creature is attacking with this turn, if it is still current. */
+  static _currentActionWeapon(actorId) {
+    const rec = MultiattackEngine._actionWeapon.get(actorId);
+    if (!rec) return null;
+    if (Date.now() - rec.at > MultiattackEngine.ACTION_WEAPON_LIFE) {
+      MultiattackEngine._actionWeapon.delete(actorId);
+      return null;
+    }
+    return rec;
+  }
+
+  /** The first weapon attack of a turn names the action weapon; later ones do not. */
+  static _noteActionWeapon(actorId, item) {
+    if (!actorId || !item?.uuid) return null;
+    const rec = MultiattackEngine._currentActionWeapon(actorId);
+    if (rec) return rec;
+    const fresh = { uuid: item.uuid, itemId: item.id ?? null, at: Date.now() };
+    MultiattackEngine._actionWeapon.set(actorId, fresh);
+    return fresh;
+  }
   static _activeChains = new Set();    // actorIds with a chain loop RUNNING right now (stale-gate healing)
   static _openPrompts  = new Map();    // actorId → the OPEN chain Dialog (front it instead of silent-suppressing)
 
@@ -51,18 +98,52 @@ export class MultiattackEngine {
     } catch (_) { /* already registered */ }
 
     const trigger = (rolls, data) => {
-      // Bulletproof off-hand signal (Johnny 2026-07-12): dnd5e stamps a
-      // two-weapon off-hand swing with roll.options.attackMode === "offhand".
-      // Reading it here — instead of relying only on the pop-up's kind flag —
-      // catches BOTH a native off-hand attack AND our own pop-up swing (which
-      // now fires with the tag). The damage calc + combat-state read the mark to
-      // strip the RAW off-hand ability mod. Fires on the roller's client, right
-      // before the damage build → no TTL race.
+      // ⚠️ THE OFF-HAND SIGNAL IS THE TURN'S, NOT THE ITEM'S MEMORY. This block
+      // used to take dnd5e's `attackMode === "offhand"` at face value, and that
+      // mode is seeded from a flag on the item that nobody can see (see
+      // ACTION WEAPON above). It now asks one question instead: is this the
+      // weapon the creature is already attacking with this turn?
+      //
+      //   the action weapon  → MAIN-HAND, and any stale mark on it is cleared,
+      //                        so an earlier off-hand swing cannot bleed across
+      //                        the mark's eight seconds into this press either.
+      //   another weapon     → off-hand when this roll says so, or when ACE's own
+      //                        off-hand button already marked it (_fireAttack).
+      //
+      // Fires on the roller's client, right before the damage build, so there is
+      // no race with the strip in damage-calculator.
       try {
         const roll = Array.isArray(rolls) ? rolls[0] : rolls;
-        if (roll?.options?.attackMode === "offhand") {
-          const uuid = data?.subject?.item?.uuid ?? data?.subject?.parent?.uuid ?? null;
-          if (uuid) CombatState.markOffhandSwing(uuid);
+        const item = data?.subject?.item ?? data?.subject?.parent ?? null;
+        const actorId = data?.subject?.actor?.id ?? item?.actor?.id ?? null;
+        const uuid = item?.uuid ?? null;
+        if (uuid && actorId) {
+          const action = MultiattackEngine._noteActionWeapon(actorId, item);
+          const asked = roll?.options?.attackMode === "offhand";
+          // ⚠️ ACE'S OWN OFF-HAND BUTTON OUTRANKS THIS. _fireAttack marks the
+          // swing before it presses, and _inFlight says the swing in the air is
+          // ours. Without this, clicking "Off-hand" as the FIRST attack of a turn
+          // would name that weapon the action weapon and then wipe the mark ACE
+          // had just set, which is the bug this block exists to stop, backwards.
+          const oursAlready = MultiattackEngine._inFlight.has(actorId)
+            && CombatState.isOffhandSwing(uuid);
+          if (oursAlready) {
+            console.log(`${MODULE_ID} | "${item?.name}": off-hand, because the pop-up's own off-hand `
+              + `button fired this swing.`);
+          } else if (action?.uuid === uuid) {
+            CombatState.clearOffhandSwing(uuid);
+            if (asked) {
+              console.log(`${MODULE_ID} | "${item?.name}" is ${data?.subject?.actor?.name ?? "this creature"}'s `
+                + `action weapon this turn, so this swing is MAIN-HAND and keeps its ability modifier. `
+                + `dnd5e asked for off-hand because the item remembers that mode `
+                + `(flags.dnd5e.last.${data?.subject?.id}.attackMode); a remembered mode does not decide a press.`);
+            }
+          } else if (asked) {
+            CombatState.markOffhandSwing(uuid);
+            console.log(`${MODULE_ID} | "${item?.name}" is an off-hand swing: it is not `
+              + `${data?.subject?.actor?.name ?? "this creature"}'s action weapon this turn. `
+              + `RAW, its damage takes no ability modifier.`);
+          }
         }
       } catch (e) { console.warn(`${MODULE_ID} | off-hand attackMode mark failed:`, e); }
       try { MultiattackEngine._onAttack(rolls, data); }
@@ -79,6 +160,7 @@ export class MultiattackEngine {
     // (audit F-022, 2026-08-07)
     Hooks.on("combatTurnChange",  (combat, prior, current) => {
       MultiattackEngine._chained.clear();
+      MultiattackEngine._actionWeapon.clear();
       // Close any open chain pop-up for an actor who is no longer the active
       // combatant — covers fumble-ends-turn + GM manual skip (2026-07-10).
       try {
@@ -91,8 +173,9 @@ export class MultiattackEngine {
         }
       } catch (_) { /* non-fatal */ }
     });
-    Hooks.on("combatRound", () => MultiattackEngine._chained.clear());
-    Hooks.on("deleteCombat", () => { MultiattackEngine._chained.clear(); MultiattackEngine._inFlight.clear(); MultiattackEngine._activeChains.clear(); });
+    Hooks.on("combatRound", () => { MultiattackEngine._chained.clear(); MultiattackEngine._actionWeapon.clear(); });
+    Hooks.on("deleteCombat", () => { MultiattackEngine._chained.clear(); MultiattackEngine._inFlight.clear();
+      MultiattackEngine._activeChains.clear(); MultiattackEngine._actionWeapon.clear(); });
 
     // Immediate chain abort (Johnny 2026-07-13): fumbleEndsTurn fires this the
     // instant a nat-1 ends the turn, so an OPEN multiattack pop-up closes RIGHT
@@ -672,18 +755,34 @@ export class MultiattackEngine {
     //     follow-up (punch list); the OFFER is what lives here.
     const hasDualWielder = (actor.items ?? []).some(i =>
       i.type === "feat" && /dual\s*wielder/i.test(i.name ?? ""));
+    // ⚠️🔴 NEVER THE WEAPON HE JUST ATTACKED WITH (2026-09-27, his rule: "off-hand
+    // is a different one-handed weapon, or not at all"). The pop-up offered
+    // "Off-hand: Bladed Whip" straight after he had swung the whip as his action,
+    // because the pick below was the blind index `pairable[1]`: Jeth has Dual
+    // Wielder, so his three equipped one-handed melee weapons are the rapier, the
+    // whip and his fists, exactly one of them is Light, and the "exactly one Light
+    // of a pair" branch only covers a pair. Index one was the whip.
+    const action = MultiattackEngine._currentActionWeapon(actor.id);
     const pairable = (actor.items ?? []).filter(it =>
       it.type === "weapon" && it.system?.equipped && this._isAttackItem(it)
+      && it.id !== action?.itemId && it.uuid !== action?.uuid
       && (hasDualWielder ? this._isMeleeOneHanded(it) : this._isLightMelee(it)));
-    if (pairable.length >= 2) {
-      // Off-hand = the Light one when exactly one of the pair is Light
-      // (main the rapier, off-hand the scimitar); otherwise the second listed.
-      const lights = pairable.filter(w => this._isLightMelee(w));
-      const offhand = (lights.length === 1 && pairable.length === 2) ? lights[0] : pairable[1];
+    // With the action weapon out of the list, ONE other one-handed weapon is
+    // enough to fight with two: the pair is that weapon and the one already in
+    // his hand. With no action weapon recorded yet, nothing was excluded, so a
+    // pair still has to be two.
+    if (pairable.length >= (action ? 1 : 2)) {
+      // The Light one, since RAW two-weapon fighting wants Light; otherwise the
+      // first that is left. Never an index into a list the action weapon is in.
+      const offhand = pairable.find(w => this._isLightMelee(w)) ?? pairable[0];
       if (offhand && !seen.has(offhand.id)) {
         out.push({ id: offhand.id, name: offhand.name, img: offhand.img, activityId: null, kind: "offhand" });
         seen.add(offhand.id);
       }
+    } else if (action) {
+      console.log(`${MODULE_ID} | ${actor.name}: no off-hand swing offered. `
+        + `${hasDualWielder ? "Every other" : "Every other light"} one-handed weapon he has equipped `
+        + `is the one he attacked with, and an off-hand is a different weapon.`);
     }
 
     return out;

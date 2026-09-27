@@ -34,6 +34,9 @@ CHECKS = [
     ("every hook ACE listens for is fired", "python tools/hook-check.py"),
     ("no import read before it exists", "python tools/cycle-check.py"),
     ("no ready hook registered from inside ready", "python tools/ready-inside-ready-check.py"),
+    # ACE-ONE-ROAD.md section 9, in his words: "must be a release check, not
+    # prose." Seven side doors; every hit named with its file and line.
+    ("no side doors off the one road", "python tools/one-road-check.py"),
     # Two Forge traps destructured a name its target file does not export, so
     # neither had ever played its animation (2026-09-25). Nothing else sees that
     # shape: the module is real, so the load succeeds, and the name is undefined.

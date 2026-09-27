@@ -407,6 +407,30 @@ export class DamageCardRenderer {
       const dieDisplay = dieResults.length
         ? dieResults.join(' <span class="ace-qol-dmg-plus">+</span> ')
         : (flatMods.length ? "" : c.formula);
+      // ⚠️🔴 WHEN A STRIP HAPPENS, THE CARD SAYS OFF-HAND (his rule, 2026-09-27).
+      // An off-hand swing takes no ability modifier on its damage, RAW, in both
+      // editions. Twice at his table a whip hit for its die alone and the only
+      // explanation was a console line, which is silence: he does not play with
+      // the console open. The pill says the word and the number it cost.
+      if (meta?.offhand) {
+        const cost = Number(meta.strippedMod) || 0;
+        flatMods.push(`<span class="ace-qol-mod-labeled ace-qol-mod-offhand">`
+          + `<span class="ace-qol-mod-label">OFF-HAND</span>`
+          + (cost ? ` no ${meta.abilityName} ${cost >= 0 ? "+" : ""}${cost}` : "")
+          + `</span>`);
+      }
+      // ⚠️🔴 AND WHEN THE MAGIC BONUS IS WITHHELD (2026-09-27). His whip is a Rare
+      // item that requires attunement and is not attuned, so dnd5e gives none of
+      // its +1 and is right to. The card used to print "MAGIC 1" off the stored
+      // field while the roll never carried it, so a correct total read as short by
+      // one and the only explanation was a console line.
+      if (meta?.magicWithheld) {
+        const held = Number(meta.magicStored) || 0;
+        flatMods.push(`<span class="ace-qol-mod-labeled ace-qol-mod-withheld">`
+          + `<span class="ace-qol-mod-label">NO MAGIC</span>`
+          + (held ? ` +${held} ${meta.magicWithheld}` : ` ${meta.magicWithheld}`)
+          + `</span>`);
+      }
       const modDisplay = flatMods.length ? ` ${flatMods.join(" ")}` : "";
       const critDisplay = c.isCrit ? `<span class="ace-qol-dmg-crit-label">${c.normalTotal !== undefined ? `MAX ${c.normalTotal}` : "CRIT"}</span> + ` : "";
 

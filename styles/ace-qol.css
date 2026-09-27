@@ -883,6 +883,25 @@
   color: #4ea8ff; background: rgba(78,168,255,0.12);
 }
 
+/* ── OFF-HAND (2026-09-27) ──
+   An off-hand swing takes no ability modifier on its damage, RAW, both editions.
+   Twice at his table a whip hit for its die alone with nothing on the card to
+   say why. Amber, because it is telling him something is MISSING rather than
+   adding a bonus: gold is the ability, blue is magic, purple is a named source.
+   ⚠️ IT WRAPS. No fixed height, no nowrap, no hidden overflow: every pill fits
+   its own text (his standing rule). no-wrap-ok: not needed, this one wraps. */
+.ace-qol-mod-offhand,
+.ace-qol-mod-withheld {
+  color: #f0b45a; background: rgba(240,180,90,0.12);
+  border: 1px solid rgba(240,180,90,0.35);
+  border-radius: 3px; padding: 0 4px;
+  flex-wrap: wrap; min-height: 1.1em; font-size: 0.78rem;
+}
+.ace-qol-mod-offhand .ace-qol-mod-label,
+.ace-qol-mod-withheld .ace-qol-mod-label {
+  color: #f0b45a; background: rgba(240,180,90,0.18);
+}
+
 /* ── NAMED BONUS SOURCE (2026-07-29) ──
    A modifier whose ORIGIN we identified — "STORMFORGER" rather than a bare
    "BONUS". Purple, on Johnny's call, so a named source is instantly separable

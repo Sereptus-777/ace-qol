@@ -178,7 +178,12 @@ export class DamageCalculator {
     const components = [];
     const sys = item.system ?? {};
 
-    // Get roll data — prefer item (includes @mod) with actor fallback
+    // Roll data to start with, before we know which activity was used.
+    // ⚠️ THE ITEM'S ROLL DATA DOES NOT CARRY @mod. This comment used to say it
+    // did, and that sentence is the whole of the +0 weapon bug: an item's roll
+    // data is the actor's plus `item`, and only the ACTIVITY's sets `mod`. The
+    // activity loop below replaces this with the activity's own the moment it
+    // knows which one was pressed.
     let rollData;
     try {
       rollData = item.getRollData?.() ?? actor.getRollData?.() ?? {};
@@ -346,6 +351,45 @@ export class DamageCalculator {
         if (!activity?.damage?.parts?.length) continue;
         if (typeof activity.getDamageConfig !== "function") continue;
 
+        // ⚠️🔴 THE ROLL DATA MUST BE THE ACTIVITY'S, OR @mod RESOLVES TO NOTHING
+        // (2026-09-27, his table: Jeth's Bladed Whip hit for its dice and no +5).
+        //
+        // dnd5e sets the ability modifier in exactly ONE place, and it is not on
+        // the item:
+        //
+        //     Activity#getRollData   rollData.mod = this.actor?.system.abilities?.[this.ability]?.mod ?? 0
+        //
+        // An item's roll data is the actor's plus `item` and nothing else, so it
+        // carries no `mod` at all. And getDamageConfig only builds its own when
+        // it is handed none:
+        //
+        //     getDamageConfig()      rollData ??= this.getRollData();
+        //
+        // So passing the item's roll data in did not merely miss the modifier, it
+        // STOPPED dnd5e from working it out. `@mod` still went into the formula
+        // (AttackActivity#_processDamagePart pushes it for every weapon) and then
+        // resolved against a roll data with no such key, which is zero. Every
+        // weapon in his world swung at +0 while its to-hit was correct, because
+        // getAttackData asks for its own roll data and takes none from us.
+        //
+        // ⚠️ AND IT TOOK THE OVERRIDE WITH IT. The Pact of the Blade / Hex Warrior
+        // swap above and its re-assert below both test `Number.isFinite(data.mod)`
+        // before they will act. With no `mod` that is NaN, so neither fired: the
+        // 2026-07-10 halberd fix has been dead ever since for the same reason.
+        //
+        // Nothing is invented here. ACE asks the activity, the activity answers.
+        try {
+          const actRollData = activity.getRollData?.();
+          if (actRollData) rollData = actRollData;
+          else {
+            console.warn(`${MODULE_ID} | "${item?.name}": its ${activity?.type} activity has no getRollData, `
+              + `so its damage keeps the item's roll data and any @mod in it resolves to 0.`);
+          }
+        } catch (err) {
+          console.warn(`${MODULE_ID} | "${item?.name}": the activity's roll data could not be read, so its `
+            + `ability modifier may be missing from the damage:`, err);
+        }
+
         try {
           const dmgConfig = activity.getDamageConfig({}, { rollData });
           const rolls = dmgConfig?.rolls ?? [];
@@ -355,7 +399,20 @@ export class DamageCalculator {
           // not defined" threw the whole native damage build to the manual
           // fallback for every item (2026-07-14).
           let inheritedMeta = null;   // {ability, mod} when a null-ability damage borrows the attack's ability
-
+          // ⚠️🔴 WHAT THE ROLL TOOK, NOT WHAT THE ITEM STORES (2026-09-27, his
+          // table: a whip card read 4 + 5 DEX = 9 while the console said MAGIC=1).
+          // dnd5e withholds a magic bonus the wielder is not entitled to:
+          //
+          //     dnd5e.mjs:13862  magicAvailable = (attuned || attunement !== "required")
+          //                                       && properties.has("mgc")
+          //     dnd5e.mjs:28349  if ( magicalBonus && this.item.system.magicAvailable )
+          //                          parts.push("@magicalBonus")
+          //
+          // The metadata below read `system.magicalBonus` straight off the item, so
+          // it announced a bonus that was never in the formula. Declared out here,
+          // beside inheritedMeta, because the block that needs it sits OUTSIDE the
+          // roll loop where rollCfg goes out of scope.
+          let landedMagic = null;     // the @magicalBonus a roll really carried
           for (let i = 0; i < rolls.length; i++) {
             const rollCfg = rolls[i];
             let parts = rollCfg.parts ?? [];
@@ -426,6 +483,9 @@ export class DamageCalculator {
               data = { ...data, mod: 0 };
               console.log(`${MODULE_ID} | off-hand: ability mod stripped from "${item.name}" native damage (RAW: off-hand gets no ability mod in either edition; combat-state restores it only for the Two-Weapon Fighting style, or the Dual Wielder house-rule toggle)`);
             }
+            if (parts.some(p => String(p).includes("@magicalBonus"))) {
+              landedMagic = Number(data?.magicalBonus ?? rollCfg?.data?.magicalBonus) || 0;
+            }
             try { console.log(`${MODULE_ID} | [dmg-diag] "${item?.name}" act.type=${activity?.type} act.ability=${JSON.stringify(activity?.ability)} offhand=${CombatState.isOffhandSwing(item?.uuid)} formula="${formula}" data.mod=${data?.mod}`); } catch (_) {}
             const result = await DamageCalculator.rollWithCrit(formula, data, isCrit, critRule, `Base ${type}`, item);
             // Which of the item's parts this is, by its types and its dice, so its recipe can name it.
@@ -435,7 +495,17 @@ export class DamageCalculator {
 
           // Tag first component with modifier metadata for card labels
           if (components.length > 0 && !components[0]._modMeta) {
-            const magicBonus = sys.magicalBonus ?? 0;
+            // The bonus the roll took. A stored bonus that never reached a formula
+            // is NOT this swing's, and the card has to say so rather than print it.
+            const storedMagic = Number(sys.magicalBonus) || 0;
+            const magicBonus = Number(landedMagic) || 0;
+            let magicWithheld = null;
+            if (storedMagic > 0 && magicBonus === 0) {
+              magicWithheld = (sys.magicAvailable === false
+                && String(sys.attunement ?? "") === "required" && !sys.attuned)
+                ? "not attuned"
+                : (sys.magicAvailable === false ? "not a magic item" : "the system withheld it");
+            }
             let abilName = "MOD";
             let abilMod = 0;
             try {
@@ -486,8 +556,17 @@ export class DamageCalculator {
               abilityMod: _offhandZero ? 0 : abilMod,
               abilityName: abilName,
               magicBonus: magicBonus,
+              // ⚠️ SO THE CARD CAN SAY IT. A swing that quietly loses its ability
+              // modifier or its magic bonus, and explains itself only in the
+              // console, is silence.
+              offhand: _offhandZero,
+              strippedMod: _offhandZero ? abilMod : 0,
+              magicWithheld,
+              magicStored: storedMagic,
             };
-            console.log(`${MODULE_ID} | Modifier metadata: ${abilName}=${_offhandZero ? 0 : abilMod}, MAGIC=${magicBonus}${_offhandZero ? " (off-hand: ability mod stripped)" : ""}`);
+            console.log(`${MODULE_ID} | Modifier metadata: ${abilName}=${_offhandZero ? 0 : abilMod}, MAGIC=${magicBonus}`
+              + `${magicWithheld ? ` (the item's +${storedMagic} is not in this swing: ${magicWithheld})` : ""}`
+              + `${_offhandZero ? " (off-hand: ability mod stripped)" : ""}`);
           }
 
           usedNativeConfig = true;
@@ -542,9 +621,16 @@ export class DamageCalculator {
               const _offhandNoMod = CombatState.isOffhandSwing(item?.uuid);
               if (abilityMod !== 0 && !_offhandNoMod) formula += abilityMod >= 0 ? `+${abilityMod}` : `${abilityMod}`;
 
-              const magicBonus = sys.magicalBonus ?? 0;
+              const _magicStored = Number(sys.magicalBonus) || 0;
+              const _magicHeld = _magicStored > 0 && sys.magicAvailable === false;
+              const magicBonus = _magicHeld ? 0 : _magicStored;
               const partBonusNum = parseInt(part.bonus) || 0;
               if (magicBonus > 0 && partBonusNum !== magicBonus) formula += `+${magicBonus}`;
+              if (_magicHeld) {
+                console.log(`${MODULE_ID} | "${item?.name}": its +${_magicStored} is not in this swing `
+                  + `(${String(sys.attunement ?? "") === "required" && !sys.attuned
+                      ? "not attuned" : "not a magic item"}), the same answer the system gives.`);
+              }
             }
 
             const types = part.types ? [...part.types] : ["untyped"];
@@ -592,10 +678,20 @@ export class DamageCalculator {
                 abilName = abilityOverride.ability.toUpperCase();
                 abilMod = abilityOverride.mod;
               }
+              const _offhand = CombatState.isOffhandSwing(item?.uuid);
+              const _stored = Number(sys.magicalBonus) || 0;
+              const _held = _stored > 0 && sys.magicAvailable === false;
               comp._modMeta = {
-                abilityMod: CombatState.isOffhandSwing(item?.uuid) ? 0 : abilMod,
+                abilityMod: _offhand ? 0 : abilMod,
                 abilityName: abilName,
-                magicBonus: sys.magicalBonus ?? 0,
+                magicBonus: _held ? 0 : _stored,
+                offhand: _offhand,
+                strippedMod: _offhand ? abilMod : 0,
+                magicWithheld: _held
+                  ? (String(sys.attunement ?? "") === "required" && !sys.attuned
+                      ? "not attuned" : "not a magic item")
+                  : null,
+                magicStored: _stored,
               };
             }
 
