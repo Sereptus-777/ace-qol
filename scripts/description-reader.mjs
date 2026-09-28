@@ -46,7 +46,13 @@ const MODULE_ID = "ace-qol";
 const _cache = new Map();
 const MAX_CACHE = 400;
 
-const _key = (item, raw) => `${item?.uuid ?? item?.id ?? "?"}:${raw.length}`;
+// ⚠️🔴 THE SECRETS FLAG IS PART OF THE KEY (2026-09-28). Without it, a GM's
+// hover and a chat card on the SAME client share one cache entry for one item, so
+// whichever ran first decides what the other gets. The hover asking for secrets
+// would have handed its GM-only text to the usage card, and a player would have
+// read a DC off it. Two answers, two keys.
+const _key = (item, raw, secrets = false) =>
+  `${item?.uuid ?? item?.id ?? "?"}:${raw.length}:${secrets ? "gm" : "open"}`;
 
 /** The raw description off the item, or the activity's chat flavour first. */
 function _raw(item, { activity = null } = {}) {
@@ -224,11 +230,29 @@ function _flatten(html, limit) {
  * @name]]` resolves out of roll data, and the item's own roll data is what
  * carries the creature's name — asking the activity alone answers null for the
  * exact placeholder that started this.
+ *
+ * ⚠️🔴 AND SECRETS. A D&D Beyond import wraps a whole statblock in
+ * `<section class="secret">`, and Foundry's enricher DELETES those unless it is
+ * told otherwise. This asked for `secrets: false` always, so for every one of
+ * those items the reader kept only whatever sat outside the section. His Spiked
+ * Chain has one line out there — "The [creature] attacks with its [weapon]" —
+ * and the reach, the 2d6, the DC 14 save and all three effects were inside it.
+ * That is what his hover has been showing: the leftovers.
+ *
+ * ⚠️ IT IS OPT-IN, AND IT DEFAULTS TO OFF, because that is the difference between
+ * a tooltip on his own screen and a card other people read. A hover asks for
+ * `secrets: game.user.isGM` and shows him everything; a loot card, a death card
+ * and the usage card ask for nothing and stay exactly as they were. Players never
+ * see a DC, and a secret section is the most likely place for one to be hiding.
+ *
+ * @param {boolean} [opts.secrets=false]  include GM-only sections. Only ever true
+ *   for something drawn locally on the reader's own screen.
  */
-export async function aceDescriptionHtml(item, { activity = null, actor = null } = {}) {
+export async function aceDescriptionHtml(item, { activity = null, actor = null,
+    secrets = false } = {}) {
   const raw = _raw(item, { activity });
   if (!raw) return "";
-  const cacheKey = _key(item, raw);
+  const cacheKey = _key(item, raw, secrets);
   const hit = _cache.get(cacheKey);
   if (hit) return hit;
 
@@ -239,12 +263,12 @@ export async function aceDescriptionHtml(item, { activity = null, actor = null }
         + `are shown with their enricher syntax removed rather than resolved.`);
       return aceStripEnrichers(raw, _context(item));
     }
-    const rollData = activity?.getRollData?.()
+    const rollData2 = activity?.getRollData?.()
                   ?? item?.getRollData?.()
                   ?? (actor ?? item?.actor)?.getRollData?.()
                   ?? {};
     const enriched = await TE.enrichHTML(raw, {
-      rollData, relativeTo: item, secrets: false,
+      rollData: rollData2, relativeTo: item, secrets: !!secrets,
     });
     if (_cache.size > MAX_CACHE) _cache.clear();
     _cache.set(cacheKey, enriched);
@@ -273,13 +297,14 @@ export async function aceDescriptionText(item, opts = {}) {
  * On a miss this still never shows the syntax — it strips it — so the worst
  * case is one sentence missing a name, not brackets on the screen.
  */
-export function aceDescriptionTextSync(item, { limit = 0, activity = null } = {}) {
+export function aceDescriptionTextSync(item, { limit = 0, activity = null,
+    secrets = false } = {}) {
   const raw = _raw(item, { activity });
   if (!raw) return "";
-  const hit = _cache.get(_key(item, raw));
+  const hit = _cache.get(_key(item, raw, secrets));
   if (hit) return _flatten(hit, limit);
   // Not warm yet: warm it for next time, and answer safely now.
-  aceDescriptionHtml(item, { activity }).catch(() => {});
+  aceDescriptionHtml(item, { activity, secrets }).catch(() => {});
   return _flatten(aceStripEnrichers(raw, _context(item)), limit);
 }
 
@@ -290,10 +315,14 @@ export function aceDescriptionTextSync(item, { limit = 0, activity = null } = {}
  * which flattening to prose destroys, and it never shows enricher syntax. It
  * warms the cache on the way past, so the next look is the rendered text.
  */
-export function aceDescriptionFloorHtml(item, { activity = null } = {}) {
+export function aceDescriptionFloorHtml(item, { activity = null, secrets = false } = {}) {
   const raw = _raw(item, { activity });
   if (!raw) return "";
-  aceDescriptionHtml(item, { activity }).catch(() => {});
+  aceDescriptionHtml(item, { activity, secrets }).catch(() => {});
+  // ⚠️ THE FLOOR KEEPS THE SECRET SECTION'S WORDS. aceStripEnrichers takes the
+  // enricher syntax out and leaves the tags, so nothing is deleted here: the
+  // floor was already showing more than the enriched read did, which is why a
+  // cold hover looked fuller than a warm one.
   return aceStripEnrichers(raw, _context(item));
 }
 
@@ -305,21 +334,31 @@ export function aceDescriptionFloorHtml(item, { activity = null } = {}) {
  * here would put enricher syntax straight into a tooltip, which is the whole
  * thing this file exists to prevent. It warms the cache on the way past.
  */
-export function aceDescriptionHtmlSync(item, { activity = null } = {}) {
+export function aceDescriptionHtmlSync(item, { activity = null, secrets = false } = {}) {
   const raw = _raw(item, { activity });
   if (!raw) return "";
-  const hit = _cache.get(_key(item, raw));
+  const hit = _cache.get(_key(item, raw, secrets));
   if (hit) return hit;
-  aceDescriptionHtml(item, { activity }).catch(() => {});
+  aceDescriptionHtml(item, { activity, secrets }).catch(() => {});
   return "";
 }
 
-/** Enrich these items' descriptions in the background so the sync read is warm. */
-export function acePrimeDescriptions(items) {
+/**
+ * Enrich these items' descriptions in the background so the sync read is warm.
+ *
+ * ⚠️ WARM THE KEY THE VIEWER WILL ASK FOR. A hover asks with secrets on a GM's
+ * screen, so priming without them warms an entry nobody reads and every first
+ * hover is a cache miss. Both are warmed on a GM's client: his hover, and the
+ * one a card would ask for.
+ */
+export function acePrimeDescriptions(items, { secrets = null } = {}) {
+  const want = secrets === null ? !!game.user?.isGM : !!secrets;
   try {
     for (const item of (items ?? [])) {
       if (!item?.system?.description?.value) continue;
-      aceDescriptionHtml(item).catch(() => {});
+      aceDescriptionHtml(item, { secrets: want }).catch(() => {});
+      // And the open copy too, so a card that asks later is warm as well.
+      if (want) aceDescriptionHtml(item, { secrets: false }).catch(() => {});
     }
   } catch (err) {
     console.warn(`${MODULE_ID} | could not pre-read these descriptions, so the first `

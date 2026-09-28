@@ -652,7 +652,8 @@ export class ActionBar {
       // _wireHover), so the second branch is the rare one. It keeps the
       // paragraphs and tables and spells every enricher out; the old fallback
       // flattened the lot into one run-on line and let "&Reference" through.
-      const cached = aceDescriptionHtmlSync(item);
+      // A GM hovering his own action bar sees the whole statblock, secrets and all.
+      const cached = aceDescriptionHtmlSync(item, { secrets: !!game.user?.isGM });
       if (cached) return cached;
       return aceDescriptionFloorHtml(item);
     } catch (_) { return ""; }
@@ -813,7 +814,8 @@ export class ActionBar {
       // starts as the pointer arrives, the delay covers it many times over,
       // and the card is built from what is ready when it shows.
       const item = ActionBar._itemForSlot(slot);
-      const rendering = item ? aceDescriptionHtml(item).catch(() => null) : null;
+      const rendering = item
+        ? aceDescriptionHtml(item, { secrets: !!game.user?.isGM }).catch(() => null) : null;
       ActionBar._tipTimer = setTimeout(async () => {
         ActionBar._tipTimer = null;
         try {
@@ -1439,7 +1441,7 @@ export class ActionBar {
           const item = actor.items.get(slot.dataset.itemId);
           if (!item) return;
           // A pinned card is read at length, so it waits for the rendered text.
-          await aceDescriptionHtml(item).catch(() => null);
+          await aceDescriptionHtml(item, { secrets: !!game.user?.isGM }).catch(() => null);
           const box = slot.getBoundingClientRect();
           game.tooltip?.createLockedTooltip?.(
             { top: `${Math.round(box.top)}px`, left: `${Math.round(box.right + 8)}px` },

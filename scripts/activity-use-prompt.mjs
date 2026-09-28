@@ -213,7 +213,9 @@ export class ActivityUsePrompt {
     // carries the creature's name — `[[lookup @name]]` asked of an activity
     // alone resolves to nothing, which is the exact placeholder that started
     // this on 2026-09-03.
-    try { return await aceDescriptionText(activity?.item, { activity, limit: 240 }); }
+    // The presser's own prompt, on the presser's own screen.
+    try { return await aceDescriptionText(activity?.item, { activity, limit: 240,
+      secrets: !!game.user?.isGM }); }
     catch (_) { return ""; }
   }
 
