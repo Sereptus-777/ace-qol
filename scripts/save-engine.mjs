@@ -5525,6 +5525,10 @@ export class SaveEngine {
     damageTypes = [], magical = false,
     attackerToken = null, targetToken = null,
     rangeFt = null, originIsAttacker = false,
+    // ⚠️ FORWARDED, OR THE NEW RULE NEVER RUNS — the same trap as the line above,
+    // written down in 2026-09-10 and walked into again on 2026-09-27: the ward
+    // rule in the gate cannot ask about a material without the item.
+    item = null,
   } = {}) {
     // ⚠️ THIS BODY MOVED INTO THE GATE (Phase 1, 2026-08-28). It used to hold
     // the dead check and the immunity check as LOCAL logic, which is precisely
@@ -5546,6 +5550,7 @@ export class SaveEngine {
       dealsDamage,
       damageTypes,
       magical,
+      item,
     });
   }
 
@@ -5608,6 +5613,9 @@ export class SaveEngine {
       dealsDamage: types.length > 0,
       damageTypes: types,
       magical,
+      // ⚠️ THE SOURCE TRAVELS. A ward that names a material ("webs of any sort")
+      // has nothing to answer without it, and the gate says so rather than guess.
+      item,
     };
   }
 

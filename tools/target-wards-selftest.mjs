@@ -123,8 +123,27 @@ const gear = (name, words, { equipped = true, attuned = true, attunement = "requ
   system: { equipped, attuned, attunement, description: { value: words } },
 });
 const jeth = (items) => ({ id: "jeth", name: "Jeth", type: "character", items });
-const web = { id: "web", name: "Web", type: "spell", uuid: "Item.web",
-  system: { description: { value: WEB_WORDS } } };
+/** dnd5e keeps a live save ability as a Set and a live damage type as a Set. */
+const liveActivities = (stored) => {
+  const out = new Map();
+  for (const [id, a] of Object.entries(stored ?? {})) {
+    const copy = structuredClone(a);
+    copy.id = copy._id ?? id;
+    if (copy.save?.ability) copy.save.ability = new Set([].concat(copy.save.ability));
+    for (const p of (copy.damage?.parts ?? [])) p.types = new Set([].concat(p.types ?? []));
+    out.set(copy.id, copy);
+  }
+  return out;
+};
+const web = WEB
+  ? { id: WEB._id ?? "web", name: "Web", type: "spell", uuid: "Item.web",
+      system: { ...WEB.system, description: { value: WEB_WORDS },
+        activities: liveActivities(WEB.system?.activities),
+        properties: new Set(WEB.system?.properties ?? []) },
+      getFlag: () => undefined, effects: [] }
+  : { id: "web", name: "Web", type: "spell", uuid: "Item.web",
+      system: { description: { value: WEB_WORDS }, activities: new Map(),
+        properties: new Set() }, getFlag: () => undefined, effects: [] };
 
 /* ══ 1. THE READER ════════════════════════════════════════════════════════ */
 console.log("THE READER FINDS THE WARD IN THE CLOAK'S OWN WORDS");
@@ -462,6 +481,109 @@ console.log("\nA SAVE THAT COULD DECIDE NOTHING IS NOT ROLLED");
   check("an area with no single-condition failure is still rolled",
     widget._saveWouldDecideNothing(cloaked, { item: web, timing: { family: "areaDenial" },
       recipe: webTracker.recipe }).skip === false, "no failEffect on its timing");
+}
+
+/* == 9. THE GATE, WHERE THE SAVE ENGINE ASKS ============================= */
+// ⚠️ THE PATH HIS TABLE ACTUALLY TOOK. _getTokensInTemplate found him, and then
+// save-engine.mjs:3867 GM-rolled the PC save before the card was even built: a
+// FAIL (9) row and a second cloak card for the same entry. The widget gate added
+// in 0.41.0 is on a different road. The one gate is where every pipeline reads
+// its verdict, so the ward belongs there, beside the immunity rule it matches.
+console.log("\nTHE ONE GATE REFUSES THE DIE, NOT JUST THE EFFECT");
+{
+  const { ActionGate } = await import(`${MODULE}/scripts/gate/action-gate.mjs`);
+  const { buildTargetProfile } = await import(`${MODULE}/scripts/profiles/target-profile.mjs`);
+
+  const actorLike = (items) => ({
+    id: "jeth", name: "Jeth", type: "character", items,
+    effects: { contents: [] }, statuses: new Set(),
+    system: { attributes: { hp: { value: 50, max: 50 }, ac: { value: 17 } }, abilities: {},
+      traits: { ci: { value: new Set() }, di: { value: new Set() } } },
+    getFlag: () => undefined, getActiveTokens: () => [],
+  });
+  const cloaked = actorLike([gear("Cloak of Arachnida", CLOAK_WORDS)]);
+  const bare = actorLike([]);
+
+  const verdict = (actor, { outcomes, dealsDamage = false, item = web }) =>
+    ActionGate.verdictFor({ targetProfile: buildTargetProfile(actor), targetActor: actor,
+      outcomes, dealsDamage, item });
+
+  // Web as it now reads: restrained on a failure, no damage.
+  const v = verdict(cloaked, { outcomes: ["restrained"] });
+  check("the gate refuses the die outright", v?.reason === "warded", v?.reason ?? "rolled");
+  check("and its label names the cloak, for the one card",
+    /cloak of arachnida/i.test(v?.label ?? "") || /cloak of arachnida/i.test(v?.why ?? ""),
+    v?.label ?? "");
+  check("it reads as a no-roll, the same shape immunity has",
+    v?.tone === "immune", v?.tone ?? "?");
+
+  // Somebody with no cloak still rolls.
+  check("a creature with no ward still rolls it",
+    verdict(bare, { outcomes: ["restrained"] }) === null
+    || verdict(bare, { outcomes: ["restrained"] })?.reason !== "warded",
+    JSON.stringify(verdict(bare, { outcomes: ["restrained"] })?.reason ?? null));
+
+  // ⚠️ THE SAME LIMIT THE IMMUNITY RULE HAS. Damage on the failure and the save
+  // still earns half on a success, so the die is still thrown.
+  check("an area that also deals damage is still rolled",
+    verdict(cloaked, { outcomes: ["restrained"], dealsDamage: true })?.reason !== "warded",
+    "damage still has to be decided");
+
+  // A second condition the ward does not cover: still rolled.
+  check("an area putting on something the ward does not cover is still rolled",
+    verdict(cloaked, { outcomes: ["restrained", "blinded"] })?.reason !== "warded");
+
+  // ⚠️ AND WITHOUT THE ITEM THE RULE IS INERT, NOT WRONG. A material ward has
+  // nothing to answer, so it does not fire, and the gate says so in the log.
+  check("handed no item, a material ward does not fire",
+    verdict(cloaked, { outcomes: ["restrained"], item: null })?.reason !== "warded",
+    "nothing to compare the webs against");
+}
+
+/* == 10. AND THE SAVE ENGINE HANDS THE GATE WHAT IT NEEDS =============== */
+console.log("\nTHE SAVE ENGINE'S OWN CONTEXT CARRIES THE SOURCE");
+{
+  const { SaveEngine } = await import(`${MODULE}/scripts/save-engine.mjs`);
+  const ctx = SaveEngine._gateContextFor(web, [], null);
+  check("the gate context carries the item, or a material ward is deaf",
+    ctx?.item === web, ctx?.item ? "the item is there" : "MISSING");
+  check("and it says the save deals no damage when it deals none",
+    ctx?.dealsDamage === false, `dealsDamage=${ctx?.dealsDamage}`);
+  // ⚠️ WHAT THE GATE WILL BE TOLD THIS SAVE CAN DO. It reads the recipe through
+  // whatLands, the same answer the applier gives, so "restrained" here is the
+  // real list and not a guess.
+  // ⚠️🔴 AN EMPTY OUTCOME LIST MAKES THE WHOLE GATE INERT, for the ward exactly as
+  // for the immunity rule beside it: `if (!dealsDamage && outcomes.length)`. So
+  // what fills that list is pinned here, because if it ever comes back empty the
+  // die is thrown again and the cloak is decoration.
+  //
+  // Web is in the spell registry but its entry carries no effect key, so the
+  // registry branch answers null and the RECIPE decides. This harness has no book
+  // index, so the recipe lookup finds nothing here; the replay, which does index
+  // his 40 packs, reads Web as "on fail restrained". So the recipe is handed over
+  // directly and what is pinned is the wiring: a recipe that restrains produces
+  // the outcome list the gate needs.
+  const keepRecipe = SaveEngine.saveRecipe;
+  SaveEngine.saveRecipe = () => ({ recipe: { decidedBy: { kind: "save", ability: "dex" },
+    onFail: [{ kind: "condition", condition: { key: "restrained" } }], onSuccess: [] } });
+  let outcomes;
+  try { outcomes = SaveEngine._outcomeConditionsFor(web, null); }
+  finally { SaveEngine.saveRecipe = keepRecipe; }
+  check("a recipe that restrains gives the gate the restrain to act on",
+    Array.isArray(outcomes) && outcomes.includes("restrained"), JSON.stringify(outcomes));
+
+  // And the whole chain, from that list to the die: the gate refuses it.
+  const { ActionGate: Gate2 } = await import(`${MODULE}/scripts/gate/action-gate.mjs`);
+  const { buildTargetProfile: prof2 } = await import(`${MODULE}/scripts/profiles/target-profile.mjs`);
+  const jeth2 = { id: "jeth", name: "Jeth", type: "character",
+    items: [gear("Cloak of Arachnida", CLOAK_WORDS)], effects: { contents: [] },
+    statuses: new Set(), getFlag: () => undefined, getActiveTokens: () => [],
+    system: { attributes: { hp: { value: 50, max: 50 } }, abilities: {},
+      traits: { ci: { value: new Set() }, di: { value: new Set() } } } };
+  const endToEnd = Gate2.verdictFor({ targetProfile: prof2(jeth2), targetActor: jeth2,
+    outcomes, dealsDamage: ctx.dealsDamage, item: ctx.item });
+  check("so the engine's own context, start to finish, throws no die",
+    endToEnd?.reason === "warded", endToEnd?.label ?? "it would have rolled");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

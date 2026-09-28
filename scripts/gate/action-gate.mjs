@@ -25,6 +25,7 @@
 // deletes saving throws, the same shape as the wall checks that returned "no
 // wall" out of a catch block twice on 2026-08-06.
 import { buildTargetProfile }      from "../profiles/target-profile.mjs";
+import { wardAgainst }             from "../profiles/target-wards.mjs";
 import { buildAttackerProfile }    from "../profiles/attacker-profile.mjs";
 import { buildEnvironmentProfile } from "../profiles/environment-profile.mjs";
 // ⚠️ Settles "+2 versus undead" against the profiles instead of handing it
@@ -119,6 +120,42 @@ export class ActionGate {
           const names = [...new Set(immune)].map(cap);
           return { reason: "immune", environment: env, tone: "immune",
             label: `IMMUNE to ${names.join(", ")} — no save` };
+        }
+
+        // ⚠️🔴 AND A WARD IS THE SAME ANSWER IN DIFFERENT WORDS (2026-09-27).
+        // Blanket condition immunity is the rule above. This is the other half:
+        // something the creature carries that refuses this condition from THIS
+        // source. Jeth's Cloak of Arachnida says he cannot be caught in webs of
+        // any sort, so a web's Dexterity save has nothing left to decide, and he
+        // was rolling it anyway and then getting a FAIL row beside the card that
+        // said the cloak had saved him.
+        //
+        // ⚠️ IT LIVES HERE, IN THE ONE GATE, because the save engine, the attack
+        // pipeline and the heal pipeline all read their verdict from this
+        // function. Put in the save engine alone it would be a second place that
+        // decides, which is the fault docs/ONE_GATE_ARCHITECTURE.md exists to end.
+        //
+        // ⚠️ AND IT NEEDS THE ITEM. A ward that names a material can only answer
+        // when it can see what the effect is made of. If a caller does not hand
+        // one over the rule is simply inert, and it says so in the log rather
+        // than guessing: the same "forwarded, or the new rule never runs" trap
+        // this file's own signature fell into on 2026-09-10.
+        const warded = [];
+        for (const c of outcomes) {
+          const w = wardAgainst(tProfile.ref ?? tProfile.actor ?? p.targetActor, c,
+            { item: p.item ?? null });
+          if (w?.warded) warded.push({ c, w });
+        }
+        if (warded.length === outcomes.length && warded.length) {
+          const first = warded[0].w;
+          const names = [...new Set(warded.map(x => cap(x.c)))];
+          return { reason: "warded", environment: env, tone: "immune",
+            label: `NOT ${names.join(", ").toUpperCase()} — ${first.source} — no save`,
+            why: first.why, source: first.source, sentence: first.sentence ?? null };
+        }
+        if (!p.item && outcomes.length) {
+          console.debug("ace-qol | the gate was handed no item, so a ward that names a "
+            + "material could not be asked about this save.");
         }
       }
 
