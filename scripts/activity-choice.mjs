@@ -265,6 +265,37 @@ export function decideActivityChoice({ item, activities, offeredIds, isMachinery
         + `asks for it on the damage card after the hit.`);
     }
 
+    // ── ⚠️🔴 THE ONE SWINGING IS NEVER ASKED TO ESCAPE ──────────────────
+    //
+    // Johnny, 2026-09-28, pressing his Spiked Chain: "I don't have to do an
+    // escape check as the attacker." Its press asked "attack | Escape Check",
+    // because the rider filter above only knows about SAVES and this is a check.
+    // An escape check belongs to whatever got grappled, never to the creature
+    // that grappled it.
+    //
+    // ⚠️ THE RULE IS THE PAIRING, NOT THE NAME. A check activity beside an ATTACK
+    // on the same item is that attack's consequence; nothing here reads "escape"
+    // out of a title, so a homebrew "Break Free" or a translated name works the
+    // same. 158 items in hijinx are that pair: Bite 23, Tentacles 18, Tentacle
+    // 16, Constrict 9, Claw 8, Spiked Chain 8, and on down.
+    //
+    // ⚠️ AND A CHECK-ONLY ITEM KEEPS ITS CHECK. Thieves' Tools, Rope, the
+    // instruments, the Herbalism Kit: 118 items in his world whose check IS the
+    // press. They have no attack beside it, so this never looks at them, and the
+    // "never swallow the action" guard below is the belt to that brace.
+    const hasAttack = choosable.some(a => a.type === "attack");
+    if (hasAttack) {
+      const escapes = choosable.filter(a => a.type === "check");
+      const left = choosable.filter(a => a.type !== "check");
+      if (escapes.length && left.length) {
+        choosable = left;
+        notes.push(`"${item.name}": not offering `
+          + `${escapes.map(a => `"${a.name || "Check"}"`).join(", ")} as a choice. `
+          + `That is the check the creature this grabs makes to get free, not one the `
+          + `attacker makes.`);
+      }
+    }
+
     // ── ⚠️🔴 A LATER STEP IS NOT A WAY TO CAST THE SPELL ─────────────────
     //
     // Johnny, 2026-09-11, looking at Prismatic Wall's list (Create Wall,

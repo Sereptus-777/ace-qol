@@ -205,6 +205,47 @@ console.log("\nTHE QUESTIONS ARE ONLY ASKED WHEN THEY MATTER");
   check("the spell pipeline is not consulted for a lone attack", asked, 0);
 }
 
+console.log("\nTHE ONE SWINGING IS NEVER ASKED TO ESCAPE");
+{
+  // Johnny, 2026-09-28, pressing his Spiked Chain: "I don't have to do an escape
+  // check as the attacker." Its press asked "attack | Escape Check", because the
+  // rider filter only knows about SAVES and an escape is a check.
+  //
+  // ⚠️ THE RULE IS THE PAIRING, NOT THE NAME: a check beside an ATTACK on the
+  // same item is that attack's consequence. 158 items in hijinx are that pair
+  // (Bite 23, Tentacles 18, Tentacle 16, Constrict 9, Claw 8, Spiked Chain 8).
+  const chain = { name: "Spiked Chain", type: "feat" };
+  const chainActs = [act("atk", "attack"), act("esc", "check", { name: "Escape Check" }),
+                     act("sav", "save", { name: "Save" })];
+  const d1 = decide(chain, chainActs, { riderIds: new Set(["sav"]) });
+  check("the Spiked Chain press swings, and asks nothing", show(d1), "fire attack");
+  check("and it says whose check that was", /not one the attacker makes/.test(d1.notes.join(" ")), true);
+
+  // An attack with only the escape beside it: still swings, nothing swallowed.
+  const bite = { name: "Bite", type: "weapon" };
+  const d2 = decide(bite, [act("atk2", "attack"), act("esc2", "check", { name: "Escape Check" })]);
+  check("a Bite with an escape beside it swings too", show(d2), "fire attack");
+
+  // ⚠️ AND A CHECK-ONLY ITEM KEEPS ITS CHECK. 118 items in his world are this:
+  // Thieves' Tools, Rope, the instruments, the Herbalism Kit. No attack beside
+  // them, so this rule never looks at them.
+  const tools = { name: "Thieves' Tools", type: "tool" };
+  const d3 = decide(tools, [act("chk", "check")]);
+  // "reveal" is dnd5e's own dialog left standing with the check in it, which is
+  // what this item did before and still does: the rule above never looked at it.
+  check("Thieves' Tools still offers its check", show(d3), "reveal");
+  check("and nothing was taken off its list",
+    !/not offering/.test(d3.notes.join(" ")), true);
+
+  // Two checks and no attack: still a genuine question.
+  const rope = { name: "Rope", type: "consumable" };
+  const d4 = decide(rope, [act("tie", "utility", { name: "Tie Knot" }),
+                           act("burst", "check", { name: "Burst Rope" }),
+                           act("esc3", "check", { name: "Escape Check" })]);
+  check("a rope has no attack, so its checks are left alone",
+    /Escape Check/.test(show(d4)), true);
+}
+
 console.log("");
 console.log(pass + " passed, " + fail + " failed");
 process.exitCode = fail ? 1 : 0;
