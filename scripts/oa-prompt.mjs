@@ -38,6 +38,9 @@ import { aceTokenSpace, aceSpaceDistanceFt } from "./geometry-utils.mjs";
 // ⚠️ THE ONE READER for "out of the fight", the same one Shield and Counterspell
 // ask. A hand-written status list drifts; this one does not.
 import { isOutOfTheFight } from "./is-down.mjs";
+// The one sight reader, which tests walls. A creature that cannot see through
+// the stone is not "passed over", it was never in this at all.
+import { Situation } from "./situation.mjs";
 // ⚠️ A REACTION BUDGET IS A PER-ROUND BUDGET, AND ROUNDS ONLY EXIST IN A FIGHT.
 import { hasTurns } from "./action-economy.mjs";
 // ⚠️ THE ONE ANSWER TO "who decides this creature's reaction", the same one
@@ -178,6 +181,18 @@ export class OAPrompt {
     // aceSpaceDistanceFt, touching spaces 5 feet, the table's diagonal rule.
     const within = (ft, reach) => ft <= reach + 0.1;
 
+    // ⚠️🔴 DISTANCE AND WALLS FIRST (2026-09-27, his table). Every refusal below
+    // used to be reached before the distance was measured, so one step across the
+    // room printed a line for every corpse and every token hundreds of feet away
+    // and behind walls: Ghast, Shield Guardian, Specter, Flameskull, Poltergeist,
+    // "out of the fight", "nothing to swing". The line that mattered was buried.
+    //
+    // A creature is IN THIS only when the mover's own movement crossed its reach,
+    // and only when it can actually see the mover. Anything else is not passed
+    // over and says nothing at all. What is left gets its reason, as it always did,
+    // and one line at the end names who could really take the swing.
+    const couldSwing = [];
+    let considered = 0;
     for (const t of placeables) {
       if (!t.actor) continue;
       if (t.id === moverDoc.id) continue;
@@ -185,6 +200,27 @@ export class OAPrompt {
       // Hostile to mover (opposite disposition, NOT neutral 0)
       if (td.disposition === moverDisp) continue;
       if (td.disposition === 0) continue;
+
+      // ── 1. Did this movement cross its reach at all? ──
+      // The one distance (geometry-utils): nearest edge, size-aware, 3D.
+      const reactorSpace = aceTokenSpace(td);
+      const beforeFt = aceSpaceDistanceFt(moverFrom, reactorSpace);
+      const afterFt = aceSpaceDistanceFt(moverTo, reactorSpace);
+      const polearmData = OAPrompt._getPolearmReachData(t.actor);
+      const leaves = within(beforeFt, reachFt) && !within(afterFt, reachFt);
+      const entersPolearm = !!polearmData
+        && !within(beforeFt, polearmData.reachFt) && within(afterFt, polearmData.reachFt);
+      if (!leaves && !entersPolearm) continue;          // never in this; say nothing
+
+      // ── 2. Can it see the mover? Walls, darkness, blindness, averted eyes. ──
+      // ⚠️ THE SAME READER THE ATTACK ASKS, so the swing it is offered and the
+      // sight that swing needs cannot give two answers.
+      let sight = null;
+      try { sight = Situation.canSee(t.actor, moverActor, { viewerToken: t, subjectToken: moverDoc.object ?? moverDoc }); }
+      catch (err) { console.warn(`${MODULE_ID} | OA: sight could not be read for ${td.name}:`, err); }
+      if (sight && sight.canSee === false) continue;    // a wall or the dark; not passed over
+
+      considered++;
 
       // Reactor can't make OAs if dead, incapacitated, blinded, etc.
       // "dead" + 0-HP guards added v0.7.22 — mirror of the mover-side guard
@@ -196,7 +232,8 @@ export class OAPrompt {
       // take the attack against a creature you can SEE, so it is not part of
       // "out of the fight" - the shared reader - but it is a refusal all the
       // same. Everything else comes from that one reader.
-      const near = (why) => OAPrompt._say(`${td.name ?? t.actor.name} is not offered one: ${why}`);
+      const near = (why) => OAPrompt._say(`${td.name ?? t.actor.name} is not offered one: ${why}`
+        + ` (${Math.round(beforeFt)} ft before, ${Math.round(afterFt)} ft after)`);
       if (isOutOfTheFight(t.actor)) { near("it is out of the fight, so it takes no reactions"); continue; }
       if (t.actor.statuses?.has?.("blinded")) { near("it cannot see the mover"); continue; }
       const reactorHP = Number(t.actor.system?.attributes?.hp?.value ?? 0);
@@ -230,16 +267,11 @@ export class OAPrompt {
         continue;
       }
 
-      // Distance (ft) from the mover's BEFORE and AFTER spaces to the reactor's:
-      // nearest edge, size-aware, and 3D (a flyer passing overhead is out of
-      // reach). The one distance (geometry-utils), so a creature standing corner
-      // to corner is 5 feet here exactly as it is to the attack.
-      const reactorSpace = aceTokenSpace(td);
-      const beforeFt = aceSpaceDistanceFt(moverFrom, reactorSpace);
-      const afterFt = aceSpaceDistanceFt(moverTo, reactorSpace);
-
       // Was within reach AND now isn't = standard leave-reach OA (PHB 195).
-      if (within(beforeFt, reachFt) && !within(afterFt, reachFt)) {
+      // Measured at the top of this loop, because it decides whether this creature
+      // is in the scan at all.
+      if (leaves) {
+        couldSwing.push(td.name ?? t.actor.name);
         await OAPrompt._postPromptCard(t.actor, moverActor, td, moverDoc);
       }
 
@@ -250,18 +282,28 @@ export class OAPrompt {
       // list (no Spear). Reach pulled from the weapon (10 feet for reach-property
       // weapons, 5 feet otherwise). Mover must have been OUTSIDE the polearm's
       // reach before and INSIDE it after.
-      const polearmData = OAPrompt._getPolearmReachData(t.actor);
-      if (polearmData) {
-        if (!within(beforeFt, polearmData.reachFt) && within(afterFt, polearmData.reachFt)) {
+      if (entersPolearm) {
+        {
           // Use the TOKEN name (which has disambiguators like "Assassin 1",
           // "Assassin 2") rather than the actor name (which would just say
           // "Assassin" for every duplicate). Falls back to actor name if
           // the token doc somehow lacks a name.
           const moverDisplayName = moverDoc?.name ?? moverActor.name;
           const reasonText = `can make an OA against <strong>${moverDisplayName}</strong> entering polearm reach (${polearmData.weaponName}, ${polearmData.reachFt} feet, ${polearmData.edition} RAW).`;
+          couldSwing.push(`${td.name ?? t.actor.name} (polearm)`);
           await OAPrompt._postPromptCard(t.actor, moverActor, td, moverDoc, { reasonText });
         }
       }
+    }
+
+    // ⚠️ ONE LINE FOR WHO COULD ACTUALLY TAKE IT. Nothing at all when the move
+    // crossed nobody's reach, which is almost every move.
+    if (considered) {
+      OAPrompt._say(couldSwing.length
+        ? `${moverDoc?.name ?? moverActor.name} moved: ${couldSwing.join(", ")} `
+          + `${couldSwing.length === 1 ? "was" : "were"} offered the swing`
+        : `${moverDoc?.name ?? moverActor.name} moved through ${considered} creature`
+          + `${considered === 1 ? "'s" : "s'"} reach, and none of them could take it`);
     }
   }
 

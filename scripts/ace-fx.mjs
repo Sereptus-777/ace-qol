@@ -277,7 +277,29 @@ export class AceFX {
         if (!tk) return;
         let item = null;
         if (data?.itemUuid) item = await fromUuid(data.itemUuid).catch(() => null);
-        const dt = _itemDamageType(item, data?.activityId ?? null);
+        let dt = _itemDamageType(item, data?.activityId ?? null);
+        // ⚠️🔴 A SAVE'S FX IS THE DAMAGE THAT SAVE DEALS (2026-09-27, his table).
+        // This read the activity's stored damage parts, and Web keeps a 2d4 fire
+        // part on its Dexterity save that belongs to its burning-webs clause, not
+        // to the save. So failing to dodge a web played fire. The recipe reader
+        // already answers which parts a save actually deals; it is asked here too,
+        // by dynamic import so the FX layer adds no load-time edge.
+        if (dt && item) {
+          try {
+            const { damageTheSaveDeals, damageWordsOf } = await import("./inference/recipe.mjs");
+            const { plainSpellText } = await import("./inference/spell-text.mjs");
+            const words = plainSpellText(damageWordsOf(item?.system?.description?.value ?? ""));
+            const kept = damageTheSaveDeals([{ formula: "", types: [dt] }], words).kept;
+            if (!kept.length) {
+              console.log(`${MODULE_ID} | [ace-fx] SAVE-FAIL: "${item?.name}" plays no ${dt}. Its words `
+                + `give that damage to something other than the save, so the save deals none.`);
+              dt = null;
+            }
+          } catch (err) {
+            console.warn(`${MODULE_ID} | [ace-fx] could not check whose damage the ${dt} is `
+              + `(playing it as before):`, err);
+          }
+        }
         console.log(`${MODULE_ID} | [ace-fx] SAVE-FAIL encrust: item="${item?.name ?? "?"}" dmgType=${dt ?? "none"} target=${tk?.name}`);
         if (!dt || !ENCRUST_TYPES.has(dt)) return;     // ice/encrust only for elemental-damage spells
         // Resolve the impact sound. Honor a configured `aceFxSounds[type]` ONLY when it's

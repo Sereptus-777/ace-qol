@@ -267,5 +267,151 @@ console.log("\nKASIMIR'S WEB, JETH WALKING IN");
     && v.damage.length === 0);
 }
 
+/* == 6. THE FAIL PATH ITSELF: the widget that applies it ================= */
+// His live fail came through here, not through the save engine: the log said
+// "concentration-widget.mjs:1947 applied Restrained to Jeth from Web" and
+// "save-engine skipped because Web is area-denial / widget-owned". This file
+// wrote the effect with createEmbeddedDocuments, so the ward never ran.
+console.log("\nTHE WIDGET'S OWN FAIL PATH ASKS THE WARD FIRST");
+{
+  const { ConcentrationWidget } = await import(`${MODULE}/scripts/concentration-widget.mjs`);
+  const { CardDoor } = await import(`${MODULE}/scripts/road/doors.mjs`);
+
+  const posted = [];
+  const keepPost = CardDoor.post;
+  CardDoor.post = async (data) => { posted.push(data); return data; };
+
+  const madeEffects = [];
+  const actorWith = (items) => {
+    const a = {
+      id: "jeth", name: "Jeth", type: "character", items,
+      effects: { contents: [] },
+      statuses: new Set(),
+      system: { attributes: { hp: { value: 50, max: 50 } } },
+      getFlag: () => undefined, setFlag: async () => {}, unsetFlag: async () => {},
+      createEmbeddedDocuments: async (type, data) => { madeEffects.push(...data); return data; },
+      deleteEmbeddedDocuments: async () => [],
+      getActiveTokens: () => [],
+    };
+    return a;
+  };
+  const tracker = { item: web, actor: { id: "kas", name: "Kasimir Velikov" },
+    timing: {}, saveDC: 13, templateId: "t1" };
+
+  try {
+    // Jeth, wearing the cloak: the webs get nothing.
+    const jethWorn = actorWith([gear("Cloak of Arachnida", CLOAK_WORDS)]);
+    const widget = new ConcentrationWidget(null);
+    const out = await widget._applyAreaDenialEffect(jethWorn, tracker, "restrained", "entry");
+    check("the widget refuses it, and says the cloak did it", out?.warded === true
+      && /cloak of arachnida/i.test(out?.why ?? ""), out?.why ?? JSON.stringify(out));
+    check("no effect is written to him at all", madeEffects.length === 0,
+      `${madeEffects.length} effect(s) created`);
+    check("and a card goes out naming the cloak, not a silent skip",
+      posted.length === 1 && /Cloak of Arachnida/.test(posted[0]?.content ?? ""),
+      posted.length ? "card posted" : "nothing posted");
+    check("the card says which condition he escaped",
+      /not restrained/i.test(posted[0]?.content ?? ""), "");
+
+    // Somebody with no cloak: it lands, ONCE, through the condition door.
+    const { ConditionLibrary } = await import(`${MODULE}/scripts/condition-library.mjs`);
+    const keepApply = ConditionLibrary.applyByName;
+    let applies = 0;
+    ConditionLibrary.applyByName = async (actor, key) => {
+      applies++;
+      actor.effects.contents.push({ id: "e1", name: "Restrained", disabled: false,
+        statuses: new Set([key]), flags: {}, update: async () => {} });
+      return { ok: true, applied: key };
+    };
+    try {
+      madeEffects.length = 0;
+      const plain = actorWith([]);
+      await widget._applyAreaDenialEffect(plain, tracker, "restrained", "entry");
+      check("without a ward it still lands, through the condition door",
+        applies === 1, `${applies} call(s) to the library`);
+      check("ONE restrained, not a second effect beside the condition",
+        madeEffects.length === 0 && plain.effects.contents.length === 1,
+        `${madeEffects.length} raw effect(s), ${plain.effects.contents.length} condition(s)`);
+      check("and it is the condition's own name, so the token wears the overlay",
+        plain.effects.contents[0]?.name === "Restrained", plain.effects.contents[0]?.name ?? "?");
+    } finally { ConditionLibrary.applyByName = keepApply; }
+  } finally { CardDoor.post = keepPost; }
+}
+
+/* == 7. THE OPPORTUNITY-ATTACK LOG ====================================== */
+// His log: oa-prompt spam for Ghast, Shield Guardian, Specter, Flameskull and
+// Poltergeist, all corpses or hundreds of feet away behind walls, because every
+// refusal was reached BEFORE the distance was measured.
+console.log("\nTHE OPPORTUNITY-ATTACK SCAN ONLY TALKS ABOUT CREATURES IT REACHED");
+{
+  const { OAPrompt } = await import(`${MODULE}/scripts/oa-prompt.mjs`);
+  const { QolSettings } = await import(`${MODULE}/scripts/settings.mjs`);
+  const keepGet = QolSettings.get;
+  QolSettings.get = (k) => (k === "opportunityAttackReach" ? 5 : true);
+
+  const GRID = 100;   // 100 px to 5 feet
+  globalThis.canvas = { ...globalThis.canvas, ready: true,
+    grid: { size: GRID, distance: 5, type: 1 },
+    dimensions: { size: GRID, distance: 5 },
+    scene: { grid: { size: GRID, distance: 5, type: 1 } },
+    tokens: { placeables: [] } };
+
+  const tok = (name, gx, gy, { down = false, disposition = -1, weapons = true } = {}) => {
+    const actor = { id: `a-${name}`, name, type: "npc",
+      statuses: new Set(down ? ["dead"] : []),
+      system: { attributes: { hp: { value: down ? 0 : 20, max: 20 } } },
+      items: weapons ? [{ id: "w", name: "Claw", type: "weapon", img: "",
+        system: { equipped: true, properties: new Set(),
+          activities: { a1: { _id: "a1", id: "a1", type: "attack",
+            damage: { includeBase: true, parts: [] } } } } }] : [],
+      effects: { contents: [] }, getFlag: () => undefined,
+      getActiveTokens: () => [] };
+    const document = { id: `t-${name}`, name, x: gx * GRID, y: gy * GRID, elevation: 0,
+      width: 1, height: 1, disposition, actor, object: null };
+    const t = { id: document.id, actor, document, x: document.x, y: document.y, w: GRID, h: GRID };
+    document.object = t;
+    actor.getActiveTokens = () => [t];
+    return t;
+  };
+
+  const mover = tok("Jeth", 10, 10, { disposition: 1 });
+  // Beside him, and he walks four squares away, so their reach really is left.
+  const adjacentDown = tok("Specter", 11, 10, { down: true });
+  const farCorpse = tok("Flameskull", 70, 70, { down: true });
+  const farAlive = tok("Shield Guardian", 68, 70);
+  const adjacentLive = tok("Ghast", 10, 11);
+  canvas.tokens.placeables = [mover, adjacentDown, farCorpse, farAlive, adjacentLive];
+
+  const lines = [];
+  const keepLog = console.log;
+  console.log = (...a) => { const t = a.join(" "); if (/opportunity attack/.test(t)) lines.push(t); };
+  let cards = 0;
+  const keepCard = OAPrompt._postPromptCard;
+  OAPrompt._postPromptCard = async () => { cards++; };
+  try {
+    // Jeth steps two squares away: out of everybody's reach.
+    await OAPrompt._checkProvocations(mover.document, { x: 14 * GRID, y: 10 * GRID });
+  } finally {
+    console.log = keepLog;
+    OAPrompt._postPromptCard = keepCard;
+    QolSettings.get = keepGet;
+  }
+
+  const named = (n) => lines.filter(l => l.includes(n));
+  check("nothing is said about a corpse across the map", named("Flameskull").length === 0,
+    named("Flameskull")[0] ?? "silent");
+  check("nothing is said about a live creature across the map", named("Shield Guardian").length === 0,
+    named("Shield Guardian")[0] ?? "silent");
+  check("the dead thing he walked away from gets ONE line, with the distances",
+    named("Specter").length === 1 && /ft before/.test(named("Specter")[0] ?? ""),
+    named("Specter")[0]?.replace(/^.*opportunity attack: /, "") ?? "nothing");
+  check("the one that could swing was offered it", cards === 1, `${cards} card(s)`);
+  check("and one closing line names who was offered the swing",
+    lines.some(l => /was offered the swing/.test(l) && l.includes("Ghast")),
+    lines.find(l => /offered the swing/.test(l))?.replace(/^.*opportunity attack: /, "") ?? "none");
+  check("the whole move is three lines or fewer, not one per token on the map",
+    lines.length <= 3, `${lines.length} line(s) for five tokens`);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.stdout.write("", () => process.exit(fail ? 1 : 0));

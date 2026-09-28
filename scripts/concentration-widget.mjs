@@ -30,6 +30,9 @@ import { isTokenInTemplate } from "./template-geometry.mjs";
 // Only for getActiveEdition. template-geometry.mjs takes the resolver as an
 // argument precisely so IT stays a leaf and never joins an import cycle.
 import { CombatState } from "./combat-state.mjs";
+// The condition door, so this file stops writing conditions itself: its apply
+// asks the target profile first, and its warded() is that question on its own.
+import { ConditionDoor, CardDoor } from "./road/doors.mjs";
 import { RulesBrain } from "./rules/rules-brain.mjs";
 // Prismatic Wall is run by its own engine (a wall is crossed, not stood in);
 // a pure leaf, so it adds nothing to the import cycle.
@@ -1196,6 +1199,51 @@ export class ConcentrationWidget {
    * ends. Matches by our `ace-qol.areaDenial` flag + the spell name, or by the
    * break-free item link, so unrelated Restrained effects are left untouched.
    */
+  /**
+   * Is this creature already held by THIS area? Read from the flag, because the
+   * condition door names the effect "Restrained" and the spell lives in the flag.
+   */
+  static _alreadyRestrainedBy(actor, tracker) {
+    const spellName = tracker?.item?.name ?? "Spell";
+    const uuid = tracker?.item?.uuid ?? null;
+    return (actor?.effects?.contents ?? []).some(e => {
+      if (e.disabled) return false;
+      if (!e.statuses?.has?.("restrained")) return false;
+      const f = e.flags?.["ace-qol"] ?? {};
+      if (f.areaDenial && f.spellName === spellName) return true;
+      if (uuid && f.breakFree?.itemUuid === uuid) return true;
+      return false;
+    });
+  }
+
+  /**
+   * ⚠️ A SILENT SKIP IS THE SAME AS A BROKEN FEATURE. Something the creature is
+   * wearing refused this, on purpose, and he does not play with the console open.
+   * One card, naming the thing and its own sentence.
+   */
+  static async _sayWarded(actor, tracker, key, ward) {
+    const esc = (v) => foundry.utils.escapeHTML(String(v ?? ""));
+    await CardDoor.post({
+      speaker: ChatMessage.getSpeaker({ actor: tracker?.actor ?? actor }),
+      content: `
+        <div style="background:linear-gradient(180deg,#15110d 0%,#0c0a08 100%);
+                    border:2px solid #d4af37;border-radius:8px;padding:12px 14px;
+                    color:#f0e4c0;font-family:'Signika','Helvetica Neue',sans-serif;">
+          <div style="font-size:18px;font-weight:700;color:#ffb347;margin-bottom:4px;">
+            ${esc(tracker?.item?.name ?? "The area")}
+          </div>
+          <div style="font-size:16px;line-height:1.5;color:#8fd18f;">
+            ${esc(actor?.name)} is not ${esc(key)}.
+          </div>
+          <div style="font-size:16px;line-height:1.5;margin-top:2px;">${esc(ward?.why)}</div>
+          ${ward?.sentence ? `<div style="font-size:14px;color:#c0b288;font-style:italic;
+            margin-top:4px;">${esc(ward.sentence)}</div>` : ""}
+        </div>`,
+      flags: { "ace-qol": { type: "wardRefused", condition: key,
+        source: ward?.source ?? null, itemUuid: tracker?.item?.uuid ?? null } },
+    });
+  }
+
   async _clearAreaDenialRestraint(tracker) {
     const spellName = tracker.item?.name ?? "Spell";
     const effName = `Restrained by ${spellName}`;
@@ -1207,8 +1255,11 @@ export class ConcentrationWidget {
         const toDelete = (actor.effects?.contents ?? []).filter(e => {
           if (!e.statuses?.has?.("restrained")) return false;   // only restraints
           const f = e.flags?.["ace-qol"] ?? {};
-          // Our area-denial "Restrained by <spell>" effect.
-          if (f.areaDenial && e.name === effName) return true;
+          // Our area-denial restraint. Matched by the flag first, because the
+          // condition door names it "Restrained" and the spell lives in the flag;
+          // the old "Restrained by <spell>" name still matches for anything that
+          // was put on before 2026-09-27.
+          if (f.areaDenial && (f.spellName === spellName || e.name === effName)) return true;
           // Our break-free restraint, linked to this exact item.
           if (itemUuid && f.breakFree?.itemUuid === itemUuid) return true;
           // The legacy/duplicate plain "Restrained" the save engine used to
@@ -1243,7 +1294,7 @@ export class ConcentrationWidget {
       const toDelete = (actor.effects?.contents ?? []).filter(e => {
         if (!e.statuses?.has?.("restrained")) return false;
         const f = e.flags?.["ace-qol"] ?? {};
-        if (f.areaDenial && e.name === effName) return true;
+        if (f.areaDenial && (f.spellName === spellName || e.name === effName)) return true;
         if (itemUuid && f.breakFree?.itemUuid === itemUuid) return true;
         const co = f.concentrationOrigin;
         if (co && (co.spellItemId === tracker.item?.id || co.spellName === spellName)) return true;
@@ -1904,6 +1955,30 @@ export class ConcentrationWidget {
     const existingByName = (name) => actor.effects?.contents?.find?.(e => e.name === name)
                                   ?? Array.from(actor.effects ?? []).find(e => e.name === name);
 
+    // ⚠️🔴 THIS FILE WAS A SIDE DOOR (2026-09-27, his table). It wrote the effect
+    // with createEmbeddedDocuments straight onto the actor, so the target profile's
+    // ward never ran: Jeth's Cloak of Arachnida says he cannot be caught in webs of
+    // any sort, and a web restrained him anyway. Everything that lands a condition
+    // asks first, and this is now one of them.
+    const _WARD_STATUS = { restrained: "restrained", retching: "incapacitated" };
+    const _wardKey = _WARD_STATUS[failEffect] ?? null;
+    if (_wardKey) {
+      const _ward = ConditionDoor.warded(actor, _wardKey, { item: tracker.item ?? null });
+      if (_ward?.warded) {
+        console.log(`${TAG} | ${actor.name} is not ${_wardKey} from ${spellName}: ${_ward.why}. `
+          + `(${_ward.sentence})`);
+        // ⚠️ SAID, NOT SWALLOWED. The card names the thing that refused it.
+        try {
+          await ConcentrationWidget._sayWarded(actor, tracker, _wardKey, _ward);
+        } catch (err) { console.warn(`${TAG} | could not post the ward card:`, err); }
+        return { warded: true, why: _ward.why };
+      }
+      for (const h of (_ward?.held ?? [])) {
+        console.log(`${TAG} | ${actor.name} carries ${h.source}, which would refuse ${_wardKey}, `
+          + `but ${h.heldBecause}.`);
+      }
+    }
+
     try {
       if (failEffect === "retching") {
         const name = `Retching (${spellName})`;
@@ -1923,6 +1998,13 @@ export class ConcentrationWidget {
       } else if (failEffect === "restrained") {
         const name = `Restrained by ${spellName}`;
         if (existingByName(name)) return;
+        // ⚠️ ONE RESTRAINED, NOT TWO THINGS THAT MEAN IT (2026-09-27). This used to
+        // create its own effect named "Restrained by <spell>" carrying the restrained
+        // status, so his sheet listed a temporary effect AND the condition while the
+        // token wore no overlay at all. The condition door lands the real condition,
+        // with its own art and its overlay, and this file's bookkeeping is stamped
+        // onto that one effect afterwards, the way the save engine stamps break-free.
+        if (ConcentrationWidget._alreadyRestrainedBy(actor, tracker)) return;
         // Break-free: if the spell allows an action-to-escape (Web, Watery
         // Sphere), stamp the break-free tag so ACE QOL prompts a STR (or other)
         // check vs the spell DC at the start of the creature's turn.
@@ -1938,12 +2020,22 @@ export class ConcentrationWidget {
             stampedAt:    Date.now(),
           };
         }
-        await actor.createEmbeddedDocuments("ActiveEffect", [{
-          name,
-          img: "icons/svg/net.svg",
-          statuses: ["restrained"],
-          flags: { "ace-qol": aceFlags },
-        }]);
+        const _out = await ConditionDoor.apply(actor, "restrained", {}, { item: tracker.item ?? null });
+        if (!_out?.ok) {
+          console.warn(`${TAG} | ${spellName}: restrained did not take on ${actor.name}:`, _out);
+          return;
+        }
+        // The one effect the door just put on, tagged as this area's.
+        const _eff = (actor.effects?.contents ?? []).find(e =>
+          !e.disabled && e.statuses?.has?.("restrained")
+          && !e.flags?.["ace-qol"]?.areaDenial);
+        if (_eff) {
+          try { await _eff.update({ "flags.ace-qol": { ...(_eff.flags?.["ace-qol"] ?? {}), ...aceFlags } }); }
+          catch (err) { console.warn(`${TAG} | could not tag ${actor.name}'s restrained as ${spellName}'s:`, err); }
+        } else {
+          console.warn(`${TAG} | ${spellName}: restrained landed on ${actor.name} but the effect could not be `
+            + `found to tag, so leaving the area may not clear it. Its name is in the log above.`);
+        }
         console.log(`${TAG} | applied Restrained to ${actor.name} from ${spellName}${aceFlags.breakFree ? " (break-free enabled)" : ""}`);
       } else if (failEffect === "exhaustion+glowing") {
         // Increment exhaustion via the actor's system attribute (dnd5e 5.x
