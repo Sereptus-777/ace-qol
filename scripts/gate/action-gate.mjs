@@ -114,6 +114,14 @@ export class ActionGate {
       // it rolls and the card notes the immunity instead of eating the die.
       const outcomes = p.outcomes ?? [];
       const cap = (c) => c.charAt(0).toUpperCase() + c.slice(1);
+      // ⚠️ AN EMPTY LIST IS THE GATE STANDING DOWN, AND IT SAYS SO (his words,
+      // 2026-09-27: "If outcomes is empty, log that and stop guessing"). Neither
+      // the immunity rule nor the ward below can run without knowing what this
+      // action does, and for three nights that silence read as "nothing stops it".
+      if (!p.dealsDamage && !outcomes.length) {
+        console.log("ace-qol | GATE: no outcome list for this action, so nothing can be "
+          + "spared the die by immunity or by a ward. The die is thrown.");
+      }
       if (!p.dealsDamage && outcomes.length) {
         const immune = outcomes.filter(c => tProfile.immuneToCondition?.(c));
         if (immune.length === outcomes.length) {

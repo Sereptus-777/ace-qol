@@ -2920,6 +2920,20 @@ export class SaveEngine {
   }
 
   /** The activity with this id on the item, or null. */
+  /**
+   * Every save activity on the item, for when the caller does not know which one
+   * was used. Order is the item's own; the caller unions their answers.
+   */
+  static _saveActivitiesOf(item) {
+    try {
+      const acts = item?.system?.activities;
+      const list = !acts ? []
+        : (typeof acts.values === "function") ? [...acts.values()]
+        : (typeof acts === "object" ? Object.values(acts) : []);
+      return list.filter(a => String(a?.type ?? "") === "save");
+    } catch (_) { return []; }
+  }
+
   static _activityOf(item, activityId) {
     if (!item || !activityId) return null;
     try {
@@ -5588,10 +5602,45 @@ export class SaveEngine {
       const key = SaveEngine._registryEffectKey(item);
       if (key) return ConditionLibrary.statusesFor(key) ?? [];
     } catch (_) { /* fall through to the recipe */ }
-    const { recipe } = SaveEngine.saveRecipe(item, SaveEngine._activityOf(item, activityId));
-    const out = new Set(whatLands(recipe, { passed: false }).conditions
-      .map(c => String(c?.key ?? "").toLowerCase()).filter(Boolean));
+
+    // ⚠️🔴 NO ACTIVITY NAMED MEANT NO LIST AT ALL, AND AN EMPTY LIST MAKES THE
+    // WHOLE GATE INERT (2026-09-27, his table, three nights running).
+    //
+    //     _activityOf(item, null)  -> null          (it wants an id)
+    //     saveRecipe(item, null)   -> "no activity was named"
+    //     whatLands(null, ...)     -> no conditions
+    //
+    // So every caller that did not know which activity was used handed the gate
+    // an empty list, and `if (!dealsDamage && outcomes.length)` skipped both the
+    // immunity rule AND the ward. Jeth rolled a Dexterity save his cloak had
+    // already answered, and a creature immune to the condition would have rolled
+    // too: the rule from 2026-09-10 has been dead on this path the whole time.
+    //
+    // ⚠️ THE UNION, NOT A GUESS. With no activity named, every save activity on
+    // the item is asked and the answers are put together. A longer list can only
+    // make it HARDER to skip a die, never easier, because the rule needs the
+    // creature to be immune or warded against every entry in it. Picking one
+    // activity and hoping would be the coin toss that rolled Thunderstorm of
+    // Misery's dice for Tornado Takedown.
+    const named = SaveEngine._activityOf(item, activityId);
+    const asked = named ? [named] : SaveEngine._saveActivitiesOf(item);
+    const out = new Set();
+    for (const act of asked) {
+      const { recipe } = SaveEngine.saveRecipe(item, act);
+      for (const c of whatLands(recipe, { passed: false }).conditions) {
+        const k = String(c?.key ?? "").toLowerCase();
+        if (k) out.add(k);
+      }
+    }
     if (out.size && item?.getFlag?.(MODULE_ID, "breakFreeConfig")?.enabled === true) out.add("restrained");
+    // ⚠️ SAID OUT LOUD. An empty list is the gate standing down, and it used to do
+    // that in silence, which is why this took three nights to find.
+    if (!out.size) {
+      console.log(`${MODULE_ID} | GATE: "${item?.name ?? "this action"}" — nothing is known about `
+        + `what a failed save here puts on (${asked.length} save activit${asked.length === 1 ? "y" : "ies"} `
+        + `read${named ? ", the one that was used" : ", none was named"}), so the gate cannot spare `
+        + `anybody the die: neither immunity nor a ward can be tested.`);
+    }
     return [...out];
   }
 

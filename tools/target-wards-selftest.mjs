@@ -559,18 +559,49 @@ console.log("\nTHE SAVE ENGINE'S OWN CONTEXT CARRIES THE SOURCE");
   //
   // Web is in the spell registry but its entry carries no effect key, so the
   // registry branch answers null and the RECIPE decides. This harness has no book
-  // index, so the recipe lookup finds nothing here; the replay, which does index
-  // his 40 packs, reads Web as "on fail restrained". So the recipe is handed over
-  // directly and what is pinned is the wiring: a recipe that restrains produces
-  // the outcome list the gate needs.
+  // index, so the recipe is handed over directly and what is pinned is the wiring.
   const keepRecipe = SaveEngine.saveRecipe;
-  SaveEngine.saveRecipe = () => ({ recipe: { decidedBy: { kind: "save", ability: "dex" },
-    onFail: [{ kind: "condition", condition: { key: "restrained" } }], onSuccess: [] } });
-  let outcomes;
-  try { outcomes = SaveEngine._outcomeConditionsFor(web, null); }
-  finally { SaveEngine.saveRecipe = keepRecipe; }
+  const asked = [];
+  SaveEngine.saveRecipe = (item, activity) => {
+    asked.push(activity?.id ?? activity?._id ?? "(nothing)");
+    return { recipe: { decidedBy: { kind: "save", ability: "dex" },
+      onFail: [{ kind: "condition", condition: { key: "restrained" } }], onSuccess: [] } };
+  };
+  let outcomes, noneNamed;
+  try {
+    outcomes = SaveEngine._outcomeConditionsFor(web, null);
+    noneNamed = [...asked];
+    asked.length = 0;
+  } finally { SaveEngine.saveRecipe = keepRecipe; }
   check("a recipe that restrains gives the gate the restrain to act on",
     Array.isArray(outcomes) && outcomes.includes("restrained"), JSON.stringify(outcomes));
+
+  // ⚠️🔴 THE PIN THAT WOULD HAVE CAUGHT THREE NIGHTS OF THIS. With no activity id,
+  // _activityOf answers null, saveRecipe says "no activity was named", whatLands
+  // gets nothing and the list came back EMPTY — which makes the gate inert for the
+  // ward AND for plain condition immunity. Every save activity is asked now.
+  check("with no activity named, every save activity is still asked",
+    noneNamed.length >= 1 && !noneNamed.includes("(nothing)"),
+    `asked: ${noneNamed.join(", ") || "none at all"}`);
+  check("and Web has more than one save activity, so one of them is not enough",
+    SaveEngine._saveActivitiesOf(web).length >= (fromWorld ? 2 : 0),
+    `${SaveEngine._saveActivitiesOf(web).length} save activit(ies) on it`);
+
+  // ⚠️ AND AN EMPTY LIST IS NEVER SILENT AGAIN (his words: "If outcomes is empty,
+  // log that and stop guessing").
+  {
+    const keep2 = SaveEngine.saveRecipe;
+    SaveEngine.saveRecipe = () => ({ recipe: null, why: "nothing to read" });
+    const said = [];
+    const keepLog = console.log;
+    console.log = (...a) => { said.push(a.join(" ")); };
+    let empty;
+    try { empty = SaveEngine._outcomeConditionsFor(web, null); }
+    finally { console.log = keepLog; SaveEngine.saveRecipe = keep2; }
+    check("an empty outcome list says so, instead of standing down in silence",
+      empty.length === 0 && said.some(l => /the gate cannot spare anybody the die/i.test(l)),
+      said.find(l => /GATE/.test(l))?.slice(0, 96) ?? "nothing was said");
+  }
 
   // And the whole chain, from that list to the die: the gate refuses it.
   const { ActionGate: Gate2 } = await import(`${MODULE}/scripts/gate/action-gate.mjs`);
