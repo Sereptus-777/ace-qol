@@ -290,13 +290,17 @@ export async function run(recipe, trigger, ctx = {}) {
       label: `${what} (${happened})`,
     });
 
+    // ⚠️ THE SOURCE TRAVELS WITH THE CONDITION. A ward that names a material
+    // ("webs of any sort") can only answer when it can see what this was made of.
+    const warded = [];
     for (const c of [...verdict.conditions, ...verdict.effects]) {
       if (!c?.key) continue;
-      await ConditionDoor.apply(token.actor, c.key,
-        c.duration ? { duration: c.duration } : {}, { dice: rolled.length > 0 });
+      const res = await ConditionDoor.apply(token.actor, c.key,
+        c.duration ? { duration: c.duration } : {}, { dice: rolled.length > 0, item });
+      if (res?.warded) warded.push({ key: c.key, source: res.source, why: res.why });
     }
 
-    await _postAutomaticCard({ item, actor, token, trigger, happened, ticks, rolled, finals, landed, verdict, dice: rolled.length > 0 });
+    await _postAutomaticCard({ item, actor, token, trigger, happened, ticks, rolled, finals, landed, verdict, warded, dice: rolled.length > 0 });
     return { ran: true, why: `its own damage, ${trigger}`, kind, total: landed?.total ?? 0 };
   }
 
@@ -339,7 +343,7 @@ export function repeatOutcome(recipe, { key, passed } = {}) {
 }
 
 /** The card for damage nothing rolled against: what it moved through, and what it cost. */
-async function _postAutomaticCard({ item, actor, token, trigger, happened = null, ticks, rolled, finals, landed, verdict, dice }) {
+async function _postAutomaticCard({ item, actor, token, trigger, happened = null, ticks, rolled, finals, landed, verdict, warded = [], dice }) {
   try {
     const esc = (s) => foundry.utils.escapeHTML(String(s ?? ""));
     const total = finals.reduce((sum, f) => sum + (Number(f.final) || 0), 0);
@@ -353,7 +357,14 @@ async function _postAutomaticCard({ item, actor, token, trigger, happened = null
         + `</div>`;
     }).join("");
     const dicePart = rolled.map(r => `${esc(r.formula)} = ${esc(r.total)}`).join(", ");
-    const conditions = [...verdict.conditions, ...verdict.effects].map(c => esc(c.key)).filter(Boolean);
+    const refused = new Set((warded ?? []).map(w => String(w.key)));
+    const conditions = [...verdict.conditions, ...verdict.effects]
+      .map(c => c?.key).filter(Boolean).filter(k => !refused.has(String(k))).map(esc);
+    // ⚠️ A SILENT SKIP IS THE SAME AS A BROKEN FEATURE. Whatever refused it is
+    // named on the card, in the words of the thing that did it.
+    const wardRows = (warded ?? []).map(w =>
+      `<div style="font-size:16px;line-height:1.5;color:#8fd18f;">`
+      + `not ${esc(w.key)} &middot; <span style="color:#c0b288;">${esc(w.why)}</span></div>`).join("");
     await CardDoor.post({
       speaker: ChatMessage.getSpeaker({ actor }),
       content: `
@@ -369,6 +380,7 @@ async function _postAutomaticCard({ item, actor, token, trigger, happened = null
           </div>
           ${rows || `<div style="font-size:16px;">No damage.</div>`}
           ${conditions.length ? `<div style="font-size:16px;margin-top:4px;">${conditions.join(", ")}</div>` : ""}
+          ${wardRows}
           <div style="font-size:14px;color:#c0b288;margin-top:6px;">
             ${dicePart ? `${esc(dicePart)} &middot; ` : ""}${landed?.applied
               ? `${esc(total)} taken off ${esc(token?.name ?? "it")}`

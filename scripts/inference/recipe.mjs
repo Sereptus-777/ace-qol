@@ -233,6 +233,65 @@ const damageRolled = (facts, activity) => (facts?.change?.damage ?? []).filter(d
   || (_s(activity?.type) === "attack" && activity?.damage?.includeBase !== false));
 
 /**
+ * ⚠️🔴 A SAVE DEALS THE DAMAGE ITS OWN SENTENCE GIVES IT (2026-09-27, his table).
+ *
+ * Kasimir's Web carries a 2d4 fire part on its Dexterity save activity. Web's
+ * words give that fire to something else entirely:
+ *
+ *   "Any 5-foot Cube of webs exposed to fire burns away in 1 round, dealing 2d4
+ *    fire damage to any creature that starts its turn in the fire."
+ *
+ * Nothing in the spell deals damage for failing the save; you are Restrained and
+ * that is all. But a stored part is a stored part, so the recipe read "on fail
+ * 2d4 fire, restrained", the card grew a ROLL DAMAGE button, and a walk-in set
+ * a man on fire for failing to dodge a web.
+ *
+ * ⚠️ AND THE RULE MUST NOT TOUCH FIREBALL. "A target takes 8d6 fire damage on a
+ * failed save, or half as much on a successful one" is a gated sentence too, so a
+ * plain "is this conditional" test strips the most-cast spell in the game. The
+ * discriminator is WHAT it is gated on: a sentence that ties the damage to the
+ * save keeps it, always. A part is dropped only when every sentence naming that
+ * damage ties it to something else, and none of them mentions a save at all.
+ *
+ * A damage the words never mention is kept: the data is all there is.
+ *
+ * @param {object[]} parts  from damageRolled
+ * @param {string} text     the item's words, already plain
+ * @returns {{kept: object[], dropped: Array<{part: object, why: string}>}}
+ */
+const SAVE_WORDS = /\b(?:saving throw|\bsave\b|fail(?:s|ed|ure)?|succe(?:ed|eds|ssful)|\bDC\b)\b/i;
+const ELSEWHERE = /\b(?:exposed to|starts? its turn|start of (?:its|each|the)|ends? its turn|end of (?:its|each|the)|enters?|while (?:in|inside|within)|burns? away|each round|per round|takes? .{0,20}at the start)\b/i;
+
+export const damageWordsOf = (html) => String(html ?? "")
+  .replace(/\[\[\/damage\s+([^\]]*?)\s*\]\](?:\{[^}]*\})?/gi, (_m, body) => {
+    const dice = /(\d+\s*d\s*\d+(?:\s*[+-]\s*\d+)?)/i.exec(body)?.[1] ?? "";
+    const type = /type\s*=\s*([a-z]+)/i.exec(body)?.[1] ?? "";
+    return `${dice} ${type} damage`.replace(/\s+/g, " ").trim();
+  });
+
+export function damageTheSaveDeals(parts, text) {
+  const kept = [], dropped = [];
+  const words = String(text ?? "");
+  const sentences = words.split(/(?<=[.!?])\s+/).filter(Boolean);
+  for (const part of parts) {
+    const types = (part?.types ?? []).map(t => _s(t)).filter(Boolean);
+    if (!types.length || !sentences.length) { kept.push(part); continue; }
+    // Every sentence that names this damage AND rolls dice for it.
+    const naming = sentences.filter(sn =>
+      types.some(t => new RegExp(`\\b${t}\\b`, "i").test(sn)) && /\d+\s*d\s*\d+/i.test(sn));
+    if (!naming.length) { kept.push(part); continue; }          // the words say nothing
+    if (naming.some(sn => SAVE_WORDS.test(sn))) { kept.push(part); continue; }   // it is the save's
+    if (naming.every(sn => ELSEWHERE.test(sn))) {
+      dropped.push({ part, why: `its words give that ${types.join("/")} to `
+        + `"${naming[0].trim().slice(0, 90)}", not to the save` });
+      continue;
+    }
+    kept.push(part);
+  }
+  return { kept, dropped };
+}
+
+/**
  * How a condition from a save ends, in the parser's own reading of the words.
  *
  * ⚠️ dnd5e HAS NO FIELD FOR A REPEATED SAVE. The parser names it as a trigger
@@ -477,7 +536,14 @@ function saveOutcomes(item, activity, plan, facts, parsed) {
   // item's words describe every save on the item at once, so they never decide it
   // for one of them: that leak put Weird's half on its end-of-turn save.
   const onSave = plan.decide?.onSave === "half" ? "half" : "none";
-  const onFail = damageRolled(facts, activity).map(d => damageOut(d, onSave));
+  // ⚠️ THE SAVE'S OWN DAMAGE, NOT EVERY PART SOMEBODY STORED ON IT.
+  const _dmg = damageTheSaveDeals(damageRolled(facts, activity),
+    plainSpellText(damageWordsOf(item?.system?.description?.value ?? "")));
+  for (const d of _dmg.dropped) {
+    console.log(`${MODULE_ID} | "${item?.name}": ${d.part?.formula ?? "a damage part"} does not land on this `
+      + `save. ${d.why}.`);
+  }
+  const onFail = _dmg.kept.map(d => damageOut(d, onSave));
   const onSuccess = [];
   let fromText = false;
 

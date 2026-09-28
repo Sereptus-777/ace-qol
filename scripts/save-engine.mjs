@@ -7728,7 +7728,7 @@ export class SaveEngine {
           applied.push({ targetName: r.name ?? actor.name, tokenDocId: r.tokenDocId, conditions: [key] });
           continue;
         }
-        const out = await ConditionDoor.apply(actor, key, { source: item.name });
+        const out = await ConditionDoor.apply(actor, key, { source: item.name }, { item });
         console.log(`${MODULE_ID} | ${item.name}: ${actor.name} failed by ${failByRule.n} or more (${_total} against `
           + `DC ${resolvedSaveDC}), so its words make it ${key} at once${out?.ok ? "" : ", and it did not take"}.`);
         if (out?.ok) applied.push({ targetName: r.name ?? actor.name, tokenDocId: r.tokenDocId, conditions: [key] });
@@ -7865,6 +7865,11 @@ export class SaveEngine {
       const appliedForThisTarget = [];
       const immuneForThisTarget = [];   // so the card can say IMMUNE instead of lying
       const failedToApply = [];         // what was tried and did not take, for the card
+      // ⚠️🔴 A WARD IS NOT A FAILURE (2026-09-27). Something the creature carries
+      // refused this, on purpose, and the card has to say which thing and why. Put
+      // through `failedToApply` it read as "it did not take, the console has the
+      // error", which is a bug report about a rule working correctly.
+      const wardedForThisTarget = [];
 
       for (const cond of failConditions) {
         const condKey = String(cond.condition ?? "").toLowerCase().trim();
@@ -7969,7 +7974,7 @@ export class SaveEngine {
 
           // Through the condition door (The One Road, section 11): the library's
           // immunity check, no stacking, and its stamps, once the dice are down.
-          const out = await ConditionDoor.apply(actor, cond.condition, applyOpts);
+          const out = await ConditionDoor.apply(actor, cond.condition, applyOpts, { item });
           if (out?.ok) {
             const detail = out.level !== undefined ? ` (level ${out.level})` : "";
             const tagBits = [];
@@ -8006,6 +8011,9 @@ export class SaveEngine {
                 console.warn(`${MODULE_ID} | Direct break-free stamp failed on ${actor.name}:`, err);
               }
             }
+          } else if (out?.warded) {
+            console.log(`${MODULE_ID} | ${item.name}: ${actor.name} is not ${cond.condition}. ${out.why}.`);
+            wardedForThisTarget.push(out.why);
           } else {
             console.warn(`${MODULE_ID} | ${item.name}: applyByName returned not-ok for "${cond.condition}" on ${actor.name}:`, out);
             failedToApply.push(cond.condition);
@@ -8066,9 +8074,15 @@ export class SaveEngine {
       }
       // ⚠️ A CREATURE THAT FAILED AND GOT NOTHING GETS A REASON, NOT A BLANK.
       if (!appliedForThisTarget.length && !immuneForThisTarget.length) {
-        applied.push(...SaveEngine._declinedFor([r], failedToApply.length
+        applied.push(...SaveEngine._declinedFor([r], wardedForThisTarget.length
+          ? wardedForThisTarget.join("; ")
+          : failedToApply.length
           ? `ACE tried to put ${failedToApply.join(", ")} on it, and it did not take. The console has the error.`
           : (alternativesNote ?? "nothing ACE could put on it took hold.")));
+      }
+      // And when something else DID land, the ward still gets said beside it.
+      else if (wardedForThisTarget.length) {
+        applied.push(...SaveEngine._declinedFor([r], wardedForThisTarget.join("; ")));
       }
     }
 
@@ -8088,7 +8102,7 @@ export class SaveEngine {
         for (const cond of successConditions) {
           if (saveCtx?.dryRun) { names.push(cond.condition); continue; }
           try {
-            const out = await ConditionDoor.apply(actor, cond.condition, cond.duration ? { duration: cond.duration } : {});
+            const out = await ConditionDoor.apply(actor, cond.condition, cond.duration ? { duration: cond.duration } : {}, { item });
             if (out?.ok) names.push(cond.condition);
           } catch (err) {
             console.warn(`${MODULE_ID} | ${item.name}: could not put ${cond.condition} on ${actor.name} after its made save:`, err);

@@ -23,6 +23,7 @@ import { awaitDiceSettle } from "../dsn-utils.mjs";
 import { DamageApplicator } from "../damage-applicator.mjs";
 import { DamageCalculator } from "../damage-calculator.mjs";
 import { ConditionLibrary } from "../condition-library.mjs";
+import { wardAgainst } from "../profiles/target-wards.mjs";
 
 const MODULE_ID = "ace-qol";
 
@@ -72,13 +73,43 @@ export class ConditionDoor {
   }
 
   /**
+   * ⚠️🔴 DOES THIS LAND ON THIS CREATURE? (The One Road, the target profile's own
+   * question, 2026-09-27.) Blanket condition immunity is what `immune` above
+   * reads. This is the other half: a reason the creature carries that refuses
+   * this condition FROM THIS SOURCE, which is a thing no field in dnd5e records.
+   *
+   * Jeth's Cloak of Arachnida says "you can't be caught in webs of any sort" and
+   * carries no active effect at all, so webbing had always restrained him.
+   *
+   * @returns {{warded: boolean, source?: string, why?: string}}
+   */
+  static warded(actor, key, { item = null } = {}) {
+    return wardAgainst(actor, key, { item });
+  }
+
+  /**
    * A condition by its key, through the condition library: its immunity check,
    * no stacking, exhaustion by level, and its stamps (a duration, the caster's
    * concentration, the repeat save, break-free).
    *
    * @returns {Promise<{ok: boolean, applied: string|null, immune?: boolean}>}
    */
-  static async apply(actor, key, options = {}, { dice = false } = {}) {
+  static async apply(actor, key, options = {}, { dice = false, item = null } = {}) {
+    // ⚠️ ASKED BEFORE THE DICE ARE WAITED FOR. A ward is not a result, it is a
+    // fact about the creature: if the cloak refuses this, there was never
+    // anything for the dice to decide, and nothing should sit on a hook for them.
+    const ward = ConditionDoor.warded(actor, key, { item });
+    if (ward?.warded) {
+      console.log(`${MODULE_ID} | ${actor?.name} is not ${key}: ${ward.why}.`
+        + ` (${ward.sentence})`);
+      return { ok: false, applied: null, warded: true, source: ward.source, why: ward.why };
+    }
+    // A ward that is carried but not in play says so, so a cloak in the pack is
+    // never mistaken for a cloak being worn.
+    for (const h of (ward?.held ?? [])) {
+      console.log(`${MODULE_ID} | ${actor?.name} carries ${h.source}, which would refuse `
+        + `${key}, but ${h.heldBecause}.`);
+    }
     await untilDiceLand(dice);
     return ConditionLibrary.applyByName(actor, key, options);
   }

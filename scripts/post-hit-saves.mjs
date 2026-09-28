@@ -1011,7 +1011,7 @@ export class PostHitSaves {
             for (const fx of (matchedEntry.effects ?? [])) {
               console.log(`${MODULE_ID} | POST-HIT TABLE: effect:`, fx);
               if (fx.type === "condition" && fx.condition) {
-                await PostHitSaves._landConditions([{ key: fx.condition }], targetActor, result, tgt.name);
+                await PostHitSaves._landConditions([{ key: fx.condition }], targetActor, result, tgt.name, item);
               } else if (fx.type === "damage" && fx.formula) {
                 const rolled = await PostHitSaves._rollSaveDamage([{ formula: fx.formula, types: [fx.damageType] }], casterActor);
                 PostHitSaves._landSaveDamage(rolled.map(r => ({ amount: r.total, type: r.type })), rolled, targetActor, item, result);
@@ -1117,7 +1117,7 @@ export class PostHitSaves {
       : [];
     const v = whatLands(recipe, { ...how, rolled });
     PostHitSaves._landSaveDamage(v.damage, rolled, targetActor, item, result, { halved: v.share > 0 && v.share < 1 });
-    await PostHitSaves._landConditions(v.conditions, targetActor, result, name);
+    await PostHitSaves._landConditions(v.conditions, targetActor, result, name, item);
     // Anything else on the result is the GM's to put on: said, never dropped.
     const rest = [...v.effects.map(e => e?.key), ...v.notes].filter(Boolean);
     if (rest.length) {
@@ -1181,7 +1181,7 @@ export class PostHitSaves {
    * condition library's immunity check, no stacking, exhaustion by level, and the
    * recipe's own duration. One that did not go on is on the card, with why.
    */
-  static async _landConditions(conditions, targetActor, result, name) {
+  static async _landConditions(conditions, targetActor, result, name, item = null) {
     if (!conditions?.length) return;
     const autoApply = QolSettings.get("autoApplyConditions") ?? true;
     for (const c of conditions) {
@@ -1195,7 +1195,7 @@ export class PostHitSaves {
       }
       let out = null;
       try {
-        out = await ConditionDoor.apply(targetActor, key, Number(c.duration) > 0 ? { duration: { seconds: Number(c.duration) } } : {});
+        out = await ConditionDoor.apply(targetActor, key, Number(c.duration) > 0 ? { duration: { seconds: Number(c.duration) } } : {}, { item });
       } catch (err) {
         console.warn(`${MODULE_ID} | post-hit: putting ${key} on ${name} failed:`, err);
       }

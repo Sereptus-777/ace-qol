@@ -185,7 +185,7 @@ export class CheckGate {
       if (!key) continue;
       if (!canWrite) { notPut.push(`${key}: the GM puts it on`); continue; }
       let out = null;
-      try { out = await ConditionDoor.apply(them, key, Number(c.duration) > 0 ? { duration: { seconds: Number(c.duration) } } : {}); }
+      try { out = await ConditionDoor.apply(them, key, Number(c.duration) > 0 ? { duration: { seconds: Number(c.duration) } } : {}, { item }); }
       catch (err) { console.warn(`${LOG} | ${item.name}: putting ${key} on ${them.name} failed:`, err); }
       if (out?.ok) put.push(key);
       else notPut.push(out?.immune ? `${key}: immune` : `${key}: it did not take, the console has why`);
