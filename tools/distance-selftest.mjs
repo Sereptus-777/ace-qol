@@ -193,8 +193,19 @@ const square = { x: 7600, y: 9400, shape: {
   x: 0, y: 0, width: 200, height: 200,
   contains: (px, py) => px >= 0 && px <= 200 && py >= 0 && py <= 200,
 } };
-check("a template edge on the kobold's square catches it, off-grid picture and all",
-  isTokenInTemplate(kobold, square, null, { ignoreElevation: true }), true);
+// ⚠️🔴 RE-PINNED 2026-09-27, HIS RULE: "a token is in only if the shape overlaps
+// its space by at least 1 foot. A shared edge with no interior overlap is out."
+// Measured: the kobold's square is y 9200..9400 and this template starts at
+// y 9400, so the two share an edge and the template enters the square by nothing.
+// It used to count. It does not now, and that is the rule, not a regression.
+check("a template that only shares an edge with the kobold's square is out",
+  isTokenInTemplate(kobold, square, null, { ignoreElevation: true }), false);
+// And the same template pulled one foot (40 px at this 200 px grid) into the
+// square does catch it, off-grid picture and all, which was the point of the
+// original pin: the SQUARE is what is tested, never the picture.
+const squareOneFootIn = { x: 7600, y: 9360, shape: square.shape };
+check("the same template one foot into that square catches it, picture 41 px off and all",
+  isTokenInTemplate(kobold, squareOneFootIn, null, { ignoreElevation: true }), true);
 globalThis.canvas.grid.size = 100;
 
 console.log("");

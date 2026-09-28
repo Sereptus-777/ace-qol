@@ -2173,6 +2173,27 @@ export class ConcentrationWidget {
       return;
     }
 
+    // ── NOTHING THIS SAVE COULD DECIDE ──
+    // ⚠️ HIS RULE (2026-09-27): "If the target profile already refuses the only
+    // on-fail effect, do not roll. One card: he is not restrained, name the cloak.
+    // No second FAIL card." Jeth in a web was rolling a Dexterity save whose only
+    // possible outcome his cloak had already refused, then getting a FAIL card and
+    // a ward card for the same entry. A die nobody can act on is noise.
+    //
+    // Same shape as the auto-success gate above, and deliberately narrow: it only
+    // skips when the failure has nothing else in it. Damage on the failure, or a
+    // second condition the ward does not cover, and the save is still worth making.
+    {
+      const nothing = this._saveWouldDecideNothing(token?.actor, tracker);
+      if (nothing.skip) {
+        console.log(`${TAG} | ${token?.name} rolls nothing against ${tracker.item?.name}: `
+          + `${nothing.why}.`);
+        try { await ConcentrationWidget._sayWarded(token.actor, tracker, nothing.key, nothing.ward); }
+        catch (err) { console.warn(`${TAG} | could not post the ward card:`, err); }
+        return;
+      }
+    }
+
     // ── Area-denial AUTO family (Cloud of Daggers): NO save, just damage ──
     // RAW: damage on first entry per turn OR start of turn there. We use the
     // entrySavesThisTurn Set as a unified "fired this turn" cap so both
@@ -2325,6 +2346,40 @@ export class ConcentrationWidget {
    * to any listed condition. Stinking Cloud (poison immune → auto-pass),
    * Sickening Radiance (exhaustion immune → auto-pass), etc.
    */
+  /**
+   * Would this save change anything at all for this creature?
+   *
+   * ⚠️ NARROW ON PURPOSE. Three things all have to be true: the area's failure has
+   * exactly one effect, the target's own profile refuses that effect outright, and
+   * the failure carries no damage. Miss any one of them and the die still matters,
+   * so it is still rolled.
+   *
+   * @returns {{skip: boolean, why: string, key?: string, ward?: object}}
+   */
+  _saveWouldDecideNothing(actor, tracker) {
+    if (!actor || !tracker) return { skip: false, why: "there is nobody to ask" };
+    const failEffect = tracker.timing?.failEffect ?? null;
+    const key = { restrained: "restrained", retching: "incapacitated" }[failEffect] ?? null;
+    if (!key) return { skip: false, why: "its failure is not a single condition" };
+
+    // Damage on the failure, and the save decides how much of it lands.
+    const onFail = tracker.recipe?.onFail ?? [];
+    if (onFail.some(o => o?.kind === "damage")) {
+      return { skip: false, why: "its failure deals damage, which the save still decides" };
+    }
+    // Another condition the ward may not cover: the save still decides that one.
+    const named = onFail.filter(o => o?.kind === "condition" || o?.kind === "effect")
+      .map(o => String(o?.condition?.key ?? "").toLowerCase()).filter(Boolean);
+    if (named.length > 1) {
+      return { skip: false, why: `its failure puts on more than one thing (${named.join(", ")})` };
+    }
+
+    const ward = ConditionDoor.warded(actor, key, { item: tracker.item ?? null });
+    if (!ward?.warded) return { skip: false, why: `nothing on ${actor.name} refuses ${key}` };
+    return { skip: true, key, ward,
+      why: `the only thing a failure could do is make it ${key}, and ${ward.why}` };
+  }
+
   _shouldAutoSucceedSave(actor, timing) {
     if (!actor) return false;
     const list = timing?.autoSucceedIfCondImmune;

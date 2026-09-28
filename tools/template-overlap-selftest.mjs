@@ -62,6 +62,12 @@ const cone = () => {
 
 /** A token placeable, as the hit-test reads one: a document with a size. */
 const token = (x, y, cells = 1) => ({ document: { x, y, width: cells, height: cells, elevation: 0 } });
+/** A cube / rect template: Foundry hands these over as a PIXI.Rectangle. */
+const rect = (x, y, width, height) => ({
+  x, y, width, height,
+  contains: (px, py) => px >= x && px <= x + width && py >= y && py <= y + height,
+});
+
 /** The template placeable: a shape and where its origin sits on the canvas. */
 const at = (shape, x = 0, y = 0) => ({ shape, x, y });
 
@@ -74,22 +80,39 @@ console.log("\nANY PART OF ITS SPACE, AND AN EDGE COUNTS");
   // corner: its centre is 353 pixels out and every one of the nine sample
   // points the old rule used is outside the circle, so it used to be left out
   // of the tick. The circle cuts its space, so it is in it.
-  check("a Large creature the circle clips at one corner is in the area",
-    isTokenInTemplate(token(200, 200, 2), sg), true);
+  // ⚠️🔴 RE-PINNED 2026-09-27, HIS RULE: "a token is in only if the shape overlaps
+  // its space by at least 1 foot (one-fifth of a 5-foot square)." This clip is
+  // 0.86 feet deep, measured: its nearest corner is 282.8 px from the centre and a
+  // 300 px circle reaches 17.2 px past it, which is 0.86 of a foot. Under a foot,
+  // so this creature is now OUT. It used to be in, and it was his horse case from
+  // 2026-09-18; the line he has drawn is at one foot and this sits just under it.
+  check("a corner clipped by less than a foot (0.86 ft) is NOT in it",
+    isTokenInTemplate(token(200, 200, 2), sg), false);
+  // And the same creature once the circle really does get a foot in. ⚠️ A CORNER
+  // IS TWO SIDES AT ONCE: the rule is one foot into the square, and at a corner
+  // that means a foot on BOTH axes, which is 1.41 feet along the diagonal. The
+  // inner corner sits at 311.1 px from the centre, so a 312 px circle reaches it
+  // and a 311 px one does not.
+  check("a corner clip that gets a foot in on both axes IS in it",
+    isTokenInTemplate(token(200, 200, 2), at(circle(312))), true);
+  check("and one a pixel short of that is still out",
+    isTokenInTemplate(token(200, 200, 2), at(circle(310))), false);
 
   // The same creature, one square further out, touches nothing.
   check("and one that is clear of it is not",
     isTokenInTemplate(token(320, 320, 2), sg), false);
 
   // Edge touching: a square whose corner sits exactly on the circle.
-  check("a square whose corner sits exactly on the edge counts",
-    isTokenInTemplate(token(300, 0, 1), sg), true);
+  // ⚠️ RE-PINNED: "A shared edge with no interior overlap is out." Zero overlap.
+  check("a square whose corner sits exactly on the edge is out",
+    isTokenInTemplate(token(300, 0, 1), sg), false);
 
   // A Medium creature whose square the circle falls short of, and one it reaches.
   check("a Medium creature the circle falls short of is out",
     isTokenInTemplate(token(290, 290, 1), sg), false);
-  check("and it is in as soon as the circle touches its square",
-    isTokenInTemplate(token(210, 210, 1), sg), true);
+  // ⚠️ RE-PINNED: this clip is 0.15 of a foot. Touching is not being in it.
+  check("a clip of 0.15 of a foot is not enough",
+    isTokenInTemplate(token(210, 210, 1), sg), false);
 
   // The old centre-point reading would have said no to all of these.
   check("dead centre still counts, obviously",
@@ -99,8 +122,11 @@ console.log("\nANY PART OF ITS SPACE, AND AN EDGE COUNTS");
 console.log("\nA CONE IS A POLYGON, AND ITS EDGE COUNTS TOO");
 {
   const spray = at(cone());
-  check("a creature the cone's edge cuts is in it",
-    isTokenInTemplate(token(250, 100, 1), spray), true);
+  // ⚠️ RE-PINNED: this token snaps to the square at x=300, and the cone's far
+  // edge IS x=300, so the cone runs along the square's edge and enters it by
+  // nothing at all. A shared edge is out.
+  check("a square the cone's edge only runs along is out",
+    isTokenInTemplate(token(250, 100, 1), spray), false);
   check("a creature past its point is not",
     isTokenInTemplate(token(400, 0, 1), spray), false);
   check("a creature beside it, untouched, is not",
@@ -109,6 +135,38 @@ console.log("\nA CONE IS A POLYGON, AND ITS EDGE COUNTS TOO");
   // inside it: the polygon's edge does the work.
   check("a square a long edge crosses is in, with no point of it inside",
     isTokenInTemplate(token(100, -60, 1), spray), true);
+}
+
+// ⚠️ HIS TABLE RULE, 2026-09-27, in his own words: "Medium token, cube flush on
+// his square, no interior overlap -> not in, no save. Same token, cube overlaps
+// that square by 1 foot or more -> in."
+console.log("\nONE FOOT OF OVERLAP, OR IT IS NOT IN IT");
+{
+  // A Medium creature standing on the square at (500, 500). One foot is 20 px.
+  const him = token(500, 500, 1);
+
+  // A cube whose right edge lands exactly on his left edge: nothing inside.
+  const flush = at(rect(300, 500, 200, 100));
+  check("a cube flush on his square, with no interior overlap, is out",
+    isTokenInTemplate(him, flush), false);
+
+  // The same cube, one foot wider: it reaches 20 px into his square.
+  const byOneFoot = at(rect(300, 500, 220, 100));
+  check("the same cube overlapping that square by one foot is in",
+    isTokenInTemplate(him, byOneFoot), true);
+
+  // And a hair under a foot is still out, so the line is where he put it.
+  const byHalfAFoot = at(rect(300, 500, 210, 100));
+  check("half a foot of overlap is still out",
+    isTokenInTemplate(him, byHalfAFoot), false);
+
+  // ⚠️ "whollyInside IS UNCHANGED" (his words). A cube covering his whole square
+  // still answers the wholly-within question the way it always did.
+  const allOfIt = at(rect(450, 450, 250, 250));
+  check("wholly within is unchanged: a cube covering his square still covers it",
+    isTokenInTemplate(him, allOfIt, null, { whollyInside: true }), true);
+  check("and one that only overlaps him is still not wholly within",
+    isTokenInTemplate(him, byOneFoot, null, { whollyInside: true }), false);
 }
 
 console.log("\n\"WHOLLY WITHIN\" IS A DIFFERENT QUESTION");

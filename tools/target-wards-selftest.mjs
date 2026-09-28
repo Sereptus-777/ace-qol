@@ -413,5 +413,56 @@ console.log("\nTHE OPPORTUNITY-ATTACK SCAN ONLY TALKS ABOUT CREATURES IT REACHED
     lines.length <= 3, `${lines.length} line(s) for five tokens`);
 }
 
+/* == 8. NO WASTED SAVE ================================================== */
+// ⚠️ HIS RULE (2026-09-27): "If the target profile already refuses the only
+// on-fail effect, do not roll. One card: he is not restrained, name the cloak.
+// No second FAIL card." He was rolling a Dexterity save whose only outcome the
+// cloak had already refused, then getting a FAIL card AND a ward card for it.
+console.log("\nA SAVE THAT COULD DECIDE NOTHING IS NOT ROLLED");
+{
+  const { ConcentrationWidget } = await import(`${MODULE}/scripts/concentration-widget.mjs`);
+  const widget = new ConcentrationWidget(null);
+  const cloaked = { id: "jeth", name: "Jeth", type: "character",
+    items: [gear("Cloak of Arachnida", CLOAK_WORDS)], effects: { contents: [] },
+    statuses: new Set(), getFlag: () => undefined };
+  const bare = { id: "kro", name: "Krusk", type: "character", items: [],
+    effects: { contents: [] }, statuses: new Set(), getFlag: () => undefined };
+
+  // Web as it now reads: a failure restrains, and nothing else.
+  const webTracker = { item: web, timing: { family: "areaDenial", failEffect: "restrained" },
+    recipe: { decidedBy: { kind: "save" },
+      onFail: [{ kind: "condition", condition: { key: "restrained" } }], onSuccess: [] } };
+
+  const skipped = widget._saveWouldDecideNothing(cloaked, webTracker);
+  check("his save is skipped, because its only outcome is already refused",
+    skipped.skip === true && skipped.key === "restrained", skipped.why);
+  check("and the reason names the cloak, for the one card that goes out",
+    /cloak of arachnida/i.test(skipped.ward?.why ?? ""), skipped.ward?.why ?? "");
+
+  const rolls = widget._saveWouldDecideNothing(bare, webTracker);
+  check("somebody with no cloak still rolls it", rolls.skip === false, rolls.why);
+
+  // ⚠️ NARROW ON PURPOSE. Damage on the failure, and the save decides how much.
+  const withDamage = { ...webTracker, recipe: { decidedBy: { kind: "save" },
+    onFail: [{ kind: "damage", formula: "2d4", types: ["fire"] },
+             { kind: "condition", condition: { key: "restrained" } }], onSuccess: [] } };
+  const stillRolls = widget._saveWouldDecideNothing(cloaked, withDamage);
+  check("an area whose failure also deals damage is still rolled",
+    stillRolls.skip === false, stillRolls.why);
+
+  // Two conditions on the failure: the save still decides the one he is open to.
+  const twoThings = { ...webTracker, recipe: { decidedBy: { kind: "save" },
+    onFail: [{ kind: "condition", condition: { key: "restrained" } },
+             { kind: "condition", condition: { key: "blinded" } }], onSuccess: [] } };
+  check("an area that puts on more than one thing is still rolled",
+    widget._saveWouldDecideNothing(cloaked, twoThings).skip === false,
+    widget._saveWouldDecideNothing(cloaked, twoThings).why);
+
+  // And an area whose failure is not a single condition at all.
+  check("an area with no single-condition failure is still rolled",
+    widget._saveWouldDecideNothing(cloaked, { item: web, timing: { family: "areaDenial" },
+      recipe: webTracker.recipe }).skip === false, "no failEffect on its timing");
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.stdout.write("", () => process.exit(fail ? 1 : 0));

@@ -72,7 +72,31 @@ function _segmentHitsRect(ax, ay, bx, by, rx, ry, rw, rh) {
  * All coordinates are the shape's own, which sit relative to the template's
  * origin: the caller translates.
  */
-function _squareTouchesShape(shape, rx, ry, size) {
+/**
+ * ⚠️🔴 A SHARED EDGE IS NOT BEING IN IT (2026-09-27, his table rule). "A token is
+ * in only if the shape overlaps its space by at least 1 foot (one-fifth of a
+ * 5-foot square). A shared edge with no interior overlap is out."
+ *
+ * Before this, a cube laid flush against the side of his square caught him: the
+ * corner points sat exactly on the boundary and the tolerance below counted them.
+ * That is a template touching the line he is standing behind, not a web he is in.
+ *
+ * ⚠️ HOW: the square is tested INSET by one foot on every side. A shape that only
+ * reaches the boundary never meets the inner square; one that reaches a foot in
+ * meets it exactly, which the tolerances here already count. Symmetric on all four
+ * sides, and it costs the circle, polygon and rectangle branches nothing, so
+ * cones, lines, circles, cubes and walls all answer by the same rule.
+ *
+ * ⚠️ AND IT CUTS BOTH WAYS, on purpose. A circle that clips a corner by less than
+ * a foot no longer catches that creature. A deeper clip still does: an inch over a
+ * foot on both axes reaches the inner square's corner.
+ *
+ * @param {number} [inset=0]  feet-in-pixels to pull every side in by
+ */
+function _squareTouchesShape(shape, rx0, ry0, size0, inset = 0) {
+  // Never let the inset swallow the square: a tiny grid keeps a real middle.
+  const pull = Math.max(0, Math.min(inset, size0 * 0.4));
+  const rx = rx0 + pull, ry = ry0 + pull, size = size0 - 2 * pull;
   const x1 = rx + size, y1 = ry + size;
   // 1. A corner, an edge midpoint or the centre inside the shape.
   const pts = [[rx, ry], [x1, ry], [rx, y1], [x1, y1], [rx + size / 2, ry + size / 2],
@@ -307,6 +331,11 @@ export function isTokenInTemplate(token, template, at = null, opts = {}) {
     // measure from. A picture a hair off the grid is still in its square
     // (2026-09-18: a kobold 41 pixels off its square read 10 feet away).
     const grid = canvas?.grid?.size ?? 100;
+    // One foot, in pixels: a fifth of a 5-foot square, whatever the scene's scale
+    // says a square is worth. A hair is taken off so an overlap of exactly one
+    // foot counts as in, which is the rule as he stated it.
+    const feetPerSquare = Number(canvas?.grid?.distance) > 0 ? Number(canvas.grid.distance) : 5;
+    const oneFoot = Math.max(0, (grid / feetPerSquare) - 1e-6);
     const space = aceTokenSpace(token, at ? { x: at.x, y: at.y } : null);
     const w = Math.max(1, Math.round(space.w / grid));
     const h = Math.max(1, Math.round(space.h / grid));
@@ -327,7 +356,7 @@ export function isTokenInTemplate(token, template, at = null, opts = {}) {
         // every square it stands on must be fully covered, not merely touched.
         const inside = opts.whollyInside
           ? _squareWhollyInside(shape, sqX, sqY, grid)
-          : _squareTouchesShape(shape, sqX, sqY, grid);
+          : _squareTouchesShape(shape, sqX, sqY, grid, oneFoot);
 
         if (inside) {
           if (!opts.whollyInside) return true;
