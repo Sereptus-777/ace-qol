@@ -6182,3 +6182,49 @@ i.ace-douse-tool::after {
   transform-origin: center;
   pointer-events: none;
 }
+
+/* ── THE REGENERATION CARD, START OF TURN (2026-09-29) ─────────────────────
+   ⚠️ IT HAD NO CSS AT ALL. Every `ace-qol-ot-*` class was unstyled, so the
+   portrait rendered at the image's own size — a token is 256px square, so it
+   filled the card — and the APPLY button was whatever Foundry's default is.
+   His words: "Portrait about one-third the current height. APPLIED button:
+   green, full width of the card, ~10px taller."
+
+   ⚠️ SCOPED TO .ace-qol-regen-card ON PURPOSE. The over-time DAMAGE card and
+   the aura card share the same ot- classes and are NOT touched: he asked for
+   the regeneration card only. Nothing here changes when regen fires or how
+   much it heals; this file cannot reach that. */
+.ace-qol-regen-card .ace-qol-ot-header {
+  display: flex; align-items: center; gap: 10px;
+}
+
+/* A third of a full-width portrait. One number to change if he wants it smaller. */
+.ace-qol-regen-card .ace-qol-ot-token-img {
+  width: 84px; height: 84px; flex: 0 0 auto;
+  object-fit: cover; border-radius: 8px;
+  border: 1px solid rgba(155, 204, 74, 0.45);
+}
+
+.ace-qol-regen-card .ace-qol-ot-header-text {
+  display: flex; flex-direction: column; gap: 1px; min-width: 0;
+}
+.ace-qol-regen-card .ace-qol-ot-name { font-size: 17px; }
+.ace-qol-regen-card .ace-qol-ot-label { font-size: 15px; color: #c0b288; }
+.ace-qol-regen-card .ace-qol-ot-timing { font-size: 14px; color: #9bb37a; }
+
+/* The APPLY button: green, the full width of the card, and taller.
+   ⚠️ min-height, NEVER a fixed height with nowrap — every pill fits its own
+   text, forever (his standing rule). A long label wraps and the button grows. */
+.ace-qol-regen-card .ace-qol-ot-buttons { display: block; margin-top: 8px; }
+.ace-qol-regen-card .ace-qol-ot-heal {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; box-sizing: border-box;
+  min-height: 44px; padding: 11px 12px;
+  font-size: 16px; font-weight: 700; line-height: 1.2;
+  color: #14140c; background: #9bcc4a;
+  border: 1px solid #7fae35; border-radius: 6px; cursor: pointer;
+  white-space: normal; overflow-wrap: anywhere;
+}
+.ace-qol-regen-card .ace-qol-ot-heal:hover {
+  background: #aede5c; box-shadow: 0 0 8px rgba(155, 204, 74, 0.45);
+}

@@ -35,6 +35,8 @@ const check = (label, ok, detail = "") => {
 /* ══ the least Foundry these readers need ═════════════════════════════════ */
 globalThis.Hooks = { on: () => {}, once: () => {}, callAll: () => {}, call: () => true };
 globalThis.CONFIG = { DND5E: { abilities: { str: { label: "Strength" }, dex: { label: "Dexterity" } },
+  // dnd5e's own skill labels, which is what the result card prints.
+  skills: { ath: { label: "Athletics", ability: "str" }, acr: { label: "Acrobatics", ability: "dex" } },
   conditionTypes: {}, statusEffects: [], damageTypes: {} }, Dice: {} };
 globalThis.ui = { notifications: { warn: () => {}, error: () => {}, info: () => {} } };
 const el = () => ({ classList: { add() {}, remove() {}, contains: () => false }, dataset: {}, style: {},
@@ -166,26 +168,114 @@ console.log("\nTHE STAMP GOES ON THE VICTIM, THROUGH THE DOOR WEB USES");
     !other.flags?.["ace-qol"]?.breakFree, "prone is not a grapple");
 }
 
-/* ══ 3. THE PROMPT THE VICTIM SEES ═══════════════════════════════════════ */
-console.log("\nTHE PROMPT OFFERS WHAT THE RULES OFFER");
+/* ══ 3. NOBODY IS ASKED ═════════════════════════════════════════════════ */
+// ⚠️ HIS RULE, 2026-09-29: "do not ask Strength or Dexterity. Roll the higher of
+// the victim's Strength (Athletics) and Dexterity (Acrobatics) against the stamped
+// DC. One whisper to the victim's owners. No Dialog. No two buttons."
+console.log("\nTHE GRAPPLE ESCAPE ROLLS ITSELF");
 {
-  // Read the engine's own card builder the way it builds it: two abilities give
-  // two buttons, one gives the single "Break Free" it has always shown.
+  const { BreakFreeEngine } = await import(`${MODULE}/scripts/break-free-engine.mjs`);
+
+  const eff = { id: "e1", name: "Grappled", disabled: false, statuses: new Set(["grappled"]),
+    flags: { "ace-qol": { breakFree: { auto: true, ability: "str", abilities: ["str", "dex"],
+      dc: 14, label: "Spiked Chain", itemUuid: "Item.chain" } } },
+    update: async (u) => { for (const [k, v] of Object.entries(u)) foundry.utils.setProperty(eff, k, v); },
+    delete: async () => { eff.deleted = true; } };
+
+  const victim = (ath, acr) => ({
+    id: "v", name: "Krusk", uuid: "Actor.v", img: "",
+    system: { attributes: { hp: { value: 30, max: 30 } },
+      skills: { ath: { total: ath }, acr: { total: acr } },
+      abilities: { str: { mod: 3 }, dex: { mod: 1 } } },
+    statuses: new Set(["grappled"]), effects: { contents: [eff], get: () => eff },
+    getFlag: () => undefined, getRollData: () => ({ abilities: { str: { mod: 3 }, dex: { mod: 1 } } }),
+    testUserPermission: () => true, getActiveTokens: () => [],
+    rollSkill: async ({ skill }) => { rolled.push(skill); return { total: nextTotal, dice: [{ total: 11 }] }; },
+  });
+
+  let rolled = [], nextTotal = 0, posted = [];
+  globalThis.ChatMessage = { create: async (d) => { posted.push(d); return d; },
+    getSpeaker: () => ({}) };
+  globalThis.fromUuid = async () => victimActor;
+
+  // ── Athletics is better: that is what gets rolled, and it passes. ──
+  let victimActor = victim(7, 2);
+  rolled = []; posted = []; nextTotal = 18; eff.deleted = false;
+  await BreakFreeEngine._autoAttempt(victimActor, null, eff, eff.flags["ace-qol"].breakFree, 4, 0);
+  check("it rolls the better skill without asking", rolled.join(",") === "ath",
+    `rolled ${rolled.join(",") || "nothing"}`);
+  check("no dialog and no buttons were built", posted.every(p => !/breakfree-go/.test(p.content ?? "")),
+    `${posted.length} message(s), none with a button`);
+  check("a pass takes the Grappled off", eff.deleted === true, "the effect was deleted");
+  check("and one whisper goes to the victim's owners, not the table",
+    posted.length === 1 && Array.isArray(posted[0].whisper) && posted[0].whisper.length > 0,
+    `${posted.length} card, whispered`);
+  check("the whisper says the score, the roll and the verdict",
+    /Athletics/.test(posted[0].content) && /18/.test(posted[0].content)
+    && /vs DC 14/.test(posted[0].content) && /Broke free/.test(posted[0].content),
+    "what was rolled, which score, pass or fail");
+
+  // ── Acrobatics is better: the rogue uses it. ──
+  victimActor = victim(1, 9);
+  rolled = []; posted = []; nextTotal = 19; eff.deleted = false;
+  delete eff.flags["ace-qol"].breakFree.promptedRound;
+  await BreakFreeEngine._autoAttempt(victimActor, null, eff, eff.flags["ace-qol"].breakFree, 5, 0);
+  check("a creature better at Acrobatics rolls that instead", rolled.join(",") === "acr",
+    `rolled ${rolled.join(",")}`);
+
+  // ── A failure leaves the hold on. ──
+  victimActor = victim(7, 2);
+  rolled = []; posted = []; nextTotal = 9; eff.deleted = false;
+  await BreakFreeEngine._autoAttempt(victimActor, null, eff, eff.flags["ace-qol"].breakFree, 6, 0);
+  check("a fail leaves the Grappled on", eff.deleted === false, "still held");
+  check("and the whisper says so", /holds/.test(posted[0]?.content ?? ""),
+    "the grapple holds");
+}
+
+/* ══ 4. WEB AND THE ROPE KEEP THEIR BUTTON ══════════════════════════════ */
+console.log("\nA STAMP THAT DOES NOT SAY auto STILL ASKS");
+{
   const src = await import("node:fs").then(fs =>
     fs.readFileSync("D:/FoundryVTT/Data/modules/ace-qol/scripts/break-free-engine.mjs", "utf8"));
-  check("the card builds a button per ability, not one fixed button",
-    /abilities\.map\(a =>/.test(src) && /data-ability="\$\{a\}"/.test(src),
-    "one button each");
-  check("and a stamp with only an ability still shows one button, as Web's does",
-    /Array\.isArray\(meta\.abilities\) && meta\.abilities\.length/.test(src)
-    && /\? meta\.abilities : \[meta\.ability\]/.test(src),
-    "the list falls back to the single ability");
-  check("the two-button row wraps, so neither pill clips its label",
-    /flex-wrap:wrap/.test(src) && /min-width:118px/.test(src), "every pill fits its own text");
-  // ⚠️ AND IT IS STILL THE VICTIM WHO IS ASKED. The engine whispers to the
-  // trapped creature's owners, which is why the attacker never sees it.
+  check("only an auto stamp rolls itself; everything else posts the prompt",
+    /if \(meta\.auto\) this\._autoAttempt/.test(src) && /else this\._postPrompt/.test(src),
+    "Web, the net and the Entangling Rope are untouched");
+  check("and the prompt is ONE button again, not two",
+    !/abilities\.map\(a =>/.test(src) && /data-ability="\$\{meta\.ability\}"/.test(src),
+    "no picker anywhere");
+  check("the turn scan sees a grapple as well as a restraint",
+    /statuses\?\.has\?\.\("grappled"\)/.test(src),
+    "a grapple is held too");
   check("the prompt still goes to the trapped creature's own owners",
     /whisper/i.test(src), "whispered, not posted to the table");
+}
+
+/* ══ 5. THE REGENERATION CARD ═══════════════════════════════════════════ */
+// ⚠️ HIS RULE: "Portrait about one-third the current height. APPLIED button:
+// green, full width of the card, ~10px taller." It had NO css at all, so the
+// portrait rendered at the token image's own size and filled the card.
+console.log("\nTHE REGENERATION CARD, START OF TURN");
+{
+  const css = await import("node:fs").then(fs =>
+    fs.readFileSync("D:/FoundryVTT/Data/modules/ace-qol/styles/ace-qol.css", "utf8"));
+  const block = css.slice(css.indexOf(".ace-qol-regen-card .ace-qol-ot-header"));
+  check("the portrait has a size at last", /\.ace-qol-regen-card \.ace-qol-ot-token-img/.test(css)
+    && /width: 84px; height: 84px/.test(block), "84px, about a third of a full-width portrait");
+  check("the APPLY button is green", /background: #9bcc4a/.test(block), "#9bcc4a");
+  check("and the full width of the card", /width: 100%/.test(block), "width: 100%");
+  check("and taller, with min-height so a long label still wraps",
+    /min-height: 44px/.test(block) && /white-space: normal/.test(block),
+    "every pill fits its own text");
+  // ⚠️ REGENERATION ONLY. The over-time damage card and the aura card share the
+  // same ot- classes and must not move.
+  check("every rule is scoped to the regeneration card alone",
+    block.split("}").filter(r => r.includes("{")).every(r => /\.ace-qol-regen-card/.test(r)),
+    "the damage and aura cards are untouched");
+  const engine = await import("node:fs").then(fs =>
+    fs.readFileSync("D:/FoundryVTT/Data/modules/ace-qol/scripts/overtime-engine.mjs", "utf8"));
+  check("and nothing changed about when regen fires or how much it heals",
+    /Should regain <strong>\$\{amount\}<\/strong> HP/.test(engine)
+    && /APPLY \$\{amount\} HP/.test(engine), "the card's own words are as they were");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

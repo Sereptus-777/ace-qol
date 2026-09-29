@@ -84,7 +84,11 @@ export class BreakFreeEngine {
       // presence alone is not enough; the effect must currently impose the
       // Restrained status and be live (not disabled / suppressed).
       if (e.disabled || e.isSuppressed) return false;
-      return e.statuses?.has?.("restrained") === true;
+      // ⚠️ A GRAPPLE IS HELD TOO (2026-09-29). This looked only at restrained, so a
+      // grapple carrying a break-free stamp was never seen and the escape never
+      // came round. Both are "something has hold of you".
+      return e.statuses?.has?.("restrained") === true
+          || e.statuses?.has?.("grappled") === true;
     });
     if (!tagged.length) return;
 
@@ -109,7 +113,14 @@ export class BreakFreeEngine {
       if (this._promptGuard?.has(gk)) continue;
       (this._promptGuard ??= new Set()).add(gk);
       if (this._promptGuard.size > 300) this._promptGuard = new Set([gk]);  // bound it
-      this._postPrompt(actor, combatant, eff, meta, round, turn);
+      // ⚠️🔴 NO PICKER FOR A GRAPPLE (his rule, 2026-09-29): "do not ask Strength
+      // or Dexterity. Roll the higher of the victim's Strength (Athletics) and
+      // Dexterity (Acrobatics) against the stamped DC." A stamp that says `auto`
+      // rolls itself and whispers the answer. Everything that does NOT say it —
+      // Web, the net, the Entangling Rope — keeps the button it has always had,
+      // because those cost an action somebody has to decide to spend.
+      if (meta.auto) this._autoAttempt(actor, combatant, eff, meta, round, turn);
+      else this._postPrompt(actor, combatant, eff, meta, round, turn);
     }
   }
 
@@ -129,10 +140,8 @@ export class BreakFreeEngine {
       // Escaping a GRAPPLE is Athletics or Acrobatics and the held creature
       // chooses, so a stamp may carry `abilities` as well. Nothing that stamps
       // only `ability` behaves any differently: the list falls back to it.
-      const abilities = Array.isArray(meta.abilities) && meta.abilities.length
-        ? meta.abilities : [meta.ability];
-      const labelOf = (a) => CONFIG.DND5E?.abilities?.[a]?.label ?? String(a).toUpperCase();
-      const abilityLabel = abilities.map(labelOf).join(" or ");
+      const abilityLabel = CONFIG.DND5E?.abilities?.[meta.ability]?.label
+        ?? String(meta.ability).toUpperCase();
       const img = actor.img || "icons/svg/mystery-man.svg";
 
       const content = `
@@ -149,17 +158,16 @@ export class BreakFreeEngine {
             <span>Spend your <b>action</b> to try to break free — a <b>${abilityLabel} check</b> vs <b style="color:#cfe8a0;">DC ${meta.dc}</b>.</span>
           </div>
           <div style="display:flex;gap:8px;padding:0 12px 12px;flex-wrap:wrap;">
-            ${abilities.map(a => `
             <button class="ace-qol-breakfree-go" data-effect-id="${eff.id}" data-actor-uuid="${actor.uuid}"
                     data-token-id="${tokenId ?? ""}" data-scene-id="${sceneId ?? ""}" data-item-uuid="${meta.itemUuid ?? ""}"
-                    data-ability="${a}" data-dc="${meta.dc}" data-label="${foundry.utils.escapeHTML(meta.label || "")}"
+                    data-ability="${meta.ability}" data-dc="${meta.dc}" data-label="${foundry.utils.escapeHTML(meta.label || "")}"
                     style="flex:1 1 auto;min-width:118px;display:flex;align-items:center;justify-content:center;gap:9px;padding:9px;color:#14140c;background:#9bcc4a;border:none;border-radius:6px;cursor:pointer;line-height:1.05;">
               <i class="fas fa-hand-fist" style="font-size:17px;"></i>
               <span style="display:flex;flex-direction:column;align-items:center;">
-                <span style="font-size:16px;font-weight:700;">${abilities.length > 1 ? labelOf(a) : "Break Free"}</span>
+                <span style="font-size:16px;font-weight:700;">Break Free</span>
                 <span style="font-size:11px;font-weight:600;opacity:0.8;">uses action</span>
               </span>
-            </button>`).join("")}
+            </button>
             <button class="ace-qol-breakfree-skip" style="padding:9px 12px;font-size:14px;color:#cfe8a0;background:transparent;border:1px solid #4a5a28;border-radius:6px;cursor:pointer;">
               Stay
             </button>
@@ -209,13 +217,24 @@ export class BreakFreeEngine {
     }
   }
 
-  /** Roll the ability check vs DC; free the creature on a success. */
-  static async _attempt(btn) {
-    const actorUuid = btn.dataset.actorUuid;
-    const effectId  = btn.dataset.effectId;
-    const ability   = btn.dataset.ability;
-    const dc        = Number(btn.dataset.dc);
-    const label     = btn.dataset.label || "the restraint";
+  /**
+   * Roll the check vs DC; free the creature on a success.
+   *
+   * ⚠️ ONE ROLL PATH, TWO WAYS IN. A pressed button hands over its dataset; the
+   * automatic escape hands over the same fields as a plain object. Duplicating
+   * this for the auto path would have been two rollers drifting apart, which is
+   * the fault the whole suite is built to avoid. `btn` is a DOM element in the
+   * first case and undefined in the second, so every DOM touch below is guarded.
+   */
+  static async _attempt(btn, instruction = null) {
+    const d = instruction ?? btn?.dataset ?? {};
+    const actorUuid = d.actorUuid;
+    const effectId  = d.effectId;
+    const ability   = d.ability;
+    const skill     = d.skill || null;      // a grapple escapes with a SKILL
+    const whisperTo = d.whisperTo || null;  // an automatic escape is whispered
+    const dc        = Number(d.dc);
+    const label     = d.label || "the restraint";
 
     const actor = await fromUuid(actorUuid).then(d => d?.actor ?? d).catch(() => null);
     if (!actor) { ui.notifications?.warn("ACE QOL — couldn't find the creature to break free."); return; }
@@ -229,24 +248,26 @@ export class BreakFreeEngine {
     // it, then the player clicks their own copy of the same whispered card),
     // bail — the resolve flag is on the message so every client locks together.
     const promptMsg = (() => {
-      const id = btn.closest?.(".chat-message")?.dataset?.messageId;
+      const id = btn?.closest?.(".chat-message")?.dataset?.messageId;
       return id ? game.messages.get(id) : null;
     })();
     if (promptMsg?.getFlag?.(MODULE_ID, "breakFreeResolved")) {
-      btn.closest(".ace-qol-breakfree-card")?.style.setProperty("opacity", "0.5");
-      btn.disabled = true;
+      btn?.closest?.(".ace-qol-breakfree-card")?.style.setProperty("opacity", "0.5");
+      if (btn) btn.disabled = true;
       return;
     }
 
     const eff = actor.effects?.get?.(effectId);
     if (!eff) {
-      btn.closest(".ace-qol-breakfree-card")?.style.setProperty("opacity", "0.5");
-      ui.notifications?.info("ACE QOL — that restraint is already gone.");
+      btn?.closest?.(".ace-qol-breakfree-card")?.style.setProperty("opacity", "0.5");
+      if (btn) ui.notifications?.info("ACE QOL — that restraint is already gone.");
       return;
     }
 
-    btn.disabled = true;
-    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Rolling…';
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Rolling…';
+    }
 
     // Raw ability CHECK (1d20 + ability modifier). Prefer dnd5e's own roller so
     // bonuses / advantage flags apply; fall back to a plain Roll. Capture the
@@ -265,7 +286,12 @@ export class BreakFreeEngine {
       // THIRD is the message config (`{create:false}`); passing
       // `{chatMessage:false}` as the 2nd arg silently let the dialog through.
       // (Suite-wide dialog sweep, 2026-07-27.)
-      if (typeof actor.rollAbilityCheck === "function") {
+      if (skill && typeof actor.rollSkill === "function") {
+        // Athletics or Acrobatics, whichever this creature is better at. ACE owns
+        // the pause here too: no dnd5e dialog, no chat message of its own.
+        const r = await actor.rollSkill({ skill }, { configure: false }, { create: false });
+        roll = Array.isArray(r) ? r[0] : r;
+      } else if (typeof actor.rollAbilityCheck === "function") {
         const r = await actor.rollAbilityCheck({ ability }, { configure: false }, { create: false });
         roll = Array.isArray(r) ? r[0] : r;
       } else if (typeof actor.rollAbilityTest === "function") {
@@ -302,7 +328,9 @@ export class BreakFreeEngine {
 
     const passed = total >= dc;
     const modPart = (dieFace != null) ? (() => { const m = total - dieFace; const s = m >= 0 ? "+" : ""; return m === 0 ? "" : ` ${s}${m}`; })() : "";
-    const abilityLabel = CONFIG.DND5E?.abilities?.[ability]?.label ?? ability.toUpperCase();
+    const abilityLabel = skill
+      ? `${CONFIG.DND5E?.skills?.[skill]?.label ?? String(skill).toUpperCase()} check`
+      : `${CONFIG.DND5E?.abilities?.[ability]?.label ?? String(ability).toUpperCase()} check`;
 
     if (passed) {
       try { await eff.delete(); } catch (_) { /* already gone */ }
@@ -312,11 +340,11 @@ export class BreakFreeEngine {
       try {
         const seqMgr = globalThis.Sequencer?.EffectManager ?? window.Sequencer?.EffectManager;
         if (seqMgr) {
-          const itemUuid = btn.dataset.itemUuid;
+          const itemUuid = d.itemUuid;
           if (itemUuid) { try { await seqMgr.endEffects({ name: `forge:persist:${itemUuid}` }); } catch (_) {} }
-          const tokDoc = btn.dataset.sceneId
-            ? game.scenes.get(btn.dataset.sceneId)?.tokens?.get(btn.dataset.tokenId)
-            : canvas.scene?.tokens?.get(btn.dataset.tokenId);
+          const tokDoc = d.sceneId
+            ? game.scenes.get(d.sceneId)?.tokens?.get(d.tokenId)
+            : canvas.scene?.tokens?.get(d.tokenId);
           const tokObj = tokDoc?.object ?? actor.getActiveTokens?.()?.[0];
           if (tokObj && typeof seqMgr.getEffects === "function") {
             for (const e of (seqMgr.getEffects({ object: tokObj }) ?? [])) {
@@ -336,12 +364,13 @@ export class BreakFreeEngine {
       : `The ${foundry.utils.escapeHTML(label)} holds — still entangled.`;
     await ChatMessage.create({
       speaker: ChatMessage.getSpeaker({ actor }),
+      ...(whisperTo?.length ? { whisper: whisperTo } : {}),
       content: `
         <div style="border:1px solid ${color}55;border-radius:8px;padding:12px 14px;background:linear-gradient(180deg,#14140c,#0c0c08);font-family:'Signika',sans-serif;">
           <div style="display:flex;align-items:center;gap:10px;">
             ${aceD20FaceImg(dieFace, { size: 38, glow: true })}
             <span style="color:#e8e6d8;font-size:16px;line-height:1.25;">
-              <b>${foundry.utils.escapeHTML(actor.name)}</b> — ${abilityLabel} check<br/>
+              <b>${foundry.utils.escapeHTML(actor.name)}</b> — ${abilityLabel}<br/>
               <b style="color:#fff;font-size:18px;">${dieFace ?? total}</b><span style="color:#b9a978;">${modPart} =</span> <b style="color:${color};font-size:18px;">${total}</b> <span style="color:#b9a978;">vs DC ${dc}</span>
             </span>
           </div>
@@ -350,7 +379,61 @@ export class BreakFreeEngine {
     });
 
     // Grey out the prompt now that it's resolved.
-    btn.closest(".ace-qol-breakfree-card")?.style.setProperty("opacity", "0.6");
-    btn.innerHTML = passed ? '<i class="fas fa-check"></i> Free' : '<i class="fas fa-xmark"></i> Held';
+    btn?.closest?.(".ace-qol-breakfree-card")?.style.setProperty("opacity", "0.6");
+    if (btn) btn.innerHTML = passed ? '<i class="fas fa-check"></i> Free' : '<i class="fas fa-xmark"></i> Held';
+    return { passed, total, dieFace, dc };
+  }
+
+  /**
+   * The automatic escape: no dialog, no buttons, no question.
+   *
+   * ⚠️ HIS RULE, 2026-09-29: "Roll the higher of the victim's Strength (Athletics)
+   * and Dexterity (Acrobatics) against the stamped DC. One whisper to the victim's
+   * owners: what was rolled, which score, pass or fail."
+   *
+   * ⚠️ THE BETTER SKILL, NOT THE BETTER ABILITY. Athletics and Acrobatics carry
+   * proficiency and expertise; a rogue with Acrobatics expertise and a middling
+   * DEX beats their own raw Strength. The totals dnd5e has already worked out are
+   * what is compared, so every bonus on the sheet counts.
+   */
+  static async _autoAttempt(actor, combatant, eff, meta, round, turn) {
+    try {
+      await eff.update({
+        [`flags.${MODULE_ID}.breakFree.promptedRound`]: round,
+        [`flags.${MODULE_ID}.breakFree.promptedTurn`]: turn,
+      });
+      const skills = actor.system?.skills ?? {};
+      const ath = Number(skills.ath?.total ?? skills.ath?.mod);
+      const acr = Number(skills.acr?.total ?? skills.acr?.mod);
+      const haveAth = Number.isFinite(ath), haveAcr = Number.isFinite(acr);
+      let skill = null, ability = meta.ability || "str";
+      if (haveAth || haveAcr) {
+        skill = (!haveAcr || (haveAth && ath >= acr)) ? "ath" : "acr";
+        ability = skill === "ath" ? "str" : "dex";
+      } else {
+        // No skill block at all (a bare NPC): fall back to the raw ability, and
+        // say so rather than pretending a skill was rolled.
+        const rd = actor.getRollData?.() ?? {};
+        ability = (abilityMod(rd, "dex") > abilityMod(rd, "str")) ? "dex" : "str";
+        console.log(`${MODULE_ID} | BreakFree: ${actor.name} has no Athletics or Acrobatics on `
+          + `its sheet, so its escape is a raw ${ability.toUpperCase()} check.`);
+      }
+      const owners = game.users?.filter(u => u.active
+        && (u.isGM || actor.testUserPermission?.(u, "OWNER"))).map(u => u.id) ?? [];
+      const tokenId = combatant?.token?.id ?? combatant?.tokenId ?? null;
+      const sceneId = combatant?.token?.parent?.id ?? canvas.scene?.id ?? null;
+      console.log(`${MODULE_ID} | BreakFree: ${actor.name} tries to escape "${meta.label}" `
+        + `automatically — ${skill ? (skill === "ath" ? "Athletics" : "Acrobatics") : ability.toUpperCase()} `
+        + `vs DC ${meta.dc}. Nobody is asked.`);
+      await this._attempt(null, {
+        actorUuid: actor.uuid, effectId: eff.id, ability, skill,
+        dc: meta.dc, label: meta.label || "the grapple",
+        itemUuid: meta.itemUuid ?? null, tokenId, sceneId,
+        whisperTo: owners.length ? owners : [game.user.id],
+      });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | BreakFree: the automatic escape for ${actor?.name} failed, `
+        + `so it stays held:`, err);
+    }
   }
 }

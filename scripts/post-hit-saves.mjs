@@ -138,6 +138,12 @@ export class PostHitSaves {
         [`flags.${MODULE_ID}.breakFree`]: {
           ability: escape.abilities[0],
           abilities: escape.abilities,
+          // ⚠️ THIS ONE ROLLS ITSELF (his rule, 2026-09-29). A grapple escape asks
+          // nobody: at the start of the held creature's turn the engine rolls the
+          // better of its Athletics and Acrobatics and whispers the answer. Web,
+          // the net and the Entangling Rope carry no `auto`, so they keep the
+          // button they have always had — those cost an action somebody chooses.
+          auto: true,
           dc: escape.dc,
           label: item.name,
           itemUuid: item.uuid ?? null,
