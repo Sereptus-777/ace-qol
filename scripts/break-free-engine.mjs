@@ -354,10 +354,14 @@ export class BreakFreeEngine {
         try { await e.delete(); freed.push(e.name ?? id); }
         catch (_) { /* already gone */ }
       }
-      if (freed.length > 1) {
-        console.log(`${MODULE_ID} | BreakFree: ${actor.name} broke out of ${label} — `
-          + `${freed.join(" and ")} came off together, because that grab put them all on.`);
-      }
+      // WHAT THE STAMP HELD, WHAT CAME OFF, WHAT IS LEFT (his rule, 2026-09-29).
+      const stillOn = (actor.effects?.contents ?? [])
+        .filter(e => !e.disabled)
+        .map(e => `${e.name ?? "?"}=${e.id}`);
+      console.log(`${MODULE_ID} | BreakFree: ${actor.name} broke out of ${label}.`
+        + ` The stamp held ${ids.join(", ") || "nothing"};`
+        + ` deleted ${freed.join(", ") || "nothing"};`
+        + ` left on ${actor.name}: ${stillOn.join(", ") || "nothing"}.`)
       // Clear the persistent Forge animation (the frozen rope). Try the precise
       // item-name end first; then sweep ANY forge:persist:* effect bound to the
       // freed token — robust even if the flag predates itemUuid tracking.

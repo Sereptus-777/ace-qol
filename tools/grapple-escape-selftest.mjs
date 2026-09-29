@@ -327,6 +327,41 @@ console.log("\nA PASS TAKES OFF EVERYTHING THAT GRAB PUT ON");
   check("and the whisper says the grapple holds", /holds/.test(posted[0]?.content ?? ""), "");
 }
 
+// THE TABLE PATH IS THE ONE HIS TABLE WALKS.
+// The pins above handed the lander both conditions at once. The post-hit TABLE
+// never did: it called _landConditions once per effect, so the chain's Grapple
+// row arrived as two separate calls and the stamp, armed at the end of a call,
+// could only ever record the one it was in. That is why Restrained survived an
+// escape on his screen while every pin here was green. "Pins are not the table."
+console.log("\nTHE TABLE HANDS THE WHOLE ROW OVER AT ONCE");
+{
+  const src = await import("node:fs").then(fs =>
+    fs.readFileSync("D:/FoundryVTT/Data/modules/ace-qol/scripts/post-hit-saves.mjs", "utf8"));
+  const at = src.indexOf("POST-HIT TABLE: applying");
+  const block = src.slice(at, at + 1800);
+
+  check("the table collects the row's conditions before it lands any of them",
+    /const tableConditions = \(matchedEntry\.effects/.test(block)
+    && /\.filter\(fx => fx\.type === "condition"/.test(block),
+    "one array for the whole row");
+  check("and calls the lander ONCE with all of them",
+    /_landConditions\(tableConditions,/.test(block)
+    && !/_landConditions\(\[\{ key: fx\.condition \}\]/.test(src),
+    "no more one-at-a-time call anywhere in the file");
+  check("the damage entries still land, in their own pass",
+    /fx\.type !== "damage"/.test(block) && /_rollSaveDamage/.test(block),
+    "conditions first, then the damage");
+
+  // And the log he asked for.
+  const bf = await import("node:fs").then(fs =>
+    fs.readFileSync("D:/FoundryVTT/Data/modules/ace-qol/scripts/break-free-engine.mjs", "utf8"));
+  check("the stamp says which ids it holds when it is written",
+    /the escape stamp on \$\{name\} holds/.test(src), "ids before");
+  check("and the escape says what it deleted and what is left",
+    /The stamp held/.test(bf) && /deleted /.test(bf) && /left on /.test(bf),
+    "ids deleted, ids left");
+}
+
 console.log("\nA STAMP THAT DOES NOT SAY auto STILL ASKS");
 {
   const src = await import("node:fs").then(fs =>

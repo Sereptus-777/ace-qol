@@ -6289,3 +6289,16 @@ i.ace-douse-tool::after {
   font-size: 14px; line-height: 1.35; color: #f0e4c0;
   white-space: normal; overflow-wrap: anywhere; word-break: normal;
 }
+
+/* A spent regeneration card: it has been applied, so it reads as done.
+   ⚠️ NOTHING IS HIDDEN. The numbers stay readable, the pill keeps its shape and
+   nothing is clipped; it is only dimmed and desaturated so a screen full of turns
+   shows at a glance which ones are still waiting. */
+.ace-qol-regen-card.ace-qol-ot-spent {
+  opacity: 0.55;
+  filter: saturate(0.35);
+  border-color: rgba(212, 175, 55, 0.35);
+}
+.ace-qol-regen-card.ace-qol-ot-spent .ace-qol-ot-heal {
+  background: #6f7f52; border-color: #5a6742; cursor: default;
+}

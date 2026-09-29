@@ -853,7 +853,7 @@ export class OverTimeEngine {
     }
 
     const cardHtml = `
-      <div class="ace-qol-overtime-card ace-qol-regen-card">
+      <div class="ace-qol-overtime-card ace-qol-regen-card${applied ? " ace-qol-ot-spent" : ""}">
         <div class="ace-qol-ot-header">
           <img src="${tokenImg}" class="ace-qol-ot-token-img" />
           <div class="ace-qol-ot-header-text">
@@ -1259,7 +1259,13 @@ export class OverTimeEngine {
     }
 
     // ── APPLY HEAL button (regeneration cards) ──
+    // SPENT LOOKS SPENT (his rule, 2026-09-29). The card already said APPLIED on
+    // the button; the whole card greys out now so a screen full of turns reads at
+    // a glance. Nothing is posted and nothing is re-healed: it is one class on the
+    // card that is already there, set on the click and on every later re-render.
+    const _markSpent = () => el.querySelector(".ace-qol-regen-card")?.classList.add("ace-qol-ot-spent");
     const healBtn = el.querySelector("[data-action='aceQolOtHeal']");
+    if (flags.applied) _markSpent();
     if (healBtn && !healBtn.dataset.wired) {
       healBtn.dataset.wired = "1";
       if (flags.applied) {
@@ -1274,6 +1280,7 @@ export class OverTimeEngine {
           await DamageApplicator.applyHPHeal(actor, heal, { label: "Regeneration (manual apply)" });
           healBtn.disabled = true;
           healBtn.innerHTML = '<i class="fas fa-check"></i> APPLIED';
+          _markSpent();
           await message.setFlag(MODULE_ID, "applied", true);
         });
       }

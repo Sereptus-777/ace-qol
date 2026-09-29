@@ -162,6 +162,8 @@ export class PostHitSaves {
         },
       });
       const held = landed.filter(l => l.id).map(l => l.key);
+      console.log(`${MODULE_ID} | post-hit: the escape stamp on ${name} holds `
+        + `${landed.filter(l => l.id).map(l => `${l.key}=${l.id}`).join(", ") || "nothing"}.`);
       console.log(`${MODULE_ID} | post-hit: ${name} can try to escape "${item.name}" on its own `
         + `turn — DC ${escape.dc}, ${escape.abilities.map(a => a.toUpperCase()).join(" or ")}. `
         + `Getting free ends ${held.length ? held.join(" and ") : "the grapple"}. (${escape.sentence})`);
@@ -1074,14 +1076,30 @@ export class PostHitSaves {
             // A table is a mechanic its recipe cannot carry yet, so the entry
             // says what lands; it lands through the same doors as every save.
             console.log(`${MODULE_ID} | POST-HIT TABLE: applying ${matchedEntry.effects?.length ?? 0} effects from "${matchedEntry.name}"`);
+            // ONE CALL FOR THE WHOLE ROW, OR THE GRAB FORGETS HALF OF ITSELF.
+            // This landed one condition per call, so the chain's Grapple row
+            // ("grappled ... until the grapple ends, restrained") arrived as TWO
+            // separate calls and the escape stamp, armed at the end of a call,
+            // could only ever record the one it was in. Escher's Restrained then
+            // survived an escape that had already ended the grapple.
+            // (2026-09-29, his table. The pins passed because they handed the
+            // lander both conditions at once, which the table never did.)
+            const tableConditions = (matchedEntry.effects ?? [])
+              .filter(fx => fx.type === "condition" && fx.condition)
+              .map(fx => ({ key: fx.condition }));
             for (const fx of (matchedEntry.effects ?? [])) {
               console.log(`${MODULE_ID} | POST-HIT TABLE: effect:`, fx);
-              if (fx.type === "condition" && fx.condition) {
-                await PostHitSaves._landConditions([{ key: fx.condition }], targetActor, result, tgt.name, item);
-              } else if (fx.type === "damage" && fx.formula) {
-                const rolled = await PostHitSaves._rollSaveDamage([{ formula: fx.formula, types: [fx.damageType] }], casterActor);
-                PostHitSaves._landSaveDamage(rolled.map(r => ({ amount: r.total, type: r.type })), rolled, targetActor, item, result);
-              }
+            }
+            if (tableConditions.length) {
+              console.log(`${MODULE_ID} | POST-HIT TABLE: "${matchedEntry.name}" puts on `
+                + `${tableConditions.map(c => c.key).join(" + ")} \u2014 one call, so a grab `
+                + `remembers all of it.`);
+              await PostHitSaves._landConditions(tableConditions, targetActor, result, tgt.name, item);
+            }
+            for (const fx of (matchedEntry.effects ?? [])) {
+              if (fx.type !== "damage" || !fx.formula) continue;
+              const rolled = await PostHitSaves._rollSaveDamage([{ formula: fx.formula, types: [fx.damageType] }], casterActor);
+              PostHitSaves._landSaveDamage(rolled.map(r => ({ amount: r.total, type: r.type })), rolled, targetActor, item, result);
             }
           }
         } else {

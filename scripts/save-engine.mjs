@@ -7233,6 +7233,8 @@ export class SaveEngine {
     await this._postSaveResults(item, casterActor, results, {
       saveAbility, saveDC, halfOnSave, damageTypes, isSpell,
       activityId: flags.activityId ?? null, recipe,
+      // The card that asked for the save becomes the card that answers it.
+      updateMessage: message,
     }, damageComponents);
   }
 
@@ -9468,7 +9470,13 @@ export class SaveEngine {
   }
 
   async _postSaveResults(item, casterActor, results, opts, damageComponents) {
-    const { saveAbility, saveDC, halfOnSave, damageTypes, spellLevel, activityId, recipe = null } = opts;
+    const { saveAbility, saveDC, halfOnSave, damageTypes, spellLevel, activityId, recipe = null,
+      // ONE SAVE CARD (his rule, 2026-09-29): "Save Required becomes the result on
+      // THAT card. No Save Results message." When the caller hands over the card
+      // that asked for the save, this becomes that card instead of posting a
+      // second one. Phase 2 has updated in place since 2026-08; this path was the
+      // one still posting, which is why his chat grew a card per save.
+      updateMessage = null } = opts;
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
 
     // If damageComponents not provided, roll them (with cantrip + upcast scaling)
@@ -9656,7 +9664,7 @@ export class SaveEngine {
     // produced it has visibly stopped. (feedback_chat_cards_use_the_room)
     await awaitDiceSettle();
 
-    await CardDoor.post({
+    const _cardData = {
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor: casterActor }),
       // PUBLIC (Johnny 2026-07-11): the table sees the damage + HP change. The
@@ -9687,7 +9695,18 @@ export class SaveEngine {
           damageComponentTotals: damageComponents.map(c => ({ total: c.total, type: c.type, formula: c.formula })),
         }
       }
-    });
+    };
+
+    // BECOME THE CARD THAT ASKED, or post one when there was none to become.
+    if (updateMessage) {
+      await CardDoor.update(updateMessage, {
+        content: _cardData.content,
+        [`flags.${MODULE_ID}`]: _cardData.flags?.[MODULE_ID] ?? {},
+      });
+      console.log(`${MODULE_ID} | the save card became its own result; no second card was posted.`);
+    } else {
+      await CardDoor.post(_cardData);
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
