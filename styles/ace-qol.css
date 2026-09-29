@@ -6185,46 +6185,107 @@ i.ace-douse-tool::after {
 
 /* ── THE REGENERATION CARD, START OF TURN (2026-09-29) ─────────────────────
    ⚠️ IT HAD NO CSS AT ALL. Every `ace-qol-ot-*` class was unstyled, so the
-   portrait rendered at the image's own size — a token is 256px square, so it
-   filled the card — and the APPLY button was whatever Foundry's default is.
-   His words: "Portrait about one-third the current height. APPLIED button:
-   green, full width of the card, ~10px taller."
+   portrait rendered at the token image's own size and filled the card, the card
+   had no background, and the APPLY button was Foundry's default.
 
-   ⚠️ SCOPED TO .ace-qol-regen-card ON PURPOSE. The over-time DAMAGE card and
-   the aura card share the same ot- classes and are NOT touched: he asked for
-   the regeneration card only. Nothing here changes when regen fires or how
-   much it heals; this file cannot reach that. */
-.ace-qol-regen-card .ace-qol-ot-header {
-  display: flex; align-items: center; gap: 10px;
+   ⚠️ SCOPED TO .ace-qol-regen-card ALONE. The over-time DAMAGE card and the
+   aura card share the same ot- classes and are NOT touched: he asked for the
+   regeneration card only. Nothing here can reach when regen fires or how much
+   it heals.
+
+   ⚠️ AND NOTHING SITS OUTSIDE ITS PILL (his standing rule). Every row is flex
+   with wrap, every pill uses min-height rather than a fixed height, and nothing
+   is nowrap or clipped, so a long name or a big number grows the box instead of
+   running off the card. */
+.ace-qol-regen-card {
+  background: #1a1a1e;
+  border: 1px solid #d4af37;
+  border-radius: 4px;
+  padding: 10px 12px;
+  color: #f0e4c0;
+  font-family: 'Segoe UI', sans-serif;
+  overflow: hidden;
 }
 
-/* A third of a full-width portrait. One number to change if he wants it smaller. */
+.ace-qol-regen-card .ace-qol-ot-header {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+
+/* ⚠️ CONTAIN, NOT COVER. A token's art is not always square and cropping it cut
+   the head off. The box stays about a third of a full-width portrait; the
+   picture sits inside it whole. */
 .ace-qol-regen-card .ace-qol-ot-token-img {
   width: 84px; height: 84px; flex: 0 0 auto;
-  object-fit: cover; border-radius: 8px;
-  border: 1px solid rgba(155, 204, 74, 0.45);
+  object-fit: contain; background: #0e0e11;
+  border-radius: 6px; border: 1px solid rgba(212, 175, 55, 0.45);
 }
 
 .ace-qol-regen-card .ace-qol-ot-header-text {
-  display: flex; flex-direction: column; gap: 1px; min-width: 0;
+  display: flex; flex-direction: column; gap: 2px;
+  min-width: 0; flex: 1 1 140px;
 }
-.ace-qol-regen-card .ace-qol-ot-name { font-size: 17px; }
-.ace-qol-regen-card .ace-qol-ot-label { font-size: 15px; color: #c0b288; }
-.ace-qol-regen-card .ace-qol-ot-timing { font-size: 14px; color: #9bb37a; }
+.ace-qol-regen-card .ace-qol-ot-name {
+  color: #d4af37; font-size: 17px; font-weight: 700;
+  white-space: normal; overflow-wrap: anywhere;
+}
+.ace-qol-regen-card .ace-qol-ot-label,
+.ace-qol-regen-card .ace-qol-ot-timing {
+  color: #d4af37; font-size: 15px;
+  white-space: normal; overflow-wrap: anywhere;
+}
+
+/* "Should regain" in gold; the number and its unit in green, as one thing. */
+.ace-qol-regen-card .ace-qol-ot-damage { margin-top: 8px; }
+.ace-qol-regen-card .ace-qol-ot-dmg-detail {
+  color: #d4af37; font-size: 16px; line-height: 1.35;
+  white-space: normal; overflow-wrap: anywhere;
+}
+.ace-qol-regen-card .ace-qol-ot-amount {
+  color: #9bcc4a; font-weight: 700;
+}
 
 /* The APPLY button: green, the full width of the card, and taller.
    ⚠️ min-height, NEVER a fixed height with nowrap — every pill fits its own
-   text, forever (his standing rule). A long label wraps and the button grows. */
-.ace-qol-regen-card .ace-qol-ot-buttons { display: block; margin-top: 8px; }
+   text, forever. A long label wraps and the button grows with it. */
+.ace-qol-regen-card .ace-qol-ot-buttons { display: block; margin-top: 9px; }
 .ace-qol-regen-card .ace-qol-ot-heal {
-  display: flex; align-items: center; justify-content: center; gap: 8px;
+  display: flex; align-items: center; justify-content: center;
+  gap: 8px; flex-wrap: wrap;
   width: 100%; box-sizing: border-box;
   min-height: 44px; padding: 11px 12px;
   font-size: 16px; font-weight: 700; line-height: 1.2;
   color: #14140c; background: #9bcc4a;
   border: 1px solid #7fae35; border-radius: 6px; cursor: pointer;
-  white-space: normal; overflow-wrap: anywhere;
+  white-space: normal; overflow-wrap: anywhere; text-align: center;
 }
 .ace-qol-regen-card .ace-qol-ot-heal:hover {
   background: #aede5c; box-shadow: 0 0 8px rgba(155, 204, 74, 0.45);
+}
+
+/* ── THE FORMULA THAT MADE THE NUMBER (2026-09-29) ─────────────────────────
+   His rule: every ACE roll card prints the parts, not just the total.
+   ⚠️ AND NOTHING SITS OUTSIDE ITS PILL. The row wraps, each pill wraps inside
+   itself with min-height rather than a fixed height, and long words break, so a
+   formula with six parts grows downward and never runs off the card. */
+.ace-qol-formula-row {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin-top: 6px; width: 100%; box-sizing: border-box;
+}
+.ace-qol-formula-pill {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px;
+  flex: 1 1 auto; min-width: 0; max-width: 100%; box-sizing: border-box;
+  min-height: 22px; padding: 4px 8px;
+  background: rgba(212, 175, 55, 0.10);
+  border: 1px solid rgba(212, 175, 55, 0.30);
+  border-radius: 5px;
+}
+.ace-qol-formula-label {
+  flex: 0 0 auto;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
+  text-transform: uppercase; color: #b9a978;
+}
+.ace-qol-formula-text {
+  flex: 1 1 auto; min-width: 0;
+  font-size: 14px; line-height: 1.35; color: #f0e4c0;
+  white-space: normal; overflow-wrap: anywhere; word-break: normal;
 }

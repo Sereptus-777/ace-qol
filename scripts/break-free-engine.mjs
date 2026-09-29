@@ -27,6 +27,8 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { awaitDsnRoll } from "./attack-prompt.mjs";
 import { abilityMod } from "./rolldata-utils.mjs";
+// The one reader for what made a number (roll-formula.mjs).
+import { explainCheck, formulaPill } from "./roll-formula.mjs";
 // Lucky (2014) and the halfling's Lucky. See luck.mjs.
 import { withHalflingLuck, againstDC as luckAgainstDC } from "./luck.mjs";
 
@@ -358,6 +360,19 @@ export class BreakFreeEngine {
       } catch (_) { /* best-effort FX cleanup */ }
     }
 
+    // THE PARTS BEHIND THE BONUS (his rule, 2026-09-29): what was rolled, which
+    // score, and why each piece of it is there. Read off the sheet, nothing
+    // invented; if it cannot be read the card is exactly what it was.
+    let formulaFor = "";
+    try {
+      const { parts } = explainCheck(actor, skill ? { skill } : { ability });
+      formulaFor = formulaPill(parts, { total: (dieFace != null) ? (total - dieFace) : null,
+        label: skill ? "check" : "ability" });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | BreakFree: could not read what made ${actor?.name}'s `
+        + `bonus, so the card shows the roll alone:`, err);
+    }
+
     const color = passed ? "#9bcc4a" : "#d98b46";
     const verdict = passed
       ? `Broke free of ${foundry.utils.escapeHTML(label)}!`
@@ -375,6 +390,7 @@ export class BreakFreeEngine {
             </span>
           </div>
           <div style="margin-top:7px;color:${color};font-weight:700;font-size:15px;">${verdict}</div>
+          ${formulaFor}
         </div>`,
     });
 

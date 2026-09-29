@@ -838,9 +838,13 @@ export class OverTimeEngine {
     if (blockedReason) {
       body = `<div class="ace-qol-ot-damage"><span class="ace-qol-ot-dmg-detail">Regeneration suppressed — <strong>${blockedReason}</strong>.</span></div>`;
     } else if (applied) {
-      body = `<div class="ace-qol-ot-damage"><span class="ace-qol-ot-dmg-detail">Regained <strong>${healed}</strong> HP.</span></div>`;
+      body = `<div class="ace-qol-ot-damage"><span class="ace-qol-ot-dmg-detail">Regained `
+           + `<span class="ace-qol-ot-amount">${healed} HP</span>.</span></div>`;
     } else {
-      body = `<div class="ace-qol-ot-damage"><span class="ace-qol-ot-dmg-detail">Should regain <strong>${amount}</strong> HP.</span></div>`;
+      // ⚠️ THE NUMBER CARRIES ITS OWN UNIT. "10 HP" is one thing on the card and
+      // is coloured as one thing; splitting it left "HP" outside the green.
+      body = `<div class="ace-qol-ot-damage"><span class="ace-qol-ot-dmg-detail">Should regain `
+           + `<span class="ace-qol-ot-amount">${amount} HP</span>.</span></div>`;
       btn  = `<div class="ace-qol-ot-buttons ace-qol-dmg-gm-controls">
                 <button class="ace-qol-ot-btn ace-qol-ot-heal" data-action="aceQolOtHeal" data-actor-id="${actorId}" data-heal="${amount}" data-token-doc-id="${tokenDocId ?? ""}">
                   <i class="fas fa-heart"></i> APPLY ${amount} HP

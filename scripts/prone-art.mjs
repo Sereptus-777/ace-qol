@@ -302,6 +302,27 @@ export class ProneArt {
         return;
       }
 
+      // ⚠️🔴 STILL DOWN IS NOT GETTING UP (2026-09-29, his table: Escher was
+      // already Prone, a second Topple landed, the condition stayed on and the
+      // STANDING art came back).
+      //
+      // The condition library does not stack: applying a condition a creature
+      // already has REPLACES it, deleting the old record and creating a new one.
+      // The delete fires this, the create fires goProne, and goProne sees the
+      // swap flag already set and correctly does nothing — so the restore wins
+      // and the creature stands up while still prone.
+      //
+      // His rule, and it is the general one: if the token already has that
+      // condition, do not change Token Art. Read from the ACTOR's statuses,
+      // which is what is true after every effect has landed, rather than from
+      // the one record that happened to be deleted.
+      if (tokenDoc?.actor?.statuses?.has?.("prone")) {
+        console.log(`${LOG} | ${tokenDoc.name} is still prone, so its art stays down. `
+          + `(A condition that lands twice replaces its own record; only the last one up `
+          + `puts the picture back.)`);
+        return;
+      }
+
       await tokenDoc.update({
         "texture.src": previous,
         [`flags.${MODULE_ID}.-=${FLAG_PREV}`]: null,

@@ -258,9 +258,22 @@ console.log("\nTHE REGENERATION CARD, START OF TURN");
 {
   const css = await import("node:fs").then(fs =>
     fs.readFileSync("D:/FoundryVTT/Data/modules/ace-qol/styles/ace-qol.css", "utf8"));
-  const block = css.slice(css.indexOf(".ace-qol-regen-card .ace-qol-ot-header"));
-  check("the portrait has a size at last", /\.ace-qol-regen-card \.ace-qol-ot-token-img/.test(css)
-    && /width: 84px; height: 84px/.test(block), "84px, about a third of a full-width portrait");
+  // Only the regeneration block: other rules now follow it in the file, and
+  // slicing to the end swept them in and made this pin lie.
+  const from = css.indexOf(".ace-qol-regen-card {");
+  const next = css.indexOf("/* \u2500\u2500 THE FORMULA", from);
+  const block = css.slice(from, next > from ? next : undefined);
+  check("the portrait has a size at last, and is shown whole",
+    /width: 84px; height: 84px/.test(block) && /object-fit: contain/.test(block),
+    "84px box, contain so nothing is cropped");
+  check("the card has the ACE black background and its gold edge",
+    /background: #1a1a1e/.test(block) && /border: 1px solid #d4af37/.test(block), "#1a1a1e / #d4af37");
+  check("the name and the timing are in the signature gold",
+    /\.ace-qol-ot-name \{[^}]*color: #d4af37/.test(block)
+    && /\.ace-qol-ot-timing \{[^}]*color: #d4af37/.test(block), "#d4af37");
+  check("\"Should regain\" is gold and the healing is green",
+    /\.ace-qol-ot-dmg-detail \{[^}]*color: #d4af37/.test(block)
+    && /\.ace-qol-ot-amount \{[^}]*color: #9bcc4a/.test(block), "gold text, green number");
   check("the APPLY button is green", /background: #9bcc4a/.test(block), "#9bcc4a");
   check("and the full width of the card", /width: 100%/.test(block), "width: 100%");
   check("and taller, with min-height so a long label still wraps",
@@ -273,9 +286,11 @@ console.log("\nTHE REGENERATION CARD, START OF TURN");
     "the damage and aura cards are untouched");
   const engine = await import("node:fs").then(fs =>
     fs.readFileSync("D:/FoundryVTT/Data/modules/ace-qol/scripts/overtime-engine.mjs", "utf8"));
-  check("and nothing changed about when regen fires or how much it heals",
-    /Should regain <strong>\$\{amount\}<\/strong> HP/.test(engine)
-    && /APPLY \$\{amount\} HP/.test(engine), "the card's own words are as they were");
+  check("and nothing changed about how much it heals",
+    /Should regain /.test(engine) && /\$\{amount\} HP/.test(engine)
+    && /APPLY \$\{amount\} HP/.test(engine), "the same amount, in the same words");
+  check("the number and its unit are one thing, so they colour as one",
+    /class="ace-qol-ot-amount">\$\{amount\} HP</.test(engine), '"10 HP" together');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

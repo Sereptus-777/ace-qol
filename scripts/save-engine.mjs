@@ -19,6 +19,9 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+// The one reader for what made a number (roll-formula.mjs): every ACE roll card
+// prints the parts behind its total, never the total alone.
+import { explainSave, formulaText } from "./roll-formula.mjs";
 import { aimAt } from "./road/aim.mjs";   // ACE aims on purpose: no "did you mean that corpse?" (road/aim.mjs)
 import { replyIsFromTheUserWeAsked } from "./socket-authority.mjs";
 import { registerChatCardHandler } from "./chat-render-utils.mjs";
@@ -3619,7 +3622,31 @@ export class SaveEngine {
             .replace(/^Heroes' Feast$/i, "Feast");
           return `<span class="ace-qol-save-bonus-chip" title="${label}">${vDisplay} ${shortLabel}</span>`;
         }).join("");
-      return `<span class="ace-qol-save-tgt-mod">${t.saveAbilityUpper} ${baseStr}</span>${bonusChips}`;
+      // PROFICIENCY IS NOT HIDDEN INSIDE THE ABILITY (his rule, 2026-09-29).
+      // This printed "DEX -2", which says nothing about why a creature with a
+      // Dexterity of 1 is not as hopeless as it looks. It prints the parts now:
+      //
+      //     Dex 1 (-5) + proficiency +3 = -2
+      //
+      // THE MATH IS NOT REDONE. `t.saveModBase` is the number the save engine
+      // already worked out and it stays the total; this only names the parts
+      // behind it, and says so when they do not add up rather than quietly
+      // printing its own. Nothing is invented: a part not on the sheet is not
+      // on the card.
+      let formula = `${t.saveAbilityUpper} ${baseStr}`;
+      try {
+        const _actor = (game.scenes?.get(t.sceneId)?.tokens?.get(t.tokenDocId)?.actor)
+          ?? game.actors?.get(t.actorId) ?? null;
+        const _ab = String(t.saveAbility ?? t.saveAbilityUpper ?? "").toLowerCase();
+        if (_actor && _ab) {
+          const line = formulaText(explainSave(_actor, _ab).parts, t.saveModBase);
+          if (line) formula = line;
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | could not read what made ${t.name}'s save bonus, `
+          + `so the card shows the total alone:`, err);
+      }
+      return `<span class="ace-qol-save-tgt-mod">${formula}</span>${bonusChips}`;
     };
 
     // ── Helper: glowing black-d20 ROLL button for a PC (GM rolls on their behalf) ──
