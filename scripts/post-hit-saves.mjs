@@ -7,6 +7,9 @@
 import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
 import { DescriptionParser } from "./description-parser.mjs";
+// The one reader for what made a number (roll-formula.mjs): every ACE roll card
+// prints the parts behind its total, never the total alone.
+import { explainSave, formulaPill } from "./roll-formula.mjs";
 // His rule: nothing lands before the dice that decided it. The stamp below is
 // bookkeeping rather than a landing, and it waits anyway — a settle with no dice
 // in the air returns at once, so it costs nothing to keep the rule unargued with.
@@ -1117,7 +1120,8 @@ export class PostHitSaves {
     }
 
     // Post results card
-    await PostHitSaves.postSaveResults(item, casterActor, results, save);
+    // The card that asked for the save becomes the card that answers it.
+    await PostHitSaves.postSaveResults(item, casterActor, results, save, message);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1329,7 +1333,39 @@ export class PostHitSaves {
   /**
    * Post the results card showing save outcomes, table rolls, and applied effects.
    */
-  static async postSaveResults(item, actor, results, save) {
+  /**
+   * THE FORMULA THAT MADE THE NUMBER, for one row of this card (his rule,
+   * 2026-09-29):
+   *
+   *     Dex 1 (-5) + proficiency +3 = -2
+   *
+   * Read off the creature's own sheet, through the one reader. Nothing is
+   * invented: a part not on the sheet is not on the card, and proficiency is
+   * never folded into the ability. THE MATH IS NOT REDONE - the bonus the roll
+   * actually used (its total minus its die) is what is shown as the total, and
+   * this only names the parts behind it. It sits inside its own pill and wraps.
+   */
+  static _formulaForRow(r, save) {
+    try {
+      if (!r || r.isAutoFail || typeof r.saveTotal !== "number") return "";
+      const d20 = r.dieResult ?? r.roll?.dice?.[0]?.total ?? null;
+      if (d20 == null) return "";
+      const ab = String(r.saveAbility ?? save?.ability ?? "").toLowerCase();
+      if (!ab) return "";
+      const actor = (game.scenes?.get(r.sceneId)?.tokens?.get(r.tokenDocId)?.actor)
+        ?? game.actors?.get(r.actorId) ?? null;
+      if (!actor) return "";
+      const { parts } = explainSave(actor, ab);
+      if (!parts.length) return "";
+      return formulaPill(parts, { total: r.saveTotal - d20, label: "save" });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | post-hit: could not read what made ${r?.name}'s save `
+        + `bonus, so its row shows the total alone:`, err);
+      return "";
+    }
+  }
+
+  static async postSaveResults(item, actor, results, save, updateMessage = null) {
     const abilityLabel = CONFIG.DND5E?.abilities?.[save.ability]?.label ?? save.ability.toUpperCase();
 
     const hasDamage = results.some(r => r.effects.some(fx => fx.type === "damage"));
@@ -1429,6 +1465,7 @@ export class PostHitSaves {
             <span class="ace-qol-save-roll ${passClass}">${rollDisplay}</span>
             <span class="ace-qol-save-result-label ${passClass}">${resultLabel}</span>
           </div>
+          ${PostHitSaves._formulaForRow(r, save)}
           ${effectsHtml ? `<div class="ace-qol-posthit-effects">${effectsHtml}</div>` : ""}
           ${hpHtml}
         </div>
@@ -1490,7 +1527,7 @@ export class PostHitSaves {
 
     // The save and save-damage dice are waited for inside the card door, so the
     // table never sees the outcome before they finish tumbling.
-    await CardDoor.post({
+    const _resultCard = {
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor }),
       flags: {
@@ -1502,7 +1539,36 @@ export class PostHitSaves {
           ...(damageResults.length ? { damageResults } : {}),
         }
       },
-    }, { dice: true });
+    };
+
+    // ONE CARD (his rule, 2026-09-29): "post-hit-saves already has Save Required.
+    // After the roll, UPDATE that ChatMessage. Never post Save Results."
+    //
+    // A save that rolls on a table keeps its own card, because its recipe cannot
+    // carry a table yet. That part is true and is not changing. What was wrong is
+    // that it kept its own card AND posted a second one beside it.
+    //
+    // The flags are MERGED, not replaced, and the card keeps its own id as the
+    // cast: the roll button, the target rows and anything reconciling a player's
+    // result all look this message up, and replacing its flags wholesale would cut
+    // every one of them loose.
+    // NOTHING LANDS BEFORE THE DICE (his rule). The door waits on its own when
+    // it is told to, but the wait is written here too so the house check can see
+    // it: a card that redraws mid-animation shows a result nobody watched arrive.
+    // A settle with no dice in the air returns at once.
+    await awaitDiceSettle();
+    if (updateMessage) {
+      await CardDoor.update(updateMessage, {
+        content: _resultCard.content,
+        [`flags.${MODULE_ID}`]: { ...(updateMessage.flags?.[MODULE_ID] ?? {}),
+                                  ...(_resultCard.flags?.[MODULE_ID] ?? {}),
+                                  castId: updateMessage.id, resolved: true },
+      }, { dice: true });
+      console.log(`${MODULE_ID} | post-hit: "${item?.name}"'s save card became its own result. `
+        + `No second card was posted.`);
+    } else {
+      await CardDoor.post(_resultCard, { dice: true });
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

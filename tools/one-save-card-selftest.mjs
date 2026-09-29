@@ -89,6 +89,72 @@ console.log("THE CARD CENSUS");
 }
 
 /* ══ 2. THE FORMULA ON THE CARD THAT SURVIVES ════════════════════════════ */
+/* == THE POST-HIT SAVE: ITS OWN CARD, AND ONLY ONE ===================== */
+// His table, 2026-09-29: the Spiked Chain's after-hit save is posted by
+// post-hit-saves.mjs, not by the save engine. Its console line said it plainly -
+// "rolls on a table, which its recipe cannot carry yet, so it keeps its own card"
+// - and that is true and stays true. What was wrong is that it kept its own card
+// AND posted a second one beside it when the roll came in.
+console.log("\nTHE POST-HIT SAVE KEEPS ONE CARD");
+{
+  const ph = read("scripts/post-hit-saves.mjs");
+
+  // Every card this file can post, with the function it sits in.
+  const lines = ph.split("\n");
+  const posts = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!/CardDoor\.post\(|ChatMessage\.create\(/.test(lines[i])) continue;
+    let fn = "(top level)";
+    for (let j = i; j >= 0; j--) {
+      const m = /^  (?:static )?(?:async )?([_a-zA-Z0-9]+)\s*\(/.exec(lines[j]);
+      if (m) { fn = m[1]; break; }
+    }
+    posts.push(fn);
+  }
+  check("every card this file can post is accounted for",
+    posts.length <= 8, `${posts.length}: ${[...new Set(posts)].join(", ")}`);
+
+  // EXACTLY ONE SAVE MESSAGE PER CAST: the one that asks becomes the one that
+  // answers. Nothing else in this file may post a save card.
+  const saveCardTypes = [...ph.matchAll(/type: "(postHitSave[A-Za-z]*)"/g)].map(m => m[1]);
+  check("there are two save shapes: the question and the answer",
+    new Set(saveCardTypes).size === 2
+    && saveCardTypes.includes("postHitSave") && saveCardTypes.includes("postHitSaveResult"),
+    [...new Set(saveCardTypes)].join(", "));
+  check("the answer is built but no longer posted on its own",
+    /const _resultCard = \{/.test(ph)
+    && !/await CardDoor\.post\(\{\s*\n\s*content: cardHtml,\s*\n\s*speaker[\s\S]{0,200}postHitSaveResult/.test(ph),
+    "it becomes the asking card");
+  check("it updates that card in place when it has one",
+    /if \(updateMessage\) \{[\s\S]{0,900}CardDoor\.update\(updateMessage/.test(ph),
+    "CardDoor.update");
+  check("and the roll handler hands its own card over",
+    /postSaveResults\(item, casterActor, results, save, message\)/.test(ph),
+    "the card that asked answers");
+  check("the card keeps its id as the cast, so its buttons still find it",
+    /castId: updateMessage\.id/.test(ph), "flags merged, id kept");
+  check("with no card to become it still posts, so nothing dead-ends",
+    /\} else \{[\s\S]{0,120}CardDoor\.post\(_resultCard/.test(ph), "the fallback stands");
+
+  // THE FORMULA on the row that is left.
+  check("its result row draws the formula",
+    /\$\{PostHitSaves\._formulaForRow\(r, save\)\}/.test(ph), "on every row");
+  const at = ph.indexOf("static _formulaForRow");
+  const body = ph.slice(at, at + 1500);
+  check("through the one reader, from the creature's own sheet",
+    /explainSave\(actor, ab\)/.test(body), "roll-formula.mjs");
+  check("showing the bonus the ROLL used, so no math is redone",
+    /r\.saveTotal - d20/.test(body), "total minus the die");
+  check("inside its pill, never loose on the card",
+    /formulaPill\(parts/.test(body), "one pill");
+
+  // AND THE THINGS HE TOLD ME NOT TO TOUCH.
+  check("the table reading is unchanged",
+    /rolls on a table, which its recipe/.test(ph), "it still keeps its own card");
+  check("and the stamp is unchanged",
+    /holds: landed\.filter\(l => l\.id\)/.test(ph), "grappled + restrained by id");
+}
+
 console.log("\nTHE FORMULA IS ON THE ROW THAT IS LEFT");
 {
   check("the phase-1 result row draws the formula",
