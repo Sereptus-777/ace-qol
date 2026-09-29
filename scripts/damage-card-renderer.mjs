@@ -241,7 +241,11 @@ export class DamageCardRenderer {
           recipeFrom: road ? (road.book?.pack ?? "its sheet") : null,
         }
       }
-    });
+    // SAID OUT LOUD, not left to the door to guess. This card is a BUTTON: it
+    // shows no total, no verdict and nothing that dice decided, so it lands at
+    // once even while somebody else's dice are in the air. Leaving this off would
+    // now put it through the wait with every card that shows a result.
+    }, { dice: false });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

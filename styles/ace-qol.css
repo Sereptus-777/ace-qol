@@ -5408,6 +5408,70 @@
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   A ROW THAT IS WAITING BLINKS YELLOW, AND CARRIES ITS OWN DIE (his rule,
+   2026-09-29: "Yellow blink until they roll. Click the d20 PNG or the roll
+   control. Both work ... Blink stops when the result is on it").
+
+   The blink is on the ROW, not only on the four words at the end of it: on a
+   card with five targets the one still waiting has to be findable at a glance
+   from across the table. It stops on its own, because a row with a result is no
+   longer `.ace-qol-save-await`.
+
+   Honours prefers-reduced-motion: it stays a solid yellow edge rather than
+   pulsing for anyone who has asked the OS not to animate.
+   ═══════════════════════════════════════════════════════════════════════════ */
+@keyframes ace-qol-await-row {
+  0%, 100% { border-left-color: rgba(255,213,74,1);    background: rgba(255,213,74,0.10); }
+  50%      { border-left-color: rgba(255,213,74,0.25); background: rgba(255,213,74,0.02); }
+}
+.ace-qol-save-await {
+  border-left: 3px solid rgba(255,213,74,1);
+  background: rgba(255,213,74,0.10);
+  animation: ace-qol-await-row 1.2s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ace-qol-save-await { animation: none; }
+}
+/* The row's own controls sit on one line and WRAP as whole units; the label
+   already takes its own full-width line under them. */
+.ace-qol-save-await .ace-qol-save-result-target {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-height: 46px;
+}
+/* The die on the row. Not .ace-qol-save-pc-roll-btn on purpose: that class is
+   stripped from every non-GM screen (save-engine's GM-only pass), and this one
+   is the player's. */
+.ace-qol-save-await-roll {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  transition: transform 0.15s;
+}
+.ace-qol-save-await-roll:hover { transform: scale(1.15); }
+.ace-qol-save-await-roll:focus-visible {
+  outline: 2px solid rgba(255,213,74,0.9);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+.ace-qol-save-await-roll:disabled { opacity: 0.45; cursor: default; transform: none; }
+/* Yellow, to match the row it is on. */
+.ace-qol-save-await .ace-qol-save-pending {
+  color: #ffd54a !important;
+  text-shadow: 0 0 6px rgba(255,213,74,0.45);
+  background: rgba(255,213,74,0.10);
+  border: 1px solid rgba(255,213,74,0.38);
+  min-height: 1.4em;
+  height: auto;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
    CHAT-CARD TEXT LAW (2026-07-28) — NON-NEGOTIABLE
    No label in an ACE chat card may EVER wrap mid-word or stack one letter per
    line. "WAITING FOR PLAYER" shipped crammed into a flex cell with an image, a

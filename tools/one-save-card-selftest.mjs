@@ -67,9 +67,15 @@ console.log("THE CARD CENSUS");
     check(`${fn} was found in one piece`, body.length > 500, `${body.length} chars`);
     check(`${fn} takes the card it should become`,
       /updateMessage = null/.test(body), "updateMessage");
-    check(`${fn} updates in place when it has one`,
-      /if \(updateMessage\) \{[\s\S]{0,900}CardDoor\.update\(updateMessage/.test(body),
+    // ⚠️ AND IT ASKS WHETHER THE CARD CAN BE REDRAWN, not merely whether one was
+    // handed over. A deleted card is truthy and has no update, and the result then
+    // landed nowhere and said nothing.
+    check(`${fn} updates in place when the card can be redrawn`,
+      /if \(typeof updateMessage\?\.update === "function"\) \{[\s\S]{0,900}CardDoor\.update\(updateMessage/.test(body),
       "CardDoor.update, not a second post");
+    check(`${fn} posts instead of losing the result when it cannot`,
+      /\} else \{[\s\S]{0,200}CardDoor\.post\(_(phase1Card|cardData)\)/.test(body),
+      "nothing dead-ends");
   }
 
   // And their callers hand it over.
@@ -125,8 +131,8 @@ console.log("\nTHE POST-HIT SAVE KEEPS ONE CARD");
     /const _resultCard = \{/.test(ph)
     && !/await CardDoor\.post\(\{\s*\n\s*content: cardHtml,\s*\n\s*speaker[\s\S]{0,200}postHitSaveResult/.test(ph),
     "it becomes the asking card");
-  check("it updates that card in place when it has one",
-    /if \(updateMessage\) \{[\s\S]{0,900}CardDoor\.update\(updateMessage/.test(ph),
+  check("it updates that card in place when the card can be redrawn",
+    /if \(typeof updateMessage\?\.update === "function"\) \{[\s\S]{0,900}CardDoor\.update\(updateMessage/.test(ph),
     "CardDoor.update");
   check("and the roll handler hands its own card over",
     /postSaveResults\(item, casterActor, results, save, message\)/.test(ph),
@@ -153,8 +159,10 @@ console.log("\nTHE POST-HIT SAVE KEEPS ONE CARD");
     /\$\{SaveEngine\._formulaForRow\(r, opts\)\}/.test(save)
     && /\$\{r\.extraHtml \?\? ""\}/.test(save),
     "one row, one formula, one extra hook");
+  // The phase-1 card is the one whose handler the remove X belongs to, so it is
+  // the one card that asks for it. Everything else about the row is shared.
   check("the QOL card still uses that same row, so neither can drift",
-    /results\.map\(r => SaveEngine\.saveResultRowHtml\(r, opts\)\)/.test(save),
+    /results\.map\(r => SaveEngine\.saveResultRowHtml\(r, \{ \.\.\.opts, canRemove: true \}\)\)/.test(save),
     "both cards, one renderer");
 
   // AND THE THINGS HE TOLD ME NOT TO TOUCH.

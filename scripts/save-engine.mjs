@@ -555,6 +555,12 @@ export class SaveEngine {
         }
       } catch (_) { /* cosmetic — never block card wiring */ }
 
+      // THE DIE ON A WAITING ROW, wired for every card that can draw one - phase
+      // 1, phase 2, the post-hit save, the legacy results card. Wired here rather
+      // than in each card's own branch because the row is shared now, and a
+      // control wired in one branch is a control that is dead in the other three.
+      this._wireAwaitRollButtons(el, message, flags);
+
       // ── Save Prompt card (legacy — still supported) ──
       if (flags.type === "savePrompt") {
         this._wireSavePromptButtons(el, message, flags);
@@ -3653,11 +3659,23 @@ export class SaveEngine {
     // Lives in the LEFT column directly under the portrait. Keeps the
     // .ace-qol-save-pc-roll-btn class + data-action/data-token-doc-id so the
     // existing click wiring and post-roll DOM updates still target it.
-    const _pcDiceBtn = (t) => `
-      <button class="ace-qol-save-pc-roll-btn" data-action="aceQolGmRollPcSave" data-token-doc-id="${t.tokenDocId}" title="Roll save on this PC's behalf (GM)"
+    // ⚠️🔴 ONLY THEY ROLL (his rule, 2026-09-29: "Owner online: only they
+    // roll ... Do not open a GM 'roll for the player' dialog").
+    //
+    // While the person whose character this is has a client up, this die is not
+    // the GM's to press: the row waits on them and they roll it themselves, from
+    // their whispered prompt or from the die on the row. The GM keeps it only for
+    // a sheet nobody is behind - and even then ACE has already rolled that one
+    // before the card was built (line ~3908), so it stands as the hand fallback
+    // for when that failed, never as a second way to take a player's roll.
+    const _pcDiceBtn = (t) => {
+      if (this._pcOwnerActive(t)) return "";
+      return `
+      <button class="ace-qol-save-pc-roll-btn" data-action="aceQolGmRollPcSave" data-token-doc-id="${t.tokenDocId}" title="Nobody is behind this sheet — roll its save (GM)"
               style="background:none;border:none;cursor:pointer;padding:0;display:inline-flex;">
         ${aceD20FaceImg(20, { size: 40, glow: true })}
       </button>`;
+    };
 
     // ── Helper: status badges (auto-fail / evasion / damage indicator) ──
     const _renderBadges = (t) => {
@@ -4266,46 +4284,23 @@ export class SaveEngine {
           if (!tgt) return;
 
           btn.disabled = true;
+          const keepDie = btn.innerHTML;
           btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
 
-          // Build a fake pcSavePrompt message and roll it
-          const flags = message.flags?.[MODULE_ID];
-          const fakeMsg = { flags: { [MODULE_ID]: {
-            type: "pcSavePrompt",
-            // Carry the item link through — without it the saveComplete fires
-            // with itemUuid:null and the Forge FX runtime can't find the item,
-            // so animation+sound never play for GM-rolled PCs (the player-prompt
-            // path already had it, which is why some PCs worked and some didn't).
-            itemUuid: flags.itemUuid ?? null,
-            itemId: flags.itemId ?? null,
-            saveAbility: flags.saveAbility,
-            saveDC: flags.saveDC,
-            halfOnSave: flags.halfOnSave,
-            damageTypes: flags.damageTypes,
-            isSpell: flags.isSpell,
-            recipe: flags.recipe ?? null,
-            tokenDocId: tgt.tokenDocId,
-            actorId: tgt.actorId,
-            sceneId: tgt.sceneId,
-            // The cast card knows both — carry them so the GM's dice button
-            // measures cover from the caster, not from the target. (F-019)
-            casterActorId:    flags.actorId ?? null,
-            casterTokenDocId: flags.casterTokenDocId ?? null,
-            targetName: tgt.name,
-            targetImg: tgt.img,
-            autoFailSave: tgt.autoFailSave,
-            saveAdvantage: tgt.saveAdvantage,
-            saveDisadvantage: tgt.saveDisadvantage,
-            saveAdvReasons: tgt.saveAdvReasons ?? [],
-            saveDisadvReasons: tgt.saveDisadvReasons ?? [],
-            superSaver: tgt.superSaver,
-            semiSuperSaver: tgt.semiSuperSaver,
-            saveBonuses: tgt.saveBonuses,
-            damageModifiers: tgt.damageModifiers,
-            currentHP: tgt.currentHP,
-            maxHP: tgt.maxHP,
-            castId: message.id,
-          }}};
+          // ONE BUILDER, NOT A SECOND COPY. What `_rollPcSave` reads is built in
+          // `_promptShapeFromCard` now, so this die and the die on the waiting row
+          // hand it exactly the same twenty fields. The item link going missing
+          // from one copy is how GM-rolled saves lost their animation and sound.
+          const tgtFlags = message.flags?.[MODULE_ID];
+          const fakeMsg = SaveEngine._promptShapeFromCard(message, tgtFlags, tokenDocId);
+          if (!fakeMsg) {
+            ui.notifications?.warn("ACE: that target is no longer on this card.");
+            console.warn(`${MODULE_ID} | the cast card ${message.id} carries no target row for `
+              + `${tokenDocId}, so there is nothing to roll.`);
+            btn.disabled = false;
+            btn.innerHTML = keepDie;
+            return;
+          }
 
           const restoreScroll = this._preserveChatScroll();
           await this._rollPcSave(fakeMsg);
@@ -4479,8 +4474,34 @@ export class SaveEngine {
       }
       const cast = game.messages?.get?.(castId);
       if (!cast) return false;                     // the cast is gone
+      const castFlags = cast.flags?.[MODULE_ID] ?? null;
+
+      // 26a0Fe0f0001F534 THE CARD THAT ASKED IS NOW THE CARD THAT ANSWERS.
+      //
+      // The loop above looks for a results card posted AFTER the cast, and breaks
+      // the moment it reaches the cast itself. That was right while the answer was
+      // a second message. Since 0.51.0 it is not: the asking card becomes its own
+      // result, so the loop breaks without ever finding a results card, falls
+      // through to `superseded`, and that flag is exactly what the card sets when
+      // it becomes the result.
+      //
+      // So every open save box was closed the instant the NPC saves landed, while
+      // the player it belonged to had not rolled yet. One line, and the roll box he
+      // confirmed at the table on 19 September was gone from every cast with a PC
+      // in it. The replay caught it; the self-tests could not, because each of them
+      // read the function I had just changed.
+      //
+      // The cast's OWN rows are the results now, so they are read first. Before it
+      // becomes the result it carries `targets`, not `allResults`, so this finds
+      // nothing and the old answer below still stands.
+      const ownRows = Array.isArray(castFlags?.allResults) ? castFlags.allResults : null;
+      if (ownRows) {
+        const row = ownRows.find(r => r?.tokenDocId === tokenDocId);
+        if (row) return row.pending === true;
+      }
+
       if (results) return !!(results.allResults ?? []).find(r => r?.tokenDocId === tokenDocId)?.pending;
-      return cast.flags?.[MODULE_ID]?.superseded !== true;
+      return castFlags?.superseded !== true;
     } catch (err) {
       console.warn(`${MODULE_ID} | could not tell whether a save prompt still waits; its card stays in the chat:`, err);
       return false;
@@ -6515,6 +6536,146 @@ export class SaveEngine {
   //  PC Rolls Their Own Save
   // ═══════════════════════════════════════════════════════════════════════════
 
+  /**
+   * THE ROLL THIS ROW IS WAITING FOR, pressed from the row itself.
+   *
+   * His rule, 2026-09-29: "Owner online: only they roll. Yellow blink until they
+   * roll. Click the d20 PNG or the roll control. Both work. Do not open a GM
+   * 'roll for the player' dialog."
+   *
+   * The card is public and built once, so the die ships on every waiting row and
+   * this decides, ON EACH SCREEN, who may press it:
+   *
+   *   - the person whose character it is, whenever they are looking at it;
+   *   - the GM, only for a sheet nobody is behind, as the hand fallback for the
+   *     auto-roll that already ran when the card was built.
+   *
+   * It is not a second way to take a player's roll: for a row whose owner is
+   * connected, the GM's copy of that die is hidden.
+   *
+   * ⚠️ IT IS THE SAME ROLL, NOT A SECOND ONE. When this viewer holds the
+   * whispered prompt for that row, the press rolls THROUGH that message, so the
+   * prompt is spent exactly as if they had pressed the prompt itself and nothing
+   * can roll twice. Only when there is no prompt on this screen is the shape
+   * rebuilt from the card's own flags.
+   */
+  _wireAwaitRollButtons(el, message, flags) {
+    let btns;
+    try { btns = el?.querySelectorAll?.("[data-action='aceQolRollMySave']") ?? []; }
+    catch (err) {
+      console.warn(`${MODULE_ID} | could not look for the dice on the waiting rows, so those `
+        + `rows can only be rolled from the whispered prompt:`, err);
+      return;
+    }
+    if (!btns.length) return;
+
+    for (const btn of btns) {
+      if (btn.dataset.wired) continue;
+      btn.dataset.wired = "1";
+      const tokenDocId = btn.dataset.tokenDocId;
+      const ownerOnline = btn.dataset.ownerOnline !== "false";
+
+      // ── Whose die is this, on THIS screen? ──
+      let mine = false;
+      try {
+        const row = (flags?.allResults ?? flags?.targets ?? []).find(r => r?.tokenDocId === tokenDocId);
+        const actor = (game.scenes?.get(row?.sceneId)?.tokens?.get(tokenDocId)?.actor)
+          ?? (row?.actorId ? game.actors?.get(row.actorId) : null);
+        mine = game.user?.isGM
+          ? !ownerOnline                       // nobody is behind the sheet
+          : !!actor?.isOwner;                  // it is their character
+      } catch (err) {
+        console.warn(`${MODULE_ID} | could not work out whether ${tokenDocId} is yours to roll, `
+          + `so its die is hidden on this screen:`, err);
+        mine = false;
+      }
+      if (!mine) { btn.style.display = "none"; continue; }
+
+      btn.addEventListener("click", async () => {
+        if (btn.disabled) return;
+        btn.disabled = true;
+        const keep = btn.innerHTML;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+        try {
+          const castId = flags?.castId ?? message?.id ?? null;
+          // The prompt whispered to this screen, if it is still here: rolling
+          // through it spends it, so the row cannot be answered twice.
+          const own = game.messages?.contents?.find(m => {
+            const f = m.flags?.[MODULE_ID];
+            return f?.type === "pcSavePrompt" && f.tokenDocId === tokenDocId
+              && (f.castId ?? null) === castId;
+          }) ?? null;
+          const shape = own ?? SaveEngine._promptShapeFromCard(message, flags, tokenDocId);
+          if (!shape) {
+            ui.notifications?.warn("ACE: that row's save could not be rebuilt from this card — roll it from the prompt.");
+            console.warn(`${MODULE_ID} | the waiting row ${tokenDocId} carries no target data on `
+              + `card ${message?.id}, so its die has nothing to roll.`);
+            btn.disabled = false; btn.innerHTML = keep;
+            return;
+          }
+          console.log(`${MODULE_ID} | ${game.user?.name} rolled the waiting row for ${tokenDocId} `
+            + `from the card${own ? " (through their own prompt)" : " (rebuilt from the card)"}.`);
+          await this._rollPcSave(shape);
+        } catch (err) {
+          console.error(`${MODULE_ID} | rolling the waiting row from the card failed:`, err);
+          ui.notifications?.error("ACE: that save did not roll — the console says why.");
+          btn.disabled = false; btn.innerHTML = keep;
+        }
+      });
+    }
+  }
+
+  /**
+   * ONE BUILDER for the shape `_rollPcSave` reads, from whichever card is asking.
+   *
+   * The GM's roll-on-their-behalf die had this inline, and the waiting row needed
+   * the same thing; two copies of a twenty-field object is two chances to drop the
+   * one field that matters. (The item link went missing from the GM's copy once
+   * already, and Forge's animation and sound never played for GM-rolled saves.)
+   *
+   * Reads `allResults` (the save card) or `targets` (the cast card), whichever the
+   * card carries.
+   */
+  static _promptShapeFromCard(message, flags, tokenDocId) {
+    const rows = flags?.allResults ?? flags?.targets ?? [];
+    const t = rows.find(r => r?.tokenDocId === tokenDocId);
+    if (!t) return null;
+    return { id: message?.id ?? null, flags: { [MODULE_ID]: {
+      type: "pcSavePrompt",
+      // Without the item link saveComplete fires with itemUuid:null and Forge
+      // cannot find the item, so nothing animates and nothing sounds.
+      itemUuid: flags.itemUuid ?? null,
+      itemId: flags.itemId ?? null,
+      saveAbility: flags.saveAbility,
+      saveDC: flags.saveDC,
+      halfOnSave: flags.halfOnSave,
+      damageTypes: flags.damageTypes,
+      isSpell: flags.isSpell,
+      recipe: flags.recipe ?? null,
+      activityId: flags.activityId ?? null,
+      tokenDocId: t.tokenDocId,
+      actorId: t.actorId,
+      sceneId: t.sceneId,
+      // Cover is measured from the caster, not from the target. (F-019)
+      casterActorId:    flags.actorId ?? null,
+      casterTokenDocId: flags.casterTokenDocId ?? null,
+      targetName: t.name,
+      targetImg: t.img,
+      autoFailSave: t.autoFailSave ?? t.isAutoFail ?? false,
+      saveAdvantage: !!t.saveAdvantage,
+      saveDisadvantage: !!t.saveDisadvantage,
+      saveAdvReasons: t.saveAdvReasons ?? [],
+      saveDisadvReasons: t.saveDisadvReasons ?? [],
+      superSaver: !!t.superSaver,
+      semiSuperSaver: !!t.semiSuperSaver,
+      saveBonuses: t.saveBonuses ?? null,
+      damageModifiers: t.damageModifiers ?? null,
+      currentHP: t.currentHP,
+      maxHP: t.maxHP,
+      castId: flags.castId ?? message?.id ?? null,
+    }}};
+  }
+
   async _rollPcSave(message) {
     const flags = message.flags?.[MODULE_ID];
     if (!flags) return;
@@ -8274,15 +8435,48 @@ export class SaveEngine {
   static saveResultRowHtml(r, opts = {}) {
       // Immune, no save: one line under the rows (_immuneLine), never a row each.
       if (SaveEngine._isImmuneRow(r)) return "";
-      const removeBtn = `<button class="ace-qol-save-phase1-remove" data-action="aceQolRemovePhase1" data-token-doc-id="${r.tokenDocId}" title="Remove this target before damage rolls"><i class="fas fa-xmark"></i></button>`;
+      // ⚠️🔴 THE X ONLY WHERE THE X DOES SOMETHING (his table, 2026-09-29:
+      // "an X ... Kill those"). This button drops a target BEFORE its damage is
+      // rolled, and the card that owns that handler is the phase-1 save card. The
+      // post-hit save card, which now draws this same row, has already rolled,
+      // already landed its conditions and has no damage left to hold: its X sat
+      // there dead beside a grapple that had already happened.
+      //
+      // So the card says whether a target can still be dropped, and SILENCE MEANS
+      // NO. A default of "draw it" is exactly the habit the dice door was just
+      // cured of: a button that has to be switched off at every new call site is
+      // a button that will be left on.
+      const removeBtn = opts?.canRemove
+        ? `<button class="ace-qol-save-phase1-remove" data-action="aceQolRemovePhase1" data-token-doc-id="${r.tokenDocId}" title="Remove this target before damage rolls"><i class="fas fa-xmark"></i></button>`
+        : "";
       if (r.pending) {
+        // ⚠️🔴 THE ROW THAT IS WAITING CAN BE ROLLED FROM (his rule,
+        // 2026-09-29: "Click the d20 PNG or the roll control. Both work").
+        //
+        // A whispered prompt is easy to lose behind four other cards, and the row
+        // in front of him was a dead line of text. It carries the die now.
+        //
+        // ⚠️ WHO MAY PRESS IT IS DECIDED ON EACH SCREEN, NOT HERE. This HTML is
+        // built once, by the GM, and rendered on every client, so a button drawn
+        // "only for the owner" here would be drawn for everybody. It ships for
+        // everyone and `_wireAwaitRollButtons` hides it from whoever may not press
+        // it - the same shape as the GM-only controls above it.
+        //
+        // And SAY WHICH WAIT THIS IS. "Waiting for player" over a sheet nobody is
+        // sitting behind is the lie from 2026-08-14 all over again.
+        const _awaitLabel = r.ownerOnline === false
+          ? "NO PLAYER ONLINE — GM ROLLING"
+          : "WAITING FOR PLAYER";
         return `
-          <div class="ace-qol-save-result-row ace-qol-save-result-pending" data-token-doc-id="${r.tokenDocId}">
+          <div class="ace-qol-save-result-row ace-qol-save-result-pending ace-qol-save-await" data-token-doc-id="${r.tokenDocId}">
             <div class="ace-qol-save-result-target">
               <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
               <span class="ace-qol-save-tgt-name">${r.name}</span>
+              <button type="button" class="ace-qol-save-await-roll" data-action="aceQolRollMySave"
+                      data-token-doc-id="${r.tokenDocId}" data-owner-online="${r.ownerOnline === false ? "false" : "true"}"
+                      title="Roll this saving throw">${aceD20FaceImg(20, { size: 40, glow: true })}</button>
               ${removeBtn}
-              <span class="ace-qol-save-result-label ace-qol-save-pending">WAITING FOR PLAYER</span>
+              <span class="ace-qol-save-result-label ace-qol-save-pending">${_awaitLabel}</span>
             </div>
           </div>
         `;
@@ -8391,7 +8585,9 @@ export class SaveEngine {
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
     const _p1Title = this._abilityLabel(item, activityId);
 
-    const targetRows = results.map(r => SaveEngine.saveResultRowHtml(r, opts)).join("");
+    // This is the card whose handler `aceQolRemovePhase1` belongs to, so this is
+    // the card whose rows carry the X.
+    const targetRows = results.map(r => SaveEngine.saveResultRowHtml(r, { ...opts, canRemove: true })).join("");
 
     // ROLL DAMAGE button only appears if the spell actually deals damage.
     // Save-or-condition spells (Hold Person, Charm Person, Sleep, etc.) get
@@ -8705,6 +8901,13 @@ export class SaveEngine {
             maxHP: r.maxHP,
             isPC: r.isPC,
             pending: r.pending,
+            // WHICH WAIT THIS IS, carried with the row. Without it a rebuild
+            // (a PC resolving, "add targets", a re-render) turns "no player
+            // online" back into "waiting for player" and the card starts lying
+            // about a human who is not there.
+            ownerOnline: r.ownerOnline !== false,
+            saveBonuses: r.saveBonuses ?? null,
+            semiSuperSaver: !!r.semiSuperSaver,
             // The Gate's verdict must survive serialization, or a card rebuild
             // (a PC resolving later, "add targets", a re-render) turns a
             // "DEAD — no save" row back into a red FAIL. (2026-08-06)
@@ -8721,7 +8924,11 @@ export class SaveEngine {
 
     // BECOME THE CARD THAT ASKED, or post one when there was none.
     let posted;
-    if (updateMessage) {
+    // ⚠️ A CARD THAT CANNOT BE REDRAWN IS NOT A CARD TO BECOME. Asking whether it
+    // exists is not the same as asking whether it can be updated: a deleted card, or
+    // a stand-in passed in by a test, is truthy and has no update, and the result
+    // then landed nowhere at all.
+    if (typeof updateMessage?.update === "function") {
       // THE CARD IS STILL THE CAST. Everything that reconciles a player's own
       // result looks it up by castId, and the target list answered that with its
       // own id ("f.type === saveTargetList ? message.id : f.castId"). Once this
@@ -9245,17 +9452,10 @@ export class SaveEngine {
       // Immune, no save: one line under the rows (_immuneLine), never a row each.
       if (SaveEngine._isImmuneRow(r)) return "";
       // PC still pending
-      if (r.pending) {
-        return `
-          <div class="ace-qol-save-result-row ace-qol-save-result-pending" data-token-doc-id="${r.tokenDocId}">
-            <div class="ace-qol-save-result-target">
-              <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
-              <span class="ace-qol-save-tgt-name">${r.name}</span>
-              <span class="ace-qol-save-result-label ace-qol-save-pending">WAITING FOR PLAYER</span>
-            </div>
-          </div>
-        `;
-      }
+      // ONE WAITING ROW, NOT THREE. This was a third hand-written copy of the
+      // same markup, and the die and the yellow wait went onto only the first
+      // one. Every card that can show a row waiting now draws the same row.
+      if (r.pending) return SaveEngine.saveResultRowHtml(r, opts);
 
       // Gated by the Gate — carry the verdict onto the damage card too, so a
       // target that never rolled doesn't reappear here wearing a red "FAIL".
@@ -9577,17 +9777,10 @@ export class SaveEngine {
     // ── Build result rows ──
     const targetRows = results.map(r => {
       // ── PC still pending ──
-      if (r.pending) {
-        return `
-          <div class="ace-qol-save-result-row ace-qol-save-result-pending" data-token-doc-id="${r.tokenDocId}">
-            <div class="ace-qol-save-result-target">
-              <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
-              <span class="ace-qol-save-tgt-name">${r.name}</span>
-              <span class="ace-qol-save-result-label ace-qol-save-pending">WAITING FOR PLAYER</span>
-            </div>
-          </div>
-        `;
-      }
+      // ONE WAITING ROW, NOT THREE. This was a third hand-written copy of the
+      // same markup, and the die and the yellow wait went onto only the first
+      // one. Every card that can show a row waiting now draws the same row.
+      if (r.pending) return SaveEngine.saveResultRowHtml(r, opts);
 
       const passClass = r.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
       const rollDisplay = r.isAutoFail ? "AUTO" : r.saveTotal;
@@ -9775,7 +9968,7 @@ export class SaveEngine {
     };
 
     // BECOME THE CARD THAT ASKED, or post one when there was none to become.
-    if (updateMessage) {
+    if (typeof updateMessage?.update === "function") {
       // Same as phase 1: the card that became the result is still the cast.
       await CardDoor.update(updateMessage, {
         content: _cardData.content,

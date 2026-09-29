@@ -19,7 +19,7 @@
 // const read at top level inside an import cycle throws at load (2026-08-28).
 // ──────────────────────────────────────────────────────────────────────────────
 
-import { awaitDiceSettle } from "../dsn-utils.mjs";
+import { awaitDiceSettle, diceInFlight } from "../dsn-utils.mjs";
 import { DamageApplicator } from "../damage-applicator.mjs";
 import { DamageCalculator } from "../damage-calculator.mjs";
 import { ConditionLibrary } from "../condition-library.mjs";
@@ -40,27 +40,81 @@ export const SIGNALS = Object.freeze([
  *   came in on, when dice decided this landing; false when none were thrown
  */
 export async function untilDiceLand(dice) {
-  // ⚠️ NOTE 4: NOTHING THROWN, NOTHING WAITED FOR. A caller whose landing was
-  // decided by dice says so; anything else lands at once and never sits on a
-  // hook for dice nobody threw (the twenty-second card of 4 September).
-  if (!dice) return;
   const messageId = typeof dice === "object" ? (dice.messageId ?? null) : null;
+
+  // ⚠️🔴 "NOBODY DECLARED DICE" IS NOT "THERE ARE NO DICE ON THE TABLE".
+  //
+  // His table, 2026-09-29: a save card flipped to FAIL while the d20 was still
+  // tumbling. The caller was right, the door was wrong. `dice` was a promise the
+  // CALLER had to remember to make, and of the forty-five cards this module can
+  // post, five made it. The other forty - and every card redrawn through
+  // `update`, which no caller passed it to at all - went straight past the wait.
+  //
+  // A default that has to be remembered at every door is not a door, it is a
+  // habit. So the door asks instead of being told: if this screen has dice in
+  // the air right now, the landing waits for them, whoever threw them. His rule
+  // is absolute and is about the screen, not about one feature - "if a card
+  // flips while 3D dice are up, that call is wrong".
+  //
+  // ⚠️ NOTE 4 IS UNTOUCHED. "A door with no dice does not wait": an immune
+  // target, a spell with no save, an automatic heal. Nothing was thrown, nothing
+  // is in the air, and this returns on the same tick without so much as a timer
+  // (the twenty-second card of 4 September stays fixed).
+  // ⚠️ DECLARED "NO DICE" IS HONOURED; SILENCE IS NOT.
+  //
+  // `dice: false`, written out, is a caller saying it has thought about this and
+  // nothing was thrown that decides it: a ROLL DAMAGE button, a prompt, a notice.
+  // Those land at once even while somebody else's dice are in the air, because
+  // holding a BUTTON behind an animation is not what his rule is about - his rule
+  // is that a RESULT never beats its dice.
+  //
+  // Leaving it out is not that declaration. That is the forty cards that never
+  // thought about it at all, and they go through the gate.
+  if (dice === false) return;
+  if (!dice && !diceInFlight()) return;
+
   await awaitDiceSettle(undefined, { messageId });
 }
 
 /* ── 1. A card ─────────────────────────────────────────────────────────── */
 
 export class CardDoor {
-  /** A new card, once the dice that decided it have landed. */
-  static async post(data, { dice = false, options = {} } = {}) {
+  /**
+   * A new card, once the dice that decided it have landed.
+   *
+   * `dice` names the roll to wait for. Leaving it out no longer means "do not
+   * wait": the door still waits for anything already tumbling on this screen.
+   * A card that genuinely decides nothing - a button, a prompt, a notice - says
+   * `dice: false` out loud and lands at once.
+   */
+  static async post(data, { dice, options = {} } = {}) {
     await untilDiceLand(dice);
     return ChatMessage.create(data, options);
   }
 
-  /** A card redrawn, once the dice that decided it have landed. */
-  static async update(message, data, { dice = false } = {}) {
+  /**
+   * A card REDRAWN, once the dice that decided it have landed.
+   *
+   * ⚠️🔴 THE SECOND HALF OF THE SAME RULE. A save card that asks and then
+   * becomes its own result lands its verdict here, not through `post`, and not
+   * one caller in the module ever passed this a `dice`. So the wait he watched
+   * being added to `post` was never on the write that actually flipped the card
+   * in front of him (his table, 2026-09-29). It is the same door now: PASS,
+   * FAIL, totals, APPLY and conditions all wait for the dice on screen.
+   */
+  static async update(message, data, { dice } = {}) {
+    // ⚠🔴 A DOOR THAT DOES NOTHING MUST NEVER DO IT QUIETLY. This read
+    // `message?.update?.(data) ?? null` and handed back null for a card that could
+    // not be redrawn - a card that had been deleted, or a stand-in with no update
+    // of its own. The caller saw the same null as a card that redrew fine, so a
+    // whole result could vanish with nothing said anywhere.
+    if (typeof message?.update !== "function") {
+      console.warn(`${MODULE_ID} | a card could not be redrawn because it has no update `
+        + `(id ${message?.id ?? "unknown"}). Its caller should post instead of losing the result.`);
+      return null;
+    }
     await untilDiceLand(dice);
-    return message?.update?.(data) ?? null;
+    return message.update(data);
   }
 }
 

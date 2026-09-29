@@ -939,6 +939,7 @@ export class PostHitSaves {
       let saveTotal = 0;
       let passed = false;
       let saveRoll = null;
+      let dieFace = null;
 
       if (isAutoFail) {
         saveTotal = 0;
@@ -976,6 +977,10 @@ export class PostHitSaves {
         safeShowForRoll(saveRoll, "post-hit save roll");
 
         saveTotal = saveRoll.total;
+        // The face the card will draw, kept beside the total from here on. A
+        // reroll changes BOTH, and only one of them used to be carried.
+        dieFace = saveRoll.dice?.[0]?.total
+          ?? saveRoll.terms?.find?.(t => t?.faces === 20)?.results?.find?.(x => x?.active)?.result ?? null;
         passed = saveTotal >= save.dc;
       }
 
@@ -994,7 +999,19 @@ export class PostHitSaves {
           const lk = await luckAgainstDC({ actor: targetActor, kind: "save",
             what: `${String(save.ability ?? "").toUpperCase()} save against ${item?.name ?? "the hit"} (DC ${save.dc})`,
             roll: saveRoll, total: saveTotal, dc: save.dc, dice: "none" });
-          if (lk.spent) { saveTotal = lk.total; passed = saveTotal >= save.dc; luckNote = lk.note; }
+          // ⚠️🔴 A REROLL CHANGES THE DIE, NOT JUST THE TOTAL (his table,
+          // 2026-09-29: "12-face on a 10 total"). Lucky hands back both, and this
+          // took only the total: the card then drew the die that was thrown AWAY
+          // beside the total of the one that replaced it, and the row - which
+          // works the bonus out by taking the die off the total - invented a
+          // modifier out of the gap. break-free-engine.mjs:326 had always taken
+          // both; these two save paths never did.
+          if (lk.spent) {
+            saveTotal = lk.total;
+            if (Number.isFinite(Number(lk.d20))) dieFace = Number(lk.d20);
+            passed = saveTotal >= save.dc;
+            luckNote = lk.note;
+          }
         } catch (err) {
           console.warn(`${MODULE_ID} | PostHitSave: Lucky could not be offered on ${tgt.name}'s save; it stands as rolled:`, err);
         }
@@ -1043,6 +1060,9 @@ export class PostHitSaves {
         actorId: tgt.actorId,
         sceneId: tgt.sceneId,
         saveTotal,
+        // THE FACE THAT MADE THIS TOTAL, said plainly rather than dug back out of
+        // the roll by whoever draws the row. A reroll replaces it (above).
+        dieResult: dieFace,
         passed,
         isAutoFail,
         saveRoll,
@@ -1375,8 +1395,13 @@ export class PostHitSaves {
       // row now; the three locals that built them here are gone with the markup.
       let effectsHtml = "";
       if (r.tableEntry) {
+        // ⚠️ TEXT, NOT A SECOND DIE (his rule, 2026-09-29: "Only extra under
+        // the shared row is text: Rolled 3: Grapple, then what landed"). The die
+        // that decided this row is the d20 the shared row already draws; a little
+        // square d6 beside it read as a second roll nobody made, and on a card
+        // that had just rolled a d20 it was the wrong shape as well.
         effectsHtml += `<div class="ace-qol-table-result">
-          <i class="fas fa-dice-d6"></i> Rolled <strong>${r.tableRoll}</strong>: <strong>${r.tableEntry}</strong>
+          Rolled <strong>${r.tableRoll}</strong>: <strong>${r.tableEntry}</strong>
         </div>`;
       }
 
@@ -1574,7 +1599,9 @@ export class PostHitSaves {
     // it: a card that redraws mid-animation shows a result nobody watched arrive.
     // A settle with no dice in the air returns at once.
     await awaitDiceSettle();
-    if (updateMessage) {
+    // Truthy is not the same as updatable: a deleted card, or a stand-in with no
+    // update of its own, would swallow the whole result.
+    if (typeof updateMessage?.update === "function") {
       await CardDoor.update(updateMessage, {
         content: _resultCard.content,
         [`flags.${MODULE_ID}`]: { ...(updateMessage.flags?.[MODULE_ID] ?? {}),
@@ -1637,6 +1664,7 @@ export class PostHitSaves {
       const roll = new Roll(withHalflingLuck(`1d20 + ${saveBonus}`, targetActor));
       await roll.evaluate();
       let riderTotal = roll.total;
+      let riderFace = roll.dice?.[0]?.total ?? null;
       let passed = riderTotal >= rider.dc;
 
       safeShowForRoll(roll, "repeating-save roll");
@@ -1650,7 +1678,13 @@ export class PostHitSaves {
         const lk = await luckAgainstDC({ actor: targetActor, kind: "save",
           what: `${String(abilityKey ?? "").toUpperCase()} save against ${item?.name ?? "the hit"} (DC ${rider.dc})`,
           roll, total: riderTotal, dc: rider.dc, dice: "none" });
-        if (lk.spent) { riderTotal = lk.total; passed = riderTotal >= rider.dc; }
+        // Same as the save above: the die that made the new total is the die
+        // the card must draw.
+        if (lk.spent) {
+          riderTotal = lk.total;
+          if (Number.isFinite(Number(lk.d20))) riderFace = Number(lk.d20);
+          passed = riderTotal >= rider.dc;
+        }
       } catch (err) {
         console.warn(`${MODULE_ID} | Lucky could not be offered on ${targetActor?.name}'s save; it stands as rolled:`, err);
       }

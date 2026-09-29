@@ -2221,7 +2221,20 @@ console.log(`\nPHASE 3: ATTACKS ON THE ROAD`);
     const thrown = { n: 0, landed: 0 };
     game.dice3d = { isEnabled: () => true,
       showForRoll: () => { thrown.n++; return new Promise(r => setTimeout(() => { thrown.landed++; r(true); }, 15)); } };
-    let rollingAtCreate = null, waited = null, atOnce = null;
+    // 26a0Fe0f0001F534 THE DOOR ASKS, IT IS NOT TOLD (his table, 2026-09-29: "The wait
+    // was only on CardDoor.post. Results now land through CardDoor.update and
+    // that write does not wait. Fix the door, not one caller.")
+    //
+    // Three cases, because `dice` now has three states and they mean three
+    // different things:
+    //
+    //   { dice: true }   these dice decided this        -> waits
+    //   { dice: false }  said out loud: nothing did     -> lands at once
+    //   nothing said     forty cards never thought      -> waits
+    //
+    // The third is the one that was letting results beat their dice. A card that
+    // genuinely decides nothing - the ROLL DAMAGE button - now says so.
+    let rollingAtCreate = null, waited = null, atOnce = null, silent = null;
     ChatMessage.create = async (data) => { rollingAtCreate = thrown.n - thrown.landed; return keepCreate(data); };
     try {
       await quiet(async () => {
@@ -2229,16 +2242,21 @@ console.log(`\nPHASE 3: ATTACKS ON THE ROAD`);
         await CardDoor.post({ content: "a damage card" }, { dice: true });
         waited = rollingAtCreate;
         safeShowForRoll({ total: 3 }, "someone else's dice");
-        await CardDoor.post({ content: "a ROLL DAMAGE button" });
+        await CardDoor.post({ content: "a ROLL DAMAGE button" }, { dice: false });
         atOnce = rollingAtCreate;
+        safeShowForRoll({ total: 3 }, "dice nobody declared");
+        await CardDoor.post({ content: "a card that said nothing" });
+        silent = rollingAtCreate;
       });
-      await new Promise(r => setTimeout(r, 40));
+      await new Promise(r => setTimeout(r, 60));
     } finally { game.dice3d = keepDice; ChatMessage.create = keepCreate; }
-    check("7. the damage card waits in the card door for its thrown dice; the ROLL DAMAGE card, with none thrown, lands at once (Phase 3)",
-      !cardErr && button?.dice === false && result?.dice === true && waited === 0 && atOnce === 1,
+    check("7. the damage card waits in the card door for its thrown dice; a card that DECLARES none lands at once; a card that says nothing waits too (Phase 3)",
+      !cardErr && button?.dice === false && result?.dice === true
+      && waited === 0 && atOnce === 1 && silent === 0,
       cardErr ? `a card threw: ${cardErr?.message ?? cardErr}`
         : `ROLL DAMAGE card: dice ${button?.dice}; damage card: dice ${result?.dice}; `
-          + `dice still rolling when the damage card was created: ${waited}; when the button was: ${atOnce}`);
+          + `dice still rolling when the damage card was created: ${waited}; `
+          + `when the declared-no-dice button was: ${atOnce}; when a silent card was: ${silent}`);
   }
 
   // ── 8. The live hit lands its recipe's onHit: what its words give the hit, and nothing else ──
@@ -4301,6 +4319,12 @@ console.log(`\nSAVE CARD UX: THE BOX, THE RESULTS CARD, ONE CONCENTRATION CHECK`
       };
       msg.whisper = data?.whisper ?? [];
       msg.author = data?.author ?? null;
+      // WHAT IT WAS WHEN IT WAS BORN. Since 0.51.0 the card that asks for a save
+      // becomes the card that answers it, in place, so by the time these pins read
+      // the chat its type has legitimately changed and a lookup by type finds
+      // nothing. Keep the birth flags beside it: "was this card the carrier" and
+      // "how did it draw before any result was on it" are still real questions.
+      msg._born = JSON.parse(JSON.stringify(data?.flags?.[MOD] ?? {}));
       chat7.set(msg.id, msg);
       return msg;
     };
@@ -4360,9 +4384,11 @@ console.log(`\nSAVE CARD UX: THE BOX, THE RESULTS CARD, ONE CONCENTRATION CHECK`
       } catch (e) { err1 = e; }
       const cards = [...chat7.values()];
       const of = (type) => cards.filter(m => m?.flags?.[MOD]?.type === type);
-      const list = of("saveTargetList").at(-1) ?? null;
+      // The carrier is found by what it was BORN as, not by what it is now: it is
+      // the same message as the results card since 0.51.0.
+      const list = cards.filter(m => m?._born?.type === "saveTargetList").at(-1) ?? null;
       const prompt = of("pcSavePrompt").at(-1) ?? null;
-      const results = of("saveResults").at(-1) ?? null;
+      const results = of("saveResults").at(-1) ?? list;
       const text = (m) => String(m?.content ?? "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
 
       SignalDoor.send = keepSend;
@@ -4372,12 +4398,14 @@ console.log(`\nSAVE CARD UX: THE BOX, THE RESULTS CARD, ONE CONCENTRATION CHECK`
 
       // The chat: results only. Drawn as it was born, before the results card
       // retired it, because that is when the waiting list used to show.
-      const born = list ? { ...list, flags: { [MOD]: { ...list.flags[MOD], superseded: false, rolled: false } } } : null;
+      // Drawn as it was born, before it became its own result: that is the moment
+      // the waiting list would have shown, and it must be folded even then.
+      const born = list ? { ...list, flags: { [MOD]: { ...list._born, superseded: false, rolled: false } } } : null;
       const listOnGm = born ? drawOn(GM, born, renderHooks) : null;
       const listOnPlayer = born ? drawOn(PLAYER, born, renderHooks) : null;
       check("NPCs do not sit on a waiting list: the Magmin's save card with the waiting rows is never drawn, on the GM's screen or the player's, because the NPCs roll themselves (2026-09-19)",
-        !err1 && !!list && list.flags[MOD].carrier === true && folded(listOnGm) && folded(listOnPlayer),
-        err1 ? `threw: ${err1?.message ?? err1}` : list ? `carrier ${list.flags[MOD].carrier}; GM ${folded(listOnGm) ? "folded" : "DRAWN"}, player ${folded(listOnPlayer) ? "folded" : "DRAWN"}` : "no save card posted");
+        !err1 && !!list && list._born.carrier === true && folded(listOnGm) && folded(listOnPlayer),
+        err1 ? `threw: ${err1?.message ?? err1}` : list ? `carrier ${list._born.carrier}; GM ${folded(listOnGm) ? "folded" : "DRAWN"}, player ${folded(listOnPlayer) ? "folded" : "DRAWN"}` : "no save card posted");
       const rt = text(results);
       check("the chat shows one results card after the dice: the bandit's rolled save with its verdict, Chudd waiting for his player, and the azer as one line, immune to fire, no save and no row (2026-09-19)",
         !!results && /a bandit/.test(rt) && /FAIL/.test(rt) && /Chudd/.test(rt) && /WAITING FOR PLAYER/.test(rt)
