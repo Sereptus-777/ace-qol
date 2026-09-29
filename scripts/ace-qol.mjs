@@ -2542,7 +2542,16 @@ Hooks.once("ready", () => {
               // per token (snapshot first; setTarget(false) mutates the set
               // during iteration). Same pattern as save-engine + oa-prompt.
               const held = [...(game.user.targets ?? [])];
-              if (held.length) {
+              // ONE TARGET STAYS (his rule, 2026-09-29): "after the attack /
+              // save / apply, that token stays targeted until the attacker or the
+              // player changes it." Two or more still clear the moment the
+              // resolve is done, which is the path he told me to leave alone.
+              // Nothing is restored here and nothing is remembered: whatever is
+              // targeted now is simply left where it is.
+              if (held.length === 1) {
+                console.log(`${MODULE_ID} | one target (${held[0]?.name ?? "it"}) stays after `
+                  + `template ${tdoc.id} resolved.`);
+              } else if (held.length) {
                 for (const t of held) {
                   t.setTarget?.(false, { user: game.user, releaseOthers: false, groupSelection: false });
                 }

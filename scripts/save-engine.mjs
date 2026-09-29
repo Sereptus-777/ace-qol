@@ -21,7 +21,7 @@
 import { MODULE_ID } from "./ace-qol.mjs";
 // The one reader for what made a number (roll-formula.mjs): every ACE roll card
 // prints the parts behind its total, never the total alone.
-import { explainSave, formulaText } from "./roll-formula.mjs";
+import { explainSave, formulaText, formulaPill } from "./roll-formula.mjs";
 import { aimAt } from "./road/aim.mjs";   // ACE aims on purpose: no "did you mean that corpse?" (road/aim.mjs)
 import { replyIsFromTheUserWeAsked } from "./socket-authority.mjs";
 import { registerChatCardHandler } from "./chat-render-utils.mjs";
@@ -5497,6 +5497,8 @@ export class SaveEngine {
     const allResults = [...npcResults, ...pcResults];
     await this._postSaveResultsPhase1(item, casterActor, allResults, {
       saveAbility, saveDC, halfOnSave, damageTypes, isSpell,
+      // The target list IS the save card. It becomes the result in place.
+      updateMessage: message,
       // The slot it was cast with, so the damage roll scales by it. It stopped
       // here, and every card's damage rolled at the spell's own level.
       spellLevel,
@@ -8225,6 +8227,37 @@ export class SaveEngine {
   // ─────────────────────────────────────────────────────────────────────────
   //  Build Phase 1 card HTML — extracted so late PC updates can rebuild
   // ─────────────────────────────────────────────────────────────────────────
+  /**
+   * THE FORMULA THAT MADE THE NUMBER, for one result row (his rule, 2026-09-29).
+   *
+   *     Dex 1 (-5) + proficiency +3 = -2
+   *
+   * Read off the creature's own sheet. Nothing is invented: a part that is not on
+   * the sheet is not on the card, and proficiency is never folded into the
+   * ability. The MATH IS NOT REDONE - the bonus the roll actually used
+   * (total minus the die) is the total shown, and the reader only names the parts
+   * behind it. It sits inside its own pill and wraps.
+   */
+  static _formulaForRow(r, opts = {}) {
+    try {
+      if (!r || r.noRoll || r.pending) return "";
+      const d20 = r.dieResult ?? r.roll?.dice?.[0]?.total ?? null;
+      const used = (typeof r.saveTotal === "number" && d20 != null) ? r.saveTotal - d20 : null;
+      const ab = String(r.saveAbility ?? opts?.saveAbility ?? "").toLowerCase();
+      if (!ab) return "";
+      const actor = (game.scenes?.get(r.sceneId)?.tokens?.get(r.tokenDocId)?.actor)
+        ?? game.actors?.get(r.actorId) ?? null;
+      if (!actor) return "";
+      const { parts } = explainSave(actor, ab);
+      if (!parts.length) return "";
+      return formulaPill(parts, { total: used, label: "save" });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not read what made ${r?.name}'s save bonus, `
+        + `so its row shows the total alone:`, err);
+      return "";
+    }
+  }
+
   _buildPhase1CardHtml(item, results, opts) {
     const { saveAbility, saveDC, hasDamage = true, halfOnSave = false, appliedConditions: _appliedRaw = [],
             activityId = null, autoResolve = false, presence = null } = opts;
@@ -8338,6 +8371,7 @@ export class SaveEngine {
                     style="font-weight:bold;font-size:15px;letter-spacing:0.5px;">${verdictText}</span>
             </div>
             ${SaveEngine._advTagsHtml(r)}
+            ${SaveEngine._formulaForRow(r, opts)}
           </div>
         </div>
       `;
@@ -8552,7 +8586,13 @@ export class SaveEngine {
   async _postSaveResultsPhase1(item, casterActor, results, opts) {
     const { saveAbility, saveDC, halfOnSave, damageTypes, isSpell,
             timingType, templateDocId, templateSceneId, hasDamage = true,
-            appliedConditions = [], activityId = null, spellLevel = null, recipe = null } = opts;
+            appliedConditions = [], activityId = null, spellLevel = null, recipe = null,
+            // ONE SAVE CARD (his rule, 2026-09-29). The card that asked for the
+            // save becomes the card that answers it. This path posted a SECOND
+            // message beside the target list, which is the "Save Results" filling
+            // his chat: the target list said "Save Required", this said the answer,
+            // and both stayed. Handed the asking card, it becomes it.
+            updateMessage = null } = opts;
 
     // ⚠️🔴 A ROLL THAT LANDED BEFORE THIS CARD EXISTED (his table, 2026-09-20:
     // "Aryel's fail landed before the card existed. The card still says she has
@@ -8580,7 +8620,7 @@ export class SaveEngine {
     // produced it has visibly stopped. (feedback_chat_cards_use_the_room)
     await awaitDiceSettle();
 
-    const posted = await CardDoor.post({
+    const _phase1Card = {
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor: casterActor }),
       // PUBLIC (Johnny 2026-07-11): the save results are visible to the whole
@@ -8661,7 +8701,28 @@ export class SaveEngine {
           templateSceneId: templateSceneId ?? null,
         }
       }
-    });
+    };
+
+    // BECOME THE CARD THAT ASKED, or post one when there was none.
+    let posted;
+    if (updateMessage) {
+      // THE CARD IS STILL THE CAST. Everything that reconciles a player's own
+      // result looks it up by castId, and the target list answered that with its
+      // own id ("f.type === saveTargetList ? message.id : f.castId"). Once this
+      // card stops calling itself a target list, that shortcut stops working, so
+      // the id is written in explicitly. Without it a PC result posted from
+      // another screen would never find its row again.
+      await CardDoor.update(updateMessage, {
+        content: _phase1Card.content,
+        [`flags.${MODULE_ID}`]: { ...(updateMessage.flags?.[MODULE_ID] ?? {}),
+                                  ...(_phase1Card.flags?.[MODULE_ID] ?? {}),
+                                  castId: updateMessage.id },
+      });
+      posted = updateMessage;
+      console.log(`${MODULE_ID} | the save card became its own result; no second card was posted.`);
+    } else {
+      posted = await CardDoor.post(_phase1Card);
+    }
 
     // A mechanic the recipe names that ACE has not built is said, not skipped.
     await this._sayWhatIsNotBuilt(item, casterActor, recipe);
@@ -9699,9 +9760,12 @@ export class SaveEngine {
 
     // BECOME THE CARD THAT ASKED, or post one when there was none to become.
     if (updateMessage) {
+      // Same as phase 1: the card that became the result is still the cast.
       await CardDoor.update(updateMessage, {
         content: _cardData.content,
-        [`flags.${MODULE_ID}`]: _cardData.flags?.[MODULE_ID] ?? {},
+        [`flags.${MODULE_ID}`]: { ...(updateMessage.flags?.[MODULE_ID] ?? {}),
+                                  ...(_cardData.flags?.[MODULE_ID] ?? {}),
+                                  castId: updateMessage.id },
       });
       console.log(`${MODULE_ID} | the save card became its own result; no second card was posted.`);
     } else {

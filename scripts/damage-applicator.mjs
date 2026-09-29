@@ -697,7 +697,14 @@ export class DamageApplicator {
     // 1500ms post-card clear pattern for distribute shapes (Magic Missile).
     setTimeout(() => {
       try {
-        for (const t of [...(game.user?.targets ?? [])]) {
+        const held = [...(game.user?.targets ?? [])];
+        // ONE TARGET STAYS (his rule, 2026-09-29). Two or more clear when the
+        // resolve is done, exactly as they always have.
+        if (held.length === 1) {
+          console.log(`${MODULE_ID} | one target (${held[0]?.name ?? "it"}) stays after APPLY ALL.`);
+          return;
+        }
+        for (const t of held) {
           t.setTarget?.(false, { user: game.user, releaseOthers: false, groupSelection: false });
         }
         game.user?.targets?.clear?.();

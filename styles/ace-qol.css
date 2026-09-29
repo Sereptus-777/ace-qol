@@ -6294,11 +6294,9 @@ i.ace-douse-tool::after {
    ⚠️ NOTHING IS HIDDEN. The numbers stay readable, the pill keeps its shape and
    nothing is clipped; it is only dimmed and desaturated so a screen full of turns
    shows at a glance which ones are still waiting. */
-.ace-qol-regen-card.ace-qol-ot-spent {
-  opacity: 0.55;
-  filter: saturate(0.35);
-  border-color: rgba(212, 175, 55, 0.35);
-}
+/* The BUTTON is spent, not the card. The name, the number and the portrait stay
+   exactly as bright as they were; only the thing he already pressed goes grey. */
 .ace-qol-regen-card.ace-qol-ot-spent .ace-qol-ot-heal {
+  opacity: 0.6;
   background: #6f7f52; border-color: #5a6742; cursor: default;
 }
