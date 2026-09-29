@@ -7,6 +7,10 @@
 import { MODULE_ID } from "./ace-qol.mjs";
 import { QolSettings } from "./settings.mjs";
 import { DescriptionParser } from "./description-parser.mjs";
+// His rule: nothing lands before the dice that decided it. The stamp below is
+// bookkeeping rather than a landing, and it waits anyway — a settle with no dice
+// in the air returns at once, so it costs nothing to keep the rule unargued with.
+import { awaitDiceSettle } from "./dsn-utils.mjs";
 import { DamageConstants, safeShowForRoll } from "./damage-engine.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
 import { ConditionLibrary } from "./condition-library.mjs";
@@ -102,6 +106,52 @@ export class PostHitSaves {
       console.warn(`${MODULE_ID} | could not tell whether "${item?.name}" has a save that `
         + `follows its hit, so every choice stays on offer:`, err);
       return new Set();
+    }
+  }
+
+  /**
+   * Arm the start-of-turn break-free check on the creature that was just grabbed.
+   *
+   * ⚠️ NO NEW ENGINE. BreakFreeEngine has prompted at the start of a trapped
+   * creature's turn since the Entangling Rope, reading
+   * `flags.ace-qol.breakFree` off the effect. This writes that flag and stops.
+   * The prompt, the roll, the success and the clean-up are all its own.
+   *
+   * ⚠️ STAMPED ON THE EFFECT, the way the save engine stamps its own, because the
+   * engine looks for the flag on the condition rather than on the actor.
+   */
+  static async _armEscape(actor, item, name) {
+    try {
+      if (!actor || !item) return;
+      const escape = DescriptionParser.escapeFromGrapple(item);
+      if (!escape) return;
+      await awaitDiceSettle();
+      const eff = (actor.effects?.contents ?? []).find(e =>
+        !e.disabled && e.statuses?.has?.("grappled"));
+      if (!eff) {
+        console.warn(`${MODULE_ID} | post-hit: ${name} is grappled by "${item.name}" but the `
+          + `effect could not be found, so no escape check was armed.`);
+        return;
+      }
+      if (eff.flags?.[MODULE_ID]?.breakFree?.dc) return;    // already armed
+      await eff.update({
+        [`flags.${MODULE_ID}.breakFree`]: {
+          ability: escape.abilities[0],
+          abilities: escape.abilities,
+          dc: escape.dc,
+          label: item.name,
+          itemUuid: item.uuid ?? null,
+          appliedRound: game.combat?.round ?? null,
+          appliedTurn: game.combat?.turn ?? null,
+          stampedAt: Date.now(),
+        },
+      });
+      console.log(`${MODULE_ID} | post-hit: ${name} can try to escape "${item.name}" on its own `
+        + `turn — DC ${escape.dc}, ${escape.abilities.map(a => a.toUpperCase()).join(" or ")}. `
+        + `(${escape.sentence})`);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | post-hit: could not arm the escape from "${item?.name}" `
+        + `on ${name}:`, err);
     }
   }
 
@@ -1202,6 +1252,14 @@ export class PostHitSaves {
       if (out?.ok) {
         result.effects.push({ type: "condition", condition: key });
         console.log(`${MODULE_ID} | post-hit: ${key}${out.level !== undefined ? ` (level ${out.level})` : ""} put on ${name}.`);
+        // ⚠️🔴 A GRAPPLE IS NOT OVER WHEN IT LANDS (2026-09-29, his One Road
+        // stamp). The creature held gets to spend its action trying to get out,
+        // on ITS turn, and the one swinging is never asked. That prompt already
+        // exists and Web already uses it; all this does is stamp the flag it
+        // reads, with the DC the item's own words state.
+        if (key === "grappled") {
+          await PostHitSaves._armEscape(targetActor, item, name);
+        }
       } else if (out?.immune) {
         result.effects.push({ type: "condition", condition: key, blocked: true, reason: `immune to ${key}` });
         console.log(`${MODULE_ID} | post-hit: ${name} is immune to ${key}, so it was not put on.`);

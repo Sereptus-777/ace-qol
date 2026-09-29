@@ -124,7 +124,15 @@ export class BreakFreeEngine {
 
       const tokenId = combatant?.token?.id ?? combatant?.tokenId ?? null;
       const sceneId = combatant?.token?.parent?.id ?? canvas.scene?.id ?? null;
-      const abilityLabel = CONFIG.DND5E?.abilities?.[meta.ability]?.label ?? meta.ability.toUpperCase();
+      // ⚠️ ONE ABILITY OR A CHOICE OF TWO (2026-09-29). A rope or a net names the
+      // one check its own words name, and that is what `ability` has always been.
+      // Escaping a GRAPPLE is Athletics or Acrobatics and the held creature
+      // chooses, so a stamp may carry `abilities` as well. Nothing that stamps
+      // only `ability` behaves any differently: the list falls back to it.
+      const abilities = Array.isArray(meta.abilities) && meta.abilities.length
+        ? meta.abilities : [meta.ability];
+      const labelOf = (a) => CONFIG.DND5E?.abilities?.[a]?.label ?? String(a).toUpperCase();
+      const abilityLabel = abilities.map(labelOf).join(" or ");
       const img = actor.img || "icons/svg/mystery-man.svg";
 
       const content = `
@@ -140,17 +148,18 @@ export class BreakFreeEngine {
             ${aceD20FaceImg(20, { size: 38, glow: true })}
             <span>Spend your <b>action</b> to try to break free — a <b>${abilityLabel} check</b> vs <b style="color:#cfe8a0;">DC ${meta.dc}</b>.</span>
           </div>
-          <div style="display:flex;gap:8px;padding:0 12px 12px;">
+          <div style="display:flex;gap:8px;padding:0 12px 12px;flex-wrap:wrap;">
+            ${abilities.map(a => `
             <button class="ace-qol-breakfree-go" data-effect-id="${eff.id}" data-actor-uuid="${actor.uuid}"
                     data-token-id="${tokenId ?? ""}" data-scene-id="${sceneId ?? ""}" data-item-uuid="${meta.itemUuid ?? ""}"
-                    data-ability="${meta.ability}" data-dc="${meta.dc}" data-label="${foundry.utils.escapeHTML(meta.label || "")}"
-                    style="flex:1;display:flex;align-items:center;justify-content:center;gap:9px;padding:9px;color:#14140c;background:#9bcc4a;border:none;border-radius:6px;cursor:pointer;line-height:1.05;">
+                    data-ability="${a}" data-dc="${meta.dc}" data-label="${foundry.utils.escapeHTML(meta.label || "")}"
+                    style="flex:1 1 auto;min-width:118px;display:flex;align-items:center;justify-content:center;gap:9px;padding:9px;color:#14140c;background:#9bcc4a;border:none;border-radius:6px;cursor:pointer;line-height:1.05;">
               <i class="fas fa-hand-fist" style="font-size:17px;"></i>
               <span style="display:flex;flex-direction:column;align-items:center;">
-                <span style="font-size:16px;font-weight:700;">Break Free</span>
+                <span style="font-size:16px;font-weight:700;">${abilities.length > 1 ? labelOf(a) : "Break Free"}</span>
                 <span style="font-size:11px;font-weight:600;opacity:0.8;">uses action</span>
               </span>
-            </button>
+            </button>`).join("")}
             <button class="ace-qol-breakfree-skip" style="padding:9px 12px;font-size:14px;color:#cfe8a0;background:transparent;border:1px solid #4a5a28;border-radius:6px;cursor:pointer;">
               Stay
             </button>

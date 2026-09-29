@@ -817,6 +817,58 @@ export class DescriptionParser {
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
+   * ⚠️🔴 WHAT IT TAKES TO GET OUT, FROM THE ITEM'S OWN WORDS (2026-09-29).
+   *
+   * A grapple is not over when it lands. The creature held can spend its action
+   * to get free, and every statblock that grapples says the number:
+   *
+   *     "The target is grappled (escape DC 14)"
+   *     "it has the Grappled condition (escape DC 15)"
+   *
+   * 550 items in hijinx mention a grapple and 234 of them carry a DC in that
+   * shape. Nothing read it, so the number sat in the prose and the escape was the
+   * GM's to remember.
+   *
+   * ⚠️ AND IT REFUSES TO GUESS. Some of his items write the DC as an enricher
+   * — "(escape DC [[/save ...]])" — or as a formula ("equals 8 plus your
+   * proficiency"). Those have no plain number here, so this answers null and says
+   * so, rather than inventing one. A wrong DC is worse than no prompt.
+   *
+   * ⚠️ THE ABILITIES ARE THE RULES', NOT THE ITEM'S. Neither edition's statblock
+   * names which check; both say escaping a grapple is Athletics or Acrobatics and
+   * the held creature chooses. So both are offered and the player picks.
+   *
+   * @returns {{dc: number, abilities: string[], sentence: string}|null}
+   */
+  static escapeFromGrapple(item) {
+    try {
+      const raw = String(item?.system?.description?.value ?? "");
+      if (!raw) return null;
+      const text = raw.replace(/<[^>]+>/g, " ")
+        // &Reference[grappled]{grappled} reads as its label, so the sentence this
+        // quotes back into the log is the sentence he wrote, not the markup.
+        .replace(/(?:&amp;|&)?Reference\[(\w+)[^\]]*\](?:\{([^}]*)\})?/gi, (_m, id, label) => label || id)
+        .replace(/&[a-z]+;/gi, " ")
+        .replace(/[\u2018\u2019]/g, "'")
+        .replace(/\s+/g, " ");
+      if (!/\bgrappl/i.test(text)) return null;
+      const m = /\bescape\s*DC\s*(\d{1,2})\b/i.exec(text);
+      if (!m) {
+        if (/\bescape\s*DC\b/i.test(text)) {
+          console.log(`${MODULE_ID} | "${item?.name}" names an escape DC its words do not `
+            + `spell out as a number, so no break-free prompt is armed from it. The GM calls it.`);
+        }
+        return null;
+      }
+      const sentence = (/[^.]*\bescape\s*DC\s*\d{1,2}[^.]*\./i.exec(text)?.[0] ?? m[0]).trim();
+      return { dc: Number(m[1]), abilities: ["str", "dex"], sentence: sentence.slice(0, 160) };
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not read the escape DC on "${item?.name}":`, err);
+      return null;
+    }
+  }
+
+  /**
    * Parse effect tables like "roll a d6: 1-2: Decay, 3-4: Grapple, 5-6: Topple"
    * Patterns:
    *   "choose one or roll a d6:"
