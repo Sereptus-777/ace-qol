@@ -1734,6 +1734,48 @@ export class SaveEngine {
   }
 
 
+  /**
+   * DOES THIS POWER'S RESULT MOVE HIT POINTS?
+   *
+   * The one question behind "does a player's creature wait for APPLY": the press
+   * exists so hit points do not move before the GM has decided. A power that moves
+   * none has nothing to sequence, so its condition lands and there is no button.
+   *
+   * Read off the recipe's own outcome lists, where a damage outcome is a `kind:
+   * "damage"` entry with a formula. An unreadable recipe answers YES, because
+   * holding something the GM can release is recoverable and landing something he
+   * did not ask for is not.
+   */
+  static _recipeDealsDamage(recipe) {
+    if (!recipe) return true;
+    try {
+      const lists = [recipe.onFail, recipe.onSuccess, recipe.onHit, recipe.onCrit, recipe.then];
+      return lists.some(list => (list ?? []).some(o =>
+        o?.kind === "damage" && String(o?.formula ?? "").trim()));
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not read whether this power deals damage, so a player's `
+        + `creature waits for APPLY as it always has:`, err);
+      return true;
+    }
+  }
+
+  /**
+   * WHICH FUNCTION DREW THE CARD IN FRONT OF HIM.
+   *
+   * His table, 2026-09-29: "0.55 built a shell the live Charm path does not
+   * render." Five functions can draw a save card and every one of them looked the
+   * same in the console, so there was no way to tell from a log which one he was
+   * looking at - I had to read all five and guess. One line each ends that.
+   */
+  static _sayCard(who, message, note = "") {
+    try {
+      const f = message?.flags?.[MODULE_ID] ?? {};
+      const shell = /data-ace-save-shell/.test(String(message?.content ?? "")) ? "the shell" : "⚠️ NOT the shell";
+      console.log(`${MODULE_ID} | card: ${who} drew message ${message?.id ?? "?"} `
+        + `(type ${f.type ?? "?"}, phase ${f.phase ?? "-"}) as ${shell}${note ? ` — ${note}` : ""}.`);
+    } catch (_) { /* a log must never break a card */ }
+  }
+
   /** A card entry, for each creature that FAILED, saying why nothing landed. */
   static _declinedFor(results, why) {
     return (results ?? []).filter(r => SaveEngine._failedTheSave(r)).map(r => ({
@@ -3750,6 +3792,16 @@ export class SaveEngine {
     // at line ~2692 (querySelector ".ace-qol-save-tgt-row[data-pc='false']").
     // Without it, NPC rows can't be counted as pending → button false-positives
     // to "ALL ROLLED" as soon as PCs are done.
+    // ⚠️🔴 NO X WHERE AN X DOES NOTHING (his card, 2026-09-29). This drops a
+    // target off the save list BEFORE its damage is rolled. A power that moves no
+    // hit points has nothing to drop it from: Charm Person's only result is one
+    // reversible condition, and the X on its row was a control with no job.
+    const _castDealsDamage = Array.isArray(damageTypes) && damageTypes.length > 0
+                          && damageTypes.some(t => t && t !== "none");
+    const _castRemoveBtn = (t, title) => _castDealsDamage
+      ? `<button class="ace-qol-save-tgt-remove" data-action="aceQolRemoveTarget" data-token-id="${t.tokenId}"${title ? ` title="${title}"` : ""}><i class="fas fa-xmark"></i></button>`
+      : "";
+
     const npcRowsHtml = npcs.map(t => {
       const di = _getDmgIndicator(t);
       return `
@@ -3760,7 +3812,7 @@ export class SaveEngine {
         <div class="ace-qol-save-tgt-identity" style="flex:1;min-width:0;">
           <div style="display:flex;align-items:center;gap:8px;">
             <span class="ace-qol-save-tgt-name" style="flex:1;font-weight:bold;color:#fff;font-size:16px;">${t.name}</span>
-            <button class="ace-qol-save-tgt-remove" data-action="aceQolRemoveTarget" data-token-id="${t.tokenId}"><i class="fas fa-xmark"></i></button>
+            ${_castRemoveBtn(t, "")}
           </div>
           <div style="margin-top:3px;">${_renderModBreakdown(t)}</div>
           ${_renderBadges(t)}
@@ -3784,7 +3836,7 @@ export class SaveEngine {
         <div class="ace-qol-save-tgt-identity" style="flex:1;min-width:0;">
           <div style="display:flex;align-items:center;gap:8px;">
             <span class="ace-qol-save-tgt-name" style="flex:1;font-weight:bold;color:#fff;font-size:16px;">${t.name}</span>
-            <button class="ace-qol-save-tgt-remove" data-action="aceQolRemoveTarget" data-token-id="${t.tokenId}" title="Remove this PC from the save list"><i class="fas fa-xmark"></i></button>
+            ${_castRemoveBtn(t, "Remove this PC from the save list")}
           </div>
           <div style="margin-top:3px;">${_renderModBreakdown(t)}</div>
           ${_renderBadges(t)}
@@ -3793,22 +3845,20 @@ export class SaveEngine {
     `}).join("");
 
     // ── Assemble card ──
-    const _actName   = this._abilityLabel(item, activityId, { rawOnly: true });
-    const _hasPower  = !!_actName;
-    const _cardTitle = this._abilityLabel(item, activityId);
+    // The ability's name is in the cast line now, so the title and its subtitle
+    // are gone with the header they lived in.
     const _effectLine = this._effectSummaryLine(item, { halfOnSave, damageTypes });
     const cardHtml = `
-      <div class="ace-qol-save-card">
+      <div class="ace-qol-save-card ace-qol-save-shell" data-ace-save-shell="1">
         ${this._castAnnouncementHtml(item, actor, tokens, activityId)}
-        <div class="ace-qol-save-header">
-          <img src="${item.img || "icons/svg/spell.svg"}" class="ace-qol-save-item-img" />
-          <div>
-            <strong class="ace-qol-save-item-name">${_cardTitle}</strong>
-            ${_hasPower ? `<span class="ace-qol-save-subname" style="display:block;font-size:11px;color:#b9a978;font-weight:600;">${item.name}</span>` : ""}
-            <span class="ace-qol-save-dc">DC ${saveDC} ${abilityLabel} Save</span>
-          </div>
-          ${halfOnSave ? '<span class="ace-qol-save-half-badge">HALF ON SAVE</span>' : ""}
-        </div>
+        <!-- ONE SHELL, EVERY SAVE CARD (his correction, 2026-09-29: "If the new
+             template is unused, delete it or wire it. Do not leave both."). This
+             card kept its own manila header with the item icon, a title and a DC
+             pill, so whichever path rendered decided what he saw. They all draw
+             the shell now: the caster's own portrait and one sentence, then the
+             quiet line whose DC half is the GM's alone. -->
+        ${SaveEngine.saveQuietLineHtml(targetData, { saveAbility, saveDC, abilityLabel })}
+        ${halfOnSave ? '<div class="ace-qol-save-half-badge">HALF ON SAVE</div>' : ""}
         ${_effectLine ? `<div class="ace-qol-save-effect-line"><i class="fas fa-angle-right"></i> ${_effectLine}</div>` : ""}
 
         ${npcs.length ? `
@@ -4095,15 +4145,16 @@ export class SaveEngine {
     }).join("");
 
     const cardHtml = `
-      <div class="ace-qol-save-card">
-        <div class="ace-qol-save-header">
-          <img src="${item.img || "icons/svg/spell.svg"}" class="ace-qol-save-item-img" />
-          <div>
-            <strong class="ace-qol-save-item-name">${this._abilityLabel(item, activityId)}</strong>
-            <span class="ace-qol-save-dc">DC ${saveDC} ${abilityLabel} Save</span>
-          </div>
-          ${halfOnSave ? '<span class="ace-qol-save-half-badge">HALF ON SAVE</span>' : ""}
-        </div>
+      <div class="ace-qol-save-card ace-qol-save-shell" data-ace-save-shell="1">
+        <!-- ONE SHELL, EVERY SAVE CARD (his correction, 2026-09-29: "If the new
+             template is unused, delete it or wire it. Do not leave both."). This
+             card kept its own manila header with the item icon, a title and a DC
+             pill, so whichever path rendered decided what he saw. They all draw
+             the shell now: the caster's own portrait and one sentence, then the
+             quiet line whose DC half is the GM's alone. -->
+        ${this._castAnnouncementHtml(item, actor, targetStates, activityId)}
+        ${SaveEngine.saveQuietLineHtml(targetStates, { saveAbility, saveDC, abilityLabel })}
+        ${halfOnSave ? '<div class="ace-qol-save-half-badge">HALF ON SAVE</div>' : ""}
         <div class="ace-qol-save-targets">
           ${targetRows}
         </div>
@@ -6439,7 +6490,11 @@ export class SaveEngine {
       <div class="ace-qol-pc-save-card" style="background:#0c0c10;border:1px solid #d4af37;border-radius:9px;overflow:hidden;font-family:'Signika',sans-serif;">
         <div style="padding:11px 15px;border-bottom:1px solid rgba(212,175,55,0.3);background:#0c0c10;">
           <div style="color:#f0e4c0;font-weight:700;font-size:19px;line-height:1.15;">${item.name}</div>
-          <div style="color:#d4af37;font-size:15px;font-weight:600;margin-top:3px;">DC ${saveDC} ${abilityLabel} Save</div>
+          <!-- ⚠🔴 A PLAYER NEVER SEES A DC (his standing rule). This card is
+               WHISPERED TO THE PLAYER, and it printed the number they are rolling
+               against in gold under the spell's name. What they need is which save
+               to roll; what they must not have is the target. -->
+          <div class="ace-qol-save-prompt-ability" style="color:#d4af37;font-size:15px;font-weight:600;margin-top:3px;">Roll a ${abilityLabel} save</div>
         </div>
         <div style="display:flex;align-items:center;gap:15px;padding:15px;background:#0c0c10;">
           <div style="display:flex;flex-direction:column;align-items:center;gap:8px;flex-shrink:0;">
@@ -7111,8 +7166,21 @@ export class SaveEngine {
     console.log(`${MODULE_ID} | _updateTargetListPcRow looking for tokenDocId:`, tokenDocId);
 
     // Search the entire document — V13 chat containers vary
-    const row = document.querySelector(`.ace-qol-save-tgt-row[data-token-doc-id="${tokenDocId}"]`);
-    if (!row) { console.log(`${MODULE_ID} | Row not found in DOM`); return; }
+    // ⚠️🔴 "NOT FOUND" AND "THERE IS NOTHING TO FIND" ARE DIFFERENT FACTS.
+    // This printed one line for both. Since the card that asks became the card that
+    // answers, the cast card's rows are REPLACED by result rows: there is correctly
+    // no `.ace-qol-save-tgt-row` left to patch, and the card is rebuilt whole by
+    // `_doUpdateMainCardPcResult` instead. That is not a failure, and reading it as
+    // one is how an evening goes looking for a bug that is not there.
+    const row = document.querySelector(`.ace-qol-save-tgt-row[data-token-doc-id="${tokenDocId}"]`)
+      ?? document.querySelector(`.ace-qol-save-tgt-row[data-token-id="${tokenDocId}"]`);
+    if (!row) {
+      const asResult = document.querySelector(`.ace-qol-save-result-row[data-token-doc-id="${tokenDocId}"]`);
+      console.log(`${MODULE_ID} | ${tokenDocId} has no cast-card row to patch`
+        + `${asResult ? ", because that card has already become its own result and is redrawn whole"
+                      : ": no row for it is on screen at all"}.`);
+      return;
+    }
     {
 
       const passClass = pcResult.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
@@ -7403,7 +7471,8 @@ export class SaveEngine {
         [`flags.${MODULE_ID}.allResults`]: allResults,
         [`flags.${MODULE_ID}.appliedConditions`]: cardApplied,
       });
-      console.log(`${MODULE_ID} | Card updated for ${r.name}: ${r.passed ? "PASS" : "FAIL"} (${r.saveTotal})`);
+      SaveEngine._sayCard("_doUpdateMainCardPcResult", msg,
+        `${r.name} ${r.passed ? "PASS" : "FAIL"} (${r.saveTotal})`);
       // The last save on a trigger's card finishes it (no button).
       await this._autoResolveIfReady(msg);
     } catch (err) {
@@ -8049,7 +8118,17 @@ export class SaveEngine {
       // presence still holds (2026-09-20) because a presence is named here
       // explicitly, and the Wing's Prone still holds (2026-09-21) because the Wing
       // deals damage.
-      const _nothingToSequence = saveCtx?.dealsDamage === false
+      // ⚠🔴 READ, NOT PASSED IN. 0.55 asked the CALLER whether the save
+      // dealt damage, and of the five places that land a failed save only one was
+      // told. His live Charm Person came through `_doUpdateMainCardPcResult`, which
+      // was not, so the console still said "charm_person waits for APPLY" and the
+      // APPLY button was still on the card. That is the dice-door lesson again: a
+      // fact every caller has to remember is a fact most callers will not.
+      //
+      // The recipe is right here and it is the thing that knows. A caller may still
+      // state it, and one that says nothing gets the answer read off the recipe.
+      const _dealsDamage = saveCtx?.dealsDamage ?? SaveEngine._recipeDealsDamage(recipe);
+      const _nothingToSequence = _dealsDamage === false
         && !saveCtx?.presence?.sourceTokenId;
       if (_nothingToSequence && r.isPC && !saveCtx?.dryRun) {
         console.log(`${MODULE_ID} | ${item.name}: ${actor.name} is a player's creature, and this `
@@ -8258,7 +8337,9 @@ export class SaveEngine {
 
           // Build options bundle for applyByName — concentration linkage AND
           // repeating-save metadata (when applicable).
-          const applyOpts = {};
+          // WHAT PUT IT ON, so "one write per status per source" can tell one
+          // power landing twice from two powers stacking.
+          const applyOpts = { source: item.name };
           if (saveCtx?.presence?.sourceTokenId) {
             applyOpts.extraFlags = { presence: {
               sourceTokenId: saveCtx.presence.sourceTokenId,
@@ -9211,9 +9292,10 @@ export class SaveEngine {
                                   castId: updateMessage.id },
       });
       posted = updateMessage;
-      console.log(`${MODULE_ID} | the save card became its own result; no second card was posted.`);
+      SaveEngine._sayCard("_postSaveResultsPhase1", posted, "it became the card that asked");
     } else {
       posted = await CardDoor.post(_phase1Card);
+      SaveEngine._sayCard("_postSaveResultsPhase1", posted, "there was no card to become, so it posted one");
     }
 
     // A mechanic the recipe names that ACE has not built is said, not skipped.
@@ -9852,15 +9934,15 @@ export class SaveEngine {
     }).join(", ");
 
     return `
-      <div class="ace-qol-save-results-card" data-phase="2">
+      <div class="ace-qol-save-results-card ace-qol-save-shell" data-phase="2" data-ace-save-shell="1">
         ${this._castAnnouncementHtml(item, casterActor, results, activityId)}
-        <div class="ace-qol-save-header">
-          <img src="${item.img || "icons/svg/spell.svg"}" class="ace-qol-save-item-img" />
-          <div>
-            <strong class="ace-qol-save-item-name">${this._abilityLabel(item, activityId)} \u2014 Save Results</strong>
-            <span class="ace-qol-save-dc">DC ${saveDC} ${abilityLabel}</span>
-          </div>
-        </div>
+        <!-- ONE SHELL, EVERY SAVE CARD (his correction, 2026-09-29: "If the new
+             template is unused, delete it or wire it. Do not leave both."). This
+             card kept its own manila header with the item icon, a title and a DC
+             pill, so whichever path rendered decided what he saw. They all draw
+             the shell now: the caster's own portrait and one sentence, then the
+             quiet line whose DC half is the GM's alone. -->
+        ${SaveEngine.saveQuietLineHtml(results, { saveAbility, saveDC, abilityLabel })}
         <div class="ace-qol-save-dmg-summary">Damage: ${dmgSummary}</div>
         <div class="ace-qol-save-results">
           ${targetRows}
@@ -10175,15 +10257,15 @@ export class SaveEngine {
     }).join(", ");
 
     const cardHtml = `
-      <div class="ace-qol-save-results-card">
+      <div class="ace-qol-save-results-card ace-qol-save-shell" data-ace-save-shell="1">
         ${this._castAnnouncementHtml(item, casterActor, results, activityId)}
-        <div class="ace-qol-save-header">
-          <img src="${item.img || "icons/svg/spell.svg"}" class="ace-qol-save-item-img" />
-          <div>
-            <strong class="ace-qol-save-item-name">${this._abilityLabel(item, activityId)} \u2014 Save Results</strong>
-            <span class="ace-qol-save-dc">DC ${saveDC} ${abilityLabel}</span>
-          </div>
-        </div>
+        <!-- ONE SHELL, EVERY SAVE CARD (his correction, 2026-09-29: "If the new
+             template is unused, delete it or wire it. Do not leave both."). This
+             card kept its own manila header with the item icon, a title and a DC
+             pill, so whichever path rendered decided what he saw. They all draw
+             the shell now: the caster's own portrait and one sentence, then the
+             quiet line whose DC half is the GM's alone. -->
+        ${SaveEngine.saveQuietLineHtml(results, { saveAbility, saveDC, abilityLabel })}
         <div class="ace-qol-save-dmg-summary">Damage: ${dmgSummary}</div>
         <div class="ace-qol-save-results">
           ${targetRows}
@@ -10245,9 +10327,10 @@ export class SaveEngine {
                                   ...(_cardData.flags?.[MODULE_ID] ?? {}),
                                   castId: updateMessage.id },
       });
-      console.log(`${MODULE_ID} | the save card became its own result; no second card was posted.`);
+      SaveEngine._sayCard("_postSaveResults (legacy)", updateMessage, "it became the card that asked");
     } else {
-      await CardDoor.post(_cardData);
+      const _p = await CardDoor.post(_cardData);
+      SaveEngine._sayCard("_postSaveResults (legacy)", _p, "there was no card to become, so it posted one");
     }
   }
 

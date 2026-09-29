@@ -61,8 +61,11 @@ console.log("ONE WRITE, NOT TWO");
 /* ══ 2. WHY APPLY RAN ═════════════════════════════════════════════════════ */
 console.log("\nWHY APPLY RAN");
 {
+  // ⚠️ AND IT READS THE FACT RATHER THAN BEING HANDED IT. 0.55 asked the caller,
+  // and of the five places that land a failed save only one was told — so his live
+  // Charm Person still said "waits for APPLY".
   check("a save that moves no hit points lands what it leaves",
-    /const _nothingToSequence = saveCtx\?\.dealsDamage === false\s*\n\s*&& !saveCtx\?\.presence\?\.sourceTokenId;/.test(save),
+    /const _nothingToSequence = _dealsDamage === false[\s\S]{0,60}!saveCtx\?\.presence\?\.sourceTokenId;/.test(save),
     "no APPLY on Charm");
   check("and the hold is skipped for exactly that case",
     /if \(_holdPCs && !_nothingToSequence && r\.isPC && !saveCtx\?\.dryRun\) \{/.test(save),
@@ -184,6 +187,81 @@ console.log("\nBEFORE THE ROLL, AND THE CHAIN");
   check("still one ChatMessage, still no second Save Results post",
     /if \(typeof updateMessage\?\.update === "function"\) \{/.test(ph)
     && /castId: updateMessage\.id, resolved: true/.test(ph), "it becomes the card that asked");
+}
+
+/* == EVERY SAVE CARD, NOT JUST THE ONE I CONVERTED ===================== */
+// His correction, 2026-09-29: "0.55 built a shell the live Charm path does not
+// render ... If the new template is unused, delete it or wire it. Do not leave
+// both." Five functions in this engine can draw a save card. I converted one and
+// then checked the one I converted, which is the same mistake as reading a pin
+// instead of the table: the live Charm path drew a different one.
+console.log("\nNO CARD IS LEFT BEHIND");
+{
+  check("not one manila header is left in the engine",
+    !/ace-qol-save-header/.test(save), "0 left");
+  check("nor in the post-hit card",
+    !/ace-qol-save-header/.test(ph), "0 left");
+  const shells = (save.match(/data-ace-save-shell="1"/g) ?? []).length;
+  check("every card the engine draws is stamped as the shell", shells >= 4,
+    `${shells} cards`);
+  check("and the post-hit asking and result cards too",
+    (ph.match(/data-ace-save-shell="1"/g) ?? []).length === 2, "ask and answer");
+  check("the quiet line is the one header they all draw",
+    (save.match(/saveQuietLineHtml\(/g) ?? []).length >= 5, "one reader, five cards");
+
+  // THE PLAYER'S WHISPERED PROMPT LEAKED THE DC IN GOLD.
+  check("the whispered prompt says which save, never the number to beat",
+    /Roll a \$\{abilityLabel\} save/.test(save)
+    && !/DC \$\{saveDC\} \$\{abilityLabel\} Save<\/div>/.test(save),
+    "a player never sees a DC");
+}
+
+/* == THE HOLD IS READ, NOT PASSED IN ================================== */
+console.log("\nTHE HOLD ASKS THE RECIPE");
+{
+  check("the lander reads whether the power deals damage",
+    /const _dealsDamage = saveCtx\?\.dealsDamage \?\? SaveEngine\._recipeDealsDamage\(recipe\);/.test(save),
+    "no caller can forget it");
+  check("and reads it off the recipe's own outcomes",
+    /o\?\.kind === "damage" && String\(o\?\.formula \?\? ""\)\.trim\(\)/.test(save),
+    "kind: damage, with a formula");
+  check("an unreadable recipe holds, because that is the recoverable answer",
+    /if \(!recipe\) return true;/.test(save), "hold, not land");
+  check("the cast card's X is gone where nothing is sequenced too",
+    /const _castRemoveBtn = \(t, title\) => _castDealsDamage/.test(save), "both cards");
+}
+
+/* == ONE WRITE PER STATUS, PER SOURCE ================================= */
+console.log("\nONE WRITE PER STATUS");
+{
+  const cl = read("scripts/condition-library.mjs");
+  check("a second write of the same statuses from the same source is refused",
+    /const _wantStatuses = \[\.\.\.\(ALL_EFFECTS\[key\]\?\.statuses \?\? \[key\]\)\]/.test(cl)
+    && /return \{ ok: true, applied: _twin\.name, duplicate: true \};/.test(cl),
+    "charm_person and charmed are one status");
+  check("it is refused BEFORE toggleStatusEffect can make dnd5e's own copy",
+    cl.indexOf("_wantStatuses") < cl.indexOf("actor.toggleStatusEffect(key, { active: true })"),
+    "no second dnd5echarmed0000");
+  check("two different powers can still both charm a creature",
+    /return from === _src;/.test(cl), "same source only");
+  check("and what put it on is stamped where the guard can read it",
+    /source: options\.source \?\? null,/.test(cl)
+    && /const applyOpts = \{ source: item\.name \};/.test(save),
+    "not a layer nothing calls");
+}
+
+/* == WHICH FUNCTION DREW THE CARD ===================================== */
+console.log("\nTHE CARD SAYS WHO DREW IT");
+{
+  check("one line names the renderer, the message and whether it is the shell",
+    /static _sayCard\(who, message, note = ""\)/.test(save)
+    && /NOT the shell/.test(save), "no more guessing between five");
+  check("every write point says it",
+    (save.match(/SaveEngine\._sayCard\(/g) ?? []).length >= 5, "five callers");
+  check("and the row patcher no longer cries wolf",
+    /has no cast-card row to patch/.test(save)
+    && /already become its own result and is redrawn whole/.test(save),
+    '"not found" is not "nothing to find"');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

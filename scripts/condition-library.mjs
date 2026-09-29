@@ -1837,6 +1837,11 @@ export class ConditionLibrary {
       flags: {
         [MODULE_ID]: {
           conditionKey: key,
+          // ⚠️ WHAT PUT IT ON, kept ON the effect. Without it "one write per status
+          // per source" had no way to tell one power landing twice from two powers
+          // stacking, so the guard above could never find its own twin. A layer
+          // nothing can read is the same bug wearing a hat.
+          source: options.source ?? null,
           category: def.category,
           concentration: def.concentration ?? false,
           specialDuration: options.specialDuration ?? def.specialDuration ?? null,
@@ -2203,6 +2208,48 @@ export class ConditionLibrary {
           ConditionLibrary._debug?.(`applyByName: replaced existing "${key}" on ${actor.name} (dedupe)`);
         }
       } catch (_) { /* dedupe is best-effort — never block the application */ }
+    }
+
+    // ── ONE WRITE PER STATUS, PER SOURCE ────────────────────────────
+    //
+    // His table, 2026-09-29: "No second dnd5echarmed0000 write. The collision in
+    // the log is the second write."
+    //
+    // The dedupe below this is keyed on the KEY. Charm Person lands through the
+    // registry key `charm_person`, whose definition carries the charmed STATUS, so
+    // a second call with the plain key `charmed` looked like a different condition
+    // entirely: `toggleStatusEffect("charmed")` then created dnd5e's fixed-id
+    // `dnd5echarmed0000` beside ACE's "Charmed by Caster", both carrying charmed.
+    // That is the collision the toggle guard swallows, and it is also the second
+    // Automated Animations clip - AA fires once per effect.
+    //
+    // ⚠️ ONLY FROM THE SAME SOURCE. A creature CAN be charmed by two different
+    // things, and each keeps its own rules and duration (Suggestion on top of Charm
+    // Person). This refuses a second write of the same statuses from the SAME
+    // source only, which is one power landing twice, never two powers stacking.
+    try {
+      const _wantStatuses = [...(ALL_EFFECTS[key]?.statuses ?? [key])]
+        .map(x => String(x).toLowerCase()).filter(Boolean);
+      const _src = String(options?.source ?? "").toLowerCase().trim();
+      if (_wantStatuses.length && _src) {
+        const _twin = (actor.effects?.contents ?? []).find(e => {
+          if (e.disabled) return false;
+          if (!_wantStatuses.every(st => e.statuses?.has?.(st))) return false;
+          const f = e.flags?.["ace-qol"] ?? {};
+          const from = String(f.source ?? f.spellEffect?.spellName ?? f.concentrationOrigin?.spellName ?? "")
+            .toLowerCase().trim();
+          return from === _src;
+        });
+        if (_twin) {
+          console.log(`ace-qol | ${actor.name} already carries "${_twin.name}" from ${options.source}, `
+            + `which puts on ${_wantStatuses.join(", ")}. ONE WRITE: "${key}" is not written a second `
+            + `time, so there is one effect and one animation.`);
+          return { ok: true, applied: _twin.name, duplicate: true };
+        }
+      }
+    } catch (err) {
+      console.warn(`ace-qol | could not check whether ${actor?.name} already carries what "${key}" `
+        + `puts on, so it is applied as it always was:`, err);
     }
 
     // ── Standard binary status condition ──
