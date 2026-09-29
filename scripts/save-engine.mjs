@@ -95,6 +95,8 @@ export { aceD20FaceImg };
 // The player who must roll gets a box on their own screen (his rule,
 // 2026-09-19); who that is, is the one rule every prompt asks.
 import { RollPopout } from "./roll-popout.mjs";
+// How long a condition lasts, in the words the card says it in.
+import { durationWords, durationSecondsOf } from "./duration-words.mjs";
 import { popupDing } from "./popup-ding.mjs";
 import { whoAnswers } from "./who-answers.mjs";
 
@@ -534,6 +536,13 @@ export class SaveEngine {
             for (const gmEl of el.querySelectorAll(".ace-qol-gm-only")) {
               gmEl.setAttribute("data-ace-gm", "true");
             }
+            // ⚠️🔴 A PLAYER NEVER SEES A DC (his standing rule). Every save card
+            // in the game printed "DC 13 Wisdom" in its header, to the whole table.
+            // Stamped here rather than wrapped card by card, because the ones that
+            // were missed are exactly the ones nobody thought about.
+            for (const dcEl of el.querySelectorAll(".ace-qol-save-dc")) {
+              dcEl.setAttribute("data-ace-gm", "true");
+            }
           } else {
             // Hide GM-only in-row controls from players — remove-target ×,
             // roll-on-behalf dice, phase-1 remove. These live inside shared
@@ -560,6 +569,10 @@ export class SaveEngine {
       // than in each card's own branch because the row is shared now, and a
       // control wired in one branch is a control that is dead in the other three.
       this._wireAwaitRollButtons(el, message, flags);
+
+      // The shell: Foundry's speaker strip off this message, and the line that says
+      // what landed put into the second person on the screen it happened to.
+      this._wireSaveShell(el, message, flags);
 
       // ── Save Prompt card (legacy — still supported) ──
       if (flags.type === "savePrompt") {
@@ -3352,10 +3365,34 @@ export class SaveEngine {
     const tgts   = this._formatTargetNames(targets);
     // ⚠️ A CLAW IS NOT CAST. "Neferon casts Claws on Specter" (2026-09-12).
     const isSpell = item?.type === "spell";
+    return SaveEngine.castLineHtml(casterActor, spell, tgts, { isSpell, fallbackImg: item?.img });
+  }
+
+  /**
+   * LINE 1 OF THE SHELL: who did what to whom (his card, 2026-09-29).
+   *
+   *     [Lamia's portrait]  Lamia casts Charm Person on Jeth
+   *
+   * ⚠️ THE CASTER'S OWN FACE, not the spell's icon. The card led with the item
+   * image, which is the same picture for every Charm Person anybody ever casts; the
+   * creature doing it is what is worth recognising across a table.
+   *
+   * ⚠️ A CLAW IS NOT CAST. "Neferon casts Claws on Specter" (2026-09-12), so a
+   * feature "uses" and a spell "casts".
+   *
+   * Static so the post-hit save card draws the same line instead of keeping its own
+   * header, which is how that one still had a DC pill on it.
+   */
+  static castLineHtml(casterActor, title, targetNames, { isSpell = true, fallbackImg = null } = {}) {
+    const who = casterActor?.name ?? "Someone";
+    const img = casterActor?.img || fallbackImg || "icons/svg/mystery-man.svg";
+    const esc = (v) => foundry.utils.escapeHTML(String(v ?? ""));
     return `<div class="ace-qol-save-cast-line">`
-      + `<i class="fas ${isSpell ? "fa-wand-magic-sparkles" : "fa-hand-fist"}"></i> `
-      + `<strong>${caster}</strong> ${isSpell ? "casts" : "uses"} <strong>${spell}</strong>`
-      + `${tgts ? ` on <strong>${tgts}</strong>` : ""}`
+      + `<img class="ace-qol-save-caster-img ace-qol-save-portrait" src="${img}" alt="" />`
+      + `<span class="ace-qol-save-cast-text">`
+      + `<strong>${esc(who)}</strong> ${isSpell ? "casts" : "uses"} <strong>${esc(title)}</strong>`
+      + `${targetNames ? ` on <strong>${targetNames}</strong>` : ""}`
+      + `</span>`
       + `</div>`;
   }
 
@@ -5471,6 +5508,8 @@ export class SaveEngine {
     try {
       appliedConditions = await this._applyFailedSaveConditions(item, [...npcResults, ...pcResults],
         { saveAbility, saveDC, activityId, casterActor, recipe, presence: flags.presence ?? null,
+          // Whether anything is waiting to be sequenced behind the GM's press.
+          dealsDamage: hasDamage,
           holdPCs: flags.holdPCs !== false }) ?? [];
     } catch (err) {
       console.error(`${MODULE_ID} | Phase-1 condition application failed:`, err);
@@ -6559,6 +6598,57 @@ export class SaveEngine {
    * can roll twice. Only when there is no prompt on this screen is the shape
    * rebuilt from the card's own flags.
    */
+  /**
+   * THE SHELL, ON THIS SCREEN.
+   *
+   * Two things a card built once by the GM cannot decide for itself:
+   *
+   * 1. FOUNDRY'S SPEAKER STRIP. The manila bar with the name and DUNGEON MASTER is
+   *    Foundry's own markup, outside anything ACE writes, so the stylesheet cannot
+   *    reach it from inside the card. The flag is stamped onto the message element
+   *    here and the stylesheet hangs off that, which is why other chat keeps its
+   *    strip: no ACE save card, no stamp. The controls stay - his rule, "keep a
+   *    small ⋮ so the message can still be deleted" - and they move into the
+   *    card's top-right corner instead of holding a bar open.
+   *
+   * 2. WHOSE CREATURE IT IS. "Charmed — 1 hour" is right for everyone watching;
+   *    "You are Charmed for 1 hour." is right for the one person it happened to.
+   *    Both cannot be baked into one message, so the line ships in the third person
+   *    carrying the second, and the owner's own screen swaps it.
+   */
+  _wireSaveShell(el, message, flags) {
+    try {
+      if (el?.querySelector?.("[data-ace-save-shell]") && el.setAttribute) {
+        el.setAttribute("data-ace-save-shell", "1");
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not stamp the save shell onto this message, so it keeps `
+        + `Foundry's speaker strip:`, err);
+    }
+
+    try {
+      const lines = el?.querySelectorAll?.(".ace-qol-save-landed[data-mine]") ?? [];
+      for (const line of lines) {
+        if (line.dataset.wired) continue;
+        const mine = line.dataset.mine;
+        if (!mine) continue;
+        // The GM reads the table's version: he is watching all of them.
+        if (game.user?.isGM) { line.dataset.wired = "1"; continue; }
+        const tokenDocId = line.dataset.tokenDocId;
+        const row = (flags?.allResults ?? flags?.targets ?? []).find(r => r?.tokenDocId === tokenDocId);
+        const actor = (game.scenes?.get(row?.sceneId)?.tokens?.get(tokenDocId)?.actor)
+          ?? (row?.actorId ? game.actors?.get(row.actorId) : null);
+        if (!actor?.isOwner) { line.dataset.wired = "1"; continue; }
+        line.textContent = mine;
+        line.classList.add("ace-qol-save-landed-mine");
+        line.dataset.wired = "1";
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not put the line that says what landed into the second `
+        + `person, so it reads as it does for the table:`, err);
+    }
+  }
+
   _wireAwaitRollButtons(el, message, flags) {
     let btns;
     try { btns = el?.querySelectorAll?.("[data-action='aceQolRollMySave']") ?? []; }
@@ -7947,7 +8037,25 @@ export class SaveEngine {
       // abilities, so it is the rule for a save card rather than a feature of
       // one ability. A caller that must land at once says `holdPCs: false`.
       const _holdPCs = saveCtx?.holdPCs ?? saveCtx?.presence?.holdPCs ?? true;
-      if (_holdPCs && r.isPC && !saveCtx?.dryRun) {
+      // ⚠️🔴 AND A SAVE WITH NOTHING TO SEQUENCE DOES NOT ASK (his card,
+      // 2026-09-29: "Recipe already says fail -> charmed 3600s. That lands once,
+      // through the condition door, after DSN. No APPLY button on Charm.").
+      //
+      // APPLY exists so hit points do not move before he has decided. Charm Person
+      // moves none: the whole result is one reversible condition, and the press was
+      // a step with no decision in it, sitting under a card that says FAIL.
+      //
+      // Both of the cases he asked the hold for are untouched. A frightening
+      // presence still holds (2026-09-20) because a presence is named here
+      // explicitly, and the Wing's Prone still holds (2026-09-21) because the Wing
+      // deals damage.
+      const _nothingToSequence = saveCtx?.dealsDamage === false
+        && !saveCtx?.presence?.sourceTokenId;
+      if (_nothingToSequence && r.isPC && !saveCtx?.dryRun) {
+        console.log(`${MODULE_ID} | ${item.name}: ${actor.name} is a player's creature, and this `
+          + `save moves no hit points, so what it leaves lands now instead of waiting on APPLY.`);
+      }
+      if (_holdPCs && !_nothingToSequence && r.isPC && !saveCtx?.dryRun) {
         const waiting = failConditions.map(c => c.condition).filter(Boolean);
         applied.push({ targetName: r.name ?? actor.name, tokenDocId: r.tokenDocId,
           conditions: [], held: waiting, note: null });
@@ -8112,6 +8220,9 @@ export class SaveEngine {
       }
 
       const appliedForThisTarget = [];
+      // condition key -> how many seconds it landed for, so the card can say
+      // "Charmed — 1 hour" instead of just "Charmed".
+      const durationForThisTarget = {};
       const immuneForThisTarget = [];   // so the card can say IMMUNE instead of lying
       const failedToApply = [];         // what was tried and did not take, for the card
       // ⚠️🔴 A WARD IS NOT A FAILURE (2026-09-27). Something the creature carries
@@ -8232,6 +8343,13 @@ export class SaveEngine {
             const tagStr = tagBits.length ? ` [${tagBits.join(", ")}]` : "";
             console.log(`${MODULE_ID} | ${item.name}: applied "${cond.condition}"${detail} to ${actor.name} (failed save)${tagStr}`);
             appliedForThisTarget.push(cond.condition);
+            // HOW LONG, kept beside WHAT (his shell, 2026-09-29: the line under the
+            // result reads "Charmed — 1 hour"). The card had the condition and not
+            // its duration, so it could only ever say half of what happened.
+            {
+              const secs = durationSecondsOf(applyOpts?.duration) || Number(durationSeconds) || 0;
+              if (secs > 0) durationForThisTarget[String(cond.condition).toLowerCase()] = secs;
+            }
 
             // Stamp the break-free tag DIRECTLY on the applied effect from here,
             // so it never depends on condition-library's internal stamp path
@@ -8293,7 +8411,12 @@ export class SaveEngine {
             castLevel: saveCtx?.castLevel ?? null,
             dryRun: !!saveCtx?.dryRun,
           });
-          if (res.ok) {
+          if (res.duplicate) {
+            // ONE WRITE: the condition line already says this. Listing the effect
+            // beside it is what printed "Charm_person" next to "Charmed".
+            console.log(`${MODULE_ID} | ${item.name}: "${fx.name}" is the same thing as the `
+              + `condition already on ${actor.name}, so the card says it once.`);
+          } else if (res.ok) {
             appliedForThisTarget.push(fx.name);
             if (repeatingSaveMeta) saveCarried = true;
           } else {
@@ -8307,6 +8430,8 @@ export class SaveEngine {
           targetName: r.name ?? actor.name,
           tokenDocId: r.tokenDocId,
           conditions: appliedForThisTarget,
+          // key -> seconds, for the one line that says what landed and for how long.
+          ...(Object.keys(durationForThisTarget).length ? { durations: durationForThisTarget } : {}),
           ...(alternativesNote ? { note: alternativesNote } : {}),
         });
       }
@@ -8365,7 +8490,9 @@ export class SaveEngine {
             castLevel: saveCtx?.castLevel ?? null,
             dryRun: !!saveCtx?.dryRun,
           });
-          if (res.ok) names.push(fx.name);
+          // ONE WRITE on the success side too: an effect that is only the
+          // condition already on the creature is not named a second time.
+          if (res.ok && !res.duplicate) names.push(fx.name);
         }
         if (names.length) {
           applied.push({ targetName: r.name ?? actor.name, tokenDocId: r.tokenDocId,
@@ -8432,6 +8559,64 @@ export class SaveEngine {
    * - the post-hit table's "Rolled 3: Grapple" line and what it landed. Nothing
    * else about the row changes for anybody.
    */
+  /**
+   * The creatures on a save card that actually roll: not the ones the Gate refused
+   * and not the ones that were immune and never asked.
+   */
+  static _rollersOf(results) {
+    return (results ?? []).filter(r => r && !r.noRoll && !SaveEngine._isImmuneRow(r));
+  }
+
+  /**
+   * LINE 2 OF THE SHELL: one quiet line (his card, 2026-09-29).
+   *
+   *     Wis 16 (+3) = +3 · DC 13 Wisdom
+   *
+   * "Formula is already on line 2 so they know the math before they click." That is
+   * why it is here and not in the row: before the roll a row has no total to hang a
+   * formula off, and the person about to press the die is the one who wants to know
+   * what they are adding to it.
+   *
+   * With ONE creature rolling, this carries that creature's own bonus and the row
+   * does not repeat it. With several, each row keeps its own and this is the DC
+   * alone, because one shared line cannot be true for four different sheets.
+   *
+   * ⚠️🔴 THE DC IS HIS ALONE (his standing rule: a player never sees a DC).
+   * The half after the dot is `.ace-qol-gm-only`, hidden until the render stamps
+   * this screen as the GM's. The header this replaced printed "DC 13 Wisdom" to the
+   * whole table, on every save card in the game.
+   */
+  static saveQuietLineHtml(results, { saveAbility, saveDC, abilityLabel = null } = {}) {
+    const rollers = SaveEngine._rollersOf(results);
+    const label = abilityLabel
+      ?? CONFIG.DND5E?.abilities?.[saveAbility]?.label
+      ?? String(saveAbility ?? "").toUpperCase();
+    let formula = "";
+    if (rollers.length === 1) {
+      try {
+        const r = rollers[0];
+        const actor = (game.scenes?.get(r.sceneId)?.tokens?.get(r.tokenDocId)?.actor)
+          ?? (r.actorId ? game.actors?.get(r.actorId) : null);
+        const ab = String(r.saveAbility ?? saveAbility ?? "").toLowerCase();
+        if (actor && ab) formula = formulaText(explainSave(actor, ab).parts);
+        if (!formula) {
+          console.log(`${MODULE_ID} | the save card could not read what makes ${r.name}'s `
+            + `${ab || "save"} bonus, so its quiet line shows the DC alone.`);
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | the save card could not read the roller's own bonus for its `
+          + `quiet line, so that line shows the DC alone:`, err);
+      }
+    }
+    const dcText = Number.isFinite(Number(saveDC)) ? `DC ${saveDC} ${label}` : "";
+    if (!formula && !dcText) return "";
+    return `
+      <div class="ace-qol-save-quiet">
+        ${formula ? `<span class="ace-qol-save-quiet-formula">${foundry.utils.escapeHTML(formula)}</span>` : ""}
+        ${dcText ? `<span class="ace-qol-save-quiet-dc ace-qol-gm-only">${formula ? "· " : ""}${dcText}</span>` : ""}
+      </div>`;
+  }
+
   static saveResultRowHtml(r, opts = {}) {
       // Immune, no save: one line under the rows (_immuneLine), never a row each.
       if (SaveEngine._isImmuneRow(r)) return "";
@@ -8446,6 +8631,13 @@ export class SaveEngine {
       // NO. A default of "draw it" is exactly the habit the dice door was just
       // cured of: a button that has to be switched off at every new call site is
       // a button that will be left on.
+      // ⚠️🔴 NO X ON THE SHELL (his card, 2026-09-29: "No SAVE pill. No X.
+      // No APPLY. No skull."). This button drops a target BEFORE its damage is
+      // rolled. A save that deals no damage has nothing to drop it from, and the
+      // post-hit card has already rolled and already landed what it landed, so on
+      // both of those it was a dead X beside a result.
+      //
+      // The card says whether a target can still be dropped, and SILENCE MEANS NO.
       const removeBtn = opts?.canRemove
         ? `<button class="ace-qol-save-phase1-remove" data-action="aceQolRemovePhase1" data-token-doc-id="${r.tokenDocId}" title="Remove this target before damage rolls"><i class="fas fa-xmark"></i></button>`
         : "";
@@ -8470,7 +8662,7 @@ export class SaveEngine {
         return `
           <div class="ace-qol-save-result-row ace-qol-save-result-pending ace-qol-save-await" data-token-doc-id="${r.tokenDocId}">
             <div class="ace-qol-save-result-target">
-              <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" />
+              <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img ace-qol-save-portrait" />
               <span class="ace-qol-save-tgt-name">${r.name}</span>
               <button type="button" class="ace-qol-save-await-roll" data-action="aceQolRollMySave"
                       data-token-doc-id="${r.tokenDocId}" data-owner-online="${r.ownerOnline === false ? "false" : "true"}"
@@ -8481,7 +8673,11 @@ export class SaveEngine {
           </div>
         `;
       }
-      const portrait = `<img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img" style="width:46px;height:46px;border-radius:8px;flex-shrink:0;border:1px solid #555;object-fit:cover;" />`;
+      // ⚠️ NOT CROPPED (his card, 2026-09-29: "Target portrait (not cropped)").
+      // `object-fit: cover` fills the square by cutting the picture, which took the
+      // top of a tall token's head off. `contain` shows the whole picture and lets
+      // the backdrop take the leftover, so a creature is recognisable.
+      const portrait = `<img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img ace-qol-save-portrait" />`;
 
       // ── GATED — no die was thrown (2026-08-06, ONE_GATE phase 0) ──────────
       // Johnny: "I want us to be able to see it." A target the Gate refused is
@@ -8527,14 +8723,15 @@ export class SaveEngine {
         const modifier = (typeof r.saveTotal === "number" && d20Face != null)
           ? r.saveTotal - d20Face : null;
         if (d20Face != null && modifier != null) {
-          const modSign = modifier >= 0 ? "+" : "";
-          const modPart = modifier === 0 ? "" : ` ${modSign}${modifier}`;
+          // "9 + 3 = 12", the way he wrote it: the die, the sign, the bonus, the
+          // total. A bonus of nothing says nothing rather than "+ 0".
+          const modPart = modifier === 0 ? "" : ` ${modifier >= 0 ? "+" : "−"} ${Math.abs(modifier)}`;
           d20El = aceD20FaceImg(d20Face, { size: 40 });
           breakdownText = `
-            <span style="display:inline-flex;align-items:center;gap:6px;font-family:'Signika',sans-serif;">
-              <span style="color:#ffffff;font-size:19px;font-weight:700;">${d20Face}</span>
-              <span style="color:#b9a978;font-size:15px;">${modPart} =</span>
-              <span class="${passClass}" style="font-weight:700;font-size:19px;">${r.saveTotal}</span>
+            <span class="ace-qol-save-math">
+              <span class="ace-qol-save-math-die">${d20Face}</span>
+              <span class="ace-qol-save-math-mod">${modPart} =</span>
+              <span class="${passClass} ace-qol-save-math-total">${r.saveTotal}</span>
             </span>`;
         } else {
           breakdownText = `<span class="${passClass}" style="font-weight:700;font-size:18px;">${r.saveTotal}</span>`;
@@ -8560,11 +8757,46 @@ export class SaveEngine {
                     style="font-weight:bold;font-size:15px;letter-spacing:0.5px;">${verdictText}</span>
             </div>
             ${SaveEngine._advTagsHtml(r)}
-            ${SaveEngine._formulaForRow(r, opts)}
+            ${opts?.formulaOnShell ? "" : SaveEngine._formulaForRow(r, opts)}
+            ${SaveEngine._landedLineHtml(r, opts)}
             ${r.extraHtml ?? ""}
           </div>
         </div>
       `;
+  }
+
+  /**
+   * LINE 4: ONE LINE OF WHAT LANDED. "Charmed — 1 hour."
+   *
+   * His card, 2026-09-29. Not a red skull footer listing every creature again,
+   * not a tag per condition, not the effect's own compendium key beside the
+   * condition it already is. One line, under the creature it happened to.
+   *
+   * ⚠️ AND IT IS REWRITTEN ON THE OWNER'S SCREEN. "Player client: ... They see
+   * the roll, FAIL, and 'You are Charmed for 1 hour.'" This HTML is built once by
+   * the GM and rendered on every client, so both wordings cannot be decided here:
+   * the line ships in the third person and carries what a client needs to say it
+   * in the second (`_wireLandedLines`).
+   */
+  static _landedLineHtml(r, opts = {}) {
+    const row = opts?.landedByToken?.[r?.tokenDocId] ?? null;
+    const names = (row?.conditions ?? []).filter(Boolean);
+    if (!names.length) return "";
+    const cap = (c) => { const t = String(c ?? ""); return t.charAt(0).toUpperCase() + t.slice(1); };
+    const esc = (v) => foundry.utils.escapeHTML(String(v ?? ""));
+    const withTime = names.map(c => {
+      const secs = Number(row?.durations?.[String(c).toLowerCase()]) || 0;
+      const words = durationWords(secs);
+      return `${cap(c)}${words ? ` — ${words}` : ""}`;
+    });
+    // What the owner's own screen will say instead: "You are Charmed for 1 hour."
+    const mine = names.map(c => {
+      const secs = Number(row?.durations?.[String(c).toLowerCase()]) || 0;
+      const words = durationWords(secs);
+      return `${cap(c)}${words ? ` for ${words}` : ""}`;
+    }).join(", ");
+    return `<div class="ace-qol-save-landed" data-token-doc-id="${esc(r?.tokenDocId)}"`
+      + ` data-mine="You are ${esc(mine)}.">${esc(withTime.join(", "))}</div>`;
   }
 
   _buildPhase1CardHtml(item, results, opts) {
@@ -8583,11 +8815,37 @@ export class SaveEngine {
       results = [...results].sort((a, b) => (a?.isPC === true ? 1 : 0) - (b?.isPC === true ? 1 : 0));
     }
     const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
-    const _p1Title = this._abilityLabel(item, activityId);
 
-    // This is the card whose handler `aceQolRemovePhase1` belongs to, so this is
-    // the card whose rows carry the X.
-    const targetRows = results.map(r => SaveEngine.saveResultRowHtml(r, { ...opts, canRemove: true })).join("");
+    // ── LINE 2: ONE QUIET LINE (his shell, 2026-09-29) ─────────────────
+    //
+    //     Wis 16 (+3) = +3 · DC 13 Wisdom
+    //
+    // "Formula is already on line 2 so they know the math before they click." That
+    // is the whole reason it is up here and not down in the row: before the roll a
+    // row has no total to hang a formula off, and the person about to press the die
+    // is the person who wants to know what they are adding.
+    //
+    // With one creature rolling, the line carries that creature's own bonus and the
+    // row does not repeat it. With several, each row keeps its own and this line is
+    // the DC alone, because one shared line cannot be true for four sheets.
+    //
+    // ⚠️🔴 AND THE DC IS HIS (his standing rule: a player never sees a DC). The
+    // half after the dot is inside `.ace-qol-gm-only`, which is hidden until the
+    // render stamps this screen as the GM's. The old header printed "DC 13 Wisdom"
+    // to the whole table on every save card in the game.
+    const _rollers = SaveEngine._rollersOf(results);
+    const _quietLine = SaveEngine.saveQuietLineHtml(results, { saveAbility, saveDC, abilityLabel });
+
+    // ── LINES 3 AND 4: one row per creature, and what landed under it ─────
+    //
+    // The X belongs to this card's handler, and it drops a target before its damage
+    // is rolled - so it is offered only where there is damage still to roll.
+    const _landedByToken = Object.fromEntries((appliedConditions ?? [])
+      .filter(a => a?.tokenDocId).map(a => [a.tokenDocId, a]));
+    const targetRows = results.map(r => SaveEngine.saveResultRowHtml(r, { ...opts,
+      canRemove: hasDamage === true,
+      formulaOnShell: _rollers.length === 1,
+      landedByToken: _landedByToken })).join("");
 
     // ROLL DAMAGE button only appears if the spell actually deals damage.
     // Save-or-condition spells (Hold Person, Charm Person, Sleep, etc.) get
@@ -8730,16 +8988,27 @@ export class SaveEngine {
       }
     }
 
+    // ── THE SHELL HE APPROVED, TOP TO BOTTOM ───────────────────────
+    //
+    //   1. caster portrait + "Lamia casts Charm Person on Jeth"
+    //   2. one quiet line: Wis 16 (+3) = +3 · DC 13 Wisdom
+    //   3. target portrait + name + the rolled d20 + "9 + 3 = 12" + FAIL
+    //   4. one line of what landed: "Charmed — 1 hour"
+    //
+    // Gone with the old header: the item icon repeated under the cast line, the
+    // "— Saves" title, and the DC pill every player at the table could read.
+    // `data-ace-save-shell` is what the stylesheet hangs the hidden Foundry speaker
+    // strip off, once the render stamps it onto the message.
+    //
+    // ⚠️ WHAT IS STILL HERE, AND WHY. The immune line is ONE line for creatures
+    // never asked to roll (his rule, 2026-09-20: one line, not a row each). The
+    // advantage and disadvantage footnote prints only when there IS a reason to
+    // name, so an ordinary save shows nothing and a save rolled with two dice never
+    // shows a verdict with no cause (his rule, 2026-08-06).
     return `
-      <div class="ace-qol-save-results-card" data-phase="1">
+      <div class="ace-qol-save-results-card ace-qol-save-shell" data-phase="1" data-ace-save-shell="1">
         ${this._castAnnouncementHtml(item, item.actor, results, activityId)}
-        <div class="ace-qol-save-header">
-          <img src="${item.img || "icons/svg/spell.svg"}" class="ace-qol-save-item-img" />
-          <div>
-            <strong class="ace-qol-save-item-name">${_p1Title} \u2014 Saves</strong>
-            <span class="ace-qol-save-dc">DC ${saveDC} ${abilityLabel}</span>
-          </div>
-        </div>
+        ${_quietLine}
         <div class="ace-qol-save-results">
           ${targetRows}
           ${SaveEngine._immuneLine(results)}

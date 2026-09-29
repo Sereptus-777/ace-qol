@@ -155,14 +155,25 @@ console.log("\nTHE POST-HIT SAVE KEEPS ONE CARD");
   check("what belongs to THIS card rides under the row as extraHtml",
     /extraHtml: effectsHtml/.test(ph) && /static _rowExtraHtml\(r\)/.test(ph),
     "the table line and the HP readout");
-  check("and the shared row is the one that draws the formula",
-    /\$\{SaveEngine\._formulaForRow\(r, opts\)\}/.test(save)
+  // ⚠️ THE FORMULA MOVED UP, IT DID NOT GO AWAY (his shell, 2026-09-29:
+  // "Formula is already on line 2 so they know the math before they click"). With
+  // one creature rolling it is the shell's quiet line; with several, each row keeps
+  // its own, because one line cannot be true for four sheets. So the row still
+  // draws it and now knows when the shell already has.
+  check("the shared row is still the one that draws the formula",
+    /\$\{opts\?\.formulaOnShell \? "" : SaveEngine\._formulaForRow\(r, opts\)\}/.test(save)
     && /\$\{r\.extraHtml \?\? ""\}/.test(save),
     "one row, one formula, one extra hook");
+  check("and the shell's quiet line is the same reader, not a second one",
+    /static saveQuietLineHtml\(/.test(save)
+    && /formulaText\(explainSave\(actor, ab\)\.parts\)/.test(save),
+    "roll-formula.mjs, both places");
   // The phase-1 card is the one whose handler the remove X belongs to, so it is
   // the one card that asks for it. Everything else about the row is shared.
+  // The X is offered only where damage is still to be rolled, and the shell tells
+  // the row whether the quiet line already carries the formula.
   check("the QOL card still uses that same row, so neither can drift",
-    /results\.map\(r => SaveEngine\.saveResultRowHtml\(r, \{ \.\.\.opts, canRemove: true \}\)\)/.test(save),
+    /saveResultRowHtml\(r, \{ \.\.\.opts,[\s\S]{0,80}canRemove: hasDamage === true,/.test(save),
     "both cards, one renderer");
 
   // AND THE THINGS HE TOLD ME NOT TO TOUCH.
@@ -175,7 +186,8 @@ console.log("\nTHE POST-HIT SAVE KEEPS ONE CARD");
 console.log("\nTHE FORMULA IS ON THE ROW THAT IS LEFT");
 {
   check("the phase-1 result row draws the formula",
-    /\$\{SaveEngine\._formulaForRow\(r, opts\)\}/.test(save), "on every result row");
+    /\$\{opts\?\.formulaOnShell \? "" : SaveEngine\._formulaForRow\(r, opts\)\}/.test(save),
+    "on every row the shell is not already speaking for");
   const at = save.indexOf("static _formulaForRow");
   const body = save.slice(at, at + 1400);
   check("it reads the creature's own sheet through the one reader",

@@ -6364,3 +6364,174 @@ i.ace-douse-tool::after {
   opacity: 0.6;
   background: #6f7f52; border-color: #5a6742; cursor: default;
 }
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   THE SAVE-CARD SHELL (his card, 2026-09-29) — the one he approved.
+
+     1. caster portrait + "Lamia casts Charm Person on Jeth"
+     2. one quiet line: Wis 16 (+3) = +3 · DC 13 Wisdom
+     3. target portrait (not cropped) + name + the rolled d20 + "9 + 3 = 12" + FAIL
+     4. one line of what landed: "Charmed — 1 hour"
+
+   Everything here is flex and wraps. No fixed heights, nothing outside a pill,
+   nothing that can clip: height is free (his standing rule).
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Foundry's manila speaker strip, hidden on ACE save cards only ──────────
+   His card: "Foundry's message-header (the manila speaker strip: name +
+   DUNGEON MASTER) is hidden on ACE save cards only ... Other chat keeps the
+   strip. Keep a small ⋮ so the message can still be deleted."
+
+   ⚠️ ONLY WHAT I CAN NAME AS THE STRIP IS HIDDEN. The sender and the timestamp
+   go; every other child of the header stays visible, because that is where
+   Foundry keeps the controls and the exact markup for them has moved between
+   generations. Hiding the whole header would take the delete with it.
+   The message itself is the positioning context so the controls can sit in the
+   card's top-right corner instead of holding a strip of their own open. */
+.chat-message[data-ace-save-shell="1"] { position: relative; }
+.chat-message[data-ace-save-shell="1"] > .message-header {
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  margin: 0;
+  min-height: 0;
+}
+.chat-message[data-ace-save-shell="1"] > .message-header .message-sender,
+.chat-message[data-ace-save-shell="1"] > .message-header .message-timestamp,
+.chat-message[data-ace-save-shell="1"] > .message-header > h4,
+.chat-message[data-ace-save-shell="1"] > .message-header time,
+.chat-message[data-ace-save-shell="1"] > .message-header .whisper-to,
+.chat-message[data-ace-save-shell="1"] > .message-header .flavor-text {
+  display: none !important;
+}
+/* The ⋮ / delete, tucked into the card's corner and still reachable. */
+.chat-message[data-ace-save-shell="1"] > .message-header .message-metadata {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  z-index: 4;
+  opacity: 0.55;
+  transition: opacity 0.15s;
+}
+.chat-message[data-ace-save-shell="1"] > .message-header .message-metadata:hover { opacity: 1; }
+
+/* ── The shell ─────────────────────────────────────────────────────────────── */
+.ace-qol-save-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* A portrait is shown WHOLE. `cover` cropped the top off a tall token. */
+.ace-qol-save-portrait {
+  object-fit: contain;
+  background: #14120e;
+}
+
+/* ── 1. The cast line ─────────────────────────────────────────────────────── */
+.ace-qol-save-shell .ace-qol-save-cast-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 9px 12px;
+  min-height: 2.2em;
+  line-height: 1.35;
+}
+.ace-qol-save-caster-img {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  border: 1px solid #5b5241;
+  flex-shrink: 0;
+}
+.ace-qol-save-cast-text {
+  flex: 1 1 12ch;
+  min-width: 0;
+  font-size: 16px;
+  color: #f0e4c0;
+}
+
+/* ── 2. The quiet line ───────────────────────────────────────────────────── */
+.ace-qol-save-quiet {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 12px 8px 12px;
+  min-height: 1.3em;
+  font-size: 14px;
+  color: #a79b7d;
+}
+.ace-qol-save-quiet-formula,
+.ace-qol-save-quiet-dc {
+  color: #a79b7d;
+  font-size: 14px;
+  line-height: 1.35;
+}
+/* The DC half is the GM's: hidden until the render stamps this screen as his. */
+.ace-qol-save-quiet-dc { display: none; }
+.ace-qol-save-quiet-dc[data-ace-gm="true"] { display: inline; }
+
+/* ── 3. The result line ──────────────────────────────────────────────────── */
+.ace-qol-save-math {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-family: 'Signika', sans-serif;
+  min-height: 1.3em;
+}
+.ace-qol-save-math-die   { color: #ffffff; font-size: 19px; font-weight: 700; }
+.ace-qol-save-math-mod   { color: #b9a978; font-size: 15px; }
+.ace-qol-save-math-total { font-weight: 700; font-size: 19px; }
+
+/* ── 4. What landed ──────────────────────────────────────────────────────── */
+.ace-qol-save-landed {
+  display: block;
+  margin-top: 4px;
+  padding: 3px 0 0 0;
+  font-size: 15px;
+  line-height: 1.4;
+  color: #ff9b9b;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  min-height: 1.4em;
+}
+
+/* ── A PLAYER NEVER SEES A DC (his standing rule) ───────────────────────────
+   Every ACE save card carried "DC 13 Wisdom" in its header, readable by the
+   whole table. The pill is hidden until the render stamps this screen as the
+   GM's (save-engine's GM-only pass now stamps these too), so the card is
+   otherwise identical on every screen and nothing has to be built twice. */
+.ace-qol-save-dc { display: none !important; }
+.ace-qol-save-dc[data-ace-gm="true"] { display: inline-block !important; }
+
+/* The owner's own wording, swapped in on their screen: "You are Charmed for
+   1 hour." Same line, same place, second person. */
+.ace-qol-save-landed-mine { color: #ffb4b4; }
+
+/* A condition an immunity refused keeps its own line rather than being folded
+   into the sentence of the ones that landed (say what did NOT go on). */
+.ace-qol-save-refused {
+  display: block;
+  margin-top: 3px;
+  font-size: 14px;
+  line-height: 1.4;
+  color: #ffc98a;
+  overflow-wrap: anywhere;
+  min-height: 1.4em;
+}
+
+/* The chain's table line: text, no die of its own. */
+.ace-qol-table-result {
+  display: block;
+  margin-top: 4px;
+  font-size: 15px;
+  line-height: 1.4;
+  color: #e6d9b4;
+  overflow-wrap: anywhere;
+  min-height: 1.4em;
+}

@@ -821,15 +821,22 @@ export class PostHitSaves {
       `;
     }).join("");
 
+    // ── THE SAME SHELL, BEFORE THE ROLL (his card, 2026-09-29) ──────────
+    //
+    // "BEFORE THE ROLL / Same shell." This is the card that ASKS, and it becomes the
+    // card that answers, so it has no business looking like a different card: the
+    // attacker's own portrait and one sentence, then the quiet line with the bonus
+    // the roller is about to add. Its own header carried the item icon, a
+    // "— Save Required" title and a DC pill the whole table could read.
+    const { SaveEngine: _SEask } = await import("./save-engine.mjs");
+    const _askNames = targetData.map(t => t?.name).filter(Boolean)
+      .map(n => foundry.utils.escapeHTML(String(n))).join(", ");
     const cardHtml = `
-      <div class="ace-qol-save-card ace-qol-posthit-save">
-        <div class="ace-qol-save-header">
-          <img src="${item.img || "icons/svg/spell.svg"}" class="ace-qol-save-item-img" />
-          <div>
-            <strong class="ace-qol-save-item-name">${item.name} — Save Required</strong>
-            <span class="ace-qol-save-dc">DC ${save.dc} ${abilityLabel} Save</span>
-          </div>
-        </div>
+      <div class="ace-qol-save-card ace-qol-save-shell ace-qol-posthit-save" data-ace-save-shell="1">
+        ${_SEask.castLineHtml(actor, item?.name ?? "its attack", _askNames,
+            { isSpell: item?.type === "spell", fallbackImg: item?.img })}
+        ${_SEask.saveQuietLineHtml(targetData, { saveAbility: save?.ability ?? null,
+            saveDC: save?.dc ?? null, abilityLabel })}
         <div class="ace-qol-save-targets">
           ${targetRows}
         </div>
@@ -1405,13 +1412,30 @@ export class PostHitSaves {
         </div>`;
       }
 
+      // ⚠️ ONE LINE OF TEXT, NOT A TAG EACH (his card, 2026-09-29: "Extra line
+      // under the result: 'Rolled 3: Grapple' then 'Grappled. Restrained.'"). The
+      // row had a red pill per condition with an icon in each one; what he wants is
+      // the sentence.
+      //
+      // ⚠️ AND IT STILL SAYS WHAT DID NOT GO ON. A condition an immunity refused
+      // used to read "applied" here exactly like one that landed, so the refusal
+      // keeps its own line rather than being dropped into the same sentence.
+      {
+        const conds = r.effects.filter(fx => fx.type === "condition");
+        const cap = (c) => { const t = String(c ?? ""); return t.charAt(0).toUpperCase() + t.slice(1); };
+        const landed = conds.filter(fx => !fx.blocked).map(fx => cap(fx.condition));
+        if (landed.length) {
+          effectsHtml += `<div class="ace-qol-save-landed">${landed.map(c => `${foundry.utils.escapeHTML(c)}.`).join(" ")}</div>`;
+        }
+        for (const fx of conds.filter(f => f.blocked)) {
+          effectsHtml += `<div class="ace-qol-save-refused">${foundry.utils.escapeHTML(cap(fx.condition))} `
+            + `not put on: ${foundry.utils.escapeHTML(String(fx.reason ?? ""))}</div>`;
+        }
+      }
+
       for (const fx of r.effects) {
         if (fx.type === "condition") {
-          // ⚠️ SAY WHAT DID NOT GO ON. A condition refused by an immunity used to
-          // read "applied" here like one that went on.
-          effectsHtml += fx.blocked
-            ? `<span class="ace-qol-tag"><i class="fas fa-shield-halved"></i> ${fx.condition.toUpperCase()} not put on: ${foundry.utils.escapeHTML(String(fx.reason ?? ""))}</span> `
-            : `<span class="ace-qol-tag ace-qol-tag-debuff"><i class="fas fa-circle-xmark"></i> ${fx.condition.toUpperCase()} applied</span> `;
+          // Said above, as one line.
         } else if (fx.type === "damage") {
           const color = DamageConstants.DAMAGE_COLORS[fx.damageType] ?? "#ccc";
           const modBadge = fx.modifier === "immune" ? '<span class="ace-qol-dmg-mod ace-qol-dmg-immune">IMMUNE</span>'
@@ -1511,7 +1535,10 @@ export class PostHitSaves {
         saveAbility: r.saveAbility ?? save?.ability ?? null,
         extraHtml: effectsHtml,
       };
-      return _SE.saveResultRowHtml(forRow, { saveAbility: save?.ability ?? null, saveDC: save?.dc ?? null });
+      return _SE.saveResultRowHtml(forRow, { saveAbility: save?.ability ?? null, saveDC: save?.dc ?? null,
+        // One creature rolling means the shell's quiet line holds the formula, and a
+        // second copy of it under the row is noise.
+        formulaOnShell: _SE._rollersOf(results).length === 1 });
     }).join("");
 
     const actionsHtml = hasDamage ? `
@@ -1524,15 +1551,23 @@ export class PostHitSaves {
         </button>
       </div>` : "";
 
+    // ── THE SAME SHELL (his card, 2026-09-29: "CHAIN / Same shell.") ──────
+    //
+    // This card kept its own header: the item icon, "— Save Results", and a DC
+    // pill the whole table could read. It draws the shell the save card draws now -
+    // the creature's own portrait and one sentence, then the quiet line - so the
+    // chain's after-hit save and Charm Person look like the same card, because they
+    // are the same card.
+    //
+    // A weapon's rider is USED, not cast, and the one who used it is the attacker.
+    const _tgtNames = results.map(r => r?.name).filter(Boolean)
+      .map(n => foundry.utils.escapeHTML(String(n))).join(", ");
     const cardHtml = `
-      <div class="ace-qol-save-results-card ace-qol-posthit-results">
-        <div class="ace-qol-save-header">
-          <img src="${item?.img || "icons/svg/spell.svg"}" class="ace-qol-save-item-img" />
-          <div>
-            <strong class="ace-qol-save-item-name">${item?.name ?? "Unknown"} — Save Results</strong>
-            <span class="ace-qol-save-dc">DC ${save.dc} ${abilityLabel}</span>
-          </div>
-        </div>
+      <div class="ace-qol-save-results-card ace-qol-save-shell ace-qol-posthit-results" data-ace-save-shell="1">
+        ${_SE.castLineHtml(actor, item?.name ?? "its attack", _tgtNames,
+            { isSpell: item?.type === "spell", fallbackImg: item?.img })}
+        ${_SE.saveQuietLineHtml(results, { saveAbility: save?.ability ?? null, saveDC: save?.dc ?? null,
+            abilityLabel })}
         <div class="ace-qol-save-results">
           ${rows}
         </div>

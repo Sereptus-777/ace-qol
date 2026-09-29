@@ -199,6 +199,29 @@ export class ConditionDoor {
     try {
       const src = fx?.effect;
       if (!src) return { ok: false, name, error: "the spell's effect could not be found" };
+
+      // ⚠🔴 ONE WRITE (his table, 2026-09-29: "why charm_person plus
+      // dnd5echarmed0000 both landed. One write. The collision in the log is the
+      // second write.").
+      //
+      // Charm Person's recipe says "fail -> charmed", so the condition door puts
+      // charmed on, and then the spell's OWN effect went on beside it as a second
+      // document. That effect IS the charmed condition: dnd5e ships it carrying the
+      // charmed status and no rules of its own. So Jeth wore the condition twice,
+      // under two names, and the card listed "charm_person" beside "Charmed" as
+      // though the spell had done two things to him.
+      //
+      // The test is what the effect ADDS, not what it is called: an effect with no
+      // rules, whose statuses the creature already has, has nothing left to
+      // contribute once the condition is on. An effect with real changes (Hypnotic
+      // Pattern's Speed 0, Enervated) is NOT this, and still goes on.
+      const srcStatuses = [...(src.statuses ?? [])].map(s => String(s).toLowerCase()).filter(Boolean);
+      const srcRules = Array.isArray(src.changes) ? src.changes.length : 0;
+      if (!srcRules && srcStatuses.length && srcStatuses.every(s => actor?.statuses?.has?.(s))) {
+        console.log(`${MODULE_ID} | ${item?.name}: "${name}" adds no rules of its own and carries only `
+          + `${srcStatuses.join(", ")}, which ${actor?.name} already has. ONE WRITE: it is not put on twice.`);
+        return { ok: true, name, duplicate: true, of: srcStatuses };
+      }
       const data = typeof src.toObject === "function" ? src.toObject() : JSON.parse(JSON.stringify(src));
       delete data._id;
       data.disabled = false;

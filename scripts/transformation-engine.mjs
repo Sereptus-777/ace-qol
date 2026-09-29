@@ -28,6 +28,8 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+// One reader for how long something lasts.
+import { durationShort } from "./duration-words.mjs";
 import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { CustomPolymorph } from "./custom-polymorph.mjs";
 import { QolSettings } from "./settings.mjs";
@@ -1168,11 +1170,10 @@ export class TransformationEngine {
     }
   }
 
+  // ONE READER FOR HOW LONG SOMETHING LASTS (duration-words.mjs). This badge
+  // shape is unchanged; it simply is not a second private copy of the question
+  // any more, now that the save card needs the same duration in words.
   static _formatDuration(seconds) {
-    if (!Number.isFinite(seconds) || seconds <= 0) return "instant";
-    if (seconds < 60)    return `${seconds}s`;
-    if (seconds < 3600)  return `${Math.round(seconds / 60)}min`;
-    if (seconds < 86400) return `${Math.round(seconds / 3600 * 10) / 10}hr`;
-    return `${Math.round(seconds / 86400)}d`;
+    return durationShort(seconds);
   }
 }

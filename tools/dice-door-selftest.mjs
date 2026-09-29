@@ -81,8 +81,10 @@ console.log("\nTHE CHAIN ROW IS THE CHARM PERSON ROW");
     /const removeBtn = opts\?\.canRemove/.test(save), "opts.canRemove");
   check("silence means no, so a new card never inherits a dead button",
     /SILENCE MEANS/.test(save), "the default is off");
-  check("the phase-1 card, which owns that handler, asks for it",
-    /saveResultRowHtml\(r, \{ \.\.\.opts, canRemove: true \}\)/.test(save), "one caller");
+  // And it asks for it only where there is damage left to drop a target from:
+  // his card, 2026-09-29, "No X" on a save that moves no hit points.
+  check("the phase-1 card asks for it only where damage is still to be rolled",
+    /canRemove: hasDamage === true,/.test(save), "one caller, one condition");
   check("the post-hit card does not",
     !/canRemove/.test(ph), "no X on a grapple that already happened");
 
