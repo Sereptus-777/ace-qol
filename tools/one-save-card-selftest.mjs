@@ -136,17 +136,26 @@ console.log("\nTHE POST-HIT SAVE KEEPS ONE CARD");
   check("with no card to become it still posts, so nothing dead-ends",
     /\} else \{[\s\S]{0,120}CardDoor\.post\(_resultCard/.test(ph), "the fallback stands");
 
-  // THE FORMULA on the row that is left.
-  check("its result row draws the formula",
-    /\$\{PostHitSaves\._formulaForRow\(r, save\)\}/.test(ph), "on every row");
-  const at = ph.indexOf("static _formulaForRow");
-  const body = ph.slice(at, at + 1500);
-  check("through the one reader, from the creature's own sheet",
-    /explainSave\(actor, ab\)/.test(body), "roll-formula.mjs");
-  check("showing the bonus the ROLL used, so no math is redone",
-    /r\.saveTotal - d20/.test(body), "total minus the die");
-  check("inside its pill, never loose on the card",
-    /formulaPill\(parts/.test(body), "one pill");
+  // REUSE, NOT A SECOND LAYOUT. The row is the QOL one.
+  check("it draws the shared QOL save row",
+    /_SE\.saveResultRowHtml\(forRow,/.test(ph), "SaveEngine.saveResultRowHtml");
+  check("and keeps no private result-row markup of its own",
+    !/ace-qol-save-result-row/.test(ph) && !/ace-qol-save-roll \$\{passClass\}/.test(ph),
+    "no portrait, name, roll or verdict markup left in this file");
+  check("the die face and the ability are handed over in the shape that row wants",
+    /dieResult: r\.dieResult \?\? r\.saveRoll/.test(ph)
+    && /saveAbility: r\.saveAbility \?\? save\?\.ability/.test(ph),
+    "the roll and the save travel with the row");
+  check("what belongs to THIS card rides under the row as extraHtml",
+    /extraHtml: effectsHtml/.test(ph) && /static _rowExtraHtml\(r\)/.test(ph),
+    "the table line and the HP readout");
+  check("and the shared row is the one that draws the formula",
+    /\$\{SaveEngine\._formulaForRow\(r, opts\)\}/.test(save)
+    && /\$\{r\.extraHtml \?\? ""\}/.test(save),
+    "one row, one formula, one extra hook");
+  check("the QOL card still uses that same row, so neither can drift",
+    /results\.map\(r => SaveEngine\.saveResultRowHtml\(r, opts\)\)/.test(save),
+    "both cards, one renderer");
 
   // AND THE THINGS HE TOLD ME NOT TO TOUCH.
   check("the table reading is unchanged",

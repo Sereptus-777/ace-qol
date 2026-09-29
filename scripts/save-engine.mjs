@@ -8258,25 +8258,20 @@ export class SaveEngine {
     }
   }
 
-  _buildPhase1CardHtml(item, results, opts) {
-    const { saveAbility, saveDC, hasDamage = true, halfOnSave = false, appliedConditions: _appliedRaw = [],
-            activityId = null, autoResolve = false, presence = null } = opts;
-    // ⚠️ ONE LINE PER CREATURE (his table, 2026-09-20: "Footer still lists each
-    // of them four times, mixed frightened and immune"). Whatever reached this
-    // card — a re-application, a player's own late result, a second engine —
-    // the reader sees one creature once, with everything that landed on it.
-    const appliedConditions = SaveEngine._oneLinePerCreature(_appliedRaw);
-    // ⚠️ PLAYERS AT THE BOTTOM, SO APPLY IS OBVIOUS (his rule, 2026-09-20). Only
-    // where something of theirs is waiting to be pressed: re-ordering every save
-    // card in the game is not what he asked for, and a Fireball's rows are in
-    // the order he targeted them.
-    if (presence?.holdPCs || opts.holdPCs !== false) {
-      results = [...results].sort((a, b) => (a?.isPC === true ? 1 : 0) - (b?.isPC === true ? 1 : 0));
-    }
-    const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
-    const _p1Title = this._abilityLabel(item, activityId);
-
-    const targetRows = results.map(r => {
+  /**
+   * ONE SAVE ROW, FOR EVERY ACE CARD THAT SHOWS ONE (his rule, 2026-09-29:
+   * "Reuse. Do not invent.").
+   *
+   * Portrait, name, the d20 face that was actually rolled, the formula behind the
+   * bonus, the total against the DC, and PASS or FAIL. This was the body of the
+   * phase-1 card's row map; it is a method now so the post-hit save card draws
+   * the SAME row instead of keeping a second layout that drifts from it.
+   *
+   * A caller with something extra to say under the row passes it as `r.extraHtml`
+   * - the post-hit table's "Rolled 3: Grapple" line and what it landed. Nothing
+   * else about the row changes for anybody.
+   */
+  static saveResultRowHtml(r, opts = {}) {
       // Immune, no save: one line under the rows (_immuneLine), never a row each.
       if (SaveEngine._isImmuneRow(r)) return "";
       const removeBtn = `<button class="ace-qol-save-phase1-remove" data-action="aceQolRemovePhase1" data-token-doc-id="${r.tokenDocId}" title="Remove this target before damage rolls"><i class="fas fa-xmark"></i></button>`;
@@ -8372,10 +8367,31 @@ export class SaveEngine {
             </div>
             ${SaveEngine._advTagsHtml(r)}
             ${SaveEngine._formulaForRow(r, opts)}
+            ${r.extraHtml ?? ""}
           </div>
         </div>
       `;
-    }).join("");
+  }
+
+  _buildPhase1CardHtml(item, results, opts) {
+    const { saveAbility, saveDC, hasDamage = true, halfOnSave = false, appliedConditions: _appliedRaw = [],
+            activityId = null, autoResolve = false, presence = null } = opts;
+    // ⚠️ ONE LINE PER CREATURE (his table, 2026-09-20: "Footer still lists each
+    // of them four times, mixed frightened and immune"). Whatever reached this
+    // card — a re-application, a player's own late result, a second engine —
+    // the reader sees one creature once, with everything that landed on it.
+    const appliedConditions = SaveEngine._oneLinePerCreature(_appliedRaw);
+    // ⚠️ PLAYERS AT THE BOTTOM, SO APPLY IS OBVIOUS (his rule, 2026-09-20). Only
+    // where something of theirs is waiting to be pressed: re-ordering every save
+    // card in the game is not what he asked for, and a Fireball's rows are in
+    // the order he targeted them.
+    if (presence?.holdPCs || opts.holdPCs !== false) {
+      results = [...results].sort((a, b) => (a?.isPC === true ? 1 : 0) - (b?.isPC === true ? 1 : 0));
+    }
+    const abilityLabel = CONFIG.DND5E?.abilities?.[saveAbility]?.label ?? saveAbility.toUpperCase();
+    const _p1Title = this._abilityLabel(item, activityId);
+
+    const targetRows = results.map(r => SaveEngine.saveResultRowHtml(r, opts)).join("");
 
     // ROLL DAMAGE button only appears if the spell actually deals damage.
     // Save-or-condition spells (Hold Person, Charm Person, Sleep, etc.) get

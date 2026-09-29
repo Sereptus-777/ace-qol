@@ -1365,16 +1365,14 @@ export class PostHitSaves {
     }
   }
 
-  static async postSaveResults(item, actor, results, save, updateMessage = null) {
-    const abilityLabel = CONFIG.DND5E?.abilities?.[save.ability]?.label ?? save.ability.toUpperCase();
-
-    const hasDamage = results.some(r => r.effects.some(fx => fx.type === "damage"));
-
-    const rows = results.map(r => {
-      const passClass = r.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
-      const resultLabel = r.isAutoFail ? "AUTO-FAIL" : r.passed ? "PASS" : "FAIL";
-      const rollDisplay = r.isAutoFail ? "—" : r.saveTotal;
-
+  /**
+   * What goes UNDER a post-hit save row: the table it rolled on, what landed, and
+   * the hit points that moved. The row itself is the shared QOL one; this is the
+   * part that only this card has.
+   */
+  static _rowExtraHtml(r) {
+      // The verdict, the roll and the pass/fail styling all belong to the shared
+      // row now; the three locals that built them here are gone with the markup.
       let effectsHtml = "";
       if (r.tableEntry) {
         effectsHtml += `<div class="ace-qol-table-result">
@@ -1457,19 +1455,38 @@ export class PostHitSaves {
         hpHtml = `<div class="ace-qol-dmg-hp">HP: ${currentHP} → ${newHP}/${maxHP}${isDead ? " ☠" : ""}</div>`;
       }
 
-      return `
-        <div class="ace-qol-save-result-row">
-          <div class="ace-qol-save-result-target">
-            <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-target-img" />
-            <span class="ace-qol-save-target-name">${r.name}</span>
-            <span class="ace-qol-save-roll ${passClass}">${rollDisplay}</span>
-            <span class="ace-qol-save-result-label ${passClass}">${resultLabel}</span>
-          </div>
-          ${PostHitSaves._formulaForRow(r, save)}
-          ${effectsHtml ? `<div class="ace-qol-posthit-effects">${effectsHtml}</div>` : ""}
-          ${hpHtml}
-        </div>
-      `;
+      return `${effectsHtml ? `<div class="ace-qol-posthit-effects">${effectsHtml}</div>` : ""}${hpHtml}`;
+  }
+
+  static async postSaveResults(item, actor, results, save, updateMessage = null) {
+    const abilityLabel = CONFIG.DND5E?.abilities?.[save.ability]?.label ?? save.ability.toUpperCase();
+
+    const hasDamage = results.some(r => r.effects.some(fx => fx.type === "damage"));
+
+    // THE QOL SAVE ROW, NOT A SECOND LAYOUT (his rule, 2026-09-29: "Reuse. Do not
+    // invent."). Portrait, name, the d20 face that was rolled, the formula behind
+    // the bonus, the total against the DC and PASS or FAIL all come from
+    // SaveEngine.saveResultRowHtml - the same row Fireball and Spirit Guardians
+    // draw. This file used to keep its own markup for all of that, and it drifted:
+    // no d20 face, no formula, a different verdict style.
+    //
+    // What is still this card's own is what goes UNDER the row: the table line
+    // ("Rolled 3: Grapple"), what landed, and the HP readout. Those ride along as
+    // `extraHtml`, which is the one hook the shared row takes.
+    const { SaveEngine: _SE } = await import("./save-engine.mjs");
+    const rows = results.map(r => {
+      const effectsHtml = PostHitSaves._rowExtraHtml(r);
+      // The shared row reads a die face and an ability; this file's results carry
+      // the roll and the save, so they are handed over in the shape it expects.
+      const forRow = {
+        ...r,
+        dieResult: r.dieResult ?? r.saveRoll?.dice?.[0]?.total
+          ?? r.saveRoll?.terms?.find?.(t => t?.faces === 20)?.results?.[0]?.result ?? null,
+        roll: r.saveRoll ?? r.roll ?? null,
+        saveAbility: r.saveAbility ?? save?.ability ?? null,
+        extraHtml: effectsHtml,
+      };
+      return _SE.saveResultRowHtml(forRow, { saveAbility: save?.ability ?? null, saveDC: save?.dc ?? null });
     }).join("");
 
     const actionsHtml = hasDamage ? `
