@@ -233,6 +233,100 @@ console.log("\nTHE GRAPPLE ESCAPE ROLLS ITSELF");
 }
 
 /* ══ 4. WEB AND THE ROPE KEEP THEIR BUTTON ══════════════════════════════ */
+// A GRAB IS EVERYTHING IT PUT ON.
+// His table, 2026-09-29: the Spiked Chain's Grapple row lands Grappled AND
+// Restrained ("the target is grappled (escape DC 14) ... Until the grapple ends,
+// the target is restrained"). The stamp went on the Grappled effect alone, so a
+// successful escape deleted that one and left the creature Restrained by a
+// grapple that was already over.
+console.log("\nA PASS TAKES OFF EVERYTHING THAT GRAB PUT ON");
+{
+  const { BreakFreeEngine: BFE2 } = await import(`${MODULE}/scripts/break-free-engine.mjs`);
+  const { PostHitSaves: PHS } = await import(`${MODULE}/scripts/post-hit-saves.mjs`);
+  const { ConditionLibrary: CL } = await import(`${MODULE}/scripts/condition-library.mjs`);
+
+  let nextTotal = 0;
+  let posted = [];
+  let current = null;
+  globalThis.ChatMessage = { create: async (dd) => { posted.push(dd); return dd; }, getSpeaker: () => ({}) };
+  // _attempt resolves the creature through fromUuid, so it has to hand back the
+  // one this block is testing, not whichever actor a previous block left behind.
+  globalThis.fromUuid = async () => current;
+
+  /** A creature whose effects can really be created and deleted. */
+  const makeVictim = () => {
+    const effects = [];
+    let n = 0;
+    const actor = {
+      id: "esc", name: "Escher", uuid: "Actor.esc", img: "",
+      system: { attributes: { hp: { value: 40, max: 40 }, prof: 3 },
+        skills: { ath: { total: 6 }, acr: { total: 2 } },
+        abilities: { str: { mod: 3 }, dex: { mod: -5 } } },
+      statuses: new Set(),
+      effects: { contents: effects, get: (id) => effects.find(e => e.id === id) },
+      getFlag: () => undefined,
+      getRollData: () => ({ abilities: { str: { mod: 3 }, dex: { mod: -5 } } }),
+      testUserPermission: () => true, getActiveTokens: () => [],
+      rollSkill: async () => ({ total: nextTotal, dice: [{ total: 11 }] }),
+    };
+    actor._add = (key, flags = {}) => {
+      const e = { id: `e${++n}`, name: key, disabled: false, statuses: new Set([key]), flags,
+        update: async (u) => { for (const [k, v] of Object.entries(u)) foundry.utils.setProperty(e, k, v); },
+        delete: async () => { const i = effects.indexOf(e); if (i >= 0) effects.splice(i, 1); } };
+      effects.push(e);
+      actor.statuses.add(key);
+      return e;
+    };
+    return actor;
+  };
+
+  /** The chain's Grapple row landing both conditions from the one hit. */
+  const chainLands = async (actor) => {
+    const keepApply = CL.applyByName;
+    CL.applyByName = async (a, key) => { a._add(key); return { ok: true, applied: key }; };
+    try {
+      await PHS._landConditions([{ key: "grappled" }, { key: "restrained" }], actor,
+        { effects: [] }, actor.name, chain);
+    } finally { CL.applyByName = keepApply; }
+  };
+
+  const escher = makeVictim();
+  // Something ELSE is already holding him: Web's Restrained, which must survive.
+  const websHold = escher._add("restrained", { "ace-qol": { areaDenial: true, spellName: "Web" } });
+  current = escher;
+  await chainLands(escher);
+
+  const grappled = escher.effects.contents.find(e => e.statuses.has("grappled"));
+  const meta = grappled?.flags?.["ace-qol"]?.breakFree;
+  check("the stamp remembers every condition that grab applied",
+    Array.isArray(meta?.holds) && meta.holds.length === 2
+    && meta.holds.some(h => h.key === "grappled") && meta.holds.some(h => h.key === "restrained"),
+    (meta?.holds ?? []).map(h => h.key).join(" + ") || "nothing recorded");
+  check("and by id, so it cannot reach the Restrained Web is holding",
+    !(meta?.holds ?? []).some(h => h.id === websHold.id), "Web's hold is not in the list");
+
+  nextTotal = 18; posted = [];
+  await BFE2._autoAttempt(escher, null, grappled, meta, 9, 0);
+  const left = escher.effects.contents.map(e => e.id);
+  const chainRestrained = (meta.holds.find(h => h.key === "restrained") ?? {}).id;
+  check("a pass takes BOTH of them off",
+    !left.includes(grappled.id) && !left.includes(chainRestrained),
+    `${left.length} effect(s) left on him`);
+  check("and Web's Restrained is still there, untouched",
+    left.includes(websHold.id), "only what this stamp put on");
+
+  const escher2 = makeVictim();
+  current = escher2;
+  await chainLands(escher2);
+  const grappled2 = escher2.effects.contents.find(e => e.statuses.has("grappled"));
+  const meta2 = grappled2.flags["ace-qol"].breakFree;
+  nextTotal = 8; posted = [];
+  await BFE2._autoAttempt(escher2, null, grappled2, meta2, 9, 0);
+  check("a fail leaves both of them on", escher2.effects.contents.length === 2,
+    `${escher2.effects.contents.length} still held`);
+  check("and the whisper says the grapple holds", /holds/.test(posted[0]?.content ?? ""), "");
+}
+
 console.log("\nA STAMP THAT DOES NOT SAY auto STILL ASKS");
 {
   const src = await import("node:fs").then(fs =>

@@ -335,7 +335,29 @@ export class BreakFreeEngine {
       : `${CONFIG.DND5E?.abilities?.[ability]?.label ?? String(ability).toUpperCase()} check`;
 
     if (passed) {
-      try { await eff.delete(); } catch (_) { /* already gone */ }
+      // EVERYTHING THAT GRAB PUT ON COMES OFF (2026-09-29, his table: a chain's
+      // Grapple row lands Grappled AND Restrained, and a successful escape used to
+      // delete only the effect it was stamped on, leaving the creature Restrained
+      // by a grapple that was already over).
+      //
+      // The ids were recorded when the grab landed, so this can only ever remove
+      // what that grab created. A Restrained held by Web, or by anything else, is
+      // not in the list and is never touched.
+      const alsoHeld = Array.isArray(d.holds) ? d.holds
+        : (Array.isArray(eff.flags?.[MODULE_ID]?.breakFree?.holds)
+            ? eff.flags[MODULE_ID].breakFree.holds : []);
+      const ids = [...new Set([eff.id, ...alsoHeld.map(h => h?.id).filter(Boolean)])];
+      const freed = [];
+      for (const id of ids) {
+        const e = actor.effects?.get?.(id);
+        if (!e) continue;
+        try { await e.delete(); freed.push(e.name ?? id); }
+        catch (_) { /* already gone */ }
+      }
+      if (freed.length > 1) {
+        console.log(`${MODULE_ID} | BreakFree: ${actor.name} broke out of ${label} — `
+          + `${freed.join(" and ")} came off together, because that grab put them all on.`);
+      }
       // Clear the persistent Forge animation (the frozen rope). Try the precise
       // item-name end first; then sweep ANY forge:persist:* effect bound to the
       // freed token — robust even if the flag predates itemUuid tracking.

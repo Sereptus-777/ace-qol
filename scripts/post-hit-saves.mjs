@@ -120,14 +120,19 @@ export class PostHitSaves {
    * ⚠️ STAMPED ON THE EFFECT, the way the save engine stamps its own, because the
    * engine looks for the flag on the condition rather than on the actor.
    */
-  static async _armEscape(actor, item, name) {
+  static async _armEscape(actor, item, name, landed = []) {
     try {
       if (!actor || !item) return;
       const escape = DescriptionParser.escapeFromGrapple(item);
       if (!escape) return;
       await awaitDiceSettle();
+      // The Grappled effect THIS grab created, not whatever else is carrying the
+      // status. `landed` holds the ids the lander watched appear.
+      const mine = new Set(landed.map(l => l.id).filter(Boolean));
       const eff = (actor.effects?.contents ?? []).find(e =>
-        !e.disabled && e.statuses?.has?.("grappled"));
+        !e.disabled && e.statuses?.has?.("grappled")
+        && (!mine.size || mine.has(e.id)))
+        ?? (actor.effects?.contents ?? []).find(e => !e.disabled && e.statuses?.has?.("grappled"));
       if (!eff) {
         console.warn(`${MODULE_ID} | post-hit: ${name} is grappled by "${item.name}" but the `
           + `effect could not be found, so no escape check was armed.`);
@@ -146,15 +151,20 @@ export class PostHitSaves {
           auto: true,
           dc: escape.dc,
           label: item.name,
+          // EVERY CONDITION THIS GRAB PUT ON. A pass takes all of them off; a
+          // fail leaves all of them. Ids, not statuses, so an escape can never
+          // touch a Restrained that Web or anything else is holding.
+          holds: landed.filter(l => l.id).map(l => ({ key: l.key, id: l.id })),
           itemUuid: item.uuid ?? null,
           appliedRound: game.combat?.round ?? null,
           appliedTurn: game.combat?.turn ?? null,
           stampedAt: Date.now(),
         },
       });
+      const held = landed.filter(l => l.id).map(l => l.key);
       console.log(`${MODULE_ID} | post-hit: ${name} can try to escape "${item.name}" on its own `
         + `turn — DC ${escape.dc}, ${escape.abilities.map(a => a.toUpperCase()).join(" or ")}. `
-        + `(${escape.sentence})`);
+        + `Getting free ends ${held.length ? held.join(" and ") : "the grapple"}. (${escape.sentence})`);
     } catch (err) {
       console.warn(`${MODULE_ID} | post-hit: could not arm the escape from "${item?.name}" `
         + `on ${name}:`, err);
@@ -1240,6 +1250,12 @@ export class PostHitSaves {
   static async _landConditions(conditions, targetActor, result, name, item = null) {
     if (!conditions?.length) return;
     const autoApply = QolSettings.get("autoApplyConditions") ?? true;
+    // A GRAB IS EVERYTHING IT PUT ON (2026-09-29, his table). The Spiked Chain's
+    // Grapple row lands Grappled AND Restrained: "the target is grappled (escape
+    // DC 14) ... Until the grapple ends, the target is restrained." The stamp went
+    // on the Grappled effect alone, so a successful escape deleted that one and
+    // left the creature Restrained by a grapple that was already over.
+    const landed = [];
     for (const c of conditions) {
       const key = String(c?.key ?? "").toLowerCase().trim();
       if (!key) continue;
@@ -1250,6 +1266,11 @@ export class PostHitSaves {
         continue;
       }
       let out = null;
+      // WHAT THIS APPLY CREATED, AND NOTHING ELSE. The ids on the creature before
+      // and after are compared, so a grab can only ever remember the effects IT
+      // put on. Matching by status would have found Web's Restrained and let an
+      // escape from a chain strip it.
+      const before = new Set((targetActor?.effects?.contents ?? []).map(e => e.id));
       try {
         out = await ConditionDoor.apply(targetActor, key, Number(c.duration) > 0 ? { duration: { seconds: Number(c.duration) } } : {}, { item });
       } catch (err) {
@@ -1258,14 +1279,14 @@ export class PostHitSaves {
       if (out?.ok) {
         result.effects.push({ type: "condition", condition: key });
         console.log(`${MODULE_ID} | post-hit: ${key}${out.level !== undefined ? ` (level ${out.level})` : ""} put on ${name}.`);
+        for (const e of (targetActor?.effects?.contents ?? [])) {
+          if (!before.has(e.id)) landed.push({ key, id: e.id });
+        }
         // ⚠️🔴 A GRAPPLE IS NOT OVER WHEN IT LANDS (2026-09-29, his One Road
         // stamp). The creature held gets to spend its action trying to get out,
         // on ITS turn, and the one swinging is never asked. That prompt already
         // exists and Web already uses it; all this does is stamp the flag it
         // reads, with the DC the item's own words state.
-        if (key === "grappled") {
-          await PostHitSaves._armEscape(targetActor, item, name);
-        }
       } else if (out?.immune) {
         result.effects.push({ type: "condition", condition: key, blocked: true, reason: `immune to ${key}` });
         console.log(`${MODULE_ID} | post-hit: ${name} is immune to ${key}, so it was not put on.`);
@@ -1273,6 +1294,13 @@ export class PostHitSaves {
         result.effects.push({ type: "condition", condition: key, blocked: true, reason: "it did not take; the console has why" });
         if (out) console.warn(`${MODULE_ID} | post-hit: ${key} did not go on ${name}:`, out);
       }
+    }
+
+    // ONCE, AFTER EVERYTHING HAS LANDED. Arming inside the loop stamped on the
+    // Grappled effect before Restrained existed, so the stamp could never have
+    // known about it.
+    if (landed.some(l => l.key === "grappled")) {
+      await PostHitSaves._armEscape(targetActor, item, name, landed);
     }
   }
 
