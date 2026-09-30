@@ -36,6 +36,9 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { onCanvasReady } from "./ready-utils.mjs";
+// The card is what lowers the hold on a condition's drawing. chat-render-utils
+// imports nothing, so reading it here adds no cycle.
+import { registerChatCardHandler, isAceCard } from "./chat-render-utils.mjs";
 
 const CHAIN_TEXTURE_PATH = "modules/ace-qol/Assets/Conditions/restrained-chain.png";
 // Build stamp — printed at startup so "did the new file load" is answerable
@@ -43,6 +46,73 @@ const CHAIN_TEXTURE_PATH = "modules/ace-qol/Assets/Conditions/restrained-chain.p
 const CV_BUILD = "0.7.215";
 
 /** Conditions this engine renders on the body — their token squares are suppressed. */
+/* ═══════════════════════════════════════════════════════════════════════════
+   THE PICTURE WAITS FOR THE CARD
+
+   His rule, 2026-09-30: *"Dice land. Then the condition. Then the card. Then the
+   animation. The hearts must not start before the die or the card."*
+
+   A condition's drawing goes up the instant its effect is created, and the effect
+   is created before the card that announces it. So the hearts beat the card every
+   time, by however long the card takes to write.
+
+   The condition library raises a hold as a condition lands (its dice already
+   waited for) and the chrome pass lowers it when an ACE card reaches the screen,
+   which is exactly "after the card". Per creature, so nothing else on the board
+   is held up.
+
+   ⚠️ A HOLD THAT NOBODY LOWERS WOULD LOSE THE PICTURE ALTOGETHER, so it also
+   lowers itself after a bounded wait and says that no card came. Better a late
+   drawing with a line in the console than a creature whose condition is invisible.
+
+   ⚠️ THE GM'S SCREEN IS WHERE THE ORDER IS SET. The library runs on the GM, so
+   the hold is the GM's; on a player's client the effect and the card arrive
+   together over the wire and there is nothing to hold apart.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/** actorId → the reason it is held, for the log. */
+const _artHeld = new Map();
+/** Tokens whose drawing was deferred while their creature was held. */
+const _artDeferred = new Set();
+const ART_HOLD_FRAMES = 120;        // ~2s at 60Hz: the longest a card may take
+
+/** Hold ACE's drawing of this creature's conditions until its card is on screen. */
+export function holdConditionArt(actorId, why = "a condition landing") {
+  if (!actorId) return;
+  if (_artHeld.has(actorId)) return;                  // already waiting on the card
+  _artHeld.set(actorId, why);
+  let frames = 0;
+  const tick = () => {
+    if (!_artHeld.has(actorId)) return;               // the card came
+    if (++frames > ART_HOLD_FRAMES) {
+      console.log(`ace-qol | no card came for ${why}, so its picture is drawn now rather `
+        + `than held any longer.`);
+      releaseConditionArt("no card arrived");
+      return;
+    }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+/** The card is on screen: draw what was held. */
+export function releaseConditionArt(why = "the card is on screen") {
+  if (!_artHeld.size && !_artDeferred.size) return;
+  _artHeld.clear();
+  const waiting = [..._artDeferred];
+  _artDeferred.clear();
+  for (const id of waiting) {
+    try {
+      const tok = canvas?.tokens?.get(id);
+      if (tok) ConditionVisuals.sync(tok);
+    } catch (_) { /* the token may have gone */ }
+  }
+  if (waiting.length) {
+    console.log(`ace-qol | ${why}: ${waiting.length} creature('s) condition art drawn now, `
+      + `after its card.`);
+  }
+}
+
 export const BODY_VISUAL_STATUSES = new Set([
   // ⚠️ `prone` IS STILL HERE AND IT NO LONGER MEANS "WE DRAW IT". It is in this
   // list purely to keep Foundry's square icon suppressed, because he asked for
@@ -104,6 +174,15 @@ export class ConditionVisuals {
   // ═══════════════════════════════════════════════════════════════════════════
 
   static register() {
+    // ── THE CARD LOWERS THE HOLD ─────────────────────────────────────────
+    // A condition's drawing is held from the moment it lands until its card is
+    // on screen, so the order he asked for is the order he sees: the die, the
+    // card, then the hearts. Any ACE card lowers it, because the card that
+    // announces the condition is the one being written at that moment.
+    registerChatCardHandler((message, el) => {
+      if (isAceCard(message, el)) releaseConditionArt("the card is on screen");
+    }, "condition art held for its card", { sweepAll: true });
+
     // Chain strip — load once. _chainReady is AWAITED by every wrap build:
     // the strip is 2+ MB, and building chains before it finished loading was
     // why the drawn-ring fallback kept appearing instead of the real PNG
@@ -236,6 +315,17 @@ export class ConditionVisuals {
 
       const existing = ConditionVisuals._live.get(id);
       if (existing?.key === key && existing.token === token && !existing.cont?.destroyed) return;
+
+      // ⚠️ THE PICTURE WAITS FOR THE CARD (his rule, 2026-09-30). A creature
+      // whose condition has just landed is held until its card is on screen, so
+      // the hearts never beat the die or the card. Only a drawing that would ADD
+      // something is held: taking one off, and every unrelated redraw, goes now.
+      const held = token.actor?.id ? _artHeld.get(token.actor.id) : null;
+      if (held && active.length > (existing?.key ? existing.key.split("|").length : 0)) {
+        _artDeferred.add(id);
+        return;
+      }
+
       ConditionVisuals._teardown(id);
       if (!active.length) return;
 

@@ -325,9 +325,11 @@ export function registerAceChrome() {
    rest of the fight. The card he was waiting to be asked for lands off-screen
    and nothing says so.
 
-   ⚠️ waitImages, BECAUSE OUR CARDS ARE MOSTLY PICTURES. Portraits and the d20
-   faces have no height until they load, so a scroll measured before them lands
-   short of the card it was aiming at — which looks exactly like not scrolling.
+   ⚠️ THE BOTTOM OF THE LOG, AND NOTHING CLEVERER (his rule, 2026-09-30: "Do not
+   scroll-to-card. Do not wait on images. Do not add padding. Bottom of the
+   log."). 0.67.0 waited on images and then measured the card, and waiting on
+   images means waiting for every picture in the WHOLE log, which arrives late
+   enough to read as not scrolling at all.
 
    ⚠️ A CREATE, NOT A RENDER. An ACE card is written once and then updated in
    place (the card door), and a redraw is not a new card: scrolling on every
@@ -385,34 +387,31 @@ export function takeLogToNewCard(message, el) {
         if (!message?.id || !_newCards.has(message.id)) return;
         _newCards.delete(message.id);
 
-        const scroll = async () => {
-            const log = ui.chat;
-            if (!log?.scrollBottom) return;
-            // The popout too: a second log with its own scroll position, and the
-            // card is at the bottom of both.
-            await log.scrollBottom({ waitImages: true, popout: true });
-            // ⚠️ AND CHECK THAT IT WORKED. The card's own pictures settle their
-            // height after the scroll on a cold cache, which leaves the log short
-            // of the card it was aiming at. If the card is not on screen, take the
-            // log to the card itself rather than to the bottom of the log.
+        // ⚠️🔴 THE BOTTOM OF THE LOG. NOTHING ELSE. His rule, 2026-09-30: "The
+        // chat scrollbar goes all the way to the bottom. Do not scroll-to-card.
+        // Do not wait on images. Do not add padding. Bottom of the log."
+        //
+        // 0.67.0 waited on images and then measured the card and corrected to it.
+        // `ChatLog.waitForImages` waits for EVERY picture in the whole log, so on
+        // a long log the scroll arrived late, which reads as not scrolling at all.
+        // One call, and the scrollbar is at the bottom.
+        const scroll = () => {
             try {
-                const box = el?.closest?.(".chat-scroll") ?? el?.parentElement;
-                if (!box || !el?.getBoundingClientRect) return;
-                const cardBottom = el.getBoundingClientRect().bottom;
-                const boxBottom = box.getBoundingClientRect().bottom;
-                if (cardBottom - boxBottom > 2) {
-                    el.scrollIntoView({ block: "end", behavior: "instant" });
-                    console.log(`${MODULE_ID} | the log stopped short of "${message.id}" after its `
-                        + `pictures loaded, so it was taken to the card itself.`);
-                }
-            } catch (_) { /* the correction is a nicety; the scroll already ran */ }
+                const log = ui.chat;
+                if (!log?.scrollBottom) return;
+                // The popout too: a second log with its own scroll position.
+                log.scrollBottom({ popout: true });
+            } catch (err) {
+                console.warn(`${MODULE_ID} | the chat log would not scroll to the bottom for a `
+                    + `new ACE card:`, err);
+            }
         };
 
         // Wait for the append, one frame at a time. 30 frames is half a second at
         // 60Hz: long enough for the render queue, short enough to say so.
         let frames = 0;
         const whenInTheDom = () => {
-            if (el?.isConnected) { scroll().catch(() => {}); return; }
+            if (el?.isConnected) { scroll(); return; }
             if (++frames > 30) {
                 console.warn(`${MODULE_ID} | a new ACE card never reached the chat log, so the log `
                     + `was not taken to it (message ${message.id}).`);

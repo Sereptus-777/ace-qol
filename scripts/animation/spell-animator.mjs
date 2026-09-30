@@ -59,6 +59,46 @@ function aceAlreadyDrawsThis(entry, path) {
   }
 }
 
+/* ── AND AUTOMATED ANIMATIONS IS TOLD, NOT JUST OUT-VOTED ────────────────────
+ *
+ * ⚠️🔴 THIS FILE DECIDED WHO OWNS A CAST AND THEN NEVER TOLD THE OTHER SIDE.
+ * `whoOwnsThisCast` picks ACE or AA and both CALLERS read it — but AA has its own
+ * trigger on the item's use, which nothing here has ever stood down. So there are
+ * three roads a JB2A condition badge can reach the token by, and his rule needed
+ * all three shut:
+ *
+ *   1  ACE playing AA's record itself          → refused above (0.67.0)
+ *   2  AA playing off the EFFECT created       → switched off on the effect (0.66.0)
+ *   3  AA playing off the ITEM at cast time    → this, the one still open
+ *
+ * Narrow on purpose: AA is stood down only for a cast whose curated record is an
+ * on-token picture of a condition ACE draws itself. Every other cast is AA's as
+ * it always was, because standing AA down for a spell ACE has no picture for
+ * would leave the table with nothing.
+ */
+export function registerAaStandDown() {
+  Hooks.on("AutomatedAnimations-WorkflowStart", (data) => {
+    try {
+      const item = data?.item ?? null;
+      if (!item) return;
+      const entry = globalThis.game?.aceQol?.SpellPipeline?._getEntry?.(item) ?? null;
+      if (!entry) return;
+      const anim = animationFor(item);
+      const drawn = aceAlreadyDrawsThis(entry, anim?.path);
+      if (!drawn) return;
+      data.stopWorkflow = true;
+      console.log(`${MODULE_ID} | Automated Animations stands down for "${item.name}": its record `
+        + `is an on-token condition badge (${anim.path}) and ACE draws ${drawn.join(", ")} on the `
+        + `body itself. One picture of a condition, not two.`);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not stand Automated Animations down for a condition `
+        + `badge, so it may play one:`, err);
+    }
+  });
+  console.debug(`${MODULE_ID} | ACE draws its own conditions; AA's badge for one of them is `
+    + `stood down at the cast.`);
+}
+
 /**
  * Shapes whose resolution actually PUTS A TEMPLATE ON THE MAP.
  *

@@ -189,7 +189,7 @@ console.log("\n4. CHAT SITS ON THE NEW CARD");
   // run while the card is still detached: the log scrolled to the bottom of a
   // log the new card was not in. So the pin is now on the WAIT, not on the call.
   check("the scroll waits until the card is actually in the log",
-    /if \(el\?\.isConnected\) \{ scroll\(\)\.catch/.test(chat)
+    /if \(el\?\.isConnected\) \{ scroll\(\); return; \}/.test(chat)
     && /requestAnimationFrame\(whenInTheDom\);/.test(chat),
     "a condition, not a delay");
   check("and one frame is the tick, because a microtask runs before the append",
@@ -204,13 +204,17 @@ console.log("\n4. CHAT SITS ON THE NEW CARD");
     "created in this session AND now on screen");
   check("consumed once, so a re-render never moves the log again",
     /_newCards\.delete\(message\.id\);/.test(chat), "a redraw is not a new card");
-  check("it waits for the pictures",
-    /await log\.scrollBottom\(\{ waitImages: true, popout: true \}\);/.test(chat),
-    "a portrait has no height until it loads");
-  check("and checks that it worked, because they settle after the scroll",
-    /if \(cardBottom - boxBottom > 2\)/.test(chat)
-    && /el\.scrollIntoView\(\{ block: "end", behavior: "instant" \}\);/.test(chat),
-    "short of the card is the same as no scroll");
+  // ⚠️🔴 AND IT IS THE BOTTOM OF THE LOG, NOTHING CLEVERER (his rule,
+  // 2026-09-30: "Do not scroll-to-card. Do not wait on images. Do not add
+  // padding. Bottom of the log."). Waiting on images waits for every picture in
+  // the WHOLE log, which arrives late enough to read as not scrolling at all.
+  check("it does not wait on images",
+    !/log\.scrollBottom\(\{[^}]*waitImages/.test(chat),
+    "waiting on images waits for every picture in the whole log");
+  check("it does not scroll to the card",
+    !/scrollIntoView/.test(chat), "the bottom of the log");
+  check("one call, and the scrollbar is at the bottom",
+    /log\.scrollBottom\(\{ popout: true \}\);/.test(chat), "his words");
   check("the popout log too",
     /popout: true/.test(chat), "a second log with its own scroll position");
   check("whoever the speaker is",
@@ -294,6 +298,71 @@ console.log("\n6. TWO SOURCES, ONE CHARMED, NEITHER DELETED");
   check("and an unreadable answer plays, rather than silently playing nothing",
     /return null;\s+\/\/ unreadable: play it, rather than silently play nothing/.test(anim),
     "silence is the worse failure here");
+
+  // ⚠️🔴 THREE ROADS, NOT ONE. This file decided who owns a cast and never told
+  // AA, which has its own trigger on the item's use.
+  check("Automated Animations is stood down at the cast, not just out-voted",
+    /export function registerAaStandDown\(\)/.test(anim)
+    && /Hooks\.on\("AutomatedAnimations-WorkflowStart", \(data\) => \{/.test(anim)
+    && /data\.stopWorkflow = true;/.test(anim),
+    "the third road a badge could take");
+  check("and it is registered",
+    /registerAaStandDown\(\)/.test(main), "at ready, on every client");
+  check("only for a condition ACE draws — every other cast stays AA's",
+    /const drawn = aceAlreadyDrawsThis\(entry, anim\?\.path\);\s*\n\s*if \(!drawn\) return;/.test(anim),
+    "no picture at all is worse");
+}
+
+/* ══ 7. THE ORDER: DICE, CONDITION, CARD, THEN THE PICTURE ════════════════ */
+console.log("\n7. DIE, THEN CARD, THEN HEARTS");
+{
+  const lib = read("scripts/condition-library.mjs");
+  const vis = read("scripts/condition-visuals.mjs");
+  const doors = read("scripts/road/doors.mjs");
+  const gate = read("scripts/road/dice-gate.mjs");
+
+  // ⚠️🔴 THE DICE. The condition door defaulted to `dice = false`, which the gate
+  // honours as a caller's declaration, and the save resolver does not reach the
+  // door at all. So the condition landed while the d20 was still tumbling and
+  // ACE's drawing of it went up with it.
+  check("the gate lives in a leaf both the doors and the library can read",
+    /import \{ awaitDiceSettle, diceInFlight \} from "\.\.\/dsn-utils\.mjs";/.test(gate)
+    && /export \{ untilDiceLand \} from "\.\/dice-gate\.mjs";/.test(doors),
+    "doors.mjs imports the library, so the gate could not live there");
+  check("the condition door no longer says 'no dice' on the caller's behalf",
+    /static async apply\(actor, key, options = \{\}, \{ dice, item = null \} = \{\}\) \{/.test(doors),
+    "silence asks the screen");
+  check("and the library waits too, for the paths that never reach a door",
+    /static async _beforeItLands\(actor, key, options = \{\}\) \{/.test(lib)
+    && /await untilDiceLand\(options\?\.dice\);/.test(lib),
+    "the save resolver calls applyEffect straight");
+  check("both apply paths go through it",
+    (lib.match(/await ConditionLibrary\._beforeItLands\(actor, key, options\);/g) ?? []).length >= 2,
+    "applyEffect and applyByName");
+  check("and it costs nothing when the screen is still",
+    /if \(!dice && !diceInFlight\(\)\) return;/.test(gate), "same tick, no timer");
+
+  // ⚠️ THE PICTURE. Drawn the instant the effect exists, which is before the card.
+  check("a condition's drawing is held until its card",
+    /export function holdConditionArt\(actorId, why = "a condition landing"\)/.test(vis)
+    && /if \(fromSomething\) holdConditionArt\(actor\?\.id, /.test(lib),
+    "raised where the condition lands");
+  check("and only when a card is actually coming",
+    /const fromSomething = !!\(options\?\.source \|\| options\?\.sourceActorId/.test(lib),
+    "a GM's own toggle is not announced by one");
+  check("the card lowers it",
+    /export function releaseConditionArt\(why = "the card is on screen"\)/.test(vis)
+    && /if \(isAceCard\(message, el\)\) releaseConditionArt\("the card is on screen"\);/.test(vis),
+    "through the handler every ACE card already runs");
+  check("only a drawing that would ADD something is held",
+    /if \(held && active\.length > \(existing\?\.key \? existing\.key\.split\("\|"\)\.length : 0\)\)/.test(vis),
+    "taking one off, and every unrelated redraw, goes now");
+  check("per creature, so the rest of the board is not held up",
+    /_artHeld\.get\(token\.actor\.id\)/.test(vis), "one actor at a time");
+  check("and a hold nobody lowers lowers itself, out loud",
+    /if \(\+\+frames > ART_HOLD_FRAMES\)/.test(vis)
+    && /no card came for \$\{why\}/.test(vis),
+    "a late drawing beats an invisible condition");
 }
 
 /* ══ 5. A RELOAD IS NOT A NEW ROUND ═══════════════════════════════════════ */

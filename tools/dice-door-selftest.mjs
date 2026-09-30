@@ -29,6 +29,11 @@ const check = (label, ok, detail = "") => {
 const read = (p) => readFileSync(`D:/FoundryVTT/Data/modules/ace-qol/${p}`, "utf8");
 
 const doors = read("scripts/road/doors.mjs");
+// ⚠️ THE GATE MOVED INTO ITS OWN LEAF (0.68.0) so the condition library could
+// read it without an import cycle: doors.mjs imports the library, so the gate
+// could never have lived here and been readable from there. doors.mjs
+// re-exports it, which the pin below checks.
+const gate  = read("scripts/road/dice-gate.mjs");
 const dsn   = read("scripts/dsn-utils.mjs");
 const save  = read("scripts/save-engine.mjs");
 const ph    = read("scripts/post-hit-saves.mjs");
@@ -40,23 +45,39 @@ console.log("\nONE DICE GATE FOR EVERY CARD\n");
 console.log("THE DOOR ASKS, IT IS NOT TOLD");
 {
   check("the door can see what is tumbling on this screen",
-    /import \{ awaitDiceSettle, diceInFlight \} from "\.\.\/dsn-utils\.mjs";/.test(doors),
+    /import \{ awaitDiceSettle, diceInFlight \} from "\.\.\/dsn-utils\.mjs";/.test(gate),
     "diceInFlight");
+  check("and every door still reads the one gate",
+    /import \{ untilDiceLand \} from "\.\/dice-gate\.mjs";/.test(doors)
+    && /export \{ untilDiceLand \} from "\.\/dice-gate\.mjs";/.test(doors),
+    "moved to a leaf, re-exported here");
   check("and dsn-utils really exports it",
     /export function diceInFlight\(\)\s*\{\s*\n\s*return _inFlight\.size > 0;/.test(dsn),
     "the live animation set");
 
-  const gate = /if \(!dice && !diceInFlight\(\)\) return;/.test(doors);
-  check("a landing waits whenever dice are in the air, declared or not", gate,
+  const gated = /if \(!dice && !diceInFlight\(\)\) return;/.test(gate);
+  check("a landing waits whenever dice are in the air, declared or not", gated,
     "the one gate");
   check("and the old 'nobody declared dice, so do not wait' is gone",
-    !/^\s*if \(!dice\) return;\s*$/m.test(doors), "no early bail");
+    !/^\s*if \(!dice\) return;\s*$/m.test(gate), "no early bail");
+  // ⚠️ AND SILENCE IS NOT "NO DICE" AT THE CONDITION DOOR EITHER (his rule,
+  // 2026-09-30: "Dice land. Then the condition."). Every one of these read
+  // `dice = false`, which the gate honours as a declaration, so a condition from
+  // a save landed while the d20 was still up.
+  check("the condition door asks the screen when nobody said",
+    /static async apply\(actor, key, options = \{\}, \{ dice, item = null \} = \{\}\) \{/.test(doors)
+    && /static async remove\(actor, key, \{ dice \} = \{\}\) \{/.test(doors),
+    "no more dice = false by default");
+  check("and the library holds the same rule, for the paths that never reach a door",
+    /await ConditionLibrary\._beforeItLands\(actor, key, options\);/
+      .test(read("scripts/condition-library.mjs")),
+    "the save resolver calls the library straight");
 
   // FROZEN NOTE 4 IS UNTOUCHED.
-  check("nothing thrown and nothing in the air still lands at once", gate,
+  check("nothing thrown and nothing in the air still lands at once", gated,
     "note 4: no timer, no hook");
   check("the note itself is still written down",
-    /NOTE 4 IS UNTOUCHED/.test(doors) && /twenty-second card of 4 September/.test(doors),
+    /NOTE 4 IS UNTOUCHED/.test(gate) && /twenty-second card of 4 September/.test(gate),
     "why it exists");
 
   // BOTH HALVES OF THE SAME DOOR.

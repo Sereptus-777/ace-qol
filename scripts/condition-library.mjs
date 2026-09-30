@@ -19,6 +19,11 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { CombatState } from "./combat-state.mjs";
 import { CombatContext } from "./combat-context.mjs";
+// His rule, months old: nothing lands before the dice that decided it. The gate
+// lives in its own leaf so this file can hold to it too (road/dice-gate.mjs).
+import { untilDiceLand } from "./road/dice-gate.mjs";
+// And ACE's picture of a condition waits for the card that announces it.
+import { holdConditionArt } from "./condition-visuals.mjs";
 
 // ─── Shorthand for Active Effect modes ──────────────────────────────────────
 // Resolved at call time via getter so CONST is available
@@ -1786,6 +1791,7 @@ export class ConditionLibrary {
       console.warn(`${MODULE_ID} | ConditionLibrary: unknown effect key "${key}"`);
       return null;
     }
+    await ConditionLibrary._beforeItLands(actor, key, options);
 
     // Edition-aware def overrides (e.g. Barkskin's AC floor: 16 in 2014, 17 in
     // 2024). GUARDED — a no-op for the ~all defs that have no `byEdition` block,
@@ -2192,6 +2198,60 @@ export class ConditionLibrary {
     return ConditionLibrary._matchingEffects(actor, key)[0] ?? null;
   }
 
+  /* ═════════════════════════════════════════════════════════════════════════
+     THE ORDER A CONDITION ARRIVES IN
+
+     His rule, 2026-09-30: *"Dice land. Then the condition. Then the card. Then
+     the animation. The hearts must not start before the die or the card."*
+
+     ⚠️🔴 TWO THINGS WERE LETTING THE PICTURE IN FIRST.
+
+     1  THE DICE. The condition door read `dice = false` by default, which the
+        gate honours as "the caller thought about it and nothing was thrown", so
+        a condition from a save landed while the d20 was still tumbling. And the
+        save resolver does not reach the door at all — it calls this library
+        straight (one of the section-9 side doors) — so even fixing the door
+        would have left this path ungated. The gate is HERE now, at the one
+        chokepoint both paths go through, and it costs nothing when the screen is
+        still: `untilDiceLand` returns on the same tick with nothing in the air.
+
+     2  THE PICTURE. ACE draws a condition on the body the instant its effect is
+        created, which is before the card that announces it. So the drawing is
+        held from here until the card is on screen (condition-visuals' hold,
+        released by the chrome pass), and the order he asked for is what he sees:
+        the die, the card, then the hearts.
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  /**
+   * The two things that must be true before a condition lands: its dice have
+   * settled, and its picture is held until the card.
+   *
+   * @param {Actor}  actor
+   * @param {string} key
+   * @param {object} options  `dice: false` says nothing was thrown; leaving it
+   *   out asks the screen, per the gate's own rule.
+   */
+  static async _beforeItLands(actor, key, options = {}) {
+    try {
+      await untilDiceLand(options?.dice);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not wait for the dice before "${key}" landed on `
+        + `${actor?.name}, so it lands now:`, err);
+    }
+    try {
+      // ⚠️ ONLY WHEN A CARD IS COMING. A condition that arrives from a cast, an
+      // item or a feature is announced by one; a GM's own toggle on the token is
+      // not, and holding that would leave every hand-set condition waiting two
+      // seconds for a card that was never going to be written.
+      const fromSomething = !!(options?.source || options?.sourceActorId
+        || options?.spellItem || options?.origin || options?.item);
+      if (fromSomething) holdConditionArt(actor?.id, `${key} on ${actor?.name}`);
+    } catch (err) {
+      console.debug(`${MODULE_ID} | could not hold the picture of "${key}" until its card:`,
+        err?.message ?? err);
+    }
+  }
+
   /**
    * EVERY copy of this thing on the creature, not just the first.
    *
@@ -2338,6 +2398,7 @@ export class ConditionLibrary {
   static async applyByName(actor, conditionKey, options = {}) {
     if (!actor || !conditionKey) return { ok: false, applied: null };
     const key = String(conditionKey).toLowerCase().trim();
+    await ConditionLibrary._beforeItLands(actor, key, options);
 
     // ── Condition immunity (RAW, both editions) ──
     // Don't apply a condition the target is immune to (undead vs Charmed/Poisoned,

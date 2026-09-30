@@ -19,7 +19,7 @@
 // const read at top level inside an import cycle throws at load (2026-08-28).
 // ──────────────────────────────────────────────────────────────────────────────
 
-import { awaitDiceSettle, diceInFlight } from "../dsn-utils.mjs";
+import { untilDiceLand } from "./dice-gate.mjs";
 import { DamageApplicator } from "../damage-applicator.mjs";
 import { DamageCalculator } from "../damage-calculator.mjs";
 import { ConditionLibrary } from "../condition-library.mjs";
@@ -39,42 +39,11 @@ export const SIGNALS = Object.freeze([
  * @param {boolean|{messageId?: string}} dice  true, or the chat message the dice
  *   came in on, when dice decided this landing; false when none were thrown
  */
-export async function untilDiceLand(dice) {
-  const messageId = typeof dice === "object" ? (dice.messageId ?? null) : null;
-
-  // ⚠️🔴 "NOBODY DECLARED DICE" IS NOT "THERE ARE NO DICE ON THE TABLE".
-  //
-  // His table, 2026-09-29: a save card flipped to FAIL while the d20 was still
-  // tumbling. The caller was right, the door was wrong. `dice` was a promise the
-  // CALLER had to remember to make, and of the forty-five cards this module can
-  // post, five made it. The other forty - and every card redrawn through
-  // `update`, which no caller passed it to at all - went straight past the wait.
-  //
-  // A default that has to be remembered at every door is not a door, it is a
-  // habit. So the door asks instead of being told: if this screen has dice in
-  // the air right now, the landing waits for them, whoever threw them. His rule
-  // is absolute and is about the screen, not about one feature - "if a card
-  // flips while 3D dice are up, that call is wrong".
-  //
-  // ⚠️ NOTE 4 IS UNTOUCHED. "A door with no dice does not wait": an immune
-  // target, a spell with no save, an automatic heal. Nothing was thrown, nothing
-  // is in the air, and this returns on the same tick without so much as a timer
-  // (the twenty-second card of 4 September stays fixed).
-  // ⚠️ DECLARED "NO DICE" IS HONOURED; SILENCE IS NOT.
-  //
-  // `dice: false`, written out, is a caller saying it has thought about this and
-  // nothing was thrown that decides it: a ROLL DAMAGE button, a prompt, a notice.
-  // Those land at once even while somebody else's dice are in the air, because
-  // holding a BUTTON behind an animation is not what his rule is about - his rule
-  // is that a RESULT never beats its dice.
-  //
-  // Leaving it out is not that declaration. That is the forty cards that never
-  // thought about it at all, and they go through the gate.
-  if (dice === false) return;
-  if (!dice && !diceInFlight()) return;
-
-  await awaitDiceSettle(undefined, { messageId });
-}
+// ⚠️ THE GATE ITSELF NOW LIVES IN road/dice-gate.mjs, A LEAF. This file imports
+// the condition library, so the library could not read the gate back without a
+// genuine import cycle — and a path that never reaches a door was therefore
+// ungated. Re-exported here so every existing caller is untouched.
+export { untilDiceLand } from "./dice-gate.mjs";
 
 /* ── 1. A card ─────────────────────────────────────────────────────────── */
 
@@ -148,7 +117,16 @@ export class ConditionDoor {
    *
    * @returns {Promise<{ok: boolean, applied: string|null, immune?: boolean}>}
    */
-  static async apply(actor, key, options = {}, { dice = false, item = null } = {}) {
+  /**
+   * ⚠️🔴 SILENCE IS NOT "NO DICE" AT THIS DOOR EITHER (his rule, 2026-09-30:
+   * "Dice land. Then the condition."). Every one of these read `dice = false`,
+   * which the gate honours as a caller declaring it had thought about it — so a
+   * condition landing from a save went on the creature while the d20 was still
+   * tumbling, and ACE's picture of it drew with it. That is the card door's bug
+   * of 29 September, still living in this one. Left out now means "ask the
+   * screen"; a caller that means it still writes `dice: false`.
+   */
+  static async apply(actor, key, options = {}, { dice, item = null } = {}) {
     // ⚠️ ASKED BEFORE THE DICE ARE WAITED FOR. A ward is not a result, it is a
     // fact about the creature: if the cloak refuses this, there was never
     // anything for the dice to decide, and nothing should sit on a hook for them.
@@ -169,7 +147,7 @@ export class ConditionDoor {
   }
 
   /** A condition taken off. */
-  static async remove(actor, key, { dice = false } = {}) {
+  static async remove(actor, key, { dice } = {}) {
     await untilDiceLand(dice);
     return ConditionLibrary.removeEffect(actor, key);
   }
@@ -194,7 +172,7 @@ export class ConditionDoor {
    */
   static async applyItemEffect(item, actor, fx, { outcome = "fail", caster = null,
       repeatingSave = null, endsWith = [], durationSeconds = null, castLevel = null,
-      dryRun = false, linkConcentration = true, dice = false } = {}) {
+      dryRun = false, linkConcentration = true, dice } = {}) {
     const name = String(fx?.name ?? "an effect");
     try {
       const src = fx?.effect;

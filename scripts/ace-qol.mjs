@@ -2165,6 +2165,14 @@ Hooks.once("ready", () => {
   // never thinks about DCs still cannot leak one. See chat-render-utils.
   registerDCVisibility();
 
+  // ⚠️ ACE DRAWS ITS OWN CONDITIONS, SO NOBODY ELSE PAINTS ONE ON THE TOKEN.
+  // The third and last road a JB2A condition badge could reach a creature by:
+  // Automated Animations' own trigger on the item's use. See spell-animator.
+  import("./animation/spell-animator.mjs")
+    .then(({ registerAaStandDown }) => registerAaStandDown())
+    .catch(err => console.warn(`${MODULE_ID} | could not stand Automated Animations down for `
+      + `condition badges, so one may play beside ACE's own drawing:`, err));
+
   // Reaction engine — ALL users (players receive reaction prompts via socket)
   try {
     reactionEngine = new ReactionEngine();
