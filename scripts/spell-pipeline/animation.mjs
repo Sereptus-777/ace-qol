@@ -53,7 +53,10 @@ export class AnimationHelper {
       if (whoOwnsThisCast(ctx.item, ctx.entry) === "ace") {
         const targetsForAnim = AnimationHelper._extractTargets(result);
         if (targetsForAnim.length > 0) AnimationHelper._setUserTargets(targetsForAnim);
-        await playCuratedAnimation({ casterToken, item: ctx.item, targets: targetsForAnim });
+        // The entry goes with it: the animator needs the spell's landing condition
+        // to tell an on-token condition clip from a cast flourish.
+        await playCuratedAnimation({ casterToken, item: ctx.item, targets: targetsForAnim,
+          entry: ctx.entry ?? null });
         return;
       }
 

@@ -183,24 +183,117 @@ console.log("\n3. TWO SOURCES, ONE CHARMED, ONE CLIP");
 /* ══ 4. A NEW ACE CARD TAKES THE LOG TO IT ════════════════════════════════ */
 console.log("\n4. CHAT SITS ON THE NEW CARD");
 {
-  check("a new ACE card scrolls the log",
-    /Hooks\.on\("createChatMessage", \(message\) => \{/.test(chat)
-    && /log\.scrollBottom\(\{ waitImages: true, popout: true \}\);/.test(chat),
-    "Foundry only scrolls for the author, or a log already at the bottom");
+  // ⚠️🔴 THE FIRST PASS SCROLLED TOO EARLY, AND THESE PINS WERE GREEN OVER IT.
+  // Foundry's ChatLog##postOne awaits renderMessage (which fires the render
+  // hook) and THEN appends, so both createChatMessage and renderChatMessageHTML
+  // run while the card is still detached: the log scrolled to the bottom of a
+  // log the new card was not in. So the pin is now on the WAIT, not on the call.
+  check("the scroll waits until the card is actually in the log",
+    /if \(el\?\.isConnected\) \{ scroll\(\)\.catch/.test(chat)
+    && /requestAnimationFrame\(whenInTheDom\);/.test(chat),
+    "a condition, not a delay");
+  check("and one frame is the tick, because a microtask runs before the append",
+    /anything queued during the/.test(chat) && /hook runs first/.test(chat),
+    "the append is the continuation of that await");
+  check("it gives up out loud rather than looping forever",
+    /if \(\+\+frames > 30\)/.test(chat)
+    && /never reached the chat log/.test(chat), "bounded, and it says so");
+  check("a new card is marked at creation and scrolled from the render pass",
+    /_newCards\.add\(message\.id\);/.test(chat)
+    && /if \(!message\?\.id \|\| !_newCards\.has\(message\.id\)\) return;/.test(chat),
+    "created in this session AND now on screen");
+  check("consumed once, so a re-render never moves the log again",
+    /_newCards\.delete\(message\.id\);/.test(chat), "a redraw is not a new card");
   check("it waits for the pictures",
-    /waitImages: true/.test(chat),
-    "a portrait has no height until it loads, so the scroll lands short");
+    /await log\.scrollBottom\(\{ waitImages: true, popout: true \}\);/.test(chat),
+    "a portrait has no height until it loads");
+  check("and checks that it worked, because they settle after the scroll",
+    /if \(cardBottom - boxBottom > 2\)/.test(chat)
+    && /el\.scrollIntoView\(\{ block: "end", behavior: "instant" \}\);/.test(chat),
+    "short of the card is the same as no scroll");
   check("the popout log too",
     /popout: true/.test(chat), "a second log with its own scroll position");
+  check("whoever the speaker is",
+    !/author/.test(chat.slice(chat.indexOf("export function takeLogToNewCard"))),
+    "his words: including when the speaker is the monster");
   check("only ACE's cards",
     /if \(!isAceCard\(message\)\) return;/.test(chat), "nothing global");
   check("and only a card this screen can see",
     /if \(message\.visible === false\) return;/.test(chat), "a whisper past this screen");
-  check("a redraw is not a new card",
-    /A CREATE, NOT A RENDER/.test(chat), "the card door updates in place");
   check("registered once, through the chrome pass every ACE card already uses",
-    /registerAceCardScroll\(\);/.test(chat) && /if \(_scrollRegistered\) return;/.test(chat),
-    "one hook, all four modules");
+    /registerAceCardScroll\(\);/.test(chat) && /if \(_scrollRegistered\) return;/.test(chat)
+    && /takeLogToNewCard\(message, el\);/.test(chat),
+    "one place, all four modules");
+}
+
+/* ══ 6. A SECOND CASTER DOES NOT DELETE THE FIRST ═════════════════════════ */
+console.log("\n6. TWO SOURCES, ONE CHARMED, NEITHER DELETED");
+{
+  const lib = read("scripts/condition-library.mjs");
+  const anim = read("scripts/animation/spell-animator.mjs");
+  const helper = read("scripts/spell-pipeline/animation.mjs");
+  const sweep = read("scripts/effect-sweeper.mjs");
+
+  // ⚠️🔴 THE CAUSE. Both apply paths opened with a caster-blind dedupe:
+  // _findEffect then delete(). It ran BEFORE the caster-aware twin check, so
+  // Kasimir's Charm Person deleted Lamia's and the guard had nothing to look at.
+  check("the dedupe asks whose copy it is",
+    /static _copiesBySource\(actor, key, options = \{\}\) \{/.test(lib),
+    "same caster, another caster, or nobody named");
+  check("two KNOWN casters that differ make it somebody else's",
+    /if \(caster && theirs && theirs !== caster\) others\.push\(e\);/.test(lib),
+    "unknown on either side is not a disagreement");
+  check("applyEffect deletes only its own copy",
+    /const \{ mine, others \} = ConditionLibrary\._copiesBySource\(actor, key, options\);/.test(lib)
+    && (lib.match(/_copiesBySource\(actor, key, options\)/g) ?? []).length >= 2,
+    "the path a registry effect like charm_person takes");
+  check("and the caster-blind delete is gone from both paths",
+    !/const existing = ConditionLibrary\._findEffect\(actor, key\);\s*\n\s*if \(existing\) \{\s*\n\s*await existing\.delete\(\)/.test(lib),
+    "no _findEffect-then-delete left");
+  check("a second source is said out loud",
+    /static _saySecondSource\(actor, key, others, options = \{\}\)/.test(lib)
+    && /Two sources, one condition on the token, one clip/.test(lib), "never silent");
+
+  check("the same-source refresh now runs BEFORE the dedupe",
+    lib.indexOf("SAME SOURCE, SAME CONDITION: REFRESH IT")
+      < lib.indexOf("Same-condition dedupe (RAW: conditions don't stack)"),
+    "the order is the fix");
+  check("one net finds every copy, not just the first",
+    /static _matchingEffects\(actor, key\)/.test(lib)
+    && /return ConditionLibrary\._matchingEffects\(actor, key\)\[0\] \?\? null;/.test(lib),
+    "_findEffect reads the same net");
+
+  // The sweeper: a condition another source still carries has not ended.
+  check("the sweeper does not treat a still-carried condition as ended",
+    /const stillOn = EffectSweeper\.stillCarried\(actor, effect\);/.test(sweep)
+    && /if \(stillOn\.length\) \{/.test(sweep), "his rule, in the sweeper");
+  check("and it reads the other effects, not the derived status set",
+    /if \(e\.id === effect\?\.id \|\| e\.disabled\) continue;/.test(sweep),
+    "the document has not caught up when a delete is announced");
+  check("what belongs to the one effect still goes",
+    /only this one's \$\{ended\} clip\(s\) ended/.test(sweep), "its own clip");
+
+  // The JB2A condition clip.
+  check("ACE does not play a JB2A picture of a condition it draws itself",
+    /function aceAlreadyDrawsThis\(entry, path\)/.test(anim)
+    && /if \(drawn\) \{/.test(anim), "jb2a.condition.boon.01.014.red");
+  check("the condition FAMILY is what it tests",
+    /\/\(\^\|\[\.\\-_\/\]\)condition\(\[\.\\-_\/\]\|\$\)\/i\.test/.test(anim),
+    "the on-token picture, not a cast flourish");
+  check("and only when ACE really draws that condition",
+    /conditionStatuses\(key\)\.filter\(s => BODY_VISUAL_STATUSES\.has\(s\)\)/.test(anim),
+    "Bless and Bane keep their own clip");
+  check("the spell's landing condition reaches the animator",
+    /entry: ctx\.entry \?\? null/.test(helper)
+    && /export async function playCuratedAnimation\(\{ casterToken, item, targets = \[\], entry = null \} = \{\}\)/.test(anim),
+    "it cannot answer without the entry");
+  check("a key's statuses are read from the library, never a second list",
+    /export function conditionStatuses\(key\)/.test(lib), "charm_person puts on charmed");
+  check("a cast flourish is still played",
+    /A cast flourish would still play/.test(anim), "his words");
+  check("and an unreadable answer plays, rather than silently playing nothing",
+    /return null;\s+\/\/ unreadable: play it, rather than silently play nothing/.test(anim),
+    "silence is the worse failure here");
 }
 
 /* ══ 5. A RELOAD IS NOT A NEW ROUND ═══════════════════════════════════════ */

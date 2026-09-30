@@ -80,6 +80,21 @@ export class EffectSweeper {
       return;
     }
 
+    // ⚠️🔴 A CONDITION ANOTHER SOURCE STILL CARRIES HAS NOT ENDED (his rule,
+    // 2026-09-30: "effect-sweeper does not remove Charmed while any charm source
+    // is still on him."). Two casters can each have a charm on Escher, so one of
+    // them ending is not the condition ending: the status is still on the token,
+    // ACE is still drawing it, and nothing condition-wide may be cleared. What
+    // belongs to THIS effect — its own clip — still goes.
+    const stillOn = EffectSweeper.stillCarried(actor, effect);
+    if (stillOn.length) {
+      console.log(`${LOG} | ${actor.name}: "${effect.name}" ${why}, but ${stillOn.join(", ")} `
+        + `${stillOn.length === 1 ? "is" : "are"} still on ${actor.name} from another source, so the `
+        + `condition stands and only this one's ${ended} clip(s) ended.`);
+      EffectSweeper.refreshRing(actor);
+      return;
+    }
+
     if (game.users?.activeGM === game.user) {
       await EffectSweeper.clearFlags(actor, effect);
       // ⚠️ AND IT DOES NOT STAY ON THE SHEET SWITCHED OFF.
@@ -99,6 +114,34 @@ export class EffectSweeper {
     EffectSweeper.refreshRing(actor);
     if (ended || disable) {
       console.log(`${LOG} | ${actor.name}: "${effect.name}" ${why}; ${ended} clip(s) of its own ended.`);
+    }
+  }
+
+  /**
+   * Which of the statuses this effect was putting on are STILL on the creature
+   * from something else.
+   *
+   * ⚠️ IT READS THE OTHER EFFECTS, NOT `actor.statuses`. The document has often
+   * not caught up at the moment a delete is announced, so the derived set would
+   * answer for the world a tick ago. The live effect list, minus the one that
+   * just ended, is the honest answer.
+   *
+   * @returns {string[]} the status ids another live effect still carries
+   */
+  static stillCarried(actor, effect) {
+    try {
+      const gone = [...(effect?.statuses ?? [])].map(s => String(s).toLowerCase());
+      if (!gone.length) return [];
+      const held = new Set();
+      for (const e of (actor?.effects?.contents ?? [])) {
+        if (e.id === effect?.id || e.disabled) continue;
+        for (const s of (e.statuses ?? [])) held.add(String(s).toLowerCase());
+      }
+      return gone.filter(s => held.has(s));
+    } catch (err) {
+      console.debug(`${LOG} | could not tell whether "${effect?.name}" was the last of its `
+        + `condition:`, err?.message ?? err);
+      return [];
     }
   }
 

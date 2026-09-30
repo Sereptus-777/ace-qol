@@ -300,6 +300,7 @@ export function registerAceChrome() {
         stampAceCard(message, el);
         revealOwnDCs(el);
         revealOwnACs(el);
+        takeLogToNewCard(message, el);
     }, "ACE card chrome", { sweepAll: true });
     registerAceCardScroll();
     console.log(`${MODULE_ID} | ACE cards drop Foundry's speaker strip and keep the ⋮; a DC `
@@ -331,10 +332,31 @@ export function registerAceChrome() {
    ⚠️ A CREATE, NOT A RENDER. An ACE card is written once and then updated in
    place (the card door), and a redraw is not a new card: scrolling on every
    update would drag the log away from whatever he was reading each time a save
-   result landed.
+   result landed. So `createChatMessage` marks the card as new and the render
+   pass, which sees the element, is what scrolls.
+
+   ⚠️🔴 AND NEITHER HOOK IS "AFTER THE CARD IS IN THE DOM" (his correction,
+   2026-09-30: "Fix the hook so it runs after the card is in the DOM"). Foundry's
+   own order, in ChatLog##postOne, is:
+
+       const html = await this.constructor.renderMessage(message);   // the hook
+       log.append(html);                                             // the DOM
+
+   `renderChatMessageHTML` fires INSIDE renderMessage, so the element is still
+   detached, and `createChatMessage` is earlier still. Scrolling from either one
+   scrolls to the bottom of a log the new card is not in yet, which lands on the
+   card BEFORE it and looks exactly like not scrolling. A microtask is no better:
+   the append is the continuation of that `await`, so anything queued during the
+   hook runs first.
+
+   So the scroll waits on a CONDITION, not a delay: `el.isConnected`, checked once
+   a frame. One animation frame runs after every microtask, which is after the
+   append. Bounded, and it says so if the card never arrives.
    ══════════════════════════════════════════════════════════════════════════ */
 
 let _scrollRegistered = false;
+/** Cards created in this session that have not yet had the log taken to them. */
+const _newCards = new Set();
 
 export function registerAceCardScroll() {
     if (_scrollRegistered) return;
@@ -344,16 +366,65 @@ export function registerAceCardScroll() {
             if (!isAceCard(message)) return;
             // Whispered past this screen: there is nothing here to scroll to.
             if (message.visible === false) return;
-            const log = ui.chat;
-            if (!log?.scrollBottom) return;
-            // The popout too, when he has one open — it is a second log with its
-            // own scroll position and the card is at the bottom of both.
-            log.scrollBottom({ waitImages: true, popout: true });
+            _newCards.add(message.id);
         } catch (err) {
-            console.warn(`${MODULE_ID} | could not take the chat log to a new ACE card, so it `
-                + `may have landed off-screen:`, err);
+            console.warn(`${MODULE_ID} | could not mark a new ACE card for scrolling:`, err);
         }
     });
+}
+
+/**
+ * Take the log to this card, if it is one created in this session.
+ *
+ * Called from the chrome pass, so it runs for every ACE card on every screen and
+ * no module has to remember it. A swept or re-rendered card is not in the set,
+ * so it never moves the log.
+ */
+export function takeLogToNewCard(message, el) {
+    try {
+        if (!message?.id || !_newCards.has(message.id)) return;
+        _newCards.delete(message.id);
+
+        const scroll = async () => {
+            const log = ui.chat;
+            if (!log?.scrollBottom) return;
+            // The popout too: a second log with its own scroll position, and the
+            // card is at the bottom of both.
+            await log.scrollBottom({ waitImages: true, popout: true });
+            // ⚠️ AND CHECK THAT IT WORKED. The card's own pictures settle their
+            // height after the scroll on a cold cache, which leaves the log short
+            // of the card it was aiming at. If the card is not on screen, take the
+            // log to the card itself rather than to the bottom of the log.
+            try {
+                const box = el?.closest?.(".chat-scroll") ?? el?.parentElement;
+                if (!box || !el?.getBoundingClientRect) return;
+                const cardBottom = el.getBoundingClientRect().bottom;
+                const boxBottom = box.getBoundingClientRect().bottom;
+                if (cardBottom - boxBottom > 2) {
+                    el.scrollIntoView({ block: "end", behavior: "instant" });
+                    console.log(`${MODULE_ID} | the log stopped short of "${message.id}" after its `
+                        + `pictures loaded, so it was taken to the card itself.`);
+                }
+            } catch (_) { /* the correction is a nicety; the scroll already ran */ }
+        };
+
+        // Wait for the append, one frame at a time. 30 frames is half a second at
+        // 60Hz: long enough for the render queue, short enough to say so.
+        let frames = 0;
+        const whenInTheDom = () => {
+            if (el?.isConnected) { scroll().catch(() => {}); return; }
+            if (++frames > 30) {
+                console.warn(`${MODULE_ID} | a new ACE card never reached the chat log, so the log `
+                    + `was not taken to it (message ${message.id}).`);
+                return;
+            }
+            requestAnimationFrame(whenInTheDom);
+        };
+        requestAnimationFrame(whenInTheDom);
+    } catch (err) {
+        console.warn(`${MODULE_ID} | could not take the chat log to a new ACE card, so it may `
+            + `have landed off-screen:`, err);
+    }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

@@ -20,6 +20,44 @@
 const MODULE_ID = "ace-qol";
 
 import { animationFor } from "./autorec.mjs";
+// ⚠️ Read inside a function, never at load: both of these sit in import cycles
+// through the entry file, and a top-level read of one is how a module dies on
+// the way in (2026-08-28, again 2026-09-06).
+import { BODY_VISUAL_STATUSES } from "../condition-visuals.mjs";
+import { conditionStatuses } from "../condition-library.mjs";
+
+/* ── ACE DRAWS THE CONDITION. NOBODY ELSE PAINTS IT ON THE TOKEN ─────────────
+ *
+ * His table, 2026-09-30: *"spell-animator does not play a JB2A condition clip
+ * for Charm Person. ACE already draws the hearts. Cast flourish is fine.
+ * On-token condition is not."*
+ *
+ * Automated Animations' curated record for Charm Person is
+ * `jb2a.condition.boon.01.014.red` — a looping badge that sits ON the creature,
+ * which is the same job as ACE's drifting hearts. Borrowing AA's choice, which
+ * is the whole point of this file, borrowed that too, so a second caster's charm
+ * put a red JB2A ring on Escher beside the pink coat ACE had already drawn.
+ *
+ * So the record's own asset family decides: the `condition` family is the
+ * on-token picture, and ACE draws every condition in BODY_VISUAL_STATUSES on the
+ * body. When the spell's landing condition is one of those, ACE's drawing is the
+ * clip and the borrowed copy is not played.
+ *
+ * ⚠️ AND ONLY THEN. A condition asset curated for something ACE does NOT draw
+ * (Bless, Bane, a buff with no status of its own) still plays, because refusing
+ * it would leave that spell with no picture at all.
+ */
+function aceAlreadyDrawsThis(entry, path) {
+  try {
+    if (!/(^|[.\-_/])condition([.\-_/]|$)/i.test(String(path ?? ""))) return null;
+    const key = String(entry?.effect?.key ?? "").toLowerCase().trim();
+    if (!key) return null;
+    const drawn = conditionStatuses(key).filter(s => BODY_VISUAL_STATUSES.has(s));
+    return drawn.length ? drawn : null;
+  } catch (_) {
+    return null;     // unreadable: play it, rather than silently play nothing
+  }
+}
 
 /**
  * Shapes whose resolution actually PUTS A TEMPLATE ON THE MAP.
@@ -80,7 +118,7 @@ export function whoOwnsThisCast(item, entry = null) {
  * @param {Token[]} [p.targets]  resolved targets, for a caster-to-target throw
  * @returns {Promise<boolean>} whether anything played
  */
-export async function playCuratedAnimation({ casterToken, item, targets = [] } = {}) {
+export async function playCuratedAnimation({ casterToken, item, targets = [], entry = null } = {}) {
   try {
     if (!casterToken || !item) return false;
     // ⚠️🔴 `Sequence` IS THE CONSTRUCTOR. `Sequencer` IS THE NAMESPACE.
@@ -105,6 +143,15 @@ export async function playCuratedAnimation({ casterToken, item, targets = [] } =
       console.log(`${MODULE_ID} | no curated animation resolves for "${item.name}" `
         + `(either Automated Animations has no entry for it, or the one it has `
         + `points at an asset this JB2A install does not contain).`);
+      return false;
+    }
+
+    // ── ACE ALREADY DRAWS THIS ONE ────────────────────────────────────────
+    const drawn = aceAlreadyDrawsThis(entry, anim.path);
+    if (drawn) {
+      console.log(`${MODULE_ID} | the curated record for "${item.name}" is an on-token condition `
+        + `clip (${anim.path}), and ACE draws ${drawn.join(", ")} on the body itself. It is not `
+        + `played here: one picture of a condition, not two. A cast flourish would still play.`);
       return false;
     }
 

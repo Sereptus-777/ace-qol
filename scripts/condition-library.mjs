@@ -1667,6 +1667,24 @@ export function conditionDurationSeconds(key) {
   } catch (_) { return 0; }
 }
 
+/**
+ * WHAT A CONDITION KEY ACTUALLY PUTS ON A CREATURE, as status ids.
+ *
+ * `charm_person` is a library key, not a status: what it puts on is `charmed`.
+ * The animator asks this so it can tell an on-token picture of a condition ACE
+ * already draws from a cast flourish (animation/spell-animator.mjs), and the
+ * card's "what landed" line reads the same answer.
+ */
+export function conditionStatuses(key) {
+  try {
+    const k = String(key ?? "").toLowerCase().trim();
+    if (!k) return [];
+    const def = ALL_EFFECTS[k];
+    const list = def?.statuses ?? (def?.statusId ? [def.statusId] : [k]);
+    return [...list].map(s => String(s).toLowerCase().trim()).filter(Boolean);
+  } catch (_) { return []; }
+}
+
 export class ConditionLibrary {
 
   // ─── Lookup ─────────────────────────────────────────────────────────────
@@ -1972,13 +1990,20 @@ export class ConditionLibrary {
     //   - No duplicate +1d4 stacking
     // Pass `options.allowStack: true` to opt out (rare cases where dedupe
     // is wrong — none in the standard SRD library).
+    //
+    // ⚠️🔴 AND ONLY A COPY FROM THE SAME SOURCE (his rule, 2026-09-30). This
+    // asked `_findEffect` and deleted whatever came back, so Kasimir's Charm
+    // Person deleted Lamia's: one caster's hour ended because another cast the
+    // same spell. See _copiesBySource above. A different caster's copy stays and
+    // this one goes on beside it.
     if (!options.allowStack) {
       try {
-        const existing = ConditionLibrary._findEffect(actor, key);
-        if (existing) {
+        const { mine, others } = ConditionLibrary._copiesBySource(actor, key, options);
+        for (const existing of mine) {
           await existing.delete();
-          ConditionLibrary._debug(`Replaced existing "${def.name}" on ${actor.name} (dedupe)`);
+          ConditionLibrary._debug(`Replaced existing "${def.name}" on ${actor.name} (dedupe, same source)`);
         }
+        if (others.length) ConditionLibrary._saySecondSource(actor, key, others, options);
       } catch (err) {
         console.warn(`${MODULE_ID} | applyEffect dedupe failed (non-fatal):`, err);
       }
@@ -2164,36 +2189,114 @@ export class ConditionLibrary {
    * @private
    */
   static _findEffect(actor, key) {
-    if (!actor?.effects) return null;
+    return ConditionLibrary._matchingEffects(actor, key)[0] ?? null;
+  }
 
-    // Primary: match by our conditionKey flag
-    for (const effect of actor.effects) {
-      if (effect.flags?.[MODULE_ID]?.conditionKey === key) return effect;
-    }
-
-    // Fallback: match by the key ITSELF as a status (frightened/prone/etc. are
-    // their own status id) — catches a native toggled status that carries no
-    // ACE conditionKey flag, so the two apply paths cross-dedup (2026-07-11).
-    for (const effect of actor.effects) {
-      if (effect.statuses?.has(key)) return effect;
-    }
-
-    // Fallback: match by statusId (for system-applied conditions)
+  /**
+   * EVERY copy of this thing on the creature, not just the first.
+   *
+   * ⚠️ THE NET IS `_findEffect`'S, UNCHANGED, because that net is the proven
+   * answer to "is this already on him" and both apply paths deduped with it. The
+   * only new thing is that a creature may now carry more than one, so the callers
+   * need all of them rather than whichever came first.
+   *
+   * @private
+   */
+  static _matchingEffects(actor, key) {
+    if (!actor?.effects) return [];
     const def = ALL_EFFECTS[key];
+    const out = [];
+    const take = (e) => { if (e && !out.includes(e)) out.push(e); };
+
+    // Primary: our conditionKey flag
+    for (const effect of actor.effects) {
+      if (effect.flags?.[MODULE_ID]?.conditionKey === key) take(effect);
+    }
+    // Fallback: the key ITSELF as a status (frightened/prone/etc. are their own
+    // status id) — catches a native toggled status carrying no ACE flag, so the
+    // two apply paths cross-dedup (2026-07-11).
+    for (const effect of actor.effects) {
+      if (effect.statuses?.has(key)) take(effect);
+    }
+    // Fallback: statusId (system-applied conditions)
     if (def?.statusId) {
       for (const effect of actor.effects) {
-        if (effect.statuses?.has(def.statusId)) return effect;
+        if (effect.statuses?.has(def.statusId)) take(effect);
       }
     }
-
-    // Fallback: match by exact name
+    // Fallback: exact name
     if (def?.name) {
       for (const effect of actor.effects) {
-        if (effect.name === def.name) return effect;
+        if (effect.name === def.name) take(effect);
       }
     }
+    return out;
+  }
 
-    return null;
+  /* ═════════════════════════════════════════════════════════════════════════
+     A SECOND CASTER DOES NOT DELETE THE FIRST
+
+     His table, 2026-09-30: *"Lamia charmed Escher. Kasimir charmed Escher. The
+     sweeper removed 'Charmed' and killed the clip... Two sources. One Charmed.
+     One ACE hearts clip. The first source stays until its hour ends or that
+     caster (or their allies) damages him. The door adds Kasimir's effect. It
+     does not delete Lamia's."*
+
+     ⚠️🔴 WHY 0.63.0's GUARD NEVER GOT A SAY. Both apply paths open with a
+     caster-blind dedupe — `_findEffect(actor, key)` then `delete()` — and it
+     runs BEFORE the caster-aware twin check I added. So Kasimir's Charm Person
+     found Lamia's, deleted it, and the refresh logic below had nothing left to
+     look at. `applyEffect`, the path a registry effect like `charm_person`
+     actually takes, had no twin check at all. The guard was downstream of the
+     delete it was written to prevent.
+
+     One question now, asked by both paths: IS THIS COPY MINE?
+
+       · same caster            → mine. Refresh or replace it. One effect.
+       · a different caster     → theirs. Leave it. A second effect goes on.
+       · caster unknown         → treat as mine, so nothing regresses for the
+                                  many conditions that never stamp one (a native
+                                  status, a GM's toggle, anything pre-0.62).
+
+     ⚠️ ONE STATUS AND ONE CLIP EITHER WAY. condition-visuals draws from the
+     token's STATUS set, so two charm effects are one pink coat and one set of
+     hearts, and the status only drops when the last of them is gone. Two
+     durations, one picture.
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  /**
+   * The copies of this thing already on the creature, split by whose they are.
+   *
+   * @param {Actor}  actor
+   * @param {string} key      the library key being applied
+   * @param {object} options  the apply options (`sourceActorId` names the caster)
+   * @returns {{mine: ActiveEffect[], others: ActiveEffect[]}}
+   * @private
+   */
+  static _copiesBySource(actor, key, options = {}) {
+    const caster = String(options?.sourceActorId ?? "").trim();
+    const mine = [], others = [];
+    for (const e of ConditionLibrary._matchingEffects(actor, key)) {
+      const theirs = String(e.flags?.[MODULE_ID]?.sourceActorId ?? "").trim();
+      // Unknown on either side is not a disagreement: only two KNOWN casters
+      // that differ make this somebody else's.
+      if (caster && theirs && theirs !== caster) others.push(e);
+      else mine.push(e);
+    }
+    return { mine, others };
+  }
+
+  /** What to say when a second source lands beside a first. */
+  static _saySecondSource(actor, key, others, options = {}) {
+    try {
+      const whose = others.map(e => {
+        const id = String(e.flags?.[MODULE_ID]?.sourceActorId ?? "");
+        return game.actors?.get(id)?.name ?? e.flags?.[MODULE_ID]?.source ?? "somebody else";
+      });
+      console.log(`${MODULE_ID} | ${actor?.name} already carries "${key}" from ${whose.join(", ")}. `
+        + `That is a different source, so it stays with its own duration and this one goes on `
+        + `beside it. Two sources, one condition on the token, one clip.`);
+    } catch (_) { /* the log is a nicety */ }
   }
 
   /**
@@ -2266,30 +2369,14 @@ export class ConditionLibrary {
       }
     }
 
-    // ── Same-condition dedupe (RAW: conditions don't stack) ──
-    // Mirror applyEffect so a condition already placed by EITHER path (an ACE
-    // effect OR a native status) is replaced, never doubled. Ghostly Howl
-    // failed twice = ONE Frightened, not two (live-fire 2026-07-11: the chasme
-    // stacked Frightened from two howls). Exhaustion already returned above.
-    if (!options.allowStack) {
-      try {
-        const existing = ConditionLibrary._findEffect(actor, key);
-        if (existing) {
-          // ⚠️🔴 A REPLACEMENT IS NOT AN ENDING, AND SOMETHING WAS WATCHING
-          // (his table, 2026-09-20). Conditions do not stack, so the old one is
-          // deleted and a fresh one goes on — and every listener on
-          // `deleteActiveEffect` sees that as the condition ENDING. The
-          // presence engine's watch turned each of those into "the fear ended,
-          // so it is immune for 24 hours", which is how one creature ended up
-          // frightened AND immune, four lines deep on the card. The flag rides
-          // on the delete so a watcher can tell the two apart.
-          await existing.delete({ aceReplacing: key });
-          ConditionLibrary._debug?.(`applyByName: replaced existing "${key}" on ${actor.name} (dedupe)`);
-        }
-      } catch (_) { /* dedupe is best-effort — never block the application */ }
-    }
-
     // ── SAME SOURCE, SAME CONDITION: REFRESH IT ─────────────────────
+    //
+    // ⚠️🔴 THIS USED TO RUN SECOND, AND THAT IS WHY IT NEVER FIRED. The dedupe
+    // that now sits BELOW it deleted the very effect this block exists to
+    // refresh, before this block could look for it. Same caster, so the refresh
+    // never happened and a create fired an animation; different caster, so
+    // Kasimir's Charm Person ended Lamia's hour. The order is the fix, and the
+    // dedupe below asks whose copy it is (_copiesBySource).
     //
     // His table, 2026-09-30: "Jeth was already Charmed. A second Charm Person from
     // Lamia put a second charmed on him and played a second animation. Same source,
@@ -2375,6 +2462,34 @@ export class ConditionLibrary {
     } catch (err) {
       console.warn(`ace-qol | could not check whether ${actor?.name} already carries what "${key}" `
         + `puts on, so it is applied as it always was:`, err);
+    }
+
+    // ── Same-condition dedupe (RAW: conditions don't stack) ──
+    // Mirror applyEffect so a condition already placed by EITHER path (an ACE
+    // effect OR a native status) is replaced, never doubled. Ghostly Howl
+    // failed twice = ONE Frightened, not two (live-fire 2026-07-11: the chasme
+    // stacked Frightened from two howls). Exhaustion already returned above.
+    //
+    // ⚠️🔴 A COPY FROM ANOTHER CASTER IS NOT A DUPLICATE (his rule, 2026-09-30).
+    // It stays, with its own duration, and this one goes on beside it. Same
+    // caster, or a copy that names no caster, is still replaced.
+    if (!options.allowStack) {
+      try {
+        const { mine, others } = ConditionLibrary._copiesBySource(actor, key, options);
+        for (const existing of mine) {
+          // ⚠️🔴 A REPLACEMENT IS NOT AN ENDING, AND SOMETHING WAS WATCHING
+          // (his table, 2026-09-20). Conditions do not stack, so the old one is
+          // deleted and a fresh one goes on — and every listener on
+          // `deleteActiveEffect` sees that as the condition ENDING. The
+          // presence engine's watch turned each of those into "the fear ended,
+          // so it is immune for 24 hours", which is how one creature ended up
+          // frightened AND immune, four lines deep on the card. The flag rides
+          // on the delete so a watcher can tell the two apart.
+          await existing.delete({ aceReplacing: key });
+          ConditionLibrary._debug?.(`applyByName: replaced existing "${key}" on ${actor.name} (dedupe, same source)`);
+        }
+        if (others.length) ConditionLibrary._saySecondSource(actor, key, others, options);
+      } catch (_) { /* dedupe is best-effort — never block the application */ }
     }
 
     // ── Standard binary status condition ──
