@@ -384,7 +384,38 @@ export class ProneArt {
       }
     };
     Hooks.on("createActiveEffect", (e) => onEffect(e, "down"));
-    Hooks.on("deleteActiveEffect", (e) => onEffect(e, "up"));
+    // ⚠️🔴 A REPLACEMENT IS NOT A CREATURE GETTING UP (his table, 2026-09-30:
+    // "Escher is already prone... A second Spiked Chain hit applied prone again.
+    // The standing image came back.").
+    //
+    // Conditions do not stack, so applying prone to a creature that is already
+    // prone DELETES the record it has and creates a fresh one. This handler saw
+    // that delete and restored the standing art, and it had no way to tell it
+    // apart from the GM clearing the condition.
+    //
+    // 0.54.0 guarded it inside `standUp` by asking the ACTOR whether it was still
+    // prone — and that read is exactly what cannot be trusted here. At the moment
+    // a delete is announced the replacement has not been created yet, so the
+    // derived status set says "not prone", the guard passes, the art is restored
+    // and the flag cleared. Then the create raced the restore: `goProne` read a
+    // texture that was still the prone picture, concluded there was nothing to
+    // do, and the standing art the other write was still landing won.
+    //
+    // The condition library already marks a replacement delete — `aceReplacing`
+    // is the flag it puts on exactly this delete so a watcher can tell the two
+    // apart. Reading it needs no timing and no derived state: a replacement moves
+    // no artwork at all, and only the last one up puts the picture back. The
+    // statuses check in `standUp` stays as the second line, for a delete that
+    // arrives unmarked.
+    Hooks.on("deleteActiveEffect", (e, options = {}) => {
+      if (options?.aceReplacing) {
+        console.log(`${LOG} | ${e?.parent?.name ?? "that creature"}'s "${e?.name}" was replaced, `
+          + `not removed, so its artwork does not move. Applying a condition it already has is a `
+          + `no-op for the picture.`);
+        return;
+      }
+      onEffect(e, "up");
+    });
 
     // ⚠️ TURNING A CONDITION OFF DOES NOT ALWAYS DELETE IT.
     // Johnny, 2026-08-11: "taking off the prone condition does not bring back

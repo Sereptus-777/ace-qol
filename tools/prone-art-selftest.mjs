@@ -19,7 +19,7 @@
 // his real folders; tools/dead-art-selftest.mjs pins the corpse side.
 //
 // Run:  node tools/prone-art-selftest.mjs
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 globalThis.Hooks = { on: () => {}, once: () => {}, off: () => {}, callAll: () => {} };
@@ -224,6 +224,45 @@ check("Izek Strazni still gets prone-Izek", got(npc("Izek Strazni", "humanoid", 
   check("caught by Feather Fall: no damage and on his feet", c.prone === false && c.dice === 0);
   const s = resolveFall({ from: 5, to: 0 });
   check("a 5 ft drop is not a fall that hurts, so no prone", s.prone === false && s.dice === 0);
+}
+
+/* ══ APPLYING PRONE TO A CREATURE ALREADY PRONE MOVES NO ARTWORK ═══════════
+ *
+ * His table, 2026-09-30: *"Escher is already prone. ACE is already showing his
+ * prone token. A second Spiked Chain hit applied prone again. The standing image
+ * came back. If he is already prone, do not take the prone art off."*
+ *
+ * ⚠️🔴 AND 0.54.0 ALREADY GUARDED THIS, WITH THE ONE READ THAT CANNOT BE TRUSTED
+ * HERE. It asked the ACTOR whether it was still prone — but at the moment a
+ * delete is announced the replacement has not been created yet, so the derived
+ * status set says "not prone", the guard passed, the standing art went back and
+ * the memory of the old picture was cleared. The create then raced that write:
+ * goProne read a texture that was still the prone picture, concluded there was
+ * nothing to do, and the restore won.
+ *
+ * `aceReplacing` is the flag the condition library already puts on exactly this
+ * delete. Reading it needs no timing and no derived state.
+ * ══════════════════════════════════════════════════════════════════════════ */
+{
+  const src = readFileSync(`${MODULE}/scripts/prone-art.mjs`, "utf8");
+  const lib = readFileSync(`${MODULE}/scripts/condition-library.mjs`, "utf8");
+
+  check("a replacement delete moves no artwork",
+    /Hooks\.on\("deleteActiveEffect", \(e, options = \{\}\) => \{/.test(src)
+    && /if \(options\?\.aceReplacing\) \{/.test(src),
+    "applying prone when prone is already on is a no-op for the picture");
+  check("and it says so rather than going quiet",
+    /was replaced, `\s*\n?\s*\+ `not removed, so its artwork does not move/.test(src)
+    || /not removed, so its artwork does not move/.test(src),
+    "silence is a bug");
+  check("removing it is still the only thing that stands a creature up",
+    /onEffect\(e, "up"\);/.test(src), "the last one up puts the picture back");
+  check("the statuses check stays as the second line",
+    /if \(tokenDoc\?\.actor\?\.statuses\?\.has\?\.\("prone"\)\) \{/.test(src),
+    "for a delete that arrives unmarked");
+  check("both apply paths mark their replacement delete",
+    (lib.match(/\.delete\(\{ aceReplacing: key \}\)/g) ?? []).length >= 2,
+    "applyByName always did; applyEffect never did");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

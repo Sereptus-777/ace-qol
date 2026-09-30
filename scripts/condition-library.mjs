@@ -2006,7 +2006,13 @@ export class ConditionLibrary {
       try {
         const { mine, others } = ConditionLibrary._copiesBySource(actor, key, options);
         for (const existing of mine) {
-          await existing.delete();
+          // ⚠️ THE MARKER RIDES ON THIS DELETE TOO. `aceReplacing` is how a
+          // watcher tells "the condition ended" from "the same condition landed
+          // again": the presence engine's 24-hour immunity and the prone artwork
+          // both turn on that difference. applyByName has always passed it and
+          // this path never did, so the same delete meant two different things
+          // depending on which apply path a condition happened to take.
+          await existing.delete({ aceReplacing: key });
           ConditionLibrary._debug(`Replaced existing "${def.name}" on ${actor.name} (dedupe, same source)`);
         }
         if (others.length) ConditionLibrary._saySecondSource(actor, key, others, options);
