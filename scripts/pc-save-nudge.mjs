@@ -174,6 +174,7 @@ export class PcSaveNudge {
         </div>
         <div class="ace-qol-nudge-body">
           <b>${foundry.utils.escapeHTML(c.targetName ?? "Target")}</b> hasn't rolled their
+          <!-- dc-ok: this whole card is whispered to the GM alone, a few lines below. -->
           ${foundry.utils.escapeHTML(c.abilityLabel ?? "")} save (DC ${c.dc ?? "?"}) yet.
         </div>
         <button type="button" class="ace-qol-nudge-btn" data-action="ace-nudge-roll" data-key="${key}">

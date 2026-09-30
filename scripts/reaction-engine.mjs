@@ -2469,6 +2469,8 @@ export class ReactionEngine {
             counterDC = 13;
             console.error(`${MODULE_ID} | Counterspell (2024): ${reactor.actor.name}'s spell save DC could not `
               + `be read OR worked out. DC 13 is a guess - check the sheet and resolve this one by hand.`);
+            // dc-ok: Counterspell resolves on the GM's client, and this names a sheet
+            // he has to fix rather than a number a player is rolling against.
             ui.notifications?.warn(`ACE: ${reactor.actor.name} has no spell save DC. Counterspell used DC 13.`);
           }
         }

@@ -97,6 +97,8 @@ export { aceD20FaceImg };
 import { RollPopout } from "./roll-popout.mjs";
 // How long a condition lasts, in the words the card says it in.
 import { durationWords, durationSecondsOf } from "./duration-words.mjs";
+// What a creature now IS, in the words the table uses: a key is not a name.
+import { conditionDisplayName, conditionDurationSeconds } from "./condition-library.mjs";
 import { popupDing } from "./popup-ding.mjs";
 import { whoAnswers } from "./who-answers.mjs";
 
@@ -536,13 +538,10 @@ export class SaveEngine {
             for (const gmEl of el.querySelectorAll(".ace-qol-gm-only")) {
               gmEl.setAttribute("data-ace-gm", "true");
             }
-            // ⚠️🔴 A PLAYER NEVER SEES A DC (his standing rule). Every save card
-            // in the game printed "DC 13 Wisdom" in its header, to the whole table.
-            // Stamped here rather than wrapped card by card, because the ones that
-            // were missed are exactly the ones nobody thought about.
-            for (const dcEl of el.querySelectorAll(".ace-qol-save-dc")) {
-              dcEl.setAttribute("data-ace-gm", "true");
-            }
+            // A DC is revealed by the one pass in chat-render-utils, registered for
+            // every ACE card from every module, so it is not done again here: a
+            // stamp inside ONE handler covers only the cards that handler reaches,
+            // which is how the others kept leaking.
           } else {
             // Hide GM-only in-row controls from players — remove-target ×,
             // roll-on-behalf dice, phase-1 remove. These live inside shared
@@ -2186,6 +2185,7 @@ export class SaveEngine {
     console.warn(`${MODULE_ID} | "${item?.name}" has no save DC ACE can read, and ${actor?.name} `
       + `has no spell save DC either, so it is being asked at DC 10. Open the ability and set its DC.`);
     if (game.user?.isGM) {
+      // dc-ok: inside `if (game.user?.isGM)`, and it names a sheet for him to fix.
       ui.notifications?.warn(`ACE: "${item?.name}" has no save DC on it — asking at DC 10. `
         + `Set the DC on its save activity.`);
     }
@@ -8428,7 +8428,13 @@ export class SaveEngine {
             // result reads "Charmed — 1 hour"). The card had the condition and not
             // its duration, so it could only ever say half of what happened.
             {
-              const secs = durationSecondsOf(applyOpts?.duration) || Number(durationSeconds) || 0;
+              // What the cast says, then what the spell's own sheet says, then what
+              // the condition's definition says. None of the three, and the line
+              // names the condition without inventing a time for it.
+              const secs = durationSecondsOf(applyOpts?.duration)
+                || Number(durationSeconds)
+                || conditionDurationSeconds(cond.condition)
+                || 0;
               if (secs > 0) durationForThisTarget[String(cond.condition).toLowerCase()] = secs;
             }
 
@@ -8863,18 +8869,22 @@ export class SaveEngine {
     const row = opts?.landedByToken?.[r?.tokenDocId] ?? null;
     const names = (row?.conditions ?? []).filter(Boolean);
     if (!names.length) return "";
-    const cap = (c) => { const t = String(c ?? ""); return t.charAt(0).toUpperCase() + t.slice(1); };
     const esc = (v) => foundry.utils.escapeHTML(String(v ?? ""));
-    const withTime = names.map(c => {
+    // ⚠🔴 A KEY IS NOT A NAME (his card: no "Charm_person"). Charm Person lands
+    // through the registry key `charm_person`; what Jeth IS is charmed. One reader
+    // answers that for every key (condition-library.mjs).
+    const say = (c) => {
       const secs = Number(row?.durations?.[String(c).toLowerCase()]) || 0;
-      const words = durationWords(secs);
-      return `${cap(c)}${words ? ` — ${words}` : ""}`;
+      return { name: conditionDisplayName(c), words: durationWords(secs) };
+    };
+    const withTime = names.map(c => {
+      const { name, words } = say(c);
+      return `${name}${words ? ` — ${words}` : ""}`;
     });
     // What the owner's own screen will say instead: "You are Charmed for 1 hour."
     const mine = names.map(c => {
-      const secs = Number(row?.durations?.[String(c).toLowerCase()]) || 0;
-      const words = durationWords(secs);
-      return `${cap(c)}${words ? ` for ${words}` : ""}`;
+      const { name, words } = say(c);
+      return `${name}${words ? ` for ${words}` : ""}`;
     }).join(", ");
     return `<div class="ace-qol-save-landed" data-token-doc-id="${esc(r?.tokenDocId)}"`
       + ` data-mine="You are ${esc(mine)}.">${esc(withTime.join(", "))}</div>`;
@@ -9001,12 +9011,22 @@ export class SaveEngine {
             <i class="fas fa-check"></i> APPLY
           </button>
         </div>`;
-    } else if ((appliedConditions ?? []).some(a => a?.conditions?.length || a?.immune?.length
-        || a?.declined || a?.note)) {
-      // ⚠️ A NAME KEEPS ITS OWN CAPITALS. This used to lower-case everything
-      // after the first letter, harmless for "paralyzed" and wrong for "Brief
-      // Enfeeblement".
-      const cap = (c) => { const t = String(c ?? ""); return t.charAt(0).toUpperCase() + t.slice(1); };
+    } else if ((appliedConditions ?? []).some(a => a?.immune?.length || a?.declined || a?.note
+        || (a?.onSuccess && a?.conditions?.length))) {
+      // ⚠️🔴 WHAT LANDED IS SAID ONCE, ON THE CREATURE'S OWN ROW (his card,
+      // 2026-09-29: line 4 is "Charmed — 1 hour", and "No skull. No
+      // 'Charm_person' death row.").
+      //
+      // This footer named every creature a SECOND time, under a red skull, using
+      // the raw key: "Jeth → Charm_person". The row above it already says what
+      // he needs, in the words the table uses and with how long it lasts.
+      //
+      // ⚠️ WHAT THE ROW CANNOT SAY STAYS HERE. An immunity that refused a
+      // condition, a failure ACE recorded nothing for, a menu the spell leaves to
+      // the GM, and the odd case of something landing on a MADE save: none of those
+      // are "what landed on this creature" and none has a row of its own.
+      // Names come from `conditionDisplayName` now, which keeps a definition's own
+      // capitals ("Brief Enfeeblement") and turns a key into what the creature is.
       // ⚠️ A CREATURE'S NAME IS NEVER THE THING THAT GETS SACRIFICED (2026-08-06).
       // The name refuses to wrap and the row is allowed to, so when the two
       // cannot sit side by side the label drops to its own line instead of
@@ -9024,12 +9044,13 @@ export class SaveEngine {
         // IMMUNE reads as a shield in ORANGE, not a skull in red: the creature
         // shrugged it off, which is a different story from being hit.
         if (a.immune?.length) {
-          out.push(row("fa-shield-halved", "#ffaa44", a.targetName, `IMMUNE to ${a.immune.map(cap).join(", ")}`));
+          out.push(row("fa-shield-halved", "#ffaa44", a.targetName, `IMMUNE to ${a.immune.map(conditionDisplayName).join(", ")}`));
         }
-        if (a.conditions?.length) {
-          out.push(a.onSuccess
-            ? row("fa-shield-halved", "#88c878", a.targetName, `saved, and still gets ${a.conditions.map(cap).join(", ")}`)
-            : row("fa-skull-crossbones", "#ff5555", a.targetName, a.conditions.map(cap).join(", ")));
+        // Only the surprise: something landing on a creature that MADE its save.
+        // A failed save's result is on its own row, once.
+        if (a.onSuccess && a.conditions?.length) {
+          out.push(row("fa-shield-halved", "#88c878", a.targetName,
+            `saved, and still gets ${a.conditions.map(conditionDisplayName).join(", ")}`));
         }
         if (a.declined) {
           out.push(SaveEngine._gmReasonLine(`${a.targetName} failed, and ACE put nothing on it: ${a.declined}`));
@@ -9056,10 +9077,21 @@ export class SaveEngine {
         // Nothing was recorded for a creature that failed. Either something else
         // owns the result (Web's own area puts Restrained on them), or the step
         // never ran, and the GM is told which rather than shown a blank.
+        // ⚠️🔴 AND IT NAMES ONLY THE ONES WITH NOTHING RECORDED. This branch used
+        // to be reached only when NO row had any conditions on it, so "failed and
+        // nothing recorded" was safe. Now that what landed is said on the creature's
+        // own row instead of in this footer, a cast where everything DID land falls
+        // through to here, and it announced that nothing had been recorded about a
+        // creature the row above was describing.
+        const recorded = new Set((appliedConditions ?? [])
+          .filter(a => a?.conditions?.length || a?.immune?.length || a?.declined
+                    || a?.note || a?.held?.length || a?.handedOff)
+          .map(a => a?.tokenDocId));
         const handedOff = (appliedConditions ?? []).some(a => a?.handedOff);
         const who = (results ?? []).filter(r => SaveEngine._failedTheSave(r))
+          .filter(r => !recorded.has(r.tokenDocId))
           .map(r => String(r?.name ?? "a target"));
-        actionsHtml = handedOff ? "" : SaveEngine._gmReasonLine(
+        actionsHtml = (handedOff || !who.length) ? "" : SaveEngine._gmReasonLine(
           `${who.join(", ")} failed, and nothing recorded what happened to `
           + `${who.length === 1 ? "it" : "them"}. The console has the details.`);
       } else {
@@ -10173,11 +10205,11 @@ export class SaveEngine {
       } else if (r.passed && r.resultLabel.includes("EVASION")) {
         reasonText = `<span class="ace-qol-save-pass">EVASION \u2014 SAVED \u2014 0 damage</span>`;
       } else if (r.passed) {
-        reasonText = `<span class="ace-qol-save-pass">Rolled ${r.saveTotal} \u2014 SAVED (DC ${saveDC})</span>`;
+        reasonText = `<span class="ace-qol-save-pass">Rolled ${r.saveTotal} \u2014 SAVED<span class="ace-qol-save-dc"> (DC ${saveDC})</span></span>`;
       } else if (r.resultLabel.includes("EVASION")) {
-        reasonText = `<span class="ace-qol-save-fail">Rolled ${r.saveTotal} \u2014 FAILED (DC ${saveDC}) \u2014 EVASION: half</span>`;
+        reasonText = `<span class="ace-qol-save-fail">Rolled ${r.saveTotal} \u2014 FAILED<span class="ace-qol-save-dc"> (DC ${saveDC})</span> \u2014 EVASION: half</span>`;
       } else {
-        reasonText = `<span class="ace-qol-save-fail">Rolled ${r.saveTotal} \u2014 FAILED (DC ${saveDC})</span>`;
+        reasonText = `<span class="ace-qol-save-fail">Rolled ${r.saveTotal} \u2014 FAILED<span class="ace-qol-save-dc"> (DC ${saveDC})</span></span>`;
       }
 
       // Add resistance/immunity/vulnerability reasons

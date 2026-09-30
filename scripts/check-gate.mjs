@@ -637,6 +637,8 @@ export class CheckGate {
     if (!lost.length) return;
     console.log(`${LOG} | ${actor.name} lost concentration on ${lost.join(", ")} `
       + `(${total} vs DC ${dc}).`);
+    // dc-ok: a concentration DC is the concentrating creature's own number (10, or
+    // half the damage it just took), so whoever is behind that sheet already knows it.
     ui.notifications?.info(`${actor.name} lost concentration on ${lost.join(", ")} `
       + `(${total} vs DC ${dc}).`);
   }
@@ -1319,7 +1321,7 @@ export class CheckGate {
       const made = total >= Number(dc);
       verdict = `<div style="margin-top:6px;"><span style="font-size:16px;font-weight:700;`
         + `color:${made ? "#7ee081" : "#e08b7e"};">`
-        + `${made ? "SUCCESS" : "FAILURE"} vs DC ${esc(String(dc))}</span></div>`;
+        + `${made ? "SUCCESS" : "FAILURE"} <span class="ace-qol-save-dc">vs DC ${esc(String(dc))}</span></span></div>`;
     }
 
     // ⚠️ A DEATH SAVE'S RESULT IS THE TALLY, NOT THE NUMBER. "17 versus DC 10"

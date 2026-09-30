@@ -353,7 +353,7 @@ export async function showSavePrompt({ creature, abilityLabel, dc, sourceName, s
       <div class="ace-qol-adv-targets">
         <span class="ace-qol-adv-attacker ${cls}">${foundry.utils.escapeHTML(creature)}</span>
         <i class="fas fa-shield-halved"></i>
-        <span class="ace-qol-adv-target">${foundry.utils.escapeHTML(abilityLabel)} save vs DC ${dc}</span>
+        <span class="ace-qol-adv-target">${foundry.utils.escapeHTML(abilityLabel)} save <span class="ace-qol-save-dc">vs DC ${dc}</span></span>
       </div>
       <div class="ace-qol-adv-suggested">
         ACE-QOL Suggests: <strong class="ace-qol-adv-${suggested}">${suggestedLabel}</strong>

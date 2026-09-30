@@ -6507,7 +6507,7 @@ i.ace-douse-tool::after {
    GM's (save-engine's GM-only pass now stamps these too), so the card is
    otherwise identical on every screen and nothing has to be built twice. */
 .ace-qol-save-dc { display: none !important; }
-.ace-qol-save-dc[data-ace-gm="true"] { display: inline-block !important; }
+.ace-qol-save-dc[data-ace-dc="show"] { display: inline-block !important; }
 
 /* The owner's own wording, swapped in on their screen: "You are Charmed for
    1 hour." Same line, same place, second person. */
@@ -6535,3 +6535,14 @@ i.ace-douse-tool::after {
   overflow-wrap: anywhere;
   min-height: 1.4em;
 }
+
+/* ── A DC BELONGS TO WHOEVER SET IT (his rule, 2026-09-29) ──────────────────
+   "The player knows its own DCs. It has no idea about any other DC. The dungeon
+   master knows all DCs."
+
+   Hidden by default and revealed per screen by `revealOwnDCs`, so one card is
+   correct on every client and nothing is built twice. A wrapper with no owner
+   named stays hidden from a player: not knowing whose it is is not a reason to
+   show it. */
+.ace-qol-dc { display: none !important; }
+.ace-qol-dc[data-ace-dc="show"] { display: inline !important; }

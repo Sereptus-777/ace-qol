@@ -48,6 +48,11 @@ CHECKS = [
     ("lint the other modules (engine, forge, token art, envoy)", "python tools/lint-siblings.py"),
     # After lint on purpose: it reads the code with the parser the lint install brings.
     ("nothing lands before its dice (qol, forge, engine)", "node tools/dice-check.mjs"),
+    # His rule, 2026-09-29: "The player knows its own DCs. It has no idea about any
+    # other DC. The dungeon master knows all DCs." It was already the rule and every
+    # save card in the suite was still printing one to the whole table, so it is
+    # enforced here rather than remembered.
+    ("a DC belongs to whoever set it (qol, forge, engine, envoy)", "node tools/dc-check.mjs"),
 ]
 
 

@@ -1611,6 +1611,62 @@ export function commandWordFrom(name) {
   return null;
 }
 
+/**
+ * WHAT A CREATURE NOW IS, IN THE WORDS THE TABLE USES.
+ *
+ * His card, 2026-09-29: "Charmed — 1 hour", and "No 'Charm_person' death row."
+ *
+ * A key is not a name. Charm Person lands through the registry key `charm_person`,
+ * and every card that printed what landed printed that key with its underscore and
+ * a capital letter bolted on. What the creature IS is the STATUS the definition
+ * carries: charmed. So the status wins, then the definition's own name, and only a
+ * key nothing knows about falls back to being tidied up.
+ *
+ * @param {string} key  a condition or registry effect key
+ * @returns {string} "Charmed", "Prone", "Charmed by Caster", "Faerie Fire"
+ */
+export function conditionDisplayName(key) {
+  const k = String(key ?? "").toLowerCase().trim();
+  if (!k) return "";
+  const cap = (t) => String(t).charAt(0).toUpperCase() + String(t).slice(1);
+  try {
+    const def = ALL_EFFECTS[k];
+    const st = [...(def?.statuses ?? [])].map(s => String(s).toLowerCase()).filter(Boolean);
+    // The status the creature is under, named the way the books name it.
+    if (st.length === 1) {
+      const label = CONFIG.DND5E?.conditionTypes?.[st[0]]?.label
+        ?? CONFIG.statusEffects?.find(e => e.id === st[0])?.name
+        ?? st[0];
+      return cap(String(label));
+    }
+    // Several statuses, or none: the definition's own name says it best.
+    if (def?.name) return String(def.name);
+  } catch (_) { /* fall through to the key */ }
+  // An unknown key, tidied: never an underscore in front of the table.
+  return k.split(/[_\s]+/).filter(Boolean).map(cap).join(" ");
+}
+
+/**
+ * HOW LONG A CONDITION'S OWN DEFINITION SAYS IT LASTS, in seconds.
+ *
+ * The last fallback for the line that says what landed: a spell states its own
+ * duration on the item, which is the right answer when it has one, and a few
+ * conditions carry theirs in the definition instead. 0 when neither does, so the
+ * line simply names the condition rather than inventing a time for it.
+ */
+export function conditionDurationSeconds(key) {
+  try {
+    const d = ALL_EFFECTS[String(key ?? "").toLowerCase().trim()]?.duration;
+    if (!d) return 0;
+    const sec = Number(d.seconds);
+    if (Number.isFinite(sec) && sec > 0) return sec;
+    const rounds = Number(d.rounds);
+    if (Number.isFinite(rounds) && rounds > 0) return rounds * 6;
+    const turns = Number(d.turns);
+    return (Number.isFinite(turns) && turns > 0) ? turns * 6 : 0;
+  } catch (_) { return 0; }
+}
+
 export class ConditionLibrary {
 
   // ─── Lookup ─────────────────────────────────────────────────────────────
@@ -2625,7 +2681,7 @@ export class ConditionLibrary {
           <strong style="color:#ffd87a;font-size:13px;text-transform:uppercase;letter-spacing:0.5px;">Stunning Strike</strong>
         </div>
         <div style="color:#cfcfd0;font-size:13px;line-height:1.5;margin-bottom:8px;">
-          <strong>${target.name}</strong> must make a <strong>DC ${dc} ${abilityLabel}</strong> save or be <strong style="color:#ffd87a;">Stunned</strong> ${durationText}.
+          <strong>${target.name}</strong> must make a <span class="ace-qol-dc" data-dc-actor="${monk?.id ?? ""}"><strong>DC ${dc} </strong></span><strong>${abilityLabel}</strong> save or be <strong style="color:#ffd87a;">Stunned</strong> ${durationText}.
         </div>
         <div style="color:#888;font-size:11px;font-style:italic;margin-bottom:8px;">(${edition} RAW)</div>
         <div style="display:flex;gap:6px;">

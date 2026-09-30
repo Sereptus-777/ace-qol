@@ -252,6 +252,7 @@ export class DamageApplicator {
         await ConcentrationPrompt.ask(actor, { damage, dc, effect: concEffect });
       } catch (err) {
         console.error(`${MODULE_ID} | ${actor.name}'s concentration check (DC ${dc}, ${concName}) could not be asked:`, err);
+        // dc-ok: damage is applied on the GM's client, so this error is his to read.
         ui.notifications?.error(`ACE could not ask ${actor.name}'s concentration check (DC ${dc}). `
           + `Roll it from the sheet; the console has why.`);
       }

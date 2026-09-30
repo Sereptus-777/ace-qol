@@ -115,9 +115,19 @@ console.log("\nTOP TO BOTTOM");
   // 4. What landed.
   check("line 4 is one line of what landed",
     /static _landedLineHtml\(r, opts = \{\}\)/.test(save), "Charmed \u2014 1 hour");
+  // Three places a duration can come from, in the order that makes it true: what
+  // the cast set, then the spell's own sheet, then the condition's definition.
   check("with how long it lasts, read from what actually landed",
-    /const secs = durationSecondsOf\(applyOpts\?\.duration\) \|\| Number\(durationSeconds\) \|\| 0;/.test(save)
+    /const secs = durationSecondsOf\(applyOpts\?\.duration\)[\s\S]{0,220}conditionDurationSeconds\(cond\.condition\)/.test(save)
     && /durations: durationForThisTarget/.test(save), "seconds beside the condition");
+  check("and it names the condition, never the registry key",
+    /const name = conditionDisplayName\(c\)|conditionDisplayName\(c\)/.test(save)
+    && /export function conditionDisplayName\(key\)/.test(read("scripts/condition-library.mjs")),
+    "Charmed, not Charm_person");
+  check("the footer no longer names every creature a second time",
+    /\(a\?\.onSuccess && a\?\.conditions\?\.length\)/.test(save)
+    && !/row\("fa-skull-crossbones", "#ff5555", a\.targetName/.test(save),
+    "no skull, no second list");
   check("and the duration comes out in English",
     /export function durationWords\(seconds\)/.test(dur) && /n\(h, "hour"\)/.test(dur), "1 hour");
   check("90 minutes is not rounded into 2 hours",
@@ -141,9 +151,13 @@ console.log("\nNO PILL, NO X, NO SKULL");
   check("no DC pill on the shell; the DC is the quiet line's GM half",
     !/ace-qol-save-dc/.test(card) && /ace-qol-save-quiet-dc ace-qol-gm-only/.test(save),
     "a player never sees a DC");
+  // The per-handler stamp is gone: it only covered the cards that ONE handler
+  // reached, which is how the others kept leaking. One pass, every ACE card, every
+  // module (chat-render-utils.mjs, pinned in dc-visibility-selftest.mjs).
   check("and every other DC pill in the suite is the GM's too",
-    /for \(const dcEl of el\.querySelectorAll\("\.ace-qol-save-dc"\)\)/.test(save)
-    && /\.ace-qol-save-dc \{ display: none !important; \}/.test(css), "stamped at render");
+    /\.ace-qol-save-dc \{ display: none !important; \}/.test(css)
+    && /\.ace-qol-save-dc\[data-ace-dc="show"\]/.test(css)
+    && /registerDCVisibility\(\);/.test(read("scripts/ace-qol.mjs")), "one pass, every card");
   check("the X is offered only where damage is still to be rolled",
     /canRemove: hasDamage === true,/.test(save), "nothing to drop it from");
 }

@@ -1755,7 +1755,7 @@ export class PostHitSaves {
               <span class="ace-qol-pst-target">${h.target?.name ?? targetActor.name}</span>
             </div>
             <div class="ace-qol-pst-body">
-              <div class="ace-qol-pst-line">HP ${hpNow} ≤ ${rider.threshold} → DC ${rider.dc} ${abilityLabel} save</div>
+              <div class="ace-qol-pst-line">HP ${hpNow} ≤ ${rider.threshold} → <span class="ace-qol-save-dc">DC ${rider.dc} </span>${abilityLabel} save</div>
               <div class="ace-qol-pst-line">Roll: <strong>${riderTotal}</strong> ${passed ? "✅" : "❌"}</div>
               <div class="ace-qol-pst-line ace-qol-pst-result">${resultLabel}</div>
             </div>

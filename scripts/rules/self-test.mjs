@@ -61,6 +61,7 @@ export class SelfTest {
     try {
       // The Giant Wasp, verbatim statblock wording — the 2026-07-10 bug.
       const wasp = DescriptionParser.parse(fakeItem("Sting",
+        // dc-ok: a description fixture fed to the parser. Nothing renders it.
         "<p>The target must make a DC 11 Constitution saving throw, taking 10 (3d6) poison damage on a failed save, or half as much damage on a successful one.</p>"));
       const ws = wasp.saves?.[0];
       t("parser", "wasp save detected (DC 11 CON)", ws?.dc === 11 && ws?.ability === "con", JSON.stringify({ dc: ws?.dc, ability: ws?.ability }));
@@ -70,12 +71,14 @@ export class SelfTest {
 
       // "takes" wording still parses (don't fix one tense and break the other)
       const snake = DescriptionParser.parse(fakeItem("Bite",
+        // dc-ok: a description fixture fed to the parser. Nothing renders it.
         "<p>The target must make a DC 12 Constitution saving throw. On a failed save the target takes 7 (2d6) poison damage.</p>"));
       const sd = (snake.saves?.[0]?.failEffect ?? []).find(f => f.type === "damage");
       t("parser", "'takes' wording still parses", sd?.formula === "2d6" && sd?.damageType === "poison", JSON.stringify(sd ?? null));
 
       // Condition-on-fail wording
       const ghoul = DescriptionParser.parse(fakeItem("Claws",
+        // dc-ok: a description fixture fed to the parser. Nothing renders it.
         "<p>The target must succeed on a DC 10 Constitution saving throw or be paralyzed for 1 minute.</p>"));
       const gc = (ghoul.saves?.[0]?.failEffect ?? []).find(f => f.type === "condition");
       t("parser", "condition-on-fail extracted (paralyzed)", gc?.condition === "paralyzed", JSON.stringify(gc ?? null));
@@ -175,6 +178,7 @@ export class SelfTest {
     try {
       // The flags mapping must carry the fail-effect (the dropped-bag bug).
       const parsed = DescriptionParser.parse(fakeItem("Contract Sting",
+        // dc-ok: a description fixture fed to the parser. Nothing renders it.
         "<p>DC 13 Constitution saving throw, taking 9 (2d8) poison damage on a failed save, or half as much damage on a successful one.</p>"));
       const spec = parsed.saves[0];
       const wireBag = JSON.parse(JSON.stringify({   // simulate the message flags round-trip

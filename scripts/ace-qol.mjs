@@ -32,7 +32,8 @@ import { HungerWarning }     from "./hunger-warning.mjs";
 import { RestRaw }           from "./rest-raw.mjs";
 import { installHookDebugGuard, setHookDebug } from "./hook-debug-guard.mjs";
 import { replyOwnerIsAuthorised } from "./socket-authority.mjs";
-import { registerChatCardHandler, registerForeignChatCardHandler, sweepDrawnCards } from "./chat-render-utils.mjs";
+import { registerChatCardHandler, registerForeignChatCardHandler, sweepDrawnCards,
+         registerDCVisibility } from "./chat-render-utils.mjs";
 import { ExtendedEffects }   from "./extended-effects.mjs";
 import { AttackPipeline }    from "./attack-pipeline.mjs";
 import { HealPipeline }      from "./heal-pipeline.mjs";
@@ -2113,6 +2114,12 @@ Hooks.once("ready", () => {
   };
   // + sweeps cards drawn before this registered — see chat-render-utils.
   registerChatCardHandler(wireMovementUndo, "movement-undo cards");
+
+  // ⚠️🔴 A DC BELONGS TO WHOEVER SET IT (his rule, 2026-09-29: "The player knows
+  // its own DCs. It has no idea about any other DC. The dungeon master knows all
+  // DCs."). Registered once, for every ACE card from every module, so a card that
+  // never thinks about DCs still cannot leak one. See chat-render-utils.
+  registerDCVisibility();
 
   // Reaction engine — ALL users (players receive reaction prompts via socket)
   try {

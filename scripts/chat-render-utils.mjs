@@ -142,3 +142,94 @@ export function sweepDrawnCards(handler, { label = "chat cards", sweepAll = fals
 export function registerForeignChatCardHandler(handler, label = "third-party cards") {
     return registerChatCardHandler(handler, label, { sweepAll: true });
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   A DC BELONGS TO WHOEVER SET IT (his rule, 2026-09-29)
+
+     "The player knows its own DCs. It has no idea about any other DC. The
+      dungeon master knows all DCs. That's all there is to it."
+
+   So it is not "checks show, saves hide", and it is not decided when the card
+   is written: it is decided on each screen, by whose creature the number came
+   off. A chat card is built ONCE, by the GM, and rendered on every client, so a
+   card that made this choice while it was being written would make it for the
+   whole table at once. That is how "DC 13 Wisdom" was printed to everybody on
+   every save card in the suite.
+
+   ONE MECHANISM, ALL FOUR MODULES. Wrap the number:
+
+       <span class="ace-qol-dc" data-dc-actor="${actorId}">DC 13 Wisdom</span>
+
+   `data-dc-actor` is the creature that SET the DC: the caster, the grappler, the
+   trap's owner. The pass below reveals it to the GM always, and to a player only
+   when they own that creature. A wrapper with no owner named is hidden from
+   every player, because "I do not know whose this is" is not a reason to show it.
+
+   ⚠️ IT RUNS FOR EVERY ACE CARD, not for every handler. Registered once, here,
+   so a module that never thinks about DCs still cannot leak one, and a new card
+   inherits the rule instead of having to remember it. `tools/dc-check.mjs` fails
+   the release if a DC reaches a card outside this wrapper.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/** Whether this screen may read a DC set by the creature `actorId`. */
+export function maySeeDC(actorId) {
+    try {
+        if (game.user?.isGM) return true;
+        if (!actorId) return false;
+        const actor = game.actors?.get(actorId) ?? null;
+        return !!actor?.isOwner;
+    } catch (_) {
+        return false;                       // unreadable: it is not theirs
+    }
+}
+
+/**
+ * The wrapper every card puts a DC in.
+ *
+ * @param {string|number} text     what to show, e.g. "DC 13 Wisdom" or just 13
+ * @param {string|null} actorId    the creature that SET this DC
+ * @param {string} [extraClass]    any styling class the card already used
+ */
+export function dcSpan(text, actorId = null, extraClass = "") {
+    const esc = (v) => String(v ?? "")
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    return `<span class="ace-qol-dc${extraClass ? ` ${extraClass}` : ""}"`
+        + `${actorId ? ` data-dc-actor="${esc(actorId)}"` : ""}>${esc(text)}</span>`;
+}
+
+/**
+ * Reveal, on THIS screen, the DCs this viewer is allowed to know.
+ *
+ * ⚠️ TWO CLASSES, ONE PASS. `.ace-qol-dc` names the creature that set the number
+ * and is revealed to that creature's owner as well as to the GM.
+ * `.ace-qol-save-dc` is the older wrapper with no owner in it: a monster's save
+ * DC, which no player owns, so it is the GM's alone. Both are hidden by CSS and
+ * revealed here, and both are swept by the same registration, so a card drawn by
+ * any of the four modules is covered without that module knowing about DCs.
+ */
+export function revealOwnDCs(root) {
+    let shown = 0, hidden = 0;
+    const decide = (el, ownerId) => {
+        if (maySeeDC(ownerId)) { el.dataset.aceDc = "show"; shown++; }
+        else { delete el.dataset.aceDc; hidden++; }
+    };
+    try {
+        for (const el of (root?.querySelectorAll?.(".ace-qol-dc") ?? [])) {
+            decide(el, el.dataset?.dcActor ?? null);
+        }
+        // No owner named: the GM's alone.
+        for (const el of (root?.querySelectorAll?.(".ace-qol-save-dc") ?? [])) {
+            decide(el, null);
+        }
+    } catch (err) {
+        console.warn(`${MODULE_ID} | could not decide which DCs this screen may see, so none of `
+            + `them are shown here:`, err);
+    }
+    return { shown, hidden };
+}
+
+/** Registered once, for every ACE card on every screen. */
+export function registerDCVisibility() {
+    registerChatCardHandler((_message, el) => { revealOwnDCs(el); }, "DC visibility", { sweepAll: true });
+    console.log(`${MODULE_ID} | a DC is shown to the GM, and to a player only when it is their own.`);
+}
