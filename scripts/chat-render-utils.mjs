@@ -387,29 +387,52 @@ export function takeLogToNewCard(message, el) {
         if (!message?.id || !_newCards.has(message.id)) return;
         _newCards.delete(message.id);
 
-        // ⚠️🔴 HIS LINE, VERBATIM (2026-09-30): "One line, after the card is in
-        // #chat-log: ui.chat.scrollBottom({ force: true }). Then once more on the
-        // next animation frame. Do not wait on images. Do not pad. Do not
-        // scroll-to-card."
+        // ⚠️🔴 DRIVE THE ELEMENT. His rule, 2026-09-30: "Set the real log's
+        // scrollTop to its scrollHeight. Main chat and the popout. When the card
+        // is in the DOM, then again on the next animation frame. If
+        // ui.chat.scrollBottom({ force: true }) does not move the bar, drive the
+        // element yourself. Log which element and scrollTop after."
         //
-        // The second call is what covers the card settling into its final height
-        // without waiting on a single picture: the first scroll happens the frame
-        // the card lands, the second after the browser has laid it out.
+        // scrollBottom is asked first because it is the supported path, and then
+        // the scroller is pinned by hand regardless, because asking has not been
+        // enough: V13's scrollBottom writes to `.chat-scroll` inside
+        // `ui.chat.element`, and in this app that is not always the element the
+        // card is actually sitting in.
         //
-        // ⚠️ V13's scrollBottom reads { popout, waitImages, scrollOptions } and
-        // has no `force`, so this is the plain bottom scroll with images not
-        // waited on, which is exactly what he asked for. The unknown key is
-        // harmless and it is his wording, kept so the two match.
-        const scroll = () => {
-            try {
-                ui.chat.scrollBottom({ force: true });
-                requestAnimationFrame(() => {
-                    try { ui.chat.scrollBottom({ force: true }); } catch (_) { /* gone */ }
-                });
-            } catch (err) {
-                console.warn(`${MODULE_ID} | the chat log would not scroll to the bottom for a `
-                    + `new ACE card:`, err);
+        // ⚠️ THE SCROLLER IS FOUND FROM THE CARD, not by class name. Whichever
+        // pane a copy of this message is drawn in — the sidebar, a popped-out log
+        // — its own nearest scrolling ancestor is the bar he is looking at. Every
+        // copy of the message gets pinned, which is "main chat and the popout"
+        // without guessing what either is called this generation.
+        const pin = (why) => {
+            let moved = 0;
+            try { ui.chat?.scrollBottom?.({ force: true }); } catch (_) { /* ask first */ }
+            for (const node of document.querySelectorAll(`[data-message-id="${message.id}"]`)) {
+                let box = node.parentElement;
+                while (box && box !== document.body) {
+                    const oy = getComputedStyle(box).overflowY;
+                    if (box.scrollHeight > box.clientHeight + 1 && /(auto|scroll|overlay)/.test(oy)) break;
+                    box = box.parentElement;
+                }
+                if (!box || box === document.body) continue;
+                box.scrollTop = box.scrollHeight;
+                moved++;
+                const what = box.id ? `#${box.id}` : `.${String(box.className || "?").split(/\s+/)[0]}`;
+                console.log(`${MODULE_ID} | chat scrolled (${why}): ${what} scrollTop=`
+                    + `${Math.round(box.scrollTop)} of scrollHeight=${Math.round(box.scrollHeight)} `
+                    + `(visible ${Math.round(box.clientHeight)}).`);
             }
+            if (!moved) {
+                console.warn(`${MODULE_ID} | a new ACE card is in the log but nothing around it `
+                    + `scrolls, so the bar was not moved (message ${message.id}).`);
+            }
+        };
+
+        const scroll = () => {
+            pin("card in the log");
+            // Again next frame: the card's own pictures settle its height after
+            // this one, and nothing here waits on them.
+            requestAnimationFrame(() => { try { pin("next frame"); } catch (_) { /* gone */ } });
         };
 
         // Wait for the append, one frame at a time. 30 frames is half a second at

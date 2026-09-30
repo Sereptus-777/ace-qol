@@ -941,7 +941,10 @@ export class DamageCardRenderer {
 
     const compLines = (components ?? []).map((c, idx) => {
       const color = DamageConstants.DAMAGE_COLORS[c.type] ?? "#ccc";
-      let modBadge = "";
+      // ⚠️ NO BADGE IS BUILT HERE ANY MORE. What happened to the damage is said
+      // once, in front of "HP", as a word (his rule, 2026-09-30). What stays is
+      // what changes this LINE: an immune component is struck through and hidden
+      // from players, and every modifier is remembered for the flavour hint.
       let strikeStyle = "";
       let rowClasses = "";
 
@@ -955,24 +958,28 @@ export class DamageCardRenderer {
         // The badge says what HAPPENED (immune / resist / vulnerable) and gets a
         // fixed semantic colour; the damage TYPE is already coloured on the
         // number and the word right beside it. Colouring both was the bug.
-        modBadge = `<span class="ace-qol-dmg-mod ace-qol-dmg-immune ace-qol-dmg-truth-only">IMMUNE</span>`;
         strikeStyle = `text-decoration: line-through; text-decoration-color: ${color}; opacity: 0.6;`;
         rowClasses = " ace-qol-dmg-truth-row";
         if (!flavorTrigger.immune) flavorTrigger.immune = c.type;
       } else if (c.modifier === "resistant") {
-        // Truth-only badge — players see the halved number but no "RESIST" label
-        modBadge = `<span class="ace-qol-dmg-mod ace-qol-dmg-resist ace-qol-dmg-truth-only">½ RESIST</span>`;
+        // Players see the halved number and are told nothing about why.
         if (!flavorTrigger.resistant) flavorTrigger.resistant = c.type;
       } else if (c.modifier === "vulnerable") {
-        // Truth-only badge — players see the doubled number but no "VULN" label
-        modBadge = `<span class="ace-qol-dmg-mod ace-qol-dmg-vuln ace-qol-dmg-truth-only">×2 VULN</span>`;
+        // Players see the doubled number and are told nothing about why.
         if (!flavorTrigger.vulnerable) flavorTrigger.vulnerable = c.type;
       }
 
       // Show the raw→final transition only for GM (it leaks the modifier);
       // players see only the final number, no strikethrough hint.
+      //
+      // ⚠️ AND THE ARROW BELONGS TO IT (his rule, 2026-09-30: "struck total,
+      // then the taken amount and type (16 → 8 piercing)"). The two numbers sat
+      // side by side with a space between them, which reads as two damages
+      // rather than one that was reduced. The arrow is inside the GM-only span,
+      // so a player still sees only the number that landed.
       const rawFinalSpan = (c.raw !== c.final && c.modifier !== "normal")
-        ? `<span class="ace-qol-dmg-truth-only ace-qol-dmg-raw-was">${c.raw}</span> `
+        ? `<span class="ace-qol-dmg-truth-only ace-qol-dmg-raw-was">${c.raw}</span>`
+          + `<span class="ace-qol-dmg-truth-only ace-qol-dmg-arrow">→</span>`
         : "";
       const dmgDisplay = `${rawFinalSpan}<strong class="ace-qol-dmg-final" style="color:${color}">${c.final}</strong>`;
       const clickable = c.final > 0 ? `data-action="aceQolApplyType" data-damage-type="${c.type}" data-damage-amount="${c.final}" data-comp-index="${idx}" title="Click to apply ${c.final} ${c.type} damage"` : "";
@@ -984,15 +991,29 @@ export class DamageCardRenderer {
       // become a 1 stacked on a 0 (2026-08-23). Vertical space in the chat log
       // is free; nothing here is ever allowed to be chopped to fit a width.
       // The chip now gets its OWN row, by his instruction, not by accident.
+      // ⚠️ THE CHIP IS NOT HERE ANY MORE. His rule, 2026-09-30: "½ RESIST on the
+      // HP line, before the word 'HP', same font size as the HP text. Not a
+      // badge." It is collected below and rendered there, so this line is the
+      // numbers and the type and nothing else.
       return `
         <div class="ace-qol-dmg-type-line${clickClass}${rowClasses}" ${clickable} style="${strikeStyle}">
           <div class="ace-qol-dmg-type-main">
             ${dmgDisplay} <span class="ace-qol-dmg-type-name" style="color:${color}">${c.type}</span>
           </div>
-          ${modBadge ? `<div class="ace-qol-dmg-mod-row">${modBadge}</div>` : ""}
         </div>
       `;
     }).join("");
+
+    // What happened to the damage, for the HP line: the strongest one, as plain
+    // text rather than a pill. GM-only, as the badge was — a player sees the
+    // halved number and is told nothing about why.
+    const modWord = flavorTrigger.immune ? { text: "IMMUNE", cls: "ace-qol-dmg-mod-immune" }
+      : flavorTrigger.vulnerable ? { text: "×2 VULN", cls: "ace-qol-dmg-mod-vuln" }
+      : flavorTrigger.resistant ? { text: "½ RESIST", cls: "ace-qol-dmg-mod-resist" }
+      : null;
+    const modPlain = modWord
+      ? `<span class="ace-qol-dmg-mod-plain ${modWord.cls} ace-qol-dmg-truth-only">${modWord.text}</span>`
+      : "";
 
     // Build the player-visible flavor hint (subtle, in-fiction). Visible to
     // everyone — gives players a hint without using definitive language like
@@ -1059,6 +1080,7 @@ export class DamageCardRenderer {
             <span><strong>${reactionApplied.label}</strong> — ${reactionApplied.from} halved to ${reactionApplied.to}</span>
           </div>` : ""}
           <div class="ace-qol-dmg-hp-line">
+            ${modPlain}
             <span class="ace-qol-dmg-row-hp">HP: <span class="ace-qol-hp-cur">${currentHP}</span> → <span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span><span class="ace-qol-hp-max">/${maxHP}</span></span>
             ${isDead ? '<span class="ace-qol-dmg-skull">☠</span>' : ''}
           </div>

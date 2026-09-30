@@ -2325,6 +2325,22 @@ export class ConditionLibrary {
     const out = [];
     const take = (e) => { if (e && !out.includes(e)) out.push(e); };
 
+    /* ⚠️🔴 A STATUS LIST IS NOT ALWAYS A Set, AND A THROW HERE LOSES THE WHOLE
+       APPLY. `_findEffect` read `effect.statuses?.has(key)`, which guards against
+       there being no statuses and NOT against them being an array — `.has` is
+       then undefined and calling it throws. That throw landed in applyByName's
+       outer catch, which returns not-ok, so a condition that had been placed
+       perfectly was reported as "it did not take" and the card said so. Latent in
+       `_findEffect` for months; reading every match instead of the first one is
+       what finally reached it, and the replay caught it before his table did. */
+    const carries = (e, st) => {
+      const held = e?.statuses;
+      if (!held || !st) return false;
+      if (typeof held.has === "function") return held.has(st);
+      if (Array.isArray(held)) return held.includes(st);
+      return false;
+    };
+
     // Primary: our conditionKey flag
     for (const effect of actor.effects) {
       if (effect.flags?.[MODULE_ID]?.conditionKey === key) take(effect);
@@ -2333,18 +2349,33 @@ export class ConditionLibrary {
     // status id) — catches a native toggled status carrying no ACE flag, so the
     // two apply paths cross-dedup (2026-07-11).
     for (const effect of actor.effects) {
-      if (effect.statuses?.has(key)) take(effect);
+      if (carries(effect, key)) take(effect);
     }
     // Fallback: statusId (system-applied conditions)
     if (def?.statusId) {
       for (const effect of actor.effects) {
-        if (effect.statuses?.has(def.statusId)) take(effect);
+        if (carries(effect, def.statusId)) take(effect);
       }
     }
-    // Fallback: exact name
-    if (def?.name) {
+    // Fallback: the name, however it is capitalised.
+    //
+    // ⚠️🔴 CASE MATTERS AND IT MUST NOT. `_findEffect` compared names exactly
+    // while applyByName's own net lowercased both sides, and when the two were
+    // merged into this one the exact comparison won. A dnd5e status effect is
+    // named from its localised label, so "Frightened" against a definition's
+    // "frightened" stopped matching, the verify concluded nothing had been
+    // placed, and two replay pins reported "ACE tried to put frightened on it,
+    // and it did not take" over a condition that had landed. The replay caught
+    // it; his table did not have to.
+    //
+    // ⚠️ AND THE KEY COUNTS AS A NAME, which is the other half of what the old
+    // net did: a condition placed by something that knew the key and not the
+    // definition still answers to it.
+    const names = [def?.name, key].filter(Boolean).map(n => String(n).toLowerCase().trim());
+    if (names.length) {
       for (const effect of actor.effects) {
-        if (effect.name === def.name) take(effect);
+        const n = String(effect.name ?? "").toLowerCase().trim();
+        if (n && names.includes(n)) take(effect);
       }
     }
     return out;
@@ -2620,7 +2651,28 @@ export class ConditionLibrary {
 
     // ── Standard binary status condition ──
     try {
-      if (typeof actor.toggleStatusEffect === "function") {
+      /* ⚠️🔴 DO NOT TOGGLE A STATUS THAT IS ALREADY THERE (his table,
+         2026-09-30: "applyByName tried toggleStatusEffect with id
+         dnd5echarmed0000. That id was already there from the first Charm.
+         Foundry threw. The card treated the throw as failure.").
+
+         dnd5e creates a status effect with a FIXED id — `dnd5echarmed0000` —
+         and `keepId: true`, so asking for one the creature already has is not a
+         no-op, it throws "already exists within the parent collection". Two
+         casters charming one creature is now normal, so this is the ordinary
+         case and not an edge.
+
+         A status is one flag on the creature, not a count. If it is already on,
+         there is nothing to toggle and nothing wrong. */
+      const _wants = conditionStatuses(key);
+      const _held = actor.statuses instanceof Set ? actor.statuses : new Set();
+      const _alreadyOn = _wants.length > 0 && _wants.every(st => _held.has(st));
+      if (_alreadyOn) {
+        console.log(`${MODULE_ID} | ${actor.name} already has ${_wants.join(", ")}, so nothing is `
+          + `toggled for "${key}" — a status is one flag on the creature, not a count. Its own `
+          + `record still goes on below.`);
+      }
+      if (!_alreadyOn && typeof actor.toggleStatusEffect === "function") {
         try {
           await actor.toggleStatusEffect(key, { active: true });
         } catch (toggleErr) {
@@ -2641,14 +2693,36 @@ export class ConditionLibrary {
       //      off) → it stays DISABLED, i.e. inert: no mechanics, no token icon.
       // We confirm an ENABLED matching effect exists; create one if missing,
       // and force-enable any disabled copies.
+      /* ⚠️🔴 AND THE VERIFY ASKS THE RIGHT QUESTION. His table: "Both are on
+         the sheet. The second card printed 'ACE put nothing on it.' That line is
+         a lie."
+
+         It was. This test read `_def.statusId ?? key`, and a registry effect like
+         `charm_person` has no statusId, so it looked for a creature carrying the
+         status "charm_person" — which nothing ever does; what that key puts on is
+         `charmed`. The only half that ever matched was the effect's NAME against
+         the definition's, and 0.71.0 renamed these for their caster, so
+         "Charmed by Kasimir" stopped matching "Charmed by Caster" and the last
+         match went with it. The effect was created correctly and then reported
+         as a failure, which is what reached the card.
+
+         `_matchingEffects` is the net both apply paths already dedupe with, and
+         it finds an effect by the conditionKey FLAG first — the one marker ACE
+         stamps itself and the one that cannot drift with a name or a status id.
+         `_copiesBySource` then answers his rule exactly: if "Charmed by THIS
+         caster" is on the actor, the apply succeeded. */
       const _def = ALL_EFFECTS[key];
-      const _statusId = _def?.statusId ?? key;
-      const _matches = () => (actor.effects?.contents ?? []).filter(e =>
-        e.statuses?.has?.(_statusId) || e.statuses?.has?.(key)
-        || e.name?.toLowerCase() === String(_def?.name ?? key).toLowerCase());
+      const _matches = () => ConditionLibrary._copiesBySource(actor, key, options).mine;
 
       // 1) Exists at all? If not, build it from the Foundry status definition.
-      if (!_matches().length) {
+      //
+      // ⚠️ AND NOT WHEN THE STATUS IS ALREADY ON THE CREATURE. `fromStatusEffect`
+      // builds the same fixed-id record the toggle does, so it collides the same
+      // way. Its own record still goes on through applyEffect in step 3, which
+      // creates a document with a fresh id and can therefore sit beside another
+      // caster's.
+      const _statusId = _def?.statusId ?? key;
+      if (!_matches().length && !_alreadyOn) {
         try {
           const cls = CONFIG.ActiveEffect?.documentClass;
           if (cls?.fromStatusEffect) {
@@ -2690,7 +2764,15 @@ export class ConditionLibrary {
           console.warn(`${MODULE_ID} | applyByName applyEffect fallback threw for "${key}" on ${actor.name}:`, e4);
         }
         if (!_matches().some(e => !e.disabled)) {
-          console.warn(`${MODULE_ID} | applyByName: could NOT place an ENABLED "${key}" on ${actor.name} (status + applyEffect both failed).`);
+          // ⚠️ SAY WHAT IT LOOKED FOR AND WHAT IS THERE. "both failed" sent me
+          // hunting twice; the creature's actual effects are the answer.
+          const _have = [...(actor.effects ?? [])].map(e =>
+            `"${e?.name}"${e?.disabled ? " (off)" : ""} [${[...(e?.statuses ?? [])].join("/") || "no status"}]`
+            + `${e?.flags?.[MODULE_ID]?.conditionKey ? ` key=${e.flags[MODULE_ID].conditionKey}` : ""}`);
+          console.warn(`${MODULE_ID} | applyByName: could NOT place an ENABLED "${key}" on `
+            + `${actor.name} (status + applyEffect both failed). It puts on `
+            + `${conditionStatuses(key).join(", ") || "nothing named"}; the creature carries `
+            + `${_have.join(", ") || "no effects at all"}.`);
           return { ok: false, applied: null };
         }
       }

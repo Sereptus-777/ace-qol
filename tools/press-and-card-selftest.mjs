@@ -237,8 +237,13 @@ console.log("\n4. CHAT SITS ON THE NEW CARD");
     "waiting on images waits for every picture in the whole log");
   check("it does not scroll to the card",
     !/scrollIntoView/.test(chat), "the bottom of the log");
-  check("one call, and the scrollbar is at the bottom",
-    /ui\.chat\.scrollBottom\(\{ force: true \}\);/.test(chat), "his words");
+  // ⚠️ AND ASKING WAS NOT ENOUGH (0.73.0). scrollBottom writes to `.chat-scroll`
+  // inside `ui.chat.element`, which in this app is not always the element the
+  // card is sitting in, so the bar did not move. It is asked first and then the
+  // scroller is driven by hand — pinned in full in section 9.
+  check("the scrollbar is driven to the bottom, not only asked",
+    /box\.scrollTop = box\.scrollHeight;/.test(chat)
+    && /ui\.chat\?\.scrollBottom\?\.\(\{ force: true \}\);/.test(chat), "his words");
   // ⚠️ AND THE POPOUT IS NOT SCROLLED, BY HIS INSTRUCTION. 0.68.0 passed
   // `popout: true`; 0.71.0's line is his, exactly as he wrote it, and it does
   // not. Recorded rather than lost: if he wants the popped-out log to follow he
@@ -454,13 +459,12 @@ console.log("\n8. NAMED FOR ITS CASTER, THE BOTTOM OF THE LOG, THE PORTRAIT ROW"
     /if \(_want && _want !== _twin\.name/.test(lib), "still named for them");
 
   // 2. The scrollbar, his line.
-  check("his line, verbatim, once the card is in the log",
-    /ui\.chat\.scrollBottom\(\{ force: true \}\);/.test(chat)
+  check("his line is still asked, once the card is in the log",
+    /ui\.chat\?\.scrollBottom\?\.\(\{ force: true \}\);/.test(chat)
     && /const inTheLog = \(\) => !!el\?\.closest\?\.\("#chat-log, \.chat-log"\);/.test(chat),
-    "one line");
+    "and then the element is driven — section 9");
   check("and once more on the next animation frame",
-    /requestAnimationFrame\(\(\) => \{/.test(chat)
-    && (chat.match(/ui\.chat\.scrollBottom\(\{ force: true \}\);/g) ?? []).length === 2,
+    /requestAnimationFrame\(\(\) => \{ try \{ pin\("next frame"\); \}/.test(chat),
     "the card settles into its height without waiting on a picture");
   check("no image wait, no padding, no scroll-to-card",
     !/ui\.chat\.scrollBottom\(\{[^}]*waitImages/.test(chat) && !/scrollIntoView/.test(chat),
@@ -477,10 +481,12 @@ console.log("\n8. NAMED FOR ITS CASTER, THE BOTTOM OF THE LOG, THE PORTRAIT ROW"
   check("the breakdown loses its indent inside the header",
     /\.ace-qol-dmg-row-header \.ace-qol-dmg-type-breakdown \{/.test(css),
     "no 36px clearance needed there");
-  check("the outcome chip is half the size it was",
-    /font-size: 0\.55rem; font-weight: 800; padding: 1px 5px;/.test(css), "as it used to be");
-  check("on its own row, under the pill",
-    /<div class="ace-qol-dmg-mod-row">\$\{modBadge\}<\/div>/.test(dmg), "where he asked for it");
+  // ⚠️ SUPERSEDED BY HIS NEXT RULE, AND KEPT AS THE RECORD OF IT. 0.71.0 made
+  // the chip half size on a row of its own under the pill; 0.73.0 took the badge
+  // off this card altogether and put the word on the HP line. Pinned in
+  // section 9; what is pinned here is that the old chip is gone from this card.
+  check("no outcome chip on this card any more",
+    !/ace-qol-dmg-mod-row/.test(dmg), "it is a word on the HP line now");
   check("the chosen multiplier is the card's gold, not blue",
     /background: linear-gradient\(180deg, #e2c45a 0%, #d4af37 100%\) !important;/.test(css)
     && !/#1e70c9/.test(css), "dark text on gold clears the contrast floor");
@@ -494,6 +500,69 @@ console.log("\n8. NAMED FOR ITS CASTER, THE BOTTOM OF THE LOG, THE PORTRAIT ROW"
     /class="ace-qol-dmg-hp-line">[\s\S]{0,400}ace-qol-dmg-skull/.test(dmg), "not a damage number");
   check("and a multiplier press keeps the maximum on the HP line",
     /const _max = result\.maxHP \?\? currentHP;/.test(app), "it used to drop the /82");
+}
+
+/* ══ 9. THE BAR, THE ROW, AND THE LIE ON THE SECOND CARD ══════════════════ */
+console.log("\n9. THE BAR, THE DAMAGE ROW, AND THE SECOND CARD'S FALSE ERROR");
+{
+  const lib = read("scripts/condition-library.mjs");
+  const dmg = read("scripts/damage-card-renderer.mjs");
+  const css = read("styles/ace-qol.css");
+
+  // 1. The bar.
+  check("the scroller is driven by hand, not only asked",
+    /box\.scrollTop = box\.scrollHeight;/.test(chat), "his rule: set scrollTop to scrollHeight");
+  check("and it is found from the card, so every log that holds it is pinned",
+    /for \(const node of document\.querySelectorAll\(`\[data-message-id="\$\{message\.id\}"\]`\)\)/.test(chat)
+    && /if \(box\.scrollHeight > box\.clientHeight \+ 1 && \/\(auto\|scroll\|overlay\)\/\.test\(oy\)\) break;/.test(chat),
+    "main chat and the popout, without guessing either one's class");
+  check("scrollBottom is still asked first",
+    /ui\.chat\?\.scrollBottom\?\.\(\{ force: true \}\);/.test(chat), "the supported path");
+  check("twice: in the DOM, then the next frame",
+    /pin\("card in the log"\);/.test(chat) && /pin\("next frame"\);/.test(chat), "his two moments");
+  check("and it logs which element and the scrollTop after",
+    /chat scrolled \(\$\{why\}\): \$\{what\} scrollTop=/.test(chat), "his words");
+  check("nothing scrolls and it says so",
+    /nothing around it `[\s\S]{0,80}scrolls, so the bar was not moved/.test(chat), "silence is a bug");
+
+  // 2. The damage row.
+  check("the gray pill box is gone",
+    /cursor: pointer; padding: 0; border: 0; background: none; border-radius: 0;/.test(css),
+    "the click and a non-box hover stay");
+  check("struck total, arrow, then what was taken",
+    /ace-qol-dmg-arrow">→<\/span>/.test(dmg) && /\.ace-qol-dmg-arrow \{/.test(css),
+    "16 → 8 piercing reads as one reduced number");
+  check("the outcome is a word on the HP line, before HP",
+    /\$\{modPlain\}\s*\n\s*<span class="ace-qol-dmg-row-hp">HP:/.test(dmg), "his rule");
+  check("at the HP text's own size, and not a badge",
+    /\.ace-qol-dmg-mod-plain \{\s*\n\s*font-size: 0\.95rem;/.test(css)
+    && /background: none; border: 0; padding: 0; border-radius: 0; box-shadow: none;/.test(css),
+    "same font size as the HP text");
+  check("still the GM's alone",
+    /ace-qol-dmg-mod-plain \$\{modWord\.cls\} ace-qol-dmg-truth-only/.test(dmg),
+    "a player sees the halved number and is told nothing about why");
+  check("and no badge is built any more",
+    !/modBadge/.test(dmg), "nothing left that nothing renders");
+  check("the merge card's chip goes back to the size he knows",
+    /font-size: 1\.05rem; font-weight: 800; padding: 2px 9px;/.test(css),
+    "0.71.0 shrank it there for a card that no longer uses it");
+
+  // 3 and 4. The false error, and the line both cards owe him.
+  check("a status already on the creature is not toggled again",
+    /const _alreadyOn = _wants\.length > 0 && _wants\.every\(st => _held\.has\(st\)\);/.test(lib)
+    && /if \(!_alreadyOn && typeof actor\.toggleStatusEffect === "function"\)/.test(lib),
+    "dnd5echarmed0000 is a fixed id and a second one throws");
+  check("nor rebuilt from the status definition, which collides the same way",
+    /if \(!_matches\(\)\.length && !_alreadyOn\) \{/.test(lib), "fromStatusEffect keeps the id too");
+  check("the verify asks whether THIS caster's copy is on the actor",
+    /const _matches = \(\) => ConditionLibrary\._copiesBySource\(actor, key, options\)\.mine;/.test(lib),
+    "if Charmed by this caster is there, the apply succeeded");
+  check("and it no longer asks for a status nothing carries",
+    !/e\.statuses\?\.has\?\.\(_statusId\) \|\| e\.statuses\?\.has\?\.\(key\)/.test(lib),
+    "charm_person puts on charmed, not charm_person");
+  check("the net finds an effect by the flag ACE stamps itself",
+    /if \(effect\.flags\?\.\[MODULE_ID\]\?\.conditionKey === key\) take\(effect\);/.test(lib),
+    "a name renamed for its caster cannot break it");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
