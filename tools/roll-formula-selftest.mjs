@@ -109,7 +109,7 @@ const { explainSave, explainCheck, formulaText, formulaPill, rollLineHtml } =
   check("and one on the creature is its own part beside it",
     b.parts.filter(p => p.label === null).length === 2, `${b.total} altogether`);
   check("an unnamed part prints its number alone, never a made-up word",
-    / \+3 \+1 = /.test(formulaText(b.parts, b.total)), formulaText(b.parts, b.total));
+    / \+3 \+1 = D20 /.test(formulaText(b.parts, b.total)), formulaText(b.parts, b.total));
 
   // A formula bonus cannot be added up, so it is left off and said in the log.
   const weird = { name: "Odd", system: { abilities: { dex: { value: 10, mod: 0, proficient: 0,
@@ -123,7 +123,7 @@ const { explainSave, explainCheck, formulaText, formulaPill, rollLineHtml } =
   const ath = explainCheck(escher, { skill: "ath" });
   // Number then label: "+3 prof", not "+ prof +3" (his rule, 2026-09-30).
   check("a skill check reads its own ability and proficiency",
-    formulaText(ath.parts, ath.total) === "Str 16 (+3) +3 prof = +6",
+    formulaText(ath.parts, ath.total) === "Str 16 (+3) +3 prof = D20 + 6",
     formulaText(ath.parts, ath.total));
   const acr = explainCheck(escher, { skill: "acr" });
   check("expertise is named as expertise, not as proficiency twice",

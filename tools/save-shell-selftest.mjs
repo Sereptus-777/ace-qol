@@ -370,9 +370,19 @@ console.log("\nONE STYLE ONLY");
     && /\$\{p\.label\} \(\$\{signed\(p\.value\)\}\)/.test(rf), "Wis 16 (+3)");
   check("the word is prof", /label: "prof"/.test(rf) && !/"proficiency"/.test(rf), "never proficiency");
   check("and never the word modifier", !/label: "modifier"/.test(rf), "never modifier");
-  check("the end is the bonus, never a d20",
-    /const line = `\$\{shown\.join\(" "\)\} = \$\{signed\(end\)\}`;/.test(rf)
-    && !/D20 \+/.test(rf), "= +3, not D20 + 3");
+  // ⚠️ REVERSED (his rule, 2026-09-30, the second time round): "The line under the
+  // header must end with the combined bonus as D20 + N. Wrong: Wis 16 (+3) = +3.
+  // Right: Wis 16 (+3) = D20 + 3." It reads as the thing about to happen rather
+  // than a number with no verb.
+  check("the end is the roll it is about to make",
+    /const line = `\$\{shown\.join\(" "\)\} = D20 \$\{end < 0 \? "−" : "\+"\} \$\{Math\.abs\(end\)\}`;/.test(rf),
+    "= D20 + 3");
+  check("and N is what was added, with no note about the sheet",
+    /console\.log\(`ace-qol \| the roll used/.test(rf)
+    && !/more than the sheet shows\)`/.test(rf), "never a book-vs-sheet note");
+  check("the same line is on both cards, gated by nothing",
+    /<span class="ace-qol-save-quiet-formula">/.test(save)
+    && !/ace-qol-save-quiet-formula[^>]*gm-only/.test(save), "GM and player alike");
   check("and the sheet's disagreement is a console line",
     /console\.log\(`ace-qol \| the roll used/.test(rf)
     && !/more than the sheet shows\)`/.test(rf), "never on a card");

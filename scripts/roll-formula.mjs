@@ -275,7 +275,18 @@ export function formulaText(parts, total = null) {
   });
   const sum = parts.reduce((n, p) => n + p.value, 0);
   const end = Number.isFinite(Number(total)) ? Number(total) : sum;
-  const line = `${shown.join(" ")} = ${signed(end)}`;
+  // ⚠️🔴 THE LINE ENDS IN THE ROLL IT IS ABOUT TO MAKE (his rule, 2026-09-30):
+  //
+  //     Wis 16 (+3) = D20 + 3
+  //     Wis 16 (+3) +1 cloak = D20 + 4
+  //
+  // He asked for a bare "= +3" earlier in the same morning and then reversed it,
+  // and this is the reversal, not a proposal of mine. It reads as the thing that
+  // is about to happen rather than a number with no verb.
+  //
+  // A bonus of nothing still prints as "D20 + 0": N is what was actually added,
+  // and hiding a zero would be inventing a rule he has not given.
+  const line = `${shown.join(" ")} = D20 ${end < 0 ? "−" : "+"} ${Math.abs(end)}`;
   // ⚠️🔴 THE ARGUMENT ABOUT THE NUMBER IS NOT FOR THE CARD (his rule,
   // 2026-09-29: "Never print '+2 more than the sheet shows' or any book-vs-sheet
   // note. That note is for the console, not chat.").
