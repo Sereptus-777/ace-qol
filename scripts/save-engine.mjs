@@ -8699,7 +8699,19 @@ export class SaveEngine {
         const actor = (game.scenes?.get(r.sceneId)?.tokens?.get(r.tokenDocId)?.actor)
           ?? (r.actorId ? game.actors?.get(r.actorId) : null);
         const ab = String(r.saveAbility ?? saveAbility ?? "").toLowerCase();
-        if (actor && ab) formula = formulaText(explainSave(actor, ab).parts);
+        // ⚠️🔴 PRINT THE BONUS THAT WAS ACTUALLY ADDED (his card, 2026-09-30:
+        // "The live card says = +0. That is wrong. Print the bonus that was actually
+        // added. If the sheet and the roll disagree, console only.")
+        //
+        // The parts come off the sheet, and the TOTAL comes off the roll: the die
+        // taken off the total is the bonus that went in, whatever the sheet adds up
+        // to. Before the roll there is no total to read, so the sheet's own sum
+        // stands. `formulaText` logs any disagreement between the two and prints
+        // neither argument on the card.
+        const _die = r.dieResult ?? r.roll?.dice?.[0]?.total ?? null;
+        const _used = (typeof r.saveTotal === "number" && _die != null)
+          ? r.saveTotal - _die : null;
+        if (actor && ab) formula = formulaText(explainSave(actor, ab).parts, _used);
         if (!formula) {
           console.log(`${MODULE_ID} | the save card could not read what makes ${r.name}'s `
             + `${ab || "save"} bonus, so its quiet line shows the DC alone.`);
@@ -8814,62 +8826,62 @@ export class SaveEngine {
       const passClass = r.passed ? "ace-qol-save-pass" : "ace-qol-save-fail";
       const verdictText = r.passed ? "PASS" : "FAIL";
 
-      // The glowing d20 face goes UNDER the portrait (left column); the math
-      // breakdown (raw +mod = total) sits to the right with the verdict.
+      // ── TWO ROWS, NOT THREE (his card, 2026-09-30) ────────────────────
+      //
+      //   1. Jeth's portrait, whole, on the SAME ROW as the name "Jeth".
+      //   2. Under it: the d20 face, then "2 + 3 = 5" as ONE line, then FAIL.
+      //   3. "Charmed — 1 hour" last.
+      //
+      // ⚠️🔴 THE PORTRAIT WAS HANGING IN THE MIDDLE. It lived in a left column of
+      // its own, spanning the whole row, and the row was `align-items: center` — so
+      // with a name line, a numbers line and a landed line beside it, the picture
+      // floated to the vertical middle with the name ABOVE it. His words: "Do not
+      // leave the portrait hanging in the middle with the name above it and the die
+      // beside a lone 2."
+      //
+      // ⚠️ AND THE SUM IS ONE PIECE OF TEXT. It was four flex children with gaps,
+      // so a narrow card broke it into "2" on one line and "+3 = 5" on the next.
+      // "Do not split the total into '2' and '+3 = 5'." One span, one string: it
+      // can still wrap as text on an absurdly narrow card, and it cannot split into
+      // two visual pieces with a picture between them.
+      let mathLine;
       let d20El = "";
-      let breakdownText;
       if (r.isAutoFail) {
-        breakdownText = `<span class="${passClass}" style="font-weight:700;font-size:17px;">AUTO-FAIL</span>`;
+        mathLine = `<span class="${passClass} ace-qol-save-math-total">AUTO-FAIL</span>`;
       } else {
         const d20Face = r.dieResult ?? r.roll?.dice?.[0]?.total ?? null;
         const modifier = (typeof r.saveTotal === "number" && d20Face != null)
           ? r.saveTotal - d20Face : null;
         if (d20Face != null && modifier != null) {
-          // "9 + 3 = 12", the way he wrote it: the die, the sign, the bonus, the
-          // total. A bonus of nothing says nothing rather than "+ 0".
+          // A bonus of nothing says nothing rather than "+ 0".
           const modPart = modifier === 0 ? "" : ` ${modifier >= 0 ? "+" : "−"} ${Math.abs(modifier)}`;
           d20El = aceD20FaceImg(d20Face, { size: 40 });
-          // ⚠️ THE DIE SITS WITH THE RESULT IT MADE (his card, 2026-09-29:
-          // "d20 PNG for the number rolled sits with the result: 5 − 2 = 3 FAIL").
-          // It used to be stacked under the portrait, a column away from the
-          // numbers it produced, so the picture of a 5 and the "5" in the sum were
-          // nowhere near each other.
-          breakdownText = `
-            <span class="ace-qol-save-math">
-              ${d20El}
-              <span class="ace-qol-save-math-die">${d20Face}</span>
-              <span class="ace-qol-save-math-mod">${modPart} =</span>
-              <span class="${passClass} ace-qol-save-math-total">${r.saveTotal}</span>
-            </span>`;
-          d20El = "";   // it has moved; the left column is the portrait alone
+          mathLine = `<span class="ace-qol-save-math">`
+            + `<span class="ace-qol-save-math-die">${d20Face}</span>`
+            + `<span class="ace-qol-save-math-mod">${modPart} = </span>`
+            + `<span class="${passClass} ace-qol-save-math-total">${r.saveTotal}</span>`
+            + `</span>`;
         } else {
-          breakdownText = `<span class="${passClass}" style="font-weight:700;font-size:18px;">${r.saveTotal}</span>`;
+          mathLine = `<span class="${passClass} ace-qol-save-math-total">${r.saveTotal}</span>`;
         }
       }
 
-      // Portrait + d20 stacked in the left column; name / breakdown / verdict right.
       return `
-        <div class="ace-qol-save-result-row" data-token-doc-id="${r.tokenDocId}"
-             style="display:flex;align-items:center;gap:12px;padding:10px 12px;border-bottom:1px solid rgba(212,175,55,0.15);">
-          <div style="display:flex;flex-direction:column;align-items:center;gap:5px;flex-shrink:0;">
+        <div class="ace-qol-save-result-row ace-qol-save-row" data-token-doc-id="${r.tokenDocId}">
+          <div class="ace-qol-save-row-who">
             ${portrait}
+            <span class="ace-qol-save-tgt-name">${r.name}</span>
+            ${removeBtn}
+          </div>
+          <div class="ace-qol-save-row-result">
             ${d20El}
+            ${mathLine}
+            <span class="ace-qol-save-verdict ${passClass}">${verdictText}</span>
           </div>
-          <div style="flex:1;min-width:0;">
-            <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px;">
-              <span class="ace-qol-save-tgt-name" style="flex:1;font-weight:bold;color:#fff;font-size:16px;line-height:1.2;">${r.name}</span>
-              ${removeBtn}
-            </div>
-            <div style="display:flex;align-items:center;gap:12px;">
-              <span style="flex:1;">${breakdownText}</span>
-              <span class="ace-qol-save-verdict ${passClass}"
-                    style="font-weight:bold;font-size:15px;letter-spacing:0.5px;">${verdictText}</span>
-            </div>
-            ${SaveEngine._advTagsHtml(r)}
-            ${opts?.formulaOnShell ? "" : SaveEngine._formulaForRow(r, opts)}
-            ${SaveEngine._landedLineHtml(r, opts)}
-            ${r.extraHtml ?? ""}
-          </div>
+          ${SaveEngine._advTagsHtml(r)}
+          ${opts?.formulaOnShell ? "" : SaveEngine._formulaForRow(r, opts)}
+          ${SaveEngine._landedLineHtml(r, opts)}
+          ${r.extraHtml ?? ""}
         </div>
       `;
   }

@@ -158,8 +158,11 @@ console.log("\n\u00a7 13.4  WHAT A CARD SAYS ABOUT ITS OWN NUMBERS");
   check("the portrait is shown whole",
     /width: 52px !important;/.test(qolCss) && /object-fit: contain !important;/.test(qolCss),
     "not a 32px circle");
+  // The die and the sum are now the row's second line, side by side, and the sum
+  // itself is one piece of text (his card, 2026-09-30).
   check("the die sits with the result it made",
-    /\$\{d20El\}\s*\n\s*<span class="ace-qol-save-math-die">/.test(save), "5 \u2212 2 = 3 FAIL");
+    /<div class="ace-qol-save-row-result">[\s\S]{0,180}\$\{d20El\}[\s\S]{0,80}\$\{mathLine\}/.test(save),
+    "5 \u2212 2 = 3 FAIL");
   check("and a second roll is a second line",
     /\.ace-qol-save-extra-roll \{/.test(qolCss)
     && /ace-qol-save-extra-roll/.test(read("ace-qol/scripts/post-hit-saves.mjs")),

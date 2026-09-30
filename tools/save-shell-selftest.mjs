@@ -93,9 +93,18 @@ console.log("\nTOP TO BOTTOM");
   check("line 2 is one quiet line, from one reader",
     /static saveQuietLineHtml\(results, \{ saveAbility, saveDC, abilityLabel = null \} = \{\}\)/.test(save),
     "shared with the post-hit card");
-  check("it carries the roller's own bonus when one creature rolls",
-    /if \(rollers\.length === 1\)/.test(save) && /formulaText\(explainSave\(actor, ab\)\.parts\)/.test(save),
+  // ⚠️🔴 THE PARTS COME OFF THE SHEET, THE TOTAL COMES OFF THE ROLL (his card,
+  // 2026-09-30: "Print the bonus that was actually added. If the sheet and the
+  // roll disagree, console only."). The live card said "= +0" for a roll that had
+  // added +3.
+  check("it carries the bonus the roll actually added",
+    /if \(rollers\.length === 1\)/.test(save)
+    && /formulaText\(explainSave\(actor, ab\)\.parts, _used\)/.test(save)
+    && /\? r\.saveTotal - _die : null;/.test(save),
     "Wis 16 (+3) = +3");
+  check("and before the roll the sheet's own sum stands",
+    /const _used = \(typeof r\.saveTotal === "number" && _die != null\)/.test(save),
+    "nothing to read yet");
   check("with several rollers each row keeps its own instead",
     /formulaOnShell: _rollers\.length === 1/.test(save), "one line cannot be true for four sheets");
   check("and the row does not repeat what the shell already says",
@@ -301,6 +310,39 @@ console.log("\nTHE CARD SAYS WHO DREW IT");
     /has no cast-card row to patch/.test(save)
     && /already become its own result and is redrawn whole/.test(save),
     '"not found" is not "nothing to find"');
+}
+
+/* == THE ROW IS TWO ROWS, NOT THREE ==================================== */
+// His card, 2026-09-30: "Body is two rows, not three. 1. Jeth's portrait (whole,
+// not a 32px circle) flush top, same row as the name 'Jeth'. 2. Under that: the
+// d20 PNG for the number rolled, then '2 + 3 = 5' as one line, then FAIL."
+//
+// ⚠️🔴 THE PORTRAIT WAS HANGING IN THE MIDDLE. It sat in a left column of its own
+// spanning the whole row, and the row was centred, so with a name line, a numbers
+// line and a landed line beside it the picture floated to the vertical middle with
+// the name ABOVE it.
+console.log("\nTWO ROWS, NOT THREE");
+{
+  check("the portrait and the name are on one row",
+    /<div class="ace-qol-save-row-who">[\s\S]{0,180}\$\{portrait\}[\s\S]{0,140}ace-qol-save-tgt-name/.test(save),
+    "no left column of its own");
+  check("the die, the sum and the verdict are on the row under it",
+    /<div class="ace-qol-save-row-result">[\s\S]{0,180}\$\{d20El\}[\s\S]{0,80}\$\{mathLine\}/.test(save),
+    "in that order");
+  check("the row stacks, so a picture cannot centre itself against three lines",
+    /\.ace-qol-save-row \{[\s\S]{0,140}flex-direction: column;/.test(css),
+    "flex-direction: column");
+  check("the portrait's top is flush with the name row",
+    /\.ace-qol-save-row-who \{[\s\S]{0,180}align-items: center;/.test(css), "not floating");
+  check("the sum is ONE piece of text, so it cannot split",
+    /ace-qol-save-math">`[\s\S]{0,60}ace-qol-save-math-die/.test(save),
+    "not four flex children with gaps");
+  check("and its CSS says so",
+    /\.ace-qol-save-row-result \.ace-qol-save-math \{[\s\S]{0,80}display: inline;/.test(css),
+    "inline text, no flex");
+  check("what landed is still the last line",
+    /ace-qol-save-row-result[\s\S]{0,500}_landedLineHtml\(r, opts\)/.test(save),
+    "Charmed — 1 hour");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

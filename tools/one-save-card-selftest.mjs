@@ -164,9 +164,12 @@ console.log("\nTHE POST-HIT SAVE KEEPS ONE CARD");
     /\$\{opts\?\.formulaOnShell \? "" : SaveEngine\._formulaForRow\(r, opts\)\}/.test(save)
     && /\$\{r\.extraHtml \?\? ""\}/.test(save),
     "one row, one formula, one extra hook");
+  // ⚠️ AND THE TOTAL IT PRINTS IS THE BONUS THE ROLL ADDED (his card, 2026-09-30:
+  // "Print the bonus that was actually added"). The parts still come off the sheet
+  // through the one reader; only the total is read off the roll.
   check("and the shell's quiet line is the same reader, not a second one",
     /static saveQuietLineHtml\(/.test(save)
-    && /formulaText\(explainSave\(actor, ab\)\.parts\)/.test(save),
+    && /formulaText\(explainSave\(actor, ab\)\.parts, _used\)/.test(save),
     "roll-formula.mjs, both places");
   // The phase-1 card is the one whose handler the remove X belongs to, so it is
   // the one card that asks for it. Everything else about the row is shared.

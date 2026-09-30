@@ -6590,3 +6590,71 @@ i.ace-douse-tool::after {
    an AC is the one thing the person rolling must not be told. */
 .ace-qol-ac { display: none !important; }
 .ace-qol-ac[data-ace-ac="show"] { display: inline !important; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   THE SAVE ROW: TWO ROWS, NOT THREE (his card, 2026-09-30)
+
+     1. the portrait, whole, on the SAME ROW as the name
+     2. under it: the d20 face, then "2 + 3 = 5" as one line, then FAIL
+     3. what landed, last
+
+   ⚠️🔴 THE PORTRAIT USED TO HANG IN THE MIDDLE. It sat in a left column of its
+   own spanning the whole row, and the row was centred, so with a name line, a
+   numbers line and a landed line beside it the picture floated to the vertical
+   middle with the name ABOVE it. His words: "Do not leave the portrait hanging
+   in the middle with the name above it and the die beside a lone 2."
+
+   Everything here is flex and wraps. No fixed heights, nothing that can clip:
+   height is free (his standing rule).
+   ═══════════════════════════════════════════════════════════════════════════ */
+.ace-qol-save-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(212,175,55,0.15);
+}
+
+/* 1. The portrait and the name, on one row, the portrait's top flush with it. */
+.ace-qol-save-row-who {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-height: 52px;
+}
+.ace-qol-save-row .ace-qol-save-tgt-name {
+  flex: 1 1 8ch;
+  min-width: 0;
+  font-weight: bold;
+  color: #fff;
+  font-size: 17px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+/* 2. The die, the sum and the verdict, on one row under it. */
+.ace-qol-save-row-result {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-height: 1.6em;
+}
+/* ⚠️ THE SUM IS ONE PIECE OF TEXT. It was four flex children with gaps, so a
+   narrow card broke it into "2" and "+3 = 5" on separate lines with the die
+   picture between them. Inline text, no flex, no gaps: it cannot come apart. */
+.ace-qol-save-row-result .ace-qol-save-math {
+  display: inline;
+  font-family: 'Signika', sans-serif;
+  overflow-wrap: anywhere;
+}
+.ace-qol-save-row-result .ace-qol-save-math-die   { color: #ffffff; font-size: 19px; font-weight: 700; }
+.ace-qol-save-row-result .ace-qol-save-math-mod   { color: #b9a978; font-size: 16px; }
+.ace-qol-save-row-result .ace-qol-save-math-total { font-size: 19px; font-weight: 700; }
+.ace-qol-save-row-result .ace-qol-save-verdict {
+  margin-left: auto;
+  font-weight: bold;
+  font-size: 15px;
+  letter-spacing: 0.5px;
+}
