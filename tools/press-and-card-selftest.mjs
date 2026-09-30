@@ -54,12 +54,12 @@ console.log("1. ALREADY SELECTED MEANS FOUNDRY'S CURRENT TARGETS");
     "save-single, one target");
 
   check("the clear remembers what it cleared",
-    /if \(remember\) rememberAim\(why\);/.test(pipe)
-    && /static _clearUserTargets\(\{ remember = true, why = "the cast" \} = \{\}\)/.test(pipe),
+    /if \(remember\) rememberAim\(why, key\);/.test(pipe)
+    && /static _clearUserTargets\(\{ remember = true, why = "the cast", key = "" \} = \{\}\)/.test(pipe),
     "road/aim.mjs");
   check("the same helper in the damage path remembers too",
-    /if \(remember\) rememberAim\(why\);/.test(auto)
-    && /static _clearUserTargets\(\{ remember = true, why = "the cast" \} = \{\}\)/.test(auto),
+    /if \(remember\) rememberAim\(why, key\);/.test(auto)
+    && /static _clearUserTargets\(\{ remember = true, why = "the cast", key = "" \} = \{\}\)/.test(auto),
     "one rule, both clears");
   check("a post-resolution tidy-up does NOT remember",
     /_clearUserTargets\(\{ remember: false \}\)/.test(pipe)
@@ -71,17 +71,41 @@ console.log("1. ALREADY SELECTED MEANS FOUNDRY'S CURRENT TARGETS");
     && !/^import /m.test(aim),
     "no import cycle");
   check("an empty press writes an empty snapshot",
-    /_atPress = \{ ids, why: String\(why\) \};/.test(aim),
+    /_atPress = \{ ids, why: String\(why\), key: k \};/.test(aim),
     "nothing can be inherited from an older press");
   check("and the first read consumes it",
-    /const held = _atPress;\s*\n\s*_atPress = null;\s*\n\s*return held;/.test(aim),
+    /_atPress = null;/.test(aim) && /return held;/.test(aim),
     "read once, then gone");
+
+  // ⚠️🔴 AND THE SECOND CLEAR OF ONE PRESS MUST NOT ERASE IT. 0.66.0 shipped the
+  // memory and the picker STILL opened on Escher: dnd5e's activity chooser and
+  // ACE's consume prompt both re-enter the use, so preUseActivity — where the
+  // clear lives — fires twice for one press, and the second pass remembered the
+  // empty set the first pass had just left.
+  check("the memory is keyed to what is being cast",
+    /export function rememberAim\(why = "a press", key = ""\)/.test(aim)
+    && /export function aimedAtPress\(key = ""\)/.test(aim),
+    "an item uuid");
+  check("the same press never replaces a real answer with nothing",
+    /if \(!ids\.length && same && _atPress\.ids\.length\) \{/.test(aim),
+    "the chooser and the consume prompt both re-enter the use");
+  check("a different press does replace it, so nothing bleeds across",
+    /if \(held\.key && k && held\.key !== k\) \{/.test(aim), "keyed both ways");
+  check("both clears pass the key",
+    /rememberAim\(why, key\);/.test(pipe) && /rememberAim\(why, key\);/.test(auto)
+    && /key: activity\?\.item\?\.uuid \?\? "",/.test(pipe),
+    "one press, one memory");
+  check("and the picker asks for its own",
+    /aimedAtPress\(spellItem\?\.uuid \?\? ""\)/.test(pick), "not somebody else's press");
+  check("when it opens anyway it says why",
+    /the picker is opening\. Targeted now:/.test(pick),
+    "this decision has been wrong twice with nothing in the console");
 
   check("the picker asks the live reticle first",
     /let chosen = \[\.\.\.\(game\.user\.targets \?\? \[\]\)\]\.map\(t => legal\(t\.id\)\)\.filter\(Boolean\);/.test(pick),
     "whatever is targeted now");
   check("then what the press was pointing at",
-    /const press = aimedAtPress\(\);/.test(pick)
+    /const press = aimedAtPress\(spellItem\?\.uuid \?\? ""\);/.test(pick)
     && /const held = \(press\?\.ids \?\? \[\]\)\.map\(id => legal\(id\)\)\.filter\(Boolean\);/.test(pick),
     "the set ACE emptied");
   check("one legal target either way means no picker at all",
@@ -301,16 +325,31 @@ console.log("\n6. TWO SOURCES, ONE CHARMED, NEITHER DELETED");
 
   // ⚠️🔴 THREE ROADS, NOT ONE. This file decided who owns a cast and never told
   // AA, which has its own trigger on the item's use.
-  check("Automated Animations is stood down at the cast, not just out-voted",
+  check("Automated Animations is stood down, not just out-voted",
     /export function registerAaStandDown\(\)/.test(anim)
     && /Hooks\.on\("AutomatedAnimations-WorkflowStart", \(data\) => \{/.test(anim)
     && /data\.stopWorkflow = true;/.test(anim),
-    "the third road a badge could take");
+    "AAHandler.make fires that hook and honours stopWorkflow");
   check("and it is registered",
     /registerAaStandDown\(\)/.test(main), "at ready, on every client");
-  check("only for a condition ACE draws — every other cast stays AA's",
-    /const drawn = aceAlreadyDrawsThis\(entry, anim\?\.path\);\s*\n\s*if \(!drawn\) return;/.test(anim),
-    "no picture at all is worse");
+
+  // ⚠️🔴 THE ROAD 0.67.0 MISSED. AA's createActiveEffects calls
+  // AAHandler.make({ item: effect, activeEffect: true }), so on that hook
+  // `data.item` is an ActiveEffect. The old code asked the spell registry for an
+  // entry, got null, and returned — so AA played its badge on the token.
+  check("an EFFECT that puts on a condition ACE draws gets no AA picture",
+    /if \(data\?\.activeEffect === true \|\| subject\?\.documentName === "ActiveEffect"\) \{/.test(anim)
+    && /const drawn = statuses\.filter\(s => BODY_VISUAL_STATUSES\.has\(s\)\);/.test(anim),
+    "not on the effect");
+  check("whoever created it and whatever record AA chose",
+    /it puts on \$\{drawn\.join\(", "\)\}, which ACE draws on/.test(anim),
+    "no autorec path is consulted for this one");
+  check("the item's use is refused too, for a condition badge",
+    /const drawn = aceAlreadyDrawsThis\(entry, anim\?\.path\);/.test(anim),
+    "not on the item use");
+  check("and Bless and Bane are left alone",
+    /if \(!drawn\.length\) return;/.test(anim),
+    "they carry no body-visual status, so nothing is stood down for them");
 }
 
 /* ══ 7. THE ORDER: DICE, CONDITION, CARD, THEN THE PICTURE ════════════════ */

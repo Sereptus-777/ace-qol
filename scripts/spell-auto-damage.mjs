@@ -92,7 +92,10 @@ export class SpellAutoDamage {
       // time; the resolver re-sets targets AFTER the picker confirms.
       try {
         if (SpellAutoDamage._isMagicMissile(activity)) {
-          SpellAutoDamage._clearUserTargets({ why: `the press on ${activity?.item?.name ?? "that spell"}` });
+          SpellAutoDamage._clearUserTargets({
+            why: `the press on ${activity?.item?.name ?? "that spell"}`,
+            key: activity?.item?.uuid ?? "",
+          });
         }
       } catch (err) {
         console.warn(`${MODULE_ID} | preUseActivity target-clear failed (non-fatal):`, err);
@@ -532,13 +535,13 @@ export class SpellAutoDamage {
    * Foundry V13: the old game.user.updateTokenTargets() helper is gone;
    * use Token#setTarget per token. Safe / non-fatal on errors.
    */
-  static _clearUserTargets({ remember = true, why = "the cast" } = {}) {
+  static _clearUserTargets({ remember = true, why = "the cast", key = "" } = {}) {
     try {
       // ⚠️ THE CLEAR REMEMBERS WHAT IT CLEARED (road/aim.mjs, 2026-09-30) — the
       // pre-picker clear above is the press, and the picker must still be able to
       // read what the press pointed at. The post-resolution one at 1500ms passes
       // `remember: false`: that reticle is spent.
-      if (remember) rememberAim(why);
+      if (remember) rememberAim(why, key);
       const targets = Array.from(game.user.targets ?? []);
       // SILENT-OK: nothing is targeted; clearing none is a no-op, not a failure
       if (targets.length === 0) return;

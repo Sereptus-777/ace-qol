@@ -207,7 +207,13 @@ export class SpellPipeline {
           // press (Killed for good), after its own picker offered the dead; wiping it
           // here asked him to pick the same corpse twice.
               if (!(revivesTheDead(activity?.item) && (game.user?.targets?.size ?? 0) > 0)) {
-            SpellPipeline._clearUserTargets({ why: `the press on ${activity?.item?.name ?? "that spell"}` });
+            // ⚠️ KEYED BY THE ITEM. One press runs this more than once (the
+            // activity chooser and the consume prompt both re-enter the use), and
+            // the second pass must not forget what the first pass saw.
+            SpellPipeline._clearUserTargets({
+              why: `the press on ${activity?.item?.name ?? "that spell"}`,
+              key: activity?.item?.uuid ?? "",
+            });
           }
           // OUR picker owns targeting for these shapes — suppress dnd5e's native
           // template placement so the player doesn't get a redundant "place the
@@ -1268,7 +1274,7 @@ export class SpellPipeline {
    * V13-correct per-Token target clearing. The old User#updateTokenTargets
    * API was removed; setTarget(false) per token + Set#clear() is the path.
    */
-  static _clearUserTargets({ remember = true, why = "the cast" } = {}) {
+  static _clearUserTargets({ remember = true, why = "the cast", key = "" } = {}) {
     try {
       // ⚠️🔴 THE CLEAR REMEMBERS WHAT IT CLEARED (road/aim.mjs, 2026-09-30).
       // This runs at the press, BEFORE ACE's own picker opens, so the picker was
@@ -1276,7 +1282,7 @@ export class SpellPipeline {
       // legal creature already targeted could never stand the picker down. The
       // post-resolution cleanup passes `remember: false` — that one is stale by
       // definition and must not be handed to the next cast.
-      if (remember) rememberAim(why);
+      if (remember) rememberAim(why, key);
       const targets = [...(game.user?.targets ?? [])];
       for (const t of targets) {
         t.setTarget?.(false, { user: game.user, releaseOthers: false, groupSelection: false });

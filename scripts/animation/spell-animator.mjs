@@ -79,15 +79,41 @@ function aceAlreadyDrawsThis(entry, path) {
 export function registerAaStandDown() {
   Hooks.on("AutomatedAnimations-WorkflowStart", (data) => {
     try {
-      const item = data?.item ?? null;
-      if (!item) return;
-      const entry = globalThis.game?.aceQol?.SpellPipeline?._getEntry?.(item) ?? null;
+      const subject = data?.item ?? null;
+      if (!subject) return;
+
+      // ── 1. AA PLAYING A CONDITION OFF ITS EFFECT ────────────────────────
+      //
+      // ⚠️🔴 THIS IS THE ROAD 0.67.0 MISSED, AND IT IS THE ONE HE SAW. AA's
+      // `createActiveEffects` calls `AAHandler.make({ item: effect,
+      // activeEffect: true })`, so on this hook `data.item` is an ACTIVE EFFECT,
+      // not an item. The old code asked the spell registry for an entry, got
+      // null for an effect, and returned — so AA went on to play
+      // `static conditions heart pink` on the token beside ACE's own hearts.
+      //
+      // Now: an effect that puts on a condition ACE draws gets no AA picture at
+      // all, whoever created it and whatever record AA chose for it. Bless and
+      // Bane carry no body-visual status, so they are untouched, which is his
+      // rule for them.
+      if (data?.activeEffect === true || subject?.documentName === "ActiveEffect") {
+        const statuses = [...(subject.statuses ?? [])].map(s => String(s).toLowerCase());
+        const drawn = statuses.filter(s => BODY_VISUAL_STATUSES.has(s));
+        if (!drawn.length) return;
+        data.stopWorkflow = true;
+        console.log(`${MODULE_ID} | Automated Animations stands down for the effect `
+          + `"${subject.name ?? subject.label}": it puts on ${drawn.join(", ")}, which ACE draws on `
+          + `the body. One clip on the token, however many sources put it there.`);
+        return;
+      }
+
+      // ── 2. AA PLAYING A CONDITION BADGE OFF THE ITEM'S USE ──────────────
+      const entry = globalThis.game?.aceQol?.SpellPipeline?._getEntry?.(subject) ?? null;
       if (!entry) return;
-      const anim = animationFor(item);
+      const anim = animationFor(subject);
       const drawn = aceAlreadyDrawsThis(entry, anim?.path);
       if (!drawn) return;
       data.stopWorkflow = true;
-      console.log(`${MODULE_ID} | Automated Animations stands down for "${item.name}": its record `
+      console.log(`${MODULE_ID} | Automated Animations stands down for "${subject.name}": its record `
         + `is an on-token condition badge (${anim.path}) and ACE draws ${drawn.join(", ")} on the `
         + `body itself. One picture of a condition, not two.`);
     } catch (err) {
@@ -96,7 +122,7 @@ export function registerAaStandDown() {
     }
   });
   console.debug(`${MODULE_ID} | ACE draws its own conditions; AA's badge for one of them is `
-    + `stood down at the cast.`);
+    + `stood down, on the effect and on the cast.`);
 }
 
 /**

@@ -90,7 +90,26 @@ export function aimAt(token, context = {}) {
    snapshot, so nothing can be inherited) and the first read consumes it.
    ══════════════════════════════════════════════════════════════════════════ */
 
-/** @type {{ids: string[], why: string}|null} */
+/* ⚠️🔴 AND THE SECOND CLEAR OF THE SAME PRESS MUST NOT ERASE IT (his table,
+ * 2026-09-30, after 0.66.0 shipped this and the picker still opened on Escher).
+ *
+ * One press runs the use flow more than once. dnd5e's activity chooser and ACE's
+ * consume prompt both cancel a use and re-enter it, so `preUseActivity` — which
+ * is where the clear lives — fires again for the same press. The first pass
+ * remembered Escher and cleared the reticle; the second pass then remembered the
+ * EMPTY set the first one had just left behind, and overwrote him with nothing.
+ *
+ * The overwrite-with-empty was deliberate: it was how a later press was stopped
+ * from inheriting an older one's target. Both things are needed, so the memory is
+ * KEYED by what is being cast:
+ *
+ *   · a different key replaces the memory, empty or not — no cross-press bleed
+ *   · the SAME key never replaces a real answer with nothing — the second pass
+ *     of one press cannot forget what the first pass saw
+ *   · and a picker only reads a memory left for the thing it is picking for
+ */
+
+/** @type {{ids: string[], why: string, key: string}|null} */
 let _atPress = null;
 
 /**
@@ -98,19 +117,28 @@ let _atPress = null;
  * there is one place to add and no caller to remember.
  *
  * @param {string} [why]  what is about to clear it, for the log
+ * @param {string} [key]  what is being cast (an item uuid), so one press's
+ *                        several passes are one memory
  * @returns {string[]}    the token ids that were targeted
  */
-export function rememberAim(why = "a press") {
+export function rememberAim(why = "a press", key = "") {
   try {
     const ids = [...(globalThis.game?.user?.targets ?? [])].map(t => t?.id).filter(Boolean);
-    _atPress = { ids, why: String(why) };
+    const k = String(key ?? "");
+    const same = _atPress && _atPress.key === k;
+    if (!ids.length && same && _atPress.ids.length) {
+      console.log(`ace-qol | ${why} cleared nothing (it was already cleared this press), so the `
+        + `${_atPress.ids.length} target(s) it started with are still what the picker will use.`);
+      return _atPress.ids;
+    }
+    _atPress = { ids, why: String(why), key: k };
     if (ids.length) {
       console.log(`ace-qol | ${ids.length} target(s) were on the table when ${why} cleared them, `
         + `so the picker can still use them.`);
     }
     return ids;
   } catch (err) {
-    _atPress = { ids: [], why: String(why) };
+    _atPress = { ids: [], why: String(why), key: String(key ?? "") };
     console.warn(`ace-qol | could not remember what was targeted before ${why}:`, err);
     return [];
   }
@@ -120,10 +148,21 @@ export function rememberAim(why = "a press") {
  * What was targeted at the press, for a picker whose live set has been emptied.
  * Reading it consumes it.
  *
+ * @param {string} [key]  what is being picked for; a memory left for something
+ *                        else is not this picker's to use
  * @returns {{ids: string[], why: string}|null}
  */
-export function aimedAtPress() {
+export function aimedAtPress(key = "") {
   const held = _atPress;
+  if (!held) return null;
+  const k = String(key ?? "");
+  // A memory with no key (an older caller) is still readable by anyone; a keyed
+  // one belongs to that cast alone.
+  if (held.key && k && held.key !== k) {
+    console.log(`ace-qol | what was targeted belongs to a different press (${held.why}), so it is `
+      + `not used here.`);
+    return null;
+  }
   _atPress = null;
   return held;
 }

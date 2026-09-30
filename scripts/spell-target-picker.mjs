@@ -165,7 +165,7 @@ export class SpellTargetPicker {
       let chosen = [...(game.user.targets ?? [])].map(t => legal(t.id)).filter(Boolean);
       let from = "targeted";
       if (!chosen.length) {
-        const press = aimedAtPress();
+        const press = aimedAtPress(spellItem?.uuid ?? "");
         const held = (press?.ids ?? []).map(id => legal(id)).filter(Boolean);
         if (held.length) {
           chosen = held;
@@ -183,6 +183,15 @@ export class SpellTargetPicker {
       if (chosen.length > 1) {
         console.log(`${MODULE_ID} | ${spellItem?.name}: ${chosen.length} creatures were ${from} `
           + `and it takes one, so the picker opens to ask which.`);
+      }
+      // ⚠️ AND WHEN IT OPENS ANYWAY, IT SAYS WHY. This decision has now been
+      // wrong twice and both times the console showed nothing about it, so the
+      // next report starts from an answer instead of a hunt.
+      if (chosen.length !== 1) {
+        const live = [...(game.user.targets ?? [])].map(t => t?.name ?? t?.id).join(", ") || "nobody";
+        console.log(`${MODULE_ID} | ${spellItem?.name}: the picker is opening. Targeted now: ${live}. `
+          + `Legal candidates: ${candidates.filter(c => c.valid !== false).length} of ${candidates.length}. `
+          + `Wanted exactly one legal target and found ${chosen.length}.`);
       }
     }
 
