@@ -117,8 +117,11 @@ console.log("\n\u00a7 13.2  A DC IS SHOWN ON THE ROLL THAT NEEDS IT");
   check("Lamia's DC is on the header, for the creatures rolling against it",
     /dcSpan\(` \u00b7 \$\{dcText\}`, rollers, "ace-qol-save-cast-dc"\)/.test(save)
     && /static rollersOn\(results\)/.test(save), "Jeth reads it");
+  // His own wording, 2026-09-30: "The whispered prompt is 'Roll a Wisdom save
+  // (DC 13)'." The DC after the save, in brackets, not in front of the ability.
   check("and the whispered prompt shows it to the person rolling",
-    /Roll a \$\{dcSpan\(`DC \$\{saveDC\} `, tgt\?\.actorId\)\}/.test(save), "their roll, their number");
+    /Roll a \$\{abilityLabel\} save \$\{dcSpan\(`\(DC \$\{saveDC\}\)`, tgt\?\.actorId\)\}/.test(save),
+    "Roll a Wisdom save (DC 13)");
   check("the older pill, which names nobody, stays the GM's",
     /for \(const el of \(root\?\.querySelectorAll\?\.\(".ace-qol-save-dc"\) \?\? \[\]\)\)/.test(utils)
     && /decide\(el, null\);/.test(utils), "no roller, no player");

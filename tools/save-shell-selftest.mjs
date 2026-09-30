@@ -257,11 +257,12 @@ console.log("\nNO CARD IS LEFT BEHIND");
     (save.match(/saveQuietLineHtml\(/g) ?? []).length >= 5, "one reader, five cards");
 
   // THE PLAYER'S WHISPERED PROMPT LEAKED THE DC IN GOLD.
-  // ⚠️🔴 AND THE DC IS BACK ON IT (§ 13.2). 0.56 took it off on the old reading of
-  // the rule; this card IS the roll that player is making, whispered to them.
-  check("the whispered prompt shows the DC to the person rolling it",
-    /Roll a \$\{dcSpan\(`DC \$\{saveDC\} `, tgt\?\.actorId\)\}\$\{abilityLabel\} save/.test(save),
-    "their roll, their number");
+  // ⚠️🔴 THE DC IS ON IT (§ 13.2), AND IN HIS WORDING. 0.56 took it off on the
+  // old reading of the rule; 0.59 put it back as "Roll a DC 13 Wisdom save"; he
+  // wrote it out himself as "Roll a Wisdom save (DC 13)". Pinned in the style
+  // block below, where the rest of his wording lives.
+  check("the whispered prompt carries its DC",
+    /Roll a \$\{abilityLabel\} save \$\{dcSpan\(/.test(save), "their roll, their number");
 }
 
 /* == THE HOLD IS READ, NOT PASSED IN ================================== */
@@ -343,6 +344,66 @@ console.log("\nTWO ROWS, NOT THREE");
   check("what landed is still the last line",
     /ace-qol-save-row-result[\s\S]{0,500}_landedLineHtml\(r, opts\)/.test(save),
     "Charmed — 1 hour");
+}
+
+/* == THE FORMULA LINE: ONE STYLE ONLY ================================== */
+// His spec, 2026-09-30:
+//
+//     Wis 16 (+3) = +3
+//     Dex 1 (−5) + prof +3 = +0
+//
+// "Short ability. 'prof' not 'proficiency'. Named extras: + 1 cloak.
+//  Never 'modifier'. Never 'D20 + N'. Never '+2 more than the sheet shows'."
+//
+// The second line is the one that matters: its parts add up to −2 and it ends in
+// +0, because the total is the bonus the ROLL added and the sheet's disagreement
+// with it is a console line. Both of those are pinned below.
+console.log("\nONE STYLE ONLY");
+{
+  const rf = read("scripts/roll-formula.mjs");
+
+  check("the ability is short, and carries its score and its modifier",
+    /const ABILITY_NAME = \{ str: "Str", dex: "Dex", con: "Con", int: "Int", wis: "Wis", cha: "Cha" \};/.test(rf)
+    && /\$\{p\.label\} \(\$\{signed\(p\.value\)\}\)/.test(rf), "Wis 16 (+3)");
+  check("the word is prof", /label: "prof"/.test(rf) && !/"proficiency"/.test(rf), "never proficiency");
+  check("and never the word modifier", !/label: "modifier"/.test(rf), "never modifier");
+  check("the end is the bonus, never a d20",
+    /const line = `\$\{shown\.join\(" "\)\} = \$\{signed\(end\)\}`;/.test(rf)
+    && !/D20 \+/.test(rf), "= +3, not D20 + 3");
+  check("and the sheet's disagreement is a console line",
+    /console\.log\(`ace-qol \| the roll used/.test(rf)
+    && !/more than the sheet shows\)`/.test(rf), "never on a card");
+
+  // NAMED EXTRAS. The field on the sheet is a formula string and does not know
+  // what put it there; the active effect granting it does.
+  check("an extra is named for the thing that grants it",
+    /function grantedBy\(actor, keys\)/.test(rf)
+    && /label: by \?\? "save bonus"/.test(rf), "+ Cloak of Protection +1");
+  check("it reads the effect's own changes, by the key that field lives at",
+    /system\.abilities\.\$\{ab\}\.bonuses\.save/.test(rf)
+    && /system\.bonuses\.abilities\.save/.test(rf), "the only place the name exists");
+  check("several things stacking are all named, not one picked",
+    /\[\.\.\.new Set\(named\)\]\.join\(" \+ "\)/.test(rf), "no guessing which");
+  check("and a bonus nobody claims is NOT given a name",
+    /that no active effect claims/.test(rf), "\"save bonus\", and the console says why");
+  check("a disabled effect grants nothing",
+    /if \(e\?\.disabled\) continue;/.test(rf), "switched off is switched off");
+}
+
+/* == THE DCs STAY (§ 13.2, unchanged) ================================== */
+// His correction, 2026-09-30: "Do not rewrite § 13.2. I changed my mind. DCs
+// stay. A player sees the DC on a roll they are making."
+console.log("\nTHE DCs STAY");
+{
+  check("the header's DC still names the creatures rolling against it",
+    /dcSpan\(` · \$\{dcText\}`, rollers, "ace-qol-save-cast-dc"\)/.test(save),
+    "Jeth reads Lamia's 13");
+  check("and the whispered prompt reads the way he wrote it",
+    /Roll a \$\{abilityLabel\} save \$\{dcSpan\(`\(DC \$\{saveDC\}\)`, tgt\?\.actorId\)\}/.test(save),
+    "Roll a Wisdom save (DC 13)");
+  check("§ 13.2 is untouched",
+    /Lamia's DC 13 is on\s*\n?\s*Jeth's Charm Person card/.test(read("docs/ACE-ONE-ROAD.md")),
+    "not rewritten");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

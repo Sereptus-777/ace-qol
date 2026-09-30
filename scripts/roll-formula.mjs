@@ -51,6 +51,46 @@ function flatBonus(raw) {
  * @param {string} ability   "dex"
  * @returns {{parts: Array<{label: string, value: number, why: string}>, total: number}}
  */
+/**
+ * WHAT IS GIVING THIS BONUS, by name (his rule, 2026-09-30: "Named extras:
+ * + 1 cloak").
+ *
+ * A save bonus beyond the ability and its proficiency lives in a formula field on
+ * the sheet, and the field does not know what put it there. The EFFECT does: an
+ * active effect granting it carries a change whose key is that very field. So the
+ * name comes off the effect, which is the only place it honestly exists.
+ *
+ * ⚠️ AND A BONUS NOBODY CLAIMS IS NOT GIVEN A NAME. Typed straight onto the
+ * sheet by hand, or granted by something with no active effect, it stays "save
+ * bonus" and says so in the console. Inventing a source is worse than admitting
+ * there isn't one: a card that says "+ 1 cloak" when there is no cloak sends him
+ * looking for an item that does not exist.
+ *
+ * @param {Actor} actor
+ * @param {string[]} keys  the change keys that would grant it
+ * @returns {string|null} the effect's name, or null when nothing claims it
+ */
+function grantedBy(actor, keys) {
+  try {
+    const want = keys.map(k => String(k).toLowerCase());
+    const names = [];
+    for (const e of (actor?.effects?.contents ?? actor?.effects ?? [])) {
+      if (e?.disabled) continue;
+      for (const c of (e?.changes ?? [])) {
+        if (want.includes(String(c?.key ?? "").toLowerCase())) { names.push(String(e.name ?? "").trim()); break; }
+      }
+    }
+    const named = names.filter(Boolean);
+    if (!named.length) return null;
+    // Several things stacking into one field: name them all rather than pick one.
+    return [...new Set(named)].join(" + ");
+  } catch (err) {
+    console.log(`${MODULE_ID} | could not read what grants ${actor?.name}'s save bonus, so the `
+      + `card calls it "save bonus":`, err);
+    return null;
+  }
+}
+
 export function explainSave(actor, ability) {
   const ab = String(ability ?? "").toLowerCase();
   const a = actor?.system?.abilities?.[ab];
@@ -74,14 +114,29 @@ export function explainSave(actor, ability) {
   }
 
   const own = flatBonus(a.bonuses?.save);
-  if (own) parts.push({ label: "save bonus", value: own, why: "on the ability itself" });
+  if (own) {
+    const by = grantedBy(actor, [`system.abilities.${ab}.bonuses.save`]);
+    if (!by) {
+      console.log(`${MODULE_ID} | ${actor?.name}'s ${ab.toUpperCase()} save carries ${signed(own)} `
+        + `that no active effect claims, so the card calls it "save bonus" rather than naming `
+        + `something that is not there.`);
+    }
+    parts.push({ label: by ?? "save bonus", value: own, why: "on the ability itself" });
+  }
   else if (own === null) {
     console.log(`${MODULE_ID} | ${actor?.name}'s ${ab.toUpperCase()} save bonus is a formula `
       + `("${a.bonuses?.save}"), so it is left off the card rather than guessed at.`);
   }
 
   const global = flatBonus(actor?.system?.bonuses?.abilities?.save);
-  if (global) parts.push({ label: "save bonus", value: global, why: "on the creature" });
+  if (global) {
+    const by = grantedBy(actor, ["system.bonuses.abilities.save"]);
+    if (!by) {
+      console.log(`${MODULE_ID} | ${actor?.name} carries ${signed(global)} on every save that no `
+        + `active effect claims, so the card calls it "save bonus".`);
+    }
+    parts.push({ label: by ?? "save bonus", value: global, why: "on the creature" });
+  }
 
   return { parts, total: parts.reduce((n, p) => n + p.value, 0) };
 }

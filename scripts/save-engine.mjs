@@ -6510,7 +6510,7 @@ export class SaveEngine {
                and this card IS that roll, whispered to the person about to make it.
                It carries the roller so the wrapper agrees with the rest of the suite
                rather than being a bare exception nobody can check. -->
-          <div class="ace-qol-save-prompt-ability" style="color:#d4af37;font-size:15px;font-weight:600;margin-top:3px;">Roll a ${dcSpan(`DC ${saveDC} `, tgt?.actorId)}${abilityLabel} save</div>
+          <div class="ace-qol-save-prompt-ability" style="color:#d4af37;font-size:15px;font-weight:600;margin-top:3px;">Roll a ${abilityLabel} save ${dcSpan(`(DC ${saveDC})`, tgt?.actorId)}</div>
         </div>
         <div style="display:flex;align-items:center;gap:15px;padding:15px;background:#0c0c10;">
           <div style="display:flex;flex-direction:column;align-items:center;gap:8px;flex-shrink:0;">
