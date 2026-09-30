@@ -60,3 +60,70 @@ export function aimAt(token, context = {}) {
     return false;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   WHAT THE PRESS POINTED AT
+
+   His rule, 2026-09-30: *"'Already selected' means Foundry's current targets,
+   not only ACE's last pick. One legal target already targeted → no picker,
+   that target is the cast."*
+
+   ⚠️🔴 ACE WIPES THE RETICLE BEFORE ITS OWN PICKER OPENS. 0.65.0 taught the
+   picker to stand aside when one legal creature was already targeted, and it
+   still opened on Jeth. The reason is upstream of the picker entirely: the
+   pipeline's `preUseActivity` clears `game.user.targets` for every picker-using
+   shape — save-single, touch, chained, distribute, the two multis, attack-multi
+   — so by the time the picker asks what is targeted, the answer is nothing. It
+   was reading a set ACE had just emptied.
+
+   The clear is right and stays. It exists because a stale reticle from the LAST
+   cast pre-filled the next one, and because Automated Animations fires at
+   cast time and would otherwise throw the clip at last cast's victims. Both are
+   about a target that is STALE. The one he just set for THIS press is not.
+
+   So the clear remembers what it cleared, and the picker asks here when the live
+   set is empty.
+
+   ⚠️ READ ONCE, THEN GONE. A snapshot that outlived its press would hand the
+   next cast a target from the previous one, which is the very bug the clear was
+   written to stop. Every clear overwrites it (an empty press writes an empty
+   snapshot, so nothing can be inherited) and the first read consumes it.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/** @type {{ids: string[], why: string}|null} */
+let _atPress = null;
+
+/**
+ * Snapshot the reticle, then let the caller clear it. Called BY the clear, so
+ * there is one place to add and no caller to remember.
+ *
+ * @param {string} [why]  what is about to clear it, for the log
+ * @returns {string[]}    the token ids that were targeted
+ */
+export function rememberAim(why = "a press") {
+  try {
+    const ids = [...(globalThis.game?.user?.targets ?? [])].map(t => t?.id).filter(Boolean);
+    _atPress = { ids, why: String(why) };
+    if (ids.length) {
+      console.log(`ace-qol | ${ids.length} target(s) were on the table when ${why} cleared them, `
+        + `so the picker can still use them.`);
+    }
+    return ids;
+  } catch (err) {
+    _atPress = { ids: [], why: String(why) };
+    console.warn(`ace-qol | could not remember what was targeted before ${why}:`, err);
+    return [];
+  }
+}
+
+/**
+ * What was targeted at the press, for a picker whose live set has been emptied.
+ * Reading it consumes it.
+ *
+ * @returns {{ids: string[], why: string}|null}
+ */
+export function aimedAtPress() {
+  const held = _atPress;
+  _atPress = null;
+  return held;
+}

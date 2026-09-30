@@ -19,6 +19,8 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { aceDistanceFt } from "./geometry-utils.mjs";
 // Who may be offered: the living, the dying and the dead (The One Road, Phase 4).
 import { lifeStateOf, pickable, lifeBadge } from "./road/picker-rule.mjs";
+// What the press pointed at, for a picker whose live reticle ACE has just cleared.
+import { aimAt, aimedAtPress } from "./road/aim.mjs";
 
 export class SpellTargetPicker {
 
@@ -150,17 +152,36 @@ export class SpellTargetPicker {
     // ⚠️ AND ALREADY CHARMED IS STILL LEGAL. `candidates` decides legality; nothing
     // here filters on a condition the creature is already under, because a recast
     // refreshes it (the condition door's own rule).
+    //
+    // ⚠️🔴 AND "ALREADY SELECTED" IS FOUNDRY'S CURRENT TARGETS, NOT ONLY ACE'S
+    // LAST PICK (his correction, 2026-09-30, after this still opened on Jeth).
+    // 0.65.0 read `game.user.targets` alone, and by the time this line runs ACE
+    // has emptied it: the pipeline's press clears the reticle for every
+    // picker-using shape before the picker opens. So the clear now remembers what
+    // it cleared (road/aim.mjs) and this asks both — the live set first, then what
+    // the press was pointing at. One read, then the memory is gone.
     if (cap === 1 && kind !== "exclude") {
-      const chosen = [...(game.user.targets ?? [])]
-        .map(t => candidates.find(c => c.tokenId === t.id && c.valid !== false))
-        .filter(Boolean);
+      const legal = (tokenId) => candidates.find(c => c.tokenId === tokenId && c.valid !== false);
+      let chosen = [...(game.user.targets ?? [])].map(t => legal(t.id)).filter(Boolean);
+      let from = "targeted";
+      if (!chosen.length) {
+        const press = aimedAtPress();
+        const held = (press?.ids ?? []).map(id => legal(id)).filter(Boolean);
+        if (held.length) {
+          chosen = held;
+          from = `targeted when ${press.why} cleared the reticle`;
+        }
+      }
       if (chosen.length === 1 && chosen[0].actor) {
-        console.log(`${MODULE_ID} | ${spellItem?.name}: ${chosen[0].actor.name} is already `
-          + `targeted and is a legal target, so the picker does not open.`);
+        console.log(`${MODULE_ID} | ${spellItem?.name}: ${chosen[0].actor.name} was already `
+          + `${from} and is a legal target, so the picker does not open.`);
+        // Put the reticle back where he had it: the cast, the animation and the
+        // card all read `game.user.targets` after this.
+        if (chosen[0].token) aimAt(chosen[0].token, { releaseOthers: false });
         return [chosen[0].actor];
       }
       if (chosen.length > 1) {
-        console.log(`${MODULE_ID} | ${spellItem?.name}: ${chosen.length} creatures are targeted `
+        console.log(`${MODULE_ID} | ${spellItem?.name}: ${chosen.length} creatures were ${from} `
           + `and it takes one, so the picker opens to ask which.`);
       }
     }

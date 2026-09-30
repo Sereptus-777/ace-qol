@@ -49,6 +49,7 @@ import { DescriptionParser } from "../description-parser.mjs";
 import { getSpellTiming } from "../spell-timing.mjs";
 // Who a picker may offer (The One Road, Phase 4): the dying for a heal, the dead for a revive.
 import { revivesTheDead, lifeStateOf, pickable } from "../road/picker-rule.mjs";
+import { rememberAim } from "../road/aim.mjs";
 import { aceDistanceFt } from "../geometry-utils.mjs";
 // Which Teleport an item is, read from the item itself (2026-09-18).
 import { readTeleport } from "../rules/teleport-words.mjs";
@@ -205,7 +206,9 @@ export class SpellPipeline {
           // ⚠️ A REVIVE KEEPS ITS TARGET (Phase 4). The gate judged it for this very
           // press (Killed for good), after its own picker offered the dead; wiping it
           // here asked him to pick the same corpse twice.
-          if (!(revivesTheDead(activity?.item) && (game.user?.targets?.size ?? 0) > 0)) SpellPipeline._clearUserTargets();
+              if (!(revivesTheDead(activity?.item) && (game.user?.targets?.size ?? 0) > 0)) {
+            SpellPipeline._clearUserTargets({ why: `the press on ${activity?.item?.name ?? "that spell"}` });
+          }
           // OUR picker owns targeting for these shapes — suppress dnd5e's native
           // template placement so the player doesn't get a redundant "place the
           // template" prompt (and a leftover template they can't use) ALONGSIDE our
@@ -1135,7 +1138,9 @@ export class SpellPipeline {
       : (result?.targets?.length ?? 0);
     if (resolvedTargetCount > 1) {
       setTimeout(() => {
-        try { SpellPipeline._clearUserTargets(); }
+        // Post-resolution tidy-up: this reticle is spent, so it is NOT remembered
+        // for the next press (road/aim.mjs).
+        try { SpellPipeline._clearUserTargets({ remember: false }); }
         catch (_) { /* non-fatal */ }
       }, 1500);
     }
@@ -1263,8 +1268,15 @@ export class SpellPipeline {
    * V13-correct per-Token target clearing. The old User#updateTokenTargets
    * API was removed; setTarget(false) per token + Set#clear() is the path.
    */
-  static _clearUserTargets() {
+  static _clearUserTargets({ remember = true, why = "the cast" } = {}) {
     try {
+      // ⚠️🔴 THE CLEAR REMEMBERS WHAT IT CLEARED (road/aim.mjs, 2026-09-30).
+      // This runs at the press, BEFORE ACE's own picker opens, so the picker was
+      // being asked what is targeted moments after ACE had emptied the set: one
+      // legal creature already targeted could never stand the picker down. The
+      // post-resolution cleanup passes `remember: false` — that one is stale by
+      // definition and must not be handed to the next cast.
+      if (remember) rememberAim(why);
       const targets = [...(game.user?.targets ?? [])];
       for (const t of targets) {
         t.setTarget?.(false, { user: game.user, releaseOthers: false, groupSelection: false });

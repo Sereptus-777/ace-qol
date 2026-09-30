@@ -629,14 +629,24 @@ console.log("\nTHE PICKER GETS OUT OF THE WAY");
 /* == A PRESS IS NEVER LABELLED "SAVE" ================================== */
 console.log("\nA PRESS IS NEVER LABELLED SAVE");
 {
+  // ⚠️🔴 THESE TWO PINS USED TO TEST CODE THAT COULD NEVER RUN. 0.65.0 built
+  // "Cast Charm Person" behind `if (a.name)`, and dnd5e's prepareData writes
+  // the activity's TYPE into that field before anything of ours reads it — so
+  // the branch was unreachable and these pins were green over a dead fix. The
+  // rule lives in activity-choice.mjs::pressLabel now, and the four presses that
+  // can show a label are pinned in tools/press-and-card-selftest.mjs.
   const main = read("scripts/ace-qol.mjs");
+  const choice = read("scripts/activity-choice.mjs");
   check("an unnamed activity is named after the thing being done",
-    /const _verb = item\.type === "spell" \? "Cast" : "Use";/.test(main)
-    && /const _named = `\$\{_verb\} \$\{item\.name\}`;/.test(main), "Cast Charm Person");
+    /const verb = item\?\.type === "spell" \? "Cast" : "Use";/.test(choice)
+    && /return name \? `\$\{verb\} \$\{name\}`/.test(choice), "Cast Charm Person");
   check("and dnd5e's type word is never the label",
-    !/\|\| a\.name \|\| a\.type \|\| "Action"/.test(main), "never Save");
+    /if \(typeWord && name === typeWord\) return false;/.test(choice), "never Save");
   check("an activity with a real name of its own keeps it",
-    /if \(a\.name\) return base;/.test(main), "that name tells two of them apart");
+    /if \(hasOwnName\(activity\)\) return String\(activity\.name\)\.trim\(\);/.test(choice),
+    "that name tells two of them apart");
+  check("and the label is read from that one place, never rebuilt",
+    /const base = pressLabel\(\{ item, activity: a \}\);/.test(main), "one reader");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

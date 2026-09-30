@@ -15,6 +15,7 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { aceDescriptionText } from "./description-reader.mjs";
+import { pressLabel } from "./activity-choice.mjs";
 
 export class ActivityUsePrompt {
 
@@ -225,7 +226,11 @@ export class ActivityUsePrompt {
       const choice = await showConsumePrompt({
         itemName:     activity.item?.name,
         itemImg:      activity.item?.img,
-        activityName: activity.name || activity.type,
+        // ⚠️ THE ABILITY IS THE BUTTON here, so this string IS the press. It read
+        // `activity.name || activity.type` and dnd5e has already backfilled that
+        // name with the type word, so a save-only spell's one button said "Save".
+        // One reader for every press: activity-choice.mjs::pressLabel.
+        activityName: pressLabel({ item: activity.item, activity }),
         cost:         spend.cost,
         available:    spend.available,
         max:          spend.max,

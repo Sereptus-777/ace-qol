@@ -301,8 +301,59 @@ export function registerAceChrome() {
         revealOwnDCs(el);
         revealOwnACs(el);
     }, "ACE card chrome", { sweepAll: true });
+    registerAceCardScroll();
     console.log(`${MODULE_ID} | ACE cards drop Foundry's speaker strip and keep the ⋮; a DC `
         + `shows for the GM, and for a player on a roll they are making.`);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   A NEW ACE CARD TAKES THE LOG TO IT
+
+     His rule, 2026-09-30: *"A new ACE card must scroll the log to that card."*
+
+   ⚠️🔴 FOUNDRY ONLY SCROLLS FOR TWO PEOPLE. Its own handler is:
+
+       if ( this.isAtBottom || (message.author.id === game.user.id) )
+         this.scrollBottom({ waitImages: true });
+
+   So the log follows a new message only when this screen was already parked at
+   the bottom, or when the message is YOURS. An ACE card is neither for the
+   people who most need to read it: ACE writes a card as the creature it is
+   about, so on the roller's screen the author is not them; and one glance back
+   up the log to check what a monster rolled leaves `isAtBottom` false for the
+   rest of the fight. The card he was waiting to be asked for lands off-screen
+   and nothing says so.
+
+   ⚠️ waitImages, BECAUSE OUR CARDS ARE MOSTLY PICTURES. Portraits and the d20
+   faces have no height until they load, so a scroll measured before them lands
+   short of the card it was aiming at — which looks exactly like not scrolling.
+
+   ⚠️ A CREATE, NOT A RENDER. An ACE card is written once and then updated in
+   place (the card door), and a redraw is not a new card: scrolling on every
+   update would drag the log away from whatever he was reading each time a save
+   result landed.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+let _scrollRegistered = false;
+
+export function registerAceCardScroll() {
+    if (_scrollRegistered) return;
+    _scrollRegistered = true;
+    Hooks.on("createChatMessage", (message) => {
+        try {
+            if (!isAceCard(message)) return;
+            // Whispered past this screen: there is nothing here to scroll to.
+            if (message.visible === false) return;
+            const log = ui.chat;
+            if (!log?.scrollBottom) return;
+            // The popout too, when he has one open — it is a second log with its
+            // own scroll position and the card is at the bottom of both.
+            log.scrollBottom({ waitImages: true, popout: true });
+        } catch (err) {
+            console.warn(`${MODULE_ID} | could not take the chat log to a new ACE card, so it `
+                + `may have landed off-screen:`, err);
+        }
+    });
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

@@ -32,7 +32,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
-import { aimAt } from "./road/aim.mjs";   // ACE aims on purpose: no "did you mean that corpse?" (road/aim.mjs)
+import { aimAt, rememberAim } from "./road/aim.mjs";   // ACE aims on purpose: no "did you mean that corpse?" (road/aim.mjs)
 import { spellKey } from "./rules/spell-name.mjs";
 import { QolSettings } from "./settings.mjs";
 import { DamageCalculator } from "./damage-calculator.mjs";
@@ -92,7 +92,7 @@ export class SpellAutoDamage {
       // time; the resolver re-sets targets AFTER the picker confirms.
       try {
         if (SpellAutoDamage._isMagicMissile(activity)) {
-          SpellAutoDamage._clearUserTargets();
+          SpellAutoDamage._clearUserTargets({ why: `the press on ${activity?.item?.name ?? "that spell"}` });
         }
       } catch (err) {
         console.warn(`${MODULE_ID} | preUseActivity target-clear failed (non-fatal):`, err);
@@ -532,8 +532,13 @@ export class SpellAutoDamage {
    * Foundry V13: the old game.user.updateTokenTargets() helper is gone;
    * use Token#setTarget per token. Safe / non-fatal on errors.
    */
-  static _clearUserTargets() {
+  static _clearUserTargets({ remember = true, why = "the cast" } = {}) {
     try {
+      // ⚠️ THE CLEAR REMEMBERS WHAT IT CLEARED (road/aim.mjs, 2026-09-30) — the
+      // pre-picker clear above is the press, and the picker must still be able to
+      // read what the press pointed at. The post-resolution one at 1500ms passes
+      // `remember: false`: that reticle is spent.
+      if (remember) rememberAim(why);
       const targets = Array.from(game.user.targets ?? []);
       // SILENT-OK: nothing is targeted; clearing none is a no-op, not a failure
       if (targets.length === 0) return;
@@ -825,7 +830,7 @@ export class SpellAutoDamage {
       // before they vanish. PUNCH-LIST #11 (Johnny): if every dart went to
       // ONE creature, that's a single-target action — the target STAYS.
       if (mmHits.length > 1) {
-        setTimeout(() => SpellAutoDamage._clearUserTargets(), 1500);
+        setTimeout(() => SpellAutoDamage._clearUserTargets({ remember: false }), 1500);
       }
 
       return;

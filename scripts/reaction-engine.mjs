@@ -1191,6 +1191,20 @@ export class ReactionEngine {
     const _resetReactionFlagsOnBoot = () => {
       // SILENT-OK: GM-only handler; every client sees this hook and only the GM resolves it
       if (!game.user.isGM) return;
+      // ⚠️🔴 A RELOAD IS NOT A NEW ROUND (his report, 2026-09-30: "Kasimir's
+      // reaction comes back on every reload with no round advanced."). The flag
+      // lives on the actor — `flags.ace-qol.reactionUsed`, on the world actor for
+      // a linked token and on the ActorDelta for an unlinked one — so it survives
+      // a reload on purpose, and this boot sweep was handing it back. Mid-fight
+      // that is a free reaction for anyone who has spent theirs, every time he
+      // refreshes. It stands down while an encounter is running; combatTurnChange,
+      // combatRound, deleteCombat and a rest all still clear it.
+      if (game.combat?.started) {
+        console.log(`${MODULE_ID} | a fight is in progress on ${game.combat.round
+          ? `round ${game.combat.round}` : "round 0"}, so spent reactions are left as they were. `
+          + `A reload is not a new round.`);
+        return;
+      }
       this._resetAllReactionFlags("world startup");
     };
     if (game.ready) _resetReactionFlagsOnBoot();

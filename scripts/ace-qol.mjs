@@ -78,7 +78,7 @@ import { ConditionSheetIntegration } from "./condition-sheet-integration.mjs";
 import { SpellTargetPicker }    from "./spell-target-picker.mjs";
 import { DescriptionParser }    from "./description-parser.mjs";
 import { PostHitSaves }         from "./post-hit-saves.mjs";
-import { decideActivityChoice, spellIsUp, upCanBeSeen } from "./activity-choice.mjs";
+import { decideActivityChoice, spellIsUp, upCanBeSeen, pressLabel, hasOwnName } from "./activity-choice.mjs";
 // The one spell whose sheets carry the same cast twice (2026-09-16).
 import { guardianCastActivity } from "./rules/spirit-guardians.mjs";
 import { RepeatingSaveEngine }  from "./repeating-save-engine.mjs";
@@ -1021,6 +1021,50 @@ Hooks.on("preCreateActiveEffect", (effect, data, _options, _userId) => {
       + `so Automated Animations is switched off for this effect.`);
   } catch (err) {
     console.warn(`${MODULE_ID} | could not take over the Spirit Guardians aura (non-fatal):`, err);
+  }
+});
+
+/* ── ONE CLIP ON THE TOKEN, HOWEVER MANY SOURCES ─────────────────────────────
+ *
+ * His rule, 2026-09-30: *"Two casters may both Charm him. Two sources, one
+ * Charmed condition. One animation on the token. ACE's hearts. Not JB2A. If a
+ * charm clip is already running, a second source does not start another. When
+ * the last charm source ends, the clip ends."*
+ *
+ * ⚠️ ACE'S OWN HALF ALREADY OBEYED THIS, WHICH IS WHY THE SECOND CLIP WAS NOT
+ * OURS. condition-visuals draws from the token's STATUS SET and keys what it
+ * built on that set, so a second charmed effect leaves the key unchanged and
+ * `sync` returns without touching the hearts — and the status only drops when
+ * the last effect carrying it is gone, which is "the clip ends when the last
+ * source ends" for free.
+ *
+ * Automated Animations is the other clip. It plays per EFFECT CREATED, so a
+ * second caster's Charm is a second overlay on the same token. ACE is already
+ * drawing every condition in BODY_VISUAL_STATUSES on the body — that is the
+ * whole point of retiring the square icons — so AA's copy is the double, for
+ * charm and for all twelve of them. Switched off in AA's own words, on the
+ * effect, before it is created and therefore before AA ever sees it.
+ *
+ * ⚠️ ACE'S OWN CONDITIONS ONLY. A condition from anywhere else is not ours to
+ * take over, and nothing here touches a spell's cast animation.
+ */
+Hooks.on("preCreateActiveEffect", (effect, data, _options, _userId) => {
+  try {
+    const key = data?.flags?.[MODULE_ID]?.conditionKey ?? effect?.flags?.[MODULE_ID]?.conditionKey;
+    if (!key) return;                                        // not one of ACE's conditions
+    const statuses = [...(data?.statuses ?? effect?.statuses ?? [])];
+    const drawn = statuses.filter(s => BODY_VISUAL_STATUSES.has(s));
+    if (!drawn.length) return;                               // ACE draws nothing for this one
+    if (data?.flags?.autoanimations || effect?.flags?.autoanimations) return;
+    effect.updateSource({ "flags.autoanimations": {
+      isEnabled: false, isCustomized: false, fromAmmo: false, version: 5,
+    } });
+    console.log(`${MODULE_ID} | "${data?.name ?? key}": ACE draws ${drawn.join(", ")} on the body, `
+      + `so Automated Animations is switched off for this effect. One clip on the token, `
+      + `however many sources put it there.`);
+  } catch (err) {
+    console.warn(`${MODULE_ID} | could not switch Automated Animations off for an ACE `
+      + `condition, so that token may get a second clip:`, err);
   }
 });
 
@@ -6310,6 +6354,22 @@ Hooks.once("ready", () => {
   Hooks.on("renderActivityUsageDialog", (app, element) => {
     try {
       const el = element instanceof HTMLElement ? element : (element?.[0] ?? app?.element);
+      // ⚠️🔴 THE ROW THAT SAID "Save" IS THIS DIALOG'S SUBTITLE. dnd5e builds this
+      // window as `title = item.name` over `subtitle = activity.name`, and it has
+      // already backfilled that name with the activity's type word — so his shot
+      // read "Charm Person" with "Save" under it. His rule: that row reads "Cast
+      // Charm Person", never "Save". Every spell. Display only: `activity.type`
+      // stays "save" and the save still happens.
+      const sub = (app?.element ?? el)?.querySelector?.(".window-subtitle");
+      const act = app?.activity ?? null;
+      if (sub && act && !hasOwnName(act)) {
+        const want = pressLabel({ item: act.item, activity: act });
+        if (sub.innerText?.trim() !== want) {
+          console.log(`${MODULE_ID} | dnd5e's use dialog called this press `
+            + `"${sub.innerText?.trim()}", which is the activity's type. It reads "${want}".`);
+          sub.innerText = want;
+        }
+      }
       const tpl = el?.querySelector?.('[name="create.measuredTemplate"]');
       if (!tpl) return;
       const section = tpl.closest("fieldset, .card, .form-group") ?? tpl.parentElement;
@@ -6592,6 +6652,32 @@ Hooks.once("ready", () => {
   // Use a string-key set on (item-uuid + app-id) so we catch app re-creates.
   // Cleared after a short timeout so subsequent casts of the same spell work.
   const _handledActivityDialogs = new Set();
+  /**
+   * Rewrite dnd5e's own activity rows so no press is labelled by its type.
+   *
+   * Display only, and per screen: the activity document is untouched, so the
+   * type stays "save" and the sheet still reads as its author wrote it.
+   */
+  function _aceRelabelActivityRows(root, item) {
+    try {
+      const acts = item?.system?.activities;
+      if (!acts || !root?.querySelectorAll) return;
+      for (const btn of root.querySelectorAll("button[data-activity-id]")) {
+        const a = acts.get?.(btn.dataset.activityId);
+        if (!a || hasOwnName(a)) continue;
+        const want = pressLabel({ item, activity: a });
+        const slot = btn.querySelector(".name") ?? btn;
+        if (slot.textContent?.trim() === want) continue;
+        console.log(`${MODULE_ID} | dnd5e's dialog called this press `
+          + `"${slot.textContent?.trim()}", which is the activity's type. It reads "${want}".`);
+        slot.textContent = want;
+      }
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not relabel dnd5e's activity rows, so one of them may `
+        + `still be showing its type:`, err);
+    }
+  }
+
   function _handleActivityChoiceDialog(app, element) {
     const item = app.item;
     const dedupKey = `${item?.uuid ?? "?"}|${app.id ?? app.appId ?? Math.random()}`;
@@ -6644,6 +6730,14 @@ Hooks.once("ready", () => {
     // sees nothing — the menu renders into the DOM but stays display:none.
     // This was the Holy Symbol of Ravenkind "invisible power menu" bug.
     const _revealChoice = () => {
+      // ⚠️🔴 AND IT SAYS WHAT THE PRESS IS, NOT WHAT THE TYPE IS. His rule,
+      // 2026-09-30: "The shot is dnd5e's own use dialog. Relabeling ACE's button
+      // did not touch it. That row reads 'Cast Charm Person', never 'Save'."
+      // dnd5e renders each row as `<span class="name">{{ name }}</span>` from
+      // `activity.name`, which it has already backfilled with the type word, so
+      // the one dialog ACE deliberately hands back was the one still saying
+      // "Save". One reader for every row: activity-choice.mjs::pressLabel.
+      _aceRelabelActivityRows(el, item);
       (el?.closest?.(".activity-choice") ?? el)?.classList?.add?.("ace-choice-show");
     };
 
@@ -6752,20 +6846,16 @@ Hooks.once("ready", () => {
       // listed first, and "Cast again" is what separates a second wall from
       // a save against the first one.
       label: (decision.recastIds?.has(a.id) ? "Cast again: " : "") + (() => {
-        // ⚠️🔴 NEVER "SAVE" ON A PRESS (his rule, 2026-09-30: "Never label the
-        // press 'Save'. That is dnd5e's activity type. The button is 'Cast Charm
-        // Person', 'Cast Fireball', the spell or feature name. Every press.").
-        //
-        // dnd5e names an unnamed activity after its TYPE, so a spell whose whole
-        // job is one saving throw offered a button that said "Save" — the mechanic,
-        // not the thing being done. An activity with a real name of its own keeps
-        // it, because that name is what tells two of them apart.
-        const _verb = item.type === "spell" ? "Cast" : "Use";
-        const _named = `${_verb} ${item.name}`;
-        const base = a.name
-          ? ((buttonFor(a)?.textContent ?? "").trim() || a.name)
-          : _named;
-        if (a.name) return base;               // it has a real name; leave it alone
+        // ⚠️🔴 NEVER "SAVE" ON A PRESS — activity-choice.mjs::pressLabel owns this
+        // now, for ACE's rows AND for dnd5e's own two dialogs. 0.65.0 asked
+        // `if (a.name)`, and dnd5e has already written "Save" into that field by
+        // the time we read it, so the branch never ran anywhere.
+        const base = pressLabel({ item, activity: a });
+        if (hasOwnName(a)) {
+          // A name its author wrote: dnd5e's own button text is the human version
+          // of it (an activity's `.name` is often the bare key), so prefer that.
+          return (buttonFor(a)?.textContent ?? "").trim() || base;
+        }
         try {
           const parts = a.damage?.parts ?? [];
           const bits = parts.map(pt => {

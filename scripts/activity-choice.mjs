@@ -505,3 +505,65 @@ export function decideActivityChoice({ item, activities, offeredIds, isMachinery
   }
   return { kind: "close", notes, why: "Auto-closing post-hit ActivityChoiceDialog" };
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   WHAT A PRESS IS CALLED
+
+   His rule, 2026-09-30: *"Never label the press 'Save'. That is dnd5e's
+   activity type. The button is 'Cast Charm Person', 'Cast Fireball', the spell
+   or feature name. Every press."* And after 0.65.0 shipped a fix that did not
+   take: *"The shot is dnd5e's own use dialog. Relabeling ACE's button did not
+   touch it. That row reads 'Cast Charm Person', never 'Save'. Every spell. The
+   activity type stays save internally."*
+
+   ⚠️🔴 WHY 0.65.0 CHANGED NOTHING, ANYWHERE. It guarded with `if (a.name)` and
+   treated a name as proof the author had written one. dnd5e backfills it:
+
+       prepareData() { this.name = this.name || game.i18n.localize(this.metadata?.title); }
+
+   So by the time any of our code reads it, an unnamed save activity is already
+   called "Save" — a truthy string. The branch that built "Cast Charm Person"
+   was unreachable on every activity in his world, including in ACE's own
+   picker. One test guarded the whole thing and it was the wrong test.
+
+   So ask dnd5e what it would have called this TYPE, and treat a name equal to
+   that as no name at all. That is exact: no word list, and an activity someone
+   genuinely named "Save" keeps its name.
+
+   ⚠️ THE TYPE IS UNTOUCHED. This is a label. `activity.type` stays "save", the
+   save still happens, and nothing downstream reads this.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Whether the author gave this activity a name, as opposed to dnd5e filling in
+ * its type word.
+ *
+ * @param {object} activity
+ * @returns {boolean}
+ */
+export function hasOwnName(activity) {
+  const name = String(activity?.name ?? "").trim();
+  if (!name) return false;
+  try {
+    const key = activity?.metadata?.title;
+    const typeWord = key ? String(globalThis.game?.i18n?.localize?.(key) ?? key).trim() : "";
+    if (typeWord && name === typeWord) return false;     // dnd5e's backfill
+  } catch (_) { /* no i18n: fall through and trust the name */ }
+  return true;
+}
+
+/**
+ * What the press should read. `Cast <spell>` / `Use <feature>` when the activity
+ * has no name of its own, otherwise the name its author gave it.
+ *
+ * @param {object} opts
+ * @param {Item}   opts.item        the item being pressed
+ * @param {object} opts.activity    the activity the row or dialog is for
+ * @returns {string}
+ */
+export function pressLabel({ item, activity }) {
+  if (hasOwnName(activity)) return String(activity.name).trim();
+  const verb = item?.type === "spell" ? "Cast" : "Use";
+  const name = String(item?.name ?? "").trim();
+  return name ? `${verb} ${name}` : (verb === "Cast" ? "Cast" : "Use");
+}
