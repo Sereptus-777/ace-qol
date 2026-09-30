@@ -109,7 +109,12 @@ const CASES = [
     item: item({ range: { value: 30, units: "ft" } }),
     activity: { range: { value: 30, units: "ft" } },
     want: 30,
-    wantSource: "the activity's declared range",
+    // ⚠️ ONE SLOT, ONE NAME (0.69.0). An activity has no `reach` field at all in
+    // dnd5e 5.x — only the weapon data model has one — so an activity's range
+    // VALUE is the only place a feature's reach can live, and it is what the
+    // Attack tab's Targeting box holds. The reader names that field the same way
+    // wherever it reads it from.
+    wantSource: "the attack activity's range value",
   },
   {
     title: "A thrown weapon must NOT have its long range mistaken for reach",
@@ -155,6 +160,61 @@ for (const c of CASES) {
   console.log(`  ${pass ? "PASS" : "FAIL"}  ${c.title}`);
   console.log(`        ${got.reachFt} ft from ${got.source}`);
   if (!pass) console.log(`        EXPECTED ${c.want} ft from ${c.wantSource}`);
+}
+
+/* ══ AND THE REPAIR WRITES WHERE THE READER LOOKS ═══════════════════════
+
+   His table, 2026-09-30: *"Console says it wrote 10. The Attack activity
+   Targeting range value is still empty. It is writing the old item.system.range
+   field."*
+
+   ⚠️🔴 THE WRITE WENT INTO A FIELD THE SCHEMA DOES NOT HAVE. Only dnd5e's
+   WEAPON data model carries `range.reach`; a feat has no `system.range` at all,
+   and Spiked Chain is a feat. `item.update` with an undefined key resolves
+   without a word, so the log said "Wrote reach 10" over a write that did nothing,
+   and the reader proposed the same repair on every swing for the rest of the
+   session. These pins are on the SOURCE, because the source is the file — there
+   is no live document here to write to.
+   ══════════════════════════════════════════════════════════════════════ */
+const repair = fs.readFileSync(
+  "D:/FoundryVTT/Data/modules/ace-qol/scripts/reach-repair.mjs", "utf8");
+const reader = fs.readFileSync(
+  "D:/FoundryVTT/Data/modules/ace-qol/scripts/reach-reader.mjs", "utf8");
+
+const pins = [
+  ["the destination is asked of the schema, not guessed from the type",
+    /item\?\.system\?\.schema\?\.getField\?\.\("range\.reach"\)/.test(repair)
+      && /activity\.schema\?\.getField\?\.\("range\.value"\)/.test(repair)],
+  ["a feat's reach goes on the attack activity's range, in feet",
+    /await where\.activity\.update\(\{ "range\.value": String\(ft\), "range\.units": "ft" \}\);/.test(repair)],
+  ["a weapon's still goes in its own reach field, which dnd5e reads",
+    /await item\.update\(\{ "system\.range\.reach": ft \}\);/.test(repair)],
+  ["one attack activity only — two is a guess and it refuses",
+    /it has \$\{all\.length\} attack activities/.test(repair)],
+  ["it cannot be written → his words, and NOT a success line",
+    /could not write reach on \$\{item\.name\} — \$\{done\.why\}/.test(repair)
+      && /no activity range field/.test(repair)],
+  ["a success line only after a write that took",
+    /if \(!done\.ok\) \{/.test(repair) && /Wrote reach \$\{ft\} feet onto/.test(repair)],
+  ["said once, so the console is quiet on the next swing",
+    /_refused\.add\(uuid\);/.test(repair) && /if \(_refused\.has\(uuid\)\) return;/.test(repair)],
+  ["\"already has it\" is asked of the field that will hold it",
+    /const where = reachDestination\(item\);/.test(repair)
+      && /if \(where\.current > 0\) return 0;/.test(repair)],
+  ["the bulk pass writes to the same place",
+    /const w = await writeReach\(r\.item, r\.ft\);/.test(repair)],
+  ["and the reader reads the activity's range value, so the repair sticks",
+    /activityReach = toFeet\(activityRange\.value, activityRange\.units \|\| units\);/.test(reader)],
+  ["a long range is still a range, never a reach",
+    /if \(!activityReach && activityRange && longRange === 0\) \{/.test(reader)],
+];
+
+console.log("");
+console.log("THE REPAIR WRITES WHERE THE READER LOOKS");
+console.log("=".repeat(78));
+for (const [label, got] of pins) {
+  if (!got) ok = false;
+  console.log(`  ${got ? "PASS" : "FAIL"}  ${label}`);
 }
 
 console.log("");

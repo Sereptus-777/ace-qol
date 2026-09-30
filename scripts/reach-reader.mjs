@@ -129,11 +129,31 @@ export function resolveReach(item, activity = null, { repair = true } = {}) {
   //    source string is what tells a GM WHERE to go and fix the item, and it
   //    was sending them to a field that did not exist. Caught by
   //    tools/reach-agreement-check.mjs the day this file was written.
+  //    ⚠️🔴 AND AN ACTIVITY HAS NO `reach` SLOT AT ALL. dnd5e 5.x's RangeField is
+  //    `{ value, units, special }` plus `override`: only the WEAPON data model
+  //    carries `range.reach`. So for a feature — which is what most statblock
+  //    attacks are, Johnny's Spiked Chain included — the reach can only ever be
+  //    the activity's range VALUE, which is the number the Attack tab's Targeting
+  //    box holds and the one ReachRepair now writes. Reading `.reach` here and
+  //    nothing else meant the repair could write a correct 10 and this reader
+  //    would still fall through to the description on the very next swing, log
+  //    that the item had no reach, and queue the same repair again.
+  //
+  //    ⚠️ A RANGE IS NOT ALWAYS A REACH, so the same guard step 5 uses: no long
+  //    range. A thrown or ranged attack's value is a distance it travels, and
+  //    that is step 5's business, not this one's.
   const activityRange = activity?.range ?? null;
-  const activityReach = activityRange ? toFeet(activityRange.reach, units) : 0;
+  let activityReach = activityRange ? toFeet(activityRange.reach, units) : 0;
+  // ⚠️ AND THE SOURCE STRING TELLS THE TRUTH ABOUT WHICH SLOT IT WAS. That is
+  // the whole point of it: it is what tells a GM where to go and fix the item.
+  let activityFrom = activityReach > 0 ? "the activity's reach field" : "";
+  if (!activityReach && activityRange && longRange === 0) {
+    activityReach = toFeet(activityRange.value, activityRange.units || units);
+    if (activityReach > 0) activityFrom = "the attack activity's range value";
+  }
   if (activityReach > 0) {
     reachFt = activityReach;
-    source = "the activity's reach field";
+    source = activityFrom;
   }
 
   // 3. Nothing declared in EITHER field? Read the description.
@@ -198,8 +218,10 @@ export function resolveReach(item, activity = null, { repair = true } = {}) {
   const declared = toFeet(range.value, units);
   if (declared > reachFt && longRange === 0) {
     reachFt = declared;
-    // Same care as step 2: name the place the number actually came from.
-    source = activityRange ? "the activity's declared range" : "the item's declared range";
+    // Same care as step 2: name the place the number actually came from, and
+    // with the SAME words step 2 uses for that same field — one slot, one name,
+    // or the line that tells a GM where to go says two different things about it.
+    source = activityRange ? "the attack activity's range value" : "the item's declared range";
   }
 
   return { reachFt: Math.round(reachFt), source, units };

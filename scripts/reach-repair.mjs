@@ -67,6 +67,91 @@ function reachMentions(sys) {
   }
 }
 
+/* ══ WHERE A REACH ACTUALLY LIVES ══════════════════════════════════
+
+   His table, 2026-09-30: *"Spiked Chain. Description says reach 10 feet. Console
+   says it wrote 10. The Attack activity Targeting range value is still empty. It
+   is writing the old item.system.range field. That tab does not show that
+   field."*
+
+   ⚠️🔴 HE IS EXACTLY RIGHT, AND THE WRITE WENT NOWHERE. dnd5e 5.x keeps
+   `range.reach` on the WEAPON data model only — `WeaponData.defineSchema` has
+   `range: { value, long, reach, units }`. A FEAT has no `system.range` at all, and
+   Spiked Chain is a feat (this file's own note says so: "the log says
+   [feat/attack]"). So `item.update({"system.range.reach": 10})` on a feat set a
+   key the schema does not define: the update resolved, nothing threw, the log
+   said "Wrote reach 10", and the field stayed empty. A dead field refuses in
+   silence — the same shape as the dnd5e 3.x value that refused every caster.
+
+   And the reach was never re-read, so `proposedReachFor` proposed it again on
+   every swing, forever.
+
+   ⚠️ SO THE DESTINATION IS ASKED OF THE SCHEMA, NOT ASSUMED FROM THE TYPE.
+
+     · an item whose schema really has `range.reach` (a weapon) → that field.
+       dnd5e's own attack reads it: `getRangeLabel` composes "Reach 10 ft" from
+       `item.system.range`, and the activity inherits it while its override is
+       off. This is where a weapon's reach belongs and the Details tab shows it.
+
+     · anything else (a feat, which is most statblock attacks) → the ATTACK
+       ACTIVITY's own range: value and units. `canOverride` is
+       `safePropertyExists(item.system, "range")`, so on a feat it is false, the
+       override checkbox is not even drawn and that range IS the Targeting tab's
+       Range value. His field.
+
+   ⚠️ AND IT SAYS WHICH IT DID, OR THAT IT COULD NOT. His words: *"If that
+   field cannot be written, log 'could not write reach on [item] — no activity
+   range field' and do not log 'Wrote reach'."*
+   ══════════════════════════════════════════════════════════════════════ */
+
+/** Does this item's own data model really hold a melee reach? */
+function itemHoldsReach(item) {
+  try {
+    return !!item?.system?.schema?.getField?.("range.reach");
+  } catch (_) {
+    return false;
+  }
+}
+
+/** The one activity that attacks, or why there is not one. */
+function attackActivityOf(item) {
+  try {
+    const all = [...(item?.system?.activities ?? [])].filter(a => a?.type === "attack");
+    if (!all.length) return { activity: null, why: "it has no attack activity" };
+    // ⚠️ SEVERAL ATTACKS IS RULE 1 AGAIN. One reach in the prose and two attacks
+    // to hang it on is a choice, and this file does not guess.
+    if (all.length > 1) {
+      return { activity: null, why: `it has ${all.length} attack activities, so which one the `
+        + `description means is a guess` };
+    }
+    return { activity: all[0], why: null };
+  } catch (err) {
+    return { activity: null, why: `its activities could not be read (${err?.message ?? err})` };
+  }
+}
+
+/**
+ * Where this item's reach goes, and what is in there now.
+ *
+ * @returns {{kind: "item"|"activity"|null, activity?: object, current: number, why?: string}}
+ */
+export function reachDestination(item) {
+  if (itemHoldsReach(item)) {
+    return { kind: "item", current: Number(item.system?.range?.reach) || 0 };
+  }
+  const { activity, why } = attackActivityOf(item);
+  if (!activity) return { kind: null, current: 0, why };
+  // The field the Targeting tab draws. No field, no write — and it says so
+  // rather than reporting a success.
+  const hasRange = !!activity.schema?.getField?.("range.value");
+  if (!hasRange) return { kind: null, current: 0, why: "no activity range field" };
+  const units = String(activity.range?.units ?? "").toLowerCase();
+  const raw = Number(activity.range?.value);
+  // A value in a unit that is not a length (self, touch, any) is not a reach.
+  const current = (Number.isFinite(raw) && raw > 0) ? toFeet(raw, units || "ft") : 0;
+  return { kind: "activity", activity, current };
+}
+
 /**
  * Should this weapon be repaired, and to what?
  * @returns {number} the reach in feet, or 0 when it must be left alone
@@ -93,8 +178,12 @@ export function proposedReachFor(item) {
     if (item.type !== "weapon" && item.type !== "feat") return 0;
     if (item.pack) return 0;                    // never write into a compendium
     const sys = item.system ?? {};
-    // Rule 2 — an existing value is never touched.
-    if (Number(sys.range?.reach) > 0) return 0;
+    // Rule 2 — an existing value is never touched. ⚠️ ASKED OF THE FIELD THAT
+    // WILL ACTUALLY HOLD IT: this read `system.range.reach`, which a feat does
+    // not have, so it was always 0 and the repair was proposed on every swing
+    // for the rest of the session.
+    const where = reachDestination(item);
+    if (where.current > 0) return 0;
     // Rule 1 — ambiguity means hands off.
     if (reachMentions(sys) !== 1) return 0;
     const ft = reachFromDescription(sys, sys.range?.units || "ft", toFeet);
@@ -109,6 +198,30 @@ export function proposedReachFor(item) {
 // ─── The automatic heal ──────────────────────────────────────────────────────
 
 const _queued = new Set();
+/** Items we have already said we cannot write, so the console says it once. */
+const _refused = new Set();
+
+/**
+ * Write the reach where it actually lives.
+ *
+ * @returns {Promise<{ok: boolean, kind?: string, why?: string}>}
+ */
+export async function writeReach(item, ft) {
+  const where = reachDestination(item);
+  if (where.kind === "item") {
+    await item.update({ "system.range.reach": ft });
+    return { ok: true, kind: "the item's own reach field" };
+  }
+  if (where.kind === "activity") {
+    // The Targeting tab's Range value, in feet. `override` is left alone: it only
+    // decides whether an activity ignores an item range, and an item with no
+    // range field has nothing to ignore (dnd5e's `canOverride` is false there,
+    // which is why this field is the editable one on his sheet).
+    await where.activity.update({ "range.value": String(ft), "range.units": "ft" });
+    return { ok: true, kind: `the ${where.activity.name ?? "attack"} activity's range` };
+  }
+  return { ok: false, why: where.why ?? "no activity range field" };
+}
 
 /**
  * Remember that this weapon needs its reach written, and do it once the roll is
@@ -120,6 +233,7 @@ export function queueReachHeal(item) {
     if (!game.user?.isGM) return;               // only the GM may write
     const uuid = item?.uuid;
     if (!uuid || _queued.has(uuid)) return;
+    if (_refused.has(uuid)) return;             // already said why, once
     const ft = proposedReachFor(item);
     if (!ft) return;
     _queued.add(uuid);
@@ -128,12 +242,22 @@ export function queueReachHeal(item) {
     // hook races the attack it is meant to be helping.
     setTimeout(async () => {
       try {
-        await item.update({ "system.range.reach": ft });
-        console.log(`${LOG} | Wrote reach ${ft} feet onto "${item.name}" — its description said so and the field was empty. `
-          + `dnd5e's own sheet and tooltip will now agree.`);
+        const done = await writeReach(item, ft);
+        if (!done.ok) {
+          // ⚠️ HIS WORDING, AND NOT A WORD ABOUT WRITING. A success line over a
+          // write that went nowhere is what cost him this evening.
+          console.warn(`${LOG} | could not write reach on ${item.name} — ${done.why}`);
+          // Said once. It is the same answer on every swing, and a line per
+          // swing is noise he has to read past.
+          _refused.add(uuid);
+          return;
+        }
+        console.log(`${LOG} | Wrote reach ${ft} feet onto "${item.name}", on ${done.kind} — its `
+          + `description said so and the field was empty. dnd5e's own sheet and tooltip will now agree.`);
         ui.notifications?.info(`ACE: set "${item.name}" reach to ${ft} feet from its description.`);
       } catch (err) {
         console.warn(`${LOG} | Could not write reach onto "${item?.name}":`, err);
+        _refused.add(uuid);
       } finally {
         _queued.delete(uuid);
       }
@@ -171,7 +295,8 @@ export async function repairWeaponReach({ fix = false } = {}) {
     if (item?.type !== "weapon" && item?.type !== "feat") return;
     checked++;
     const sys = item.system ?? {};
-    if (Number(sys.range?.reach) > 0) return;
+    // ⚠️ THE FIELD THAT WILL HOLD IT, not the weapon field a feat does not have.
+    if (reachDestination(item).current > 0) return;
     const mentions = reachMentions(sys);
     if (mentions > 1) {
       // ⚠️ NAMED, NOT SILENTLY SKIPPED. These are the ones a human has to
@@ -218,11 +343,20 @@ export async function repairWeaponReach({ fix = false } = {}) {
     return { checked, rows, ambiguous };
   }
 
-  // ⚠️ ONE UPDATE PER OWNER. A world with many of these would otherwise fire a
-  // document write per weapon, each broadcast to every connected client.
+  // ⚠️ ONE UPDATE PER OWNER FOR THE ITEM FIELD. A world with many of these would
+  // otherwise fire a document write per weapon, each broadcast to every client.
+  // An activity's range is a pseudo-document update and goes one at a time,
+  // because that is the only API dnd5e gives for it.
   const byActor = new Map();
   const loose = [];
+  const viaActivity = [];
   for (const r of rows) {
+    const where = reachDestination(r.item);
+    if (where.kind === "activity") { viaActivity.push(r); continue; }
+    if (where.kind !== "item") {
+      console.warn(`${LOG} | could not write reach on ${r.item.name} — ${where.why ?? "no activity range field"}`);
+      continue;
+    }
     const parent = r.item.parent;
     if (parent?.updateEmbeddedDocuments) {
       if (!byActor.has(parent)) byActor.set(parent, []);
@@ -238,6 +372,16 @@ export async function repairWeaponReach({ fix = false } = {}) {
   for (const r of loose) {
     try { await r.item.update({ "system.range.reach": r.ft }); done++; }
     catch (err) { failed++; console.warn(`${LOG} | Could not repair "${r.item.name}":`, err); }
+  }
+  for (const r of viaActivity) {
+    try {
+      const w = await writeReach(r.item, r.ft);
+      if (w.ok) done++;
+      else { failed++; console.warn(`${LOG} | could not write reach on ${r.item.name} — ${w.why}`); }
+    } catch (err) {
+      failed++;
+      console.warn(`${LOG} | Could not repair "${r.item.name}":`, err);
+    }
   }
 
   console.log(`${LOG} | ${done} weapon(s) repaired${failed ? `, ${failed} FAILED` : ""}.`);
