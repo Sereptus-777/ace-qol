@@ -4691,7 +4691,10 @@ export class SaveEngine {
         sourceImg: f.casterImg ?? null,
         rollerName: tokenDoc?.name ?? f.targetName ?? actor.name,
         rollerImg: tokenDoc?.texture?.src ?? f.targetImg ?? actor.img,
-        pillLabel: `Roll ${abilityLabel} save`,
+        // § 13.2: he is rolling against this number, so the button says it.
+        pillLabel: Number.isFinite(Number(f.saveDC))
+          ? `Roll ${abilityLabel} save (DC ${f.saveDC})`
+          : `Roll ${abilityLabel} save`,
         match: { kind: "save", castId: f.castId ?? null, tokenDocId: f.tokenDocId ?? null },
         lucky,
         onRoll: async () => {
@@ -8351,9 +8354,14 @@ export class SaveEngine {
 
           // Build options bundle for applyByName — concentration linkage AND
           // repeating-save metadata (when applicable).
-          // WHAT PUT IT ON, so "one write per status per source" can tell one
-          // power landing twice from two powers stacking.
-          const applyOpts = { source: item.name };
+          // WHAT PUT IT ON, AND WHO. The name tells one power landing twice from two
+          // powers stacking; the caster tells Lamia's Charm Person from anybody
+          // else's, which is a second source and keeps its own duration.
+          const applyOpts = {
+            source: item.name,
+            sourceActorId: saveCtx?.casterActor?.id ?? item?.actor?.id ?? null,
+            origin: item?.uuid ?? null,
+          };
           if (saveCtx?.presence?.sourceTokenId) {
             applyOpts.extraFlags = { presence: {
               sourceTokenId: saveCtx.presence.sourceTokenId,

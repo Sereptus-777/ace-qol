@@ -1893,11 +1893,13 @@ export class ConditionLibrary {
       flags: {
         [MODULE_ID]: {
           conditionKey: key,
-          // ⚠️ WHAT PUT IT ON, kept ON the effect. Without it "one write per status
-          // per source" had no way to tell one power landing twice from two powers
-          // stacking, so the guard above could never find its own twin. A layer
-          // nothing can read is the same bug wearing a hat.
+          // ⚠️ WHAT PUT IT ON, AND WHO, kept ON the effect. Without the name, "one
+          // write per source" had no way to tell one power landing twice from two
+          // powers stacking. Without the CASTER it cannot tell Lamia's Charm Person
+          // from another creature's: his rule, 2026-09-30, "A different caster may
+          // charm him too. That is a second source, not a second copy of Lamia's."
           source: options.source ?? null,
+          sourceActorId: options.sourceActorId ?? null,
           category: def.category,
           concentration: def.concentration ?? false,
           specialDuration: options.specialDuration ?? def.specialDuration ?? null,
@@ -2209,6 +2211,27 @@ export class ConditionLibrary {
    *   "frightened", "exhaustion")
    * @returns {Promise<{ok: boolean, applied: string, level?: number}>}
    */
+  /**
+   * HOW LONG THIS APPLICATION LASTS, in seconds: what the caller says first, then
+   * the condition's own definition. 0 when neither names one, and a refresh then
+   * leaves the duration it already had rather than clearing it.
+   */
+  static _durationSecondsFor(key, options = {}) {
+    try {
+      const d = options?.duration ?? null;
+      const fromCaller = Number(d?.seconds) > 0 ? Number(d.seconds)
+        : Number(d?.rounds) > 0 ? Number(d.rounds) * 6
+        : Number(d?.turns) > 0 ? Number(d.turns) * 6 : 0;
+      if (fromCaller > 0) return fromCaller;
+      const def = ALL_EFFECTS[String(key ?? "").toLowerCase()]?.duration ?? null;
+      if (!def) return 0;
+      if (Number(def.seconds) > 0) return Number(def.seconds);
+      if (Number(def.rounds) > 0) return Number(def.rounds) * 6;
+      if (Number(def.turns) > 0) return Number(def.turns) * 6;
+      return 0;
+    } catch (_) { return 0; }
+  }
+
   static async applyByName(actor, conditionKey, options = {}) {
     if (!actor || !conditionKey) return { ok: false, applied: null };
     const key = String(conditionKey).toLowerCase().trim();
@@ -2266,42 +2289,88 @@ export class ConditionLibrary {
       } catch (_) { /* dedupe is best-effort — never block the application */ }
     }
 
-    // ── ONE WRITE PER STATUS, PER SOURCE ────────────────────────────
+    // ── SAME SOURCE, SAME CONDITION: REFRESH IT ─────────────────────
     //
-    // His table, 2026-09-29: "No second dnd5echarmed0000 write. The collision in
-    // the log is the second write."
+    // His table, 2026-09-30: "Jeth was already Charmed. A second Charm Person from
+    // Lamia put a second charmed on him and played a second animation. Same source,
+    // same condition: refresh the duration. One effect. One clip."
     //
-    // The dedupe below this is keyed on the KEY. Charm Person lands through the
-    // registry key `charm_person`, whose definition carries the charmed STATUS, so
-    // a second call with the plain key `charmed` looked like a different condition
-    // entirely: `toggleStatusEffect("charmed")` then created dnd5e's fixed-id
-    // `dnd5echarmed0000` beside ACE's "Charmed by Caster", both carrying charmed.
-    // That is the collision the toggle guard swallows, and it is also the second
-    // Automated Animations clip - AA fires once per effect.
+    // ⚠️🔴 AND WHY THE 0.56 GUARD MISSED IT. That version found its twin only by
+    // the `source` flag it had itself stamped, so anything already on a creature
+    // from before that version was invisible to it — which is exactly Jeth, who was
+    // charmed in an earlier test. A guard that can only see its own handiwork is no
+    // guard at all on a live world.
     //
-    // ⚠️ ONLY FROM THE SAME SOURCE. A creature CAN be charmed by two different
-    // things, and each keeps its own rules and duration (Suggestion on top of Charm
-    // Person). This refuses a second write of the same statuses from the SAME
-    // source only, which is one power landing twice, never two powers stacking.
+    // So a twin is recognised three ways, any one of which means "this creature
+    // already carries this thing":
+    //
+    //   · the same `conditionKey` — ACE put it there, whatever version did it
+    //   · the same source NAME — stamped from 0.56 on
+    //   · the same ORIGIN item — the effect came from this very item
+    //
+    // ⚠️ AND THE CASTER DECIDES WHETHER IT IS THE SAME SOURCE AT ALL. Two creatures
+    // can both cast Charm Person on him and each keeps its own duration. When BOTH
+    // the existing effect and this call know their caster and they differ, it is a
+    // second source and a second effect. When the existing one does not know (older
+    // than 0.62), the name or key match stands, because refreshing the one he has is
+    // closer to right than stacking a second copy on top of it.
+    //
+    // A REFRESH IS NOT A WRITE. The effect is updated in place, so nothing is
+    // created, nothing is deleted, and Automated Animations — which fires once per
+    // effect CREATED — has nothing new to play. That is the second clip, gone.
     try {
       const _wantStatuses = [...(ALL_EFFECTS[key]?.statuses ?? [key])]
         .map(x => String(x).toLowerCase()).filter(Boolean);
       const _src = String(options?.source ?? "").toLowerCase().trim();
-      if (_wantStatuses.length && _src) {
-        const _twin = (actor.effects?.contents ?? []).find(e => {
-          if (e.disabled) return false;
-          if (!_wantStatuses.every(st => e.statuses?.has?.(st))) return false;
-          const f = e.flags?.["ace-qol"] ?? {};
-          const from = String(f.source ?? f.spellEffect?.spellName ?? f.concentrationOrigin?.spellName ?? "")
-            .toLowerCase().trim();
-          return from === _src;
-        });
-        if (_twin) {
-          console.log(`ace-qol | ${actor.name} already carries "${_twin.name}" from ${options.source}, `
-            + `which puts on ${_wantStatuses.join(", ")}. ONE WRITE: "${key}" is not written a second `
-            + `time, so there is one effect and one animation.`);
-          return { ok: true, applied: _twin.name, duplicate: true };
+      const _caster = String(options?.sourceActorId ?? "").trim();
+      const _originItem = String(options?.origin ?? "").trim();
+
+      const _twin = (actor.effects?.contents ?? []).find(e => {
+        if (e.disabled) return false;
+        // It must already put on everything this would put on.
+        if (_wantStatuses.length && !_wantStatuses.every(st => e.statuses?.has?.(st))) return false;
+        const f = e.flags?.["ace-qol"] ?? {};
+        const from = String(f.source ?? f.spellEffect?.spellName ?? f.concentrationOrigin?.spellName ?? "")
+          .toLowerCase().trim();
+        const sameThing = (f.conditionKey && String(f.conditionKey).toLowerCase() === key)
+          || (!!_src && from === _src)
+          || (!!_originItem && String(e.origin ?? "") === _originItem);
+        if (!sameThing) return false;
+        // A caster on both sides that disagrees makes this a DIFFERENT source.
+        const theirs = String(f.sourceActorId ?? "").trim();
+        if (_caster && theirs && theirs !== _caster) return false;
+        return true;
+      });
+
+      if (_twin) {
+        const seconds = ConditionLibrary._durationSecondsFor(key, options);
+        let refreshed = false;
+        try {
+          const update = { disabled: false };
+          if (seconds > 0) {
+            update["duration.seconds"] = seconds;
+            update["duration.startTime"] = game.time?.worldTime ?? 0;
+            if (game.combat) {
+              update["duration.startRound"] = game.combat.round ?? null;
+              update["duration.startTurn"] = game.combat.turn ?? null;
+            }
+          }
+          // Whoever cast it THIS time owns it now, so a later cast from somebody
+          // else is correctly seen as a different source.
+          if (_src) update["flags.ace-qol.source"] = options.source;
+          if (_caster) update["flags.ace-qol.sourceActorId"] = options.sourceActorId;
+          await _twin.update(update);
+          refreshed = true;
+        } catch (err) {
+          console.warn(`ace-qol | could not refresh "${_twin.name}" on ${actor.name}, so it keeps `
+            + `the duration it had:`, err);
         }
+        console.log(`ace-qol | ${actor.name} already carries "${_twin.name}"`
+          + `${options?.source ? ` from ${options.source}` : ""}, which puts on `
+          + `${_wantStatuses.join(", ") || key}. ONE EFFECT: `
+          + `${refreshed ? (seconds > 0 ? `its duration is refreshed to ${seconds}s` : "it is left in place")
+                         : "it stands as it was"}, nothing is created, and there is no second animation.`);
+        return { ok: true, applied: _twin.name, refreshed, duplicate: true };
       }
     } catch (err) {
       console.warn(`ace-qol | could not check whether ${actor?.name} already carries what "${key}" `

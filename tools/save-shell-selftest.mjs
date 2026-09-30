@@ -284,18 +284,21 @@ console.log("\nTHE HOLD ASKS THE RECIPE");
 console.log("\nONE WRITE PER STATUS");
 {
   const cl = read("scripts/condition-library.mjs");
-  check("a second write of the same statuses from the same source is refused",
+  // ⚠️ IT REFRESHES NOW RATHER THAN REFUSING (his rule, 2026-09-30: "Same source,
+  // same condition: refresh the duration."). 0.56 returned early and left the old
+  // duration running, so a second Charm bought Lamia nothing.
+  check("a second write of the same statuses from the same source refreshes it",
     /const _wantStatuses = \[\.\.\.\(ALL_EFFECTS\[key\]\?\.statuses \?\? \[key\]\)\]/.test(cl)
-    && /return \{ ok: true, applied: _twin\.name, duplicate: true \};/.test(cl),
+    && /return \{ ok: true, applied: _twin\.name, refreshed, duplicate: true \};/.test(cl),
     "charm_person and charmed are one status");
   check("it is refused BEFORE toggleStatusEffect can make dnd5e's own copy",
     cl.indexOf("_wantStatuses") < cl.indexOf("actor.toggleStatusEffect(key, { active: true })"),
     "no second dnd5echarmed0000");
   check("two different powers can still both charm a creature",
-    /return from === _src;/.test(cl), "same source only");
+    /if \(!sameThing\) return false;/.test(cl), "same source only");
   check("and what put it on is stamped where the guard can read it",
     /source: options\.source \?\? null,/.test(cl)
-    && /const applyOpts = \{ source: item\.name \};/.test(save),
+    && /const applyOpts = \{\s*\n\s*source: item\.name,/.test(save),
     "not a layer nothing calls");
 }
 
@@ -426,6 +429,122 @@ console.log("\nTHE DCs STAY");
   check("§ 13.2 is untouched",
     /Lamia's DC 13 is on\s*\n?\s*Jeth's Charm Person card/.test(read("docs/ACE-ONE-ROAD.md")),
     "not rewritten");
+}
+
+/* == CHARM DOES NOT STACK ============================================== */
+// His table, 2026-09-30: "Jeth was already Charmed. A second Charm Person from
+// Lamia put a second charmed on him and played a second animation. Same source,
+// same condition: refresh the duration. One effect. One clip."
+//
+// ⚠️🔴 AND WHY 0.56's GUARD MISSED IT. That version found its twin only by the
+// `source` flag it had stamped itself, so anything already on a creature from
+// before it was invisible — which is exactly Jeth, charmed in an earlier test. A
+// guard that can only see its own handiwork is no guard on a live world.
+console.log("\nCHARM DOES NOT STACK");
+{
+  const cl = read("scripts/condition-library.mjs");
+
+  check("a twin is found three ways, not just by ACE's own flag",
+    /f\.conditionKey && String\(f\.conditionKey\)\.toLowerCase\(\) === key/.test(cl)
+    && /from === _src/.test(cl)
+    && /String\(e\.origin \?\? ""\) === _originItem/.test(cl),
+    "key, source name, or origin item");
+  check("so an effect older than the guard is still recognised",
+    /A guard that can only see its own handiwork/.test(cl), "conditionKey carries it");
+  check("it must already put on everything this would put on",
+    /!_wantStatuses\.every\(st => e\.statuses\?\.has\?\.\(st\)\)/.test(cl), "same statuses");
+
+  // A DIFFERENT CASTER IS A DIFFERENT SOURCE.
+  check("two casters do not share one charm",
+    /if \(_caster && theirs && theirs !== _caster\) return false;/.test(cl),
+    "a second source, not a second copy");
+  check("and a caster nobody recorded still matches by name or key",
+    /_caster && theirs/.test(cl), "older than 0.62 is not punished for it");
+
+  // A REFRESH, NOT A WRITE.
+  check("the same source refreshes the duration in place",
+    /update\["duration\.seconds"\] = seconds;/.test(cl)
+    && /update\["duration\.startTime"\] = game\.time\?\.worldTime \?\? 0;/.test(cl),
+    "from the top, on the world clock");
+  check("and in combat it restarts on this round and turn",
+    /update\["duration\.startRound"\]/.test(cl) && /update\["duration\.startTurn"\]/.test(cl),
+    "not left on the old one");
+  check("nothing is created, so there is no second clip",
+    /await _twin\.update\(update\);/.test(cl)
+    && /there is no second animation/.test(cl), "AA fires once per effect created");
+  check("whoever cast it this time owns it now",
+    /update\["flags\.ace-qol\.sourceActorId"\] = options\.sourceActorId;/.test(cl),
+    "so a later cast from somebody else is a different source");
+  check("and it is refused BEFORE toggleStatusEffect can write dnd5e's own copy",
+    cl.indexOf("_wantStatuses") < cl.indexOf("actor.toggleStatusEffect(key, { active: true })"),
+    "no dnd5echarmed0000 beside ACE's charm");
+
+  // HOW LONG, FROM ONE READER.
+  check("how long it lasts comes from the caller, then the definition",
+    /static _durationSecondsFor\(key, options = \{\}\)/.test(cl)
+    && /if \(fromCaller > 0\) return fromCaller;/.test(cl), "one reader");
+  check("and neither naming one leaves the duration it had",
+    /return 0;/.test(cl) && /leaves the duration it already had/.test(cl), "never cleared");
+
+  // THE EFFECT REMEMBERS WHO.
+  check("an effect is stamped with what put it on and who cast it",
+    /source: options\.source \?\? null,/.test(cl)
+    && /sourceActorId: options\.sourceActorId \?\? null,/.test(cl), "on creation");
+  check("and the save path hands both over",
+    /sourceActorId: saveCtx\?\.casterActor\?\.id \?\? item\?\.actor\?\.id \?\? null,/.test(save)
+    && /origin: item\?\.uuid \?\? null,/.test(save), "caster and item");
+}
+
+/* == THE ROLL BOX ====================================================== */
+// His card, 2026-09-30: title centred and gold, no white SVG d20, a bigger
+// sentence, the button below the die and never over it, the die on its own row,
+// and portraits shown whole inside the gold frame.
+console.log("\nTHE ROLL BOX");
+{
+  const box = read("scripts/roll-popout.mjs");
+
+  check("the title is centred and gold",
+    /\.ace-qol-roll-popout \.window-header \{ justify-content: center; \}/.test(box)
+    && /color: #d4af37;[\s\S]{0,40}text-align: center;/.test(box), "the spell's name, as a heading");
+  check("the white d20 glyph is off the button",
+    !/class="acp-pill" data-acp="roll"><i class="fas fa-dice-d20">/.test(box),
+    "the PNG is the only die on the box");
+  check("the sentence is the biggest thing after the title",
+    /\.ace-qol-roll-popout \.acp-line \{[\s\S]{0,60}font-size: 20px;/.test(box),
+    "Lamia casts Charm Person at you.");
+  check("the die has a row of its own",
+    /<div class="acp-die-row">/.test(box)
+    && /\.ace-qol-roll-popout \.acp-die-row \{ min-height: 78px; \}/.test(box), "nothing covers it");
+  check("and the button has its own row under it",
+    /<div class="acp-pill-row">/.test(box)
+    && box.indexOf('class="acp-die-row"') < box.indexOf('class="acp-pill-row"'),
+    "below the d20, never over it");
+  check("a portrait is shown whole inside its frame",
+    /\.acp-portrait \{[\s\S]{0,120}object-fit: contain;/.test(box), "Lamia's art is not clipped");
+  check("the button names the DC he is rolling against",
+    /pillLabel: Number\.isFinite\(Number\(f\.saveDC\)\)/.test(save)
+    && /Roll \$\{abilityLabel\} save \(DC \$\{f\.saveDC\}\)/.test(save), "Roll Wisdom save (DC 13)");
+}
+
+/* == THE D20 GLOW ====================================================== */
+// "Keep the gold circle behind the die (glowSpan). Take the drop-shadow off the
+// PNG. No glow on the face, no glow on the image."
+console.log("\nLIGHT BEHIND THE DIE, NONE ON IT");
+{
+  const face = read("scripts/dice-face.mjs");
+
+  check("the gold circle behind the die stays",
+    /const glowSpan = glow/.test(face) && /radial-gradient\(circle,rgba\(212,175,55/.test(face),
+    "glowSpan");
+  check("and nothing is painted onto the picture",
+    /const shadow = "";/.test(face) && !/filter:drop-shadow\(0 0 3px/.test(face),
+    "no drop-shadow on the PNG");
+  check("the damage dice are untouched",
+    /drop-shadow\(0 1px 3px rgba\(0,0,0,0\.6\)\)/.test(css), "their dark shadow is depth, not glow");
+  check("the nat-20 and nat-1 highlight is untouched",
+    /\.ace-qol-rs-d20\.ace-qol-rs-nat20 \{[\s\S]{0,120}box-shadow/.test(css), "green and red stay");
+  check("and the roll box keeps its own pulse",
+    /@keyframes acp-blink-die/.test(read("scripts/roll-popout.mjs")), "CSS on the button, not this function");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

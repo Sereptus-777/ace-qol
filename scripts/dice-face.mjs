@@ -3,7 +3,7 @@
 // Real black d20 die art (per-face). These are the dice the GM already sees;
 // ACE uses them everywhere a save result or a prompt appears instead of the flat
 // Font Awesome icon. The art is black and ACE's cards are dark, so each die gets
-// a gold radial glow and a drop-shadow beneath it for contrast.
+// a gold radial glow behind it. Nothing is painted onto the picture itself.
 //
 // ⚠️ ONE WIDGET (2026-09-19). His ask: "Same d20 widget as the save popout."
 // This lived in the save engine with a second copy in the break-free engine;
@@ -16,7 +16,7 @@ const ACE_DICE_DIR = "modules/ace-qol/Assets/Dice%20Dice/BD20";
 /**
  * @param {number} face         The raw d20 result (1–20). Out-of-range → generic 20 face.
  * @param {{size?:number, glow?:boolean}} opts  Pixel size of the die (default 30).
- * @returns {string}            HTML for a glowing black d20 showing that face.
+ * @returns {string}            HTML for a black d20 showing that face, lit from behind.
  */
 export function aceD20FaceImg(face, { size = 30, glow = true } = {}) {
   const n = Number(face);
@@ -26,7 +26,18 @@ export function aceD20FaceImg(face, { size = 30, glow = true } = {}) {
   const glowSpan = glow
     ? `<span style="position:absolute;width:${size}px;height:${size}px;border-radius:50%;background:radial-gradient(circle,rgba(212,175,55,0.60) 0%,rgba(212,175,55,0.22) 48%,transparent 72%);"></span>`
     : "";
-  const shadow = glow ? "filter:drop-shadow(0 0 3px rgba(212,175,55,0.75));" : "";
+  // ⚠️🔴 LIGHT BEHIND THE DIE, NONE ON IT (his rule, 2026-09-30: "Keep the
+  // gold circle behind the die (glowSpan). Take the drop-shadow off the PNG. No
+  // glow on the face, no glow on the image.").
+  //
+  // The gold circle above still sits behind the art and reads as light in the
+  // room. The drop-shadow was painted ON the picture, which smeared the die's
+  // own edges and its numeral — and the art is crisp enough now that it was only
+  // ever hiding a soft upscale.
+  //
+  // ⚠️ THE ROLL BOX IS UNTOUCHED. Its pulse lives in `acp-blink-die` in
+  // roll-popout.mjs, which is CSS on the button and not this function's doing.
+  const shadow = "";
   return `<span class="ace-qol-d20" style="position:relative;display:inline-flex;align-items:center;justify-content:center;width:${size}px;height:${size}px;flex-shrink:0;vertical-align:middle;">`
     + glowSpan
     + `<img src="${src}" alt="d20${valid ? " " + n : ""}" style="position:relative;width:${size}px;height:${size}px;object-fit:contain;${shadow}" `

@@ -33,7 +33,14 @@ const CSS = `
   border-bottom: 1px solid rgba(212,175,55,0.35);
   color: #f0e4c0;
 }
-.ace-qol-roll-popout .window-header .window-title { font-size: 18px; font-weight: 700; }
+/* ⚠️ THE TITLE IS THE SPELL, CENTRED AND GOLD (his card, 2026-09-30). Foundry
+   left-aligns it in cream; this is the one line on the box that names what is
+   happening, so it reads as a heading rather than a window label. */
+.ace-qol-roll-popout .window-header { justify-content: center; }
+.ace-qol-roll-popout .window-header .window-title {
+  font-size: 20px; font-weight: 700; color: #d4af37;
+  text-align: center; flex: 1 1 auto;
+}
 /* It is not dismissed by accident: it closes when the roll is made. */
 .ace-qol-roll-popout .window-header [data-action="close"] { display: none; }
 .ace-qol-roll-popout .window-content {
@@ -53,15 +60,36 @@ const CSS = `
   display: flex; flex-direction: column; align-items: center; gap: 5px;
   max-width: 130px; text-align: center;
 }
+/* ⚠️🔴 THE WHOLE PICTURE, INSIDE THE FRAME (his card, 2026-09-30: "Portraits
+   stay inside the gold frame. Lamia's art is clipped; fit it the way Jeth's
+   fits."). "cover" fills the square by cutting the picture, so a portrait that is
+   not square loses its edges — Jeth's looked right only because his art happens
+   to be square. "contain" shows all of it and the dark backdrop takes the rest. */
 .ace-qol-roll-popout .acp-portrait {
-  width: 66px; height: 66px; border-radius: 10px; object-fit: cover;
+  width: 66px; height: 66px; border-radius: 10px; object-fit: contain;
   border: 2px solid var(--acp-accent, #d4af37); background: #0c0c10;
 }
 .ace-qol-roll-popout .acp-name { font-size: 16px; font-weight: 700; line-height: 1.2; overflow-wrap: anywhere; }
 .ace-qol-roll-popout .acp-you { font-size: 14px; color: #c0b288; font-weight: 400; }
 .ace-qol-roll-popout .acp-arrow { color: #c0392b; font-size: 24px; }
-.ace-qol-roll-popout .acp-line { font-size: 17px; line-height: 1.4; text-align: center; }
-.ace-qol-roll-popout .acp-roll { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+/* The sentence is what tells him what is happening to him, so it is the biggest
+   thing on the box after the title (his card, 2026-09-30: "Sentence bigger"). */
+.ace-qol-roll-popout .acp-line {
+  font-size: 20px; line-height: 1.35; text-align: center; color: #f0e4c0;
+}
+/* ⚠️🔴 THE DIE HAS ITS OWN ROW AND NOTHING COVERS IT (his card, 2026-09-30:
+   "Button: ... It must sit below the d20, not over it. The d20 PNG has its own
+   row. Nothing covers it."). Each control is now its own full-width row with its
+   own centring, so nothing can share a line with the die or ride over it however
+   narrow the box gets. */
+.ace-qol-roll-popout .acp-roll {
+  display: flex; flex-direction: column; align-items: stretch; gap: 14px; width: 100%;
+}
+.ace-qol-roll-popout .acp-die-row,
+.ace-qol-roll-popout .acp-pill-row {
+  display: flex; align-items: center; justify-content: center; width: 100%;
+}
+.ace-qol-roll-popout .acp-die-row { min-height: 78px; }
 .ace-qol-roll-popout .acp-die {
   background: none; border: none; padding: 0; cursor: pointer; border-radius: 50%;
   animation: acp-blink-die 1.1s ease-in-out infinite;
@@ -142,8 +170,12 @@ class RollPopoutApp extends AppV2 {
       <div class="acp-line">${esc(s.line)}</div>
       <div class="acp-roll">
         ${lucky}
-        <button type="button" class="acp-die" data-acp="roll" title="${esc(s.pillLabel)}">${aceD20FaceImg(20, { size: 72, glow: true })}</button>
-        <button type="button" class="acp-pill" data-acp="roll"><i class="fas fa-dice-d20"></i><span>${esc(s.pillLabel)}</span></button>
+        <div class="acp-die-row">
+          <button type="button" class="acp-die" data-acp="roll" title="${esc(s.pillLabel)}">${aceD20FaceImg(20, { size: 72, glow: true })}</button>
+        </div>
+        <div class="acp-pill-row">
+          <button type="button" class="acp-pill" data-acp="roll"><span>${esc(s.pillLabel)}</span></button>
+        </div>
       </div>
     </div>`;
   }

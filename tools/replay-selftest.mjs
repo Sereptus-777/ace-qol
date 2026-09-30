@@ -4437,7 +4437,7 @@ console.log(`\nSAVE CARD UX: THE BOX, THE RESULTS CARD, ONE CONCENTRATION CHECK`
         prompt ? `whisper ${JSON.stringify(prompt.whisper)}; GM's screen ${gmBox ? "OPENED a box" : "no box"}; Tommy's ${box ? "box open" : "NO BOX"}` : "no save prompt posted");
       check("the box is the moment, in plain words: \"Magmin dies, and its Death Burst catches you.\", the Magmin's portrait and Chudd's, and one pill, \"Roll Dexterity save\" (2026-09-19)",
         !!box && box.spec.line === "Magmin dies, and its Death Burst catches you." && box.spec.sourceName === "Magmin"
-          && box.spec.rollerName === "Chudd" && box.spec.pillLabel === "Roll Dexterity save",
+          && box.spec.rollerName === "Chudd" && box.spec.pillLabel.startsWith("Roll Dexterity save"),
         box ? `"${box.spec.line}" / ${box.spec.sourceName} → ${box.spec.rollerName} / "${box.spec.pillLabel}"` : "no box");
       const boxDings = plays7.slice(dingsBefore).filter(p => p.user === "tommy");
       check("the box dings the moment it opens, once, with the prompt ding, whether or not Foundry reports it drawn, and the hidden prompt card no longer dings first and takes the box's ding away (his table, 2026-09-19: \"No ding on the Death Burst popout\")",
@@ -4514,7 +4514,7 @@ console.log(`\nSAVE CARD UX: THE BOX, THE RESULTS CARD, ONE CONCENTRATION CHECK`
       if (prompt) drawOn(PLAYER, prompt, renderHooks);
       const box = prompt ? RollPopout._open.get(prompt.id) : null;
       check(`a Fireball from ${caster.name} at Chudd opens the same box on Tommy's screen: "${caster.name} casts Fireball at you.", "Roll Dexterity save" (2026-09-19)`,
-        !err3 && !!box && box.spec.line === `${caster.name} casts Fireball at you.` && box.spec.pillLabel === "Roll Dexterity save",
+        !err3 && !!box && box.spec.line === `${caster.name} casts Fireball at you.` && box.spec.pillLabel.startsWith("Roll Dexterity save"),
         err3 ? `threw: ${err3?.message ?? err3}` : box ? `"${box.spec.line}" / "${box.spec.pillLabel}"` : "no box");
       if (box) await box.close({ acpResolved: true });
     }
@@ -4558,7 +4558,7 @@ console.log(`\nSAVE CARD UX: THE BOX, THE RESULTS CARD, ONE CONCENTRATION CHECK`
       const onTommy = drawOn(PLAYER, p1, concRender);
       const box = RollPopout._open.get(p1.id) ?? null;
       check("its box opens on Tommy's screen with the same d20 and pill as a save, \"Roll Concentration\", and not on the GM's; the chat card stays folded (2026-09-19)",
-        !gmBox && !!box && box.spec.pillLabel === "Roll Concentration" && folded(onGm) && folded(onTommy),
+        !gmBox && !!box && box.spec.pillLabel.startsWith("Roll Concentration") && folded(onGm) && folded(onTommy),
         box ? `"${box.spec.line}" / "${box.spec.pillLabel}"` : "no box");
       // Press it, then press again, then the GM presses too.
       game.user = PLAYER;
@@ -4918,7 +4918,7 @@ console.log(`\nRECHARGE ATTACKS: BREATH, WING, TAIL`);
       const box = prompt ? RollPopout._open.get(prompt.id) : null;
       await quiet(async () => { box?._onRender?.({}, {}); await new Promise(r => setTimeout(r, 10)); });
       check("Chudd's player gets the box for it, with the dragon's own words: a ding, the breath's name and \"Roll Dexterity save\", its chat card folded away (2026-09-20)",
-        !!box && box.spec.pillLabel === "Roll Dexterity save" && box.spec.sourceName === "Volcathar the Flameborn CR17"
+        !!box && box.spec.pillLabel.startsWith("Roll Dexterity save") && box.spec.sourceName === "Volcathar the Flameborn CR17"
           && box.spec.title === "Fire Breath" && folded8(onPlayer)
           && plays8.slice(dings).some(p => p.user === "tommy"),
         box ? `"${box.spec.line}" / "${box.spec.pillLabel}"; dings ${plays8.slice(dings).filter(p => p.user === "tommy").length}` : "no box");
@@ -5014,7 +5014,7 @@ console.log(`\nRECHARGE ATTACKS: BREATH, WING, TAIL`);
       await quiet(async () => { boxW?._onRender?.({}, {}); await new Promise(r => setTimeout(r, 10)); });
       check("the wing posts the one save card too, with the trampled skeleton off it, Chudd's player holding a box that dings, and not a hit point moved until APPLY (2026-09-20)",
         !errCW && !!resultsW && /a squire/.test(rtW) && !/trampled skeleton/.test(rtW) && /Chudd/.test(rtW)
-          && /WAITING FOR (?:PLAYER|SAVES)/.test(rtW) && !!boxW && boxW.spec.pillLabel === "Roll Dexterity save"
+          && /WAITING FOR (?:PLAYER|SAVES)/.test(rtW) && !!boxW && boxW.spec.pillLabel.startsWith("Roll Dexterity save")
           && boxW.spec.title === "Wing Attack" && folded8(onPlayerW)
           && plays8.slice(dingsW).some(p => p.user === "tommy")
           && resultsW.flags[MOD].applied !== true
