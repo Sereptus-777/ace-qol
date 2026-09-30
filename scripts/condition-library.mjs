@@ -1892,7 +1892,7 @@ export class ConditionLibrary {
     // duplicate of the status itself too. Rider lifecycle is handled by the
     // deleteActiveEffect cleanup in condition-raw-hooks.mjs instead. (2026-06-24.)
     const effectData = {
-      name: options.nameOverride ?? def.name,
+      name: options.nameOverride ?? ConditionLibrary._nameFor(def, options),
       // ⚠️ BOTH FIELD NAMES. Foundry renamed ActiveEffect#icon to #img at
       // v11 and has carried a shim since. ACE reads both everywhere and wrote
       // only the old one, which is a silent-no-op waiting for the release that
@@ -2196,6 +2196,57 @@ export class ConditionLibrary {
    */
   static _findEffect(actor, key) {
     return ConditionLibrary._matchingEffects(actor, key)[0] ?? null;
+  }
+
+  /* ═════════════════════════════════════════════════════════════════════════
+     AN EFFECT IS NAMED FOR WHO PUT IT THERE
+
+     His rule, 2026-09-30: *"Never 'Charmed by Caster'. Name it 'Charmed by
+     Lamia', 'Charmed by Kasimir' — the actor's name. Same caster recasts →
+     refresh that one. Still named for them. Different caster → second named
+     effect. Both stay. One hearts clip."*
+
+     Two sources of the same condition now live side by side on one creature, so
+     "Charmed by Caster" twice on Escher's sheet tells him nothing about which is
+     Lamia's hour and which is Kasimir's. The name is the only thing on the
+     effects panel that can carry it.
+
+     ⚠️ THE CASTER IS ASKED OF THE ITEM FIRST. `spellItem.actor` is the caster
+     that cast this, already resolved and correct for an unlinked token; a bare
+     `sourceActorId` may name a synthetic token actor that `game.actors` has
+     never heard of, which is why the id is the second question and the canvas
+     the third.
+
+     ⚠️ AND IF NOBODY CAN BE NAMED, THE DEFINITION'S OWN NAME STANDS. A name is
+     better wrong-shaped than invented.
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  /** Who cast this, by name, or null when it cannot be said. */
+  static casterNameFrom(options = {}) {
+    try {
+      const fromItem = options?.spellItem?.actor?.name ?? options?.item?.actor?.name ?? null;
+      if (fromItem) return String(fromItem);
+      const id = String(options?.sourceActorId ?? "").trim();
+      if (!id) return null;
+      const world = game.actors?.get(id)?.name;
+      if (world) return String(world);
+      // An unlinked token's synthetic actor is not in game.actors; the board is.
+      for (const tok of (canvas?.tokens?.placeables ?? [])) {
+        if (tok?.actor?.id === id) return String(tok.name ?? tok.actor.name);
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /** The definition's name, with "by Caster" replaced by who it actually was. */
+  static _nameFor(def, options = {}) {
+    const base = String(def?.name ?? "");
+    if (!/\bby Caster\b/i.test(base)) return base;
+    const who = ConditionLibrary.casterNameFrom(options);
+    if (!who) return base;
+    return base.replace(/\bby Caster\b/i, `by ${who}`);
   }
 
   /* ═════════════════════════════════════════════════════════════════════════
@@ -2507,6 +2558,14 @@ export class ConditionLibrary {
           // else is correctly seen as a different source.
           if (_src) update["flags.ace-qol.source"] = options.source;
           if (_caster) update["flags.ace-qol.sourceActorId"] = options.sourceActorId;
+          // ⚠️ AND IT STAYS NAMED FOR THEM (his rule, 2026-09-30). A refresh is
+          // the same caster recasting, so the name does not change — but one
+          // placed before 0.71.0 still says "by Caster", and this is the moment
+          // it can be told who that was.
+          const _want = ConditionLibrary._nameFor(ALL_EFFECTS[key], options);
+          if (_want && _want !== _twin.name && /\bby Caster\b/i.test(String(_twin.name ?? ""))) {
+            update.name = _want;
+          }
           await _twin.update(update);
           refreshed = true;
         } catch (err) {

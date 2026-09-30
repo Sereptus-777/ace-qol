@@ -538,9 +538,24 @@
 }
 .ace-qol-dmg-tgt-name {
   color: #e8e6e0; font-size: 0.85rem; font-weight: 600;
-  flex: 1 1 90px; min-width: 90px;          /* hard floor — never per-char wrap */
+  /* ⚠️ IT TAKES WHAT IT NEEDS, NOT THE WHOLE ROW. What landed now sits on this
+     same row (his rule, 2026-09-30), and `flex: 1 1 90px` made the name claim
+     every spare pixel and push the pill onto a line of its own. The 90px floor
+     stays, so a long name still never wraps per character. */
+  flex: 0 1 auto; min-width: 90px;          /* hard floor — never per-char wrap */
   cursor: pointer;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ─── What landed, on the creature's own row ────────────────────── */
+/* The breakdown used to be a block under the portrait, indented 36px to clear
+   it. Inside the header it needs no indent and no padding: it is one more flex
+   child, free to wrap to the next line when the row is full, which is the pill
+   rule rather than an exception to it. */
+.ace-qol-dmg-row-header .ace-qol-dmg-type-breakdown {
+  padding: 0; margin-left: 2px;
+  flex: 0 1 auto; min-width: 0;
+  row-gap: 2px;
 }
 
 /* ─── HP line (above override buttons) ──────────────────────────── */
@@ -601,11 +616,17 @@
   color: #d4af37; border-color: rgba(212,175,55,0.4);
   box-shadow: 0 0 4px rgba(212,175,55,0.15);
 }
+/* ⚠️ THE SAME GOLD AS THE REST OF THE CARD (his rule, 2026-09-30: "The
+   selected multiplier (the 1) is yellow, not blue. Same gold as the rest of the
+   card."). Blue was the one colour on this card that belonged to nothing else on
+   it. Dark text on gold, the same pairing the resist chip uses, so it clears the
+   contrast floor the way white on #d4af37 would not. */
 .ace-qol-dmg-ovr-active {
-  background: linear-gradient(180deg, #1e70c9 0%, #1256a0 100%) !important;
-  color: #fff !important;
-  border-color: #448aff !important;
-  box-shadow: 0 0 8px rgba(68,138,255,0.5), inset 0 1px 0 rgba(255,255,255,0.15) !important;
+  background: linear-gradient(180deg, #e2c45a 0%, #d4af37 100%) !important;
+  color: #1a1a1a !important;
+  border-color: #f0d878 !important;
+  text-shadow: none !important;
+  box-shadow: 0 0 8px rgba(212,175,55,0.5), inset 0 1px 0 rgba(255,255,255,0.35) !important;
 }
 .ace-qol-dmg-ovr-spacer { flex: 1; }
 /* Damage + merge cards share this with the save card's number — one look for
@@ -967,9 +988,16 @@
    is how this chip stayed unreadable even before the damage type was painting
    over it. Every one of these clears the 4.5:1 floor with room to spare.
    ────────────────────────────────────────────────────────────────────────── */
+/* ⚠️ HALF THE SIZE, AS IT USED TO BE (his rule, 2026-09-30: "½ RESIST is half
+   the current size, on its own row under that pill, as it used to be."). It was
+   grown to 1.05rem for legibility when it shared a row with the damage type and
+   had to compete with it; on a row of its own under the pill it does not, and at
+   that size it was the loudest thing on the card. The colours are untouched —
+   dark text on orange, which is what clears the contrast floor — and the padding
+   comes down with the type so the chip still fits its own text. */
 .ace-qol-dmg-mod {
-  font-size: 1.05rem; font-weight: 800; padding: 2px 9px; border-radius: 3px;
-  line-height: 1.25; letter-spacing: 0.4px; text-transform: uppercase;
+  font-size: 0.55rem; font-weight: 800; padding: 1px 5px; border-radius: 3px;
+  line-height: 1.3; letter-spacing: 0.3px; text-transform: uppercase;
   white-space: nowrap;
 }
 

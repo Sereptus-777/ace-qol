@@ -1120,10 +1120,13 @@ export class DamageApplicator {
       const projectedHP = Math.max(0, currentLiveHP - remainingDamage);
       const isDead = projectedHP <= 0;
 
+      // ⚠️ THE RED "n DMG" LINE IS GONE (his rule, 2026-09-30), so there is no
+      // number here to rewrite. What it said is said twice over already: the
+      // pill names what landed and the HP line says what it did. Kept as a
+      // conditional rather than deleted blind, so a card rendered by an older
+      // version still updates.
       const dmgSpan = row.querySelector(".ace-qol-dmg-row-dmg");
-      if (dmgSpan && appliedAmount > 0) {
-        dmgSpan.textContent = remainingDamage;
-      }
+      if (dmgSpan && appliedAmount > 0) dmgSpan.textContent = remainingDamage;
 
       const hpLine = row.querySelector(".ace-qol-dmg-row-hp");
       if (hpLine && appliedAmount > 0) {
@@ -1321,12 +1324,19 @@ export class DamageApplicator {
     const newHP = Math.max(0, currentHP - newDamage);
     const isDead = newHP <= 0;
 
+    // No red "n DMG" line to rewrite any more; an older card still has one.
     const dmgSpan = row.querySelector(".ace-qol-dmg-row-dmg");
     if (dmgSpan) dmgSpan.textContent = newDamage;
 
     const hpSpan = row.querySelector(".ace-qol-dmg-row-hp");
     if (hpSpan) {
-      hpSpan.innerHTML = `HP: <span class="ace-qol-hp-cur">${currentHP}</span>→<span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span>`;
+      // ⚠️ AND IT KEEPS THE MAXIMUM. He asked for "HP 10 → 5/82" kept, and this
+      // line dropped the /82 the moment a multiplier was pressed — the one place
+      // the HP line is rebuilt. Same shape as the first render, spaces included.
+      const _max = result.maxHP ?? currentHP;
+      hpSpan.innerHTML = `HP: <span class="ace-qol-hp-cur">${currentHP}</span> → `
+        + `<span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span>`
+        + `<span class="ace-qol-hp-max">/${_max}</span>`;
     }
 
     const skull = row.querySelector(".ace-qol-dmg-skull");

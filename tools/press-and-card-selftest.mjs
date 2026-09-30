@@ -213,7 +213,7 @@ console.log("\n4. CHAT SITS ON THE NEW CARD");
   // run while the card is still detached: the log scrolled to the bottom of a
   // log the new card was not in. So the pin is now on the WAIT, not on the call.
   check("the scroll waits until the card is actually in the log",
-    /if \(el\?\.isConnected\) \{ scroll\(\); return; \}/.test(chat)
+    /if \(inTheLog\(\)\) \{ scroll\(\); return; \}/.test(chat)
     && /requestAnimationFrame\(whenInTheDom\);/.test(chat),
     "a condition, not a delay");
   check("and one frame is the tick, because a microtask runs before the append",
@@ -238,9 +238,13 @@ console.log("\n4. CHAT SITS ON THE NEW CARD");
   check("it does not scroll to the card",
     !/scrollIntoView/.test(chat), "the bottom of the log");
   check("one call, and the scrollbar is at the bottom",
-    /log\.scrollBottom\(\{ popout: true \}\);/.test(chat), "his words");
-  check("the popout log too",
-    /popout: true/.test(chat), "a second log with its own scroll position");
+    /ui\.chat\.scrollBottom\(\{ force: true \}\);/.test(chat), "his words");
+  // ⚠️ AND THE POPOUT IS NOT SCROLLED, BY HIS INSTRUCTION. 0.68.0 passed
+  // `popout: true`; 0.71.0's line is his, exactly as he wrote it, and it does
+  // not. Recorded rather than lost: if he wants the popped-out log to follow he
+  // will say so, and this pin is where it goes.
+  check("and the popout is left alone, which is his line as written",
+    !/popout: true/.test(chat), "one line, no extras");
   check("whoever the speaker is",
     !/author/.test(chat.slice(chat.indexOf("export function takeLogToNewCard"))),
     "his words: including when the speaker is the monster");
@@ -417,6 +421,79 @@ console.log("\n5. ALSO LOGGED: A SPENT REACTION SURVIVES A RELOAD");
     "turn, round, combat end, rest");
   check("the boot sweep itself still exists for a fight that ended without deleteCombat",
     /this\._resetAllReactionFlags\("world startup"\);/.test(react), "not removed, gated");
+}
+
+/* ══ 8. THE NAME, THE SCROLLBAR AND THE DAMAGE ROW ════════════════════════ */
+console.log("\n8. NAMED FOR ITS CASTER, THE BOTTOM OF THE LOG, THE PORTRAIT ROW");
+{
+  const lib = read("scripts/condition-library.mjs");
+  const dmg = read("scripts/damage-card-renderer.mjs");
+  const app = read("scripts/damage-applicator.mjs");
+  const css = read("styles/ace-qol.css");
+
+  // 1. "Charmed by Lamia", never "Charmed by Caster". Two sources live side by
+  //    side on one creature now, so the name is the only thing on the effects
+  //    panel that can say whose hour is whose.
+  check("an effect is named for who put it there",
+    /static _nameFor\(def, options = \{\}\) \{/.test(lib)
+    && /return base\.replace\(\/\\bby Caster\\b\/i, `by \$\{who\}`\);/.test(lib),
+    "Charmed by Lamia");
+  check("and the effect data uses it",
+    /name: options\.nameOverride \?\? ConditionLibrary\._nameFor\(def, options\),/.test(lib),
+    "one place");
+  check("the caster is asked of the item first",
+    /const fromItem = options\?\.spellItem\?\.actor\?\.name/.test(lib),
+    "a synthetic token actor is not in game.actors");
+  check("then the id, then the board",
+    /const world = game\.actors\?\.get\(id\)\?\.name;/.test(lib)
+    && /if \(tok\?\.actor\?\.id === id\) return String\(tok\.name \?\? tok\.actor\.name\);/.test(lib),
+    "an unlinked token still gets a name");
+  check("and nothing is invented when nobody can be named",
+    /if \(!who\) return base;/.test(lib), "the definition's own name stands");
+  check("a same-caster refresh keeps the name, and fixes an old one",
+    /if \(_want && _want !== _twin\.name/.test(lib), "still named for them");
+
+  // 2. The scrollbar, his line.
+  check("his line, verbatim, once the card is in the log",
+    /ui\.chat\.scrollBottom\(\{ force: true \}\);/.test(chat)
+    && /const inTheLog = \(\) => !!el\?\.closest\?\.\("#chat-log, \.chat-log"\);/.test(chat),
+    "one line");
+  check("and once more on the next animation frame",
+    /requestAnimationFrame\(\(\) => \{/.test(chat)
+    && (chat.match(/ui\.chat\.scrollBottom\(\{ force: true \}\);/g) ?? []).length === 2,
+    "the card settles into its height without waiting on a picture");
+  check("no image wait, no padding, no scroll-to-card",
+    !/ui\.chat\.scrollBottom\(\{[^}]*waitImages/.test(chat) && !/scrollIntoView/.test(chat),
+    "his three don'ts");
+
+  // 3. The damage row.
+  const header = dmg.slice(dmg.indexOf('class="ace-qol-dmg-row-header"'));
+  check("what landed sits on the creature's own row",
+    header.indexOf("ace-qol-dmg-type-breakdown") > 0
+    && header.indexOf("ace-qol-dmg-type-breakdown") < header.indexOf("${flavorHintHtml}"),
+    "inside the header, not a block above the buttons");
+  check("and the name stops claiming the whole row",
+    /flex: 0 1 auto; min-width: 90px;/.test(css), "so the pill fits beside it");
+  check("the breakdown loses its indent inside the header",
+    /\.ace-qol-dmg-row-header \.ace-qol-dmg-type-breakdown \{/.test(css),
+    "no 36px clearance needed there");
+  check("the outcome chip is half the size it was",
+    /font-size: 0\.55rem; font-weight: 800; padding: 1px 5px;/.test(css), "as it used to be");
+  check("on its own row, under the pill",
+    /<div class="ace-qol-dmg-mod-row">\$\{modBadge\}<\/div>/.test(dmg), "where he asked for it");
+  check("the chosen multiplier is the card's gold, not blue",
+    /background: linear-gradient\(180deg, #e2c45a 0%, #d4af37 100%\) !important;/.test(css)
+    && !/#1e70c9/.test(css), "dark text on gold clears the contrast floor");
+  check("the red DMG line is gone",
+    !/<span class="ace-qol-dmg-row-dmg">\$\{totalFinal\}/.test(dmg),
+    "the pill already said 5 piercing");
+  check("HP and the buttons stay",
+    /HP: <span class="ace-qol-hp-cur">/.test(dmg) && /ace-qol-dmg-ovr-line/.test(dmg),
+    "keep HP 10 to 5/82 and APPLY ALL / UNDO ALL");
+  check("the skull moved to the line about hit points",
+    /class="ace-qol-dmg-hp-line">[\s\S]{0,400}ace-qol-dmg-skull/.test(dmg), "not a damage number");
+  check("and a multiplier press keeps the maximum on the HP line",
+    /const _max = result\.maxHP \?\? currentHP;/.test(app), "it used to drop the /82");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

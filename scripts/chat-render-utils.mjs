@@ -387,20 +387,25 @@ export function takeLogToNewCard(message, el) {
         if (!message?.id || !_newCards.has(message.id)) return;
         _newCards.delete(message.id);
 
-        // ⚠️🔴 THE BOTTOM OF THE LOG. NOTHING ELSE. His rule, 2026-09-30: "The
-        // chat scrollbar goes all the way to the bottom. Do not scroll-to-card.
-        // Do not wait on images. Do not add padding. Bottom of the log."
+        // ⚠️🔴 HIS LINE, VERBATIM (2026-09-30): "One line, after the card is in
+        // #chat-log: ui.chat.scrollBottom({ force: true }). Then once more on the
+        // next animation frame. Do not wait on images. Do not pad. Do not
+        // scroll-to-card."
         //
-        // 0.67.0 waited on images and then measured the card and corrected to it.
-        // `ChatLog.waitForImages` waits for EVERY picture in the whole log, so on
-        // a long log the scroll arrived late, which reads as not scrolling at all.
-        // One call, and the scrollbar is at the bottom.
+        // The second call is what covers the card settling into its final height
+        // without waiting on a single picture: the first scroll happens the frame
+        // the card lands, the second after the browser has laid it out.
+        //
+        // ⚠️ V13's scrollBottom reads { popout, waitImages, scrollOptions } and
+        // has no `force`, so this is the plain bottom scroll with images not
+        // waited on, which is exactly what he asked for. The unknown key is
+        // harmless and it is his wording, kept so the two match.
         const scroll = () => {
             try {
-                const log = ui.chat;
-                if (!log?.scrollBottom) return;
-                // The popout too: a second log with its own scroll position.
-                log.scrollBottom({ popout: true });
+                ui.chat.scrollBottom({ force: true });
+                requestAnimationFrame(() => {
+                    try { ui.chat.scrollBottom({ force: true }); } catch (_) { /* gone */ }
+                });
             } catch (err) {
                 console.warn(`${MODULE_ID} | the chat log would not scroll to the bottom for a `
                     + `new ACE card:`, err);
@@ -409,9 +414,12 @@ export function takeLogToNewCard(message, el) {
 
         // Wait for the append, one frame at a time. 30 frames is half a second at
         // 60Hz: long enough for the render queue, short enough to say so.
+        // ⚠️ IN THE LOG, not merely attached somewhere: his words are "after the
+        // card is in #chat-log", and that is the element whose scrollbar moves.
         let frames = 0;
+        const inTheLog = () => !!el?.closest?.("#chat-log, .chat-log");
         const whenInTheDom = () => {
-            if (el?.isConnected) { scroll(); return; }
+            if (inTheLog()) { scroll(); return; }
             if (++frames > 30) {
                 console.warn(`${MODULE_ID} | a new ACE card never reached the chat log, so the log `
                     + `was not taken to it (message ${message.id}).`);

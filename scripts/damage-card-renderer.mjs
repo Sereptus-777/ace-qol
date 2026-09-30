@@ -1014,8 +1014,17 @@ export class DamageCardRenderer {
           <img src="${portrait}" class="ace-qol-dmg-tgt-img" />
           <span class="ace-qol-dmg-tgt-name">${name ?? "Unknown"}</span>
           ${isCrit ? '<span class="ace-qol-dmg-crit-badge">CRIT</span>' : ""}
+          <!-- ⚠️ WHAT LANDED SITS ON THE CREATURE'S OWN ROW (his rule,
+               2026-09-30: "The gray pill (struck 10, 5 piercing) sits on
+               Escher's portrait row. Not on its own block above the buttons.").
+               It was a block of its own under the portrait, indented 36px to
+               clear it, which put the number furthest from the name it belongs
+               to. The header already wraps, so a long name or a crowded row
+               drops it to the next line instead of squeezing it — his pill rule
+               is untouched, and the outcome chip keeps the row of its own that
+               he asked for underneath. -->
+          ${compLines ? `<div class="ace-qol-dmg-type-breakdown">${compLines}</div>` : ""}
         </div>
-        ${compLines ? `<div class="ace-qol-dmg-type-breakdown">${compLines}</div>` : ""}
         ${flavorHintHtml}
         <div class="ace-qol-dmg-gm-controls">
           <!-- ⚠️🔴 ONE THING PER ROW. EVERY ROW WRAPS. Johnny, 2026-08-30:
@@ -1038,10 +1047,12 @@ export class DamageCardRenderer {
             <button class="ace-qol-dmg-ovr${_a(1)}" data-action="aceQolDmgOverride" data-token-doc-id="${tDocId}" data-multiplier="1">1</button>
             <button class="ace-qol-dmg-ovr${_a(2)}" data-action="aceQolDmgOverride" data-token-doc-id="${tDocId}" data-multiplier="2">2</button>
           </div>
-          <div class="ace-qol-dmg-total-line">
-            <span class="ace-qol-dmg-row-dmg">${totalFinal}<span class="ace-qol-dmg-unit">DMG</span></span>
-            ${isDead ? '<span class="ace-qol-dmg-skull">☠</span>' : ''}
-          </div>
+          <!-- ⚠️ NO RED "n DMG" LINE (his rule, 2026-09-30: "Delete the red
+               '5 DMG' line. The pill already said 5 piercing. Keep HP 10 → 5/82
+               and APPLY ALL / UNDO ALL."). It was the same number a third time:
+               the pill says what landed and the HP line says what it did. The
+               skull is not that number, so it moves to the HP line, beside the
+               hit points it is about. -->
           ${reactionApplied ? `
           <div class="ace-qol-dmg-reaction-line">
             <i class="fas fa-person-running"></i>
@@ -1049,6 +1060,7 @@ export class DamageCardRenderer {
           </div>` : ""}
           <div class="ace-qol-dmg-hp-line">
             <span class="ace-qol-dmg-row-hp">HP: <span class="ace-qol-hp-cur">${currentHP}</span> → <span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span><span class="ace-qol-hp-max">/${maxHP}</span></span>
+            ${isDead ? '<span class="ace-qol-dmg-skull">☠</span>' : ''}
           </div>
         </div>
       </div>
