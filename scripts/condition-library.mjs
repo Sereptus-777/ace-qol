@@ -2681,7 +2681,7 @@ export class ConditionLibrary {
           <strong style="color:#ffd87a;font-size:13px;text-transform:uppercase;letter-spacing:0.5px;">Stunning Strike</strong>
         </div>
         <div style="color:#cfcfd0;font-size:13px;line-height:1.5;margin-bottom:8px;">
-          <strong>${target.name}</strong> must make a <span class="ace-qol-dc" data-dc-actor="${monk?.id ?? ""}"><strong>DC ${dc} </strong></span><strong>${abilityLabel}</strong> save or be <strong style="color:#ffd87a;">Stunned</strong> ${durationText}.
+          <strong>${target.name}</strong> must make a <span class="ace-qol-dc" data-dc-roller="${target?.id ?? ""}"><strong>DC ${dc} </strong></span><strong>${abilityLabel}</strong> save or be <strong style="color:#ffd87a;">Stunned</strong> ${durationText}.
         </div>
         <div style="color:#888;font-size:11px;font-style:italic;margin-bottom:8px;">(${edition} RAW)</div>
         <div style="display:flex;gap:6px;">

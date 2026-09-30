@@ -1097,7 +1097,7 @@ export class WeaponMasteries {
 
     this._postMasteryCard("topple", item, actor, targetToken,
       this._l10nFire("topple", { attacker: actor.name, target: tName, dc },
-        `${tName} must make a <span class="ace-qol-save-dc"><strong>DC ${dc} </strong></span><strong>CON save</strong> or fall <strong>Prone</strong>.`)
+        `${tName} must make a <span class="ace-qol-dc" data-dc-roller="${targetToken?.actor?.id ?? ""}"><strong>DC ${dc} </strong></span><strong>CON save</strong> or fall <strong>Prone</strong>.`)
     );
 
     // If the save engine is available, fire a public save card for this single target.

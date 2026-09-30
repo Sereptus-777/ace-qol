@@ -144,80 +144,89 @@ export function registerForeignChatCardHandler(handler, label = "third-party car
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   A DC BELONGS TO WHOEVER SET IT (his rule, 2026-09-29)
+   A DC IS SHOWN ON THE ROLL THAT NEEDS IT (ACE-ONE-ROAD.md § 13.2)
 
-     "The player knows its own DCs. It has no idea about any other DC. The
-      dungeon master knows all DCs. That's all there is to it."
+     "A player sees the DC on a roll they are making. The GM always sees every
+      DC. Hide a DC only when it is not on a roll that player is making
+      (unrevealed sheet, unsprung trap, someone else's save)."
 
-   So it is not "checks show, saves hide", and it is not decided when the card
-   is written: it is decided on each screen, by whose creature the number came
-   off. A chat card is built ONCE, by the GM, and rendered on every client, so a
-   card that made this choice while it was being written would make it for the
-   whole table at once. That is how "DC 13 Wisdom" was printed to everybody on
-   every save card in the suite.
+   ⚠️🔴 THIS REPLACES WHAT 0.58 SHIPPED. I built it round the wrong question:
+   "who SET this number". By that reading Lamia's DC 13 belonged to Lamia, so it
+   was hidden from Jeth, who is the one rolling against it. His correction:
+   "Do not hide Lamia's DC 13 on Jeth's Charm card. He is rolling against it."
+   The number belongs to the ROLL, and the person making the roll may read it.
 
-   ONE MECHANISM, ALL FOUR MODULES. Wrap the number:
+   So the wrapper names the ROLLER:
 
-       <span class="ace-qol-dc" data-dc-actor="${actorId}">DC 13 Wisdom</span>
+       <span class="ace-qol-dc" data-dc-roller="${actorId}">DC 14 Dexterity</span>
 
-   `data-dc-actor` is the creature that SET the DC: the caster, the grappler, the
-   trap's owner. The pass below reveals it to the GM always, and to a player only
-   when they own that creature. A wrapper with no owner named is hidden from
-   every player, because "I do not know whose this is" is not a reason to show it.
+   and several rollers share one line, because one save card asks the same DC of
+   everybody on it:
+
+       data-dc-roller="abc123 def456"
+
+   Revealed to the GM always, and to a player who owns ANY of the rollers named.
+   NO roller named means nobody is rolling against it yet — an unrevealed sheet,
+   an unsprung trap — so it stays the GM's alone. That is what `.ace-qol-save-dc`
+   means, and it is now the narrow case rather than the default.
+
+   ⚠️ DECIDED PER SCREEN. A chat card is built ONCE, by the GM, and rendered on
+   every client, so a card that made this choice while it was being written would
+   make it for the whole table at once.
 
    ⚠️ IT RUNS FOR EVERY ACE CARD, not for every handler. Registered once, here,
-   so a module that never thinks about DCs still cannot leak one, and a new card
-   inherits the rule instead of having to remember it. `tools/dc-check.mjs` fails
-   the release if a DC reaches a card outside this wrapper.
-   ═══════════════════════════════════════════════════════════════════════════ */
+   so a module that never thinks about DCs still cannot leak one.
+   `tools/dc-check.mjs` fails the release if a DC reaches a card unwrapped.
+   ══════════════════════════════════════════════════════════════════════════ */
 
-/** Whether this screen may read a DC set by the creature `actorId`. */
-export function maySeeDC(actorId) {
+/**
+ * Whether this screen may read a DC being rolled against by `rollers`.
+ *
+ * @param {string|null} rollers  one actor id, or several separated by spaces
+ */
+export function maySeeDC(rollers) {
     try {
         if (game.user?.isGM) return true;
-        if (!actorId) return false;
-        const actor = game.actors?.get(actorId) ?? null;
-        return !!actor?.isOwner;
+        const ids = String(rollers ?? "").split(/\s+/).filter(Boolean);
+        if (!ids.length) return false;          // nobody is rolling it yet
+        return ids.some(id => !!game.actors?.get(id)?.isOwner);
     } catch (_) {
-        return false;                       // unreadable: it is not theirs
+        return false;                           // unreadable: not this screen's
     }
 }
 
 /**
  * The wrapper every card puts a DC in.
  *
- * @param {string|number} text     what to show, e.g. "DC 13 Wisdom" or just 13
- * @param {string|null} actorId    the creature that SET this DC
- * @param {string} [extraClass]    any styling class the card already used
+ * @param {string|number} text        e.g. "DC 14 Dexterity"
+ * @param {string|string[]|null} rollers  the creature(s) rolling against it
+ * @param {string} [extraClass]       any styling class the card already used
  */
-export function dcSpan(text, actorId = null, extraClass = "") {
+export function dcSpan(text, rollers = null, extraClass = "") {
     const esc = (v) => String(v ?? "")
         .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    const ids = (Array.isArray(rollers) ? rollers : [rollers]).filter(Boolean).join(" ");
     return `<span class="ace-qol-dc${extraClass ? ` ${extraClass}` : ""}"`
-        + `${actorId ? ` data-dc-actor="${esc(actorId)}"` : ""}>${esc(text)}</span>`;
+        + `${ids ? ` data-dc-roller="${esc(ids)}"` : ""}>${esc(text)}</span>`;
 }
 
 /**
- * Reveal, on THIS screen, the DCs this viewer is allowed to know.
+ * Reveal, on THIS screen, the DCs this viewer is rolling against.
  *
- * ⚠️ TWO CLASSES, ONE PASS. `.ace-qol-dc` names the creature that set the number
- * and is revealed to that creature's owner as well as to the GM.
- * `.ace-qol-save-dc` is the older wrapper with no owner in it: a monster's save
- * DC, which no player owns, so it is the GM's alone. Both are hidden by CSS and
- * revealed here, and both are swept by the same registration, so a card drawn by
- * any of the four modules is covered without that module knowing about DCs.
+ * ⚠️ TWO CLASSES, ONE PASS. `.ace-qol-dc` names the roller(s) and is revealed to
+ * their owner as well as to the GM. `.ace-qol-save-dc` names nobody: it is a
+ * number no player is rolling against yet, so it is the GM's alone.
  */
 export function revealOwnDCs(root) {
     let shown = 0, hidden = 0;
-    const decide = (el, ownerId) => {
-        if (maySeeDC(ownerId)) { el.dataset.aceDc = "show"; shown++; }
+    const decide = (el, rollers) => {
+        if (maySeeDC(rollers)) { el.dataset.aceDc = "show"; shown++; }
         else { delete el.dataset.aceDc; hidden++; }
     };
     try {
         for (const el of (root?.querySelectorAll?.(".ace-qol-dc") ?? [])) {
-            decide(el, el.dataset?.dcActor ?? null);
+            decide(el, el.dataset?.dcRoller ?? null);
         }
-        // No owner named: the GM's alone.
         for (const el of (root?.querySelectorAll?.(".ace-qol-save-dc") ?? [])) {
             decide(el, null);
         }
@@ -228,8 +237,110 @@ export function revealOwnDCs(root) {
     return { shown, hidden };
 }
 
-/** Registered once, for every ACE card on every screen. */
+/** Kept as the name the entry file already calls; the chrome pass does both. */
 export function registerDCVisibility() {
-    registerChatCardHandler((_message, el) => { revealOwnDCs(el); }, "DC visibility", { sweepAll: true });
-    console.log(`${MODULE_ID} | a DC is shown to the GM, and to a player only when it is their own.`);
+    registerAceChrome();
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   NO SPEAKER STRIP ON AN ACE CARD (ACE-ONE-ROAD.md § 13.1)
+
+     "Every ACE chat card hides Foundry's speaker strip (the manila
+      'Name / DUNGEON MASTER' bar). ⋮ stays. This is every ACE card: save,
+      attack, damage, heal, reaction, refusal. Not only saves."
+
+   ⚠️🔴 IT WAS THE SAVE CARD ONLY. 0.55 stamped the flag from the save card's
+   own content, so the attack card, the damage card, the heal card and every
+   refusal kept the manila bar. The rule is about ACE's cards, so the stamp reads
+   the MESSAGE's flags: any of the four modules owns it, it loses the strip.
+   Other chat is untouched, which is the point — nothing here is global.
+
+   ⚠️ ONLY THE SENDER AND THE TIME ARE HIDDEN, never the header itself. The ⋮
+   lives in there and its markup has moved between Foundry generations, so
+   hiding the whole bar is how you lose the ability to delete a message. The
+   stylesheet does that part; this only says which messages are ACE's.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/** Every module whose cards are ACE's. */
+export const ACE_NAMESPACES = Object.freeze(["ace-qol", "ace-artificer", "ace-engine", "ace-envoy"]);
+
+/** Whether this message is a card one of the ACE modules posted. */
+export function isAceCard(message, el = null) {
+    try {
+        const flags = message?.flags ?? {};
+        if (ACE_NAMESPACES.some(ns => flags[ns] && Object.keys(flags[ns]).length)) return true;
+        // A card posted before its module stamped a flag, and the shells that
+        // already marked themselves in their own content.
+        if (el?.querySelector?.("[data-ace-save-shell], .ace-qol-save-shell, .ace-qol-card")) return true;
+    } catch (_) { /* fall through */ }
+    return false;
+}
+
+/** Stamp this message as ACE's, so the stylesheet can take its speaker strip off. */
+export function stampAceCard(message, el) {
+    try {
+        if (!el?.setAttribute) return false;
+        if (!isAceCard(message, el)) return false;
+        el.setAttribute("data-ace-card", "1");
+        return true;
+    } catch (err) {
+        console.warn(`${MODULE_ID} | could not stamp a card as ACE's, so it keeps Foundry's `
+            + `speaker strip:`, err);
+        return false;
+    }
+}
+
+/**
+ * The chrome pass: one registration for the two things every ACE card needs on
+ * every screen. No speaker strip (§ 13.1), and a DC only on a roll this screen
+ * is making (§ 13.2).
+ */
+export function registerAceChrome() {
+    registerChatCardHandler((message, el) => {
+        stampAceCard(message, el);
+        revealOwnDCs(el);
+        revealOwnACs(el);
+    }, "ACE card chrome", { sweepAll: true });
+    console.log(`${MODULE_ID} | ACE cards drop Foundry's speaker strip and keep the ⋮; a DC `
+        + `shows for the GM, and for a player on a roll they are making.`);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   A MONSTER'S AC IS NOT ON A CARD (ACE-ONE-ROAD.md § 13.3)
+
+     "Do not put a monster's AC on any card. AC is not a save DC."
+
+   ⚠️ AND IT DOES NOT FOLLOW THE DC RULE. A DC is shown to the person rolling
+   against it, because they are the one who needs it. AC is the opposite: the
+   attacker rolling against it is exactly the person who must not learn it. So
+   this asks whose SHEET the number is on, which is the question the DC rule was
+   wrongly built round — right here, wrong there.
+
+       <span class="ace-qol-ac" data-ac-actor="${targetActorId}">AC 15</span>
+
+   Revealed to the GM always, and to a player who owns that creature, because
+   their own AC is on their own sheet.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/** The wrapper every card puts an AC in. `whose` is the creature it belongs to. */
+export function acSpan(text, whose = null, extraClass = "") {
+    const esc = (v) => String(v ?? "")
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    return `<span class="ace-qol-ac${extraClass ? ` ${extraClass}` : ""}"`
+        + `${whose ? ` data-ac-actor="${esc(whose)}"` : ""}>${esc(text)}</span>`;
+}
+
+/** Reveal, on THIS screen, the ACs this viewer is entitled to. */
+export function revealOwnACs(root) {
+    try {
+        for (const el of (root?.querySelectorAll?.(".ace-qol-ac") ?? [])) {
+            const id = el.dataset?.acActor ?? null;
+            const mine = game.user?.isGM || (!!id && !!game.actors?.get(id)?.isOwner);
+            if (mine) el.dataset.aceAc = "show";
+            else delete el.dataset.aceAc;
+        }
+    } catch (err) {
+        console.warn(`${MODULE_ID} | could not decide which ACs this screen may see, so none of `
+            + `them are shown here:`, err);
+    }
 }

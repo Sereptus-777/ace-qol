@@ -1321,7 +1321,7 @@ export class CheckGate {
       const made = total >= Number(dc);
       verdict = `<div style="margin-top:6px;"><span style="font-size:16px;font-weight:700;`
         + `color:${made ? "#7ee081" : "#e08b7e"};">`
-        + `${made ? "SUCCESS" : "FAILURE"} <span class="ace-qol-save-dc">vs DC ${esc(String(dc))}</span></span></div>`;
+        + `${made ? "SUCCESS" : "FAILURE"} <span class="ace-qol-dc" data-dc-roller="${actor?.id ?? ""}">vs DC ${esc(String(dc))}</span></span></div>`;
     }
 
     // ⚠️ A DEATH SAVE'S RESULT IS THE TALLY, NOT THE NUMBER. "17 versus DC 10"

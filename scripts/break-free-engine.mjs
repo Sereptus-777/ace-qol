@@ -157,7 +157,7 @@ export class BreakFreeEngine {
           </div>
           <div style="display:flex;align-items:center;gap:12px;padding:12px 14px;color:#e8e6d8;font-size:16px;line-height:1.35;">
             ${aceD20FaceImg(20, { size: 38, glow: true })}
-            <span>Spend your <b>action</b> to try to break free — a <b>${abilityLabel} check</b><span class="ace-qol-save-dc"> vs <b style="color:#cfe8a0;">DC ${meta.dc}</b></span>.</span>
+            <span>Spend your <b>action</b> to try to break free — a <b>${abilityLabel} check</b><span class="ace-qol-dc" data-dc-roller="${actor?.id ?? ""}"> vs <b style="color:#cfe8a0;">DC ${meta.dc}</b></span>.</span>
           </div>
           <div style="display:flex;gap:8px;padding:0 12px 12px;flex-wrap:wrap;">
             <button class="ace-qol-breakfree-go" data-effect-id="${eff.id}" data-actor-uuid="${actor.uuid}"
@@ -412,7 +412,7 @@ export class BreakFreeEngine {
             ${aceD20FaceImg(dieFace, { size: 38, glow: true })}
             <span style="color:#e8e6d8;font-size:16px;line-height:1.25;">
               <b>${foundry.utils.escapeHTML(actor.name)}</b> — ${abilityLabel}<br/>
-              <b style="color:#fff;font-size:18px;">${dieFace ?? total}</b><span style="color:#b9a978;">${modPart} =</span> <b style="color:${color};font-size:18px;">${total}</b> <span class="ace-qol-save-dc"><span style="color:#b9a978;">vs DC ${dc}</span></span>
+              <b style="color:#fff;font-size:18px;">${dieFace ?? total}</b><span style="color:#b9a978;">${modPart} =</span> <b style="color:${color};font-size:18px;">${total}</b> <span class="ace-qol-dc" data-dc-roller="${actor?.id ?? ""}"><span style="color:#b9a978;">vs DC ${dc}</span></span>
             </span>
           </div>
           <div style="margin-top:7px;color:${color};font-weight:700;font-size:15px;">${verdict}</div>

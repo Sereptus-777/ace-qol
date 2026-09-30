@@ -1,9 +1,16 @@
-// ─── A DC BELONGS TO WHOEVER SET IT ─────────────────────────────────────────
+// ─── A DC IS SHOWN ON THE ROLL THAT NEEDS IT ─────────────────────────────────────────
 //
 // HIS RULE, 2026-09-29:
 //
-//   "The player knows its own DCs. It has no idea about any other DC. The
-//    dungeon master knows all DCs. That's all there is to it."
+//   "A player sees the DC on a roll they are making. The GM always sees every
+//    DC. Hide a DC only when it is not on a roll that player is making
+//    (unrevealed sheet, unsprung trap, someone else's save)."
+//
+// ⚠️🔴 AND IT IS THE ROLL, NOT THE SHEET IT CAME OFF. 0.58 asked "who SET this
+// number", which hid Lamia's DC 13 from Jeth, the man rolling against it. The
+// wrapper names the ROLLER: `data-dc-roller`. A DC with no roller on it is one
+// nobody is rolling against yet — an unrevealed sheet, an unsprung trap — and
+// that is what `.ace-qol-save-dc` now means.
 //
 // WHY THIS EXISTS. It was already the rule, written down as "players never see
 // any DC", and on the evening of 29 September every save card in the suite was
@@ -16,10 +23,10 @@
 // So the rule is enforced instead of remembered. A DC that reaches a screen goes
 // through the one wrapper:
 //
-//     <span class="ace-qol-dc" data-dc-actor="${whoSetIt}">DC 13 Wisdom</span>
+//     <span class="ace-qol-dc" data-dc-roller="${whoIsRolling}">DC 13 Wisdom</span>
 //
 // which `revealOwnDCs` (chat-render-utils.mjs) shows to the GM always and to a
-// player only for a creature they own.
+// player who owns any of the creatures rolling against it.
 //
 // WHAT THIS CHECK READS. Every script in ace-qol, Forge, Engine and Envoy, with
 // a real parser (espree), and for every string or template literal that states a
@@ -58,12 +65,18 @@ const ROOTS = [
 
 /** A literal that states a DC and a number, e.g. "DC 13", "DC ${dc}", "(DC 15)". */
 const STATES_A_DC = /\bDC\b\s*(?:\$\{|\d)/;
+// § 13.3: "Do not put a monster's AC on any card. AC is not a save DC." The same
+// check, because it is the same failure: a number the table may not know, put on
+// a card by somebody who was thinking about something else.
+const STATES_AN_AC = /\bAC\b\s*(?:\$\{|\d)/;
+const STATES_EITHER = /\b(?:DC|AC)\b\s*(?:\$\{|\d)/;
 // ⚠️ THREE WRAPPERS COUNT, AND THEY ARE NOT THE SAME THING.
 //
-//   .ace-qol-dc      hidden by default, revealed to the GM and to the OWNER of
-//                    the creature that set it. The one to reach for.
-//   .ace-qol-save-dc hidden by default, revealed to the GM only. Correct for a
-//                    monster's save DC, which no player owns.
+//   .ace-qol-dc      hidden by default, revealed to the GM and to the owner of
+//                    any creature ROLLING against it. The one to reach for.
+//   .ace-qol-save-dc hidden by default, revealed to the GM only. For a number
+//                    nobody is rolling against yet: an unrevealed sheet, an
+//                    unsprung trap.
 //   .forge-gm-only   Forge's own, same shape, in Forge's stylesheet.
 //
 // All three are hidden by CSS and revealed at render, which is the safe
@@ -73,6 +86,8 @@ const STATES_A_DC = /\bDC\b\s*(?:\$\{|\d)/;
 const WRAPPED = /ace-qol-dc\b|ace-qol-save-dc\b|forge-gm-only\b|dcSpan\s*\(/;
 /** A justification on the line or just above it. */
 const OK_MARK = /dc-ok:\s*\S/;
+/** § 13.3's wrapper, for an AC. */
+const AC_WRAPPED = /ace-qol-ac\b|acSpan\s*\(|forge-gm-only\b/;
 /** Markup: this text is part of something drawn on a screen. */
 const IS_MARKUP = /<[a-zA-Z/]/;
 /** A call that hands text to a screen rather than into a data structure. */
@@ -155,7 +170,7 @@ export function run() {
   for (const root of ROOTS) {
     for (const file of walkFiles(root)) {
       const src = readFileSync(file, "utf8");
-      if (!STATES_A_DC.test(src)) continue;
+      if (!STATES_EITHER.test(src)) continue;
       checked++;
       let ast;
       try {
@@ -170,12 +185,33 @@ export function run() {
       const screens = screenRanges(ast);
       const lines = src.split("\n");
 
+      // ⚠️ A REASON ON A TABLE COVERS THE TABLE. A crit table is forty sentences,
+      // each its own literal, and a note above the declaration is more than three
+      // lines from the second entry. Writing the same reason forty times is not a
+      // reason, it is wallpaper. So a `dc-ok` above the thing that HOLDS the
+      // literals exempts what is inside it.
+      const exempt = [];
+      eachNode(ast, (node) => {
+        if (!["ArrayExpression", "VariableDeclaration", "PropertyDefinition",
+              "Property", "ObjectExpression"].includes(node.type)) return;
+        const l = node.loc.start.line;
+        for (let k = Math.max(1, l - 3); k <= l; k++) {
+          if (OK_MARK.test(lines[k - 1] ?? "")) { exempt.push([node.range[0], node.range[1]]); return; }
+        }
+      });
+
       eachNode(ast, (node) => {
         if (node.type !== "TemplateLiteral" && node.type !== "Literal") return;
         const text = src.slice(node.range[0], node.range[1]);
-        if (!STATES_A_DC.test(text)) return;
+        const isDC = STATES_A_DC.test(text);
+        const isAC = STATES_AN_AC.test(text);
+        if (!isDC && !isAC) return;
         if (inAny(quiet, node.range[0])) return;        // the console is the GM's
-        if (WRAPPED.test(text)) return;                 // already in the wrapper
+        if (inAny(exempt, node.range[0])) return;       // its table already said why
+        // Each kind has its own wrapper, and a literal that states both needs both.
+        if (isDC && !WRAPPED.test(text)) { /* still to answer for */ }
+        else if (isAC && !AC_WRAPPED.test(text)) { /* still to answer for */ }
+        else return;                                    // already wrapped
 
         // ⚠️ REPORT THE LINE THE DC IS ON, not the line the template opens on. A
         // card is one literal forty lines long, so "pc-save-nudge.mjs:170" sent me
@@ -183,7 +219,7 @@ export function run() {
         // lines too far away to count. The offset inside the literal gives the real
         // line, and a reason anywhere from three lines above the literal down to
         // the DC's own line is a reason.
-        const at = text.search(STATES_A_DC);
+        const at = text.search(STATES_EITHER);
         const startLine = node.loc.start.line;
         const dcLine = startLine + (at > 0 ? (text.slice(0, at).match(/\n/g)?.length ?? 0) : 0);
         for (let l = Math.max(1, startLine - 3); l <= dcLine; l++) {
@@ -223,11 +259,12 @@ if (isMain) {
   };
 
   console.log("=".repeat(74));
-  console.log("A DC BELONGS TO WHOEVER SET IT");
+  console.log("A DC IS SHOWN ON THE ROLL THAT NEEDS IT · AN AC IS NOT ON A CARD");
   console.log("=".repeat(74));
   if (!hits.length) {
     console.log(`Read ${checked} file(s) that state a DC. Every one that reaches a screen is`);
-    console.log("inside the wrapper, so the GM sees them all and a player sees only their own.");
+    console.log("inside the wrapper: the GM sees them all, a player sees the ones on a roll");
+    console.log("they are making.");
     sayNotes();
     process.exit(0);
   }
@@ -242,7 +279,8 @@ if (isMain) {
     for (const h of list) console.log(`  ${String(h.line).padStart(5)}  ${h.text}`);
   }
   console.log(`\n${hits.length} DC(s) reach a screen outside the wrapper, in ${byFile.size} file(s).`);
-  console.log("Wrap it:   dcSpan(`DC ${dc} ${label}`, whoSetItActorId)");
+  console.log("A DC:  dcSpan(`DC ${dc} ${label}`, whoIsRollingActorId)");
+  console.log("An AC:  acSpan(`AC ${ac}`, whoseACItIsActorId)");
   console.log("or say why it belongs as it is:   dc-ok: <reason>");
   sayNotes();
   process.exit(1);

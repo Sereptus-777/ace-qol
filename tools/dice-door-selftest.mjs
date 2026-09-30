@@ -88,11 +88,15 @@ console.log("\nTHE CHAIN ROW IS THE CHARM PERSON ROW");
   check("the post-hit card does not",
     !/canRemove/.test(ph), "no X on a grapple that already happened");
 
-  // NO SECOND DIE ON THE TABLE LINE.
-  const at = ph.indexOf("ace-qol-table-result");
+  // A SECOND ROLL IS A SECOND LINE (ACE-ONE-ROAD.md § 13.4). It was a gold pill
+  // with a little d6 in it, sitting between the save's numbers and its verdict, so
+  // it read as part of the save. Plain text, on its own line, under what landed.
+  const at = ph.indexOf("ace-qol-save-extra-roll");
   const table = ph.slice(at, at + 300);
-  check("the table line is text, with no die of its own",
-    !/fa-dice/.test(table) && /Rolled <strong>/.test(table), "Rolled 3: Grapple");
+  check("the table roll is text on its own line, with no die of its own",
+    at > 0 && !/fa-dice/.test(table) && /Rolled <strong>/.test(table), "Rolled 3: Grapple");
+  check("and it is added after what landed, not inside the save's row",
+    /\$\{tableLine\}\$\{hpHtml\}/.test(ph), "result, then Prone., then the extra roll");
 }
 
 /* ══ 3. A REROLL CHANGES THE DIE, NOT JUST THE TOTAL ══════════════════════ */

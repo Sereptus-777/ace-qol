@@ -97,7 +97,7 @@ export class SwordOfWounding {
             <strong style="color:#ffc8c8;"><i class="fas fa-ban"></i> Healing Blocked — Wounded</strong>
             <div style="color:#e8d8d8; font-size:12px; margin-top:3px;">
               ${foundry.utils.escapeHTML(actor.name)} can't be healed while wounds are open.
-              <em style="color:#ccaaaa;">Close the wounds first <span class="ace-qol-save-dc">(DC 15 CON save at start of turn, DC 15 Medicine check, or short/long rest)</span>.</em>
+              <em style="color:#ccaaaa;">Close the wounds first <span class="ace-qol-dc" data-dc-roller="${actor?.id ?? ""}">(DC 15 CON save at start of turn, DC 15 Medicine check, or short/long rest)</span>.</em>
             </div>
           </div>`,
           speaker: ChatMessage.getSpeaker({ actor }),
@@ -194,7 +194,7 @@ export class SwordOfWounding {
         <div style="color:#e8d8d8; font-size:12px; line-height:1.45;">
           <strong>${foundry.utils.escapeHTML(actor.name)}</strong> takes
           <strong>${total} necrotic</strong> (${stacks}d4) from open wounds dealt by ${foundry.utils.escapeHTML(sourceName)}.
-          <br><em style="color:#ccaaaa; font-size:11px;">Make a <span class="ace-qol-save-dc">DC 15 </span>CON save to close all wounds (or an ally within 5 ft can use an Action to make a DC 15 Medicine check).</em>
+          <br><em style="color:#ccaaaa; font-size:11px;">Make a <span class="ace-qol-dc" data-dc-roller="${actor?.id ?? ""}">DC 15 </span>CON save to close all wounds (or an ally within 5 ft can use an Action to make a DC 15 Medicine check).</em>
         </div>
       </div>`,
       speaker: ChatMessage.getSpeaker({ actor }),
@@ -246,7 +246,7 @@ export class SwordOfWounding {
         </div>
         <div style="color:#e8d8d8; font-size:12px; line-height:1.45;">
           ${attName} wounds <strong>${tgtName}</strong> — they will take <strong>${stacks}d4 necrotic</strong> at the start of each of their turns.
-          <br><em style="color:#ccaaaa; font-size:11px;">A <span class="ace-qol-save-dc">DC 15 </span>CON save (start of turn) or <span class="ace-qol-save-dc">DC 15 </span>Medicine check (ally Action) closes all wounds.</em>
+          <br><em style="color:#ccaaaa; font-size:11px;">A <span class="ace-qol-dc" data-dc-roller="${targetToken?.actor?.id ?? ""}">DC 15 </span>CON save (start of turn) or <span class="ace-qol-dc" data-dc-roller="${targetToken?.actor?.id ?? ""}">DC 15 </span>Medicine check (ally Action) closes all wounds.</em>
         </div>
       </div>`,
       speaker: ChatMessage.getSpeaker({ actor: attacker }),

@@ -29,6 +29,7 @@ const save  = read("scripts/save-engine.mjs");
 const ph    = read("scripts/post-hit-saves.mjs");
 const doors = read("scripts/road/doors.mjs");
 const css   = read("styles/ace-qol.css");
+const utils = read("scripts/chat-render-utils.mjs");
 const dur   = read("scripts/duration-words.mjs");
 
 console.log("\nTHE SAVE-CARD SHELL\n");
@@ -101,9 +102,14 @@ console.log("\nTOP TO BOTTOM");
     /\$\{opts\?\.formulaOnShell \? "" : SaveEngine\._formulaForRow\(r, opts\)\}/.test(save), "once");
 
   // 3. The result line.
-  check("line 3's portrait is shown whole, not cropped",
+  // ⚠️ ALL FOUR PROPERTIES, not just the fit: the base class is a 32px circle with
+  // `cover`, so overriding object-fit alone still left a cropped thumbnail
+  // (ACE-ONE-ROAD.md § 13.4, his card: "not a 32px circle").
+  check("line 3's portrait is shown whole, not a 32px circle",
     /ace-qol-save-tgt-img ace-qol-save-portrait/.test(save)
-    && /\.ace-qol-save-portrait \{\s*\n\s*object-fit: contain;/.test(css), "object-fit: contain");
+    && /\.ace-qol-save-portrait \{[\s\S]{0,260}object-fit: contain !important;/.test(css)
+    && /width: 52px !important;/.test(css) && /border-radius: 8px !important;/.test(css),
+    "52px, square corners, contain");
   // A real minus sign, not a hyphen: "9 − 2 = 7" lines up with the figures
   // beside it where a hyphen sits too high and too short.
   check("the math reads the way he wrote it",
@@ -148,9 +154,16 @@ console.log("\nNO PILL, NO X, NO SKULL");
   check("the old header, its item icon and its \u2014 Saves title are gone",
     at > 0 && !/ace-qol-save-header/.test(card) && !/ace-qol-save-item-img/.test(card),
     "the shell replaced the strip");
-  check("no DC pill on the shell; the DC is the quiet line's GM half",
-    !/ace-qol-save-dc/.test(card) && /ace-qol-save-quiet-dc ace-qol-gm-only/.test(save),
-    "a player never sees a DC");
+  // ⚠️🔴 THE DC MOVED ONTO THE HEADER AND STOPPED BEING GM-ONLY (§ 13.2, replacing
+  // what 0.58 shipped). "Header: 'Jeth uses Spiked Chain on Escher · DC 14
+  // Dexterity'", and "Do not hide Lamia's DC 13 on Jeth's Charm card. He is
+  // rolling against it."
+  check("the DC is on the header, named for the creatures rolling against it",
+    /dcSpan\(` · \$\{dcText\}`, rollers, "ace-qol-save-cast-dc"\)/.test(save)
+    && /rollers: SaveEngine\.rollersOn\(results\)/.test(save),
+    "shown to them and to the GM");
+  check("and the old quiet-line DC is gone, so it lives in one place",
+    !/ace-qol-save-quiet-dc/.test(save), "not two");
   // The per-handler stamp is gone: it only covered the cards that ONE handler
   // reached, which is how the others kept leaking. One pass, every ACE card, every
   // module (chat-render-utils.mjs, pinned in dc-visibility-selftest.mjs).
@@ -165,17 +178,28 @@ console.log("\nNO PILL, NO X, NO SKULL");
 /* ══ 5. FOUNDRY'S SPEAKER STRIP ═══════════════════════════════════════════ */
 console.log("\nTHE MANILA STRIP, AND THE \u22ee THAT STAYS");
 {
-  check("the message is stamped, so only ACE save cards lose the strip",
-    /el\.setAttribute\("data-ace-save-shell", "1"\)/.test(save)
-    && /data-ace-save-shell="1"/.test(save), "other chat keeps it");
+  // \u26a0\ufe0f\ud83d\udd34 EVERY ACE CARD, NOT ONLY SAVES (\u00a7 13.1). It was stamped from the save
+  // card's own content, so the attack, damage, heal and refusal cards all kept the
+  // manila bar. It comes off the MESSAGE's flags now, in the one chrome pass, for
+  // all four modules.
+  check("every ACE card is stamped, from the message's own flags",
+    /export function stampAceCard\(message, el\)/.test(utils)
+    && /el\.setAttribute\("data-ace-card", "1"\)/.test(utils)
+    && /ACE_NAMESPACES/.test(utils), "save, attack, damage, heal, reaction, refusal");
+  check("and the save engine no longer stamps it from one card's content",
+    !/setAttribute\("data-ace-save-shell"/.test(save), "one pass, not one handler");
   check("the stylesheet hides the sender and the time",
-    /\.chat-message\[data-ace-save-shell="1"\] > \.message-header \.message-sender/.test(css)
+    /\.chat-message\[data-ace-card="1"\] > \.message-header \.message-sender/.test(css)
     && /display: none !important;/.test(css), "the strip");
+  check("in all three stylesheets, so a module is right without QOL",
+    /data-ace-card="1"/.test(read("../ace-artificer/styles/ace-artificer.css"))
+    && /data-ace-card="1"/.test(read("../ace-engine/styles/ace-engine.css")),
+    "Forge and Engine carry it too");
   check("and it never hides the whole header, so the \u22ee survives",
-    !/\.chat-message\[data-ace-save-shell="1"\] > \.message-header \{\s*\n\s*display: none/.test(css)
-    && /\.message-metadata \{\s*\n\s*position: absolute;/.test(css), "tucked into the corner");
+    !/\.chat-message\[data-ace-card="1"\] > \.message-header \{[\s\S]{0,20}display: none/.test(css)
+    && /\.message-metadata \{[\s\S]{0,30}position: absolute;/.test(css), "tucked into the corner");
   check("the card is the positioning context for it",
-    /\.chat-message\[data-ace-save-shell="1"\] \{ position: relative; \}/.test(css), "top right");
+    /\.chat-message\[data-ace-card="1"\] \{ position: relative; \}/.test(css), "top right");
 }
 
 /* ══ 6. BEFORE THE ROLL, AND THE CHAIN ════════════════════════════════════ */
@@ -224,10 +248,11 @@ console.log("\nNO CARD IS LEFT BEHIND");
     (save.match(/saveQuietLineHtml\(/g) ?? []).length >= 5, "one reader, five cards");
 
   // THE PLAYER'S WHISPERED PROMPT LEAKED THE DC IN GOLD.
-  check("the whispered prompt says which save, never the number to beat",
-    /Roll a \$\{abilityLabel\} save/.test(save)
-    && !/DC \$\{saveDC\} \$\{abilityLabel\} Save<\/div>/.test(save),
-    "a player never sees a DC");
+  // ⚠️🔴 AND THE DC IS BACK ON IT (§ 13.2). 0.56 took it off on the old reading of
+  // the rule; this card IS the roll that player is making, whispered to them.
+  check("the whispered prompt shows the DC to the person rolling it",
+    /Roll a \$\{dcSpan\(`DC \$\{saveDC\} `, tgt\?\.actorId\)\}\$\{abilityLabel\} save/.test(save),
+    "their roll, their number");
 }
 
 /* == THE HOLD IS READ, NOT PASSED IN ================================== */

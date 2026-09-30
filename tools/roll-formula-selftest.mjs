@@ -72,8 +72,11 @@ const { explainSave, explainCheck, formulaText, formulaPill, rollLineHtml } =
 /* ══ 1. HIS PIN, EXACTLY ═════════════════════════════════════════════════ */
 {
   const { parts, total } = explainSave(escher, "dex");
-  check("the save's parts are the ability and proficiency, separately",
-    parts.length === 2 && parts[0].why === "ability" && parts[1].label === "proficiency",
+  // ⚠️ THE WORD IS "prof" (his card, 2026-09-29: "Never write the word
+  // 'proficiency'"). It is still its own part, named separately from the ability;
+  // only what the card calls it changed.
+  check("the save's parts are the ability and its proficiency, separately",
+    parts.length === 2 && parts[0].why === "ability" && parts[1].label === "prof",
     parts.map(p => `${p.label} ${p.value}`).join(", "));
   check("his line, exactly", formulaText(parts, total),
     formulaText(parts, total) === "Dex 1 (\u22125) + proficiency +3 = \u22122"
@@ -113,7 +116,7 @@ const { explainSave, explainCheck, formulaText, formulaPill, rollLineHtml } =
 {
   const ath = explainCheck(escher, { skill: "ath" });
   check("a skill check reads its own ability and proficiency",
-    formulaText(ath.parts, ath.total) === "Str 16 (+3) + proficiency +3 = +6",
+    formulaText(ath.parts, ath.total) === "Str 16 (+3) + prof +3 = +6",
     formulaText(ath.parts, ath.total));
   const acr = explainCheck(escher, { skill: "acr" });
   check("expertise is named as expertise, not as proficiency twice",
@@ -138,7 +141,7 @@ const { explainSave, explainCheck, formulaText, formulaPill, rollLineHtml } =
     /d20 7/.test(html) && /5/.test(html) && /vs DC 14/.test(html) && /FAIL/.test(html),
     "the roll reads end to end");
   check("and the formula is in it too, not just the total",
-    /proficiency/.test(html) && /Dex 1/.test(html), "the parts are on the card");
+    /prof/.test(html) && /Dex 1/.test(html), "the parts are on the card");
   check("nothing is drawn outside a pill",
     (html.match(/ace-qol-formula-pill/g) ?? []).length === 2
     && /^<div class="ace-qol-formula-row">/.test(html), "two pills, one row");

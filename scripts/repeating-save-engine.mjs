@@ -988,17 +988,17 @@ export class RepeatingSaveEngine {
       if (noteOverride) {
         // A save that keeps score, or happens only once, says its own outcome.
         const v = verdict ?? { text: passed ? "SUCCESS" : "FAIL", good: !!passed };
-        rollLine = `<div style="${S.roll}">${working} <span class="ace-qol-save-dc"><span style="${S.dim}">vs DC ${esc(dc)}</span></span>: `
+        rollLine = `<div style="${S.roll}">${working} <span class="ace-qol-dc" data-dc-roller="${actor?.id ?? ""}"><span style="${S.dim}">vs DC ${esc(dc)}</span></span>: `
           + `<span style="${v.good ? S.good : S.bad}">${esc(v.text)}</span></div>`;
         noteLine = `<div style="${S.note}">${esc(noteOverride)}</div>`;
       } else if (ended === "duration") {
         rollLine = `<div style="${S.roll}"><span style="${S.good}">DURATION ENDED</span></div>`;
         noteLine = `<div style="${S.note}">The spell ran its course — ${esc(actor.name)} is free of it.</div>`;
       } else if (passed) {
-        rollLine = `<div style="${S.roll}">${working} <span class="ace-qol-save-dc"><span style="${S.dim}">vs DC ${esc(dc)}</span></span> — <span style="${S.good}">SUCCESS</span></div>`;
+        rollLine = `<div style="${S.roll}">${working} <span class="ace-qol-dc" data-dc-roller="${actor?.id ?? ""}"><span style="${S.dim}">vs DC ${esc(dc)}</span></span> — <span style="${S.good}">SUCCESS</span></div>`;
         noteLine = `<div style="${S.note}">Broke free on ${attempts === 1 ? "the first attempt" : `attempt ${esc(passOnAttempt)} of ${esc(attempts)}`}, out of combat.</div>`;
       } else {
-        rollLine = `<div style="${S.roll}">${working} <span class="ace-qol-save-dc"><span style="${S.dim}">vs DC ${esc(dc)}</span></span> — <span style="${S.bad}">HELD</span></div>`;
+        rollLine = `<div style="${S.roll}">${working} <span class="ace-qol-dc" data-dc-roller="${actor?.id ?? ""}"><span style="${S.dim}">vs DC ${esc(dc)}</span></span> — <span style="${S.bad}">HELD</span></div>`;
         noteLine = `<div style="${S.note}">${attempts === 1 ? "One attempt" : `${esc(attempts)} attempts`} out of combat, best roll shown. Still affected.</div>`;
       }
 
@@ -1224,7 +1224,7 @@ export class RepeatingSaveEngine {
       const html = `
         <div class="ace-qol-rsv2">
           <div class="ace-qol-rsv2-head">
-            <i class="fas fa-hourglass-half"></i>&nbsp;<b>${spell}</b>&nbsp;— repeating ${abilityLabel} save<span class="ace-qol-save-dc">, DC ${dc}</span>
+            <i class="fas fa-hourglass-half"></i>&nbsp;<b>${spell}</b>&nbsp;— repeating ${abilityLabel} save<span class="ace-qol-dc" data-dc-roller="${actor?.id ?? ""}">, DC ${dc}</span>
             <span class="ace-qol-rsv2-src">${sourceLabel}</span>
           </div>
           <div class="ace-qol-rsv2-row">
@@ -1261,7 +1261,7 @@ export class RepeatingSaveEngine {
       try {
         await ChatMessage.create({
           speaker: ChatMessage.getSpeaker({ actor }),
-          content: `<b>${actor.name}</b> — ${spell} re-save: <b>${total}</b> <span class="ace-qol-save-dc">vs DC ${dc}</span> — <b>${resultLabel}${petrifies ? " → Petrified" : ""}</b>`,
+          content: `<b>${actor.name}</b> — ${spell} re-save: <b>${total}</b> <span class="ace-qol-dc" data-dc-roller="${actor?.id ?? ""}">vs DC ${dc}</span> — <b>${resultLabel}${petrifies ? " → Petrified" : ""}</b>`,
         });
       } catch (err2) {
         console.error(`${MODULE_ID} | RepeatingSave: even the fallback card failed:`, err2);

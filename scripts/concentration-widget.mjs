@@ -1854,7 +1854,7 @@ export class ConcentrationWidget {
       const darkContent = `
         <div style="background:#1a1a1f;color:#e8dfc8;padding:10px 12px;border-radius:5px;border:1px solid #d4af37;font-family:'Signika',sans-serif;">
           <div style="color:#d4af37;font-size:14px;font-weight:bold;margin-bottom:4px;">${spellName} — Exit Save <span style="color:#c8b890;font-weight:normal;font-size:12px;">(advantage)</span></div>
-          <div style="color:#c8b890;font-size:11px;margin-bottom:6px;"><span class="ace-qol-save-dc">vs DC ${dc}</span></div>
+          <div style="color:#c8b890;font-size:11px;margin-bottom:6px;"><span class="ace-qol-dc" data-dc-roller="${actor?.id ?? ""}">vs DC ${dc}</span></div>
           <div style="margin-bottom:4px;">${breakdown}</div>
           <div style="color:${accent};font-weight:bold;font-size:13px;">${verdictText}</div>
         </div>

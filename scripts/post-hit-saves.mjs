@@ -1401,15 +1401,17 @@ export class PostHitSaves {
       // The verdict, the roll and the pass/fail styling all belong to the shared
       // row now; the three locals that built them here are gone with the markup.
       let effectsHtml = "";
+      let tableLine = "";
       if (r.tableEntry) {
         // ⚠️ TEXT, NOT A SECOND DIE (his rule, 2026-09-29: "Only extra under
         // the shared row is text: Rolled 3: Grapple, then what landed"). The die
         // that decided this row is the d20 the shared row already draws; a little
         // square d6 beside it read as a second roll nobody made, and on a card
         // that had just rolled a d20 it was the wrong shape as well.
-        effectsHtml += `<div class="ace-qol-table-result">
-          Rolled <strong>${r.tableRoll}</strong>: <strong>${r.tableEntry}</strong>
-        </div>`;
+        // Held back and added AFTER what landed, below: a second roll is a second
+        // line under the result, not a pill inside the save's own row.
+        tableLine = `<div class="ace-qol-save-extra-roll">`
+          + `Rolled <strong>${r.tableRoll}</strong>: <strong>${r.tableEntry}</strong></div>`;
       }
 
       // ⚠️ ONE LINE OF TEXT, NOT A TAG EACH (his card, 2026-09-29: "Extra line
@@ -1504,7 +1506,12 @@ export class PostHitSaves {
         hpHtml = `<div class="ace-qol-dmg-hp">HP: ${currentHP} → ${newHP}/${maxHP}${isDead ? " ☠" : ""}</div>`;
       }
 
-      return `${effectsHtml ? `<div class="ace-qol-posthit-effects">${effectsHtml}</div>` : ""}${hpHtml}`;
+      // ⚠️ ORDER (his card, 2026-09-29): the save's own result, then what landed
+      // ("Prone."), and only then the second roll that chose it. The table roll used
+      // to sit in gold between the save's numbers and its verdict, reading as part
+      // of the save.
+      return `${effectsHtml ? `<div class="ace-qol-posthit-effects">${effectsHtml}</div>` : ""}`
+        + `${tableLine}${hpHtml}`;
   }
 
   static async postSaveResults(item, actor, results, save, updateMessage = null) {
@@ -1755,7 +1762,7 @@ export class PostHitSaves {
               <span class="ace-qol-pst-target">${h.target?.name ?? targetActor.name}</span>
             </div>
             <div class="ace-qol-pst-body">
-              <div class="ace-qol-pst-line">HP ${hpNow} ≤ ${rider.threshold} → <span class="ace-qol-save-dc">DC ${rider.dc} </span>${abilityLabel} save</div>
+              <div class="ace-qol-pst-line">HP ${hpNow} ≤ ${rider.threshold} → <span class="ace-qol-dc" data-dc-roller="${targetActor?.id ?? ""}">DC ${rider.dc} </span>${abilityLabel} save</div>
               <div class="ace-qol-pst-line">Roll: <strong>${riderTotal}</strong> ${passed ? "✅" : "❌"}</div>
               <div class="ace-qol-pst-line ace-qol-pst-result">${resultLabel}</div>
             </div>

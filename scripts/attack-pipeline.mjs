@@ -45,6 +45,8 @@ import { SpellPipeline } from "./spell-pipeline/pipeline.mjs";
 // imports nothing, so it cannot join the static import cycles ace-qol.mjs
 // sits at the centre of.
 import { gateOff } from "./why-not.mjs";
+// § 13.3: a monster's AC is not on a card; the wrapper says whose it is.
+import { acSpan } from "./chat-render-utils.mjs";
 
 // ─── Profile access for this pipeline (2026-07-28, re-cut 2026-08-25) ────────
 //
@@ -1764,9 +1766,17 @@ export class AttackPipeline {
         : r.coverResult?.isFullCover
         ? `<span class="ace-qol-tag ace-qol-tag-cover ace-qol-tag-cover-full" title="Full cover — line of sight completely blocked. Cannot be targeted."><i class="fas fa-shield-alt"></i> FULL COVER (untargetable)</span>`
         : "";
+      // ⚠️🔴 A MONSTER'S AC IS NOT ON A CARD (ACE-ONE-ROAD.md § 13.3). Every
+      // to-hit card in the game printed it, so a player learned a creature's
+      // armour from the first swing. The GM sees it, and a player sees it only for
+      // a creature they own, because their own AC is on their own sheet.
+      //
+      // The MATH is untouched: this is the display, and the hit was decided long
+      // before this line runs.
+      const _acWhose = r.targetActor?.id ?? r.target?.actor?.id ?? null;
       const acDisplay = r.effectiveAC && r.effectiveAC !== r.ac
-        ? `AC ${r.effectiveAC} <span class="ace-qol-atk-ac-bonus" title="Base AC ${r.ac} + Cover ${r.effectiveAC - r.ac}">+${r.effectiveAC - r.ac}</span>`
-        : `AC ${r.ac}`;
+        ? acSpan(`AC ${r.effectiveAC} +${r.effectiveAC - r.ac}`, _acWhose)
+        : acSpan(`AC ${r.ac}`, _acWhose);
 
       // ── Mirror Image redirect caption ──
       // When the attack was absorbed by an illusory duplicate, the row shows

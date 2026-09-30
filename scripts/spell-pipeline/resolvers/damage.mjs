@@ -549,7 +549,7 @@ export class DamageResolver {
         header = `
           <div style="margin-top:8px;font-weight:700;color:#e8d49a;font-size:15px;">
             <i class="fas fa-bullseye" style="color:${gold};font-size:12px;margin-right:5px;"></i>${r.target}
-            <span style="color:#8a7a5a;font-weight:400;font-size:12px;">AC ${r.ac}</span>
+            <span class="ace-qol-ac" data-ac-actor="${r.targetActor?.id ?? ""}" style="color:#8a7a5a;font-weight:400;font-size:12px;">AC ${r.ac}</span>
           </div>
           ${r.situNote ? `<div style="font-size:12px;color:#a8935f;font-style:italic;margin:1px 0 2px 20px;">${r.situNote}</div>` : ""}`;
       }

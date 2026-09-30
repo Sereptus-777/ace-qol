@@ -178,7 +178,7 @@ export class MergeCard {
         <div class="ace-qol-merge-target-row ${hitClass}">
           <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-merge-tgt-img" />
           <span class="ace-qol-merge-tgt-name">${r.name ?? "Unknown"}</span>
-          <span class="ace-qol-merge-tgt-ac">AC ${r.ac}</span>
+          <span class="ace-qol-merge-tgt-ac ace-qol-ac" data-ac-actor="${r.targetActor?.id ?? ""}">AC ${r.ac}</span>
           <span class="ace-qol-merge-tgt-result">${hitLabel}</span>
         </div>
         ${mirrorCaption}
@@ -414,7 +414,7 @@ export class MergeCard {
             <div class="ace-qol-merge-row-header">
               <img src="${atkResult.img || "icons/svg/mystery-man.svg"}" class="ace-qol-dmg-tgt-img" />
               <span class="ace-qol-dmg-tgt-name">${atkResult.name ?? "Unknown"}</span>
-              <span class="ace-qol-atk-ac">AC ${atkResult.ac}</span>
+              <span class="ace-qol-atk-ac ace-qol-ac" data-ac-actor="${atkResult.targetActor?.id ?? ""}">AC ${atkResult.ac}</span>
               <span class="ace-qol-atk-result ${hitClass}">${hitLabel}</span>
             </div>
             ${mirrorCaption}
@@ -431,7 +431,7 @@ export class MergeCard {
             <div class="ace-qol-merge-row-header">
               <img src="${atkResult.img || "icons/svg/mystery-man.svg"}" class="ace-qol-dmg-tgt-img" />
               <span class="ace-qol-dmg-tgt-name">${atkResult.name ?? "Unknown"}</span>
-              <span class="ace-qol-atk-ac">AC ${atkResult.ac}</span>
+              <span class="ace-qol-atk-ac ace-qol-ac" data-ac-actor="${atkResult.targetActor?.id ?? ""}">AC ${atkResult.ac}</span>
               <span class="ace-qol-atk-result ${hitClass}">${hitLabel}</span>
             </div>
           </div>
@@ -481,7 +481,7 @@ export class MergeCard {
           <div class="ace-qol-merge-row-header">
             <img src="${portrait}" class="ace-qol-dmg-tgt-img" />
             <span class="ace-qol-dmg-tgt-name">${atkResult.name ?? "Unknown"}</span>
-            <span class="ace-qol-atk-ac">AC ${atkResult.ac}</span>
+            <span class="ace-qol-atk-ac ace-qol-ac" data-ac-actor="${atkResult.targetActor?.id ?? ""}">AC ${atkResult.ac}</span>
             <span class="ace-qol-atk-result ${hitClass}">${hitLabel}</span>
             ${isCrit ? '<span class="ace-qol-dmg-crit-badge">CRIT</span>' : ""}
           </div>

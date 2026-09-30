@@ -1886,13 +1886,13 @@ export class ReactionEngine {
           this._debug(`Shield BLOCKED: ${targetActor.name} (${result.attackTotal} vs AC ${acWith})`);
           result.shieldBlocked = true;
           await this._postReactionChat(targetActor, "Shield",
-            `${foundry.utils.escapeHTML(targetActor.name)} casts <strong>Shield</strong>: AC ${acBefore} becomes ${acWith}, `
+            `${foundry.utils.escapeHTML(targetActor.name)} casts <strong>Shield</strong>: <span class="ace-qol-ac" data-ac-actor="${targetActor?.id ?? ""}">AC ${acBefore} becomes ${acWith}</span>, `
             + `and ${attackerName}'s ${attackName} (${result.attackTotal}) misses.`, "#42a5f5");
         } else {
           // Shield didn't prevent the hit but still grants +5 AC for the round
           this._debug(`Shield CAST but still hit: ${targetActor.name} (${result.attackTotal} vs AC ${acWith})`);
           await this._postReactionChat(targetActor, "Shield",
-            `${foundry.utils.escapeHTML(targetActor.name)} casts <strong>Shield</strong>: AC ${acBefore} becomes ${acWith}, `
+            `${foundry.utils.escapeHTML(targetActor.name)} casts <strong>Shield</strong>: <span class="ace-qol-ac" data-ac-actor="${targetActor?.id ?? ""}">AC ${acBefore} becomes ${acWith}</span>, `
             + `but ${attackerName}'s ${attackName} (${result.attackTotal}) still hits.`, "#ef5350");
         }
       }

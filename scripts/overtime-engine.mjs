@@ -1120,7 +1120,7 @@ export class OverTimeEngine {
         <div class="ace-qol-ot-save">
           <span class="ace-qol-ot-save-label">Save:</span>
           <span class="ace-qol-ot-save-detail">
-            ${abilityLabel} <span class="ace-qol-save-dc">DC ${saveResult.dc}</span>
+            ${abilityLabel} <span class="ace-qol-dc" data-dc-roller="${actorId ?? ""}">DC ${saveResult.dc}</span>
             → Rolled <strong>${saveResult.total}</strong>
             → <span class="${passClass}"><strong>${passLabel}</strong></span>
           </span>

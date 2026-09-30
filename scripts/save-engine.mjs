@@ -24,7 +24,9 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { explainSave, formulaText, formulaPill } from "./roll-formula.mjs";
 import { aimAt } from "./road/aim.mjs";   // ACE aims on purpose: no "did you mean that corpse?" (road/aim.mjs)
 import { replyIsFromTheUserWeAsked } from "./socket-authority.mjs";
-import { registerChatCardHandler } from "./chat-render-utils.mjs";
+// The one DC wrapper: it names the creature(s) rolling against the number
+// (ACE-ONE-ROAD.md § 13.2).
+import { registerChatCardHandler, dcSpan } from "./chat-render-utils.mjs";
 import { QolSettings } from "./settings.mjs";
 import { CombatState } from "./combat-state.mjs";
 // ⚠️ THE ONE GATE. The pre-roll decision lives in scripts/gate/action-gate.mjs
@@ -3401,13 +3403,14 @@ export class SaveEngine {
   /** Slim banner: "🪄 Chudd casts Frostbite on Steel Defender". Shared by the
    *  save card AND the results/damage card so the announcement survives the
    *  target-card collapse and the two cards read as one continuous story. */
-  _castAnnouncementHtml(item, casterActor, targets, activityId = null) {
+  _castAnnouncementHtml(item, casterActor, targets, activityId = null, opts = null) {
     const caster = casterActor?.name ?? "Someone";
     const spell  = this._abilityLabel(item, activityId);
     const tgts   = this._formatTargetNames(targets);
     // ⚠️ A CLAW IS NOT CAST. "Neferon casts Claws on Specter" (2026-09-12).
     const isSpell = item?.type === "spell";
-    return SaveEngine.castLineHtml(casterActor, spell, tgts, { isSpell, fallbackImg: item?.img });
+    return SaveEngine.castLineHtml(casterActor, spell, tgts,
+      { isSpell, fallbackImg: item?.img, ...(opts ?? {}) });
   }
 
   /**
@@ -3425,17 +3428,28 @@ export class SaveEngine {
    * Static so the post-hit save card draws the same line instead of keeping its own
    * header, which is how that one still had a DC pill on it.
    */
-  static castLineHtml(casterActor, title, targetNames, { isSpell = true, fallbackImg = null } = {}) {
+  static castLineHtml(casterActor, title, targetNames, { isSpell = true, fallbackImg = null,
+      dcText = "", rollers = null } = {}) {
     const who = casterActor?.name ?? "Someone";
     const img = casterActor?.img || fallbackImg || "icons/svg/mystery-man.svg";
     const esc = (v) => foundry.utils.escapeHTML(String(v ?? ""));
+    // ⚠️ THE DC IS ON THE HEADER, AND IT IS THE ROLLERS' TO READ (his card,
+    // 2026-09-29: "Header: 'Jeth uses Spiked Chain on Escher · DC 14 Dexterity'" and
+    // "Do not hide Lamia's DC 13 on Jeth's Charm card. He is rolling against it.").
     return `<div class="ace-qol-save-cast-line">`
       + `<img class="ace-qol-save-caster-img ace-qol-save-portrait" src="${img}" alt="" />`
       + `<span class="ace-qol-save-cast-text">`
       + `<strong>${esc(who)}</strong> ${isSpell ? "casts" : "uses"} <strong>${esc(title)}</strong>`
       + `${targetNames ? ` on <strong>${targetNames}</strong>` : ""}`
+      + `${dcText ? dcSpan(` · ${dcText}`, rollers, "ace-qol-save-cast-dc") : ""}`
       + `</span>`
       + `</div>`;
+  }
+
+  /** The creatures a save card is asking to roll, for the header's DC. */
+  static rollersOn(results) {
+    return [...new Set(SaveEngine._rollersOf(results)
+      .map(r => r?.actorId).filter(Boolean))];
   }
 
   /** One concise, RAW-accurate line describing what a FAILED save costs.
@@ -6490,11 +6504,13 @@ export class SaveEngine {
       <div class="ace-qol-pc-save-card" style="background:#0c0c10;border:1px solid #d4af37;border-radius:9px;overflow:hidden;font-family:'Signika',sans-serif;">
         <div style="padding:11px 15px;border-bottom:1px solid rgba(212,175,55,0.3);background:#0c0c10;">
           <div style="color:#f0e4c0;font-weight:700;font-size:19px;line-height:1.15;">${item.name}</div>
-          <!-- ⚠🔴 A PLAYER NEVER SEES A DC (his standing rule). This card is
-               WHISPERED TO THE PLAYER, and it printed the number they are rolling
-               against in gold under the spell's name. What they need is which save
-               to roll; what they must not have is the target. -->
-          <div class="ace-qol-save-prompt-ability" style="color:#d4af37;font-size:15px;font-weight:600;margin-top:3px;">Roll a ${abilityLabel} save</div>
+          <!-- ⚠️🔴 THE DC IS BACK, AND IT BELONGS HERE (ACE-ONE-ROAD.md § 13.2).
+               0.56 took it off this card on the old reading, "a player never sees a
+               DC". His correction: a player sees the DC on a roll they are making,
+               and this card IS that roll, whispered to the person about to make it.
+               It carries the roller so the wrapper agrees with the rest of the suite
+               rather than being a bare exception nobody can check. -->
+          <div class="ace-qol-save-prompt-ability" style="color:#d4af37;font-size:15px;font-weight:600;margin-top:3px;">Roll a ${dcSpan(`DC ${saveDC} `, tgt?.actorId)}${abilityLabel} save</div>
         </div>
         <div style="display:flex;align-items:center;gap:15px;padding:15px;background:#0c0c10;">
           <div style="display:flex;flex-direction:column;align-items:center;gap:8px;flex-shrink:0;">
@@ -6672,14 +6688,12 @@ export class SaveEngine {
    *    carrying the second, and the owner's own screen swaps it.
    */
   _wireSaveShell(el, message, flags) {
-    try {
-      if (el?.querySelector?.("[data-ace-save-shell]") && el.setAttribute) {
-        el.setAttribute("data-ace-save-shell", "1");
-      }
-    } catch (err) {
-      console.warn(`${MODULE_ID} | could not stamp the save shell onto this message, so it keeps `
-        + `Foundry's speaker strip:`, err);
-    }
+    // ⚠️ THE SPEAKER STRIP IS NOT THIS FUNCTION'S JOB ANY MORE (ACE-ONE-ROAD.md
+    // § 13.1). It was stamped here, from the save card's own content, which is
+    // exactly why the attack, damage, heal and refusal cards all kept the manila
+    // bar. The chrome pass in chat-render-utils reads the MESSAGE's flags and
+    // stamps every ACE card from every module. This is left with the one thing
+    // only this card knows: whose creature the landed line is about.
 
     try {
       const lines = el?.querySelectorAll?.(".ace-qol-save-landed[data-mine]") ?? [];
@@ -8695,12 +8709,13 @@ export class SaveEngine {
           + `quiet line, so that line shows the DC alone:`, err);
       }
     }
-    const dcText = Number.isFinite(Number(saveDC)) ? `DC ${saveDC} ${label}` : "";
-    if (!formula && !dcText) return "";
+    // ⚠️ THE DC LEFT THIS LINE. It is on the header now, beside who did what to
+    // whom, which is where he asked for it: "Jeth uses Spiked Chain on Escher · DC
+    // 14 Dexterity". This line is the one short formula and nothing else.
+    if (!formula) return "";
     return `
       <div class="ace-qol-save-quiet">
-        ${formula ? `<span class="ace-qol-save-quiet-formula">${foundry.utils.escapeHTML(formula)}</span>` : ""}
-        ${dcText ? `<span class="ace-qol-save-quiet-dc ace-qol-gm-only">${formula ? "· " : ""}${dcText}</span>` : ""}
+        <span class="ace-qol-save-quiet-formula">${foundry.utils.escapeHTML(formula)}</span>
       </div>`;
   }
 
@@ -8814,12 +8829,19 @@ export class SaveEngine {
           // total. A bonus of nothing says nothing rather than "+ 0".
           const modPart = modifier === 0 ? "" : ` ${modifier >= 0 ? "+" : "−"} ${Math.abs(modifier)}`;
           d20El = aceD20FaceImg(d20Face, { size: 40 });
+          // ⚠️ THE DIE SITS WITH THE RESULT IT MADE (his card, 2026-09-29:
+          // "d20 PNG for the number rolled sits with the result: 5 − 2 = 3 FAIL").
+          // It used to be stacked under the portrait, a column away from the
+          // numbers it produced, so the picture of a 5 and the "5" in the sum were
+          // nowhere near each other.
           breakdownText = `
             <span class="ace-qol-save-math">
+              ${d20El}
               <span class="ace-qol-save-math-die">${d20Face}</span>
               <span class="ace-qol-save-math-mod">${modPart} =</span>
               <span class="${passClass} ace-qol-save-math-total">${r.saveTotal}</span>
             </span>`;
+          d20El = "";   // it has moved; the left column is the portrait alone
         } else {
           breakdownText = `<span class="${passClass}" style="font-weight:700;font-size:18px;">${r.saveTotal}</span>`;
         }
@@ -9120,7 +9142,10 @@ export class SaveEngine {
     // shows a verdict with no cause (his rule, 2026-08-06).
     return `
       <div class="ace-qol-save-results-card ace-qol-save-shell" data-phase="1" data-ace-save-shell="1">
-        ${this._castAnnouncementHtml(item, item.actor, results, activityId)}
+        ${this._castAnnouncementHtml(item, item.actor, results, activityId, {
+            // dc-ok: castLineHtml puts this through dcSpan with the rollers below.
+            dcText: Number.isFinite(Number(saveDC)) ? `DC ${saveDC} ${abilityLabel}` : "",
+            rollers: SaveEngine.rollersOn(results) })}
         ${_quietLine}
         <div class="ace-qol-save-results">
           ${targetRows}
@@ -10205,11 +10230,11 @@ export class SaveEngine {
       } else if (r.passed && r.resultLabel.includes("EVASION")) {
         reasonText = `<span class="ace-qol-save-pass">EVASION \u2014 SAVED \u2014 0 damage</span>`;
       } else if (r.passed) {
-        reasonText = `<span class="ace-qol-save-pass">Rolled ${r.saveTotal} \u2014 SAVED<span class="ace-qol-save-dc"> (DC ${saveDC})</span></span>`;
+        reasonText = `<span class="ace-qol-save-pass">Rolled ${r.saveTotal} \u2014 SAVED<span class="ace-qol-dc" data-dc-roller="${r.actorId ?? ""}"> (DC ${saveDC})</span></span>`;
       } else if (r.resultLabel.includes("EVASION")) {
-        reasonText = `<span class="ace-qol-save-fail">Rolled ${r.saveTotal} \u2014 FAILED<span class="ace-qol-save-dc"> (DC ${saveDC})</span> \u2014 EVASION: half</span>`;
+        reasonText = `<span class="ace-qol-save-fail">Rolled ${r.saveTotal} \u2014 FAILED<span class="ace-qol-dc" data-dc-roller="${r.actorId ?? ""}"> (DC ${saveDC})</span> \u2014 EVASION: half</span>`;
       } else {
-        reasonText = `<span class="ace-qol-save-fail">Rolled ${r.saveTotal} \u2014 FAILED<span class="ace-qol-save-dc"> (DC ${saveDC})</span></span>`;
+        reasonText = `<span class="ace-qol-save-fail">Rolled ${r.saveTotal} \u2014 FAILED<span class="ace-qol-dc" data-dc-roller="${r.actorId ?? ""}"> (DC ${saveDC})</span></span>`;
       }
 
       // Add resistance/immunity/vulnerability reasons

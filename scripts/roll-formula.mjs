@@ -70,7 +70,7 @@ export function explainSave(actor, ability) {
   const prof = Number(actor?.system?.attributes?.prof ?? 0);
   if (profMult > 0 && prof) {
     const v = Math.floor(prof * profMult);
-    if (v) parts.push({ label: "proficiency", value: v, why: "proficient in this save" });
+    if (v) parts.push({ label: "prof", value: v, why: "proficient in this save" });
   }
 
   const own = flatBonus(a.bonuses?.save);
@@ -114,7 +114,7 @@ export function explainCheck(actor, { ability = null, skill = null } = {}) {
     const v = Math.floor(prof * mult);
     // ⚠️ EXPERTISE IS SAID BY ITS NAME. A multiplier of 2 is not "proficiency
     // twice"; he asked for why each part is there.
-    const label = mult >= 2 ? "expertise" : mult < 1 ? "half proficiency" : "proficiency";
+    const label = mult >= 2 ? "expertise" : mult < 1 ? "half prof" : "prof";
     if (v) parts.push({ label, value: v, why: skill ? "proficient in this skill" : "proficient" });
   }
 
@@ -151,9 +151,18 @@ export function formulaText(parts, total = null) {
   });
   const sum = parts.reduce((n, p) => n + p.value, 0);
   const end = Number.isFinite(Number(total)) ? Number(total) : sum;
-  let line = `${shown.join(" ")} = ${signed(end)}`;
+  const line = `${shown.join(" ")} = ${signed(end)}`;
+  // ⚠️🔴 THE ARGUMENT ABOUT THE NUMBER IS NOT FOR THE CARD (his rule,
+  // 2026-09-29: "Never print '+2 more than the sheet shows' or any book-vs-sheet
+  // note. That note is for the console, not chat.").
+  //
+  // It printed on the card, in the middle of the formula, and it is a note to ME
+  // about a disagreement between what the roll used and what the sheet adds up to.
+  // The table gets the number; the console gets the argument.
   if (Number.isFinite(Number(total)) && Number(total) !== sum) {
-    line += ` (${signed(Number(total) - sum)} more than the sheet shows)`;
+    console.log(`ace-qol | the roll used ${signed(Number(total))} where this sheet adds up to `
+      + `${signed(sum)} (${signed(Number(total) - sum)}). The card shows what the roll used: `
+      + `${line}`);
   }
   return line;
 }

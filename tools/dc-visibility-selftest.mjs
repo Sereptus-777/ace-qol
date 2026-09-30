@@ -1,26 +1,32 @@
-// ─── A DC BELONGS TO WHOEVER SET IT ─────────────────────────────────────────
+// ─── THE CHROME LAW: ACE-ONE-ROAD.md § 13 ───────────────────────────────────
 //
-// His rule, 2026-09-29:
+// § 13.1  Every ACE chat card hides Foundry's speaker strip. The ⋮ stays.
+// § 13.2  A player sees the DC on a roll they are making. The GM sees every DC.
+// § 13.3  A monster's AC is never on a card. AC is not a save DC.
 //
-//   "The player knows its own DCs. It has no idea about any other DC. The
-//    dungeon master knows all DCs. That's all there is to it."
+// ⚠️🔴 § 13.2 REPLACES WHAT 0.58 SHIPPED. I built that round the wrong question,
+// "who SET this number", so Lamia's DC 13 was hidden from Jeth, the man rolling
+// against it. His correction: "Do not hide Lamia's DC 13 on Jeth's Charm card.
+// He is rolling against it." The number belongs to the ROLL.
 //
-// This pins the MECHANISM, and `dc-check.mjs` pins the sweep. Two different
-// jobs: the check asks "is every DC that reaches a screen wrapped", and this
-// asks "does the wrapper actually do the right thing on each screen".
+// And § 13.3 is the mirror of it, which is why it needs its own wrapper: a DC
+// goes TO the person rolling, and an AC is the one thing the person rolling must
+// not be handed.
 //
-// The three properties that matter, and every one of them is a bug I have
-// already shipped in some other form:
+// This pins the MECHANISM. `dc-check.mjs` pins the sweep: that every DC and AC
+// which reaches a card goes through a wrapper at all.
 //
-//   1. IT IS DECIDED PER SCREEN. A card is built once by the GM and rendered on
-//      every client, so a choice made while the card is written is made for the
-//      whole table at once. That is how "DC 13 Wisdom" got printed to everybody.
-//   2. IT FAILS HIDDEN. Hidden by CSS, revealed by a pass. A card the pass never
-//      reaches shows nothing rather than leaking, which is the opposite of
-//      `forge-gm-only` (visible until something hides it) and of the 2026-08-07
-//      bug that chat-render-utils exists to prevent.
-//   3. EVERY MODULE CARRIES ITS OWN HIDE RULE. Forge and Engine draw their own
-//      cards and must be correct in a world without ACE QOL.
+// The three properties that matter, each of them a bug I have already shipped in
+// some other form:
+//
+//   1. DECIDED PER SCREEN. A card is built once, by the GM, and rendered on every
+//      client, so a choice made while the card is written is made for the whole
+//      table at once.
+//   2. FAILS HIDDEN. Hidden by CSS, revealed by a pass. A card the pass never
+//      reaches shows nothing rather than leaking. `forge-gm-only` is the other way
+//      round and one of its cards had no handler at all.
+//   3. EVERY MODULE CARRIES ITS OWN COPY. Forge and Engine draw their own cards
+//      and must be right in a world without ACE QOL.
 import { readFileSync } from "node:fs";
 
 let pass = 0, fail = 0;
@@ -38,98 +44,144 @@ const engineCss = read("ace-engine/styles/ace-engine.css");
 const qolMain = read("ace-qol/scripts/ace-qol.mjs");
 const forge = read("ace-artificer/scripts/ace-artificer.mjs");
 const engine = read("ace-engine/scripts/ace-engine.mjs");
+const save = read("ace-qol/scripts/save-engine.mjs");
+const attack = read("ace-qol/scripts/attack-pipeline.mjs");
 const checker = read("ace-qol/tools/dc-check.mjs");
 const release = read("ace-qol/tools/release-check.py");
+const road = read("ace-qol/docs/ACE-ONE-ROAD.md");
 
-console.log("\nA DC BELONGS TO WHOEVER SET IT\n");
+console.log("\nTHE CHROME LAW (ACE-ONE-ROAD.md \u00a7 13)\n");
 
-/* ══ 1. WHO MAY KNOW ══════════════════════════════════════════════════════ */
-console.log("WHO MAY KNOW");
+/* ══ THE LAW IS WRITTEN DOWN ══════════════════════════════════════════════ */
+console.log("IT IS IN THE DOCUMENT, NOT JUST IN THE CODE");
+{
+  check("\u00a7 13 exists in the One Road", /## 13\. Every ACE card/.test(road), "the chrome law");
+  check("\u00a7 13.1 no speaker strip", /### 13\.1 No speaker strip/.test(road), "every ACE card");
+  check("\u00a7 13.2 a DC on the roll that needs it",
+    /### 13\.2 A DC is shown on the roll that needs it/.test(road)
+    && /Lamia's DC 13 is on\s*\n?\s*Jeth's Charm Person card/.test(road), "his own example");
+  check("\u00a7 13.3 a monster's AC is never on a card",
+    /### 13\.3 A monster's AC is never on a card/.test(road), "AC is not a save DC");
+  check("\u00a7 13.4 what a card says about its own numbers",
+    /### 13\.4 What a card says about its own numbers/.test(road)
+    && /Never the word "proficiency"/.test(road), "prof, no sheet-vs-book note");
+  check("and the road's own diagram points at it",
+    /A DC only on a roll that\s*\n?\s*player is making\. See section 13\./.test(road), "one line, one pointer");
+}
+
+/* ══ § 13.1 THE SPEAKER STRIP ═════════════════════════════════════════════ */
+console.log("\n\u00a7 13.1  NO SPEAKER STRIP, ON ANY ACE CARD");
+{
+  check("a card is recognised by the MESSAGE's flags, not by its own content",
+    /export function isAceCard\(message, el = null\)/.test(utils)
+    && /ACE_NAMESPACES\.some\(ns => flags\[ns\]/.test(utils), "save, attack, damage, heal, reaction");
+  check("all four modules count",
+    /\["ace-qol", "ace-artificer", "ace-engine", "ace-envoy"\]/.test(utils), "one list");
+  check("the stamp goes on the message element",
+    /el\.setAttribute\("data-ace-card", "1"\)/.test(utils), "data-ace-card");
+  check("one pass does the strip and the numbers together",
+    /export function registerAceChrome\(\)/.test(utils)
+    && /stampAceCard\(message, el\);/.test(utils)
+    && /revealOwnDCs\(el\);/.test(utils) && /revealOwnACs\(el\);/.test(utils), "registered once");
+  check("and it is registered at ready", /registerDCVisibility\(\);/.test(qolMain), "ace-qol.mjs");
+  for (const [name, css] of [["ace-qol", qolCss], ["Forge", forgeCss], ["Engine", engineCss]]) {
+    check(`${name} hides the sender and the time, never the header`,
+      /\.chat-message\[data-ace-card="1"\] > \.message-header \.message-sender/.test(css)
+      && !/\.chat-message\[data-ace-card="1"\] > \.message-header \{[\s\S]{0,20}display: none/.test(css),
+      "the \u22ee survives");
+  }
+  check("and the controls move into the card's corner",
+    /\.message-metadata \{[\s\S]{0,40}position: absolute;/.test(qolCss), "top right");
+  check("Forge and Engine stamp their own, without depending on QOL",
+    /forgeStampAceCard\(message, root\)/.test(forge)
+    && /root\.setAttribute\("data-ace-card", "1"\)/.test(engine), "each on its own");
+}
+
+/* ══ § 13.2 A DC GOES TO THE ROLLER ═══════════════════════════════════════ */
+console.log("\n\u00a7 13.2  A DC IS SHOWN ON THE ROLL THAT NEEDS IT");
 {
   const body = utils.slice(utils.indexOf("export function maySeeDC"), utils.indexOf("export function dcSpan"));
-  check("the GM knows all of them", /if \(game\.user\?\.isGM\) return true;/.test(body), "always");
-  check("a player knows the ones their own creature set",
-    /return !!actor\?\.isOwner;/.test(body), "isOwner");
-  check("no owner named means it is not theirs",
-    /if \(!actorId\) return false;/.test(body), "hidden, not shown");
-  check("and an unreadable answer is 'not theirs' too",
-    /return false;\s*\n\s*\/\/ unreadable: it is not theirs/.test(body)
-    || /catch \(_\) \{\s*\n\s*return false;/.test(body), "fails closed");
+  check("the GM sees every DC", /if \(game\.user\?\.isGM\) return true;/.test(body), "always");
+  check("a player sees one on a roll their creature is making",
+    /return ids\.some\(id => !!game\.actors\?\.get\(id\)\?\.isOwner\);/.test(body), "isOwner");
+  check("several rollers share one line, because one card asks them all",
+    /String\(rollers \?\? ""\)\.split\(\/\\s\+\/\)/.test(body), "space-separated");
+  check("no roller named means nobody is rolling it yet",
+    /if \(!ids\.length\) return false;/.test(body), "an unsprung trap, an unrevealed sheet");
+  check("and an unreadable answer is not this screen's",
+    /catch \(_\) \{[\s\S]{0,60}return false;/.test(body), "fails closed");
+
+  check("the wrapper names the roller, not whoever set the number",
+    /data-dc-roller="\$\{esc\(ids\)\}"/.test(utils)
+    && !/data-dc-actor/.test(utils), "data-dc-roller");
+  check("Lamia's DC is on the header, for the creatures rolling against it",
+    /dcSpan\(` \u00b7 \$\{dcText\}`, rollers, "ace-qol-save-cast-dc"\)/.test(save)
+    && /static rollersOn\(results\)/.test(save), "Jeth reads it");
+  check("and the whispered prompt shows it to the person rolling",
+    /Roll a \$\{dcSpan\(`DC \$\{saveDC\} `, tgt\?\.actorId\)\}/.test(save), "their roll, their number");
+  check("the older pill, which names nobody, stays the GM's",
+    /for \(const el of \(root\?\.querySelectorAll\?\.\(".ace-qol-save-dc"\) \?\? \[\]\)\)/.test(utils)
+    && /decide\(el, null\);/.test(utils), "no roller, no player");
 }
 
-/* ══ 2. DECIDED PER SCREEN, NOT WHEN THE CARD IS WRITTEN ══════════════════ */
-console.log("\nDECIDED PER SCREEN");
+/* ══ § 13.3 AN AC IS NOT A DC ═════════════════════════════════════════════ */
+console.log("\n\u00a7 13.3  A MONSTER'S AC IS NEVER ON A CARD");
 {
-  check("the wrapper carries the creature that SET the number",
-    /data-dc-actor="\$\{esc\(actorId\)\}"/.test(utils), "dcSpan");
-  check("both wrappers are revealed by one pass",
-    /querySelectorAll\?\.\(".ace-qol-dc"\)/.test(utils)
-    && /querySelectorAll\?\.\(".ace-qol-save-dc"\)/.test(utils), "owner-aware and GM-only");
-  check("the older pill has no owner, so it is the GM's alone",
-    /\/\/ No owner named: the GM's alone\.\s*\n\s*for \(const el of \(root\?\.querySelectorAll\?\.\(".ace-qol-save-dc"\)/.test(utils),
-    "a monster's save DC");
-  check("registered once for every ACE card, from every module",
-    /export function registerDCVisibility\(\)/.test(utils)
-    && /registerDCVisibility\(\);/.test(qolMain), "not per handler");
-  check("and NOT stamped inside one handler any more",
-    !/for \(const dcEl of el\.querySelectorAll\("\.ace-qol-save-dc"\)\)/.test(read("ace-qol/scripts/save-engine.mjs")),
-    "a stamp in one handler covers only its own cards");
+  check("an AC has its own wrapper, asking a different question",
+    /export function acSpan\(text, whose = null/.test(utils)
+    && /data-ac-actor="\$\{esc\(whose\)\}"/.test(utils), "whose sheet, not who rolls");
+  check("revealed to the GM and to the creature's own owner",
+    /const mine = game\.user\?\.isGM \|\| \(!!id && !!game\.actors\?\.get\(id\)\?\.isOwner\);/.test(utils),
+    "their own AC is on their own sheet");
+  check("the to-hit card's AC goes through it",
+    /acSpan\(`AC \$\{r\.effectiveAC\} \+\$\{r\.effectiveAC - r\.ac\}`, _acWhose\)/.test(attack)
+    && /acSpan\(`AC \$\{r\.ac\}`, _acWhose\)/.test(attack), "every swing printed it before");
+  check("and the math is untouched, only the display",
+    /The MATH is untouched/.test(attack), "the hit was decided long before");
+  for (const [name, css] of [["ace-qol", qolCss], ["Forge", forgeCss], ["Engine", engineCss]]) {
+    check(`${name} hides an AC by default`,
+      /\.ace-qol-ac \{ display: none !important; \}/.test(css)
+      && /\.ace-qol-ac\[data-ace-ac="show"\]/.test(css), "CSS, not a handler");
+  }
 }
 
-/* ══ 3. IT FAILS HIDDEN ═══════════════════════════════════════════════════ */
-console.log("\nIT FAILS HIDDEN");
-for (const [name, css] of [["ace-qol", qolCss], ["Forge", forgeCss], ["Engine", engineCss]]) {
-  check(`${name} hides a DC by default`,
-    /\.ace-qol-dc \{ display: none !important; \}/.test(css)
-    && /\.ace-qol-save-dc \{ display: none !important; \}/.test(css), "CSS, not a handler");
-  check(`${name} shows one only once a pass has said so`,
-    /\.ace-qol-dc\[data-ace-dc="show"\]/.test(css)
-    && /\.ace-qol-save-dc\[data-ace-dc="show"\]/.test(css), "data-ace-dc");
-}
+/* ══ § 13.4 WHAT A CARD SAYS ABOUT ITS NUMBERS ════════════════════════════ */
+console.log("\n\u00a7 13.4  WHAT A CARD SAYS ABOUT ITS OWN NUMBERS");
 {
-  check("Forge reveals its own, without depending on ACE QOL",
-    /function forgeRevealOwnDCs\(root\)/.test(forge) && /registerForgeDCVisibility\(\)/.test(forge),
-    "its own pass");
-  check("Engine reveals its own, on every card it draws",
-    /function _aceRevealOwnDCs\(root\)/.test(engine)
-    && /_aceRevealOwnDCs\(root\);/.test(engine), "in its render handler");
-  check("and Forge sweeps what is already on screen",
-    /for \(const node of document\.querySelectorAll\("#chat-log \[data-message-id\]/.test(forge),
-    "Foundry paints the log once");
+  const rf = read("ace-qol/scripts/roll-formula.mjs");
+  check("the word is prof, never proficiency",
+    /label: "prof"/.test(rf) && !/label: "proficiency"/.test(rf), "on the card");
+  check("the sheet-versus-roll note is a console line now",
+    /console\.log\(`ace-qol \| the roll used/.test(rf)
+    && !/more than the sheet shows\)`/.test(rf),
+    "chat gets the number, the console gets the argument");
+  check("the portrait is shown whole",
+    /width: 52px !important;/.test(qolCss) && /object-fit: contain !important;/.test(qolCss),
+    "not a 32px circle");
+  check("the die sits with the result it made",
+    /\$\{d20El\}\s*\n\s*<span class="ace-qol-save-math-die">/.test(save), "5 \u2212 2 = 3 FAIL");
+  check("and a second roll is a second line",
+    /\.ace-qol-save-extra-roll \{/.test(qolCss)
+    && /ace-qol-save-extra-roll/.test(read("ace-qol/scripts/post-hit-saves.mjs")),
+    "the Topple die, under the result");
 }
 
-/* ══ 4. THE SWEEP IS ENFORCED, NOT REMEMBERED ═════════════════════════════ */
+/* ══ ENFORCED, NOT REMEMBERED ═════════════════════════════════════════════ */
 console.log("\nENFORCED, NOT REMEMBERED");
 {
-  check("the release check runs the DC check",
-    /node tools\/dc-check\.mjs/.test(release), "every release");
+  check("the release check runs it", /node tools\/dc-check\.mjs/.test(release), "every release");
   check("it reads all four modules",
-    /ace-artificer/.test(checker) && /ace-engine/.test(checker) && /ace-envoy/.test(checker),
-    "qol, Forge, Engine, Envoy");
-  check("it accepts all three wrappers and no others",
-    /const WRAPPED = \/ace-qol-dc\\b\|ace-qol-save-dc\\b\|forge-gm-only\\b\|dcSpan/.test(checker),
-    "and says why each counts");
+    /ace-artificer/.test(checker) && /ace-engine/.test(checker) && /ace-envoy/.test(checker), "qol too");
+  check("it checks an AC as well as a DC",
+    /const STATES_AN_AC/.test(checker) && /const AC_WRAPPED/.test(checker), "\u00a7 13.3");
   check("the console is the GM's, so it is not a leak",
     /c\.object\?\.name === "console"/.test(checker), "console.* is skipped");
   check("prose and reference data are listed, never failed",
     /\(onAScreen \? hits : notes\)\.push\(row\)/.test(checker), "two lists");
-  check("it reports the line the DC is on, not the line the template opens on",
-    /const dcLine = startLine \+/.test(checker), "a card is one literal, forty lines long");
-  check("a justification anywhere from above the literal to the DC counts",
-    /for \(let l = Math\.max\(1, startLine - 3\); l <= dcLine; l\+\+\)/.test(checker),
-    "dc-ok: <reason>");
-}
-
-/* ══ 5. AND THE ONE IT WAS ALL FOR ════════════════════════════════════════ */
-console.log("\nTHE CARD HE WAS LOOKING AT");
-{
-  const save = read("ace-qol/scripts/save-engine.mjs");
-  check("the save card's quiet line keeps its DC on the GM's side",
-    /ace-qol-save-quiet-dc ace-qol-gm-only/.test(save), "line 2");
-  check("the whispered prompt names the save and not the number",
-    /Roll a \$\{abilityLabel\} save/.test(save), "sent TO the player");
-  check("every DC pill in the suite is hidden until a pass says otherwise",
-    /\.ace-qol-save-dc \{ display: none !important; \}/.test(qolCss), "one rule");
+  check("it reports the line the number is on",
+    /const dcLine = startLine \+/.test(checker), "not the line the template opens on");
+  check("a reason on a table covers the table",
+    /its table already said why/.test(checker), "forty sentences, one reason");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

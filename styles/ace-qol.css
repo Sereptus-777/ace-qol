@@ -6379,9 +6379,14 @@ i.ace-douse-tool::after {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 /* ── Foundry's manila speaker strip, hidden on ACE save cards only ──────────
-   His card: "Foundry's message-header (the manila speaker strip: name +
-   DUNGEON MASTER) is hidden on ACE save cards only ... Other chat keeps the
-   strip. Keep a small ⋮ so the message can still be deleted."
+   ACE-ONE-ROAD.md § 13.1: "Every ACE chat card hides Foundry's speaker strip
+   (the manila 'Name / DUNGEON MASTER' bar). ⋮ stays. This is every ACE card:
+   save, attack, damage, heal, reaction, refusal. Not only saves."
+
+   ⚠️ IT WAS SAVE CARDS ONLY. The stamp came off the save card's own content, so
+   the attack, damage, heal and refusal cards all kept the bar. It comes off the
+   MESSAGE's flags now: any ACE module owns it, it loses the strip. Other chat is
+   untouched.
 
    ⚠️ ONLY WHAT I CAN NAME AS THE STRIP IS HIDDEN. The sender and the timestamp
    go; every other child of the header stays visible, because that is where
@@ -6389,8 +6394,8 @@ i.ace-douse-tool::after {
    generations. Hiding the whole header would take the delete with it.
    The message itself is the positioning context so the controls can sit in the
    card's top-right corner instead of holding a strip of their own open. */
-.chat-message[data-ace-save-shell="1"] { position: relative; }
-.chat-message[data-ace-save-shell="1"] > .message-header {
+.chat-message[data-ace-card="1"] { position: relative; }
+.chat-message[data-ace-card="1"] > .message-header {
   background: none;
   border: none;
   box-shadow: none;
@@ -6398,16 +6403,16 @@ i.ace-douse-tool::after {
   margin: 0;
   min-height: 0;
 }
-.chat-message[data-ace-save-shell="1"] > .message-header .message-sender,
-.chat-message[data-ace-save-shell="1"] > .message-header .message-timestamp,
-.chat-message[data-ace-save-shell="1"] > .message-header > h4,
-.chat-message[data-ace-save-shell="1"] > .message-header time,
-.chat-message[data-ace-save-shell="1"] > .message-header .whisper-to,
-.chat-message[data-ace-save-shell="1"] > .message-header .flavor-text {
+.chat-message[data-ace-card="1"] > .message-header .message-sender,
+.chat-message[data-ace-card="1"] > .message-header .message-timestamp,
+.chat-message[data-ace-card="1"] > .message-header > h4,
+.chat-message[data-ace-card="1"] > .message-header time,
+.chat-message[data-ace-card="1"] > .message-header .whisper-to,
+.chat-message[data-ace-card="1"] > .message-header .flavor-text {
   display: none !important;
 }
 /* The ⋮ / delete, tucked into the card's corner and still reachable. */
-.chat-message[data-ace-save-shell="1"] > .message-header .message-metadata {
+.chat-message[data-ace-card="1"] > .message-header .message-metadata {
   position: absolute;
   top: 4px;
   right: 6px;
@@ -6415,7 +6420,7 @@ i.ace-douse-tool::after {
   opacity: 0.55;
   transition: opacity 0.15s;
 }
-.chat-message[data-ace-save-shell="1"] > .message-header .message-metadata:hover { opacity: 1; }
+.chat-message[data-ace-card="1"] > .message-header .message-metadata:hover { opacity: 1; }
 
 /* ── The shell ─────────────────────────────────────────────────────────────── */
 .ace-qol-save-shell {
@@ -6424,10 +6429,20 @@ i.ace-douse-tool::after {
   gap: 0;
 }
 
-/* A portrait is shown WHOLE. `cover` cropped the top off a tall token. */
+/* ── A PORTRAIT IS SHOWN WHOLE (his card, 2026-09-29: "Target portrait shown
+   whole, not a 32px circle") ─────────────────────────────────────────────────
+   `.ace-qol-save-tgt-img` is a 32px circle with `object-fit: cover`, so a tall
+   token lost the top of its head and a wide one lost its shoulders, inside a
+   thumbnail too small to recognise across a table. This overrides all four:
+   bigger, square-cornered, and CONTAIN, so the whole picture is there and the
+   backdrop takes whatever is left over. */
 .ace-qol-save-portrait {
-  object-fit: contain;
+  width: 52px !important;
+  height: 52px !important;
+  border-radius: 8px !important;
+  object-fit: contain !important;
   background: #14120e;
+  border: 1px solid #5b5241;
 }
 
 /* ── 1. The cast line ─────────────────────────────────────────────────────── */
@@ -6546,3 +6561,32 @@ i.ace-douse-tool::after {
    show it. */
 .ace-qol-dc { display: none !important; }
 .ace-qol-dc[data-ace-dc="show"] { display: inline !important; }
+
+/* The DC on the header, beside who did what to whom. Its own span so the reveal
+   pass can hide it from a screen that is not rolling against it. */
+.ace-qol-save-cast-dc {
+  color: #d4af37;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* A SECOND ROLL IS A SECOND LINE (his card, 2026-09-29: "The Topple die is a
+   second roll. It does not share the save row ... one extra line under the
+   result, not a gold pill in the middle of the save"). Quiet, plain, under
+   everything the save itself said. */
+.ace-qol-save-extra-roll {
+  display: block;
+  margin-top: 4px;
+  font-size: 14px;
+  line-height: 1.4;
+  color: #b9a978;
+  overflow-wrap: anywhere;
+  min-height: 1.4em;
+}
+
+/* ── A MONSTER'S AC IS NOT ON A CARD (ACE-ONE-ROAD.md § 13.3) ───────────────
+   Hidden by default, revealed to the GM and to the owner of the creature whose
+   AC it is. NOT the DC rule: a DC belongs to the person rolling against it, and
+   an AC is the one thing the person rolling must not be told. */
+.ace-qol-ac { display: none !important; }
+.ace-qol-ac[data-ace-ac="show"] { display: inline !important; }
