@@ -557,5 +557,87 @@ console.log("\nLIGHT BEHIND THE DIE, NONE ON IT");
     /@keyframes acp-blink-die/.test(read("scripts/roll-popout.mjs")), "CSS on the button, not this function");
 }
 
+/* == HARM FROM THE SOURCE ENDS THE CHARM =============================== */
+// His rule, 2026-09-30: "When the caster of that Charm, or that caster's allies,
+// deal damage to that target, that caster's Charm ends immediately. No extra
+// save. 2014: you or your companions do anything harmful. 2024: you or your
+// allies damage it. Read the edition off the item."
+console.log("\nHARM FROM THE SOURCE ENDS THE CHARM");
+{
+  const raw = read("scripts/condition-raw-hooks.mjs");
+
+  // ⚠️🔴 THE REASON IT NEVER FIRED. ACE writes hit points with a raw actor.update,
+  // which does not fire dnd5e.preApplyDamage, and only the Sleep wake had been
+  // moved onto ACE's own signal. So every drop of ACE damage came down the one
+  // path this door ignored.
+  check("ACE's own damage drives every reaction, not just the Sleep wake",
+    /ConditionRawHooks\._dispatch\(key, \{ actor, effect, sourceActor, sourceItem, amount \}\)/.test(raw),
+    "the same dispatch as the dnd5e hook");
+  check("and it reads the caster and the amount off the signal",
+    /const sourceActor = payload\?\.sourceActor \?\? null;/.test(raw)
+    && /Number\(payload\?\.hpDelta \?\? payload\?\.total \?\? 0\)/.test(raw),
+    "the payload has carried both since the hit-point door");
+  check("a heal is not harm",
+    /if \(!Number\.isFinite\(amount\) \|\| amount <= 0\) return;/.test(raw), "only damage ends it");
+
+  check("the caster's SIDE ends it, not the caster alone",
+    /static _onCasterSide\(sourceActor, casterActorId\)/.test(raw)
+    && /if \(!ConditionRawHooks\._onCasterSide\(sourceActor, casterActorId\)\) return;/.test(raw),
+    "2014 companions, 2024 allies");
+  check("a side is a disposition, the only allegiance Foundry knows",
+    /mine\.disposition === theirs\.disposition/.test(raw), "same side");
+  check("and a creature it cannot place does NOT end a charm on a guess",
+    /so the charm is left for the GM to end/.test(raw), "no token, no answer");
+
+  check("the edition is read off the ITEM, never the world setting",
+    /item\?\.system\?\.source\?\.rules/.test(raw), "the item is what is being cast");
+  check("2014's wider wording is said, not pretended",
+    /which is wider than damage/.test(raw), "other harm is still the GM's call");
+  check("it ends with no extra save",
+    /No save:/.test(raw) && /await effect\.delete\(\);/.test(raw), "immediately");
+  check("Command is NOT in the dispatch",
+    !/case "command":/.test(raw), "his rule: Command is not this rule");
+  check("Suggestion IS, through the same door",
+    /case "suggestion":/.test(raw), "that spell's own text");
+}
+
+/* == THE PICKER GETS OUT OF THE WAY ==================================== */
+console.log("\nTHE PICKER GETS OUT OF THE WAY");
+{
+  const pk = read("scripts/spell-target-picker.mjs");
+
+  check("one legal target already selected means no picker",
+    /if \(cap === 1 && kind !== "exclude"\)/.test(pk)
+    && /return \[chosen\[0\]\.actor\];/.test(pk), "use that target");
+  check("two targeted with room for one is still a question",
+    /if \(chosen\.length > 1\)/.test(pk), "the picker opens to ask which");
+  check("and nothing filters a creature out for a condition it already has",
+    /a recast\s*\n?\s*\/\/ refreshes it/.test(pk), "already Charmed is still legal");
+
+  check("with one target, the click is the cast",
+    /if \(maxTargets === 1\) \{[\s\S]{0,260}confirm\.click\(\); return;/.test(pk),
+    "no second Cast button");
+  check("and it presses the dialog's own confirm, so there is one way out",
+    /button\[data-action="confirm"\]/.test(pk)
+    && /ONE path out of this dialog/.test(pk), "the selection is read the same way");
+  check("that button is hidden when a click already does it",
+    /if \(confirm\) confirm\.style\.display = "none";/.test(pk), "no second Cast button");
+  check("with room for several the confirm button stays",
+    /the confirm button stays/.test(pk), "he asked for it there");
+}
+
+/* == A PRESS IS NEVER LABELLED "SAVE" ================================== */
+console.log("\nA PRESS IS NEVER LABELLED SAVE");
+{
+  const main = read("scripts/ace-qol.mjs");
+  check("an unnamed activity is named after the thing being done",
+    /const _verb = item\.type === "spell" \? "Cast" : "Use";/.test(main)
+    && /const _named = `\$\{_verb\} \$\{item\.name\}`;/.test(main), "Cast Charm Person");
+  check("and dnd5e's type word is never the label",
+    !/\|\| a\.name \|\| a\.type \|\| "Action"/.test(main), "never Save");
+  check("an activity with a real name of its own keeps it",
+    /if \(a\.name\) return base;/.test(main), "that name tells two of them apart");
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exitCode = fail ? 1 : 0;

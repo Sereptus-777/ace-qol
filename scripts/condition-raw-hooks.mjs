@@ -4,10 +4,13 @@
 // manually trigger:
 //
 //   • Sleep        — "the sleeper wakes if it takes damage" (PHB 277).
-//   • Charm Person — "the spell ends if the charmer harms it" (PHB 221).
-//   • Suggestion   — "if the activity could harm the target, the spell ends"
-//                    (PHB 280). We treat "the caster damages the target"
-//                    as the closest mechanical proxy.
+//   • Charm Person — the spell ends when the caster OR THE CASTER'S SIDE harms
+//                    the target. 2014: "you or your companions do anything
+//                    harmful"; 2024: "you or your allies damage it". Read off the
+//                    ITEM, and damage is the harm a hook can see.
+//   • Suggestion   — the same door and that spell's own text: it ends on damage
+//                    from the caster or their companions.
+//   • Command      — NOT this rule. It is not in the dispatch and must not be.
 //   • Dominate Person / Monster — "each time the target takes damage, it
 //                    makes a new save; on a success the spell ends" (PHB 235).
 //   • Geas         — "the target takes 5d10 psychic damage when it acts
@@ -73,24 +76,44 @@ export class ConditionRawHooks {
       }
     });
 
-    // ── ACE damage path ── APPLY ALL / Cleave / save-for-half route HP through
-    // DamageApplicator.applyHPDamage, which writes hp via a raw actor.update and
-    // therefore NEVER fires dnd5e.preApplyDamage. So the hook above never heard a
-    // normal ACE attack, and a sleeping creature couldn't be woken by getting hit.
-    // Listen to ACE's own damageApplied hook too. Its payload has no amount/source,
-    // so it only drives the "any damage" reaction (Sleep wake) — caster-specific
-    // ones (charm break, dominate re-save) stay on the dnd5e hook. (2026-06-24.)
+    // ── ACE'S OWN DAMAGE PATH DRIVES ALL OF THEM (2026-09-30) ──────────────
+    //
+    // APPLY ALL, Cleave and save-for-half route hit points through
+    // DamageApplicator.applyHPDamage, which writes hp with a raw actor.update and
+    // therefore NEVER fires `dnd5e.preApplyDamage`. So the hook above never hears a
+    // normal ACE attack.
+    //
+    // ⚠️🔴 AND ONLY THE SLEEP WAKE WAS MOVED ACROSS. The note here said the payload
+    // "has no amount/source, so it only drives the any-damage reaction — caster-
+    // specific ones stay on the dnd5e hook". That stopped being true when the
+    // hit-point door was built: `damageApplied` carries `sourceActor` and `total`.
+    // The note stayed, so Lamia could hit Escher all day and her Charm never broke,
+    // because every drop of ACE damage came down the one path this hook ignored.
+    // (His table, 2026-09-30: "Lamia hitting Escher drops her Charm the moment
+    // damage lands.")
+    //
+    // It is the same dispatch as the dnd5e hook now, so there is one set of rules
+    // and not two. The two paths are disjoint — a raw actor.update does not fire
+    // dnd5e's hook — and a reaction whose effect has already gone simply finds
+    // nothing to do.
     Hooks.on(`${MODULE_ID}.damageApplied`, (payload) => {
       try {
         if (game.users?.activeGM !== game.user) return;
         const actor = payload?.actor;
         if (!actor?.effects) return;
-        const sleepEffect = [...(actor.effects ?? [])].find(e =>
-          e && !e.disabled && e.flags?.[MODULE_ID]?.conditionKey === "sleep_unconscious");
-        if (!sleepEffect) return;
+        const amount = Number(payload?.hpDelta ?? payload?.total ?? 0);
+        if (!Number.isFinite(amount) || amount <= 0) return;      // a heal is not harm
+        const sourceActor = payload?.sourceActor ?? null;
+        const sourceItem = payload?.sourceItem ?? null;
+        // A beat, so the hit points and the card have settled before an effect goes.
         setTimeout(() => {
-          ConditionRawHooks._wakeSleeper({ actor, effect: sleepEffect, amount: null })
-            .catch(err => console.warn(`${MODULE_ID} | ACE-damage Sleep wake failed:`, err));
+          for (const effect of [...(actor.effects ?? [])]) {
+            const key = effect?.flags?.[MODULE_ID]?.conditionKey;
+            if (!effect || effect.disabled || !key) continue;
+            ConditionRawHooks._dispatch(key, { actor, effect, sourceActor, sourceItem, amount })
+              ?.catch?.(err => console.warn(`${MODULE_ID} | the "${key}" reaction to ACE damage `
+                + `on ${actor?.name} failed:`, err));
+          }
         }, 60);
       } catch (err) {
         console.warn(`${MODULE_ID} | ConditionRawHooks damageApplied hook failed:`, err);
@@ -377,25 +400,91 @@ export class ConditionRawHooks {
   // CHARM PERSON / SUGGESTION — caster's harm breaks the effect
   // ═════════════════════════════════════════════════════════════════════════
 
-  static async _breakOnHarmFromCaster({ actor, effect, sourceActor, amount }) {
-    // RAW: the spell ends if the charmer (or anyone the charmer commands)
-    // harms the target. We approximate "anyone the charmer commands" as
-    // "the charmer themselves" — extending to summons/dominated minions is
-    // a future enhancement (would need a charmer-allegiance check).
+  /**
+   * WHETHER THIS DAMAGER IS ON THE CASTER'S SIDE (2026-09-30).
+   *
+   * His rule: "When the caster of that Charm, or that caster's allies, deal damage
+   * to that target, that caster's Charm ends immediately." RAW says the same in
+   * both editions, in different words: 2014 "you or your companions", 2024 "you or
+   * your allies".
+   *
+   * A side is a token's disposition, which is the only thing Foundry actually
+   * knows about allegiance. Same disposition as the caster's own token means the
+   * same side. A creature with no token on this scene cannot be placed, so the
+   * answer is NO and the console says why: ending a charm on a guess is worse than
+   * leaving the GM to end it himself.
+   */
+  static _onCasterSide(sourceActor, casterActorId) {
+    try {
+      if (!sourceActor || !casterActorId) return false;
+      if (sourceActor.id === casterActorId) return true;          // the caster themselves
+      const tokenOf = (a) => a?.getActiveTokens?.()?.[0]?.document
+        ?? canvas?.tokens?.placeables?.find(t => t.actor?.id === a?.id)?.document ?? null;
+      const caster = game.actors?.get(casterActorId) ?? null;
+      const mine = tokenOf(sourceActor);
+      const theirs = tokenOf(caster);
+      if (!mine || !theirs) {
+        console.log(`${MODULE_ID} | cannot tell whether ${sourceActor?.name} is on `
+          + `${caster?.name ?? "the charmer"}'s side: one of them has no token on this scene, `
+          + `so the charm is left for the GM to end.`);
+        return false;
+      }
+      const same = mine.disposition === theirs.disposition;
+      if (same) {
+        console.log(`${MODULE_ID} | ${sourceActor.name} is on ${caster?.name}'s side `
+          + `(both disposition ${mine.disposition}), so its damage ends that charm.`);
+      }
+      return same;
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not work out whose side ${sourceActor?.name} is on, `
+        + `so the charm stands:`, err);
+      return false;
+    }
+  }
+
+  static async _breakOnHarmFromCaster({ actor, effect, sourceActor, sourceItem = null, amount }) {
     try {
       const casterActorId = ConditionRawHooks._effectCasterActorId(effect);
       if (!casterActorId) return;                  // can't identify caster → can't enforce
-      if (!sourceActor) return;                    // damage from environment, traps, etc. → not the caster
-      if (sourceActor.id !== casterActorId) return;
-      // The caster harmed the charmed target → spell ends.
+      if (!sourceActor) return;                    // a trap, the environment: not the caster
+      // \u26a0\ufe0f THE CASTER OR THE CASTER'S SIDE (2026-09-30). This was the caster
+      // alone, with a comment calling allies "a future enhancement"; RAW has said
+      // "you or your companions" since 2014.
+      if (!ConditionRawHooks._onCasterSide(sourceActor, casterActorId)) return;
+
+      // \u26a0\ufe0f THE EDITION IS READ OFF THE ITEM, never off the world setting: the
+      // item is what is being cast (CLAUDE.md, 2026-08-29). The two editions differ
+      // in BREADTH, not in whether damage counts \u2014 2014's "anything harmful" is wider
+      // than 2024's "damage it" \u2014 and damage is the only harm a hook can see, so the
+      // wider one is only partly enforced and says so rather than pretending.
+      let edition = null;
+      try {
+        const item = sourceItem ?? (typeof fromUuidSync === "function"
+          ? (fromUuidSync(effect.origin)?.item ?? fromUuidSync(effect.origin)) : null);
+        edition = String(item?.system?.source?.rules ?? "").trim() || null;
+      } catch (_) { /* the break does not depend on knowing */ }
+      if (edition === "2014") {
+        console.log(`${MODULE_ID} | ${effect.name}: 2014 ends on "you or your companions do `
+          + `anything harmful", which is wider than damage. ACE ends it on damage, which is `
+          + `the part a hook can see; other harm is still the GM's call.`);
+      } else if (edition === "2024") {
+        console.log(`${MODULE_ID} | ${effect.name}: 2024 ends on "you or your allies damage it", `
+          + `which is exactly what just happened.`);
+      }
+
+      // The caster's side harmed the charmed target, so the spell ends. No save:
+      // his rule, 2026-09-30, "No extra save."
       await effect.setFlag(MODULE_ID, "_replacedNotEnded", true);
       await effect.delete();
       const spellName = effect.name ?? effect.flags?.[MODULE_ID]?.conditionKey ?? "the charm";
+      const who = sourceActor.id === casterActorId
+        ? `The charmer (<b>${sourceActor.name}</b>)`
+        : `<b>${sourceActor.name}</b>, on the charmer's side,`;
       ConditionRawHooks._postCard({
         actor,
         title: `${spellName} — Broken`,
         accent: "#ce93d8",
-        line: `The charmer (<b>${sourceActor.name}</b>) just dealt ${amount} damage to <b>${actor.name}</b>. RAW: the spell ends.`,
+        line: `${who} just dealt ${amount} damage to <b>${actor.name}</b>. The spell ends.`,
       });
     } catch (err) {
       console.warn(`${MODULE_ID} | charm/suggestion break-on-harm failed for ${actor.name}:`, err);

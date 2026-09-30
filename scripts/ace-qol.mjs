@@ -6752,7 +6752,19 @@ Hooks.once("ready", () => {
       // listed first, and "Cast again" is what separates a second wall from
       // a save against the first one.
       label: (decision.recastIds?.has(a.id) ? "Cast again: " : "") + (() => {
-        const base = (buttonFor(a)?.textContent ?? "").trim() || a.name || a.type || "Action";
+        // ⚠️🔴 NEVER "SAVE" ON A PRESS (his rule, 2026-09-30: "Never label the
+        // press 'Save'. That is dnd5e's activity type. The button is 'Cast Charm
+        // Person', 'Cast Fireball', the spell or feature name. Every press.").
+        //
+        // dnd5e names an unnamed activity after its TYPE, so a spell whose whole
+        // job is one saving throw offered a button that said "Save" — the mechanic,
+        // not the thing being done. An activity with a real name of its own keeps
+        // it, because that name is what tells two of them apart.
+        const _verb = item.type === "spell" ? "Cast" : "Use";
+        const _named = `${_verb} ${item.name}`;
+        const base = a.name
+          ? ((buttonFor(a)?.textContent ?? "").trim() || a.name)
+          : _named;
         if (a.name) return base;               // it has a real name; leave it alone
         try {
           const parts = a.damage?.parts ?? [];

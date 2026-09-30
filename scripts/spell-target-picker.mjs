@@ -132,6 +132,39 @@ export class SpellTargetPicker {
     const cap = kind === "exclude"
       ? Math.max(1, candidates.length)
       : Math.max(1, Number(maxTargets) || 1);
+
+    // ── A TARGET ALREADY CHOSEN IS THE ANSWER (his rule, 2026-09-30) ──────
+    //
+    //   "If a legal target is already selected, do not open the picker. Use that
+    //    target. If nobody legal is selected, open the picker."
+    //
+    // The picker used to open regardless and merely PRE-SELECT what was already
+    // targeted, so every single-target cast cost a dialog and a second click to
+    // confirm a choice that had already been made on the canvas.
+    //
+    // ⚠️ SINGLE TARGET ONLY. With room for several, what is targeted is a starting
+    // point and not the answer, so the picker still opens — he asked for a confirm
+    // button there. And it must be EXACTLY one legal target: two targeted with room
+    // for one is a genuine question.
+    //
+    // ⚠️ AND ALREADY CHARMED IS STILL LEGAL. `candidates` decides legality; nothing
+    // here filters on a condition the creature is already under, because a recast
+    // refreshes it (the condition door's own rule).
+    if (cap === 1 && kind !== "exclude") {
+      const chosen = [...(game.user.targets ?? [])]
+        .map(t => candidates.find(c => c.tokenId === t.id && c.valid !== false))
+        .filter(Boolean);
+      if (chosen.length === 1 && chosen[0].actor) {
+        console.log(`${MODULE_ID} | ${spellItem?.name}: ${chosen[0].actor.name} is already `
+          + `targeted and is a legal target, so the picker does not open.`);
+        return [chosen[0].actor];
+      }
+      if (chosen.length > 1) {
+        console.log(`${MODULE_ID} | ${spellItem?.name}: ${chosen.length} creatures are targeted `
+          + `and it takes one, so the picker opens to ask which.`);
+      }
+    }
+
     return await SpellTargetPicker._showDialog({
       spellItem,
       candidates,
@@ -459,6 +492,13 @@ export class SpellTargetPicker {
       // "first cast fails / second cast works" bug Johnny hit with Haste.
       // (Audit-mandated 2026-06-09.)
       dlg.render({ force: true }).then(() => {
+        // No second "Cast" button when one click is the whole interaction. It is
+        // hidden rather than removed, because the row click presses it: one path
+        // out of the dialog, whichever way the choice was made.
+        if (maxTargets === 1) {
+          const confirm = (dlg.element ?? document).querySelector?.('button[data-action="confirm"]');
+          if (confirm) confirm.style.display = "none";
+        }
         SpellTargetPicker._wireGrid(dlg.element ?? document, maxTargets);
       }).catch(err => {
         console.warn(`${MODULE_ID} | SpellTargetPicker dialog render threw:`, err);
@@ -619,6 +659,18 @@ export class SpellTargetPicker {
             allSelected[0]?.classList.remove("selected");
           }
           el.classList.add("selected");
+          // ⚠️🔴 ONE TARGET: THE CLICK IS THE CAST (his rule, 2026-09-30: "One
+          // target: clicking the portrait is the selection and the cast. No second
+          // 'Cast' button."). It presses the dialog's own confirm rather than
+          // resolving separately, so there is ONE path out of this dialog and the
+          // selection is read the same way however it was made. With room for
+          // several, the confirm button stays and is the only way out.
+          if (maxTargets === 1) {
+            const confirm = root.querySelector?.('button[data-action="confirm"]');
+            if (confirm) { confirm.click(); return; }
+            console.warn(`${MODULE_ID} | the picker has no confirm button to press, so this `
+              + `single target still needs one click more.`);
+          }
         } else {
           el.classList.remove("selected");
         }
