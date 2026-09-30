@@ -100,10 +100,16 @@ const { explainSave, explainCheck, formulaText, formulaPill, rollLineHtml } =
     bonuses: { save: "+3" } } }, attributes: { prof: 3 },
     bonuses: { abilities: { save: "1" } } } };
   const b = explainSave(bonused, "dex");
+  // ⚠️ THE LABEL IS THE SHORT KIND, OR NOTHING (his rule, 2026-09-30: "If you
+  // cannot map it, print +1 only and put the real name in the console"). This
+  // stand-in carries the bonus on its sheet with no active effect granting it, so
+  // there is nothing to name: the part is real and its label is null.
   check("a real save bonus on the ability IS a part",
-    b.parts.some(p => p.label === "save bonus" && p.value === 3), formulaText(b.parts, b.total));
+    b.parts.some(p => p.label === null && p.value === 3), formulaText(b.parts, b.total));
   check("and one on the creature is its own part beside it",
-    b.parts.filter(p => p.label === "save bonus").length === 2, `${b.total} altogether`);
+    b.parts.filter(p => p.label === null).length === 2, `${b.total} altogether`);
+  check("an unnamed part prints its number alone, never a made-up word",
+    / \+3 \+1 = /.test(formulaText(b.parts, b.total)), formulaText(b.parts, b.total));
 
   // A formula bonus cannot be added up, so it is left off and said in the log.
   const weird = { name: "Odd", system: { abilities: { dex: { value: 10, mod: 0, proficient: 0,
@@ -115,8 +121,9 @@ const { explainSave, explainCheck, formulaText, formulaPill, rollLineHtml } =
 /* ══ 3. CHECKS AND SKILLS ════════════════════════════════════════════════ */
 {
   const ath = explainCheck(escher, { skill: "ath" });
+  // Number then label: "+3 prof", not "+ prof +3" (his rule, 2026-09-30).
   check("a skill check reads its own ability and proficiency",
-    formulaText(ath.parts, ath.total) === "Str 16 (+3) + prof +3 = +6",
+    formulaText(ath.parts, ath.total) === "Str 16 (+3) +3 prof = +6",
     formulaText(ath.parts, ath.total));
   const acr = explainCheck(escher, { skill: "acr" });
   check("expertise is named as expertise, not as proficiency twice",

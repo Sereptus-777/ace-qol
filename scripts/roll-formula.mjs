@@ -51,42 +51,99 @@ function flatBonus(raw) {
  * @param {string} ability   "dex"
  * @returns {{parts: Array<{label: string, value: number, why: string}>, total: number}}
  */
+/* ═══════════════════════════════════════════════════════════════════════
+   THE SHORT KIND, AND NOTHING ELSE (his rule, 2026-09-30)
+
+     Wrong:  + Cloak of Protection +1
+     Right:  +1 cloak
+
+   "the short kind, then nothing else. prof · cloak · ring · amulet · circlet ·
+    stone · Bless · Guidance. A spell or condition uses that short name. An item
+    uses its type, never the title. If you cannot map it, print +1 only and put
+    the real name in the console."
+
+   ⚠️🔴 THIS IS A TABLE, NOT A GUESS. My first pass printed the effect's own
+   name, so a save read "+ Cloak of Protection +1" and the card grew a title in
+   the middle of a sum. The table below is the whole vocabulary; anything it does
+   not know prints its NUMBER ALONE and says in the console what it actually
+   found, so the gap is visible and he can tell me the word to add.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/** His vocabulary. A new word goes in here and nowhere else. */
+const SHORT_KIND = [
+  [/\bcloak\b/i,    "cloak"],
+  [/\bring\b/i,     "ring"],
+  [/\bamulet\b/i,   "amulet"],
+  [/\bcirclet\b/i,  "circlet"],
+  [/\bstone\b/i,    "stone"],
+  [/\bbless\b/i,    "Bless"],
+  [/\bguidance\b/i, "Guidance"],
+];
+
 /**
- * WHAT IS GIVING THIS BONUS, by name (his rule, 2026-09-30: "Named extras:
- * + 1 cloak").
+ * The short kind for whatever grants a bonus, or null when the table does not
+ * know it.
+ *
+ * Tested against the effect's own name AND the name of the item or spell it came
+ * from, because either can be the recognisable one: an effect called "Protection"
+ * from an item called "Cloak of Protection" maps on the ITEM, and a condition ACE
+ * put on called "Bless" maps on itself.
+ */
+function shortKindOf(effect) {
+  const names = [];
+  try {
+    if (effect?.name) names.push(String(effect.name));
+    const origin = effect?.origin;
+    if (origin && typeof fromUuidSync === "function") {
+      const resolved = fromUuidSync(origin);
+      const item = resolved?.item ?? resolved;
+      if (item?.name) names.push(String(item.name));
+    }
+  } catch (_) { /* whatever name we already have is what gets tested */ }
+  for (const n of names) {
+    for (const [re, kind] of SHORT_KIND) if (re.test(n)) return { kind, from: n };
+  }
+  return { kind: null, from: names.join(" / ") || "nothing named it" };
+}
+
+/**
+ * WHAT IS GIVING THIS BONUS: its short kind, or nothing at all.
  *
  * A save bonus beyond the ability and its proficiency lives in a formula field on
  * the sheet, and the field does not know what put it there. The EFFECT does: an
- * active effect granting it carries a change whose key is that very field. So the
- * name comes off the effect, which is the only place it honestly exists.
- *
- * ⚠️ AND A BONUS NOBODY CLAIMS IS NOT GIVEN A NAME. Typed straight onto the
- * sheet by hand, or granted by something with no active effect, it stays "save
- * bonus" and says so in the console. Inventing a source is worse than admitting
- * there isn't one: a card that says "+ 1 cloak" when there is no cloak sends him
- * looking for an item that does not exist.
+ * active effect granting it carries a change whose key is that very field.
  *
  * @param {Actor} actor
  * @param {string[]} keys  the change keys that would grant it
- * @returns {string|null} the effect's name, or null when nothing claims it
+ * @returns {string|null} the short kind, or null so the part prints its number alone
  */
 function grantedBy(actor, keys) {
   try {
     const want = keys.map(k => String(k).toLowerCase());
-    const names = [];
+    const kinds = [];
+    const unmapped = [];
     for (const e of (actor?.effects?.contents ?? actor?.effects ?? [])) {
-      if (e?.disabled) continue;
+      if (e?.disabled) continue;                       // switched off grants nothing
+      let mine = false;
       for (const c of (e?.changes ?? [])) {
-        if (want.includes(String(c?.key ?? "").toLowerCase())) { names.push(String(e.name ?? "").trim()); break; }
+        if (want.includes(String(c?.key ?? "").toLowerCase())) { mine = true; break; }
       }
+      if (!mine) continue;
+      const { kind, from } = shortKindOf(e);
+      if (kind) kinds.push(kind);
+      else unmapped.push(from);
     }
-    const named = names.filter(Boolean);
-    if (!named.length) return null;
+    if (unmapped.length) {
+      console.log(`${MODULE_ID} | ${actor?.name}'s bonus from ${unmapped.join(", ")} has no short `
+        + `kind in the table, so the card prints its number alone. Add a word to SHORT_KIND `
+        + `in roll-formula.mjs to name it.`);
+    }
     // Several things stacking into one field: name them all rather than pick one.
-    return [...new Set(named)].join(" + ");
+    const shown = [...new Set(kinds)];
+    return shown.length ? shown.join(" ") : null;
   } catch (err) {
     console.log(`${MODULE_ID} | could not read what grants ${actor?.name}'s save bonus, so the `
-      + `card calls it "save bonus":`, err);
+      + `card prints its number alone:`, err);
     return null;
   }
 }
@@ -118,10 +175,10 @@ export function explainSave(actor, ability) {
     const by = grantedBy(actor, [`system.abilities.${ab}.bonuses.save`]);
     if (!by) {
       console.log(`${MODULE_ID} | ${actor?.name}'s ${ab.toUpperCase()} save carries ${signed(own)} `
-        + `that no active effect claims, so the card calls it "save bonus" rather than naming `
+        + `that no active effect claims, so the card prints the number alone rather than naming `
         + `something that is not there.`);
     }
-    parts.push({ label: by ?? "save bonus", value: own, why: "on the ability itself" });
+    parts.push({ label: by, value: own, why: "on the ability itself" });
   }
   else if (own === null) {
     console.log(`${MODULE_ID} | ${actor?.name}'s ${ab.toUpperCase()} save bonus is a formula `
@@ -133,9 +190,9 @@ export function explainSave(actor, ability) {
     const by = grantedBy(actor, ["system.bonuses.abilities.save"]);
     if (!by) {
       console.log(`${MODULE_ID} | ${actor?.name} carries ${signed(global)} on every save that no `
-        + `active effect claims, so the card calls it "save bonus".`);
+        + `active effect claims, so the card prints the number alone.`);
     }
-    parts.push({ label: by ?? "save bonus", value: global, why: "on the creature" });
+    parts.push({ label: by, value: global, why: "on the creature" });
   }
 
   return { parts, total: parts.reduce((n, p) => n + p.value, 0) };
@@ -174,10 +231,13 @@ export function explainCheck(actor, { ability = null, skill = null } = {}) {
   }
 
   const own = flatBonus(sk ? sk.bonuses?.check : a.bonuses?.check);
-  if (own) parts.push({ label: "check bonus", value: own, why: "on the sheet" });
+  // The short kind, or its number alone: the same rule as a save extra.
+  if (own) parts.push({ label: grantedBy(actor, [`system.abilities.${ab}.bonuses.check`]),
+                        value: own, why: "on the sheet" });
 
   const global = flatBonus(actor?.system?.bonuses?.abilities?.check);
-  if (global) parts.push({ label: "check bonus", value: global, why: "on the creature" });
+  if (global) parts.push({ label: grantedBy(actor, ["system.bonuses.abilities.check"]),
+                          value: global, why: "on the creature" });
 
   return { parts, total: parts.reduce((n, p) => n + p.value, 0) };
 }
@@ -192,17 +252,26 @@ export function explainCheck(actor, { ability = null, skill = null } = {}) {
  */
 export function formulaText(parts, total = null) {
   if (!parts?.length) return "";
-  // ⚠️ HIS SHAPE, EXACTLY: "Dex 1 (-5) + proficiency +3 = -2". The first part
-  // carries its modifier in brackets beside the score; every part after it is
-  // joined by the sign it actually has and still shows that sign on its number,
-  // so "+ proficiency +3" and "- cover 2" both read as English.
+  // ⚠️ HIS SHAPE, EXACTLY (2026-09-30: "Order: number then label. +1 cloak.
+  // +3 prof. +2 Bless."):
+  //
+  //     Wis 16 (+3) = +3
+  //     Dex 1 (−5) +3 prof = +0
+  //     Wis 16 (+3) +1 cloak = +4
+  //
+  // The first part carries its modifier in brackets beside the score. Every part
+  // after it is its signed number and then its short label, and the sign on the
+  // number is the only joiner, so a penalty reads "−2 cover" with no stray plus
+  // in front of it.
+  //
+  // ⚠️ A PART WITH NO LABEL PRINTS ITS NUMBER ALONE. That is the honest answer
+  // for a bonus whose source the table cannot map to a short kind: the number is
+  // real, the name is not known, and the console carries what was found.
   const shown = parts.map((p, i) => {
     if (i === 0) {
       return p.why === "ability" ? `${p.label} (${signed(p.value)})` : `${p.label} ${signed(p.value)}`;
     }
-    return p.value < 0
-      ? `− ${p.label} ${Math.abs(p.value)}`
-      : `+ ${p.label} ${signed(p.value)}`;
+    return p.label ? `${signed(p.value)} ${p.label}` : signed(p.value);
   });
   const sum = parts.reduce((n, p) => n + p.value, 0);
   const end = Number.isFinite(Number(total)) ? Number(total) : sum;

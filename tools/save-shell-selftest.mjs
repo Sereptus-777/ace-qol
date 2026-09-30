@@ -376,16 +376,38 @@ console.log("\nONE STYLE ONLY");
 
   // NAMED EXTRAS. The field on the sheet is a formula string and does not know
   // what put it there; the active effect granting it does.
-  check("an extra is named for the thing that grants it",
+  // ⚠️🔴 THE SHORT KIND, NOT THE TITLE (his rule, 2026-09-30). My first pass
+  // printed the effect's own name, so a save read "+ Cloak of Protection +1" and
+  // the card grew a title in the middle of a sum.
+  check("an extra is the short kind of the thing that grants it",
     /function grantedBy\(actor, keys\)/.test(rf)
-    && /label: by \?\? "save bonus"/.test(rf), "+ Cloak of Protection +1");
+    && /const SHORT_KIND = \[/.test(rf)
+    && rf.includes('"cloak"],'), "+1 cloak");
+  // Plain substring checks on purpose: the rows are regex literals, and a pin
+  // written as a regex about a regex is two layers of escaping and a bug waiting.
+  check("its whole vocabulary is his list and nothing else",
+    ["cloak", "ring", "amulet", "circlet", "stone", "Bless", "Guidance"]
+      .every(k => rf.includes(`"${k}"],`))
+    && (rf.match(/\], *\n/g) ?? []).length >= 7,
+    "cloak ring amulet circlet stone Bless Guidance");
+  check("an item maps on its type, never its title",
+    /const item = resolved\?\.item \?\? resolved;/.test(rf)
+    && /for \(const \[re, kind\] of SHORT_KIND\) if \(re\.test\(n\)\) return/.test(rf),
+    "the effect's name or the item's");
+  check("and what the table cannot map prints its number alone",
+    /label: by,/.test(rf) && /has no short `/.test(rf), "+1, with the real name in the console");
+  check("the order is number then label",
+    /return p\.label \? `\$\{signed\(p\.value\)\} \$\{p\.label\}` : signed\(p\.value\);/.test(rf),
+    "+1 cloak, +3 prof, +2 Bless");
   check("it reads the effect's own changes, by the key that field lives at",
     /system\.abilities\.\$\{ab\}\.bonuses\.save/.test(rf)
-    && /system\.bonuses\.abilities\.save/.test(rf), "the only place the name exists");
+    && /system\.bonuses\.abilities\.save/.test(rf), "the only place the source exists");
   check("several things stacking are all named, not one picked",
-    /\[\.\.\.new Set\(named\)\]\.join\(" \+ "\)/.test(rf), "no guessing which");
+    /const shown = \[\.\.\.new Set\(kinds\)\];/.test(rf)
+    && /shown\.join\(" "\)/.test(rf), "+1 cloak ring, not a guess between them");
   check("and a bonus nobody claims is NOT given a name",
-    /that no active effect claims/.test(rf), "\"save bonus\", and the console says why");
+    /that no active effect claims/.test(rf)
+    && /prints the number alone/.test(rf), "its number alone, and the console says why");
   check("a disabled effect grants nothing",
     /if \(e\?\.disabled\) continue;/.test(rf), "switched off is switched off");
 }
