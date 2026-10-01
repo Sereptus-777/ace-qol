@@ -958,7 +958,7 @@ export class DamageCardRenderer {
         // The badge says what HAPPENED (immune / resist / vulnerable) and gets a
         // fixed semantic colour; the damage TYPE is already coloured on the
         // number and the word right beside it. Colouring both was the bug.
-        strikeStyle = `text-decoration: line-through; text-decoration-color: ${color}; opacity: 0.6;`;
+        strikeStyle = `text-decoration: line-through; opacity: 0.65;`;
         rowClasses = " ace-qol-dmg-truth-row";
         if (!flavorTrigger.immune) flavorTrigger.immune = c.type;
       } else if (c.modifier === "resistant") {
@@ -981,7 +981,9 @@ export class DamageCardRenderer {
         ? `<span class="ace-qol-dmg-truth-only ace-qol-dmg-raw-was">${c.raw}</span>`
           + `<span class="ace-qol-dmg-truth-only ace-qol-dmg-arrow">→</span>`
         : "";
-      const dmgDisplay = `${rawFinalSpan}<strong class="ace-qol-dmg-final" style="color:${color}">${c.final}</strong>`;
+      // Black on the type's own fill (his rule). The number carried the colour
+      // when there was nothing behind it; now there is.
+      const dmgDisplay = `${rawFinalSpan}<strong class="ace-qol-dmg-final">${c.final}</strong>`;
       const clickable = c.final > 0 ? `data-action="aceQolApplyType" data-damage-type="${c.type}" data-damage-amount="${c.final}" data-comp-index="${idx}" title="Click to apply ${c.final} ${c.type} damage"` : "";
       const clickClass = c.final > 0 ? " ace-qol-dmg-type-clickable" : "";
       // ⚠️ WRAPPED ROWS, NEVER A SQUEEZED COLUMN. This was one flex row with no
@@ -995,10 +997,16 @@ export class DamageCardRenderer {
       // HP line, before the word 'HP', same font size as the HP text. Not a
       // badge." It is collected below and rendered there, so this line is the
       // numbers and the type and nothing else.
+      // ⚠️ ONE PILL, FILLED WITH THE DAMAGE TYPE'S OWN COLOUR, BLACK TEXT (his
+      // rule, 2026-09-30: "Right half: one pill, '16 → 8 piercing', black text.
+      // Pill fill is the damage-type color"). The colour used to be painted on
+      // the number and the word; as a fill behind both it says the same thing
+      // once, and the struck total travels inside the pill with it.
       return `
-        <div class="ace-qol-dmg-type-line${clickClass}${rowClasses}" ${clickable} style="${strikeStyle}">
+        <div class="ace-qol-dmg-type-line${clickClass}${rowClasses}" ${clickable}
+             style="${strikeStyle}background:${color};">
           <div class="ace-qol-dmg-type-main">
-            ${dmgDisplay} <span class="ace-qol-dmg-type-name" style="color:${color}">${c.type}</span>
+            ${dmgDisplay} <span class="ace-qol-dmg-type-name">${c.type}</span>
           </div>
         </div>
       `;
@@ -1032,9 +1040,15 @@ export class DamageCardRenderer {
     return `
       <div class="ace-qol-dmg-target-row" data-token-doc-id="${tDocId}" data-actor-id="${actorId ?? ""}" data-scene-id="${sceneId ?? ""}">
         <div class="ace-qol-dmg-row-header">
-          <img src="${portrait}" class="ace-qol-dmg-tgt-img" />
-          <span class="ace-qol-dmg-tgt-name">${name ?? "Unknown"}</span>
-          ${isCrit ? '<span class="ace-qol-dmg-crit-badge">CRIT</span>' : ""}
+          <!-- ⚠️ LEFT HALF: THE CREATURE (his rule, 2026-09-30: "portrait bigger,
+               name under the portrait, name bigger"). The name sat beside the
+               portrait and had to be kept short to leave room for what landed;
+               under it, it has the whole column and can say the whole name. -->
+          <div class="ace-qol-dmg-row-who">
+            <img src="${portrait}" class="ace-qol-dmg-tgt-img" />
+            <span class="ace-qol-dmg-tgt-name">${name ?? "Unknown"}</span>
+            ${isCrit ? '<span class="ace-qol-dmg-crit-badge">CRIT</span>' : ""}
+          </div>
           <!-- ⚠️ WHAT LANDED SITS ON THE CREATURE'S OWN ROW (his rule,
                2026-09-30: "The gray pill (struck 10, 5 piercing) sits on
                Escher's portrait row. Not on its own block above the buttons.").

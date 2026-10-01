@@ -482,6 +482,10 @@ export class SpellTargetPicker {
     return await new Promise((resolve) => {
       const dlg = new foundry.applications.api.DialogV2({
         window: { title: wording ? wording.title(spellItem.name) : `${verb} ${spellItem.name} — Pick Targets` },
+        // The class the stylesheet needs to reach this dialog's own window title,
+        // which is Foundry's chrome and not part of `content` (his rule,
+        // 2026-09-30: that header is centred and twice the size).
+        classes: ["ace-qol-pickr-dialog"],
         content,
         rejectClose: false,
         position: { width: 600 },

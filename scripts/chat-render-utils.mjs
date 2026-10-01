@@ -404,35 +404,61 @@ export function takeLogToNewCard(message, el) {
         // — its own nearest scrolling ancestor is the bar he is looking at. Every
         // copy of the message gets pinned, which is "main chat and the popout"
         // without guessing what either is called this generation.
-        const pin = (why) => {
-            let moved = 0;
-            try { ui.chat?.scrollBottom?.({ force: true }); } catch (_) { /* ask first */ }
-            for (const node of document.querySelectorAll(`[data-message-id="${message.id}"]`)) {
-                let box = node.parentElement;
-                while (box && box !== document.body) {
-                    const oy = getComputedStyle(box).overflowY;
-                    if (box.scrollHeight > box.clientHeight + 1 && /(auto|scroll|overlay)/.test(oy)) break;
-                    box = box.parentElement;
-                }
-                if (!box || box === document.body) continue;
-                box.scrollTop = box.scrollHeight;
-                moved++;
-                const what = box.id ? `#${box.id}` : `.${String(box.className || "?").split(/\s+/)[0]}`;
-                console.log(`${MODULE_ID} | chat scrolled (${why}): ${what} scrollTop=`
-                    + `${Math.round(box.scrollTop)} of scrollHeight=${Math.round(box.scrollHeight)} `
-                    + `(visible ${Math.round(box.clientHeight)}).`);
+        // ⚠️ THE TEST IS HIS: scrollHeight bigger than clientHeight, on an
+        // ancestor of the new card. 0.73.0 also demanded overflow-y be auto,
+        // scroll or overlay, and that is a guess about how the pane is styled
+        // rather than about whether it scrolls — an element with a clipped
+        // overflow still has a scrollTop, and in this app the one that owns the
+        // bar was being skipped by that extra condition.
+        const ownerOfTheBar = (node) => {
+            let box = node?.parentElement ?? null;
+            while (box && box !== document.body) {
+                if (box.scrollHeight > box.clientHeight + 1) return box;
+                box = box.parentElement;
             }
-            if (!moved) {
-                console.warn(`${MODULE_ID} | a new ACE card is in the log but nothing around it `
-                    + `scrolls, so the bar was not moved (message ${message.id}).`);
+            return null;
+        };
+        const nameOf = (box) => box.id ? `#${box.id}`
+            : `${box.tagName.toLowerCase()}.${String(box.className || "?").trim().split(/\s+/)[0]}`;
+
+        const pin = (why) => {
+            let found = 0;
+            try { ui.chat?.scrollBottom?.({ force: true }); } catch (_) { /* ask first */ }
+            // Every copy of this message: the sidebar log and a popped-out one.
+            for (const node of document.querySelectorAll(`[data-message-id="${message.id}"]`)) {
+                const box = ownerOfTheBar(node);
+                if (!box) continue;
+                found++;
+                box.scrollTop = box.scrollHeight;
+                // ⚠️🔴 AND READ IT BACK. Saying "chat scrolled" because scrollTop
+                // was ASSIGNED is the same mistake as reporting an intention for
+                // an outcome. The browser clamps it to scrollHeight - clientHeight,
+                // so that, not scrollHeight, is the bottom.
+                const top = Math.round(box.scrollTop);
+                const h = Math.round(box.scrollHeight);
+                const vis = Math.round(box.clientHeight);
+                const bottom = Math.max(0, h - vis);
+                const where = `${nameOf(box)} scrollTop=${top} scrollHeight=${h} clientHeight=${vis}`;
+                if (top >= bottom - 1) {
+                    console.log(`${MODULE_ID} | chat at the bottom (${why}): ${where}.`);
+                } else {
+                    console.warn(`${MODULE_ID} | chat did NOT reach the bottom (${why}): ${where} — `
+                        + `${bottom - top}px short. Something is holding that bar.`);
+                }
+            }
+            if (!found) {
+                console.warn(`${MODULE_ID} | a new ACE card is in the log and nothing above it has a `
+                    + `scrollbar, so there was nothing to move (message ${message.id}).`);
             }
         };
 
         const scroll = () => {
             pin("card in the log");
-            // Again next frame: the card's own pictures settle its height after
-            // this one, and nothing here waits on them.
+            // Again next frame, and again at 100ms: his three moments. The card's
+            // own pictures settle its height after the first two, and nothing
+            // here waits on a single one of them.
             requestAnimationFrame(() => { try { pin("next frame"); } catch (_) { /* gone */ } });
+            setTimeout(() => { try { pin("100ms later"); } catch (_) { /* gone */ } }, 100);
         };
 
         // Wait for the append, one frame at a time. 30 frames is half a second at

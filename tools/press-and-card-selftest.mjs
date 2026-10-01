@@ -476,8 +476,10 @@ console.log("\n8. NAMED FOR ITS CASTER, THE BOTTOM OF THE LOG, THE PORTRAIT ROW"
     header.indexOf("ace-qol-dmg-type-breakdown") > 0
     && header.indexOf("ace-qol-dmg-type-breakdown") < header.indexOf("${flavorHintHtml}"),
     "inside the header, not a block above the buttons");
-  check("and the name stops claiming the whole row",
-    /flex: 0 1 auto; min-width: 90px;/.test(css), "so the pill fits beside it");
+  check("and the name is under the portrait, in a column of its own",
+    /\.ace-qol-dmg-row-who \{/.test(css)
+    && /display: flex; flex-direction: column; align-items: center; gap: 3px;/.test(css),
+    "so it never has to be cut short to leave room for what landed");
   check("the breakdown loses its indent inside the header",
     /\.ace-qol-dmg-row-header \.ace-qol-dmg-type-breakdown \{/.test(css),
     "no 36px clearance needed there");
@@ -514,30 +516,52 @@ console.log("\n9. THE BAR, THE DAMAGE ROW, AND THE SECOND CARD'S FALSE ERROR");
     /box\.scrollTop = box\.scrollHeight;/.test(chat), "his rule: set scrollTop to scrollHeight");
   check("and it is found from the card, so every log that holds it is pinned",
     /for \(const node of document\.querySelectorAll\(`\[data-message-id="\$\{message\.id\}"\]`\)\)/.test(chat)
-    && /if \(box\.scrollHeight > box\.clientHeight \+ 1 && \/\(auto\|scroll\|overlay\)\/\.test\(oy\)\) break;/.test(chat),
-    "main chat and the popout, without guessing either one's class");
+    && /if \(box\.scrollHeight > box\.clientHeight \+ 1\) return box;/.test(chat),
+    "his test, and nothing about how the pane happens to be styled");
+  check("three moments: in the log, next frame, 100ms later",
+    /pin\("card in the log"\);/.test(chat) && /pin\("next frame"\);/.test(chat)
+    && /pin\("100ms later"\);/.test(chat), "his three");
   check("scrollBottom is still asked first",
     /ui\.chat\?\.scrollBottom\?\.\(\{ force: true \}\);/.test(chat), "the supported path");
   check("twice: in the DOM, then the next frame",
     /pin\("card in the log"\);/.test(chat) && /pin\("next frame"\);/.test(chat), "his two moments");
-  check("and it logs which element and the scrollTop after",
-    /chat scrolled \(\$\{why\}\): \$\{what\} scrollTop=/.test(chat), "his words");
-  check("nothing scrolls and it says so",
-    /nothing around it `[\s\S]{0,80}scrolls, so the bar was not moved/.test(chat), "silence is a bug");
+  check("and it logs the element, scrollTop, scrollHeight and clientHeight",
+    /scrollTop=\$\{top\} scrollHeight=\$\{h\} clientHeight=\$\{vis\}/.test(chat), "his words");
+  // ⚠️ AND IT READS THE VALUE BACK. Saying "scrolled" because scrollTop was
+  // ASSIGNED is reporting an intention as an outcome; the browser clamps it to
+  // scrollHeight minus the visible height, and that is the bottom.
+  check("it never claims it scrolled when it did not",
+    /chat did NOT reach the bottom/.test(chat)
+    && /const bottom = Math\.max\(0, h - vis\);/.test(chat), "his rule");
+  check("nothing has a scrollbar and it says so",
+    /scrollbar, so there was nothing to move/.test(chat), "silence is a bug");
 
   // 2. The damage row.
-  check("the gray pill box is gone",
-    /cursor: pointer; padding: 0; border: 0; background: none; border-radius: 0;/.test(css),
-    "the click and a non-box hover stay");
+  // ⚠️ THE GRAY BOX IS GONE, AND THE TYPE-COLOUR PILL IS NOT THAT BOX. The click
+  // rule used to zero padding, border and radius to kill the gray box, which
+  // would have flattened the pill — same element, later in the file, equal
+  // specificity: exactly the cascade collision the house rule warns about.
+  check("the click rule no longer zeroes the pill's own shape",
+    /\.ace-qol-dmg-type-clickable \{\s*\n\s*cursor: pointer; border: 0;/.test(css),
+    "it carries only the click");
+  check("and the pill is declared last, so nothing flattens it",
+    css.lastIndexOf(".ace-qol-dmg-type-line {") > css.lastIndexOf(".ace-qol-dmg-type-clickable {"),
+    "one shape says the number, the reduction and the type");
+  check("the pill is filled with the damage type's own colour, in black",
+    /style="\$\{strikeStyle\}background:\$\{color\};"/.test(dmg)
+    && /\.ace-qol-dmg-type-line \.ace-qol-dmg-arrow \{ color: #12120f; \}/.test(css),
+    "DAMAGE_COLORS, the table the whole suite paints with");
   check("struck total, arrow, then what was taken",
     /ace-qol-dmg-arrow">→<\/span>/.test(dmg) && /\.ace-qol-dmg-arrow \{/.test(css),
     "16 → 8 piercing reads as one reduced number");
   check("the outcome is a word on the HP line, before HP",
     /\$\{modPlain\}\s*\n\s*<span class="ace-qol-dmg-row-hp">HP:/.test(dmg), "his rule");
-  check("at the HP text's own size, and not a badge",
-    /\.ace-qol-dmg-mod-plain \{\s*\n\s*font-size: 0\.95rem;/.test(css)
-    && /background: none; border: 0; padding: 0; border-radius: 0; box-shadow: none;/.test(css),
-    "same font size as the HP text");
+  check("a pill again, at the HP text's own size",
+    /\.ace-qol-dmg-mod-plain \{/.test(css)
+    && /font-size: 0\.95rem; font-weight: 800; letter-spacing: 0\.3px;/.test(css)
+    && /padding: 1px 8px; border-radius: 999px;/.test(css)
+    && /min-height: 1\.1rem;/.test(css),
+    "same size as the HP text, and it fits its own label");
   check("still the GM's alone",
     /ace-qol-dmg-mod-plain \$\{modWord\.cls\} ace-qol-dmg-truth-only/.test(dmg),
     "a player sees the halved number and is told nothing about why");
@@ -563,6 +587,57 @@ console.log("\n9. THE BAR, THE DAMAGE ROW, AND THE SECOND CARD'S FALSE ERROR");
   check("the net finds an effect by the flag ACE stamps itself",
     /if \(effect\.flags\?\.\[MODULE_ID\]\?\.conditionKey === key\) take\(effect\);/.test(lib),
     "a name renamed for its caster cannot break it");
+}
+
+/* ══ 10. NO RED TOAST, AND A PICKER HE CAN READ ═══════════════════════════ */
+console.log("\n10. NO RED TOAST, AND THE PICKER AT TWICE THE SIZE");
+{
+  const css = read("styles/ace-qol.css");
+  const pick2 = read("scripts/spell-target-picker.mjs");
+
+  // ⚠️ ACE no longer asks for a status a creature already has, but dnd5e's rider
+  // spawn, a macro or the effects panel still can, and a creature carrying two
+  // Charms is now ordinary. A red banner about a collision that broke nothing is
+  // not the table's business.
+  check("a duplicate-id toast never reaches the screen",
+    /if \(\/_id\\s\*\\\[\[\^\\\]\]\+\\\]\\s\*already exists\/i\.test\(text\)\) \{/.test(main),
+    "the id in the message is what makes it safe to catch");
+  check("and it is still said, in the console",
+    /held back a toast about a duplicate document id/.test(main), "never a silent swallow");
+  check("every other notification is untouched",
+    /return _origNotify\(message, type, options\);/.test(main), "one message, by its text");
+  check("patched once, and never able to break a notification",
+    /if \(notes\?\.notify && !notes\._aceDupeIdQuiet\)/.test(main)
+    && /catch \(_\) \{ \/\* never let the guard break a notification \*\//.test(main),
+    "notify is what error, warn and info all go through");
+
+  // The picker: text only, twice the size.
+  check("the spell name in the header is twice the size",
+    /font-size: 30px; color: #d4af37;/.test(css), "15px → 30px");
+  check("the window title is centred and twice the size",
+    /\.ace-qol-pickr-dialog \.window-header \.window-title \{/.test(css)
+    && /font-size: 30px; line-height: 1\.2; flex: 1 1 auto; text-align: center;/.test(css)
+    && /classes: \["ace-qol-pickr-dialog"\],/.test(pick2),
+    "Foundry's chrome needs its own rule and a class to reach it");
+  check("the instructions are twice the size",
+    /font-size: 22px; color: #c9c9cc;/.test(css), "11px → 22px");
+  check("each name is twice the size, and wraps instead of being cut",
+    /font-weight: 600; font-size: 22px; color: #e8e8ea; text-align: center;/.test(css)
+    && /overflow-wrap: break-word;/.test(css), "11px → 22px");
+  check("FRIENDLY / HOSTILE is twice the size",
+    /font-size: 16px; font-weight: 700; letter-spacing: 1px;/.test(css), "8px → 16px");
+  check("the distance is twice the size",
+    /font-size: 18px; font-weight: 700; letter-spacing: 1px;/.test(css), "9px → 18px");
+  check("\"0 / 1 selected\" is twice the size",
+    /font-size: 24px; color: #cfcfd2; gap: 12px;/.test(css), "12px → 24px");
+  check("the range tag too",
+    /font-size: 18px; font-weight: 700; letter-spacing: 1\.2px;/.test(css), "9px → 18px");
+  check("and the tile grew with the text, so nothing is clipped",
+    /repeat\(auto-fill, minmax\(180px, 1fr\)\)/.test(css),
+    "doubling every label inside a 120px tile would cut the names");
+  check("who may be picked and the range are untouched",
+    /const resolvedRange = \(Number\.isFinite\(rangeFt\) \|\| rangeFt === Infinity\)/.test(pick2)
+    && /candidates = candidates\.filter\(c => c\.lifeOk\);/.test(pick2), "text only");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

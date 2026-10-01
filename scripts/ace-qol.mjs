@@ -2165,6 +2165,48 @@ Hooks.once("ready", () => {
   // never thinks about DCs still cannot leak one. See chat-render-utils.
   registerDCVisibility();
 
+  /* ── NOBODY AT THE TABLE SEES A DUPLICATE-ID ERROR ────────────────────────
+   *
+   * His rule, 2026-09-30: *"The screen must not show 'The _id
+   * [dnd5echarmed0000] already exists'. Console is fine. That ui.notifications
+   * toast is not. ... If some other path still throws it, swallow that one
+   * notification. Players never see it."*
+   *
+   * ACE no longer asks for a status a creature already has, so ACE's own paths
+   * do not cause this. But dnd5e's rider spawn, a macro, the effects panel and
+   * any other module can still ask, and a creature carrying two Charms is now
+   * ordinary — so the toast is a red banner in front of a player about a
+   * collision that broke nothing.
+   *
+   * ⚠️ ONE MESSAGE, AND IT IS STILL SAID. Every other notification is untouched
+   * and this one goes to the console, because a swallowed error that leaves no
+   * trace is the bug this suite has spent months removing. The id in the message
+   * is what makes it safe to catch: a keepId collision on a fixed-id document,
+   * nothing else.
+   */
+  try {
+    const notes = ui.notifications;
+    if (notes?.notify && !notes._aceDupeIdQuiet) {
+      notes._aceDupeIdQuiet = true;
+      const _origNotify = notes.notify.bind(notes);
+      notes.notify = function (message, type, options) {
+        try {
+          const text = String(message?.message ?? message ?? "");
+          if (/_id\s*\[[^\]]+\]\s*already exists/i.test(text)) {
+            console.log(`${MODULE_ID} | held back a toast about a duplicate document id, which is `
+              + `harmless and not the table's business: ${text}`);
+            return null;
+          }
+        } catch (_) { /* never let the guard break a notification */ }
+        return _origNotify(message, type, options);
+      };
+      console.debug(`${MODULE_ID} | a duplicate-id collision stays in the console; the table does `
+        + `not see it.`);
+    }
+  } catch (err) {
+    console.warn(`${MODULE_ID} | could not hold back duplicate-id toasts, so one may appear:`, err);
+  }
+
   // ⚠️ ACE DRAWS ITS OWN CONDITIONS, SO NOBODY ELSE PAINTS ONE ON THE TOKEN.
   // The third and last road a JB2A condition badge could reach a creature by:
   // Automated Animations' own trigger on the item's use. See spell-animator.
