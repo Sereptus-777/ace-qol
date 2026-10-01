@@ -2451,12 +2451,81 @@ export class ConditionLibrary {
     const mine = [], others = [];
     for (const e of ConditionLibrary._matchingEffects(actor, key)) {
       const theirs = String(e.flags?.[MODULE_ID]?.sourceActorId ?? "").trim();
-      // Unknown on either side is not a disagreement: only two KNOWN casters
-      // that differ make this somebody else's.
-      if (caster && theirs && theirs !== caster) others.push(e);
-      else mine.push(e);
+      /* ⚠️🔴 "MINE" MUST BE PROVED, NOT ASSUMED FROM THE ABSENCE OF A
+         DISAGREEMENT (his table, 2026-10-01: "Lamia charmed Escher. Time
+         advanced. 40 minutes left. Kasimir charmed him. Both bars say 1 hour...
+         It must not write seconds, startTime, or duration onto any other
+         effect.").
+
+         This read "only two KNOWN casters that differ make it somebody else's",
+         so a copy that names NO caster was treated as the new caster's own — and
+         the refresh below then wrote a fresh hour and a fresh startTime onto it.
+         One missing stamp on either side, from any older version or any path
+         that did not pass one, and Kasimir rewrote Lamia's clock.
+
+         So: when this apply knows who is casting, a copy is only his if it says
+         so. An unattributed copy belongs to nobody and is left exactly as it is;
+         a second effect goes on beside it, which is the model everything else
+         has moved to anyway.
+
+         ⚠️ AND A CONDITION WITH NO CASTER AT ALL STILL DOES NOT STACK. When this
+         apply names nobody either — prone from a fall, a GM's toggle — unknown
+         matches unknown and the old no-stack behaviour is untouched. */
+      if (caster ? (theirs === caster) : !theirs) mine.push(e);
+      else others.push(e);
     }
     return { mine, others };
+  }
+
+  /**
+   * Every clock this creature is already carrying for this condition, read off
+   * the documents.
+   *
+   * His rule, 2026-10-01: *"Log both durations before and after the second
+   * apply. Pinned means nothing if the live bar resets. The live bar is the
+   * test."* So the apply says what each copy's clock read before it ran and what
+   * it reads after, and shouts if one it did not own moved.
+   */
+  static _clocks(actor, key) {
+    const out = [];
+    for (const e of ConditionLibrary._matchingEffects(actor, key)) {
+      const d = e.duration ?? {};
+      out.push({
+        id: e.id,
+        name: e.name,
+        from: game.actors?.get(String(e.flags?.[MODULE_ID]?.sourceActorId ?? ""))?.name
+          ?? e.flags?.[MODULE_ID]?.source ?? "nobody named",
+        seconds: Number(d.seconds) || 0,
+        startTime: d.startTime ?? null,
+        // What the yellow bar reads: Foundry's own computed remaining, which is
+        // what the effects panel shows.
+        remaining: d.remaining ?? null,
+      });
+    }
+    return out;
+  }
+
+  /** One line per clock, for the before-and-after pair. */
+  static _sayClocks(label, clocks) {
+    if (!clocks.length) return;
+    const say = (c) => `"${c.name}" (${c.from}): ${c.seconds}s total, startTime ${c.startTime ?? "NONE"}`
+      + `, bar reads ${c.remaining ?? "its full duration"}`;
+    console.log(`${MODULE_ID} | ${label}: ${clocks.map(say).join(" · ")}`);
+  }
+
+  /** Did an apply move a clock it did not own? */
+  static _sayIfAClockMoved(actor, key, before, after) {
+    try {
+      for (const was of before) {
+        const now = after.find(c => c.id === was.id);
+        if (!now) continue;
+        if (now.seconds === was.seconds && now.startTime === was.startTime) continue;
+        console.warn(`${MODULE_ID} | A SECOND SOURCE MOVED ANOTHER SOURCE'S CLOCK, which is his `
+          + `rule broken: "${was.name}" (${was.from}) on ${actor?.name} went from ${was.seconds}s `
+          + `starting ${was.startTime ?? "NONE"} to ${now.seconds}s starting `
+          + `${now.startTime ?? "NONE"}. Nothing in this apply should have touched it.`);
+      }
+    } catch (_) { /* the report must never break the apply */ }
   }
 
   /** What to say when a second source lands beside a first. */
@@ -2512,6 +2581,19 @@ export class ConditionLibrary {
     if (!actor || !conditionKey) return { ok: false, applied: null };
     const key = String(conditionKey).toLowerCase().trim();
     await ConditionLibrary._beforeItLands(actor, key, options);
+    // ⚠️ THE CLOCKS, BEFORE AND AFTER (his rule, 2026-10-01). The live bar is the
+    // test, so the apply reports what every copy's clock read on the way in and
+    // on the way out, and says plainly if one it does not own has moved.
+    const _clocksBefore = ConditionLibrary._clocks(actor, key);
+    ConditionLibrary._sayClocks(`${actor.name}'s "${key}" clocks BEFORE this apply`, _clocksBefore);
+    const _report = (result) => {
+      try {
+        const after = ConditionLibrary._clocks(actor, key);
+        ConditionLibrary._sayClocks(`${actor.name}'s "${key}" clocks AFTER this apply`, after);
+        ConditionLibrary._sayIfAClockMoved(actor, key, _clocksBefore, after);
+      } catch (_) { /* the report must never change the answer */ }
+      return result;
+    };
 
     // ── Condition immunity (RAW, both editions) ──
     // Don't apply a condition the target is immune to (undead vs Charmed/Poisoned,
@@ -2597,9 +2679,13 @@ export class ConditionLibrary {
           || (!!_src && from === _src)
           || (!!_originItem && String(e.origin ?? "") === _originItem);
         if (!sameThing) return false;
-        // A caster on both sides that disagrees makes this a DIFFERENT source.
+        // ⚠️🔴 THE SAME SOURCE IS PROVED, NOT ASSUMED (his rule, 2026-10-01).
+        // This asked whether the two casters DISAGREED, so a copy naming no
+        // caster passed the test and had its duration and startTime rewritten by
+        // whoever cast next: Lamia's forty minutes became Kasimir's fresh hour.
+        // A refresh now needs the effect to SAY it is his.
         const theirs = String(f.sourceActorId ?? "").trim();
-        if (_caster && theirs && theirs !== _caster) return false;
+        if (_caster ? (theirs !== _caster) : !!theirs) return false;
         return true;
       });
 
@@ -2639,7 +2725,7 @@ export class ConditionLibrary {
           + `${_wantStatuses.join(", ") || key}. ONE EFFECT: `
           + `${refreshed ? (seconds > 0 ? `its duration is refreshed to ${seconds}s` : "it is left in place")
                          : "it stands as it was"}, nothing is created, and there is no second animation.`);
-        return { ok: true, applied: _twin.name, refreshed, duplicate: true };
+        return _report({ ok: true, applied: _twin.name, refreshed, duplicate: true });
       }
     } catch (err) {
       console.warn(`ace-qol | could not check whether ${actor?.name} already carries what "${key}" `
@@ -2798,7 +2884,7 @@ export class ConditionLibrary {
             + `${actor.name} (status + applyEffect both failed). It puts on `
             + `${conditionStatuses(key).join(", ") || "nothing named"}; the creature carries `
             + `${_have.join(", ") || "no effects at all"}.`);
-          return { ok: false, applied: null };
+          return _report({ ok: false, applied: null });
         }
       }
 
@@ -2951,10 +3037,10 @@ export class ConditionLibrary {
         }
       }
 
-      return { ok: true, applied: key };
+      return _report({ ok: true, applied: key });
     } catch (err) {
       console.warn(`${MODULE_ID} | toggleStatusEffect failed for "${key}" on ${actor.name}:`, err);
-      return { ok: false, applied: null };
+      return _report({ ok: false, applied: null });
     }
   }
 

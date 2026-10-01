@@ -289,7 +289,7 @@ console.log("\nONE WRITE PER STATUS");
   // duration running, so a second Charm bought Lamia nothing.
   check("a second write of the same statuses from the same source refreshes it",
     /const _wantStatuses = \[\.\.\.\(ALL_EFFECTS\[key\]\?\.statuses \?\? \[key\]\)\]/.test(cl)
-    && /return \{ ok: true, applied: _twin\.name, refreshed, duplicate: true \};/.test(cl),
+    && /return _report\(\{ ok: true, applied: _twin\.name, refreshed, duplicate: true \}\);/.test(cl),
     "charm_person and charmed are one status");
   check("it is refused BEFORE toggleStatusEffect can make dnd5e's own copy",
     cl.indexOf("_wantStatuses") < cl.indexOf("actor.toggleStatusEffect(key, { active: true })"),
@@ -464,12 +464,26 @@ console.log("\nCHARM DOES NOT STACK");
   check("it must already put on everything this would put on",
     /!_wantStatuses\.every\(st => e\.statuses\?\.has\?\.\(st\)\)/.test(cl), "same statuses");
 
-  // A DIFFERENT CASTER IS A DIFFERENT SOURCE.
+  /* A DIFFERENT CASTER IS A DIFFERENT SOURCE.
+   *
+   * ⚠️🔴 AND AN UNRECORDED CASTER IS NOT THIS ONE EITHER (his table, 2026-10-01:
+   * "Lamia charmed Escher. Time advanced. 40 minutes left. Kasimir charmed him.
+   * Both bars say 1 hour... It must not write seconds, startTime, or duration
+   * onto any other effect.").
+   *
+   * This pin used to assert the opposite — that an effect naming no caster still
+   * matched, so "older than 0.62 is not punished for it" — and that leniency is
+   * what let Kasimir's cast rewrite Lamia's clock. One missing stamp on either
+   * side and the refresh, which is the only ACE write that touches an existing
+   * duration, fired on somebody else's effect. A refresh now needs the effect to
+   * SAY it is his; an unattributed copy is left exactly as it is and a second
+   * effect goes on beside it, which is the model everything else has moved to. */
   check("two casters do not share one charm",
-    /if \(_caster && theirs && theirs !== _caster\) return false;/.test(cl),
+    /if \(_caster \? \(theirs !== _caster\) : !!theirs\) return false;/.test(cl),
     "a second source, not a second copy");
-  check("and a caster nobody recorded still matches by name or key",
-    /_caster && theirs/.test(cl), "older than 0.62 is not punished for it");
+  check("and an unrecorded caster is not quietly treated as this one",
+    /THE SAME SOURCE IS PROVED, NOT ASSUMED/.test(cl),
+    "that leniency is what rewrote Lamia's forty minutes");
 
   // A REFRESH, NOT A WRITE.
   check("the same source refreshes the duration in place",

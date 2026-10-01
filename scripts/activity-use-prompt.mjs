@@ -14,7 +14,6 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
-import { aceDescriptionText } from "./description-reader.mjs";
 import { pressLabel } from "./activity-choice.mjs";
 
 export class ActivityUsePrompt {
@@ -203,22 +202,6 @@ export class ActivityUsePrompt {
     } catch (_) { return null; }
   }
 
-  /**
-   * A short, readable blurb for the prompt — the activity's own chat flavour if
-   * it has one, otherwise the item's description. Trimmed to a couple of lines
-   * so the dialog stays a decision, not a wall of rules text.
-   */
-  static async _summary(activity) {
-    // ⚠️ THROUGH THE SHARED READER, which enriches and then flattens. Its roll
-    // data falls back from the activity to the ITEM, and the item's is what
-    // carries the creature's name — `[[lookup @name]]` asked of an activity
-    // alone resolves to nothing, which is the exact placeholder that started
-    // this on 2026-09-03.
-    // The presser's own prompt, on the presser's own screen.
-    try { return await aceDescriptionText(activity?.item, { activity, limit: 240,
-      secrets: !!game.user?.isGM }); }
-    catch (_) { return ""; }
-  }
 
   static async _promptThenRefire(activity, usageConfig, messageConfig, spend) {
     try {
@@ -235,7 +218,12 @@ export class ActivityUsePrompt {
         available:    spend.available,
         max:          spend.max,
         label:        spend.label,
-        summary:      await ActivityUsePrompt._summary(activity),
+        // ⚠️ NO SUMMARY. The description under the consume box is gone (his rule,
+        // 2026-10-01), so reading the item's text for it was work done for
+        // nothing — and `_summary`, which existed only to feed it, went with it.
+        // A helper nothing calls is the same bug wearing a hat. The shared reader
+        // it used (description-reader) is untouched and is still what every other
+        // description on screen goes through.
       });
       if (!choice) return;   // cancelled — the use stays cancelled
 

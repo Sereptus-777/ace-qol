@@ -146,11 +146,10 @@ async function _pressedLucky(luckActor, hasDisadvantage, fallback) {
  *
  * @returns {Promise<"consume"|"free"|null>} null = cancelled
  */
-export async function showConsumePrompt({ itemName, activityName, itemImg = null, cost = 0, available = null, max = null, label = "uses", summary = "" }) {
+export async function showConsumePrompt({ itemName, activityName, itemImg = null, cost = 0, available = null, max = null, label = "uses" }) {
   const esc = foundry.utils.escapeHTML;
   const enough = available == null || available >= cost;
   const isGM = !!game.user?.isGM;
-  const blurb = String(summary ?? "").trim();
 
   // ── THE ABILITY IS THE BUTTON (Johnny 2026-07-28, from the mockup) ──
   // The old shape was three competing pills in a footer — Use / Use without
@@ -185,7 +184,14 @@ export async function showConsumePrompt({ itemName, activityName, itemImg = null
         <span>Consume item use</span>
       </label>` : ""}
 
-      ${blurb ? `<div class="ace-qol-consume-blurb">${blurb}</div>` : ""}
+      <!-- ⚠️ NO DESCRIPTION UNDER THE CONSUME BOX (his rule, 2026-10-01: "Delete
+           the description under the consume box."). The spell's own words were
+           repeated here, under a dialog whose whole job is one press: he knows
+           what he is casting, and the title says it. The parameter went with it,
+           and so did the caller's read of the description: a dead argument is a
+           trap for the next reader and the work behind it was being done for
+           nothing.
+           The not-enough warning STAYS: that one is about this press. -->
       ${enough ? "" : `<div class="ace-qol-consume-warn"><i class="fas fa-triangle-exclamation"></i> Not enough ${esc(label)} — using it anyway won't spend any.</div>`}
     </div>`;
 

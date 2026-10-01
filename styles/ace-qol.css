@@ -4969,11 +4969,18 @@
 
 /* ── ACE activity picker — replaces dnd5e's ActivityChoiceDialog (2026-07-27) */
 .ace-qol-act-picker { display: flex; flex-direction: column; gap: 10px; font-family: "Signika", sans-serif; }
+/* ⚠️ THE TITLE BESIDE THE ICON IS TWICE THE SIZE (his rule, 2026-10-01). It is
+   the name of the thing he is about to do and it was the smallest line in the
+   dialog. It wraps rather than being cut: a long spell name at this size would
+   otherwise run off the end. */
 .ace-qol-act-head {
   display: flex; align-items: center; gap: 10px;
-  font-size: 1.15em; font-weight: 700; color: #f5df8f;
+  flex-wrap: wrap; row-gap: 4px;
+  font-size: 2.3em; font-weight: 700; color: #f5df8f;   /* 1.15em → twice */
+  line-height: 1.15;
   padding-bottom: 8px; border-bottom: 1px solid rgba(212,175,55,0.35);
 }
+.ace-qol-act-head > span { overflow-wrap: break-word; min-width: 0; }
 .ace-qol-act-head img { width: 34px; height: 34px; border: 0; border-radius: 5px; object-fit: cover; }
 .ace-qol-act-rows { display: flex; flex-direction: column; gap: 7px; }
 .ace-qol-act-row {
@@ -5689,13 +5696,16 @@
 .ace-qol-adv-dialog .form-footer,
 .ace-qol-adv-dialog footer.form-footer { padding: 0; margin: 0; gap: 0; }
 .ace-qol-adv-dialog button[data-action="cancel"] {
-  width: 100%; margin: 0; padding: 7px 10px;
+  width: 100%; margin: 0; padding: 9px 12px;
   background: rgba(226,75,74,0.10);
   border: none; border-top: 1px solid rgba(226,75,74,0.35);
   border-radius: 0;
-  color: #e8756f; font-family: "Rajdhani", "Signika", sans-serif;
-  font-size: 13px; font-weight: 600; letter-spacing: 0.5px;
-  text-transform: none; cursor: pointer; min-height: 0; line-height: 1.4;
+  /* ⚠️ A BIT BIGGER AND A BIT BRIGHTER, STILL INSIDE THE BUTTON (his rule,
+     2026-10-01). Not a new size and not a new colour — one step of each, and the
+     padding comes up with the text so the word never touches the edge. */
+  color: #ff8d86; font-family: "Rajdhani", "Signika", sans-serif;
+  font-size: 15px; font-weight: 700; letter-spacing: 0.5px;
+  text-transform: none; cursor: pointer; min-height: 0; line-height: 1.45;
 }
 .ace-qol-adv-dialog button[data-action="cancel"]:hover {
   background: rgba(226,75,74,0.20); color: #ff9d97;

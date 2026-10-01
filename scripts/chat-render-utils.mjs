@@ -387,128 +387,19 @@ export function takeLogToNewCard(message, el) {
         if (!message?.id || !_newCards.has(message.id)) return;
         _newCards.delete(message.id);
 
-        // ⚠️🔴 DRIVE THE ELEMENT. His rule, 2026-09-30: "Set the real log's
-        // scrollTop to its scrollHeight. Main chat and the popout. When the card
-        // is in the DOM, then again on the next animation frame. If
-        // ui.chat.scrollBottom({ force: true }) does not move the bar, drive the
-        // element yourself. Log which element and scrollTop after."
-        //
-        // scrollBottom is asked first because it is the supported path, and then
-        // the scroller is pinned by hand regardless, because asking has not been
-        // enough: V13's scrollBottom writes to `.chat-scroll` inside
-        // `ui.chat.element`, and in this app that is not always the element the
-        // card is actually sitting in.
-        //
-        // ⚠️ THE SCROLLER IS FOUND FROM THE CARD, not by class name. Whichever
-        // pane a copy of this message is drawn in — the sidebar, a popped-out log
-        // — its own nearest scrolling ancestor is the bar he is looking at. Every
-        // copy of the message gets pinned, which is "main chat and the popout"
-        // without guessing what either is called this generation.
-        // ⚠️ THE TEST IS HIS: scrollHeight bigger than clientHeight, on an
-        // ancestor of the new card. 0.73.0 also demanded overflow-y be auto,
-        // scroll or overlay, and that is a guess about how the pane is styled
-        // rather than about whether it scrolls — an element with a clipped
-        // overflow still has a scrollTop, and in this app the one that owns the
-        // bar was being skipped by that extra condition.
-        // ⚠️🔴 THE FIRST SCROLLING ANCESTOR IS NOT THE BAR HE DRAGS. His log:
-        // "scrollHeight 1207, clientHeight 1117. That element only has 90 pixels
-        // of travel. The chat bar the GM is looking at travels much further. You
-        // scrolled the wrong box."
-        //
-        // Right. A card sits inside several boxes that each scroll a little — a
-        // message wrapper, a notifications strip — and walking up and taking the
-        // FIRST one finds one of those. The pane whose thumb he grabs is the one
-        // with the most TRAVEL, because travel is the thumb: a log full of cards
-        // has thousands of pixels of it and a wrapper has ninety.
-        //
-        // So every scrolling ancestor is measured and the deepest-travelling one
-        // wins, and the rest are named in the log beside it so a wrong answer is
-        // visible rather than silent.
-        const barsAbove = (node) => {
-            const found = [];
-            let box = node?.parentElement ?? null;
-            while (box && box !== document.body) {
-                const travel = box.scrollHeight - box.clientHeight;
-                if (travel > 1) found.push({ box, travel });
-                box = box.parentElement;
-            }
-            return found.sort((a, b) => b.travel - a.travel);
-        };
-        const nameOf = (box) => box.id ? `#${box.id}`
-            : `${box.tagName.toLowerCase()}.${String(box.className || "?").trim().split(/\s+/)[0]}`;
-
-        const pin = (why) => {
-            let found = 0;
-            // Every copy of this message: the sidebar log and a popped-out one.
-            for (const node of document.querySelectorAll(`[data-message-id="${message.id}"]`)) {
-                const bars = barsAbove(node);
-                if (!bars.length) continue;
-                found++;
-                const { box } = bars[0];
-                // The MAX, which is what the bottom is. scrollHeight on its own
-                // is past the end and the browser clamps it anyway; asking for
-                // the real number is how the read-back below means something.
-                box.scrollTop = box.scrollHeight - box.clientHeight;
-                // ⚠️🔴 AND READ IT BACK. Saying "chat scrolled" because scrollTop
-                // was ASSIGNED is reporting an intention as an outcome.
-                const top = Math.round(box.scrollTop);
-                const h = Math.round(box.scrollHeight);
-                const vis = Math.round(box.clientHeight);
-                const travel = Math.max(0, h - vis);
-                const where = `${nameOf(box)} scrollTop=${top} scrollHeight=${h} `
-                    + `clientHeight=${vis} travel=${travel}`;
-                const others = bars.slice(1).map(b => `${nameOf(b.box)} travel=${Math.round(b.travel)}`);
-
-                // ⚠️ A SHORT BAR IN A FULL LOG IS THE WRONG BOX, AND IT SAYS SO
-                // (his rule). Ninety pixels of travel under a log of cards is a
-                // wrapper, not the pane he drags.
-                const cards = document.querySelectorAll("#chat-log [data-message-id], "
-                    + ".chat-log [data-message-id]").length;
-                if (travel < 200 && cards > 5) {
-                    console.warn(`${MODULE_ID} | WRONG ELEMENT (${why}): ${where} — only ${travel}px of `
-                        + `travel with ${cards} cards in the log, so this is not the bar he drags. `
-                        + `Others above the card: ${others.join(", ") || "none"}.`);
-                } else if (top >= travel - 1) {
-                    console.log(`${MODULE_ID} | chat at the bottom (${why}): ${where}`
-                        + `${others.length ? ` · also above the card: ${others.join(", ")}` : ""}.`);
-                } else {
-                    console.warn(`${MODULE_ID} | chat did NOT reach the bottom (${why}): ${where} — `
-                        + `${travel - top}px short. Something is holding that bar.`);
-                }
-            }
-            if (!found) {
-                console.warn(`${MODULE_ID} | a new ACE card is in the log and nothing above it has a `
-                    + `scrollbar, so there was nothing to move (message ${message.id}).`);
-            }
-        };
-
-        const scroll = () => {
-            pin("card in the log");
-            // Next frame, and 100ms later: the card's own pictures settle its
-            // height across those, and nothing here waits on one of them.
-            requestAnimationFrame(() => { try { pin("next frame"); } catch (_) { /* gone */ } });
-            setTimeout(() => { try { pin("100ms later"); } catch (_) { /* gone */ } }, 100);
-            // ⚠️ AND AFTER FOUNDRY'S OWN SCROLL, so its write cannot put the bar
-            // back (his rule). Foundry's runs from ChatLog##postOne and awaits
-            // every picture in the log, so it lands whenever it lands — the only
-            // honest way to be after it is to await the same call. The three pins
-            // above have already happened; this one is the last word.
-            Promise.resolve(ui.chat?.scrollBottom?.({ waitImages: true, popout: true }))
-                .then(() => pin("after Foundry's own scroll"))
-                .catch(() => { /* its scroll is a nicety; ours already ran */ });
-        };
-
-        // Wait for the append, one frame at a time. 30 frames is half a second at
-        // 60Hz: long enough for the render queue, short enough to say so.
-        // ⚠️ IN THE LOG, not merely attached somewhere: his words are "after the
-        // card is in #chat-log", and that is the element whose scrollbar moves.
+        // ⚠️ WAIT FOR THE CARD TO BE IN THE LOG FIRST. The render hook fires
+        // inside ChatMessage#renderHTML, which ChatLog##postOne awaits BEFORE it
+        // appends — so at this moment the card is still detached and the bottom
+        // of the log is not where it is going to be. `inTheLog` is the condition,
+        // checked once a frame, and the follower below then keeps the bar there
+        // while the rest of the cast is still writing.
         let frames = 0;
         const inTheLog = () => !!el?.closest?.("#chat-log, .chat-log");
         const whenInTheDom = () => {
-            if (inTheLog()) { scroll(); return; }
+            if (inTheLog()) { followTheLog(`a new ACE card (${message.id})`, el); return; }
             if (++frames > 30) {
-                console.warn(`${MODULE_ID} | a new ACE card never reached the chat log, so the log `
-                    + `was not taken to it (message ${message.id}).`);
+                console.warn(`${MODULE_ID} | a new ACE card never reached the chat log, so the bar `
+                    + `was not moved (message ${message.id}).`);
                 return;
             }
             requestAnimationFrame(whenInTheDom);
@@ -518,6 +409,209 @@ export function takeLogToNewCard(message, el) {
         console.warn(`${MODULE_ID} | could not take the chat log to a new ACE card, so it may `
             + `have landed off-screen:`, err);
     }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   THE BAR FOLLOWS THE LOG UNTIL THE LOG STOPS GROWING
+
+   His table, 2026-10-01, reading his own console back to me:
+
+     "div.chat-scroll scrollTop=3687 scrollHeight=4804 clientHeight=1117
+      travel=3687. That element was at its max. The GM's bar was not at the
+      bottom, because the Charm card, the apply, and the condition art all
+      logged AFTER the 100ms scroll."
+
+   ⚠️🔴 SO THE SCROLL WAS RIGHT AND THE MOMENT WAS WRONG. Three pins and a
+   fourth after Foundry's own scroll all happen while a cast is still resolving:
+   the save card goes up, then the apply, then what landed, then the condition
+   art, each its own write and each one taller than the last. Pinning the bar
+   before the last of them is pinning it to a log that is about to grow.
+
+   A card cannot know when it is the last thing in the log, so this stops
+   guessing and WATCHES instead:
+
+     · a MutationObserver on every chat log — anything added or removed
+     · a ResizeObserver on the logs' own content — a card that grows after it
+       was drawn, which is every ACE card that fills itself in
+     · every signal The One Road names, so the end of an apply is a pin too
+
+   and it keeps following until the log has been still for a moment, with a hard
+   ceiling so it can never hold the bar hostage while he reads.
+
+   ⚠️ IT PINS EVERY LOG, NAMED. `div.chat-scroll` is the pane in his console, and
+   the bar he drags is whichever ancestor of the card has the most travel. Both
+   are pinned and both are named, because when they differ that difference is the
+   bug (0.75.0 pinned one of them and reported success).
+
+   ⚠️ NOTHING HERE WAITS ON AN IMAGE, pads anything, or scrolls to the card.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/** How long the log must be still before the bar is let go, and the ceiling. */
+const FOLLOW_QUIET_MS = 400;
+const FOLLOW_MAX_MS = 4000;
+
+let _following = null;
+
+/** Every pane that could own a chat scrollbar right now. */
+function chatScrollers(cardEl = null) {
+    const seen = new Map();
+    const add = (box, why) => {
+        if (!box || box === document.body || !(box.scrollHeight > box.clientHeight + 1)) return;
+        if (!seen.has(box)) seen.set(box, why);
+    };
+    // The pane Foundry scrolls, in the sidebar and in every popped-out log.
+    for (const box of document.querySelectorAll(".chat-scroll")) add(box, "chat-scroll");
+    // And the bar he actually drags: the ancestor of the card with the most
+    // travel. They are usually the same element; when they are not, that is
+    // exactly what went wrong last time, so both get pinned.
+    for (const node of document.querySelectorAll(".chat-message, [data-message-id]")) {
+        if (cardEl && node !== cardEl && !node.contains?.(cardEl)) continue;
+        let box = node.parentElement, best = null, bestTravel = 0;
+        while (box && box !== document.body) {
+            const travel = box.scrollHeight - box.clientHeight;
+            if (travel > bestTravel) { best = box; bestTravel = travel; }
+            box = box.parentElement;
+        }
+        add(best, "most travel above the card");
+        break;
+    }
+    return seen;
+}
+
+const scrollerName = (box) => box.id ? `#${box.id}`
+    : `${box.tagName.toLowerCase()}.${String(box.className || "?").trim().split(/\s+/)[0]}`;
+
+/**
+ * Put every chat scrollbar at its maximum, and say what happened.
+ *
+ * @returns {boolean} whether every bar it found is now at the bottom
+ */
+function pinChatToBottom(why, cardEl = null, { quiet = false } = {}) {
+    const boxes = chatScrollers(cardEl);
+    if (!boxes.size) {
+        if (!quiet) {
+            console.warn(`${MODULE_ID} | ${why}: nothing in the chat has a scrollbar, so there was `
+                + `nothing to move.`);
+        }
+        return true;
+    }
+    let allDown = true;
+    for (const [box, found] of boxes) {
+        box.scrollTop = box.scrollHeight - box.clientHeight;
+        const top = Math.round(box.scrollTop);
+        const h = Math.round(box.scrollHeight);
+        const vis = Math.round(box.clientHeight);
+        const travel = Math.max(0, h - vis);
+        const down = top >= travel - 1;
+        if (!down) allDown = false;
+        if (quiet && down) continue;
+        const line = `${scrollerName(box)} (${found}) scrollTop=${top} scrollHeight=${h} `
+            + `clientHeight=${vis} travel=${travel}`;
+        if (!down) {
+            console.warn(`${MODULE_ID} | ${why}: ${line} — ${travel - top}px SHORT of the bottom. `
+                + `Something is holding that bar.`);
+        } else {
+            console.log(`${MODULE_ID} | ${why}: ${line} — at the bottom.`);
+        }
+    }
+    return allDown;
+}
+
+/**
+ * Follow the log to the bottom until it stops growing.
+ *
+ * Called for a new ACE card, and safe to call again while one is already being
+ * followed: the later call extends the window rather than starting a second
+ * watcher.
+ */
+export function followTheLog(why, cardEl = null) {
+    // Already following: just extend it and pin now.
+    if (_following) {
+        _following.until = Math.max(_following.until, performance.now() + FOLLOW_QUIET_MS);
+        _following.card = cardEl ?? _following.card;
+        pinChatToBottom(`${why} while already following`, _following.card, { quiet: true });
+        return;
+    }
+
+    const started = performance.now();
+    const state = { until: started + FOLLOW_QUIET_MS, card: cardEl, pins: 0 };
+    _following = state;
+
+    const pin = (what, { quiet = false } = {}) => {
+        state.pins++;
+        // Anything that moves the log keeps the window open: the apply, the card
+        // filling itself in, the condition art. This is the whole fix — the bar
+        // is pinned after the LAST write, not before it.
+        state.until = Math.max(state.until, performance.now() + FOLLOW_QUIET_MS);
+        return pinChatToBottom(what, state.card, { quiet });
+    };
+
+    // ── What we watch ───────────────────────────────────────────────────────
+    const observers = [];
+    try {
+        const logs = document.querySelectorAll("#chat-log, .chat-log, .chat-scroll");
+        const mo = new MutationObserver(() => pin("a message was added to the log", { quiet: true }));
+        for (const log of logs) mo.observe(log, { childList: true, subtree: true });
+        observers.push(mo);
+    } catch (err) {
+        console.debug(`${MODULE_ID} | could not watch the chat log for new messages:`, err?.message ?? err);
+    }
+    try {
+        if (typeof ResizeObserver === "function") {
+            const ro = new ResizeObserver(() => pin("a card changed height", { quiet: true }));
+            for (const log of document.querySelectorAll("#chat-log, .chat-log")) ro.observe(log);
+            if (cardEl) ro.observe(cardEl);
+            observers.push(ro);
+        }
+    } catch (err) {
+        console.debug(`${MODULE_ID} | could not watch the cards for a height change:`, err?.message ?? err);
+    }
+    // Every landing The One Road names: the end of an apply is a pin.
+    const signals = ["saveComplete", "damageApplied", "killLogged", "reactionUsed",
+        "concentrationBroken", "attackResolved", "attackCancelled", "expectCard"];
+    const hooked = signals.map(name => {
+        const fn = () => pin(`ACE finished ${name}`, { quiet: true });
+        Hooks.on(`${MODULE_ID}.${name}`, fn);
+        return [name, fn];
+    });
+
+    // ── The pins he asked for, and then whatever the log does ───────────────
+    pin("the card is in the log");
+    requestAnimationFrame(() => pin("next frame", { quiet: true }));
+    setTimeout(() => pin("100ms later", { quiet: true }), 100);
+    // After Foundry's own scroll, so its write cannot put the bar back. That one
+    // waits for pictures; ours never do, and by then they have all run.
+    Promise.resolve(ui.chat?.scrollBottom?.({ waitImages: true, popout: true }))
+        .then(() => pin("after Foundry's own scroll", { quiet: true }))
+        .catch(() => { /* its scroll is a nicety */ });
+
+    // ── Letting go, and only then the verdict ───────────────────────────────
+    const tick = () => {
+        const now = performance.now();
+        if (now < state.until && (now - started) < FOLLOW_MAX_MS) {
+            setTimeout(tick, 60);
+            return;
+        }
+        for (const o of observers) { try { o.disconnect(); } catch (_) {} }
+        for (const [name, fn] of hooked) { try { Hooks.off(`${MODULE_ID}.${name}`, fn); } catch (_) {} }
+        _following = null;
+        // ⚠️ THE VERDICT IS READ HERE, AFTER THE CARD AND EVERYTHING THAT CAME
+        // WITH IT IS ON SCREEN (his rule: "Log after the Charm card is on screen,
+        // not before"). Every pin above is quiet unless it found a bar short;
+        // this is the line that says where the thumb actually ended up.
+        const down = pinChatToBottom(`${why}: the log has been still for ${FOLLOW_QUIET_MS}ms`
+            + ` after ${state.pins} pin(s)`, state.card);
+        if (!down) {
+            console.warn(`${MODULE_ID} | the chat bar is still not at the bottom after the log went `
+                + `quiet. Do not take the lines above as a success.`);
+        }
+        if ((now - started) >= FOLLOW_MAX_MS) {
+            console.log(`${MODULE_ID} | stopped following the chat log after ${FOLLOW_MAX_MS}ms — it `
+                + `was still changing, and holding his scrollbar longer than that is worse than `
+                + `letting go of it.`);
+        }
+    };
+    setTimeout(tick, 60);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

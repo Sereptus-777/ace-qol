@@ -213,7 +213,7 @@ console.log("\n4. CHAT SITS ON THE NEW CARD");
   // run while the card is still detached: the log scrolled to the bottom of a
   // log the new card was not in. So the pin is now on the WAIT, not on the call.
   check("the scroll waits until the card is actually in the log",
-    /if \(inTheLog\(\)\) \{ scroll\(\); return; \}/.test(chat)
+    /if \(inTheLog\(\)\) \{ followTheLog\(/.test(chat)
     && /requestAnimationFrame\(whenInTheDom\);/.test(chat),
     "a condition, not a delay");
   check("and one frame is the tick, because a microtask runs before the append",
@@ -269,9 +269,15 @@ console.log("\n6. TWO SOURCES, ONE CHARMED, NEITHER DELETED");
   check("the dedupe asks whose copy it is",
     /static _copiesBySource\(actor, key, options = \{\}\) \{/.test(lib),
     "same caster, another caster, or nobody named");
-  check("two KNOWN casters that differ make it somebody else's",
-    /if \(caster && theirs && theirs !== caster\) others\.push\(e\);/.test(lib),
-    "unknown on either side is not a disagreement");
+  // ⚠️🔴 AND "MINE" IS PROVED, NOT ASSUMED FROM THE ABSENCE OF A DISAGREEMENT.
+  // 0.73.0 read "only two KNOWN casters that differ make it somebody else's", so
+  // a copy naming NO caster was treated as the new caster's own and had its clock
+  // rewritten. One missing stamp on either side and Kasimir rewrote Lamia's hour.
+  check("a copy is only his when it says so",
+    /if \(caster \? \(theirs === caster\) : !theirs\) mine\.push\(e\);/.test(lib),
+    "an unattributed copy belongs to nobody and is left alone");
+  check("and a condition with no caster at all still does not stack",
+    /the old no-stack behaviour is untouched/.test(lib), "prone from a fall, a GM's toggle");
   check("applyEffect deletes only its own copy",
     /const \{ mine, others \} = ConditionLibrary\._copiesBySource\(actor, key, options\);/.test(lib)
     && (lib.match(/_copiesBySource\(actor, key, options\)/g) ?? []).length >= 2,
@@ -456,7 +462,7 @@ console.log("\n8. NAMED FOR ITS CASTER, THE BOTTOM OF THE LOG, THE PORTRAIT ROW"
     /const inTheLog = \(\) => !!el\?\.closest\?\.\("#chat-log, \.chat-log"\);/.test(chat),
     "that is the element whose scrollbar moves");
   check("and once more on the next animation frame",
-    /requestAnimationFrame\(\(\) => \{ try \{ pin\("next frame"\); \}/.test(chat),
+    /requestAnimationFrame\(\(\) => pin\("next frame", \{ quiet: true \}\)\);/.test(chat),
     "the card settles into its height without waiting on a picture");
   check("no padding, no scroll-to-card",
     !/scrollIntoView/.test(chat), "two of his three don'ts; images are section 9's");
@@ -512,36 +518,54 @@ console.log("\n9. THE BAR, THE DAMAGE ROW, AND THE SECOND CARD'S FALSE ERROR");
    * and taking the FIRST one finds one of those wrappers. The pane whose thumb he
    * grabs is the one with the most TRAVEL — travel IS the thumb — so every
    * scrolling ancestor is measured and the deepest-travelling one wins. */
-  check("the bar is the ancestor with the MOST travel, not the first that scrolls",
-    /const travel = box\.scrollHeight - box\.clientHeight;/.test(chat)
-    && /return found\.sort\(\(a, b\) => b\.travel - a\.travel\);/.test(chat)
-    && /const \{ box \} = bars\[0\];/.test(chat),
-    "90px under a full log is a wrapper");
-  check("and it is set to the max, which is what the bottom is",
+  /* ⚠️🔴 AND THE MOMENT WAS THE REST OF IT. His console, 2026-10-01:
+   * "div.chat-scroll scrollTop=3687 ... travel=3687. That element was at its max.
+   * The GM's bar was not at the bottom, because the Charm card, the apply, and
+   * the condition art all logged AFTER the 100ms scroll."
+   *
+   * So the element was right and every pin fired before the log had finished
+   * growing. A card cannot know when it is the last thing in the log, so the bar
+   * is FOLLOWED instead: watched to the bottom until the log goes still. */
+  check("the bar follows the log until it stops growing",
+    /export function followTheLog\(why, cardEl = null\) \{/.test(chat)
+    && /const FOLLOW_QUIET_MS = 400;/.test(chat), "not a fixed set of moments");
+  check("anything added to the log is a pin",
+    /new MutationObserver\(\(\) => pin\("a message was added to the log"/.test(chat),
+    "the apply and what landed arrive after the card");
+  check("a card that grows after it was drawn is a pin",
+    /new ResizeObserver\(\(\) => pin\("a card changed height"/.test(chat),
+    "every ACE card fills itself in");
+  check("and the end of an apply is a pin",
+    /Hooks\.on\(`\$\{MODULE_ID\}\.\$\{name\}`, fn\);/.test(chat)
+    && /ACE finished \$\{name\}/.test(chat), "every signal The One Road names");
+  check("each of those keeps the window open",
+    /state\.until = Math\.max\(state\.until, performance\.now\(\) \+ FOLLOW_QUIET_MS\);/.test(chat),
+    "so the bar is pinned after the LAST write, not before it");
+  check("and it lets go, so it can never hold his scrollbar hostage",
+    /const FOLLOW_MAX_MS = 4000;/.test(chat)
+    && /for \(const o of observers\) \{ try \{ o\.disconnect\(\); \} catch \(_\) \{\} \}/.test(chat),
+    "holding it longer is worse than letting go");
+
+  check("both panes are pinned, and both are named",
+    /for \(const box of document\.querySelectorAll\("\.chat-scroll"\)\) add\(box, "chat-scroll"\);/.test(chat)
+    && /add\(best, "most travel above the card"\);/.test(chat),
+    "div.chat-scroll and the bar he drags, when they differ");
+  check("set to the max, which is what the bottom is",
     /box\.scrollTop = box\.scrollHeight - box\.clientHeight;/.test(chat),
     "scrollHeight on its own is past the end");
-  check("every copy of the message is pinned",
-    /for \(const node of document\.querySelectorAll\(`\[data-message-id="\$\{message\.id\}"\]`\)\)/.test(chat),
-    "main log and popout");
-  check("four moments: in the log, next frame, 100ms, and after Foundry's own scroll",
-    /pin\("card in the log"\);/.test(chat) && /pin\("next frame"\);/.test(chat)
-    && /pin\("100ms later"\);/.test(chat) && /pin\("after Foundry's own scroll"\)/.test(chat),
-    "so a later write cannot put the bar back");
   check("it logs the class, scrollTop, scrollHeight, clientHeight and the travel",
     /scrollTop=\$\{top\} scrollHeight=\$\{h\} `/.test(chat)
     && /clientHeight=\$\{vis\} travel=\$\{travel\}/.test(chat), "his words");
-  check("a short bar under a full log is called the wrong element",
-    /if \(travel < 200 && cards > 5\) \{/.test(chat) && /WRONG ELEMENT/.test(chat),
-    "his rule: do not claim it scrolled");
-  check("and the other candidates are named beside it",
-    /also above the card: \$\{others\.join\(", "\)\}/.test(chat), "so a wrong answer is visible");
-  // ⚠️ AND IT READS THE VALUE BACK. Saying "scrolled" because scrollTop was
-  // ASSIGNED is reporting an intention as an outcome.
-  check("it never claims it scrolled when it did not",
-    /chat did NOT reach the bottom/.test(chat)
-    && /\$\{travel - top\}px short/.test(chat), "his rule");
+  check("the verdict is read after the log goes quiet, not before",
+    /the log has been still for \$\{FOLLOW_QUIET_MS\}ms/.test(chat),
+    "his rule: log after the card is on screen");
+  check("and it never claims it scrolled when it did not",
+    /px SHORT of the bottom/.test(chat)
+    && /Do not take the lines above as a success/.test(chat), "his rule");
   check("nothing has a scrollbar and it says so",
-    /scrollbar, so there was nothing to move/.test(chat), "silence is a bug");
+    /nothing in the chat has a scrollbar/.test(chat), "silence is a bug");
+  check("the quiet pins stay quiet unless a bar is short",
+    /if \(quiet && down\) continue;/.test(chat), "one verdict, not forty lines");
   // ⚠️ THE ONLY IMAGE WAIT IS FOUNDRY'S OWN, AND IT GATES ONLY THE LAST PIN.
   // "After Foundry's own scroll runs" can only be known by awaiting the same
   // call, and that call is the one that waits for pictures. The first three pins
@@ -692,12 +716,55 @@ console.log("\n11. THE CHIP ON THE HP ROW, AND TWO TIMERS THAT DO NOT TOUCH");
   check("the tracker's rescue stamp says what it is doing",
     /had no start time, so it `/.test(tracker) && /is anchored to now/.test(tracker),
     "stamping now onto a twenty-minute-old effect hands it a fresh duration");
-  check("a different caster is still never refreshed",
-    /if \(_caster && theirs && theirs !== _caster\) return false;/.test(lib),
-    "two known casters that differ are two sources");
-  check("and his copy is not deleted either",
-    /if \(caster && theirs && theirs !== caster\) others\.push\(e\);/.test(lib),
+  check("a refresh needs the effect to SAY it is his",
+    /if \(_caster \? \(theirs !== _caster\) : !!theirs\) return false;/.test(lib),
+    "the only ACE write that touches an existing clock");
+  check("and another source's copy is not deleted either",
+    /if \(caster \? \(theirs === caster\) : !theirs\) mine\.push\(e\);/.test(lib),
     "both stay, each with its own hour");
+  check("the clocks are read before and after every apply",
+    /static _clocks\(actor, key\)/.test(lib)
+    && /clocks BEFORE this apply/.test(lib) && /clocks AFTER this apply/.test(lib),
+    "his rule: the live bar is the test");
+  check("and a clock this apply did not own moving is shouted about",
+    /A SECOND SOURCE MOVED ANOTHER SOURCE'S CLOCK/.test(lib), "never silent");
+  check("the bar's own number is what is reported",
+    /remaining: d\.remaining \?\? null,/.test(lib),
+    "Foundry's computed remaining, which is what the effects panel shows");
+}
+
+/* ══ 12. THE CAST DIALOG ══════════════════════════════════════════════════ */
+console.log("\n12. THE CAST DIALOG");
+{
+  const css = read("styles/ace-qol.css");
+  const prompt = read("scripts/attack-prompt.mjs");
+  const use = read("scripts/activity-use-prompt.mjs");
+
+  check("the title beside the icon is twice the size",
+    /font-size: 2\.3em; font-weight: 700; color: #f5df8f;/.test(css), "1.15em → twice");
+  check("and it wraps, so a long spell name is not cut",
+    /\.ace-qol-act-head > span \{ overflow-wrap: break-word; min-width: 0; \}/.test(css),
+    "at that size it would run off the end");
+  check("\"Cast Charm Person\" stays",
+    /<span class="ace-qol-use-primary-name">\$\{esc\(activityName \?\? "Use"\)\}<\/span>/.test(prompt),
+    "the ability is the button");
+  check("\"Consume item use\" stays",
+    /<span>Consume item use<\/span>/.test(prompt), "his rule");
+  check("the description under the consume box is gone",
+    !/ace-qol-consume-blurb/.test(prompt), "he knows what he is casting");
+  check("and so is the work behind it, and the helper that did it",
+    !/summary/.test(prompt.slice(prompt.indexOf("export async function showConsumePrompt")))
+    && !/_summary/.test(use.replace(/\/\/[^\n]*/g, "")),
+    "a dead argument is a trap for the next reader");
+  check("the not-enough warning stays, because that one is about this press",
+    /ace-qol-consume-warn/.test(prompt), "using it anyway won't spend any");
+  check("Cancel stays where it is, a bit bigger and a bit brighter",
+    /color: #ff8d86; font-family: "Rajdhani", "Signika", sans-serif;/.test(css)
+    && /font-size: 15px; font-weight: 700; letter-spacing: 0\.5px;/.test(css),
+    "13px → 15px, #e8756f → #ff8d86");
+  check("and the text stays inside the button",
+    /width: 100%; margin: 0; padding: 9px 12px;/.test(css),
+    "the padding came up with the type");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
