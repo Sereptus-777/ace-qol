@@ -980,5 +980,38 @@ console.log("\n16. A SECOND SOURCE CARRIES NO STATUS, AND NOBODY RE-READS THE AC
     "said, not repaired by a re-read");
 }
 
+/* ══ 17. ONE FACE, ONE BOX — AND THE CARD THAT REDRAWS SCROLLS TOO ════════ */
+console.log("\n17. THE PORTRAIT, AND THE POST-HIT RESULT");
+{
+  const dmg = read("scripts/damage-card-renderer.mjs");
+  const ph = read("scripts/post-hit-saves.mjs");
+  const css = read("styles/ace-qol.css");
+
+  // ⚠️ A circle crop takes the top off every portrait that is not already square,
+  // and two ACE cards showing one creature two different shapes is the kind of
+  // difference a table notices.
+  check("the damage card draws the save card's portrait box",
+    /class="ace-qol-dmg-tgt-img ace-qol-save-portrait"/.test(dmg), "same face, same box");
+  check("and that box is square and not cropped",
+    /\.ace-qol-save-portrait \{/.test(css)
+    && /border-radius: 8px !important;/.test(css)
+    && /object-fit: contain !important;/.test(css), "no circle");
+  check("the old class stays, because it is the click handle",
+    /row\.querySelector\("\.ace-qol-dmg-tgt-img"\)/.test(read("scripts/damage-applicator.mjs")),
+    "it selects and pans to the token");
+
+  /* ⚠️🔴 HIS AUDIT: "post-hit-saves.mjs says the Spiked Chain save card became its
+   * own result and posted no second card. After that line there is no 'chat to
+   * the end'. The scroll ran on the shell. The result was written into it
+   * afterwards, so the bottom half sits below the fold." */
+  check("the post-hit result takes the chat to the end once it is in the card",
+    /scrollChatToEnd\("the post-hit save result is in its card"\)/.test(ph),
+    "this card redraws instead of posting, so it is taller afterwards");
+  check("and it is the same scroll the save engine calls",
+    /scrollChatToEnd\("the save card is drawn and its dice have landed"\)/
+      .test(read("scripts/save-engine.mjs")),
+    "Charm's path is untouched");
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exitCode = fail ? 1 : 0;

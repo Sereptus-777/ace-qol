@@ -1045,7 +1045,18 @@ export class DamageCardRenderer {
                portrait and had to be kept short to leave room for what landed;
                under it, it has the whole column and can say the whole name. -->
           <div class="ace-qol-dmg-row-who">
-            <img src="${portrait}" class="ace-qol-dmg-tgt-img" />
+            <!-- ⚠️🔴 THE SAME FACE IN THE SAME BOX AS THE SAVE CARD (his rule,
+                 2026-10-01: "The damage card draws Escher with
+                 .ace-qol-dmg-tgt-img: 56px, border-radius 50%, so the face is cut
+                 to a circle. The save card draws him with .ace-qol-save-portrait,
+                 square, not cropped. Use that class and that size.").
+                 A circle crop takes the top of a head off every portrait that is
+                 not already square, and two ACE cards showing one creature two
+                 different shapes is the kind of difference a table notices.
+                 ⚠️ BOTH CLASSES. The old one stays because it is the handle
+                 damage-applicator uses to wire the click that selects and pans to
+                 the token; the save card's class is what decides the box. -->
+            <img src="${portrait}" class="ace-qol-dmg-tgt-img ace-qol-save-portrait" />
             <span class="ace-qol-dmg-tgt-name">${name ?? "Unknown"}</span>
             ${isCrit ? '<span class="ace-qol-dmg-crit-badge">CRIT</span>' : ""}
           </div>

@@ -1655,6 +1655,26 @@ export class PostHitSaves {
     } else {
       await CardDoor.post(_resultCard, { dice: true });
     }
+
+    /* ⚠️🔴 AND NOW THE CHAT GOES TO THE END (his rule, 2026-10-01).
+     *
+     * His audit: "post-hit-saves.mjs says the Spiked Chain save card became its
+     * own result and posted no second card. After that line there is no 'chat to
+     * the end'. The scroll ran on the shell. The result was written into it
+     * afterwards, so the bottom half sits below the fold."
+     *
+     * Right. This card does not post a second message — it writes the result into
+     * the one that asked, which is taller afterwards than it was when anything
+     * else scrolled. Charm reaches the bottom through the save engine's own line
+     * after its phase-1 draw; this is the same line for the path that redraws
+     * instead of posting. Its path is untouched. */
+    try {
+      const { scrollChatToEnd } = await import("./chat-render-utils.mjs");
+      scrollChatToEnd("the post-hit save result is in its card");
+    } catch (err) {
+      console.warn(`${MODULE_ID} | post-hit: the result is in the card but the chat was not taken `
+        + `to the end:`, err);
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
