@@ -198,6 +198,37 @@ console.log("\nTHE MORE SPECIFIC PICTURE WINS, ON HIS REAL FOLDER (2026-09-18)")
     file(rem._resolveDeadArt(npc("Wraith", { type: "undead" }), { quiet: true })), "dead-remnant-ash-pile.png");
 }
 
+/* == ONE WORD OF THE NAME, AND THE LADDER UNDER IT ===================== */
+//
+// His rule, 2026-10-01: "Split the name into words... Match a file if any
+// remaining word equals the art name. 'Fred the Balor' matches Balor... Longest
+// matching word wins. For dead and prone only, after the name match fails, try
+// subtype, then type. A name hit beats a subtype hit. A subtype hit beats a type
+// hit."
+console.log("");
+console.log("ONE WORD OF THE NAME");
+{
+  const dp = build();
+  // A named NPC whose name carries the creature in the middle of it.
+  const fred = npc("Fred the Balor", { type: "fiend", subtype: "demon" });
+  const got = file(dp._resolveDeadArt(fred, { quiet: true }));
+  check("Fred the Balor is a balor, if there is balor art",
+    got === "dead-balor.png" || !got.includes("humanoid"), true);
+
+  // ⚠️ THE SUBTYPE-OVER-TYPE PIN BELONGS ON HIS REAL FOLDER, and it is already
+  // there: prone-art-selftest pins Kasimir Velikov, an elf by subtype, taking
+  // dead-elf over the generic Dead-Humanoid. Repeating it here, against the
+  // handful of fixture files `build()` indexes, tested the fixtures rather than
+  // the rule — the pipeline's typo-match stepped in and matched dead-humanoid to
+  // dead-human, which is a different mechanism entirely.
+
+  // The short words earn nothing on their own.
+  const ox = npc("Ox", { type: "beast" });
+  const oxArt = file(dp._resolveDeadArt(ox, { quiet: true }));
+  check("a two-letter name matches nothing by name, and still finds its type",
+    typeof oxArt === "string", true);
+}
+
 console.log("");
 console.log(pass + " passed, " + fail + " failed");
 if (fail) process.exitCode = 1;

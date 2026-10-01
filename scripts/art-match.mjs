@@ -70,8 +70,22 @@ export const TILE_FILES = /\.(png|webp|jpe?g|gif|avif|svg|webm|mp4|m4v|ogv)$/i;
 const RANK = { prone: 3, plain: 2, dead: 1 };
 
 /** Words that say nothing about which creature a picture shows. */
-const STOP = new Set(["the", "and", "of", "an", "to", "in", "on", "at", "by", "or", "cr",
+const STOP = new Set(["the", "a", "and", "of", "an", "to", "in", "on", "at", "by", "or", "cr",
   "legacy", "variant", "any", "dead", "corpse", "prone"]);
+
+/**
+ * How short a word of a creature's NAME may be and still earn a match.
+ *
+ * ⚠️ HIS RULE, 2026-10-01: "Ignore 'the', 'a', 'of', and any word under 3
+ * letters." A two-letter word is in half the words in the language and matching
+ * on one is how a confident wrong picture gets picked.
+ *
+ * ⚠️ AND IT IS THE NAME ONLY. The type, the subtype and what the sheet was
+ * imported from are single known words from a fixed vocabulary, so there is no
+ * stray two-letter word among them to protect against — and a creature whose
+ * whole name IS two letters ("Ox") still finds its picture by its type.
+ */
+const NAME_MIN = 3;
 
 /** What a creature does or where it stands among its kind, never what it is. */
 const ROLES = new Set(["lord", "lady", "king", "queen", "prince", "princess", "chief", "chieftain",
@@ -222,7 +236,12 @@ export function creatureWords(actor, { names = [] } = {}) {
   const subtype = typeof rawType === "string" ? "" : rawType?.subtype;
   return {
     levels: [
-      { label: "name", words: named([actor?.name, actor?.prototypeToken?.name, ...names]) },
+      // ⚠️ A NAME WORD IS THREE LETTERS OR MORE (his rule, 2026-10-01). "Fred the
+      // Balor" is fred and balor; "the" was already a stop word and anything
+      // shorter than three letters is dropped here.
+      { label: "name",
+        words: new Set([...named([actor?.name, actor?.prototypeToken?.name, ...names])]
+          .filter(w => w.length >= NAME_MIN)) },
       { label: "made from", words: named(madeFrom(actor)) },
       { label: "type", words: own },
       { label: "subtype", words: new Set([...wordsOf(subtype), ...wordsOf(raceName)]) },
@@ -260,11 +279,19 @@ export function rankArt(index, creature) {
       // A job word counts only for a picture of the creature's own type.
       const sameType = !entry.type || !creature.type || entry.type === creature.type;
       const counts = (x, set) => set.has(x) && (sameType || !roles.has(x));
+      const nameWords = levels[0]?.words ?? new Set();
       const score = {
         entry,
         counts: levels.map(l => entry.words.filter(x => counts(x, l.words)).length),
         extra: entry.words.filter(x => !all.has(x) && !soft.has(x)).length,
         soft: entry.words.filter(x => soft.has(x) || (!sameType && roles.has(x))).length,
+        // ⚠️ THE LONGEST WORD OF THE NAME IT MATCHED ON (his rule, 2026-10-01:
+        // "Longest matching word wins"). A longer word is a more particular
+        // word: "arcanaloth" says more about a creature than "elf" does, and
+        // when two files each match one word of the name, that is the whole
+        // difference between them.
+        nameLen: entry.words.filter(x => counts(x, nameWords))
+          .reduce((n, x) => Math.max(n, x.length), 0),
       };
       if (score.counts.some(c => c > 0)) scored.push(score);
     }
@@ -277,7 +304,27 @@ export function compareArt(a, b) {
   const [aName, aMade, aType, aSub] = a.counts;
   const [bName, bMade, bType, bSub] = b.counts;
   if (aName !== bName) return bName - aName;              // its own name
+  // ⚠️ LONGEST MATCHING WORD WINS (his rule, 2026-10-01). With the same number
+  // of name words matched, the file that matched on the longer one is the more
+  // particular picture: "balor" over "red" for Fred the Balor.
+  if ((a.nameLen ?? 0) !== (b.nameLen ?? 0)) return (b.nameLen ?? 0) - (a.nameLen ?? 0);
   if (aMade !== bMade) return bMade - aMade;              // what it was made from
+  /* ⚠️🔴 A SUBTYPE HIT BEATS A TYPE HIT, AND IT ALREADY DID. His rule,
+     2026-10-01: "A name hit beats a subtype hit. A subtype hit beats a type
+     hit." That is this order, and the ladder below delivers it for every clean
+     case: Kasimir's dead-elf and the plain Dead-Humanoid are both pictures of
+     only his own words, so the exactness test is a tie between them and the
+     subtype test decides it. dead-elf, which is what he asked for.
+
+     ⚠️ AND I MOVED THIS TEST BELOW THE SUBTYPE ONCE, WHICH BROKE THREE OF HIS
+     OWN PINS. What sits above the subtype here is not the type: it is the test
+     for a picture that is about some OTHER creature. With the subtype first,
+     an Imp (fiend / devil) took `dead-barbed devil` over `dead-fiend` because
+     "devil" is its subtype, Ezmerelda took the human hag's corpse because
+     "human" is hers, and an Erinyes took the Barbed Devil's. A borrowed word
+     from another creature's picture is not a hit for this one, which is what
+     `extra` measures, so it is asked first and the subtype decides between the
+     pictures that are genuinely about this creature. */
   const aExact = a.extra === 0, bExact = b.extra === 0;
   if (aExact !== bExact) return aExact ? -1 : 1;          // a picture of exactly this
   if (aSub !== bSub) return bSub - aSub;                  // its subtype, more specific

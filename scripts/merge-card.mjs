@@ -412,7 +412,11 @@ export class MergeCard {
         return `
           <div class="ace-qol-merge-combined-row ace-qol-merge-row-miss">
             <div class="ace-qol-merge-row-header">
-              <img src="${atkResult.img || "icons/svg/mystery-man.svg"}" class="ace-qol-dmg-tgt-img" />
+              <!-- ⚠️ THE SAME FACE IN THE SAME BOX AS EVERY OTHER ACE CARD (his
+                   rule, 2026-10-01, extended to this card the same day). The old
+                   class stays because it is the handle the applier wires the
+                   click to; the save card's class decides the box. -->
+              <img src="${atkResult.img || "icons/svg/mystery-man.svg"}" class="ace-qol-dmg-tgt-img ace-qol-save-portrait" />
               <span class="ace-qol-dmg-tgt-name">${atkResult.name ?? "Unknown"}</span>
               <span class="ace-qol-atk-ac ace-qol-ac" data-ac-actor="${atkResult.targetActor?.id ?? ""}">AC ${atkResult.ac}</span>
               <span class="ace-qol-atk-result ${hitClass}">${hitLabel}</span>
@@ -429,7 +433,7 @@ export class MergeCard {
         return `
           <div class="ace-qol-merge-combined-row">
             <div class="ace-qol-merge-row-header">
-              <img src="${atkResult.img || "icons/svg/mystery-man.svg"}" class="ace-qol-dmg-tgt-img" />
+              <img src="${atkResult.img || "icons/svg/mystery-man.svg"}" class="ace-qol-dmg-tgt-img ace-qol-save-portrait" />
               <span class="ace-qol-dmg-tgt-name">${atkResult.name ?? "Unknown"}</span>
               <span class="ace-qol-atk-ac ace-qol-ac" data-ac-actor="${atkResult.targetActor?.id ?? ""}">AC ${atkResult.ac}</span>
               <span class="ace-qol-atk-result ${hitClass}">${hitLabel}</span>
@@ -479,7 +483,7 @@ export class MergeCard {
       return `
         <div class="ace-qol-dmg-target-row ace-qol-merge-combined-row" data-token-doc-id="${tokenDocId}" data-actor-id="${dr.targetActor?.id ?? ""}" data-scene-id="${canvas.scene?.id ?? ""}">
           <div class="ace-qol-merge-row-header">
-            <img src="${portrait}" class="ace-qol-dmg-tgt-img" />
+            <img src="${portrait}" class="ace-qol-dmg-tgt-img ace-qol-save-portrait" />
             <span class="ace-qol-dmg-tgt-name">${atkResult.name ?? "Unknown"}</span>
             <span class="ace-qol-atk-ac ace-qol-ac" data-ac-actor="${atkResult.targetActor?.id ?? ""}">AC ${atkResult.ac}</span>
             <span class="ace-qol-atk-result ${hitClass}">${hitLabel}</span>
