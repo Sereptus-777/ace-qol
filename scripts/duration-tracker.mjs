@@ -286,14 +286,31 @@ export class DurationTracker {
       patch["duration.startRound"] = round;
       patch["duration.startTurn"]  = turn;
     }
-    // ⚠️🔴 AND IT SAYS SO WHEN IT DOES THIS. Stamping NOW onto an effect that has
-    // been on a creature for twenty minutes hands it a fresh full duration, and
-    // that is how Lamia's forty minutes became an hour again the moment Kasimir
-    // charmed the same creature (2026-09-30). ACE's own conditions carry their
-    // anchor from the moment they land now, so this is for an orphan from
-    // somewhere else — where guessing "now" is the only answer available, and
-    // worth a line rather than a silent rewrite.
+    /* ⚠️🔴 AND IT NEVER DOES THIS TO ONE OF ACE'S OWN CONDITIONS (his table,
+       2026-10-01: "AFTER the second apply the log printed both copies at 3600s,
+       both startTime -185548925, both bar reads 3600... Find the write that
+       stamped Lamia's startTime with Kasimir's and stop it.").
+
+       This is that write. Stamping NOW onto an effect that has been on a creature
+       for twenty minutes hands it a fresh full duration, and a second caster's
+       charm is exactly what wakes this sweep: both copies were anchored to the
+       same instant and both bars read an hour. It was written to rescue an
+       orphaned effect from somewhere else, and it was reaching ACE's own.
+
+       ACE's conditions are anchored where they are built now, on both apply
+       paths. One arriving here without an anchor is a bug in that path, so it
+       says so and is left exactly as it is: a condition that outstays its welcome
+       is a thing he can see and clear, and a clock silently reset to a full hour
+       is not. Everything else keeps the rescue. */
     if (d.startTime == null) {
+      const mine = effect?.flags?.["ace-qol"]?.conditionKey ?? null;
+      if (mine) {
+        console.warn(`ace-qol | "${effect?.name}" on ${effect?.parent?.name} is ACE's own "${mine}" `
+          + `and has no start time, which it should have been given when it landed. It is NOT `
+          + `anchored to now: that would hand it a fresh ${effect?.duration?.seconds ?? "?"}s and `
+          + `reset a clock that has been running. Fix the apply path, not the clock.`);
+        return;
+      }
       patch["duration.startTime"] = game.time?.worldTime ?? 0;
       console.log(`ace-qol | "${effect?.name}" on ${effect?.parent?.name} had no start time, so it `
         + `is anchored to now and will run its full ${effect?.duration?.seconds ?? "?"}s from here. `

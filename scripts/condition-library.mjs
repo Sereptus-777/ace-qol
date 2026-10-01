@@ -2914,11 +2914,21 @@ export class ConditionLibrary {
           // concentration AND non-concentration powers — break-free / repeating-
           // save tags must land on Entangling Rope, the Net, etc. too. The find
           // also covers the "re-enabled inert effect" path.
+          /* ⚠️🔴 THIS APPLY'S OWN COPY, NEVER THE FIRST THAT LOOKS LIKE IT (his
+             table, 2026-10-01: "It must not write seconds, startTime, or the bar
+             onto any other effect.").
+
+             This searched `actor.effects.contents` for anything carrying the
+             status or the definition's name and took the FIRST — which, on a
+             creature carrying two charms, is the OTHER caster's. Everything below
+             then wrote onto it: a duration, a concentration link, a repeat save.
+             `_copiesBySource(...).mine` is the same question every other write in
+             this file now asks. */
           const def = ALL_EFFECTS[key];
           const statusId = def?.statusId ?? key;
-          const placed = actor.effects.contents.find(e =>
-            e.statuses?.has?.(statusId) || e.name === def?.name || e.name?.toLowerCase() === key
-          );
+          const placed = ConditionLibrary._copiesBySource(actor, key, options).mine
+            .find(e => !e.disabled)
+            ?? null;
           if (placed) {
             const updateData = {};
             let caster = null, concEffect = null;
@@ -2930,6 +2940,16 @@ export class ConditionLibrary {
             for (const k of ["seconds", "rounds", "turns"]) {
               const v = Number(options.duration?.[k]);
               if (Number.isFinite(v) && v > 0) updateData[`duration.${k}`] = v;
+            }
+            /* ⚠️🔴 AND A DURATION WRITTEN HERE IS ANCHORED HERE. This set
+               `seconds` and never `startTime`, so a condition that landed through
+               the status toggle rather than through applyEffect arrived with a
+               length and no beginning — and duration-tracker then anchored it to
+               whenever it next swept, which is how one creature's two charms ended
+               up sharing a start time and both reading a full hour. A duration
+               with no anchor is an invitation for somebody else to pick one. */
+            if (updateData["duration.seconds"] > 0 && placed.duration?.startTime == null) {
+              updateData["duration.startTime"] = game.time?.worldTime ?? 0;
             }
 
             // ── Concentration linkage (concentration spells only) ──

@@ -303,6 +303,7 @@ export function registerAceChrome() {
         takeLogToNewCard(message, el);
     }, "ACE card chrome", { sweepAll: true });
     registerAceCardScroll();
+    registerScrollAtTheEnd();
     console.log(`${MODULE_ID} | ACE cards drop Foundry's speaker strip and keep the ⋮; a DC `
         + `shows for the GM, and for a player on a roll they are making.`);
 }
@@ -412,206 +413,162 @@ export function takeLogToNewCard(message, el) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   THE BAR FOLLOWS THE LOG UNTIL THE LOG STOPS GROWING
+   EVERY PANE, ONE PASS, AT THE END
 
-   His table, 2026-10-01, reading his own console back to me:
+   His table, 2026-10-01: *"The console said div.chat-scroll was at the bottom.
+   The bar did not move. That element is not the thumb he drags. The last thing
+   the pipeline does, after the card is in the log and the apply is finished, is
+   scroll... Do it once, at the end. Not before the card. Not on a timer that
+   lets go."*
 
-     "div.chat-scroll scrollTop=3687 scrollHeight=4804 clientHeight=1117
-      travel=3687. That element was at its max. The GM's bar was not at the
-      bottom, because the Charm card, the apply, and the condition art all
-      logged AFTER the 100ms scroll."
+   ⚠️🔴 TWICE I PICKED AN ELEMENT AND REPORTED IT AT ITS MAXIMUM WHILE HIS BAR SAT
+   WHERE IT WAS. 0.75.0 took the first ancestor that scrolled, which was a wrapper
+   with ninety pixels of travel. 0.76.0 took the one with the most travel and
+   followed the log with observers until it went quiet, and div.chat-scroll read
+   at the bottom while the thumb did not move.
 
-   ⚠️🔴 SO THE SCROLL WAS RIGHT AND THE MOMENT WAS WRONG. Three pins and a
-   fourth after Foundry's own scroll all happen while a cast is still resolving:
-   the save card goes up, then the apply, then what landed, then the condition
-   art, each its own write and each one taller than the last. Pinning the bar
-   before the last of them is pinning it to a log that is about to grow.
+   So this stops choosing, and stops holding. Every pane that could own a chat
+   scrollbar is driven by name, Foundry's own is asked for its, every ancestor of
+   the last card is driven too, and then the last message is brought into view —
+   which is the one move that does not depend on having picked the right box,
+   because the browser scrolls whatever has to move. The widest-travel pane is
+   named as the thumb in the log, so a wrong answer stays visible.
 
-   A card cannot know when it is the last thing in the log, so this stops
-   guessing and WATCHES instead:
+   And it runs at the END: when the card is in the log, and again when ACE says an
+   apply has finished. Each call does the whole job, so the last to run is the one
+   that counts and nothing lets go of the bar afterwards.
 
-     · a MutationObserver on every chat log — anything added or removed
-     · a ResizeObserver on the logs' own content — a card that grows after it
-       was drawn, which is every ACE card that fills itself in
-     · every signal The One Road names, so the end of an apply is a pin too
-
-   and it keeps following until the log has been still for a moment, with a hard
-   ceiling so it can never hold the bar hostage while he reads.
-
-   ⚠️ IT PINS EVERY LOG, NAMED. `div.chat-scroll` is the pane in his console, and
-   the bar he drags is whichever ancestor of the card has the most travel. Both
-   are pinned and both are named, because when they differ that difference is the
-   bug (0.75.0 pinned one of them and reported success).
-
-   ⚠️ NOTHING HERE WAITS ON AN IMAGE, pads anything, or scrolls to the card.
+   ⚠️ NOTHING HERE WAITS ON AN IMAGE or pads anything. Scrolling the last message
+   into view is his own instruction of 2026-10-01 and supersedes the "no
+   scroll-to-card" of the day before.
    ══════════════════════════════════════════════════════════════════════════ */
 
-/** How long the log must be still before the bar is let go, and the ceiling. */
-const FOLLOW_QUIET_MS = 400;
-const FOLLOW_MAX_MS = 4000;
-
-let _following = null;
-
-/** Every pane that could own a chat scrollbar right now. */
-function chatScrollers(cardEl = null) {
-    const seen = new Map();
+/**
+ * Every pane that could own a chat scrollbar, by every name the app has used for
+ * one, plus whatever actually owns the visible thumb.
+ *
+ * ⚠️🔴 HIS RULE, 2026-10-01: "Set scrollTop = scrollHeight on every one of these
+ * that exists: the sidebar chat, #chat-log, .chat-scroll, div.chat-scroll, the
+ * popout, and the element that actually owns the visible thumb."
+ *
+ * Twice now I have found "the" scroller, reported it at its maximum, and left his
+ * bar where it was. So this stops choosing. Every candidate is listed and every
+ * one of them is driven, and the one with the most travel — which is the thumb he
+ * can actually grab — is named as such in the log so a wrong answer is visible
+ * rather than reported as a success.
+ */
+function chatPanes() {
+    const panes = new Map();
     const add = (box, why) => {
-        if (!box || box === document.body || !(box.scrollHeight > box.clientHeight + 1)) return;
-        if (!seen.has(box)) seen.set(box, why);
+        if (!box || box === document.body) return;
+        if (!(box.scrollHeight > box.clientHeight + 1)) return;   // no bar on it
+        if (!panes.has(box)) panes.set(box, why);
+        else if (!panes.get(box).includes(why)) panes.set(box, `${panes.get(box)} + ${why}`);
     };
-    // The pane Foundry scrolls, in the sidebar and in every popped-out log.
-    for (const box of document.querySelectorAll(".chat-scroll")) add(box, "chat-scroll");
-    // And the bar he actually drags: the ancestor of the card with the most
-    // travel. They are usually the same element; when they are not, that is
-    // exactly what went wrong last time, so both get pinned.
-    for (const node of document.querySelectorAll(".chat-message, [data-message-id]")) {
-        if (cardEl && node !== cardEl && !node.contains?.(cardEl)) continue;
-        let box = node.parentElement, best = null, bestTravel = 0;
-        while (box && box !== document.body) {
-            const travel = box.scrollHeight - box.clientHeight;
-            if (travel > bestTravel) { best = box; bestTravel = travel; }
-            box = box.parentElement;
-        }
-        add(best, "most travel above the card");
-        break;
+
+    // By name, everywhere, which covers the sidebar and every popped-out log.
+    for (const sel of ["#chat", "#chat-log", ".chat-log", ".chat-scroll", "#sidebar #chat",
+        "#chat-popout", ".chat-popout", ".chat-sidebar", "section.chat"]) {
+        for (const box of document.querySelectorAll(sel)) add(box, sel);
     }
-    return seen;
+    // Whatever Foundry itself thinks it is scrolling.
+    try { add(ui.chat?.element?.querySelector?.(".chat-scroll"), "ui.chat's own"); } catch (_) {}
+    try { add(ui.chat?.popout?.element?.querySelector?.(".chat-scroll"), "popout's own"); } catch (_) {}
+    // And the thumb: every ancestor of the last message, so nothing between the
+    // card and the window is missed.
+    try {
+        const last = [...document.querySelectorAll("#chat-log [data-message-id], "
+            + ".chat-log [data-message-id]")].pop();
+        let box = last?.parentElement ?? null;
+        while (box && box !== document.body) { add(box, "above the last card"); box = box.parentElement; }
+    } catch (_) {}
+    return panes;
 }
 
 const scrollerName = (box) => box.id ? `#${box.id}`
-    : `${box.tagName.toLowerCase()}.${String(box.className || "?").trim().split(/\s+/)[0]}`;
+    : `${box.tagName.toLowerCase()}.${String(box.className || "?").trim().split(/\s+/)[0] || "?"}`;
 
 /**
- * Put every chat scrollbar at its maximum, and say what happened.
+ * THE LAST THING: put every chat pane at the bottom and the last message in view.
  *
- * @returns {boolean} whether every bar it found is now at the bottom
+ * ⚠️ ONCE, AT THE END (his rule). Not before the card, and not on a window that
+ * lets go: this is called when the card is in the log and again when ACE says an
+ * apply has finished, and each call does the whole job, so the last one to run is
+ * the one that counts.
  */
-function pinChatToBottom(why, cardEl = null, { quiet = false } = {}) {
-    const boxes = chatScrollers(cardEl);
-    if (!boxes.size) {
-        if (!quiet) {
-            console.warn(`${MODULE_ID} | ${why}: nothing in the chat has a scrollbar, so there was `
-                + `nothing to move.`);
+export function scrollChatToEnd(why) {
+    try {
+        const panes = chatPanes();
+        if (!panes.size) {
+            console.warn(`${MODULE_ID} | ${why}: no chat pane has a scrollbar, so there was nothing `
+                + `to move.`);
+            return;
         }
-        return true;
-    }
-    let allDown = true;
-    for (const [box, found] of boxes) {
-        box.scrollTop = box.scrollHeight - box.clientHeight;
-        const top = Math.round(box.scrollTop);
-        const h = Math.round(box.scrollHeight);
-        const vis = Math.round(box.clientHeight);
-        const travel = Math.max(0, h - vis);
-        const down = top >= travel - 1;
-        if (!down) allDown = false;
-        if (quiet && down) continue;
-        const line = `${scrollerName(box)} (${found}) scrollTop=${top} scrollHeight=${h} `
-            + `clientHeight=${vis} travel=${travel}`;
-        if (!down) {
-            console.warn(`${MODULE_ID} | ${why}: ${line} — ${travel - top}px SHORT of the bottom. `
-                + `Something is holding that bar.`);
-        } else {
-            console.log(`${MODULE_ID} | ${why}: ${line} — at the bottom.`);
+        // Widest travel = the thumb he drags. Driven like the rest, named apart.
+        let thumb = null, widest = 0;
+        for (const box of panes.keys()) {
+            const travel = box.scrollHeight - box.clientHeight;
+            if (travel > widest) { thumb = box; widest = travel; }
         }
+
+        const lines = [];
+        for (const [box, found] of panes) {
+            box.scrollTop = box.scrollHeight;          // his line, every pane
+            const top = Math.round(box.scrollTop);
+            const travel = Math.max(0, Math.round(box.scrollHeight - box.clientHeight));
+            const atMax = top >= travel - 1;
+            lines.push(`${scrollerName(box)} [${found}] travel=${travel} scrollTop=${top} `
+                + `${atMax ? "AT MAX" : `SHORT by ${travel - top}`}${box === thumb ? " ← the thumb" : ""}`);
+        }
+
+        // ⚠️ AND THE LAST MESSAGE INTO VIEW (his rule, 2026-10-01). It is the one
+        // thing that does not depend on having picked the right box: the browser
+        // scrolls whatever ancestor has to move to put that element on screen.
+        try {
+            const last = [...document.querySelectorAll("#chat-log [data-message-id], "
+                + ".chat-log [data-message-id]")].pop();
+            last?.scrollIntoView?.({ block: "end", behavior: "instant" });
+        } catch (_) { /* the panes above already moved */ }
+
+        console.log(`${MODULE_ID} | chat to the end (${why}):\n  ${lines.join("\n  ")}`);
+        if (thumb) {
+            const top = Math.round(thumb.scrollTop);
+            const travel = Math.max(0, Math.round(thumb.scrollHeight - thumb.clientHeight));
+            if (top < travel - 1) {
+                console.warn(`${MODULE_ID} | the bar he drags (${scrollerName(thumb)}) is still `
+                    + `${travel - top}px SHORT of the bottom. Do not read the lines above as a `
+                    + `success.`);
+            }
+        }
+    } catch (err) {
+        console.warn(`${MODULE_ID} | could not take the chat to the end:`, err);
     }
-    return allDown;
 }
 
 /**
- * Follow the log to the bottom until it stops growing.
- *
- * Called for a new ACE card, and safe to call again while one is already being
- * followed: the later call extends the window rather than starting a second
- * watcher.
+ * Kept as the name the card path calls, now that there is no window to hold.
+ * One pass, here and at the end of the apply.
  */
-export function followTheLog(why, cardEl = null) {
-    // Already following: just extend it and pin now.
-    if (_following) {
-        _following.until = Math.max(_following.until, performance.now() + FOLLOW_QUIET_MS);
-        _following.card = cardEl ?? _following.card;
-        pinChatToBottom(`${why} while already following`, _following.card, { quiet: true });
-        return;
+export function followTheLog(why, _cardEl = null) {
+    scrollChatToEnd(why);
+}
+
+/**
+ * ⚠️ THE END OF THE PIPELINE IS A SCROLL (his rule, 2026-10-01: "The last thing
+ * the pipeline does, after the card is in the log and the apply is finished, is
+ * scroll."). Every landing The One Road names ends with the chat at the bottom,
+ * so the card, the apply and what landed can arrive in any order and the last of
+ * them is still the one that leaves the bar at the end.
+ */
+let _endOfPipelineWired = false;
+export function registerScrollAtTheEnd() {
+    if (_endOfPipelineWired) return;
+    _endOfPipelineWired = true;
+    for (const name of ["saveComplete", "damageApplied", "killLogged", "concentrationBroken",
+        "attackResolved", "expectCard"]) {
+        Hooks.on(`${MODULE_ID}.${name}`, () => scrollChatToEnd(`ACE finished ${name}`));
     }
-
-    const started = performance.now();
-    const state = { until: started + FOLLOW_QUIET_MS, card: cardEl, pins: 0 };
-    _following = state;
-
-    const pin = (what, { quiet = false } = {}) => {
-        state.pins++;
-        // Anything that moves the log keeps the window open: the apply, the card
-        // filling itself in, the condition art. This is the whole fix — the bar
-        // is pinned after the LAST write, not before it.
-        state.until = Math.max(state.until, performance.now() + FOLLOW_QUIET_MS);
-        return pinChatToBottom(what, state.card, { quiet });
-    };
-
-    // ── What we watch ───────────────────────────────────────────────────────
-    const observers = [];
-    try {
-        const logs = document.querySelectorAll("#chat-log, .chat-log, .chat-scroll");
-        const mo = new MutationObserver(() => pin("a message was added to the log", { quiet: true }));
-        for (const log of logs) mo.observe(log, { childList: true, subtree: true });
-        observers.push(mo);
-    } catch (err) {
-        console.debug(`${MODULE_ID} | could not watch the chat log for new messages:`, err?.message ?? err);
-    }
-    try {
-        if (typeof ResizeObserver === "function") {
-            const ro = new ResizeObserver(() => pin("a card changed height", { quiet: true }));
-            for (const log of document.querySelectorAll("#chat-log, .chat-log")) ro.observe(log);
-            if (cardEl) ro.observe(cardEl);
-            observers.push(ro);
-        }
-    } catch (err) {
-        console.debug(`${MODULE_ID} | could not watch the cards for a height change:`, err?.message ?? err);
-    }
-    // Every landing The One Road names: the end of an apply is a pin.
-    const signals = ["saveComplete", "damageApplied", "killLogged", "reactionUsed",
-        "concentrationBroken", "attackResolved", "attackCancelled", "expectCard"];
-    const hooked = signals.map(name => {
-        const fn = () => pin(`ACE finished ${name}`, { quiet: true });
-        Hooks.on(`${MODULE_ID}.${name}`, fn);
-        return [name, fn];
-    });
-
-    // ── The pins he asked for, and then whatever the log does ───────────────
-    pin("the card is in the log");
-    requestAnimationFrame(() => pin("next frame", { quiet: true }));
-    setTimeout(() => pin("100ms later", { quiet: true }), 100);
-    // After Foundry's own scroll, so its write cannot put the bar back. That one
-    // waits for pictures; ours never do, and by then they have all run.
-    Promise.resolve(ui.chat?.scrollBottom?.({ waitImages: true, popout: true }))
-        .then(() => pin("after Foundry's own scroll", { quiet: true }))
-        .catch(() => { /* its scroll is a nicety */ });
-
-    // ── Letting go, and only then the verdict ───────────────────────────────
-    const tick = () => {
-        const now = performance.now();
-        if (now < state.until && (now - started) < FOLLOW_MAX_MS) {
-            setTimeout(tick, 60);
-            return;
-        }
-        for (const o of observers) { try { o.disconnect(); } catch (_) {} }
-        for (const [name, fn] of hooked) { try { Hooks.off(`${MODULE_ID}.${name}`, fn); } catch (_) {} }
-        _following = null;
-        // ⚠️ THE VERDICT IS READ HERE, AFTER THE CARD AND EVERYTHING THAT CAME
-        // WITH IT IS ON SCREEN (his rule: "Log after the Charm card is on screen,
-        // not before"). Every pin above is quiet unless it found a bar short;
-        // this is the line that says where the thumb actually ended up.
-        const down = pinChatToBottom(`${why}: the log has been still for ${FOLLOW_QUIET_MS}ms`
-            + ` after ${state.pins} pin(s)`, state.card);
-        if (!down) {
-            console.warn(`${MODULE_ID} | the chat bar is still not at the bottom after the log went `
-                + `quiet. Do not take the lines above as a success.`);
-        }
-        if ((now - started) >= FOLLOW_MAX_MS) {
-            console.log(`${MODULE_ID} | stopped following the chat log after ${FOLLOW_MAX_MS}ms — it `
-                + `was still changing, and holding his scrollbar longer than that is worse than `
-                + `letting go of it.`);
-        }
-    };
-    setTimeout(tick, 60);
+    console.debug(`${MODULE_ID} | the chat goes to the end when an apply finishes, not before it.`);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

@@ -166,16 +166,25 @@ export async function showConsumePrompt({ itemName, activityName, itemImg = null
     ? `Spends ${cost}${remain ? ` · ${remain}` : ""}`
     : (available != null ? `${available} ${esc(label)} available` : "");
 
+  // ⚠️🔴 THE TWO ARE SWAPPED (his rule, 2026-10-01: "The big 'Charm Person'
+  // with the icon becomes the cast button. Same size. Filled, pink, centered. The
+  // current cast row ('Cast Charm Person' and 'Spends 1 · 2 of 3 charges left')
+  // moves to the top as the header.").
+  //
+  // The big name with the icon was a title doing nothing, and the thing to press
+  // was the smaller line under it. Now the biggest thing on the dialog is the
+  // thing he presses, and what it will cost him is the line above it — which is
+  // the order he reads them in.
   const content = `
     <div class="ace-qol-act-picker">
-      <div class="ace-qol-act-head">
-        ${itemImg ? `<img src="${itemImg}" alt="">` : ""}
-        <span>${esc(itemName ?? "Item")}</span>
-      </div>
-
-      <button type="button" class="ace-qol-use-primary" data-action="ace-use">
+      <div class="ace-qol-use-header">
         <span class="ace-qol-use-primary-name">${esc(activityName ?? "Use")}</span>
         ${costLine ? `<span class="ace-qol-use-primary-cost">${costLine}</span>` : ""}
+      </div>
+
+      <button type="button" class="ace-qol-use-primary ace-qol-use-cast" data-action="ace-use">
+        ${itemImg ? `<img src="${itemImg}" alt="">` : ""}
+        <span>${esc(itemName ?? "Item")}</span>
       </button>
 
       ${(isGM && cost > 0) ? `

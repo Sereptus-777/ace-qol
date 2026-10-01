@@ -235,13 +235,14 @@ console.log("\n4. CHAT SITS ON THE NEW CARD");
   check("it does not wait on images",
     !/log\.scrollBottom\(\{[^}]*waitImages/.test(chat),
     "waiting on images waits for every picture in the whole log");
-  check("it does not scroll to the card",
-    !/scrollIntoView/.test(chat), "the bottom of the log");
-  // ⚠️ ASKING WAS NOT ENOUGH, AND NEITHER WAS THE FIRST BOX THAT SCROLLS. The
-  // whole rule is pinned in section 9; it lives in one place now because three
-  // copies of it across three sections drifted apart twice in one evening.
-  check("the scrollbar is driven to the bottom by hand — section 9 has the rule",
-    /box\.scrollTop = box\.scrollHeight - box\.clientHeight;/.test(chat), "his words");
+  // ⚠️ AND HE ASKED FOR THE LAST MESSAGE IN VIEW AFTER ALL (2026-10-01), which
+  // reverses "do not scroll-to-card" from the day before. It is the one move that
+  // does not depend on having picked the right box, so it is now the last step.
+  // The whole rule is pinned in section 9, in one place, because three copies of
+  // it across three sections drifted apart twice in one evening.
+  check("the last message is brought into view — section 9 has the rule",
+    /last\?\.scrollIntoView\?\.\(\{ block: "end", behavior: "instant" \}\);/.test(chat),
+    "his words, and it supersedes the day before");
   check("whoever the speaker is",
     !/author/.test(chat.slice(chat.indexOf("export function takeLogToNewCard"))),
     "his words: including when the speaker is the monster");
@@ -461,11 +462,14 @@ console.log("\n8. NAMED FOR ITS CASTER, THE BOTTOM OF THE LOG, THE PORTRAIT ROW"
   check("it waits for the card to be in the log, not merely attached",
     /const inTheLog = \(\) => !!el\?\.closest\?\.\("#chat-log, \.chat-log"\);/.test(chat),
     "that is the element whose scrollbar moves");
-  check("and once more on the next animation frame",
-    /requestAnimationFrame\(\(\) => pin\("next frame", \{ quiet: true \}\)\);/.test(chat),
-    "the card settles into its height without waiting on a picture");
-  check("no padding, no scroll-to-card",
-    !/scrollIntoView/.test(chat), "two of his three don'ts; images are section 9's");
+  check("and the card path asks for one pass, not a set of moments",
+    /if \(inTheLog\(\)\) \{ followTheLog\(/.test(chat)
+    && /export function followTheLog\(why, _cardEl = null\) \{/.test(chat)
+    && /scrollChatToEnd\(why\);/.test(chat),
+    "once, at the end — section 9");
+  check("no padding, and nothing waits on an image",
+    !/waitImages/.test(chat.slice(chat.indexOf("export function scrollChatToEnd"))),
+    "his don'ts, minus the one he reversed");
 
   // 3. The damage row.
   const header = dmg.slice(dmg.indexOf('class="ace-qol-dmg-row-header"'));
@@ -508,71 +512,54 @@ console.log("\n9. THE BAR, THE DAMAGE ROW, AND THE SECOND CARD'S FALSE ERROR");
   const dmg = read("scripts/damage-card-renderer.mjs");
   const css = read("styles/ace-qol.css");
 
-  /* 1. THE BAR, AND IT IS THE ONE HE DRAGS.
+  /* 1. THE BAR: EVERY PANE, ONE PASS, AT THE END.
    *
-   * ⚠️🔴 HIS LOG, 2026-09-30: "scrollHeight 1207, clientHeight 1117. That element
-   * only has 90 pixels of travel. The chat bar the GM is looking at travels much
-   * further. You scrolled the wrong box."
+   * ⚠️🔴 TWICE I FOUND "THE" SCROLLER, REPORTED IT AT ITS MAXIMUM, AND LEFT HIS
+   * BAR WHERE IT WAS. 0.75.0 took the first ancestor that scrolled: 90px of
+   * travel, a wrapper. 0.76.0 took the one with the most travel and followed the
+   * log: div.chat-scroll reported at the bottom, and "the bar did not move. That
+   * element is not the thumb he drags."
    *
-   * A card sits inside several boxes that each scroll a little, and walking up
-   * and taking the FIRST one finds one of those wrappers. The pane whose thumb he
-   * grabs is the one with the most TRAVEL — travel IS the thumb — so every
-   * scrolling ancestor is measured and the deepest-travelling one wins. */
-  /* ⚠️🔴 AND THE MOMENT WAS THE REST OF IT. His console, 2026-10-01:
-   * "div.chat-scroll scrollTop=3687 ... travel=3687. That element was at its max.
-   * The GM's bar was not at the bottom, because the Charm card, the apply, and
-   * the condition art all logged AFTER the 100ms scroll."
+   * So this stops choosing. His rule, 2026-10-01: "Set scrollTop = scrollHeight
+   * on every one of these that exists: the sidebar chat, #chat-log, .chat-scroll,
+   * div.chat-scroll, the popout, and the element that actually owns the visible
+   * thumb. Then scroll the last message into view. Do it once, at the end."
    *
-   * So the element was right and every pin fired before the log had finished
-   * growing. A card cannot know when it is the last thing in the log, so the bar
-   * is FOLLOWED instead: watched to the bottom until the log goes still. */
-  check("the bar follows the log until it stops growing",
-    /export function followTheLog\(why, cardEl = null\) \{/.test(chat)
-    && /const FOLLOW_QUIET_MS = 400;/.test(chat), "not a fixed set of moments");
-  check("anything added to the log is a pin",
-    /new MutationObserver\(\(\) => pin\("a message was added to the log"/.test(chat),
-    "the apply and what landed arrive after the card");
-  check("a card that grows after it was drawn is a pin",
-    /new ResizeObserver\(\(\) => pin\("a card changed height"/.test(chat),
-    "every ACE card fills itself in");
-  check("and the end of an apply is a pin",
-    /Hooks\.on\(`\$\{MODULE_ID\}\.\$\{name\}`, fn\);/.test(chat)
-    && /ACE finished \$\{name\}/.test(chat), "every signal The One Road names");
-  check("each of those keeps the window open",
-    /state\.until = Math\.max\(state\.until, performance\.now\(\) \+ FOLLOW_QUIET_MS\);/.test(chat),
-    "so the bar is pinned after the LAST write, not before it");
-  check("and it lets go, so it can never hold his scrollbar hostage",
-    /const FOLLOW_MAX_MS = 4000;/.test(chat)
-    && /for \(const o of observers\) \{ try \{ o\.disconnect\(\); \} catch \(_\) \{\} \}/.test(chat),
-    "holding it longer is worse than letting go");
-
-  check("both panes are pinned, and both are named",
-    /for \(const box of document\.querySelectorAll\("\.chat-scroll"\)\) add\(box, "chat-scroll"\);/.test(chat)
-    && /add\(best, "most travel above the card"\);/.test(chat),
-    "div.chat-scroll and the bar he drags, when they differ");
-  check("set to the max, which is what the bottom is",
-    /box\.scrollTop = box\.scrollHeight - box\.clientHeight;/.test(chat),
-    "scrollHeight on its own is past the end");
-  check("it logs the class, scrollTop, scrollHeight, clientHeight and the travel",
-    /scrollTop=\$\{top\} scrollHeight=\$\{h\} `/.test(chat)
-    && /clientHeight=\$\{vis\} travel=\$\{travel\}/.test(chat), "his words");
-  check("the verdict is read after the log goes quiet, not before",
-    /the log has been still for \$\{FOLLOW_QUIET_MS\}ms/.test(chat),
-    "his rule: log after the card is on screen");
-  check("and it never claims it scrolled when it did not",
-    /px SHORT of the bottom/.test(chat)
-    && /Do not take the lines above as a success/.test(chat), "his rule");
-  check("nothing has a scrollbar and it says so",
-    /nothing in the chat has a scrollbar/.test(chat), "silence is a bug");
-  check("the quiet pins stay quiet unless a bar is short",
-    /if \(quiet && down\) continue;/.test(chat), "one verdict, not forty lines");
-  // ⚠️ THE ONLY IMAGE WAIT IS FOUNDRY'S OWN, AND IT GATES ONLY THE LAST PIN.
-  // "After Foundry's own scroll runs" can only be known by awaiting the same
-  // call, and that call is the one that waits for pictures. The first three pins
-  // have already happened by then, so nothing he asked for waits on an image.
-  check("ACE's own three pins wait on nothing",
-    chat.indexOf('pin("100ms later")') < chat.indexOf("after Foundry's own scroll"),
-    "the image wait belongs to Foundry's call, which is the last word only");
+   * Every candidate is driven, the widest-travel one is NAMED as the thumb, and
+   * the last message is brought into view — which is the one move that does not
+   * depend on having picked the right box at all. */
+  check("every pane is driven, by every name the app has used for one",
+    /for \(const sel of \["#chat", "#chat-log", "\.chat-log", "\.chat-scroll", "#sidebar #chat",/.test(chat)
+    && /box\.scrollTop = box\.scrollHeight;/.test(chat),
+    "his list, not my pick of it");
+  check("including whatever Foundry itself thinks it is scrolling, and the popout",
+    /add\(ui\.chat\?\.element\?\.querySelector\?\.\("\.chat-scroll"\), "ui\.chat's own"\)/.test(chat)
+    && /add\(ui\.chat\?\.popout\?\.element\?\.querySelector\?\.\("\.chat-scroll"\), "popout's own"\)/.test(chat),
+    "named separately so the log tells them apart");
+  check("and every ancestor of the last card, so nothing between it and the window is missed",
+    /while \(box && box !== document\.body\) \{ add\(box, "above the last card"\); box = box\.parentElement; \}/.test(chat),
+    "the element that actually owns the visible thumb");
+  check("the widest travel is named as the thumb",
+    /if \(travel > widest\) \{ thumb = box; widest = travel; \}/.test(chat)
+    && /\\u2190 the thumb/.test(chat) || /← the thumb/.test(chat),
+    "so a wrong answer is visible instead of reported as a success");
+  check("then the last message is brought into view",
+    /last\?\.scrollIntoView\?\.\(\{ block: "end", behavior: "instant" \}\);/.test(chat),
+    "the one move that does not depend on picking the right box");
+  check("once, at the end — the card path and the end of the apply",
+    /export function registerScrollAtTheEnd\(\)/.test(chat)
+    && /Hooks\.on\(`\$\{MODULE_ID\}\.\$\{name\}`, \(\) => scrollChatToEnd\(`ACE finished \$\{name\}`\)\);/.test(chat),
+    "the last thing the pipeline does is scroll");
+  check("and nothing holds it on a window that lets go",
+    !/FOLLOW_QUIET_MS/.test(chat) && !/MutationObserver/.test(chat),
+    "his rule: not on a timer that lets go");
+  check("it logs each element's class and whether its thumb is at the max",
+    /\$\{atMax \? "AT MAX" : `SHORT by \$\{travel - top\}`\}/.test(chat), "his words");
+  check("and if the one he drags is still short it says so",
+    /is still `/.test(chat) && /px SHORT of the bottom\. Do not read the lines above as a/.test(chat),
+    "do not claim it scrolled");
+  check("no pane has a scrollbar and it says so",
+    /no chat pane has a scrollbar/.test(chat), "silence is a bug");
 
   // 2. The damage row.
   // ⚠️ THE GRAY BOX IS GONE, AND THE TYPE-COLOUR PILL IS NOT THAT BOX. The click
@@ -765,6 +752,60 @@ console.log("\n12. THE CAST DIALOG");
   check("and the text stays inside the button",
     /width: 100%; margin: 0; padding: 9px 12px;/.test(css),
     "the padding came up with the type");
+}
+
+/* ══ 13. THE DIALOG'S TWO HALVES SWAPPED, AND THE CLOCK WRITES ════════════ */
+console.log("\n13. THE CAST IS THE BUTTON, AND NOTHING WRITES ANOTHER CLOCK");
+{
+  const css = read("styles/ace-qol.css");
+  const prompt = read("scripts/attack-prompt.mjs");
+  const lib = read("scripts/condition-library.mjs");
+  const tracker = read("scripts/duration-tracker.mjs");
+
+  // His rule, 2026-10-01: the two are swapped.
+  check("the item's own name with its icon IS the cast button",
+    /<button type="button" class="ace-qol-use-primary ace-qol-use-cast" data-action="ace-use">/.test(prompt)
+    && /\$\{itemImg \? `<img src="\$\{itemImg\}" alt="">` : ""\}/.test(prompt),
+    "the biggest thing on the dialog is the thing he presses");
+  check("at the same size, filled, pink and centred",
+    /\.ace-qol-use-cast \{/.test(css)
+    && /font-size: 2\.3em; font-weight: 700;/.test(css)
+    && /background: linear-gradient\(180deg, #f9a3cd 0%, #e879b6 100%\);/.test(css)
+    && /justify-content: center; align-items: center;/.test(css), "his words");
+  check("near-black on the pink, which white would not clear",
+    /color: #1a1016;/.test(css), "the contrast floor");
+  check("and the cast row with its cost is the header",
+    /<div class="ace-qol-use-header">/.test(prompt)
+    && /ace-qol-use-primary-name">\$\{esc\(activityName \?\? "Use"\)\}/.test(prompt)
+    && /ace-qol-use-primary-cost">\$\{costLine\}/.test(prompt),
+    "Cast Charm Person, and Spends 1 · 2 of 3 charges left");
+  check("the header is a line to read, not a thing to hit",
+    /\.ace-qol-use-header \{/.test(css) && /border-bottom: 1px solid rgba\(212,175,55,0\.35\);/.test(css),
+    "the box, the border and the press came off it");
+  check("Consume item use stays, Cancel stays, the description stays gone",
+    /<span>Consume item use<\/span>/.test(prompt)
+    && /buttons: \[\{ action: "cancel", label: "Cancel" \}\]/.test(prompt)
+    && !/ace-qol-consume-blurb/.test(prompt), "his three");
+  check("and the press still lands on the same control",
+    /\[data-action='ace-use'\]/.test(prompt), "the wiring is untouched");
+
+  /* ⚠️🔴 THE WRITE THAT STAMPED LAMIA'S START TIME WITH KASIMIR'S. His log:
+     "both copies at 3600s, both startTime -185548925, both bar reads 3600".
+     Identical anchors on two effects created minutes apart is not two creations,
+     it is one write landing on both — duration-tracker's rescue anchor, which
+     stamps the CURRENT world time onto any effect that has none and is woken by
+     exactly this: a second condition landing on the same creature. */
+  check("the rescue anchor never touches one of ACE's own conditions",
+    /const mine = effect\?\.flags\?\.\["ace-qol"\]\?\.conditionKey \?\? null;/.test(tracker)
+    && /It is NOT `/.test(tracker), "fix the apply path, not the clock");
+  check("and it says so instead of papering over it",
+    /Fix the apply path, not the clock\./.test(tracker), "silence is a bug");
+  check("a duration stamped by the apply is anchored by the apply",
+    /if \(updateData\["duration\.seconds"\] > 0 && placed\.duration\?\.startTime == null\)/.test(lib),
+    "a length with no beginning is an invitation for somebody else to pick one");
+  check("and the stamp lands on THIS apply's copy, never the first that looks like it",
+    /const placed = ConditionLibrary\._copiesBySource\(actor, key, options\)\.mine/.test(lib),
+    "on a creature with two charms the first match is the other caster's");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
