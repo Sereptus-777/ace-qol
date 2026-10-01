@@ -528,38 +528,52 @@ console.log("\n9. THE BAR, THE DAMAGE ROW, AND THE SECOND CARD'S FALSE ERROR");
    * Every candidate is driven, the widest-travel one is NAMED as the thumb, and
    * the last message is brought into view — which is the one move that does not
    * depend on having picked the right box at all. */
-  check("every pane is driven, by every name the app has used for one",
-    /for \(const sel of \["#chat", "#chat-log", "\.chat-log", "\.chat-scroll", "#sidebar #chat",/.test(chat)
-    && /box\.scrollTop = box\.scrollHeight;/.test(chat),
-    "his list, not my pick of it");
-  check("including whatever Foundry itself thinks it is scrolling, and the popout",
-    /add\(ui\.chat\?\.element\?\.querySelector\?\.\("\.chat-scroll"\), "ui\.chat's own"\)/.test(chat)
-    && /add\(ui\.chat\?\.popout\?\.element\?\.querySelector\?\.\("\.chat-scroll"\), "popout's own"\)/.test(chat),
-    "named separately so the log tells them apart");
-  check("and every ancestor of the last card, so nothing between it and the window is missed",
-    /while \(box && box !== document\.body\) \{ add\(box, "above the last card"\); box = box\.parentElement; \}/.test(chat),
-    "the element that actually owns the visible thumb");
-  check("the widest travel is named as the thumb",
-    /if \(travel > widest\) \{ thumb = box; widest = travel; \}/.test(chat)
-    && /\\u2190 the thumb/.test(chat) || /← the thumb/.test(chat),
-    "so a wrong answer is visible instead of reported as a success");
-  check("then the last message is brought into view",
+  /* ⚠️🔴 AND THE SCAN WAS BLIND. 0.77.0 reported "no chat pane has a scrollbar,
+   * so there was nothing to move" while the log was visibly cut off — a claim
+   * about the chat drawn from a list that may never have contained the chat. His
+   * rule: measure every candidate, log tag, id, class, scrollHeight,
+   * clientHeight and overflow, and if none qualify say so and name what was
+   * measured.
+   *
+   * Part of what blinded it: the messages were looked for through
+   * `#chat-log [data-message-id]`, so if the log is not called that here, the
+   * ancestor walk — the only path that cannot miss the real scroller — never ran
+   * at all. */
+  check("every candidate is measured, not only the ones that pass",
+    /function measureChatPanes\(\) \{/.test(chat)
+    && /scrolls: scrollHeight > clientHeight \+ 1,/.test(chat),
+    "measure first, decide second");
+  check("and tag, id, class, scrollHeight, clientHeight and overflow are all logged",
+    /overflow = `\$\{cs\.overflow\}\/\$\{cs\.overflowY\}`;/.test(chat)
+    && /scrollHeight=\$\{p\.scrollHeight\} clientHeight=\$\{p\.clientHeight\}/.test(chat)
+    && /overflow=\$\{p\.overflow\} travel=\$\{p\.travel\}/.test(chat), "his list");
+  check("his named candidates are all in the scan",
+    /"#chat", "#chat-log", "\.chat-log", "\.chat-scroll", "#sidebar",/.test(chat)
+    && /"#chat-popout", "\.chat-popout"/.test(chat), "his list, not my pick of it");
+  check("including whatever Foundry itself holds, sidebar and popout",
+    /look\(ui\.chat\?\.element, "ui\.chat\.element"\);/.test(chat)
+    && /look\(ui\.chat\?\.popout\?\.element, "popout element"\);/.test(chat), "named separately");
+  check("and every parent of the last message",
+    /look\(box, `parent \$\{depth\} of the last message`\);/.test(chat),
+    "the only path that cannot miss the element holding the bar");
+  check("the last message is found however the log is built",
+    /function lastChatMessage\(\) \{/.test(chat)
+    && /li\.chat-message, \.chat-message\[data-message-id\], /.test(chat),
+    "not 'inside #chat-log', which is what blinded it");
+  check("the last message goes into view first",
     /last\?\.scrollIntoView\?\.\(\{ block: "end", behavior: "instant" \}\);/.test(chat),
-    "the one move that does not depend on picking the right box");
-  check("once, at the end — the card path and the end of the apply",
-    /export function registerScrollAtTheEnd\(\)/.test(chat)
-    && /Hooks\.on\(`\$\{MODULE_ID\}\.\$\{name\}`, \(\) => scrollChatToEnd\(`ACE finished \$\{name\}`\)\);/.test(chat),
-    "the last thing the pipeline does is scroll");
-  check("and nothing holds it on a window that lets go",
-    !/FOLLOW_QUIET_MS/.test(chat) && !/MutationObserver/.test(chat),
-    "his rule: not on a timer that lets go");
-  check("it logs each element's class and whether its thumb is at the max",
-    /\$\{atMax \? "AT MAX" : `SHORT by \$\{travel - top\}`\}/.test(chat), "his words");
-  check("and if the one he drags is still short it says so",
-    /is still `/.test(chat) && /px SHORT of the bottom\. Do not read the lines above as a/.test(chat),
-    "do not claim it scrolled");
-  check("no pane has a scrollbar and it says so",
-    /no chat pane has a scrollbar/.test(chat), "silence is a bug");
+    "it does not depend on identifying the right box");
+  check("then every pane that scrolls is driven",
+    /for \(const p of scrollers\) p\.el\.scrollTop = p\.el\.scrollHeight;/.test(chat), "his line");
+  check("each one reads back AT MAX or how far short it is",
+    /\? "AT MAX" : `SHORT by \$\{travel - top\}`/.test(chat), "his words");
+  check("none qualifying is reported as a measurement, not as nothing to move",
+    /none of those \$\{panes\.length\} candidates has a scrollbar/.test(chat)
+    && /the element holding it is not in that list and its name is what is /.test(chat),
+    "do not claim there was nothing to move");
+  check("and if the bar he drags is still short it says so",
+    /is still \$\{travel - top\}px SHORT /.test(chat)
+    && /Do not read the lines above as a success/.test(chat), "his rule");
 
   // 2. The damage row.
   // ⚠️ THE GRAY BOX IS GONE, AND THE TYPE-COLOUR PILL IS NOT THAT BOX. The click
@@ -806,6 +820,51 @@ console.log("\n13. THE CAST IS THE BUTTON, AND NOTHING WRITES ANOTHER CLOCK");
   check("and the stamp lands on THIS apply's copy, never the first that looks like it",
     /const placed = ConditionLibrary\._copiesBySource\(actor, key, options\)\.mine/.test(lib),
     "on a creature with two charms the first match is the other caster's");
+}
+
+/* ══ 14. THE CLOCK DOOR, AND THE DIALOG'S TYPE ════════════════════════════ */
+console.log("\n14. NOBODY MOVES A RUNNING CLOCK, AND THE HEADER IS TWICE THE SIZE");
+{
+  const door = read("scripts/clock-door.mjs");
+  const lib = read("scripts/condition-library.mjs");
+  const css = read("styles/ace-qol.css");
+
+  /* ⚠️🔴 I HAVE NAMED THE WRITER TWICE AND BEEN WRONG TWICE. First the twin
+   * refresh, then duration-tracker's rescue anchor. Both were real faults and
+   * both are fixed, and his bars still both read an hour — so the write is
+   * somewhere I have not read, and a third guess is not a plan. A door sees
+   * every write from every source before it lands. */
+  check("an anchor that is already set is not moved by anybody",
+    /Hooks\.on\("preUpdateActiveEffect", \(effect, changes, options = \{\}\) => \{/.test(door)
+    && /REFUSED a write that would have moved/.test(door),
+    "whoever tried: ACE, dnd5e, a macro, another module");
+  check("and the refusal names what tried",
+    /function whoTried\(\) \{/.test(door) && /It came from: \$\{whoTried\(\)\}/.test(door),
+    "the next report names the writer instead of costing another round of reading");
+  check("a clock being STARTED is allowed, and said",
+    /if \(was == null\) \{/.test(door) && /That is a clock starting, which is allowed/.test(door),
+    "an anchor arriving is not an anchor moving");
+  check("the caster who owns it may restart it, and only through that one key",
+    /if \(options\?\.aceClock === true\) \{/.test(door)
+    && /await _twin\.update\(update, \{ aceClock: true \}\);/.test(lib),
+    "the same caster recasting is a refresh");
+  check("it strips the anchor rather than vetoing the whole write",
+    /delete changes\["duration\.startTime"\];/.test(door),
+    "whatever else that update was doing is probably right");
+  check("a length change is reported and allowed",
+    /its length is being changed /.test(door),
+    "a GM editing a duration on the sheet is doing something legitimate");
+  check("and it only ever looks at ACE's own conditions",
+    /const key = effect\?\.flags\?\.\[MODULE_ID\]\?\.conditionKey \?\? null;/.test(door),
+    "somebody else's effect is not ours to police");
+
+  // The dialog's type.
+  check("\"Cast Charm Person\" is twice the size",
+    /font-size: 32px; font-weight: 700; line-height: 1\.2;/.test(css), "16px → 32px");
+  check("and the cost line with it",
+    /font-size: 24px; font-weight: 600; color: #c8b784;/.test(css), "12px → 24px");
+  check("the pink button keeps its width and loses ten pixels of height",
+    /margin-top: 10px; padding: 7px 16px;/.test(css), "12px → 7px, top and bottom");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

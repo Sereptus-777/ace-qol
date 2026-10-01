@@ -5664,17 +5664,19 @@
   box-shadow: 0 0 10px rgba(212,175,55,0.3);
 }
 .ace-qol-use-primary:active { transform: scale(0.995); }
+/* ⚠️ TWICE THE SIZE (his rule, 2026-10-01). These two are the header now, and
+   the header is what tells him what the press will do and what it will cost. */
 .ace-qol-use-primary-name {
   flex: 1 1 auto; min-width: 0;
-  font-size: 16px; font-weight: 700; line-height: 1.25;
+  font-size: 32px; font-weight: 700; line-height: 1.2;   /* 16px → twice */
   white-space: normal; overflow-wrap: anywhere;
 }
 /* The cost is supporting information, not a second headline — it was the same
    bright gold as the name and competed with it. Dimmer, smaller, hard right. */
 .ace-qol-use-primary-cost {
   flex: 0 0 auto;
-  font-size: 12px; font-weight: 600; color: #b9a978;
-  white-space: nowrap; letter-spacing: 0.2px;
+  font-size: 24px; font-weight: 600; color: #c8b784;   /* 12px → twice */
+  white-space: nowrap; letter-spacing: 0.2px; line-height: 1.2;
 }
 
 /* ── THE HEADER IS THE COST LINE NOW, AND THE CAST IS THE BUTTON ──────── */
@@ -5699,7 +5701,10 @@
 .ace-qol-use-cast {
   flex-flow: row nowrap; justify-content: center; align-items: center;
   gap: 12px; text-align: center;
-  margin-top: 10px; padding: 12px 16px;
+  /* ⚠️ SAME WIDTH, ABOUT TEN PIXELS SHORTER (his rule, 2026-10-01). The height
+     came out of the padding, five off the top and five off the bottom, so the
+     width and the type are exactly as they were. */
+  margin-top: 10px; padding: 7px 16px;
   background: linear-gradient(180deg, #f9a3cd 0%, #e879b6 100%);
   border: 1px solid #ffc4e0;
   color: #1a1016;

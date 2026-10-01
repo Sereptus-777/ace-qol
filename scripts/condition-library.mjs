@@ -2714,7 +2714,9 @@ export class ConditionLibrary {
           if (_want && _want !== _twin.name && /\bby Caster\b/i.test(String(_twin.name ?? ""))) {
             update.name = _want;
           }
-          await _twin.update(update);
+          // ⚠️ `aceClock` is the one key the clock door lets an anchor move for:
+          // the same caster recasting, which is the only legitimate restart.
+          await _twin.update(update, { aceClock: true });
           refreshed = true;
         } catch (err) {
           console.warn(`ace-qol | could not refresh "${_twin.name}" on ${actor.name}, so it keeps `

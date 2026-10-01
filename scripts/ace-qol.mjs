@@ -2165,6 +2165,15 @@ Hooks.once("ready", () => {
   // never thinks about DCs still cannot leak one. See chat-render-utils.
   registerDCVisibility();
 
+  // ⚠️ NOBODY MOVES A CLOCK THAT IS ALREADY RUNNING (scripts/clock-door.mjs). I
+  // have named the writer that reset Lamia's charm twice and been wrong twice, so
+  // this is a door rather than a third guess: every write to an anchor passes
+  // through it, and a refusal names what tried.
+  import("./clock-door.mjs")
+    .then(({ registerClockDoor }) => registerClockDoor())
+    .catch(err => console.warn(`${MODULE_ID} | the clock door did not open, so a second source `
+      + `may still reset another's duration:`, err));
+
   /* ── NOBODY AT THE TABLE SEES A DUPLICATE-ID ERROR ────────────────────────
    *
    * His rule, 2026-09-30: *"The screen must not show 'The _id

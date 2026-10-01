@@ -493,8 +493,10 @@ console.log("\nCHARM DOES NOT STACK");
   check("and in combat it restarts on this round and turn",
     /update\["duration\.startRound"\]/.test(cl) && /update\["duration\.startTurn"\]/.test(cl),
     "not left on the old one");
+  // ⚠️ AND IT NOW SAYS IT IS ENTITLED TO. `aceClock` is the one key the clock
+  // door (0.78.0) lets an anchor move for: the same caster recasting.
   check("nothing is created, so there is no second clip",
-    /await _twin\.update\(update\);/.test(cl)
+    /await _twin\.update\(update, \{ aceClock: true \}\);/.test(cl)
     && /there is no second animation/.test(cl), "AA fires once per effect created");
   check("whoever cast it this time owns it now",
     /update\["flags\.ace-qol\.sourceActorId"\] = options\.sourceActorId;/.test(cl),

@@ -36,7 +36,7 @@ const FOUNDRY_GLOBALS = [
   "setTimeout", "clearTimeout", "setInterval", "clearInterval", "queueMicrotask",
   "structuredClone", "AbortController", "TextDecoder", "TextEncoder",
   "Event", "CustomEvent", "KeyboardEvent", "MouseEvent", "PointerEvent",
-  "HTMLElement", "HTMLImageElement", "HTMLCanvasElement", "Node", "NodeList",
+  "Element", "HTMLElement", "HTMLImageElement", "HTMLCanvasElement", "Node", "NodeList",
   "HTMLInputElement", "HTMLVideoElement", "HTMLSelectElement", "HTMLTextAreaElement",
   "customElements", "DOMParser", "XMLSerializer",
   "Image", "Audio", "performance", "navigator", "location", "alert", "confirm",

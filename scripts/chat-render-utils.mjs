@@ -457,88 +457,142 @@ export function takeLogToNewCard(message, el) {
  * can actually grab — is named as such in the log so a wrong answer is visible
  * rather than reported as a success.
  */
-function chatPanes() {
-    const panes = new Map();
-    const add = (box, why) => {
-        if (!box || box === document.body) return;
-        if (!(box.scrollHeight > box.clientHeight + 1)) return;   // no bar on it
-        if (!panes.has(box)) panes.set(box, why);
-        else if (!panes.get(box).includes(why)) panes.set(box, `${panes.get(box)} + ${why}`);
-    };
-
-    // By name, everywhere, which covers the sidebar and every popped-out log.
-    for (const sel of ["#chat", "#chat-log", ".chat-log", ".chat-scroll", "#sidebar #chat",
-        "#chat-popout", ".chat-popout", ".chat-sidebar", "section.chat"]) {
-        for (const box of document.querySelectorAll(sel)) add(box, sel);
-    }
-    // Whatever Foundry itself thinks it is scrolling.
-    try { add(ui.chat?.element?.querySelector?.(".chat-scroll"), "ui.chat's own"); } catch (_) {}
-    try { add(ui.chat?.popout?.element?.querySelector?.(".chat-scroll"), "popout's own"); } catch (_) {}
-    // And the thumb: every ancestor of the last message, so nothing between the
-    // card and the window is missed.
-    try {
-        const last = [...document.querySelectorAll("#chat-log [data-message-id], "
-            + ".chat-log [data-message-id]")].pop();
-        let box = last?.parentElement ?? null;
-        while (box && box !== document.body) { add(box, "above the last card"); box = box.parentElement; }
-    } catch (_) {}
-    return panes;
+/**
+ * The last chat message on screen, however the log is built this generation.
+ *
+ * ⚠️ NOT "inside #chat-log". That is what blinded the scan: the messages were
+ * found through `#chat-log [data-message-id]`, and if the log element is not
+ * called that here, `last` was undefined, the ancestor walk never ran, and the
+ * only candidates left were the named selectors.
+ */
+function lastChatMessage() {
+    const all = [...document.querySelectorAll("li.chat-message, .chat-message[data-message-id], "
+        + "[data-message-id]")];
+    return all.length ? all[all.length - 1] : null;
 }
 
-const scrollerName = (box) => box.id ? `#${box.id}`
-    : `${box.tagName.toLowerCase()}.${String(box.className || "?").trim().split(/\s+/)[0] || "?"}`;
+/**
+ * Measure every candidate pane, whether or not it turns out to scroll.
+ *
+ * ⚠️🔴 HIS RULE, 2026-10-01, after the scan reported "no chat pane has a
+ * scrollbar" while the log was visibly cut off: "The scan is blind. Log every
+ * candidate: tag, id, class, scrollHeight, clientHeight, overflow... If none
+ * qualify, say so and name what you measured. Do not claim there was nothing to
+ * move."
+ *
+ * He is right twice over. A scan that only reports what passed its own filter
+ * cannot be debugged, and "nothing to move" was a conclusion about the chat drawn
+ * from a list that may never have contained the chat at all. So this measures
+ * first and decides second, and the measurements are the log.
+ *
+ * @returns {{el: Element, why: string, tag: string, id: string, cls: string,
+ *            scrollHeight: number, clientHeight: number, overflow: string,
+ *            travel: number, scrolls: boolean}[]}
+ */
+function measureChatPanes() {
+    const seen = new Map();
+    const look = (el, why) => {
+        if (!el || !(el instanceof Element) || el === document.body) return;
+        if (seen.has(el)) {
+            if (!seen.get(el).why.includes(why)) seen.get(el).why += ` + ${why}`;
+            return;
+        }
+        let overflow = "?";
+        try {
+            const cs = getComputedStyle(el);
+            overflow = `${cs.overflow}/${cs.overflowY}`;
+        } catch (_) { /* detached or cross-document */ }
+        const scrollHeight = Math.round(el.scrollHeight);
+        const clientHeight = Math.round(el.clientHeight);
+        seen.set(el, {
+            el, why,
+            tag: el.tagName.toLowerCase(),
+            id: el.id || "",
+            cls: String(el.className || "").trim(),
+            scrollHeight, clientHeight, overflow,
+            travel: Math.max(0, scrollHeight - clientHeight),
+            scrolls: scrollHeight > clientHeight + 1,
+        });
+    };
+
+    // His list, by name, everywhere it exists.
+    for (const sel of ["#chat", "#chat-log", ".chat-log", ".chat-scroll", "#sidebar",
+        "#sidebar #chat", "#chat-popout", ".chat-popout", ".chat-sidebar", "section.chat",
+        "#chat-notifications", ".chat-notifications"]) {
+        for (const el of document.querySelectorAll(sel)) look(el, sel);
+    }
+    // Whatever Foundry itself holds, sidebar and popout.
+    try { look(ui.chat?.element, "ui.chat.element"); } catch (_) {}
+    try { look(ui.chat?.element?.querySelector?.(".chat-scroll"), "ui.chat's .chat-scroll"); } catch (_) {}
+    try { look(ui.chat?.popout?.element, "popout element"); } catch (_) {}
+    try { look(ui.chat?.popout?.element?.querySelector?.(".chat-scroll"), "popout .chat-scroll"); } catch (_) {}
+    // And every parent of the last message, which is the only path that cannot
+    // miss the element actually holding the bar.
+    let box = lastChatMessage()?.parentElement ?? null;
+    let depth = 0;
+    while (box && box !== document.body && depth++ < 20) {
+        look(box, `parent ${depth} of the last message`);
+        box = box.parentElement;
+    }
+    return [...seen.values()];
+}
 
 /**
- * THE LAST THING: put every chat pane at the bottom and the last message in view.
+ * THE LAST THING: the last message into view, and every pane that scrolls put at
+ * the bottom. Measured out loud, every time.
  *
- * ⚠️ ONCE, AT THE END (his rule). Not before the card, and not on a window that
- * lets go: this is called when the card is in the log and again when ACE says an
- * apply has finished, and each call does the whole job, so the last one to run is
- * the one that counts.
+ * ⚠️ ONCE, AT THE END (his rule). Called when the card is in the log and again
+ * when ACE says an apply has finished, so the last one to run is the one that
+ * counts and nothing lets go of the bar afterwards.
  */
 export function scrollChatToEnd(why) {
     try {
-        const panes = chatPanes();
-        if (!panes.size) {
-            console.warn(`${MODULE_ID} | ${why}: no chat pane has a scrollbar, so there was nothing `
-                + `to move.`);
+        const panes = measureChatPanes();
+
+        // ⚠️ THE LAST MESSAGE FIRST, because it is the one move that does not
+        // depend on having identified the right box: the browser scrolls whatever
+        // ancestor has to move to put that element on screen.
+        const last = lastChatMessage();
+        try { last?.scrollIntoView?.({ block: "end", behavior: "instant" }); }
+        catch (_) { /* the panes below still get driven */ }
+
+        const scrollers = panes.filter(p => p.scrolls);
+        // Drive every one of them, then read each back.
+        for (const p of scrollers) p.el.scrollTop = p.el.scrollHeight;
+
+        const line = (p) => {
+            const top = Math.round(p.el.scrollTop);
+            const travel = Math.max(0, Math.round(p.el.scrollHeight - p.el.clientHeight));
+            const at = p.scrolls ? (top >= travel - 1 ? "AT MAX" : `SHORT by ${travel - top}`)
+                : "does not scroll";
+            return `${p.tag}${p.id ? `#${p.id}` : ""}${p.cls ? `.${p.cls.split(/\s+/).join(".")}` : ""}`
+                + ` [${p.why}] scrollHeight=${p.scrollHeight} clientHeight=${p.clientHeight}`
+                + ` overflow=${p.overflow} travel=${p.travel} → ${at}`;
+        };
+
+        console.log(`${MODULE_ID} | chat to the end (${why}) — ${panes.length} candidate(s) measured, `
+            + `${scrollers.length} scroll:\n  ${panes.map(line).join("\n  ")}`
+            + `\n  last message: ${last ? `${last.tagName.toLowerCase()}`
+                + `[data-message-id="${last.dataset?.messageId ?? "?"}"] brought into view`
+                : "NONE FOUND — nothing matched li.chat-message or [data-message-id]"}`);
+
+        if (!scrollers.length) {
+            // ⚠️ NOT "nothing to move". That was a claim about the chat; this is a
+            // report of what was measured and found wanting.
+            console.warn(`${MODULE_ID} | none of those ${panes.length} candidates has a scrollbar `
+                + `(scrollHeight greater than clientHeight). The measurements are above — if the log `
+                + `is cut off, the element holding it is not in that list and its name is what is `
+                + `needed next.`);
             return;
         }
-        // Widest travel = the thumb he drags. Driven like the rest, named apart.
-        let thumb = null, widest = 0;
-        for (const box of panes.keys()) {
-            const travel = box.scrollHeight - box.clientHeight;
-            if (travel > widest) { thumb = box; widest = travel; }
-        }
-
-        const lines = [];
-        for (const [box, found] of panes) {
-            box.scrollTop = box.scrollHeight;          // his line, every pane
-            const top = Math.round(box.scrollTop);
-            const travel = Math.max(0, Math.round(box.scrollHeight - box.clientHeight));
-            const atMax = top >= travel - 1;
-            lines.push(`${scrollerName(box)} [${found}] travel=${travel} scrollTop=${top} `
-                + `${atMax ? "AT MAX" : `SHORT by ${travel - top}`}${box === thumb ? " ← the thumb" : ""}`);
-        }
-
-        // ⚠️ AND THE LAST MESSAGE INTO VIEW (his rule, 2026-10-01). It is the one
-        // thing that does not depend on having picked the right box: the browser
-        // scrolls whatever ancestor has to move to put that element on screen.
-        try {
-            const last = [...document.querySelectorAll("#chat-log [data-message-id], "
-                + ".chat-log [data-message-id]")].pop();
-            last?.scrollIntoView?.({ block: "end", behavior: "instant" });
-        } catch (_) { /* the panes above already moved */ }
-
-        console.log(`${MODULE_ID} | chat to the end (${why}):\n  ${lines.join("\n  ")}`);
-        if (thumb) {
-            const top = Math.round(thumb.scrollTop);
-            const travel = Math.max(0, Math.round(thumb.scrollHeight - thumb.clientHeight));
-            if (top < travel - 1) {
-                console.warn(`${MODULE_ID} | the bar he drags (${scrollerName(thumb)}) is still `
-                    + `${travel - top}px SHORT of the bottom. Do not read the lines above as a `
-                    + `success.`);
-            }
+        // The widest travel is the thumb he drags; say so when it is still short.
+        const thumb = scrollers.reduce((a, b) => (b.travel > a.travel ? b : a));
+        const top = Math.round(thumb.el.scrollTop);
+        const travel = Math.max(0, Math.round(thumb.el.scrollHeight - thumb.el.clientHeight));
+        if (top < travel - 1) {
+            console.warn(`${MODULE_ID} | the bar he drags (${thumb.tag}${thumb.id ? `#${thumb.id}` : ""}`
+                + `${thumb.cls ? `.${thumb.cls.split(/\s+/)[0]}` : ""}) is still ${travel - top}px SHORT `
+                + `of the bottom. Do not read the lines above as a success.`);
         }
     } catch (err) {
         console.warn(`${MODULE_ID} | could not take the chat to the end:`, err);
@@ -546,8 +600,8 @@ export function scrollChatToEnd(why) {
 }
 
 /**
- * Kept as the name the card path calls, now that there is no window to hold.
- * One pass, here and at the end of the apply.
+ * Kept as the name the card path calls. One pass, here and at the end of the
+ * apply.
  */
 export function followTheLog(why, _cardEl = null) {
     scrollChatToEnd(why);
