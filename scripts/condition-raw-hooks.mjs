@@ -127,12 +127,50 @@ export class ConditionRawHooks {
     // is deleted; they linger on the token after Sleep / Hold Person ends. When one
     // of OUR condition effects is deleted, remove the rider conditions it pulled in,
     // UNLESS another surviving effect still pulls the same rider. (2026-06-24.)
+    /* ⚠️🔴 THE STATUS IS HANDED ON, NOT LOST WITH ITS CARRIER.
+     *
+     * A second source's copy is created WITHOUT the status, because a status is
+     * one flag on a creature and asking dnd5e for its fixed-id record twice is
+     * what collided and re-read the actor (his audit, 2026-10-01). The other half
+     * of that rule is this: when the copy that WAS carrying it ends — its hour
+     * runs out, or the caster's side harms the target — the creature must not
+     * stop being charmed while another caster's charm is still running.
+     *
+     * So the status goes to the oldest remaining copy. Only the status: its
+     * duration, its anchor and its flags are its own and are not touched, which
+     * is the rule that took four versions to get right.
+     */
     Hooks.on("deleteActiveEffect", async (effect, _opts, _userId) => {
       try {
         if (game.users?.activeGM !== game.user) return;
-        if (!effect?.flags?.[MODULE_ID]?.conditionKey) return;   // only OUR conditions
+        const key = effect?.flags?.[MODULE_ID]?.conditionKey ?? null;
+        if (!key) return;                                        // only OUR conditions
         const actor = effect.parent;
         if (!(actor instanceof Actor) || !actor.effects) return;
+
+        const gone = [...(effect.statuses ?? [])].map(x => String(x).toLowerCase());
+        if (gone.length) {
+          const others = (actor.effects.contents ?? []).filter(e =>
+            e.id !== effect.id && !e.disabled && e.flags?.[MODULE_ID]?.conditionKey === key);
+          const stillHeld = new Set();
+          for (const e of others) {
+            for (const x of (e.statuses ?? [])) stillHeld.add(String(x).toLowerCase());
+          }
+          const orphaned = gone.filter(st => !stillHeld.has(st));
+          if (orphaned.length && others.length) {
+            const heir = others[0];
+            try {
+              await heir.update({ statuses: [...new Set([...(heir.statuses ?? []), ...orphaned])] });
+              console.log(`${MODULE_ID} | "${effect.name}" was carrying ${orphaned.join(", ")} for `
+                + `${actor.name} and has ended, but "${heir.name}" is still running — so the status `
+                + `goes to it. Its own duration and clock are untouched.`);
+            } catch (err) {
+              console.warn(`${MODULE_ID} | could not hand ${orphaned.join(", ")} on to `
+                + `"${heir.name}" on ${actor.name}, so that creature may have stopped being it while `
+                + `a second source is still running:`, err);
+            }
+          }
+        }
 
         // Which rider statuses did THIS effect's statuses pull in?
         const riders = new Set();

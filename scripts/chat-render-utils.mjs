@@ -465,9 +465,68 @@ export function takeLogToNewCard(message, el) {
  * called that here, `last` was undefined, the ancestor walk never ran, and the
  * only candidates left were the named selectors.
  */
+function inTheNotifications(el) {
+    try { return !!el?.closest?.("#chat-notifications, .chat-notifications"); }
+    catch (_) { return false; }
+}
+
+/**
+ * The REAL copy of a message, and the pane whose bar he drags.
+ *
+ * ⚠️🔴 HIS AUDIT, 2026-10-01, and he read it out of the DOM himself: "That node
+ * is in a 733px ol.chat-log. Its div.chat-scroll is 1117/1117 and has no
+ * overflowed class. The bar is the other one, div.chat-scroll.overflowed...
+ * lastChatMessage() is returning the notification copy."
+ *
+ * Exactly right, and Foundry's own source says so twice over. `_toggleNotifications`
+ * builds a SECOND `.chat-log` inside `#chat-notifications` holding copies of
+ * recent messages — the same message id in two places — and `#setOverflowing`
+ * toggles `.overflowed` on the real `.chat-scroll` when its content is taller
+ * than it is. So the notification copy is indistinguishable by id and the real
+ * pane announces itself by class. My scan walked the last `[data-message-id]`
+ * anywhere in the document, which is the notification copy, measured its
+ * container at 1117/1117, and reported that nothing scrolls.
+ *
+ * @param {string} id  the message id
+ * @returns {{li: Element, box: Element|null, why: string, candidates: string[]}|null}
+ */
+export function realLogCopyOf(id) {
+    if (!id) return null;
+    const all = [...document.querySelectorAll(`[data-message-id="${id}"]`)];
+    const seen = [];
+    let best = null;
+    for (const li of all) {
+        const box = li.closest?.(".chat-scroll") ?? null;
+        const notif = inTheNotifications(li);
+        const overflowed = !!box?.classList?.contains?.("overflowed");
+        const travel = box ? Math.max(0, box.scrollHeight - box.clientHeight) : 0;
+        seen.push(`${notif ? "notification copy" : "log copy"}`
+            + ` in ${box ? `${box.tagName.toLowerCase()}.${String(box.className).trim().split(/\s+/).join(".")}`
+                : "no .chat-scroll"}`
+            + ` ${box ? `${box.scrollHeight}/${box.clientHeight}` : ""}`
+            + `${overflowed ? " [overflowed]" : ""} travel=${travel}`);
+        if (notif) continue;                      // never the notification strip
+        // The one Foundry marked as overflowing is the bar; failing that, the
+        // one with travel; failing that, keep the first real log copy so there
+        // is always something to report.
+        const rank = (overflowed ? 2 : 0) + (travel > 1 ? 1 : 0);
+        if (!best || rank > best.rank) best = { li, box, rank, overflowed, travel };
+    }
+    if (!best) return null;
+    return {
+        li: best.li, box: best.box, candidates: seen,
+        why: best.overflowed ? ".chat-scroll.overflowed"
+            : best.travel > 1 ? "the real log copy, which has travel"
+            : "the real log copy, which does NOT scroll",
+    };
+}
+
+/**
+ * The last message in the REAL log, never the notification strip.
+ */
 function lastChatMessage() {
-    const all = [...document.querySelectorAll("li.chat-message, .chat-message[data-message-id], "
-        + "[data-message-id]")];
+    const all = [...document.querySelectorAll("li.chat-message[data-message-id], "
+        + "[data-message-id]")].filter(el => !inTheNotifications(el));
     return all.length ? all[all.length - 1] : null;
 }
 
@@ -516,9 +575,14 @@ function measureChatPanes() {
     };
 
     // His list, by name, everywhere it exists.
-    for (const sel of ["#chat", "#chat-log", ".chat-log", ".chat-scroll", "#sidebar",
-        "#sidebar #chat", "#chat-popout", ".chat-popout", ".chat-sidebar", "section.chat",
-        "#chat-notifications", ".chat-notifications"]) {
+    // ⚠️ `.chat-scroll.overflowed` is listed in its own right: Foundry's
+    // `#setOverflowing` puts that class on the pane whose content is taller than
+    // it is, which is the one definition of "the bar he drags" the app itself
+    // provides. The notification strip is measured too, and named, so a copy
+    // found there is visible in the log instead of mistaken for the chat.
+    for (const sel of ["#chat", "#chat-log", ".chat-log", ".chat-scroll", ".chat-scroll.overflowed",
+        "#sidebar", "#sidebar #chat", "#chat-popout", ".chat-popout", ".chat-sidebar",
+        "section.chat", "#chat-notifications", ".chat-notifications"]) {
         for (const el of document.querySelectorAll(sel)) look(el, sel);
     }
     // Whatever Foundry itself holds, sidebar and popout.
@@ -596,6 +660,59 @@ export function scrollChatToEnd(why) {
         }
     } catch (err) {
         console.warn(`${MODULE_ID} | could not take the chat to the end:`, err);
+    }
+}
+
+/**
+ * Take the pane that holds THIS message to the bottom.
+ *
+ * ⚠️🔴 HIS RULE, 2026-10-01: "Find every li with the save message id. Keep the one
+ * inside the div.chat-scroll that has the overflowed class... then set that
+ * element's scrollTop to its scrollHeight. If you still measure 1117/1117, you
+ * still have the notification copy. Say so."
+ *
+ * @param {string} id   the message whose pane to move
+ * @param {string} why  for the log
+ * @returns {boolean}   whether that pane ended at its bottom
+ */
+export function takeTheRealLogToBottom(id, why) {
+    try {
+        const found = realLogCopyOf(id);
+        if (!found) {
+            console.warn(`${MODULE_ID} | ${why}: no copy of message ${id} is in the chat log at all `
+                + `(only the notification strip, or none).`);
+            return false;
+        }
+        const box = found.box;
+        if (!box) {
+            console.warn(`${MODULE_ID} | ${why}: the log copy of ${id} has no .chat-scroll above it. `
+                + `Candidates: ${found.candidates.join(" | ")}`);
+            return false;
+        }
+        const h = Math.round(box.scrollHeight);
+        const vis = Math.round(box.clientHeight);
+        const travel = Math.max(0, h - vis);
+        const name = `${box.tagName.toLowerCase()}.${String(box.className).trim().split(/\s+/).join(".")}`;
+        if (travel <= 1) {
+            // ⚠️ HIS OWN TEST FOR IT. A pane as tall as its content is not the bar.
+            console.warn(`${MODULE_ID} | ${why}: ${name} measures ${h}/${vis} — no travel, so this is `
+                + `NOT the bar he drags and is very likely still the notification copy. `
+                + `Candidates: ${found.candidates.join(" | ")}`);
+            return false;
+        }
+        box.scrollTop = box.scrollHeight;
+        const top = Math.round(box.scrollTop);
+        const down = top >= travel - 1;
+        console.log(`${MODULE_ID} | ${why}: ${name} (${found.why}) ${h}/${vis} travel=${travel} `
+            + `scrollTop=${top} → ${down ? "AT MAX" : `SHORT by ${travel - top}`}`);
+        if (!down) {
+            console.warn(`${MODULE_ID} | that bar is still ${travel - top}px short. Do not read the `
+                + `line above as a success.`);
+        }
+        return down;
+    } catch (err) {
+        console.warn(`${MODULE_ID} | could not take the log to message ${id}:`, err);
+        return false;
     }
 }
 

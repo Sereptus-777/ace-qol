@@ -548,18 +548,53 @@ console.log("\n9. THE BAR, THE DAMAGE ROW, AND THE SECOND CARD'S FALSE ERROR");
     && /scrollHeight=\$\{p\.scrollHeight\} clientHeight=\$\{p\.clientHeight\}/.test(chat)
     && /overflow=\$\{p\.overflow\} travel=\$\{p\.travel\}/.test(chat), "his list");
   check("his named candidates are all in the scan",
-    /"#chat", "#chat-log", "\.chat-log", "\.chat-scroll", "#sidebar",/.test(chat)
+    /"#chat", "#chat-log", "\.chat-log", "\.chat-scroll", "\.chat-scroll\.overflowed",/.test(chat)
     && /"#chat-popout", "\.chat-popout"/.test(chat), "his list, not my pick of it");
+  // ⚠️ AND `.chat-scroll.overflowed` IS LISTED IN ITS OWN RIGHT. Foundry's
+  // `#setOverflowing` puts that class on the pane whose content is taller than it
+  // is: the app's own definition of the bar he drags.
+  check("the pane Foundry marks as overflowing is a candidate by name",
+    /"\.chat-scroll\.overflowed"/.test(chat), "#setOverflowing toggles it");
   check("including whatever Foundry itself holds, sidebar and popout",
     /look\(ui\.chat\?\.element, "ui\.chat\.element"\);/.test(chat)
     && /look\(ui\.chat\?\.popout\?\.element, "popout element"\);/.test(chat), "named separately");
   check("and every parent of the last message",
     /look\(box, `parent \$\{depth\} of the last message`\);/.test(chat),
     "the only path that cannot miss the element holding the bar");
-  check("the last message is found however the log is built",
+  /* ⚠️🔴 AND IT IS NEVER THE NOTIFICATION COPY. His audit, read out of the
+   * DOM: "There are two ol.chat-log in the document, and lastChatMessage() takes
+   * the last [data-message-id] anywhere, so it walked the short one... Its
+   * div.chat-scroll is 1117/1117 and has no overflowed class."
+   *
+   * Foundry's own `_toggleNotifications` builds a SECOND `.chat-log` inside
+   * `#chat-notifications` holding copies of recent messages under the SAME ids,
+   * which is why dice-hold's note says the log copy and the notification copy
+   * share one. The last `[data-message-id]` in the document is that copy. */
+  check("the last message is found in the real log, never the notification strip",
     /function lastChatMessage\(\) \{/.test(chat)
-    && /li\.chat-message, \.chat-message\[data-message-id\], /.test(chat),
-    "not 'inside #chat-log', which is what blinded it");
+    && /\.filter\(el => !inTheNotifications\(el\)\);/.test(chat),
+    "two ol.chat-log, one of them 733px");
+  check("and a message's own pane is found by class, not by document order",
+    /export function realLogCopyOf\(id\) \{/.test(chat)
+    && /const rank = \(overflowed \? 2 : 0\) \+ \(travel > 1 \? 1 : 0\);/.test(chat),
+    "overflowed first, then travel");
+  check("1117/1117 is called out as the notification copy, by his own test",
+    /no travel, so this is `/.test(chat)
+    && /very likely still the notification copy/.test(chat), "his words");
+  check("a save card reaches the bottom when its hold is released",
+    /takeTheRealLogToBottom\(id, "the card is no longer held for this screen's dice"\)/
+      .test(read("scripts/dice-hold.mjs")),
+    "the moment only dice-hold knows about");
+  check("and two frames later, because it has just come back from display:none",
+    /_next\(\(\) => _next\(\(\) => \{/.test(read("scripts/dice-hold.mjs")),
+    "its scrollHeight is not final until the browser has laid it out again");
+  // ⚠️ A FRAME IN A BROWSER, A TICK IN A HARNESS. The replay drives dice-hold
+  // headless, where requestAnimationFrame does not exist: it threw on the first
+  // run and took the whole replay down with it.
+  check("and it works where there are no frames",
+    /typeof requestAnimationFrame === "function"/.test(read("scripts/dice-hold.mjs"))
+    && /: setTimeout\(fn, 0\)\)/.test(read("scripts/dice-hold.mjs")),
+    "the replay runs this file with no browser at all");
   check("the last message goes into view first",
     /last\?\.scrollIntoView\?\.\(\{ block: "end", behavior: "instant" \}\);/.test(chat),
     "it does not depend on identifying the right box");
@@ -904,6 +939,45 @@ console.log("\n15. THE SAVE CARD, AFTER THE DICE AND AFTER THE ART");
     "his log had no BEFORE line for the save resolver's path");
   check("and says if one moved that it does not own",
     (lib.match(/_sayIfAClockMoved\(actor, key,/g) ?? []).length >= 2, "both paths");
+}
+
+/* ══ 16. THE CREATE, NOT THE UPDATE ═══════════════════════════════════════ */
+console.log("\n16. A SECOND SOURCE CARRIES NO STATUS, AND NOBODY RE-READS THE ACTOR");
+{
+  const lib = read("scripts/condition-library.mjs");
+  const raw = read("scripts/condition-raw-hooks.mjs");
+  const main = read("scripts/ace-qol.mjs");
+
+  /* ⚠️🔴 HIS AUDIT NAMED THE WRITE, AND IT WAS A CREATE. "applyEffect builds a new
+   * effect with statuses: ['charmed'] and creates it. That create tries to make
+   * dnd5echarmed0000, which already exists. ace-qol.mjs line 6533 swallows the
+   * collision and calls actor.reset(). Before that line, the after-clock already
+   * shows both effects at startTime -185541665. Lamia's was -185542865. The create
+   * stamped her clock. The door cannot see a create."
+   *
+   * Which is why two fixes aimed at updates never fired. */
+  check("a second source's effect carries no status somebody else already has",
+    /export function statusesForNewCopy\(actor, key, wanted\) \{/.test(lib)
+    && /statuses: statusesForNewCopy\(actor, key, statuses\),/.test(lib),
+    "a status is one flag on a creature, not a count");
+  check("and it says which it dropped and why",
+    /so this "\$\{key\}" is placed WITHOUT it/.test(lib), "never a silent change");
+  check("the status is handed on when its carrier ends",
+    /const heir = others\[0\];/.test(raw)
+    && /so the status `/.test(raw) && /goes to it\. Its own duration and clock are untouched/.test(raw),
+    "the creature does not stop being charmed while a second charm runs");
+  check("and only the status — never the heir's duration",
+    /await heir\.update\(\{ statuses: \[\.\.\.new Set\(\[\.\.\.\(heir\.statuses \?\? \[\]\), \.\.\.orphaned\]\)\] \}\);/.test(raw),
+    "the rule that took four versions to get right");
+  check("the toggle collision no longer re-reads the actor",
+    !/_actor\?\.reset\?\.\(\)/.test(main) && /The actor is NOT re-read/.test(main),
+    "that re-read is what moved the other source's clock");
+  check("nor does the rider collision",
+    (main.match(/is NOT re-read/g) ?? []).length >= 2, "both doors");
+  check("and the desync pre-flight says it instead of resetting",
+    /The actor is NOT re-read — that re-read moves other effects' `/.test(main)
+      || /that re-read moves other effects'/.test(main),
+    "said, not repaired by a re-read");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

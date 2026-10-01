@@ -6469,15 +6469,15 @@ Hooks.once("ready", () => {
           return await _origCreateRiders.apply(this, args);
         } catch (err) {
           if (!/already exists/i.test(err?.message ?? "")) throw err;
-          console.warn(`${MODULE_ID} | rider condition already present — swallowed a keepId ActorDelta collision and re-syncing (non-fatal):`, err?.message ?? err);
-          const _actor = this?.parent ?? null;
-          // Deferred so we never re-enter the in-flight create workflow.
-          setTimeout(() => {
-            try {
-              _actor?.reset?.();
-              if (_actor?.sheet?.rendered) _actor.sheet.render(false);
-            } catch (_) { /* best-effort re-sync */ }
-          }, 0);
+          // ⚠️🔴 AND THIS ONE DOES NOT RE-READ THE ACTOR EITHER (his rule,
+          // 2026-10-01). Same fault as the toggle door below: `reset()` rebuilds
+          // every effect from source, and his after-clock showed two charms
+          // sharing one anchor the moment that happened. The record the create
+          // wanted already exists, which is the end state it was asking for.
+          console.warn(`${MODULE_ID} | rider condition already present — swallowed a keepId `
+            + `ActorDelta collision (non-fatal, and the record it wanted is already there). The `
+            + `actor is NOT re-read: that re-read moves other effects' clocks.`,
+            err?.message ?? err);
           return [];
         }
       };
@@ -6516,8 +6516,13 @@ Hooks.once("ready", () => {
           const sid = st?._id;
           if (sid && !this.effects?.get?.(sid)
               && (this._source?.effects ?? []).some(e => e?._id === sid)) {
-            console.warn(`${MODULE_ID} | status "${statusId}" is desynced on ${this.name} (stored but not live) — re-syncing before toggle`);
-            this.reset?.();
+            // ⚠️ SAID, NOT REPAIRED BY A RE-READ. `reset()` here has the same fault
+            // as the one below: it re-reads every effect, and that is what moved
+            // another source's clock. The toggle may collide and be swallowed;
+            // that is harmless, and this line is what tells him why.
+            console.warn(`${MODULE_ID} | status "${statusId}" is desynced on ${this.name} (stored `
+              + `but not live). The actor is NOT re-read — that re-read moves other effects' `
+              + `clocks — so the toggle below may collide and be swallowed, which is harmless.`);
           }
         } catch (_) { /* pre-flight is best-effort */ }
 
@@ -6530,14 +6535,17 @@ Hooks.once("ready", () => {
           // is whoever asked for the toggle.)
           const _who = (new Error().stack ?? "").split("\n")
             .filter(l => !/ace-qol\.mjs|toggleStatusEffect/.test(l)).slice(1, 4).join(" ← ").trim();
-          console.warn(`${MODULE_ID} | toggleStatusEffect keepId collision swallowed (status already present) — re-syncing ${this?.name ?? "actor"}. Caller: ${_who || "unknown"} |`, err?.message ?? err);
-          const _actor = this;
-          setTimeout(() => {
-            try {
-              _actor?.reset?.();
-              if (_actor?.sheet?.rendered) _actor.sheet.render(false);
-            } catch (_) { /* best-effort re-sync */ }
-          }, 0);
+          // ⚠️🔴 AND IT DOES NOT RESET THE ACTOR (his audit, 2026-10-01: "Do
+          // not reset the actor."). `reset()` re-reads every effect from source,
+          // and his after-clock showed both charms sharing one anchor the moment
+          // that happened: the re-read is what put the new startTime on the
+          // OTHER caster's effect. The collision is already harmless — the
+          // record it wanted exists, which IS the intended end state — so
+          // swallowing it is enough, and the sheet redraws on its own when
+          // anything real changes.
+          console.warn(`${MODULE_ID} | toggleStatusEffect keepId collision swallowed (status already `
+            + `present, which is the intended end state). The actor is NOT re-read: that re-read is `
+            + `what moved another source's clock. Caller: ${_who || "unknown"} |`, err?.message ?? err);
           return undefined;
         }
       };

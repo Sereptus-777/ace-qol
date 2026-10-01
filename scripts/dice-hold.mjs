@@ -60,13 +60,34 @@ export function holdForDice(message, li) {
 
   li.classList?.add?.(HELD);
   hold.then(() => {
-    // Keep the log at the bottom if it was there while the card was hidden.
-    let atBottom = false;
-    try { atBottom = !!globalThis.ui?.chat?.isAtBottom; } catch (_) { atBottom = false; }
     li.classList?.remove?.(HELD);
-    if (atBottom) {
-      try { globalThis.ui?.chat?.scrollBottom?.({ popout: false }); } catch (_) { /* scrolling is a courtesy */ }
-    }
+    /* ⚠️🔴 AND THIS IS WHERE A SAVE CARD REACHES THE BOTTOM (his audit,
+       2026-10-01: "After the held class is removed, wait two frames, then set
+       that element's scrollTop to its scrollHeight.").
+
+       This is the moment the card stops being invisible, and it is a moment only
+       this file knows about: a save card is held here until the dice land, which
+       is why attacks stick and saves did not. Every scroll elsewhere was
+       measuring a card that was still hidden, and the old line here asked
+       `ui.chat.scrollBottom` and only when the log happened to be at the bottom
+       already — both of which have been proved not to move his bar.
+
+       Two frames, because the card has just come back from `display: none` and
+       the pane's scrollHeight is not final until the browser has laid it out
+       again. Then the pane that actually holds this message, found by class
+       rather than by document order. */
+    // ⚠️ A FRAME IN A BROWSER, A TICK IN A HARNESS. The replay drives this file
+    // headless, where `requestAnimationFrame` does not exist — it threw on the
+    // first run and took the whole replay with it. Two of whichever this
+    // environment has.
+    const _next = (fn) => (typeof requestAnimationFrame === "function"
+      ? requestAnimationFrame(fn) : setTimeout(fn, 0));
+    _next(() => _next(() => {
+      import("./chat-render-utils.mjs")
+        .then(({ takeTheRealLogToBottom }) =>
+          takeTheRealLogToBottom(id, "the card is no longer held for this screen's dice"))
+        .catch(err => console.warn(`${LOG} | the card is shown but the log was not moved:`, err));
+    }));
   });
   return hold;
 }

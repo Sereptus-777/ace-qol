@@ -1680,6 +1680,45 @@ export function conditionDurationSeconds(key) {
  * already draws from a cast flourish (animation/spell-animator.mjs), and the
  * card's "what landed" line reads the same answer.
  */
+/**
+ * Which of this condition's statuses the NEW effect should carry.
+ *
+ * A status is one flag on a creature. If another effect already puts it on, the
+ * new one carries nothing: it is a second source with its own duration, and
+ * asking for the status again is what makes dnd5e try to create its fixed-id
+ * record a second time (his audit, 2026-10-01).
+ *
+ * @returns {string[]} the statuses to put on this effect — usually all of them,
+ *   and none of the ones somebody else is already carrying.
+ */
+export function statusesForNewCopy(actor, key, wanted) {
+  try {
+    const want = [...(wanted ?? [])].map(x => String(x).toLowerCase()).filter(Boolean);
+    if (!want.length) return [];
+    const held = new Set();
+    for (const e of (actor?.effects ?? [])) {
+      if (e.disabled) continue;
+      const st = e.statuses;
+      if (!st) continue;
+      if (typeof st.has === "function") { for (const x of st) held.add(String(x).toLowerCase()); }
+      else if (Array.isArray(st)) { for (const x of st) held.add(String(x).toLowerCase()); }
+    }
+    const mine = want.filter(st => !held.has(st));
+    const theirs = want.filter(st => held.has(st));
+    if (theirs.length) {
+      console.log(`ace-qol | ${actor?.name} already carries ${theirs.join(", ")} from another `
+        + `source, so this "${key}" is placed WITHOUT it: a status is one flag on a creature, not `
+        + `a count, and asking for it again is what collides with dnd5e's fixed-id record and `
+        + `re-reads the actor. The other source keeps its own clock.`);
+    }
+    return mine;
+  } catch (err) {
+    console.warn(`ace-qol | could not tell which statuses "${key}" still needs, so it carries all `
+      + `of them:`, err);
+    return [...(wanted ?? [])];
+  }
+}
+
 export function conditionStatuses(key) {
   try {
     const k = String(key ?? "").toLowerCase().trim();
@@ -1946,7 +1985,33 @@ export class ConditionLibrary {
       origin: options.origin ?? null,
       changes,
       duration,
-      statuses,
+      /* ⚠️🔴 A SECOND SOURCE CARRIES NO STATUS, AND THAT IS THE WHOLE BUG HE
+         AUDITED (2026-10-01):
+
+           "applyEffect builds a new effect with statuses: ['charmed'] and creates
+            it. That create tries to make dnd5echarmed0000, which already exists.
+            ace-qol.mjs line 6533 swallows the collision and calls actor.reset().
+            Before that line, the after-clock already shows both effects at
+            startTime -185541665. Lamia's was -185542865. The create stamped her
+            clock. The door cannot see a create."
+
+         Every word of that is right, and it is why two fixes aimed at updates
+         never fired: the write was a CREATE. dnd5e spawns its fixed-id condition
+         record from an effect's `statuses`, with keepId, so the second charm asked
+         for a `dnd5echarmed0000` that already existed; the collision was swallowed
+         and the actor re-mirrored, and Lamia's effect came back from that re-read
+         carrying the new anchor.
+
+         A status is one flag on a creature, not a count. The first source put
+         `charmed` on and it is still on. So the second source's effect carries
+         NONE: it is "Charmed by Kasimir" with its own hour, its own flags and its
+         own clock, beside hers. Nothing collides, nothing is swallowed, nothing is
+         reset, and her startTime is never touched.
+
+         ⚠️ AND THE STATUS IS HANDED ON WHEN THE CARRIER GOES (condition-raw-hooks):
+         the creature must not stop being charmed because the FIRST caster's hour
+         ran out while the second's is still running. */
+      statuses: statusesForNewCopy(actor, key, statuses),
       flags: {
         [MODULE_ID]: {
           conditionKey: key,
