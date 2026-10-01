@@ -237,19 +237,11 @@ console.log("\n4. CHAT SITS ON THE NEW CARD");
     "waiting on images waits for every picture in the whole log");
   check("it does not scroll to the card",
     !/scrollIntoView/.test(chat), "the bottom of the log");
-  // ⚠️ AND ASKING WAS NOT ENOUGH (0.73.0). scrollBottom writes to `.chat-scroll`
-  // inside `ui.chat.element`, which in this app is not always the element the
-  // card is sitting in, so the bar did not move. It is asked first and then the
-  // scroller is driven by hand — pinned in full in section 9.
-  check("the scrollbar is driven to the bottom, not only asked",
-    /box\.scrollTop = box\.scrollHeight;/.test(chat)
-    && /ui\.chat\?\.scrollBottom\?\.\(\{ force: true \}\);/.test(chat), "his words");
-  // ⚠️ AND THE POPOUT IS NOT SCROLLED, BY HIS INSTRUCTION. 0.68.0 passed
-  // `popout: true`; 0.71.0's line is his, exactly as he wrote it, and it does
-  // not. Recorded rather than lost: if he wants the popped-out log to follow he
-  // will say so, and this pin is where it goes.
-  check("and the popout is left alone, which is his line as written",
-    !/popout: true/.test(chat), "one line, no extras");
+  // ⚠️ ASKING WAS NOT ENOUGH, AND NEITHER WAS THE FIRST BOX THAT SCROLLS. The
+  // whole rule is pinned in section 9; it lives in one place now because three
+  // copies of it across three sections drifted apart twice in one evening.
+  check("the scrollbar is driven to the bottom by hand — section 9 has the rule",
+    /box\.scrollTop = box\.scrollHeight - box\.clientHeight;/.test(chat), "his words");
   check("whoever the speaker is",
     !/author/.test(chat.slice(chat.indexOf("export function takeLogToNewCard"))),
     "his words: including when the speaker is the monster");
@@ -458,17 +450,16 @@ console.log("\n8. NAMED FOR ITS CASTER, THE BOTTOM OF THE LOG, THE PORTRAIT ROW"
   check("a same-caster refresh keeps the name, and fixes an old one",
     /if \(_want && _want !== _twin\.name/.test(lib), "still named for them");
 
-  // 2. The scrollbar, his line.
-  check("his line is still asked, once the card is in the log",
-    /ui\.chat\?\.scrollBottom\?\.\(\{ force: true \}\);/.test(chat)
-    && /const inTheLog = \(\) => !!el\?\.closest\?\.\("#chat-log, \.chat-log"\);/.test(chat),
-    "and then the element is driven — section 9");
+  // 2. The scrollbar: the wait on the card being in the log. Everything else
+  //    about it is section 9's.
+  check("it waits for the card to be in the log, not merely attached",
+    /const inTheLog = \(\) => !!el\?\.closest\?\.\("#chat-log, \.chat-log"\);/.test(chat),
+    "that is the element whose scrollbar moves");
   check("and once more on the next animation frame",
     /requestAnimationFrame\(\(\) => \{ try \{ pin\("next frame"\); \}/.test(chat),
     "the card settles into its height without waiting on a picture");
-  check("no image wait, no padding, no scroll-to-card",
-    !/ui\.chat\.scrollBottom\(\{[^}]*waitImages/.test(chat) && !/scrollIntoView/.test(chat),
-    "his three don'ts");
+  check("no padding, no scroll-to-card",
+    !/scrollIntoView/.test(chat), "two of his three don'ts; images are section 9's");
 
   // 3. The damage row.
   const header = dmg.slice(dmg.indexOf('class="ace-qol-dmg-row-header"'));
@@ -511,30 +502,53 @@ console.log("\n9. THE BAR, THE DAMAGE ROW, AND THE SECOND CARD'S FALSE ERROR");
   const dmg = read("scripts/damage-card-renderer.mjs");
   const css = read("styles/ace-qol.css");
 
-  // 1. The bar.
-  check("the scroller is driven by hand, not only asked",
-    /box\.scrollTop = box\.scrollHeight;/.test(chat), "his rule: set scrollTop to scrollHeight");
-  check("and it is found from the card, so every log that holds it is pinned",
-    /for \(const node of document\.querySelectorAll\(`\[data-message-id="\$\{message\.id\}"\]`\)\)/.test(chat)
-    && /if \(box\.scrollHeight > box\.clientHeight \+ 1\) return box;/.test(chat),
-    "his test, and nothing about how the pane happens to be styled");
-  check("three moments: in the log, next frame, 100ms later",
+  /* 1. THE BAR, AND IT IS THE ONE HE DRAGS.
+   *
+   * ⚠️🔴 HIS LOG, 2026-09-30: "scrollHeight 1207, clientHeight 1117. That element
+   * only has 90 pixels of travel. The chat bar the GM is looking at travels much
+   * further. You scrolled the wrong box."
+   *
+   * A card sits inside several boxes that each scroll a little, and walking up
+   * and taking the FIRST one finds one of those wrappers. The pane whose thumb he
+   * grabs is the one with the most TRAVEL — travel IS the thumb — so every
+   * scrolling ancestor is measured and the deepest-travelling one wins. */
+  check("the bar is the ancestor with the MOST travel, not the first that scrolls",
+    /const travel = box\.scrollHeight - box\.clientHeight;/.test(chat)
+    && /return found\.sort\(\(a, b\) => b\.travel - a\.travel\);/.test(chat)
+    && /const \{ box \} = bars\[0\];/.test(chat),
+    "90px under a full log is a wrapper");
+  check("and it is set to the max, which is what the bottom is",
+    /box\.scrollTop = box\.scrollHeight - box\.clientHeight;/.test(chat),
+    "scrollHeight on its own is past the end");
+  check("every copy of the message is pinned",
+    /for \(const node of document\.querySelectorAll\(`\[data-message-id="\$\{message\.id\}"\]`\)\)/.test(chat),
+    "main log and popout");
+  check("four moments: in the log, next frame, 100ms, and after Foundry's own scroll",
     /pin\("card in the log"\);/.test(chat) && /pin\("next frame"\);/.test(chat)
-    && /pin\("100ms later"\);/.test(chat), "his three");
-  check("scrollBottom is still asked first",
-    /ui\.chat\?\.scrollBottom\?\.\(\{ force: true \}\);/.test(chat), "the supported path");
-  check("twice: in the DOM, then the next frame",
-    /pin\("card in the log"\);/.test(chat) && /pin\("next frame"\);/.test(chat), "his two moments");
-  check("and it logs the element, scrollTop, scrollHeight and clientHeight",
-    /scrollTop=\$\{top\} scrollHeight=\$\{h\} clientHeight=\$\{vis\}/.test(chat), "his words");
+    && /pin\("100ms later"\);/.test(chat) && /pin\("after Foundry's own scroll"\)/.test(chat),
+    "so a later write cannot put the bar back");
+  check("it logs the class, scrollTop, scrollHeight, clientHeight and the travel",
+    /scrollTop=\$\{top\} scrollHeight=\$\{h\} `/.test(chat)
+    && /clientHeight=\$\{vis\} travel=\$\{travel\}/.test(chat), "his words");
+  check("a short bar under a full log is called the wrong element",
+    /if \(travel < 200 && cards > 5\) \{/.test(chat) && /WRONG ELEMENT/.test(chat),
+    "his rule: do not claim it scrolled");
+  check("and the other candidates are named beside it",
+    /also above the card: \$\{others\.join\(", "\)\}/.test(chat), "so a wrong answer is visible");
   // ⚠️ AND IT READS THE VALUE BACK. Saying "scrolled" because scrollTop was
-  // ASSIGNED is reporting an intention as an outcome; the browser clamps it to
-  // scrollHeight minus the visible height, and that is the bottom.
+  // ASSIGNED is reporting an intention as an outcome.
   check("it never claims it scrolled when it did not",
     /chat did NOT reach the bottom/.test(chat)
-    && /const bottom = Math\.max\(0, h - vis\);/.test(chat), "his rule");
+    && /\$\{travel - top\}px short/.test(chat), "his rule");
   check("nothing has a scrollbar and it says so",
     /scrollbar, so there was nothing to move/.test(chat), "silence is a bug");
+  // ⚠️ THE ONLY IMAGE WAIT IS FOUNDRY'S OWN, AND IT GATES ONLY THE LAST PIN.
+  // "After Foundry's own scroll runs" can only be known by awaiting the same
+  // call, and that call is the one that waits for pictures. The first three pins
+  // have already happened by then, so nothing he asked for waits on an image.
+  check("ACE's own three pins wait on nothing",
+    chat.indexOf('pin("100ms later")') < chat.indexOf("after Foundry's own scroll"),
+    "the image wait belongs to Foundry's call, which is the last word only");
 
   // 2. The damage row.
   // ⚠️ THE GRAY BOX IS GONE, AND THE TYPE-COLOUR PILL IS NOT THAT BOX. The click
@@ -638,6 +652,52 @@ console.log("\n10. NO RED TOAST, AND THE PICKER AT TWICE THE SIZE");
   check("who may be picked and the range are untouched",
     /const resolvedRange = \(Number\.isFinite\(rangeFt\) \|\| rangeFt === Infinity\)/.test(pick2)
     && /candidates = candidates\.filter\(c => c\.lifeOk\);/.test(pick2), "text only");
+}
+
+/* ══ 11. ONE ROW FOR THE CHIP, AND A TIMER NOBODY ELSE RESETS ═════════════ */
+console.log("\n11. THE CHIP ON THE HP ROW, AND TWO TIMERS THAT DO NOT TOUCH");
+{
+  const css = read("styles/ace-qol.css");
+  const dmg = read("scripts/damage-card-renderer.mjs");
+  const lib = read("scripts/condition-library.mjs");
+  const tracker = read("scripts/duration-tracker.mjs");
+
+  // ⚠️ IT WAS ALREADY ON THAT LINE IN THE MARKUP. A 36px left indent, left from
+  // when a 26px portrait sat beside this text, ate enough width that the chip
+  // and the sentence could not share the row, so it wrapped above.
+  check("the chip and HP share one row",
+    /\$\{modPlain\}/.test(dmg) && /padding: 3px 10px 2px 0; font-size: 0\.85rem;/.test(css),
+    "the indent is gone; the portrait is a column of its own now");
+  check("and the chip keeps its width, so the sentence is what wraps",
+    /\.ace-qol-dmg-hp-line \.ace-qol-dmg-mod-plain \{ flex: 0 0 auto; \}/.test(css),
+    "never the chip away from the line it belongs to");
+  check("at the HP text's own size",
+    /font-size: 0\.95rem; font-weight: 800; letter-spacing: 0\.3px;/.test(css), "his rule");
+
+  /* ⚠️🔴 A NEW SOURCE DOES NOT REWRITE ANOTHER SOURCE'S DURATION (his table,
+     2026-09-30: "Lamia charmed Escher. Time passed. 40 minutes left. Kasimir
+     charmed him... Lamia's copy stays at 40 minutes.").
+
+     applyEffect set `seconds` and never `startTime`, so an ACE condition arrived
+     with no wall-clock anchor. duration-tracker's `_anchorEffect` then stamps the
+     missing anchor with the CURRENT world time whenever it next sweeps — and a
+     second caster's charm is exactly what triggers that sweep. Lamia's forty
+     minutes were re-anchored to now and became a fresh hour, by a write meant
+     only to rescue an orphaned third-party effect. */
+  check("a condition is anchored the moment it lands",
+    /duration\.startTime = Number\.isFinite\(Number\(options\.startTime\)\)/.test(lib),
+    "so nothing downstream has to guess when it started");
+  check("and only when it has a finite duration to count",
+    /if \(_secs > 0\) \{/.test(lib), "a permanent effect has nothing to anchor");
+  check("the tracker's rescue stamp says what it is doing",
+    /had no start time, so it `/.test(tracker) && /is anchored to now/.test(tracker),
+    "stamping now onto a twenty-minute-old effect hands it a fresh duration");
+  check("a different caster is still never refreshed",
+    /if \(_caster && theirs && theirs !== _caster\) return false;/.test(lib),
+    "two known casters that differ are two sources");
+  check("and his copy is not deleted either",
+    /if \(caster && theirs && theirs !== caster\) others\.push\(e\);/.test(lib),
+    "both stay, each with its own hour");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

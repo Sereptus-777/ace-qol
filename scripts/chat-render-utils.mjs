@@ -410,40 +410,70 @@ export function takeLogToNewCard(message, el) {
         // rather than about whether it scrolls — an element with a clipped
         // overflow still has a scrollTop, and in this app the one that owns the
         // bar was being skipped by that extra condition.
-        const ownerOfTheBar = (node) => {
+        // ⚠️🔴 THE FIRST SCROLLING ANCESTOR IS NOT THE BAR HE DRAGS. His log:
+        // "scrollHeight 1207, clientHeight 1117. That element only has 90 pixels
+        // of travel. The chat bar the GM is looking at travels much further. You
+        // scrolled the wrong box."
+        //
+        // Right. A card sits inside several boxes that each scroll a little — a
+        // message wrapper, a notifications strip — and walking up and taking the
+        // FIRST one finds one of those. The pane whose thumb he grabs is the one
+        // with the most TRAVEL, because travel is the thumb: a log full of cards
+        // has thousands of pixels of it and a wrapper has ninety.
+        //
+        // So every scrolling ancestor is measured and the deepest-travelling one
+        // wins, and the rest are named in the log beside it so a wrong answer is
+        // visible rather than silent.
+        const barsAbove = (node) => {
+            const found = [];
             let box = node?.parentElement ?? null;
             while (box && box !== document.body) {
-                if (box.scrollHeight > box.clientHeight + 1) return box;
+                const travel = box.scrollHeight - box.clientHeight;
+                if (travel > 1) found.push({ box, travel });
                 box = box.parentElement;
             }
-            return null;
+            return found.sort((a, b) => b.travel - a.travel);
         };
         const nameOf = (box) => box.id ? `#${box.id}`
             : `${box.tagName.toLowerCase()}.${String(box.className || "?").trim().split(/\s+/)[0]}`;
 
         const pin = (why) => {
             let found = 0;
-            try { ui.chat?.scrollBottom?.({ force: true }); } catch (_) { /* ask first */ }
             // Every copy of this message: the sidebar log and a popped-out one.
             for (const node of document.querySelectorAll(`[data-message-id="${message.id}"]`)) {
-                const box = ownerOfTheBar(node);
-                if (!box) continue;
+                const bars = barsAbove(node);
+                if (!bars.length) continue;
                 found++;
-                box.scrollTop = box.scrollHeight;
+                const { box } = bars[0];
+                // The MAX, which is what the bottom is. scrollHeight on its own
+                // is past the end and the browser clamps it anyway; asking for
+                // the real number is how the read-back below means something.
+                box.scrollTop = box.scrollHeight - box.clientHeight;
                 // ⚠️🔴 AND READ IT BACK. Saying "chat scrolled" because scrollTop
-                // was ASSIGNED is the same mistake as reporting an intention for
-                // an outcome. The browser clamps it to scrollHeight - clientHeight,
-                // so that, not scrollHeight, is the bottom.
+                // was ASSIGNED is reporting an intention as an outcome.
                 const top = Math.round(box.scrollTop);
                 const h = Math.round(box.scrollHeight);
                 const vis = Math.round(box.clientHeight);
-                const bottom = Math.max(0, h - vis);
-                const where = `${nameOf(box)} scrollTop=${top} scrollHeight=${h} clientHeight=${vis}`;
-                if (top >= bottom - 1) {
-                    console.log(`${MODULE_ID} | chat at the bottom (${why}): ${where}.`);
+                const travel = Math.max(0, h - vis);
+                const where = `${nameOf(box)} scrollTop=${top} scrollHeight=${h} `
+                    + `clientHeight=${vis} travel=${travel}`;
+                const others = bars.slice(1).map(b => `${nameOf(b.box)} travel=${Math.round(b.travel)}`);
+
+                // ⚠️ A SHORT BAR IN A FULL LOG IS THE WRONG BOX, AND IT SAYS SO
+                // (his rule). Ninety pixels of travel under a log of cards is a
+                // wrapper, not the pane he drags.
+                const cards = document.querySelectorAll("#chat-log [data-message-id], "
+                    + ".chat-log [data-message-id]").length;
+                if (travel < 200 && cards > 5) {
+                    console.warn(`${MODULE_ID} | WRONG ELEMENT (${why}): ${where} — only ${travel}px of `
+                        + `travel with ${cards} cards in the log, so this is not the bar he drags. `
+                        + `Others above the card: ${others.join(", ") || "none"}.`);
+                } else if (top >= travel - 1) {
+                    console.log(`${MODULE_ID} | chat at the bottom (${why}): ${where}`
+                        + `${others.length ? ` · also above the card: ${others.join(", ")}` : ""}.`);
                 } else {
                     console.warn(`${MODULE_ID} | chat did NOT reach the bottom (${why}): ${where} — `
-                        + `${bottom - top}px short. Something is holding that bar.`);
+                        + `${travel - top}px short. Something is holding that bar.`);
                 }
             }
             if (!found) {
@@ -454,11 +484,18 @@ export function takeLogToNewCard(message, el) {
 
         const scroll = () => {
             pin("card in the log");
-            // Again next frame, and again at 100ms: his three moments. The card's
-            // own pictures settle its height after the first two, and nothing
-            // here waits on a single one of them.
+            // Next frame, and 100ms later: the card's own pictures settle its
+            // height across those, and nothing here waits on one of them.
             requestAnimationFrame(() => { try { pin("next frame"); } catch (_) { /* gone */ } });
             setTimeout(() => { try { pin("100ms later"); } catch (_) { /* gone */ } }, 100);
+            // ⚠️ AND AFTER FOUNDRY'S OWN SCROLL, so its write cannot put the bar
+            // back (his rule). Foundry's runs from ChatLog##postOne and awaits
+            // every picture in the log, so it lands whenever it lands — the only
+            // honest way to be after it is to await the same call. The three pins
+            // above have already happened; this one is the last word.
+            Promise.resolve(ui.chat?.scrollBottom?.({ waitImages: true, popout: true }))
+                .then(() => pin("after Foundry's own scroll"))
+                .catch(() => { /* its scroll is a nicety; ours already ran */ });
         };
 
         // Wait for the append, one frame at a time. 30 frames is half a second at

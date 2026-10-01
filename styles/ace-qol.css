@@ -568,11 +568,22 @@
 
 
 /* ─── HP line (above override buttons) ──────────────────────────── */
+/* ⚠️🔴 ONE ROW: THE CHIP, THEN "HP" (his rule, 2026-09-30: "The pill is above
+   'HP: 10 → 4/82'. It belongs on that same line, before HP."). It WAS on that
+   line in the markup — and a 36px left indent, left over from when a 26px
+   portrait sat beside this text, ate enough width that the chip and the sentence
+   could not share it, so the row wrapped and the chip landed above. The portrait
+   is a column of its own now and nothing needs clearing, so the indent goes and
+   both fit. The wrap stays as the fallback it was always meant to be. */
 .ace-qol-dmg-hp-line {
-  display: flex; align-items: center; gap: 6px;
+  display: flex; align-items: center; gap: 7px;
   flex-wrap: wrap; row-gap: 2px;
-  padding: 3px 10px 2px 36px; font-size: 0.85rem;
+  padding: 3px 10px 2px 0; font-size: 0.85rem;
 }
+/* The chip keeps its own width and the sentence takes the rest, so it is the
+   sentence that wraps if anything has to — never the chip away from it. */
+.ace-qol-dmg-hp-line .ace-qol-dmg-mod-plain { flex: 0 0 auto; }
+.ace-qol-dmg-hp-line .ace-qol-dmg-row-hp { flex: 0 1 auto; margin-left: 0; }
 
 /* ─── Override buttons per target row ──────────────────────────────── */
 /* ⚠️🔴 THE DAMAGE NUMBER WAS BEING PUSHED OFF THE CARD. Johnny, 2026-08-30:

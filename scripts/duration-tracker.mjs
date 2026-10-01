@@ -286,7 +286,19 @@ export class DurationTracker {
       patch["duration.startRound"] = round;
       patch["duration.startTurn"]  = turn;
     }
-    if (d.startTime == null) patch["duration.startTime"] = game.time?.worldTime ?? 0;
+    // ⚠️🔴 AND IT SAYS SO WHEN IT DOES THIS. Stamping NOW onto an effect that has
+    // been on a creature for twenty minutes hands it a fresh full duration, and
+    // that is how Lamia's forty minutes became an hour again the moment Kasimir
+    // charmed the same creature (2026-09-30). ACE's own conditions carry their
+    // anchor from the moment they land now, so this is for an orphan from
+    // somewhere else — where guessing "now" is the only answer available, and
+    // worth a line rather than a silent rewrite.
+    if (d.startTime == null) {
+      patch["duration.startTime"] = game.time?.worldTime ?? 0;
+      console.log(`ace-qol | "${effect?.name}" on ${effect?.parent?.name} had no start time, so it `
+        + `is anchored to now and will run its full ${effect?.duration?.seconds ?? "?"}s from here. `
+        + `Whatever created it did not say when it began.`);
+    }
     if (!Object.keys(patch).length) return;
     try { await effect.update(patch); } catch (_) { /* non-fatal */ }
   }

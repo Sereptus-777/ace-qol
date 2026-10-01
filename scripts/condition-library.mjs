@@ -1825,6 +1825,31 @@ export class ConditionLibrary {
     if (durationData.hours   != null) _secs += Number(durationData.hours)   * 3600;
     if (durationData.days    != null) _secs += Number(durationData.days)    * 86400;
     if (_secs > 0) duration.seconds = _secs;
+    /* ⚠️🔴 AND IT IS ANCHORED THE MOMENT IT LANDS (his table, 2026-09-30: "Lamia
+       charmed Escher. Time passed. 40 minutes left. Kasimir charmed him...
+       Lamia's copy stays at 40 minutes. A new source does not rewrite another
+       source's duration.").
+
+       This set `seconds` and never `startTime`, so an ACE condition arrived with
+       no wall-clock anchor at all. Two things follow from that, and the second is
+       his bug:
+
+         · a seconds-based effect with no startTime has no remaining time to
+           compute, so it reads as its whole duration however long it has been on
+
+         · duration-tracker's `_anchorEffect` stamps the missing anchor with the
+           CURRENT world time whenever it next sweeps — and a second caster's
+           charm is exactly what triggers that sweep. Lamia's forty minutes were
+           re-anchored to now and became a fresh hour, by a write that was only
+           ever meant to rescue an orphaned third-party effect.
+
+       Stamped here, at the one place every ACE condition is built, nothing
+       downstream has to guess when it started and no later source can move it. */
+    if (_secs > 0) {
+      duration.startTime = Number.isFinite(Number(options.startTime))
+        ? Number(options.startTime)
+        : (game.time?.worldTime ?? 0);
+    }
     // Stamp combat start for tracking
     if (combat) {
       duration.startRound = options.combatRound ?? combat.round ?? 0;
