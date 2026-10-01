@@ -252,6 +252,24 @@ export function creatureWords(actor, { names = [] } = {}) {
     roles,
     /** Its type, lower case ("" when the sheet has none). */
     type: String(rawType?.value ?? (typeof rawType === "string" ? rawType : "")).toLowerCase(),
+    /**
+     * The words of its name IN NAME ORDER, stop words out and nothing dropped
+     * for being short.
+     *
+     * ⚠️ HIS RULE, 2026-10-01: "The name's words, stop words out, are tried in
+     * name order, not longest first. The first word that is the whole name of a
+     * file wins. 'Virric Velikov' must take Virric, not a file named Velikov...
+     * A word of two letters still counts when it is the whole file name."
+     *
+     * A person's name reads first-name-first, and the first word is the one that
+     * is theirs: Virric Velikov is Virric, and Velikov is the family he comes
+     * from. Longest-first got that backwards for every character with a surname.
+     * And two letters is only dangerous when it is one word among several in a
+     * filename; when it IS the filename, somebody named the picture that on
+     * purpose. So the length floor stays on the scoring below and not here.
+     */
+    nameOrder: [...new Set([actor?.name, actor?.prototypeToken?.name, ...names]
+      .flatMap(t => wordsOf(t)))],
   };
 }
 
@@ -280,18 +298,42 @@ export function rankArt(index, creature) {
       const sameType = !entry.type || !creature.type || entry.type === creature.type;
       const counts = (x, set) => set.has(x) && (sameType || !roles.has(x));
       const nameWords = levels[0]?.words ?? new Set();
+      /* ⚠️🔴 IS THIS FILE THE WHOLE NAME OF ONE WORD OF THE CREATURE'S NAME?
+         (His rule, 2026-10-01: "The name's words, stop words out, are tried in
+         name order, not longest first. The first word that is the whole name of
+         a file wins. 'Virric Velikov' must take Virric, not a file named
+         Velikov... A word of two letters still counts when it is the whole file
+         name.")
+
+         A person reads first-name-first and the first word is the one that is
+         theirs; the surname is the family they came from. Longest-first, which I
+         shipped this morning, had that backwards for every character with two
+         names.
+
+         ⚠️ TWO LETTERS COUNT ONLY HERE. A short word is dangerous as one word
+         among several in a filename and not dangerous at all when it IS the
+         filename: somebody named that picture that on purpose. So `Ox.png`
+         earns a name match for an Ox, and "ox" inside a longer filename still
+         earns nothing.
+
+         ⚠️ AND AN ADJECTIVE OR A JOB STILL EARNS NOTHING. `dead-giant.webp` is
+         the whole name of "giant", and a Giant Frog is a beast, so the word is
+         soft and this does not fire — the frog keeps dead-beast. Same for the
+         Guard Drake and `dead-guard`, which is a humanoid's picture. */
+      const whole = entry.words.length === 1 ? entry.words[0] : null;
+      const order = creature.nameOrder ?? [];
+      const wholeOk = whole != null && order.includes(whole)
+        && !soft.has(whole) && (sameType || !roles.has(whole));
+      const counted = levels.map(l => entry.words.filter(x => counts(x, l.words)).length);
+      // A short name word earns its name match through being the whole filename.
+      if (wholeOk && !nameWords.has(whole)) counted[0] += 1;
       const score = {
         entry,
-        counts: levels.map(l => entry.words.filter(x => counts(x, l.words)).length),
+        counts: counted,
         extra: entry.words.filter(x => !all.has(x) && !soft.has(x)).length,
         soft: entry.words.filter(x => soft.has(x) || (!sameType && roles.has(x))).length,
-        // ⚠️ THE LONGEST WORD OF THE NAME IT MATCHED ON (his rule, 2026-10-01:
-        // "Longest matching word wins"). A longer word is a more particular
-        // word: "arcanaloth" says more about a creature than "elf" does, and
-        // when two files each match one word of the name, that is the whole
-        // difference between them.
-        nameLen: entry.words.filter(x => counts(x, nameWords))
-          .reduce((n, x) => Math.max(n, x.length), 0),
+        /** Where in the name the word this file IS sits. Earlier wins. */
+        nameAt: wholeOk ? order.indexOf(whole) : Infinity,
       };
       if (score.counts.some(c => c > 0)) scored.push(score);
     }
@@ -304,10 +346,6 @@ export function compareArt(a, b) {
   const [aName, aMade, aType, aSub] = a.counts;
   const [bName, bMade, bType, bSub] = b.counts;
   if (aName !== bName) return bName - aName;              // its own name
-  // ⚠️ LONGEST MATCHING WORD WINS (his rule, 2026-10-01). With the same number
-  // of name words matched, the file that matched on the longer one is the more
-  // particular picture: "balor" over "red" for Fred the Balor.
-  if ((a.nameLen ?? 0) !== (b.nameLen ?? 0)) return (b.nameLen ?? 0) - (a.nameLen ?? 0);
   if (aMade !== bMade) return bMade - aMade;              // what it was made from
   /* ⚠️🔴 A SUBTYPE HIT BEATS A TYPE HIT, AND IT ALREADY DID. His rule,
      2026-10-01: "A name hit beats a subtype hit. A subtype hit beats a type
@@ -331,6 +369,23 @@ export function compareArt(a, b) {
   if (aType !== bType) return bType - aType;              // than its type
   if (a.extra !== b.extra) return a.extra - b.extra;
   if (a.soft !== b.soft) return b.soft - a.soft;
+  /* ⚠️ AND THEN THE FIRST WORD OF THE NAME THAT IS THE WHOLE NAME OF A FILE
+     (his rule, 2026-10-01: "tried in name order, not longest first... 'Virric
+     Velikov' must take Virric, not a file named Velikov").
+
+     A person reads first-name-first: the first word is the one that is theirs
+     and the surname is the family they came from. Longest-first, which I
+     shipped this morning, had that backwards for every character with two
+     names.
+
+     ⚠️ LAST OF THE WORD TESTS, BECAUSE EVERY TEST ABOVE IT IS ABOUT HOW WELL
+     THE PICTURE FITS and this one is only about which of his words it is. Put
+     any higher it beat better-fitting art: above the count it took dead-giant
+     over Dead-Hill-Giant, and above `soft` it took dead-frog over
+     "dead-giant frog". Virric and Velikov tie on every one of those, which is
+     exactly the case he is describing, so this is where it decides. */
+  const aAt = a.nameAt ?? Infinity, bAt = b.nameAt ?? Infinity;
+  if (aAt !== bAt) return aAt - bAt;
   return b.entry.rank - a.entry.rank;
 }
 
