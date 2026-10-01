@@ -717,8 +717,12 @@ console.log("\n11. THE CHIP ON THE HP ROW, AND TWO TIMERS THAT DO NOT TOUCH");
   check("the tracker's rescue stamp says what it is doing",
     /had no start time, so it `/.test(tracker) && /is anchored to now/.test(tracker),
     "stamping now onto a twenty-minute-old effect hands it a fresh duration");
-  check("a refresh needs the effect to SAY it is his",
-    /if \(_caster \? \(theirs !== _caster\) : !!theirs\) return false;/.test(lib),
+  // ⚠️ AND TWO UNKNOWNS ARE NOT ONE SOURCE. 0.76.0 asked "if I know mine, it
+  // must match", which still paired a cast with no caster recorded against an
+  // effect with no caster recorded — and that pairing is what the clock door
+  // waved through as "its own caster recast it".
+  check("a refresh needs two named casters that agree, and nothing less",
+    /if \(!_caster \|\| !theirs \|\| theirs !== _caster\) return false;/.test(lib),
     "the only ACE write that touches an existing clock");
   check("and another source's copy is not deleted either",
     /if \(caster \? \(theirs === caster\) : !theirs\) mine\.push\(e\);/.test(lib),
@@ -865,6 +869,41 @@ console.log("\n14. NOBODY MOVES A RUNNING CLOCK, AND THE HEADER IS TWICE THE SIZ
     /font-size: 24px; font-weight: 600; color: #c8b784;/.test(css), "12px → 24px");
   check("the pink button keeps its width and loses ten pixels of height",
     /margin-top: 10px; padding: 7px 16px;/.test(css), "12px → 7px, top and bottom");
+}
+
+/* ══ 15. A SAVE CARD SCROLLS AFTER IT IS DRAWN ════════════════════════════ */
+console.log("\n15. THE SAVE CARD, AFTER THE DICE AND AFTER THE ART");
+{
+  const save = read("scripts/save-engine.mjs");
+  const vis = read("scripts/condition-visuals.mjs");
+  const lib = read("scripts/condition-library.mjs");
+
+  /* ⚠️🔴 HIS LOG, 2026-10-01: the scroll ran, said div.chat-scroll was AT MAX and
+   * that the last message was in view — and only THEN came "the card is on
+   * screen" and "_postSaveResultsPhase1 drew message". A save card is held until
+   * its dice land and then drawn, so every earlier scroll measured an empty
+   * shell. "AT MAX on a shell is not the test." */
+  check("the save card takes the chat to the end after its own draw",
+    /scrollChatToEnd\("the save card is drawn and its dice have landed"\)/.test(save),
+    "the line after the draw, not before it");
+  check("and so does the condition art, which lands after the card",
+    /scrollChatToEnd\("the condition art is drawn"\)/.test(vis),
+    "his rule: after the phase-1 draw and after the condition art");
+  check("the draw is still the last thing that function does",
+    save.indexOf('_sayCard("_postSaveResultsPhase1"')
+      < save.indexOf('scrollChatToEnd("the save card is drawn'),
+    "nothing of the card's own work moved");
+  check("attacks, damage and Misty Step keep the path they already had",
+    /export function registerScrollAtTheEnd\(\)/.test(read("scripts/chat-render-utils.mjs")),
+    "his rule: do not touch them");
+
+  // And the other half of his report: both paths report their clocks now.
+  check("applyEffect reports its clocks too",
+    /clocks BEFORE this apply `\s*\n?\s*\+ `\(applyEffect\)/.test(lib)
+      || /\(applyEffect\)`, _clocksBefore\);/.test(lib),
+    "his log had no BEFORE line for the save resolver's path");
+  check("and says if one moved that it does not own",
+    (lib.match(/_sayIfAClockMoved\(actor, key,/g) ?? []).length >= 2, "both paths");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

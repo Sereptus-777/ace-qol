@@ -479,11 +479,11 @@ console.log("\nCHARM DOES NOT STACK");
    * SAY it is his; an unattributed copy is left exactly as it is and a second
    * effect goes on beside it, which is the model everything else has moved to. */
   check("two casters do not share one charm",
-    /if \(_caster \? \(theirs !== _caster\) : !!theirs\) return false;/.test(cl),
+    /if \(!_caster \|\| !theirs \|\| theirs !== _caster\) return false;/.test(cl),
     "a second source, not a second copy");
-  check("and an unrecorded caster is not quietly treated as this one",
-    /THE SAME SOURCE IS PROVED, NOT ASSUMED/.test(cl),
-    "that leniency is what rewrote Lamia's forty minutes");
+  check("and two UNKNOWNS are not one source either",
+    /A REFRESH NEEDS TWO NAMED CASTERS THAT AGREE/.test(cl),
+    "that pairing is what the clock door waved through");
 
   // A REFRESH, NOT A WRITE.
   check("the same source refreshes the duration in place",

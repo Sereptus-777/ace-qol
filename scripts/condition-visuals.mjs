@@ -110,6 +110,13 @@ export function releaseConditionArt(why = "the card is on screen") {
   if (waiting.length) {
     console.log(`ace-qol | ${why}: ${waiting.length} creature('s) condition art drawn now, `
       + `after its card.`);
+    // ⚠️ AND THE CONDITION ART IS THE LAST THING A CAST DOES (his rule,
+    // 2026-10-01: "after the phase-1 draw and after the condition art. Not
+    // before."). The card can still be growing while this lands, so the chat
+    // goes to the end once more from here.
+    import("./chat-render-utils.mjs")
+      .then(({ scrollChatToEnd }) => scrollChatToEnd("the condition art is drawn"))
+      .catch(() => { /* the card path already scrolled */ });
   }
 }
 

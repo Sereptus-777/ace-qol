@@ -1792,6 +1792,14 @@ export class ConditionLibrary {
       return null;
     }
     await ConditionLibrary._beforeItLands(actor, key, options);
+    // ⚠️ THIS PATH REPORTS ITS CLOCKS TOO (his log, 2026-10-01: "Lamia's apply
+    // logged no BEFORE line"). It did not, because only applyByName was saying
+    // anything, and the save resolver comes straight here. Both paths now print
+    // what every copy's clock read before and after, and shout if one moved that
+    // this apply does not own.
+    const _clocksBefore = ConditionLibrary._clocks(actor, key);
+    ConditionLibrary._sayClocks(`${actor?.name}'s "${key}" clocks BEFORE this apply `
+      + `(applyEffect)`, _clocksBefore);
 
     // Edition-aware def overrides (e.g. Barkskin's AC floor: 16 in 2014, 17 in
     // 2024). GUARDED — a no-op for the ~all defs that have no `byEdition` block,
@@ -2053,6 +2061,13 @@ export class ConditionLibrary {
     if (effect) {
       ConditionLibrary._debug(`Applied "${def.name}" to ${actor.name} (key=${key})`);
     }
+
+    try {
+      const _after = ConditionLibrary._clocks(actor, key);
+      ConditionLibrary._sayClocks(`${actor?.name}'s "${key}" clocks AFTER this apply `
+        + `(applyEffect)`, _after);
+      ConditionLibrary._sayIfAClockMoved(actor, key, _clocksBefore, _after);
+    } catch (_) { /* the report must never change the answer */ }
 
     return effect;
   }
@@ -2679,13 +2694,27 @@ export class ConditionLibrary {
           || (!!_src && from === _src)
           || (!!_originItem && String(e.origin ?? "") === _originItem);
         if (!sameThing) return false;
-        // ⚠️🔴 THE SAME SOURCE IS PROVED, NOT ASSUMED (his rule, 2026-10-01).
-        // This asked whether the two casters DISAGREED, so a copy naming no
-        // caster passed the test and had its duration and startTime rewritten by
-        // whoever cast next: Lamia's forty minutes became Kasimir's fresh hour.
-        // A refresh now needs the effect to SAY it is his.
+        /* ⚠️🔴 A REFRESH NEEDS TWO NAMED CASTERS THAT AGREE. NOTHING LESS.
+           (His table, 2026-10-01, with the log: "The clock door logged 'its own
+           caster recast it, so its clock restarts' and the bar became 3600...
+           A new source is a new effect. It does not refresh, delete, re-sync, or
+           re-anchor any other effect.")
+
+           The door let it through because this said yes. Twice I narrowed this
+           test and twice I left one gate open: first "do the two DISAGREE", which
+           passed an unattributed copy; then "if I know mine, it must match",
+           which still paired TWO UNKNOWNS. Two unknowns is how a cast with no
+           caster recorded and an effect with no caster recorded became "the same
+           source", and that is the pairing his bars were showing me.
+
+           So a refresh is the narrowest thing it can be: both sides name a
+           caster and the names are the same. Anything else is a new source and
+           gets a new effect. The cost is that a condition which records no caster
+           at all — prone from a fall, a GM's toggle — is no longer refreshed; it
+           falls to the dedupe below, which replaces its own copy exactly as it
+           always did. No-stack is kept; the rewrite is gone. */
         const theirs = String(f.sourceActorId ?? "").trim();
-        if (_caster ? (theirs !== _caster) : !!theirs) return false;
+        if (!_caster || !theirs || theirs !== _caster) return false;
         return true;
       });
 

@@ -9378,6 +9378,25 @@ export class SaveEngine {
     // A mechanic the recipe names that ACE has not built is said, not skipped.
     await this._sayWhatIsNotBuilt(item, casterActor, recipe);
     await this._autoResolveIfReady(posted);
+
+    /* ⚠️🔴 AND NOW THE CHAT GOES TO THE END (his rule, 2026-10-01).
+     *
+     * His log: the scroll ran, said div.chat-scroll was AT MAX and that the last
+     * message was in view — and only THEN came "the card is on screen" and
+     * "_postSaveResultsPhase1 drew message". A save card is held until its dice
+     * land and then drawn, so every earlier scroll was measuring an empty shell.
+     * "AT MAX on a shell is not the test."
+     *
+     * This is the line after the draw. Attacks, damage and Misty Step already
+     * reach the bottom through the card path and the signals; a save needed the
+     * one moment that only this function knows about. */
+    try {
+      const { scrollChatToEnd } = await import("./chat-render-utils.mjs");
+      scrollChatToEnd("the save card is drawn and its dice have landed");
+    } catch (err) {
+      console.warn(`${MODULE_ID} | the save card is drawn but the chat was not taken to the `
+        + `end:`, err);
+    }
   }
 
   /**
