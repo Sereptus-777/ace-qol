@@ -8635,19 +8635,100 @@ export class SaveEngine {
    * (total minus the die) is the total shown, and the reader only names the parts
    * behind it. It sits inside its own pill and wraps.
    */
+  /**
+   * THE FACE THIS ROW SHOWS, AND THE BONUS THAT WENT WITH IT — ONE READER.
+   *
+   * ⚠️🔴 A PLAYER'S ROW HAD NO DIE AT ALL (his shot, 2026-10-01: "every NPC
+   * has the d20 picture beside the roll. Jeth and Virric do not. A player gets
+   * the same picture, the same formula and the same pass or fail as an NPC").
+   * The row drew its picture only when `dieResult` came back with the result,
+   * and on the paths a player's own roll travels it does not always: the row is
+   * filled from a flag bundle, and a bundle without that one number left the
+   * card with a bare total and no die beside it.
+   *
+   * So when the number did not travel, it is WORKED OUT: the total minus what
+   * this creature adds to the save is the face that was rolled. A d20 cannot be
+   * outside 1..20, and anything that does not land in that range is refused
+   * rather than drawn wrong — and said out loud, because a missing picture with
+   * no reason is what this bug looked like from the table.
+   *
+   * ⚠️ ONE READER, BECAUSE THERE WERE THREE. The row, the rebuilt row and the
+   * line under them each took the die and the bonus their own way, so a row
+   * could show a total with no picture while the line below it printed a
+   * different sum. They all ask this now.
+   *
+   * @returns {{die: number|null, used: number|null, parts: Array, derived: boolean}}
+   */
+  static _rollReadingFor(r, opts = {}) {
+    const out = { die: null, used: null, parts: [], derived: false };
+    try {
+      const ab = String(r?.saveAbility ?? opts?.saveAbility ?? "").toLowerCase();
+      const actor = (game.scenes?.get(r?.sceneId)?.tokens?.get(r?.tokenDocId)?.actor)
+        ?? (r?.actorId ? game.actors?.get(r.actorId) : null) ?? null;
+      if (actor && ab) out.parts = explainSave(actor, ab).parts ?? [];
+
+      const told = r?.dieResult ?? r?.roll?.dice?.[0]?.total ?? null;
+      const total = typeof r?.saveTotal === "number" ? r.saveTotal : null;
+      if (told != null) {
+        out.die = Number(told);
+        out.used = total != null ? total - out.die : null;
+        return out;
+      }
+      if (total == null || !out.parts.length) return out;
+
+      /* ⚠️🔴 A DIE IN THE BONUS MAKES THIS UNKNOWABLE, NOT APPROXIMATE. Bless
+         adds 1d4 and Bardic Inspiration a whole die, so the total no longer
+         equals the face plus a number this reader can work out — and a face that
+         is merely plausible is a picture of a die nobody threw. It refuses, and
+         says why. */
+      const rolledBonus = (r?.saveBonuses ?? []).find(b => {
+        const raw = String(b?.value ?? "").trim();
+        return raw && !Number.isFinite(Number(raw.replace(/^\+/, "")));
+      });
+      if (rolledBonus) {
+        console.log(`${MODULE_ID} | ${r?.name}'s save carries ${rolledBonus.value} from `
+          + `${rolledBonus.label ?? "a bonus"}, which is its own die, so the face behind the `
+          + `${total} cannot be worked out from the total. The row shows the total with no `
+          + `picture rather than one that was never thrown.`);
+        return out;
+      }
+
+      const sheet = out.parts.reduce((n, p) => n + p.value, 0);
+      const face = total - sheet;
+      if (!Number.isInteger(face) || face < 1 || face > 20) {
+        console.log(`${MODULE_ID} | ${r?.name}'s save came back as ${total} with no die, and this `
+          + `creature adds ${sheet >= 0 ? "+" : ""}${sheet}, which would make the face ${face}. `
+          + `A d20 cannot roll that, so the row shows the total with no picture rather than a `
+          + `die that was never thrown.`);
+        return out;
+      }
+      out.die = face;
+      out.used = sheet;
+      out.derived = true;
+      console.log(`${MODULE_ID} | ${r?.name}'s roll did not carry its die, so the ${face} on the `
+        + `row is ${total} less this creature's ${sheet >= 0 ? "+" : ""}${sheet}. The picture and `
+        + `the line are the same as an NPC's.`);
+      return out;
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not read the die behind ${r?.name}'s save, so the row `
+        + `shows the total alone:`, err);
+      return out;
+    }
+  }
+
   static _formulaForRow(r, opts = {}) {
     try {
       if (!r || r.noRoll || r.pending) return "";
-      const d20 = r.dieResult ?? r.roll?.dice?.[0]?.total ?? null;
-      const used = (typeof r.saveTotal === "number" && d20 != null) ? r.saveTotal - d20 : null;
-      const ab = String(r.saveAbility ?? opts?.saveAbility ?? "").toLowerCase();
-      if (!ab) return "";
-      const actor = (game.scenes?.get(r.sceneId)?.tokens?.get(r.tokenDocId)?.actor)
-        ?? game.actors?.get(r.actorId) ?? null;
-      if (!actor) return "";
-      const { parts } = explainSave(actor, ab);
+      const { die, used, parts } = SaveEngine._rollReadingFor(r, opts);
       if (!parts.length) return "";
-      return formulaPill(parts, { total: used, label: "save" });
+      // ⚠️ THE DIE IS ON THE LINE NOW (his rule, 2026-10-01: "Print the die,
+      // then every bonus and where it came from"). `rolled` is what picks the
+      // shape that ends in the number the row already shows, instead of the
+      // "= D20 + N" that belongs to a roll nobody has made yet.
+      return formulaPill(parts, {
+        total: typeof r.saveTotal === "number" ? r.saveTotal : used,
+        die, rolled: true, label: "save",
+      });
     } catch (err) {
       console.warn(`${MODULE_ID} | could not read what made ${r?.name}'s save bonus, `
         + `so its row shows the total alone:`, err);
@@ -8857,9 +8938,12 @@ export class SaveEngine {
       if (r.isAutoFail) {
         mathLine = `<span class="${passClass} ace-qol-save-math-total">AUTO-FAIL</span>`;
       } else {
-        const d20Face = r.dieResult ?? r.roll?.dice?.[0]?.total ?? null;
+        // ⚠️ THE SAME READER AS THE LINE UNDER IT, so a row cannot show a total
+        // with no picture while the line prints a different sum.
+        const _reading = SaveEngine._rollReadingFor(r, opts);
+        const d20Face = _reading.die;
         const modifier = (typeof r.saveTotal === "number" && d20Face != null)
-          ? r.saveTotal - d20Face : null;
+          ? r.saveTotal - d20Face : _reading.used;
         if (d20Face != null && modifier != null) {
           // A bonus of nothing says nothing rather than "+ 0".
           const modPart = modifier === 0 ? "" : ` ${modifier >= 0 ? "+" : "−"} ${Math.abs(modifier)}`;
@@ -9933,9 +10017,12 @@ export class SaveEngine {
       if (r.isAutoFail) {
         rollDisplay = `<span class="ace-qol-save-roll ${passClass}">AUTO</span>`;
       } else {
-        const d20Face = r.dieResult ?? r.roll?.dice?.[0]?.total ?? null;
+        // ⚠️ THE SAME READER AS THE LINE UNDER IT, so a row cannot show a total
+        // with no picture while the line prints a different sum.
+        const _reading = SaveEngine._rollReadingFor(r, opts);
+        const d20Face = _reading.die;
         const modifier = (typeof r.saveTotal === "number" && d20Face != null)
-          ? r.saveTotal - d20Face : null;
+          ? r.saveTotal - d20Face : _reading.used;
         if (d20Face != null && modifier != null) {
           const modSign = modifier >= 0 ? "+" : "";
           const modPart = modifier === 0 ? "" : ` ${modSign}${modifier}`;

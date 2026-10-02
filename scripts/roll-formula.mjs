@@ -195,6 +195,48 @@ export function explainSave(actor, ability) {
     parts.push({ label: by, value: global, why: "on the creature" });
   }
 
+  /* ⚠️🔴 COVER IS A DEXTERITY SAVE BONUS, AND IT IS THE ONE THAT WAS MISSING.
+     His Lightning Bolt card, 2026-10-01: Escher "Dex 1 (−5) +3 prof" rolled a 1
+     and totalled 1; the Gorgon "Dex 11 (+0)" added +2; the Cloud Giant the same.
+     All three reconcile the moment cover is on the line — −5 +3 +2 = 0, and
+     +0 +2 = +2 — and dnd5e has been adding it the whole time:
+
+         const cover = id === "dex" ? Math.max(ac?.cover ?? 0, this.parent.coverBonus) : 0;
+         abl.saveBonus = saveBonusAbl + saveBonus + cover;      (dnd5e.mjs)
+
+     `coverBonus` is +2 for half cover and +5 for three-quarters, read off the
+     creature's own status. The card could not name a bonus it never looked for,
+     so the line disagreed with the die on every creature standing behind
+     something. DEXTERITY ONLY, because that is the only save cover touches. */
+  if (ab === "dex") {
+    const fromAc = Number(actor?.system?.attributes?.ac?.cover ?? 0) || 0;
+    const fromStatus = Number(actor?.coverBonus ?? 0) || 0;
+    const cover = Math.max(fromAc, fromStatus);
+    if (cover) {
+      const has = (id) => actor?.statuses?.has?.(id) ?? false;
+      const which = has("coverThreeQuarters") ? "three-quarters cover"
+        : has("coverHalf") ? "half cover" : "cover";
+      parts.push({ label: "cover", value: cover, why: which });
+    }
+  }
+
+  /* ⚠️ AND WHATEVER IS LEFT IS SAID OUT LOUD. `system.abilities.<ab>.save.value`
+     is dnd5e's own answer for this save, and it is what the roll will use. When
+     the parts above do not reach it, something is adding to this creature that
+     this reader cannot name — and a line that does not add up is the fault he
+     reported, not a detail. The number goes on the card; what it is stays an
+     open question in the console. */
+  const sum = parts.reduce((n, p) => n + p.value, 0);
+  const systemTotal = Number(a?.save?.value);
+  if (Number.isFinite(systemTotal) && systemTotal !== sum) {
+    const gap = systemTotal - sum;
+    parts.push({ label: "not on the sheet", value: gap, why: "dnd5e adds it and does not say where from" });
+    console.log(`${MODULE_ID} | ${actor?.name}'s ${ab.toUpperCase()} save is ${signed(systemTotal)} `
+      + `on the sheet and the parts the card can name come to ${signed(sum)}. The ${signed(gap)} `
+      + `difference is on the card as "not on the sheet" rather than left off. Look for an active `
+      + `effect on system.abilities.${ab}.save or a module adding to the roll.`);
+  }
+
   return { parts, total: parts.reduce((n, p) => n + p.value, 0) };
 }
 
@@ -274,7 +316,14 @@ export function formulaText(parts, total = null) {
     return p.label ? `${signed(p.value)} ${p.label}` : signed(p.value);
   });
   const sum = parts.reduce((n, p) => n + p.value, 0);
-  const end = Number.isFinite(Number(total)) ? Number(total) : sum;
+  /* ⚠️🔴 NULL IS NOT ZERO, AND `Number(null)` IS. The callers pass `total:
+     null` to mean "the roll has not said", and `Number.isFinite(Number(null))`
+     is true, so every row whose die never reached the card printed "= D20 + 0"
+     beside parts that added up to something else. That is Jeth's line in his
+     shot, 2026-10-01: "Dex 20 (+5) +4 prof = D20 + 0" over a 23. Unknown means
+     fall back to the sheet's own sum, which is what the roll will use. */
+  const told = total !== null && total !== undefined && Number.isFinite(Number(total));
+  const end = told ? Number(total) : sum;
   // ⚠️🔴 THE LINE ENDS IN THE ROLL IT IS ABOUT TO MAKE (his rule, 2026-09-30):
   //
   //     Wis 16 (+3) = D20 + 3
@@ -294,7 +343,7 @@ export function formulaText(parts, total = null) {
   // It printed on the card, in the middle of the formula, and it is a note to ME
   // about a disagreement between what the roll used and what the sheet adds up to.
   // The table gets the number; the console gets the argument.
-  if (Number.isFinite(Number(total)) && Number(total) !== sum) {
+  if (told && Number(total) !== sum) {
     console.log(`ace-qol | the roll used ${signed(Number(total))} where this sheet adds up to `
       + `${signed(sum)} (${signed(Number(total) - sum)}). The card shows what the roll used: `
       + `${line}`);
@@ -308,8 +357,58 @@ export function formulaText(parts, total = null) {
  * ⚠️ IT WRAPS. flex + wrap, min-height, overflow-wrap — a long formula grows
  * downward and never leaves the card or clips its own text.
  */
-export function formulaPill(parts, { total = null, label = "" } = {}) {
-  const text = formulaText(parts, total);
+/**
+ * The line for a save that has already been rolled: the die, then every bonus
+ * and where it came from, then the total it made.
+ *
+ *     d20 14 +5 Dex 20 +4 prof = 23 · no ring, cloak or feat
+ *     d20 11 +0 Dex 11 +2 cover = 13 · no ring, cloak or feat
+ *     d20 1 −5 Dex 1 +3 prof +2 cover = 1 · no ring, cloak or feat
+ *
+ * ⚠️🔴 HIS RULE, 2026-10-01: *"The formula is not the roll... Print the die,
+ * then every bonus and where it came from... A ring, a cloak or a feat appears on
+ * the line if he has one, and the line says there is none if he does not."*
+ *
+ * The old line ended "= D20 + N", which is the shape for a roll that has not
+ * happened yet. After the die has landed that reads as a second, different sum
+ * beside the one the row already shows, and on four of his five rows the two
+ * disagreed. This one ends in the number on the row.
+ *
+ * ⚠️ THE TAIL IS A STATEMENT, NOT A BLANK. "No ring, cloak or feat" is an
+ * answer; leaving it off is the same silence that made him ask where the +2 came
+ * from in the first place.
+ *
+ * @param {Array} parts  from `explainSave`
+ * @param {object} o
+ * @param {number|null} o.die  the face that was rolled
+ * @param {number|null} o.total  the roll's own total, when it is known
+ */
+export function rollLineText(parts, { die = null, total = null } = {}) {
+  if (!parts?.length) return "";
+  const sum = parts.reduce((n, p) => n + p.value, 0);
+  const shown = parts.map((p, i) => {
+    if (i === 0 && p.why === "ability") return `${signed(p.value)} ${p.label}`;
+    return p.label ? `${signed(p.value)} ${p.label}` : signed(p.value);
+  });
+  const haveDie = die !== null && die !== undefined && Number.isFinite(Number(die));
+  const haveTotal = total !== null && total !== undefined && Number.isFinite(Number(total));
+  const end = haveTotal ? Number(total) : (haveDie ? Number(die) + sum : null);
+  const head = haveDie ? `d20 ${Number(die)}` : "";
+  const body = [head, ...shown].filter(Boolean).join(" ");
+  const line = end === null ? body : `${body} = ${end}`;
+
+  /* ⚠️ ONLY THE EXTRAS COUNT AS "a ring, a cloak or a feat". An ability score,
+     proficiency and cover are not something he put on; they are what the
+     creature is and where it is standing. */
+  const builtIn = new Set(["ability", "proficient in this save", "half cover",
+    "three-quarters cover", "cover"]);
+  const extras = parts.filter(p => !builtIn.has(String(p.why ?? "")));
+  const tail = extras.length ? "" : " · no ring, cloak or feat";
+  return line + tail;
+}
+
+export function formulaPill(parts, { total = null, label = "", die = null, rolled = false } = {}) {
+  const text = rolled ? rollLineText(parts, { die, total }) : formulaText(parts, total);
   if (!text) return "";
   const esc = (v) => foundry.utils.escapeHTML(String(v ?? ""));
   return `<div class="ace-qol-formula-pill">`

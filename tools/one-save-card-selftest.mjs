@@ -193,10 +193,18 @@ console.log("\nTHE FORMULA IS ON THE ROW THAT IS LEFT");
     "on every row the shell is not already speaking for");
   const at = save.indexOf("static _formulaForRow");
   const body = save.slice(at, at + 1400);
-  check("it reads the creature's own sheet through the one reader",
-    /explainSave\(actor, ab\)/.test(body), "roll-formula.mjs");
-  check("it shows the bonus the ROLL used, so the math is not redone",
-    /r\.saveTotal - d20/.test(body), "total minus the die");
+  /* ⚠️ REWRITTEN TO HIS NEW RULE, 2026-10-01: "Print the die, then every bonus
+     and where it came from." The row no longer reads the sheet and the die
+     itself — one reader does both for the row, the rebuilt row and this line,
+     because three readers is how a player's row showed a bare total with no
+     picture while the line under it printed a different sum. */
+  check("it reads the creature's sheet and its die through the one reader",
+    /SaveEngine\._rollReadingFor\(r, opts\)/.test(body), "_rollReadingFor");
+  check("it shows the total the ROLL made, so the math is not redone",
+    /total: typeof r\.saveTotal === "number" \? r\.saveTotal : used/.test(body),
+    "the row's own number");
+  check("and the die is on the line, his rule",
+    /die, rolled: true/.test(body), "d20 14 +5 Dex 20 +4 prof = 23");
   check("and it is drawn as a pill, never loose on the card",
     /formulaPill\(parts/.test(body), "inside its pill");
   check("a row that never rolled gets no formula",
