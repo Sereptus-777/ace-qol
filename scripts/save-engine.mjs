@@ -7195,7 +7195,14 @@ export class SaveEngine {
 
   _onPcSaveResultPosted(resultFlags) {
     console.log(`${MODULE_ID} | _onPcSaveResultPosted fired for tokenDocId:`, resultFlags.tokenDocId, "passed:", resultFlags.passed);
-    const { tokenDocId, saveTotal, dieResult, passed, autoFailSave, superSaver } = resultFlags;
+    /* ⚠️🔴 THE DIE AND THE PARTS ARE READ OUT HERE OR THEY ARE LOST. This
+       line is the whole of what the GM's card learns from a player's roll, and
+       anything not named on it never reaches the row — which is why Jeth came
+       out as a bare 15 and Virric a bare 12 while every NPC beside them carried
+       a die and a line (his table, 2026-10-02: "A player's result carries the
+       same die and the same parts, and the row draws them"). */
+    const { tokenDocId, saveTotal, dieResult, passed, autoFailSave, superSaver,
+            saveParts, saveBonusUsed } = resultFlags;
 
     // The player rolled — stand the GM nudge down before it ever fires, and
     // retire the card if it already did.
@@ -7222,7 +7229,14 @@ export class SaveEngine {
     const damageMultiplier = _gmVerdict.share;
 
     const pcResult = { saveTotal, dieResult: dieResult ?? null, passed, resultLabel: _gmVerdict.label,
-      autoFailSave, damageMultiplier, superSaver: !!superSaver };
+      autoFailSave, damageMultiplier, superSaver: !!superSaver,
+      saveParts: Array.isArray(saveParts) ? saveParts : [],
+      saveBonusUsed: typeof saveBonusUsed === "number" ? saveBonusUsed : null };
+    if (!autoFailSave && dieResult == null) {
+      console.warn(`${MODULE_ID} | a player's save came back with a total of ${saveTotal} and no `
+        + `die. Its row will show the number alone. The result card it came from is the only `
+        + `place that face exists, and it did not travel.`);
+    }
 
     // ── Re-fire saveComplete on the GM so area-denial effects land ──
     // FIRST, before the cosmetic card updates — a throw in those must never
@@ -9088,6 +9102,16 @@ export class SaveEngine {
             + `<span class="${passClass} ace-qol-save-math-total">${r.saveTotal}</span>`
             + `</span>`;
         } else {
+          /* ⚠️🔴 A BARE NUMBER IS A ROW THAT LOST SOMETHING, AND IT SAYS SO.
+             Jeth came out as a bare 15 and Virric a bare 12 while every NPC
+             beside them carried a die and a line, and nothing anywhere said
+             which field had gone missing on the way from the player's client. */
+          if (typeof r.saveTotal === "number") {
+            console.warn(`${MODULE_ID} | ${r.name}'s row shows ${r.saveTotal} on its own: `
+              + `die ${r.dieResult ?? "missing"}, ${(r.saveParts ?? []).length} named part(s), `
+              + `${r.isPC ? "a player's" : "an NPC's"} roll. A row with no die draws no picture `
+              + `and no line under it.`);
+          }
           mathLine = `<span class="${passClass} ace-qol-save-math-total">${r.saveTotal}</span>`;
         }
       }
@@ -9537,6 +9561,12 @@ export class SaveEngine {
             damageMultiplier: r.damageMultiplier,
             superSaver: !!r.superSaver,
             dieResult: r.dieResult ?? null,
+            // ⚠️ THE PARTS SURVIVE SERIALIZATION, or a redraw (a PC resolving
+            // later, "add targets", a re-render) leaves a row with a total and
+            // nothing to explain it, and the line under it refuses to draw.
+            saveParts: Array.isArray(r.saveParts) ? r.saveParts : [],
+            saveBonusUsed: typeof r.saveBonusUsed === "number" ? r.saveBonusUsed : null,
+            saveAbility: r.saveAbility ?? r.ability ?? null,
             saveAdvantage: !!r.saveAdvantage,
             saveDisadvantage: !!r.saveDisadvantage,
             saveAdvReasons: r.saveAdvReasons ?? [],

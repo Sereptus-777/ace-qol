@@ -449,7 +449,12 @@ export function rolledLineHtml(parts) {
   // The sum is a plain number, not a signed one: "= 9", and "= −2" when it is
   // negative, with the same minus the parts use.
   const end = sum < 0 ? `−${Math.abs(sum)}` : `${sum}`;
-  return `${line}<span class="ace-qol-formula-eq">= ${esc(end)}</span>`;
+  /* ⚠️ THE NUMBER IS ITS OWN ELEMENT, THE EQUALS IS NOT (his rule, 2026-10-02:
+     "only the number after the equals is bright orange and a little bigger. The
+     equals stays with the line"). One span for both would have carried the
+     colour onto the sign, which is punctuation, not the answer. */
+  return `${line}<span class="ace-qol-formula-eq">=</span>`
+    + `<span class="ace-qol-formula-sum">${esc(end)}</span>`;
 }
 
 /**

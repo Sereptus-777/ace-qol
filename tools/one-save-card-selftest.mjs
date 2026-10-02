@@ -254,6 +254,49 @@ console.log("\nCOVER IS DECIDED ONCE, WHEN THE BOLT IS MEASURED");
     "one measurer");
 }
 
+console.log("\nA PLAYER'S ROW IS AN NPC'S ROW");
+{
+  /* ⚠️🔴 HIS TABLE, 2026-10-02: "Jeth is a bare 15 and Virric is a bare 12. No
+     die, no line. The NPC rows carried both. A player's result carries the same
+     die and the same parts, and the row draws them."
+
+     The hole was one line: the GM learns about a player's roll by destructuring
+     that result's flags, and anything not named there never reaches the row. */
+  check("the GM reads the parts out of a player's result",
+    /saveParts, saveBonusUsed \} = resultFlags;/.test(save), "named or lost");
+  check("and hands them to the row with the die",
+    /saveParts: Array\.isArray\(saveParts\) \? saveParts : \[\],/.test(save));
+  check("a player's result with no die at all is called out",
+    /a player's save came back with a total of \$\{saveTotal\} and no `/.test(save));
+  /* ⚠️ AND THE ROW KEEPS THEM THROUGH A REDRAW. */
+  check("the card's own flags keep the parts",
+    /saveParts: Array\.isArray\(r\.saveParts\) \? r\.saveParts : \[\],/.test(save),
+    "serialized with the row");
+  check("and keep which save it was, so a redrawn row can still read itself",
+    /saveAbility: r\.saveAbility \?\? r\.ability \?\? null,/.test(save));
+  /* ⚠️ A BARE NUMBER SAYS WHAT IT LOST. */
+  check("a row that comes out bare names the field that went missing",
+    /die \$\{r\.dieResult \?\? "missing"\}, \$\{\(r\.saveParts \?\? \[\]\)\.length\} named part/.test(save));
+}
+
+console.log("\nONLY THE NUMBER AFTER THE EQUALS IS BRIGHT");
+{
+  const css = readFileSync("D:/FoundryVTT/Data/modules/ace-qol/styles/ace-qol.css", "utf8");
+  const rf = readFileSync("D:/FoundryVTT/Data/modules/ace-qol/scripts/roll-formula.mjs", "utf8");
+  /* ⚠️ His rule: "only the number after the equals is bright orange and a little
+     bigger. The equals stays with the line." */
+  check("the equals and the number are two elements",
+    /class="ace-qol-formula-eq">=<\/span>/.test(rf)
+    && /class="ace-qol-formula-sum">/.test(rf), "the sign is not the answer");
+  const at = css.indexOf(".ace-qol-formula-sum");
+  check("the number is bright orange and a little bigger",
+    at > 0 && /#ff9d2e/.test(css.slice(at, at + 200)) && /font-size: 1\.12em/.test(css.slice(at, at + 200)));
+  check("the words stay light yellow",
+    /\.ace-qol-formula-rolled \.ace-qol-formula-text \{ color: #f0e4c0; \}/.test(css));
+  check("and the pipe stays the darker gold",
+    /#8b6914/.test(css.slice(css.indexOf(".ace-qol-formula-pipe"), css.indexOf(".ace-qol-formula-pipe") + 200)));
+}
+
 console.log("\nTHE PARTS TRAVEL WITH THE ROLL");
 {
   check("an NPC's roll records them",

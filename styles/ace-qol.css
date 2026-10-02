@@ -6548,7 +6548,16 @@ i.ace-douse-tool::after {
   font-weight: 700;
   margin: 0 7px;
 }
+/* ⚠️ THE EQUALS STAYS WITH THE LINE and the number after it is the one bright
+   thing (his rule, 2026-10-02). Light yellow words, a darker gold pipe, and the
+   answer in orange: three jobs, three colours, and nothing else competing. */
 .ace-qol-formula-eq { margin-left: 8px; font-weight: 700; }
+.ace-qol-formula-sum {
+  margin-left: 5px;
+  color: #ff9d2e;
+  font-size: 1.12em;
+  font-weight: 800;
+}
 
 /* A spent regeneration card: it has been applied, so it reads as done.
    ⚠️ NOTHING IS HIDDEN. The numbers stay readable, the pill keeps its shape and
