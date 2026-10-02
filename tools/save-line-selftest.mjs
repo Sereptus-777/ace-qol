@@ -96,6 +96,37 @@ console.log("\nHIS FIVE ROWS, AND THE LINE EACH ONE GETS");
     `"${rolledLineText(explainSave(virric, "dex").parts, { total: 11 })}"`);
 }
 
+console.log("\nHIS EXAMPLE: A CLOAK AND A FEAT ON ONE LINE");
+{
+  // "Dex is +5, proficiency is +9, has a cloak of protection +3, and a feat
+  // that gives it -2." (2026-10-02)
+  //
+  // ⚠️ THE FEAT CAME OUT AS "Bonus" THE FIRST TIME I RAN THIS. The word was
+  // missing from the vocabulary because the edit that added it went through a
+  // heredoc that ate the backslashes, so the search string held a real
+  // backspace and the replace quietly matched nothing. This pin is why that
+  // cannot happen again unnoticed.
+  const jeth = {
+    name: "Jeth", statuses: new Set(), coverBonus: 0,
+    effects: [
+      { name: "Cloak of Protection", changes: [{ key: "system.abilities.dex.bonuses.save" }] },
+      { name: "Feat: Unlucky", changes: [{ key: "system.bonuses.abilities.save" }] },
+    ],
+    system: {
+      abilities: { dex: { value: 20, mod: 5, proficient: 1, save: { value: 15 }, bonuses: { save: "3" } } },
+      attributes: { prof: 9, ac: {} },
+      bonuses: { abilities: { save: "-2" } },
+    },
+  };
+  const { parts, total } = explainSave(jeth, "dex");
+  check("the four parts come to +15", total === 15, `total ${total}`);
+  check("and the line names each one in a word, in order",
+    rolledLineText(parts, { total: 27 }) === "Dex +5 | Prof +9 | Cloak +3 | Feat −2 = 27",
+    rolledLineText(parts, { total: 27 }));
+  check("a penalty keeps its own sign and no stray plus in front of it",
+    /\| Feat −2 /.test(rolledLineText(parts, { total: 27 })));
+}
+
 console.log("\nONE WORD, AND ONLY WHEN HE HAS IT");
 {
   const withCloak = sheet({ name: "Ireena", score: 14, mod: 2, prof: 3, profMult: 1, own: "1" });

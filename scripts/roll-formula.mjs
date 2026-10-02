@@ -78,6 +78,11 @@ const SHORT_KIND = [
   [/\bstone\b/i,    "stone"],
   [/\bbless\b/i,    "Bless"],
   [/\bguidance\b/i, "Guidance"],
+  // ⚠️ HIS WORD, 2026-10-01: "the name is one word: Cloak +1, Ring +1, Feat +1."
+  // A feat's own name is "Resilient" or "Lucky", which this table has no reason
+  // to know, so what it matches is a sheet that says the word: the dnd5e item
+  // type reaches `shortKindOf` through the effect's origin.
+  [/\bfeat\b/i,     "feat"],
 ];
 
 /**

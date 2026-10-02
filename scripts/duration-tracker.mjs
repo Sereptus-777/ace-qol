@@ -198,18 +198,44 @@ export class DurationTracker {
     for (const c of game.combat?.combatants ?? []) if (c.actor) actors.add(c.actor);
 
     const combat = game.combat ?? null;
+    let looked = 0, expired = 0, anchored = 0;
+    const leftOn = [];
     for (const actor of actors) {
       const toExpire = [];
       for (const effect of actor.effects) {
         if (effect.disabled) continue;
+        looked++;
         const state = DurationTracker._staleState(effect, combat);
         if (state === "expire") {
           toExpire.push({ effect, reason: `${effect.name}: duration elapsed (cleanup sweep)` });
         } else if (state === "anchor") {
           await DurationTracker._anchorEffect(effect, combat);
+          anchored++;
+        } else {
+          /* ⚠️🔴 A SWEEP THAT WALKS PAST A DEAD TIMER MUST SAY SO. Four charms
+             sat on Escher at −4200, −2400, −1800 and −1200 seconds through
+             reload after reload, and every sweep that passed them printed
+             nothing at all — so there was no way to tell a sweep that found them
+             healthy from one that never looked. Anything still counting below
+             zero after this is a contradiction, and it is named. */
+          const rem = effect.duration?.remaining;
+          if (rem != null && Number.isFinite(Number(rem)) && rem <= 0) {
+            leftOn.push(`${actor.name}: ${effect.name} at ${Math.round(rem)}s`);
+          }
         }
       }
+      expired += toExpire.length;
       for (const { effect, reason } of toExpire) await this._expireEffect(actor, effect, reason);
+    }
+    if (expired || anchored || leftOn.length) {
+      console.log(`${MODULE_ID} | timers: looked at ${looked} effect(s) on ${actors.size} `
+        + `creature(s), deleted ${expired} that had run out, started ${anchored} that had no `
+        + `clock.`);
+    }
+    if (leftOn.length) {
+      console.warn(`${MODULE_ID} | and LEFT ${leftOn.length} on with a timer already past zero, `
+        + `which should be impossible: ${leftOn.join("; ")}. Every one of these should have been `
+        + `deleted by the line above.`);
     }
   }
 
@@ -255,10 +281,19 @@ export class DurationTracker {
     const hasAnchor =
       (((rounds > 0) || (turns > 0)) && d.startRound != null) ||
       ((seconds > 0) && d.startTime != null);
+
+    /* ⚠️🔴 ZERO IS THE ANSWER, WHATEVER ELSE IS TRUE (his rule, 2026-10-02:
+       "At zero the effect is deleted. It does not go negative"). This test used
+       to sit BELOW the anchor question, so an effect that had already run out
+       could be sent back for a fresh anchor instead of being deleted — and an
+       anchor stamped now restarts a clock that had finished. A number at or
+       below zero is not a clock that needs starting. */
+    const rem = d.remaining;
+    if (rem != null && Number.isFinite(Number(rem)) && rem <= 0) return "expire";
+
     if (!hasAnchor) return "anchor";
 
     // Anchored → trust dnd5e's own computed remaining first.
-    const rem = d.remaining;
     if (rem != null) return rem <= 0 ? "expire" : null;
 
     // Anchored but dnd5e gave no number → compute from the anchor ourselves.
@@ -768,11 +803,38 @@ export class DurationTracker {
       for (const effect of actor.effects) {
         if (effect.disabled) continue;
 
+        /* ⚠️🔴 THE SAME TEST AS EVERY OTHER SWEEP, AND IT USED TO BE ITS OWN.
+           His table, 2026-10-02: "Any effect with a timer comes off at zero.
+           Charm, Bless, and everything else. Escher still has four charms:
+           Charmed by Lamia at -4200 seconds, Charmed by Kasimir at -2400, and
+           two more by Lamia at -1800 and -1200. The clock counted through zero
+           and left them on."
+
+           Three sweeps expire effects — turn change, the stale sweep, and this
+           one — and this one asked a different question. It looked for ACE's own
+           `worldTimeStart` flag and nothing else, so an effect carrying
+           Foundry's own anchor (`duration.startTime` + `seconds`, which is what
+           the condition library stamps and what the yellow bar counts down) was
+           invisible to it. Outside combat, with no scene change, this is the ONLY
+           sweep that runs on a clock advance, so those four counted past zero and
+           kept going. Four hours of charm on a creature nobody had charmed.
+
+           `_staleState` reads `duration.remaining`, which Foundry recomputes on
+           every world-time change, and says "expire" at zero or below. One test,
+           three sweeps. */
+        const state = DurationTracker._staleState(effect, game.combat ?? null);
+        if (state === "anchor") { await DurationTracker._anchorEffect(effect, game.combat ?? null); continue; }
+        if (state === "expire") {
+          toExpire.push({ effect, reason: `${effect.name}: duration elapsed (world time)` });
+          continue;
+        }
+
         const duration = effect.duration;
         const seconds = duration?.seconds;
         if (!seconds || seconds <= 0) continue;
 
-        // Check world time start stamp
+        // ACE's own stamp, for an effect whose Foundry anchor is missing but
+        // whose creation this module recorded.
         const worldTimeStart = effect.flags?.[MODULE_ID]?.worldTimeStart;
         if (worldTimeStart != null) {
           const elapsed = worldTime - worldTimeStart;
