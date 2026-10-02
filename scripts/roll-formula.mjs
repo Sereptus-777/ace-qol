@@ -385,71 +385,74 @@ export function formulaText(parts, total = null) {
  * downward and never leaves the card or clips its own text.
  */
 /**
- * THE LINE UNDER A ROLLED SAVE: the bonuses this creature actually has, and the
- * number they made.
+ * THE LINE UNDER A ROLLED SAVE: how the bonus was built, and what it came to.
  *
- *     Dex +5 | Prof +4 = 14
- *     Dex +0 | Cover +2 = 6
- *     Cloak +1 | Prof +3 = 18
+ *     Dex +5 | Prof +4 = 9
+ *     Dex −5 | Prof +3 = −2
+ *     Dex +0 | Cover +2 = 2
  *
- * ⚠️🔴 HIS CORRECTION, 2026-10-01, on the shape I shipped that morning:
- * *"It repeats the die, names the ability score, and says 'no ring, cloak or
- * feat' on every row. The line names the bonus first, then the number, with a
- * darker gold pipe between the parts. The pipe is the only gold... A bonus is
- * named only when he has it, and the name is one word."*
+ * ⚠️🔴 THE NUMBER AFTER THE EQUALS IS THE BONUS, NOT THE TOTAL (his correction,
+ * 2026-10-02: *"The row already has the die and the total. The line under it is
+ * only how the bonus was built... Jeth is 15 + 9 = 24 on the row, and
+ * Dex +5 | Prof +4 = 9 under it."*).
  *
- * So: no die (it is already the picture above with its total beside it), no
- * score, no sentence about what he does not have. Name, then number, pipes
- * between, and the row's own total at the end.
+ * I had it ending in the row's own total, which put the same number on the card
+ * twice and made a line that did not add up: "Dex +5 | Prof +4 = 24" reads as
+ * nine making twenty-four. The row says what was rolled; this line says only
+ * where its bonus came from, and ends in the sum of its own parts.
  *
- * ⚠️ NOTHING TO ADD MEANS NO LINE AT ALL (his rule, same message: "Virric has
- * nothing to add, so he gets no line"). A row whose every part is zero has
- * nothing to explain, and an empty pill saying so is the noise he just took off
- * four other rows.
+ * ⚠️ NO DIE AND NO SCORE ON IT EITHER. Both are the row above it.
  *
- * ⚠️ A ZERO BESIDE SOMETHING REAL STAYS. His own example keeps it: "The Gorgon
- * is Dex +0 | Cover +2". The +0 is why the +2 is the whole bonus, and dropping
- * it would leave a line that looks like it is missing its ability.
+ * ⚠️ NOTHING TO ADD MEANS NO LINE AT ALL (his rule: "Virric has nothing to add,
+ * so he gets no line"). A creature whose every part is zero has nothing to
+ * explain, and an empty pill saying so is noise.
+ *
+ * ⚠️ A ZERO BESIDE SOMETHING REAL STAYS: his own example keeps it, "The Gorgon
+ * is Dex +0 | Cover +2". The +0 is why the +2 is the whole bonus.
  *
  * @param {Array} parts  from `explainSave`
- * @param {object} o
- * @param {number|null} o.total  the number the row shows
  * @returns {string} HTML, or "" when there is nothing to name
  */
-export function rolledLineHtml(parts, { total = null } = {}) {
+export function rolledLineHtml(parts) {
   if (!parts?.length) return "";
   if (!parts.some(p => Number(p.value) !== 0)) return "";
   const esc = (v) => foundry.utils.escapeHTML(String(v ?? ""));
   const pieces = parts.map(p =>
     `<span class="ace-qol-formula-part">${esc(p.name ?? p.label ?? "Bonus")} ${signed(p.value)}</span>`);
   // ⚠️ THE PIPE IS AN ELEMENT, NOT A CHARACTER IN THE TEXT, because it is the
-  // one thing on this line that is gold and it cannot be coloured otherwise.
+  // one thing on this line that is a darker gold and it cannot be coloured
+  // otherwise. The words themselves stay light yellow, his rule.
   const line = pieces.join(`<span class="ace-qol-formula-pipe">|</span>`);
-  const told = total !== null && total !== undefined && Number.isFinite(Number(total));
-  return told ? `${line}<span class="ace-qol-formula-eq">= ${esc(Number(total))}</span>` : line;
+  const sum = parts.reduce((n, p) => n + p.value, 0);
+  // The sum is a plain number, not a signed one: "= 9", and "= −2" when it is
+  // negative, with the same minus the parts use.
+  const end = sum < 0 ? `−${Math.abs(sum)}` : `${sum}`;
+  return `${line}<span class="ace-qol-formula-eq">= ${esc(end)}</span>`;
 }
 
 /**
  * The same line, as plain text, for anything that cannot take HTML.
  * @returns {string} "" when there is nothing to name
  */
-export function rolledLineText(parts, { total = null } = {}) {
+export function rolledLineText(parts) {
   if (!parts?.length) return "";
   if (!parts.some(p => Number(p.value) !== 0)) return "";
   const line = parts.map(p => `${p.name ?? p.label ?? "Bonus"} ${signed(p.value)}`).join(" | ");
-  const told = total !== null && total !== undefined && Number.isFinite(Number(total));
-  return told ? `${line} = ${Number(total)}` : line;
+  const sum = parts.reduce((n, p) => n + p.value, 0);
+  return `${line} = ${sum < 0 ? `−${Math.abs(sum)}` : sum}`;
 }
 
 /**
  * The pill a ROLLED save hangs its line in, or "" when there is no line to draw.
+ *
+ * ⚠️ NO LABEL (his rule, 2026-10-02: "The word Save comes off"). The row it sits
+ * under is a saving throw and says so three times over; a chip repeating it is
+ * the fourth.
  */
-export function rolledPill(parts, { total = null, label = "" } = {}) {
-  const inner = rolledLineHtml(parts, { total });
+export function rolledPill(parts) {
+  const inner = rolledLineHtml(parts);
   if (!inner) return "";
-  const esc = (v) => foundry.utils.escapeHTML(String(v ?? ""));
   return `<div class="ace-qol-formula-pill ace-qol-formula-rolled">`
-    + (label ? `<span class="ace-qol-formula-label">${esc(label)}</span>` : "")
     + `<span class="ace-qol-formula-text">${inner}</span>`
     + `</div>`;
 }

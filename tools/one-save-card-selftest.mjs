@@ -200,9 +200,12 @@ console.log("\nTHE FORMULA IS ON THE ROW THAT IS LEFT");
      picture while the line under it printed a different sum. */
   check("it reads the creature's sheet and its die through the one reader",
     /SaveEngine\._rollReadingFor\(r, opts\)/.test(body), "_rollReadingFor");
-  check("it shows the total the ROLL made, so the math is not redone",
-    /total: typeof r\.saveTotal === "number" \? r\.saveTotal : null/.test(body),
-    "the row's own number");
+  /* ⚠️🔴 THE LINE CARRIES NO TOTAL AT ALL (his correction, 2026-10-02: "The
+     row already has the die and the total. The line under it is only how the
+     bonus was built, and the number after the equals is the bonus, not the
+     total"). It ends in the sum of its own parts, worked out where it is drawn. */
+  check("it hands the line no total, because the line is only the bonus",
+    /rolledPill\(parts\);/.test(body), "Dex +5 | Prof +4 = 9");
   /* ⚠️ THE DIE IS NOT ON THIS LINE (his correction, 2026-10-01: "The die and the
      total stay. The line under them is wrong. It repeats the die"). The picture
      and the total are the row above it. */

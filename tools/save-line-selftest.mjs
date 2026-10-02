@@ -60,40 +60,44 @@ const sheet = ({ name, ab = "dex", score, mod, prof = 0, profMult = 0,
   };
 };
 
-console.log("\nHIS FIVE ROWS, AND THE LINE EACH ONE GETS");
+console.log("\nHIS ROWS, AND THE LINE EACH ONE GETS");
 {
-  // Escher: Dex 1 (−5), proficient +3, behind half cover.
-  const escher = sheet({ name: "Escher", score: 1, mod: -5, prof: 3, profMult: 1,
-    cover: 2, coverStatus: "coverHalf" });
-  const { parts, total } = explainSave(escher, "dex");
-  check("Escher's parts add up to the +0 his roll used", total === 0, `total ${total}`);
-  check("cover is named by which cover it is",
-    parts.find(p => p.label === "cover")?.why === "half cover");
-  check("and his line is the names, the numbers and the total",
-    rolledLineText(parts, { total: 1 }) === "Dex −5 | Prof +3 | Cover +2 = 1",
-    rolledLineText(parts, { total: 1 }));
-
-  /* ⚠️ HIS THREE LINES, WORD FOR WORD (2026-10-01). */
+  /* ⚠️🔴 THE NUMBER AFTER THE EQUALS IS THE BONUS, NOT THE TOTAL (his
+     correction, 2026-10-02: "The row already has the die and the total. The line
+     under it is only how the bonus was built... Jeth is 15 + 9 = 24 on the row,
+     and Dex +5 | Prof +4 = 9 under it"). */
   const jeth = sheet({ name: "Jeth", score: 20, mod: 5, prof: 4, profMult: 1 });
-  check("Jeth is Dex +5 | Prof +4 = 14",
-    rolledLineText(explainSave(jeth, "dex").parts, { total: 14 }) === "Dex +5 | Prof +4 = 14",
-    rolledLineText(explainSave(jeth, "dex").parts, { total: 14 }));
+  check("Jeth is Dex +5 | Prof +4 = 9",
+    rolledLineText(explainSave(jeth, "dex").parts) === "Dex +5 | Prof +4 = 9",
+    rolledLineText(explainSave(jeth, "dex").parts));
 
+  // "Escher rolled 20 with Dex −5 and Prof +3, so the row is 20 − 2 = 18 and the
+  //  line is Dex −5 | Prof +3 = −2."
+  const escher = sheet({ name: "Escher", score: 1, mod: -5, prof: 3, profMult: 1 });
+  check("Escher is Dex −5 | Prof +3 = −2",
+    rolledLineText(explainSave(escher, "dex").parts) === "Dex −5 | Prof +3 = −2",
+    rolledLineText(explainSave(escher, "dex").parts));
+  check("a negative bonus keeps the same minus the parts use",
+    rolledLineText(explainSave(escher, "dex").parts).endsWith("= −2"));
+
+  // "The Gorgon and the Cloud Giant name Cover +2."
   const gorgon = sheet({ name: "Gorgon", score: 11, mod: 0, cover: 2, coverStatus: "coverHalf" });
-  check("the Gorgon is Dex +0 | Cover +2 = 6",
-    rolledLineText(explainSave(gorgon, "dex").parts, { total: 6 }) === "Dex +0 | Cover +2 = 6",
-    rolledLineText(explainSave(gorgon, "dex").parts, { total: 6 }));
-
-  const cloud = sheet({ name: "Cloud Giant", score: 10, mod: 0, cover: 2, coverStatus: "coverHalf" });
-  check("the Cloud Giant is Dex +0 | Cover +2 = 20",
-    rolledLineText(explainSave(cloud, "dex").parts, { total: 20 }) === "Dex +0 | Cover +2 = 20",
-    rolledLineText(explainSave(cloud, "dex").parts, { total: 20 }));
+  check("the Gorgon names Cover +2",
+    rolledLineText(explainSave(gorgon, "dex").parts) === "Dex +0 | Cover +2 = 2",
+    rolledLineText(explainSave(gorgon, "dex").parts));
+  check("and cover is named by which cover it is",
+    explainSave(gorgon, "dex").parts.find(p => p.name === "Cover")?.why === "half cover");
+  /* ⚠️ "A bonus is named only when it was added": no Cover on a creature that
+     was not behind anything. */
+  check("a creature with no cover never shows the word",
+    !/Cover/.test(rolledLineText(explainSave(jeth, "dex").parts)),
+    rolledLineText(explainSave(jeth, "dex").parts));
 
   /* ⚠️ "Virric has nothing to add, so he gets no line." */
   const virric = sheet({ name: "Virric", score: 10, mod: 0 });
   check("Virric has nothing to add, so he gets no line",
-    rolledLineText(explainSave(virric, "dex").parts, { total: 11 }) === "",
-    `"${rolledLineText(explainSave(virric, "dex").parts, { total: 11 })}"`);
+    rolledLineText(explainSave(virric, "dex").parts) === "",
+    `"${rolledLineText(explainSave(virric, "dex").parts)}"`);
 }
 
 console.log("\nHIS EXAMPLE: A CLOAK AND A FEAT ON ONE LINE");
@@ -104,8 +108,7 @@ console.log("\nHIS EXAMPLE: A CLOAK AND A FEAT ON ONE LINE");
   // ⚠️ THE FEAT CAME OUT AS "Bonus" THE FIRST TIME I RAN THIS. The word was
   // missing from the vocabulary because the edit that added it went through a
   // heredoc that ate the backslashes, so the search string held a real
-  // backspace and the replace quietly matched nothing. This pin is why that
-  // cannot happen again unnoticed.
+  // backspace and the replace quietly matched nothing.
   const jeth = {
     name: "Jeth", statuses: new Set(), coverBonus: 0,
     effects: [
@@ -121,41 +124,37 @@ console.log("\nHIS EXAMPLE: A CLOAK AND A FEAT ON ONE LINE");
   const { parts, total } = explainSave(jeth, "dex");
   check("the four parts come to +15", total === 15, `total ${total}`);
   check("and the line names each one in a word, in order",
-    rolledLineText(parts, { total: 27 }) === "Dex +5 | Prof +9 | Cloak +3 | Feat −2 = 27",
-    rolledLineText(parts, { total: 27 }));
+    rolledLineText(parts) === "Dex +5 | Prof +9 | Cloak +3 | Feat −2 = 15",
+    rolledLineText(parts));
   check("a penalty keeps its own sign and no stray plus in front of it",
-    /\| Feat −2 /.test(rolledLineText(parts, { total: 27 })));
+    /\| Feat −2 /.test(rolledLineText(parts)));
 }
 
-console.log("\nONE WORD, AND ONLY WHEN HE HAS IT");
+console.log("\nONE WORD, AND NOTHING HE DOES NOT HAVE");
 {
-  const withCloak = sheet({ name: "Ireena", score: 14, mod: 2, prof: 3, profMult: 1, own: "1" });
-  const line = rolledLineText(explainSave(withCloak, "dex").parts, { total: 15 });
   const jethLine = rolledLineText(explainSave(
-    sheet({ name: "Jeth", score: 20, mod: 5, prof: 4, profMult: 1 }), "dex").parts, { total: 14 });
-  check("a bonus he has is on the line, as one word", /\| \w+ \+1/.test(line), line);
-  /* ⚠️🔴 AND NOTHING ABOUT WHAT HE DOES NOT HAVE (his correction: "No ability
-     score, no repeated die, no sentence about a ring he does not have"). */
+    sheet({ name: "Jeth", score: 20, mod: 5, prof: 4, profMult: 1 }), "dex").parts);
+  /* ⚠️🔴 "No ability score, no repeated die, no sentence about a ring he does
+     not have." */
   check("no sentence about a ring he does not have", !/ring|cloak or feat/i.test(jethLine), jethLine);
-  check("no ability score on the line", !/Dex \d\d|Dex 1\b/.test(line + " " + jethLine));
-  check("and no die repeated on it", !/d20/.test(line + " " + jethLine), line);
+  check("no ability score on the line", !/Dex \d\d/.test(jethLine), jethLine);
+  check("and no die repeated on it", !/d20/.test(jethLine), jethLine);
 }
 
-console.log("\nTHE PIPE IS THE ONLY GOLD");
+console.log("\nTHE PIPE IS THE ONLY DARKER GOLD, AND SAVE COMES OFF");
 {
   const css = readFileSync("D:/FoundryVTT/Data/modules/ace-qol/styles/ace-qol.css", "utf8");
   const at = css.indexOf(".ace-qol-formula-pipe");
-  check("the pipe is its own element, so it can be the one gold thing",
+  check("the pipe is its own element, in the darker gold",
     at > 0 && /#8b6914/.test(css.slice(at, at + 200)));
+  check("the words stay light yellow",
+    /\.ace-qol-formula-rolled \.ace-qol-formula-text \{ color: #f0e4c0; \}/.test(css));
   check("the rolled pill drops the gold wash and the gold frame",
     /\.ace-qol-formula-pill\.ace-qol-formula-rolled \{[^}]*rgba\(255, 255, 255, 0\.04\)/s.test(css));
-  check("a row with nothing to add draws no pill at all",
-    rolledLineText(explainSave(sheet({ name: "Virric", score: 10, mod: 0 }), "dex").parts,
-      { total: 11 }) === "");
-  /* ⚠️ A ZERO BESIDE SOMETHING REAL STAYS: his own Gorgon keeps it. */
-  check("and a zero beside something real stays, his Gorgon",
-    rolledLineText(explainSave(sheet({ name: "Gorgon", score: 11, mod: 0, cover: 2,
-      coverStatus: "coverHalf" }), "dex").parts, { total: 6 }).startsWith("Dex +0 |"));
+  const rf = readFileSync("D:/FoundryVTT/Data/modules/ace-qol/scripts/roll-formula.mjs", "utf8");
+  const pill = rf.slice(rf.indexOf("export function rolledPill"));
+  check("the word Save comes off the pill",
+    !/formula-label/.test(pill.slice(0, 500)), "no label chip");
 }
 
 console.log("\nCOVER IS A DEXTERITY SAVE AND NOTHING ELSE");
@@ -213,7 +212,7 @@ console.log("\nONE READER FOR THE DIE");
     (engine.match(/SaveEngine\._rollReadingFor\(r, opts\)/g) ?? []).length >= 3,
     `${(engine.match(/SaveEngine\._rollReadingFor\(r, opts\)/g) ?? []).length} call sites`);
   check("and the line it draws is the rolled one, which can come back empty",
-    /return rolledPill\(parts, \{/.test(engine) && /label: "save",/.test(engine));
+    /return rolledPill\(parts\);/.test(engine), "no total, no label");
   /* ⚠️ A FACE THAT IS MERELY PLAUSIBLE IS A PICTURE OF A DIE NOBODY THREW.
      Bless adds 1d4, so the total stops being the face plus a number. */
   check("a Bless die in the bonus refuses the working-out",

@@ -8726,10 +8726,7 @@ export class SaveEngine {
          The picture and the total are the row above; this line is what the
          creature added and nothing else. It comes back empty for a creature with
          nothing to add, and an empty line draws no pill at all. */
-      return rolledPill(parts, {
-        total: typeof r.saveTotal === "number" ? r.saveTotal : null,
-        label: "save",
-      });
+      return rolledPill(parts);
     } catch (err) {
       console.warn(`${MODULE_ID} | could not read what made ${r?.name}'s save bonus, `
         + `so its row shows the total alone:`, err);

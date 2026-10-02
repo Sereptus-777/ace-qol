@@ -6538,8 +6538,10 @@ i.ace-douse-tool::after {
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.12);
 }
-.ace-qol-formula-rolled .ace-qol-formula-label { color: #9a978f; }
-.ace-qol-formula-rolled .ace-qol-formula-text { color: #f0eee6; }
+/* ⚠️ THE WORDS STAY LIGHT YELLOW and the pipe is the only darker gold (his
+   rule, 2026-10-02). The pill carries no label at all now: the row it sits under
+   is a saving throw and says so three times over. */
+.ace-qol-formula-rolled .ace-qol-formula-text { color: #f0e4c0; }
 .ace-qol-formula-part { white-space: nowrap; }   /* card-wrap-ok: "Dex +5" is two words that mean one thing; the line wraps between parts, at the pipes */
 .ace-qol-formula-pipe {
   color: #8b6914;
