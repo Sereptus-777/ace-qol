@@ -71,7 +71,24 @@ const RANK = { prone: 3, plain: 2, dead: 1 };
 
 /** Words that say nothing about which creature a picture shows. */
 const STOP = new Set(["the", "a", "and", "of", "an", "to", "in", "on", "at", "by", "or", "cr",
-  "legacy", "variant", "any", "dead", "corpse", "prone"]);
+  "legacy", "variant", "any", "dead", "corpse", "prone",
+  /* ⚠️🔴 HIS FILES, 2026-10-01: "Virric 33A", "Virric number 1", "Virric token".
+     The whole-name test refused all three because of the extra word. His rule:
+     "A number, a size, and the words token, number, portrait and img are not
+     part of a file's name. Drop those and the file's name is Virric."
+     They are what a librarian writes, not what a creature is called. */
+  "token", "number", "portrait", "img", "image", "art",
+  "tiny", "small", "medium", "large", "huge", "gargantuan"]);
+
+/**
+ * A variant tag, not a word: `01`, `11`, `33A`, `v2`, `2b`.
+ *
+ * ⚠️ `^\d+$` WAS NOT ENOUGH, AND "Virric 33A" IS WHY. A number with a letter on
+ * it is how his library numbers two pictures of one creature, and it was being
+ * read as a word of the creature's name — so "Virric 33A" was Virric AND 33a,
+ * two words, and therefore not the whole name of anything.
+ */
+const VARIANT = /^v?\d+[a-z]?$|^[a-z]\d+$/i;
 
 /**
  * How short a word of a creature's NAME may be and still earn a match.
@@ -116,7 +133,7 @@ function creatureTypes() {
 export function wordsOf(text) {
   return String(text ?? "").toLowerCase().replace(/['’]/g, "")
     .split(/[^a-z0-9]+/)
-    .filter(w => w.length > 1 && !/^\d+$/.test(w) && !STOP.has(w));
+    .filter(w => w.length > 1 && !VARIANT.test(w) && !STOP.has(w));
 }
 
 /** What a file is, read from how it is named: art made for lying down (`prone-`), a corpse (`dead-`), or neither. */

@@ -85,8 +85,12 @@ const got = (actor, rand) => file(pick(actor, rand)?.path);
 console.log(`\nHis prone folders: ${index.files} images (${index.byKind.prone} prone-, ${index.byKind.dead} dead-, ${index.byKind.plain} no prefix)`);
 
 // ── Every image counts (0.34.67) ──
+// ⚠️ THE PROPERTY, NOT THE COUNT. This asserted `prone === 7`, which was the
+// number of prone- files he had the day it was written; he has thirteen now, so
+// the pin failed over him adding art. The rule it exists for is that the dead-
+// pictures are in this index at all, which is what it says now.
 check("the dead- pictures in his Dead folder are in the prone index, not only the prone- ones",
-  index.byKind.dead > 50 && index.byKind.prone === 7, `${index.byKind.dead} dead-, ${index.byKind.prone} prone-`);
+  index.byKind.dead > 50 && index.byKind.prone > 0, `${index.byKind.dead} dead-, ${index.byKind.prone} prone-`);
 check("a video and a Photoshop file are not pictures (dead-Celestial.webm, the _PSD Sources)",
   !paths.filter(p => /\.(webm|psd)$/i.test(p)).some(p => index.paths.has(p)));
 check("an image with no prefix counts too (Drowned-Dead-Corpse.png)",
