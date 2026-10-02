@@ -6837,3 +6837,65 @@ i.ace-douse-tool::after {
    Only the WIDTH changes: the colour and the radius are Foundry's, and a card
    that ACE never stamped is untouched. */
 .chat-message[data-ace-card="1"] { border-width: 1px; }
+
+/* ══ THE SYSTEM'S OWN CARDS IN ACE'S CHROME ══════════════════════════════
+
+   His ask, 2026-10-01: "for short rest, long rest, initiative, and any of the
+   dice that I roll off of (the dice that are underneath the chat card), I want
+   them to look like ours. With our black background, only 1px wide."
+
+   `chat-render-utils.mjs` stamps `data-ace-skin` on those and moves them to the
+   dark theme; everything below is the dressing.
+
+   ⚠️ FOUNDRY'S OWN TWO VARIABLES DO THE WORK. `.chat-message` reads
+   `--chat-message-background` (the parchment image) and
+   `--chat-message-border-color`, so redefining them here is the whole repaint:
+   no `!important`, nothing clobbered, and a message ACE never stamped keeps
+   Foundry's look exactly. The border DROPS TO 1px the same way an ACE card's
+   does, and keeps Foundry's own colour and radius. */
+.chat-message[data-ace-skin="1"] {
+  --chat-message-background: #0e0e10;
+  border-width: 1px;
+  /* ⚠️ `.chat-message` hardcodes `color: var(--color-dark-1)`, which the theme
+     switch cannot reach, so the one line that would have stayed near-black on
+     black is named here. */
+  color: var(--color-text-primary, #e8e6e0);
+}
+.chat-message[data-ace-skin="1"] .message-header,
+.chat-message[data-ace-skin="1"] .message-header .message-sender,
+.chat-message[data-ace-skin="1"] .message-header .flavor-text {
+  color: var(--color-text-secondary, #c9c7c1);
+}
+.chat-message[data-ace-skin="1"] .whisper-to,
+.chat-message[data-ace-skin="1"] .message-timestamp {
+  color: var(--color-text-subtle, #9a9892);
+}
+
+/* ⚠️ THE DICE PANEL IS DRESSED ON ACE'S CARDS TOO. "the dice that are
+   underneath the chat card" sit under both kinds, and Foundry draws them with
+   three hardcoded values that no theme touches: a `rgba(0,0,0,0.1)` fill, a
+   `#999` frame and a white inset glow. On black that glow is a grey halo round
+   every roll. The fill and the frame are ACE's here, the glow is gone, and the
+   two selectors are listed together so the box cannot come out one way on a
+   rest card and another on a save card. */
+.chat-message[data-ace-skin="1"] .dice-roll .dice-formula,
+.chat-message[data-ace-skin="1"] .dice-roll .dice-total,
+.chat-message[data-ace-skin="1"] .dice-tooltip .part-header .part-total,
+.chat-message[data-ace-card="1"] .dice-roll .dice-formula,
+.chat-message[data-ace-card="1"] .dice-roll .dice-total,
+.chat-message[data-ace-card="1"] .dice-tooltip .part-header .part-total {
+  background: #0a0a0c;
+  border: 1px solid rgba(212, 175, 55, 0.45);
+  box-shadow: none;
+  color: #f0eee0;
+}
+.chat-message[data-ace-skin="1"] .dice-tooltip .part-header,
+.chat-message[data-ace-card="1"] .dice-tooltip .part-header {
+  border-bottom-color: rgba(212, 175, 55, 0.35);
+}
+/* A success stays green and a failure stays red: those two say the outcome and
+   are not dressing. */
+.chat-message[data-ace-skin="1"] .dice-roll .dice-total.success,
+.chat-message[data-ace-card="1"] .dice-roll .dice-total.success { color: #6ee787; }
+.chat-message[data-ace-skin="1"] .dice-roll .dice-total.failure,
+.chat-message[data-ace-card="1"] .dice-roll .dice-total.failure { color: #ff7b72; }

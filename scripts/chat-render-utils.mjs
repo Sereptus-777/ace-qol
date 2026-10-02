@@ -290,6 +290,75 @@ export function stampAceCard(message, el) {
     }
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   THE SYSTEM'S OWN CARDS WEAR ACE'S CHROME
+
+     His ask, 2026-10-01: *"for short rest, long rest, initiative, and any of
+     the dice that I roll off of (the dice that are underneath the chat card), I
+     want them to look like ours. With our black background, only 1px wide."*
+
+   These four are dnd5e's and Foundry's, not ACE's, and ACE does not post a card
+   in their place, so they sat in the log as manila parchment beside every ACE
+   card. This does not rebuild them: it dresses them.
+
+   ⚠️ IT IS A SKIN, NOT A STAMP AS AN ACE CARD. `data-ace-card` hides the whole
+   speaker strip, flavor text included (§ 13.1), and on a rest card the flavor IS
+   the card's title: "Long Rest (8 hours, new day)". Stamping these would have
+   thrown away the one line that says what happened. A second marker,
+   `data-ace-skin`, changes the dressing and keeps every word.
+
+   ⚠️ THE PLATFORM'S OWN DARK SWITCH DOES THE READING. dnd5e draws its cards
+   from `--dnd5e-*` colour variables and Foundry from `--color-text-*`, and both
+   define a full dark set behind `.themed.theme-dark`. Repainting the background
+   black and leaving the text on its light-theme values would have left dark grey
+   on black; moving the message to the dark theme is one class and the system
+   recolours its own card. `theme-light` comes off first, or both sets apply and
+   which one wins is whichever happens to be defined later.
+ */
+const ACE_SKIN = "data-ace-skin";
+
+/** A rest card, an initiative roll, or anything with dice under it. */
+function wantsAceSkin(message, el) {
+    try {
+        // Not ACE's own cards: those have their own frame and their own look.
+        if (el?.getAttribute?.("data-ace-card") === "1") return false;
+        const type = String(message?.type ?? message?.system?.constructor?.metadata?.type ?? "");
+        // ⚠️ TWO TESTS FOR THE REST CARD. The data model's type is dnd5e's own
+        // answer, and the class is the one the template actually draws; a rename
+        // in either place leaves the other still working.
+        if (type === "dnd5e.rest" || el?.querySelector?.(".rest-card")) return true;
+        if (message?.flags?.core?.initiativeRoll === true
+            || message?.getFlag?.("core", "initiativeRoll") === true) return true;
+        // "any of the dice that I roll off of (the dice that are underneath the
+        // chat card)" — every roll panel, whoever posted it.
+        if (el?.querySelector?.(".dice-roll")) return true;
+        return false;
+    } catch (err) {
+        console.warn(`${MODULE_ID} | could not tell whether this card wants ACE's dressing, `
+            + `so it keeps Foundry's:`, err);
+        return false;
+    }
+}
+
+/**
+ * Dress one of the system's cards in ACE's chrome.
+ * @returns {boolean} whether it was dressed
+ */
+export function skinSystemCard(message, el) {
+    try {
+        if (!el?.setAttribute) return false;
+        if (!wantsAceSkin(message, el)) return false;
+        el.setAttribute(ACE_SKIN, "1");
+        el.classList?.remove?.("theme-light");
+        el.classList?.add?.("themed", "theme-dark");
+        return true;
+    } catch (err) {
+        console.warn(`${MODULE_ID} | could not dress a system card in ACE's chrome, so it `
+            + `keeps Foundry's parchment:`, err);
+        return false;
+    }
+}
+
 /**
  * The chrome pass: one registration for the two things every ACE card needs on
  * every screen. No speaker strip (§ 13.1), and a DC only on a roll this screen
@@ -298,6 +367,7 @@ export function stampAceCard(message, el) {
 export function registerAceChrome() {
     registerChatCardHandler((message, el) => {
         stampAceCard(message, el);
+        skinSystemCard(message, el);   // after the stamp: an ACE card is never skinned
         revealOwnDCs(el);
         revealOwnACs(el);
         takeLogToNewCard(message, el);
@@ -305,7 +375,8 @@ export function registerAceChrome() {
     registerAceCardScroll();
     registerScrollAtTheEnd();
     console.log(`${MODULE_ID} | ACE cards drop Foundry's speaker strip and keep the ⋮; a DC `
-        + `shows for the GM, and for a player on a roll they are making.`);
+        + `shows for the GM, and for a player on a roll they are making. Rest, initiative `
+        + `and any card with dice under it take ACE's black and a 1px frame.`);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
