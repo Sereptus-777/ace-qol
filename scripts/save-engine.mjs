@@ -1655,6 +1655,11 @@ export class SaveEngine {
       autoFailSave: tgt.autoFailSave, saveAdvantage: tgt.saveAdvantage, saveDisadvantage: tgt.saveDisadvantage,
       superSaver: tgt.superSaver, semiSuperSaver: tgt.semiSuperSaver,
       saveBonuses: tgt.saveBonuses, damageModifiers: tgt.damageModifiers,
+      /* ⚠️🔴 THE MEASUREMENT COMES WITH IT. Virric was measured at +2 when the
+         bolt was laid down and his row showed nothing, because this hand-made
+         prompt listed every field except that one and the roll fell back to
+         measuring again from a position nobody had checked. */
+      coverBonus: tgt.coverBonus ?? null,
       currentHP: tgt.currentHP, maxHP: tgt.maxHP, castId,
     }}};
     // 2024 Lucky is a button on the player's own card, pressed before the roll.
@@ -1671,7 +1676,9 @@ export class SaveEngine {
     } catch (err) {
       console.warn(`${MODULE_ID} | could not read ${tgt.name}'s Lucky feat for the roll made for them:`, err);
     }
-    return await this._rollPcSave(fakeMsg);
+    // ⚠️ NOT HELD FOR THE ANIMATION: nobody is behind this sheet to watch it,
+    // and the card the GM is waiting for is the point.
+    return await this._rollPcSave(fakeMsg, { holdForDice: false });
   }
 
   /** Called on the GM when the caster's client replies with its target choice. */
@@ -5540,6 +5547,17 @@ export class SaveEngine {
           name: tgt.name, img: tgt.img,
           tokenDocId: tgt.tokenDocId, actorId: tgt.actorId, sceneId: tgt.sceneId,
           saveTotal: existing.saveTotal, passed,
+          /* ⚠️🔴 THE DIE AND THE PARTS, AND THIS IS WHERE THEY WERE LOST.
+             Both players were offline, so the GM rolled them before the card was
+             built and handed the results straight here — and this builder named
+             the total and nothing else. Jeth came out a bare 18 and Virric a
+             bare 17 beside four NPC rows that had a die and a line each (his
+             card, 2026-10-02). A roll made for an absent player is still a roll;
+             it arrives whole or the row cannot draw it. */
+          dieResult: existing.dieResult ?? null,
+          saveParts: Array.isArray(existing.saveParts) ? existing.saveParts : [],
+          saveBonusUsed: typeof existing.saveBonusUsed === "number" ? existing.saveBonusUsed : null,
+          saveAbility: existing.saveAbility ?? tgt.saveAbility ?? null,
           isAutoFail: existing.autoFailSave,
           resultLabel: v.label,
           damageMultiplier: v.share, superSaver,
@@ -6912,7 +6930,7 @@ export class SaveEngine {
     }}};
   }
 
-  async _rollPcSave(message) {
+  async _rollPcSave(message, { holdForDice = true } = {}) {
     const flags = message.flags?.[MODULE_ID];
     if (!flags) return;
 
@@ -7112,8 +7130,18 @@ export class SaveEngine {
       </div>
     `;
 
-    // Let PC save dice settle before posting the result card.
-    await awaitDsnRoll();
+    /* ⚠️🔴 A DICE SO NICE THROW IS A FINISHED ROLL (his rule, 2026-10-02:
+       "Do not hold the card"). The total exists the moment the roll is
+       evaluated; the 3D throw is the picture of a number already decided. On the
+       path where the GM rolls for absent players this wait ran once per player
+       BEFORE the save card was built, so two offline characters held his whole
+       card behind an animation of a result they were not even there to watch.
+       The player's own roll still waits, because that one is thrown on the
+       screen of the person reading the result.
+       dice-ok: the roll is evaluated above and its total is final; this waits
+       only for the animation, and the caller that skips it is the GM rolling on
+       behalf of somebody who is not connected. */
+    if (holdForDice) await awaitDsnRoll();
 
     await CardDoor.post({
       content: resultHtml,
@@ -7186,6 +7214,10 @@ export class SaveEngine {
       saveTotal, dieResult, passed, resultLabel,
       autoFailSave, superSaver, damageMultiplier,
       saveAbility,
+      // ⚠️ AND THE PARTS. A caller standing right here should never have to go
+      // and find what this roll was made of either.
+      saveParts: _parts,
+      saveBonusUsed: _partsTotal,
     };
   }
 

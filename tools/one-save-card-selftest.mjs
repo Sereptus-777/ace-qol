@@ -279,6 +279,46 @@ console.log("\nA PLAYER'S ROW IS AN NPC'S ROW");
     /die \$\{r\.dieResult \?\? "missing"\}, \$\{\(r\.saveParts \?\? \[\]\)\.length\} named part/.test(save));
 }
 
+console.log("\nTHE GM ROLLS FOR AN ABSENT PLAYER, AND THE ROW GETS ALL OF IT");
+{
+  /* ⚠️🔴 HIS CARD, 2026-10-02: "Jeth is a bare 18. Virric is a bare 17. No die,
+     no line. The four NPC rows have both. Both players were offline, so the GM
+     rolled them, and that path still writes a total and nothing else."
+
+     The offline roll goes out before the card is built and its result is handed
+     straight to the row builder. That builder named the total and nothing else,
+     so the die and the parts were thrown away between the roll and the row. */
+  check("the roll hands its parts back to the caller",
+    /saveParts: _parts,\n      saveBonusUsed: _partsTotal,\n    \};/.test(save),
+    "_rollPcSave returns them");
+  check("and the row built from a handed result keeps the die",
+    /dieResult: existing\.dieResult \?\? null,/.test(save));
+  check("and the parts",
+    /saveParts: Array\.isArray\(existing\.saveParts\) \? existing\.saveParts : \[\],/.test(save));
+  check("and which save it was, so a redraw can still read itself",
+    /saveAbility: existing\.saveAbility \?\? tgt\.saveAbility \?\? null,/.test(save));
+  /* ⚠️ AND THE MEASUREMENT REACHES THE ROLL. Virric was measured +2 and his row
+     showed nothing, because the hand-made prompt listed every field but that. */
+  check("the GM's stand-in prompt carries the measured cover",
+    /coverBonus: tgt\.coverBonus \?\? null,\n      currentHP: tgt\.currentHP/.test(save),
+    "Virric's +2");
+}
+
+console.log("\nA DICE SO NICE THROW IS A FINISHED ROLL");
+{
+  /* ⚠️ His rule, same message: "Do not hold the card." Two offline characters
+     held the whole save card behind an animation of a result they were not there
+     to watch. */
+  check("the roll can be told not to wait for the animation",
+    /async _rollPcSave\(message, \{ holdForDice = true \} = \{\} \)?/.test(save)
+    || /async _rollPcSave\(message, \{ holdForDice = true \} = \{\}\) \{/.test(save),
+    "holdForDice");
+  check("and the GM rolling for an absent player does not",
+    /_rollPcSave\(fakeMsg, \{ holdForDice: false \}\)/.test(save));
+  check("while a player's own roll still waits, because they are watching it",
+    /if \(holdForDice\) await awaitDsnRoll\(\);/.test(save));
+}
+
 console.log("\nONLY THE NUMBER AFTER THE EQUALS IS BRIGHT");
 {
   const css = readFileSync("D:/FoundryVTT/Data/modules/ace-qol/styles/ace-qol.css", "utf8");
