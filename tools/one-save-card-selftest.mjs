@@ -201,12 +201,21 @@ console.log("\nTHE FORMULA IS ON THE ROW THAT IS LEFT");
   check("it reads the creature's sheet and its die through the one reader",
     /SaveEngine\._rollReadingFor\(r, opts\)/.test(body), "_rollReadingFor");
   check("it shows the total the ROLL made, so the math is not redone",
-    /total: typeof r\.saveTotal === "number" \? r\.saveTotal : used/.test(body),
+    /total: typeof r\.saveTotal === "number" \? r\.saveTotal : null/.test(body),
     "the row's own number");
-  check("and the die is on the line, his rule",
-    /die, rolled: true/.test(body), "d20 14 +5 Dex 20 +4 prof = 23");
+  /* ⚠️ THE DIE IS NOT ON THIS LINE (his correction, 2026-10-01: "The die and the
+     total stay. The line under them is wrong. It repeats the die"). The picture
+     and the total are the row above it. */
+  check("and the die is not repeated on it",
+    !/die,/.test(body), "Dex +5 | Prof +4 = 14");
   check("and it is drawn as a pill, never loose on the card",
-    /formulaPill\(parts/.test(body), "inside its pill");
+    /rolledPill\(parts/.test(body), "inside its pill");
+  /* ⚠️ AND A CREATURE WITH NOTHING TO ADD GETS NO PILL: the builder comes back
+     empty and the row draws nothing. */
+  check("a creature with nothing to add gets no line at all",
+    /if \(!parts\.some\(p => Number\(p\.value\) !== 0\)\) return "";/
+      .test(readFileSync("D:/FoundryVTT/Data/modules/ace-qol/scripts/roll-formula.mjs", "utf8")),
+    "Virric gets no line");
   check("a row that never rolled gets no formula",
     /if \(!r \|\| r\.noRoll \|\| r\.pending\) return "";/.test(body), "nothing to explain");
   // The old bare modifier is gone from the asking card.

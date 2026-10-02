@@ -6523,6 +6523,31 @@ i.ace-douse-tool::after {
   white-space: normal; overflow-wrap: anywhere; word-break: normal;
 }
 
+/* ══ THE LINE UNDER A ROLLED SAVE ════════════════════════════════════
+
+     Dex +5 | Prof +4 = 14
+
+   His rule, 2026-10-01: "The line names the bonus first, then the number, with a
+   darker gold pipe between the parts. THE PIPE IS THE ONLY GOLD."
+
+   So this pill drops the gold wash and the gold frame the pre-roll one wears:
+   on a row that already carries a gold-framed card, a gold tint behind a gold
+   label behind gold text is four golds saying nothing. One dark gold, on the one
+   mark that separates the parts. */
+.ace-qol-formula-pill.ace-qol-formula-rolled {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+.ace-qol-formula-rolled .ace-qol-formula-label { color: #9a978f; }
+.ace-qol-formula-rolled .ace-qol-formula-text { color: #f0eee6; }
+.ace-qol-formula-part { white-space: nowrap; }   /* card-wrap-ok: "Dex +5" is two words that mean one thing; the line wraps between parts, at the pipes */
+.ace-qol-formula-pipe {
+  color: #8b6914;
+  font-weight: 700;
+  margin: 0 7px;
+}
+.ace-qol-formula-eq { margin-left: 8px; font-weight: 700; }
+
 /* A spent regeneration card: it has been applied, so it reads as done.
    ⚠️ NOTHING IS HIDDEN. The numbers stay readable, the pill keeps its shape and
    nothing is clipped; it is only dimmed and desaturated so a screen full of turns

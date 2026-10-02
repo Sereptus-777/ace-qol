@@ -30,7 +30,7 @@ globalThis.Hooks = { on: () => {}, once: () => {}, callAll: () => {} };
 globalThis.ui = {};
 globalThis.CONFIG = { DND5E: { abilities: {} } };
 
-const { explainSave, formulaText, rollLineText } = await import(
+const { explainSave, formulaText, rolledLineText } = await import(
   "file:///D:/FoundryVTT/Data/modules/ace-qol/scripts/roll-formula.mjs");
 const engine = readFileSync("D:/FoundryVTT/Data/modules/ace-qol/scripts/save-engine.mjs", "utf8");
 
@@ -60,51 +60,71 @@ const sheet = ({ name, ab = "dex", score, mod, prof = 0, profMult = 0,
   };
 };
 
-console.log("\nHIS FIVE ROWS, EACH ONE ADDING UP");
+console.log("\nHIS FIVE ROWS, AND THE LINE EACH ONE GETS");
 {
-  // Escher: Dex 1 (−5), proficient +3, behind half cover. Die 1, total 1.
+  // Escher: Dex 1 (−5), proficient +3, behind half cover.
   const escher = sheet({ name: "Escher", score: 1, mod: -5, prof: 3, profMult: 1,
     cover: 2, coverStatus: "coverHalf" });
   const { parts, total } = explainSave(escher, "dex");
   check("Escher's parts add up to the +0 his roll used", total === 0, `total ${total}`);
-  const line = rollLineText(parts, { die: 1, total: 1 });
-  check("and the line is the die, then every bonus, then the 1 on the row",
-    line.startsWith("d20 1 ") && /cover/.test(line) && / = 1/.test(line), line);
   check("cover is named by which cover it is",
     parts.find(p => p.label === "cover")?.why === "half cover");
+  check("and his line is the names, the numbers and the total",
+    rolledLineText(parts, { total: 1 }) === "Dex −5 | Prof +3 | Cover +2 = 1",
+    rolledLineText(parts, { total: 1 }));
 
-  // Jeth: Dex 20 (+5), proficient +4, no cover. Total 23, so the die was 14.
+  /* ⚠️ HIS THREE LINES, WORD FOR WORD (2026-10-01). */
   const jeth = sheet({ name: "Jeth", score: 20, mod: 5, prof: 4, profMult: 1 });
-  const j = explainSave(jeth, "dex");
-  check("Jeth's sheet comes to +9, not 0", j.total === 9, `total ${j.total}`);
-  check("and his line ends in the 23 the row shows",
-    rollLineText(j.parts, { die: 14, total: 23 }).endsWith("= 23 · no ring, cloak or feat"),
-    rollLineText(j.parts, { die: 14, total: 23 }));
+  check("Jeth is Dex +5 | Prof +4 = 14",
+    rolledLineText(explainSave(jeth, "dex").parts, { total: 14 }) === "Dex +5 | Prof +4 = 14",
+    rolledLineText(explainSave(jeth, "dex").parts, { total: 14 }));
 
-  // The Gorgon and the Cloud Giant: +0 ability, +2 from cover alone.
   const gorgon = sheet({ name: "Gorgon", score: 11, mod: 0, cover: 2, coverStatus: "coverHalf" });
-  check("the Gorgon's +2 is cover, and the line says so",
-    explainSave(gorgon, "dex").total === 2
-    && /\+2 cover/.test(rollLineText(explainSave(gorgon, "dex").parts, { die: 11, total: 13 })),
-    rollLineText(explainSave(gorgon, "dex").parts, { die: 11, total: 13 }));
+  check("the Gorgon is Dex +0 | Cover +2 = 6",
+    rolledLineText(explainSave(gorgon, "dex").parts, { total: 6 }) === "Dex +0 | Cover +2 = 6",
+    rolledLineText(explainSave(gorgon, "dex").parts, { total: 6 }));
 
-  // Virric: nothing but a +0 ability. The line still says what he does not have.
+  const cloud = sheet({ name: "Cloud Giant", score: 10, mod: 0, cover: 2, coverStatus: "coverHalf" });
+  check("the Cloud Giant is Dex +0 | Cover +2 = 20",
+    rolledLineText(explainSave(cloud, "dex").parts, { total: 20 }) === "Dex +0 | Cover +2 = 20",
+    rolledLineText(explainSave(cloud, "dex").parts, { total: 20 }));
+
+  /* ⚠️ "Virric has nothing to add, so he gets no line." */
   const virric = sheet({ name: "Virric", score: 10, mod: 0 });
-  check("Virric's line still names the absence of an item or feat",
-    rollLineText(explainSave(virric, "dex").parts, { die: 11, total: 11 })
-      .includes("no ring, cloak or feat"));
+  check("Virric has nothing to add, so he gets no line",
+    rolledLineText(explainSave(virric, "dex").parts, { total: 11 }) === "",
+    `"${rolledLineText(explainSave(virric, "dex").parts, { total: 11 })}"`);
 }
 
-console.log("\nA RING, A CLOAK OR A FEAT");
+console.log("\nONE WORD, AND ONLY WHEN HE HAS IT");
 {
   const withCloak = sheet({ name: "Ireena", score: 14, mod: 2, prof: 3, profMult: 1, own: "1" });
-  const { parts } = explainSave(withCloak, "dex");
-  const line = rollLineText(parts, { die: 9, total: 15 });
-  check("a bonus on the sheet is on the line", /\+1/.test(line), line);
-  /* ⚠️ THE TAIL IS AN ANSWER, NOT A HABIT: it is there when there is nothing to
-     name and gone the moment there is. */
-  check("and the 'none' tail goes the moment there is one",
-    !line.includes("no ring, cloak or feat"), line);
+  const line = rolledLineText(explainSave(withCloak, "dex").parts, { total: 15 });
+  const jethLine = rolledLineText(explainSave(
+    sheet({ name: "Jeth", score: 20, mod: 5, prof: 4, profMult: 1 }), "dex").parts, { total: 14 });
+  check("a bonus he has is on the line, as one word", /\| \w+ \+1/.test(line), line);
+  /* ⚠️🔴 AND NOTHING ABOUT WHAT HE DOES NOT HAVE (his correction: "No ability
+     score, no repeated die, no sentence about a ring he does not have"). */
+  check("no sentence about a ring he does not have", !/ring|cloak or feat/i.test(jethLine), jethLine);
+  check("no ability score on the line", !/Dex \d\d|Dex 1\b/.test(line + " " + jethLine));
+  check("and no die repeated on it", !/d20/.test(line + " " + jethLine), line);
+}
+
+console.log("\nTHE PIPE IS THE ONLY GOLD");
+{
+  const css = readFileSync("D:/FoundryVTT/Data/modules/ace-qol/styles/ace-qol.css", "utf8");
+  const at = css.indexOf(".ace-qol-formula-pipe");
+  check("the pipe is its own element, so it can be the one gold thing",
+    at > 0 && /#8b6914/.test(css.slice(at, at + 200)));
+  check("the rolled pill drops the gold wash and the gold frame",
+    /\.ace-qol-formula-pill\.ace-qol-formula-rolled \{[^}]*rgba\(255, 255, 255, 0\.04\)/s.test(css));
+  check("a row with nothing to add draws no pill at all",
+    rolledLineText(explainSave(sheet({ name: "Virric", score: 10, mod: 0 }), "dex").parts,
+      { total: 11 }) === "");
+  /* ⚠️ A ZERO BESIDE SOMETHING REAL STAYS: his own Gorgon keeps it. */
+  check("and a zero beside something real stays, his Gorgon",
+    rolledLineText(explainSave(sheet({ name: "Gorgon", score: 11, mod: 0, cover: 2,
+      coverStatus: "coverHalf" }), "dex").parts, { total: 6 }).startsWith("Dex +0 |"));
 }
 
 console.log("\nCOVER IS A DEXTERITY SAVE AND NOTHING ELSE");
@@ -161,8 +181,8 @@ console.log("\nONE READER FOR THE DIE");
   check("both row renderers ask it",
     (engine.match(/SaveEngine\._rollReadingFor\(r, opts\)/g) ?? []).length >= 3,
     `${(engine.match(/SaveEngine\._rollReadingFor\(r, opts\)/g) ?? []).length} call sites`);
-  check("and the line it draws is the rolled shape",
-    /die, rolled: true, label: "save"/.test(engine));
+  check("and the line it draws is the rolled one, which can come back empty",
+    /return rolledPill\(parts, \{/.test(engine) && /label: "save",/.test(engine));
   /* ⚠️ A FACE THAT IS MERELY PLAUSIBLE IS A PICTURE OF A DIE NOBODY THREW.
      Bless adds 1d4, so the total stops being the face plus a number. */
   check("a Bless die in the bonus refuses the working-out",

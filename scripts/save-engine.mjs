@@ -21,7 +21,7 @@
 import { MODULE_ID } from "./ace-qol.mjs";
 // The one reader for what made a number (roll-formula.mjs): every ACE roll card
 // prints the parts behind its total, never the total alone.
-import { explainSave, formulaText, formulaPill } from "./roll-formula.mjs";
+import { explainSave, formulaText, formulaPill, rolledPill } from "./roll-formula.mjs";
 import { aimAt } from "./road/aim.mjs";   // ACE aims on purpose: no "did you mean that corpse?" (road/aim.mjs)
 import { replyIsFromTheUserWeAsked } from "./socket-authority.mjs";
 // The one DC wrapper: it names the creature(s) rolling against the number
@@ -8719,15 +8719,16 @@ export class SaveEngine {
   static _formulaForRow(r, opts = {}) {
     try {
       if (!r || r.noRoll || r.pending) return "";
-      const { die, used, parts } = SaveEngine._rollReadingFor(r, opts);
+      const { parts } = SaveEngine._rollReadingFor(r, opts);
       if (!parts.length) return "";
-      // ⚠️ THE DIE IS ON THE LINE NOW (his rule, 2026-10-01: "Print the die,
-      // then every bonus and where it came from"). `rolled` is what picks the
-      // shape that ends in the number the row already shows, instead of the
-      // "= D20 + N" that belongs to a roll nobody has made yet.
-      return formulaPill(parts, {
-        total: typeof r.saveTotal === "number" ? r.saveTotal : used,
-        die, rolled: true, label: "save",
+      /* ⚠️🔴 THE DIE IS NOT ON THIS LINE (his correction, 2026-10-01: "The die
+         and the total stay. The line under them is wrong. It repeats the die").
+         The picture and the total are the row above; this line is what the
+         creature added and nothing else. It comes back empty for a creature with
+         nothing to add, and an empty line draws no pill at all. */
+      return rolledPill(parts, {
+        total: typeof r.saveTotal === "number" ? r.saveTotal : null,
+        label: "save",
       });
     } catch (err) {
       console.warn(`${MODULE_ID} | could not read what made ${r?.name}'s save bonus, `

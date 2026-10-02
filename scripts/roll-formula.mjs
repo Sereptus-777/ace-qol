@@ -148,6 +148,20 @@ function grantedBy(actor, keys) {
   }
 }
 
+/**
+ * One word for a part, capitalised: "cloak" → "Cloak".
+ *
+ * ⚠️ AND "Bonus" WHEN THE TABLE DID NOT KNOW IT. His rule is one word, so a
+ * bonus whose source has no short kind cannot print the three it used to
+ * ("not on the sheet"). The number is still real and the console still carries
+ * what was actually found.
+ */
+function oneWord(label) {
+  const w = String(label ?? "").trim().split(/\s+/)[0] ?? "";
+  if (!w) return "Bonus";
+  return w.charAt(0).toUpperCase() + w.slice(1);
+}
+
 export function explainSave(actor, ability) {
   const ab = String(ability ?? "").toLowerCase();
   const a = actor?.system?.abilities?.[ab];
@@ -157,8 +171,15 @@ export function explainSave(actor, ability) {
   const score = Number(a.value);
   const mod = Number.isFinite(Number(a.mod)) ? Number(a.mod)
     : Math.floor((Number.isFinite(score) ? score : 10) - 10) / 2 | 0;
+  /* ⚠️🔴 EVERY PART CARRIES ONE WORD (his rule, 2026-10-01: "A bonus is named
+     only when he has it, and the name is one word: Cloak +1, Ring +1, Feat +1.
+     No ability score"). `label` is the old long form, still used by the line a
+     roll has not been made on yet; `name` is the word the rolled line prints.
+     The score left the card with it: "Dex 20" told him what he already knows
+     from the sheet, and the +5 is the only part of it that is in the sum. */
   parts.push({
     label: Number.isFinite(score) ? `${ABILITY_NAME[ab] ?? ab.toUpperCase()} ${score}` : (ABILITY_NAME[ab] ?? ab.toUpperCase()),
+    name: ABILITY_NAME[ab] ?? ab.toUpperCase(),
     value: mod, why: "ability",
   });
 
@@ -167,7 +188,7 @@ export function explainSave(actor, ability) {
   const prof = Number(actor?.system?.attributes?.prof ?? 0);
   if (profMult > 0 && prof) {
     const v = Math.floor(prof * profMult);
-    if (v) parts.push({ label: "prof", value: v, why: "proficient in this save" });
+    if (v) parts.push({ label: "prof", name: "Prof", value: v, why: "proficient in this save" });
   }
 
   const own = flatBonus(a.bonuses?.save);
@@ -178,7 +199,7 @@ export function explainSave(actor, ability) {
         + `that no active effect claims, so the card prints the number alone rather than naming `
         + `something that is not there.`);
     }
-    parts.push({ label: by, value: own, why: "on the ability itself" });
+    parts.push({ label: by, name: oneWord(by), value: own, why: "on the ability itself" });
   }
   else if (own === null) {
     console.log(`${MODULE_ID} | ${actor?.name}'s ${ab.toUpperCase()} save bonus is a formula `
@@ -192,7 +213,7 @@ export function explainSave(actor, ability) {
       console.log(`${MODULE_ID} | ${actor?.name} carries ${signed(global)} on every save that no `
         + `active effect claims, so the card prints the number alone.`);
     }
-    parts.push({ label: by, value: global, why: "on the creature" });
+    parts.push({ label: by, name: oneWord(by), value: global, why: "on the creature" });
   }
 
   /* ⚠️🔴 COVER IS A DEXTERITY SAVE BONUS, AND IT IS THE ONE THAT WAS MISSING.
@@ -216,7 +237,7 @@ export function explainSave(actor, ability) {
       const has = (id) => actor?.statuses?.has?.(id) ?? false;
       const which = has("coverThreeQuarters") ? "three-quarters cover"
         : has("coverHalf") ? "half cover" : "cover";
-      parts.push({ label: "cover", value: cover, why: which });
+      parts.push({ label: "cover", name: "Cover", value: cover, why: which });
     }
   }
 
@@ -230,7 +251,8 @@ export function explainSave(actor, ability) {
   const systemTotal = Number(a?.save?.value);
   if (Number.isFinite(systemTotal) && systemTotal !== sum) {
     const gap = systemTotal - sum;
-    parts.push({ label: "not on the sheet", value: gap, why: "dnd5e adds it and does not say where from" });
+    parts.push({ label: "not on the sheet", name: "Bonus", value: gap,
+      why: "dnd5e adds it and does not say where from" });
     console.log(`${MODULE_ID} | ${actor?.name}'s ${ab.toUpperCase()} save is ${signed(systemTotal)} `
       + `on the sheet and the parts the card can name come to ${signed(sum)}. The ${signed(gap)} `
       + `difference is on the card as "not on the sheet" rather than left off. Look for an active `
@@ -358,57 +380,77 @@ export function formulaText(parts, total = null) {
  * downward and never leaves the card or clips its own text.
  */
 /**
- * The line for a save that has already been rolled: the die, then every bonus
- * and where it came from, then the total it made.
+ * THE LINE UNDER A ROLLED SAVE: the bonuses this creature actually has, and the
+ * number they made.
  *
- *     d20 14 +5 Dex 20 +4 prof = 23 · no ring, cloak or feat
- *     d20 11 +0 Dex 11 +2 cover = 13 · no ring, cloak or feat
- *     d20 1 −5 Dex 1 +3 prof +2 cover = 1 · no ring, cloak or feat
+ *     Dex +5 | Prof +4 = 14
+ *     Dex +0 | Cover +2 = 6
+ *     Cloak +1 | Prof +3 = 18
  *
- * ⚠️🔴 HIS RULE, 2026-10-01: *"The formula is not the roll... Print the die,
- * then every bonus and where it came from... A ring, a cloak or a feat appears on
- * the line if he has one, and the line says there is none if he does not."*
+ * ⚠️🔴 HIS CORRECTION, 2026-10-01, on the shape I shipped that morning:
+ * *"It repeats the die, names the ability score, and says 'no ring, cloak or
+ * feat' on every row. The line names the bonus first, then the number, with a
+ * darker gold pipe between the parts. The pipe is the only gold... A bonus is
+ * named only when he has it, and the name is one word."*
  *
- * The old line ended "= D20 + N", which is the shape for a roll that has not
- * happened yet. After the die has landed that reads as a second, different sum
- * beside the one the row already shows, and on four of his five rows the two
- * disagreed. This one ends in the number on the row.
+ * So: no die (it is already the picture above with its total beside it), no
+ * score, no sentence about what he does not have. Name, then number, pipes
+ * between, and the row's own total at the end.
  *
- * ⚠️ THE TAIL IS A STATEMENT, NOT A BLANK. "No ring, cloak or feat" is an
- * answer; leaving it off is the same silence that made him ask where the +2 came
- * from in the first place.
+ * ⚠️ NOTHING TO ADD MEANS NO LINE AT ALL (his rule, same message: "Virric has
+ * nothing to add, so he gets no line"). A row whose every part is zero has
+ * nothing to explain, and an empty pill saying so is the noise he just took off
+ * four other rows.
+ *
+ * ⚠️ A ZERO BESIDE SOMETHING REAL STAYS. His own example keeps it: "The Gorgon
+ * is Dex +0 | Cover +2". The +0 is why the +2 is the whole bonus, and dropping
+ * it would leave a line that looks like it is missing its ability.
  *
  * @param {Array} parts  from `explainSave`
  * @param {object} o
- * @param {number|null} o.die  the face that was rolled
- * @param {number|null} o.total  the roll's own total, when it is known
+ * @param {number|null} o.total  the number the row shows
+ * @returns {string} HTML, or "" when there is nothing to name
  */
-export function rollLineText(parts, { die = null, total = null } = {}) {
+export function rolledLineHtml(parts, { total = null } = {}) {
   if (!parts?.length) return "";
-  const sum = parts.reduce((n, p) => n + p.value, 0);
-  const shown = parts.map((p, i) => {
-    if (i === 0 && p.why === "ability") return `${signed(p.value)} ${p.label}`;
-    return p.label ? `${signed(p.value)} ${p.label}` : signed(p.value);
-  });
-  const haveDie = die !== null && die !== undefined && Number.isFinite(Number(die));
-  const haveTotal = total !== null && total !== undefined && Number.isFinite(Number(total));
-  const end = haveTotal ? Number(total) : (haveDie ? Number(die) + sum : null);
-  const head = haveDie ? `d20 ${Number(die)}` : "";
-  const body = [head, ...shown].filter(Boolean).join(" ");
-  const line = end === null ? body : `${body} = ${end}`;
-
-  /* ⚠️ ONLY THE EXTRAS COUNT AS "a ring, a cloak or a feat". An ability score,
-     proficiency and cover are not something he put on; they are what the
-     creature is and where it is standing. */
-  const builtIn = new Set(["ability", "proficient in this save", "half cover",
-    "three-quarters cover", "cover"]);
-  const extras = parts.filter(p => !builtIn.has(String(p.why ?? "")));
-  const tail = extras.length ? "" : " · no ring, cloak or feat";
-  return line + tail;
+  if (!parts.some(p => Number(p.value) !== 0)) return "";
+  const esc = (v) => foundry.utils.escapeHTML(String(v ?? ""));
+  const pieces = parts.map(p =>
+    `<span class="ace-qol-formula-part">${esc(p.name ?? p.label ?? "Bonus")} ${signed(p.value)}</span>`);
+  // ⚠️ THE PIPE IS AN ELEMENT, NOT A CHARACTER IN THE TEXT, because it is the
+  // one thing on this line that is gold and it cannot be coloured otherwise.
+  const line = pieces.join(`<span class="ace-qol-formula-pipe">|</span>`);
+  const told = total !== null && total !== undefined && Number.isFinite(Number(total));
+  return told ? `${line}<span class="ace-qol-formula-eq">= ${esc(Number(total))}</span>` : line;
 }
 
-export function formulaPill(parts, { total = null, label = "", die = null, rolled = false } = {}) {
-  const text = rolled ? rollLineText(parts, { die, total }) : formulaText(parts, total);
+/**
+ * The same line, as plain text, for anything that cannot take HTML.
+ * @returns {string} "" when there is nothing to name
+ */
+export function rolledLineText(parts, { total = null } = {}) {
+  if (!parts?.length) return "";
+  if (!parts.some(p => Number(p.value) !== 0)) return "";
+  const line = parts.map(p => `${p.name ?? p.label ?? "Bonus"} ${signed(p.value)}`).join(" | ");
+  const told = total !== null && total !== undefined && Number.isFinite(Number(total));
+  return told ? `${line} = ${Number(total)}` : line;
+}
+
+/**
+ * The pill a ROLLED save hangs its line in, or "" when there is no line to draw.
+ */
+export function rolledPill(parts, { total = null, label = "" } = {}) {
+  const inner = rolledLineHtml(parts, { total });
+  if (!inner) return "";
+  const esc = (v) => foundry.utils.escapeHTML(String(v ?? ""));
+  return `<div class="ace-qol-formula-pill ace-qol-formula-rolled">`
+    + (label ? `<span class="ace-qol-formula-label">${esc(label)}</span>` : "")
+    + `<span class="ace-qol-formula-text">${inner}</span>`
+    + `</div>`;
+}
+
+export function formulaPill(parts, { total = null, label = "" } = {}) {
+  const text = formulaText(parts, total);
   if (!text) return "";
   const esc = (v) => foundry.utils.escapeHTML(String(v ?? ""));
   return `<div class="ace-qol-formula-pill">`
