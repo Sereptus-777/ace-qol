@@ -21,7 +21,7 @@
 import { MODULE_ID } from "./ace-qol.mjs";
 // The one reader for what made a number (roll-formula.mjs): every ACE roll card
 // prints the parts behind its total, never the total alone.
-import { explainSave, formulaText, formulaPill, rolledPill } from "./roll-formula.mjs";
+import { explainSave, formulaText, formulaPill, rolledPill, coverInSheetSave } from "./roll-formula.mjs";
 import { aimAt } from "./road/aim.mjs";   // ACE aims on purpose: no "did you mean that corpse?" (road/aim.mjs)
 import { replyIsFromTheUserWeAsked } from "./socket-authority.mjs";
 // The one DC wrapper: it names the creature(s) rolling against the number
@@ -3600,6 +3600,34 @@ export class SaveEngine {
                    && damageTypes.some(t => t && t !== "none");
     const halfOnSave = rawHalfOnSave && hasDamage;
 
+    /* ══ COVER IS DECIDED ONCE, WHEN THE BOLT IS MEASURED ══════════════════
+
+       His rule, 2026-10-02: "Cover is decided once, when the bolt is measured,
+       and that +2 is in the roll and on the line."
+
+       ⚠️🔴 IT USED TO BE DECIDED INSIDE EACH ROLL, and that is why his five
+       rows disagreed with each other: the Gorgon and the Cloud Giant got +2,
+       Virric got nothing while standing behind the same thing, and the line
+       under each row re-derived it a third time from a status that was not
+       there. One measurement, here, carried to the roll and carried to the line.
+       Nothing downstream asks again. */
+    const casterTokenDocForCover = SaveEngine.casterTokenDoc(actor, { sceneId: canvas.scene?.id, quiet: true });
+    const coverByToken = new Map();
+    if (saveAbility === "dex") {
+      for (const token of tokens) {
+        const td = token?.document ?? null;
+        coverByToken.set(td?.id ?? token?.id,
+          SaveEngine._measureCover(casterTokenDocForCover, td));
+      }
+      const seen = [...coverByToken.values()];
+      if (seen.some(v => v > 0)) {
+        console.log(`${MODULE_ID} | cover measured once for this area: `
+          + `${[...coverByToken.entries()].map(([id, v]) => `${canvas.scene?.tokens?.get(id)?.name ?? id}: `
+            + `${v ? `+${v}` : "none"}`).join(", ")}. That number is in every roll below and on `
+          + `every line under it.`);
+      }
+    }
+
     // Assess all targets
     const targetData = [];
     for (const token of tokens) {
@@ -3637,6 +3665,10 @@ export class SaveEngine {
         saveMod: modStr,
         saveModBase: saveMod,
         saveModBonus: numericBonusTotal,
+        // ⚠️ THE ONE MEASUREMENT, carried. A row that was not measured carries
+        // null, which is different from a row measured at zero.
+        coverBonus: coverByToken.has(token.document?.id ?? token.id)
+          ? coverByToken.get(token.document?.id ?? token.id) : null,
         saveAbilityUpper: saveAbility.toUpperCase(),
         autoFailSave: state.autoFailSave,
         saveAdvantage: state.saveAdvantage,
@@ -5242,6 +5274,8 @@ export class SaveEngine {
       r.pending    = false;
       r.saveTotal  = f.saveTotal;
       r.dieResult  = f.dieResult ?? null;
+      r.saveParts  = Array.isArray(f.saveParts) ? f.saveParts : (r.saveParts ?? []);
+      r.saveBonusUsed = typeof f.saveBonusUsed === "number" ? f.saveBonusUsed : (r.saveBonusUsed ?? null);
       r.passed     = passed;
       r.resultLabel = v.label;
       r.isAutoFail = f.autoFailSave;
@@ -6023,6 +6057,10 @@ export class SaveEngine {
     let rollResult = null;
     let isAutoFail = tgt.autoFailSave;
     let luck = null;   // a luck point spent on this save: { d20, note }
+    // The named parts of the bonus this roll is about to use, and their sum.
+    // They travel with the result so the card's line cannot disagree with it.
+    let _parts = [];
+    let _partsTotal = 0;
 
     if (isAutoFail) {
       saveTotal = 0;
@@ -6038,26 +6076,51 @@ export class SaveEngine {
       // dnd5e 5.2.5: abilities.dex.save may be a number OR an object with .value
       // Save modifier via the target profile — ONE reader for a fact that
       // was being decoded seven different ways in this file alone.
-      const saveMod = SaveEngine._targetProfileFor(targetActor, tgt)?.saveMod(ability) ?? 0;
+      const profileMod = SaveEngine._targetProfileFor(targetActor, tgt)?.saveMod(ability) ?? 0;
       const allBonusParts = (tgt.saveBonuses ?? []).map(b => b.value);
 
-      // ── Cover DEX save bonus (half cover +2, three-quarters +5) ──
-      if (ability === "dex" && tokenDoc && casterActorId) {
-        try {
-          if (QolSettings.get("enableCoverCalculation")) {
-            // Cover is measured from a POSITION, so it needs the exact body that
-            // cast — the card stamped it at cast time. The old search took the
-            // first token sharing the caster's actor, which with several unlinked
-            // copies is a different creature standing somewhere else. (F-019)
-            const casterTokenDoc = SaveEngine.casterTokenDocById(casterActorId, scene, options.casterTokenDocId);
-            if (casterTokenDoc) {
-              const coverResult = CoverEngine.calculateCover(casterTokenDoc, tokenDoc);
-              if (coverResult?.dexSaveBonus > 0) {
-                allBonusParts.push(coverResult.dexSaveBonus);
-              }
-            }
-          }
-        } catch (_) { /* cover check non-fatal */ }
+      /* ══ COVER: ONE NUMBER, MEASURED WHEN THE AREA WAS LAID DOWN ══════════
+
+         ⚠️🔴 THIS USED TO MEASURE ITS OWN, PER SAVE, AND ADD IT TO A SHEET
+         NUMBER THAT ALREADY HELD COVER. dnd5e folds a creature's cover status
+         into `abilities.dex.save.value`, so a creature wearing the status had it
+         counted twice and one standing behind the same rock without the status
+         had it counted once — which is his five rows exactly: the Gorgon and the
+         Cloud Giant at +2, Virric at nothing behind the same thing.
+
+         The card measures once for the whole area now. Here the sheet's number
+         gives up its own cover and that one measurement goes back in. */
+      const measured = Number(tgt.coverBonus ?? NaN);
+      let cover = 0;
+      if (Number.isFinite(measured)) {
+        cover = measured;
+      } else if (ability === "dex" && tokenDoc && casterActorId) {
+        // No measurement travelled with this row (a single save, a later
+        // re-roll), so it is taken here instead — once, and said out loud.
+        const casterTokenDoc = SaveEngine.casterTokenDocById(casterActorId, scene, options.casterTokenDocId);
+        cover = SaveEngine._measureCover(casterTokenDoc, tokenDoc);
+        if (cover) {
+          console.log(`${MODULE_ID} | ${tgt.name}'s row carried no cover measurement, so it was `
+            + `taken at the roll: +${cover}.`);
+        }
+      }
+      // ⚠️ THE SHEET'S OWN COVER COMES OUT, or the one above is the second copy.
+      const sheetCover = coverInSheetSave(targetActor, ability);
+      const saveMod = profileMod - sheetCover + cover;
+      // The names behind that number, built here and carried to the card.
+      const _built = SaveEngine._savePartsFor(targetActor, ability, tgt, cover);
+      _parts = _built.parts;
+      _partsTotal = _built.total;
+      if (_partsTotal !== saveMod) {
+        console.log(`${MODULE_ID} | ${tgt.name}'s save is rolling with ${saveMod >= 0 ? "+" : ""}`
+          + `${saveMod} and the parts that can be named come to ${_partsTotal >= 0 ? "+" : ""}`
+          + `${_partsTotal}. The row keeps the roll's number and the line under it is not drawn, `
+          + `because a line that does not add up to the row is worse than no line.`);
+      }
+      if (sheetCover) {
+        console.log(`${MODULE_ID} | ${tgt.name}'s sheet already carried +${sheetCover} of cover in `
+          + `its ${ability.toUpperCase()} save. It is taken out and this area's own measurement `
+          + `(${cover ? `+${cover}` : "none"}) used instead, so cover is counted once.`);
       }
 
       // Filter out zero / empty / null bonuses so the formula doesn't show
@@ -6177,6 +6240,12 @@ export class SaveEngine {
       damageModifiers: tgt.damageModifiers,
       currentHP: tgt.currentHP,
       maxHP: tgt.maxHP,
+      /* ⚠️🔴 THE PARTS TRAVEL WITH THE ROLL (his rule, 2026-10-02: "The row
+         and the line are one sum... It does not read the sheet again"). Built
+         out of what the formula actually contained, so the line under the row
+         can only ever name the bonus the row shows. */
+      saveParts: _parts,
+      saveBonusUsed: _partsTotal,
       isPC: false,
       pending: false,
     };
@@ -6831,6 +6900,11 @@ export class SaveEngine {
       superSaver: !!t.superSaver,
       semiSuperSaver: !!t.semiSuperSaver,
       saveBonuses: t.saveBonuses ?? null,
+      // ⚠️ THE ONE MEASUREMENT GOES WITH THE PROMPT. A player's save is the same
+      // sum as an NPC's, and it cannot be if the number is left behind on the
+      // card (his rule, 2026-10-02: cover is decided once, when the bolt is
+      // measured).
+      coverBonus: t.coverBonus ?? null,
       damageModifiers: t.damageModifiers ?? null,
       currentHP: t.currentHP,
       maxHP: t.maxHP,
@@ -6842,6 +6916,10 @@ export class SaveEngine {
     const flags = message.flags?.[MODULE_ID];
     if (!flags) return;
 
+    const _rowCover = flags.coverBonus ?? null;
+    // The named parts behind this roll's bonus, carried to the card with it.
+    let _parts = [];
+    let _partsTotal = 0;
     const { saveAbility, saveDC, tokenDocId, sceneId, actorId,
             autoFailSave, saveAdvantage, saveDisadvantage, superSaver,
             saveBonuses, targetName, targetImg, castId } = flags;
@@ -6891,26 +6969,36 @@ export class SaveEngine {
       // "WAITING FOR PLAYER" forever. `node --check` cannot catch this — an
       // undefined identifier is valid syntax and only explodes at runtime.
       // Copy-pasting a line out of _rollSingleSave(tgt, …) is how it got here.
-      const _row = { tokenDocId, sceneId, actorId };
-      const saveMod = SaveEngine._targetProfileFor(targetActor, _row)?.saveMod(ability) ?? 0;
+      const _row = { tokenDocId, sceneId, actorId, name: targetName, saveBonuses };
+      const profileMod = SaveEngine._targetProfileFor(targetActor, _row)?.saveMod(ability) ?? 0;
       const allBonusParts = (saveBonuses ?? []).map(b => b.value);
 
-      // ── Cover DEX save bonus (half cover +2, three-quarters +5) ──
-      if (ability === "dex" && tokenDoc) {
-        try {
-          if (QolSettings.get("enableCoverCalculation")) {
-            // The exact caster token the cast card stamped — see the matching
-            // note in _rollSingleSave. (F-019)
-            const casterActorId = flags.casterActorId ?? flags.actorId;
-            const casterTokenDoc = SaveEngine.casterTokenDocById(casterActorId, scene, flags.casterTokenDocId);
-            if (casterTokenDoc) {
-              const coverResult = CoverEngine.calculateCover(casterTokenDoc, tokenDoc);
-              if (coverResult?.dexSaveBonus > 0) {
-                allBonusParts.push(coverResult.dexSaveBonus);
-              }
-            }
-          }
-        } catch (_) { /* cover check non-fatal */ }
+      /* ⚠️🔴 A PLAYER'S SAVE IS THE SAME SUM AS AN NPC'S. This path had its
+         own copy of the cover block and added it to a sheet number that already
+         held cover, exactly as the NPC path did. One measurement: the card's,
+         when the area was laid down, and the sheet's own taken back out. */
+      const _measured = Number(_rowCover ?? NaN);
+      let cover = 0;
+      if (Number.isFinite(_measured)) {
+        cover = _measured;
+      } else if (ability === "dex" && tokenDoc) {
+        const casterActorId = flags.casterActorId ?? flags.actorId;
+        const casterTokenDoc = SaveEngine.casterTokenDocById(casterActorId, scene, flags.casterTokenDocId);
+        cover = SaveEngine._measureCover(casterTokenDoc, tokenDoc);
+        if (cover) {
+          console.log(`${MODULE_ID} | ${targetName}'s row carried no cover measurement, so it was `
+            + `taken at the roll: +${cover}.`);
+        }
+      }
+      const sheetCover = coverInSheetSave(targetActor, ability);
+      const saveMod = profileMod - sheetCover + cover;
+      const _built = SaveEngine._savePartsFor(targetActor, ability, _row, cover);
+      _parts = _built.parts;
+      _partsTotal = _built.total;
+      if (_partsTotal !== saveMod) {
+        console.log(`${MODULE_ID} | ${targetName}'s save is rolling with ${saveMod >= 0 ? "+" : ""}`
+          + `${saveMod} and the parts that can be named come to ${_partsTotal >= 0 ? "+" : ""}`
+          + `${_partsTotal}, so no line is drawn under that row.`);
       }
 
       // Filter out zero / empty / null bonuses so the formula doesn't show
@@ -7047,6 +7135,11 @@ export class SaveEngine {
           itemUuid: flags.itemUuid ?? null,
           activityId: flags.activityId ?? null,   // WHICH ability, not just which item
           rolledByGm: game.user.isGM,        // so a PC's client can show "GM" + grey its button
+          // ⚠️ THE PARTS TRAVEL WITH THE RESULT, same as an NPC's. Without them
+          // the GM's card has a player's row and nothing to explain it with, and
+          // the only honest thing a card can do with that is draw no line.
+          saveParts: _parts,
+          saveBonusUsed: _partsTotal,
           // What this client's whatLands said; the GM decides the row from the cast card.
           halfOnSave: _pcVerdict.half,
           damageMultiplier: _pcMultiplier,
@@ -7381,6 +7474,9 @@ export class SaveEngine {
     r.pending = false;
     r.saveTotal = pcResult.saveTotal;
     r.dieResult = pcResult.dieResult ?? null;
+    // The parts that made this player's bonus, as the roll itself recorded them.
+    r.saveParts = Array.isArray(pcResult.saveParts) ? pcResult.saveParts : [];
+    r.saveBonusUsed = typeof pcResult.saveBonusUsed === "number" ? pcResult.saveBonusUsed : null;
     r.passed = pcResult.passed;
     r.resultLabel = pcResult.resultLabel;
     r.isAutoFail = pcResult.autoFailSave;
@@ -8662,10 +8758,12 @@ export class SaveEngine {
   static _rollReadingFor(r, opts = {}) {
     const out = { die: null, used: null, parts: [], derived: false };
     try {
-      const ab = String(r?.saveAbility ?? opts?.saveAbility ?? "").toLowerCase();
-      const actor = (game.scenes?.get(r?.sceneId)?.tokens?.get(r?.tokenDocId)?.actor)
-        ?? (r?.actorId ? game.actors?.get(r.actorId) : null) ?? null;
-      if (actor && ab) out.parts = explainSave(actor, ab).parts ?? [];
+      /* ⚠️🔴 THE ROLL'S OWN PARTS, NOT THE SHEET'S (his rule, 2026-10-02: "It
+         does not read the sheet again"). They were recorded when the formula was
+         built, so they are what went into this die's bonus and nothing else. A
+         row from before this version carries none, and then a missing face
+         cannot be worked out and is not guessed at. */
+      out.parts = Array.isArray(r?.saveParts) ? r.saveParts : [];
 
       const told = r?.dieResult ?? r?.roll?.dice?.[0]?.total ?? null;
       const total = typeof r?.saveTotal === "number" ? r.saveTotal : null;
@@ -8693,7 +8791,9 @@ export class SaveEngine {
         return out;
       }
 
-      const sheet = out.parts.reduce((n, p) => n + p.value, 0);
+      const sheet = typeof r?.saveBonusUsed === "number"
+        ? r.saveBonusUsed
+        : out.parts.reduce((n, p) => n + (Number(p?.value) || 0), 0);
       const face = total - sheet;
       if (!Number.isInteger(face) || face < 1 || face > 20) {
         console.log(`${MODULE_ID} | ${r?.name}'s save came back as ${total} with no die, and this `
@@ -8719,13 +8819,49 @@ export class SaveEngine {
   static _formulaForRow(r, opts = {}) {
     try {
       if (!r || r.noRoll || r.pending) return "";
-      const { parts } = SaveEngine._rollReadingFor(r, opts);
-      if (!parts.length) return "";
-      /* ⚠️🔴 THE DIE IS NOT ON THIS LINE (his correction, 2026-10-01: "The die
-         and the total stay. The line under them is wrong. It repeats the die").
-         The picture and the total are the row above; this line is what the
-         creature added and nothing else. It comes back empty for a creature with
-         nothing to add, and an empty line draws no pill at all. */
+
+      /* ══ THE ROW AND THE LINE ARE ONE SUM ══════════════════════════
+
+         His rule, 2026-10-02: "The bonus is what was added to that die, and the
+         line names those parts. It does not read the sheet again... If the named
+         parts do not add up to the bonus on the row, the line is not drawn."
+
+         ⚠️🔴 IT READ THE SHEET, AND THAT IS THE WHOLE FAULT HE LISTED. Escher
+         rolled 13 for 13 — nothing added — while the line went back to his sheet
+         and printed −2. The Gorgon and the Cloud Giant added +2 and got no line
+         at all, because the cover that made their +2 was measured at the roll and
+         the sheet had no trace of it. Lamia added +3 under a line reading +1.
+         Four rows, four different numbers, because two different readers answered
+         the same question minutes apart.
+
+         So the line draws what the ROLL carried and nothing else. No sheet, no
+         second reading, no guessing. And when the parts do not come to the number
+         on the row, there is no line: a creature with an unexplained bonus is
+         told nothing rather than told something false. */
+      const parts = Array.isArray(r.saveParts) ? r.saveParts : null;
+      if (!parts || !parts.length) {
+        if (!r.isAutoFail && typeof r.saveTotal === "number") {
+          console.log(`${MODULE_ID} | ${r?.name}'s row carries no parts from its roll, so there is `
+            + `no line under it. A roll made before this version, or on another client, does not `
+            + `know what made its own bonus.`);
+        }
+        return "";
+      }
+
+      const sum = parts.reduce((n, p) => n + (Number(p?.value) || 0), 0);
+      const die = r.dieResult ?? r.roll?.dice?.[0]?.total ?? null;
+      const onRow = (typeof r.saveTotal === "number" && die != null)
+        ? r.saveTotal - die
+        : (typeof r.saveBonusUsed === "number" ? r.saveBonusUsed : null);
+      if (onRow == null) return "";
+      if (sum !== onRow) {
+        console.log(`${MODULE_ID} | ${r?.name}'s row shows a bonus of ${onRow >= 0 ? "+" : ""}`
+          + `${onRow} and its named parts come to ${sum >= 0 ? "+" : ""}${sum} `
+          + `(${parts.map(p => `${p.name} ${p.value >= 0 ? "+" : ""}${p.value}`).join(", ")}). `
+          + `No line is drawn: the row is the roll, and a line that disagrees with it is worse `
+          + `than none.`);
+        return "";
+      }
       return rolledPill(parts);
     } catch (err) {
       console.warn(`${MODULE_ID} | could not read what made ${r?.name}'s save bonus, `
@@ -10157,6 +10293,67 @@ export class SaveEngine {
    * snapshot once, not once per question asked about it.
    */
   static _profileCache = new Map();
+
+  /**
+   * ONE MEASUREMENT OF COVER, taken where the area is laid down.
+   *
+   * ⚠️🔴 AND IT IS SUBTRACTED FROM THE SHEET, NOT ADDED TO IT. dnd5e folds
+   * a creature's cover STATUS into `abilities.dex.save.value` itself, so a roll
+   * that took that number and then added ACE's own measurement counted the same
+   * cover twice. The roll below takes the sheet's number with its status cover
+   * removed and this one measurement put back, so there is exactly one.
+   *
+   * @returns {number} 0, 2 or 5
+   */
+  static _measureCover(casterTokenDoc, targetTokenDoc) {
+    try {
+      if (!casterTokenDoc || !targetTokenDoc) return 0;
+      if (!QolSettings.get("enableCoverCalculation")) return 0;
+      const result = CoverEngine.calculateCover(casterTokenDoc, targetTokenDoc);
+      return Number(result?.dexSaveBonus ?? 0) || 0;
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not measure cover for ${targetTokenDoc?.name}, so this `
+        + `save is rolled with none:`, err);
+      return 0;
+    }
+  }
+
+  /**
+   * THE PARTS THAT GO INTO A SAVE, AND THE NUMBER THEY COME TO.
+   *
+   * ⚠️🔴 THE ROW AND THE LINE ARE ONE SUM (his rule, 2026-10-02: "The bonus
+   * is what was added to that die, and the line names those parts. It does not
+   * read the sheet again"). This is built at the roll, out of exactly what the
+   * formula is about to contain, and travels with the result. The card draws it
+   * and asks the sheet nothing.
+   *
+   * What it holds: the creature's own save off the sheet with its cover taken
+   * out, broken into its named parts; the one cover measured for this area; and
+   * every flat bonus the card is carrying (Bless's own die is not flat and is
+   * not here — it is in the formula and it is why a line can refuse to draw).
+   *
+   * @returns {{parts: Array<{name: string, value: number}>, total: number}}
+   */
+  static _savePartsFor(targetActor, ability, tgt, cover) {
+    const parts = [];
+    try {
+      const sheet = explainSave(targetActor, ability, { withCover: false });
+      for (const p of (sheet.parts ?? [])) parts.push({ name: p.name ?? p.label ?? "Bonus", value: p.value });
+    } catch (err) {
+      console.warn(`${MODULE_ID} | could not read what makes ${tgt?.name}'s ${ability} save, so `
+        + `its row will carry no line:`, err);
+      return { parts: [], total: 0 };
+    }
+    if (cover) parts.push({ name: "Cover", value: cover });
+    for (const b of (tgt?.saveBonuses ?? [])) {
+      const raw = String(b?.value ?? "").trim().replace(/^\+/, "");
+      const n = Number(raw);
+      if (!raw || !Number.isFinite(n) || n === 0) continue;   // a die is not a part
+      const word = String(b?.label ?? "Bonus").trim().split(/\s+/)[0] || "Bonus";
+      parts.push({ name: word.charAt(0).toUpperCase() + word.slice(1), value: n });
+    }
+    return { parts, total: parts.reduce((n, p) => n + p.value, 0) };
+  }
 
   static _targetProfileFor(actor, row = null) {
     if (!actor) return null;

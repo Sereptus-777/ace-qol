@@ -167,7 +167,29 @@ function oneWord(label) {
   return w.charAt(0).toUpperCase() + w.slice(1);
 }
 
-export function explainSave(actor, ability) {
+/**
+ * The cover dnd5e has already folded into this creature's save, from its own
+ * status. Dexterity only, and +2 or +5.
+ *
+ * ⚠️🔴 IT IS INSIDE `save.value` ALREADY, which is why this has to be
+ * subtractable. dnd5e computes `abl.save.value = mod + saveBonus + prof` where
+ * `saveBonus` carries cover, and ACE measures cover of its own when the area is
+ * laid down. Adding both is counting it twice; the roll takes the sheet's number
+ * with this removed and ACE's one measurement put back.
+ */
+export function coverInSheetSave(actor, ability) {
+  if (String(ability ?? "").toLowerCase() !== "dex") return 0;
+  const fromAc = Number(actor?.system?.attributes?.ac?.cover ?? 0) || 0;
+  const fromStatus = Number(actor?.coverBonus ?? 0) || 0;
+  return Math.max(fromAc, fromStatus);
+}
+
+/**
+ * @param {object} [o]
+ * @param {boolean} [o.withCover]  false leaves cover off, for a caller that
+ *   measures its own and would otherwise count it twice.
+ */
+export function explainSave(actor, ability, { withCover = true } = {}) {
   const ab = String(ability ?? "").toLowerCase();
   const a = actor?.system?.abilities?.[ab];
   const parts = [];
@@ -234,10 +256,8 @@ export function explainSave(actor, ability) {
      creature's own status. The card could not name a bonus it never looked for,
      so the line disagreed with the die on every creature standing behind
      something. DEXTERITY ONLY, because that is the only save cover touches. */
-  if (ab === "dex") {
-    const fromAc = Number(actor?.system?.attributes?.ac?.cover ?? 0) || 0;
-    const fromStatus = Number(actor?.coverBonus ?? 0) || 0;
-    const cover = Math.max(fromAc, fromStatus);
+  if (ab === "dex" && withCover) {
+    const cover = coverInSheetSave(actor, ab);
     if (cover) {
       const has = (id) => actor?.statuses?.has?.(id) ?? false;
       const which = has("coverThreeQuarters") ? "three-quarters cover"
@@ -253,7 +273,9 @@ export function explainSave(actor, ability) {
      reported, not a detail. The number goes on the card; what it is stays an
      open question in the console. */
   const sum = parts.reduce((n, p) => n + p.value, 0);
-  const systemTotal = Number(a?.save?.value);
+  // ⚠️ WITH COVER LEFT OFF, dnd5e's own number is higher by exactly that much,
+  // and the gap below would put it back under another name.
+  const systemTotal = Number(a?.save?.value) - (withCover ? 0 : coverInSheetSave(actor, ab));
   if (Number.isFinite(systemTotal) && systemTotal !== sum) {
     const gap = systemTotal - sum;
     parts.push({ label: "not on the sheet", name: "Bonus", value: gap,

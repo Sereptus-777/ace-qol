@@ -186,45 +186,86 @@ console.log("\nTHE POST-HIT SAVE KEEPS ONE CARD");
     /holds: landed\.filter\(l => l\.id\)/.test(ph), "grappled + restrained by id");
 }
 
-console.log("\nTHE FORMULA IS ON THE ROW THAT IS LEFT");
+console.log("\nTHE ROW AND THE LINE ARE ONE SUM");
 {
   check("the phase-1 result row draws the formula",
     /\$\{opts\?\.formulaOnShell \? "" : SaveEngine\._formulaForRow\(r, opts\)\}/.test(save),
     "on every row the shell is not already speaking for");
   const at = save.indexOf("static _formulaForRow");
-  const body = save.slice(at, at + 1400);
-  /* ⚠️ REWRITTEN TO HIS NEW RULE, 2026-10-01: "Print the die, then every bonus
-     and where it came from." The row no longer reads the sheet and the die
-     itself — one reader does both for the row, the rebuilt row and this line,
-     because three readers is how a player's row showed a bare total with no
-     picture while the line under it printed a different sum. */
-  check("it reads the creature's sheet and its die through the one reader",
-    /SaveEngine\._rollReadingFor\(r, opts\)/.test(body), "_rollReadingFor");
-  /* ⚠️🔴 THE LINE CARRIES NO TOTAL AT ALL (his correction, 2026-10-02: "The
-     row already has the die and the total. The line under it is only how the
-     bonus was built, and the number after the equals is the bonus, not the
-     total"). It ends in the sum of its own parts, worked out where it is drawn. */
-  check("it hands the line no total, because the line is only the bonus",
-    /rolledPill\(parts\);/.test(body), "Dex +5 | Prof +4 = 9");
-  /* ⚠️ THE DIE IS NOT ON THIS LINE (his correction, 2026-10-01: "The die and the
-     total stay. The line under them is wrong. It repeats the die"). The picture
-     and the total are the row above it. */
-  check("and the die is not repeated on it",
-    !/die,/.test(body), "Dex +5 | Prof +4 = 14");
-  check("and it is drawn as a pill, never loose on the card",
-    /rolledPill\(parts/.test(body), "inside its pill");
-  /* ⚠️ AND A CREATURE WITH NOTHING TO ADD GETS NO PILL: the builder comes back
-     empty and the row draws nothing. */
+  const body = save.slice(at, save.indexOf("\n  }", at) + 4);
+
+  /* ⚠️🔴 HIS RULE, 2026-10-02: "The bonus is what was added to that die, and the
+     line names those parts. It does not read the sheet again... If the named
+     parts do not add up to the bonus on the row, the line is not drawn."
+
+     Escher rolled 13 for 13 while the line printed −2. The Gorgon and the Cloud
+     Giant added +2 and got no line. Lamia added +3 under a line saying +1. Four
+     rows, four numbers, because two readers answered the same question minutes
+     apart: the roll used a profile number plus a measured cover, and the line
+     went back to the sheet afterwards. */
+  check("the line draws what the ROLL carried",
+    /const parts = Array\.isArray\(r\.saveParts\) \? r\.saveParts : null;/.test(body),
+    "r.saveParts");
+  check("and never reads the sheet again",
+    !/explainSave\(/.test(body), "no second reading");
+  check("if the named parts do not add up to the row, no line is drawn",
+    /if \(sum !== onRow\) \{/.test(body) && /return "";/.test(body),
+    "worse than none");
+  check("and the row's own bonus is the die taken off its total",
+    /r\.saveTotal - die/.test(body));
+  check("it is drawn as a pill, never loose on the card",
+    /rolledPill\(parts\);/.test(body), "inside its pill");
+  check("a row that never rolled gets no formula",
+    /if \(!r \|\| r\.noRoll \|\| r\.pending\) return "";/.test(body), "nothing to explain");
+  /* ⚠️ A CREATURE WITH NOTHING TO ADD GETS NO PILL. */
   check("a creature with nothing to add gets no line at all",
     /if \(!parts\.some\(p => Number\(p\.value\) !== 0\)\) return "";/
       .test(readFileSync("D:/FoundryVTT/Data/modules/ace-qol/scripts/roll-formula.mjs", "utf8")),
     "Virric gets no line");
-  check("a row that never rolled gets no formula",
-    /if \(!r \|\| r\.noRoll \|\| r\.pending\) return "";/.test(body), "nothing to explain");
   // The old bare modifier is gone from the asking card.
   check("the asking card no longer prints a bare ability modifier",
     /formulaText\(explainSave\(_actor, _ab\)\.parts, t\.saveModBase\)/.test(save),
     "it prints the parts");
+}
+
+console.log("\nCOVER IS DECIDED ONCE, WHEN THE BOLT IS MEASURED");
+{
+  /* ⚠️🔴 IT WAS DECIDED INSIDE EACH ROLL, AND ADDED TO A SHEET NUMBER THAT
+     ALREADY HELD IT. dnd5e folds a creature's cover status into
+     `abilities.dex.save.value`, so a creature wearing the status had cover twice
+     and one standing behind the same rock without it had cover once. */
+  check("the card measures it once for the whole area",
+    /const coverByToken = new Map\(\);/.test(save)
+    && /SaveEngine\._measureCover\(casterTokenDocForCover, td\)/.test(save),
+    "when the bolt is measured");
+  check("and every target row carries that one number",
+    /coverBonus: coverByToken\.has\(/.test(save));
+  check("the player's prompt carries it too, so a PC is the same sum as an NPC",
+    /coverBonus: t\.coverBonus \?\? null,/.test(save));
+  check("the sheet's own cover comes back out, so it is counted once",
+    (save.match(/const sheetCover = coverInSheetSave\(targetActor, ability\);/g) ?? []).length >= 2,
+    "both roll paths");
+  check("and the roll is the sheet, less its cover, plus the measured one",
+    (save.match(/const saveMod = profileMod - sheetCover \+ cover;/g) ?? []).length >= 2,
+    "both roll paths");
+  /* ⚠️ AND NOTHING DOWNSTREAM MEASURES AGAIN. */
+  check("no roll path calls the cover engine for itself any more",
+    !/CoverEngine\.calculateCover\(casterTokenDoc, tokenDoc\)/.test(save),
+    "one measurer");
+}
+
+console.log("\nTHE PARTS TRAVEL WITH THE ROLL");
+{
+  check("an NPC's roll records them",
+    /saveParts: _parts,/.test(save) && /saveBonusUsed: _partsTotal,/.test(save));
+  check("a player's roll records them in its own result",
+    (save.match(/saveParts: _parts,/g) ?? []).length >= 2, "both paths");
+  check("and they are put on the row the GM's card draws",
+    /r\.saveParts = Array\.isArray\(pcResult\.saveParts\)/.test(save));
+  check("a redrawn card keeps them",
+    /r\.saveParts  = Array\.isArray\(f\.saveParts\)/.test(save));
+  check("and a roll whose parts do not match its own formula says so",
+    /The row keeps the roll's number and the line under it is not drawn/.test(save));
 }
 
 /* ══ 3. ONE TARGET STAYS, TWO OR MORE STILL CLEAR ════════════════════════ */

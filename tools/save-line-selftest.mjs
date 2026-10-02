@@ -208,8 +208,11 @@ console.log("\nONE READER FOR THE DIE");
     !/const d20Face = r\.dieResult \?\? r\.roll\?\.dice/.test(engine)
     && !/const d20 = r\.dieResult \?\? r\.roll\?\.dice/.test(engine),
     "no second reader left");
+  /* ⚠️ TWO RENDERERS, ONE READER. The line no longer asks it at all: it draws
+     the parts the ROLL carried, and asking a reader for them again would be the
+     second reading his rule forbids. */
   check("both row renderers ask it",
-    (engine.match(/SaveEngine\._rollReadingFor\(r, opts\)/g) ?? []).length >= 3,
+    (engine.match(/SaveEngine\._rollReadingFor\(r, opts\)/g) ?? []).length >= 2,
     `${(engine.match(/SaveEngine\._rollReadingFor\(r, opts\)/g) ?? []).length} call sites`);
   check("and the line it draws is the rolled one, which can come back empty",
     /return rolledPill\(parts\);/.test(engine), "no total, no label");
