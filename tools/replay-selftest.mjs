@@ -8688,13 +8688,26 @@ console.log(`\nPHASE 6a: THE SHIELD REACTION`);
           : `21 vs AC 15 + half cover, with Shield: ${out5?.[0]?.hitResult}, AC on the card ${out5?.[0]?.effectiveAC} `
             + `(the creature's ${out5?.[0]?.ac} and the cover's +2)`);
       // box3 is the covered 21 now: the 25 never opened one (re-pinned 2026-09-21).
-      check("the box is the moment: no number rows, and the one line it carries says Shield saves you, because it never opens when it would not (his design, 2026-09-18)",
+      /* ⚠️🔴 RE-PINNED 2026-10-03, HIS TABLE. This used to REQUIRE the line
+         "Shield would turn it into a miss", and that sentence is the fault he
+         reported: "The Shield prompt is telling the player the outcome... He
+         knows he was hit, and that Shield is +5 against that attack. He does not
+         know the roll." The box only opens when +5 changes the answer, so saying
+         so out loud handed the player the roll, the AC and the margin at once and
+         made the decision for them. The line is what their character knows now,
+         and the numbers moved to a note only a GM's screen draws. */
+      check("the box is the moment, and it does not hand him the answer: no number rows, the line names who hit him and with what, and nothing about a miss or a hit after the +5 (his rule, 2026-10-03)",
         !!box2 && !box2.details?.length
-          && /Shield would turn it into a miss/.test(box2.description ?? "")
-          && (!box3 || /Shield would turn it into a miss/.test(box3.description ?? ""))
-          && asked.slice(atAsk).every(b => !/still hits/i.test(b.description ?? "")),
+          && /hits you with/.test(box2.description ?? "")
+          && !/miss/i.test(box2.description ?? "")
+          && (!box3 || !/miss/i.test(box3.description ?? ""))
+          && asked.slice(atAsk).every(b => !/still hits/i.test(b.description ?? "")
+                                        && !/miss/i.test(b.description ?? "")),
         `rows in the box: ${box2?.details?.length ?? 0}; its line: "${String(box2?.description ?? "").replace(/<[^>]+>/g, "")}"; `
-          + `every box opened says Shield saves them: ${asked.slice(atAsk).every(b => !/still hits/i.test(b.description ?? ""))}`);
+          + `no box tells him the outcome: ${asked.slice(atAsk).every(b => !/miss/i.test(b.description ?? "") && !/still hits/i.test(b.description ?? ""))}`);
+      check("and the margin is still there for the GM, on the box's own GM line (2026-10-03)",
+        !!box2 && /against AC/.test(box2.gmNote ?? "") && /a miss by/.test(box2.gmNote ?? ""),
+        `the GM line: "${String(box2?.gmNote ?? "none").replace(/<[^>]+>/g, "")}"`);
     }
 
     // ── Saying no changes nothing ──

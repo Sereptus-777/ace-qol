@@ -1857,15 +1857,30 @@ export class ReactionEngine {
         type: "shield",
         title: "Shield Spell",
         heading: "Shield",
-        // ⚠️ THE MOMENT, NOT THE MECHANICS (his design, 2026-09-18). The Magic
-        // Missile box below lost its dice and effect rows that day; this box
-        // still carried four number rows (roll, AC, AC with Shield, result)
-        // because it had never once opened. The one thing the player needs to
-        // DECIDE is whether Shield saves them, so the line says that in words,
-        // and the numbers go on the card after the choice.
-        // It only opens when Shield changes the answer, so the line says so.
+        /* ⚠️ THE MOMENT, NOT THE MECHANICS (his design, 2026-09-18). The Magic
+           Missile box below lost its dice and effect rows that day; this box
+           still carried four number rows (roll, AC, AC with Shield, result)
+           because it had never once opened.
+
+           ⚠️🔴 AND IT MUST NOT HAND HIM THE ANSWER (his rule, 2026-10-03:
+           "The Shield prompt is telling the player the outcome... He knows he
+           was hit, and that Shield is +5 against that attack. He does not know
+           the roll."). The line said "Shield would turn it into a miss", which
+           is the whole decision made for them: the box only opens when Shield
+           changes the answer, so saying so out loud told them the roll, the AC
+           and the margin in one sentence. What they are owed is what their
+           character knows — something hit them, and their spell is worth five
+           AC. Whether five is enough is the gamble. */
         description: `${foundry.utils.escapeHTML(attacker?.name ?? "An attacker")} hits you with `
-          + `<span class="ace-qol-reaction-spell">${attackName}</span>. Shield would turn it into a miss.`,
+          + `<span class="ace-qol-reaction-spell">${attackName}</span>.`,
+        // ⚠️ THE MARGIN IS THE GM'S, on the GM's own screen (same rule). It is
+        // drawn only where this box opens on a GM's client; a player's never
+        // shows it.
+        gmNote: `${foundry.utils.escapeHTML(String(result.attackTotal ?? "?"))} against AC `
+          + `${foundry.utils.escapeHTML(String(acBefore ?? "?"))}; with Shield, AC `
+          + `${foundry.utils.escapeHTML(String(acWith ?? "?"))} and a miss by `
+          + `${Number.isFinite(Number(acWith) - Number(result.attackTotal))
+              ? Math.max(0, Number(acWith) - Number(result.attackTotal)) : "?"}.`,
         acceptLabel: "Cast Shield",
         declineLabel: "No reaction",
         spellSlotLevel: 1,
@@ -4201,6 +4216,13 @@ export class ReactionEngine {
     return new Promise((resolve) => {
       const {
         type, title, heading, description, details, acceptLabel, declineLabel,
+        // ⚠️🔴 WHAT ONLY THE GM MAY READ, and it is read on the screen it is
+        // DRAWN on, not the one it was built on. A reaction box is built on the
+        // GM's client and sent to whoever owns the creature, so a line meant for
+        // the GM cannot be decided where it is written — everything written
+        // there is the GM's. This is checked at render time, on the client the
+        // box opens on, which is the player's whenever a player is answering.
+        gmNote,
         spellSlotLevel, availableSlots, icon, iconExtra, accentColor,
         reactorActorName, reactorActorImg, reactorIsNpc, extraData,
         // v0.7.71 — attacker portrait + name (Shield UX polish)
@@ -4248,6 +4270,7 @@ export class ReactionEngine {
             </div>
           </div>
           <div class="ace-qol-reaction-scene-line">${description ?? ""}</div>
+          ${gmNote && game.user?.isGM ? `<div class="ace-qol-reaction-gm-note">${gmNote}</div>` : ""}
         </div>` : "";
 
       // ── Build details rows ──
@@ -4330,7 +4353,8 @@ export class ReactionEngine {
         <div class="ace-qol-reaction-prompt" data-reaction-type="${type}">
           ${headerHtml}
           <div class="ace-qol-reaction-body">
-            ${sceneHtml || `<div class="ace-qol-reaction-description">${description}</div>`}
+            ${sceneHtml || `<div class="ace-qol-reaction-description">${description}`
+              + `${gmNote && game.user?.isGM ? `<div class="ace-qol-reaction-gm-note">${gmNote}</div>` : ""}</div>`}
             ${detailRows ? `<div class="ace-qol-reaction-details">${detailRows}</div>` : ""}
             ${slotPickerHtml}
             ${consumeSlotHtml}
@@ -5024,6 +5048,19 @@ export function injectReactionCSS() {
   font-size: 1.15rem;       /* ≈18px */
   color: #ebe6d8;
   line-height: 1.4;
+}
+/* ⚠️ THE GM'S OWN LINE. Quieter than the sentence above it, because it carries
+   numbers the player answering must never be handed (his rule, 2026-10-03: the
+   roll, the AC and the margin are the GM's). It is only ever drawn on a GM's
+   client, and it wraps like everything else here. */
+.ace-qol-reaction-gm-note {
+  margin-top: 8px;
+  text-align: center;
+  font-size: 0.95rem;
+  line-height: 1.4;
+  color: #b9a978;
+  font-style: italic;
+  white-space: normal;
 }
 .ace-qol-reaction-scene-line .ace-qol-reaction-spell {
   color: #9fd0ff;
