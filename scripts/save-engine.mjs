@@ -5887,6 +5887,37 @@ export class SaveEngine {
    * the dice land, never did, and the rolled row did not even carry the reason
    * to them.
    */
+  /**
+   * THE WORD FOR A ZERO (his rule, 2026-10-02).
+   *
+   *     "Jeth passed and took 0. The 0 is Evasion. The card prints the word on
+   *      his row, next to the 0... A pass with no Evasion still prints the half."
+   *
+   * Two creatures passed the same bolt: one took nothing and one took ten, and
+   * the only thing on the card that explained the difference was a phrase in the
+   * console. The log said PASS (EVASION) and the row said 0.
+   *
+   * ⚠️ THE WORD ALONE. Not "PASS (EVASION)", not in brackets: the row already
+   * says PASS beside the roll, and the brackets were the console's shorthand, not
+   * something to print at a table.
+   *
+   * ⚠️ ON ITS OWN LINE, ABOVE THE BUTTONS AND THE HP ("Do not squish the word
+   * or anything like that"). The line below it carries the quarter, the half,
+   * the one, the two, the damage and the hit points, which is already as much as
+   * one row can hold.
+   *
+   * ⚠️ ONLY WHEN EVASION IS WHAT MADE THE ZERO. A creature that passed without
+   * it took half and the card says so with the half — there is nothing here to
+   * name.
+   */
+  static _evasionLineHtml(r) {
+    if (!r || r.noRoll || r.pending) return "";
+    if (!r.passed || !r.superSaver) return "";
+    return `<div class="ace-qol-save-evasion-line">`
+      + `<span class="ace-qol-tag ace-qol-tag-condition ace-qol-evasion-pill">Evasion</span>`
+      + `</div>`;
+  }
+
   static _advTagsHtml(r, { indent = 0 } = {}) {
     if (!r || r.noRoll || r.pending) return "";
     const esc = (x) => foundry.utils.escapeHTML(String(x ?? ""));
@@ -10292,6 +10323,7 @@ export class SaveEngine {
                   style="font-weight:bold;font-size:14px;letter-spacing:0.5px;">${verdictText}</span>
           </div>
           ${SaveEngine._advTagsHtml(r, { indent: 32 })}
+          ${SaveEngine._evasionLineHtml(r)}
           <div class="ace-qol-save-ovr-line">
             <button class="ace-qol-save-ovr-x" data-action="aceQolRemoveResult" data-token-doc-id="${r.tokenDocId}">\u00d7</button>
             <button class="ace-qol-save-ovr${_a(0.25)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="0.25">\u00bc</button>
@@ -10676,6 +10708,7 @@ export class SaveEngine {
                   style="font-weight:bold;font-size:14px;letter-spacing:0.5px;">${verdictText}</span>
           </div>
           ${SaveEngine._advTagsHtml(r, { indent: 32 })}
+          ${SaveEngine._evasionLineHtml(r)}
           <div class="ace-qol-save-ovr-line">
             <button class="ace-qol-save-ovr-x" data-action="aceQolRemoveResult" data-token-doc-id="${r.tokenDocId}">\u00d7</button>
             <button class="ace-qol-save-ovr${_a(0.25)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="0.25">\u00bc</button>

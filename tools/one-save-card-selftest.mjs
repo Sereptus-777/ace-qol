@@ -279,6 +279,56 @@ console.log("\nA PLAYER'S ROW IS AN NPC'S ROW");
     /die \$\{r\.dieResult \?\? "missing"\}, \$\{\(r\.saveParts \?\? \[\]\)\.length\} named part/.test(save));
 }
 
+console.log("\nEVASION IS THE WORD FOR A ZERO");
+{
+  /* ⚠️🔴 HIS CARD, 2026-10-02: "Jeth passed and took 0. Virric passed and took
+     10. The 0 is Evasion. The log already said PASS (EVASION). The card prints
+     the word on his row, next to the 0. A pass with no Evasion still prints the
+     half."
+
+     Two creatures passed the same bolt, one took nothing and one took ten, and
+     the only thing that explained the difference was a phrase in the console. */
+  const at = save.indexOf("static _evasionLineHtml(r) {");
+  check("there is one builder for the word", at > 0, "_evasionLineHtml");
+  const body = save.slice(at, save.indexOf("\n  }", at) + 4);
+
+  check("it says the word and nothing else",
+    />Evasion</.test(body) && !/PASS/.test(body) && !/\(/.test(body.split(">Evasion<")[0].slice(-40)),
+    "not PASS (EVASION), not in brackets");
+  check("it is the yellow pill form",
+    /ace-qol-tag ace-qol-tag-condition/.test(body), "the condition tag's yellow");
+  check("only a pass with Evasion gets it",
+    /if \(!r\.passed \|\| !r\.superSaver\) return "";/.test(body),
+    "a pass without it still prints the half");
+  check("and a row that never rolled gets nothing",
+    /if \(!r \|\| r\.noRoll \|\| r\.pending\) return "";/.test(body));
+
+  /* ⚠️ BOTH ROWS, because there are two renderers of the same row and one of
+     them having it is the same bug wearing a hat. */
+  check("both result rows draw it",
+    (save.match(/\$\{SaveEngine\._evasionLineHtml\(r\)\}/g) ?? []).length === 2,
+    `${(save.match(/\$\{SaveEngine\._evasionLineHtml\(r\)\}/g) ?? []).length} rows`);
+  /* ⚠️ ON ITS OWN LINE, ABOVE THE BUTTONS AND THE HP. */
+  check("on its own line above the quarter, the half, the one and the two",
+    /_evasionLineHtml\(r\)\}\n          <div class="ace-qol-save-ovr-line">/.test(save),
+    "above the ovr line, which carries the HP too");
+
+  const css = readFileSync("D:/FoundryVTT/Data/modules/ace-qol/styles/ace-qol.css", "utf8");
+  const pill = css.slice(css.indexOf(".ace-qol-evasion-pill"), css.indexOf(".ace-qol-evasion-pill") + 300);
+  /* ⚠️ "Do not squish the word or anything like that." */
+  /* ⚠️ A FIXED HEIGHT IS ONE THAT IS NOT `min-` OR `line-`: those two are how a
+     pill grows to its own text instead of cropping it. */
+  check("the word is not squished: no nowrap, no fixed height",
+    /white-space: normal/.test(pill) && !/[^-]height: \d+px/.test(pill),
+    "min-height only");
+  check("and it is readable, not the tag's 0.6rem",
+    /font-size: 14px/.test(pill));
+  check("it prints as he wrote it, not shouted",
+    /text-transform: none/.test(pill));
+  check("its line wraps and sits above the rest",
+    /\.ace-qol-save-evasion-line \{[^}]*flex-wrap: wrap;/s.test(css));
+}
+
 console.log("\nTHE GM ROLLS FOR AN ABSENT PLAYER, AND THE ROW GETS ALL OF IT");
 {
   /* ⚠️🔴 HIS CARD, 2026-10-02: "Jeth is a bare 18. Virric is a bare 17. No die,
