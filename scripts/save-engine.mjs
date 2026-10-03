@@ -5888,34 +5888,29 @@ export class SaveEngine {
    * to them.
    */
   /**
-   * THE WORD FOR A ZERO (his rule, 2026-10-02).
+   * THE WORD BESIDE THE NUMBER (his rule, 2026-10-02).
    *
-   *     "Jeth passed and took 0. The 0 is Evasion. The card prints the word on
-   *      his row, next to the 0... A pass with no Evasion still prints the half."
+   *     "A failed save with Evasion is half damage, and the row prints Evasion
+   *      beside that number. Jeth failed and took 9 with no word. A pass with
+   *      Evasion prints Evasion beside the 0."
    *
-   * Two creatures passed the same bolt: one took nothing and one took ten, and
-   * the only thing on the card that explained the difference was a phrase in the
-   * console. The log said PASS (EVASION) and the row said 0.
+   * ⚠️🔴 A FAIL IS NOT THE ABSENCE OF EVASION. I hung this on the pass alone,
+   * and that is half the feature: Evasion is what makes a failed save half
+   * instead of whole, so Jeth's 9 is as much its doing as his 0 was. Whenever
+   * the creature has it and rolled, the word is beside the number it produced.
    *
-   * ⚠️ THE WORD ALONE. Not "PASS (EVASION)", not in brackets: the row already
-   * says PASS beside the roll, and the brackets were the console's shorthand, not
-   * something to print at a table.
+   * ⚠️ THE WORD ALONE, in the yellow pill form. Not "PASS (EVASION)", not in
+   * brackets: the row already says PASS or FAIL beside the roll, and the
+   * brackets were the console's shorthand, never something to print at a table.
    *
-   * ⚠️ ON ITS OWN LINE, ABOVE THE BUTTONS AND THE HP ("Do not squish the word
-   * or anything like that"). The line below it carries the quarter, the half,
-   * the one, the two, the damage and the hit points, which is already as much as
-   * one row can hold.
-   *
-   * ⚠️ ONLY WHEN EVASION IS WHAT MADE THE ZERO. A creature that passed without
-   * it took half and the card says so with the half — there is nothing here to
-   * name.
+   * ⚠️ ON THE DAMAGE LINE, beside the number, with the buttons on the line
+   * below. A creature that passed WITHOUT Evasion took half and the card says so
+   * with the half; there is nothing there to name.
    */
-  static _evasionLineHtml(r) {
+  static _evasionPill(r) {
     if (!r || r.noRoll || r.pending) return "";
-    if (!r.passed || !r.superSaver) return "";
-    return `<div class="ace-qol-save-evasion-line">`
-      + `<span class="ace-qol-tag ace-qol-tag-condition ace-qol-evasion-pill">Evasion</span>`
-      + `</div>`;
+    if (!r.superSaver) return "";
+    return `<span class="ace-qol-tag ace-qol-tag-condition ace-qol-evasion-pill">Evasion</span>`;
   }
 
   static _advTagsHtml(r, { indent = 0 } = {}) {
@@ -10323,16 +10318,22 @@ export class SaveEngine {
                   style="font-weight:bold;font-size:14px;letter-spacing:0.5px;">${verdictText}</span>
           </div>
           ${SaveEngine._advTagsHtml(r, { indent: 32 })}
-          ${SaveEngine._evasionLineHtml(r)}
+          <!-- the damage line: the number, what made it, and what it did to the hit
+               points are one thought. The buttons that change it are another, and
+               they are the line below (his rule, 2026-10-02: "The word is on the
+               damage line, beside the number. The X, the quarter, the half, the one
+               and the two stay on the line below it."). -->
+          <div class="ace-qol-save-dmg-line">
+            ${SaveEngine._evasionPill(r)}
+            <span class="ace-qol-save-result-dmg">${dmgDisplay}<span class="ace-qol-dmg-unit">DMG</span></span>${isDead ? '<span class="ace-qol-save-skull">\u2620</span>' : '<span class="ace-qol-save-skull" style="display:none">\u2620</span>'}
+            <span class="ace-qol-save-result-hp">HP: <span class="ace-qol-hp-cur">${r.currentHP}</span>\u2192<span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span></span>
+          </div>
           <div class="ace-qol-save-ovr-line">
             <button class="ace-qol-save-ovr-x" data-action="aceQolRemoveResult" data-token-doc-id="${r.tokenDocId}">\u00d7</button>
             <button class="ace-qol-save-ovr${_a(0.25)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="0.25">\u00bc</button>
             <button class="ace-qol-save-ovr${_a(0.5)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="0.5">\u00bd</button>
             <button class="ace-qol-save-ovr${_a(1)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="1">1</button>
             <button class="ace-qol-save-ovr${_a(2)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="2">2</button>
-            <span class="ace-qol-save-ovr-spacer"></span>
-            <span class="ace-qol-save-result-dmg">${dmgDisplay}<span class="ace-qol-dmg-unit">DMG</span></span>${isDead ? '<span class="ace-qol-save-skull">\u2620</span>' : '<span class="ace-qol-save-skull" style="display:none">\u2620</span>'}
-            <span class="ace-qol-save-result-hp">HP: <span class="ace-qol-hp-cur">${r.currentHP}</span>\u2192<span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span></span>
           </div>
         </div>
       `;
@@ -10708,16 +10709,22 @@ export class SaveEngine {
                   style="font-weight:bold;font-size:14px;letter-spacing:0.5px;">${verdictText}</span>
           </div>
           ${SaveEngine._advTagsHtml(r, { indent: 32 })}
-          ${SaveEngine._evasionLineHtml(r)}
+          <!-- the damage line: the number, what made it, and what it did to the hit
+               points are one thought. The buttons that change it are another, and
+               they are the line below (his rule, 2026-10-02: "The word is on the
+               damage line, beside the number. The X, the quarter, the half, the one
+               and the two stay on the line below it."). -->
+          <div class="ace-qol-save-dmg-line">
+            ${SaveEngine._evasionPill(r)}
+            <span class="ace-qol-save-result-dmg">${dmgDisplay}<span class="ace-qol-dmg-unit">DMG</span></span>${isDead ? '<span class="ace-qol-save-skull">\u2620</span>' : '<span class="ace-qol-save-skull" style="display:none">\u2620</span>'}
+            <span class="ace-qol-save-result-hp">HP: <span class="ace-qol-hp-cur">${r.currentHP}</span>\u2192<span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span></span>
+          </div>
           <div class="ace-qol-save-ovr-line">
             <button class="ace-qol-save-ovr-x" data-action="aceQolRemoveResult" data-token-doc-id="${r.tokenDocId}">\u00d7</button>
             <button class="ace-qol-save-ovr${_a(0.25)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="0.25">\u00bc</button>
             <button class="ace-qol-save-ovr${_a(0.5)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="0.5">\u00bd</button>
             <button class="ace-qol-save-ovr${_a(1)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="1">1</button>
             <button class="ace-qol-save-ovr${_a(2)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="2">2</button>
-            <span class="ace-qol-save-ovr-spacer"></span>
-            <span class="ace-qol-save-result-dmg">${dmgDisplay}<span class="ace-qol-dmg-unit">DMG</span></span>${isDead ? '<span class="ace-qol-save-skull">\u2620</span>' : '<span class="ace-qol-save-skull" style="display:none">\u2620</span>'}
-            <span class="ace-qol-save-result-hp">HP: <span class="ace-qol-hp-cur">${r.currentHP}</span>\u2192<span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span></span>
           </div>
         </div>
       `;

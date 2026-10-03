@@ -279,54 +279,65 @@ console.log("\nA PLAYER'S ROW IS AN NPC'S ROW");
     /die \$\{r\.dieResult \?\? "missing"\}, \$\{\(r\.saveParts \?\? \[\]\)\.length\} named part/.test(save));
 }
 
-console.log("\nEVASION IS THE WORD FOR A ZERO");
+console.log("\nEVASION IS THE WORD BESIDE THE NUMBER");
 {
-  /* ⚠️🔴 HIS CARD, 2026-10-02: "Jeth passed and took 0. Virric passed and took
-     10. The 0 is Evasion. The log already said PASS (EVASION). The card prints
-     the word on his row, next to the 0. A pass with no Evasion still prints the
-     half."
+  /* ⚠️🔴 HIS CARD, 2026-10-02: "A failed save with Evasion is half damage, and
+     the row prints Evasion beside that number. Jeth failed and took 9 with no
+     word. A pass with Evasion prints Evasion beside the 0."
 
-     Two creatures passed the same bolt, one took nothing and one took ten, and
-     the only thing that explained the difference was a phrase in the console. */
-  const at = save.indexOf("static _evasionLineHtml(r) {");
-  check("there is one builder for the word", at > 0, "_evasionLineHtml");
+     I hung it on the pass alone, which is half the feature: Evasion is what
+     makes a failed save half instead of whole, so a 9 is as much its doing as a
+     0 was. */
+  const at = save.indexOf("static _evasionPill(r) {");
+  check("there is one builder for the word", at > 0, "_evasionPill");
   const body = save.slice(at, save.indexOf("\n  }", at) + 4);
 
   check("it says the word and nothing else",
-    />Evasion</.test(body) && !/PASS/.test(body) && !/\(/.test(body.split(">Evasion<")[0].slice(-40)),
-    "not PASS (EVASION), not in brackets");
+    />Evasion</.test(body) && !/PASS/.test(body), "not PASS (EVASION), not in brackets");
   check("it is the yellow pill form",
     /ace-qol-tag ace-qol-tag-condition/.test(body), "the condition tag's yellow");
-  check("only a pass with Evasion gets it",
-    /if \(!r\.passed \|\| !r\.superSaver\) return "";/.test(body),
-    "a pass without it still prints the half");
+  check("a FAILED save with Evasion gets it too",
+    !/r\.passed/.test(body) && /if \(!r\.superSaver\) return "";/.test(body),
+    "the 9 is Evasion's doing as much as the 0");
+  check("a creature without Evasion gets nothing",
+    /if \(!r\.superSaver\) return "";/.test(body), "a pass without it still prints the half");
   check("and a row that never rolled gets nothing",
     /if \(!r \|\| r\.noRoll \|\| r\.pending\) return "";/.test(body));
 
   /* ⚠️ BOTH ROWS, because there are two renderers of the same row and one of
      them having it is the same bug wearing a hat. */
   check("both result rows draw it",
-    (save.match(/\$\{SaveEngine\._evasionLineHtml\(r\)\}/g) ?? []).length === 2,
-    `${(save.match(/\$\{SaveEngine\._evasionLineHtml\(r\)\}/g) ?? []).length} rows`);
-  /* ⚠️ ON ITS OWN LINE, ABOVE THE BUTTONS AND THE HP. */
-  check("on its own line above the quarter, the half, the one and the two",
-    /_evasionLineHtml\(r\)\}\n          <div class="ace-qol-save-ovr-line">/.test(save),
-    "above the ovr line, which carries the HP too");
+    (save.match(/\$\{SaveEngine\._evasionPill\(r\)\}/g) ?? []).length === 2,
+    `${(save.match(/\$\{SaveEngine\._evasionPill\(r\)\}/g) ?? []).length} rows`);
+}
+
+console.log("\nTHE DAMAGE LINE, AND THE BUTTONS BELOW IT");
+{
+  /* ⚠️ His rule, 2026-10-02: "The word is on the damage line, beside the number.
+     The X, the quarter, the half, the one and the two stay on the line below
+     it." They were all one line with a spacer pushing the number right. */
+  check("the damage line holds the word, the number and the hit points",
+    (save.match(/<div class="ace-qol-save-dmg-line">/g) ?? []).length === 2
+    && /ace-qol-save-dmg-line">\n            \$\{SaveEngine\._evasionPill\(r\)\}\n            <span class="ace-qol-save-result-dmg"/.test(save),
+    "one thought per line");
+  check("and it sits above the buttons",
+    /<\/div>\n          <div class="ace-qol-save-ovr-line">/.test(save));
+  check("the buttons line no longer carries the damage or the hit points",
+    !/ace-qol-save-ovr-spacer/.test(save), "the spacer went with them");
 
   const css = readFileSync("D:/FoundryVTT/Data/modules/ace-qol/styles/ace-qol.css", "utf8");
+  check("the damage line wraps, with no fixed height",
+    /\.ace-qol-save-dmg-line \{[^}]*flex-wrap: wrap;/s.test(css)
+    && !/\.ace-qol-save-dmg-line \{[^}]*[^-]height: \d/s.test(css));
+  check("the number keeps its size on that line",
+    /\.ace-qol-save-dmg-line \.ace-qol-save-result-dmg/.test(css));
+
   const pill = css.slice(css.indexOf(".ace-qol-evasion-pill"), css.indexOf(".ace-qol-evasion-pill") + 300);
   /* ⚠️ "Do not squish the word or anything like that." */
-  /* ⚠️ A FIXED HEIGHT IS ONE THAT IS NOT `min-` OR `line-`: those two are how a
-     pill grows to its own text instead of cropping it. */
   check("the word is not squished: no nowrap, no fixed height",
-    /white-space: normal/.test(pill) && !/[^-]height: \d+px/.test(pill),
-    "min-height only");
-  check("and it is readable, not the tag's 0.6rem",
-    /font-size: 14px/.test(pill));
-  check("it prints as he wrote it, not shouted",
-    /text-transform: none/.test(pill));
-  check("its line wraps and sits above the rest",
-    /\.ace-qol-save-evasion-line \{[^}]*flex-wrap: wrap;/s.test(css));
+    /white-space: normal/.test(pill) && !/[^-]height: \d+px/.test(pill), "min-height only");
+  check("and it is readable, not the tag's 0.6rem", /font-size: 14px/.test(pill));
+  check("it prints as he wrote it, not shouted", /text-transform: none/.test(pill));
 }
 
 console.log("\nTHE GM ROLLS FOR AN ABSENT PLAYER, AND THE ROW GETS ALL OF IT");

@@ -452,12 +452,16 @@
    ⚠️ NO FIXED HEIGHT AND NO NOWRAP (his standing rule: every pill fits its own
    text). The line is a flex row that wraps, the pill grows to whatever it holds,
    and nothing clips. */
-.ace-qol-save-evasion-line {
+/* ⚠️ THE DAMAGE LINE: the number, the word that made it, and what it did to the
+   hit points. The buttons that CHANGE it are the line underneath (his rule,
+   2026-10-02). It wraps like every other row here; height is free. */
+.ace-qol-save-dmg-line {
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
-  padding-left: 32px;
-  margin: 5px 0 2px;
+  gap: 8px;
+  row-gap: 4px;
+  padding: 2px 4px 0 32px;
 }
 .ace-qol-evasion-pill {
   font-size: 14px;
@@ -1842,7 +1846,8 @@
 /* Damage number on the override line */
 /* The override sub-line used to SHRINK the damage number back to 0.95rem —
    that override is what actually produced the "tiny 4". Keep it big here too. */
-.ace-qol-save-ovr-line .ace-qol-save-result-dmg {
+.ace-qol-save-ovr-line .ace-qol-save-result-dmg,
+.ace-qol-save-dmg-line .ace-qol-save-result-dmg {
   font-size: 1.5rem;
 }
 .ace-qol-save-ovr.ace-qol-save-ovr:hover {
