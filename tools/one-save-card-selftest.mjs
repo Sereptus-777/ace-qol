@@ -325,6 +325,20 @@ console.log("\nTHE DAMAGE LINE, AND THE BUTTONS BELOW IT");
   check("the buttons line no longer carries the damage or the hit points",
     !/ace-qol-save-ovr-spacer/.test(save), "the spacer went with them");
 
+  /* ⚠️🔴 ONE ORDER FOR EVERY CREATURE ON THE CARD (his rule, 2026-10-03):
+     portrait and name, the roll and PASS or FAIL, the damage with Evasion beside
+     it, the buttons, then the hit points LAST. They used to ride on the damage
+     line, so on one creature they sat beside the number and on the next they
+     wrapped above the buttons, and which it was came down to how wide that row's
+     own number happened to be. */
+  check("the hit points are their own line, under the buttons",
+    (save.match(/<div class="ace-qol-save-hp-line">/g) ?? []).length === 2
+    && /<\/div>\s*<!--[\s\S]*?-->\s*<div class="ace-qol-save-hp-line">/.test(save),
+    "HP: 50 → 50 goes last");
+  check("and they are off the damage line",
+    !/ace-qol-save-dmg-line">[\s\S]{0,400}?ace-qol-save-result-hp/.test(save),
+    "never beside the damage");
+
   const css = readFileSync("D:/FoundryVTT/Data/modules/ace-qol/styles/ace-qol.css", "utf8");
   check("the damage line wraps, with no fixed height",
     /\.ace-qol-save-dmg-line \{[^}]*flex-wrap: wrap;/s.test(css)

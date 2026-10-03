@@ -455,6 +455,20 @@
 /* ⚠️ THE DAMAGE LINE: the number, the word that made it, and what it did to the
    hit points. The buttons that CHANGE it are the line underneath (his rule,
    2026-10-02). It wraps like every other row here; height is free. */
+/* ⚠️ THE HIT POINTS ARE LAST, ON THEIR OWN LINE (his rule, 2026-10-03). They
+   rode on the damage line, so on one creature they sat beside the number and on
+   the next they wrapped above the buttons, and which it was came down to how
+   wide that row's own damage number happened to be. One order, every creature:
+   the roll, the damage, the buttons, then this. */
+.ace-qol-save-hp-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  row-gap: 4px;
+  padding: 0 4px 3px 32px;
+}
+
 .ace-qol-save-dmg-line {
   display: flex;
   align-items: center;

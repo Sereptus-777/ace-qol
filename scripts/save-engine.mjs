@@ -10326,7 +10326,6 @@ export class SaveEngine {
           <div class="ace-qol-save-dmg-line">
             ${SaveEngine._evasionPill(r)}
             <span class="ace-qol-save-result-dmg">${dmgDisplay}<span class="ace-qol-dmg-unit">DMG</span></span>${isDead ? '<span class="ace-qol-save-skull">\u2620</span>' : '<span class="ace-qol-save-skull" style="display:none">\u2620</span>'}
-            <span class="ace-qol-save-result-hp">HP: <span class="ace-qol-hp-cur">${r.currentHP}</span>\u2192<span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span></span>
           </div>
           <div class="ace-qol-save-ovr-line">
             <button class="ace-qol-save-ovr-x" data-action="aceQolRemoveResult" data-token-doc-id="${r.tokenDocId}">\u00d7</button>
@@ -10334,6 +10333,16 @@ export class SaveEngine {
             <button class="ace-qol-save-ovr${_a(0.5)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="0.5">\u00bd</button>
             <button class="ace-qol-save-ovr${_a(1)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="1">1</button>
             <button class="ace-qol-save-ovr${_a(2)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="2">2</button>
+          </div>
+          <!-- the hit points, LAST and on their own line (his rule, 2026-10-03:
+               "Every creature on that card uses one order... then the buttons
+               x, a quarter, a half, one, two, then the HP line last. HP: 50 to 50
+               goes under the buttons, not above them and not beside the damage.").
+               It used to ride on the damage line, so whether it landed beside the
+               number or wrapped above the buttons depended on how wide that row's
+               own number happened to be, and no two creatures agreed. -->
+          <div class="ace-qol-save-hp-line">
+            <span class="ace-qol-save-result-hp">HP: <span class="ace-qol-hp-cur">${r.currentHP}</span>\u2192<span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span></span>
           </div>
         </div>
       `;
@@ -10717,7 +10726,6 @@ export class SaveEngine {
           <div class="ace-qol-save-dmg-line">
             ${SaveEngine._evasionPill(r)}
             <span class="ace-qol-save-result-dmg">${dmgDisplay}<span class="ace-qol-dmg-unit">DMG</span></span>${isDead ? '<span class="ace-qol-save-skull">\u2620</span>' : '<span class="ace-qol-save-skull" style="display:none">\u2620</span>'}
-            <span class="ace-qol-save-result-hp">HP: <span class="ace-qol-hp-cur">${r.currentHP}</span>\u2192<span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span></span>
           </div>
           <div class="ace-qol-save-ovr-line">
             <button class="ace-qol-save-ovr-x" data-action="aceQolRemoveResult" data-token-doc-id="${r.tokenDocId}">\u00d7</button>
@@ -10725,6 +10733,16 @@ export class SaveEngine {
             <button class="ace-qol-save-ovr${_a(0.5)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="0.5">\u00bd</button>
             <button class="ace-qol-save-ovr${_a(1)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="1">1</button>
             <button class="ace-qol-save-ovr${_a(2)}" data-action="aceQolDmgOverride" data-token-doc-id="${r.tokenDocId}" data-multiplier="2">2</button>
+          </div>
+          <!-- the hit points, LAST and on their own line (his rule, 2026-10-03:
+               "Every creature on that card uses one order... then the buttons
+               x, a quarter, a half, one, two, then the HP line last. HP: 50 to 50
+               goes under the buttons, not above them and not beside the damage.").
+               It used to ride on the damage line, so whether it landed beside the
+               number or wrapped above the buttons depended on how wide that row's
+               own number happened to be, and no two creatures agreed. -->
+          <div class="ace-qol-save-hp-line">
+            <span class="ace-qol-save-result-hp">HP: <span class="ace-qol-hp-cur">${r.currentHP}</span>\u2192<span class="ace-qol-hp-new${isDead ? ' ace-qol-hp-dead' : ''}">${newHP}</span></span>
           </div>
         </div>
       `;
