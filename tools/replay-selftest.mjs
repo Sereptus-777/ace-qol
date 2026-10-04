@@ -6241,18 +6241,32 @@ console.log(`\nWHAT AN EFFECT LEAVES BEHIND GOES WITH IT`);
 // His table, 2026-09-21: Aryel was offered Shield against Volcathar's Bite over
 // a line reading "Even with Shield, it still hits", and a recharge he re-rolled
 // ran on a player's client and posted in their chat.
-console.log(`\nSHIELD ONLY WHEN IT SAVES THEM, AND THE RECHARGE IS THE GM'S`);
+console.log(`\nSHIELD IS ASKED ON EVERY HIT, AND THE RECHARGE IS THE GM'S`);
 {
   const src = readFileSync(`${ROOT}/Data/modules/ace-qol/scripts/reaction-engine.mjs`, "utf8");
   const gate = src.slice(src.indexOf("const acWith = acBefore + 5;"), src.indexOf("acceptLabel: \"Cast Shield\""));
-  check("Shield is offered only when it changes the answer: the attack hits now and misses at AC + 5, and a hit that still lands at AC + 5 asks nobody and spends nothing (2026-09-21)",
-    /if \(isAHit\(withShield\)\)/.test(gate)
-      && /modified\.push\(result\);\s*\n\s*continue;/.test(gate)
-      // the line it used to show is gone from the box itself (the comment that
-      // records why it went is not the box)
-      && !/description: `\$\{foundry\.utils\.escapeHTML[^`]*Even with Shield/.test(src)
-      && /Shield would turn it into a miss/.test(src),
-    "the box opens for a miss at AC + 5 and for nothing else; the \"still hits\" line is gone");
+  /* ⚠️🔴 RE-PINNED 2026-10-03, HIS RULE: "The gate goes. Shield is offered on
+     every hit against a creature that has it prepared and a reaction, including
+     a hit the +5 will not stop. The lasting AC is the reason."
+
+     The gate this used to require was built round one attack. Shield is +5 AC
+     until the start of your next turn, so a hit it cannot stop is still a reason
+     to cast it against everything else swinging before then, and whether that is
+     worth a slot is the player's call. The gate was making it for them. */
+  check("every hit asks: a hit the +5 will not stop still opens the box, because the AC lasts until the start of their next turn (2026-10-03)",
+    /is asked anyway/.test(gate)
+      && !/so the spell cannot stop it/.test(gate.slice(0, gate.indexOf("is asked anyway")))
+      && !/EVERY HIT ASKS[\s\S]*?continue;/.test(gate),
+    "no gate between the AC and the box");
+  /* ⚠️ READ THE VALUE, NOT THE FILE. The comments around this line quote the
+     sentences it used to carry, so a pin that greps the source passes or fails
+     on the wrong words. */
+  const playerLine = gate.slice(gate.indexOf("description:"), gate.indexOf("gmNote:"));
+  check("and the box still tells him nothing about the outcome (2026-10-03)",
+    /hits you with/.test(playerLine)
+      && !/miss/i.test(playerLine)
+      && !/still hits/i.test(playerLine),
+    "the line is who hit him and with what");
 
   // Magic Missile has no attack roll, so it is never judged this way.
   const missile = src.slice(src.indexOf("Check each Magic Missile target for Shield availability"));
@@ -8667,47 +8681,53 @@ console.log(`\nPHASE 6a: THE SHIELD REACTION`);
         });
       } catch (e) { err2 = e; }
       const [box2, box3, box5] = asked.slice(atAsk);
-      // ⚠️ RE-PINNED 2026-09-21, HIS TABLE. This used to require that a 25 asks
-      // as well, over a box reading "Even with Shield, it still hits" — which
-      // is what Aryel was handed against Volcathar's Bite. A box whose only
-      // answer is "no" is an interruption with a slot attached, so the rule is
-      // now: it asks when +5 changes the answer, and at no other time.
-      check("2. an attack that hits asks ONLY when Shield saves them: +5 turns a 17 against AC 15 into a miss and the box opens, a 25 still hits at 20 so nobody is asked, and the card's AC goes up either way (2026-09-19, re-pinned 2026-09-21)",
-        !err2 && shape?.creatureBeside && !shape?.blockHasCreature && asked.length - atAsk === 2
+      /* ⚠️🔴 RE-PINNED 2026-10-03, HIS RULE: "The gate goes. Shield is offered
+         on every hit against a creature that has it prepared and a reaction,
+         including a hit the +5 will not stop. The lasting AC is the reason."
+
+         This pin has now been written three ways, and the swings between them
+         are all one argument: whether a box that cannot stop THIS blow is worth
+         opening. It is. Shield is +5 AC until the start of your next turn, so
+         the 25 that lands anyway still buys the wizard five AC against whatever
+         swings next, and that trade is the player's to make, not this code's. */
+      check("2. every hit asks: the 17 that +5 turns into a miss, the 25 that still lands, and the covered 21 — three boxes, and the card's AC goes up on every one of them (2026-10-03)",
+        !err2 && shape?.creatureBeside && !shape?.blockHasCreature && asked.length - atAsk === 3
           && out2?.[0]?.hitResult === "miss" && out2?.[0]?.shieldBlocked === true
           && out2?.[0]?.ac === 20 && out2?.[0]?.effectiveAC === 20
-          && out3?.[0]?.hitResult === "hit" && out3?.[0]?.shieldBlocked !== true,
+          && out3?.[0]?.hitResult === "hit" && out3?.[0]?.shieldBlocked !== true
+          && out3?.[0]?.ac === 20,
         err2 ? `threw: ${err2?.message ?? err2}`
           : `the result keeps the creature ${shape?.creatureBeside ? "beside" : "NOT beside"} the target block, `
-            + `the block ${shape?.blockHasCreature ? "HAS" : "has no"} creature in it; boxes opened ${asked.length - atAsk} (the 17 and the covered 21, not the 25); `
+            + `the block ${shape?.blockHasCreature ? "HAS" : "has no"} creature in it; boxes opened ${asked.length - atAsk} (the 17, the 25 and the covered 21); `
             + `17 vs AC 15 with Shield: ${out2?.[0]?.hitResult} (${out2?.[0]?.shieldBlocked ? "blocked" : "not blocked"}, AC on the card ${out2?.[0]?.effectiveAC}); `
-            + `25 vs AC 15: ${out3?.[0]?.hitResult}, nobody asked`);
+            + `25 vs AC 15 with Shield: ${out3?.[0]?.hitResult}, AC on the card ${out3?.[0]?.ac}`);
       check("Shield goes on top of cover: a 21 against AC 15 behind half cover is 17 and a hit, and Shield makes it 22 and a miss (2026-09-19)",
         !err2 && out5?.[0]?.hitResult === "miss" && out5?.[0]?.effectiveAC === 22 && out5?.[0]?.ac === 20,
         err2 ? `threw: ${err2?.message ?? err2}`
           : `21 vs AC 15 + half cover, with Shield: ${out5?.[0]?.hitResult}, AC on the card ${out5?.[0]?.effectiveAC} `
             + `(the creature's ${out5?.[0]?.ac} and the cover's +2)`);
-      // box3 is the covered 21 now: the 25 never opened one (re-pinned 2026-09-21).
+      // box3 is the 25 that lands anyway, box5 the covered 21 (2026-10-03).
       /* ⚠️🔴 RE-PINNED 2026-10-03, HIS TABLE. This used to REQUIRE the line
          "Shield would turn it into a miss", and that sentence is the fault he
          reported: "The Shield prompt is telling the player the outcome... He
          knows he was hit, and that Shield is +5 against that attack. He does not
-         know the roll." The box only opens when +5 changes the answer, so saying
-         so out loud handed the player the roll, the AC and the margin at once and
-         made the decision for them. The line is what their character knows now,
-         and the numbers moved to a note only a GM's screen draws. */
+         know the roll." The line is what their character knows now, and the
+         numbers moved to a note only a GM's screen draws. */
       check("the box is the moment, and it does not hand him the answer: no number rows, the line names who hit him and with what, and nothing about a miss or a hit after the +5 (his rule, 2026-10-03)",
         !!box2 && !box2.details?.length
           && /hits you with/.test(box2.description ?? "")
-          && !/miss/i.test(box2.description ?? "")
-          && (!box3 || !/miss/i.test(box3.description ?? ""))
-          && asked.slice(atAsk).every(b => !/still hits/i.test(b.description ?? "")
-                                        && !/miss/i.test(b.description ?? "")),
+          && asked.slice(atAsk).every(b => !/miss/i.test(b.description ?? "")
+                                        && !/still hits/i.test(b.description ?? "")),
         `rows in the box: ${box2?.details?.length ?? 0}; its line: "${String(box2?.description ?? "").replace(/<[^>]+>/g, "")}"; `
           + `no box tells him the outcome: ${asked.slice(atAsk).every(b => !/miss/i.test(b.description ?? "") && !/still hits/i.test(b.description ?? ""))}`);
-      check("and the margin is still there for the GM, on the box's own GM line (2026-10-03)",
-        !!box2 && /against AC/.test(box2.gmNote ?? "") && /a miss by/.test(box2.gmNote ?? ""),
-        `the GM line: "${String(box2?.gmNote ?? "none").replace(/<[^>]+>/g, "")}"`);
+      /* ⚠️ AND THE MARGIN IS THE GM'S, ON BOTH KINDS OF HIT. A note that always
+         said "a miss by N" would be a lie on the 25, and that note is the only
+         line on the box allowed to say either. */
+      check("the margin is still there for the GM, and it tells the truth about both hits (2026-10-03)",
+        !!box2 && /against AC/.test(box2.gmNote ?? "") && /a miss by/.test(box2.gmNote ?? "")
+          && !!box3 && /against AC/.test(box3.gmNote ?? "") && /it still hits/.test(box3.gmNote ?? ""),
+        `the 17's GM line: "${String(box2?.gmNote ?? "none").replace(/<[^>]+>/g, "")}"; `
+          + `the 25's: "${String(box3?.gmNote ?? "none").replace(/<[^>]+>/g, "")}"`);
     }
 
     // ── Saying no changes nothing ──

@@ -1810,21 +1810,29 @@ export class ReactionEngine {
         fullCover: !!result.coverResult?.isFullCover, mirrorImage: !!result.mirrorImageRedirect,
         autoCrit: !!result.autoCrit });
 
-      // ── ⚠️🔴 A BOX THAT CANNOT CHANGE THE ANSWER IS NOT A CHOICE ──────────
-      // His table, 2026-09-21: Volcathar's Bite, and Aryel was offered Shield
-      // over a line reading "Even with Shield, it still hits." That is not a
-      // decision, it is an interruption with a slot attached: the only thing
-      // she could do was decline. Shield is asked when the attack hits NOW and
-      // the same attack misses at AC + 5, and at no other time.
-      //
-      // ⚠️ MAGIC MISSILE IS NOT THIS. It never rolls to hit, so there is no
-      // "still hits" to work out; its own block below always asks.
+      /* ══ EVERY HIT ASKS ═════════════════════════════════════════
+
+         His rule, 2026-10-03: "The gate goes. Shield is offered on every hit
+         against a creature that has it prepared and a reaction, including a hit
+         the +5 will not stop. THE LASTING AC IS THE REASON."
+
+         ⚠️🔴 THE GATE THAT USED TO SIT HERE WAS BUILT ROUND ONE ATTACK. It
+         refused to ask whenever the same attack still hit at AC + 5, on the
+         grounds that a box whose only answer is "no" is an interruption with a
+         slot attached. That reads the spell as if it were a shield for THIS
+         blow, and it is not: Shield is +5 AC until the start of your next turn,
+         so a hit it cannot stop is still a reason to cast it, against everything
+         else swinging before then. Whether that is worth a slot is the player's
+         call, and the gate was making it for them.
+
+         ⚠️ AND THE BOX STILL SAYS NOTHING ABOUT THE OUTCOME (his rule, same
+         day). It cannot: it no longer knows which kind of hit this is from the
+         fact that it opened, which is exactly what made the old line a leak. */
       if (isAHit(withShield)) {
-        console.log(`${MODULE_ID} | Shield: ${targetActor.name} is not asked. `
-          + `${attackItem?.name ?? "That attack"} totals ${result.attackTotal} against AC ${acBefore}, `
-          + `and still hits at ${acWith} with Shield up, so the spell cannot stop it.`);
-        modified.push(result);
-        continue;
+        console.log(`${MODULE_ID} | Shield: ${targetActor.name} is asked anyway. `
+          + `${attackItem?.name ?? "That attack"} totals ${result.attackTotal} against AC ${acBefore} `
+          + `and still hits at ${acWith}, so the spell cannot stop this one — the +5 lasts until `
+          + `the start of their next turn, and that is theirs to spend a slot on.`);
       }
 
       // ── The attack's d20 lands before anybody is asked ──
@@ -1878,9 +1886,14 @@ export class ReactionEngine {
         // shows it.
         gmNote: `${foundry.utils.escapeHTML(String(result.attackTotal ?? "?"))} against AC `
           + `${foundry.utils.escapeHTML(String(acBefore ?? "?"))}; with Shield, AC `
-          + `${foundry.utils.escapeHTML(String(acWith ?? "?"))} and a miss by `
-          + `${Number.isFinite(Number(acWith) - Number(result.attackTotal))
-              ? Math.max(0, Number(acWith) - Number(result.attackTotal)) : "?"}.`,
+          + `${foundry.utils.escapeHTML(String(acWith ?? "?"))} and `
+          // ⚠️ BOTH ANSWERS, now that both kinds of hit open a box. A note that
+          // always said "a miss by N" would be a lie on the hits the +5 cannot
+          // stop, and this is the only line on the box that may say either.
+          + `${isAHit(withShield)
+              ? "it still hits"
+              : `a miss by ${Number.isFinite(Number(acWith) - Number(result.attackTotal))
+                  ? Math.max(0, Number(acWith) - Number(result.attackTotal)) : "?"}`}.`,
         acceptLabel: "Cast Shield",
         declineLabel: "No reaction",
         spellSlotLevel: 1,

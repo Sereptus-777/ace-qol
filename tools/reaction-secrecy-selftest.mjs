@@ -44,7 +44,32 @@ console.log("\nTHE PLAYER'S LINE IS THE MOMENT, NOT THE ANSWER");
   check("nothing about a miss is on the player's line",
     !/miss/.test(line), "no outcome");
   check("and nothing about a hit after the +5 either",
-    !/still hits/.test(box) && !/would be a hit/i.test(box));
+    !/still hits/.test(line) && !/would be a hit/i.test(line),
+    "the GM note may say it; the player's line may not");
+}
+
+console.log("\nEVERY HIT ASKS, EVEN ONE THE +5 WILL NOT STOP");
+{
+  /* ⚠️🔴 HIS RULE, 2026-10-03: "The gate goes. Shield is offered on every hit
+     against a creature that has it prepared and a reaction, including a hit the
+     +5 will not stop. The lasting AC is the reason."
+
+     The gate that sat here was built round one attack. Shield is +5 AC until the
+     start of your next turn, so a hit it cannot stop is still a reason to cast
+     it against everything else swinging before then, and whether that is worth a
+     slot is the player's call. The gate was making it for them. */
+  const gate = src.slice(src.indexOf("const acWith = acBefore + 5;"),
+    src.indexOf('acceptLabel: "Cast Shield"'));
+  check("a hit the +5 will not stop is not turned away",
+    /is asked anyway/.test(gate) && !/so the spell cannot stop it[\s\S]{0,120}continue;/.test(gate),
+    "no gate between the AC and the box");
+  check("and the reason is said out loud, not just done",
+    /the \+5 lasts until/.test(gate), "the lasting AC is the reason");
+  /* ⚠️ THE GM NOTE MUST TELL BOTH TRUTHS NOW. One that always said "a miss by
+     N" would be a lie on the hit that lands anyway, and it is the only line on
+     the box allowed to say either. */
+  check("the GM note says which kind of hit this is",
+    /isAHit\(withShield\)\s*\n\s*\? "it still hits"/.test(src), "it still hits, or a miss by N");
 }
 
 console.log("\nTHE MARGIN IS THE GM'S, ON THE GM'S OWN SCREEN");
