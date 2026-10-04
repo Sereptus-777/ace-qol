@@ -57,7 +57,7 @@ const file = (p) => decodeURIComponent(String(p ?? "").split("/").pop());
 
 const MODULE = "D:/FoundryVTT/Data/modules/ace-qol";
 const { ProneArt } = await import(`file:///${MODULE}/scripts/prone-art.mjs`);
-const { creatureWords, bestArt, rankArt, indexArt } = await import(`file:///${MODULE}/scripts/art-match.mjs`);
+const { creatureWords, bestArt, rankArt, indexArt, DEATH_KINDS, PRONE_KINDS } = await import(`file:///${MODULE}/scripts/art-match.mjs`);
 const { resolveFall } = await import(`file:///${MODULE}/scripts/falling.mjs`);
 
 // ── His folders, walked the way ACE Token Art walks them (every subfolder) ──
@@ -79,7 +79,15 @@ const npc = (name, value, subtype = "", { flags = {}, stats = {}, race = null } 
   getFlag: (scope, key) => flags?.[scope]?.[key],
   system: { details: { type: { value, subtype }, race } },
 });
-const pick = (actor, rand = () => 0) => bestArt(index, creatureWords(actor), { rand });
+/* ⚠️🔴 THESE PINS NAME CORPSES, SO THEY ASK AS A DEATH DOES (2026-10-03).
+   Both kinds share one folder now and his rule splits them by caller: "A death
+   prefers a file whose name starts with dead-. If that creature has none, use
+   its prone- file. Prone never uses a dead- file." Every expectation below is a
+   dead- file, which is the death caller's answer; the prone caller's own
+   answers are pinned further down, against ProneArt itself. Asking with no
+   kinds at all tested a matcher neither caller uses. */
+const pick = (actor, rand = () => 0) =>
+  bestArt(index, creatureWords(actor), { rand, kinds: DEATH_KINDS });
 const got = (actor, rand) => file(pick(actor, rand)?.path);
 
 console.log(`\nHis prone folders: ${index.files} images (${index.byKind.prone} prone-, ${index.byKind.dead} dead-, ${index.byKind.plain} no prefix)`);
@@ -126,9 +134,19 @@ check("a Giant Frog is not a dead giant or a giant spider: \"giant\" names anoth
   got(npc("Giant Frog", "beast")) === "dead-beast.png", got(npc("Giant Frog", "beast")));
 check("a Giant Spider gets its own picture (dead-giant spider-11)",
   got(npc("Giant Spider", "beast")) === "dead-giant spider-11.png", got(npc("Giant Spider", "beast")));
-check("a Frost Giant gets a plain dead giant, not the Hill Giant or the spider",
-  /^dead-giant(-11)?\.(png|webp)$/.test(got(npc("Frost Giant", "giant"))), got(npc("Frost Giant", "giant")));
-check("a Hill Giant gets Dead-Hill-Giant", got(npc("Hill Giant", "giant")) === "Dead-Hill-Giant.png");
+/* ⚠️🔴 RE-PINNED 2026-10-03. These named one file each, and he has since put a
+   prone- picture of a frost giant and of a hill giant in the same library. Under
+   his rule a death takes those when it owns no dead- file of its own ("if that
+   creature has none, use its prone- file"), and the more specific picture still
+   wins first — so a frost giant's own picture beats a plain dead giant whichever
+   prefix it carries. The rule is what is pinned now, not the inventory: a pin
+   that names a filename over a library he is still reorganising is a pin that
+   reads as broken when nothing is. */
+check("a Frost Giant gets a picture of a frost giant, or a plain giant — never the Hill Giant or the spider",
+  /frost|^dead-giant(-11)?\.(png|webp)$/i.test(got(npc("Frost Giant", "giant")))
+    && !/hill|spider/i.test(got(npc("Frost Giant", "giant"))), got(npc("Frost Giant", "giant")));
+check("a Hill Giant gets a picture of a hill giant, not a plain one",
+  /hill/i.test(got(npc("Hill Giant", "giant"))), got(npc("Hill Giant", "giant")));
 check("a Goblin Boss gets dead-goblin (a name word), not Dead-Goblinoid (the subtype) or dead-fey (the type)",
   got(npc("Goblin Boss", "fey", "goblinoid")) === "dead-goblin.png", got(npc("Goblin Boss", "fey", "goblinoid")));
 check("a Cultist gets dead-cultist-11 over the Aberrant Cultist (fewest words it does not have)",
@@ -182,10 +200,13 @@ check("a 2014 Goblin Boss (humanoid) still gets dead-goblin, filed under Fey by 
   check("a race that is only a missing item's id is not a word",
     !creatureWords(npc("Varek", "humanoid", "", { race: "aB3dE5fG7hJ9kL1m" })).levels[3].words.size);
   check("ranked, not first-found: every candidate for Neferon is listed, the arcanaloth first",
-    rankArt(index, creatureWords(neferon)).map(r => file(r.entry.path)).slice(0, 3).join(", ")
-      === "dead-arcanaloth-fiend.png, dead-fiend-11.png, dead-fiend.png"
-    || rankArt(index, creatureWords(neferon)).map(r => file(r.entry.path)).slice(0, 3).join(", ")
-      === "dead-arcanaloth-fiend.png, dead-fiend.png, dead-fiend-11.png");
+    // ⚠️ ASKED AS A DEATH ASKS, and pinned on the ORDER rather than on three
+    // filenames: the arcanaloth is first because he is the most specific, and
+    // that is the rule worth keeping (2026-10-03).
+    rankArt(index, creatureWords(neferon), { kinds: DEATH_KINDS })
+      .map(r => file(r.entry.path))[0] === "dead-arcanaloth-fiend.png",
+    rankArt(index, creatureWords(neferon), { kinds: DEATH_KINDS })
+      .map(r => file(r.entry.path)).slice(0, 3).join(", "));
 }
 
 // ── The first-name rule still works ──
@@ -205,18 +226,42 @@ check("Izek Strazni still gets prone-Izek", got(npc("Izek Strazni", "humanoid", 
   console.log = (...a) => lines.push(a.join(" "));
   try { await ProneArt.goProne(doc); } finally { console.log = log; }
   const u = wrote[0] ?? {};
-  check("goProne puts dead-arcanaloth-fiend on Neferon's token and remembers what he was wearing",
-    file(u["texture.src"]) === "dead-arcanaloth-fiend.png"
-      && u["flags.ace-qol.proneArtPrevious"] === "NPCs/FIENDS/Arcanaloth%20033.png",
-    `${file(u["texture.src"])}, remembers ${u["flags.ace-qol.proneArtPrevious"]}`);
+  /* ⚠️🔴 RE-PINNED 2026-10-03, HIS RULE: "Prone never uses a dead- file."
+     This used to require `dead-arcanaloth-fiend.png` on a prone Neferon, from
+     the day both kinds shared a folder and every file in it counted. They share
+     one folder again now, which is exactly why the kinds had to be separated: a
+     creature knocked down was being handed a picture of its own corpse.
 
-  const lost = { ...doc, name: "Nobody", actor: { ...npc("Nobody", "celestial", "angel"), statuses: new Set(["prone"]) } };
+     ⚠️ AND NEFERON IS THE CASE WHERE THAT COSTS SOMETHING. His only picture is
+     a corpse, so now he has nothing to wear lying down — and what the swap must
+     do then is nothing at all, out loud, rather than dress him as dead.
+
+     ⚠️ THE PIN IS THE RULE, NOT THE INVENTORY. One naming a filename fails the
+     next time he adds art, which is how this file came to read as broken when
+     nothing was. */
+  const wornNow = file(u["texture.src"]);
+  check("goProne never puts a dead- picture on a creature that is only knocked down",
+    !/^dead[-_ ]/i.test(wornNow ?? ""), wornNow || "nothing was put on him");
+  check("and when it does dress him, it remembers what he was wearing",
+    !wornNow || u["flags.ace-qol.proneArtPrevious"] === "NPCs/FIENDS/Arcanaloth%20033.png",
+    wornNow ? `remembers ${u["flags.ace-qol.proneArtPrevious"]}` : "nothing to remember");
+  check("a creature whose only picture is a corpse is left alone, and the console says why",
+    wornNow ? true : (wrote.length === 0 && lines.some(l => /prone/i.test(l))),
+    wornNow ? "he had a prone picture" : (lines.find(l => /Neferon/i.test(l)) ?? "SAID NOTHING"));
+
+  /* ⚠️ A CREATURE NOTHING CAN MATCH, AND IT HAS TO STAY THAT WAY. This asked
+     about a celestial angel named Nobody, and he has since put a celestial
+     avenger in the library — so the one creature in this file that was meant to
+     find nothing started finding something, and a pin about silence failed over
+     him adding art. The name is nonsense and the type is blank on purpose. */
+  const lost = { ...doc, name: "Qwomblezibbet", actor: { ...npc("Qwomblezibbet", ""), statuses: new Set(["prone"]) } };
   wrote.length = 0; lines.length = 0;
   console.log = (...a) => lines.push(a.join(" "));
   try { await ProneArt.goProne(lost); } finally { console.log = log; }
   check("a creature with no picture says so in the console, with the words it was asked by, instead of nothing",
-    !wrote.length && lines.some(l => /Nobody is prone, but no prone art matched \(asked for: name: nobody; type: celestial; subtype: angel\)/.test(l)),
-    lines.find(l => /Nobody/.test(l)) ?? "no line");
+    !wrote.length && lines.some(l => /Qwomblezibbet is prone, but no prone art matched/.test(l)
+      && /asked for: name: qwomblezibbet/.test(l)),
+    lines.find(l => /Qwomblezibbet/.test(l)) ?? "no line");
 }
 
 // ── The fall ──

@@ -187,8 +187,18 @@ console.log("\nTHE MORE SPECIFIC PICTURE WINS, ON HIS REAL FOLDER (2026-09-18)")
   check("a Bat's is dead-beast, not the displacer beast", dead(real("Bat", "beast", "")), "dead-beast.png");
   check("a Giant Frog's is dead-beast, not a dead giant", dead(real("Giant Frog", "beast", "")), "dead-beast.png");
   check("a Wolf's is dead-wolf-grey, not the Animal Lord", dead(real("Wolf", "beast", "")), "dead-wolf-grey.png");
-  check("a Celestial with no picture still gets its video, dead-Celestial.webm (a corpse can be a video)",
-    dead(real("Deva", "celestial", "angel")), "dead-Celestial.webm");
+  /* ⚠️ RE-PINNED 2026-10-03. A Deva had no picture of its own the day this was
+     written, so it fell to its type's video and that is what this named. He has
+     since put a prone- deva in the library, and under his rule a death takes a
+     prone- file when the creature owns no dead- one ("if that creature has none,
+     use its prone- file") — so the Deva's own picture now beats the type's, which
+     is the more specific answer and the right one. What is pinned is the rule:
+     a corpse may be a video, and a picture of the creature beats its type. */
+  check("a Deva gets a picture of a deva, not its type's",
+    /deva/i.test(dead(real("Deva", "celestial", "angel")) ?? ""), true);
+  check("and a creature whose type has only a video still gets the video (a corpse can be a video)",
+    file(build(["dead-Celestial.webm"])._resolveDeadArt(npc("Deva", { type: "celestial" }), { quiet: true })),
+    "dead-Celestial.webm");
 
   // A remnant is reached by its own rule, never by a shared word.
   const rem = build(["dead-ash zombie.png", "dead-remnant-ash-pile.png", "dead-undead.png"]);

@@ -38,7 +38,7 @@
 // Guessing it back from the actor's prototype would quietly undo all of those.
 // ──────────────────────────────────────────────────────────────────────────────
 
-import { IMAGE_FILES, indexArt, creatureWords, describeWords, bestArt } from "./art-match.mjs";
+import { IMAGE_FILES, indexArt, creatureWords, describeWords, bestArt, PRONE_KINDS } from "./art-match.mjs";
 
 // ⚠️ DECLARED LOCALLY, NOT IMPORTED — AND THIS IS NOT A STYLE CHOICE.
 // `ace-qol.mjs` imports THIS file, so the two form a cycle. Every import is
@@ -235,7 +235,10 @@ export class ProneArt {
 
     const index = await this.buildCache();
     if (!index?.files) return null;
-    return bestArt(index, creatureWords(actor))?.path ?? null;
+    /* ⚠️🔴 PRONE NEVER USES A DEAD- FILE (his rule, 2026-10-03). Both kinds
+       live in one folder now, so without this a creature knocked down could be
+       handed a picture of its own corpse. */
+    return bestArt(index, creatureWords(actor), { kinds: PRONE_KINDS })?.path ?? null;
   }
 
   /** The words asked for this creature, as one line for the console. */

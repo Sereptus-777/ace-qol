@@ -300,7 +300,35 @@ export function describeWords(creature) {
  * Every file that shares a word with the creature, best first.
  * @returns {{entry, counts: number[], extra: number}[]}
  */
-export function rankArt(index, creature) {
+/**
+ * WHICH KINDS THIS CALLER MAY HAVE, BEST FIRST.
+ *
+ * ⚠️🔴 HIS RULE, 2026-10-03: "A death prefers a file whose name starts with
+ * dead-. If that creature has none, use its prone- file. Prone never uses a
+ * dead- file."
+ *
+ * Both libraries live in one folder now, so a picture of a corpse and a picture
+ * of somebody lying down sit side by side and the old single ranking had one
+ * answer for both callers: prone above plain above dead. That is right for a
+ * creature knocked down and backwards for one that has just died.
+ *
+ * ⚠️ IT IS STILL THE LAST TIEBREAK, AND THAT IS DELIBERATE. The more specific
+ * picture wins, always (his rule, 2026-09-18: Neferon takes
+ * `dead-arcanaloth-fiend` over `dead-fiend`). Kind decides between pictures that
+ * are equally about this creature — which is exactly "if that creature has none,
+ * use its prone- file": when the only file naming him is a prone one, it wins by
+ * being the only one left.
+ */
+export const DEATH_KINDS = ["dead", "plain", "prone"];
+export const PRONE_KINDS  = ["prone", "plain"];
+
+/**
+ * @param {object} index
+ * @param {object} creature
+ * @param {object} [o]
+ * @param {string[]} [o.kinds]  allowed kinds, best first; anything else is refused
+ */
+export function rankArt(index, creature, { kinds = null } = {}) {
   const levels = creature.levels;
   const all = new Set(levels.flatMap(l => [...l.words]));
   const soft = creature.soft ?? new Set();
@@ -311,6 +339,9 @@ export function rankArt(index, creature) {
     for (const entry of (index?.byWord?.get?.(w) ?? [])) {
       if (seen.has(entry)) continue;
       seen.add(entry);
+      // ⚠️ A KIND THIS CALLER MAY NOT HAVE IS NOT RANKED LOW, IT IS REFUSED.
+      // "Prone never uses a dead- file" is not a preference.
+      if (kinds && !kinds.includes(entry.kind)) continue;
       // A job word counts only for a picture of the creature's own type.
       const sameType = !entry.type || !creature.type || entry.type === creature.type;
       const counts = (x, set) => set.has(x) && (sameType || !roles.has(x));
@@ -351,6 +382,8 @@ export function rankArt(index, creature) {
         soft: entry.words.filter(x => soft.has(x) || (!sameType && roles.has(x))).length,
         /** Where in the name the word this file IS sits. Earlier wins. */
         nameAt: wholeOk ? order.indexOf(whole) : Infinity,
+        /** The caller's own kind order, carried so the comparison can read it. */
+        kinds,
       };
       if (score.counts.some(c => c > 0)) scored.push(score);
     }
@@ -403,6 +436,17 @@ export function compareArt(a, b) {
      exactly the case he is describing, so this is where it decides. */
   const aAt = a.nameAt ?? Infinity, bAt = b.nameAt ?? Infinity;
   if (aAt !== bAt) return aAt - bAt;
+  /* ⚠️ THE CALLER'S OWN ORDER WHEN IT GAVE ONE. `entry.rank` is the shared
+     default (prone, then plain, then dead); a caller that named its kinds is
+     answered in the order it named them. */
+  const order = (x) => {
+    const k = x?.kinds;
+    if (!k) return null;
+    const at = k.indexOf(x.entry.kind);
+    return at < 0 ? -1 : k.length - at;
+  };
+  const ao = order(a), bo = order(b);
+  if (ao !== null && bo !== null && ao !== bo) return bo - ao;
   return b.entry.rank - a.entry.rank;
 }
 
@@ -414,8 +458,8 @@ const SPECIFIC = [0, 1, 3, 2];
  * numbered variants of one picture) are picked from at random.
  * @returns {{path: string, level: string, words: string[], tied: number} | null}
  */
-export function bestArt(index, creature, { rand = Math.random } = {}) {
-  const ranked = rankArt(index, creature);
+export function bestArt(index, creature, { rand = Math.random, kinds = null } = {}) {
+  const ranked = rankArt(index, creature, { kinds });
   if (!ranked.length) return null;
   const top = ranked.filter(s => compareArt(s, ranked[0]) === 0);
   const pick = top[Math.min(top.length - 1, Math.floor(rand() * top.length))];

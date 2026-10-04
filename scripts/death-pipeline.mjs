@@ -1,6 +1,6 @@
 // ─── ACE: QOL — Death Pipeline ──────────────────────────────────────────────
 import { aceDescriptionHtml } from "./description-reader.mjs";
-import { TILE_FILES, newArtIndex, addArt, creatureWords, describeWords, bestArt } from "./art-match.mjs";
+import { TILE_FILES, newArtIndex, addArt, creatureWords, describeWords, bestArt, DEATH_KINDS } from "./art-match.mjs";
 // Handles NPC death visuals: converts dead NPC tokens to tile art.
 // When an NPC drops to 0 HP, this engine finds matching dead-creature art,
 // places a tile at the token's position, and removes the original token.
@@ -1143,7 +1143,13 @@ export class DeathPipeline {
     // here. One that only shares its type or subtype waits for the remnants
     // below: a wraith leaves ash, not a body.
     const creature = creatureWords(actor);
-    const best = bestArt(this._artIndex, creature);
+    /* ⚠️🔴 A DEATH PREFERS A dead- FILE (his rule, 2026-10-03: "A death
+       prefers a file whose name starts with dead-. If that creature has none,
+       use its prone- file"). Both kinds share one folder now, and the shared
+       ranking put prone above dead — right for a creature knocked down, exactly
+       backwards for one that has just died. The specific picture still wins
+       first; this decides between two that are equally about him. */
+    const best = bestArt(this._artIndex, creature, { kinds: DEATH_KINDS });
     const chosen = () => {
       if (!quiet) console.log(`${LOG_PREFIX}   art for ${actor.name}: ${best.path.split("/").pop()} `
         + `(by its ${best.level}; ${describeWords(creature)})`);
