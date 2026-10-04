@@ -17,7 +17,7 @@ import { FlagsEngine } from "./flags-engine.mjs";
 import { MergeCard } from "./merge-card.mjs";
 import { CoverEngine } from "./cover-engine.mjs";
 import { RiderEngine } from "./rider-engine.mjs";
-import { pendingAttackChoices, awaitDsnRoll, showCenterToast, promptAttackChoice } from "./attack-prompt.mjs";
+import { pendingAttackChoices, awaitDsnRoll, showCenterToast, showOutOfRangeBanner, promptAttackChoice } from "./attack-prompt.mjs";
 import { aceArmDiceWatch } from "./dsn-utils.mjs";
 // ⚠️ THE ONE RULE for "does this attack hit" (shared with the socket path and Lucky).
 import { judgeAttack } from "./rules/attack-hit.mjs";
@@ -612,8 +612,17 @@ export class AttackPipeline {
       if (unreachable.length && !reachable.length) {
         const worst = nearest(unreachable);
         const msg = `Out of range — ${worst.distanceFt} feet away (${worst.rangeDesc})`;
-        showCenterToast(msg, 2500);
-        ui.notifications?.warn(`ACE QOL: ${msg}`);
+        /* ⚠️🔴 IT STAYS UP, AND IT SAYS WHY (his rule, 2026-10-04). A bare
+           "15 feet away" over two empty squares reads as a measuring bug every
+           time, because the gap IS ten feet and the count is fifteen: the
+           target's own square is the last five. Six months of that argument
+           came out of a banner that showed one number, explained nothing, and
+           faded before it could be read. */
+        showOutOfRangeBanner(worst.distanceFt, worst.rangeDesc);
+        // ⚠️ AND NOT A THIRD TIME. The banner says it, `_announceAttackCancelled`
+        // records it; a red corner toast saying the same words was the third copy
+        // of one event.
+        console.log(`${MODULE_ID} | ${msg}`);
         _announceAttackCancelled(item, actor, msg);
         return false; // Block the roll
       }

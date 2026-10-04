@@ -120,7 +120,7 @@ import { MergeCard }            from "./merge-card.mjs";
 import { LootEngine }           from "./loot-engine.mjs";
 import { DeathPipeline, revokeVorpalLock } from "./death-pipeline.mjs";
 import * as Diagnostics         from "./diagnostics.mjs";
-import { showCenterToast, showAdvantagePrompt, promptAttackChoice, pendingAttackChoices }
+import { showCenterToast, showOutOfRangeBanner, showAdvantagePrompt, promptAttackChoice, pendingAttackChoices }
   from "./attack-prompt.mjs";
 import { EffectsPanel } from "./effects-panel.mjs";
 import { XpEngine } from "./xp-engine.mjs";
@@ -6659,7 +6659,7 @@ Hooks.once("ready", () => {
               const rangeCheck = ap._checkRange(this.actor, target, this);
               if (rangeCheck?.blocked) {
                 const msg = `Out of range — ${rangeCheck.distanceFt} feet away (${rangeCheck.rangeDesc})`;
-                showCenterToast(msg, 2500);
+                showOutOfRangeBanner(rangeCheck.distanceFt, rangeCheck.rangeDesc);
                 ui.notifications?.warn(`ACE QOL: ${msg}`);
                 return null;  // cancel the attack
               }

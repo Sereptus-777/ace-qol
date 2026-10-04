@@ -2648,6 +2648,94 @@
 }
 
 /* ─── Center toast (no-target nudge) ────────────────────────────────────── */
+/* ══ THE BANNER THAT STAYS ════════════════════════════════════════════
+
+   His rule, 2026-10-04: the headline, the distance and the squares, the reach in
+   big letters under it, the rule quoted in small ones, and it stays until he
+   clicks. It is read, not glimpsed, so every size here is above the floor and
+   nothing is squeezed: the quote wraps as far as it needs to and the box grows.
+
+   ⚠️ IT TAKES NO CLICKS ITSELF. `pointer-events: none` means the press that
+   dismisses it goes through to whatever is underneath, so getting rid of it
+   never costs him the move he was making. */
+.ace-qol-center-banner {
+  position: fixed;
+  top: 42%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.92);
+  max-width: min(760px, 86vw);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 40px;
+  background: linear-gradient(135deg, rgba(10, 10, 12, 0.97), rgba(17, 17, 20, 0.97));
+  border: 2px solid #d4af37;
+  border-radius: 8px;
+  box-shadow: 0 0 28px rgba(212, 175, 55, 0.45), 0 10px 38px rgba(0, 0, 0, 0.65);
+  text-align: center;
+  z-index: 99999;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+.ace-qol-center-banner.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+.ace-qol-center-banner.hide { opacity: 0; }
+
+.ace-qol-banner-headline {
+  font-family: "Cinzel Decorative", "Cinzel", serif;
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: #ff6b6b;
+  text-shadow: 0 0 10px rgba(255, 107, 107, 0.5);
+  line-height: 1.2;
+}
+.ace-qol-banner-detail {
+  font-family: "Signika", "Helvetica Neue", sans-serif;
+  font-size: 18px;
+  line-height: 1.45;
+  color: #f0e4c0;
+}
+/* The one number he is arguing with, in the biggest letters on the box. */
+.ace-qol-banner-big {
+  font-family: "Cinzel Decorative", "Cinzel", serif;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: #d4af37;
+  text-shadow: 0 0 8px rgba(212, 175, 55, 0.55);
+  line-height: 1.25;
+  margin-top: 2px;
+}
+/* The rule itself. Small, but 14px is the floor in this suite and it holds. */
+.ace-qol-banner-quote {
+  font-family: "Signika", "Helvetica Neue", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  font-style: italic;
+  color: #c9bfa4;
+  max-width: 66ch;
+  margin-top: 6px;
+  white-space: normal;
+}
+.ace-qol-banner-cite {
+  font-family: "Signika", "Helvetica Neue", sans-serif;
+  font-size: 12px;
+  letter-spacing: 0.4px;
+  color: #9a9080;
+}
+.ace-qol-banner-hint {
+  font-family: "Signika", "Helvetica Neue", sans-serif;
+  font-size: 12px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: #7e7768;
+  margin-top: 4px;
+}
+
 .ace-qol-center-toast {
   position: fixed;
   top: 45%;

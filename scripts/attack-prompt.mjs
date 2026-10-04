@@ -78,6 +78,129 @@ async function _awaitDsnRollLegacy(fallbackMs = null, { messageId = null } = {})
   });
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   THE BANNER THAT STAYS, AND SAYS WHY
+
+     His rule, 2026-10-04, after we settled the Salamander argument: the
+     out-of-range banner says the distance, how many empty squares that is, that
+     the target's own square counts as the last five feet, the reach in big
+     letters under it, and the rule quoted underneath in small ones. It stays on
+     screen until he clicks.
+
+   ⚠️🔴 WHY IT EXISTS AT ALL. A bare "15 feet away" over two empty squares reads
+   as a measuring bug every single time, because the gap IS ten feet and the
+   count is fifteen. Both numbers are true. He has re-litigated this for six
+   months against a banner that showed one of them and explained nothing, so the
+   explanation goes on the banner.
+
+   THE RULE, VERBATIM (Player's Handbook 2024, "Playing on a Grid", and the 2014
+   PHB p.192, "Variant: Playing on a Grid", word for word the same):
+
+       "To determine the range on a grid between two things — whether creatures
+        or objects — count squares from a square adjacent to one of them and
+        stop counting in the space of the other one. Count by the shortest
+        route."
+
+   "Stop counting in the space of the other one" is the whole argument: the
+   target's own square is the last five feet of the range.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/** The rule itself, so every caller quotes the same words. */
+export const GRID_RANGE_RULE =
+  "“To determine the range on a grid between two things — whether creatures or objects — "
+  + "count squares from a square adjacent to one of them and stop counting in the space of the "
+  + "other one. Count by the shortest route.”";
+export const GRID_RANGE_CITE = "Player’s Handbook (2024), “Playing on a Grid” · 2014 PHB p.192";
+
+/** The banner on screen now, so a second one replaces it instead of stacking. */
+let _banner = null;
+
+/**
+ * A centred banner that stays until the next click anywhere, or Escape.
+ *
+ * ⚠️ IT DOES NOT SWALLOW THE CLICK THAT DISMISSES IT. There is no backdrop: the
+ * listener is on the document and does not stop the event, so the click he makes
+ * to get rid of it still does whatever he was clicking. A full-screen catcher
+ * would have eaten the first press of every move he makes after a bad swing.
+ *
+ * ⚠️ AND IT IS ARMED ON THE NEXT FRAME. The press that fired the attack is still
+ * travelling when this is built; listening immediately dismisses the banner with
+ * the very click that caused it.
+ *
+ * @param {object} o
+ * @param {string} o.headline   "OUT OF RANGE"
+ * @param {string} [o.detail]   the sentence under it
+ * @param {string} [o.big]      the line in large letters under that
+ * @param {string} [o.quote]    the rule, in small letters
+ * @param {string} [o.cite]     where the quote is from
+ */
+export function showCenterBanner({ headline, detail = "", big = "", quote = "", cite = "" }) {
+  try { _banner?.remove?.(); } catch (_) { /* a stale node is not a reason to skip this one */ }
+
+  const el = document.createElement("div");
+  el.className = "ace-qol-center-banner";
+  const line = (cls, text) => {
+    if (!text) return;
+    const d = document.createElement("div");
+    d.className = cls;
+    d.textContent = text;
+    el.appendChild(d);
+  };
+  line("ace-qol-banner-headline", headline);
+  line("ace-qol-banner-detail", detail);
+  line("ace-qol-banner-big", big);
+  line("ace-qol-banner-quote", quote);
+  line("ace-qol-banner-cite", cite);
+  const hint = document.createElement("div");
+  hint.className = "ace-qol-banner-hint";
+  hint.textContent = "click anywhere to dismiss";
+  el.appendChild(hint);
+
+  document.body.appendChild(el);
+  _banner = el;
+  requestAnimationFrame(() => el.classList.add("show"));
+
+  const close = () => {
+    document.removeEventListener("pointerdown", close, true);
+    document.removeEventListener("keydown", onKey, true);
+    if (_banner === el) _banner = null;
+    el.classList.add("hide");
+    setTimeout(() => el.remove(), 250);
+  };
+  const onKey = (ev) => { if (ev.key === "Escape") close(); };
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    document.addEventListener("pointerdown", close, true);
+    document.addEventListener("keydown", onKey, true);
+  }));
+  return el;
+}
+
+/**
+ * The out-of-range banner, built from the numbers the gate already has.
+ *
+ * ⚠️ THE EMPTY SQUARES ARE WORKED OUT FROM THE DISTANCE, not counted again. The
+ * distance already counts the target's own square, so the empty ones between
+ * them are that count less one. A touching pair has none, and says so.
+ *
+ * @param {number} distanceFt  what the gate measured
+ * @param {string} rangeDesc   "melee reach 10 feet", "thrown 20/60 feet"
+ */
+export function showOutOfRangeBanner(distanceFt, rangeDesc) {
+  const gd = Number(canvas?.scene?.grid?.distance ?? canvas?.grid?.distance ?? 5) || 5;
+  const squares = Math.max(0, Math.round(Number(distanceFt) / gd) - 1);
+  const between = squares === 0
+    ? "touching"
+    : `${squares} empty square${squares === 1 ? "" : "s"} between you`;
+  return showCenterBanner({
+    headline: "OUT OF RANGE",
+    detail: `Target is ${Math.round(distanceFt)} ft away `
+      + `(${between}; a target’s own square counts as the last ${gd} ft)`,
+    big: String(rangeDesc || "").toUpperCase(),
+    quote: GRID_RANGE_RULE,
+    cite: GRID_RANGE_CITE,
+  });
+}
+
 /**
  * Show a centered toast that fades out after `durationMs`.
  */
