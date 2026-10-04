@@ -487,8 +487,34 @@ export class DescriptionParser {
    *   "plus 1d6 cold damage"
    *   "deals an extra 1d8 radiant damage to undead"
    */
+  /**
+   * Is this damage dealt by THIS roll, or later, on somebody's turn?
+   *
+   * ⚠️🔴 HIS CONSTRICT, 2026-10-04: "The 'until this grapple ends, it
+   * takes...' dice stay off this roll. They tick at the start of the target's
+   * turn only while the grapple is still on."
+   *
+   * The sentence after a 2024 grapple reads "Until this grapple ends, the target
+   * takes 7 (2d6) Bludgeoning damage at the start of each of its turns", and the
+   * bonus-damage patterns below match "takes 7 (2d6) Bludgeoning damage" in it
+   * word for word. So every Constrict in the book was adding its ongoing damage
+   * to the attack that started the grapple, and then never again.
+   *
+   * What makes it ongoing is said in the same sentence, on one side or the other
+   * of the dice, so the sentence is what gets read.
+   */
+  static _isOngoingDamage(text, at) {
+    const from = text.lastIndexOf(".", Math.max(0, at - 1)) + 1;
+    let to = text.indexOf(".", at);
+    if (to < 0) to = text.length;
+    const sentence = text.slice(from, to).toLowerCase();
+    return /(?:at the (?:start|end) of|start of (?:its|each|the)|end of (?:its|each|the)|until (?:this|the) \w+ ends|while (?:it|the target) (?:is|has|remains)|each round|every round|on (?:its|each) turn)/.test(sentence);
+  }
+
   static _parseBonusDamage(text, lower) {
     const bonuses = [];
+    /** Damage the words put on a later turn, not on this roll. */
+    const ongoing = [];
     const seen = new Set();
 
     // ── Foundry enriched format: [[/damage 2d6 + @abilities.dex.mod type=piercing average=true]] ──
@@ -554,6 +580,15 @@ export class DescriptionParser {
         const damageType = DAMAGE_TYPES.includes(typeRaw) ? typeRaw : "weapon";
         const triggersOnCrit = DescriptionParser._detectCritOnlyQualifier(text, match.index);
         const key = `${formula}|${damageType}|${triggersOnCrit ? "crit" : "any"}`;
+        // ⚠️ NOT ON THIS ROLL. It is kept, with when it happens, so the hit can
+        // arm it rather than deal it.
+        if (DescriptionParser._isOngoingDamage(text, match.index)) {
+          if (!seen.has(`ongoing|${key}`)) {
+            seen.add(`ongoing|${key}`);
+            ongoing.push({ formula, damageType, matchIndex: match.index });
+          }
+          continue;
+        }
         if (!seen.has(key)) {
           seen.add(key);
           bonuses.push({ formula, displayFormula: formula, damageType, triggersOnCrit, matchIndex: match.index });
@@ -594,6 +629,13 @@ export class DescriptionParser {
         const damageType = DAMAGE_TYPES.includes(typeRaw) ? typeRaw : "weapon";
         const triggersOnCrit = DescriptionParser._detectCritOnlyQualifier(text, match.index);
         const key = `${flat}|${damageType}|${triggersOnCrit ? "crit" : "any"}`;
+        if (DescriptionParser._isOngoingDamage(text, match.index)) {
+          if (!seen.has(`ongoing|${key}`)) {
+            seen.add(`ongoing|${key}`);
+            ongoing.push({ formula: flat, damageType, matchIndex: match.index });
+          }
+          continue;
+        }
         if (!seen.has(key)) {
           seen.add(key);
           bonuses.push({ formula: flat, displayFormula: flat, damageType, triggersOnCrit, isFlat: true, matchIndex: match.index });
@@ -601,6 +643,11 @@ export class DescriptionParser {
       }
     }
 
+    /* ⚠️ THE ONGOING DICE RIDE ALONG, OUT OF BAND. The callers that add bonus
+       damage to a roll read the array and are unaffected; the one that arms a
+       grapple reads this and puts it on the effect as an OverTime tick. Returning
+       them in the same list would have put them straight back on the attack. */
+    Object.defineProperty(bonuses, "ongoing", { value: ongoing, enumerable: false });
     return bonuses;
   }
 
@@ -683,10 +730,17 @@ export class DescriptionParser {
         // throw" with no inline DC — so paralyzed wasn't detected as save-gated
         // and was silently skipped. Loosened to match standard 5e save-trigger
         // phrasings: "saving throw", "save or", "must succeed".
-        const requiresSave = /dc\s*\d+/.test(nearbyText)
-                          || /\[\[\/save/.test(nearbyText)
-                          || /sav(?:ing\s+throw|e)/i.test(nearbyText)
-                          || /must\s+succeed\s+on/i.test(nearbyText);
+        /* ⚠️🔴 AN ESCAPE DC IS NOT A SAVE THAT GATES THE CONDITION (his
+           Constrict, 2026-10-04). "it has the Grappled condition (escape DC 14),
+           and it has the Restrained condition until the grapple ends" carries a
+           DC, so this read the Restrained as save-gated and the on-hit path
+           skipped it. That number is what it takes to GET OUT afterwards, not a
+           save to avoid it: the condition lands on the hit either way. */
+        const gating = nearbyText.replace(/escape\s*dc\s*\d+/gi, " ");
+        const requiresSave = /dc\s*\d+/.test(gating)
+                          || /\[\[\/save/.test(gating)
+                          || /sav(?:ing\s+throw|e)/i.test(gating)
+                          || /must\s+succeed\s+on/i.test(gating);
         found.push({ condition: cond, requiresSave });
       }
     }
@@ -696,8 +750,15 @@ export class DescriptionParser {
       if (seen.has(cond)) continue;
 
       const patterns = [
-        new RegExp(`(?:is|are|be|become[s]?|have\\s+the)\\s+(?:knocked\\s+)?${cond}`, "i"),
-        new RegExp(`have\\s+the\\s+${cond}\\s+condition`, "i"),
+        /* ⚠️🔴 "HAS", NOT ONLY "HAVE" (2026-10-04, his Constrict). The 2024
+           Monster Manual writes a creature's own conditions in the singular:
+           "it HAS the Grappled condition (escape DC 14), and it HAS the
+           Restrained condition until the grapple ends." Every pattern here
+           expected "have the", so no 2024 statblock condition written that way
+           was ever found, on any monster. The parser answered an empty list and
+           everything downstream believed it. */
+        new RegExp(`(?:is|are|be|become[s]?|ha(?:ve|s)\\s+the)\\s+(?:knocked\\s+)?${cond}`, "i"),
+        new RegExp(`ha(?:ve|s)\\s+the\\s+${cond}\\s+condition`, "i"),
         new RegExp(`applies?\\s+(?:the\\s+)?${cond}`, "i"),
         new RegExp(`(?:knocked|pushed|forced)\\s+${cond}`, "i"),
       ];
@@ -713,10 +774,17 @@ export class DescriptionParser {
         // throw" with no inline DC — so paralyzed wasn't detected as save-gated
         // and was silently skipped. Loosened to match standard 5e save-trigger
         // phrasings: "saving throw", "save or", "must succeed".
-        const requiresSave = /dc\s*\d+/.test(nearbyText)
-                          || /\[\[\/save/.test(nearbyText)
-                          || /sav(?:ing\s+throw|e)/i.test(nearbyText)
-                          || /must\s+succeed\s+on/i.test(nearbyText);
+        /* ⚠️🔴 AN ESCAPE DC IS NOT A SAVE THAT GATES THE CONDITION (his
+           Constrict, 2026-10-04). "it has the Grappled condition (escape DC 14),
+           and it has the Restrained condition until the grapple ends" carries a
+           DC, so this read the Restrained as save-gated and the on-hit path
+           skipped it. That number is what it takes to GET OUT afterwards, not a
+           save to avoid it: the condition lands on the hit either way. */
+        const gating = nearbyText.replace(/escape\s*dc\s*\d+/gi, " ");
+        const requiresSave = /dc\s*\d+/.test(gating)
+                          || /\[\[\/save/.test(gating)
+                          || /sav(?:ing\s+throw|e)/i.test(gating)
+                          || /must\s+succeed\s+on/i.test(gating);
           found.push({ condition: cond, requiresSave });
         }
       }

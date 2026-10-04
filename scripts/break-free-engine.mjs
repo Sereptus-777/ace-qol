@@ -418,6 +418,13 @@ export class BreakFreeEngine {
           <div style="margin-top:7px;color:${color};font-weight:700;font-size:15px;">${verdict}</div>
           ${formulaFor}
         </div>`,
+      /* ⚠️🔴 DO NOT HIDE THE ESCAPE CHECK (his rule, 2026-10-04): "It is the
+         target's check, not a second attack." ACE hides every chat card that
+         carries a dnd5e flag and no ACE type of its own, and every suppressor in
+         this suite reads that same marker. The escape result is ACE's own card
+         about the held creature's own check, so it says so and nothing can
+         mistake it for the system's leftovers. */
+      flags: { [MODULE_ID]: { type: "breakFreeResult", passed, dc } },
     });
 
     // Grey out the prompt now that it's resolved.

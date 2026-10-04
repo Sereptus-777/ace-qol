@@ -208,6 +208,15 @@ export class PostHitSaves {
         console.warn(`${MODULE_ID} | entry on-hit handling failed:`, err);
       }
     }
+    /* ⚠️🔴 THE HIT'S OWN CONDITIONS, BEFORE THE GATE BELOW. A Constrict has
+       no save, no table and no rider, so the gate drops out of this function
+       before anything could put its Grappled and Restrained on. */
+    try {
+      await PostHitSaves._landHitConditions(item, actor, hits);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | on-hit conditions failed for "${item?.name}":`, err);
+    }
+
     // Early-return gate: skip the whole function if the item has NO
     // post-hit machinery to run. severRider MUST be in this list — without
     // it, weapons whose only post-hit effect is a head/limb sever (Vorpal
@@ -1156,6 +1165,119 @@ export class PostHitSaves {
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
+   * EVERY CONDITION A HIT PUTS ON, THROUGH THE CONDITION DOOR.
+   *
+   * ⚠️🔴 NOTHING DID THIS. His Constrict, 2026-10-04: "This press recorded
+   * grappled on the hit and applied neither." `attackLands` has built
+   * `verdict.conditions` from the recipe's `onHit` since Phase 3, and every
+   * consumer on the hit path reads `.damage`, `.extras` and `.notes` and nothing
+   * else. A save's result lands its conditions (`_landSaveResult` below); an
+   * attack's hit landed none, on any item, ever. The layer was built and never
+   * wired to a consumer, which is the oldest fault in this codebase.
+   *
+   * ⚠️ AND IT RUNS BEFORE THE EARLY-RETURN GATE in `checkPostHitEffects`. That
+   * gate drops out when an item has no save, no table and no rider, which a
+   * Constrict has not: it would have returned before this could run even once
+   * the consumer existed.
+   *
+   * ⚠️ ONE LANDER, the same one the saves use, so a grapple gets its escape
+   * armed and a second condition in the same breath cannot strip the first.
+   */
+  static async _landHitConditions(item, actor, hits) {
+    const struck = (hits ?? []).filter(h => h.hitResult === "hit" || h.hitResult === "critical");
+    if (!struck.length) return;
+
+    let recipe = null;
+    try {
+      const road = await DamageCalculator._attackRoad(item, actor, null);
+      recipe = road?.recipe ?? null;
+    } catch (err) {
+      console.warn(`${MODULE_ID} | on-hit: could not read "${item?.name}"'s recipe, so nothing it names lands:`, err);
+      return;
+    }
+    if (!recipe) {
+      console.log(`${MODULE_ID} | on-hit: "${item?.name}" has no recipe, so no condition of its own lands on a hit.`);
+      return;
+    }
+
+    for (const h of struck) {
+      const scene = game.scenes.get(h.sceneId) ?? canvas.scene;
+      const tokenDoc = scene?.tokens?.get(h.targetToken?.document?.id ?? h.tokenDocId);
+      const targetActor = tokenDoc?.actor ?? game.actors.get(h.targetActor?.id ?? h.actorId);
+      const name = h.name ?? tokenDoc?.name ?? targetActor?.name ?? "the target";
+      if (!targetActor) {
+        console.warn(`${MODULE_ID} | on-hit: "${item?.name}" hit ${name}, and no creature could be read `
+          + `behind that token, so nothing was put on.`);
+        continue;
+      }
+
+      const v = whatLands(recipe, { result: h.hitResult });
+      if (!v.conditions.length) {
+        console.log(`${MODULE_ID} | on-hit: "${item?.name}" hit ${name} and its words name no condition `
+          + `to put on (${v.why}).`);
+        continue;
+      }
+
+      const result = { effects: [] };
+      const landed = await PostHitSaves._landConditions(v.conditions, targetActor, result, name, item);
+
+      /* ⚠️🔴 PRINT THE TARGET AND BOTH CONDITIONS, OR THE REASON NEITHER LANDED
+         (his rule, 2026-10-04). A press that records a condition and applies
+         nothing is indistinguishable from one that was never asked, and that is
+         the whole of what he saw. */
+      const put = result.effects.filter(e => e.type === "condition" && !e.blocked).map(e => e.condition);
+      const kept = result.effects.filter(e => e.type === "condition" && e.blocked)
+        .map(e => `${e.condition} (${e.reason})`);
+      console.log(`${MODULE_ID} | on-hit: "${item?.name}" hit ${name} — `
+        + `${put.length ? `put on ${put.join(" and ")}` : "put on nothing"}`
+        + `${kept.length ? `; refused ${kept.join("; ")}` : ""}.`);
+
+      await PostHitSaves._armOngoing(item, targetActor, name, landed);
+    }
+  }
+
+  /**
+   * The dice that tick while a grapple holds, armed on the effect rather than
+   * added to the swing.
+   *
+   * ⚠️🔴 HIS RULE, 2026-10-04: "The 'until this grapple ends, it takes...' dice
+   * stay off this roll. They tick at the start of the target's turn only while
+   * the grapple is still on." The parser used to read that sentence as bonus
+   * damage on the attack, so a Constrict dealt its ongoing dice once, at the
+   * moment of the grab, and never again.
+   *
+   * It is an OverTime tick on the effect ACE just put on, which is the engine
+   * this suite already runs for burning and poison. Living on the effect is what
+   * makes "only while the grapple is still on" true without anything checking:
+   * when the grapple ends the effect goes, and the tick goes with it.
+   */
+  static async _armOngoing(item, targetActor, name, landed) {
+    const ongoing = DescriptionParser.parse(item)?.bonusDamage?.ongoing ?? [];
+    if (!ongoing.length || !landed?.length) return;
+    // The condition it hangs on: the grapple when there is one, else the first.
+    const hook = landed.find(l => l.key === "grappled") ?? landed[0];
+    const effect = targetActor.effects?.get?.(hook.id);
+    if (!effect) {
+      console.warn(`${MODULE_ID} | on-hit: "${item?.name}" deals ${ongoing.map(o => o.formula).join(", ")} `
+        + `while it holds ${name}, and the effect it should tick on is already gone, so nothing was armed.`);
+      return;
+    }
+    const one = ongoing[0];
+    try {
+      await effect.setFlag(MODULE_ID, "OverTime", {
+        turn: "start",
+        damageRoll: String(one.formula),
+        damageType: one.damageType === "weapon" ? "bludgeoning" : one.damageType,
+        label: `${item?.name ?? "A grapple"} — while it holds you`,
+      });
+      console.log(`${MODULE_ID} | on-hit: ${name} takes ${one.formula} ${one.damageType} at the start of `
+        + `each of its turns while ${hook.key} from "${item?.name}" lasts. Not on this roll.`);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | on-hit: could not arm "${item?.name}"'s ongoing damage on ${name}:`, err);
+    }
+  }
+
+  /**
    * Apply a rules entry's onHit effects to every HIT target: conditions with
    * immunity checks (through ConditionLibrary so exhaustion increments), and
    * one compact announcement card naming what landed and how to escape.
@@ -1351,6 +1473,10 @@ export class PostHitSaves {
     if (landed.some(l => l.key === "grappled")) {
       await PostHitSaves._armEscape(targetActor, item, name, landed);
     }
+    // ⚠️ WHAT IT PUT ON, HANDED BACK. The hit path hangs its ongoing damage on
+    // one of these, and going looking for the effect afterwards would find any
+    // Grappled on the creature, including one somebody else put there.
+    return landed;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
