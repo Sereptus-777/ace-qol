@@ -403,7 +403,10 @@ console.log("\nONLY THE NUMBER AFTER THE EQUALS IS BRIGHT");
   check("the equals and the number are two elements",
     /class="ace-qol-formula-eq">=<\/span>/.test(rf)
     && /class="ace-qol-formula-sum">/.test(rf), "the sign is not the answer");
-  const at = css.indexOf(".ace-qol-formula-sum");
+  /* ⚠️ THE BASE RULE, not the escape card's override of it. The escape card
+     draws the same pill at twice the size and its selector contains this one's
+     name, so a plain indexOf finds the override first. */
+  const at = css.search(/^\.ace-qol-formula-sum \{/m);
   check("the number is bright orange and a little bigger",
     at > 0 && /#ff9d2e/.test(css.slice(at, at + 200)) && /font-size: 1\.12em/.test(css.slice(at, at + 200)));
   check("the words stay light yellow",

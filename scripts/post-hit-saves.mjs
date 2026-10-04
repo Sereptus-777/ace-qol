@@ -1262,16 +1262,20 @@ export class PostHitSaves {
         + `while it holds ${name}, and the effect it should tick on is already gone, so nothing was armed.`);
       return;
     }
-    const one = ongoing[0];
+    /* ⚠️🔴 ALL OF THEM, NOT THE FIRST (his rule, 2026-10-04: "Roll the
+       bludgeoning and the acid"). A hold can carry two kinds at once, and the
+       OverTime engine's flag holds one roll, so this is the hold's own list and
+       `grapple-turn.mjs` throws them together at the start of the turn, shows
+       them together, and posts one card after they land. */
+    const squeeze = ongoing.map(o => ({
+      formula: String(o.formula),
+      type: o.damageType === "weapon" ? "bludgeoning" : o.damageType,
+    }));
     try {
-      await effect.setFlag(MODULE_ID, "OverTime", {
-        turn: "start",
-        damageRoll: String(one.formula),
-        damageType: one.damageType === "weapon" ? "bludgeoning" : one.damageType,
-        label: `${item?.name ?? "A grapple"} — while it holds you`,
-      });
-      console.log(`${MODULE_ID} | on-hit: ${name} takes ${one.formula} ${one.damageType} at the start of `
-        + `each of its turns while ${hook.key} from "${item?.name}" lasts. Not on this roll.`);
+      await effect.setFlag(MODULE_ID, "squeeze", squeeze);
+      console.log(`${MODULE_ID} | on-hit: ${name} takes `
+        + `${squeeze.map(s => `${s.formula} ${s.type}`).join(" and ")} at the start of each of its `
+        + `turns while ${hook.key} from "${item?.name}" lasts. Not on this roll.`);
     } catch (err) {
       console.warn(`${MODULE_ID} | on-hit: could not arm "${item?.name}"'s ongoing damage on ${name}:`, err);
     }

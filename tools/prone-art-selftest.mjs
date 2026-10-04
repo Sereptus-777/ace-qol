@@ -123,8 +123,12 @@ check("so does a Draft Horse (Legacy) from the D&D Beyond importer",
     { flags: { monsterMunch: { url: "https://www.dndbeyond.com/monsters/16844-draft-horse" } } })).startsWith("dead-horse"));
 
 // ── More specific is measured against the creature ──
-check("an Imp still gets dead-fiend: dead-arcanaloth-fiend has its one word plus some other fiend's",
-  /^dead-fiend(-11)?\.png$/.test(got(npc("Imp", "fiend", "devil"))), got(npc("Imp", "fiend", "devil")));
+/* ⚠️ RE-PINNED 2026-10-04: he drew an imp this afternoon, so the Imp's own
+   picture now beats the generic fiend, which is the rule working. What must stay
+   true is that it never takes SOMEBODY ELSE'S fiend. */
+check("an Imp gets a picture of an imp or a plain fiend, never the arcanaloth or the barbed devil",
+  /imp|^dead-fiend(-11)?\.png$/i.test(got(npc("Imp", "fiend", "devil")))
+    && !/arcanaloth|barbed/i.test(got(npc("Imp", "fiend", "devil"))), got(npc("Imp", "fiend", "devil")));
 check("a Bat gets dead-beast, not the displacer beast",
   got(npc("Bat", "beast")) === "dead-beast.png", got(npc("Bat", "beast")));
 check("a Wolf gets dead-wolf-grey, not the Animal Lord (Wolf)",
@@ -155,8 +159,9 @@ check("Kasimir Velikov, an elf by subtype, gets dead-elf, not the generic Dead-H
   got(npc("Kasimir Velikov", "humanoid", "elf")) === "dead-elf.png", got(npc("Kasimir Velikov", "humanoid", "elf")));
 check("Ezmerelda, a human by subtype, gets Dead-Humanoid, not the human hag or the bandit",
   got(npc("Ezmerelda d'Avenir", "humanoid", "human")) === "Dead-Humanoid.png", got(npc("Ezmerelda d'Avenir", "humanoid", "human")));
-check("an Erinyes (a devil by subtype) gets dead-fiend, not the Barbed Devil's picture",
-  /^dead-fiend(-11)?\.png$/.test(got(npc("Erinyes", "fiend", "devil"))), got(npc("Erinyes", "fiend", "devil")));
+check("an Erinyes gets a picture of an erinyes or a plain fiend, not the Barbed Devil's",
+  /erinyes|^dead-fiend(-11)?\.png$/i.test(got(npc("Erinyes", "fiend", "devil")))
+    && !/barbed/i.test(got(npc("Erinyes", "fiend", "devil"))), got(npc("Erinyes", "fiend", "devil")));
 check("a Gazer (a beholder by subtype) gets dead-beholder, not the generic aberration",
   got(npc("Gazer", "aberration", "beholder")) === "dead-beholder.png", got(npc("Gazer", "aberration", "beholder")));
 // A job word only matches a picture filed under the creature's own type.

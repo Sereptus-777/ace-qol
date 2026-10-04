@@ -6692,6 +6692,18 @@ i.ace-douse-tool::after {
    thing (his rule, 2026-10-02). Light yellow words, a darker gold pipe, and the
    answer in orange: three jobs, three colours, and nothing else competing. */
 .ace-qol-formula-eq { margin-left: 8px; font-weight: 700; }
+/* ⚠️ THE ESCAPE CARD'S FORMULA IS TWICE THE SIZE (his rule, 2026-10-04:
+   "Both formulas on the escape card stay the same colors and are drawn twice as
+   big"). The same pill, the same light yellow words, the same darker gold pipe
+   and the same orange sum: only the size changes, because this one is read
+   across a table in the middle of somebody's turn. */
+.ace-qol-escape-formula .ace-qol-formula-text,
+.ace-qol-escape-formula .ace-qol-formula-part,
+.ace-qol-escape-formula .ace-qol-formula-eq { font-size: 28px; line-height: 1.3; }
+.ace-qol-escape-formula .ace-qol-formula-sum { font-size: 31px; }
+.ace-qol-escape-formula .ace-qol-formula-pipe { margin: 0 10px; }
+.ace-qol-escape-formula .ace-qol-formula-pill { padding: 8px 12px; }
+
 .ace-qol-formula-sum {
   margin-left: 5px;
   color: #ff9d2e;

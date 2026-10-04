@@ -87,6 +87,7 @@ import { PresenceEngine }       from "./presence-engine.mjs";
 import { BreathAnimator }       from "./breath-animator.mjs";
 import { EffectSweeper }        from "./effect-sweeper.mjs";
 import { CreatureTriggers }     from "./creature-triggers.mjs";
+import { GrappleTurn } from "./grapple-turn.mjs";
 import { BreakFreeEngine }      from "./break-free-engine.mjs";
 import { RestrainedMovement }   from "./restrained-movement.mjs";
 import { TransformationEngine } from "./transformation-engine.mjs";
@@ -3791,6 +3792,15 @@ Hooks.once("ready", () => {
     BreakFreeEngine.init();
   } catch (err) {
     console.error(`${MODULE_ID} | Break-Free Engine init failed:`, err);
+  }
+
+  // The turn of a creature something is holding: the squeeze, then one box that
+  // asks whether it swings or tries to get out. Owns the grapple escape that
+  // BreakFree used to roll for them (his rule, 2026-10-04).
+  try {
+    GrappleTurn.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Held-turn engine init failed:`, err);
   }
 
   // Restrained Movement Lock — ALL clients (the block runs on the player who

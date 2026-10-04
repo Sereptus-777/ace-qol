@@ -121,8 +121,20 @@ export class BreakFreeEngine {
       // rolls itself and whispers the answer. Everything that does NOT say it —
       // Web, the net, the Entangling Rope — keeps the button it has always had,
       // because those cost an action somebody has to decide to spend.
-      if (meta.auto) this._autoAttempt(actor, combatant, eff, meta, round, turn);
-      else this._postPrompt(actor, combatant, eff, meta, round, turn);
+      /* ⚠️🔴 A GRAPPLE IS NOT ROLLED FOR THEM ANY MORE (his rule,
+         2026-10-04, reversing 2026-09-29). That day an escape "asked nobody":
+         this rolled the better of Athletics and Acrobatics at the start of the
+         turn and whispered the answer. It asks now, because the creature has a
+         real choice to make with that action — swing at what is holding it, or
+         get out — and rolling the escape took the choice away. `grapple-turn.mjs`
+         owns that box and the squeeze that comes before it; everything else that
+         holds a creature (Web, a net, the Entangling Rope) keeps this prompt. */
+      if (meta.auto) {
+        console.log(`${MODULE_ID} | BreakFree: ${actor.name}'s "${meta.label ?? "hold"}" is a grapple, `
+          + `so the held-turn box asks it rather than this rolling for them.`);
+        continue;
+      }
+      this._postPrompt(actor, combatant, eff, meta, round, turn);
     }
   }
 

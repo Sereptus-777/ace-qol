@@ -892,6 +892,33 @@ export class ConditionVisuals {
     // unreachable sheets (live-fire 2026-07-09).
     cont.eventMode = "none";
     cont.interactiveChildren = false;
+    /* ══ ABOVE THE TOKEN, ALWAYS ═══════════════════════════════════
+
+       ⚠️🔴 NOTHING HERE EVER SET A Z (his rule, 2026-10-04: "any condition or
+       whatever... has to sit above the token... I want you to make sure that ALL
+       of them sit on top of the token, visible"). This container goes on
+       `canvas.stage`, whose children are Foundry's own layers and which SORTS
+       them: tiles, tokens, interface and controls carry explicit zIndexes
+       (200, 500, 900). A container added with none sorts at zero, which is
+       underneath every one of them. So the chains, the grip band and every other
+       overlay were drawn BEHIND the token art, and showed only where that art
+       happened to be transparent. That is why it looked like it worked on some
+       creatures and not on Restrained.
+
+       ⚠️ AND THE NUMBER IS READ, NOT GUESSED. A hardcoded 1000 is a guess about
+       somebody else's layers; this takes whatever the highest child is now and
+       goes above it, so a module that adds its own layer cannot bury the
+       conditions again. */
+    try {
+      const top = Math.max(0, ...(layer.children ?? []).map(c => Number(c?.zIndex) || 0));
+      cont.zIndex = top + 10;
+      layer.sortableChildren = true;
+      layer.sortChildren?.();
+    } catch (err) {
+      cont.zIndex = 1000;
+      console.warn(`${MODULE_ID} | could not read the canvas layer order, so the condition `
+        + `overlay was put at 1000 and may sit under a layer above that:`, err);
+    }
     layer.addChild(cont);
 
     // ── Silhouette mask — created LAZILY, only when something consumes it.

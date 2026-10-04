@@ -38,8 +38,17 @@ export class RestrainedMovement {
   static _onPreUpdate(tokenDoc, changes, options, userId) {
     // Only position changes matter.
     if (!("x" in changes) && !("y" in changes)) return;
-    // The GM is never blocked — repositioning, forced movement, narrative moves.
-    if (game.user.isGM) return;
+    /* ⚠️🔴 THE GM IS BLOCKED TOO WHEN SOMETHING IS HOLDING IT (his rule,
+       2026-10-04: "A move by the GM or the player opens the same popup and does
+       not move the token"). The GM used to be waved through for repositioning
+       and forced movement, which is right for a creature that is merely
+       Restrained and wrong for one a creature is HOLDING: dragging it out of the
+       grapple is the commonest way a grapple quietly stops mattering. So a hold
+       with an escape stamp on it stops anybody, and the box asks instead; a
+       Restrained with no hold behind it leaves the GM free as before. */
+    const held = (tokenDoc.actor?.effects?.contents ?? [])
+      .some(e => !e.disabled && Number(e.flags?.[MODULE_ID]?.breakFree?.dc) > 0);
+    if (game.user.isGM && !held) return;
     // Only act on the drag the CURRENT client initiated (so a GM-authored move
     // arriving on the player's client isn't blocked).
     if (userId && userId !== game.user.id) return;
@@ -57,7 +66,19 @@ export class RestrainedMovement {
     try {
       ui.notifications?.info(`${tokenDoc.name} is ${label} — can't move until it's cleared. The GM can reposition it.`);
     } catch (_) {}
-    console.log(`${TAG} | blocked player move of "${tokenDoc.name}" — ${locked}`);
+    console.log(`${TAG} | that move does not happen: "${tokenDoc.name}" is ${locked}`
+      + `${held ? ", and something is holding it" : ""}.`);
+    // ⚠️ AND THE SAME BOX OPENS. A refusal with nothing offered is the move
+    // disappearing for no reason anybody can see.
+    if (held) {
+      import("./grapple-turn.mjs").then(({ GrappleTurn }) => {
+        const holds = GrappleTurn.holdsOn(tokenDoc.actor);
+        if (holds.length) {
+          GrappleTurn.ask(tokenDoc.actor, tokenDoc.object ?? null, holds[0],
+            { because: "somebody tried to move it" });
+        }
+      }).catch(err => console.warn(`${TAG} | the held box could not open after a refused move:`, err));
+    }
     return false;   // cancel the update → token snaps back
   }
 }

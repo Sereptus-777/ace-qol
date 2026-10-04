@@ -183,7 +183,10 @@ console.log("\nTHE MORE SPECIFIC PICTURE WINS, ON HIS REAL FOLDER (2026-09-18)")
   check("Neferon's corpse is dead-arcanaloth-fiend, not dead-fiend", dead(neferon), "dead-arcanaloth-fiend.png");
   check("the Draft Horse's corpse is dead-horse, not dead-beast",
     /^dead-horse(-2)?\.png$/.test(dead(real("Draft Horse", "beast", ""))), true);
-  check("an Imp's is still dead-fiend", /^dead-fiend(-11)?\.png$/.test(dead(real("Imp", "fiend", "devil"))), true);
+  // ⚠️ RE-PINNED 2026-10-04: an imp of his own now exists, and it should win.
+  check("an Imp gets an imp or a plain fiend, never another fiend's picture",
+    /imp|^dead-fiend(-11)?\.png$/i.test(dead(real("Imp", "fiend", "devil")))
+      && !/arcanaloth|barbed/i.test(dead(real("Imp", "fiend", "devil"))), true);
   check("a Bat's is dead-beast, not the displacer beast", dead(real("Bat", "beast", "")), "dead-beast.png");
   check("a Giant Frog's is dead-beast, not a dead giant", dead(real("Giant Frog", "beast", "")), "dead-beast.png");
   check("a Wolf's is dead-wolf-grey, not the Animal Lord", dead(real("Wolf", "beast", "")), "dead-wolf-grey.png");

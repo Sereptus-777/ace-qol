@@ -139,8 +139,13 @@ console.log("\nTHE ONGOING DICE TICK ON THE EFFECT, WHILE IT HOLDS");
     /landed\.find\(l => l\.key === "grappled"\) \?\? landed\[0\]/.test(postHit));
   /* ⚠️ THE ENGINE THIS SUITE ALREADY RUNS, not a second ticker: burning and
      poison go through the same flag. */
-  check("as an OverTime tick at the start of a turn",
-    /setFlag\(MODULE_ID, "OverTime", \{/.test(postHit) && /turn: "start"/.test(postHit));
+  /* ⚠️ THE HOLD'S OWN LIST, NOT THE OverTime FLAG. A hold can carry two kinds
+     at once (his rule, 2026-10-04: "Roll the bludgeoning and the acid") and that
+     engine's flag holds one roll, so grapple-turn.mjs throws the list together
+     at the start of the turn and posts one card after the dice land. */
+  check("as the hold's own squeeze list, every part of it",
+    /setFlag\(MODULE_ID, "squeeze", squeeze\)/.test(postHit)
+    && /const squeeze = ongoing\.map/.test(postHit), "both kinds, not the first");
   /* ⚠️ "Only while the grapple is still on" needs nothing to check it: the tick
      lives on the effect, so it goes when the effect goes. */
   check("and living on the effect is what ends it with the grapple",

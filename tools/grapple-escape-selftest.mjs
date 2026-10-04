@@ -366,8 +366,18 @@ console.log("\nA STAMP THAT DOES NOT SAY auto STILL ASKS");
 {
   const src = await import("node:fs").then(fs =>
     fs.readFileSync("D:/FoundryVTT/Data/modules/ace-qol/scripts/break-free-engine.mjs", "utf8"));
-  check("only an auto stamp rolls itself; everything else posts the prompt",
-    /if \(meta\.auto\) this\._autoAttempt/.test(src) && /else this\._postPrompt/.test(src),
+  /* ⚠️🔴 RE-PINNED 2026-10-04, HIS REVERSAL. On 2026-09-29 a grapple escape
+     "asked nobody" and this engine rolled it at the start of the turn. It asks
+     now: "one popup on that creature: Attack, or Escape check", because the
+     creature has a real choice to make with that action and rolling the escape
+     for them took it away. The stamp still says `auto`; what it means is that
+     `grapple-turn.mjs` owns that turn, not that anything rolls itself. */
+  check("a grapple is handed to the held-turn box, not rolled here",
+    /if \(meta\.auto\) \{/.test(src) && /held-turn box asks it/.test(src)
+    && !/if \(meta\.auto\) this\._autoAttempt/.test(src),
+    "the choice is the creature's");
+  check("and everything else still posts this engine's own prompt",
+    /this\._postPrompt\(actor, combatant, eff, meta, round, turn\);/.test(src),
     "Web, the net and the Entangling Rope are untouched");
   check("and the prompt is ONE button again, not two",
     !/abilities\.map\(a =>/.test(src) && /data-ability="\$\{meta\.ability\}"/.test(src),
