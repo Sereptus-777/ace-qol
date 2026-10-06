@@ -42,6 +42,7 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { onCanvasReady } from "./ready-utils.mjs";
+import { aceToolOrder } from "./token-tools-order.mjs";
 
 const LOG = "ace-qol | DispositionOutline";
 
@@ -115,7 +116,8 @@ Hooks.on("getSceneControlButtons", (controls) => {
       toggle: true,
       active: DispositionOutline.enabled(),
       visible: true,
-      order: 99006,
+      // Its own number, off the one list: this and ace-select-all were both 99006.
+      order: aceToolOrder("ace-disposition-outline"),
       onChange: () => DispositionOutline.toggle(),
     };
 

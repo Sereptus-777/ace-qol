@@ -25,6 +25,7 @@ import { gateOff, cannotDo } from "./why-not.mjs";
 // The one reader for a weapon's own damage type. read-activities.mjs imports
 // nothing either, so it is safe from anywhere in the attack path.
 import { weaponDamageType, weaponDamageTypes } from "./read-activities.mjs";
+import { faceOf } from "./face.mjs";
 
 // ─── Creature snapshot access (2026-07-28) ───────────────────────────────────
 // combat-state sits BELOW the profile layer — attacker-profile imports this
@@ -1516,7 +1517,10 @@ export class CombatState {
 
       target: {
         name: targetToken.document?.name ?? targetToken.name ?? targetActor.name,
-        img: targetToken.document?.texture?.src ?? targetActor.img,
+        // ⚠️ THE PORTRAIT, NEVER THE TOKEN (his rule, 2026-10-05). Every
+        // card that draws this profile's face drew a webm token's blank
+        // frame for an animated creature. face.mjs is the one reader.
+        img: faceOf(targetActor),
         ac: tgtAttrs.ac?.value ?? 10,
         conditions: tgtConditions,
         conditionImmunities: new Set(tgtTraits.ci?.value ?? []),

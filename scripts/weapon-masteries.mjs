@@ -40,6 +40,7 @@ import { CombatState } from "./combat-state.mjs";
 import { AttackAbilityResolver } from "./attack-ability-resolver.mjs";
 import { editionFor } from "./rules-edition.mjs";
 import { weaponDamageType } from "./read-activities.mjs";
+import { faceOf } from "./face.mjs";
 
 const MODULE_ID = "ace-qol";
 const TAG       = `${MODULE_ID} | Mastery`;
@@ -567,7 +568,7 @@ export class WeaponMasteries {
   static _pickCleaveTarget(candidates, origName) {
     return new Promise(resolve => {
       const tiles = candidates.map((t, i) => {
-        const img = t.document?.texture?.src ?? t.actor?.img ?? "icons/svg/mystery-man.svg";
+        const img = faceOf(t);
         const name = foundry.utils.escapeHTML(t.name ?? `Target ${i + 1}`);
         return `
           <div class="ace-qol-cleave-pick" data-idx="${i}"

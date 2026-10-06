@@ -90,6 +90,7 @@ import { CreatureTriggers }     from "./creature-triggers.mjs";
 import { GrappleTurn } from "./grapple-turn.mjs";
 import { BreakFreeEngine }      from "./break-free-engine.mjs";
 import { RestrainedMovement }   from "./restrained-movement.mjs";
+import { PerceptionWatch } from "./perception-watch.mjs";
 import { TransformationEngine } from "./transformation-engine.mjs";
 import { ConcentrationDamage }  from "./concentration-damage.mjs";
 import { BonusSpellRule }       from "./bonus-spell-rule.mjs";
@@ -136,6 +137,9 @@ import { BladeCantrips }     from "./blade-cantrips.mjs";
 import { HolySymbol }        from "./holy-symbol.mjs";
 import { ActionBar }         from "./action-bar.mjs";
 import { DispositionOutline } from "./disposition-outline.mjs";
+// ⚠️ LAST OF THE TOOLBAR IMPORTS ON PURPOSE: its two listeners are registered
+// after every file that builds a button, so its order is the final word.
+import "./token-tools-order.mjs";
 import { DialogSuppression } from "./dialog-suppression.mjs";
 import { Intent }            from "./intent-reader.mjs";
 import { Banishment }        from "./banishment.mjs";
@@ -3801,6 +3805,15 @@ Hooks.once("ready", () => {
     GrappleTurn.init();
   } catch (err) {
     console.error(`${MODULE_ID} | Held-turn engine init failed:`, err);
+  }
+
+  // When a hostile creature notices somebody: one popup for the GM, three
+  // buttons, and nothing rolls that he did not press. ALL clients, because the
+  // movement lock has to refuse the drag on the client that started it.
+  try {
+    PerceptionWatch.init();
+  } catch (err) {
+    console.error(`${MODULE_ID} | Perception watch init failed:`, err);
   }
 
   // Restrained Movement Lock — ALL clients (the block runs on the player who

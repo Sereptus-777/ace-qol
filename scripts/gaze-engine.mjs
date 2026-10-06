@@ -41,6 +41,7 @@ import { readTurnGaze } from "./rules/creature-words.mjs";
 import { lifeStateOf, pickable } from "./road/picker-rule.mjs";
 // What a save's DC comes to, the way dnd5e works it out (one resolver).
 import { saveDCOf } from "./rules/save-dc.mjs";
+import { faceOf } from "./face.mjs";
 
 const MODULE_ID = "ace-qol";
 const LOG = "ace-qol | gaze";
@@ -213,7 +214,7 @@ export class GazeEngine {
         reactorActor: victimDoc.actor,
         reactorToken: victimDoc.object ?? null,
         attackerName: gazerDoc.name,
-        attackerImg: gazerDoc.texture?.src ?? gazerDoc.actor?.img ?? null,
+        attackerImg: faceOf(gazerDoc) || null,
         description: `${gazerDoc.name}'s eyes are on you. Look away and you do not have to save, `
           + `but you cannot see ${gazerDoc.name} until the start of your next turn.`,
         acceptLabel: "Avert my eyes",

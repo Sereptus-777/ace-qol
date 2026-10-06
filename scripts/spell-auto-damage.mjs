@@ -39,6 +39,7 @@ import { DamageCalculator } from "./damage-calculator.mjs";
 import { DamageCardRenderer } from "./damage-card-renderer.mjs";
 import { getSpellTiming, TIMING } from "./spell-timing.mjs";
 import { MagicMissilePicker } from "./magic-missile-picker.mjs";
+import { faceOf } from "./face.mjs";
 
 export class SpellAutoDamage {
 
@@ -738,7 +739,7 @@ export class SpellAutoDamage {
         mmHits.push({
           target: {
             name:      token.name ?? targetActor.name,
-            img:       targetActor.img ?? token.document?.texture?.src,
+            img:       faceOf(targetActor),
             currentHP: targetActor.system?.attributes?.hp?.value ?? 0,
             maxHP:     targetActor.system?.attributes?.hp?.max ?? 0,
           },
@@ -749,7 +750,7 @@ export class SpellAutoDamage {
           isCritRoll:  false,
           damageModifiers: DamageCalculator.getTargetDamageModifiers(targetActor, item),
           name: token.name ?? targetActor.name,
-          img:  targetActor.img ?? token.document?.texture?.src,
+          img:  faceOf(targetActor),
           ac:   targetActor.system?.attributes?.ac?.value ?? 0,
           // ── The Magic Missile override the DamageCalculator looks for ──
           magicMissileOverride: {
@@ -855,7 +856,7 @@ export class SpellAutoDamage {
     const hits = targets.map(token => {
       const tActor = token.actor;
       return {
-        target:        { name: token.name, img: token.actor?.img ?? token.document?.texture?.src, currentHP: tActor?.system?.attributes?.hp?.value ?? 0, maxHP: tActor?.system?.attributes?.hp?.max ?? 0 },
+        target:        { name: token.name, img: faceOf(token), currentHP: tActor?.system?.attributes?.hp?.value ?? 0, maxHP: tActor?.system?.attributes?.hp?.max ?? 0 },
         targetActor:   tActor,
         targetToken:   token,
         hitResult:     "hit",
@@ -864,7 +865,7 @@ export class SpellAutoDamage {
         damageModifiers: tActor ? DamageCalculator.getTargetDamageModifiers(tActor, item) : {},
         // Standard token info for the renderer
         name:          token.name,
-        img:           token.actor?.img ?? token.document?.texture?.src,
+        img:           faceOf(token),
         ac:            tActor?.system?.attributes?.ac?.value ?? 0,
       };
     });

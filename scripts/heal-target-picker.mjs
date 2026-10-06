@@ -20,6 +20,7 @@ import { MODULE_ID } from "./ace-qol.mjs";
 import { aceDistanceFt } from "./geometry-utils.mjs";
 // Who a heal may be offered: the living and the dying, never the dead (Phase 4).
 import { lifeStateOf, pickable } from "./road/picker-rule.mjs";
+import { faceOf } from "./face.mjs";
 
 const SELF_KEY = "__SELF__";
 
@@ -102,7 +103,7 @@ export class HealTargetPicker {
         tokenId:    tok.id,
         token:      tok,
         name:       tok.document?.name ?? tok.actor.name,
-        img:        tok.document?.texture?.src ?? tok.actor.img,
+        img:        faceOf(tok),
         actorType:  tok.actor.type,
         disposition: tok.document?.disposition ?? 0,
         currentHp:  cur,

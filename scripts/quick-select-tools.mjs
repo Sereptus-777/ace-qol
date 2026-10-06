@@ -10,6 +10,8 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { MODULE_ID } from "./ace-qol.mjs";
+// One list owns both where these sit and what their number is.
+import { aceToolOrder } from "./token-tools-order.mjs";
 
 let _quickSelectInstance = null;
 
@@ -24,52 +26,12 @@ Hooks.on("getSceneControlButtons", (controls) => {
   }
 });
 
-// ─── DOM-level reordering: move our buttons to the end of the toolbar ──
-// V13 uses object-key insertion order to render tools, but other modules
-// register their tools at unpredictable times — sometimes after us. The
-// only way to guarantee our buttons land at the very bottom is to grab
-// the rendered DOM elements and append() them (which moves them) to the
-// end of their parent container after every render of SceneControls.
-Hooks.on("renderSceneControls", (_app, htmlOrJq) => {
-  try {
-    if (!game.user?.isGM) return;
-    const root = htmlOrJq?.[0] ?? htmlOrJq; // Accept jQuery or HTMLElement
-    if (!root?.querySelectorAll) return;
-
-    // V13 may use `data-tool`, `data-name`, or just `name` to identify a tool
-    // button. Try each selector in order; first non-empty match wins.
-    const aceOrder = ["ace-select-pcs", "ace-select-npcs", "ace-select-hostile",
-                      "ace-select-friendly", "ace-select-neutral", "ace-select-all"];
-    const selectors = [
-      '[data-tool^="ace-select-"]',
-      '[data-name^="ace-select-"]',
-      '[name^="ace-select-"]',
-      'button[id^="ace-select-"]',
-    ];
-    let ourButtons = null;
-    let matchedAttr = "data-tool";
-    for (const sel of selectors) {
-      const found = root.querySelectorAll(sel);
-      if (found?.length) {
-        ourButtons = found;
-        matchedAttr = sel.match(/\[([\w-]+)/)?.[1] ?? "data-tool";
-        break;
-      }
-    }
-    if (!ourButtons?.length) return;
-
-    // Move our buttons to the end of their parent container, in canonical
-    // order. appendChild on an already-parented node MOVES it (doesn't clone).
-    const parent = ourButtons[0].parentNode;
-    if (!parent) return;
-    for (const name of aceOrder) {
-      const el = parent.querySelector(`[${matchedAttr}="${name}"]`);
-      if (el) parent.appendChild(el);
-    }
-  } catch (err) {
-    console.warn(`${MODULE_ID} | Quick select DOM reorder failed (non-fatal):`, err);
-  }
-});
+/* ⚠️🔴 THE ORDER IS NOT THIS FILE'S ANY MORE (his rule, 2026-10-05).
+   There was a `renderSceneControls` pin here that moved these six to the end on
+   every render, and its list named only these six, so the outline toggle and the
+   two party buttons kept sliding. party-transfer.mjs had a second pin that ran
+   after this one by import order, which is a race that settles, not an order.
+   token-tools-order.mjs owns the one list and both hooks now. */
 
 export class QuickSelectTools {
 
@@ -168,38 +130,40 @@ export class QuickSelectTools {
       }
     };
 
-    const makeBtn = (name, title, icon, filterFn, order) => ({
+    const makeBtn = (name, title, icon, filterFn) => ({
       name,
       title,
       icon,
       button: true,
       visible: true,
-      order,
+      // ⚠️ NOT A NUMBER TYPED HERE. Four files typed their own and two matched.
+      order: aceToolOrder(name),
       // ⚠️🔴 ONE HANDLER. Foundry V13 fires BOTH `onClick` and `onChange`
       // for a button tool, so every one of these selected twice — which is why
       // Johnny's console read "Selected 9 tokens" two times from one press.
       onChange: () => selectByFilter(filterFn),
     });
 
-    // Use very high `order` values so V13's tool sort places these AFTER all
-    // other modules' tools (Sequencer, Token Manager, BG3 HUD, etc.). We saw
-    // 900-905 land mid-list because some modules register higher orders.
+    // The numbers are very high so V13's tool sort places these AFTER every
+    // other module's tools (Sequencer, Token Manager, BG3 HUD); 900-905 landed
+    // mid-list because some modules register higher. They come off the one list
+    // in token-tools-order.mjs, in the order he wants to see them.
     const tools = [
       makeBtn("ace-select-pcs",      "Select all Player Characters on this scene",   "fas fa-users",
-        t => t.actor?.type === "character" && t.actor?.hasPlayerOwner, 99001),
+        t => t.actor?.type === "character" && t.actor?.hasPlayerOwner),
       makeBtn("ace-select-npcs",     "Select all NPCs on this scene",                "fas fa-skull",
-        t => t.actor?.type === "npc", 99002),
+        t => t.actor?.type === "npc"),
       // ⚠️🔴 NOT A FLAME. This was `fas fa-fire`, identical to the fire
       // engine's own tool, so he pressed it expecting to set something alight
       // and selected every hostile on the scene instead — twice.
       makeBtn("ace-select-hostile",  "Select all Hostile tokens (red disposition)",  "fas fa-hand-fist",
-        t => t.document?.disposition === -1, 99003),
+        t => t.document?.disposition === -1),
       makeBtn("ace-select-friendly", "Select all Friendly tokens (green disposition)","fas fa-handshake",
-        t => t.document?.disposition === 1, 99004),
+        t => t.document?.disposition === 1),
       makeBtn("ace-select-neutral",  "Select all Neutral tokens (yellow disposition)","fas fa-circle-half-stroke",
-        t => t.document?.disposition === 0, 99005),
+        t => t.document?.disposition === 0),
       makeBtn("ace-select-all",      "Select ALL tokens on this scene",              "fas fa-globe",
-        () => true, 99006),
+        () => true),
     ];
 
     // v12 (array) vs v13 (object map) tool insertion

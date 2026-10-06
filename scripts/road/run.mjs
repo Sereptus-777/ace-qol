@@ -36,6 +36,7 @@
 import { whatLands, automaticOutcomes } from "./what-lands.mjs";
 import { CardDoor, ConditionDoor, HpDoor } from "./doors.mjs";
 import { safeShowForRoll, awaitDiceSettle } from "../dsn-utils.mjs";
+import { faceOf } from "../face.mjs";
 
 const MODULE_ID = "ace-qol";
 const LOG = "ace-qol | road";
@@ -342,54 +343,117 @@ export function repeatOutcome(recipe, { key, passed } = {}) {
       : (stays ? "its recipe puts it on a failed save" : "its recipe takes it off on a failed save") };
 }
 
-/** The card for damage nothing rolled against: what it moved through, and what it cost. */
+/**
+ * The card for damage nothing rolled against.
+ *
+ * ⚠️🔴 IT IS THE DAMAGE CARD NOW (his rule, 2026-10-05): "Fire Aura posts
+ * through the same damage-card builder as a hit. The title row is Fire Aura and
+ * the dice, 2d6, on that same row. The next row names who was beside the
+ * bearer. Then the dice images and the total, then the resist line, then the hit
+ * points, the same block a hit card ends with."
+ *
+ * This function used to write its own markup: the same facts in a worse shape,
+ * with the dice as text instead of their faces and no hit-point block at the
+ * end of it at all. A salamander's aura and a claw's hit are both "this creature
+ * took this damage" and there is one card for that.
+ *
+ * ⚠️ NOTHING THE OLD CARD SAID IS LOST. The conditions it landed and anything
+ * that refused one travel in `extras`, which the builder draws under the
+ * creature's row, so Web still says "not restrained" and why.
+ */
 async function _postAutomaticCard({ item, actor, token, trigger, happened = null, ticks, rolled, finals, landed, verdict, warded = [], dice }) {
   try {
     const esc = (s) => foundry.utils.escapeHTML(String(s ?? ""));
     const total = finals.reduce((sum, f) => sum + (Number(f.final) || 0), 0);
-    const rows = finals.map(f => {
-      const badge = f.modifier === "immune" ? " IMMUNE"
-        : f.modifier === "resistant" ? " RESISTED"
-        : f.modifier === "vulnerable" ? " VULNERABLE" : "";
-      return `<div style="font-size:16px;line-height:1.5;">`
-        + `${esc(f.final)} ${esc(f.type ?? "damage")}${badge ? `<span style="color:#c0b288;font-size:14px;">${badge}</span>` : ""}`
-        + `${f.reason ? `<div style="font-size:14px;color:#c0b288;font-style:italic;">${esc(f.reason)}</div>` : ""}`
-        + `</div>`;
-    }).join("");
-    const dicePart = rolled.map(r => `${esc(r.formula)} = ${esc(r.total)}`).join(", ");
+    const tokenDoc = token?.document ?? token;
+    const targetActor = token?.actor ?? tokenDoc?.actor ?? null;
+    if (!targetActor) {
+      console.warn(`${LOG} | ${item?.name}: no creature behind that token, so no card was posted.`);
+      return;
+    }
+
+    /* ⚠️ THE DICE, ON THE TITLE ROW. One formula per part, as rolled: a hold
+       that carries two kinds reads "3d6 + 2d6". */
+    const titleNote = rolled.map(r => r.formula).join(" + ");
+
+    /* ⚠️ WHO IT REACHED, in the words the trigger already had. */
+    const subLine = `${tokenDoc?.name ?? targetActor.name} ${happened ?? triggerWords(trigger)}`
+      + `${trigger === "move-through" ? ` (${ticks} × ${FEET_PER_TICK} feet)` : ""}.`;
+
+    /* ⚠️ EACH PART KEEPS ITS OWN ROLL, or the card cannot draw the dice. The
+       faces come off the Roll object, so it travels with the component. */
+    const comps = finals.map((f, i) => {
+      const r = rolled[i] ?? null;
+      return {
+        name: item?.name ?? "Damage",
+        type: f.type ?? "damage",
+        raw: Number(r?.total ?? f.amount ?? f.final) || 0,
+        final: Number(f.final) || 0,
+        formula: r?.formula ?? "",
+        roll: r?.roll ?? null,
+        modifier: f.modifier ?? "normal",
+      };
+    });
+
+    /* ⚠️ THE HIT POINTS IT HAD BEFORE, so the line reads 52 → 45 and not
+       45 → 45. The door hands back what it wrote. */
+    const hp = targetActor.system?.attributes?.hp ?? {};
+    const before = Number(landed?.result?.currentHP ?? hp.value ?? 0);
+    const hpDelta = Number(landed?.hpDelta ?? 0);
+
     const refused = new Set((warded ?? []).map(w => String(w.key)));
     const conditions = [...verdict.conditions, ...verdict.effects]
       .map(c => c?.key).filter(Boolean).filter(k => !refused.has(String(k))).map(esc);
     // ⚠️ A SILENT SKIP IS THE SAME AS A BROKEN FEATURE. Whatever refused it is
     // named on the card, in the words of the thing that did it.
     const wardRows = (warded ?? []).map(w =>
-      `<div style="font-size:16px;line-height:1.5;color:#8fd18f;">`
-      + `not ${esc(w.key)} &middot; <span style="color:#c0b288;">${esc(w.why)}</span></div>`).join("");
-    await CardDoor.post({
-      speaker: ChatMessage.getSpeaker({ actor }),
-      content: `
-        <div style="background:linear-gradient(180deg,#15110d 0%,#0c0a08 100%);
-                    border:2px solid #d4af37;border-radius:8px;padding:12px 14px;
-                    color:#f0e4c0;font-family:'Signika','Helvetica Neue',sans-serif;">
-          <div style="font-size:18px;font-weight:700;color:#ffb347;margin-bottom:4px;">
-            ${esc(item?.name)}
-          </div>
-          <div style="font-size:16px;line-height:1.5;margin-bottom:6px;">
-            ${esc(token?.name ?? token?.actor?.name)} ${esc(happened ?? triggerWords(trigger))}${
-              trigger === "move-through" ? ` (${ticks} &times; ${esc(FEET_PER_TICK)} feet)` : ""}.
-          </div>
-          ${rows || `<div style="font-size:16px;">No damage.</div>`}
-          ${conditions.length ? `<div style="font-size:16px;margin-top:4px;">${conditions.join(", ")}</div>` : ""}
-          ${wardRows}
-          <div style="font-size:14px;color:#c0b288;margin-top:6px;">
-            ${dicePart ? `${esc(dicePart)} &middot; ` : ""}${landed?.applied
-              ? `${esc(total)} taken off ${esc(token?.name ?? "it")}`
-              : `nothing was taken off ${esc(token?.name ?? "it")}`}
-          </div>
-        </div>`,
-      flags: { [MODULE_ID]: { type: "areaTrigger", trigger, itemUuid: item?.uuid ?? null,
-                              tokenDocId: token?.document?.id ?? null, total } },
-    }, { dice });
+      `<div class="ace-qol-dmg-ward-line">not ${esc(w.key)} &middot; <span>${esc(w.why)}</span></div>`).join("");
+    const extras = (conditions.length || wardRows)
+      ? `<div class="ace-qol-dmg-extras">`
+        + `${conditions.length ? `<div class="ace-qol-dmg-cond-line">${conditions.join(", ")}</div>` : ""}`
+        + `${wardRows}</div>`
+      : null;
+
+    /* ⚠️ WHO MAY SEE IT (his rule): the creature that took it, the creature
+       that caused it, and every GM. Nobody else, and a table with no player
+       owner on either side leaves it GM-only. */
+    const seers = new Set((game.users?.filter?.(u => u.isGM) ?? []).map(u => u.id));
+    for (const a of [targetActor, actor]) {
+      for (const u of (game.users ?? [])) {
+        if (u.isGM) continue;
+        if (a?.testUserPermission?.(u, "OWNER")) seers.add(u.id);
+      }
+    }
+
+    const { DamageCardRenderer } = await import("../damage-card-renderer.mjs");
+    await DamageCardRenderer.postDamageCard(item, actor, [{
+      targetToken: token,
+      targetActor,
+      target: {
+        name: tokenDoc?.name ?? targetActor.name,
+        img: faceOf(targetActor),
+        currentHP: before,
+        maxHP: Number(hp.max ?? 0),
+      },
+      totalFinal: total,
+      totalRaw: comps.reduce((sum, c) => sum + c.raw, 0),
+      isCrit: false,
+      hitResult: "hit",
+      components: comps,
+      reactionsAsked: true,
+    }], null, null, null, null, {
+      titleNote,
+      subLine,
+      extras,
+      // Not a swing: no CLEAVE, no PUSH.
+      offerMeleeExtras: false,
+      whisper: [...seers],
+      // Nothing is offered that has already happened: the door landed it above.
+      alreadyTaken: landed?.applied
+        ? { [tokenDoc?.id ?? token?.id]: hpDelta }
+        : null,
+    });
+    void dice;   // the card door waits for the damage dice inside the builder
   } catch (err) {
     console.warn(`${LOG} | could not post the card for ${item?.name}:`, err);
   }

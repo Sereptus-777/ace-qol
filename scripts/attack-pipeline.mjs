@@ -1815,7 +1815,7 @@ export class AttackPipeline {
       return `
         <div class="ace-qol-atk-row">
           <div class="ace-qol-atk-target">
-            <img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-atk-img" />
+            ${r.img ? `<img src="${r.img}" class="ace-qol-atk-img" />` : ""}
             <span class="ace-qol-atk-name">${r.name}</span>
             <span class="ace-qol-atk-ac">${acDisplay}</span>
             <span class="ace-qol-atk-result ${hitClass}">${hitLabel}</span>

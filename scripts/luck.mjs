@@ -211,6 +211,11 @@ async function askSpend(opts) {
   if (!eng) return { yes: false, spentAlready: false };
   const who = whoAnswers(opts.reactorActor);
   say(`asking ${who.user?.name ?? "this screen"} for ${nameOf(opts.reactorActor)}: ${who.why}.`);
+  /* ⚠️🔴 THE PLAYER COPY NEVER SAYS MISS AND NEVER SAYS THE AC (his rule,
+     2026-10-05). `description` is what everybody may read: the weapon and the
+     roll. `gmNote` is the one line under it that only a GM's screen is given,
+     and it is written into the HTML on the client the box opens on, so a
+     player's own DOM never carries the number either. */
   const res = await eng._promptReaction({
     type: "lucky", title: "Lucky", heading: "Lucky",
     icon: "fa-clover", accentColor: LUCK_GREEN,
@@ -286,6 +291,9 @@ async function untilDiceLand(dice) {
  */
 export async function ownRoll(o) {
   const { actor, kind, what, kept, total, judge } = o;
+  // What the player's line calls the roll: the weapon for an attack, else the
+  // roll's own name. Never the target, never the number it was against.
+  const subject = o.subject ?? `Your ${what}`;
   const unchanged = { d20: kept, total, changed: false, spent: false };
   const feat = luckyFeat(actor);
   if (!feat) {
@@ -307,9 +315,15 @@ export async function ownRoll(o) {
   const ask = await askSpend({
     reactorActor: actor, reactorToken: actor.getActiveTokens?.()[0] ?? null,
     luckItemUuid: feat.item.uuid,
+    /* ⚠️ WHAT ROLLED, AND WHAT IT ROLLED. His line: "Dawnbringer rolled 16.
+       Spend a luck point and roll another d20? 2 of 3 left." An attack names the
+       weapon; a save or a check names itself. Neither says what it was against
+       and neither says it failed. */
     description: cancels
-      ? `Your ${what} is about to fail (${now.words}). Another creature already spent a luck point on this roll: if you spend one, the two cancel and the roll stands as first rolled. ${feat.left} of ${feat.max} left.`
-      : `Your ${what} is about to fail (${now.words}). Spend a luck point to roll another d20 and keep the one you want? ${feat.left} of ${feat.max} left.`,
+      ? `${subject} rolled ${kept}. Another creature already spent a luck point on this roll: `
+        + `if you spend one, the two cancel and the roll stands as first rolled. ${feat.left} of ${feat.max} left.`
+      : `${subject} rolled ${kept}. Spend a luck point and roll another d20? ${feat.left} of ${feat.max} left.`,
+    gmNote: `${now.words}.`,
     acceptLabel: "Spend a luck point", declineLabel: "Keep the roll",
   });
   if (!ask.yes) { say(`${nameOf(actor)} kept the roll (${what}).`); return unchanged; }
@@ -418,10 +432,17 @@ export async function incomingHit(o) {
     reactorActor: target, reactorToken: result.targetToken ?? null,
     attackerName: nameOf(attacker), attackerImg: attacker?.img ?? null,
     luckItemUuid: feat.item.uuid,
+    /* ⚠️ THE SAME RULE ON THE DEFENDER'S BOX. It used to open with "is about
+       to hit you (16 against AC 17)", which is the player reading their own AC
+       off a pop-up and being told the outcome before they decide. */
     description: cancels
-      ? `${nameOf(attacker)}'s ${itemName} is about to hit you (${words}). ${nameOf(attacker)} already spent a luck point on this roll: if you spend one, the two cancel and the roll stands as first rolled. ${feat.left} of ${feat.max} left.`
-      : `${nameOf(attacker)}'s ${itemName} is about to hit you (${words}). Spend a luck point, roll a d20, and choose which die the attack uses? ${feat.left} of ${feat.max} left.`,
-    acceptLabel: "Spend a luck point", declineLabel: "Take the hit",
+      ? `${nameOf(attacker)}'s ${itemName} rolled ${result.d20Result}. ${nameOf(attacker)} already spent a luck `
+        + `point on this roll: if you spend one, the two cancel and the roll stands as first rolled. `
+        + `${feat.left} of ${feat.max} left.`
+      : `${nameOf(attacker)}'s ${itemName} rolled ${result.d20Result}. Spend a luck point, roll a d20, and `
+        + `choose which die the attack uses? ${feat.left} of ${feat.max} left.`,
+    gmNote: `${words}, ${result.hitResult === "critical" ? "a critical hit" : "hits"}.`,
+    acceptLabel: "Spend a luck point", declineLabel: "Keep the roll",
   });
   if (!ask.yes) { say(`${nameOf(target)} let the hit stand.`); return same; }
   const paid = ask.spentAlready || await spendLuck(feat.item);
@@ -524,7 +545,7 @@ export async function afterAttackRoll({ actor, item, results, d20s = [], dice = 
       return { fails, words: txt };
     };
     const shared = results[0]._luck;
-    const own = await ownRoll({ actor, kind: "attack", what: `attack with ${itemName}`, d20s,
+    const own = await ownRoll({ actor, kind: "attack", what: `attack with ${itemName}`, subject: itemName, d20s,
       kept: first.d20, total: first.total, judge: words, ledger: shared, dice: diceOnce() });
     if (own.spent) {
       for (const r of results) {

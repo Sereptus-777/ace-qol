@@ -819,7 +819,11 @@ export class OverTimeEngine {
     const auto = QolSettings.get("autoApplyOverTimeHeal");
     let healed = 0;
     if (auto) {
-      const res = await DamageApplicator.applyHPHeal(actor, spec.amount, { label: `Regeneration — ${tokenName}` });
+      // ⚠️ ITS OWN REGENERATION IS ITS OWN DOING. Nothing else healed it,
+      // and the heal record must not hand the credit to anybody who happened
+      // to post a card a moment earlier.
+      const res = await DamageApplicator.applyHPHeal(actor, spec.amount, {
+        label: `Regeneration — ${tokenName}`, healer: actor, tokenDocId: tokenDoc?.id ?? null });
       healed = res?.healedAmount ?? spec.amount;
     }
     this._debug(`Regeneration: ${tokenName} ${auto ? `+${healed} HP` : `pending +${spec.amount}`} (${spec.label})`);
@@ -944,7 +948,11 @@ export class OverTimeEngine {
         try { amount = (await new Roll(String(aura.roll || "0")).evaluate()).total; }
         catch (_) { amount = parseInt(aura.roll) || 0; }
         if (amount <= 0) continue;
-        const res = await DamageApplicator.applyHPHeal(actor, amount, { label: `${aura.label} (aura)` });
+        // ⚠️ AN AURA IS SOMEBODY. Its bearer is standing right there, and an
+        // aura never heals its own bearer (both callers exclude it), so this
+        // is always one creature healing another.
+        const res = await DamageApplicator.applyHPHeal(actor, amount, {
+          label: `${aura.label} (aura)`, healer: sourceToken?.actor ?? null, tokenDocId: t?.document?.id ?? null });
         results.push({ name: t.name, text: `+${res?.healedAmount ?? amount} HP` });
       } else {
         const dmg = await this._rollDamage(String(aura.roll || "0"), aura.damageType, actor, false);
@@ -1277,7 +1285,9 @@ export class OverTimeEngine {
           const actor = tokenActor ?? game.actors.get(healBtn.dataset.actorId);
           const heal = parseInt(healBtn.dataset.heal) || 0;
           if (!actor || heal <= 0) return;
-          await DamageApplicator.applyHPHeal(actor, heal, { label: "Regeneration (manual apply)" });
+          await DamageApplicator.applyHPHeal(actor, heal, {
+            label: "Regeneration (manual apply)", healer: actor,
+            tokenDocId: healBtn.dataset.tokenDocId || null });
           healBtn.disabled = true;
           healBtn.innerHTML = '<i class="fas fa-check"></i> APPLIED';
           _markSpent();

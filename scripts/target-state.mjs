@@ -10,6 +10,7 @@ import { FlagsEngine } from "./flags-engine.mjs";
 import { CombatState } from "./combat-state.mjs";
 import { Situation } from "./situation.mjs";
 import { NullificationWalker } from "./target-state-registry/walker.mjs";
+import { faceOf } from "./face.mjs";
 
 // ─── Conditions that affect combat ──────────────────────────────────────────
 const CONDITION_EFFECTS = {
@@ -342,7 +343,7 @@ export class TargetState {
       token: targetToken,
       actor,
       name: actor.name,
-      img: targetToken.document?.texture?.src ?? actor.img,
+      img: faceOf(actor),
 
       // Defenses
       ac: ac + (nullifications.ac?.bonus ?? 0),  // include registry AC bonuses

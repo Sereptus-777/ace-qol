@@ -1034,7 +1034,13 @@ export class ActionBar {
    * one element is worse than none.
    */
   static _wireDrag(el) {
-    const handle = el.querySelector(".ace-qol-ab-portrait");
+    /* ⚠️🔴 THE PORTRAIT IS NOT A HANDLE (his rule, 2026-10-05). It was the
+       only way to move the bar, and it is also the thing you click to roll
+       initiative and to open the checks menu, so every move began as a press on
+       a control. The hand on the left edge is the handle, and it is nothing
+       else: it sits outside the bar and appears on hover, the way the gear does
+       on the right, so it costs no width. */
+    const handle = el.querySelector(".ace-qol-ab-grip");
     if (!handle || handle.dataset.aceDrag) return;
     handle.dataset.aceDrag = "1";
 
@@ -1049,9 +1055,9 @@ export class ActionBar {
       if (!start) return;
       const mx = ev.clientX - start.x;
       const my = ev.clientY - start.y;
-      // ⚠️ A DRAG IS NOT A CLICK. The portrait opens things, so this only takes
-      // over once the mouse has actually travelled.
-      if (!start.moved && Math.hypot(mx, my) < 5) return;
+      /* The hand does nothing but drag, so there is no click to protect any
+         more. A couple of pixels still keeps a twitch from writing a position. */
+      if (!start.moved && Math.hypot(mx, my) < 2) return;
       start.moved = true;
       el.style.transform = `translate(${start.dx + mx}px, ${start.dy + my}px)`;
     };
@@ -1270,9 +1276,11 @@ export class ActionBar {
       // on the outside when you hover over the bar." It sits off the right edge
       // and only appears on hover, so it costs no width and no attention.
       el.innerHTML = `
-        <button type="button" class="ace-qol-ab-gear"
-                data-tooltip="Drag the portrait to move this bar. Click to put it back.">
-          <i class="fas fa-gear"></i>
+        <button type="button" class="ace-qol-ab-grip" data-tooltip="Drag to move the bar.">
+          <i class="fa-solid fa-hand"></i>
+        </button>
+        <button type="button" class="ace-qol-ab-gear" data-tooltip="Put the bar back.">
+          <i class="fa-solid fa-rotate-left"></i>
         </button>
         <div class="ace-qol-ab-strip">${badgeHtml}</div>
         ${tabHtml}${levelHtml}

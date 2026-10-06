@@ -44,6 +44,7 @@ const FLAG_NS = "ace-qol";
 import { TheClock } from "./the-clock.mjs";
 import { onCanvasReady } from "./ready-utils.mjs";
 import { buildRegionShapeFromTemplate } from "./geometry-utils.mjs";
+import { aceToolOrder } from "./token-tools-order.mjs";
 
 const LOG = `${MODULE_ID} | Fire`;
 
@@ -159,17 +160,58 @@ export class FireEngine {
    * look the same in the console — that lesson cost a day on the aura rings,
    * where "nothing is playing" could have meant either.
    */
-  static _resolveFx(candidates) {
+  static _fileChecks = new Map();
+
+  /**
+   * Is that file actually on the server?
+   *
+   * ⚠️🔴 A PATH IS NOT PROOF OF A FILE (his find, 2026-10-05). `_resolveFx`
+   * returned the first candidate with a slash in it, unchecked, so the database
+   * key behind it was never reached: on an install with the free JB2A, or any
+   * version that renamed those files, the fire asked for a webm that is not there
+   * and burned with nothing drawn and nothing said. The answer is cached, because
+   * the same four paths are asked for on every square of every fire.
+   */
+  static async _fileThere(path) {
+    if (FireEngine._fileChecks.has(path)) return FireEngine._fileChecks.get(path);
+    const check = (async () => {
+      const dir = path.slice(0, path.lastIndexOf("/"));
+      const want = decodeURIComponent(path.slice(path.lastIndexOf("/") + 1)).toLowerCase();
+      const FP = foundry.applications?.apps?.FilePicker?.implementation ?? globalThis.FilePicker;
+      try {
+        const listed = await FP.browse("data", dir);
+        const files = (listed?.files ?? []).map(f =>
+          decodeURIComponent(String(f).split("/").pop()).toLowerCase());
+        if (files.length) return files.includes(want);
+      } catch (_) { /* a folder that will not list is not an answer either */ }
+      // Last resort: ask the server for the file itself.
+      try {
+        const r = await fetch(path, { method: "HEAD" });
+        return r.ok;
+      } catch (_) { return false; }
+    })();
+    FireEngine._fileChecks.set(path, check);
+    return check;
+  }
+
+  /**
+   * The first candidate that really exists: a file that is on disk, or a database
+   * entry this JB2A install has.
+   */
+  static async _resolveFx(candidates) {
     for (const c of candidates) {
-      // ⚠️ A PLAIN FILE PATH IS A VALID ANSWER. Database keys get renamed
-      // between JB2A releases; the file on disk does not. Anything with a slash
-      // is taken as a path and used as-is, so a renamed key still leaves a
-      // working picture instead of a warning nobody reads.
-      if (typeof c === "string" && c.includes("/")) return c;
+      if (typeof c !== "string") continue;
+      if (c.includes("/")) {
+        // ⚠️ CHECKED NOW. A renamed or missing file falls through to the next
+        // candidate instead of being handed to Sequencer as if it were there.
+        if (await FireEngine._fileThere(c)) return c;
+        console.log(`${LOG} | "${c}" is not in this install, so the next picture is tried.`);
+        continue;
+      }
       try { if (globalThis.Sequencer?.Database?.entryExists?.(c)) return c; } catch (_) { /* next */ }
     }
-    console.warn(`${LOG} | none of these fire effects are in this JB2A install, so `
-      + `the fire will burn without a picture: ${candidates.join(", ")}`);
+    console.warn(`${LOG} | NO PICTURE: none of these are in this JB2A install, so the fire will `
+      + `burn with nothing drawn on it: ${candidates.join(", ")}`);
     return null;
   }
 
@@ -188,7 +230,7 @@ export class FireEngine {
    * because these were read off his own install and a renamed key would put the
    * campfire back.
    */
-  static _flamePath(big = false) {
+  static async _flamePath(big = false) {
     const F = "modules/jb2a_patreon/Library/Generic/Fire/Flame";
     return FireEngine._resolveFx(big
       ? [`${F}/Flames03_01_Regular_Orange_10x10ft_400x400.webm`,
@@ -200,7 +242,7 @@ export class FireEngine {
   }
 
   /** The smoke left behind on the ash. */
-  static _smokePath() {
+  static async _smokePath() {
     return FireEngine._resolveFx([
       "jb2a.smoke.puff.centered.grey.0",
       "jb2a.fumes.04.loop.grey",
@@ -273,7 +315,8 @@ export class FireEngine {
 
       await doc.update({ [`flags.${FLAG_NS}.fire`]: record });
       await FireEngine._applyBurning(doc, record);
-      FireEngine._drawTokenFlame(doc);
+      FireEngine._drawTokenFlame(doc)
+        .catch(err => console.warn(`${LOG} | could not draw the flames on ${doc?.name}:`, err));
 
       const until = FireEngine._describeRemaining(record);
       console.log(`${LOG} | ${doc.name} is on fire: ${spec.label.toLowerCase()}, `
@@ -338,7 +381,8 @@ export class FireEngine {
         flags: { [FLAG_NS]: { fire: record } },
       }]);
 
-      FireEngine._drawAreaFlames(region);
+      // Awaited: it waits for the region to be drawn before it places anything.
+      await FireEngine._drawAreaFlames(region);
       await FireEngine._burnOccupants(region);
 
       const until = FireEngine._describeRemaining(record);
@@ -542,7 +586,7 @@ export class FireEngine {
       shapes: [FireEngine._grownShape(record.baseShape, wanted)],
       [`flags.${FLAG_NS}.fire.spreadSoFarFt`]: wanted,
     });
-    FireEngine._drawAreaFlames(region);
+    await FireEngine._drawAreaFlames(region);
     console.log(`${LOG} | the fire has spread to ${wanted} feet beyond where it started.`);
   }
 
@@ -626,7 +670,8 @@ export class FireEngine {
         [`flags.${FLAG_NS}.-=originalActorId`]: null,
       });
 
-      FireEngine._drawSmoke(doc);
+      FireEngine._drawSmoke(doc)
+        .catch(err => console.warn(`${LOG} | could not draw the smoke on ${doc?.name}:`, err));
       ui.notifications?.info(`${doc.name} has burned to ash.`);
       console.log(`${LOG} | ${doc.name} burned away. Its loot went with it.`);
     } catch (err) {
@@ -801,7 +846,7 @@ export class FireEngine {
         // every other module's tools, the same trick quick-select-tools uses.
         const tool = {
           name: "ace-set-fire",
-          order: 99010,
+          order: aceToolOrder("ace-set-fire"),
           title: "ACE — Set fire",
           icon: "fas fa-fire ace-fire-tool",
           button: true,
@@ -817,7 +862,7 @@ export class FireEngine {
         // mistake had to be waited out. This is its own button.
         const douse = {
           name: "ace-douse-fire",
-          order: 99011,
+          order: aceToolOrder("ace-douse-fire"),
           title: "ACE — Put it out",
           // ⚠️🔴 THE SAME GLYPH, WHICH IS WHAT HE ASKED FOR: "the exact same
           // icon with a slash through it, but blue." It was `fa-fire-flame-simple`,
@@ -842,7 +887,7 @@ export class FireEngine {
         // gone by then.
         const undoTool = {
           name: "ace-undo-fire",
-          order: 99012,
+          order: aceToolOrder("ace-undo-fire"),
           title: "ACE — Undo the fire",
           icon: "fas fa-rotate-left ace-undo-fire-tool",
           button: true,
@@ -951,16 +996,24 @@ export class FireEngine {
     } catch (_) { return false; }
   }
 
-  static _drawTokenFlame(doc) {
+  static async _drawTokenFlame(doc) {
     if (!FireEngine._isActiveGM()) return;
     try {
       if (typeof Sequence === "undefined" || !globalThis.Sequencer?.EffectManager) return;
       const name = `${FX_PREFIX}tok:${doc.id}`;
       if (FireEngine._alreadyPlaying(name)) return;
-      const path = FireEngine._flamePath(Math.max(doc.width, doc.height) >= 2);
-      if (!path) return;
+      const path = await FireEngine._flamePath(Math.max(doc.width, doc.height) >= 2);
+      if (!path) {
+        console.warn(`${LOG} | ${doc?.name} is burning and no flame picture could be found, so `
+          + `nothing is drawn on it.`);
+        return;
+      }
       const token = doc.object;
-      if (!token) return;
+      if (!token) {
+        console.warn(`${LOG} | ${doc?.name} is burning and its token is not on the canvas yet, so `
+          + `no flame was drawn. It is drawn again when the scene is ready.`);
+        return;
+      }
       new Sequence().effect()
         .file(path).attachTo(token, { bindAlpha: false })
         .persist().name(name)
@@ -972,6 +1025,22 @@ export class FireEngine {
   }
 
   /**
+   * The region's own footprint, once the canvas has drawn it.
+   *
+   * Half a second of waiting, in frames, because the document exists before its
+   * placeable does. `null` means it genuinely never arrived, and the caller says
+   * so out loud rather than drawing nothing in silence.
+   */
+  static async _regionBounds(region, tries = 30) {
+    for (let i = 0; i < tries; i++) {
+      const b = region?.object?.bounds;
+      if (b && (b.width || b.height)) return b;
+      await new Promise(r => requestAnimationFrame(r));
+    }
+    return region?.object?.bounds ?? null;
+  }
+
+  /**
    * Flames across a burning area.
    *
    * ⚠️ ONE PER SQUARE, CAPPED. A 60 foot grass fire is 144 squares, and a
@@ -979,16 +1048,31 @@ export class FireEngine {
    * cap is a visual budget, and it says out loud when it stops rather than
    * quietly drawing part of a fire.
    */
-  static _drawAreaFlames(region) {
+  static async _drawAreaFlames(region) {
     if (!FireEngine._isActiveGM()) return;
     try {
       if (typeof Sequence === "undefined" || !globalThis.Sequencer?.EffectManager) return;
-      const path = FireEngine._flamePath(false);
-      if (!path) return;
+      const path = await FireEngine._flamePath(false);
+      if (!path) {
+        console.warn(`${LOG} | the area is burning and no flame picture could be found, so `
+          + `nothing is drawn on it.`);
+        return;
+      }
 
       const gs = canvas?.grid?.size ?? 100;
-      const bounds = region.object?.bounds;
-      if (!bounds) return;
+      /* ⚠️🔴 THE REGION IS NOT ON THE CANVAS YET (his find, 2026-10-05). This
+         is called the instant after `createEmbeddedDocuments`, and the placeable
+         that carries the bounds is built by the layer a frame or two later. The
+         old code read `region.object?.bounds`, found nothing and RETURNED WITHOUT
+         A WORD, which is why "Fire started" came with no fire. It waits for the
+         draw now, and if it never comes it says so. */
+      const bounds = await FireEngine._regionBounds(region);
+      if (!bounds) {
+        console.warn(`${LOG} | the fire on "${region.name ?? region.id}" is burning, and its `
+          + `region never appeared on the canvas, so no flames could be placed. They are drawn `
+          + `again on the next scene load.`);
+        return;
+      }
 
       const MAX = 60;
       let placed = 0, skipped = 0;
@@ -1004,7 +1088,10 @@ export class FireEngine {
             .persist().name(name)
             .size({ width: gs * 1.2, height: gs * 1.2 })
             .opacity(0.85).fadeIn(400).fadeOut(600)
-            .play().catch(() => {});
+            // ⚠️ NOT SWALLOWED. This was `.catch(() => {})`, so a picture Sequencer
+            // refused to play failed in total silence.
+            .play().catch(err => console.warn(`${LOG} | a flame on this area failed to play `
+              + `("${path}"):`, err));
           placed++;
         }
       }
@@ -1019,14 +1106,18 @@ export class FireEngine {
   }
 
   /** Smoke that keeps rising off a pile of ash. */
-  static _drawSmoke(doc) {
+  static async _drawSmoke(doc) {
     if (!FireEngine._isActiveGM()) return;
     try {
       if (typeof Sequence === "undefined" || !globalThis.Sequencer?.EffectManager) return;
       const name = `${FX_PREFIX}ash:${doc.id}`;
       if (FireEngine._alreadyPlaying(name)) return;
-      const path = FireEngine._smokePath();
-      if (!path) return;
+      const path = await FireEngine._smokePath();
+      if (!path) {
+        console.warn(`${LOG} | there is ash where ${doc?.name} was and no smoke picture could be `
+          + `found, so nothing is drawn on it.`);
+        return;
+      }
       const token = doc.object;
       if (!token) return;
       new Sequence().effect()
@@ -1146,8 +1237,8 @@ export class FireEngine {
 
     // Flames and smoke are drawn per client and are lost on a scene change.
     onCanvasReady( () => {
-      try { FireEngine.redrawAll(); }
-      catch (err) { console.warn(`${LOG} | could not redraw the fires on this scene:`, err); }
+      FireEngine.redrawAll()
+        .catch(err => console.warn(`${LOG} | could not redraw the fires on this scene:`, err));
     });
 
     // ── The button ──
@@ -1343,13 +1434,23 @@ export class FireEngine {
    * before they arrived — the same "cards drawn before the handler registered"
    * shape that leaked GM controls to a player on 2026-08-07.
    */
-  static redrawAll() {
+  static async redrawAll() {
+    const sayNo = (what) => (err) => console.warn(`${LOG} | could not redraw ${what}:`, err);
     for (const tokenDoc of (canvas?.scene?.tokens ?? [])) {
-      if (tokenDoc.flags?.[FLAG_NS]?.fire) FireEngine._drawTokenFlame(tokenDoc);
-      else if (tokenDoc.flags?.[FLAG_NS]?.isAsh) FireEngine._drawSmoke(tokenDoc);
+      if (tokenDoc.flags?.[FLAG_NS]?.fire) {
+        FireEngine._drawTokenFlame(tokenDoc).catch(sayNo(`the flames on ${tokenDoc.name}`));
+      } else if (tokenDoc.flags?.[FLAG_NS]?.isAsh) {
+        FireEngine._drawSmoke(tokenDoc).catch(sayNo(`the smoke on ${tokenDoc.name}`));
+      }
     }
+    /* ⚠️ AND AGAIN FROM HERE (his rule). This runs on canvasReady, by which time
+       every region is drawn, so it is the second chance for a fire whose region
+       was not on the canvas when it was lit. Awaited one at a time so a scene
+       full of fires does not start thirty waits at once. */
     for (const region of (canvas?.scene?.regions ?? [])) {
-      if (region.flags?.[FLAG_NS]?.fire) FireEngine._drawAreaFlames(region);
+      if (!region.flags?.[FLAG_NS]?.fire) continue;
+      try { await FireEngine._drawAreaFlames(region); }
+      catch (err) { console.warn(`${LOG} | could not redraw the flames on an area:`, err); }
     }
   }
 }

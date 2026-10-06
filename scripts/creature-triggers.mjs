@@ -222,20 +222,59 @@ export class CreatureTriggers {
     }
     let caught = CreatureTriggers._around(sourceDoc, radius);
     if (only) caught = caught.filter(t => t.id === only.id);
-    // ⚠️ "OF ITS CHOICE" IS ITS OWN SIDE LEFT OUT. The creature chooses; it does
-    // not burn its allies. Where the words give no choice, everyone in reach burns.
-    if (aura.choice) {
-      const spared = caught.filter(t => !CreatureTriggers._opposes(sourceDoc, t));
-      if (spared.length) say(`${tag}: ${spared.map(t => t.name).join(", ")} ${spared.length > 1 ? "are" : "is"} on its side, so its choice spares them.`);
-      caught = caught.filter(t => CreatureTriggers._opposes(sourceDoc, t));
+    const inRange = caught.map(t => t.name);
+
+    /* ⚠️🔴 "OF ITS CHOICE" IS A CHOICE SOMEBODY MAKES (his rule, 2026-10-04).
+       This answered it by disposition: anybody not on the opposite side was
+       spared, silently, without anybody being asked. So a Salamander's Fire Aura
+       left the Yuan-ti Anathema standing beside it untouched every round and the
+       log said it was "on its side". Two creatures are not allies because a
+       token's disposition number happens to match, a salamander will burn a
+       yuan-ti as readily as anyone, and that choice is not ACE's to make.
+
+       One creature in reach is burned. More than one opens the portrait picker
+       this suite already uses for exactly this question, and only the ones he
+       marks there are spared. */
+    let spared = [];
+    if (aura.choice && caught.length > 1) {
+      const { SpellTargetPicker } = await import("./spell-target-picker.mjs");
+      let safe = [];
+      try {
+        safe = await SpellTargetPicker.pick({
+          spellItem: item, casterActor: actor, maxTargets: caught.length,
+          rangeFt: Infinity, allowSelf: false, kind: "exclude", only: caught,
+        }) ?? [];
+      } catch (err) {
+        console.warn(`${LOG} | ${tag}: the "who is safe" picker could not be opened, `
+          + `so nobody is marked safe and everyone in reach burns:`, err);
+      }
+      const safeIds = new Set();
+      for (const a of safe) {
+        for (const t of caught) {
+          if (t.actor === a || (a?.id && t.actor?.id === a.id)) safeIds.add(t.id);
+        }
+      }
+      spared = caught.filter(t => safeIds.has(t.id));
+      caught = caught.filter(t => !safeIds.has(t.id));
     }
     if (!caught.length) {
-      if (!only) say(`${tag}: nobody living within ${radius} feet for it to burn.`);
+      /* ⚠️ MARKING EVERYBODY SAFE IS AN ANSWER, and it does not look like an
+         empty room. */
+      if (spared.length) {
+        say(`${tag}: in range ${inRange.join(", ")}; every one of them marked safe, so nobody was burned.`);
+      } else if (!only) {
+        say(`${tag}: nobody living within ${radius} feet for it to burn.`);
+      }
       return;
     }
     const when = aura.when === "own-end" ? "as its turn ended" : aura.when === "own-start" ? "as its turn began"
       : "as their turn began";
-    say(`${tag}: ${caught.map(t => t.name).join(", ")} within ${radius} feet ${when}.`);
+    // ⚠️ WHO WAS IN RANGE AND WHO WAS BURNED (his rule): a creature that was
+    // standing there and did not burn has to be accounted for by name.
+    say(`${tag}: within ${radius} feet ${when}: ${inRange.join(", ")}. `
+      + `Burned: ${caught.map(t => t.name).join(", ")}.`
+      + `${spared.length ? ` Marked safe: ${spared.map(t => t.name).join(", ")}.` : ""}`
+      + `${aura.choice && inRange.length === 1 ? " One creature in reach, so nothing was asked." : ""}`);
     await CreatureTriggers._land(rec, item, actor, caught, "aura", `was beside ${name} ${when}`);
   }
 
@@ -372,14 +411,11 @@ export class CreatureTriggers {
     return pickable("harm", lifeStateOf(tokenDoc?.actor, tokenDoc)).ok;
   }
 
-  /** On different sides: its disposition and theirs differ (secret counts as hostile). */
-  static _opposes(a, b) {
-    const side = (d) => {
-      const n = Number(d?.disposition ?? 0);
-      return n < 0 ? -1 : n > 0 ? 1 : 0;
-    };
-    return side(a) !== side(b);
-  }
+  /* ⚠️ `_opposes` IS GONE (2026-10-04). It was only ever used to decide who an
+     aura "of its choice" spared, and deciding that by disposition is the bug he
+     reported: it spared the Yuan-ti Anathema from the salamander standing next
+     to it. The question is asked now. The gaze engine keeps its own copy, where
+     it answers a different question (whose gaze is the GM's to force). */
 
   static _outOfAction(actor) {
     const st = actor?.statuses;

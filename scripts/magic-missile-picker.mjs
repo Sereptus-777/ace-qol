@@ -28,6 +28,7 @@
 
 import { MODULE_ID } from "./ace-qol.mjs";
 import { aceDistanceFt } from "./geometry-utils.mjs";
+import { faceOf } from "./face.mjs";
 
 export class MagicMissilePicker {
 
@@ -122,7 +123,7 @@ export class MagicMissilePicker {
         actor,
         token: tok,
         name: tok.name ?? actor.name,
-        img: tok.document?.texture?.src ?? actor.img,
+        img: faceOf(tok),
         ac: actor.system?.attributes?.ac?.value ?? null,
         hp,
         maxHP: actor.system?.attributes?.hp?.max ?? hp,

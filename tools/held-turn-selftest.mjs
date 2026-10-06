@@ -100,12 +100,14 @@ console.log("\nTHE ESCAPE: ATHLETICS, THE DICE HOOK, AND THE HOLD ENDS OR DOES N
     "not by status, so Web's Restrained is never touched");
   check("a failure leaves it on, and says so",
     /holds\.`\);\s*\n\s*return false;/.test(held) || /: "\$\{label\}" holds/.test(held));
-  /* ⚠️ THE FORMULAS STAY THE SAME COLOURS AND ARE DRAWN TWICE AS BIG. */
-  check("the escape card's formula is twice the size",
-    /\.ace-qol-escape-formula \.ace-qol-formula-text[^}]*font-size: 28px/s.test(css));
-  check("and keeps every colour the other cards use",
-    !/\.ace-qol-escape-formula[^}]*color:/s.test(css.slice(css.indexOf(".ace-qol-escape-formula"),
-      css.indexOf(".ace-qol-escape-formula") + 700)), "size only");
+  /* ⚠️ THE CARD IS ONE BUILDER'S NOW, NOT THIS FILE'S (2026-10-04): he rebuilt
+     it in four rows and the net posts the same four. These two were pinned on
+     the pill's CSS, which is gone, so they read the builder instead. */
+  check("the card comes from the one builder",
+    /content: escapeCardHtml\(\{/.test(held) && /from "\.\/escape-card\.mjs"/.test(held));
+  check("and the formula is still the big row, same colours",
+    /\.ace-qol-escape-sum\s*\{[^}]*font-size: 24px/s.test(css)
+    && /\.ace-qol-escape-total\s*\{[^}]*font-size: 26px/s.test(css));
 }
 
 console.log("\nA MOVE OPENS THE SAME BOX AND THE TOKEN STAYS PUT");

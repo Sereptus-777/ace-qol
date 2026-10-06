@@ -30,6 +30,7 @@ import { aceStripEnrichers } from "./description-reader.mjs";
 import { CombatState } from "./combat-state.mjs";
 // Lucky (2024): a target's question before each swing is rolled. See luck.mjs.
 import { needsBeforeRoll as luckNeedsBeforeRoll, beforeAttackRoll as luckBeforeAttackRoll } from "./luck.mjs";
+import { faceOf } from "./face.mjs";
 
 const NUM_WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8 };
 const ACCENT = "#ffd54f";
@@ -977,7 +978,7 @@ export class MultiattackEngine {
   static _lastOutcome = null;
 
   static _promptOne(actor, state, bonusAttacks, gate = null) {
-    const portrait = actor.img ?? actor.prototypeToken?.texture?.src ?? "icons/svg/mystery-man.svg";
+    const portrait = faceOf(actor);
     const BONUS_ACCENT = "#6fa8dc";
 
     const remainingCount = () => state.mode === "parsed"

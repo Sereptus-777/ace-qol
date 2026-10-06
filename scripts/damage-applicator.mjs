@@ -13,6 +13,7 @@ import { TransformationEngine } from "./transformation-engine.mjs";
 import { HpDoor, CardDoor } from "./road/doors.mjs";
 // What an attack's recipe lets land on each target's result, asked at APPLY.
 import { whatLands } from "./road/what-lands.mjs";
+import { faceOf } from "./face.mjs";
 
 /**
  * Per-actor write queue for hit-point changes.
@@ -349,6 +350,9 @@ export class DamageApplicator {
    * @param {number} healAmount — positive integer
    * @param {object} [opts]
    * @param {string} [opts.label]
+   * @param {Actor|string} [opts.healer] — the creature that did it. A creature
+   *        healing ITSELF passes itself: that is an answer, and the record needs
+   *        it. Leaving it out means nobody knows, and nothing is credited.
    * @returns {Promise<{currentHP, newHP, applied, healedAmount}>}
    */
   static async applyHPHeal(actor, healAmount, opts = {}) {
@@ -421,12 +425,31 @@ export class DamageApplicator {
     // not an act of mercy and must never be logged as one.
     if (healedAmount > 0) {
       try {
+        /* ⚠️🔴 THE HEAL NOW SAYS WHO DID IT (2026-10-04). It never did, and the
+           one listener on this signal had to GUESS: it scanned the last few chat
+           messages for heal-shaped words and took the speaker's name. So
+           Escher's own regeneration, which has no healer at all, was credited to
+           whatever card had been posted a moment earlier, and ACE's reputation
+           ladder moved for a monster healing itself.
+
+           `opts.healer` is the creature that did it, as an Actor or an id. A
+           creature's own regeneration passes itself, which is the whole point:
+           self is an answer, and it is not the same answer as "nobody knows". */
+        const healerActor = opts.healer?.id ? opts.healer
+          : (typeof opts.healer === "string" ? game.actors?.get(opts.healer) ?? null : null);
+        const healerActorId = healerActor?.id ?? (typeof opts.healer === "string" ? opts.healer : null);
         Hooks.callAll(`${MODULE_ID}.healApplied`, {
           actor,
           tokenDocId: opts.tokenDocId ?? null,
           amount: healedAmount,
           currentHP, newHP,
           label: opts.label ?? "",
+          healerActorId,
+          healerName: healerActor?.name ?? opts.healerName ?? "",
+          // ⚠️ THE CREATURE'S OWN DOING. Either it was named as its own healer,
+          // or no healer was named and the label says where it came from.
+          selfHeal: (!!healerActorId && healerActorId === actor?.id)
+            || (!opts.healer && /^\s*regenerat/i.test(opts.label ?? "")),
           isCorrection: !!opts.isCorrection || /undo|correction|restore/i.test(opts.label ?? ""),
           wasDying: currentHP <= 0,
         });
@@ -947,7 +970,7 @@ export class DamageApplicator {
     const currentHP = actor.system?.attributes?.hp?.value ?? 0;
     const maxHP = actor.system?.attributes?.hp?.max ?? 0;
     const tokenDocId = token.document?.id ?? token.id;
-    const img = token.document?.texture?.src || actor.img || "icons/svg/mystery-man.svg";
+    const img = faceOf(actor);
 
     // Build row HTML and insert into the targets container
     const rowHtml = DamageCardRenderer.buildTargetRowHtml({

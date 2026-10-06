@@ -34,6 +34,7 @@ import { hasTurns } from "./action-economy.mjs";
 import { hasReadySpell } from "./rules/spell-ready.mjs";
 import { RulesBrain } from "./rules/rules-brain.mjs";
 import { CardDoor } from "./road/doors.mjs";
+import { faceOf } from "./face.mjs";
 
 const LOG = "ace-qol | Falling";
 
@@ -581,7 +582,7 @@ export class FallPipeline {
     // image, and for a creature that just landed prone that is now the PRONE
     // art — a card full of upside-down figures. The actor portrait is the face.
     // Token art only stands in when there is no portrait at all.
-    const portraitImg = actor?.img || tokenDoc.texture?.src || "icons/svg/mystery-man.svg";
+    const portraitImg = faceOf(actor);
 
     const row = DamageCardRenderer.buildTargetRowHtml({
       tokenDocId: tokenDoc.id, actorId: actor?.id, sceneId: tokenDoc.parent?.id,

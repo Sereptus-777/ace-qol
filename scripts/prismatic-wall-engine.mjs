@@ -38,6 +38,7 @@ import { wallShapeOf, distanceToWallFt, wallCrossings, entersBand, wallPointsWit
 import { safeShowForRoll, awaitDiceSettle } from "./dsn-utils.mjs";
 import { damageShare, shareOf } from "./road/what-lands.mjs";
 import { aceDiagonalRule, aceTokenSpace } from "./geometry-utils.mjs";
+import { faceOf } from "./face.mjs";
 
 // ⚠️ A LITERAL, NOT THE ENTRY FILE'S EXPORT. The entry file imports this one,
 // and a binding read from it here would be the import cycle that took the whole
@@ -541,7 +542,7 @@ export class PrismaticWallEngine {
     const { SaveEngine } = await import("./save-engine.mjs");
     const tgt = {
       tokenId: tokenDoc.id, tokenDocId: tokenDoc.id, sceneId: tokenDoc.parent?.id ?? null, actorId: actor?.id,
-      name: tokenDoc.name, img: actor?.img ?? tokenDoc.texture?.src,
+      name: tokenDoc.name, img: faceOf(actor),
       autoFailSave: !!state.autoFailSave, saveAdvantage: !!state.saveAdvantage, saveDisadvantage: !!state.saveDisadvantage,
       saveAdvReasons: state.saveAdvReasons ?? [], saveDisadvReasons: state.saveDisadvReasons ?? [],
       superSaver: !!state.superSaver, saveBonuses: state.saveBonuses ?? [], damageModifiers: state.damageModifiers ?? {},
@@ -826,7 +827,7 @@ export class PrismaticWallEngine {
           ...(total > 0 ? { damageResults: [{
             targetId: actor?.id ?? null, tokenId: tokenDoc.id, tokenDocId: tokenDoc.id,
             sceneId: tokenDoc.parent?.id ?? null, isLinked: !!tokenDoc.actorLink,
-            name: tokenDoc.name, img: actor?.img ?? tokenDoc.texture?.src ?? "",
+            name: tokenDoc.name, img: faceOf(actor),
             totalFinal: total, currentHP: hpNow, maxHP: hpMax, components,
           }] } : {}),
         } },

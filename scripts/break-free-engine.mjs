@@ -28,7 +28,7 @@ import { registerChatCardHandler } from "./chat-render-utils.mjs";
 import { awaitDsnRoll } from "./attack-prompt.mjs";
 import { abilityMod } from "./rolldata-utils.mjs";
 // The one reader for what made a number (roll-formula.mjs).
-import { explainCheck, formulaPill } from "./roll-formula.mjs";
+import { escapeCardHtml } from "./escape-card.mjs";
 // Lucky (2014) and the halfling's Lucky. See luck.mjs.
 import { withHalflingLuck, againstDC as luckAgainstDC } from "./luck.mjs";
 
@@ -341,7 +341,6 @@ export class BreakFreeEngine {
     }
 
     const passed = total >= dc;
-    const modPart = (dieFace != null) ? (() => { const m = total - dieFace; const s = m >= 0 ? "+" : ""; return m === 0 ? "" : ` ${s}${m}`; })() : "";
     const abilityLabel = skill
       ? `${CONFIG.DND5E?.skills?.[skill]?.label ?? String(skill).toUpperCase()} check`
       : `${CONFIG.DND5E?.abilities?.[ability]?.label ?? String(ability).toUpperCase()} check`;
@@ -398,38 +397,21 @@ export class BreakFreeEngine {
       } catch (_) { /* best-effort FX cleanup */ }
     }
 
-    // THE PARTS BEHIND THE BONUS (his rule, 2026-09-29): what was rolled, which
-    // score, and why each piece of it is there. Read off the sheet, nothing
-    // invented; if it cannot be read the card is exactly what it was.
-    let formulaFor = "";
-    try {
-      const { parts } = explainCheck(actor, skill ? { skill } : { ability });
-      formulaFor = formulaPill(parts, { total: (dieFace != null) ? (total - dieFace) : null,
-        label: skill ? "check" : "ability" });
-    } catch (err) {
-      console.warn(`${MODULE_ID} | BreakFree: could not read what made ${actor?.name}'s `
-        + `bonus, so the card shows the roll alone:`, err);
-    }
-
-    const color = passed ? "#9bcc4a" : "#d98b46";
-    const verdict = passed
-      ? `Broke free of ${foundry.utils.escapeHTML(label)}!`
-      : `The ${foundry.utils.escapeHTML(label)} holds — still entangled.`;
+    /* ⚠️ THE SAME BUILDER AS THE HELD-TURN BOX (his four rows, 2026-10-04).
+       This card used to print "18 = 25" with the bonus nowhere on it and the
+       held-turn card printed a pill naming the score and every effect behind it.
+       Two drawings of one card is how they drifted that far apart. */
     await ChatMessage.create({
       speaker: ChatMessage.getSpeaker({ actor }),
       ...(whisperTo?.length ? { whisper: whisperTo } : {}),
-      content: `
-        <div style="border:1px solid ${color}55;border-radius:8px;padding:12px 14px;background:linear-gradient(180deg,#14140c,#0c0c08);font-family:'Signika',sans-serif;">
-          <div style="display:flex;align-items:center;gap:10px;">
-            ${aceD20FaceImg(dieFace, { size: 38, glow: true })}
-            <span style="color:#e8e6d8;font-size:16px;line-height:1.25;">
-              <b>${foundry.utils.escapeHTML(actor.name)}</b> — ${abilityLabel}<br/>
-              <b style="color:#fff;font-size:18px;">${dieFace ?? total}</b><span style="color:#b9a978;">${modPart} =</span> <b style="color:${color};font-size:18px;">${total}</b> <span class="ace-qol-dc" data-dc-roller="${actor?.id ?? ""}"><span style="color:#b9a978;">vs DC ${dc}</span></span>
-            </span>
-          </div>
-          <div style="margin-top:7px;color:${color};font-weight:700;font-size:15px;">${verdict}</div>
-          ${formulaFor}
-        </div>`,
+      content: escapeCardHtml({
+        name: actor.name, actorId: actor?.id ?? "",
+        checkLabel: abilityLabel,
+        // A net escapes with a skill or with a bare score, so the label takes
+        // whichever one this check actually used.
+        ability: skill ? (CONFIG.DND5E?.skills?.[skill]?.ability ?? null) : ability,
+        die: dieFace, total, dc, passed, label,
+      }),
       /* ⚠️🔴 DO NOT HIDE THE ESCAPE CHECK (his rule, 2026-10-04): "It is the
          target's check, not a second attack." ACE hides every chat card that
          carries a dnd5e flag and no ACE type of its own, and every suppressor in

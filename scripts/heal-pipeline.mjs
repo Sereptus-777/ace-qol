@@ -53,6 +53,7 @@ import { ActionInterceptor } from "./profiles/action-interceptor.mjs";
 import { CardDoor } from "./road/doors.mjs";
 // The one answer to "is this creature in that area" (template-geometry.mjs).
 import { isTokenInTemplate } from "./template-geometry.mjs";
+import { faceOf } from "./face.mjs";
 
 export class HealPipeline {
 
@@ -1002,7 +1003,7 @@ export class HealPipeline {
         actorId:       tActor?.id,
         actorUuid:     tActor?.uuid,
         name:          token.document?.name ?? tActor?.name ?? "?",
-        img:           token.document?.texture?.src ?? tActor?.img,
+        img:           faceOf(tActor),
         currentHp:     cur,
         maxHp:         max,
         currentTempHp: tmp,

@@ -468,18 +468,52 @@ export class DamageCardRenderer {
         + `</div>`;    }).join("");
   }
 
+  /**
+   * ⚠️🔴 THIS IS THE ONE DAMAGE CARD, AND AN AURA POSTS THROUGH IT TOO (his
+   * rule, 2026-10-05: "Fire Aura posts through the same damage-card builder as
+   * a hit"). The road had its own hand-written card for damage nothing rolls
+   * against, which said the same things in a worse shape and ended without the
+   * hit-point block, so a Salamander's aura and a Claws hit looked like two
+   * different products. Four options are all it needed:
+   *
+   *   titleNote     the dice, on the title row beside the name ("2d6")
+   *   subLine       who it reached ("Yuan-ti Anathema was beside Salamander…")
+   *   whisper       who may see it at all
+   *   alreadyTaken  {tokenDocId: hpDelta} when the hit points have ALREADY
+   *                 moved, as they have on every automatic trigger: the card
+   *                 says APPLIED instead of offering to do it twice, and the
+   *                 same flags APPLY writes are written here, so UNDO ALL and
+   *                 the per-type undo work exactly as they do on a hit.
+   *   extras        the condition and refusal lines the road's card carried,
+   *                 so switching to this one loses nothing Web was saying.
+   */
   static async postDamageCard(item, actor, damageResults, critRule, consumedRiders = null, refundLink = null, activityId = null,
-      { recipe = null, recipeFrom = null } = {}) {
+      { recipe = null, recipeFrom = null, titleNote = null, subLine = null,
+        whisper = null, alreadyTaken = null, extras = null,
+        offerMeleeExtras = true } = {}) {
     if (!damageResults.length) return;
+    const docIdOf = (dr) => dr.targetToken?.document?.id ?? dr.targetToken?.id;
+    const landedAlready = !!alreadyTaken && Object.keys(alreadyTaken).length > 0;
 
-    // ── What the attack's recipe says the hit does NOT deal, for the GM ──
-    // A damage part its words give to something else (a charge, a choice, a later
-    // turn) is not rolled on a hit (inference/recipe.mjs), and the GM sees why here.
-    let recipeNotes = [];
+    /* ── What the attack's recipe says the hit does NOT deal ──────────────────
+       ⚠️ IT IS NOT ON THE CARD ANY MORE (his rule, 2026-10-05): "Remove the
+       'Not rolled on this hit (GM only)' block from the damage card... Do not
+       print the reason on the card." A Constrict's 3d6 and 2d6 stay off the
+       swing and land on the squeeze, which is what the card is already showing
+       correctly; a paragraph explaining the arithmetic belongs nowhere near a
+       card he reads mid-fight.
+
+       ⚠️ IT IS STILL SAID, in the console. A part the hit does not roll is a
+       decision ACE made, and a decision nothing records is the one I cannot
+       explain to him the next time it is wrong. */
     try {
       if (recipe?.decidedBy?.kind === "attack") {
         const anyCritHit = damageResults.some(dr => dr.isCrit || dr.hitResult === "critical");
-        recipeNotes = whatLands(recipe, { result: anyCritHit ? "critical" : "hit" }).notes.filter(Boolean);
+        const notes = whatLands(recipe, { result: anyCritHit ? "critical" : "hit" }).notes.filter(Boolean);
+        if (notes.length) {
+          console.log(`${MODULE_ID} | "${item?.name}" does not roll this on a hit: `
+            + `${notes.join(" | ")}. Not on the card, by his rule.`);
+        }
       }
     } catch (err) {
       console.warn(`${MODULE_ID} | the damage card could not read its recipe's notes:`, err);
@@ -512,16 +546,26 @@ export class DamageCardRenderer {
     const critRuleLabel = { doubleDice: "Double Dice", maxPlusRoll: "Max + Roll", maxAll: "Max All" }[critRule] ?? critRule;
     const anyCrit = damageResults.some(dr => dr.isCrit);
 
-    const hasCleave = actor ? DamageConstants.actorHasCleave(actor, item) : false;
-    const hasPush   = (actor && item) ? WeaponMasteries.shouldOfferPush(item, actor) : false;
+    /* ⚠️🔴 AN AURA OFFERS NO CLEAVE AND NO PUSH. Both are things you do with a
+       melee swing, and neither test is safe to ask about an item that is not
+       one: `actorHasCleave` falls through to scanning the ACTOR's items, so a
+       creature carrying Great Weapon Master would have been handed a CLEAVE
+       button on its Fire Aura. The caller says whether this card is a swing. */
+    const hasCleave = (offerMeleeExtras && actor) ? DamageConstants.actorHasCleave(actor, item) : false;
+    const hasPush   = (offerMeleeExtras && actor && item) ? WeaponMasteries.shouldOfferPush(item, actor) : false;
 
     const cardHtml = `
       <div class="ace-qol-damage-card">
         <div class="ace-qol-dmg-header">
           <img src="${item.img || "icons/svg/sword.svg"}" class="ace-qol-dmg-item-img" />
-          <strong class="ace-qol-dmg-item-name">${item.name} — Damage</strong>
+          <!-- ⚠️ THE DICE SIT ON THE TITLE ROW (his rule): "The title row is Fire
+               Aura and the dice, 2d6, on that same row." A hit keeps its
+               "— Damage", which is what tells it apart from the attack card. -->
+          <strong class="ace-qol-dmg-item-name">${item.name}${titleNote ? "" : " — Damage"}</strong>
+          ${titleNote ? `<span class="ace-qol-dmg-dice-note">${foundry.utils.escapeHTML(String(titleNote))}</span>` : ""}
           ${anyCrit ? `<span class="ace-qol-dmg-crit-rule">${critRuleLabel}</span>` : ""}
         </div>
+        ${subLine ? `<div class="ace-qol-dmg-subline">${foundry.utils.escapeHTML(String(subLine))}</div>` : ""}
         <div class="ace-qol-dmg-roll-section">
           <div class="ace-qol-dmg-components">${formulaRows}</div>
         </div>
@@ -538,16 +582,18 @@ export class DamageCardRenderer {
         <div class="ace-qol-dmg-targets">
           ${targetRows}
         </div>
+        ${extras ?? ""}
         <div class="ace-qol-dmg-gm-controls">
-          ${recipeNotes.length ? `<div class="ace-qol-dmg-recipe-notes" style="margin:0 0 6px;padding:6px 8px;border-left:3px solid #d4af37;background:rgba(20,17,24,0.85);color:#e8d9a8;font-size:14px;line-height:1.4;">
-            <div style="color:#d4af37;font-weight:700;">Not rolled on this hit (GM only)</div>
-            ${recipeNotes.map(n => `<div style="margin-top:3px;">${foundry.utils.escapeHTML(String(n))}</div>`).join("")}
-          </div>` : ""}
           <div class="ace-qol-dmg-actions">
-            <button class="ace-qol-btn ace-qol-btn-apply" data-action="aceQolApplyDamage">
-              <i class="fas fa-heart-crack"></i> APPLY ALL
+            <!-- ⚠️ ALREADY TAKEN OFF MEANS DO NOT OFFER TO DO IT AGAIN. An
+                 automatic trigger lands through the hit-point door before this
+                 card exists, so APPLY ALL here would take the damage twice;
+                 UNDO ALL starts live instead, reading the movement this card
+                 recorded in its own flags. -->
+            <button class="ace-qol-btn ace-qol-btn-apply${landedAlready ? " ace-qol-btn-applied" : ""}" data-action="aceQolApplyDamage"${landedAlready ? " disabled" : ""}>
+              <i class="fas fa-heart-crack"></i> ${landedAlready ? "APPLIED" : "APPLY ALL"}
             </button>
-            <button class="ace-qol-btn ace-qol-btn-undo" data-action="aceQolUndoDamage" disabled>
+            <button class="ace-qol-btn ace-qol-btn-undo" data-action="aceQolUndoDamage"${landedAlready ? "" : " disabled"}>
               <i class="fas fa-undo"></i> UNDO ALL
             </button>
           </div>
@@ -567,10 +613,25 @@ export class DamageCardRenderer {
     await CardDoor.post({
       content: cardHtml,
       speaker: ChatMessage.getSpeaker({ actor }),
+      // ⚠️ WHO MAY SEE IT AT ALL (his rule, 2026-10-05): "A player sees the card
+      // only if their creature took the damage or their creature caused it. The
+      // GM sees it either way." A hit card passes nothing and stays public.
+      ...(whisper?.length ? { whisper: [...new Set(whisper)] } : {}),
       flags: {
         [MODULE_ID]: {
           type: "damageResult",
           itemUuid: item.uuid,
+          // The hit points have already moved, so this card carries the same
+          // record APPLY ALL writes: what moved, which components went on, and
+          // how much each one cost. UNDO reads every one of these.
+          ...(landedAlready ? {
+            applied: true,
+            hpDelta: { ...alreadyTaken },
+            perTypeApplied: Object.fromEntries(damageResults.map(dr => [docIdOf(dr), dr.totalFinal])),
+            appliedComps: Object.fromEntries(damageResults.map(dr => [docIdOf(dr), (dr.components ?? []).map((_, i) => i)])),
+            perCompApplied: Object.fromEntries(damageResults.map(dr => [docIdOf(dr),
+              Object.fromEntries((dr.components ?? []).map((c, i) => [i, Number(c.final) || 0]))])),
+          } : {}),
           // WHICH activity produced this damage — the button path re-rolls from
           // the card, and without this it would fall back to "first damaging
           // activity" and can pick a sibling on a multi-activity item.
@@ -931,7 +992,9 @@ export class DamageCardRenderer {
    */
   static buildTargetRowHtml({ tokenDocId, actorId, sceneId, name, img, currentHP, maxHP, totalFinal, isCrit, components, reactionApplied = null }) {
     const tDocId = tokenDocId ?? "unknown";
-    const portrait = img || "icons/svg/mystery-man.svg";
+    // ⚠️ THE PORTRAIT OR AN EMPTY SQUARE (his rule, 2026-10-05): no token
+    // texture behind it and no stand-in icon.
+    const portrait = String(img ?? "").trim();
     const newHP = Math.max(0, currentHP - totalFinal);
     const isDead = newHP <= 0;
 
@@ -1056,7 +1119,7 @@ export class DamageCardRenderer {
                  ⚠️ BOTH CLASSES. The old one stays because it is the handle
                  damage-applicator uses to wire the click that selects and pans to
                  the token; the save card's class is what decides the box. -->
-            <img src="${portrait}" class="ace-qol-dmg-tgt-img ace-qol-save-portrait" />
+            ${portrait ? `<img src="${portrait}" class="ace-qol-dmg-tgt-img ace-qol-save-portrait" />` : ""}
             <span class="ace-qol-dmg-tgt-name">${name ?? "Unknown"}</span>
             ${isCrit ? '<span class="ace-qol-dmg-crit-badge">CRIT</span>' : ""}
           </div>

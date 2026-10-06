@@ -30,6 +30,7 @@ import { lifeStateOf, pickable } from "./road/picker-rule.mjs";
 import { saveDCOf } from "./rules/save-dc.mjs";
 // Where a pop-up opens, so three boxes never land on the same spot.
 import { stepAside } from "./popup-place.mjs";
+import { faceOf } from "./face.mjs";
 
 const MODULE_ID = "ace-qol";
 const LOG = "ace-qol | presence";
@@ -259,7 +260,7 @@ export class PresenceEngine {
       // Its own side is asked only if he ticks them, and only where the words
       // make it the creature's choice who is caught.
       const ally = !skip && presence.choice && PresenceEngine._sameSide(t, sourceDoc);
-      rows.push({ doc: t, name: t.name, img: t.texture?.src ?? t.actor?.img ?? null, ft, skip, ally });
+      rows.push({ doc: t, name: t.name, img: faceOf(t) || null, ft, skip, ally });
     }
     return rows;
   }

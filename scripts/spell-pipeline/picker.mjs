@@ -19,6 +19,7 @@
 import { MODULE_ID } from "../ace-qol.mjs";
 import { aceDistanceFt } from "../geometry-utils.mjs";
 import { Situation } from "../situation.mjs";
+import { faceOf } from "../face.mjs";
 
 // ─── Creature snapshot access (2026-07-28) ───────────────────────────────────
 // Facts about a creature come from the ONE reader, never from actor.system —
@@ -160,7 +161,7 @@ export class UnifiedSpellPicker {
         actor,
         token: tok,
         name: tok.name ?? actor.name,
-        img: tok.document?.texture?.src ?? actor.img,
+        img: faceOf(tok),
         ac: _aceCreature(actor)?.ac ?? null,
         hp: _aceCreature(actor)?.hp?.value ?? 0,
         maxHP: _aceCreature(actor)?.hp?.max ?? _aceCreature(actor)?.hp?.value ?? 0,
@@ -492,7 +493,7 @@ export class UnifiedSpellPicker {
           token,
           tokenId: token?.id,
           name: token?.name ?? targetActor.name,
-          img: targetActor.img ?? token?.document?.texture?.src,
+          img: faceOf(targetActor),
         };
       });
       return { targets };

@@ -39,8 +39,8 @@
 const MODULE_ID = "ace-qol";
 import { CardDoor } from "./road/doors.mjs";
 import { awaitDiceSettle, safeShowForRoll } from "./dsn-utils.mjs";
-import { explainCheck, formulaPill } from "./roll-formula.mjs";
-import { aceD20FaceImg } from "./dice-face.mjs";
+import { explainCheck } from "./roll-formula.mjs";
+import { escapeCardHtml } from "./escape-card.mjs";
 import { isOutOfTheFight } from "./is-down.mjs";
 
 const LOG = `${MODULE_ID} | held`;
@@ -222,37 +222,19 @@ export class GrappleTurn {
     const total = Number(roll.total);
     const passed = total >= dc;
 
-    /* ⚠️ THE FORMULAS ARE THE SAME COLOURS AND TWICE THE SIZE (his rule,
-       2026-10-04). Same pill, same light yellow and the same darker gold pipe
-       as every other card in the suite; only the size changes, because this one
-       is read across a table in the middle of somebody's turn. */
-    let line = "";
-    try {
-      const { parts } = explainCheck(actor, { skill });
-      line = formulaPill(parts, { total: die != null ? total - die : null, label: "escape" });
-    } catch (err) {
-      console.warn(`${LOG} | could not read what made ${actor?.name}'s escape bonus:`, err);
-    }
-
-    const colour = passed ? "#9bcc4a" : "#d98b46";
+    /* ⚠️ ONE BUILDER DRAWS THIS CARD (his four rows, 2026-10-04), and the
+       net's escape in break-free-engine.mjs draws it with the same one. Nothing
+       about how it looks is decided here, the colours included. */
     await CardDoor.post({
       speaker: ChatMessage.getSpeaker({ actor }),
-      content: `
-        <div class="ace-qol-escape-card" style="border:1px solid ${colour}55;border-radius:8px;padding:12px 14px;background:linear-gradient(180deg,#14140c,#0c0c08);font-family:'Signika',sans-serif;">
-          <div style="display:flex;align-items:center;gap:10px;">
-            ${aceD20FaceImg(die, { size: 38, glow: true })}
-            <span style="color:#e8e6d8;font-size:16px;line-height:1.25;">
-              <b>${foundry.utils.escapeHTML(actor?.name ?? "It")}</b> — Athletics<br/>
-              <b style="color:#fff;font-size:18px;">${die ?? total}</b>
-              <b style="color:${colour};font-size:18px;"> = ${total}</b>
-              <span class="ace-qol-dc" data-dc-roller="${actor?.id ?? ""}"><span style="color:#b9a978;"> vs DC ${dc}</span></span>
-            </span>
-          </div>
-          <div style="margin-top:7px;color:${colour};font-weight:700;font-size:15px;">
-            ${passed ? `Broke free of ${foundry.utils.escapeHTML(label)}.` : `${foundry.utils.escapeHTML(label)} holds.`}
-          </div>
-          <div class="ace-qol-escape-formula">${line}</div>
-        </div>`,
+      content: escapeCardHtml({
+        name: actor?.name ?? "It", actorId: actor?.id ?? "",
+        checkLabel: `${CONFIG.DND5E?.skills?.[skill]?.label ?? "Athletics"} check`,
+        // The score behind the bonus, for his "2 + STR 4 = 6". Read off the
+        // skill, because a table can move Athletics onto another one.
+        ability: CONFIG.DND5E?.skills?.[skill]?.ability ?? "str",
+        die, total, dc, passed, label,
+      }),
       flags: { [MODULE_ID]: { type: "escapeResult", passed, dc } },
     }, { dice: true });
 

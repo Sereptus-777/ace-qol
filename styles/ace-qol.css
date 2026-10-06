@@ -531,6 +531,45 @@
   background-clip: text;
 }
 
+/* ── AN AURA'S CARD IS THIS CARD (his rule, 2026-10-05) ─────────────────────
+   The dice on the title row, who it reached on the row under it. Everything
+   below is the hit card's own, unchanged: the dice faces, the resist word and
+   the hit-point line. */
+.ace-qol-dmg-dice-note {
+  flex: 0 0 auto;
+  color: #d4af37;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+.ace-qol-dmg-subline {
+  /* No nowrap and no fixed height: a long creature name and a long trigger
+     wrap onto a second line rather than losing either of them. */
+  color: #f0e4c0;
+  font-size: 16px;
+  line-height: 1.4;
+  margin: 2px 0 6px;
+}
+.ace-qol-dmg-extras { margin: 4px 0 2px; }
+/* The damage has already been taken off, so the button says so rather than
+   looking like one that did nothing. UNDO ALL beside it is live. */
+.ace-qol-btn-applied {
+  opacity: 0.55;
+  cursor: default;
+}
+.ace-qol-dmg-cond-line {
+  color: #f0e4c0;
+  font-size: 16px;
+  line-height: 1.5;
+}
+/* Whatever refused a condition says so in its own words. */
+.ace-qol-dmg-ward-line {
+  color: #8fd18f;
+  font-size: 16px;
+  line-height: 1.5;
+}
+.ace-qol-dmg-ward-line span { color: #c0b288; }
+
 .ace-qol-dmg-crit-rule {
   font-size: 0.6rem; font-weight: 700; color: #1a1a1e;
   background: linear-gradient(180deg, #ffd700 0%, #d4af37 100%);
@@ -6058,6 +6097,25 @@
 /* ── Move and recentre ────────────────────────────────────────────────── */
 /* The portrait is the drag handle; this puts it back. Small and quiet - it is
    an escape hatch, not a feature anybody uses twice a session. */
+/* ⚠️🔴 THE HANDLE IS A HAND ON THE LEFT, OUTSIDE THE BAR (his rule,
+   2026-10-05: "The action bar is dragged by the portrait. That is the wrong
+   handle."). It mirrors the gear exactly: off the edge, invisible until the
+   mouse is on the bar, so it takes no width from the slots. */
+.ace-qol-ab-grip {
+  position: absolute;
+  left: -30px; bottom: 4px;
+  width: 24px; height: 24px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; color: #6b5530;
+  background: #17171b; border: 1px solid #3a3a40; border-radius: 4px;
+  cursor: grab;
+  opacity: 0; pointer-events: none;
+  transition: opacity .12s ease, color .12s ease, border-color .12s ease;
+}
+#ace-qol-action-bar:hover .ace-qol-ab-grip { opacity: 1; pointer-events: auto; }
+.ace-qol-ab-grip:hover { color: #d4af37; border-color: #d4af37; }
+.ace-qol-ab-grip:active { cursor: grabbing; color: #f0dca0; border-color: #f0dca0; }
+
 .ace-qol-ab-gear {
   position: absolute;
   right: -30px; bottom: 4px;
@@ -6697,12 +6755,59 @@ i.ace-douse-tool::after {
    big"). The same pill, the same light yellow words, the same darker gold pipe
    and the same orange sum: only the size changes, because this one is read
    across a table in the middle of somebody's turn. */
-.ace-qol-escape-formula .ace-qol-formula-text,
-.ace-qol-escape-formula .ace-qol-formula-part,
-.ace-qol-escape-formula .ace-qol-formula-eq { font-size: 28px; line-height: 1.3; }
-.ace-qol-escape-formula .ace-qol-formula-sum { font-size: 31px; }
-.ace-qol-escape-formula .ace-qol-formula-pipe { margin: 0 10px; }
-.ace-qol-escape-formula .ace-qol-formula-pill { padding: 8px 12px; }
+/* ── THE ESCAPE CARD, IN HIS FOUR ROWS (2026-10-04) ─────────────────────────
+   Name and check, then the die with the formula, then the DC, then the result.
+   One row each, and every one of them wraps: his standing rule is that a row
+   that cannot wrap CLIPS, and this card is read across a table in the middle of
+   somebody's turn. Only the two colours come from the card itself. */
+.ace-qol-escape-card {
+  border: 1px solid #9bcc4a55;        /* the colour is set on the card */
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: linear-gradient(180deg, #14140c, #0c0c08);
+  font-family: "Signika", sans-serif;
+}
+.ace-qol-escape-who {
+  color: #e8e6d8;
+  font-size: 16px;
+  line-height: 1.3;
+}
+.ace-qol-escape-roll {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 6px;
+}
+/* ⚠️ BIG, BUT NOT THAT BIG (his correction, 2026-10-04: "a little too big.
+   Shrink that whole row slightly"). The whole row came down together, the die
+   picture with it, and the two rows under it went up to meet it. */
+.ace-qol-escape-sum {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 24px;
+  line-height: 1.3;
+  font-weight: 800;
+}
+.ace-qol-escape-die   { color: #fff; }
+/* ⚠️ THE SCORE IS THE SAME SIZE AS THE NUMBERS (his rule): "2 + STR 4 = 6".
+   No font-size here, so STR takes the row's own. */
+.ace-qol-escape-bonus { color: #b9a978; }
+.ace-qol-escape-total { font-size: 26px; }
+.ace-qol-escape-dc {
+  margin-top: 5px;
+  color: #b9a978;
+  font-size: 18px;
+  line-height: 1.3;
+}
+.ace-qol-escape-verdict {
+  margin-top: 7px;
+  font-weight: 700;
+  font-size: 17px;
+  line-height: 1.3;
+}
 
 .ace-qol-formula-sum {
   margin-left: 5px;
@@ -7087,3 +7192,171 @@ i.ace-douse-tool::after {
 .chat-message[data-ace-card="1"] .dice-roll .dice-total.success { color: #6ee787; }
 .chat-message[data-ace-skin="1"] .dice-roll .dice-total.failure,
 .chat-message[data-ace-card="1"] .dice-roll .dice-total.failure { color: #ff7b72; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   THE LUCKY OFFER — HIS POPUP, 2026-10-05, AND IT IS NOT RESTYLED AGAIN
+
+   "Build it the way the portrait picker is built, a dialog you have to answer.
+   One card only. Green border around the whole popup, gold hairline inside it."
+
+   So the border, the hairline and the dark ground are the WINDOW's, not an
+   inner box's: the popup is the card. Foundry's window header and its footer
+   buttons are the application's own chrome and cannot be reached from the
+   dialog's content, which is why the dialog carries a class of its own (the
+   same reason the portrait picker carries one). This block is last in the
+   stylesheet and says !important where Foundry's application theme would
+   otherwise win.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.ace-lucky-dialog {
+  background: #14180f !important;
+  border: 1px solid #2f6b3a !important;
+  box-shadow: inset 0 0 0 1px #c6a15a, 0 6px 18px rgba(0,0,0,.55) !important;
+  border-radius: 10px !important;
+  color: #f3ead7;
+}
+/* No Foundry title bar. The title is still set, for the window list and for a
+   screen reader; it is simply not drawn. */
+.ace-lucky-dialog .window-header { display: none !important; }
+.ace-lucky-dialog .window-content {
+  background: transparent !important;
+  border: none !important;
+  color: #f3ead7;
+  padding: 14px !important;
+  gap: 0 !important;
+}
+.ace-lucky-dialog .dialog-content { background: transparent !important; padding: 0 !important; }
+
+/* One header: the square portrait, the name, then the clover and the word. */
+.ace-lucky-who { display: flex; gap: 12px; align-items: center; border-bottom: 1px solid #c6a15a; padding-bottom: 10px; }
+.ace-lucky-face { width: 72px; height: 72px; object-fit: cover; border: 1px solid #c6a15a; border-radius: 2px; background: #0c0e0a; }
+.ace-lucky-name { color: #d4b46a; letter-spacing: .04em; font-weight: 700; font-size: 18px; }
+.ace-lucky-tag { color: #d4b46a; display: flex; gap: 6px; align-items: center; font-size: 16px; }
+.ace-lucky-clover { flex: 0 0 auto; }
+.ace-lucky-ask { margin: 12px 0; color: #f3ead7; font-size: 16px; line-height: 1.45; }
+.ace-lucky-gm { display: none; color: #c6a15a; margin: 0 0 12px; font-size: 16px; line-height: 1.45; }
+.ace-lucky.is-gm .ace-lucky-gm { display: block; }
+
+/* The two answers, which are the window's own footer buttons. Same height, gold
+   rim on each, green and red, and nothing on the keep button but the words. */
+.ace-lucky-dialog .form-footer,
+.ace-lucky-dialog .dialog-buttons {
+  display: flex !important;
+  flex-direction: row !important;
+  gap: 10px !important;
+  margin-top: 12px !important;
+  padding: 0 !important;
+  background: transparent !important;
+  border: none !important;
+}
+.ace-lucky-dialog .form-footer button,
+.ace-lucky-dialog .dialog-buttons button {
+  flex: 1 1 0;
+  height: 42px;
+  min-height: 42px;
+  border-radius: 8px;
+  border: 1px solid #c6a15a !important;
+  color: #f3ead7 !important;
+  box-shadow: inset 0 2px 4px rgba(0,0,0,.45);
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ace-lucky-dialog button[data-action="spend"] { background: #1f6b3a !important; }
+.ace-lucky-dialog button[data-action="keep"]  { background: #8d2a2a !important; }
+.ace-lucky-dialog .form-footer button:hover,
+.ace-lucky-dialog .dialog-buttons button:hover { border-color: #f0dca0 !important; }
+
+/* The clover sits before the words on the spend button, same drawing as the
+   header's. The keep button stays plain, by his rule. */
+.ace-lucky-dialog button[data-action="spend"] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   NOTICED — the popup when a creature perceives somebody (2026-10-05)
+
+   Foundry's own dialog is light parchment, so the window carries ACE's dark
+   ground and its own class, the same way the Lucky popup does. Three buttons,
+   and the one that rolls is the only thing that rolls.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.ace-perceived-dialog {
+  background: #120f14 !important;
+  border: 1px solid #8b2f2f !important;
+  box-shadow: inset 0 0 0 1px #c6a15a, 0 6px 18px rgba(0,0,0,.55) !important;
+  border-radius: 10px !important;
+  color: #f3ead7;
+}
+.ace-perceived-dialog .window-header { display: none !important; }
+.ace-perceived-dialog .window-content {
+  background: transparent !important;
+  border: none !important;
+  color: #f3ead7;
+  padding: 14px !important;
+}
+.ace-perceived-dialog .dialog-content { background: transparent !important; padding: 0 !important; }
+
+.ace-perceived-who {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  border-bottom: 1px solid #c6a15a;
+  padding-bottom: 10px;
+}
+.ace-perceived-face {
+  width: 64px; height: 64px;
+  object-fit: cover;
+  border: 1px solid #c6a15a;
+  border-radius: 2px;
+  background: #0c0e0a;
+  flex: 0 0 auto;
+}
+.ace-perceived-who > div { flex: 1 1 200px; }
+.ace-perceived-line { color: #f3ead7; font-size: 18px; font-weight: 700; line-height: 1.3; }
+.ace-perceived-sub { color: #d4b46a; font-size: 16px; line-height: 1.35; margin-top: 3px; }
+.ace-perceived-why { color: #c6a15a; font-size: 14px; line-height: 1.4; margin: 10px 0 0; }
+
+.ace-perceived-dialog .form-footer,
+.ace-perceived-dialog .dialog-buttons {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: wrap !important;
+  gap: 10px !important;
+  margin-top: 12px !important;
+  padding: 0 !important;
+  background: transparent !important;
+  border: none !important;
+}
+.ace-perceived-dialog .form-footer button,
+.ace-perceived-dialog .dialog-buttons button {
+  flex: 1 1 130px;
+  min-height: 42px;
+  border-radius: 8px;
+  border: 1px solid #c6a15a !important;
+  color: #f3ead7 !important;
+  box-shadow: inset 0 2px 4px rgba(0,0,0,.45);
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ace-perceived-dialog button[data-action="wait"]  { background: #2a2a30 !important; }
+.ace-perceived-dialog button[data-action="ready"] { background: #1f6b3a !important; }
+.ace-perceived-dialog button[data-action="roll"]  { background: #8d2a2a !important; }
+
+/* The rest of the group on a sighting popup: who else is looking, by name. */
+.ace-perceived-also {
+  color: #f3ead7;
+  font-size: 16px;
+  line-height: 1.4;
+  margin: 10px 0 0;
+}
+/* The one GM line when a creature joins a fight already under way. */
+.ace-perceived-note {
+  color: #f3ead7;
+  font-size: 16px;
+  line-height: 1.45;
+}
+.ace-perceived-note strong { color: #d4b46a; }

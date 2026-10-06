@@ -35,6 +35,8 @@ import { Situation } from "./situation.mjs";
 // the teleport picker had its own copy and Crusher's push had none at all.
 import { aceSnapToGrid, aceMarkFootprint, aceFootprintFree, aceTakenSquares }
   from "./geometry-utils.mjs";
+// One list owns where these buttons sit and what their number is.
+import { aceToolOrder } from "./token-tools-order.mjs";
 
 const HAND_KEY            = "partyHand";
 const TRANSIT_FOLDER_NAME = "ACE — In Transit";
@@ -75,25 +77,10 @@ Hooks.on("getSceneControlButtons", (controls) => {
   catch (err) { console.error(`${MODULE_ID} | Party Transfer toolbar injection failed:`, err); }
 });
 
-// ⚠️ V13 renders tools in object-key insertion order, and other modules insert
-// theirs at unpredictable times — so our buttons drift up and down the list
-// between renders. The only way to pin them is to physically move the rendered
-// nodes to the end of their container after EVERY render. This file is imported
-// after quick-select-tools.mjs, so this listener runs after that module's own
-// reorder and our two buttons finish at the very bottom, every time.
-Hooks.on("renderSceneControls", (_app, htmlOrJq) => {
-  try {
-    if (!game.user?.isGM) return;
-    const root = htmlOrJq?.[0] ?? htmlOrJq;
-    if (!root?.querySelector) return;
-    for (const name of ["ace-party-transfer", "ace-party-place"]) {
-      const el = root.querySelector(`[data-tool="${name}"], [data-name="${name}"], [name="${name}"]`);
-      if (el?.parentNode) el.parentNode.appendChild(el);
-    }
-  } catch (err) {
-    console.warn(`${MODULE_ID} | Party Transfer toolbar pin failed (non-fatal):`, err);
-  }
-});
+/* ⚠️ WHERE THESE TWO SIT IS NOT THIS FILE'S BUSINESS ANY MORE. The pin that
+   stood here worked "because this file is imported after quick-select-tools",
+   which is the sentence that gave it away. token-tools-order.mjs owns the one
+   list and both toolbar hooks (his rule, 2026-10-05). */
 
 export class PartyTransfer {
 
@@ -246,14 +233,14 @@ export class PartyTransfer {
         name: "ace-party-transfer",
         title: "Transfer party off this scene (pick up into the Hand)",
         icon: "fa-solid fa-people-arrows",
-        button: true, visible: true, order: 99007,
+        button: true, visible: true, order: aceToolOrder("ace-party-transfer"),
         onChange: () => PartyTransfer.openTransfer(),
       },
       {
         name: "ace-party-place",
         title: "Place held creatures onto this scene",
         icon: "fa-solid fa-hand-holding-hand",
-        button: true, visible: true, order: 99008,
+        button: true, visible: true, order: aceToolOrder("ace-party-place"),
         onChange: () => PartyTransfer.openPlace(),
       },
     ];

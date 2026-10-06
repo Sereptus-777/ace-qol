@@ -103,6 +103,7 @@ import { durationWords, durationSecondsOf } from "./duration-words.mjs";
 import { conditionDisplayName, conditionDurationSeconds } from "./condition-library.mjs";
 import { popupDing } from "./popup-ding.mjs";
 import { whoAnswers } from "./who-answers.mjs";
+import { faceOf } from "./face.mjs";
 
 /**
  * Inline d20 result breakdown for a live save-card row: glowing black die face
@@ -2034,7 +2035,7 @@ export class SaveEngine {
       sceneId:    canvas.scene?.id,
       actorId:    tActor?.id,
       name:       token.name ?? tActor?.name,
-      img:        tActor?.img ?? token.document?.texture?.src,
+      img:        faceOf(tActor),
       saveAbility,
       saveAbilityUpper: saveAbility.toUpperCase(),
       saveMod,
@@ -3438,13 +3439,13 @@ export class SaveEngine {
   static castLineHtml(casterActor, title, targetNames, { isSpell = true, fallbackImg = null,
       dcText = "", rollers = null } = {}) {
     const who = casterActor?.name ?? "Someone";
-    const img = casterActor?.img || fallbackImg || "icons/svg/mystery-man.svg";
+    const img = faceOf(casterActor);
     const esc = (v) => foundry.utils.escapeHTML(String(v ?? ""));
     // ⚠️ THE DC IS ON THE HEADER, AND IT IS THE ROLLERS' TO READ (his card,
     // 2026-09-29: "Header: 'Jeth uses Spiked Chain on Escher · DC 14 Dexterity'" and
     // "Do not hide Lamia's DC 13 on Jeth's Charm card. He is rolling against it.").
     return `<div class="ace-qol-save-cast-line">`
-      + `<img class="ace-qol-save-caster-img ace-qol-save-portrait" src="${img}" alt="" />`
+      + `${img ? `<img class="ace-qol-save-caster-img ace-qol-save-portrait" src="${img}" alt="" />` : ""}`
       + `<span class="ace-qol-save-cast-text">`
       + `<strong>${esc(who)}</strong> ${isSpell ? "casts" : "uses"} <strong>${esc(title)}</strong>`
       + `${targetNames ? ` on <strong>${targetNames}</strong>` : ""}`
@@ -4729,7 +4730,7 @@ export class SaveEngine {
         sourceName: f.casterName ?? null,
         sourceImg: f.casterImg ?? null,
         rollerName: tokenDoc?.name ?? f.targetName ?? actor.name,
-        rollerImg: tokenDoc?.texture?.src ?? f.targetImg ?? actor.img,
+        rollerImg: faceOf(actor) || f.targetImg || "",
         // § 13.2: he is rolling against this number, so the button says it.
         pillLabel: Number.isFinite(Number(f.saveDC))
           ? `Roll ${abilityLabel} save (DC ${f.saveDC})`
@@ -6707,7 +6708,7 @@ export class SaveEngine {
           // For the box: what it is, who it comes from, and how it came.
           itemName:   item?.name ?? null,
           casterName: _casterTok?.name ?? casterActor?.name ?? null,
-          casterImg:  _casterTok?.texture?.src ?? casterActor?.img ?? null,
+          casterImg:  faceOf(casterActor) || null,
           trigger,
           saveAbility,
           saveDC,
@@ -7516,7 +7517,8 @@ export class SaveEngine {
       const actor = tokenDoc?.actor;
       allResults.push({
         name:       tokenDoc?.name ?? actor?.name ?? "Unknown",
-        img:        tokenDoc?.texture?.src ?? actor?.img ?? "icons/svg/mystery-man.svg",
+        // The portrait, or nothing: his rule, 2026-10-05.
+        img:        faceOf(actor),
         tokenDocId,
         actorId:    actor?.id,
         sceneId:    scene?.id,
@@ -9086,7 +9088,10 @@ export class SaveEngine {
       // `object-fit: cover` fills the square by cutting the picture, which took the
       // top of a tall token's head off. `contain` shows the whole picture and lets
       // the backdrop take the leftover, so a creature is recognisable.
-      const portrait = `<img src="${r.img || "icons/svg/mystery-man.svg"}" class="ace-qol-save-tgt-img ace-qol-save-portrait" />`;
+      // ⚠️ AN EMPTY SQUARE, NOT SOMEBODY ELSE'S PICTURE (his rule).
+      const portrait = r.img
+        ? `<img src="${r.img}" class="ace-qol-save-tgt-img ace-qol-save-portrait" />`
+        : "";
 
       // ── GATED — no die was thrown (2026-08-06, ONE_GATE phase 0) ──────────
       // Johnny: "I want us to be able to see it." A target the Gate refused is

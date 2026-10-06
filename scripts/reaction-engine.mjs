@@ -54,6 +54,7 @@ import { popupDing } from "./popup-ding.mjs";
 import { judgeAttack, isAHit } from "./rules/attack-hit.mjs";
 // A box asked between the attack roll and its card waits for the attack's d20.
 import { awaitArmedDicePeek } from "./dsn-utils.mjs";
+import { faceOf } from "./face.mjs";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Constants
@@ -4064,10 +4065,9 @@ export class ReactionEngine {
     const answer = ReactionEngine.showReactionDialog({
       ...opts,
       reactorActorName: opts.reactorActor?.name ?? opts.reactorActorName ?? "Reaction",
-      reactorActorImg: opts.reactorActor?.img
-        ?? opts.reactorToken?.document?.texture?.src
-        ?? opts.reactorActorImg
-        ?? null,
+      // ⚠️ THE PORTRAIT ONLY (his rule, 2026-10-05): a token texture behind
+      // it painted an animated creature's square blank.
+      reactorActorImg: faceOf(opts.reactorActor) || opts.reactorActorImg || null,
       // v0.7.71: forward attacker name + portrait (Shield prompt UX polish)
       attackerName: opts.attackerName ?? null,
       attackerImg:  opts.attackerImg  ?? null,
@@ -4140,7 +4140,7 @@ export class ReactionEngine {
           // Serialize actor/token references (can't send full objects over socket)
           reactorActorId: opts.reactorActor?.id,
           reactorActorName: opts.reactorActor?.name,
-          reactorActorImg: opts.reactorActor?.img ?? opts.reactorToken?.document?.texture?.src,
+          reactorActorImg: faceOf(opts.reactorActor),
           reactorTokenId: opts.reactorToken?.id,
           // v0.7.71: attacker name + portrait (Shield prompt UX polish) — these
           // are already primitives/strings, so they survive the socket roundtrip.
@@ -4352,6 +4352,48 @@ export class ReactionEngine {
             </div>
           </div>`;
 
+      /* ── THE LUCKY OFFER IS A POPUP YOU HAVE TO ANSWER ────────────────
+         His rule, 2026-10-05: "Lucky is a popup again, not a chat card. Build
+         it the way the portrait picker is built, a dialog you have to answer.
+         One card only... Then stop. Do not restyle it again."
+
+         So it is built like spell-target-picker.mjs: a DialogV2 with a class of
+         its own, which is the handle the stylesheet needs to reach Foundry's
+         chrome, because the window header and the footer buttons are the
+         application's and not part of `content`. The header is hidden, the green
+         border and the gold hairline are the WINDOW's, and the two footer
+         buttons are painted there. There is no inner bordered box: the popup is
+         the card, which is the one card he asked for.
+
+         Everything else about the offer is unchanged: it is announced to the
+         silence watch, the creature's reaction is claimed while it is open, and
+         the answer travels back over the same socket, because only the drawing
+         changed and this runs on the client that answers. */
+      if (type === "lucky") {
+        ReactionEngine._offerLuckyPopup({
+          title,
+          description: description ?? "",
+          gmNote,
+          acceptLabel: acceptLabel ?? "Spend a luck point",
+          declineLabel: declineLabel ?? "Keep the roll",
+          // The token's own picture, which is what he asked for on this card.
+          face: reactorActorImg,
+          name: reactorActorName,
+          onShown: data.onShown,
+          answer: (accepted) => {
+            if (resolved) return;
+            resolved = true;
+            resolve({ accepted, choiceData: {} });
+          },
+        }).catch(err => {
+          // ⚠️ NOTHING WAITS FOREVER. The roll is holding on this promise.
+          console.error(`${MODULE_ID} | the Lucky offer failed before it reached the chat, `
+            + `so the roll stands as rolled:`, err);
+          if (!resolved) { resolved = true; resolve({ accepted: false, choiceData: {} }); }
+        });
+        return;
+      }
+
       // ── Full dialog HTML ──
       // v0.7.21: countdown timer REMOVED. The user wants the reaction
       // decision to be binary (Accept / Decline) with no time pressure.
@@ -4362,7 +4404,7 @@ export class ReactionEngine {
       // ⚠️ THE NO IS ALWAYS THE RED PILL (his rule, 2026-09-18): "The red has
       // to be red, though, on the negative." The yes keeps each reaction's own
       // colour: Shield blue, Counterspell purple, Absorb Elements the element.
-      const html = `
+      const genericHtml = `
         <div class="ace-qol-reaction-prompt" data-reaction-type="${type}">
           ${headerHtml}
           <div class="ace-qol-reaction-body">
@@ -4390,6 +4432,10 @@ export class ReactionEngine {
           </div>
         </div>
       `;
+
+      // The Lucky offer left this path entirely (it is a chat card now), so
+      // every box that still comes through here is a Foundry dialog again.
+      const html = genericHtml;
 
       const dialog = new Dialog({
         title: `⚡ ${title} — ${reactorActorName ?? "Reaction"}`,
@@ -4466,6 +4512,125 @@ export class ReactionEngine {
       // as well, through Foundry's old global name, so the box would have
       // sounded twice (2026-09-18).
     });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  The Lucky offer — a chat card that answers a waiting roll
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * His clover, as the drawing he gave rather than a text club, which takes
+   * whatever the font has. A drawing cannot fall back to a missing glyph.
+   */
+  static LUCKY_CLOVER = `<svg class="ace-lucky-clover" width="16" height="16" viewBox="0 0 16 16" `
+    + `aria-hidden="true"><g fill="#3fa34d"><circle cx="5.6" cy="5.2" r="2.3"/>`
+    + `<circle cx="10.4" cy="5.2" r="2.3"/><circle cx="5.6" cy="9.4" r="2.3"/>`
+    + `<circle cx="10.4" cy="9.4" r="2.3"/>`
+    + `<path d="M8 8.4c.15 1.5.2 2.7 0 4.4-.2-1.7-.15-2.9 0-4.4z"/></g></svg>`;
+
+  /**
+   * The Lucky offer, as a popup that has to be answered.
+   *
+   * ⚠️🔴 THE PLAYER POPUP AND THE GM POPUP ARE TWO DIFFERENT POPUPS. His
+   * rule: "The player popup says the weapon and the roll, and how many points
+   * are left. It does not say miss and it does not say the AC. The GM popup may
+   * add that line." This box is drawn on the screen of the one person being
+   * asked, so the line is simply not written when that person is not a GM: it
+   * is not in their page at all, not merely hidden by a rule.
+   *
+   * ⚠️ AND IT ALWAYS ANSWERS. The roll is holding on this promise, so a window
+   * dismissed with Escape answers "keep the roll" rather than leaving the attack
+   * waiting for a click that is never coming.
+   */
+  static async _offerLuckyPopup({ title, description, gmNote, acceptLabel, declineLabel,
+                                  face, name, onShown, answer }) {
+    const esc = (x) => foundry.utils.escapeHTML(String(x ?? ""));
+    const amGM = game.user?.isGM === true;
+
+    // One header, one question, and the GM's line when it is a GM reading it.
+    // No bordered box of its own: the window carries the border.
+    const content = `
+      <div class="ace-lucky${amGM ? " is-gm" : ""}">
+        <div class="ace-lucky-who">
+          ${face ? `<img class="ace-lucky-face" src="${esc(face)}">` : ""}
+          <div>
+            <div class="ace-lucky-name">${esc(String(name ?? "Unknown").toUpperCase())}</div>
+            <div class="ace-lucky-tag">${ReactionEngine.LUCKY_CLOVER} Lucky</div>
+          </div>
+        </div>
+        <p class="ace-lucky-ask">${description}</p>
+        ${amGM && gmNote ? `<p class="ace-lucky-gm">${gmNote}</p>` : ""}
+      </div>`;
+
+    let done = false;
+    const settle = (accepted) => {
+      if (done) return;
+      done = true;
+      answer(accepted);
+    };
+
+    try {
+      const dlg = new foundry.applications.api.DialogV2({
+        // Hidden by the stylesheet, and still set: it is what a screen reader
+        // and the window list read.
+        window: { title: `${title ?? "Lucky"} — ${name ?? "Reaction"}` },
+        // ⚠️ THE HANDLE THE STYLESHEET NEEDS. The window header and the footer
+        // buttons are the application's own chrome, not `content`, so they can
+        // only be reached through this class (the portrait picker's own note).
+        classes: ["ace-lucky-dialog"],
+        content,
+        position: { width: 520 },
+        rejectClose: false,
+        buttons: [
+          {
+            action: "spend",
+            label: acceptLabel ?? "Spend a luck point",
+            default: true,
+            callback: () => settle(true),
+          },
+          {
+            // ⚠️ NO X ON THE KEEP BUTTON (his rule): no icon at all on it.
+            action: "keep",
+            label: declineLabel ?? "Keep the roll",
+            callback: () => settle(false),
+          },
+        ],
+        // ⚠️ DISMISSAL MUST ANSWER, OR THE ROLL WAITS FOREVER. The same fault
+        // the pickers each had to learn: a window closed with Escape fires no
+        // button callback at all.
+        close: () => settle(false),
+      });
+      await dlg.render({ force: true });
+
+      /* ⚠️ THE CLOVER GOES ON THE SPEND BUTTON (his rule, 2026-10-05: "the same
+         svg as the header... Keep the roll stays plain"). It is put in after the
+         render rather than passed as the button's label, because a button label
+         is the application's to render and is not promised to keep markup. The
+         keep button is left exactly as it is. */
+      try {
+        const spend = dlg.element?.querySelector?.('button[data-action="spend"]');
+        if (!spend) {
+          console.warn(`${MODULE_ID} | the Lucky popup's spend button could not be found, so it `
+            + `has no clover on it. The offer still works.`);
+        } else if (!spend.querySelector(".ace-lucky-clover")) {
+          spend.insertAdjacentHTML("afterbegin", ReactionEngine.LUCKY_CLOVER);
+        }
+      } catch (err) {
+        console.warn(`${MODULE_ID} | could not put the clover on the Lucky popup's spend button:`, err);
+      }
+
+      // It is a pop-up, so it dings like every other one, on the screen of
+      // whoever has to decide and nowhere else.
+      try { popupDing(`the ${title ?? "Lucky"} offer`); } catch (_) { /* a silent ding is not a bug */ }
+      try { onShown?.(); } catch (err) {
+        console.warn(`${MODULE_ID} | could not report that the Lucky offer opened:`, err);
+      }
+    } catch (err) {
+      /* ⚠️ A BOX THAT COULD NOT OPEN IS A NO, SAID OUT LOUD. */
+      console.error(`${MODULE_ID} | the Lucky offer could not open, so the roll stands as rolled:`, err);
+      try { ui.notifications?.warn("ACE: the Lucky offer could not open; the roll stands."); } catch (_) {}
+      settle(false);
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

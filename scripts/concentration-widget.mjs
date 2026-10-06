@@ -46,6 +46,7 @@ import { isSpiritGuardians, guardianFlavour } from "./rules/spirit-guardians.mjs
 import { recipeForActivity, loadBookFor } from "./inference/recipe.mjs";
 // A spell keeps its damage on its activities, never on the item (2026-09-25).
 import { firstDamage, readActivities } from "./read-activities.mjs";
+import { faceOf } from "./face.mjs";
 
 const TAG = `${MODULE_ID} | ConcWidget`;
 
@@ -2419,7 +2420,7 @@ export class ConcentrationWidget {
                      : phase === "endOfTurn"   ? "End of Turn"
                      : phase;
     const targetName = this._escapeHtml(token?.name ?? token?.actor?.name ?? "Target");
-    const portrait   = token?.actor?.img ?? token?.document?.texture?.src ?? "icons/svg/mystery-man.svg";
+    const portrait   = faceOf(token);
 
     // Two-line layout to match the save-result-row UX: target portrait +
     // name across the top, verdict on the second line indented under it.

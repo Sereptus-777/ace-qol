@@ -21,6 +21,7 @@ import { aceDistanceFt } from "./geometry-utils.mjs";
 import { lifeStateOf, pickable, lifeBadge } from "./road/picker-rule.mjs";
 // What the press pointed at, for a picker whose live reticle ACE has just cleared.
 import { aimAt, aimedAtPress } from "./road/aim.mjs";
+import { faceOf } from "./face.mjs";
 
 export class SpellTargetPicker {
 
@@ -328,7 +329,7 @@ export class SpellTargetPicker {
         token: tok,
         actor: tok.actor,
         name: tok.name ?? tok.actor.name,
-        img: tok.actor.img ?? tok.document?.texture?.src ?? "icons/svg/mystery-man.svg",
+        img: faceOf(tok),
         isSelf,
         distFt,
         // ⚠️ WHICH WAY, NOT JUST HOW FAR. Johnny, 2026-08-23: "goblins can

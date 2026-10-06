@@ -56,6 +56,7 @@ import { readTeleport } from "../rules/teleport-words.mjs";
 // What a press spent, given back through dnd5e's own refund when the cast is
 // abandoned (2026-09-18). Imports nothing, so it cannot close a cycle.
 import { giveBack, spentCount } from "../road/give-back.mjs";
+import { faceOf } from "../face.mjs";
 
 // ─── Creature snapshot access (2026-07-28) ───────────────────────────────────
 // Facts about a creature come from the ONE reader, never from actor.system —
@@ -1236,7 +1237,7 @@ export class SpellPipeline {
         actor: a, token,
         tokenId: token?.id ?? null,
         name: token?.name ?? a.name,
-        img: token?.document?.texture?.src ?? a.img,
+        img: faceOf(a),
       };
     }).filter(t => t.token);
 
